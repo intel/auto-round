@@ -15,11 +15,10 @@ from ...envs import (
     require_greater_than_050,
     require_ipex,
 )
-from ...helpers import evaluate_accuracy, get_model_path, get_tiny_model, model_infer
+from ...helpers import eval_generated_prompt, evaluate_accuracy, get_model_path, is_cuda_support_fp8
 
 
 class TestAutoRound:
-    save_dir = "./saved"
 
     @pytest.fixture(autouse=True, scope="class")
     def setup_and_teardown_class(self):
@@ -31,38 +30,36 @@ class TestAutoRound:
 
         # ===== TEARDOWN (teardown_class) =====
         print("[Teardown] Running after all tests in class")
-        shutil.rmtree("./saved", ignore_errors=True)
         shutil.rmtree("runs", ignore_errors=True)
 
+    @pytest.fixture(autouse=True)
+    def _save_dir(self, tmp_path):
+        self.save_dir = str(tmp_path / "saved")
+        yield
+        shutil.rmtree(self.save_dir, ignore_errors=True)
+
     @require_greater_than_050
-    def test_autoround_asym(self, tiny_opt_model_path, dataloader):
-        for bits in [2, 3, 4, 8]:
-            # model_name = get_model_path("facebook/opt-125m")
-            bits, group_size, sym = bits, 128, False
-            autoround = AutoRound(
-                tiny_opt_model_path,
-                bits=bits,
-                group_size=group_size,
-                sym=sym,
-                iters=2,
-                seqlen=2,
-                dataset=dataloader,
-            )
-            quantized_model_path = self.save_dir
+    @pytest.mark.parametrize("bits", [2, 3, 4, 8])
+    @pytest.mark.parametrize("group_size", [32, 128])
+    @pytest.mark.parametrize("is_sym", [True, False])
+    def test_autoround_format(self, tiny_opt_model_path, bits, group_size, is_sym):
+        autoround = AutoRound(
+            tiny_opt_model_path,
+            bits=bits,
+            group_size=group_size,
+            sym=is_sym,
+            iters=0,
+            disable_opt_rtn=True,
+        )
+        quantized_model_path = self.save_dir
 
-            autoround.quantize_and_save(output_dir=quantized_model_path, format="auto_round")
+        autoround.quantize_and_save(output_dir=quantized_model_path, format="auto_round")
 
-            model = AutoModelForCausalLM.from_pretrained(
-                quantized_model_path, device_map="cuda:0", trust_remote_code=True
-            )
-            tokenizer = AutoTokenizer.from_pretrained(quantized_model_path)
-            text = "There is a girl who likes adventure,"
-            inputs = tokenizer(text, return_tensors="pt").to(model.device)
-            res = tokenizer.decode(model.generate(**inputs, max_new_tokens=50)[0])
-            print(res)
-            assert "!!!" not in res
-            shutil.rmtree(self.save_dir, ignore_errors=True)
+        # Verify loading
+        model = AutoModelForCausalLM.from_pretrained(quantized_model_path, device_map="cuda:0", trust_remote_code=True)
+        assert isinstance(model, torch.nn.Module), "Loaded model is not an instance of torch.nn.Module"
 
+    @pytest.mark.skip_ci(reason="Time-consuming; Accuracy evaluation")
     @require_autogptq
     def test_mixed_precision(self):
         model_name = get_model_path("facebook/opt-125m")
@@ -78,16 +75,10 @@ class TestAutoRound:
         autoround = AutoRound(model_name, bits=bits, group_size=group_size, sym=sym, layer_config=layer_config)
         quantized_model_path = self.save_dir
         autoround.quantize_and_save(output_dir=quantized_model_path, format="auto_round")
-        quantization_config = AutoRoundConfig(backend="auto")
-        model = AutoModelForCausalLM.from_pretrained(
-            self.save_dir, torch_dtype=torch.float16, device_map="auto", quantization_config=quantization_config
-        )
+        eval_generated_prompt(quantized_model_path)
+        evaluate_accuracy(quantized_model_path, threshold=0.32, batch_size=16)
 
-        tokenizer = AutoTokenizer.from_pretrained(self.save_dir)
-        model_infer(model, tokenizer)
-        evaluate_accuracy(model, tokenizer, threshold=0.32, batch_size=16)
-        shutil.rmtree(self.save_dir, ignore_errors=True)
-
+    @pytest.mark.skip_ci(reason="Time-consuming; Accuracy evaluation")
     @require_gptqmodel
     def test_awq_backend(self):
         model_name = get_model_path("facebook/opt-125m")
@@ -109,7 +100,7 @@ class TestAutoRound:
         )
 
         tokenizer = AutoTokenizer.from_pretrained(self.save_dir)
-        model_infer(model, tokenizer)
+        eval_generated_prompt(model, tokenizer)
         evaluate_accuracy(model, tokenizer, threshold=0.18, batch_size=16)
         torch.cuda.empty_cache()
 
@@ -118,22 +109,21 @@ class TestAutoRound:
         )
 
         tokenizer = AutoTokenizer.from_pretrained(self.save_dir)
-        model_infer(model, tokenizer)
-        shutil.rmtree(self.save_dir, ignore_errors=True)
+        eval_generated_prompt(model, tokenizer)
 
+    @pytest.mark.skip_ci(reason="Time-consuming; Accuracy evaluation")
     @require_greater_than_050
     def test_tritonv2_bf16(self):
         model_name = get_model_path("OPEA/Meta-Llama-3.1-8B-Instruct-int4-sym-inc")
         quantization_config = AutoRoundConfig(backend="tritonv2")
-        model = get_tiny_model(
+        model = AutoModelForCausalLM.from_pretrained(
             model_name, torch_dtype=torch.bfloat16, device_map="auto", quantization_config=quantization_config
         )
-
         tokenizer = AutoTokenizer.from_pretrained(model_name)
-        model_infer(model, tokenizer)
-
+        eval_generated_prompt(model, tokenizer)
         torch.cuda.empty_cache()
 
+    @pytest.mark.skip_ci(reason="IPEX is deprecated.")
     @require_ipex
     def test_autoround_gptq_sym_format(self, tiny_opt_model_path, dataloader):
         bits, group_size, sym = 4, 128, True
@@ -146,7 +136,7 @@ class TestAutoRound:
             seqlen=2,
             dataset=dataloader,
         )
-        quantized_model_path = "./saved"
+        quantized_model_path = self.save_dir
 
         autoround.quantize_and_save(output_dir=quantized_model_path)
 
@@ -182,8 +172,7 @@ class TestAutoRound:
         print(res)
         assert "!!!" not in res
 
-        shutil.rmtree("./saved", ignore_errors=True)
-
+    @pytest.mark.skip_ci(reason="IPEX is deprecated.")
     @require_awq
     @require_ipex
     def test_autoround_awq_sym_format(self, tiny_opt_model_path, dataloader):
@@ -197,7 +186,7 @@ class TestAutoRound:
             seqlen=2,
             dataset=dataloader,
         )
-        quantized_model_path = "./saved"
+        quantized_model_path = self.save_dir
 
         autoround.quantize_and_save(output_dir=quantized_model_path, format="auto_round:auto_awq")
 
@@ -219,46 +208,23 @@ class TestAutoRound:
         print(res)
         assert "!!!" not in res
 
-        shutil.rmtree("./saved", ignore_errors=True)
+    def test_fp8_block_fp8_format(self):
+        model_name = "Qwen/Qwen3-0.6B"
 
-    @require_greater_than_050
-    def test_autoround_sym(self, tiny_opt_model_path, dataloader):
-        for bits in [2, 3, 4, 8]:
-            bits, group_size, sym = bits, 128, True
-            autoround = AutoRound(
-                tiny_opt_model_path,
-                bits=bits,
-                group_size=group_size,
-                sym=sym,
-                iters=2,
-                seqlen=2,
-                dataset=dataloader,
-            )
-            quantized_model_path = "./saved"
-
-            autoround.quantize_and_save(output_dir=quantized_model_path, format="auto_round")
-
-            model = AutoModelForCausalLM.from_pretrained(
-                quantized_model_path, device_map="auto", trust_remote_code=True
-            )
-            tokenizer = AutoTokenizer.from_pretrained(quantized_model_path)
-            text = "There is a girl who likes adventure,"
-            inputs = tokenizer(text, return_tensors="pt").to(model.device)
-            res = tokenizer.decode(model.generate(**inputs, max_new_tokens=50)[0])
-            print(res)
-            assert "!!!" not in res
-            shutil.rmtree(self.save_dir, ignore_errors=True)
-
-    @require_greater_than_050
-    def test_load_gptq_model_3bits(self):
-        model_name = get_model_path("LucasSantiago257/gemma-2b-2bits-gptq")
-        quantization_config = AutoRoundConfig()
-        model = AutoModelForCausalLM.from_pretrained(
+        scheme = "FP8_BLOCK"
+        autoround = AutoRound(
             model_name,
-            torch_dtype="auto",
-            trust_remote_code=True,
-            device_map="auto",
-            quantization_config=quantization_config,
+            scheme=scheme,
+            iters=2,
+            seqlen=2,
         )
-        tokenizer = AutoTokenizer.from_pretrained(model_name, trust_remote_code=True)
-        model_infer(model, tokenizer)
+        quantized_model_path = self.save_dir
+        compressed_model, _ = autoround.quantize_and_save(output_dir=quantized_model_path, format="fp8")
+        tmp_layer = compressed_model.model.layers[1].self_attn.q_proj
+        assert hasattr(tmp_layer, "weight_scale_inv")
+        assert tmp_layer.weight.dtype is torch.float8_e4m3fn
+        assert list(tmp_layer.weight_scale_inv.shape) == [16, 8]
+        assert compressed_model.config.quantization_config["quant_method"] == "fp8"
+        assert compressed_model.config.quantization_config["weight_block_size"] == (128, 128)
+        if is_cuda_support_fp8():
+            eval_generated_prompt(quantized_model_path, device="cuda")

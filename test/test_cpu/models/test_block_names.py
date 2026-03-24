@@ -113,8 +113,11 @@ class TestQuantizationBlocks:
 
     @classmethod
     def teardown_class(self):
-        shutil.rmtree("./saved", ignore_errors=True)
         shutil.rmtree("runs", ignore_errors=True)
+
+    @pytest.fixture(autouse=True)
+    def setup_save_dir(self, tmp_path):
+        self.save_dir = str(tmp_path / "saved")
 
     def test_moe_quant(self):
         input_size = 10
@@ -166,7 +169,7 @@ class TestQuantizationBlocks:
         )
         autoround.quantize()
 
-        quantized_model_path = "./saved"
+        quantized_model_path = self.save_dir
         autoround.save_quantized(quantized_model_path, inplace=False, safe_serialization=False, format="auto_round")
 
         model = AutoModelForCausalLM.from_pretrained(quantized_model_path, device_map="auto")
@@ -176,7 +179,6 @@ class TestQuantizationBlocks:
         print(tokenizer.decode(model.generate(**inputs, max_new_tokens=50)[0]))
         quant_config = model.config.quantization_config
         assert quant_config.block_name_to_quantize is not None
-        shutil.rmtree("./saved", ignore_errors=True)
 
     def test_mm_block_name(self, tiny_qwen_vl_model_path):
         from transformers import Qwen2VLForConditionalGeneration

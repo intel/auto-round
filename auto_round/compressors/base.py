@@ -150,6 +150,7 @@ SERIALIZATION_KEYS = (
     "super_bits",
     "super_group_size",
     "to_quant_block_names",
+    "transform_config",
 )
 
 
@@ -550,6 +551,8 @@ class BaseCompressor(object):
                 wrapper_autoround(self)
             except (ImportError, ModuleNotFoundError):
                 logger.error("algorithm extension import error, fallback to default mode")
+
+        self.transform_config = kwargs.pop("transform_config", {})
 
     def _gen_auto_scheme(self) -> dict[str, dict]:
         if self.mllm:
@@ -1261,7 +1264,6 @@ class BaseCompressor(object):
                     enable_round_tuning=False,
                     enable_torch_compile=self.enable_torch_compile,
                     disable_opt_rtn=disable_opt_rtn,
-                    enable_rtn=self.iters == 0,
                 )
                 m = m.unwrapper({})
             except torch.OutOfMemoryError:
@@ -1277,7 +1279,6 @@ class BaseCompressor(object):
                         enable_norm_bias_tuning=False,
                         enable_round_tuning=False,
                         enable_torch_compile=self.enable_torch_compile,
-                        enable_rtn=self.iters == 0,
                     )
                     m = m.unwrapper({})
                 except Exception as e:
@@ -1790,7 +1791,6 @@ class BaseCompressor(object):
             self.model = self.model.to(self.amp_dtype)
 
         layer_names = self._get_quantized_layer_names_outside_blocks()
-        start_time = time.time()
         all_first_block_names = [block[0] for block in all_blocks]
         if len(layer_names) > 0:
             logger.info(
@@ -1827,6 +1827,7 @@ class BaseCompressor(object):
         else:
             pbar = tqdm(range(0, len(all_blocks[0]), self.nblocks))  # move the alg warning outside pbar
 
+        start_time = time.time()
         for block_names in all_blocks:
             inputs = all_inputs[block_names[0]]
             all_inputs.pop(block_names[0])
@@ -1941,7 +1942,6 @@ class BaseCompressor(object):
                     enable_torch_compile=self.enable_torch_compile,
                     device=self.device,
                     disable_opt_rtn=self.disable_opt_rtn,
-                    enable_rtn=self.iters == 0,
                 )
                 new_layer = wrapper_layer.unwrapper({})
                 set_module(self.model, layer_name, new_layer)
@@ -2710,7 +2710,6 @@ class BaseCompressor(object):
             enable_minmax_tuning=self.enable_minmax_tuning,
             enable_torch_compile=self.enable_torch_compile,
             device=device,
-            enable_rtn=self.iters == 0,
         ).to(device)
         round_params = []
         minmax_params = []
@@ -3022,7 +3021,6 @@ class BaseCompressor(object):
             self.enable_norm_bias_tuning,
             enable_torch_compile=self.enable_torch_compile,
             device=device,
-            enable_rtn=self.iters == 0,
         )
         # Call this before quantization and after applying the block wrapper.
         if is_nv_fp(self.data_type):  # enable qkv and moe structure global_scale fuse.

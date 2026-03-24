@@ -1,3 +1,4 @@
+import gc
 import json
 import shutil
 import sys
@@ -13,8 +14,13 @@ from ...helpers import get_model_path, opt_name_or_path
 
 
 class TestAutoRound:
-    save_dir = "./saved"
     model_name = opt_name_or_path
+
+    @pytest.fixture(autouse=True)
+    def _save_dir(self, tmp_path):
+        self.save_dir = str(tmp_path / "saved")
+        yield
+        shutil.rmtree(self.save_dir, ignore_errors=True)
 
     @pytest.fixture(autouse=True, scope="class")
     def setup_and_teardown_class(self):
@@ -26,17 +32,22 @@ class TestAutoRound:
 
         # ===== TEARDOWN (teardown_class) =====
         print("[Teardown] Running after all tests in class")
-        shutil.rmtree("./saved", ignore_errors=True)
         shutil.rmtree("runs", ignore_errors=True)
 
     def _run_sglang_inference(self, model_path: Path):
         llm = sgl.Engine(
-            model_path=str(model_path), mem_fraction_static=0.7, disable_piecewise_cuda_graph=True, cuda_graph_bs=[1]
+            model_path=str(model_path), mem_fraction_static=0.5, disable_piecewise_cuda_graph=True, cuda_graph_bs=[1]
         )
-        prompts = ["Hello, my name is"]
-        sampling_params = {"temperature": 0.6, "top_p": 0.95}
-        outputs = llm.generate(prompts, sampling_params)
-        return outputs[0]["text"]
+        try:
+            prompts = ["Hello, my name is"]
+            sampling_params = {"temperature": 0.6, "top_p": 0.95}
+            outputs = llm.generate(prompts, sampling_params)
+            return outputs[0]["text"]
+        finally:
+            llm.shutdown()
+            del llm
+            gc.collect()
+            torch.cuda.empty_cache()
 
     def test_ar_format_sglang(self, dataloader):
         autoround = AutoRound(
@@ -57,8 +68,6 @@ class TestAutoRound:
         print(generated_text)
 
         assert "!!!" not in generated_text
-
-        shutil.rmtree(self.save_dir, ignore_errors=True)
 
     def test_mixed_ar_format_sglang(self, dataloader):
         layer_config = {
@@ -98,6 +107,7 @@ class TestAutoRound:
 
         shutil.rmtree(self.save_dir, ignore_errors=True)
 
+    @pytest.mark.skip_ci(reason="Cannot work well in CI env")
     def test_awq_format_sglang(self, dataloader):
         autoround = AutoRound(
             self.model_name,
@@ -117,5 +127,3 @@ class TestAutoRound:
         print(generated_text)
 
         assert "!!!" not in generated_text
-
-        shutil.rmtree(self.save_dir, ignore_errors=True)

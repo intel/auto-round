@@ -33,6 +33,8 @@ from auto_round.utils import (
     extract_block_names_to_str,
     find_matching_blocks,
     get_block_names,
+    merge_block_output_keys,
+    wrap_block_forward_positional_to_kwargs,
 )
 
 pipeline_utils = LazyImport("diffusers.pipelines.pipeline_utils")
@@ -168,6 +170,9 @@ class DiffusionCompressor(BaseCompressor):
             q_inputs = {k: q_inputs.pop(k, None) for k in input_id_str}
         return inputs, q_inputs
 
+    def _get_block_forward_func(self, name):
+        return wrap_block_forward_positional_to_kwargs(super()._get_block_forward_func(name))
+
     def _split_inputs(self, inputs: dict, first_input_name: str) -> tuple[dict, dict]:
         input_id_str = [key for key in inputs.keys() if "hidden_state" in key]
         input_ids = {k: inputs.pop(k, None) for k in input_id_str}
@@ -201,7 +206,7 @@ class DiffusionCompressor(BaseCompressor):
         )
         if isinstance(current_input_ids, dict):
             hidden_states = current_input_ids.pop("hidden_states")
-            current_input_others.update(current_input_ids)
+            merge_block_output_keys(block, current_input_others, current_input_ids)
             current_input_ids = hidden_states
         output_q = block_forward(block, current_input_ids, current_input_others, self.amp, self.amp_dtype, device, idx)
         return output_q.to(cache_device)
@@ -247,7 +252,7 @@ class DiffusionCompressor(BaseCompressor):
             )
             if isinstance(tmp_input_ids, dict):
                 hidden_states = tmp_input_ids.pop("hidden_states")
-                tmp_input_others.update(tmp_input_ids)
+                merge_block_output_keys(block, tmp_input_others, tmp_input_ids)
                 tmp_input_ids = hidden_states
 
             tmp_output = block_forward(block, tmp_input_ids, tmp_input_others, self.amp, self.amp_dtype, device, None)
