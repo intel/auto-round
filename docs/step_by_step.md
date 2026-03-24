@@ -629,7 +629,7 @@ AutoRound automatically selects the best available backend based on the installe
 
 ###  CPU
 
-Supports 2, 4, and 8 bits. We recommend using auto-round-lib (ark) for inference.
+Supports 2, 4, and 8 bits. We recommend using auto-round-lib (ark) for inference. When using the ark backend, ensure that your PyTorch version is >= 2.8.0.
 
 ```python
 from transformers import AutoModelForCausalLM, AutoTokenizer
