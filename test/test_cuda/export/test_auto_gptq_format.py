@@ -9,7 +9,7 @@ from transformers import AutoConfig, AutoModelForCausalLM, AutoRoundConfig, Auto
 
 from auto_round import AutoRound
 
-from ...envs import require_optimum
+from ...envs import require_gptqmodel
 from ...helpers import eval_generated_prompt, get_model_path, get_tiny_model, transformers_version
 
 
@@ -33,7 +33,7 @@ class TestAutoRound:
         yield
         shutil.rmtree(self.save_dir, ignore_errors=True)
 
-    @require_optimum
+    @require_gptqmodel
     def test_autogptq_format(self, tiny_opt_model_path):
         bits, group_size, sym = 4, 128, False
         autoround = AutoRound(
@@ -52,6 +52,7 @@ class TestAutoRound:
         assert model is not None, "Loaded model should not be None."
 
     @pytest.mark.skip_ci(reason="Only tiny model is suggested")  # skip this test in CI
+    @require_gptqmodel
     def test_autogptq_format_qsave_ignore_layers(self):
         model = AutoModelForCausalLM.from_pretrained(get_model_path("facebook/opt-125m"))
 

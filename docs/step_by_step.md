@@ -629,7 +629,7 @@ AutoRound automatically selects the best available backend based on the installe
 
 ###  CPU
 
-Supports 2, 4, and 8 bits. We recommend using intel-extension-for-pytorch (IPEX) for 4 bits inference.
+Supports 2, 4, and 8 bits. We recommend using auto-round-lib (ark) for inference. When using the ark backend, ensure that your PyTorch version is >= 2.8.0.
 
 ```python
 from transformers import AutoModelForCausalLM, AutoTokenizer
@@ -645,7 +645,7 @@ print(tokenizer.decode(model.generate(**inputs, max_new_tokens=50, do_sample=Fal
 
 ### Intel GPU
 
-Supports 4 bits only. We recommend using intel-extension-for-pytorch (IPEX) for inference.
+Supports 4,8 bits. When using the ark backend, PyTorch (torch) >= 2.8.0 is required. We recommend using auto-round-lib (ark) for inference.
 
 ```python
 from transformers import AutoModelForCausalLM, AutoTokenizer
@@ -698,13 +698,13 @@ print(tokenizer.decode(model.generate(**inputs, max_new_tokens=50, do_sample=Fal
 AutoRound automatically selects the backend for each layer based on compatibility. In general, the priority order is Marlin > ExLLaMAV2 > Triton, but the final choice depends on factors such as group size, bit width, packing format, hardware device, and other implementation details.
 
 The backend may not always be the most suitable for certain devices. 
-You can specify your preferred backend such as "ipex" for CPU and Intel GPU, "marlin/exllamav2/triton" for CUDA, according to your needs or hardware compatibility. Please note that additional corresponding libraries may be required.
+You can specify your preferred backend such as "ark" for CPU and Intel GPU, "marlin/exllamav2/triton" for CUDA, according to your needs or hardware compatibility. Please note that additional corresponding libraries may be required.
 
 ```python
 from transformers import AutoModelForCausalLM, AutoTokenizer, AutoRoundConfig
 
 model_name = "OPEA/Qwen2.5-1.5B-Instruct-int4-sym-inc"
-quantization_config = AutoRoundConfig(backend="ipex")
+quantization_config = AutoRoundConfig(backend="ark")
 model = AutoModelForCausalLM.from_pretrained(
     model_name, device_map="cpu", quantization_config=quantization_config, torch_dtype="auto"
 )
@@ -715,13 +715,17 @@ print(tokenizer.decode(model.generate(**inputs, max_new_tokens=50, do_sample=Fal
 ```
 | Name                                         | Devices      | Bits    | Dtypes    | Priority | Packing format  | Requirements                      |
 |----------------------------------------------|--------------|---------|-----------|----------|-----------------|-----------------------------------|
-| ipex                                         | cpu/xpu      | 4       | BF16/FP16 | 5        | gptq_zp+-1/awq  | intel-extension-for-pytorch       |
+| ark                                          | cpu          | 2,4,8   | FP32/FP16/BF16 | 6   | gptq/gptq_zp+-1 | auto-round-lib<br/>torch>=2.8.0  |
+| ark                                          | cpu          | 4       | FP32/FP16/BF16 | 6   | awq             | auto-round-lib<br/>torch>=2.8.0  |
+| ark                                          | xpu          | 4,8     | FP32/FP16/BF16 | 6   | gptq/gptq_zp+-1 | auto-round-lib<br/>torch>=2.8.0  |
+| ark                                          | xpu          | 4       | FP32/FP16/BF16 | 6   | awq             | auto-round-lib<br/>torch>=2.8.0  |
+| ipex(To be deprecated)                       | cpu/xpu      | 4       | BF16/FP16 | 5        | gptq_zp+-1/awq  | intel-extension-for-pytorch       |
 | marlin                                       | cuda         | 4,8     | BF16/FP16 | 6        | gptq/gptq_zp+-1 | gptqmodel                         |
 | exllamav2 or<br/>gptqmodel:exllamav2         | cuda         | 4       | BF16/FP16 | 5        | gptq/gptq_zp+-1 | gptqmodel                         |
 | exllamav2 or<br/>gptq:exllamav2              | cuda         | 4       | FP16      | 3        | gptq_zp+-1      | auto-gptq<br/>transformers<5.0.0  |
 | gptq:cuda                                    | cuda         | 2,3,4,8 | FP16      | 1        | gptq_zp+-1      | auto-gptq<br/>transformers<5.0.0  |
 | triton                                       | xpu/cuda     | 2,4,8   | BF16/FP16 | 2        | gptq/gptq_zp+-1 | auto-round                        |
-| awq                                          | cuda         | 4       | FP16      | 5        | awq             | auto-awq<br/>transformers<4.57.0                          |
+| awq                                          | cuda         | 4       | FP16      | 5        | awq             | auto-awq<br/>transformers<4.57.0  |
 | gptqmodel:awq or<br/>gptqmodel:awq_exllamav2 | cuda         | 4       | BF16/FP16 | 6        | awq             | gptqmodel                         |
 | gptqmodel:awq_marlin                         | cuda         | 4,8     | FP16      | 5        | awq             | gptqmodel                         |
 | gptqmodel:awq_gemm                           | cuda         | 4       | FP16      | 3        | awq             | gptqmodel                         |

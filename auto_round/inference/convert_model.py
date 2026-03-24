@@ -528,6 +528,11 @@ def post_init(model: torch.nn.Module, used_backends: list[str]) -> None:
             need_gptqmodel_init = True
         elif backend.startswith(("ipex", "auto_round_kernel")):
             need_ipex_init = True
+            if backend.startswith("ipex"):
+                logger.warning_once(
+                    f"Backend '{backend}' is deprecated and will be removed in a future release. "
+                    "Please use the 'ark' backend instead (requires auto-round-lib and torch>=2.8.0)."
+                )
 
     # AutoGPTQ post-init
     if need_autogptq_init:
