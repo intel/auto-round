@@ -645,7 +645,7 @@ print(tokenizer.decode(model.generate(**inputs, max_new_tokens=50, do_sample=Fal
 
 ### Intel GPU
 
-Supports 4,8 bits. We recommend using auto-round-lib (ark) for inference.
+Supports 4,8 bits. When using the ark backend, PyTorch (torch) >= 2.8.0 is required. We recommend using auto-round-lib (ark) for inference.
 
 ```python
 from transformers import AutoModelForCausalLM, AutoTokenizer
