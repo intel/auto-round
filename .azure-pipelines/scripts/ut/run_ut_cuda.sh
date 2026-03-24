@@ -23,7 +23,6 @@ function create_conda_env() {
     conda create -n ${CONDA_ENV_NAME} python=${PYTHON_VERSION} setuptools -y
     source activate ${CONDA_ENV_NAME} > /dev/null 2>&1
     conda install -c conda-forge git gxx=11.2.0 gcc=11.2.0 gdb sysroot_linux-64 libgcc uv -y
-    export UV_TORCH_BACKEND=cu128
     export LD_PRELOAD=${CONDA_PREFIX}/lib/libstdc++.so.6
 
     # install AutoRound
@@ -171,7 +170,7 @@ function run_unit_test_llmc() {
 
     cd ${REPO_PATH}/test
     rm -rf .coverage* *.xml *.html
-    uv pip install -r test_cuda/requirements_llmc.txt
+    uv pip install -r test_cuda/requirements_llmc.txt --extra-index-url https://download.pytorch.org/whl/cu128
     cd ${REPO_PATH} && uv pip install . && cd ${REPO_PATH}/test
 
     pip list > ${LOG_DIR}/llmc_ut_pip_list.txt

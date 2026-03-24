@@ -29,7 +29,6 @@ function setup_environment() {
     export TQDM_MININTERVAL=120
     export CUDA_VISIBLE_DEVICES=0
     export HF_HUB_DISABLE_PROGRESS_BARS=1
-    export UV_TORCH_BACKEND=cu128
 }
 
 function print_summary() {
@@ -113,7 +112,7 @@ function run_unit_test_llmc() {
     rm -rf /root/.venv
     uv venv --python=3.12 /root/.venv
     uv pip install -U pytest-cov pytest-html
-    uv pip install -r test/test_cuda/requirements_llmc.txt
+    uv pip install -r test/test_cuda/requirements_llmc.txt --extra-index-url https://download.pytorch.org/whl/cu128
     uv pip install .
     uv pip list
     echo "##[endgroup]"
