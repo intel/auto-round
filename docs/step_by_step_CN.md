@@ -676,10 +676,10 @@ print(tokenizer.decode(model.generate(**inputs, max_new_tokens=50, do_sample=Fal
 #### 各推理后端的详细支持说明
 | 后端名称                | 支持设备       | 支持位宽       | 支持数据类型 | 优先级 | 打包格式        | 依赖库要求                     |
 |-------------------------|----------------|----------------|--------------|--------|-----------------|--------------------------------|
-| ark                     | cpu            | 2、4、8        | FP32/FP16/BF16 | 6    | gptq/gptq_zp+-1 | auto-round-lib                 |
-| ark                     | cpu            | 4              | FP32/FP16/BF16 | 6    | awq             | auto-round-lib                 |
-| ark                     | xpu            | 4、8           | FP32/FP16/BF16 | 6    | gptq/gptq_zp+-1 | auto-round-lib                 |
-| ark                     | xpu            | 4              | FP32/FP16/BF16 | 6    | awq             | auto-round-lib                 |
+| ark                     | cpu            | 2、4、8        | FP32/FP16/BF16 | 6    | gptq/gptq_zp+-1 | auto-round-lib<br/>torch>=2.8.0 |
+| ark                     | cpu            | 4              | FP32/FP16/BF16 | 6    | awq             | auto-round-lib<br/>torch>=2.8.0 |
+| ark                     | xpu            | 4、8           | FP32/FP16/BF16 | 6    | gptq/gptq_zp+-1 | auto-round-lib<br/>torch>=2.8.0 |
+| ark                     | xpu            | 4              | FP32/FP16/BF16 | 6    | awq             | auto-round-lib<br/>torch>=2.8.0 |
 | ipex（即将废弃）        | cpu/xpu        | 4              | BF16/FP16    | 5      | gptq_zp+-1/awq  | intel-extension-for-pytorch    |
 | marlin                  | cuda           | 4、8           | BF16/FP16    | 6      | gptq/gptq_zp+-1 | gptqmodel                      |
 | exllamav2/<br/>gptqmodel:exllamav2 | cuda    | 4              | BF16/FP16    | 5      | gptq            | gptqmodel                      |
