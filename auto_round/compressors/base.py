@@ -119,6 +119,10 @@ from auto_round.utils.distributed import setup_ddp_if_needed_
 from auto_round.utils.offload import OffloadManager
 from auto_round.wrapper import WrapperLinear, WrapperMultiblock, unwrapper_block, unwrapper_layer, wrapper_block
 
+from auto_round.experimental.transform.transform_config import TransformConfig
+from auto_round.experimental.transform.helper import _normalize_transform_config
+
+
 SERIALIZATION_KEYS = (
     "bits",
     "act_bits",
@@ -201,6 +205,7 @@ class BaseCompressor(object):
         disable_opt_rtn: bool | None = None,
         seed: int = 42,
         low_cpu_mem_usage: bool = True,
+        transform_config: str|dict|TransformConfig|None = None,
         **kwargs,
     ):
         """Initialize AutoRound with quantization and tuning configuration.
@@ -552,7 +557,8 @@ class BaseCompressor(object):
             except (ImportError, ModuleNotFoundError):
                 logger.error("algorithm extension import error, fallback to default mode")
 
-        self.transform_config = kwargs.pop("transform_config", {})
+        self.transform_config = _normalize_transform_config(transform_config, scheme)
+
 
     def _gen_auto_scheme(self) -> dict[str, dict]:
         if self.mllm:
