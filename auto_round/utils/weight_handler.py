@@ -494,9 +494,9 @@ class FP8Handler(WeightTypeHandler):
                 q_scheme = module.quantization_scheme
                 if (
                     q_scheme.weights.num_bits == 8
-                    and "float" in q_scheme.weights.data_type
+                    and q_scheme.weights.type == "float"
                     and q_scheme.input_activations.num_bits == 8
-                    and "float" in q_scheme.input_activations.data_type
+                    and q_scheme.input_activations.type == "float"
                 ):
                     return True
 
