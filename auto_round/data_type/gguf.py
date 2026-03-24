@@ -244,7 +244,11 @@ def make_qp_quants(nmax, data, quant_weights):
     #     if n_changed == 0:
     #         break
 
-    return sumlx / suml2, L
+    # When suml2 is zero (all L=0 due to zero scales, or all quant_weights=0 due to
+    # unactivated calibration features), fall back to the simple max-based scale
+    # estimate to avoid NaN propagating into the GGUF file.
+    fallback_d = group_max.squeeze(-1) / nmax
+    return torch.where(suml2 > 0, sumlx / suml2, fallback_d), L
 
 
 @register_dtype("int_asym_dq")
@@ -329,7 +333,7 @@ def _imatrix_handle_zero(imatrix: Union[torch.Tensor, float], weight: torch.Tens
             "please use more data via setting `nsamples` to improve accuracy as calibration activations contain 0"
         )
 
-        zero_cnt = torch.sum(imatrix == 0, dim=-1)
+        zero_cnt = torch.sum(imatrix <= 1e-30, dim=-1)
         replace_index = zero_cnt > group_size // 2
         if torch.sum(replace_index) > 0:
             ## fallback to no imatrix
