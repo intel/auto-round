@@ -91,8 +91,7 @@ function run_unit_test() {
     cd ${REPO_PATH}/test
     rm -rf .coverage* *.xml *.html
 
-    uv pip install torch==2.10.0 torchvision
-    uv pip install -v git+https://github.com/casper-hansen/AutoAWQ.git --no-build-isolation
+    uv pip install torch==2.11.0 torchvision --index-url https://download.pytorch.org/whl/cu128
     uv pip install gptqmodel --no-build-isolation
     uv pip install -r https://raw.githubusercontent.com/ModelCloud/GPTQModel/refs/heads/main/requirements.txt
     CMAKE_ARGS="-DGGML_CUDA=on -DLLAVA_BUILD=off" uv pip install llama-cpp-python
@@ -132,14 +131,11 @@ function run_unit_test_vlm() {
     cd ${REPO_PATH}/test
     rm -rf .coverage* *.xml *.html
 
-    uv pip install torch==2.10.0 torchvision
+    uv pip install torch==2.11.0 torchvision --index-url https://download.pytorch.org/whl/cu128
+    uv pip install gptqmodel --no-build-isolation
     uv pip install git+https://github.com/haotian-liu/LLaVA.git@v1.2.2 --no-deps
-    local site_path=$(python -c "import site; print(site.getsitepackages()[0])")
-    # reference https://github.com/haotian-liu/LLaVA/issues/1448#issuecomment-2119845242
-    sed -i '/inputs\[.*image_sizes.*\] = image_sizes/a\        inputs.pop("cache_position")' ${site_path}/llava/model/language_model/llava_llama.py
-    uv pip install git+https://github.com/deepseek-ai/DeepSeek-VL2.git timm attrdict --no-deps
     uv pip install -v git+https://github.com/casper-hansen/AutoAWQ.git@v0.2.0 --no-build-isolation
-    uv pip install flash-attn==2.7.4.post1 --no-build-isolation
+    uv pip install flash-attn==2.8.3 --no-build-isolation
     uv pip install -r test_cuda/requirements_vlm.txt
     cd ${REPO_PATH} && uv pip install . && cd ${REPO_PATH}/test
 

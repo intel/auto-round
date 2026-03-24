@@ -94,15 +94,27 @@ def check_gpu_count(token):
 def run_create_pod(api_key, payload):
     url = "https://rest.runpod.io/v1/pods"
     headers = {"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"}
-    response = requests.post(url, json=payload, headers=headers)
+    max_retries = 3
 
-    response.raise_for_status()
-    result = response.json()
-    if "errors" in result:
-        print("❌ Errors:")
-        print(json.dumps(result["errors"], indent=2))
-        sys.exit(1)
-    return result
+    for attempt in range(max_retries + 1):
+        response = requests.post(url, json=payload, headers=headers)
+
+        if response.status_code >= 500:
+            if attempt < max_retries:
+                print(f"⚠️ {response.status_code} Error, Retrying in 60 seconds ({attempt + 1}/{max_retries})...")
+                time.sleep(60)
+                continue
+            else:
+                print(f"❌ {response.status_code} Error, Reached maximum retry attempts ({max_retries}), giving up.")
+        response.raise_for_status()
+
+        result = response.json()
+        if "errors" in result:
+            print("❌ Errors:")
+            print(json.dumps(result["errors"], indent=2))
+            sys.exit(1)
+
+        return result
 
 
 def create_pod(args):
