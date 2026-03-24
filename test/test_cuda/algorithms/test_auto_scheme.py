@@ -263,7 +263,7 @@ class TestAutoScheme:
         model_name = get_model_path("facebook/opt-125m")
         scheme = AutoScheme(avg_bits=3, options=("W2A16", "W4A16", "W8A16", "BF16"))
         ar = AutoRound(model=model_name, scheme=scheme)
-        ar.quantize()
+        ar.quantize_and_save(output_dir=self.save_dir)
         evaluate_accuracy(self.save_dir, threshold=0.25)
 
     @pytest.mark.skip_ci(reason="The evaluation is time-consuming")
@@ -271,5 +271,5 @@ class TestAutoScheme:
         model_name = get_model_path("facebook/opt-125m")
         scheme = AutoScheme(avg_bits=2, options=("W2A16"), ignore_scale_zp_bits=True)
         ar = AutoRound(model=model_name, scheme=scheme, enable_torch_compile=True)
-        ar.quantize()
+        ar.quantize_and_save(output_dir=self.save_dir)
         evaluate_accuracy(self.save_dir, threshold=0.10)
