@@ -70,6 +70,7 @@ function run_unit_test() {
     uv pip install -r test/test_cuda/requirements.txt
     uv pip install -r test/test_cuda/requirements_diffusion.txt
     uv pip install -U transformers
+    uv pip install torch==2.11.0 torchvision --index-url https://download.pytorch.org/whl/cu128
     uv pip install .
     echo "##[endgroup]"
 

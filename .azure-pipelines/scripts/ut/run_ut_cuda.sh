@@ -99,6 +99,7 @@ function run_unit_test() {
     uv pip install -r test_cuda/requirements.txt
     uv pip install -r test_cuda/requirements_diffusion.txt
     uv pip install -U transformers
+    uv pip install torch==2.11.0 torchvision --index-url https://download.pytorch.org/whl/cu128
     cd ${REPO_PATH} && uv pip install . && cd ${REPO_PATH}/test
 
     pip list > ${LOG_DIR}/ut_pip_list.txt
@@ -230,6 +231,7 @@ function run_unit_test_sglang() {
 function run_unit_test_vllm() {
     # install unit test dependencies
     create_conda_env
+    unset LD_LIBRARY_PATH
 
     cd ${REPO_PATH}/test
     rm -rf .coverage* *.xml *.html
