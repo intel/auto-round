@@ -1589,7 +1589,7 @@ class MemoryMonitor:
                 device_list = list(range(torch.xpu.device_count()))
             elif is_hpex_available():
                 try:
-                    import habana_frameworks.torch.hpu as hthpu
+                    import habana_frameworks.torch.hpu as hthpu  # pylint: disable=E0401
 
                     device_list = list(range(hthpu.device_count()))
                 except Exception:
@@ -1641,7 +1641,7 @@ class MemoryMonitor:
             return
         if device_list is None:
             try:
-                import habana_frameworks.torch.hpu as hthpu
+                import habana_frameworks.torch.hpu as hthpu  # pylint: disable=E0401
 
                 device_list = list(range(hthpu.device_count()))
             except Exception:
