@@ -1,8 +1,11 @@
+# # Copyright (C) 2026 Intel Corporation
+# # SPDX-License-Identifier: Apache-2.0
 
 from typing import Any
 
 from auto_round.experimental.transform.transform_config import TransformConfig
 from auto_round.experimental.transform.transforms import TRANSFORMS
+
 
 def _normalize_transform_config(transform_config: Any, scheme: str = None) -> dict[str, Any]:
     """
@@ -42,8 +45,7 @@ def _normalize_transform_config(transform_config: Any, scheme: str = None) -> di
 
         if key not in TRANSFORMS:
             raise ValueError(
-                f"Invalid transform_config string: {key!r}. "
-                f"Expected one of {sorted(TRANSFORMS.keys())}."
+                f"Invalid transform_config string: {key!r}. " f"Expected one of {sorted(TRANSFORMS.keys())}."
             )
 
         cfg_dict = {"transform_type": key, "quant_scheme": scheme}
@@ -51,9 +53,7 @@ def _normalize_transform_config(transform_config: Any, scheme: str = None) -> di
         try:
             cfg = TransformConfig.model_validate(cfg_dict).model_dump()
         except Exception as e:
-            raise ValueError(
-                f"transform_config built from string {key!r} is invalid for TransformConfig: {e}"
-            ) from e
+            raise ValueError(f"transform_config built from string {key!r} is invalid for TransformConfig: {e}") from e
 
         return cfg
 

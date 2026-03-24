@@ -5,20 +5,16 @@ import torch
 import tqdm
 
 from auto_round.experimental.qmodules.mx import MXQuantLinearBase
+from auto_round.experimental.transform.helper import _normalize_transform_config
 from auto_round.experimental.transform.transform_config import TransformConfig
 from auto_round.experimental.transform.transforms import build_transform
-from auto_round.experimental.transform.helper import _normalize_transform_config
 
 __all__ = ["apply_transform"]
 
 
 def apply_transform(
-        model: torch.nn.Module,
-        config: str|dict|TransformConfig,
-        scheme: str = None,
-        use_tqdm=True,
-        desc=None
-    ):
+    model: torch.nn.Module, config: str | dict | TransformConfig, scheme: str = None, use_tqdm=True, desc=None
+):
     """
     Apply a transform config to a model. Add weight transforms and
     activation transforms are attached as submodules and trigger via pytorch hooks
