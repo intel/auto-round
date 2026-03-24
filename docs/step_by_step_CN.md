@@ -604,7 +604,7 @@ print(tokenizer.decode(model.generate(**inputs, max_new_tokens=50, do_sample=Fal
 ```
 
 ### 英特尔 GPU
-支持 4、8 bits 模型，推荐搭配 **auto-round-lib（ark）** 进行推理，示例：
+支持 4、8 bits 模型，推荐搭配 **auto-round-lib（ark）**（需 PyTorch>=2.8.0）进行推理，示例：
 ```python
 from transformers import AutoModelForCausalLM, AutoTokenizer
 
