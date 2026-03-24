@@ -298,40 +298,27 @@ def _qwen2_5_omni_forward(
 
     # Run talker forward if available (for calibration purposes)
     if hasattr(model, "talker") and model.has_talker:
-        try:
-            thinker_hidden = thinker_output.hidden_states[-1] if thinker_output.hidden_states else None
+        thinker_hidden = thinker_output.hidden_states[-1] if thinker_output.hidden_states else None
 
-            if thinker_hidden is not None:
-                batch_size, seq_len, _ = thinker_hidden.shape
+        if thinker_hidden is not None:
+            # ---- calibrate thinker_to_talker_proj (nn.Linear) ----
+            thinker_embeds = model.thinker.get_input_embeddings()(input_ids)
+            proj_dtype = next(model.talker.thinker_to_talker_proj.parameters()).dtype
+            talker_inputs_embeds = model.talker.thinker_to_talker_proj(thinker_embeds.to(proj_dtype))
 
-                if hasattr(model.talker, "thinker_to_talker_proj"):
-                    thinker_embeds = model.thinker.get_input_embeddings()(input_ids)
-                    proj_dtype = next(model.talker.thinker_to_talker_proj.parameters()).dtype
-                    talker_inputs_embeds = model.talker.thinker_to_talker_proj(thinker_embeds.to(proj_dtype))
-                else:
-                    talker_hidden_size = model.talker.model.config.hidden_size
-                    talker_inputs_embeds = torch.zeros(
-                        batch_size,
-                        seq_len,
-                        talker_hidden_size,
-                        device=thinker_hidden.device,
-                        dtype=thinker_hidden.dtype,
-                    )
-
-                # Align dtype with talker model weights
-                talker_dtype = next(model.talker.model.parameters()).dtype
-                _ = model.talker.model(
-                    inputs_embeds=talker_inputs_embeds.to(talker_dtype),
-                    attention_mask=attention_mask,
-                    use_cache=False,
-                )
-        except Exception as exc:
-            logger.warning(
-                "Qwen2.5-Omni talker forward failed during calibration; "
-                "continuing with thinker-only quantization. Error: %s",
-                exc,
-                exc_info=True,
+            # ---- calibrate talker decoder layers ----
+            talker_dtype = next(model.talker.model.parameters()).dtype
+            talker_output = model.talker.model(
+                inputs_embeds=talker_inputs_embeds.to(talker_dtype),
+                attention_mask=attention_mask,
+                use_cache=False,
             )
+
+            # ---- calibrate codec_head (nn.Linear) ----
+            if hasattr(model.talker, "codec_head"):
+                talker_last_hidden = talker_output[0] if not hasattr(talker_output, "last_hidden_state") \
+                    else talker_output.last_hidden_state
+                _ = model.talker.codec_head(talker_last_hidden.to(talker_dtype))
 
     return thinker_output
 
@@ -364,6 +351,16 @@ def _qwen3_omni_moe_forward(
     This runs forward through both thinker and talker modules for calibration.
     The thinker processes text/vision/audio input, and talker uses thinker's
     hidden states to prepare for speech synthesis.
+
+    In real inference the talker receives inputs built from two projections:
+      - ``text_projection``: maps thinker word embeddings → talker hidden dim
+        (used for pure-text tokens).
+      - ``hidden_projection``: maps thinker intermediate hidden states → talker
+        hidden dim (used for multimodal tokens).
+
+    During calibration we exercise both projection paths and then run one
+    forward pass through the talker decoder so that every linear layer
+    (attention, MoE/MLP, codec_head) observes representative activations.
     """
     # Run thinker forward with output_hidden_states to get hidden states for talker
     thinker_output = model.thinker(
@@ -393,48 +390,34 @@ def _qwen3_omni_moe_forward(
 
     # Run talker forward if available (for calibration purposes)
     if getattr(model, "has_talker", False) and getattr(model, "talker", None) is not None:
-        try:
-            # Get thinker hidden states for talker input
-            # Use the last hidden state from thinker as input to talker
-            thinker_hidden = thinker_output.hidden_states[-1] if thinker_output.hidden_states else None
+        thinker_hidden = thinker_output.hidden_states[-1] if thinker_output.hidden_states else None
 
-            if thinker_hidden is not None:
-                # Create simple talker input from thinker hidden states
-                # Project thinker hidden states to talker dimension
-                batch_size, seq_len, _ = thinker_hidden.shape
-                talker_hidden_size = model.config.talker_config.text_config.hidden_size
-
-                # Use text projection to convert thinker embeddings to talker space
-                if hasattr(model.talker, "text_projection"):
-                    # Get thinker embeddings and align dtype with text_projection weights
-                    thinker_embeds = model.thinker.get_input_embeddings()(input_ids)
-                    proj_dtype = next(model.talker.text_projection.parameters()).dtype
-                    talker_inputs_embeds = model.talker.text_projection(thinker_embeds.to(proj_dtype))
-                else:
-                    # Fallback: create zero embeddings of correct size
-                    talker_inputs_embeds = torch.zeros(
-                        batch_size,
-                        seq_len,
-                        talker_hidden_size,
-                        device=thinker_hidden.device,
-                        dtype=thinker_hidden.dtype,
-                    )
-
-                # Run talker model forward — align dtype with talker model weights
-                talker_dtype = next(model.talker.model.parameters()).dtype
-                _ = model.talker.model(
-                    inputs_embeds=talker_inputs_embeds.to(talker_dtype),
-                    attention_mask=attention_mask,
-                    use_cache=False,
-                )
-        except Exception as exc:
-            # Log talker forward errors during calibration without interrupting thinker quantization
-            logger.warning(
-                "Qwen3-Omni-MoE talker forward failed during calibration; "
-                "continuing with thinker-only quantization. Error: %s",
-                exc,
-                exc_info=True,
+        if thinker_hidden is not None:
+            # ---- calibrate text_projection (ResizeMLP) ----
+            thinker_embeds = model.thinker.get_input_embeddings()(input_ids)
+            proj_dtype = next(model.talker.text_projection.parameters()).dtype
+            talker_inputs_embeds = model.talker.text_projection(
+                thinker_embeds.to(proj_dtype)
             )
+
+            # ---- calibrate hidden_projection (ResizeMLP) ----
+            if hasattr(model.talker, "hidden_projection"):
+                hidden_proj_dtype = next(model.talker.hidden_projection.parameters()).dtype
+                _ = model.talker.hidden_projection(thinker_hidden.to(hidden_proj_dtype))
+
+            # ---- calibrate talker decoder layers ----
+            talker_dtype = next(model.talker.model.parameters()).dtype
+            talker_output = model.talker.model(
+                inputs_embeds=talker_inputs_embeds.to(talker_dtype),
+                attention_mask=attention_mask,
+                use_cache=False,
+            )
+
+            # ---- calibrate codec_head ----
+            if hasattr(model.talker, "codec_head"):
+                talker_last_hidden = talker_output[0] if not hasattr(talker_output, "last_hidden_state") \
+                    else talker_output.last_hidden_state
+                _ = model.talker.codec_head(talker_last_hidden.to(talker_dtype))
 
     return thinker_output
 
