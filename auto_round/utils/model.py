@@ -12,6 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 import collections
+import inspect
 import json
 import os
 import re
@@ -367,6 +368,75 @@ def llm_load_model(
     return model, tokenizer
 
 
+def _find_pipeline_model_subfolder(model_dir_or_repo: str, file_list: list = None) -> tuple:
+    """Find model/processor subfolders from a pipeline's model_index.json.
+
+    Works for both local directories and remote HF repos.
+
+    Args:
+        model_dir_or_repo: Local directory path or HF repo id.
+        file_list: If provided, treat *model_dir_or_repo* as a remote HF repo
+            and use *file_list* (from ``list_repo_files``) to check file existence.
+            If ``None``, treat it as a local directory.
+
+    Returns:
+        (model_subfolder, processor_subfolder, config_dict)
+    """
+    is_local = file_list is None
+
+    if is_local:
+        index_path = os.path.join(model_dir_or_repo, "model_index.json")
+        if not os.path.exists(index_path):
+            raise FileNotFoundError(f"No config.json or model_index.json found under {model_dir_or_repo}")
+    else:
+        from huggingface_hub import hf_hub_download
+
+        index_path = hf_hub_download(model_dir_or_repo, "model_index.json")
+
+    with open(index_path, "r", encoding="utf-8") as f:
+        model_index = json.load(f)
+
+    processor_subfolder = None
+    for name, value in model_index.items():
+        if name == "processor" and isinstance(value, list):
+            processor_subfolder = "processor"
+            break
+
+    candidates = []
+    for name, value in model_index.items():
+        if name.startswith("_") or not isinstance(value, list) or len(value) < 2:
+            continue
+        # Load component config.json
+        if is_local:
+            cfg_path = os.path.join(model_dir_or_repo, name, "config.json")
+            if not os.path.isfile(cfg_path):
+                continue
+            with open(cfg_path, "r", encoding="utf-8") as f:
+                comp_config = json.load(f)
+        else:
+            comp_config_file = f"{name}/config.json"
+            if comp_config_file not in file_list:
+                continue
+            cfg_path = hf_hub_download(model_dir_or_repo, comp_config_file)
+            with open(cfg_path, "r", encoding="utf-8") as f:
+                comp_config = json.load(f)
+
+        if "architectures" in comp_config:
+            candidates.append((name, comp_config))
+
+    if not candidates:
+        raise FileNotFoundError(
+            f"model_index.json found in {model_dir_or_repo} but no component with 'architectures' in its config.json"
+        )
+
+    for name, comp_config in candidates:
+        arch = comp_config["architectures"][0]
+        if "CausalLM" in arch or "ConditionalGeneration" in arch:
+            return name, processor_subfolder, comp_config
+
+    return candidates[0][0], processor_subfolder, candidates[0][1]
+
+
 def mllm_load_model(
     pretrained_model_name_or_path: str,
     platform: str = "hf",
@@ -405,17 +475,27 @@ def mllm_load_model(
     torch_dtype = "auto"
     if device_str is not None and "hpu" in device_str:
         torch_dtype = torch.bfloat16
+    model_subfolder = None
+    processor_subfolder = None
     if os.path.isdir(pretrained_model_name_or_path):
-        config = json.load(open(os.path.join(pretrained_model_name_or_path, "config.json")))
+        config_path = os.path.join(pretrained_model_name_or_path, "config.json")
+        if os.path.exists(config_path):
+            with open(config_path, "r", encoding="utf-8") as f:
+                config = json.load(f)
+        else:
+            model_subfolder, processor_subfolder, config = _find_pipeline_model_subfolder(pretrained_model_name_or_path)
     else:
         from huggingface_hub import hf_hub_download, list_repo_files
 
         file_list = list_repo_files(pretrained_model_name_or_path)
         if "config.json" in file_list:
-            # Load plain JSON
             config_path = hf_hub_download(pretrained_model_name_or_path, "config.json")
             with open(config_path, "r", encoding="utf-8") as f:
                 config = json.load(f)
+        elif "model_index.json" in file_list:
+            model_subfolder, processor_subfolder, config = _find_pipeline_model_subfolder(
+                pretrained_model_name_or_path, file_list
+            )
         elif "config.json.gz" in file_list:
             # Load gzipped JSON
             import gzip
@@ -430,6 +510,20 @@ def mllm_load_model(
         model_type = config["model_type"]
     else:
         model_type = None
+
+    if model_type == "qwen2_5_omni":
+        if version.parse(transformers.__version__) < version.parse("4.52.0"):
+            raise RuntimeError(
+                f"Qwen2.5-Omni requires transformers >= 4.52.0, but found {transformers.__version__}. "
+                "Please upgrade: pip install transformers>=4.52.0"
+            )
+
+    if model_type == "qwen3_omni_moe":
+        if version.parse(transformers.__version__) < version.parse("5.1.0"):
+            raise RuntimeError(
+                f"Qwen3-Omni requires transformers >= 5.1.0, but found {transformers.__version__}. "
+                "Please upgrade: pip install transformers>=5.1.0"
+            )
 
     processor, image_processor = None, None
     if "deepseek_vl_v2" == model_type:
@@ -464,20 +558,28 @@ def mllm_load_model(
             else:
                 cls = AutoModelForCausalLM
             try:
+                model_load_kwargs = {}
+                if model_subfolder is not None:
+                    model_load_kwargs["subfolder"] = model_subfolder
                 model = cls.from_pretrained(
                     pretrained_model_name_or_path,
                     trust_remote_code=trust_remote_code,
                     torch_dtype=torch_dtype,
                     device_map="auto" if use_auto_mapping else None,
+                    **model_load_kwargs,
                 )
             except ValueError as e:
                 if "FP8 quantized" in str(e):
                     with override_cuda_device_capability():
+                        model_load_kwargs = {}
+                        if model_subfolder is not None:
+                            model_load_kwargs["subfolder"] = model_subfolder
                         model = cls.from_pretrained(
                             pretrained_model_name_or_path,
                             trust_remote_code=trust_remote_code,
                             torch_dtype=torch_dtype,
                             device_map="auto" if use_auto_mapping else None,
+                            **model_load_kwargs,
                         )
                     logger.warning("the support for fp8 model as input is experimental, please use with caution.")
                 else:
@@ -491,11 +593,18 @@ def mllm_load_model(
                 else:
                     tokenizer = MistralTokenizer.from_hf_hub(pretrained_model_name_or_path)
             else:
+                processor_load_kwargs = {}
+                if processor_subfolder is not None:
+                    processor_load_kwargs["subfolder"] = processor_subfolder
                 tokenizer = AutoTokenizer.from_pretrained(
-                    pretrained_model_name_or_path, trust_remote_code=trust_remote_code
+                    pretrained_model_name_or_path,
+                    trust_remote_code=trust_remote_code,
+                    **processor_load_kwargs,
                 )
                 processor = AutoProcessor.from_pretrained(
-                    pretrained_model_name_or_path, trust_remote_code=trust_remote_code
+                    pretrained_model_name_or_path,
+                    trust_remote_code=trust_remote_code,
+                    **processor_load_kwargs,
                 )
             try:
                 if platform == "model_scope":
@@ -503,16 +612,29 @@ def mllm_load_model(
                 else:
                     from transformers import AutoImageProcessor
 
+                image_processor_load_kwargs = {}
+                if processor_subfolder is not None:
+                    image_processor_load_kwargs["subfolder"] = processor_subfolder
                 image_processor = AutoImageProcessor.from_pretrained(
-                    pretrained_model_name_or_path, trust_remote_code=trust_remote_code
+                    pretrained_model_name_or_path,
+                    trust_remote_code=trust_remote_code,
+                    **image_processor_load_kwargs,
                 )
             except Exception as e:
                 pass
+
+            if model_type == "glm_image" and image_processor is not None:
+                from transformers.models.glm_image.processing_glm_image import GlmImageProcessor
+
+                processor = GlmImageProcessor(image_processor=image_processor, tokenizer=tokenizer)
 
     model = model.eval()
     check_and_mark_quantized_module(model)
     handle_generation_config(model)
     model = _to_model_dtype(model, model_dtype)
+
+    if model_subfolder is not None:
+        model._autoround_pipeline_subfolder = model_subfolder
 
     return model, processor, tokenizer, image_processor
 
@@ -712,6 +834,8 @@ def is_moe_layer(module: torch.nn.Module) -> bool:
             "Qwen2MoeSparseMoeBlock".lower(),
             "Qwen3MoeSparseMoeBlock".lower(),
             "Qwen3VLMoeTextSparseMoeBlock".lower(),
+            "Qwen3OmniMoeThinkerTextSparseMoeBlock".lower(),
+            "Qwen3OmniMoeTalkerTextSparseMoeBlock".lower(),
         ]
     )
 
@@ -811,6 +935,8 @@ def get_expert_linear_names(module: torch.nn.Module) -> list[str]:
             "DeepseekV2MoE",
             "DeepseekV3MoE",
             "Qwen3VLMoeTextSparseMoeBlock",
+            "Qwen3OmniMoeThinkerTextSparseMoeBlock",
+            "Qwen3OmniMoeTalkerTextSparseMoeBlock",
         ],
     ):
         return ["gate_proj", "down_proj", "up_proj"]
@@ -846,6 +972,8 @@ def get_expert_input_proj_names(module: torch.nn.Module) -> list[str]:
             "Qwen2MoeSparseMoeBlock",
             "Qwen3MoeSparseMoeBlock",
             "Qwen3VLMoeTextSparseMoeBlock",
+            "Qwen3OmniMoeThinkerTextSparseMoeBlock",
+            "Qwen3OmniMoeTalkerTextSparseMoeBlock",
             "DeepseekMoE",
             "DeepseekV2MoE",
             "DeepseekV3MoE",
@@ -1525,6 +1653,28 @@ def _get_reference_amax_from_experts(moe_module: torch.nn.Module, attr_name: str
     return torch.max(all_values)
 
 
+# Extra non-weight files that some models require at load time but are not saved
+# by model.save_pretrained().  These are copied from the source model cache to
+# the quantized output directory so that from_pretrained() works out of the box.
+_EXTRA_MODEL_FILES = {
+    "spk_dict.pt",  # Qwen2.5-Omni speaker dictionary for audio output
+}
+
+
+def _copy_extra_model_files(src_dir: str, dst_dir: str):
+    """Copy known extra model files from *src_dir* to *dst_dir* if they exist."""
+    import os
+    import shutil
+
+    for file in os.listdir(src_dir):
+        if file in _EXTRA_MODEL_FILES:
+            src_file = os.path.join(src_dir, file)
+            dst_file = os.path.join(dst_dir, file)
+            if os.path.isfile(src_file) and not os.path.exists(dst_file):
+                logger.debug(f"Transferring extra model file {src_file} to {dst_dir}")
+                shutil.copy(src_file, dst_dir)
+
+
 # Adapted from https://github.com/vllm-project/llm-compressor/blob/
 # 5b3ddff74cae9651f24bef15d3255c4ee053fc60/src/llmcompressor/pytorch/model_load/helpers.py#L144
 def copy_python_files_from_model_cache(model, save_path: str):
@@ -1562,6 +1712,8 @@ def copy_python_files_from_model_cache(model, save_path: str):
             if file.endswith(".py") and os.path.isfile(full_file_name):
                 logger.debug(f"Transferring {full_file_name} to {save_path}")
                 shutil.copy(full_file_name, save_path)
+
+        _copy_extra_model_files(cache_path, save_path)
 
 
 def extract_block_names_to_str(quant_block_list):
@@ -1666,3 +1818,67 @@ def handle_generation_config(model: torch.nn.Module):
             model.generation_config.do_sample = True
         if hasattr(generation_config, "temperature") and generation_config.temperature != 1.0:
             model.generation_config.do_sample = True
+
+
+def merge_block_output_keys(block, input_others, extra_keys):
+    """Merge block output keys into input_others, resolving positional/keyword conflicts.
+
+    When a block is called with positional args (stored in input_others["positional_inputs"]),
+    and the block output produces updated values for those same parameters (e.g.,
+    encoder_hidden_states), we must update the positional arg rather than adding a duplicate
+    keyword arg, which would cause "got multiple values for argument" errors.
+    """
+    positional_inputs = input_others.get("positional_inputs")
+    if not positional_inputs or not extra_keys:
+        input_others.update(extra_keys)
+        return
+
+    try:
+        sig = inspect.signature(block.forward)
+    except (ValueError, TypeError):
+        input_others.update(extra_keys)
+        return
+
+    params = [p for p in sig.parameters.keys() if p != "self"]
+    # params[0] = hidden_states (passed as input_ids separately)
+    # params[1:] correspond to positional_inputs[0], [1], ...
+
+    positional_inputs = list(positional_inputs)
+    for key, value in extra_keys.items():
+        if key in params:
+            pos_idx = params.index(key) - 1  # -1 because hidden_states is params[0]
+            if 0 <= pos_idx < len(positional_inputs):
+                positional_inputs[pos_idx] = value
+                continue
+        input_others[key] = value
+    input_others["positional_inputs"] = tuple(positional_inputs)
+
+
+def wrap_block_forward_positional_to_kwargs(base_hook):
+    """Wrap a block forward hook to convert positional inputs to keyword args.
+
+    Models like GLM-Image call transformer blocks with positional args
+    (e.g. block(hidden_states, encoder_hidden_states, temb, ...)).  The base
+    hook only stores positional_inputs once (from the first sample), losing
+    per-sample variation for encoder_hidden_states etc.  By converting
+    positional args to keyword args, all inputs are properly accumulated
+    across calibration samples.
+    """
+    _param_names = None
+
+    def forward(m, hidden_states=None, *positional_inputs, **kwargs):
+        nonlocal _param_names
+        if positional_inputs:
+            if _param_names is None:
+                sig = inspect.signature(m.orig_forward)
+                _param_names = [p for p in sig.parameters.keys() if p != "self"]
+            for i, val in enumerate(positional_inputs):
+                param_idx = i + 1  # hidden_states is params[0]
+                if param_idx < len(_param_names):
+                    param_name = _param_names[param_idx]
+                    if param_name not in kwargs:
+                        kwargs[param_name] = val
+            positional_inputs = ()
+        return base_hook(m, hidden_states, *positional_inputs, **kwargs)
+
+    return forward

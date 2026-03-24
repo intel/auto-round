@@ -15,12 +15,16 @@ class TestAutoRoundARKBackend:
     @classmethod
     def setup_class(self):
         self.model_name = get_model_path("facebook/opt-125m")
-        self.save_folder = "./saved"
 
     @classmethod
     def teardown_class(self):
-        shutil.rmtree(self.save_folder, ignore_errors=True)
         shutil.rmtree("runs", ignore_errors=True)
+
+    @pytest.fixture(autouse=True)
+    def _save_dir(self, tmp_path):
+        self.save_folder = str(tmp_path / "saved")
+        yield
+        shutil.rmtree(self.save_folder, ignore_errors=True)
 
     def main_op(self, format, bits, group_size, sym, dtype, device, fast_cfg=True, tar_acc=0.27):
         limit = 100
@@ -51,7 +55,6 @@ class TestAutoRoundARKBackend:
         model_infer(model, tokenizer)
         evaluate_accuracy(model, tokenizer, threshold=tar_acc, batch_size=32, limit=limit)
         torch.xpu.empty_cache()
-        shutil.rmtree(self.save_folder, ignore_errors=True)
 
     @pytest.mark.parametrize("format", ["auto_round", "auto_round:gptqmodel"])
     @pytest.mark.parametrize("bits, group_size, sym", [(4, 128, True), (8, 128, True)])

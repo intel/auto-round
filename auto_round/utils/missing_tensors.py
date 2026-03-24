@@ -189,24 +189,34 @@ def copy_missing_tensors_from_source(
     shortcut_block_prefix: set = {name.split(".", 1)[1] for name in saved_block_prefix if "." in name}
     saved_block_prefix.update(shortcut_block_prefix)
 
-    def _is_truly_missing(name: str) -> bool:
-        # Special case: google/gemma-3-4b-it
-        # saved tensors have "model.language_model" prefix
+    def _name_aliases(name: str) -> set:
+        """Return a set of equivalent tensor-name variants to match against saved tensors.
+
+        Handles models where the source and saved prefixes differ, e.g.
+        google/gemma-3-4b-it: ``language_model.model.*`` ↔ ``model.language_model.*``.
+        """
+        aliases = {name}
         if name.startswith("language_model.model."):
-            name = name.replace("language_model.model.", "model.language_model.")
+            aliases.add("model.language_model." + name[len("language_model.model.") :])
+        elif name.startswith("model.language_model."):
+            aliases.add("language_model.model." + name[len("model.language_model.") :])
+        return aliases
+
+    def _is_truly_missing(name: str) -> bool:
         # Special case: Qwen/Qwen3-0.6B-FP8
         # lm_head is tied but still in source_dir → not missing
         if name == "lm_head.weight":
             return False
-        if name in saved_tensor_names:
+        aliases = _name_aliases(name)
+        if aliases & saved_tensor_names:
             return False
-        parent = name.rsplit(".", 1)[0]
-        if parent in saved_parent_layers:
+        parents = {a.rsplit(".", 1)[0] for a in aliases}
+        if parents & saved_parent_layers:
             return False
         # For split experts, name is changed but block name is the same.
-        src_block = _first_numeric_prefix(name)
-        if src_block is not None:
-            return src_block not in saved_block_prefix
+        blocks = {_first_numeric_prefix(a) for a in aliases} - {None}
+        if blocks:
+            return not (blocks & saved_block_prefix)
         return True
 
     missing_tensor_names: list = [name for name in source_tensor_to_file if _is_truly_missing(name)]
@@ -599,9 +609,12 @@ def _woq_quantize_missing_tensors(target_dir: str, missing_tensors_dict: dict) -
                     ec.setdefault(layer_name, {"bits": 16, "data_type": "fp"})
                 qcfg["extra_config"] = ec
                 if show_log:
+                    # 7 is the len('.weight')
+                    ignored_layers = [k[:-7] for k in ignored_weight_keys]
+                    compressed_ignored_layers = compress_layer_names(ignored_layers)
                     logger.info(
                         f"Updated extra_config for {len(ignored_weight_keys)} ignored layer(s): "
-                        f"{[k[: -len('.weight')] for k in ignored_weight_keys]}"
+                        f"{compressed_ignored_layers}"
                     )
             if weight_keys:
                 existing = qcfg.get("block_name_to_quantize") or []

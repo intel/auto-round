@@ -211,6 +211,8 @@ def get_layer_config(model, quantization_config):
     act_data_type = getattr(quantization_config, "act_data_type", None)
     act_dynamic = getattr(quantization_config, "act_dynamic", False)
 
+    transform_config = getattr(quantization_config, "transform_config", None)
+
     default_quant_scheme = QuantizationScheme(
         bits=bits,
         group_size=group_size,
@@ -221,6 +223,7 @@ def get_layer_config(model, quantization_config):
         act_sym=act_sym,
         act_data_type=act_data_type,
         act_dynamic=act_dynamic,
+        transform_config=transform_config,
     )
 
     # Determine the quantization block list
@@ -396,7 +399,7 @@ def _create_quant_layer(layer, layer_backend, config, in_features, out_features)
     QuantLinear = dynamic_import_inference_linear(layer_backend, config)
     bias = layer.bias is not None
 
-    # Special handling for AWQ layers
+    # Special handling for auto-round-lib AWQ layers
     from auto_round_extension.ark.qlinear import QuantLinearAWQ
 
     if "auto_round_kernel" in layer_backend:
@@ -413,7 +416,21 @@ def _create_quant_layer(layer, layer_backend, config, in_features, out_features)
         return QuantLinear.from_linear(
             layer, config["bits"], config["group_size"], init_only=True, has_zero_points=not config["sym"]
         )
+    elif "awq" in layer_backend and "gptqmodel" in layer_backend:
+        # gptqmodel AWQ QuantLinear — This matches the approach used
+        # by transformers' replace_with_awq_linear().
+        return QuantLinear(
+            bits=config["bits"],
+            group_size=config["group_size"],
+            desc_act=False,
+            sym=config["sym"],
+            in_features=in_features,
+            out_features=out_features,
+            bias=bias,
+            register_buffers=True,
+        )
     elif "awq" in layer_backend:
+        # autoawq WQLinear_GEMM
         return QuantLinear.from_linear(layer, config["bits"], config["group_size"], init_only=True)
     elif "gptqmodel" in layer_backend:
         return QuantLinear(
@@ -493,6 +510,10 @@ def post_init(model: torch.nn.Module, used_backends: list[str]) -> None:
         used_backends (List[str]): List of backend names used for quantization.
 
     """
+    from auto_round.utils.common import monkey_patch_model
+
+    monkey_patch_model(model)
+
     need_autogptq_init = False
     need_gptqmodel_init = False
     need_ipex_init = False
@@ -583,7 +604,7 @@ def disable_moe_conversion_mapping(model):
     if model_type is not None:
         conversions = get_checkpoint_conversion_mapping(model_type)
         if conversions is not None:
-            # 只保留 WeightRenaming，跳过 WeightConverter（MoE merge 操作）
+            # Keep only WeightRenaming, skip WeightConverter (MoE merge operations)
             filtered = [c for c in conversions if isinstance(c, WeightRenaming)]
             register_checkpoint_conversion_mapping(model_type, mapping=filtered, overwrite=True)
 
@@ -649,6 +670,20 @@ def convert_hf_model(model: nn.Module, target_device: str = "cpu") -> tuple[nn.M
     # Replace layers with quantized versions
     layer_configs = get_layer_config(model, quantization_config)
     used_backends = _replace_by_quant_layers(model, layer_configs, backend, target_device, packing_format)
+
+    transform_config = getattr(quantization_config, "transform_config", None)
+    if transform_config is not None and transform_config:
+        from auto_round.experimental.transform.apply import apply_transform
+        from auto_round.experimental.transform.transform_config import TransformConfig
+
+        # apply forward hook
+        act_transform_config = TransformConfig(
+            quant_scheme=transform_config["quant_scheme"],
+            transform_block_size=transform_config["transform_block_size"],
+            transform_type=transform_config["transform_type"],
+            location="input",
+        )  # apply to activation
+        model = apply_transform(model, act_transform_config, desc="Register pre forward hook for transform")
 
     # Suggest a better backend if available
     if backend == "auto":

@@ -21,7 +21,6 @@ class TestAutoRound:
 
         # ===== TEARDOWN (teardown_class) =====
         print("[Teardown] Running after all tests in class")
-        shutil.rmtree("./saved", ignore_errors=True)
         shutil.rmtree("runs", ignore_errors=True)
 
     def test_Adam(self, tiny_opt_model, opt_tokenizer, dataloader):

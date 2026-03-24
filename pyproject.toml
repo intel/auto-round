@@ -18,11 +18,13 @@ line-length = 120
 [tool.typos]
 [tool.typos.files]
 extend-exclude = [
-    ".azure-pipelines/scripts/codeScan/codespell/autoround_dict.txt"
+    ".azure-pipelines/scripts/codeScan/codespell/autoround_dict.txt",
+    ".azure-pipelines/scripts/cuda_unit_test/runpod_manager.py"
 ]
 [tool.typos.default.extend-words]
 ue = "ue"
 endianess = "endianess"
+thw = "thw"
 
 [tool.ruff]
 # Exclude a variety of commonly ignored directories.

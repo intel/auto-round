@@ -97,11 +97,42 @@ def _get_quant_format(model):
     return None
 
 
+def _compress_and_set_format(layer, scheme, device=None):
+    """Compress a layer and set its quantization format, with backward compatibility.
+
+    Supports both old (<0.9.0) and new (>=0.9.0) compressed_tensors APIs:
+    - New API: compress_module() handles compression, state dict replacement, status, and format.
+    - Old API: NaiveQuantizationCompressor instance + manual param management + set_per_module_format.
+    """
+    try:
+        from compressed_tensors.compressors import compress_module  # pylint: disable=E0401
+
+        compress_module(layer)
+    except (ImportError, TypeError):
+        from compressed_tensors.compressors import NaiveQuantizationCompressor  # pylint: disable=E0401
+        from compressed_tensors.config.format import set_per_module_format  # pylint: disable=E0401
+        from compressed_tensors.quantization import QuantizationStatus  # pylint: disable=E0401
+        from compressed_tensors.utils import (  # pylint: disable=E0401
+            delete_offload_parameter,
+            register_offload_parameter,
+        )
+
+        compressor = NaiveQuantizationCompressor()
+        q_state_dict = compressor.compress(layer.state_dict(), names_to_scheme={"": scheme}, show_progress=False)
+
+        for param_name, _ in list(layer.named_parameters(recurse=False)):
+            delete_offload_parameter(layer, param_name)
+
+        for param_name, value in q_state_dict.items():
+            param = torch.nn.Parameter(value, requires_grad=False)
+            register_offload_parameter(layer, param_name, param, device)
+
+        layer.quantization_status = QuantizationStatus.COMPRESSED
+        set_per_module_format(layer)
+
+
 def pack_layer(name, model, device=None):
-    from compressed_tensors.compressors import NaiveQuantizationCompressor  # pylint: disable=E0401
-    from compressed_tensors.config.format import set_per_module_format  # pylint: disable=E0401
     from compressed_tensors.quantization import QuantizationStatus  # pylint: disable=E0401
-    from compressed_tensors.utils import delete_offload_parameter, register_offload_parameter  # pylint: disable=E0401
 
     layer = get_module(model, name)
     if type(layer) not in SUPPORTED_LAYER_TYPES and not isinstance(layer, WrapperWALayer):  ##already packed
@@ -135,20 +166,7 @@ def pack_layer(name, model, device=None):
     setattr(layer, "weight_zero_point", torch.nn.Parameter(zp.to(weight_device), requires_grad=False))
     delattr(layer, "scale")
 
-    compressor = NaiveQuantizationCompressor()
-    q_state_dict = compressor.compress(layer.state_dict(), names_to_scheme={"": scheme}, show_progress=False)
-
-    # remove any existing parameters
-    for name, _ in list(layer.named_parameters(recurse=False)):
-        delete_offload_parameter(layer, name)
-
-    # replace with compressed parameters
-    for name, value in q_state_dict.items():
-        param = torch.nn.Parameter(value, requires_grad=False)
-        register_offload_parameter(layer, name, param, device)
-
-    layer.quantization_status = QuantizationStatus.COMPRESSED
-    set_per_module_format(layer)
+    _compress_and_set_format(layer, scheme, device)
 
 
 @torch.no_grad()
