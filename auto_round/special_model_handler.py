@@ -316,8 +316,11 @@ def _qwen2_5_omni_forward(
 
             # ---- calibrate codec_head (nn.Linear) ----
             if hasattr(model.talker, "codec_head"):
-                talker_last_hidden = talker_output[0] if not hasattr(talker_output, "last_hidden_state") \
+                talker_last_hidden = (
+                    talker_output[0]
+                    if not hasattr(talker_output, "last_hidden_state")
                     else talker_output.last_hidden_state
+                )
                 _ = model.talker.codec_head(talker_last_hidden.to(talker_dtype))
 
     return thinker_output
@@ -396,9 +399,7 @@ def _qwen3_omni_moe_forward(
             # ---- calibrate text_projection (ResizeMLP) ----
             thinker_embeds = model.thinker.get_input_embeddings()(input_ids)
             proj_dtype = next(model.talker.text_projection.parameters()).dtype
-            talker_inputs_embeds = model.talker.text_projection(
-                thinker_embeds.to(proj_dtype)
-            )
+            talker_inputs_embeds = model.talker.text_projection(thinker_embeds.to(proj_dtype))
 
             # ---- calibrate hidden_projection (ResizeMLP) ----
             if hasattr(model.talker, "hidden_projection"):
@@ -415,8 +416,11 @@ def _qwen3_omni_moe_forward(
 
             # ---- calibrate codec_head ----
             if hasattr(model.talker, "codec_head"):
-                talker_last_hidden = talker_output[0] if not hasattr(talker_output, "last_hidden_state") \
+                talker_last_hidden = (
+                    talker_output[0]
+                    if not hasattr(talker_output, "last_hidden_state")
                     else talker_output.last_hidden_state
+                )
                 _ = model.talker.codec_head(talker_last_hidden.to(talker_dtype))
 
     return thinker_output
