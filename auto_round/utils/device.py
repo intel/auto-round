@@ -683,7 +683,9 @@ def check_memory_availability(device, inputs, weight, org_seqlen, org_bs):
         free_space = total_memory - used_memory
     elif "hpu" in device:  # pragma: no cover
         current_hpu_index = torch.hpu.current_device()
-        free_space = torch.hpu.memory_reserved(current_hpu_index)
+        total_memory = torch.hpu.memory_cached(current_hpu_index)
+        used_memory = torch.hpu.memory_allocated(current_hpu_index)
+        free_space = total_memory - used_memory
     else:
         return True, org_seqlen, org_bs
 
@@ -1606,7 +1608,7 @@ class MemoryMonitor:
                     device = "0"
             elif is_hpex_available():
                 try:
-                    current_vram = torch.hpu.memory_reserved(device) / 1024**3  # GB
+                    current_vram = torch.hpu.memory_allocated(device) / 1024**3  # GB
                 except Exception:
                     current_vram = 0.0
                 if device == "hpu":
@@ -1650,7 +1652,7 @@ class MemoryMonitor:
             if str(device) == "cpu":
                 continue
             try:
-                current_vram = torch.hpu.memory_reserved(device) / 1024**3  # GB
+                current_vram = torch.hpu.memory_allocated(device) / 1024**3  # GB
             except Exception:
                 continue
             dev_key = str(device)
