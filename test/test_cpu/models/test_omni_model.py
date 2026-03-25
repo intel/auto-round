@@ -28,10 +28,7 @@ import shutil
 
 import pytest
 import torch
-from transformers import (
-    Qwen3OmniMoeConfig,
-    Qwen3OmniMoeForConditionalGeneration,
-)
+from transformers import Qwen2_5OmniForConditionalGeneration, Qwen3OmniMoeConfig, Qwen3OmniMoeForConditionalGeneration
 
 from ...helpers import check_version, transformers_version
 
@@ -87,15 +84,22 @@ def _make_tiny_qwen3_omni_moe_config():
 # (real config, reduced layers, random weights). Skipped if model not available.
 
 
-class TestQwen2_5OmniBlockNames:
+class TestQwen2_5Omni:
     """Test block name discovery for Qwen2.5-Omni (dense, not MoE)."""
 
-    def test_block_names_default(self, tiny_qwen2_5_omni):
+    @pytest.fixture(autouse=True, scope="class")
+    def setup_and_teardown_class(self, tiny_qwen2_5_omni_model_path, request):
+        request.cls.model = Qwen2_5OmniForConditionalGeneration.from_pretrained(
+            tiny_qwen2_5_omni_model_path, trust_remote_code=True
+        )
+        yield
+        shutil.rmtree("runs", ignore_errors=True)
+
+    def test_block_names_default(self):
         """Test that get_block_names returns thinker + talker layers."""
         from auto_round.utils import get_block_names
 
-        model, _, _ = tiny_qwen2_5_omni
-        block_names = get_block_names(model, quant_vision=False)
+        block_names = get_block_names(self.model, quant_vision=False)
         # Should have thinker.model.layers and talker.model.layers
         assert any(
             "thinker.model.layers" in str(b) for b in block_names
@@ -104,26 +108,21 @@ class TestQwen2_5OmniBlockNames:
             "talker.model.layers" in str(b) for b in block_names
         ), f"Expected talker.model.layers in block_names, got: {block_names}"
 
-    def test_block_names_quant_vision(self, tiny_qwen2_5_omni):
+    def test_block_names_quant_vision(self):
         """Test that quant_vision adds visual and audio blocks."""
         from auto_round.utils import get_block_names
 
-        model, _, _ = tiny_qwen2_5_omni
-        blocks_no_vision = get_block_names(model, quant_vision=False)
-        blocks_with_vision = get_block_names(model, quant_vision=True)
+        blocks_no_vision = get_block_names(self.model, quant_vision=False)
+        blocks_with_vision = get_block_names(self.model, quant_vision=True)
 
         assert len(blocks_with_vision) > len(blocks_no_vision), "quant_vision=True should add visual/audio blocks"
 
-
-class TestQwen2_5OmniForward:
-    """Test forward function patching for Qwen2.5-Omni."""
-
-    def test_handle_special_model(self, tiny_qwen2_5_omni):
+    def test_handle_special_model_forward(self):
         """Test that _handle_special_model patches the forward function."""
         from auto_round.special_model_handler import _handle_special_model
 
         # Deepcopy to avoid mutating the shared session-scoped fixture
-        model = copy.deepcopy(tiny_qwen2_5_omni[0])
+        model = copy.deepcopy(self.model)
         original_forward = model.forward
         model = _handle_special_model(model)
         assert model.forward != original_forward, "Forward should be patched for qwen2_5_omni"
