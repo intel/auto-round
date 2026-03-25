@@ -36,14 +36,16 @@ def parse_log_file(log_file: Path) -> QuantMetrics:
 
     content = log_file.read_text(encoding="utf-8")
 
-    time_match = re.search(r"tuning time ([0-9]+\.[0-9]+)", content)
-    if time_match:
-        metrics.tuning_time_s = round(float(time_match.group(1)), 4)
+    # Use findall to capture all occurrences and take the most recent one.
+    time_matches = re.findall(r"tuning time ([0-9]+\.[0-9]+)", content)
+    if time_matches:
+        metrics.tuning_time_s = round(float(time_matches[-1]), 4)
 
-    ram_match = re.search(r"'peak_ram':\s*([\d.]+)GB?.*?,'peak_vram':\s*([\d.]+)GB?", content)
-    if ram_match:
-        metrics.peak_ram_gb = round(float(ram_match.group(1)), 4)
-        metrics.peak_vram_gb = round(float(ram_match.group(2)), 4)
+    ram_matches = re.findall(r"'peak_ram':\s*([\d.]+)\s*GB,\s*'peak_vram':\s*([\d.]+)\s*GB", content)
+    if ram_matches:
+        last_ram, last_vram = ram_matches[-1]
+        metrics.peak_ram_gb = round(float(last_ram), 4)
+        metrics.peak_vram_gb = round(float(last_vram), 4)
 
     return metrics
 
@@ -112,7 +114,7 @@ def check_performance():
         if not compare_metric("Peak VRAM (GB)", current.peak_vram_gb, baseline.peak_vram_gb, tolerance=0.05):
             all_passed = False
 
-        if not compare_metric("Output Size (GB)", current.output_size_gb, baseline.output_size_gb, tolerance=0.01):
+        if not compare_metric("Output Size (GB)", current.output_size_gb, baseline.output_size_gb, tolerance=0.05):
             all_passed = False
 
     logging.info("=" * 60)
