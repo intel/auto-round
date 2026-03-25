@@ -67,7 +67,7 @@ def normalize_hadamard_config(hadamard_config: Any) -> dict[str, Any]:
 
         if key not in HADAMARDS:
             raise ValueError(
-                f"Invalid hadamard_config string: {key!r}. " f"Expected one of {sorted(TRANSFORMS.keys())}."
+                f"Invalid hadamard_config string: {key!r}. " f"Expected one of {sorted(HADAMARDS.keys())}."
             )
 
         cfg_dict = {"transform_type": key}
