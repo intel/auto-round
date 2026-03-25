@@ -22,6 +22,32 @@ from auto_round.logger import logger
 from auto_round.utils import get_lm_head_name, get_module
 
 
+def _safe_to_meta(module: torch.nn.Module) -> None:
+    """Move a module to meta device, handling plain Tensors in ``_parameters``.
+
+    PyTorch's ``module.to("meta")`` asserts ``isinstance(param, Parameter)`` for
+    every entry in ``_parameters``.  Some third-party modules (e.g. fla's
+    ``FusedRMSNormGated`` used by Qwen3-Next) store plain ``torch.Tensor``
+    objects there, causing ``AssertionError``.  This helper moves both
+    ``Parameter`` and plain ``Tensor`` entries safely.
+
+    See https://github.com/intel/auto-round/issues/1499
+    """
+    for child in module.children():
+        _safe_to_meta(child)
+    for name, p in list(module._parameters.items()):
+        if p is not None:
+            if isinstance(p, torch.nn.Parameter):
+                module._parameters[name] = torch.nn.Parameter(
+                    torch.empty_like(p, device="meta"), requires_grad=p.requires_grad
+                )
+            else:
+                module._parameters[name] = torch.empty_like(p, device="meta")
+    for name, b in list(module._buffers.items()):
+        if b is not None:
+            module._buffers[name] = torch.empty_like(b, device="meta")
+
+
 class ShardWriter:
     """
     Handles shard-saving of model parameters to disk with memory management.
@@ -173,7 +199,7 @@ class ShardWriter:
                 and isinstance(module, torch.nn.Module)
                 and all(f"{module_path}.{k}" in self._all_saved for k in module.state_dict().keys())
             ):
-                module.to("meta")
+                _safe_to_meta(module)
 
     def finalize(self):
         """Saves remaining weights, renames files, and writes the index JSON."""

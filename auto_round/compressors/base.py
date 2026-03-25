@@ -34,7 +34,7 @@ from transformers import AutoConfig, set_seed
 
 from auto_round import envs
 from auto_round.auto_scheme.gen_auto_scheme import AutoScheme
-from auto_round.compressors.shard_writer import shard_writer
+from auto_round.compressors.shard_writer import _safe_to_meta, shard_writer
 from auto_round.compressors.utils import (
     IndexSampler,
     block_forward,
@@ -61,12 +61,7 @@ from auto_round.formats import OutputFormat, get_formats
 from auto_round.logger import logger
 from auto_round.modeling.fused_moe.replace_modules import materialize_model_, safe_to_cpu_
 from auto_round.modeling.unfused_moe import apply_model_monkey_patches
-from auto_round.schemes import (
-    QuantizationScheme,
-    _handle_special_schemes,
-    get_gguf_scheme,
-    preset_name_to_scheme,
-)
+from auto_round.schemes import QuantizationScheme, _handle_special_schemes, get_gguf_scheme, preset_name_to_scheme
 from auto_round.sign_sgd import SignSGD
 from auto_round.special_model_handler import get_predefined_ignore_layers, update_module
 from auto_round.utils import (
@@ -1302,7 +1297,7 @@ class BaseCompressor(object):
             # Free RAM immediately: the data is now in the shard-writer buffer
             # (and will be flushed to disk).  Keeping it also in the model tree
             # causes linear RAM growth for large models.
-            m.to("meta")
+            _safe_to_meta(m)
 
     def _immediate_pack(self, name: str):
         if not self.is_immediate_packing:
@@ -1425,8 +1420,8 @@ class BaseCompressor(object):
                                 if self.is_immediate_saving:
                                     shard_writer(self, name=m.global_name)
                                     copied_m = get_module(self.model, m.global_name)
-                                    copied_m.to("meta")
-                                m.to("meta")
+                                    _safe_to_meta(copied_m)
+                                _safe_to_meta(m)
                         # Move remaining GPU tensors to CPU; offload to disk if low_cpu_mem_usage.
                         # This mirrors _quantize_via_rtn_blockwise's post-block cleanup.
                         if not self.is_immediate_saving:
@@ -1435,7 +1430,7 @@ class BaseCompressor(object):
                             # Save once at block scope to capture tensors that are not saved
                             # in per-layer branch (e.g., custom module-level params/buffers).
                             shard_writer(self, name=block_name)
-                            block.to("meta")
+                            _safe_to_meta(block)
                         if self.low_cpu_mem_usage and not self.is_immediate_saving:
                             self._offloader(self.model, block_name)
                         clear_memory(device_list=self.device_list)
@@ -1475,7 +1470,7 @@ class BaseCompressor(object):
                     ):
                         set_module(self.model, n, copy.deepcopy(m))
                         shard_writer(self, name=n)
-                        m.to("meta")
+                        _safe_to_meta(m)
 
         # Convert remaining fp8
         convert_module_to_hp_if_necessary(self.model, self.amp_dtype, self.device)

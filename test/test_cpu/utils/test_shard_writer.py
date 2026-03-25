@@ -94,3 +94,35 @@ def test_finalize_skips_lm_head_when_tie_word_embeddings_true(tmp_path):
     assert "transformer_blocks.0.linear.weight" in saved_tensors
     assert "lm_head.weight" not in saved_tensors, "lm_head must be skipped when tied"
     assert model.lm_head.weight.device.type == "meta"
+
+
+class _BlockWithPlainTensor(torch.nn.Module):
+    """Simulates third-party modules that store plain Tensors in _parameters."""
+
+    def __init__(self):
+        super().__init__()
+        self.linear = torch.nn.Linear(4, 4)
+        # Inject a plain Tensor (not nn.Parameter) into _parameters,
+        # mimicking what some fla/CUDA extension modules do.
+        self._parameters["plain_weight"] = torch.zeros(4)
+
+
+def test_finalize_handles_module_with_plain_tensor_in_parameters(tmp_path):
+    """_offload_to_meta must not crash when a module has a plain torch.Tensor
+    in _parameters (regression test for issue #1499)."""
+    model = _DiffusionStyleModel()
+    # Replace one block with one that has a plain tensor
+    model.transformer_blocks[0] = _BlockWithPlainTensor()
+    rounder = _RounderStub(model, str(tmp_path))
+    writer = ShardWriter(rounder)
+
+    writer.save_module(model.transformer_blocks[0], "transformer_blocks.0")
+    writer.finalize()  # Must not raise AssertionError
+
+    shard_path = os.path.join(tmp_path, "model.bin")
+    saved_tensors = torch.load(shard_path, map_location="cpu")
+    assert "transformer_blocks.0.linear.weight" in saved_tensors
+    assert "transformer_blocks.0.plain_weight" in saved_tensors
+    # The offloaded module should be on meta device
+    assert model.transformer_blocks[0].linear.weight.device.type == "meta"
+    assert model.transformer_blocks[0]._parameters["plain_weight"].device.type == "meta"
