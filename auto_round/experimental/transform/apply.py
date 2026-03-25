@@ -13,14 +13,14 @@ __all__ = ["apply_transform"]
 
 
 def apply_transform(
-    model: torch.nn.Module, config: str | dict | TransformConfig, scheme: str = None, use_tqdm=True, desc=None
+    model: torch.nn.Module, config: str | dict | TransformConfig | None, scheme: str = None, use_tqdm=True, desc=None
 ):
     """
     Apply a transform config to a model. Add weight transforms and
     activation transforms are attached as submodules and trigger via pytorch hooks
 
     :param model: model to apply config to
-    :param config: transform config to apply
+    :param config: transform config to apply. May be a string, dict, TransformConfig, or None.
     :param scheme: need quantization scheme when config is str
     """
 
