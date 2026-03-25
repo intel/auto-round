@@ -32,6 +32,7 @@ This document presents step-by-step instructions for auto-round llm quantization
   + [Device/Multi-GPU setting in Quantization](#devicemulti-gpu-setting-in-quantization)
     - [Enable multiple gpus calibration in lm_head quantization](#enable-multiple-gpus-calibration-in-lm_head-quantization)
   + [Adjust Hyperparameters](#adjust-hyperparameters)
+  + [Hadamard Transform](#Hadamard-Transform)
 * [4 Inference](#4-inference)
   + [CPU](#cpu)
   + [Intel GPU](#intel-gpu)
@@ -620,6 +621,114 @@ autoround.save_quantized(format="auto_awq", output_dir="tmp_autoround")
 
   Include the flag `--adam`. Note that AdamW is less effective than sign gradient descent in many scenarios we tested.
 
+
+### Hadamard Transform
+
+AutoRound supports Hadamard transform as an optional weight/activation transformation technique, which can improve quantization accuracy by rotating the weight/activation matrix. This is particularly useful for certain quantization scenarios.
+
+#### Overview
+
+The Hadamard transform uses a special square matrix with entries +1 or -1, where all rows are mutually orthogonal. This property makes it useful for "spreading" information across the weight/activation matrix, which can help reduce quantization error.
+
+#### Implementation
+
+AutoRound provides two types of Hadamard transforms:
+
+1. **Deterministic Hadamard Transform** (`hadamard`): Uses Sylvester's construction to create a deterministic Hadamard matrix. The size must be a power of 2.
+
+2. **Random Hadamard Transform** (`random_hadamard`): Uses known Hadamard matrices from N. J. A. Sloane's Library of Hadamard Matrices. Supports non-power-of-2 sizes and deterministic seeding.
+
+#### Key Functions
+
+```python
+from auto_round.experimental.transform.utils.hadamard import (
+    deterministic_hadamard_matrix,
+    random_hadamard_matrix,
+    is_pow2,
+)
+```
+
+- `deterministic_hadamard_matrix(size, dtype, device)`: Creates a deterministic Hadamard matrix using Sylvester's construction
+- `random_hadamard_matrix(size, dtype, device, gen)`: Creates a random Hadamard matrix from known matrices
+- `is_pow2(n)`: Checks if a number is a power of 2
+
+#### Usage in Transforms
+
+```python
+from auto_round.experimental.transform.hadamard import build_hadamard_transform
+
+# Create a deterministic hadamard transform with block size 32
+transform = build_hadamard_transform("hadamard", transform_block_size=32, device="cuda")
+
+# Create a random hadamard transform with a specific seed
+random_transform = build_hadamard_transform(
+    "random_hadamard",
+    transform_block_size=32,
+    device="cuda",
+    seed=42,
+)
+```
+
+#### Quantization with Hadamard Transform
+
+```python
+from auto_round import AutoRound
+
+# Load a model (supports FP8/BF16/FP16/FP32)
+model_name_or_path = ""
+output_dir = ""
+
+from auto_round.utils import llm_load_model
+model, tokenizer = llm_load_model(
+    model_name_or_path,
+    platform="hf",
+    device="cpu",  # always load cpu first
+    model_dtype=None,
+    trust_remote_code=True,
+)
+
+from auto_round.experimental.transform.apply import apply_hadamard_transform
+from auto_round.experimental.transform.hadamard_config import HadamardConfig
+
+hadamard_config = HadamardConfig()
+
+model = apply_hadamard_transform(
+    model,
+    hadamard_config,
+)
+
+ar = AutoRound(model, scheme="MXFP4", iters=0, hadamard_config=hadamard_config)
+
+ar.quantize_and_save(output_dir=output_dir, format="auto_round")
+```
+
+#### Transform Classes
+
+| Class | Description |
+|-------|-------------|
+| `HadamardTransform` | Applies deterministic Hadamard transform to weights |
+| `RandomHadamardTransform` | Applies random Hadamard transform with optional seeding |
+
+#### Parameters
+
+| Parameter | Description |
+|-----------|-------------|
+| `transform_block_size` | Size of the transformation block (default: 32) |
+| `device` | Device to create the transform on |
+| `precision` | Data type for the transform matrix |
+| `location` | Location to apply transform ("weight") |
+| `module_type` | Module type (default: `torch.nn.Linear`) |
+| `inverse` | Whether to apply inverse transform |
+| `seed` | Random seed (for RandomHadamardTransform) |
+| `generator` | PyTorch generator for random values |
+
+#### Notes
+
+- The Hadamard transform is its own inverse: H @ H = I
+- The transform includes a scaling factor of 1/sqrt(size) for normalization
+- The implementation refers some code from [compressed-tensors](https://github.com/vllm-project/compressed-tensors) and is inspired by [SpinQuant](https://github.com/facebookresearch/SpinQuant). (TODO: support SpinQuant, which the rotation matrix is learnabl)
+- Only support combination with MXFP4/MXPF8 quantization scheme currently. (TODO: support nvfp4)
+- For inference, Only support huggingface/transformers as backend. (TODO: support vllm)
 
 ## 4 Inference
 
