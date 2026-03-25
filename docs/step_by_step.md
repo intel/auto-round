@@ -679,6 +679,7 @@ model_name_or_path = ""
 output_dir = ""
 
 from auto_round.utils import llm_load_model
+
 model, tokenizer = llm_load_model(
     model_name_or_path,
     platform="hf",
