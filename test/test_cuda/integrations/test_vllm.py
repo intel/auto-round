@@ -168,14 +168,7 @@ def test_auto_round_awq_format_vllm():
     autoround.quantize_and_save(output_dir=save_dir, format="auto_round:auto_awq")
 
     sampling_params = SamplingParams(temperature=0.8, top_p=0.95, max_tokens=32)
-    llm = LLM(
-        model=save_dir,
-        # quantization="awq",
-        trust_remote_code=True,
-        tensor_parallel_size=1,
-        # allow_deprecated_quantization=True,
-        # dtype="auto",
-    )
+    llm = LLM(model=save_dir, trust_remote_code=True, tensor_parallel_size=1, dtype="auto")
     outputs = llm.generate(["The capital of France is"], sampling_params)
     generated_text = outputs[0].outputs[0].text
     print(generated_text)
