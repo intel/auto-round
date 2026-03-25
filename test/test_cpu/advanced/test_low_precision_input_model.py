@@ -51,7 +51,7 @@ class TestCompressedTensor:
 
     @pytest.mark.skipif(
         transformers_version >= version.parse("5.0.0"),
-        reason="Compressed-tensor is not compatible with transformers 5.0.0 and above. See https://github.com/vllm-project/compressed-tensors/blob/68f1a7d63f7e0c701837c383b0bb026f0eeb3a04/setup.py#L80",
+        reason="Compressed-tensor is not compatible with transformers 5.0.0 and above. See https://github.com/vllm-project/compressed-tensors/issues/651",
     )
     def test_mxfp4(self):
         model = get_tiny_model(get_model_path(self.mxfp4_model_path))
