@@ -57,8 +57,8 @@ from auto_round.compressors.utils import (
 )
 from auto_round.data_type import QUANT_FUNC_WITH_DTYPE
 from auto_round.data_type.utils import reshape_pad_tensor_by_group_size, update_block_global_scale_if_needed
-
 from auto_round.experimental.transform.hadamard_config import HadamardConfig
+from auto_round.experimental.transform.helper import normalize_hadamard_config
 from auto_round.export.export_to_gguf.config import GGUF_INNER_CONFIG
 from auto_round.formats import OutputFormat, get_formats
 from auto_round.logger import logger
@@ -121,8 +121,6 @@ from auto_round.utils.device import (
 from auto_round.utils.distributed import setup_ddp_if_needed_
 from auto_round.utils.offload import OffloadManager
 from auto_round.wrapper import WrapperLinear, WrapperMultiblock, unwrapper_block, unwrapper_layer, wrapper_block
-from auto_round.experimental.transform.helper import normalize_hadamard_config
-
 
 SERIALIZATION_KEYS = (
     "bits",

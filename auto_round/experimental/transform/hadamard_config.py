@@ -19,7 +19,6 @@ class HadamardConfig(BaseModel):
     # for random hadamard transform
     random_seed: bool = Field(default=False, exclude=True)
 
-
     @field_validator("hadamard_type")
     @classmethod
     def validate_hadamard_type(cls, v: str) -> str:

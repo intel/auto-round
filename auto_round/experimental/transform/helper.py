@@ -1,10 +1,13 @@
 # Copyright (C) 2026 Intel Corporation
 # SPDX-License-Identifier: Apache-2.0
 
-import torch
 from typing import Any
+
+import torch
+
 from auto_round.experimental.transform.hadamard_config import HadamardConfig
 from auto_round.experimental.transform.hadamards import HADAMARDS
+
 
 def is_triton_kernel_available() -> bool:
     """
@@ -24,6 +27,7 @@ def is_triton_kernel_available() -> bool:
         return False
 
     return True
+
 
 def normalize_hadamard_config(hadamard_config: Any) -> dict[str, Any]:
     """
@@ -63,8 +67,7 @@ def normalize_hadamard_config(hadamard_config: Any) -> dict[str, Any]:
 
         if key not in HADAMARDS:
             raise ValueError(
-                f"Invalid hadamard_config string: {key!r}. "
-                f"Expected one of {sorted(TRANSFORMS.keys())}."
+                f"Invalid hadamard_config string: {key!r}. " f"Expected one of {sorted(TRANSFORMS.keys())}."
             )
 
         cfg_dict = {"transform_type": key}
@@ -72,13 +75,10 @@ def normalize_hadamard_config(hadamard_config: Any) -> dict[str, Any]:
         try:
             cfg = HadamardConfig.model_validate(cfg_dict).model_dump()
         except Exception as e:
-            raise ValueError(
-                f"hadamard_config built from string {key!r} is invalid for HadamardConfig: {e}"
-            ) from e
+            raise ValueError(f"hadamard_config built from string {key!r} is invalid for HadamardConfig: {e}") from e
 
         return cfg
 
     raise TypeError(
-        "hadamard_config must be one of: None, dict, HadamardConfig, or str "
-        f"(got {type(hadamard_config).__name__})"
+        "hadamard_config must be one of: None, dict, HadamardConfig, or str " f"(got {type(hadamard_config).__name__})"
     )

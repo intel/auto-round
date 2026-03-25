@@ -85,11 +85,7 @@ class TestAutoRound:
         from auto_round.experimental.transform.hadamard_config import HadamardConfig
 
         hadamard_config = HadamardConfig()
-        model = apply_hadamard_transform(
-            model,
-            hadamard_config,
-            need_calibration=True
-        )
+        model = apply_hadamard_transform(model, hadamard_config, need_calibration=True)
 
         ar = AutoRound(
             model=model,

@@ -5,9 +5,9 @@ import torch
 import tqdm
 
 from auto_round.experimental.qmodules.mx import MXQuantLinearBase
-from auto_round.experimental.transform.helper import normalize_hadamard_config
 from auto_round.experimental.transform.hadamard_config import HadamardConfig
 from auto_round.experimental.transform.hadamards import build_hadamard_transform
+from auto_round.experimental.transform.helper import normalize_hadamard_config
 
 __all__ = ["apply_hadamard_transform"]
 
@@ -18,7 +18,7 @@ def apply_hadamard_transform(
     need_calibration: bool = False,
     location: str = "weight",
     use_tqdm=True,
-    desc=None
+    desc=None,
 ):
     """
     Apply a transform configuration to a model.
@@ -80,7 +80,7 @@ def _apply_to_module(
     module: torch.nn.Module,
     config: HadamardConfig,
     need_calibration: bool = False,
-    location: str = "weight"
+    location: str = "weight",
 ):
     """
     Create transforms and apply them to the module
@@ -165,6 +165,7 @@ def _apply_to_module(
             module.register_module(config.hadamard_type, weight_hadamard_transform)
             # for saving transform weight
             from auto_round.experimental.transform.patch_modules import patch_quantlinear
+
             patch_quantlinear(config.hadamard_type)
 
         if need_calibration:
