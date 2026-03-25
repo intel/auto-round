@@ -556,7 +556,20 @@ class BaseCompressor(object):
             except (ImportError, ModuleNotFoundError):
                 logger.error("algorithm extension import error, fallback to default mode")
 
+        # apply hadamard transform
         self.hadamard_config = normalize_hadamard_config(hadamard_config)
+        if hadamard_config:
+            from auto_round.experimental.transform.apply import apply_hadamard_transform
+            from auto_round.experimental.transform.helper import check_supported_schemes
+
+            check_supported_schemes(self.scheme)
+
+            self.model = apply_hadamard_transform(
+                self.model,
+                hadamard_config,
+                need_calibration=True if self.iters > 0 else False
+            )
+
 
     def _gen_auto_scheme(self) -> dict[str, dict]:
         if self.mllm:

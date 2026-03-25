@@ -8,6 +8,7 @@ import torch
 from auto_round.experimental.transform.hadamard_config import HadamardConfig
 from auto_round.experimental.transform.hadamards import HADAMARDS
 
+SUPPORTED_QUANTIZATION_SCHEMES = ["MXFP8", "MXFP4"]
 
 def is_triton_kernel_available() -> bool:
     """
@@ -65,12 +66,16 @@ def normalize_hadamard_config(hadamard_config: Any) -> dict[str, Any]:
         if not key:
             return {}
 
+        if key == "default":
+            cfg = HadamardConfig()
+            return cfg.model_dump()
+
         if key not in HADAMARDS:
             raise ValueError(
                 f"Invalid hadamard_config string: {key!r}. " f"Expected one of {sorted(HADAMARDS.keys())}."
             )
 
-        cfg_dict = {"transform_type": key}
+        cfg_dict = {"hadamard_type": key}
 
         try:
             cfg = HadamardConfig.model_validate(cfg_dict).model_dump()
@@ -82,3 +87,8 @@ def normalize_hadamard_config(hadamard_config: Any) -> dict[str, Any]:
     raise TypeError(
         "hadamard_config must be one of: None, dict, HadamardConfig, or str " f"(got {type(hadamard_config).__name__})"
     )
+
+
+def check_supported_schemes(scheme: str):
+    if scheme not in SUPPORTED_QUANTIZATION_SCHEMES:
+        raise ValueError(f"Unsupported quantization scheme: {scheme}. Currently {SUPPORTED_QUANTIZATION_SCHEMES} are supported.")

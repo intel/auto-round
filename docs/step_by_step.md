@@ -678,27 +678,8 @@ from auto_round import AutoRound
 model_name_or_path = ""
 output_dir = ""
 
-from auto_round.utils import llm_load_model
-
-model, tokenizer = llm_load_model(
-    model_name_or_path,
-    platform="hf",
-    device="cpu",  # always load cpu first
-    model_dtype=None,
-    trust_remote_code=True,
-)
-
-from auto_round.experimental.transform.apply import apply_hadamard_transform
-from auto_round.experimental.transform.hadamard_config import HadamardConfig
-
-hadamard_config = HadamardConfig()
-
-model = apply_hadamard_transform(
-    model,
-    hadamard_config,
-)
-
-ar = AutoRound(model, scheme="MXFP4", iters=0, hadamard_config=hadamard_config)
+# hadamard_config="default": block_size=32, hadamard_type="hadamard"
+ar = AutoRound(model_name_or_path, scheme="MXFP4", iters=0, hadamard_config="default")
 
 ar.quantize_and_save(output_dir=output_dir, format="auto_round")
 ```
@@ -714,7 +695,7 @@ ar.quantize_and_save(output_dir=output_dir, format="auto_round")
 
 | Parameter | Description |
 |-----------|-------------|
-| `transform_block_size` | Size of the transformation block (default: 32) |
+| `block_size` | Size of the transformation block (default: 32) |
 | `device` | Device to create the transform on |
 | `precision` | Data type for the transform matrix |
 | `location` | Location to apply transform ("weight") |

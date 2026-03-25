@@ -31,35 +31,14 @@ class TestAutoRound:
         model_name = get_model_path("qwen/Qwen3-0.6B")
         scheme = "MXFP4"
 
-        from auto_round.utils import llm_load_model
-
-        model, tokenizer = llm_load_model(
-            model_name,
-            platform="hf",
-            device="cpu",  # always load cpu first
-            model_dtype=None,
-            trust_remote_code=True,
-        )
-
-        from auto_round.experimental.transform.apply import apply_hadamard_transform
-        from auto_round.experimental.transform.hadamard_config import HadamardConfig
-
-        hadamard_config = HadamardConfig()
-        model = apply_hadamard_transform(
-            model,
-            hadamard_config,
-        )
-
         ar = AutoRound(
-            model=model,
+            model=model_name,
             iters=0,
             seqlen=2,
             scheme=scheme,
-            hadamard_config=hadamard_config,
+            hadamard_config="default",
         )
         compressed_model, _ = ar.quantize_and_save(output_dir=self.save_dir, format="auto_round")
-
-        tokenizer.save_pretrained(self.save_dir)
 
         model = AutoModelForCausalLM.from_pretrained(self.save_dir, torch_dtype="auto", device_map="cuda")
         tokenizer = AutoTokenizer.from_pretrained(self.save_dir)
@@ -71,33 +50,14 @@ class TestAutoRound:
         model_name = get_model_path("qwen/Qwen3-0.6B")
         scheme = "MXFP4"
 
-        from auto_round.utils import llm_load_model
-
-        model, tokenizer = llm_load_model(
-            model_name,
-            platform="hf",
-            device="cpu",  # always load cpu first
-            model_dtype=None,
-            trust_remote_code=True,
-        )
-
-        from auto_round.experimental.transform.apply import apply_hadamard_transform
-        from auto_round.experimental.transform.hadamard_config import HadamardConfig
-
-        hadamard_config = HadamardConfig()
-        model = apply_hadamard_transform(model, hadamard_config, need_calibration=True)
-
         ar = AutoRound(
-            model=model,
+            model=model_name,
             iters=2,
             seqlen=2,
-            tokenizer=tokenizer,
             scheme=scheme,
-            hadamard_config=hadamard_config,
+            hadamard_config="default",
         )
         compressed_model, _ = ar.quantize_and_save(output_dir=self.save_dir, format="auto_round")
-
-        tokenizer.save_pretrained(self.save_dir)
 
         model = AutoModelForCausalLM.from_pretrained(self.save_dir, torch_dtype="auto", device_map="cuda")
         tokenizer = AutoTokenizer.from_pretrained(self.save_dir)
@@ -109,35 +69,14 @@ class TestAutoRound:
         model_name = get_model_path("qwen/Qwen3-0.6B")
         scheme = "MXFP4"
 
-        from auto_round.utils import llm_load_model
-
-        model, tokenizer = llm_load_model(
-            model_name,
-            platform="hf",
-            device="cpu",  # always load cpu first
-            model_dtype=None,
-            trust_remote_code=True,
-        )
-
-        from auto_round.experimental.transform.apply import apply_hadamard_transform
-        from auto_round.experimental.transform.hadamard_config import HadamardConfig
-
-        hadamard_config = HadamardConfig(hadamard_type="random_hadamard")
-        model = apply_hadamard_transform(
-            model,
-            hadamard_config,
-        )
-
         ar = AutoRound(
-            model=model,
+            model=model_name,
             iters=0,
             seqlen=2,
             scheme=scheme,
-            hadamard_config=hadamard_config,
+            hadamard_config="random_hadamard",
         )
         compressed_model, _ = ar.quantize_and_save(output_dir=self.save_dir, format="auto_round")
-
-        tokenizer.save_pretrained(self.save_dir)
 
         model = AutoModelForCausalLM.from_pretrained(self.save_dir, torch_dtype="auto", device_map="cuda")
         tokenizer = AutoTokenizer.from_pretrained(self.save_dir)
