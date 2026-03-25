@@ -47,8 +47,7 @@ def _normalize_transform_config(transform_config: Any, scheme: str | None = None
 
         if key not in TRANSFORMS:
             raise ValueError(
-                f"Invalid transform_config string: {key!r}. "
-                f"Expected one of {sorted(TRANSFORMS.keys())}."
+                f"Invalid transform_config string: {key!r}. " f"Expected one of {sorted(TRANSFORMS.keys())}."
             )
 
         cfg_dict = {"transform_type": key, "quant_scheme": scheme}
@@ -56,9 +55,7 @@ def _normalize_transform_config(transform_config: Any, scheme: str | None = None
         try:
             cfg = TransformConfig.model_validate(cfg_dict).model_dump()
         except Exception as e:
-            raise ValueError(
-                f"transform_config built from string {key!r} is invalid for TransformConfig: {e}"
-            ) from e
+            raise ValueError(f"transform_config built from string {key!r} is invalid for TransformConfig: {e}") from e
 
         return cfg
 

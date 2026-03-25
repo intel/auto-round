@@ -108,7 +108,6 @@ class TestAutoRound:
 
         generate_prompt(model, tokenizer)
 
-
     def test_random_transform_mxfp4_quant_infer(self):
         model_name = get_model_path("qwen/Qwen3-0.6B")
         scheme = "MXFP4"
@@ -148,5 +147,3 @@ class TestAutoRound:
         from ...helpers import generate_prompt
 
         generate_prompt(model, tokenizer)
-
-
