@@ -16,12 +16,36 @@ def apply_transform(
     model: torch.nn.Module, config: str | dict | TransformConfig | None, scheme: str = None, use_tqdm=True, desc=None
 ):
     """
-    Apply a transform config to a model. Add weight transforms and
-    activation transforms are attached as submodules and trigger via pytorch hooks
+    Apply a transform configuration to a model.
 
-    :param model: model to apply config to
-    :param config: transform config to apply. May be a string, dict, TransformConfig, or None.
-    :param scheme: need quantization scheme when config is str
+    Weight and activation transforms are attached as submodules and are
+    triggered via PyTorch hooks.
+
+    :param model: Model to which the transform configuration will be applied.
+    :param config: Transform configuration to apply. Supported values are:
+        * ``str``: A named/preset transform configuration. In this case,
+          ``scheme`` is typically required so that the preset can be
+          resolved to a concrete quantization/transform configuration.
+        * ``dict``: A raw configuration mapping that will be normalized
+          (via :func:`_normalize_transform_config`) and then passed to
+          :class:`TransformConfig`.
+        * :class:`TransformConfig`: An existing configuration instance.
+          This will be used to construct the final configuration after
+          normalization.
+        * ``None``: Uses the default behavior of
+          :func:`_normalize_transform_config` (for example, inferring a
+          configuration from ``scheme`` or other project defaults), if
+          supported.
+    :param scheme: Optional quantization/transform scheme identifier used
+        when ``config`` is a ``str`` (and, if supported, when it is
+        ``None``) to determine which concrete configuration to build.
+        Ignored when ``config`` is already a ``dict`` or
+        :class:`TransformConfig`.
+    :param use_tqdm: If ``True``, wrap the per-module application in a
+        tqdm progress bar.
+    :param desc: Optional description string to show in the tqdm progress
+        bar. If ``None``, a description will be derived from
+        ``config.transform_type``.
     """
 
     config = _normalize_transform_config(config, scheme)
