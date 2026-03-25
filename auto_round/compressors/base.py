@@ -565,11 +565,8 @@ class BaseCompressor(object):
             check_supported_schemes(self.scheme)
 
             self.model = apply_hadamard_transform(
-                self.model,
-                hadamard_config,
-                need_calibration=True if self.iters > 0 else False
+                self.model, hadamard_config, need_calibration=True if self.iters > 0 else False
             )
-
 
     def _gen_auto_scheme(self) -> dict[str, dict]:
         if self.mllm:

@@ -10,6 +10,7 @@ from auto_round.experimental.transform.hadamards import HADAMARDS
 
 SUPPORTED_QUANTIZATION_SCHEMES = ["MXFP8", "MXFP4"]
 
+
 def is_triton_kernel_available() -> bool:
     """
     Best-effort check for whether Triton kernel path can be used.
@@ -91,4 +92,6 @@ def normalize_hadamard_config(hadamard_config: Any) -> dict[str, Any]:
 
 def check_supported_schemes(scheme: str):
     if scheme not in SUPPORTED_QUANTIZATION_SCHEMES:
-        raise ValueError(f"Unsupported quantization scheme: {scheme}. Currently {SUPPORTED_QUANTIZATION_SCHEMES} are supported.")
+        raise ValueError(
+            f"Unsupported quantization scheme: {scheme}. Currently {SUPPORTED_QUANTIZATION_SCHEMES} are supported."
+        )
