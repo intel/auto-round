@@ -15,7 +15,7 @@ jobs:
     steps:
       - uses: actions/stale@v10
         with:
-          start-date: '2020-01-01T00:00:00Z'
+          start-date: '2024-01-01T00:00:00Z'
           operations-per-run: 500
 
           days-before-issue-stale: 90
