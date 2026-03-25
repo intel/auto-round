@@ -1,65 +1,125 @@
 import re
 import sys
+import logging
+from pathlib import Path
+from dataclasses import dataclass
+from typing import Optional, Dict
 
-LOG_DIR = "/auto-round/log_dir"
+logging.basicConfig(level=logging.INFO, format="%(message)s")
 
-
-def parse_tuning_time(log_file):
-    with open(log_file, "r") as f:
-        content = f.read()
-
-    pattern = r"tuning time ([0-9]+\.[0-9]+)"
-    match = re.search(pattern, content)
-
-    if match:
-        elapsed = str_to_float(match.group(1))
-        return elapsed
-    return None
+LOG_DIR = Path("/auto-round/log_dir")
+OUTPUT_BASE_DIR = Path("/auto-round/.azure-pipelines/scripts/performance")
 
 
-def str_to_float(value):
-    try:
-        return round(float(value), 4)
-    except ValueError:
-        return value
+@dataclass
+class QuantMetrics:
+    tuning_time_s: Optional[float] = None
+    peak_ram_gb: Optional[float] = None
+    peak_vram_gb: Optional[float] = None
+    output_size_gb: Optional[float] = None
 
 
-def get_tuning_time():
+def get_dir_size_gb(path: Path) -> float:
+    if not path.exists() or not path.is_dir():
+        return 0.0
+
+    total_bytes = sum(f.stat().st_size for f in path.rglob("*") if f.is_file())
+    return round(total_bytes / (1024**3), 4)
+
+
+def parse_log_file(log_file: Path) -> QuantMetrics:
+    metrics = QuantMetrics()
+
+    if not log_file.exists():
+        logging.warning(f"Log file not found: {log_file}")
+        return metrics
+
+    content = log_file.read_text(encoding="utf-8")
+
+    time_match = re.search(r"tuning time ([0-9]+\.[0-9]+)", content)
+    if time_match:
+        metrics.tuning_time_s = round(float(time_match.group(1)), 4)
+
+    ram_match = re.search(r"'peak_ram':\s*([\d.]+)GB?.*?,'peak_vram':\s*([\d.]+)GB?", content)
+    if ram_match:
+        metrics.peak_ram_gb = round(float(ram_match.group(1)), 4)
+        metrics.peak_vram_gb = round(float(ram_match.group(2)), 4)
+
+    return metrics
+
+
+def get_tuning_info() -> Dict[str, Dict[str, QuantMetrics]]:
     summary = {}
     model_list = ["Qwen/Qwen3-0.6B"]
+
     for model in model_list:
         summary[model] = {}
         for test_mode in ["current", "baseline"]:
-            log_file = f"{LOG_DIR}/perf_test_{test_mode}.log"
-            print(f"Processing {log_file}...")
-            tuning_time = parse_tuning_time(log_file)
-            if tuning_time is not None:
-                summary[model][test_mode] = tuning_time
-            else:
-                summary[model][test_mode] = "N/A"
+            log_file = LOG_DIR / f"perf_test_{test_mode}.log"
+            output_dir = OUTPUT_BASE_DIR / test_mode
+
+            logging.info(f"Processing {log_file}...")
+
+            metrics = parse_log_file(log_file)
+            metrics.output_size_gb = get_dir_size_gb(output_dir)
+
+            summary[model][test_mode] = metrics
 
     return summary
 
 
-def check_performance():
-    status = True
-    summary = get_tuning_time()
-    for model, times in summary.items():
-        current_time = times.get("current", "N/A")
-        baseline_time = times.get("baseline", "N/A")
-        if current_time != "N/A" and baseline_time != "N/A":
-            print(f"{model}:\n  Current = {current_time} seconds\n  Baseline = {baseline_time} seconds")
-            ratio = current_time / baseline_time
-            if ratio < 0.9 or ratio > 1.1:
-                status = False
-        else:
-            print(f"{model}: Tuning time data is incomplete.")
-            status = False
+def compare_metric(
+    metric_name: str, current: Optional[float], baseline: Optional[float], tolerance: float = 0.1
+) -> bool:
+    if current is None or baseline is None:
+        logging.error(f"  [-] {metric_name}: Incomplete data (Current: {current}, Baseline: {baseline})")
+        return False
 
-    if status:
-        print("Performance check passed: Current tuning times are within acceptable limits compared to baseline.")
+    if baseline == 0:
+        logging.warning(f"  [!] {metric_name}: Baseline is 0, cannot calculate ratio.")
+        return False
+
+    ratio = current / baseline
+    diff_percent = (ratio - 1) * 100
+
+    msg = f"  [*] {metric_name:<20}: Current = {current:<8} | Baseline = {baseline:<8} (Diff: {diff_percent:+.2f}%)"
+
+    if 1.0 - tolerance <= ratio <= 1.0 + tolerance:
+        logging.info(f"{msg} -> PASS")
+        return True
     else:
-        print("Performance check failed: Current tuning times exceed acceptable limits compared to baseline.")
+        logging.error(f"{msg} -> FAIL")
+        return False
+
+
+def check_performance():
+    summary = get_tuning_info()
+    all_passed = True
+
+    for model, modes in summary.items():
+        logging.info(f"\nEvaluating Model: {model}")
+        logging.info("-" * 60)
+
+        current: QuantMetrics = modes.get("current", QuantMetrics())
+        baseline: QuantMetrics = modes.get("baseline", QuantMetrics())
+
+        if not compare_metric("Tuning Time (s)", current.tuning_time_s, baseline.tuning_time_s, tolerance=0.1):
+            all_passed = False
+
+        if not compare_metric("Peak RAM (GB)", current.peak_ram_gb, baseline.peak_ram_gb, tolerance=0.1):
+            all_passed = False
+
+        if not compare_metric("Peak VRAM (GB)", current.peak_vram_gb, baseline.peak_vram_gb, tolerance=0.05):
+            all_passed = False
+
+        if not compare_metric("Output Size (GB)", current.output_size_gb, baseline.output_size_gb, tolerance=0.01):
+            all_passed = False
+
+    logging.info("=" * 60)
+    if all_passed:
+        logging.info("✅ Performance check passed: All metrics are within acceptable limits (±10%).")
+    else:
+        logging.error("❌ Performance check failed: Current metrics exceed acceptable limits compared to baseline.")
         sys.exit(1)
 
 

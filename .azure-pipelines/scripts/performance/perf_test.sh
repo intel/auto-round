@@ -37,9 +37,8 @@ function run_performance_test() {
     test_mode=$1
     cd /auto-round/.azure-pipelines/scripts/performance
     local log_file="perf_test_${test_mode}.log"
-    rm -rf "saved" "${LOG_DIR}/${log_file}"
     echo "##[group]run ${test_mode} performance test..."
-    auto-round --model_name ${model_name} --bits 4 --iters 200 --enable_torch_compile --device hpu --output_dir ./saved 2>&1 | tee -a "${LOG_DIR}/${log_file}"
+    auto-round --model_name ${model_name} --bits 4 --iters 200 --enable_torch_compile --device hpu --output_dir "./${test_mode}" 2>&1 | tee -a "${LOG_DIR}/${log_file}"
     echo "##[endgroup]"
 }
 
