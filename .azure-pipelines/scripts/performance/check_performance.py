@@ -1,9 +1,9 @@
+import logging
 import re
 import sys
-import logging
-from pathlib import Path
 from dataclasses import dataclass
-from typing import Optional, Dict
+from pathlib import Path
+from typing import Dict, Optional
 
 logging.basicConfig(level=logging.INFO, format="%(message)s")
 
