@@ -67,5 +67,5 @@ def test_flux_calib(setup_flux):
     )
     # skip model saving since it takes much time
     all_inputs = autoround.cache_inter_data(["transformer_blocks.0"], 2)
-    assert len(all_inputs['transformer_blocks.0']['hidden_states']) == 4
+    assert len(all_inputs["transformer_blocks.0"]["hidden_states"]) == 4
     shutil.rmtree(output_dir, ignore_errors=True)
