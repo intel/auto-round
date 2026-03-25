@@ -56,7 +56,8 @@ from auto_round.compressors.utils import (
 )
 from auto_round.data_type import QUANT_FUNC_WITH_DTYPE
 from auto_round.data_type.utils import reshape_pad_tensor_by_group_size, update_block_global_scale_if_needed
-from auto_round.experimental.transform.helper import _normalize_transform_config
+import auto_round.experimental.transform.helper as transform_helper
+_normalize_transform_config = transform_helper._normalize_transform_config
 from auto_round.experimental.transform.transform_config import TransformConfig
 from auto_round.export.export_to_gguf.config import GGUF_INNER_CONFIG
 from auto_round.formats import OutputFormat, get_formats
