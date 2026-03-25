@@ -127,6 +127,18 @@ class TestQwen2_5Omni:
         model = _handle_special_model(model)
         assert model.forward != original_forward, "Forward should be patched for qwen2_5_omni"
 
+    def test_not_moe(self):
+        from auto_round.utils.model import is_moe_layer
+
+        # Thinker uses dense MLP, not MoE
+        thinker_mlp = self.model.thinker.model.layers[0].mlp
+        assert not is_moe_layer(thinker_mlp), "Qwen2.5-Omni should not be detected as MoE"
+
+    def test_not_custom_model(self):
+        from auto_round.modeling.fused_moe.replace_modules import is_custom_model
+
+        assert not is_custom_model(self.model), "Qwen2.5-Omni should not be in BUILTIN_MODULES"
+
 
 class TestQwen2_5OmniProcessor:
     """Test processor and template registration for Qwen2.5-Omni."""
@@ -386,24 +398,6 @@ class TestQwen3OmniMoeUtils:
             "thinker.model.layers.0.mlp.gate",
             "talker.model.layers.0.mlp.gate",
         ], f"Expected mlp.gate in ignore_layers for qwen3_omni_moe, got: {ignore_layers}"
-
-
-class TestQwen2_5OmniNotMoe:
-    """Verify Qwen2.5-Omni is not treated as MoE."""
-
-    def test_not_moe(self, tiny_qwen2_5_omni):
-        from auto_round.utils.model import is_moe_layer
-
-        model, _, _ = tiny_qwen2_5_omni
-        # Thinker uses dense MLP, not MoE
-        thinker_mlp = model.thinker.model.layers[0].mlp
-        assert not is_moe_layer(thinker_mlp), "Qwen2.5-Omni should not be detected as MoE"
-
-    def test_not_custom_model(self, tiny_qwen2_5_omni):
-        from auto_round.modeling.fused_moe.replace_modules import is_custom_model
-
-        model, _, _ = tiny_qwen2_5_omni
-        assert not is_custom_model(model), "Qwen2.5-Omni should not be in BUILTIN_MODULES"
 
 
 class TestVisualKeysExclusion:
