@@ -62,11 +62,12 @@ auto-round \
 
 ### Diffusion Support Matrix
 
-For diffusion models, currently we only validate quantizaion on the FLUX.1-dev, which involves quantizing the transformer component of the pipeline.
+For diffusion models, currently we validate quantization on the following models, which involves quantizing the transformer component of the pipeline.
 
 | Model     | calibration dataset |
 |--------------|--------------|
 | black-forest-labs/FLUX.1-dev | COCO2014      |
+| AIDC-AI/Ovis-Image-7B | COCO2014      |
 
 
 
