@@ -60,7 +60,8 @@ def quant_block_fp_sym(tensor, max_scale=1.0, tensor_max=None, group_size=(128, 
         max_tensor = (
             torch.tensor(tensor_max).to(tensor.device) * max_scale
             if tensor_min is None
-            else torch.maximum(torch.tensor(tensor_max).abs(), torch.tensor(tensor_min).abs()).to(tensor.device) * max_scale
+            else torch.maximum(torch.tensor(tensor_max).abs(), torch.tensor(tensor_min).abs()).to(tensor.device)
+            * max_scale
         )
     scale = max_tensor / info.max
     assert len(scale.shape) == 2, f"Only support 2D group_size, but get {len(scale.shape)}"
@@ -115,7 +116,8 @@ def quant_fp8_sym(tensor, max_scale=1.0, tensor_max=None, group_size=-1, v=0, te
         max_tensor = (
             torch.tensor(tensor_max).to(tensor.device) * max_scale
             if tensor_min is None
-            else torch.maximum(torch.tensor(tensor_max).abs(), torch.tensor(tensor_min).abs()).to(tensor.device) * max_scale
+            else torch.maximum(torch.tensor(tensor_max).abs(), torch.tensor(tensor_min).abs()).to(tensor.device)
+            * max_scale
         )
     scale = max_tensor.to(torch.float32) / info.max
     min_scaling_factor = float(1.0 / (info.max * 512.0))  ##copy from vllm
@@ -165,7 +167,8 @@ def quant_fp8_e5m2(tensor, max_scale=1.0, tensor_max=None, group_size=-1, v=0, t
         max_tensor = (
             torch.tensor(tensor_max).to(tensor.device) * max_scale
             if tensor_min is None
-            else torch.maximum(torch.tensor(tensor_max).abs(), torch.tensor(tensor_min).abs()).to(tensor.device) * max_scale
+            else torch.maximum(torch.tensor(tensor_max).abs(), torch.tensor(tensor_min).abs()).to(tensor.device)
+            * max_scale
         )
     scale = max_tensor.to(torch.float32) / info.max
     min_scaling_factor = float(1.0 / (info.max * 512.0))  ##copy from vllm
@@ -277,13 +280,15 @@ def quant_fp8_sym_gaudi3(tensor, max_scale=1.0, tensor_max=None, tensor_min=None
         max_tensor = (
             tensor_max.to(tensor.device) * max_scale
             if tensor_min is None
-            else torch.maximum(tensor_max.clone().detach().abs(), tensor_min.clone().detach().abs()).to(tensor.device) * max_scale
+            else torch.maximum(tensor_max.clone().detach().abs(), tensor_min.clone().detach().abs()).to(tensor.device)
+            * max_scale
         )
     else:
         max_tensor = (
             torch.tensor(tensor_max).to(tensor.device) * max_scale
             if tensor_min is None
-            else torch.maximum(torch.tensor(tensor_max).abs(), torch.tensor(tensor_min).abs()).to(tensor.device) * max_scale
+            else torch.maximum(torch.tensor(tensor_max).abs(), torch.tensor(tensor_min).abs()).to(tensor.device)
+            * max_scale
         )
     scale = max_tensor.to(torch.float32) / fp8_max
     min_scaling_factor = float(1.0 / (fp8_max * 512.0))  ##copy from vllm
@@ -343,7 +348,8 @@ if is_gaudi2():
             max_tensor = (
                 torch.tensor(tensor_max).to(tensor.device) * max_scale
                 if tensor_min is None
-                else torch.maximum(torch.tensor(tensor_max).abs(), torch.tensor(tensor_min).abs()).to(tensor.device) * max_scale
+                else torch.maximum(torch.tensor(tensor_max).abs(), torch.tensor(tensor_min).abs()).to(tensor.device)
+                * max_scale
             )
         scale = max_tensor.to(torch.float32) / info.max
         min_scaling_factor = float(1.0 / (info.max * 512.0))  ##copy from vllm
