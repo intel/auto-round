@@ -67,7 +67,7 @@ class TestAutoRound:
 
         generate_prompt(model, tokenizer)
 
-    def test_transform_mxfp4_tunning_quant_infer(self):
+    def test_transform_mxfp4_tuning_quant_infer(self):
         model_name = get_model_path("qwen/Qwen3-0.6B")
         scheme = "MXFP4"
 
