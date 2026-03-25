@@ -7,7 +7,7 @@ from auto_round.experimental.transform.transform_config import TransformConfig
 from auto_round.experimental.transform.transforms import TRANSFORMS
 
 
-def _normalize_transform_config(transform_config: Any, scheme: str = None) -> dict[str, Any]:
+def _normalize_transform_config(transform_config: Any, scheme: str | None = None) -> dict[str, Any]:
     """
     Normalize and validate `transform_config`.
 
