@@ -19,25 +19,27 @@ def _normalize_transform_config(transform_config: Any, scheme: str | None = None
 
     On any validation failure, raises ValueError/TypeError.
     """
-    # 1) None -> {}
+
     if transform_config is None:
         return {}
 
-    # 2) Already a TransformConfig instance
     if isinstance(transform_config, TransformConfig):
-        # Ensure it passes its own validation and convert to dict
-        cfg = TransformConfig.model_validate(transform_config).model_dump()
-        return cfg
+        return transform_config
 
-    # 3) dict -> validate via TransformConfig
     if isinstance(transform_config, dict):
+        original = dict(transform_config)
+
         try:
-            cfg = TransformConfig.model_validate(transform_config).model_dump()
+            validated = TransformConfig.model_validate(transform_config).model_dump()
         except Exception as e:
             raise ValueError(f"Invalid transform_config dict: {e}") from e
-        return cfg
 
-    # 4) str -> shorthand for transform_type
+        known_fields = set(TransformConfig.model_fields.keys())
+        extras = {k: v for k, v in original.items() if k not in known_fields}
+
+        validated.update(extras)
+        return validated
+
     if isinstance(transform_config, str):
         key = transform_config.strip()
         if not key:
@@ -45,7 +47,8 @@ def _normalize_transform_config(transform_config: Any, scheme: str | None = None
 
         if key not in TRANSFORMS:
             raise ValueError(
-                f"Invalid transform_config string: {key!r}. " f"Expected one of {sorted(TRANSFORMS.keys())}."
+                f"Invalid transform_config string: {key!r}. "
+                f"Expected one of {sorted(TRANSFORMS.keys())}."
             )
 
         cfg_dict = {"transform_type": key, "quant_scheme": scheme}
@@ -53,7 +56,9 @@ def _normalize_transform_config(transform_config: Any, scheme: str | None = None
         try:
             cfg = TransformConfig.model_validate(cfg_dict).model_dump()
         except Exception as e:
-            raise ValueError(f"transform_config built from string {key!r} is invalid for TransformConfig: {e}") from e
+            raise ValueError(
+                f"transform_config built from string {key!r} is invalid for TransformConfig: {e}"
+            ) from e
 
         return cfg
 

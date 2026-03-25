@@ -49,7 +49,8 @@ def apply_transform(
     """
 
     config = _normalize_transform_config(config, scheme)
-    config = TransformConfig(**config)
+    if not isinstance(config, TransformConfig):
+        config = TransformConfig(**config)
 
     modules_config = [
         (name, module, config)
