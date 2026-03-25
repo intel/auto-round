@@ -1,65 +1,84 @@
 # Copyright (C) 2026 Intel Corporation
 # SPDX-License-Identifier: Apache-2.0
 
+import torch
 from typing import Any
+from auto_round.experimental.transform.hadamard_config import HadamardConfig
+from auto_round.experimental.transform.hadamards import HADAMARDS
 
-from auto_round.experimental.transform.transform_config import TransformConfig
-from auto_round.experimental.transform.transforms import TRANSFORMS
-
-
-def _normalize_transform_config(transform_config: Any, scheme: str | None = None) -> dict[str, Any]:
+def is_triton_kernel_available() -> bool:
     """
-    Normalize and validate `transform_config`.
+    Best-effort check for whether Triton kernel path can be used.
+    """
+    try:
+        import triton  # pylint: disable=E0401
+    except Exception:
+        return False
+
+    if not torch.cuda.is_available():
+        return False
+
+    try:
+        from auto_round.experimental.transform.triton.mxfp4 import mxfp4_forward_kernel_wrapper  # pylint: disable=E0401
+    except Exception:
+        return False
+
+    return True
+
+def normalize_hadamard_config(hadamard_config: Any) -> dict[str, Any]:
+    """
+    Normalize and validate `hadamard_config`.
 
     Supported input types:
         - None          -> {}
-        - dict          -> validated via TransformConfig
-        - TransformConfig -> validated & converted to dict
+        - dict          -> validated via HadamardConfig
+        - HadamardConfig -> validated & converted to dict
         - str           -> shorthand for `transform_type` in TRANSFORMS keys
 
     On any validation failure, raises ValueError/TypeError.
     """
-
-    if transform_config is None:
+    # 1) None -> {}
+    if hadamard_config is None:
         return {}
 
-    if isinstance(transform_config, TransformConfig):
-        return transform_config
+    # 2) Already a HadamardConfig instance
+    if isinstance(hadamard_config, HadamardConfig):
+        # Ensure it passes its own validation and convert to dict
+        cfg = HadamardConfig.model_validate(hadamard_config).model_dump()
+        return cfg
 
-    if isinstance(transform_config, dict):
-        original = dict(transform_config)
-
+    # 3) dict -> validate via HadamardConfig
+    if isinstance(hadamard_config, dict):
         try:
-            validated = TransformConfig.model_validate(transform_config).model_dump()
+            cfg = HadamardConfig.model_validate(hadamard_config).model_dump()
         except Exception as e:
-            raise ValueError(f"Invalid transform_config dict: {e}") from e
+            raise ValueError(f"Invalid hadamard_config dict: {e}") from e
+        return cfg
 
-        known_fields = set(TransformConfig.model_fields.keys())
-        extras = {k: v for k, v in original.items() if k not in known_fields}
-
-        validated.update(extras)
-        return validated
-
-    if isinstance(transform_config, str):
-        key = transform_config.strip()
+    # 4) str -> shorthand for transform_type
+    if isinstance(hadamard_config, str):
+        key = hadamard_config.strip()
         if not key:
             return {}
 
-        if key not in TRANSFORMS:
+        if key not in HADAMARDS:
             raise ValueError(
-                f"Invalid transform_config string: {key!r}. " f"Expected one of {sorted(TRANSFORMS.keys())}."
+                f"Invalid hadamard_config string: {key!r}. "
+                f"Expected one of {sorted(TRANSFORMS.keys())}."
             )
 
-        cfg_dict = {"transform_type": key, "quant_scheme": scheme}
+        cfg_dict = {"transform_type": key}
 
         try:
-            cfg = TransformConfig.model_validate(cfg_dict).model_dump()
+            cfg = HadamardConfig.model_validate(cfg_dict).model_dump()
         except Exception as e:
-            raise ValueError(f"transform_config built from string {key!r} is invalid for TransformConfig: {e}") from e
+            raise ValueError(
+                f"hadamard_config built from string {key!r} is invalid for HadamardConfig: {e}"
+            ) from e
 
         return cfg
 
     raise TypeError(
-        "transform_config must be one of: None, dict, TransformConfig, or str "
-        f"(got {type(transform_config).__name__})"
+        "hadamard_config must be one of: None, dict, HadamardConfig, or str "
+        f"(got {type(hadamard_config).__name__})"
     )

@@ -41,13 +41,13 @@ class TestAutoRound:
             trust_remote_code=True,
         )
 
-        from auto_round.experimental.transform.apply import apply_transform
-        from auto_round.experimental.transform.transform_config import TransformConfig
+        from auto_round.experimental.transform.apply import apply_hadamard_transform
+        from auto_round.experimental.transform.hadamard_config import HadamardConfig
 
-        transform_config = TransformConfig(quant_scheme="MXFP4")
-        model = apply_transform(
+        hadamard_config = HadamardConfig()
+        model = apply_hadamard_transform(
             model,
-            transform_config,
+            hadamard_config,
         )
 
         ar = AutoRound(
@@ -55,7 +55,7 @@ class TestAutoRound:
             iters=0,
             seqlen=2,
             scheme=scheme,
-            transform_config=transform_config.dict(),
+            hadamard_config=hadamard_config,
         )
         compressed_model, _ = ar.quantize_and_save(output_dir=self.save_dir, format="auto_round")
 
@@ -81,13 +81,14 @@ class TestAutoRound:
             trust_remote_code=True,
         )
 
-        from auto_round.experimental.transform.apply import apply_transform
-        from auto_round.experimental.transform.transform_config import TransformConfig
+        from auto_round.experimental.transform.apply import apply_hadamard_transform
+        from auto_round.experimental.transform.hadamard_config import HadamardConfig
 
-        transform_config = TransformConfig(quant_scheme="MXFP4", need_calibration=True)
-        model = apply_transform(
+        hadamard_config = HadamardConfig()
+        model = apply_hadamard_transform(
             model,
-            transform_config,
+            hadamard_config,
+            need_calibration=True
         )
 
         ar = AutoRound(
@@ -96,7 +97,7 @@ class TestAutoRound:
             seqlen=2,
             tokenizer=tokenizer,
             scheme=scheme,
-            transform_config=transform_config.dict(),
+            hadamard_config=hadamard_config,
         )
         compressed_model, _ = ar.quantize_and_save(output_dir=self.save_dir, format="auto_round")
 
@@ -122,13 +123,13 @@ class TestAutoRound:
             trust_remote_code=True,
         )
 
-        from auto_round.experimental.transform.apply import apply_transform
-        from auto_round.experimental.transform.transform_config import TransformConfig
+        from auto_round.experimental.transform.apply import apply_hadamard_transform
+        from auto_round.experimental.transform.hadamard_config import HadamardConfig
 
-        transform_config = TransformConfig(quant_scheme="MXFP4", transform_type="random_hadamard")
-        model = apply_transform(
+        hadamard_config = HadamardConfig(hadamard_type="random_hadamard")
+        model = apply_hadamard_transform(
             model,
-            transform_config,
+            hadamard_config,
         )
 
         ar = AutoRound(
@@ -136,7 +137,7 @@ class TestAutoRound:
             iters=0,
             seqlen=2,
             scheme=scheme,
-            transform_config=transform_config.dict(),
+            hadamard_config=hadamard_config,
         )
         compressed_model, _ = ar.quantize_and_save(output_dir=self.save_dir, format="auto_round")
 

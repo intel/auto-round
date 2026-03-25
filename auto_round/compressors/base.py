@@ -58,8 +58,7 @@ from auto_round.compressors.utils import (
 from auto_round.data_type import QUANT_FUNC_WITH_DTYPE
 from auto_round.data_type.utils import reshape_pad_tensor_by_group_size, update_block_global_scale_if_needed
 
-_normalize_transform_config = transform_helper._normalize_transform_config
-from auto_round.experimental.transform.transform_config import TransformConfig
+from auto_round.experimental.transform.hadamard_config import HadamardConfig
 from auto_round.export.export_to_gguf.config import GGUF_INNER_CONFIG
 from auto_round.formats import OutputFormat, get_formats
 from auto_round.logger import logger
@@ -122,6 +121,8 @@ from auto_round.utils.device import (
 from auto_round.utils.distributed import setup_ddp_if_needed_
 from auto_round.utils.offload import OffloadManager
 from auto_round.wrapper import WrapperLinear, WrapperMultiblock, unwrapper_block, unwrapper_layer, wrapper_block
+from auto_round.experimental.transform.helper import normalize_hadamard_config
+
 
 SERIALIZATION_KEYS = (
     "bits",
@@ -154,7 +155,7 @@ SERIALIZATION_KEYS = (
     "super_bits",
     "super_group_size",
     "to_quant_block_names",
-    "transform_config",
+    "hadamard_config",
 )
 
 
@@ -205,7 +206,7 @@ class BaseCompressor(object):
         disable_opt_rtn: bool | None = None,
         seed: int = 42,
         low_cpu_mem_usage: bool = True,
-        transform_config: str | dict | TransformConfig | None = None,
+        hadamard_config: str | dict | HadamardConfig | None = None,
         **kwargs,
     ):
         """Initialize AutoRound with quantization and tuning configuration.
@@ -557,7 +558,7 @@ class BaseCompressor(object):
             except (ImportError, ModuleNotFoundError):
                 logger.error("algorithm extension import error, fallback to default mode")
 
-        self.transform_config = _normalize_transform_config(transform_config, scheme)
+        self.hadamard_config = normalize_hadamard_config(hadamard_config)
 
     def _gen_auto_scheme(self) -> dict[str, dict]:
         if self.mllm:
@@ -3367,6 +3368,7 @@ class BaseCompressor(object):
             serialization_dict = {}
             for key in SERIALIZATION_KEYS:
                 serialization_dict[key] = getattr(self, key)
+
             from auto_round.version import __version__
 
             serialization_dict["autoround_version"] = __version__

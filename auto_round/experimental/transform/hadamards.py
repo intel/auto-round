@@ -118,13 +118,13 @@ class RandomHadamardTransform(HadamardTransform):
         return nn.Parameter(data, requires_grad=False)
 
 
-TRANSFORMS = {
+HADAMARDS = {
     "identity": IdentityTransform,
     "hadamard": HadamardTransform,
     "random_hadamard": RandomHadamardTransform,
 }
 
 
-def build_transform(transform_type: str, **transform_kwargs):
-    transform = TRANSFORMS[transform_type]
-    return transform(**filter_kwarg_dict(transform.__init__, transform_kwargs))
+def build_hadamard_transform(hadamard_type: str, **hadamard_kwargs):
+    hadamard = HADAMARDS[hadamard_type]
+    return hadamard(**filter_kwarg_dict(hadamard.__init__, hadamard_kwargs))
