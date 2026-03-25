@@ -18,7 +18,7 @@ try:
     try:
         Version(_gguf_mod.__version__)
     except Exception:
-        _gguf_mod.__version__ = "0.0.0"
+        _gguf_mod.__version__ = "0.10.0"
 except ImportError:
     pass
 

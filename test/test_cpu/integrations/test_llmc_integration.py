@@ -54,6 +54,7 @@ recipe_modifier_mxfp4 = AutoRoundModifier(
 w8a8_dynamic_recipe_modifier = AutoRoundModifier(
     ignore=["lm_head"],
     iters=0,
+    enable_torch_compile=False,
     config_groups={
         "group_0": QuantizationScheme(
             targets=["Linear"],
@@ -66,6 +67,7 @@ w8a8_dynamic_recipe_modifier = AutoRoundModifier(
 w8a8_static_recipe_modifier = AutoRoundModifier(
     ignore=["lm_head"],
     iters=0,
+    enable_torch_compile=False,
     config_groups={
         "group_0": QuantizationScheme(
             targets=["Linear"],
@@ -192,9 +194,9 @@ def test_oneshot_with_device_ids(tiny_tiny_llama_model_path, tmp_path):
     "recipe",
     [w8a8_dynamic_recipe_modifier, w8a8_static_recipe_modifier],
 )
-def test_rtn_oneshot(recipe, tmp_path):
+def test_rtn_oneshot(recipe, tmp_path, tiny_tiny_llama_model_path):
     output = tmp_path / "oneshot_output"
-    model = "TinyLlama/TinyLlama-1.1B-Chat-v1.0"
+    model = tiny_tiny_llama_model_path
     tokenizer = AutoTokenizer.from_pretrained(model)
     dataset = get_dataset(
         tokenizer=tokenizer,

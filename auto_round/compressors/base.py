@@ -1400,7 +1400,7 @@ class BaseCompressor(object):
                     tied_weights_layers.append(lm_head_name)
 
             if use_blockwise_quantization:  # The ram usage is a little higher
-                all_to_quantized_module_names = list(set(all_to_quantized_module_names))
+                all_to_quantized_module_names = list(dict.fromkeys(all_to_quantized_module_names))
 
                 all_blocks = self.quant_block_list if self.quant_block_list else get_block_names(self.model)
                 pbar = tqdm(range(sum(len(block) for block in all_blocks)))
