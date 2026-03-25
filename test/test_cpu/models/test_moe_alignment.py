@@ -6,6 +6,7 @@ import torch
 from transformers import AutoConfig, AutoModelForCausalLM, AutoTokenizer
 
 from auto_round import AutoRound
+from auto_round.modeling.fused_moe import apply_replacements
 from auto_round.utils.model import get_module, set_amax_for_all_moe_layers
 
 from ...helpers import get_model_path
@@ -109,6 +110,7 @@ def test_set_amax_for_all_moe_layers_direct(setup_deepseek_v2_lite):
     os.environ["AR_ENABLE_UNIFY_MOE_INPUT_SCALE"] = "true"
 
     model, tokenizer, output_dir, config = setup_deepseek_v2_lite
+    apply_replacements(model)
 
     # Find the first MoE block and manually set different act_max values
     moe_block = None

@@ -1,5 +1,6 @@
 import pytest
 import torch
+from packaging import version
 
 from auto_round.utils.weight_handler import (
     ModuleWeightType,
@@ -7,7 +8,7 @@ from auto_round.utils.weight_handler import (
     convert_module_to_hp_if_necessary,
 )
 
-from ...helpers import get_model_path, get_tiny_model
+from ...helpers import get_model_path, get_tiny_model, transformers_version
 
 
 class TestCompressedTensor:
@@ -48,6 +49,10 @@ class TestCompressedTensor:
             model.model.layers[0].mlp.up_proj.weight.dtype == torch.bfloat16
         ), "CompressedLinear layer was not converted to Linear"
 
+    @pytest.mark.skipif(
+        transformers_version >= version.parse("5.0.0"),
+        reason="Compressed-tensor is not compatible with transformers 5.0.0 and above. See https://github.com/vllm-project/compressed-tensors/blob/68f1a7d63f7e0c701837c383b0bb026f0eeb3a04/setup.py#L80",
+    )
     def test_mxfp4(self):
         model = get_tiny_model(get_model_path(self.mxfp4_model_path))
         assert (
