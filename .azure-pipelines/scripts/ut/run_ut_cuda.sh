@@ -99,6 +99,7 @@ function run_unit_test() {
     uv pip install -r test_cuda/requirements.txt
     uv pip install -r test_cuda/requirements_diffusion.txt
     uv pip install -U transformers
+    uv pip uninstall torch torchvision
     uv pip install torch==2.11.0 torchvision --index-url https://download.pytorch.org/whl/cu128
     cd ${REPO_PATH} && uv pip install . && cd ${REPO_PATH}/test
 
