@@ -139,7 +139,7 @@ def patch_wrapperwalayer_forward_to_apply_transform(inp_transform):
     WrapperWALayer._hadamard_forward_patched = True
 
 
-def patch_quantlinear():
+def patch_quantlinear(hadamard_type):
     """ """
 
     if getattr(QuantLinear, "_pack_patched", False):
@@ -202,8 +202,8 @@ def patch_quantlinear():
             self.input_global_scale = input_global_scale.to(torch.float32).to(device).reshape([1])
 
         # add transform weight
-        transform = getattr(linear, "transform_matrix")
-        self.register_buffer("transform_matrix", transform.weight.to(device))
+        transform = getattr(linear, hadamard_type)
+        self.register_buffer("hadamard_matrix", transform.weight.to(device))
         return
 
     QuantLinear.pack = _pack_patched
