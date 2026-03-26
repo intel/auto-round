@@ -326,6 +326,7 @@ class DiffusionCompressor(BaseCompressor):
 
         if self.pipe.device != self.model.device:
             self.pipe.to(self.model.device)
+        self.pipe.to(self.model.dtype)
         with tqdm(range(1, total + 1), desc="cache block inputs") as pbar:
             for ids, prompts in self.dataloader:
                 if isinstance(prompts, tuple):
@@ -373,6 +374,11 @@ class DiffusionCompressor(BaseCompressor):
                         self.inputs[k][key] = v[key][:max_len]
 
         # torch.cuda.empty_cache()
+
+    def _should_stop_cache_forward(self, name: str) -> bool:
+        """Determine whether current forward pass can stop after caching `name`."""
+        # diffusion model needs to run all steps to collect input
+        return False
 
     def _get_save_folder_name(self, format: OutputFormat) -> str:
         """Generates the save folder name based on the provided format string.
