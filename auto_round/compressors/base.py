@@ -474,7 +474,10 @@ class BaseCompressor(object):
             disable_opt_rtn = False
 
         if self.iters > 0 and is_block_wfp8(self):
-            logger.warning("RTN is recommended since it shows even better accuracy for block-wise fp8 quantization.")
+            logger.warning(
+                "RTN is recommended as it achieves accuracy comparable to tuning for block-wise FP8 quantization "
+                "while being significantly faster. You can set `--iters 0 --disable_opt_rtn` to enable RTN mode."
+            )
 
         # Important Note! This is not very robust, do NOT rely on it to do high risky thing
         self.is_moe_model = is_moe_model(self.model)
