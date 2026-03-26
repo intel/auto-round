@@ -28,18 +28,6 @@ def filter_kwarg_dict(fn_or_method: Callable, kwarg_dict: Dict[str, Any]) -> Dic
     return {k: v for k, v in kwarg_dict.items() if k in fn_or_method_keys}
 
 
-class IdentityTransform(nn.Module):
-
-    def __init__(self, *args, **kwargs):
-        super().__init__()
-
-    def forward(self, x: torch.Tensor):
-        return x
-
-    def remove_parametrizations(self) -> None:
-        pass
-
-
 class HadamardTransform(nn.Module):
 
     def __init__(
@@ -119,7 +107,6 @@ class RandomHadamardTransform(HadamardTransform):
 
 
 HADAMARDS = {
-    "identity": IdentityTransform,
     "hadamard": HadamardTransform,
     "random_hadamard": RandomHadamardTransform,
 }

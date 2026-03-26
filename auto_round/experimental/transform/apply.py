@@ -7,7 +7,7 @@ import tqdm
 from auto_round.experimental.qmodules.mx import MXQuantLinearBase
 from auto_round.experimental.transform.hadamard_config import HadamardConfig
 from auto_round.experimental.transform.hadamards import build_hadamard_transform
-from auto_round.experimental.transform.helper import normalize_hadamard_config
+from auto_round.experimental.utils import normalize_hadamard_config, is_triton_kernel_available
 
 __all__ = ["apply_hadamard_transform"]
 
@@ -93,7 +93,6 @@ def _apply_to_module(
     hadamard_name = config.hadamard_type
 
     if location == "input":
-        from auto_round.experimental.transform.helper import is_triton_kernel_available
 
         # activation needs transpose
         input_hadamard_transform = build_hadamard_transform(

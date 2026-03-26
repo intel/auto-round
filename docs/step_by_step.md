@@ -622,13 +622,13 @@ autoround.save_quantized(format="auto_awq", output_dir="tmp_autoround")
   Include the flag `--adam`. Note that AdamW is less effective than sign gradient descent in many scenarios we tested.
 
 
-### Hadamard Transform
+### Hadamard Transform[Experimental Feature]
 
 AutoRound supports Hadamard transform as an optional weight/activation transformation technique, which can improve quantization accuracy by rotating the weight/activation matrix. This is particularly useful for certain quantization scenarios.
 
 #### Overview
 
-The Hadamard transform uses a special square matrix with entries +1 or -1, where all rows are mutually orthogonal. This property makes it useful for "spreading" information across the weight/activation matrix, which can help reduce quantization error.
+The Hadamard transform is particularly useful in scenarios where activation outliers hurt quantization accuracy. In practice, it helps suppress such outliers, making it especially effective when `act_bits < 8`. Users can enable this feature when they need more stable activation distributions and better accuracy in low‑bit quantization settings.
 
 #### Implementation
 
@@ -645,11 +645,11 @@ AutoRound provides two types of Hadamard transforms:
 from auto_round import AutoRound
 
 # Load a model (supports FP8/BF16/FP16/FP32)
-model_name_or_path = ""
-output_dir = ""
+model_name_or_path = "meta-llama/Llama-3.1-8B-Instruct"
+output_dir = "./Llama-3.1-8B-Instruct-mxfp4-ht"
 
 # hadamard_config="default": block_size=32, hadamard_type="hadamard"
-ar = AutoRound(model_name_or_path, scheme="MXFP4", iters=0, hadamard_config="default")
+ar = AutoRound(model_name_or_path, scheme="MXFP4", hadamard_config="default")
 
 ar.quantize_and_save(output_dir=output_dir, format="auto_round")
 ```
@@ -674,14 +674,6 @@ ar.quantize_and_save(output_dir=output_dir, format="auto_round")
 | `seed` | Random seed (for RandomHadamardTransform) |
 | `generator` | PyTorch generator for random values |
 
-#### Notes
-
-- The hadamard transform is its own inverse: H @ H = I
-- The hadamard transform includes a scaling factor of 1/sqrt(size) for normalization
-- For randon hadamard transform, a single fixed Hadamard rotation matrix (initialized via a specified seed) is shared across all layers. (TODO: support layerwise randomness)
-- The implementation refers some code from [compressed-tensors](https://github.com/vllm-project/compressed-tensors) and is inspired by [SpinQuant](https://github.com/facebookresearch/SpinQuant). (TODO: support SpinQuant, which the rotation matrix is learnabl)
-- Only support combination with MXFP4/MXPF8 quantization scheme currently. (TODO: support nvfp4)
-- For inference, Only support huggingface/transformers as backend. (TODO: support vllm)
 
 ## 4 Inference
 
