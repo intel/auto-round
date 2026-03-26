@@ -31,6 +31,10 @@ environment_variables: dict[str, Callable[[], Any]] = {
     in ["1", "true"],
     "AR_OMP_NUM_THREADS": lambda: os.getenv("AR_OMP_NUM_THREADS", None),
     "AR_DISABLE_OFFLOAD": lambda: os.getenv("AR_DISABLE_OFFLOAD", "0").lower() in ("1", "true", "yes"),
+    "AR_DISABLE_DATASET_SUBPROCESS": lambda: os.getenv("AR_DISABLE_DATASET_SUBPROCESS", "0").lower() in ("1", "true"),
+    "AR_DATASET_CACHE_DIR": lambda: os.getenv(
+        "AR_DATASET_CACHE_DIR", os.path.join(os.path.expanduser("~"), ".cache", "auto_round", "datasets")
+    ),
 }
 
 

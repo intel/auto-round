@@ -47,6 +47,25 @@ export AR_USE_MODELSCOPE=true
 export AR_WORK_SPACE=/path/to/custom/workspace
 ```
 
+### AR_DISABLE_DATASET_SUBPROCESS
+- **Description**: Disables the use of a subprocess for dataset preprocessing. By default, AutoRound uses a subprocess to ensure all temporary memory is reclaimed by the OS.
+- **Default**: `False`
+- **Valid Values**: `"1"`, `"true"` (case-insensitive) for disabling; any other value for enabling
+- **Usage**: Set this to run dataset preprocessing in the main process
+
+```bash
+export AR_DISABLE_DATASET_SUBPROCESS=true
+```
+
+### AR_DATASET_CACHE_DIR
+- **Description**: Sets the cache directory for preprocessed datasets.
+- **Default**: `"~/.cache/auto_round/datasets/"`
+- **Usage**: Specify a custom directory to store cached datasets
+
+```bash
+export AR_DATASET_CACHE_DIR=/path/to/custom/cache
+```
+
 ## Usage Examples
 
 ### Setting Environment Variables
