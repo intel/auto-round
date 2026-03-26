@@ -881,17 +881,6 @@ def _get_dataset_impl(tokenizer, seqlen, dataset_name="NeelNanda/pile-10k", seed
     return dataset_final
 
 
-def _subprocess_worker(tokenizer, seqlen, dataset_name, seed, nsamples):
-    """Worker function executed in a child process.
-
-    Runs the full dataset preprocessing pipeline to warm up the HuggingFace
-    datasets cache. When this process exits, all temporary preprocessing
-    memory is reclaimed by the OS, while the cached results remain on disk
-    for the main process to reuse.
-    """
-    _get_dataset_impl(tokenizer, seqlen, dataset_name, seed, nsamples)
-
-
 def get_dataset(tokenizer, seqlen, dataset_name="NeelNanda/pile-10k", seed=42, nsamples=512):
     """Generate a dataset for calibration.
 
