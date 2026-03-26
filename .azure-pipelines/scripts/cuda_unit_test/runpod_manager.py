@@ -13,6 +13,36 @@ TARGET_GPUS = [
     "NVIDIA L40S",
     "NVIDIA RTX PRO 6000 Blackwell Server Edition",
 ]
+DATA_CENTER_IDS = [
+    "AP-JP-1",
+    "CA-MTL-1",
+    "CA-MTL-2",
+    "CA-MTL-3",
+    "EU-CZ-1",
+    "EU-FR-1",
+    "EU-NL-1",
+    "EU-RO-1",
+    "EU-SE-1",
+    "EUR-IS-1",
+    "EUR-IS-2",
+    "EUR-IS-3",
+    "EUR-NO-1",
+    "OC-AU-1",
+    "US-CA-2",
+    "US-DE-1",
+    "US-GA-1",
+    "US-GA-2",
+    "US-IL-1",
+    "US-KS-2",
+    "US-KS-3",
+    "US-NC-1",
+    "US-TX-1",
+    "US-TX-3",
+    "US-TX-4",
+    "US-WA-1",
+]
+DATA_CENTER_BAN_LIST = ["EUR-IS-2", "US-IL-1"]
+DATA_CENTER_SELECT_LIST = [dc for dc in DATA_CENTER_IDS if dc not in DATA_CENTER_BAN_LIST]
 REQUIRED_COUNT = 1
 IMAGES_NAME = "xuehaosu/azure-agent:v0.1"
 
@@ -46,7 +76,17 @@ def check_gpu_count(token):
       }
     }
     """ % ids_string
-    variables = {"input": {"gpuCount": 1, "secureCloud": True, "minMemoryInGb": 0, "minVcpuCount": 0}}
+
+    datacenter_id_string = ",".join(DATA_CENTER_SELECT_LIST)
+    variables = {
+        "input": {
+            "gpuCount": 1,
+            "secureCloud": True,
+            "minMemoryInGb": 0,
+            "minVcpuCount": 0,
+            "dataCenterId": datacenter_id_string,
+        }
+    }
 
     try:
         response = requests.post(
@@ -137,6 +177,8 @@ def create_pod(args):
     payload = {
         "cloudType": "SECURE",
         "containerDiskInGb": args.container_disk_size,
+        "dataCenterIds": DATA_CENTER_SELECT_LIST,
+        "dataCenterPriority": "availability",
         "env": env_dict,
         "gpuCount": args.gpu_count,
         "gpuTypeIds": [gpu_type],
