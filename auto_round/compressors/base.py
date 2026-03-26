@@ -1315,6 +1315,7 @@ class BaseCompressor(object):
             layer_config=self.layer_config,
             tokenizer=self.tokenizer,
         )
+
     # Use no_grad instead of inference mode
     # https://github.com/intel/auto-round/issues/1620
     @torch.no_grad()
