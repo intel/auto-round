@@ -638,36 +638,6 @@ AutoRound provides two types of Hadamard transforms:
 
 2. **Random Hadamard Transform** (`random_hadamard`): Uses known Hadamard matrices from N. J. A. Sloane's Library of Hadamard Matrices. Supports non-power-of-2 sizes and deterministic seeding.
 
-#### Key Functions
-
-```python
-from auto_round.experimental.transform.utils.hadamard import (
-    deterministic_hadamard_matrix,
-    random_hadamard_matrix,
-    is_pow2,
-)
-```
-
-- `deterministic_hadamard_matrix(size, dtype, device)`: Creates a deterministic Hadamard matrix using Sylvester's construction
-- `random_hadamard_matrix(size, dtype, device, gen)`: Creates a random Hadamard matrix from known matrices
-- `is_pow2(n)`: Checks if a number is a power of 2
-
-#### Usage in Transforms
-
-```python
-from auto_round.experimental.transform.hadamard import build_hadamard_transform
-
-# Create a deterministic hadamard transform with block size 32
-transform = build_hadamard_transform("hadamard", transform_block_size=32, device="cuda")
-
-# Create a random hadamard transform with a specific seed
-random_transform = build_hadamard_transform(
-    "random_hadamard",
-    transform_block_size=32,
-    device="cuda",
-    seed=42,
-)
-```
 
 #### Quantization with Hadamard Transform
 
@@ -706,8 +676,9 @@ ar.quantize_and_save(output_dir=output_dir, format="auto_round")
 
 #### Notes
 
-- The Hadamard transform is its own inverse: H @ H = I
-- The transform includes a scaling factor of 1/sqrt(size) for normalization
+- The hadamard transform is its own inverse: H @ H = I
+- The hadamard transform includes a scaling factor of 1/sqrt(size) for normalization
+- For randon hadamard transform, a single fixed Hadamard rotation matrix (initialized via a specified seed) is shared across all layers. (TODO: support layerwise randomness)
 - The implementation refers some code from [compressed-tensors](https://github.com/vllm-project/compressed-tensors) and is inspired by [SpinQuant](https://github.com/facebookresearch/SpinQuant). (TODO: support SpinQuant, which the rotation matrix is learnabl)
 - Only support combination with MXFP4/MXPF8 quantization scheme currently. (TODO: support nvfp4)
 - For inference, Only support huggingface/transformers as backend. (TODO: support vllm)
