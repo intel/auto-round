@@ -9,7 +9,7 @@ import transformers
 from packaging import version
 
 from auto_round.eval.evaluation import simple_evaluate, simple_evaluate_user_model
-from auto_round.utils import detect_device, get_attr, llm_load_model, mllm_load_model, set_attr, diffusion_load_model
+from auto_round.utils import detect_device, diffusion_load_model, get_attr, llm_load_model, mllm_load_model, set_attr
 
 transformers_version = version.parse(transformers.__version__)
 
@@ -221,13 +221,7 @@ def _reduce_config_layers(config, num_layers, num_experts=None):
 
 
 def get_tiny_model(
-    model_name_or_path,
-    num_layers=2,
-    num_experts=None,
-    is_mllm=False,
-    from_config=False,
-    is_diffusion=False,
-    **kwargs
+    model_name_or_path, num_layers=2, num_experts=None, is_mllm=False, from_config=False, is_diffusion=False, **kwargs
 ):
     """Generate a tiny model by slicing layers from the original model.
 
@@ -249,9 +243,13 @@ def get_tiny_model(
         if is_diffusion:
             import importlib
             import json
-            from huggingface_hub import snapshot_download
+
             from diffusers import AutoPipelineForText2Image
-            local_dir = snapshot_download(repo_id=model_name_or_path, ignore_patterns=["*.safetensors", "*.safetensors.index.json"])
+            from huggingface_hub import snapshot_download
+
+            local_dir = snapshot_download(
+                repo_id=model_name_or_path, ignore_patterns=["*.safetensors", "*.safetensors.index.json"]
+            )
 
             diffusers_module = importlib.import_module("diffusers")
             transformers_module = importlib.import_module("transformers")
@@ -263,7 +261,9 @@ def get_tiny_model(
                     _reduce_config_layers(config, num_layers, num_experts)
                     return getattr(getattr(diffusers_module, mod_name), "from_config")(config)
                 else:
-                    config = transformers.AutoConfig.from_pretrained(os.path.join(local_dir, folder_name, "config.json"))
+                    config = transformers.AutoConfig.from_pretrained(
+                        os.path.join(local_dir, folder_name, "config.json")
+                    )
                     _reduce_config_layers(config, num_layers, num_experts)
                     return getattr(getattr(transformers_module, mod_name), "_from_config")(config)
 
@@ -323,7 +323,11 @@ def get_tiny_model(
                 model.config.vision_config.depth = num_layers
     elif is_diffusion:
         pipe, model = diffusion_load_model(model_name_or_path, **kwargs)
-        if hasattr(model, "config") and hasattr(model.config, "num_layers") and hasattr(model.config, "num_single_layers"):
+        if (
+            hasattr(model, "config")
+            and hasattr(model.config, "num_layers")
+            and hasattr(model.config, "num_single_layers")
+        ):
             model.config.num_layers = num_layers
             model.config.num_single_layers = num_layers
     else:
