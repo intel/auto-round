@@ -476,7 +476,10 @@ class BaseCompressor(object):
             disable_opt_rtn = False
 
         if self.iters > 0 and is_block_wfp8(self):
-            logger.warning("RTN is recommended since it shows even better accuracy for block-wise fp8 quantization.")
+            logger.warning(
+                "RTN is recommended as it achieves accuracy comparable to tuning for block-wise FP8 quantization "
+                "while being significantly faster. You can set `--iters 0 --disable_opt_rtn` to enable RTN mode."
+            )
 
         # Important Note! This is not very robust, do NOT rely on it to do high risky thing
         self.is_moe_model = is_moe_model(self.model)
@@ -1903,7 +1906,7 @@ class BaseCompressor(object):
         )
         if len(unquantized_layers) > 0:
             compressed_unquantized_layers = compress_layer_names(unquantized_layers)
-            summary_info += f",  {compressed_unquantized_layers} have not been quantized"
+            summary_info += f", unquantized layers: {compressed_unquantized_layers}"
         logger.info(summary_info)
 
         self.quantized = True
@@ -3179,7 +3182,7 @@ class BaseCompressor(object):
         if self.low_gpu_mem_usage:
             clear_memory(device_list=self.device_list)  # clear cached memory during training
         if len(unquantized_layer_names) != 0:
-            logger.info(f"{unquantized_layer_names} have not been quantized")
+            logger.info(f"Unquantized layers: {unquantized_layer_names}")
         with torch.no_grad():
             unwrapper_block(block, best_params)
 
