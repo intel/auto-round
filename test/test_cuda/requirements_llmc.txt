@@ -1,2 +1,3 @@
 llmcompressor @ git+https://github.com/vllm-project/llm-compressor.git@main
+compressed-tensors @ git+https://github.com/vllm-project/compressed-tensors.git@main
 parameterized
