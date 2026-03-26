@@ -798,22 +798,6 @@ def _get_dataset_impl(tokenizer, seqlen, dataset_name="NeelNanda/pile-10k", seed
         if do_concat:
             dataset = concat_dataset_element(dataset)
 
-        # After .map() tokenization on the first run, the tokenizer produces
-        # large temporary Python objects (batch string copies, token-id lists)
-        # during processing.  Although the final Arrow result is already mmap'd
-        # from the cache file, those temporaries linger in the Python/glibc
-        # heap.  Force GC + malloc_trim to return those pages to the OS before
-        # the next memory-intensive steps (filter, cast).
-        import gc
-
-        gc.collect()
-        try:
-            import ctypes
-
-            ctypes.CDLL("libc.so.6").malloc_trim(0)
-        except Exception:
-            pass
-
         dataset = dataset.filter(filter_func)
         if name in data_lens:
             dataset = select_dataset(dataset, range(data_lens[name]))
@@ -830,7 +814,6 @@ def _get_dataset_impl(tokenizer, seqlen, dataset_name="NeelNanda/pile-10k", seed
                 new_features[k] = v
 
         dataset = dataset.cast(Features(new_features))
-
         datasets.append(dataset)
 
     if len(datasets) == 1:
