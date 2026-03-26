@@ -193,7 +193,7 @@ def save_model(
         model.save_pretrained(save_dir, max_shard_size=max_shard_size, safe_serialization=safe_serialization)
 
     # Allow disabling copy_missing_tensors_from_source via env var, default enabled
-    if not envs.AR_DISABLE_MTP:
+    if not envs.AR_DISABLE_COPY_MTP_WEIGHTS:
         try:
             if (
                 hasattr(model, "config")
