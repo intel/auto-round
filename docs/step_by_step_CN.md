@@ -466,7 +466,7 @@ W4G128 量化耗时与显存占用（英特尔 GPU B60 24G）
 |------------------------------------------------------------------------------------------------------------------------|-------------------|-------------------|---------------------|---------------------|---------------------|
 | 2.11.0+xpu 开启 torch compile                                                                                          | 20min<br/>10.7GB  | 26min<br/>13.2GB  | 58min<br/>22.8GB    | OOM                 | OOM                 |
 | 2.11.0+xpu 开启 torch compile<br/>low_gpu_mem_usage=True                                                               | 29min<br/>9.5GB   | 38min<br/>9.8GB   | 1h 23min<br/>19.4GB | 1h 32min<br/>20.1GB | 5h 33min<br/>22.8GB |
-| 2.11.0+xpu 开启 torch compile<br/>low_gpu_mem_usage=True<br/>gradient_accumulate_steps=8,bs=1                          | 41min<br/>1.3GB   | 42min<br/>1.8GB   | 1h 29min<br/>3.6GB  | 2h 4min<br/>4.6GB   | —                   |
+| 2.11.0+xpu 开启 torch compile<br/>low_gpu_mem_usage=True<br/>gradient_accumulate_steps=8,bs=1                          | 41min<br/>1.3GB   | 42min<br/>1.8GB   | 1h 29min<br/>3.6GB  | 2h 4min<br/>4.6GB   | 21h 41min<br/>10.2GB  |
 | 2.11.0+xpu 关闭 torch compile                                                                                          | 20min<br/>10.9GB  | 28min<br/>13.2GB  | OOM                 | OOM                 | OOM                 |
 
 
