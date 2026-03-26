@@ -145,7 +145,9 @@ class TestAutoRound:
         from ...helpers import save_tiny_model
 
         model_name = "google/gemma-3-4b-it"
-        tiny_model_path = save_tiny_model(model_name, "tiny_model_path", num_layers=3, is_mllm=True, use_fast=False, use_config=True)
+        tiny_model_path = save_tiny_model(
+            model_name, "tiny_model_path", num_layers=3, is_mllm=True, use_fast=False, use_config=True
+        )
         # Needs tokenizer.model for gguf
         # New transformers won't download it even with use_fast=False
         file_path = hf_hub_download(repo_id=model_name, filename="tokenizer.model", local_dir=tiny_model_path)
