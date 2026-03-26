@@ -31,7 +31,7 @@ environment_variables: dict[str, Callable[[], Any]] = {
     in ["1", "true"],
     "AR_OMP_NUM_THREADS": lambda: os.getenv("AR_OMP_NUM_THREADS", None),
     "AR_DISABLE_OFFLOAD": lambda: os.getenv("AR_DISABLE_OFFLOAD", "0").lower() in ("1", "true", "yes"),
-    "AR_DISABLE_MTP": lambda: os.getenv("AR_DISABLE_MTP", "0").lower() in ("1", "true", "yes"),
+    "AR_DISABLE_COPY_MTP_WEIGHTS": lambda: os.getenv("AR_DISABLE_COPY_MTP_WEIGHTS", "0").lower() in ("1", "true", "yes"),
 }
 
 
