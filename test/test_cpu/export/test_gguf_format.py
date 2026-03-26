@@ -263,5 +263,5 @@ class TestGGUF:
         gguf_model = GGUFReader(os.path.join(quantized_model_path, gguf_file))
         assert gguf_model.get_tensor(2).name == "blk.0.attn_k.weight"
         assert gguf_model.get_tensor(2).tensor_type.name == "Q4_K"
-        assert gguf_model.get_tensor(10).name == "blk.0.ffn_up_exps.weight"
-        assert gguf_model.get_tensor(10).tensor_type.name == "Q2_K"
+        assert gguf_model.get_tensor(9).name == "blk.0.ffn_up_exps.weight"
+        assert gguf_model.get_tensor(9).tensor_type.name == "Q2_K"
