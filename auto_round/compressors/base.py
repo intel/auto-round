@@ -1319,7 +1319,9 @@ class BaseCompressor(object):
             tokenizer=self.tokenizer,
         )
 
-    @torch.inference_mode()
+    # Use no_grad instead of inference mode
+    # https://github.com/intel/auto-round/issues/1620
+    @torch.no_grad()
     def _quantize_rtn(self) -> tuple[torch.nn.Module, dict[str, Any]]:
         """Quantize all modules in the model using RTN (Round-To-Nearest) strategy.
 
