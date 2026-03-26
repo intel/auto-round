@@ -3294,6 +3294,8 @@ class BaseCompressor(object):
             )
             if hasattr(model, "config"):
                 del m.config
+            if self.enable_torch_compile:
+                torch._dynamo.reset()
             if self.is_immediate_packing:
                 for n, tmp_m in m.named_modules():
                     if not (hasattr(tmp_m, "bits") and check_to_quantized(tmp_m)):
