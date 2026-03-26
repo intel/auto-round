@@ -7,7 +7,7 @@ import tqdm
 from auto_round.experimental.qmodules.mx import MXQuantLinearBase
 from auto_round.experimental.transform.hadamard_config import HadamardConfig
 from auto_round.experimental.transform.hadamards import build_hadamard_transform
-from auto_round.experimental.utils import normalize_hadamard_config, is_triton_kernel_available
+from auto_round.experimental.utils import is_triton_kernel_available, normalize_hadamard_config
 
 __all__ = ["apply_hadamard_transform"]
 
