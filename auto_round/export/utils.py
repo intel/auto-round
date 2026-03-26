@@ -17,13 +17,13 @@ import shutil
 
 import torch.nn as nn
 
+import auto_round.envs as envs
 from auto_round.utils import (
     copy_missing_tensors_from_source,
     copy_python_files_from_model_cache,
     logger,
     unsupported_meta_device,
 )
-import auto_round.envs as envs
 
 
 def is_local_pipeline_model_dir(model_dir: str) -> bool:
