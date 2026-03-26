@@ -33,7 +33,7 @@
     - [lm_head 量化中开启多 GPU 标定](#lm_head-量化中开启多-gpu-标定)
     - [手动配置设备映射](#手动配置设备映射)
   + [超参数调整](#超参数调整)
-  + [Hadamard变换(实验性功能)](#hadamard变换(实验性功能))
+  + [Hadamard变换](#hadamard变换)
 * [4 推理部署](#4-推理部署)
   + [CPU](#cpu)
   + [英特尔 GPU](#英特尔-gpu)
@@ -585,7 +585,7 @@ auto-round --model_name Qwen/Qwen3-0.6B  --scheme "W4A16" --quant_lm_head --form
 
 
 
-### Hadamard变换(实验性功能)
+### Hadamard变换
 
 AutoRound 支持将 Hadamard 变换作为可选的权重/激活变换技术，通过旋转权重/激活矩阵来提升量化精度。这在某些量化场景中尤其有用。
 
