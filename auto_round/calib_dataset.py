@@ -88,6 +88,30 @@ def apply_chat_template_to_samples(samples, tokenizer, seqlen, system_prompt=Non
     return example
 
 
+def _make_map_fingerprint(dataset, tokenizer, seqlen, apply_chat_template, system_prompt, text_key="text"):
+    """Compute a stable fingerprint for Dataset.map() calls.
+
+    datasets uses dill to serialize the transform function for cache fingerprinting.
+    HuggingFace tokenizer objects are not reliably serializable by dill, causing
+    a random hash to be used each run — which breaks caching entirely.
+
+    This function computes a deterministic fingerprint from stable string
+    identifiers (tokenizer name, seqlen, etc.) so that caching works correctly
+    and subsequent runs can load from disk instead of re-tokenizing in RAM.
+    """
+    import hashlib
+
+    parts = [
+        getattr(dataset, "_fingerprint", "no_fingerprint"),
+        getattr(tokenizer, "name_or_path", type(tokenizer).__name__),
+        str(seqlen),
+        str(apply_chat_template),
+        str(system_prompt),
+        text_key,
+    ]
+    return hashlib.md5("|".join(parts).encode()).hexdigest()
+
+
 def get_tokenizer_function(tokenizer, seqlen, apply_chat_template=False, system_prompt=None):
     """Returns a default tokenizer function.
 
@@ -157,7 +181,13 @@ def get_pile_dataset(
             logger.error(f"Failed to load the dataset: {error_message}")
         sys.exit(1)
     calib_dataset = calib_dataset.shuffle(seed=seed)
-    calib_dataset = calib_dataset.map(tokenizer_function, batched=True)
+    calib_dataset = calib_dataset.map(
+        tokenizer_function,
+        batched=True,
+        new_fingerprint=_make_map_fingerprint(
+            calib_dataset, tokenizer, seqlen, apply_chat_template, system_prompt, "text"
+        ),
+    )
 
     return calib_dataset
 
@@ -453,7 +483,13 @@ def get_new_chinese_title_dataset(
 
     calib_dataset = load_dataset("madao33/new-title-chinese", split=split)
     calib_dataset = calib_dataset.shuffle(seed=seed)
-    calib_dataset = calib_dataset.map(tokenizer_function, batched=True)
+    calib_dataset = calib_dataset.map(
+        tokenizer_function,
+        batched=True,
+        new_fingerprint=_make_map_fingerprint(
+            calib_dataset, tokenizer, seqlen, apply_chat_template, system_prompt, "content"
+        ),
+    )
 
     return calib_dataset
 
@@ -505,7 +541,13 @@ def get_mbpp_dataset(
     import datasets
 
     calib_dataset = datasets.Dataset.from_list(samples)
-    calib_dataset = calib_dataset.map(tokenizer_function, batched=True)
+    calib_dataset = calib_dataset.map(
+        tokenizer_function,
+        batched=True,
+        new_fingerprint=_make_map_fingerprint(
+            calib_dataset, tokenizer, seqlen, apply_chat_template, system_prompt, "text"
+        ),
+    )
 
     return calib_dataset
 
@@ -574,7 +616,13 @@ def get_local_dataset(
     import datasets
 
     calib_dataset = datasets.Dataset.from_list(samples)
-    calib_dataset = calib_dataset.map(tokenizer_function, batched=True)
+    calib_dataset = calib_dataset.map(
+        tokenizer_function,
+        batched=True,
+        new_fingerprint=_make_map_fingerprint(
+            calib_dataset, tokenizer, seqlen, apply_chat_template, system_prompt, "text"
+        ),
+    )
     return calib_dataset
 
 
