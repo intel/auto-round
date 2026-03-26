@@ -32,7 +32,7 @@ This document presents step-by-step instructions for auto-round llm quantization
   + [Device/Multi-GPU setting in Quantization](#devicemulti-gpu-setting-in-quantization)
     - [Enable multiple gpus calibration in lm_head quantization](#enable-multiple-gpus-calibration-in-lm_head-quantization)
   + [Adjust Hyperparameters](#adjust-hyperparameters)
-  + [Hadamard Transform(Experimental Feature)](#hadamard-transform(experimental-feature))
+  + [Hadamard Transform](#hadamard-transform)
 * [4 Inference](#4-inference)
   + [CPU](#cpu)
   + [Intel GPU](#intel-gpu)
@@ -622,7 +622,7 @@ autoround.save_quantized(format="auto_awq", output_dir="tmp_autoround")
   Include the flag `--adam`. Note that AdamW is less effective than sign gradient descent in many scenarios we tested.
 
 
-### Hadamard Transform(Experimental Feature)
+### Hadamard Transform
 
 AutoRound supports Hadamard transform as an optional weight/activation transformation technique, which can improve quantization accuracy by rotating the weight/activation matrix. This is particularly useful for certain quantization scenarios.
 
