@@ -23,6 +23,7 @@ from auto_round.utils import (
     logger,
     unsupported_meta_device,
 )
+import auto_round.envs as envs
 
 
 def is_local_pipeline_model_dir(model_dir: str) -> bool:
@@ -191,18 +192,20 @@ def save_model(
     else:
         model.save_pretrained(save_dir, max_shard_size=max_shard_size, safe_serialization=safe_serialization)
 
-    try:
-        if (
-            hasattr(model, "config")
-            and hasattr(model.config, "_name_or_path")
-            and model.config.name_or_path is not None  # set None for tiny model
-        ):
-            copy_missing_tensors_from_source(
-                source_dir=model.config._name_or_path,
-                target_dir=save_dir,
-            )
-    except Exception as e:
-        logger.warning("Skipping copy of missing tensors from source checkpoint due to error: %s", e)
+    # Allow disabling copy_missing_tensors_from_source via env var, default enabled
+    if not envs.AR_DISABLE_MTP:
+        try:
+            if (
+                hasattr(model, "config")
+                and hasattr(model.config, "_name_or_path")
+                and model.config.name_or_path is not None  # set None for tiny model
+            ):
+                copy_missing_tensors_from_source(
+                    source_dir=model.config._name_or_path,
+                    target_dir=save_dir,
+                )
+        except Exception as e:
+            logger.warning("Skipping copy of missing tensors from source checkpoint due to error: %s", e)
 
     config_path = os.path.join(save_dir, "config.json")
     if dtype is not None and dtype != model.dtype and os.path.exists(os.path.join(save_dir, "config.json")):
