@@ -10,6 +10,7 @@ import transformers
 from .helpers import (
     DataLoader,
     deepseek_v2_name_or_path,
+    flux_name_or_path,
     gemma_name_or_path,
     get_model_path,
     get_tiny_model,
@@ -101,6 +102,21 @@ def tiny_fp8_qwen_model_path():
         model_name_or_path = get_model_path("Qwen/Qwen3-0.6B-FP8")
         tiny_model_path = "./tmp/tiny_fp8_qwen_model_path"
         tiny_model_path = save_tiny_model(model_name_or_path, tiny_model_path)
+    yield tiny_model_path
+    shutil.rmtree(tiny_model_path, ignore_errors=True)
+
+
+@pytest.fixture(scope="session")
+def tiny_flux_model_path():
+    model_name_or_path = flux_name_or_path
+    tiny_model_path = "./tmp/tiny_flux_model_path"
+    tiny_model_path = save_tiny_model(
+        model_name_or_path,
+        tiny_model_path,
+        num_layers=1,
+        is_diffusion=True,
+        from_config=True,
+    )
     yield tiny_model_path
     shutil.rmtree(tiny_model_path, ignore_errors=True)
 
