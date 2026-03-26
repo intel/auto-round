@@ -57,15 +57,6 @@ export AR_WORK_SPACE=/path/to/custom/workspace
 export AR_DISABLE_DATASET_SUBPROCESS=true
 ```
 
-### AR_DATASET_CACHE_DIR
-- **Description**: Sets the cache directory for preprocessed datasets.
-- **Default**: `"~/.cache/auto_round/datasets/"`
-- **Usage**: Specify a custom directory to store cached datasets
-
-```bash
-export AR_DATASET_CACHE_DIR=/path/to/custom/cache
-```
-
 ## Usage Examples
 
 ### Setting Environment Variables
