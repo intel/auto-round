@@ -32,7 +32,7 @@ This document presents step-by-step instructions for auto-round llm quantization
   + [Device/Multi-GPU setting in Quantization](#devicemulti-gpu-setting-in-quantization)
     - [Enable multiple gpus calibration in lm_head quantization](#enable-multiple-gpus-calibration-in-lm_head-quantization)
   + [Adjust Hyperparameters](#adjust-hyperparameters)
-  + [Hadamard Transform](#hadamard-transform)
+  + [Hadamard Transform(Experimental Feature)](#hadamard-transform)
 * [4 Inference](#4-inference)
   + [CPU](#cpu)
   + [Intel GPU](#intel-gpu)
@@ -622,7 +622,7 @@ autoround.save_quantized(format="auto_awq", output_dir="tmp_autoround")
   Include the flag `--adam`. Note that AdamW is less effective than sign gradient descent in many scenarios we tested.
 
 
-### Hadamard Transform[Experimental Feature]
+### Hadamard Transform(Experimental Feature)
 
 AutoRound supports Hadamard transform as an optional weight/activation transformation technique, which can improve quantization accuracy by rotating the weight/activation matrix. This is particularly useful for certain quantization scenarios.
 
@@ -658,7 +658,7 @@ ar.quantize_and_save(output_dir=output_dir, format="auto_round")
 
 | Class | Description |
 |-------|-------------|
-| `HadamardTransform` | Applies deterministic Hadamard transform to weights |
+| `HadamardTransform` | Applies deterministic Hadamard transform |
 | `RandomHadamardTransform` | Applies random Hadamard transform with optional seeding |
 
 #### Parameters
@@ -666,13 +666,7 @@ ar.quantize_and_save(output_dir=output_dir, format="auto_round")
 | Parameter | Description |
 |-----------|-------------|
 | `block_size` | Size of the transformation block (default: 32) |
-| `device` | Device to create the transform on |
-| `precision` | Data type for the transform matrix |
-| `location` | Location to apply transform ("weight") |
-| `module_type` | Module type (default: `torch.nn.Linear`) |
-| `inverse` | Whether to apply inverse transform |
 | `seed` | Random seed (for RandomHadamardTransform) |
-| `generator` | PyTorch generator for random values |
 
 
 ## 4 Inference
