@@ -234,10 +234,10 @@ class BagelForQuantization(nn.Module):
         with open(config_path, "w", encoding="utf-8") as f:
             json.dump(config_dict, f, indent=2, ensure_ascii=False)
 
-        # Save all model parameters as safetensors
-        state_dict = {}
-        for name, param in self.named_parameters():
-            state_dict[name] = param.data.contiguous()
+        # Save all model weights (parameters + registered buffers) as safetensors.
+        # Using state_dict() instead of named_parameters() ensures buffers such as
+        # rotary-embedding caches are included, which are required for correct reload.
+        tensors = {name: tensor.contiguous() for name, tensor in self.state_dict().items()}
 
         # Remap weight names to match original BAGEL checkpoint format
         # The BagelPipeline expects top-level names like:
@@ -245,7 +245,7 @@ class BagelForQuantization(nn.Module):
         #   connector.fc1.weight
         #   vit_model.vision_model.embeddings...
         #   encoder.*, decoder.* (VAE, but those are in ae.safetensors)
-        save_file(state_dict, os.path.join(output_dir, "model.safetensors"))
+        save_file(tensors, os.path.join(output_dir, "model.safetensors"))
 
 
 def load_bagel_model(model_path, torch_dtype="auto"):
