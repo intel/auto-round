@@ -222,6 +222,10 @@ def get_tiny_model(model_name_or_path, num_layers=2, num_experts=None, is_mllm=F
         # ---- lightweight path: config-only, random weights ----
         trust_remote_code = kwargs.pop("trust_remote_code", True)
         config = transformers.AutoConfig.from_pretrained(model_name_or_path, trust_remote_code=trust_remote_code)
+        # Special cases
+        if config.model_type == "qwen3_omni_moe":
+            config.initializer_range = 0.02  # Default initializer range for weight initialization
+
         _reduce_config_layers(config, num_layers, num_experts)
 
         # Pick the right model class
