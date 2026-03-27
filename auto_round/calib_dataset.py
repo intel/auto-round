@@ -109,7 +109,7 @@ def _make_map_fingerprint(dataset, tokenizer, seqlen, apply_chat_template, syste
         str(system_prompt),
         text_key,
     ]
-    return hashlib.md5("|".join(parts).encode()).hexdigest()
+    return hashlib.sha256("|".join(parts).encode()).hexdigest()
 
 
 def get_tokenizer_function(tokenizer, seqlen, apply_chat_template=False, system_prompt=None):
