@@ -317,7 +317,7 @@ class QuantizedKVParameterCache(DynamicCache):
 
 
 class TurboQuantPackedKVCacheLayer(CacheLayerMixin):
-    is_compileable = False
+    is_compilable = False
 
     def __init__(
         self,
@@ -361,20 +361,30 @@ class TurboQuantPackedKVCacheLayer(CacheLayerMixin):
             seed=self.seed + 7919,
         )
         self._key_state = build_turboquant_state(
-            self._k_head_dim, self.bits, self.seed, self.device,
+            self._k_head_dim,
+            self.bits,
+            self.seed,
+            self.device,
             qjl_config=self._residual_config,
         )
         self._value_state = build_turboquant_state(
-            self._v_head_dim, self.bits, self.seed + 1, self.device,
+            self._v_head_dim,
+            self.bits,
+            self.seed + 1,
+            self.device,
             qjl_config=self._residual_config,
         )
         self.is_initialized = True
 
     def _empty_like_keys(self):
-        return torch.empty((self._batch_size, self._num_heads, 0, self._k_head_dim), dtype=self.dtype, device=self.device)
+        return torch.empty(
+            (self._batch_size, self._num_heads, 0, self._k_head_dim), dtype=self.dtype, device=self.device
+        )
 
     def _empty_like_values(self):
-        return torch.empty((self._batch_size, self._num_heads, 0, self._v_head_dim), dtype=self.dtype, device=self.device)
+        return torch.empty(
+            (self._batch_size, self._num_heads, 0, self._v_head_dim), dtype=self.dtype, device=self.device
+        )
 
     def _spill_residual_to_packed(self):
         if self.residual_length < 0:
@@ -459,8 +469,12 @@ class TurboQuantPackedKVCacheLayer(CacheLayerMixin):
         self.values = torch.cat([self.values, value_states], dim=-2)
         self._spill_residual_to_packed()
 
-        dequantized_keys = self._dequantize_segments(self._packed_key_segments, self._key_state, self._empty_like_keys())
-        dequantized_values = self._dequantize_segments(self._packed_value_segments, self._value_state, self._empty_like_values())
+        dequantized_keys = self._dequantize_segments(
+            self._packed_key_segments, self._key_state, self._empty_like_keys()
+        )
+        dequantized_values = self._dequantize_segments(
+            self._packed_value_segments, self._value_state, self._empty_like_values()
+        )
         keys_to_return = torch.cat([dequantized_keys, self.keys], dim=-2)
         values_to_return = torch.cat([dequantized_values, self.values], dim=-2)
         return keys_to_return, values_to_return
@@ -490,11 +504,7 @@ class TurboQuantPackedKVCacheLayer(CacheLayerMixin):
                         if segment.qjl_packed_signs is None
                         else segment.qjl_packed_signs.to(device, non_blocking=True)
                     ),
-                    qjl_norms=(
-                        None
-                        if segment.qjl_norms is None
-                        else segment.qjl_norms.to(device, non_blocking=True)
-                    ),
+                    qjl_norms=(None if segment.qjl_norms is None else segment.qjl_norms.to(device, non_blocking=True)),
                 )
             )
         return moved
@@ -506,7 +516,11 @@ class TurboQuantPackedKVCacheLayer(CacheLayerMixin):
 
     def prefetch(self):
         super().prefetch()
-        if self.is_initialized and len(self._packed_key_segments) > 0 and self._packed_key_segments[0].packed_codes.device != self.device:
+        if (
+            self.is_initialized
+            and len(self._packed_key_segments) > 0
+            and self._packed_key_segments[0].packed_codes.device != self.device
+        ):
             self._packed_key_segments = self._move_packed_segments(self._packed_key_segments, self.device)
             self._packed_value_segments = self._move_packed_segments(self._packed_value_segments, self.device)
 
@@ -523,7 +537,9 @@ class TurboQuantPackedKVCacheLayer(CacheLayerMixin):
         for segment in segments:
             unpacked = turboquant_unpack(segment, state, dtype=self.dtype, residual_config=self._residual_config)
             repacked.append(
-                turboquant_pack(unpacked.index_select(0, indices.to(unpacked.device)), state, residual_config=self._residual_config)
+                turboquant_pack(
+                    unpacked.index_select(0, indices.to(unpacked.device)), state, residual_config=self._residual_config
+                )
             )
         return repacked
 
@@ -531,7 +547,9 @@ class TurboQuantPackedKVCacheLayer(CacheLayerMixin):
         if self.keys is not None and self.keys.numel() > 0:
             self.keys = self.keys.index_select(0, beam_idx.to(self.keys.device))
             self.values = self.values.index_select(0, beam_idx.to(self.values.device))
-        self._packed_key_segments = self._repack_segments_with_batch_indices(self._packed_key_segments, self._key_state, beam_idx)
+        self._packed_key_segments = self._repack_segments_with_batch_indices(
+            self._packed_key_segments, self._key_state, beam_idx
+        )
         self._packed_value_segments = self._repack_segments_with_batch_indices(
             self._packed_value_segments, self._value_state, beam_idx
         )
@@ -541,7 +559,9 @@ class TurboQuantPackedKVCacheLayer(CacheLayerMixin):
             self.keys = self.keys.repeat_interleave(repeats, dim=0)
             self.values = self.values.repeat_interleave(repeats, dim=0)
         indices = torch.arange(self._batch_size, device=self.device).repeat_interleave(repeats)
-        self._packed_key_segments = self._repack_segments_with_batch_indices(self._packed_key_segments, self._key_state, indices)
+        self._packed_key_segments = self._repack_segments_with_batch_indices(
+            self._packed_key_segments, self._key_state, indices
+        )
         self._packed_value_segments = self._repack_segments_with_batch_indices(
             self._packed_value_segments, self._value_state, indices
         )
@@ -551,7 +571,9 @@ class TurboQuantPackedKVCacheLayer(CacheLayerMixin):
         if self.keys is not None and self.keys.numel() > 0:
             self.keys = self.keys[indices, ...]
             self.values = self.values[indices, ...]
-        self._packed_key_segments = self._repack_segments_with_batch_indices(self._packed_key_segments, self._key_state, indices)
+        self._packed_key_segments = self._repack_segments_with_batch_indices(
+            self._packed_key_segments, self._key_state, indices
+        )
         self._packed_value_segments = self._repack_segments_with_batch_indices(
             self._packed_value_segments, self._value_state, indices
         )
@@ -564,7 +586,13 @@ class TurboQuantPackedKVCacheLayer(CacheLayerMixin):
         return self.keys.numel() * self.keys.element_size() + self.values.numel() * self.values.element_size()
 
     def raw_memory_bytes(self) -> int:
-        return self.cumulative_length * self._batch_size * self._num_heads * (self._k_head_dim + self._v_head_dim) * torch.tensor([], dtype=self.dtype).element_size()
+        return (
+            self.cumulative_length
+            * self._batch_size
+            * self._num_heads
+            * (self._k_head_dim + self._v_head_dim)
+            * torch.tensor([], dtype=self.dtype).element_size()
+        )
 
 
 class TurboQuantPackedKVCache(Cache):
@@ -682,7 +710,9 @@ def build_turboquant_runtime_cache(
     """
     if mode == "pre_dequant":
         return TurboQuantPreDequantCache(
-            bits=bits, seed=seed, qjl_residual=qjl_residual,
+            bits=bits,
+            seed=seed,
+            qjl_residual=qjl_residual,
         )
     return TurboQuantPackedKVCache(
         bits=bits,

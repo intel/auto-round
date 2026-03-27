@@ -41,6 +41,7 @@ def _next_power_of_2(n: int) -> int:
 # Encode kernel
 # ---------------------------------------------------------------------------
 
+
 @triton.jit
 def _turboquant_encode_kernel(
     # Input: [num_tokens, num_kv_heads, head_size]
@@ -106,6 +107,7 @@ def _turboquant_encode_kernel(
 # Decode kernel
 # ---------------------------------------------------------------------------
 
+
 @triton.jit
 def _turboquant_decode_kernel(
     # Input indices: [num_tokens, num_kv_heads, head_size] as uint8
@@ -166,10 +168,11 @@ def _turboquant_decode_kernel(
 # Python wrappers
 # ---------------------------------------------------------------------------
 
+
 def turboquant_encode(
-    x: torch.Tensor,          # [num_tokens, num_kv_heads, head_size]
-    pit: torch.Tensor,         # [head_size, head_size] rotation^T
-    codebook: torch.Tensor,    # [num_centroids]
+    x: torch.Tensor,  # [num_tokens, num_kv_heads, head_size]
+    pit: torch.Tensor,  # [head_size, head_size] rotation^T
+    codebook: torch.Tensor,  # [num_centroids]
     boundaries: torch.Tensor,  # [num_centroids - 1]
     head_dim: int | None = None,
 ) -> tuple[torch.Tensor, torch.Tensor]:
@@ -188,11 +191,13 @@ def turboquant_encode(
 
     indices = torch.empty(
         (num_tokens, num_kv_heads, head_size),
-        dtype=torch.uint8, device=x.device,
+        dtype=torch.uint8,
+        device=x.device,
     )
     norms = torch.empty(
         (num_tokens, num_kv_heads),
-        dtype=torch.float32, device=x.device,
+        dtype=torch.float32,
+        device=x.device,
     )
 
     grid = (num_tokens, num_kv_heads)
@@ -219,9 +224,9 @@ def turboquant_encode(
 
 
 def turboquant_decode(
-    indices: torch.Tensor,   # [num_tokens, num_kv_heads, head_size] uint8
-    norms: torch.Tensor,     # [num_tokens, num_kv_heads] float32
-    pi: torch.Tensor,        # [head_size, head_size] rotation matrix
+    indices: torch.Tensor,  # [num_tokens, num_kv_heads, head_size] uint8
+    norms: torch.Tensor,  # [num_tokens, num_kv_heads] float32
+    pi: torch.Tensor,  # [head_size, head_size] rotation matrix
     codebook: torch.Tensor,  # [num_centroids]
     head_dim: int | None = None,
     output_dtype: torch.dtype = torch.bfloat16,
@@ -239,7 +244,8 @@ def turboquant_decode(
 
     out = torch.empty(
         (num_tokens, num_kv_heads, head_size),
-        dtype=output_dtype, device=indices.device,
+        dtype=output_dtype,
+        device=indices.device,
     )
 
     grid = (num_tokens, num_kv_heads)
@@ -268,6 +274,7 @@ def turboquant_decode(
 # ---------------------------------------------------------------------------
 # Bit-pack / unpack kernels
 # ---------------------------------------------------------------------------
+
 
 @triton.jit
 def _bitpack_kernel(
@@ -323,13 +330,13 @@ def _bitunpack_kernel(
     # Each code spans [offs*bits, offs*bits + bits) in the bit stream,
     # crossing at most 2 bytes.  Load both and extract.
     bit_pos = offs * bits
-    byte_lo = bit_pos >> 3          # first byte index
-    bit_off = bit_pos & 7           # bit offset within that byte
+    byte_lo = bit_pos >> 3  # first byte index
+    bit_off = bit_pos & 7  # bit offset within that byte
 
     lo = tl.load(packed_ptr + byte_lo, mask=mask, other=0).to(tl.int32)
     hi_mask = mask & ((byte_lo + 1) < n_bytes)
     hi = tl.load(packed_ptr + byte_lo + 1, mask=hi_mask, other=0).to(tl.int32)
-    combined = lo | (hi << 8)       # 16 bits is always enough for bits <= 8
+    combined = lo | (hi << 8)  # 16 bits is always enough for bits <= 8
 
     code_mask = (1 << bits) - 1
     codes = (combined >> bit_off) & code_mask
@@ -340,6 +347,7 @@ def _bitunpack_kernel(
 # ---------------------------------------------------------------------------
 # Python wrappers for bit-pack / unpack
 # ---------------------------------------------------------------------------
+
 
 def triton_pack_codes(codes: torch.Tensor, bits: int) -> torch.Tensor:
     """Bit-pack a flat uint8/long tensor of codes on GPU.

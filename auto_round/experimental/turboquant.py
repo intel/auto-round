@@ -14,12 +14,12 @@
 
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass
 from functools import lru_cache
 from math import prod, sqrt
 from typing import Optional
 
-import math
 import numpy as np
 import torch
 
@@ -40,6 +40,7 @@ class QJLResidualConfig:
     Stores sign(residual @ S^T) as ±1 int8 + residual norm.
     Reconstruction: sqrt(π/2) / head_dim * r_norm * (signs @ S).
     """
+
     enabled: bool = False
     seed: int = 1729
 
@@ -49,8 +50,8 @@ class TurboQuantState:
     head_dim: int
     bits: int
     seed: int
-    rotation: torch.Tensor        # (head_dim, head_dim)
-    inverse_rotation: torch.Tensor # (head_dim, head_dim)
+    rotation: torch.Tensor  # (head_dim, head_dim)
+    inverse_rotation: torch.Tensor  # (head_dim, head_dim)
     codebook: torch.Tensor
     boundaries: torch.Tensor
     qjl_matrix: Optional[torch.Tensor] = None  # (head_dim, head_dim) random projection
@@ -59,11 +60,11 @@ class TurboQuantState:
 @dataclass
 class TurboQuantPackedTensor:
     packed_codes: torch.Tensor
-    norms: torch.Tensor           # per-vector L2 norms
+    norms: torch.Tensor  # per-vector L2 norms
     original_shape: tuple[int, ...]
     bits: int
     qjl_packed_signs: Optional[torch.Tensor] = None  # uint8, bit-packed (1 bit/sign)
-    qjl_norms: Optional[torch.Tensor] = None         # float16, residual norms, shape = original_shape[:-1]
+    qjl_norms: Optional[torch.Tensor] = None  # float16, residual norms, shape = original_shape[:-1]
 
     def memory_bytes(self) -> int:
         size = self.packed_codes.numel() * self.packed_codes.element_size()
@@ -239,8 +240,7 @@ def turboquant_pack(
 
     qjl_packed_signs = None
     qjl_norms = None
-    if (residual_config is not None and residual_config.enabled
-            and state.qjl_matrix is not None):
+    if residual_config is not None and residual_config.enabled and state.qjl_matrix is not None:
         quantized = state.codebook[bucket_ids].view(tensor.shape) / scale
         reconstructed = torch.matmul(quantized, state.inverse_rotation)
         residual = normalized - reconstructed
@@ -327,12 +327,11 @@ def turboquant_qdq(
 
 _HAS_TRITON = False
 try:
-    from auto_round_extension.triton.turboquant import (
-        turboquant_encode as _triton_encode,
-        turboquant_decode as _triton_decode,
-        triton_pack_codes as _triton_pack,
-        triton_unpack_codes as _triton_unpack,
-    )
+    from auto_round_extension.triton.turboquant import triton_pack_codes as _triton_pack
+    from auto_round_extension.triton.turboquant import triton_unpack_codes as _triton_unpack
+    from auto_round_extension.triton.turboquant import turboquant_decode as _triton_decode
+    from auto_round_extension.triton.turboquant import turboquant_encode as _triton_encode
+
     _HAS_TRITON = True
 except ImportError:
     pass
