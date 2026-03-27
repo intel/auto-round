@@ -464,7 +464,7 @@ deepspeed_exists = False
 if importlib.util.find_spec("deepspeed"):  # check if deepspeed is installed
     deepspeed_exists = True
 
-SUPPORTED_DTYPES = ("int", "mx_fp", "fp", "nv_fp")
+SUPPORTED_DTYPES = ("int", "mx_fp", "fp", "nv_fp", "mx_int")
 SUPPORTED_FORMATS = SupportedFormats()
 SUPPORTED_LAYER_TYPES = (torch.nn.Linear, transformers.pytorch_utils.Conv1D)
 # Changed to str as it relies on triton or others lib to load this
