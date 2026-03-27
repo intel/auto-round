@@ -336,12 +336,10 @@ def llm_load_model(
             load_kwargs["quantization_config"] = Mxfp4Config(dequantized=True)
             logger.info("Detected MXFP4 quantized model, using Mxfp4Config(dequantized=True) for loading.")
 
-    # BAGEL requires a custom loader (Qwen2 + not extensions, not in transformers)
-    _config_path = (
-        os.path.join(pretrained_model_name_or_path, "config.json")
-        if os.path.isdir(pretrained_model_name_or_path)
-        else None
-    )
+    # BAGEL requires a custom loader (Qwen2 + MoT extensions, not in transformers)
+    _config_path = os.path.join(pretrained_model_name_or_path, "config.json") if os.path.isdir(
+        pretrained_model_name_or_path
+    ) else None
     if _config_path and os.path.exists(_config_path):
         with open(_config_path) as _f:
             _mt = json.load(_f).get("model_type")
@@ -793,7 +791,6 @@ _is_mllm_model_cache: dict = {}
 # (text-only calibration, non-text modules excluded from quantization).
 _LLM_ONLY_MODEL_TYPES = {"bagel"}
 
-
 def is_mllm_model(model_or_path: Union[str, torch.nn.Module], platform: str = None):
     from auto_round.utils.common import MM_KEYS
 
@@ -804,7 +801,7 @@ def is_mllm_model(model_or_path: Union[str, torch.nn.Module], platform: str = No
         return _is_mllm_model_cache[model_path]
 
     # Check model_type exclusion: some models have multimodal components
-    # but should be quantized as LLM (e.g., BAGEL not).
+    # but should be quantized as LLM (e.g., BAGEL MoT).
     _model_type = None
     if isinstance(model_or_path, torch.nn.Module) and hasattr(model_or_path, "config"):
         _model_type = getattr(model_or_path.config, "model_type", None)
