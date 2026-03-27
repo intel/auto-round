@@ -153,7 +153,7 @@ def tiny_fp8_qwen_moe_model_path():
 
         from transformers.integrations.finegrained_fp8 import FP8Linear
 
-        if is_transformers_version_greater_or_equal_5_4_0:
+        if is_transformers_version_greater_or_equal_5_4_0():
             from transformers.integrations.finegrained_fp8 import FP8Experts as FP8Expert
         else:
             from transformers.integrations.finegrained_fp8 import FP8Expert

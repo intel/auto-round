@@ -58,6 +58,7 @@ from auto_round.utils import (
     get_packing_device,
     is_quantized_input_module,
     is_separate_tensor,
+    is_transformers_version_greater_or_equal_5_4_0,
     logger,
 )
 
@@ -370,7 +371,8 @@ def get_qtype_by_layer_config(layer_config, name, data_qtype):
 def _special_name_handle(cls, name):
     # using transformers >= 5.4, model.language_model.embed_tokens.weight changed to
     # model.language_model.model.embed_tokens.weight after saved
-    name = name.replace("language_model.model.", "language_model.")
+    if is_transformers_version_greater_or_equal_5_4_0():
+        name = name.replace("language_model.model.", "language_model.")
 
     # for Qwen2VL
     def remove_prefix(name, key_list):
