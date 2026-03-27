@@ -206,7 +206,7 @@ def save_quantized_as_autogptq(
 
     # --- 1️⃣ Extract inputs & configs ---
     quantization_config = serialization_dict
-    quant_block_list = serialization_dict.get("quant_block_list", get_block_names(model))
+    quant_block_list = serialization_dict.get("quant_block_list") or get_block_names(model)
     processor = kwargs.get("processor")
     image_processor = kwargs.get("image_processor")
     safe_serialization = kwargs.get("safe_serialization", True)

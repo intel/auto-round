@@ -224,6 +224,7 @@ def set_layer_config(
     enable_gguf_official_mixed: bool = True,
     is_mllm: bool = False,
     fill_default_value=True,
+    gguf_format_name: str = None,
 ) -> tuple[dict, bool, dict]:
     """
     Normalize, validate, and expand layer-specific quantization configs.
@@ -315,7 +316,7 @@ def set_layer_config(
 
     # 5. collect supported modules
     embedding_types = (torch.nn.Embedding,)
-    gguf_name = get_gguf_scheme(default_scheme)
+    gguf_name = gguf_format_name if gguf_format_name else get_gguf_scheme(default_scheme)
     if gguf_name:
         if torch.nn.Embedding not in supported_types:
             supported_types = (*supported_types, torch.nn.Embedding)
@@ -549,7 +550,7 @@ def get_layer_config_by_gguf_format(layer_config, target_gguf_format: str, model
 
     import gguf  # pylint: disable=E0401
 
-    from auto_round.schemes import get_gguf_scheme
+    from auto_round.schemes import QuantizationScheme, get_gguf_scheme
     from auto_round.utils.common import MM_KEYS, LazyImport
     from auto_round.utils.model import get_lm_head_name, get_module
 

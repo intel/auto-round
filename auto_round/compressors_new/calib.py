@@ -475,10 +475,10 @@ class CalibCompressor(BaseCompressor):
                 Processed data or None
             """
             new_data = data
-            if batch_size <= 1:
-                return new_data
             if data_name in self.model_context.shared_cache_keys:
                 return None
+            if batch_size <= 1:
+                return new_data
             if "alibi" in data_name:
                 if isinstance(data, torch.Tensor):
                     alibi = data
@@ -526,9 +526,7 @@ class CalibCompressor(BaseCompressor):
                 ):
                     if key not in self.inputs[name].keys():  # initialization
                         data = to_device(kwargs[key], device=torch.device("cpu"))
-                        if data is None or (
-                            self.quantizer.batch_size > 1 and key in self.model_context.shared_cache_keys
-                        ):
+                        if data is None or key in self.model_context.shared_cache_keys:
                             self.inputs[name][key] = data
                             continue
                         if self.quantizer.batch_size <= 1:
@@ -1234,7 +1232,6 @@ class CalibratedRTNCompressor(CalibCompressor):
             for hook in hooks:
                 hook.remove()
 
-    @torch.inference_mode()
     def quantize(self):
         """Quantize all modules in the model using RTN (Round-To-Nearest) strategy.
 
@@ -1244,7 +1241,13 @@ class CalibratedRTNCompressor(CalibCompressor):
         Returns:
             tuple[nn.Module, Dict[str, Any]]: The quantized model and the layer configuration.
         """
+        # post_init must be called OUTSIDE @torch.inference_mode() because
+        # AutoScheme delta-loss selection requires autograd (backward pass).
         self.post_init()
+        return self._quantize_impl()
+
+    @torch.inference_mode()
+    def _quantize_impl(self):
 
         formats = getattr(self, "formats", None) or []
         if not (any(fmt.is_gguf() for fmt in formats) or self.super_bits is not None):

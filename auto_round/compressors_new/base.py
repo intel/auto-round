@@ -12,7 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 import os
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, fields
 from typing import Any, Optional, Union
 
 import torch
@@ -27,6 +27,7 @@ from auto_round.context.model import ModelContext
 from auto_round.formats import OutputFormat, get_formats
 from auto_round.logger import logger
 from auto_round.utils import (
+    INNER_SUPPORTED_LAYER_TYPES,
     SUPPORTED_LAYER_TYPES,
     TORCH_VERSION_AT_LEAST_2_6,
     compile_func,
@@ -81,6 +82,8 @@ class BaseCompressor(object):
     model_context: ModelContext = None
     shard_writer: ShardWriter = None
     supported_types = SUPPORTED_LAYER_TYPES
+    inner_supported_types = INNER_SUPPORTED_LAYER_TYPES
+    quant_block_list = None
 
     def __init__(
         self,
@@ -324,6 +327,83 @@ class BaseCompressor(object):
             self.compress_context.formats = self.formats
             ShardWriter.reset()
             self.shard_writer = ShardWriter(self.model_context.model, bits=8)
+
+        # ── Phase 2b: propagate format-adjusted attrs back to quantizer ──────
+        # gguf_args_check (called inside get_formats) may have overridden
+        # bits / sym / data_type / super_bits / super_group_size / group_size
+        # on *this* BaseCompressor object.  The quantizer stored its own copies
+        # from Phase 1 (resolve_scheme), so we must sync them now, before
+        # quantizer.post_init() builds the layer_config in Phase 4.
+        _gguf_forwarded_attrs = (
+            "bits",
+            "sym",
+            "data_type",
+            "super_bits",
+            "super_group_size",
+            "group_size",
+            "act_bits",
+            "scale_dtype",
+        )
+        _any_gguf_attr_changed = False
+        for _attr in _gguf_forwarded_attrs:
+            if _attr in self.__dict__ and hasattr(self.quantizer, _attr):
+                if _attr not in ("scale_dtype", "act_bits") and getattr(self.quantizer, _attr) != self.__dict__[_attr]:
+                    _any_gguf_attr_changed = True
+                setattr(self.quantizer, _attr, self.__dict__[_attr])
+        # If gguf_args_check changed scheme attrs, rebuild self.quantizer.scheme
+        # so that set_layer_config() uses the correct default_dict and gguf_name.
+        if _any_gguf_attr_changed:
+            from auto_round.schemes import PRESET_SCHEMES
+            from auto_round.schemes import QuantizationScheme as _QS
+
+            # Prefer to derive the scheme directly from the gguf format name to
+            # avoid ambiguity (e.g. Q4_K_S and Q4_K_M share identical weight attrs).
+            _gguf_preset_scheme = None
+            _gguf_fmt_name = None
+            _gguf_original_fmt_name = None
+            for _fmt in self.formats or []:
+                # GGUFFormat (outer) has output_format="gguf" but backend.output_format="gguf:q4_k_m"
+                # GGUFFormat (inner/standalone) has output_format="gguf:q4_k_m"
+                _of = getattr(_fmt, "output_format", "")
+                if "gguf" in str(_of):
+                    if str(_of) == "gguf":
+                        # outer GGUFFormat: full format in _original_format (e.g. "gguf:q2_k_mixed")
+                        # or backend.output_format (e.g. "gguf:q2_k_s" after _mixed → _s conversion)
+                        _orig = getattr(_fmt, "_original_format", None)
+                        if _orig:
+                            _gguf_original_fmt_name = str(_orig).upper()
+                        _backend = getattr(_fmt, "backend", None)
+                        _of = getattr(_backend, "output_format", _of) if _backend is not None else _of
+                    _preset_key = str(_of).upper()
+                    if _preset_key in PRESET_SCHEMES:
+                        _gguf_preset_scheme = PRESET_SCHEMES[_preset_key]
+                        _gguf_fmt_name = _preset_key
+                        break
+            if _gguf_preset_scheme is not None:
+                self.quantizer.scheme = _gguf_preset_scheme
+                # Store the exact gguf format name so set_layer_config can
+                # use it directly, avoiding Q4_K_S / Q4_K_M ambiguity.
+                self.quantizer._gguf_format_name = _gguf_fmt_name
+                # Store original format name (may include _mixed) for _handle_special_schemes
+                if _gguf_original_fmt_name:
+                    self.quantizer._gguf_original_format_name = _gguf_original_fmt_name
+            else:
+                _new_scheme_dict = {f.name: getattr(self.quantizer, f.name, None) for f in fields(_QS)}
+                self.quantizer.scheme = _QS.from_dict({k: v for k, v in _new_scheme_dict.items() if v is not None})
+
+        # ── Phase 2c: sync layer_config set by GGUFFormat._mixed handling ───
+        # Inner GGUFFormat("q2_k_mixed", ar) calls _handle_special_schemes and
+        # stores the result in ar.__dict__["layer_config"] (via ar.layer_config=).
+        # This is NOT the same object as quantizer.layer_config, so we must
+        # forward it here before quantizer.post_init() builds the final config.
+        _compressor_layer_cfg = self.__dict__.get("layer_config")
+        if _compressor_layer_cfg is not None and isinstance(_compressor_layer_cfg, dict) and _compressor_layer_cfg:
+            # Merge: let the GGUFFormat-set entries take precedence over any
+            # user-provided entries already in quantizer.layer_config.
+            if self.quantizer.layer_config is None:
+                self.quantizer.layer_config = {}
+            for _lname, _lval in _compressor_layer_cfg.items():
+                self.quantizer.layer_config.setdefault(_lname, _lval)
 
         # ── Phase 3: patch model structure ───────────────────────────────────
         # update_module() may replace layers (e.g. MoE expert merging); must

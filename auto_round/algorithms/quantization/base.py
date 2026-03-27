@@ -105,6 +105,16 @@ class BaseQuantizers:
     def formats(self):
         return getattr(self.compress_context, "formats", None)
 
+    @property
+    def amp(self):
+        return getattr(self.model_context, "amp", False)
+
+    @property
+    def amp_dtype(self):
+        import torch
+
+        return getattr(self.model_context, "amp_dtype", torch.float32)
+
     def resolve_scheme(
         self,
         model_context: "ModelContext",
@@ -290,6 +300,21 @@ class BaseQuantizers:
                 quant_lm_head=self.quant_lm_head,
                 mllm=self.model_context.is_mllm,
             )
+            # For GGUF _mixed formats (e.g. gguf:q2_k_mixed), the inner GGUFFormat
+            # stores the mixed-handling result in ar.layer_config which is NOT the
+            # same object as quantizer.layer_config.  Re-apply the special scheme
+            # on the patched model here (after Phase 3) so layer names are correct.
+            _gguf_orig_fmt = getattr(self, "_gguf_original_format_name", None)
+            if _gguf_orig_fmt and "_MIXED" in _gguf_orig_fmt.upper():
+                self.layer_config = _handle_special_schemes(
+                    _gguf_orig_fmt.lower(),
+                    self.layer_config,
+                    self.model_context.model,
+                    supported_types=SUPPORTED_LAYER_TYPES,
+                    inner_supported_types=INNER_SUPPORTED_LAYER_TYPES,
+                    quant_lm_head=self.quant_lm_head,
+                    mllm=self.model_context.is_mllm,
+                )
 
         fill_default_value = True
         if self.is_auto_scheme:
@@ -307,6 +332,7 @@ class BaseQuantizers:
             enable_gguf_official_mixed=enable_gguf_official_mixed,
             is_mllm=self.model_context.is_mllm,
             fill_default_value=fill_default_value,
+            gguf_format_name=getattr(self, "_gguf_format_name", None),
         )
 
     def _register_act_max_hook(self, model):

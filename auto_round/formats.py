@@ -733,6 +733,7 @@ class GGUFFormat(OutputFormat):
 
     def __init__(self, format: str, ar: BaseCompressor):
         if format.startswith("gguf:"):
+            self._original_format = format  # preserve "gguf:q2_k_mixed" etc. for Phase 2b
             self.gguf_args_check(ar, format, model_type=ModelType.TEXT)
             if ar.mllm:
                 self.gguf_args_check(ar, format, model_type=ModelType.MMPROJ)
@@ -768,14 +769,14 @@ class GGUFFormat(OutputFormat):
         return True
 
     def check_and_reset_format(self, ar):
-        if ar.iters != 0 and ar.bits != 3 and not ar.enable_alg_ext:
+        if getattr(ar, "iters", 0) != 0 and ar.bits != 3 and not ar.enable_alg_ext:
             logger.warning_once(
                 "`iters=0` is recommended when exporting to current GGUF format"
                 " or add `enable_alg_ext` for better accuracy with much more tuning cost."
                 " Please refer to https://github.com/intel/auto-round/tree/main/docs/gguf_alg_ext_acc.md"
                 " for the accuracy results."
             )
-        elif ar.bits >= 8 and ar.iters != 0:
+        elif ar.bits >= 8 and getattr(ar, "iters", 0) != 0:
             logger.warning_once("`iters=0` is recommended for bits>=8")
 
         if getattr(ar, "quant_nontext_module", False):

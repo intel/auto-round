@@ -757,7 +757,10 @@ def is_mllm_model(model_or_path: Union[str, torch.nn.Module], platform: str = No
 
     model_path = model_or_path if isinstance(model_or_path, str) else model_or_path.name_or_path
     # For dummy model, model_path could be "".
-    if model_path and not os.path.isdir(model_path):
+    # Only try to download if the path looks like a HF repo id (not a local filesystem path).
+    # Skip download for absolute paths or relative paths that contain current/parent dir markers.
+    _is_local_path = os.path.isabs(model_path) or model_path.startswith("./") or model_path.startswith("../")
+    if model_path and not os.path.isdir(model_path) and not _is_local_path:
         model_path = download_or_get_path(model_path, platform=platform)
 
     if isinstance(model_path, str):

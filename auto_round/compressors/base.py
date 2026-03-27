@@ -2473,10 +2473,10 @@ class BaseCompressor(object):
                 Processed data or None
             """
             new_data = data
-            if batch_size <= 1:
-                return new_data
             if data_name in self.shared_cache_keys:
                 return None
+            if batch_size <= 1:
+                return new_data
             if "alibi" in data_name:
                 if isinstance(data, torch.Tensor):
                     alibi = data
@@ -2524,7 +2524,7 @@ class BaseCompressor(object):
                 ):
                     if key not in self.inputs[name].keys():  # initialization
                         data = to_device(kwargs[key], device=torch.device("cpu"))
-                        if data is None or (self.batch_size > 1 and key in self.shared_cache_keys):
+                        if data is None or key in self.shared_cache_keys:
                             self.inputs[name][key] = data
                             continue
                         if self.batch_size <= 1:
