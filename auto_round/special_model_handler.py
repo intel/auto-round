@@ -338,10 +338,10 @@ def _get_glm_image_multimodal_block(model, quant_vision=False):
 
 
 def _get_bagel_multimodal_block(model, quant_vision=False):
-    """Get block names for BAGEL not (Mixture of Transformers) model.
+    """Get block names for BAGEL MoT (Mixture of Transformers) model.
 
     BAGEL model structure:
-    - language_model.model.layers: Qwen2-based LLM with not dual paths
+    - language_model.model.layers: Qwen2-based LLM with MoT dual paths
     - vit_model: SigLIP vision encoder (not quantized by default)
     - connector: Vision-language MLP connector
     - encoder/decoder: VAE autoencoder
@@ -751,8 +751,12 @@ def get_bagel_ignore_layers(model) -> list[str]:
 
     BAGEL uses `*_moe_gen` modules for the image-generation path. Quantizing
     them causes quality to collapse during the iterative denoising loop.
-    The shared attention projections are also highly sensitive.
+    The shared attention projections are also highly sensitive, and preserving
+    the top 4 transformer blocks in FP16 gave acceptable image quality in
+    validation runs.
     """
+    top_fp16_layers = 0
+
     ignore_layers = [
         "moe_gen",
         "self_attn.q_proj",
@@ -760,6 +764,14 @@ def get_bagel_ignore_layers(model) -> list[str]:
         "self_attn.v_proj",
         "self_attn.o_proj",
     ]
+
+    num_layers = 0
+    if hasattr(model, "language_model") and hasattr(model.language_model, "model"):
+        num_layers = len(getattr(model.language_model.model, "layers", []))
+
+    if num_layers > 0:
+        for layer_idx in range(max(0, num_layers - top_fp16_layers), num_layers):
+            ignore_layers.append(f"language_model.model.layers.{layer_idx}")
 
     return ignore_layers
 

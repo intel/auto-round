@@ -143,7 +143,7 @@ class ModelContext(BaseContext):
             try:
                 config = AutoConfig.from_pretrained(self.model, trust_remote_code=self.trust_remote_code)
                 self._import_custom_moe_replacements(config)
-            except (OSError, EnvironmentError) as e:
+            except (OSError, EnvironmentError, ValueError) as e:
                 logger.debug(
                     "Failed to load config via AutoConfig.from_pretrained for %s: %s. "
                     "Proceeding without config-based checks.",
