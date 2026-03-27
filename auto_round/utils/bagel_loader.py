@@ -316,7 +316,7 @@ def load_bagel_model(model_path, torch_dtype="auto", device_map=None):
     other_weights = {}
     for name, tensor in all_weights.items():
         if name.startswith("language_model."):
-            lm_name = name[len("language_model.") :]
+            lm_name = name[len("language_model."):]
             lm_weights[lm_name] = tensor
         else:
             other_weights[name] = tensor
@@ -333,9 +333,8 @@ def load_bagel_model(model_path, torch_dtype="auto", device_map=None):
             logger.warning(f"  Unexpected: {k}")
 
     # Build the BAGEL config
-    bagel_config = BagelConfig(
-        **{k: v for k, v in bagel_config_dict.items() if k not in ("llm_config", "architectures")}
-    )
+    bagel_config = BagelConfig(**{k: v for k, v in bagel_config_dict.items()
+                                  if k not in ("llm_config", "architectures")})
     bagel_config.llm_config = llm_config.to_dict()
     bagel_config.architectures = ["BagelForConditionalGeneration"]
 
