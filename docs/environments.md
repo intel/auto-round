@@ -1,5 +1,7 @@
 # AutoRound Environment Variables Configuration
 
+English | [简体中文](./environments_CN.md)
+
 This document describes the environment variables used by AutoRound for configuration and their usage.
 
 ## Overview
