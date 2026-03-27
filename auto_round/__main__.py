@@ -362,8 +362,8 @@ class BasicArgumentParser(argparse.ArgumentParser):
             "--static_kv_dtype",
             default=None,
             type=str,
-            choices=["fp8", "float8_e4m3fn"],
-            help="Data type for static quantize key and value. ",
+            help="KV cache backend for calibration-time quantize-dequant. "
+            "Supported values: 'fp8', 'float8_e4m3fn', 'turboquant', 'turboquant:2', 'turboquant:3', 'turboquant:4'.",
         )
 
         scheme.add_argument(
