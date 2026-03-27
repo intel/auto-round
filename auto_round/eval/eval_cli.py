@@ -285,7 +285,7 @@ def eval_with_vllm(args):
         logger.info(f"Overriding VLLM parameters with custom args: {custom_vllm_kwargs}")
         vllm_kwargs.update(custom_vllm_kwargs)
 
-        device = get_device_str()
+    device = get_device_str()
     environ_mapping = {
         "cuda": "CUDA_VISIBLE_DEVICES",
         "xpu": "ZE_AFFINITY_MASK",
