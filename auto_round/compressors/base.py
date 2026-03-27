@@ -283,7 +283,7 @@ class BaseCompressor(object):
             config: Optional[AutoConfig] = None
             try:
                 config = AutoConfig.from_pretrained(model, trust_remote_code=self.trust_remote_code)
-            except (OSError, EnvironmentError) as e:
+            except (OSError, EnvironmentError, ValueError) as e:
                 logger.debug(
                     "Failed to load config via AutoConfig.from_pretrained for %s: %s. "
                     "Proceeding without config-based checks.",
@@ -397,6 +397,10 @@ class BaseCompressor(object):
             torch.use_deterministic_algorithms(True, warn_only=True)
 
         self.to_quant_block_names = to_quant_block_names
+        if self.to_quant_block_names is None:
+            _hint = getattr(model, "_autoround_to_quant_block_names", None)
+            if _hint is not None:
+                self.to_quant_block_names = _hint
         if not hasattr(self, "quant_block_list"):
             all_blocks = get_block_names(model)
             self.quant_block_list = find_matching_blocks(model, all_blocks, self.to_quant_block_names)

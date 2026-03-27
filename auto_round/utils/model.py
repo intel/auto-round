@@ -331,6 +331,24 @@ def llm_load_model(
             load_kwargs["quantization_config"] = Mxfp4Config(dequantized=True)
             logger.info("Detected MXFP4 quantized model, using Mxfp4Config(dequantized=True) for loading.")
 
+    # BAGEL requires a custom loader (Qwen2 + MoT extensions, not in transformers)
+    _config_path = os.path.join(pretrained_model_name_or_path, "config.json") if os.path.isdir(
+        pretrained_model_name_or_path
+    ) else None
+    if _config_path and os.path.exists(_config_path):
+        with open(_config_path) as _f:
+            _mt = json.load(_f).get("model_type")
+        if _mt == "bagel":
+            from auto_round.utils.bagel_loader import load_bagel_model
+
+            model, tokenizer = load_bagel_model(
+                pretrained_model_name_or_path,
+                torch_dtype=torch_dtype,
+            )
+            model = _to_model_dtype(model, model_dtype)
+            model._autoround_to_quant_block_names = "language_model.model.layers"
+            return model, tokenizer
+
     is_glm = bool(re.search("chatglm", pretrained_model_name_or_path.lower()))
 
     tokenizer = AutoTokenizer.from_pretrained(pretrained_model_name_or_path, trust_remote_code=trust_remote_code)
@@ -537,6 +555,15 @@ def mllm_load_model(
             torch_dtype=torch_dtype,
             device_map="auto" if use_auto_mapping else None,
         )
+    elif "bagel" == model_type:
+        from auto_round.utils.bagel_loader import load_bagel_model
+
+        model, tokenizer = load_bagel_model(
+            pretrained_model_name_or_path,
+            torch_dtype=torch_dtype,
+        )
+        processor = None
+        image_processor = None
     else:
         architectures = config["architectures"][0]
         if architectures == "LlavaLlamaForCausalLM":
@@ -750,10 +777,28 @@ def is_pure_text_model(model):
     return True
 
 
+# Model types that have multimodal components but should use LLM compressor
+# (text-only calibration, non-text modules excluded from quantization).
+_LLM_ONLY_MODEL_TYPES = {"bagel"}
+
+
 def is_mllm_model(model_or_path: Union[str, torch.nn.Module], platform: str = None):
     from auto_round.utils.common import MM_KEYS
 
     model_path = model_or_path if isinstance(model_or_path, str) else model_or_path.name_or_path
+
+    # Check model_type exclusion: some models have multimodal components
+    # but should be quantized as LLM (e.g., BAGEL MoT).
+    _model_type = None
+    if isinstance(model_or_path, torch.nn.Module) and hasattr(model_or_path, "config"):
+        _model_type = getattr(model_or_path.config, "model_type", None)
+    elif isinstance(model_path, str) and os.path.isdir(model_path):
+        _cfg_path = os.path.join(model_path, "config.json")
+        if os.path.exists(_cfg_path):
+            with open(_cfg_path) as _f:
+                _model_type = json.load(_f).get("model_type")
+    if _model_type in _LLM_ONLY_MODEL_TYPES:
+        return False
     # For dummy model, model_path could be "".
     if model_path and not os.path.isdir(model_path):
         model_path = download_or_get_path(model_path, platform=platform)
@@ -1658,6 +1703,9 @@ def _get_reference_amax_from_experts(moe_module: torch.nn.Module, attr_name: str
 # the quantized output directory so that from_pretrained() works out of the box.
 _EXTRA_MODEL_FILES = {
     "spk_dict.pt",  # Qwen2.5-Omni speaker dictionary for audio output
+    "llm_config.json",  # BAGEL sub-model config
+    "vit_config.json",  # BAGEL vision transformer config
+    "preprocessor_config.json",  # BAGEL image preprocessor config
 }
 
 

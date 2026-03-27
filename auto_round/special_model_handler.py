@@ -48,6 +48,7 @@ SUPPORT_ONLY_TEXT_MODELS = [
     "qwen2_5_omni",
     "qwen3_omni_moe",
     "gemma3",
+    "bagel",
 ]
 
 NOT_SUPPORT_ONLY_TEXT_MODELS = ["mllama", "mistral3_2"]
@@ -198,11 +199,35 @@ def _get_glm_image_multimodal_block(model, quant_vision=False):
     return block_names
 
 
+def _get_bagel_multimodal_block(model, quant_vision=False):
+    """Get block names for BAGEL MoT (Mixture of Transformers) model.
+
+    BAGEL model structure:
+    - language_model.model.layers: Qwen2-based LLM with MoT dual paths
+    - vit_model: SigLIP vision encoder (not quantized by default)
+    - connector: Vision-language MLP connector
+    - encoder/decoder: VAE autoencoder
+    - time_embedder, vae2llm, llm2vae: bridge modules
+
+    By default, only the language_model layers are quantized.
+    """
+    block_names = []
+
+    if hasattr(model, "language_model") and hasattr(model.language_model, "model"):
+        if hasattr(model.language_model.model, "layers"):
+            block_names.append(
+                [f"language_model.model.layers.{i}" for i in range(len(model.language_model.model.layers))]
+            )
+
+    return block_names
+
+
 SPECIAL_MULTIMODAL_BLOCK = {
     "deepseek_vl_v2": _get_deepseek_vl2_multimodal_block,
     "qwen2_5_omni": _get_qwen2_5_omni_multimodal_block,
     "qwen3_omni_moe": _get_qwen3_omni_moe_multimodal_block,
     "glm_image": _get_glm_image_multimodal_block,
+    "bagel": _get_bagel_multimodal_block,
 }
 
 
@@ -571,6 +596,46 @@ register_ignore_layers(
         "eh_proj",  # MTP layer
         "shared_head",  # MTP layer
         "layers.45",  # MTP layer, requiring g_idx in vLLM, skip it
+    ],
+)
+
+
+def get_bagel_ignore_layers(model) -> list[str]:
+    """Keep BAGEL generation-path modules in FP16.
+
+    BAGEL uses `*_moe_gen` modules for the image-generation path. Quantizing
+    them causes quality to collapse during the iterative denoising loop.
+    The shared attention projections are also highly sensitive, and preserving
+    the top 4 transformer blocks in FP16 gave acceptable image quality in
+    validation runs.
+    """
+    top_fp16_layers = 0
+
+    ignore_layers = [
+        "moe_gen",
+        "self_attn.q_proj",
+        "self_attn.k_proj",
+        "self_attn.v_proj",
+        "self_attn.o_proj",
+    ]
+
+    num_layers = 0
+    if hasattr(model, "language_model") and hasattr(model.language_model, "model"):
+        num_layers = len(getattr(model.language_model.model, "layers", []))
+
+    if num_layers > 0:
+        for layer_idx in range(max(0, num_layers - top_fp16_layers), num_layers):
+            ignore_layers.append(f"language_model.model.layers.{layer_idx}")
+
+    return ignore_layers
+
+
+register_ignore_layers(
+    matchers=[
+        ModelTypeMatcher(r"bagel", mode="full"),
+    ],
+    ignore_layers=[
+        get_bagel_ignore_layers,
     ],
 )
 
