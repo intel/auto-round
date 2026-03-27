@@ -76,6 +76,7 @@ def _make_tiny_qwen3_omni_moe_config():
     config.code2wav_config.num_attention_heads = 4
     config.code2wav_config.num_key_value_heads = 4
     config.code2wav_config.intermediate_size = 128
+    config.initializer_range = 0.02  # Default initializer range for weight initialization
     return config
 
 
