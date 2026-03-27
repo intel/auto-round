@@ -560,8 +560,20 @@ def mllm_load_model(
     elif "bagel" == model_type:
         from auto_round.utils.bagel_loader import load_bagel_model
 
+        resolved_model_path = pretrained_model_name_or_path
+        # If a Hugging Face repo ID is provided instead of a local directory,
+        # download a local snapshot so that load_bagel_model can find config.json.
+        if not os.path.isdir(resolved_model_path):
+            try:
+                from huggingface_hub import snapshot_download  # type: ignore[import]
+
+                resolved_model_path = snapshot_download(pretrained_model_name_or_path)
+            except Exception:  # pylint: disable=broad-except
+                # Fall back to the original value; load_bagel_model may still handle it
+                resolved_model_path = pretrained_model_name_or_path
+
         model, tokenizer = load_bagel_model(
-            pretrained_model_name_or_path,
+            resolved_model_path,
             torch_dtype=torch_dtype,
         )
         processor = None
