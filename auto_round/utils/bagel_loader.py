@@ -248,13 +248,12 @@ class BagelForQuantization(nn.Module):
         save_file(state_dict, os.path.join(output_dir, "model.safetensors"))
 
 
-def load_bagel_model(model_path, torch_dtype="auto", device_map=None):
+def load_bagel_model(model_path, torch_dtype="auto"):
     """Load a BAGEL model for quantization.
 
     Args:
         model_path: Path to the BAGEL model directory.
         torch_dtype: Data type for model weights.
-        device_map: Device map for model placement.
 
     Returns:
         Tuple of (model, tokenizer).
