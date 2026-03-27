@@ -200,10 +200,10 @@ def _get_glm_image_multimodal_block(model, quant_vision=False):
 
 
 def _get_bagel_multimodal_block(model, quant_vision=False):
-    """Get block names for BAGEL MoT (Mixture of Transformers) model.
+    """Get block names for BAGEL not (Mixture of Transformers) model.
 
     BAGEL model structure:
-    - language_model.model.layers: Qwen2-based LLM with MoT dual paths
+    - language_model.model.layers: Qwen2-based LLM with not dual paths
     - vit_model: SigLIP vision encoder (not quantized by default)
     - connector: Vision-language MLP connector
     - encoder/decoder: VAE autoencoder
