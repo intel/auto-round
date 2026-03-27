@@ -159,7 +159,6 @@ def tiny_fp8_qwen_moe_model_path():
                 fp8_linear = FP8Linear(
                     module.in_features,
                     module.out_features,
-                    bias=module.bias is not None,
                     block_size=[128, 128],
                 )
                 model.set_submodule(name, fp8_linear)
