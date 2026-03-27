@@ -107,3 +107,28 @@ class TestAutoRound:
         assert compressed_model.config.quantization_config["quant_method"] == "compressed-tensors"
         if is_cuda_support_fp8():
             eval_generated_prompt(quantized_model_path, device="cuda")
+
+    def test_mxfp8_llmcompressor_format(self, tiny_opt_model_path):
+        scheme = "mxfp8"
+        ar = AutoRound(
+            model=tiny_opt_model_path,
+            iters=0,
+            disable_opt_rtn=True,
+            scheme=scheme,
+        )
+        compressed_model, _ = ar.quantize_and_save(output_dir=self.save_dir, format="llm_compressor")
+        tmp_layer = compressed_model.model.decoder.layers[1].self_attn.q_proj
+        assert (
+            hasattr(tmp_layer, "weight_scale")
+            and hasattr(tmp_layer, "weight")
+            and tmp_layer.weight_scale.dtype is torch.uint8
+            and tmp_layer.weight_scale.shape[0] == 768
+        ), "Illegal MXFP8 packing name or data_type or shape"
+        quantization_config = transformers.AutoConfig.from_pretrained(
+            self.save_dir, trust_remote_code=True
+        ).quantization_config
+        assert (
+            quantization_config["format"] == "float-quantized"
+            and quantization_config["config_groups"]["group_0"]["weights"]["is_mx"] is True
+            and quantization_config["config_groups"]["group_0"]["weights"]["num_bits"] == 8
+        ), f"Invalid MXFP8 quantization configuration: {quantization_config}"
