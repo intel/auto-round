@@ -7,6 +7,8 @@ import pytest
 import torch
 import transformers
 
+from auto_round.utils import is_transformers_version_greater_or_equal_5_4_0
+
 from .helpers import (
     DataLoader,
     deepseek_v2_name_or_path,
@@ -148,7 +150,13 @@ def tiny_fp8_qwen_moe_model_path():
         config.num_experts, config.num_hidden_layers, config.vocab_size = 4, 2, 2048
         model = transformers.AutoModelForCausalLM.from_config(config, trust_remote_code=True)
         tokenizer = transformers.AutoTokenizer.from_pretrained(model_name)
-        from transformers.integrations.finegrained_fp8 import FP8Expert, FP8Linear
+
+        from transformers.integrations.finegrained_fp8 import FP8Linear
+
+        if is_transformers_version_greater_or_equal_5_4_0:
+            from transformers.integrations.finegrained_fp8 import FP8Experts as FP8Expert
+        else:
+            from transformers.integrations.finegrained_fp8 import FP8Expert
 
         for name, module in model.named_modules():
             if name == "lm_head":
