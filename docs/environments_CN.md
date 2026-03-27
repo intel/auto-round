@@ -49,6 +49,16 @@ export AR_USE_MODELSCOPE=true
 export AR_WORK_SPACE=/path/to/custom/workspace
 ```
 
+### AR_DISABLE_OFFLOAD
+- **描述**：强制禁用 `OffloadManager` 中的权重卸载功能。在开发和调试时可跳过所有卸载/重载开销。
+- **默认值**：`False`（等价于 `"0"`）
+- **有效值**：`"1"`、`"true"`、`"yes"`（不区分大小写）表示禁用卸载；其他值保持默认行为
+- **用途**：设置后将完全绕过权重卸载
+
+```bash
+export AR_DISABLE_OFFLOAD=1
+```
+
 ### AR_DISABLE_DATASET_SUBPROCESS
 - **描述**：禁用子进程方式进行数据集预处理。默认情况下，AutoRound 使用子进程确保所有临时内存在进程退出后被操作系统回收。
 - **默认值**：`False`
@@ -118,16 +128,6 @@ if is_set("AR_LOG_LEVEL"):
     print("AR_LOG_LEVEL 已被显式设置")
 else:
     print("AR_LOG_LEVEL 正在使用默认值")
-```
-
-### AR_DISABLE_OFFLOAD
-- **描述**：强制禁用 `OffloadManager` 中的权重卸载功能。在开发和调试时可跳过所有卸载/重载开销。
-- **默认值**：`False`（等价于 `"0"`）
-- **有效值**：`"1"`、`"true"`、`"yes"`（不区分大小写）表示禁用卸载；其他值保持默认行为
-- **用途**：设置后将完全绕过权重卸载
-
-```bash
-export AR_DISABLE_OFFLOAD=1
 ```
 
 ## 配置最佳实践
