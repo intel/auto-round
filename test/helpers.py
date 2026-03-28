@@ -243,6 +243,7 @@ def get_tiny_model(
         if is_diffusion:
             import importlib
             import json
+
             from diffusers import AutoPipelineForText2Image
             from huggingface_hub import snapshot_download
 
