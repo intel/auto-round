@@ -292,22 +292,34 @@ def eval_with_vllm(args):
         "hpu": "HABANA_VISIBLE_MODULES",
     }
     if "tensor_parallel_size" not in vllm_kwargs:
-        # Parse device_map to determine tensor_parallel_size and set CUDA_VISIBLE_DEVICES
-        # Only accept formats like "0" or "0,1,2"
+        # Parse device_map to determine tensor_parallel_size and set the relevant env var
+        # Only accept formats like "0" or "0,1,2". If the environment variable is
+        # already set externally, do not overwrite it — but still derive
+        # `tensor_parallel_size` from the existing value.
         assert device in environ_mapping, f"Device {device} not supported for vllm tensor parallelism."
         environ_name = environ_mapping[device]
         device_map = args.device_map
         device_ids = [d.strip() for d in str(device_map).split(",") if d.strip().isdigit()]
-        if device_ids:
+
+        from auto_round.logger import logger
+
+        existing_env = os.environ.get(environ_name)
+        if existing_env:
+            existing_ids = [d.strip() for d in existing_env.split(",") if d.strip()]
+            if existing_ids:
+                tensor_parallel_size = len(existing_ids)
+                vllm_kwargs["tensor_parallel_size"] = tensor_parallel_size
+                logger.info(
+                    f"Detected existing {environ_name}={existing_env}, skipping overwrite; "
+                    f"tensor_parallel_size={tensor_parallel_size} derived from {environ_name}"
+                )
+        elif device_ids:
             device_id_str = ",".join(device_ids)
             os.environ[environ_name] = device_id_str
             tensor_parallel_size = len(device_ids)
             vllm_kwargs["tensor_parallel_size"] = tensor_parallel_size
-            from auto_round.logger import logger
 
-            logger.info(
-                f"Set {environ_name}={os.environ[environ_name]}, " f"tensor_parallel_size={tensor_parallel_size}"
-            )
+            logger.info(f"Set {environ_name}={os.environ[environ_name]}, tensor_parallel_size={tensor_parallel_size}")
 
     vllm_lm = VLLM_VLM(**vllm_kwargs) if args.mllm else VLLM(**vllm_kwargs)
     res = evaluator.simple_evaluate(

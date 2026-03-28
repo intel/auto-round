@@ -243,7 +243,6 @@ def get_tiny_model(
         if is_diffusion:
             import importlib
             import json
-
             from diffusers import AutoPipelineForText2Image
             from huggingface_hub import snapshot_download
 
@@ -280,6 +279,9 @@ def get_tiny_model(
         else:
             trust_remote_code = kwargs.pop("trust_remote_code", True)
             config = transformers.AutoConfig.from_pretrained(model_name_or_path, trust_remote_code=trust_remote_code)
+            # Special cases, for transformers == 5.4.0
+            if config.model_type == "qwen3_omni_moe":
+                config.initializer_range = 0.02  # Default initializer range for weight initialization
             _reduce_config_layers(config, num_layers, num_experts)
 
             # Pick the right model class
