@@ -32,6 +32,7 @@ This document presents step-by-step instructions for auto-round llm quantization
   + [Device/Multi-GPU setting in Quantization](#devicemulti-gpu-setting-in-quantization)
     - [Enable multiple gpus calibration in lm_head quantization](#enable-multiple-gpus-calibration-in-lm_head-quantization)
   + [Adjust Hyperparameters](#adjust-hyperparameters)
+  + [Hadamard Transform](#hadamard-transform)
 * [4 Inference](#4-inference)
   + [CPU](#cpu)
   + [Intel GPU](#intel-gpu)
@@ -621,6 +622,53 @@ autoround.save_quantized(format="auto_awq", output_dir="tmp_autoround")
   Include the flag `--adam`. Note that AdamW is less effective than sign gradient descent in many scenarios we tested.
 
 
+### Hadamard Transform
+
+AutoRound supports Hadamard transform as an optional weight/activation transformation technique, which can improve quantization accuracy by rotating the weight/activation matrix. This is particularly useful for certain quantization scenarios.
+
+#### Overview
+
+The Hadamard transform is particularly useful in scenarios where activation outliers hurt quantization accuracy. In practice, it helps suppress such outliers, making it especially effective when `act_bits < 8`. Users can enable this feature when they need more stable activation distributions and better accuracy in low‑bit quantization settings.
+
+#### Implementation
+
+AutoRound provides two types of Hadamard transforms:
+
+1. **Deterministic Hadamard Transform** (`hadamard`): Uses Sylvester's construction to create a deterministic Hadamard matrix. The size must be a power of 2.
+
+2. **Random Hadamard Transform** (`random_hadamard`): Uses known Hadamard matrices from N. J. A. Sloane's Library of Hadamard Matrices. Supports non-power-of-2 sizes and deterministic seeding.
+
+
+#### Quantization with Hadamard Transform
+
+```python
+from auto_round import AutoRound
+
+# Load a model (supports FP8/BF16/FP16/FP32)
+model_name_or_path = "meta-llama/Llama-3.1-8B-Instruct"
+output_dir = "./Llama-3.1-8B-Instruct-mxfp4-ht"
+
+# hadamard_config="default": block_size=32, hadamard_type="hadamard"
+ar = AutoRound(model_name_or_path, scheme="MXFP4", hadamard_config="default")
+
+ar.quantize_and_save(output_dir=output_dir, format="auto_round")
+```
+
+#### Transform Classes
+
+| Class | Description |
+|-------|-------------|
+| `HadamardTransform` | Applies deterministic Hadamard transform |
+| `RandomHadamardTransform` | Applies random Hadamard transform with optional seeding |
+
+#### Parameters
+
+| Parameter | Description |
+|-----------|-------------|
+| `block_size` | Size of the transformation block (default: 32) |
+| `seed` | Random seed (for RandomHadamardTransform) |
+
+
 ## 4 Inference
 
 AutoRound automatically selects the best available backend based on the installed libraries and prompts the user to install additional libraries when a better backend is found.
@@ -629,7 +677,7 @@ AutoRound automatically selects the best available backend based on the installe
 
 ###  CPU
 
-Supports 2, 4, and 8 bits. We recommend using intel-extension-for-pytorch (IPEX) for 4 bits inference.
+Supports 2, 4, and 8 bits. We recommend using auto-round-lib (ark) for inference. When using the ark backend, ensure that your PyTorch version is >= 2.8.0.
 
 ```python
 from transformers import AutoModelForCausalLM, AutoTokenizer
@@ -645,7 +693,7 @@ print(tokenizer.decode(model.generate(**inputs, max_new_tokens=50, do_sample=Fal
 
 ### Intel GPU
 
-Supports 4 bits only. We recommend using intel-extension-for-pytorch (IPEX) for inference.
+Supports 4,8 bits. When using the ark backend, PyTorch (torch) >= 2.8.0 is required. We recommend using auto-round-lib (ark) for inference.
 
 ```python
 from transformers import AutoModelForCausalLM, AutoTokenizer
@@ -698,13 +746,13 @@ print(tokenizer.decode(model.generate(**inputs, max_new_tokens=50, do_sample=Fal
 AutoRound automatically selects the backend for each layer based on compatibility. In general, the priority order is Marlin > ExLLaMAV2 > Triton, but the final choice depends on factors such as group size, bit width, packing format, hardware device, and other implementation details.
 
 The backend may not always be the most suitable for certain devices. 
-You can specify your preferred backend such as "ipex" for CPU and Intel GPU, "marlin/exllamav2/triton" for CUDA, according to your needs or hardware compatibility. Please note that additional corresponding libraries may be required.
+You can specify your preferred backend such as "ark" for CPU and Intel GPU, "marlin/exllamav2/triton" for CUDA, according to your needs or hardware compatibility. Please note that additional corresponding libraries may be required.
 
 ```python
 from transformers import AutoModelForCausalLM, AutoTokenizer, AutoRoundConfig
 
 model_name = "OPEA/Qwen2.5-1.5B-Instruct-int4-sym-inc"
-quantization_config = AutoRoundConfig(backend="ipex")
+quantization_config = AutoRoundConfig(backend="ark")
 model = AutoModelForCausalLM.from_pretrained(
     model_name, device_map="cpu", quantization_config=quantization_config, torch_dtype="auto"
 )
@@ -715,13 +763,17 @@ print(tokenizer.decode(model.generate(**inputs, max_new_tokens=50, do_sample=Fal
 ```
 | Name                                         | Devices      | Bits    | Dtypes    | Priority | Packing format  | Requirements                      |
 |----------------------------------------------|--------------|---------|-----------|----------|-----------------|-----------------------------------|
-| ipex                                         | cpu/xpu      | 4       | BF16/FP16 | 5        | gptq_zp+-1/awq  | intel-extension-for-pytorch       |
+| ark                                          | cpu          | 2,4,8   | FP32/FP16/BF16 | 6   | gptq/gptq_zp+-1 | auto-round-lib<br/>torch>=2.8.0  |
+| ark                                          | cpu          | 4       | FP32/FP16/BF16 | 6   | awq             | auto-round-lib<br/>torch>=2.8.0  |
+| ark                                          | xpu          | 4,8     | FP32/FP16/BF16 | 6   | gptq/gptq_zp+-1 | auto-round-lib<br/>torch>=2.8.0  |
+| ark                                          | xpu          | 4       | FP32/FP16/BF16 | 6   | awq             | auto-round-lib<br/>torch>=2.8.0  |
+| ipex(To be deprecated)                       | cpu/xpu      | 4       | BF16/FP16 | 5        | gptq_zp+-1/awq  | intel-extension-for-pytorch       |
 | marlin                                       | cuda         | 4,8     | BF16/FP16 | 6        | gptq/gptq_zp+-1 | gptqmodel                         |
 | exllamav2 or<br/>gptqmodel:exllamav2         | cuda         | 4       | BF16/FP16 | 5        | gptq/gptq_zp+-1 | gptqmodel                         |
 | exllamav2 or<br/>gptq:exllamav2              | cuda         | 4       | FP16      | 3        | gptq_zp+-1      | auto-gptq<br/>transformers<5.0.0  |
 | gptq:cuda                                    | cuda         | 2,3,4,8 | FP16      | 1        | gptq_zp+-1      | auto-gptq<br/>transformers<5.0.0  |
 | triton                                       | xpu/cuda     | 2,4,8   | BF16/FP16 | 2        | gptq/gptq_zp+-1 | auto-round                        |
-| awq                                          | cuda         | 4       | FP16      | 5        | awq             | auto-awq<br/>transformers<4.57.0                          |
+| awq                                          | cuda         | 4       | FP16      | 5        | awq             | auto-awq<br/>transformers<4.57.0  |
 | gptqmodel:awq or<br/>gptqmodel:awq_exllamav2 | cuda         | 4       | BF16/FP16 | 6        | awq             | gptqmodel                         |
 | gptqmodel:awq_marlin                         | cuda         | 4,8     | FP16      | 5        | awq             | gptqmodel                         |
 | gptqmodel:awq_gemm                           | cuda         | 4       | FP16      | 3        | awq             | gptqmodel                         |

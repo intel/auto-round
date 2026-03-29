@@ -177,32 +177,29 @@ def pack_gguf_layer(
                 )
             )
 
-        if not hasattr(model, "last_layer_name_to_block_name"):
-            block_name_to_last_layer_name = {}
-            block_names = get_block_names(model, quant_vision=True)
-            block_names_flatten = flatten_list(block_names)
-            all_qlayer_name = []
-            for n, m in model.named_modules():
-                if not check_to_quantized(m):
-                    continue
-                all_qlayer_name.append(n)
-                for block_name in block_names_flatten:
-                    block_name_split = block_name.split(".")
-                    name_split = n.split(".")
-                    if (
-                        len(name_split) < len(block_name_split)
-                        or name_split[: len(block_name_split)] != block_name_split
-                    ):
-                        continue
-                    block_name_to_last_layer_name[block_name] = n
-            last_layer_name_to_block_name = {v: k for k, v in block_name_to_last_layer_name.items()}
-            model.last_layer_name_to_block_name = last_layer_name_to_block_name
-            names_in_blocks = []
+    if not hasattr(model, "last_layer_name_to_block_name"):
+        block_name_to_last_layer_name = {}
+        block_names = get_block_names(model, quant_vision=True)
+        block_names_flatten = flatten_list(block_names)
+        all_qlayer_name = []
+        for n, m in model.named_modules():
+            if not check_to_quantized(m):
+                continue
+            all_qlayer_name.append(n)
             for block_name in block_names_flatten:
-                block = get_module(model, block_name)
-                for n, m in block.named_modules():
-                    if check_to_quantized(m):
-                        names_in_blocks.append(m.global_name)
+                block_name_split = block_name.split(".")
+                name_split = n.split(".")
+                if len(name_split) < len(block_name_split) or name_split[: len(block_name_split)] != block_name_split:
+                    continue
+                block_name_to_last_layer_name[block_name] = n
+        last_layer_name_to_block_name = {v: k for k, v in block_name_to_last_layer_name.items()}
+        model.last_layer_name_to_block_name = last_layer_name_to_block_name
+        names_in_blocks = []
+        for block_name in block_names_flatten:
+            block = get_module(model, block_name)
+            for n, m in block.named_modules():
+                if check_to_quantized(m):
+                    names_in_blocks.append(m.global_name)
 
     if name in model.last_layer_name_to_block_name:
         # Packing block

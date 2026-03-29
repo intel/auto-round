@@ -211,7 +211,7 @@ def get_layer_config(model, quantization_config):
     act_data_type = getattr(quantization_config, "act_data_type", None)
     act_dynamic = getattr(quantization_config, "act_dynamic", False)
 
-    transform_config = getattr(quantization_config, "transform_config", None)
+    hadamard_config = getattr(quantization_config, "hadamard_config", None)
 
     default_quant_scheme = QuantizationScheme(
         bits=bits,
@@ -223,7 +223,7 @@ def get_layer_config(model, quantization_config):
         act_sym=act_sym,
         act_data_type=act_data_type,
         act_dynamic=act_dynamic,
-        transform_config=transform_config,
+        hadamard_config=hadamard_config,
     )
 
     # Determine the quantization block list
@@ -528,6 +528,11 @@ def post_init(model: torch.nn.Module, used_backends: list[str]) -> None:
             need_gptqmodel_init = True
         elif backend.startswith(("ipex", "auto_round_kernel")):
             need_ipex_init = True
+            if backend.startswith("ipex"):
+                logger.warning_once(
+                    f"Backend '{backend}' is deprecated and will be removed in a future release. "
+                    "Please use the 'ark' backend instead (requires auto-round-lib and torch>=2.8.0)."
+                )
 
     # AutoGPTQ post-init
     if need_autogptq_init:
@@ -671,19 +676,19 @@ def convert_hf_model(model: nn.Module, target_device: str = "cpu") -> tuple[nn.M
     layer_configs = get_layer_config(model, quantization_config)
     used_backends = _replace_by_quant_layers(model, layer_configs, backend, target_device, packing_format)
 
-    transform_config = getattr(quantization_config, "transform_config", None)
-    if transform_config is not None and transform_config:
-        from auto_round.experimental.transform.apply import apply_transform
-        from auto_round.experimental.transform.transform_config import TransformConfig
+    hadamard_config = getattr(quantization_config, "hadamard_config", None)
+    if hadamard_config is not None and hadamard_config:
+        from auto_round.experimental.transform.apply import apply_hadamard_transform
+        from auto_round.experimental.transform.hadamard_config import HadamardConfig
 
         # apply forward hook
-        act_transform_config = TransformConfig(
-            quant_scheme=transform_config["quant_scheme"],
-            transform_block_size=transform_config["transform_block_size"],
-            transform_type=transform_config["transform_type"],
-            location="input",
+        act_hadamard_config = HadamardConfig(
+            block_size=hadamard_config["block_size"],
+            hadamard_type=hadamard_config["hadamard_type"],
         )  # apply to activation
-        model = apply_transform(model, act_transform_config, desc="Register pre forward hook for transform")
+        model = apply_hadamard_transform(
+            model, act_hadamard_config, location="input", desc="Register pre forward hook for hadamard transform"
+        )
 
     # Suggest a better backend if available
     if backend == "auto":

@@ -160,10 +160,92 @@ qwen3_omni_name_or_path = get_model_path("Qwen/Qwen3-Omni-30B-A3B-Instruct")
 
 
 # Slice model into tiny model for speedup
-def get_tiny_model(model_name_or_path, num_layers=2, is_mllm=False, **kwargs):
-    """Generate a tiny model by slicing layers from the original model."""
+def _reduce_config_layers(config, num_layers, num_experts=None):
+    """Reduce num_layers and num_experts in a config object (in-place).
+
+    Handles nested sub-configs (text_config, vision_config, audio_config,
+    thinker_config, talker_config, etc.) commonly found in multi-modal and
+    MoE architectures.
+    """
+    n_block_keys = ["n_layers", "num_hidden_layers", "n_layer", "num_layers", "depth", "encoder_layers"]
+    n_expert_keys = ["num_experts", "num_local_experts"]
+
+    def _apply(cfg):
+        for key in n_block_keys:
+            if hasattr(cfg, key):
+                setattr(cfg, key, num_layers)
+        if hasattr(cfg, "layer_types"):
+            cfg.layer_types = cfg.layer_types[:num_layers]
+        if num_experts is not None:
+            for key in n_expert_keys:
+                if hasattr(cfg, key):
+                    setattr(cfg, key, num_experts)
+
+    # Top-level config
+    _apply(config)
+
+    # Common sub-configs
+    for sub_name in [
+        "text_config",
+        "vision_config",
+        "audio_config",
+        "thinker_config",
+        "talker_config",
+    ]:
+        sub_cfg = getattr(config, sub_name, None)
+        if sub_cfg is not None:
+            _apply(sub_cfg)
+            # Handle deeper nesting, e.g. thinker_config.text_config
+            for inner_name in ["text_config", "vision_config", "audio_config"]:
+                inner_cfg = getattr(sub_cfg, inner_name, None)
+                if inner_cfg is not None:
+                    _apply(inner_cfg)
+
+
+def get_tiny_model(model_name_or_path, num_layers=2, num_experts=None, is_mllm=False, from_config=False, **kwargs):
+    """Generate a tiny model by slicing layers from the original model.
+
+    Args:
+        model_name_or_path: HuggingFace model name or local path.
+        num_layers: Number of layers to keep.
+        num_experts: Number of experts to keep for MoE models (None = unchanged).
+        is_mllm: Whether the model is a multi-modal model.
+        from_config: If True, initialise the model from config with random
+            weights instead of downloading the full checkpoint.  This is much
+            faster and avoids large downloads.
+        **kwargs: Extra keyword arguments forwarded to the model loader or
+            ``AutoConfig.from_pretrained``.
+    """
     model_name_or_path = get_model_path(model_name_or_path)
 
+    if from_config:
+        # ---- lightweight path: config-only, random weights ----
+        trust_remote_code = kwargs.pop("trust_remote_code", True)
+        config = transformers.AutoConfig.from_pretrained(model_name_or_path, trust_remote_code=trust_remote_code)
+        # Special cases
+        if config.model_type == "qwen3_omni_moe":
+            config.initializer_range = 0.02  # Default initializer range for weight initialization
+
+        _reduce_config_layers(config, num_layers, num_experts)
+
+        # Pick the right model class
+        base_lib = transformers
+        architectures = getattr(config, "architectures", [None])[0]
+        if (
+            is_mllm
+            and architectures.endswith("Model")
+            and hasattr(base_lib, n := architectures.replace("Model", "ForConditionalGeneration"))
+        ):
+            model_cls = getattr(base_lib, n)
+        elif hasattr(base_lib, architectures):
+            model_cls = getattr(base_lib, architectures)
+        else:
+            model_cls = transformers.AutoModelForCausalLM  # default to causal LM if we can't find a better match
+        model = model_cls._from_config(config)
+        model = model.eval()
+        return model
+
+    # ---- original path: load pretrained weights then slice ----
     def slice_layers(module):
         """slice layers in the model."""
         sliced = False
@@ -190,30 +272,43 @@ def get_tiny_model(model_name_or_path, num_layers=2, is_mllm=False, **kwargs):
 
     slice_layers(model)
 
-    if hasattr(model.config, "num_hidden_layers"):
-        model.config.num_hidden_layers = num_layers
-    if hasattr(model.config, "text_config"):
-        n_block_keys = ["n_layers", "num_hidden_layers", "n_layer", "num_layers", "depth", "encoder_layers"]
-        for key in n_block_keys:
-            if hasattr(model.config.text_config, key):
-                setattr(model.config.text_config, key, num_layers)
-        if hasattr(model.config.text_config, "layer_types"):
-            model.config.text_config.layer_types = model.config.text_config.layer_types[:num_layers]
-    if hasattr(model.config, "vision_config"):
-        n_block_keys = ["n_layers", "num_hidden_layers", "n_layer", "num_layers", "depth", "encoder_layers"]
-        for key in n_block_keys:
-            if hasattr(model.config.vision_config, key):
-                setattr(model.config.vision_config, key, num_layers)
-    if hasattr(model.config, "layer_types"):
-        model.config.layer_types = model.config.layer_types[:num_layers]
+    _reduce_config_layers(model.config, num_layers, num_experts)
 
     return model
 
 
 # for fixture usage only
-def save_tiny_model(model_name_or_path, tiny_model_path, num_layers=2, is_mllm=False, force_untie=False, **kwargs):
-    """Generate  a tiny model and save to the specified path."""
-    model = get_tiny_model(model_name_or_path, num_layers=num_layers, is_mllm=is_mllm, **kwargs)
+def save_tiny_model(
+    model_name_or_path,
+    tiny_model_path,
+    num_layers=2,
+    num_experts=None,
+    is_mllm=False,
+    force_untie=False,
+    from_config=False,
+    **kwargs,
+):
+    """Generate  a tiny model and save to the specified path.
+
+    Args:
+        model_name_or_path: HuggingFace model name or local path.
+        tiny_model_path: Where to save the tiny model.
+        num_layers: Number of layers to keep.
+        num_experts: Number of experts to keep for MoE models (None = unchanged).
+        is_mllm: Whether the model is a multi-modal model.
+        force_untie: Force untie word embeddings.
+        from_config: If True, initialise the model from config with random
+            weights instead of downloading the full checkpoint.
+        **kwargs: Extra keyword arguments forwarded to the model loader.
+    """
+    model = get_tiny_model(
+        model_name_or_path,
+        num_layers=num_layers,
+        num_experts=num_experts,
+        is_mllm=is_mllm,
+        from_config=from_config,
+        **kwargs,
+    )
     if force_untie:
         if getattr(getattr(model, "config", None), "tie_word_embeddings", False):
             model.config.tie_word_embeddings = False
