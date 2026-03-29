@@ -62,7 +62,6 @@ function run_unit_test() {
     # install unit test dependencies
     echo "##[group]set up UT env..."
     cd "${BUILD_SOURCESDIRECTORY}" || exit 1
-    uv pip install torch==2.11.0 torchvision --index-url https://download.pytorch.org/whl/cu128
     uv pip install https://github.com/XuehaoSun/GPTQModel/releases/download/v5.8.0/gptqmodel-5.8.0+cu128torch2.11-cp312-cp312-linux_x86_64.whl
     uv pip install -r https://raw.githubusercontent.com/ModelCloud/GPTQModel/refs/tags/v5.8.0/requirements.txt
     uv pip install https://github.com/XuehaoSun/llama-cpp-python/releases/download/v0.3.16/llama_cpp_python-0.3.16-cp312-cp312-linux_x86_64.whl
@@ -70,6 +69,7 @@ function run_unit_test() {
     uv pip install -r test/test_cuda/requirements.txt
     uv pip install -r test/test_cuda/requirements_diffusion.txt
     uv pip install -U transformers
+    uv pip uninstall torch torchvision
     uv pip install torch==2.11.0 torchvision --index-url https://download.pytorch.org/whl/cu128
     uv pip install .
     echo "##[endgroup]"
