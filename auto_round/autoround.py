@@ -364,6 +364,7 @@ class AutoRoundLLM(LLMCompressor):
         seed: int = 42,
         **kwargs,
     ):
+        """Initialize AutoRoundLLM. Delegates all arguments to LLMCompressor.__init__."""
         local_args = {k: v for k, v in locals().items() if k not in ("local_args", "kwargs", "self")}
         super().__init__(
             **local_args,
@@ -454,6 +455,7 @@ class AutoRoundAdam(AdamCompressor):
         optimizer="AdamW",
         **kwargs,
     ):
+        """Initialize AutoRoundAdam. Delegates all arguments to AdamCompressor.__init__."""
         local_args = {k: v for k, v in locals().items() if k not in ("local_args", "kwargs", "self")}
         super().__init__(
             **local_args,
@@ -545,6 +547,7 @@ class AutoRoundMLLM(MLLMCompressor):
         seed: int = 42,
         **kwargs,
     ):
+        """Initialize AutoRoundMLLM. Delegates all arguments to MLLMCompressor.__init__."""
         local_args = {k: v for k, v in locals().items() if k not in ("local_args", "kwargs", "self")}
         super().__init__(
             **local_args,
@@ -611,6 +614,7 @@ class AutoRoundDiffusion(DiffusionCompressor):
         seed: int = 42,
         **kwargs,
     ):
+        """Initialize AutoRoundDiffusion. Delegates all arguments to DiffusionCompressor.__init__."""
         local_args = {k: v for k, v in locals().items() if k not in ("local_args", "kwargs", "self")}
         super().__init__(
             **local_args,

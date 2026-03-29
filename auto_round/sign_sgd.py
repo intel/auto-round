@@ -144,6 +144,7 @@ def _use_grad_for_differentiable(func):
     """
 
     def _use_grad(self, *args, **kwargs):
+        """Execute *func* with gradient tracking enabled or disabled based on ``differentiable``."""
         prev_grad = torch.is_grad_enabled()
         try:
             torch.set_grad_enabled(self.defaults["differentiable"])
@@ -253,6 +254,24 @@ class SignSGD(Optimizer):
         foreach: Optional[bool] = None,
         differentiable=False
     ):
+        """Initialize SignSGD optimizer.
+
+        Args:
+            params: Iterable of parameters to optimize or dicts defining parameter groups.
+            lr (float): Learning rate.
+            momentum (float): Momentum factor. Defaults to 0.
+            dampening (float): Dampening for momentum. Defaults to 0.
+            weight_decay (float): Weight decay (L2 penalty). Defaults to 0.
+            nesterov (bool): Enable Nesterov momentum. Defaults to False.
+            maximize (bool): Maximize the objective instead of minimizing. Defaults to False.
+            foreach (bool, optional): Use faster foreach implementation. Defaults to None.
+            differentiable (bool): Whether autograd should work through the optimizer step.
+                Defaults to False.
+
+        Raises:
+            ValueError: If ``lr``, ``momentum``, or ``weight_decay`` is negative, or if
+                Nesterov requires momentum with zero dampening.
+        """
         if lr is not required and lr < 0.0:
             raise ValueError("Invalid learning rate: {}".format(lr))
         if momentum < 0.0:

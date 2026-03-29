@@ -120,6 +120,23 @@ def _get_loss_ext(
     mse_loss: Callable,
     device: Union[str, torch.device] = "cpu",
 ):
+    """Compute the masked MSE loss for quantization-aware tuning with algorithm extensions.
+
+    Computes the loss only on the top percentage of absolute differences between
+    the quantized output and the current output, optionally applying an attention mask.
+
+    Args:
+        self (AutoRound): The AutoRound instance providing configuration (e.g. attention mask,
+            AMP settings).
+        output_q (torch.Tensor): Quantized model output tensor.
+        current_output (torch.Tensor): Reference (float) model output tensor.
+        indices (torch.Tensor): Sample indices used to select the corresponding attention masks.
+        mse_loss (Callable): MSE loss function (unused; retained for API compatibility).
+        device (str | torch.device): Device on which to run computations. Defaults to ``"cpu"``.
+
+    Returns:
+        torch.Tensor: Scalar loss value.
+    """
     _, mask = get_abs_top_percent_mask(torch.abs(output_q - current_output))
     autocast_ctx = nullcontext() if self.amp else autocast(device_type=str(device).split(":")[0], dtype=self.amp_dtype)
     if self.attention_mask:
@@ -583,6 +600,16 @@ def _register_act_max_hook_ext(self, model):
     """
 
     def get_act_max_hook(module, input, output):
+        """Forward hook that tracks the per-group activation maximum for a module.
+
+        Updates ``module.act_max`` in-place with the element-wise maximum of
+        absolute activation values observed so far.
+
+        Args:
+            module (torch.nn.Module): The module being observed.
+            input: Module input(s); the first element is used when a tuple/list.
+            output: Module output (unused).
+        """
         if isinstance(input, (tuple, list)):
             input = input[0]
         if input.numel() == 0:
@@ -599,6 +626,16 @@ def _register_act_max_hook_ext(self, model):
                 module.act_max = torch.max(act_max, module.act_max)
 
     def get_imatrix_hook(module, input, output):
+        """Forward hook that accumulates the importance matrix (sum of squared activations).
+
+        Updates ``module.imatrix`` in-place by accumulating the column-wise sum of
+        squared input activations across all calibration batches.
+
+        Args:
+            module (torch.nn.Module): The module being observed.
+            input: Module input(s); the first element is used when a tuple/list.
+            output: Module output (unused).
+        """
         input = input[0] if isinstance(input, (tuple, list)) else input
         flattened = input.reshape(-1, input.shape[-1]).to(torch.float32)
         squared = torch.sum(torch.pow(flattened, 2), dim=0).to(torch.float32)

@@ -163,6 +163,7 @@ def get_formats(
     """
 
     def remove_duplicates(lst):
+        """Return a list with duplicates removed, preserving original order."""
         seen = set()
         return [x for x in lst if not (x in seen or seen.add(x))]
 
@@ -281,6 +282,7 @@ class OutputFormat(ABC):
         assert names
 
         def func(output_format: OutputFormat) -> OutputFormat:
+            """Register the decorated OutputFormat class under all given names."""
             for name in names:
                 cls._format_list[name] = output_format
             return output_format
@@ -462,10 +464,23 @@ class OutputFormat(ABC):
 
 @OutputFormat.register("fake")
 class FakeFormat(OutputFormat):
+    """Fake/no-op output format used for testing or dry-run quantization.
+
+    Saves the model in standard HuggingFace format without any weight packing.
+    """
+
     support_schemes = None
     format_name = "fake"
 
     def check_and_reset_format(self, ar: BaseCompressor) -> str:
+        """Validate and optionally reset the format for the given compressor (no-op for fake).
+
+        Args:
+            ar (BaseCompressor): Compressor instance (unused).
+
+        Returns:
+            str: Always returns ``None`` – fake format requires no special format string.
+        """
         return None
 
     # fake format will not execute pack_layer.
@@ -519,6 +534,11 @@ class FakeFormat(OutputFormat):
 
 @OutputFormat.register("llm_compressor")
 class LLMCompressorFormat(OutputFormat):
+    """Output format targeting the LLMCompressor / llm-compressor export pipeline.
+
+    Supports MXFP4, MXFP8, NVFP4, FPW8A16, FP8_STATIC, INT8_W8A8, and FP8_BLOCK schemes.
+    """
+
     support_schemes = ["MXFP4", "MXFP8", "NVFP4", "FPW8A16", "FP8_STATIC", "INT8_W8A8", "FP8_BLOCK"]
     format_name = "llm_compressor"
 
@@ -577,6 +597,18 @@ class LLMCompressorFormat(OutputFormat):
 
     @classmethod
     def check_scheme_args(cls: OutputFormat, scheme: QuantizationScheme) -> bool:
+        """Validate that the quantization scheme is compatible with LLMCompressor format.
+
+        Args:
+            cls (OutputFormat): The format class.
+            scheme (QuantizationScheme): Quantization scheme to validate.
+
+        Returns:
+            bool: ``True`` if the scheme is valid.
+
+        Raises:
+            ValueError: If the scheme uses unsupported bits, data types, or group sizes.
+        """
         error_logs = []
         if scheme.bits not in [4, 8, 16]:
             error_logs.append(f"bits={scheme.bits}")
@@ -611,6 +643,14 @@ class LLMCompressorFormat(OutputFormat):
         return True
 
     def check_and_reset_format(self, ar: BaseCompressor) -> str | None:
+        """Validate the format against the compressor config and optionally switch to a sub-backend.
+
+        Args:
+            ar (BaseCompressor): Compressor instance with scheme and activation settings.
+
+        Returns:
+            str | None: Sub-backend format string if a change is needed, or ``None``.
+        """
         if self.backend is not None:
             new_format = self.backend.check_and_reset_format(ar)
             self.backend = OutputFormat._format_list[new_format](new_format, ar) if new_format else self.backend
@@ -722,6 +762,11 @@ class LLMCompressorFormat(OutputFormat):
 
 @OutputFormat.register("auto_gptq", "gptqmodel")
 class AutoGPTQFormat(OutputFormat):
+    """Output format targeting the AutoGPTQ / GPTQModel export pipeline.
+
+    Supports W2A16, W3A16, W4A16, W8A16, BF16, and mixed-precision variants.
+    """
+
     support_schemes = ["W4A16", "W2A16", "W3A16", "W8A16", "BF16", "W2A16G64", "W2A16G32", "W4A16_MIXED"]
     format_name = "auto_gptq"
 
@@ -747,6 +792,18 @@ class AutoGPTQFormat(OutputFormat):
 
     @classmethod
     def check_scheme_args(cls: OutputFormat, scheme: QuantizationScheme) -> bool:
+        """Validate that the quantization scheme is compatible with AutoGPTQ format.
+
+        Args:
+            cls (OutputFormat): The format class.
+            scheme (QuantizationScheme): Quantization scheme to validate.
+
+        Returns:
+            bool: ``True`` if valid.
+
+        Raises:
+            ValueError: If the scheme uses unsupported bits, data type, or super-group settings.
+        """
         error_logs = []
         if scheme.bits not in [2, 3, 4, 8, 16]:
             error_logs.append(f"bits={scheme.bits}")
@@ -831,11 +888,28 @@ class AutoGPTQFormat(OutputFormat):
 
 @OutputFormat.register("auto_awq")
 class AutoAWQFormat(OutputFormat):
+    """Output format targeting the AutoAWQ export pipeline.
+
+    Only supports W4A16 (4-bit symmetric integer weight quantization).
+    """
+
     support_schemes = ["W4A16"]
     format_name = "auto_awq"
 
     @classmethod
     def check_scheme_args(cls: OutputFormat, scheme: QuantizationScheme) -> bool:
+        """Validate that the quantization scheme is compatible with AutoAWQ format.
+
+        Args:
+            cls (OutputFormat): The format class.
+            scheme (QuantizationScheme): Quantization scheme to validate.
+
+        Returns:
+            bool: ``True`` if valid.
+
+        Raises:
+            ValueError: If the scheme uses unsupported bits, data type, or super-group settings.
+        """
         error_logs = []
         if scheme.bits != 4:
             error_logs.append(f"bits={scheme.bits}")
@@ -983,6 +1057,11 @@ class AutoAWQFormat(OutputFormat):
 
 @OutputFormat.register("gguf")
 class GGUFFormat(OutputFormat):
+    """Output format targeting the GGUF model format for llama.cpp-compatible inference.
+
+    Supports a wide range of GGUF quantization sub-types (Q2_K through Q8_0).
+    """
+
     support_schemes = [
         "GGUF:Q4_0",
         "GGUF:Q4_1",
@@ -1037,6 +1116,18 @@ class GGUFFormat(OutputFormat):
 
     @classmethod
     def check_scheme_args(cls: OutputFormat, scheme: QuantizationScheme) -> bool:
+        """Validate that the quantization scheme is compatible with GGUF format.
+
+        Args:
+            cls (OutputFormat): The format class.
+            scheme (QuantizationScheme): Quantization scheme to validate.
+
+        Returns:
+            bool: ``True`` if valid.
+
+        Raises:
+            ValueError: If the data type is not integer-based.
+        """
         error_logs = []
         if not re.search("int", scheme.data_type):
             error_logs.append(f"data_type={scheme.data_type}")
@@ -1160,6 +1251,24 @@ class GGUFFormat(OutputFormat):
 
     @staticmethod
     def gguf_args_check(args_or_ar, formats: Union[str, list[str]] = None, model_type=ModelType.TEXT):
+        """Validate GGUF format arguments and download required conversion files if needed.
+
+        Checks that the requested GGUF sub-type is supported and that the model
+        architecture has a corresponding GGUF export implementation.  Downloads
+        the ``convert_hf_to_gguf`` dependency automatically when missing or when
+        the model architecture is not yet supported.
+
+        Args:
+            args_or_ar (argparse.Namespace | BaseCompressor): CLI arguments or compressor
+                instance providing the model path/object and platform.
+            formats (str | list[str], optional): One or more format strings to validate
+                (e.g. ``"gguf:q4_k_m"``). Defaults to ``None``.
+            model_type (ModelType): Whether to validate for text or MMPROJ model.
+                Defaults to ``ModelType.TEXT``.
+
+        Raises:
+            ImportError: If ``gguf-py`` is not installed or is out-of-date.
+        """
         import argparse
 
         from auto_round.export.export_to_gguf.config import GGUF_CONFIG
@@ -1321,6 +1430,11 @@ class GGUFFormat(OutputFormat):
 
 @OutputFormat.register("fp8")
 class FP8Format(OutputFormat):
+    """Output format for block-wise FP8 weight quantization (direct safetensors export).
+
+    Supports the FP8_BLOCK scheme (8-bit floating-point with block-wise scaling).
+    """
+
     support_schemes = ["FP8_BLOCK"]
     format_name = "fp8"
 
@@ -1433,6 +1547,13 @@ class FP8Format(OutputFormat):
 @OutputFormat.register("auto_round:gptqmodel", "auto_round:auto_gptq")
 @OutputFormat.register("auto_round:fp8")
 class AutoRoundFormat(OutputFormat):
+    """Primary AutoRound output format with automatic backend selection.
+
+    Chooses the optimal packing backend (AutoGPTQ, AutoAWQ, LLMCompressor, FP8, etc.)
+    based on the quantization scheme.  Also handles compound format strings such as
+    ``"auto_round:auto_gptq"`` to force a specific backend.
+    """
+
     support_schemes = [
         "W4A16",
         "W4A16_MIXED",

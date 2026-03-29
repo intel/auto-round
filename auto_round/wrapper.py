@@ -141,10 +141,12 @@ class WrapperLinear(torch.nn.Module):
 
     @property
     def weight(self):
+        """Return the weight of the wrapped original layer."""
         return self.orig_layer.weight
 
     @property
     def bias(self):
+        """Return the bias of the wrapped original layer."""
         return self.orig_layer.bias
 
     def _init_tuning_params_and_quant_func(self):
@@ -346,6 +348,14 @@ class WrapperLinear(torch.nn.Module):
             shape = qdq_weight.t().shape
 
         def _set_dict_attr(attr_dict, attr_name):
+            """Set quantization attributes (scale/zp) on the original layer from a dict.
+
+            Args:
+                attr_dict (dict): Dictionary of attribute tensors keyed by name.
+                attr_name (str): Primary attribute name (e.g. ``"scale"`` or ``"zp"``).
+                    The matching entry is reshaped and stored directly; all other entries
+                    are stored with a ``"w_"`` prefix.
+            """
             for key in attr_dict.keys():
                 if key == attr_name:
                     setattr(self.orig_layer, attr_name, attr_dict[key].reshape(shape[0], -1).to("cpu"))
