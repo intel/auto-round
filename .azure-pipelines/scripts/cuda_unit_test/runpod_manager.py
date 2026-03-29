@@ -139,7 +139,7 @@ def run_create_pod(api_key, payload):
     for attempt in range(max_retries + 1):
         response = requests.post(url, json=payload, headers=headers)
 
-        if response.status_code >= 500:
+        if response.status_code >= 500 or response.status_code == 400:
             if attempt < max_retries:
                 print(f"⚠️ {response.status_code} Error, Retrying in 60 seconds ({attempt + 1}/{max_retries})...")
                 time.sleep(60)
@@ -240,10 +240,20 @@ def terminate_pod(args):
 
     url = f"https://rest.runpod.io/v1/pods/{pod_id}"
     headers = {"Authorization": f"Bearer {args.api_key}"}
-    response = requests.delete(url, headers=headers)
-    response.raise_for_status()
 
     max_tries = 30
+
+    for attempt in range(max_tries + 1):
+        response = requests.delete(url, headers=headers)
+        if response.status_code >= 500 or response.status_code == 400:
+            if attempt < max_tries:
+                print(f"⚠️ {response.status_code} Error, Retrying in 5 seconds ({attempt + 1}/{max_tries})...")
+                time.sleep(5)
+                continue
+            else:
+                print(f"❌ {response.status_code} Error, Reached maximum retry attempts ({max_tries}), giving up.")
+
+        response.raise_for_status()
 
     for i in range(max_tries):  # Wait up to 5 minutes for termination
         pod_id = get_pod_id(args)
