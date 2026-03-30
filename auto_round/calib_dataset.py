@@ -460,6 +460,7 @@ def get_ultrafinweb_dataset(
 
     def get_default_tokenizer_function():
         """Return a tokenizer function operating on the ``"content"`` field."""
+
         def default_tokenizer_function(examples):
             """Tokenize a batch of Ultra-FineWeb examples."""
             if not apply_chat_template:
