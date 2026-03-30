@@ -12,6 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 import copy
+import json
 import os
 import random
 import re
@@ -98,6 +99,19 @@ def is_dynamic_wint8aint8(ar_or_format: Union[str, Callable]) -> bool:
     if is_wint8aint8(ar_or_format):
         return True
     return False
+
+
+def is_dynamic_afp8(ar_or_format: Callable) -> bool:
+    return ar_or_format.act_dynamic and ar_or_format.act_data_type.startswith("fp") and ar_or_format.act_bits == 8
+
+
+def is_block_wfp8(ar_or_format: Callable) -> bool:
+    return (
+        isinstance(ar_or_format.group_size, tuple)
+        and len(ar_or_format.group_size) == 2
+        and ar_or_format.data_type.startswith("fp")
+        and ar_or_format.bits == 8
+    )
 
 
 def block_forward(
@@ -211,6 +225,63 @@ def infer_bits_by_data_type(data_type: str):
     return None
 
 
+def _get_safetensor_layer_names_not_in_model(model, all_module_names: list) -> list:
+    """Collect layer names from safetensor files that are not loaded into the model.
+
+    Some tensors (e.g. MTP layers) exist in the original checkpoint but are not
+    instantiated by ``transformers``.  This function discovers them so that regex
+    patterns in ``layer_config`` can still match them.
+
+    Returns:
+        List of layer names (the path without the ``.weight`` suffix) for weight
+        tensors present in the safetensor files but absent from *all_module_names*.
+    """
+    name_or_path = None
+    if hasattr(model, "config") and hasattr(model.config, "name_or_path"):
+        name_or_path = model.config.name_or_path
+    if not name_or_path:
+        return []
+
+    if not os.path.isdir(name_or_path):
+        try:
+            from auto_round.utils.model import download_hf_model
+
+            name_or_path = download_hf_model(name_or_path)
+        except Exception as e:
+            logger.debug(f"Could not resolve source model path to check for missing tensors: {e}")
+            return []
+
+    try:
+        from safetensors import safe_open
+    except ImportError:
+        return []
+
+    # Build tensor-name list from the safetensors index or single file
+    source_index_file = os.path.join(name_or_path, "model.safetensors.index.json")
+    source_single_file = os.path.join(name_or_path, "model.safetensors")
+
+    tensor_names: list = []
+    if os.path.exists(source_index_file):
+        with open(source_index_file) as f:
+            src_index = json.load(f)
+        tensor_names = list(src_index["weight_map"].keys())
+    elif os.path.exists(source_single_file):
+        with safe_open(source_single_file, framework="pt", device="cpu") as f:
+            tensor_names = list(f.keys())
+    else:
+        return []
+
+    module_name_set = set(all_module_names)
+    extra_layer_names = []
+    for tensor_name in tensor_names:
+        if not tensor_name.endswith(".weight"):
+            continue
+        layer_name = tensor_name[: -len(".weight")]
+        if layer_name not in module_name_set:
+            extra_layer_names.append(layer_name)
+    return extra_layer_names
+
+
 def set_layer_config(
     model: torch.nn.Module,
     layer_config: dict[str, Union[str, dict, "QuantizationScheme"]],
@@ -239,6 +310,10 @@ def set_layer_config(
         """Assign scheme values as attributes to matched modules."""
         for layer_name, scheme in layer_config.items():
             module = get_module(model, layer_name)
+            if module is None:
+                # Layer exists in safetensor files but is not loaded into the model
+                # (e.g. MTP layers that transformers does not instantiate). Skip.
+                continue
             for attr, value in scheme.items():
                 setattr(module, attr, value)
 
@@ -344,6 +419,10 @@ def set_layer_config(
         if isinstance(m, embedding_types) or m.__class__.__name__.endswith("Embedding"):
             embedding_layer_names.append(n)
 
+    # Also include layer names from safetensor files not loaded into the model
+    # (e.g. MTP layers that transformers does not instantiate).
+    safetensor_only_names = _get_safetensor_layer_names_not_in_model(model, all_module_names)
+
     # 6. expand regex configs
     regex_config = {}
     for name in list(layer_config.keys()):
@@ -361,7 +440,9 @@ def set_layer_config(
 
         regex = re.compile(to_standard_regex(name))
         matched = [ln for ln in all_supported_layer_names if regex.search(ln)]
-        if not matched:
+        safetensor_only_matched = [ln for ln in safetensor_only_names if regex.search(ln)]
+        # skip it for mtp layers not loaded in transformers
+        if not matched and not safetensor_only_matched:
             # type(mlp.gate) is Qwen3VLMoeTextTopKRouter instead of Linear
             logger.warning_once(
                 f"Layer name or regex '{name}' in layer_config does not match any supported layers. "
@@ -913,6 +994,7 @@ def get_fp_layer_names(model: torch.nn.Module, ignore_layers: str):
         for name in all_layer_names:
             if fp_layer in name:
                 not_to_quantized_layers.append(name)
+    not_to_quantized_layers.extend(ignore_layers)  # keep regex name for later use
     logger.trace(f"not_to_quantized_layers: {not_to_quantized_layers}")
     return not_to_quantized_layers
 
