@@ -48,6 +48,7 @@ from auto_round.utils import (
     convert_module_to_hp_if_necessary,
     get_block_names,
     get_module,
+    is_auto_device_mapping,
     is_quantized_input_module,
     memory_monitor,
     mv_module_from_gpu,
@@ -702,12 +703,92 @@ class CalibCompressor(BaseCompressor):
                     self._offloader.reload(model, names)
 
             block_name_or_names = n if nblocks == 1 else names
-            q_input, input_ids = self.quantizer.quantize_block(
-                block_name_or_names,
+
+            # ── Infrastructure: materialize, dtype convert, device placement ──
+            materialize_model_(m)
+            convert_module_to_hp_if_necessary(m, self.model_context.amp_dtype, self.compress_context.device)
+
+            if is_auto_device_mapping(self.compress_context.device_map) and len(self.compress_context.device_list) > 1:
+                from auto_round.utils.device import set_auto_device_map_for_block_with_tuning
+
+                card_0_in_high_risk, loss_device = set_auto_device_map_for_block_with_tuning(
+                    m,
+                    self.compress_context.device_map,
+                    input_ids,
+                    self.compress_context.low_gpu_mem_usage,
+                    self.quantizer.batch_size,
+                    self.compress_context.device,
+                )
+            else:
+                m = m.to(self.compress_context.device)
+                card_0_in_high_risk, loss_device = False, self.compress_context.device
+
+            if len(self.compress_context.device_list) > 1:
+                from accelerate.hooks import AlignDevicesHook, add_hook_to_module
+
+                for _n, _mod in m.named_modules():
+                    if len(list(_mod.children())) != 0 or not hasattr(_mod, "tuning_device"):
+                        continue
+                    add_hook_to_module(_mod, AlignDevicesHook(_mod.tuning_device, io_same_device=True), True)
+
+            # ── Infrastructure: collect reference output and act_max ──────────
+            bs = self.quantizer.batch_size * self.quantizer.infer_bs_coeff
+            if q_input is None:
+                hook_handles = self.quantizer._register_act_max_hook(m)
+                reference_output = self.quantizer._get_block_outputs(m, input_ids, input_others, bs)
+                for h in hook_handles:
+                    h.remove()
+            else:
+                reference_output = self.quantizer._get_block_outputs(m, input_ids, input_others, bs)
+                hook_handles = self.quantizer._register_act_max_hook(m)
+                if hook_handles:
+                    self.quantizer._get_block_outputs(m, q_input, input_others, bs, save_output=False)
+                for h in hook_handles:
+                    h.remove()
+
+            # ── Infrastructure: swap q_input ──────────────────────────────────
+            if q_input is not None:
+                if input_ids is not q_input:
+                    clear_memory(input_ids, device_list=self.compress_context.device_list)
+                else:
+                    clear_memory(device_list=self.compress_context.device_list)
+                input_ids = q_input
+
+            # ── Pure algorithm: delegates to quantizer ────────────────────────
+            mid_iter_mem_check = self.compress_context.low_gpu_mem_usage and card_0_in_high_risk
+            self.quantizer.quantize_block(
+                m,
                 input_ids,
                 input_others,
-                q_input=q_input,
+                reference_output,
+                loss_device=loss_device,
+                mid_iter_mem_check=mid_iter_mem_check,
             )
+
+            # ── Infrastructure: collect q_outputs if needed ───────────────────
+            if self.quantizer.enable_quanted_input:
+                q_input = self.quantizer._get_block_outputs(m, input_ids, input_others, bs)
+            else:
+                q_input = None
+
+            # ── Infrastructure: hook removal, device cleanup, logging ─────────
+            if len(self.compress_context.device_list) > 1:
+                accelerate.hooks.remove_hook_from_submodules(m)
+            mv_module_from_gpu(m)
+            if self.enable_torch_compile:
+                torch._dynamo.reset()
+            clear_memory(input_ids if q_input is None else None, device_list=self.compress_context.device_list)
+            memory_monitor.log_summary()
+
+            # ── Infrastructure: immediate_pack / shard write ──────────────────
+            if self.compress_context.is_immediate_saving:
+                for _n, _mod in m.named_modules():
+                    if hasattr(_mod, "bits") and check_to_quantized(_mod):
+                        from auto_round.compressors_new.utils import immediate_pack as _immediate_pack
+
+                        _immediate_pack(_mod.global_name, self.quantizer.layer_config)
+
+            input_ids = q_input if q_input is not None else input_ids
 
             if self.is_immediate_saving:
                 self.shard_writer.write(m, is_finalize=False)
@@ -864,7 +945,7 @@ class CalibCompressor(BaseCompressor):
         )
         if len(unquantized_layers) > 0:
             compressed_unquantized_layers = compress_layer_names(unquantized_layers)
-            summary_info += f",  {compressed_unquantized_layers} have not been quantized"
+            summary_info += f", unquantized layers: {compressed_unquantized_layers}"
         logger.info(summary_info)
 
         self.model_context.quantized = True
@@ -1100,11 +1181,57 @@ class CalibratedRTNCompressor(CalibCompressor):
 
             for block_name in block_names:
                 pbar.set_description(f"Quantizing {block_name}")
-                self.quantizer.quantize_block(
-                    block_name,
+                block = get_module(self.model_context.model, block_name)
+
+                # ── Infrastructure: materialize, dtype convert, device placement ──
+                materialize_model_(block)
+                block.to("cpu")
+                block = convert_module_to_hp_if_necessary(
+                    block, dtype=self.model_context.amp_dtype, device=self.compress_context.device
+                )
+                if (
+                    is_auto_device_mapping(self.compress_context.device_map)
+                    and len(self.compress_context.device_list) > 1
+                ):
+                    from auto_round.utils.device import set_auto_device_map_for_block_with_tuning
+
+                    set_auto_device_map_for_block_with_tuning(
+                        block,
+                        self.compress_context.device_map,
+                        input_ids,
+                        self.compress_context.low_gpu_mem_usage,
+                        self.quantizer.batch_size,
+                        self.compress_context.device,
+                    )
+                    if len(self.compress_context.device_list) > 1:
+                        from accelerate.hooks import AlignDevicesHook, add_hook_to_module
+
+                        for _, _mod in block.named_modules():
+                            if len(list(_mod.children())) != 0 or not hasattr(_mod, "tuning_device"):
+                                continue
+                            add_hook_to_module(_mod, AlignDevicesHook(_mod.tuning_device, io_same_device=True), True)
+                else:
+                    block = block.to(self.compress_context.device)
+
+                # ── Infrastructure: register act_max hook and run forward pass ──
+                hook_handles = self.quantizer._register_act_max_hook(block)
+                self.quantizer._get_block_outputs(
+                    block,
                     input_ids,
                     input_others,
+                    self.quantizer.batch_size * self.quantizer.infer_bs_coeff,
                 )
+                for h in hook_handles:
+                    h.remove()
+
+                if len(self.compress_context.device_list) > 1:
+                    accelerate.hooks.remove_hook_from_submodules(block)
+
+                # ── Pure algorithm ────────────────────────────────────────────
+                self.quantizer.quantize_block(block)
+
+                # ── Infrastructure: cleanup ───────────────────────────────────
+                mv_module_from_gpu(block)
 
                 if self.compress_context.low_cpu_mem_usage and not self.is_immediate_saving:
                     self._offloader(self.model_context.model, block_name)
@@ -1246,7 +1373,9 @@ class CalibratedRTNCompressor(CalibCompressor):
         self.post_init()
         return self._quantize_impl()
 
-    @torch.inference_mode()
+    # Use no_grad instead of inference_mode
+    # https://github.com/intel/auto-round/issues/1620
+    @torch.no_grad()
     def _quantize_impl(self):
 
         formats = getattr(self, "formats", None) or []

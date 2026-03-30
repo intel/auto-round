@@ -68,8 +68,23 @@ class RTNQuantizer(BaseQuantizers):
     def __init__(self, config: RTNConfig):
         BaseQuantizers.__init__(self, config)
 
-    def quantize_block(self, block_name: str, **kwargs):
-        block = get_module(self.model, block_name)
+    def quantize_block(
+        self, block: torch.nn.Module, input_ids=None, input_others=None, reference_output=None, **kwargs
+    ) -> dict:
+        """Apply zero-shot RTN quantization to a block.
+
+        Pure-algorithm entry point.  Materialize / device placement is handled
+        by the Compressor before calling this method.
+
+        Args:
+            block: Module already materialized.
+            input_ids: Unused for zero-shot RTN (accepted for interface consistency).
+            input_others: Unused for zero-shot RTN.
+            reference_output: Unused for zero-shot RTN.
+
+        Returns:
+            dict: Empty dict (zero-shot RTN has no tunable parameters to return).
+        """
         shard_writer = ShardWriter.get_shard_writer()
 
         tied_weights_keys = getattr(self.model, "_tied_weights_keys", [])
@@ -104,14 +119,17 @@ class RTNQuantizer(BaseQuantizers):
                 m.to("meta")
 
         # Move remaining GPU tensors to CPU; offload to disk if low_cpu_mem_usage.
-        # This mirrors _quantize_via_rtn_blockwise's post-block cleanup.
         if not self.compress_context.is_immediate_saving:
             mv_module_from_gpu(block)
         else:
             # Save once at block scope to capture tensors that are not saved
             # in per-layer branch (e.g., custom module-level params/buffers).
-            shard_writer.write(name=block_name)
+            block_name = getattr(block, "name", None) or getattr(block, "global_name", None)
+            if block_name:
+                shard_writer.write(name=block_name)
             block.to("meta")
+
+        return {}
 
     def quantize_layer(self, name: str, dtype: torch.dtype = None) -> None:
         """Quantizes a layer using RTN (Round-To-Nearest) if available.
@@ -229,46 +247,18 @@ class OptimizedRTNQuantizer(RTNQuantizer):
 
         self.enable_alg_ext = True
 
-    def quantize_block(self, block_name: str, input_ids: Union[list[torch.Tensor], dict], input_others: dict, **kwargs):
-        block = get_module(self.model, block_name)
-        materialize_model_(block)
-        block.to("cpu")
+    def quantize_block(self, block: torch.nn.Module, **kwargs):
+        """Apply imatrix-informed RTN quantization to a block.
 
-        block = convert_module_to_hp_if_necessary(
-            block, dtype=self.model_context.amp_dtype, device=self.compress_context.device
-        )
+        Pure-algorithm entry point.  All infrastructure (device placement,
+        act-max hook registration, imatrix collection, cleanup) is handled
+        by the Compressor before calling this method.
+
+        Args:
+            block: Module already placed on the correct device(s) with act_max
+                attributes populated by the Compressor's hook pass.
+        """
         update_block_global_scale_if_needed(block, self.data_type, self.group_size)
-        self._register_act_max_hook(block)
-        if is_auto_device_mapping(self.compress_context.device_map) and len(self.compress_context.device_list) > 1:
-            set_auto_device_map_for_block_with_tuning(
-                block,
-                self.compress_context.device_map,
-                input_ids,
-                self.compress_context.low_gpu_mem_usage,
-                self.batch_size,
-                self.compress_context.device,
-            )
-        # Dispatch model if needed
-        if len(self.compress_context.device_list) > 1:
-            from accelerate.hooks import AlignDevicesHook, add_hook_to_module
-
-            for _, m in block.named_modules():
-                if len(list(m.children())) != 0 or not hasattr(m, "tuning_device"):
-                    continue
-                hook = AlignDevicesHook(m.tuning_device, io_same_device=True)
-                add_hook_to_module(m, hook, True)
-        else:
-            block = block.to(self.compress_context.device)
-        input_ids = self._get_block_outputs(
-            block,
-            input_ids,
-            input_others,
-            self.batch_size * self.infer_bs_coeff,
-        )
-
-        if len(self.compress_context.device_list) > 1:
-            accelerate.hooks.remove_hook_from_submodules(block)
-
         if self.config.is_act_nv_fp or self.config.is_static_afp8:
             # enable moe experts act_max automatic generation for Linear
             set_amax_for_all_moe_layers(block, attr_name="act_max")
@@ -278,14 +268,10 @@ class OptimizedRTNQuantizer(RTNQuantizer):
             clear_memory(device_list=self.compress_context.device_list)
 
         for name, m in block.named_modules():
-            # fix issue: Ling-flash-2.0-q2_k_s fail infer on cuda but well on cpu
-            # https://huggingface.co/Intel/Ling-flash-2.0-gguf-q2ks-mixed-AutoRound/discussions/1
             if hasattr(m, "imatrix"):
                 m.imatrix /= m.imatrix_cnt
             if hasattr(m, "global_name") and check_to_quantized(m):
                 self.quantize_layer(m.global_name)
-
-        mv_module_from_gpu(block)
 
     @torch.no_grad()
     def _get_block_outputs(

@@ -22,7 +22,6 @@ class RTNConfig(QuantizationConfig):
 
     def __init__(
         self,
-        scheme="W4A16",
         layer_config=None,
         *,
         disable_opt_rtn: bool = None,
@@ -34,7 +33,7 @@ class RTNConfig(QuantizationConfig):
     ):
         # pop before super().__init__ so it doesn't leak into QuantizationConfig as an unknown kwarg
         enable_opt_rtn = kwargs.pop("enable_opt_rtn", None)
-        super().__init__(scheme=scheme, layer_config=layer_config, **kwargs)
+        super().__init__(layer_config=layer_config, **kwargs)
 
         self.seqlen = seqlen
         self.nsamples = nsamples
@@ -53,9 +52,6 @@ class RTNConfig(QuantizationConfig):
         self.orig_disable_opt_rtn = disable_opt_rtn
 
         if disable_opt_rtn is None:
-            if isinstance(scheme, str) and scheme in ["W8A16", "W8A8"]:
-                logger.warning("`disable_opt_rtn` is turned on for W8A16/W8A8 quantization to improve efficiency.")
-                disable_opt_rtn = True
             if self.bits and self.bits >= 8 and self.act_bits and self.act_bits >= 8 and self.data_type == "int":
                 logger.warning("`disable_opt_rtn` is turned on for W8A16/W8A8 quantization to improve efficiency.")
                 disable_opt_rtn = True

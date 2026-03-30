@@ -62,6 +62,7 @@ DIFFUSION_OUTPUT_CONFIGS = {
 
 
 class ARQuantizer(BaseQuantizers):
+    is_adam: bool = False
 
     def __init__(self, config: AutoRoundConfig):
         super().__init__(config)
@@ -219,127 +220,38 @@ class ARQuantizer(BaseQuantizers):
 
     def quantize_block(
         self,
-        block_name: Union[str, list[str]],
-        input_ids: Union[list[torch.Tensor], dict],
-        input_others: dict,
-        q_input: Union[torch.Tensor, dict, None] = None,
-        auto_offload=True,
-        **kwargs,
-    ):
-        """Quantize a block (or multiple blocks fused as WrapperMultiblock).
-
-        Args:
-            block_name: A single block name, or a list of names when nblocks > 1.
-                The module(s) are retrieved internally via get_module().
-        """
-        if isinstance(block_name, list):
-            from auto_round.wrapper import WrapperMultiblock
-
-            modules = [get_module(self.model, n) for n in block_name]
-            block = WrapperMultiblock(modules)
-        else:
-            block = get_module(self.model, block_name)
-        q_outputs, output = self._quantize_block(
-            block, input_ids, input_others, q_input=q_input, auto_offload=auto_offload, **kwargs
-        )
-        if self.compress_context.is_immediate_saving:
-            for n, tmp_m in block.named_modules():
-                if not (hasattr(tmp_m, "bits") and check_to_quantized(tmp_m)):
-                    continue
-                immediate_pack(tmp_m.global_name, self.layer_config)
-        return q_outputs, output
-
-    def _quantize_block(
-        self,
         block: torch.nn.Module,
         input_ids: Union[list[torch.Tensor], dict],
         input_others: dict,
-        q_input: Union[torch.Tensor, dict, None] = None,
-        auto_offload=True,
+        reference_output,
+        *,
+        loss_device: Union[str, torch.device],
+        mid_iter_mem_check: bool = False,
         **kwargs,
-    ):
-        """Quantize the weights of a given block of the model.
+    ) -> dict:
+        """Apply the AutoRound optimization algorithm to a block.
+
+        This is the pure-algorithm entry point.  All infrastructure concerns
+        (device placement, act-max hook collection, reference-output caching,
+        DDP setup, memory cleanup, logging) are handled by the Compressor
+        before and after this call.
 
         Args:
-        block: The block of the model to be quantized.
-        input_ids: The input tensor containing tokenized input ids.
-        input_others: A dictionary containing additional input data.
-        q_input: The quantized input tensor.
-        device: The device for quantization.
+            block: Module already placed on the correct device(s).
+            input_ids: Calibration inputs (already on cache_device).
+            input_others: Additional inputs for the block's forward pass.
+            reference_output: FP reference outputs collected by the Compressor.
+            loss_device: Device on which to compute the MSE loss.
+            mid_iter_mem_check: Pre-evaluated by the Compressor as
+                ``low_gpu_mem_usage and card_0_in_high_risk``.  When True,
+                triggers mid-iteration memory threshold checks to reduce
+                fragmentation on the primary GPU.
 
         Returns:
-        Tuple: (q_outputs, output) if self.enable_quanted_input is True, else (None, output)
+            best_params: Best quantization parameters found during optimization.
+                Empty dict if no trainable parameters were found.
         """
         device = self.compress_context.device
-
-        materialize_model_(block)
-        convert_module_to_hp_if_necessary(block, self.model_context.amp_dtype, device)
-
-        if auto_offload:
-            # card_0_in_high_risk indicates that card_0 memory is already in high usage (90%) w/o any weights
-            # loss_device is used to calculate loss on the second device if available and card_0_in_high_risk
-            if is_auto_device_mapping(self.compress_context.device_map) and len(self.compress_context.device_list) > 1:
-                card_0_in_high_risk, loss_device = set_auto_device_map_for_block_with_tuning(
-                    block,
-                    self.compress_context.device_map,
-                    input_ids,
-                    self.compress_context.low_gpu_mem_usage,
-                    self.batch_size,
-                    device,
-                )
-            else:
-                block = block.to(device)
-                card_0_in_high_risk, loss_device = False, device
-        else:
-            card_0_in_high_risk, loss_device = False, device
-
-        if len(self.compress_context.device_list) > 1 and auto_offload:
-            for n, m in block.named_modules():
-                if len(list(m.children())) != 0 or not hasattr(m, "tuning_device"):
-                    continue
-                from accelerate.hooks import AlignDevicesHook, add_hook_to_module
-
-                hook = AlignDevicesHook(m.tuning_device, io_same_device=True)
-                add_hook_to_module(m, hook, True)
-
-        if q_input is None:
-            hook_handles = self._register_act_max_hook(block)
-
-            output = self._get_block_outputs(
-                block,
-                input_ids,
-                input_others,
-                self.batch_size * self.infer_bs_coeff,
-            )
-
-            for handle in hook_handles:
-                handle.remove()
-        else:
-            output = self._get_block_outputs(
-                block,
-                input_ids,
-                input_others,
-                self.batch_size * self.infer_bs_coeff,
-            )
-            hook_handles = self._register_act_max_hook(block)
-            if hook_handles:
-                self._get_block_outputs(
-                    block,
-                    q_input if q_input is not None else input_ids,
-                    input_others,
-                    self.batch_size * self.infer_bs_coeff,
-                    save_output=False,
-                )
-
-            for handle in hook_handles:
-                handle.remove()
-
-        if q_input is not None:
-            if input_ids is not q_input:
-                clear_memory(input_ids, device_list=self.compress_context.device_list)
-            else:
-                clear_memory(device_list=self.compress_context.device_list)
-            input_ids = q_input
 
         quantized_layer_names, unquantized_layer_names = self.wrapper_block(
             block,
@@ -367,9 +279,8 @@ class ARQuantizer(BaseQuantizers):
 
         lr = torch.tensor(self.lr)
         minmax_lr = torch.tensor(self.minmax_lr)
-        is_adam = "adam" in self.__class__.__name__.lower()
 
-        extra_kwargs = {} if is_adam else {"momentum": self.momentum}
+        extra_kwargs = {} if self.is_adam else {"momentum": self.momentum}
 
         if self.enable_minmax_tuning:
             params = [
@@ -393,8 +304,7 @@ class ARQuantizer(BaseQuantizers):
             )
             logger.info(dump_info)
             unwrapper_block(block, {})
-            mv_module_from_gpu(block)
-            return output, output
+            return {}
 
         if self.lr_scheduler is None:
             lr_schedule = torch.optim.lr_scheduler.LinearLR(
@@ -438,20 +348,20 @@ class ARQuantizer(BaseQuantizers):
 
             for tmp_step in range(self.gradient_accumulate_steps):
                 indices = global_indices[tmp_step * batch_size : (tmp_step + 1) * batch_size]
-                current_output = self._get_current_output(output, indices)
+                current_output = self._get_current_output(reference_output, indices)
                 current_output = to_device(current_output, loss_device)
                 output_q = self._get_current_q_output(block, input_ids, input_others, indices, device, loss_device)
                 loss = self._get_loss(output_q, current_output, indices, mse_loss, device)
                 num_elm = 1 if num_elm <= 0 else num_elm
                 total_loss += loss.item() / num_elm
 
-                if self.compress_context.low_gpu_mem_usage and card_0_in_high_risk:
+                if mid_iter_mem_check:
                     # clear memory to avoid OOM due to memory fragmentation
                     clear_memory_if_reached_threshold(threshold=0.5, device_list=self.compress_context.device_list)
 
                 self._scale_loss_and_backward(scaler, loss)
 
-                if self.compress_context.low_gpu_mem_usage and card_0_in_high_risk:
+                if mid_iter_mem_check:
                     # clear memory to avoid OOM due to memory fragmentation
                     clear_memory_if_reached_threshold(threshold=0.8, device_list=self.compress_context.device_list)
 
@@ -462,8 +372,6 @@ class ARQuantizer(BaseQuantizers):
                 best_loss = total_loss
                 if not self.not_use_best_mse:
                     best_params = collect_best_params(block, self.compress_context.cache_device)
-                    # print(f"get better result at iter {i}, the loss is {total_loss}", flush=True)
-
                     last_best_iter = i
             if self.not_use_best_mse and i == self.iters - 1:
                 best_params = collect_best_params(block, self.compress_context.cache_device)
@@ -492,7 +400,7 @@ class ARQuantizer(BaseQuantizers):
         if self.compress_context.low_gpu_mem_usage:
             clear_memory(device_list=self.compress_context.device_list)  # clear cached memory during training
         if len(unquantized_layer_names) != 0:
-            logger.info(f"{unquantized_layer_names} have not been quantized")
+            logger.info(f"Unquantized layers: {unquantized_layer_names}")
         with torch.no_grad():
             unwrapper_block(block, best_params)
 
@@ -500,34 +408,8 @@ class ARQuantizer(BaseQuantizers):
             # enable moe experts act_max automatic generation for WrapperWALayer
             set_amax_for_all_moe_layers(block, attr_name="orig_layer.act_max")
 
-        if self.enable_quanted_input:
-            q_outputs = self._get_block_outputs(
-                block,
-                input_ids,
-                input_others,
-                self.batch_size * self.infer_bs_coeff,
-            )
-
-            if len(self.compress_context.device_list) > 1 and auto_offload:
-                accelerate.hooks.remove_hook_from_submodules(block)
-            if auto_offload:
-                mv_module_from_gpu(block)
-
-            clear_memory(input_ids, device_list=self.compress_context.device_list)
-            memory_info_summary = memory_monitor.get_summary()
-            logger.infoclean(dump_info + "," + memory_info_summary)
-
-            return q_outputs, output
-        else:
-            if len(self.compress_context.device_list) > 1 and auto_offload:
-                accelerate.hooks.remove_hook_from_submodules(block)
-            if auto_offload:
-                mv_module_from_gpu(block)
-            clear_memory(input_ids, device_list=self.compress_context.device_list)
-            memory_info_summary = memory_monitor.get_summary()
-            logger.infoclean(dump_info + "," + memory_info_summary)
-
-            return None, output
+        logger.infoclean(dump_info)
+        return best_params
 
     def quantize_layer(
         self, layer_name: str, input_ids: torch.Tensor, q_inputs: torch.Tensor = None, device: str = "cpu", **kwargs

@@ -14,9 +14,7 @@
 from typing import Union
 
 from auto_round.algorithms.quantization.config import QuantizationConfig
-from auto_round.auto_scheme.gen_auto_scheme import AutoScheme
 from auto_round.logger import logger
-from auto_round.schemes import QuantizationScheme
 
 
 class AutoRoundConfig(QuantizationConfig):
@@ -36,8 +34,7 @@ class AutoRoundConfig(QuantizationConfig):
 
     def __init__(
         self,
-        scheme: Union[str, dict, QuantizationScheme, AutoScheme] = "W4A16",
-        layer_config: dict[str, Union[str, dict, QuantizationScheme]] = None,
+        layer_config: dict[str, Union[str, dict]] = None,
         *,
         iters: int = 200,
         lr: float = None,
@@ -59,7 +56,7 @@ class AutoRoundConfig(QuantizationConfig):
         enable_adam: bool = False,
         **kwargs,
     ):
-        super().__init__(scheme=scheme, layer_config=layer_config, **kwargs)
+        super().__init__(layer_config=layer_config, **kwargs)
         self.iters = iters
         if self.iters < 0:
             logger.warning("`iters` must be non-negative, reset it to 200")
@@ -67,7 +64,7 @@ class AutoRoundConfig(QuantizationConfig):
 
         if not lr:
             # TODO need to check 4 bits lr setting for auto-round-best, 3bits only validate on small models
-            if self.iters >= 1000 and self.bits <= 3:
+            if self.iters >= 1000 and self.bits is not None and self.bits <= 3:
                 self.lr = 2.0 / self.iters
                 logger.info("set the lr to 2.0/iters for better accuracy")
             else:

@@ -11,23 +11,14 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-import copy
 from dataclasses import dataclass
 from enum import Enum
 from typing import ClassVar, Union
 
 from auto_round.algorithms.alg_config import AlgConfig
-from auto_round.auto_scheme.gen_auto_scheme import AutoScheme
 from auto_round.export.export_to_gguf.config import GGUF_INNER_CONFIG
 from auto_round.logger import logger
-from auto_round.schemes import (
-    QuantizationScheme,
-    _handle_special_schemes,
-    _parse_scheme,
-    get_gguf_scheme,
-    preset_name_to_scheme,
-)
-from auto_round.utils import convert_dtype_str2torch
+from auto_round.schemes import QuantizationScheme
 
 
 class BackendDataType(str, Enum):
@@ -43,7 +34,6 @@ class QuantizationConfig(AlgConfig):
     _alg_cls: ClassVar[str] = None
 
     # quantization args
-    scheme: Union[str, dict, QuantizationScheme, AutoScheme] = "W4A16"
     layer_config: dict[str, Union[str, dict, QuantizationScheme]] = None
     bits: int = None
     group_size: int = None
@@ -62,12 +52,10 @@ class QuantizationConfig(AlgConfig):
     to_quant_block_names: Union[str, list, None] = None
 
     def __post_init__(self):
-        # Resolve scheme attributes early so properties (is_act_nv_fp, is_wfp8afp8, etc.)
-        # work correctly at construction time without waiting for post_init().
-        self._early_resolve_scheme()
         # Run block-wise validation early (at construction time, before model loading).
-        # Guard with None checks because _early_resolve_scheme may leave attributes unresolved
-        # (e.g. when scheme is an AutoScheme that needs model info).
+        # Scheme resolution is deferred to BaseCompressor.post_init() via SchemeMixin.
+        # Guard with None checks in case the user hasn't explicitly set data_type/bits
+        # (they will be resolved from scheme by the compressor before use).
         if self.group_size is not None and isinstance(self.group_size, (tuple, list)):
             if not (
                 self.data_type is not None
@@ -94,37 +82,6 @@ class QuantizationConfig(AlgConfig):
             raise ValueError(
                 "`act_group_size` must be -1 (per channel), 0 (per-tensor), or a positive integer, not a tuple."
             )
-
-    def _early_resolve_scheme(self) -> None:
-        """Resolve scheme attributes early so properties work from init time.
-
-        Both entry.py routing (needs_act_calib) and BaseCompressor._adjust_torch_compile
-        need resolved attributes (act_data_type, data_type, is_act_nv_fp, ...) before
-        BaseQuantizers.post_init() runs (which is deferred until quantize() / after model
-        loading).  This method performs the same _parse_scheme() call eagerly so those
-        attributes are available from construction time.
-
-        AutoScheme is left deferred because it requires model information to select its
-        concrete option.
-        """
-        if isinstance(self.scheme, AutoScheme):
-            # AutoScheme needs model info for option selection — defer to post_init
-            return
-
-        # Collect fields that exist in both QuantizationScheme and QuantizationConfig
-        # where the user explicitly provided a value (non-None). These override the
-        # scheme's built-in defaults so that e.g. RTNConfig(scheme="NVFP4", bits=8)
-        # expands NVFP4 but keeps bits=8 instead of the scheme's default bits=4.
-        user_scheme_overrides = {
-            k: getattr(self, k) for k in QuantizationScheme.get_attributes() if getattr(self, k, None) is not None
-        }
-
-        try:
-            _, _, final_attrs = _parse_scheme(self.scheme, user_scheme_overrides)
-            vars(self).update(final_attrs)
-        except Exception:
-            # Silently ignore failures — post_init() will do the authoritative resolution
-            pass
 
     @staticmethod
     def _is_valid_group_size(gs) -> bool:
@@ -205,48 +162,61 @@ class QuantizationConfig(AlgConfig):
 
     @property
     def is_nv_fp(self):
-        return BackendDataType.NV_FP in self.data_type
+        return self.data_type is not None and BackendDataType.NV_FP in self.data_type
 
     @property
     def is_act_nv_fp(self):
-        return BackendDataType.NV_FP in self.act_data_type
+        return self.act_data_type is not None and BackendDataType.NV_FP in self.act_data_type
 
     @property
     def is_mx_fp(self):
-        return BackendDataType.MX_FP in self.data_type
+        return self.data_type is not None and BackendDataType.MX_FP in self.data_type
 
     @property
     def is_act_mx_fp(self):
-        return BackendDataType.MX_FP in self.act_data_type
+        return self.act_data_type is not None and BackendDataType.MX_FP in self.act_data_type
 
     @property
     def is_dynamic_wint8aint8(self):
         if self.act_dynamic:
             return True
-        if ("int8" in self.act_data_type or ("int" in self.act_data_type and self.act_bits == 8)) and (
-            "int8" in self.data_type or ("int" in self.data_type and self.bits == 8)
-        ):
-            return True
+        if self.act_data_type is not None and self.data_type is not None:
+            if ("int8" in self.act_data_type or ("int" in self.act_data_type and self.act_bits == 8)) and (
+                "int8" in self.data_type or ("int" in self.data_type and self.bits == 8)
+            ):
+                return True
         return False
 
     @property
     def is_standard_fp(self):
-        return BackendDataType.STANDARD_FP in self.data_type and not self.is_mx_fp and not self.is_nv_fp
+        return (
+            self.data_type is not None
+            and BackendDataType.STANDARD_FP in self.data_type
+            and not self.is_mx_fp
+            and not self.is_nv_fp
+        )
 
     @property
     def is_act_standard_fp(self):
-        return BackendDataType.STANDARD_FP in self.act_data_type and not self.is_act_mx_fp and not self.is_act_nv_fp
+        return (
+            self.act_data_type is not None
+            and BackendDataType.STANDARD_FP in self.act_data_type
+            and not self.is_act_mx_fp
+            and not self.is_act_nv_fp
+        )
 
     @property
     def is_static_afp8(self):
-        return BackendDataType.FP8_STATIC in self.act_data_type
+        return self.act_data_type is not None and BackendDataType.FP8_STATIC in self.act_data_type
 
     @property
     def is_static_wfp8afp8(self):
-        return BackendDataType.FP8_STATIC in self.data_type and self.is_static_afp8
+        return self.data_type is not None and BackendDataType.FP8_STATIC in self.data_type and self.is_static_afp8
 
     @property
     def is_wfp8afp8(self):
+        if self.act_data_type is None or self.data_type is None:
+            return False
         if (
             ("fp8" in self.act_data_type or ("fp" in self.act_data_type and self.act_bits == 8))
             and ("fp8" in self.data_type or ("fp" in self.data_type and self.bits == 8))

@@ -22,6 +22,8 @@ from auto_round.utils import check_is_cpu, htcore, is_hpex_available
 
 
 class ARAdamQuantizer(ARQuantizer):
+    is_adam: bool = True
+
     def _get_optimizer(self, optimizer):
         if optimizer is None:
             optimizer = torch.optim.AdamW

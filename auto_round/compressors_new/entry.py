@@ -13,7 +13,31 @@ from auto_round.compressors_new.calib import CalibCompressor, CalibratedRTNCompr
 from auto_round.compressors_new.utils import check_need_act_calibration
 from auto_round.compressors_new.zero_shot import ZeroShotCompressor
 from auto_round.logger import logger
-from auto_round.schemes import QuantizationScheme
+from auto_round.schemes import QuantizationScheme, _parse_scheme
+
+
+def _preview_resolved_attrs(config, scheme=None) -> dict:
+    """Resolve scheme attributes without mutating config, for routing decisions.
+
+    Called in ``Compressor.__new__`` before the concrete compressor class is
+    chosen.  ``SchemeMixin.resolve_scheme()`` will do the authoritative
+    resolution later; this is just a lightweight preview so routing logic
+    (``enable_imatrix``, ``needs_act_calib``, etc.) can use the correct values
+    even when the user specified only ``scheme=`` without explicit bit/dtype args.
+
+    Returns:
+        dict: resolved attributes (may be empty if scheme cannot be previewed).
+    """
+    if isinstance(scheme, AutoScheme):
+        # AutoScheme needs model info — cannot preview, rely on raw config attrs
+        return {}
+    scheme_attr_names = QuantizationScheme.get_attributes()
+    user_overrides = {k: getattr(config, k) for k in scheme_attr_names if getattr(config, k, None) is not None}
+    try:
+        _, _, final_attrs = _parse_scheme(scheme, user_overrides)
+        return final_attrs
+    except Exception:
+        return {}
 
 
 def is_weight_scheme(scheme):
@@ -63,6 +87,7 @@ class Compressor(object):
         tokenizer=None,
         platform="hf",
         format=None,
+        scheme="W4A16",
         **kwargs,
     ):
         # using different compressor base on AlgConfigs
@@ -106,23 +131,41 @@ class Compressor(object):
         elif isinstance(config, RTNConfig):
             enable_imatrix = False
             disable_opt_rtn = getattr(config, "disable_opt_rtn", False)
+            # If disable_opt_rtn was not explicitly set and scheme is W8A16/W8A8,
+            # auto-disable optimization to improve efficiency.
+            if getattr(config, "orig_disable_opt_rtn", None) is None:
+                if isinstance(scheme, str) and scheme.upper() in ["W8A16", "W8A8"]:
+                    logger.warning("`disable_opt_rtn` is turned on for W8A16/W8A8 quantization to improve efficiency.")
+                    disable_opt_rtn = True
+                    config.disable_opt_rtn = True
             if not disable_opt_rtn:
                 has_gguf_k = "gguf" in format.lower() and "_k" in format.lower() if format else False
                 if has_gguf_k:
                     enable_imatrix = True
                 else:
-                    sym = getattr(config, "sym", True)
-                    if sym is not None and sym is False:
+                    # Resolve scheme attrs for routing (config hasn't been through
+                    # SchemeMixin yet; user may have specified only scheme="W4A16").
+                    _resolved = _preview_resolved_attrs(config, scheme)
+                    _sym = _resolved.get("sym", getattr(config, "sym", None))
+                    _data_type = _resolved.get("data_type", getattr(config, "data_type", "") or "")
+                    if _sym is not None and _sym is False:
                         enable_imatrix = False
-                    elif getattr(config, "data_type", "") == "int":
+                    elif _data_type == "int":
                         enable_imatrix = True
-                    elif is_weight_scheme(config.scheme):
+                    elif is_weight_scheme(scheme):
                         enable_imatrix = True
+            else:
+                _resolved = {}
 
-            needs_act_calib = getattr(config, "is_act_quantize", False) and check_need_act_calibration(
-                getattr(config, "act_dynamic", None),
-                getattr(config, "act_data_type", None),
-                getattr(config, "act_bits", 16),
+            _resolved = _resolved if not disable_opt_rtn else _preview_resolved_attrs(config, scheme)
+            _act_bits = _resolved.get("act_bits", getattr(config, "act_bits", None))
+            _act_data_type = _resolved.get("act_data_type", getattr(config, "act_data_type", None))
+            _act_dynamic = _resolved.get("act_dynamic", getattr(config, "act_dynamic", None))
+            _is_act_quantize = _act_bits is not None and _act_bits <= 8
+            needs_act_calib = _is_act_quantize and check_need_act_calibration(
+                _act_dynamic,
+                _act_data_type,
+                _act_bits if _act_bits is not None else 16,
                 static_kv_dtype=kwargs.get("static_kv_dtype"),
                 static_attention_dtype=kwargs.get("static_attention_dtype"),
             )
@@ -131,7 +174,7 @@ class Compressor(object):
             # scheme selection, regardless of whether imatrix is needed.
             from auto_round.auto_scheme.gen_auto_scheme import AutoScheme as _AutoScheme
 
-            is_auto_scheme = isinstance(config.scheme, _AutoScheme)
+            is_auto_scheme = isinstance(scheme, _AutoScheme)
 
             if enable_imatrix or needs_act_calib or is_auto_scheme:
                 config._alg_cls = "OptimizedRTNQuantizer"
@@ -307,7 +350,6 @@ class AutoRound:
             # RTN mode
             disable_opt_rtn = kwargs.pop("disable_opt_rtn", None)
             config = RTNConfig(
-                scheme=scheme,
                 layer_config=layer_config,
                 bits=bits,
                 group_size=group_size,
@@ -334,7 +376,6 @@ class AutoRound:
             enable_quanted_input = kwargs.pop("enable_quanted_input", True)
 
             config = AutoRoundConfig(
-                scheme=scheme,
                 layer_config=layer_config,
                 iters=iters,
                 nsamples=nsamples,
@@ -389,6 +430,7 @@ class AutoRound:
             tokenizer=tokenizer,
             platform=platform,
             format=format,
+            scheme=scheme,
             dataset=dataset,
             low_gpu_mem_usage=low_gpu_mem_usage,
             device_map=device_map,

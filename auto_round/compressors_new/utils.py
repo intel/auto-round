@@ -353,7 +353,10 @@ def set_layer_config(
             m = get_module(model, name)
             if len(list(m.children())) == 0 and type(m) not in supported_types:
                 layer_config.pop(name)
-                logger.warning(f"{name} is not supported in current scheme, ignoring its setting in `layer_config`")
+                logger.warning(
+                    f"'{name}' exists in the model but is not a supported quantization target "
+                    f"in the current scheme, ignoring its setting in `layer_config`"
+                )
                 continue
 
         regex = re.compile(to_standard_regex(name))
@@ -636,13 +639,16 @@ def get_layer_config_by_gguf_format(layer_config, target_gguf_format: str, model
     i_attention_wv = 0
     i_ffn_down = 0
     layer_config_copy = copy.deepcopy(layer_config)
-    target_bits = None
+    base_target_bits = None
     if inner_gguf_format.startswith("gguf:q") and len(inner_gguf_format) >= 7 and (inner_gguf_format[6]).isdigit():
-        target_bits = int(inner_gguf_format[6])
+        base_target_bits = int(inner_gguf_format[6])
 
     for layer_name, config in layer_config_copy.items():
         if not check_to_quantized(config):
             continue
+        # Reset target_bits each iteration to prevent lm_head/embedding settings
+        # from bleeding into subsequent block layers and bypassing their special logic.
+        target_bits = base_target_bits
         new_type = GGUF_CONFIG[target_gguf_format]["mostly"]
         layer = get_module(model, layer_name)
         if type(layer) == transformers.pytorch_utils.Conv1D:
