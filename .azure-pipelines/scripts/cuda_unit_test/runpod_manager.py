@@ -252,8 +252,10 @@ def terminate_pod(args):
                 continue
             else:
                 print(f"❌ {response.status_code} Error, Reached maximum retry attempts ({max_tries}), giving up.")
+        else:
+            break
 
-        response.raise_for_status()
+    response.raise_for_status()
 
     for i in range(max_tries):  # Wait up to 5 minutes for termination
         pod_id = get_pod_id(args)
