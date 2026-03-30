@@ -291,7 +291,7 @@ class BasicArgumentParser(argparse.ArgumentParser):
         scheme.add_argument(
             "--group_size",
             default=None,
-            type=lambda s: int(s) if s.isdigit() else tuple([int(x.strip()) for x in s.split(",")]),
+            type=lambda s: int(s) if s.lstrip('-').isdigit() else tuple([int(x.strip()) for x in s.split(",")]),
             help="Group size for weight quantization.",
         )
         scheme.add_argument("--asym", action="store_true", help="Use asymmetric quantization instead of symmetric.")
