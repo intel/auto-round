@@ -259,7 +259,7 @@ def get_tiny_model(
                     repo_id=model_name_or_path, ignore_patterns=["*.safetensors", "*.safetensors.index.json"]
                 )
 
-            def _get_module_and(cls_name, mod_name, folder_name):
+            def _get_module(cls_name, mod_name, folder_name):
                 if cls_name == "diffusers":
                     with open(os.path.join(local_dir, folder_name, "config.json"), "r", encoding="utf-8") as f:
                         config = json.load(f)
