@@ -36,6 +36,8 @@ from auto_round.utils.weight_handler import (
     is_quantized_input_module,
 )
 
+FIX_MISTRAL_REGEX_MODEL_TYPE_LIST = ["longcat_next"]
+
 
 def clean_module_parameter(submodule: torch.nn.Module, param_name: str) -> None:
     """This function is recommended to be used instead of module.weight = None.
@@ -599,6 +601,7 @@ def mllm_load_model(
                 tokenizer = AutoTokenizer.from_pretrained(
                     pretrained_model_name_or_path,
                     trust_remote_code=trust_remote_code,
+                    fix_mistral_regex=True if model_type in FIX_MISTRAL_REGEX_MODEL_TYPE_LIST else False,
                     **processor_load_kwargs,
                 )
                 processor = AutoProcessor.from_pretrained(
