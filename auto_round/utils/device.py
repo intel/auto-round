@@ -606,7 +606,7 @@ class ClearMemory:
         from auto_round.utils.device import is_hpex_available
 
         if is_hpex_available():
-            memory_monitor.update_cpu()
+            memory_monitor.update_hpu(device_list)
             return
         else:
             if device_list is not None:
@@ -683,7 +683,9 @@ def check_memory_availability(device, inputs, weight, org_seqlen, org_bs):
         free_space = total_memory - used_memory
     elif "hpu" in device:  # pragma: no cover
         current_hpu_index = torch.hpu.current_device()
-        free_space = torch.hpu.memory_reserved(current_hpu_index)
+        total_memory = torch.hpu.memory_cached(current_hpu_index)
+        used_memory = torch.hpu.memory_allocated(current_hpu_index)
+        free_space = total_memory - used_memory
     else:
         return True, org_seqlen, org_bs
 
@@ -1585,6 +1587,13 @@ class MemoryMonitor:
                 device_list = list(range(torch.cuda.device_count()))
             elif torch.xpu.is_available():
                 device_list = list(range(torch.xpu.device_count()))
+            elif is_hpex_available():
+                try:
+                    import habana_frameworks.torch.hpu as hthpu  # pylint: disable=E0401
+
+                    device_list = list(range(hthpu.device_count()))
+                except Exception:
+                    device_list = [0]
 
         for device in device_list:
             if str(device) == "cpu":
@@ -1596,6 +1605,13 @@ class MemoryMonitor:
             elif torch.xpu.is_available():
                 current_vram = torch.xpu.memory_reserved(device) / 1024**3  # GB
                 if device == "xpu":
+                    device = "0"
+            elif is_hpex_available():
+                try:
+                    current_vram = torch.hpu.memory_allocated(device) / 1024**3  # GB
+                except Exception:
+                    current_vram = 0.0
+                if device == "hpu":
                     device = "0"
             else:
                 return
@@ -1613,6 +1629,40 @@ class MemoryMonitor:
         process = psutil.Process()
         current_ram = process.memory_info().rss / 1024**3  # GB
         self.peak_ram = max(self.peak_ram, current_ram)
+
+    def update_hpu(self, device_list=None):
+        """Update memory usage for HPU devices."""
+        if not self.enabled:
+            return
+        # Track RAM
+        self.update_cpu()
+        # Track HPU VRAM
+        if not is_hpex_available():
+            return
+        if device_list is None:
+            try:
+                import habana_frameworks.torch.hpu as hthpu  # pylint: disable=E0401
+
+                device_list = list(range(hthpu.device_count()))
+            except Exception:
+                device_list = [0]
+        elif not isinstance(device_list, (list, tuple)):
+            device_list = [device_list]
+        for device in device_list:
+            if str(device) == "cpu":
+                continue
+            try:
+                current_vram = torch.hpu.memory_allocated(device) / 1024**3  # GB
+            except Exception:
+                continue
+            dev_key = str(device)
+            if dev_key == "hpu":
+                dev_key = "0"
+            dev_key = dev_key.split(":")[-1]
+            if current_vram > 0:
+                if dev_key not in self.peak_vram:
+                    self.peak_vram[dev_key] = 0.0
+                self.peak_vram[dev_key] = max(self.peak_vram[dev_key], current_vram)
 
     def reset(self):
         """Reset all statistics."""

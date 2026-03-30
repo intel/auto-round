@@ -204,6 +204,35 @@ class TestAutoRound:
 
         shutil.rmtree(saved_tiny_model_path, ignore_errors=True)
 
+    @require_gguf
+    def test_q2_k_s_ffn_down_q4k(self):
+        """Verify blk.0.ffn_down.weight is Q4_K in gguf:q2_k_s format.
+        Blocks where i_layer < n_layer/8 should use Q4_K instead of Q2_K for ffn_down."""
+        from gguf.gguf_reader import GGUFReader
+
+        model_path = get_model_path("Qwen/Qwen3-1.7B")
+        tiny_model_path = "./tmp/tiny_qwen3_1b"
+        save_tiny_model(model_path, tiny_model_path, num_layers=8)
+        autoround = AutoRound(
+            tiny_model_path,
+            iters=0,
+            nsamples=1,
+            seqlen=16,
+            disable_opt_rtn=True,
+        )
+        quantized_model_path = self.save_dir
+        autoround.quantize_and_save(output_dir=quantized_model_path, format="gguf:q2_k_s")
+        gguf_file = os.listdir(quantized_model_path)[0]
+        gguf_model = GGUFReader(os.path.join(quantized_model_path, gguf_file))
+        ffn_down_type = None
+        for tensor in gguf_model.tensors:
+            if tensor.name == "blk.0.ffn_down.weight":
+                ffn_down_type = tensor.tensor_type.name
+                break
+        assert ffn_down_type is not None, "blk.0.ffn_down.weight not found in GGUF file"
+        assert ffn_down_type == "Q4_K", f"Expected Q4_K for blk.0.ffn_down.weight but got {ffn_down_type}"
+        shutil.rmtree(tiny_model_path, ignore_errors=True)
+
     @pytest.mark.skip_ci(reason="Only tiny model is suggested for CI")
     def test_gguf_baseline(self):
         model_name = get_model_path("Qwen/Qwen2.5-1.5B-Instruct")

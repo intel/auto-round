@@ -18,6 +18,7 @@ import shutil
 import torch
 import torch.nn as nn
 
+import auto_round.envs as envs
 from auto_round.utils import (
     copy_missing_tensors_from_source,
     copy_python_files_from_model_cache,
@@ -211,24 +212,30 @@ def save_model(
         else:
             model.save_pretrained(save_dir, max_shard_size=max_shard_size, safe_serialization=safe_serialization)
 
-    try:
-        if (
-            hasattr(model, "config")
-            and hasattr(model.config, "_name_or_path")
-            and model.config.name_or_path is not None  # set None for tiny model
-        ):
-            copy_missing_tensors_from_source(
-                source_dir=model.config._name_or_path,
-                target_dir=save_dir,
-            )
-    except Exception as e:
-        logger.warning("Skipping copy of missing tensors from source checkpoint due to error: %s", e)
+    # Allow disabling copy_missing_tensors_from_source via env var AR_DISABLE_COPY_MTP_WEIGHTS, default enabled
+    if not envs.AR_DISABLE_COPY_MTP_WEIGHTS:
+        try:
+            if (
+                hasattr(model, "config")
+                and hasattr(model.config, "_name_or_path")
+                and model.config.name_or_path is not None  # set None for tiny model
+            ):
+                copy_missing_tensors_from_source(
+                    source_dir=model.config._name_or_path,
+                    target_dir=save_dir,
+                )
+        except Exception as e:
+            logger.warning("Skipping copy of missing tensors from source checkpoint due to error: %s", e)
 
     config_path = os.path.join(save_dir, "config.json")
     if dtype is not None and dtype != model.dtype and os.path.exists(os.path.join(save_dir, "config.json")):
         with open(config_path, "r") as file:
             data = json.load(file)
-        data["torch_dtype"] = str(dtype).split(".")[-1]
+        dtype_str = str(dtype).split(".")[-1]
+        data["torch_dtype"] = dtype_str
+        # Also update 'dtype' field if present (transformers >= 4.57) for consistency
+        if "dtype" in data:
+            data["dtype"] = dtype_str
         with open(config_path, "w") as file:
             json.dump(data, file, indent=2)
 

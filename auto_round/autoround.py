@@ -92,7 +92,6 @@ class AutoRound:
         enable_alg_ext: bool = False,
         disable_opt_rtn: bool | None = None,
         low_cpu_mem_usage: bool = True,
-        transform_config: dict | None = None,
         **kwargs,
     ) -> BaseCompressor:
         """Initialize AutoRound with quantization and tuning configuration.

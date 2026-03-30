@@ -40,7 +40,7 @@ class QuantizationScheme:
     act_dynamic: Optional[bool] = None
     super_bits: Optional[int] = None
     super_group_size: Optional[int] = None
-    transform_config: Optional[dict] = None
+    hadamard_config: Optional[dict] = None
 
     @classmethod
     def from_dict(cls, config: dict):
@@ -94,7 +94,7 @@ class QuantizationScheme:
                 continue
             self_val = getattr(self, field)
             other_val = getattr(other, field)
-            # Treat None and empty dict as equivalent for dict fields like transform_config
+            # Treat None and empty dict as equivalent for dict fields like hadamard_config
             if self_val != other_val:
                 if isinstance(self_val, dict) and not self_val and other_val is None:
                     continue
