@@ -96,7 +96,7 @@ class TestAutoRound:
 
         quantization_config = AutoRoundConfig(backend="auto")
         model = AutoModelForCausalLM.from_pretrained(
-            self.save_dir, torch_dtype=torch.float16, device_map="auto", quantization_config=quantization_config
+            self.save_dir, torch_dtype=torch.float16, device_map="cuda:0", quantization_config=quantization_config
         )
 
         tokenizer = AutoTokenizer.from_pretrained(self.save_dir)
