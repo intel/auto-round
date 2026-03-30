@@ -956,6 +956,7 @@ def get_dataloader(tokenizer, seqlen, dataset_name="NeelNanda/pile-10k", seed=42
         Returns:
             dict | None: Batched tensors, or ``None`` if all examples were filtered.
         """
+        input_ids_new = []
         attention_mask_new = []
         for text in batch:
             input_ids, attention_mask = text["input_ids"], text["attention_mask"]
