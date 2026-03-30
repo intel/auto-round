@@ -110,14 +110,23 @@ class TestAutoRoundBlockFP:
         )
 
         cmd = [
-            "python3", "-m", "auto_round",
-            "--model_name", tiny_qwen_model_path,
-            "--bits", "4",
-            "--group_size", "-1",
-            "--act_bits", "4",
-            "--act_group_size", "-1",
-            "--format", "fake",
-            "--iters", "0",
+            "python3",
+            "-m",
+            "auto_round",
+            "--model_name",
+            tiny_qwen_model_path,
+            "--bits",
+            "4",
+            "--group_size",
+            "-1",
+            "--act_bits",
+            "4",
+            "--act_group_size",
+            "-1",
+            "--format",
+            "fake",
+            "--iters",
+            "0",
         ]
         subprocess.run(
             cmd,
