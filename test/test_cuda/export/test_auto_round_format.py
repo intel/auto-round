@@ -105,7 +105,7 @@ class TestAutoRound:
         torch.cuda.empty_cache()
 
         model = AutoModelForCausalLM.from_pretrained(
-            self.save_dir, torch_dtype=torch.bfloat16, device_map="auto", quantization_config=quantization_config
+            self.save_dir, torch_dtype=torch.bfloat16, device_map="cuda:0", quantization_config=quantization_config
         )
 
         tokenizer = AutoTokenizer.from_pretrained(self.save_dir)
@@ -117,7 +117,7 @@ class TestAutoRound:
         model_name = get_model_path("OPEA/Meta-Llama-3.1-8B-Instruct-int4-sym-inc")
         quantization_config = AutoRoundConfig(backend="tritonv2")
         model = AutoModelForCausalLM.from_pretrained(
-            model_name, torch_dtype=torch.bfloat16, device_map="auto", quantization_config=quantization_config
+            model_name, torch_dtype=torch.bfloat16, device_map="cuda:0", quantization_config=quantization_config
         )
         tokenizer = AutoTokenizer.from_pretrained(model_name)
         eval_generated_prompt(model, tokenizer)
@@ -227,4 +227,4 @@ class TestAutoRound:
         assert compressed_model.config.quantization_config["quant_method"] == "fp8"
         assert compressed_model.config.quantization_config["weight_block_size"] == (128, 128)
         if is_cuda_support_fp8():
-            eval_generated_prompt(quantized_model_path, device="cuda")
+            eval_generated_prompt(quantized_model_path, device="cuda:0")

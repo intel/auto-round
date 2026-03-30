@@ -183,7 +183,7 @@ class TestAutoRoundMarlinBackend:
 
         quantization_config = AutoRoundConfig(backend="gptqmodel:awq_marlin")
         model = AutoModelForCausalLM.from_pretrained(
-            self.save_dir, torch_dtype="auto", device_map="auto", quantization_config=quantization_config
+            self.save_dir, torch_dtype="auto", device_map="cuda:0", quantization_config=quantization_config
         )
 
         tokenizer = AutoTokenizer.from_pretrained(self.save_dir)
@@ -215,7 +215,7 @@ class TestAutoRoundMarlinBackend:
 
         quantization_config = AutoRoundConfig(backend="gptqmodel:awq_marlin")
         model = AutoModelForCausalLM.from_pretrained(
-            self.save_dir, torch_dtype="auto", device_map="auto", quantization_config=quantization_config
+            self.save_dir, torch_dtype="auto", device_map="cuda:0", quantization_config=quantization_config
         )
 
         tokenizer = AutoTokenizer.from_pretrained(self.save_dir)
