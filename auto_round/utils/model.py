@@ -557,6 +557,9 @@ def mllm_load_model(
                 cls = getattr(base_lib, architectures)
             else:
                 cls = AutoModelForCausalLM
+            # A special case for NextStep
+            if model_type == "nextstep":
+                cls = AutoModel
             try:
                 model_load_kwargs = {}
                 if model_subfolder is not None:
