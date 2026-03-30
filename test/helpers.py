@@ -247,14 +247,19 @@ def get_tiny_model(
             from diffusers import AutoPipelineForText2Image
             from huggingface_hub import snapshot_download
 
-            local_dir = snapshot_download(
-                repo_id=model_name_or_path, ignore_patterns=["*.safetensors", "*.safetensors.index.json"]
-            )
-
             diffusers_module = importlib.import_module("diffusers")
             transformers_module = importlib.import_module("transformers")
 
-            def _get_module(cls_name, mod_name, folder_name):
+            existing = False
+            if os.path.exists(model_name_or_path):
+                local_dir = model_name_or_path
+                existing = True
+            else:
+                local_dir = snapshot_download(
+                    repo_id=model_name_or_path, ignore_patterns=["*.safetensors", "*.safetensors.index.json"]
+                )
+
+            def _get_module_and(cls_name, mod_name, folder_name):
                 if cls_name == "diffusers":
                     with open(os.path.join(local_dir, folder_name, "config.json"), "r", encoding="utf-8") as f:
                         config = json.load(f)
@@ -270,13 +275,19 @@ def get_tiny_model(
             with open(os.path.join(local_dir, "model_index.json"), "r", encoding="utf-8") as f:
                 model_index = json.load(f)
 
-            for k, v in model_index.items():
-                if k in ["scheduler", "tokenizer", "tokenizer_2"]:
-                    continue
-                if isinstance(v, list) and v[0] in ["diffusers", "transformers"]:
-                    module = _get_module(v[0], v[1], k)
-                    module.save_pretrained(os.path.join(local_dir, k))
-            model = AutoPipelineForText2Image.from_pretrained(local_dir)
+            if not existing:
+                for k, v in model_index.items():
+                    if k in ["scheduler", "tokenizer", "tokenizer_2"]:
+                        continue
+                    if isinstance(v, list) and v[0] in ["diffusers", "transformers"]:
+                        module = _get_module(v[0], v[1], k)
+                        module.save_pretrained(os.path.join(local_dir, k))
+                model = AutoPipelineForText2Image.from_pretrained(local_dir)
+            else:
+                model = AutoPipelineForText2Image.from_pretrained(local_dir)
+                for k, v in model_index.items():
+                    if k not in ["scheduler", "tokenizer", "tokenizer_2"] and isinstance(v, list) and v[0] in ["diffusers", "transformers"]:
+                        _reduce_config_layers(getattr(model, k).config, num_layers, num_experts)
         else:
             trust_remote_code = kwargs.pop("trust_remote_code", True)
             config = transformers.AutoConfig.from_pretrained(model_name_or_path, trust_remote_code=trust_remote_code)
