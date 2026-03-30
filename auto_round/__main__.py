@@ -140,10 +140,18 @@ class BasicArgumentParser(argparse.ArgumentParser):
             "Useful when working with large models that don't fit in GPU memory.",
         )
         basic.add_argument(
-            "--low_cpu_mem_usage", action="store_true", help="Deprecated, Lower CPU memory mode. Defaults to False."
+            "--low_cpu_mem_usage",
+            action="store_true",
+            help=(
+                "Deprecated: low CPU memory mode is enabled by default. "
+                "This flag is kept only for backward compatibility and has no effect "
+                "beyond explicitly re-enabling the default behavior."
+            ),
         )
         basic.add_argument(
-            "--disable_low_cpu_mem_usage", action="store_true", help="disable lower CPU memory mode. Defaults to False."
+            "--disable_low_cpu_mem_usage",
+            action="store_true",
+            help=("Disable low CPU memory mode. " "Use this flag to turn off the default low CPU memory behavior."),
         )
         basic.add_argument(
             "--format",
@@ -676,6 +684,10 @@ def tune(args):
         layer_config = parse_layer_config_arg(args.layer_config)
         args.layer_config = layer_config
 
+    low_cpu_mem_usage = True
+    if args.disable_low_cpu_mem_usage:
+        low_cpu_mem_usage = False
+
     if args.avg_bits is not None:
         if args.options is None:
             raise ValueError("please set --options for auto scheme")
@@ -684,10 +696,9 @@ def tune(args):
             avg_bits=args.avg_bits,
             shared_layers=args.shared_layers,
             ignore_scale_zp_bits=args.ignore_scale_zp_bits,
+            low_gpu_mem_usage=args.low_gpu_mem_usage,
+            low_cpu_mem_usage=low_cpu_mem_usage,
         )
-    low_cpu_mem_usage = True
-    if args.disable_low_cpu_mem_usage:
-        low_cpu_mem_usage = False
 
     autoround: BaseCompressor = AutoRound(
         model=model_name,
