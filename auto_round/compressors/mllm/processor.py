@@ -29,10 +29,10 @@ Support Matrix
 """
 import os
 from datetime import datetime, timedelta
+from types import SimpleNamespace
 
 import torch
 from transformers.data.data_collator import default_data_collator
-from types import SimpleNamespace
 
 from .utils import fetch_image
 
@@ -165,7 +165,7 @@ class HFProcessor(BasicProcessor):
         max_length=None,
         truncation=False,
         truncation_strategy="text",
-        **kwargs
+        **kwargs,
     ):
 
         if isinstance(text, list):
@@ -196,6 +196,7 @@ class Qwen2VLProcessor(HFProcessor):
             ret[key] = ret[key][0]
         return ret
 
+
 @register_processor("longcat_next")
 class LongCatNextProcessor(BasicProcessor):
     """Processor for meituan-longcat/LongCat-Next multimodal models.
@@ -210,6 +211,7 @@ class LongCatNextProcessor(BasicProcessor):
     IMAGE_TOKEN = "<image>"
     LONGCAT_IMG_START = "<longcat_img_start>"
     LONGCAT_IMG_END = "<longcat_img_end>"
+
     def __init__(self):
         super().__init__()
         from transformers.generation.configuration_utils import GenerationConfig
@@ -228,8 +230,8 @@ class LongCatNextProcessor(BasicProcessor):
                 "cfg_scale": 3.0,
                 "token_h": 37,
                 "token_w": 37,
-                "anyres_prefix": "<longcat_img_token_size>{h} {w}</longcat_img_token_size>"
-            }
+                "anyres_prefix": "<longcat_img_token_size>{h} {w}</longcat_img_token_size>",
+            },
         }
         self.visual_generation_config = GenerationConfig(**visual_config)
 
@@ -261,9 +263,7 @@ class LongCatNextProcessor(BasicProcessor):
                     )
                 messages.append(msg)
 
-            text_input = self.tokenizer.apply_chat_template(
-                messages, tokenize=False, add_generation_prompt=True
-            )
+            text_input = self.tokenizer.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
         else:
             # Plain string input
             if max_length is not None:
@@ -546,7 +546,7 @@ class Mistral3Processor(BasicProcessor):
         max_length=None,
         truncation=False,
         truncation_strategy="text",
-        **kwargs
+        **kwargs,
     ):
         from mistral_common.protocol.instruct.request import ChatCompletionRequest  # pylint: disable=E0401
 
