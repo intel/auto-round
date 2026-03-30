@@ -23,10 +23,9 @@ from transformers import set_seed
 from auto_round.algorithms.alg_config import AlgConfig
 from auto_round.algorithms.quantization import BaseQuantizers, QuantizationConfig
 from auto_round.algorithms.rotation import (
-    HadamardConfig,
+    BaseRotationConfig,
     apply_rotation,
     check_supported_schemes,
-    normalize_hadamard_config,
 )
 from auto_round.compressors_new.shard_writer import ShardWriter
 from auto_round.compressors_new.utils import _get_save_folder_name, block_forward, set_layer_config
@@ -94,7 +93,7 @@ class SerializedCompressorConfig:
     super_bits: Optional[int] = None
     super_group_size: Optional[int] = None
     to_quant_block_names: Optional[list[str]] = None
-    hadamard_config: Optional[dict[str, Any]] = None
+    rotation_configs: Optional[list[dict[str, Any]]] = None
 
 
 class BaseCompressor(object):
@@ -133,16 +132,17 @@ class BaseCompressor(object):
         enable_torch_compile: bool = False,
         seed: int = 42,
         low_cpu_mem_usage: bool = True,
-        hadamard_config: str | dict | HadamardConfig | None = None,
         **kwargs,
     ):
         self.quantize_config = None
-        self.config_list = config if isinstance(config, list) else [config]
-        for config in self.config_list:
-            if isinstance(config, QuantizationConfig):
-                self.quantize_config = config
+        self.rotation_configs: list[BaseRotationConfig] = []
+        _config_list = config if isinstance(config, list) else [config]
+        for _cfg in _config_list:
+            if isinstance(_cfg, QuantizationConfig):
+                self.quantize_config = _cfg
+            elif isinstance(_cfg, BaseRotationConfig):
+                self.rotation_configs.append(_cfg)
         assert self.quantize_config is not None, "QuantizationConfig is required for Compressor"
-        self.config_list.remove(self.quantize_config)
 
         # Scheme is passed directly to the compressor, not stored in QuantizationConfig.
         self.scheme = scheme
@@ -215,11 +215,6 @@ class BaseCompressor(object):
         if is_hpex_available():
             logger.info("habana_frameworks is available, import htcore explicitly.")
             import habana_frameworks.torch.core as htcore  # pylint: disable=E0401
-
-        # Accept legacy name for backward compatibility
-        self._hadamard_config = (
-            hadamard_config or kwargs.pop("hadamard_config", None) or kwargs.pop("transform_config", None)
-        )
 
         # Reset both context singletons before creating fresh instances so that
         # consecutive AutoRound creations don't inherit stale config from earlier ones.
@@ -672,15 +667,16 @@ class BaseCompressor(object):
             for _lname, _lval in _gguf_layer_cfg.items():
                 self.layer_config.setdefault(_lname, _lval)
 
-        # ── Phase 2d: apply hadamard transform ───────────────────────────────
-        if self._hadamard_config:
+        # ── Phase 2d: apply rotation transforms ──────────────────────────────
+        if self.rotation_configs:
             check_supported_schemes(self.scheme)
-            self.model_context.model = apply_rotation(
-                self.model_context.model,
-                self._hadamard_config,
-                need_calibration=True if self.quantize_config.iters > 0 else False,
-            )
-            self._hadamard_config = normalize_hadamard_config(self._hadamard_config)
+            need_calibration = self.quantize_config.iters > 0
+            for rotation_cfg in self.rotation_configs:
+                self.model_context.model = apply_rotation(
+                    self.model_context.model,
+                    rotation_cfg,
+                    need_calibration=need_calibration,
+                )
 
         # ── Phase 3: patch model structure ───────────────────────────────────
         # update_module() may replace layers (e.g. MoE expert merging); must
