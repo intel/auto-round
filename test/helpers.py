@@ -286,7 +286,11 @@ def get_tiny_model(
             else:
                 model = AutoPipelineForText2Image.from_pretrained(local_dir)
                 for k, v in model_index.items():
-                    if k not in ["scheduler", "tokenizer", "tokenizer_2"] and isinstance(v, list) and v[0] in ["diffusers", "transformers"]:
+                    if (
+                        k not in ["scheduler", "tokenizer", "tokenizer_2"]
+                        and isinstance(v, list)
+                        and v[0] in ["diffusers", "transformers"]
+                    ):
                         _reduce_config_layers(getattr(model, k).config, num_layers, num_experts)
         else:
             trust_remote_code = kwargs.pop("trust_remote_code", True)
