@@ -393,6 +393,7 @@ def _patch_qwen25_omni_talker(model) -> None:
         Returns:
             dict: Model input dictionary with ``position_ids`` set to ``None``.
         """
+        from transformers.generation.utils import GenerationMixin
 
         model_inputs = GenerationMixin.prepare_inputs_for_generation(
             self,
@@ -470,6 +471,7 @@ def _patch_qwen3_omni_moe_talker(model) -> None:
         Returns:
             dict: Model input dictionary.
         """
+        from transformers.generation.utils import GenerationMixin
 
         hidden_states = kwargs.pop("hidden_states", None)
         inputs = GenerationMixin.prepare_inputs_for_generation(
