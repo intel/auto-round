@@ -46,8 +46,8 @@ steps:
     - script: |
         if [ "${{ parameters.utScriptFileName }}" == "run_ut_xpu" ];then
           docker exec ${{ parameters.utContainerName }} bash -c "cd /auto-round \
-            && uv pip install torch==2.10.0 torchvision --index-url https://download.pytorch.org/whl/xpu \
-            && uv pip install torch==2.10.0 auto-round-lib \
+            && uv pip install torch==2.11.0 torchvision --index-url https://download.pytorch.org/whl/xpu \
+            && uv pip install torch==2.11.0 auto-round-lib \
             && uv pip install -r requirements.txt \
             && uv pip install -r test/test_ark/requirements.txt \
             && uv pip install -r test/test_xpu/requirements.txt \
@@ -55,8 +55,8 @@ steps:
             && uv pip list"
         else 
           docker exec ${{ parameters.utContainerName }} bash -c "cd /auto-round \
-            && uv pip install torch==2.10.0 torchvision --index-url https://download.pytorch.org/whl/cpu \
-            && uv pip install torch==2.10.0 auto-round-lib \
+            && uv pip install torch==2.11.0 torchvision --index-url https://download.pytorch.org/whl/cpu \
+            && uv pip install torch==2.11.0 auto-round-lib \
             && uv pip install -r requirements.txt \
             && uv pip install -r requirements-cpu.txt \
             && uv pip install -r test/test_cpu/requirements.txt \
