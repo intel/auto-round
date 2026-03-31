@@ -105,21 +105,21 @@ def check_performance():
         current: QuantMetrics = modes.get("current", QuantMetrics())
         baseline: QuantMetrics = modes.get("baseline", QuantMetrics())
 
-        if not compare_metric("Tuning Time (s)", current.tuning_time_s, baseline.tuning_time_s, tolerance=0.1):
+        if not compare_metric("Tuning Time (s)", current.tuning_time_s, baseline.tuning_time_s, tolerance=0.05):
             all_passed = False
 
-        if not compare_metric("Peak RAM (GB)", current.peak_ram_gb, baseline.peak_ram_gb, tolerance=0.1):
+        if not compare_metric("Peak RAM (GB)", current.peak_ram_gb, baseline.peak_ram_gb, tolerance=0.03):
             all_passed = False
 
-        if not compare_metric("Peak VRAM (GB)", current.peak_vram_gb, baseline.peak_vram_gb, tolerance=0.05):
+        if not compare_metric("Peak VRAM (GB)", current.peak_vram_gb, baseline.peak_vram_gb, tolerance=0.03):
             all_passed = False
 
-        if not compare_metric("Output Size (GB)", current.output_size_gb, baseline.output_size_gb, tolerance=0.05):
+        if not compare_metric("Output Size (GB)", current.output_size_gb, baseline.output_size_gb, tolerance=0.01):
             all_passed = False
 
     logging.info("=" * 60)
     if all_passed:
-        logging.info("✅ Performance check passed: All metrics are within acceptable limits (±10%).")
+        logging.info("✅ Performance check passed: All metrics are within acceptable limits.")
     else:
         logging.error("❌ Performance check failed: Current metrics exceed acceptable limits compared to baseline.")
         sys.exit(1)

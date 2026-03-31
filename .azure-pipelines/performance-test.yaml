@@ -30,10 +30,10 @@ stages:
 
         strategy:
           matrix:
-            Qwen3_int4:
+            Qwen3_W4A16:
               model_name: 'Qwen/Qwen3-0.6B'
               scheme: 'W4A16'
-            Qwen3_fp8:
+            Qwen3_FP8_STATIC:
               model_name: 'Qwen/Qwen3-0.6B'
               scheme: 'FP8_STATIC'
 
@@ -58,13 +58,6 @@ stages:
               bash -c "cd /auto-round/.azure-pipelines/scripts/performance \
                 && bash perf_test.sh --model_name=$(model_name) --scheme=$(scheme)"
             displayName: "Run performance test"
-
-          - task: PublishPipelineArtifact@1
-            condition: succeededOrFailed()
-            inputs:
-              targetPath: $(Build.SourcesDirectory)/log_dir
-              artifact: "Performance_Test_Logs"
-              publishLocation: "pipeline"
 
           - task: Bash@3
             condition: always()
