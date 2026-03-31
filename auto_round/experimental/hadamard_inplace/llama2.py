@@ -1,10 +1,15 @@
-import gc
-import torch
-import typing
-import transformers
-import tqdm, math
-from auto_round.experimental.hadamard_inplace.hadamard import random_hadamard_matrix, apply_exact_had_to_linear
+# # Copyright (C) 2026 Intel Corporation
+# # SPDX-License-Identifier: Apache-2.0
 
+import gc
+import math
+import typing
+
+import torch
+import tqdm
+import transformers
+
+from auto_round.experimental.hadamard_inplace.hadamard import apply_exact_had_to_linear, random_hadamard_matrix
 
 
 def fuse_ln_linear(layernorm: torch.nn.Module, linear_layers: typing.Iterable[torch.nn.Linear]) -> None:
@@ -18,7 +23,7 @@ def fuse_ln_linear(layernorm: torch.nn.Module, linear_layers: typing.Iterable[to
         W_ = linear.weight.data.double()
         linear.weight.data = (W_ * layernorm.weight.double()).to(linear_dtype)
 
-        if hasattr(layernorm, 'bias'):
+        if hasattr(layernorm, "bias"):
             if linear.bias is None:
                 linear.bias = torch.nn.Parameter(torch.zeros(linear.out_features, dtype=torch.float64))
             linear.bias.data = linear.bias.data.double() + torch.matmul(W_, layernorm.bias.double())
@@ -84,8 +89,9 @@ def rotate_mlp_output(layer, Q):
     dtype = W.weight.data.dtype
     W_ = W.weight.data.to(dtype=torch.float64)
     W.weight.data = torch.matmul(Q.T, W_).to(device="cpu", dtype=dtype)
-    apply_exact_had_to_linear(W, had_dim=-1,
-                              output=False)  # apply exact (inverse) hadamard on the weights of mlp output
+    apply_exact_had_to_linear(
+        W, had_dim=-1, output=False
+    )  # apply exact (inverse) hadamard on the weights of mlp output
     if W.bias is not None:
         b = W.bias.data.to(dtype=torch.float64)
         W.bias.data = torch.matmul(Q.T, b).to(device="cpu", dtype=dtype)
@@ -126,6 +132,8 @@ def rotate_model(model):
         rotate_mlp_input(layers[idx], Q)
         rotate_mlp_output(layers[idx], Q)
         rotate_ov_proj(layers[idx], num_heads, head_dim)
+
+
 # Rotate the weights
 if args.rotate:
     rotation_utils.fuse_layer_norms(model)
@@ -135,13 +143,13 @@ if args.rotate:
     quant_utils.add_actquant(model)  # Add Activation Wrapper to the model
     qlayers = quant_utils.find_qlayers(model)
     for name in qlayers:
-        if 'down_proj' in name:
+        if "down_proj" in name:
             had_K, K = hadamard_utils.get_hadK(model.config.intermediate_size)
             qlayers[name].online_full_had = True
             qlayers[name].had_K = had_K
             qlayers[name].K = K
             qlayers[name].fp32_had = args.fp32_had
-        if 'o_proj' in name:
+        if "o_proj" in name:
             had_K, K = hadamard_utils.get_hadK(model.config.num_attention_heads)
             qlayers[name].online_partial_had = True
             qlayers[name].had_K = had_K
@@ -149,6 +157,4 @@ if args.rotate:
             qlayers[name].had_dim = model.config.hidden_size // model.config.num_attention_heads
             qlayers[name].fp32_had = args.fp32_had
 else:
-    quant_utils.add_actquant(
-        model)  # Add Activation Wrapper to the model as the rest of the code assumes it is present
-
+    quant_utils.add_actquant(model)  # Add Activation Wrapper to the model as the rest of the code assumes it is present

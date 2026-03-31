@@ -40,16 +40,13 @@ def patch_wrapperlinear_to_apply_transform(w_transform, inp_transform):
 
                 is_conv1d = type(self.orig_layer) == transformers.pytorch_utils.Conv1D
                 if is_conv1d:
-                    weight = weight.t().continous()
+                    weight = weight.t().continuous()
                 new_weight = w_transform(weight.to(torch.float64))
 
                 if is_conv1d:
-                    new_weight=weight.t().continous()
+                    new_weight = weight.t().continuous()
                 self.orig_layer.weight.data.copy_(new_weight)
                 self.applied_weight_hadamard = True
-
-
-
 
     def _qdq_act_patched(self, x, act_max_scale, act_max=None):
 
@@ -57,11 +54,7 @@ def patch_wrapperlinear_to_apply_transform(w_transform, inp_transform):
         self.origin_qdq_act = self._qdq_act
         x = inp_transform(x)
 
-        return self.origin_qdq_act(
-            x,
-            act_max_scale,
-            act_max
-        )
+        return self.origin_qdq_act(x, act_max_scale, act_max)
 
     WrapperLinear._qdq_weight = _qdq_weight_patched
     WrapperLinear._qdq_act = _qdq_act_patched

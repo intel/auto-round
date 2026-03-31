@@ -65,7 +65,7 @@ def apply_hadamard_transform(
 
     desc = f"Applying {config.hadamard_type} transforms" if desc is None else desc
     for name, module, config in tqdm.tqdm(modules_config, desc=desc, disable=(not use_tqdm)):
-        if "lm_head" in name: #TODO unrobust
+        if "lm_head" in name:  # TODO unrobust
             continue
         _apply_to_module(model, module, config, need_calibration, location)
 
@@ -103,7 +103,7 @@ def _apply_to_module(
         else:
             hadamard_weight = None
 
-        if is_triton_kernel_available() :
+        if is_triton_kernel_available():
             from auto_round.experimental.transform.triton.mxfp4 import mxfp4_forward_kernel_wrapper
 
             def input_hook(self, args):

@@ -571,7 +571,6 @@ class BaseCompressor(object):
             #
             # self.hadamard_config = normalize_hadamard_config(hadamard_config)
 
-
     def _gen_auto_scheme(self) -> dict[str, dict]:
         if self.mllm:
             logger.info("AutoScheme is not yet supported for multimodal LLMs.")
