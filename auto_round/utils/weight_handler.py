@@ -35,6 +35,7 @@ Table of Contents:
        - MXFP8Handler: CompressedLinear with MXFP8PackedCompressor
        - MXFP4Handler: CompressedLinear with MXFP4PackedCompressor
        - NVFP4Handler: CompressedLinear with NVFP4PackedCompressor
+       - WOQHandler: CompressedLinear with weight-only quantization
 
 Quick Start Guide:
     Usage - Detect and Convert:
@@ -158,6 +159,7 @@ class ModuleWeightType(Enum):
     MXFP8 = auto()  # MX FP8 (CompressedLinear with MXFP8PackedCompressor)
     MXFP4 = auto()  # MX FP4 (CompressedLinear with MXFP4PackedCompressor)
     NVFP4 = auto()  # NV FP4 (CompressedLinear with NVFP4PackedCompressor)
+    WOQ = auto()  # Weight-Only Quantization (CompressedLinear with weight-only quantization)
 
 
 class WeightTypeHandler(ABC):
@@ -819,3 +821,50 @@ class NVFP4Handler(WeightTypeHandler):
             new_layer = new_layer.to("cpu")
 
         return new_layer
+
+
+# ----------------------------------------------------------------------------
+# WOQ Handler - CompressedLinear with weight-only quantization
+# ----------------------------------------------------------------------------
+
+
+@register_weight_type_handler(ModuleWeightType.WOQ)
+class WOQHandler(WeightTypeHandler):
+    """Handler for integer 4-bit weight-only quantized layers (Compressed Tensor only)."""
+
+    def detect_layer(self, module: torch.nn.Module) -> bool:
+        """Check if a module is an CompressedLinear layer."""
+        if module.__class__.__name__ == "CompressedLinear":
+            if hasattr(module, "compressor") and module.compressor is not None:
+                compressor_name = module.compressor.__class__.__name__
+                return "int" in compressor_name.lower()
+        if hasattr(module, "quantization_scheme"):
+            from compressed_tensors.quantization.utils import is_module_quantized  # pylint: disable=E0401
+
+            if is_module_quantized(module) and module.quantization_status.value == "compressed":
+                q_scheme = module.quantization_scheme
+                if (
+                    q_scheme.weights.num_bits in [2, 4, 8]
+                    and q_scheme.weights.type == "int"
+                    and q_scheme.input_activations is None
+                ):
+                    return True
+        return False
+
+    def convert_layer(
+        self,
+        layer: torch.nn.Module,
+        dtype: torch.dtype = torch.bfloat16,
+        device: str = "cpu",
+        to_cpu: bool = False,
+    ) -> torch.nn.Module:
+        """Convert an integer weight-only quantized layer to a standard Linear layer.
+
+        Handles both ZP-offset (GPTQ v2) and no-ZP-offset (AutoRound) packing
+        conventions, as well as AWQ packing format.
+        """
+        if hasattr(layer, "quantization_scheme") and layer.__class__.__name__ == "Linear":
+            from compressed_tensors.compressors.base import decompress_module  # pylint: disable=E0401
+
+            decompress_module(layer)
+            return layer

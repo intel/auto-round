@@ -15,6 +15,7 @@ class TestCompressedTensor:
     nvfp4_model_path = "kaitchup/Qwen3-0.6B-NVFP4"
     mxfp4_model_path = "QuixiAI/Llama-3.2-1B-MXFP4"
     fp8_block_model_path = "RedHatAI/Qwen3-0.6B-FP8-BLOCK"
+    w4a16_model_path = "RedHatAI/Qwen3-0.6B-quantized.w4a16"
 
     def test_fp8_block(self):
         model = get_tiny_model(get_model_path(self.fp8_block_model_path))
@@ -63,6 +64,21 @@ class TestCompressedTensor:
         ), "Model does not contain CompressedLinear layers"
         detected_types = check_and_mark_quantized_module(model)
         assert ModuleWeightType.MXFP4 in detected_types
+        model = convert_module_to_hp_if_necessary(model)
+        assert (
+            model.model.layers[0].mlp.up_proj.weight.dtype == torch.bfloat16
+        ), "CompressedLinear layer was not converted to Linear"
+
+    def test_w4a16(self):
+        model = get_tiny_model(get_model_path(self.w4a16_model_path))
+        assert (
+            model.model.layers[0].mlp.up_proj.weight_packed.dtype == torch.int32
+        ), "Original weight is not in INT4 format"
+        assert hasattr(
+            model.model.layers[0].mlp.up_proj, "quantization_scheme"
+        ), "Model does not contain CompressedLinear layers"
+        detected_types = check_and_mark_quantized_module(model)
+        assert ModuleWeightType.WOQ in detected_types
         model = convert_module_to_hp_if_necessary(model)
         assert (
             model.model.layers[0].mlp.up_proj.weight.dtype == torch.bfloat16
