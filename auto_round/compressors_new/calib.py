@@ -85,16 +85,16 @@ class CalibCompressor(BaseCompressor):
         self.dataset = dataset
         self.iters = iters
         super().__init__(
-            config,
-            model,
-            tokenizer,
-            platform,
-            format,
-            low_gpu_mem_usage,
-            device_map,
-            enable_torch_compile,
-            seed,
-            low_cpu_mem_usage,
+            config=config,
+            model=model,
+            tokenizer=tokenizer,
+            platform=platform,
+            format=format,
+            low_gpu_mem_usage=low_gpu_mem_usage,
+            device_map=device_map,
+            enable_torch_compile=enable_torch_compile,
+            seed=seed,
+            low_cpu_mem_usage=low_cpu_mem_usage,
             **kwargs,
         )
         if iters == 0:

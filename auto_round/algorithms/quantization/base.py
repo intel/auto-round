@@ -301,8 +301,9 @@ class BaseQuantizers:
         block-forward selection (compile vs. plain) is handled here based on
         ``enable_alg_ext`` and act-quantization flags.
         """
-        if getattr(self.model_context, "is_diffusion", False) and hasattr(self, "_get_diffusion_block_outputs"):
-            return self._get_diffusion_block_outputs(
+        diffusion_fn = getattr(self, "_get_diffusion_block_outputs", None)
+        if getattr(self.model_context, "is_diffusion", False) and diffusion_fn is not None:
+            return diffusion_fn(
                 block,
                 input_ids,
                 input_others,
