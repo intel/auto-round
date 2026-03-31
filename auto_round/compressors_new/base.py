@@ -898,6 +898,55 @@ class BaseCompressor(object):
         else:
             return compressed_model
 
+    def _get_export_dir(self, output_dir: str, format_str: str) -> str:
+        """Derive a descriptive export directory from model name and quantization config.
+
+        Must be called after ``post_init()`` so that scheme-resolved attrs
+        (bits, group_size, data_type, etc.) are available on ``self.quantize_config``.
+
+        Mirrors the logic previously in ``__main__.py`` so callers only need to
+        pass the base ``output_dir`` and the format string.
+        """
+        model_name = (getattr(self.model_context.model, "name_or_path", "") or "").rstrip("/")
+        cfg = self.quantize_config
+        group_size = cfg.group_size
+        bits = cfg.bits
+        data_type = cfg.data_type or "int"
+        act_bits = cfg.act_bits or 16
+        act_data_type = cfg.act_data_type or "float"
+
+        is_gguf = "gguf" in (format_str or "")
+        last = model_name.split("/")[-1].strip(".")
+
+        if last == "" and not is_gguf:
+            # model path is just '.' or './' – put inside output_dir with suffix
+            if group_size <= 0:
+                suffix = f"afp{act_bits}" if "fp" in act_data_type else f"a{act_bits}"
+            else:
+                suffix = f"g{group_size}"
+            return os.path.join(output_dir, f"w{bits}{suffix}")
+
+        if last == "" and is_gguf:
+            return output_dir
+
+        if is_gguf:
+            return os.path.join(output_dir, model_name.split("/")[-1] + "-gguf")
+
+        # Normal case: derive suffix from group_size / act config
+        if isinstance(group_size, tuple):
+            assert len(group_size) == 2, f"Only support 2D group_size, but got {group_size}"
+            suffix = f"g{group_size[0]}x{group_size[1]}"
+        elif group_size <= 0:
+            suffix = f"afp{act_bits}" if "fp" in act_data_type else f"a{act_bits}"
+        else:
+            suffix = f"g{group_size}"
+
+        prefix = data_type.lower().replace("_", "") if "int" not in data_type else ""
+        return os.path.join(
+            output_dir,
+            model_name.split("/")[-1] + (f"-{prefix}" if prefix else "") + f"-w{bits}{suffix}",
+        )
+
     def quantize_and_save(
         self, output_dir: str = "tmp_autoround", format: str = None, inplace: bool = True, **kwargs
     ) -> tuple[torch.nn.Module, dict[str, Any]]:
@@ -948,6 +997,11 @@ class BaseCompressor(object):
         # IMPORTANT: post_init() must run outside any @torch.inference_mode() context
         # because AutoScheme's delta-loss selection requires gradient tracking.
         self.post_init()
+        # Derive descriptive export dir after post_init so scheme-resolved attrs are available.
+        _fmt_str = format or (self.formats if isinstance(self.formats, str) else "")
+        output_dir = self._get_export_dir(output_dir, _fmt_str)
+        self.output_dir = output_dir
+        self.compress_context.output_dir = output_dir
         if self.static_attention_dtype is not None:
             from auto_round.experimental.attention import attention_quant_ctx
 

@@ -38,6 +38,7 @@ RECIPES = {
 
 
 class BasicArgumentParser(argparse.ArgumentParser):
+
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
         self.add_argument(
@@ -724,41 +725,10 @@ def tune(args):
         trust_remote_code=not args.disable_trust_remote_code,
     )
 
-    model_name = args.model.rstrip("/")
-
-    if model_name.split("/")[-1].strip(".") == "" and "gguf" not in args.format:
-        if autoround.group_size <= 0:
-            if "fp" in autoround.act_data_type:
-                suffix = f"afp{autoround.act_bits}"
-            else:
-                suffix = f"a{autoround.act_bits}"
-        else:
-            suffix = f"g{autoround.group_size}"
-        export_dir = os.path.join(args.output_dir, f"w{autoround.bits}{suffix}")
-    elif model_name.split("/")[-1].strip(".") == "" and "gguf" in args.format:
-        export_dir = args.output_dir
-    elif model_name.split("./")[-1].strip("./") != "" and "gguf" in args.format:
-        export_dir = os.path.join(args.output_dir, model_name.split("/")[-1] + "-gguf")
-    else:
-        if isinstance(autoround.group_size, tuple):
-            assert len(autoround.group_size) == 2, f"Only support 2D group_size, but get {autoround.group_size}"
-            suffix = f"g{autoround.group_size[0]}x{autoround.group_size[1]}"
-        else:
-            if autoround.group_size <= 0:
-                if "fp" in autoround.act_data_type:
-                    suffix = f"afp{autoround.act_bits}"
-                else:
-                    suffix = f"a{autoround.act_bits}"
-            else:
-                suffix = f"g{autoround.group_size}"
-        prefix = autoround.data_type.lower().replace("_", "") if "int" not in autoround.data_type else ""
-        export_dir = os.path.join(
-            args.output_dir,
-            model_name.split("/")[-1] + (f"-{prefix}" if prefix else "") + f"-w{autoround.bits}{suffix}",
-        )
-
     # ======================= Quantize and save model =======================
-    model, folders = autoround.quantize_and_save(export_dir, format=args.format)  # pylint: disable=E1101
+    # Export directory is now derived automatically inside quantize_and_save via
+    # BaseCompressor._get_export_dir(), so we only need to pass the base output_dir.
+    model, folders = autoround.quantize_and_save(args.output_dir, format=args.format)  # pylint: disable=E1101
     tokenizer = autoround.tokenizer  # pylint: disable=E1101
 
     model.eval()
