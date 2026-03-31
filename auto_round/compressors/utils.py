@@ -321,6 +321,12 @@ def set_layer_config(
         elif isinstance(item, QuantizationScheme):
             config = asdict(item)
         elif isinstance(item, dict):
+            # Support "scheme" key inside dict: resolve the preset and merge overrides
+            if "scheme" in item:
+                scheme_name = item.pop("scheme")
+                base = asdict(preset_name_to_scheme(scheme_name.upper()))
+                base.update(item)
+                item = base
             invalid = set(item) - set(scheme_keys + ("fixed_by_user", "scale_dtype"))
             if invalid:
                 raise ValueError(
