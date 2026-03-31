@@ -230,7 +230,7 @@ def save_quantized_as_autoround(
         elif cfg["in_blocks"] or (
             block_name_to_quantize is not None and check_start_with_block_name(layer_name, block_name_to_quantize)
         ):
-            neq_keys = check_neq_config(cfg, **{k: quantization_config[k] for k in scheme_keys})
+            neq_keys = check_neq_config(cfg, **{k: quantization_config.get(k) for k in scheme_keys})
             if len(neq_keys) > 0:
                 extra_config[layer_name] = {}
                 for key in neq_keys:

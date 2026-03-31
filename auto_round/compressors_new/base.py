@@ -650,12 +650,6 @@ class BaseCompressor(object):
                 _new_scheme = _QS.from_dict({k: v for k, v in _new_scheme_dict.items() if v is not None})
                 self.scheme = _new_scheme
 
-        # ── Phase 2c: merge layer_config set by GGUFFormat._mixed handling ───
-        # Inner GGUFFormat("q2_k_mixed", ar) calls _handle_special_schemes and
-        # stores the result directly in ar.__dict__["layer_config"].
-        # self.layer_config is already the authoritative owner of this attr, so
-        # just merge any GGUFFormat-supplied per-layer entries that may have
-        # been set before Phase 1 (during get_formats → gguf_args_check).
         _gguf_layer_cfg = {
             k: v
             for k, v in (self.__dict__.get("layer_config") or {}).items()

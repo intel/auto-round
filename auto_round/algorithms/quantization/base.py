@@ -310,7 +310,7 @@ class BaseQuantizers:
                 bs,
                 self.compress_context.device,
                 self.compress_context.cache_device,
-            )
+            )  # pylint : disable=E1102
 
         if (
             (self.config.is_act_quantize and (not self.config.act_dynamic or self.config.is_act_nv_fp))  # have hooks
