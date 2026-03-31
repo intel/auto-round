@@ -658,7 +658,7 @@ class BaseCompressor(object):
         # been set before Phase 1 (during get_formats → gguf_args_check).
         _gguf_layer_cfg = {
             k: v
-            for k, v in self.__dict__.get("layer_config", {}).items()
+            for k, v in (self.__dict__.get("layer_config") or {}).items()
             if k not in (self.quantize_config.layer_config or {})
         }
         if _gguf_layer_cfg:

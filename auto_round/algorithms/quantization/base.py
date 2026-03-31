@@ -302,7 +302,7 @@ class BaseQuantizers:
         ``enable_alg_ext`` and act-quantization flags.
         """
         diffusion_fn = getattr(self, "_get_diffusion_block_outputs", None)
-        if getattr(self.model_context, "is_diffusion", False) and diffusion_fn is not None:
+        if getattr(self.model_context, "is_diffusion", False) and callable(diffusion_fn):
             return diffusion_fn(
                 block,
                 input_ids,
