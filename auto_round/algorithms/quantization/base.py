@@ -13,11 +13,14 @@
 # limitations under the License.
 import importlib
 import traceback
+from collections import defaultdict
+from typing import Union
 
 import torch
 
 from auto_round.algorithms.quantization.config import QuantizationConfig
 from auto_round.compressors_new.utils import (
+    block_forward,
     check_need_act_calibration,
 )
 from auto_round.data_type import QUANT_FUNC_WITH_DTYPE
@@ -28,6 +31,7 @@ from auto_round.utils import (
     SUPPORTED_LAYER_TYPES,
     check_to_quantized,
     clear_memory,
+    compile_func,
 )
 
 
@@ -40,6 +44,7 @@ class BaseQuantizers:
     dataset = None
     supported_types = SUPPORTED_LAYER_TYPES
     inner_supported_types = INNER_SUPPORTED_LAYER_TYPES
+    enable_alg_ext = False
 
     def __init__(self, config: QuantizationConfig):
         self.config = config
@@ -59,6 +64,12 @@ class BaseQuantizers:
         self.ignore_layers = config.ignore_layers
         self.quant_lm_head = config.quant_lm_head
         self.to_quant_block_names = config.to_quant_block_names
+        # Calibration / sampling attrs – populated from config if present.
+        self.seqlen = getattr(config, "seqlen", 2048)
+        self.nsamples = getattr(config, "nsamples", 128)
+        self.batch_size = getattr(config, "batch_size", 8)
+        self.batch_dim = getattr(config, "batch_dim", None)
+        self.infer_bs_coeff = getattr(config, "infer_bs_coeff", 1)
 
     @classmethod
     def from_config(cls, config: QuantizationConfig):
@@ -274,3 +285,123 @@ class BaseQuantizers:
                 retrieved internally via get_module(model, layer_name).
         """
         raise NotImplementedError("quantize_layer must be implemented in subclasses of BaseQuantizers")
+
+    @torch.no_grad()
+    def _get_block_outputs(
+        self,
+        block: torch.nn.Module,
+        input_ids,
+        input_others,
+        bs: int,
+        save_output: bool = True,
+    ):
+        """Compute the output of a block for calibration inputs.
+
+        Shared by ARQuantizer and OptimizedRTNQuantizer.  Algorithm-specific
+        block-forward selection (compile vs. plain) is handled here based on
+        ``enable_alg_ext`` and act-quantization flags.
+        """
+        if getattr(self.model_context, "is_diffusion", False) and hasattr(self, "_get_diffusion_block_outputs"):
+            return self._get_diffusion_block_outputs(
+                block,
+                input_ids,
+                input_others,
+                bs,
+                self.compress_context.device,
+                self.compress_context.cache_device,
+            )
+
+        if (
+            (self.config.is_act_quantize and (not self.config.act_dynamic or self.config.is_act_nv_fp))  # have hooks
+            or self.enable_alg_ext  # Use imatrix
+            # or not self.disable_opt_rtn  # Use imatrix
+        ):
+            self.block_forward = block_forward
+        else:
+            # TODO FIXME
+            # This function could not be compiled, causing a large accuracy drop when `enable_alg_ext` is used.
+            # To avoid issues, remove it in all scenarios except WOQ.
+            self.block_forward = (
+                compile_func(block_forward, self.compress_context.device)
+                if self.compress_context.enable_torch_compile
+                else block_forward
+            )
+
+        output = []
+        nsamples = len(input_ids)
+        for i in range(0, nsamples, bs):
+            end_index = min(nsamples, i + bs)
+            indices = torch.arange(i, end_index).to(torch.long)
+            tmp_input_ids, tmp_input_others = self._sampling_inputs(
+                input_ids,
+                input_others,
+                indices,
+                self.seqlen,
+                self.batch_dim,
+                share_cache_keys=self.model_context.shared_cache_keys,
+            )
+            tmp_output = self.block_forward(
+                block,
+                tmp_input_ids,
+                tmp_input_others,
+                self.model_context.amp,
+                self.model_context.amp_dtype,
+                self.compress_context.device,
+            ).to(self.compress_context.cache_device)
+            if save_output:
+                if self.batch_size == 1:
+                    output.append(tmp_output)
+                else:
+                    output.extend(list(torch.split(tmp_output, 1, dim=self.batch_dim)))
+        if self.compress_context.low_gpu_mem_usage:
+            clear_memory(device_list=self.compress_context.device_list)
+
+        return output
+
+    @classmethod
+    @torch.no_grad()
+    def _sampling_inputs(
+        cls,
+        input_ids: Union[list[torch.Tensor], dict],
+        input_others: dict,
+        indices,
+        seqlen: int,
+        batch_dim: int = 0,
+        share_cache_keys: tuple = (),
+    ):
+        """Sample a mini-batch of calibration inputs by indices.
+
+        Shared by ARQuantizer and OptimizedRTNQuantizer.
+        """
+        if isinstance(input_ids, list):
+            current_input_ids = [input_ids[i] for i in indices]
+            current_input_ids = torch.cat(current_input_ids, dim=batch_dim)
+        elif isinstance(input_ids, dict):
+            current_input_ids = defaultdict(list)
+            for k in input_ids.keys():
+                current_input_ids[k].extend([input_ids[k][i] for i in indices])
+                current_input_ids[k] = torch.cat(current_input_ids[k], dim=batch_dim)
+
+        current_input_others = {"positional_inputs": input_others["positional_inputs"]}
+        for key in input_others.keys():
+            if "positional_inputs" in key:
+                continue
+            # Shared cache keys (e.g. position_embeddings, position_ids, cache_position) are stored
+            # directly as-is (not wrapped in a per-sample list) when batch_size > 1.  Indexing such
+            # values by sample index would incorrectly decompose them (e.g. (cos, sin)[0] == cos).
+            # Always pass them through unchanged.
+            if key in share_cache_keys or isinstance(input_others[key], (str, bool, type(None))):
+                current_input_others[key] = input_others[key]
+            elif input_others[key] is not None:
+                current_input_others[key] = [input_others[key][i] for i in indices]
+                if len(indices) == 1:
+                    current_input_others[key] = current_input_others[key][0]
+                else:
+                    try:
+                        current_input_others[key] = torch.cat(current_input_others[key], dim=0)
+                    except TypeError as err:
+                        logger.warning_once("Please check the model cache inputs or try setting batch_size to 1.")
+            else:
+                current_input_others[key] = None
+
+        return current_input_ids, current_input_others
