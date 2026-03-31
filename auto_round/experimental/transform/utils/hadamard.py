@@ -51,7 +51,6 @@ def deterministic_hadamard_matrix(
 
 def random_hadamard_matrix(
     size: int,
-    dtype: torch.dtype = torch.bfloat16,
     device: torch.device = torch.device("cpu"),
     gen: torch.Generator | None = None,
 ) -> torch.Tensor:
@@ -70,8 +69,8 @@ def random_hadamard_matrix(
     :param gen: Optional generator random values
     :return: randomly generated hadamard matrix
     """
-    Q = torch.randint(low=0, high=2, size=(size,), generator=gen, dtype=dtype)  # cpu
-    Q = Q.to(device=device)
+    Q = torch.randint(low=0, high=2, size=(size,), generator=gen, dtype=torch.float64,device=device)  # cpu
+    # Q = Q.to(device=device)
     Q = Q * 2 - 1
     Q = torch.diag(Q)
     return _matmul_hadU(Q)
@@ -95,7 +94,7 @@ def _fetch_hadamard_divisor(
 ) -> torch.Tensor | None:
     """
     Fetch a known hadamard matrix from the given file path. The returned matrix will
-    be of of size `k` such that `n / k` is a power of two. Return None if no such
+    be of size `k` such that `n / k` is a power of two. Return None if no such
     matrix exists.
 
     Note: This function reopens the safetensors file every time it is called.
@@ -149,3 +148,27 @@ def _matmul_hadU(X: torch.Tensor) -> torch.Tensor:
 
     # normalize
     return input.view(X.shape)
+
+
+# def matmul_hadU(X, transpose=False):
+#     n = X.shape[-1]
+#     hadK, K = get_hadK(n, transpose)
+#     input = X.clone().view(-1, n, 1)
+#     output = input.clone()
+#     while input.shape[1] > K:
+#         input = input.view(input.shape[0], input.shape[1] // 2, 2, input.shape[2])
+#         output = output.view(input.shape)
+#         output[:, :, 0, :] = input[:, :, 0, :] + input[:, :, 1, :]
+#         output[:, :, 1, :] = input[:, :, 0, :] - input[:, :, 1, :]
+#         output = output.view(input.shape[0], input.shape[1], -1)
+#         (input, output) = (output, input)
+#     del output
+#
+#     if K > 1:
+#         # Do not explicitly repeat - OOM
+#         # input = torch.bmm(
+#         #     hadK.repeat(len(input), 1, 1).to(input.device).to(input.dtype), input)
+#         # Use bcast instead
+#         input = hadK.view(1, K, K).to(input) @ input
+#
+#     return input.view(X.shape) / torch.tensor(n).sqrt()

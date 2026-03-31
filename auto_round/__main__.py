@@ -722,6 +722,7 @@ def tune(args):
         model_dtype=args.model_dtype,
         momentum=args.momentum,
         trust_remote_code=not args.disable_trust_remote_code,
+        hadamard_config="default",
     )
 
     model_name = args.model.rstrip("/")

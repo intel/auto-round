@@ -65,7 +65,7 @@ def apply_hadamard_transform(
 
     desc = f"Applying {config.hadamard_type} transforms" if desc is None else desc
     for name, module, config in tqdm.tqdm(modules_config, desc=desc, disable=(not use_tqdm)):
-        if "lm_head" in name:
+        if "lm_head" in name: #TODO unrobust
             continue
         _apply_to_module(model, module, config, need_calibration, location)
 
@@ -76,10 +76,8 @@ def apply_hadamard_transform(
 
 
 def _apply_to_module(
-    model: torch.nn.Module,
     module: torch.nn.Module,
     config: HadamardConfig,
-    need_calibration: bool = False,
     location: str = "weight",
 ):
     """
@@ -89,14 +87,11 @@ def _apply_to_module(
     :param module: target module to apply transforms to
     """
 
-    # create transform as submodule
-    hadamard_name = config.hadamard_type
-
     if location == "input":
 
         # activation needs transpose
         input_hadamard_transform = build_hadamard_transform(
-            **config.dict(),
+            **config.model_dump(),
             location="input",
             inverse=True,
             device="cpu",
@@ -108,7 +103,7 @@ def _apply_to_module(
         else:
             hadamard_weight = None
 
-        if is_triton_kernel_available():
+        if is_triton_kernel_available() :
             from auto_round.experimental.transform.triton.mxfp4 import mxfp4_forward_kernel_wrapper
 
             def input_hook(self, args):
@@ -153,7 +148,7 @@ def _apply_to_module(
         assert hasattr(module, "weight")
 
         weight_hadamard_transform = build_hadamard_transform(
-            **config.dict(),
+            **config.model_dump(),
             location="weight",
             device=module.weight.device,
             precision=module.weight.dtype,
@@ -176,7 +171,7 @@ def _apply_to_module(
             )
 
             input_hadamard_transform = build_hadamard_transform(
-                **config.dict(),
+                **config.model_dump(),
                 location="input",
                 inverse=True,
                 device=module.weight.device,
