@@ -9,7 +9,7 @@ import transformers
 from packaging import version
 
 from auto_round.eval.evaluation import simple_evaluate, simple_evaluate_user_model
-from auto_round.utils import detect_device, get_attr, llm_load_model, mllm_load_model, set_attr
+from auto_round.utils import detect_device, diffusion_load_model, get_attr, llm_load_model, mllm_load_model, set_attr
 
 transformers_version = version.parse(transformers.__version__)
 
@@ -157,6 +157,7 @@ qwen_2_5_vl_name_or_path = get_model_path("Qwen/Qwen2.5-VL-3B-Instruct")
 gemma_name_or_path = get_model_path("benzart/gemma-2b-it-fine-tuning-for-code-test")
 qwen2_5_omni_name_or_path = get_model_path("Qwen/Qwen2.5-Omni-3B")
 qwen3_omni_name_or_path = get_model_path("Qwen/Qwen3-Omni-30B-A3B-Instruct")
+flux_name_or_path = get_model_path("black-forest-labs/FLUX.1-dev")
 
 
 # Slice model into tiny model for speedup
@@ -167,18 +168,35 @@ def _reduce_config_layers(config, num_layers, num_experts=None):
     thinker_config, talker_config, etc.) commonly found in multi-modal and
     MoE architectures.
     """
-    n_block_keys = ["n_layers", "num_hidden_layers", "n_layer", "num_layers", "depth", "encoder_layers"]
+    n_block_keys = [
+        "n_layers",
+        "num_hidden_layers",
+        "n_layer",
+        "num_layers",
+        "depth",
+        "encoder_layers",
+        "num_single_layers",
+        "num_decoder_layers",
+    ]
     n_expert_keys = ["num_experts", "num_local_experts"]
 
     def _apply(cfg):
         for key in n_block_keys:
-            if hasattr(cfg, key):
+            if isinstance(cfg, dict) and key in cfg:
+                cfg[key] = num_layers
+            elif hasattr(cfg, key):
                 setattr(cfg, key, num_layers)
-        if hasattr(cfg, "layer_types"):
+
+        if isinstance(cfg, dict) and "layer_types" in cfg:
+            cfg["layer_types"] = cfg["layer_types"][:num_layers]
+        elif hasattr(cfg, "layer_types"):
             cfg.layer_types = cfg.layer_types[:num_layers]
+
         if num_experts is not None:
             for key in n_expert_keys:
-                if hasattr(cfg, key):
+                if isinstance(cfg, dict) and key in cfg:
+                    cfg[key] = num_experts
+                elif hasattr(cfg, key):
                     setattr(cfg, key, num_experts)
 
     # Top-level config
@@ -202,7 +220,9 @@ def _reduce_config_layers(config, num_layers, num_experts=None):
                     _apply(inner_cfg)
 
 
-def get_tiny_model(model_name_or_path, num_layers=2, num_experts=None, is_mllm=False, from_config=False, **kwargs):
+def get_tiny_model(
+    model_name_or_path, num_layers=2, num_experts=None, is_mllm=False, from_config=False, is_diffusion=False, **kwargs
+):
     """Generate a tiny model by slicing layers from the original model.
 
     Args:
@@ -220,25 +240,81 @@ def get_tiny_model(model_name_or_path, num_layers=2, num_experts=None, is_mllm=F
 
     if from_config:
         # ---- lightweight path: config-only, random weights ----
-        trust_remote_code = kwargs.pop("trust_remote_code", True)
-        config = transformers.AutoConfig.from_pretrained(model_name_or_path, trust_remote_code=trust_remote_code)
-        _reduce_config_layers(config, num_layers, num_experts)
+        if is_diffusion:
+            import importlib
+            import json
 
-        # Pick the right model class
-        base_lib = transformers
-        architectures = getattr(config, "architectures", [None])[0]
-        if (
-            is_mllm
-            and architectures.endswith("Model")
-            and hasattr(base_lib, n := architectures.replace("Model", "ForConditionalGeneration"))
-        ):
-            model_cls = getattr(base_lib, n)
-        elif hasattr(base_lib, architectures):
-            model_cls = getattr(base_lib, architectures)
+            from diffusers import AutoPipelineForText2Image
+            from huggingface_hub import snapshot_download
+
+            diffusers_module = importlib.import_module("diffusers")
+            transformers_module = importlib.import_module("transformers")
+
+            existing = False
+            if os.path.exists(model_name_or_path):
+                local_dir = model_name_or_path
+                existing = True
+            else:
+                local_dir = snapshot_download(
+                    repo_id=model_name_or_path, ignore_patterns=["*.safetensors", "*.safetensors.index.json"]
+                )
+
+            def _get_module(cls_name, mod_name, folder_name):
+                if cls_name == "diffusers":
+                    with open(os.path.join(local_dir, folder_name, "config.json"), "r", encoding="utf-8") as f:
+                        config = json.load(f)
+                    _reduce_config_layers(config, num_layers, num_experts)
+                    return getattr(getattr(diffusers_module, mod_name), "from_config")(config)
+                else:
+                    config = transformers.AutoConfig.from_pretrained(
+                        os.path.join(local_dir, folder_name, "config.json")
+                    )
+                    _reduce_config_layers(config, num_layers, num_experts)
+                    return getattr(getattr(transformers_module, mod_name), "_from_config")(config)
+
+            with open(os.path.join(local_dir, "model_index.json"), "r", encoding="utf-8") as f:
+                model_index = json.load(f)
+
+            if not existing:
+                for k, v in model_index.items():
+                    if k in ["scheduler", "tokenizer", "tokenizer_2"]:
+                        continue
+                    if isinstance(v, list) and v[0] in ["diffusers", "transformers"]:
+                        module = _get_module(v[0], v[1], k)
+                        module.save_pretrained(os.path.join(local_dir, k))
+                model = AutoPipelineForText2Image.from_pretrained(local_dir)
+            else:
+                model = AutoPipelineForText2Image.from_pretrained(local_dir)
+                for k, v in model_index.items():
+                    if (
+                        k not in ["scheduler", "tokenizer", "tokenizer_2"]
+                        and isinstance(v, list)
+                        and v[0] in ["diffusers", "transformers"]
+                    ):
+                        _reduce_config_layers(getattr(model, k).config, num_layers, num_experts)
         else:
-            model_cls = transformers.AutoModelForCausalLM  # default to causal LM if we can't find a better match
-        model = model_cls._from_config(config)
-        model = model.eval()
+            trust_remote_code = kwargs.pop("trust_remote_code", True)
+            config = transformers.AutoConfig.from_pretrained(model_name_or_path, trust_remote_code=trust_remote_code)
+            # Special cases, for transformers == 5.4.0
+            if config.model_type == "qwen3_omni_moe":
+                config.initializer_range = 0.02  # Default initializer range for weight initialization
+            _reduce_config_layers(config, num_layers, num_experts)
+
+            # Pick the right model class
+            base_lib = transformers
+            architectures = getattr(config, "architectures", [None])[0]
+            if (
+                is_mllm
+                and architectures.endswith("Model")
+                and hasattr(base_lib, n := architectures.replace("Model", "ForConditionalGeneration"))
+            ):
+                model_cls = getattr(base_lib, n)
+            elif hasattr(base_lib, architectures):
+                model_cls = getattr(base_lib, architectures)
+            else:
+                model_cls = transformers.AutoModelForCausalLM  # default to causal LM if we can't find a better match
+            model = model_cls._from_config(config)
+            model = model.eval()
         return model
 
     # ---- original path: load pretrained weights then slice ----
@@ -263,6 +339,15 @@ def get_tiny_model(model_name_or_path, num_layers=2, num_experts=None, is_mllm=F
                 model.config.num_hidden_layers = num_layers
             elif hasattr(model.config.vision_config, "depth"):  # qwen vl
                 model.config.vision_config.depth = num_layers
+    elif is_diffusion:
+        pipe, model = diffusion_load_model(model_name_or_path, **kwargs)
+        if (
+            hasattr(model, "config")
+            and hasattr(model.config, "num_layers")
+            and hasattr(model.config, "num_single_layers")
+        ):
+            model.config.num_layers = num_layers
+            model.config.num_single_layers = num_layers
     else:
         model, tokenizer = llm_load_model(model_name_or_path, **kwargs)
 
@@ -282,6 +367,7 @@ def save_tiny_model(
     is_mllm=False,
     force_untie=False,
     from_config=False,
+    is_diffusion=False,
     **kwargs,
 ):
     """Generate  a tiny model and save to the specified path.
@@ -303,6 +389,7 @@ def save_tiny_model(
         num_experts=num_experts,
         is_mllm=is_mllm,
         from_config=from_config,
+        is_diffusion=is_diffusion,
         **kwargs,
     )
     if force_untie:
@@ -311,11 +398,13 @@ def save_tiny_model(
             for key in model._tied_weights_keys:
                 weight = get_attr(model, key)
                 set_attr(model, key, copy.deepcopy(weight))
-    tokenizer = transformers.AutoTokenizer.from_pretrained(model_name_or_path, **kwargs)
     test_path = os.path.dirname(__file__)
     tiny_model_path = os.path.join(test_path, tiny_model_path.removeprefix("./"))
+
     model.save_pretrained(tiny_model_path)
-    tokenizer.save_pretrained(tiny_model_path)
+    if not is_diffusion:
+        tokenizer = transformers.AutoTokenizer.from_pretrained(model_name_or_path, **kwargs)
+        tokenizer.save_pretrained(tiny_model_path)
     # copy tokenizer.model
     if not os.path.isdir(model_name_or_path):
         from auto_round.utils import download_hf_model

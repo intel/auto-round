@@ -196,7 +196,7 @@ class MXFP4QuantLinear(MXQuantLinearBase):
         return unpacked_data
 
 
-class TransformMXFP4QuantLinear(MXFP4QuantLinear):
+class HadamardMXFP4QuantLinear(MXFP4QuantLinear):
     """
     Quantized linear layer using the MXFP4 quantization scheme.
     """
@@ -206,7 +206,7 @@ class TransformMXFP4QuantLinear(MXFP4QuantLinear):
         super().__init__(*args, **kwargs)
         self.enable_transform = True
         self.register_buffer(
-            "transform_matrix",
+            "hadamard_matrix",
             torch.empty(
                 self.group_size,
                 self.group_size,

@@ -2,7 +2,7 @@
 set -xe
 
 CONDA_ENV_NAME="unittest_cuda"
-PYTHON_VERSION="3.10"
+PYTHON_VERSION="3.12"
 REPO_PATH=$(git rev-parse --show-toplevel)
 LOG_DIR=${REPO_PATH}/ut_log_dir
 SUMMARY_LOG=${LOG_DIR}/results_summary.log
@@ -91,15 +91,16 @@ function run_unit_test() {
     cd ${REPO_PATH}/test
     rm -rf .coverage* *.xml *.html
 
-    uv pip install torch==2.10.0 torchvision
-    uv pip install -v git+https://github.com/casper-hansen/AutoAWQ.git --no-build-isolation
+    uv pip install torch==2.11.0 torchvision --index-url https://download.pytorch.org/whl/cu128
     uv pip install gptqmodel --no-build-isolation
     uv pip install -r https://raw.githubusercontent.com/ModelCloud/GPTQModel/refs/heads/main/requirements.txt
-    CMAKE_ARGS="-DGGML_CUDA=on -DLLAVA_BUILD=off" uv pip install llama-cpp-python
+    uv pip install https://github.com/XuehaoSun/llama-cpp-python/releases/download/v0.3.16/llama_cpp_python-0.3.16-cp312-cp312-linux_x86_64.whl
     uv pip install 'git+https://github.com/ggml-org/llama.cpp.git#subdirectory=gguf-py'
     uv pip install -r test_cuda/requirements.txt
     uv pip install -r test_cuda/requirements_diffusion.txt
     uv pip install -U transformers
+    uv pip uninstall torch torchvision
+    uv pip install torch==2.11.0 torchvision --index-url https://download.pytorch.org/whl/cu128
     cd ${REPO_PATH} && uv pip install . && cd ${REPO_PATH}/test
 
     pip list > ${LOG_DIR}/ut_pip_list.txt
@@ -132,15 +133,12 @@ function run_unit_test_vlm() {
     cd ${REPO_PATH}/test
     rm -rf .coverage* *.xml *.html
 
-    uv pip install torch==2.10.0 torchvision
+    uv pip install torch==2.11.0 torchvision --index-url https://download.pytorch.org/whl/cu128
+    uv pip install https://github.com/XuehaoSun/GPTQModel/releases/download/v5.8.0/gptqmodel-5.8.0+cu128torch2.11-cp312-cp312-linux_x86_64.whl
     uv pip install git+https://github.com/haotian-liu/LLaVA.git@v1.2.2 --no-deps
-    local site_path=$(python -c "import site; print(site.getsitepackages()[0])")
-    # reference https://github.com/haotian-liu/LLaVA/issues/1448#issuecomment-2119845242
-    sed -i '/inputs\[.*image_sizes.*\] = image_sizes/a\        inputs.pop("cache_position")' ${site_path}/llava/model/language_model/llava_llama.py
-    uv pip install git+https://github.com/deepseek-ai/DeepSeek-VL2.git timm attrdict --no-deps
     uv pip install -v git+https://github.com/casper-hansen/AutoAWQ.git@v0.2.0 --no-build-isolation
-    uv pip install flash-attn==2.7.4.post1 --no-build-isolation
-    uv pip install -r test_cuda/requirements_vlm.txt
+    uv pip install flash-attn==2.8.3 --no-build-isolation
+    uv pip install -r test_cuda/requirements_vlm.txt --extra-index-url https://download.pytorch.org/whl/cu128
     cd ${REPO_PATH} && uv pip install . && cd ${REPO_PATH}/test
 
     pip list > ${LOG_DIR}/vlm_ut_pip_list.txt
@@ -173,7 +171,7 @@ function run_unit_test_llmc() {
 
     cd ${REPO_PATH}/test
     rm -rf .coverage* *.xml *.html
-    BUILD_TYPE="nightly" uv pip install -r test_cuda/requirements_llmc.txt
+    BUILD_TYPE="nightly" uv pip install -r test_cuda/requirements_llmc.txt --extra-index-url https://download.pytorch.org/whl/cu128 --index-strategy unsafe-best-match
     cd ${REPO_PATH} && uv pip install . && cd ${REPO_PATH}/test
 
     pip list > ${LOG_DIR}/llmc_ut_pip_list.txt
@@ -234,10 +232,11 @@ function run_unit_test_sglang() {
 function run_unit_test_vllm() {
     # install unit test dependencies
     create_conda_env
+    unset LD_LIBRARY_PATH
 
     cd ${REPO_PATH}/test
     rm -rf .coverage* *.xml *.html
-    uv pip install -r test_cuda/requirements_vllm.txt
+    uv pip install -r test_cuda/requirements_vllm.txt --extra-index-url https://download.pytorch.org/whl/cu128 --index-strategy unsafe-best-match
     cd ${REPO_PATH} && uv pip install . && cd ${REPO_PATH}/test
 
     pip list > ${LOG_DIR}/vllm_ut_pip_list.txt
