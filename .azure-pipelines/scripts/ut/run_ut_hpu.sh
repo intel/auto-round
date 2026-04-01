@@ -4,11 +4,13 @@ source /auto-round/.azure-pipelines/scripts/change_color.sh
 
 function setup_environment() {
     # install requirements
-    echo "set up UT env..."
+    echo "##[group]set up UT env..."
+    export TZ='Asia/Shanghai'
     export TQDM_MININTERVAL=60
     export HF_HUB_DISABLE_PROGRESS_BARS=1
     pip install pytest-cov pytest-html
     pip list
+    echo "##[endgroup]"
 
     rm -rf /auto-round/auto_round
     cd /auto-round/test || exit 1
@@ -29,7 +31,7 @@ function run_unit_test() {
     for test_file in $(find ./test_hpu -name "test*.py" | sort); do
         local test_basename=$(basename ${test_file} .py)
 
-        echo "##[group]Running HPU lazy mode ${test_file}..."
+        echo "##[group]Running ${test_file} in HPU lazy mode..."
         local ut_log_name="${LOG_DIR}/unittest_lazy_${test_basename}.log"
         PT_HPU_LAZY_MODE=1 pytest --cov="${auto_round_path}" \
             --cov-report term --html=report.html --self-contained-html \
@@ -37,7 +39,7 @@ function run_unit_test() {
             ${test_file} 2>&1 | tee ${ut_log_name}
         echo "##[endgroup]"
 
-        echo "##[group]Running HPU compile mode ${test_file}..."
+        echo "##[group]Running ${test_file} in HPU compile mode..."
         local ut_log_name="${LOG_DIR}/unittest_compile_${test_basename}.log"
         PT_HPU_LAZY_MODE=0 pytest --mode compile --cov="${auto_round_path}" \
             --cov-report term --html=report.html --self-contained-html \

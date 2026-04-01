@@ -18,6 +18,7 @@ function setup_environment() {
     python -c "import torch; print('torch:', torch.__version__); print('xpu available:', torch.xpu.is_available()); print('xpu count:', torch.xpu.device_count())"
     echo "##[endgroup]"
 
+    export TZ='Asia/Shanghai'
     export TQDM_MININTERVAL=60
     export HF_HUB_DISABLE_PROGRESS_BARS=1
     export LD_LIBRARY_PATH=${HOME}/.venv/lib/:$LD_LIBRARY_PATH
