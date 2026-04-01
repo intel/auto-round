@@ -33,6 +33,7 @@ from tqdm import tqdm
 from transformers import AutoConfig, set_seed
 
 from auto_round import envs
+from auto_round.algorithms.quantization.sign_round.sign_sgd import SignSGD
 from auto_round.auto_scheme.gen_auto_scheme import AutoScheme
 from auto_round.compressors.shard_writer import shard_writer
 from auto_round.compressors.utils import (
@@ -68,7 +69,6 @@ from auto_round.schemes import (
     get_gguf_scheme,
     preset_name_to_scheme,
 )
-from auto_round.sign_sgd import SignSGD
 from auto_round.special_model_handler import get_predefined_ignore_layers, update_module
 from auto_round.utils import (
     INNER_SUPPORTED_LAYER_TYPES,

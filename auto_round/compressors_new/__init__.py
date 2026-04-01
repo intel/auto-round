@@ -19,26 +19,26 @@ from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
     from auto_round.compressors_new.calib import CalibCompressor, CalibratedRTNCompressor
-    from auto_round.compressors_new.entry import AutoRound, Compressor
+    from auto_round.compressors_new.entry import AutoRoundCompatible, AutoRound
     from auto_round.compressors_new.zero_shot import ZeroShotCompressor
 
 __all__ = [
-    "Compressor",
+    "AutoRound",
     "CalibCompressor",
     "CalibratedRTNCompressor",
     "ZeroShotCompressor",
-    "AutoRound",
+    "AutoRoundCompatible",
 ]
 
 
 def __getattr__(name):
     """Lazy import to avoid circular dependencies."""
-    if name == "Compressor" or name == "AutoRound":
-        from auto_round.compressors_new.entry import Compressor, AutoRound
+    if name == "AutoRound" or name == "AutoRoundCompatible":
+        from auto_round.compressors_new.entry import AutoRound, AutoRoundCompatible
 
-        if name == "Compressor":
-            return Compressor
-        return AutoRound
+        if name == "AutoRound":
+            return AutoRound
+        return AutoRoundCompatible
     elif name in ("CalibCompressor", "CalibratedRTNCompressor"):
         from auto_round.compressors_new.calib import CalibCompressor, CalibratedRTNCompressor
 

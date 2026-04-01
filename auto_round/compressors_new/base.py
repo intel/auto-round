@@ -22,7 +22,7 @@ from transformers import set_seed
 
 from auto_round.algorithms.alg_config import AlgConfig
 from auto_round.algorithms.quantization import BaseQuantizers, QuantizationConfig
-from auto_round.algorithms.rotation import (
+from auto_round.algorithms.transforms import (
     BaseRotationConfig,
     apply_rotation,
     check_supported_schemes,
@@ -93,7 +93,7 @@ class SerializedCompressorConfig:
     super_bits: Optional[int] = None
     super_group_size: Optional[int] = None
     to_quant_block_names: Optional[list[str]] = None
-    rotation_configs: Optional[list[dict[str, Any]]] = None
+    transform_configs: Optional[list[dict[str, Any]]] = None
 
 
 class BaseCompressor(object):
@@ -132,17 +132,25 @@ class BaseCompressor(object):
         enable_torch_compile: bool = False,
         seed: int = 42,
         low_cpu_mem_usage: bool = True,
+        layer_config=None,
+        nsamples: int = None,
+        seqlen: int = None,
         **kwargs,
     ):
         self.quantize_config = None
-        self.rotation_configs: list[BaseRotationConfig] = []
+        self.transform_configs: list[BaseRotationConfig] = []
         _config_list = config if isinstance(config, list) else [config]
         for _cfg in _config_list:
             if isinstance(_cfg, QuantizationConfig):
                 self.quantize_config = _cfg
             elif isinstance(_cfg, BaseRotationConfig):
-                self.rotation_configs.append(_cfg)
+                self.transform_configs.append(_cfg)
         assert self.quantize_config is not None, "QuantizationConfig is required for Compressor"
+
+        # Compressor-level calibration/layer params (do not live in QuantizationConfig).
+        self.layer_config = layer_config
+        self.nsamples = nsamples if nsamples is not None else 128
+        self.seqlen = seqlen if seqlen is not None else 2048
 
         # Scheme is passed directly to the compressor, not stored in QuantizationConfig.
         self.scheme = scheme
@@ -553,7 +561,7 @@ class BaseCompressor(object):
         # Initialize scheme state from quantize_config before resolving.
         cfg = self.quantize_config
         self.scale_dtype = cfg.scale_dtype
-        self.layer_config = cfg.layer_config
+        # self.layer_config is already set from __init__ (direct compressor param).
         self.ignore_layers = cfg.ignore_layers
         self.quant_lm_head = cfg.quant_lm_head
         self.to_quant_block_names = cfg.to_quant_block_names
@@ -572,6 +580,9 @@ class BaseCompressor(object):
         self.quantizer.compress_context = self.compress_context
         self.quantizer.model = self.model_context.model
         self.quantizer.scale_dtype = self.scale_dtype
+        # Sync compressor-owned calibration params to quantizer.
+        self.quantizer.seqlen = self.seqlen
+        self.quantizer.nsamples = self.nsamples
         self.wrapper_block = wrapper_block
 
         # ── Phase 2: resolve output format ───────────────────────────────────
@@ -582,6 +593,10 @@ class BaseCompressor(object):
             self.compress_context.formats = self.formats
             ShardWriter.reset()
             self.shard_writer = ShardWriter(self.model_context.model, bits=8)
+
+        # Snapshot the user-specified layer_config before GGUF processing may
+        # add extra entries, so we can distinguish them later in Phase 2b.
+        _pre_gguf_layer_config = copy.copy(self.layer_config) or {}
 
         # ── Phase 2b: propagate GGUF-adjusted attrs back to quantizer ────────
         # gguf_args_check (called inside get_formats) may have overridden
@@ -651,9 +666,7 @@ class BaseCompressor(object):
                 self.scheme = _new_scheme
 
         _gguf_layer_cfg = {
-            k: v
-            for k, v in (self.__dict__.get("layer_config") or {}).items()
-            if k not in (self.quantize_config.layer_config or {})
+            k: v for k, v in (self.__dict__.get("layer_config") or {}).items() if k not in (_pre_gguf_layer_config)
         }
         if _gguf_layer_cfg:
             if self.layer_config is None:
@@ -662,10 +675,10 @@ class BaseCompressor(object):
                 self.layer_config.setdefault(_lname, _lval)
 
         # ── Phase 2d: apply rotation transforms ──────────────────────────────
-        if self.rotation_configs:
+        if self.transform_configs:
             check_supported_schemes(self.scheme)
             need_calibration = self.quantize_config.iters > 0
-            for rotation_cfg in self.rotation_configs:
+            for rotation_cfg in self.transform_configs:
                 self.model_context.model = apply_rotation(
                     self.model_context.model,
                     rotation_cfg,

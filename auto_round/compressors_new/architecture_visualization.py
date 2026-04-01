@@ -11,21 +11,21 @@ def print_architecture_table():
     """Print architecture combination table"""
 
     print("\n" + "=" * 110)
-    print("Compressor New Architecture - Mixin Pattern Combination Table")
+    print("AutoRound New Architecture - Mixin Pattern Combination Table")
     print("=" * 110 + "\n")
 
-    print(f"{'Model Type':<15} {'Config Type':<20} {'Compressor (dynamic class)':<40} {'Base classes':<35}")
+    print(f"{'Model Type':<15} {'Config Type':<20} {'AutoRound (dynamic class)':<40} {'Base classes':<35}")
     print("-" * 110)
 
     # LLM combinations
-    print(f"{'LLM':<15} {'AutoRoundConfig':<20} {'CalibCompressor':<40} {'CalibCompressor':<35}")
+    print(f"{'LLM':<15} {'SignRoundConfig':<20} {'CalibCompressor':<40} {'CalibCompressor':<35}")
     print(f"{'LLM':<15} {'RTNConfig':<20} {'CalibratedRTNCompressor':<40} {'CalibratedRTNCompressor':<35}")
     print(f"{'LLM':<15} {'RTNConfig':<20} {'ZeroShotCompressor':<40} {'ZeroShotCompressor':<35}")
 
     print()
 
     # MLLM combinations (dynamic classes created in entry.py)
-    print(f"{'MLLM':<15} {'AutoRoundConfig':<20} {'MLLMCalibCompressor':<40} {'MLLMMixin + CalibCompressor':<35}")
+    print(f"{'MLLM':<15} {'SignRoundConfig':<20} {'MLLMCalibCompressor':<40} {'MLLMMixin + CalibCompressor':<35}")
     print(
         f"{'MLLM':<15} {'RTNConfig':<20} {'MLLMCalibratedRTNCompressor':<40} "
         f"{'MLLMMixin + CalibratedRTNCompressor':<35}"
@@ -36,7 +36,7 @@ def print_architecture_table():
 
     # Diffusion combinations (dynamic classes created in entry.py)
     print(
-        f"{'Diffusion':<15} {'AutoRoundConfig':<20} {'DiffusionCalibCompressor':<40} "
+        f"{'Diffusion':<15} {'SignRoundConfig':<20} {'DiffusionCalibCompressor':<40} "
         f"{'DiffusionMixin + CalibCompressor':<35}"
     )
     print(
@@ -62,13 +62,13 @@ def print_mixin_explanation():
     print("-" * 110)
     print("  1. MLLMMixin                 - MLLM features (processor, template, quant_nontext_module, etc.)")
     print("  2. DiffusionMixin            - Diffusion features (pipeline loading, guidance_scale, etc.)")
-    print("  3. CalibCompressor           - AutoRound: gradient-based calibration quantization")
+    print("  3. CalibCompressor           - AutoRoundCompatible: gradient-based calibration quantization")
     print("  4. CalibratedRTNCompressor   - RTN with importance-matrix (imatrix) or act calibration")
     print("  5. ZeroShotCompressor        - Zero-shot RTN (no calibration data needed)")
 
     print("\n🎯 Combination Approach:")
     print("-" * 110)
-    print("  Dynamic classes created on-the-fly inside Compressor.__new__():")
+    print("  Dynamic classes created on-the-fly inside AutoRound.__new__():")
     print("    class MLLMCalibCompressor(MLLMMixin, CalibCompressor): pass")
     print("    class MLLMCalibratedRTNCompressor(MLLMMixin, CalibratedRTNCompressor): pass")
     print("    class MLLMZeroShotCompressor(MLLMMixin, ZeroShotCompressor): pass")
@@ -126,15 +126,15 @@ def print_usage_examples():
     print("Usage Examples")
     print("=" * 110 + "\n")
 
-    print("Example 1: MLLM + AutoRound (gradient-based)")
+    print("Example 1: MLLM + AutoRoundCompatible (gradient-based)")
     print("-" * 110)
     print(
         """
-from auto_round.compressors_new.entry import Compressor
-from auto_round.algorithms.quantization.auto_round.config import AutoRoundConfig
+from auto_round.compressors_new.entry import AutoRound
+from auto_round.algorithms.quantization.sign_round.config import SignRoundConfig
 
-config = AutoRoundConfig(scheme="W4A16", iters=200, nsamples=128)
-compressor = Compressor(
+config = SignRoundConfig(scheme="W4A16", iters=200, nsamples=128)
+compressor = AutoRound(
     config=config,
     model="/models/Qwen2-VL-2B-Instruct",
     processor=processor,
@@ -152,7 +152,7 @@ compressor = Compressor(
 from auto_round.algorithms.quantization.rtn.config import RTNConfig
 
 config = RTNConfig(scheme="W4A16")
-compressor = Compressor(
+compressor = AutoRound(
     config=config,
     model="/models/Qwen2-VL-2B-Instruct",
     format="gguf_k",    # gguf_k triggers CalibratedRTNCompressor
@@ -162,12 +162,12 @@ compressor = Compressor(
     """
     )
 
-    print("\nExample 3: Diffusion + AutoRound")
+    print("\nExample 3: Diffusion + AutoRoundCompatible")
     print("-" * 110)
     print(
         """
-config = AutoRoundConfig(scheme="W4A16", iters=200)
-compressor = Compressor(
+config = SignRoundConfig(scheme="W4A16", iters=200)
+compressor = AutoRound(
     config=config,
     model="/models/stable-diffusion-2-1",
     guidance_scale=7.5,
@@ -190,7 +190,7 @@ def print_mro_example():
     print("-" * 110)
     print(
         """
-MLLMCalibCompressor  (dynamic, created in Compressor.__new__)
+MLLMCalibCompressor  (dynamic, created in AutoRound.__new__)
     └─> MLLMMixin
         └─> CalibCompressor
             └─> BaseCompressor
@@ -222,12 +222,12 @@ def print_decision_tree():
     """Print decision tree"""
 
     print("=" * 110)
-    print("Compressor Creation Decision Tree")
+    print("AutoRound Creation Decision Tree")
     print("=" * 110 + "\n")
 
     print(
         """
-Compressor.__new__(config, model, format, **kwargs)
+AutoRound.__new__(config, model, format, **kwargs)
 │
 ├─ Step 1: Detect model type
 │  model_type = detect_model_type(model)
@@ -235,7 +235,7 @@ Compressor.__new__(config, model, format, **kwargs)
 │  ├─ is_mllm_model()      → "mllm"
 │  └─ else                 → "llm"
 │
-├─ isinstance(config, AutoRoundConfig)
+├─ isinstance(config, SignRoundConfig)
 │  ├─ model_type == "mllm"
 │  │  └─> class MLLMCalibCompressor(MLLMMixin, CalibCompressor)
 │  ├─ model_type == "diffusion"
@@ -294,7 +294,7 @@ The module is retrieved internally via get_module(model, name).
   Implementations:
   ├─ RTNQuantizer.quantize_block(block_name: str)
   ├─ OptimizedRTNQuantizer.quantize_block(block_name: str, input_ids, input_others)
-  └─ ARQuantizer.quantize_block(block_name: Union[str, list[str]], input_ids, input_others)
+  └─ SignRoundQuantizer.quantize_block(block_name: Union[str, list[str]], input_ids, input_others)
     """
     )
 
@@ -326,7 +326,7 @@ if __name__ == "__main__":
     print()
 
     # MLLM combinations
-    print(f"{'MLLM':<15} {'AutoRoundConfig':<20} {'AutoRound':<20} {'MLLMCalibCompressor':<35}")
+    print(f"{'MLLM':<15} {'SignRoundConfig':<20} {'AutoRoundCompatible':<20} {'MLLMCalibCompressor':<35}")
     print(f"{'':<15} {'':<20} {'':<20} {'  = MLLMMixin + CalibCompressor':<35}")
     print(f"{'MLLM':<15} {'RTNConfig':<20} {'RTN + imatrix':<20} {'MLLMImatrixCompressor':<35}")
     print(f"{'':<15} {'':<20} {'':<20} {'  = MLLMMixin + ImatrixCompressor':<35}")
@@ -336,7 +336,7 @@ if __name__ == "__main__":
     print()
 
     # Diffusion combinations
-    print(f"{'Diffusion':<15} {'AutoRoundConfig':<20} {'AutoRound':<20} {'DiffusionCalibCompressor':<35}")
+    print(f"{'Diffusion':<15} {'SignRoundConfig':<20} {'AutoRoundCompatible':<20} {'DiffusionCalibCompressor':<35}")
     print(f"{'':<15} {'':<20} {'':<20} {'  = DiffusionMixin + CalibCompressor':<35}")
     print(f"{'Diffusion':<15} {'RTNConfig':<20} {'RTN + imatrix':<20} {'DiffusionImatrixCompressor':<35}")
     print(f"{'':<15} {'':<20} {'':<20} {'  = DiffusionMixin + ImatrixCompressor':<35}")

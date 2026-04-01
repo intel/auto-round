@@ -45,10 +45,14 @@ class BaseQuantizers:
     supported_types = SUPPORTED_LAYER_TYPES
     inner_supported_types = INNER_SUPPORTED_LAYER_TYPES
     enable_alg_ext = False
+    # Subclasses that support diffusion models should override this with the
+    # appropriate output key mapping, e.g.:
+    #   DIFFUSION_OUTPUT_CONFIGS = {"FluxTransformerBlock": ["encoder_hidden_states", "hidden_states"]}
+    DIFFUSION_OUTPUT_CONFIGS: dict = {}
 
     def __init__(self, config: QuantizationConfig):
         self.config = config
-        self.layer_config = config.layer_config
+        self.layer_config = None
         self.bits = config.bits
         self.group_size = config.group_size
         self.sym = config.sym
@@ -64,9 +68,9 @@ class BaseQuantizers:
         self.ignore_layers = config.ignore_layers
         self.quant_lm_head = config.quant_lm_head
         self.to_quant_block_names = config.to_quant_block_names
-        # Calibration / sampling attrs – populated from config if present.
-        self.seqlen = getattr(config, "seqlen", 2048)
-        self.nsamples = getattr(config, "nsamples", 128)
+        # Calibration / sampling attrs – synced from compressor in post_init.
+        self.seqlen = 2048
+        self.nsamples = 128
         self.batch_size = getattr(config, "batch_size", 8)
         self.batch_dim = getattr(config, "batch_dim", None)
         self.infer_bs_coeff = getattr(config, "infer_bs_coeff", 1)
@@ -270,7 +274,7 @@ class BaseQuantizers:
             reference_output: FP reference outputs collected by Compressor
                 (None for algorithms that don't need a reconstruction loss).
             **kwargs: Algorithm-specific keyword arguments (e.g. ``loss_device``,
-                ``card_0_in_high_risk`` for ARQuantizer).
+                ``card_0_in_high_risk`` for SignRoundQuantizer).
 
         Returns:
             dict: Best quantization parameters found, or ``{}`` if not applicable.
@@ -297,20 +301,20 @@ class BaseQuantizers:
     ):
         """Compute the output of a block for calibration inputs.
 
-        Shared by ARQuantizer and OptimizedRTNQuantizer.  Algorithm-specific
+        Shared by SignRoundQuantizer and OptimizedRTNQuantizer.  Algorithm-specific
         block-forward selection (compile vs. plain) is handled here based on
         ``enable_alg_ext`` and act-quantization flags.
         """
         diffusion_fn = getattr(self, "_get_diffusion_block_outputs", None)
-        if getattr(self.model_context, "is_diffusion", False) and callable(diffusion_fn):
-            return diffusion_fn(
+        if getattr(self.model_context, "is_diffusion", False):
+            return self._get_diffusion_block_outputs(
                 block,
                 input_ids,
                 input_others,
                 bs,
                 self.compress_context.device,
                 self.compress_context.cache_device,
-            )  # pylint : disable=E1102
+            )
 
         if (
             (self.config.is_act_quantize and (not self.config.act_dynamic or self.config.is_act_nv_fp))  # have hooks
@@ -354,8 +358,7 @@ class BaseQuantizers:
                     output.append(tmp_output)
                 else:
                     output.extend(list(torch.split(tmp_output, 1, dim=self.batch_dim)))
-        if self.compress_context.low_gpu_mem_usage:
-            clear_memory(device_list=self.compress_context.device_list)
+        self.compress_context.clear_memory()
 
         return output
 
@@ -372,7 +375,7 @@ class BaseQuantizers:
     ):
         """Sample a mini-batch of calibration inputs by indices.
 
-        Shared by ARQuantizer and OptimizedRTNQuantizer.
+        Shared by SignRoundQuantizer and OptimizedRTNQuantizer.
         """
         if isinstance(input_ids, list):
             current_input_ids = [input_ids[i] for i in indices]
@@ -406,3 +409,65 @@ class BaseQuantizers:
                 current_input_others[key] = None
 
         return current_input_ids, current_input_others
+
+    @torch.no_grad()
+    def _get_diffusion_block_outputs(
+        self,
+        block: torch.nn.Module,
+        input_ids: Union[torch.Tensor, dict],
+        input_others,
+        bs: int,
+        device: Union[str, torch.device],
+        cache_device: Union[str, torch.device],
+        save_output: bool = True,
+    ):
+        """Compute block outputs for diffusion models.
+
+        Uses ``self.DIFFUSION_OUTPUT_CONFIGS`` to map block class names to their
+        output keys.  Subclasses override ``DIFFUSION_OUTPUT_CONFIGS`` to add
+        support for new diffusion architectures.
+        """
+        output = defaultdict(list)
+        output_config = self.DIFFUSION_OUTPUT_CONFIGS.get(block.__class__.__name__, [])
+        if isinstance(input_ids, dict):
+            nsamples = len(input_ids["hidden_states"])
+        else:
+            nsamples = len(input_ids)
+
+        for i in range(0, nsamples, bs):
+            end_index = min(nsamples, i + bs)
+            indices = torch.arange(i, end_index).to(torch.long)
+            tmp_input_ids, tmp_input_others = self._sampling_inputs(
+                input_ids,
+                input_others,
+                indices,
+                self.seqlen,
+                self.batch_dim,
+                share_cache_keys=self.model_context.shared_cache_keys,
+            )
+            if isinstance(tmp_input_ids, dict):
+                hidden_states = tmp_input_ids.pop("hidden_states")
+                tmp_input_others.update(tmp_input_ids)
+                tmp_input_ids = hidden_states
+
+            tmp_output = block_forward(
+                block,
+                tmp_input_ids,
+                tmp_input_others,
+                self.model_context.amp,
+                self.model_context.amp_dtype,
+                device,
+                None,
+            )
+            assert len(output_config) == len(tmp_output)
+            tmp_output = dict(zip(output_config, tmp_output))
+
+            if save_output:
+                for name, out in tmp_output.items():
+                    if self.batch_size == 1:
+                        output[name].append(out.to(cache_device))
+                    else:
+                        output[name].extend(list(torch.split(out.to(cache_device), 1, dim=self.batch_dim)))
+        self.compress_context.clear_memory()
+
+        return output

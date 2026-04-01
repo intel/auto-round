@@ -25,9 +25,9 @@ from typing import Any
 import torch
 import tqdm
 
-from auto_round.algorithms.rotation.base import BaseRotation
-from auto_round.algorithms.rotation.hadamard.config import HadamardConfig, normalize_hadamard_config
-from auto_round.algorithms.rotation.hadamard.transforms import build_hadamard_transform
+from auto_round.algorithms.transforms.base import BaseRotation
+from auto_round.algorithms.transforms.hadamard.config import HadamardConfig, normalize_hadamard_config
+from auto_round.algorithms.transforms.hadamard.transforms import build_hadamard_transform
 from auto_round.experimental.qmodules.mx import MXQuantLinearBase  # optional dep, guarded below
 
 __all__ = ["HadamardRotation", "apply_hadamard_transform"]
@@ -40,7 +40,7 @@ def _triton_available() -> bool:
 
         if not torch.cuda.is_available():
             return False
-        from auto_round.algorithms.rotation.hadamard.utils.triton.mxfp4 import (  # noqa: F401
+        from auto_round.algorithms.transforms.hadamard.utils.triton.mxfp4 import (  # noqa: F401
             mxfp4_forward_kernel_wrapper,
         )
 
@@ -54,16 +54,16 @@ class HadamardRotation(BaseRotation):
     """Hadamard rotation algorithm.
 
     Registered under ``"hadamard"`` in the
-    :class:`~auto_round.algorithms.rotation.base.BaseRotation` registry.
+    :class:`~auto_round.algorithms.transforms.base.BaseRotation` registry.
 
     Typical usage (via the top-level helper)::
 
-        from auto_round.algorithms.rotation import apply_rotation
+        from auto_round.algorithms.transforms import apply_rotation
         model = apply_rotation(model, config={"hadamard_type": "random_hadamard"})
 
     Or directly::
 
-        from auto_round.algorithms.rotation.hadamard import apply_hadamard_transform
+        from auto_round.algorithms.transforms.hadamard import apply_hadamard_transform
         model = apply_hadamard_transform(model, config=HadamardConfig(), need_calibration=True)
     """
 
@@ -139,7 +139,7 @@ def _apply_to_module(
     location: str,
 ) -> None:
     """Apply the configured Hadamard transform to a single *module*."""
-    from auto_round.algorithms.rotation.hadamard.patch import (
+    from auto_round.algorithms.transforms.hadamard.patch import (
         patch_quantlinear,
         patch_wrapperlinear_to_apply_transform,
         patch_wrapperwalayer_forward_to_apply_transform,
@@ -157,7 +157,7 @@ def _apply_to_module(
 
 def _apply_input_transform(module: torch.nn.Module, config: HadamardConfig) -> None:
     """Register a forward pre-hook that applies the Hadamard to the input activation."""
-    from auto_round.algorithms.rotation.hadamard.utils.matrix import multihead_matmul
+    from auto_round.algorithms.transforms.hadamard.utils.matrix import multihead_matmul
 
     inp_transform = build_hadamard_transform(
         **config.model_dump(),
@@ -173,7 +173,7 @@ def _apply_input_transform(module: torch.nn.Module, config: HadamardConfig) -> N
         hadamard_weight = None
 
     if _triton_available():
-        from auto_round.algorithms.rotation.hadamard.utils.triton.mxfp4 import mxfp4_forward_kernel_wrapper
+        from auto_round.algorithms.transforms.hadamard.utils.triton.mxfp4 import mxfp4_forward_kernel_wrapper
 
         def _input_hook(self, args):
             x = args[0]
@@ -207,7 +207,7 @@ def _apply_weight_transform(
     need_calibration: bool,
 ) -> None:
     """Fuse or patch the Hadamard rotation into the weight of *module*."""
-    from auto_round.algorithms.rotation.hadamard.patch import (
+    from auto_round.algorithms.transforms.hadamard.patch import (
         patch_quantlinear,
         patch_wrapperlinear_to_apply_transform,
         patch_wrapperwalayer_forward_to_apply_transform,
@@ -259,7 +259,7 @@ def apply_hadamard_transform(
     """Apply a Hadamard rotation to *model*.
 
     This is the main public entry point when you only want Hadamard (rather
-    than the polymorphic :func:`~auto_round.algorithms.rotation.apply_rotation`).
+    than the polymorphic :func:`~auto_round.algorithms.transforms.apply_rotation`).
 
     Args:
         model:            Target model.

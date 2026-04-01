@@ -11,11 +11,11 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-"""Hadamard rotation sub-package for ``algorithms/rotation``."""
+"""Hadamard rotation sub-package for ``algorithms/transforms``."""
 
-from auto_round.algorithms.rotation.hadamard.apply import HadamardRotation, apply_hadamard_transform
-from auto_round.algorithms.rotation.hadamard.config import HadamardConfig, normalize_hadamard_config
-from auto_round.algorithms.rotation.hadamard.transforms import (
+from auto_round.algorithms.transforms.hadamard.apply import HadamardRotation, apply_hadamard_transform
+from auto_round.algorithms.transforms.hadamard.config import HadamardConfig, normalize_hadamard_config
+from auto_round.algorithms.transforms.hadamard.transforms import (
     HADAMARDS,
     HadamardTransform,
     RandomHadamardTransform,

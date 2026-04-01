@@ -31,6 +31,7 @@ from auto_round.utils import (
     get_module,
     global_state,
     memory_monitor,
+    mv_module_from_gpu,
     set_module,
 )
 
@@ -119,10 +120,36 @@ class ZeroShotCompressor(BaseCompressor):
                 for block_name in block_names:
                     pbar.set_description(f"Quantizing {block_name}")
                     block = get_module(self.model, block_name)
+
+                    # ── Infrastructure: materialize ───────────────────────────
+                    materialize_model_(block)
+
+                    # ── Pure algorithm ────────────────────────────────────────
                     self.quantizer.quantize_block(block)
 
-                    if self.low_cpu_mem_usage and not self.is_immediate_saving:
-                        self._offloader(self.model, block_name)
+                    # ── Infrastructure: shard write / device cleanup ──────────
+                    if self.is_immediate_saving:
+                        # Save non-quantized leaf modules (e.g. norms, embeddings in block).
+                        for _n, m in block.named_modules():
+                            if (
+                                not any(m.children())
+                                and len(m.state_dict()) > 0
+                                and hasattr(m, "global_name")
+                                and m.global_name not in tied_weights_layers
+                                and not check_to_quantized(m)
+                            ):
+                                set_module(self.model, m.global_name, copy.deepcopy(m))
+                                self.shard_writer.write(name=m.global_name)
+                                get_module(self.model, m.global_name).to("meta")
+                                m.to("meta")
+                        # Write at block scope for any remaining params/buffers.
+                        self.shard_writer.write(name=block_name)
+                        block.to("meta")
+                    else:
+                        mv_module_from_gpu(block)
+                        if self.low_cpu_mem_usage:
+                            self._offloader(self.model, block_name)
+
                     clear_memory(device_list=self.device_list)
                     memory_monitor.log_summary()
                     pbar.update(1)

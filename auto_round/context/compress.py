@@ -17,6 +17,7 @@ import torch
 
 from auto_round.context.base import BaseContext
 from auto_round.utils.device import (
+    clear_memory,
     clear_memory_if_reached_threshold,
     get_major_device,
     parse_available_devices,
@@ -65,3 +66,8 @@ class CompressContext(BaseContext):
         self.formats = formats
         self.static_kv_dtype = static_kv_dtype
         self.static_attention_dtype = static_attention_dtype
+
+    def clear_memory(self, tensor=None):
+        """Clear GPU/CPU memory only when ``low_gpu_mem_usage`` is enabled."""
+        if self.low_gpu_mem_usage:
+            clear_memory(tensor, device_list=self.device_list)

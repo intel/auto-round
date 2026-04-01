@@ -139,7 +139,7 @@ class MLLMMixin:
                 image_processor=image_processor,
                 dataset=dataset,
                 extra_data_dir=self.extra_data_dir,
-                seqlen=self.quantize_config.seqlen,
+                seqlen=self.seqlen,
                 bs=bs,
                 seed=self.seed,
                 nsamples=nsamples,

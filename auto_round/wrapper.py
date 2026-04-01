@@ -492,6 +492,7 @@ class WrapperLinear(torch.nn.Module):
 
 
 class WrapperWALayer(torch.nn.Module):
+
     def __init__(self, orig_layer, enable_torch_compile=False, device="cpu"):
         super(WrapperWALayer, self).__init__()
         self.orig_layer = orig_layer
@@ -664,7 +665,13 @@ class WrapperMultiblock(torch.nn.Module):
 
 
 def wrapper_block(
-    block, enable_minmax_tuning, enable_norm_bias_tuning, enable_torch_compile=False, device="cpu", **kwargs
+    block,
+    enable_minmax_tuning,
+    enable_norm_bias_tuning,
+    enable_torch_compile=False,
+    device="cpu",
+    is_nv_fp=False,
+    **kwargs,
 ):
     """Wraps the layers in the given block with a custom Wrapper module.
 
@@ -711,6 +718,11 @@ def wrapper_block(
                     set_module(block, n, new_m)
                 else:
                     logger.warning_once(f"{m.__class__.__name__} is not supported")
+    if is_nv_fp:
+        from auto_round.data_type.utils import update_fused_layer_global_scales
+
+        for module in block.modules():
+            update_fused_layer_global_scales(module)
     return quantized_layers, unquantized_layers
 
 

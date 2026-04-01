@@ -324,11 +324,11 @@ class CalibCompressor(BaseCompressor):
             # slow here
             self.dataloader = get_dataloader(
                 self.model_context.tokenizer,
-                self.quantize_config.seqlen,
+                self.seqlen,
                 dataset,
                 self.seed,
                 bs,
-                self.quantize_config.nsamples,
+                self.nsamples,
             )
         else:
             self.dataloader = self.dataset
@@ -349,7 +349,7 @@ class CalibCompressor(BaseCompressor):
                     logger.error("please provide tokenizer for string input")
                     exit(-1)
                 data = self.model_context.tokenizer(
-                    data, truncation=True, max_length=self.quantize_config.seqlen, return_tensors="pt"
+                    data, truncation=True, max_length=self.seqlen, return_tensors="pt"
                 ).data
                 data_new = {}
                 for key in data.keys():
@@ -365,7 +365,7 @@ class CalibCompressor(BaseCompressor):
                     if key == "images":
                         data_new[key] = to_dtype(data_new[key], self.model.dtype)
                 input_ids = data_new["input_ids"]
-            if input_ids.shape[-1] < self.quantize_config.seqlen:
+            if input_ids.shape[-1] < self.seqlen:
                 continue
             if need_attention_mask:
                 if (
@@ -429,7 +429,7 @@ class CalibCompressor(BaseCompressor):
             except RuntimeError as error:
                 error_msg = str(error)
                 if "The expanded size of the tensor" in str(error_msg) and "must match the existing size" in error_msg:
-                    check_seqlen_compatible(self.quantize_config.seqlen, self.model_context.tokenizer, self.model)
+                    check_seqlen_compatible(self.seqlen, self.model_context.tokenizer, self.model)
                 logger.warning(
                     "When quantization encounters tensor shape mismatch error, "
                     "you can try to avoid it with batch_size=1"
@@ -444,7 +444,7 @@ class CalibCompressor(BaseCompressor):
         if total_cnt == 0:
             logger.error(
                 f"no data has been cached, please provide more data with sequence length "
-                f">={self.quantize_config.seqlen} in the dataset or decease the sequence length"
+                f">={self.seqlen} in the dataset or decease the sequence length"
             )
             exit(-1)
         elif total_cnt < nsamples:
@@ -849,7 +849,7 @@ class CalibCompressor(BaseCompressor):
             logger.info("start to cache block inputs")
         all_inputs = self.try_cache_inter_data_gpucpu(
             all_first_block_names,
-            self.quantize_config.nsamples,
+            self.nsamples,
             layer_names,
         )
         self.inputs = all_inputs
@@ -859,9 +859,7 @@ class CalibCompressor(BaseCompressor):
         if is_quantized_embedding:
             all_inputs = copy.deepcopy(self.inputs)
             clear_memory(self.inputs, device_list=self.compress_context.device_list)
-            all_q_inputs = self.try_cache_inter_data_gpucpu(
-                all_first_block_names, self.quantize_config.nsamples, layer_names
-            )
+            all_q_inputs = self.try_cache_inter_data_gpucpu(all_first_block_names, self.nsamples, layer_names)
             self.inputs = all_q_inputs
         # Remove accelerate dispatch hooks before moving parameters.
         # hf_device_map is kept for reference but hooks are no longer needed.
@@ -1022,9 +1020,7 @@ class CalibCompressor(BaseCompressor):
 
         if enable_quanted_input:
             logger.info("starting to cache layer inputs for %s, this may be quite slow ", layer_names)
-            q_layer_inputs = self.try_cache_inter_data_gpucpu(
-                [], self.quantize_config.nsamples, layer_names=layer_names
-            )
+            q_layer_inputs = self.try_cache_inter_data_gpucpu([], self.nsamples, layer_names=layer_names)
             if hasattr(self.model, "hf_device_map") and len(self.model.hf_device_map) > 1:
                 accelerate.hooks.remove_hook_from_submodules(
                     self.model
@@ -1052,29 +1048,25 @@ class CalibCompressor(BaseCompressor):
     def _check_compatibility(self) -> None:
         """Checks compatibility of the configurations and model."""
         if (
-            self.quantize_config.seqlen is not None
+            self.seqlen is not None
             and hasattr(self.model_context.model, "config")
             and hasattr(self.model_context.model.config, "max_position_embeddings")
         ):
-            if self.model_context.model.config.max_position_embeddings < self.quantize_config.seqlen:
+            if self.model_context.model.config.max_position_embeddings < self.seqlen:
                 logger.warning(
                     f"Change sequence length to {self.model_context.model.config.max_position_embeddings} "
                     "due to the limitation of max_position_embeddings"
                 )
-                self.quantize_config.seqlen = min(
-                    self.quantize_config.seqlen, self.model_context.model.config.max_position_embeddings
-                )
+                self.seqlen = min(self.seqlen, self.model_context.model.config.max_position_embeddings)
 
-        if self.quantize_config.seqlen is not None and hasattr(self.model_context.tokenizer, "model_max_length"):
-            if self.model_context.tokenizer.model_max_length < self.quantize_config.seqlen:
+        if self.seqlen is not None and hasattr(self.model_context.tokenizer, "model_max_length"):
+            if self.model_context.tokenizer.model_max_length < self.seqlen:
                 logger.warning(
                     f"Change sequence length to {self.model_context.tokenizer.model_max_length} "
                     "due to the limitation of model_max_length. "
                     "You can also try to increase the model_max_length to avoid this issue."
                 )
-                self.quantize_config.seqlen = min(
-                    self.quantize_config.seqlen, self.model_context.tokenizer.model_max_length
-                )
+                self.seqlen = min(self.seqlen, self.model_context.tokenizer.model_max_length)
 
         if self.group_size == 0 and "fp8" not in self.data_type:
             logger.warning("`group_size==0` is not supported for data_type other than fp8 ")
@@ -1138,11 +1130,9 @@ class CalibratedRTNCompressor(CalibCompressor):
                     "quantize layers outside blocks for static activation quantizaiton"
                     " will significantly increase calibration time"
                 )
-            all_inputs = self.try_cache_inter_data_gpucpu(
-                all_first_block_names, self.quantize_config.nsamples, layer_names
-            )
+            all_inputs = self.try_cache_inter_data_gpucpu(all_first_block_names, self.nsamples, layer_names)
         else:
-            all_inputs = self.cache_inter_data(all_first_block_names, self.quantize_config.nsamples)
+            all_inputs = self.cache_inter_data(all_first_block_names, self.nsamples)
 
         # Clear hooks for multi-GPU setups
         if hasattr(self.model_context.model, "hf_device_map") and len(self.model_context.model.hf_device_map) > 1:
@@ -1227,6 +1217,10 @@ class CalibratedRTNCompressor(CalibCompressor):
                 if len(self.compress_context.device_list) > 1:
                     accelerate.hooks.remove_hook_from_submodules(block)
 
+                if self.compress_context.low_gpu_mem_usage:
+                    block.to("cpu")
+                    self.compress_context.clear_memory()
+
                 # ── Pure algorithm ────────────────────────────────────────────
                 self.quantizer.quantize_block(block)
 
@@ -1285,11 +1279,11 @@ class CalibratedRTNCompressor(CalibCompressor):
             dataset_name = self.dataset.replace(" ", "")
             self.dataloader = get_dataloader(
                 self.model_context.tokenizer,
-                self.quantize_config.seqlen,
+                self.seqlen,
                 dataset_name,
                 self.seed,
                 self.quantize_config.batch_size,
-                self.quantize_config.nsamples,
+                self.nsamples,
             )
         else:
             self.dataloader = self.dataset

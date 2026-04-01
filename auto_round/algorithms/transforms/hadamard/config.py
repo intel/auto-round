@@ -18,7 +18,7 @@ from typing import Any
 
 from pydantic import BaseModel, Field, field_validator
 
-from auto_round.algorithms.rotation.base import BaseRotationConfig
+from auto_round.algorithms.transforms.base import BaseRotationConfig
 
 __all__ = ["HadamardConfig", "normalize_hadamard_config"]
 
@@ -31,11 +31,11 @@ class HadamardConfig(BaseModel, BaseRotationConfig):
 
     This config is designed to be embedded inside a model's ``config.json``
     for serialisation, and is also used at runtime to drive
-    :class:`~auto_round.algorithms.rotation.hadamard.apply.HadamardRotation`.
+    :class:`~auto_round.algorithms.transforms.hadamard.apply.HadamardRotation`.
 
     Attributes:
         algorithm: Fixed to ``"hadamard"`` – identifies this config in the
-            :class:`~auto_round.algorithms.rotation.base.BaseRotation` registry.
+            :class:`~auto_round.algorithms.transforms.base.BaseRotation` registry.
         block_size: Block size for the block-diagonal Hadamard matrix.
         hadamard_type: Which transform to use (``"hadamard"`` or
             ``"random_hadamard"``).

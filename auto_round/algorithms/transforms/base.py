@@ -55,7 +55,7 @@ class BaseRotation(ABC):
 
     Example
     -------
-    >>> from auto_round.algorithms.rotation import apply_rotation
+    >>> from auto_round.algorithms.transforms import apply_rotation
     >>> model = apply_rotation(model, config={"algorithm": "hadamard", ...})
     """
 
@@ -162,7 +162,7 @@ def _ensure_registry_populated() -> None:
 
     for sub in ("hadamard",):
         try:
-            importlib.import_module(f"auto_round.algorithms.rotation.{sub}")
+            importlib.import_module(f"auto_round.algorithms.transforms.{sub}")
         except ImportError:
             pass
     _registry_populated = True

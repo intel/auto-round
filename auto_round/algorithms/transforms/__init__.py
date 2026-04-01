@@ -20,18 +20,18 @@ quantisation step to improve numerical properties.
 Current algorithms
 ------------------
 * **hadamard** – Block-diagonal Hadamard rotations (QuaRot / SpinQuant style).
-  See :mod:`auto_round.algorithms.rotation.hadamard`.
+  See :mod:`auto_round.algorithms.transforms.hadamard`.
 
 Adding a new algorithm
 -----------------------
-1. Create ``algorithms/rotation/<name>/`` with ``config.py`` and ``apply.py``.
+1. Create ``algorithms/transforms/<name>/`` with ``config.py`` and ``apply.py``.
 2. Subclass :class:`BaseRotationConfig` and :class:`BaseRotation`; register
    with ``@BaseRotation.register("<name>")``.
 3. Re-export from this ``__init__.py``.
 
 Typical usage
 -------------
->>> from auto_round.algorithms.rotation import apply_rotation
+>>> from auto_round.algorithms.transforms import apply_rotation
 >>> model = apply_rotation(model, config={"hadamard_type": "random_hadamard"})
 """
 from __future__ import annotations
@@ -40,13 +40,13 @@ from typing import Any
 
 import torch
 
-from auto_round.algorithms.rotation.base import (
+from auto_round.algorithms.transforms.base import (
     BaseRotation,
     BaseRotationConfig,
     ROTATION_SUPPORTED_SCHEMES,
     check_supported_schemes,
 )
-from auto_round.algorithms.rotation.hadamard import (
+from auto_round.algorithms.transforms.hadamard import (
     HadamardConfig,
     HadamardRotation,
     apply_hadamard_transform,

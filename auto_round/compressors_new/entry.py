@@ -6,8 +6,9 @@ from typing import Any, Callable, Optional, Union
 import torch
 
 from auto_round.algorithms.alg_config import AlgConfig
-from auto_round.algorithms.quantization.auto_round.config import AutoRoundConfig
 from auto_round.algorithms.quantization.rtn.config import RTNConfig
+from auto_round.algorithms.quantization.sign_round.config import SignRoundConfig
+from auto_round.algorithms.transforms.hadamard.config import HadamardConfig
 from auto_round.auto_scheme.gen_auto_scheme import AutoScheme
 from auto_round.compressors_new.calib import CalibCompressor, CalibratedRTNCompressor
 from auto_round.compressors_new.utils import check_need_act_calibration
@@ -19,7 +20,7 @@ from auto_round.schemes import QuantizationScheme, _parse_scheme
 def _preview_resolved_attrs(config, scheme=None) -> dict:
     """Resolve scheme attributes without mutating config, for routing decisions.
 
-    Called in ``Compressor.__new__`` before the concrete compressor class is
+    Called in ``AutoRound.__new__`` before the concrete compressor class is
     chosen.  ``SchemeMixin.resolve_scheme()`` will do the authoritative
     resolution later; this is just a lightweight preview so routing logic
     (``enable_imatrix``, ``needs_act_calib``, etc.) can use the correct values
@@ -77,19 +78,66 @@ def detect_model_type(model):
     return "llm"
 
 
-class Compressor(object):
-    SKIP_ARGS = ("local_args", "kwargs", "cls", "config")
+class AutoRound(object):
+    SKIP_ARGS = ("local_args", "kwargs", "cls", "alg_configs", "quant_config", "quant_configs")
+
+    # Mapping from string alias to config class (and optional defaults override).
+    _CONFIG_ALIASES: dict[str, type] = {
+        "sign_round": SignRoundConfig,
+        "signround": SignRoundConfig,
+        "rtn": RTNConfig,
+        "hadamard": HadamardConfig,
+    }
+
+    @classmethod
+    def _resolve_config(cls, config: Union[str, AlgConfig, list]) -> Union[AlgConfig, list[AlgConfig]]:
+        """Convert string alias(es) to the corresponding config instance(s) with default parameters."""
+        if isinstance(config, str):
+            key = config.strip().lower()
+            if key not in cls._CONFIG_ALIASES:
+                raise ValueError(f"Unknown config alias '{config}'. " f"Supported: {list(cls._CONFIG_ALIASES.keys())}")
+            return cls._CONFIG_ALIASES[key]()
+        if isinstance(config, list):
+            return [cls._resolve_config(c) for c in config]
+        return config
 
     def __new__(
         cls,
-        config: Union[AlgConfig, list[AlgConfig]],
+        alg_configs: Union[str, AlgConfig, list[Union[str, AlgConfig]]],
         model: Union[torch.nn.Module, str],
         tokenizer=None,
         platform="hf",
         format=None,
         scheme="W4A16",
+        low_gpu_mem_usage: bool = False,
+        device_map: Union[str, torch.device, int, dict] = 0,
+        enable_torch_compile: bool = False,
+        seed: int = 42,
+        low_cpu_mem_usage: bool = True,
+        layer_config=None,
+        nsamples: int = None,
+        seqlen: int = None,
         **kwargs,
     ):
+        from auto_round.algorithms.quantization.config import QuantizationConfig
+
+        # Resolve string alias(es) to config instance(s) before routing.
+        alg_configs = cls._resolve_config(alg_configs)
+
+        # Extract the single QuantizationConfig from a list; validate at most one exists.
+        if isinstance(alg_configs, list):
+            quant_configs = [c for c in alg_configs if isinstance(c, QuantizationConfig)]
+            if len(quant_configs) == 0:
+                raise ValueError("At least one QuantizationConfig (SignRoundConfig / RTNConfig) is required.")
+            if len(quant_configs) > 1:
+                raise ValueError(
+                    f"Only one QuantizationConfig is allowed, but got {len(quant_configs)}: "
+                    f"{[type(c).__name__ for c in quant_configs]}"
+                )
+            quant_config = quant_configs[0]
+        else:
+            quant_config = alg_configs
+
         # using different compressor base on AlgConfigs
         local_args = {k: v for k, v in locals().items() if k not in cls.SKIP_ARGS}
 
@@ -102,42 +150,42 @@ class Compressor(object):
         if has_multimodal_assets and model_type != "mllm":
             model_type = "mllm"
 
-        if isinstance(config, AutoRoundConfig):
-            # For AutoRound, we need calibration-based compression
+        if isinstance(quant_config, SignRoundConfig):
+            # For AutoRoundCompatible, we need calibration-based compression
             # Dynamically create combined class using Mixin pattern
             if model_type == "mllm":
                 from auto_round.compressors_new.mllm_mixin import MLLMMixin
 
                 # Create dynamic class: MLLMMixin + CalibCompressor
                 class MLLMCalibCompressor(MLLMMixin, CalibCompressor):
-                    """MLLM model with AutoRound calibration compression"""
+                    """MLLM model with AutoRoundCompatible calibration compression"""
 
                     pass
 
-                return MLLMCalibCompressor(config, **local_args, **kwargs)
+                return MLLMCalibCompressor(alg_configs, **local_args, **kwargs)
             elif model_type == "diffusion":
                 from auto_round.compressors_new.diffusion_mixin import DiffusionMixin
 
                 # Create dynamic class: DiffusionMixin + CalibCompressor
                 class DiffusionCalibCompressor(DiffusionMixin, CalibCompressor):
-                    """Diffusion model with AutoRound calibration compression"""
+                    """Diffusion model with AutoRoundCompatible calibration compression"""
 
                     pass
 
-                return DiffusionCalibCompressor(config, **local_args, **kwargs)
+                return DiffusionCalibCompressor(alg_configs, **local_args, **kwargs)
             else:
-                return CalibCompressor(config, **local_args, **kwargs)
+                return CalibCompressor(alg_configs, **local_args, **kwargs)
 
-        elif isinstance(config, RTNConfig):
+        elif isinstance(quant_config, RTNConfig):
             enable_imatrix = False
-            disable_opt_rtn = getattr(config, "disable_opt_rtn", False)
+            disable_opt_rtn = getattr(quant_config, "disable_opt_rtn", False)
             # If disable_opt_rtn was not explicitly set and scheme is W8A16/W8A8,
             # auto-disable optimization to improve efficiency.
-            if getattr(config, "orig_disable_opt_rtn", None) is None:
+            if getattr(quant_config, "orig_disable_opt_rtn", None) is None:
                 if isinstance(scheme, str) and scheme.upper() in ["W8A16", "W8A8"]:
                     logger.warning("`disable_opt_rtn` is turned on for W8A16/W8A8 quantization to improve efficiency.")
                     disable_opt_rtn = True
-                    config.disable_opt_rtn = True
+                    quant_config.disable_opt_rtn = True
             if not disable_opt_rtn:
                 has_gguf_k = "gguf" in format.lower() and "_k" in format.lower() if format else False
                 if has_gguf_k:
@@ -145,9 +193,9 @@ class Compressor(object):
                 else:
                     # Resolve scheme attrs for routing (config hasn't been through
                     # SchemeMixin yet; user may have specified only scheme="W4A16").
-                    _resolved = _preview_resolved_attrs(config, scheme)
-                    _sym = _resolved.get("sym", getattr(config, "sym", None))
-                    _data_type = _resolved.get("data_type", getattr(config, "data_type", "") or "")
+                    _resolved = _preview_resolved_attrs(quant_config, scheme)
+                    _sym = _resolved.get("sym", getattr(quant_config, "sym", None))
+                    _data_type = _resolved.get("data_type", getattr(quant_config, "data_type", "") or "")
                     if _sym is not None and _sym is False:
                         enable_imatrix = False
                     elif _data_type == "int":
@@ -157,10 +205,10 @@ class Compressor(object):
             else:
                 _resolved = {}
 
-            _resolved = _resolved if not disable_opt_rtn else _preview_resolved_attrs(config, scheme)
-            _act_bits = _resolved.get("act_bits", getattr(config, "act_bits", None))
-            _act_data_type = _resolved.get("act_data_type", getattr(config, "act_data_type", None))
-            _act_dynamic = _resolved.get("act_dynamic", getattr(config, "act_dynamic", None))
+            _resolved = _resolved if not disable_opt_rtn else _preview_resolved_attrs(quant_config, scheme)
+            _act_bits = _resolved.get("act_bits", getattr(quant_config, "act_bits", None))
+            _act_data_type = _resolved.get("act_data_type", getattr(quant_config, "act_data_type", None))
+            _act_dynamic = _resolved.get("act_dynamic", getattr(quant_config, "act_dynamic", None))
             _is_act_quantize = _act_bits is not None and _act_bits <= 8
             needs_act_calib = _is_act_quantize and check_need_act_calibration(
                 _act_dynamic,
@@ -177,7 +225,7 @@ class Compressor(object):
             is_auto_scheme = isinstance(scheme, _AutoScheme)
 
             if enable_imatrix or needs_act_calib or is_auto_scheme:
-                config._alg_cls = "OptimizedRTNQuantizer"
+                quant_config._alg_cls = "OptimizedRTNQuantizer"
                 # For RTN with calibration data, dynamically combine with model-specific Mixin
                 if model_type == "mllm":
                     from auto_round.compressors_new.mllm_mixin import MLLMMixin
@@ -187,7 +235,7 @@ class Compressor(object):
 
                         pass
 
-                    return MLLMCalibratedRTNCompressor(config, **local_args, **kwargs)
+                    return MLLMCalibratedRTNCompressor(alg_configs, **local_args, **kwargs)
                 elif model_type == "diffusion":
                     from auto_round.compressors_new.diffusion_mixin import DiffusionMixin
 
@@ -196,11 +244,11 @@ class Compressor(object):
 
                         pass
 
-                    return DiffusionCalibratedRTNCompressor(config, **local_args, **kwargs)
+                    return DiffusionCalibratedRTNCompressor(alg_configs, **local_args, **kwargs)
                 else:
-                    return CalibratedRTNCompressor(config, **local_args, **kwargs)
+                    return CalibratedRTNCompressor(alg_configs, **local_args, **kwargs)
             else:
-                config._alg_cls = "RTNQuantizer"
+                quant_config._alg_cls = "RTNQuantizer"
                 # Zero-shot RTN: no calibration data needed
                 if model_type == "mllm":
                     from auto_round.compressors_new.mllm_mixin import MLLMMixin
@@ -210,7 +258,7 @@ class Compressor(object):
 
                         pass
 
-                    return MLLMZeroShotCompressor(config, **local_args, **kwargs)
+                    return MLLMZeroShotCompressor(alg_configs, **local_args, **kwargs)
                 elif model_type == "diffusion":
                     from auto_round.compressors_new.diffusion_mixin import DiffusionMixin
 
@@ -219,16 +267,16 @@ class Compressor(object):
 
                         pass
 
-                    return DiffusionZeroShotCompressor(config, **local_args, **kwargs)
+                    return DiffusionZeroShotCompressor(alg_configs, **local_args, **kwargs)
                 else:
-                    return ZeroShotCompressor(config, **local_args, **kwargs)
+                    return ZeroShotCompressor(alg_configs, **local_args, **kwargs)
 
 
-class AutoRound:
-    """AutoRound wrapper class for backward compatibility.
+class AutoRoundCompatible:
+    """AutoRoundCompatible wrapper class for backward compatibility.
 
-    This class provides the same API as the old AutoRound class but internally
-    uses the new Compressor architecture with Mixin pattern.
+    This class provides the same API as the old AutoRoundCompatible class but internally
+    uses the new AutoRound architecture with Mixin pattern.
 
     Args:
         model: Model object or model name to load
@@ -251,8 +299,8 @@ class AutoRound:
 
     Example:
         >>> # Old API - still works
-        >>> from auto_round.compressors_new.entry import AutoRound
-        >>> autoround = AutoRound(
+        >>> from auto_round.compressors_new.entry import AutoRoundCompatible
+        >>> autoround = AutoRoundCompatible(
         ...     model="/models/opt-125m",
         ...     bits=4,
         ...     group_size=128,
@@ -326,9 +374,9 @@ class AutoRound:
         low_cpu_mem_usage: bool = True,
         **kwargs,
     ):
-        """Create AutoRound instance using new Compressor architecture.
+        """Create AutoRoundCompatible instance using new AutoRound architecture.
 
-        This method translates old AutoRound API to new Compressor API.
+        This method translates old AutoRoundCompatible API to new AutoRound API.
         """
         from auto_round.utils import is_diffusion_model, is_mllm_model
 
@@ -350,7 +398,6 @@ class AutoRound:
             # RTN mode
             disable_opt_rtn = kwargs.pop("disable_opt_rtn", None)
             config = RTNConfig(
-                layer_config=layer_config,
                 bits=bits,
                 group_size=group_size,
                 sym=sym,
@@ -362,24 +409,19 @@ class AutoRound:
                 act_dynamic=act_dynamic,
                 disable_opt_rtn=disable_opt_rtn,
                 # for optRTN
-                seqlen=seqlen,
-                nsamples=nsamples,
                 batch_size=batch_size,
                 **common_config_kwargs,
             )
         else:
-            # AutoRound mode
+            # AutoRoundCompatible mode
             lr = kwargs.pop("lr", None)
             minmax_lr = kwargs.pop("minmax_lr", None)
             enable_minmax_tuning = kwargs.pop("enable_minmax_tuning", True)
             enable_norm_bias_tuning = kwargs.pop("enable_norm_bias_tuning", False)
             enable_quanted_input = kwargs.pop("enable_quanted_input", True)
 
-            config = AutoRoundConfig(
-                layer_config=layer_config,
+            config = SignRoundConfig(
                 iters=iters,
-                nsamples=nsamples,
-                seqlen=seqlen,
                 batch_size=batch_size,
                 gradient_accumulate_steps=gradient_accumulate_steps,
                 bits=bits,
@@ -423,9 +465,9 @@ class AutoRound:
         else:
             logger.info("Using LLM mode (new architecture).")
 
-        # Create Compressor instance using new architecture
-        compressor = Compressor(
-            config=config,
+        # Create AutoRound instance using new architecture
+        compressor = AutoRound(
+            alg_configs=config,
             model=model,
             tokenizer=tokenizer,
             platform=platform,
@@ -437,6 +479,9 @@ class AutoRound:
             enable_torch_compile=enable_torch_compile,
             seed=seed,
             low_cpu_mem_usage=low_cpu_mem_usage,
+            layer_config=layer_config,
+            nsamples=nsamples,
+            seqlen=seqlen,
             # MLLM parameters
             processor=processor,
             image_processor=image_processor,

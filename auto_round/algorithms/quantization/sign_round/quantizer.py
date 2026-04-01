@@ -21,8 +21,9 @@ import accelerate
 import torch
 from torch import autocast
 
-from auto_round.algorithms.quantization.auto_round.config import AutoRoundConfig
 from auto_round.algorithms.quantization.base import BaseQuantizers
+from auto_round.algorithms.quantization.sign_round.config import SignRoundConfig
+from auto_round.algorithms.quantization.sign_round.sign_sgd import SignSGD
 from auto_round.compressors_new.utils import (
     IndexSampler,
     block_forward,
@@ -31,11 +32,8 @@ from auto_round.compressors_new.utils import (
     immediate_pack,
 )
 from auto_round.logger import logger
-from auto_round.modeling.fused_moe.replace_modules import materialize_model_
-from auto_round.sign_sgd import SignSGD
 from auto_round.utils import (
     check_to_quantized,
-    clear_memory,
     compile_func,
     convert_module_to_hp_if_necessary,
     get_module,
@@ -61,10 +59,14 @@ DIFFUSION_OUTPUT_CONFIGS = {
 }
 
 
-class ARQuantizer(BaseQuantizers):
-    is_adam: bool = False
+class SignRoundQuantizer(BaseQuantizers):
+    # Override the base empty dict with Flux-specific output key mappings.
+    DIFFUSION_OUTPUT_CONFIGS = {
+        "FluxTransformerBlock": ["encoder_hidden_states", "hidden_states"],
+        "FluxSingleTransformerBlock": ["encoder_hidden_states", "hidden_states"],
+    }
 
-    def __init__(self, config: AutoRoundConfig):
+    def __init__(self, config: SignRoundConfig):
         super().__init__(config)
         self.attention_mask = []
 
@@ -72,8 +74,6 @@ class ARQuantizer(BaseQuantizers):
         self.lr = config.lr
         self.minmax_lr = config.minmax_lr
         self.lr_scheduler = config.lr_scheduler
-        self.seqlen = config.seqlen
-        self.nsamples = config.nsamples
         self.batch_size = config.batch_size
         self.batch_dim = config.batch_dim
         self.momentum = config.momentum
@@ -88,6 +88,14 @@ class ARQuantizer(BaseQuantizers):
 
         self.optimizer = self._get_optimizer(optimizer=config.optimizer)
         self.wrapper_block = wrapper_block
+
+    def _get_extra_optimizer_kwargs(self) -> dict:
+        """Return extra keyword arguments passed to the optimizer constructor.
+
+        SignSGD requires ``momentum``; AdamW-based subclasses override this to
+        return ``{}`` because AdamW handles its own momentum internally.
+        """
+        return {"momentum": self.momentum}
 
     def post_init(self):
         super().post_init()
@@ -119,7 +127,7 @@ class ARQuantizer(BaseQuantizers):
         device: str,
         cache_device: str = "cpu",
     ):
-        output_config = DIFFUSION_OUTPUT_CONFIGS.get(block.__class__.__name__, [])
+        output_config = self.DIFFUSION_OUTPUT_CONFIGS.get(block.__class__.__name__, [])
         idx = None if "hidden_states" not in output_config else output_config.index("hidden_states")
         current_input_ids, current_input_others = self._sampling_inputs(
             input_ids,
@@ -259,14 +267,8 @@ class ARQuantizer(BaseQuantizers):
             self.enable_norm_bias_tuning,
             enable_torch_compile=self.compress_context.enable_torch_compile,
             device=device,
+            is_nv_fp=self.config.is_nv_fp,
         )
-        # Call this before quantization and after applying the block wrapper.
-        if self.config.is_nv_fp:  # enable qkv and moe structure global_scale fuse.
-            from auto_round.data_type.utils import update_fused_layer_global_scales
-
-            modules = block.modules()
-            for module in modules:
-                update_fused_layer_global_scales(module)
         round_params = []
         minmax_params = []
         for n, m in block.named_modules():
@@ -280,7 +282,7 @@ class ARQuantizer(BaseQuantizers):
         lr = torch.tensor(self.lr)
         minmax_lr = torch.tensor(self.minmax_lr)
 
-        extra_kwargs = {} if self.is_adam else {"momentum": self.momentum}
+        extra_kwargs = self._get_extra_optimizer_kwargs()
 
         if self.enable_minmax_tuning:
             params = [
@@ -397,8 +399,7 @@ class ARQuantizer(BaseQuantizers):
                 "layers in the block"
             )
 
-        if self.compress_context.low_gpu_mem_usage:
-            clear_memory(device_list=self.compress_context.device_list)  # clear cached memory during training
+        self.compress_context.clear_memory()  # clear cached memory during training
         if len(unquantized_layer_names) != 0:
             logger.info(f"Unquantized layers: {unquantized_layer_names}")
         with torch.no_grad():
@@ -588,78 +589,6 @@ class ARQuantizer(BaseQuantizers):
         mv_module_from_gpu(layer)
         dump_info = f"quantized {layer_name},  loss iter 0: {init_loss:.6f} -> iter {best_iter}: {last_loss:.6f}"
         logger.info(dump_info)
-
-    @torch.no_grad()
-    def _get_diffusion_block_outputs(
-        self,
-        block: torch.nn.Module,
-        input_ids: Union[torch.Tensor, dict],
-        input_others: torch.Tensor,
-        bs: int,
-        device: Union[str, torch.device],
-        cache_device: Union[str, torch.device],
-        save_output: bool = True,
-    ):
-        """Compute the output of a given block of the model for a given input.
-
-        Args:
-        block: The block of the model.
-        input_ids: The input tensor containing tokenized input ids.
-        input_others: A dictionary containing additional input data.
-        bs: The batch size for computing the output.
-        device: The device for computation.
-        cache_device: The device for storing the output.
-        batch_dim: The batch dimension of the output tensor.
-
-        Returns:
-        The output tensor of the block.
-        """
-
-        output = defaultdict(list)
-        output_config = DIFFUSION_OUTPUT_CONFIGS.get(block.__class__.__name__, [])
-        if isinstance(input_ids, dict):
-            nsamples = len(input_ids["hidden_states"])
-        else:
-            nsamples = len(input_ids)
-
-        for i in range(0, nsamples, bs):
-            end_index = min(nsamples, i + bs)
-            indices = torch.arange(i, end_index).to(torch.long)
-            tmp_input_ids, tmp_input_others = self._sampling_inputs(
-                input_ids,
-                input_others,
-                indices,
-                self.seqlen,
-                self.batch_dim,
-                share_cache_keys=self.model_context.shared_cache_keys,
-            )
-            if isinstance(tmp_input_ids, dict):
-                hidden_states = tmp_input_ids.pop("hidden_states")
-                tmp_input_others.update(tmp_input_ids)
-                tmp_input_ids = hidden_states
-
-            tmp_output = block_forward(
-                block,
-                tmp_input_ids,
-                tmp_input_others,
-                self.model_context.amp,
-                self.model_context.amp_dtype,
-                device,
-                None,
-            )
-            assert len(output_config) == len(tmp_output)
-            tmp_output = dict(zip(output_config, tmp_output))
-
-            if save_output:
-                for name, out in tmp_output.items():
-                    if self.batch_size == 1:
-                        output[name].append(out.to(cache_device))
-                    else:
-                        output[name].extend(list(torch.split(out.to(cache_device), 1, dim=self.batch_dim)))
-        if self.compress_context.low_gpu_mem_usage:
-            clear_memory()
-
-        return output
 
     def _get_optimizer(self, optimizer: Any):
         """Returns the specified optimizer. In SignRound, we fix the optimizer.

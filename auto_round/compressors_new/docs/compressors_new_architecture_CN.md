@@ -60,7 +60,7 @@ class QuantizationConfig(AlgConfig):
 
 子类：
 - `RTNConfig(QuantizationConfig)` — 新增 `disable_opt_rtn`、`seqlen`、`nsamples`、`batch_size`
-- `AutoRoundConfig(QuantizationConfig)` — 新增 `iters`、`lr`、`nblocks`、`enable_minmax_tuning` 等
+- `SignRoundConfig(QuantizationConfig)` — 新增 `iters`、`lr`、`nblocks`、`enable_minmax_tuning` 等
 
 ### AlgConfig
 
@@ -155,7 +155,7 @@ Compressor.__new__(config, model, format, **kwargs)
 │  ├─ is_mllm_model()      → "mllm"
 │  └─ 其他               → "llm"
 │
-├─ isinstance(config, AutoRoundConfig)
+├─ isinstance(config, SignRoundConfig)
 │  ├─ mllm      → class MLLMCalibCompressor(MLLMMixin, CalibCompressor)
 │  ├─ diffusion → class DiffusionCalibCompressor(DiffusionMixin, CalibCompressor)
 │  └─ llm       → CalibCompressor
@@ -240,9 +240,9 @@ MLLMCalibCompressor（entry.py 中动态创建）
 
 ```python
 from auto_round.compressors_new.entry import Compressor
-from auto_round.algorithms.quantization.auto_round.config import AutoRoundConfig
+from auto_round.algorithms.quantization.sign_round.config import SignRoundConfig
 
-config = AutoRoundConfig(scheme="W4A16", iters=200, nsamples=128)
+config = SignRoundConfig(scheme="W4A16", iters=200, nsamples=128)
 compressor = Compressor(config=config, model="/path/to/llm", tokenizer=tokenizer)
 quantized_model, layer_config = compressor.quantize()
 ```
@@ -250,7 +250,7 @@ quantized_model, layer_config = compressor.quantize()
 ### MLLM（视觉-语言模型）
 
 ```python
-config = AutoRoundConfig(scheme="W4A16", iters=200)
+config = SignRoundConfig(scheme="W4A16", iters=200)
 compressor = Compressor(
     config=config,
     model="/models/Qwen2-VL-2B-Instruct",
@@ -265,7 +265,7 @@ quantized_model, layer_config = compressor.quantize()
 ### Diffusion 扩散模型
 
 ```python
-config = AutoRoundConfig(scheme="W4A16", iters=200)
+config = SignRoundConfig(scheme="W4A16", iters=200)
 compressor = Compressor(
     config=config,
     model="/models/stable-diffusion-2-1",
@@ -335,12 +335,12 @@ if model_type == "audio":
 
 ```python
 from auto_round.compressors_new.entry import detect_model_type, Compressor
-from auto_round.algorithms.quantization.auto_round.config import AutoRoundConfig
+from auto_round.algorithms.quantization.sign_round.config import SignRoundConfig
 
 model_path = "/your/model/path"
 print(f"模型类型: {detect_model_type(model_path)}")
 
-config = AutoRoundConfig(scheme="W4A16")
+config = SignRoundConfig(scheme="W4A16")
 comp = Compressor(config=config, model=model_path)
 print(f"Compressor 类型: {type(comp).__name__}")
 ```
@@ -364,7 +364,7 @@ print(f"Compressor 类型: {type(comp).__name__}")
 | 特性 | 说明 |
 |---|---|
 | **统一入口** | 单一 `Compressor` 类，自动检测模型类型 |
-| **配置** | `QuantizationConfig` dataclass；子类 `RTNConfig`、`AutoRoundConfig` |
+| **配置** | `QuantizationConfig` dataclass；子类 `RTNConfig`、`SignRoundConfig` |
 | **模型加载** | `ModelContext.__init__` 立即加载；`apply_patches()` 在量化器初始化前运行 |
 | **9 种组合** | 3 种模型类型 × 3 种 Compressor，通过 Mixin 动态创建 |
 | **量化器接口** | 基于名称的 `quantize_block(name)` / `quantize_layer(name)`，非模块对象 |

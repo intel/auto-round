@@ -15,14 +15,16 @@ from typing import Union
 
 import torch
 
-from auto_round.algorithms.quantization.auto_round.quantizer import ARQuantizer
-from auto_round.compressors.base import BaseCompressor
+from auto_round.algorithms.quantization.sign_round.quantizer import SignRoundQuantizer
 from auto_round.schemes import QuantizationScheme
 from auto_round.utils import check_is_cpu, htcore, is_hpex_available
 
 
-class ARAdamQuantizer(ARQuantizer):
-    is_adam: bool = True
+class SignRoundAdamQuantizer(SignRoundQuantizer):
+
+    def _get_extra_optimizer_kwargs(self) -> dict:
+        """AdamW handles momentum internally; no extra kwargs needed."""
+        return {}
 
     def _get_optimizer(self, optimizer):
         if optimizer is None:

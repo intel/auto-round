@@ -17,7 +17,7 @@ from auto_round.algorithms.quantization.config import QuantizationConfig
 from auto_round.logger import logger
 
 
-class AutoRoundConfig(QuantizationConfig):
+class SignRoundConfig(QuantizationConfig):
     """
 
     Args:
@@ -30,18 +30,15 @@ class AutoRoundConfig(QuantizationConfig):
         enable_norm_bias_tuning (bool): Whether to enable fast norm/layer_bias tuning
     """
 
-    _alg_cls = "ARQuantizer"
+    _alg_cls = "SignRoundQuantizer"
 
     def __init__(
         self,
-        layer_config: dict[str, Union[str, dict]] = None,
         *,
         iters: int = 200,
         lr: float = None,
         minmax_lr: float = None,
         lr_scheduler=None,
-        seqlen: int = 2048,
-        nsamples: int = 128,
         momentum: float = 0.0,
         batch_size: int = 8,
         nblocks: int = 1,
@@ -56,7 +53,7 @@ class AutoRoundConfig(QuantizationConfig):
         enable_adam: bool = False,
         **kwargs,
     ):
-        super().__init__(layer_config=layer_config, **kwargs)
+        super().__init__(**kwargs)
         self.iters = iters
         if self.iters < 0:
             logger.warning("`iters` must be non-negative, reset it to 200")
@@ -74,8 +71,6 @@ class AutoRoundConfig(QuantizationConfig):
         self.minmax_lr = minmax_lr or self.lr
         self.lr_scheduler = lr_scheduler
 
-        self.seqlen = seqlen
-        self.nsamples = nsamples
         self.batch_size, self.gradient_accumulate_steps = batch_size, gradient_accumulate_steps
         self.nblocks = nblocks
         self.momentum = momentum
@@ -96,7 +91,7 @@ class AutoRoundConfig(QuantizationConfig):
         self.enable_adam = enable_adam
 
         if self.enable_adam:
-            self._alg_cls = "ARAdamQuantizer"
+            self._alg_cls = "SignRoundAdamQuantizer"
 
     def check_configs(self) -> None:
         """Checks if the configurations are valid.
@@ -110,25 +105,7 @@ class AutoRoundConfig(QuantizationConfig):
             raise ValueError("`batch_size` must be positive")
         if self.iters < 0:
             raise ValueError("`iters` must be non-negative")
-        if self.seqlen <= 0:
-            raise ValueError("`seqlen` must be positive")
         if self.nblocks <= 0:
             raise ValueError("`nblocks` must be positive")
         if self.gradient_accumulate_steps <= 0:
             raise ValueError("`gradient_accumulate_steps` must be positive")
-
-        if self.nsamples < self.gradient_accumulate_steps * self.batch_size:
-            if self.batch_size > self.nsamples:
-                if self.iters > 0:  # GGUF should log this warning, but we don't know the format here
-                    logger.warning(
-                        f"reset `batch_size` to {self.nsamples} as `nsamples`({self.nsamples})"
-                        f" is smaller than batch_size({self.batch_size})"
-                    )
-                self.batch_size = self.nsamples
-            if self.gradient_accumulate_steps > self.nsamples // self.batch_size:
-                self.gradient_accumulate_steps = self.nsamples // self.batch_size
-                logger.warning(
-                    f"reset `gradient_accumulate_steps` to {self.gradient_accumulate_steps}"
-                    f" as nsamples must equal or greater"
-                    f" than gradient_accumulate_steps * batch_size"
-                )

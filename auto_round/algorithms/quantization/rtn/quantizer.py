@@ -19,9 +19,9 @@ from typing import Any, Callable, Optional, Union
 import accelerate
 import torch
 
-from auto_round.algorithms.quantization.auto_round.quantizer import ARQuantizer
 from auto_round.algorithms.quantization.base import BaseQuantizers
 from auto_round.algorithms.quantization.rtn.config import RTNConfig
+from auto_round.algorithms.quantization.sign_round.quantizer import SignRoundQuantizer
 from auto_round.compressors_new.shard_writer import ShardWriter
 from auto_round.compressors_new.utils import (
     IndexSampler,
@@ -38,10 +38,8 @@ from auto_round.compressors_new.utils import (
 )
 from auto_round.data_type.utils import update_block_global_scale_if_needed
 from auto_round.logger import logger
-from auto_round.modeling.fused_moe.replace_modules import materialize_model_, safe_to_cpu_
 from auto_round.utils import (
     check_to_quantized,
-    clear_memory,
     convert_module_to_hp_if_necessary,
     get_lm_head_name,
     get_module,
@@ -49,7 +47,6 @@ from auto_round.utils import (
     is_auto_device_mapping,
     is_hpex_available,
     memory_monitor,
-    mv_module_from_gpu,
     set_amax_for_all_moe_layers,
     set_module,
 )
@@ -73,11 +70,11 @@ class RTNQuantizer(BaseQuantizers):
     ) -> dict:
         """Apply zero-shot RTN quantization to a block.
 
-        Pure-algorithm entry point.  Materialize / device placement is handled
-        by the Compressor before calling this method.
+        Pure-algorithm entry point.  Infrastructure (materialize, shard writing,
+        device cleanup) is handled by the Compressor before/after this call.
 
         Args:
-            block: Module already materialized.
+            block: Module already materialized and placed on the correct device.
             input_ids: Unused for zero-shot RTN (accepted for interface consistency).
             input_others: Unused for zero-shot RTN.
             reference_output: Unused for zero-shot RTN.
@@ -85,50 +82,9 @@ class RTNQuantizer(BaseQuantizers):
         Returns:
             dict: Empty dict (zero-shot RTN has no tunable parameters to return).
         """
-        shard_writer = ShardWriter.get_shard_writer()
-
-        tied_weights_keys = getattr(self.model, "_tied_weights_keys", [])
-        if tied_weights_keys is None:
-            tied_weights_keys = []
-        if isinstance(tied_weights_keys, dict):
-            tied_weights_values = list(tied_weights_keys.values())
-        else:
-            tied_weights_values = list(tied_weights_keys)
-        tied_weights_layers = [".".join(val.split(".")[:-1]) for val in tied_weights_values]  # rm weight/bias
-        # In fact, we should detect whether it is is_separate_lm_head, to simplify, we don't do it
-        if getattr(self.compress_context, "formats", None) and self.compress_context.formats[0].is_gguf():
-            lm_head_name = get_lm_head_name(self.model)
-            if lm_head_name is not None:
-                tied_weights_layers.append(lm_head_name)
-
-        materialize_model_(block)
-        for name, m in block.named_modules():
+        for _name, m in block.named_modules():
             if hasattr(m, "global_name") and check_to_quantized(m):
                 self.quantize_layer(m.global_name)
-            elif (
-                not any(m.children())
-                and len(m.state_dict()) > 0
-                and m.global_name not in tied_weights_layers
-                and self.compress_context.is_immediate_saving
-            ):
-                set_module(self.model, m.global_name, copy.deepcopy(m))
-                if self.compress_context.is_immediate_saving:
-                    shard_writer.write(name=m.global_name)
-                    copied_m = get_module(self.model, m.global_name)
-                    copied_m.to("meta")
-                m.to("meta")
-
-        # Move remaining GPU tensors to CPU; offload to disk if low_cpu_mem_usage.
-        if not self.compress_context.is_immediate_saving:
-            mv_module_from_gpu(block)
-        else:
-            # Save once at block scope to capture tensors that are not saved
-            # in per-layer branch (e.g., custom module-level params/buffers).
-            block_name = getattr(block, "name", None) or getattr(block, "global_name", None)
-            if block_name:
-                shard_writer.write(name=block_name)
-            block.to("meta")
-
         return {}
 
     def quantize_layer(self, name: str, dtype: torch.dtype = None) -> None:
@@ -238,8 +194,6 @@ class OptimizedRTNQuantizer(RTNQuantizer):
     def __init__(self, config: RTNConfig):
         BaseQuantizers.__init__(self, config)
         self.batch_size = config.batch_size
-        self.seqlen = config.seqlen
-        self.nsamples = config.nsamples
         self.batch_dim = config.batch_dim
         self.data_type = config.data_type
         self.group_size = config.group_size
@@ -263,10 +217,6 @@ class OptimizedRTNQuantizer(RTNQuantizer):
             # enable moe experts act_max automatic generation for Linear
             set_amax_for_all_moe_layers(block, attr_name="act_max")
         # Normalize imatrix and quantize layers
-        if self.compress_context.low_gpu_mem_usage:
-            block.to("cpu")
-            clear_memory(device_list=self.compress_context.device_list)
-
         for name, m in block.named_modules():
             if hasattr(m, "imatrix"):
                 m.imatrix /= m.imatrix_cnt

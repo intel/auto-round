@@ -63,7 +63,7 @@ class QuantizationConfig(AlgConfig):
 
 Subclasses:
 - `RTNConfig(QuantizationConfig)` — adds `disable_opt_rtn`, `seqlen`, `nsamples`, `batch_size`
-- `AutoRoundConfig(QuantizationConfig)` — adds `iters`, `lr`, `nblocks`, `enable_minmax_tuning`, …
+- `SignRoundConfig(QuantizationConfig)` — adds `iters`, `lr`, `nblocks`, `enable_minmax_tuning`, …
 
 ### AlgConfig
 
@@ -159,7 +159,7 @@ Compressor.__new__(config, model, format, **kwargs)
 │  ├─ is_mllm_model()      → "mllm"
 │  └─ else                 → "llm"
 │
-├─ isinstance(config, AutoRoundConfig)
+├─ isinstance(config, SignRoundConfig)
 │  ├─ mllm      → class MLLMCalibCompressor(MLLMMixin, CalibCompressor)
 │  ├─ diffusion → class DiffusionCalibCompressor(DiffusionMixin, CalibCompressor)
 │  └─ llm       → CalibCompressor
@@ -216,9 +216,9 @@ class MLLMMixin:
 
 ```python
 from auto_round.compressors_new.entry import Compressor
-from auto_round.algorithms.quantization.auto_round.config import AutoRoundConfig
+from auto_round.algorithms.quantization.sign_round.config import SignRoundConfig
 
-config = AutoRoundConfig(scheme="W4A16", iters=200, nsamples=128)
+config = SignRoundConfig(scheme="W4A16", iters=200, nsamples=128)
 compressor = Compressor(config=config, model="/path/to/llm", tokenizer=tokenizer)
 quantized_model, layer_config = compressor.quantize()
 ```
@@ -226,7 +226,7 @@ quantized_model, layer_config = compressor.quantize()
 ### MLLM (vision-language model)
 
 ```python
-config = AutoRoundConfig(scheme="W4A16", iters=200)
+config = SignRoundConfig(scheme="W4A16", iters=200)
 compressor = Compressor(
     config=config,
     model="/models/Qwen2-VL-2B-Instruct",
@@ -240,7 +240,7 @@ compressor = Compressor(
 ### Diffusion model
 
 ```python
-config = AutoRoundConfig(scheme="W4A16", iters=200)
+config = SignRoundConfig(scheme="W4A16", iters=200)
 compressor = Compressor(
     config=config,
     model="/models/stable-diffusion-2-1",
@@ -307,7 +307,7 @@ if model_type == "audio":
 | Aspect | Description |
 |---|---|
 | **Entry point** | Single `Compressor` class, auto-detects model type |
-| **Config** | `QuantizationConfig` dataclass; subclasses `RTNConfig`, `AutoRoundConfig` |
+| **Config** | `QuantizationConfig` dataclass; subclasses `RTNConfig`, `SignRoundConfig` |
 | **Model loading** | `ModelContext.__init__` loads eagerly; `apply_patches()` runs before quantizer setup |
 | **9 combinations** | 3 model types × 3 compressors, dynamic classes via Mixin |
 | **Quantizer interface** | Name-based `quantize_block(name)` / `quantize_layer(name)`, not module objects |

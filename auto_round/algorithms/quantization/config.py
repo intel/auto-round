@@ -34,7 +34,6 @@ class QuantizationConfig(AlgConfig):
     _alg_cls: ClassVar[str] = None
 
     # quantization args
-    layer_config: dict[str, Union[str, dict, QuantizationScheme]] = None
     bits: int = None
     group_size: int = None
     sym: bool = None
