@@ -28,8 +28,8 @@ Support Matrix
 ✔ means support, - means support but cannot infer or not test infert yet, X means not support.
 """
 import os
+import sys
 from datetime import datetime, timedelta
-from types import SimpleNamespace
 
 import torch
 from transformers.data.data_collator import default_data_collator
@@ -212,29 +212,6 @@ class LongCatNextProcessor(BasicProcessor):
     LONGCAT_IMG_START = "<longcat_img_start>"
     LONGCAT_IMG_END = "<longcat_img_end>"
 
-    def __init__(self):
-        super().__init__()
-        from transformers.generation.configuration_utils import GenerationConfig
-
-        self.multimodal_generation_status = SimpleNamespace()
-        self.multimodal_generation_status.mode = "visual"
-        self.multimodal_generation_status.is_img_newline = False
-        self.multimodal_generation_status.is_img_end = True
-        self.multimodal_generation_status.last_step_mode = True
-        visual_config = {
-            "do_sample": True,
-            "temperature": 0.5,
-            "top_p": 0.75,
-            "top_k": 1024,
-            "custom_params": {
-                "cfg_scale": 3.0,
-                "token_h": 37,
-                "token_w": 37,
-                "anyres_prefix": "<longcat_img_token_size>{h} {w}</longcat_img_token_size>",
-            },
-        }
-        self.visual_generation_config = GenerationConfig(**visual_config)
-
     def post_init(self, model, tokenizer, processor=None, image_processor=None, use_rtn=False, **kwargs):
         assert tokenizer is not None, "tokenizer should not be None"
         assert processor is not None, "processor should not be None"
@@ -248,6 +225,17 @@ class LongCatNextProcessor(BasicProcessor):
             self.image_processor = self.default_image_processor
         self.use_rtn = use_rtn
         self.check_image_processor()
+
+        # build generation_config from model file because the code is on hub.
+        model_module = sys.modules[self.model.__module__]
+        GenerationConfig = model_module.GenerationConfig
+        LongcatNextForCausalLMGenerationStatus = model_module.LongcatNextForCausalLMGenerationStatus
+
+        self.visual_generation_config = GenerationConfig(**self.model.generation_config.visual_generation_config)
+        self.audio_generation_config = GenerationConfig(**self.model.generation_config.audio_generation_config)
+        self.multimodal_generation_status = LongcatNextForCausalLMGenerationStatus(
+            self.visual_generation_config, self.audio_generation_config
+        )
 
     def get_input(self, text, images, squeeze=True, max_length=None, truncation=False, **kwargs):
         if isinstance(text, list):
