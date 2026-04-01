@@ -29,6 +29,7 @@ from tqdm import tqdm
 from auto_round.compressors.utils import is_mx_fp, is_nv_fp
 from auto_round.export.export_to_autoround.qlinear_fp import QuantLinear
 from auto_round.export.export_to_llmcompressor.utils import generate_ignore_regex_list
+from auto_round.export.export_to_llmcompressor.config import initialize_quantization
 from auto_round.export.utils import filter_quantization_config, release_layer_safely, save_model
 from auto_round.logger import logger
 from auto_round.utils import (
@@ -157,14 +158,6 @@ def _build_mixed_fp_quantization_config(scheme_groups, layer_config, ignore, glo
     Returns:
         quantization_config dict
     """
-    from compressed_tensors.quantization import (  # pylint: disable=E0401
-        QuantizationArgs,
-    )
-    from compressed_tensors.quantization import QuantizationScheme as CTScheme  # pylint: disable=E0401
-
-    from .config import initialize_quantization
-    from .export import _get_act_scheme_strategy, _get_weight_scheme_strategy
-
     global_key = (global_bits, global_data_type)
 
     # Override groups first, default group last
@@ -294,7 +287,6 @@ def save_quantized_as_fp(
 
     # get llm-compressor format config
     check_compressed_tensors_supported()
-    from .config import initialize_quantization
 
     # Detect mixed precision by grouping quantized layers by (bits, data_type)
     scheme_groups = {}  # (bits, data_type) -> list of layer names
@@ -313,10 +305,6 @@ def save_quantized_as_fp(
     else:
         scheme = _get_scheme(bits, data_type)
         if scheme is None:
-            logger.error(
-                f"Got unexpected combination: data_type={data_type}, bits={bits}. "
-                "Please check that both values are supported by the quantization scheme."
-            )
             raise ValueError(f"Unsupported combination of data_type={data_type} and bits={bits}.")
 
         format = _get_group_format(bits, data_type)
