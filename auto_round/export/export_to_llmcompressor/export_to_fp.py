@@ -314,7 +314,7 @@ def save_quantized_as_fp(
         scheme = _get_scheme(bits, data_type)
         if scheme is None:
             logger.error(f"Got unpexcted {data_type} with bits {bits}, please check.")
-            sys.exit(-1)
+            raise ValueError(f"Unsupported combination of data_type={data_type} and bits={bits}.")
 
         format = _get_group_format(bits, data_type)
         quantization_config = initialize_quantization(scheme=scheme)
