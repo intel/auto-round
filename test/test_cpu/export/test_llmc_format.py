@@ -117,7 +117,6 @@ class TestLLMC:
         ), f"Invalid MXFP8 quantization configuration: {quantization_config}"
 
     def test_mixed_precision_llmcompressor_format(self, tiny_opt_model_path, tmp_path):
-        scheme = "mxfp4"
         scheme = AutoScheme(
             avg_bits=7,
             options=("MXFP4", "MXFP8"),
