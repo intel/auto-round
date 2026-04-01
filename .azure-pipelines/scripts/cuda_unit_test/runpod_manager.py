@@ -62,12 +62,24 @@ def run_create_pod(api_key, payload):
                 continue
             else:
                 print(f"❌ {response.status_code} Error, Reached maximum retry attempts ({max_retries}), giving up.")
-        response.raise_for_status()
 
-        result = response.json()
+        try:
+            result = response.json()
+        except ValueError:
+            result = {}
+
         if "errors" in result:
-            print("❌ Errors:")
+            print("❌ API Errors:")
             print(json.dumps(result["errors"], indent=2))
+
+        try:
+            response.raise_for_status()
+        except requests.exceptions.HTTPError as e:
+            print(f"❌ HTTP Error: {e}")
+            if result:
+                print("Response payload:", json.dumps(result, indent=2))
+            else:
+                print("Response text:", response.text)
             sys.exit(1)
 
         return result

@@ -47,6 +47,7 @@ function run_unit_test() {
 
     for test_file in $(find ./test_xpu -name "test*.py" | sort); do
         local test_basename=$(basename ${test_file} .py)
+
         echo "##[group]Running xpu ${test_file}..."
         local ut_log_name="${LOG_DIR}/unittest_xpu_${test_basename}.log"
         numactl --physcpubind="${NUMA_CPUSET:-0-27}" --membind="${NUMA_NODE:-0}" pytest --cov="${auto_round_path}" \
