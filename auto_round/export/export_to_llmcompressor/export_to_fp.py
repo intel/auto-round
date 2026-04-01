@@ -159,7 +159,7 @@ def _build_mixed_fp_quantization_config(scheme_groups, layer_config, ignore, glo
     """
     from compressed_tensors.quantization import (
         QuantizationArgs,
-    )
+    )  # pylint: disable=E0401
     from compressed_tensors.quantization import QuantizationScheme as CTScheme  # pylint: disable=E0401
 
     from .config import initialize_quantization
