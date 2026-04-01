@@ -33,6 +33,7 @@
     - [lm_head 量化中开启多 GPU 标定](#lm_head-量化中开启多-gpu-标定)
     - [手动配置设备映射](#手动配置设备映射)
   + [超参数调整](#超参数调整)
+  + [Hadamard变换](#hadamard变换)
 * [4 推理部署](#4-推理部署)
   + [CPU](#cpu)
   + [英特尔 GPU](#英特尔-gpu)
@@ -459,6 +460,15 @@ ar.quantize_and_save(output_dir, format="gguf:q4_k_m")  # gguf:q*_k_s、gguf:q*_
 | 2.6 + 开启 torch compile + 低显存模式 + 梯度累积8步、批次1<br/>gradient_accumulate_steps=8,bs=1 | 15min<br/>3GB | 25min<br/>6GB  | 45min<br/>7GB  | 187min<br/>19GB | 75min<br/>36GB |
 | 2.5 + 关闭 torch compile                                                           | 8min<br/>10GB | 16min<br/>20GB | 30min<br/>25GB | 140min<br/>49GB | 50min<br/>49GB |
 
+W4G128 量化耗时与显存占用（英特尔 GPU B60 24G）
+（测试环境：英特尔 GPU B60 24G，PyTorch 2.11.0+xpu 正式版。注意评测未计入数据加载和打包耗时。所有测试均使用 Qwen3 系列模型。）
+
+| Torch version/Config W4G128                                                                                            | 0.6B              | 1.7B              | 4B                  | 8B                  | 30B-A3B             |
+|------------------------------------------------------------------------------------------------------------------------|-------------------|-------------------|---------------------|---------------------|---------------------|
+| 2.11.0+xpu 开启 torch compile                                                                                          | 20min<br/>10.7GB  | 26min<br/>13.2GB  | 58min<br/>22.8GB    | OOM                 | OOM                 |
+| 2.11.0+xpu 开启 torch compile<br/>low_gpu_mem_usage=True                                                               | 29min<br/>9.5GB   | 38min<br/>9.8GB   | 1h 23min<br/>19.4GB | 1h 32min<br/>20.1GB | 5h 33min<br/>22.8GB |
+| 2.11.0+xpu 开启 torch compile<br/>low_gpu_mem_usage=True<br/>gradient_accumulate_steps=8,bs=1                          | 41min<br/>1.3GB   | 42min<br/>1.8GB   | 1h 29min<br/>3.6GB  | 2h 4min<br/>4.6GB   | 21h 41min<br/>10.2GB  |
+| 2.11.0+xpu 关闭 torch compile                                                                                          | 20min<br/>10.9GB  | 28min<br/>13.2GB  | OOM                 | OOM                 | OOM                 |
 
 
 ### 设备及多卡量化设置
@@ -582,6 +592,51 @@ auto-round --model_name Qwen/Qwen3-0.6B  --scheme "W4A16" --quant_lm_head --form
 #### 使用 AdamW 优化器
 添加 `--adam` 参数即可启用；**注意**：在我们的多项测试场景中，AdamW 优化器的效果均不如符号梯度下降（sign gradient descent）。
 
+
+
+### Hadamard变换
+
+AutoRound 支持将 Hadamard 变换作为可选的权重/激活变换技术，通过旋转权重/激活矩阵来提升量化精度。这在某些量化场景中尤其有用。
+
+#### 概述
+
+Hadamard 变换在激活值存在离群点且影响量化精度的场景中特别有效。在实践中，它能够抑制这些离群点，因此在 `act_bits < 8` 的低比特激活量化设置中效果尤为显著。用户可以在需要更稳定的激活分布和更高低比特精度时启用该功能。
+
+#### 实现方式
+
+AutoRound 提供两种类型的 Hadamard 变换：
+
+1.  **确定性 Hadamard 变换**（`hadamard`）：使用 Sylvester 构造法生成确定性的 Hadamard 矩阵，尺寸必须为 2 的幂次。
+2.  **随机 Hadamard 变换**（`random_hadamard`）：使用 N. J. A. Sloane 的 Hadamard 矩阵库中已知的矩阵。支持非 2 的幂次的尺寸，并支持确定性随机种子。
+
+#### 使用 Hadamard 变换进行量化
+
+```python
+from auto_round import AutoRound
+
+# 加载模型（支持 FP8/BF16/FP16/FP32）
+model_name_or_path = "meta-llama/Llama-3.1-8B-Instruct"
+output_dir = "./Llama-3.1-8B-Instruct-mxfp4-ht"
+
+# hadamard_config="default": block_size=32, hadamard_type="hadamard"
+ar = AutoRound(model_name_or_path, scheme="MXFP4", hadamard_config="default")
+
+ar.quantize_and_save(output_dir=output_dir, format="auto_round")
+```
+
+#### 变换类
+
+| 类名                        | 描述                          |
+| ------------------------- | --------------------------- |
+| `HadamardTransform`       | 应用确定性 Hadamard 变换        |
+| `RandomHadamardTransform` | 应用随机 Hadamard 变换，并可选随机种子 |
+
+#### 参数说明
+
+| 参数           | 描述                               |
+| ------------ | -------------------------------- |
+| `block_size` | 变换块大小（默认：32）                     |
+| `seed`       | 随机种子（用于 RandomHadamardTransform） |
 
 
 ## 4 推理部署

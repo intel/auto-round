@@ -32,6 +32,7 @@ This document presents step-by-step instructions for auto-round llm quantization
   + [Device/Multi-GPU setting in Quantization](#devicemulti-gpu-setting-in-quantization)
     - [Enable multiple gpus calibration in lm_head quantization](#enable-multiple-gpus-calibration-in-lm_head-quantization)
   + [Adjust Hyperparameters](#adjust-hyperparameters)
+  + [Hadamard Transform](#hadamard-transform)
 * [4 Inference](#4-inference)
   + [CPU](#cpu)
   + [Intel GPU](#intel-gpu)
@@ -473,6 +474,16 @@ The 3B and 14B models were evaluated on Qwen 2.5, the 8X7B model is Mixtral, whi
 | 2.6  with torch compile <br/> low_gpu_mem_usage=True <br/> gradient_accumulate_steps=8,bs=1 | 15min<br/>3GB | 25min<br/>6GB  | 45min<br/>7GB  | 187min<br/>19GB | 75min<br/>36GB |
 | 2.5  w/o torch compile                                                                      | 8min<br/>10GB | 16min<br/>20GB | 30min<br/>25GB | 140min<br/>49GB | 50min<br/>49GB |
 
+W4G128 Quantization Time and Memory Usage (Intel GPU B60 24G)
+Testing was conducted on the Intel GPU B60 24G using the release version of PyTorch 2.11.0+xpu. Please note that data loading and packing costs have been excluded from the evaluation. Time and memory usage were measured using Qwen3-series models.
+
+| Torch version/Config W4G128                                                                                            | 0.6B              | 1.7B              | 4B                  | 8B                  | 30B-A3B             |
+|------------------------------------------------------------------------------------------------------------------------|-------------------|-------------------|---------------------|---------------------|---------------------|
+| 2.11.0+xpu with torch compile                                                                                          | 20min<br/>10.7GB  | 26min<br/>13.2GB  | 58min<br/>22.8GB    | OOM                 | OOM                 |
+| 2.11.0+xpu with torch compile<br/>low_gpu_mem_usage=True                                                               | 29min<br/>9.5GB   | 38min<br/>9.8GB   | 1h 23min<br/>19.4GB | 1h 32min<br/>20.1GB | 5h 33min<br/>22.8GB |
+| 2.11.0+xpu with torch compile<br/>low_gpu_mem_usage=True<br/>gradient_accumulate_steps=8,bs=1                          | 41min<br/>1.3GB   | 42min<br/>1.8GB   | 1h 29min<br/>3.6GB  | 2h 4min<br/>4.6GB   | 21h 41min<br/>10.2GB  |
+| 2.11.0+xpu w/o torch compile                                                                                           | 20min<br/>10.9GB  | 28min<br/>13.2GB  | OOM                 | OOM                 | OOM                 |
+
 
 
 
@@ -619,6 +630,53 @@ autoround.save_quantized(format="auto_awq", output_dir="tmp_autoround")
 - **Utilize the AdamW Optimizer:**
 
   Include the flag `--adam`. Note that AdamW is less effective than sign gradient descent in many scenarios we tested.
+
+
+### Hadamard Transform
+
+AutoRound supports Hadamard transform as an optional weight/activation transformation technique, which can improve quantization accuracy by rotating the weight/activation matrix. This is particularly useful for certain quantization scenarios.
+
+#### Overview
+
+The Hadamard transform is particularly useful in scenarios where activation outliers hurt quantization accuracy. In practice, it helps suppress such outliers, making it especially effective when `act_bits < 8`. Users can enable this feature when they need more stable activation distributions and better accuracy in low‑bit quantization settings.
+
+#### Implementation
+
+AutoRound provides two types of Hadamard transforms:
+
+1. **Deterministic Hadamard Transform** (`hadamard`): Uses Sylvester's construction to create a deterministic Hadamard matrix. The size must be a power of 2.
+
+2. **Random Hadamard Transform** (`random_hadamard`): Uses known Hadamard matrices from N. J. A. Sloane's Library of Hadamard Matrices. Supports non-power-of-2 sizes and deterministic seeding.
+
+
+#### Quantization with Hadamard Transform
+
+```python
+from auto_round import AutoRound
+
+# Load a model (supports FP8/BF16/FP16/FP32)
+model_name_or_path = "meta-llama/Llama-3.1-8B-Instruct"
+output_dir = "./Llama-3.1-8B-Instruct-mxfp4-ht"
+
+# hadamard_config="default": block_size=32, hadamard_type="hadamard"
+ar = AutoRound(model_name_or_path, scheme="MXFP4", hadamard_config="default")
+
+ar.quantize_and_save(output_dir=output_dir, format="auto_round")
+```
+
+#### Transform Classes
+
+| Class | Description |
+|-------|-------------|
+| `HadamardTransform` | Applies deterministic Hadamard transform |
+| `RandomHadamardTransform` | Applies random Hadamard transform with optional seeding |
+
+#### Parameters
+
+| Parameter | Description |
+|-----------|-------------|
+| `block_size` | Size of the transformation block (default: 32) |
+| `seed` | Random seed (for RandomHadamardTransform) |
 
 
 ## 4 Inference

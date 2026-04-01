@@ -1,5 +1,7 @@
 # AutoRound Environment Variables Configuration
 
+English | [简体中文](./environments_CN.md)
+
 This document describes the environment variables used by AutoRound for configuration and their usage.
 
 ## Overview
@@ -45,6 +47,26 @@ export AR_USE_MODELSCOPE=true
 
 ```bash
 export AR_WORK_SPACE=/path/to/custom/workspace
+```
+
+### AR_DISABLE_OFFLOAD
+- **Description**: Forcibly disables the weight offloading feature in `OffloadManager`. Useful during development and debugging to skip all offload/reload overhead.
+- **Default**: `False` (equivalent to `"0"`)
+- **Valid Values**: `"1"`, `"true"`, `"yes"` (case-insensitive) for disabling offload; any other value keeps the default behavior
+- **Usage**: Set this to bypass offloading entirely
+
+```bash
+export AR_DISABLE_OFFLOAD=1
+```
+
+### AR_DISABLE_DATASET_SUBPROCESS
+- **Description**: Disables the use of a subprocess for dataset preprocessing. By default, AutoRound uses a subprocess to ensure all temporary memory is reclaimed by the OS.
+- **Default**: `False`
+- **Valid Values**: `"1"`, `"true"` (case-insensitive) for disabling; any other value for enabling
+- **Usage**: Set this to run dataset preprocessing in the main process
+
+```bash
+export AR_DISABLE_DATASET_SUBPROCESS=true
 ```
 
 ## Usage Examples
@@ -106,16 +128,6 @@ if is_set("AR_LOG_LEVEL"):
     print("AR_LOG_LEVEL is explicitly set")
 else:
     print("AR_LOG_LEVEL is using default value")
-```
-
-### AR_DISABLE_OFFLOAD
-- **Description**: Forcibly disables the weight offloading feature in `OffloadManager`. Useful during development and debugging to skip all offload/reload overhead.
-- **Default**: `False` (equivalent to `"0"`)
-- **Valid Values**: `"1"`, `"true"`, `"yes"` (case-insensitive) for disabling offload; any other value keeps the default behavior
-- **Usage**: Set this to bypass offloading entirely
-
-```bash
-export AR_DISABLE_OFFLOAD=1
 ```
 
 ## Configuration Best Practices
