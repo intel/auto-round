@@ -289,7 +289,7 @@ def save_quantized_as_fp(
 
     ignore = generate_ignore_regex_list(regex_config=regex_config, layer_config=layer_config)
     lm_head_name = get_lm_head_name(model)
-    if lm_head_name not in layer_config:
+    if lm_head_name and lm_head_name not in layer_config and lm_head_name not in ignore:
         ignore.append(lm_head_name)
 
     # get llm-compressor format config
