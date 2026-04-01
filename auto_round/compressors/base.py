@@ -840,10 +840,8 @@ class BaseCompressor(object):
         if self.enable_torch_compile and is_wfp8afp8(self) and not is_hpex_available():
             self.enable_torch_compile = False
             logger.warning("reset enable_torch_compile to `False` as fp8 is enabled")
-        # TODO: fix https://github.com/intel/auto-round/issues/1109
-        if self.enable_torch_compile and is_nv_fp(self.act_data_type):
-            self.enable_torch_compile = False
-            logger.warning("reset enable_torch_compile to `False` as nvfp4 is enabled")
+        # NVFP4 now supported with torch.compile via _compile_derive pre-computation pattern
+        # Previously disabled due to issue #1109, but fix applied in frozen_kwargs mechanism
         if self.enable_torch_compile and self.super_group_size is not None and self.enable_alg_ext:
             self.enable_torch_compile = False
             logger.warning("reset enable_torch_compile to `False` as super_group_size is set for algorithm extension")
