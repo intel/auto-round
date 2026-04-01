@@ -56,6 +56,7 @@ from auto_round.compressors.utils import (
 )
 from auto_round.data_type import QUANT_FUNC_WITH_DTYPE
 from auto_round.data_type.utils import reshape_pad_tensor_by_group_size, update_block_global_scale_if_needed
+from auto_round.experimental.transform.hadamard_config import HadamardConfig
 from auto_round.export.export_to_gguf.config import GGUF_INNER_CONFIG
 from auto_round.formats import OutputFormat, get_formats
 from auto_round.logger import logger
@@ -150,7 +151,7 @@ SERIALIZATION_KEYS = (
     "super_bits",
     "super_group_size",
     "to_quant_block_names",
-    "transform_config",
+    "hadamard_config",
 )
 
 
@@ -201,6 +202,7 @@ class BaseCompressor(object):
         disable_opt_rtn: bool | None = None,
         seed: int = 42,
         low_cpu_mem_usage: bool = True,
+        hadamard_config: str | dict | HadamardConfig | None = None,
         **kwargs,
     ):
         """Initialize AutoRound with quantization and tuning configuration.
@@ -474,7 +476,10 @@ class BaseCompressor(object):
             disable_opt_rtn = False
 
         if self.iters > 0 and is_block_wfp8(self):
-            logger.warning("RTN is recommended since it shows even better accuracy for block-wise fp8 quantization.")
+            logger.warning(
+                "RTN is recommended as it achieves accuracy comparable to tuning for block-wise FP8 quantization "
+                "while being significantly faster. You can set `--iters 0 --disable_opt_rtn` to enable RTN mode."
+            )
 
         # Important Note! This is not very robust, do NOT rely on it to do high risky thing
         self.is_moe_model = is_moe_model(self.model)
@@ -552,7 +557,18 @@ class BaseCompressor(object):
             except (ImportError, ModuleNotFoundError):
                 logger.error("algorithm extension import error, fallback to default mode")
 
-        self.transform_config = kwargs.pop("transform_config", {})
+        # apply hadamard transform
+        if hadamard_config:
+            from auto_round.experimental.transform.apply import apply_hadamard_transform
+            from auto_round.experimental.utils import check_supported_schemes, normalize_hadamard_config
+
+            check_supported_schemes(self.scheme)
+
+            self.model = apply_hadamard_transform(
+                self.model, hadamard_config, need_calibration=True if self.iters > 0 else False
+            )
+
+            self.hadamard_config = normalize_hadamard_config(hadamard_config)
 
     def _gen_auto_scheme(self) -> dict[str, dict]:
         if self.mllm:
@@ -1264,7 +1280,6 @@ class BaseCompressor(object):
                     enable_round_tuning=False,
                     enable_torch_compile=self.enable_torch_compile,
                     disable_opt_rtn=disable_opt_rtn,
-                    enable_rtn=self.iters == 0,
                 )
                 m = m.unwrapper({})
             except torch.OutOfMemoryError:
@@ -1280,7 +1295,6 @@ class BaseCompressor(object):
                         enable_norm_bias_tuning=False,
                         enable_round_tuning=False,
                         enable_torch_compile=self.enable_torch_compile,
-                        enable_rtn=self.iters == 0,
                     )
                     m = m.unwrapper({})
                 except Exception as e:
@@ -1318,7 +1332,9 @@ class BaseCompressor(object):
             tokenizer=self.tokenizer,
         )
 
-    @torch.inference_mode()
+    # Use no_grad instead of inference mode
+    # https://github.com/intel/auto-round/issues/1620
+    @torch.no_grad()
     def _quantize_rtn(self) -> tuple[torch.nn.Module, dict[str, Any]]:
         """Quantize all modules in the model using RTN (Round-To-Nearest) strategy.
 
@@ -1402,7 +1418,7 @@ class BaseCompressor(object):
                     tied_weights_layers.append(lm_head_name)
 
             if use_blockwise_quantization:  # The ram usage is a little higher
-                all_to_quantized_module_names = list(set(all_to_quantized_module_names))
+                all_to_quantized_module_names = list(dict.fromkeys(all_to_quantized_module_names))
 
                 all_blocks = self.quant_block_list if self.quant_block_list else get_block_names(self.model)
                 pbar = tqdm(range(sum(len(block) for block in all_blocks)))
@@ -1892,7 +1908,7 @@ class BaseCompressor(object):
         )
         if len(unquantized_layers) > 0:
             compressed_unquantized_layers = compress_layer_names(unquantized_layers)
-            summary_info += f",  {compressed_unquantized_layers} have not been quantized"
+            summary_info += f", unquantized layers: {compressed_unquantized_layers}"
         logger.info(summary_info)
 
         self.quantized = True
@@ -1944,7 +1960,6 @@ class BaseCompressor(object):
                     enable_torch_compile=self.enable_torch_compile,
                     device=self.device,
                     disable_opt_rtn=self.disable_opt_rtn,
-                    enable_rtn=self.iters == 0,
                 )
                 new_layer = wrapper_layer.unwrapper({})
                 set_module(self.model, layer_name, new_layer)
@@ -2713,7 +2728,6 @@ class BaseCompressor(object):
             enable_minmax_tuning=self.enable_minmax_tuning,
             enable_torch_compile=self.enable_torch_compile,
             device=device,
-            enable_rtn=self.iters == 0,
         ).to(device)
         round_params = []
         minmax_params = []
@@ -3025,7 +3039,6 @@ class BaseCompressor(object):
             self.enable_norm_bias_tuning,
             enable_torch_compile=self.enable_torch_compile,
             device=device,
-            enable_rtn=self.iters == 0,
         )
         # Call this before quantization and after applying the block wrapper.
         if is_nv_fp(self.data_type):  # enable qkv and moe structure global_scale fuse.
@@ -3171,7 +3184,7 @@ class BaseCompressor(object):
         if self.low_gpu_mem_usage:
             clear_memory(device_list=self.device_list)  # clear cached memory during training
         if len(unquantized_layer_names) != 0:
-            logger.info(f"{unquantized_layer_names} have not been quantized")
+            logger.info(f"Unquantized layers: {unquantized_layer_names}")
         with torch.no_grad():
             unwrapper_block(block, best_params)
 
@@ -3296,6 +3309,8 @@ class BaseCompressor(object):
             )
             if hasattr(model, "config"):
                 del m.config
+            if self.enable_torch_compile:
+                torch._dynamo.reset()
             if self.is_immediate_packing:
                 for n, tmp_m in m.named_modules():
                     if not (hasattr(tmp_m, "bits") and check_to_quantized(tmp_m)):
@@ -3367,6 +3382,7 @@ class BaseCompressor(object):
             serialization_dict = {}
             for key in SERIALIZATION_KEYS:
                 serialization_dict[key] = getattr(self, key)
+
             from auto_round.version import __version__
 
             serialization_dict["autoround_version"] = __version__

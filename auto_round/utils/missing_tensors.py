@@ -235,8 +235,7 @@ def copy_missing_tensors_from_source(
     parent_summary = compress_layer_names(list({name.rsplit(".", 1)[0] for name in missing_tensor_names}))
     logger.info(
         f"Found {len(missing_tensor_names)} tensor(s) in the source checkpoint that are "
-        f"absent from the saved output (e.g., MTP parameters). Copying them now...\n"
-        f"  Layers: {parent_summary}"
+        f"absent from the saved output (e.g., MTP parameters): {parent_summary}. Copying them now...\n"
     )
 
     # ------------------------------------------------------------------ #
