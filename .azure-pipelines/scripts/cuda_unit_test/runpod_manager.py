@@ -7,7 +7,6 @@ import requests
 
 TARGET_GPUS = [
     "NVIDIA GeForce RTX 4090",
-    "NVIDIA RTX PRO 4500 Blackwell",
     "NVIDIA GeForce RTX 5090",
     "NVIDIA RTX 6000 Ada Generation",
     "NVIDIA L40S",
