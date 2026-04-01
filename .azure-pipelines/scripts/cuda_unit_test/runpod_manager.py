@@ -7,7 +7,6 @@ import requests
 
 TARGET_GPUS = [
     "NVIDIA GeForce RTX 4090",
-    "NVIDIA RTX PRO 4500 Blackwell",
     "NVIDIA GeForce RTX 5090",
     "NVIDIA RTX 6000 Ada Generation",
     "NVIDIA L40S",
@@ -47,90 +46,6 @@ REQUIRED_COUNT = 1
 IMAGES_NAME = "xuehaosu/azure-agent:v0.1"
 
 
-def check_gpu_count(token):
-    url = "https://api.runpod.io/graphql"
-    ids_string = ", ".join([f'"{gid}"' for gid in TARGET_GPUS])
-    graphql_query = """
-    query GpuAvailability($input: GpuLowestPriceInput!) {
-      gpuTypes(input: {ids: [%s]}) {
-        id
-        displayName
-        memoryInGb
-        secureCloud
-        communityCloud
-        maxGpuCount
-        maxGpuCountSecureCloud
-        maxGpuCountCommunityCloud
-        minPodGpuCount
-        lowestPrice(input: $input) {
-          gpuName
-          stockStatus
-          minimumBidPrice
-          uninterruptablePrice
-          maxGpuCount
-          maxUnreservedGpuCount
-          availableGpuCounts
-          rentedCount
-          totalCount
-        }
-      }
-    }
-    """ % ids_string
-
-    datacenter_id_string = ",".join(DATA_CENTER_SELECT_LIST)
-    variables = {
-        "input": {
-            "gpuCount": 1,
-            "secureCloud": True,
-            "minMemoryInGb": 0,
-            "minVcpuCount": 0,
-            "dataCenterId": datacenter_id_string,
-        }
-    }
-
-    try:
-        response = requests.post(
-            url,
-            json={
-                "query": graphql_query,
-                "variables": variables,
-            },
-            headers={
-                "Content-Type": "application/json",
-                "Authorization": f"Bearer {token}",
-            },
-        )
-        response.raise_for_status()
-        data = response.json()
-        all_gpus = data.get("data", {}).get("gpuTypes", [])
-
-        id_to_gpu = {gpu["id"]: gpu for gpu in all_gpus}
-        all_gpus = [id_to_gpu[gpu_id] for gpu_id in TARGET_GPUS if gpu_id in id_to_gpu]
-
-        print("--- Checking target graphics card inventory ---\n")
-
-        for gpu in all_gpus:
-            gpu_id = gpu.get("id")
-
-            if gpu_id in TARGET_GPUS:
-                max_count = gpu.get("lowestPrice", {}).get("maxUnreservedGpuCount", 0)
-
-                if REQUIRED_COUNT > max_count:
-                    continue
-                else:
-                    return gpu_id
-
-        print("❌ No compliant GPU found.")
-        return None
-
-    except requests.exceptions.RequestException as e:
-        print(f"HTTP Error: {e}")
-        sys.exit(1)
-    except Exception as e:
-        print(f"Error: {e}")
-        sys.exit(1)
-
-
 def run_create_pod(api_key, payload):
     url = "https://rest.runpod.io/v1/pods"
     headers = {"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"}
@@ -141,17 +56,29 @@ def run_create_pod(api_key, payload):
 
         if response.status_code >= 500 or response.status_code == 400:
             if attempt < max_retries:
-                print(f"⚠️ {response.status_code} Error, Retrying in 60 seconds ({attempt + 1}/{max_retries})...")
-                time.sleep(60)
+                print(f"⚠️ {response.status_code} Error, Retrying in 90 seconds ({attempt + 1}/{max_retries})...")
+                time.sleep(90)
                 continue
             else:
                 print(f"❌ {response.status_code} Error, Reached maximum retry attempts ({max_retries}), giving up.")
-        response.raise_for_status()
 
-        result = response.json()
+        try:
+            result = response.json()
+        except ValueError:
+            result = {}
+
         if "errors" in result:
-            print("❌ Errors:")
+            print("❌ API Errors:")
             print(json.dumps(result["errors"], indent=2))
+
+        try:
+            response.raise_for_status()
+        except requests.exceptions.HTTPError as e:
+            print(f"❌ HTTP Error: {e}")
+            if result:
+                print("Response payload:", json.dumps(result, indent=2))
+            else:
+                print("Response text:", response.text)
             sys.exit(1)
 
         return result
@@ -161,19 +88,6 @@ def create_pod(args):
     if args.env:
         env_dict = {kv.split("=", 1)[0]: kv.split("=", 1)[1] for kv in args.env}
 
-    gpu_type = None
-    for _ in range(10):  # Try up to 10 times to find an available GPU
-        gpu_type = check_gpu_count(args.api_key)
-        if gpu_type:
-            break
-        else:
-            print("⏳ No compliant GPU available. Retrying in 5 minutes...")
-            time.sleep(60 * 5)
-
-    if not gpu_type:
-        print("❌ No compliant GPU found after multiple attempts. Exiting.")
-        sys.exit(1)
-
     payload = {
         "cloudType": "SECURE",
         "containerDiskInGb": args.container_disk_size,
@@ -181,7 +95,8 @@ def create_pod(args):
         "dataCenterPriority": "availability",
         "env": env_dict,
         "gpuCount": args.gpu_count,
-        "gpuTypeIds": [gpu_type],
+        "gpuTypeIds": TARGET_GPUS,
+        "gpuTypePriority": "custom",
         "name": args.name,
         "volumeInGb": 0,
         "imageName": IMAGES_NAME,
