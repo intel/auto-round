@@ -88,13 +88,14 @@ class TestCompressedTensor:
 
     def test_w4a16_to_mxfp4(self, tmp_path):
         model = get_tiny_model(get_model_path(self.w4a16_model_path))
+        model.config.name_or_path = None  # Clear the name_or_path to avoid MTP copying issues
         tokenizer = transformers.AutoTokenizer.from_pretrained(self.w4a16_model_path)
         ar = AutoRound(
             model,
             tokenizer=tokenizer,
             scheme="MXFP4",
             iters=2,
-            disable_opt_rtn=True,
+            nsamples=2,
         )
         ar.quantize_and_save(tmp_path, format="llm_compressor")
         model = transformers.AutoModelForCausalLM.from_pretrained(tmp_path)

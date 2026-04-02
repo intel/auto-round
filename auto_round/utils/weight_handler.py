@@ -327,6 +327,9 @@ def check_and_mark_quantized_module(model: torch.nn.Module) -> Set[ModuleWeightT
                 # Record detected types
                 detected_types.add(weight_type)
 
+    # remove decompress_hook for CT models
+    if hasattr(model, "ct_decompress_hook"):
+        model.ct_decompress_hook.remove()
     return detected_types
 
 
@@ -392,6 +395,7 @@ def convert_module_to_hp_if_necessary(
         if hasattr(m, "quantized_weight_type") and m.quantized_weight_type is not None:
             handler = get_handler(m.quantized_weight_type)
             new_module = handler.convert_layer(m, dtype, device, to_cpu)
+            new_module.quantized_weight_type = None  # Clear quantized type after conversion
             set_module(model_or_layer, n, new_module)
             cnt += 1
             if cnt % 10 == 0:
