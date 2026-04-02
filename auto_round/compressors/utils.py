@@ -35,6 +35,7 @@ class BackendDataType(str, Enum):
     STANDARD_FP = "fp"
     MX_FP = "mx_fp"
     NV_FP = "nv_fp"
+    MX_INT = "mx_int"
 
 
 def is_standard_fp(backend):
@@ -45,6 +46,11 @@ def is_standard_fp(backend):
 def is_mx_fp(backend):
     backend = backend.lower()
     return BackendDataType.MX_FP in backend
+
+
+def is_mx_int(backend):
+    backend = backend.lower()
+    return BackendDataType.MX_INT in backend
 
 
 def is_nv_fp(backend):
