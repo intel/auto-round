@@ -833,7 +833,7 @@ class WOQHandler(WeightTypeHandler):
     """Handler for integer 4-bit weight-only quantized layers (Compressed Tensor only)."""
 
     def detect_layer(self, module: torch.nn.Module) -> bool:
-        """Check if a module is an CompressedLinear layer."""
+        """Check if a module is a CompressedLinear layer."""
         if module.__class__.__name__ == "CompressedLinear":
             if hasattr(module, "compressor") and module.compressor is not None:
                 compressor_name = module.compressor.__class__.__name__
