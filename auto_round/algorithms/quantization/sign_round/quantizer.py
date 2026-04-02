@@ -127,7 +127,7 @@ class SignRoundQuantizer(BaseQuantizers):
     ):
         autocast_ctx = (
             nullcontext()
-            if self.model_context.amp
+            if not self.model_context.amp
             else autocast(device_type=str(device).split(":")[0], dtype=self.model_context.amp_dtype)
         )
         if self.attention_mask:
@@ -334,7 +334,7 @@ class SignRoundQuantizer(BaseQuantizers):
         logger.infoclean(dump_info)
         return best_params
 
-    def quantize_layer(
+    def quantize_layer_outside_block(
         self, layer_name: str, input_ids: torch.Tensor, q_inputs: torch.Tensor = None, device: str = "cpu", **kwargs
     ):
         """Quantize a specific layer of the model using the provided inputs.

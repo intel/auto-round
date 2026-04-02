@@ -1028,7 +1028,7 @@ class CalibCompressor(BaseCompressor):
         if not self.is_immediate_saving:
             self.model = mv_module_from_gpu(self.model)
         clear_memory(device_list=self.compress_context.device_list)
-        quant_layer = self.quantizer.quantize_layer
+        quant_layer = self.quantizer.quantize_layer_outside_block
         for layer_name in layer_names:
             layer_input = layer_inputs[layer_name]
             layer_input = to_device(layer_input, self.compress_context.cache_device)
@@ -1253,7 +1253,7 @@ class CalibratedRTNCompressor(CalibCompressor):
             dtype = None
             if self.super_group_size is not None:
                 dtype = torch.float32
-            self.quantizer.quantize_layer(name, dtype=dtype)
+            self.quantizer.quantize_layer_outside_block(name, dtype=dtype)
             # clear_memory(device_list=self.compress_context.device_list)
         # if self.is_immediate_saving:
         #     shard_writer(self, is_finalize=True)

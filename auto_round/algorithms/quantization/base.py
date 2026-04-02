@@ -278,6 +278,15 @@ class BaseQuantizers:
         """
         raise NotImplementedError("quantize_layer must be implemented in subclasses of BaseQuantizers")
 
+    def quantize_layer_outside_block(self, layer_name: str, **kwargs):
+        """Quantizes a single layer of the model outside of a block.
+
+        Args:
+            layer_name (str): The name of the layer to quantize. The layer module is
+                retrieved internally via get_module(model, layer_name).
+        """
+        raise NotImplementedError("quantize_layer_outside_block must be implemented in subclasses of BaseQuantizers")
+
     @torch.no_grad()
     def _get_block_outputs(
         self,
@@ -350,7 +359,6 @@ class BaseQuantizers:
 
         return output
 
-    @torch.no_grad()
     def _get_current_q_output(
         self,
         block: torch.nn.Module,

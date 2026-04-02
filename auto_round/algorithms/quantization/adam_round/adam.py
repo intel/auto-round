@@ -20,7 +20,7 @@ from auto_round.schemes import QuantizationScheme
 from auto_round.utils import check_is_cpu, htcore, is_hpex_available
 
 
-class SignRoundAdamQuantizer(SignRoundQuantizer):
+class AdamRoundQuantizer(SignRoundQuantizer):
 
     def __init__(self, config):
         super().__init__(config)
