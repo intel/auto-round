@@ -182,6 +182,15 @@ class WeightTypeHandler(ABC):
         """
         pass
 
+    def attach_weight_shape(self, module: torch.nn.Module):
+        """Optional helper to attach weight shape information to the module for detection."""
+        if not hasattr(module, "weight") or module.weight is None:
+            module.weight = torch.empty(
+                module.out_features,
+                module.in_features,
+                device="meta",
+            )
+
     @abstractmethod
     def convert_layer(
         self,
@@ -299,6 +308,7 @@ def check_and_mark_quantized_module(model: torch.nn.Module) -> Set[ModuleWeightT
     for weight_type, handler in _WEIGHT_TYPE_HANDLERS.items():
         # Check model itself first
         if handler.detect_layer(model):
+            handler.attach_weight_shape(model)
             model._is_quantized_input_module = True
             model.quantized_weight_type = weight_type
             detected_types.add(weight_type)
@@ -307,6 +317,7 @@ def check_and_mark_quantized_module(model: torch.nn.Module) -> Set[ModuleWeightT
         for n, m in model.named_modules():
             # Use handler to detect based on actual characteristics
             if handler.detect_layer(m):
+                handler.attach_weight_shape(m)
                 # Mark the layer itself
                 m.quantized_weight_type = weight_type
                 # for gguf format, gguf format need to mark the quantized input module

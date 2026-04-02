@@ -1,7 +1,9 @@
 import pytest
 import torch
+import transformers
 from packaging import version
 
+from auto_round import AutoRound
 from auto_round.utils.weight_handler import (
     ModuleWeightType,
     check_and_mark_quantized_module,
@@ -83,3 +85,17 @@ class TestCompressedTensor:
         assert (
             model.model.layers[0].mlp.up_proj.weight.dtype == torch.bfloat16
         ), "CompressedLinear layer was not converted to Linear"
+
+    def test_w4a16_to_mxfp4(self, tmp_path):
+        model = get_tiny_model(get_model_path(self.w4a16_model_path))
+        tokenizer = transformers.AutoTokenizer.from_pretrained(self.w4a16_model_path)
+        ar = AutoRound(
+            model,
+            tokenizer=tokenizer,
+            scheme="MXFP4",
+            iters=2,
+            disable_opt_rtn=True,
+        )
+        ar.quantize_and_save(tmp_path, format="llm_compressor")
+        model = transformers.AutoModelForCausalLM.from_pretrained(tmp_path)
+        assert model, "Failed to load the quantized model"
