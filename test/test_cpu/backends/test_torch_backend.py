@@ -41,23 +41,25 @@ class TestAutoRoundTorchBackend:
             dataset=dataloader,
         )
         quantized_model_path = self.save_folder
-        autoround.quantize_and_save(output_dir=quantized_model_path, format="auto_round:gptqmodel")
+        _, quantized_model_path = autoround.quantize_and_save(
+            output_dir=quantized_model_path, format="auto_round:gptqmodel"
+        )
 
         quantization_config = AutoRoundConfig(backend="torch")
         model = AutoModelForCausalLM.from_pretrained(
             quantized_model_path, dtype=torch.float16, device_map="cpu", quantization_config=quantization_config
         )
 
-        tokenizer = AutoTokenizer.from_pretrained(self.save_folder)
+        tokenizer = AutoTokenizer.from_pretrained(quantized_model_path)
         model_infer(model, tokenizer)
         evaluate_accuracy(model, tokenizer, threshold=0.35, batch_size=16, limit=10)
         torch.cuda.empty_cache()
 
         model = AutoModelForCausalLM.from_pretrained(
-            self.save_folder, dtype=torch.bfloat16, device_map="cpu", quantization_config=quantization_config
+            quantized_model_path, dtype=torch.bfloat16, device_map="cpu", quantization_config=quantization_config
         )
 
-        tokenizer = AutoTokenizer.from_pretrained(self.save_folder)
+        tokenizer = AutoTokenizer.from_pretrained(quantized_model_path)
         model_infer(model, tokenizer)
         evaluate_accuracy(model, tokenizer, threshold=0.35, batch_size=16, limit=10)
         torch.cuda.empty_cache()
@@ -77,14 +79,16 @@ class TestAutoRoundTorchBackend:
             dataset=dataloader,
         )
         quantized_model_path = self.save_folder
-        autoround.quantize_and_save(output_dir=quantized_model_path, format="auto_round")  ##will convert to gptq model
+        _, quantized_model_path = autoround.quantize_and_save(
+            output_dir=quantized_model_path, format="auto_round"
+        )  ##will convert to gptq model
 
         quantization_config = AutoRoundConfig(backend="torch")
         model = AutoModelForCausalLM.from_pretrained(
             quantized_model_path, dtype=torch.float16, device_map="auto", quantization_config=quantization_config
         )
 
-        tokenizer = AutoTokenizer.from_pretrained(self.save_folder)
+        tokenizer = AutoTokenizer.from_pretrained(quantized_model_path)
         model_infer(model, tokenizer)
         evaluate_accuracy(model, tokenizer, threshold=0.28, batch_size=32, limit=1000)
         torch.cuda.empty_cache()

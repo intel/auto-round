@@ -22,10 +22,10 @@ def test_qwen3_5_moe(tiny_qwen35_moe_model_path):
         seqlen=32,
         iters=1,
     )
-    quantized_model, _ = ar.quantize_and_save(format="auto_round", output_dir=output_dir)
+    quantized_model, quantized_model_path = ar.quantize_and_save(format="auto_round", output_dir=output_dir)
     assert quantized_model is not None, "Quantized model should not be None."
 
-    loaded_model = Qwen3_5MoeForConditionalGeneration.from_pretrained(output_dir)
+    loaded_model = Qwen3_5MoeForConditionalGeneration.from_pretrained(quantized_model_path)
     loaded_model.to("cuda")
 
     inp = torch.randint(0, 100, (1, 64)).to("cuda")

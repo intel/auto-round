@@ -38,10 +38,10 @@ class TestAutoRound:
             scheme=scheme,
             hadamard_config="default",
         )
-        compressed_model, _ = ar.quantize_and_save(output_dir=self.save_dir, format="auto_round")
+        compressed_model, quantized_model_path = ar.quantize_and_save(output_dir=self.save_dir, format="auto_round")
 
-        model = AutoModelForCausalLM.from_pretrained(self.save_dir, torch_dtype="auto", device_map="cuda")
-        tokenizer = AutoTokenizer.from_pretrained(self.save_dir)
+        model = AutoModelForCausalLM.from_pretrained(quantized_model_path, torch_dtype="auto", device_map="cuda")
+        tokenizer = AutoTokenizer.from_pretrained(quantized_model_path)
         from ...helpers import generate_prompt
 
         generate_prompt(model, tokenizer)
@@ -57,10 +57,10 @@ class TestAutoRound:
             scheme=scheme,
             hadamard_config="default",
         )
-        compressed_model, _ = ar.quantize_and_save(output_dir=self.save_dir, format="auto_round")
+        compressed_model, quantized_model_path = ar.quantize_and_save(output_dir=self.save_dir, format="auto_round")
 
-        model = AutoModelForCausalLM.from_pretrained(self.save_dir, torch_dtype="auto", device_map="cuda")
-        tokenizer = AutoTokenizer.from_pretrained(self.save_dir)
+        model = AutoModelForCausalLM.from_pretrained(quantized_model_path, torch_dtype="auto", device_map="cuda")
+        tokenizer = AutoTokenizer.from_pretrained(quantized_model_path)
         from ...helpers import generate_prompt
 
         generate_prompt(model, tokenizer)
@@ -76,10 +76,10 @@ class TestAutoRound:
             scheme=scheme,
             hadamard_config="random_hadamard",
         )
-        compressed_model, _ = ar.quantize_and_save(output_dir=self.save_dir, format="auto_round")
+        compressed_model, quantized_model_path = ar.quantize_and_save(output_dir=self.save_dir, format="auto_round")
 
-        model = AutoModelForCausalLM.from_pretrained(self.save_dir, torch_dtype="auto", device_map="cuda")
-        tokenizer = AutoTokenizer.from_pretrained(self.save_dir)
+        model = AutoModelForCausalLM.from_pretrained(quantized_model_path, torch_dtype="auto", device_map="cuda")
+        tokenizer = AutoTokenizer.from_pretrained(quantized_model_path)
         from ...helpers import generate_prompt
 
         generate_prompt(model, tokenizer)

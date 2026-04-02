@@ -70,7 +70,7 @@ class TestAutoRound:
             layer_config=layer_config,
         )
         quantized_model_path = os.path.join(self.save_dir, "test_export")
-        autoround.quantize_and_save(output_dir=quantized_model_path, format="auto_awq")
+        _, quantized_model_path = autoround.quantize_and_save(output_dir=quantized_model_path, format="auto_awq")
 
         # test loading with AutoRoundConfig
         model = AutoModelForCausalLM.from_pretrained(
@@ -99,7 +99,7 @@ class TestAutoRound:
             layer_config=layer_config,
         )
         quantized_model_path = "self.save_dir"
-        autoround.quantize_and_save(output_dir=quantized_model_path, format="auto_awq")
+        _, quantized_model_path = autoround.quantize_and_save(output_dir=quantized_model_path, format="auto_awq")
         quantization_config = AutoRoundConfig()
         model = AutoModelForCausalLM.from_pretrained(
             quantized_model_path, device_map="auto", quantization_config=quantization_config

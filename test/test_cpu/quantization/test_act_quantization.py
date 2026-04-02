@@ -108,7 +108,7 @@ class TestAutoRoundAct:
             layer_config=layer_config,
         )
         quantized_model_path = self.save_dir
-        autoround.quantize_and_save(output_dir=quantized_model_path, format="auto_round")
+        _, quantized_model_path = autoround.quantize_and_save(output_dir=quantized_model_path, format="auto_round")
         model = AutoModelForCausalLM.from_pretrained(quantized_model_path, device_map="cpu")
         assert "lm_head" not in model.config.quantization_config.extra_config
 
@@ -129,7 +129,7 @@ class TestAutoRoundAct:
             layer_config=layer_config,
         )
         quantized_model_path = self.save_dir
-        autoround.quantize_and_save(output_dir=quantized_model_path, format="auto_round")
+        _, quantized_model_path = autoround.quantize_and_save(output_dir=quantized_model_path, format="auto_round")
         model = AutoModelForCausalLM.from_pretrained(quantized_model_path, device_map="cpu")
         kproj_config = model.config.quantization_config.extra_config["model.decoder.layers.1.self_attn.k_proj"]
         assert "act_bits" in kproj_config.keys() and kproj_config["act_bits"] == 16
@@ -148,7 +148,7 @@ class TestAutoRoundAct:
             layer_config=layer_config,
         )
         quantized_model_path = self.save_dir
-        autoround.quantize_and_save(output_dir=quantized_model_path, format="auto_round")
+        _, quantized_model_path = autoround.quantize_and_save(output_dir=quantized_model_path, format="auto_round")
         model = AutoModelForCausalLM.from_pretrained(quantized_model_path, device_map="cpu")
         extra_config = model.config.quantization_config.extra_config
 
@@ -178,7 +178,7 @@ class TestAutoRoundAct:
             layer_config=layer_config,
         )
         quantized_model_path = self.save_dir
-        autoround.quantize_and_save(output_dir=quantized_model_path, format="auto_round")
+        _, quantized_model_path = autoround.quantize_and_save(output_dir=quantized_model_path, format="auto_round")
         from transformers import AutoConfig
 
         extra_config = AutoConfig.from_pretrained(quantized_model_path).quantization_config["extra_config"]

@@ -32,14 +32,14 @@ class TestAutoRound:
 
     def test_small_model_rtn_generation(self, mock_fp8_capable_device, tiny_fp8_qwen_model_path):
         ar = AutoRound(tiny_fp8_qwen_model_path, iters=0, disable_opt_rtn=True)
-        ar.quantize_and_save(output_dir=self.save_dir)
-        model = AutoModelForCausalLM.from_pretrained(self.save_dir, torch_dtype="auto", trust_remote_code=True)
-        tokenizer = AutoTokenizer.from_pretrained(self.save_dir)
+        _, quantized_model_path = ar.quantize_and_save(output_dir=self.save_dir)
+        model = AutoModelForCausalLM.from_pretrained(quantized_model_path, torch_dtype="auto", trust_remote_code=True)
+        tokenizer = AutoTokenizer.from_pretrained(quantized_model_path)
         generate_prompt(model, tokenizer)
 
     def test_gguf_imatrix(self, mock_fp8_capable_device, tiny_fp8_qwen_model_path):
         ar = AutoRound(tiny_fp8_qwen_model_path, iters=0)
-        ar.quantize_and_save(format="gguf:q2_k_s", output_dir=self.save_dir)
+        _, quantized_model_path = ar.quantize_and_save(format="gguf:q2_k_s", output_dir=self.save_dir)
         # from llama_cpp import Llama
         #
         # gguf_file = os.listdir("saved/Qwen3-0.6B-FP8/-gguf")[0]
@@ -47,8 +47,8 @@ class TestAutoRound:
         # output = llm("There is a girl who likes adventure,", max_tokens=32)
         # print(output)
         # shutil.rmtree("./saved", ignore_errors=True)
-        # model = AutoModelForCausalLM.from_pretrained(self.save_dir, torch_dtype="auto", trust_remote_code=True)
-        # tokenizer = AutoTokenizer.from_pretrained(self.save_dir)
+        # model = AutoModelForCausalLM.from_pretrained(quantized_model_path, torch_dtype="auto", trust_remote_code=True)
+        # tokenizer = AutoTokenizer.from_pretrained(quantized_model_path    )
         # text = "There is a girl who likes adventure,"
         # inputs = tokenizer(text, return_tensors="pt").to(model.device)
         # print(tokenizer.decode(model.generate(**inputs, max_new_tokens=50)[0]))
@@ -86,11 +86,11 @@ class TestAutoRound:
         from llama_cpp import Llama
 
         ar = AutoRound(tiny_fp8_qwen_model_path, iters=0, disable_opt_rtn=True)
-        ar.quantize_and_save(output_dir=self.save_dir, format="gguf:q4_0")
-        for file in os.listdir(self.save_dir):
+        _, quantized_model_path = ar.quantize_and_save(output_dir=self.save_dir, format="gguf:q4_0")
+        for file in os.listdir(quantized_model_path):
             if file.endswith(".gguf"):
                 gguf_file = file
-        llm = Llama(f"{self.save_dir}/{gguf_file}", n_gpu_layers=-1)
+        llm = Llama(f"{quantized_model_path}/{gguf_file}", n_gpu_layers=-1)
         output = llm("There is a girl who likes adventure,", max_tokens=32)
         print(output)
 
@@ -99,11 +99,11 @@ class TestAutoRound:
         from llama_cpp import Llama
 
         ar = AutoRound(tiny_fp8_qwen_model_path, iters=1)
-        ar.quantize_and_save(output_dir=self.save_dir, format="gguf:q3_k_s")
-        for file in os.listdir(self.save_dir):
+        _, quantized_model_path = ar.quantize_and_save(output_dir=self.save_dir, format="gguf:q3_k_s")
+        for file in os.listdir(quantized_model_path):
             if file.endswith(".gguf"):
                 gguf_file = file
-        llm = Llama(f"{self.save_dir}/{gguf_file}", n_gpu_layers=-1)
+        llm = Llama(f"{quantized_model_path}/{gguf_file}", n_gpu_layers=-1)
         output = llm("There is a girl who likes adventure,", max_tokens=32)
         print(output)
 
@@ -113,8 +113,8 @@ class TestAutoRound:
         model_name = tiny_fp8_qwen_model_path
         print(f"Testing scheme: {scheme}")
         ar = AutoRound(model_name, iters=0, scheme=scheme, disable_opt_rtn=True, nsamples=2)
-        ar.quantize_and_save(output_dir=self.save_dir)
-        model = AutoModelForCausalLM.from_pretrained(self.save_dir, torch_dtype="auto", trust_remote_code=True)
+        _, quantized_model_path = ar.quantize_and_save(output_dir=self.save_dir)
+        model = AutoModelForCausalLM.from_pretrained(quantized_model_path, torch_dtype="auto", trust_remote_code=True)
         assert model is not None, f"Failed to load model for scheme {scheme}"
 
 
@@ -127,9 +127,9 @@ def test_qwen3_fp8_moe_mxfp(tiny_fp8_qwen_moe_model_path, mock_fp8_capable_devic
         seqlen=32,
         iters=0,
     )
-    quantized_model, _ = autoround.quantize_and_save(format="auto_round", output_dir=output_dir)
+    quantized_model, quantized_model_path = autoround.quantize_and_save(format="auto_round", output_dir=output_dir)
     assert quantized_model is not None, "Quantized model should not be None."
-    loaded_model = AutoModelForCausalLM.from_pretrained(output_dir)
+    loaded_model = AutoModelForCausalLM.from_pretrained(quantized_model_path)
     for n, m in quantized_model.named_modules():
         if m.__class__.__name__ == "QuantLinear":
             loaded_m = loaded_model.get_submodule(n)

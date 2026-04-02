@@ -29,15 +29,15 @@ class TestAutoRoundAsym:
     def test_asym_group_size_with_tuning(self, group_size, tiny_opt_model_path):
         bits, sym = 4, False
         ar = AutoRound(tiny_opt_model_path, bits=bits, group_size=group_size, sym=sym, iters=1, seqlen=2, nsamples=1)
-        _, saved_folders = ar.quantize_and_save(format="auto_round", output_dir=self.save_dir)
+        _, quantized_model_path = ar.quantize_and_save(format="auto_round", output_dir=self.save_dir)
 
         model = AutoModelForCausalLM.from_pretrained(
-            saved_folders[0],
+            quantized_model_path,
             torch_dtype="auto",
             device_map="auto",
         )
 
-        tokenizer = AutoTokenizer.from_pretrained(saved_folders[0])
+        tokenizer = AutoTokenizer.from_pretrained(quantized_model_path)
         model_infer(model, tokenizer)
 
     @pytest.mark.skip_ci(reason="Not necessary since it's covered by backend tests")  # skip this test in CI
@@ -45,15 +45,15 @@ class TestAutoRoundAsym:
     def test_asym_bits_with_tuning(self, bits, tiny_opt_model_path):
         group_size, sym = 128, False
         ar = AutoRound(tiny_opt_model_path, bits=bits, group_size=group_size, sym=sym, iters=1, seqlen=2, nsamples=1)
-        _, saved_folders = ar.quantize_and_save(format="auto_round", output_dir=self.save_dir)
+        _, quantized_model_path = ar.quantize_and_save(format="auto_round", output_dir=self.save_dir)
 
         model = AutoModelForCausalLM.from_pretrained(
-            saved_folders[0],
+            quantized_model_path,
             torch_dtype="auto",
             device_map="auto",
         )
 
-        tokenizer = AutoTokenizer.from_pretrained(saved_folders[0])
+        tokenizer = AutoTokenizer.from_pretrained(quantized_model_path)
         model_infer(model, tokenizer)
 
     @pytest.mark.skip_ci(reason="Not necessary since it's covered by backend tests")  # skip this test in CI
@@ -61,17 +61,17 @@ class TestAutoRoundAsym:
     def test_asym_format_with_tuning(self, format, tiny_opt_model_path):
         bits, group_size, sym = 4, 128, False
         ar = AutoRound(tiny_opt_model_path, bits=bits, group_size=group_size, sym=sym, iters=1, seqlen=2, nsamples=1)
-        _, saved_folders = ar.quantize_and_save(format=format, output_dir=self.save_dir)
+        _, quantized_model_path = ar.quantize_and_save(format=format, output_dir=self.save_dir)
 
         if format == "auto_round:auto_gptq":
             # Cannot load correctly, skip auto_gptq since it's deprecated.
             return
 
         model = AutoModelForCausalLM.from_pretrained(
-            saved_folders[0],
+            quantized_model_path,
             torch_dtype="auto",
             device_map="auto",
         )
 
-        tokenizer = AutoTokenizer.from_pretrained(saved_folders[0])
+        tokenizer = AutoTokenizer.from_pretrained(quantized_model_path)
         model_infer(model, tokenizer)

@@ -132,7 +132,7 @@ class TestAutoRound:
             disable_opt_rtn=True,
         )
         quantized_model_path = self.save_dir
-        autoround.quantize_and_save(output_dir=quantized_model_path, format="gguf:q4_0")
+        _, quantized_model_path = autoround.quantize_and_save(output_dir=quantized_model_path, format="gguf:q4_0")
         file_name = os.listdir(quantized_model_path)[0]
         file_size = os.path.getsize(os.path.join(quantized_model_path, file_name)) / 1024**2
         assert abs(file_size - 307) < 5.0
@@ -163,11 +163,11 @@ class TestAutoRound:
             quant_nontext_module=True,
         )
         quantized_model_path = self.save_dir
-        autoround.quantize_and_save(output_dir=quantized_model_path, format="gguf:q4_k_m")
-        assert "mmproj-model.gguf" in os.listdir(self.save_dir)
-        for file in os.listdir(self.save_dir):
-            print(f"{file}: {os.path.getsize(os.path.join(self.save_dir, file)) / 1024**2} MB")
-            file_size = os.path.getsize(os.path.join(self.save_dir, file)) / 1024**2
+        _, quantized_model_path = autoround.quantize_and_save(output_dir=quantized_model_path, format="gguf:q4_k_m")
+        assert "mmproj-model.gguf" in os.listdir(quantized_model_path)
+        for file in os.listdir(quantized_model_path):
+            print(f"{file}: {os.path.getsize(os.path.join(quantized_model_path, file)) / 1024**2} MB")
+            file_size = os.path.getsize(os.path.join(quantized_model_path, file)) / 1024**2
             if "mmproj-model.gguf" in file:
                 assert abs(file_size - 75) < 5.0
             else:
@@ -192,7 +192,7 @@ class TestAutoRound:
             disable_opt_rtn=True,
         )
         quantized_model_path = self.save_dir
-        autoround.quantize_and_save(output_dir=quantized_model_path, format="gguf:q2_k_mixed")
+        _, quantized_model_path = autoround.quantize_and_save(output_dir=quantized_model_path, format="gguf:q2_k_mixed")
         gguf_file = os.listdir(quantized_model_path)[0]
         file_size = os.path.getsize(os.path.join(quantized_model_path, gguf_file)) / 1024**2
         assert abs(file_size - 1236) < 5.0
@@ -223,7 +223,7 @@ class TestAutoRound:
             disable_opt_rtn=True,
         )
         quantized_model_path = self.save_dir
-        autoround.quantize_and_save(output_dir=quantized_model_path, format="gguf:q2_k_s")
+        _, quantized_model_path = autoround.quantize_and_save(output_dir=quantized_model_path, format="gguf:q2_k_s")
         gguf_file = os.listdir(quantized_model_path)[0]
         gguf_model = GGUFReader(os.path.join(quantized_model_path, gguf_file))
         ffn_down_type = None
@@ -252,5 +252,7 @@ class TestAutoRound:
             disable_opt_rtn=True,
         )
         quantized_model_path = self.save_dir
-        autoround.quantize_and_save(output_dir=quantized_model_path, inplace=False, format="fake")
+        _, quantized_model_path = autoround.quantize_and_save(
+            output_dir=quantized_model_path, inplace=False, format="fake"
+        )
         eval_generated_prompt(quantized_model_path)

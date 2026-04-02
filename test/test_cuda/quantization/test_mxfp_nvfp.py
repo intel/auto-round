@@ -55,11 +55,11 @@ def test_e2e_quant_and_infer(scheme, tiny_qwen_model_path):
 
         # Quantize and save the model to the temporary directory
         quantized_model_path = f"{temp_dir}/tmp_autoround_{scheme}"
-        _, saved_folders = autoround.quantize_and_save(format="auto_round", output_dir=quantized_model_path)
+        _, quantized_model_path = autoround.quantize_and_save(format="auto_round", output_dir=quantized_model_path)
 
         # Perform inference with the quantized model
         model = AutoModelForCausalLM.from_pretrained(
-            saved_folders[0],
+            quantized_model_path,
             torch_dtype="auto",
         )
         model.eval()
@@ -144,11 +144,11 @@ class TestAutoRound:
             layer_config=layer_config,
         )
         quantized_model_path = self.save_dir
-        _, saved_folders = autoround.quantize_and_save(
+        _, quantized_model_path = autoround.quantize_and_save(
             output_dir=quantized_model_path, inplace=False, format="auto_round"
         )
-        model = AutoModelForCausalLM.from_pretrained(saved_folders[0], torch_dtype="auto", device_map="auto")
-        tokenizer = AutoTokenizer.from_pretrained(saved_folders[0])
+        model = AutoModelForCausalLM.from_pretrained(quantized_model_path, torch_dtype="auto", device_map="auto")
+        tokenizer = AutoTokenizer.from_pretrained(quantized_model_path)
         from ...helpers import evaluate_accuracy
 
         evaluate_accuracy(model, tokenizer, threshold=0.49, batch_size=16, task="piqa", limit=10)

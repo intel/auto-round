@@ -225,15 +225,17 @@ class TestAutoRoundMLLM:
             processor=processor,
             image_processor=image_processor,
         )
-        autoround.quantize_and_save(self.save_dir, format="auto_round")
+        _, quantized_model_path = autoround.quantize_and_save(self.save_dir, format="auto_round")
 
         import requests
         from PIL import Image
         from transformers import AutoProcessor, AutoTokenizer, Qwen2_5_VLForConditionalGeneration
 
-        model = Qwen2_5_VLForConditionalGeneration.from_pretrained(self.save_dir, torch_dtype="auto", device_map="auto")
+        model = Qwen2_5_VLForConditionalGeneration.from_pretrained(
+            quantized_model_path, torch_dtype="auto", device_map="auto"
+        )
         image_url = "https://qianwen-res.oss-cn-beijing.aliyuncs.com/Qwen-VL/assets/demo.jpeg"
-        processor = AutoProcessor.from_pretrained(self.save_dir)
+        processor = AutoProcessor.from_pretrained(quantized_model_path)
         messages = [
             {
                 "role": "user",

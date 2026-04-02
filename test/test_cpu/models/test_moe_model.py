@@ -106,9 +106,9 @@ def test_qwen3_vl_moe_mxfp(tiny_qwen3_vl_moe_model_path):
         disable_opt_rtn=True,
         ignore_layers="self_attn,lm_head, mlp.gate",
     )
-    quantized_model, _ = autoround.quantize_and_save(format="auto_round", output_dir=output_dir)
+    quantized_model, quantized_model_path = autoround.quantize_and_save(format="auto_round", output_dir=output_dir)
     assert quantized_model is not None, "Quantized model should not be None."
-    loaded_model = Qwen3VLMoeForConditionalGeneration.from_pretrained(output_dir, device_map="cpu")
+    loaded_model = Qwen3VLMoeForConditionalGeneration.from_pretrained(quantized_model_path, device_map="cpu")
 
     for n, m in quantized_model.named_modules():
         if m.__class__.__name__ == "QuantLinear":

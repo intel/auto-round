@@ -72,7 +72,7 @@ class TestAutoRound:
             layer_config=layer_config,
         )
         quantized_model_path = self.save_dir
-        autoround.quantize_and_save(output_dir=quantized_model_path, format="auto_gptq")
+        _, quantized_model_path = autoround.quantize_and_save(output_dir=quantized_model_path, format="auto_gptq")
 
         model = AutoModelForCausalLM.from_pretrained(quantized_model_path, device_map="auto", trust_remote_code=True)
         tokenizer = AutoTokenizer.from_pretrained(quantized_model_path)

@@ -58,13 +58,13 @@ class TestAutoRound:
             dataset=dataloader,
         )
 
-        autoround.quantize_and_save(
+        _, quantized_model_path = autoround.quantize_and_save(
             output_dir=self.save_dir,
             inplace=True,
             format="auto_round",
         )
 
-        generated_text = self._run_sglang_inference(self.save_dir)
+        generated_text = self._run_sglang_inference(quantized_model_path)
         print(generated_text)
 
         assert "!!!" not in generated_text
@@ -85,12 +85,12 @@ class TestAutoRound:
             layer_config=layer_config,
         )
 
-        autoround.quantize_and_save(
+        _, quantized_model_path = autoround.quantize_and_save(
             output_dir=self.save_dir,
             inplace=True,
             format="auto_round",
         )
-        config_file = Path(self.save_dir) / "config.json"
+        config_file = Path(quantized_model_path) / "config.json"
         with open(config_file, "r", encoding="utf-8") as f:
             config = json.load(f)
         quant_config = config.get("quantization_config", {})
@@ -100,7 +100,7 @@ class TestAutoRound:
         assert "group_size" not in extra_config[".*fc1.*"].keys()
         assert "bits" in extra_config[".*fc1.*"].keys() and extra_config[".*fc1.*"]["bits"] == 16
         assert "bits" in extra_config[".*self_attn.*"].keys() and extra_config[".*self_attn.*"]["bits"] == 8
-        generated_text = self._run_sglang_inference(self.save_dir)
+        generated_text = self._run_sglang_inference(quantized_model_path)
         print(generated_text)
 
         assert "!!!" not in generated_text
@@ -117,13 +117,13 @@ class TestAutoRound:
             dataset=dataloader,
         )
 
-        autoround.quantize_and_save(
+        _, quantized_model_path = autoround.quantize_and_save(
             output_dir=self.save_dir,
             inplace=True,
             format="auto_round:auto_awq",
         )
 
-        generated_text = self._run_sglang_inference(self.save_dir)
+        generated_text = self._run_sglang_inference(quantized_model_path)
         print(generated_text)
 
         assert "!!!" not in generated_text

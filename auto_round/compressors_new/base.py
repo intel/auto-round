@@ -907,6 +907,8 @@ class BaseCompressor(object):
             folders.append(save_folder)
 
         if return_folders:
+            if len(folders) == 1:
+                folders = folders[0]
             return compressed_model, folders
         else:
             return compressed_model

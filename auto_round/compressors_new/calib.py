@@ -777,7 +777,14 @@ class CalibCompressor(BaseCompressor):
             mv_module_from_gpu(m)
             if self.enable_torch_compile:
                 torch._dynamo.reset()
-            clear_memory(input_ids if q_input is None else None, device_list=self.compress_context.device_list)
+            # Always advance input_ids to the current block's output so that the next
+            # block receives the correct activations.  When enable_quanted_input is
+            # False we reuse reference_output (unquantized block output); otherwise
+            # q_input already holds the quantized-block output.
+            next_input_ids = q_input if q_input is not None else reference_output
+            clear_memory(
+                input_ids if input_ids is not next_input_ids else None, device_list=self.compress_context.device_list
+            )
             memory_monitor.log_summary()
 
             # ── Infrastructure: immediate_pack / shard write ──────────────────
@@ -788,7 +795,7 @@ class CalibCompressor(BaseCompressor):
 
                         _immediate_pack(_mod.global_name, self.quantizer.layer_config)
 
-            input_ids = q_input if q_input is not None else input_ids
+            input_ids = next_input_ids
 
             if self.is_immediate_saving:
                 self.shard_writer.write(m, is_finalize=False)

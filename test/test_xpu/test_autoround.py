@@ -48,13 +48,13 @@ class TestAutoRoundXPU:
             dataset=dataloader,
         )
         quantized_model_path = self.save_dir
-        _, saved_folders = autoround.quantize_and_save(output_dir=quantized_model_path)
+        _, quantized_model_path = autoround.quantize_and_save(output_dir=quantized_model_path)
 
         quantization_config = AutoRoundConfig(backend="auto")
         model = AutoModelForCausalLM.from_pretrained(
-            saved_folders[0], device_map=self.device, quantization_config=quantization_config
+            quantized_model_path, device_map=self.device, quantization_config=quantization_config
         )
-        tokenizer = AutoTokenizer.from_pretrained(saved_folders[0])
+        tokenizer = AutoTokenizer.from_pretrained(quantized_model_path)
         text = "There is a girl who likes adventure,"
         inputs = tokenizer(text, return_tensors="pt").to(model.device)
         res = tokenizer.decode(model.generate(**inputs, max_new_tokens=50)[0])
@@ -79,13 +79,15 @@ class TestAutoRoundXPU:
             dataset=dataloader,
         )
         quantized_model_path = self.save_dir
-        _, saved_folders = autoround.quantize_and_save(output_dir=quantized_model_path, format="auto_round:auto_awq")
+        _, quantized_model_path = autoround.quantize_and_save(
+            output_dir=quantized_model_path, format="auto_round:auto_awq"
+        )
 
         quantization_config = AutoRoundConfig(backend="auto")
         model = AutoModelForCausalLM.from_pretrained(
-            saved_folders[0], device_map=self.device, quantization_config=quantization_config
+            quantized_model_path, device_map=self.device, quantization_config=quantization_config
         )
-        tokenizer = AutoTokenizer.from_pretrained(saved_folders[0])
+        tokenizer = AutoTokenizer.from_pretrained(quantized_model_path)
         text = "There is a girl who likes adventure,"
         inputs = tokenizer(text, return_tensors="pt").to(model.device)
         res = tokenizer.decode(model.generate(**inputs, max_new_tokens=50)[0])
@@ -110,7 +112,9 @@ class TestAutoRoundXPU:
             dataset=dataloader,
         )
         quantized_model_path = "./saved"
-        ar.quantize_and_save(output_dir=quantized_model_path, inplace=True, format="auto_round")
+        _, quantized_model_path = ar.quantize_and_save(
+            output_dir=quantized_model_path, inplace=True, format="auto_round"
+        )
 
         # test loading
         if scheme not in ["FPW8A16"]:  # FPW8A16 group_size is 0
@@ -141,7 +145,9 @@ class TestAutoRoundXPU:
         )
 
         quantized_model_path = "./saved"
-        ar.quantize_and_save(output_dir=quantized_model_path, inplace=True, format="auto_round")
+        _, quantized_model_path = ar.quantize_and_save(
+            output_dir=quantized_model_path, inplace=True, format="auto_round"
+        )
 
         quantization_config = AutoRoundConfig(backend="auto")
         import requests
@@ -212,7 +218,9 @@ class TestAutoRoundXPU:
             dataset=dataloader,
         )
         quantized_model_path = "./saved"
-        ar.quantize_and_save(output_dir=quantized_model_path, inplace=True, format="auto_round")
+        _, quantized_model_path = ar.quantize_and_save(
+            output_dir=quantized_model_path, inplace=True, format="auto_round"
+        )
 
         quantization_config = AutoRoundConfig(backend="auto")
         model = AutoModelForCausalLM.from_pretrained(

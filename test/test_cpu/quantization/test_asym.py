@@ -28,15 +28,15 @@ class TestAutoRoundAsym:
             ar = AutoRound(
                 tiny_opt_model_path, bits=bits, group_size=group_size, sym=sym, iters=0, seqlen=2, nsamples=1
             )
-            ar.quantize_and_save(format="auto_round", output_dir=self.save_folder)
+            _, quantized_model_path = ar.quantize_and_save(format="auto_round", output_dir=self.save_folder)
 
             model = AutoModelForCausalLM.from_pretrained(
-                self.save_folder,
+                quantized_model_path,
                 torch_dtype="auto",
                 device_map="auto",
             )
 
-            tokenizer = AutoTokenizer.from_pretrained(self.save_folder)
+            tokenizer = AutoTokenizer.from_pretrained(quantized_model_path)
             model_infer(model, tokenizer)
 
     def test_asym_bits(self, tiny_opt_model_path):
@@ -45,15 +45,15 @@ class TestAutoRoundAsym:
             ar = AutoRound(
                 tiny_opt_model_path, bits=bits, group_size=group_size, sym=sym, iters=0, seqlen=2, nsamples=1
             )
-            ar.quantize_and_save(format="auto_round", output_dir=self.save_folder)
+            _, quantized_model_path = ar.quantize_and_save(format="auto_round", output_dir=self.save_folder)
 
             model = AutoModelForCausalLM.from_pretrained(
-                self.save_folder,
+                quantized_model_path,
                 torch_dtype="auto",
                 device_map="auto",
             )
 
-            tokenizer = AutoTokenizer.from_pretrained(self.save_folder)
+            tokenizer = AutoTokenizer.from_pretrained(quantized_model_path)
             model_infer(model, tokenizer)
 
     # use parameters later
@@ -70,13 +70,13 @@ class TestAutoRoundAsym:
                 nsamples=1,
                 disable_opt_rtn=True,
             )
-            ar.quantize_and_save(format=format, output_dir=self.save_folder)
+            _, quantized_model_path = ar.quantize_and_save(format=format, output_dir=self.save_folder)
 
             model = AutoModelForCausalLM.from_pretrained(
-                self.save_folder,
+                quantized_model_path,
                 torch_dtype="auto",
                 device_map="auto",
             )
 
-            tokenizer = AutoTokenizer.from_pretrained(self.save_folder)
+            tokenizer = AutoTokenizer.from_pretrained(quantized_model_path)
             model_infer(model, tokenizer)

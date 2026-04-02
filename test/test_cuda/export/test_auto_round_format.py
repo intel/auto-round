@@ -53,7 +53,7 @@ class TestAutoRound:
         )
         quantized_model_path = self.save_dir
 
-        autoround.quantize_and_save(output_dir=quantized_model_path, format="auto_round")
+        _, quantized_model_path = autoround.quantize_and_save(output_dir=quantized_model_path, format="auto_round")
 
         # Verify loading
         model = AutoModelForCausalLM.from_pretrained(quantized_model_path, device_map="cuda:0", trust_remote_code=True)
@@ -74,7 +74,7 @@ class TestAutoRound:
         bits, group_size, sym = 4, 128, True
         autoround = AutoRound(model_name, bits=bits, group_size=group_size, sym=sym, layer_config=layer_config)
         quantized_model_path = self.save_dir
-        autoround.quantize_and_save(output_dir=quantized_model_path, format="auto_round")
+        _, quantized_model_path = autoround.quantize_and_save(output_dir=quantized_model_path, format="auto_round")
         eval_generated_prompt(quantized_model_path)
         evaluate_accuracy(quantized_model_path, threshold=0.32, batch_size=16)
 
@@ -92,23 +92,31 @@ class TestAutoRound:
             sym=sym,
         )
         quantized_model_path = self.save_dir
-        autoround.quantize_and_save(output_dir=quantized_model_path, format="auto_round:auto_awq")
+        _, quantized_model_path = autoround.quantize_and_save(
+            output_dir=quantized_model_path, format="auto_round:auto_awq"
+        )
 
         quantization_config = AutoRoundConfig(backend="auto")
         model = AutoModelForCausalLM.from_pretrained(
-            self.save_dir, torch_dtype=torch.float16, device_map="cuda:0", quantization_config=quantization_config
+            quantized_model_path,
+            torch_dtype=torch.float16,
+            device_map="cuda:0",
+            quantization_config=quantization_config,
         )
 
-        tokenizer = AutoTokenizer.from_pretrained(self.save_dir)
+        tokenizer = AutoTokenizer.from_pretrained(quantized_model_path)
         eval_generated_prompt(model, tokenizer)
         evaluate_accuracy(model, tokenizer, threshold=0.18, batch_size=16)
         torch.cuda.empty_cache()
 
         model = AutoModelForCausalLM.from_pretrained(
-            self.save_dir, torch_dtype=torch.bfloat16, device_map="cuda:0", quantization_config=quantization_config
+            quantized_model_path,
+            torch_dtype=torch.bfloat16,
+            device_map="cuda:0",
+            quantization_config=quantization_config,
         )
 
-        tokenizer = AutoTokenizer.from_pretrained(self.save_dir)
+        tokenizer = AutoTokenizer.from_pretrained(quantized_model_path)
         eval_generated_prompt(model, tokenizer)
 
     @pytest.mark.skip_ci(reason="Time-consuming; Accuracy evaluation")
@@ -138,7 +146,7 @@ class TestAutoRound:
         )
         quantized_model_path = self.save_dir
 
-        autoround.quantize_and_save(output_dir=quantized_model_path)
+        _, quantized_model_path = autoround.quantize_and_save(output_dir=quantized_model_path)
 
         from transformers import AutoRoundConfig
 
@@ -188,7 +196,9 @@ class TestAutoRound:
         )
         quantized_model_path = self.save_dir
 
-        autoround.quantize_and_save(output_dir=quantized_model_path, format="auto_round:auto_awq")
+        _, quantized_model_path = autoround.quantize_and_save(
+            output_dir=quantized_model_path, format="auto_round:auto_awq"
+        )
 
         model = AutoModelForCausalLM.from_pretrained(quantized_model_path, device_map="auto", trust_remote_code=True)
         tokenizer = AutoTokenizer.from_pretrained(quantized_model_path)

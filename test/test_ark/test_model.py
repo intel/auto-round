@@ -44,16 +44,16 @@ class TestAutoRoundARKBackend:
         else:
             autoround = AutoRound(model, tokenizer, bits=bits, group_size=group_size, sym=sym)
         quantized_model_path = self.save_folder
-        _, saved_folders = autoround.quantize_and_save(
+        _, saved_folder = autoround.quantize_and_save(
             output_dir=quantized_model_path, format=format
         )  ##will convert to gptq model
 
         quantization_config = AutoRoundConfig(backend="ark")
         model = AutoModelForCausalLM.from_pretrained(
-            saved_folders[0], dtype=dtype, device_map=device, quantization_config=quantization_config
+            saved_folder, dtype=dtype, device_map=device, quantization_config=quantization_config
         )
 
-        tokenizer = AutoTokenizer.from_pretrained(saved_folders[0])
+        tokenizer = AutoTokenizer.from_pretrained(saved_folder)
         model_infer(model, tokenizer)
         evaluate_accuracy(model, tokenizer, threshold=tar_acc, batch_size=32, limit=limit)
         torch.xpu.empty_cache()

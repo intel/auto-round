@@ -41,23 +41,25 @@ class TestAutoRoundexllamaBackend:
             model_path, bits=bits, group_size=group_size, sym=sym, iters=1, seqlen=2, dataset=dataloader
         )
         quantized_model_path = self.save_dir
-        autoround.quantize_and_save(output_dir=quantized_model_path, format="auto_round:gptqmodel")
+        _, quantized_model_path = autoround.quantize_and_save(
+            output_dir=quantized_model_path, format="auto_round:gptqmodel"
+        )
 
         quantization_config = AutoRoundConfig(backend="gptqmodel:exllamav2")
         model = AutoModelForCausalLM.from_pretrained(
-            self.save_dir, torch_dtype=torch.float16, device_map="auto", quantization_config=quantization_config
+            quantized_model_path, torch_dtype=torch.float16, device_map="auto", quantization_config=quantization_config
         )
 
-        tokenizer = AutoTokenizer.from_pretrained(self.save_dir)
+        tokenizer = AutoTokenizer.from_pretrained(quantized_model_path)
         model_infer(model, tokenizer)
         evaluate_accuracy(model, tokenizer, threshold=0.35, batch_size=16)
         torch.cuda.empty_cache()
 
         model = AutoModelForCausalLM.from_pretrained(
-            self.save_dir, torch_dtype=torch.bfloat16, device_map="auto", quantization_config=quantization_config
+            quantized_model_path, torch_dtype=torch.bfloat16, device_map="auto", quantization_config=quantization_config
         )
 
-        tokenizer = AutoTokenizer.from_pretrained(self.save_dir)
+        tokenizer = AutoTokenizer.from_pretrained(quantized_model_path)
         model_infer(model, tokenizer)
         evaluate_accuracy(model, tokenizer, threshold=0.35, batch_size=16)
         torch.cuda.empty_cache()
@@ -83,10 +85,10 @@ class TestAutoRoundexllamaBackend:
 
         quantization_config = AutoRoundConfig(backend="gptq:exllamav2")  ## or exllamav2
         model = AutoModelForCausalLM.from_pretrained(
-            self.save_dir, torch_dtype=torch.float16, device_map="auto", quantization_config=quantization_config
+            quantized_model_path, torch_dtype=torch.float16, device_map="auto", quantization_config=quantization_config
         )
 
-        tokenizer = AutoTokenizer.from_pretrained(self.save_dir)
+        tokenizer = AutoTokenizer.from_pretrained(quantized_model_path)
         model_infer(model, tokenizer)
         evaluate_accuracy(model, tokenizer, threshold=0.27, batch_size=16)
         torch.cuda.empty_cache()
@@ -108,14 +110,16 @@ class TestAutoRoundexllamaBackend:
             sym=True,
         )
         quantized_model_path = self.save_dir
-        autoround.quantize_and_save(output_dir=quantized_model_path, format="auto_round")  ##will convert to gptq model
+        _, quantized_model_path = autoround.quantize_and_save(
+            output_dir=quantized_model_path, format="auto_round"
+        )  ##will convert to gptq model
 
         quantization_config = AutoRoundConfig(backend="gptq:exllamav2")  ## or exllamav2
         model = AutoModelForCausalLM.from_pretrained(
-            self.save_dir, torch_dtype=torch.float16, device_map="auto", quantization_config=quantization_config
+            quantized_model_path, torch_dtype=torch.float16, device_map="auto", quantization_config=quantization_config
         )
 
-        tokenizer = AutoTokenizer.from_pretrained(self.save_dir)
+        tokenizer = AutoTokenizer.from_pretrained(quantized_model_path)
         model_infer(model, tokenizer)
         evaluate_accuracy(model, tokenizer, threshold=0.15, batch_size=64)
         torch.cuda.empty_cache()
@@ -134,15 +138,17 @@ class TestAutoRoundexllamaBackend:
             disable_opt_rtn=True,
         )
         quantized_model_path = self.save_dir
-        autoround.quantize_and_save(output_dir=quantized_model_path, format="auto_round:auto_awq")
+        _, quantized_model_path = autoround.quantize_and_save(
+            output_dir=quantized_model_path, format="auto_round:auto_awq"
+        )
         quantization_config = AutoRoundConfig(backend="gptqmodel:awq_exllamav2")
         # test awq bfloat16 inference
         model = AutoModelForCausalLM.from_pretrained(
-            self.save_dir, torch_dtype=torch.bfloat16, device_map="auto", quantization_config=quantization_config
+            quantized_model_path, torch_dtype=torch.bfloat16, device_map="auto", quantization_config=quantization_config
         )
         assert model.dtype == torch.bfloat16, f"Expected model dtype bfloat16, got {model.dtype}"
 
-        tokenizer = AutoTokenizer.from_pretrained(self.save_dir)
+        tokenizer = AutoTokenizer.from_pretrained(quantized_model_path)
         # Inference generation check
         eval_generated_prompt(model, tokenizer)
         # Accuracy check
@@ -165,14 +171,16 @@ class TestAutoRoundexllamaBackend:
             disable_opt_rtn=True,
         )
         quantized_model_path = self.save_dir
-        autoround.quantize_and_save(output_dir=quantized_model_path, format="auto_round:auto_awq")
+        _, quantized_model_path = autoround.quantize_and_save(
+            output_dir=quantized_model_path, format="auto_round:auto_awq"
+        )
 
         quantization_config = AutoRoundConfig(backend="gptqmodel:awq_exllamav2")
         model = AutoModelForCausalLM.from_pretrained(  # test awq bfloat16 inference
-            self.save_dir, torch_dtype=torch.bfloat16, device_map="auto", quantization_config=quantization_config
+            quantized_model_path, torch_dtype=torch.bfloat16, device_map="auto", quantization_config=quantization_config
         )
 
-        tokenizer = AutoTokenizer.from_pretrained(self.save_dir)
+        tokenizer = AutoTokenizer.from_pretrained(quantized_model_path)
         # Inference generation check
         eval_generated_prompt(model, tokenizer)
         # Accuracy check

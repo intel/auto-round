@@ -49,14 +49,16 @@ class TestAutoRoundTorchBackend:
             dataset=dataloader,
         )
         quantized_model_path = self.save_dir
-        autoround.quantize_and_save(output_dir=quantized_model_path, format="auto_round:gptqmodel")
+        _, quantized_model_path = autoround.quantize_and_save(
+            output_dir=quantized_model_path, format="auto_round:gptqmodel"
+        )
 
         quantization_config = AutoRoundConfig(backend="torch")
         model = AutoModelForCausalLM.from_pretrained(
             quantized_model_path, torch_dtype=torch.float16, device_map="auto", quantization_config=quantization_config
         )
 
-        tokenizer = AutoTokenizer.from_pretrained(self.save_dir)
+        tokenizer = AutoTokenizer.from_pretrained(quantized_model_path)
         model_infer(model, tokenizer)
         evaluate_accuracy(model, tokenizer, threshold=0.35, batch_size=16)
         torch.cuda.empty_cache()
@@ -79,13 +81,15 @@ class TestAutoRoundTorchBackend:
             dataset=dataloader,
         )
         quantized_model_path = self.save_dir
-        autoround.quantize_and_save(output_dir=quantized_model_path, format="auto_round")  ##will convert to gptq model
+        _, quantized_model_path = autoround.quantize_and_save(
+            output_dir=quantized_model_path, format="auto_round"
+        )  ##will convert to gptq model
 
         quantization_config = AutoRoundConfig(backend="torch")
         model = AutoModelForCausalLM.from_pretrained(
             quantized_model_path, torch_dtype=torch.float16, device_map="auto", quantization_config=quantization_config
         )
-        tokenizer = AutoTokenizer.from_pretrained(self.save_dir)
+        tokenizer = AutoTokenizer.from_pretrained(quantized_model_path)
         model_infer(model, tokenizer)
         evaluate_accuracy(model, tokenizer, threshold=0.28, batch_size=16)
         torch.cuda.empty_cache()
@@ -130,7 +134,9 @@ class TestAutoRoundTorchBackend:
         autoround.quantize()
         quantized_model_path = self.save_dir
 
-        autoround.save_quantized(output_dir=quantized_model_path, inplace=False, format="auto_round")
+        _, quantized_model_path = autoround.save_quantized(
+            output_dir=quantized_model_path, inplace=False, format="auto_round"
+        )
 
         device = "auto"  ##cpu, hpu, cuda
         from transformers import AutoRoundConfig
@@ -160,14 +166,16 @@ class TestAutoRoundTorchBackend:
             disable_opt_rtn=True,
         )
         quantized_model_path = self.save_dir
-        autoround.quantize_and_save(output_dir=quantized_model_path, format="auto_round:auto_awq")
+        _, quantized_model_path = autoround.quantize_and_save(
+            output_dir=quantized_model_path, format="auto_round:auto_awq"
+        )
 
         quantization_config = AutoRoundConfig(backend="gptqmodel:awq_torch")
         model = AutoModelForCausalLM.from_pretrained(
-            self.save_dir, torch_dtype=torch.float16, device_map="auto", quantization_config=quantization_config
+            quantized_model_path, torch_dtype=torch.float16, device_map="auto", quantization_config=quantization_config
         )
 
-        tokenizer = AutoTokenizer.from_pretrained(self.save_dir)
+        tokenizer = AutoTokenizer.from_pretrained(quantized_model_path)
         # Inference generation check
         output = model_infer(model, tokenizer)
         assert isinstance(output, str) and len(output.strip()) > 0, "Model failed to generate non-empty output"

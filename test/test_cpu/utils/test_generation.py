@@ -43,7 +43,9 @@ class TestAutoRoundFormatGeneration:
         )
         quantized_model_path = self.save_folder
 
-        autoround.quantize_and_save(output_dir=quantized_model_path, format="auto_round", inplace=False)
+        _, quantized_model_path = autoround.quantize_and_save(
+            output_dir=quantized_model_path, format="auto_round", inplace=False
+        )
 
         model = AutoModelForCausalLM.from_pretrained(quantized_model_path, device_map="cpu")
         tokenizer = AutoTokenizer.from_pretrained(quantized_model_path)
@@ -78,7 +80,7 @@ class TestAutoRoundFormatGeneration:
             )
             quantized_model_path = self.save_folder
 
-            autoround.quantize_and_save(output_dir=quantized_model_path, format="auto_round")
+            _, quantized_model_path = autoround.quantize_and_save(output_dir=quantized_model_path, format="auto_round")
 
             model = AutoModelForCausalLM.from_pretrained(
                 quantized_model_path, device_map="auto", trust_remote_code=True

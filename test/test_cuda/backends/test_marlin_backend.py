@@ -49,14 +49,14 @@ class TestAutoRoundMarlinBackend:
             dataset=dataloader,
         )
         quantized_model_path = self.save_dir
-        autoround.quantize_and_save(output_dir=quantized_model_path, format="auto_gptq")
+        _, quantized_model_path = autoround.quantize_and_save(output_dir=quantized_model_path, format="auto_gptq")
 
         quantization_config = AutoRoundConfig(backend="marlin")
         model = AutoModelForCausalLM.from_pretrained(
-            self.save_dir, torch_dtype=torch.float16, device_map="auto", quantization_config=quantization_config
+            quantized_model_path, torch_dtype=torch.float16, device_map="auto", quantization_config=quantization_config
         )
 
-        tokenizer = AutoTokenizer.from_pretrained(self.save_dir)
+        tokenizer = AutoTokenizer.from_pretrained(quantized_model_path)
         model_infer(model, tokenizer)
         evaluate_accuracy(model, tokenizer, threshold=0.27, batch_size=16)
         torch.cuda.empty_cache()
@@ -80,7 +80,7 @@ class TestAutoRoundMarlinBackend:
                 dataset=dataloader,
             )
             quantized_model_path = self.save_dir
-            autoround.quantize_and_save(output_dir=quantized_model_path, format="auto_gptq")
+            _, quantized_model_path = autoround.quantize_and_save(output_dir=quantized_model_path, format="auto_gptq")
 
             quantization_config = AutoRoundConfig(backend="marlin")
             model = AutoModelForCausalLM.from_pretrained(
@@ -107,14 +107,17 @@ class TestAutoRoundMarlinBackend:
                 dataset=dataloader,
             )
             quantized_model_path = self.save_dir
-            autoround.quantize_and_save(output_dir=quantized_model_path, format="auto_round")
+            _, quantized_model_path = autoround.quantize_and_save(output_dir=quantized_model_path, format="auto_round")
 
             quantization_config = AutoRoundConfig(backend="marlin")
             model = AutoModelForCausalLM.from_pretrained(
-                self.save_dir, torch_dtype=torch.float16, device_map="auto", quantization_config=quantization_config
+                quantized_model_path,
+                torch_dtype=torch.float16,
+                device_map="auto",
+                quantization_config=quantization_config,
             )
 
-            tokenizer = AutoTokenizer.from_pretrained(self.save_dir)
+            tokenizer = AutoTokenizer.from_pretrained(quantized_model_path)
             model_infer(model, tokenizer)
             evaluate_accuracy(model, tokenizer, threshold=0.14, batch_size=16)
 
@@ -179,14 +182,16 @@ class TestAutoRoundMarlinBackend:
             disable_opt_rtn=True,
         )
         quantized_model_path = self.save_dir
-        autoround.quantize_and_save(output_dir=quantized_model_path, format="auto_round:auto_awq")
+        _, quantized_model_path = autoround.quantize_and_save(
+            output_dir=quantized_model_path, format="auto_round:auto_awq"
+        )
 
         quantization_config = AutoRoundConfig(backend="gptqmodel:awq_marlin")
         model = AutoModelForCausalLM.from_pretrained(
-            self.save_dir, torch_dtype="auto", device_map="cuda:0", quantization_config=quantization_config
+            quantized_model_path, torch_dtype="auto", device_map="cuda:0", quantization_config=quantization_config
         )
 
-        tokenizer = AutoTokenizer.from_pretrained(self.save_dir)
+        tokenizer = AutoTokenizer.from_pretrained(quantized_model_path)
         # Inference generation check
         eval_generated_prompt(model, tokenizer)
         # Accuracy check
@@ -211,14 +216,16 @@ class TestAutoRoundMarlinBackend:
             disable_opt_rtn=True,
         )
         quantized_model_path = self.save_dir
-        autoround.quantize_and_save(output_dir=quantized_model_path, format="auto_round:auto_awq")
+        _, quantized_model_path = autoround.quantize_and_save(
+            output_dir=quantized_model_path, format="auto_round:auto_awq"
+        )
 
         quantization_config = AutoRoundConfig(backend="gptqmodel:awq_marlin")
         model = AutoModelForCausalLM.from_pretrained(
-            self.save_dir, torch_dtype="auto", device_map="cuda:0", quantization_config=quantization_config
+            quantized_model_path, torch_dtype="auto", device_map="cuda:0", quantization_config=quantization_config
         )
 
-        tokenizer = AutoTokenizer.from_pretrained(self.save_dir)
+        tokenizer = AutoTokenizer.from_pretrained(quantized_model_path)
         # Inference generation check
         eval_generated_prompt(model, tokenizer)
         # Accuracy check

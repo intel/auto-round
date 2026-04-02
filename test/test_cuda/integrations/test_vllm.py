@@ -100,7 +100,7 @@ def test_mixed_llmcompressor_format_vllm(tiny_opt_model_path, dataloader, tmp_pa
         layer_config=layer_config,
     )
     quantized_model_path = str(tmp_path / "saved")
-    autoround.quantize_and_save(output_dir=quantized_model_path, format="llm_compressor")
+    _, quantized_model_path = autoround.quantize_and_save(output_dir=quantized_model_path, format="llm_compressor")
 
     # verify loading.
     llm = LLM(
@@ -165,9 +165,9 @@ def test_auto_round_awq_format_vllm():
         iters=1,
         seqlen=2,
     )
-    autoround.quantize_and_save(output_dir=save_dir, format="auto_round:auto_awq")
+    _, quantized_model_path = autoround.quantize_and_save(output_dir=save_dir, format="auto_round:auto_awq")
     sampling_params = SamplingParams(temperature=0.8, top_p=0.95, max_tokens=32)
-    llm = LLM(model=save_dir, trust_remote_code=True, tensor_parallel_size=1, gpu_memory_utilization=0.7)
+    llm = LLM(model=quantized_model_path, trust_remote_code=True, tensor_parallel_size=1, gpu_memory_utilization=0.7)
     outputs = llm.generate(["The capital of France is"], sampling_params)
     generated_text = outputs[0].outputs[0].text
     print(generated_text)
