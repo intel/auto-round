@@ -20,6 +20,7 @@ from ...helpers import (
 
 
 class TestAutoRound:
+
     @classmethod
     def setup_class(self):
         model_name = opt_name_or_path
@@ -372,14 +373,14 @@ class TestAutoRound:
         bits, group_size, sym = 4, 128, True
         autoround = AutoRound(model, tokenizer, bits=bits, group_size=group_size, sym=sym, iters=0, nsamples=1)
         quantized_model_path = self.save_folder
-        autoround.quantize_and_save(output_dir=quantized_model_path, format="auto_round")
+        _, saved_folders = autoround.quantize_and_save(output_dir=quantized_model_path, format="auto_round")
         model = AutoModelForCausalLM.from_pretrained(
-            self.save_folder,
+            saved_folders[0],
             torch_dtype=torch.float16,
             device_map="auto",
         )
 
-        tokenizer = AutoTokenizer.from_pretrained(self.save_folder)
+        tokenizer = AutoTokenizer.from_pretrained(saved_folders[0])
         model_infer(model, tokenizer)
 
     def test_embed_quant(self, tiny_opt_model_path, dataloader):
@@ -636,8 +637,8 @@ class TestAutoRound:
             nsamples=1,
             disable_opt_rtn=True,
         )
-        ar.quantize_and_save(output_dir=self.save_folder, format="auto_round")
-        model = AutoModelForCausalLM.from_pretrained(self.save_folder, device_map="cpu")
+        _, saved_folders = ar.quantize_and_save(output_dir=self.save_folder, format="auto_round")
+        model = AutoModelForCausalLM.from_pretrained(saved_folders[0], device_map="cpu")
         assert "lm_head" in model.config.quantization_config.extra_config
         assert model.config.quantization_config.extra_config["lm_head"]["bits"] == 4
 
@@ -653,8 +654,8 @@ class TestAutoRound:
             disable_opt_rtn=True,
             layer_config=layer_config,
         )
-        ar.quantize_and_save(output_dir=self.save_folder, format="auto_round")
-        model = AutoModelForCausalLM.from_pretrained(self.save_folder, device_map="cpu")
+        _, saved_folders = ar.quantize_and_save(output_dir=self.save_folder, format="auto_round")
+        model = AutoModelForCausalLM.from_pretrained(saved_folders[0], device_map="cpu")
         assert "lm_head" in model.config.quantization_config.extra_config
         assert model.config.quantization_config.extra_config["lm_head"]["bits"] == 4
 

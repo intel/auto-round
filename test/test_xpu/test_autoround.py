@@ -12,6 +12,7 @@ from ..helpers import get_model_path
 
 
 class TestAutoRoundXPU:
+
     @classmethod
     def setup_class(self):
         self.device = "xpu"
@@ -47,13 +48,13 @@ class TestAutoRoundXPU:
             dataset=dataloader,
         )
         quantized_model_path = self.save_dir
-        autoround.quantize_and_save(output_dir=quantized_model_path)
+        _, saved_folders = autoround.quantize_and_save(output_dir=quantized_model_path)
 
         quantization_config = AutoRoundConfig(backend="auto")
         model = AutoModelForCausalLM.from_pretrained(
-            quantized_model_path, device_map=self.device, quantization_config=quantization_config
+            saved_folders[0], device_map=self.device, quantization_config=quantization_config
         )
-        tokenizer = AutoTokenizer.from_pretrained(quantized_model_path)
+        tokenizer = AutoTokenizer.from_pretrained(saved_folders[0])
         text = "There is a girl who likes adventure,"
         inputs = tokenizer(text, return_tensors="pt").to(model.device)
         res = tokenizer.decode(model.generate(**inputs, max_new_tokens=50)[0])
@@ -78,13 +79,13 @@ class TestAutoRoundXPU:
             dataset=dataloader,
         )
         quantized_model_path = self.save_dir
-        autoround.quantize_and_save(output_dir=quantized_model_path, format="auto_round:auto_awq")
+        _, saved_folders = autoround.quantize_and_save(output_dir=quantized_model_path, format="auto_round:auto_awq")
 
         quantization_config = AutoRoundConfig(backend="auto")
         model = AutoModelForCausalLM.from_pretrained(
-            quantized_model_path, device_map=self.device, quantization_config=quantization_config
+            saved_folders[0], device_map=self.device, quantization_config=quantization_config
         )
-        tokenizer = AutoTokenizer.from_pretrained(quantized_model_path)
+        tokenizer = AutoTokenizer.from_pretrained(saved_folders[0])
         text = "There is a girl who likes adventure,"
         inputs = tokenizer(text, return_tensors="pt").to(model.device)
         res = tokenizer.decode(model.generate(**inputs, max_new_tokens=50)[0])

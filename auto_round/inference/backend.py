@@ -30,7 +30,7 @@ BackendInfos = {}
 import cpuinfo
 
 if TYPE_CHECKING:
-    from transformers import SignRoundConfig
+    from transformers import AutoRoundConfig
 
 
 def get_cpu_manufacturer():
@@ -1127,7 +1127,7 @@ def get_layer_backend(
 
 
 def get_highest_priority_backend(
-    quantization_config: "SignRoundConfig", device: str, packing_format: str
+    quantization_config: "AutoRoundConfig", device: str, packing_format: str
 ) -> str | None:
     supported_backends = []
     for key in BackendInfos.keys():

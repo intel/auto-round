@@ -88,17 +88,24 @@ class ShardWriter:
         self.total_param_size_bytes = 0
         self.skipped_meta_tensors = []
 
-        # Directory Setup
+        ShardWriter._initialized = True
+
+    @property
+    def output_dir(self) -> str:
+        """Derive the output directory from the current CompressContext at access time.
+
+        Reading from context rather than caching the path at construction time ensures
+        the ShardWriter always uses the final export directory even if
+        ``CompressContext.output_dir`` is updated after the ShardWriter was created
+        (e.g. by ``_get_export_dir()`` in ``quantize_and_save()``).
+        """
         compress_context = CompressContext.get_context()
         formats = compress_context.formats
         base_dir = _get_save_folder_name(formats[0])
         subfolder = getattr(self.model, "_autoround_pipeline_subfolder", None)
         if subfolder:
             base_dir = os.path.join(base_dir, subfolder)
-        self.output_dir = os.path.join(base_dir, "")
-        os.makedirs(self.output_dir, exist_ok=True)
-
-        ShardWriter._initialized = True
+        return os.path.join(base_dir, "")
 
     @classmethod
     def reset(cls):
@@ -179,8 +186,10 @@ class ShardWriter:
             return
 
         self.shard_counter += 1
+        output_dir = self.output_dir
+        os.makedirs(output_dir, exist_ok=True)
         tmp_name = f"model-shard-{self.shard_counter:05d}.{self.shard_suffix}"
-        tmp_path = os.path.join(self.output_dir, tmp_name)
+        tmp_path = os.path.join(output_dir, tmp_name)
 
         if self.use_safetensors:
             from safetensors.torch import save_file
@@ -190,7 +199,7 @@ class ShardWriter:
             torch.save(self.current_shard_tensors, tmp_path)
 
         saved_params = list(self.current_shard_tensors.keys())
-        self.shard_meta.append({"tmp_file": tmp_name, "params": saved_params})
+        self.shard_meta.append({"tmp_file": tmp_name, "params": saved_params, "dir": output_dir})
         self._all_saved.update(saved_params)
 
         # Offload logic: move modules to meta device once all params are saved
@@ -245,21 +254,23 @@ class ShardWriter:
             logger.warning("No tensors saved.")
             return
 
+        output_dir = self.output_dir
         for idx, meta in enumerate(self.shard_meta, start=1):
-            old_path = os.path.join(self.output_dir, meta["tmp_file"])
+            shard_dir = meta.get("dir", output_dir)
+            old_path = os.path.join(shard_dir, meta["tmp_file"])
             new_name = (
                 f"model.{self.shard_suffix}"
                 if self.shard_counter == 1
                 else f"model-{idx:05d}-of-{self.shard_counter:05d}.{self.shard_suffix}"
             )
-
-            os.rename(old_path, os.path.join(self.output_dir, new_name))
+            new_path = os.path.join(shard_dir, new_name)
+            os.rename(old_path, new_path)
             for p in meta["params"]:
                 self.global_weight_map[p] = new_name
 
         # 3. Write Index JSON
         index_ext = "safetensors.index.json" if self.use_safetensors else "bin.index.json"
-        index_path = os.path.join(self.output_dir, f"model.{index_ext}")
+        index_path = os.path.join(output_dir, f"model.{index_ext}")
 
         index_data = {
             "metadata": {
