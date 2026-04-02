@@ -321,12 +321,12 @@ class BaseQuantizers:
             or self.enable_alg_ext  # Use imatrix
             # or not self.disable_opt_rtn  # Use imatrix
         ):
-            self.block_forward = block_forward
+            _bf = block_forward
         else:
             # TODO FIXME
             # This function could not be compiled, causing a large accuracy drop when `enable_alg_ext` is used.
             # To avoid issues, remove it in all scenarios except WOQ.
-            self.block_forward = (
+            _bf = (
                 compile_func(block_forward, self.compress_context.device)
                 if self.compress_context.enable_torch_compile
                 else block_forward
@@ -345,7 +345,7 @@ class BaseQuantizers:
                 self.batch_dim,
                 share_cache_keys=self.model_context.shared_cache_keys,
             )
-            tmp_output = self.block_forward(
+            tmp_output = _bf(
                 block,
                 tmp_input_ids,
                 tmp_input_others,
@@ -361,6 +361,57 @@ class BaseQuantizers:
         self.compress_context.clear_memory()
 
         return output
+
+    @torch.no_grad()
+    def _get_current_q_output(
+        self,
+        block: torch.nn.Module,
+        input_ids,
+        input_others: dict,
+        indices,
+        device,
+        cache_device: str = "cpu",
+    ) -> torch.Tensor:
+        """Compute block output for a mini-batch selected by *indices* (used during training).
+
+        Handles both LLM and diffusion model block formats.  Always calls the
+        plain (non-compiled) ``block_forward`` because this runs inside the
+        autograd training loop where compilation is not needed.
+        """
+        current_input_ids, current_input_others = self._sampling_inputs(
+            input_ids,
+            input_others,
+            indices,
+            seqlen=self.seqlen,
+            batch_dim=self.batch_dim,
+            share_cache_keys=self.model_context.shared_cache_keys,
+        )
+        if getattr(self.model_context, "is_diffusion", False):
+            output_config = self.DIFFUSION_OUTPUT_CONFIGS.get(block.__class__.__name__, [])
+            idx = None if "hidden_states" not in output_config else output_config.index("hidden_states")
+            if isinstance(current_input_ids, dict):
+                hidden_states = current_input_ids.pop("hidden_states")
+                current_input_others.update(current_input_ids)
+                current_input_ids = hidden_states
+            output_q = block_forward(
+                block,
+                current_input_ids,
+                current_input_others,
+                self.model_context.amp,
+                self.model_context.amp_dtype,
+                device,
+                idx,
+            )
+        else:
+            output_q = block_forward(
+                block,
+                current_input_ids,
+                current_input_others,
+                self.model_context.amp,
+                self.model_context.amp_dtype,
+                device,
+            )
+        return output_q.to(cache_device)
 
     @classmethod
     @torch.no_grad()

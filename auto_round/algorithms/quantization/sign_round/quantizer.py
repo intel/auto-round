@@ -41,7 +41,6 @@ from auto_round.utils import (
     is_auto_device_mapping,
     is_hpex_available,
     memory_monitor,
-    merge_block_output_keys,
     mv_module_from_gpu,
     set_amax_for_all_moe_layers,
     to_device,
@@ -53,18 +52,8 @@ from auto_round.utils.device import (
 from auto_round.utils.distributed import setup_ddp_if_needed_
 from auto_round.wrapper import WrapperLinear, unwrapper_block, unwrapper_layer, wrapper_block
 
-DIFFUSION_OUTPUT_CONFIGS = {
-    "FluxTransformerBlock": ["encoder_hidden_states", "hidden_states"],
-    "FluxSingleTransformerBlock": ["encoder_hidden_states", "hidden_states"],
-}
-
 
 class SignRoundQuantizer(BaseQuantizers):
-    # Override the base empty dict with Flux-specific output key mappings.
-    DIFFUSION_OUTPUT_CONFIGS = {
-        "FluxTransformerBlock": ["encoder_hidden_states", "hidden_states"],
-        "FluxSingleTransformerBlock": ["encoder_hidden_states", "hidden_states"],
-    }
 
     def __init__(self, config: SignRoundConfig):
         super().__init__(config)
@@ -89,14 +78,6 @@ class SignRoundQuantizer(BaseQuantizers):
         self.optimizer = self._get_optimizer(optimizer=config.optimizer)
         self.wrapper_block = wrapper_block
 
-    def _get_extra_optimizer_kwargs(self) -> dict:
-        """Return extra keyword arguments passed to the optimizer constructor.
-
-        SignSGD requires ``momentum``; AdamW-based subclasses override this to
-        return ``{}`` because AdamW handles its own momentum internally.
-        """
-        return {"momentum": self.momentum}
-
     def post_init(self):
         super().post_init()
         if self.enable_alg_ext:
@@ -117,64 +98,6 @@ class SignRoundQuantizer(BaseQuantizers):
         current_output = [output[x] for x in indices]
         current_output = torch.cat(current_output, dim=self.batch_dim)
         return current_output
-
-    def _get_diffusion_current_q_output(
-        self,
-        block: torch.nn.Module,
-        input_ids: dict,
-        input_others: dict,
-        indices: list[int],
-        device: str,
-        cache_device: str = "cpu",
-    ):
-        output_config = self.DIFFUSION_OUTPUT_CONFIGS.get(block.__class__.__name__, [])
-        idx = None if "hidden_states" not in output_config else output_config.index("hidden_states")
-        current_input_ids, current_input_others = self._sampling_inputs(
-            input_ids,
-            input_others,
-            indices,
-            seqlen=self.seqlen,
-            batch_dim=self.batch_dim,
-            share_cache_keys=self.model_context.shared_cache_keys,
-        )
-        if isinstance(current_input_ids, dict):
-            hidden_states = current_input_ids.pop("hidden_states")
-            merge_block_output_keys(block, current_input_others, current_input_ids)
-            current_input_ids = hidden_states
-        output_q = block_forward(
-            block,
-            current_input_ids,
-            current_input_others,
-            self.model_context.amp,
-            self.model_context.amp_dtype,
-            device,
-            idx,
-        )
-        return output_q.to(cache_device)
-
-    def _get_current_q_output(
-        self,
-        block: torch.nn.Module,
-        input_ids: list[torch.Tensor],
-        input_others: dict,
-        indices: list[int],
-        device: str,
-        cache_device: str = "cpu",
-    ) -> torch.Tensor:
-        if self.model_context.is_diffusion:
-            return self._get_diffusion_current_q_output(block, input_ids, input_others, indices, device, cache_device)
-        current_input_ids, current_input_others = self._sampling_inputs(
-            input_ids,
-            input_others,
-            indices,
-            seqlen=self.seqlen,
-            batch_dim=self.batch_dim,
-            share_cache_keys=self.model_context.shared_cache_keys,
-        )
-        output_q = self.block_forward(
-            block, current_input_ids, current_input_others, self.model_context.amp, self.model_context.amp_dtype, device
-        )
-        return output_q.to(cache_device)
 
     def _get_current_num_elm(
         self,
@@ -282,7 +205,7 @@ class SignRoundQuantizer(BaseQuantizers):
         lr = torch.tensor(self.lr)
         minmax_lr = torch.tensor(self.minmax_lr)
 
-        extra_kwargs = self._get_extra_optimizer_kwargs()
+        extra_kwargs = {} if self.momentum is None else {"momentum": self.momentum}
 
         if self.enable_minmax_tuning:
             params = [

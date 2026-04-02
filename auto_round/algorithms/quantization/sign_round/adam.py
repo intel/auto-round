@@ -22,9 +22,9 @@ from auto_round.utils import check_is_cpu, htcore, is_hpex_available
 
 class SignRoundAdamQuantizer(SignRoundQuantizer):
 
-    def _get_extra_optimizer_kwargs(self) -> dict:
-        """AdamW handles momentum internally; no extra kwargs needed."""
-        return {}
+    def __init__(self, config):
+        super().__init__(config)
+        self.momentum = None  # AdamW handles momentum internally
 
     def _get_optimizer(self, optimizer):
         if optimizer is None:
