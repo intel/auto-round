@@ -836,8 +836,13 @@ class WOQHandler(WeightTypeHandler):
         """Check if a module is a CompressedLinear layer."""
         if module.__class__.__name__ == "CompressedLinear":
             if hasattr(module, "compressor") and module.compressor is not None:
-                compressor_name = module.compressor.__class__.__name__
-                return "int" in compressor_name.lower()
+                q_scheme = module.quantization_scheme
+                if (
+                    q_scheme.weights.num_bits in [2, 4, 8]
+                    and q_scheme.weights.type == "int"
+                    and q_scheme.input_activations is None
+                ):
+                    return True
         if hasattr(module, "quantization_scheme"):
             from compressed_tensors.quantization.utils import is_module_quantized  # pylint: disable=E0401
 
@@ -859,12 +864,27 @@ class WOQHandler(WeightTypeHandler):
         to_cpu: bool = False,
     ) -> torch.nn.Module:
         """Convert an integer weight-only quantized layer to a standard Linear layer.
-
-        Handles both ZP-offset (GPTQ v2) and no-ZP-offset (AutoRound) packing
-        conventions, as well as AWQ packing format.
         """
         if hasattr(layer, "quantization_scheme") and layer.__class__.__name__ == "Linear":
             from compressed_tensors.compressors.base import decompress_module  # pylint: disable=E0401
 
             decompress_module(layer)
             return layer
+
+        new_layer = torch.nn.Linear(layer.in_features, layer.out_features, bias=layer.bias is not None, dtype=dtype)
+        if layer.bias is not None:
+            new_layer.bias.data.copy_(layer.bias.data.to(dtype=dtype))
+
+        # Use compressor.decompress_module for dequantization
+        dq_weight = layer.compressor.decompress_module(layer)
+        new_layer.weight.data.copy_(dq_weight.to(dtype=dtype))
+
+        # Free intermediate CUDA tensors to avoid memory buildup
+        del dq_weight
+        layer.to("meta")
+
+        if to_cpu:
+            new_layer = new_layer.to("cpu")
+
+        return new_layer
+
