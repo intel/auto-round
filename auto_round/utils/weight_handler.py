@@ -863,8 +863,7 @@ class WOQHandler(WeightTypeHandler):
         device: str = "cpu",
         to_cpu: bool = False,
     ) -> torch.nn.Module:
-        """Convert an integer weight-only quantized layer to a standard Linear layer.
-        """
+        """Convert an integer weight-only quantized layer to a standard Linear layer."""
         if hasattr(layer, "quantization_scheme") and layer.__class__.__name__ == "Linear":
             from compressed_tensors.compressors.base import decompress_module  # pylint: disable=E0401
 
@@ -887,4 +886,3 @@ class WOQHandler(WeightTypeHandler):
             new_layer = new_layer.to("cpu")
 
         return new_layer
-
