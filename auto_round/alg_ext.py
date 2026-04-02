@@ -72,7 +72,7 @@ def get_abs_top_percent_mask(x: torch.Tensor, percent: float = 1.0):
         inv_mask (torch.BoolTensor): Inverse of mask.
     """
     flat = x.view(-1)
-    k = max(1, int(flat.numel() * percent / 1000))  
+    k = max(1, int(flat.numel() * percent / 1000))
     _, idx = torch.topk(torch.abs(flat), k)
 
     mask = torch.zeros_like(flat, dtype=torch.bool)
