@@ -31,6 +31,7 @@ from auto_round.compressors_new.utils import (
     collect_best_params,
     immediate_pack,
 )
+from auto_round.data_type.utils import reshape_pad_tensor_by_group_size
 from auto_round.logger import logger
 from auto_round.utils import (
     check_to_quantized,
@@ -78,8 +79,6 @@ class SignRoundQuantizer(BaseQuantizers):
         self.optimizer = self._get_optimizer(optimizer=config.optimizer)
         self.wrapper_block = wrapper_block
 
-    def post_init(self):
-        super().post_init()
         if self.enable_alg_ext:
             try:
                 logger.info("using algorithm extension for quantization.")

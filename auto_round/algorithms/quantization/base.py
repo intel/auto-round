@@ -98,18 +98,6 @@ class BaseQuantizers:
 
         return getattr(self.model_context, "amp_dtype", torch.float32)
 
-    def resolve_scheme(self, *args, **kwargs) -> None:
-        raise NotImplementedError(
-            "resolve_scheme() has been moved to BaseCompressor in compressors_new/base.py. "
-            "Call BaseCompressor.post_init() instead."
-        )
-
-    def post_init(self, *args, **kwargs) -> None:
-        raise NotImplementedError(
-            "post_init() has been moved to BaseCompressor/_scheme_post_init() in "
-            "compressors_new/base.py. Call BaseCompressor.post_init() instead."
-        )
-
     def _register_act_max_hook(self, model):
 
         def get_act_max_hook(module, input, output):
