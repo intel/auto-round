@@ -696,7 +696,7 @@ def tune(args):
             avg_bits=args.avg_bits,
             shared_layers=args.shared_layers,
             ignore_scale_zp_bits=args.ignore_scale_zp_bits,
-            low_gpu_mem_usage=False,
+            low_gpu_mem_usage=False, # force it to be False as it uses much smaller vram but similar time cost
             low_cpu_mem_usage=low_cpu_mem_usage,
         )
 
