@@ -557,9 +557,6 @@ def mllm_load_model(
                 cls = getattr(base_lib, architectures)
             else:
                 cls = AutoModelForCausalLM
-            # A special case for NextStep
-            if model_type == "nextstep":
-                cls = AutoModel
             try:
                 model_load_kwargs = {}
                 if model_subfolder is not None:
@@ -669,6 +666,46 @@ def diffusion_load_model(
     if device_str is not None and "hpu" in device_str:
         torch_dtype = torch.bfloat16
 
+    try:
+        from transformers import AutoConfig
+
+        config = AutoConfig.from_pretrained(pretrained_model_name_or_path, trust_remote_code=True)
+    except:
+        config = None
+
+    model_type = getattr(config, "model_type", "")
+    # A special case for NextStep
+    if model_type == "nextstep":
+        from models.gen_pipeline import NextStepPipeline  # pylint: disable=E0401
+        from transformers import AutoModel, AutoTokenizer
+
+        tokenizer = AutoTokenizer.from_pretrained(
+            pretrained_model_name_or_path, local_files_only=True, trust_remote_code=True
+        )
+        model = AutoModel.from_pretrained(pretrained_model_name_or_path, local_files_only=True, trust_remote_code=True)
+        # The model is loaded onto the device because more than one block requires input data.
+        pipe = NextStepPipeline(tokenizer=tokenizer, model=model).to(device=device_str, dtype=torch.bfloat16)
+
+        def _nextstep_pipeline_fn(pipe, prompts, guidance_scale=7.5, num_inference_steps=28, generator=None, **kwargs):
+            """Default pipeline_fn for NextStep models.
+
+            Maps standard :class:`DiffusionCompressor` parameters to NextStep's
+            ``generate_image`` API.  Pass a custom ``pipeline_fn`` to
+            :class:`DiffusionCompressor` to override defaults or supply
+            model-specific kwargs (e.g. ``hw``, ``positive_prompt``,
+            ``cfg_schedule``, ``timesteps_shift``).
+            """
+            for prompt in (prompts if isinstance(prompts, list) else [prompts]):
+                pipe.generate_image(
+                    prompt,
+                    cfg=guidance_scale,
+                    num_sampling_steps=num_inference_steps,
+                    **kwargs,
+                )
+
+        pipe._autoround_pipeline_fn = _nextstep_pipeline_fn
+        return pipe, pipe.model
+
     pipelines = LazyImport("diffusers.pipelines")
     if isinstance(pretrained_model_name_or_path, str):
         if torch_dtype == "auto":
@@ -732,6 +769,25 @@ def diffusion_load_model(
 
     # non-meta model uses model.save_pretrained for model and config saving
     setattr(model, "save_pretrained", partial(model_save_pretrained, model))
+
+    if pipe.dtype != model.dtype:
+        pipe.to(model.dtype)
+    if pipe.device != model.device:
+        pipe.to(model.device)
+
+    if (
+        hasattr(model, "hf_device_map")
+        and len(model.hf_device_map) > 0
+        and pipe.device != model.device
+        and torch.device(model.device).type in ["cuda", "xpu"]
+    ):
+        logger.error(
+            "Diffusion model is activated sequential model offloading, it will crash during moving to GPU/XPU. "
+            "Please use model path for quantization or "
+            "move the pipeline object to GPU/XPU before passing them into API."
+        )
+        exit(-1)
+
     return pipe, model.to(device)
 
 
@@ -797,6 +853,21 @@ def is_gguf_model(model_path: Union[str, torch.nn.Module]) -> bool:
 def is_diffusion_model(model_or_path: Union[str, object]) -> bool:
     from auto_round.utils.common import LazyImport
 
+    # First check if it's a known diffusion pipeline by config/model_type to avoid unnecessary imports and file checks for non-diffusion models, which can be time-consuming.
+    try:
+        from transformers import AutoConfig
+
+        config = AutoConfig.from_pretrained(model_or_path, trust_remote_code=True)
+        model_type = getattr(config, "model_type", "")
+        # A special case for NextStep
+        if model_type == "nextstep":
+            return True
+    except:
+        logger.warning(
+            f"Failed to load config for {model_or_path}, trying to check model_index.json for diffusion pipeline."
+        )
+
+    # Then check if model_index.json exists for diffusion pipeline, which is a strong signal of being a diffusion pipeline.
     if isinstance(model_or_path, str):
         index_file = None
         if not os.path.isdir(model_or_path):

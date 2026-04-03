@@ -56,6 +56,11 @@ class DiffusionCompressor(BaseCompressor):
                                 The more it is, the more closely it follows the prompt (default is 7.5).
         num_inference_steps (int): The reference number of denoising steps (default is 50).
         generator_seed (int): A sees that controls the initial noise from which an image is generated (default is None).
+        pipeline_fn (callable, optional): Custom callable to run the pipeline during calibration.
+            Signature: ``fn(pipe, prompts, *, guidance_scale, num_inference_steps, generator, **kwargs)``.
+            Use this to support models whose inference API differs from the standard convention
+            (e.g. NextStep). If ``None``, the standard ``pipe(prompts, ...)`` call is used unless
+            the loaded pipeline already exposes an ``_autoround_pipeline_fn`` attribute.
         scheme: (str| dict | QuantizationScheme ): A preset scheme that defines the quantization configurations.
         layer_config (dict): Configuration for weight quantization (default is None).
         dataset: The path or name of the calib dataset.
@@ -102,9 +107,15 @@ class DiffusionCompressor(BaseCompressor):
         device_map: Union[str, torch.device, int, dict] = 0,
         enable_torch_compile: bool = False,
         seed: int = 42,
+        pipeline_fn: callable = None,
         **kwargs,
     ):
         logger.warning("Diffusion model quantization is experimental and is only validated on Flux models.")
+        if dataset == "NeelNanda/pile-10k":
+            dataset = "coco2014"
+            logger.warning(
+                "Dataset 'NeelNanda/pile-10k' is not suitable for diffusion model quantization, use coco2014 dataset instead."
+            )
         model_dtype = kwargs.pop("model_dtype", None)
 
         self.guidance_scale = guidance_scale
@@ -120,6 +131,8 @@ class DiffusionCompressor(BaseCompressor):
 
         self.model = model
         self.pipe = pipe
+        # Use explicit pipeline_fn; fall back to whatever diffusion_load_model attached to the pipe
+        self.pipeline_fn = pipeline_fn or getattr(pipe, "_autoround_pipeline_fn", None)
 
         all_blocks = get_block_names(model)
         self.quant_block_list = find_matching_blocks(model, all_blocks, to_quant_block_names)
@@ -278,6 +291,64 @@ class DiffusionCompressor(BaseCompressor):
         current_input_ids = [input_ids["hidden_states"][i] for i in indices]
         return sum(id.numel() for id in current_input_ids)
 
+    def _run_pipeline(self, prompts: list) -> None:
+        """Execute one full diffusion pipeline forward pass for calibration input capture.
+
+        This drives all transformer blocks so that their intermediate inputs are recorded
+        by the hooks installed during calibration.
+
+        **Extending for custom models** – choose whichever approach is simpler:
+
+        * Pass a ``pipeline_fn`` to the constructor (no subclassing required).  The
+          callable receives ``(pipe, prompts, *, guidance_scale, num_inference_steps,
+          generator, **kwargs)`` and must trigger a full forward pass.
+        * Subclass :class:`DiffusionCompressor` and override this method directly for
+          full control over the inference logic.
+
+        Example – NextStep model::
+
+            def nextstep_fn(pipe, prompts, guidance_scale=7.5,
+                            num_inference_steps=28, generator=None,
+                            hw=(1024, 1024), **kwargs):
+                for prompt in (prompts if isinstance(prompts, list) else [prompts]):
+                    pipe.generate_image(
+                        prompt,
+                        cfg=guidance_scale,
+                        num_sampling_steps=num_inference_steps,
+                        hw=hw,
+                        **kwargs,
+                    )
+
+            compressor = DiffusionCompressor(
+                model="path/to/nextstep",
+                pipeline_fn=nextstep_fn,
+                pipeline_fn_kwargs={"hw": (512, 512)},
+            )
+
+        Args:
+            prompts (list[str]): Text prompts for the current calibration batch.
+        """
+        generator = (
+            None
+            if self.generator_seed is None
+            else torch.Generator(device=self.pipe.device).manual_seed(self.generator_seed)
+        )
+        if self.pipeline_fn is not None:
+            self.pipeline_fn(
+                self.pipe,
+                prompts,
+                guidance_scale=self.guidance_scale,
+                num_inference_steps=self.num_inference_steps,
+                generator=generator,
+            )
+        else:
+            self.pipe(
+                prompts,
+                guidance_scale=self.guidance_scale,
+                num_inference_steps=self.num_inference_steps,
+                generator=generator,
+            )
+
     def calib(self, nsamples, bs):
         """Perform calibration for quantization.
 
@@ -308,40 +379,13 @@ class DiffusionCompressor(BaseCompressor):
         total_cnt = 0
 
         total = nsamples if not hasattr(self.dataloader, "len") else min(nsamples, len(self.dataloader))
-        if self.pipe.dtype != self.model.dtype:
-            self.pipe.to(self.model.dtype)
 
-        if (
-            hasattr(self.model, "hf_device_map")
-            and len(self.model.hf_device_map) > 0
-            and self.pipe.device != self.model.device
-            and torch.device(self.model.device).type in ["cuda", "xpu"]
-        ):
-            logger.error(
-                "Diffusion model is activated sequential model offloading, it will crash during moving to GPU/XPU. "
-                "Please use model path for quantization or "
-                "move the pipeline object to GPU/XPU before passing them into API."
-            )
-            exit(-1)
-
-        if self.pipe.device != self.model.device:
-            self.pipe.to(self.model.device)
-        self.pipe.to(self.model.dtype)
         with tqdm(range(1, total + 1), desc="cache block inputs") as pbar:
             for ids, prompts in self.dataloader:
                 if isinstance(prompts, tuple):
                     prompts = list(prompts)
                 try:
-                    self.pipe(
-                        prompt=prompts,
-                        guidance_scale=self.guidance_scale,
-                        num_inference_steps=self.num_inference_steps,
-                        generator=(
-                            None
-                            if self.generator_seed is None
-                            else torch.Generator(device=self.pipe.device).manual_seed(self.generator_seed)
-                        ),
-                    )
+                    self._run_pipeline(prompts)
                 except NotImplementedError:
                     pass
                 except Exception as error:

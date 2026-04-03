@@ -494,7 +494,6 @@ MM_KEYS = [
     "patch_merger",
     "pre_mm_projector_norm",
     "vision",
-    "image",
 ]
 
 
