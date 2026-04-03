@@ -1513,7 +1513,6 @@ class BaseCompressor(object):
         self.quantized = True
         return self.model, self.layer_config
 
-
     def _quantize_via_rtn_blockwise(self, all_to_quantized_module_names: list[str]) -> None:
         """Quantize model layers block by block using cached inputs and imatrix.
 
@@ -1531,7 +1530,7 @@ class BaseCompressor(object):
         else:
             to_cache_block_names = flatten_list(all_blocks)
         layer_names = self._get_quantized_layer_names_outside_blocks()
-        if self.act_bits < 16 and (not self.act_dynamic or len(layer_names) > 0) or  self.has_variable_block_shape:
+        if self.act_bits < 16 and (not self.act_dynamic or len(layer_names) > 0) or self.has_variable_block_shape:
             if len(layer_names) > 0:
                 logger.warning(
                     "quantize layers outside blocks for static activation quantizaiton"
@@ -1567,6 +1566,7 @@ class BaseCompressor(object):
 
             input_ids = to_device(inputs.pop("input_ids"), self.cache_device)
             input_ids = [id_.to(tmp_dtype) for id_ in input_ids]
+
             def process_input_others(input_others):
 
                 input_others = to_device(input_others, self.cache_device)
@@ -1577,7 +1577,7 @@ class BaseCompressor(object):
                         input_others[key] = [to_dtype(v, tmp_dtype) for v in val]
                 return input_others
 
-            input_others=  inputs
+            input_others = inputs
             input_others = process_input_others(input_others)
             for block_name in block_names:
                 if block_name in all_inputs.keys():
