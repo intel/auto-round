@@ -281,33 +281,40 @@ class TestAutoScheme:
         """
         target_bits = 2.5
         common_kwargs = dict(
-            iters=0, disable_opt_rtn=True, nsamples=2, seqlen=16,
+            iters=0,
+            disable_opt_rtn=True,
+            nsamples=2,
+            seqlen=16,
         )
         model_name = get_model_path("facebook/opt-125m")
         scheme_baseline = AutoScheme(
-            avg_bits=target_bits, options="W2A16,W3A16",
-            ignore_scale_zp_bits=True, low_gpu_mem_usage=True, # default setting
+            avg_bits=target_bits,
+            options="W2A16,W3A16",
+            ignore_scale_zp_bits=True,
+            low_gpu_mem_usage=True,  # default setting
         )
         ar_baseline = AutoRound(
-            model=model_name, scheme=scheme_baseline, **common_kwargs,
+            model=model_name,
+            scheme=scheme_baseline,
+            **common_kwargs,
         )
         model_baseline, _ = ar_baseline.quantize()
-        acc_baseline = evaluate_accuracy(
-            model_baseline, ar_baseline.tokenizer, task="piqa", limit=200
-        )
+        acc_baseline = evaluate_accuracy(model_baseline, ar_baseline.tokenizer, task="piqa", limit=200)
 
         # Run with low_gpu_mem_usage=False
         scheme_test = AutoScheme(
-            avg_bits=target_bits, options="W2A16,W3A16",
-            ignore_scale_zp_bits=True, low_gpu_mem_usage=False,
+            avg_bits=target_bits,
+            options="W2A16,W3A16",
+            ignore_scale_zp_bits=True,
+            low_gpu_mem_usage=False,
         )
         ar_test = AutoRound(
-            model=model_name, scheme=scheme_test, **common_kwargs,
+            model=model_name,
+            scheme=scheme_test,
+            **common_kwargs,
         )
         model_test, _ = ar_test.quantize()
-        acc_test = evaluate_accuracy(
-            model_test, ar_test.tokenizer, task="piqa", limit=200
-        )
+        acc_test = evaluate_accuracy(model_test, ar_test.tokenizer, task="piqa", limit=200)
 
         # Accuracy gap should be small
         gap = abs(acc_baseline - acc_test)
