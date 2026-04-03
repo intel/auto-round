@@ -200,6 +200,9 @@ class OptimizedRTNQuantizer(RTNQuantizer):
 
         self.enable_alg_ext = True
 
+    def quantize_layer_outside_block(self, *args, **kwargs):
+        return self.quantize_layer(*args, **kwargs)
+
     def quantize_block(self, block: torch.nn.Module, **kwargs):
         """Apply imatrix-informed RTN quantization to a block.
 
@@ -220,6 +223,6 @@ class OptimizedRTNQuantizer(RTNQuantizer):
             if hasattr(m, "imatrix"):
                 m.imatrix /= m.imatrix_cnt
             if hasattr(m, "global_name") and check_to_quantized(m):
-                self.quantize_layer(m.global_name)
+                self.quantize_layer_outside_block(m.global_name)
 
     # _get_block_outputs and _sampling_inputs are defined in BaseQuantizers and inherited.

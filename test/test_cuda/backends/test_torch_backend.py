@@ -135,7 +135,7 @@ class TestAutoRoundTorchBackend:
         quantized_model_path = self.save_dir
 
         _, quantized_model_path = autoround.save_quantized(
-            output_dir=quantized_model_path, inplace=False, format="auto_round"
+            output_dir=quantized_model_path, inplace=False, format="auto_round", return_folders=True
         )
 
         device = "auto"  ##cpu, hpu, cuda

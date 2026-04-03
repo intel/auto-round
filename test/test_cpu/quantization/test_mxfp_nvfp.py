@@ -314,7 +314,7 @@ class TestAutoRoundFP:
         quantized_model_path = self.save_dir
         autoround.quantize()
         compressed_model, quantized_model_path = autoround.save_quantized(
-            output_dir=quantized_model_path, format="auto_round"
+            output_dir=quantized_model_path, format="auto_round", return_folders=True
         )
         tmp_layer = compressed_model.model.decoder.layers[1].self_attn.q_proj
         assert (

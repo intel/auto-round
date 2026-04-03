@@ -428,7 +428,7 @@ class TestAutoRound:
         quantized_model_path = self.save_folder
 
         _, quantized_model_path = autoround.save_quantized(
-            output_dir=quantized_model_path, format="auto_round", inplace=True
+            output_dir=quantized_model_path, format="auto_round", inplace=True, return_folders=True
         )
 
         model = AutoModelForCausalLM.from_pretrained(quantized_model_path, device_map="cpu")
@@ -461,7 +461,7 @@ class TestAutoRound:
         quantized_model_path = self.save_folder
 
         _, quantized_model_path = autoround.save_quantized(
-            output_dir=quantized_model_path, format="auto_awq", inplace=True
+            output_dir=quantized_model_path, format="auto_awq", inplace=True, return_folders=True
         )
         quantization_config = AutoRoundConfig()
 
@@ -498,7 +498,7 @@ class TestAutoRound:
         quantized_model_path = self.save_folder
 
         _, quantized_model_path = autoround.save_quantized(
-            output_dir=quantized_model_path, format="auto_gptq", inplace=True
+            output_dir=quantized_model_path, format="auto_round", inplace=True, return_folders=True
         )
         quantization_config = AutoRoundConfig()
 
@@ -535,7 +535,7 @@ class TestAutoRound:
         quantized_model_path = self.save_folder
 
         _, quantized_model_path = autoround.save_quantized(
-            output_dir=quantized_model_path, format="auto_round", inplace=True
+            output_dir=quantized_model_path, format="auto_round", inplace=True, return_folders=True
         )
         quantization_config = AutoRoundConfig()
 

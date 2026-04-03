@@ -1386,7 +1386,21 @@ class CalibratedRTNCompressor(CalibCompressor):
         # Release memory
         clear_memory(device_list=self.compress_context.device_list)
 
-        self._quant_rtn_with_imatrix()
+        enable_imatrix = False
+        if not getattr(self, "disable_opt_rtn", True):
+            formats = getattr(self, "formats", None) or []
+            has_gguf_k = (
+                any(fmt.is_gguf() and "k" in fmt.output_format for fmt in formats) or self.super_bits is not None
+            )
+            if has_gguf_k:
+                enable_imatrix = True
+            elif self.data_type == "int" and self.sym:
+                enable_imatrix = True
+
+        if enable_imatrix:
+            self._quant_rtn_with_imatrix()
+        else:
+            self._quantize_via_rtn_blockwise()
 
         convert_module_to_hp_if_necessary(
             self.model_context.model,
