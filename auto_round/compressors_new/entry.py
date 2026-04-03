@@ -196,9 +196,10 @@ class AutoRound(object):
                     _resolved = _preview_resolved_attrs(quant_config, scheme)
                     _sym = _resolved.get("sym", getattr(quant_config, "sym", None))
                     _data_type = _resolved.get("data_type", getattr(quant_config, "data_type", "") or "")
+                    _bits = _resolved.get("bits", getattr(quant_config, "bits", None))
                     if _sym is not None and _sym is False:
                         enable_imatrix = False
-                    elif _data_type == "int":
+                    elif _data_type == "int" and (_bits is None or _bits < 8):
                         enable_imatrix = True
                     elif is_weight_scheme(scheme):
                         enable_imatrix = True

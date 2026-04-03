@@ -1212,7 +1212,7 @@ class CalibratedRTNCompressor(CalibCompressor):
 
                 # ── Infrastructure: register act_max hook and run forward pass ──
                 hook_handles = self.quantizer._register_act_max_hook(block)
-                self.quantizer._get_block_outputs(
+                input_ids = self.quantizer._get_block_outputs(
                     block,
                     input_ids,
                     input_others,
@@ -1394,7 +1394,7 @@ class CalibratedRTNCompressor(CalibCompressor):
             )
             if has_gguf_k:
                 enable_imatrix = True
-            elif self.data_type == "int" and self.sym:
+            elif self.data_type == "int" and self.sym and self.bits < 8:
                 enable_imatrix = True
 
         if enable_imatrix:
