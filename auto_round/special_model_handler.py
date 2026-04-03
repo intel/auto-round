@@ -48,6 +48,7 @@ SUPPORT_ONLY_TEXT_MODELS = [
     "qwen2_5_omni",
     "qwen3_omni_moe",
     "gemma3",
+    "gemma4",
 ]
 
 NOT_SUPPORT_ONLY_TEXT_MODELS = ["mllama", "mistral3_2"]
@@ -57,6 +58,112 @@ SPECIAL_SHARED_CACHE_KEYS = {
 }
 SPECIAL_SHARED_CACHE_KEYS["MiniMaxText01ForCausalLM"] = ("slope_rate",)
 MISTRAL_3_2_MODELS = ["Mistral-Small-3.2", "Magistral-Small", "Devstral-Small"]
+
+
+def _patch_gemma4_model(model):
+    """Patch each Gemma4 decoder layer so it recomputes position_embeddings and
+    attention_mask from the cached position_ids when the cached versions have
+    wrong dimensions (sliding_attention vs full_attention head_dims differ).
+
+    During auto-round block-wise quantization the cached inputs from block 0
+    (always a sliding_attention layer) are reused for every subsequent block.
+    Full-attention layers (head_dim=512) would receive position embeddings
+    computed for sliding layers (head_dim=256), causing a shape mismatch crash.
+    """
+    import types as _types
+
+    try:
+        from transformers.masking_utils import create_causal_mask, create_sliding_window_causal_mask
+        from transformers.models.gemma4.modeling_gemma4 import Gemma4TextModel
+    except ImportError:
+        return model
+
+    # Find the Gemma4TextModel by traversing the hierarchy
+    text_model = None
+    for _, submodule in model.named_modules():
+        if isinstance(submodule, Gemma4TextModel):
+            text_model = submodule
+            break
+
+    if text_model is None:
+        return model
+
+    rotary_emb = text_model.rotary_emb
+
+    for layer in text_model.layers:
+        original_forward = layer.forward
+        layer_type = getattr(getattr(layer, "self_attn", None), "layer_type", None)
+        if layer_type is None:
+            continue
+        head_dim = getattr(getattr(layer, "self_attn", None), "head_dim", None)
+        is_full = layer_type == "full_attention"
+
+        def _make_layer_forward(orig_fwd, lt, hd, is_full_attn, re, cfg):
+
+            def patched_layer_forward(
+                self,
+                hidden_states,
+                per_layer_input=None,
+                position_embeddings=None,
+                attention_mask=None,
+                position_ids=None,
+                **kwargs,
+            ):
+                # Recompute position_embeddings when cached dim doesn't match
+                if (
+                    hd is not None
+                    and position_embeddings is not None
+                    and isinstance(position_embeddings, (tuple, list))
+                    and len(position_embeddings) == 2
+                ):
+                    cos, _ = position_embeddings
+                    if cos.shape[-1] != hd and position_ids is not None:
+                        position_embeddings = re(hidden_states, position_ids, lt)
+
+                # per_layer_input is token-specific but is cached as shared positional
+                # input (only 1st batch stored). Truncate/pad to match hidden_states seq_len.
+                if per_layer_input is not None and per_layer_input.shape[1] != hidden_states.shape[1]:
+                    hs_seq = hidden_states.shape[1]
+                    pl_seq = per_layer_input.shape[1]
+                    if hs_seq <= pl_seq:
+                        per_layer_input = per_layer_input[:, :hs_seq, :]
+                    else:
+                        pad = per_layer_input[:, -1:, :].expand(-1, hs_seq - pl_seq, -1)
+                        per_layer_input = torch.cat([per_layer_input, pad], dim=1)
+
+                # Recompute attention_mask for full-attention layers when a
+                # sliding-window mask was cached (it would be too restrictive)
+                if is_full_attn and attention_mask is not None and position_ids is not None:
+                    # Only rebuild if the mask was created for a shorter context
+                    # (sliding window masks have finite bandwidth)
+                    try:
+                        attention_mask = create_causal_mask(
+                            config=cfg,
+                            inputs_embeds=hidden_states,
+                            attention_mask=None,
+                            past_key_values=kwargs.get("past_key_values"),
+                            position_ids=position_ids,
+                        )
+                    except Exception:
+                        pass  # fall back to whatever was cached
+
+                return orig_fwd(
+                    hidden_states,
+                    per_layer_input,
+                    position_embeddings=position_embeddings,
+                    attention_mask=attention_mask,
+                    position_ids=position_ids,
+                    **kwargs,
+                )
+
+            return patched_layer_forward
+
+        layer.forward = _types.MethodType(
+            _make_layer_forward(original_forward, layer_type, head_dim, is_full, rotary_emb, text_model.config),
+            layer,
+        )
+
+    return model
 
 
 def _handle_special_model(model):
@@ -72,6 +179,8 @@ def _handle_special_model(model):
         from functools import partial
 
         model.forward = partial(_qwen3_omni_moe_forward, model)
+    if hasattr(model, "config") and model.config.model_type == "gemma4":
+        _patch_gemma4_model(model)
     return model
 
 
@@ -550,7 +659,6 @@ register_ignore_layers(
     ],
 )
 
-
 # glm5
 register_ignore_layers(
     matchers=[
@@ -558,7 +666,6 @@ register_ignore_layers(
     ],
     ignore_layers=[get_glm_flash_ignore_layers, "weights_proj"],  # vllm issue
 )
-
 
 # step3p5
 register_ignore_layers(
