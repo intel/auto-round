@@ -717,44 +717,86 @@ def is_transformers_version_greater_or_equal_4():
     return version.parse(transformers.__version__) >= version.parse("4.0.0")
 
 
+
+import json
+import re
+
+
 def parse_layer_config_arg(s: str) -> dict:
-    """Parse --layer_config with unquoted keys/values.
+    s = s.strip()
 
-    Delimiters are ``{``, ``}``, ``,``, ``:``.  Each non-delimiter token is
-    auto-typed: numeric strings become ``int``, everything else stays ``str``.
+    # ✅ 去掉外层包裹引号（关键修复）
+    if (s.startswith("'") and s.endswith("'")) or \
+       (s.startswith('"') and s.endswith('"')):
+        s = s[1:-1].strip()
 
-    Example::
+    # ===== 1. 优先 JSON =====
+    try:
+        s_json = s.replace("“", '"').replace("”", '"')
+        return json.loads(s_json)
+    except Exception:
+        pass
 
-        {mtp:{bits:8},mtp.fc:{bits:16,data_type:fp}}
-    """
+    # ===== 2. fallback parser =====
     tokens = re.findall(r"[{}:,]|[^\s{}:,]+", s)
-    pos = [0]
+    pos = 0
 
-    def _val():
-        tok = tokens[pos[0]]
+    def peek():
+        return tokens[pos] if pos < len(tokens) else None
+
+    def consume(expected=None):
+        nonlocal pos
+        tok = peek()
+        if tok is None:
+            raise ValueError("Unexpected end of input")
+        if expected and tok != expected:
+            raise ValueError(f"Expected '{expected}', got '{tok}'")
+        pos += 1
+        return tok
+
+    def parse_value():
+        tok = peek()
         if tok == "{":
-            return _dict()
-        pos[0] += 1
-        try:
-            return int(tok)
-        except ValueError:
-            return tok
+            return parse_dict()
 
-    def _dict():
-        pos[0] += 1  # consume '{'
+        consume()
+
+        # 类型推断
+        if tok.isdigit():
+            return int(tok)
+        try:
+            return float(tok)
+        except ValueError:
+            pass
+
+        if tok.lower() == "true":
+            return True
+        if tok.lower() == "false":
+            return False
+
+        return tok
+
+    def parse_dict():
+        consume("{")
         result = {}
-        while tokens[pos[0]] != "}":
-            key = tokens[pos[0]]
-            pos[0] += 1  # key
-            pos[0] += 1  # consume ':'
-            result[key] = _val()
-            if tokens[pos[0]] == ",":
-                pos[0] += 1  # consume ','
-        pos[0] += 1  # consume '}'
+
+        while True:
+            tok = peek()
+            if tok == "}":
+                consume("}")
+                break
+
+            key = consume()
+            consume(":")
+            value = parse_value()
+            result[key] = value
+
+            if peek() == ",":
+                consume(",")
+
         return result
 
-    return _dict()
-
+    return parse_dict()
 
 def compress_layer_names(names: list) -> str:
     """Compress numbered layer names, e.g. layer.0, layer.1, layer.2 → layer.[0-2]."""
