@@ -653,10 +653,10 @@ class WrapperMultiblock(torch.nn.Module):
         super(WrapperMultiblock, self).__init__()
         self.layers = torch.nn.ModuleList(module_list)
 
-    def forward(self, x, **kwargs):
+    def forward(self, x, *args, **kwargs):
         hidden_states = x
         for idx, decoder_layer in enumerate(self.layers):
-            layer_outputs = decoder_layer(hidden_states, **kwargs)
+            layer_outputs = decoder_layer(hidden_states,*args, **kwargs)
             hidden_states = layer_outputs
             if isinstance(hidden_states, tuple) or isinstance(hidden_states, list):
                 hidden_states = layer_outputs[0]

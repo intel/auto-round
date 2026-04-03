@@ -596,3 +596,15 @@ def get_predefined_ignore_layers(model: torch.nn.Module) -> list[str]:
                 layers.append(name)
 
     return list(dict.fromkeys(layers))
+
+
+_PRE_DEFINED_SPECIAL_ATTR={}
+
+_PRE_DEFINED_FIXED_ATTR={"gemma4":{"has_variable_block_shape":True}}
+
+def get_predefined_fixed_attr(model:torch.nn.Module)->dict|None:
+    config = getattr(model, "config", None)
+    if config is not None and hasattr(config, "model_type"):
+        key = config.model_type
+        return _PRE_DEFINED_FIXED_ATTR.get(key,None)
+    return None
