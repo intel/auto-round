@@ -598,8 +598,6 @@ def get_predefined_ignore_layers(model: torch.nn.Module) -> list[str]:
     return list(dict.fromkeys(layers))
 
 
-_PRE_DEFINED_SPECIAL_ATTR = {}
-
 _PRE_DEFINED_FIXED_ATTR = {"gemma4": {"has_variable_block_shape": True}}
 
 
