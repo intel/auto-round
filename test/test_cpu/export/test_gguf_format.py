@@ -140,9 +140,9 @@ class TestGGUF:
         shutil.rmtree("../../tmp_autoround", ignore_errors=True)
 
     def test_vlm_gguf(self, tiny_qwen_vl_model_path):
-        from auto_round import AutoRoundMLLM
+        from auto_round import AutoRound
 
-        autoround = AutoRoundMLLM(
+        autoround = AutoRound(
             tiny_qwen_vl_model_path,
             iters=0,
             nsamples=8,
@@ -160,9 +160,9 @@ class TestGGUF:
                 assert file_size < 270, f"file size {file_size} MB is too large for non-quantized mmproj-model.gguf"
 
     def test_vlm_gguf_wo_quant_nontext_module(self, tiny_qwen_vl_model_path):
-        from auto_round import AutoRoundMLLM
+        from auto_round import AutoRound
 
-        autoround = AutoRoundMLLM(
+        autoround = AutoRound(
             tiny_qwen_vl_model_path,
             iters=0,
             nsamples=8,

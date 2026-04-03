@@ -198,24 +198,24 @@ class TestAutoRound:
 
     @multi_card
     def test_mllm_device_map(self, tiny_qwen_2_5_vl_model_path):
-        from auto_round import AutoRoundMLLM
+        from auto_round import AutoRound
 
         device_map = "0,1"
-        ar = AutoRoundMLLM(tiny_qwen_2_5_vl_model_path, device_map=device_map)
+        ar = AutoRound(tiny_qwen_2_5_vl_model_path, device_map=device_map)
         assert ar.device == "cuda:0"
         assert ar.device_map == device_map
 
         device_map = 1
-        ar = AutoRoundMLLM(ar.model, ar.tokenizer, processor=ar.processor, device_map=device_map)
+        ar = AutoRound(ar.model, ar.tokenizer, processor=ar.processor, device_map=device_map)
         assert ar.device == "cuda:1"
         assert ar.device_map == device_map
 
         device_map = "auto"
-        ar = AutoRoundMLLM(ar.model, ar.tokenizer, processor=ar.processor, device_map=device_map)
+        ar = AutoRound(ar.model, ar.tokenizer, processor=ar.processor, device_map=device_map)
         assert ar.device == "cuda"
         assert ar.device_map == device_map
 
         device_map = {"model.language_model.layers": 0, "model.visual.blocks": 1}
-        ar = AutoRoundMLLM(ar.model, ar.tokenizer, processor=ar.processor, device_map=device_map)
+        ar = AutoRound(ar.model, ar.tokenizer, processor=ar.processor, device_map=device_map)
         assert ar.model.model.language_model.layers[0].self_attn.q_proj.tuning_device == "cuda:0"
         assert ar.model.model.visual.blocks[0].mlp.gate_proj.tuning_device == "cuda:1"

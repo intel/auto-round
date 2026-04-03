@@ -11,6 +11,7 @@ from ...helpers import get_model_path, get_tiny_model, opt_name_or_path, qwen_na
 
 
 class TestAutoRound:
+
     @pytest.fixture(autouse=True)
     def setup_save_folder(self, tmp_path):
         self.save_folder = str(tmp_path / "saved")
@@ -103,9 +104,9 @@ class TestAutoRound:
         assert model is not None, "Model loading failed after quantization with MXFP4 scheme"
 
     def test_vlm(self, tiny_qwen_vl_model_path):
-        from auto_round import AutoRoundMLLM
+        from auto_round import AutoRound
 
-        ar = AutoRoundMLLM(tiny_qwen_vl_model_path, scheme="W2A16", nsamples=1, iters=1, seqlen=2)
+        ar = AutoRound(tiny_qwen_vl_model_path, scheme="W2A16", nsamples=1, iters=1, seqlen=2)
         assert ar.bits == 2
         assert ar.act_bits == 16
 

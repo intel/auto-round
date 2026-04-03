@@ -673,12 +673,6 @@ class TestAutoRound:
         assert ar.optimizer == torch.optim.AdamW
         assert ar.mllm
 
-        # test old api
-        from auto_round import AutoRoundMLLM
-
-        ar = AutoRoundMLLM(model_name)
-        assert ar.mllm
-
     def test_attention_mask_in_dataset(self):
         from transformers import AutoTokenizer
 
