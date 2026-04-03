@@ -2550,7 +2550,7 @@ class BaseCompressor(object):
                     or isinstance(kwargs[key], list)
                     or isinstance(kwargs[key], tuple)
                 ):
-                    if name not in self.blocks_requiring_input_ids and key == "hidden_states":
+                    if name not in (self.blocks_requiring_input_ids or ()) and key == "hidden_states":
                         continue
                     if key not in self.inputs[name].keys():  # initialization
                         data = to_device(kwargs[key], device=torch.device("cpu"))
