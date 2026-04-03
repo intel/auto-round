@@ -383,10 +383,21 @@ def convert_module_to_hp_if_necessary(
     from auto_round.utils.device import clear_memory
     from auto_round.utils.model import set_module
 
+    def _sync_serialization_attrs(src_module: torch.nn.Module, dst_module: torch.nn.Module) -> None:
+        """Copy serialization-related attributes from source to destination module."""
+        from auto_round.compressors.base import SERIALIZATION_KEYS
+
+        orig_module_keys = list(SERIALIZATION_KEYS) + ["global_name"]
+        for key in orig_module_keys:
+            if hasattr(src_module, key):
+                setattr(dst_module, key, getattr(src_module, key))
+
     # Check if it's a single quantized layer (has the attribute directly)
     if hasattr(model_or_layer, "quantized_weight_type") and model_or_layer.quantized_weight_type is not None:
         handler = get_handler(model_or_layer.quantized_weight_type)
-        return handler.convert_layer(model_or_layer, dtype, device, to_cpu)
+        new_module = handler.convert_layer(model_or_layer, dtype, device, to_cpu)
+        _sync_serialization_attrs(model_or_layer, new_module)
+        return new_module
 
     # Otherwise, traverse model and convert all quantized layers
     # Get handler for each layer to support mixed quantization types
@@ -395,6 +406,7 @@ def convert_module_to_hp_if_necessary(
         if hasattr(m, "quantized_weight_type") and m.quantized_weight_type is not None:
             handler = get_handler(m.quantized_weight_type)
             new_module = handler.convert_layer(m, dtype, device, to_cpu)
+            _sync_serialization_attrs(m, new_module)
             new_module.quantized_weight_type = None  # Clear quantized type after conversion
             set_module(model_or_layer, n, new_module)
             cnt += 1
