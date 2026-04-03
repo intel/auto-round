@@ -2411,7 +2411,7 @@ class BaseCompressor(object):
         self.to_cached_layers = block_names + layer_names
 
         tmp_dtype = None  # TODO delete this as most model is not fp32 now
-        # Have bug if block name is not the first block
+        # There is a bug if the block name is not the first block
         if (len(block_names) > 1 or len(layer_names) > 0) and self.low_gpu_mem_usage:
             tmp_dtype = self.model.dtype
             if self.amp:
