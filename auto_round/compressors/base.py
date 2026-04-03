@@ -1832,7 +1832,7 @@ class BaseCompressor(object):
             all_inputs = copy.deepcopy(self.inputs)
             clear_memory(self.inputs, device_list=self.device_list)
             all_q_inputs = self.try_cache_inter_data_gpucpu(
-                all_first_block_names, self.nsamples, layer_names=layer_names
+                to_cache_block_names, self.nsamples, layer_names=layer_names
             )
         # Remove accelerate dispatch hooks before moving parameters.
         # hf_device_map is kept for reference but hooks are no longer needed.
