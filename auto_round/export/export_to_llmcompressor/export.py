@@ -100,9 +100,10 @@ def _get_quant_format(model):
 def _compress_and_set_format(layer, scheme, device=None):
     """Compress a layer and set its quantization format, with backward compatibility.
 
-    Supports both old (<0.9.0) and new (>=0.9.0) compressed_tensors APIs:
+    Supports both old and new compressed_tensors APIs:
     - New API: compress_module() handles compression, state dict replacement, status, and format.
     - Old API: NaiveQuantizationCompressor instance + manual param management + set_per_module_format.
+    The new API was introduced after compressed_tensors v0.14.1, may be available in v0.15+.
     """
     try:
         from compressed_tensors.compressors import compress_module  # pylint: disable=E0401
