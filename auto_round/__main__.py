@@ -693,8 +693,8 @@ def tune(args):
             raise ValueError("please set --options for auto scheme")
         if enable_torch_compile:
             logger.warning(
-                "`enable_torch_compile=True` with AutoScheme may cause compile errors on some models during quantization. "
-                "If you encounter errors, try removing `--enable_torch_compile`."
+                "`enable_torch_compile=True` with AutoScheme may cause compile errors "
+                "on some models. If so, try removing `--enable_torch_compile`."
             )
         scheme = AutoScheme(
             options=args.options,
