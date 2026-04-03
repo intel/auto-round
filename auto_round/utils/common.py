@@ -717,17 +717,14 @@ def is_transformers_version_greater_or_equal_4():
     return version.parse(transformers.__version__) >= version.parse("4.0.0")
 
 
-
 import json
-import re
 
 
 def parse_layer_config_arg(s: str) -> dict:
     s = s.strip()
 
     # ✅ 去掉外层包裹引号（关键修复）
-    if (s.startswith("'") and s.endswith("'")) or \
-       (s.startswith('"') and s.endswith('"')):
+    if (s.startswith("'") and s.endswith("'")) or (s.startswith('"') and s.endswith('"')):
         s = s[1:-1].strip()
 
     # ===== 1. 优先 JSON =====
@@ -797,6 +794,7 @@ def parse_layer_config_arg(s: str) -> dict:
         return result
 
     return parse_dict()
+
 
 def compress_layer_names(names: list) -> str:
     """Compress numbered layer names, e.g. layer.0, layer.1, layer.2 → layer.[0-2]."""
