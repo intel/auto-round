@@ -153,8 +153,7 @@ class TestAutoRoundFP:
             quantized_model_path, trust_remote_code=True
         ).quantization_config
         assert (
-            quantization_config["format"] == "float-quantized"
-            and quantization_config["config_groups"]["group_0"]["weights"]["is_mx"] is True
+            quantization_config["format"] == "mxfp4-pack-quantized"
             and quantization_config["config_groups"]["group_0"]["weights"]["num_bits"] == 4
         ), f"Invalid MXFP4 quantization configuration: {quantization_config}"
 
@@ -192,8 +191,7 @@ class TestAutoRoundFP:
             quantized_model_path, trust_remote_code=True
         ).quantization_config
         assert (
-            quantization_config["format"] == "float-quantized"
-            and quantization_config["config_groups"]["group_0"]["weights"]["is_mx"] is True
+            quantization_config["format"] == "mxfp4-pack-quantized"
             and quantization_config["config_groups"]["group_0"]["weights"]["num_bits"] == 4
         ), f"Invalid MXFP4 quantization configuration: {quantization_config}"
 
@@ -225,8 +223,7 @@ class TestAutoRoundFP:
             quantized_model_path, trust_remote_code=True
         ).quantization_config
         assert (
-            quantization_config["format"] == "float-quantized"
-            and quantization_config["config_groups"]["group_0"]["weights"]["is_mx"] is True
+            quantization_config["format"] == "mxfp8-quantized"
             and quantization_config["config_groups"]["group_0"]["weights"]["num_bits"] == 8
         ), f"Invalid MXFP8 quantization configuration: {quantization_config}"
         folder_size_gb = _get_folder_size(quantized_model_path)
