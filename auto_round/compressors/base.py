@@ -69,7 +69,7 @@ from auto_round.schemes import (
     preset_name_to_scheme,
 )
 from auto_round.sign_sgd import SignSGD
-from auto_round.special_model_handler import get_predefined_ignore_layers, update_module, get_predefined_fixed_attr
+from auto_round.special_model_handler import get_predefined_fixed_attr, get_predefined_ignore_layers, update_module
 from auto_round.utils import (
     INNER_SUPPORTED_LAYER_TYPES,
     SUPPORTED_DTYPES,
@@ -571,8 +571,8 @@ class BaseCompressor(object):
             self.hadamard_config = normalize_hadamard_config(hadamard_config)
         self.blocks_requiring_input_ids = None
         fixed_attr = get_predefined_fixed_attr(self.model)
-        for key,value in fixed_attr.items():
-            setattr(self,key,value)
+        for key, value in fixed_attr.items():
+            setattr(self, key, value)
 
     def _gen_auto_scheme(self) -> dict[str, dict]:
         if self.mllm:
@@ -1879,7 +1879,7 @@ class BaseCompressor(object):
                 nblocks=self.nblocks,
                 device=self.device,
                 pbar=pbar,
-                input_others_extra_blocks=all_inputs
+                input_others_extra_blocks=all_inputs,
             )
             if self.is_immediate_packing and len(self.formats) != 1:
                 raise ValueError(
@@ -3236,7 +3236,7 @@ class BaseCompressor(object):
             return None, output
 
     def _split_inputs(self, inputs: dict, first_input_name: str) -> tuple[torch.Tensor, dict]:
-        input_ids = inputs.get(first_input_name,None)
+        input_ids = inputs.get(first_input_name, None)
         inputs.pop(first_input_name, None)
         input_others = inputs
         return input_ids, input_others
@@ -3270,7 +3270,7 @@ class BaseCompressor(object):
         nblocks: int = 1,
         device: str = "cpu",
         pbar: tqdm = None,
-        input_others_extra_blocks: dict = None
+        input_others_extra_blocks: dict = None,
     ):
         """Quantize and dequantize the weights of the specified blocks in the model.
 
