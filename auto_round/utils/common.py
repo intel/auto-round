@@ -721,20 +721,81 @@ import json
 
 
 def parse_layer_config_arg(s: str) -> dict:
-    s = s.strip()
+    def strip_matching_quotes(token: str) -> str:
+        token = token.strip().replace("“", '"').replace("”", '"')
+        if len(token) >= 2 and token[0] == token[-1] and token[0] in ("'", '"'):
+            return token[1:-1]
+        return token
 
-    # ✅ 去掉外层包裹引号（关键修复）
-    if (s.startswith("'") and s.endswith("'")) or (s.startswith('"') and s.endswith('"')):
-        s = s[1:-1].strip()
+    def normalize_scalar(value):
+        if not isinstance(value, str):
+            return value
 
-    # ===== 1. 优先 JSON =====
+        value = strip_matching_quotes(value)
+        if value.lstrip("-").isdigit():
+            return int(value)
+        try:
+            return float(value)
+        except ValueError:
+            pass
+
+        lower_value = value.lower()
+        if lower_value == "true":
+            return True
+        if lower_value == "false":
+            return False
+        if lower_value in ("null", "none"):
+            return None
+        return value
+
+    def normalize_tree(value):
+        if isinstance(value, dict):
+            return {normalize_scalar(k): normalize_tree(v) for k, v in value.items()}
+        if isinstance(value, list):
+            return [normalize_tree(item) for item in value]
+        return normalize_scalar(value)
+
+    def escape_invalid_json_backslashes(text: str) -> str:
+        escaped = []
+        in_string = False
+        index = 0
+
+        while index < len(text):
+            ch = text[index]
+            if not in_string:
+                if ch == '"':
+                    in_string = True
+                escaped.append(ch)
+                index += 1
+                continue
+
+            if ch == "\\":
+                next_ch = text[index + 1] if index + 1 < len(text) else ""
+                if next_ch not in {'"', "\\", "/", "b", "f", "n", "r", "t", "u"}:
+                    escaped.append("\\\\")
+                    index += 1
+                    continue
+
+            if ch == '"':
+                in_string = False
+            escaped.append(ch)
+            index += 1
+
+    s = strip_matching_quotes(s)
+
+    # 1. Prefer strict JSON.
     try:
-        s_json = s.replace("“", '"').replace("”", '"')
-        return json.loads(s_json)
+        return normalize_tree(json.loads(s))
     except Exception:
         pass
 
-    # ===== 2. fallback parser =====
+    # 2. Repair shell-friendly regex strings like "\d" into valid JSON escapes.
+    try:
+        return normalize_tree(json.loads(escape_invalid_json_backslashes(s)))
+    except Exception:
+        pass
+
+    # 3. Fallback parser for CLI-friendly dict syntax.
     tokens = re.findall(r"[{}:,]|[^\s{}:,]+", s)
     pos = 0
 
@@ -757,21 +818,7 @@ def parse_layer_config_arg(s: str) -> dict:
             return parse_dict()
 
         consume()
-
-        # 类型推断
-        if tok.isdigit():
-            return int(tok)
-        try:
-            return float(tok)
-        except ValueError:
-            pass
-
-        if tok.lower() == "true":
-            return True
-        if tok.lower() == "false":
-            return False
-
-        return tok
+        return normalize_scalar(tok)
 
     def parse_dict():
         consume("{")
@@ -783,7 +830,7 @@ def parse_layer_config_arg(s: str) -> dict:
                 consume("}")
                 break
 
-            key = consume()
+            key = normalize_scalar(consume())
             consume(":")
             value = parse_value()
             result[key] = value
@@ -793,7 +840,10 @@ def parse_layer_config_arg(s: str) -> dict:
 
         return result
 
-    return parse_dict()
+    result = parse_dict()
+    if not isinstance(result, dict):
+        raise ValueError("--layer_config must parse to a dictionary")
+    return result
 
 
 def compress_layer_names(names: list) -> str:
