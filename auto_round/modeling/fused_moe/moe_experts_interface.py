@@ -31,7 +31,6 @@ Usage:
     # Now the model uses linear_loop forward which supports quantized nn.Linear layers
 """
 
-
 import torch
 from torch import nn
 
@@ -645,7 +644,7 @@ def prepare_model_for_moe_quantization(model: nn.Module, implementation: str = L
         # Set config for linear_loop forward
         if hasattr(model, "config"):
             saved_impl = getattr(model.config, "experts_implementation", None)
-            impl_to_set = saved_impl if saved_impl else implementation
+            impl_to_set = saved_impl or implementation
             model.config._experts_implementation = impl_to_set
             logger.debug(f"Set model.config._experts_implementation = '{impl_to_set}'")
 
