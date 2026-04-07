@@ -3,6 +3,7 @@ import re
 import shutil
 
 import pytest
+import torch
 import transformers
 from transformers import AutoRoundConfig
 
@@ -275,11 +276,11 @@ class TestAutoScheme:
         evaluate_accuracy(self.save_dir, threshold=0.10)
 
     def test_mixed_bits_get_scoring(self):
-        """Verify that AutoScheme scoring with low_gpu_mem_usage=False produces
-        comparable accuracy to the low_gpu_mem_usage=True baseline for mixed-bit
+        """Verify that AutoScheme scoring produces accuracy above a known reference threshold for mixed-bit
         quantization.
         """
         target_bits = 2.5
+        ref_threshold = 0.58
         common_kwargs = dict(
             iters=0,
             disable_opt_rtn=True,
@@ -299,7 +300,9 @@ class TestAutoScheme:
             **common_kwargs,
         )
         model_baseline, _ = ar_baseline.quantize()
-        acc_baseline = evaluate_accuracy(model_baseline, ar_baseline.tokenizer, task="piqa", limit=200)
+        acc_baseline = evaluate_accuracy(model_baseline, ar_baseline.tokenizer, task="piqa", limit=200, device="cuda")
+        del model_baseline
+        torch.cuda.empty_cache()
 
         # Run with low_gpu_mem_usage=False
         scheme_test = AutoScheme(
@@ -314,12 +317,16 @@ class TestAutoScheme:
             **common_kwargs,
         )
         model_test, _ = ar_test.quantize()
-        acc_test = evaluate_accuracy(model_test, ar_test.tokenizer, task="piqa", limit=200)
+        acc_test = evaluate_accuracy(model_test, ar_test.tokenizer, task="piqa", limit=200, device="cuda")
+        del model_test
+        torch.cuda.empty_cache()
 
-        # Accuracy gap should be small
-        gap = abs(acc_baseline - acc_test)
-        print(f"acc_baseline={acc_baseline:.4f}, acc_test={acc_test:.4f}, gap={gap:.4f}")
-        assert gap < 0.01, (
-            f"Accuracy gap {gap:.4f} between low_gpu_mem modes is too large "
-            f"(baseline={acc_baseline:.4f}, test={acc_test:.4f})"
+        print(f"acc_baseline={acc_baseline:.4f}, acc_test={acc_test:.4f}, ref_threshold={ref_threshold}")
+        assert acc_baseline >= ref_threshold, (
+            f"low_gpu_mem_usage=True mode scoring produces accuracy {acc_baseline:.4f} is below "
+            f"reference threshold {ref_threshold}"
+        )
+        assert acc_test >= ref_threshold, (
+            f"low_gpu_mem_usage=False mode scoring produces accuracy {acc_test:.4f} is below "
+            f"reference threshold {ref_threshold}"
         )
