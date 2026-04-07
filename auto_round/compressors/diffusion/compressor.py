@@ -35,6 +35,7 @@ from auto_round.utils import (
     get_block_names,
     merge_block_output_keys,
     wrap_block_forward_positional_to_kwargs,
+    copy_python_files_from_model_cache,
 )
 
 pipeline_utils = LazyImport("diffusers.pipelines.pipeline_utils")
@@ -207,7 +208,7 @@ class DiffusionCompressor(BaseCompressor):
         device: str,
         cache_device: str = "cpu",
     ) -> torch.Tensor:
-        output_config = output_configs.get(block.__class__.__name__, [])
+        output_config = output_configs.get(block.__class__.__name__, ["hidden_states"])
         idx = None if "hidden_states" not in output_config else output_config.index("hidden_states")
         current_input_ids, current_input_others = self._sampling_inputs(
             input_ids,
@@ -251,7 +252,7 @@ class DiffusionCompressor(BaseCompressor):
         """
 
         output = defaultdict(list)
-        output_config = output_configs.get(block.__class__.__name__, [])
+        output_config = output_configs.get(block.__class__.__name__, ["hidden_states"])
         if isinstance(input_ids, dict):
             nsamples = len(input_ids["hidden_states"])
         else:
@@ -269,6 +270,8 @@ class DiffusionCompressor(BaseCompressor):
                 tmp_input_ids = hidden_states
 
             tmp_output = block_forward(block, tmp_input_ids, tmp_input_others, self.amp, self.amp_dtype, device, None)
+            if isinstance(tmp_output, torch.Tensor):
+                tmp_output = [tmp_output]
             assert len(output_config) == len(tmp_output)
             tmp_output = dict(zip(output_config, tmp_output))
 
@@ -379,6 +382,7 @@ class DiffusionCompressor(BaseCompressor):
         total_cnt = 0
 
         total = nsamples if not hasattr(self.dataloader, "len") else min(nsamples, len(self.dataloader))
+        self._align_device_and_dtype()
 
         with tqdm(range(1, total + 1), desc="cache block inputs") as pbar:
             for ids, prompts in self.dataloader:
@@ -439,6 +443,12 @@ class DiffusionCompressor(BaseCompressor):
         """
         # Replace special characters to make the folder name filesystem-safe
         sanitized_format = format.get_backend_name().replace(":", "-").replace("_", "-")
+        if hasattr(self.model, "config") and getattr(self.model.config, "model_type", None) == "nextstep":
+            # Use a subfolder only if there are multiple formats
+            if len(self.formats) > 1:
+                return os.path.join(self.orig_output_dir, sanitized_format)
+
+            return self.orig_output_dir
 
         # Use a subfolder only if there are multiple formats
         if len(self.formats) > 1:
@@ -467,6 +477,16 @@ class DiffusionCompressor(BaseCompressor):
             return super().save_quantized(output_dir, format=format, inplace=inplace, **kwargs)
 
         compressed_model = None
+        if hasattr(self.model, "config") and getattr(self.model.config, "model_type", None) == "nextstep":
+            compressed_model = super().save_quantized(
+                output_dir=output_dir,
+                format=format,
+                inplace=inplace,
+                **kwargs,
+            )
+            self.pipe.tokenizer.save_pretrained(output_dir)
+            copy_python_files_from_model_cache(self.model, output_dir, copy_folders=["models", "vae", "utils"])
+            return compressed_model
         for name in self.pipe.components.keys():
             val = getattr(self.pipe, name)
             sub_module_path = (
@@ -487,3 +507,29 @@ class DiffusionCompressor(BaseCompressor):
                 val.save_pretrained(sub_module_path)
         self.pipe.config.save_pretrained(output_dir)
         return compressed_model
+
+    def _align_device_and_dtype(self):
+        if hasattr(self.model, "config") and getattr(self.model.config, "model_type", None) == "nextstep":
+            return
+        if (
+            hasattr(self.model, "hf_device_map")
+            and len(self.model.hf_device_map) > 0
+            and type(self.pipe.device) != type(self.model.device)
+            and self.pipe.device != self.model.device
+            and torch.device(self.model.device).type in ["cuda", "xpu"]
+        ):
+            logger.error(
+                "Diffusion model is activated sequential model offloading, it will crash during moving to GPU/XPU. "
+                "Please use model path for quantization or "
+                "move the pipeline object to GPU/XPU before passing them into API."
+            )
+            exit(-1)
+
+        if self.pipe.device != self.model.device:
+            self.pipe.to(self.model.device)
+        if self.pipe.dtype != self.model.dtype:
+            self.pipe.to(self.model.dtype)
+
+
+def save_next_step_diffusion():
+    ar.model.save_pretrained("nextstep_diffusion_model")

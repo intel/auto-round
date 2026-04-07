@@ -2320,7 +2320,8 @@ class BaseCompressor(object):
                             max_memory=new_max_memory,
                             no_split_module_classes=no_split_modules,
                         )
-                        self.model.tie_weights()
+                        if hasattr(self.model, "tie_weights") and callable(self.model.tie_weights):
+                            self.model.tie_weights()
                         device_map = infer_auto_device_map(
                             self.model, max_memory=new_max_memory, no_split_module_classes=no_split_modules
                         )

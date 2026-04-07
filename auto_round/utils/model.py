@@ -676,34 +676,7 @@ def diffusion_load_model(
     model_type = getattr(config, "model_type", "")
     # A special case for NextStep
     if model_type == "nextstep":
-        from models.gen_pipeline import NextStepPipeline  # pylint: disable=E0401
-        from transformers import AutoModel, AutoTokenizer
-
-        tokenizer = AutoTokenizer.from_pretrained(
-            pretrained_model_name_or_path, local_files_only=True, trust_remote_code=True
-        )
-        model = AutoModel.from_pretrained(pretrained_model_name_or_path, local_files_only=True, trust_remote_code=True)
-        # The model is loaded onto the device because more than one block requires input data.
-        pipe = NextStepPipeline(tokenizer=tokenizer, model=model).to(device=device_str, dtype=torch.bfloat16)
-
-        def _nextstep_pipeline_fn(pipe, prompts, guidance_scale=7.5, num_inference_steps=28, generator=None, **kwargs):
-            """Default pipeline_fn for NextStep models.
-
-            Maps standard :class:`DiffusionCompressor` parameters to NextStep's
-            ``generate_image`` API.  Pass a custom ``pipeline_fn`` to
-            :class:`DiffusionCompressor` to override defaults or supply
-            model-specific kwargs (e.g. ``hw``, ``positive_prompt``,
-            ``cfg_schedule``, ``timesteps_shift``).
-            """
-            for prompt in (prompts if isinstance(prompts, list) else [prompts]):
-                pipe.generate_image(
-                    prompt,
-                    cfg=guidance_scale,
-                    num_sampling_steps=num_inference_steps,
-                    **kwargs,
-                )
-
-        pipe._autoround_pipeline_fn = _nextstep_pipeline_fn
+        pipe, model = load_next_step_diffusion(pretrained_model_name_or_path, device_str)
         return pipe, pipe.model
 
     pipelines = LazyImport("diffusers.pipelines")
@@ -769,25 +742,6 @@ def diffusion_load_model(
 
     # non-meta model uses model.save_pretrained for model and config saving
     setattr(model, "save_pretrained", partial(model_save_pretrained, model))
-
-    if pipe.dtype != model.dtype:
-        pipe.to(model.dtype)
-    if pipe.device != model.device:
-        pipe.to(model.device)
-
-    if (
-        hasattr(model, "hf_device_map")
-        and len(model.hf_device_map) > 0
-        and pipe.device != model.device
-        and torch.device(model.device).type in ["cuda", "xpu"]
-    ):
-        logger.error(
-            "Diffusion model is activated sequential model offloading, it will crash during moving to GPU/XPU. "
-            "Please use model path for quantization or "
-            "move the pipeline object to GPU/XPU before passing them into API."
-        )
-        exit(-1)
-
     return pipe, model.to(device)
 
 
@@ -1751,43 +1705,71 @@ def _copy_extra_model_files(src_dir: str, dst_dir: str):
 
 # Adapted from https://github.com/vllm-project/llm-compressor/blob/
 # 5b3ddff74cae9651f24bef15d3255c4ee053fc60/src/llmcompressor/pytorch/model_load/helpers.py#L144
-def copy_python_files_from_model_cache(model, save_path: str):
+def copy_python_files_from_model_cache(
+    model, save_path: str, copy_folders: bool | list[str] | tuple[str, ...] = False
+):
+    """Copy Python files (and optionally subdirectories) from the model cache to *save_path*.
+
+    Args:
+        model: The model whose ``config._name_or_path`` points to the source cache.
+        save_path (str): Destination directory.
+        copy_folders (bool | list[str] | tuple[str, ...]): Controls which subdirectories
+            are copied from the cache root to *save_path*:
+
+            * ``False`` (default) – no folders are copied.
+            * ``True`` – every subdirectory that does not already exist in *save_path*
+              is copied (e.g. all of ``vae``, ``scheduler``, …).
+            * A list/tuple of folder names (e.g. ``["vae", "scheduler"]``) – only the
+              named subdirectories are copied.
+    """
+    import shutil
+
+    from huggingface_hub import hf_hub_download
+
     config = model.config
-    if hasattr(config, "_name_or_path"):
-        import os
-        import shutil
+    if not hasattr(config, "_name_or_path"):
+        return
 
-        from huggingface_hub import hf_hub_download
+    if version.parse(transformers.__version__) < version.parse("5.0.0"):
+        from transformers.utils import TRANSFORMERS_CACHE
 
-        if version.parse(transformers.__version__) < version.parse("5.0.0"):
-            from transformers.utils import TRANSFORMERS_CACHE
+        cache_dir = os.environ.get("HF_HOME", TRANSFORMERS_CACHE)
+    else:
+        from huggingface_hub.constants import HF_HUB_CACHE
 
-            cache_dir = os.environ.get("HF_HOME", TRANSFORMERS_CACHE)
-        else:
-            from huggingface_hub.constants import HF_HUB_CACHE
+        cache_dir = os.environ.get("HF_HOME", HF_HUB_CACHE)
+    from transformers.utils import http_user_agent
 
-            cache_dir = os.environ.get("HF_HOME", HF_HUB_CACHE)
-        from transformers.utils import http_user_agent
+    cache_path = config._name_or_path
+    if not os.path.exists(cache_path):
+        user_agent = http_user_agent()
+        config_file_path = hf_hub_download(
+            repo_id=cache_path,
+            filename="config.json",
+            cache_dir=cache_dir,
+            force_download=False,
+            user_agent=user_agent,
+        )
+        cache_path = os.path.sep.join(config_file_path.split(os.path.sep)[:-1])
 
-        cache_path = config._name_or_path
-        if not os.path.exists(cache_path):
-            user_agent = http_user_agent()
-            config_file_path = hf_hub_download(
-                repo_id=cache_path,
-                filename="config.json",
-                cache_dir=cache_dir,
-                force_download=False,
-                user_agent=user_agent,
-            )
-            cache_path = os.path.sep.join(config_file_path.split(os.path.sep)[:-1])
+    for file in os.listdir(cache_path):
+        full_file_name = os.path.join(cache_path, file)
+        if file.endswith(".py") and os.path.isfile(full_file_name):
+            logger.debug(f"Transferring {full_file_name} to {save_path}")
+            shutil.copy(full_file_name, save_path)
 
-        for file in os.listdir(cache_path):
-            full_file_name = os.path.join(cache_path, file)
-            if file.endswith(".py") and os.path.isfile(full_file_name):
-                logger.debug(f"Transferring {full_file_name} to {save_path}")
-                shutil.copy(full_file_name, save_path)
+    _copy_extra_model_files(cache_path, save_path)
 
-        _copy_extra_model_files(cache_path, save_path)
+    if copy_folders is not False:
+        for entry in os.listdir(cache_path):
+            src_entry = os.path.join(cache_path, entry)
+            dst_entry = os.path.join(save_path, entry)
+            if not os.path.isdir(src_entry):
+                continue
+            if copy_folders is True or entry in copy_folders:
+                if not os.path.exists(dst_entry):
+                    logger.debug(f"Transferring folder {src_entry} to {save_path}")
+                    shutil.copytree(src_entry, dst_entry)
 
 
 def extract_block_names_to_str(quant_block_list):
@@ -1956,3 +1938,34 @@ def wrap_block_forward_positional_to_kwargs(base_hook):
         return base_hook(m, hidden_states, *positional_inputs, **kwargs)
 
     return forward
+
+def load_next_step_diffusion(pretrained_model_name_or_path, device_str):
+    from models.gen_pipeline import NextStepPipeline  # pylint: disable=E0401
+    from transformers import AutoModel, AutoTokenizer
+
+    tokenizer = AutoTokenizer.from_pretrained(
+        pretrained_model_name_or_path, local_files_only=True, trust_remote_code=True
+    )
+    model = AutoModel.from_pretrained(pretrained_model_name_or_path, local_files_only=True, trust_remote_code=True)
+    # The model is loaded onto the device because more than one block requires input data.
+    pipe = NextStepPipeline(tokenizer=tokenizer, model=model).to(device=device_str, dtype=torch.bfloat16)
+
+    def _nextstep_pipeline_fn(pipe, prompts, guidance_scale=7.5, num_inference_steps=28, generator=None, **kwargs):
+        """Default pipeline_fn for NextStep models.
+
+        Maps standard :class:`DiffusionCompressor` parameters to NextStep's
+        ``generate_image`` API.  Pass a custom ``pipeline_fn`` to
+        :class:`DiffusionCompressor` to override defaults or supply
+        model-specific kwargs (e.g. ``hw``, ``positive_prompt``,
+        ``cfg_schedule``, ``timesteps_shift``).
+        """
+        for prompt in (prompts if isinstance(prompts, list) else [prompts]):
+            pipe.generate_image(
+                prompt,
+                cfg=guidance_scale,
+                num_sampling_steps=num_inference_steps,
+                **kwargs,
+            )
+
+    pipe._autoround_pipeline_fn = _nextstep_pipeline_fn
+    return pipe, model
