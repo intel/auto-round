@@ -368,6 +368,9 @@ class DiffusionCompressor(BaseCompressor):
             "Diffusion model will catch nsamples * num_inference_steps inputs, "
             "you can reduce nsamples or num_inference_steps if OOM or take too much time."
         )
+        raw_num_inference_steps = self.num_inference_steps
+        self.num_inference_steps = 1
+        logger.info(f"Set num_inference_steps to 1 for calibration, original num_inference_steps is {raw_num_inference_steps}")
         if isinstance(self.dataset, str):
             dataset = self.dataset.replace(" ", "")
             self.dataloader, self.batch_size, self.gradient_accumulate_steps = get_diffusion_dataloader(
@@ -422,6 +425,8 @@ class DiffusionCompressor(BaseCompressor):
                         self.inputs[k][key] = v[key][:max_len]
 
         # torch.cuda.empty_cache()
+        self.num_inference_steps = raw_num_inference_steps
+        logger.info(f"Restore num_inference_steps to {self.num_inference_steps} after calibration")
 
     def _should_stop_cache_forward(self, name: str) -> bool:
         """Determine whether current forward pass can stop after caching `name`."""
