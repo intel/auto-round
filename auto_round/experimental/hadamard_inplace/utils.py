@@ -47,28 +47,30 @@ class FullOnlineHadamardHook:
         return x
 
 
-class PartialOnlineHadamardHook:
-    """Pre-forward hook: per-head Hadamard across the ``num_heads`` dimension (for ``o_proj``).
+class PerHeadOnlineHadamardHook:
+    """Pre-forward hook: Hadamard within each head on the ``head_dim`` dimension (for ``o_proj``).
 
-    Matches the ``online_partial_had`` path in the original ``ActQuantWrapper``:
+    Compensates for ``apply_exact_had_to_linear(v_proj, had_dim=head_dim, output=True)``
+    which applies Hadamard within each head on the output side of v_proj.
+    Since Hadamard is self-inverse, applying the same transform on o_proj input
+    restores the original activation.
+
       * reshape ``(*, hidden_size)`` → ``(*, num_heads, head_dim)``
-      * transpose → ``(*, head_dim, num_heads)``
-      * Hadamard on the **num_heads** axis (last dim after transpose)
-      * transpose back → ``(*, num_heads, head_dim)``
+      * Hadamard on the **head_dim** axis (last dim) — within each head
       * reshape back to original
     """
 
-    def __init__(self, had_K, K, had_dim, fp32_had=False):
+    def __init__(self, had_K, K, head_dim, fp32_had=False):
         """
         Args:
-            had_K: Hadamard sub-matrix from ``get_hadK(num_heads)``, or ``None`` when K==1.
-            K: Block size from ``get_hadK(num_heads)``.
-            had_dim: ``head_dim = hidden_size // num_attention_heads``.
+            had_K: Hadamard sub-matrix from ``get_hadK(head_dim)``.
+            K: Block size from ``get_hadK(head_dim)``.
+            head_dim: ``hidden_size // num_attention_heads``.
             fp32_had: Compute in fp32.
         """
         self.had_K = had_K
         self.K = K
-        self.had_dim = had_dim
+        self.head_dim = head_dim
         self.fp32_had = fp32_had
 
     def __call__(self, module: nn.Module, args):
@@ -79,25 +81,11 @@ class PartialOnlineHadamardHook:
             x = x.float()
 
         init_shape = x.shape
-        had_dim = self.had_dim
-        num_heads = init_shape[-1] // had_dim
-
-        if self.K == 1:
-            # reshape to (-1, num_heads, head_dim), transpose to (-1, head_dim, num_heads)
-            # hadamard_transform on last dim = num_heads, then transpose back
-            x = fast_hadamard_transform.hadamard_transform(
-                x.reshape(-1, num_heads, had_dim).transpose(1, 2),
-                scale=1.0 / math.sqrt(num_heads),
-            ).transpose(1, 2)
-        else:
-            # had_K is (K, K) where K divides num_heads
-            # reshape to (-1, num_heads, head_dim), then had_K @ x operates on num_heads dim
-            x = (
-                self.had_K.to(x.dtype).to(x.device)
-                @ x.reshape(-1, num_heads, had_dim)
-            ) / math.sqrt(num_heads)
-
-        x = x.reshape(init_shape)
+        # reshape (..., hidden_size) → (..., num_heads, head_dim)
+        x = x.view(*init_shape[:-1], -1, self.head_dim)
+        # Hadamard on last dim = head_dim (within each head)
+        x = matmul_hadU_cuda(x, self.had_K, self.K)
+        x = x.view(init_shape)
 
         if self.fp32_had:
             x = x.to(x_dtype)
@@ -114,11 +102,12 @@ class PartialOnlineHadamardHook:
 def register_online_had_hooks(model, fp32_had=False):
     """Register online Hadamard pre-forward hooks on ``down_proj`` and ``o_proj``.
 
-    Exactly reproduces the ``ActQuantWrapper`` behaviour:
-
     * **down_proj** (``online_full_had``): full Hadamard on ``intermediate_size``.
-    * **o_proj** (``online_partial_had``): Hadamard **across heads** (on the
-      ``num_heads`` axis), *not* within each head.
+      Compensates ``apply_exact_had_to_linear(down_proj, had_dim=-1, output=False)``.
+
+    * **o_proj** (``online per-head had``): Hadamard **within each head** on
+      ``head_dim``.  Compensates
+      ``apply_exact_had_to_linear(v_proj, had_dim=head_dim, output=True)``.
 
     Args:
         model: A HuggingFace model whose weights have already been rotated.
@@ -136,8 +125,8 @@ def register_online_had_hooks(model, fp32_had=False):
     # down_proj: full Hadamard on intermediate_size
     had_K_full, K_full = get_hadK(intermediate_size)
 
-    # o_proj: partial Hadamard — had_K from num_heads, had_dim = head_dim
-    had_K_partial, K_partial = get_hadK(num_heads)
+    # o_proj: per-head Hadamard on head_dim (within each head)
+    had_K_head, K_head = get_hadK(head_dim)
 
     handles = []
     for name, module in model.named_modules():
@@ -147,13 +136,12 @@ def register_online_had_hooks(model, fp32_had=False):
             )
             h = module.register_forward_pre_hook(hook)
             handles.append(h)
-        #
-        # elif name.endswith("o_proj") and isinstance(module, nn.Linear):
-        #     hook = PartialOnlineHadamardHook(
-        #         had_K=had_K_partial, K=K_partial,
-        #         had_dim=head_dim, fp32_had=fp32_had,
-        #     )
-        #     h = module.register_forward_pre_hook(hook)
-        #     handles.append(h)
+        elif name.endswith("o_proj") and isinstance(module, nn.Linear):
+            hook = PerHeadOnlineHadamardHook(
+                had_K=had_K_head, K=K_head,
+                head_dim=head_dim, fp32_had=fp32_had,
+            )
+            h = module.register_forward_pre_hook(hook)
+            handles.append(h)
 
     return handles

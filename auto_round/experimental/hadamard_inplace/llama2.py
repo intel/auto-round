@@ -148,7 +148,7 @@ def rotate_model(model):
         rotate_attention_output(layers[idx], Q)
         rotate_mlp_input(layers[idx], Q)
         rotate_mlp_output(layers[idx], Q)
-        # rotate_ov_proj(layers[idx], num_heads, head_dim)
+        rotate_ov_proj(layers[idx], num_heads, head_dim)
 
 
 
