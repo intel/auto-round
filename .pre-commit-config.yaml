@@ -46,7 +46,7 @@ repos:
       - id: blacken-docs
         args: [--line-length=120, --skip-errors]
         additional_dependencies:
-          - black==25.9.0
+          - black==26.3.1
 
   - repo: https://github.com/codespell-project/codespell
     rev: v2.4.2
@@ -57,7 +57,7 @@ repos:
           - tomli
 
   - repo: https://github.com/crate-ci/typos
-    rev: v1
+    rev: v1.45.0
     hooks:
       - id: typos
 
