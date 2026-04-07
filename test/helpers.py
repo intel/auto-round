@@ -52,7 +52,7 @@ def eval_generated_prompt(
 
 
 def evaluate_accuracy(
-    model_or_save_dir, tokenizer=None, task="lambada_openai", threshold=0.25, batch_size="auto", limit=None
+    model_or_save_dir, tokenizer=None, task="lambada_openai", threshold=0.25, batch_size="auto", limit=None, device=None
 ):
     """Helper function to evaluate model accuracy on a given task.
 
@@ -75,13 +75,15 @@ def evaluate_accuracy(
     if isinstance(model_or_save_dir, str):
         # save_dir mode
         model_args = f"pretrained={model_or_save_dir}"
-        result = simple_evaluate(model="hf", model_args=model_args, tasks=task, batch_size=batch_size)
+        result = simple_evaluate(model="hf", model_args=model_args, tasks=task, batch_size=batch_size, device=device)
     else:
         # model object mode
         if tokenizer is None:
             raise ValueError("tokenizer is required when model_or_save_dir is a model object")
+        if device and device != "cpu":
+            model_or_save_dir = model_or_save_dir.to(device)
         result = simple_evaluate_user_model(
-            model_or_save_dir, tokenizer, batch_size=batch_size, tasks=task, limit=limit
+            model_or_save_dir, tokenizer, batch_size=batch_size, tasks=task, limit=limit, device=device
         )
 
     acc = result["results"][task]["acc,none"]

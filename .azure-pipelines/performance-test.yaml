@@ -19,8 +19,6 @@ pr:
 variables:
   CONTAINER_NAME: "AutoRoundPerfTest"
 
-pool: GAUDI
-
 stages:
   - stage: PerformanceTest
     displayName: Performance Test
@@ -28,6 +26,17 @@ stages:
     jobs:
       - job: PerformanceTestJob
         displayName: Performance Test Job
+        pool: GAUDI
+
+        strategy:
+          matrix:
+            Qwen3_W4A16:
+              model_name: 'Qwen/Qwen3-0.6B'
+              scheme: 'W4A16'
+            Qwen3_FP8_STATIC:
+              model_name: 'Qwen/Qwen3-0.6B'
+              scheme: 'FP8_STATIC'
+
         steps:
           - template: template/docker-template.yml
             parameters:
@@ -47,15 +56,8 @@ stages:
           - script: |
               docker exec $(CONTAINER_NAME) \
               bash -c "cd /auto-round/.azure-pipelines/scripts/performance \
-                && bash perf_test.sh"
+                && bash perf_test.sh --model_name=$(model_name) --scheme=$(scheme)"
             displayName: "Run performance test"
-
-          - task: PublishPipelineArtifact@1
-            condition: succeededOrFailed()
-            inputs:
-              targetPath: $(Build.SourcesDirectory)/log_dir
-              artifact: "Performance_Test_Logs"
-              publishLocation: "pipeline"
 
           - task: Bash@3
             condition: always()
