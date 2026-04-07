@@ -34,6 +34,7 @@ Typical usage
 >>> from auto_round.algorithms.transforms import apply_rotation
 >>> model = apply_rotation(model, config={"hadamard_type": "random_hadamard"})
 """
+
 from __future__ import annotations
 
 from typing import Any

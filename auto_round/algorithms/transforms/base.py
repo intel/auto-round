@@ -17,6 +17,7 @@ All rotation algorithms (Hadamard, SpinQuant, QuaRot, …) must subclass
 ``BaseRotation`` and declare a corresponding ``BaseRotationConfig``.
 
 """
+
 from __future__ import annotations
 
 from abc import ABC, abstractmethod

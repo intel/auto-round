@@ -17,6 +17,7 @@
 :class:`RandomHadamardTransform` – randomly signed Hadamard.
 :func:`build_hadamard_transform` – factory that selects the right class.
 """
+
 from __future__ import annotations
 
 import inspect

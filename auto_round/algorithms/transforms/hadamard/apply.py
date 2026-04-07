@@ -18,6 +18,7 @@ Public entry points
 * :class:`HadamardRotation` – the stateful algorithm object.
 * :func:`apply_hadamard_transform` – convenience one-shot function.
 """
+
 from __future__ import annotations
 
 from typing import Any

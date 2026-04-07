@@ -90,8 +90,7 @@ def print_post_init_flow():
     print("BaseCompressor.post_init() Execution Flow")
     print("=" * 110 + "\n")
 
-    print(
-        """
+    print("""
 BaseCompressor.post_init()
 │
 ├─ Step 1: Resolve formats (str → list[OutputFormat])
@@ -113,8 +112,7 @@ BaseCompressor.post_init()
 │        └─ back-fill to_quant_block_names if it was None
 │
 └─ Step 4: Setup device map, torch compile, offloader
-    """
-    )
+    """)
 
     print("=" * 110 + "\n")
 
@@ -128,8 +126,7 @@ def print_usage_examples():
 
     print("Example 1: MLLM + AutoRoundCompatible (gradient-based)")
     print("-" * 110)
-    print(
-        """
+    print("""
 from auto_round.compressors_new.entry import AutoRound
 from auto_round.algorithms.quantization.sign_round.config import SignRoundConfig
 
@@ -142,13 +139,11 @@ compressor = AutoRound(
     quant_nontext_module=False,   # set True to also quantize vision encoder
 )
 # Dynamically creates: class MLLMCalibCompressor(MLLMMixin, CalibCompressor)
-    """
-    )
+    """)
 
     print("\nExample 2: MLLM + RTN with imatrix")
     print("-" * 110)
-    print(
-        """
+    print("""
 from auto_round.algorithms.quantization.rtn.config import RTNConfig
 
 config = RTNConfig(scheme="W4A16")
@@ -159,13 +154,11 @@ compressor = AutoRound(
     processor=processor,
 )
 # Dynamically creates: class MLLMCalibratedRTNCompressor(MLLMMixin, CalibratedRTNCompressor)
-    """
-    )
+    """)
 
     print("\nExample 3: Diffusion + AutoRoundCompatible")
     print("-" * 110)
-    print(
-        """
+    print("""
 config = SignRoundConfig(scheme="W4A16", iters=200)
 compressor = AutoRound(
     config=config,
@@ -173,8 +166,7 @@ compressor = AutoRound(
     guidance_scale=7.5,
 )
 # Dynamically creates: class DiffusionCalibCompressor(DiffusionMixin, CalibCompressor)
-    """
-    )
+    """)
 
     print("\n" + "=" * 110 + "\n")
 
@@ -188,8 +180,7 @@ def print_mro_example():
 
     print("For class MLLMCalibCompressor(MLLMMixin, CalibCompressor):")
     print("-" * 110)
-    print(
-        """
+    print("""
 MLLMCalibCompressor  (dynamic, created in AutoRound.__new__)
     └─> MLLMMixin
         └─> CalibCompressor
@@ -212,8 +203,7 @@ MLLMCalibCompressor instance has:
   ✓ MLLM features from MLLMMixin (processor, template, calib() override)
   ✓ Calibration compression from CalibCompressor
   ✓ Model/context management from BaseCompressor
-    """
-    )
+    """)
 
     print("=" * 110 + "\n")
 
@@ -225,8 +215,7 @@ def print_decision_tree():
     print("AutoRound Creation Decision Tree")
     print("=" * 110 + "\n")
 
-    print(
-        """
+    print("""
 AutoRound.__new__(config, model, format, **kwargs)
 │
 ├─ Step 1: Detect model type
@@ -264,8 +253,7 @@ AutoRound.__new__(config, model, format, **kwargs)
       │  └─> class DiffusionZeroShotCompressor(DiffusionMixin, ZeroShotCompressor)
       └─ model_type == "llm"
          └─> ZeroShotCompressor
-    """
-    )
+    """)
 
     print("=" * 110 + "\n")
 
@@ -277,8 +265,7 @@ def print_quantizer_interface():
     print("BaseQuantizers Interface - Name-based quantize_block / quantize_layer")
     print("=" * 110 + "\n")
 
-    print(
-        """
+    print("""
 All quantizers use module *names* (str) instead of module objects.
 The module is retrieved internally via get_module(model, name).
 
@@ -295,8 +282,7 @@ The module is retrieved internally via get_module(model, name).
   ├─ RTNQuantizer.quantize_block(block_name: str)
   ├─ OptimizedRTNQuantizer.quantize_block(block_name: str, input_ids, input_others)
   └─ SignRoundQuantizer.quantize_block(block_name: Union[str, list[str]], input_ids, input_others)
-    """
-    )
+    """)
 
     print("=" * 110 + "\n")
 
