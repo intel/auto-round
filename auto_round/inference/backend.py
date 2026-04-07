@@ -868,7 +868,8 @@ def get_gptqmodel_awq_infer_linear(backend):
     if dtype != torch.float32:
         torch.set_default_dtype(torch.float32)
     try:
-        import gptqmodel  # pylint: disable=E0401
+        with torch.device("cpu"):
+            import gptqmodel  # pylint: disable=E0401
     finally:
         torch.set_default_dtype(dtype)
 
@@ -899,7 +900,8 @@ def get_gptqmodel_infer_linear(backend, bits=4, group_size=128, sym=False):
         torch.set_default_dtype(torch.float32)
 
     try:
-        import gptqmodel  # pylint: disable=E0401
+        with torch.device("cpu"):
+            import gptqmodel  # pylint: disable=E0401
     finally:
         torch.set_default_dtype(dtype)
 

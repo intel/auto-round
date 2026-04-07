@@ -24,7 +24,8 @@ import torch
 
 
 def get_marlin_layer():  ##use an ugly wrapper to  import gptqmodel on demand
-    import gptqmodel
+    with torch.device("cpu"):
+        import gptqmodel
     from packaging.version import Version
 
     NEW_VERSION = False
