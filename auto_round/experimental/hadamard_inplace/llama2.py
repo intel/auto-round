@@ -2,14 +2,13 @@
 # # SPDX-License-Identifier: Apache-2.0
 
 import gc
-import math
 import typing
 
 import torch
 import tqdm
-import transformers
 
 from auto_round.experimental.hadamard_inplace.hadamard import apply_exact_had_to_linear, random_hadamard_matrix
+from auto_round.experimental.hadamard_inplace.utils import register_online_had_hooks
 
 
 def fuse_ln_linear(layernorm: torch.nn.Module, linear_layers: typing.Iterable[torch.nn.Linear]) -> None:
@@ -30,11 +29,24 @@ def fuse_ln_linear(layernorm: torch.nn.Module, linear_layers: typing.Iterable[to
             linear.bias.data = linear.bias.data.to(linear_dtype)
 
 
+def _reset_ln_params(layernorm: torch.nn.Module) -> None:
+    """Reset LayerNorm to identity: weight=1, bias=0.
+
+    Must be called after fuse_ln_linear so that the fused LN no longer
+    scales/shifts (the parameters are already absorbed into the Linear).
+    """
+    layernorm.weight.data.fill_(1.0)
+    if hasattr(layernorm, "bias") and layernorm.bias is not None:
+        layernorm.bias.data.fill_(0.0)
+
+
 def fuse_layer_norms(model):
-    # Embedding fusion
-    W = model.model.embed_tokens
-    W_ = W.weight.data.double()
-    W.weight.data = (W_ - W_.mean(dim=-1, keepdim=True)).to(W.weight.data.dtype)
+    # Embedding mean subtraction — only valid for standard LayerNorm (which
+    # subtracts mean internally, so the shift cancels out).  LLaMA uses
+    # RMSNorm which does NOT subtract mean, so this step is skipped.
+    # W = model.model.embed_tokens
+    # W_ = W.weight.data.double()
+    # W.weight.data = (W_ - W_.mean(dim=-1, keepdim=True)).to(W.weight.data.dtype)
 
     layers = model.model.layers
 
@@ -42,9 +54,13 @@ def fuse_layer_norms(model):
     for layer in layers:
         # fuse the input layernorms into the linear layers
         fuse_ln_linear(layer.post_attention_layernorm, [layer.mlp.up_proj, layer.mlp.gate_proj])
+        _reset_ln_params(layer.post_attention_layernorm)
+
         fuse_ln_linear(layer.input_layernorm, [layer.self_attn.q_proj, layer.self_attn.k_proj, layer.self_attn.v_proj])
+        _reset_ln_params(layer.input_layernorm)
 
     fuse_ln_linear(model.model.norm, [model.lm_head])
+    _reset_ln_params(model.model.norm)
 
 
 def rotate_embeddings(model, Q: torch.Tensor) -> None:
@@ -110,7 +126,7 @@ def rotate_ov_proj(layer, head_num, head_dim):
     o_proj = layer.self_attn.o_proj
 
     apply_exact_had_to_linear(v_proj, had_dim=head_dim, output=True)
-    apply_exact_had_to_linear(o_proj, had_dim=-1, output=False)
+    ##apply_exact_had_to_linear(o_proj, had_dim=-1, output=False)
 
 
 @torch.inference_mode()
@@ -127,34 +143,39 @@ def rotate_model(model):
     torch.cuda.empty_cache()
     layers = model.model.layers
     for idx, layer in enumerate(tqdm.tqdm(layers, unit="layer", desc="Rotating")):
+
         rotate_attention_inputs(layers[idx], Q)
         rotate_attention_output(layers[idx], Q)
         rotate_mlp_input(layers[idx], Q)
         rotate_mlp_output(layers[idx], Q)
-        rotate_ov_proj(layers[idx], num_heads, head_dim)
+        # rotate_ov_proj(layers[idx], num_heads, head_dim)
 
 
-# Rotate the weights
-if args.rotate:
-    rotation_utils.fuse_layer_norms(model)
-    rotation_utils.rotate_model(model, args)
-    utils.cleanup_memory(verbos=True)
 
-    quant_utils.add_actquant(model)  # Add Activation Wrapper to the model
-    qlayers = quant_utils.find_qlayers(model)
-    for name in qlayers:
-        if "down_proj" in name:
-            had_K, K = hadamard_utils.get_hadK(model.config.intermediate_size)
-            qlayers[name].online_full_had = True
-            qlayers[name].had_K = had_K
-            qlayers[name].K = K
-            qlayers[name].fp32_had = args.fp32_had
-        if "o_proj" in name:
-            had_K, K = hadamard_utils.get_hadK(model.config.num_attention_heads)
-            qlayers[name].online_partial_had = True
-            qlayers[name].had_K = had_K
-            qlayers[name].K = K
-            qlayers[name].had_dim = model.config.hidden_size // model.config.num_attention_heads
-            qlayers[name].fp32_had = args.fp32_had
-else:
-    quant_utils.add_actquant(model)  # Add Activation Wrapper to the model as the rest of the code assumes it is present
+
+def allpy_model(model, fp32_had=False):
+    """Fuse layer norms, rotate weights, and register online Hadamard hooks.
+
+    Args:
+        model: A HuggingFace model (e.g. LLaMA-2).
+        fp32_had: Whether to compute the online Hadamard transform in fp32.
+
+    Returns:
+        list of hook handles (call ``handle.remove()`` to detach).
+    """
+    fuse_layer_norms(model)
+    rotate_model(model)
+    handles = register_online_had_hooks(model, fp32_had=fp32_had)
+    return handles
+
+from transformers import AutoTokenizer,AutoModelForCausalLM
+
+if __name__ == "__main__":
+    model_name = "/models/Llama-2-7b-chat-hf"
+    tokenizer = AutoTokenizer.from_pretrained(model_name)
+    model = AutoModelForCausalLM.from_pretrained(model_name, torch_dtype=torch.float16, device_map="auto")
+    allpy_model(model)
+    model.to("cuda")
+    text = "There is a girl who likes adventure,"
+    inputs = tokenizer(text, return_tensors="pt").to(model.device)
+    print(tokenizer.decode(model.generate(**inputs, max_new_tokens=50)[0]))

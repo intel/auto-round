@@ -58,7 +58,7 @@ def get_hadK(n, transpose=False):
     else:
         from auto_round.experimental.transform.utils.hadamard import _fetch_hadamard_divisor
 
-        hadK = _fetch_hadamard_divisor(n, torch.float, "cpu")
+        hadK = _fetch_hadamard_divisor(n, torch.float, torch.device("cpu"))
         if hadK is not None:
             return hadK, hadK.shape[1]
         assert is_pow2(n)
