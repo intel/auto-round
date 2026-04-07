@@ -868,11 +868,12 @@ def safe_import_gptqmodel():
         torch.set_default_dtype(torch.float32)
     try:
         # When loaded via the "meta" device, `gptqmodel==6.0.3` raises an error (since the internal
-        # loading process within the `transformers` library defaults to the "meta" device mode). 
-        # Therefore, it is necessary to first switch to the CPU to bypass this error, and then 
+        # loading process within the `transformers` library defaults to the "meta" device mode).
+        # Therefore, it is necessary to first switch to the CPU to bypass this error, and then
         # switch back to the original data type once the loading process is complete.
         with torch.device("cpu"):
             import gptqmodel  # pylint: disable=E0401
+
             return gptqmodel
     finally:
         torch.set_default_dtype(dtype)
