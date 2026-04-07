@@ -34,7 +34,7 @@ class HadamardTransform(nn.Module):
         self,
         block_size: int = 32,
         device: torch.device = None,
-        precision: torch.dtype = torch.float64,
+        precision: torch.dtype = torch.float32,
         location: str = "weight",
         module_type: type[torch.nn.Module] = torch.nn.Linear,
         inverse: bool = False,
