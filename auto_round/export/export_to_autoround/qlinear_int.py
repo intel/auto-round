@@ -64,9 +64,7 @@ class QuantLinear(nn.Module):
 
     QUANT_TYPE = "MXINT"
 
-    def __init__(
-        self, bits, group_size, infeatures, outfeatures, bias, trainable=False, data_type="mx_int4", **kwargs
-    ):
+    def __init__(self, bits, group_size, infeatures, outfeatures, bias, trainable=False, data_type="mx_int4", **kwargs):
         super().__init__()
         if bits not in [4]:
             raise NotImplementedError("Only 4 bits are supported.")

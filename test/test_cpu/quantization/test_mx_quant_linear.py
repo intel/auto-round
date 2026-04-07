@@ -141,7 +141,7 @@ def test_mxint_quantlinear_from_original_and_forward(scheme):
         tensor=original_layer.weight,
         bits=config.bits,
         group_size=config.group_size,
-        data_type=config.data_type + str(config.bits)
+        data_type=config.data_type + str(config.bits),
     )
     shared_exp = shared_exp.reshape(weight_scale_shape)
 

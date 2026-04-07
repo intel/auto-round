@@ -1102,7 +1102,7 @@ class AutoRoundFormat(OutputFormat):
                     self.backend = AutoAWQFormat("auto_round:auto_awq", ar)
             elif is_nv_fp(ar.data_type) or is_mx_fp(ar.data_type):
                 self.backend = AutoRoundFormat(ar.data_type, ar)
-            elif is_mx_int(ar.data_type) and ar.bits == 4: # only add mx_int4 now
+            elif is_mx_int(ar.data_type) and ar.bits == 4:  # only add mx_int4 now
                 self.backend = AutoRoundFormat(ar.data_type, ar)
             elif is_static_wfp8afp8(ar):  # static wfp8afp8
                 self.backend = AutoRoundFormat(AutoRoundExportFormat.FP8_STATIC.value, ar)
