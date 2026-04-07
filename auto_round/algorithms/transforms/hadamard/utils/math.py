@@ -16,6 +16,7 @@
 Provides ``deterministic_hadamard_matrix`` (Sylvester construction) and
 ``random_hadamard_matrix`` (loaded from a precomputed safetensors file).
 """
+
 # note that hadamard matrix multiplication reuses code from
 # https://github.com/vllm-project/compressed-tensors/blob/main/src/compressed_tensors/transform/utils/hadamard.py
 

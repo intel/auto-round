@@ -391,7 +391,7 @@ def set_layer_config(
 
     # 5. collect supported modules
     embedding_types = (torch.nn.Embedding,)
-    gguf_name = gguf_format_name if gguf_format_name else get_gguf_scheme(default_scheme)
+    gguf_name = gguf_format_name or get_gguf_scheme(default_scheme)
     if gguf_name:
         if torch.nn.Embedding not in supported_types:
             supported_types = (*supported_types, torch.nn.Embedding)
