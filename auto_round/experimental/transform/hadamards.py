@@ -34,11 +34,25 @@ class HadamardTransform(nn.Module):
         self,
         block_size: int = 32,
         device: torch.device = None,
-        precision: torch.dtype = None,
+        precision: torch.dtype = torch.float64,
         location: str = "weight",
         module_type: type[torch.nn.Module] = torch.nn.Linear,
         inverse: bool = False,
     ):
+        """Initialize a Hadamard transform module.
+
+        Args:
+            block_size: Size of each Hadamard block. The input tensor is reshaped
+                to ``(-1, block_size)`` before applying the transform.
+            device: Device on which to create the Hadamard matrix.
+            precision: Data type used for the Hadamard matrix weights, using float64 as default.
+            location: Target location used by ``apply_transform_weight`` when
+                applying the transform.
+            module_type: Module type associated with the transform application,
+                typically ``torch.nn.Linear``.
+            inverse: Whether to build the inverse form of the transform.
+        """
+
         super().__init__()
         self.size = block_size
         self.scale = 1 / math.sqrt(self.size)

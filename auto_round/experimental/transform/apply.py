@@ -100,7 +100,6 @@ def _apply_to_module(
             location="input",
             inverse=True,
             device="cpu",
-            precision=module.dtype,
         )
 
         if config.hadamard_type != "random_hadamard":
@@ -115,6 +114,7 @@ def _apply_to_module(
                 input = args[0]
                 # transform(input)
                 orig_shape = input.shape
+                orig_dtype = input.dtype
                 x_flat = input.contiguous().flatten(end_dim=-2)
                 qdq_input, _ = mxfp4_forward_kernel_wrapper(
                     x_flat,
@@ -122,7 +122,7 @@ def _apply_to_module(
                         hadamard_weight if hadamard_weight is not None else self.hadamard_matrix.T
                     ),  # this matrix from w_transform, needs transpose
                 )
-                return qdq_input.reshape(orig_shape)
+                return qdq_input.reshape(orig_shape).to(orig_dtype)
 
             # for fused transform + quantization kernel
             module.pre_dequantized_input = True
@@ -135,13 +135,23 @@ def _apply_to_module(
                 input = args[0]
 
                 ori_shape = input.shape
+                orig_dtype = input.dtype
 
                 if hadamard_weight is not None:
                     input = input.view(-1, hadamard_weight.shape[0])
-                    return _multihead_matmul(input, hadamard_weight.to(input.device)).view(ori_shape)
+                    return (
+                        _multihead_matmul(
+                            input.to(hadamard_weight.dtype),
+                            hadamard_weight.to(input.device)
+                        )
+                    ).view(ori_shape).to(orig_dtype)
                 else:
                     input = input.view(-1, self.hadamard_matrix.shape[0])
-                    return _multihead_matmul(input, self.hadamard_matrix.T).view(ori_shape)
+                    return (
+                        _multihead_matmul(
+                            input.to(self.hadamard_matrix.dtype),
+                            self.hadamard_matrix.T)
+                    ).view(ori_shape).to(orig_dtype)
 
             # for fused transform + quantization kernel
             module.pre_dequantized_input = False
@@ -156,7 +166,6 @@ def _apply_to_module(
             **config.dict(),
             location="weight",
             device=module.weight.device,
-            precision=module.weight.dtype,
         )
 
         # need save random hadamard matrix needed when inference
@@ -180,7 +189,6 @@ def _apply_to_module(
                 location="input",
                 inverse=True,
                 device=module.weight.device,
-                precision=module.weight.dtype,
             )
 
             patch_wrapperlinear_to_apply_transform(weight_hadamard_transform, input_hadamard_transform)
