@@ -653,6 +653,159 @@ class CalibCompressor(BaseCompressor):
         input_others = inputs
         return input_ids, input_others
 
+    def normalize_decoding_layer_inputs_(self, decoding_layer_inputs: list[tuple[tuple[Any, dict[str, Any]]]]) -> None:
+        """Replay captured decoding-layer calls to populate ``self.inputs``.
+
+        Converts the raw ``(args, kwargs)`` tuples captured by LLM-Compressor's
+        input hook into the ``self.inputs`` dict format expected by
+        :meth:`quantize_block`.  The logic mirrors the old-arch implementation in
+        ``compressors/base.py``.
+
+        Args:
+            decoding_layer_inputs:
+                A list of entries captured by a forward hook on the decoding layer.
+                Each element is a tuple whose first item is ``(args, kwargs)``.
+        """
+        first_block_name = self.quant_block_list[0][0]
+
+        class _FakeDecodingLayer(torch.nn.Module):
+
+            def forward(self, *args, **kwargs):
+                return args, kwargs
+
+        fake_layer = _FakeDecodingLayer()
+        fake_layer.orig_forward = fake_layer.forward
+        fake_layer.forward = partial(self._get_block_forward_func(first_block_name), fake_layer)
+
+        self.inputs = {}
+        self.last_cache_name = None
+        for step_input in decoding_layer_inputs:
+            args, kwargs = step_input[0]
+            fake_layer(*args, **kwargs)
+
+    def quantize_block(
+        self,
+        block: torch.nn.Module,
+        inputs: tuple,
+        q_input: Union[torch.Tensor, dict, None] = None,
+        device: Union[str, torch.device] = "cpu",
+        auto_offload: bool = True,
+    ):
+        """Quantize a single decoded block of the model (public API for LLM-Compressor).
+
+        This method is the new-arch equivalent of the old ``BaseCompressor.quantize_block``
+        (see ``compressors/base.py``).  It is primarily consumed by LLM-Compressor:
+        https://github.com/vllm-project/llm-compressor/pull/1994
+
+        The method normalizes the raw decoding-layer inputs provided by LLM-Compressor,
+        runs the full infrastructure pipeline (device placement, act-max collection,
+        reference-output caching) for the given *block*, delegates the pure-algorithm
+        weight optimization to ``self.quantizer.quantize_block``, then returns the
+        quantized-block outputs.
+
+        Args:
+            block: The transformer block (decoder layer) to quantize.
+            inputs: Raw decoding-layer inputs captured by LLM-Compressor's hook.
+                Format: list of ``((args, kwargs),)`` tuples as produced by the hook.
+            q_input: Optional quantized input from the previous block.  ``None`` on
+                the first block.
+            device: Target device for quantization (e.g. ``"cuda:0"``).
+            auto_offload: When *True*, use the device-map-aware offloading path;
+                otherwise move ``block`` directly to ``device``.
+
+        Returns:
+            tuple: ``(q_outputs, reference_output)`` where *q_outputs* is the
+            block's output after quantization (or ``None`` when
+            ``enable_quanted_input`` is ``False``), and *reference_output* is the
+            full-precision reference output collected before optimization.
+        """
+        assert not self.mllm and not self.diffusion, (
+            f"Currently, {self.__class__.__name__} does not support quantize_block " "for MLLM / diffusion models."
+        )
+
+        # Ensure post_init has been called (sets up model_context, compress_context,
+        # quantizer, layer_config, etc.).
+        if not self._post_init_done:
+            self.post_init()
+
+        self.normalize_decoding_layer_inputs_(inputs)
+        block_inputs = self.inputs[self.quant_block_list[0][0]]
+        input_ids, input_others = self._preprocess_block_inputs(block_inputs, "hidden_states")
+
+        # ── Infrastructure: materialize, dtype convert, device placement ──────
+        materialize_model_(block)
+        convert_module_to_hp_if_necessary(block, self.model_context.amp_dtype, device)
+
+        if auto_offload:
+            if is_auto_device_mapping(self.compress_context.device_map) and len(self.compress_context.device_list) > 1:
+                from auto_round.utils.device import set_auto_device_map_for_block_with_tuning
+
+                card_0_in_high_risk, loss_device = set_auto_device_map_for_block_with_tuning(
+                    block,
+                    self.compress_context.device_map,
+                    input_ids,
+                    self.compress_context.low_gpu_mem_usage,
+                    self.quantizer.batch_size,
+                    device,
+                )
+            else:
+                block = block.to(device)
+                card_0_in_high_risk, loss_device = False, device
+        else:
+            card_0_in_high_risk, loss_device = False, device
+
+        if len(self.compress_context.device_list) > 1 and auto_offload:
+            from accelerate.hooks import AlignDevicesHook, add_hook_to_module
+
+            for n, m in block.named_modules():
+                if len(list(m.children())) != 0 or not hasattr(m, "tuning_device"):
+                    continue
+                add_hook_to_module(m, AlignDevicesHook(m.tuning_device, io_same_device=True), True)
+
+        # ── Infrastructure: collect reference output and act_max ──────────────
+        bs = self.quantizer.batch_size * self.quantizer.infer_bs_coeff
+        if q_input is None:
+            hook_handles = self.quantizer._register_act_max_hook(block)
+            reference_output = self.quantizer._get_block_outputs(block, input_ids, input_others, bs)
+            for h in hook_handles:
+                h.remove()
+        else:
+            reference_output = self.quantizer._get_block_outputs(block, input_ids, input_others, bs)
+            hook_handles = self.quantizer._register_act_max_hook(block)
+            if hook_handles:
+                self.quantizer._get_block_outputs(block, q_input, input_others, bs, save_output=False)
+            for h in hook_handles:
+                h.remove()
+            if input_ids is not q_input:
+                clear_memory(input_ids, device_list=self.compress_context.device_list)
+            else:
+                clear_memory(device_list=self.compress_context.device_list)
+            input_ids = q_input
+
+        # ── Pure algorithm: delegates to quantizer ────────────────────────────
+        mid_iter_mem_check = self.compress_context.low_gpu_mem_usage and card_0_in_high_risk
+        self.quantizer.quantize_block(
+            block,
+            input_ids,
+            input_others,
+            reference_output,
+            loss_device=loss_device,
+            mid_iter_mem_check=mid_iter_mem_check,
+        )
+
+        # ── Collect quantized-block outputs ───────────────────────────────────
+        if self.quantizer.enable_quanted_input:
+            q_outputs = self.quantizer._get_block_outputs(block, input_ids, input_others, bs)
+        else:
+            q_outputs = None
+
+        # ── Cleanup ───────────────────────────────────────────────────────────
+        if len(self.compress_context.device_list) > 1:
+            accelerate.hooks.remove_hook_from_submodules(block)
+        mv_module_from_gpu(block)
+
+        return q_outputs, reference_output
+
     def _quantize_blocks(
         self,
         model: torch.nn.Module,

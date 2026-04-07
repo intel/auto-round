@@ -94,7 +94,7 @@ class TestLLMC:
             disable_opt_rtn=True,
             scheme=scheme,
         )
-        compressed_model, _ = ar.quantize_and_save(output_dir=tmp_path, format="llm_compressor")
+        compressed_model, tmp_path = ar.quantize_and_save(output_dir=tmp_path, format="llm_compressor")
         tmp_layer = compressed_model.model.decoder.layers[1].self_attn.q_proj
         assert (
             hasattr(tmp_layer, "weight_scale")
@@ -128,7 +128,7 @@ class TestLLMC:
             disable_opt_rtn=True,
             scheme=scheme,
         )
-        ar.quantize_and_save(output_dir=tmp_path, format="llm_compressor")
+        _, tmp_path = ar.quantize_and_save(output_dir=tmp_path, format="llm_compressor")
         model = AutoModelForCausalLM.from_pretrained(tmp_path, torch_dtype="auto", trust_remote_code=True)
         op = model.model.decoder.layers[0].fc1
         if op.quantization_scheme.targets != ["Linear"]:

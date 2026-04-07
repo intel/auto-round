@@ -36,10 +36,12 @@ class TestAutoRound:
 
     def test_w4a16(self, tiny_opt_model_path, dataloader):
         ar = AutoRound(tiny_opt_model_path, scheme="W4A16", nsamples=1, iters=1, seqlen=2, dataset=dataloader)
+        ar.post_init()
         assert ar.bits == 4
 
     def test_w2a16_rtn(self, tiny_opt_model_path, dataloader):
         ar = AutoRound(tiny_opt_model_path, scheme="W2A16", nsamples=1, iters=0, seqlen=2, dataset=dataloader)
+        ar.post_init()
         assert ar.bits == 2
 
     def test_w4a16_mixed(self, tiny_qwen_moe_model_path, dataloader):
@@ -88,6 +90,7 @@ class TestAutoRound:
 
     def test_mxfp4(self, tiny_opt_model_path, dataloader):
         ar = AutoRound(tiny_opt_model_path, scheme="MXFP4", nsamples=1, iters=1, seqlen=2, dataset=dataloader)
+        ar.post_init()
         assert ar.bits == 4
         assert ar.act_bits == 4
         assert ar.data_type == "mx_fp"
@@ -95,6 +98,7 @@ class TestAutoRound:
 
     def test_mxfp4_rceil(self, tiny_opt_model_path):
         ar = AutoRound(tiny_opt_model_path, scheme="MXFP4_RCEIL", nsamples=1, iters=1)
+        ar.post_init()
         assert ar.bits == 4
         assert ar.act_bits == 4
         assert ar.data_type == "mx_fp"
@@ -107,11 +111,13 @@ class TestAutoRound:
         from auto_round import AutoRound
 
         ar = AutoRound(tiny_qwen_vl_model_path, scheme="W2A16", nsamples=1, iters=1, seqlen=2)
+        ar.post_init()
         assert ar.bits == 2
         assert ar.act_bits == 16
 
     def test_nvfp4(self, tiny_opt_model_path, dataloader):
         ar = AutoRound(tiny_opt_model_path, scheme="NVFP4", nsamples=1, iters=1, seqlen=2, dataset=dataloader)
+        ar.post_init()
         assert ar.bits == 4
         assert ar.act_bits == 4
         assert ar.data_type == "nv_fp"
@@ -199,6 +205,7 @@ class TestAutoRound:
 
     def test_fp8_static(self, tiny_opt_model_path):
         ar = AutoRound(tiny_opt_model_path, scheme="FP8_STATIC", nsamples=1, iters=1)
+        ar.post_init()
         assert ar.bits == 8
         assert ar.act_bits == 8
         assert ar.data_type == "fp"
@@ -211,6 +218,7 @@ class TestAutoRound:
 
     def test_fp8_static_rtn(self, tiny_opt_model_path):
         ar = AutoRound(tiny_opt_model_path, scheme="FP8_STATIC", nsamples=1, iters=0, disable_opt_rtn=True)
+        ar.post_init()
         assert ar.bits == 8
         assert ar.act_bits == 8
         assert ar.data_type == "fp"

@@ -41,6 +41,37 @@ def _preview_resolved_attrs(config, scheme=None) -> dict:
         return {}
 
 
+def _eager_validate_scheme(config, scheme=None) -> None:
+    """Eagerly validate scheme/config constraints at construction time.
+
+    Mirrors the old-arch ``_check_configs()`` call in ``BaseCompressor.__init__``.
+    Raises ``ValueError`` or ``NotImplementedError`` immediately if the scheme
+    contains config-only invalid combinations (e.g. tuple group_size with non-fp8
+    weight dtype) so that callers get a fast failure rather than a deferred error
+    buried inside ``post_init()``.
+
+    ``AutoScheme`` is skipped because it requires model information.
+    """
+    if isinstance(scheme, AutoScheme):
+        return
+
+    scheme_attr_names = QuantizationScheme.get_attributes()
+    user_overrides = {k: getattr(config, k) for k in scheme_attr_names if getattr(config, k, None) is not None}
+    try:
+        _, _, final_attrs = _parse_scheme(scheme, user_overrides)
+    except (ValueError, NotImplementedError):
+        raise
+    except Exception:
+        return  # Other parse errors are deferred to post_init
+
+    import copy
+
+    temp_config = copy.copy(config)
+    for key, value in final_attrs.items():
+        setattr(temp_config, key, value)
+    temp_config.check_config()  # raises ValueError / NotImplementedError if invalid
+
+
 # ---------------------------------------------------------------------------
 # Compressor-class registry
 # ---------------------------------------------------------------------------
@@ -172,6 +203,11 @@ class AutoRound(object):
             quant_config = quant_configs[0]
         else:
             quant_config = alg_configs
+
+        # Eagerly validate scheme constraints that do not require model info.
+        # This mirrors old-arch _check_configs() called at __init__ time so that
+        # callers get ValueError/NotImplementedError on construction, not deferred.
+        _eager_validate_scheme(quant_config, scheme)
 
         # using different compressor base on AlgConfigs
         local_args = {k: v for k, v in locals().items() if k not in cls.SKIP_ARGS}
