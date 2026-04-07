@@ -502,7 +502,7 @@ def _evaluate_tasks_with_retry(tasks, hflm, device_str, batch_size, limit, retry
             except Exception as e:
                 cuda_error_msg = traceback.format_exc()
                 try:
-                    ori_batch_sizes = hflm.batch_sizes if hflm.batch_sizes else {"0": 64}
+                    ori_batch_sizes = hflm.batch_sizes or {"0": 64}
                     if not hflm.batch_sizes:
                         hflm.batch_sizes = ori_batch_sizes.copy()
                     try:
