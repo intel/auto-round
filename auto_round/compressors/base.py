@@ -1420,7 +1420,7 @@ class BaseCompressor(object):
             if use_blockwise_quantization:  # The ram usage is a little higher
                 all_to_quantized_module_names = list(dict.fromkeys(all_to_quantized_module_names))
 
-                all_blocks = self.quant_block_list if self.quant_block_list else get_block_names(self.model)
+                all_blocks = self.quant_block_list or get_block_names(self.model)
                 pbar = tqdm(range(sum(len(block) for block in all_blocks)))
                 for block_names in all_blocks:
                     for block_name in block_names:
@@ -1513,7 +1513,7 @@ class BaseCompressor(object):
         """
         all_to_quantized_module_names = list(set(all_to_quantized_module_names))
 
-        all_blocks = self.quant_block_list if self.quant_block_list else get_block_names(self.model)
+        all_blocks = self.quant_block_list or get_block_names(self.model)
         if not all_blocks:
             raise ValueError("Could not find any blocks. Check the model or quant_block_list.")
 
