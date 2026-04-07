@@ -63,7 +63,6 @@ class CompressContext(BaseContext):
         self.immediate_packing = is_immediate_packing
         self.is_immediate_packing = is_immediate_packing
         self.is_immediate_saving = is_immediate_saving
-        self.formats = formats
         self.static_kv_dtype = static_kv_dtype
         self.static_attention_dtype = static_attention_dtype
 

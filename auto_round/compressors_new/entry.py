@@ -41,6 +41,41 @@ def _preview_resolved_attrs(config, scheme=None) -> dict:
         return {}
 
 
+# ---------------------------------------------------------------------------
+# Compressor-class registry
+# ---------------------------------------------------------------------------
+# Maps (model_type, base_class_name) → combined class, created lazily.
+_COMPRESSOR_REGISTRY: dict[tuple[str, str], type] = {}
+
+
+def _get_compressor_class(model_type: str, base_cls: type) -> type:
+    """Return the compressor class for *base_cls* wired with the right model-type Mixin.
+
+    For ``model_type == "llm"`` the bare *base_cls* is returned unchanged.
+    For ``"mllm"`` and ``"diffusion"`` the corresponding Mixin is prepended via
+    :func:`type` and the result is cached in ``_COMPRESSOR_REGISTRY`` so that
+    each ``(model_type, base_cls)`` pair is created at most once per process.
+    """
+    if model_type == "llm":
+        return base_cls
+    key = (model_type, base_cls.__name__)
+    if key in _COMPRESSOR_REGISTRY:
+        return _COMPRESSOR_REGISTRY[key]
+    if model_type == "mllm":
+        from auto_round.compressors_new.mllm_mixin import MLLMMixin
+
+        mixin = MLLMMixin
+    elif model_type == "diffusion":
+        from auto_round.compressors_new.diffusion_mixin import DiffusionMixin
+
+        mixin = DiffusionMixin
+    else:
+        return base_cls
+    combined = type(f"{model_type.capitalize()}{base_cls.__name__}", (mixin, base_cls), {})
+    _COMPRESSOR_REGISTRY[key] = combined
+    return combined
+
+
 def is_weight_scheme(scheme):
     if isinstance(scheme, str):
         return scheme.upper().startswith("W")
@@ -151,30 +186,7 @@ class AutoRound(object):
             model_type = "mllm"
 
         if isinstance(quant_config, SignRoundConfig):
-            # For AutoRoundCompatible, we need calibration-based compression
-            # Dynamically create combined class using Mixin pattern
-            if model_type == "mllm":
-                from auto_round.compressors_new.mllm_mixin import MLLMMixin
-
-                # Create dynamic class: MLLMMixin + CalibCompressor
-                class MLLMCalibCompressor(MLLMMixin, CalibCompressor):
-                    """MLLM model with AutoRoundCompatible calibration compression"""
-
-                    pass
-
-                return MLLMCalibCompressor(alg_configs, **local_args, **kwargs)
-            elif model_type == "diffusion":
-                from auto_round.compressors_new.diffusion_mixin import DiffusionMixin
-
-                # Create dynamic class: DiffusionMixin + CalibCompressor
-                class DiffusionCalibCompressor(DiffusionMixin, CalibCompressor):
-                    """Diffusion model with AutoRoundCompatible calibration compression"""
-
-                    pass
-
-                return DiffusionCalibCompressor(alg_configs, **local_args, **kwargs)
-            else:
-                return CalibCompressor(alg_configs, **local_args, **kwargs)
+            return _get_compressor_class(model_type, CalibCompressor)(alg_configs, **local_args, **kwargs)
 
         elif isinstance(quant_config, RTNConfig):
             enable_imatrix = False
@@ -227,50 +239,10 @@ class AutoRound(object):
 
             if enable_imatrix or needs_act_calib or is_auto_scheme:
                 quant_config._alg_cls = "OptimizedRTNQuantizer"
-                # For RTN with calibration data, dynamically combine with model-specific Mixin
-                if model_type == "mllm":
-                    from auto_round.compressors_new.mllm_mixin import MLLMMixin
-
-                    class MLLMCalibratedRTNCompressor(MLLMMixin, CalibratedRTNCompressor):
-                        """MLLM model with calibrated RTN compression"""
-
-                        pass
-
-                    return MLLMCalibratedRTNCompressor(alg_configs, **local_args, **kwargs)
-                elif model_type == "diffusion":
-                    from auto_round.compressors_new.diffusion_mixin import DiffusionMixin
-
-                    class DiffusionCalibratedRTNCompressor(DiffusionMixin, CalibratedRTNCompressor):
-                        """Diffusion model with calibrated RTN compression"""
-
-                        pass
-
-                    return DiffusionCalibratedRTNCompressor(alg_configs, **local_args, **kwargs)
-                else:
-                    return CalibratedRTNCompressor(alg_configs, **local_args, **kwargs)
+                return _get_compressor_class(model_type, CalibratedRTNCompressor)(alg_configs, **local_args, **kwargs)
             else:
                 quant_config._alg_cls = "RTNQuantizer"
-                # Zero-shot RTN: no calibration data needed
-                if model_type == "mllm":
-                    from auto_round.compressors_new.mllm_mixin import MLLMMixin
-
-                    class MLLMZeroShotCompressor(MLLMMixin, ZeroShotCompressor):
-                        """MLLM model with zero-shot RTN compression"""
-
-                        pass
-
-                    return MLLMZeroShotCompressor(alg_configs, **local_args, **kwargs)
-                elif model_type == "diffusion":
-                    from auto_round.compressors_new.diffusion_mixin import DiffusionMixin
-
-                    class DiffusionZeroShotCompressor(DiffusionMixin, ZeroShotCompressor):
-                        """Diffusion model with zero-shot RTN compression"""
-
-                        pass
-
-                    return DiffusionZeroShotCompressor(alg_configs, **local_args, **kwargs)
-                else:
-                    return ZeroShotCompressor(alg_configs, **local_args, **kwargs)
+                return _get_compressor_class(model_type, ZeroShotCompressor)(alg_configs, **local_args, **kwargs)
 
 
 class AutoRoundCompatible:

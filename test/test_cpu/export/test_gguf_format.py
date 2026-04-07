@@ -66,7 +66,7 @@ class TestGGUF:
         )
         assert autoround.group_size == 32
         assert not autoround.sym
-        gguf_file = os.listdir(self.save_dir)[0]
+        gguf_file = os.listdir(quantized_model_path)[0]
         model = AutoModelForCausalLM.from_pretrained(quantized_model_path, gguf_file=gguf_file, device_map="auto")
         eval_generated_prompt(model, self.tokenizer)
 
@@ -151,7 +151,7 @@ class TestGGUF:
         )
         quantized_model_path = self.save_dir
         _, quantized_model_path = autoround.quantize_and_save(output_dir=quantized_model_path, format="gguf:q4_0")
-        assert "mmproj-model.gguf" in os.listdir(self.save_dir)
+        assert "mmproj-model.gguf" in os.listdir(quantized_model_path)
         for file_name in os.listdir(quantized_model_path):
             file_size = os.path.getsize(os.path.join(quantized_model_path, file_name)) / 1024**2
             if file_name == "mmproj-model.gguf":
@@ -171,7 +171,7 @@ class TestGGUF:
         )
         quantized_model_path = self.save_dir
         _, quantized_model_path = autoround.quantize_and_save(output_dir=quantized_model_path, format="gguf:q4_0")
-        assert "mmproj-model.gguf" in os.listdir(self.save_dir)
+        assert "mmproj-model.gguf" in os.listdir(quantized_model_path)
         for file_name in os.listdir(quantized_model_path):
             file_size = os.path.getsize(os.path.join(quantized_model_path, file_name)) / 1024**2
             if file_name == "mmproj-model.gguf":

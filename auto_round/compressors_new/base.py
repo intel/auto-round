@@ -547,18 +547,44 @@ class BaseCompressor(object):
         ``quantize_and_save()`` does this automatically before entering the
         inference-mode quantize loop.
 
-        The five phases in order:
-          1. Scheme resolution  – pure config, no model structure needed.
-          2. Format resolution  – needs data_type/bits from phase 1.
-          3. Model patching     – needs formats from phase 2.
-          4. Layer-config build – needs patched model from phase 3.
-          5. Hardware setup     – device map, torch.compile, offloading.
+        Delegates to five ordered pipeline phases; see each ``_resolve_scheme``,
+        ``_resolve_formats``, ``_patch_model``, ``_build_layer_config``, and
+        ``_hardware_setup`` for the precise preconditions and postconditions.
         """
         if self._post_init_done:
             return
 
-        # ── Phase 1: resolve scheme ───────────────────────────────────────────
-        # Initialize scheme state from quantize_config before resolving.
+        self._resolve_scheme()
+        self._resolve_formats()
+        self._patch_model()
+        self._build_layer_config()
+        self._hardware_setup()
+
+        self._post_init_done = True
+
+    # ── Pipeline phase methods ────────────────────────────────────────────────
+
+    def _resolve_scheme(self) -> None:
+        """Phase 1 – Scheme resolution and quantizer construction.
+
+        Preconditions:
+          - ``self.quantize_config`` is a valid :class:`QuantizationConfig`.
+
+        Work performed:
+          - Seeds scheme-related attrs (``scale_dtype``, ``ignore_layers``,
+            ``quant_lm_head``, ``to_quant_block_names``) from ``quantize_config``.
+          - Calls :meth:`resolve_scheme` to derive ``data_type``, ``bits``,
+            ``sym``, ``scale_dtype`` etc. and write them back to both ``self``
+            and ``self.quantize_config``.
+          - Constructs ``self.quantizer`` from the now-resolved config and wires
+            it to the current model / context.
+          - Binds ``self.wrapper_block`` for later use in quantizers.
+
+        Postconditions:
+          - ``self.scheme`` and ``self.quantize_config`` carry resolved scheme attrs.
+          - ``self.quantizer`` is ready; calibration params (``seqlen``,
+            ``nsamples``) are synced.
+        """
         cfg = self.quantize_config
         self.scale_dtype = cfg.scale_dtype
         # self.layer_config is already set from __init__ (direct compressor param).
@@ -585,7 +611,33 @@ class BaseCompressor(object):
         self.quantizer.nsamples = self.nsamples
         self.wrapper_block = wrapper_block
 
-        # ── Phase 2: resolve output format ───────────────────────────────────
+    def _resolve_formats(self) -> None:
+        """Phase 2 – Format resolution, GGUF attr sync, and rotation application.
+
+        Preconditions:
+          - Phase 1 complete: ``self.quantizer`` is initialised and the scheme
+            is resolved (``data_type``, ``bits``, ``sym`` etc. are final).
+
+        Work performed:
+          - Converts a string ``self.formats`` to a list of
+            :class:`~auto_round.formats.OutputFormat` objects via
+            :func:`~auto_round.formats.get_formats`.
+          - Initialises :class:`~auto_round.compressors_new.shard_writer.ShardWriter`
+            when formats are present.
+          - **(2b)** Detects GGUF-driven attribute mutations (``bits``, ``sym``,
+            ``data_type``, ``group_size``, etc.) that ``gguf_args_check`` may
+            have written onto ``self`` inside ``get_formats``, syncs them to
+            ``self.quantizer``, and rebuilds ``self.scheme`` accordingly.
+          - Merges any GGUF-injected entries into ``self.layer_config``.
+          - **(2d)** Applies rotation transforms from ``self.transform_configs``.
+
+        Postconditions:
+          - ``self.formats`` is a list (or ``None``).
+          - ``self.compress_context.formats`` mirrors ``self.formats``.
+          - ``self.quantizer`` carries the GGUF-adjusted scheme attrs.
+          - ``self.scheme`` is consistent with the final quantization attrs.
+          - All rotation transforms have been applied to ``self.model_context.model``.
+        """
         # get_formats() inspects data_type / bits etc. that were just resolved.
         if isinstance(self.formats, str):
             self.formats = get_formats(self.formats, self)
@@ -595,10 +647,10 @@ class BaseCompressor(object):
             self.shard_writer = ShardWriter(self.model_context.model, bits=8)
 
         # Snapshot the user-specified layer_config before GGUF processing may
-        # add extra entries, so we can distinguish them later in Phase 2b.
+        # add extra entries, so we can distinguish them later in step 2b.
         _pre_gguf_layer_config = copy.copy(self.layer_config) or {}
 
-        # ── Phase 2b: propagate GGUF-adjusted attrs back to quantizer ────────
+        # ── 2b: propagate GGUF-adjusted attrs back to quantizer ──────────────
         # gguf_args_check (called inside get_formats) may have overridden
         # bits / sym / data_type / super_bits / super_group_size / group_size
         # on *this* BaseCompressor object.  The quantizer stored its own copies
@@ -674,7 +726,7 @@ class BaseCompressor(object):
             for _lname, _lval in _gguf_layer_cfg.items():
                 self.layer_config.setdefault(_lname, _lval)
 
-        # ── Phase 2d: apply rotation transforms ──────────────────────────────
+        # ── 2d: apply rotation transforms ────────────────────────────────────
         if self.transform_configs:
             check_supported_schemes(self.scheme)
             need_calibration = self.quantize_config.iters > 0
@@ -685,15 +737,50 @@ class BaseCompressor(object):
                     need_calibration=need_calibration,
                 )
 
-        # ── Phase 3: patch model structure ───────────────────────────────────
-        # update_module() may replace layers (e.g. MoE expert merging); must
+    def _patch_model(self) -> None:
+        """Phase 3 – Model structure patching.
+
+        Preconditions:
+          - Phase 2 complete: ``self.formats`` is resolved so that
+            ``apply_patches`` can inspect format-specific requirements.
+
+        Work performed:
+          - Delegates to :meth:`~auto_round.context.model.ModelContext.apply_patches`
+            which may replace or merge layers (e.g. MoE expert merging, adding
+            static-kv wrappers) to produce the final model topology.
+
+        Postconditions:
+          - ``self.model_context.model`` reflects the definitive topology that
+            :meth:`_build_layer_config` will walk.
+        """
+        # apply_patches() may replace layers (e.g. MoE expert merging); must
         # happen before configure_layer_config() so it sees the final topology.
         self.model_context.apply_patches(self.formats)
 
-        # ── Phase 4: build layer config ──────────────────────────────────────
+    def _build_layer_config(self) -> None:
+        """Phase 4 – Layer-config construction and quantizer sync.
+
+        Preconditions:
+          - Phase 3 complete: model topology is final.
+          - ``self.scheme`` and all scheme-resolved attrs are consistent with
+            the (possibly GGUF-adjusted) values set in Phase 2.
+
+        Work performed:
+          - Calls :meth:`_scheme_post_init` which walks the patched model to
+            build ``self.layer_config``, ``self.quant_block_list``, etc.
+            On the AutoScheme path this also runs delta-loss forward/backward
+            passes to select per-layer schemes.
+          - Syncs the fully-resolved ``layer_config`` and related attrs to
+            ``self.quantizer`` so quantization methods have the complete view.
+
+        Postconditions:
+          - ``self.layer_config`` is fully populated.
+          - ``self.quantizer`` mirrors ``layer_config``, ``has_qlayer_outside_block``,
+            ``regex_config``, ``quant_block_list``, ``to_quant_block_names``,
+            ``scale_dtype``, and ``ignore_layers``.
+        """
         # configure_layer_config() walks the patched model; _gen_auto_scheme()
         # (AutoScheme path) runs delta-loss forward+backward passes.
-        # Both methods now live in BaseCompressor and operate on self directly.
         self._scheme_post_init()
 
         # Sync the fully-resolved scheme state to the quantizer so that
@@ -707,7 +794,32 @@ class BaseCompressor(object):
         self.quantizer.scale_dtype = self.scale_dtype
         self.quantizer.ignore_layers = self.ignore_layers
 
-        # ── Phase 5: hardware / compile setup ────────────────────────────────
+    def _hardware_setup(self) -> None:
+        """Phase 5 – Hardware and compile configuration.
+
+        Preconditions:
+          - Phase 4 complete: ``layer_config`` is built and
+            ``has_qlayer_outside_block`` is known.
+          - ``self.quantize_config.data_type`` is the final resolved value
+            (needed by :meth:`_adjust_torch_compile`).
+
+        Work performed:
+          - Applies the device map via :func:`~auto_round.utils.device.set_non_auto_device_map`.
+          - Re-evaluates ``torch.compile`` eligibility now that ``data_type`` is
+            resolved and writes the result back to ``compress_context``.
+          - Selects ``self.block_forward`` (compiled or plain).
+          - Resets the offload manager when ``low_cpu_mem_usage`` is active.
+          - Disables ``self.inplace`` when quantized layers live outside
+            transformer blocks (incompatible with in-place rewriting).
+          - Calls :meth:`_adjust_immediate_packing_and_saving` to decide whether
+            layers should be packed / written immediately after each block.
+
+        Postconditions:
+          - ``self.block_forward`` is ready for use.
+          - ``compress_context.enable_torch_compile`` is final.
+          - ``self.inplace`` and ``self.is_immediate_packing`` /
+            ``self.is_immediate_saving`` are set to their definitive values.
+        """
         set_non_auto_device_map(self.model_context.model, self.compress_context.device_map)
         # Re-evaluate torch.compile eligibility now that data_type is resolved.
         self._adjust_torch_compile(self.enable_torch_compile)
@@ -726,8 +838,6 @@ class BaseCompressor(object):
             logger.warning("this API is deprecated, please use `quantize_and_save` instead")
         else:
             self._adjust_immediate_packing_and_saving()
-
-        self._post_init_done = True
 
     # backward compatible with the legacy API
     def __getattr__(self, name: str) -> Any:

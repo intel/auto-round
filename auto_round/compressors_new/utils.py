@@ -1213,4 +1213,8 @@ def immediate_pack(name: str, layer_config: dict):
         output_dir=_get_save_folder_name(compress_context.formats[0]),
         layer_config=layer_config,
         tokenizer=model_context.tokenizer,
+        mllm=model_context.is_mllm,
+        processor=getattr(model_context, "processor", None),
+        image_processor=getattr(model_context, "image_processor", None),
+        quant_nontext_module=getattr(model_context, "quant_nontext_module", False),
     )
