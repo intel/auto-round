@@ -140,18 +140,17 @@ def _apply_to_module(
                 if hadamard_weight is not None:
                     input = input.view(-1, hadamard_weight.shape[0])
                     return (
-                        _multihead_matmul(
-                            input.to(hadamard_weight.dtype),
-                            hadamard_weight.to(input.device)
-                        )
-                    ).view(ori_shape).to(orig_dtype)
+                        (_multihead_matmul(input.to(hadamard_weight.dtype), hadamard_weight.to(input.device)))
+                        .view(ori_shape)
+                        .to(orig_dtype)
+                    )
                 else:
                     input = input.view(-1, self.hadamard_matrix.shape[0])
                     return (
-                        _multihead_matmul(
-                            input.to(self.hadamard_matrix.dtype),
-                            self.hadamard_matrix.T)
-                    ).view(ori_shape).to(orig_dtype)
+                        (_multihead_matmul(input.to(self.hadamard_matrix.dtype), self.hadamard_matrix.T))
+                        .view(ori_shape)
+                        .to(orig_dtype)
+                    )
 
             # for fused transform + quantization kernel
             module.pre_dequantized_input = False
