@@ -338,12 +338,10 @@ class BaseCompressor(object):
     def _gen_auto_scheme(self) -> dict[str, dict]:
         """Generate per-layer config via AutoScheme delta-loss selection."""
         if self.model_context.is_mllm:
-            logger.info("AutoScheme is not yet supported for multimodal LLMs.")
-            sys.exit(-1)
+            raise NotImplementedError("AutoScheme is not yet supported for multimodal LLMs.")
 
         if is_quantized_input_module(self.model_context.model):
-            logger.info("AutoScheme does not currently support quantized input models (e.g., FP8).")
-            sys.exit(-1)
+            raise NotImplementedError("AutoScheme does not currently support quantized input models (e.g., FP8).")
 
         all_dtypes = []
         all_gguf = True

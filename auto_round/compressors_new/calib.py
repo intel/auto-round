@@ -1120,7 +1120,7 @@ class CalibratedRTNCompressor(CalibCompressor):
     def _quantize_via_rtn_blockwise(self) -> None:
         """Quantize model layers block by block using cached inputs and imatrix."""
 
-        all_blocks = self.quantizer.quant_block_list if self.quantizer.quant_block_list else get_block_names(self.model)
+        all_blocks = self.quant_block_list or get_block_names(self.model)
         if not all_blocks:
             raise ValueError("Could not find any blocks. Check the model or quant_block_list.")
 
