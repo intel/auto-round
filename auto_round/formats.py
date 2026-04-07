@@ -1102,7 +1102,7 @@ class AutoRoundFormat(OutputFormat):
                     self.backend = AutoAWQFormat("auto_round:auto_awq", ar)
             elif is_nv_fp(ar.data_type) or is_mx_fp(ar.data_type):
                 self.backend = AutoRoundFormat(ar.data_type, ar)
-            elif is_mx_int(ar.data_type):
+            elif is_mx_int(ar.data_type) and ar.bits == 4: # only add mx_int4 now
                 self.backend = AutoRoundFormat(ar.data_type, ar)
             elif is_static_wfp8afp8(ar):  # static wfp8afp8
                 self.backend = AutoRoundFormat(AutoRoundExportFormat.FP8_STATIC.value, ar)
@@ -1161,11 +1161,11 @@ class AutoRoundFormat(OutputFormat):
             f"auto_round:{AutoRoundExportFormat.MX_FP_RCEIL.value}",
             f"auto_round:{AutoRoundExportFormat.NV_FP4_WITH_STATIC_GS.value}",
         ]:
-            from auto_round.export.export_to_autoround.export_to_nvfp_mxfp import pack_layer
+            from auto_round.export.export_to_autoround.export_to_nvfp_mx import pack_layer
 
             pack_func = pack_layer
         elif self.output_format in [f"auto_round:{AutoRoundExportFormat.MX_INT.value}"]:
-            from auto_round.export.export_to_autoround.export_to_nvfp_mxfp import pack_layer
+            from auto_round.export.export_to_autoround.export_to_nvfp_mx import pack_layer
 
             pack_func = pack_layer
         elif self.output_format in [
@@ -1206,7 +1206,7 @@ class AutoRoundFormat(OutputFormat):
             )
         backend = self.get_backend_name()
         if re.search(f"{AutoRoundExportFormat.MX_FP.value}|{AutoRoundExportFormat.NV_FP.value}", backend):
-            from auto_round.export.export_to_autoround.export_to_nvfp_mxfp import save_quantized_as_fp
+            from auto_round.export.export_to_autoround.export_to_nvfp_mx import save_quantized_as_fp
 
             backend = "auto_round:llm_compressor"
             export_func = save_quantized_as_fp
@@ -1216,7 +1216,7 @@ class AutoRoundFormat(OutputFormat):
             backend = "auto_round:fp8_static" if serialization_dict.get("act_bits", 16) == 8 else None
             export_func = save_quantized_as_autoround
         elif re.search(f"{AutoRoundExportFormat.MX_INT.value}", backend):
-            from auto_round.export.export_to_autoround.export_to_nvfp_mxfp import save_quantized_as_fp
+            from auto_round.export.export_to_autoround.export_to_nvfp_mx import save_quantized_as_fp
 
             backend = "auto_round:mx_int4"
             export_func = save_quantized_as_fp

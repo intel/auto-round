@@ -222,6 +222,21 @@ class MXINT4QuantLinear(MXQuantLinearBase):
         unpacked_data = unpack_int4_from_uint8(packed_data, m, half_n * 2, dtype=self.dtype)
         return unpacked_data
 
+    @classmethod
+    def from_original(cls, config: Optional[QuantizationScheme], original_layer: torch.nn.Linear):
+        """
+        Create an `MXQuantLinear` layer from an original linear layer.
+        """
+        logger.warning_once("MXINT quantization is still in experimental stage, the inference speed might be slow.")
+        qdq_linear = cls(
+            in_features=original_layer.in_features,
+            out_features=original_layer.out_features,
+            config=config,
+            bias=original_layer.bias,
+            dtype=original_layer.weight.dtype,
+        )
+        return qdq_linear
+
 
 class HadamardMXFP4QuantLinear(MXFP4QuantLinear):
     """

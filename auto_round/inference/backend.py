@@ -321,7 +321,7 @@ BackendInfos["auto_round:torch_mxint4"] = BackendInfo(
     priority=0,
     checkers=[mxfp_nvfp_feature_checker],
     alias=["auto_round", "torch"],
-    requirements=["auto-round>0.11.0"],
+    requirements=["auto-round>0.12.0"],
 )
 
 # NVFP4
