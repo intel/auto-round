@@ -683,7 +683,7 @@ def _woq_quantize_missing_tensors(target_dir: str, missing_tensors_dict: dict) -
         layer_cfg = _resolve_layer_cfg(layer_name)
         bits = layer_cfg["bits"]
         if bits not in [4, 8]:
-            logger.warning_once(f"RTN [< 4-bits] may lead to a significant decrease in the acceptance rate.")
+            logger.warning_once("RTN [< 4-bits] may lead to a significant decrease in the acceptance rate.")
             logger.warning_once(f"Skipping WOQ[RTN] {bits}-bit quantization, only 4-bit and 8-bit are supported.")
             continue
         group_size = layer_cfg["group_size"]
