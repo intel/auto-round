@@ -13,18 +13,16 @@ import typing
 import torch
 import tqdm
 
-
-from auto_round.experimental.hadamard_inplace.utils import (
-    apply_exact_had_to_linear,
-    random_hadamard_matrix,
-)
 from auto_round.experimental.hadamard_inplace.model_config import (
     RotationMapping,
     _resolve,
     infer_mapping_from_model,
 )
-from auto_round.experimental.hadamard_inplace.utils import register_online_had_hooks
-
+from auto_round.experimental.hadamard_inplace.utils import (
+    apply_exact_had_to_linear,
+    random_hadamard_matrix,
+    register_online_had_hooks,
+)
 
 # ---------------------------------------------------------------------------
 # Low-level primitives (model-agnostic via RotationMapping)
@@ -46,13 +44,9 @@ def _fuse_ln_linear(
 
         if hasattr(layernorm, "bias") and layernorm.bias is not None:
             if linear.bias is None:
-                linear.bias = torch.nn.Parameter(
-                    torch.zeros(linear.out_features, dtype=torch.float64, device=dev)
-                )
+                linear.bias = torch.nn.Parameter(torch.zeros(linear.out_features, dtype=torch.float64, device=dev))
             ln_bias = layernorm.bias.double().to(dev)
-            linear.bias.data = (
-                linear.bias.data.double() + torch.matmul(W_, ln_bias)
-            )
+            linear.bias.data = linear.bias.data.double() + torch.matmul(W_, ln_bias)
             linear.bias.data = linear.bias.data.to(linear_dtype)
 
 
@@ -192,7 +186,6 @@ def _replace_layernorms_with_rmsnorm(model) -> None:
         setattr(parent, attr, rms)
 
 
-
 # ---------------------------------------------------------------------------
 # High-level steps driven by RotationMapping
 # ---------------------------------------------------------------------------
@@ -306,6 +299,7 @@ def apply_hadamard_rotation(model, fp32_had: bool = False, use_fast_had: bool = 
     """
     if use_fast_had:
         from auto_round.utils import logger
+
         try:
             import fast_hadamard_transform  # noqa: F401
 
@@ -315,10 +309,7 @@ def apply_hadamard_rotation(model, fp32_had: bool = False, use_fast_had: bool = 
                 "and inference. This will be refined later."
             )
         except ImportError:
-            logger.warning(
-                "Importing fast_hadamard_transform failed, "
-                "falling back to default implementation."
-            )
+            logger.warning("Importing fast_hadamard_transform failed, " "falling back to default implementation.")
             use_fast_had = False
 
     mapping = infer_mapping_from_model(model)
@@ -353,10 +344,12 @@ def apply_hadamard_rotation(model, fp32_had: bool = False, use_fast_had: bool = 
 
     # For v_proj it's within-head; combining with cross-head equals a full Hadamard
     handles = register_online_had_hooks(
-        model, mapping=mapping, fp32_had=fp32_had, use_fast_had=use_fast_had,
+        model,
+        mapping=mapping,
+        fp32_had=fp32_had,
+        use_fast_had=use_fast_had,
     )
     return handles
-
 
 
 # ---------------------------------------------------------------------------
@@ -364,10 +357,10 @@ def apply_hadamard_rotation(model, fp32_had: bool = False, use_fast_had: bool = 
 # ---------------------------------------------------------------------------
 
 if __name__ == "__main__":
-    from auto_round.experimental.transform.utils.hadamard import _fetch_hadamard_divisor
     from transformers import AutoModelForCausalLM, AutoTokenizer
-    import auto_round
 
+    import auto_round
+    from auto_round.experimental.transform.utils.hadamard import _fetch_hadamard_divisor
 
     K_list = [172, 156, 140, 108, 60, 52, 36, 28, 40, 20, 12]
     for d in K_list:
@@ -378,9 +371,7 @@ if __name__ == "__main__":
     print("equal test passed")
     model_name = "/models/opt-125m"
     tokenizer = AutoTokenizer.from_pretrained(model_name)
-    model = AutoModelForCausalLM.from_pretrained(
-        model_name, torch_dtype=torch.float16, device_map="auto"
-    )
+    model = AutoModelForCausalLM.from_pretrained(model_name, torch_dtype=torch.float16, device_map="auto")
     model.to("cuda")
     text = "There is a girl who likes adventure,"
     inputs = tokenizer(text, return_tensors="pt").to(model.device)
@@ -392,14 +383,9 @@ if __name__ == "__main__":
     inputs = tokenizer(text, return_tensors="pt").to(model.device)
     print(tokenizer.decode(model.generate(**inputs, max_new_tokens=50)[0]))
 
-
-
-
     model_name = "/models/Qwen3-8B"
     tokenizer = AutoTokenizer.from_pretrained(model_name)
-    model = AutoModelForCausalLM.from_pretrained(
-        model_name, torch_dtype=torch.float16, device_map="auto"
-    )
+    model = AutoModelForCausalLM.from_pretrained(model_name, torch_dtype=torch.float16, device_map="auto")
     apply_hadamard_rotation(model, use_fast_had=False)
     model.to("cuda")
     text = "There is a girl who likes adventure,"
@@ -410,21 +396,16 @@ if __name__ == "__main__":
 
     model_name = "/models/Meta-Llama-3.1-8B-Instruct"
     tokenizer = AutoTokenizer.from_pretrained(model_name)
-    model = AutoModelForCausalLM.from_pretrained(
-        model_name, torch_dtype=torch.float16, device_map="auto"
-    )
+    model = AutoModelForCausalLM.from_pretrained(model_name, torch_dtype=torch.float16, device_map="auto")
     apply_hadamard_rotation(model, use_fast_had=False)
     model.to("cuda")
     text = "There is a girl who likes adventure,"
     inputs = tokenizer(text, return_tensors="pt").to(model.device)
     print(tokenizer.decode(model.generate(**inputs, max_new_tokens=50)[0]))
 
-
     model_name = "/models/Llama-2-7b-chat-hf"
     tokenizer = AutoTokenizer.from_pretrained(model_name)
-    model = AutoModelForCausalLM.from_pretrained(
-        model_name, torch_dtype=torch.float16, device_map="auto"
-    )
+    model = AutoModelForCausalLM.from_pretrained(model_name, torch_dtype=torch.float16, device_map="auto")
     apply_hadamard_rotation(model, use_fast_had=False)
     model.to("cuda")
     text = "There is a girl who likes adventure,"
