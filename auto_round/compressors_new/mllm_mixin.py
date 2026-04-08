@@ -126,6 +126,16 @@ class MLLMMixin:
 
         if isinstance(self.dataset, str):
             dataset = self.dataset.replace(" ", "")
+            # Mirror old arch __init__: switch text-only dataset to MLLM dataset when
+            # quant_nontext_module=True, as text datasets cannot calibrate vision modules.
+            from auto_round.calib_dataset import CALIB_DATASETS
+
+            if self.quant_nontext_module and dataset in CALIB_DATASETS:
+                logger.warning(
+                    "Text only dataset cannot be used for calibrating non-text modules,"
+                    " switching to liuhaotian/llava_conv_58k"
+                )
+                dataset = "liuhaotian/llava_conv_58k"
             (
                 self.dataloader,
                 self.batch_size,
@@ -145,6 +155,8 @@ class MLLMMixin:
                 nsamples=nsamples,
                 quant_nontext_module=self.quant_nontext_module,
             )
+        else:
+            self.dataloader = self.dataset
 
         # Process data through the model for calibration
         total_cnt = 0

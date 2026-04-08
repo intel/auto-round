@@ -983,6 +983,12 @@ class BaseCompressor(object):
             logger.warning("please run autoround.quantize first")
             return
         folders = []
+        if self.formats is None:
+            logger.info("format is not set, using default auto_round format.")
+            self.formats = "auto_round"
+        if isinstance(self.formats, str):
+            self.formats = get_formats(self.formats, self)
+            self.compress_context.formats = self.formats
         for format in self.formats:
             save_folder = _get_save_folder_name(format)
             if self.act_bits <= 8 and format.is_fake():
@@ -1030,6 +1036,12 @@ class BaseCompressor(object):
         Mirrors the logic previously in ``__main__.py`` so callers only need to
         pass the base ``output_dir`` and the format string.
         """
+        # Diffusion models use save_quantized from DiffusionMixin which manages its own
+        # directory layout (model_index.json + per-component subdirs).  Appending a
+        # scheme-derived suffix here would place files one level too deep.
+        if getattr(self, "diffusion", False):
+            return output_dir
+
         model_name = (getattr(self.model_context.model, "name_or_path", "") or "").rstrip("/")
         cfg = self.quantize_config
         group_size = cfg.group_size
@@ -1120,6 +1132,13 @@ class BaseCompressor(object):
         # IMPORTANT: post_init() must run outside any @torch.inference_mode() context
         # because AutoScheme's delta-loss selection requires gradient tracking.
         self.post_init()
+        # If post_init() was called manually before quantize_and_save() (e.g. ar.post_init()
+        # in tests), _resolve_formats saw formats=None and was a no-op.  Now that we have set
+        # self.formats to a default string above, resolve it into OutputFormat objects so that
+        # quantize() and save_quantized() receive proper objects, not a raw string.
+        if isinstance(self.formats, str):
+            self.formats = get_formats(self.formats, self)
+            self.compress_context.formats = self.formats
         # Derive descriptive export dir after post_init so scheme-resolved attrs are available.
         _fmt_str = format or (self.formats if isinstance(self.formats, str) else "")
         output_dir = self._get_export_dir(output_dir, _fmt_str)

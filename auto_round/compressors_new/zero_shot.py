@@ -70,6 +70,40 @@ class ZeroShotCompressor(BaseCompressor):
         )
         self.lr = 5e-3
 
+    def quantize_block(
+        self,
+        block: torch.nn.Module,
+        inputs: tuple,
+        q_input: Union[torch.Tensor, dict, None] = None,
+        device: Union[str, torch.device] = "cpu",
+        auto_offload: bool = True,
+    ):
+        """Quantize a single block via RTN (public API for LLM-Compressor).
+
+        ZeroShotCompressor does not need calibration data, so ``inputs`` and
+        ``q_input`` are accepted for interface compatibility but not used for
+        algorithm purposes.  The block is materialized, converted to the target
+        dtype, moved to ``device``, and quantized in-place via RTN.
+
+        Returns:
+            tuple: ``(None, None)`` — RTN does not produce reference outputs.
+        """
+        assert not self.mllm and not self.diffusion, (
+            f"Currently, {self.__class__.__name__} does not support quantize_block " "for MLLM / diffusion models."
+        )
+
+        if not self._post_init_done:
+            self.post_init()
+
+        materialize_model_(block)
+        convert_module_to_hp_if_necessary(block, self.model_context.amp_dtype, device)
+        block = block.to(device)
+
+        self.quantizer.quantize_block(block)
+
+        mv_module_from_gpu(block)
+        return None, None
+
     # Use no_grad instead of inference_mode
     # https://github.com/intel/auto-round/issues/1620
     @torch.no_grad()

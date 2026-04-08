@@ -24,7 +24,7 @@ def quantize_model(model, output_dir, scheme, iters=0, ignore_layers="self_attn,
         disable_opt_rtn=disable_opt_rtn,
     )
     quantized_model, save_folder = autoround.quantize_and_save(format="auto_round", output_dir=output_dir)
-    return quantized_model
+    return quantized_model, save_folder
 
 
 def count_modules_by_type(model, target_module_name_or_class):
@@ -44,7 +44,9 @@ def count_modules_by_type(model, target_module_name_or_class):
 def test_gptoss(scheme, tiny_gpt_oss_model_path, tmp_path):
     config = AutoConfig.from_pretrained(tiny_gpt_oss_model_path, trust_remote_code=True)
     output_dir = str(tmp_path / "saved")
-    quantized_model = quantize_model(tiny_gpt_oss_model_path, output_dir, scheme, ignore_layers="self_attn,lm_head")
+    quantized_model, save_folder = quantize_model(
+        tiny_gpt_oss_model_path, output_dir, scheme, ignore_layers="self_attn,lm_head"
+    )
 
     # Ensure the quantized model is not None
     assert quantized_model is not None, "Quantized model should not be None."
@@ -63,7 +65,7 @@ def test_gptoss(scheme, tiny_gpt_oss_model_path, tmp_path):
     ), f"Expected {config.num_hidden_layers * 3 * config.num_local_experts} QuantLinear modules, found {quant_linear_cnt}."
 
     # verify the quantized model can be loaded and run inference
-    loaded_model = GptOssForCausalLM.from_pretrained(output_dir)
+    loaded_model = GptOssForCausalLM.from_pretrained(save_folder)
     for n, m in quantized_model.named_modules():
         if m.__class__.__name__ == "QuantLinear":
             loaded_m = loaded_model.get_submodule(n)
@@ -78,12 +80,14 @@ def test_gptoss(scheme, tiny_gpt_oss_model_path, tmp_path):
 
 def test_llama4(tiny_llama4_model_path):
     output_dir = "./tmp/test_quantized_llama4"
-    quantized_model = quantize_model(tiny_llama4_model_path, output_dir, "MXFP4", ignore_layers="self_attn,lm_head")
+    quantized_model, save_folder = quantize_model(
+        tiny_llama4_model_path, output_dir, "MXFP4", ignore_layers="self_attn,lm_head"
+    )
 
     # Ensure the quantized model is not None
     assert quantized_model is not None, "Quantized model should not be None."
 
-    loaded_model = Llama4ForConditionalGeneration.from_pretrained(output_dir)
+    loaded_model = Llama4ForConditionalGeneration.from_pretrained(save_folder)
     for n, m in quantized_model.named_modules():
         if m.__class__.__name__ == "QuantLinear":
             loaded_m = loaded_model.get_submodule(n)

@@ -324,6 +324,9 @@ def set_layer_config(
         elif isinstance(item, QuantizationScheme):
             config = asdict(item)
         elif isinstance(item, dict):
+            # "in_blocks" is an internal bookkeeping key injected by LLM-Compressor;
+            # silently drop it before validation.
+            item = {k: v for k, v in item.items() if k != "in_blocks"}
             invalid = set(item) - set(scheme_keys + ("fixed_by_user", "scale_dtype"))
             if invalid:
                 raise ValueError(

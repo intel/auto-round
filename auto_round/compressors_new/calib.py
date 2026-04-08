@@ -270,6 +270,10 @@ class CalibCompressor(BaseCompressor):
         """
         if layer_names is None:
             layer_names = []
+
+        if not self._post_init_done:
+            self.post_init()
+
         self.inputs = {}
         self.to_cached_layers = block_names + layer_names
 

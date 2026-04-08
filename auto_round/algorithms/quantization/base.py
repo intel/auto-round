@@ -323,11 +323,12 @@ class BaseQuantizers:
             # TODO FIXME
             # This function could not be compiled, causing a large accuracy drop when `enable_alg_ext` is used.
             # To avoid issues, remove it in all scenarios except WOQ.
-            _bf = (
-                compile_func(block_forward, self.compress_context.device)
-                if self.compress_context.enable_torch_compile
-                else block_forward
-            )
+            if self.compress_context.enable_torch_compile:
+                if not hasattr(self, "_compiled_block_forward"):
+                    self._compiled_block_forward = compile_func(block_forward, self.compress_context.device)
+                _bf = self._compiled_block_forward
+            else:
+                _bf = block_forward
 
         output = []
         nsamples = len(input_ids)
