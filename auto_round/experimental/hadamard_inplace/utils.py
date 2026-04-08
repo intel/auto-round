@@ -18,7 +18,7 @@ try:
 except ImportError:
     fast_hadamard_transform = None
 
-from auto_round.experimental.hadamard_inplace.hadamard import get_hadK, matmul_hadU_cuda
+from auto_round.experimental.hadamard_inplace.hadamard import get_hadK, matmul_hadU, matmul_hadU_cuda
 
 # ---------------------------------------------------------------------------
 # Hook implementations
@@ -28,7 +28,7 @@ from auto_round.experimental.hadamard_inplace.hadamard import get_hadK, matmul_h
 class FullOnlineHadamardHook(nn.Module):
     """Pre-forward hook: full Hadamard on the entire last dimension (for ``down_proj``)."""
 
-    def __init__(self, had_K, K, fp32_had=False):
+    def __init__(self, had_K, K, fp32_had=False, use_fast_had=True):
         super().__init__()
         if had_K is not None:
             self.register_buffer("had_K", had_K)
@@ -36,15 +36,16 @@ class FullOnlineHadamardHook(nn.Module):
             self.had_K = None
         self.K = K
         self.fp32_had = fp32_had
+        self.use_fast_had = use_fast_had
 
     def __call__(self, module: nn.Module, args):
         x = args[0] if isinstance(args, tuple) else args
         x_dtype = x.dtype
 
         if self.fp32_had:
-            x = matmul_hadU_cuda(x.float(), self.had_K, self.K).to(x_dtype)
+            x = matmul_hadU_cuda(x.float(), self.had_K, self.K, use_fast_had=self.use_fast_had).to(x_dtype)
         else:
-            x = matmul_hadU_cuda(x, self.had_K, self.K)
+            x = matmul_hadU_cuda(x, self.had_K, self.K, use_fast_had=self.use_fast_had)
 
         if isinstance(args, tuple):
             return (x,) + args[1:]
@@ -70,13 +71,14 @@ class CrossHeadOnlineHadamardHook(nn.Module):
       * transpose back and reshape
     """
 
-    def __init__(self, had_K, K, head_dim, fp32_had=False):
+    def __init__(self, had_K, K, head_dim, fp32_had=False, use_fast_had=True):
         """
         Args:
             had_K: Hadamard sub-matrix from ``get_hadK(num_heads)``.
             K: Block size from ``get_hadK(num_heads)``.
             head_dim: ``hidden_size // num_attention_heads``.
             fp32_had: Compute in fp32.
+            use_fast_had: If True use fast_hadamard_transform; if False use matmul_hadU.
         """
         super().__init__()
         if had_K is not None:
@@ -86,6 +88,7 @@ class CrossHeadOnlineHadamardHook(nn.Module):
         self.K = K
         self.had_dim = head_dim
         self.fp32_had = fp32_had
+        self.use_fast_had = use_fast_had
 
     def __call__(self, module: nn.Module, args):
         x = args[0] if isinstance(args, tuple) else args
@@ -95,17 +98,23 @@ class CrossHeadOnlineHadamardHook(nn.Module):
             x = x.float()
 
         init_shape = x.shape
-        # Important Notice: fast_hadamard_transform does not use the same had_K,
-        # it only handles the power-of-2 part (K==1). For K>1, use had_K matrix directly.
-        if self.K == 1 and fast_hadamard_transform:
-            x = fast_hadamard_transform.hadamard_transform(
-                x.reshape(-1, init_shape[-1] // self.had_dim, self.had_dim).transpose(1, 2),
-                scale=1 / math.sqrt(init_shape[-1] // self.had_dim),
-            ).transpose(1, 2)
+        num_heads = init_shape[-1] // self.had_dim
+
+        if self.use_fast_had:
+            # Important Notice: fast_hadamard_transform does not use the same had_K,
+            # it only handles the power-of-2 part (K==1). For K>1, use had_K matrix directly.
+            if self.K == 1 and fast_hadamard_transform:
+                x = fast_hadamard_transform.hadamard_transform(
+                    x.reshape(-1, num_heads, self.had_dim).transpose(1, 2),
+                    scale=1 / math.sqrt(num_heads),
+                ).transpose(1, 2)
+            else:
+                x = (self.had_K.to(x.dtype) @ x.reshape(-1, num_heads, self.had_dim)) / math.sqrt(num_heads)
         else:
-            x = (self.had_K.to(x.dtype) @ x.reshape(-1, init_shape[-1] // self.had_dim, self.had_dim)) / math.sqrt(
-                init_shape[-1] // self.had_dim
-            )
+            # Fallback: use matmul_hadU (pure butterfly, no fast_hadamard_transform)
+            x = x.reshape(-1, num_heads, self.had_dim).transpose(1, 2)
+            x = matmul_hadU(x.contiguous())
+            x = x.transpose(1, 2)
 
         if self.fp32_had:
             x = x.to(x_dtype)
@@ -121,19 +130,19 @@ class CrossHeadOnlineHadamardHook(nn.Module):
 # ---------------------------------------------------------------------------
 
 
-def register_online_had_hooks(model, fp32_had=False):
+def register_online_had_hooks(model, fp32_had=False, use_fast_had=True):
     """Register online Hadamard pre-forward hooks on ``down_proj`` and ``o_proj``.
 
     * **down_proj** (``online_full_had``): full Hadamard on ``intermediate_size``.
       Compensates ``apply_exact_had_to_linear(down_proj, had_dim=-1, output=False)``.
 
-    * **o_proj** (``online per-head had``): Hadamard **within each head** on
-      ``head_dim``.  Compensates
-      ``apply_exact_had_to_linear(v_proj, had_dim=head_dim, output=True)``.
+    * **o_proj** (``online cross-head had``): cross-head Hadamard on ``num_heads``.
+      Compensates the residual after v_proj's within-head Hadamard cancels.
 
     Args:
         model: A HuggingFace model whose weights have already been rotated.
         fp32_had: Whether to compute the Hadamard transform in fp32.
+        use_fast_had: If True use fast_hadamard_transform; if False use matmul_hadU.
 
     Returns:
         list of hook handles (call ``handle.remove()`` to detach).
@@ -157,6 +166,7 @@ def register_online_had_hooks(model, fp32_had=False):
                 had_K=had_K_full,
                 K=K_full,
                 fp32_had=fp32_had,
+                use_fast_had=use_fast_had,
             )
             h = module.register_forward_pre_hook(hook)
             handles.append(h)
@@ -166,6 +176,7 @@ def register_online_had_hooks(model, fp32_had=False):
                 K=K_head,
                 head_dim=head_dim,
                 fp32_had=fp32_had,
+                use_fast_had=use_fast_had,
             )
             h = module.register_forward_pre_hook(hook)
             handles.append(h)

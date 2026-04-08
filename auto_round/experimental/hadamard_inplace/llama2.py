@@ -99,14 +99,14 @@ def rotate_mlp_input(layer, Q):
         W.weight.data = torch.matmul(W_, Q).to(device="cpu", dtype=dtype)
 
 
-def rotate_mlp_output(layer, Q):
+def rotate_mlp_output(layer, Q, use_fast_had=True):
     # Rotate the MLP output weights and bias.
     W = layer.mlp.down_proj
     dtype = W.weight.data.dtype
     W_ = W.weight.data.to(dtype=torch.float64)
     W.weight.data = torch.matmul(Q.T, W_).to(device="cpu", dtype=dtype)
     apply_exact_had_to_linear(
-        W, had_dim=-1, output=False
+        W, had_dim=-1, output=False, use_fast_had=use_fast_had
     )  # apply exact (inverse) hadamard on the weights of mlp output
     if W.bias is not None:
         b = W.bias.data.to(dtype=torch.float64)
@@ -121,16 +121,16 @@ def rotate_head(model, Q: torch.Tensor) -> None:
     W.weight.data = torch.matmul(W_, Q).to(device="cpu", dtype=dtype)
 
 
-def rotate_ov_proj(layer, head_num, head_dim):
+def rotate_ov_proj(layer, head_num, head_dim, use_fast_had=True):
     v_proj = layer.self_attn.v_proj
     o_proj = layer.self_attn.o_proj
 
-    apply_exact_had_to_linear(v_proj, had_dim=head_dim, output=True)
-    apply_exact_had_to_linear(o_proj, had_dim=-1, output=False)
+    apply_exact_had_to_linear(v_proj, had_dim=head_dim, output=True, use_fast_had=use_fast_had)
+    apply_exact_had_to_linear(o_proj, had_dim=-1, output=False, use_fast_had=use_fast_had)
 
 
 @torch.inference_mode()
-def rotate_model(model):
+def rotate_model(model, use_fast_had=True):
     Q = random_hadamard_matrix(model.config.hidden_size, model.device)
     config = model.config
     num_heads = config.num_attention_heads
@@ -146,24 +146,36 @@ def rotate_model(model):
         rotate_attention_inputs(layers[idx], Q)
         rotate_attention_output(layers[idx], Q)
         rotate_mlp_input(layers[idx], Q)
-        rotate_mlp_output(layers[idx], Q)
-        rotate_ov_proj(layers[idx], num_heads, head_dim)
+        rotate_mlp_output(layers[idx], Q, use_fast_had=use_fast_had)
+        rotate_ov_proj(layers[idx], num_heads, head_dim, use_fast_had=use_fast_had)
 
 
-def allpy_model(model, fp32_had=False):
+def allpy_model(model, fp32_had=False, use_fast_had=True):
     """Fuse layer norms, rotate weights, and register online Hadamard hooks.
 
     Args:
         model: A HuggingFace model (e.g. LLaMA-2).
         fp32_had: Whether to compute the online Hadamard transform in fp32.
+        use_fast_had: If True use fast_hadamard_transform; if False use matmul_hadU.
 
     Returns:
         list of hook handles (call ``handle.remove()`` to detach).
     """
+    if use_fast_had:
+        try:
+            import fast_hadamard_transform
+            from auto_round import logger
+            logger.warning(
+                "fast_hadamard_transform uses a different Hadamard matrix than the default implementation. "
+                "Please ensure consistency between training and inference. This will be refined later."
+            )
+        except ImportError:
+            logger.waring("importing fast_hadamard_transform failed, fallback to default implementation.")
+            use_fast_had=False
     fuse_layer_norms(model)
-    rotate_model(model)
+    rotate_model(model, use_fast_had=use_fast_had)
     # For v_proj, it's across head. Combining this one with head_dim one equal to a full hadamard
-    handles = register_online_had_hooks(model, fp32_had=fp32_had)
+    handles = register_online_had_hooks(model, fp32_had=fp32_had, use_fast_had=use_fast_had)
     return handles
 
 
@@ -234,7 +246,7 @@ if __name__ == "__main__":
     model_name = "/models/Qwen3-8B"
     tokenizer = AutoTokenizer.from_pretrained(model_name)
     model = AutoModelForCausalLM.from_pretrained(model_name, torch_dtype=torch.float16, device_map="auto")
-    allpy_model(model)
+    allpy_model(model,use_fast_had=False)
     model.to("cuda")
     text = "There is a girl who likes adventure,"
     inputs = tokenizer(text, return_tensors="pt").to(model.device)
