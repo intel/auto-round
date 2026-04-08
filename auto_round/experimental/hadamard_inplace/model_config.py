@@ -37,6 +37,7 @@ __all__ = [
 # Mapping dataclass
 # ---------------------------------------------------------------------------
 
+
 @dataclass
 class RotationMapping:
     """Declarative description of a transformer architecture for Hadamard rotation.
@@ -94,16 +95,17 @@ class RotationMapping:
     moe_expert_mlp_in: List[str] = field(
         default_factory=lambda: ["re:.*experts\\.\\d+\\.up_proj$", "re:.*experts\\.\\d+\\.gate_proj$"]
     )
-    moe_expert_mlp_out: List[str] = field(
-        default_factory=lambda: ["re:.*experts\\.\\d+\\.down_proj$"]
-    )
+    moe_expert_mlp_out: List[str] = field(default_factory=lambda: ["re:.*experts\\.\\d+\\.down_proj$"])
     moe_shared_mlp_in: List[str] = field(
-        default_factory=lambda: ["re:.*shared_expert\\.up_proj$", "re:.*shared_expert\\.gate_proj$",
-                                  "re:.*shared_experts\\.up_proj$", "re:.*shared_experts\\.gate_proj$"]
+        default_factory=lambda: [
+            "re:.*shared_expert\\.up_proj$",
+            "re:.*shared_expert\\.gate_proj$",
+            "re:.*shared_experts\\.up_proj$",
+            "re:.*shared_experts\\.gate_proj$",
+        ]
     )
     moe_shared_mlp_out: List[str] = field(
-        default_factory=lambda: ["re:.*shared_expert\\.down_proj$",
-                                  "re:.*shared_experts\\.down_proj$"]
+        default_factory=lambda: ["re:.*shared_expert\\.down_proj$", "re:.*shared_experts\\.down_proj$"]
     )
 
     # -- head dim --
@@ -119,6 +121,7 @@ class RotationMapping:
 # ---------------------------------------------------------------------------
 # Pattern matching helper
 # ---------------------------------------------------------------------------
+
 
 def _match(pattern: str, name: str) -> bool:
     """Check whether *name* matches *pattern*.
@@ -165,10 +168,7 @@ def get_mapping(key: str) -> RotationMapping:
     """Look up a mapping by *key*; fall back to default if not found."""
     if key in MAPPING_REGISTRY:
         return MAPPING_REGISTRY[key]
-    logger.warning(
-        f"No rotation mapping registered for '{key}', "
-        "falling back to default (LLaMA-like) mapping."
-    )
+    logger.warning(f"No rotation mapping registered for '{key}', " "falling back to default (LLaMA-like) mapping.")
     return RotationMapping()
 
 
