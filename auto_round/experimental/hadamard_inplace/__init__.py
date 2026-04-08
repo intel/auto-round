@@ -8,5 +8,3 @@ from auto_round.experimental.hadamard_inplace.model_config import (
     infer_mapping_from_model,
     register_mapping,
 )
-
-

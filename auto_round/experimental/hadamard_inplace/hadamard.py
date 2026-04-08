@@ -9,7 +9,7 @@ import torch
 # Adapted from https://github.com/Cornell-RelaxML/quip-sharp/blob/main/lib/utils/matmul_had.py
 
 
-def get_hadK(n:int, transpose=False)->(torch.Tensor,int):
+def get_hadK(n: int, transpose=False) -> (torch.Tensor, int):
     hadK, K = None, None
     if n % 172 == 0:  # llama-2-7b up
         assert is_pow2(n // 172)
@@ -67,7 +67,6 @@ def get_hadK(n:int, transpose=False)->(torch.Tensor,int):
                 return hadK, 1 if is_pow2(hadK.shape[0]) else hadK.shape[0]
             assert is_pow2(n)
 
-
     return hadK, K
 
 
@@ -82,7 +81,7 @@ def matmul_hadU(X, transpose=False):
         output[:, :, 0, :] = input[:, :, 0, :] + input[:, :, 1, :]
         output[:, :, 1, :] = input[:, :, 0, :] - input[:, :, 1, :]
         output = output.view(input.shape[0], input.shape[1], -1)
-        (input, output) = (output, input)
+        input, output = (output, input)
     del output
 
     if K > 1:
