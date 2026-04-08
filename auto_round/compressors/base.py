@@ -561,6 +561,7 @@ class BaseCompressor(object):
         if hadamard_config:
             self.enable_hadamard = True
             from auto_round.experimental.hadamard_inplace import apply_hadamard_rotation
+
             # from auto_round.experimental.utils import normalize_hadamard_config
 
             #
