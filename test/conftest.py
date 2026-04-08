@@ -24,6 +24,8 @@ except ImportError:
 
 
 try:
+    import torch
+
     # When loaded via the "meta" device, `gptqmodel==6.0.3` raises an error (since the internal
     # loading process within the `transformers` library defaults to the "meta" device mode).
     # Therefore, it is necessary to first switch to the CPU to bypass this error, and then
