@@ -371,9 +371,9 @@ class BaseQuantizers:
     ) -> torch.Tensor:
         """Compute block output for a mini-batch selected by *indices* (used during training).
 
-        Handles both LLM and diffusion model block formats.  Always calls the
-        plain (non-compiled) ``block_forward`` because this runs inside the
-        autograd training loop where compilation is not needed.
+        Handles both LLM and diffusion model block formats.  Uses the compiled
+        block_forward when enable_torch_compile is True (same as _get_block_outputs),
+        matching old-arch behaviour where self.block_forward was compiled at init.
         """
         current_input_ids, current_input_others = self._sampling_inputs(
             input_ids,
@@ -383,6 +383,14 @@ class BaseQuantizers:
             batch_dim=self.batch_dim,
             share_cache_keys=self.model_context.shared_cache_keys,
         )
+        # Mirror _get_block_outputs: use compiled block_forward when available.
+        if self.compress_context.enable_torch_compile:
+            if not hasattr(self, "_compiled_block_forward"):
+                self._compiled_block_forward = compile_func(block_forward, self.compress_context.device)
+            _bf = self._compiled_block_forward
+        else:
+            _bf = block_forward
+
         if getattr(self.model_context, "is_diffusion", False):
             output_config = self.DIFFUSION_OUTPUT_CONFIGS.get(block.__class__.__name__, [])
             idx = None if "hidden_states" not in output_config else output_config.index("hidden_states")
@@ -390,7 +398,7 @@ class BaseQuantizers:
                 hidden_states = current_input_ids.pop("hidden_states")
                 current_input_others.update(current_input_ids)
                 current_input_ids = hidden_states
-            output_q = block_forward(
+            output_q = _bf(
                 block,
                 current_input_ids,
                 current_input_others,
@@ -400,7 +408,7 @@ class BaseQuantizers:
                 idx,
             )
         else:
-            output_q = block_forward(
+            output_q = _bf(
                 block,
                 current_input_ids,
                 current_input_others,
