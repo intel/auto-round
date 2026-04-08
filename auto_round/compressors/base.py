@@ -69,7 +69,7 @@ from auto_round.schemes import (
     preset_name_to_scheme,
 )
 from auto_round.sign_sgd import SignSGD
-from auto_round.special_model_handler import get_predefined_ignore_layers, update_module
+from auto_round.special_model_handler import get_predefined_fixed_attr, get_predefined_ignore_layers, update_module
 from auto_round.utils import (
     INNER_SUPPORTED_LAYER_TYPES,
     SUPPORTED_DTYPES,
@@ -569,6 +569,12 @@ class BaseCompressor(object):
             )
 
             self.hadamard_config = normalize_hadamard_config(hadamard_config)
+
+        self.blocks_requiring_input_ids = []
+        self.has_variable_block_shape = False
+        fixed_attr = get_predefined_fixed_attr(self.model) or {}
+        for key, value in fixed_attr.items():
+            setattr(self, key, value)
 
     def _gen_auto_scheme(self) -> dict[str, dict]:
         if self.mllm:
@@ -1809,14 +1815,17 @@ class BaseCompressor(object):
             self.model = self.model.to(self.amp_dtype)
 
         layer_names = self._get_quantized_layer_names_outside_blocks()
-        all_first_block_names = [block[0] for block in all_blocks]
+        if not self.has_variable_block_shape:
+            to_cache_block_names = [block[0] for block in all_blocks]
+        else:
+            to_cache_block_names = all_blocks
         if len(layer_names) > 0:
             logger.info(
                 "Starting to cache block inputs. This may be slow due to external block layers: %s", layer_names
             )
         else:
             logger.info("start to cache block inputs")
-        all_inputs = self.try_cache_inter_data_gpucpu(all_first_block_names, self.nsamples, layer_names=layer_names)
+        all_inputs = self.try_cache_inter_data_gpucpu(to_cache_block_names, self.nsamples, layer_names=layer_names)
         is_quantized_embedding = self._quantize_embedding_layer()
         clear_memory(device_list=self.device_list)
         all_q_inputs = None
@@ -1824,7 +1833,7 @@ class BaseCompressor(object):
             all_inputs = copy.deepcopy(self.inputs)
             clear_memory(self.inputs, device_list=self.device_list)
             all_q_inputs = self.try_cache_inter_data_gpucpu(
-                all_first_block_names, self.nsamples, layer_names=layer_names
+                to_cache_block_names, self.nsamples, layer_names=layer_names
             )
         # Remove accelerate dispatch hooks before moving parameters.
         # hf_device_map is kept for reference but hooks are no longer needed.
@@ -1872,6 +1881,7 @@ class BaseCompressor(object):
                 nblocks=self.nblocks,
                 device=self.device,
                 pbar=pbar,
+                input_others_extra_blocks=all_inputs,
             )
             if self.is_immediate_packing and len(self.formats) != 1:
                 raise ValueError(
@@ -2080,6 +2090,7 @@ class BaseCompressor(object):
         first_block_name = self.quant_block_list[0][0]
 
         class _FakeDecodingLayer(torch.nn.Module):
+
             def forward(self, *args, **kwargs):
                 return args, kwargs
 
@@ -2261,11 +2272,14 @@ class BaseCompressor(object):
             layer_names = []
         if layer_names is None:
             layer_names = []
+        self.blocks_requiring_input_ids = [data if isinstance(data, str) else data[0] for data in block_names]
+        block_names = flatten_list(block_names)
         if self.low_gpu_mem_usage or (
             len(block_names) == 1
             and len(layer_names) == 0
             and not self.has_qlayer_outside_block
             and (last_cache_name is None or last_cache_name in block_names)
+            and not getattr(self, "mllm", False)
         ):
             # low_gpu_mem_usage or calibrate only the embedding layer, which is also very fast on CPU
             all_inputs = self.cache_inter_data(block_names, nsamples, layer_names=[], last_cache_name=last_cache_name)
@@ -2539,6 +2553,8 @@ class BaseCompressor(object):
                     or isinstance(kwargs[key], list)
                     or isinstance(kwargs[key], tuple)
                 ):
+                    if name not in self.blocks_requiring_input_ids and key == "hidden_states":
+                        continue
                     if key not in self.inputs[name].keys():  # initialization
                         data = to_device(kwargs[key], device=torch.device("cpu"))
                         if data is None or (self.batch_size > 1 and key in self.shared_cache_keys):
@@ -2624,6 +2640,7 @@ class BaseCompressor(object):
                 self.hook_handles.append(hook_handle)
 
     def _register_act_max_hook(self, model):
+
         def get_act_max_hook(module, input, output):
             if isinstance(input, (tuple, list)):
                 input = input[0]
@@ -3224,7 +3241,7 @@ class BaseCompressor(object):
             return None, output
 
     def _split_inputs(self, inputs: dict, first_input_name: str) -> tuple[torch.Tensor, dict]:
-        input_ids = inputs[first_input_name]
+        input_ids = inputs.get(first_input_name, None)
         inputs.pop(first_input_name, None)
         input_others = inputs
         return input_ids, input_others
@@ -3232,12 +3249,14 @@ class BaseCompressor(object):
     def _preprocess_block_inputs(self, inputs, first_input_name="input_ids"):
         input_ids, input_others = self._split_inputs(inputs, first_input_name)
         clear_memory(device_list=self.device_list)
-        input_ids = to_device(input_ids, self.cache_device)
+        if input_ids is not None:
+            input_ids = to_device(input_ids, self.cache_device)
         input_others = to_device(input_others, self.cache_device)
         # As in calibration phase, we may use bf16 for calibration due to low_gpu_memory usage
 
         tmp_dtype = self.amp_dtype if self.amp else torch.float32
-        input_ids = to_dtype(input_ids, tmp_dtype)
+        if input_ids is not None:
+            input_ids = to_dtype(input_ids, tmp_dtype)
 
         for key in input_others.keys():
             if isinstance(input_others[key], torch.Tensor) and (
@@ -3258,6 +3277,7 @@ class BaseCompressor(object):
         nblocks: int = 1,
         device: str = "cpu",
         pbar: tqdm = None,
+        input_others_extra_blocks: dict = None,
     ):
         """Quantize and dequantize the weights of the specified blocks in the model.
 
@@ -3281,6 +3301,10 @@ class BaseCompressor(object):
             pbar = tqdm(range(0, len(block_names), nblocks))
 
         for i in range(0, len(block_names), nblocks):
+            if input_others_extra_blocks and block_names[i] in input_others_extra_blocks:
+                _, extra_input_others = self._preprocess_block_inputs(input_others_extra_blocks[block_names[i]])
+                input_others.update(extra_input_others)
+                input_others_extra_blocks.pop(block_names[i])
             if i != 0:
                 pbar.update(1)
             if nblocks == 1:

@@ -718,23 +718,44 @@ def is_transformers_version_greater_or_equal_4():
 
 
 def parse_layer_config_arg(s: str) -> dict:
-    """Parse --layer_config with unquoted keys/values.
+    """Parse --layer_config with unquoted keys/values, or standard JSON.
 
-    Delimiters are ``{``, ``}``, ``,``, ``:``.  Each non-delimiter token is
-    auto-typed: numeric strings become ``int``, everything else stays ``str``.
+    Accepts standard JSON strings (e.g. ``{"layer": {"bits": 8}}``) as well as
+    the compact unquoted format where delimiters are ``{``, ``}``, ``,``, ``:``.
+    In the unquoted format each non-delimiter token is auto-typed: numeric
+    strings become ``int``, everything else stays ``str``.
 
-    Example::
+    Example (unquoted)::
 
         {mtp:{bits:8},mtp.fc:{bits:16,data_type:fp}}
+
+    Example (JSON)::
+
+        {"mtp": {"bits": 8}, "mtp.fc": {"bits": 16, "data_type": "fp"}}
     """
+    import json as _json
+
+    stripped = s.strip()
+    if stripped.startswith("{"):
+        try:
+            return _json.loads(stripped)
+        except _json.JSONDecodeError:
+            pass
+
     tokens = re.findall(r"[{}:,]|[^\s{}:,]+", s)
     pos = [0]
+
+    def _strip_quotes(tok):
+        if len(tok) >= 2 and tok[0] == '"' and tok[-1] == '"':
+            return tok[1:-1]
+        return tok
 
     def _val():
         tok = tokens[pos[0]]
         if tok == "{":
             return _dict()
         pos[0] += 1
+        tok = _strip_quotes(tok)
         try:
             return int(tok)
         except ValueError:
@@ -744,7 +765,7 @@ def parse_layer_config_arg(s: str) -> dict:
         pos[0] += 1  # consume '{'
         result = {}
         while tokens[pos[0]] != "}":
-            key = tokens[pos[0]]
+            key = _strip_quotes(tokens[pos[0]])
             pos[0] += 1  # key
             pos[0] += 1  # consume ':'
             result[key] = _val()

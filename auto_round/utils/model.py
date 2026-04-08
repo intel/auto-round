@@ -883,11 +883,11 @@ def get_block_names(model, quant_vision=False):
             return SPECIAL_MULTIMODAL_BLOCK.get(model.config.model_type)(model, quant_vision=quant_vision)
         block_names = []
         target_modules = []
-        vision_blocks_tuple = ("vision", "visual", "image", "img")
+        non_text_blocks_tuple = ("vision", "visual", "image", "img", "audio", "speech")
         target_modules = _search_block("", model)
 
         for i, target_m in enumerate(target_modules):
-            if quant_vision or all(key not in target_m[0].lower() for key in (vision_blocks_tuple)):
+            if quant_vision or all(key not in target_m[0].lower() for key in non_text_blocks_tuple):
                 block_names.append([])
                 for n, m in target_m[1].named_children():
                     block_names[-1].append(target_m[0] + "." + n)

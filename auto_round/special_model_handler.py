@@ -180,7 +180,11 @@ def _handle_special_model(model):
 
         model.forward = partial(_qwen3_omni_moe_forward, model)
     if hasattr(model, "config") and model.config.model_type == "gemma4":
-        _patch_gemma4_model(model)
+        import transformers
+        from packaging import version
+
+        if version.parse(transformers.__version__) < version.parse("5.6"):
+            _patch_gemma4_model(model)
     return model
 
 
@@ -703,3 +707,31 @@ def get_predefined_ignore_layers(model: torch.nn.Module) -> list[str]:
                 layers.append(name)
 
     return list(dict.fromkeys(layers))
+
+
+# Maps model_type -> fixed attributes to set on the BaseCompressor instance.
+# Only used when transformers >= 5.6, which natively supports per-block
+# position_embedding recomputation (has_variable_block_shape).
+_PRE_DEFINED_FIXED_ATTR = {"gemma4": {"has_variable_block_shape": True}}
+
+
+def get_predefined_fixed_attr(model: torch.nn.Module) -> dict | None:
+    """Return fixed compressor attributes for models that need special caching.
+
+    For Gemma4 with transformers >= 5.6, each decoder block must cache its own
+    inputs because sliding vs full-attention layers require different
+    position_embeddings. Returns ``None`` for older transformers, which instead
+    rely on the per-layer forward patch applied in ``_handle_special_model``.
+    """
+    import transformers
+    from packaging import version
+
+    config = getattr(model, "config", None)
+    if config is None or not hasattr(config, "model_type"):
+        return None
+    attrs = _PRE_DEFINED_FIXED_ATTR.get(config.model_type)
+    if attrs is None:
+        return None
+    if version.parse(transformers.__version__) >= version.parse("5.6"):
+        return attrs
+    return None

@@ -281,7 +281,10 @@ class MLLMCompressor(BaseCompressor):
                 )
                 dataset = "liuhaotian/llava_conv_58k"
             elif self.template is not None and not _only_text_test(
-                model, tokenizer, self.device, self.template.model_type
+                model,
+                tokenizer,
+                self.device,
+                getattr(getattr(model, "config", None), "model_type", None) or self.template.model_type,
             ):
                 logger.warning(
                     f"{model.config.model_type} does not support for {dataset},"
