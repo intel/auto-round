@@ -197,7 +197,6 @@ def register_online_had_hooks(model, mapping=None, fp32_had=False, use_fast_had=
 # # SPDX-License-Identifier: Apache-2.0
 
 
-
 from auto_round.experimental.hadamard_inplace.hadamard_matrix import *
 
 
