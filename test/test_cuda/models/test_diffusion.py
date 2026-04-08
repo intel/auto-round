@@ -49,7 +49,6 @@ class TestAutoRound:
         # skip model saving since it takes much time
         autoround.quantize()
 
-    @pytest.mark.skip_ci(reason="Tuning will OOM in CI; Only tiny model is suggested")  # skip this test in CI
     @require_optimum
     def test_diffusion_tune(self, tiny_flux_model_path):
         from diffusers import AutoPipelineForText2Image

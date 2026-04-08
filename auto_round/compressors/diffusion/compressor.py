@@ -534,7 +534,3 @@ class DiffusionCompressor(BaseCompressor):
             self.pipe.to(self.model.device)
         if self.pipe.dtype != self.model.dtype:
             self.pipe.to(self.model.dtype)
-
-
-def save_next_step_diffusion():
-    ar.model.save_pretrained("nextstep_diffusion_model")

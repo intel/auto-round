@@ -30,9 +30,6 @@ def get_marlin_layer():  ##use an ugly wrapper to  import gptqmodel on demand
     NEW_VERSION = False
     if Version(gptqmodel.__version__) >= Version("5.0.0"):
         NEW_VERSION = True
-    NEW_VERSION_6_0 = False
-    if Version(gptqmodel.__version__) >= Version("6.0.0"):
-        NEW_VERSION_6_0 = True
     from gptqmodel.models._const import DEVICE, PLATFORM  # pylint: disable=E0401
     from gptqmodel.nn_modules.qlinear import BaseQuantLinear  # pylint: disable=E0401
     from gptqmodel.utils.backend import BACKEND  # pylint: disable=E0401
@@ -247,59 +244,20 @@ def get_marlin_layer():  ##use an ugly wrapper to  import gptqmodel on demand
                 # (since we have only one group per output channel)
                 desc_act = False
 
-            backend = kwargs.pop("backend", BACKEND.MARLIN)
-            if NEW_VERSION_6_0:
-                # gptqmodel >= 6.0.0: BaseQuantLinear no longer accepts group_size/sym/desc_act/pack_dtype
-                # directly; they must be passed via validate_kwargs. Attributes are also set manually.
-                super().__init__(
-                    bits=bits,
-                    in_features=in_features,
-                    out_features=out_features,
-                    bias=bias,
-                    backend=backend,
-                    adapter=None,
-                    register_buffers=False,
-                    validate_kwargs={
-                        "group_size": group_size,
-                        "desc_act": desc_act,
-                        "sym": sym,
-                        "pack_dtype": pack_dtype,
-                    },
-                    **kwargs,
-                )
-                # Set attributes that intermediate classes (PackedQuantLinear /
-                # GPTQQuantLinear) would have set in the old API.
-                self.pack_dtype = pack_dtype
-                if pack_dtype == torch.int8:
-                    self.pack_dtype_bits = 8
-                elif pack_dtype == torch.int16:
-                    self.pack_dtype_bits = 16
-                elif pack_dtype == torch.int32:
-                    self.pack_dtype_bits = 32
-                elif pack_dtype == torch.int64:
-                    self.pack_dtype_bits = 64
-                else:
-                    raise ValueError(f"Unsupported pack_dtype: {pack_dtype}")
-                self.pack_factor = self.pack_dtype_bits // bits
-                self.group_size = group_size if group_size != -1 else in_features
-                self.requested_group_size = group_size
-                self.desc_act = desc_act
-                self.sym = sym
-            else:
-                super().__init__(
-                    bits=bits,
-                    group_size=group_size,
-                    sym=sym,
-                    desc_act=desc_act,
-                    in_features=in_features,
-                    out_features=out_features,
-                    bias=bias,
-                    pack_dtype=pack_dtype,
-                    backend=backend,
-                    adapter=None,
-                    register_buffers=False,
-                    **kwargs,
-                )
+            super().__init__(
+                bits=bits,
+                group_size=group_size,
+                sym=sym,
+                desc_act=desc_act,
+                in_features=in_features,
+                out_features=out_features,
+                bias=bias,
+                pack_dtype=pack_dtype,
+                backend=kwargs.pop("backend", BACKEND.MARLIN),
+                adapter=None,
+                register_buffers=False,
+                **kwargs,
+            )
 
             # toggle fp32 mode depending on MARLIN or MARLIN_FP16 backend
             self.fp32 = True if self.backend in [BACKEND.MARLIN, BACKEND.AUTO] else False
