@@ -36,6 +36,7 @@ from auto_round.utils import (
     get_block_names,
     merge_block_output_keys,
     wrap_block_forward_positional_to_kwargs,
+    dispatch_model_by_all_available_devices,
 )
 
 pipeline_utils = LazyImport("diffusers.pipelines.pipeline_utils")
@@ -87,6 +88,7 @@ class DiffusionCompressor(BaseCompressor):
     act_dynamic: bool | None
     super_bits: int | None
     super_group_size: int | None
+    is_diffusion: bool = True
 
     def __init__(
         self,
@@ -176,6 +178,7 @@ class DiffusionCompressor(BaseCompressor):
             to_quant_block_names=to_quant_block_names,
             **kwargs,
         )
+        self._align_device_and_dtype()
 
     def _update_inputs(self, inputs: dict, q_inputs: dict) -> tuple[dict, dict]:
         # flux transformer model's blocks will update hidden_states and encoder_hidden_states
@@ -387,7 +390,6 @@ class DiffusionCompressor(BaseCompressor):
         total_cnt = 0
 
         total = nsamples if not hasattr(self.dataloader, "len") else min(nsamples, len(self.dataloader))
-        self._align_device_and_dtype()
 
         with tqdm(range(1, total + 1), desc="cache block inputs") as pbar:
             for ids, prompts in self.dataloader:
@@ -533,5 +535,5 @@ class DiffusionCompressor(BaseCompressor):
             exit(-1)
 
         self.pipe.to(self.model.dtype)
-        if self.pipe.device != self.model.device:
-            self.pipe.to(self.model.device)
+
+        dispatch_model_by_all_available_devices(self.pipe, self.device_map)

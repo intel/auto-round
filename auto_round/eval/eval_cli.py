@@ -22,10 +22,11 @@ from transformers.utils.versions import require_version
 from auto_round.utils import (
     dispatch_model_block_wise,
     get_device_and_parallelism,
-    get_device_str,
+    detect_device,
     get_model_dtype,
     is_diffusion_model,
     set_cuda_visible_devices,
+    DEVICE_ENVIRON_VARIABLE_MAPPING,
 )
 
 
@@ -285,19 +286,14 @@ def eval_with_vllm(args):
         logger.info(f"Overriding VLLM parameters with custom args: {custom_vllm_kwargs}")
         vllm_kwargs.update(custom_vllm_kwargs)
 
-    device = get_device_str()
-    environ_mapping = {
-        "cuda": "CUDA_VISIBLE_DEVICES",
-        "xpu": "ZE_AFFINITY_MASK",
-        "hpu": "HABANA_VISIBLE_MODULES",
-    }
+    device = detect_device()
     if "tensor_parallel_size" not in vllm_kwargs:
         # Parse device_map to determine tensor_parallel_size and set the relevant env var
         # Only accept formats like "0" or "0,1,2". If the environment variable is
         # already set externally, do not overwrite it — but still derive
         # `tensor_parallel_size` from the existing value.
-        assert device in environ_mapping, f"Device {device} not supported for vllm tensor parallelism."
-        environ_name = environ_mapping[device]
+        assert device in DEVICE_ENVIRON_VARIABLE_MAPPING, f"Device {device} not supported for vllm tensor parallelism."
+        environ_name = DEVICE_ENVIRON_VARIABLE_MAPPING[device]
         device_map = args.device_map
         device_ids = [d.strip() for d in str(device_map).split(",") if d.strip().isdigit()]
 
