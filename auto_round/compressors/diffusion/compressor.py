@@ -29,13 +29,13 @@ from auto_round.schemes import QuantizationScheme
 from auto_round.utils import (
     LazyImport,
     clear_memory,
+    copy_python_files_from_model_cache,
     diffusion_load_model,
     extract_block_names_to_str,
     find_matching_blocks,
     get_block_names,
     merge_block_output_keys,
     wrap_block_forward_positional_to_kwargs,
-    copy_python_files_from_model_cache,
 )
 
 pipeline_utils = LazyImport("diffusers.pipelines.pipeline_utils")
@@ -370,7 +370,9 @@ class DiffusionCompressor(BaseCompressor):
         )
         raw_num_inference_steps = self.num_inference_steps
         self.num_inference_steps = 1
-        logger.info(f"Set num_inference_steps to 1 for calibration, original num_inference_steps is {raw_num_inference_steps}")
+        logger.info(
+            f"Set num_inference_steps to 1 for calibration, original num_inference_steps is {raw_num_inference_steps}"
+        )
         if isinstance(self.dataset, str):
             dataset = self.dataset.replace(" ", "")
             self.dataloader, self.batch_size, self.gradient_accumulate_steps = get_diffusion_dataloader(

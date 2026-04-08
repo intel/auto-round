@@ -1705,9 +1705,7 @@ def _copy_extra_model_files(src_dir: str, dst_dir: str):
 
 # Adapted from https://github.com/vllm-project/llm-compressor/blob/
 # 5b3ddff74cae9651f24bef15d3255c4ee053fc60/src/llmcompressor/pytorch/model_load/helpers.py#L144
-def copy_python_files_from_model_cache(
-    model, save_path: str, copy_folders: bool | list[str] | tuple[str, ...] = False
-):
+def copy_python_files_from_model_cache(model, save_path: str, copy_folders: bool | list[str] | tuple[str, ...] = False):
     """Copy Python files (and optionally subdirectories) from the model cache to *save_path*.
 
     Args:
@@ -1938,6 +1936,7 @@ def wrap_block_forward_positional_to_kwargs(base_hook):
         return base_hook(m, hidden_states, *positional_inputs, **kwargs)
 
     return forward
+
 
 def load_next_step_diffusion(pretrained_model_name_or_path, device_str):
     from models.gen_pipeline import NextStepPipeline  # pylint: disable=E0401
