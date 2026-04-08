@@ -2,9 +2,11 @@
 # # SPDX-License-Identifier: Apache-2.0
 
 import math
-from auto_round.experimental.hadamard_inplace.hadamrd_matrix import *
 
 import torch
+
+from auto_round.experimental.hadamard_inplace.hadamrd_matrix import *
+
 
 # Adapted from https://github.com/Cornell-RelaxML/quip-sharp/blob/main/lib/utils/matmul_had.py
 def get_hadK(n: int, transpose=False) -> (torch.Tensor, int):

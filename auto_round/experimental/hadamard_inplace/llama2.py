@@ -164,14 +164,16 @@ def allpy_model(model, fp32_had=False, use_fast_had=True):
     if use_fast_had:
         try:
             import fast_hadamard_transform
+
             from auto_round import logger
+
             logger.warning(
                 "fast_hadamard_transform uses a different Hadamard matrix than the default implementation. "
                 "Please ensure consistency between training and inference. This will be refined later."
             )
         except ImportError:
-            logger.waring("importing fast_hadamard_transform failed, fallback to default implementation.")
-            use_fast_had=False
+            logger.warning("importing fast_hadamard_transform failed, fallback to default implementation.")
+            use_fast_had = False
     fuse_layer_norms(model)
     rotate_model(model, use_fast_had=use_fast_had)
     # For v_proj, it's across head. Combining this one with head_dim one equal to a full hadamard
@@ -246,7 +248,7 @@ if __name__ == "__main__":
     model_name = "/models/Qwen3-8B"
     tokenizer = AutoTokenizer.from_pretrained(model_name)
     model = AutoModelForCausalLM.from_pretrained(model_name, torch_dtype=torch.float16, device_map="auto")
-    allpy_model(model,use_fast_had=False)
+    allpy_model(model, use_fast_had=False)
     model.to("cuda")
     text = "There is a girl who likes adventure,"
     inputs = tokenizer(text, return_tensors="pt").to(model.device)
