@@ -38,16 +38,20 @@ def _fuse_ln_linear(
     """Fuse the linear operations in LayerNorm into adjacent linear blocks."""
     for linear in linear_layers:
         linear_dtype = linear.weight.dtype
+        dev = linear.weight.device
+
         W_ = linear.weight.data.double()
-        linear.weight.data = (W_ * layernorm.weight.double()).to(linear_dtype)
+        ln_weight = layernorm.weight.double().to(dev)
+        linear.weight.data = (W_ * ln_weight).to(linear_dtype)
 
         if hasattr(layernorm, "bias") and layernorm.bias is not None:
             if linear.bias is None:
                 linear.bias = torch.nn.Parameter(
-                    torch.zeros(linear.out_features, dtype=torch.float64)
+                    torch.zeros(linear.out_features, dtype=torch.float64, device=dev)
                 )
+            ln_bias = layernorm.bias.double().to(dev)
             linear.bias.data = (
-                linear.bias.data.double() + torch.matmul(W_, layernorm.bias.double())
+                linear.bias.data.double() + torch.matmul(W_, ln_bias)
             )
             linear.bias.data = linear.bias.data.to(linear_dtype)
 
@@ -67,14 +71,60 @@ def _rotate_linear_by_Q(module: torch.nn.Linear, Q: torch.Tensor, side: str) -> 
               ``'output'`` →  W = Q^T @ W  (rotate output side)
     """
     dtype = module.weight.data.dtype
+    dev = module.weight.data.device
     W_ = module.weight.data.to(dtype=torch.float64)
+    Q_ = Q.to(device=dev)
     if side == "input":
-        module.weight.data = torch.matmul(W_, Q).to(device="cpu", dtype=dtype)
+        module.weight.data = torch.matmul(W_, Q_).to(dtype=dtype)
     else:
-        module.weight.data = torch.matmul(Q.T, W_).to(device="cpu", dtype=dtype)
+        module.weight.data = torch.matmul(Q_.T, W_).to(dtype=dtype)
         if module.bias is not None:
             b = module.bias.data.to(dtype=torch.float64)
-            module.bias.data = torch.matmul(Q.T, b).to(device="cpu", dtype=dtype)
+            module.bias.data = torch.matmul(Q_.T, b).to(dtype=dtype)
+
+
+def _untie_word_embeddings(model, mapping: RotationMapping) -> None:
+    """Break tied weights between lm_head and embedding if they share the same tensor.
+
+    Auto-detects by comparing data pointers. After rotation, embedding and
+    lm_head receive different transforms, so they must have independent storage.
+    """
+    embedding = _resolve(model, mapping.embedding)
+    lm_head = _resolve(model, mapping.lm_head)
+
+    if lm_head.weight.data_ptr() != embedding.weight.data_ptr():
+        return  # not tied, nothing to do
+
+    lm_head.weight = torch.nn.Parameter(lm_head.weight.data.clone())
+    # Tell HuggingFace config so it won't re-tie later
+    if hasattr(model.config, "tie_word_embeddings"):
+        model.config.tie_word_embeddings = False
+
+
+def _uses_layernorm_with_mean(model, mapping: RotationMapping) -> bool:
+    """Check whether the model uses standard LayerNorm (which subtracts mean).
+
+    Returns True for ``nn.LayerNorm``, False for RMSNorm variants.
+    Inspects the first layer's attention input LN as a representative.
+    """
+    layers = _resolve(model, mapping.layers_attr)
+    first_ln = _resolve(layers[0], mapping.attn_input_ln)
+    # Standard nn.LayerNorm has both weight and bias, and subtracts mean.
+    # RMSNorm variants (LlamaRMSNorm, Qwen2RMSNorm, etc.) do NOT subtract mean.
+    return isinstance(first_ln, torch.nn.LayerNorm)
+
+
+def _subtract_embedding_mean(model, mapping: RotationMapping) -> None:
+    """Subtract per-row mean from the embedding weight matrix.
+
+    Standard LayerNorm subtracts the mean internally, so the mean component
+    of the embedding is cancelled anyway.  By removing it upfront we ensure
+    the rotation does not distort the zero-mean assumption.
+    """
+    W = _resolve(model, mapping.embedding)
+    dtype = W.weight.data.dtype
+    W_ = W.weight.data.to(dtype=torch.float64)
+    W.weight.data = (W_ - W_.mean(dim=-1, keepdim=True)).to(dtype=dtype)
 
 
 # ---------------------------------------------------------------------------
@@ -111,41 +161,67 @@ def _fuse_layer_norms(model, mapping: RotationMapping) -> None:
 
 
 @torch.inference_mode()
-def _rotate_weights(model, mapping: RotationMapping, use_fast_had: bool = True) -> None:
-    """Apply random Hadamard + exact Hadamard rotations to all weights."""
+def _rotate_weights(model, mapping: RotationMapping, use_fast_had: bool = True,
+                    rotate_residual: bool = True) -> None:
+    """Apply random Hadamard + exact Hadamard rotations to all weights.
+
+    Args:
+        rotate_residual: If True, apply random orthogonal Q to the residual
+            stream (embedding, lm_head, Q/K/V input, attn output, MLP in/out).
+            Set to False for models with standard LayerNorm (e.g. OPT) where
+            the mean-subtraction makes Q rotation non-commutative.
+    """
     config = model.config
     hidden_size = getattr(config, mapping.hidden_size_attr)
     num_heads = getattr(config, mapping.num_heads_attr)
     head_dim = mapping.attn_head_dim or (hidden_size // num_heads)
 
-    Q = random_hadamard_matrix(hidden_size, model.device)
+    if rotate_residual:
+        Q = random_hadamard_matrix(hidden_size, model.device)
 
-    # Top-level: embedding & lm_head
-    _rotate_linear_by_Q(_resolve(model, mapping.embedding), Q, side="input")
-    _rotate_linear_by_Q(_resolve(model, mapping.lm_head), Q, side="input")
+        # Top-level: embedding & lm_head
+        embedding = _resolve(model, mapping.embedding)
+        dtype = embedding.weight.data.dtype
+        dev = embedding.weight.data.device
+        W_ = embedding.weight.data.to(dtype=torch.float64)
+        embedding.weight.data = torch.matmul(W_, Q.to(dev)).to(dtype=dtype)
+
+        # Positional embedding (e.g. OPT's learned pos embed)
+        if mapping.positional_embedding is not None:
+            pos_emb = _resolve(model, mapping.positional_embedding)
+            pos_dtype = pos_emb.weight.data.dtype
+            pos_dev = pos_emb.weight.data.device
+            P_ = pos_emb.weight.data.to(dtype=torch.float64)
+            pos_emb.weight.data = torch.matmul(P_, Q.to(pos_dev)).to(dtype=pos_dtype)
+
+        lm_head = _resolve(model, mapping.lm_head)
+        _rotate_linear_by_Q(lm_head, Q, side="input")
 
     gc.collect()
     torch.cuda.empty_cache()
 
     layers = _resolve(model, mapping.layers_attr)
     for layer in tqdm.tqdm(layers, unit="layer", desc="Rotating"):
-        # Attention inputs: Q/K/V  ← W @ Q
-        for attr in (mapping.attn_q, mapping.attn_k, mapping.attn_v):
-            _rotate_linear_by_Q(_resolve(layer, attr), Q, side="input")
+        if rotate_residual:
+            # Attention inputs: Q/K/V  ← W @ Q
+            for attr in (mapping.attn_q, mapping.attn_k, mapping.attn_v):
+                _rotate_linear_by_Q(_resolve(layer, attr), Q, side="input")
 
-        # Attention output: o_proj ← Q^T @ W
-        _rotate_linear_by_Q(_resolve(layer, mapping.attn_o), Q, side="output")
+            # Attention output: o_proj ← Q^T @ W
+            _rotate_linear_by_Q(_resolve(layer, mapping.attn_o), Q, side="output")
 
-        # MLP inputs: gate/up ← W @ Q
-        for attr in mapping.mlp_in:
-            _rotate_linear_by_Q(_resolve(layer, attr), Q, side="input")
+            # MLP inputs: gate/up ← W @ Q
+            for attr in mapping.mlp_in:
+                _rotate_linear_by_Q(_resolve(layer, attr), Q, side="input")
 
-        # MLP output: down_proj ← Q^T @ W + exact Hadamard
+            # MLP output: down_proj ← Q^T @ W
+            _rotate_linear_by_Q(_resolve(layer, mapping.mlp_out), Q, side="output")
+
+        # Exact Hadamard on down_proj input (always applied)
         down_proj = _resolve(layer, mapping.mlp_out)
-        _rotate_linear_by_Q(down_proj, Q, side="output")
         apply_exact_had_to_linear(down_proj, had_dim=-1, output=False, use_fast_had=use_fast_had)
 
-        # OV projection: within-head Had on v_proj + full Had on o_proj
+        # OV projection: within-head Had on v_proj + full Had on o_proj (always applied)
         v_proj = _resolve(layer, mapping.attn_v)
         o_proj = _resolve(layer, mapping.attn_o)
         apply_exact_had_to_linear(v_proj, had_dim=head_dim, output=True, use_fast_had=use_fast_had)
@@ -191,8 +267,21 @@ def apply_hadamard_rotation(model, fp32_had: bool = False, use_fast_had: bool = 
 
     mapping = infer_mapping_from_model(model)
 
-    _fuse_layer_norms(model, mapping)
-    _rotate_weights(model, mapping, use_fast_had=use_fast_had)
+    # Standard LayerNorm (e.g. OPT) subtracts mean, which is NOT commutative
+    # with orthogonal rotation across residual connections.  For such models
+    # we only apply exact Hadamard rotations (v/o proj, down_proj) that don't
+    # cross the residual stream.  RMSNorm models (LLaMA, Qwen) are fine.
+    rotate_residual = not _uses_layernorm_with_mean(model, mapping)
+
+    if rotate_residual:
+        # Untie lm_head ↔ embedding if they share the same weight tensor.
+        _untie_word_embeddings(model, mapping)
+
+        # Fuse LayerNorm affine params into adjacent Linear layers
+        _fuse_layer_norms(model, mapping)
+
+    _rotate_weights(model, mapping, use_fast_had=use_fast_had,
+                    rotate_residual=rotate_residual)
 
     # For v_proj it's within-head; combining with cross-head equals a full Hadamard
     handles = register_online_had_hooks(
@@ -208,7 +297,7 @@ def apply_hadamard_rotation(model, fp32_had: bool = False, use_fast_had: bool = 
 
 if __name__ == "__main__":
     from auto_round.experimental.transform.utils.hadamard import _fetch_hadamard_divisor
-    from auto_round.experimental.hadamard_inplace.hadamard_matrix import *
+    from transformers import AutoModelForCausalLM, AutoTokenizer
     import auto_round
 
 
@@ -219,9 +308,24 @@ if __name__ == "__main__":
         hadK = _fetch_hadamard_divisor(d, torch.float, torch.device("cpu"))
         torch.equal(quarot_had, hadK)
     print("equal test passed")
+    model_name = "/models/opt-125m"
+    tokenizer = AutoTokenizer.from_pretrained(model_name)
+    model = AutoModelForCausalLM.from_pretrained(
+        model_name, torch_dtype=torch.float16, device_map="auto"
+    )
+    model.to("cuda")
+    text = "There is a girl who likes adventure,"
+    inputs = tokenizer(text, return_tensors="pt").to(model.device)
+    print(tokenizer.decode(model.generate(**inputs, max_new_tokens=50)[0]))
+
+    apply_hadamard_rotation(model, use_fast_had=False)
+    model.to("cuda")
+    text = "There is a girl who likes adventure,"
+    inputs = tokenizer(text, return_tensors="pt").to(model.device)
+    print(tokenizer.decode(model.generate(**inputs, max_new_tokens=50)[0]))
 
 
-    from transformers import AutoModelForCausalLM, AutoTokenizer
+
 
     model_name = "/models/Qwen3-8B"
     tokenizer = AutoTokenizer.from_pretrained(model_name)

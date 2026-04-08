@@ -45,6 +45,7 @@ class RotationMapping:
     # -- top-level modules (dot-path from model root) --
     embedding: str = "model.embed_tokens"
     lm_head: str = "lm_head"
+    positional_embedding: Optional[str] = None  # e.g. "model.decoder.embed_positions" for OPT
 
     # -- layers container (dot-path from model root) --
     layers_attr: str = "model.layers"
@@ -71,6 +72,7 @@ class RotationMapping:
     num_heads_attr: str = "num_attention_heads"
     hidden_size_attr: str = "hidden_size"
     intermediate_size_attr: str = "intermediate_size"
+
 
 
 # ---------------------------------------------------------------------------
@@ -147,3 +149,26 @@ register_mapping("Qwen3ForCausalLM", _default)
 # Qwen-2 / Qwen-2.5 dense — identical layout to LLaMA
 register_mapping("qwen2", _default)
 register_mapping("Qwen2ForCausalLM", _default)
+
+# ---- OPT ----
+# OPT uses standard LayerNorm (with bias, subtracts mean),
+# different module names, and tied lm_head ↔ embedding weights.
+_opt = RotationMapping(
+    embedding="model.decoder.embed_tokens",
+    lm_head="lm_head",
+    positional_embedding="model.decoder.embed_positions",
+    layers_attr="model.decoder.layers",
+    attn_input_ln="self_attn_layer_norm",
+    attn_q="self_attn.q_proj",
+    attn_k="self_attn.k_proj",
+    attn_v="self_attn.v_proj",
+    attn_o="self_attn.out_proj",
+    mlp_input_ln="final_layer_norm",
+    mlp_in=["fc1"],
+    mlp_out="fc2",
+    pre_head_ln="model.decoder.final_layer_norm",
+    intermediate_size_attr="ffn_dim",
+)
+register_mapping("opt", _opt)
+register_mapping("OPTForCausalLM", _opt)
+
