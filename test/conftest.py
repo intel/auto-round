@@ -23,6 +23,17 @@ except ImportError:
     pass
 
 
+try:
+    # When loaded via the "meta" device, `gptqmodel==6.0.3` raises an error (since the internal
+    # loading process within the `transformers` library defaults to the "meta" device mode).
+    # Therefore, it is necessary to first switch to the CPU to bypass this error, and then
+    # switch back to the original data type once the loading process is complete.
+    with torch.device("cpu"):
+        import gptqmodel  # pylint: disable=E0401
+except ImportError:
+    pass
+
+
 ### HPU related configuration, usage: `pytest --mode=compile/lazy``
 def pytest_addoption(parser):
     parser.addoption(
