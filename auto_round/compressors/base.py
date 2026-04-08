@@ -557,9 +557,21 @@ class BaseCompressor(object):
             except (ImportError, ModuleNotFoundError):
                 logger.error("algorithm extension import error, fallback to default mode")
 
-        # apply hadamard transform
+
+        hadamard_config = 1
         if hadamard_config:
             self.enable_hadamard = True
+            from auto_round.experimental.hadamard_inplace import apply_hadamard_rotation
+            from auto_round.experimental.utils import normalize_hadamard_config
+            #
+            # _hcfg = normalize_hadamard_config(hadamard_config)
+            # if not isinstance(_hcfg, HadamardConfig):
+            #     _hcfg = HadamardConfig(**_hcfg)
+            # group_size = _hcfg.block_size  # e.g. 32 for MXFP4
+
+            self.model.to("cuda")
+            apply_hadamard_rotation(self.model, group_size=-1)
+
             # from auto_round.experimental.transform.apply import apply_hadamard_transform
             # from auto_round.experimental.utils import check_supported_schemes, normalize_hadamard_config
             #
