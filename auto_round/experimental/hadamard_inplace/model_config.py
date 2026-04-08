@@ -74,7 +74,6 @@ class RotationMapping:
     intermediate_size_attr: str = "intermediate_size"
 
 
-
 # ---------------------------------------------------------------------------
 # Helper: resolve a dot-path attribute on a module
 # ---------------------------------------------------------------------------
@@ -105,10 +104,7 @@ def get_mapping(key: str) -> RotationMapping:
     """Look up a mapping by *key*; fall back to default if not found."""
     if key in MAPPING_REGISTRY:
         return MAPPING_REGISTRY[key]
-    logger.warning(
-        f"No rotation mapping registered for '{key}', "
-        "falling back to default (LLaMA-like) mapping."
-    )
+    logger.warning(f"No rotation mapping registered for '{key}', " "falling back to default (LLaMA-like) mapping.")
     return RotationMapping()
 
 
@@ -171,4 +167,3 @@ _opt = RotationMapping(
 )
 register_mapping("opt", _opt)
 register_mapping("OPTForCausalLM", _opt)
-

@@ -149,6 +149,7 @@ def register_online_had_hooks(model, mapping=None, fp32_had=False, use_fast_had=
     """
     if mapping is None:
         from auto_round.experimental.hadamard_inplace.model_config import infer_mapping_from_model
+
         mapping = infer_mapping_from_model(model)
 
     config = model.config
@@ -164,8 +165,8 @@ def register_online_had_hooks(model, mapping=None, fp32_had=False, use_fast_had=
     had_K_head, K_head = get_hadK(num_heads)
 
     # Identify target module suffixes from mapping
-    mlp_out_suffix = mapping.mlp_out.split(".")[-1]   # e.g. "down_proj"
-    attn_o_suffix = mapping.attn_o.split(".")[-1]      # e.g. "o_proj"
+    mlp_out_suffix = mapping.mlp_out.split(".")[-1]  # e.g. "down_proj"
+    attn_o_suffix = mapping.attn_o.split(".")[-1]  # e.g. "o_proj"
 
     handles = []
     for name, module in model.named_modules():
@@ -191,13 +192,14 @@ def register_online_had_hooks(model, mapping=None, fp32_had=False, use_fast_had=
 
     return handles
 
+
 # # Copyright (C) 2026 Intel Corporation
 # # SPDX-License-Identifier: Apache-2.0
 
-import math
+
+
 from auto_round.experimental.hadamard_inplace.hadamard_matrix import *
 
-import torch
 
 # Adapted from https://github.com/Cornell-RelaxML/quip-sharp/blob/main/lib/utils/matmul_had.py
 def get_hadK(n: int, transpose=False) -> (torch.Tensor, int):
