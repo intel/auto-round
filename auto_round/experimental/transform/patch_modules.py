@@ -50,6 +50,7 @@ def patch_wrapperlinear_to_apply_transform(w_transform, inp_transform):
         return orig_qdq_weight(self, value, min_scale, max_scale)
 
     orig_qdq_act = WrapperLinear._qdq_act
+
     def _qdq_act_patched(self, x, act_max_scale, act_max=None):
 
         x = inp_transform(x)
