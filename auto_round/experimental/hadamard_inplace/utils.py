@@ -20,10 +20,10 @@ except ImportError:
 
 from auto_round.experimental.hadamard_inplace.hadamard import get_hadK, matmul_hadU_cuda
 
-
 # ---------------------------------------------------------------------------
 # Hook implementations
 # ---------------------------------------------------------------------------
+
 
 class FullOnlineHadamardHook(nn.Module):
     """Pre-forward hook: full Hadamard on the entire last dimension (for ``down_proj``)."""
@@ -100,15 +100,16 @@ class CrossHeadOnlineHadamardHook(nn.Module):
         if self.K == 1 and fast_hadamard_transform:
             x = fast_hadamard_transform.hadamard_transform(
                 x.reshape(-1, init_shape[-1] // self.had_dim, self.had_dim).transpose(1, 2),
-                scale=1 / math.sqrt(init_shape[-1] // self.had_dim)).transpose(1, 2)
+                scale=1 / math.sqrt(init_shape[-1] // self.had_dim),
+            ).transpose(1, 2)
         else:
             x = (self.had_K.to(x.dtype) @ x.reshape(-1, init_shape[-1] // self.had_dim, self.had_dim)) / math.sqrt(
-                init_shape[-1] // self.had_dim)
+                init_shape[-1] // self.had_dim
+            )
 
         if self.fp32_had:
             x = x.to(x_dtype)
         x = x.reshape(init_shape)
-
 
         if isinstance(args, tuple):
             return (x,) + args[1:]
@@ -118,6 +119,7 @@ class CrossHeadOnlineHadamardHook(nn.Module):
 # ---------------------------------------------------------------------------
 # Registration helper
 # ---------------------------------------------------------------------------
+
 
 def register_online_had_hooks(model, fp32_had=False):
     """Register online Hadamard pre-forward hooks on ``down_proj`` and ``o_proj``.
@@ -152,14 +154,18 @@ def register_online_had_hooks(model, fp32_had=False):
     for name, module in model.named_modules():
         if name.endswith("down_proj") and isinstance(module, nn.Linear):
             hook = FullOnlineHadamardHook(
-                had_K=had_K_full, K=K_full, fp32_had=fp32_had,
+                had_K=had_K_full,
+                K=K_full,
+                fp32_had=fp32_had,
             )
             h = module.register_forward_pre_hook(hook)
             handles.append(h)
         elif name.endswith("o_proj") and isinstance(module, nn.Linear):
             hook = CrossHeadOnlineHadamardHook(
-                had_K=had_K_head, K=K_head,
-                head_dim=head_dim, fp32_had=fp32_had,
+                had_K=had_K_head,
+                K=K_head,
+                head_dim=head_dim,
+                fp32_had=fp32_had,
             )
             h = module.register_forward_pre_hook(hook)
             handles.append(h)

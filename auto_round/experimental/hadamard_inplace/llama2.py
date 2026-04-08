@@ -150,8 +150,6 @@ def rotate_model(model):
         rotate_ov_proj(layers[idx], num_heads, head_dim)
 
 
-
-
 def allpy_model(model, fp32_had=False):
     """Fuse layer norms, rotate weights, and register online Hadamard hooks.
 
@@ -168,7 +166,8 @@ def allpy_model(model, fp32_had=False):
     handles = register_online_had_hooks(model, fp32_had=fp32_had)
     return handles
 
-from transformers import AutoTokenizer,AutoModelForCausalLM
+
+from transformers import AutoModelForCausalLM, AutoTokenizer
 
 if __name__ == "__main__":
     from auto_round.experimental.hadamard_inplace.hadamard import get_hadK
