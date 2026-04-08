@@ -31,12 +31,12 @@ from auto_round.utils import (
     clear_memory,
     copy_python_files_from_model_cache,
     diffusion_load_model,
+    dispatch_model_by_all_available_devices,
     extract_block_names_to_str,
     find_matching_blocks,
     get_block_names,
     merge_block_output_keys,
     wrap_block_forward_positional_to_kwargs,
-    dispatch_model_by_all_available_devices,
 )
 
 pipeline_utils = LazyImport("diffusers.pipelines.pipeline_utils")

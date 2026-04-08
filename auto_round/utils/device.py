@@ -49,6 +49,7 @@ DEVICE_ENVIRON_VARIABLE_MAPPING = {
 #   The compile mode can speed up quantization process but still in experimental stage.
 # 2. Lazy Mode (By default)
 
+
 ################ Check available sys.module to decide behavior #################
 def is_package_available(package_name: str) -> bool:
     """Check if the package exists in the environment without importing.
@@ -1736,7 +1737,7 @@ def dump_mem_usage(msg: str = "", log_level: str = "info"):
     return decorator
 
 
-# This function is designed for Auto Scheme and Diffusion Pipeline, 
+# This function is designed for Auto Scheme and Diffusion Pipeline,
 # which requires dispatching the whole model on all available devices.
 def dispatch_model_by_all_available_devices(
     model: torch.nn.Module, device_map: Union[str, int, dict, None]
@@ -1746,9 +1747,11 @@ def dispatch_model_by_all_available_devices(
     if device_type in DEVICE_ENVIRON_VARIABLE_MAPPING:
         existing_env = os.environ.get(DEVICE_ENVIRON_VARIABLE_MAPPING[device_type])
         if existing_env is None:
-            logger.warning_once("`get_balanced_memory` is used here, but no environment variable "
+            logger.warning_once(
+                "`get_balanced_memory` is used here, but no environment variable "
                 + "is set to specify device visibility. This may lead to OOM issue even the memory "
-                + "is large enough.")
+                + "is large enough."
+            )
 
     # Handle DiffusionPipeline: dispatch only the main sub-model (transformer / unet)
     # across devices and move the remaining pipeline components to the primary device.
@@ -1761,11 +1764,7 @@ def dispatch_model_by_all_available_devices(
             devices = parse_available_devices(_device_map)
             # Identify the main quantisable sub-model
             main_attr = next(
-                (
-                    attr
-                    for attr in ("transformer", "unet")
-                    if isinstance(getattr(pipe, attr, None), torch.nn.Module)
-                ),
+                (attr for attr in ("transformer", "unet") if isinstance(getattr(pipe, attr, None), torch.nn.Module)),
                 None,
             )
             if main_attr is None or len(devices) == 1:

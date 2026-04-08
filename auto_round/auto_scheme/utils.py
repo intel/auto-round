@@ -21,6 +21,7 @@ from accelerate.utils import get_balanced_memory
 
 from auto_round.schemes import QuantizationScheme, preset_name_to_scheme
 from auto_round.utils import (
+    DEVICE_ENVIRON_VARIABLE_MAPPING,
     SUPPORTED_LAYER_TYPES,
     check_to_quantized,
     get_block_names,
@@ -29,7 +30,6 @@ from auto_round.utils import (
     is_hpex_available,
     normalize_no_split_modules,
     parse_available_devices,
-    DEVICE_ENVIRON_VARIABLE_MAPPING
 )
 
 
@@ -212,7 +212,6 @@ def compute_layer_bits(
     total_bits = weight_bits * n_param + aux_total_bits
     avg_bits = total_bits / n_param
     return total_bits, avg_bits
-
 
 
 def merge_lists_unionfind(list_of_lists):

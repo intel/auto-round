@@ -44,6 +44,7 @@ from auto_round.utils import (
     SUPPORTED_LAYER_TYPES,
     check_to_quantized,
     clear_memory,
+    dispatch_model_by_all_available_devices,
     get_block_names,
     get_major_device,
     get_module,
@@ -53,7 +54,6 @@ from auto_round.utils import (
     set_module,
     set_non_auto_device_map,
     to_device,
-    dispatch_model_by_all_available_devices,
 )
 from auto_round.utils.device import MemoryMonitor
 from auto_round.utils.offload import OffloadManager

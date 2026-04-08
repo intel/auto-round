@@ -20,13 +20,13 @@ import torch.nn
 from transformers.utils.versions import require_version
 
 from auto_round.utils import (
+    DEVICE_ENVIRON_VARIABLE_MAPPING,
+    detect_device,
     dispatch_model_block_wise,
     get_device_and_parallelism,
-    detect_device,
     get_model_dtype,
     is_diffusion_model,
     set_cuda_visible_devices,
-    DEVICE_ENVIRON_VARIABLE_MAPPING,
 )
 
 
