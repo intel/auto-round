@@ -109,9 +109,23 @@ def _uses_layernorm_with_mean(model, mapping: RotationMapping) -> bool:
     """
     layers = _resolve(model, mapping.layers_attr)
     first_ln = _resolve(layers[0], mapping.attn_input_ln)
-    # Standard nn.LayerNorm has both weight and bias, and subtracts mean.
-    # RMSNorm variants (LlamaRMSNorm, Qwen2RMSNorm, etc.) do NOT subtract mean.
     return isinstance(first_ln, torch.nn.LayerNorm)
+
+
+def _bake_mean_into_linear(linear: torch.nn.Linear) -> None:
+    """Subtract column-wise mean from a Linear layer's weight (and mean from bias).
+
+    After this, the linear layer's output is always zero-mean, which absorbs
+    the mean-subtraction step of standard LayerNorm.  This allows LayerNorm
+    to be treated as RMSNorm (normalize only, no mean subtraction) and thus
+    be fused and rotated just like in RMSNorm models.
+    """
+    linear_dtype = linear.weight.dtype
+    W_ = linear.weight.data.double()
+    linear.weight.data = (W_ - W_.mean(dim=-2, keepdim=True)).to(linear_dtype)
+    if linear.bias is not None:
+        b_ = linear.bias.data.double()
+        linear.bias.data = (b_ - b_.mean()).to(linear_dtype)
 
 
 def _subtract_embedding_mean(model, mapping: RotationMapping) -> None:
@@ -125,6 +139,58 @@ def _subtract_embedding_mean(model, mapping: RotationMapping) -> None:
     dtype = W.weight.data.dtype
     W_ = W.weight.data.to(dtype=torch.float64)
     W.weight.data = (W_ - W_.mean(dim=-1, keepdim=True)).to(dtype=dtype)
+
+    # Also subtract mean from positional embedding (e.g. OPT's learned pos embed)
+    if mapping.positional_embedding is not None:
+        P = _resolve(model, mapping.positional_embedding)
+        p_dtype = P.weight.data.dtype
+        P_ = P.weight.data.to(dtype=torch.float64)
+        P.weight.data = (P_ - P_.mean(dim=-1, keepdim=True)).to(dtype=p_dtype)
+
+
+class _RMSNorm(torch.nn.Module):
+    """RMS Normalization (no mean subtraction).
+
+    Replaces ``nn.LayerNorm`` after ``bake_mean_into_linear`` has absorbed the
+    mean-subtraction into the linear layers.  This makes the normalization
+    commutative with orthogonal rotations.
+    """
+
+    def __init__(self, dim: int, eps: float = 1e-5):
+        super().__init__()
+        self.eps = eps
+        self.register_buffer("weight", torch.ones(dim))
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        rms = torch.sqrt(x.pow(2).mean(dim=-1, keepdim=True) + self.eps)
+        return x / rms * self.weight
+
+
+def _replace_layernorms_with_rmsnorm(model) -> None:
+    """Replace all ``nn.LayerNorm`` modules with ``_RMSNorm``.
+
+    After ``bake_mean_into_linear`` has absorbed the mean-subtraction into
+    linear layers, the LayerNorm's mean subtraction is redundant and breaks
+    rotation commutativity.  Replacing with RMS-only norm fixes this.
+    """
+    # Collect first to avoid modifying the model while iterating
+    replacements = []
+    for name, module in model.named_modules():
+        if isinstance(module, torch.nn.LayerNorm):
+            replacements.append((name, module))
+
+    for name, module in replacements:
+        parts = name.rsplit(".", 1)
+        if len(parts) == 2:
+            parent = _resolve(model, parts[0])
+            attr = parts[1]
+        else:
+            parent = model
+            attr = parts[0]
+        rms = _RMSNorm(module.normalized_shape[0], eps=module.eps)
+        rms = rms.to(device=module.weight.device, dtype=module.weight.dtype)
+        setattr(parent, attr, rms)
+
 
 
 # ---------------------------------------------------------------------------
@@ -161,67 +227,57 @@ def _fuse_layer_norms(model, mapping: RotationMapping) -> None:
 
 
 @torch.inference_mode()
-def _rotate_weights(model, mapping: RotationMapping, use_fast_had: bool = True,
-                    rotate_residual: bool = True) -> None:
-    """Apply random Hadamard + exact Hadamard rotations to all weights.
-
-    Args:
-        rotate_residual: If True, apply random orthogonal Q to the residual
-            stream (embedding, lm_head, Q/K/V input, attn output, MLP in/out).
-            Set to False for models with standard LayerNorm (e.g. OPT) where
-            the mean-subtraction makes Q rotation non-commutative.
-    """
+def _rotate_weights(model, mapping: RotationMapping, use_fast_had: bool = True) -> None:
+    """Apply random Hadamard + exact Hadamard rotations to all weights."""
     config = model.config
     hidden_size = getattr(config, mapping.hidden_size_attr)
     num_heads = getattr(config, mapping.num_heads_attr)
     head_dim = mapping.attn_head_dim or (hidden_size // num_heads)
 
-    if rotate_residual:
-        Q = random_hadamard_matrix(hidden_size, model.device)
+    Q = random_hadamard_matrix(hidden_size, model.device)
 
-        # Top-level: embedding & lm_head
-        embedding = _resolve(model, mapping.embedding)
-        dtype = embedding.weight.data.dtype
-        dev = embedding.weight.data.device
-        W_ = embedding.weight.data.to(dtype=torch.float64)
-        embedding.weight.data = torch.matmul(W_, Q.to(dev)).to(dtype=dtype)
+    # Top-level: embedding & lm_head
+    embedding = _resolve(model, mapping.embedding)
+    dtype = embedding.weight.data.dtype
+    dev = embedding.weight.data.device
+    W_ = embedding.weight.data.to(dtype=torch.float64)
+    embedding.weight.data = torch.matmul(W_, Q.to(dev)).to(dtype=dtype)
 
-        # Positional embedding (e.g. OPT's learned pos embed)
-        if mapping.positional_embedding is not None:
-            pos_emb = _resolve(model, mapping.positional_embedding)
-            pos_dtype = pos_emb.weight.data.dtype
-            pos_dev = pos_emb.weight.data.device
-            P_ = pos_emb.weight.data.to(dtype=torch.float64)
-            pos_emb.weight.data = torch.matmul(P_, Q.to(pos_dev)).to(dtype=pos_dtype)
+    # Positional embedding (e.g. OPT's learned pos embed)
+    if mapping.positional_embedding is not None:
+        pos_emb = _resolve(model, mapping.positional_embedding)
+        pos_dtype = pos_emb.weight.data.dtype
+        pos_dev = pos_emb.weight.data.device
+        P_ = pos_emb.weight.data.to(dtype=torch.float64)
+        pos_emb.weight.data = torch.matmul(P_, Q.to(pos_dev)).to(dtype=pos_dtype)
 
-        lm_head = _resolve(model, mapping.lm_head)
-        _rotate_linear_by_Q(lm_head, Q, side="input")
+    lm_head = _resolve(model, mapping.lm_head)
+    _rotate_linear_by_Q(lm_head, Q, side="input")
 
     gc.collect()
     torch.cuda.empty_cache()
 
     layers = _resolve(model, mapping.layers_attr)
     for layer in tqdm.tqdm(layers, unit="layer", desc="Rotating"):
-        if rotate_residual:
-            # Attention inputs: Q/K/V  ← W @ Q
-            for attr in (mapping.attn_q, mapping.attn_k, mapping.attn_v):
-                _rotate_linear_by_Q(_resolve(layer, attr), Q, side="input")
+        # Attention inputs: Q/K/V  ← W @ Q
+        for attr in (mapping.attn_q, mapping.attn_k, mapping.attn_v):
+            _rotate_linear_by_Q(_resolve(layer, attr), Q, side="input")
 
-            # Attention output: o_proj ← Q^T @ W
-            _rotate_linear_by_Q(_resolve(layer, mapping.attn_o), Q, side="output")
+        # Attention output: o_proj ← Q^T @ W
+        _rotate_linear_by_Q(_resolve(layer, mapping.attn_o), Q, side="output")
 
-            # MLP inputs: gate/up ← W @ Q
-            for attr in mapping.mlp_in:
-                _rotate_linear_by_Q(_resolve(layer, attr), Q, side="input")
+        # MLP inputs: gate/up ← W @ Q
+        for attr in mapping.mlp_in:
+            _rotate_linear_by_Q(_resolve(layer, attr), Q, side="input")
 
-            # MLP output: down_proj ← Q^T @ W
-            _rotate_linear_by_Q(_resolve(layer, mapping.mlp_out), Q, side="output")
+        # MLP output: down_proj ← Q^T @ W
+        _rotate_linear_by_Q(_resolve(layer, mapping.mlp_out), Q, side="output")
 
-        # Exact Hadamard on down_proj input (always applied)
+        # Exact Hadamard on down_proj input
         down_proj = _resolve(layer, mapping.mlp_out)
         apply_exact_had_to_linear(down_proj, had_dim=-1, output=False, use_fast_had=use_fast_had)
 
-        # OV projection: within-head Had on v_proj + full Had on o_proj (always applied)
+        # OV projection: within-head Had on v_proj + full Had on o_proj
         v_proj = _resolve(layer, mapping.attn_v)
         o_proj = _resolve(layer, mapping.attn_o)
         apply_exact_had_to_linear(v_proj, had_dim=head_dim, output=True, use_fast_had=use_fast_had)
@@ -267,21 +323,33 @@ def apply_hadamard_rotation(model, fp32_had: bool = False, use_fast_had: bool = 
 
     mapping = infer_mapping_from_model(model)
 
-    # Standard LayerNorm (e.g. OPT) subtracts mean, which is NOT commutative
-    # with orthogonal rotation across residual connections.  For such models
-    # we only apply exact Hadamard rotations (v/o proj, down_proj) that don't
-    # cross the residual stream.  RMSNorm models (LLaMA, Qwen) are fine.
-    rotate_residual = not _uses_layernorm_with_mean(model, mapping)
+    # Untie lm_head ↔ embedding if they share the same weight tensor.
+    _untie_word_embeddings(model, mapping)
 
-    if rotate_residual:
-        # Untie lm_head ↔ embedding if they share the same weight tensor.
-        _untie_word_embeddings(model, mapping)
+    # Subtract per-row mean from embedding.  For standard LayerNorm (OPT)
+    # this is required; for RMSNorm (LLaMA/Qwen) it is harmless since
+    # RMSNorm doesn't subtract mean.  QuaRot does this unconditionally.
+    _subtract_embedding_mean(model, mapping)
 
-        # Fuse LayerNorm affine params into adjacent Linear layers
-        _fuse_layer_norms(model, mapping)
+    # Fuse LayerNorm affine params into adjacent Linear layers
+    _fuse_layer_norms(model, mapping)
 
-    _rotate_weights(model, mapping, use_fast_had=use_fast_had,
-                    rotate_residual=rotate_residual)
+    # For standard LayerNorm models (e.g. OPT), absorb the mean-subtraction
+    # into the linear layers that feed back into the residual stream (out_proj
+    # and down_proj/fc2).  Must be done AFTER fuse_ln so that bake operates
+    # on the final (fused) weights.  After this, LayerNorm effectively becomes
+    # RMSNorm and the rotation is commutative.
+    if _uses_layernorm_with_mean(model, mapping):
+        layers = _resolve(model, mapping.layers_attr)
+        for layer in layers:
+            _bake_mean_into_linear(_resolve(layer, mapping.attn_o))
+            _bake_mean_into_linear(_resolve(layer, mapping.mlp_out))
+        # Replace all nn.LayerNorm with RMS-only norm — after bake_mean has
+        # absorbed the mean subtraction, LayerNorm's mean removal is redundant
+        # and breaks rotation commutativity.
+        _replace_layernorms_with_rmsnorm(model)
+
+    _rotate_weights(model, mapping, use_fast_had=use_fast_had)
 
     # For v_proj it's within-head; combining with cross-head equals a full Hadamard
     handles = register_online_had_hooks(
