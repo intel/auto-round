@@ -532,7 +532,6 @@ class DiffusionCompressor(BaseCompressor):
             )
             exit(-1)
 
+        self.pipe.to(self.model.dtype)
         if self.pipe.device != self.model.device:
             self.pipe.to(self.model.device)
-        if self.pipe.dtype != self.model.dtype:
-            self.pipe.to(self.model.dtype)
