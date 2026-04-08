@@ -31,7 +31,7 @@ class FullOnlineHadamardHook:
     def __init__(self, had_K, K, fp32_had=False):
         self.had_K = had_K
         self.K = K
-        self.fp32_had = fp32_had
+        self.fp32_had = True
 
     def __call__(self, module: nn.Module, args):
         x = args[0] if isinstance(args, tuple) else args
@@ -47,8 +47,8 @@ class FullOnlineHadamardHook:
         return x
 
 
-class PerHeadOnlineHadamardHook:
-    """Pre-forward hook: Hadamard within each head on the ``head_dim`` dimension (for ``o_proj``).
+class CrossHeadOnlineHadamardHook:
+    """Pre-forward hook: Hadamard across each head on the ``head_dim`` dimension (for ``o_proj``).
 
     Compensates for ``apply_exact_had_to_linear(v_proj, had_dim=head_dim, output=True)``
     which applies Hadamard within each head on the output side of v_proj.
@@ -70,8 +70,8 @@ class PerHeadOnlineHadamardHook:
         """
         self.had_K = had_K
         self.K = K
-        self.head_dim = head_dim
-        self.fp32_had = fp32_had
+        self.had_dim = head_dim
+        self.fp32_had = True
 
     def __call__(self, module: nn.Module, args):
         x = args[0] if isinstance(args, tuple) else args
@@ -81,11 +81,19 @@ class PerHeadOnlineHadamardHook:
             x = x.float()
 
         init_shape = x.shape
-        # reshape (..., hidden_size) → (..., num_heads, head_dim)
-        x = x.view(*init_shape[:-1], -1, self.head_dim)
-        # Hadamard on last dim = head_dim (within each head)
-        x = matmul_hadU_cuda(x, self.had_K, self.K)
-        x = x.view(init_shape)
+        if self.K == 1 and fast_hadamard_transform: # FIXME Important Notice fast_hadamard_transform does not use the same had_K
+            x = fast_hadamard_transform.hadamard_transform(
+                x.reshape(-1, init_shape[-1] // self.had_dim, self.had_dim).transpose(1, 2),
+                scale=1 / math.sqrt(init_shape[-1] // self.had_dim)).transpose(1, 2)
+
+        else:
+            self.had_K = self.had_K.to(x.device)  # TODO better
+            x = (self.had_K.to(x.dtype) @ x.reshape(-1, init_shape[-1] // self.had_dim, self.had_dim)) / math.sqrt(
+                init_shape[-1] // self.had_dim)
+
+        if self.fp32_had:
+            x = x.to(x_dtype)
+        x = x.reshape(init_shape)
 
         if self.fp32_had:
             x = x.to(x_dtype)
@@ -126,7 +134,7 @@ def register_online_had_hooks(model, fp32_had=False):
     had_K_full, K_full = get_hadK(intermediate_size)
 
     # o_proj: per-head Hadamard on head_dim (within each head)
-    had_K_head, K_head = get_hadK(head_dim)
+    had_K_head, K_head = get_hadK(num_heads)
 
     handles = []
     for name, module in model.named_modules():
@@ -137,7 +145,7 @@ def register_online_had_hooks(model, fp32_had=False):
             h = module.register_forward_pre_hook(hook)
             handles.append(h)
         elif name.endswith("o_proj") and isinstance(module, nn.Linear):
-            hook = PerHeadOnlineHadamardHook(
+            hook = CrossHeadOnlineHadamardHook(
                 had_K=had_K_head, K=K_head,
                 head_dim=head_dim, fp32_had=fp32_had,
             )

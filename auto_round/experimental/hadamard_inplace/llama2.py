@@ -126,7 +126,7 @@ def rotate_ov_proj(layer, head_num, head_dim):
     o_proj = layer.self_attn.o_proj
 
     apply_exact_had_to_linear(v_proj, had_dim=head_dim, output=True)
-    ##apply_exact_had_to_linear(o_proj, had_dim=-1, output=False)
+    apply_exact_had_to_linear(o_proj, had_dim=-1, output=False)
 
 
 @torch.inference_mode()
@@ -165,12 +165,74 @@ def allpy_model(model, fp32_had=False):
     """
     fuse_layer_norms(model)
     rotate_model(model)
+    # For v_proj, it's acorss head. Combinint this one with head one equal to a -1 hadamard
     handles = register_online_had_hooks(model, fp32_had=fp32_had)
     return handles
 
 from transformers import AutoTokenizer,AutoModelForCausalLM
 
 if __name__ == "__main__":
+    from auto_round.experimental.hadamard_inplace.hadamard import get_hadK
+
+    # from auto_round.experimental.hadamard_inplace.hadamard import get_hadK, matmul_hadU_cuda
+    #
+    # # Simulate Llama-2-7b: hidden=4096, heads=32, head_dim=128
+    # num_heads = 32
+    # head_dim = 128
+    # hidden_size = num_heads * head_dim
+    #
+    # torch.manual_seed(42)
+    # x = torch.randn(2, 10, hidden_size).cuda().float()
+    #
+    # # --- Method 1: Full Hadamard on hidden_size ---
+    # had_K_full, K_full = get_hadK(hidden_size)
+    # y_full = matmul_hadU_cuda(x.clone(), had_K_full, K_full)
+    #
+    # # --- Method 2: Decomposed = within-head + cross-head ---
+    # had_K_within, K_within = get_hadK(head_dim)
+    # had_K_cross, K_cross = get_hadK(num_heads)
+    #
+    # y_decomp = x.clone()
+    #
+    # # Step 1: within-head Hadamard (on head_dim axis)
+    # y_decomp = y_decomp.reshape(-1, num_heads, head_dim)
+    #
+    # if K_within == 1:
+    #     y_decomp = fast_hadamard_transform.hadamard_transform(
+    #         y_decomp.contiguous(), scale=1.0 / math.sqrt(head_dim))
+    # else:
+    #     y_decomp = y_decomp.view(-1, K_within, head_dim // K_within)
+    #     y_decomp = fast_hadamard_transform.hadamard_transform(
+    #         y_decomp.contiguous(), scale=1.0 / math.sqrt(head_dim))
+    #     y_decomp = had_K_within.to(y_decomp.device).to(y_decomp.dtype) @ y_decomp
+    #     y_decomp = y_decomp.view(-1, num_heads, head_dim)
+    #
+    # # Step 2: cross-head Hadamard (on num_heads axis)
+    # y_decomp = y_decomp.transpose(-1, -2)  # (..., head_dim, num_heads)
+    #
+    # if K_cross == 1:
+    #     y_decomp = fast_hadamard_transform.hadamard_transform(
+    #         y_decomp.contiguous(), scale=1.0 / math.sqrt(num_heads))
+    # else:
+    #     had_K_cross_dev = had_K_cross.to(y_decomp.device)
+    #     y_decomp = y_decomp.reshape(-1, K_cross, num_heads // K_cross)
+    #     y_decomp = fast_hadamard_transform.hadamard_transform(
+    #         y_decomp.contiguous(), scale=1.0 / math.sqrt(num_heads))
+    #     y_decomp = had_K_cross_dev.to(y_decomp.dtype) @ y_decomp
+    #     y_decomp = y_decomp.view(-1, head_dim, num_heads)
+    #
+    # y_decomp = y_decomp.transpose(-1, -2)  # back to (..., num_heads, head_dim)
+    # y_decomp = y_decomp.reshape(2, 10, hidden_size)
+    #
+    # # Compare
+    # diff = (y_full - y_decomp).abs().max().item()
+    # rel_diff = diff / y_full.abs().mean().item()
+    #
+    # print(f'Max abs diff: {diff:.2e}')
+    # print(f'Relative diff: {rel_diff:.2e}')
+    # print(f'PASS: {diff < 1e-4}')
+    # exit()
+
     model_name = "/models/Llama-2-7b-chat-hf"
     tokenizer = AutoTokenizer.from_pretrained(model_name)
     model = AutoModelForCausalLM.from_pretrained(model_name, torch_dtype=torch.float16, device_map="auto")
