@@ -25,13 +25,17 @@ from auto_round.experimental.hadamard_inplace.hadamard import get_hadK, matmul_h
 # Hook implementations
 # ---------------------------------------------------------------------------
 
-class FullOnlineHadamardHook:
+class FullOnlineHadamardHook(nn.Module):
     """Pre-forward hook: full Hadamard on the entire last dimension (for ``down_proj``)."""
 
     def __init__(self, had_K, K, fp32_had=False):
-        self.had_K = had_K
+        super().__init__()
+        if had_K is not None:
+            self.register_buffer("had_K", had_K)
+        else:
+            self.had_K = None
         self.K = K
-        self.fp32_had = True
+        self.fp32_had = fp32_had
 
     def __call__(self, module: nn.Module, args):
         x = args[0] if isinstance(args, tuple) else args
@@ -47,31 +51,41 @@ class FullOnlineHadamardHook:
         return x
 
 
-class CrossHeadOnlineHadamardHook:
-    """Pre-forward hook: Hadamard across each head on the ``head_dim`` dimension (for ``o_proj``).
+class CrossHeadOnlineHadamardHook(nn.Module):
+    """Pre-forward hook: **cross-head** Hadamard on the ``num_heads`` dimension
+    (for ``o_proj``).
 
-    Compensates for ``apply_exact_had_to_linear(v_proj, had_dim=head_dim, output=True)``
-    which applies Hadamard within each head on the output side of v_proj.
-    Since Hadamard is self-inverse, applying the same transform on o_proj input
-    restores the original activation.
+    After offline rotation:
+      - ``v_proj`` absorbed a per-head (within-head) Hadamard on ``head_dim``.
+      - ``o_proj`` absorbed a full Hadamard on ``hidden_size``.
+
+    Since ``H_full = H_cross ⊗ H_within`` (Kronecker decomposition) and the
+    within-head part is already cancelled by ``v_proj`` through the attention
+    path (``H_within² = I``), the online hook only needs to apply the residual
+    **cross-head** Hadamard (``H_cross ⊗ I``):
 
       * reshape ``(*, hidden_size)`` → ``(*, num_heads, head_dim)``
-      * Hadamard on the **head_dim** axis (last dim) — within each head
-      * reshape back to original
+      * transpose → ``(*, head_dim, num_heads)``
+      * Hadamard on the **num_heads** axis (last dim)
+      * transpose back and reshape
     """
 
     def __init__(self, had_K, K, head_dim, fp32_had=False):
         """
         Args:
-            had_K: Hadamard sub-matrix from ``get_hadK(head_dim)``.
-            K: Block size from ``get_hadK(head_dim)``.
+            had_K: Hadamard sub-matrix from ``get_hadK(num_heads)``.
+            K: Block size from ``get_hadK(num_heads)``.
             head_dim: ``hidden_size // num_attention_heads``.
             fp32_had: Compute in fp32.
         """
-        self.had_K = had_K
+        super().__init__()
+        if had_K is not None:
+            self.register_buffer("had_K", had_K)
+        else:
+            self.had_K = None
         self.K = K
         self.had_dim = head_dim
-        self.fp32_had = True
+        self.fp32_had = fp32_had
 
     def __call__(self, module: nn.Module, args):
         x = args[0] if isinstance(args, tuple) else args
@@ -81,13 +95,13 @@ class CrossHeadOnlineHadamardHook:
             x = x.float()
 
         init_shape = x.shape
-        if self.K == 1 and fast_hadamard_transform: # FIXME Important Notice fast_hadamard_transform does not use the same had_K
+        # Important Notice: fast_hadamard_transform does not use the same had_K,
+        # it only handles the power-of-2 part (K==1). For K>1, use had_K matrix directly.
+        if self.K == 1 and fast_hadamard_transform:
             x = fast_hadamard_transform.hadamard_transform(
                 x.reshape(-1, init_shape[-1] // self.had_dim, self.had_dim).transpose(1, 2),
                 scale=1 / math.sqrt(init_shape[-1] // self.had_dim)).transpose(1, 2)
-
         else:
-            self.had_K = self.had_K.to(x.device)  # TODO better
             x = (self.had_K.to(x.dtype) @ x.reshape(-1, init_shape[-1] // self.had_dim, self.had_dim)) / math.sqrt(
                 init_shape[-1] // self.had_dim)
 
@@ -95,8 +109,6 @@ class CrossHeadOnlineHadamardHook:
             x = x.to(x_dtype)
         x = x.reshape(init_shape)
 
-        if self.fp32_had:
-            x = x.to(x_dtype)
 
         if isinstance(args, tuple):
             return (x,) + args[1:]

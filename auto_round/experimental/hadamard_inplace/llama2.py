@@ -143,7 +143,6 @@ def rotate_model(model):
     torch.cuda.empty_cache()
     layers = model.model.layers
     for idx, layer in enumerate(tqdm.tqdm(layers, unit="layer", desc="Rotating")):
-
         rotate_attention_inputs(layers[idx], Q)
         rotate_attention_output(layers[idx], Q)
         rotate_mlp_input(layers[idx], Q)
@@ -165,7 +164,7 @@ def allpy_model(model, fp32_had=False):
     """
     fuse_layer_norms(model)
     rotate_model(model)
-    # For v_proj, it's acorss head. Combinint this one with head one equal to a -1 hadamard
+    # For v_proj, it's across head. Combining this one with head_dim one equal to a full hadamard
     handles = register_online_had_hooks(model, fp32_had=fp32_had)
     return handles
 
@@ -233,7 +232,7 @@ if __name__ == "__main__":
     # print(f'PASS: {diff < 1e-4}')
     # exit()
 
-    model_name = "/models/Llama-2-7b-chat-hf"
+    model_name = "/models/Qwen3-8B"
     tokenizer = AutoTokenizer.from_pretrained(model_name)
     model = AutoModelForCausalLM.from_pretrained(model_name, torch_dtype=torch.float16, device_map="auto")
     allpy_model(model)
