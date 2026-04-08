@@ -140,17 +140,18 @@ def _apply_to_module(
                 if hadamard_weight is not None:
                     input = input.view(-1, hadamard_weight.shape[0])
                     return (
-                        (_multihead_matmul(input.to(hadamard_weight.dtype), hadamard_weight.to(input.device)))
-                        .view(ori_shape)
-                        .to(orig_dtype)
-                    )
+                        _multihead_matmul(
+                            input.to(hadamard_weight.dtype),
+                            hadamard_weight.to(input.device)
+                        )
+                    ).view(ori_shape).to(orig_dtype)
                 else:
                     input = input.view(-1, self.hadamard_matrix.shape[0])
                     return (
-                        (_multihead_matmul(input.to(self.hadamard_matrix.dtype), self.hadamard_matrix.T))
-                        .view(ori_shape)
-                        .to(orig_dtype)
-                    )
+                        _multihead_matmul(
+                            input.to(self.hadamard_matrix.dtype),
+                            self.hadamard_matrix.T)
+                    ).view(ori_shape).to(orig_dtype)
 
             # for fused transform + quantization kernel
             module.pre_dequantized_input = False
@@ -175,30 +176,23 @@ def _apply_to_module(
 
             patch_quantlinear(config.hadamard_type)
 
-        if need_calibration:
-            # for training, the weight changes with every forward pass
-            # for autoround tuning: patch wrapper linear qdq_weight func
-            from auto_round.experimental.transform.patch_modules import (
-                patch_wrapperlinear_to_apply_transform,
-                patch_wrapperwalayer_forward_to_apply_transform,
-            )
+        # for autoround tuning: weight not tuning
+        # for rtn: weight transformed before saving
+        from auto_round.experimental.transform.patch_modules import (
+            patch_wrapperlinear_to_apply_transform,
+            patch_wrapperwalayer_forward_to_apply_transform,
+        )
 
-            input_hadamard_transform = build_hadamard_transform(
-                **config.dict(),
-                location="input",
-                inverse=True,
-                device=module.weight.device,
-            )
+        input_hadamard_transform = build_hadamard_transform(
+            **config.dict(),
+            location="input",
+            inverse=True,
+            device=module.weight.device,
+        )
 
-            patch_wrapperlinear_to_apply_transform(weight_hadamard_transform, input_hadamard_transform)
-            patch_wrapperwalayer_forward_to_apply_transform(input_hadamard_transform)
+        patch_wrapperlinear_to_apply_transform(weight_hadamard_transform, input_hadamard_transform)
+        patch_wrapperwalayer_forward_to_apply_transform(input_hadamard_transform)
 
-        else:
-            # transform is no longer needed (unfusing is not supported)
-            # delattr(module, transform_name)
-            # fuse transform into weight
-            with torch.no_grad():
-                getattr(module, "weight").copy_(weight_hadamard_transform(module.weight).to(module.weight.device))
 
     else:
         # TODO: apply transform to output/q/k

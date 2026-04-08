@@ -32,67 +32,29 @@ def patch_wrapperlinear_to_apply_transform(w_transform, inp_transform):
             # keep original behavior for >=16bit to avoid changing semantics unexpectedly
             return orig_qdq_weight(self, value, min_scale, max_scale)
 
-        min_scale.data.clamp_(0, 1.0)
-        max_scale.data.clamp_(0, 1.0)
+        if getattr(self, "applied_weight_hadamard", None) is None:
+            with torch.no_grad():
+                weight = self.orig_layer.weight
+                if weight.device.type == "meta":
+                    weight = self.orig_layer.get_weight().to(self.device)
 
-        weight = self.orig_layer.weight
-        if weight.device.type == "meta":
-            weight = self.orig_layer.get_weight().to(self.device)
+                is_conv1d = type(self.orig_layer) == transformers.pytorch_utils.Conv1D
+                if is_conv1d:
+                    weight = weight.t().continuous()
+                new_weight = w_transform(weight)
+                if is_conv1d:
+                    new_weight = weight.t().continuous()
+                self.orig_layer.weight.data.copy_(new_weight)
+                self.applied_weight_hadamard = True
 
-        is_conv1d = type(self.orig_layer) == transformers.pytorch_utils.Conv1D
-        if is_conv1d:
-            weight = weight.t()
+        return orig_qdq_weight(self, value, min_scale, max_scale)
 
-        weight = weight.to(self.device)
-
-        weight_t = w_transform(weight)
-
-        quant_kwargs = {}
-        if hasattr(self.orig_layer, "super_bits"):
-            quant_kwargs["super_bits"] = self.orig_layer.super_bits
-            quant_kwargs["super_group_size"] = self.orig_layer.super_group_size
-
-        weight_q, scale, zp = self.weight_quant_func(
-            weight_t,
-            bits=self.orig_layer.bits,
-            group_size=self.orig_layer.group_size,
-            v=value,
-            min_scale=min_scale,
-            max_scale=max_scale,
-            scale_dtype=self.orig_layer.scale_dtype,
-            tensor_min=self.weight_min,
-            tensor_max=self.weight_max,
-            data_type=self.data_type,
-            q_scale_thresh=self.q_scale_thresh,
-            imatrix=self.orig_layer.imatrix.to(self.device) if hasattr(self.orig_layer, "imatrix") else None,
-            global_scale=getattr(self, "weight_global_scale", None),
-            **quant_kwargs,
-        )
-
-        weight_q = weight_q.to(dtype=weight.dtype)
-
-        if is_conv1d:
-            weight_q = weight_q.t()
-
-        return weight_q, scale, zp
-
+    orig_qdq_act = WrapperLinear._qdq_act
     def _qdq_act_patched(self, x, act_max_scale, act_max=None):
 
-        # transform = getattr(self.orig_layer, transform_attr)
         x = inp_transform(x)
-        act_max_scale.data.clamp_(0, 1.0)
-        x, scale, zp = self.act_quant_func(
-            x,
-            bits=self.orig_layer.act_bits,
-            group_size=self.orig_layer.act_group_size,
-            scale_dtype=self.orig_layer.scale_dtype,
-            q_scale_thresh=self.q_scale_thresh,
-            data_type=self.act_data_type,
-            max_scale=act_max_scale,
-            tensor_max=act_max,
-            global_scale=getattr(self, "input_global_scale", None),
-        )
-        return x, scale, zp
+
+        return orig_qdq_act(self, x, act_max_scale, act_max)
 
     WrapperLinear._qdq_weight = _qdq_weight_patched
     WrapperLinear._qdq_act = _qdq_act_patched
