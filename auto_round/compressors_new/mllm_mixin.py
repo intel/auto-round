@@ -15,6 +15,7 @@
 import torch
 
 from auto_round.logger import logger
+from auto_round.utils import to_device
 
 
 class MLLMMixin:
@@ -62,6 +63,21 @@ class MLLMMixin:
 
         # Pass quant_nontext_module to ModelContext so get_block_names can include vision blocks
         kwargs.setdefault("quant_nontext_module", quant_nontext_module)
+
+        # Mirror old arch: reset batch_size to 1 when quantizing non-text modules,
+        # because vision encoder blocks have non-standard hidden_states shapes that
+        # break batch_dim detection, and image collation fails with batch_size > 1.
+        if quant_nontext_module:
+            batch_size = kwargs.get("batch_size", None)
+            if batch_size is not None and batch_size != 1:
+                grad_acc = kwargs.get("gradient_accumulate_steps", 1)
+                kwargs["gradient_accumulate_steps"] = batch_size * grad_acc
+                kwargs["batch_size"] = 1
+                logger.warning(
+                    f"reset batch_size({batch_size}) to 1 and "
+                    f"gradient_accumulate_steps to {batch_size * grad_acc} "
+                    f"because batch_size={batch_size} cannot be used for calibrating non-text modules."
+                )
 
         # super().__init__() creates model_context, which eagerly loads the model and
         # populates model_context.processor / image_processor / tokenizer.
@@ -164,15 +180,37 @@ class MLLMMixin:
             if data is None:
                 continue
 
-            if isinstance(data, dict):
-                data_new = {
-                    key: value.to(mc.model.device) if isinstance(value, torch.Tensor) else value
-                    for key, value in data.items()
-                }
-            else:
-                data_new = data
-
             try:
+                if isinstance(data, str):
+                    # List-of-strings dataset: process through template → model inputs
+                    processed = self.template_obj.processor.get_input(
+                        text=data, images=None, max_length=self.seqlen, squeeze=False
+                    )
+                    data_new = {k: to_device(v, mc.model.device) for k, v in processed.items()}
+                elif isinstance(data, dict) and "text" in data:
+                    # FakeDataLoader-style {"text": ..., "image": ...}: process through template
+                    text = data["text"]
+                    if isinstance(text, dict):
+                        text = [text]
+                    input_text = self.template_obj._encode(text)
+                    processed = self.template_obj.processor.get_input(
+                        text=input_text,
+                        images=data.get("image", None),
+                        max_length=self.seqlen,
+                        squeeze=False,
+                    )
+                    data_new = {}
+                    for key, value in processed.items():
+                        tensor_val = value if isinstance(value, torch.Tensor) else torch.as_tensor(value)
+                        data_new[key] = to_device(tensor_val, mc.model.device)
+                elif isinstance(data, dict):
+                    data_new = {
+                        key: value.to(mc.model.device) if isinstance(value, torch.Tensor) else value
+                        for key, value in data.items()
+                    }
+                else:
+                    data_new = data
+
                 if isinstance(data_new, dict):
                     mc.model(**data_new)
                 else:

@@ -538,7 +538,10 @@ class CalibCompressor(BaseCompressor):
                             self.inputs[name][key] = [data]
                         else:
                             data = post_process_cache_data(self.quantizer.batch_size, data, key)
-                            self.inputs[name][key] = list(torch.split(data, 1, dim=self.quantizer.batch_dim))
+                            if isinstance(data, torch.Tensor):
+                                self.inputs[name][key] = list(torch.split(data, 1, dim=self.quantizer.batch_dim))
+                            else:
+                                self.inputs[name][key] = [data]
                     else:  # append cache inputs
                         new_data = post_process_cache_data(self.quantizer.batch_size, kwargs[key], key)
                         if new_data is None:  # shareable args or NoneType
@@ -547,7 +550,12 @@ class CalibCompressor(BaseCompressor):
                         if self.quantizer.batch_size <= 1:
                             self.inputs[name][key].append(new_data)
                         else:
-                            self.inputs[name][key].extend(list(torch.split(new_data, 1, dim=self.quantizer.batch_dim)))
+                            if isinstance(new_data, torch.Tensor):
+                                self.inputs[name][key].extend(
+                                    list(torch.split(new_data, 1, dim=self.quantizer.batch_dim))
+                                )
+                            else:
+                                self.inputs[name][key].append(new_data)
                 elif isinstance(kwargs[key], (str, bool, type(None))):
                     if key not in self.inputs[name].keys():
                         self.inputs[name][key] = kwargs[key]
