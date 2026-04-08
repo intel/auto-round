@@ -17,6 +17,7 @@ import os
 from collections import OrderedDict
 
 import torch
+from torch.nn import Parameter
 
 from auto_round.logger import logger
 from auto_round.utils import get_lm_head_name, get_module
@@ -173,7 +174,26 @@ class ShardWriter:
                 and isinstance(module, torch.nn.Module)
                 and all(f"{module_path}.{k}" in self._all_saved for k in module.state_dict().keys())
             ):
-                module.to("meta")
+                self._move_module_to_meta(module)
+
+    def _move_module_to_meta(self, module: torch.nn.Module):
+        for child in module.children():
+            self._move_module_to_meta(child)
+
+        for name, param in list(module._parameters.items()):
+            if param is None:
+                continue
+            if isinstance(param, Parameter):
+                meta_param = Parameter(param.detach().to(device="meta"), requires_grad=param.requires_grad)
+            elif isinstance(param, torch.Tensor):
+                meta_param = Parameter(param.detach().to(device="meta"), requires_grad=param.requires_grad)
+            else:
+                continue
+            module._parameters[name] = meta_param
+
+        for name, buffer in list(module._buffers.items()):
+            if isinstance(buffer, torch.Tensor):
+                module._buffers[name] = buffer.detach().to(device="meta")
 
     def finalize(self):
         """Saves remaining weights, renames files, and writes the index JSON."""
@@ -202,7 +222,7 @@ class ShardWriter:
             layer_name = ".".join(pname.split(".")[:-1])
             if self.lm_head_name is not None and layer_name == self.lm_head_name and tie_word_embeddings:
                 lm_head_module = get_module(self.model, self.lm_head_name)
-                lm_head_module.to("meta")  # Must to meta, otherwise model's saver will dump it again
+                self._move_module_to_meta(lm_head_module)  # Must to meta, otherwise model's saver will dump it again
                 continue
             self._add_tensor(pname, tensor.detach().to("cpu"))
 
