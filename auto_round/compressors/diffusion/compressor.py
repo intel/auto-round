@@ -37,6 +37,7 @@ from auto_round.utils import (
     get_block_names,
     merge_block_output_keys,
     wrap_block_forward_positional_to_kwargs,
+    config_save_pretrained,
 )
 
 pipeline_utils = LazyImport("diffusers.pipelines.pipeline_utils")
@@ -514,6 +515,13 @@ class DiffusionCompressor(BaseCompressor):
                 )
             elif val is not None and hasattr(val, "save_pretrained"):
                 val.save_pretrained(sub_module_path)
+        if not hasattr(self.pipe.config, "save_pretrained"):
+            # For Z-Image, tuning will cause this attribute missing, we need to add it back before saving config
+            setattr(
+                self.pipe.config, 
+                "save_pretrained", 
+                partial(config_save_pretrained, self.pipe.config, "model_index.json")
+            )
         self.pipe.config.save_pretrained(output_dir)
         return compressed_model
 
