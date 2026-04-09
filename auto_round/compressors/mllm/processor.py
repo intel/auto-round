@@ -225,7 +225,10 @@ class LongCatNextProcessor(BasicProcessor):
         else:
             self.image_processor = self.default_image_processor
         self.use_rtn = use_rtn
-        self.check_image_processor()
+        # LongCat-Next get_input() relies on the HF processor output directly and
+        # does not use self.image_processor in the current input path. Do not
+        # enforce image_processor availability here so text-only calibration can
+        # still proceed when AutoImageProcessor loading is unavailable.
 
         # build generation_config from model file because the code is on hub.
         model_module = sys.modules[self.model.__module__]
