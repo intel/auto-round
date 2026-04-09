@@ -46,18 +46,18 @@ steps:
     - script: |
         if [ "${{ parameters.utScriptFileName }}" == "run_ut_xpu" ];then
           docker exec ${{ parameters.utContainerName }} bash -c "cd /auto-round \
-            && uv pip install -r $.azure-pipelines/scripts/ut/constraints.txt --extra-index-url https://download.pytorch.org/whl/xpu \
-            && uv pip install auto-round-lib \
+            && uv pip install -r .azure-pipelines/scripts/ut/constraints.txt --extra-index-url https://download.pytorch.org/whl/xpu \
+            && uv pip install auto-round-lib --constraint .azure-pipelines/scripts/ut/constraints.txt \
             && uv pip install -r requirements.txt \
             && uv pip install -r test/test_ark/requirements.txt \
             && uv pip install -r test/test_xpu/requirements.txt --extra-index-url https://download.pytorch.org/whl/xpu \
-            && uv pip install -r $.azure-pipelines/scripts/ut/constraints.txt --extra-index-url https://download.pytorch.org/whl/xpu \
+            && uv pip install -r .azure-pipelines/scripts/ut/constraints.txt --extra-index-url https://download.pytorch.org/whl/xpu \
             && cd /auto-round && uv pip install . \
             && uv pip list"
         else 
           docker exec ${{ parameters.utContainerName }} bash -c "cd /auto-round \
             && uv pip install -r .azure-pipelines/scripts/ut/constraints.txt --extra-index-url https://download.pytorch.org/whl/cpu \
-            && uv pip install auto-round-lib \
+            && uv pip install auto-round-lib --constraint .azure-pipelines/scripts/ut/constraints.txt \
             && uv pip install -r requirements.txt \
             && uv pip install -r requirements-cpu.txt \
             && uv pip install -r test/test_cpu/requirements.txt --extra-index-url https://download.pytorch.org/whl/cpu \
