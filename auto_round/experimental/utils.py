@@ -137,9 +137,7 @@ def is_triton_kernel_available(data_type: str) -> bool:
     return True
 
 
-def normalize_hadamard_config(
-    hadamard_config: str | dict | HadamardConfig | None, scheme: str
-) -> dict[str, Any]:
+def normalize_hadamard_config(hadamard_config: str | dict | HadamardConfig | None, scheme: str) -> dict[str, Any]:
     """
     Normalize and validate `hadamard_config`.
 
@@ -231,9 +229,7 @@ def normalize_hadamard_config(
                 raise ValueError(f"Invalid default hadamard_config after scheme adjustment: {e}") from e
 
         if key not in HADAMARDS:
-            raise ValueError(
-                f"Invalid hadamard_config string: {key!r}. Expected one of {sorted(HADAMARDS.keys())}."
-            )
+            raise ValueError(f"Invalid hadamard_config string: {key!r}. Expected one of {sorted(HADAMARDS.keys())}.")
 
         cfg_dict = {"hadamard_type": key}
         cfg_dict = _apply_scheme_block_size(cfg_dict, block_size_explicitly_set=False)
@@ -244,8 +240,7 @@ def normalize_hadamard_config(
             raise ValueError(f"hadamard_config built from string {key!r} is invalid for HadamardConfig: {e}") from e
 
     raise TypeError(
-        "hadamard_config must be one of: None, dict, HadamardConfig, or str "
-        f"(got {type(hadamard_config).__name__})"
+        "hadamard_config must be one of: None, dict, HadamardConfig, or str " f"(got {type(hadamard_config).__name__})"
     )
 
 
