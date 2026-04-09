@@ -74,6 +74,11 @@ class BaseQuantizers:
         self.batch_size = getattr(config, "batch_size", 8)
         self.batch_dim = getattr(config, "batch_dim", None)
         self.infer_bs_coeff = getattr(config, "infer_bs_coeff", 1)
+        # Whether to feed quantized-block outputs as inputs to the next block.
+        # Subclasses that support cascaded quantized-input (e.g. SignRoundQuantizer)
+        # override this from their config.  Defaults to False for zero-shot algorithms
+        # (RTN) where activations are not used during weight optimization.
+        self.enable_quanted_input = getattr(config, "enable_quanted_input", False)
 
     @classmethod
     def from_config(cls, config: QuantizationConfig):
