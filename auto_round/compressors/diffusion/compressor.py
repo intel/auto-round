@@ -118,7 +118,8 @@ class DiffusionCompressor(BaseCompressor):
         if dataset == "NeelNanda/pile-10k":
             dataset = "coco2014"
             logger.warning(
-                "Dataset 'NeelNanda/pile-10k' is not suitable for diffusion model quantization, use coco2014 dataset instead."
+                "Dataset 'NeelNanda/pile-10k' is not suitable for diffusion "
+                + "model quantization, use coco2014 dataset instead."
             )
         model_dtype = kwargs.pop("model_dtype", None)
 
