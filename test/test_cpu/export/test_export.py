@@ -474,8 +474,8 @@ class TestAutoRound:
     @pytest.mark.parametrize(
         "iters,use_dataloader",
         [
-            (0, False),   # RTN (no tuning)
-            (1, True),    # with tuning
+            (0, False),  # RTN (no tuning)
+            (1, True),  # with tuning
         ],
         ids=["rtn", "tuning"],
     )
@@ -524,19 +524,19 @@ class TestAutoRound:
         with safe_open(os.path.join(quantized_model_path, "model.safetensors"), framework="pt") as f:
             # weights must be packed as int32 (compressed-tensors stores both int4 and int8 as torch.int32)
             weight = f.get_tensor("model.decoder.layers.5.self_attn.v_proj.weight_packed")
-            assert weight.dtype == torch.int32, (
-                f"Expected int32 weight for {scheme}, got {weight.dtype}"
-            )
+            assert weight.dtype == torch.int32, f"Expected int32 weight for {scheme}, got {weight.dtype}"
             # weight_scale must be present and be a float tensor
             scale_key = "model.decoder.layers.8.self_attn.k_proj.weight_scale"
             assert scale_key in f.keys(), f"Missing {scale_key} for {scheme} export"
             scale = f.get_tensor(scale_key)
-            assert scale.dtype in (torch.float32, torch.float16, torch.bfloat16), (
-                f"Expected float weight_scale for {scheme}, got {scale.dtype}"
-            )
+            assert scale.dtype in (
+                torch.float32,
+                torch.float16,
+                torch.bfloat16,
+            ), f"Expected float weight_scale for {scheme}, got {scale.dtype}"
             # No input_scale should be present for weight-only quantization
             input_scale_keys = [k for k in f.keys() if k.endswith(".input_scale")]
-            assert len(input_scale_keys) == 0, (
-                f"Expected no input_scale for weight-only {scheme}, but found: {input_scale_keys[:5]}"
-            )
+            assert (
+                len(input_scale_keys) == 0
+            ), f"Expected no input_scale for weight-only {scheme}, but found: {input_scale_keys[:5]}"
         shutil.rmtree(quantized_model_path, ignore_errors=True)
