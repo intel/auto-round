@@ -15,7 +15,6 @@ from ...helpers import get_captions_dataset_path, get_model_path, transformers_v
 
 
 class TestAutoRound:
-    model_name = get_model_path("black-forest-labs/FLUX.1-dev")
 
     @pytest.fixture(autouse=True)
     def _save_dir(self, tmp_path):
@@ -28,11 +27,11 @@ class TestAutoRound:
         yield
         shutil.rmtree("runs", ignore_errors=True)
 
-    def test_diffusion_rtn(self):
+    def test_diffusion_rtn(self, tiny_flux_model_path):
         from diffusers import AutoPipelineForText2Image
 
         ## load the model
-        pipe = AutoPipelineForText2Image.from_pretrained(self.model_name)
+        pipe = AutoPipelineForText2Image.from_pretrained(tiny_flux_model_path)
         # build tiny model for testing since the full model is too large to quantize and evaluate in CI
         pipe.transformer.transformer_blocks = pipe.transformer.transformer_blocks[:2]
         pipe.transformer.single_transformer_blocks = pipe.transformer.single_transformer_blocks[:2]
@@ -52,11 +51,11 @@ class TestAutoRound:
 
     @pytest.mark.skip_ci(reason="Tuning will OOM in CI; Only tiny model is suggested")  # skip this test in CI
     @require_optimum
-    def test_diffusion_tune(self):
+    def test_diffusion_tune(self, tiny_flux_model_path):
         from diffusers import AutoPipelineForText2Image
 
         ## load the model
-        pipe = AutoPipelineForText2Image.from_pretrained(self.model_name)
+        pipe = AutoPipelineForText2Image.from_pretrained(tiny_flux_model_path)
         model = pipe.transformer
         # build tiny model for testing since the full model is too large to quantize and evaluate in CI
         pipe.transformer.transformer_blocks = pipe.transformer.transformer_blocks[:2]

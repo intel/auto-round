@@ -559,6 +559,9 @@ def get_score_for_scheme(
 
         model_forward_low_gpu(model, dataloader, major_device=major_device, pbar=pbar)
     else:
+        for n, m in model.named_modules():
+            if hasattr(m, "grad_mode"):
+                m.grad_mode = True
         dataloader = get_dataloader(tokenizer, seqlen, dataset_name=dataset, seed=42, bs=batch_size, nsamples=nsamples)
         for data in dataloader:
             data = to_device(data, model.device)

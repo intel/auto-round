@@ -62,27 +62,15 @@ function run_unit_test() {
     # install unit test dependencies
     echo "##[group]set up UT env..."
     cd "${BUILD_SOURCESDIRECTORY}" || exit 1
-    uv pip install torch==2.10.0 torchvision
-    uv pip install git+https://github.com/casper-hansen/AutoAWQ.git --no-build-isolation
-
-    # install gptqmodel
-    CUDA_VER=$(python -c 'import torch; print(f"cu{torch.version.cuda.replace(".", "")}")')
-    PY_VER=$(python -c 'import sys; print(f"cp{sys.version_info.major}{sys.version_info.minor}")')
-    TORCH_VER="torch2.10"
-    WHEEL="gptqmodel-5.7.0-${CUDA_VER}${TORCH_VER}-${PY_VER}-${PY_VER}-linux_x86_64.whl"
-    URL="https://pkgs.dev.azure.com/lpot-inc/b7121868-d73a-4794-90c1-23135f974d09/_packaging/4728fbab-e069-4cbd-bcca-d35f4d42256b/pypi/download/gptqmodel/5.7/${WHEEL}"
-    wget -q "$URL" -O "$WHEEL" || { echo "Download failed. Check CUDA/PyTorch/Python versions match (cu126/cu128/cu130, torch2.10, cp310-cp313)"; exit 1; }
-    mv "$WHEEL" "${WHEEL/-${CUDA_VER}${TORCH_VER}-/+${CUDA_VER}.${TORCH_VER}-}"
-    uv pip install "./${WHEEL/-${CUDA_VER}${TORCH_VER}-/+${CUDA_VER}.${TORCH_VER}-}" --no-build-isolation
-    rm -f "./${WHEEL/-${CUDA_VER}${TORCH_VER}-/+${CUDA_VER}.${TORCH_VER}-}"
-
-    uv pip install gptqmodel --extra-index-url https://pkgs.dev.azure.com/lpot-inc/neural-compressor/_packaging/gptqmodel-wheels/pypi/simple/
-    uv pip install -r https://raw.githubusercontent.com/ModelCloud/GPTQModel/refs/tags/v5.7.0/requirements.txt
+    uv pip install https://github.com/XuehaoSun/GPTQModel/releases/download/v5.8.0/gptqmodel-5.8.0+cu128torch2.11-cp312-cp312-linux_x86_64.whl
+    uv pip install -r https://raw.githubusercontent.com/ModelCloud/GPTQModel/refs/tags/v5.8.0/requirements.txt
     uv pip install https://github.com/XuehaoSun/llama-cpp-python/releases/download/v0.3.16/llama_cpp_python-0.3.16-cp312-cp312-linux_x86_64.whl
     uv pip install 'git+https://github.com/ggml-org/llama.cpp.git#subdirectory=gguf-py'
     uv pip install -r test/test_cuda/requirements.txt
     uv pip install -r test/test_cuda/requirements_diffusion.txt
     uv pip install -U transformers
+    uv pip uninstall torch torchvision
+    uv pip install torch==2.11.0 torchvision --index-url https://download.pytorch.org/whl/cu128
     uv pip install .
     echo "##[endgroup]"
 
@@ -126,8 +114,9 @@ function run_unit_test_llmc() {
     uv pip install -U pytest-cov pytest-html
     BUILD_TYPE="nightly" uv pip install -r test/test_cuda/requirements_llmc.txt --extra-index-url https://download.pytorch.org/whl/cu128 --index-strategy unsafe-best-match
     uv pip install .
-    echo "##[endgroup]"
     uv pip list
+    echo "##[endgroup]"
+
     cd "${BUILD_SOURCESDIRECTORY}/test" || exit 1
 
     export COVERAGE_RCFILE="${BUILD_SOURCESDIRECTORY}/.azure-pipelines/scripts/ut/.coverage"
@@ -151,9 +140,9 @@ function run_unit_test_sglang() {
     uv pip install -U pytest-cov pytest-html
     uv pip install -r test/test_cuda/requirements_sglang.txt
     uv pip install .
+    uv pip list
     echo "##[endgroup]"
 
-    uv pip list
     cd "${BUILD_SOURCESDIRECTORY}/test" || exit 1
     export COVERAGE_RCFILE="${BUILD_SOURCESDIRECTORY}/.azure-pipelines/scripts/ut/.coverage"
 
@@ -174,11 +163,11 @@ function run_unit_test_vllm() {
     rm -rf /root/.venv
     uv venv --python=3.12 /root/.venv
     uv pip install -U pytest-cov pytest-html
-    uv pip install -r test/test_cuda/requirements_vllm.txt
+    uv pip install -r test/test_cuda/requirements_vllm.txt --extra-index-url https://download.pytorch.org/whl/cu128 --index-strategy unsafe-best-match
     uv pip install .
+    uv pip list
     echo "##[endgroup]"
 
-    uv pip list
     cd "${BUILD_SOURCESDIRECTORY}/test" || exit 1
     export COVERAGE_RCFILE="${BUILD_SOURCESDIRECTORY}/.azure-pipelines/scripts/ut/.coverage"
 
@@ -197,16 +186,14 @@ function main() {
     setup_environment
     if [ "${test_case}" == "vlm" ]; then
         run_unit_test_vlm
-    elif [ "${test_case}" == "llmc" ]; then
-        run_unit_test_llmc
-    elif [ "${test_case}" == "sglang" ]; then
+    elif [ "${test_case}" == "specific" ]; then
         run_unit_test_sglang
-    elif [ "${test_case}" == "vllm" ]; then
+        run_unit_test_llmc
         run_unit_test_vllm
     elif [ "${test_case}" == "all" ]; then
         run_unit_test
     else
-        echo "##[error]Invalid test case specified: ${test_case}. Please use 'vlm', 'llmc', 'sglang', 'vllm', or 'all'."
+        echo "##[error]Invalid test case specified: ${test_case}. Please use 'vlm', 'specific', or 'all'."
         exit 1
     fi
     check_storage_usage

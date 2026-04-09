@@ -321,6 +321,12 @@ def set_layer_config(
         elif isinstance(item, QuantizationScheme):
             config = asdict(item)
         elif isinstance(item, dict):
+            # Support "scheme" key inside dict: resolve the preset and merge overrides
+            if "scheme" in item:
+                scheme_name = item.pop("scheme")
+                base = asdict(preset_name_to_scheme(scheme_name.upper()))
+                base.update(item)
+                item = base
             invalid = set(item) - set(scheme_keys + ("fixed_by_user", "scale_dtype"))
             if invalid:
                 raise ValueError(
@@ -341,9 +347,11 @@ def set_layer_config(
     extra_scheme_keys = ("scale_dtype",)
     scheme_keys = tuple(f.name for f in fields(QuantizationScheme)) + ("scale_dtype",)
     layer_config = copy.deepcopy(layer_config) or {}
+    ignore_layer_patterns = set()
     if ignore_layers:
         ignore_layers = ignore_layers.replace(" ", "").split(",")
         ignore_layers = [name + "." if name[-1].isdigit() else name for name in ignore_layers]
+        ignore_layer_patterns = set(ignore_layers)
 
     # 1. ignore_layers -> force 16
     for name in get_fp_layer_names(model, ignore_layers):
@@ -428,11 +436,16 @@ def set_layer_config(
         if name in all_module_names:
             m = get_module(model, name)
             if len(list(m.children())) == 0 and type(m) not in supported_types:
-                layer_config.pop(name)
-                logger.warning(
-                    f"'{name}' exists in the model but is not a supported quantization target "
-                    f"in the current scheme, ignoring its setting in `layer_config`"
-                )
+                val = layer_config.pop(name)
+                if name in ignore_layer_patterns:
+                    # Keep unsupported ignore_layers entries so export can serialize
+                    # them into regex-based extra_config for loaders like vLLM INC.
+                    regex_config[name] = val
+                else:
+                    logger.warning(
+                        f"'{name}' exists in the model but is not a supported quantization target "
+                        f"in the current scheme, ignoring its setting in `layer_config`"
+                    )
                 continue
 
         regex = re.compile(to_standard_regex(name))
