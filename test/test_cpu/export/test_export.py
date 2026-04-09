@@ -471,14 +471,24 @@ class TestAutoRound:
             "model.visual.blocks" in modules_to_not_convert
         ), f"'model.visual.blocks' should be in modules_to_not_convert. Got: {modules_to_not_convert}"
 
-    def test_llmc_dynamic_wint8aint8_export(self):
+    @pytest.mark.parametrize(
+        "iters,use_dataloader",
+        [
+            (0, False),   # RTN (no tuning)
+            (1, True),    # with tuning
+        ],
+        ids=["rtn", "tuning"],
+    )
+    def test_llmc_dynamic_wint8aint8_export(self, iters, use_dataloader, dataloader):
         from safetensors import safe_open
 
+        dataset = dataloader if use_dataloader else None
         autoround = AutoRound(
             self.model_name,
-            iters=0,
+            iters=iters,
             nsamples=2,
             seqlen=2,
+            dataset=dataset,
             scheme="INT8_W8A8",
         )
         quantized_model_path = self.save_dir
@@ -486,13 +496,47 @@ class TestAutoRound:
         with safe_open(os.path.join(quantized_model_path, "model.safetensors"), framework="pt") as f:
             assert "model.decoder.layers.8.self_attn.k_proj.weight_scale" in f.keys()
             assert f.get_tensor("model.decoder.layers.5.self_attn.v_proj.weight").dtype == torch.int8
+        shutil.rmtree(quantized_model_path, ignore_errors=True)
 
-    def test_llmc_dynamic_wint8aint8_export_with_tuning(self, dataloader):
+    @pytest.mark.parametrize(
+        "scheme,bits,group_size,sym",
+        [
+            ("W4A16", 4, 128, True),
+            ("W4A16", 4, -1, True),
+            ("W8A16", 8, -1, True),
+        ],
+    )
+    def test_llmc_wint_a16_export(self, scheme, bits, group_size, sym):
         from safetensors import safe_open
 
-        autoround = AutoRound(self.model_name, iters=1, nsamples=2, seqlen=2, dataset=dataloader, scheme="INT8_W8A8")
-        quantized_model_path = self.save_dir
+        autoround = AutoRound(
+            self.model_name,
+            iters=2,
+            nsamples=2,
+            seqlen=2,
+            scheme=scheme,
+            bits=bits,
+            group_size=group_size,
+            sym=sym,
+        )
+        quantized_model_path = "./saved"
         autoround.quantize_and_save(output_dir=quantized_model_path, format="llm_compressor")
         with safe_open(os.path.join(quantized_model_path, "model.safetensors"), framework="pt") as f:
-            assert "model.decoder.layers.8.self_attn.k_proj.weight_scale" in f.keys()
-            assert f.get_tensor("model.decoder.layers.5.self_attn.v_proj.weight").dtype == torch.int8
+            # weights must be packed as int32 (compressed-tensors stores both int4 and int8 as torch.int32)
+            weight = f.get_tensor("model.decoder.layers.5.self_attn.v_proj.weight_packed")
+            assert weight.dtype == torch.int32, (
+                f"Expected int32 weight for {scheme}, got {weight.dtype}"
+            )
+            # weight_scale must be present and be a float tensor
+            scale_key = "model.decoder.layers.8.self_attn.k_proj.weight_scale"
+            assert scale_key in f.keys(), f"Missing {scale_key} for {scheme} export"
+            scale = f.get_tensor(scale_key)
+            assert scale.dtype in (torch.float32, torch.float16, torch.bfloat16), (
+                f"Expected float weight_scale for {scheme}, got {scale.dtype}"
+            )
+            # No input_scale should be present for weight-only quantization
+            input_scale_keys = [k for k in f.keys() if k.endswith(".input_scale")]
+            assert len(input_scale_keys) == 0, (
+                f"Expected no input_scale for weight-only {scheme}, but found: {input_scale_keys[:5]}"
+            )
+        shutil.rmtree(quantized_model_path, ignore_errors=True)

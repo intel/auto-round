@@ -74,14 +74,18 @@ def construct_ct_scheme(layer):
         strategy=_get_weight_scheme_strategy(layer.group_size),
         block_structure=layer.group_size if _get_weight_scheme_strategy(layer.group_size) == "block" else None,
     )
-    activations_args = QuantizationArgs(
-        num_bits=layer.act_bits,
-        type=_get_scheme_type(layer.act_data_type),
-        symmetric=layer.act_sym,
-        dynamic=layer.act_dynamic,
-        group_size=layer.act_group_size if _get_act_scheme_strategy(layer.act_group_size) == "group" else None,
-        strategy=_get_act_scheme_strategy(layer.act_group_size),
-    )
+    # Weight-only quantization (W4A16, W8A16, etc.): no activation quantization
+    if layer.act_bits >= 16 or layer.act_data_type is None:
+        activations_args = None
+    else:
+        activations_args = QuantizationArgs(
+            num_bits=layer.act_bits,
+            type=_get_scheme_type(layer.act_data_type),
+            symmetric=layer.act_sym,
+            dynamic=layer.act_dynamic,
+            group_size=layer.act_group_size if _get_act_scheme_strategy(layer.act_group_size) == "group" else None,
+            strategy=_get_act_scheme_strategy(layer.act_group_size),
+        )
     scheme = QuantizationScheme(
         targets=[layer.__class__.__name__],
         weights=weights_args,
@@ -98,38 +102,28 @@ def _get_quant_format(model):
 
 
 def _compress_and_set_format(layer, scheme, device=None):
-    """Compress a layer and set its quantization format, with backward compatibility.
+    """Compress a layer and set its quantization format.
 
-    Supports both old and new compressed_tensors APIs:
-    - New API: compress_module() handles compression, state dict replacement, status, and format.
-    - Old API: NaiveQuantizationCompressor instance + manual param management + set_per_module_format.
-    The new API was introduced after compressed_tensors v0.14.1, may be available in v0.15+.
+    Requires a compressed_tensors version that provides `compress_module`.
+
+    :param layer: quantized layer to compress
+    :param scheme: quantization scheme for the layer
+    :raises ImportError: if compress_module is not available
     """
     try:
         from compressed_tensors.compressors import compress_module  # pylint: disable=E0401
 
         compress_module(layer)
-    except (ImportError, TypeError):
-        from compressed_tensors.compressors import NaiveQuantizationCompressor  # pylint: disable=E0401
-        from compressed_tensors.config.format import set_per_module_format  # pylint: disable=E0401
-        from compressed_tensors.quantization import QuantizationStatus  # pylint: disable=E0401
-        from compressed_tensors.utils import (  # pylint: disable=E0401
-            delete_offload_parameter,
-            register_offload_parameter,
+    except ImportError as e:
+        logger.error(
+            "Unable to import compress_module from compressed_tensors. "
+            "This functionality requires compressed_tensors >= 0.15.0. "
+            "Please upgrade: pip install --upgrade compressed_tensors"
         )
-
-        compressor = NaiveQuantizationCompressor()
-        q_state_dict = compressor.compress(layer.state_dict(), names_to_scheme={"": scheme}, show_progress=False)
-
-        for param_name, _ in list(layer.named_parameters(recurse=False)):
-            delete_offload_parameter(layer, param_name)
-
-        for param_name, value in q_state_dict.items():
-            param = torch.nn.Parameter(value, requires_grad=False)
-            register_offload_parameter(layer, param_name, param, device)
-
-        layer.quantization_status = QuantizationStatus.COMPRESSED
-        set_per_module_format(layer)
+        raise ImportError(
+            "compress_module not found in compressed_tensors. "
+            "Please install a compatible version: pip install --upgrade compressed_tensors"
+        ) from e
 
 
 def pack_layer(name, model, device=None):

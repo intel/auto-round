@@ -35,6 +35,7 @@ from auto_round.compressors.utils import (
     is_standard_fp,
     is_static_wfp8afp8,
     is_wfp8afp8,
+    is_wint_woq,
 )
 from auto_round.export.export_to_gguf.config import ModelType
 from auto_round.schemes import (
@@ -69,6 +70,7 @@ class AutoRoundExportFormat(str, Enum):
     NV_FP4_WITH_STATIC_GS = "nv_fp4_with_static_gs"
     INT8_W8A8 = "int8_w8a8"
     FP8_BLOCK = "fp8_block"
+    WINT_A16 = "wint_a16"
 
 
 if TYPE_CHECKING:
@@ -345,7 +347,8 @@ class FakeFormat(OutputFormat):
 
 @OutputFormat.register("llm_compressor")
 class LLMCompressorFormat(OutputFormat):
-    support_schemes = ["MXFP4", "MXFP8", "NVFP4", "FPW8A16", "FP8_STATIC", "INT8_W8A8", "FP8_BLOCK"]
+    support_schemes = ["MXFP4", "MXFP8", "NVFP4", "FPW8A16", "FP8_STATIC", "INT8_W8A8", "FP8_BLOCK",
+                        "W4A16", "W8A16"]
     format_name = "llm_compressor"
 
     def __init__(self, format, ar):
@@ -384,6 +387,11 @@ class LLMCompressorFormat(OutputFormat):
 
                 check_compressed_tensors_supported()
                 self.backend = LLMCompressorFormat(AutoRoundExportFormat.INT8_W8A8.value, ar)
+            elif is_wint_woq(ar):
+                from auto_round.export.export_to_llmcompressor import check_compressed_tensors_supported
+
+                check_compressed_tensors_supported()
+                self.backend = LLMCompressorFormat(AutoRoundExportFormat.WINT_A16.value, ar)
         else:
             if format.upper() not in list(AutoRoundExportFormat.__members__.keys()):
                 raise KeyError(f"Unsupported backend format llm_compressor:{format}, please check")
@@ -397,7 +405,9 @@ class LLMCompressorFormat(OutputFormat):
             error_logs.append(f"bits={scheme.bits}")
         if not re.search("mxfp|fp|nvfp|int", scheme.data_type):
             error_logs.append(f"data_type={scheme.data_type}")
-        if scheme.data_type in ["fp", "int"] and scheme.bits != 8:
+        if scheme.data_type == "fp" and scheme.bits != 8:
+            error_logs.append(f"data_type={scheme.data_type}, bits={scheme.bits}")
+        if scheme.data_type == "int" and scheme.bits not in [4, 8]:
             error_logs.append(f"data_type={scheme.data_type}, bits={scheme.bits}")
         if scheme.super_bits:
             error_logs.append(f"super_bits={scheme.super_bits}")
@@ -468,6 +478,10 @@ class LLMCompressorFormat(OutputFormat):
 
             return pack_layer(layer_name, model, device=device)
         elif re.search(f"{AutoRoundExportFormat.FP8_BLOCK.value}", self.output_format):
+            from auto_round.export.export_to_llmcompressor.export import pack_layer
+
+            return pack_layer(layer_name, model, device=device)
+        elif re.search(f"{AutoRoundExportFormat.WINT_A16.value}", self.output_format):
             from auto_round.export.export_to_llmcompressor.export import pack_layer
 
             return pack_layer(layer_name, model, device=device)
