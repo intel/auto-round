@@ -35,6 +35,8 @@ from auto_round.compressors_new.utils import (
     check_skippable_keywords,
     immediate_pack,
     init_cache,
+    is_nv_fp,
+    is_static_wfp8afp8,
     reset_params,
 )
 from auto_round.logger import logger
@@ -52,6 +54,7 @@ from auto_round.utils import (
     is_quantized_input_module,
     memory_monitor,
     mv_module_from_gpu,
+    set_amax_for_all_moe_layers,
     set_module,
     to_device,
     to_dtype,
@@ -805,6 +808,10 @@ class CalibCompressor(BaseCompressor):
             mid_iter_mem_check=mid_iter_mem_check,
         )
 
+        # ── MoE scale alignment for FP8 dispatch efficiency ────────────────
+        if is_nv_fp(self.quantizer.act_data_type) or is_static_wfp8afp8(self.quantizer):
+            set_amax_for_all_moe_layers(block, attr_name="act_max")
+
         # ── Collect quantized-block outputs ───────────────────────────────────
         if self.quantizer.enable_quanted_input:
             q_outputs = self.quantizer._get_block_outputs(block, input_ids, input_others, bs)
@@ -929,6 +936,10 @@ class CalibCompressor(BaseCompressor):
                 loss_device=loss_device,
                 mid_iter_mem_check=mid_iter_mem_check,
             )
+
+            # ── MoE scale alignment for FP8 dispatch efficiency ────────────────
+            if is_nv_fp(self.quantizer.act_data_type) or is_static_wfp8afp8(self.quantizer):
+                set_amax_for_all_moe_layers(m, attr_name="act_max")
 
             # ── Infrastructure: collect q_outputs if needed ───────────────────
             if self.quantizer.enable_quanted_input:

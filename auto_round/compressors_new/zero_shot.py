@@ -19,6 +19,7 @@ from tqdm import tqdm
 
 from auto_round.algorithms.alg_config import AlgConfig
 from auto_round.compressors_new.base import BaseCompressor
+from auto_round.compressors_new.utils import is_nv_fp, is_static_wfp8afp8
 from auto_round.logger import logger
 from auto_round.modeling.fused_moe.replace_modules import materialize_model_
 from auto_round.utils import (
@@ -32,6 +33,7 @@ from auto_round.utils import (
     global_state,
     memory_monitor,
     mv_module_from_gpu,
+    set_amax_for_all_moe_layers,
     set_module,
 )
 
@@ -101,6 +103,10 @@ class ZeroShotCompressor(BaseCompressor):
 
         self.quantizer.quantize_block(block)
 
+        # ── MoE scale alignment for FP8 dispatch efficiency ────────────────
+        if is_nv_fp(self.quantizer.act_data_type) or is_static_wfp8afp8(self.quantizer):
+            set_amax_for_all_moe_layers(block, attr_name="act_max")
+
         mv_module_from_gpu(block)
         return None, None
 
@@ -160,6 +166,10 @@ class ZeroShotCompressor(BaseCompressor):
 
                     # ── Pure algorithm ────────────────────────────────────────
                     self.quantizer.quantize_block(block)
+
+                    # ── MoE scale alignment for FP8 dispatch efficiency ────────────────
+                    if is_nv_fp(self.quantizer.act_data_type) or is_static_wfp8afp8(self.quantizer):
+                        set_amax_for_all_moe_layers(block, attr_name="act_max")
 
                     # ── Infrastructure: shard write / device cleanup ──────────
                     if self.is_immediate_saving:

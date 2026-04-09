@@ -68,14 +68,33 @@ class MLLMMixin:
         # because vision encoder blocks have non-standard hidden_states shapes that
         # break batch_dim detection, and image collation fails with batch_size > 1.
         if quant_nontext_module:
+            # batch_size may come from kwargs (placed there by AutoRoundCompatible local_args)
+            # or from the AlgConfig object in args[0] (the authoritative source for quantizer.batch_size).
+            # We must update both so that quantizer.batch_size is also reset to 1.
             batch_size = kwargs.get("batch_size", None)
+            _alg_cfg = args[0] if args else None
+            if batch_size is None and _alg_cfg is not None:
+                cfgs = _alg_cfg if isinstance(_alg_cfg, list) else [_alg_cfg]
+                for cfg in cfgs:
+                    if hasattr(cfg, "batch_size") and cfg.batch_size is not None:
+                        batch_size = cfg.batch_size
+                        break
             if batch_size is not None and batch_size != 1:
                 grad_acc = kwargs.get("gradient_accumulate_steps", 1)
-                kwargs["gradient_accumulate_steps"] = batch_size * grad_acc
+                new_grad_acc = batch_size * grad_acc
+                kwargs["gradient_accumulate_steps"] = new_grad_acc
                 kwargs["batch_size"] = 1
+                # Also patch the AlgConfig object so that BaseCompressor.quantize_config.batch_size == 1
+                if _alg_cfg is not None:
+                    cfgs = _alg_cfg if isinstance(_alg_cfg, list) else [_alg_cfg]
+                    for cfg in cfgs:
+                        if hasattr(cfg, "batch_size"):
+                            cfg.batch_size = 1
+                        if hasattr(cfg, "gradient_accumulate_steps"):
+                            cfg.gradient_accumulate_steps = new_grad_acc
                 logger.warning(
                     f"reset batch_size({batch_size}) to 1 and "
-                    f"gradient_accumulate_steps to {batch_size * grad_acc} "
+                    f"gradient_accumulate_steps to {new_grad_acc} "
                     f"because batch_size={batch_size} cannot be used for calibrating non-text modules."
                 )
 

@@ -34,6 +34,7 @@ environment_variables: dict[str, Callable[[], Any]] = {
     "AR_DISABLE_DATASET_SUBPROCESS": lambda: os.getenv("AR_DISABLE_DATASET_SUBPROCESS", "0").lower() in ("1", "true"),
     "AR_DISABLE_COPY_MTP_WEIGHTS": lambda: os.getenv("AR_DISABLE_COPY_MTP_WEIGHTS", "0").lower()
     in ("1", "true", "yes"),
+    "AR_DISABLE_NEW_ARCH": lambda: os.getenv("AR_DISABLE_NEW_ARCH", "0").lower() in ("1", "true", "yes"),
 }
 
 
@@ -69,8 +70,8 @@ def set_config(**kwargs):
     for key, value in kwargs.items():
         if key in environment_variables:
             # Convert value to appropriate string format
-            if key == "AR_USE_MODELSCOPE":
-                # Handle boolean values for AR_USE_MODELSCOPE
+            if key in ("AR_USE_MODELSCOPE", "AR_DISABLE_NEW_ARCH"):
+                # Handle boolean values for boolean env flags
                 str_value = "true" if value in [True, "True", "true", "1", 1] else "false"
             else:
                 # For other variables, convert to string

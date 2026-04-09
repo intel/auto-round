@@ -63,6 +63,17 @@ class DiffusionMixin:
         """
         return wrap_block_forward_positional_to_kwargs(super()._get_block_forward_func(name))
 
+    def _should_stop_cache_forward(self, name: str) -> bool:
+        """Diffusion models must run all denoising steps to collect enough inputs.
+
+        Mirrors old-arch DiffusionCompressor._should_stop_cache_forward which always
+        returns False so the pipeline never exits early after the first block hit.
+        Without this, CalibCompressor._should_stop_cache_forward would stop after the
+        first inference step, yielding only nsamples inputs instead of
+        nsamples * num_inference_steps.
+        """
+        return False
+
     @torch.no_grad()
     def calib(self, nsamples, bs):
         """Perform diffusion-specific calibration for quantization.

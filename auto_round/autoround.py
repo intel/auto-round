@@ -17,6 +17,7 @@ from typing import TYPE_CHECKING, Optional, Union
 
 import torch
 
+import auto_round.envs as envs
 from auto_round.compressors import (
     AdamCompressor,
     BaseCompressor,
@@ -33,7 +34,8 @@ from auto_round.utils import is_diffusion_model, is_mllm_model
 if TYPE_CHECKING:
     from auto_round.auto_scheme.gen_auto_scheme import AutoScheme
 
-NEW_ARCH = True
+# Default to new architecture; set AR_DISABLE_NEW_ARCH=true/1 to force old architecture.
+NEW_ARCH = not envs.AR_DISABLE_NEW_ARCH
 
 
 class AutoRound:
