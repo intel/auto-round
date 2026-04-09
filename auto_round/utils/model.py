@@ -794,7 +794,7 @@ def is_gguf_model(model_path: Union[str, torch.nn.Module]) -> bool:
 def is_diffusion_model(model_or_path: Union[str, object]) -> bool:
     from auto_round.utils.common import LazyImport
 
-    # First check if it's a known diffusion pipeline by config/model_type 
+    # First check if it's a known diffusion pipeline by config/model_type
     # to avoid unnecessary imports and file checks for non-diffusion models, which can be time-consuming.
     try:
         from transformers import AutoConfig
@@ -809,7 +809,7 @@ def is_diffusion_model(model_or_path: Union[str, object]) -> bool:
             f"Failed to load config for {model_or_path}, trying to check model_index.json for diffusion pipeline."
         )
 
-    # Then check if model_index.json exists for diffusion pipeline, 
+    # Then check if model_index.json exists for diffusion pipeline,
     # which is a strong signal of being a diffusion pipeline.
     if isinstance(model_or_path, str):
         index_file = None
