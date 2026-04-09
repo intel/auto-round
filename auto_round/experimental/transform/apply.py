@@ -18,7 +18,7 @@ def apply_hadamard_transform(
     location: str = "weight",
     use_tqdm=True,
     desc=None,
-    data_type="mx_fp"
+    data_type="mx_fp",
 ):
     """
     Apply a transform configuration to a model.
@@ -80,7 +80,7 @@ def _apply_to_module(
     module: torch.nn.Module,
     config: HadamardConfig,
     location: str = "weight",
-    data_type: str = "mx_fp"
+    data_type: str = "mx_fp",
 ):
     """
     Create transforms and apply them to the module

@@ -691,7 +691,7 @@ def convert_hf_model(model: nn.Module, target_device: str = "cpu") -> tuple[nn.M
             act_hadamard_config,
             location="input",
             desc="Register pre forward hook for hadamard transform",
-            data_type=quantization_config.data_type
+            data_type=quantization_config.data_type,
         )
 
     # Suggest a better backend if available
