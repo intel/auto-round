@@ -11,6 +11,12 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
+"""Common utilities for AutoRound.
+
+Provides version checks, lazy imports, string/type helpers, layer name utilities,
+dataset and tokenizer helpers, and monkey-patching functions for transformers
+compatibility.
+"""
 from __future__ import annotations
 
 import importlib
@@ -30,10 +36,27 @@ from auto_round.logger import logger
 
 
 def compare_versions(v1, v2):
+    """Compare two version strings using packaging.version.
+
+    Args:
+        v1 (str): First version string.
+        v2 (str): Second version string.
+
+    Returns:
+        bool: True if v1 >= v2, False otherwise.
+    """
     return version.parse(v1) >= version.parse(v2)
 
 
 def torch_version_at_least(version_string):
+    """Check if the current PyTorch version is at least the specified version.
+
+    Args:
+        version_string (str): Minimum required version string (e.g., "2.4.0").
+
+    Returns:
+        bool: True if torch.__version__ >= version_string, False otherwise.
+    """
     return compare_versions(torch.__version__, version_string)
 
 
@@ -94,6 +117,7 @@ def _patch_classmethod_kwargs(cls, method_name, **name_map):
 
     @wraps(underlying_func)
     def patched(klass, *args, **kwargs):
+        """Classmethod wrapper that transparently renames keyword arguments before forwarding."""
         for old_name, new_name in name_map.items():
             if old_name in kwargs:
                 if new_name in kwargs:
@@ -105,10 +129,20 @@ def _patch_classmethod_kwargs(cls, method_name, **name_map):
 
 
 def normalize_no_split_modules(no_split_modules):
+    """Flatten and deduplicate a nested collection of no-split module class names.
+
+    Args:
+        no_split_modules: A single name, or a nested list/tuple/set of names.
+            ``None`` values are silently dropped.
+
+    Returns:
+        list[str]: Flat, deduplicated list of module class name strings.
+    """
     if not no_split_modules:
         return []
 
     def flatten_items(value):
+        """Recursively yield leaf items from a nested collection."""
         if isinstance(value, (list, tuple, set)):
             for item in value:
                 yield from flatten_items(item)
@@ -139,6 +173,18 @@ def _patch_transpose_for_buffers():
 
     @wraps(_original_convert)
     def _patched_convert(self, input_dict, source_patterns, target_patterns, **kwargs):
+        """Patched Transpose.convert that skips transposition for buffer tensors.
+
+        Args:
+            input_dict (dict): Mapping of pattern keys to tensors.
+            source_patterns: Source layout patterns for the conversion.
+            target_patterns: Target layout patterns for the conversion.
+            **kwargs: Additional keyword arguments forwarded to the original convert,
+                including optional ``model`` and ``full_layer_name`` for buffer detection.
+
+        Returns:
+            dict: Converted tensor dictionary.
+        """
         if not self.check_dims:
             return _original_convert(self, input_dict, source_patterns, target_patterns, **kwargs)
 
@@ -195,13 +241,25 @@ def _patch_tensor_get_dtype_for_prequantized_loading():
     torch_to_safetensors_dtype = {v: k for k, v in _TYPES.items()}
 
     def _tensor_get_dtype(self):
-        return torch_to_safetensors_dtype.get(self.dtype, str(self.dtype).removeprefix("torch.").upper())
+        """Return a safetensors-compatible dtype string for this tensor.
+
+        Returns:
+            str: Safetensors dtype string (e.g. ``"F32"``, ``"BF16"``).
+        """
 
     torch.Tensor.get_dtype = _tensor_get_dtype
 
 
 # TODO: only AutoModelForCausalLM is patched; other Auto* classes are not covered yet
 def monkey_patch_transformers():
+    """Apply compatibility patches to the installed transformers library.
+
+    Patches are applied based on the detected transformers version:
+    - >=5.0.0: Replaces no_init_weights with the new initialization API.
+    - >=5.2.0: Patches Transpose.convert() to skip buffer tensors.
+    - >=5.3.0: Adds Tensor.get_dtype() shim for pre-quantized loading.
+    - >=4.56.0: Remaps AutoModelForCausalLM.from_pretrained torch_dtype kwarg.
+    """
     transformers_version = getattr(transformers, "__version__", None)
     if transformers_version is None:
         logger.warning("transformers.__version__ is not available; skipping transformers monkey patching.")
@@ -236,6 +294,11 @@ def monkey_patch_transformers():
 
 @lru_cache(None)
 def monkey_patch():
+    """Apply all AutoRound compatibility patches (cached, runs at most once).
+
+    Delegates to monkey_patch_transformers() using lru_cache to ensure
+    patches are applied exactly once per interpreter session.
+    """
     monkey_patch_transformers()
 
 
@@ -299,6 +362,37 @@ def _patch_qwen25_omni_talker(model) -> None:
         video_second_per_grid=None,
         **kwargs,
     ):
+        """Patched prepare_inputs_for_generation for Qwen2.5-Omni talker.
+
+        Overrides ``position_ids`` to ``None`` to work around a transformers >= 5.1
+        signature change that collides with positional argument passing in the original
+        talker implementation.
+
+        Args:
+            self: The talker sub-model instance.
+            input_ids (torch.Tensor): Input token IDs.
+            input_text_ids: Optional secondary text token IDs.
+            past_key_values: Cached key/value states for fast generation.
+            attention_mask: Attention mask tensor.
+            inputs_embeds: Precomputed input embeddings.
+            thinker_reply_part: Thinker reply part for audio-visual models.
+            cache_position: Cache position tensor.
+            position_ids: Position IDs (overridden to ``None`` by this patch).
+            use_cache (bool): Whether to use the KV cache.
+            pixel_values: Visual pixel value tensors.
+            pixel_values_videos: Video pixel value tensors.
+            image_grid_thw: Image grid dimensions.
+            video_grid_thw: Video grid dimensions.
+            input_audio_features: Audio feature tensors.
+            audio_feature_attention_mask: Attention mask for audio features.
+            audio_feature_lengths: Lengths of audio feature sequences.
+            use_audio_in_video (bool): Whether audio is used in video mode.
+            video_second_per_grid: Video seconds per grid.
+            **kwargs: Additional keyword arguments forwarded to GenerationMixin.
+
+        Returns:
+            dict: Model input dictionary with ``position_ids`` set to ``None``.
+        """
         from transformers.generation.utils import GenerationMixin
 
         model_inputs = GenerationMixin.prepare_inputs_for_generation(
@@ -359,6 +453,24 @@ def _patch_qwen3_omni_moe_talker(model) -> None:
         is_first_iteration=False,
         **kwargs,
     ):
+        """Patched prepare_inputs_for_generation for Qwen3-Omni MoE talker.
+
+        Keyword-argument-ifies the ``past_key_values``, ``attention_mask``, and
+        ``inputs_embeds`` parameters to avoid collisions with the new
+        ``next_sequence_length`` positional argument in transformers >= 5.1.
+
+        Args:
+            self: The talker sub-model instance.
+            input_ids (torch.Tensor): Input token IDs.
+            past_key_values: Cached key/value states for fast generation.
+            attention_mask: Attention mask tensor.
+            inputs_embeds: Precomputed input embeddings.
+            is_first_iteration (bool): Whether this is the first generation step.
+            **kwargs: Additional keyword arguments forwarded to GenerationMixin.
+
+        Returns:
+            dict: Model input dictionary.
+        """
         from transformers.generation.utils import GenerationMixin
 
         hidden_states = kwargs.pop("hidden_states", None)
@@ -429,8 +541,14 @@ htcore = LazyImport("habana_frameworks.torch.core")
 
 
 class SupportedFormats:
+    """Registry of supported export/quantization format strings.
+
+    Provides membership testing (``in`` operator), iteration, and string
+    representation over all supported format identifiers including GGUF variants.
+    """
 
     def __init__(self):
+        """Initialize SupportedFormats with the built-in format list and all GGUF variants."""
         self._support_format = (
             "auto_round",
             "auto_gptq",
@@ -448,13 +566,34 @@ class SupportedFormats:
         self._support_list = self._support_format + self._gguf_format
 
     def __contains__(self, key):
+        """Check if a format key is supported.
+
+        Args:
+            key (str): The format string to check.
+
+        Returns:
+            bool: True if the key is in the supported format list.
+        """
         return True if key in self._support_list else False
 
     def __str__(self):
+        """Return a comma-separated string of all supported formats.
+
+        Returns:
+            str: Parenthesised, comma-separated list of supported format strings.
+        """
         # Return "(%s)" % ', '.join(self._support_format + ("gguf:q*_0", "gguf:q*_1", "gguf:q*_k_s"))
         return "(%s)" % ", ".join(self._support_list)
 
     def __getitem__(self, key):
+        """Return the format at the given index.
+
+        Args:
+            key (int): Index into the supported format list.
+
+        Returns:
+            str: The format string at position key.
+        """
         return self._support_list[key]
 
 
@@ -526,6 +665,14 @@ def is_local_path(path):
 
 
 def get_library_version(library_name):
+    """Get the installed version of a Python library.
+
+    Args:
+        library_name (str): Name of the library to query (e.g. "torch", "transformers").
+
+    Returns:
+        str: The installed version string, or a message if the library is not installed.
+    """
     from packaging.version import Version
 
     python_version = Version(sys.version.split()[0])
@@ -551,6 +698,19 @@ def get_library_version(library_name):
 
 
 def str2bool(v):
+    """Convert a string or boolean value to a Python bool.
+
+    Args:
+        v (bool or str): Value to convert. Accepts "yes", "true", "t", "y", "1"
+            (True) and "no", "false", "f", "n", "0" (False).
+
+    Returns:
+        bool: The converted boolean value.
+
+    Raises:
+        argparse.ArgumentTypeError: If v is a string that cannot be interpreted
+            as a boolean.
+    """
     import argparse
 
     if isinstance(v, bool):
@@ -564,6 +724,14 @@ def str2bool(v):
 
 
 def flatten_list(nested_list):
+    """Recursively flatten a nested list or tuple into a flat list.
+
+    Args:
+        nested_list (list or tuple): Potentially nested sequence to flatten.
+
+    Returns:
+        list: A flat list with all nested elements in order.
+    """
     flattened = []
     for item in nested_list:
         if isinstance(item, (list, tuple)):
@@ -686,6 +854,8 @@ def get_reciprocal(tensor):
 
 @dataclass
 class GlobalState:
+    """Simple global mutable state used to track replaced module counts."""
+
     replaced_module_count = 0
 
 
@@ -694,6 +864,11 @@ global_state = GlobalState()
 
 @lru_cache(None)
 def is_transformers_version_greater_or_equal_5_4_0():
+    """Check if the installed transformers version is >= 5.4.0.
+
+    Returns:
+        bool: True if transformers.__version__ >= "5.4.0", False otherwise.
+    """
     import transformers
     from packaging import version
 
@@ -702,6 +877,11 @@ def is_transformers_version_greater_or_equal_5_4_0():
 
 @lru_cache(None)
 def is_transformers_version_greater_or_equal_5():
+    """Check if the installed transformers version is >= 5.0.0.
+
+    Returns:
+        bool: True if transformers.__version__ >= "5.0.0", False otherwise.
+    """
     import transformers
     from packaging import version
 
@@ -711,6 +891,11 @@ def is_transformers_version_greater_or_equal_5():
 # TODO: (yiliu30) refine version check logic
 @lru_cache(None)
 def is_transformers_version_greater_or_equal_4():
+    """Check if the installed transformers version is >= 4.0.0.
+
+    Returns:
+        bool: True if transformers.__version__ >= "4.0.0", False otherwise.
+    """
     import transformers
     from packaging import version
 
@@ -731,6 +916,7 @@ def parse_layer_config_arg(s: str) -> dict:
     pos = [0]
 
     def _val():
+        """Parse a single value token (either a nested dict or a scalar)."""
         tok = tokens[pos[0]]
         if tok == "{":
             return _dict()
@@ -741,6 +927,7 @@ def parse_layer_config_arg(s: str) -> dict:
             return tok
 
     def _dict():
+        """Parse a brace-delimited ``{key:value, ...}`` dictionary."""
         pos[0] += 1  # consume '{'
         result = {}
         while tokens[pos[0]] != "}":

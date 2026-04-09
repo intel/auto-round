@@ -12,6 +12,13 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+"""Data type registration and utilities for auto-round quantization.
+
+This package registers all supported quantization data types (int, fp8, mxfp,
+nvfp, gguf, w4fp8) and exposes the quantization function registry together with
+common tensor-manipulation helpers used across data-type implementations.
+"""
+
 import auto_round.data_type.int
 import auto_round.data_type.mxfp
 import auto_round.data_type.fp8

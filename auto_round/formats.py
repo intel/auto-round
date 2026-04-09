@@ -12,6 +12,24 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+"""Output format classes for exporting AutoRound-quantized models.
+
+This module defines the :class:`OutputFormat` abstract base class and all
+concrete format implementations used to pack quantized weights and save models
+in deployment-ready formats.
+
+Supported formats include:
+    - ``fake``: Saves the model without packing (research/debugging).
+    - ``auto_round``: AutoRound-native format (delegates to auto_gptq/awq/fp8
+      depending on the quantization scheme).
+    - ``auto_gptq`` / ``gptqmodel``: GPTQ-compatible packing.
+    - ``auto_awq``: AWQ-compatible packing (W4 only).
+    - ``llm_compressor``: LLM-Compressor / compressed-tensors format
+      (FP8, MX-FP, NV-FP, INT8 W8A8).
+    - ``gguf``: GGUF format for llama.cpp-compatible models.
+    - ``fp8``: Block-wise FP8 packing.
+"""
+
 from __future__ import annotations
 
 import copy
@@ -56,6 +74,12 @@ from auto_round.utils import (
 
 
 class AutoRoundExportFormat(str, Enum):
+    """String enum of AutoRound backend export format identifiers.
+
+    These values are used as backend specifiers within compound format strings
+    such as ``"auto_round:fp8_static"`` or ``"llm_compressor:mxfp8"``.
+    """
+
     # Weight: FP8, per-channel, may be extended to per-tensor in future
     # Activation: FP8, per-tensor
     FP8_STATIC = "fp8_static"
@@ -76,6 +100,23 @@ if TYPE_CHECKING:
 
 
 def _check_compatibility(formats: list[str], ar: BaseCompressor):
+    """Validates and normalizes a list of requested export formats.
+
+    Ensures that GGUF formats are not mixed with other non-fake formats and
+    that the GGUF scheme derived from the compressor matches the requested
+    format.  Also converts block-wise FP8 ``auto_round`` requests to ``fp8``.
+
+    Args:
+        formats (list[str]): List of format name strings to validate.
+        ar (BaseCompressor): The compressor instance whose scheme and
+            configuration determine compatibility.
+
+    Returns:
+        list[str]: The (possibly modified) list of validated format strings.
+
+    Raises:
+        ValueError: If GGUF is requested alongside incompatible formats.
+    """
     if (
         any(["gguf" in f.lower() for f in formats])
         and len([f for f in formats if f.lower() != "fake" and not f.lower().startswith("gguf")]) > 1
@@ -106,9 +147,23 @@ def get_formats(
     format: str,
     ar: BaseCompressor,
 ) -> list[OutputFormat]:
-    """Get the list of OutputFormat instances based on the provided name."""
+    """Parses a format string and returns the corresponding OutputFormat instances.
+
+    Args:
+        format (str): Comma-separated format string (e.g. ``"auto_round,fake"``).
+            May contain ``q*_`` wildcard patterns.
+        ar (BaseCompressor): Compressor instance providing scheme and model info.
+
+    Returns:
+        list[OutputFormat]: Ordered list of :class:`OutputFormat` objects ready
+        for packing and serialization.
+
+    Raises:
+        KeyError: If an unknown (non-GGUF) format name is requested.
+    """
 
     def remove_duplicates(lst):
+        """Return a list with duplicates removed, preserving original order."""
         seen = set()
         return [x for x in lst if not (x in seen or seen.add(x))]
 
@@ -144,6 +199,17 @@ def get_formats(
 
 
 def _check_divisible_by_32(ar):
+    """Marks layers whose weight dimensions are not divisible by 32 as full-precision.
+
+    Layers with output or input feature sizes not divisible by 32 are
+    incompatible with most INT packing kernels and are therefore set to
+    ``bits=16`` (i.e. skipped) in ``ar.layer_config``.
+
+    Args:
+        ar (BaseCompressor): Compressor instance with ``model``, ``scheme``,
+            ``supported_types``, ``inner_supported_types``, and
+            ``layer_config`` attributes.
+    """
     from auto_round.schemes import preset_name_to_scheme
 
     if isinstance(ar.scheme, str):
@@ -182,7 +248,13 @@ class OutputFormat(ABC):
     format_name = "base"
 
     def __init__(self, format: str, ar: BaseCompressor):
-        """Initialize the OutputFormat class."""
+        """Initializes the output format, validating scheme compatibility.
+
+        Args:
+            format (str): The format name string (e.g. ``"auto_round"``).
+            ar (BaseCompressor): Compressor instance supplying the scheme to
+                validate against ``support_schemes``.
+        """
         self.output_format = format
         self.backend = None
 
@@ -195,9 +267,22 @@ class OutputFormat(ABC):
 
     @classmethod
     def register(cls, *names: str) -> Callable[[OutputFormat], OutputFormat]:
+        """Class decorator that registers an OutputFormat subclass under one or more names.
+
+        Args:
+            *names (str): One or more format name strings to register.
+
+        Returns:
+            Callable[[OutputFormat], OutputFormat]: Decorator function that adds the
+            class to ``_format_list`` under each name and returns it unchanged.
+
+        Raises:
+            AssertionError: If no names are provided.
+        """
         assert names
 
         def func(output_format: OutputFormat) -> OutputFormat:
+            """Register the decorated OutputFormat class under all given names."""
             for name in names:
                 cls._format_list[name] = output_format
             return output_format
@@ -206,6 +291,11 @@ class OutputFormat(ABC):
 
     @classmethod
     def get_support_matrix(cls: OutputFormat) -> str:
+        """Builds a formatted string listing all registered formats and their supported schemes.
+
+        Returns:
+            str: ANSI-colored multi-line string with one entry per registered format.
+        """
         output_str = ""
         for k, v in sorted(cls._format_list.items()):
             if k == "fake":
@@ -220,6 +310,15 @@ class OutputFormat(ABC):
         return output_str
 
     def get_backend_name(self) -> str:
+        """Returns the fully-qualified backend name for this format.
+
+        For simple formats (no backend) this is the ``output_format`` string.
+        For compound formats the backend names are joined with colons, e.g.
+        ``"auto_round:llm_compressor:fp8_static"``.
+
+        Returns:
+            str: Backend name string.
+        """
         if self.backend is None:
             return self.output_format
 
@@ -232,6 +331,14 @@ class OutputFormat(ABC):
 
     @classmethod
     def is_support_scheme(cls: OutputFormat, scheme: Union[str, QuantizationScheme]) -> bool:
+        """Checks whether a given scheme is supported by this format.
+
+        Args:
+            scheme (str | QuantizationScheme): Scheme name or object to check.
+
+        Returns:
+            bool: ``True`` if the scheme is compatible with this format.
+        """
         if isinstance(scheme, str) and scheme.upper() in cls.support_schemes:
             return True
         if isinstance(scheme, QuantizationScheme):
@@ -240,9 +347,37 @@ class OutputFormat(ABC):
 
     @classmethod
     def check_scheme_args(cls: OutputFormat, scheme: QuantizationScheme) -> bool:
+        """Validates detailed scheme arguments for compatibility with this format.
+
+        Override in subclasses to enforce format-specific restrictions on
+        ``bits``, ``data_type``, ``group_size``, etc. The base implementation
+        performs no validation and always returns ``True``.
+
+        Args:
+            scheme (QuantizationScheme): The quantization scheme to validate.
+
+        Returns:
+            bool: ``True`` if the scheme arguments are valid.
+
+        Raises:
+            ValueError: If any scheme argument violates format constraints.
+        """
         return True
 
     def check_and_reset_format(self, ar: BaseCompressor) -> str:
+        """Checks format compatibility and optionally resets to a fallback format.
+
+        Inspects the compressor configuration (FP8 data types, activation
+        quantization settings) and returns a replacement format name when the
+        current format cannot support the configuration.
+
+        Args:
+            ar (BaseCompressor): Compressor instance with quantization config.
+
+        Returns:
+            str | None: Name of a replacement format (e.g. ``"fake"``) or
+            ``None`` if no reset is needed.
+        """
         if self.backend is not None:
             new_format = self.backend.check_and_reset_format(ar)
             self.backend = OutputFormat._format_list[new_format](new_format, ar) if new_format else self.backend
@@ -273,13 +408,33 @@ class OutputFormat(ABC):
 
     @abstractmethod
     def pack_layer(self, *args, **kwargs):
+        """Packs quantization parameters into the layer in-place.
+
+        Args:
+            *args: Format-specific positional arguments.
+            **kwargs: Format-specific keyword arguments.
+        """
         pass
 
     @abstractmethod
     def save_quantized(self, *args, **kwargs):
+        """Saves the quantized model to the given output directory.
+
+        Args:
+            *args: Format-specific positional arguments.
+            **kwargs: Format-specific keyword arguments.
+        """
         pass
 
     def immediate_pack(self, name: str, model: torch.nn.Module, device: torch.device, **kwargs):
+        """Packs a single named layer immediately if it is marked for quantization.
+
+        Args:
+            name (str): Dot-separated layer name within ``model``.
+            model (torch.nn.Module): The model containing the layer.
+            device (torch.device): Device on which packing should be performed.
+            **kwargs: Additional keyword arguments forwarded to :meth:`pack_layer`.
+        """
         m = get_module(model, name)
         if not check_to_quantized(m):
             return
@@ -287,31 +442,50 @@ class OutputFormat(ABC):
         self.pack_layer(name, model, device=device)
 
     def is_gguf(self) -> bool:
+        """Returns True if this is a GGUF format."""
         return "gguf" in self.output_format
 
     def is_fake(self) -> bool:
+        """Returns True if this is a fake (no-packing) format."""
         return self.output_format == "fake"
 
     def is_gptq(self) -> bool:
+        """Returns True if this format uses GPTQ kernel packing."""
         return "gptq" in self.output_format or (self.backend is not None and self.backend.is_gptq())
 
     def is_awq(self) -> bool:
+        """Returns True if this format uses AWQ kernel packing."""
         return "awq" in self.output_format or (self.backend is not None and self.backend.is_awq())
 
     def is_llm_compressor(self) -> bool:
+        """Returns True if this format targets llm_compressor / compressed-tensors."""
         return "llm_compressor" in self.output_format or (self.backend is not None and self.backend.is_llm_compressor())
 
 
 @OutputFormat.register("fake")
 class FakeFormat(OutputFormat):
+    """Fake/no-op output format used for testing or dry-run quantization.
+
+    Saves the model in standard HuggingFace format without any weight packing.
+    """
+
     support_schemes = None
     format_name = "fake"
 
     def check_and_reset_format(self, ar: BaseCompressor) -> str:
+        """Validate and optionally reset the format for the given compressor (no-op for fake).
+
+        Args:
+            ar (BaseCompressor): Compressor instance (unused).
+
+        Returns:
+            str: Always returns ``None`` – fake format requires no special format string.
+        """
         return None
 
     # fake format will not execute pack_layer.
     def pack_layer(self, *args, **kwargs):
+        """No-op: fake format does not pack layers."""
         pass
 
     def save_quantized(
@@ -325,6 +499,21 @@ class FakeFormat(OutputFormat):
         serialization_dict: dict = None,
         **kwargs,
     ):
+        """Saves the model in standard HuggingFace format without weight packing.
+
+        Args:
+            output_dir (str): Directory path where the model will be saved.
+            model (torch.nn.Module, optional): The model to save.
+            tokenizer (Callable, optional): Tokenizer to save alongside the model.
+            layer_config (dict, optional): Layer configuration (unused for fake format).
+            inplace (bool, optional): Whether to operate in-place. Defaults to ``True``.
+            device (str | torch.device, optional): Device for the model. Defaults to ``"cpu"``.
+            serialization_dict (dict, optional): Extra serialization metadata (unused).
+            **kwargs: Additional keyword arguments (e.g. ``processor``).
+
+        Returns:
+            torch.nn.Module: The (possibly CPU-moved) model after saving.
+        """
         if not unsupported_meta_device(model):
             model = model.to("cpu")
             model.save_pretrained(output_dir)
@@ -345,10 +534,26 @@ class FakeFormat(OutputFormat):
 
 @OutputFormat.register("llm_compressor")
 class LLMCompressorFormat(OutputFormat):
+    """Output format targeting the LLMCompressor / llm-compressor export pipeline.
+
+    Supports MXFP4, MXFP8, NVFP4, FPW8A16, FP8_STATIC, INT8_W8A8, and FP8_BLOCK schemes.
+    """
+
     support_schemes = ["MXFP4", "MXFP8", "NVFP4", "FPW8A16", "FP8_STATIC", "INT8_W8A8", "FP8_BLOCK"]
     format_name = "llm_compressor"
 
     def __init__(self, format, ar):
+        """Initializes the LLMCompressor format, selecting the appropriate backend.
+
+        Args:
+            format (str): Format string (e.g. ``"llm_compressor"`` or a sub-backend
+                such as ``"fp8_static"``).
+            ar (BaseCompressor): Compressor instance supplying scheme and config.
+
+        Raises:
+            ValueError: If the scheme is not supported by llm_compressor.
+            KeyError: If an unsupported backend sub-format is specified.
+        """
         if not self.is_support_scheme(ar.scheme):
             logger.error(
                 f"Currently, the llm_compressor format only supports {self.support_schemes}, "
@@ -392,6 +597,18 @@ class LLMCompressorFormat(OutputFormat):
 
     @classmethod
     def check_scheme_args(cls: OutputFormat, scheme: QuantizationScheme) -> bool:
+        """Validate that the quantization scheme is compatible with LLMCompressor format.
+
+        Args:
+            cls (OutputFormat): The format class.
+            scheme (QuantizationScheme): Quantization scheme to validate.
+
+        Returns:
+            bool: ``True`` if the scheme is valid.
+
+        Raises:
+            ValueError: If the scheme uses unsupported bits, data types, or group sizes.
+        """
         error_logs = []
         if scheme.bits not in [4, 8, 16]:
             error_logs.append(f"bits={scheme.bits}")
@@ -426,6 +643,14 @@ class LLMCompressorFormat(OutputFormat):
         return True
 
     def check_and_reset_format(self, ar: BaseCompressor) -> str | None:
+        """Validate the format against the compressor config and optionally switch to a sub-backend.
+
+        Args:
+            ar (BaseCompressor): Compressor instance with scheme and activation settings.
+
+        Returns:
+            str | None: Sub-backend format string if a change is needed, or ``None``.
+        """
         if self.backend is not None:
             new_format = self.backend.check_and_reset_format(ar)
             self.backend = OutputFormat._format_list[new_format](new_format, ar) if new_format else self.backend
@@ -453,6 +678,14 @@ class LLMCompressorFormat(OutputFormat):
         return None
 
     def pack_layer(self, layer_name, model, device=None, **kwargs):
+        """Packs quantization parameters into the layer using the llm_compressor backend.
+
+        Args:
+            layer_name (str): Dot-separated layer name.
+            model (torch.nn.Module): The model containing the layer.
+            device (torch.device | None, optional): Device for packing.
+            **kwargs: Additional keyword arguments.
+        """
         if self.backend is not None:
             return self.backend.pack_layer(layer_name, model, device=device, **kwargs)
         if re.search(f"{AutoRoundExportFormat.MX_FP.value}|{AutoRoundExportFormat.NV_FP.value}", self.output_format):
@@ -486,6 +719,21 @@ class LLMCompressorFormat(OutputFormat):
         serialization_dict: dict = None,
         **kwargs,
     ) -> torch.nn.Module:
+        """Saves the model in llm_compressor / compressed-tensors format.
+
+        Args:
+            output_dir (str): Destination directory.
+            model (torch.nn.Module, optional): Model to serialize.
+            tokenizer (Callable, optional): Tokenizer to save.
+            layer_config (dict, optional): Per-layer quantization configuration.
+            inplace (bool, optional): Operate in-place. Defaults to ``True``.
+            device (str | torch.device, optional): Device. Defaults to ``"cpu"``.
+            serialization_dict (dict, optional): Serialization metadata.
+            **kwargs: Extra keyword arguments forwarded to the export function.
+
+        Returns:
+            torch.nn.Module: The serialized model.
+        """
         backend = self.get_backend_name()
         if re.search(f"{AutoRoundExportFormat.MX_FP.value}|{AutoRoundExportFormat.NV_FP.value}", backend):
             from auto_round.export.export_to_llmcompressor.export_to_fp import save_quantized_as_fp
@@ -514,10 +762,23 @@ class LLMCompressorFormat(OutputFormat):
 
 @OutputFormat.register("auto_gptq", "gptqmodel")
 class AutoGPTQFormat(OutputFormat):
+    """Output format targeting the AutoGPTQ / GPTQModel export pipeline.
+
+    Supports W2A16, W3A16, W4A16, W8A16, BF16, and mixed-precision variants.
+    """
+
     support_schemes = ["W4A16", "W2A16", "W3A16", "W8A16", "BF16", "W2A16G64", "W2A16G32", "W4A16_MIXED"]
     format_name = "auto_gptq"
 
     def check_and_reset_format(self, ar):
+        """Warns about asymmetric GPTQ accuracy and checks layer divisibility.
+
+        Args:
+            ar (BaseCompressor): Compressor instance.
+
+        Returns:
+            str | None: Replacement format name, or ``None``.
+        """
         if not ar.sym:
             logger.warning(
                 "the asymmetrical kernel of the GPTQ format may result in a noticeable accuracy drop,"
@@ -531,6 +792,18 @@ class AutoGPTQFormat(OutputFormat):
 
     @classmethod
     def check_scheme_args(cls: OutputFormat, scheme: QuantizationScheme) -> bool:
+        """Validate that the quantization scheme is compatible with AutoGPTQ format.
+
+        Args:
+            cls (OutputFormat): The format class.
+            scheme (QuantizationScheme): Quantization scheme to validate.
+
+        Returns:
+            bool: ``True`` if valid.
+
+        Raises:
+            ValueError: If the scheme uses unsupported bits, data type, or super-group settings.
+        """
         error_logs = []
         if scheme.bits not in [2, 3, 4, 8, 16]:
             error_logs.append(f"bits={scheme.bits}")
@@ -548,6 +821,14 @@ class AutoGPTQFormat(OutputFormat):
         return True
 
     def pack_layer(self, layer_name, model, device=None, **kwargs):
+        """Packs quantization data into a layer using AutoGPTQ or AutoRound packing.
+
+        Args:
+            layer_name (str): Dot-separated layer name.
+            model (torch.nn.Module): The model containing the layer.
+            device (torch.device | None, optional): Device for packing.
+            **kwargs: Additional keyword arguments.
+        """
         if self.output_format.startswith("auto_round"):
             from auto_round.export.export_to_autoround.export import pack_layer
 
@@ -568,6 +849,21 @@ class AutoGPTQFormat(OutputFormat):
         serialization_dict: dict = None,
         **kwargs,
     ) -> torch.nn.Module:
+        """Saves the model in AutoGPTQ format.
+
+        Args:
+            output_dir (str): Destination directory.
+            model (torch.nn.Module, optional): Model to serialize.
+            tokenizer (Callable, optional): Tokenizer to save.
+            layer_config (dict, optional): Per-layer quantization configuration.
+            inplace (bool, optional): Operate in-place. Defaults to ``True``.
+            device (str | torch.device, optional): Device. Defaults to ``"cpu"``.
+            serialization_dict (dict, optional): Serialization metadata.
+            **kwargs: Extra keyword arguments forwarded to the export function.
+
+        Returns:
+            torch.nn.Module: The serialized model.
+        """
         backend = self.get_backend_name()
         if backend == "auto_round:auto_gptq" or backend == "auto_round:gptqmodel":
             from auto_round.export.export_to_autoround.export import save_quantized_as_autoround
@@ -592,11 +888,28 @@ class AutoGPTQFormat(OutputFormat):
 
 @OutputFormat.register("auto_awq")
 class AutoAWQFormat(OutputFormat):
+    """Output format targeting the AutoAWQ export pipeline.
+
+    Only supports W4A16 (4-bit symmetric integer weight quantization).
+    """
+
     support_schemes = ["W4A16"]
     format_name = "auto_awq"
 
     @classmethod
     def check_scheme_args(cls: OutputFormat, scheme: QuantizationScheme) -> bool:
+        """Validate that the quantization scheme is compatible with AutoAWQ format.
+
+        Args:
+            cls (OutputFormat): The format class.
+            scheme (QuantizationScheme): Quantization scheme to validate.
+
+        Returns:
+            bool: ``True`` if valid.
+
+        Raises:
+            ValueError: If the scheme uses unsupported bits, data type, or super-group settings.
+        """
         error_logs = []
         if scheme.bits != 4:
             error_logs.append(f"bits={scheme.bits}")
@@ -656,6 +969,17 @@ class AutoAWQFormat(OutputFormat):
         return True, ""
 
     def check_and_reset_format(self, ar):
+        """Verifies AWQ GEMM kernel compatibility and validates W4 constraint.
+
+        Args:
+            ar (BaseCompressor): Compressor instance.
+
+        Returns:
+            str | None: Replacement format name, or ``None``.
+
+        Raises:
+            ValueError: If ``ar.bits != 4``.
+        """
         awq_supported, info = self.check_awq_gemm_compatibility(
             ar.model, ar.bits, ar.group_size, ar.sym, ar.layer_config
         )
@@ -670,6 +994,14 @@ class AutoAWQFormat(OutputFormat):
         return super().check_and_reset_format(ar)
 
     def pack_layer(self, layer_name, model, device=None, **kwargs):
+        """Packs quantization data into a layer using the AWQ kernel.
+
+        Args:
+            layer_name (str): Dot-separated layer name.
+            model (torch.nn.Module): The model containing the layer.
+            device (torch.device | None, optional): Device for packing.
+            **kwargs: Additional keyword arguments.
+        """
         from auto_round.export.export_to_awq.export import pack_layer
 
         pack_layer(layer_name, model, backend=self.output_format, device=device)
@@ -685,6 +1017,21 @@ class AutoAWQFormat(OutputFormat):
         serialization_dict: dict = None,
         **kwargs,
     ) -> torch.nn.Module:
+        """Saves the model in AutoAWQ format.
+
+        Args:
+            output_dir (str): Destination directory.
+            model (torch.nn.Module, optional): Model to serialize.
+            tokenizer (Callable, optional): Tokenizer to save.
+            layer_config (dict, optional): Per-layer quantization configuration.
+            inplace (bool, optional): Operate in-place. Defaults to ``True``.
+            device (str | torch.device, optional): Device. Defaults to ``"cpu"``.
+            serialization_dict (dict, optional): Serialization metadata.
+            **kwargs: Extra keyword arguments forwarded to the export function.
+
+        Returns:
+            torch.nn.Module: The serialized model.
+        """
         backend = self.get_backend_name()
         if backend == "auto_round:auto_awq":
             from auto_round.export.export_to_autoround.export import save_quantized_as_autoround
@@ -710,6 +1057,11 @@ class AutoAWQFormat(OutputFormat):
 
 @OutputFormat.register("gguf")
 class GGUFFormat(OutputFormat):
+    """Output format targeting the GGUF model format for llama.cpp-compatible inference.
+
+    Supports a wide range of GGUF quantization sub-types (Q2_K through Q8_0).
+    """
+
     support_schemes = [
         "GGUF:Q4_0",
         "GGUF:Q4_1",
@@ -730,6 +1082,15 @@ class GGUFFormat(OutputFormat):
     format_name = "gguf"
 
     def __init__(self, format: str, ar: BaseCompressor):
+        """Initializes the GGUFFormat, validating the requested GGUF sub-type.
+
+        Handles both ``"gguf:<type>"`` (top-level GGUF with nested backend) and
+        bare sub-type strings (used when constructing the nested backend).
+
+        Args:
+            format (str): GGUF format string (e.g. ``"gguf:q4_k_m"``).
+            ar (BaseCompressor): Compressor instance with model and config.
+        """
         if format.startswith("gguf:"):
             self.gguf_args_check(ar, format, model_type=ModelType.TEXT)
             if ar.mllm:
@@ -755,6 +1116,18 @@ class GGUFFormat(OutputFormat):
 
     @classmethod
     def check_scheme_args(cls: OutputFormat, scheme: QuantizationScheme) -> bool:
+        """Validate that the quantization scheme is compatible with GGUF format.
+
+        Args:
+            cls (OutputFormat): The format class.
+            scheme (QuantizationScheme): Quantization scheme to validate.
+
+        Returns:
+            bool: ``True`` if valid.
+
+        Raises:
+            ValueError: If the data type is not integer-based.
+        """
         error_logs = []
         if not re.search("int", scheme.data_type):
             error_logs.append(f"data_type={scheme.data_type}")
@@ -766,6 +1139,14 @@ class GGUFFormat(OutputFormat):
         return True
 
     def check_and_reset_format(self, ar):
+        """Warns if ``iters != 0`` for GGUF and adjusts quant block list for MLLMs.
+
+        Args:
+            ar (BaseCompressor): Compressor instance.
+
+        Returns:
+            str | None: Replacement format name, or ``None``.
+        """
         if ar.iters != 0 and ar.bits != 3 and not ar.enable_alg_ext:
             logger.warning_once(
                 "`iters=0` is recommended when exporting to current GGUF format"
@@ -796,6 +1177,22 @@ class GGUFFormat(OutputFormat):
         device="cpu",
         quant_nontext_module=False,
     ):
+        """Packs a single layer into the GGUF output file.
+
+        Args:
+            name (str): Dot-separated layer name.
+            model (torch.nn.Module): The model.
+            backend (str): Backend format string (e.g. ``"gguf:q4_k_m"``).
+            output_dir (str): Output directory for the GGUF file.
+            layer_config (dict): Per-layer quantization configuration.
+            tokenizer: Tokenizer instance.
+            processor (optional): Multimodal processor.
+            image_processor (optional): Image processor.
+            model_type (ModelType): Text or MMPROJ model type.
+            device (str, optional): Device string. Defaults to ``"cpu"``.
+            quant_nontext_module (bool, optional): Whether to quantize non-text
+                modules. Defaults to ``False``.
+        """
         from auto_round.export.export_to_gguf.export import pack_gguf_layer
 
         pack_gguf_layer(
@@ -823,6 +1220,21 @@ class GGUFFormat(OutputFormat):
         serialization_dict: dict = None,
         **kwargs,
     ) -> torch.nn.Module:
+        """Saves the model in GGUF format.
+
+        Args:
+            output_dir (str): Destination directory.
+            model (torch.nn.Module, optional): Model to serialize.
+            tokenizer (Callable, optional): Tokenizer to save.
+            layer_config (dict, optional): Per-layer quantization configuration.
+            inplace (bool, optional): Operate in-place. Defaults to ``True``.
+            device (str | torch.device, optional): Device. Defaults to ``"cpu"``.
+            serialization_dict (dict, optional): Serialization metadata.
+            **kwargs: Extra keyword arguments forwarded to the GGUF export function.
+
+        Returns:
+            torch.nn.Module: The serialized model.
+        """
         from auto_round.export.export_to_gguf.export import save_quantized_as_gguf
 
         backend = self.get_backend_name()
@@ -839,6 +1251,24 @@ class GGUFFormat(OutputFormat):
 
     @staticmethod
     def gguf_args_check(args_or_ar, formats: Union[str, list[str]] = None, model_type=ModelType.TEXT):
+        """Validate GGUF format arguments and download required conversion files if needed.
+
+        Checks that the requested GGUF sub-type is supported and that the model
+        architecture has a corresponding GGUF export implementation.  Downloads
+        the ``convert_hf_to_gguf`` dependency automatically when missing or when
+        the model architecture is not yet supported.
+
+        Args:
+            args_or_ar (argparse.Namespace | BaseCompressor): CLI arguments or compressor
+                instance providing the model path/object and platform.
+            formats (str | list[str], optional): One or more format strings to validate
+                (e.g. ``"gguf:q4_k_m"``). Defaults to ``None``.
+            model_type (ModelType): Whether to validate for text or MMPROJ model.
+                Defaults to ``ModelType.TEXT``.
+
+        Raises:
+            ImportError: If ``gguf-py`` is not installed or is out-of-date.
+        """
         import argparse
 
         from auto_round.export.export_to_gguf.config import GGUF_CONFIG
@@ -964,6 +1394,21 @@ class GGUFFormat(OutputFormat):
         quant_nontext_module: bool = False,
         **kwargs,
     ):
+        """Packs a single layer immediately to GGUF format if it should be quantized.
+
+        Args:
+            name (str): Dot-separated layer name within ``model``.
+            model (torch.nn.Module): The full model.
+            device (torch.device): Device for packing.
+            output_dir (str, optional): Output directory for the GGUF file.
+            mllm (bool, optional): Whether this is a multimodal LM projection.
+            layer_config (dict, optional): Per-layer quantization configuration.
+            tokenizer (optional): Tokenizer instance.
+            processor (optional): Multimodal processor.
+            image_processor (optional): Image processor.
+            quant_nontext_module (bool, optional): Quantize non-text modules.
+            **kwargs: Additional keyword arguments.
+        """
         m = get_module(model, name)
         if not check_to_quantized(m):
             return
@@ -985,11 +1430,28 @@ class GGUFFormat(OutputFormat):
 
 @OutputFormat.register("fp8")
 class FP8Format(OutputFormat):
+    """Output format for block-wise FP8 weight quantization (direct safetensors export).
+
+    Supports the FP8_BLOCK scheme (8-bit floating-point with block-wise scaling).
+    """
+
     support_schemes = ["FP8_BLOCK"]
     format_name = "fp8"
 
     @classmethod
     def check_scheme_args(cls: OutputFormat, scheme: QuantizationScheme) -> bool:
+        """Validates that the scheme is compatible with block-wise FP8 packing.
+
+        Args:
+            scheme (QuantizationScheme): Scheme to validate.
+
+        Returns:
+            bool: ``True`` if valid.
+
+        Raises:
+            ValueError: If bits, data_type, group_size, or activation settings
+                are incompatible with block FP8.
+        """
         error_logs = []
         if scheme.bits != 8:
             error_logs.append(f"bits={scheme.bits}")
@@ -1013,6 +1475,14 @@ class FP8Format(OutputFormat):
         return True
 
     def pack_layer(self, layer_name, model, device=None, **kwargs):
+        """Packs a single layer using FP8 block-wise quantization.
+
+        Args:
+            layer_name (str): Dot-separated layer name.
+            model (torch.nn.Module): The model containing the layer.
+            device (torch.device | None, optional): Device for packing.
+            **kwargs: Additional keyword arguments.
+        """
         from auto_round.export.export_to_autoround.export_to_fp8 import pack_layer
 
         pack_layer(layer_name, model, self.output_format, device=device)
@@ -1028,6 +1498,21 @@ class FP8Format(OutputFormat):
         serialization_dict: dict = None,
         **kwargs,
     ) -> torch.nn.Module:
+        """Saves the model in FP8 block-wise format.
+
+        Args:
+            output_dir (str): Destination directory.
+            model (torch.nn.Module, optional): Model to serialize.
+            tokenizer (Callable, optional): Tokenizer to save.
+            layer_config (dict, optional): Per-layer quantization configuration.
+            inplace (bool, optional): Operate in-place. Defaults to ``True``.
+            device (str | torch.device, optional): Device. Defaults to ``"cpu"``.
+            serialization_dict (dict, optional): Serialization metadata.
+            **kwargs: Extra keyword arguments forwarded to the export function.
+
+        Returns:
+            torch.nn.Module: The serialized model.
+        """
         from auto_round.export.export_to_autoround.export_to_fp8 import save_quantized_as_autoround
 
         backend = self.get_backend_name()
@@ -1062,6 +1547,13 @@ class FP8Format(OutputFormat):
 @OutputFormat.register("auto_round:gptqmodel", "auto_round:auto_gptq")
 @OutputFormat.register("auto_round:fp8")
 class AutoRoundFormat(OutputFormat):
+    """Primary AutoRound output format with automatic backend selection.
+
+    Chooses the optimal packing backend (AutoGPTQ, AutoAWQ, LLMCompressor, FP8, etc.)
+    based on the quantization scheme.  Also handles compound format strings such as
+    ``"auto_round:auto_gptq"`` to force a specific backend.
+    """
+
     support_schemes = [
         "W4A16",
         "W4A16_MIXED",
@@ -1081,6 +1573,23 @@ class AutoRoundFormat(OutputFormat):
     format_name = "auto_round"
 
     def __init__(self, format: str, ar: BaseCompressor):
+        """Initializes the AutoRound format, selecting the appropriate backend.
+
+        The backend is chosen based on the quantization scheme:
+        symmetric INT → AutoGPTQ; asymmetric W4 INT → AutoAWQ;
+        NV-FP / MX-FP → NV/MX backend; static FP8 → FP8_STATIC backend;
+        WOQ FP8 → FP8 backend; block FP8 → fp8 sub-format.
+
+        Args:
+            format (str): Format string (e.g. ``"auto_round"`` or a compound
+                string such as ``"auto_round:auto_gptq"``).
+            ar (BaseCompressor): Compressor instance supplying scheme and config.
+
+        Raises:
+            ValueError: If activation quantization is requested but the
+                configuration is unsupported.
+            KeyError: If an unknown backend sub-format is specified.
+        """
         self.output_format = "auto_round"
         self.backend = None
 
@@ -1124,6 +1633,14 @@ class AutoRoundFormat(OutputFormat):
             self.support_schemes = self.backend.support_schemes
 
     def check_and_reset_format(self, ar):
+        """Validates and adjusts the auto_round format for the given configuration.
+
+        Args:
+            ar (BaseCompressor): Compressor instance.
+
+        Returns:
+            None: Auto_round format never resets to another format at the top level.
+        """
         if self.backend is not None:
             new_format = self.backend.check_and_reset_format(ar)
             self.backend = OutputFormat._format_list[new_format](new_format, ar) if new_format else self.backend
@@ -1144,6 +1661,14 @@ class AutoRoundFormat(OutputFormat):
         return None
 
     def pack_layer(self, layer_name, model, device=None, **kwargs):
+        """Packs a layer using the appropriate auto_round backend packing function.
+
+        Args:
+            layer_name (str): Dot-separated layer name.
+            model (torch.nn.Module): The model containing the layer.
+            device (torch.device | None, optional): Device for packing.
+            **kwargs: Additional keyword arguments forwarded to the backend.
+        """
         if self.backend is not None:
             return self.backend.pack_layer(layer_name, model, device=device, **kwargs)
 
@@ -1183,6 +1708,21 @@ class AutoRoundFormat(OutputFormat):
         serialization_dict: dict = None,
         **kwargs,
     ) -> torch.nn.Module:
+        """Saves the model using the auto_round backend serialization.
+
+        Args:
+            output_dir (str): Destination directory.
+            model (torch.nn.Module, optional): Model to serialize.
+            tokenizer (Callable, optional): Tokenizer to save.
+            layer_config (dict, optional): Per-layer quantization configuration.
+            inplace (bool, optional): Operate in-place. Defaults to ``True``.
+            device (str | torch.device, optional): Device. Defaults to ``"cpu"``.
+            serialization_dict (dict, optional): Serialization metadata.
+            **kwargs: Extra keyword arguments forwarded to the export function.
+
+        Returns:
+            torch.nn.Module: The serialized model.
+        """
         if self.backend is not None:
             return self.backend.save_quantized(
                 output_dir=output_dir,

@@ -13,7 +13,40 @@
 # limitations under the License.
 # Note: the design of this module is inspired by vLLM's envs.py
 # For detailed usage and configuration guide, see: docs/environments.md
+"""AutoRound runtime environment variable configuration.
 
+This module exposes AutoRound runtime settings as module-level attributes backed
+by environment variables.  Attribute access is lazy: each read evaluates the
+corresponding lambda at call time so that ``os.environ`` changes are reflected
+immediately.
+
+Available settings (with their environment variable names):
+
+    ``AR_LOG_LEVEL`` (str):
+        Default logging level. Reads ``$AR_LOG_LEVEL``. Default: ``"INFO"``.
+    ``AR_ENABLE_COMPILE_PACKING`` (bool):
+        Enable ``torch.compile`` during weight packing. Reads
+        ``$AR_ENABLE_COMPILE_PACKING``. Default: ``False``.
+    ``AR_USE_MODELSCOPE`` (bool):
+        Use ModelScope as the model hub. Reads ``$AR_USE_MODELSCOPE``.
+        Default: ``False``.
+    ``AR_WORK_SPACE`` (str):
+        Working directory for temporary files. Reads ``$AR_WORK_SPACE``.
+        Default: ``"ar_work_space"``.
+    ``AR_ENABLE_UNIFY_MOE_INPUT_SCALE`` (bool):
+        Unify MoE input scale across experts. Reads
+        ``$AR_ENABLE_UNIFY_MOE_INPUT_SCALE``. Default: ``False``.
+    ``AR_OMP_NUM_THREADS`` (str | None):
+        OpenMP thread count. Reads ``$AR_OMP_NUM_THREADS``. Default: ``None``.
+
+Usage::
+
+    import auto_round.envs as envs
+
+    print(envs.AR_LOG_LEVEL)   # "INFO" by default
+    envs.set_config(AR_LOG_LEVEL="DEBUG")
+    print(envs.AR_LOG_LEVEL)   # "DEBUG"
+"""
 import os
 from typing import TYPE_CHECKING, Any, Callable, Optional
 
@@ -38,6 +71,18 @@ environment_variables: dict[str, Callable[[], Any]] = {
 
 
 def __getattr__(name: str):
+    """Lazily evaluates the requested environment variable.
+
+    Args:
+        name (str): Name of the environment variable / module attribute.
+
+    Returns:
+        Any: The evaluated value of the corresponding lambda in
+        ``environment_variables``.
+
+    Raises:
+        AttributeError: If ``name`` is not a known environment variable.
+    """
     # lazy evaluation of environment variables
     if name in environment_variables:
         return environment_variables[name]()
@@ -45,11 +90,26 @@ def __getattr__(name: str):
 
 
 def __dir__():
+    """Returns the list of configurable environment variable names.
+
+    Returns:
+        list[str]: All keys in ``environment_variables``.
+    """
     return list(environment_variables.keys())
 
 
 def is_set(name: str):
-    """Check if an environment variable is explicitly set."""
+    """Checks whether an environment variable is explicitly set in the OS environment.
+
+    Args:
+        name (str): Environment variable name to check.
+
+    Returns:
+        bool: ``True`` if the variable is present in ``os.environ``.
+
+    Raises:
+        AttributeError: If ``name`` is not a known environment variable.
+    """
     if name in environment_variables:
         return name in os.environ
     raise AttributeError(f"module {__name__!r} has no attribute {name!r}")

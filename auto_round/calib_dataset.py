@@ -12,6 +12,21 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+"""Calibration dataset loading utilities for AutoRound quantization.
+
+This module provides functions and a registry for loading, tokenizing, and
+preparing calibration datasets used during the AutoRound quantization-tuning
+process.  A ``CALIB_DATASETS`` registry maps dataset names to loader functions,
+and :func:`get_dataloader` is the main entry point for obtaining a
+:class:`torch.utils.data.DataLoader` ready for calibration.
+
+Supported built-in datasets include ``NeelNanda/pile-10k``,
+``swift/pile-val-backup``, ``BAAI/CCI3-HQ``,
+``codeparrot/github-code-clean``, ``HuggingFaceH4/ultrachat_200k``,
+``openbmb/Ultra-FineWeb``, ``madao33/new-title-chinese``,
+``google-research-datasets/mbpp``, and local JSON/JSONL files.
+"""
+
 import json
 import logging
 import multiprocessing
@@ -44,6 +59,7 @@ def register_dataset(name):
     """
 
     def register(dataset):
+        """Register the dataset class/function under the configured name(s)."""
         if isinstance(name, list):
             names = name
         else:
@@ -56,6 +72,24 @@ def register_dataset(name):
 
 
 def apply_chat_template_to_samples(samples, tokenizer, seqlen, system_prompt=None):
+    """Applies the tokenizer's chat template to a list of text samples.
+
+    Each sample is wrapped in a user message (and optionally a system message),
+    formatted with the tokenizer's chat template, and then tokenized with
+    truncation.
+
+    Args:
+        samples (list[str | list[dict]]): List of raw text strings or pre-built
+            message lists to apply the template to.
+        tokenizer: HuggingFace tokenizer with ``apply_chat_template`` support.
+        seqlen (int): Maximum token sequence length for truncation.
+        system_prompt (str | None, optional): Optional system prompt to prepend
+            to each conversation. Defaults to ``None``.
+
+    Returns:
+        dict: Tokenized output dict with ``"input_ids"`` and ``"attention_mask"``
+            keys (as returned by the tokenizer).
+    """
     rendered_messages = []
     # if system_prompt is None: ## remove system prompt as models like deepseek don't recommend using it
     #     system_prompt = "You are a helpful assistant."
@@ -125,6 +159,7 @@ def get_tokenizer_function(tokenizer, seqlen, apply_chat_template=False, system_
     """
 
     def default_tokenizer_function(examples):
+        """Tokenize a batch of examples, optionally applying a chat template."""
         if not apply_chat_template:
             example = tokenizer(examples["text"], truncation=True, max_length=seqlen)
         else:
@@ -305,6 +340,7 @@ def get_github_code_clean_dataset(
         """
 
         def default_tokenizer_function(examples):
+            """Tokenize a batch of code examples."""
             if not apply_chat_template:
                 example = tokenizer(examples["code"], truncation=True, max_length=seqlen)
             else:
@@ -348,6 +384,28 @@ def get_ultrachat_dataset(
     apply_chat_template=True,
     system_prompt=None,
 ):
+    """Returns a tokenized dataset from HuggingFaceH4/ultrachat_200k.
+
+    Args:
+        tokenizer: HuggingFace tokenizer used for tokenization.
+        seqlen (int): Maximum sequence length for truncation.
+        dataset_name (str, optional): HuggingFace dataset identifier. Defaults
+            to ``"HuggingFaceH4/ultrachat_200k"``.
+        split (str, optional): Dataset split name (one of ``"train_sft"``,
+            ``"test_sft"``, ``"train_gen"``, ``"test_gen"``). Defaults to
+            ``"train_sft"``.
+        seed (int, optional): Random seed for shuffling. Defaults to 42.
+        apply_chat_template (bool, optional): Whether to apply the tokenizer
+            chat template. Defaults to ``True``.
+        system_prompt (str | None, optional): System prompt for chat template.
+            Defaults to ``None``.
+
+    Returns:
+        datasets.Dataset: Shuffled, tokenized dataset ready for calibration.
+
+    Raises:
+        ValueError: If ``split`` is not one of the valid splits for this dataset.
+    """
     if split is None:
         split = "train_sft"
     all_splits = ["train_sft", "test_sft", "train_gen", "test_gen"]
@@ -358,6 +416,7 @@ def get_ultrachat_dataset(
     dataset = dataset.shuffle(seed=seed).take(20000)
 
     def is_instruct_tokenizer(tokenizer):
+        """Return True if the tokenizer supports a chat template."""
         try:
             out = tokenizer.apply_chat_template([{"role": "user", "content": "Hi"}])
             return bool(out and len(out) > 0)
@@ -374,6 +433,7 @@ def get_ultrachat_dataset(
     apply_chat_template = False
 
     def tokenize_example_batch(examples):
+        """Tokenize a batch of chat-style message examples."""
         if not apply_chat_template:
             texts = []
             for message_list in examples["messages"]:
@@ -397,6 +457,27 @@ def get_ultrafinweb_dataset(
     apply_chat_template=True,
     system_prompt=None,
 ):
+    """Returns a tokenized dataset from openbmb/Ultra-FineWeb.
+
+    Args:
+        tokenizer: HuggingFace tokenizer used for tokenization.
+        seqlen (int): Maximum sequence length for truncation.
+        dataset_name (str, optional): Dataset identifier. Defaults to
+            ``"openbmb/Ultra-FineWeb"``.
+        split (str | None, optional): Language split; one of ``"en"`` or
+            ``"zh"``. Defaults to ``"en"`` when ``None``.
+        seed (int, optional): Random seed for shuffling. Defaults to 42.
+        apply_chat_template (bool, optional): Whether to apply chat template.
+            Defaults to ``True``.
+        system_prompt (str | None, optional): System prompt for chat template.
+            Defaults to ``None``.
+
+    Returns:
+        datasets.Dataset: Tokenized dataset ready for calibration.
+
+    Raises:
+        ValueError: If ``split`` is not ``"en"`` or ``"zh"``.
+    """
     if split is not None:
         if split not in ["en", "zh"]:
             raise ValueError("split must be one of ['en', 'zh'] for Ultra-FineWeb dataset")
@@ -411,7 +492,10 @@ def get_ultrafinweb_dataset(
     calib_dataset = calib_dataset.shuffle(seed=seed).take(20000)
 
     def get_default_tokenizer_function():
+        """Return a tokenizer function operating on the ``"content"`` field."""
+
         def default_tokenizer_function(examples):
+            """Tokenize a batch of Ultra-FineWeb examples."""
             if not apply_chat_template:
                 example = tokenizer(examples["content"], truncation=True, max_length=seqlen)
             else:
@@ -466,6 +550,7 @@ def get_new_chinese_title_dataset(
         """
 
         def default_tokenizer_function(examples):
+            """Tokenize a batch of new-title-chinese examples."""
             if not apply_chat_template:
                 example = tokenizer(examples["content"], truncation=True, max_length=seqlen)
             else:
@@ -575,6 +660,14 @@ def get_local_dataset(
     )
 
     def load_local_data(data_path):
+        """Load calibration data from a local JSON or JSONL file.
+
+        Args:
+            data_path (str): Path to a ``.json`` or ``.jsonl`` file.
+
+        Returns:
+            list | dict: Parsed data from the file.
+        """
         if data_path.endswith(".json"):
             with open(data_path, "r") as f:
                 data = json.load(f)
@@ -712,6 +805,7 @@ def _get_dataset_impl(tokenizer, seqlen, dataset_name="NeelNanda/pile-10k", seed
     dataset_names = dataset_name.split(",")
 
     def filter_func(example):
+        """Return True if the example is long enough and not repetitive."""
         if isinstance(example["input_ids"], list):
             example["input_ids"] = torch.tensor(example["input_ids"])
         if example["input_ids"].shape[-1] < seqlen:
@@ -723,6 +817,7 @@ def _get_dataset_impl(tokenizer, seqlen, dataset_name="NeelNanda/pile-10k", seed
         return True
 
     def concat_dataset_element(dataset):
+        """Concatenate multiple short examples into fixed-length sequences of ``seqlen`` tokens."""
         input_ids, concat_input_ids = [eg["input_ids"] for eg in dataset], []
         attention_mask_list, attention_mask = [], torch.ones([1, seqlen]).to(torch.int64)
         buffer_input_id = torch.Tensor().to(torch.int64)
@@ -955,6 +1050,18 @@ def get_dataloader(tokenizer, seqlen, dataset_name="NeelNanda/pile-10k", seed=42
 
     @torch.no_grad()
     def collate_batch(batch):
+        """Collate a batch of tokenized examples into padded/truncated tensors.
+
+        Filters out repetitive sequences and stacks valid ``input_ids`` and
+        ``attention_mask`` tensors into a single dictionary.
+
+        Args:
+            batch (list[dict]): List of examples with ``input_ids`` and
+                ``attention_mask`` keys.
+
+        Returns:
+            dict | None: Batched tensors, or ``None`` if all examples were filtered.
+        """
         input_ids_new = []
         attention_mask_new = []
         for text in batch:

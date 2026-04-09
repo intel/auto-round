@@ -12,6 +12,20 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+"""Microscaling floating-point (MX) quantization for auto-round.
+
+This module implements group-wise quantization using the OCP MX (microscaling)
+specification for a wide range of sub-formats: MX-Int2/4/8, MX-FP4, MX-FP6,
+MX-FP8, MX-FP16, and MX-BF16.  Each format is characterised by its exponent
+bits, mantissa bits, maximum exponent, maximum normalised value, and minimum
+normalised value, all stored in :data:`MXFP_FORMAT_CACHE`.
+
+Two quantization entry points are registered:
+
+- ``quant_mx`` — uses a floor-rounded shared exponent (standard).
+- ``quant_mx_rceil`` — uses a ceil-rounded shared exponent (avoids clipping).
+"""
+
 import torch
 
 from auto_round.data_type.register import QUANT_FUNC_WITH_DTYPE, register_dtype
@@ -47,6 +61,33 @@ FP32_MIN_NORMAL = 2 ** (-FP32_EXPONENT_BIAS + 1)
 
 
 def quant_element(tensor, ebits, mbits, max_norm, mantissa_rounding="even"):
+    """Quantize individual elements to a given floating-point sub-format.
+
+    Scales each element to the integer range implied by *mbits* mantissa bits,
+    applies the selected rounding mode, then rescales back.  When *ebits* > 0 a
+    per-element private exponent is used so that the full dynamic range of the
+    sub-format is exploited.
+
+    Args:
+        tensor (torch.Tensor): Input tensor to quantize (any shape).
+        ebits (int): Number of exponent bits in the target sub-format.  Pass
+            ``0`` for integer sub-formats that have no exponent.
+        mbits (int): Total number of mantissa bits (including the implicit
+            leading bit for normalised values).
+        max_norm (float): Maximum representable normalised value in the target
+            sub-format (used for clamping).
+        mantissa_rounding (str, optional): Rounding mode for the mantissa.
+            Supported values: ``"even"`` (round-half-to-even), ``"nearest"``
+            (round-half-up), ``"floor"`` (truncation), ``"stochastic"``
+            (stochastic rounding).  Defaults to ``"even"``.
+
+    Returns:
+        torch.Tensor: Quantized tensor with the same shape and dtype as the
+            input.
+
+    Raises:
+        ValueError: If *mantissa_rounding* is not one of the supported values.
+    """
     if ebits != 0:
         private_exp = floor_ste(torch.log2(torch.abs(tensor) + (tensor == 0).type(tensor.dtype)))
         # The minimum representable exponent for 8 exp bits is -126

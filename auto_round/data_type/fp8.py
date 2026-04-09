@@ -12,6 +12,16 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+"""Float8 quantization implementations for auto-round.
+
+This module registers quantization functions that map tensors to the float8
+representation (E4M3 and E5M2 variants) and dequantize them back to the
+original precision.  Both per-row dynamic scaling (``fp8_sym``) and
+block-wise scaling (``block_fp8_sym``) are provided.  Intel Gaudi2
+hardware is detected at import time and an optimised HPU-specific
+implementation is registered for ``fp8_sym`` when applicable.
+"""
+
 import torch
 
 from auto_round.data_type.register import register_dtype

@@ -11,6 +11,23 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
+"""GGUF-compatible quantization implementations for auto-round.
+
+This module implements the GGUF/llama.cpp quantization formats used when
+exporting models to the ``.gguf`` file format.  The formats covered are:
+
+- **Q2_K / Q4_K / Q5_K** — asymmetric double-quantized formats
+  (``rtn_int_asym_dq``, ``int_asym_dq``, ``int_asym_float_zp``).
+- **Q3_K / Q6_K** — symmetric double-quantized formats
+  (``rtn_int_sym_dq``, ``int_sym_dq``).
+
+Double quantization refers to a two-level scheme where both the primary
+quantization scales and the minimum-value offsets are themselves quantized,
+reducing the metadata overhead per block.
+
+An *importance matrix* (``imatrix``) can optionally be supplied to weight the
+quantization error so that more-important activations incur less distortion.
+"""
 from typing import Any, Callable, Union
 
 import torch
@@ -143,6 +160,24 @@ def quant_tensor_asym_float_zp(
 
 ## the values should be positive
 def double_quant_tensor(tensor, bits):
+    """Asymmetric double-quantize a positive-valued scale or offset tensor.
+
+    Quantizes the values in *tensor* to *bits*-bit unsigned integers and
+    returns the dequantized result together with the per-row scale.
+
+    Args:
+        tensor (torch.Tensor): Positive-valued 2-D tensor to quantize, shaped
+            ``(n_super_groups, super_group_size)``.
+        bits (int): Number of bits for the unsigned integer quantization
+            (``maxq = 2**bits - 1``).
+
+    Returns:
+        tuple:
+            - qdq_tensor (torch.Tensor): Dequantized tensor with the same
+              shape as *tensor*, in float32.
+            - scale (torch.Tensor): Per-row float32 scale tensor with shape
+              ``(n_super_groups, 1)``.
+    """
     tensor = tensor.to(torch.float32)  # Ensure tensor is in float32 for precision
     maxq = 2**bits - 1
     wmax = torch.clamp(tensor.max(-1)[0], min=0)
@@ -155,6 +190,25 @@ def double_quant_tensor(tensor, bits):
 
 
 def double_quant_tensor_sym(tensor, bits):
+    """Symmetric double-quantize a scale tensor.
+
+    Quantizes using the element with the largest absolute value as the
+    reference (i.e. the scale is derived from the extremal element rather than
+    the range).
+
+    Args:
+        tensor (torch.Tensor): 2-D tensor to quantize, shaped
+            ``(n_super_groups, super_group_size)``.
+        bits (int): Number of bits for signed integer quantization
+            (``maxq = 2**(bits-1)``).
+
+    Returns:
+        tuple:
+            - qdq_tensor (torch.Tensor): Dequantized tensor with the same
+              shape as *tensor*, in float32.
+            - scale (torch.Tensor): Per-row float32 scale tensor with shape
+              ``(n_super_groups, 1)``.
+    """
     tensor = tensor.to(torch.float32)  # Ensure tensor is in float32 for precision
     maxq = 2 ** (bits - 1)
     imax = abs(tensor).argmax(axis=-1, keepdims=True)
@@ -166,10 +220,24 @@ def double_quant_tensor_sym(tensor, bits):
 
 
 def double_quant_tensor_sym_rtn(tensor, bits):
-    """
-    Inplace-optimized symmetric double quantization.
-    - Uses float32 inplace where possible
-    - Minimizes temporary tensor allocations
+    """Inplace-optimised symmetric double-quantize a scale tensor.
+
+    Functionally equivalent to :func:`double_quant_tensor_sym` but uses
+    in-place operations and minimises temporary tensor allocations.
+
+    Args:
+        tensor (torch.Tensor): 2-D tensor to quantize in-place if already
+            float32, otherwise a copy is made.  Shape
+            ``(n_super_groups, super_group_size)``.
+        bits (int): Number of bits for signed integer quantization
+            (``maxq = 2**(bits-1)``).
+
+    Returns:
+        tuple:
+            - qdq_tensor (torch.Tensor): In-place quantized and dequantized
+              tensor, in float32.
+            - scale (torch.Tensor): Per-row float32 scale tensor with shape
+              ``(n_super_groups, 1)``.
     """
     # Ensure tensor is float32 inplace (if tensor already float32, no copy)
     if tensor.dtype != torch.float32:
@@ -197,6 +265,27 @@ def double_quant_tensor_sym_rtn(tensor, bits):
 
 
 def make_qp_quants(nmax, data, quant_weights):
+    """Weighted scale search for asymmetric double-quantization of positive tensors.
+
+    Iterates over a small range of scale candidates to minimise the weighted
+    squared reconstruction error, then refines the scale using weighted least
+    squares.  Used when an importance matrix is available.
+
+    Args:
+        nmax (int): Maximum representable unsigned integer value
+            (``2**super_bits - 1``).
+        data (torch.Tensor): Positive-valued 2-D tensor of scales to quantize,
+            shape ``(n_super_groups, super_group_size)``.
+        quant_weights (torch.Tensor): Importance weights with the same shape
+            as *data*.
+
+    Returns:
+        tuple:
+            - scale (torch.Tensor): Per-row optimal scale, shape
+              ``(n_super_groups,)``.
+            - L (torch.Tensor): Quantized integer values with the same shape
+              as *data*.
+    """
     data = data.to(torch.float32)
     quant_weights = quant_weights.to(torch.float32)
     group_max = torch.max(data, dim=-1, keepdim=True)[0]
@@ -323,6 +412,31 @@ def quant_tensor_asym_dq(
 
 
 def _imatrix_handle_zero(imatrix: Union[torch.Tensor, float], weight: torch.Tensor, bits: int):
+    """Handle zero entries in an importance matrix by substituting fallback weights.
+
+    When importance matrix entries are zero (meaning the corresponding
+    activation was never observed during calibration), this function replaces
+    them with proxy values derived from the weight tensor to avoid degenerate
+    quantization.
+
+    - If more than half of a row is zero, the entire row is replaced with a
+      proxy based on absolute weight values (for 2-bit) or a sigma-weighted
+      proxy (for 4/5-bit).
+    - If only a minority of entries are zero, they are replaced with the row
+      mean of the non-zero entries.
+    - If *imatrix* is not a tensor (e.g. a scalar ``1.0``) it is returned
+      unchanged.
+
+    Args:
+        imatrix (torch.Tensor or float): Importance matrix of shape
+            ``(n_groups, group_size)`` or a scalar (passes through unchanged).
+        weight (torch.Tensor): Weight tensor reshaped to match *imatrix*.
+        bits (int): Quantization bit width (affects the fallback proxy).
+
+    Returns:
+        torch.Tensor or float: Modified importance matrix with zeros replaced,
+            or the original scalar.
+    """
     if not isinstance(imatrix, torch.Tensor):
         return imatrix
 
@@ -357,6 +471,35 @@ def _imatrix_handle_zero(imatrix: Union[torch.Tensor, float], weight: torch.Tens
 
 @torch.inference_mode()
 def search_gguf_scale_min_asym(tensor, bits=4, scale_dtype=torch.float16, imatrix=None, split_num=1):
+    """Search for optimal asymmetric GGUF scales and minimum offsets.
+
+    Selects quantization parameters for Q2_K, Q4_K, and Q5_K blocks using
+    either a WLS (weighted least squares) search (without imatrix) or an
+    imatrix-weighted variant.  Scales and minimums are themselves
+    double-quantized to super-group level.
+
+    Args:
+        tensor (torch.Tensor): Float32 weight tensor shaped
+            ``(n_groups, group_size)``.
+        bits (int, optional): Primary quantization bit width; must be one of
+            ``2``, ``4``, ``5``.  Defaults to ``4``.
+        scale_dtype (torch.dtype, optional): Storage dtype for primary scales.
+            Defaults to ``torch.float16``.
+        imatrix (torch.Tensor or None, optional): Importance matrix used to
+            weight the quantization error.  When ``None`` or all-zero, a
+            heuristic proxy is used.  Defaults to ``None``.
+        split_num (int, optional): Number of row chunks to process sequentially
+            to limit peak GPU memory usage.  Defaults to ``1``.
+
+    Returns:
+        tuple:
+            - scale (torch.Tensor): Per-group primary scale, shape
+              ``(n_groups, 1)``.
+            - wmin (torch.Tensor): Per-group minimum-offset, shape
+              ``(n_groups, 1)``.
+            - d_scale (torch.Tensor): Super-group scale-of-scale.
+            - d_wmin (torch.Tensor): Super-group scale-of-minimum.
+    """
     super_bits = 4 if bits == 2 else 6
     super_group_size = 16 if bits == 2 else 8
 
@@ -499,6 +642,39 @@ def quant_tensor_gguf_asym_dq(
 def iterative_wls_quant_search_chunk(
     data, bits=4, rrmin=-1.0, rdelta=0.1, nstep=20, use_mad=False, weights=None, split_num=1
 ):
+    """Chunked iterative weighted least-squares quantization parameter search.
+
+    Processes *data* in ``split_num`` row-chunks to limit peak memory usage.
+    Within each chunk the optimal scale and minimum for asymmetric quantization
+    are found by iterating over a grid of scale candidates, selecting the one
+    that minimises the (optionally weighted) reconstruction error, and then
+    refining the estimate with a closed-form WLS step.
+
+    Args:
+        data (torch.Tensor): Input float tensor shaped
+            ``(n_groups, group_size)``.
+        bits (int, optional): Number of quantization bits.  Defaults to ``4``.
+        rrmin (float, optional): Initial range-factor offset added to the
+            ``(maxq - minq)`` denominator.  Defaults to ``-1.0``.
+        rdelta (float, optional): Step size for iterating over range factors.
+            Defaults to ``0.1``.
+        nstep (int, optional): Number of candidate scale steps.  Defaults to
+            ``20``.
+        use_mad (bool, optional): Use mean absolute deviation instead of mean
+            squared error as the loss.  Defaults to ``False``.
+        weights (torch.Tensor or None, optional): Importance weights with the
+            same shape as *data*.  When ``None`` all elements are weighted
+            equally.  Defaults to ``None``.
+        split_num (int, optional): Number of row-chunks to process
+            sequentially.  Defaults to ``1``.
+
+    Returns:
+        tuple:
+            - scale (torch.Tensor): Per-group float32 scale, shape
+              ``(n_groups, 1)``.
+            - rmin (torch.Tensor): Per-group float32 negated minimum (i.e.
+              ``wmin = -rmin``), shape ``(n_groups, 1)``.
+    """
     dtype = torch.float32
     data = data.to(dtype)
     maxq = 2**bits - 1
@@ -641,6 +817,24 @@ def iterative_wls_quant_search(
 
 @torch.inference_mode()
 def search_gguf_scale_min_sym(tensor, bits, imatrix, scale_dtype, split_num):
+    """Search for optimal symmetric GGUF scales for Q3_K and Q6_K formats.
+
+    Delegates to the llama.cpp-compatible ``make_q3_quants`` (3-bit) or
+    ``make_qx_quants_chunk`` (6-bit) scale-search routines.  When an
+    importance matrix is provided the imatrix-weighted variant is used.
+
+    Args:
+        tensor (torch.Tensor): Float32 weight tensor reshaped as
+            ``(n_blocks, super_group_size, sub_group_size)``.
+        bits (int): Primary quantization bit width; must be ``3`` or ``6``.
+        imatrix (torch.Tensor or None): Importance matrix.  When ``None`` or
+            all-zero, the unweighted search is used.
+        scale_dtype (torch.dtype): Storage dtype for the returned scale.
+        split_num (int): Number of row-chunks for memory-bounded processing.
+
+    Returns:
+        torch.Tensor: Per-sub-group scale tensor.
+    """
     if imatrix is None or (imatrix is not None and torch.sum(imatrix) == 0):
         if bits == 3:
             # Note: make_q3_quants does not support split_num/chunking;
