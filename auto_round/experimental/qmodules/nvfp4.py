@@ -204,3 +204,21 @@ class NVFP4QuantLinear(QModuleBase):
         m, half_n = packed_data.shape
         unpacked_data = unpack_fp4_from_uint8(packed_data, m, half_n * 2, dtype=self.dtype)
         return unpacked_data
+
+
+class HadamardNVFP4QuantLinear(NVFP4QuantLinear):
+    """
+    Quantized linear layer using the NVFP4 quantization scheme.
+    """
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.enable_transform = True
+        self.register_buffer(
+            "hadamard_matrix",
+            torch.empty(
+                self.group_size,
+                self.group_size,
+                dtype=self.dtype,
+            ),
+        )

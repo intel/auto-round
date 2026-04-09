@@ -687,7 +687,11 @@ def convert_hf_model(model: nn.Module, target_device: str = "cpu") -> tuple[nn.M
             hadamard_type=hadamard_config["hadamard_type"],
         )  # apply to activation
         model = apply_hadamard_transform(
-            model, act_hadamard_config, location="input", desc="Register pre forward hook for hadamard transform"
+            model,
+            act_hadamard_config,
+            location="input",
+            desc="Register pre forward hook for hadamard transform",
+            data_type=quantization_config.data_type
         )
 
     # Suggest a better backend if available

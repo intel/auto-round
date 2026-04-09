@@ -4,7 +4,7 @@
 import torch
 import tqdm
 
-from auto_round.experimental.qmodules.mx import MXQuantLinearBase
+from auto_round.experimental.qmodules.base import QModuleBase
 from auto_round.experimental.transform.hadamard_config import HadamardConfig
 from auto_round.experimental.transform.hadamards import build_hadamard_transform
 from auto_round.experimental.utils import is_triton_kernel_available, normalize_hadamard_config
@@ -15,10 +15,10 @@ __all__ = ["apply_hadamard_transform"]
 def apply_hadamard_transform(
     model: torch.nn.Module,
     config: str | dict | HadamardConfig | None,
-    need_calibration: bool = False,
     location: str = "weight",
     use_tqdm=True,
     desc=None,
+    data_type="mx_fp"
 ):
     """
     Apply a transform configuration to a model.
@@ -60,14 +60,14 @@ def apply_hadamard_transform(
     modules_config = [
         (name, module, config)
         for name, module in model.named_modules()
-        if isinstance(module, torch.nn.Linear) or isinstance(module, MXQuantLinearBase)
+        if isinstance(module, torch.nn.Linear) or isinstance(module, QModuleBase)
     ]
 
     desc = f"Applying {config.hadamard_type} transforms" if desc is None else desc
     for name, module, config in tqdm.tqdm(modules_config, desc=desc, disable=(not use_tqdm)):
         if "lm_head" in name:
             continue
-        _apply_to_module(model, module, config, need_calibration, location)
+        _apply_to_module(model, module, config, location, data_type)
 
     # attach config to model for compression/serialization
     setattr(model, "hadamard_config", config)
@@ -79,8 +79,8 @@ def _apply_to_module(
     model: torch.nn.Module,
     module: torch.nn.Module,
     config: HadamardConfig,
-    need_calibration: bool = False,
     location: str = "weight",
+    data_type: str = "mx_fp"
 ):
     """
     Create transforms and apply them to the module
@@ -107,7 +107,7 @@ def _apply_to_module(
         else:
             hadamard_weight = None
 
-        if is_triton_kernel_available():
+        if is_triton_kernel_available(data_type):
             from auto_round.experimental.transform.triton.mxfp4 import mxfp4_forward_kernel_wrapper
 
             def input_hook(self, args):

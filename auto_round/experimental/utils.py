@@ -20,7 +20,7 @@ from auto_round.experimental.transform.hadamard_config import HadamardConfig
 from auto_round.experimental.transform.hadamards import HADAMARDS
 from auto_round.utils import logger
 
-SUPPORTED_QUANTIZATION_SCHEMES = ["MXFP4"]
+SUPPORTED_QUANTIZATION_SCHEMES = ["MXFP4", "NVFP4"]
 
 
 def per_tensor_fp8_qdq(
@@ -114,10 +114,12 @@ def clean_model_parameters_and_buffers_(model: torch.nn.Module, name_tuple: tupl
         _clean_param_or_buff_if_exists(module, name_tuple)
 
 
-def is_triton_kernel_available() -> bool:
+def is_triton_kernel_available(data_type: str) -> bool:
     """
     Best-effort check for whether Triton kernel path can be used.
     """
+    if is_nv_fp(data_type):
+        return False
     try:
         import triton  # pylint: disable=E0401
     except Exception:
@@ -134,62 +136,107 @@ def is_triton_kernel_available() -> bool:
     return True
 
 
-def normalize_hadamard_config(hadamard_config: str | dict | HadamardConfig | None) -> dict[str, Any]:
+def normalize_hadamard_config(
+    hadamard_config: str | dict | HadamardConfig | None, scheme: str
+) -> dict[str, Any]:
     """
     Normalize and validate `hadamard_config`.
 
     Supported input types:
-        - None          -> {}
-        - dict          -> validated via HadamardConfig
+        - None           -> {}
+        - dict           -> validated via HadamardConfig
         - HadamardConfig -> validated & converted to dict
-        - str           -> shorthand for `transform_type` in TRANSFORMS keys
+        - str            -> shorthand for `hadamard_type` in HADAMARDS keys
 
-    On any validation failure, raises ValueError/TypeError.
+    Additional behavior:
+        - If block_size is not set:
+            - MXFP4 -> default block_size to 32
+            - NVFP4 -> default block_size to 16
+            - other schemes -> emit a warning
+        - If block_size is set but does not match the recommended value:
+            - MXFP4 expects 32
+            - NVFP4 expects 16
+            - emit a warning
     """
+
+    check_supported_schemes(scheme)
+
+    def _apply_scheme_block_size(cfg_dict: dict[str, Any]) -> dict[str, Any]:
+        block_size = cfg_dict.get("block_size")
+
+        if block_size is None:
+            if scheme == "MXFP4":
+                cfg_dict["block_size"] = 32
+                logger.warning("block_size is not set for scheme 'MXFP4'; defaulting to 32.")
+            elif scheme == "NVFP4":
+                cfg_dict["block_size"] = 16
+                logger.warning("block_size is not set for scheme 'NVFP4'; defaulting to 16.")
+            else:
+                logger.warning(
+                    f"block_size is not set and cannot be inferred for scheme {scheme!r}; "
+                    "please set block_size explicitly in hadamard_config if needed."
+                )
+        else:
+            if scheme == "MXFP4" and block_size != 32:
+                logger.warning(f"scheme is 'MXFP4' but block_size={block_size}; recommended value is 32.")
+            elif scheme == "NVFP4" and block_size != 16:
+                logger.warning(f"scheme is 'NVFP4' but block_size={block_size}; recommended value is 16.")
+
+        return cfg_dict
+
+
     # 1) None -> {}
     if hadamard_config is None:
         return {}
 
     # 2) Already a HadamardConfig instance
     if isinstance(hadamard_config, HadamardConfig):
-        # Ensure it passes its own validation and convert to dict
-        cfg = HadamardConfig.model_validate(hadamard_config).model_dump()
-        return cfg
+        try:
+            cfg_dict = HadamardConfig.model_validate(hadamard_config).model_dump()
+            cfg_dict = _apply_scheme_block_size(cfg_dict)
+            return HadamardConfig.model_validate(cfg_dict).model_dump()
+        except Exception as e:
+            raise ValueError(f"Invalid HadamardConfig: {e}") from e
 
     # 3) dict -> validate via HadamardConfig
     if isinstance(hadamard_config, dict):
         try:
-            cfg = HadamardConfig.model_validate(hadamard_config).model_dump()
+            cfg_dict = HadamardConfig.model_validate(hadamard_config).model_dump()
+            cfg_dict = _apply_scheme_block_size(cfg_dict)
+            return HadamardConfig.model_validate(cfg_dict).model_dump()
         except Exception as e:
             raise ValueError(f"Invalid hadamard_config dict: {e}") from e
-        return cfg
 
-    # 4) str -> shorthand for transform_type
+    # 4) str -> shorthand for hadamard_type
     if isinstance(hadamard_config, str):
         key = hadamard_config.strip()
         if not key:
             return {}
 
         if key == "default":
-            cfg = HadamardConfig()
-            return cfg.model_dump()
+            cfg_dict = HadamardConfig().model_dump()
+            cfg_dict = _apply_scheme_block_size(cfg_dict)
+            try:
+                return HadamardConfig.model_validate(cfg_dict).model_dump()
+            except Exception as e:
+                raise ValueError(f"Invalid default hadamard_config after scheme adjustment: {e}") from e
 
         if key not in HADAMARDS:
             raise ValueError(
-                f"Invalid hadamard_config string: {key!r}. " f"Expected one of {sorted(HADAMARDS.keys())}."
+                f"Invalid hadamard_config string: {key!r}. Expected one of {sorted(HADAMARDS.keys())}."
             )
 
         cfg_dict = {"hadamard_type": key}
+        cfg_dict = _apply_scheme_block_size(cfg_dict)
 
         try:
-            cfg = HadamardConfig.model_validate(cfg_dict).model_dump()
+            return HadamardConfig.model_validate(cfg_dict).model_dump()
         except Exception as e:
             raise ValueError(f"hadamard_config built from string {key!r} is invalid for HadamardConfig: {e}") from e
 
-        return cfg
-
     raise TypeError(
-        "hadamard_config must be one of: None, dict, HadamardConfig, or str " f"(got {type(hadamard_config).__name__})"
+        "hadamard_config must be one of: None, dict, HadamardConfig, or str "
+        f"(got {type(hadamard_config).__name__})"
     )
 
 

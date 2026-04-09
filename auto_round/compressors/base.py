@@ -560,15 +560,11 @@ class BaseCompressor(object):
         # apply hadamard transform
         if hadamard_config:
             from auto_round.experimental.transform.apply import apply_hadamard_transform
-            from auto_round.experimental.utils import check_supported_schemes, normalize_hadamard_config
+            from auto_round.experimental.utils import normalize_hadamard_config
 
-            check_supported_schemes(self.scheme)
+            self.hadamard_config = normalize_hadamard_config(hadamard_config, self.scheme)
+            self.model = apply_hadamard_transform(self.model, self.hadamard_config)
 
-            self.model = apply_hadamard_transform(
-                self.model, hadamard_config, need_calibration=True if self.iters > 0 else False
-            )
-
-            self.hadamard_config = normalize_hadamard_config(hadamard_config)
 
     def _gen_auto_scheme(self) -> dict[str, dict]:
         if self.mllm:
