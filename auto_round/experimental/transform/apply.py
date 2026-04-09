@@ -19,7 +19,7 @@ def apply_hadamard_transform(
     use_tqdm=True,
     desc=None,
     data_type="mx_fp",
-    scheme="MXFP4"
+    scheme="MXFP4",
 ):
     """
     Apply a transform configuration to a model.
