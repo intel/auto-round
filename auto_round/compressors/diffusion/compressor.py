@@ -15,6 +15,7 @@
 import os
 from collections import defaultdict
 from copy import deepcopy
+from functools import partial
 from typing import Union
 
 import torch
