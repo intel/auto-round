@@ -29,6 +29,7 @@ from auto_round.schemes import QuantizationScheme
 from auto_round.utils import (
     LazyImport,
     clear_memory,
+    config_save_pretrained,
     copy_python_files_from_model_cache,
     diffusion_load_model,
     dispatch_model_by_all_available_devices,
@@ -37,7 +38,6 @@ from auto_round.utils import (
     get_block_names,
     merge_block_output_keys,
     wrap_block_forward_positional_to_kwargs,
-    config_save_pretrained,
 )
 
 pipeline_utils = LazyImport("diffusers.pipelines.pipeline_utils")
@@ -518,9 +518,9 @@ class DiffusionCompressor(BaseCompressor):
         if not hasattr(self.pipe.config, "save_pretrained"):
             # For Z-Image, tuning will cause this attribute missing, we need to add it back before saving config
             setattr(
-                self.pipe.config, 
-                "save_pretrained", 
-                partial(config_save_pretrained, self.pipe.config, "model_index.json")
+                self.pipe.config,
+                "save_pretrained",
+                partial(config_save_pretrained, self.pipe.config, "model_index.json"),
             )
         self.pipe.config.save_pretrained(output_dir)
         return compressed_model

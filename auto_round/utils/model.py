@@ -1956,6 +1956,7 @@ def load_next_step_diffusion(pretrained_model_name_or_path, device_str):
     pipe._autoround_pipeline_fn = _nextstep_pipeline_fn
     return pipe, model
 
+
 def config_save_pretrained(config, file_name, save_directory):
     if os.path.isfile(save_directory):
         raise AssertionError(f"Provided path ({save_directory}) should be a directory, not a file")
