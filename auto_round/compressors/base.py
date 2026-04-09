@@ -563,7 +563,7 @@ class BaseCompressor(object):
             from auto_round.experimental.utils import normalize_hadamard_config
 
             self.hadamard_config = normalize_hadamard_config(hadamard_config, self.scheme)
-            self.model = apply_hadamard_transform(self.model, self.hadamard_config)
+            self.model = apply_hadamard_transform(self.model, self.hadamard_config, scheme=self.scheme)
 
     def _gen_auto_scheme(self) -> dict[str, dict]:
         if self.mllm:

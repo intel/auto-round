@@ -19,6 +19,7 @@ def apply_hadamard_transform(
     use_tqdm=True,
     desc=None,
     data_type="mx_fp",
+    scheme="MXFP4"
 ):
     """
     Apply a transform configuration to a model.
@@ -53,7 +54,7 @@ def apply_hadamard_transform(
         ``config.transform_type``.
     """
 
-    config = normalize_hadamard_config(config)
+    config = normalize_hadamard_config(config, scheme)
     if not isinstance(config, HadamardConfig):
         config = HadamardConfig(**config)
 
