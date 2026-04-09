@@ -270,8 +270,8 @@ class SignRoundQuantizer(BaseQuantizers):
             if self.attention_mask:
                 num_elm = self._get_non_zero_cnt(self.attention_mask, global_indices)
 
-            for tmp_step in range(self.gradient_accumulate_steps):
-                indices = global_indices[tmp_step * batch_size : (tmp_step + 1) * batch_size]
+            for batch_start in range(0, len(global_indices), batch_size):
+                indices = global_indices[batch_start : batch_start + batch_size]
                 current_output = self._get_current_output(reference_output, indices)
                 current_output = to_device(current_output, loss_device)
                 output_q = self._get_current_q_output(block, input_ids, input_others, indices, device, loss_device)
@@ -443,8 +443,8 @@ class SignRoundQuantizer(BaseQuantizers):
             if self.attention_mask:
                 num_elm = self._get_non_zero_cnt(self.attention_mask, global_indices)
 
-            for tmp_step in range(gradient_accumulate_steps):
-                indices = global_indices[tmp_step * batch_size : (tmp_step + 1) * batch_size]
+            for batch_start in range(0, len(global_indices), batch_size):
+                indices = global_indices[batch_start : batch_start + batch_size]
                 if q_inputs is not None:
                     current_input = [q_inputs[i] for i in indices]
                     current_input = torch.cat(current_input, dim=0).to(device)

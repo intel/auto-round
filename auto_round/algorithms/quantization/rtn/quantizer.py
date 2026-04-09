@@ -81,6 +81,17 @@ class RTNQuantizer(BaseQuantizers):
         Returns:
             dict: Empty dict (zero-shot RTN has no tunable parameters to return).
         """
+        if (
+            self.config.is_act_nv_fp
+            or self.config.is_static_afp8
+            or (self.config.is_wfp8afp8 and not self.config.act_dynamic)
+        ):
+            # For FP8 static / NVFP paths, expert input scales are derived during
+            # layer quantization from the current act_max. Unify MoE input-proj
+            # act_max values before quantizing each expert so exported input_scale
+            # stays aligned across experts.
+            set_amax_for_all_moe_layers(block, attr_name="act_max")
+
         for _name, m in block.named_modules():
             if hasattr(m, "global_name") and check_to_quantized(m):
                 self.quantize_layer(m.global_name)
@@ -207,7 +218,9 @@ class OptimizedRTNQuantizer(RTNQuantizer):
     def quantize_layer_outside_block(self, *args, **kwargs):
         return self.quantize_layer(*args, **kwargs)
 
-    def quantize_block(self, block: torch.nn.Module, **kwargs):
+    def quantize_block(
+        self, block: torch.nn.Module, input_ids=None, input_others=None, reference_output=None, **kwargs
+    ):
         """Apply imatrix-informed RTN quantization to a block.
 
         Pure-algorithm entry point.  All infrastructure (device placement,
@@ -217,9 +230,16 @@ class OptimizedRTNQuantizer(RTNQuantizer):
         Args:
             block: Module already placed on the correct device(s) with act_max
                 attributes populated by the Compressor's hook pass.
+            input_ids: Unused for optimized RTN; accepted for interface consistency.
+            input_others: Unused for optimized RTN.
+            reference_output: Unused for optimized RTN.
         """
         update_block_global_scale_if_needed(block, self.data_type, self.group_size)
-        if self.config.is_act_nv_fp or self.config.is_static_afp8:
+        if (
+            self.config.is_act_nv_fp
+            or self.config.is_static_afp8
+            or (self.config.is_wfp8afp8 and not self.config.act_dynamic)
+        ):
             # enable moe experts act_max automatic generation for Linear
             set_amax_for_all_moe_layers(block, attr_name="act_max")
         # Normalize imatrix and quantize layers
