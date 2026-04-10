@@ -79,40 +79,40 @@ def search_scales(data: torch.Tensor, bits: int, qw: Union[None, torch.Tensor, f
     return scales
 
 
-@register_dtype("rtn_int_sym")
-def quant_tensor_rtn_sym(tensor, bits=4, group_size=-1, v=0, q_scale_thresh=1e-5, imatrix=None, **kwargs):
-    """Quantize and de-quantize tensor asymmetrically. full range, credict goes to llamacpp community
-
-    Args:
-        tensor: Tensor containing the tensor to be quantized
-        bits: Number of bits for quantization (e.g., 2, 3, 4, 8)
-        group_size: Number of elements to share scale for quantization
-        v: Rounding value perturbation
-        q_scale_thresh: clip the quantized scale's magnitude to this value to improve the numerical stability
-
-    Returns:
-        Quantized and de-quantized tensor, scale, zero-point
-    """
-    from auto_round.data_type.gguf import _imatrix_handle_zero
-
-    tensor, orig_shape, pad_len = reshape_pad_tensor_by_group_size(tensor, group_size)
-    maxq = 2 ** (bits - 1)
-    if imatrix is None:
-        imatrix = 1.0
-    else:
-        imatrix = imatrix.reshape(1, -1)
-        imatrix = reshape_pad_tensor_by_group_size(imatrix, group_size, val=1e-5)[0].view(1, -1)
-        imatrix = imatrix.expand(tensor.numel() // imatrix.numel(), -1)
-        imatrix = imatrix.reshape(tensor.shape)
-
-        imatrix = _imatrix_handle_zero(imatrix, tensor, bits)
-
-    scale = search_scales(tensor, bits, qw=imatrix)
-    scale = torch.where(scale < 0, torch.clamp(scale, max=-q_scale_thresh), torch.clamp(scale, min=q_scale_thresh))
-    int_w = tensor.div(scale).round_().clamp_(-maxq, maxq - 1)
-    qdq_result = (int_w.mul_(scale)).to(tensor.dtype)
-    qdq_result = revert_tensor_by_pad(qdq_result, orig_shape=orig_shape, pad_len=pad_len)
-    return qdq_result, scale, maxq
+# @register_dtype("rtn_int_sym")
+# def quant_tensor_rtn_sym(tensor, bits=4, group_size=-1, v=0, q_scale_thresh=1e-5, imatrix=None, **kwargs):
+#     """Quantize and de-quantize tensor asymmetrically. full range, credict goes to llamacpp community
+#
+#     Args:
+#         tensor: Tensor containing the tensor to be quantized
+#         bits: Number of bits for quantization (e.g., 2, 3, 4, 8)
+#         group_size: Number of elements to share scale for quantization
+#         v: Rounding value perturbation
+#         q_scale_thresh: clip the quantized scale's magnitude to this value to improve the numerical stability
+#
+#     Returns:
+#         Quantized and de-quantized tensor, scale, zero-point
+#     """
+#     from auto_round.data_type.gguf import _imatrix_handle_zero
+#
+#     tensor, orig_shape, pad_len = reshape_pad_tensor_by_group_size(tensor, group_size)
+#     maxq = 2 ** (bits - 1)
+#     if imatrix is None:
+#         imatrix = 1.0
+#     else:
+#         imatrix = imatrix.reshape(1, -1)
+#         imatrix = reshape_pad_tensor_by_group_size(imatrix, group_size, val=1e-5)[0].view(1, -1)
+#         imatrix = imatrix.expand(tensor.numel() // imatrix.numel(), -1)
+#         imatrix = imatrix.reshape(tensor.shape)
+#
+#         imatrix = _imatrix_handle_zero(imatrix, tensor, bits)
+#
+#     scale = search_scales(tensor, bits, qw=imatrix)
+#     scale = torch.where(scale < 0, torch.clamp(scale, max=-q_scale_thresh), torch.clamp(scale, min=q_scale_thresh))
+#     int_w = tensor.div(scale).round_().clamp_(-maxq, maxq - 1)
+#     qdq_result = (int_w.mul_(scale)).to(tensor.dtype)
+#     qdq_result = revert_tensor_by_pad(qdq_result, orig_shape=orig_shape, pad_len=pad_len)
+#     return qdq_result, scale, maxq
 
 
 @register_dtype("int_sym")

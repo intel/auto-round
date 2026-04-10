@@ -273,7 +273,7 @@ class BaseCompressor(object):
                 value = kwargs.pop(k)
                 if value is not None:
                     self.user_scheme_overrides[k] = value
-
+        # self.user_scheme_overrides["act_sym"]= False
         # Model related
         model_dtype = kwargs.pop("model_dtype", None)
         self.mllm = kwargs.pop("mllm") if "mllm" in kwargs else False
