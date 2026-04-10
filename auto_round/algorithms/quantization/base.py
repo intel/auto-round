@@ -363,12 +363,15 @@ class BaseQuantizers:
         This avoids repeated attribute checks in the hot training loop
         (called thousands of times per block).
         """
-        if hasattr(self, "_resolved_block_forward"):
-            return self._resolved_block_forward
+        cached = self.__dict__.get("_resolved_block_forward")
+        if cached is not None:
+            return cached
         if self.compress_context.enable_torch_compile:
-            if not hasattr(self, "_compiled_block_forward"):
-                self._compiled_block_forward = compile_func(block_forward, self.compress_context.device)
-            self._resolved_block_forward = self._compiled_block_forward
+            compiled = self.__dict__.get("_compiled_block_forward")
+            if compiled is None:
+                compiled = compile_func(block_forward, self.compress_context.device)
+                self._compiled_block_forward = compiled
+            self._resolved_block_forward = compiled
         else:
             self._resolved_block_forward = block_forward
         return self._resolved_block_forward
