@@ -104,27 +104,27 @@ def _get_quant_format(model):
 def _compress_and_set_format(layer, scheme, device=None):
     """Compress a layer and set its quantization format.
 
-    Requires a compressed_tensors version that provides `compress_module`.
-
-    :param layer: quantized layer to compress
-    :param scheme: quantization scheme for the layer
-    :raises ImportError: if compress_module is not available
+    Compatible with multiple compressed_tensors versions.
     """
     try:
-        from compressed_tensors.compressors import compress_module  # pylint: disable=E0401
-
-        compress_module(layer)
-    except ImportError as e:
-        logger.error(
-            "Unable to import compress_module from compressed_tensors. "
-            "This functionality requires compressed_tensors >= 0.15.0. "
-            "Please upgrade: pip install --upgrade compressed_tensors"
-        )
-        raise ImportError(
-            "compress_module not found in compressed_tensors. "
-            "Please install a compatible version: pip install --upgrade compressed_tensors"
-        ) from e
-
+        # Newer compressed_tensors export path
+        from compressed_tensors.compressors import compress_module as _compress_module  # pylint: disable=E0401
+    except ImportError:
+        try:
+            # Older versions expose this from module path only
+            from compressed_tensors.compressors.base import compress_module as _compress_module  # pylint: disable=E0401
+        except ImportError as e:
+            logger.error(
+                "Unable to import compress_module from compressed_tensors "
+                "(tried compressed_tensors.compressors and "
+                "compressed_tensors.compressors.base). "
+                "Please install/upgrade compressed-tensors."
+            )
+            raise ImportError(
+                "compress_module not found in compressed_tensors. "
+                "Install a compatible version."
+            ) from e
+    _compress_module(layer)
 
 def pack_layer(name, model, device=None):
     from compressed_tensors.quantization import QuantizationStatus  # pylint: disable=E0401
