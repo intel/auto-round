@@ -35,7 +35,7 @@ AutoRound 智能体使用说明。
 
 ## 常用命令
 - CLI 帮助：`auto-round -h`
-- 列出支持的导出格式：`auto_round list format`
+- 列出支持的导出格式：`auto-round list format`
 
 ## 最小示例
 - CLI 量化：
