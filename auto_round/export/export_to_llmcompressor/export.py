@@ -121,10 +121,10 @@ def _compress_and_set_format(layer, scheme, device=None):
                 "Please install/upgrade compressed-tensors."
             )
             raise ImportError(
-                "compress_module not found in compressed_tensors. "
-                "Install a compatible version."
+                "compress_module not found in compressed_tensors. " "Install a compatible version."
             ) from e
     _compress_module(layer)
+
 
 def pack_layer(name, model, device=None):
     from compressed_tensors.quantization import QuantizationStatus  # pylint: disable=E0401
