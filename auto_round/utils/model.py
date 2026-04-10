@@ -1972,3 +1972,25 @@ def config_save_pretrained(config, file_name, save_directory, model=None):
 
     with open(output_config_file, "w", encoding="utf-8") as writer:
         writer.write(json.dumps(config_dict, indent=2, sort_keys=True) + "\n")
+
+
+def rename_weights_files(path: str, prefix="diffusion_pytorch_model"):
+    """Rename weight files for diffusion models."""
+    import os, json, glob
+
+    # rename safetensors
+    files = sorted(glob.glob(f"{path}/*.safetensors"))
+    total = len(files)
+    
+    for i, f in enumerate(files, 1):
+        new = f"{prefix}-{i:05d}-of-{total:05d}.safetensors"
+        os.rename(f, os.path.join(path, new))
+
+    # rename index.json
+    idx = os.path.join(path, "model.safetensors.index.json")
+    if os.path.exists(idx):
+        d = json.load(open(idx))
+        d["weight_map"] = {k: v.replace("model-", prefix+"-") for k, v in d["weight_map"].items()}
+        new_idx = os.path.join(path, f"{prefix}.safetensors.index.json")
+        json.dump(d, open(new_idx, "w"), indent=2)
+        os.remove(idx)

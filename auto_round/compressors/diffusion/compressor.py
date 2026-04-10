@@ -39,6 +39,7 @@ from auto_round.utils import (
     get_block_names,
     merge_block_output_keys,
     wrap_block_forward_positional_to_kwargs,
+    rename_weights_files,
 )
 
 pipeline_utils = LazyImport("diffusers.pipelines.pipeline_utils")
@@ -493,6 +494,7 @@ class DiffusionCompressor(BaseCompressor):
             self.pipe.tokenizer.save_pretrained(output_dir)
             copy_python_files_from_model_cache(self.model, output_dir, copy_folders=["models", "vae", "utils"])
             return compressed_model
+
         for name in self.pipe.components.keys():
             val = getattr(self.pipe, name)
             sub_module_path = (
@@ -511,6 +513,11 @@ class DiffusionCompressor(BaseCompressor):
                 )
             elif val is not None and hasattr(val, "save_pretrained"):
                 val.save_pretrained(sub_module_path)
+
+            if name == "transformer":
+                # To suit "diffusion_pytorch_model.safetensors"
+                for single_format in format:
+                    rename_weights_files(self._get_save_folder_name(single_format))
         if not hasattr(self.pipe.config, "save_pretrained"):
             # For Z-Image, tuning will cause this attribute missing, we need to add it back before saving config
             setattr(
