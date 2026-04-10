@@ -59,7 +59,7 @@ FLOAT_TO_E0M4 = [
 
 class QuantLinear(nn.Module):
     """
-    MXFP quantized linear layer.
+    MXINT quantized linear layer.
     """
 
     QUANT_TYPE = "MXINT"
