@@ -174,6 +174,10 @@ def normalize_hadamard_config(hadamard_config: str | dict | HadamardConfig | Non
             cfg = HadamardConfig()
             return cfg.model_dump()
 
+        if key == "llama_quarot":
+            cfg = HadamardConfig(placement_strategy="llama_quarot", hadamard_type="random_hadamard")
+            return cfg.model_dump()
+
         if key not in HADAMARDS:
             raise ValueError(
                 f"Invalid hadamard_config string: {key!r}. " f"Expected one of {sorted(HADAMARDS.keys())}."
@@ -193,7 +197,15 @@ def normalize_hadamard_config(hadamard_config: str | dict | HadamardConfig | Non
     )
 
 
-def check_supported_schemes(scheme: str):
+def check_supported_schemes(
+    scheme: str,
+    hadamard_config: str | dict | HadamardConfig | None = None,
+):
+    if hadamard_config:
+        normalized_hadamard_config = normalize_hadamard_config(hadamard_config)
+        if normalized_hadamard_config.get("placement_strategy") == "llama_quarot":
+            return
+
     if scheme not in SUPPORTED_QUANTIZATION_SCHEMES:
         raise ValueError(
             f"Unsupported quantization scheme: {scheme}. Currently {SUPPORTED_QUANTIZATION_SCHEMES} are supported."

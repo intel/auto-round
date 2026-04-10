@@ -16,6 +16,13 @@ class HadamardConfig(BaseModel):
 
     hadamard_type: str = Field(default="hadamard")
 
+    placement_strategy: str = Field(default="all_linears")
+
+    # llama_quarot specific options
+    llama_quarot_online_force_fp32: bool = Field(default=True)
+    llama_quarot_strict: bool = Field(default=True)
+    llama_quarot_center_embeddings: bool = Field(default=False)
+
     # for random hadamard transform
     random_seed: bool = Field(default=False, exclude=True)
 
@@ -25,4 +32,12 @@ class HadamardConfig(BaseModel):
         allowed = {"hadamard", "random_hadamard"}
         if v not in allowed:
             raise ValueError(f"Unsupported hadamard_type: {v}. Supported values: {sorted(allowed)}")
+        return v
+
+    @field_validator("placement_strategy")
+    @classmethod
+    def validate_placement_strategy(cls, v: str) -> str:
+        allowed = {"all_linears", "llama_quarot"}
+        if v not in allowed:
+            raise ValueError(f"Unsupported placement_strategy: {v}. Supported values: {sorted(allowed)}")
         return v

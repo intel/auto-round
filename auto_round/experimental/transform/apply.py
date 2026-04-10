@@ -7,6 +7,12 @@ import tqdm
 from auto_round.experimental.qmodules.mx import MXQuantLinearBase
 from auto_round.experimental.transform.hadamard_config import HadamardConfig
 from auto_round.experimental.transform.hadamards import build_hadamard_transform
+from auto_round.experimental.transform.llama_quarot import (
+    LLAMA_QUAROT_STRATEGY,
+    apply_llama_quarot_weight_transform,
+    llama_quarot_online_transform,
+    register_llama_quarot_online_transforms,
+)
 from auto_round.experimental.utils import is_triton_kernel_available, normalize_hadamard_config
 
 __all__ = ["apply_hadamard_transform"]
@@ -17,6 +23,7 @@ def apply_hadamard_transform(
     config: str | dict | HadamardConfig | None,
     need_calibration: bool = False,
     location: str = "weight",
+    target_device: str | torch.device | None = None,
     use_tqdm=True,
     desc=None,
 ):
@@ -56,6 +63,43 @@ def apply_hadamard_transform(
     config = normalize_hadamard_config(config)
     if not isinstance(config, HadamardConfig):
         config = HadamardConfig(**config)
+
+    if config.placement_strategy == LLAMA_QUAROT_STRATEGY:
+        if location == "weight":
+            model = apply_llama_quarot_weight_transform(
+                model, config, use_tqdm=use_tqdm, desc=desc, target_device=target_device
+            )
+            register_llama_quarot_online_transforms(
+                model,
+                use_tqdm=use_tqdm,
+                desc="Register Llama QuaRot online transforms",
+                force_fp32=config.llama_quarot_online_force_fp32,
+            )
+
+            # if need_calibration:
+            #     from auto_round.experimental.transform.patch_modules import (
+            #         patch_wrapperlinear_forward_to_apply_activation_transform,
+            #         patch_wrapperwalayer_forward_to_apply_activation_transform,
+            #     )
+
+            #     patch_wrapperlinear_forward_to_apply_activation_transform(llama_quarot_online_transform)
+            #     patch_wrapperwalayer_forward_to_apply_activation_transform(llama_quarot_online_transform)
+            from auto_round.experimental.transform.patch_modules import (
+                patch_wrapperlinear_forward_to_apply_activation_transform,
+                patch_wrapperwalayer_forward_to_apply_activation_transform,
+            )
+
+            patch_wrapperlinear_forward_to_apply_activation_transform(llama_quarot_online_transform)
+            patch_wrapperwalayer_forward_to_apply_activation_transform(llama_quarot_online_transform)
+        elif location == "input":
+            register_llama_quarot_online_transforms(
+                model, use_tqdm=use_tqdm, desc=desc, force_fp32=config.llama_quarot_online_force_fp32
+            )
+        else:
+            raise NotImplementedError(f"Unsupported hadamard transform location: {location}")
+
+        setattr(model, "hadamard_config", config)
+        return model
 
     modules_config = [
         (name, module, config)

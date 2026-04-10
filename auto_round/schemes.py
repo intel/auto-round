@@ -124,6 +124,20 @@ W4A16 = QuantizationScheme.from_dict(
     }
 )
 
+W4A4 = QuantizationScheme.from_dict(
+    {
+        "bits": 4,
+        "sym": True,
+        "group_size": -1,
+        "data_type": "int",
+        "act_bits": 4,
+        "act_group_size": -1,
+        "act_sym": True,
+        "act_data_type": "int",
+        "act_dynamic": True,
+    }
+)
+
 W2A16 = QuantizationScheme.from_dict(
     {
         "bits": 2,
@@ -314,6 +328,7 @@ BF16 = QuantizationScheme.from_dict(
 
 PRESET_SCHEMES = {
     "W4A16": W4A16,
+    "W4A4": W4A4,
     "W2A16": W2A16,
     "W3A16": W3A16,
     "W8A16": W8A16,

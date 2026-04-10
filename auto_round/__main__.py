@@ -37,6 +37,27 @@ RECIPES = {
 }
 
 
+def parse_hadamard_config_arg(value: str | None):
+    """Parse --hadamard_config into string shortcut or dict."""
+    if value is None:
+        return None
+
+    value = value.strip()
+    if not value:
+        return None
+
+    if value.startswith("{"):
+        try:
+            parsed_value = json.loads(value)
+        except json.JSONDecodeError as exc:
+            raise ValueError(f"Invalid JSON for --hadamard_config: {exc}") from exc
+        if not isinstance(parsed_value, dict):
+            raise ValueError("--hadamard_config JSON must be an object/dict")
+        return parsed_value
+
+    return value
+
+
 class BasicArgumentParser(argparse.ArgumentParser):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
@@ -303,6 +324,17 @@ class BasicArgumentParser(argparse.ArgumentParser):
             help="Group size for weight quantization.",
         )
         scheme.add_argument("--asym", action="store_true", help="Use asymmetric quantization instead of symmetric.")
+        act_sym_group = scheme.add_mutually_exclusive_group()
+        act_sym_group.add_argument(
+            "--act_sym",
+            action="store_true",
+            help="Use symmetric activation quantization. Overrides the activation default inherited from weight quantization.",
+        )
+        act_sym_group.add_argument(
+            "--act_asym",
+            action="store_true",
+            help="Use asymmetric activation quantization. Overrides the activation default inherited from weight quantization.",
+        )
         scheme.add_argument(
             "--data_type",
             "--dtype",
@@ -372,6 +404,16 @@ class BasicArgumentParser(argparse.ArgumentParser):
             type=str,
             choices=["fp8", "float8_e4m3fn"],
             help="Data type for static quantize attention. ",
+        )
+        scheme.add_argument(
+            "--hadamard_config",
+            default=None,
+            type=str,
+            help=(
+                "Optional hadamard/rotation config. "
+                "Supports shortcuts such as 'default', 'random_hadamard', 'llama_quarot', "
+                'or a JSON dict string such as {"placement_strategy":"llama_quarot","hadamard_type":"random_hadamard"}.'
+            ),
         )
         gguf = self.add_argument_group("Double Quant Arguments")
         gguf.add_argument(
@@ -541,6 +583,20 @@ def start(recipe="default"):
     tune(args)
 
 
+def resolve_symmetry_args(args):
+    sym = None  # inherit the preset/default weight symmetry unless explicitly overridden
+    if args.asym:
+        sym = False
+
+    act_sym = None  # inherit from weight symmetry unless explicitly overridden
+    if getattr(args, "act_asym", False):
+        act_sym = False
+    elif getattr(args, "act_sym", False):
+        act_sym = True
+
+    return sym, act_sym
+
+
 def tune(args):
     assert args.model or args.model_name, "[model] or --model MODEL_NAME should be set."
     if args.model is None:
@@ -612,9 +668,7 @@ def tune(args):
                 )
 
     enable_torch_compile = True if "--enable_torch_compile" in sys.argv else False
-    sym = None  # the default value should be None now
-    if args.asym:  # if the scheme is asym, how to set it to sym is an issue
-        sym = False
+    sym, act_sym = resolve_symmetry_args(args)
     act_dynamic = None
     if args.disable_act_dynamic:
         act_dynamic = False
@@ -657,6 +711,7 @@ def tune(args):
         data_type=args.data_type,
         act_bits=args.act_bits,
         act_group_size=args.act_group_size,
+        act_sym=act_sym,
         act_data_type=args.act_data_type,
         act_dynamic=act_dynamic,
         super_bits=args.super_bits,
@@ -700,6 +755,8 @@ def tune(args):
             low_cpu_mem_usage=low_cpu_mem_usage,
         )
 
+    hadamard_config = parse_hadamard_config_arg(args.hadamard_config)
+
     autoround: BaseCompressor = AutoRound(
         model=model_name,
         platform=args.platform,
@@ -722,6 +779,7 @@ def tune(args):
         model_dtype=args.model_dtype,
         momentum=args.momentum,
         trust_remote_code=not args.disable_trust_remote_code,
+        hadamard_config=hadamard_config,
     )
 
     model_name = args.model.rstrip("/")

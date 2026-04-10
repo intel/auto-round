@@ -37,6 +37,24 @@ class TestAutoRound:
         ar = AutoRound(tiny_opt_model_path, scheme="W4A16", nsamples=1, iters=1, seqlen=2, dataset=dataloader)
         assert ar.bits == 4
 
+    def test_w4a4(self, tiny_opt_model_path, dataloader):
+        ar = AutoRound(
+            tiny_opt_model_path,
+            scheme="W4A4",
+            nsamples=1,
+            iters=0,
+            disable_opt_rtn=True,
+            seqlen=2,
+            dataset=dataloader,
+        )
+        assert ar.bits == 4
+        assert ar.act_bits == 4
+        assert ar.data_type == "int"
+        assert ar.act_data_type == "int"
+        ar.quantize_and_save(self.save_folder)
+        model = transformers.AutoModelForCausalLM.from_pretrained(self.save_folder, trust_remote_code=True)
+        assert model is not None, "Model loading failed after quantization with W4A4 scheme"
+
     def test_w2a16_rtn(self, tiny_opt_model_path, dataloader):
         ar = AutoRound(tiny_opt_model_path, scheme="W2A16", nsamples=1, iters=0, seqlen=2, dataset=dataloader)
         assert ar.bits == 2
