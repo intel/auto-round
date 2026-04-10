@@ -38,8 +38,8 @@ from auto_round.utils import (
     find_matching_blocks,
     get_block_names,
     merge_block_output_keys,
-    wrap_block_forward_positional_to_kwargs,
     rename_weights_files,
+    wrap_block_forward_positional_to_kwargs,
 )
 
 pipeline_utils = LazyImport("diffusers.pipelines.pipeline_utils")
