@@ -1305,7 +1305,7 @@ def mv_module_from_gpu(module):
         for attr_name in list(module._parameters.keys()):
             p = module._parameters[attr_name]
             if p is not None and p.device.type != "meta" and p.device.type != "cpu":
-                module._parameters[attr_name] = p.to("cpu")
+                module._parameters[attr_name] = torch.nn.Parameter(p.to("cpu"), requires_grad=p.requires_grad)
         for attr_name in list(module._buffers.keys()):
             b = module._buffers[attr_name]
             if b is not None and b.device.type != "meta" and b.device.type != "cpu":

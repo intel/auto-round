@@ -569,6 +569,14 @@ class BaseCompressor(object):
             )
 
             self.hadamard_config = normalize_hadamard_config(hadamard_config)
+        self.has_variable_block_shape = False
+        all_blocks = self.quant_block_list if self.quant_block_list else get_block_names(self.model)
+        if not all_blocks:
+            raise ValueError("Could not find any blocks. Check the model or quant_block_list.")
+        self.blocks_requiring_input_ids = [data if isinstance(data, str) else data[0] for data in all_blocks]
+        fixed_attr = get_predefined_fixed_attr(self.model) or {}
+        for key, value in fixed_attr.items():
+            setattr(self, key, value)
 
         self.blocks_requiring_input_ids = []
         self.has_variable_block_shape = False
@@ -1523,17 +1531,20 @@ class BaseCompressor(object):
         if not all_blocks:
             raise ValueError("Could not find any blocks. Check the model or quant_block_list.")
 
-        all_first_block_names = [block[0] for block in all_blocks]
+        if not self.has_variable_block_shape:
+            to_cache_block_names = [block[0] for block in all_blocks]
+        else:
+            to_cache_block_names = flatten_list(all_blocks)
         layer_names = self._get_quantized_layer_names_outside_blocks()
-        if self.act_bits < 16 and (not self.act_dynamic or len(layer_names) > 0):
+        if self.act_bits < 16 and (not self.act_dynamic or len(layer_names) > 0) or self.has_variable_block_shape:
             if len(layer_names) > 0:
                 logger.warning(
                     "quantize layers outside blocks for static activation quantizaiton"
                     " will significantly increase calibration time"
                 )
-            all_inputs = self.try_cache_inter_data_gpucpu(all_first_block_names, self.nsamples, layer_names)
+            all_inputs = self.try_cache_inter_data_gpucpu(to_cache_block_names, self.nsamples, layer_names)
         else:
-            all_inputs = self.cache_inter_data(all_first_block_names, self.nsamples)
+            all_inputs = self.cache_inter_data(to_cache_block_names, self.nsamples)
 
         # Clear hooks for multi-GPU setups
         if hasattr(self.model, "hf_device_map") and len(self.model.hf_device_map) > 1:
@@ -1557,20 +1568,28 @@ class BaseCompressor(object):
             if total_samples < self.batch_size:
                 self.batch_size = total_samples
                 logger.warning(f"Forcing batch size to {total_samples}")
+            tmp_dtype = self.amp_dtype if self.amp else torch.float32
 
             input_ids = to_device(inputs.pop("input_ids"), self.cache_device)
-            input_others = to_device(inputs, self.cache_device)
-
-            tmp_dtype = self.amp_dtype if self.amp else torch.float32
             input_ids = [id_.to(tmp_dtype) for id_ in input_ids]
 
-            for key, val in input_others.items():
-                if isinstance(val, torch.Tensor) and val.dtype in (torch.float16, torch.bfloat16):
-                    input_others[key] = val.to(tmp_dtype)
-                elif isinstance(val, list):
-                    input_others[key] = [to_dtype(v, tmp_dtype) for v in val]
+            def process_input_others(input_others):
 
+                input_others = to_device(input_others, self.cache_device)
+                for key, val in input_others.items():
+                    if isinstance(val, torch.Tensor) and val.dtype in (torch.float16, torch.bfloat16):
+                        input_others[key] = val.to(tmp_dtype)
+                    elif isinstance(val, list):
+                        input_others[key] = [to_dtype(v, tmp_dtype) for v in val]
+                return input_others
+
+            input_others = inputs
+            input_others = process_input_others(input_others)
             for block_name in block_names:
+                if block_name in all_inputs.keys():
+                    input_others = all_inputs[block_name]
+                    input_others = process_input_others(input_others)
+                    all_inputs.pop(block_name)
                 pbar.set_description(f"Quantizing {block_name}")
                 block = get_module(self.model, block_name)
                 materialize_model_(block)
@@ -1818,7 +1837,7 @@ class BaseCompressor(object):
         if not self.has_variable_block_shape:
             to_cache_block_names = [block[0] for block in all_blocks]
         else:
-            to_cache_block_names = all_blocks
+            to_cache_block_names = flatten_list(all_blocks)
         if len(layer_names) > 0:
             logger.info(
                 "Starting to cache block inputs. This may be slow due to external block layers: %s", layer_names
@@ -2268,6 +2287,7 @@ class BaseCompressor(object):
         Raises:
             Exception: If caching on GPU fails, switches to CPU and caches there.
         """
+        block_names = flatten_list(block_names)
         if is_quantized_input_module(self.model):
             layer_names = []
         if layer_names is None:
@@ -2411,17 +2431,18 @@ class BaseCompressor(object):
         if layer_names is None:
             layer_names = []
         self.inputs = {}
+        block_names = flatten_list(block_names)
         self.to_cached_layers = block_names + layer_names
 
         tmp_dtype = None  # TODO delete this as most model is not fp32 now
-        ## have bug if block name is not the first block
+        # There is a bug if the block name is not the first block
         if (len(block_names) > 1 or len(layer_names) > 0) and self.low_gpu_mem_usage:
             tmp_dtype = self.model.dtype
             if self.amp:
                 if self.model.dtype != self.model.dtype:
                     self.model = self.model.to(torch.bfloat16)
             else:
-                self.model = self.model.to(torch.float32)  ##model on cpu
+                self.model = self.model.to(torch.float32)  # model on cpu
 
         self.last_cache_name = self._infer_last_cache_name(block_names, layer_names, last_cache_name)
         self._cache_target_set = set(self.to_cached_layers)
@@ -3249,14 +3270,12 @@ class BaseCompressor(object):
     def _preprocess_block_inputs(self, inputs, first_input_name="input_ids"):
         input_ids, input_others = self._split_inputs(inputs, first_input_name)
         clear_memory(device_list=self.device_list)
-        if input_ids is not None:
-            input_ids = to_device(input_ids, self.cache_device)
-        input_others = to_device(input_others, self.cache_device)
-        # As in calibration phase, we may use bf16 for calibration due to low_gpu_memory usage
-
         tmp_dtype = self.amp_dtype if self.amp else torch.float32
         if input_ids is not None:
+            input_ids = to_device(input_ids, self.cache_device)
             input_ids = to_dtype(input_ids, tmp_dtype)
+        input_others = to_device(input_others, self.cache_device)
+        # As in calibration phase, we may use bf16 for calibration due to low_gpu_memory usage
 
         for key in input_others.keys():
             if isinstance(input_others[key], torch.Tensor) and (
@@ -3302,8 +3321,8 @@ class BaseCompressor(object):
 
         for i in range(0, len(block_names), nblocks):
             if input_others_extra_blocks and block_names[i] in input_others_extra_blocks:
-                _, extra_input_others = self._preprocess_block_inputs(input_others_extra_blocks[block_names[i]])
-                input_others.update(extra_input_others)
+                input_others = input_others_extra_blocks[block_names[i]]
+                _, input_others = self._preprocess_block_inputs(input_others)
                 input_others_extra_blocks.pop(block_names[i])
             if i != 0:
                 pbar.update(1)
@@ -3311,6 +3330,7 @@ class BaseCompressor(object):
                 n = block_names[i]
                 pbar.set_description(f"Quantizing {n}")
                 m = get_module(model, n)
+
             else:
                 names = block_names[i : min(i + nblocks, len(block_names))]
                 pbar.set_description(f"Quantizing [{i + 1}-{min(i + nblocks, len(block_names))}]/{len(block_names)}")
