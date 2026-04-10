@@ -504,6 +504,12 @@ class WrapperWALayer(torch.nn.Module):
             self.act_quant_func = compile_func(self.act_quant_func, self.device)
         self.extra_repr_org = orig_layer.extra_repr
 
+        # Steal forward_pre_hooks from orig_layer (e.g., Hadamard transform hooks)
+        # and remove them from orig_layer so they won't fire again inside orig_layer.forward().
+        # We will run them explicitly in our forward() BEFORE activation quantization.
+        self._stolen_pre_hooks = list(orig_layer._forward_pre_hooks.values())
+        orig_layer._forward_pre_hooks.clear()
+
     @property
     def weight(self):
         """Exposes the weight of the wrapped layer for external access."""
@@ -515,6 +521,13 @@ class WrapperWALayer(torch.nn.Module):
         return self.orig_layer.bias
 
     def forward(self, x):
+        # 1) Run stolen pre_hooks first (e.g., online Hadamard) → smooths activation
+        for hook in self._stolen_pre_hooks:
+            result = hook(self.orig_layer, (x,))
+            if result is not None:
+                x = result[0] if isinstance(result, tuple) else result
+
+        # 2) Activation quantization on the smoothed activation
         act_max = self.orig_layer.act_max if hasattr(self.orig_layer, "act_max") else None
         x, _, _ = self.orig_layer.act_quant_func(
             x,
@@ -525,6 +538,7 @@ class WrapperWALayer(torch.nn.Module):
             data_type=self.orig_layer.act_data_type,
             tensor_max=act_max,
         )
+        # 3) Linear computation via orig_layer (pre_hooks already removed, no double execution)
         return self.orig_layer.forward(x)
 
     def extra_repr(self):

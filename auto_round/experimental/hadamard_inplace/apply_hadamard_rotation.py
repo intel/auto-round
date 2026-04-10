@@ -320,7 +320,8 @@ def apply_hadamard_rotation(model, fp32_had: bool = False, use_fast_had: bool = 
     # Subtract per-row mean from embedding.  For standard LayerNorm (OPT)
     # this is required; for RMSNorm (LLaMA/Qwen) it is harmless since
     # RMSNorm doesn't subtract mean.  QuaRot does this unconditionally.
-    _subtract_embedding_mean(model, mapping)
+    if _uses_layernorm_with_mean(model, mapping):
+        _subtract_embedding_mean(model, mapping)
 
     # Fuse LayerNorm affine params into adjacent Linear layers
     _fuse_layer_norms(model, mapping)

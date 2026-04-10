@@ -264,7 +264,7 @@ class OutputFormat(ABC):
 
         if ar.act_bits <= 8 and (not is_standard_fp(ar.act_data_type) or ar.act_dynamic) and not is_block_dynamic_fp8:
             logger.warning(
-                f"{self.format_name} format not support for current activation quantization configuration,"
+                f"{self.format_name} format does not support for current activation quantization configuration,"
                 " reset to fake format and save."
             )
             return "fake"

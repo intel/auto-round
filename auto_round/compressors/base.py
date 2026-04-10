@@ -559,7 +559,7 @@ class BaseCompressor(object):
 
         hadamard_config = 1
         if hadamard_config:
-            self.enable_hadamard = True
+            # self.enable_hadamard = True
             from auto_round.experimental.hadamard_inplace import apply_hadamard_rotation
 
             # from auto_round.experimental.utils import normalize_hadamard_config
@@ -571,7 +571,10 @@ class BaseCompressor(object):
             # group_size = _hcfg.block_size  # e.g. 32 for MXFP4
 
             self.model.to("cuda")
-            apply_hadamard_rotation(self.model)
+            apply_hadamard_rotation(self.model,use_fast_had=True)
+            for name, m in model.named_modules():
+                if m._forward_hooks or m._forward_pre_hooks or m._backward_hooks:
+                    print(f"{name} has hooks")
 
             # from auto_round.experimental.transform.apply import apply_hadamard_transform
             # from auto_round.experimental.utils import check_supported_schemes, normalize_hadamard_config
@@ -583,6 +586,7 @@ class BaseCompressor(object):
             # )
             #
             # self.hadamard_config = normalize_hadamard_config(hadamard_config)
+        tmp=1
 
     def _gen_auto_scheme(self) -> dict[str, dict]:
         if self.mllm:
