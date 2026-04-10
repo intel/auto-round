@@ -35,7 +35,7 @@ Agent-facing notes for working on AutoRound.
 
 ## Common commands
 - CLI help: `auto-round -h`
-- List supported formats: `auto_round list format`
+- List supported formats: `auto-round list format`
 
 ## Minimal examples
 - CLI quantization:
