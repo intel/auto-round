@@ -1889,3 +1889,22 @@ def wrap_block_forward_positional_to_kwargs(base_hook):
         return base_hook(m, hidden_states, *positional_inputs, **kwargs)
 
     return forward
+
+
+def hook_ngram_embeddings_on_cpu(model):
+    has_ngram_embeddings = hasattr(model, "model") and hasattr(model.model, "ngram_embeddings")
+    if has_ngram_embeddings:
+        raw_ngram_embeddings = model.model.ngram_embeddings
+
+        def hook_input_output_device_for_cpu_module(module):
+            from accelerate.hooks import AlignDevicesHook, add_hook_to_module
+
+            hook = AlignDevicesHook(
+                io_same_device=True,
+                execution_device="cpu",
+            )
+
+            add_hook_to_module(module, hook)
+
+        hook_input_output_device_for_cpu_module(raw_ngram_embeddings)
+    return has_ngram_embeddings, raw_ngram_embeddings if has_ngram_embeddings else None

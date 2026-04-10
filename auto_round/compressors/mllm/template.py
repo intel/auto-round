@@ -127,7 +127,7 @@ _register_template("deepseek_vl_v2", default_dataset="NeelNanda/pile-10k", proce
 _register_template("mistral3", default_dataset="NeelNanda/pile-10k", processor=PROCESSORS["hf"])
 _register_template("mistral3_2", default_dataset="liuhaotian/llava", processor=PROCESSORS["mistral3_2"])
 _register_template("gemma3", default_dataset="NeelNanda/pile-10k", processor=PROCESSORS["hf"])
-_register_template("longcat_next", default_dataset="NeelNanda/pile-10k", processor=PROCESSORS["longcat_next"])
+_register_template("longcat_next", default_dataset="liuhaotian/llava", processor=PROCESSORS["longcat_next"])
 
 
 def load_template(path: str):

@@ -92,6 +92,7 @@ from auto_round.utils import (
     get_lm_head_name,
     get_module,
     global_state,
+    hook_ngram_embeddings_on_cpu,
     htcore,
     is_auto_device_mapping,
     is_debug_mode,
@@ -2212,8 +2213,15 @@ class BaseCompressor(object):
                     self.model(*data_new, **kwargs)
                 else:
                     self.model(**data_new, **kwargs)
-            except NotImplementedError:
-                pass
+            except NotImplementedError as error:
+                error_msg = str(error)
+                # Raise NotImplementedError to fallback to CUDA device
+                if "flash_attn::" in error_msg and "CPU" in error_msg:
+                    raise NotImplementedError(
+                        "Could not run 'flash_attn::_flash_attn_varlen_forward' with arguments from the 'CPU' backend."
+                    )
+                else:
+                    pass
             except RuntimeError as error:
                 error_msg = str(error)
                 if "The expanded size of the tensor" in str(error_msg) and "must match the existing size" in error_msg:
@@ -2261,18 +2269,27 @@ class BaseCompressor(object):
             layer_names = []
         if layer_names is None:
             layer_names = []
-        if not os.environ.get("AR_CALIB_FORCE_CUDA", False) and (
-            self.low_gpu_mem_usage
-            or (
-                len(block_names) == 1
-                and len(layer_names) == 0
-                and not self.has_qlayer_outside_block
-                and (last_cache_name is None or last_cache_name in block_names)
-            )
+
+        calibrate_on_cpu = True
+        if self.low_gpu_mem_usage or (
+            len(block_names) == 1
+            and len(layer_names) == 0
+            and not self.has_qlayer_outside_block
+            and (last_cache_name is None or last_cache_name in block_names)
         ):
             # low_gpu_mem_usage or calibrate only the embedding layer, which is also very fast on CPU
-            all_inputs = self.cache_inter_data(block_names, nsamples, layer_names=[], last_cache_name=last_cache_name)
-        else:
+            try:
+                all_inputs = self.cache_inter_data(
+                    block_names, nsamples, layer_names=[], last_cache_name=last_cache_name
+                )
+            except NotImplementedError as error:
+                error_msg = str(error)
+                if "flash_attn::" in error_msg and "CPU" in error_msg:
+                    calibrate_on_cpu = False  # fallback to GPU when flash attention is not supported on CPU
+                else:
+                    raise error
+
+        if not calibrate_on_cpu:
             try:
                 if any(p.device.type == "meta" for p in self.model.parameters()):
                     materialize_model_(self.model)
@@ -2317,7 +2334,8 @@ class BaseCompressor(object):
                                 "No non-CPU device available in accelerate's reported memory. "
                                 "Falling back to CPU caching."
                             )
-
+                        # Keep ngram_embeddings on CPU
+                        has_ngram_embeddings, raw_ngram_embeddings = hook_ngram_embeddings_on_cpu(self.model)
                         new_max_memory = get_balanced_memory(
                             self.model,
                             max_memory=new_max_memory,
@@ -2334,8 +2352,9 @@ class BaseCompressor(object):
                             )
 
                         try:
-
                             self.model = dispatch_model(self.model, device_map=device_map)
+                            if has_ngram_embeddings:
+                                self.model.model.ngram_embeddings = raw_ngram_embeddings
                         except ValueError as e:
                             if "offload_dir" in e.__str__():
                                 logger.warning(
