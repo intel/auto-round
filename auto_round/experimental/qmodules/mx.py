@@ -20,7 +20,7 @@ import torch
 from auto_round.data_type.utils import get_quant_func
 from auto_round.experimental.qmodules.base import QModuleBase
 from auto_round.experimental.qmodules.fp4_utils import unpack_fp4_from_uint8
-from auto_round.experimental.qmodules.int4_utils import unpack_int4_from_uint8
+from auto_round.experimental.qmodules.mxint4_utils import unpack_int4_from_uint8
 from auto_round.logger import logger
 from auto_round.schemes import QuantizationScheme
 

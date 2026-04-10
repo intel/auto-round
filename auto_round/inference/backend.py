@@ -307,7 +307,7 @@ BackendInfos["auto_round:torch_mxfp4"] = BackendInfo(
 # MXINT4
 BackendInfos["auto_round:torch_mxint4"] = BackendInfo(
     device=["cuda", "cpu"],
-    packing_format=["auto_round:mx_int4"],
+    packing_format=["auto_round"],
     sym=[True],
     compute_dtype=["float32", "float16", "bfloat16"],
     data_type=MX_TENSOR_DATA_TYPES,
@@ -347,6 +347,7 @@ BackendInfos["auto_round:torch_nvfp4"] = BackendInfo(
 
 BackendInfos["auto_round:tritonv2"] = BackendInfo(
     device=["cuda", "xpu"],
+    data_type=["int"],
     sym=[True, False],
     packing_format=GPTQ_FORMAT_NO_ZP,
     compute_dtype=["float16", "bfloat16"],

@@ -1218,7 +1218,7 @@ class AutoRoundFormat(OutputFormat):
         elif re.search(f"{AutoRoundExportFormat.MX_INT.value}", backend):
             from auto_round.export.export_to_autoround.export_to_nvfp_mx import save_quantized_as_fp
 
-            backend = "auto_round:mx_int4"
+            backend = "auto_round"
             export_func = save_quantized_as_fp
         else:
             from auto_round.export.export_to_autoround.export import save_quantized_as_autoround
