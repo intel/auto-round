@@ -325,15 +325,7 @@ class BaseQuantizers:
         ):
             _bf = block_forward
         else:
-            # TODO FIXME
-            # This function could not be compiled, causing a large accuracy drop when `enable_alg_ext` is used.
-            # To avoid issues, remove it in all scenarios except WOQ.
-            if self.compress_context.enable_torch_compile:
-                if not hasattr(self, "_compiled_block_forward"):
-                    self._compiled_block_forward = compile_func(block_forward, self.compress_context.device)
-                _bf = self._compiled_block_forward
-            else:
-                _bf = block_forward
+            _bf = self._resolve_block_forward()
 
         output = []
         nsamples = len(input_ids)
@@ -365,6 +357,26 @@ class BaseQuantizers:
 
         return output
 
+    def _resolve_block_forward(self):
+        """Resolve and cache the block forward function once.
+
+        This avoids repeated attribute checks in the hot training loop
+        (called thousands of times per block).
+        """
+        if hasattr(self, "_resolved_block_forward"):
+            return self._resolved_block_forward
+        if self.compress_context.enable_torch_compile:
+            if not hasattr(self, "_compiled_block_forward"):
+                self._compiled_block_forward = compile_func(block_forward, self.compress_context.device)
+            self._resolved_block_forward = self._compiled_block_forward
+        else:
+            self._resolved_block_forward = block_forward
+        return self._resolved_block_forward
+
+    def _invalidate_block_forward_cache(self):
+        """Clear the cached block forward function (call when block changes)."""
+        self.__dict__.pop("_resolved_block_forward", None)
+
     def _get_current_q_output(
         self,
         block: torch.nn.Module,
@@ -388,13 +400,7 @@ class BaseQuantizers:
             batch_dim=self.batch_dim,
             share_cache_keys=self.model_context.shared_cache_keys,
         )
-        # Mirror _get_block_outputs: use compiled block_forward when available.
-        if self.compress_context.enable_torch_compile:
-            if not hasattr(self, "_compiled_block_forward"):
-                self._compiled_block_forward = compile_func(block_forward, self.compress_context.device)
-            _bf = self._compiled_block_forward
-        else:
-            _bf = block_forward
+        _bf = self._resolve_block_forward()
 
         if getattr(self.model_context, "is_diffusion", False):
             output_config = self.DIFFUSION_OUTPUT_CONFIGS.get(block.__class__.__name__, [])

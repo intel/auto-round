@@ -953,6 +953,7 @@ class CalibCompressor(BaseCompressor):
             mv_module_from_gpu(m)
             if self.enable_torch_compile:
                 torch._dynamo.reset()
+                self.quantizer._invalidate_block_forward_cache()
             # Always advance input_ids to the current block's output so that the next
             # block receives the correct activations.  When enable_quanted_input is
             # False we reuse reference_output (unquantized block output); otherwise
