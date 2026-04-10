@@ -9,5 +9,5 @@ pytest
 lm_eval >= 0.4.10  # for transformers >= 5.0.0
 diffusers
 protobuf
-compressed-tensors
-transformers > 5.0.0
+compressed-tensors >= 0.15.0
+transformers >= 5.5.0
