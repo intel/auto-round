@@ -895,7 +895,7 @@ class BaseCompressor(object):
                     logger.warning("reset low_cpu_mem_usage to False due to tied weights")
                 return
             if len(tied_weight_keys) == 1:
-                key = tied_weight_keys.keys[0]
+                key = list(tied_weight_keys.keys())[0]
                 if "lm_head" not in key:
                     self.is_immediate_saving = False
                     if self.compress_context.low_cpu_mem_usage:
