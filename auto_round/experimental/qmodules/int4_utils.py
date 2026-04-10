@@ -1,4 +1,4 @@
-# Copyright (c) 2025 Intel Corporation
+# Copyright (c) 2026 Intel Corporation
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -72,7 +72,6 @@ def _unpack_int4_from_uint8_cuda(
     return _unpack_int4_from_uint8(a, m, n, dtype)
 
 
-# reference: : https://github.com/vllm-project/vllm/pull/16362
 def _unpack_int4_from_uint8(
     a: torch.Tensor, m: int, n: int, dtype: Optional[torch.dtype] = torch.bfloat16
 ) -> torch.Tensor:
