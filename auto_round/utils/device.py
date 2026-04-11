@@ -398,6 +398,7 @@ class fake_triton_for_hpu(ContextDecorator):
 
             # Create and inject fake triton module
             class FakeTriton:
+
                 def __getattr__(self, name):
                     return None
 
@@ -595,6 +596,7 @@ def _maybe_trim_malloc() -> None:
 
 
 class ClearMemory:
+
     def __init__(self, device_list: list | tuple | None = None):
         self.device_list = device_list
 
@@ -606,6 +608,13 @@ class ClearMemory:
         from auto_round.utils.device import is_hpex_available
 
         if is_hpex_available():
+            # Clear CPU-side references so Python can reclaim them.
+            if isinstance(tensor, list):
+                for i in range(len(tensor)):
+                    tensor[i] = None
+            tensor = None
+            gc.collect()
+            _maybe_trim_malloc()
             memory_monitor.update_hpu(device_list)
             return
         else:
@@ -1727,6 +1736,7 @@ def dump_mem_usage(msg: str = "", log_level: str = "info"):
     """Decorator to dump memory usage before and after a function call."""
 
     def decorator(func):
+
         @functools.wraps(func)
         def wrapper(*args, **kwargs):
             memory_monitor.update_cpu()

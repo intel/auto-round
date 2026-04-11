@@ -318,14 +318,7 @@ class BaseQuantizers:
                 self.compress_context.cache_device,
             )
 
-        if (
-            (self.config.is_act_quantize and (not self.config.act_dynamic or self.config.is_act_nv_fp))  # have hooks
-            or self.enable_alg_ext  # Use imatrix
-            # or not self.disable_opt_rtn  # Use imatrix
-        ):
-            _bf = block_forward
-        else:
-            _bf = self._resolve_block_forward()
+        _bf = self._resolve_block_forward()
 
         output = []
         nsamples = len(input_ids)
@@ -362,11 +355,24 @@ class BaseQuantizers:
 
         This avoids repeated attribute checks in the hot training loop
         (called thousands of times per block).
+
+        For activation-quantization schemes (e.g. FP8_STATIC) or when
+        algorithm extensions are enabled, forward hooks are attached to layers
+        inside the block.  ``torch.compile`` is incompatible with these hooks,
+        so we must fall back to the plain ``block_forward``.  This mirrors the
+        old-arch behaviour where ``self.block_forward`` was set in ``__init__``
+        to the uncompiled function for these cases.
         """
         cached = self.__dict__.get("_resolved_block_forward")
         if cached is not None:
             return cached
-        if self.compress_context.enable_torch_compile:
+        # Act-quantization hooks / alg-extension hooks are incompatible with
+        # torch.compile → always use the plain (uncompiled) block_forward.
+        if (
+            self.config.is_act_quantize and (not self.config.act_dynamic or self.config.is_act_nv_fp)
+        ) or self.enable_alg_ext:
+            self._resolved_block_forward = block_forward
+        elif self.compress_context.enable_torch_compile:
             compiled = self.__dict__.get("_compiled_block_forward")
             if compiled is None:
                 compiled = compile_func(block_forward, self.compress_context.device)

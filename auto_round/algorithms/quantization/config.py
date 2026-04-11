@@ -30,7 +30,7 @@ class BackendDataType(str, Enum):
 
 
 @dataclass(kw_only=True)
-class QuantizationConfig(AlgConfig):
+class QuantizationConfig:
     _alg_cls: ClassVar[str] = None
 
     # quantization args
