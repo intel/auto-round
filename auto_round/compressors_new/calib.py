@@ -964,6 +964,8 @@ class CalibCompressor(BaseCompressor):
             clear_memory(
                 input_ids if input_ids is not next_input_ids else None, device_list=self.compress_context.device_list
             )
+            if reference_output is not next_input_ids:
+                clear_memory(reference_output, device_list=self.compress_context.device_list)
             memory_monitor.log_summary()
 
             # ── Infrastructure: immediate_pack / shard write ──────────────────
