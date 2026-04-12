@@ -278,18 +278,20 @@ class TestQwen3OmniMoeReplacement:
 
         intermediate = 32  # moe_intermediate_size
         # Verify thinker expert weights
+        # Use equal_nan=True because fused expert parameters may contain
+        # uninitialized memory with NaN bit patterns, and NaN != NaN in IEEE 754.
         for i in range(4):
             expert = model.thinker.model.layers[0].mlp.experts[i]
-            assert torch.allclose(expert.gate_proj.weight.data, thinker_gate_up[i, :intermediate, :])
-            assert torch.allclose(expert.up_proj.weight.data, thinker_gate_up[i, intermediate:, :])
-            assert torch.allclose(expert.down_proj.weight.data, thinker_down[i])
+            assert torch.allclose(expert.gate_proj.weight.data, thinker_gate_up[i, :intermediate, :], equal_nan=True)
+            assert torch.allclose(expert.up_proj.weight.data, thinker_gate_up[i, intermediate:, :], equal_nan=True)
+            assert torch.allclose(expert.down_proj.weight.data, thinker_down[i], equal_nan=True)
 
         # Verify talker expert weights
         for i in range(4):
             expert = model.talker.model.layers[0].mlp.experts[i]
-            assert torch.allclose(expert.gate_proj.weight.data, talker_gate_up[i, :intermediate, :])
-            assert torch.allclose(expert.up_proj.weight.data, talker_gate_up[i, intermediate:, :])
-            assert torch.allclose(expert.down_proj.weight.data, talker_down[i])
+            assert torch.allclose(expert.gate_proj.weight.data, talker_gate_up[i, :intermediate, :], equal_nan=True)
+            assert torch.allclose(expert.up_proj.weight.data, talker_gate_up[i, intermediate:, :], equal_nan=True)
+            assert torch.allclose(expert.down_proj.weight.data, talker_down[i], equal_nan=True)
 
     def test_forward_output_match(self):
         """Test that replaced MoE forward output matches original."""
