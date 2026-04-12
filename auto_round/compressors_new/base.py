@@ -822,9 +822,16 @@ class BaseCompressor(object):
         # Re-evaluate torch.compile eligibility now that data_type is resolved.
         self._adjust_torch_compile(self.enable_torch_compile)
         self.compress_context.enable_torch_compile = self.enable_torch_compile
-        self.block_forward = (
-            compile_func(block_forward, self.compress_context.device) if self.enable_torch_compile else block_forward
+        # Apply the same act-quantization / alg-ext guard as
+        # _resolve_block_forward() so we never compile when hooks are present.
+        cfg = self.quantize_config
+        _needs_plain_forward = (cfg.is_act_quantize and (not cfg.act_dynamic or cfg.is_act_nv_fp)) or getattr(
+            cfg, "enable_alg_ext", False
         )
+        if self.enable_torch_compile and not _needs_plain_forward:
+            self.block_forward = compile_func(block_forward, self.compress_context.device)
+        else:
+            self.block_forward = block_forward
         if self.compress_context.low_cpu_mem_usage:
             self._offloader.reset()
 

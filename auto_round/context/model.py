@@ -12,6 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import gc
 import importlib
 from typing import Any, Callable, Optional, Union
 
@@ -37,6 +38,7 @@ from auto_round.utils import (
     mllm_load_model,
     unsupported_meta_device,
 )
+from auto_round.utils.device import _maybe_trim_malloc
 
 __all__ = ["ModelContext"]
 
@@ -118,6 +120,11 @@ class ModelContext(BaseContext):
                 self.model = self.model.to(torch.bfloat16)
         else:
             logger.info(f"using {self.model.dtype} for quantization tuning")
+
+        # Reclaim C heap fragmentation left by model/tokenizer loading so
+        # that the quantize loop starts from a tighter RSS baseline.
+        gc.collect()
+        _maybe_trim_malloc()
 
     def _load_model(self):
         if is_mllm_model(self.model, platform=self.platform):
