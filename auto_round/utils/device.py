@@ -1755,40 +1755,43 @@ def dispatch_model_by_all_available_devices(
 
     # Handle DiffusionPipeline: dispatch only the main sub-model (transformer / unet)
     # across devices and move the remaining pipeline components to the primary device.
+    is_diffusion_pipeline = False
     try:
         from diffusers.pipelines.pipeline_utils import DiffusionPipeline
 
         if isinstance(model, DiffusionPipeline):
-            pipe = model
-            _device_map = 0 if device_map is None else device_map
-            devices = parse_available_devices(_device_map)
-            # Identify the main quantisable sub-model
-            main_attr = next(
-                (attr for attr in ("transformer", "unet") if isinstance(getattr(pipe, attr, None), torch.nn.Module)),
-                None,
-            )
-            if main_attr is None or len(devices) == 1:
-                # No identifiable main sub-model, or single target device:
-                # move the entire pipeline to the (first) device.
-                pipe.to(devices[0] if devices else "cuda:0")
-                return pipe
-            # Multi-device path: recursively dispatch the main sub-model,
-            # then move all remaining pipeline components to the primary device.
-            main_model = getattr(pipe, main_attr)
-            dispatched = dispatch_model_by_all_available_devices(main_model, _device_map)
-            setattr(pipe, main_attr, dispatched)
-            primary_device = devices[0]
-            for attr, component in pipe.components.items():
-                if attr == main_attr:
-                    continue
-                if isinstance(component, torch.nn.Module):
-                    try:
-                        component.to(primary_device)
-                    except Exception:
-                        pass
-            return pipe
+            is_diffusion_pipeline = True
     except ImportError:
         pass
+    if is_diffusion_pipeline:
+        pipe = model
+        _device_map = 0 if device_map is None else device_map
+        devices = parse_available_devices(_device_map)
+        # Identify the main quantisable sub-model
+        main_attr = next(
+            (attr for attr in ("transformer", "unet") if isinstance(getattr(pipe, attr, None), torch.nn.Module)),
+            None,
+        )
+        if main_attr is None or len(devices) == 1:
+            # No identifiable main sub-model, or single target device:
+            # move the entire pipeline to the (first) device.
+            pipe.to(devices[0] if devices else "cuda:0")
+            return pipe
+        # Multi-device path: recursively dispatch the main sub-model,
+        # then move all remaining pipeline components to the primary device.
+        main_model = getattr(pipe, main_attr)
+        dispatched = dispatch_model_by_all_available_devices(main_model, _device_map)
+        setattr(pipe, main_attr, dispatched)
+        primary_device = devices[0]
+        for attr, component in pipe.components.items():
+            if attr == main_attr:
+                continue
+            if isinstance(component, torch.nn.Module):
+                try:
+                    component.to(primary_device)
+                except Exception:
+                    pass
+        return pipe
 
     if device_map is None:
         device_map = 0
