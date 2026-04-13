@@ -519,7 +519,7 @@ class TestAutoRound:
             group_size=group_size,
             sym=sym,
         )
-        quantized_model_path = "./saved"
+        quantized_model_path = self.save_dir
         autoround.quantize_and_save(output_dir=quantized_model_path, format="llm_compressor")
         with safe_open(os.path.join(quantized_model_path, "model.safetensors"), framework="pt") as f:
             # weights must be packed as int32 (compressed-tensors stores both int4 and int8 as torch.int32)
