@@ -357,6 +357,22 @@ def is_quantized_input_module(model: torch.nn.Module) -> Optional[ModuleWeightTy
     return None
 
 
+def remove_existed_quantization_config(model: torch.nn.Module):
+    """
+    Removes the existing quantization configuration from the model's config if it exists.
+    This is to ensure that outdated or incompatible quantization configurations do not interfere with the export process.
+    """
+    if hasattr(model, "config") and model.config is not None:
+        if hasattr(model.config, "quantization_config"):
+            delattr(model.config, "quantization_config")
+        for attr in dir(model.config):
+            if attr.startswith("__"):
+                continue
+            config_attr = getattr(model.config, attr)
+            if hasattr(config_attr, "quantization_config"):
+                delattr(config_attr, "quantization_config")
+
+
 # --- Main Conversion Function ---
 def convert_module_to_hp_if_necessary(
     model_or_layer: torch.nn.Module,
@@ -392,6 +408,7 @@ def convert_module_to_hp_if_necessary(
             if hasattr(src_module, key):
                 setattr(dst_module, key, getattr(src_module, key))
 
+    remove_existed_quantization_config(model_or_layer)
     # Check if it's a single quantized layer (has the attribute directly)
     if hasattr(model_or_layer, "quantized_weight_type") and model_or_layer.quantized_weight_type is not None:
         handler = get_handler(model_or_layer.quantized_weight_type)
