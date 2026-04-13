@@ -19,6 +19,24 @@ except ImportError:
     fast_hadamard_transform = None
 
 
+def _resolve_compute_device(compute_device) -> torch.device:
+    """Return *compute_device* if explicitly given, otherwise auto-detect GPU.
+
+    When ``compute_device`` is ``None`` the function checks for CUDA / XPU
+    availability and returns the first accelerator it finds so that heavy
+    matrix operations are offloaded to GPU even when the model weights live
+    on CPU.  Falls back to ``torch.device("cpu")`` when no accelerator is
+    present.
+    """
+    if compute_device is not None:
+        return torch.device(compute_device) if not isinstance(compute_device, torch.device) else compute_device
+    if torch.cuda.is_available():
+        return torch.device("cuda:0")
+    if hasattr(torch, "xpu") and torch.xpu.is_available():
+        return torch.device("xpu:0")
+    return torch.device("cpu")
+
+
 # ---------------------------------------------------------------------------
 # Hook implementations
 # ---------------------------------------------------------------------------
@@ -316,7 +334,7 @@ def matmul_hadUt_cuda(X, hadK, K, use_fast_had=True):
     return matmul_hadU_cuda(X, hadK, K, use_fast_had=use_fast_had)
 
 
-def apply_exact_had_to_linear(module, had_dim=-1, output=False, use_fast_had=True):
+def apply_exact_had_to_linear(module, had_dim=-1, output=False, use_fast_had=True, compute_device=None):
     assert isinstance(module, torch.nn.Linear)
     in_features, out_features = module.in_features, module.out_features
 
@@ -327,7 +345,8 @@ def apply_exact_had_to_linear(module, had_dim=-1, output=False, use_fast_had=Tru
     dtype = W_.dtype
     dev = W_.device
     init_shape = W_.shape
-    W_ = W_.float().cuda()
+    compute_dev = _resolve_compute_device(compute_device)
+    W_ = W_.double().to(compute_dev)
 
     if had_dim == -1:
         if output:
@@ -365,3 +384,192 @@ def apply_exact_had_to_linear(module, had_dim=-1, output=False, use_fast_had=Tru
 
 def is_pow2(n):
     return (n & (n - 1) == 0) and (n > 0)
+
+
+# ---------------------------------------------------------------------------
+# Grouped (block-diagonal) Hadamard utilities
+# ---------------------------------------------------------------------------
+
+
+class GroupOnlineHadamardHook(nn.Module):
+    """Pre-forward hook: block-diagonal Hadamard with fixed ``group_size`` on last dim.
+
+    Reshapes ``(*, D)`` → ``(*, D // group_size, group_size)``, applies Hadamard
+    per group, then reshapes back.  Much cheaper than a full-dimension Hadamard.
+    """
+
+    def __init__(self, group_size, fp32_had=False, use_fast_had=True):
+        super().__init__()
+        self.group_size = group_size
+        self.fp32_had = fp32_had
+        self.use_fast_had = use_fast_had
+        # For non-power-of-2 group_size, pre-compute had_K
+        if not is_pow2(group_size):
+            had_K, K = get_hadK(group_size)
+            if had_K is not None:
+                self.register_buffer("had_K", had_K)
+            else:
+                self.had_K = None
+            self.K = K
+        else:
+            self.had_K = None
+            self.K = 1
+
+    def __call__(self, module: nn.Module, args):
+        x = args[0] if isinstance(args, tuple) else args
+        x_dtype = x.dtype
+        init_shape = x.shape
+        gs = self.group_size
+
+        if self.fp32_had:
+            x = x.float()
+
+        # Reshape: (*, D) → (*, D//gs, gs)
+        x = x.reshape(*init_shape[:-1], init_shape[-1] // gs, gs)
+
+        if self.use_fast_had and fast_hadamard_transform is not None and self.K == 1:
+            x = fast_hadamard_transform.hadamard_transform(x, scale=1.0 / math.sqrt(gs))
+        elif self.had_K is not None:
+            # had_K is (K, K), x last two dims are (n_groups, gs)
+            # We need to apply had to the gs dimension
+            # x shape: (*, n_groups, gs) → treat as batch over (*, n_groups), had on gs
+            x = x.reshape(-1, gs)  # (batch, gs)
+            x = matmul_hadU(x)
+            x = x.reshape(*init_shape[:-1], init_shape[-1] // gs, gs)
+        else:
+            x = x.reshape(-1, gs)
+            x = matmul_hadU(x)
+            x = x.reshape(*init_shape[:-1], init_shape[-1] // gs, gs)
+
+        x = x.reshape(init_shape)
+
+        if self.fp32_had:
+            x = x.to(x_dtype)
+
+        if isinstance(args, tuple):
+            return (x,) + args[1:]
+        return x
+
+
+def _apply_grouped_had_to_weight(W, group_size, side="input", use_fast_had=True):
+    """Apply block-diagonal Hadamard to a weight matrix.
+
+    Args:
+        W: Weight tensor, shape (out_features, in_features).
+        group_size: Block size for the Hadamard rotation.
+        side: ``'input'`` rotates columns (in_features dim),
+              ``'output'`` rotates rows (out_features dim).
+        use_fast_had: Use fast_hadamard_transform if available.
+
+    Returns:
+        Rotated weight tensor.
+    """
+    gs = group_size
+    dtype = W.dtype
+    W = W.double()
+
+    if side == "input":
+        # Rotate columns: W @ Q_block_diag
+        # W: (out, in) → (out, in//gs, gs) → Had on gs → (out, in)
+        out_f, in_f = W.shape
+        W = W.reshape(out_f, in_f // gs, gs)
+        if use_fast_had and fast_hadamard_transform is not None and is_pow2(gs):
+            W = fast_hadamard_transform.hadamard_transform(W, scale=1.0 / math.sqrt(gs))
+        else:
+            W = matmul_hadU(W.reshape(-1, gs)).reshape(out_f, in_f // gs, gs)
+        W = W.reshape(out_f, in_f)
+    else:
+        # Rotate rows: Q_block_diag^T @ W = (Q_block_diag @ W^T)^T
+        # W: (out, in) → W^T: (in, out) → (in, out//gs, gs) → Had on gs → W^T back
+        out_f, in_f = W.shape
+        Wt = W.t().contiguous()  # (in, out)
+        Wt = Wt.reshape(in_f, out_f // gs, gs)
+        if use_fast_had and fast_hadamard_transform is not None and is_pow2(gs):
+            Wt = fast_hadamard_transform.hadamard_transform(Wt, scale=1.0 / math.sqrt(gs))
+        else:
+            Wt = matmul_hadU(Wt.reshape(-1, gs)).reshape(in_f, out_f // gs, gs)
+        W = Wt.reshape(in_f, out_f).t().contiguous()
+
+    return W.to(dtype)
+
+
+def _rotate_linear_grouped(module, group_size, side="input", use_fast_had=True, compute_device=None):
+    """Apply block-diagonal Hadamard rotation to a Linear layer's weight.
+
+    Args:
+        module: ``nn.Linear`` layer.
+        group_size: Block size.
+        side: ``'input'`` or ``'output'``.
+        use_fast_had: Use fast_hadamard_transform.
+        compute_device: Device to run computation on. If None, auto-detects GPU.
+    """
+    dtype = module.weight.data.dtype
+    dev = module.weight.data.device
+    compute_dev = _resolve_compute_device(compute_device)
+    W = module.weight.data.to(device=compute_dev, dtype=torch.float64)
+    W = _apply_grouped_had_to_weight(W, group_size, side=side, use_fast_had=use_fast_had)
+    module.weight.data = W.to(device=dev, dtype=dtype)
+
+    if side == "output" and module.bias is not None:
+        bias = module.bias.data.to(device=compute_dev, dtype=torch.float64)
+        gs = group_size
+        bias = bias.reshape(-1, gs)
+        if use_fast_had and fast_hadamard_transform is not None and is_pow2(gs):
+            bias = fast_hadamard_transform.hadamard_transform(
+                bias.unsqueeze(0), scale=1.0 / math.sqrt(gs)
+            ).squeeze(0)
+        else:
+            bias = matmul_hadU(bias)
+        module.bias.data = bias.reshape(-1).to(device=dev, dtype=dtype)
+
+
+def _rotate_embedding_grouped(embedding, group_size, use_fast_had=True, compute_device=None):
+    """Apply block-diagonal Hadamard rotation to an Embedding layer.
+
+    Embedding weight: (vocab, hidden_size) → rotate on hidden_size (columns).
+    """
+    dtype = embedding.weight.data.dtype
+    dev = embedding.weight.data.device
+    compute_dev = _resolve_compute_device(compute_device)
+    W = embedding.weight.data.to(device=compute_dev, dtype=torch.float64)
+    W = _apply_grouped_had_to_weight(W, group_size, side="input", use_fast_had=use_fast_had)
+    embedding.weight.data = W.to(device=dev, dtype=dtype)
+
+
+def register_online_had_hooks_grouped(model, mapping, group_size, fp32_had=False, use_fast_had=True):
+    """Register per-group online Hadamard hooks on ``down_proj`` and ``o_proj``.
+
+    In grouped mode:
+      - **down_proj**: block-diagonal Hadamard on ``intermediate_size`` with ``group_size``.
+      - **o_proj**: block-diagonal Hadamard on ``hidden_size`` with ``group_size``.
+
+    Args:
+        model: HuggingFace model with rotated weights.
+        mapping: RotationMapping.
+        group_size: Block size for block-diagonal Hadamard.
+        fp32_had: Compute in fp32.
+        use_fast_had: Use fast_hadamard_transform.
+
+    Returns:
+        list of hook handles.
+    """
+    mlp_out_suffix = mapping.mlp_out.split(".")[-1]
+    attn_o_suffix = mapping.attn_o.split(".")[-1]
+
+    handles = []
+    for name, module in model.named_modules():
+        if name.endswith(mlp_out_suffix) and isinstance(module, nn.Linear):
+            hook = GroupOnlineHadamardHook(
+                group_size=group_size, fp32_had=fp32_had, use_fast_had=use_fast_had,
+            )
+            h = module.register_forward_pre_hook(hook)
+            handles.append(h)
+        elif name.endswith(attn_o_suffix) and isinstance(module, nn.Linear):
+            hook = GroupOnlineHadamardHook(
+                group_size=group_size, fp32_had=fp32_had, use_fast_had=use_fast_had,
+            )
+            h = module.register_forward_pre_hook(hook)
+            handles.append(h)
+
+    return handles
+
