@@ -3424,8 +3424,8 @@ class BaseCompressor(object):
                 continue
             layer = get_module(self.model, key)
             if layer is None:
-                logger.error(f"could not find layer {key} in the model, exit...")
-                exit(-1)
+                logger.warning_once(f"could not find layer {key} in the model, skipping")
+                continue
             if type(layer) in self.supported_types and check_to_quantized(self.layer_config[key]):
                 layer_names.append(key)
 
