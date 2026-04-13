@@ -1193,14 +1193,22 @@ def set_attr(model, key, new_attr):
 
 
 def get_module(module, key):
-    """Get module from model by key name using PyTorch native API.
-
-    Missing paths return `None` to preserve legacy non-fail-fast behavior.
+    """
+    Get module from model by key name using PyTorch native API with a 
+    fallback to manual traversal for backward compatibility.
     """
     try:
         return module.get_submodule(key)
     except (AttributeError, KeyError):
-        return None
+        pass
+
+    attrs = key.split(".")
+    for attr in attrs:
+        try:
+            module = getattr(module, attr)
+        except AttributeError:
+            return None
+    return module
 
 
 def set_module(model, key, new_module):
