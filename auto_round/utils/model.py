@@ -36,6 +36,8 @@ from auto_round.utils.weight_handler import (
     is_quantized_input_module,
 )
 
+FIX_MISTRAL_REGEX_MODEL_TYPE_LIST = ["longcat_next"]
+
 
 def clean_module_parameter(submodule: torch.nn.Module, param_name: str) -> None:
     """This function is recommended to be used instead of module.weight = None.
@@ -599,6 +601,7 @@ def mllm_load_model(
                 tokenizer = AutoTokenizer.from_pretrained(
                     pretrained_model_name_or_path,
                     trust_remote_code=trust_remote_code,
+                    fix_mistral_regex=True if model_type in FIX_MISTRAL_REGEX_MODEL_TYPE_LIST else False,
                     **processor_load_kwargs,
                 )
                 processor = AutoProcessor.from_pretrained(
@@ -893,7 +896,8 @@ def get_block_names(model, quant_vision=False):
                 block_names[i].append(target_m[0] + "." + n)
         return block_names
 
-    def _get_vlm_block_names(model, quant_vision=False):
+    def _get_vlm_block_names(model, quant_vision=False, ignore_audio=True):
+        # Since calibration dataset doesn't contain audio data, audio-related blocks will be ignored by default.
         if (
             hasattr(model, "config")
             and hasattr(model.config, "model_type")
@@ -903,10 +907,13 @@ def get_block_names(model, quant_vision=False):
         block_names = []
         target_modules = []
         vision_blocks_tuple = ("vision", "visual", "image", "img")
+        audio_blocks_tuple = ("audio", "speech", "wav", "waveform")
         target_modules = _search_block("", model)
 
         for i, target_m in enumerate(target_modules):
             if quant_vision or all(key not in target_m[0].lower() for key in (vision_blocks_tuple)):
+                if ignore_audio and any(key in target_m[0].lower() for key in audio_blocks_tuple):
+                    continue
                 block_names.append([])
                 for n, m in target_m[1].named_children():
                     block_names[-1].append(target_m[0] + "." + n)
@@ -1184,38 +1191,53 @@ def _to_model_dtype(model, model_dtype):
     return model
 
 
-def get_module(module, key):
-    """Get module from model by key name.
+def get_attr(module, key):
+    """Get attribute (including parameters like `...weight`) by dotted key.
 
-    Args:
-        module (torch.nn.Module): original model
-        key (str): module name to be replaced
+    Missing keys return `None` (legacy behavior relied on by tests).
     """
     name_list = key.split(".")
     for name in name_list:
+        if module is None:
+            return None
         module = getattr(module, name, None)
     return module
 
 
-def set_module(model, key, new_module):
-    """Set new module into model by key name.
+def set_attr(model, key, new_attr):
+    """Set attribute (including parameters like `...weight`) by dotted key.
 
-    Args:
-        model (torch.nn.Module): original model
-        key (str): module name to be replaced
-        new_module (torch.nn.Module): new module to be inserted
+    If an intermediate parent doesn't exist, this is a no-op.
     """
     module = model
     name_list = key.split(".")
     for name in name_list[:-1]:
-        if hasattr(module, name):
-            module = getattr(module, name)
-    setattr(module, name_list[-1], new_module)
+        if not hasattr(module, name):
+            return
+        module = getattr(module, name)
+    setattr(module, name_list[-1], new_attr)
 
 
-# For getting and setting attribution, such as 'lm_head.weight'
-get_attr = get_module
-set_attr = set_module
+def get_module(module, key):
+    """Get module from model by key name using PyTorch native API.
+
+    Missing paths return `None` to preserve legacy non-fail-fast behavior.
+    """
+    try:
+        return module.get_submodule(key)
+    except (AttributeError, KeyError):
+        return None
+
+
+def set_module(model, key, new_module):
+    """Set new module into model by key name using PyTorch native API.
+
+    Missing paths are ignored (no-op) to preserve legacy behavior.
+    """
+    try:
+        model.set_submodule(key, new_module)
+    except (AttributeError, KeyError):
+        return
 
 
 def get_layer_features(layer):
@@ -1966,3 +1988,22 @@ def rename_weights_files(path: str, prefix="diffusion_pytorch_model"):
         new_idx = os.path.join(path, f"{prefix}.safetensors.index.json")
         json.dump(d, open(new_idx, "w"), indent=2)
         os.remove(idx)
+
+
+def hook_ngram_embeddings_on_cpu(model):
+    has_ngram_embeddings = hasattr(model, "model") and hasattr(model.model, "ngram_embeddings")
+    if has_ngram_embeddings:
+        raw_ngram_embeddings = model.model.ngram_embeddings
+
+        def hook_input_output_device_for_cpu_module(module):
+            from accelerate.hooks import AlignDevicesHook, add_hook_to_module
+
+            hook = AlignDevicesHook(
+                io_same_device=True,
+                execution_device="cpu",
+            )
+
+            add_hook_to_module(module, hook)
+
+        hook_input_output_device_for_cpu_module(raw_ngram_embeddings)
+    return has_ngram_embeddings, raw_ngram_embeddings if has_ngram_embeddings else None

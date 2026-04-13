@@ -35,6 +35,7 @@ class BackendDataType(str, Enum):
     STANDARD_FP = "fp"
     MX_FP = "mx_fp"
     NV_FP = "nv_fp"
+    MX_INT = "mx_int"
 
 
 def is_standard_fp(backend):
@@ -45,6 +46,11 @@ def is_standard_fp(backend):
 def is_mx_fp(backend):
     backend = backend.lower()
     return BackendDataType.MX_FP in backend
+
+
+def is_mx_int(backend):
+    backend = backend.lower()
+    return BackendDataType.MX_INT in backend
 
 
 def is_nv_fp(backend):
@@ -87,6 +93,16 @@ def is_static_wfp8afp8(ar_or_format: Union[str, Callable]) -> bool:
     if is_wfp8afp8(ar_or_format):
         return True
     return False
+
+
+def is_wint_woq(ar: Callable) -> bool:
+    """Returns True for integer weight-only quantization with non-quantized activations (`act_bits >= 16`)."""
+    return "int" in ar.data_type and ar.act_bits >= 16 and ar.super_group_size is None
+
+
+def is_wint_a16(ar: Callable) -> bool:
+    """Backward-compatible alias for `is_wint_woq()`."""
+    return is_wint_woq(ar)
 
 
 def is_dynamic_wint8aint8(ar_or_format: Union[str, Callable]) -> bool:
