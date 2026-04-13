@@ -95,6 +95,19 @@ class MXQuantLinearBase(QModuleBase):
         )
         self.register_buffer("weight_scale", init_weight_scale)
 
+        hadamard_config = getattr(config, "hadamard_config", None)
+        # TODO: remove the limit: hadamard_config["hadamard_type"] == "random_hadamard"
+        if hadamard_config is not None and hadamard_config["hadamard_type"] == "random_hadamard":
+            self.enable_transform = True
+            self.register_buffer(
+                "hadamard_matrix",
+                torch.empty(
+                    self.group_size,
+                    self.group_size,
+                    dtype=self.dtype,
+                ),
+            )
+
     def initialize_weights(self, weight: Optional[torch.Tensor]) -> torch.Tensor:
         """
         Initialize weights. This method should be overridden by subclasses.
@@ -194,25 +207,6 @@ class MXFP4QuantLinear(MXQuantLinearBase):
         m, half_n = packed_data.shape
         unpacked_data = unpack_fp4_from_uint8(packed_data, m, half_n * 2, dtype=self.dtype)
         return unpacked_data
-
-
-class HadamardMXFP4QuantLinear(MXFP4QuantLinear):
-    """
-    Quantized linear layer using the MXFP4 quantization scheme.
-    """
-
-    def __init__(self, *args, **kwargs):
-        self.weight_name = "weight_packed"
-        super().__init__(*args, **kwargs)
-        self.enable_transform = True
-        self.register_buffer(
-            "hadamard_matrix",
-            torch.empty(
-                self.group_size,
-                self.group_size,
-                dtype=self.dtype,
-            ),
-        )
 
 
 class MXFP8QuantLinear(MXQuantLinearBase):

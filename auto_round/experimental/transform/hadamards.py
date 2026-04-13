@@ -65,7 +65,7 @@ class HadamardTransform(nn.Module):
         self,
         size: int,
         device: torch.device = None,
-        precision: torch.dtype = None,
+        precision: torch.dtype = torch.float32,
     ) -> torch.nn.Parameter:
         data = deterministic_hadamard_matrix(size, precision, device) * self.scale
         # TODO: implement SpinQuant, which rotation matrix is learnable

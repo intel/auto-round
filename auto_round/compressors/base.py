@@ -67,6 +67,7 @@ from auto_round.schemes import (
     _handle_special_schemes,
     get_gguf_scheme,
     preset_name_to_scheme,
+    scheme_to_preset_name,
 )
 from auto_round.sign_sgd import SignSGD
 from auto_round.special_model_handler import get_predefined_ignore_layers, update_module
@@ -562,8 +563,9 @@ class BaseCompressor(object):
             from auto_round.experimental.transform.apply import apply_hadamard_transform
             from auto_round.experimental.utils import normalize_hadamard_config
 
-            self.hadamard_config = normalize_hadamard_config(hadamard_config, self.scheme)
-            self.model = apply_hadamard_transform(self.model, self.hadamard_config, scheme=self.scheme)
+            preset_scheme = scheme_to_preset_name(self.scheme)
+            self.hadamard_config = normalize_hadamard_config(hadamard_config, preset_scheme)
+            self.model = apply_hadamard_transform(self.model, self.hadamard_config, scheme=preset_scheme)
 
     def _gen_auto_scheme(self) -> dict[str, dict]:
         if self.mllm:

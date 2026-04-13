@@ -70,7 +70,7 @@ def random_hadamard_matrix(
     :param gen: Optional generator random values
     :return: randomly generated hadamard matrix
     """
-    Q = torch.randint(low=0, high=2, size=(size,), generator=gen)  # cpu
+    Q = torch.randint(low=0, high=2, size=(size,), generator=gen, device="cpu")  # cpu
     Q = Q.to(device=device, dtype=dtype)
     Q = Q * 2 - 1
     Q = torch.diag(Q)

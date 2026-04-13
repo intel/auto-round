@@ -21,7 +21,7 @@ from auto_round.experimental.transform.hadamard_config import HadamardConfig
 from auto_round.experimental.transform.hadamards import HADAMARDS
 from auto_round.utils import logger
 
-SUPPORTED_QUANTIZATION_SCHEMES = ["MXFP4", "NVFP4"]
+SUPPORTED_QUANTIZATION_SCHEMES = ["MXFP8", "MXFP4", "NVFP4"]
 
 
 def per_tensor_fp8_qdq(
