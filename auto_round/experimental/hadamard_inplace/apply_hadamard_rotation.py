@@ -19,18 +19,16 @@ from auto_round.experimental.hadamard_inplace.model_config import (
     infer_mapping_from_model,
 )
 from auto_round.experimental.hadamard_inplace.utils import (
-    apply_exact_had_to_linear,
-    random_hadamard_matrix,
-    _rotate_linear_grouped,
-    _rotate_embedding_grouped,
-    _resolve_compute_device,
-    FullOnlineHadamardHook,
     CrossHeadOnlineHadamardHook,
+    FullOnlineHadamardHook,
     GroupOnlineHadamardHook,
+    _resolve_compute_device,
+    _rotate_embedding_grouped,
+    _rotate_linear_grouped,
+    apply_exact_had_to_linear,
     get_hadK,
+    random_hadamard_matrix,
 )
-
-
 
 # ---------------------------------------------------------------------------
 # Low-level primitives (model-agnostic via RotationMapping)
@@ -227,12 +225,10 @@ def _rotate_weights(
     desc = f"Rotating (group_size={group_size})" if is_grouped else "Rotating"
 
     if is_grouped:
-        assert hidden_size % group_size == 0, (
-            f"group_size={group_size} must divide hidden_size={hidden_size}"
-        )
-        assert intermediate_size % group_size == 0, (
-            f"group_size={group_size} must divide intermediate_size={intermediate_size}"
-        )
+        assert hidden_size % group_size == 0, f"group_size={group_size} must divide hidden_size={hidden_size}"
+        assert (
+            intermediate_size % group_size == 0
+        ), f"group_size={group_size} must divide intermediate_size={intermediate_size}"
 
     # --- Full mode: build a random Hadamard matrix Q ---
     Q = None
@@ -264,7 +260,9 @@ def _rotate_weights(
     # ---- Top-level: lm_head ----
     lm_head = _resolve(model, mapping.lm_head)
     if is_grouped:
-        _rotate_linear_grouped(lm_head, group_size, side="input", use_fast_had=use_fast_had, compute_device=compute_device)
+        _rotate_linear_grouped(
+            lm_head, group_size, side="input", use_fast_had=use_fast_had, compute_device=compute_device
+        )
     else:
         _rotate_linear_by_Q(lm_head, Q, side="input", compute_device=compute_device)
 
@@ -278,31 +276,55 @@ def _rotate_weights(
         # Attention inputs: Q/K/V
         for attr in (mapping.attn_q, mapping.attn_k, mapping.attn_v):
             if is_grouped:
-                _rotate_linear_grouped(_resolve(layer, attr), group_size, side="input", use_fast_had=use_fast_had, compute_device=compute_device)
+                _rotate_linear_grouped(
+                    _resolve(layer, attr),
+                    group_size,
+                    side="input",
+                    use_fast_had=use_fast_had,
+                    compute_device=compute_device,
+                )
             else:
                 _rotate_linear_by_Q(_resolve(layer, attr), Q, side="input", compute_device=compute_device)
 
         # Attention output: o_proj
         if is_grouped:
-            _rotate_linear_grouped(_resolve(layer, mapping.attn_o), group_size, side="output", use_fast_had=use_fast_had, compute_device=compute_device)
+            _rotate_linear_grouped(
+                _resolve(layer, mapping.attn_o),
+                group_size,
+                side="output",
+                use_fast_had=use_fast_had,
+                compute_device=compute_device,
+            )
         else:
             _rotate_linear_by_Q(_resolve(layer, mapping.attn_o), Q, side="output", compute_device=compute_device)
 
         # MLP inputs: gate/up
         for attr in mapping.mlp_in:
             if is_grouped:
-                _rotate_linear_grouped(_resolve(layer, attr), group_size, side="input", use_fast_had=use_fast_had, compute_device=compute_device)
+                _rotate_linear_grouped(
+                    _resolve(layer, attr),
+                    group_size,
+                    side="input",
+                    use_fast_had=use_fast_had,
+                    compute_device=compute_device,
+                )
             else:
                 _rotate_linear_by_Q(_resolve(layer, attr), Q, side="input", compute_device=compute_device)
 
         # MLP output: down_proj
         down_proj = _resolve(layer, mapping.mlp_out)
         if is_grouped:
-            _rotate_linear_grouped(down_proj, group_size, side="output", use_fast_had=use_fast_had, compute_device=compute_device)
-            _rotate_linear_grouped(down_proj, group_size, side="input", use_fast_had=use_fast_had, compute_device=compute_device)
+            _rotate_linear_grouped(
+                down_proj, group_size, side="output", use_fast_had=use_fast_had, compute_device=compute_device
+            )
+            _rotate_linear_grouped(
+                down_proj, group_size, side="input", use_fast_had=use_fast_had, compute_device=compute_device
+            )
         else:
             _rotate_linear_by_Q(down_proj, Q, side="output", compute_device=compute_device)
-            apply_exact_had_to_linear(down_proj, had_dim=-1, output=False, use_fast_had=use_fast_had, compute_device=compute_device)
+            apply_exact_had_to_linear(
+                down_proj, had_dim=-1, output=False, use_fast_had=use_fast_had, compute_device=compute_device
+            )
 
         # OV projection
         v_proj = _resolve(layer, mapping.attn_v)
@@ -318,8 +340,12 @@ def _rotate_weights(
             pass
         else:
             # Full mode: per-head Had on v_proj output + full Had on o_proj input
-            apply_exact_had_to_linear(v_proj, had_dim=head_dim, output=True, use_fast_had=use_fast_had, compute_device=compute_device)
-            apply_exact_had_to_linear(o_proj, had_dim=-1, output=False, use_fast_had=use_fast_had, compute_device=compute_device)
+            apply_exact_had_to_linear(
+                v_proj, had_dim=head_dim, output=True, use_fast_had=use_fast_had, compute_device=compute_device
+            )
+            apply_exact_had_to_linear(
+                o_proj, had_dim=-1, output=False, use_fast_had=use_fast_had, compute_device=compute_device
+            )
 
 
 # ---------------------------------------------------------------------------
@@ -348,7 +374,7 @@ def _register_online_hooks(
     intermediate_size = getattr(config, mapping.intermediate_size_attr)
     head_dim = mapping.attn_head_dim or (hidden_size // num_heads)
 
-    is_grouped = group_size is not None and group_size >0
+    is_grouped = group_size is not None and group_size > 0
 
     mlp_out_suffix = mapping.mlp_out.split(".")[-1]
     attn_o_suffix = mapping.attn_o.split(".")[-1]
@@ -366,7 +392,11 @@ def _register_online_hooks(
         # In grouped mode the OV rotation is skipped, so no hook is needed.
         had_K, K = get_hadK(num_heads)
         return CrossHeadOnlineHadamardHook(
-            had_K=had_K, K=K, head_dim=head_dim, fp32_had=fp32_had, use_fast_had=use_fast_had,
+            had_K=had_K,
+            K=K,
+            head_dim=head_dim,
+            fp32_had=fp32_had,
+            use_fast_had=use_fast_had,
         )
 
     # --- Register ---
@@ -453,7 +483,8 @@ def apply_hadamard_rotation(
     _rotate_weights(model, mapping, use_fast_had=use_fast_had, group_size=group_size, compute_device=compute_device)
 
     handles = _register_online_hooks(
-        model, mapping,
+        model,
+        mapping,
         fp32_had=fp32_had,
         use_fast_had=use_fast_had,
         group_size=group_size,
@@ -487,7 +518,7 @@ if __name__ == "__main__":
     inputs = tokenizer(text, return_tensors="pt").to(model.device)
     print(tokenizer.decode(model.generate(**inputs, max_new_tokens=50)[0]))
 
-    apply_hadamard_rotation(model, use_fast_had=False,group_size=32)
+    apply_hadamard_rotation(model, use_fast_had=False, group_size=32)
     model.to("cuda")
     text = "There is a girl who likes adventure,"
     inputs = tokenizer(text, return_tensors="pt").to(model.device)
@@ -496,7 +527,7 @@ if __name__ == "__main__":
     model_name = "/models/Qwen3-8B"
     tokenizer = AutoTokenizer.from_pretrained(model_name)
     model = AutoModelForCausalLM.from_pretrained(model_name, torch_dtype=torch.float16, device_map="auto")
-    apply_hadamard_rotation(model, use_fast_had=False,group_size=32)
+    apply_hadamard_rotation(model, use_fast_had=False, group_size=32)
     model.to("cuda")
     text = "There is a girl who likes adventure,"
     inputs = tokenizer(text, return_tensors="pt").to(model.device)

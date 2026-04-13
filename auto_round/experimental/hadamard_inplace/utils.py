@@ -515,9 +515,7 @@ def _rotate_linear_grouped(module, group_size, side="input", use_fast_had=True, 
         gs = group_size
         bias = bias.reshape(-1, gs)
         if use_fast_had and fast_hadamard_transform is not None and is_pow2(gs):
-            bias = fast_hadamard_transform.hadamard_transform(
-                bias.unsqueeze(0), scale=1.0 / math.sqrt(gs)
-            ).squeeze(0)
+            bias = fast_hadamard_transform.hadamard_transform(bias.unsqueeze(0), scale=1.0 / math.sqrt(gs)).squeeze(0)
         else:
             bias = matmul_hadU(bias)
         module.bias.data = bias.reshape(-1).to(device=dev, dtype=dtype)
@@ -560,16 +558,19 @@ def register_online_had_hooks_grouped(model, mapping, group_size, fp32_had=False
     for name, module in model.named_modules():
         if name.endswith(mlp_out_suffix) and isinstance(module, nn.Linear):
             hook = GroupOnlineHadamardHook(
-                group_size=group_size, fp32_had=fp32_had, use_fast_had=use_fast_had,
+                group_size=group_size,
+                fp32_had=fp32_had,
+                use_fast_had=use_fast_had,
             )
             h = module.register_forward_pre_hook(hook)
             handles.append(h)
         elif name.endswith(attn_o_suffix) and isinstance(module, nn.Linear):
             hook = GroupOnlineHadamardHook(
-                group_size=group_size, fp32_had=fp32_had, use_fast_had=use_fast_had,
+                group_size=group_size,
+                fp32_had=fp32_had,
+                use_fast_had=use_fast_had,
             )
             h = module.register_forward_pre_hook(hook)
             handles.append(h)
 
     return handles
-
