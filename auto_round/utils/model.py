@@ -1194,7 +1194,7 @@ def set_attr(model, key, new_attr):
 
 def get_module(module, key):
     """
-    Get module from model by key name using PyTorch native API with a 
+    Get module from model by key name using PyTorch native API with a
     fallback to manual traversal for backward compatibility.
     """
     try:
