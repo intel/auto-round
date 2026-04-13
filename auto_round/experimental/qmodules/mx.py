@@ -20,10 +20,11 @@ import torch
 from auto_round.data_type.utils import get_quant_func
 from auto_round.experimental.qmodules.base import QModuleBase
 from auto_round.experimental.qmodules.fp4_utils import unpack_fp4_from_uint8
+from auto_round.experimental.qmodules.mxint4_utils import unpack_int4_from_uint8
 from auto_round.logger import logger
 from auto_round.schemes import QuantizationScheme
 
-__all__ = ["MXFP4QuantLinear", "MXFP8QuantLinear"]
+__all__ = ["MXFP4QuantLinear", "MXFP8QuantLinear", "MXINT4QuantLinear"]
 
 SUPPORTED_HIGHER_DTYPE = [torch.bfloat16, torch.float16, torch.float32]
 E8M0_EXPONENT_BIAS = 127
@@ -207,6 +208,48 @@ class MXFP4QuantLinear(MXQuantLinearBase):
         m, half_n = packed_data.shape
         unpacked_data = unpack_fp4_from_uint8(packed_data, m, half_n * 2, dtype=self.dtype)
         return unpacked_data
+
+
+class MXINT4QuantLinear(MXQuantLinearBase):
+    """
+    Quantized linear layer using the MXINT4 quantization scheme.
+    """
+
+    def __init__(self, *args, **kwargs):
+        self.weight_name = "weight_packed"
+        super().__init__(*args, **kwargs)
+
+    def initialize_weights(self, weight: Optional[torch.Tensor]) -> torch.Tensor:
+        weight_dtype = torch.uint8
+        weight_in_features = self.in_features // 2
+        return torch.zeros((self.out_features, weight_in_features), dtype=weight_dtype) if weight is None else weight
+
+    def dequant_weight_online(self) -> torch.Tensor:
+        if self.pre_dequantized:
+            return self.weight
+        dq_weight = self.dequant_mx_tensor(self.weight_packed, self.weight_scale)
+        return dq_weight
+
+    def unpack_data(self, packed_data: torch.Tensor) -> torch.Tensor:
+        m, half_n = packed_data.shape
+        unpacked_data = unpack_int4_from_uint8(packed_data, m, half_n * 2, dtype=self.dtype)
+        return unpacked_data
+
+    @classmethod
+    def from_original(cls, config: Optional[QuantizationScheme], original_layer: torch.nn.Linear):
+        """
+        Create an `MXQuantLinear` layer from an original linear layer.
+        """
+        logger.warning_once("MXINT quantization is still in experimental stage, the inference speed might be slow.")
+        qdq_linear = cls(
+            in_features=original_layer.in_features,
+            out_features=original_layer.out_features,
+            config=config,
+            bias=original_layer.bias,
+            dtype=original_layer.weight.dtype,
+        )
+        return qdq_linear
+
 
 
 class MXFP8QuantLinear(MXQuantLinearBase):
