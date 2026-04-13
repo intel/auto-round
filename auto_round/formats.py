@@ -31,6 +31,7 @@ from auto_round.compressors.utils import (
     is_dynamic_afp8,
     is_dynamic_wint8aint8,
     is_mx_fp,
+    is_mx_int,
     is_nv_fp,
     is_standard_fp,
     is_static_wfp8afp8,
@@ -70,6 +71,8 @@ class AutoRoundExportFormat(str, Enum):
     NV_FP4_WITH_STATIC_GS = "nv_fp4_with_static_gs"
     INT8_W8A8 = "int8_w8a8"
     FP8_BLOCK = "fp8_block"
+    MXINT4 = "mxint4"
+    MX_INT = "mx_int"
     WINT_A16 = "wint_a16"
 
 
@@ -1090,6 +1093,7 @@ class AutoRoundFormat(OutputFormat):
         "FP8_STATIC",
         "BF16",
         "FP8_BLOCK",
+        "MXINT4",
     ]
     format_name = "auto_round"
 
@@ -1098,7 +1102,7 @@ class AutoRoundFormat(OutputFormat):
         self.backend = None
 
         if format == "auto_round":
-            if ar.sym and "int" in ar.data_type:
+            if ar.sym and "int" in ar.data_type and "mx" not in ar.data_type:
                 self.backend = AutoGPTQFormat("auto_round:auto_gptq", ar)
             elif ar.bits == 4 and not ar.sym and "int" in ar.data_type:
                 if ar.layer_config is None:
@@ -1110,6 +1114,8 @@ class AutoRoundFormat(OutputFormat):
                 if enable_awq:
                     self.backend = AutoAWQFormat("auto_round:auto_awq", ar)
             elif is_nv_fp(ar.data_type) or is_mx_fp(ar.data_type):
+                self.backend = AutoRoundFormat(ar.data_type, ar)
+            elif is_mx_int(ar.data_type) and ar.bits == 4:  # only add mx_int4 now
                 self.backend = AutoRoundFormat(ar.data_type, ar)
             elif is_static_wfp8afp8(ar):  # static wfp8afp8
                 self.backend = AutoRoundFormat(AutoRoundExportFormat.FP8_STATIC.value, ar)
@@ -1168,7 +1174,11 @@ class AutoRoundFormat(OutputFormat):
             f"auto_round:{AutoRoundExportFormat.MX_FP_RCEIL.value}",
             f"auto_round:{AutoRoundExportFormat.NV_FP4_WITH_STATIC_GS.value}",
         ]:
-            from auto_round.export.export_to_autoround.export_to_nvfp_mxfp import pack_layer
+            from auto_round.export.export_to_autoround.export_to_nvfp_mx import pack_layer
+
+            pack_func = pack_layer
+        elif self.output_format in [f"auto_round:{AutoRoundExportFormat.MX_INT.value}"]:
+            from auto_round.export.export_to_autoround.export_to_nvfp_mx import pack_layer
 
             pack_func = pack_layer
         elif self.output_format in [
@@ -1209,7 +1219,7 @@ class AutoRoundFormat(OutputFormat):
             )
         backend = self.get_backend_name()
         if re.search(f"{AutoRoundExportFormat.MX_FP.value}|{AutoRoundExportFormat.NV_FP.value}", backend):
-            from auto_round.export.export_to_autoround.export_to_nvfp_mxfp import save_quantized_as_fp
+            from auto_round.export.export_to_autoround.export_to_nvfp_mx import save_quantized_as_fp
 
             backend = "auto_round:llm_compressor"
             export_func = save_quantized_as_fp
@@ -1218,6 +1228,11 @@ class AutoRoundFormat(OutputFormat):
 
             backend = "auto_round:fp8_static" if serialization_dict.get("act_bits", 16) == 8 else None
             export_func = save_quantized_as_autoround
+        elif re.search(f"{AutoRoundExportFormat.MX_INT.value}", backend):
+            from auto_round.export.export_to_autoround.export_to_nvfp_mx import save_quantized_as_fp
+
+            backend = "auto_round"
+            export_func = save_quantized_as_fp
         else:
             from auto_round.export.export_to_autoround.export import save_quantized_as_autoround
 
