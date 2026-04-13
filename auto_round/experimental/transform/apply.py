@@ -101,7 +101,7 @@ def _apply_to_module(
             location="input",
             inverse=True,
             device="cpu",
-            precision=module.dtype, # for online activation, the transform dtype maybe bfloat16/float16.
+            precision=module.dtype,  # for online activation, the transform dtype maybe bfloat16/float16.
         )
 
         if config.hadamard_type != "random_hadamard":
@@ -121,7 +121,9 @@ def _apply_to_module(
                 qdq_input, _ = mxfp4_forward_kernel_wrapper(
                     x_flat,
                     (
-                        hadamard_weight.to(orig_dtype) if hadamard_weight is not None else self.hadamard_matrix.T.to(orig_dtype)
+                        hadamard_weight.to(orig_dtype)
+                        if hadamard_weight is not None
+                        else self.hadamard_matrix.T.to(orig_dtype)
                     ),  # this matrix from w_transform, needs transpose
                 )
                 return qdq_input.reshape(orig_shape).to(orig_dtype)
@@ -149,9 +151,7 @@ def _apply_to_module(
                 else:
                     input = input.view(-1, self.hadamard_matrix.shape[0])
                     return (
-                        (_multihead_matmul(input, self.hadamard_matrix.T.to(orig_dtype)))
-                        .view(ori_shape)
-                        .to(orig_dtype)
+                        (_multihead_matmul(input, self.hadamard_matrix.T.to(orig_dtype))).view(ori_shape).to(orig_dtype)
                     )
 
             # for fused transform + quantization kernel
@@ -189,7 +189,7 @@ def _apply_to_module(
             location="input",
             inverse=True,
             device=module.weight.device,
-            precision=module.weight.dtype, # for online activation, the transform dtype maybe bfloat16/float16.
+            precision=module.weight.dtype,  # for online activation, the transform dtype maybe bfloat16/float16.
         )
 
         patch_wrapperlinear_to_apply_transform(weight_hadamard_transform, input_hadamard_transform)

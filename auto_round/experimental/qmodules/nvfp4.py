@@ -132,7 +132,6 @@ class NVFP4QuantLinear(QModuleBase):
                 ),
             )
 
-
     @staticmethod
     def _convert_global_scale_to_float32(state_dict: dict[str, torch.Tensor], name: str):
         if name not in state_dict or state_dict[name].dtype == torch.float32:
@@ -218,4 +217,3 @@ class NVFP4QuantLinear(QModuleBase):
         m, half_n = packed_data.shape
         unpacked_data = unpack_fp4_from_uint8(packed_data, m, half_n * 2, dtype=self.dtype)
         return unpacked_data
-
