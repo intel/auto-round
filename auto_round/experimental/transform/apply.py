@@ -171,11 +171,10 @@ def _apply_to_module(
 
         # need save random hadamard matrix needed when inference
         if config.hadamard_type == "random_hadamard":
-            module.register_module(config.hadamard_type, weight_hadamard_transform)
             # for saving transform weight
             from auto_round.experimental.transform.patch_modules import patch_quantlinear
 
-            patch_quantlinear(config.hadamard_type)
+            patch_quantlinear(weight_hadamard_transform)
 
         # for autoround tuning: weight not tuning
         # for rtn: weight transformed before saving

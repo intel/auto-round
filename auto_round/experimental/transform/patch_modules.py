@@ -41,7 +41,7 @@ def patch_wrapperlinear_to_apply_transform(w_transform, inp_transform):
                 is_conv1d = type(self.orig_layer) == transformers.pytorch_utils.Conv1D
                 if is_conv1d:
                     weight = weight.t().continuous()
-                new_weight = w_transform(weight)
+                new_weight = w_transform(weight).to(self.device)
                 if is_conv1d:
                     new_weight = weight.t().continuous()
                 self.orig_layer.weight.data.copy_(new_weight)
@@ -102,7 +102,7 @@ def patch_wrapperwalayer_forward_to_apply_transform(inp_transform):
     WrapperWALayer._hadamard_forward_patched = True
 
 
-def patch_quantlinear(hadamard_type):
+def patch_quantlinear(w_transform):
     """ """
 
     if getattr(QuantLinear, "_pack_patched", False):
@@ -165,8 +165,7 @@ def patch_quantlinear(hadamard_type):
             self.input_global_scale = input_global_scale.to(torch.float32).to(device).reshape([1])
 
         # add transform weight
-        transform = getattr(linear, hadamard_type)
-        self.register_buffer("hadamard_matrix", transform.weight.to(device))
+        self.register_buffer("hadamard_matrix", w_transform.weight.to(device))
         return
 
     QuantLinear.pack = _pack_patched
