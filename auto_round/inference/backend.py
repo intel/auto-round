@@ -306,7 +306,7 @@ BackendInfos["auto_round:torch_mxfp4"] = BackendInfo(
 
 # MXINT4
 BackendInfos["auto_round:torch_mxint4"] = BackendInfo(
-    device=["cuda", "cpu"],
+    device=["xpu", "cuda", "cpu"],
     packing_format=["auto_round"],
     sym=[True],
     compute_dtype=["float32", "float16", "bfloat16"],
