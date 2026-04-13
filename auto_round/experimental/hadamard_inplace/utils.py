@@ -37,6 +37,115 @@ def _resolve_compute_device(compute_device) -> torch.device:
     return torch.device("cpu")
 
 
+BUILTIN_ROTATION_PRESETS = {"quarot_hadamard", "hadamard", "random_hadamard"}
+
+# Global cache for random Hadamard matrices keyed by dimension.
+# Ensures the same shape always returns the exact same random matrix within
+# a process, across all calls to ``_rotate_weights`` / ``_register_online_hooks``.
+_RANDOM_HADAMARD_CACHE: dict = {}
+
+
+def get_or_create_random_hadamard(dim: int, device=None) -> torch.Tensor:
+    """Return a random Hadamard matrix for *dim*, creating and caching it if needed.
+
+    The matrix is cached globally in ``_RANDOM_HADAMARD_CACHE`` so that every
+    caller that requests the same *dim* receives the identical matrix.
+    """
+    if dim in _RANDOM_HADAMARD_CACHE:
+        mat = _RANDOM_HADAMARD_CACHE[dim]
+        if device is not None:
+            mat = mat.to(device)
+        return mat
+    mat = random_hadamard_matrix(dim, device or torch.device("cpu"))
+    _RANDOM_HADAMARD_CACHE[dim] = mat
+    return mat
+
+
+def clear_random_hadamard_cache():
+    """Clear the global random Hadamard matrix cache.
+
+    Call this when you want subsequent ``random_hadamard`` preset runs to
+    generate fresh random matrices (e.g. between independent experiments).
+    """
+    _RANDOM_HADAMARD_CACHE.clear()
+
+
+def _normalize_rotation_matrix(rotation_matrix, group_size):
+    """Normalize ``rotation_matrix`` into a ``(had_dict, use_fast_had, preset)`` tuple.
+
+    Accepted inputs:
+      * ``None`` → ``(None, False, None)``  — use built-in butterfly ``matmul_hadU``.
+      * ``"quarot_hadamard"`` → ``(None, True, "quarot_hadamard")`` — fusable
+        rotations use ``fast_hadamard_transform`` (random); non-fusable
+        (online-paired) rotations use deterministic ``get_hadK``/``matmul_hadU``.
+      * ``"hadamard"`` → ``(None, False, "hadamard")`` — all rotations use
+        deterministic ``get_hadK``/``matmul_hadU``.
+      * ``"random_hadamard"`` → ``(None, False, "random_hadamard")`` — all rotations use
+        ``random_hadamard_matrix``.
+      * A ``torch.Tensor`` of shape ``(n, n)`` → ``({n: tensor}, False, None)``.
+      * A ``dict[int, Tensor]`` → ``(dict, False, None)`` — returned as-is.
+
+    Returns:
+        ``(had_dict, use_fast_had, preset)``
+
+    Raises:
+        ValueError: if a non-``str`` *rotation_matrix* is given but
+            *group_size* is not a positive integer, or an unknown preset.
+    """
+    if rotation_matrix is None:
+        return None, False, None
+
+    if isinstance(rotation_matrix, str):
+        if rotation_matrix not in BUILTIN_ROTATION_PRESETS:
+            raise ValueError(
+                f"Unknown rotation_matrix preset '{rotation_matrix}'. "
+                f"Supported presets: {BUILTIN_ROTATION_PRESETS}."
+            )
+        if rotation_matrix == "quarot_hadamard":
+            return None, True, "quarot_hadamard"
+        elif rotation_matrix == "hadamard":
+            return None, False, "hadamard"
+        else:  # "random_hadamard"
+            return None, False, "random_hadamard"
+
+    is_grouped = group_size is not None and group_size > 0
+    if not is_grouped and not isinstance(rotation_matrix, dict):
+        raise ValueError(
+            "rotation_matrix (Tensor/dict) can only be used with a positive group_size. "
+            f"Got group_size={group_size}."
+        )
+
+    if isinstance(rotation_matrix, torch.Tensor):
+        assert rotation_matrix.ndim == 2 and rotation_matrix.shape[0] == rotation_matrix.shape[1], (
+            f"rotation_matrix must be square, got shape {rotation_matrix.shape}"
+        )
+        return {rotation_matrix.shape[0]: rotation_matrix}, False, None
+
+    if isinstance(rotation_matrix, dict):
+        for k, t in rotation_matrix.items():
+            assert isinstance(t, torch.Tensor) and t.ndim == 2 and t.shape[0] == t.shape[1], (
+                f"rotation_matrix[{k}] must be a square tensor, got shape {t.shape}"
+            )
+        return rotation_matrix, False, None
+
+    raise TypeError(
+        f"rotation_matrix must be a Tensor, dict[int, Tensor], str, or None. "
+        f"Got {type(rotation_matrix)}."
+    )
+
+
+def _get_custom_had(had_dict, size):
+    """Look up a custom Hadamard matrix for *size* from the normalized dict.
+
+    Returns ``(had_tensor, True)`` if found, ``(None, False)`` otherwise.
+    """
+    if had_dict is None:
+        return None, False
+    if size in had_dict:
+        return had_dict[size], True
+    return None, False
+
+
 # ---------------------------------------------------------------------------
 # Hook implementations
 # ---------------------------------------------------------------------------
@@ -45,13 +154,19 @@ def _resolve_compute_device(compute_device) -> torch.device:
 class FullOnlineHadamardHook(nn.Module):
     """Pre-forward hook: full Hadamard on the entire last dimension (for ``down_proj``)."""
 
-    def __init__(self, had_K, K, fp32_had=False, use_fast_had=True):
+    def __init__(self, had_K, K, fp32_had=False, use_fast_had=True, had_matrix=None):
         super().__init__()
-        if had_K is not None:
-            self.register_buffer("had_K", had_K)
-        else:
+        self.custom_had = had_matrix is not None
+        if had_matrix is not None:
+            self.register_buffer("had_matrix", had_matrix)
             self.had_K = None
-        self.K = K
+            self.K = None
+        else:
+            if had_K is not None:
+                self.register_buffer("had_K", had_K)
+            else:
+                self.had_K = None
+            self.K = K
         self.fp32_had = fp32_had
         self.use_fast_had = use_fast_had
 
@@ -59,7 +174,14 @@ class FullOnlineHadamardHook(nn.Module):
         x = args[0] if isinstance(args, tuple) else args
         x_dtype = x.dtype
 
-        if self.fp32_had:
+        if self.custom_had:
+            H = self.had_matrix.to(x.dtype)
+            if self.fp32_had:
+                H = self.had_matrix.float()
+                x = (x.float() @ H.T).to(x_dtype)
+            else:
+                x = x @ H.T
+        elif self.fp32_had:
             x = matmul_hadU_cuda(x.float(), self.had_K, self.K, use_fast_had=self.use_fast_had).to(x_dtype)
         else:
             x = matmul_hadU_cuda(x, self.had_K, self.K, use_fast_had=self.use_fast_had)
@@ -88,7 +210,7 @@ class CrossHeadOnlineHadamardHook(nn.Module):
       * transpose back and reshape
     """
 
-    def __init__(self, had_K, K, head_dim, fp32_had=False, use_fast_had=True):
+    def __init__(self, had_K, K, head_dim, fp32_had=False, use_fast_had=True, had_matrix=None):
         """
         Args:
             had_K: Hadamard sub-matrix from ``get_hadK(num_heads)``.
@@ -96,13 +218,20 @@ class CrossHeadOnlineHadamardHook(nn.Module):
             head_dim: ``hidden_size // num_attention_heads``.
             fp32_had: Compute in fp32.
             use_fast_had: If True use fast_hadamard_transform; if False use matmul_hadU.
+            had_matrix: Optional custom rotation matrix of shape ``(num_heads, num_heads)``.
         """
         super().__init__()
-        if had_K is not None:
-            self.register_buffer("had_K", had_K)
-        else:
+        self.custom_had = had_matrix is not None
+        if had_matrix is not None:
+            self.register_buffer("had_matrix", had_matrix)
             self.had_K = None
-        self.K = K
+            self.K = None
+        else:
+            if had_K is not None:
+                self.register_buffer("had_K", had_K)
+            else:
+                self.had_K = None
+            self.K = K
         self.had_dim = head_dim
         self.fp32_had = fp32_had
         self.use_fast_had = use_fast_had
@@ -117,18 +246,19 @@ class CrossHeadOnlineHadamardHook(nn.Module):
         init_shape = x.shape
         num_heads = init_shape[-1] // self.had_dim
 
-        if self.use_fast_had:
-            # Important Notice: fast_hadamard_transform does not use the same had_K,
-            # it only handles the power-of-2 part (K==1). For K>1, use had_K matrix directly.
-            if self.K == 1 and fast_hadamard_transform:
-                x = fast_hadamard_transform.hadamard_transform(
-                    x.reshape(-1, num_heads, self.had_dim).transpose(1, 2),
-                    scale=1 / math.sqrt(num_heads),
-                ).transpose(1, 2)
-            else:
-                x = (self.had_K.to(x.dtype) @ x.reshape(-1, num_heads, self.had_dim)) / math.sqrt(num_heads)
+        if self.custom_had:
+            H = self.had_matrix.to(x.dtype)
+            # reshape (*, hidden) → (*, num_heads, head_dim), transpose → (*, head_dim, num_heads)
+            x = x.reshape(-1, num_heads, self.had_dim).transpose(1, 2)
+            # apply H on last dim (num_heads): x @ H.T
+            x = (x @ H.T).transpose(1, 2)
+        elif self.use_fast_had and fast_hadamard_transform is not None and self.K == 1:
+            x = fast_hadamard_transform.hadamard_transform(
+                x.reshape(-1, num_heads, self.had_dim).transpose(1, 2),
+                scale=1 / math.sqrt(num_heads),
+            ).transpose(1, 2)
         else:
-            # Fallback: use matmul_hadU (pure butterfly, no fast_hadamard_transform)
+            # Fallback: use matmul_hadU (pure butterfly + had_K, no fast_hadamard_transform)
             x = x.reshape(-1, num_heads, self.had_dim).transpose(1, 2)
             x = matmul_hadU(x.contiguous())
             x = x.transpose(1, 2)
@@ -216,6 +346,10 @@ def register_online_had_hooks(model, mapping=None, fp32_had=False, use_fast_had=
 
 
 from auto_round.experimental.hadamard_inplace.hadamard_matrix import *
+
+
+def is_pow2(n):
+    return (n & (n - 1) == 0) and (n > 0)
 
 
 # Adapted from https://github.com/Cornell-RelaxML/quip-sharp/blob/main/lib/utils/matmul_had.py
@@ -316,9 +450,19 @@ def random_hadamard_matrix(size, device):
     return matmul_hadU(Q).to(device)
 
 
+def deterministic_hadamard_matrix(size, device):
+    """Build a deterministic Hadamard matrix of the given *size*.
+
+    Applies the butterfly ``matmul_hadU`` to an identity matrix so that the
+    result is purely determined by ``get_hadK`` (no random sign flips).
+    """
+    Q = torch.eye(size, dtype=torch.float64)
+    return matmul_hadU(Q).to(device)
+
+
 def matmul_hadU_cuda(X, hadK, K, use_fast_had=True):
     n = X.shape[-1]
-    if not use_fast_had:
+    if not use_fast_had or fast_hadamard_transform is None:
         return matmul_hadU(X)
     if K == 1:
         return fast_hadamard_transform.hadamard_transform(X.contiguous(), 1.0 / torch.tensor(n).sqrt())
@@ -334,11 +478,25 @@ def matmul_hadUt_cuda(X, hadK, K, use_fast_had=True):
     return matmul_hadU_cuda(X, hadK, K, use_fast_had=use_fast_had)
 
 
-def apply_exact_had_to_linear(module, had_dim=-1, output=False, use_fast_had=True, compute_device=None):
+def apply_exact_had_to_linear(module, had_dim=-1, output=False, use_fast_had=True, compute_device=None,
+                              had_matrix=None):
+    """Apply Hadamard rotation to a Linear layer's weight in-place.
+
+    Args:
+        module: ``nn.Linear`` layer.
+        had_dim: Dimension of each Hadamard block (``-1`` for full dimension).
+        output: If ``True`` rotate the output (row) side; otherwise input (col).
+        use_fast_had: Use ``fast_hadamard_transform`` when available.
+        compute_device: Device to run computation on.
+        had_matrix: Optional custom rotation matrix.  When ``had_dim == -1``
+            this should be a square tensor whose size equals
+            ``out_features`` (output) or ``in_features`` (input).  When
+            ``had_dim > 0`` the size should equal ``had_dim``.
+    """
     assert isinstance(module, torch.nn.Linear)
     in_features, out_features = module.in_features, module.out_features
 
-    if had_dim != -1:
+    if had_dim != -1 and had_matrix is None:
         assert is_pow2(had_dim), "Hadamard dimension must be a power of 2!"
 
     W_ = module.weight.data
@@ -348,7 +506,28 @@ def apply_exact_had_to_linear(module, had_dim=-1, output=False, use_fast_had=Tru
     compute_dev = _resolve_compute_device(compute_device)
     W_ = W_.double().to(compute_dev)
 
-    if had_dim == -1:
+    if had_matrix is not None:
+        H = had_matrix.to(device=compute_dev, dtype=torch.float64)
+        if had_dim == -1:
+            # Full-dimension custom matrix
+            if output:
+                # W.T = H @ W.T  →  W = (H @ W.T).T = W @ H.T
+                W_ = W_ @ H.T
+            else:
+                # W = H @ W  (rotate input columns: W_new[i,:] = sum H[i,j]*W[j,:])
+                # Actually for input side: W_new = W @ H (each row is rotated)
+                W_ = W_ @ H.T
+        else:
+            # Per-block custom matrix
+            if output:
+                W_ = W_.t()
+                transposed_shape = W_.shape
+                flat = W_.reshape(-1, had_dim)
+                W_ = (flat @ H.T).reshape(transposed_shape).t()
+            else:
+                flat = W_.reshape(-1, had_dim)
+                W_ = (flat @ H.T).reshape(init_shape)
+    elif had_dim == -1:
         if output:
             had_K, K = get_hadK(out_features)
             W_ = matmul_hadU_cuda(W_.t(), had_K, K, use_fast_had=use_fast_had).t()
@@ -360,7 +539,7 @@ def apply_exact_had_to_linear(module, had_dim=-1, output=False, use_fast_had=Tru
         if output:
             W_ = W_.t()
             transposed_shape = W_.shape
-            if use_fast_had:
+            if use_fast_had and fast_hadamard_transform is not None:
                 W_ = (
                     fast_hadamard_transform.hadamard_transform(
                         W_.reshape(-1, transposed_shape[-1] // had_dim, had_dim), scale=1 / math.sqrt(had_dim)
@@ -371,19 +550,67 @@ def apply_exact_had_to_linear(module, had_dim=-1, output=False, use_fast_had=Tru
             else:
                 W_ = matmul_hadU(W_.reshape(-1, had_dim)).reshape(transposed_shape).t()
         else:
-            if use_fast_had:
+            if use_fast_had and fast_hadamard_transform is not None:
                 n = W_.shape[1]
                 W_ = fast_hadamard_transform.hadamard_transform(
                     W_.reshape(-1, n // had_dim, had_dim), scale=1 / math.sqrt(had_dim)
                 ).reshape(init_shape)
             else:
-                n = W_.shape[1]
                 W_ = matmul_hadU(W_.reshape(-1, had_dim)).reshape(init_shape)
     module.weight.data = W_.to(device=dev, dtype=dtype)
 
 
-def is_pow2(n):
-    return (n & (n - 1) == 0) and (n > 0)
+def apply_cross_head_had_to_linear(module, num_heads, head_dim, use_fast_had=True, compute_device=None,
+                                   had_matrix=None):
+    """Apply a cross-head Hadamard rotation to a Linear layer's input side.
+
+    The operation is equivalent to ``(H_cross ⊗ I_head_dim)`` applied to the
+    input columns:
+
+    * Reshape columns ``(hidden_size,)`` → ``(num_heads, head_dim)``
+    * Transpose → ``(head_dim, num_heads)``
+    * Hadamard on the ``num_heads`` axis
+    * Transpose back and reshape
+
+    This mirrors what :class:`CrossHeadOnlineHadamardHook` does at runtime.
+
+    Args:
+        module: ``nn.Linear`` layer whose ``in_features == num_heads * head_dim``.
+        num_heads: Number of attention heads.
+        head_dim: Per-head dimension.
+        use_fast_had: Use ``fast_hadamard_transform`` when available.
+        compute_device: Device to run computation on.
+        had_matrix: Optional custom rotation matrix of shape ``(num_heads, num_heads)``.
+    """
+    assert isinstance(module, torch.nn.Linear)
+    W_ = module.weight.data
+    dtype = W_.dtype
+    dev = W_.device
+    compute_dev = _resolve_compute_device(compute_device)
+    W_ = W_.double().to(compute_dev)
+
+    out_f = W_.shape[0]
+    # W shape: (out_features, hidden_size) where hidden_size = num_heads * head_dim
+    # Reshape columns: (out_f, num_heads, head_dim)
+    W_ = W_.reshape(out_f, num_heads, head_dim)
+    # Transpose last two dims: (out_f, head_dim, num_heads)
+    W_ = W_.transpose(1, 2).contiguous()
+
+    if had_matrix is not None:
+        H = had_matrix.to(device=compute_dev, dtype=torch.float64)
+        # Apply H on last dim (num_heads): flat @ H.T
+        flat = W_.reshape(-1, num_heads)
+        W_ = (flat @ H.T).reshape(out_f, head_dim, num_heads)
+    elif use_fast_had and fast_hadamard_transform is not None and is_pow2(num_heads):
+        W_ = fast_hadamard_transform.hadamard_transform(
+            W_, scale=1.0 / math.sqrt(num_heads)
+        )
+    else:
+        W_ = matmul_hadU(W_.reshape(-1, num_heads)).reshape(out_f, head_dim, num_heads)
+
+    # Transpose back: (out_f, num_heads, head_dim) → (out_f, hidden_size)
+    W_ = W_.transpose(1, 2).contiguous().reshape(out_f, num_heads * head_dim)
+    module.weight.data = W_.to(device=dev, dtype=dtype)
 
 
 # ---------------------------------------------------------------------------
@@ -398,13 +625,18 @@ class GroupOnlineHadamardHook(nn.Module):
     per group, then reshapes back.  Much cheaper than a full-dimension Hadamard.
     """
 
-    def __init__(self, group_size, fp32_had=False, use_fast_had=True):
+    def __init__(self, group_size, fp32_had=False, use_fast_had=True, had_matrix=None):
         super().__init__()
         self.group_size = group_size
         self.fp32_had = fp32_had
         self.use_fast_had = use_fast_had
-        # For non-power-of-2 group_size, pre-compute had_K
-        if not is_pow2(group_size):
+        self.custom_had = had_matrix is not None
+
+        if had_matrix is not None:
+            self.register_buffer("had_matrix", had_matrix)
+            self.had_K = None
+            self.K = None
+        elif not is_pow2(group_size):
             had_K, K = get_hadK(group_size)
             if had_K is not None:
                 self.register_buffer("had_K", had_K)
@@ -427,15 +659,12 @@ class GroupOnlineHadamardHook(nn.Module):
         # Reshape: (*, D) → (*, D//gs, gs)
         x = x.reshape(*init_shape[:-1], init_shape[-1] // gs, gs)
 
-        if self.use_fast_had and fast_hadamard_transform is not None and self.K == 1:
+        if self.custom_had:
+            H = self.had_matrix.to(x.dtype)
+            flat = x.reshape(-1, gs)
+            x = (flat @ H.T).reshape(*init_shape[:-1], init_shape[-1] // gs, gs)
+        elif self.use_fast_had and fast_hadamard_transform is not None and self.K == 1:
             x = fast_hadamard_transform.hadamard_transform(x, scale=1.0 / math.sqrt(gs))
-        elif self.had_K is not None:
-            # had_K is (K, K), x last two dims are (n_groups, gs)
-            # We need to apply had to the gs dimension
-            # x shape: (*, n_groups, gs) → treat as batch over (*, n_groups), had on gs
-            x = x.reshape(-1, gs)  # (batch, gs)
-            x = matmul_hadU(x)
-            x = x.reshape(*init_shape[:-1], init_shape[-1] // gs, gs)
         else:
             x = x.reshape(-1, gs)
             x = matmul_hadU(x)
@@ -451,7 +680,7 @@ class GroupOnlineHadamardHook(nn.Module):
         return x
 
 
-def _apply_grouped_had_to_weight(W, group_size, side="input", use_fast_had=True):
+def _apply_grouped_had_to_weight(W, group_size, side="input", use_fast_had=True, had_matrix=None):
     """Apply block-diagonal Hadamard to a weight matrix.
 
     Args:
@@ -460,6 +689,8 @@ def _apply_grouped_had_to_weight(W, group_size, side="input", use_fast_had=True)
         side: ``'input'`` rotates columns (in_features dim),
               ``'output'`` rotates rows (out_features dim).
         use_fast_had: Use fast_hadamard_transform if available.
+        had_matrix: Optional custom Hadamard matrix of shape ``(gs, gs)``
+            to use instead of the built-in Hadamard.
 
     Returns:
         Rotated weight tensor.
@@ -468,32 +699,34 @@ def _apply_grouped_had_to_weight(W, group_size, side="input", use_fast_had=True)
     dtype = W.dtype
     W = W.double()
 
+    def _had_on_last_dim(X):
+        """Apply Hadamard on the last dimension (size gs) of X shaped (..., gs)."""
+        if had_matrix is not None:
+            H = had_matrix.to(device=X.device, dtype=X.dtype)
+            # X: (..., gs) → batch matmul with H^T  →  X @ H^T
+            flat = X.reshape(-1, gs)
+            return (flat @ H.T).reshape(X.shape)
+        if use_fast_had and fast_hadamard_transform is not None and is_pow2(gs):
+            return fast_hadamard_transform.hadamard_transform(X, scale=1.0 / math.sqrt(gs))
+        orig_shape = X.shape
+        return matmul_hadU(X.reshape(-1, gs)).reshape(orig_shape)
+
     if side == "input":
-        # Rotate columns: W @ Q_block_diag
-        # W: (out, in) → (out, in//gs, gs) → Had on gs → (out, in)
         out_f, in_f = W.shape
         W = W.reshape(out_f, in_f // gs, gs)
-        if use_fast_had and fast_hadamard_transform is not None and is_pow2(gs):
-            W = fast_hadamard_transform.hadamard_transform(W, scale=1.0 / math.sqrt(gs))
-        else:
-            W = matmul_hadU(W.reshape(-1, gs)).reshape(out_f, in_f // gs, gs)
+        W = _had_on_last_dim(W)
         W = W.reshape(out_f, in_f)
     else:
-        # Rotate rows: Q_block_diag^T @ W = (Q_block_diag @ W^T)^T
-        # W: (out, in) → W^T: (in, out) → (in, out//gs, gs) → Had on gs → W^T back
         out_f, in_f = W.shape
-        Wt = W.t().contiguous()  # (in, out)
+        Wt = W.t().contiguous()
         Wt = Wt.reshape(in_f, out_f // gs, gs)
-        if use_fast_had and fast_hadamard_transform is not None and is_pow2(gs):
-            Wt = fast_hadamard_transform.hadamard_transform(Wt, scale=1.0 / math.sqrt(gs))
-        else:
-            Wt = matmul_hadU(Wt.reshape(-1, gs)).reshape(in_f, out_f // gs, gs)
+        Wt = _had_on_last_dim(Wt)
         W = Wt.reshape(in_f, out_f).t().contiguous()
 
     return W.to(dtype)
 
 
-def _rotate_linear_grouped(module, group_size, side="input", use_fast_had=True, compute_device=None):
+def _rotate_linear_grouped(module, group_size, side="input", use_fast_had=True, compute_device=None, had_matrix=None):
     """Apply block-diagonal Hadamard rotation to a Linear layer's weight.
 
     Args:
@@ -502,28 +735,32 @@ def _rotate_linear_grouped(module, group_size, side="input", use_fast_had=True, 
         side: ``'input'`` or ``'output'``.
         use_fast_had: Use fast_hadamard_transform.
         compute_device: Device to run computation on. If None, auto-detects GPU.
+        had_matrix: Optional custom Hadamard matrix of shape ``(gs, gs)``.
     """
     dtype = module.weight.data.dtype
     dev = module.weight.data.device
     compute_dev = _resolve_compute_device(compute_device)
     W = module.weight.data.to(device=compute_dev, dtype=torch.float64)
-    W = _apply_grouped_had_to_weight(W, group_size, side=side, use_fast_had=use_fast_had)
+    W = _apply_grouped_had_to_weight(W, group_size, side=side, use_fast_had=use_fast_had, had_matrix=had_matrix)
     module.weight.data = W.to(device=dev, dtype=dtype)
 
     if side == "output" and module.bias is not None:
         bias = module.bias.data.to(device=compute_dev, dtype=torch.float64)
         gs = group_size
         bias = bias.reshape(-1, gs)
-        if use_fast_had and fast_hadamard_transform is not None and is_pow2(gs):
+        if had_matrix is not None:
+            H = had_matrix.to(device=compute_dev, dtype=torch.float64)
+            bias = (bias @ H.T).reshape(-1)
+        elif use_fast_had and fast_hadamard_transform is not None and is_pow2(gs):
             bias = fast_hadamard_transform.hadamard_transform(
                 bias.unsqueeze(0), scale=1.0 / math.sqrt(gs)
-            ).squeeze(0)
+            ).squeeze(0).reshape(-1)
         else:
-            bias = matmul_hadU(bias)
-        module.bias.data = bias.reshape(-1).to(device=dev, dtype=dtype)
+            bias = matmul_hadU(bias).reshape(-1)
+        module.bias.data = bias.to(device=dev, dtype=dtype)
 
 
-def _rotate_embedding_grouped(embedding, group_size, use_fast_had=True, compute_device=None):
+def _rotate_embedding_grouped(embedding, group_size, use_fast_had=True, compute_device=None, had_matrix=None):
     """Apply block-diagonal Hadamard rotation to an Embedding layer.
 
     Embedding weight: (vocab, hidden_size) → rotate on hidden_size (columns).
@@ -532,7 +769,7 @@ def _rotate_embedding_grouped(embedding, group_size, use_fast_had=True, compute_
     dev = embedding.weight.data.device
     compute_dev = _resolve_compute_device(compute_device)
     W = embedding.weight.data.to(device=compute_dev, dtype=torch.float64)
-    W = _apply_grouped_had_to_weight(W, group_size, side="input", use_fast_had=use_fast_had)
+    W = _apply_grouped_had_to_weight(W, group_size, side="input", use_fast_had=use_fast_had, had_matrix=had_matrix)
     embedding.weight.data = W.to(device=dev, dtype=dtype)
 
 

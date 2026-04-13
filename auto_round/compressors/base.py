@@ -571,7 +571,7 @@ class BaseCompressor(object):
             # group_size = _hcfg.block_size  # e.g. 32 for MXFP4
 
             self.model.to("cuda")
-            apply_hadamard_rotation(self.model, use_fast_had=False,group_size = self.group_size)
+            apply_hadamard_rotation(self.model, group_size=self.group_size, allow_online_hadamard=False)
 
             # from auto_round.experimental.transform.apply import apply_hadamard_transform
             # from auto_round.experimental.utils import check_supported_schemes, normalize_hadamard_config
