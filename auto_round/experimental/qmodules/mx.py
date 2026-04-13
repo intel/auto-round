@@ -251,7 +251,6 @@ class MXINT4QuantLinear(MXQuantLinearBase):
         return qdq_linear
 
 
-
 class MXFP8QuantLinear(MXQuantLinearBase):
     """
     Quantized linear layer using the MXFP8 quantization scheme.
