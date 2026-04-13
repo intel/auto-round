@@ -529,14 +529,14 @@ class WrapperWALayer(torch.nn.Module):
 
         # 2) Activation quantization on the smoothed activation
         act_max = self.orig_layer.act_max if hasattr(self.orig_layer, "act_max") else None
-        if self.orig_layer.group_size == -1:
-            tensor = x.reshape(-1, x.shape[-1])
-        elif self.orig_layer.group_size > 0:
-            tensor = x.reshape(-1, self.orig_layer.group_size)
-        else:
-            tensor = x.reshape(-1)
-        tensor_min = torch.clamp(tensor.min(-1)[0], max=0) * 0.9
-        tensor_max = torch.clamp(tensor.max(-1)[0], min=0) * 0.9
+        # if self.orig_layer.group_size == -1:
+        #     tensor = x.reshape(-1, x.shape[-1])
+        # elif self.orig_layer.group_size > 0:
+        #     tensor = x.reshape(-1, self.orig_layer.group_size)
+        # else:
+        #     tensor = x.reshape(-1)
+        # tensor_min = torch.clamp(tensor.min(-1)[0], max=0) * 0.9
+        # tensor_max = torch.clamp(tensor.max(-1)[0], min=0) * 0.9
         x, _, _ = self.orig_layer.act_quant_func(
             x,
             bits=self.orig_layer.act_bits,
@@ -544,8 +544,9 @@ class WrapperWALayer(torch.nn.Module):
             scale_dtype=self.orig_layer.scale_dtype,
             q_scale_thresh=self.orig_layer.q_scale_thresh,
             data_type=self.orig_layer.act_data_type,
-            tensor_min=tensor_min,
-            tensor_max=tensor_max,
+            act_max = act_max
+            # tensor_min=tensor_min,
+            # tensor_max=tensor_max,
         )
         # 3) Linear computation via orig_layer (pre_hooks already removed, no double execution)
         return self.orig_layer.forward(x)
