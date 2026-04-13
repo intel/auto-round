@@ -681,9 +681,16 @@ def diffusion_load_model(
                         component_config = json.load(file)
                     torch_dtype[k] = component_config.get("torch_dtype", "auto")
 
-        pipe = pipelines.auto_pipeline.AutoPipelineForText2Image.from_pretrained(
-            pretrained_model_name_or_path, torch_dtype=torch_dtype
-        )
+        try:
+            pipe = pipelines.auto_pipeline.AutoPipelineForText2Image.from_pretrained(
+                pretrained_model_name_or_path, torch_dtype=torch_dtype
+            )
+        except ValueError as exc:
+            if "AutoPipeline can't find a pipeline linked" not in str(exc):
+                raise
+            pipe = pipelines.pipeline_utils.DiffusionPipeline.from_pretrained(
+                pretrained_model_name_or_path, torch_dtype=torch_dtype
+            )
         pipe_config = pipe.load_config(pretrained_model_name_or_path)
 
     elif isinstance(pretrained_model_name_or_path, pipelines.pipeline_utils.DiffusionPipeline):

@@ -1761,9 +1761,10 @@ class BaseCompressor(object):
         formats = self.formats if hasattr(self, "formats") else None
         # It is best to modify the model structure in the quantize function and check the format,
         # because it may cause the gguf format to not be exported normally.
-        self.model = update_module(
-            self.model, formats=formats, trust_remote_code=self.trust_remote_code, cleanup_original=False
-        )
+        if not self.diffusion:
+            self.model = update_module(
+                self.model, formats=formats, trust_remote_code=self.trust_remote_code, cleanup_original=False
+            )
 
         # Temporary names must be assigned after handle_moe_model;
         # placing them earlier would cause them to be removed when the module is replaced.
@@ -2320,7 +2321,8 @@ class BaseCompressor(object):
                             max_memory=new_max_memory,
                             no_split_module_classes=no_split_modules,
                         )
-                        self.model.tie_weights()
+                        if hasattr(self.model, "tie_weights"):
+                            self.model.tie_weights()
                         device_map = infer_auto_device_map(
                             self.model, max_memory=new_max_memory, no_split_module_classes=no_split_modules
                         )
@@ -2979,7 +2981,7 @@ class BaseCompressor(object):
         if auto_offload:
             # card_0_in_high_risk indicates that card_0 memory is already in high usage (90%) w/o any weights
             # loss_device is used to calculate loss on the second device if available and card_0_in_high_risk
-            if is_auto_device_mapping(self.device_map) and len(self.device_list) > 1:
+            if is_auto_device_mapping(self.device_map) and len(self.device_list) > 1 and not self.diffusion:
                 card_0_in_high_risk, loss_device = set_auto_device_map_for_block_with_tuning(
                     block, self.device_map, input_ids, self.low_gpu_mem_usage, self.batch_size, device
                 )
@@ -2989,7 +2991,7 @@ class BaseCompressor(object):
         else:
             card_0_in_high_risk, loss_device = False, device
 
-        if len(self.device_list) > 1 and auto_offload:
+        if len(self.device_list) > 1 and auto_offload and not self.diffusion:
             for n, m in block.named_modules():
                 if len(list(m.children())) != 0 or not hasattr(m, "tuning_device"):
                     continue

@@ -13,11 +13,13 @@
 # limitations under the License.
 
 import os
+import inspect
 from collections import defaultdict
 from copy import deepcopy
 from typing import Union
 
 import torch
+from PIL import Image
 from tqdm import tqdm
 
 from auto_round.compressors.base import BaseCompressor
@@ -29,10 +31,12 @@ from auto_round.schemes import QuantizationScheme
 from auto_round.utils import (
     LazyImport,
     clear_memory,
+    dispatch_model_block_wise,
     diffusion_load_model,
     extract_block_names_to_str,
     find_matching_blocks,
     get_block_names,
+    is_auto_device_mapping,
     merge_block_output_keys,
     wrap_block_forward_positional_to_kwargs,
 )
@@ -42,6 +46,7 @@ pipeline_utils = LazyImport("diffusers.pipelines.pipeline_utils")
 output_configs = {
     "FluxTransformerBlock": ["encoder_hidden_states", "hidden_states"],
     "FluxSingleTransformerBlock": ["encoder_hidden_states", "hidden_states"],
+    "WanTransformerBlock": ["hidden_states"],
 }
 
 
@@ -164,6 +169,11 @@ class DiffusionCompressor(BaseCompressor):
         )
 
     def _update_inputs(self, inputs: dict, q_inputs: dict) -> tuple[dict, dict]:
+        if self._uses_single_hidden_state_input():
+            if q_inputs is not None:
+                q_inputs = q_inputs.pop("hidden_states", None)
+            return inputs, q_inputs
+
         # flux transformer model's blocks will update hidden_states and encoder_hidden_states
         input_id_str = [key for key in inputs.keys() if "hidden_state" in key]
         if q_inputs is not None:
@@ -173,7 +183,30 @@ class DiffusionCompressor(BaseCompressor):
     def _get_block_forward_func(self, name):
         return wrap_block_forward_positional_to_kwargs(super()._get_block_forward_func(name))
 
+    def _uses_single_hidden_state_input(self) -> bool:
+        first_block_name = self.quant_block_list[0][0]
+        first_block = self.model.get_submodule(first_block_name)
+        return output_configs.get(first_block.__class__.__name__, []) == ["hidden_states"]
+
+    def _requires_calibration_image(self) -> bool:
+        image_param = inspect.signature(self.pipe.__call__).parameters.get("image")
+        return image_param is not None and image_param.default is inspect._empty
+
+    def _get_calibration_image(self, batch_size: int):
+        params = inspect.signature(self.pipe.__call__).parameters
+        width = params.get("width").default if "width" in params else 832
+        height = params.get("height").default if "height" in params else 480
+        image = Image.new("RGB", (width, height), color=(127, 127, 127))
+        if batch_size == 1:
+            return image
+        return [image.copy() for _ in range(batch_size)]
+
     def _split_inputs(self, inputs: dict, first_input_name: str) -> tuple[dict, dict]:
+        if self._uses_single_hidden_state_input():
+            input_ids = inputs.pop("hidden_states", None)
+            input_others = inputs
+            return input_ids, input_others
+
         input_id_str = [key for key in inputs.keys() if "hidden_state" in key]
         input_ids = {k: inputs.pop(k, None) for k in input_id_str}
         input_others = inputs
@@ -256,8 +289,15 @@ class DiffusionCompressor(BaseCompressor):
                 tmp_input_ids = hidden_states
 
             tmp_output = block_forward(block, tmp_input_ids, tmp_input_others, self.amp, self.amp_dtype, device, None)
-            assert len(output_config) == len(tmp_output)
-            tmp_output = dict(zip(output_config, tmp_output))
+            if isinstance(tmp_output, torch.Tensor):
+                if len(output_config) != 1:
+                    raise AssertionError(
+                        f"Expected a single output name for {block.__class__.__name__}, got {output_config}"
+                    )
+                tmp_output = {output_config[0]: tmp_output}
+            else:
+                assert len(output_config) == len(tmp_output)
+                tmp_output = dict(zip(output_config, tmp_output))
 
             if save_output:
                 for name, out in tmp_output.items():
@@ -277,6 +317,15 @@ class DiffusionCompressor(BaseCompressor):
     ) -> int:
         current_input_ids = [input_ids["hidden_states"][i] for i in indices]
         return sum(id.numel() for id in current_input_ids)
+
+    def cache_inter_data(self, block_names, nsamples, layer_names=None, last_cache_name=None):
+        """Dispatch multi-device before caching so accelerate hooks are added before _replace_forward."""
+        multi_device_diffusion = is_auto_device_mapping(self.device_map) and len(self.device_list) > 1
+        if multi_device_diffusion:
+            if not (hasattr(self.model, "hf_device_map") and len(self.model.hf_device_map) > 1):
+                self.model = dispatch_model_block_wise(self.model, self.device_map)
+                self.pipe.transformer = self.model
+        return super().cache_inter_data(block_names, nsamples, layer_names, last_cache_name)
 
     def calib(self, nsamples, bs):
         """Perform calibration for quantization.
@@ -308,7 +357,17 @@ class DiffusionCompressor(BaseCompressor):
         total_cnt = 0
 
         total = nsamples if not hasattr(self.dataloader, "len") else min(nsamples, len(self.dataloader))
-        if self.pipe.dtype != self.model.dtype:
+        multi_device_diffusion = is_auto_device_mapping(self.device_map) and len(self.device_list) > 1
+
+        if multi_device_diffusion:
+            for name, component in self.pipe.components.items():
+                if component is None or name == "transformer" or component is self.model:
+                    continue
+                if hasattr(component, "to"):
+                    component.to(self.device)
+                    if hasattr(component, "dtype") and component.dtype != self.model.dtype:
+                        component.to(dtype=self.model.dtype)
+        elif self.pipe.dtype != self.model.dtype:
             self.pipe.to(self.model.dtype)
 
         if (
@@ -324,24 +383,28 @@ class DiffusionCompressor(BaseCompressor):
             )
             exit(-1)
 
-        if self.pipe.device != self.model.device:
+        if not multi_device_diffusion and self.pipe.device != self.model.device:
             self.pipe.to(self.model.device)
-        self.pipe.to(self.model.dtype)
+        if not multi_device_diffusion:
+            self.pipe.to(self.model.dtype)
         with tqdm(range(1, total + 1), desc="cache block inputs") as pbar:
             for ids, prompts in self.dataloader:
                 if isinstance(prompts, tuple):
                     prompts = list(prompts)
+                pipe_kwargs = {
+                    "prompt": prompts,
+                    "guidance_scale": self.guidance_scale,
+                    "num_inference_steps": self.num_inference_steps,
+                    "generator": (
+                        None
+                        if self.generator_seed is None
+                        else torch.Generator(device=self.pipe.device).manual_seed(self.generator_seed)
+                    ),
+                }
+                if self._requires_calibration_image():
+                    pipe_kwargs["image"] = self._get_calibration_image(len(prompts))
                 try:
-                    self.pipe(
-                        prompt=prompts,
-                        guidance_scale=self.guidance_scale,
-                        num_inference_steps=self.num_inference_steps,
-                        generator=(
-                            None
-                            if self.generator_seed is None
-                            else torch.Generator(device=self.pipe.device).manual_seed(self.generator_seed)
-                        ),
-                    )
+                    self.pipe(**pipe_kwargs)
                 except NotImplementedError:
                     pass
                 except Exception as error:
@@ -441,5 +504,6 @@ class DiffusionCompressor(BaseCompressor):
                 )
             elif val is not None and hasattr(val, "save_pretrained"):
                 val.save_pretrained(sub_module_path)
-        self.pipe.config.save_pretrained(output_dir)
+        if hasattr(self.pipe, "save_config"):
+            self.pipe.save_config(output_dir)
         return compressed_model

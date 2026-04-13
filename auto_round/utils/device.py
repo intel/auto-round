@@ -1348,7 +1348,8 @@ def dispatch_model_block_wise(model: torch.nn.Module, device_map: str, max_mem_r
         max_memory=new_max_memory,
         no_split_module_classes=no_split_modules,
     )
-    model.tie_weights()
+    if hasattr(model, "tie_weights"):
+        model.tie_weights()
     device_map = infer_auto_device_map(model, max_memory=new_max_memory, no_split_module_classes=no_split_modules)
     if len(devices) > 1 and "cpu" in device_map.values():
         logger.warning(

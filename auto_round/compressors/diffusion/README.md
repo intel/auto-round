@@ -67,7 +67,9 @@ For diffusion models, currently we only validate quantizaion on the FLUX.1-dev, 
 | Model     | calibration dataset |
 |--------------|--------------|
 | black-forest-labs/FLUX.1-dev | COCO2014      |
-
+| Wan-AI/Wan2.2-I2V-A14B-Diffusers | COCO2014      |
+| Wan-AI/Wan2.2-TI2V-5B-Diffusers | COCO2014      |
+| Wan-AI/Wan2.2-T2V-A14B-Diffusers | COCO2014      |
 
 
 <details>
