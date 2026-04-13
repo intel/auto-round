@@ -293,29 +293,29 @@ def eval_with_vllm(args):
         # already set externally, do not overwrite it — but still derive
         # `tensor_parallel_size` from the existing value.
         assert device in DEVICE_ENVIRON_VARIABLE_MAPPING, f"Device {device} not supported for vllm tensor parallelism."
-        environ_name = DEVICE_ENVIRON_VARIABLE_MAPPING[device]
+        env_name = DEVICE_ENVIRON_VARIABLE_MAPPING[device]
         device_map = args.device_map
         device_ids = [d.strip() for d in str(device_map).split(",") if d.strip().isdigit()]
 
         from auto_round.logger import logger
 
-        existing_env = os.environ.get(environ_name)
+        existing_env = os.environ.get(env_name)
         if existing_env:
             existing_ids = [d.strip() for d in existing_env.split(",") if d.strip()]
             if existing_ids:
                 tensor_parallel_size = len(existing_ids)
                 vllm_kwargs["tensor_parallel_size"] = tensor_parallel_size
                 logger.info(
-                    f"Detected existing {environ_name}={existing_env}, skipping overwrite; "
-                    f"tensor_parallel_size={tensor_parallel_size} derived from {environ_name}"
+                    f"Detected existing {env_name}={existing_env}, skipping overwrite; "
+                    f"tensor_parallel_size={tensor_parallel_size} derived from {env_name}"
                 )
         elif device_ids:
             device_id_str = ",".join(device_ids)
-            os.environ[environ_name] = device_id_str
+            os.environ[env_name] = device_id_str
             tensor_parallel_size = len(device_ids)
             vllm_kwargs["tensor_parallel_size"] = tensor_parallel_size
 
-            logger.info(f"Set {environ_name}={os.environ[environ_name]}, tensor_parallel_size={tensor_parallel_size}")
+            logger.info(f"Set {env_name}={os.environ[env_name]}, tensor_parallel_size={tensor_parallel_size}")
 
     vllm_lm = VLLM_VLM(**vllm_kwargs) if args.mllm else VLLM(**vllm_kwargs)
     res = evaluator.simple_evaluate(

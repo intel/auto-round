@@ -669,13 +669,15 @@ def diffusion_load_model(
     try:
         from transformers import AutoConfig
 
-        config = AutoConfig.from_pretrained(pretrained_model_name_or_path, trust_remote_code=True)
+        config = AutoConfig.from_pretrained(pretrained_model_name_or_path, trust_remote_code=trust_remote_code)
     except:
         config = None
 
     model_type = getattr(config, "model_type", "")
     # A special case for NextStep
     if model_type == "nextstep":
+        from auto_round.special_model_handler import load_next_step_diffusion
+
         pipe, model = load_next_step_diffusion(pretrained_model_name_or_path, device_str)
         return pipe, pipe.model
 
@@ -1925,38 +1927,6 @@ def wrap_block_forward_positional_to_kwargs(base_hook):
         return base_hook(m, hidden_states, *positional_inputs, **kwargs)
 
     return forward
-
-
-def load_next_step_diffusion(pretrained_model_name_or_path, device_str):
-    from models.gen_pipeline import NextStepPipeline  # pylint: disable=E0401
-    from transformers import AutoModel, AutoTokenizer
-
-    tokenizer = AutoTokenizer.from_pretrained(
-        pretrained_model_name_or_path, local_files_only=True, trust_remote_code=True
-    )
-    model = AutoModel.from_pretrained(pretrained_model_name_or_path, local_files_only=True, trust_remote_code=True)
-    # The model is loaded onto the device because more than one block requires input data.
-    pipe = NextStepPipeline(tokenizer=tokenizer, model=model).to(device=device_str, dtype=torch.bfloat16)
-
-    def _nextstep_pipeline_fn(pipe, prompts, guidance_scale=7.5, num_inference_steps=28, generator=None, **kwargs):
-        """Default pipeline_fn for NextStep models.
-
-        Maps standard :class:`DiffusionCompressor` parameters to NextStep's
-        ``generate_image`` API.  Pass a custom ``pipeline_fn`` to
-        :class:`DiffusionCompressor` to override defaults or supply
-        model-specific kwargs (e.g. ``hw``, ``positive_prompt``,
-        ``cfg_schedule``, ``timesteps_shift``).
-        """
-        for prompt in (prompts if isinstance(prompts, list) else [prompts]):
-            pipe.generate_image(
-                prompt,
-                cfg=guidance_scale,
-                num_sampling_steps=num_inference_steps,
-                **kwargs,
-            )
-
-    pipe._autoround_pipeline_fn = _nextstep_pipeline_fn
-    return pipe, model
 
 
 def config_save_pretrained(config, file_name, save_directory, model=None):
