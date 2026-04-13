@@ -38,7 +38,7 @@ from auto_round.utils import (
     mllm_load_model,
     unsupported_meta_device,
 )
-from auto_round.utils.device import _maybe_trim_malloc
+from auto_round.utils.device import _force_trim_malloc
 
 __all__ = ["ModelContext"]
 
@@ -124,7 +124,7 @@ class ModelContext(BaseContext):
         # Reclaim C heap fragmentation left by model/tokenizer loading so
         # that the quantize loop starts from a tighter RSS baseline.
         gc.collect()
-        _maybe_trim_malloc()
+        _force_trim_malloc()
 
     def _load_model(self):
         if is_mllm_model(self.model, platform=self.platform):
@@ -170,6 +170,13 @@ class ModelContext(BaseContext):
                         "This MoE model has not been optimized by AutoRound yet, which may result in high RAM usage, "
                         "Please consider submitting an issue to https://github.com/intel/auto-round/issues"
                     )
+
+            # Reclaim temporary HTTP/config objects from model type detection
+            # and AutoConfig loading before the large model allocation.  This
+            # reduces heap fragmentation especially on HPU where habana internal
+            # allocations amplify fragmentation into persistent RSS growth.
+            gc.collect()
+            _force_trim_malloc()
 
             self.model, self.tokenizer = llm_load_model(
                 self.model,

@@ -62,7 +62,7 @@ from auto_round.utils import (
     wrap_block_forward_positional_to_kwargs,
 )
 from auto_round.utils.device import (
-    _maybe_trim_malloc,
+    _force_trim_malloc,
     parse_available_devices,
 )
 from auto_round.wrapper import WrapperLinear, WrapperMultiblock
@@ -1012,7 +1012,7 @@ class CalibCompressor(BaseCompressor):
 
         # Reclaim heap fragmentation from init/post_init before the memory-intensive quantize loop.
         gc.collect()
-        _maybe_trim_malloc()
+        _force_trim_malloc()
 
         self._check_compatibility()
 

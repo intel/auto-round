@@ -12,6 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 import copy
+import gc
 import os
 import sys
 from dataclasses import asdict, dataclass, fields
@@ -56,7 +57,7 @@ from auto_round.utils import (
     is_quantized_input_module,
     memory_monitor,
 )
-from auto_round.utils.device import set_non_auto_device_map
+from auto_round.utils.device import _force_trim_malloc, get_major_device, set_non_auto_device_map
 from auto_round.utils.offload import OffloadManager
 from auto_round.wrapper import wrapper_block
 
@@ -228,6 +229,26 @@ class BaseCompressor(object):
         # consecutive AutoRound creations don't inherit stale config from earlier ones.
         CompressContext.reset_context()
         ModelContext.reset_context()
+
+        # Resolve the device eagerly so ModelContext can be created before
+        # CompressContext.  Creating ModelContext first places the large model
+        # allocation early in the heap, matching the OLD arch allocation order
+        # and reducing C-heap fragmentation (which is amplified on HPU).
+        _device = get_major_device(device_map if device_map is not None else 0)
+
+        self.model_context = ModelContext(
+            model,
+            tokenizer=tokenizer,
+            platform=platform,
+            model_dtype=model_dtype,
+            trust_remote_code=trust_remote_code,
+            amp=amp,
+            need_calib=self.need_calib,
+            device=_device,
+            formats=self.formats,
+            is_act_quantize=self.quantize_config.is_act_quantize,
+            quant_nontext_module=quant_nontext_module,
+        )
         # Alternatively, you can use CompressContext.create_context
         self.compress_context = CompressContext(
             low_cpu_mem_usage,
@@ -239,19 +260,6 @@ class BaseCompressor(object):
             formats=self.formats,
             static_kv_dtype=self.static_kv_dtype,
             static_attention_dtype=self.static_attention_dtype,
-        )
-        self.model_context = ModelContext(
-            model,
-            tokenizer=tokenizer,
-            platform=platform,
-            model_dtype=model_dtype,
-            trust_remote_code=trust_remote_code,
-            amp=amp,
-            need_calib=self.need_calib,
-            device=self.compress_context.device,
-            formats=self.formats,
-            is_act_quantize=self.quantize_config.is_act_quantize,
-            quant_nontext_module=quant_nontext_module,
         )
         self.shard_writer = None
 
@@ -557,6 +565,11 @@ class BaseCompressor(object):
         self._patch_model()
         self._build_layer_config()
         self._hardware_setup()
+
+        # Reclaim heap fragmentation from the five init phases above so that
+        # the quantize loop starts from a tighter RSS baseline.
+        gc.collect()
+        _force_trim_malloc()
 
         self._post_init_done = True
 

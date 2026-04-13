@@ -564,6 +564,25 @@ def _clear_memory_for_cpu_and_cuda(
 _malloc_trim_counter = 0
 
 
+def _force_trim_malloc() -> None:
+    """Unconditionally release glibc heap pages back to the OS on Linux.
+
+    Unlike :func:`_maybe_trim_malloc`, this ignores the call-count throttle and
+    always invokes ``malloc_trim(0)``.  Use at critical lifecycle boundaries
+    (end of model loading, end of post_init, start of quantize loop) where a
+    one-time trim has a meaningful impact on peak RSS.
+    """
+    if os.name != "posix":
+        return
+    if os.environ.get("AR_ENABLE_MALLOC_TRIM", "1") != "1":
+        return
+    try:
+        libc = ctypes.CDLL("libc.so.6")
+        libc.malloc_trim(0)
+    except Exception:
+        pass
+
+
 def _maybe_trim_malloc() -> None:
     """Optionally release glibc heap pages back to OS on Linux.
 
@@ -614,7 +633,7 @@ class ClearMemory:
                     tensor[i] = None
             tensor = None
             gc.collect()
-            _maybe_trim_malloc()
+            _force_trim_malloc()
             memory_monitor.update_hpu(device_list)
             return
         else:
