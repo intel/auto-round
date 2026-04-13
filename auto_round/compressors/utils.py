@@ -95,6 +95,16 @@ def is_static_wfp8afp8(ar_or_format: Union[str, Callable]) -> bool:
     return False
 
 
+def is_wint_woq(ar: Callable) -> bool:
+    """Returns True for integer weight-only quantization with non-quantized activations (`act_bits >= 16`)."""
+    return "int" in ar.data_type and ar.act_bits >= 16 and ar.super_group_size is None
+
+
+def is_wint_a16(ar: Callable) -> bool:
+    """Backward-compatible alias for `is_wint_woq()`."""
+    return is_wint_woq(ar)
+
+
 def is_dynamic_wint8aint8(ar_or_format: Union[str, Callable]) -> bool:
     if isinstance(ar_or_format, str):
         return "int8_w8a8" in ar_or_format.lower()
