@@ -119,6 +119,7 @@ AutoRound 支持多种量化配置：
 - **混合bit**: （实验性功能）请使用 AutoScheme 接口或者使用 API 中的 `layer_config` 参数自己自定义
 - **NVFP4**（实验性功能）推荐导出为`llm_compressor`格式，参数：data_type=nvfp4, act_data_type=nvfp4, static_global_scale, group_size=16
 - **MXFP4**（研究性功能，暂无实际内核）：标准 MXFP4 量化，参数：data_type=mxfp, act_data_type=mxfp, bits=4, act_bits=4, group_size=32
+- **MXINT4**（研究性功能，暂无实际内核）：标准 MXINT4 量化，参数：data_type=mxint, act_data_type=mxint, bits=4, act_bits=4, group_size=32
 - **MXFP4_RCEIL**（研究性功能，暂无实际内核）：NVIDIA变体，参数：data_type=mxfp, act_data_type=mxfp_rceil, bits=4, act_bits=4, group_size=32
 - **MXFP8**（研究性功能，暂无实际内核），参数：data_type=mxfp, act_data_type=mxfp_rceil, group_size=32
 - **FPW8A16**（研究性功能，暂无实际内核），参数：data_type=fp8, group_size=0 -> 每张量

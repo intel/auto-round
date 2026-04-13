@@ -125,6 +125,7 @@ AutoRound supports several Schemes:
 - **Mixed Bits Weight only**
 - **NVFP4**(Experimental feature, recommend exporting to `llm_compressor` format.data_type nvfp4,act_data_type nvfp4,static_global_scale,group_size 16)
 - **MXFP4**(**Research feature, no real kernel**, Standard MXFP4, data_type mxfp,act_data_type mxfp,bits 4, act_bits 4, group_size 32)
+- **MXINT4**(**Research feature, no real kernel**, Standard MXINT4, data_type mxint,act_data_type mxint,bits 4, act_bits 4, group_size 32)
 - **MXFP4_RCEIL**(**Research feature,no real kernel**, NVIDIA's variant, data_type mxfp,act_data_type mxfp_rceil,bits 4, act_bits 4, group_size 32)
 - **MXFP8**(**Research feature, no real kernel**, data_type mxfp,act_data_type mxfp_rceil,group_size 32)
 - **FPW8A16**(**Research feature, no real kernel**, data_type fp8,group_size 0->per tensor )
