@@ -116,21 +116,20 @@ def _normalize_rotation_matrix(rotation_matrix, group_size):
         )
 
     if isinstance(rotation_matrix, torch.Tensor):
-        assert rotation_matrix.ndim == 2 and rotation_matrix.shape[0] == rotation_matrix.shape[1], (
-            f"rotation_matrix must be square, got shape {rotation_matrix.shape}"
-        )
+        assert (
+            rotation_matrix.ndim == 2 and rotation_matrix.shape[0] == rotation_matrix.shape[1]
+        ), f"rotation_matrix must be square, got shape {rotation_matrix.shape}"
         return {rotation_matrix.shape[0]: rotation_matrix}, False, None
 
     if isinstance(rotation_matrix, dict):
         for k, t in rotation_matrix.items():
-            assert isinstance(t, torch.Tensor) and t.ndim == 2 and t.shape[0] == t.shape[1], (
-                f"rotation_matrix[{k}] must be a square tensor, got shape {t.shape}"
-            )
+            assert (
+                isinstance(t, torch.Tensor) and t.ndim == 2 and t.shape[0] == t.shape[1]
+            ), f"rotation_matrix[{k}] must be a square tensor, got shape {t.shape}"
         return rotation_matrix, False, None
 
     raise TypeError(
-        f"rotation_matrix must be a Tensor, dict[int, Tensor], str, or None. "
-        f"Got {type(rotation_matrix)}."
+        f"rotation_matrix must be a Tensor, dict[int, Tensor], str, or None. " f"Got {type(rotation_matrix)}."
     )
 
 
@@ -478,8 +477,9 @@ def matmul_hadUt_cuda(X, hadK, K, use_fast_had=True):
     return matmul_hadU_cuda(X, hadK, K, use_fast_had=use_fast_had)
 
 
-def apply_exact_had_to_linear(module, had_dim=-1, output=False, use_fast_had=True, compute_device=None,
-                              had_matrix=None):
+def apply_exact_had_to_linear(
+    module, had_dim=-1, output=False, use_fast_had=True, compute_device=None, had_matrix=None
+):
     """Apply Hadamard rotation to a Linear layer's weight in-place.
 
     Args:
@@ -560,8 +560,9 @@ def apply_exact_had_to_linear(module, had_dim=-1, output=False, use_fast_had=Tru
     module.weight.data = W_.to(device=dev, dtype=dtype)
 
 
-def apply_cross_head_had_to_linear(module, num_heads, head_dim, use_fast_had=True, compute_device=None,
-                                   had_matrix=None):
+def apply_cross_head_had_to_linear(
+    module, num_heads, head_dim, use_fast_had=True, compute_device=None, had_matrix=None
+):
     """Apply a cross-head Hadamard rotation to a Linear layer's input side.
 
     The operation is equivalent to ``(H_cross ⊗ I_head_dim)`` applied to the
@@ -602,9 +603,7 @@ def apply_cross_head_had_to_linear(module, num_heads, head_dim, use_fast_had=Tru
         flat = W_.reshape(-1, num_heads)
         W_ = (flat @ H.T).reshape(out_f, head_dim, num_heads)
     elif use_fast_had and fast_hadamard_transform is not None and is_pow2(num_heads):
-        W_ = fast_hadamard_transform.hadamard_transform(
-            W_, scale=1.0 / math.sqrt(num_heads)
-        )
+        W_ = fast_hadamard_transform.hadamard_transform(W_, scale=1.0 / math.sqrt(num_heads))
     else:
         W_ = matmul_hadU(W_.reshape(-1, num_heads)).reshape(out_f, head_dim, num_heads)
 
@@ -752,9 +751,11 @@ def _rotate_linear_grouped(module, group_size, side="input", use_fast_had=True, 
             H = had_matrix.to(device=compute_dev, dtype=torch.float64)
             bias = (bias @ H.T).reshape(-1)
         elif use_fast_had and fast_hadamard_transform is not None and is_pow2(gs):
-            bias = fast_hadamard_transform.hadamard_transform(
-                bias.unsqueeze(0), scale=1.0 / math.sqrt(gs)
-            ).squeeze(0).reshape(-1)
+            bias = (
+                fast_hadamard_transform.hadamard_transform(bias.unsqueeze(0), scale=1.0 / math.sqrt(gs))
+                .squeeze(0)
+                .reshape(-1)
+            )
         else:
             bias = matmul_hadU(bias).reshape(-1)
         module.bias.data = bias.to(device=dev, dtype=dtype)
@@ -797,16 +798,19 @@ def register_online_had_hooks_grouped(model, mapping, group_size, fp32_had=False
     for name, module in model.named_modules():
         if name.endswith(mlp_out_suffix) and isinstance(module, nn.Linear):
             hook = GroupOnlineHadamardHook(
-                group_size=group_size, fp32_had=fp32_had, use_fast_had=use_fast_had,
+                group_size=group_size,
+                fp32_had=fp32_had,
+                use_fast_had=use_fast_had,
             )
             h = module.register_forward_pre_hook(hook)
             handles.append(h)
         elif name.endswith(attn_o_suffix) and isinstance(module, nn.Linear):
             hook = GroupOnlineHadamardHook(
-                group_size=group_size, fp32_had=fp32_had, use_fast_had=use_fast_had,
+                group_size=group_size,
+                fp32_had=fp32_had,
+                use_fast_had=use_fast_had,
             )
             h = module.register_forward_pre_hook(hook)
             handles.append(h)
 
     return handles
-

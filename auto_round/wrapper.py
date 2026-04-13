@@ -544,7 +544,7 @@ class WrapperWALayer(torch.nn.Module):
             scale_dtype=self.orig_layer.scale_dtype,
             q_scale_thresh=self.orig_layer.q_scale_thresh,
             data_type=self.orig_layer.act_data_type,
-            act_max = act_max
+            act_max=act_max,
             # tensor_min=tensor_min,
             # tensor_max=tensor_max,
         )
