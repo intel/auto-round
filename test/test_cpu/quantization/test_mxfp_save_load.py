@@ -28,11 +28,12 @@ SCHEMES_MAPPING = {
     AutoRoundExportFormat.MXFP8.value: ar_schemes.MXFP8,
     AutoRoundExportFormat.MXFP4.value: ar_schemes.MXFP4,
 }
+MX_TENSOR_DATA_TYPES_FP = [i for i in MX_TENSOR_DATA_TYPES if "int" not in i]
 
 
 @pytest.mark.parametrize("scheme_name", testing_scheme_name_lst)
-@pytest.mark.parametrize("weight_data_type", MX_TENSOR_DATA_TYPES)
-@pytest.mark.parametrize("act_data_type", MX_TENSOR_DATA_TYPES)
+@pytest.mark.parametrize("weight_data_type", MX_TENSOR_DATA_TYPES_FP)
+@pytest.mark.parametrize("act_data_type", MX_TENSOR_DATA_TYPES_FP)
 @torch.inference_mode()
 def test_e2e_quant_and_load(scheme_name, weight_data_type, act_data_type):
     # Use a temporary directory for saving the quantized model

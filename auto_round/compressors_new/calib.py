@@ -51,6 +51,7 @@ from auto_round.utils import (
     convert_module_to_hp_if_necessary,
     get_block_names,
     get_module,
+    hook_ngram_embeddings_on_cpu,
     is_auto_device_mapping,
     is_quantized_input_module,
     memory_monitor,
@@ -125,6 +126,8 @@ class CalibCompressor(BaseCompressor):
             layer_names = []
         if layer_names is None:
             layer_names = []
+        calibrate_on_cpu = False
+        cannot_calibrate_on_cpu = False
         if self.compress_context.low_gpu_mem_usage or (
             len(block_names) == 1
             and len(layer_names) == 0
@@ -132,8 +135,19 @@ class CalibCompressor(BaseCompressor):
             and (last_cache_name is None or last_cache_name in block_names)
         ):
             # low_gpu_mem_usage or calibrate only the embedding layer, which is also very fast on CPU
-            all_inputs = self.cache_inter_data(block_names, nsamples, layer_names=[], last_cache_name=last_cache_name)
-        else:
+            calibrate_on_cpu = True
+            try:
+                all_inputs = self.cache_inter_data(
+                    block_names, nsamples, layer_names=[], last_cache_name=last_cache_name
+                )
+            except NotImplementedError as error:
+                error_msg = str(error)
+                if "flash_attn::" in error_msg and "CPU" in error_msg:
+                    cannot_calibrate_on_cpu = True  # fallback to GPU when flash attention is not supported on CPU
+                else:
+                    raise error
+
+        if not calibrate_on_cpu or cannot_calibrate_on_cpu:
             try:
                 if any(p.device.type == "meta" for p in self.model_context.model.parameters()):
                     materialize_model_(self.model_context.model)
@@ -189,6 +203,10 @@ class CalibCompressor(BaseCompressor):
                                 "Falling back to CPU caching."
                             )
 
+                        # Keep ngram_embeddings on CPU
+                        has_ngram_embeddings, raw_ngram_embeddings = hook_ngram_embeddings_on_cpu(
+                            self.model_context.model
+                        )
                         new_max_memory = get_balanced_memory(
                             self.model_context.model,
                             max_memory=new_max_memory,
@@ -209,6 +227,8 @@ class CalibCompressor(BaseCompressor):
                         try:
 
                             self.model_context.model = dispatch_model(self.model_context.model, device_map=device_map)
+                            if has_ngram_embeddings:
+                                self.model_context.model.model.ngram_embeddings = raw_ngram_embeddings
                         except ValueError as e:
                             if "offload_dir" in e.__str__():
                                 logger.warning(
@@ -233,7 +253,9 @@ class CalibCompressor(BaseCompressor):
                 ):
                     accelerate.hooks.remove_hook_from_submodules(self.model_context.model)
 
-            except torch.OutOfMemoryError:
+            except torch.OutOfMemoryError as e:
+                if cannot_calibrate_on_cpu:
+                    raise e
                 cuda_error_msg = traceback.format_exc()
                 try:
                     logger.info("switch to cpu to cache block inputs")
@@ -298,13 +320,16 @@ class CalibCompressor(BaseCompressor):
         calib_bs = self.quantizer.batch_size
         self.hook_handles = []
         self._replace_forward()
-        self.calib(nsamples, calib_bs)
-        self.model_context.recover_forward()
+        try:
+            self.calib(nsamples, calib_bs)
+        finally:
+            # Use finally to recover_forward and delattr in case of that
+            # self.calib raises NotImplementedError, such as: flash_attn on CPU.
+            self.model_context.recover_forward()
+            for attr in ("last_cache_name", "_cache_target_set", "_cache_seen_targets", "to_cached_layers"):
+                if hasattr(self, attr):
+                    delattr(self, attr)
         res = self.inputs
-        del self.last_cache_name
-        del self._cache_target_set
-        del self._cache_seen_targets
-        del self.to_cached_layers
         if tmp_dtype is not None:
             self.model_context.model = self.model_context.model.to(tmp_dtype)
 
@@ -433,8 +458,16 @@ class CalibCompressor(BaseCompressor):
                     self.model(*data_new, **kwargs)
                 else:
                     self.model(**data_new, **kwargs)
-            except NotImplementedError:
-                pass
+            except NotImplementedError as error:
+                error_msg = str(error)
+                # Raise NotImplementedError to fallback to CUDA device
+                if "flash_attn::" in error_msg and "CPU" in error_msg:
+                    raise NotImplementedError(
+                        "Could not run 'flash_attn::_flash_attn_varlen_forward'"
+                        " with arguments from the 'CPU' backend."
+                    )
+                else:
+                    pass
             except RuntimeError as error:
                 error_msg = str(error)
                 if "The expanded size of the tensor" in str(error_msg) and "must match the existing size" in error_msg:

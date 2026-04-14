@@ -58,21 +58,21 @@ class TestAutoRound:
         model_name = get_model_path("Qwen/Qwen3-0.6B-FP8")
         ar = AutoRound(model=model_name, iters=0)
         _, folder = ar.quantize_and_save(output_dir=self.save_dir)
-        evaluate_accuracy(self.save_dir, threshold=0.25)
+        evaluate_accuracy(folder, threshold=0.25)
 
     @pytest.mark.skip_ci(reason="Triton issue; time-consuming")
     def test_small_model_iters1(self, mock_fp8_capable_device):
         model_name = get_model_path("Qwen/Qwen3-0.6B-FP8")
         ar = AutoRound(model=model_name, iters=1)
         _, folder = ar.quantize_and_save(output_dir=self.save_dir)
-        evaluate_accuracy(self.save_dir, threshold=0.25)
+        evaluate_accuracy(folder, threshold=0.25)
 
     @pytest.mark.skip_ci(reason="Triton issue; time-consuming")
     def test_medium_model_rtn(self, mock_fp8_capable_device):
         model_name = get_model_path("Qwen/Qwen3-0.6B-FP8")
         ar = AutoRound(model=model_name, iters=0)
         _, folder = ar.quantize_and_save(output_dir=self.save_dir)
-        evaluate_accuracy(self.save_dir, threshold=0.33)
+        evaluate_accuracy(folder, threshold=0.33)
 
     @pytest.mark.skip_ci(reason="Triton issue; time-consuming")
     def test_medium_model_rtn_with_lm_head(self, mock_fp8_capable_device):
@@ -80,7 +80,7 @@ class TestAutoRound:
         layer_config = {"lm_head": {"bits": 4}}
         ar = AutoRound(model=model_name, iters=0, layer_config=layer_config)
         _, folder = ar.quantize_and_save(output_dir=self.save_dir)
-        evaluate_accuracy(self.save_dir, threshold=0.33)
+        evaluate_accuracy(folder, threshold=0.33)
 
     def test_fp8_model_gguf_q4(self, mock_fp8_capable_device, tiny_fp8_qwen_model_path):
         from llama_cpp import Llama

@@ -84,10 +84,13 @@ class TestAutoRoundMarlinBackend:
 
             quantization_config = AutoRoundConfig(backend="marlin")
             model = AutoModelForCausalLM.from_pretrained(
-                self.save_dir, torch_dtype=torch.float16, device_map="auto", quantization_config=quantization_config
+                quantized_model_path,
+                torch_dtype=torch.float16,
+                device_map="auto",
+                quantization_config=quantization_config,
             )
 
-            tokenizer = AutoTokenizer.from_pretrained(self.save_dir)
+            tokenizer = AutoTokenizer.from_pretrained(quantized_model_path)
             model_infer(model, tokenizer)
             evaluate_accuracy(model, tokenizer, threshold=0.14, batch_size=16)
 
@@ -140,7 +143,7 @@ class TestAutoRoundMarlinBackend:
     #
     #     quantization_config = AutoRoundConfig(backend="marlin")
     #     model = AutoModelForCausalLM.from_pretrained(
-    #         self.save_dir,
+    #         quantized_model_path,
     #         torch_dtype=torch.float16,
     #         device_map="auto",
     #         quantization_config=quantization_config

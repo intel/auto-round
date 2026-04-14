@@ -25,7 +25,7 @@ from auto_round.compressors.utils import get_shared_keys
 from auto_round.context.base import BaseContext
 from auto_round.logger import logger
 from auto_round.modeling.unfused_moe import apply_model_monkey_patches
-from auto_round.special_model_handler import update_module
+from auto_round.special_model_handler import _handle_special_model, update_module
 from auto_round.utils import (
     CpuInfo,
     check_and_mark_quantized_module,
@@ -254,6 +254,7 @@ class ModelContext(BaseContext):
         self.model = update_module(
             self.model, formats=formats, trust_remote_code=self.trust_remote_code, cleanup_original=False
         )
+        self.model = _handle_special_model(self.model)
 
         # Temporary names must be assigned after handle_moe_model;
         # placing them earlier would cause them to be removed when the module is replaced.

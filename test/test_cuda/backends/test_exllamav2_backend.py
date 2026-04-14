@@ -81,7 +81,9 @@ class TestAutoRoundexllamaBackend:
             dataset=dataloader,
         )
         quantized_model_path = self.save_dir
-        autoround.quantize_and_save(output_dir=quantized_model_path, format="auto_round")  ##will convert to gptq model
+        _, quantized_model_path = autoround.quantize_and_save(
+            output_dir=quantized_model_path, format="auto_round"
+        )  ##will convert to gptq model
 
         quantization_config = AutoRoundConfig(backend="gptq:exllamav2")  ## or exllamav2
         model = AutoModelForCausalLM.from_pretrained(

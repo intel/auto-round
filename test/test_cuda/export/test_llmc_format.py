@@ -41,7 +41,7 @@ class TestAutoRound:
             dataset=dataloader,
         )
         print(ar.model)
-        compressed_model, _ = ar.quantize_and_save(output_dir=self.save_dir, format="llm_compressor")
+        compressed_model, quantized_model_path = ar.quantize_and_save(output_dir=self.save_dir, format="llm_compressor")
         tmp_layer = compressed_model.model.layers[1].self_attn.q_proj
         assert (
             hasattr(tmp_layer, "weight_scale")
@@ -50,7 +50,7 @@ class TestAutoRound:
             and tmp_layer.weight_scale.shape[0] == 2048
         ), "Illegal MXFP4 packing name or data_type or shape"
         quantization_config = transformers.AutoConfig.from_pretrained(
-            self.save_dir, trust_remote_code=True
+            quantized_model_path, trust_remote_code=True
         ).quantization_config
         assert (
             quantization_config["format"] == "mxfp4-pack-quantized"
@@ -68,7 +68,9 @@ class TestAutoRound:
             dataset=dataloader,
         )
         quantized_model_path = self.save_dir
-        compressed_model, _ = autoround.quantize_and_save(output_dir=quantized_model_path, format="llm_compressor")
+        compressed_model, quantized_model_path = autoround.quantize_and_save(
+            output_dir=quantized_model_path, format="llm_compressor"
+        )
         tmp_layer = compressed_model.model.decoder.layers[1].self_attn.q_proj
         assert (
             hasattr(tmp_layer, "weight_scale")
@@ -98,7 +100,9 @@ class TestAutoRound:
             disable_opt_rtn=True,
         )
         quantized_model_path = self.save_dir
-        compressed_model, _ = autoround.quantize_and_save(output_dir=quantized_model_path, format="llm_compressor")
+        compressed_model, quantized_model_path = autoround.quantize_and_save(
+            output_dir=quantized_model_path, format="llm_compressor"
+        )
         tmp_layer = compressed_model.model.layers[1].self_attn.q_proj
         assert hasattr(tmp_layer, "weight_scale")
         assert tmp_layer.weight.dtype is torch.float8_e4m3fn

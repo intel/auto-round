@@ -238,6 +238,7 @@ class MLLMMixin:
                 pass
             except Exception as e:
                 logger.warning(f"Calibration forward pass failed: {e}")
+                continue
 
             total_cnt += bs
             if total_cnt >= nsamples:

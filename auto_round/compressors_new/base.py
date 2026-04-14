@@ -1096,7 +1096,7 @@ class BaseCompressor(object):
         else:
             suffix = f"g{group_size}"
 
-        prefix = data_type.lower().replace("_", "") if "int" not in data_type else ""
+        prefix = data_type.lower().replace("_", "") if "int" not in data_type or "mx" in data_type else ""
         return os.path.join(
             output_dir,
             model_name.split("/")[-1] + (f"-{prefix}" if prefix else "") + f"-w{bits}{suffix}",

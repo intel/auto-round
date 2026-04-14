@@ -132,9 +132,10 @@ class RTNQuantizer(BaseQuantizers):
             m.zp = None
         else:
             try:
-                disable_opt_rtn = False
+                disable_opt_rtn = bool(getattr(self.config, "disable_opt_rtn", False))
                 if (
-                    self.config.orig_disable_opt_rtn is None
+                    not disable_opt_rtn
+                    and self.config.orig_disable_opt_rtn is None
                     and self.model_context.is_moe_model
                     and "expert" in m.global_name
                     and "shared_expert" not in m.global_name
