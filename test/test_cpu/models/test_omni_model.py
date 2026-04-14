@@ -262,11 +262,10 @@ class TestQwen3OmniMoeReplacement:
     def test_weight_fidelity(self):
         """Test that unfused weights match original fused weights."""
         from auto_round.modeling.fused_moe.replace_modules import apply_replacements, materialize_model_
-
         torch.manual_seed(42)
 
+        def assert_same_weights(actual: torch.Tensor, expected: torch.Tensor):
             torch.testing.assert_close(actual, expected, rtol=0, atol=0, equal_nan=True)
-            assert torch.allclose(actual, expected, equal_nan=True)
 
         config = _make_tiny_qwen3_omni_moe_config()
         model = Qwen3OmniMoeForConditionalGeneration(config)
