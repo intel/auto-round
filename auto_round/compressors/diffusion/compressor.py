@@ -12,8 +12,8 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-import os
 import inspect
+import os
 from collections import defaultdict
 from copy import deepcopy
 from typing import Union
@@ -30,8 +30,8 @@ from auto_round.schemes import QuantizationScheme
 from auto_round.utils import (
     LazyImport,
     clear_memory,
-    dispatch_model_block_wise,
     diffusion_load_model,
+    dispatch_model_block_wise,
     extract_block_names_to_str,
     find_matching_blocks,
     get_block_names,
