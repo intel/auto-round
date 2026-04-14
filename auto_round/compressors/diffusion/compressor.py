@@ -108,7 +108,7 @@ class DiffusionCompressor(BaseCompressor):
         seed: int = 42,
         **kwargs,
     ):
-        logger.warning("Diffusion model quantization is experimental and is only validated on Flux models.")
+        logger.warning("Diffusion model quantization is experimental and is only validated on a few models.")
         model_dtype = kwargs.pop("model_dtype", None)
 
         self.guidance_scale = guidance_scale
@@ -192,7 +192,7 @@ class DiffusionCompressor(BaseCompressor):
         return image_param is not None and image_param.default is inspect._empty
 
     def _get_calibration_image(self, batch_size: int):
-        from PIL import Image
+        from PIL import Image  # pylint: disable=E0401
 
         params = inspect.signature(self.pipe.__call__).parameters
         width = params.get("width").default if "width" in params else 832
