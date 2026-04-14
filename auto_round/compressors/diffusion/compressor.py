@@ -124,6 +124,7 @@ class DiffusionCompressor(BaseCompressor):
 
         self.model = model
         self.pipe = pipe
+        self._current_transformer_name = "transformer"
 
         all_blocks = get_block_names(model)
         self.quant_block_list = find_matching_blocks(model, all_blocks, to_quant_block_names)
@@ -331,8 +332,34 @@ class DiffusionCompressor(BaseCompressor):
         multi_device_diffusion = is_auto_device_mapping(self.device_map) and len(self.device_list) > 1
         if multi_device_diffusion:
             if not (hasattr(self.model, "hf_device_map") and len(self.model.hf_device_map) > 1):
+                # Place other pipeline components on GPU/XPU *before* dispatching the
+                # current transformer.  dispatch_model_block_wise queries free memory
+                # so it will leave room for these components automatically.
+                comp_device = self.device_list[-1]
+                for comp_name in self.pipe.components:
+                    comp = getattr(self.pipe, comp_name, None)
+                    if comp is None or comp is self.model:
+                        continue
+                    if not hasattr(comp, "to"):
+                        continue
+                    is_other_transformer = (
+                        comp_name.startswith("transformer")
+                        and isinstance(comp, torch.nn.Module)
+                        and next(comp.parameters()).device.type == "cpu"
+                    )
+                    is_other_component = not comp_name.startswith("transformer")
+                    if is_other_transformer or is_other_component:
+                        # Convert dtype on CPU first to reduce GPU/XPU memory for large components
+                        if isinstance(comp, torch.nn.Module) and hasattr(comp, "dtype") \
+                                and comp.dtype != self.model.dtype:
+                            comp.to(dtype=self.model.dtype)
+                        try:
+                            comp.to(comp_device)
+                        except (NotImplementedError, RuntimeError):
+                            # Component may have meta/unmaterialized tensors (already quantized & saved)
+                            continue
                 self.model = dispatch_model_block_wise(self.model, self.device_map)
-                self.pipe.transformer = self.model
+                setattr(self.pipe, self._current_transformer_name, self.model)
         return super().cache_inter_data(block_names, nsamples, layer_names, last_cache_name)
 
     def calib(self, nsamples, bs):
@@ -367,34 +394,25 @@ class DiffusionCompressor(BaseCompressor):
         total = nsamples if not hasattr(self.dataloader, "len") else min(nsamples, len(self.dataloader))
         multi_device_diffusion = is_auto_device_mapping(self.device_map) and len(self.device_list) > 1
 
-        if multi_device_diffusion:
-            for name, component in self.pipe.components.items():
-                if component is None or name == "transformer" or component is self.model:
-                    continue
-                if hasattr(component, "to"):
-                    component.to(self.device)
-                    if hasattr(component, "dtype") and component.dtype != self.model.dtype:
-                        component.to(dtype=self.model.dtype)
-        elif self.pipe.dtype != self.model.dtype:
-            self.pipe.to(self.model.dtype)
-
-        if (
-            hasattr(self.model, "hf_device_map")
-            and len(self.model.hf_device_map) > 0
-            and self.pipe.device != self.model.device
-            and torch.device(self.model.device).type in ["cuda", "xpu"]
-        ):
-            logger.error(
-                "Diffusion model is activated sequential model offloading, it will crash during moving to GPU/XPU. "
-                "Please use model path for quantization or "
-                "move the pipeline object to GPU/XPU before passing them into API."
-            )
-            exit(-1)
-
-        if not multi_device_diffusion and self.pipe.device != self.model.device:
-            self.pipe.to(self.model.device)
         if not multi_device_diffusion:
+            # Detect sequential model offloading which is incompatible with calibration
+            if (
+                hasattr(self.model, "hf_device_map")
+                and len(self.model.hf_device_map) > 0
+                and self.pipe.device != self.model.device
+                and torch.device(self.model.device).type in ["cuda", "xpu"]
+            ):
+                logger.error(
+                    "Diffusion model is activated sequential model offloading, "
+                    "it will crash during moving to GPU/XPU. "
+                    "Please use model path for quantization or "
+                    "move the pipeline object to GPU/XPU before passing them into API."
+                )
+                exit(-1)
+            if self.pipe.device != self.model.device:
+                self.pipe.to(self.model.device)
             self.pipe.to(self.model.dtype)
+        # For multi_device_diffusion, components are already placed on GPU in cache_inter_data
         with tqdm(range(1, total + 1), desc="cache block inputs") as pbar:
             for ids, prompts in self.dataloader:
                 if isinstance(prompts, tuple):
@@ -451,6 +469,105 @@ class DiffusionCompressor(BaseCompressor):
         # diffusion model needs to run all steps to collect input
         return False
 
+    def _find_additional_transformers(self):
+        """Find transformer components beyond the primary one (e.g. transformer_2 in WAN)."""
+        result = []
+        for comp_name in self.pipe.components:
+            comp = getattr(self.pipe, comp_name, None)
+            if (
+                comp_name.startswith("transformer")
+                and comp_name != "transformer"
+                and comp is not None
+                and isinstance(comp, torch.nn.Module)
+            ):
+                result.append((comp_name, comp))
+        return result
+
+    def quantize_and_save(
+        self, output_dir: str = "tmp_autoround", format: str = "auto_round", inplace: bool = True, **kwargs
+    ):
+        """Quantize all transformer components and save the pipeline."""
+        additional = self._find_additional_transformers()
+        if not additional:
+            return super().quantize_and_save(output_dir, format=format, inplace=inplace, **kwargs)
+
+        # Setup (mirrors BaseCompressor.quantize_and_save)
+        from auto_round.formats import get_formats
+
+        self.orig_output_dir = output_dir
+        format_list = get_formats(format, self)
+        self.formats = format_list
+        if len(format_list) > 1:
+            inplace = False
+        self.inplace = kwargs.get("inplace", inplace)
+        kwargs.pop("inplace", None)
+
+        # For multi-transformer quantization, disable low_cpu_mem_usage so that
+        # is_immediate_saving stays False.  With immediate saving, each quantized
+        # block is written to disk and then moved to meta device — making the
+        # model a hollow shell that cannot run inference.  We need the quantized
+        # primary transformer to remain functional in CPU memory so the pipeline
+        # can use it during calibration of subsequent transformers.
+        orig_low_cpu = self.low_cpu_mem_usage
+        self.low_cpu_mem_usage = False
+
+        # Quantize primary transformer
+        logger.info("Quantizing transformer")
+        self.quantize()
+
+        # Remove the stale device map so cache_inter_data can re-dispatch freely.
+        if hasattr(self.model, "hf_device_map"):
+            del self.model.hf_device_map
+        clear_memory(device_list=self.device_list)
+
+        # Store results and save state
+        primary_model = self.model
+        primary_layer_config = self.layer_config
+        primary_quant_block_list = self.quant_block_list
+        quantized_extras = {}
+
+        # Dual-transformer pipelines (e.g. WAN) switch between transformers based on
+        # a boundary timestep.  With num_inference_steps=1 only the primary (high-noise)
+        # transformer is called, so the secondary never receives calibration data.
+        # Ensure at least 2 steps so both transformers are exercised.
+        orig_steps = self.num_inference_steps
+        if self.num_inference_steps < 2:
+            logger.warning(
+                f"num_inference_steps={self.num_inference_steps} is too low for dual-transformer "
+                f"quantization — increasing to 2 so all transformers receive calibration data."
+            )
+            self.num_inference_steps = 2
+
+        for comp_name, transformer in additional:
+            logger.info(f"Quantizing {comp_name}")
+            self._current_transformer_name = comp_name
+            self.model = transformer
+            self.quantized = False
+            all_blocks = get_block_names(self.model)
+            self.quant_block_list = find_matching_blocks(self.model, all_blocks, None)
+            self.layer_config = {}
+
+            self.quantize()
+
+            quantized_extras[comp_name] = (self.model, dict(self.layer_config))
+            setattr(self.pipe, comp_name, self.model)
+
+        # Restore primary state for save
+        self._current_transformer_name = "transformer"
+        self.model = primary_model
+        self.layer_config = primary_layer_config
+        self.quant_block_list = primary_quant_block_list
+        self._quantized_transformers = quantized_extras
+        self.low_cpu_mem_usage = orig_low_cpu
+        self.num_inference_steps = orig_steps
+
+        # Save everything
+        self.save_quantized(output_dir, format=self.formats, inplace=inplace, return_folders=True, **kwargs)
+
+        from auto_round.utils import memory_monitor
+
+        memory_monitor.log_summary()
+
     def _get_save_folder_name(self, format: OutputFormat) -> str:
         """Generates the save folder name based on the provided format string.
 
@@ -493,17 +610,24 @@ class DiffusionCompressor(BaseCompressor):
         if output_dir is None:
             return super().save_quantized(output_dir, format=format, inplace=inplace, **kwargs)
 
+        quantized_transformers = getattr(self, "_quantized_transformers", {})
         compressed_model = None
         for name in self.pipe.components.keys():
             val = getattr(self.pipe, name)
             sub_module_path = (
                 os.path.join(output_dir, name) if os.path.basename(os.path.normpath(output_dir)) != name else output_dir
             )
-            if (
-                hasattr(val, "config")
-                and hasattr(val.config, "_name_or_path")
-                and val.config._name_or_path == self.model.config._name_or_path
-            ):
+            if name in quantized_transformers:
+                saved_model, saved_lc = self.model, self.layer_config
+                self.model, self.layer_config = quantized_transformers[name]
+                compressed_model = super().save_quantized(
+                    output_dir=sub_module_path if not self.is_immediate_saving else output_dir,
+                    format=format,
+                    inplace=inplace,
+                    **kwargs,
+                )
+                self.model, self.layer_config = saved_model, saved_lc
+            elif val is self.model:
                 compressed_model = super().save_quantized(
                     output_dir=sub_module_path if not self.is_immediate_saving else output_dir,
                     format=format,
