@@ -183,6 +183,8 @@ class DiffusionCompressor(BaseCompressor):
         return wrap_block_forward_positional_to_kwargs(super()._get_block_forward_func(name))
 
     def _uses_single_hidden_state_input(self) -> bool:
+        if not self.quant_block_list:
+            return False
         first_block_name = self.quant_block_list[0][0]
         first_block = self.model.get_submodule(first_block_name)
         return output_configs.get(first_block.__class__.__name__, []) == ["hidden_states"]
