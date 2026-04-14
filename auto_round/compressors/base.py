@@ -561,6 +561,7 @@ class BaseCompressor(object):
 
         # apply hadamard transform
         if hadamard_config:
+            logger.info("Applying Hadamard transform to the model.")
             from auto_round.experimental.transform.apply import apply_hadamard_transform
             from auto_round.experimental.utils import normalize_hadamard_config
 
