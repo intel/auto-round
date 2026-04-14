@@ -139,6 +139,51 @@ def patch_wrapperwalayer_forward_to_apply_transform(inp_transform):
     WrapperWALayer._hadamard_forward_patched = True
 
 
+def patch_wrapperlinear_forward_to_apply_activation_transform(transform_resolver):
+    """
+    Globally monkey-patch WrapperLinear.forward so selective modules can apply an
+    activation transform before weight/activation quantization.
+    """
+
+    if getattr(WrapperLinear, "_llama_quarot_forward_patched", False):
+        return
+
+    orig_forward = WrapperLinear.forward
+
+    def _forward_patched(self, x):
+        x = transform_resolver(self.orig_layer, x)
+        return orig_forward(self, x)
+
+    WrapperLinear.forward = _forward_patched
+    WrapperLinear._llama_quarot_forward_patched = True
+
+
+def patch_wrapperwalayer_forward_to_apply_activation_transform(transform_resolver):
+    """
+    Globally monkey-patch WrapperWALayer.forward so selective modules can apply
+    an activation transform before activation quantization.
+    """
+
+    if getattr(WrapperWALayer, "_llama_quarot_forward_patched", False):
+        return
+
+    from auto_round.experimental.transform.llama_quarot import LLAMA_QUAROT_ONLINE_HOOK_BYPASS_ATTR
+
+    orig_forward = WrapperWALayer.forward
+
+    def _forward_patched(self, x):
+        x = transform_resolver(self.orig_layer, x)
+        setattr(self.orig_layer, LLAMA_QUAROT_ONLINE_HOOK_BYPASS_ATTR, True)
+        try:
+            return orig_forward(self, x)
+        finally:
+            if hasattr(self.orig_layer, LLAMA_QUAROT_ONLINE_HOOK_BYPASS_ATTR):
+                delattr(self.orig_layer, LLAMA_QUAROT_ONLINE_HOOK_BYPASS_ATTR)
+
+    WrapperWALayer.forward = _forward_patched
+    WrapperWALayer._llama_quarot_forward_patched = True
+
+
 def patch_quantlinear(hadamard_type):
     """ """
 

@@ -427,8 +427,9 @@ def run_model_evaluation(model, tokenizer, autoround, folders, formats, device_s
     # Check if GGUF model
     eval_gguf_model = any(file.endswith("gguf") for file in os.listdir(eval_folder))
 
-    # Determine if model instance evaluation is needed
-    need_model_instance = (autoround.act_bits <= 8 and formats[-1] == "fake") or eval_gguf_model
+    # Fake quant evaluation must use the in-memory model instance so that
+    # runtime transforms such as online hadamard hooks remain attached.
+    need_model_instance = (formats[-1] == "fake") or eval_gguf_model
 
     if need_model_instance:
         # Load or prepare model instance

@@ -681,11 +681,7 @@ def convert_hf_model(model: nn.Module, target_device: str = "cpu") -> tuple[nn.M
         from auto_round.experimental.transform.apply import apply_hadamard_transform
         from auto_round.experimental.transform.hadamard_config import HadamardConfig
 
-        # apply forward hook
-        act_hadamard_config = HadamardConfig(
-            block_size=hadamard_config["block_size"],
-            hadamard_type=hadamard_config["hadamard_type"],
-        )  # apply to activation
+        act_hadamard_config = HadamardConfig(**hadamard_config)
         model = apply_hadamard_transform(
             model, act_hadamard_config, location="input", desc="Register pre forward hook for hadamard transform"
         )

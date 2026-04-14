@@ -777,7 +777,17 @@ def dynamic_import_inference_linear(backend, config):
     if "torch_mxfp4" in backend:
         hadamard_config = getattr(config, "hadamard_config", None)
         if hadamard_config is not None and hadamard_config:
-            if hadamard_config["hadamard_type"] == "random_hadamard":
+            hadamard_type = (
+                hadamard_config["hadamard_type"]
+                if isinstance(hadamard_config, dict)
+                else getattr(hadamard_config, "hadamard_type", None)
+            )
+            placement_strategy = (
+                hadamard_config.get("placement_strategy", "all_linears")
+                if isinstance(hadamard_config, dict)
+                else getattr(hadamard_config, "placement_strategy", "all_linears")
+            )
+            if hadamard_type == "random_hadamard" and placement_strategy == "all_linears":
                 return ar_qmodules.HadamardMXFP4QuantLinear
         return ar_qmodules.MXFP4QuantLinear
     if "torch_nvfp4" in backend:

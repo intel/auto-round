@@ -514,7 +514,7 @@ class LLMCompressorFormat(OutputFormat):
 
 @OutputFormat.register("auto_gptq", "gptqmodel")
 class AutoGPTQFormat(OutputFormat):
-    support_schemes = ["W4A16", "W2A16", "W3A16", "W8A16", "BF16", "W2A16G64", "W2A16G32", "W4A16_MIXED"]
+    support_schemes = ["W4A16", "W4A4", "W2A16", "W3A16", "W8A16", "BF16", "W2A16G64", "W2A16G32", "W4A16_MIXED"]
     format_name = "auto_gptq"
 
     def check_and_reset_format(self, ar):
@@ -1064,6 +1064,7 @@ class FP8Format(OutputFormat):
 class AutoRoundFormat(OutputFormat):
     support_schemes = [
         "W4A16",
+        "W4A4",
         "W4A16_MIXED",
         "W2A16",
         "W3A16",

@@ -562,13 +562,20 @@ class BaseCompressor(object):
             from auto_round.experimental.transform.apply import apply_hadamard_transform
             from auto_round.experimental.utils import check_supported_schemes, normalize_hadamard_config
 
-            check_supported_schemes(self.scheme)
+            normalized_hadamard_config = normalize_hadamard_config(hadamard_config)
+            check_supported_schemes(self.scheme, normalized_hadamard_config)
 
             self.model = apply_hadamard_transform(
-                self.model, hadamard_config, need_calibration=True if self.iters > 0 else False
+                self.model,
+                normalized_hadamard_config,
+                need_calibration=True if self.iters > 0 else False,
+                target_device=self.device,
             )
+            rotation_device = getattr(self.model, "_autoround_llama_quarot_rotation_device", None)
+            if rotation_device is not None:
+                logger.info(f"Llama QuaRot offline rotation device: {rotation_device}")
 
-            self.hadamard_config = normalize_hadamard_config(hadamard_config)
+            self.hadamard_config = normalized_hadamard_config
 
     def _gen_auto_scheme(self) -> dict[str, dict]:
         if self.mllm:
@@ -1694,6 +1701,15 @@ class BaseCompressor(object):
             is_mllm=self.mllm,
             fill_default_value=fill_default_value,
         )
+
+        if (getattr(self, "hadamard_config", {}) or {}).get("placement_strategy") == "llama_quarot":
+            from auto_round.experimental.transform.llama_quarot import apply_llama_quarot_layer_config_overrides
+
+            self.layer_config = apply_llama_quarot_layer_config_overrides(
+                self.model,
+                self.layer_config,
+                warn_fn=logger.warning,
+            )
 
     def _adjust_immediate_packing_and_saving(self):
         formats = getattr(self, "formats", [])
