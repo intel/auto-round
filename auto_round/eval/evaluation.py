@@ -428,7 +428,7 @@ def run_model_evaluation(model, tokenizer, autoround, folders, formats, device_s
     eval_gguf_model = any(file.endswith("gguf") for file in os.listdir(eval_folder))
 
     # Determine if model instance evaluation is needed
-    need_model_instance = (autoround.act_bits <= 8) or formats[-1] == "fake" or eval_gguf_model
+    need_model_instance =  formats[-1] == "fake" or eval_gguf_model
 
     if need_model_instance:
         # Load or prepare model instance
