@@ -16,7 +16,7 @@ from typing import Any
 
 import torch
 
-from auto_round.compressors.utils import is_nv_fp, is_mx_fp
+from auto_round.compressors.utils import is_mx_fp, is_nv_fp
 from auto_round.experimental.transform.hadamard_config import HadamardConfig
 from auto_round.experimental.transform.hadamards import HADAMARDS
 from auto_round.utils import logger
@@ -158,7 +158,6 @@ def normalize_hadamard_config(hadamard_config: str | dict | HadamardConfig | Non
             - emit a warning
     """
 
-
     def _apply_data_type_block_size(cfg_dict: dict[str, Any], block_size_explicitly_set: bool) -> dict[str, Any]:
         block_size = cfg_dict.get("block_size")
 
@@ -237,9 +236,9 @@ def normalize_hadamard_config(hadamard_config: str | dict | HadamardConfig | Non
             raise ValueError(f"hadamard_config built from string {key!r} is invalid for HadamardConfig: {e}") from e
 
     raise TypeError(
-        "hadamard_config must be one of: None, dict, HadamardConfig, or str "
-        f"(got {type(hadamard_config).__name__})"
+        "hadamard_config must be one of: None, dict, HadamardConfig, or str " f"(got {type(hadamard_config).__name__})"
     )
+
 
 def check_supported_schemes(scheme: str):
     if scheme not in SUPPORTED_QUANTIZATION_SCHEMES:
