@@ -34,6 +34,13 @@ from accelerate.utils import get_balanced_memory, get_max_memory
 from auto_round.logger import logger
 from auto_round.utils.model import check_to_quantized, get_block_names, get_layer_features, get_module
 
+DEVICE_ENVIRON_VARIABLE_MAPPING = {
+    "cuda": "CUDA_VISIBLE_DEVICES",
+    "xpu": "ZE_AFFINITY_MASK",
+    "hpu": "HABANA_VISIBLE_MODULES",
+}
+
+
 # Note on HPU usage:
 # There are two modes available for enabling auto-round on HPU:
 # 1. Compile Mode
@@ -1694,18 +1701,6 @@ class MemoryMonitor:
         return summary
 
 
-def get_device_str():
-    """Get a string representation of the automatically detected device."""
-    if torch.cuda.is_available():
-        return "cuda"
-    elif torch.xpu.is_available():  # pragma: no cover
-        return "xpu"
-    elif is_hpex_available():  # pragma: no cover
-        return "hpu"
-    else:  # pragma: no cover
-        return "cpu"
-
-
 # Global singleton instance
 memory_monitor = MemoryMonitor()
 
@@ -1740,3 +1735,107 @@ def dump_mem_usage(msg: str = "", log_level: str = "info"):
         return wrapper
 
     return decorator
+
+
+# This function is designed for Auto Scheme and Diffusion Pipeline,
+# which requires dispatching the whole model on all available devices.
+def dispatch_model_by_all_available_devices(
+    model: torch.nn.Module, device_map: Union[str, int, dict, None]
+) -> torch.nn.Module:
+    # Important Notice: This dispatch does not follow dict device_map, just extract all available devices and use them
+    device_type = detect_device()
+    if device_type in DEVICE_ENVIRON_VARIABLE_MAPPING:
+        existing_env = os.environ.get(DEVICE_ENVIRON_VARIABLE_MAPPING[device_type])
+        if existing_env is None:
+            logger.warning_once(
+                "`get_balanced_memory` is used here, but no environment variable "
+                + "is set to specify device visibility. This may lead to OOM issue even the memory "
+                + "is large enough."
+            )
+
+    # Handle DiffusionPipeline: dispatch only the main sub-model (transformer / unet)
+    # across devices and move the remaining pipeline components to the primary device.
+    is_diffusion_pipeline = False
+    try:
+        from diffusers.pipelines.pipeline_utils import DiffusionPipeline
+
+        if isinstance(model, DiffusionPipeline):
+            is_diffusion_pipeline = True
+    except ImportError:
+        pass
+    if is_diffusion_pipeline:
+        pipe = model
+        _device_map = 0 if device_map is None else device_map
+        devices = parse_available_devices(_device_map)
+        # Identify the main quantisable sub-model
+        main_attr = next(
+            (attr for attr in ("transformer", "unet") if isinstance(getattr(pipe, attr, None), torch.nn.Module)),
+            None,
+        )
+        if main_attr is None or len(devices) == 1:
+            # No identifiable main sub-model, or single target device:
+            # move the entire pipeline to the (first) device.
+            pipe.to(devices[0] if devices else "cuda:0")
+            return pipe
+        # Multi-device path: recursively dispatch the main sub-model,
+        # then move all remaining pipeline components to the primary device.
+        main_model = getattr(pipe, main_attr)
+        dispatched = dispatch_model_by_all_available_devices(main_model, _device_map)
+        setattr(pipe, main_attr, dispatched)
+        primary_device = devices[0]
+        for attr, component in pipe.components.items():
+            if attr == main_attr:
+                continue
+            if isinstance(component, torch.nn.Module):
+                try:
+                    component.to(primary_device)
+                except Exception:
+                    pass
+        return pipe
+
+    if device_map is None:
+        device_map = 0
+
+    from auto_round.utils.common import normalize_no_split_modules
+
+    no_split_modules = normalize_no_split_modules(getattr(model, "_no_split_modules", []))
+    if device_map == "auto":
+        max_memory = get_balanced_memory(
+            model,
+            max_memory=None,
+            no_split_module_classes=no_split_modules,
+        )
+        device_map = infer_auto_device_map(model, max_memory=max_memory, no_split_module_classes=no_split_modules)
+        model = dispatch_model(model, device_map=device_map)
+        return model
+
+    devices = parse_available_devices(device_map)
+
+    if len(devices) == 1:
+        model.to(devices[0])
+        return model
+
+    max_memory = get_balanced_memory(
+        model,
+        max_memory=None,
+        no_split_module_classes=no_split_modules,
+    )
+
+    # Filter max_memory with devices
+    #  assume only one GPU model
+    new_max_memory = {}
+    for device in devices:
+        if ":" in device:
+            device = int(device.split(":")[-1])
+        elif device == "cpu":
+            device = "cpu"
+        elif isinstance(device, str):
+            device = 0
+        else:
+            raise ValueError(f"Unsupported device {device} in device_map: {device_map}")
+        new_max_memory[device] = max_memory[device]
+    if hasattr(model, "tie_weights") and callable(model.tie_weights):
+        model.tie_weights()
+    device_map = infer_auto_device_map(model, max_memory=new_max_memory, no_split_module_classes=no_split_modules)
+    model = dispatch_model(model, device_map=device_map)
+    return model

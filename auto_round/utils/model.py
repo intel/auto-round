@@ -669,6 +669,21 @@ def diffusion_load_model(
     if device_str is not None and "hpu" in device_str:
         torch_dtype = torch.bfloat16
 
+    try:
+        from transformers import AutoConfig
+
+        config = AutoConfig.from_pretrained(pretrained_model_name_or_path, trust_remote_code=trust_remote_code)
+    except:
+        config = None
+
+    model_type = getattr(config, "model_type", "")
+    # A special case for NextStep
+    if model_type == "nextstep":
+        from auto_round.special_model_handler import load_next_step_diffusion
+
+        pipe, model = load_next_step_diffusion(pretrained_model_name_or_path, device_str)
+        return pipe, pipe.model
+
     pipelines = LazyImport("diffusers.pipelines")
     if isinstance(pretrained_model_name_or_path, str):
         if torch_dtype == "auto":
@@ -706,21 +721,8 @@ def diffusion_load_model(
     pipe = _to_model_dtype(pipe, model_dtype)
     model = pipe.transformer
 
-    def config_save_pretrained(config, file_name, save_directory):
-        if os.path.isfile(save_directory):
-            raise AssertionError(f"Provided path ({save_directory}) should be a directory, not a file")
-        os.makedirs(save_directory, exist_ok=True)
-        output_config_file = os.path.join(save_directory, file_name)
-
-        config_dict = dict(config)
-        if file_name == "config.json" and hasattr(model.config, "quantization_config"):
-            config_dict["quantization_config"] = model.config.quantization_config
-
-        with open(output_config_file, "w", encoding="utf-8") as writer:
-            writer.write(json.dumps(config_dict, indent=2, sort_keys=True) + "\n")
-
     # meta model uses model.config.save_pretrained for config saving
-    setattr(model.config, "save_pretrained", partial(config_save_pretrained, model.config, "config.json"))
+    setattr(model.config, "save_pretrained", partial(config_save_pretrained, model.config, "config.json", model=model))
     setattr(pipe.config, "save_pretrained", partial(config_save_pretrained, pipe.config, "model_index.json"))
 
     def model_save_pretrained(model, save_directory, **kwargs):
@@ -797,6 +799,23 @@ def is_gguf_model(model_path: Union[str, torch.nn.Module]) -> bool:
 def is_diffusion_model(model_or_path: Union[str, object]) -> bool:
     from auto_round.utils.common import LazyImport
 
+    # First check if it's a known diffusion pipeline by config/model_type
+    # to avoid unnecessary imports and file checks for non-diffusion models, which can be time-consuming.
+    try:
+        from transformers import AutoConfig
+
+        config = AutoConfig.from_pretrained(model_or_path, trust_remote_code=True)
+        model_type = getattr(config, "model_type", "")
+        # A special case for NextStep
+        if model_type == "nextstep":
+            return True
+    except:
+        logger.warning(
+            f"Failed to load config for {model_or_path}, trying to check model_index.json for diffusion pipeline."
+        )
+
+    # Then check if model_index.json exists for diffusion pipeline,
+    # which is a strong signal of being a diffusion pipeline.
     if isinstance(model_or_path, str):
         index_file = None
         if not os.path.isdir(model_or_path):
@@ -1699,43 +1718,69 @@ def _copy_extra_model_files(src_dir: str, dst_dir: str):
 
 # Adapted from https://github.com/vllm-project/llm-compressor/blob/
 # 5b3ddff74cae9651f24bef15d3255c4ee053fc60/src/llmcompressor/pytorch/model_load/helpers.py#L144
-def copy_python_files_from_model_cache(model, save_path: str):
+def copy_python_files_from_model_cache(model, save_path: str, copy_folders: bool | list[str] | tuple[str, ...] = False):
+    """Copy Python files (and optionally subdirectories) from the model cache to *save_path*.
+
+    Args:
+        model: The model whose ``config._name_or_path`` points to the source cache.
+        save_path (str): Destination directory.
+        copy_folders (bool | list[str] | tuple[str, ...]): Controls which subdirectories
+            are copied from the cache root to *save_path*:
+
+            * ``False`` (default) – no folders are copied.
+            * ``True`` – every subdirectory that does not already exist in *save_path*
+              is copied (e.g. all of ``vae``, ``scheduler``, …).
+            * A list/tuple of folder names (e.g. ``["vae", "scheduler"]``) – only the
+              named subdirectories are copied.
+    """
+    import shutil
+
+    from huggingface_hub import hf_hub_download
+
     config = model.config
-    if hasattr(config, "_name_or_path"):
-        import os
-        import shutil
+    if not hasattr(config, "_name_or_path"):
+        return
 
-        from huggingface_hub import hf_hub_download
+    if version.parse(transformers.__version__) < version.parse("5.0.0"):
+        from transformers.utils import TRANSFORMERS_CACHE
 
-        if version.parse(transformers.__version__) < version.parse("5.0.0"):
-            from transformers.utils import TRANSFORMERS_CACHE
+        cache_dir = os.environ.get("HF_HOME", TRANSFORMERS_CACHE)
+    else:
+        from huggingface_hub.constants import HF_HUB_CACHE
 
-            cache_dir = os.environ.get("HF_HOME", TRANSFORMERS_CACHE)
-        else:
-            from huggingface_hub.constants import HF_HUB_CACHE
+        cache_dir = os.environ.get("HF_HOME", HF_HUB_CACHE)
+    from transformers.utils import http_user_agent
 
-            cache_dir = os.environ.get("HF_HOME", HF_HUB_CACHE)
-        from transformers.utils import http_user_agent
+    cache_path = config._name_or_path
+    if not os.path.exists(cache_path):
+        user_agent = http_user_agent()
+        config_file_path = hf_hub_download(
+            repo_id=cache_path,
+            filename="config.json",
+            cache_dir=cache_dir,
+            force_download=False,
+            user_agent=user_agent,
+        )
+        cache_path = os.path.sep.join(config_file_path.split(os.path.sep)[:-1])
 
-        cache_path = config._name_or_path
-        if not os.path.exists(cache_path):
-            user_agent = http_user_agent()
-            config_file_path = hf_hub_download(
-                repo_id=cache_path,
-                filename="config.json",
-                cache_dir=cache_dir,
-                force_download=False,
-                user_agent=user_agent,
-            )
-            cache_path = os.path.sep.join(config_file_path.split(os.path.sep)[:-1])
+    for file in os.listdir(cache_path):
+        full_file_name = os.path.join(cache_path, file)
+        if file.endswith(".py") and os.path.isfile(full_file_name):
+            logger.debug(f"Transferring {full_file_name} to {save_path}")
+            shutil.copy(full_file_name, save_path)
 
-        for file in os.listdir(cache_path):
-            full_file_name = os.path.join(cache_path, file)
-            if file.endswith(".py") and os.path.isfile(full_file_name):
-                logger.debug(f"Transferring {full_file_name} to {save_path}")
-                shutil.copy(full_file_name, save_path)
+    _copy_extra_model_files(cache_path, save_path)
 
-        _copy_extra_model_files(cache_path, save_path)
+    if copy_folders is not False:
+        for entry in os.listdir(cache_path):
+            src_entry = os.path.join(cache_path, entry)
+            dst_entry = os.path.join(save_path, entry)
+            if not os.path.isdir(src_entry):
+                continue
+            if copy_folders is True or entry in copy_folders:
+                if not os.path.exists(dst_entry):
+                    logger.debug(f"Transferring folder {src_entry} to {save_path}")
+                    shutil.copytree(src_entry, dst_entry)
 
 
 def extract_block_names_to_str(quant_block_list):
@@ -1904,6 +1949,45 @@ def wrap_block_forward_positional_to_kwargs(base_hook):
         return base_hook(m, hidden_states, *positional_inputs, **kwargs)
 
     return forward
+
+
+def config_save_pretrained(config, file_name, save_directory, model=None):
+    if os.path.isfile(save_directory):
+        raise AssertionError(f"Provided path ({save_directory}) should be a directory, not a file")
+    os.makedirs(save_directory, exist_ok=True)
+    output_config_file = os.path.join(save_directory, file_name)
+
+    config_dict = dict(config)
+    if model is not None:
+        if file_name == "config.json" and hasattr(model.config, "quantization_config"):
+            config_dict["quantization_config"] = model.config.quantization_config
+
+    with open(output_config_file, "w", encoding="utf-8") as writer:
+        writer.write(json.dumps(config_dict, indent=2, sort_keys=True) + "\n")
+
+
+def rename_weights_files(path: str, prefix="diffusion_pytorch_model"):
+    """Rename weight files for diffusion models."""
+    import glob
+    import json
+    import os
+
+    # rename safetensors
+    files = sorted(glob.glob(f"{path}/*.safetensors"))
+    total = len(files)
+
+    for i, f in enumerate(files, 1):
+        new = f"{prefix}-{i:05d}-of-{total:05d}.safetensors"
+        os.rename(f, os.path.join(path, new))
+
+    # rename index.json
+    idx = os.path.join(path, "model.safetensors.index.json")
+    if os.path.exists(idx):
+        d = json.load(open(idx))
+        d["weight_map"] = {k: v.replace("model-", prefix + "-") for k, v in d["weight_map"].items()}
+        new_idx = os.path.join(path, f"{prefix}.safetensors.index.json")
+        json.dump(d, open(new_idx, "w"), indent=2)
+        os.remove(idx)
 
 
 def hook_ngram_embeddings_on_cpu(model):
