@@ -564,10 +564,17 @@ class BaseCompressor(object):
         self._resolve_formats()
         self._patch_model()
         self._build_layer_config()
+
+        # Reclaim temporaries from Phases 1-4 (scheme resolution, format
+        # parsing, model patching, layer-config walk) before Phase 5
+        # allocates hardware/compile objects.  This compacts the heap so that
+        # the fragmentation gap between live and freed blocks is minimised.
+        gc.collect()
+        _force_trim_malloc()
+
         self._hardware_setup()
 
-        # Reclaim heap fragmentation from the five init phases above so that
-        # the quantize loop starts from a tighter RSS baseline.
+        # Final trim after all init phases.
         gc.collect()
         _force_trim_malloc()
 
@@ -655,7 +662,8 @@ class BaseCompressor(object):
         if self.formats is not None:
             self.compress_context.formats = self.formats
             ShardWriter.reset()
-            self.shard_writer = ShardWriter(self.model_context.model, bits=8)
+            # Defer ShardWriter construction to _ensure_shard_writer() to avoid
+            # heap fragmentation during post_init (parameter iteration).
 
         # Snapshot the user-specified layer_config before GGUF processing may
         # add extra entries, so we can distinguish them later in step 2b.
@@ -961,6 +969,17 @@ class BaseCompressor(object):
         self.compress_context.is_immediate_packing = self.is_immediate_packing
         self.compress_context.is_immediate_saving = self.is_immediate_saving
 
+        # Create ShardWriter eagerly only when immediate saving is active
+        # (it interleaves with the quantize loop).  Otherwise keep it deferred
+        # until save_quantized() to avoid heap fragmentation during init.
+        if self.is_immediate_saving:
+            self._ensure_shard_writer()
+
+    def _ensure_shard_writer(self):
+        """Lazily create ShardWriter if it hasn't been created yet."""
+        if self.shard_writer is None and self.formats is not None:
+            self.shard_writer = ShardWriter(self.model_context.model, bits=8)
+
     def quantize(self) -> tuple[torch.nn.Module, dict[str, Any]]:
         """Quantize the model and return the quantized model along with layer configurations.The entry of AutoRound.
         Returns:
@@ -1179,6 +1198,9 @@ class BaseCompressor(object):
         else:
             self.quantize()
             self.model_context.quantized = True
+
+        # Ensure ShardWriter is ready before saving (deferred from post_init).
+        self._ensure_shard_writer()
 
         # Save the quantized model in the specified format_list
         model, folders = self.save_quantized(output_dir, inplace=inplace, return_folders=True, **kwargs)

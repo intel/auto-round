@@ -329,6 +329,9 @@ class CalibCompressor(BaseCompressor):
             for attr in ("last_cache_name", "_cache_target_set", "_cache_seen_targets", "to_cached_layers"):
                 if hasattr(self, attr):
                     delattr(self, attr)
+            # Release calibration dataloader to free tokenized sample tensors
+            if hasattr(self, "dataloader"):
+                del self.dataloader
         res = self.inputs
         if tmp_dtype is not None:
             self.model_context.model = self.model_context.model.to(tmp_dtype)
