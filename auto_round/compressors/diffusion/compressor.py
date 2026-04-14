@@ -218,8 +218,8 @@ class DiffusionCompressor(BaseCompressor):
         params = inspect.signature(self.pipe.__call__).parameters
         width_param = params.get("width")
         height_param = params.get("height")
-        width = 832 if width_param is None or width_param.default in (inspect._empty, None) else width_param.default
-        height = 480 if height_param is None or height_param.default in (inspect._empty, None) else height_param.default
+        width = 832 if width_param is None or width_param.default in (inspect.Parameter.empty, None) else width_param.default
+        height = 480 if height_param is None or height_param.default in (inspect.Parameter.empty, None) else height_param.default
         image = Image.new("RGB", (int(width), int(height)), color=(127, 127, 127))
         if batch_size == 1:
             return image
@@ -442,8 +442,8 @@ class DiffusionCompressor(BaseCompressor):
                     self._run_pipeline(prompts)
                 except NotImplementedError:
                     pass
-                except Exception as error:
-                    raise error
+                except Exception:
+                    raise
                 step = len(prompts)
                 total_cnt += step
                 pbar.update(step)
