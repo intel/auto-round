@@ -12,12 +12,14 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import math
 from math import ceil
 
 import torch
 import transformers
 from torch.functional import F
 
+import auto_round.envs as envs
 from auto_round.compressors.utils import is_nv_fp
 from auto_round.data_type import get_quant_func, reshape_pad_tensor_by_group_size
 from auto_round.logger import logger
@@ -28,8 +30,7 @@ from auto_round.utils import (
     deepspeed_exists,
     set_module,
 )
-import math
-import auto_round.envs as envs
+
 if deepspeed_exists:
     from deepspeed import comm as dist
     from deepspeed.module_inject import LinearAllreduce, LinearLayer
@@ -181,7 +182,7 @@ class WrapperLinear(torch.nn.Module):
             )
             from auto_round.data_type.int import quant_tensor_sym
 
-            self.act_quant_func = quant_tensor_sym #TODO harded coded
+            self.act_quant_func = quant_tensor_sym  # TODO harded coded
             if self.enable_torch_compile:
                 self.act_quant_func = compile_func(self.act_quant_func, self.device)
             self._init_params("act_max_scale", p_dtype, (1), 1.0, not orig_layer.act_dynamic)
@@ -281,7 +282,7 @@ class WrapperLinear(torch.nn.Module):
             q_scale_thresh=self.q_scale_thresh,
             data_type=self.act_data_type,
             max_scale=act_max_scale if math.isclose(act_scale, 1.0, rel_tol=1e-6) else act_scale,
-            min_scale = 1.0 if math.isclose(act_scale, 1.0, rel_tol=1e-6) else act_scale,
+            min_scale=1.0 if math.isclose(act_scale, 1.0, rel_tol=1e-6) else act_scale,
             global_scale=getattr(self, "input_global_scale", None),
         )
         return x, scale, zp
@@ -317,7 +318,6 @@ class WrapperLinear(torch.nn.Module):
         Returns:
             torch.nn.Module: The unwrapped and restored original layer.
         """
-
 
         if len(self.orig_layer._forward_pre_hooks) > 0:
             logger.info(f"{self.orig_layer.global_name} has prehook")
@@ -545,6 +545,7 @@ class WrapperWALayer(torch.nn.Module):
 
         # 2) Activation quantization on the smoothed activation
         import auto_round.envs as envs
+
         act_scale = envs.AR_ACT_SCALE
         # act_max = self.orig_layer.act_max if hasattr(self.orig_layer, "act_max") else None
         # if self.orig_layer.group_size == -1:

@@ -42,11 +42,7 @@ def wrapper_autoround(cls: AutoRound):
         cls.sym
         and cls.enable_alg_ext
         and cls.super_group_size is None
-        and (
-            (cls.data_type.startswith("int"))
-            or cls.data_type.startswith("mx")
-            or cls.data_type.startswith("nv")
-        )
+        and ((cls.data_type.startswith("int")) or cls.data_type.startswith("mx") or cls.data_type.startswith("nv"))
     ):
         if cls.bits > 2 and (not cls.data_type.startswith("mx") or not cls.data_type.startswith("nv")):
             logger.warning_once(
