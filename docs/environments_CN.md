@@ -69,6 +69,16 @@ export AR_DISABLE_OFFLOAD=1
 export AR_DISABLE_DATASET_SUBPROCESS=true
 ```
 
+### AR_ACT_SCALE
+- **描述**：控制激活量化时对激活值最小/最大值的缩放系数。小于 1.0 的值会缩小裁剪范围，有助于减小离群值的影响。
+- **默认值**：`0.9`
+- **有效值**：任意浮点数，如 `0.8`、`0.9`、`1.0`
+- **用途**：调整激活裁剪范围
+
+```bash
+export AR_ACT_SCALE=0.8
+```
+
 ## 使用示例
 
 ### 设置环境变量

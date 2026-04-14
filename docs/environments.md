@@ -69,6 +69,16 @@ export AR_DISABLE_OFFLOAD=1
 export AR_DISABLE_DATASET_SUBPROCESS=true
 ```
 
+### AR_ACT_SCALE
+- **Description**: Controls the scaling factor applied to activation min/max values during activation quantization. A value less than 1.0 shrinks the clipping range, which can reduce outlier impact.
+- **Default**: `0.9`
+- **Valid Values**: Any float, e.g. `0.8`, `0.9`, `1.0`
+- **Usage**: Set this to adjust the activation clipping range
+
+```bash
+export AR_ACT_SCALE=0.8
+```
+
 ## Usage Examples
 
 ### Setting Environment Variables

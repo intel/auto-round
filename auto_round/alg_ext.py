@@ -43,7 +43,7 @@ def wrapper_autoround(cls: AutoRound):
         and cls.enable_alg_ext
         and cls.super_group_size is None
         and (
-            (cls.data_type.startswith("int") and cls.act_bits >= 8)
+            (cls.data_type.startswith("int"))
             or cls.data_type.startswith("mx")
             or cls.data_type.startswith("nv")
         )

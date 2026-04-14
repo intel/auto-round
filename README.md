@@ -226,7 +226,7 @@ ar.quantize_and_save(output_dir="./qmodel", format="auto_round")
 - **`iters` (int)**: Number of tuning iterations (default is `200`). Common values: 0 (RTN mode), 50 (with lr=5e-3 recommended), 1000. Higher values increase accuracy but slow down tuning.
 - **`lr` (float)**: The learning rate for rounding value (default is `None`). When None, it will be set to `1.0/iters` automatically.
 - **`batch_size` (int)**: Batch size for training (default is `8`). 4 is also commonly used.
-- ** `enable_deterministic_algorithms` (bool)**: Whether to enable deterministic algorithms for reproducibility (default is `False`).
+- **`enable_deterministic_algorithms` (bool)**: Whether to enable deterministic algorithms for reproducibility (default is `False`).
 
 ##### Calibration Dataset
 - **`dataset` (str|list|tuple|torch.utils.data.DataLoader)**: The dataset for tuning (default is `"NeelNanda/pile-10k"`). Supports local JSON files and dataset combinations, e.g. `"./tmp.json,NeelNanda/pile-10k:train,mbpp:train+validation+test"`.

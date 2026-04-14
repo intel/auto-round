@@ -34,6 +34,7 @@ environment_variables: dict[str, Callable[[], Any]] = {
     "AR_DISABLE_DATASET_SUBPROCESS": lambda: os.getenv("AR_DISABLE_DATASET_SUBPROCESS", "0").lower() in ("1", "true"),
     "AR_DISABLE_COPY_MTP_WEIGHTS": lambda: os.getenv("AR_DISABLE_COPY_MTP_WEIGHTS", "0").lower()
     in ("1", "true", "yes"),
+    "AR_ACT_SCALE": lambda: float(os.getenv("AR_ACT_SCALE", "1.0")),
 }
 
 
