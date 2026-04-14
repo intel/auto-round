@@ -36,6 +36,8 @@ from auto_round.utils.weight_handler import (
     is_quantized_input_module,
 )
 
+FIX_MISTRAL_REGEX_MODEL_TYPE_LIST = ["longcat_next"]
+
 
 def clean_module_parameter(submodule: torch.nn.Module, param_name: str) -> None:
     """This function is recommended to be used instead of module.weight = None.
@@ -599,6 +601,7 @@ def mllm_load_model(
                 tokenizer = AutoTokenizer.from_pretrained(
                     pretrained_model_name_or_path,
                     trust_remote_code=trust_remote_code,
+                    fix_mistral_regex=True if model_type in FIX_MISTRAL_REGEX_MODEL_TYPE_LIST else False,
                     **processor_load_kwargs,
                 )
                 processor = AutoProcessor.from_pretrained(
@@ -881,7 +884,8 @@ def get_block_names(model, quant_vision=False):
                 block_names[i].append(target_m[0] + "." + n)
         return block_names
 
-    def _get_vlm_block_names(model, quant_vision=False):
+    def _get_vlm_block_names(model, quant_vision=False, ignore_audio=True):
+        # Since calibration dataset doesn't contain audio data, audio-related blocks will be ignored by default.
         if (
             hasattr(model, "config")
             and hasattr(model.config, "model_type")
@@ -891,10 +895,13 @@ def get_block_names(model, quant_vision=False):
         block_names = []
         target_modules = []
         vision_blocks_tuple = ("vision", "visual", "image", "img")
+        audio_blocks_tuple = ("audio", "speech", "wav", "waveform")
         target_modules = _search_block("", model)
 
         for i, target_m in enumerate(target_modules):
             if quant_vision or all(key not in target_m[0].lower() for key in (vision_blocks_tuple)):
+                if ignore_audio and any(key in target_m[0].lower() for key in audio_blocks_tuple):
+                    continue
                 block_names.append([])
                 for n, m in target_m[1].named_children():
                     block_names[-1].append(target_m[0] + "." + n)
@@ -1904,3 +1911,22 @@ def wrap_block_forward_positional_to_kwargs(base_hook):
         return base_hook(m, hidden_states, *positional_inputs, **kwargs)
 
     return forward
+
+
+def hook_ngram_embeddings_on_cpu(model):
+    has_ngram_embeddings = hasattr(model, "model") and hasattr(model.model, "ngram_embeddings")
+    if has_ngram_embeddings:
+        raw_ngram_embeddings = model.model.ngram_embeddings
+
+        def hook_input_output_device_for_cpu_module(module):
+            from accelerate.hooks import AlignDevicesHook, add_hook_to_module
+
+            hook = AlignDevicesHook(
+                io_same_device=True,
+                execution_device="cpu",
+            )
+
+            add_hook_to_module(module, hook)
+
+        hook_input_output_device_for_cpu_module(raw_ngram_embeddings)
+    return has_ngram_embeddings, raw_ngram_embeddings if has_ngram_embeddings else None
