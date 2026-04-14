@@ -114,6 +114,7 @@ BACKEND_ACT_ATTRS = [
 MX_TENSOR_DATA_TYPES = [
     "mx_fp",
     "mx_fp_rceil",
+    "mx_int",
 ]
 
 
@@ -303,6 +304,26 @@ BackendInfos["auto_round:torch_mxfp4"] = BackendInfo(
     requirements=["auto-round>0.7.0"],
 )
 
+# MXINT4
+BackendInfos["auto_round:torch_mxint4"] = BackendInfo(
+    device=["xpu", "cuda", "cpu"],
+    packing_format=["auto_round"],
+    sym=[True],
+    compute_dtype=["float32", "float16", "bfloat16"],
+    data_type=MX_TENSOR_DATA_TYPES,
+    group_size=[32],
+    bits=[4],
+    act_bits=[4],
+    act_group_size=[32],
+    act_sym=[True],
+    act_data_type=MX_TENSOR_DATA_TYPES,
+    act_dynamic=[True],
+    priority=0,
+    checkers=[mxfp_nvfp_feature_checker],
+    alias=["auto_round", "torch"],
+    requirements=["auto-round>0.12.0"],
+)
+
 # NVFP4
 
 BackendInfos["auto_round:torch_nvfp4"] = BackendInfo(
@@ -326,6 +347,7 @@ BackendInfos["auto_round:torch_nvfp4"] = BackendInfo(
 
 BackendInfos["auto_round:tritonv2"] = BackendInfo(
     device=["cuda", "xpu"],
+    data_type=["int"],
     sym=[True, False],
     packing_format=GPTQ_FORMAT_NO_ZP,
     compute_dtype=["float16", "bfloat16"],
@@ -774,6 +796,8 @@ def dynamic_import_inference_linear(backend, config):
         return ar_qmodules.WeightFP8ActFP8StaticQuantLinear
     if "torch_mxfp8" in backend:
         return ar_qmodules.MXFP8QuantLinear
+    if "torch_mxint4" in backend:
+        return ar_qmodules.MXINT4QuantLinear
     if "torch_mxfp4" in backend:
         hadamard_config = getattr(config, "hadamard_config", None)
         if hadamard_config is not None and hadamard_config:
@@ -861,16 +885,28 @@ def dynamic_import_inference_linear(backend, config):
     raise ValueError(f"unsupported backend {backend}, please set it to `auto` and retry")
 
 
-def get_gptqmodel_awq_infer_linear(backend):
-    """Returns the appropriate gptqmodel AWQ QuantLinear class for inference."""
-
+def safe_import_gptqmodel():
+    """Safely import gptqmodel on CPU to avoid meta device issues."""
     dtype = torch.get_default_dtype()
     if dtype != torch.float32:
         torch.set_default_dtype(torch.float32)
     try:
-        import gptqmodel  # pylint: disable=E0401
+        # When loaded via the "meta" device, `gptqmodel==6.0.3` raises an error (since the internal
+        # loading process within the `transformers` library defaults to the "meta" device mode).
+        # Therefore, it is necessary to first switch to the CPU to bypass this error, and then
+        # switch back to the original data type once the loading process is complete.
+        with torch.device("cpu"):
+            import gptqmodel  # pylint: disable=E0401
+
+            return gptqmodel
     finally:
         torch.set_default_dtype(dtype)
+
+
+def get_gptqmodel_awq_infer_linear(backend):
+    """Returns the appropriate gptqmodel AWQ QuantLinear class for inference."""
+
+    gptqmodel = safe_import_gptqmodel()
 
     # Select AWQ kernel based on the BackendInfos key
     if "marlin" in backend:
@@ -894,14 +930,7 @@ def get_gptqmodel_awq_infer_linear(backend):
 
 
 def get_gptqmodel_infer_linear(backend, bits=4, group_size=128, sym=False):
-    dtype = torch.get_default_dtype()
-    if dtype != torch.float32:
-        torch.set_default_dtype(torch.float32)
-
-    try:
-        import gptqmodel  # pylint: disable=E0401
-    finally:
-        torch.set_default_dtype(dtype)
+    gptqmodel = safe_import_gptqmodel()
 
     if "marlin" in backend:
         return auto_round_extension.cuda.gptqmodel_marlin.get_marlin_layer()

@@ -27,7 +27,9 @@ Support Matrix
 
 ✔ means support, - means support but cannot infer or not test infert yet, X means not support.
 """
+
 import os
+import sys
 from datetime import datetime, timedelta
 
 import torch
@@ -137,7 +139,7 @@ class HFProcessor(BasicProcessor):
                     conversation[-1]["content"].append({"image": image, "type": "image"})
             else:
                 conversation.append({"role": content["role"], "content": content["content"]})
-        if hasattr(self.processor, "chat_template"):
+        if hasattr(self.processor, "chat_template") and self.processor.chat_template is not None:
             text = self.processor.apply_chat_template(
                 conversation, add_generation_prompt=True, tokenize=False, return_dict=False
             )
@@ -164,7 +166,7 @@ class HFProcessor(BasicProcessor):
         max_length=None,
         truncation=False,
         truncation_strategy="text",
-        **kwargs
+        **kwargs,
     ):
 
         if isinstance(text, list):
@@ -194,6 +196,105 @@ class Qwen2VLProcessor(HFProcessor):
                 continue
             ret[key] = ret[key][0]
         return ret
+
+
+@register_processor("longcat_next")
+class LongCatNextProcessor(BasicProcessor):
+    """Processor for meituan-longcat/LongCat-Next multimodal models.
+
+    LongCat-Next supports text, image, and audio inputs.  Images are referenced
+    in the conversation text via ``<longcat_img_start>URL<longcat_img_end>``
+    tags.  The HuggingFace ``processor`` returns a tuple of
+    ``(text_inputs, visual_inputs, audio_inputs)`` instead of a single dict,
+    so this class unpacks them into a flat dict suitable for ``model.forward()``.
+    """
+
+    IMAGE_TOKEN = "<image>"
+    LONGCAT_IMG_START = "<longcat_img_start>"
+    LONGCAT_IMG_END = "<longcat_img_end>"
+
+    def post_init(self, model, tokenizer, processor=None, image_processor=None, use_rtn=False, **kwargs):
+        assert tokenizer is not None, "tokenizer should not be None"
+        assert processor is not None, "processor should not be None"
+        self.model = model
+        self.tokenizer = tokenizer
+        self.tokenizer.fix_mistral_regex = True
+        self.processor = processor
+        if image_processor is not None:
+            self.image_processor = image_processor
+        else:
+            self.image_processor = self.default_image_processor
+        self.use_rtn = use_rtn
+        # LongCat-Next get_input() relies on the HF processor output directly and
+        # does not use self.image_processor in the current input path. Do not
+        # enforce image_processor availability here so text-only calibration can
+        # still proceed when AutoImageProcessor loading is unavailable.
+
+        # build generation_config from model file because the code is on hub.
+        model_module = sys.modules[self.model.__module__]
+        GenerationConfig = model_module.GenerationConfig
+        LongcatNextForCausalLMGenerationStatus = model_module.LongcatNextForCausalLMGenerationStatus
+
+        self.visual_generation_config = GenerationConfig(**self.model.generation_config.visual_generation_config)
+        self.audio_generation_config = GenerationConfig(**self.model.generation_config.audio_generation_config)
+        self.multimodal_generation_status = LongcatNextForCausalLMGenerationStatus(
+            self.visual_generation_config, self.audio_generation_config
+        )
+
+    def get_input(self, text, images, squeeze=True, max_length=None, truncation=False, **kwargs):
+        if isinstance(text, list):
+            # text is a list of message dicts (conversation format)
+            messages = []
+            for content in text:
+                msg = {"role": content["role"], "content": content["content"]}
+                if self.IMAGE_TOKEN in content["content"] and images is not None:
+                    # Replace generic <image> token with LongCat image tags wrapping the URL
+                    msg["content"] = content["content"].replace(
+                        self.IMAGE_TOKEN,
+                        f"{self.LONGCAT_IMG_START}{images}{self.LONGCAT_IMG_END}",
+                    )
+                messages.append(msg)
+
+            text_input = self.tokenizer.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
+        else:
+            # Plain string input
+            if max_length is not None:
+                text_input = self.tokenizer.decode(self.tokenizer(text).input_ids[:max_length])
+            else:
+                text_input = text
+
+        # LongCat processor returns (text_inputs, visual_inputs, audio_inputs)
+        text_inputs, visual_inputs, audio_inputs = self.processor(text=text_input, return_tensors="pt")
+
+        ret = {}
+        for key in text_inputs:
+            ret[key] = text_inputs[key]
+        if visual_inputs is not None:
+            ret["visual_inputs"] = visual_inputs
+        if audio_inputs is not None:
+            ret["audio_inputs"] = audio_inputs
+        ret["multimodal_generation_status"] = self.multimodal_generation_status
+        ret["visual_generation_config"] = self.visual_generation_config
+
+        return ret
+
+    @staticmethod
+    def data_collator(batch):
+        if len(batch) == 1:
+            return batch[0]
+
+        batched_data = {}
+        for key in batch[0].keys():
+            values = [item[key] for item in batch]
+            if isinstance(values[0], torch.Tensor):
+                try:
+                    batched_data[key] = torch.stack(values)
+                except (RuntimeError, TypeError):
+                    batched_data[key] = values
+            else:
+                batched_data[key] = values
+
+        return batched_data
 
 
 @register_processor("qwen2_5_omni")
@@ -437,7 +538,7 @@ class Mistral3Processor(BasicProcessor):
         max_length=None,
         truncation=False,
         truncation_strategy="text",
-        **kwargs
+        **kwargs,
     ):
         from mistral_common.protocol.instruct.request import ChatCompletionRequest  # pylint: disable=E0401
 

@@ -691,6 +691,11 @@ def tune(args):
     if args.avg_bits is not None:
         if args.options is None:
             raise ValueError("please set --options for auto scheme")
+        if enable_torch_compile:
+            logger.warning(
+                "`enable_torch_compile=True` with AutoScheme may cause compile errors "
+                "on some models. If so, try removing `--enable_torch_compile`."
+            )
         scheme = AutoScheme(
             options=args.options,
             avg_bits=args.avg_bits,
@@ -751,7 +756,11 @@ def tune(args):
                     suffix = f"a{autoround.act_bits}"
             else:
                 suffix = f"g{autoround.group_size}"
-        prefix = autoround.data_type.lower().replace("_", "") if "int" not in autoround.data_type else ""
+        prefix = (
+            autoround.data_type.lower().replace("_", "")
+            if "int" not in autoround.data_type or "mx" in autoround.data_type
+            else ""
+        )
         export_dir = os.path.join(
             args.output_dir,
             model_name.split("/")[-1] + (f"-{prefix}" if prefix else "") + f"-w{autoround.bits}{suffix}",

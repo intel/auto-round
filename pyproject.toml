@@ -79,6 +79,7 @@ ignore = [
     "F401", # {name} imported but unused
     "F403", # from {name} import * used; unable to detect undefined names
     "F841", # Local variable is assigned to but never used{name}
+    "FURB171", # Membership test against single-item container
 ]
 
 # Allow fix for all enabled rules (when `--fix`) is provided.
