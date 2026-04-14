@@ -19,7 +19,6 @@ from copy import deepcopy
 from typing import Union
 
 import torch
-from PIL import Image
 from tqdm import tqdm
 
 from auto_round.compressors.base import BaseCompressor
@@ -193,6 +192,8 @@ class DiffusionCompressor(BaseCompressor):
         return image_param is not None and image_param.default is inspect._empty
 
     def _get_calibration_image(self, batch_size: int):
+        from PIL import Image
+
         params = inspect.signature(self.pipe.__call__).parameters
         width = params.get("width").default if "width" in params else 832
         height = params.get("height").default if "height" in params else 480
