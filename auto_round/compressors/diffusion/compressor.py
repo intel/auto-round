@@ -317,11 +317,14 @@ class DiffusionCompressor(BaseCompressor):
 
     def _get_current_num_elm(
         self,
-        input_ids: list[torch.Tensor],
+        input_ids: Union[list[torch.Tensor], dict],
         indices: list[int],
     ) -> int:
-        current_input_ids = [input_ids["hidden_states"][i] for i in indices]
-        return sum(id.numel() for id in current_input_ids)
+        if isinstance(input_ids, dict):
+            current_input_ids = [input_ids["hidden_states"][i] for i in indices]
+        else:
+            current_input_ids = [input_ids[i] for i in indices]
+        return sum(input_id.numel() for input_id in current_input_ids)
 
     def cache_inter_data(self, block_names, nsamples, layer_names=None, last_cache_name=None):
         """Dispatch multi-device before caching so accelerate hooks are added before _replace_forward."""
