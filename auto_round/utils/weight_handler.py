@@ -358,9 +358,11 @@ def is_quantized_input_module(model: torch.nn.Module) -> Optional[ModuleWeightTy
 
 
 def remove_existed_quantization_config(model: torch.nn.Module):
-    """
-    Removes the existing quantization configuration from the model's config if it exists.
-    This is to ensure that outdated or incompatible quantization configurations do not interfere with the export process.
+    """Removes the existing quantization configuration from the model's config if it exists.
+
+    This is necessary to prevent conflicts during conversion, especially for models that have a
+    `quantization_config` attribute in their config or sub-configs. It checks the model and its
+    config for any `quantization_config` attributes and deletes them if found.
     """
     if hasattr(model, "config") and model.config is not None:
         if hasattr(model.config, "quantization_config"):
