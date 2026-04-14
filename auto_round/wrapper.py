@@ -94,6 +94,7 @@ class WrapperLinear(torch.nn.Module):
         """
         super(WrapperLinear, self).__init__()
         self.orig_layer = orig_layer
+        self.orig_layer.iters = kwargs.pop("iters", 200)
         self.disable_opt_rtn = disable_opt_rtn
         self.output_device = device
         self.device = self.orig_layer.tuning_device if hasattr(self.orig_layer, "tuning_device") else device
@@ -171,18 +172,15 @@ class WrapperLinear(torch.nn.Module):
         self._init_params("max_scale", p_dtype, shape, 1.0, (self.enable_minmax_tuning and self.orig_layer.bits < 16))
 
         self.weight_quant_func, self.data_type = get_quant_func(
-            orig_layer.data_type, orig_layer.bits, orig_layer.sym, self.disable_opt_rtn, orig_layer.group_size
+            orig_layer.data_type, orig_layer.bits, orig_layer.sym, self.disable_opt_rtn, orig_layer.group_size,iters=orig_layer.iters
         )
         if self.enable_torch_compile:
             self.weight_quant_func = compile_func(self.weight_quant_func, self.device)
 
         if self.enable_act_quant:
             self.act_quant_func, self.act_data_type = get_quant_func(
-                orig_layer.act_data_type, orig_layer.act_bits, orig_layer.act_sym, self.disable_opt_rtn
+                orig_layer.act_data_type, orig_layer.act_bits, orig_layer.act_sym, disable_opt_rtn=True,iters=orig_layer.iters
             )
-            from auto_round.data_type.int import quant_tensor_sym
-
-            self.act_quant_func = quant_tensor_sym  # TODO harded coded
             if self.enable_torch_compile:
                 self.act_quant_func = compile_func(self.act_quant_func, self.device)
             self._init_params("act_max_scale", p_dtype, (1), 1.0, not orig_layer.act_dynamic)

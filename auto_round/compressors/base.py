@@ -1094,7 +1094,9 @@ class BaseCompressor(object):
                 dtype = f"{dtype}_{'sym' if config['sym'] else 'asym'}"
 
             # Optionally use optimized rounding (RTN) variant
-            if not self.disable_opt_rtn and f"rtn_{dtype}" in QUANT_FUNC_WITH_DTYPE:
+            if not self.disable_opt_rtn and f"opt_rtn_{dtype}" in QUANT_FUNC_WITH_DTYPE:
+                dtype = f"opt_rtn_{dtype}"
+            elif f"rtn_{dtype}" in QUANT_FUNC_WITH_DTYPE:
                 dtype = f"rtn_{dtype}"
 
             quant_func = QUANT_FUNC_WITH_DTYPE[dtype]
@@ -1297,6 +1299,7 @@ class BaseCompressor(object):
                     enable_round_tuning=False,
                     enable_torch_compile=self.enable_torch_compile,
                     disable_opt_rtn=disable_opt_rtn,
+                    iters=self.iters,
                 )
                 m = m.unwrapper({})
             except torch.OutOfMemoryError:
@@ -1312,6 +1315,7 @@ class BaseCompressor(object):
                         enable_norm_bias_tuning=False,
                         enable_round_tuning=False,
                         enable_torch_compile=self.enable_torch_compile,
+                        iters=self.iters,
                     )
                     m = m.unwrapper({})
                 except Exception as e:
@@ -1977,6 +1981,7 @@ class BaseCompressor(object):
                     enable_torch_compile=self.enable_torch_compile,
                     device=self.device,
                     disable_opt_rtn=self.disable_opt_rtn,
+                    iters=self.iters,
                 )
                 new_layer = wrapper_layer.unwrapper({})
                 set_module(self.model, layer_name, new_layer)
@@ -2745,6 +2750,7 @@ class BaseCompressor(object):
             enable_minmax_tuning=self.enable_minmax_tuning,
             enable_torch_compile=self.enable_torch_compile,
             device=device,
+            iters=self.iters,
         ).to(device)
         round_params = []
         minmax_params = []
@@ -3056,6 +3062,7 @@ class BaseCompressor(object):
             self.enable_norm_bias_tuning,
             enable_torch_compile=self.enable_torch_compile,
             device=device,
+            iters=self.iters,
         )
         # Call this before quantization and after applying the block wrapper.
         if is_nv_fp(self.data_type):  # enable qkv and moe structure global_scale fuse.
