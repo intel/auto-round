@@ -27,6 +27,7 @@ This document presents step-by-step instructions for auto-round llm quantization
     - [API Usage](#api-usage-1)
     - [Hyperparameters in AutoScheme](#hyperparameters-in-autoscheme)
   + [OPT RTN mode](#opt-rtn-mode)
+  + [Model-Free Mode](#model-free-mode)
   + [GGUF format](#gguf-format)
   + [Quantization Costs](#quantization-costs)
   + [Device/Multi-GPU setting in Quantization](#devicemulti-gpu-setting-in-quantization)
@@ -436,6 +437,69 @@ ar = AutoRound(
 output_dir = "./tmp_autoround"
 ar.quantize_and_save(output_dir, format="auto_round")
 ```
+
+### Model-Free Mode
+
+Model-free mode performs RTN quantization **without loading the full model into memory**. It downloads safetensors files directly, quantizes each Linear weight tensor shard-by-shard, and saves the packed result. This is useful when you want fast, no-calibration quantization with minimal resource requirements.
+
+**Key features:**
+- **No model object required** – only `config.json` and safetensors files are needed
+- **Low disk memory mode** (`--low_disk_mem_usage`) – downloads and quantizes one shard at a time, deleting the source shard after processing
+- **Per-layer configuration** – supports `--layer_config` for per-layer bit-width overrides and `--ignore_layers` to keep specific layers in full precision
+- **Predefined ignore layers** – automatically skips model-specific layers (e.g., MoE gates, MTP layers) based on config detection
+
+#### CLI Usage
+
+```bash
+# Basic model-free quantization
+auto_round meta-llama/Llama-3.2-1B-Instruct \
+  --model_free \
+  --scheme W4A16 \
+  --output_dir ./int4-llama
+
+# With low disk memory usage
+auto_round meta-llama/Llama-3.2-1B-Instruct \
+  --model_free \
+  --low_disk_mem_usage \
+  --scheme W4A16 \
+  --output_dir ./int4-llama
+
+# With per-layer configuration and ignored layers
+auto_round meta-llama/Llama-3.2-1B-Instruct \
+  --model_free \
+  --scheme W4A16 \
+  --layer_config "{k_proj:{bits:8},v_proj:{bits:8}}" \
+  --ignore_layers "lm_head" \
+  --output_dir ./int4-llama
+```
+
+#### API Usage
+
+```python
+from auto_round.compressors.model_free import model_free_quantize
+
+# Basic usage
+model_free_quantize(
+    model_name_or_path="meta-llama/Llama-3.2-1B-Instruct",
+    scheme="W4A16",
+    output_dir="./int4-llama",
+)
+
+# With low disk memory and per-layer config
+model_free_quantize(
+    model_name_or_path="meta-llama/Llama-3.2-1B-Instruct",
+    scheme="W4A16",
+    output_dir="./int4-llama",
+    low_disk_mem_usage=True,
+    layer_config={
+        ".*k_proj": {"bits": 8, "group_size": 32},
+        ".*v_proj": {"bits": 8, "group_size": 32},
+    },
+    ignore_layers="lm_head",
+)
+```
+
+> **Note:** Model-free mode only supports the `auto_round` output format and uses RTN (no calibration data, no iterative tuning). For higher quality quantization, use the standard AutoRound flow.
 
 ### GGUF format
 Experimental feature. This format is well-suited for CPU devices and is widely adopted by the community. 

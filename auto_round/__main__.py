@@ -182,6 +182,21 @@ class BasicArgumentParser(argparse.ArgumentParser):
             help="Disable trusting remote code when loading models. "
             "Use for security if you don't trust the model source.",
         )
+        basic.add_argument(
+            "--model_free",
+            action="store_true",
+            help="Enable model-free quantization mode. "
+            "Downloads and quantizes safetensors files directly using RTN, "
+            "without loading the full model into memory. "
+            "Only supports auto_round output format.",
+        )
+        basic.add_argument(
+            "--low_disk_mem_usage",
+            action="store_true",
+            help="Download safetensors shards one at a time and delete each "
+            "source shard after quantization to minimize disk usage. "
+            "Only effective with --model_free.",
+        )
 
         tuning = self.add_argument_group("Tuning Arguments")
         tuning.add_argument(
@@ -582,6 +597,42 @@ def tune(args):
 
     if "marlin" in args.format and args.asym is True:
         raise RuntimeError("marlin backend only supports sym quantization, please remove --asym")
+
+    # ======================= Model-Free Mode =======================
+    if getattr(args, "model_free", False):
+        from auto_round.compressors.model_free import model_free_quantize
+
+        layer_config = {}
+        if args.layer_config:
+            layer_config = parse_layer_config_arg(args.layer_config)
+
+        scheme = args.scheme.upper()
+        if scheme not in PRESET_SCHEMES:
+            raise ValueError(f"{scheme} is not supported. Only {list(PRESET_SCHEMES.keys())} are supported")
+
+        model_name = args.model.rstrip("/")
+        logger.info(f"Model-free quantization mode for {model_name}")
+
+        output_dir = args.output_dir
+        if output_dir == "./tmp_autoround" and model_name.split("/")[-1].strip(".") != "":
+            from auto_round.schemes import preset_name_to_scheme
+
+            s = preset_name_to_scheme(scheme)
+            suffix = f"g{s.group_size}" if s.group_size > 0 else f"a{s.act_bits}"
+            output_dir = os.path.join(args.output_dir, model_name.split("/")[-1] + f"-w{s.bits}{suffix}")
+
+        model_free_quantize(
+            model_name_or_path=model_name,
+            output_dir=output_dir,
+            scheme=scheme,
+            layer_config=layer_config,
+            ignore_layers=args.ignore_layers,
+            format=args.format,
+            device=args.device_map if args.device_map not in ("0", "auto") else "cpu",
+            low_disk_mem_usage=getattr(args, "low_disk_mem_usage", False),
+            trust_remote_code=not args.disable_trust_remote_code,
+        )
+        return
 
     device_str, use_auto_mapping = get_device_and_parallelism(args.device_map)
 

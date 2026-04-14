@@ -27,6 +27,7 @@
     - [API 用法](#api-用法)
     - [AutoScheme 中的超参数](#autoscheme-超参数说明)
   + [OPT RTN 模式](#opt-rtn-模式)
+  + [免模型量化模式](#免模型量化模式)
   + [GGUF 格式](#gguf-格式量化)
   + [量化成本](#量化成本)
   + [设备及多卡量化设置](#设备及多卡量化设置)
@@ -428,6 +429,69 @@ ar = AutoRound(
 output_dir = "./tmp_autoround"
 ar.quantize_and_save(output_dir, format="auto_round")
 ```
+
+### 免模型量化模式
+
+免模型量化模式（Model-Free Mode）可以**无需将完整模型加载到内存中**即可执行 RTN 量化。它直接下载 safetensors 文件，逐分片地对每个 Linear 权重张量进行量化并保存打包结果。当您需要快速、无标定数据的量化且资源有限时，该模式非常实用。
+
+**主要特性：**
+- **无需模型对象** — 仅需 `config.json` 和 safetensors 文件
+- **低磁盘内存模式** (`--low_disk_mem_usage`) — 逐个下载并量化分片，处理完成后立即删除源分片
+- **逐层配置** — 支持 `--layer_config` 设置逐层位宽，以及 `--ignore_layers` 保持特定层全精度
+- **预定义忽略层** — 根据模型配置自动跳过特定层（如 MoE 门控层、MTP 层等）
+
+#### 命令行用法
+
+```bash
+# 基本免模型量化
+auto_round meta-llama/Llama-3.2-1B-Instruct \
+  --model_free \
+  --scheme W4A16 \
+  --output_dir ./int4-llama
+
+# 搭配低磁盘存储模式
+auto_round meta-llama/Llama-3.2-1B-Instruct \
+  --model_free \
+  --low_disk_mem_usage \
+  --scheme W4A16 \
+  --output_dir ./int4-llama
+
+# 搭配逐层配置和忽略层
+auto_round meta-llama/Llama-3.2-1B-Instruct \
+  --model_free \
+  --scheme W4A16 \
+  --layer_config "{k_proj:{bits:8},v_proj:{bits:8}}" \
+  --ignore_layers "lm_head" \
+  --output_dir ./int4-llama
+```
+
+#### API 用法
+
+```python
+from auto_round.compressors.model_free import model_free_quantize
+
+# 基本用法
+model_free_quantize(
+    model_name_or_path="meta-llama/Llama-3.2-1B-Instruct",
+    scheme="W4A16",
+    output_dir="./int4-llama",
+)
+
+# 搭配低磁盘内存模式及逐层配置
+model_free_quantize(
+    model_name_or_path="meta-llama/Llama-3.2-1B-Instruct",
+    scheme="W4A16",
+    output_dir="./int4-llama",
+    low_disk_mem_usage=True,
+    layer_config={
+        ".*k_proj": {"bits": 8, "group_size": 32},
+        ".*v_proj": {"bits": 8, "group_size": 32},
+    },
+    ignore_layers="lm_head",
+)
+```
+
+> **注意：** 免模型量化模式仅支持 `auto_round` 输出格式，并使用 RTN（无标定数据、无迭代调优）。如需更高质量的量化结果，请使用标准 AutoRound 流程。
 
 ### GGUF 格式量化
 实验性功能。该格式适用 CPU 设备，在社区应用广泛。
