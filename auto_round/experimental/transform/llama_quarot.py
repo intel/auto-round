@@ -8,7 +8,11 @@ import torch
 import tqdm
 
 from auto_round.experimental.transform.hadamard_config import HadamardConfig
-from auto_round.experimental.transform.utils.hadamard import _fetch_hadamard_divisor, deterministic_hadamard_matrix, is_pow2
+from auto_round.experimental.transform.utils.hadamard import (
+    _fetch_hadamard_divisor,
+    deterministic_hadamard_matrix,
+    is_pow2,
+)
 
 __all__ = [
     "LLAMA_QUAROT_STRATEGY",
@@ -102,12 +106,7 @@ def apply_llama_quarot_layer_config_overrides(
             continue
 
         group_size = scheme.get("group_size", None)
-        if (
-            warn_fn is not None
-            and isinstance(group_size, int)
-            and group_size > 0
-            and group_size != act_group_size
-        ):
+        if warn_fn is not None and isinstance(group_size, int) and group_size > 0 and group_size != act_group_size:
             warn_fn(
                 "llama_quarot follows QuaRot's Llama activation grouping best when "
                 f"`group_size` matches `act_group_size`; got group_size={group_size}, "
@@ -426,7 +425,8 @@ def _fuse_ln_linear(layernorm: torch.nn.Module, linear_layers: list[torch.nn.Lin
                     torch.zeros(linear.out_features, dtype=torch.float64, device=linear.weight.device)
                 )
             linear.bias.data = (
-                linear.bias.data.to(dtype=torch.float64) + torch.matmul(weight, layernorm.bias.data.to(dtype=torch.float64))
+                linear.bias.data.to(dtype=torch.float64)
+                + torch.matmul(weight, layernorm.bias.data.to(dtype=torch.float64))
             ).to(device=linear.bias.device, dtype=linear_dtype)
 
 
