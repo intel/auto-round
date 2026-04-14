@@ -183,21 +183,25 @@ class DiffusionCompressor(BaseCompressor):
         return wrap_block_forward_positional_to_kwargs(super()._get_block_forward_func(name))
 
     def _uses_single_hidden_state_input(self) -> bool:
+        if not self.quant_block_list:
+            return False
         first_block_name = self.quant_block_list[0][0]
         first_block = self.model.get_submodule(first_block_name)
         return output_configs.get(first_block.__class__.__name__, []) == ["hidden_states"]
 
     def _requires_calibration_image(self) -> bool:
         image_param = inspect.signature(self.pipe.__call__).parameters.get("image")
-        return image_param is not None and image_param.default is inspect._empty
+        return image_param is not None and image_param.default is inspect.Parameter.empty
 
     def _get_calibration_image(self, batch_size: int):
         from PIL import Image  # pylint: disable=E0401
 
         params = inspect.signature(self.pipe.__call__).parameters
-        width = params.get("width").default if "width" in params else 832
-        height = params.get("height").default if "height" in params else 480
-        image = Image.new("RGB", (width, height), color=(127, 127, 127))
+        width_param = params.get("width")
+        height_param = params.get("height")
+        width = 832 if width_param is None or width_param.default in (inspect._empty, None) else width_param.default
+        height = 480 if height_param is None or height_param.default in (inspect._empty, None) else height_param.default
+        image = Image.new("RGB", (int(width), int(height)), color=(127, 127, 127))
         if batch_size == 1:
             return image
         return [image.copy() for _ in range(batch_size)]
@@ -313,11 +317,14 @@ class DiffusionCompressor(BaseCompressor):
 
     def _get_current_num_elm(
         self,
-        input_ids: list[torch.Tensor],
+        input_ids: Union[list[torch.Tensor], dict],
         indices: list[int],
     ) -> int:
-        current_input_ids = [input_ids["hidden_states"][i] for i in indices]
-        return sum(id.numel() for id in current_input_ids)
+        if isinstance(input_ids, dict):
+            current_input_ids = [input_ids["hidden_states"][i] for i in indices]
+        else:
+            current_input_ids = [input_ids[i] for i in indices]
+        return sum(input_id.numel() for input_id in current_input_ids)
 
     def cache_inter_data(self, block_names, nsamples, layer_names=None, last_cache_name=None):
         """Dispatch multi-device before caching so accelerate hooks are added before _replace_forward."""
