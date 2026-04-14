@@ -191,7 +191,7 @@ class DiffusionCompressor(BaseCompressor):
 
     def _requires_calibration_image(self) -> bool:
         image_param = inspect.signature(self.pipe.__call__).parameters.get("image")
-        return image_param is not None and image_param.default is inspect._empty
+        return image_param is not None and image_param.default is inspect.Parameter.empty
 
     def _get_calibration_image(self, batch_size: int):
         from PIL import Image
