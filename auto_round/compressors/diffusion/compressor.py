@@ -221,8 +221,16 @@ class DiffusionCompressor(BaseCompressor):
         params = inspect.signature(self.pipe.__call__).parameters
         width_param = params.get("width")
         height_param = params.get("height")
-        width = 832 if width_param is None or width_param.default in (inspect.Parameter.empty, None) else width_param.default
-        height = 480 if height_param is None or height_param.default in (inspect.Parameter.empty, None) else height_param.default
+        width = (
+            832
+            if width_param is None or width_param.default in (inspect.Parameter.empty, None)
+            else width_param.default
+        )
+        height = (
+            480
+            if height_param is None or height_param.default in (inspect.Parameter.empty, None)
+            else height_param.default
+        )
         image = Image.new("RGB", (int(width), int(height)), color=(127, 127, 127))
         if batch_size == 1:
             return image
@@ -366,8 +374,11 @@ class DiffusionCompressor(BaseCompressor):
                     is_other_component = not comp_name.startswith("transformer")
                     if is_other_transformer or is_other_component:
                         # Convert dtype on CPU first to reduce GPU/XPU memory for large components
-                        if isinstance(comp, torch.nn.Module) and hasattr(comp, "dtype") \
-                                and comp.dtype != self.model.dtype:
+                        if (
+                            isinstance(comp, torch.nn.Module)
+                            and hasattr(comp, "dtype")
+                            and comp.dtype != self.model.dtype
+                        ):
                             comp.to(dtype=self.model.dtype)
                         try:
                             comp.to(comp_device)
