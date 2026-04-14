@@ -571,7 +571,7 @@ class BaseCompressor(object):
 
             self.hadamard_config = normalize_hadamard_config(hadamard_config)
         self.has_variable_block_shape = False
-        all_blocks = self.quant_block_list if self.quant_block_list else get_block_names(self.model)
+        all_blocks = self.quant_block_list or get_block_names(self.model)
         if not all_blocks:
             raise ValueError("Could not find any blocks. Check the model or quant_block_list.")
         self.blocks_requiring_input_ids = [data if isinstance(data, str) else data[0] for data in all_blocks]
