@@ -33,7 +33,6 @@ from auto_round.experimental.hadamard_inplace.utils import (
     deterministic_hadamard_matrix,
     get_hadK,
     get_or_create_random_hadamard,
-    random_hadamard_matrix,
 )
 
 # ---------------------------------------------------------------------------
@@ -260,20 +259,20 @@ def _rotate_weights(
     if preset == "random_hadamard":
         fused_fast = False
 
-    # -- Grouped-mode matrix resolution --
+    # -- Matrix resolution --
     had_matrix, _found = _get_custom_had(had_dict, group_size) if is_grouped else (None, False)
 
     online_had_matrix = had_matrix
-    if preset == "random_hadamard" and is_grouped and had_matrix is None:
-        had_matrix = get_or_create_random_hadamard(group_size, compute_device)
+    if preset == "random_hadamard" and had_matrix is None:
+        had_matrix = get_or_create_random_hadamard(group_size if is_grouped else hidden_size, compute_device)
         online_had_matrix = had_matrix
     if preset == "quarot_hadamard" and is_grouped:
         online_had_matrix = None  # force deterministic for online-paired
 
-    # -- Helper: look up random matrix for online-paired ops in full mode --
+    # -- Helper: look up cached random matrix for online-paired ops --
     def _online_had(dim):
         """Return cached random matrix for *dim* under random_hadamard, else None."""
-        if preset == "random_hadamard" and not is_grouped:
+        if preset == "random_hadamard":
             return get_or_create_random_hadamard(dim, compute_device)
         return None
 
@@ -515,16 +514,16 @@ def _register_online_hooks(
     # that was cached in had_dict by _rotate_weights.
     online_fast = False
 
-    # -- Grouped-mode matrix resolution (must match _rotate_weights) --
+    # -- Matrix resolution (must match _rotate_weights) --
     had_matrix, _ = _get_custom_had(had_dict, group_size) if is_grouped else (None, False)
-    if preset == "random_hadamard" and is_grouped and had_matrix is None:
-        had_matrix = get_or_create_random_hadamard(group_size)
+    if preset == "random_hadamard" and had_matrix is None:
+        had_matrix = get_or_create_random_hadamard(group_size if is_grouped else hidden_size)
     if preset == "quarot_hadamard" and is_grouped:
         had_matrix = None
 
-    # -- Helper: look up random matrix for full-mode online-paired hooks --
+    # -- Helper: look up cached random matrix for online-paired hooks --
     def _online_had(dim):
-        if preset == "random_hadamard" and not is_grouped:
+        if preset == "random_hadamard":
             return get_or_create_random_hadamard(dim)
         return None
 
@@ -585,11 +584,11 @@ def _register_online_hooks(
 
 def apply_hadamard_rotation(
     model,
-    fp32_had: bool = False,
     group_size: int = None,
-    compute_device: torch.device = None,
     allow_online_hadamard: bool = True,
     rotation_matrix: Union[str, torch.Tensor, Dict[int, torch.Tensor], None] = None,
+    compute_device: torch.device = None,
+    fp32_had: bool = False,
 ):
     """Fuse layer norms, rotate weights, and register online Hadamard hooks.
 
