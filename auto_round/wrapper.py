@@ -28,7 +28,8 @@ from auto_round.utils import (
     deepspeed_exists,
     set_module,
 )
-
+import math
+import auto_round.envs as envs
 if deepspeed_exists:
     from deepspeed import comm as dist
     from deepspeed.module_inject import LinearAllreduce, LinearLayer
@@ -178,6 +179,9 @@ class WrapperLinear(torch.nn.Module):
             self.act_quant_func, self.act_data_type = get_quant_func(
                 orig_layer.act_data_type, orig_layer.act_bits, orig_layer.act_sym, self.disable_opt_rtn
             )
+            from auto_round.data_type.int import quant_tensor_sym
+
+            self.act_quant_func = quant_tensor_sym #TODO harded coded
             if self.enable_torch_compile:
                 self.act_quant_func = compile_func(self.act_quant_func, self.device)
             self._init_params("act_max_scale", p_dtype, (1), 1.0, not orig_layer.act_dynamic)
@@ -221,8 +225,8 @@ class WrapperLinear(torch.nn.Module):
         """
         if self.orig_layer.bits >= 16:
             return self.orig_layer.weight, None, None
-        min_scale.data.clamp_(0, 1.0)
-        max_scale.data.clamp_(0, 1.0)
+        min_scale.data.clamp_(0.0, 1.0)
+        max_scale.data.clamp_(0.0, 1.0)
         weight = self.orig_layer.weight
         if weight.device.type == "meta":
             weight = self.orig_layer.get_weight().to(self.device)
@@ -267,6 +271,8 @@ class WrapperLinear(torch.nn.Module):
             tuple: Quantized activation, scale, and zero point.
         """
         act_max_scale.data.clamp_(0, 1.0)
+
+        act_scale = envs.AR_ACT_SCALE
         x, scale, zp = self.act_quant_func(
             x,
             bits=self.orig_layer.act_bits,
@@ -274,8 +280,8 @@ class WrapperLinear(torch.nn.Module):
             scale_dtype=self.orig_layer.scale_dtype,
             q_scale_thresh=self.q_scale_thresh,
             data_type=self.act_data_type,
-            max_scale=act_max_scale,
-            tensor_max=act_max,
+            max_scale=act_max_scale if math.isclose(act_scale, 1.0, rel_tol=1e-6) else act_scale,
+            min_scale = 1.0 if math.isclose(act_scale, 1.0, rel_tol=1e-6) else act_scale,
             global_scale=getattr(self, "input_global_scale", None),
         )
         return x, scale, zp
@@ -311,6 +317,10 @@ class WrapperLinear(torch.nn.Module):
         Returns:
             torch.nn.Module: The unwrapped and restored original layer.
         """
+
+
+        if len(self.orig_layer._forward_pre_hooks) > 0:
+            logger.info(f"{self.orig_layer.global_name} has prehook")
         best_params = best_params or {}
         v = best_params.get("value", torch.tensor(0.0)).to(self.device)
         min_scale = best_params.get("min_scale", torch.tensor(1.0)).to(self.device)
@@ -477,6 +487,12 @@ class WrapperLinear(torch.nn.Module):
         weight_q, *_ = self._qdq_weight(self.value, self.min_scale, self.max_scale)
 
         if self.enable_act_quant:
+            # Run orig_layer's forward_pre_hooks (e.g., online Hadamard transform)
+            # BEFORE activation quantization, to match inference behavior in WrapperWALayer.
+            for hook in self.orig_layer._forward_pre_hooks.values():
+                result = hook(self.orig_layer, (x,))
+                if result is not None:
+                    x = result[0] if isinstance(result, tuple) else result
             act_max = self.orig_layer.act_max if hasattr(self.orig_layer, "act_max") else None
             x, _, _ = self._qdq_act(x, act_max_scale=self.act_max_scale, act_max=act_max)
 
@@ -530,15 +546,18 @@ class WrapperWALayer(torch.nn.Module):
         # 2) Activation quantization on the smoothed activation
         import auto_round.envs as envs
         act_scale = envs.AR_ACT_SCALE
-        act_max = self.orig_layer.act_max if hasattr(self.orig_layer, "act_max") else None
-        if self.orig_layer.group_size == -1:
-            tensor = x.reshape(-1, x.shape[-1])
-        elif self.orig_layer.group_size > 0:
-            tensor = x.reshape(-1, self.orig_layer.group_size)
-        else:
-            tensor = x.reshape(-1)
-        tensor_min = torch.clamp(tensor.min(-1)[0], max=0) * act_scale
-        tensor_max = torch.clamp(tensor.max(-1)[0], min=0) * act_scale
+        # act_max = self.orig_layer.act_max if hasattr(self.orig_layer, "act_max") else None
+        # if self.orig_layer.group_size == -1:
+        #     tensor = x.reshape(-1, x.shape[-1])
+        # elif self.orig_layer.group_size > 0:
+        #     tensor = x.reshape(-1, self.orig_layer.group_size)
+        # else:
+        #     tensor = x.reshape(-1)
+        # tensor_min = torch.clamp(tensor.min(-1)[0], max=0) * act_scale
+        # tensor_max = torch.clamp(tensor.max(-1)[0], min=0) * act_scale
+        max_scale = 1.0 if math.isclose(act_scale, 1.0, rel_tol=1e-6) else act_scale
+        min_scale = 1.0 if math.isclose(act_scale, 1.0, rel_tol=1e-6) else act_scale
+        # if act_max is None:
         x, _, _ = self.orig_layer.act_quant_func(
             x,
             bits=self.orig_layer.act_bits,
@@ -546,10 +565,20 @@ class WrapperWALayer(torch.nn.Module):
             scale_dtype=self.orig_layer.scale_dtype,
             q_scale_thresh=self.orig_layer.q_scale_thresh,
             data_type=self.orig_layer.act_data_type,
-            act_max=act_max,
-            tensor_min=tensor_min,
-            tensor_max=tensor_max,
+            min_scale=min_scale,
+            max_scale=max_scale,
         )
+        # else:
+        #     x, _, _ = self.orig_layer.act_quant_func(
+        #         x,
+        #         bits=self.orig_layer.act_bits,
+        #         group_size=self.orig_layer.act_group_size,
+        #         scale_dtype=self.orig_layer.scale_dtype,
+        #         q_scale_thresh=self.orig_layer.q_scale_thresh,
+        #         data_type=self.orig_layer.act_data_type,
+        #         tensor_min=tensor_min,
+        #         tensor_max=tensor_max,
+        #     )
         # 3) Linear computation via orig_layer (pre_hooks already removed, no double execution)
         return self.orig_layer.forward(x)
 
@@ -666,6 +695,7 @@ NORM_MAPPING["Qwen2RMSNorm"] = WrapperLlamaNorm
 NORM_MAPPING["Phi3RMSNorm"] = WrapperLlamaNorm
 NORM_MAPPING["MistralRMSNorm"] = WrapperLlamaNorm
 NORM_MAPPING["Qwen3RMSNorm"] = WrapperLlamaNorm
+NORM_MAPPING["Qwen3_5MoeRMSNorm"] = WrapperLlamaNorm
 
 
 class WrapperMultiblock(torch.nn.Module):

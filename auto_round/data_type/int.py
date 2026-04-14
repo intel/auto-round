@@ -97,15 +97,15 @@ def search_scales(data: torch.Tensor, bits: int, qw: Union[None, torch.Tensor, f
 #
 #     tensor, orig_shape, pad_len = reshape_pad_tensor_by_group_size(tensor, group_size)
 #     maxq = 2 ** (bits - 1)
-#     if imatrix is None:
-#         imatrix = 1.0
-#     else:
-#         imatrix = imatrix.reshape(1, -1)
-#         imatrix = reshape_pad_tensor_by_group_size(imatrix, group_size, val=1e-5)[0].view(1, -1)
-#         imatrix = imatrix.expand(tensor.numel() // imatrix.numel(), -1)
-#         imatrix = imatrix.reshape(tensor.shape)
-#
-#         imatrix = _imatrix_handle_zero(imatrix, tensor, bits)
+#     # if imatrix is None:
+#     imatrix = 1.0
+#     # else:
+#     #     imatrix = imatrix.reshape(1, -1)
+#     #     imatrix = reshape_pad_tensor_by_group_size(imatrix, group_size, val=1e-5)[0].view(1, -1)
+#     #     imatrix = imatrix.expand(tensor.numel() // imatrix.numel(), -1)
+#     #     imatrix = imatrix.reshape(tensor.shape)
+#     #
+#     #     imatrix = _imatrix_handle_zero(imatrix, tensor, bits)
 #
 #     scale = search_scales(tensor, bits, qw=imatrix)
 #     scale = torch.where(scale < 0, torch.clamp(scale, max=-q_scale_thresh), torch.clamp(scale, min=q_scale_thresh))

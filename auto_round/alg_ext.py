@@ -323,8 +323,6 @@ class WrapperLinearV2(WrapperLinear):
             disable_opt_rtn=disable_opt_rtn,
             **kwargs,
         )
-        if self.enable_act_quant and self.orig_layer.data_type.startswith("int"):
-            raise ValueError("does not support act quantization in WrapperLinearV2, please use WrapperLinear instead")
 
     def _init_tuning_params_and_quant_func(self):
         """Initializes tuning parameters and quantization functions.
