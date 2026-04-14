@@ -172,14 +172,23 @@ class WrapperLinear(torch.nn.Module):
         self._init_params("max_scale", p_dtype, shape, 1.0, (self.enable_minmax_tuning and self.orig_layer.bits < 16))
 
         self.weight_quant_func, self.data_type = get_quant_func(
-            orig_layer.data_type, orig_layer.bits, orig_layer.sym, self.disable_opt_rtn, orig_layer.group_size,iters=orig_layer.iters
+            orig_layer.data_type,
+            orig_layer.bits,
+            orig_layer.sym,
+            self.disable_opt_rtn,
+            orig_layer.group_size,
+            iters=orig_layer.iters,
         )
         if self.enable_torch_compile:
             self.weight_quant_func = compile_func(self.weight_quant_func, self.device)
 
         if self.enable_act_quant:
             self.act_quant_func, self.act_data_type = get_quant_func(
-                orig_layer.act_data_type, orig_layer.act_bits, orig_layer.act_sym, disable_opt_rtn=True,iters=orig_layer.iters
+                orig_layer.act_data_type,
+                orig_layer.act_bits,
+                orig_layer.act_sym,
+                disable_opt_rtn=True,
+                iters=orig_layer.iters,
             )
             if self.enable_torch_compile:
                 self.act_quant_func = compile_func(self.act_quant_func, self.device)

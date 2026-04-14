@@ -116,7 +116,16 @@ def quant_tensor_rtn_sym(tensor, bits=4, group_size=-1, v=0, q_scale_thresh=1e-5
 
 
 @register_dtype("rtn_int_sym")
-def quant_tensor_rtn_sym(tensor, bits=4, group_size=-1, q_scale_thresh=1e-5, min_scale=1.0,max_scale=1.0, scale_dtype=torch.float16, **kwargs):
+def quant_tensor_rtn_sym(
+    tensor,
+    bits=4,
+    group_size=-1,
+    q_scale_thresh=1e-5,
+    min_scale=1.0,
+    max_scale=1.0,
+    scale_dtype=torch.float16,
+    **kwargs
+):
     """Quantize and de-quantize tensor asymmetrically. full range, credict goes to llamacpp community
 
     Args:
@@ -143,6 +152,7 @@ def quant_tensor_rtn_sym(tensor, bits=4, group_size=-1, q_scale_thresh=1e-5, min
     qdq_result = (int_w.mul_(scale)).to(tensor.dtype)
     qdq_result = revert_tensor_by_pad(qdq_result, orig_shape=orig_shape, pad_len=pad_len)
     return qdq_result, scale, maxq
+
 
 @register_dtype("int_sym")
 def quant_tensor_sym(
