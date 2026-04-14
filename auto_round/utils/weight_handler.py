@@ -367,8 +367,8 @@ def remove_existed_quantization_config(model: torch.nn.Module):
     if hasattr(model, "config") and model.config is not None:
         if hasattr(model.config, "quantization_config"):
             delattr(model.config, "quantization_config")
-        for attr in dir(model.config):
-            if attr.startswith("__"):
+        for attr in dir(model.config):  # for text_config, vision_config, etc.
+            if "config" not in attr:
                 continue
             config_attr = getattr(model.config, attr)
             if hasattr(config_attr, "quantization_config"):
