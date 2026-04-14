@@ -265,7 +265,7 @@ class TestQwen3OmniMoeReplacement:
 
         torch.manual_seed(42)
 
-        def assert_same_weights(actual: torch.Tensor, expected: torch.Tensor):
+            torch.testing.assert_close(actual, expected, rtol=0, atol=0, equal_nan=True)
             assert torch.allclose(actual, expected, equal_nan=True)
 
         config = _make_tiny_qwen3_omni_moe_config()
