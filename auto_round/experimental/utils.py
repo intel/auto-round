@@ -16,7 +16,7 @@ from typing import Any
 
 import torch
 
-from auto_round.compressors.utils import is_nv_fp
+from auto_round.compressors.utils import is_nv_fp, is_mx_fp
 from auto_round.experimental.transform.hadamard_config import HadamardConfig
 from auto_round.experimental.transform.hadamards import HADAMARDS
 from auto_round.utils import logger
@@ -137,7 +137,7 @@ def is_triton_kernel_available(data_type: str) -> bool:
     return True
 
 
-def normalize_hadamard_config(hadamard_config: str | dict | HadamardConfig | None, scheme: str) -> dict[str, Any]:
+def normalize_hadamard_config(hadamard_config: str | dict | HadamardConfig | None, data_type: str) -> dict[str, Any]:
     """
     Normalize and validate `hadamard_config`.
 
@@ -149,39 +149,36 @@ def normalize_hadamard_config(hadamard_config: str | dict | HadamardConfig | Non
 
     Additional behavior:
         - If block_size is not set by user:
-            - MXFP4 -> default block_size to 32
-            - NVFP4 -> default block_size to 16
-            - other schemes -> emit a warning
+            - mx_fp -> default block_size to 32
+            - nv_fp -> default block_size to 16
+            - other data types -> emit a warning
         - If block_size is set but does not match the recommended value:
-            - MXFP4 expects 32
-            - NVFP4 expects 16
+            - mx_fp expects 32
+            - nv_fp expects 16
             - emit a warning
     """
 
-    def _normalize_scheme(s: str) -> str:
-        return s.strip().upper()
 
-    def _apply_scheme_block_size(cfg_dict: dict[str, Any], block_size_explicitly_set: bool) -> dict[str, Any]:
-        normalized_scheme = _normalize_scheme(scheme)
+    def _apply_data_type_block_size(cfg_dict: dict[str, Any], block_size_explicitly_set: bool) -> dict[str, Any]:
         block_size = cfg_dict.get("block_size")
 
         if not block_size_explicitly_set or block_size is None:
-            if normalized_scheme == "MXFP4":
+            if is_mx_fp(data_type):
                 cfg_dict["block_size"] = 32
-                logger.warning("block_size is not set for scheme 'MXFP4'; defaulting to 32.")
-            elif normalized_scheme == "NVFP4":
+                logger.warning("block_size is not set for data_type 'mx_fp'; defaulting to 32.")
+            elif is_nv_fp(data_type):
                 cfg_dict["block_size"] = 16
-                logger.warning("block_size is not set for scheme 'NVFP4'; defaulting to 16.")
+                logger.warning("block_size is not set for data_type 'nv_fp'; defaulting to 16.")
             else:
                 logger.warning(
-                    f"block_size is not set and cannot be inferred for scheme {scheme!r}; "
+                    f"block_size is not set and cannot be inferred for data_type {data_type!r}; "
                     "please set block_size explicitly in hadamard_config if needed."
                 )
         else:
-            if normalized_scheme == "MXFP4" and block_size != 32:
-                logger.warning(f"scheme is 'MXFP4' but block_size={block_size}; recommended value is 32.")
-            elif normalized_scheme == "NVFP4" and block_size != 16:
-                logger.warning(f"scheme is 'NVFP4' but block_size={block_size}; recommended value is 16.")
+            if is_mx_fp(data_type) and block_size != 32:
+                logger.warning(f"data_type is 'mx_fp' but block_size={block_size}; recommended value is 32.")
+            elif is_nv_fp(data_type) and block_size != 16:
+                logger.warning(f"data_type is 'nv_fp' but block_size={block_size}; recommended value is 16.")
 
         return cfg_dict
 
@@ -195,7 +192,7 @@ def normalize_hadamard_config(hadamard_config: str | dict | HadamardConfig | Non
         block_size_explicitly_set = "block_size" in raw_cfg_dict
 
         cfg_dict = dict(raw_cfg_dict)
-        cfg_dict = _apply_scheme_block_size(cfg_dict, block_size_explicitly_set)
+        cfg_dict = _apply_data_type_block_size(cfg_dict, block_size_explicitly_set)
 
         try:
             return HadamardConfig.model_validate(cfg_dict).model_dump()
@@ -207,7 +204,7 @@ def normalize_hadamard_config(hadamard_config: str | dict | HadamardConfig | Non
         block_size_explicitly_set = "block_size" in hadamard_config
 
         cfg_dict = dict(hadamard_config)
-        cfg_dict = _apply_scheme_block_size(cfg_dict, block_size_explicitly_set)
+        cfg_dict = _apply_data_type_block_size(cfg_dict, block_size_explicitly_set)
 
         try:
             return HadamardConfig.model_validate(cfg_dict).model_dump()
@@ -222,17 +219,17 @@ def normalize_hadamard_config(hadamard_config: str | dict | HadamardConfig | Non
 
         if key == "default":
             cfg_dict = {}
-            cfg_dict = _apply_scheme_block_size(cfg_dict, block_size_explicitly_set=False)
+            cfg_dict = _apply_data_type_block_size(cfg_dict, block_size_explicitly_set=False)
             try:
                 return HadamardConfig.model_validate(cfg_dict).model_dump()
             except Exception as e:
-                raise ValueError(f"Invalid default hadamard_config after scheme adjustment: {e}") from e
+                raise ValueError(f"Invalid default hadamard_config after data_type adjustment: {e}") from e
 
         if key not in HADAMARDS:
             raise ValueError(f"Invalid hadamard_config string: {key!r}. Expected one of {sorted(HADAMARDS.keys())}.")
 
         cfg_dict = {"hadamard_type": key}
-        cfg_dict = _apply_scheme_block_size(cfg_dict, block_size_explicitly_set=False)
+        cfg_dict = _apply_data_type_block_size(cfg_dict, block_size_explicitly_set=False)
 
         try:
             return HadamardConfig.model_validate(cfg_dict).model_dump()
@@ -240,9 +237,9 @@ def normalize_hadamard_config(hadamard_config: str | dict | HadamardConfig | Non
             raise ValueError(f"hadamard_config built from string {key!r} is invalid for HadamardConfig: {e}") from e
 
     raise TypeError(
-        "hadamard_config must be one of: None, dict, HadamardConfig, or str " f"(got {type(hadamard_config).__name__})"
+        "hadamard_config must be one of: None, dict, HadamardConfig, or str "
+        f"(got {type(hadamard_config).__name__})"
     )
-
 
 def check_supported_schemes(scheme: str):
     if scheme not in SUPPORTED_QUANTIZATION_SCHEMES:

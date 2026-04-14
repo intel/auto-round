@@ -19,7 +19,6 @@ def apply_hadamard_transform(
     use_tqdm=True,
     desc=None,
     data_type="mx_fp",
-    scheme="MXFP4",
 ):
     """
     Apply a transform configuration to a model.
@@ -30,7 +29,6 @@ def apply_hadamard_transform(
     :param model: Model to which the transform configuration will be applied.
     :param config: Transform configuration to apply. Supported values are:
         * ``str``: A named/preset transform configuration. In this case,
-          ``scheme`` is typically required so that the preset can be
           resolved to a concrete quantization/transform configuration.
         * ``dict``: A raw configuration mapping that will be normalized
           (via :func:`normalize_hadamard_config`) and then passed to
@@ -40,13 +38,9 @@ def apply_hadamard_transform(
           normalization.
         * ``None``: Uses the default behavior of
           :func:`_normalize_hadamard_config` (for example, inferring a
-          configuration from ``scheme`` or other project defaults), if
+          configuration from ``data_type`` or other project defaults), if
           supported.
-    :param scheme: Optional quantization/transform scheme identifier used
-        when ``config`` is a ``str`` (and, if supported, when it is
-        ``None``) to determine which concrete configuration to build.
-        Ignored when ``config`` is already a ``dict`` or
-        :class:`TransformConfig`.
+    :param data_type: quantization data type.
     :param use_tqdm: If ``True``, wrap the per-module application in a
         tqdm progress bar.
     :param desc: Optional description string to show in the tqdm progress
@@ -54,7 +48,7 @@ def apply_hadamard_transform(
         ``config.transform_type``.
     """
 
-    config = normalize_hadamard_config(config, scheme)
+    config = normalize_hadamard_config(config, data_type)
     if not isinstance(config, HadamardConfig):
         config = HadamardConfig(**config)
 

@@ -45,7 +45,7 @@ class HadamardTransform(nn.Module):
             block_size: Size of each Hadamard block. The input tensor is reshaped
                 to ``(-1, block_size)`` before applying the transform.
             device: Device on which to create the Hadamard matrix.
-            precision: Data type used for the Hadamard matrix weights, using float64 as default.
+            precision: Data type used for the Hadamard matrix weights, using float32 as default.
             location: Target location used by ``apply_transform_weight`` when
                 applying the transform.
             module_type: Module type associated with the transform application,
