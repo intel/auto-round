@@ -80,12 +80,10 @@ from auto_round.utils.missing_tensors import quantize_weight_rtn, split_fused_ex
 #  Layers that should never be RTN-quantized (e.g. routing gates)     #
 # ------------------------------------------------------------------ #
 _BLOCK_NAME_TO_IGNORE = ["shared_expert_gate.", "mlp.gate.", "embed"]
-
+_GPU_CONCURRENT_WORKER = 64
 # ------------------------------------------------------------------ #
 #  Predefined ignore-layer rules                                       #
 # ------------------------------------------------------------------ #
-# Reuses the rules registered in special_model_handler via a thin
-# config-dict wrapper, so there is no need to duplicate registrations.
 
 
 def get_predefined_ignore_layers_from_config(config: dict) -> list[str]:
@@ -194,23 +192,6 @@ def _list_safetensor_shards(source_dir: str) -> list[str]:
         return shards
     elif os.path.exists(single_file):
         return ["model.safetensors"]
-    else:
-        raise FileNotFoundError(f"No safetensors files found in {source_dir}")
-
-
-def _get_tensor_to_shard_map(source_dir: str) -> dict[str, str]:
-    """Return mapping from tensor name to shard filename."""
-    index_file = os.path.join(source_dir, "model.safetensors.index.json")
-    single_file = os.path.join(source_dir, "model.safetensors")
-
-    if os.path.exists(index_file):
-        with open(index_file) as f:
-            return json.load(f)["weight_map"]
-    elif os.path.exists(single_file):
-        from safetensors import safe_open
-
-        with safe_open(single_file, framework="pt", device="cpu") as f:
-            return {name: "model.safetensors" for name in f.keys()}
     else:
         raise FileNotFoundError(f"No safetensors files found in {source_dir}")
 
@@ -490,7 +471,7 @@ def _download_metadata_files(
 
 
 # ------------------------------------------------------------------ #
-#  Core: quantize a single tensor (used by both serial & concurrent)   #
+#  Core: quantize a single tensor                                      #
 # ------------------------------------------------------------------ #
 
 
@@ -594,15 +575,15 @@ def _process_shard(
 ) -> tuple[dict[str, torch.Tensor], list[str], list[str]]:
     """Quantize eligible weights in a single safetensors shard.
 
-    Accepts either a precompiled :class:`_PatternMatcher` via *matcher*
-    (preferred for cross-shard cache reuse) or the legacy positional
-    parameters *default_scheme*, *layer_config*, *ignore_patterns*.
+    When *matcher* is provided it is used directly (preferred for
+    cross-shard cache reuse).  Otherwise a new :class:`_PatternMatcher`
+    is built from *default_scheme*, *layer_config*, and *ignore_patterns*.
 
     Args:
         shard_path: Path to the safetensors file.
-        default_scheme: Default quantization parameters (legacy).
-        layer_config: Per-layer overrides (legacy).
-        ignore_patterns: Layer name patterns to skip (legacy).
+        default_scheme: Default quantization parameters.
+        layer_config: Per-layer overrides.
+        ignore_patterns: Layer name patterns to skip.
         device: Computation device (``"cpu"`` or ``"cuda"``).
         matcher: Precompiled :class:`_PatternMatcher` instance.
 
@@ -631,12 +612,11 @@ def _process_shard(
     use_gpu_concurrent = device != "cpu" and torch.cuda.is_available()
 
     if use_gpu_concurrent:
-        # 2-stream pipeline: each worker owns a dedicated CUDA stream
-        # (created inside _quantize_single_tensor).  With 2 workers,
-        # H2D of tensor N+1 overlaps with compute/D2H of tensor N.
+        # Each worker owns a dedicated CUDA stream (created inside
+        # _quantize_single_tensor), enabling H2D / compute / D2H overlap.
         futures: dict = {}
         tensor_names = list(raw_tensors.keys())
-        with ThreadPoolExecutor(max_workers=4) as pool:
+        with ThreadPoolExecutor(max_workers=_GPU_CONCURRENT_WORKER) as pool:
             for tensor_name in tensor_names:
                 tensor = raw_tensors.pop(tensor_name)
                 fut = pool.submit(
@@ -783,26 +763,6 @@ def _write_index_file(output_dir: str, weight_map: dict[str, str]):
 
 
 # ------------------------------------------------------------------ #
-#  Top-level worker for multiprocessing (CPU-only)                     #
-# ------------------------------------------------------------------ #
-
-
-def _process_shard_worker(args: tuple) -> tuple[dict[str, torch.Tensor], list[str], list[str]]:
-    """Multiprocessing-friendly wrapper around :func:`_process_shard`.
-
-    ``multiprocessing.Pool`` requires picklable top-level functions.
-    """
-    shard_path, default_scheme, layer_config, ignore_patterns, device = args
-    return _process_shard(
-        shard_path=shard_path,
-        default_scheme=default_scheme,
-        layer_config=layer_config,
-        ignore_patterns=ignore_patterns,
-        device=device,
-    )
-
-
-# ------------------------------------------------------------------ #
 #  Shard prefetch helper (overlaps I/O with quantization)              #
 # ------------------------------------------------------------------ #
 
@@ -859,8 +819,7 @@ def model_free_quantize(
 
     On **GPU** (``device="cuda"``), multiple weight tensors inside each
     shard are quantized concurrently so that H2D transfers and GPU
-    compute overlap.  On **CPU**, multiple shards are processed in
-    parallel using ``multiprocessing`` (controlled by *nproc*).
+    compute overlap.
 
     Args:
         model_name_or_path: HuggingFace model ID or local directory path.
