@@ -63,7 +63,7 @@ import os
 import re
 import shutil
 import time
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import asdict, fields
 from typing import Optional, Union
 
@@ -281,6 +281,129 @@ def _is_eligible_weight(tensor_name: str, tensor: torch.Tensor) -> bool:
 
 
 # ------------------------------------------------------------------ #
+#  Precompiled pattern matcher with result caching                     #
+# ------------------------------------------------------------------ #
+
+
+class _PatternMatcher:
+    """Precompiled pattern matcher with result caching.
+
+    Merges *ignore_patterns* and ``_BLOCK_NAME_TO_IGNORE`` into single
+    compiled regexes, precompiles ``layer_config`` regex patterns, and
+    caches all match results so that repeated lookups (common across
+    shards) are O(1) dict hits.
+    """
+
+    __slots__ = (
+        "_ignore_re",
+        "_skip_re",
+        "_layer_config",
+        "_default_scheme",
+        "_compiled_lc",
+        "_ignore_cache",
+        "_scheme_cache",
+    )
+
+    def __init__(
+        self,
+        ignore_patterns: list[str],
+        layer_config: dict[str, dict],
+        default_scheme: dict,
+    ):
+        self._default_scheme = default_scheme
+        self._layer_config = layer_config
+
+        # ---- Combined ignore regex (user-specified patterns) ----
+        self._ignore_re: re.Pattern | None = self._build_ignore_regex(ignore_patterns)
+
+        # ---- Combined skip regex (_BLOCK_NAME_TO_IGNORE) ----
+        skip_parts = [re.escape(b) for b in _BLOCK_NAME_TO_IGNORE]
+        self._skip_re: re.Pattern | None = re.compile("|".join(skip_parts)) if skip_parts else None
+
+        # ---- Precompile layer_config patterns ----
+        # Each entry: (compiled_regex | None, plain_string | None, cfg_dict)
+        self._compiled_lc: list[tuple[re.Pattern | None, str | None, dict]] = []
+        for pattern, cfg in layer_config.items():
+            try:
+                self._compiled_lc.append((re.compile(pattern), None, cfg))
+            except re.error:
+                self._compiled_lc.append((None, pattern, cfg))
+
+        # ---- Result caches (thread-safe under CPython GIL) ----
+        self._ignore_cache: dict[str, bool] = {}
+        self._scheme_cache: dict[str, dict | None] = {}
+
+    # ---- helpers ----
+
+    @staticmethod
+    def _build_ignore_regex(patterns: list[str]) -> re.Pattern | None:
+        """Merge ignore patterns into one compiled regex."""
+        if not patterns:
+            return None
+        parts: list[str] = []
+        for p in patterns:
+            if p.endswith("."):
+                escaped = re.escape(p.rstrip("."))
+                # "stripped." as substring OR "stripped" at end-of-string
+                parts.append(f"{escaped}(?:\\.|$)")
+            else:
+                parts.append(re.escape(p))
+        return re.compile("|".join(parts))
+
+    # ---- public API ----
+
+    def should_ignore(self, tensor_name: str) -> bool:
+        """Check user-specified ignore patterns (merged regex + cache)."""
+        cached = self._ignore_cache.get(tensor_name)
+        if cached is not None:
+            return cached
+        layer_name = tensor_name.rsplit(".", 1)[0] if "." in tensor_name else tensor_name
+        result = bool(self._ignore_re and self._ignore_re.search(layer_name))
+        self._ignore_cache[tensor_name] = result
+        return result
+
+    def should_skip(self, tensor_name: str) -> bool:
+        """Check predefined skip patterns (routing gates, embeddings, etc.)."""
+        return bool(self._skip_re and self._skip_re.search(tensor_name))
+
+    def resolve_scheme(self, tensor_name: str) -> dict | None:
+        """Resolve quantization scheme for *tensor_name* (cached).
+
+        Returns ``None`` when the layer should stay in full precision.
+        """
+        if tensor_name in self._scheme_cache:
+            return self._scheme_cache[tensor_name]
+        result = self._resolve_uncached(tensor_name)
+        self._scheme_cache[tensor_name] = result
+        return result
+
+    def _resolve_uncached(self, tensor_name: str) -> dict | None:
+        layer_name = tensor_name.rsplit(".", 1)[0] if "." in tensor_name else tensor_name
+        default = self._default_scheme
+
+        # Exact match
+        if layer_name in self._layer_config:
+            cfg = self._layer_config[layer_name]
+            if cfg.get("bits", default.get("bits", 4)) >= 16:
+                return None
+            return {**default, **cfg}
+
+        # Precompiled pattern match
+        for compiled, plain, cfg in self._compiled_lc:
+            if compiled is not None:
+                if compiled.search(layer_name):
+                    if cfg.get("bits", default.get("bits", 4)) >= 16:
+                        return None
+                    return {**default, **cfg}
+            elif plain is not None and plain in layer_name:
+                if cfg.get("bits", default.get("bits", 4)) >= 16:
+                    return None
+                return {**default, **cfg}
+
+        return default
+
+
+# ------------------------------------------------------------------ #
 #  Download helpers for is_streaming                             #
 # ------------------------------------------------------------------ #
 
@@ -351,17 +474,17 @@ def _download_metadata_files(
     except Exception:
         repo_files = []
 
-    for fname in repo_files:
-        if _is_safetensors_file(fname):
-            continue
+    non_safetensor_files = [f for f in repo_files if not _is_safetensors_file(f)]
+
+    def _dl_one(fname: str) -> None:
         try:
-            hf_hub_download(
-                repo_id=model_name_or_path,
-                filename=fname,
-                local_dir=local_dir,
-            )
+            hf_hub_download(repo_id=model_name_or_path, filename=fname, local_dir=local_dir)
         except Exception:
             pass  # Not all files are mandatory
+
+    if non_safetensor_files:
+        with ThreadPoolExecutor(max_workers=8) as dl_pool:
+            list(dl_pool.map(_dl_one, non_safetensor_files))
 
     return local_dir
 
@@ -374,9 +497,7 @@ def _download_metadata_files(
 def _quantize_single_tensor(
     tensor_name: str,
     tensor: torch.Tensor,
-    default_scheme: dict,
-    layer_config: dict,
-    ignore_patterns: list[str],
+    matcher: "_PatternMatcher",
     device: str = "cpu",
 ) -> tuple[str, dict[str, torch.Tensor], str | None, str | None]:
     """Quantize one eligible weight tensor and return packed outputs.
@@ -390,15 +511,15 @@ def _quantize_single_tensor(
     if not _is_eligible_weight(tensor_name, tensor):
         return layer_name, {tensor_name: tensor}, None, None
 
-    if _should_ignore_layer(tensor_name, ignore_patterns):
+    if matcher.should_ignore(tensor_name):
         logger.debug(f"Ignoring (user-specified): {layer_name}")
         return layer_name, {tensor_name: tensor}, None, layer_name
 
-    if _should_skip_quantization(tensor_name):
+    if matcher.should_skip(tensor_name):
         logger.debug(f"Skipping (predefined): {layer_name}")
         return layer_name, {tensor_name: tensor}, None, layer_name
 
-    scheme = _resolve_layer_scheme(tensor_name, layer_config, default_scheme)
+    scheme = matcher.resolve_scheme(tensor_name)
     if scheme is None:
         logger.debug(f"Keeping full precision: {layer_name}")
         return layer_name, {tensor_name: tensor}, None, layer_name
@@ -413,13 +534,30 @@ def _quantize_single_tensor(
     # ---- RTN quantization ----
     try:
         orig_in_features = tensor.shape[1]
-        qweight, qzeros, scales = quantize_weight_rtn(
-            weight=tensor,
-            bits=bits,
-            group_size=group_size,
-            sym=sym,
-            device=torch.device(device) if device != "cpu" else None,
-        )
+        use_cuda = device != "cpu" and torch.cuda.is_available()
+        if use_cuda:
+            # Dedicated CUDA stream per worker: allows H2D / compute / D2H
+            # overlap across concurrent workers in the ThreadPoolExecutor.
+            stream = torch.cuda.Stream()
+            with torch.cuda.stream(stream):
+                tensor_gpu = tensor.to(device=device, dtype=torch.float32, non_blocking=True)
+                qweight, qzeros, scales = quantize_weight_rtn(
+                    weight=tensor_gpu,
+                    bits=bits,
+                    group_size=group_size,
+                    sym=sym,
+                    device=None,  # already on target device
+                )
+            stream.synchronize()
+            del tensor, tensor_gpu
+        else:
+            qweight, qzeros, scales = quantize_weight_rtn(
+                weight=tensor,
+                bits=bits,
+                group_size=group_size,
+                sym=sym,
+                device=None,
+            )
 
         out: dict[str, torch.Tensor] = {
             f"{layer_name}.qweight": qweight,
@@ -447,23 +585,37 @@ def _quantize_single_tensor(
 
 def _process_shard(
     shard_path: str,
-    default_scheme: dict,
-    layer_config: dict,
-    ignore_patterns: list[str],
+    default_scheme: dict = None,
+    layer_config: dict = None,
+    ignore_patterns: list[str] = None,
     device: str = "cpu",
+    *,
+    matcher: "_PatternMatcher | None" = None,
 ) -> tuple[dict[str, torch.Tensor], list[str], list[str]]:
     """Quantize eligible weights in a single safetensors shard.
 
+    Accepts either a precompiled :class:`_PatternMatcher` via *matcher*
+    (preferred for cross-shard cache reuse) or the legacy positional
+    parameters *default_scheme*, *layer_config*, *ignore_patterns*.
+
     Args:
         shard_path: Path to the safetensors file.
-        default_scheme: Default quantization parameters.
-        layer_config: Per-layer overrides.
-        ignore_patterns: Layer name patterns to skip.
+        default_scheme: Default quantization parameters (legacy).
+        layer_config: Per-layer overrides (legacy).
+        ignore_patterns: Layer name patterns to skip (legacy).
         device: Computation device (``"cpu"`` or ``"cuda"``).
+        matcher: Precompiled :class:`_PatternMatcher` instance.
 
     Returns:
         (output_tensors, quantized_layer_names, ignored_layer_names)
     """
+    if matcher is None:
+        matcher = _PatternMatcher(
+            ignore_patterns if ignore_patterns is not None else [],
+            layer_config if layer_config is not None else {},
+            default_scheme if default_scheme is not None else {},
+        )
+
     from safetensors import safe_open
 
     output_tensors: dict[str, torch.Tensor] = {}
@@ -476,22 +628,50 @@ def _process_shard(
     # Split fused expert tensors (3-D) into per-expert 2-D tensors
     raw_tensors = split_fused_expert_tensors(raw_tensors)
 
-    tensor_names = list(raw_tensors.keys())
-    for tensor_name in tensor_names:
-        tensor = raw_tensors.pop(tensor_name)
-        _layer_name, out_dict, q_layer, ig_layer = _quantize_single_tensor(
-            tensor_name,
-            tensor,
-            default_scheme,
-            layer_config,
-            ignore_patterns,
-            device,
-        )
-        output_tensors.update(out_dict)
-        if q_layer:
-            quantized_layers.append(q_layer)
-        if ig_layer:
-            ignored_layers.append(ig_layer)
+    use_gpu_concurrent = device != "cpu" and torch.cuda.is_available()
+
+    if use_gpu_concurrent:
+        # 2-stream pipeline: each worker owns a dedicated CUDA stream
+        # (created inside _quantize_single_tensor).  With 2 workers,
+        # H2D of tensor N+1 overlaps with compute/D2H of tensor N.
+        futures: dict = {}
+        tensor_names = list(raw_tensors.keys())
+        with ThreadPoolExecutor(max_workers=4) as pool:
+            for tensor_name in tensor_names:
+                tensor = raw_tensors.pop(tensor_name)
+                fut = pool.submit(
+                    _quantize_single_tensor,
+                    tensor_name,
+                    tensor,
+                    matcher,
+                    device,
+                )
+                futures[fut] = tensor_name
+
+            for fut in as_completed(futures):
+                _layer_name, out_dict, q_layer, ig_layer = fut.result()
+                output_tensors.update(out_dict)
+                if q_layer:
+                    quantized_layers.append(q_layer)
+                if ig_layer:
+                    ignored_layers.append(ig_layer)
+        torch.cuda.empty_cache()
+    else:
+        # Serial path (CPU)
+        tensor_names = list(raw_tensors.keys())
+        for tensor_name in tensor_names:
+            tensor = raw_tensors.pop(tensor_name)
+            _layer_name, out_dict, q_layer, ig_layer = _quantize_single_tensor(
+                tensor_name,
+                tensor,
+                matcher,
+                device,
+            )
+            output_tensors.update(out_dict)
+            if q_layer:
+                quantized_layers.append(q_layer)
+            if ig_layer:
+                ignored_layers.append(ig_layer)
 
     return output_tensors, quantized_layers, ignored_layers
 
@@ -574,7 +754,7 @@ def _write_output_shard(
     from safetensors.torch import save_file
 
     shard_path = os.path.join(output_dir, shard_name)
-    tensors = {k: v.contiguous() for k, v in tensors.items()}
+    tensors = {k: v if v.is_contiguous() else v.contiguous() for k, v in tensors.items()}
     save_file(tensors, shard_path)
     for tensor_name in tensors:
         weight_map[tensor_name] = shard_name
@@ -779,6 +959,9 @@ def model_free_quantize(
         logger.info(f"Using predefined ignore_layers from config: {compressed}")
         ignore_patterns.extend(predefined_ignore)
 
+    # ---- Build precompiled pattern matcher (shared across all shards) ----
+    matcher = _PatternMatcher(ignore_patterns, layer_config, default_scheme)
+
     # Discover shards
     if is_streaming:
         # Get shard list from index file or by checking the repo
@@ -822,7 +1005,9 @@ def model_free_quantize(
 
     # ---- I/O pipeline: prefetch next shard while quantizing current ----
     prefetch_pool = ThreadPoolExecutor(max_workers=1)
+    write_pool = ThreadPoolExecutor(max_workers=1)
     prefetch_future = None
+    write_future = None
 
     # Kick off prefetch of the very first shard
     if shard_names:
@@ -865,19 +1050,22 @@ def model_free_quantize(
         # Quantize (GPU concurrent or CPU serial, chosen inside _process_shard)
         output_tensors, quantized, ignored = _process_shard(
             shard_path=shard_path,
-            default_scheme=default_scheme,
-            layer_config=layer_config,
-            ignore_patterns=ignore_patterns,
             device=device,
+            matcher=matcher,
         )
         memory_monitor.update()
 
         all_quantized_layers.extend(quantized)
         all_ignored_layers.extend(ignored)
 
+        # Wait for previous async write before starting a new one
+        if write_future is not None:
+            write_future.result()
+
         out_shard_name = f"model-{shard_idx + 1:05d}-of-{len(shard_names):05d}.safetensors"
-        _write_output_shard(output_dir, out_shard_name, output_tensors, output_weight_map)
-        del output_tensors
+        write_future = write_pool.submit(
+            _write_output_shard, output_dir, out_shard_name, output_tensors, output_weight_map
+        )
 
         # In streaming mode, delete the source shard to save disk space
         if is_streaming:
@@ -888,6 +1076,11 @@ def model_free_quantize(
                 logger.warning(f"Could not delete source shard {shard_path}: {e}")
 
     prefetch_pool.shutdown(wait=False)
+
+    # Wait for the last async write to complete
+    if write_future is not None:
+        write_future.result()
+    write_pool.shutdown(wait=True)
 
     # ---- Write index file ----
     _write_index_file(output_dir, output_weight_map)
