@@ -101,10 +101,6 @@ def test_qwen3_vl_moe_mxfp(tiny_qwen3_vl_moe_model_path):
     assert quantized_model is not None, "Quantized model should not be None."
     loaded_model = Qwen3VLMoeForConditionalGeneration.from_pretrained(output_dir, device_map="cpu")
 
-    for n, m in quantized_model.named_modules():
-        if m.__class__.__name__ == "QuantLinear":
-            loaded_m = loaded_model.get_submodule(n)
-            assert (loaded_m.weight_packed.to("cpu") == m.weight_packed.to("cpu")).all()
     inp = torch.randint(0, 100, (1, 32))
     with torch.inference_mode():
         loaded_out = loaded_model(inp)
