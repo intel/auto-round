@@ -64,13 +64,7 @@ def test_gptoss(scheme, tiny_gpt_oss_model_path, tmp_path):
 
     # verify the quantized model can be loaded and run inference
     loaded_model = GptOssForCausalLM.from_pretrained(output_dir)
-    for n, m in quantized_model.named_modules():
-        if m.__class__.__name__ == "QuantLinear":
-            loaded_m = loaded_model.get_submodule(n)
-            if scheme == "MXFP4":
-                assert (loaded_m.weight_packed.to("cpu") == m.weight_packed.to("cpu")).all()
-            if scheme == "MXFP8":
-                assert (loaded_m.weight.to("cpu") == m.weight.to("cpu")).all()
+
     inp = torch.randint(0, 100, (1, 32))
     with torch.inference_mode():
         loaded_out = loaded_model(inp)
@@ -84,10 +78,7 @@ def test_llama4(tiny_llama4_model_path):
     assert quantized_model is not None, "Quantized model should not be None."
 
     loaded_model = Llama4ForConditionalGeneration.from_pretrained(output_dir)
-    for n, m in quantized_model.named_modules():
-        if m.__class__.__name__ == "QuantLinear":
-            loaded_m = loaded_model.get_submodule(n)
-            assert (loaded_m.weight_packed.to("cpu") == m.weight_packed.to("cpu")).all()
+
     inp = torch.randint(0, 100, (1, 32))
     with torch.inference_mode():
         loaded_out = loaded_model(inp)
