@@ -95,7 +95,7 @@ def compile_func_on_hpu(func):
 
 
 def compile_func_on_cuda_or_cpu(func):
-    return torch.compile(func)
+    return torch.compile(func, dynamic=True)
 
 
 def compile_func(
