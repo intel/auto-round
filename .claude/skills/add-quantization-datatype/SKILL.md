@@ -33,10 +33,21 @@ The quantization function must follow this contract:
 from auto_round.data_type.register import register_dtype
 from auto_round.data_type.utils import reshape_pad_tensor_by_group_size, revert_tensor_by_pad
 
+
 @register_dtype("your_dtype_name")
-def quant_tensor_your_dtype(tensor, bits=4, group_size=128, v=0, min_scale=0,
-                            max_scale=0, scale_dtype=torch.float16, q_scale_thresh=0,
-                            weight_fp8_max_scale=0, imatrix=None, **kwargs):
+def quant_tensor_your_dtype(
+    tensor,
+    bits=4,
+    group_size=128,
+    v=0,
+    min_scale=0,
+    max_scale=0,
+    scale_dtype=torch.float16,
+    q_scale_thresh=0,
+    weight_fp8_max_scale=0,
+    imatrix=None,
+    **kwargs
+):
     """Quantize a tensor using your data type.
 
     Args:
@@ -70,6 +81,7 @@ def quant_tensor_your_dtype(tensor, bits=4, group_size=128, v=0, min_scale=0,
 
     # 4. Quantize and dequantize (Straight-Through Estimator for gradients)
     from auto_round.data_type.utils import round_ste
+
     tensor_q = round_ste(tensor / scale) + zp  # or your rounding logic
     qdq_tensor = (tensor_q - zp) * scale
 
