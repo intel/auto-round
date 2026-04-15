@@ -60,15 +60,16 @@ MISTRAL_3_2_MODELS = ["Mistral-Small-3.2", "Magistral-Small", "Devstral-Small"]
 
 
 def _handle_special_model(model):
-    if hasattr(model, "config") and model.config.model_type == "deepseek_vl_v2":
+    model_type = getattr(getattr(model, "config", None), "model_type", None)
+    if model_type == "deepseek_vl_v2":
         from functools import partial
 
         model.forward = partial(_deepseek_vl2_forward, model)
-    if hasattr(model, "config") and model.config.model_type == "qwen2_5_omni":
+    if model_type == "qwen2_5_omni":
         from functools import partial
 
         model.forward = partial(_qwen2_5_omni_forward, model)
-    if hasattr(model, "config") and model.config.model_type == "qwen3_omni_moe":
+    if model_type == "qwen3_omni_moe":
         from functools import partial
 
         model.forward = partial(_qwen3_omni_moe_forward, model)

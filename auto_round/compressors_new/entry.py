@@ -483,6 +483,7 @@ class AutoRoundCompatible:
             format=format,
             scheme=scheme,
             dataset=dataset,
+            iters=iters,
             low_gpu_mem_usage=low_gpu_mem_usage,
             device_map=device_map,
             enable_torch_compile=enable_torch_compile,
