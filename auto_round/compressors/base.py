@@ -1744,6 +1744,10 @@ class BaseCompressor(object):
                 self.low_cpu_mem_usage = False
                 self.is_immediate_saving = False
 
+        if self.is_immediate_saving and ("int" not in self.data_type or is_nv_fp(self.data_type) or is_mx_fp(self.data_type)):
+            logger.warning("immediate_saving is only supported for int/nv_fp/mx_fp quantization, set to False")
+            self.is_immediate_saving = False
+        
         if self.orig_output_dir is None:
             self.is_immediate_saving = False
 
