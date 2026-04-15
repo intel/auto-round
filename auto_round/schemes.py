@@ -298,7 +298,7 @@ FP8_STATIC = QuantizationScheme.from_dict(
     }
 )
 
-INT8_W8A8 = QuantizationScheme.from_dict(
+INT8 = QuantizationScheme.from_dict(
     {
         "bits": 8,
         "group_size": -1,
@@ -340,7 +340,8 @@ PRESET_SCHEMES = {
     "FP8_STATIC": FP8_STATIC,
     "BF16": BF16,
     "W4A16_MIXED": W4A16,
-    "INT8_W8A8": INT8_W8A8,
+    "INT8": INT8,
+    "INT8_W8A8": INT8,
     "FP8_BLOCK": FP8_BLOCK,
     "MXINT4": MXINT4,
 }
