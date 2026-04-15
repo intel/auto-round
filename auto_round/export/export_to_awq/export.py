@@ -221,6 +221,9 @@ def save_quantized_as_autoawq(
     if hasattr(compressed_model, "config"):
         compressed_model.config.quantization_config = quantization_config
     safe_serialization = kwargs.get("safe_serialization", True)
-    save_model(compressed_model, output_dir, safe_serialization=safe_serialization, dtype=None)
+    # Force torch_dtype in the saved config to fp16 for vLLM CUDA kernel compatibility;
+    # this does not change in-memory model weights.
+    dtype = torch.float16
+    save_model(compressed_model, output_dir, safe_serialization=safe_serialization, dtype=dtype)
 
     return compressed_model

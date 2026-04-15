@@ -89,6 +89,9 @@ def get_keys_to_not_convert(model):
     # Create a copy of the model and tie the weights, then
     # check if it contains tied weights
     tied_model = deepcopy(model)  # this has 0 cost since it is done inside `init_empty_weights` context manager`
+    if not hasattr(tied_model, "tie_weights") and not hasattr(model, "get_output_embeddings"):
+        return []  # not a LLM model, could be a diffusers model
+
     tied_model.tie_weights()
 
     tied_params = find_tied_parameters(tied_model)
@@ -211,7 +214,7 @@ def get_layer_config(model, quantization_config):
     act_data_type = getattr(quantization_config, "act_data_type", None)
     act_dynamic = getattr(quantization_config, "act_dynamic", False)
 
-    transform_config = getattr(quantization_config, "transform_config", None)
+    hadamard_config = getattr(quantization_config, "hadamard_config", None)
 
     default_quant_scheme = QuantizationScheme(
         bits=bits,
@@ -223,7 +226,7 @@ def get_layer_config(model, quantization_config):
         act_sym=act_sym,
         act_data_type=act_data_type,
         act_dynamic=act_dynamic,
-        transform_config=transform_config,
+        hadamard_config=hadamard_config,
     )
 
     # Determine the quantization block list
@@ -447,6 +450,7 @@ def _create_quant_layer(layer, layer_backend, config, in_features, out_features)
         or AutoRoundExportFormat.MXFP8.value in layer_backend
         or AutoRoundExportFormat.MXFP4.value in layer_backend
         or AutoRoundExportFormat.NVFP4.value in layer_backend
+        or AutoRoundExportFormat.MXINT4.value in layer_backend
     ):
         return QuantLinear.from_original(config, layer)
 
@@ -676,19 +680,19 @@ def convert_hf_model(model: nn.Module, target_device: str = "cpu") -> tuple[nn.M
     layer_configs = get_layer_config(model, quantization_config)
     used_backends = _replace_by_quant_layers(model, layer_configs, backend, target_device, packing_format)
 
-    transform_config = getattr(quantization_config, "transform_config", None)
-    if transform_config is not None and transform_config:
-        from auto_round.experimental.transform.apply import apply_transform
-        from auto_round.experimental.transform.transform_config import TransformConfig
+    hadamard_config = getattr(quantization_config, "hadamard_config", None)
+    if hadamard_config is not None and hadamard_config:
+        from auto_round.experimental.transform.apply import apply_hadamard_transform
+        from auto_round.experimental.transform.hadamard_config import HadamardConfig
 
         # apply forward hook
-        act_transform_config = TransformConfig(
-            quant_scheme=transform_config["quant_scheme"],
-            transform_block_size=transform_config["transform_block_size"],
-            transform_type=transform_config["transform_type"],
-            location="input",
+        act_hadamard_config = HadamardConfig(
+            block_size=hadamard_config["block_size"],
+            hadamard_type=hadamard_config["hadamard_type"],
         )  # apply to activation
-        model = apply_transform(model, act_transform_config, desc="Register pre forward hook for transform")
+        model = apply_hadamard_transform(
+            model, act_hadamard_config, location="input", desc="Register pre forward hook for hadamard transform"
+        )
 
     # Suggest a better backend if available
     if backend == "auto":

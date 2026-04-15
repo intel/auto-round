@@ -44,7 +44,8 @@ from auto_round.utils import (
 )
 from auto_round.wrapper import WrapperWALayer
 
-from .qlinear_fp import QuantLinear
+from .qlinear_fp import QuantLinear as FpQuantLinear
+from .qlinear_int import QuantLinear as IntQuantLinear
 
 __all__ = [
     "pack_layer",
@@ -94,7 +95,8 @@ def pack_layer(name, model, backend, device=None):
 
     bias = layer.bias is not None
     ##bias = True  ## if using the above, llama3 lambada RTN will be NAN , TODO why?
-    qlayer = QuantLinear(  ##pylint: disable=E1123
+    linear_func = FpQuantLinear if "fp" in data_type else IntQuantLinear
+    qlayer = linear_func(  ##pylint: disable=E1123
         bits,
         group_size,
         in_features,

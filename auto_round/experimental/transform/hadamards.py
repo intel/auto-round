@@ -28,23 +28,11 @@ def filter_kwarg_dict(fn_or_method: Callable, kwarg_dict: Dict[str, Any]) -> Dic
     return {k: v for k, v in kwarg_dict.items() if k in fn_or_method_keys}
 
 
-class IdentityTransform(nn.Module):
-
-    def __init__(self, *args, **kwargs):
-        super().__init__()
-
-    def forward(self, x: torch.Tensor):
-        return x
-
-    def remove_parametrizations(self) -> None:
-        pass
-
-
 class HadamardTransform(nn.Module):
 
     def __init__(
         self,
-        transform_block_size: int = 32,
+        block_size: int = 32,
         device: torch.device = None,
         precision: torch.dtype = None,
         location: str = "weight",
@@ -52,7 +40,7 @@ class HadamardTransform(nn.Module):
         inverse: bool = False,
     ):
         super().__init__()
-        self.size = transform_block_size
+        self.size = block_size
         self.scale = 1 / math.sqrt(self.size)
         self.location = location
         self.module_type = module_type
@@ -76,7 +64,7 @@ class HadamardTransform(nn.Module):
         return (
             (
                 apply_transform_weight(
-                    self.weight,
+                    self.weight.to(x.device),
                     x.to(dtype=self.weight.dtype),
                     self.location,
                     self.module_type,
@@ -118,13 +106,12 @@ class RandomHadamardTransform(HadamardTransform):
         return nn.Parameter(data, requires_grad=False)
 
 
-TRANSFORMS = {
-    "identity": IdentityTransform,
+HADAMARDS = {
     "hadamard": HadamardTransform,
     "random_hadamard": RandomHadamardTransform,
 }
 
 
-def build_transform(transform_type: str, **transform_kwargs):
-    transform = TRANSFORMS[transform_type]
-    return transform(**filter_kwarg_dict(transform.__init__, transform_kwargs))
+def build_hadamard_transform(hadamard_type: str, **hadamard_kwargs):
+    hadamard = HADAMARDS[hadamard_type]
+    return hadamard(**filter_kwarg_dict(hadamard.__init__, hadamard_kwargs))
