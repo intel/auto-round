@@ -212,7 +212,8 @@ class CalibCompressor(BaseCompressor):
                             max_memory=new_max_memory,
                             no_split_module_classes=no_split_modules,
                         )
-                        self.model_context.model.tie_weights()
+                        if hasattr(self.model_context.model, "tie_weights"):
+                            self.model_context.model.tie_weights()
                         device_map = infer_auto_device_map(
                             self.model_context.model,
                             max_memory=new_max_memory,
@@ -790,7 +791,11 @@ class CalibCompressor(BaseCompressor):
         convert_module_to_hp_if_necessary(block, self.model_context.amp_dtype, device)
 
         if auto_offload:
-            if is_auto_device_mapping(self.compress_context.device_map) and len(self.compress_context.device_list) > 1:
+            if (
+                is_auto_device_mapping(self.compress_context.device_map)
+                and len(self.compress_context.device_list) > 1
+                and not self.model_context.is_diffusion
+            ):
                 from auto_round.utils.device import set_auto_device_map_for_block_with_tuning
 
                 card_0_in_high_risk, loss_device = set_auto_device_map_for_block_with_tuning(
