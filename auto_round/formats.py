@@ -350,7 +350,18 @@ class FakeFormat(OutputFormat):
 
 @OutputFormat.register("llm_compressor")
 class LLMCompressorFormat(OutputFormat):
-    support_schemes = ["MXFP4", "MXFP8", "NVFP4", "FPW8A16", "FP8_STATIC", "INT8", "INT8_W8A8", "FP8_BLOCK", "W4A16", "W8A16"]
+    support_schemes = [
+        "MXFP4",
+        "MXFP8",
+        "NVFP4",
+        "FPW8A16",
+        "FP8_STATIC",
+        "INT8",
+        "INT8_W8A8",
+        "FP8_BLOCK",
+        "W4A16",
+        "W8A16",
+    ]
     format_name = "llm_compressor"
 
     def __init__(self, format, ar):
