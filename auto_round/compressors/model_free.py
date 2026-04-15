@@ -63,7 +63,7 @@ import os
 import re
 import shutil
 import time
-from concurrent.futures import ThreadPoolExecutor, as_completed
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import asdict, fields
 from typing import Optional, Union
 
@@ -444,11 +444,6 @@ def _quantize_single_tensor(
 #  Core: process a single shard                                        #
 # ------------------------------------------------------------------ #
 
-# Number of concurrent GPU quantization workers.  Each worker holds one
-# weight tensor on the GPU (~200-900 MB for typical LLM layers), so 16
-# workers use at most a few GB — negligible on any modern GPU.
-_DEFAULT_GPU_WORKERS = 4
-
 
 def _process_shard(
     shard_path: str,
@@ -458,11 +453,6 @@ def _process_shard(
     device: str = "cpu",
 ) -> tuple[dict[str, torch.Tensor], list[str], list[str]]:
     """Quantize eligible weights in a single safetensors shard.
-
-    When *device* is a CUDA device, multiple weight tensors are quantized
-    concurrently using a :class:`~concurrent.futures.ThreadPoolExecutor`
-    so that H2D transfers and GPU compute can overlap, significantly
-    improving GPU utilisation.
 
     Args:
         shard_path: Path to the safetensors file.
@@ -486,51 +476,22 @@ def _process_shard(
     # Split fused expert tensors (3-D) into per-expert 2-D tensors
     raw_tensors = split_fused_expert_tensors(raw_tensors)
 
-    use_gpu_concurrent = device != "cpu" and torch.cuda.is_available()
-
-    if use_gpu_concurrent:
-        # GPU-concurrent: overlap H2D transfer with compute
-        futures: dict = {}
-        with ThreadPoolExecutor(max_workers=_DEFAULT_GPU_WORKERS) as pool:
-            tensor_names = list(raw_tensors.keys())
-            for tensor_name in tensor_names:
-                tensor = raw_tensors.pop(tensor_name)
-                fut = pool.submit(
-                    _quantize_single_tensor,
-                    tensor_name,
-                    tensor,
-                    default_scheme,
-                    layer_config,
-                    ignore_patterns,
-                    device,
-                )
-                futures[fut] = tensor_name
-
-            for fut in as_completed(futures):
-                _layer_name, out_dict, q_layer, ig_layer = fut.result()
-                output_tensors.update(out_dict)
-                if q_layer:
-                    quantized_layers.append(q_layer)
-                if ig_layer:
-                    ignored_layers.append(ig_layer)
-    else:
-        # Serial path (CPU)
-        tensor_names = list(raw_tensors.keys())
-        for tensor_name in tensor_names:
-            tensor = raw_tensors.pop(tensor_name)
-            _layer_name, out_dict, q_layer, ig_layer = _quantize_single_tensor(
-                tensor_name,
-                tensor,
-                default_scheme,
-                layer_config,
-                ignore_patterns,
-                device,
-            )
-            output_tensors.update(out_dict)
-            if q_layer:
-                quantized_layers.append(q_layer)
-            if ig_layer:
-                ignored_layers.append(ig_layer)
+    tensor_names = list(raw_tensors.keys())
+    for tensor_name in tensor_names:
+        tensor = raw_tensors.pop(tensor_name)
+        _layer_name, out_dict, q_layer, ig_layer = _quantize_single_tensor(
+            tensor_name,
+            tensor,
+            default_scheme,
+            layer_config,
+            ignore_patterns,
+            device,
+        )
+        output_tensors.update(out_dict)
+        if q_layer:
+            quantized_layers.append(q_layer)
+        if ig_layer:
+            ignored_layers.append(ig_layer)
 
     return output_tensors, quantized_layers, ignored_layers
 
