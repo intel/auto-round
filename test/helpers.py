@@ -455,18 +455,6 @@ def is_model_outputs_similar(model_path_1, model_path_2, metric="cosine_similari
     elif metric in ["cosine_similarity", "cos_sim", "cosine"]:
         out1 = output_1.float().flatten()
         out2 = output_2.float().flatten()
-        # Ignore NaN/Inf pairs to avoid NaN cosine on CI CPU
-        finite_mask = torch.isfinite(out1) & torch.isfinite(out2)
-        valid_count = int(finite_mask.sum().item())
-
-        if valid_count == 0:
-            if verbose:
-                print("Cosine Similarity: NaN (no finite overlap) | ✗ FAIL\n")
-            return False
-
-        out1 = out1[finite_mask]
-        out2 = out2[finite_mask]
-
         value = torch.nn.functional.cosine_similarity(out1.unsqueeze(0), out2.unsqueeze(0)).item()
         passed = value >= threshold
         if verbose:
