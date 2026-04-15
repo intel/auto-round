@@ -89,6 +89,9 @@ def get_keys_to_not_convert(model):
     # Create a copy of the model and tie the weights, then
     # check if it contains tied weights
     tied_model = deepcopy(model)  # this has 0 cost since it is done inside `init_empty_weights` context manager`
+    if not hasattr(tied_model, "tie_weights") and not hasattr(model, "get_output_embeddings"):
+        return []  # not a LLM model, could be a diffusers model
+
     tied_model.tie_weights()
 
     tied_params = find_tied_parameters(tied_model)
