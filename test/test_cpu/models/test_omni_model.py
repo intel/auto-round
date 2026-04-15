@@ -264,6 +264,10 @@ class TestQwen3OmniMoeReplacement:
         from auto_round.modeling.fused_moe.replace_modules import apply_replacements, materialize_model_
 
         torch.manual_seed(42)
+
+        def assert_same_weights(actual: torch.Tensor, expected: torch.Tensor):
+            torch.testing.assert_close(actual, expected, rtol=0, atol=0, equal_nan=True)
+
         config = _make_tiny_qwen3_omni_moe_config()
         model = Qwen3OmniMoeForConditionalGeneration(config)
 
@@ -280,16 +284,16 @@ class TestQwen3OmniMoeReplacement:
         # Verify thinker expert weights
         for i in range(4):
             expert = model.thinker.model.layers[0].mlp.experts[i]
-            assert torch.allclose(expert.gate_proj.weight.data, thinker_gate_up[i, :intermediate, :])
-            assert torch.allclose(expert.up_proj.weight.data, thinker_gate_up[i, intermediate:, :])
-            assert torch.allclose(expert.down_proj.weight.data, thinker_down[i])
+            assert_same_weights(expert.gate_proj.weight.data, thinker_gate_up[i, :intermediate, :])
+            assert_same_weights(expert.up_proj.weight.data, thinker_gate_up[i, intermediate:, :])
+            assert_same_weights(expert.down_proj.weight.data, thinker_down[i])
 
         # Verify talker expert weights
         for i in range(4):
             expert = model.talker.model.layers[0].mlp.experts[i]
-            assert torch.allclose(expert.gate_proj.weight.data, talker_gate_up[i, :intermediate, :])
-            assert torch.allclose(expert.up_proj.weight.data, talker_gate_up[i, intermediate:, :])
-            assert torch.allclose(expert.down_proj.weight.data, talker_down[i])
+            assert_same_weights(expert.gate_proj.weight.data, talker_gate_up[i, :intermediate, :])
+            assert_same_weights(expert.up_proj.weight.data, talker_gate_up[i, intermediate:, :])
+            assert_same_weights(expert.down_proj.weight.data, talker_down[i])
 
     def test_forward_output_match(self):
         """Test that replaced MoE forward output matches original."""
