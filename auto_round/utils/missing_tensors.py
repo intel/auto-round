@@ -47,6 +47,108 @@ from auto_round.logger import logger
 from auto_round.utils.common import compress_layer_names
 from auto_round.utils.weight_handler import _dequant_fp8_linear_weight
 
+# ------------------------------------------------------------------ #
+# Fused expert projection patterns                                      #
+# ------------------------------------------------------------------ #
+# Maps a fused projection name to its constituent split names.
+# When a 3D tensor ``*.experts.<fused_name>`` (shape [num_experts, ...])
+# is encountered, it is split along dimension 0 of the per-expert 2-D
+# slice to produce one tensor per split name per expert.
+_FUSED_EXPERT_PROJ_PATTERNS: dict[str, list[str]] = {
+    "gate_up_proj": ["gate_proj", "up_proj"],
+}
+
+
+def split_fused_expert_tensors(
+    tensors_dict: dict[str, torch.Tensor],
+) -> dict[str, torch.Tensor]:
+    """Split 3-D fused expert tensors into per-expert 2-D tensors.
+
+    Many MoE checkpoints store expert weights as fused 3-D parameters
+    under ``*.experts.<proj_name>`` (for example ``gate_up_proj`` with shape
+    ``[num_experts, 2*intermediate, hidden]``, or ``down_proj`` with shape
+    ``[num_experts, out, in]``).  After unfusing, each expert gets its own
+    2-D weight tensor, e.g.
+    ``experts.0.gate_proj.weight [intermediate, hidden]``.
+
+    Splitting rules:
+
+    * **gate_up_proj** ``[N, 2*inter, hidden]`` →
+      ``experts.{i}.gate_proj.weight`` + ``experts.{i}.up_proj.weight``
+    * **up_gate_proj** ``[N, 2*inter, hidden]`` →
+      ``experts.{i}.up_proj.weight`` + ``experts.{i}.gate_proj.weight``
+    * **Other** stacked projections (e.g. ``down_proj``) ``[N, out, in]`` →
+      ``experts.{i}.<proj>.weight``
+
+    Non-3-D or non-expert tensors pass through unchanged.
+
+    Args:
+        tensors_dict: Mapping of tensor names to tensors.
+
+    Returns:
+        New dict with fused expert tensors replaced by per-expert 2-D tensors.
+    """
+    result: dict[str, torch.Tensor] = {}
+    split_count = 0
+
+    for tensor_name, tensor in tensors_dict.items():
+        if tensor.dim() != 3:
+            result[tensor_name] = tensor
+            continue
+
+        # Strip optional .weight suffix for pattern matching
+        stripped = tensor_name
+        stripped = stripped.removesuffix(".weight")  # len(".weight") == 7
+
+        # Expect: <prefix>.experts.<proj_name>
+        dot_idx = stripped.rfind(".")
+        if dot_idx < 0:
+            result[tensor_name] = tensor
+            continue
+
+        parent = stripped[:dot_idx]
+        proj_name = stripped[dot_idx + 1 :]
+
+        # The immediate parent must be "experts"
+        if not parent.endswith("experts") and parent.split(".")[-1] != "experts":
+            result[tensor_name] = tensor
+            continue
+
+        num_experts = tensor.shape[0]
+
+        if proj_name in _FUSED_EXPERT_PROJ_PATTERNS:
+            split_names = _FUSED_EXPERT_PROJ_PATTERNS[proj_name]
+            logger.info(
+                f"Splitting fused expert tensor '{tensor_name}' "
+                f"(shape={list(tensor.shape)}, num_experts={num_experts}) "
+                f"into {split_names}"
+            )
+            for i in range(num_experts):
+                expert_2d = tensor[i]  # [fused_out, in_features]
+                chunks = expert_2d.chunk(len(split_names), dim=0)
+                for split_name, chunk in zip(split_names, chunks):
+                    out_key = f"{parent}.{i}.{split_name}.weight"
+                    result[out_key] = chunk.contiguous()
+        else:
+            logger.info(
+                f"Splitting stacked expert tensor '{tensor_name}' "
+                f"(shape={list(tensor.shape)}, num_experts={num_experts})"
+            )
+            for i in range(num_experts):
+                expert_2d = tensor[i]  # [out, in]
+                out_key = f"{parent}.{i}.{proj_name}.weight"
+                result[out_key] = expert_2d.contiguous()
+
+        split_count += 1
+
+    if split_count:
+        logger.info(
+            f"Split {split_count} fused expert tensor(s) into "
+            f"{len(result) - (len(tensors_dict) - split_count)} per-expert tensors."
+        )
+
+    return result
+
 
 def copy_missing_tensors_from_source(
     source_dir: str,
@@ -271,6 +373,12 @@ def copy_missing_tensors_from_source(
             )
             for tensor_name in _iter_tensors:
                 missing_tensors_dict[tensor_name] = f.get_tensor(tensor_name)
+
+    # ------------------------------------------------------------------ #
+    # Split fused expert tensors (3-D) into per-expert 2-D tensors          #
+    # ------------------------------------------------------------------ #
+    missing_tensors_dict = split_fused_expert_tensors(missing_tensors_dict)
+
     # ------------------------------------------------------------------ #
     # FP8 dequantization: if a weight is FP8 and its scale_inv is present  #
     # ------------------------------------------------------------------ #
@@ -399,7 +507,10 @@ def quantize_weight_rtn(
     out_features, in_features = weight.shape
     if device is None:
         device = weight.device
-    weight = weight.to(device).float()
+    # Single-step transfer + cast avoids an intermediate BF16 copy on CUDA
+    # (``weight.to(device).float()`` would briefly allocate both BF16 and
+    # float32 buffers on the target device).
+    weight = weight.to(device=device, dtype=torch.float32)
 
     # --- pad in_features to multiple of group_size ---
     if in_features % group_size != 0:
@@ -424,11 +535,16 @@ def quantize_weight_rtn(
         half_range = (1 << (bits - 1)) - 1  # e.g. 7 for 4-bit
         zero_point = 1 << (bits - 1)  # e.g. 8 for 4-bit
 
-        w_absmax = w_grouped.abs().amax(dim=-1, keepdim=True).clamp(min=1e-10)
+        w_absmax = w_grouped.abs().amax(dim=-1, keepdim=True).clamp_(min=1e-10)
         scales_full = w_absmax / half_range  # [padded_out, num_groups, 1]
+        del w_absmax
 
-        q = torch.round(w_grouped / scales_full).clamp(-half_range - 1, half_range)
-        q = (q + zero_point).to(torch.int32)  # shift to unsigned [0, 2^bits-1]
+        # In-place ops to minimise peak GPU memory.
+        q = w_grouped / scales_full
+        del weight, w_grouped  # free the (potentially large) float32 weight storage
+        q.round_().clamp_(-half_range - 1, half_range)
+        q += zero_point
+        q = q.to(torch.int32)  # new int32 tensor; float32 q is freed
 
         zp = torch.full((num_groups, padded_out), zero_point, dtype=torch.int32, device=device)
     else:
@@ -436,28 +552,40 @@ def quantize_weight_rtn(
         w_min = w_grouped.amin(dim=-1, keepdim=True)
         w_max = w_grouped.amax(dim=-1, keepdim=True)
 
-        scales_full = ((w_max - w_min).clamp(min=1e-10)) / max_int
-        zp_full = torch.round(-w_min / scales_full).clamp(0, max_int).to(torch.int32)
+        scales_full = ((w_max - w_min).clamp_(min=1e-10)) / max_int
+        zp_full = torch.round(-w_min / scales_full).clamp_(0, max_int).to(torch.int32)
+        del w_min, w_max
 
-        q = torch.round(w_grouped / scales_full + zp_full.float()).clamp(0, max_int).to(torch.int32)
+        q = w_grouped / scales_full
+        del weight, w_grouped
+        q += zp_full.float()
+        q.round_().clamp_(0, max_int)
+        q = q.to(torch.int32)
 
         zp = zp_full.squeeze(-1).t().contiguous()  # [num_groups, padded_out]
+        del zp_full
 
     # scales → [num_groups, padded_out] (float16)
     scales_out = scales_full.squeeze(-1).t().contiguous().to(torch.float16)
+    del scales_full
 
     # q → [in_features, padded_out]
     q = q.reshape(padded_out, in_features).t().contiguous()
 
     # ---- Pack qweight: [in_features // pack_factor, padded_out] ----
-    qweight = torch.zeros(in_features // pack_factor, padded_out, dtype=torch.int32, device=device)
-    for k in range(pack_factor):
-        qweight |= q[k::pack_factor, :] << (bits * k)
+    # Vectorised: reshape → broadcast shift → int64 sum (≡ bitwise-OR for
+    # non-overlapping bit lanes) avoids a Python loop per bit-lane.
+    _shifts = torch.arange(pack_factor, dtype=torch.int64, device=device) * bits
+    q_packed = q.reshape(in_features // pack_factor, pack_factor, padded_out).to(torch.int64)
+    del q
+    qweight = (q_packed << _shifts[None, :, None]).sum(dim=1).to(torch.int32)
+    del q_packed
 
     # ---- Pack qzeros: [num_groups, padded_out // pack_factor] ----
-    qzeros = torch.zeros(num_groups, padded_out // pack_factor, dtype=torch.int32, device=device)
-    for k in range(pack_factor):
-        qzeros |= zp[:, k::pack_factor] << (bits * k)
+    zp_packed = zp.reshape(num_groups, padded_out // pack_factor, pack_factor).to(torch.int64)
+    del zp
+    qzeros = (zp_packed << _shifts[None, None, :]).sum(dim=2).to(torch.int32)
+    del zp_packed, _shifts
 
     # Remove output padding from qweight / scales (qzeros stays in pack units)
     if out_pad > 0:

@@ -39,7 +39,6 @@ from auto_round.compressors.model_free import (
     model_free_quantize,
 )
 
-
 # ---------------------------------------------------------------------------
 #  Helpers: create fake model directories
 # ---------------------------------------------------------------------------
@@ -176,8 +175,10 @@ class TestShouldSkipQuantization:
     def test_mlp_gate(self):
         assert _should_skip_quantization("model.layers.0.mlp.gate.weight") is True
 
-    def test_g_proj(self):
-        assert _should_skip_quantization("model.layers.0.g_proj.weight") is True
+    def test_embed(self):
+        """embed must be caught by the embed pattern."""
+        assert _should_skip_quantization("model.visual.pos_embed.weight") is True
+        assert _should_skip_quantization("model.language_model.embed_tokens.weight") is True
 
     def test_normal_layer_not_skipped(self):
         assert _should_skip_quantization("model.layers.0.mlp.fc1.weight") is False
@@ -571,8 +572,6 @@ class TestModelFreeQuantize:
 
         assert os.path.isdir(result)
         assert os.path.exists(os.path.join(output_dir, "config.json"))
-        # Temp dir should be cleaned up
-        assert not os.path.exists(os.path.join(output_dir, "_model_free_tmp"))
 
     def test_multi_shard_model(self, tmp_path):
         model_dir = _make_model_dir(tmp_path, _SIMPLE_CONFIG, _SIMPLE_TENSORS, multi_shard=True)
@@ -716,3 +715,208 @@ class TestModelFreeQuantize:
         )
 
         assert os.path.exists(os.path.join(output_dir, "tokenizer_config.json"))
+
+    def test_lm_head_and_embed_ignored_by_default(self, tmp_path):
+        """lm_head and any layer containing 'embed' are kept in full precision by default."""
+        model_dir = _make_model_dir(tmp_path, _SIMPLE_CONFIG, _SIMPLE_TENSORS)
+        output_dir = str(tmp_path / "output")
+
+        model_free_quantize(
+            model_name_or_path=model_dir,
+            output_dir=output_dir,
+            scheme="W4A16",
+        )
+
+        all_keys = set()
+        for fname in os.listdir(output_dir):
+            if fname.endswith(".safetensors"):
+                with safe_open(os.path.join(output_dir, fname), framework="pt") as f:
+                    all_keys.update(f.keys())
+
+        # lm_head should be original weight, NOT quantized
+        assert "lm_head.weight" in all_keys
+        assert "lm_head.qweight" not in all_keys
+        # Any embed layer should be kept as-is
+        embed_weights = [k for k in all_keys if "embed" in k and k.endswith(".weight")]
+        assert len(embed_weights) > 0, "No embed layers found in output"
+        for ek in embed_weights:
+            base = ek[: -len(".weight")]
+            assert f"{base}.qweight" not in all_keys, f"{base} should not be quantized"
+
+    def test_quant_lm_head_quantizes_lm_head(self, tmp_path):
+        """With quant_lm_head=True, lm_head IS quantized."""
+        model_dir = _make_model_dir(tmp_path, _SIMPLE_CONFIG, _SIMPLE_TENSORS)
+        output_dir = str(tmp_path / "output")
+
+        model_free_quantize(
+            model_name_or_path=model_dir,
+            output_dir=output_dir,
+            scheme="W4A16",
+            quant_lm_head=True,
+        )
+
+        all_keys = set()
+        for fname in os.listdir(output_dir):
+            if fname.endswith(".safetensors"):
+                with safe_open(os.path.join(output_dir, fname), framework="pt") as f:
+                    all_keys.update(f.keys())
+
+        # lm_head should be quantized
+        assert "lm_head.qweight" in all_keys
+        assert "lm_head.weight" not in all_keys
+
+
+# ===========================================================================
+#  Test: _process_shard with fused expert tensors
+# ===========================================================================
+
+
+class TestProcessShardFusedExperts:
+    """Tests for fused-expert handling inside _process_shard."""
+
+    DEFAULT_SCHEME = {"bits": 4, "group_size": 32, "sym": True, "data_type": "int"}
+
+    def test_fused_gate_up_proj_split_and_quantized(self, tmp_path):
+        """A 3-D gate_up_proj tensor is split into per-expert slices and quantized."""
+        N, I, H = 2, 64, 32
+        shard_path = str(tmp_path / "shard.safetensors")
+        save_file(
+            {
+                "model.layers.0.mlp.experts.gate_up_proj": torch.randn(N, 2 * I, H),
+                "model.layers.0.mlp.experts.down_proj": torch.randn(N, H, I),
+            },
+            shard_path,
+        )
+
+        output, quantized, ignored = _process_shard(shard_path, self.DEFAULT_SCHEME, {}, [])
+
+        # Original fused keys must NOT appear
+        assert not any("gate_up_proj" in k for k in output)
+        assert not any("gate_up_proj" in k for k in quantized)
+
+        # Each expert's per-expert weights should be quantized
+        for i in range(N):
+            gate_base = f"model.layers.0.mlp.experts.{i}.gate_proj"
+            up_base = f"model.layers.0.mlp.experts.{i}.up_proj"
+            down_base = f"model.layers.0.mlp.experts.{i}.down_proj"
+            for base in [gate_base, up_base, down_base]:
+                assert base in quantized, f"{base} not in quantized: {quantized}"
+                assert f"{base}.qweight" in output
+                assert f"{base}.scales" in output
+
+    def test_fused_experts_with_ignore_pattern(self, tmp_path):
+        """After splitting, per-expert weights honour ignore_patterns."""
+        N, I, H = 2, 32, 16
+        shard_path = str(tmp_path / "shard.safetensors")
+        save_file(
+            {"model.mtp.0.mlp.experts.gate_up_proj": torch.randn(N, 2 * I, H)},
+            shard_path,
+        )
+
+        output, quantized, ignored = _process_shard(shard_path, self.DEFAULT_SCHEME, {}, ["mtp"])
+
+        assert len(quantized) == 0
+        # All split weight keys must be kept in full precision
+        for i in range(N):
+            assert f"model.mtp.0.mlp.experts.{i}.gate_proj.weight" in output
+            assert f"model.mtp.0.mlp.experts.{i}.up_proj.weight" in output
+
+
+# ===========================================================================
+#  Test: model_free_quantize with fused expert model (end-to-end)
+# ===========================================================================
+
+
+class TestModelFreeQuantizeFusedExperts:
+    """End-to-end tests for model_free_quantize when the source has fused expert tensors."""
+
+    def test_fused_moe_model_quantizes_per_expert(self, tmp_path):
+        """model_free_quantize correctly splits and quantizes fused experts.
+
+        gate_proj is kept in full precision because the MoE-config auto-ignore
+        rule adds '.gate' which matches '.gate_proj' via substring.  down_proj
+        and up_proj are not gated so they get quantized.
+        """
+        N, I, H = 4, 64, 32
+        # Use a plain (non-MoE flagged) config so no auto-ignore is injected
+        plain_config = {
+            "architectures": ["LlamaForCausalLM"],
+            "model_type": "llama",
+        }
+        tensors = {
+            "model.layers.0.mlp.experts.gate_up_proj": torch.randn(N, 2 * I, H),
+            "model.layers.0.mlp.experts.down_proj": torch.randn(N, H, I),
+        }
+        model_dir = _make_model_dir(tmp_path, plain_config, tensors)
+        output_dir = str(tmp_path / "output")
+
+        model_free_quantize(
+            model_name_or_path=model_dir,
+            output_dir=output_dir,
+            scheme="W4A16",
+        )
+
+        assert os.path.exists(os.path.join(output_dir, "config.json"))
+
+        # Collect all tensor keys written to safetensors output(s)
+        written_keys = set()
+        for fname in os.listdir(output_dir):
+            if fname.endswith(".safetensors"):
+                fpath = os.path.join(output_dir, fname)
+                with safe_open(fpath, framework="pt") as f:
+                    written_keys.update(f.keys())
+
+        # Fused key should not appear in output
+        assert not any("gate_up_proj" in k for k in written_keys)
+
+        # Per-expert quantized tensors should appear for all three projections
+        for i in range(N):
+            for proj in ["gate_proj", "up_proj", "down_proj"]:
+                base = f"model.layers.0.mlp.experts.{i}.{proj}"
+                assert f"{base}.qweight" in written_keys, f"{base}.qweight not found"
+                assert f"{base}.scales" in written_keys, f"{base}.scales not found"
+
+
+# ===========================================================================
+#  Test: low_gpu_mem_usage
+# ===========================================================================
+
+
+class TestLowGpuMemUsage:
+    """Tests that the low_gpu_mem_usage flag is accepted and functions correctly on CPU."""
+
+    DEFAULT_SCHEME = {"bits": 4, "group_size": 128, "sym": True, "data_type": "int"}
+
+    def test_process_shard_accepts_flag(self, tmp_path):
+        """_process_shard works with low_gpu_mem_usage=True on CPU."""
+        shard_path = str(tmp_path / "shard.safetensors")
+        save_file({"layer.weight": torch.randn(64, 128)}, shard_path)
+
+        output, quantized, _ = _process_shard(
+            shard_path,
+            self.DEFAULT_SCHEME,
+            {},
+            [],
+            device="cpu",
+            low_gpu_mem_usage=True,
+        )
+        assert "layer" in quantized
+        assert "layer.qweight" in output
+
+    def test_model_free_quantize_accepts_flag(self, tmp_path):
+        """model_free_quantize works with low_gpu_mem_usage=True."""
+        model_dir = _make_model_dir(
+            tmp_path,
+            {"architectures": ["LlamaForCausalLM"], "model_type": "llama"},
+            {"layer.weight": torch.randn(64, 128)},
+        )
+        output_dir = str(tmp_path / "output")
+        model_free_quantize(
+            model_name_or_path=model_dir,
+            output_dir=output_dir,
+            scheme="W4A16",
+            low_gpu_mem_usage=True,
+        )
+        assert os.path.exists(os.path.join(output_dir, "config.json"))
+        st_files = [f for f in os.listdir(output_dir) if f.endswith(".safetensors")]
+        assert len(st_files) > 0

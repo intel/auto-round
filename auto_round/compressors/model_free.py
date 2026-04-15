@@ -24,7 +24,7 @@ Key features
 ------------
 * **No model object required** – only ``config.json`` and safetensors files are
   needed.
-* **Low-disk-memory mode** (``--low_disk_mem_usage``) – downloads, quantizes,
+* **Streaming mode** (``--streaming``) – downloads, quantizes,
   and deletes each safetensors shard one at a time so that only one copy of a
   shard is ever on disk.
 * **Per-layer configuration** – honours ``--layer_config`` overrides and
@@ -40,7 +40,6 @@ Usage (CLI)
 
     auto_round facebook/opt-125m \\
         --model_free \\
-        --low_disk_mem_usage \\
         --scheme W4A16 \\
         --output_dir int4-125m
 
@@ -53,7 +52,6 @@ Usage (API)
         model_name_or_path="facebook/opt-125m",
         scheme="W4A16",
         output_dir="./int4-125m",
-        low_disk_mem_usage=True,
     )
 """
 
@@ -64,104 +62,67 @@ import json
 import os
 import re
 import shutil
+import time
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import asdict, fields
 from typing import Optional, Union
 
 import torch
 
+from auto_round import envs
 from auto_round.logger import logger
 from auto_round.schemes import PRESET_SCHEMES, QuantizationScheme, preset_name_to_scheme
 from auto_round.utils.common import compress_layer_names
-from auto_round.utils.missing_tensors import quantize_weight_rtn
+from auto_round.utils.device import memory_monitor
+from auto_round.utils.missing_tensors import quantize_weight_rtn, split_fused_expert_tensors
 
 # ------------------------------------------------------------------ #
 #  Layers that should never be RTN-quantized (e.g. routing gates)     #
 # ------------------------------------------------------------------ #
-_BLOCK_NAME_TO_IGNORE = ["shared_expert_gate.", "mlp.gate.", "g_proj."]
+_BLOCK_NAME_TO_IGNORE = ["shared_expert_gate.", "mlp.gate.", "embed"]
 
 # ------------------------------------------------------------------ #
-#  Predefined ignore-layer rules (mirrors special_model_handler.py)   #
+#  Predefined ignore-layer rules                                       #
 # ------------------------------------------------------------------ #
-# Each entry: (matcher_fn(config) -> bool, ignore_layers: list[str])
-# matcher_fn operates on the config dict (no model object needed).
-
-_CONFIG_BASED_IGNORE_RULES: list[tuple] = []
-
-
-def _register_config_ignore_rule(matcher, ignore_layers: list[str]):
-    """Register a config-based ignore-layer rule for model-free mode."""
-    _CONFIG_BASED_IGNORE_RULES.append((matcher, ignore_layers))
-
-
-def _arch_contains(config: dict, pattern: str) -> bool:
-    archs = config.get("architectures", [])
-    archs_str = ",".join(archs) if isinstance(archs, list) else str(archs)
-    return pattern in archs_str
-
-
-def _model_type_eq(config: dict, model_type: str) -> bool:
-    return config.get("model_type", "") == model_type
-
-
-def _model_type_contains(config: dict, model_type: str) -> bool:
-    return model_type in config.get("model_type", "")
-
-
-# Longcat – skip classifier
-_register_config_ignore_rule(
-    lambda cfg: _arch_contains(cfg, "Longcat"),
-    ["classifier"],
-)
-
-
-# Glm4MoeLite – skip first_k_dense_replace mlp layers
-def _glm_flash_ignore(config: dict) -> list[str]:
-    num_dense = config.get("first_k_dense_replace", 1)
-    return [f"layers.{i}.mlp" for i in range(num_dense)]
-
-
-_register_config_ignore_rule(
-    lambda cfg: _arch_contains(cfg, "Glm4MoeLite"),
-    [],  # placeholder, resolved dynamically
-)
-
-
-# glm_moe_dsa – skip dense layers + weights_proj
-_register_config_ignore_rule(
-    lambda cfg: _model_type_eq(cfg, "glm_moe_dsa"),
-    ["weights_proj"],
-)
-
-
-# step3p5 – skip g_proj, moe.gate, MTP layers
-_register_config_ignore_rule(
-    lambda cfg: _model_type_eq(cfg, "step3p5"),
-    ["g_proj", "moe.gate", "eh_proj", "shared_head", "layers.45"],
-)
+# Reuses the rules registered in special_model_handler via a thin
+# config-dict wrapper, so there is no need to duplicate registrations.
 
 
 def get_predefined_ignore_layers_from_config(config: dict) -> list[str]:
-    """Return layers to ignore based on the model's config.json (no model object needed).
+    """Return layers to ignore based on the model's config.json.
 
-    This mirrors :func:`auto_round.special_model_handler.get_predefined_ignore_layers`
-    but operates purely on the config dictionary.
+    Delegates to the same rules registered via
+    :func:`~auto_round.special_model_handler.register_ignore_layers` by
+    wrapping the config dict in a lightweight pseudo-model object, so there
+    is no need to duplicate ignore-layer rule registrations here.
     """
+    import types
+
+    from auto_round.special_model_handler import _PRE_DEFINED_IGNORE_LAYERS
+
+    # Build a pseudo-model whose .config attribute exposes the config fields.
+    cfg_ns = types.SimpleNamespace(**config)
+    wrapper = types.SimpleNamespace(config=cfg_ns)
+
     layers: list[str] = []
-    for matcher, ignore_list in _CONFIG_BASED_IGNORE_RULES:
+    for rule in _PRE_DEFINED_IGNORE_LAYERS:
         try:
-            if matcher(config):
-                if _arch_contains(config, "Glm4MoeLite"):
-                    layers.extend(_glm_flash_ignore(config))
-                elif _model_type_eq(config, "glm_moe_dsa"):
-                    layers.extend(_glm_flash_ignore(config))
-                    layers.extend(ignore_list)  # adds "weights_proj"
-                else:
-                    layers.extend(ignore_list)
+            if all(m(wrapper) for m in rule.matchers):
+                for ignore_layer in rule.ignore_layers:
+                    if isinstance(ignore_layer, str):
+                        layers.append(ignore_layer)
+                    else:
+                        # callable (e.g. get_glm_flash_ignore_layers)
+                        res = ignore_layer(wrapper)
+                        if isinstance(res, str):
+                            layers.append(res)
+                        elif isinstance(res, list):
+                            layers.extend(res)
                 break
         except Exception:
             continue
 
-    # Fallback: for MoE models, ignore .gate layers
+    # MoE fallback: no module iteration available, use the common gate pattern
     if not layers and _is_moe_config(config):
         layers.append(".gate")
 
@@ -182,6 +143,19 @@ def _is_moe_config(config: dict) -> bool:
 # ------------------------------------------------------------------ #
 #  Helpers                                                             #
 # ------------------------------------------------------------------ #
+
+
+def _is_model_cached(model_name_or_path: str) -> bool:
+    """Return True if the model is already available locally or in HF cache."""
+    if os.path.isdir(model_name_or_path):
+        return True
+    try:
+        from huggingface_hub import try_to_load_from_cache
+
+        result = try_to_load_from_cache(model_name_or_path, "config.json")
+        return isinstance(result, str)
+    except Exception:
+        return False
 
 
 def _resolve_source_dir(model_name_or_path: str) -> str:
@@ -307,7 +281,7 @@ def _is_eligible_weight(tensor_name: str, tensor: torch.Tensor) -> bool:
 
 
 # ------------------------------------------------------------------ #
-#  Download helpers for low_disk_mem_usage                             #
+#  Download helpers for is_streaming                             #
 # ------------------------------------------------------------------ #
 
 
@@ -339,37 +313,35 @@ def _download_single_shard(
     return downloaded
 
 
+def _is_safetensors_file(fname: str) -> bool:
+    """Return True if *fname* is a safetensors weight shard (not the index)."""
+    return fname.endswith(".safetensors") and not fname.endswith(".index.json")
+
+
 def _download_metadata_files(
     model_name_or_path: str,
     local_dir: str,
 ) -> str:
-    """Download config.json, tokenizer files, and index file. Returns local dir."""
+    """Download all non-safetensors files from a model repo. Returns local dir.
+
+    This copies every file that is **not** a ``.safetensors`` weight shard
+    (config, tokenizer, index, modeling code, etc.) so that the output
+    directory is a self-contained model repo once the quantized shards are
+    written.
+    """
     os.makedirs(local_dir, exist_ok=True)
-    metadata_files = [
-        "config.json",
-        "generation_config.json",
-        "tokenizer.json",
-        "tokenizer_config.json",
-        "special_tokens_map.json",
-        "vocab.json",
-        "merges.txt",
-        "tokenizer.model",
-        "model.safetensors.index.json",
-    ]
 
     if os.path.isdir(model_name_or_path):
-        for fname in metadata_files:
+        for fname in os.listdir(model_name_or_path):
+            if _is_safetensors_file(fname):
+                continue
             src = os.path.join(model_name_or_path, fname)
             dst = os.path.join(local_dir, fname)
-            if os.path.exists(src) and not os.path.exists(dst):
-                shutil.copy2(src, dst)
-        # Also copy any .py files (modeling code for trust_remote_code)
-        for fname in os.listdir(model_name_or_path):
-            if fname.endswith(".py"):
-                src = os.path.join(model_name_or_path, fname)
-                dst = os.path.join(local_dir, fname)
+            if os.path.isdir(src):
                 if not os.path.exists(dst):
-                    shutil.copy2(src, dst)
+                    shutil.copytree(src, dst)
+            elif os.path.isfile(src) and not os.path.exists(dst):
+                shutil.copy2(src, dst)
         return local_dir
 
     from huggingface_hub import hf_hub_download, list_repo_files
@@ -379,8 +351,8 @@ def _download_metadata_files(
     except Exception:
         repo_files = []
 
-    for fname in metadata_files:
-        if repo_files and fname not in repo_files:
+    for fname in repo_files:
+        if _is_safetensors_file(fname):
             continue
         try:
             hf_hub_download(
@@ -391,24 +363,91 @@ def _download_metadata_files(
         except Exception:
             pass  # Not all files are mandatory
 
-    # Download .py files for trust_remote_code
-    for fname in repo_files:
-        if fname.endswith(".py"):
-            try:
-                hf_hub_download(
-                    repo_id=model_name_or_path,
-                    filename=fname,
-                    local_dir=local_dir,
-                )
-            except Exception:
-                pass
-
     return local_dir
+
+
+# ------------------------------------------------------------------ #
+#  Core: quantize a single tensor (used by both serial & concurrent)   #
+# ------------------------------------------------------------------ #
+
+
+def _quantize_single_tensor(
+    tensor_name: str,
+    tensor: torch.Tensor,
+    default_scheme: dict,
+    layer_config: dict,
+    ignore_patterns: list[str],
+    device: str = "cpu",
+) -> tuple[str, dict[str, torch.Tensor], str | None, str | None]:
+    """Quantize one eligible weight tensor and return packed outputs.
+
+    Returns:
+        (layer_name, output_tensors_dict, quantized_layer_or_None, ignored_layer_or_None)
+    """
+    layer_name = tensor_name.rsplit(".", 1)[0]
+
+    # ---- eligibility / skip checks ----
+    if not _is_eligible_weight(tensor_name, tensor):
+        return layer_name, {tensor_name: tensor}, None, None
+
+    if _should_ignore_layer(tensor_name, ignore_patterns):
+        logger.debug(f"Ignoring (user-specified): {layer_name}")
+        return layer_name, {tensor_name: tensor}, None, layer_name
+
+    if _should_skip_quantization(tensor_name):
+        logger.debug(f"Skipping (predefined): {layer_name}")
+        return layer_name, {tensor_name: tensor}, None, layer_name
+
+    scheme = _resolve_layer_scheme(tensor_name, layer_config, default_scheme)
+    if scheme is None:
+        logger.debug(f"Keeping full precision: {layer_name}")
+        return layer_name, {tensor_name: tensor}, None, layer_name
+
+    bits = scheme["bits"]
+    group_size = scheme["group_size"]
+    sym = scheme.get("sym", True)
+
+    if bits >= 16:
+        return layer_name, {tensor_name: tensor}, None, layer_name
+
+    # ---- RTN quantization ----
+    try:
+        orig_in_features = tensor.shape[1]
+        qweight, qzeros, scales = quantize_weight_rtn(
+            weight=tensor,
+            bits=bits,
+            group_size=group_size,
+            sym=sym,
+            device=torch.device(device) if device != "cpu" else None,
+        )
+
+        out: dict[str, torch.Tensor] = {
+            f"{layer_name}.qweight": qweight,
+            f"{layer_name}.qzeros": qzeros,
+            f"{layer_name}.scales": scales,
+        }
+
+        in_features = orig_in_features
+        if in_features % group_size != 0:
+            in_features += group_size - in_features % group_size
+        out[f"{layer_name}.g_idx"] = torch.arange(in_features, dtype=torch.int32) // group_size
+
+        logger.debug(f"Quantized: {layer_name} (bits={bits}, group_size={group_size}, sym={sym})")
+        return layer_name, out, layer_name, None
+
+    except Exception as e:
+        logger.warning(f"Failed to quantize {layer_name}: {e}. Keeping original weight.")
+        return layer_name, {tensor_name: tensor}, None, layer_name
 
 
 # ------------------------------------------------------------------ #
 #  Core: process a single shard                                        #
 # ------------------------------------------------------------------ #
+
+# Number of concurrent GPU quantization workers.  Each worker holds one
+# weight tensor on the GPU (~200-900 MB for typical LLM layers), so 16
+# workers use at most a few GB — negligible on any modern GPU.
+_DEFAULT_GPU_WORKERS = 4
 
 
 def _process_shard(
@@ -420,6 +459,18 @@ def _process_shard(
 ) -> tuple[dict[str, torch.Tensor], list[str], list[str]]:
     """Quantize eligible weights in a single safetensors shard.
 
+    When *device* is a CUDA device, multiple weight tensors are quantized
+    concurrently using a :class:`~concurrent.futures.ThreadPoolExecutor`
+    so that H2D transfers and GPU compute can overlap, significantly
+    improving GPU utilisation.
+
+    Args:
+        shard_path: Path to the safetensors file.
+        default_scheme: Default quantization parameters.
+        layer_config: Per-layer overrides.
+        ignore_patterns: Layer name patterns to skip.
+        device: Computation device (``"cpu"`` or ``"cuda"``).
+
     Returns:
         (output_tensors, quantized_layer_names, ignored_layer_names)
     """
@@ -430,78 +481,56 @@ def _process_shard(
     ignored_layers: list[str] = []
 
     with safe_open(shard_path, framework="pt", device="cpu") as f:
-        tensor_names = list(f.keys())
+        raw_tensors = {name: f.get_tensor(name) for name in f.keys()}
 
-        for tensor_name in tensor_names:
-            tensor = f.get_tensor(tensor_name)
+    # Split fused expert tensors (3-D) into per-expert 2-D tensors
+    raw_tensors = split_fused_expert_tensors(raw_tensors)
 
-            # Check if this is an eligible weight for quantization
-            if not _is_eligible_weight(tensor_name, tensor):
-                output_tensors[tensor_name] = tensor.contiguous()
-                continue
+    use_gpu_concurrent = device != "cpu" and torch.cuda.is_available()
 
-            layer_name = tensor_name.rsplit(".", 1)[0]
-
-            # Check ignore patterns
-            if _should_ignore_layer(tensor_name, ignore_patterns):
-                logger.debug(f"Ignoring (user-specified): {layer_name}")
-                output_tensors[tensor_name] = tensor.contiguous()
-                ignored_layers.append(layer_name)
-                continue
-
-            # Check predefined skip patterns (routing gates, etc.)
-            if _should_skip_quantization(tensor_name):
-                logger.debug(f"Skipping (predefined): {layer_name}")
-                output_tensors[tensor_name] = tensor.contiguous()
-                ignored_layers.append(layer_name)
-                continue
-
-            # Resolve per-layer scheme
-            scheme = _resolve_layer_scheme(tensor_name, layer_config, default_scheme)
-            if scheme is None:
-                logger.debug(f"Keeping full precision: {layer_name}")
-                output_tensors[tensor_name] = tensor.contiguous()
-                ignored_layers.append(layer_name)
-                continue
-
-            bits = scheme["bits"]
-            group_size = scheme["group_size"]
-            sym = scheme.get("sym", True)
-
-            if bits >= 16:
-                output_tensors[tensor_name] = tensor.contiguous()
-                ignored_layers.append(layer_name)
-                continue
-
-            # Quantize with RTN
-            try:
-                qweight, qzeros, scales = quantize_weight_rtn(
-                    weight=tensor,
-                    bits=bits,
-                    group_size=group_size,
-                    sym=sym,
-                    device=torch.device(device) if device != "cpu" else None,
+    if use_gpu_concurrent:
+        # GPU-concurrent: overlap H2D transfer with compute
+        futures: dict = {}
+        with ThreadPoolExecutor(max_workers=_DEFAULT_GPU_WORKERS) as pool:
+            tensor_names = list(raw_tensors.keys())
+            for tensor_name in tensor_names:
+                tensor = raw_tensors.pop(tensor_name)
+                fut = pool.submit(
+                    _quantize_single_tensor,
+                    tensor_name,
+                    tensor,
+                    default_scheme,
+                    layer_config,
+                    ignore_patterns,
+                    device,
                 )
+                futures[fut] = tensor_name
 
-                # Store packed tensors with auto_gptq naming convention
-                output_tensors[f"{layer_name}.qweight"] = qweight.contiguous()
-                output_tensors[f"{layer_name}.qzeros"] = qzeros.contiguous()
-                output_tensors[f"{layer_name}.scales"] = scales.contiguous()
-
-                # Store g_idx as empty (not needed for RTN without reordering)
-                in_features = tensor.shape[1]
-                if in_features % group_size != 0:
-                    in_features = in_features + (group_size - in_features % group_size)
-                g_idx = torch.arange(in_features, dtype=torch.int32) // group_size
-                output_tensors[f"{layer_name}.g_idx"] = g_idx.contiguous()
-
-                quantized_layers.append(layer_name)
-                logger.debug(f"Quantized: {layer_name} (bits={bits}, group_size={group_size}, sym={sym})")
-
-            except Exception as e:
-                logger.warning(f"Failed to quantize {layer_name}: {e}. Keeping original weight.")
-                output_tensors[tensor_name] = tensor.contiguous()
-                ignored_layers.append(layer_name)
+            for fut in as_completed(futures):
+                _layer_name, out_dict, q_layer, ig_layer = fut.result()
+                output_tensors.update(out_dict)
+                if q_layer:
+                    quantized_layers.append(q_layer)
+                if ig_layer:
+                    ignored_layers.append(ig_layer)
+    else:
+        # Serial path (CPU)
+        tensor_names = list(raw_tensors.keys())
+        for tensor_name in tensor_names:
+            tensor = raw_tensors.pop(tensor_name)
+            _layer_name, out_dict, q_layer, ig_layer = _quantize_single_tensor(
+                tensor_name,
+                tensor,
+                default_scheme,
+                layer_config,
+                ignore_patterns,
+                device,
+            )
+            output_tensors.update(out_dict)
+            if q_layer:
+                quantized_layers.append(q_layer)
+            if ig_layer:
+                ignored_layers.append(ig_layer)
 
     return output_tensors, quantized_layers, ignored_layers
 
@@ -613,6 +642,53 @@ def _write_index_file(output_dir: str, weight_map: dict[str, str]):
 
 
 # ------------------------------------------------------------------ #
+#  Top-level worker for multiprocessing (CPU-only)                     #
+# ------------------------------------------------------------------ #
+
+
+def _process_shard_worker(args: tuple) -> tuple[dict[str, torch.Tensor], list[str], list[str]]:
+    """Multiprocessing-friendly wrapper around :func:`_process_shard`.
+
+    ``multiprocessing.Pool`` requires picklable top-level functions.
+    """
+    shard_path, default_scheme, layer_config, ignore_patterns, device = args
+    return _process_shard(
+        shard_path=shard_path,
+        default_scheme=default_scheme,
+        layer_config=layer_config,
+        ignore_patterns=ignore_patterns,
+        device=device,
+    )
+
+
+# ------------------------------------------------------------------ #
+#  Shard prefetch helper (overlaps I/O with quantization)              #
+# ------------------------------------------------------------------ #
+
+
+def _prefetch_shard(
+    model_name_or_path: str,
+    shard_name: str,
+    work_dir: str,
+    source_dir: str,
+    streaming: bool,
+) -> str | None:
+    """Return the local path of the next shard (download if needed).
+
+    Runs in a background thread so the I/O overlaps with quantization
+    of the current shard.
+    """
+    try:
+        if streaming:
+            return _download_single_shard(model_name_or_path, shard_name, work_dir)
+        path = os.path.join(source_dir, shard_name)
+        return path if os.path.exists(path) else None
+    except Exception as e:  # pragma: no cover
+        logger.warning(f"Prefetch failed for {shard_name}: {e}")
+        return None
+
+
+# ------------------------------------------------------------------ #
 #  Main entry point                                                    #
 # ------------------------------------------------------------------ #
 
@@ -625,13 +701,25 @@ def model_free_quantize(
     ignore_layers: str = "",
     format: str = "auto_round",
     device: str = "cpu",
-    low_disk_mem_usage: bool = False,
-    trust_remote_code: bool = True,
+    quant_lm_head: bool = False,
 ) -> str:
     """Perform model-free RTN quantization.
 
     Downloads safetensors directly, applies RTN quantization to each eligible
     Linear weight, and saves the packed model in auto-round format.
+
+    The function automatically decides the I/O strategy:
+
+    * If the model is already available locally (a directory path or
+      previously cached by ``huggingface_hub``), all shards are read
+      directly from disk.
+    * Otherwise, shards are downloaded one at a time and deleted after
+      quantization to minimise disk usage.
+
+    On **GPU** (``device="cuda"``), multiple weight tensors inside each
+    shard are quantized concurrently so that H2D transfers and GPU
+    compute overlap.  On **CPU**, multiple shards are processed in
+    parallel using ``multiprocessing`` (controlled by *nproc*).
 
     Args:
         model_name_or_path: HuggingFace model ID or local directory path.
@@ -646,15 +734,13 @@ def model_free_quantize(
         format: Output format (only ``"auto_round"`` is supported in
             model-free mode).
         device: Device for quantization computation (``"cpu"`` or ``"cuda"``).
-        low_disk_mem_usage: If True, download and process one shard at a time,
-            deleting the source shard after processing.
-        trust_remote_code: Whether to trust remote code when downloading.
+        quant_lm_head: If True, quantize ``lm_head`` as well.  By default
+            ``lm_head`` and any layer containing ``embed`` are kept in full
+            precision.
 
     Returns:
         Path to the output directory.
     """
-    from safetensors.torch import save_file
-
     # ---- Validate format ----
     supported_formats = ("auto_round",)
     format_lower = format.lower().replace(" ", "").split(",")[0]
@@ -681,7 +767,6 @@ def model_free_quantize(
     # ---- Parse layer_config ----
     layer_config = copy.deepcopy(layer_config) if layer_config else {}
     # Normalize layer_config values
-    scheme_keys = [f.name for f in fields(QuantizationScheme)]
     for key, val in list(layer_config.items()):
         if isinstance(val, str):
             parsed = asdict(preset_name_to_scheme(val.upper()))
@@ -698,13 +783,28 @@ def model_free_quantize(
     if ignore_layers:
         ignore_patterns = [p.strip() for p in ignore_layers.replace(" ", "").split(",") if p.strip()]
 
+    # By default keep lm_head in full precision; embed layers are always
+    # skipped via _BLOCK_NAME_TO_IGNORE regardless of quant_lm_head
+    if not quant_lm_head:
+        if "lm_head" not in ignore_patterns:
+            ignore_patterns.append("lm_head")
+
     # ---- Setup output directory ----
     os.makedirs(output_dir, exist_ok=True)
 
+    # ---- Decide I/O strategy ----
+    # If the model is already local or in HF cache, read directly;
+    # otherwise download one shard at a time to save disk.
+    is_streaming = not _is_model_cached(model_name_or_path)
+    if is_streaming:
+        logger.info("Model not found locally or in cache — using streaming download mode.")
+
     # ---- Resolve source and load config ----
-    if low_disk_mem_usage:
-        # In low-disk mode, only download metadata first
-        work_dir = os.path.join(output_dir, "_model_free_tmp")
+    work_dir: str = ""
+    source_dir: str = ""
+    if is_streaming:
+        # Download only metadata first
+        work_dir = os.path.join(envs.AR_WORK_SPACE, "_model_free_tmp")
         _download_metadata_files(model_name_or_path, work_dir)
         config = _load_config(work_dir)
     else:
@@ -718,8 +818,8 @@ def model_free_quantize(
         logger.info(f"Using predefined ignore_layers from config: {compressed}")
         ignore_patterns.extend(predefined_ignore)
 
-    # ---- Discover shards ----
-    if low_disk_mem_usage:
+    # Discover shards
+    if is_streaming:
         # Get shard list from index file or by checking the repo
         index_file = os.path.join(work_dir, "model.safetensors.index.json")
         if os.path.exists(index_file):
@@ -741,7 +841,9 @@ def model_free_quantize(
         f"  Scheme: {scheme_obj}\n"
         f"  Output: {output_dir}\n"
         f"  Shards: {len(shard_names)}\n"
-        f"  Low-disk mode: {low_disk_mem_usage}"
+        f"  Streaming download: {is_streaming}\n"
+        f"  Quant lm_head: {quant_lm_head}\n"
+        f"  Device: {device}"
     )
 
     # ---- Process each shard ----
@@ -749,25 +851,57 @@ def model_free_quantize(
     all_ignored_layers: list[str] = []
     output_weight_map: dict[str, str] = {}
 
+    start_time = time.time()
+    memory_monitor.reset()
+
     try:
         from tqdm import tqdm as _tqdm
     except ImportError:
         _tqdm = None
 
-    shard_iter = _tqdm(shard_names, desc="Processing shards", unit="shard") if _tqdm else shard_names
+    # ---- I/O pipeline: prefetch next shard while quantizing current ----
+    prefetch_pool = ThreadPoolExecutor(max_workers=1)
+    prefetch_future = None
 
-    for shard_idx, shard_name in enumerate(shard_iter):
-        if low_disk_mem_usage:
-            # Download this specific shard
-            shard_path = _download_single_shard(model_name_or_path, shard_name, work_dir)
+    # Kick off prefetch of the very first shard
+    if shard_names:
+        prefetch_future = prefetch_pool.submit(
+            _prefetch_shard,
+            model_name_or_path,
+            shard_names[0],
+            work_dir,
+            source_dir,
+            is_streaming,
+        )
+
+    shard_iter = (
+        _tqdm(enumerate(shard_names), total=len(shard_names), desc="Processing shards", unit="shard")
+        if _tqdm
+        else enumerate(shard_names)
+    )
+
+    for shard_idx, shard_name in shard_iter:
+        # Wait for the prefetched shard path
+        shard_path = prefetch_future.result() if prefetch_future else None
+
+        # Kick off prefetch of the *next* shard immediately
+        if shard_idx + 1 < len(shard_names):
+            prefetch_future = prefetch_pool.submit(
+                _prefetch_shard,
+                model_name_or_path,
+                shard_names[shard_idx + 1],
+                work_dir,
+                source_dir,
+                is_streaming,
+            )
         else:
-            shard_path = os.path.join(source_dir, shard_name)
+            prefetch_future = None
 
-        if not os.path.exists(shard_path):
-            logger.warning(f"Shard not found: {shard_path}, skipping")
+        if shard_path is None or not os.path.exists(shard_path):
+            logger.warning(f"Shard not found: {shard_name}, skipping")
             continue
 
-        # Process the shard
+        # Quantize (GPU concurrent or CPU serial, chosen inside _process_shard)
         output_tensors, quantized, ignored = _process_shard(
             shard_path=shard_path,
             default_scheme=default_scheme,
@@ -775,24 +909,24 @@ def model_free_quantize(
             ignore_patterns=ignore_patterns,
             device=device,
         )
+        memory_monitor.update()
 
         all_quantized_layers.extend(quantized)
         all_ignored_layers.extend(ignored)
 
-        # Write output shard
         out_shard_name = f"model-{shard_idx + 1:05d}-of-{len(shard_names):05d}.safetensors"
         _write_output_shard(output_dir, out_shard_name, output_tensors, output_weight_map)
-
-        # Free memory
         del output_tensors
 
-        # In low-disk mode, delete the source shard to save disk space
-        if low_disk_mem_usage:
+        # In streaming mode, delete the source shard to save disk space
+        if is_streaming:
             try:
                 os.remove(shard_path)
                 logger.debug(f"Deleted source shard: {shard_path}")
             except OSError as e:
                 logger.warning(f"Could not delete source shard {shard_path}: {e}")
+
+    prefetch_pool.shutdown(wait=False)
 
     # ---- Write index file ----
     _write_index_file(output_dir, output_weight_map)
@@ -817,65 +951,37 @@ def model_free_quantize(
     with open(qconfig_path, "w") as f:
         json.dump(quantization_config, f, indent=2)
 
-    # ---- Copy tokenizer files ----
-    if low_disk_mem_usage:
-        tokenizer_files = [
-            "tokenizer.json",
-            "tokenizer_config.json",
-            "special_tokens_map.json",
-            "vocab.json",
-            "merges.txt",
-            "tokenizer.model",
-            "generation_config.json",
-        ]
-        for fname in tokenizer_files:
-            src = os.path.join(work_dir, fname)
-            dst = os.path.join(output_dir, fname)
-            if os.path.exists(src) and not os.path.exists(dst):
-                shutil.copy2(src, dst)
-        # Copy .py files
-        for fname in os.listdir(work_dir):
-            if fname.endswith(".py"):
-                src = os.path.join(work_dir, fname)
-                dst = os.path.join(output_dir, fname)
-                if not os.path.exists(dst):
-                    shutil.copy2(src, dst)
+    # ---- Copy non-safetensors files (tokenizer, config, modeling code, etc.) ----
+    copy_src_dir = work_dir if is_streaming else source_dir
+    for fname in os.listdir(copy_src_dir):
+        if _is_safetensors_file(fname):
+            continue
+        src = os.path.join(copy_src_dir, fname)
+        dst = os.path.join(output_dir, fname)
+        if os.path.isdir(src):
+            if not os.path.exists(dst):
+                shutil.copytree(src, dst)
+        elif os.path.isfile(src) and not os.path.exists(dst):
+            shutil.copy2(src, dst)
 
+    if is_streaming:
         # Clean up temp dir
         try:
             shutil.rmtree(work_dir)
         except OSError:
             pass
-    else:
-        # Copy tokenizer and other files from source
-        copy_files = [
-            "tokenizer.json",
-            "tokenizer_config.json",
-            "special_tokens_map.json",
-            "vocab.json",
-            "merges.txt",
-            "tokenizer.model",
-            "generation_config.json",
-        ]
-        for fname in copy_files:
-            src = os.path.join(source_dir, fname)
-            dst = os.path.join(output_dir, fname)
-            if os.path.exists(src) and not os.path.exists(dst):
-                shutil.copy2(src, dst)
-        # Copy .py files
-        for fname in os.listdir(source_dir):
-            if fname.endswith(".py"):
-                src = os.path.join(source_dir, fname)
-                dst = os.path.join(output_dir, fname)
-                if not os.path.exists(dst):
-                    shutil.copy2(src, dst)
 
+    end_time = time.time()
+    total_time = end_time - start_time
     # ---- Summary ----
     compressed_quantized = compress_layer_names(all_quantized_layers)
     compressed_ignored = compress_layer_names(list(dict.fromkeys(all_ignored_layers)))
+    mem_summary = memory_monitor.get_summary()
     logger.info(
         f"\nModel-free quantization complete.\n"
         f"  Output directory: {output_dir}\n"
+        f"  Total time: {total_time:.2f} seconds\n"
+        f"  Memory usage: {mem_summary}\n"
         f"  Quantized layers ({len(all_quantized_layers)}): {compressed_quantized}\n"
         f"  Ignored layers ({len(set(all_ignored_layers))}): {compressed_ignored}\n"
     )

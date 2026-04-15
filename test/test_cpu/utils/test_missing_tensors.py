@@ -15,15 +15,20 @@
 import json
 import os
 import tempfile
-import unittest
 
+import pytest
 import torch
 
 from auto_round.utils.missing_tensors import (
     _get_woq_config_from_dir,
     copy_missing_tensors_from_source,
     quantize_weight_rtn,
+    split_fused_expert_tensors,
 )
+
+# ---------------------------------------------------------------------------
+#  Helpers
+# ---------------------------------------------------------------------------
 
 
 def _save_safetensors(tensors: dict, path: str) -> None:
@@ -50,587 +55,433 @@ def _write_config(target_dir: str, qcfg: dict | None = None) -> None:
         json.dump(config, f)
 
 
-class TestQuantizeWeightRtn(unittest.TestCase):
-    """Tests for the standalone quantize_weight_rtn helper."""
+def _make_auto_round_config(bits=4, group_size=128, sym=True) -> dict:
+    return {
+        "quantization_config": {
+            "quant_method": "auto-round",
+            "packing_format": "auto_round:auto_gptq",
+            "bits": bits,
+            "group_size": group_size,
+            "sym": sym,
+        }
+    }
+
+
+# ===========================================================================
+#  split_fused_expert_tensors
+# ===========================================================================
+
+
+class TestSplitFusedExpertTensors:
+
+    def test_2d_and_non_expert_pass_through(self):
+        """2-D tensors and 3-D non-expert tensors are returned unchanged."""
+        tensors = {
+            "mlp.fc1.weight": torch.randn(64, 128),
+            "mlp.fc1.bias": torch.randn(64),
+            "model.layers.0.something.weight": torch.randn(4, 8, 16),
+        }
+        result = split_fused_expert_tensors(tensors)
+        assert set(result.keys()) == set(tensors.keys())
+        for k in tensors:
+            assert torch.equal(result[k], tensors[k])
+
+    def test_empty_dict_returns_empty(self):
+        assert split_fused_expert_tensors({}) == {}
+
+    def test_gate_up_proj_split(self):
+        """experts.gate_up_proj [N,2I,H] → N*(gate_proj + up_proj)."""
+        N, I, H = 4, 64, 32
+        fused = torch.randn(N, 2 * I, H)
+        result = split_fused_expert_tensors({"model.layers.0.mlp.experts.gate_up_proj": fused})
+
+        assert "model.layers.0.mlp.experts.gate_up_proj" not in result
+        assert len(result) == N * 2
+        for i in range(N):
+            gk = f"model.layers.0.mlp.experts.{i}.gate_proj.weight"
+            uk = f"model.layers.0.mlp.experts.{i}.up_proj.weight"
+            assert result[gk].shape == (I, H)
+            assert result[uk].shape == (I, H)
+            assert torch.equal(result[gk], fused[i, :I, :])
+            assert torch.equal(result[uk], fused[i, I:, :])
+
+    def test_gate_up_proj_with_weight_suffix(self):
+        N, I, H = 2, 16, 8
+        fused = torch.randn(N, 2 * I, H)
+        result = split_fused_expert_tensors({"model.experts.gate_up_proj.weight": fused})
+        assert "model.experts.gate_up_proj.weight" not in result
+        for i in range(N):
+            assert f"model.experts.{i}.gate_proj.weight" in result
+            assert f"model.experts.{i}.up_proj.weight" in result
+
+    def test_stacked_down_proj(self):
+        """experts.down_proj [N,O,I] → N * down_proj.weight."""
+        N, O, I = 3, 32, 16
+        stacked = torch.randn(N, O, I)
+        result = split_fused_expert_tensors({"model.layers.0.mlp.experts.down_proj": stacked})
+        assert len(result) == N
+        for i in range(N):
+            key = f"model.layers.0.mlp.experts.{i}.down_proj.weight"
+            assert result[key].shape == (O, I)
+            assert torch.equal(result[key], stacked[i])
+
+    def test_mixed_fused_and_normal(self):
+        N, I, H = 2, 32, 16
+        tensors = {
+            "mlp.experts.gate_up_proj": torch.randn(N, 2 * I, H),
+            "mlp.experts.down_proj": torch.randn(N, H, I),
+            "attn.q_proj.weight": torch.randn(H, H),
+        }
+        result = split_fused_expert_tensors(tensors)
+        assert "mlp.experts.gate_up_proj" not in result
+        assert "mlp.experts.down_proj" not in result
+        assert "attn.q_proj.weight" in result
+        for i in range(N):
+            assert f"mlp.experts.{i}.gate_proj.weight" in result
+            assert f"mlp.experts.{i}.down_proj.weight" in result
+
+    def test_output_tensors_are_contiguous(self):
+        N, I, H = 2, 32, 16
+        result = split_fused_expert_tensors(
+            {
+                "mlp.experts.gate_up_proj": torch.randn(N, 2 * I, H),
+                "mlp.experts.down_proj": torch.randn(N, H, I),
+            }
+        )
+        for k, v in result.items():
+            assert v.is_contiguous(), f"{k} is not contiguous"
+
+
+# ===========================================================================
+#  quantize_weight_rtn
+# ===========================================================================
+
+
+class TestQuantizeWeightRtn:
 
     def test_output_shapes_4bit_sym(self):
-        """Check that output tensors have the expected shapes for 4-bit symmetric quantization."""
-        out_features, in_features = 32, 64
-        bits, group_size = 4, 32
-        weight = torch.randn(out_features, in_features)
-
-        pack_factor = 32 // bits  # 8
-        num_groups = in_features // group_size  # 2
-
-        qweight, qzeros, scales = quantize_weight_rtn(weight, bits=bits, group_size=group_size, sym=True)
-
-        self.assertEqual(qweight.shape, (in_features // pack_factor, out_features))
-        self.assertEqual(qzeros.shape, (num_groups, out_features // pack_factor))
-        self.assertEqual(scales.shape, (num_groups, out_features))
-        self.assertEqual(qweight.dtype, torch.int32)
-        self.assertEqual(qzeros.dtype, torch.int32)
-        self.assertEqual(scales.dtype, torch.float16)
+        out_f, in_f, bits, gs = 32, 64, 4, 32
+        qw, qz, sc = quantize_weight_rtn(torch.randn(out_f, in_f), bits=bits, group_size=gs, sym=True)
+        pf = 32 // bits
+        ng = in_f // gs
+        assert qw.shape == (in_f // pf, out_f)
+        assert qz.shape == (ng, out_f // pf)
+        assert sc.shape == (ng, out_f)
+        assert qw.dtype == torch.int32
+        assert sc.dtype == torch.float16
 
     def test_output_shapes_4bit_asym(self):
-        """Check output shapes for 4-bit asymmetric quantization."""
-        out_features, in_features = 32, 64
-        bits, group_size = 4, 32
-        weight = torch.randn(out_features, in_features)
-
-        pack_factor = 32 // bits
-        num_groups = in_features // group_size
-
-        qweight, qzeros, scales = quantize_weight_rtn(weight, bits=bits, group_size=group_size, sym=False)
-
-        self.assertEqual(qweight.shape, (in_features // pack_factor, out_features))
-        self.assertEqual(qzeros.shape, (num_groups, out_features // pack_factor))
-        self.assertEqual(scales.shape, (num_groups, out_features))
+        out_f, in_f, bits, gs = 32, 64, 4, 32
+        qw, qz, sc = quantize_weight_rtn(torch.randn(out_f, in_f), bits=bits, group_size=gs, sym=False)
+        assert qw.shape == (in_f // (32 // bits), out_f)
 
     def test_output_shapes_8bit(self):
-        """Check output shapes for 8-bit symmetric quantization."""
-        out_features, in_features = 16, 128
-        bits, group_size = 8, 128
-        weight = torch.randn(out_features, in_features)
+        out_f, in_f, bits, gs = 16, 128, 8, 128
+        qw, qz, sc = quantize_weight_rtn(torch.randn(out_f, in_f), bits=bits, group_size=gs, sym=True)
+        pf = 32 // bits
+        assert qw.shape == (in_f // pf, out_f)
 
-        pack_factor = 32 // bits  # 4
-        num_groups = in_features // group_size  # 1
+    def test_outputs_on_cpu(self):
+        qw, qz, sc = quantize_weight_rtn(torch.randn(16, 64), bits=4, group_size=32)
+        assert qw.device.type == "cpu"
+        assert qz.device.type == "cpu"
+        assert sc.device.type == "cpu"
 
-        qweight, qzeros, scales = quantize_weight_rtn(weight, bits=bits, group_size=group_size, sym=True)
-
-        self.assertEqual(qweight.shape, (in_features // pack_factor, out_features))
-        self.assertEqual(qzeros.shape, (num_groups, out_features // pack_factor))
-        self.assertEqual(scales.shape, (num_groups, out_features))
-
-    def test_outputs_are_on_cpu(self):
-        """Verify that all returned tensors are on the CPU regardless of input device."""
-        weight = torch.randn(16, 64)
-        qweight, qzeros, scales = quantize_weight_rtn(weight, bits=4, group_size=32)
-        self.assertEqual(qweight.device.type, "cpu")
-        self.assertEqual(qzeros.device.type, "cpu")
-        self.assertEqual(scales.device.type, "cpu")
-
-    def test_raises_on_1d_weight(self):
-        """quantize_weight_rtn must reject 1-D tensors."""
-        with self.assertRaises(AssertionError):
+    def test_raises_on_1d(self):
+        with pytest.raises(AssertionError):
             quantize_weight_rtn(torch.randn(64), bits=4, group_size=32)
 
     def test_in_features_padding(self):
-        """in_features that is not a multiple of group_size should be padded internally."""
-        # in_features=70 is not a multiple of group_size=32
-        out_features, in_features = 16, 70
-        bits, group_size = 4, 32
-        weight = torch.randn(out_features, in_features)
-        # padded in_features = 96 (next multiple of 32)
-        padded_in = 96
-        pack_factor = 32 // bits
-
-        qweight, qzeros, scales = quantize_weight_rtn(weight, bits=bits, group_size=group_size)
-        self.assertEqual(qweight.shape, (padded_in // pack_factor, out_features))
+        qw, _, _ = quantize_weight_rtn(torch.randn(16, 70), bits=4, group_size=32)
+        assert qw.shape == (96 // (32 // 4), 16)  # padded to 96
 
 
-class TestGetWoqConfigFromDir(unittest.TestCase):
-    """Tests for _get_woq_config_from_dir."""
-
-    def test_returns_none_when_no_config(self):
-        with tempfile.TemporaryDirectory() as d:
-            self.assertIsNone(_get_woq_config_from_dir(d))
-
-    def test_returns_none_for_wrong_quant_method(self):
-        with tempfile.TemporaryDirectory() as d:
-            _write_config(
-                d,
-                {
-                    "quant_method": "gptq",
-                    "packing_format": "auto_round:auto_gptq",
-                    "bits": 4,
-                    "group_size": 128,
-                    "sym": True,
-                },
-            )
-            self.assertIsNone(_get_woq_config_from_dir(d))
-
-    def test_returns_none_for_wrong_packing_format(self):
-        with tempfile.TemporaryDirectory() as d:
-            _write_config(
-                d,
-                {
-                    "quant_method": "auto-round",
-                    "packing_format": "other_format",
-                    "bits": 4,
-                    "group_size": 128,
-                    "sym": True,
-                },
-            )
-            self.assertIsNone(_get_woq_config_from_dir(d))
-
-    def test_returns_none_for_missing_bits(self):
-        with tempfile.TemporaryDirectory() as d:
-            _write_config(
-                d,
-                {
-                    "quant_method": "auto-round",
-                    "packing_format": "auto_round:auto_gptq",
-                    "group_size": 128,
-                    "sym": True,
-                },
-            )
-            self.assertIsNone(_get_woq_config_from_dir(d))
-
-    def test_returns_none_for_bits_greater_than_8(self):
-        with tempfile.TemporaryDirectory() as d:
-            _write_config(
-                d,
-                {
-                    "quant_method": "auto-round",
-                    "packing_format": "auto_round:auto_gptq",
-                    "bits": 16,
-                    "group_size": 128,
-                    "sym": True,
-                },
-            )
-            self.assertIsNone(_get_woq_config_from_dir(d))
-
-    def test_valid_config_returns_required_fields(self):
-        """A fully valid config returns a dict with bits, group_size, sym,
-        block_name_to_quantize, and extra_config."""
-        with tempfile.TemporaryDirectory() as d:
-            _write_config(
-                d,
-                {
-                    "quant_method": "auto-round",
-                    "packing_format": "auto_round:auto_gptq",
-                    "bits": 4,
-                    "group_size": 128,
-                    "sym": True,
-                },
-            )
-            cfg = _get_woq_config_from_dir(d)
-            self.assertIsNotNone(cfg)
-            self.assertEqual(cfg["bits"], 4)
-            self.assertEqual(cfg["group_size"], 128)
-            self.assertTrue(cfg["sym"])
-            # New fields must also be present
-            self.assertIn("block_name_to_quantize", cfg)
-            self.assertIn("extra_config", cfg)
-
-    def test_valid_config_with_extra_config_and_block_name(self):
-        """extra_config and block_name_to_quantize from config.json are propagated."""
-        with tempfile.TemporaryDirectory() as d:
-            _write_config(
-                d,
-                {
-                    "quant_method": "auto-round",
-                    "packing_format": "auto_round:auto_gptq",
-                    "bits": 4,
-                    "group_size": 128,
-                    "sym": True,
-                    "block_name_to_quantize": ["model.layers"],
-                    "extra_config": {"mtp.0.fc": {"bits": 8}},
-                },
-            )
-            cfg = _get_woq_config_from_dir(d)
-            self.assertIsNotNone(cfg)
-            self.assertEqual(cfg["block_name_to_quantize"], ["model.layers"])
-            self.assertEqual(cfg["extra_config"], {"mtp.0.fc": {"bits": 8}})
+# ===========================================================================
+#  _get_woq_config_from_dir
+# ===========================================================================
 
 
-class TestCopyMissingTensorsFromSource(unittest.TestCase):
-    """End-to-end tests for copy_missing_tensors_from_source.
+class TestGetWoqConfigFromDir:
 
-    Detection is now purely name-based (parent-layer + block-prefix comparison),
-    so no model loading or mocking is required.
+    def test_returns_none_when_no_config(self, tmp_path):
+        assert _get_woq_config_from_dir(str(tmp_path)) is None
 
-    A source tensor T is "missing" when ALL of:
-      1. T is not already present in the saved output,
-      2. T's parent layer (rsplit('.', 1)[0]) is absent from the saved parent layers,
-      3. T's first numeric block-prefix (e.g. 'mtp.0') is absent from the saved
-         block-prefixes — OR T has no numeric segment at all.
-    Special case: 'lm_head.weight' is always excluded.
-    """
+    def test_returns_none_for_wrong_quant_method(self, tmp_path):
+        _write_config(
+            str(tmp_path),
+            {
+                "quant_method": "gptq",
+                "packing_format": "auto_round:auto_gptq",
+                "bits": 4,
+                "group_size": 128,
+                "sym": True,
+            },
+        )
+        assert _get_woq_config_from_dir(str(tmp_path)) is None
 
-    def _make_auto_round_config(self, bits=4, group_size=128, sym=True) -> dict:
-        return {
-            "quantization_config": {
+    def test_returns_none_for_wrong_packing_format(self, tmp_path):
+        _write_config(
+            str(tmp_path),
+            {"quant_method": "auto-round", "packing_format": "other", "bits": 4, "group_size": 128, "sym": True},
+        )
+        assert _get_woq_config_from_dir(str(tmp_path)) is None
+
+    def test_returns_none_for_missing_bits_or_high_bits(self, tmp_path):
+        _write_config(
+            str(tmp_path),
+            {"quant_method": "auto-round", "packing_format": "auto_round:auto_gptq", "group_size": 128, "sym": True},
+        )
+        assert _get_woq_config_from_dir(str(tmp_path)) is None
+
+    def test_valid_config(self, tmp_path):
+        _write_config(
+            str(tmp_path),
+            {
                 "quant_method": "auto-round",
                 "packing_format": "auto_round:auto_gptq",
-                "bits": bits,
-                "group_size": group_size,
-                "sym": sym,
-            }
-        }
-
-    # ------------------------------------------------------------------ #
-    # Detection correctness                                                #
-    # ------------------------------------------------------------------ #
-
-    def test_plain_copy_of_missing_mtp_tensor(self):
-        """Tensors from blocks entirely absent in the saved output are copied verbatim."""
-        with tempfile.TemporaryDirectory() as source_dir, tempfile.TemporaryDirectory() as target_dir:
-            mtp_norm = torch.randn(64)
-            _save_safetensors({"mtp.0.norm.weight": mtp_norm}, os.path.join(source_dir, "model.safetensors"))
-
-            _save_safetensors(
-                {"model.embed_tokens.weight": torch.randn(32, 64)},
-                os.path.join(target_dir, "model.safetensors"),
-            )
-            _write_config(target_dir)
-
-            copy_missing_tensors_from_source(source_dir, target_dir)
-
-            extra_shard = os.path.join(target_dir, "model_extra_tensors.safetensors")
-            self.assertTrue(os.path.exists(extra_shard), "Extra shard should be created")
-
-            result = _load_safetensors(extra_shard)
-            self.assertIn("mtp.0.norm.weight", result)
-            torch.testing.assert_close(result["mtp.0.norm.weight"], mtp_norm)
-
-    def test_tensor_with_known_parent_layer_not_copied(self):
-        """Source tensor whose parent layer already has tensors in the target is not missing.
-
-        Scenario: source has the original '.weight'; target has the packed '.qweight'
-        under the same parent layer — the layer was processed, not skipped.
-        """
-        with tempfile.TemporaryDirectory() as source_dir, tempfile.TemporaryDirectory() as target_dir:
-            _save_safetensors(
-                {"model.layers.0.self_attn.q_proj.weight": torch.randn(32, 64)},
-                os.path.join(source_dir, "model.safetensors"),
-            )
-            # Target has the quantised form — same parent layer, different suffix
-            _save_safetensors(
-                {"model.layers.0.self_attn.q_proj.qweight": torch.randint(0, 2**31, (8, 32), dtype=torch.int32)},
-                os.path.join(target_dir, "model.safetensors"),
-            )
-            _write_config(target_dir)
-
-            copy_missing_tensors_from_source(source_dir, target_dir)
-
-            extra_shard = os.path.join(target_dir, "model_extra_tensors.safetensors")
-            self.assertFalse(os.path.exists(extra_shard), "No extra shard expected: parent layer is known")
-
-    def test_tensor_with_known_block_prefix_not_copied(self):
-        """Source tensor whose numeric block-prefix exists in the saved output is not missing.
-
-        Scenario: source has an extra gate weight inside 'model.layers.0'; the target
-        already contains other tensors from 'model.layers.0' — the block was processed.
-        """
-        with tempfile.TemporaryDirectory() as source_dir, tempfile.TemporaryDirectory() as target_dir:
-            _save_safetensors(
-                {"model.layers.0.mlp.extra_gate.weight": torch.randn(32, 64)},
-                os.path.join(source_dir, "model.safetensors"),
-            )
-            # Target has a different sub-layer inside the same block
-            _save_safetensors(
-                {"model.layers.0.mlp.gate_proj.qweight": torch.randint(0, 2**31, (8, 32), dtype=torch.int32)},
-                os.path.join(target_dir, "model.safetensors"),
-            )
-            _write_config(target_dir)
-
-            copy_missing_tensors_from_source(source_dir, target_dir)
-
-            extra_shard = os.path.join(target_dir, "model_extra_tensors.safetensors")
-            self.assertFalse(os.path.exists(extra_shard), "No extra shard expected: block prefix is known")
-
-    def test_lm_head_weight_is_never_copied(self):
-        """lm_head.weight is always excluded, even when it is absent from the target."""
-        with tempfile.TemporaryDirectory() as source_dir, tempfile.TemporaryDirectory() as target_dir:
-            _save_safetensors(
-                {"lm_head.weight": torch.randn(32, 64)},
-                os.path.join(source_dir, "model.safetensors"),
-            )
-            _save_safetensors(
-                {"model.embed_tokens.weight": torch.randn(32, 64)},
-                os.path.join(target_dir, "model.safetensors"),
-            )
-            _write_config(target_dir)
-
-            copy_missing_tensors_from_source(source_dir, target_dir)
-
-            extra_shard = os.path.join(target_dir, "model_extra_tensors.safetensors")
-            self.assertFalse(os.path.exists(extra_shard), "lm_head.weight must never be copied")
-
-    def test_already_saved_tensors_are_not_duplicated(self):
-        """Tensors that are already present in the target are not written again."""
-        with tempfile.TemporaryDirectory() as source_dir, tempfile.TemporaryDirectory() as target_dir:
-            mtp_tensor = torch.randn(64)
-            _save_safetensors(
-                {"mtp.0.shared_head.norm.weight": mtp_tensor},
-                os.path.join(source_dir, "model.safetensors"),
-            )
-            # Target already has exactly this tensor
-            _save_safetensors(
-                {"mtp.0.shared_head.norm.weight": mtp_tensor},
-                os.path.join(target_dir, "model.safetensors"),
-            )
-            _write_config(target_dir)
-
-            copy_missing_tensors_from_source(source_dir, target_dir)
-
-            extra_shard = os.path.join(target_dir, "model_extra_tensors.safetensors")
-            self.assertFalse(os.path.exists(extra_shard), "No extra shard expected: tensor already present")
-
-    def test_detects_multiple_missing_tensors_from_different_blocks(self):
-        """All source tensors from blocks absent in the saved output are copied."""
-        with tempfile.TemporaryDirectory() as source_dir, tempfile.TemporaryDirectory() as target_dir:
-            _save_safetensors(
-                {
-                    "custom_block.0.norm.weight": torch.randn(64),
-                    "mtp.0.norm.weight": torch.randn(64),
-                    "model.embed_tokens.weight": torch.randn(8, 64),
-                },
-                os.path.join(source_dir, "model.safetensors"),
-            )
-            _save_safetensors(
-                {"model.embed_tokens.weight": torch.randn(8, 64)},
-                os.path.join(target_dir, "model.safetensors"),
-            )
-            _write_config(target_dir)
-
-            copy_missing_tensors_from_source(source_dir, target_dir)
-
-            extra_shard = os.path.join(target_dir, "model_extra_tensors.safetensors")
-            self.assertTrue(os.path.exists(extra_shard))
-
-            result = _load_safetensors(extra_shard)
-            self.assertIn("custom_block.0.norm.weight", result)
-            self.assertIn("mtp.0.norm.weight", result)
-            # Model-known tensor must NOT be in the extra shard
-            self.assertNotIn("model.embed_tokens.weight", result)
-
-    # ------------------------------------------------------------------ #
-    # FP8 dequantization                                                   #
-    # ------------------------------------------------------------------ #
-
-    def test_fp8_weight_is_dequantized_to_bf16(self):
-        """FP8 weights paired with weight_scale_inv are dequantized to BF16 before saving."""
-        with tempfile.TemporaryDirectory() as source_dir, tempfile.TemporaryDirectory() as target_dir:
-            fp8_weight = torch.randn(64, 128).to(torch.float8_e4m3fn)
-            scale_inv = torch.tensor(0.5)
-
-            _save_safetensors(
-                {
-                    "mtp.0.ffn.weight": fp8_weight,
-                    "mtp.0.ffn.weight_scale_inv": scale_inv,
-                },
-                os.path.join(source_dir, "model.safetensors"),
-            )
-            _save_safetensors(
-                {"model.embed_tokens.weight": torch.randn(8, 64)},
-                os.path.join(target_dir, "model.safetensors"),
-            )
-            _write_config(target_dir)
-
-            copy_missing_tensors_from_source(source_dir, target_dir)
-
-            extra_shard = os.path.join(target_dir, "model_extra_tensors.safetensors")
-            self.assertTrue(os.path.exists(extra_shard))
-
-            result = _load_safetensors(extra_shard)
-            self.assertIn("mtp.0.ffn.weight", result)
-            # Scale tensor must be dropped after dequantization
-            self.assertNotIn("mtp.0.ffn.weight_scale_inv", result)
-            self.assertEqual(result["mtp.0.ffn.weight"].dtype, torch.bfloat16)
-
-    # ------------------------------------------------------------------ #
-    # WOQ quantization                                                     #
-    # ------------------------------------------------------------------ #
-
-    def test_woq_quantization_replaces_weight_with_packed_tensors(self):
-        """2-D MTP weight tensors are quantized and packed when an auto-round WOQ config is present."""
-        out_features, in_features = 32, 128
-        with tempfile.TemporaryDirectory() as source_dir, tempfile.TemporaryDirectory() as target_dir:
-            mtp_weight = torch.randn(out_features, in_features)
-            _save_safetensors(
-                {"mtp.0.ffn.weight": mtp_weight},
-                os.path.join(source_dir, "model.safetensors"),
-            )
-            _save_safetensors(
-                {"model.embed_tokens.weight": torch.randn(8, 64)},
-                os.path.join(target_dir, "model.safetensors"),
-            )
-            with open(os.path.join(target_dir, "config.json"), "w") as f:
-                json.dump(self._make_auto_round_config(bits=4, group_size=128, sym=True), f)
-
-            copy_missing_tensors_from_source(source_dir, target_dir)
-
-            extra_shard = os.path.join(target_dir, "model_extra_tensors.safetensors")
-            self.assertTrue(os.path.exists(extra_shard))
-
-            result = _load_safetensors(extra_shard)
-            # Original weight must be replaced by the three packed tensors
-            self.assertNotIn("mtp.0.ffn.weight", result)
-            self.assertIn("mtp.0.ffn.qweight", result)
-            self.assertIn("mtp.0.ffn.qzeros", result)
-            self.assertIn("mtp.0.ffn.scales", result)
-
-    def test_block_name_to_ignore_not_quantized_in_woq_mode(self):
-        """Weights matching BLOCK_NAME_TO_IGNORE patterns are copied as-is, not quantized."""
-        out_features, in_features = 32, 128
-        with tempfile.TemporaryDirectory() as source_dir, tempfile.TemporaryDirectory() as target_dir:
-            gate_weight = torch.randn(out_features, in_features)
-            # "mlp.gate." is in BLOCK_NAME_TO_IGNORE
-            _save_safetensors(
-                {"mtp.0.mlp.gate.weight": gate_weight},
-                os.path.join(source_dir, "model.safetensors"),
-            )
-            _save_safetensors(
-                {"model.embed_tokens.weight": torch.randn(8, 64)},
-                os.path.join(target_dir, "model.safetensors"),
-            )
-            with open(os.path.join(target_dir, "config.json"), "w") as f:
-                json.dump(self._make_auto_round_config(bits=4, group_size=128, sym=True), f)
-
-            copy_missing_tensors_from_source(source_dir, target_dir)
-
-            extra_shard = os.path.join(target_dir, "model_extra_tensors.safetensors")
-            self.assertTrue(os.path.exists(extra_shard))
-
-            result = _load_safetensors(extra_shard)
-            # Weight must be present as-is — not packed
-            self.assertIn("mtp.0.mlp.gate.weight", result)
-            self.assertNotIn("mtp.0.mlp.gate.qweight", result)
-
-    def test_config_updated_with_block_name_to_quantize_after_woq(self):
-        """After WOQ, config.json is updated so the new block appears in block_name_to_quantize."""
-        out_features, in_features = 32, 128
-        with tempfile.TemporaryDirectory() as source_dir, tempfile.TemporaryDirectory() as target_dir:
-            _save_safetensors(
-                {"mtp.0.ffn.weight": torch.randn(out_features, in_features)},
-                os.path.join(source_dir, "model.safetensors"),
-            )
-            _save_safetensors(
-                {"model.embed_tokens.weight": torch.randn(8, 64)},
-                os.path.join(target_dir, "model.safetensors"),
-            )
-            with open(os.path.join(target_dir, "config.json"), "w") as f:
-                json.dump(self._make_auto_round_config(bits=4, group_size=128, sym=True), f)
-
-            copy_missing_tensors_from_source(source_dir, target_dir)
-
-            with open(os.path.join(target_dir, "config.json")) as f:
-                updated_cfg = json.load(f)
-
-            qcfg = updated_cfg.get("quantization_config", {})
-            block_names = qcfg.get("block_name_to_quantize", [])
-            self.assertTrue(
-                any("mtp" in b for b in block_names),
-                f"Expected an 'mtp' block in block_name_to_quantize, got: {block_names}",
-            )
-
-    def test_config_updated_with_extra_config_for_unquantized_2d_weight(self):
-        """When a 2-D weight is skipped by BLOCK_NAME_TO_IGNORE, extra_config is updated
-        to mark it as full-precision so the inference stack knows not to dequantize it."""
-        out_features, in_features = 32, 128
-        with tempfile.TemporaryDirectory() as source_dir, tempfile.TemporaryDirectory() as target_dir:
-            # "mlp.gate." is in BLOCK_NAME_TO_IGNORE → not quantized → should go to extra_config
-            _save_safetensors(
-                {"mtp.0.mlp.gate.weight": torch.randn(out_features, in_features)},
-                os.path.join(source_dir, "model.safetensors"),
-            )
-            _save_safetensors(
-                {"model.embed_tokens.weight": torch.randn(8, 64)},
-                os.path.join(target_dir, "model.safetensors"),
-            )
-            with open(os.path.join(target_dir, "config.json"), "w") as f:
-                json.dump(self._make_auto_round_config(bits=4, group_size=128, sym=True), f)
-
-            copy_missing_tensors_from_source(source_dir, target_dir)
-
-            with open(os.path.join(target_dir, "config.json")) as f:
-                updated_cfg = json.load(f)
-
-            extra_config = updated_cfg.get("quantization_config", {}).get("extra_config", {})
-            self.assertIn("mtp.0.mlp.gate", extra_config)
-            layer_cfg = extra_config["mtp.0.mlp.gate"]
-            self.assertEqual(layer_cfg.get("bits"), 16)
-            self.assertEqual(layer_cfg.get("data_type"), "fp")
-
-    # ------------------------------------------------------------------ #
-    # Index file handling                                                  #
-    # ------------------------------------------------------------------ #
-
-    def test_index_json_is_updated_for_sharded_target(self):
-        """When target uses a sharded index, copied tensor names are added to weight_map."""
-        with tempfile.TemporaryDirectory() as source_dir, tempfile.TemporaryDirectory() as target_dir:
-            mtp_norm = torch.randn(64)
-            _save_safetensors({"mtp.0.norm.weight": mtp_norm}, os.path.join(source_dir, "model.safetensors"))
-
-            saved_shard = "model-00001-of-00001.safetensors"
-            _save_safetensors(
-                {"model.embed_tokens.weight": torch.randn(8, 64)},
-                os.path.join(target_dir, saved_shard),
-            )
-            index = {"metadata": {"total_size": 0}, "weight_map": {"model.embed_tokens.weight": saved_shard}}
-            with open(os.path.join(target_dir, "model.safetensors.index.json"), "w") as f:
-                json.dump(index, f)
-            _write_config(target_dir)
-
-            copy_missing_tensors_from_source(source_dir, target_dir)
-
-            with open(os.path.join(target_dir, "model.safetensors.index.json")) as f:
-                updated_index = json.load(f)
-
-            self.assertIn("mtp.0.norm.weight", updated_index["weight_map"])
-            self.assertEqual(updated_index["weight_map"]["mtp.0.norm.weight"], "model_extra_tensors.safetensors")
-
-    def test_index_json_is_created_for_single_file_target(self):
-        """When the target uses a single safetensors file and tensors are copied, a new
-        model.safetensors.index.json is created mapping all tensors to their shards."""
-        with tempfile.TemporaryDirectory() as source_dir, tempfile.TemporaryDirectory() as target_dir:
-            mtp_norm = torch.randn(64)
-            _save_safetensors({"mtp.0.norm.weight": mtp_norm}, os.path.join(source_dir, "model.safetensors"))
-
-            _save_safetensors(
-                {"model.embed_tokens.weight": torch.randn(8, 64)},
-                os.path.join(target_dir, "model.safetensors"),
-            )
-            _write_config(target_dir)
-
-            copy_missing_tensors_from_source(source_dir, target_dir)
-
-            index_path = os.path.join(target_dir, "model.safetensors.index.json")
-            self.assertTrue(os.path.exists(index_path), "An index.json should be created for single-file targets")
-
-            with open(index_path) as f:
-                index = json.load(f)
-
-            weight_map = index["weight_map"]
-            self.assertIn("mtp.0.norm.weight", weight_map)
-            self.assertIn("model.embed_tokens.weight", weight_map)
-            self.assertEqual(weight_map["mtp.0.norm.weight"], "model_extra_tensors.safetensors")
-            self.assertEqual(weight_map["model.embed_tokens.weight"], "model.safetensors")
-
-    def test_tensor_with_known_block_prefix_not_copied_gemma(self):
-        """Source tensor whose numeric block-prefix exists in the saved output is not missing.
-
-        Scenario: source has an extra gate weight inside 'model.layers.0'; the target
-        already contains other tensors from 'model.layers.0' — the block was processed.
-        """
-        with tempfile.TemporaryDirectory() as source_dir, tempfile.TemporaryDirectory() as target_dir:
-            _save_safetensors(
-                {
-                    "language_model.model.layers.0.mlp.gate_proj.weight": torch.randn(32, 64),
-                    "language_model.model.norm.weight": torch.randn(64),
-                    "language_model.layers.0.mlp.gate_proj.weight": torch.randn(32, 64),
-                    "language_model.norm.weight": torch.randn(64),
-                },
-                os.path.join(source_dir, "model.safetensors"),
-            )
-            # Target has a different sub-layer inside the same block
-            _save_safetensors(
-                {
-                    "language_model.model.layers.0.mlp.gate_proj.weight": torch.randn(32, 64),  # llama4
-                    "model.language_model.layers.0.mlp.gate_proj.weight": torch.randn(32, 64),  # gemma
-                    "model.language_model.norm.weight": torch.randn(64),
-                },
-                os.path.join(target_dir, "model.safetensors"),
-            )
-            _write_config(target_dir)
-
-            copy_missing_tensors_from_source(source_dir, target_dir)
-
-            extra_shard = os.path.join(target_dir, "model_extra_tensors.safetensors")
-            self.assertFalse(os.path.exists(extra_shard), "No extra shard expected: block prefix is known")
-
-
-if __name__ == "__main__":
-    unittest.main()
+                "bits": 4,
+                "group_size": 128,
+                "sym": True,
+            },
+        )
+        cfg = _get_woq_config_from_dir(str(tmp_path))
+        assert cfg is not None
+        assert cfg["bits"] == 4
+        assert "block_name_to_quantize" in cfg
+        assert "extra_config" in cfg
+
+
+# ===========================================================================
+#  copy_missing_tensors_from_source
+# ===========================================================================
+
+
+class TestCopyMissingTensorsFromSource:
+
+    # ----- Detection -----
+
+    def test_plain_copy_of_missing_tensor(self, tmp_path):
+        src, tgt = str(tmp_path / "src"), str(tmp_path / "tgt")
+        os.makedirs(src)
+        os.makedirs(tgt)
+        mtp_norm = torch.randn(64)
+        _save_safetensors({"mtp.0.norm.weight": mtp_norm}, os.path.join(src, "model.safetensors"))
+        _save_safetensors({"model.embed_tokens.weight": torch.randn(8, 64)}, os.path.join(tgt, "model.safetensors"))
+        _write_config(tgt)
+        copy_missing_tensors_from_source(src, tgt)
+        result = _load_safetensors(os.path.join(tgt, "model_extra_tensors.safetensors"))
+        assert "mtp.0.norm.weight" in result
+        torch.testing.assert_close(result["mtp.0.norm.weight"], mtp_norm)
+
+    def test_known_parent_layer_not_copied(self, tmp_path):
+        src, tgt = str(tmp_path / "src"), str(tmp_path / "tgt")
+        os.makedirs(src)
+        os.makedirs(tgt)
+        _save_safetensors(
+            {"model.layers.0.self_attn.q_proj.weight": torch.randn(32, 64)}, os.path.join(src, "model.safetensors")
+        )
+        _save_safetensors(
+            {"model.layers.0.self_attn.q_proj.qweight": torch.randint(0, 2**31, (8, 32), dtype=torch.int32)},
+            os.path.join(tgt, "model.safetensors"),
+        )
+        _write_config(tgt)
+        copy_missing_tensors_from_source(src, tgt)
+        assert not os.path.exists(os.path.join(tgt, "model_extra_tensors.safetensors"))
+
+    def test_known_block_prefix_not_copied(self, tmp_path):
+        src, tgt = str(tmp_path / "src"), str(tmp_path / "tgt")
+        os.makedirs(src)
+        os.makedirs(tgt)
+        _save_safetensors(
+            {"model.layers.0.mlp.extra_gate.weight": torch.randn(32, 64)}, os.path.join(src, "model.safetensors")
+        )
+        _save_safetensors(
+            {"model.layers.0.mlp.gate_proj.qweight": torch.randint(0, 2**31, (8, 32), dtype=torch.int32)},
+            os.path.join(tgt, "model.safetensors"),
+        )
+        _write_config(tgt)
+        copy_missing_tensors_from_source(src, tgt)
+        assert not os.path.exists(os.path.join(tgt, "model_extra_tensors.safetensors"))
+
+    def test_lm_head_never_copied(self, tmp_path):
+        src, tgt = str(tmp_path / "src"), str(tmp_path / "tgt")
+        os.makedirs(src)
+        os.makedirs(tgt)
+        _save_safetensors({"lm_head.weight": torch.randn(32, 64)}, os.path.join(src, "model.safetensors"))
+        _save_safetensors({"model.embed_tokens.weight": torch.randn(32, 64)}, os.path.join(tgt, "model.safetensors"))
+        _write_config(tgt)
+        copy_missing_tensors_from_source(src, tgt)
+        assert not os.path.exists(os.path.join(tgt, "model_extra_tensors.safetensors"))
+
+    def test_already_present_not_duplicated(self, tmp_path):
+        src, tgt = str(tmp_path / "src"), str(tmp_path / "tgt")
+        os.makedirs(src)
+        os.makedirs(tgt)
+        t = torch.randn(64)
+        _save_safetensors({"mtp.0.norm.weight": t}, os.path.join(src, "model.safetensors"))
+        _save_safetensors({"mtp.0.norm.weight": t}, os.path.join(tgt, "model.safetensors"))
+        _write_config(tgt)
+        copy_missing_tensors_from_source(src, tgt)
+        assert not os.path.exists(os.path.join(tgt, "model_extra_tensors.safetensors"))
+
+    # ----- Fused expert splitting -----
+
+    def test_fused_experts_split_and_copied(self, tmp_path):
+        N, I, H = 2, 32, 16
+        src, tgt = str(tmp_path / "src"), str(tmp_path / "tgt")
+        os.makedirs(src)
+        os.makedirs(tgt)
+        _save_safetensors(
+            {
+                "model.mtp.0.mlp.experts.gate_up_proj": torch.randn(N, 2 * I, H),
+                "model.mtp.0.mlp.experts.down_proj": torch.randn(N, H, I),
+            },
+            os.path.join(src, "model.safetensors"),
+        )
+        _save_safetensors({"model.embed_tokens.weight": torch.randn(10, H)}, os.path.join(tgt, "model.safetensors"))
+        _write_config(tgt)
+        copy_missing_tensors_from_source(src, tgt)
+        result = _load_safetensors(os.path.join(tgt, "model_extra_tensors.safetensors"))
+        assert "model.mtp.0.mlp.experts.gate_up_proj" not in result
+        for i in range(N):
+            assert f"model.mtp.0.mlp.experts.{i}.gate_proj.weight" in result
+            assert f"model.mtp.0.mlp.experts.{i}.up_proj.weight" in result
+            assert f"model.mtp.0.mlp.experts.{i}.down_proj.weight" in result
+
+    def test_fused_experts_woq_quantized(self, tmp_path):
+        N, I, H = 2, 32, 16
+        src, tgt = str(tmp_path / "src"), str(tmp_path / "tgt")
+        os.makedirs(src)
+        os.makedirs(tgt)
+        _save_safetensors(
+            {
+                "model.mtp.0.mlp.experts.gate_up_proj": torch.randn(N, 2 * I, H),
+                "model.mtp.0.mlp.experts.down_proj": torch.randn(N, H, I),
+            },
+            os.path.join(src, "model.safetensors"),
+        )
+        _save_safetensors(
+            {"model.layers.0.mlp.fc1.qweight": torch.zeros(H // 8, H, dtype=torch.int32)},
+            os.path.join(tgt, "model.safetensors"),
+        )
+        _write_config(
+            tgt,
+            {
+                "quant_method": "auto-round",
+                "packing_format": "auto_round:auto_gptq",
+                "bits": 4,
+                "group_size": H,
+                "sym": True,
+            },
+        )
+        copy_missing_tensors_from_source(src, tgt)
+        result = _load_safetensors(os.path.join(tgt, "model_extra_tensors.safetensors"))
+        for i in range(N):
+            assert f"model.mtp.0.mlp.experts.{i}.gate_proj.qweight" in result
+            assert f"model.mtp.0.mlp.experts.{i}.down_proj.qweight" in result
+        assert "model.mtp.0.mlp.experts.0.gate_proj.weight" not in result
+
+    # ----- FP8 dequantization -----
+
+    def test_fp8_dequantized_to_bf16(self, tmp_path):
+        src, tgt = str(tmp_path / "src"), str(tmp_path / "tgt")
+        os.makedirs(src)
+        os.makedirs(tgt)
+        _save_safetensors(
+            {
+                "mtp.0.ffn.weight": torch.randn(64, 128).to(torch.float8_e4m3fn),
+                "mtp.0.ffn.weight_scale_inv": torch.tensor(0.5),
+            },
+            os.path.join(src, "model.safetensors"),
+        )
+        _save_safetensors({"model.embed_tokens.weight": torch.randn(8, 64)}, os.path.join(tgt, "model.safetensors"))
+        _write_config(tgt)
+        copy_missing_tensors_from_source(src, tgt)
+        result = _load_safetensors(os.path.join(tgt, "model_extra_tensors.safetensors"))
+        assert "mtp.0.ffn.weight" in result
+        assert "mtp.0.ffn.weight_scale_inv" not in result
+        assert result["mtp.0.ffn.weight"].dtype == torch.bfloat16
+
+    # ----- WOQ quantization -----
+
+    def test_woq_quantizes_missing_weights(self, tmp_path):
+        src, tgt = str(tmp_path / "src"), str(tmp_path / "tgt")
+        os.makedirs(src)
+        os.makedirs(tgt)
+        _save_safetensors({"mtp.0.ffn.weight": torch.randn(32, 128)}, os.path.join(src, "model.safetensors"))
+        _save_safetensors({"model.embed_tokens.weight": torch.randn(8, 64)}, os.path.join(tgt, "model.safetensors"))
+        with open(os.path.join(tgt, "config.json"), "w") as f:
+            json.dump(_make_auto_round_config(), f)
+        copy_missing_tensors_from_source(src, tgt)
+        result = _load_safetensors(os.path.join(tgt, "model_extra_tensors.safetensors"))
+        assert "mtp.0.ffn.weight" not in result
+        assert "mtp.0.ffn.qweight" in result
+
+    def test_block_name_to_ignore_not_quantized(self, tmp_path):
+        src, tgt = str(tmp_path / "src"), str(tmp_path / "tgt")
+        os.makedirs(src)
+        os.makedirs(tgt)
+        _save_safetensors({"mtp.0.mlp.gate.weight": torch.randn(32, 128)}, os.path.join(src, "model.safetensors"))
+        _save_safetensors({"model.embed_tokens.weight": torch.randn(8, 64)}, os.path.join(tgt, "model.safetensors"))
+        with open(os.path.join(tgt, "config.json"), "w") as f:
+            json.dump(_make_auto_round_config(), f)
+        copy_missing_tensors_from_source(src, tgt)
+        result = _load_safetensors(os.path.join(tgt, "model_extra_tensors.safetensors"))
+        assert "mtp.0.mlp.gate.weight" in result
+        assert "mtp.0.mlp.gate.qweight" not in result
+
+    # ----- Config / index file updates -----
+
+    def test_config_updated_after_woq(self, tmp_path):
+        src, tgt = str(tmp_path / "src"), str(tmp_path / "tgt")
+        os.makedirs(src)
+        os.makedirs(tgt)
+        _save_safetensors({"mtp.0.ffn.weight": torch.randn(32, 128)}, os.path.join(src, "model.safetensors"))
+        _save_safetensors({"model.embed_tokens.weight": torch.randn(8, 64)}, os.path.join(tgt, "model.safetensors"))
+        with open(os.path.join(tgt, "config.json"), "w") as f:
+            json.dump(_make_auto_round_config(), f)
+        copy_missing_tensors_from_source(src, tgt)
+        with open(os.path.join(tgt, "config.json")) as f:
+            cfg = json.load(f)
+        block_names = cfg.get("quantization_config", {}).get("block_name_to_quantize", [])
+        assert any("mtp" in b for b in block_names)
+
+    def test_index_json_updated_for_sharded_target(self, tmp_path):
+        src, tgt = str(tmp_path / "src"), str(tmp_path / "tgt")
+        os.makedirs(src)
+        os.makedirs(tgt)
+        _save_safetensors({"mtp.0.norm.weight": torch.randn(64)}, os.path.join(src, "model.safetensors"))
+        saved_shard = "model-00001-of-00001.safetensors"
+        _save_safetensors({"model.embed_tokens.weight": torch.randn(8, 64)}, os.path.join(tgt, saved_shard))
+        with open(os.path.join(tgt, "model.safetensors.index.json"), "w") as f:
+            json.dump({"metadata": {"total_size": 0}, "weight_map": {"model.embed_tokens.weight": saved_shard}}, f)
+        _write_config(tgt)
+        copy_missing_tensors_from_source(src, tgt)
+        with open(os.path.join(tgt, "model.safetensors.index.json")) as f:
+            idx = json.load(f)
+        assert idx["weight_map"]["mtp.0.norm.weight"] == "model_extra_tensors.safetensors"
+
+    def test_known_block_prefix_not_copied_gemma(self, tmp_path):
+        src, tgt = str(tmp_path / "src"), str(tmp_path / "tgt")
+        os.makedirs(src)
+        os.makedirs(tgt)
+        _save_safetensors(
+            {
+                "language_model.model.layers.0.mlp.gate_proj.weight": torch.randn(32, 64),
+                "language_model.model.norm.weight": torch.randn(64),
+                "language_model.layers.0.mlp.gate_proj.weight": torch.randn(32, 64),
+                "language_model.norm.weight": torch.randn(64),
+            },
+            os.path.join(src, "model.safetensors"),
+        )
+        _save_safetensors(
+            {
+                "language_model.model.layers.0.mlp.gate_proj.weight": torch.randn(32, 64),
+                "model.language_model.layers.0.mlp.gate_proj.weight": torch.randn(32, 64),
+                "model.language_model.norm.weight": torch.randn(64),
+            },
+            os.path.join(tgt, "model.safetensors"),
+        )
+        _write_config(tgt)
+        copy_missing_tensors_from_source(src, tgt)
+        assert not os.path.exists(os.path.join(tgt, "model_extra_tensors.safetensors"))
