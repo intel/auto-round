@@ -53,8 +53,7 @@ class TestAutoRound:
             self.save_dir, trust_remote_code=True
         ).quantization_config
         assert (
-            quantization_config["format"] == "float-quantized"
-            and quantization_config["config_groups"]["group_0"]["weights"]["is_mx"] is True
+            quantization_config["format"] == "mxfp4-pack-quantized"
             and quantization_config["config_groups"]["group_0"]["weights"]["num_bits"] == 4
         ), f"Invalid MXFP4 quantization configuration: {quantization_config}"
 

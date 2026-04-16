@@ -299,7 +299,7 @@ class BasicArgumentParser(argparse.ArgumentParser):
         scheme.add_argument(
             "--group_size",
             default=None,
-            type=lambda s: int(s) if s.isdigit() else tuple([int(x.strip()) for x in s.split(",")]),
+            type=lambda s: int(s) if s.lstrip("-").isdigit() else tuple([int(x.strip()) for x in s.split(",")]),
             help="Group size for weight quantization.",
         )
         scheme.add_argument("--asym", action="store_true", help="Use asymmetric quantization instead of symmetric.")
@@ -691,12 +691,17 @@ def tune(args):
     if args.avg_bits is not None:
         if args.options is None:
             raise ValueError("please set --options for auto scheme")
+        if enable_torch_compile:
+            logger.warning(
+                "`enable_torch_compile=True` with AutoScheme may cause compile errors "
+                "on some models. If so, try removing `--enable_torch_compile`."
+            )
         scheme = AutoScheme(
             options=args.options,
             avg_bits=args.avg_bits,
             shared_layers=args.shared_layers,
             ignore_scale_zp_bits=args.ignore_scale_zp_bits,
-            low_gpu_mem_usage=args.low_gpu_mem_usage,
+            low_gpu_mem_usage=True,  # force it to be True as it uses much smaller vram but similar time cost
             low_cpu_mem_usage=low_cpu_mem_usage,
         )
 
@@ -751,7 +756,11 @@ def tune(args):
                     suffix = f"a{autoround.act_bits}"
             else:
                 suffix = f"g{autoround.group_size}"
-        prefix = autoround.data_type.lower().replace("_", "") if "int" not in autoround.data_type else ""
+        prefix = (
+            autoround.data_type.lower().replace("_", "")
+            if "int" not in autoround.data_type or "mx" in autoround.data_type
+            else ""
+        )
         export_dir = os.path.join(
             args.output_dir,
             model_name.split("/")[-1] + (f"-{prefix}" if prefix else "") + f"-w{autoround.bits}{suffix}",

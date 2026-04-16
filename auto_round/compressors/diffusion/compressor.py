@@ -15,6 +15,7 @@
 import os
 from collections import defaultdict
 from copy import deepcopy
+from functools import partial
 from typing import Union
 
 import torch
@@ -29,11 +30,15 @@ from auto_round.schemes import QuantizationScheme
 from auto_round.utils import (
     LazyImport,
     clear_memory,
+    config_save_pretrained,
+    copy_python_files_from_model_cache,
     diffusion_load_model,
+    dispatch_model_by_all_available_devices,
     extract_block_names_to_str,
     find_matching_blocks,
     get_block_names,
     merge_block_output_keys,
+    rename_weights_files,
     wrap_block_forward_positional_to_kwargs,
 )
 
@@ -56,6 +61,11 @@ class DiffusionCompressor(BaseCompressor):
                                 The more it is, the more closely it follows the prompt (default is 7.5).
         num_inference_steps (int): The reference number of denoising steps (default is 50).
         generator_seed (int): A sees that controls the initial noise from which an image is generated (default is None).
+        pipeline_fn (callable, optional): Custom callable to run the pipeline during calibration.
+            Signature: ``fn(pipe, prompts, *, guidance_scale, num_inference_steps, generator, **kwargs)``.
+            Use this to support models whose inference API differs from the standard convention
+            (e.g. NextStep). If ``None``, the standard ``pipe(prompts, ...)`` call is used unless
+            the loaded pipeline already exposes an ``_autoround_pipeline_fn`` attribute.
         scheme: (str| dict | QuantizationScheme ): A preset scheme that defines the quantization configurations.
         layer_config (dict): Configuration for weight quantization (default is None).
         dataset: The path or name of the calib dataset.
@@ -81,6 +91,7 @@ class DiffusionCompressor(BaseCompressor):
     act_dynamic: bool | None
     super_bits: int | None
     super_group_size: int | None
+    is_diffusion: bool = True
 
     def __init__(
         self,
@@ -102,9 +113,16 @@ class DiffusionCompressor(BaseCompressor):
         device_map: Union[str, torch.device, int, dict] = 0,
         enable_torch_compile: bool = False,
         seed: int = 42,
+        pipeline_fn: callable = None,
         **kwargs,
     ):
         logger.warning("Diffusion model quantization is experimental and is only validated on Flux models.")
+        if dataset == "NeelNanda/pile-10k":
+            dataset = "coco2014"
+            logger.warning(
+                "Dataset 'NeelNanda/pile-10k' is not suitable for diffusion "
+                + "model quantization, use coco2014 dataset instead."
+            )
         model_dtype = kwargs.pop("model_dtype", None)
 
         self.guidance_scale = guidance_scale
@@ -120,6 +138,8 @@ class DiffusionCompressor(BaseCompressor):
 
         self.model = model
         self.pipe = pipe
+        # Use explicit pipeline_fn; fall back to whatever diffusion_load_model attached to the pipe
+        self.pipeline_fn = pipeline_fn or getattr(pipe, "_autoround_pipeline_fn", None)
 
         all_blocks = get_block_names(model)
         self.quant_block_list = find_matching_blocks(model, all_blocks, to_quant_block_names)
@@ -162,6 +182,7 @@ class DiffusionCompressor(BaseCompressor):
             to_quant_block_names=to_quant_block_names,
             **kwargs,
         )
+        self._align_device_and_dtype()
 
     def _update_inputs(self, inputs: dict, q_inputs: dict) -> tuple[dict, dict]:
         # flux transformer model's blocks will update hidden_states and encoder_hidden_states
@@ -194,7 +215,7 @@ class DiffusionCompressor(BaseCompressor):
         device: str,
         cache_device: str = "cpu",
     ) -> torch.Tensor:
-        output_config = output_configs.get(block.__class__.__name__, [])
+        output_config = output_configs.get(block.__class__.__name__, ["hidden_states"])
         idx = None if "hidden_states" not in output_config else output_config.index("hidden_states")
         current_input_ids, current_input_others = self._sampling_inputs(
             input_ids,
@@ -238,7 +259,7 @@ class DiffusionCompressor(BaseCompressor):
         """
 
         output = defaultdict(list)
-        output_config = output_configs.get(block.__class__.__name__, [])
+        output_config = output_configs.get(block.__class__.__name__, ["hidden_states"])
         if isinstance(input_ids, dict):
             nsamples = len(input_ids["hidden_states"])
         else:
@@ -256,6 +277,8 @@ class DiffusionCompressor(BaseCompressor):
                 tmp_input_ids = hidden_states
 
             tmp_output = block_forward(block, tmp_input_ids, tmp_input_others, self.amp, self.amp_dtype, device, None)
+            if isinstance(tmp_output, torch.Tensor):
+                tmp_output = [tmp_output]
             assert len(output_config) == len(tmp_output)
             tmp_output = dict(zip(output_config, tmp_output))
 
@@ -277,6 +300,64 @@ class DiffusionCompressor(BaseCompressor):
     ) -> int:
         current_input_ids = [input_ids["hidden_states"][i] for i in indices]
         return sum(id.numel() for id in current_input_ids)
+
+    def _run_pipeline(self, prompts: list) -> None:
+        """Execute one full diffusion pipeline forward pass for calibration input capture.
+
+        This drives all transformer blocks so that their intermediate inputs are recorded
+        by the hooks installed during calibration.
+
+        **Extending for custom models** – choose whichever approach is simpler:
+
+        * Pass a ``pipeline_fn`` to the constructor (no subclassing required).  The
+          callable receives ``(pipe, prompts, *, guidance_scale, num_inference_steps,
+          generator, **kwargs)`` and must trigger a full forward pass.
+        * Subclass :class:`DiffusionCompressor` and override this method directly for
+          full control over the inference logic.
+
+        Example – NextStep model::
+
+            def nextstep_fn(pipe, prompts, guidance_scale=7.5,
+                            num_inference_steps=28, generator=None,
+                            hw=(1024, 1024), **kwargs):
+                for prompt in (prompts if isinstance(prompts, list) else [prompts]):
+                    pipe.generate_image(
+                        prompt,
+                        cfg=guidance_scale,
+                        num_sampling_steps=num_inference_steps,
+                        hw=hw,
+                        **kwargs,
+                    )
+
+            compressor = DiffusionCompressor(
+                model="path/to/nextstep",
+                pipeline_fn=nextstep_fn,
+                pipeline_fn_kwargs={"hw": (512, 512)},
+            )
+
+        Args:
+            prompts (list[str]): Text prompts for the current calibration batch.
+        """
+        generator = (
+            None
+            if self.generator_seed is None
+            else torch.Generator(device=self.pipe.device).manual_seed(self.generator_seed)
+        )
+        if self.pipeline_fn is not None:
+            self.pipeline_fn(
+                self.pipe,
+                prompts,
+                guidance_scale=self.guidance_scale,
+                num_inference_steps=self.num_inference_steps,
+                generator=generator,
+            )
+        else:
+            self.pipe(
+                prompts,
+                guidance_scale=self.guidance_scale,
+                num_inference_steps=self.num_inference_steps,
+                generator=generator,
+            )
 
     def calib(self, nsamples, bs):
         """Perform calibration for quantization.
@@ -308,40 +389,13 @@ class DiffusionCompressor(BaseCompressor):
         total_cnt = 0
 
         total = nsamples if not hasattr(self.dataloader, "len") else min(nsamples, len(self.dataloader))
-        if self.pipe.dtype != self.model.dtype:
-            self.pipe.to(self.model.dtype)
 
-        if (
-            hasattr(self.model, "hf_device_map")
-            and len(self.model.hf_device_map) > 0
-            and self.pipe.device != self.model.device
-            and torch.device(self.model.device).type in ["cuda", "xpu"]
-        ):
-            logger.error(
-                "Diffusion model is activated sequential model offloading, it will crash during moving to GPU/XPU. "
-                "Please use model path for quantization or "
-                "move the pipeline object to GPU/XPU before passing them into API."
-            )
-            exit(-1)
-
-        if self.pipe.device != self.model.device:
-            self.pipe.to(self.model.device)
-        self.pipe.to(self.model.dtype)
         with tqdm(range(1, total + 1), desc="cache block inputs") as pbar:
             for ids, prompts in self.dataloader:
                 if isinstance(prompts, tuple):
                     prompts = list(prompts)
                 try:
-                    self.pipe(
-                        prompt=prompts,
-                        guidance_scale=self.guidance_scale,
-                        num_inference_steps=self.num_inference_steps,
-                        generator=(
-                            None
-                            if self.generator_seed is None
-                            else torch.Generator(device=self.pipe.device).manual_seed(self.generator_seed)
-                        ),
-                    )
+                    self._run_pipeline(prompts)
                 except NotImplementedError:
                     pass
                 except Exception as error:
@@ -374,6 +428,7 @@ class DiffusionCompressor(BaseCompressor):
                         self.inputs[k][key] = v[key][:max_len]
 
         # torch.cuda.empty_cache()
+        logger.info(f"Restore num_inference_steps to {self.num_inference_steps} after calibration")
 
     def _should_stop_cache_forward(self, name: str) -> bool:
         """Determine whether current forward pass can stop after caching `name`."""
@@ -395,6 +450,12 @@ class DiffusionCompressor(BaseCompressor):
         """
         # Replace special characters to make the folder name filesystem-safe
         sanitized_format = format.get_backend_name().replace(":", "-").replace("_", "-")
+        if hasattr(self.model, "config") and getattr(self.model.config, "model_type", None) == "nextstep":
+            # Use a subfolder only if there are multiple formats
+            if len(self.formats) > 1:
+                return os.path.join(self.orig_output_dir, sanitized_format)
+
+            return self.orig_output_dir
 
         # Use a subfolder only if there are multiple formats
         if len(self.formats) > 1:
@@ -423,6 +484,17 @@ class DiffusionCompressor(BaseCompressor):
             return super().save_quantized(output_dir, format=format, inplace=inplace, **kwargs)
 
         compressed_model = None
+        if hasattr(self.model, "config") and getattr(self.model.config, "model_type", None) == "nextstep":
+            compressed_model = super().save_quantized(
+                output_dir=output_dir,
+                format=format,
+                inplace=inplace,
+                **kwargs,
+            )
+            self.pipe.tokenizer.save_pretrained(output_dir)
+            copy_python_files_from_model_cache(self.model, output_dir, copy_folders=["models", "vae", "utils"])
+            return compressed_model
+
         for name in self.pipe.components.keys():
             val = getattr(self.pipe, name)
             sub_module_path = (
@@ -441,5 +513,38 @@ class DiffusionCompressor(BaseCompressor):
                 )
             elif val is not None and hasattr(val, "save_pretrained"):
                 val.save_pretrained(sub_module_path)
+
+            if name == "transformer":
+                # To suit "diffusion_pytorch_model.safetensors"
+                for single_format in format:
+                    rename_weights_files(self._get_save_folder_name(single_format))
+        if not hasattr(self.pipe.config, "save_pretrained"):
+            # For Z-Image, tuning will cause this attribute missing, we need to add it back before saving config
+            setattr(
+                self.pipe.config,
+                "save_pretrained",
+                partial(config_save_pretrained, self.pipe.config, "model_index.json"),
+            )
         self.pipe.config.save_pretrained(output_dir)
         return compressed_model
+
+    def _align_device_and_dtype(self):
+        if hasattr(self.model, "config") and getattr(self.model.config, "model_type", None) == "nextstep":
+            return
+        if (
+            hasattr(self.model, "hf_device_map")
+            and len(self.model.hf_device_map) > 0
+            and type(self.pipe.device) != type(self.model.device)
+            and self.pipe.device != self.model.device
+            and torch.device(self.model.device).type in ["cuda", "xpu"]
+        ):
+            logger.error(
+                "Diffusion model is activated sequential model offloading, it will crash during moving to GPU/XPU. "
+                "Please use model path for quantization or "
+                "move the pipeline object to GPU/XPU before passing them into API."
+            )
+            exit(-1)
+
+        self.pipe.to(self.model.dtype)
+
+        dispatch_model_by_all_available_devices(self.pipe, self.device_map)
