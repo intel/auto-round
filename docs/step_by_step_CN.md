@@ -152,7 +152,7 @@ AutoRound 支持多种量化配置：
 | **auto_round**  | W4A16、W2A16、W3A16、W8A16、W2A16G64、W2A16G32、`MXFP4`、`MXFP8`、`MXFP4_RCEIL`、`MXFP8_RCEIL`、`NVFP4`、`FPW8A16`、`FP8_STATIC`、`FP8_BLOCK`、`BF16`, `MXINT4`                                                               |
 | **auto_awq**    | W4A16、BF16                                                                                                                                                                                                   |
 | **auto_gptq**   | W4A16、W2A16、W3A16、W8A16、W2A16G64、W2A16G32、BF16                                                                                                                                                           |
-| **llm_compressor** | NVFP4、`MXFP4`、`MXFP8`、`FPW8A16`、`FP8_STATIC`、FP8_STATIC                                                                                                                                                              |
+| **llm_compressor** | NVFP4、`MXFP4`、`MXFP8`、`FPW8A16`、`FP8_STATIC`、FP8_BLOCK                                                                                                                                                              |
 | **gguf**        | GGUF:Q4_K_M、GGUF:Q2_K_S、GGUF:Q3_K_S、GGUF:Q3_K_M、GGUF:Q3_K_L、GGUF:Q4_K_S、GGUF:Q5_K_S、GGUF:Q5_K_M、GGUF:Q6_K、GGUF:Q4_0、GGUF:Q4_1、GGUF:Q5_0、GGUF:Q5_1、GGUF:Q8_0                                           |
 | **fp8**         | FP8_BLOCK  |
 | **fake**        | `所有方案（仅用于研究场景）`                                                                                                                                                                                   |
@@ -412,7 +412,7 @@ ar.quantize_and_save()
 #### 局限性
 AutoScheme 目前还**不支持对嵌入层（Embedding layer）进行自动量化**。该层将直接采用候选方案中精度最高的配置。
 
-## OPT-RTN 模式
+### OPT-RTN 模式
 AutoRound 还提供优化版 RTN（Round-To-Nearest，就近舍入）模式，无需标定数据即可实现快速基线量化。**启用方式为 `iters=0`**。同时为获得更好的效果，推荐搭配 `group_size=32` 。RTN 与 OPT RTN 模式的精度对比详见[《精度对比报告》](./opt_rtn.md)。
 
 对于 GGUF 格式，我们参考 llamacpp 的思路，优化了 RTN 算法。若需使用原始（非优化）RTN 算法，开启 `--disable_opt_rtn` 即可。
@@ -436,7 +436,7 @@ ar.quantize_and_save(output_dir, format="auto_round")
 
 **主要特性：**
 - **无需模型对象** — 仅需 `config.json` 和 safetensors 文件
-- **低磁盘内存模式** (`--low_disk_mem_usage`) — 逐个下载并量化分片，处理完成后立即删除源分片
+- **低磁盘内存** (如果无本地模型) — 逐个下载并量化分片，处理完成后立即删除源分片
 - **逐层配置** — 支持 `--layer_config` 设置逐层位宽，以及 `--ignore_layers` 保持特定层全精度
 - **预定义忽略层** — 根据模型配置自动跳过特定层（如 MoE 门控层、MTP 层等）
 
@@ -446,13 +446,6 @@ ar.quantize_and_save(output_dir, format="auto_round")
 # 基本免模型量化
 auto_round meta-llama/Llama-3.2-1B-Instruct \
   --model_free \
-  --scheme W4A16 \
-  --output_dir ./int4-llama
-
-# 搭配低磁盘存储模式
-auto_round meta-llama/Llama-3.2-1B-Instruct \
-  --model_free \
-  --low_disk_mem_usage \
   --scheme W4A16 \
   --output_dir ./int4-llama
 
@@ -482,7 +475,6 @@ model_free_quantize(
     model_name_or_path="meta-llama/Llama-3.2-1B-Instruct",
     scheme="W4A16",
     output_dir="./int4-llama",
-    low_disk_mem_usage=True,
     layer_config={
         ".*k_proj": {"bits": 8, "group_size": 32},
         ".*v_proj": {"bits": 8, "group_size": 32},
@@ -802,8 +794,8 @@ print(tokenizer.decode(model.generate(**inputs, max_new_tokens=50, do_sample=Fal
 | ark                     | xpu            | 4              | FP32/FP16/BF16 | 6    | awq             | auto-round-lib<br/>torch>=2.8.0 |
 | ipex（即将废弃）        | cpu/xpu        | 4              | BF16/FP16    | 5      | gptq_zp+-1/awq  | intel-extension-for-pytorch    |
 | marlin                  | cuda           | 4、8           | BF16/FP16    | 6      | gptq/gptq_zp+-1 | gptqmodel                      |
-| exllamav2/<br/>gptqmodel:exllamav2 | cuda    | 4              | BF16/FP16    | 5      | gptq            | gptqmodel                      |
-| exllamav2/<br/>gptq:exllamav2      | cuda    | 4              | FP16         | 5      | gptq_zp+-1      | auto-gptq<br/>transformers<5.0.0  |
+| exllamav2/<br/>gptqmodel:exllamav2 | cuda    | 4              | BF16/FP16    | 5      | gptq/gptq_zp+-1 | gptqmodel                      |
+| exllamav2/<br/>gptq:exllamav2      | cuda    | 4              | FP16         | 3      | gptq_zp+-1      | auto-gptq<br/>transformers<5.0.0  |
 | gptq:cuda               | cuda           | 2、3、4、8     | FP16         | 1      | gptq_zp+-1      | auto-gptq<br/>transformers<5.0.0  |
 | triton                  | xpu/cuda       | 2、4、8        | BF16/FP16    | 2      | gptq/gptq_zp+-1 | auto-round                     |
 | awq                     | cuda           | 4              | FP16         | 5      | awq             | auto-awq<br/>transformers<4.57.0 |

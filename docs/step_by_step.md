@@ -444,7 +444,7 @@ Model-free mode performs RTN quantization **without loading the full model into 
 
 **Key features:**
 - **No model object required** – only `config.json` and safetensors files are needed
-- **Low disk memory mode** (`--low_disk_mem_usage`) – downloads and quantizes one shard at a time, deleting the source shard after processing
+- **Low disk memory required** (If no local model files) – downloads and quantizes one shard at a time, deleting the source shard after processing
 - **Per-layer configuration** – supports `--layer_config` for per-layer bit-width overrides and `--ignore_layers` to keep specific layers in full precision
 - **Predefined ignore layers** – automatically skips model-specific layers (e.g., MoE gates, MTP layers) based on config detection
 
@@ -454,13 +454,6 @@ Model-free mode performs RTN quantization **without loading the full model into 
 # Basic model-free quantization
 auto_round meta-llama/Llama-3.2-1B-Instruct \
   --model_free \
-  --scheme W4A16 \
-  --output_dir ./int4-llama
-
-# With low disk memory usage
-auto_round meta-llama/Llama-3.2-1B-Instruct \
-  --model_free \
-  --low_disk_mem_usage \
   --scheme W4A16 \
   --output_dir ./int4-llama
 
@@ -490,7 +483,6 @@ model_free_quantize(
     model_name_or_path="meta-llama/Llama-3.2-1B-Instruct",
     scheme="W4A16",
     output_dir="./int4-llama",
-    low_disk_mem_usage=True,
     layer_config={
         ".*k_proj": {"bits": 8, "group_size": 32},
         ".*v_proj": {"bits": 8, "group_size": 32},
