@@ -485,8 +485,8 @@ class TestAutoRound:
     @pytest.mark.parametrize(
         "iters,use_dataloader,scheme",
         [
-            (0, False, "INT8"),   # RTN with new scheme name
-            (1, True, "INT8"),    # tuning with new scheme name
+            (0, False, "INT8"),  # RTN with new scheme name
+            (1, True, "INT8"),  # tuning with new scheme name
             (0, False, "INT8_W8A8"),  # RTN with old scheme name (backward compat)
         ],
         ids=["rtn", "tuning", "rtn-old-scheme"],
