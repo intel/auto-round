@@ -58,11 +58,16 @@ class TestLLMC:
 
         import json
 
+        from safetensors import safe_open
+
         config = json.load(open(os.path.join(tmp_path, "config.json")))
         assert "group_0" in config["quantization_config"]["config_groups"]
         assert config["quantization_config"]["config_groups"]["group_0"]["input_activations"]["num_bits"] == 8
         assert config["quantization_config"]["config_groups"]["group_0"]["weights"]["strategy"] == "channel"
         assert config["quantization_config"]["quant_method"] == "compressed-tensors"
+
+        f = safe_open(os.path.join(tmp_path, "model.safetensors"), framework="pt")
+        assert len(f.get_tensor("model.decoder.layers.0.fc1.weight_scale").shape) == 2
 
     def test_autoround_llmcompressor_fp8(self, tmp_path):
         ## quantize the model
