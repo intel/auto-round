@@ -192,7 +192,8 @@ class WrapperLinear(torch.nn.Module):
             )
             if self.enable_torch_compile:
                 self.act_quant_func = compile_func(self.act_quant_func, self.device)
-            self._init_params("act_max_scale", p_dtype, (1), 1.0, not orig_layer.act_dynamic)
+            self._init_params("act_max_scale", p_dtype, (1), 1.0, True)
+            self._init_params("act_min_scale", p_dtype, (1), 1.0, True)
 
         # Bias tuning
         if self.enable_norm_bias_tuning:
@@ -267,7 +268,7 @@ class WrapperLinear(torch.nn.Module):
             weight_q = weight_q.t()
         return weight_q, scale, zp
 
-    def _qdq_act(self, x, act_max_scale, act_max=None):
+    def _qdq_act(self, x, act_min_scale, act_max_scale, act_max=None):
         """Quantizes and dequantizes activations.
 
         Args:
@@ -279,7 +280,7 @@ class WrapperLinear(torch.nn.Module):
             tuple: Quantized activation, scale, and zero point.
         """
         act_max_scale.data.clamp_(0, 1.0)
-
+        act_min_scale.data.clamp_(0, 1.0)
         act_scale = envs.AR_ACT_SCALE
         x, scale, zp = self.act_quant_func(
             x,
@@ -289,7 +290,7 @@ class WrapperLinear(torch.nn.Module):
             q_scale_thresh=self.q_scale_thresh,
             data_type=self.act_data_type,
             max_scale=act_max_scale if math.isclose(act_scale, 1.0, rel_tol=1e-6) else act_scale,
-            min_scale=1.0 if math.isclose(act_scale, 1.0, rel_tol=1e-6) else act_scale,
+            min_scale=act_min_scale if math.isclose(act_scale, 1.0, rel_tol=1e-6) else act_scale,
             global_scale=getattr(self, "input_global_scale", None),
         )
         return x, scale, zp
@@ -411,7 +412,8 @@ class WrapperLinear(torch.nn.Module):
                     elif self.orig_layer.act_group_size == -1:
                         tmp_shape = (act_max.shape[0], 1)
                     _, act_scale, _ = self._qdq_act(
-                        torch.zeros(tmp_shape).to(self.device), act_max_scale=self.act_max_scale, act_max=act_max
+                        torch.zeros(tmp_shape).to(self.device), act_min_scale=self.act_min_scale,
+                        act_max_scale=self.act_max_scale, act_max=act_max
                     )
                     self.orig_layer.act_max = self.orig_layer.act_max * act_max_scale.item()
                     self.orig_layer.act_max = self.orig_layer.act_max.to("cpu")
@@ -421,6 +423,8 @@ class WrapperLinear(torch.nn.Module):
 
             self.orig_layer.q_scale_thresh = self.q_scale_thresh
             self.orig_layer.data_type = self.data_type
+            self.orig_layer.act_min_scale = self.act_min_scale
+            self.orig_layer.act_max_scale = self.act_max_scale
 
             self.orig_layer.act_data_type = self.act_data_type
             self.orig_layer.act_quant_func = self.act_quant_func
@@ -501,7 +505,7 @@ class WrapperLinear(torch.nn.Module):
                 if result is not None:
                     x = result[0] if isinstance(result, tuple) else result
             act_max = self.orig_layer.act_max if hasattr(self.orig_layer, "act_max") else None
-            x, _, _ = self._qdq_act(x, act_max_scale=self.act_max_scale, act_max=act_max)
+            x, _, _ = self._qdq_act(x, act_max_scale=self.act_max_scale, act_min_scale=self.act_min_scale, act_max=act_max)
 
         # pylint: disable=not-callable
         bias = self.orig_layer.bias
@@ -563,8 +567,8 @@ class WrapperWALayer(torch.nn.Module):
         #     tensor = x.reshape(-1)
         # tensor_min = torch.clamp(tensor.min(-1)[0], max=0) * act_scale
         # tensor_max = torch.clamp(tensor.max(-1)[0], min=0) * act_scale
-        max_scale = 1.0 if math.isclose(act_scale, 1.0, rel_tol=1e-6) else act_scale
-        min_scale = 1.0 if math.isclose(act_scale, 1.0, rel_tol=1e-6) else act_scale
+        max_scale = self.orig_layer.act_max_scale if math.isclose(act_scale, 1.0, rel_tol=1e-6) else act_scale
+        min_scale = self.orig_layer.act_min_scale if math.isclose(act_scale, 1.0, rel_tol=1e-6) else act_scale
         # if act_max is None:
         x, _, _ = self.orig_layer.act_quant_func(
             x,
