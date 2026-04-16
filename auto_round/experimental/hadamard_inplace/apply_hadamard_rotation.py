@@ -209,9 +209,9 @@ def _rotate_weights(
     use_fast_had: bool = True,
     group_size: int = None,
     compute_device: torch.device = None,
-    allow_online_hadamard: bool = True,
     had_dict: dict = None,
     preset: str = None,
+    fuse_online_to_weight: bool = True,
 ) -> None:
     """Apply Hadamard rotation to all weights.
 
@@ -291,45 +291,48 @@ def _rotate_weights(
             # "random_hadamard", "quarot_hadamard", None — same shape → same matrix
             Q = get_or_create_random_hadamard(hidden_size, compute_device)
 
-    # ---- Top-level: embedding ----
-    embedding = _resolve(model, mapping.embedding)
-    if is_grouped:
-        _rotate_embedding_grouped(
-            embedding, group_size, use_fast_had=fused_fast, compute_device=compute_device, had_matrix=had_matrix
-        )
-    else:
-        dtype = embedding.weight.data.dtype
-        dev = embedding.weight.data.device
-        cdev = compute_device
-        W_ = embedding.weight.data.to(device=cdev, dtype=torch.float64)
-        embedding.weight.data = torch.matmul(W_, Q.to(cdev)).to(device=dev, dtype=dtype)
-
-    if mapping.positional_embedding is not None:
-        pos_emb = _resolve(model, mapping.positional_embedding)
+    # ---- Top-level: embedding / lm_head ----
+    # When fuse_online_to_weight=False, skip embedding and lm_head rotation:
+    # each layer is self-contained (weight rotation + online hook cancel out).
+    if fuse_online_to_weight:
+        embedding = _resolve(model, mapping.embedding)
         if is_grouped:
             _rotate_embedding_grouped(
-                pos_emb, group_size, use_fast_had=fused_fast, compute_device=compute_device, had_matrix=had_matrix
+                embedding, group_size, use_fast_had=fused_fast, compute_device=compute_device, had_matrix=had_matrix
             )
         else:
-            pos_dtype = pos_emb.weight.data.dtype
-            pos_dev = pos_emb.weight.data.device
+            dtype = embedding.weight.data.dtype
+            dev = embedding.weight.data.device
             cdev = compute_device
-            P_ = pos_emb.weight.data.to(device=cdev, dtype=torch.float64)
-            pos_emb.weight.data = torch.matmul(P_, Q.to(cdev)).to(device=pos_dev, dtype=pos_dtype)
+            W_ = embedding.weight.data.to(device=cdev, dtype=torch.float64)
+            embedding.weight.data = torch.matmul(W_, Q.to(cdev)).to(device=dev, dtype=dtype)
 
-    # ---- Top-level: lm_head ----
-    lm_head = _resolve(model, mapping.lm_head)
-    if is_grouped:
-        _rotate_linear_grouped(
-            lm_head,
-            group_size,
-            side="input",
-            use_fast_had=fused_fast,
-            compute_device=compute_device,
-            had_matrix=had_matrix,
-        )
-    else:
-        _rotate_linear_by_Q(lm_head, Q, side="input", compute_device=compute_device)
+        if mapping.positional_embedding is not None:
+            pos_emb = _resolve(model, mapping.positional_embedding)
+            if is_grouped:
+                _rotate_embedding_grouped(
+                    pos_emb, group_size, use_fast_had=fused_fast, compute_device=compute_device, had_matrix=had_matrix
+                )
+            else:
+                pos_dtype = pos_emb.weight.data.dtype
+                pos_dev = pos_emb.weight.data.device
+                cdev = compute_device
+                P_ = pos_emb.weight.data.to(device=cdev, dtype=torch.float64)
+                pos_emb.weight.data = torch.matmul(P_, Q.to(cdev)).to(device=pos_dev, dtype=pos_dtype)
+
+        # ---- Top-level: lm_head ----
+        lm_head = _resolve(model, mapping.lm_head)
+        if is_grouped:
+            _rotate_linear_grouped(
+                lm_head,
+                group_size,
+                side="input",
+                use_fast_had=fused_fast,
+                compute_device=compute_device,
+                had_matrix=had_matrix,
+            )
+        else:
+            _rotate_linear_by_Q(lm_head, Q, side="input", compute_device=compute_device)
 
     gc.collect()
     if torch.cuda.is_available():
@@ -338,137 +341,173 @@ def _rotate_weights(
     # ---- Per-layer rotation ----
     layers = _resolve(model, mapping.layers_attr)
     for layer in tqdm.tqdm(layers, unit="layer", desc=desc):
-        # Attention inputs: Q/K/V  (fusable — residual stream)
-        for attr in (mapping.attn_q, mapping.attn_k, mapping.attn_v):
+        if fuse_online_to_weight:
+            # ---- fuse mode: residual stream rotation + online Had stacked ----
+            # Attention inputs: Q/K/V  (residual stream + optional online Had)
+            for attr in (mapping.attn_q, mapping.attn_k, mapping.attn_v):
+                mod = _resolve(layer, attr)
+                if is_grouped:
+                    _rotate_linear_grouped(
+                        mod, group_size, side="input",
+                        use_fast_had=fused_fast, compute_device=compute_device, had_matrix=had_matrix,
+                    )
+                else:
+                    _rotate_linear_by_Q(mod, Q, side="input", compute_device=compute_device)
+                # Stack online Had on top of residual
+                if is_grouped:
+                    _rotate_linear_grouped(
+                        mod, group_size, side="input",
+                        use_fast_had=online_fast, compute_device=compute_device, had_matrix=online_had_matrix,
+                    )
+                else:
+                    apply_exact_had_to_linear(
+                        mod, had_dim=-1, output=False,
+                        use_fast_had=online_fast, compute_device=compute_device,
+                        had_matrix=_online_had(hidden_size),
+                    )
+
+            # o_proj: residual stream output rotation
             if is_grouped:
                 _rotate_linear_grouped(
-                    _resolve(layer, attr),
-                    group_size,
-                    side="input",
-                    use_fast_had=fused_fast,
-                    compute_device=compute_device,
-                    had_matrix=had_matrix,
+                    _resolve(layer, mapping.attn_o), group_size, side="output",
+                    use_fast_had=fused_fast, compute_device=compute_device, had_matrix=had_matrix,
                 )
             else:
-                _rotate_linear_by_Q(_resolve(layer, attr), Q, side="input", compute_device=compute_device)
+                _rotate_linear_by_Q(
+                    _resolve(layer, mapping.attn_o), Q, side="output", compute_device=compute_device
+                )
 
-        # Attention output: o_proj  (fusable — residual stream)
-        if is_grouped:
-            _rotate_linear_grouped(
-                _resolve(layer, mapping.attn_o),
-                group_size,
-                side="output",
-                use_fast_had=fused_fast,
-                compute_device=compute_device,
-                had_matrix=had_matrix,
-            )
-        else:
-            _rotate_linear_by_Q(_resolve(layer, mapping.attn_o), Q, side="output", compute_device=compute_device)
+            # gate/up: residual + online Had
+            for attr in mapping.mlp_in:
+                mod = _resolve(layer, attr)
+                if is_grouped:
+                    _rotate_linear_grouped(
+                        mod, group_size, side="input",
+                        use_fast_had=fused_fast, compute_device=compute_device, had_matrix=had_matrix,
+                    )
+                else:
+                    _rotate_linear_by_Q(mod, Q, side="input", compute_device=compute_device)
+                if is_grouped:
+                    _rotate_linear_grouped(
+                        mod, group_size, side="input",
+                        use_fast_had=online_fast, compute_device=compute_device, had_matrix=online_had_matrix,
+                    )
+                else:
+                    apply_exact_had_to_linear(
+                        mod, had_dim=-1, output=False,
+                        use_fast_had=online_fast, compute_device=compute_device,
+                        had_matrix=_online_had(hidden_size),
+                    )
 
-        # MLP inputs: gate/up  (fusable — residual stream)
-        for attr in mapping.mlp_in:
+            # down_proj: residual output + online input Had
+            down_proj = _resolve(layer, mapping.mlp_out)
             if is_grouped:
                 _rotate_linear_grouped(
-                    _resolve(layer, attr),
-                    group_size,
-                    side="input",
-                    use_fast_had=fused_fast,
-                    compute_device=compute_device,
-                    had_matrix=had_matrix,
+                    down_proj, group_size, side="output",
+                    use_fast_had=fused_fast, compute_device=compute_device, had_matrix=had_matrix,
+                )
+                _rotate_linear_grouped(
+                    down_proj, group_size, side="input",
+                    use_fast_had=online_fast, compute_device=compute_device, had_matrix=online_had_matrix,
                 )
             else:
-                _rotate_linear_by_Q(_resolve(layer, attr), Q, side="input", compute_device=compute_device)
-
-        # MLP output: down_proj
-        down_proj = _resolve(layer, mapping.mlp_out)
-        if is_grouped:
-            _rotate_linear_grouped(
-                down_proj,
-                group_size,
-                side="output",
-                use_fast_had=fused_fast,
-                compute_device=compute_device,
-                had_matrix=had_matrix,
-            )
-            if allow_online_hadamard:
-                _rotate_linear_grouped(
-                    down_proj,
-                    group_size,
-                    side="input",
-                    use_fast_had=online_fast,
-                    compute_device=compute_device,
-                    had_matrix=online_had_matrix,
-                )
-        else:
-            _rotate_linear_by_Q(down_proj, Q, side="output", compute_device=compute_device)
-            if allow_online_hadamard:
+                _rotate_linear_by_Q(down_proj, Q, side="output", compute_device=compute_device)
                 apply_exact_had_to_linear(
-                    down_proj,
-                    had_dim=-1,
-                    output=False,
-                    use_fast_had=online_fast,
-                    compute_device=compute_device,
+                    down_proj, had_dim=-1, output=False,
+                    use_fast_had=online_fast, compute_device=compute_device,
                     had_matrix=_online_had(intermediate_size),
                 )
 
-        # OV projection
-        v_proj = _resolve(layer, mapping.attn_v)
-        o_proj = _resolve(layer, mapping.attn_o)
-        if is_grouped:
-            pass
-        elif allow_online_hadamard:
-            # Full mode: per-head Had on v_proj output + Had on o_proj input.
-            # For random_hadamard we decompose o_proj into within-head + cross-head
-            # because a random matrix has no Kronecker structure.
-            online_head_had = _online_had(head_dim)
-            apply_exact_had_to_linear(
-                v_proj,
-                had_dim=head_dim,
-                output=True,
-                use_fast_had=online_fast,
-                compute_device=compute_device,
-                had_matrix=online_head_had,
-            )
-            if preset == "random_hadamard":
+            # OV projection: v_proj per-head output + o_proj full/cross-head input
+            v_proj = _resolve(layer, mapping.attn_v)
+            o_proj = _resolve(layer, mapping.attn_o)
+            if is_grouped:
+                pass
+            else:
+                online_head_had = _online_had(head_dim)
                 apply_exact_had_to_linear(
-                    o_proj,
-                    had_dim=head_dim,
-                    output=False,
-                    use_fast_had=online_fast,
-                    compute_device=compute_device,
-                    had_matrix=online_head_had,
+                    v_proj, had_dim=head_dim, output=True,
+                    use_fast_had=online_fast, compute_device=compute_device, had_matrix=online_head_had,
                 )
-                apply_cross_head_had_to_linear(
-                    o_proj,
-                    num_heads,
-                    head_dim,
-                    use_fast_had=online_fast,
-                    compute_device=compute_device,
-                    had_matrix=_online_had(num_heads),
+                if preset == "random_hadamard":
+                    apply_exact_had_to_linear(
+                        o_proj, had_dim=head_dim, output=False,
+                        use_fast_had=online_fast, compute_device=compute_device, had_matrix=online_head_had,
+                    )
+                    apply_cross_head_had_to_linear(
+                        o_proj, num_heads, head_dim,
+                        use_fast_had=online_fast, compute_device=compute_device,
+                        had_matrix=_online_had(num_heads),
+                    )
+                else:
+                    apply_exact_had_to_linear(
+                        o_proj, had_dim=-1, output=False,
+                        use_fast_had=online_fast, compute_device=compute_device,
+                    )
+
+        else:
+            # ---- unfused mode: no residual rotation, only input-side Had ----
+            # Each layer gets Had fused on input side + compensating hook → equivalent.
+            # No embedding/lm_head rotation. No self-cancelling pair.
+            # v_proj treated same as Q/K (input Had only, no per-head/cross-head).
+
+            # Q/K/V: input-side Had on hidden_size
+            for attr in (mapping.attn_q, mapping.attn_k, mapping.attn_v):
+                mod = _resolve(layer, attr)
+                if is_grouped:
+                    _rotate_linear_grouped(
+                        mod, group_size, side="input",
+                        use_fast_had=online_fast, compute_device=compute_device, had_matrix=online_had_matrix,
+                    )
+                else:
+                    apply_exact_had_to_linear(
+                        mod, had_dim=-1, output=False,
+                        use_fast_had=online_fast, compute_device=compute_device,
+                        had_matrix=_online_had(hidden_size),
+                    )
+
+            # o_proj: input-side Had on hidden_size (full Had, not cross-head)
+            o_proj = _resolve(layer, mapping.attn_o)
+            if is_grouped:
+                _rotate_linear_grouped(
+                    o_proj, group_size, side="input",
+                    use_fast_had=online_fast, compute_device=compute_device, had_matrix=online_had_matrix,
                 )
             else:
                 apply_exact_had_to_linear(
-                    o_proj, had_dim=-1, output=False, use_fast_had=online_fast, compute_device=compute_device
+                    o_proj, had_dim=-1, output=False,
+                    use_fast_had=online_fast, compute_device=compute_device,
+                    had_matrix=_online_had(hidden_size),
                 )
-        else:
-            # Full mode, no online hooks — self-cancelling per-head pairs.
-            online_head_had = _online_had(head_dim)
-            apply_exact_had_to_linear(
-                v_proj,
-                had_dim=head_dim,
-                output=True,
-                use_fast_had=online_fast,
-                compute_device=compute_device,
-                had_matrix=online_head_had,
-            )
-            apply_exact_had_to_linear(
-                o_proj,
-                had_dim=head_dim,
-                output=False,
-                use_fast_had=online_fast,
-                compute_device=compute_device,
-                had_matrix=online_head_had,
-            )
+
+            # gate/up: input-side Had on hidden_size
+            for attr in mapping.mlp_in:
+                mod = _resolve(layer, attr)
+                if is_grouped:
+                    _rotate_linear_grouped(
+                        mod, group_size, side="input",
+                        use_fast_had=online_fast, compute_device=compute_device, had_matrix=online_had_matrix,
+                    )
+                else:
+                    apply_exact_had_to_linear(
+                        mod, had_dim=-1, output=False,
+                        use_fast_had=online_fast, compute_device=compute_device,
+                        had_matrix=_online_had(hidden_size),
+                    )
+
+            # down_proj: input-side Had on intermediate_size
+            down_proj = _resolve(layer, mapping.mlp_out)
+            if is_grouped:
+                _rotate_linear_grouped(
+                    down_proj, group_size, side="input",
+                    use_fast_had=online_fast, compute_device=compute_device, had_matrix=online_had_matrix,
+                )
+            else:
+                apply_exact_had_to_linear(
+                    down_proj, had_dim=-1, output=False,
+                    use_fast_had=online_fast, compute_device=compute_device,
+                    had_matrix=_online_had(intermediate_size),
+                )
 
 
 # ---------------------------------------------------------------------------
@@ -484,6 +523,7 @@ def _register_online_hooks(
     group_size: int = None,
     had_dict: dict = None,
     preset: str = None,
+    fuse_online_to_weight: bool = True,
 ):
     """Register online Hadamard pre-forward hooks on ``down_proj`` and ``o_proj``.
 
@@ -530,6 +570,12 @@ def _register_online_hooks(
     mlp_out_suffix = mapping.mlp_out.split(".")[-1]
     attn_o_suffix = mapping.attn_o.split(".")[-1]
 
+    # Suffixes for Q/K/V and gate/up (for online input Had hooks)
+    attn_qkv_suffixes = set(
+        attr.split(".")[-1] for attr in (mapping.attn_q, mapping.attn_k, mapping.attn_v)
+    )
+    mlp_in_suffixes = set(attr.split(".")[-1] for attr in mapping.mlp_in)
+
     # --- Build hook factories ---
     def _make_down_proj_hook():
         if is_grouped:
@@ -542,6 +588,20 @@ def _register_online_hooks(
                 had_K=None, K=None, fp32_had=fp32_had, use_fast_had=online_fast, had_matrix=online_mat
             )
         had_K, K = get_hadK(intermediate_size)
+        return FullOnlineHadamardHook(had_K=had_K, K=K, fp32_had=fp32_had, use_fast_had=online_fast)
+
+    def _make_hidden_had_hook():
+        """Full Had hook on hidden_size (for Q/K/V and gate/up input)."""
+        if is_grouped:
+            return GroupOnlineHadamardHook(
+                group_size=group_size, fp32_had=fp32_had, use_fast_had=online_fast, had_matrix=had_matrix
+            )
+        online_mat = _online_had(hidden_size)
+        if online_mat is not None:
+            return FullOnlineHadamardHook(
+                had_K=None, K=None, fp32_had=fp32_had, use_fast_had=online_fast, had_matrix=online_mat
+            )
+        had_K, K = get_hadK(hidden_size)
         return FullOnlineHadamardHook(had_K=had_K, K=K, fp32_had=fp32_had, use_fast_had=online_fast)
 
     def _make_o_proj_hook():
@@ -566,12 +626,32 @@ def _register_online_hooks(
 
     # --- Register ---
     handles = []
+
     for name, module in model.named_modules():
-        if name.endswith(mlp_out_suffix) and isinstance(module, torch.nn.Linear):
+        if not isinstance(module, torch.nn.Linear):
+            continue
+        suffix = name.split(".")[-1]
+
+        if name.endswith(mlp_out_suffix):
+            # down_proj: full Had on intermediate_size input
             h = module.register_forward_pre_hook(_make_down_proj_hook())
             handles.append(h)
-        elif not is_grouped and name.endswith(attn_o_suffix) and isinstance(module, torch.nn.Linear):
-            h = module.register_forward_pre_hook(_make_o_proj_hook())
+        elif name.endswith(attn_o_suffix):
+            if fuse_online_to_weight and not is_grouped:
+                # o_proj: cross-head Had on input (fused mode, full only)
+                h = module.register_forward_pre_hook(_make_o_proj_hook())
+                handles.append(h)
+            elif not fuse_online_to_weight:
+                # o_proj: full Had on hidden_size input (unfused mode, matches weight rotation)
+                h = module.register_forward_pre_hook(_make_hidden_had_hook())
+                handles.append(h)
+        elif suffix in attn_qkv_suffixes:
+            # Q/K/V: full Had on hidden_size input
+            h = module.register_forward_pre_hook(_make_hidden_had_hook())
+            handles.append(h)
+        elif suffix in mlp_in_suffixes:
+            # gate/up: full Had on hidden_size input
+            h = module.register_forward_pre_hook(_make_hidden_had_hook())
             handles.append(h)
 
     return handles
@@ -589,6 +669,7 @@ def apply_hadamard_rotation(
     rotation_matrix: Union[str, torch.Tensor, Dict[int, torch.Tensor], None] = None,
     compute_device: torch.device = None,
     fp32_had: bool = False,
+    fuse_online_to_weight: bool = True,
 ):
     """Fuse layer norms, rotate weights, and register online Hadamard hooks.
 
@@ -598,50 +679,21 @@ def apply_hadamard_rotation(
     Args:
         model: A HuggingFace CausalLM model (LLaMA-2/3, Qwen-3, etc.).
         fp32_had: Whether to compute the online Hadamard transform in fp32.
-        group_size: If ``None`` (default), use full-dimension Hadamard rotation
-            (original QuaRot).  If set to an integer (e.g. 32 or 64), use
-            block-diagonal rotation where each block is ``group_size × group_size``.
-        compute_device: Device to run Hadamard computation on (e.g. ``"cuda:0"``).
-            When the model lives on CPU, set this to a GPU device so that the
-            heavy matrix operations run on GPU; weights are temporarily moved
-            there and moved back afterwards.  If ``None`` (default), auto-detects
-            GPU availability (CUDA → XPU → CPU fallback).
-        allow_online_hadamard: If ``True`` (default), apply the full QuaRot-style
-            rotation including extra input-side Hadamard on ``down_proj`` and
-            the OV pair (``v_proj`` output + ``o_proj`` input).  These extra
-            rotations require compensating online Hadamard hooks at inference.
-            If ``False``, only apply the residual-stream rotation (embedding,
-            lm_head, Q/K/V input, o_proj output, gate/up input, down_proj
-            output).  This is still a valid equivalence transform but does
-            **not** need any online hooks — a fully fused mode.
-        rotation_matrix: Rotation matrix selection.  Accepted forms:
-
-            * ``None`` (default) — use the built-in butterfly Hadamard
-              (``matmul_hadU`` / ``get_hadK``); full-mode Q is a random
-              Hadamard matrix, grouped/online operations are deterministic.
-            * ``"hadamard"`` — same as ``None``: all rotations use the
-              deterministic ``get_hadK`` / ``matmul_hadU`` path.  In full mode
-              the Q matrix is a deterministic Hadamard (no random sign flips).
-            * ``"random_hadamard"`` — all rotations use ``random_hadamard_matrix``.
-              In grouped mode a random matrix of size ``group_size`` is
-              generated once and reused for every rotation (including online
-              hooks).
-            * ``"quarot_hadamard"`` — fusable (residual-stream) rotations use
-              ``fast_hadamard_transform`` (random in full mode); non-fusable
-              (online-paired) rotations **and their weight-side counterparts**
-              use deterministic ``get_hadK``/``matmul_hadU`` so that the
-              online hook at inference produces the exact same transform.
-            * A ``torch.Tensor`` of shape ``(n, n)`` — custom rotation matrix,
-              used as-is for all grouped rotations.  Only valid when
-              ``group_size`` is set (``n`` should equal ``group_size``).
-            * A ``dict[int, torch.Tensor]`` — mapping from dimension to
-              rotation matrix.  Only valid when ``group_size`` is set.
-
-            Raises ``ValueError`` when a Tensor/dict is provided without a
-            positive ``group_size``, or when an unknown ``str`` preset is given.
+        group_size: If ``None`` (default), use full-dimension Hadamard rotation.
+        compute_device: Device to run Hadamard computation on.
+        allow_online_hadamard: If ``True`` (default), apply online Hadamard
+            rotations on ``down_proj`` input and the OV pair.
+        rotation_matrix: Rotation matrix selection (``"hadamard"``,
+            ``"random_hadamard"``, ``"quarot_hadamard"``, Tensor, dict, or None).
+        fuse_online_to_weight: If ``True`` (default), fuse online Hadamard
+            rotation into weights (down_proj input, v_proj output, o_proj input)
+            and register compensating online hooks.  If ``False``, skip
+            embedding/lm_head rotation; each linear layer is self-contained
+            with input-side Had on weight + compensating online hook on
+            activation.  No v_proj cross-head or inner-head rotation.
 
     Returns:
-        list of hook handles (empty when ``allow_online_hadamard=False``)."""
+        list of hook handles."""
     had_dict, use_fast_had, preset = _normalize_rotation_matrix(rotation_matrix, group_size)
     compute_device = _resolve_compute_device(compute_device)
 
@@ -683,13 +735,13 @@ def apply_hadamard_rotation(
         use_fast_had=use_fast_had,
         group_size=group_size,
         compute_device=compute_device,
-        allow_online_hadamard=allow_online_hadamard,
         had_dict=had_dict,
         preset=preset,
+        fuse_online_to_weight=fuse_online_to_weight,
     )
 
     handles = []
-    if allow_online_hadamard:
+    if fuse_online_to_weight or allow_online_hadamard :
         handles = _register_online_hooks(
             model,
             mapping,
@@ -698,6 +750,7 @@ def apply_hadamard_rotation(
             group_size=group_size,
             had_dict=had_dict,
             preset=preset,
+            fuse_online_to_weight=fuse_online_to_weight,
         )
 
     return handles
@@ -728,7 +781,7 @@ if __name__ == "__main__":
     inputs = tokenizer(text, return_tensors="pt").to(model.device)
     print(tokenizer.decode(model.generate(**inputs, max_new_tokens=50)[0]))
 
-    apply_hadamard_rotation(model, group_size=-1, allow_online_hadamard=False, rotation_matrix="random_hadamard")
+    apply_hadamard_rotation(model, group_size=-1, allow_online_hadamard=True, rotation_matrix="random_hadamard",fuse_online_to_weight=False)
     model.to("cuda")
     text = "There is a girl who likes adventure,"
     inputs = tokenizer(text, return_tensors="pt").to(model.device)
@@ -737,7 +790,7 @@ if __name__ == "__main__":
     model_name = "/models/Qwen3-8B"
     tokenizer = AutoTokenizer.from_pretrained(model_name)
     model = AutoModelForCausalLM.from_pretrained(model_name, torch_dtype=torch.float16, device_map="auto")
-    apply_hadamard_rotation(model, group_size=-1, allow_online_hadamard=False)
+    apply_hadamard_rotation(model, group_size=-1, allow_online_hadamard=True,fuse_online_to_weight=False)
     model.to("cuda")
     text = "There is a girl who likes adventure,"
     inputs = tokenizer(text, return_tensors="pt").to(model.device)
@@ -748,17 +801,17 @@ if __name__ == "__main__":
     model_name = "/models/Meta-Llama-3.1-8B-Instruct"
     tokenizer = AutoTokenizer.from_pretrained(model_name)
     model = AutoModelForCausalLM.from_pretrained(model_name, torch_dtype=torch.float16, device_map="auto")
-    apply_hadamard_rotation(model)
+    apply_hadamard_rotation(model,fuse_online_to_weight=False,group_size=32)
     model.to("cuda")
     text = "There is a girl who likes adventure,"
     inputs = tokenizer(text, return_tensors="pt").to(model.device)
     print(tokenizer.decode(model.generate(**inputs, max_new_tokens=50)[0]))
-
-    model_name = "/models/Llama-2-7b-chat-hf"
-    tokenizer = AutoTokenizer.from_pretrained(model_name)
-    model = AutoModelForCausalLM.from_pretrained(model_name, torch_dtype=torch.float16, device_map="auto")
-    apply_hadamard_rotation(model)
-    model.to("cuda")
-    text = "There is a girl who likes adventure,"
-    inputs = tokenizer(text, return_tensors="pt").to(model.device)
-    print(tokenizer.decode(model.generate(**inputs, max_new_tokens=50)[0]))
+    #
+    # model_name = "/models/Llama-2-7b-chat-hf"
+    # tokenizer = AutoTokenizer.from_pretrained(model_name)
+    # model = AutoModelForCausalLM.from_pretrained(model_name, torch_dtype=torch.float16, device_map="auto")
+    # apply_hadamard_rotation(model)
+    # model.to("cuda")
+    # text = "There is a girl who likes adventure,"
+    # inputs = tokenizer(text, return_tensors="pt").to(model.device)
+    # print(tokenizer.decode(model.generate(**inputs, max_new_tokens=50)[0]))

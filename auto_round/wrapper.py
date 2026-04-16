@@ -506,6 +506,13 @@ class WrapperLinear(torch.nn.Module):
                     x = result[0] if isinstance(result, tuple) else result
             act_max = self.orig_layer.act_max if hasattr(self.orig_layer, "act_max") else None
             x, _, _ = self._qdq_act(x, act_max_scale=self.act_max_scale, act_min_scale=self.act_min_scale, act_max=act_max)
+        elif len(self.orig_layer._forward_pre_hooks) > 0:
+            # Even without act_quant, run pre-hooks for online Hadamard correctness
+            # (when fuse_online_to_weight=False, pre-hooks transform activations).
+            for hook in self.orig_layer._forward_pre_hooks.values():
+                result = hook(self.orig_layer, (x,))
+                if result is not None:
+                    x = result[0] if isinstance(result, tuple) else result
 
         # pylint: disable=not-callable
         bias = self.orig_layer.bias
@@ -515,6 +522,14 @@ class WrapperLinear(torch.nn.Module):
             bias, _, _ = self._qdq_bias(bias, self.bias_v)
 
         output = self.orig_forward(x, weight_q, bias).to(self.output_device)
+
+        # Execute post-hooks from orig_layer (e.g., v_proj per-head Hadamard
+        # when online rotation is not fused into weights).
+        for hook in self.orig_layer._forward_hooks.values():
+            hook_result = hook(self.orig_layer, (x,), output)
+            if hook_result is not None:
+                output = hook_result
+
         return output
 
 

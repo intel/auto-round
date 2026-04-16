@@ -572,7 +572,7 @@ class BaseCompressor(object):
 
             self.model.to("cuda")
             apply_hadamard_rotation(
-                self.model, group_size=self.group_size, allow_online_hadamard=True, rotation_matrix="hadamard"
+                self.model, group_size=self.group_size, allow_online_hadamard=True, rotation_matrix="hadamard",fuse_online_to_weight=False
             )
 
             # from auto_round.experimental.transform.apply import apply_hadamard_transform

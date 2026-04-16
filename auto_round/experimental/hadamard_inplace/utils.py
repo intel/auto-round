@@ -174,9 +174,9 @@ class FullOnlineHadamardHook(nn.Module):
         x_dtype = x.dtype
 
         if self.custom_had:
-            H = self.had_matrix.to(x.dtype)
+            H = self.had_matrix.to(device=x.device, dtype=x.dtype)
             if self.fp32_had:
-                H = self.had_matrix.float()
+                H = self.had_matrix.to(device=x.device).float()
                 x = (x.float() @ H.T).to(x_dtype)
             else:
                 x = x @ H.T
@@ -246,7 +246,7 @@ class CrossHeadOnlineHadamardHook(nn.Module):
         num_heads = init_shape[-1] // self.had_dim
 
         if self.custom_had:
-            H = self.had_matrix.to(x.dtype)
+            H = self.had_matrix.to(device=x.device, dtype=x.dtype)
             # reshape (*, hidden) → (*, num_heads, head_dim), transpose → (*, head_dim, num_heads)
             x = x.reshape(-1, num_heads, self.had_dim).transpose(1, 2)
             # apply H on last dim (num_heads): x @ H.T
@@ -617,6 +617,25 @@ def apply_cross_head_had_to_linear(
 # ---------------------------------------------------------------------------
 
 
+class OnlineHadamardPostHook(nn.Module):
+    """Forward hook (post-hook) adapter: wraps a pre-hook-style Hadamard
+    transform to apply it on the layer's **output** instead of input.
+
+    Used for v_proj per-head Hadamard on the output side when online
+    rotation is not fused into weights.
+    """
+
+    def __init__(self, pre_hook):
+        super().__init__()
+        self.pre_hook = pre_hook
+
+    def __call__(self, module, input, output):
+        result = self.pre_hook(module, (output,))
+        if isinstance(result, tuple):
+            return result[0]
+        return result
+
+
 class GroupOnlineHadamardHook(nn.Module):
     """Pre-forward hook: block-diagonal Hadamard with fixed ``group_size`` on last dim.
 
@@ -659,7 +678,7 @@ class GroupOnlineHadamardHook(nn.Module):
         x = x.reshape(*init_shape[:-1], init_shape[-1] // gs, gs)
 
         if self.custom_had:
-            H = self.had_matrix.to(x.dtype)
+            H = self.had_matrix.to(device=x.device, dtype=x.dtype)
             flat = x.reshape(-1, gs)
             x = (flat @ H.T).reshape(*init_shape[:-1], init_shape[-1] // gs, gs)
         elif self.use_fast_had and fast_hadamard_transform is not None and self.K == 1:
@@ -814,3 +833,4 @@ def register_online_had_hooks_grouped(model, mapping, group_size, fp32_had=False
             handles.append(h)
 
     return handles
+
