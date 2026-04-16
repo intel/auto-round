@@ -15,8 +15,8 @@
 """Model-free RTN quantization.
 
 This module performs weight-only quantization (WOQ) using RTN (Round-To-Nearest)
-**without** loading the full model into memory.  It downloads safetensors files
-directly (from a Hugging Face repo or a local directory), quantizes eligible
+**without** loading the full model into memory.  It reads safetensors files
+(from a Hugging Face repo or a local directory), quantizes eligible
 ``nn.Linear`` weight tensors shard-by-shard, and writes the packed result to
 the output directory.
 
@@ -24,15 +24,18 @@ Key features
 ------------
 * **No model object required** – only ``config.json`` and safetensors files are
   needed.
-* **Streaming mode** (``--streaming``) – downloads, quantizes,
-  and deletes each safetensors shard one at a time so that only one copy of a
-  shard is ever on disk.
+* **Streaming mode** – when the model is not locally available, shards are
+  downloaded one at a time and deleted after quantization so that only one
+  copy of a shard is ever on disk.
 * **Per-layer configuration** – honours ``--layer_config`` overrides and
   ``--ignore_layers`` for fine-grained control.
 * **Predefined ignore layers** – inspects
   :func:`~auto_round.special_model_handler.get_predefined_ignore_layers_from_config`
   so that model-specific quirks (e.g. MoE gates, MTP layers) are respected even
   without a live model object.
+* **GPU acceleration** – when ``device="cuda"``, each weight tensor is
+  transferred to GPU and quantized there; the packed results are returned on
+  CPU ready for safetensors serialisation.
 
 Usage (CLI)
 -----------
@@ -63,7 +66,7 @@ import os
 import re
 import shutil
 import time
-from concurrent.futures import ThreadPoolExecutor, as_completed
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import asdict, fields
 from typing import Optional, Union
 
@@ -73,11 +76,10 @@ from auto_round import envs
 from auto_round.logger import logger
 from auto_round.schemes import PRESET_SCHEMES, QuantizationScheme, preset_name_to_scheme
 from auto_round.utils.common import compress_layer_names
-from auto_round.utils.device import memory_monitor
+from auto_round.utils.device import memory_monitor, clear_memory
 from auto_round.utils.missing_tensors import quantize_weight_rtn, split_fused_expert_tensors
 
 _BLOCK_NAME_TO_IGNORE = ["shared_expert_gate.", "mlp.gate.", "embed"]
-_GPU_CONCURRENT_WORKER = 64
 
 
 def get_predefined_ignore_layers_from_config(config: dict) -> list[str]:
@@ -379,6 +381,13 @@ def _quantize_single_tensor(
 ) -> tuple[str, dict[str, torch.Tensor], str | None, str | None]:
     """Quantize one eligible weight tensor and return packed outputs.
 
+    The *tensor* is expected on CPU.  When *device* is a CUDA device,
+    :func:`~auto_round.utils.missing_tensors.quantize_weight_rtn` moves it
+    to GPU for quantization and returns packed results on CPU.
+
+    Non-quantizable tensors (non-2-D, ignored, skipped, or ≥ 16-bit) are
+    returned as-is without any device transfer.
+
     Returns:
         (layer_name, output_tensors_dict, quantized_layer_or_None, ignored_layer_or_None)
     """
@@ -411,30 +420,13 @@ def _quantize_single_tensor(
     # ---- RTN quantization ----
     try:
         orig_in_features = tensor.shape[1]
-        use_cuda = device != "cpu" and torch.cuda.is_available()
-        if use_cuda:
-            # Dedicated CUDA stream per worker: allows H2D / compute / D2H
-            # overlap across concurrent workers in the ThreadPoolExecutor.
-            stream = torch.cuda.Stream()
-            with torch.cuda.stream(stream):
-                tensor_gpu = tensor.to(device=device, dtype=torch.float32, non_blocking=True)
-                qweight, qzeros, scales = quantize_weight_rtn(
-                    weight=tensor_gpu,
-                    bits=bits,
-                    group_size=group_size,
-                    sym=sym,
-                    device=None,  # already on target device
-                )
-            stream.synchronize()
-            del tensor, tensor_gpu
-        else:
-            qweight, qzeros, scales = quantize_weight_rtn(
-                weight=tensor,
-                bits=bits,
-                group_size=group_size,
-                sym=sym,
-                device=None,
-            )
+        qweight, qzeros, scales = quantize_weight_rtn(
+            weight=tensor,
+            bits=bits,
+            group_size=group_size,
+            sym=sym,
+            device=device,
+        )
 
         out: dict[str, torch.Tensor] = {
             f"{layer_name}.qweight": qweight,
@@ -466,6 +458,11 @@ def _process_shard(
 ) -> tuple[dict[str, torch.Tensor], list[str], list[str]]:
     """Quantize eligible weights in a single safetensors shard.
 
+    Loads every tensor from *shard_path*, iterates over them sequentially,
+    and delegates each to :func:`_quantize_single_tensor`.  When *device*
+    is a CUDA device the actual RTN computation happens on GPU (handled
+    inside ``quantize_weight_rtn``); all returned tensors are on CPU.
+
     When *matcher* is provided it is used directly (preferred for
     cross-shard cache reuse).  Otherwise a new :class:`_PatternMatcher`
     is built from *default_scheme*, *layer_config*, and *ignore_patterns*.
@@ -475,7 +472,9 @@ def _process_shard(
         default_scheme: Default quantization parameters.
         layer_config: Per-layer overrides.
         ignore_patterns: Layer name patterns to skip.
-        device: Computation device (``"cpu"`` or ``"cuda"``).
+        device: Computation device (``"cpu"`` or ``"cuda"``).  Passed
+            through to ``quantize_weight_rtn`` which handles the H2D
+            transfer internally.
         matcher: Precompiled :class:`_PatternMatcher` instance.
 
     Returns:
@@ -500,50 +499,20 @@ def _process_shard(
     # Split fused expert tensors (3-D) into per-expert 2-D tensors
     raw_tensors = split_fused_expert_tensors(raw_tensors)
 
-    use_gpu_concurrent = device != "cpu" and torch.cuda.is_available()
-
-    if use_gpu_concurrent:
-        # Each worker owns a dedicated CUDA stream (created inside
-        # _quantize_single_tensor), enabling H2D / compute / D2H overlap.
-        futures: dict = {}
-        tensor_names = list(raw_tensors.keys())
-        with ThreadPoolExecutor(max_workers=_GPU_CONCURRENT_WORKER) as pool:
-            for tensor_name in tensor_names:
-                tensor = raw_tensors.pop(tensor_name)
-                fut = pool.submit(
-                    _quantize_single_tensor,
-                    tensor_name,
-                    tensor,
-                    matcher,
-                    device,
-                )
-                futures[fut] = tensor_name
-
-            for fut in as_completed(futures):
-                _layer_name, out_dict, q_layer, ig_layer = fut.result()
-                output_tensors.update(out_dict)
-                if q_layer:
-                    quantized_layers.append(q_layer)
-                if ig_layer:
-                    ignored_layers.append(ig_layer)
-            memory_monitor.update()
-        torch.cuda.empty_cache()
-    else:
-        # Serial path (CPU)
-        tensor_names = list(raw_tensors.keys())
-        for tensor_name in tensor_names:
-            tensor = raw_tensors.pop(tensor_name)
-            _layer_name, out_dict, q_layer, ig_layer = _quantize_single_tensor(
-                tensor_name,
-                tensor,
-                matcher,
-                device,
-            )
-            output_tensors.update(out_dict)
-            if q_layer:
-                quantized_layers.append(q_layer)
-            if ig_layer:
-                ignored_layers.append(ig_layer)
+    tensor_names = list(raw_tensors.keys())
+    for tensor_name in tensor_names:
+        tensor = raw_tensors.pop(tensor_name)
+        _layer_name, out_dict, q_layer, ig_layer = _quantize_single_tensor(
+            tensor_name,
+            tensor,
+            matcher,
+            device,
+        )
+        output_tensors.update(out_dict)
+        if q_layer:
+            quantized_layers.append(q_layer)
+        if ig_layer:
+            ignored_layers.append(ig_layer)
 
     return output_tensors, quantized_layers, ignored_layers
 
@@ -678,8 +647,10 @@ def model_free_quantize(
 ) -> str:
     """Perform model-free RTN quantization.
 
-    Downloads safetensors directly, applies RTN quantization to each eligible
-    Linear weight, and saves the packed model in auto-round format.
+    Reads safetensors shards, applies RTN quantization to each eligible
+    ``nn.Linear`` weight tensor, and saves the packed model in auto-round
+    format.  No model object is loaded — only ``config.json`` and the
+    safetensors files are needed.
 
     The function automatically decides the I/O strategy:
 
@@ -689,9 +660,8 @@ def model_free_quantize(
     * Otherwise, shards are downloaded one at a time and deleted after
       quantization to minimise disk usage.
 
-    On **GPU** (``device="cuda"``), multiple weight tensors inside each
-    shard are quantized concurrently so that H2D transfers and GPU
-    compute overlap.
+    When ``device="cuda"``, each weight tensor is sent to GPU for
+    quantization; the packed results are always returned on CPU.
 
     Args:
         model_name_or_path: HuggingFace model ID or local directory path.
@@ -878,16 +848,16 @@ def model_free_quantize(
             logger.warning(f"Shard not found: {shard_name}, skipping")
             continue
 
-        # Quantize (GPU concurrent or CPU serial, chosen inside _process_shard)
         output_tensors, quantized, ignored = _process_shard(
             shard_path=shard_path,
             device=device,
             matcher=matcher,
         )
         memory_monitor.update()
-        mem_summary = memory_monitor.get_summary()
-        logger.info(f"Finished quantizing shard {shard_name}: {len(quantized)} layers")
-        logger.info(f"Memory usage: {mem_summary}")
+        clear_memory()
+        if len(shard_names) > 1:
+            mem_summary = memory_monitor.get_summary()
+            logger.info(f"Memory usage: {mem_summary}")
 
         all_quantized_layers.extend(quantized)
         all_ignored_layers.extend(ignored)

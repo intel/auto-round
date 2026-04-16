@@ -462,7 +462,7 @@ auto_round meta-llama/Llama-3.2-1B-Instruct \
   --model_free \
   --scheme W4A16 \
   --layer_config "{k_proj:{bits:8},v_proj:{bits:8}}" \
-  --ignore_layers "lm_head" \
+  --ignore_layers "mlp" \
   --output_dir ./int4-llama
 ```
 
@@ -487,7 +487,7 @@ model_free_quantize(
         ".*k_proj": {"bits": 8, "group_size": 32},
         ".*v_proj": {"bits": 8, "group_size": 32},
     },
-    ignore_layers="lm_head",
+    ignore_layers="mlp",
 )
 ```
 
