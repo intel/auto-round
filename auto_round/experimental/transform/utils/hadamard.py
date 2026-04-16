@@ -137,7 +137,7 @@ def _matmul_hadU(X: torch.Tensor) -> torch.Tensor:
         output[:, :, 0, :] = input[:, :, 0, :] + input[:, :, 1, :]
         output[:, :, 1, :] = input[:, :, 0, :] - input[:, :, 1, :]
         output = output.view(input.shape[0], input.shape[1], -1)
-        (input, output) = (output, input)
+        input, output = (output, input)
     assert input.shape[1] == K
     del output
 

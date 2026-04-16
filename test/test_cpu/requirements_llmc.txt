@@ -1,1 +1,2 @@
-llmcompressor @ git+https://github.com/vllm-project/llm-compressor.git@370c04c34191c0e5fb88cf889e16578bf8c7fe20
+llmcompressor @ git+https://github.com/vllm-project/llm-compressor.git@main
+compressed-tensors @ git+https://github.com/vllm-project/compressed-tensors.git@main

@@ -138,11 +138,7 @@ stages:
                   if [ ${{ pair.value.PART }} -eq 0 ]; then
                     export UV_NO_CACHE=0
                     bash .azure-pipelines/scripts/cuda_unit_test/run_cuda_ut.sh \
-                      --test_case=sglang
-                    bash .azure-pipelines/scripts/cuda_unit_test/run_cuda_ut.sh \
-                      --test_case=llmc
-                    bash .azure-pipelines/scripts/cuda_unit_test/run_cuda_ut.sh \
-                      --test_case=vllm
+                      --test_case=specific
                   else
                     bash .azure-pipelines/scripts/cuda_unit_test/run_cuda_ut.sh \
                       --test_case=all \

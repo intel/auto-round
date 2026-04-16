@@ -44,8 +44,8 @@ class TestAutoRound:
     @require_gptqmodel
     def test_mixed_gptqmodel(self, dataloader):
         layer_config = {
-            "k_proj": {"bits": 8},  # part name
-            "lm_head": {"bits": 4},  # set lm_head quant
+            "k_proj": {"scheme": "W8A16"},  # part name
+            "lm_head": {"scheme": "w4a16"},  # set lm_head quant
             "fc1": {"bits": 16},
             "model.decoder.layers.0.self_attn.v_proj": {"bits": 16},
             "model.decoder.layers.0.self_attn.q_proj": {"bits": 8},  # full name

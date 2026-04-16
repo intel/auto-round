@@ -131,6 +131,27 @@ class ShardWriter:
             self.current_shard_tensors[name] = tensor
             self.current_shard_size += t_size
 
+    def _handle_tied_weights(self):
+        """
+        Detects tied weights in the current shard and ensures they are only saved once.
+        This is done by tracking storage pointers of tensors and skipping duplicates.
+        """
+        from collections import defaultdict
+
+        storage_map = set()
+        filtered_tensors = {}
+
+        for name, tensor in self.current_shard_tensors.items():
+            if not isinstance(tensor, torch.Tensor):
+                filtered_tensors[name] = tensor
+                continue
+
+            ptr = tensor.untyped_storage().data_ptr()
+            if ptr not in storage_map:
+                storage_map.add(ptr)
+                filtered_tensors[name] = tensor
+        self.current_shard_tensors = filtered_tensors
+
     def _flush_shard(self):
         if not self.current_shard_tensors:
             return
@@ -138,6 +159,7 @@ class ShardWriter:
         self.shard_counter += 1
         tmp_name = f"model-shard-{self.shard_counter:05d}.{self.shard_suffix}"
         tmp_path = os.path.join(self.output_dir, tmp_name)
+        self._handle_tied_weights()
 
         if self.use_safetensors:
             from safetensors.torch import save_file

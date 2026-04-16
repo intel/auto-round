@@ -349,6 +349,8 @@ def save_quantized_as_autoround(
         image_processor.save_pretrained(processor_output_dir)
     if quantization_config.get("act_bits", 16) <= 8:
         dtype = torch.bfloat16
+    elif "awq" in quantization_config.get("packing_format", "auto_round:auto_gptq"):
+        dtype = torch.float16  ## awq vllm kernel only supports float16 on cuda
     else:
         dtype = None
     save_model(model, model_output_dir, safe_serialization=safe_serialization, dtype=dtype)

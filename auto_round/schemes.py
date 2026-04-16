@@ -36,7 +36,7 @@ class QuantizationScheme:
     act_dynamic: Optional[bool] = None
     super_bits: Optional[int] = None
     super_group_size: Optional[int] = None
-    transform_config: Optional[dict] = None
+    hadamard_config: Optional[dict] = None
 
     @classmethod
     def from_dict(cls, config: dict):
@@ -88,7 +88,7 @@ class QuantizationScheme:
                 continue
             self_val = getattr(self, field)
             other_val = getattr(other, field)
-            # Treat None and empty dict as equivalent for dict fields like transform_config
+            # Treat None and empty dict as equivalent for dict fields like hadamard_config
             if self_val != other_val:
                 if isinstance(self_val, dict) and not self_val and other_val is None:
                     continue
@@ -228,6 +228,18 @@ MXFP8_RCEIL = QuantizationScheme.from_dict(
     }
 )
 
+MXINT4 = QuantizationScheme.from_dict(
+    {
+        "bits": 4,
+        "group_size": 32,
+        "data_type": "mx_int",
+        "act_bits": 4,
+        "act_data_type": "mx_int",
+        "act_group_size": 32,
+        "act_sym": True,
+        "act_dynamic": True,
+    }
+)
 
 NVFP4 = QuantizationScheme.from_dict(
     {
@@ -330,6 +342,7 @@ PRESET_SCHEMES = {
     "W4A16_MIXED": W4A16,
     "INT8_W8A8": INT8_W8A8,
     "FP8_BLOCK": FP8_BLOCK,
+    "MXINT4": MXINT4,
 }
 from auto_round.export.export_to_gguf.config import GGUF_CONFIG
 

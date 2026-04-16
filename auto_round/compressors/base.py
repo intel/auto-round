@@ -56,6 +56,7 @@ from auto_round.compressors.utils import (
 )
 from auto_round.data_type import QUANT_FUNC_WITH_DTYPE
 from auto_round.data_type.utils import reshape_pad_tensor_by_group_size, update_block_global_scale_if_needed
+from auto_round.experimental.transform.hadamard_config import HadamardConfig
 from auto_round.export.export_to_gguf.config import GGUF_INNER_CONFIG
 from auto_round.formats import OutputFormat, get_formats
 from auto_round.logger import logger
@@ -91,6 +92,7 @@ from auto_round.utils import (
     get_lm_head_name,
     get_module,
     global_state,
+    hook_ngram_embeddings_on_cpu,
     htcore,
     is_auto_device_mapping,
     is_debug_mode,
@@ -150,7 +152,7 @@ SERIALIZATION_KEYS = (
     "super_bits",
     "super_group_size",
     "to_quant_block_names",
-    "transform_config",
+    "hadamard_config",
 )
 
 
@@ -201,6 +203,7 @@ class BaseCompressor(object):
         disable_opt_rtn: bool | None = None,
         seed: int = 42,
         low_cpu_mem_usage: bool = True,
+        hadamard_config: str | dict | HadamardConfig | None = None,
         **kwargs,
     ):
         """Initialize AutoRound with quantization and tuning configuration.
@@ -474,7 +477,10 @@ class BaseCompressor(object):
             disable_opt_rtn = False
 
         if self.iters > 0 and is_block_wfp8(self):
-            logger.warning("RTN is recommended since it shows even better accuracy for block-wise fp8 quantization.")
+            logger.warning(
+                "RTN is recommended as it achieves accuracy comparable to tuning for block-wise FP8 quantization "
+                "while being significantly faster. You can set `--iters 0 --disable_opt_rtn` to enable RTN mode."
+            )
 
         # Important Note! This is not very robust, do NOT rely on it to do high risky thing
         self.is_moe_model = is_moe_model(self.model)
@@ -552,7 +558,18 @@ class BaseCompressor(object):
             except (ImportError, ModuleNotFoundError):
                 logger.error("algorithm extension import error, fallback to default mode")
 
-        self.transform_config = kwargs.pop("transform_config", {})
+        # apply hadamard transform
+        if hadamard_config:
+            from auto_round.experimental.transform.apply import apply_hadamard_transform
+            from auto_round.experimental.utils import check_supported_schemes, normalize_hadamard_config
+
+            check_supported_schemes(self.scheme)
+
+            self.model = apply_hadamard_transform(
+                self.model, hadamard_config, need_calibration=True if self.iters > 0 else False
+            )
+
+            self.hadamard_config = normalize_hadamard_config(hadamard_config)
 
     def _gen_auto_scheme(self) -> dict[str, dict]:
         if self.mllm:
@@ -1316,7 +1333,9 @@ class BaseCompressor(object):
             tokenizer=self.tokenizer,
         )
 
-    @torch.inference_mode()
+    # Use no_grad instead of inference mode
+    # https://github.com/intel/auto-round/issues/1620
+    @torch.no_grad()
     def _quantize_rtn(self) -> tuple[torch.nn.Module, dict[str, Any]]:
         """Quantize all modules in the model using RTN (Round-To-Nearest) strategy.
 
@@ -1402,7 +1421,7 @@ class BaseCompressor(object):
             if use_blockwise_quantization:  # The ram usage is a little higher
                 all_to_quantized_module_names = list(dict.fromkeys(all_to_quantized_module_names))
 
-                all_blocks = self.quant_block_list if self.quant_block_list else get_block_names(self.model)
+                all_blocks = self.quant_block_list or get_block_names(self.model)
                 pbar = tqdm(range(sum(len(block) for block in all_blocks)))
                 for block_names in all_blocks:
                     for block_name in block_names:
@@ -1495,7 +1514,7 @@ class BaseCompressor(object):
         """
         all_to_quantized_module_names = list(set(all_to_quantized_module_names))
 
-        all_blocks = self.quant_block_list if self.quant_block_list else get_block_names(self.model)
+        all_blocks = self.quant_block_list or get_block_names(self.model)
         if not all_blocks:
             raise ValueError("Could not find any blocks. Check the model or quant_block_list.")
 
@@ -1555,7 +1574,11 @@ class BaseCompressor(object):
                 block = convert_module_to_hp_if_necessary(block, dtype=self.amp_dtype, device=self.device)
                 update_block_global_scale_if_needed(block, self.data_type, self.group_size)
                 self._register_act_max_hook(block)
-                if is_auto_device_mapping(self.device_map) and len(self.device_list) > 1:
+                if (
+                    is_auto_device_mapping(self.device_map)
+                    and len(self.device_list) > 1
+                    and not getattr(self, "is_diffusion", False)
+                ):
                     set_auto_device_map_for_block_with_tuning(
                         block, self.device_map, input_ids, self.low_gpu_mem_usage, self.batch_size, self.device
                     )
@@ -2194,8 +2217,15 @@ class BaseCompressor(object):
                     self.model(*data_new, **kwargs)
                 else:
                     self.model(**data_new, **kwargs)
-            except NotImplementedError:
-                pass
+            except NotImplementedError as error:
+                error_msg = str(error)
+                # Raise NotImplementedError to fallback to CUDA device
+                if "flash_attn::" in error_msg and "CPU" in error_msg:
+                    raise NotImplementedError(
+                        "Could not run 'flash_attn::_flash_attn_varlen_forward' with arguments from the 'CPU' backend."
+                    )
+                else:
+                    pass
             except RuntimeError as error:
                 error_msg = str(error)
                 if "The expanded size of the tensor" in str(error_msg) and "must match the existing size" in error_msg:
@@ -2243,6 +2273,9 @@ class BaseCompressor(object):
             layer_names = []
         if layer_names is None:
             layer_names = []
+
+        calibrate_on_cpu = False
+        cannot_calibrate_on_cpu = False
         if self.low_gpu_mem_usage or (
             len(block_names) == 1
             and len(layer_names) == 0
@@ -2250,8 +2283,19 @@ class BaseCompressor(object):
             and (last_cache_name is None or last_cache_name in block_names)
         ):
             # low_gpu_mem_usage or calibrate only the embedding layer, which is also very fast on CPU
-            all_inputs = self.cache_inter_data(block_names, nsamples, layer_names=[], last_cache_name=last_cache_name)
-        else:
+            calibrate_on_cpu = True
+            try:
+                all_inputs = self.cache_inter_data(
+                    block_names, nsamples, layer_names=[], last_cache_name=last_cache_name
+                )
+            except NotImplementedError as error:
+                error_msg = str(error)
+                if "flash_attn::" in error_msg and "CPU" in error_msg:
+                    cannot_calibrate_on_cpu = True  # fallback to GPU when flash attention is not supported on CPU
+                else:
+                    raise error
+
+        if not calibrate_on_cpu or cannot_calibrate_on_cpu:
             try:
                 if any(p.device.type == "meta" for p in self.model.parameters()):
                     materialize_model_(self.model)
@@ -2296,13 +2340,15 @@ class BaseCompressor(object):
                                 "No non-CPU device available in accelerate's reported memory. "
                                 "Falling back to CPU caching."
                             )
-
+                        # Keep ngram_embeddings on CPU
+                        has_ngram_embeddings, raw_ngram_embeddings = hook_ngram_embeddings_on_cpu(self.model)
                         new_max_memory = get_balanced_memory(
                             self.model,
                             max_memory=new_max_memory,
                             no_split_module_classes=no_split_modules,
                         )
-                        self.model.tie_weights()
+                        if hasattr(self.model, "tie_weights") and callable(self.model.tie_weights):
+                            self.model.tie_weights()
                         device_map = infer_auto_device_map(
                             self.model, max_memory=new_max_memory, no_split_module_classes=no_split_modules
                         )
@@ -2313,8 +2359,9 @@ class BaseCompressor(object):
                             )
 
                         try:
-
                             self.model = dispatch_model(self.model, device_map=device_map)
+                            if has_ngram_embeddings:
+                                self.model.model.ngram_embeddings = raw_ngram_embeddings
                         except ValueError as e:
                             if "offload_dir" in e.__str__():
                                 logger.warning(
@@ -2327,7 +2374,6 @@ class BaseCompressor(object):
                             else:
                                 raise
                     else:
-
                         self.model = self.model.to(self.device)
 
                 all_inputs = self.cache_inter_data(
@@ -2336,7 +2382,9 @@ class BaseCompressor(object):
                 if hasattr(self.model, "hf_device_map") and len(self.model.hf_device_map) > 1:
                     accelerate.hooks.remove_hook_from_submodules(self.model)
 
-            except torch.OutOfMemoryError:
+            except torch.OutOfMemoryError as e:
+                if cannot_calibrate_on_cpu:
+                    raise e
                 cuda_error_msg = traceback.format_exc()
                 try:
                     logger.info("switch to cpu to cache block inputs")
@@ -2397,13 +2445,16 @@ class BaseCompressor(object):
         calib_bs = self.batch_size
         self.hook_handles = []
         self._replace_forward()
-        self.calib(nsamples, calib_bs)
-        self._recover_forward()
+        try:
+            self.calib(nsamples, calib_bs)
+        finally:
+            # Use finally to recover_forward and delattr in case of that
+            # self.calib raises NotImplementedError, such as: flash_attn on CPU.
+            self._recover_forward()
+            for attr in ("last_cache_name", "_cache_target_set", "_cache_seen_targets", "to_cached_layers"):
+                if hasattr(self, attr):
+                    delattr(self, attr)
         res = self.inputs
-        del self.last_cache_name
-        del self._cache_target_set
-        del self._cache_seen_targets
-        del self.to_cached_layers
         if tmp_dtype is not None:
             self.model = self.model.to(tmp_dtype)
 
@@ -2595,7 +2646,6 @@ class BaseCompressor(object):
 
     def _replace_forward(self):
         """Replaces the forward function."""
-
         for n, m in self.model.named_modules():
             if n in self.to_cached_layers and type(m) not in self.supported_types:  ##block
                 m.orig_forward = m.forward
@@ -2961,7 +3011,11 @@ class BaseCompressor(object):
         if auto_offload:
             # card_0_in_high_risk indicates that card_0 memory is already in high usage (90%) w/o any weights
             # loss_device is used to calculate loss on the second device if available and card_0_in_high_risk
-            if is_auto_device_mapping(self.device_map) and len(self.device_list) > 1:
+            if (
+                is_auto_device_mapping(self.device_map)
+                and len(self.device_list) > 1
+                and not getattr(self, "is_diffusion", False)
+            ):
                 card_0_in_high_risk, loss_device = set_auto_device_map_for_block_with_tuning(
                     block, self.device_map, input_ids, self.low_gpu_mem_usage, self.batch_size, device
                 )
@@ -3291,6 +3345,8 @@ class BaseCompressor(object):
             )
             if hasattr(model, "config"):
                 del m.config
+            if self.enable_torch_compile:
+                torch._dynamo.reset()
             if self.is_immediate_packing:
                 for n, tmp_m in m.named_modules():
                     if not (hasattr(tmp_m, "bits") and check_to_quantized(tmp_m)):
@@ -3362,6 +3418,7 @@ class BaseCompressor(object):
             serialization_dict = {}
             for key in SERIALIZATION_KEYS:
                 serialization_dict[key] = getattr(self, key)
+
             from auto_round.version import __version__
 
             serialization_dict["autoround_version"] = __version__
@@ -3401,8 +3458,8 @@ class BaseCompressor(object):
                 continue
             layer = get_module(self.model, key)
             if layer is None:
-                logger.error(f"could not find layer {key} in the model, exit...")
-                exit(-1)
+                logger.warning_once(f"could not find layer {key} in the model, skipping")
+                continue
             if type(layer) in self.supported_types and check_to_quantized(self.layer_config[key]):
                 layer_names.append(key)
 

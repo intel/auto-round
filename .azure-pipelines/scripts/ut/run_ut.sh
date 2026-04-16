@@ -96,7 +96,7 @@ function run_unit_test() {
 }
 
 function run_llmc_unit_test() {
-    uv pip install -r /auto-round/test/test_cpu/requirements_llmc.txt
+    BUILD_TYPE="nightly" uv pip install -r /auto-round/test/test_cpu/requirements_llmc.txt
     uv pip uninstall auto-round
     cd /auto-round && uv pip install .
 
