@@ -118,6 +118,15 @@ def tiny_flux_model_path():
         num_layers=1,
         is_diffusion=True,
         from_config=True,
+        config_overrides={
+            "num_attention_heads": 2,
+            "attention_head_dim": 128,
+            "joint_attention_dim": 256,
+            "pooled_projection_dim": 256,
+            "hidden_size": 256,
+            "max_position_embeddings": 128,
+            "intermediate_size": 256,
+        },
     )
     yield tiny_model_path
     shutil.rmtree(tiny_model_path, ignore_errors=True)
