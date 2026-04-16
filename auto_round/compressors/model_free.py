@@ -75,7 +75,7 @@ import torch
 from auto_round import envs
 from auto_round.logger import logger
 from auto_round.schemes import PRESET_SCHEMES, QuantizationScheme, preset_name_to_scheme
-from auto_round.utils.common import compress_layer_names
+from auto_round.utils.common import compress_layer_names, to_standard_regex
 from auto_round.utils.device import memory_monitor, clear_memory
 from auto_round.utils.missing_tensors import quantize_weight_rtn, split_fused_expert_tensors
 
@@ -229,10 +229,12 @@ class _PatternMatcher:
 
         # ---- Precompile layer_config patterns ----
         # Each entry: (compiled_regex | None, plain_string | None, cfg_dict)
+        # Uses to_standard_regex for consistent pattern matching with
+        # set_layer_config (auto-wrapping plain names with .* etc.)
         self._compiled_lc: list[tuple[re.Pattern | None, str | None, dict]] = []
         for pattern, cfg in layer_config.items():
             try:
-                self._compiled_lc.append((re.compile(pattern), None, cfg))
+                self._compiled_lc.append((re.compile(to_standard_regex(pattern)), None, cfg))
             except re.error:
                 self._compiled_lc.append((None, pattern, cfg))
 
@@ -244,17 +246,27 @@ class _PatternMatcher:
 
     @staticmethod
     def _build_ignore_regex(patterns: list[str]) -> re.Pattern | None:
-        """Merge ignore patterns into one compiled regex."""
+        """Merge ignore patterns into one compiled regex.
+
+        Uses :func:`~auto_round.utils.common.to_standard_regex` so that
+        plain names are automatically wrapped with ``.*`` on both sides
+        (substring matching) and regex meta-characters in user patterns
+        are preserved — consistent with ``set_layer_config``.
+        """
         if not patterns:
             return None
         parts: list[str] = []
         for p in patterns:
             if p.endswith("."):
-                escaped = re.escape(p.rstrip("."))
-                # "stripped." as substring OR "stripped" at end-of-string
-                parts.append(f"{escaped}(?:\\.|$)")
+                # Pattern ending with '.' (e.g. "layer.1.") — match as prefix
+                std = to_standard_regex(p.rstrip("."))
+                # Replace trailing .* with a dot-or-end anchor so "layer.1"
+                # won't accidentally match "layer.10"
+                if std.endswith(".*"):
+                    std = std[:-2]
+                parts.append(f"{std}(?:\\.|$)")
             else:
-                parts.append(re.escape(p))
+                parts.append(to_standard_regex(p))
         return re.compile("|".join(parts))
 
     # ---- public API ----
@@ -708,6 +720,12 @@ def model_free_quantize(
 
     # ---- Parse layer_config ----
     layer_config = copy.deepcopy(layer_config) if layer_config else {}
+    # Normalize layer_config keys: append '.' to names ending with a digit
+    # to avoid partial matches (e.g. "layer.1" matching "layer.10")
+    for key in list(layer_config.keys()):
+        if key and key[-1].isdigit():
+            layer_config[key + "."] = layer_config.pop(key)
+
     # Normalize layer_config values
     for key, val in list(layer_config.items()):
         if isinstance(val, str):
@@ -724,6 +742,9 @@ def model_free_quantize(
     ignore_patterns: list[str] = []
     if ignore_layers:
         ignore_patterns = [p.strip() for p in ignore_layers.replace(" ", "").split(",") if p.strip()]
+        # Append '.' to names ending with a digit to avoid partial matches
+        # e.g. "layer.1" -> "layer.1." so it won't match "layer.10", "layer.11", etc.
+        ignore_patterns = [p + "." if p and p[-1].isdigit() else p for p in ignore_patterns]
 
     # By default keep lm_head in full precision; embed layers are always
     # skipped via _BLOCK_NAME_TO_IGNORE regardless of quant_lm_head

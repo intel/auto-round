@@ -173,6 +173,31 @@ class TestPatternMatcherIgnore:
         m = _matcher()
         assert m.should_ignore("anything.weight") is False
 
+    def test_broad_substring_matches_all_mlp_layers(self):
+        """A simple pattern like 'mlp' should match ALL layers containing 'mlp'."""
+        m = _matcher(ignore=["mlp"])
+        assert m.should_ignore("model.layers.0.mlp.fc1.weight") is True
+        assert m.should_ignore("model.layers.0.mlp.fc2.weight") is True
+        assert m.should_ignore("model.layers.0.mlp.gate_proj.weight") is True
+        assert m.should_ignore("model.layers.5.mlp.up_proj.weight") is True
+        # Non-mlp layers should NOT match
+        assert m.should_ignore("model.layers.0.self_attn.q_proj.weight") is False
+        assert m.should_ignore("lm_head.weight") is False
+
+    def test_broad_substring_self_attn(self):
+        """Pattern 'self_attn' should match all attention layers."""
+        m = _matcher(ignore=["self_attn"])
+        assert m.should_ignore("model.layers.0.self_attn.q_proj.weight") is True
+        assert m.should_ignore("model.layers.0.self_attn.k_proj.weight") is True
+        assert m.should_ignore("model.layers.0.mlp.fc1.weight") is False
+
+    def test_cache_consistency(self):
+        """Repeated calls return same result (cache path)."""
+        m = _matcher(ignore=["mlp"])
+        name = "model.layers.0.mlp.fc1.weight"
+        assert m.should_ignore(name) is True
+        assert m.should_ignore(name) is True  # cached
+
 
 class TestPatternMatcherSkip:
     def test_shared_expert_gate(self):
@@ -547,6 +572,54 @@ class TestModelFreeQuantize:
         assert "lm_head.weight" in keys
         # Should NOT have lm_head.qweight
         assert "lm_head.qweight" not in keys
+
+    def test_ignore_layers_broad_substring(self, tmp_path):
+        """ignore_layers='mlp' should keep ALL mlp layers in full precision."""
+        tensors = {
+            "model.layers.0.mlp.fc1.weight": torch.randn(512, 128),
+            "model.layers.0.mlp.fc2.weight": torch.randn(128, 512),
+            "model.layers.0.self_attn.q_proj.weight": torch.randn(128, 128),
+            "model.layers.0.self_attn.k_proj.weight": torch.randn(128, 128),
+            "model.layers.0.mlp.fc1.bias": torch.randn(512),
+            "lm_head.weight": torch.randn(1000, 128),
+        }
+        model_dir = _make_model_dir(
+            tmp_path,
+            {"architectures": ["LlamaForCausalLM"], "model_type": "llama"},
+            tensors,
+        )
+        output_dir = str(tmp_path / "output")
+
+        model_free_quantize(
+            model_name_or_path=model_dir,
+            output_dir=output_dir,
+            scheme="W4A16",
+            ignore_layers="mlp",
+        )
+
+        st_files = [f for f in os.listdir(output_dir) if f.endswith(".safetensors")]
+        with safe_open(os.path.join(output_dir, st_files[0]), framework="pt") as f:
+            keys = set(f.keys())
+
+        # mlp layers should be kept as original weight (NOT quantized)
+        assert "model.layers.0.mlp.fc1.weight" in keys
+        assert "model.layers.0.mlp.fc2.weight" in keys
+        assert "model.layers.0.mlp.fc1.qweight" not in keys
+        assert "model.layers.0.mlp.fc2.qweight" not in keys
+
+        # self_attn layers should be quantized
+        assert "model.layers.0.self_attn.q_proj.qweight" in keys
+        assert "model.layers.0.self_attn.k_proj.qweight" in keys
+        assert "model.layers.0.self_attn.q_proj.weight" not in keys
+
+        # Check extra_config marks mlp layers as 16-bit
+        with open(os.path.join(output_dir, "config.json")) as f:
+            cfg = json.load(f)
+        extra = cfg["quantization_config"].get("extra_config", {})
+        mlp_ignored = [k for k in extra if "mlp" in k]
+        assert len(mlp_ignored) >= 2, f"Expected mlp layers in extra_config, got: {extra}"
+        for k in mlp_ignored:
+            assert extra[k]["bits"] == 16
 
     def test_layer_config_override(self, tmp_path):
         model_dir = _make_model_dir(tmp_path, _SIMPLE_CONFIG, _SIMPLE_TENSORS)
