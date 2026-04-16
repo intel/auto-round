@@ -617,6 +617,9 @@ def _woq_quantize_missing_tensors(target_dir: str, missing_tensors_dict: dict) -
                     )
             if weight_keys:
                 existing = qcfg.get("block_name_to_quantize") or []
+                # In cases where this attribution is lacking
+                if not existing:
+                    return qcfg
                 if isinstance(existing, str):
                     existing = [b.strip() for b in existing.split(",") if b.strip()]
                 existing_set = set(existing)
