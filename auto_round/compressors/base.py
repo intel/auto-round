@@ -68,6 +68,7 @@ from auto_round.schemes import (
     _handle_special_schemes,
     get_gguf_scheme,
     preset_name_to_scheme,
+    scheme_to_preset_name,
 )
 from auto_round.special_model_handler import get_predefined_ignore_layers, update_module
 from auto_round.utils import (
@@ -560,16 +561,12 @@ class BaseCompressor(object):
 
         # apply hadamard transform
         if hadamard_config:
+            logger.info("Applying Hadamard transform to the model.")
             from auto_round.experimental.transform.apply import apply_hadamard_transform
-            from auto_round.experimental.utils import check_supported_schemes, normalize_hadamard_config
+            from auto_round.experimental.utils import normalize_hadamard_config
 
-            check_supported_schemes(self.scheme)
-
-            self.model = apply_hadamard_transform(
-                self.model, hadamard_config, need_calibration=True if self.iters > 0 else False
-            )
-
-            self.hadamard_config = normalize_hadamard_config(hadamard_config)
+            self.hadamard_config = normalize_hadamard_config(hadamard_config, self.data_type)
+            self.model = apply_hadamard_transform(self.model, self.hadamard_config, data_type=self.data_type)
 
     def _gen_auto_scheme(self) -> dict[str, dict]:
         if self.mllm:
