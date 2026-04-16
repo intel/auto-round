@@ -146,7 +146,7 @@ class ShardWriter:
                 filtered_tensors[name] = tensor
                 continue
 
-            ptr = tensor.untyped_storage().data_ptr() + tensor.storage_offset()*tensor.element_size()
+            ptr = tensor.untyped_storage().data_ptr() + tensor.storage_offset() * tensor.element_size()
             if ptr not in storage_map:
                 storage_map.add(ptr)
                 filtered_tensors[name] = tensor
