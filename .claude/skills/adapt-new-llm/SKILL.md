@@ -48,6 +48,7 @@ layer hierarchy, block detection may fail.
 
 ```python
 from auto_round.utils import get_block_names
+
 model = ...  # loaded model
 print(get_block_names(model))
 ```
@@ -79,13 +80,9 @@ def _get_your_model_multimodal_block(model, quant_vision=False):
     block_names = []
 
     if quant_vision and hasattr(model, "encoder"):
-        block_names.append([
-            f"encoder.layers.{i}" for i in range(len(model.encoder.layers))
-        ])
+        block_names.append([f"encoder.layers.{i}" for i in range(len(model.encoder.layers))])
 
-    block_names.append([
-        f"decoder.layers.{i}" for i in range(len(model.decoder.layers))
-    ])
+    block_names.append([f"decoder.layers.{i}" for i in range(len(model.decoder.layers))])
 
     return block_names
 
@@ -124,18 +121,18 @@ If auto-unfusing fails, create a custom module in
 
 ```python
 """Unfuse fused MoE weights for YourModel."""
+
 import torch
 import torch.nn as nn
 from auto_round.modeling.fused_moe.replace_modules import register_replacement
+
 
 @register_replacement("YourMoELayer")
 def replace_your_moe_layer(module, name, model):
     """Replace FusedMoE with per-expert nn.Linear layers."""
     experts = nn.ModuleList()
     for i in range(module.num_experts):
-        linear = nn.Linear(
-            module.hidden_size, module.intermediate_size, bias=False
-        )
+        linear = nn.Linear(module.hidden_size, module.intermediate_size, bias=False)
         linear.weight.data = module.weight[i].clone()
         experts.append(linear)
     return experts
@@ -180,6 +177,7 @@ def _handle_special_model(model):
     ...
     if hasattr(model, "config") and model.config.model_type == "your_model_type":
         from functools import partial
+
         model.forward = partial(_your_model_forward, model)
     return model
 ```
@@ -226,6 +224,7 @@ If you can import the class:
 
 ```python
 from your_library import YourLinear
+
 SUPPORTED_LAYER_TYPES = SUPPORTED_LAYER_TYPES + (YourLinear,)
 ```
 
@@ -262,6 +261,7 @@ def test_your_model_quantization():
 
     # Verify inference works
     from auto_round.utils import model_infer
+
     output = model_infer(compressed_model, tokenizer, "Hello world")
     assert output is not None
 ```
