@@ -29,10 +29,8 @@ from auto_round.compressors.model_free import (
     _is_moe_config,
     _list_safetensor_shards,
     _load_config,
+    _PatternMatcher,
     _process_shard,
-    _resolve_layer_scheme,
-    _should_ignore_layer,
-    _should_skip_quantization,
     _write_index_file,
     _write_output_shard,
     get_predefined_ignore_layers_from_config,
@@ -131,99 +129,108 @@ class TestIsEligibleWeight:
 
 
 # ===========================================================================
-#  Test: _should_ignore_layer
+#  Test: _PatternMatcher (should_ignore / should_skip / resolve_scheme)
 # ===========================================================================
 
 
-class TestShouldIgnoreLayer:
+def _matcher(ignore=None, layer_config=None, default=None):
+    """Shorthand to build a _PatternMatcher for tests."""
+    return _PatternMatcher(
+        ignore if ignore is not None else [],
+        layer_config if layer_config is not None else {},
+        default if default is not None else {},
+    )
+
+
+class TestPatternMatcherIgnore:
     def test_substring_match(self):
-        assert _should_ignore_layer("model.layers.0.mlp.fc1.weight", ["mlp.fc1"]) is True
+        m = _matcher(ignore=["mlp.fc1"])
+        assert m.should_ignore("model.layers.0.mlp.fc1.weight") is True
 
     def test_no_match(self):
-        assert _should_ignore_layer("model.layers.0.mlp.fc1.weight", ["no_match"]) is False
+        m = _matcher(ignore=["no_match"])
+        assert m.should_ignore("model.layers.0.mlp.fc1.weight") is False
 
     def test_trailing_dot_pattern_with_model_prefix(self):
-        """Trailing-dot patterns should match even with 'model.' prefix."""
-        assert _should_ignore_layer("model.layers.0.mlp.fc1.weight", ["layers.0."]) is True
+        m = _matcher(ignore=["layers.0."])
+        assert m.should_ignore("model.layers.0.mlp.fc1.weight") is True
 
     def test_trailing_dot_pattern_no_partial_number_match(self):
-        """'layers.4.' should NOT match 'layers.45.xxx'."""
-        assert _should_ignore_layer("model.layers.45.mlp.fc1.weight", ["layers.4."]) is False
+        m = _matcher(ignore=["layers.4."])
+        assert m.should_ignore("model.layers.45.mlp.fc1.weight") is False
 
     def test_trailing_dot_pattern_exact_number(self):
-        assert _should_ignore_layer("model.layers.45.mlp.fc1.weight", ["layers.45."]) is True
+        m = _matcher(ignore=["layers.45."])
+        assert m.should_ignore("model.layers.45.mlp.fc1.weight") is True
 
     def test_multiple_patterns(self):
-        patterns = ["lm_head", "embed_tokens"]
-        assert _should_ignore_layer("lm_head.weight", patterns) is True
-        assert _should_ignore_layer("model.embed_tokens.weight", patterns) is True
-        assert _should_ignore_layer("model.layers.0.fc1.weight", patterns) is False
+        m = _matcher(ignore=["lm_head", "embed_tokens"])
+        assert m.should_ignore("lm_head.weight") is True
+        assert m.should_ignore("model.embed_tokens.weight") is True
+        assert m.should_ignore("model.layers.0.fc1.weight") is False
 
     def test_empty_patterns(self):
-        assert _should_ignore_layer("anything.weight", []) is False
+        m = _matcher()
+        assert m.should_ignore("anything.weight") is False
 
 
-# ===========================================================================
-#  Test: _should_skip_quantization
-# ===========================================================================
-
-
-class TestShouldSkipQuantization:
+class TestPatternMatcherSkip:
     def test_shared_expert_gate(self):
-        assert _should_skip_quantization("model.layers.0.shared_expert_gate.weight") is True
+        m = _matcher()
+        assert m.should_skip("model.layers.0.shared_expert_gate.weight") is True
 
     def test_mlp_gate(self):
-        assert _should_skip_quantization("model.layers.0.mlp.gate.weight") is True
+        m = _matcher()
+        assert m.should_skip("model.layers.0.mlp.gate.weight") is True
 
     def test_embed(self):
-        """embed must be caught by the embed pattern."""
-        assert _should_skip_quantization("model.visual.pos_embed.weight") is True
-        assert _should_skip_quantization("model.language_model.embed_tokens.weight") is True
+        m = _matcher()
+        assert m.should_skip("model.visual.pos_embed.weight") is True
+        assert m.should_skip("model.language_model.embed_tokens.weight") is True
 
     def test_normal_layer_not_skipped(self):
-        assert _should_skip_quantization("model.layers.0.mlp.fc1.weight") is False
-        assert _should_skip_quantization("model.layers.0.self_attn.q_proj.weight") is False
+        m = _matcher()
+        assert m.should_skip("model.layers.0.mlp.fc1.weight") is False
+        assert m.should_skip("model.layers.0.self_attn.q_proj.weight") is False
 
 
-# ===========================================================================
-#  Test: _resolve_layer_scheme
-# ===========================================================================
-
-
-class TestResolveLayerScheme:
+class TestPatternMatcherResolveScheme:
     DEFAULT = {"bits": 4, "group_size": 128, "sym": True}
 
     def test_exact_match(self):
         lc = {"model.layers.0.mlp.fc1": {"bits": 8, "group_size": 32}}
-        result = _resolve_layer_scheme("model.layers.0.mlp.fc1.weight", lc, self.DEFAULT)
+        m = _matcher(layer_config=lc, default=self.DEFAULT)
+        result = m.resolve_scheme("model.layers.0.mlp.fc1.weight")
         assert result["bits"] == 8
         assert result["group_size"] == 32
-        assert result["sym"] is True  # inherited from default
+        assert result["sym"] is True
 
     def test_regex_match(self):
         lc = {r".*k_proj": {"bits": 8}}
-        result = _resolve_layer_scheme("model.layers.0.self_attn.k_proj.weight", lc, self.DEFAULT)
+        m = _matcher(layer_config=lc, default=self.DEFAULT)
+        result = m.resolve_scheme("model.layers.0.self_attn.k_proj.weight")
         assert result["bits"] == 8
-        assert result["group_size"] == 128  # inherited from default
+        assert result["group_size"] == 128
 
     def test_default_fallback(self):
-        result = _resolve_layer_scheme("model.layers.0.mlp.fc1.weight", {}, self.DEFAULT)
+        m = _matcher(default=self.DEFAULT)
+        result = m.resolve_scheme("model.layers.0.mlp.fc1.weight")
         assert result == self.DEFAULT
 
     def test_bits_16_returns_none(self):
         lc = {"model.layers.0.mlp.fc1": {"bits": 16}}
-        result = _resolve_layer_scheme("model.layers.0.mlp.fc1.weight", lc, self.DEFAULT)
-        assert result is None
+        m = _matcher(layer_config=lc, default=self.DEFAULT)
+        assert m.resolve_scheme("model.layers.0.mlp.fc1.weight") is None
 
     def test_bits_32_returns_none(self):
         lc = {"model.layers.0.mlp.fc1": {"bits": 32}}
-        result = _resolve_layer_scheme("model.layers.0.mlp.fc1.weight", lc, self.DEFAULT)
-        assert result is None
+        m = _matcher(layer_config=lc, default=self.DEFAULT)
+        assert m.resolve_scheme("model.layers.0.mlp.fc1.weight") is None
 
     def test_fuzzy_substring_match(self):
-        """If regex fails, fallback to substring match."""
-        lc = {"k_proj[": {"bits": 8}}  # Invalid regex, will fall back to substring
-        result = _resolve_layer_scheme("model.layers.0.self_attn.k_proj[0].weight", lc, self.DEFAULT)
+        lc = {"k_proj[": {"bits": 8}}  # Invalid regex, falls back to substring
+        m = _matcher(layer_config=lc, default=self.DEFAULT)
+        result = m.resolve_scheme("model.layers.0.self_attn.k_proj[0].weight")
         assert result is not None
         assert result["bits"] == 8
 

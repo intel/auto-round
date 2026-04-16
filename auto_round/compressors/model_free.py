@@ -76,14 +76,8 @@ from auto_round.utils.common import compress_layer_names
 from auto_round.utils.device import memory_monitor
 from auto_round.utils.missing_tensors import quantize_weight_rtn, split_fused_expert_tensors
 
-# ------------------------------------------------------------------ #
-#  Layers that should never be RTN-quantized (e.g. routing gates)     #
-# ------------------------------------------------------------------ #
 _BLOCK_NAME_TO_IGNORE = ["shared_expert_gate.", "mlp.gate.", "embed"]
 _GPU_CONCURRENT_WORKER = 64
-# ------------------------------------------------------------------ #
-#  Predefined ignore-layer rules                                       #
-# ------------------------------------------------------------------ #
 
 
 def get_predefined_ignore_layers_from_config(config: dict) -> list[str]:
@@ -136,11 +130,6 @@ def _is_moe_config(config: dict) -> bool:
         or "moe" in config.get("model_type", "").lower()
         or "moe" in ",".join(config.get("architectures", [])).lower()
     )
-
-
-# ------------------------------------------------------------------ #
-#  Helpers                                                             #
-# ------------------------------------------------------------------ #
 
 
 def _is_model_cached(model_name_or_path: str) -> bool:
@@ -196,74 +185,9 @@ def _list_safetensor_shards(source_dir: str) -> list[str]:
         raise FileNotFoundError(f"No safetensors files found in {source_dir}")
 
 
-def _should_ignore_layer(tensor_name: str, ignore_patterns: list[str]) -> bool:
-    """Check if a tensor should be ignored (kept in full precision)."""
-    layer_name = tensor_name.rsplit(".", 1)[0] if "." in tensor_name else tensor_name
-    for pattern in ignore_patterns:
-        if pattern.endswith("."):
-            # Prefix match: e.g. "layers.45." matches "model.layers.45.xxx"
-            # but not "model.layers.450.xxx"
-            stripped = pattern.rstrip(".")
-            if stripped + "." in layer_name or layer_name.endswith(stripped):
-                return True
-        elif pattern in layer_name:
-            return True
-    return False
-
-
-def _should_skip_quantization(tensor_name: str) -> bool:
-    """Check if a tensor should be skipped (routing gates, etc.)."""
-    for block_name in _BLOCK_NAME_TO_IGNORE:
-        if block_name in tensor_name:
-            return True
-    return False
-
-
-def _resolve_layer_scheme(
-    tensor_name: str,
-    layer_config: dict,
-    default_scheme: dict,
-) -> dict | None:
-    """Resolve quantization config for a specific tensor.
-
-    Returns None if the layer should be kept in full precision (bits >= 16).
-    """
-    layer_name = tensor_name.rsplit(".", 1)[0] if "." in tensor_name else tensor_name
-
-    # Check exact match first
-    if layer_name in layer_config:
-        cfg = layer_config[layer_name]
-        if cfg.get("bits", default_scheme["bits"]) >= 16:
-            return None
-        merged = {**default_scheme, **cfg}
-        return merged
-
-    # Check regex/fuzzy match
-    for pattern, cfg in layer_config.items():
-        try:
-            if re.search(pattern, layer_name):
-                if cfg.get("bits", default_scheme["bits"]) >= 16:
-                    return None
-                merged = {**default_scheme, **cfg}
-                return merged
-        except re.error:
-            if pattern in layer_name:
-                if cfg.get("bits", default_scheme["bits"]) >= 16:
-                    return None
-                merged = {**default_scheme, **cfg}
-                return merged
-
-    return default_scheme
-
-
 def _is_eligible_weight(tensor_name: str, tensor: torch.Tensor) -> bool:
     """Check if a tensor is eligible for quantization (2D Linear weight)."""
     return tensor_name.endswith(".weight") and tensor.dim() == 2
-
-
-# ------------------------------------------------------------------ #
-#  Precompiled pattern matcher with result caching                     #
-# ------------------------------------------------------------------ #
 
 
 class _PatternMatcher:
@@ -384,11 +308,6 @@ class _PatternMatcher:
         return default
 
 
-# ------------------------------------------------------------------ #
-#  Download helpers for is_streaming                             #
-# ------------------------------------------------------------------ #
-
-
 def _download_single_shard(
     model_name_or_path: str,
     shard_filename: str,
@@ -417,7 +336,7 @@ def _download_single_shard(
     return downloaded
 
 
-def _is_safetensors_file(fname: str) -> bool:
+def _is_safetensors_shard(fname: str) -> bool:
     """Return True if *fname* is a safetensors weight shard (not the index)."""
     return fname.endswith(".safetensors") and not fname.endswith(".index.json")
 
@@ -426,18 +345,12 @@ def _download_metadata_files(
     model_name_or_path: str,
     local_dir: str,
 ) -> str:
-    """Download all non-safetensors files from a model repo. Returns local dir.
-
-    This copies every file that is **not** a ``.safetensors`` weight shard
-    (config, tokenizer, index, modeling code, etc.) so that the output
-    directory is a self-contained model repo once the quantized shards are
-    written.
-    """
+    """Download all non-safetensors files from a model repo. Returns local dir."""
     os.makedirs(local_dir, exist_ok=True)
 
     if os.path.isdir(model_name_or_path):
         for fname in os.listdir(model_name_or_path):
-            if _is_safetensors_file(fname):
+            if _is_safetensors_shard(fname):
                 continue
             src = os.path.join(model_name_or_path, fname)
             dst = os.path.join(local_dir, fname)
@@ -448,31 +361,14 @@ def _download_metadata_files(
                 shutil.copy2(src, dst)
         return local_dir
 
-    from huggingface_hub import hf_hub_download, list_repo_files
+    from huggingface_hub import snapshot_download
 
-    try:
-        repo_files = list_repo_files(model_name_or_path)
-    except Exception:
-        repo_files = []
-
-    non_safetensor_files = [f for f in repo_files if not _is_safetensors_file(f)]
-
-    def _dl_one(fname: str) -> None:
-        try:
-            hf_hub_download(repo_id=model_name_or_path, filename=fname, local_dir=local_dir)
-        except Exception:
-            pass  # Not all files are mandatory
-
-    if non_safetensor_files:
-        with ThreadPoolExecutor(max_workers=8) as dl_pool:
-            list(dl_pool.map(_dl_one, non_safetensor_files))
-
+    snapshot_download(
+        repo_id=model_name_or_path,
+        local_dir=local_dir,
+        ignore_patterns=["*.safetensors"],
+    )
     return local_dir
-
-
-# ------------------------------------------------------------------ #
-#  Core: quantize a single tensor                                      #
-# ------------------------------------------------------------------ #
 
 
 def _quantize_single_tensor(
@@ -559,11 +455,6 @@ def _quantize_single_tensor(
         return layer_name, {tensor_name: tensor}, None, layer_name
 
 
-# ------------------------------------------------------------------ #
-#  Core: process a single shard                                        #
-# ------------------------------------------------------------------ #
-
-
 def _process_shard(
     shard_path: str,
     default_scheme: dict = None,
@@ -635,6 +526,7 @@ def _process_shard(
                     quantized_layers.append(q_layer)
                 if ig_layer:
                     ignored_layers.append(ig_layer)
+            memory_monitor.update()
         torch.cuda.empty_cache()
     else:
         # Serial path (CPU)
@@ -654,11 +546,6 @@ def _process_shard(
                 ignored_layers.append(ig_layer)
 
     return output_tensors, quantized_layers, ignored_layers
-
-
-# ------------------------------------------------------------------ #
-#  Build quantization config for config.json                           #
-# ------------------------------------------------------------------ #
 
 
 def _build_quantization_config(
@@ -719,11 +606,6 @@ def _build_quantization_config(
     return qconfig
 
 
-# ------------------------------------------------------------------ #
-#  Write output shard and update index                                 #
-# ------------------------------------------------------------------ #
-
-
 def _write_output_shard(
     output_dir: str,
     shard_name: str,
@@ -762,11 +644,6 @@ def _write_index_file(output_dir: str, weight_map: dict[str, str]):
         json.dump(index, f, indent=2)
 
 
-# ------------------------------------------------------------------ #
-#  Shard prefetch helper (overlaps I/O with quantization)              #
-# ------------------------------------------------------------------ #
-
-
 def _prefetch_shard(
     model_name_or_path: str,
     shard_name: str,
@@ -787,11 +664,6 @@ def _prefetch_shard(
     except Exception as e:  # pragma: no cover
         logger.warning(f"Prefetch failed for {shard_name}: {e}")
         return None
-
-
-# ------------------------------------------------------------------ #
-#  Main entry point                                                    #
-# ------------------------------------------------------------------ #
 
 
 def model_free_quantize(
@@ -1013,6 +885,13 @@ def model_free_quantize(
             matcher=matcher,
         )
         memory_monitor.update()
+        mem_summary = memory_monitor.get_summary()
+        logger.info(
+            f"Finished quantizing shard {shard_name}: {len(quantized)} layers"
+        )
+        logger.info(
+            f"Memory usage: {mem_summary}"
+        )
 
         all_quantized_layers.extend(quantized)
         all_ignored_layers.extend(ignored)
@@ -1067,7 +946,7 @@ def model_free_quantize(
     # ---- Copy non-safetensors files (tokenizer, config, modeling code, etc.) ----
     copy_src_dir = work_dir if is_streaming else source_dir
     for fname in os.listdir(copy_src_dir):
-        if _is_safetensors_file(fname):
+        if _is_safetensors_shard(fname):
             continue
         src = os.path.join(copy_src_dir, fname)
         dst = os.path.join(output_dir, fname)
