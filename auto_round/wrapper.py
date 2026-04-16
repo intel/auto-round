@@ -192,8 +192,8 @@ class WrapperLinear(torch.nn.Module):
             )
             if self.enable_torch_compile:
                 self.act_quant_func = compile_func(self.act_quant_func, self.device)
-            self._init_params("act_max_scale", p_dtype, (1), 1.0, True)
-            self._init_params("act_min_scale", p_dtype, (1), 1.0, True)
+            self._init_params("act_max_scale", p_dtype, (1), 1.0, not envs.AR_DISABLE_ACT_MINMAX_TUNING)
+            self._init_params("act_min_scale", p_dtype, (1), 1.0, not envs.AR_DISABLE_ACT_MINMAX_TUNING)
 
         # Bias tuning
         if self.enable_norm_bias_tuning:

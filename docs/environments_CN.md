@@ -79,6 +79,16 @@ export AR_DISABLE_DATASET_SUBPROCESS=true
 export AR_ACT_SCALE=0.8
 ```
 
+### AR_DISABLE_ACT_MINMAX_TUNING
+- **描述**：禁用激活量化中最小/最大缩放参数（`act_min_scale`、`act_max_scale`）的调优。启用后，这些缩放参数将固定为 1.0。
+- **默认值**：`False`（等同于 `"0"`）
+- **有效值**：`"1"`、`"true"`、`"yes"`（不区分大小写）表示禁用调优；其他值表示保持调优
+- **用途**：禁用激活最小-最大缩放参数的调优
+
+```bash
+export AR_DISABLE_ACT_MINMAX_TUNING=1
+```
+
 ## 使用示例
 
 ### 设置环境变量

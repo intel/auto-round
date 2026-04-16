@@ -79,6 +79,16 @@ export AR_DISABLE_DATASET_SUBPROCESS=true
 export AR_ACT_SCALE=0.8
 ```
 
+### AR_DISABLE_ACT_MINMAX_TUNING
+- **Description**: Disables tuning of activation min/max scale parameters (`act_min_scale`, `act_max_scale`) during quantization optimization. When enabled, these scales remain fixed at 1.0.
+- **Default**: `False` (equivalent to `"0"`)
+- **Valid Values**: `"1"`, `"true"`, `"yes"` (case-insensitive) for disabling tuning; any other value to keep tuning enabled
+- **Usage**: Set this to disable activation min-max scale tuning
+
+```bash
+export AR_DISABLE_ACT_MINMAX_TUNING=1
+```
+
 ## Usage Examples
 
 ### Setting Environment Variables
