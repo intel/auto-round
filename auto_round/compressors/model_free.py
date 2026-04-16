@@ -116,22 +116,7 @@ def get_predefined_ignore_layers_from_config(config: dict) -> list[str]:
         except Exception:
             continue
 
-    # MoE fallback: no module iteration available, use the common gate pattern
-    if not layers and _is_moe_config(config):
-        layers.append(".gate")
-
     return list(dict.fromkeys(layers))
-
-
-def _is_moe_config(config: dict) -> bool:
-    """Check if config indicates a MoE model."""
-    return (
-        config.get("num_local_experts") is not None
-        or config.get("num_experts") is not None
-        or config.get("num_experts_per_tok") is not None
-        or "moe" in config.get("model_type", "").lower()
-        or "moe" in ",".join(config.get("architectures", [])).lower()
-    )
 
 
 def _is_model_cached(model_name_or_path: str) -> bool:
@@ -459,6 +444,49 @@ def _quantize_single_tensor(
         return layer_name, {tensor_name: tensor}, None, layer_name
 
 
+def _dequant_fp8_tensors(
+    raw_tensors: dict[str, torch.Tensor],
+    block_size: list | None = None,
+) -> dict[str, torch.Tensor]:
+    """Dequantize FP8 weight tensors in-place and remove their scale tensors.
+
+    FP8 models (e.g. DeepSeek-V3-FP8) store weights as ``float8_e4m3fn``
+    with per-block scales in ``weight_scale_inv`` tensors.  This function
+    converts them back to ``bfloat16`` so that downstream RTN quantization
+    can proceed normally.
+
+    Returns a new dict with dequantized weights and scale tensors removed.
+    """
+    from auto_round.utils.weight_handler import _dequant_fp8_linear_weight
+
+    # Identify FP8 weight tensors and their scales
+    fp8_weight_names: list[str] = []
+    for name, tensor in raw_tensors.items():
+        if not name.endswith(".weight"):
+            continue
+        if tensor.dtype == torch.float8_e4m3fn or (
+            tensor.element_size() == 1 and tensor.dtype != torch.float8_e4m3fn
+        ):
+            scale_name = name.replace(".weight", ".weight_scale_inv")
+            if scale_name in raw_tensors:
+                fp8_weight_names.append(name)
+
+    if not fp8_weight_names:
+        return raw_tensors
+
+    logger.info(f"Dequantizing {len(fp8_weight_names)} FP8 weight tensors to bfloat16.")
+
+    for weight_name in fp8_weight_names:
+        scale_name = weight_name.replace(".weight", ".weight_scale_inv")
+        weight = raw_tensors[weight_name]
+        scale = raw_tensors.pop(scale_name)
+        raw_tensors[weight_name] = _dequant_fp8_linear_weight(
+            weight, scale, block_size=block_size
+        )
+
+    return raw_tensors
+
+
 def _process_shard(
     shard_path: str,
     default_scheme: dict = None,
@@ -467,6 +495,7 @@ def _process_shard(
     device: str = "cpu",
     *,
     matcher: "_PatternMatcher | None" = None,
+    fp8_block_size: list | None = None,
 ) -> tuple[dict[str, torch.Tensor], list[str], list[str]]:
     """Quantize eligible weights in a single safetensors shard.
 
@@ -510,6 +539,9 @@ def _process_shard(
 
     # Split fused expert tensors (3-D) into per-expert 2-D tensors
     raw_tensors = split_fused_expert_tensors(raw_tensors)
+
+    # Dequantize FP8 weight tensors (e.g. DeepSeek-V3-FP8) to bfloat16
+    raw_tensors = _dequant_fp8_tensors(raw_tensors, block_size=fp8_block_size)
 
     tensor_names = list(raw_tensors.keys())
     for tensor_name in tensor_names:
@@ -784,6 +816,14 @@ def model_free_quantize(
     # ---- Build precompiled pattern matcher (shared across all shards) ----
     matcher = _PatternMatcher(ignore_patterns, layer_config, default_scheme)
 
+    # ---- Detect FP8 source model (e.g. DeepSeek-V3-FP8) ----
+    fp8_block_size = None
+    quant_config = config.get("quantization_config", {})
+    if quant_config.get("quant_method") == "fp8" or quant_config.get("quantization_type") == "fp8":
+        fp8_block_size = quant_config.get("weight_block_size")
+        logger.info(f"Detected FP8 source model (block_size={fp8_block_size}). "
+                    f"FP8 weights will be dequantized before quantization.")
+
     # Discover shards
     if is_streaming:
         # Get shard list from index file or by checking the repo
@@ -873,6 +913,7 @@ def model_free_quantize(
             shard_path=shard_path,
             device=device,
             matcher=matcher,
+            fp8_block_size=fp8_block_size,
         )
         memory_monitor.update()
         clear_memory()
