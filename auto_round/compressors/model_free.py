@@ -886,12 +886,8 @@ def model_free_quantize(
         )
         memory_monitor.update()
         mem_summary = memory_monitor.get_summary()
-        logger.info(
-            f"Finished quantizing shard {shard_name}: {len(quantized)} layers"
-        )
-        logger.info(
-            f"Memory usage: {mem_summary}"
-        )
+        logger.info(f"Finished quantizing shard {shard_name}: {len(quantized)} layers")
+        logger.info(f"Memory usage: {mem_summary}")
 
         all_quantized_layers.extend(quantized)
         all_ignored_layers.extend(ignored)
