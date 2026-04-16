@@ -64,20 +64,13 @@ auto-round \
 
 For diffusion models, currently we validate quantization on the following models, which involves quantizing the transformer component of the pipeline.
 
-<<<<<<< lvl/support_ovis_image
-| Model     | calibration dataset |
-|--------------|--------------|
-| black-forest-labs/FLUX.1-dev | COCO2014      |
-| AIDC-AI/Ovis-Image-7B | COCO2014      |
-=======
 | Model         | calibration dataset |  Model Link  |
 |---------------|---------------------|--------------|
 | black-forest-labs/FLUX.1-dev  | COCO2014      | - |
 | Tongyi-MAI/Z-Image            | COCO2014      | - |
 | Tongyi-MAI/Z-Image-Turb       | COCO2014      | - |
 | stepfun-ai/NextStep-1.1       | COCO2014      | - |
->>>>>>> main
-
+| AIDC-AI/Ovis-Image-7B         | COCO2014      | - |
 
 
 <details>
