@@ -561,6 +561,19 @@ class BaseCompressor(object):
             return
 
         self._resolve_scheme()
+
+        # After scheme resolution, is_act_quantize is known.  When activation
+        # quantization is enabled and the model is in float16, convert to
+        # bfloat16 to match the old arch.  This also detaches any parameter
+        # tensors that are still backed by safetensors' mmap, preventing
+        # per-block RSS growth (~14 MB/block) when .to(device) page-faults
+        # the underlying file pages into physical memory.
+        if self.quantize_config.is_act_quantize and self.model_context.amp_dtype == torch.float16:
+            logger.warning("force to use bf16 for quantization tuning when enabling activation quantization")
+            self.model_context.amp_dtype = torch.bfloat16
+            if self.model_context.model.dtype != torch.bfloat16:
+                self.model_context.model = self.model_context.model.to(torch.bfloat16)
+
         self._resolve_formats()
         self._patch_model()
         self._build_layer_config()
