@@ -10,11 +10,11 @@ import torch
 
 from auto_round import AutoRound
 
-from ...helpers import get_model_path, opt_name_or_path
+from ...helpers import get_model_path, qwen_name_or_path
 
 
 class TestAutoRound:
-    model_name = opt_name_or_path
+    model_name = qwen_name_or_path
 
     @pytest.fixture(autouse=True)
     def _save_dir(self, tmp_path):
@@ -73,7 +73,7 @@ class TestAutoRound:
         layer_config = {
             "self_attn": {"bits": 8},
             "lm_head": {"bits": 16},
-            "fc1": {"bits": 16, "act_bits": 16},
+            "mlp": {"bits": 16, "act_bits": 16},
         }
 
         autoround = AutoRound(
@@ -96,9 +96,9 @@ class TestAutoRound:
         quant_config = config.get("quantization_config", {})
         extra_config = quant_config.get("extra_config", {})
         # check extra_config only saved attributes differing from Scheme values
-        assert "act_bits" not in extra_config[".*fc1.*"].keys()
-        assert "group_size" not in extra_config[".*fc1.*"].keys()
-        assert "bits" in extra_config[".*fc1.*"].keys() and extra_config[".*fc1.*"]["bits"] == 16
+        assert "act_bits" not in extra_config[".*mlp.*"].keys()
+        assert "group_size" not in extra_config[".*mlp.*"].keys()
+        assert "bits" in extra_config[".*mlp.*"].keys() and extra_config[".*mlp.*"]["bits"] == 16
         assert "bits" in extra_config[".*self_attn.*"].keys() and extra_config[".*self_attn.*"]["bits"] == 8
         generated_text = self._run_sglang_inference(quantized_model_path)
         print(generated_text)
