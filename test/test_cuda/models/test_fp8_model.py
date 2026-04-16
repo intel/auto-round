@@ -126,10 +126,15 @@ def test_qwen3_fp8_moe_mxfp(tiny_fp8_qwen_moe_model_path, mock_fp8_capable_devic
         nsamples=2,
         seqlen=32,
         iters=0,
+        low_cpu_mem_usage=False,
     )
     quantized_model, _ = autoround.quantize_and_save(format="auto_round", output_dir=output_dir)
     assert quantized_model is not None, "Quantized model should not be None."
     loaded_model = AutoModelForCausalLM.from_pretrained(output_dir)
+    for n, m in quantized_model.named_modules():
+        if m.__class__.__name__ == "QuantLinear":
+            loaded_m = loaded_model.get_submodule(n)
+            assert (loaded_m.weight_packed == m.weight_packed).all()
     # Expect all linear in experts are quantized
     for n, m in quantized_model.named_modules():
         if "experts" in m.__class__.__name__.lower():
