@@ -105,6 +105,12 @@ def preset_name_to_scheme(name: str) -> QuantizationScheme:
     if name not in PRESET_SCHEMES:
         raise KeyError(f"Unknown preset scheme name {name}, " f"available names: {list(PRESET_SCHEMES.keys())}")
 
+    if name == "INT8_W8A8":
+        logger.warning_once(
+            "The 'INT8_W8A8' scheme name is deprecated and will be removed in a future release. "
+            "Please use 'INT8' instead."
+        )
+
     scheme_args = deepcopy(PRESET_SCHEMES[name])
     return scheme_args
 
