@@ -303,6 +303,7 @@ class BasicArgumentParser(argparse.ArgumentParser):
             help="Group size for weight quantization.",
         )
         scheme.add_argument("--asym", action="store_true", help="Use asymmetric quantization instead of symmetric.")
+        scheme.add_argument("--act_asym", action="store_true", help="Use asymmetric quantization for activation instead of symmetric.")
         scheme.add_argument(
             "--data_type",
             "--dtype",
@@ -659,6 +660,7 @@ def tune(args):
         act_group_size=args.act_group_size,
         act_data_type=args.act_data_type,
         act_dynamic=act_dynamic,
+        act_sym=not args.act_asym,
         super_bits=args.super_bits,
         super_group_size=args.super_group_size,
         quant_lm_head=args.quant_lm_head,
