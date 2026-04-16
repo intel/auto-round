@@ -242,7 +242,7 @@ ar.quantize_and_save(output_dir="./qmodel", format="auto_round")
 |**auto_round**| W4A16（推荐）、W2A16、W3A16、W8A16、W2A16G64、W2A16G32、`MXFP4`​、`MXFP8`​、`MXFP4_RCEIL`​、`MXFP8_RCEIL`​、`NVFP4`​、`FPW8A16`​、`FP8_STATIC`​、`BF16`                                                          |
 |**auto_awq**| W4A16（推荐）、BF16                                                                                                                                                                                  |
 |**auto_gptq**| W4A16（推荐）、W2A16、W3A16、W8A16、W2A16G64、W2A16G32、BF16                                                                                                                                              |
-|**llm_compressor**| NVFP4（推荐）、`MXFP4`​、`MXFP8`​、`FPW8A16`​、`FP8_STATIC`                                                                                                                                             |
+|**llm_compressor**| NVFP4（推荐）、`MXFP4`​、`MXFP8`​、`FPW8A16`​、`FP8_STATIC`、`FP8_BLOCK`、`INT8_W8A8`、`W4A16`、`W8A16`                                                                                                  |
 |**gguf**| GGUF:Q4\_K\_M（推荐）、Auto-RoundGGUF:Q2\_K\_S、GGUF:Q3\_K\_S、GGUF:Q3\_K\_M、GGUF:Q3\_K\_L、GGUF:Q4\_K\_S、GGUF:Q5\_K\_S、GGUF:Q5\_K\_M、GGUF:Q6\_K、GGUF:Q4\_0、GGUF:Q4\_1、GGUF:Q5\_0、GGUF:Q5\_1、GGUF:Q8\_0 |
 |**fake**| ​`所有方案（仅用于研究）`                                                                                                                                                                                  |
 </details>

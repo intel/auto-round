@@ -161,6 +161,11 @@ def mxfp4_forward_kernel_wrapper(
     if hadamard_matrix.device != device:
         hadamard_matrix = hadamard_matrix.to(device)
 
+    dtype = hadamard_matrix.dtype
+
+    if x.dtype != dtype:
+        x = x.to(dtype)
+
     # Make sure inputs are contiguous
     x = x.contiguous()
     hadamard_matrix = hadamard_matrix.contiguous()

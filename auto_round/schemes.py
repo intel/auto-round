@@ -109,6 +109,18 @@ def preset_name_to_scheme(name: str) -> QuantizationScheme:
     return scheme_args
 
 
+def scheme_to_preset_name(scheme: Union[str, QuantizationScheme]) -> str:
+    """Get preset scheme name from a QuantizationScheme instance."""
+    if isinstance(scheme, str):
+        name = scheme.upper()
+        return name if name in PRESET_SCHEMES else ""
+
+    for key, val in PRESET_SCHEMES.items():
+        if val == scheme:
+            return key
+    return ""
+
+
 def is_preset_scheme(name: str) -> bool:
     """Check if the given name is a preset scheme name."""
     return name.upper() in PRESET_SCHEMES
@@ -228,6 +240,18 @@ MXFP8_RCEIL = QuantizationScheme.from_dict(
     }
 )
 
+MXINT4 = QuantizationScheme.from_dict(
+    {
+        "bits": 4,
+        "group_size": 32,
+        "data_type": "mx_int",
+        "act_bits": 4,
+        "act_data_type": "mx_int",
+        "act_group_size": 32,
+        "act_sym": True,
+        "act_dynamic": True,
+    }
+)
 
 NVFP4 = QuantizationScheme.from_dict(
     {
@@ -330,6 +354,7 @@ PRESET_SCHEMES = {
     "W4A16_MIXED": W4A16,
     "INT8_W8A8": INT8_W8A8,
     "FP8_BLOCK": FP8_BLOCK,
+    "MXINT4": MXINT4,
 }
 from auto_round.export.export_to_gguf.config import GGUF_CONFIG
 
