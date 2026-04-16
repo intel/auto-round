@@ -26,7 +26,6 @@ from auto_round.algorithms.quantization import BaseQuantizers, QuantizationConfi
 from auto_round.algorithms.transforms import (
     BaseRotationConfig,
     apply_rotation,
-    check_supported_schemes,
 )
 from auto_round.compressors_new.shard_writer import ShardWriter
 from auto_round.compressors_new.utils import _get_save_folder_name, block_forward, set_layer_config
@@ -760,13 +759,12 @@ class BaseCompressor(object):
 
         # ── 2d: apply rotation transforms ────────────────────────────────────
         if self.transform_configs:
-            check_supported_schemes(self.scheme)
-            need_calibration = self.quantize_config.iters > 0
+            logger.info("Applying Hadamard transform to the model.")
             for rotation_cfg in self.transform_configs:
                 self.model_context.model = apply_rotation(
                     self.model_context.model,
                     rotation_cfg,
-                    need_calibration=need_calibration,
+                    data_type=self.quantize_config.data_type,
                 )
 
     def _patch_model(self) -> None:

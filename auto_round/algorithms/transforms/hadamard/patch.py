@@ -59,64 +59,32 @@ def patch_wrapperlinear_to_apply_transform(
 
     def _qdq_weight_patched(self, value, min_scale, max_scale):
         if self.orig_layer.bits >= 16:
-            # Keep original behaviour for ≥16-bit quantisation.
+            # Keep original behaviour for >=16-bit quantisation.
             return _orig_qdq_weight(self, value, min_scale, max_scale)
 
-        min_scale.data.clamp_(0, 1.0)
-        max_scale.data.clamp_(0, 1.0)
+        if getattr(self, "applied_weight_hadamard", None) is None:
+            with torch.no_grad():
+                weight = self.orig_layer.weight
+                if weight.device.type == "meta":
+                    weight = self.orig_layer.get_weight().to(self.device)
 
-        weight = self.orig_layer.weight
-        if weight.device.type == "meta":
-            weight = self.orig_layer.get_weight().to(self.device)
+                is_conv1d = type(self.orig_layer) is transformers.pytorch_utils.Conv1D
+                if is_conv1d:
+                    weight = weight.t().contiguous()
+                new_weight = w_transform(weight).to(self.device)
+                if is_conv1d:
+                    new_weight = new_weight.t().contiguous()
+                self.orig_layer.weight.data.copy_(new_weight)
+                self.applied_weight_hadamard = True
 
-        is_conv1d = type(self.orig_layer) is transformers.pytorch_utils.Conv1D
-        if is_conv1d:
-            weight = weight.t()
-        weight = weight.to(self.device)
+        return _orig_qdq_weight(self, value, min_scale, max_scale)
 
-        weight_t = w_transform(weight)
-
-        quant_kwargs = {}
-        if hasattr(self.orig_layer, "super_bits"):
-            quant_kwargs["super_bits"] = self.orig_layer.super_bits
-            quant_kwargs["super_group_size"] = self.orig_layer.super_group_size
-
-        weight_q, scale, zp = self.weight_quant_func(
-            weight_t,
-            bits=self.orig_layer.bits,
-            group_size=self.orig_layer.group_size,
-            v=value,
-            min_scale=min_scale,
-            max_scale=max_scale,
-            scale_dtype=self.orig_layer.scale_dtype,
-            tensor_min=self.weight_min,
-            tensor_max=self.weight_max,
-            data_type=self.data_type,
-            q_scale_thresh=self.q_scale_thresh,
-            imatrix=self.orig_layer.imatrix.to(self.device) if hasattr(self.orig_layer, "imatrix") else None,
-            global_scale=getattr(self, "weight_global_scale", None),
-            **quant_kwargs,
-        )
-        weight_q = weight_q.to(dtype=weight.dtype)
-        if is_conv1d:
-            weight_q = weight_q.t()
-        return weight_q, scale, zp
+    _orig_qdq_act = WrapperLinear._qdq_act
 
     def _qdq_act_patched(self, x, act_max_scale, act_max=None):
         x = inp_transform(x)
-        act_max_scale.data.clamp_(0, 1.0)
-        x, scale, zp = self.act_quant_func(
-            x,
-            bits=self.orig_layer.act_bits,
-            group_size=self.orig_layer.act_group_size,
-            scale_dtype=self.orig_layer.scale_dtype,
-            q_scale_thresh=self.q_scale_thresh,
-            data_type=self.act_data_type,
-            max_scale=act_max_scale,
-            tensor_max=act_max,
-            global_scale=getattr(self, "input_global_scale", None),
-        )
-        return x, scale, zp
+
+        return _orig_qdq_act(self, x, act_max_scale, act_max)
 
     WrapperLinear._qdq_weight = _qdq_weight_patched
     WrapperLinear._qdq_act = _qdq_act_patched
@@ -155,7 +123,7 @@ def patch_wrapperwalayer_forward_to_apply_transform(
     WrapperWALayer._hadamard_forward_patched = True
 
 
-def patch_quantlinear(hadamard_type: str) -> None:
+def patch_quantlinear(w_transform) -> None:
     """Patch :class:`QuantLinear` so random Hadamard matrices are saved when packing.
 
     Only needed for ``random_hadamard`` where the rotation matrix must be
@@ -219,11 +187,11 @@ def patch_quantlinear(hadamard_type: str) -> None:
         if global_scale is not None:
             self.weight_global_scale = global_scale.to(torch.float32).to(device)
         if input_global_scale is not None:
-            self.input_global_scale = input_global_scale.to(torch.float32).to(device)
+            self.input_global_scale = input_global_scale.to(torch.float32).to(device).reshape([1])
 
-        # Save the random Hadamard matrix from the submodule.
-        if hasattr(linear, hadamard_type):
-            self.register_module(hadamard_type, getattr(linear, hadamard_type))
+        # add transform weight
+        self.register_buffer("hadamard_matrix", w_transform.weight.to(device))
+        return
 
     QuantLinear.pack = _pack_patched
     QuantLinear._pack_patched = True

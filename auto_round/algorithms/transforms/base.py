@@ -74,17 +74,14 @@ class BaseRotation(ABC):
     def apply_to_model(
         self,
         model: torch.nn.Module,
-        need_calibration: bool = False,
+        data_type: str = "mx_fp",
         **kwargs: Any,
     ) -> torch.nn.Module:
         """Apply this rotation to *model* and return the (possibly mutated) model.
 
         Args:
             model: The model to transform.
-            need_calibration: When ``True``, monkey-patch training-time wrappers
-                (``WrapperLinear``, ``WrapperWALayer``) so the transform is
-                re-applied each forward pass during calibration.  When
-                ``False``, fuse the transform eagerly into the weight tensor.
+            data_type: Quantization data type (e.g. ``"mx_fp"``).
             **kwargs: Algorithm-specific extra arguments.
 
         Returns:
@@ -134,7 +131,7 @@ class BaseRotation(ABC):
 # ---------------------------------------------------------------------------
 
 #: Quantization schemes that support (and require) rotation transforms.
-ROTATION_SUPPORTED_SCHEMES: list[str] = ["MXFP4"]
+ROTATION_SUPPORTED_SCHEMES: list[str] = ["MXFP8", "MXFP4", "NVFP4"]
 
 
 def check_supported_schemes(scheme: str) -> None:

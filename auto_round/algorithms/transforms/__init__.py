@@ -114,7 +114,7 @@ def normalize_rotation_config(
 def apply_rotation(
     model: torch.nn.Module,
     config: Any,
-    need_calibration: bool = False,
+    data_type: str = "mx_fp",
     **kwargs: Any,
 ) -> torch.nn.Module:
     """Apply a rotation/transform algorithm to *model*.
@@ -130,9 +130,7 @@ def apply_rotation(
                           * :class:`HadamardConfig` or compatible ``dict``/``str``.
                           * Any :class:`BaseRotationConfig` subclass.
 
-        need_calibration: Forward to the rotation implementation; controls
-                          whether transforms are fused eagerly or patched into
-                          calibration wrappers.
+        data_type:        Quantization data type (e.g. ``"mx_fp"``).
         **kwargs:         Forwarded to :meth:`BaseRotation.apply_to_model`.
 
     Returns:
@@ -146,4 +144,4 @@ def apply_rotation(
         return model
 
     rotation = BaseRotation.from_config(normalised)
-    return rotation.apply_to_model(model, need_calibration=need_calibration, **kwargs)
+    return rotation.apply_to_model(model, data_type=data_type, **kwargs)
