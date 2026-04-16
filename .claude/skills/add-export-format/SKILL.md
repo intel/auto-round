@@ -82,8 +82,7 @@ def pack_layer(layer_name, model, backend, output_dtype=torch.float16):
 Saves the complete quantized model:
 
 ```python
-def save_quantized_as_yourformat(output_dir, model, tokenizer, layer_config,
-                                  serialization_dict=None, **kwargs):
+def save_quantized_as_yourformat(output_dir, model, tokenizer, layer_config, serialization_dict=None, **kwargs):
     """Save quantized model in your format.
 
     Args:
@@ -137,22 +136,18 @@ class YourFormat(OutputFormat):
     @classmethod
     def check_scheme_args(cls, scheme: QuantizationScheme) -> bool:
         """Check if a QuantizationScheme is compatible with this format."""
-        return (
-            scheme.bits in [4, 8]
-            and scheme.data_type == "int"
-            and scheme.act_bits >= 16
-        )
+        return scheme.bits in [4, 8] and scheme.data_type == "int" and scheme.act_bits >= 16
 
     def pack_layer(self, layer_name, model, output_dtype=torch.float16):
         from auto_round.export.export_to_yourformat.export import pack_layer
+
         return pack_layer(layer_name, model, self.get_backend_name(), output_dtype)
 
-    def save_quantized(self, output_dir, model, tokenizer, layer_config,
-                       serialization_dict=None, **kwargs):
+    def save_quantized(self, output_dir, model, tokenizer, layer_config, serialization_dict=None, **kwargs):
         from auto_round.export.export_to_yourformat.export import save_quantized_as_yourformat
+
         return save_quantized_as_yourformat(
-            output_dir, model, tokenizer, layer_config,
-            serialization_dict=serialization_dict, **kwargs
+            output_dir, model, tokenizer, layer_config, serialization_dict=serialization_dict, **kwargs
         )
 ```
 
@@ -197,6 +192,7 @@ def test_yourformat_export(tiny_opt_model_path, dataloader):
 
     # Verify model can be loaded back
     from transformers import AutoModelForCausalLM
+
     loaded = AutoModelForCausalLM.from_pretrained("./tmp_yourformat")
 ```
 

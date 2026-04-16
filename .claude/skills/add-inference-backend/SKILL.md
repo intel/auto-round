@@ -30,19 +30,19 @@ Edit `auto_round/inference/backend.py` to register your backend's capabilities:
 
 ```python
 BackendInfos["auto_round:your_backend"] = BackendInfo(
-    device=["cuda"],                    # Supported devices
-    sym=[True, False],                  # Symmetric and/or asymmetric
-    packing_format=["auto_round"],      # Compatible packing formats
-    bits=[2, 4, 8],                     # Supported bit-widths
-    group_size=[32, 64, 128, -1],       # Supported group sizes (-1 = per-channel)
+    device=["cuda"],  # Supported devices
+    sym=[True, False],  # Symmetric and/or asymmetric
+    packing_format=["auto_round"],  # Compatible packing formats
+    bits=[2, 4, 8],  # Supported bit-widths
+    group_size=[32, 64, 128, -1],  # Supported group sizes (-1 = per-channel)
     compute_dtype=["float16", "bfloat16"],  # Compute precision
-    data_type=["int"],                  # Quantization data types
-    act_bits=[16, 32],                  # Activation bit-widths (16 = WxA16)
-    priority=2,                         # Higher = preferred (0-5 typical range)
-    checkers=[your_feature_checker],    # Validation functions (optional)
-    alias=["your_backend_short"],       # Alternative names (optional)
-    requirements=["some_package>=1.0"], # Required packages (optional)
-    systems=["linux"],                  # OS restriction (optional)
+    data_type=["int"],  # Quantization data types
+    act_bits=[16, 32],  # Activation bit-widths (16 = WxA16)
+    priority=2,  # Higher = preferred (0-5 typical range)
+    checkers=[your_feature_checker],  # Validation functions (optional)
+    alias=["your_backend_short"],  # Alternative names (optional)
+    requirements=["some_package>=1.0"],  # Required packages (optional)
+    systems=["linux"],  # OS restriction (optional)
 )
 ```
 
@@ -75,14 +75,11 @@ from auto_round.inference.backend import feature_multiply_checker_32
 # Require in_features divisible by group_size
 from auto_round.inference.backend import in_feature_checker_group_size
 
+
 # Custom checker
 def your_feature_checker(in_feature, out_feature, config):
     """Check if layer dimensions are compatible with your backend."""
-    return (
-        in_feature % 64 == 0
-        and out_feature % 64 == 0
-        and config["group_size"] in [64, 128]
-    )
+    return in_feature % 64 == 0 and out_feature % 64 == 0 and config["group_size"] in [64, 128]
 ```
 
 ## Step 2: Implement QuantLinear Module
@@ -95,6 +92,7 @@ import torch.nn as nn
 
 QUANT_TYPE = "your_backend"
 
+
 class QuantLinear(nn.Module):
     """Quantized linear layer for your backend.
 
@@ -104,8 +102,7 @@ class QuantLinear(nn.Module):
 
     QUANT_TYPE = QUANT_TYPE
 
-    def __init__(self, bits, group_size, in_features, out_features,
-                 bias=True, sym=True, **kwargs):
+    def __init__(self, bits, group_size, in_features, out_features, bias=True, sym=True, **kwargs):
         super().__init__()
         self.bits = bits
         self.group_size = group_size
@@ -208,6 +205,7 @@ def test_your_backend_e2e(tiny_opt_model_path, dataloader):
 
     # Load and verify inference with your backend
     from transformers import AutoModelForCausalLM, AutoTokenizer
+
     model = AutoModelForCausalLM.from_pretrained("./tmp_backend_test")
     tokenizer = AutoTokenizer.from_pretrained("./tmp_backend_test")
     inputs = tokenizer("Hello", return_tensors="pt").to("cuda")

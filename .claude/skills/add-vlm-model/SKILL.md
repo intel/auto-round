@@ -52,25 +52,20 @@ def _get_your_vlm_multimodal_block(model, quant_vision=False):
     if quant_vision:
         if hasattr(model, "model") and hasattr(model.model, "vision_encoder"):
             if hasattr(model.model.vision_encoder, "blocks"):
-                block_names.append([
-                    f"model.vision_encoder.blocks.{i}"
-                    for i in range(len(model.model.vision_encoder.blocks))
-                ])
+                block_names.append(
+                    [f"model.vision_encoder.blocks.{i}" for i in range(len(model.model.vision_encoder.blocks))]
+                )
         # Add projector if it has quantizable layers
         if hasattr(model, "model") and hasattr(model.model, "projector"):
             if hasattr(model.model.projector, "layers"):
-                block_names.append([
-                    f"model.projector.layers.{i}"
-                    for i in range(len(model.model.projector.layers))
-                ])
+                block_names.append([f"model.projector.layers.{i}" for i in range(len(model.model.projector.layers))])
 
     # Language model layers (always quantized)
     if hasattr(model, "model") and hasattr(model.model, "language_model"):
         if hasattr(model.model.language_model, "layers"):
-            block_names.append([
-                f"model.language_model.layers.{i}"
-                for i in range(len(model.model.language_model.layers))
-            ])
+            block_names.append(
+                [f"model.language_model.layers.{i}" for i in range(len(model.model.language_model.layers))]
+            )
 
     return block_names
 ```
@@ -181,6 +176,7 @@ def _handle_special_model(model):
     ...
     if hasattr(model, "config") and model.config.model_type == "your_vlm":
         from functools import partial
+
         model.forward = partial(_your_vlm_forward, model)
     return model
 ```
@@ -193,8 +189,7 @@ If your model needs a specialized calibration dataset loader, create one in
 ```python
 @register_dataset("your_vlm_dataset")
 class YourVLMDataset:
-    def __init__(self, dataset_name, model_path, seqlen, **kwargs):
-        ...
+    def __init__(self, dataset_name, model_path, seqlen, **kwargs): ...
 
     def __len__(self):
         return len(self.data)
@@ -223,12 +218,12 @@ def test_your_vlm_quantization():
 
 Test with vision quantization:
 ```python
-    ar = AutoRound(
-        model_name,
-        bits=4,
-        group_size=128,
-        quant_nontext_module=True,  # also quantize vision encoder
-    )
+ar = AutoRound(
+    model_name,
+    bits=4,
+    group_size=128,
+    quant_nontext_module=True,  # also quantize vision encoder
+)
 ```
 
 ## Step 6: Update Documentation
