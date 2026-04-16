@@ -574,6 +574,16 @@ register_ignore_layers(
     ],
 )
 
+register_ignore_layers(
+    matchers=[
+        ModelTypeMatcher(r"kimi_k25", mode="full"),
+    ],
+    ignore_layers=[
+        "vision_tower",
+        "mm_projector",
+    ],
+)
+
 
 def get_predefined_ignore_layers(model: torch.nn.Module) -> list[str]:
     layers = []
