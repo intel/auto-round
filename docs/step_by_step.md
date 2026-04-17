@@ -440,7 +440,7 @@ ar.quantize_and_save(output_dir, format="auto_round")
 
 ### Model-Free Mode
 
-Model-free mode performs RTN quantization **without loading the full model into memory**. It downloads safetensors files directly, quantizes each Linear weight tensor shard-by-shard, and saves the packed result. This is useful when you want fast, no-calibration quantization with minimal resource requirements.
+Model-free mode performs RTN WOQ quantization **without loading the full model into memory**. It downloads safetensors files directly, quantizes each Linear weight tensor shard-by-shard, and saves the packed result. This is useful when you want fast, no-calibration quantization with minimal resource requirements.
 
 **Key features:**
 - **No model object required** – only `config.json` and safetensors files are needed
@@ -461,6 +461,8 @@ auto_round meta-llama/Llama-3.2-1B-Instruct \
 auto_round meta-llama/Llama-3.2-1B-Instruct \
   --model_free \
   --scheme W4A16 \
+  --group_size 32 \
+  --asym \
   --layer_config "{k_proj:{bits:8},v_proj:{bits:8}}" \
   --ignore_layers "mlp" \
   --output_dir ./int4-llama
@@ -481,7 +483,7 @@ model_free_quantize(
 # With low disk memory and per-layer config
 model_free_quantize(
     model_name_or_path="meta-llama/Llama-3.2-1B-Instruct",
-    scheme="W4A16",
+    scheme="W4A16",  # Supports custom scheme object for configuring `group_size` and `sym`.
     output_dir="./int4-llama",
     layer_config={
         ".*k_proj": {"bits": 8, "group_size": 32},

@@ -432,7 +432,7 @@ ar.quantize_and_save(output_dir, format="auto_round")
 
 ### 免模型量化模式
 
-免模型量化模式（Model-Free Mode）可以**无需将完整模型加载到内存中**即可执行 RTN 量化。它直接下载 safetensors 文件，逐分片地对每个 Linear 权重张量进行量化并保存打包结果。当您需要快速、无标定数据的量化且资源有限时，该模式非常实用。
+免模型量化模式（Model-Free Mode）可以**无需将完整模型加载到内存中**即可执行 RTN WOQ 量化。它直接下载 safetensors 文件，逐分片地对每个 Linear 权重张量进行量化并保存打包结果。当您需要快速、无标定数据的量化且资源有限时，该模式非常实用。
 
 **主要特性：**
 - **无需模型对象** — 仅需 `config.json` 和 safetensors 文件
@@ -453,6 +453,8 @@ auto_round meta-llama/Llama-3.2-1B-Instruct \
 auto_round meta-llama/Llama-3.2-1B-Instruct \
   --model_free \
   --scheme W4A16 \
+  --group_size 32 \
+  --asym \
   --layer_config "{k_proj:{bits:8},v_proj:{bits:8}}" \
   --ignore_layers "mlp" \
   --output_dir ./int4-llama
@@ -473,7 +475,7 @@ model_free_quantize(
 # 搭配低磁盘内存模式及逐层配置
 model_free_quantize(
     model_name_or_path="meta-llama/Llama-3.2-1B-Instruct",
-    scheme="W4A16",
+    scheme="W4A16",  # 支持自定义scheme对象，用于设置`group_size`, `sym`
     output_dir="./int4-llama",
     layer_config={
         ".*k_proj": {"bits": 8, "group_size": 32},
