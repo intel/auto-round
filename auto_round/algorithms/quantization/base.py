@@ -385,6 +385,7 @@ class BaseQuantizers:
     def _invalidate_block_forward_cache(self):
         """Clear the cached block forward function (call when block changes)."""
         self.__dict__.pop("_resolved_block_forward", None)
+        self.__dict__.pop("_compiled_block_forward", None)
 
     def _get_current_q_output(
         self,

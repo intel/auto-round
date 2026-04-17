@@ -944,6 +944,14 @@ class BaseCompressor(object):
         if self.compress_context.low_cpu_mem_usage and self.is_immediate_packing:
             self.is_immediate_saving = True
 
+        if self.compress_context.low_cpu_mem_usage and not self.is_immediate_packing:
+            logger.info(
+                "`low_cpu_mem_usage` is only supported when `immediate_packing` is True. "
+                "Setting `low_cpu_mem_usage` to False."
+            )
+            self.compress_context.low_cpu_mem_usage = False
+            self.is_immediate_saving = False
+
         if self.compress_context.low_cpu_mem_usage and self.is_immediate_packing:
             if formats[0].is_gguf():
                 logger.warning(
