@@ -405,10 +405,7 @@ def materialize_non_block_layers(model, model_name, block_names):
     _reinit_computed_buffers(model)
 
     n_loaded = len(non_block_layer_names)
-    logger.info(
-        f"Materialized {n_loaded} non-block layers from checkpoint "
-        f"(block weights stay offloaded)"
-    )
+    logger.info(f"Materialized {n_loaded} non-block layers from checkpoint " f"(block weights stay offloaded)")
 
 
 def _reinit_computed_buffers(model):
@@ -445,9 +442,7 @@ def _reinit_computed_buffers(model):
                     f"Could not recompute buffer {module_name}.{buf_name}, "
                     "using zeros (may slightly affect AutoScheme scoring accuracy)"
                 )
-                module.register_buffer(
-                    buf_name, torch.zeros(buf.shape, dtype=buf.dtype, device="cpu")
-                )
+                module.register_buffer(buf_name, torch.zeros(buf.shape, dtype=buf.dtype, device="cpu"))
 
 
 # =====================================================================
