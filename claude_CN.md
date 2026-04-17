@@ -1,0 +1,1 @@
+@CLAUDE_CN.md
