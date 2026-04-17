@@ -202,10 +202,11 @@ class ShardWriter:
                 filtered_tensors[name] = tensor
                 continue
 
-            ptr = tensor.untyped_storage().data_ptr()
+            ptr = tensor.untyped_storage().data_ptr() + tensor.storage_offset() * tensor.element_size()
             if ptr not in storage_map:
                 storage_map.add(ptr)
                 filtered_tensors[name] = tensor
+
         self.current_shard_tensors = filtered_tensors
 
     def _flush_shard(self):
