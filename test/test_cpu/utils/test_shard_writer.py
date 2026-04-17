@@ -76,6 +76,22 @@ class _LMStyleModel(torch.nn.Module):
         self.config = SimpleNamespace(model_type="toy-lm", tie_word_embeddings=True)
 
 
+class _ToyExperts(torch.nn.Module):
+    def __init__(self):
+        super().__init__()
+        self.is_transposed = False
+
+
+class _FusedExpertsModel(torch.nn.Module):
+    def __init__(self):
+        super().__init__()
+        self.block = torch.nn.Module()
+        self.block.experts = _ToyExperts()
+        self.talker = torch.nn.Module()
+        self.talker.experts = _ToyExperts()
+        self.config = SimpleNamespace(model_type="qwen3_omni_moe")
+
+
 def test_finalize_skips_lm_head_when_tie_word_embeddings_true(tmp_path):
     """Complementary test: when tie_word_embeddings=True the lm_head should be
     skipped (not written to disk) and offloaded to meta."""
@@ -108,3 +124,39 @@ def test_finalize_offloads_module_with_tensor_in_parameters(tmp_path):
     offloaded_weight = model.transformer_blocks[0].linear._parameters["weight"]
     assert isinstance(offloaded_weight, torch.nn.Parameter)
     assert offloaded_weight.device.type == "meta"
+
+
+def test_expand_fused_experts_for_skipped_talker_prefix(tmp_path):
+    model = _FusedExpertsModel()
+    rounder = _RounderStub(model, str(tmp_path))
+    writer = ShardWriter(rounder)
+
+    fused_gate_up = torch.arange(2 * 6 * 4, dtype=torch.float32).reshape(2, 6, 4)
+    writer._add_tensor("talker.experts.gate_up_proj", fused_gate_up)
+    writer.finalize()
+
+    shard_path = os.path.join(tmp_path, "model.bin")
+    saved_tensors = torch.load(shard_path, map_location="cpu")
+
+    assert set(saved_tensors) == {
+        "talker.experts.0.gate_proj.weight",
+        "talker.experts.0.up_proj.weight",
+        "talker.experts.1.gate_proj.weight",
+        "talker.experts.1.up_proj.weight",
+    }
+
+
+def test_do_not_expand_fused_experts_outside_skipped_prefixes(tmp_path):
+    model = _FusedExpertsModel()
+    rounder = _RounderStub(model, str(tmp_path))
+    writer = ShardWriter(rounder)
+
+    fused_gate_up = torch.arange(2 * 6 * 4, dtype=torch.float32).reshape(2, 6, 4)
+    writer._add_tensor("block.experts.gate_up_proj", fused_gate_up)
+    writer.finalize()
+
+    shard_path = os.path.join(tmp_path, "model.bin")
+    saved_tensors = torch.load(shard_path, map_location="cpu")
+
+    assert "block.experts.gate_up_proj" in saved_tensors
+    assert "block.experts.0.gate_proj.weight" not in saved_tensors

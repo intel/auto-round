@@ -603,7 +603,11 @@ def _unfuse_experts_weights_inplace(
     return True
 
 
-def prepare_model_for_moe_quantization(model: nn.Module, implementation: str = LINEAR_LOOP_IMPL) -> list[str]:
+def prepare_model_for_moe_quantization(
+    model: nn.Module,
+    implementation: str = LINEAR_LOOP_IMPL,
+    skip_prefixes: list[str] | None = None,
+) -> list[str]:
     """Prepare a model for MOE quantization using transformers' experts interface.
 
     This function:
@@ -617,6 +621,9 @@ def prepare_model_for_moe_quantization(model: nn.Module, implementation: str = L
     Args:
         model: The model to prepare
         implementation: The experts implementation to use (default: "linear_loop")
+        skip_prefixes: Module name prefixes to skip (e.g. ["talker."]).
+            Modules under these prefixes stay in their original fused 3D format.
+            ShardWriter handles the fused→per-expert conversion at save time.
 
     Returns:
         List of module names that were unfused
@@ -630,6 +637,8 @@ def prepare_model_for_moe_quantization(model: nn.Module, implementation: str = L
     # Unfuse all fused experts modules (only those supporting @use_experts_implementation)
     unfused_modules = []
     for name, module in model.named_modules():
+        if skip_prefixes and any(name.startswith(p) for p in skip_prefixes):
+            continue
         if _unfuse_experts_weights_inplace(module):
             unfused_modules.append(name)
             logger.debug(f"[MoE Prep] Unfused '{name}'")
