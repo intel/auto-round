@@ -79,9 +79,10 @@ calibration crashes because AutoRound doesn't know how to collect activations.
 
 ```python
 import diffusers
+
 pipe = diffusers.AutoPipelineForText2Image.from_pretrained("your-model")
 for name, module in pipe.transformer.named_modules():
-    if hasattr(module, 'forward') and 'block' in name.lower():
+    if hasattr(module, "forward") and "block" in name.lower():
         print(f"{name}: {type(module).__name__}")
 ```
 
@@ -127,8 +128,7 @@ pipeline function.
 ### Option A: Pass `pipeline_fn` parameter (no code changes)
 
 ```python
-def your_model_pipeline_fn(pipe, prompts, guidance_scale=7.5,
-                           num_inference_steps=28, generator=None, **kwargs):
+def your_model_pipeline_fn(pipe, prompts, guidance_scale=7.5, num_inference_steps=28, generator=None, **kwargs):
     """Custom pipeline function for YourModel."""
     for prompt in (prompts if isinstance(prompts, list) else [prompts]):
         pipe.generate(
@@ -137,6 +137,7 @@ def your_model_pipeline_fn(pipe, prompts, guidance_scale=7.5,
             steps=num_inference_steps,
             generator=generator,
         )
+
 
 ar = AutoRound(
     "your-model",
@@ -161,10 +162,12 @@ For full control, override `_run_pipeline()`:
 ```python
 from auto_round.compressors.diffusion.compressor import DiffusionCompressor
 
+
 class YourModelCompressor(DiffusionCompressor):
     def _run_pipeline(self, prompts):
         generator = (
-            None if self.generator_seed is None
+            None
+            if self.generator_seed is None
             else torch.Generator(device=self.pipe.device).manual_seed(self.generator_seed)
         )
         self.pipe.your_custom_generate(
@@ -186,7 +189,7 @@ Edit `auto_round/compressors/diffusion/hybrid.py`:
 ```python
 HYBRID_AR_COMPONENTS = [
     "vision_language_encoder",  # GLM-Image
-    "your_ar_component",        # Your model's AR attribute name
+    "your_ar_component",  # Your model's AR attribute name
 ]
 ```
 
@@ -210,15 +213,10 @@ component so AutoRound knows which layers to quantize:
 def _get_your_hybrid_multimodal_block(model, quant_vision=False):
     block_names = []
     if quant_vision and hasattr(model, "vision_encoder"):
-        block_names.append([
-            f"vision_encoder.blocks.{i}"
-            for i in range(len(model.vision_encoder.blocks))
-        ])
-    block_names.append([
-        f"language_model.layers.{i}"
-        for i in range(len(model.language_model.layers))
-    ])
+        block_names.append([f"vision_encoder.blocks.{i}" for i in range(len(model.vision_encoder.blocks))])
+    block_names.append([f"language_model.layers.{i}" for i in range(len(model.language_model.layers))])
     return block_names
+
 
 SPECIAL_MULTIMODAL_BLOCK["your_model_type"] = _get_your_hybrid_multimodal_block
 ```
@@ -234,8 +232,8 @@ The `HybridCompressor` runs two phases:
 ```python
 ar = AutoRound(
     "your-hybrid-model",
-    dataset="coco2014",              # DiT calibration
-    ar_dataset="NeelNanda/pile-10k", # AR calibration
+    dataset="coco2014",  # DiT calibration
+    ar_dataset="NeelNanda/pile-10k",  # AR calibration
     quant_ar=True,
     quant_dit=True,
 )
@@ -277,13 +275,13 @@ def test_your_diffusion_model():
 
 For hybrid models, test both phases:
 ```python
-    ar = AutoRound(
-        "your-hybrid-model",
-        quant_ar=True,
-        quant_dit=True,
-        iters=2,
-        nsamples=4,
-    )
+ar = AutoRound(
+    "your-hybrid-model",
+    quant_ar=True,
+    quant_dit=True,
+    iters=2,
+    nsamples=4,
+)
 ```
 
 ## Checklist
