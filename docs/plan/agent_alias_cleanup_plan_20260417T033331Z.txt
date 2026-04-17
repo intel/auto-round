@@ -1,0 +1,12 @@
+Task: remove root-level CN markdown entrypoints and alias shared skills into Codex and OpenCode directories.
+
+Done criteria:
+- Remove root-level Chinese markdown mirrors tied to agent/readme entrypoints.
+- Keep translated docs under docs/ untouched.
+- Replace placeholder files in .codex/ and .opencode/ with skills aliases to .claude/skills.
+- Verify the aliases resolve correctly.
+- Commit only the requested changes.
+
+Tradeoffs:
+- Limit CN-file removal to root entrypoints to avoid deleting substantive translated documentation.
+- Use symlinks for skills so Claude, Codex, and OpenCode share one maintained skill source.
