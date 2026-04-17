@@ -386,7 +386,10 @@ class TestFP8SourceModel:
         output, quantized, _ = _process_shard(
             shard_path,
             {"bits": 4, "group_size": 128, "sym": True, "data_type": "int"},
-            {}, [], device="cpu", fp8_block_size=None,
+            {},
+            [],
+            device="cpu",
+            fp8_block_size=None,
         )
         assert "layer" in quantized
         assert "layer.qweight" in output

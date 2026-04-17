@@ -76,7 +76,7 @@ from auto_round import envs
 from auto_round.logger import logger
 from auto_round.schemes import PRESET_SCHEMES, QuantizationScheme, preset_name_to_scheme
 from auto_round.utils.common import compress_layer_names, to_standard_regex
-from auto_round.utils.device import memory_monitor, clear_memory
+from auto_round.utils.device import clear_memory, memory_monitor
 from auto_round.utils.missing_tensors import quantize_weight_rtn, split_fused_expert_tensors
 
 _BLOCK_NAME_TO_IGNORE = ["shared_expert_gate.", "mlp.gate.", "embed"]
@@ -247,8 +247,7 @@ class _PatternMatcher:
                 std = to_standard_regex(p.rstrip("."))
                 # Replace trailing .* with a dot-or-end anchor so "layer.1"
                 # won't accidentally match "layer.10"
-                if std.endswith(".*"):
-                    std = std[:-2]
+                std = std.removesuffix(".*")
                 parts.append(f"{std}(?:\\.|$)")
             else:
                 parts.append(to_standard_regex(p))
@@ -463,9 +462,7 @@ def _dequant_fp8_tensors(
     for name, tensor in raw_tensors.items():
         if not name.endswith(".weight"):
             continue
-        if tensor.dtype == torch.float8_e4m3fn or (
-            tensor.element_size() == 1 and tensor.dtype != torch.float8_e4m3fn
-        ):
+        if tensor.dtype == torch.float8_e4m3fn or (tensor.element_size() == 1 and tensor.dtype != torch.float8_e4m3fn):
             scale_name = name.replace(".weight", ".weight_scale_inv")
             if scale_name in raw_tensors:
                 fp8_weight_names.append(name)
@@ -479,9 +476,7 @@ def _dequant_fp8_tensors(
         scale_name = weight_name.replace(".weight", ".weight_scale_inv")
         weight = raw_tensors[weight_name]
         scale = raw_tensors.pop(scale_name)
-        raw_tensors[weight_name] = _dequant_fp8_linear_weight(
-            weight, scale, block_size=block_size
-        )
+        raw_tensors[weight_name] = _dequant_fp8_linear_weight(weight, scale, block_size=block_size)
 
     return raw_tensors
 
@@ -829,8 +824,10 @@ def model_free_quantize(
     quant_config = config.get("quantization_config", {})
     if quant_config.get("quant_method") == "fp8" or quant_config.get("quantization_type") == "fp8":
         fp8_block_size = quant_config.get("weight_block_size")
-        logger.info(f"Detected FP8 source model (block_size={fp8_block_size}). "
-                    f"FP8 weights will be dequantized before quantization.")
+        logger.info(
+            f"Detected FP8 source model (block_size={fp8_block_size}). "
+            f"FP8 weights will be dequantized before quantization."
+        )
 
     # Discover shards
     if is_streaming:
