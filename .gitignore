@@ -10,3 +10,4 @@ dist/
 CMakeUserPresets.json
 tmp_autoround/
 ut_log_dir/
+CLAUDE.local.md
