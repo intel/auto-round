@@ -123,7 +123,9 @@ class ShardWriter:
 
         model_type = getattr(getattr(self.model, "config", None), "model_type", None)
         skip_prefixes = MOE_SKIP_PREFIXES.get(model_type, []) if model_type is not None else []
-        if not any(prefix == skip_prefix.rstrip(".") or prefix.startswith(skip_prefix) for skip_prefix in skip_prefixes):
+        if not any(
+            prefix == skip_prefix.rstrip(".") or prefix.startswith(skip_prefix) for skip_prefix in skip_prefixes
+        ):
             return None
 
         config = KNOWN_PROJECTION_PATTERNS.get(attr_name)

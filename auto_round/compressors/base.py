@@ -81,8 +81,8 @@ from auto_round.utils import (
     check_seqlen_compatible,
     check_to_quantized,
     clear_memory,
-    compile_func,
     collapse_ignore_layers,
+    compile_func,
     compress_layer_names,
     convert_dtype_str2torch,
     convert_module_to_hp_if_necessary,
@@ -1663,7 +1663,8 @@ class BaseCompressor(object):
             if predefined_ignore_layers and self.quant_block_list:
                 block_prefixes = [b for group in self.quant_block_list for b in group]
                 predefined_ignore_layers = [
-                    name for name in predefined_ignore_layers
+                    name
+                    for name in predefined_ignore_layers
                     if any(name.startswith(prefix) for prefix in block_prefixes)
                 ]
 
