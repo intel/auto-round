@@ -65,7 +65,7 @@ def test_gptoss(scheme, tiny_gpt_oss_model_path, tmp_path):
     ), f"Expected {config.num_hidden_layers * 3 * config.num_local_experts} QuantLinear modules, found {quant_linear_cnt}."
 
     # verify the quantized model can be loaded and run inference
-    loaded_model = GptOssForCausalLM.from_pretrained(output_dir)
+    loaded_model = GptOssForCausalLM.from_pretrained(save_folder)
 
     inp = torch.randint(0, 100, (1, 32))
     with torch.inference_mode():
@@ -81,7 +81,7 @@ def test_llama4(tiny_llama4_model_path):
     # Ensure the quantized model is not None
     assert quantized_model is not None, "Quantized model should not be None."
 
-    loaded_model = Llama4ForConditionalGeneration.from_pretrained(output_dir)
+    loaded_model = Llama4ForConditionalGeneration.from_pretrained(save_folder)
 
     inp = torch.randint(0, 100, (1, 32))
     with torch.inference_mode():
