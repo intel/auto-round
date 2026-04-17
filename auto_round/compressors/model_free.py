@@ -746,6 +746,15 @@ def model_free_quantize(
     else:
         raise TypeError(f"Unsupported scheme type: {type(scheme)}")
 
+    # ---- Validate WOQ (weight-only quantization) ----
+    act_bits = scheme_obj.act_bits if scheme_obj.act_bits is not None else 16
+    if act_bits < 16:
+        raise ValueError(
+            f"Model-free mode only supports weight-only quantization (WOQ) schemes "
+            f"where act_bits >= 16, but '{scheme}' has act_bits={act_bits}. "
+            f"Supported schemes include: W4A16, W2A16, W3A16, W8A16, FPW8A16, etc."
+        )
+
     default_scheme = asdict(scheme_obj)
     default_scheme = {k: v for k, v in default_scheme.items() if v is not None}
 

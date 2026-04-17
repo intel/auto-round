@@ -318,6 +318,38 @@ class TestModelFreeQuantize:
                 scheme="INVALID",
             )
 
+    def test_non_woq_scheme_raises(self, tmp_path):
+        """Non-WOQ schemes (act_bits < 16) should be rejected."""
+        with pytest.raises(ValueError, match="weight-only quantization"):
+            model_free_quantize(
+                model_name_or_path=str(tmp_path),
+                output_dir=str(tmp_path / "out"),
+                scheme="MXFP4",
+            )
+
+    def test_group_size_asym_quantization(self, tmp_path):
+        """Asymmetric quantization via QuantizationScheme."""
+        from auto_round.schemes import QuantizationScheme
+
+        model_dir = _make_model_dir(
+            tmp_path,
+            {"architectures": ["LlamaForCausalLM"], "model_type": "llama"},
+            {"layer.weight": torch.randn(64, 128)},
+        )
+        output_dir = str(tmp_path / "output")
+
+        scheme = QuantizationScheme(bits=4, group_size=64, sym=False)
+        model_free_quantize(
+            model_name_or_path=model_dir,
+            output_dir=output_dir,
+            scheme=scheme,
+        )
+
+        with open(os.path.join(output_dir, "config.json")) as f:
+            cfg = json.load(f)
+        assert cfg["quantization_config"]["sym"] is False
+        assert cfg["quantization_config"]["group_size"] == 64
+
 
 # ===========================================================================
 #  Test: FP8 source model support

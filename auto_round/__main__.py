@@ -616,10 +616,16 @@ def tune(args):
             output_dir = os.path.join(args.output_dir, model_name.split("/")[-1] + f"-w{s.bits}{suffix}")
 
         device = detect_device(args.device_map)
+        scheme_obj = preset_name_to_scheme(scheme)
+        if args.asym:
+            scheme_obj.sym = False
+        if args.group_size:
+            scheme_obj.group_size = args.group_size
+
         model_free_quantize(
             model_name_or_path=model_name,
             output_dir=output_dir,
-            scheme=scheme,
+            scheme=scheme_obj,
             layer_config=layer_config,
             ignore_layers=args.ignore_layers,
             format=args.format,
