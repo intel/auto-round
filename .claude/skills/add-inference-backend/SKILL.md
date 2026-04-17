@@ -160,11 +160,27 @@ class QuantLinear(nn.Module):
         ...
 ```
 
-## Step 3: Register QuantLinear for Auto-Discovery
+## Step 3: Wire Up QuantLinear Import Logic
 
-Ensure your QuantLinear is discoverable by the model conversion system in
-`auto_round/inference/convert_model.py`. The system typically looks for modules
-in the `auto_round_extension/` directory matching the backend name.
+Register your backend in the explicit import logic in
+`auto_round/inference/backend.py`. In this repository, backend loading is not a
+generic directory scan; `dynamic_import_inference_linear()` maps backend keys to
+specific `QuantLinear` implementations.
+
+Add a new backend key in `BackendInfos[...]` if needed, and make sure
+`dynamic_import_inference_linear()` returns your `QuantLinear` class for that
+backend:
+
+```python
+if backend == "auto_round:your_backend":
+    from auto_round_extension.your_device.qlinear_your_backend import QuantLinear
+
+    return QuantLinear
+```
+
+If your backend fits an existing branch pattern, you can also reuse that logic,
+but contributors should update the explicit import mapping rather than rely on
+implicit auto-discovery.
 
 ## Step 4: Add Extension `__init__.py`
 
@@ -230,5 +246,5 @@ def test_your_backend_e2e(tiny_opt_model_path, dataloader):
 |------|-------|-----------|
 | Backend capabilities | `auto_round/inference/backend.py` | `BackendInfos["name"]` dict |
 | QuantLinear module | `auto_round_extension/<device>/qlinear_*.py` | `QUANT_TYPE` class attr |
-| Model conversion | `auto_round/inference/convert_model.py` | Auto-discovery |
+| QuantLinear import wiring | `auto_round/inference/backend.py` | `dynamic_import_inference_linear()` |
 | Feature checkers | `auto_round/inference/backend.py` | `functools.partial` wrappers |

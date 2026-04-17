@@ -55,8 +55,6 @@ def pack_layer(layer_name, model, backend, output_dtype=torch.float16):
     Returns:
         dict: Packed tensors ready for serialization
     """
-    import auto_round_extension.cuda.qlinear_triton as qlinear_triton
-
     layer = get_module(model, layer_name)
     device = layer.weight.device
 
@@ -153,8 +151,27 @@ class YourFormat(OutputFormat):
 
 ## Step 4: Update SUPPORTED_FORMATS
 
-Add your format name to the `SUPPORTED_FORMATS` list in `auto_round/utils/common.py`
-(or wherever the constant is defined) so it appears in CLI help and validation.
+Update the supported-format registry in `auto_round/utils/common.py` so your
+format appears in CLI help and validation.
+
+In this repository, `SUPPORTED_FORMATS` is a `SupportedFormats` object, not a
+plain list. Add your format string to the `_support_format` tuple inside
+`SupportedFormats.__init__()`:
+
+```python
+class SupportedFormats:
+    def __init__(self):
+        self._support_format = (
+            "auto_round",
+            "auto_gptq",
+            # ...
+            "yourformat",  # Add your format here
+        )
+```
+
+`SUPPORTED_FORMATS = SupportedFormats()` is then built from that tuple (plus
+GGUF-derived formats), so contributors should modify the registry definition,
+not treat `SUPPORTED_FORMATS` itself as a mutable list.
 
 ## Step 5: Wire Up Backend Info (If Needed)
 
@@ -213,4 +230,4 @@ def test_yourformat_export(tiny_opt_model_path, dataloader):
 | Format class | `auto_round/formats.py` | `@OutputFormat.register("name")` |
 | Support matrix | `OutputFormat.support_schemes` | Class attribute list |
 | Backend info | `auto_round/inference/backend.py` | `BackendInfos["name"]` dict |
-| CLI format list | `auto_round/utils/common.py` | `SUPPORTED_FORMATS` list |
+| CLI format registry | `auto_round/utils/common.py` | `SupportedFormats._support_format` tuple |
