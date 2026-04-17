@@ -19,7 +19,7 @@
 
 &nbsp;&nbsp;&nbsp;&nbsp;[English](README.md) | 简体中文
 
-[User Guide](./docs/step_by_step.md) | [用户指南](./docs/step_by_step_CN.md)&nbsp;&nbsp;
+[User Guide](./docs/step_by_step.md) | [用户指南](./docs/step_by_step_CN.md)&nbsp;&nbsp; 
 
 ---
 <div align="left">
@@ -94,7 +94,7 @@ pip install auto-round
 pip install auto-round-nightly
 
 # HPU(Gaudi)
-# 在 hpu docker container 中安装, e.g. vault.habana.ai/gaudi-docker/1.23.0/ubuntu24.04/habanalabs/pytorch-installer-2.9.0:latest
+# 在 hpu docker container 中安装, e.g. vault.habana.ai/gaudi-docker/1.23.0/ubuntu24.04/habanalabs/pytorch-installer-2.9.0:latest  
 pip install auto-round-hpu
 
 # XPU(Intel GPU)
@@ -111,7 +111,7 @@ pip install auto-round
 
   # HPU(Gaudi)
   python setup.py install hpu
-
+  
   # XPU(Intel GPU)
   pip install torch --index-url https://download.pytorch.org/whl/xpu
   pip install .
