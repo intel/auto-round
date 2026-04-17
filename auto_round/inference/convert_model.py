@@ -89,6 +89,9 @@ def get_keys_to_not_convert(model):
     # Create a copy of the model and tie the weights, then
     # check if it contains tied weights
     tied_model = deepcopy(model)  # this has 0 cost since it is done inside `init_empty_weights` context manager`
+    if not hasattr(tied_model, "tie_weights") and not hasattr(model, "get_output_embeddings"):
+        return []  # not a LLM model, could be a diffusers model
+
     tied_model.tie_weights()
 
     tied_params = find_tied_parameters(tied_model)
@@ -688,7 +691,11 @@ def convert_hf_model(model: nn.Module, target_device: str = "cpu") -> tuple[nn.M
             hadamard_type=hadamard_config["hadamard_type"],
         )  # apply to activation
         model = apply_hadamard_transform(
-            model, act_hadamard_config, location="input", desc="Register pre forward hook for hadamard transform"
+            model,
+            act_hadamard_config,
+            location="input",
+            desc="Register pre forward hook for hadamard transform",
+            data_type=quantization_config.data_type,
         )
 
     # Suggest a better backend if available
