@@ -302,6 +302,9 @@ class CalibCompressor(BaseCompressor):
         if not self._post_init_done:
             self.post_init()
 
+        if hasattr(self, "quantizer") and hasattr(self.quantizer, "attention_mask"):
+            self.quantizer.attention_mask = []
+
         self.inputs = {}
         self.to_cached_layers = block_names + layer_names
 
