@@ -683,8 +683,7 @@ class BaseCompressor(object):
             formats = self.formats if hasattr(self, "formats") else None
             if not self.diffusion and formats is not None:
                 self.model = update_module(
-                    self.model, formats=formats,
-                    trust_remote_code=self.trust_remote_code, cleanup_original=False
+                    self.model, formats=formats, trust_remote_code=self.trust_remote_code, cleanup_original=False
                 )
             for n, m in self.model.named_modules():
                 m.global_name = n

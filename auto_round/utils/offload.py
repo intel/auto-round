@@ -241,9 +241,7 @@ def _set_tensor_in_model(model: torch.nn.Module, full_name: str, tensor: torch.T
     param_name = parts[-1]
     old = getattr(target, param_name, None)
     if isinstance(old, torch.nn.Parameter):
-        setattr(target, param_name, torch.nn.Parameter(
-            tensor.to(dtype=old.dtype), requires_grad=old.requires_grad
-        ))
+        setattr(target, param_name, torch.nn.Parameter(tensor.to(dtype=old.dtype), requires_grad=old.requires_grad))
     else:
         setattr(target, param_name, tensor)
 
@@ -306,8 +304,9 @@ def load_model_meta_skeleton(model_name: str):
     Returns:
         (model, tokenizer, None) -- same signature as ``llm_load_model``.
     """
-    from transformers import AutoModelForCausalLM, AutoTokenizer, AutoModel
     import re
+
+    from transformers import AutoModel, AutoModelForCausalLM, AutoTokenizer
 
     is_glm = bool(re.search("chatglm", model_name.lower()))
     model_cls = AutoModel if is_glm else AutoModelForCausalLM
@@ -363,10 +362,14 @@ def materialize_non_block_layers(model, model_name, block_names):
                 if any(name.startswith(bp) for bp in block_prefixes) and param_attr == "weight":
                     target._cached_weight_numel = param.numel()
                     target._cached_weight_shape = tuple(param.shape)
-                setattr(target, param_attr, torch.nn.Parameter(
-                    torch.empty(0, dtype=param.dtype, device="cpu"),
-                    requires_grad=param.requires_grad,
-                ))
+                setattr(
+                    target,
+                    param_attr,
+                    torch.nn.Parameter(
+                        torch.empty(0, dtype=param.dtype, device="cpu"),
+                        requires_grad=param.requires_grad,
+                    ),
+                )
 
         # Replace meta BUFFERS that ARE in the checkpoint with empty CPU tensors.
         # Leave non-checkpoint meta buffers (computed in __init__) untouched for now;
@@ -398,10 +401,7 @@ def materialize_non_block_layers(model, model_name, block_names):
     _reinit_computed_buffers(model)
 
     n_loaded = len(non_block_layer_names)
-    logger.info(
-        f"Materialized {n_loaded} non-block layers from checkpoint "
-        f"(block weights stay offloaded)"
-    )
+    logger.info(f"Materialized {n_loaded} non-block layers from checkpoint " f"(block weights stay offloaded)")
 
 
 def _reinit_computed_buffers(model):
@@ -438,9 +438,7 @@ def _reinit_computed_buffers(model):
                     f"Could not recompute buffer {module_name}.{buf_name}, "
                     "using zeros (may slightly affect AutoScheme scoring accuracy)"
                 )
-                module.register_buffer(
-                    buf_name, torch.zeros(buf.shape, dtype=buf.dtype, device="cpu")
-                )
+                module.register_buffer(buf_name, torch.zeros(buf.shape, dtype=buf.dtype, device="cpu"))
 
 
 # =====================================================================
