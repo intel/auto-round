@@ -23,7 +23,7 @@ from auto_round.auto_scheme import AutoScheme
 from auto_round.compressors import BaseCompressor
 from auto_round.eval.eval_cli import EvalArgumentParser, eval, eval_task_by_task
 from auto_round.eval.evaluation import run_model_evaluation
-from auto_round.schemes import PRESET_SCHEMES
+from auto_round.schemes import PRESET_SCHEMES, preset_name_to_scheme
 from auto_round.utils import (
     clear_memory,
     get_device_and_parallelism,
@@ -609,8 +609,6 @@ def tune(args):
 
         output_dir = args.output_dir
         if output_dir == "./tmp_autoround" and model_name.split("/")[-1].strip(".") != "":
-            from auto_round.schemes import preset_name_to_scheme
-
             s = preset_name_to_scheme(scheme)
             suffix = f"g{s.group_size}" if s.group_size > 0 else f"a{s.act_bits}"
             output_dir = os.path.join(args.output_dir, model_name.split("/")[-1] + f"-w{s.bits}{suffix}")
