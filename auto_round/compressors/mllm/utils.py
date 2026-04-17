@@ -58,7 +58,12 @@ def fetch_image(path_or_url):
     if os.path.isfile(path_or_url):
         image_obj = Image.open(path_or_url)
     elif path_or_url.startswith("http://") or path_or_url.startswith("https://"):
-        image_obj = Image.open(requests.get(path_or_url, stream=True).raw)
+        try:
+            response = requests.get(path_or_url, stream=True, timeout=(3, 10))
+            response.raise_for_status()
+            image_obj = Image.open(response.raw)
+        except (requests.exceptions.RequestException, OSError) as e:
+            raise RuntimeError(f"Failed to fetch image from url: {path_or_url}") from e
     else:
         raise TypeError(f"{path_or_url} neither a path or url.")
 
