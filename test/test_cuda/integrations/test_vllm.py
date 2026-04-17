@@ -21,6 +21,31 @@ from ...helpers import get_model_path
 
 os.environ["VLLM_WORKER_MULTIPROC_METHOD"] = "spawn"
 
+
+def _is_sm12_with_old_cuda() -> bool:
+    """Return True when the GPU is SM 12.x (Blackwell) and CUDA < 12.9.
+
+    vLLM's gptq_marlin JIT kernels require CUDA >= 12.9 on SM 12.x devices.
+    """
+    try:
+        import torch
+
+        if not torch.cuda.is_available():
+            return False
+        major, _ = torch.cuda.get_device_capability()
+        if major < 12:
+            return False
+        cuda_ver = tuple(int(x) for x in (torch.version.cuda or "0.0").split(".")[:2])
+        return cuda_ver < (12, 9)
+    except Exception:
+        return False
+
+
+pytestmark = pytest.mark.skipif(
+    _is_sm12_with_old_cuda(),
+    reason="SM 12.x (Blackwell) GPU requires CUDA >= 12.9 for vLLM GPTQ marlin JIT kernels",
+)
+
 MODELS = [
     "OPEA/Qwen2.5-0.5B-Instruct-int4-sym-inc",  ##auto_round:auto_gptq
     "Intel/Qwen2-0.5B-Instruct-int4-sym-AutoRound",  ##auto_round:auto_awq

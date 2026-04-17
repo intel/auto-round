@@ -35,6 +35,20 @@ class TestAutoRound:
         shutil.rmtree("runs", ignore_errors=True)
 
     def _run_sglang_inference(self, model_path: Path):
+        # SM 12.x (Blackwell) GPUs require CUDA >= 12.9 for sglang's gptq_marlin_repack JIT kernel.
+        # Skip inference when the environment is known to be incompatible.
+        if torch.cuda.is_available():
+            try:
+                major, minor = torch.cuda.get_device_capability()
+                if major >= 12:
+                    cuda_ver = tuple(int(x) for x in (torch.version.cuda or "0.0").split(".")[:2])
+                    if cuda_ver < (12, 9):
+                        pytest.skip(
+                            f"SM {major}.{minor} GPU requires CUDA >= 12.9 for sglang GPTQ JIT kernels "
+                            f"(installed: CUDA {torch.version.cuda})"
+                        )
+            except Exception:
+                pass
         llm = sgl.Engine(
             model_path=str(model_path), mem_fraction_static=0.5, disable_piecewise_cuda_graph=True, cuda_graph_bs=[1]
         )
