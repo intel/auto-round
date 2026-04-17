@@ -12,6 +12,7 @@ from ...helpers import get_model_path, opt_name_or_path
 
 
 class TestLLMC:
+
     @classmethod
     def setup_class(self):
         self.model_name = get_model_path("stas/tiny-random-llama-2")

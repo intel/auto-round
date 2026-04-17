@@ -997,16 +997,14 @@ class CalibCompressor(BaseCompressor):
             if self.enable_torch_compile:
                 torch._dynamo.reset()
                 self.quantizer._invalidate_block_forward_cache()
-            # Always advance input_ids to the current block's output so that the next
-            # block receives the correct activations.  When enable_quanted_input is
-            # False we reuse reference_output (unquantized block output); otherwise
-            # q_input already holds the quantized-block output.
-            next_input_ids = q_input if q_input is not None else reference_output
+            # Keep old-arch semantics: the next block's FP reference input comes
+            # from the current block's reference output, while q_input (when
+            # enabled) is only used as the quantized-input companion for the
+            # next block.
+            next_input_ids = reference_output
             clear_memory(
                 input_ids if input_ids is not next_input_ids else None, device_list=self.compress_context.device_list
             )
-            if reference_output is not next_input_ids:
-                clear_memory(reference_output, device_list=self.compress_context.device_list)
             memory_monitor.log_summary()
 
             # ── Infrastructure: immediate_pack / shard write ──────────────────
@@ -1092,7 +1090,6 @@ class CalibCompressor(BaseCompressor):
             all_inputs = copy.deepcopy(self.inputs)
             clear_memory(self.inputs, device_list=self.compress_context.device_list)
             all_q_inputs = self.try_cache_inter_data_gpucpu(all_first_block_names, self.nsamples, layer_names)
-            self.inputs = all_q_inputs
         # Remove accelerate dispatch hooks before moving parameters.
         # hf_device_map is kept for reference but hooks are no longer needed.
         if hasattr(self.model_context.model, "hf_device_map") and len(self.model_context.model.hf_device_map) > 1:
