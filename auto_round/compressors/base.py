@@ -81,6 +81,7 @@ from auto_round.utils import (
     check_to_quantized,
     clear_memory,
     compile_func,
+    collapse_ignore_layers,
     compress_layer_names,
     convert_dtype_str2torch,
     convert_module_to_hp_if_necessary,
@@ -1660,6 +1661,19 @@ class BaseCompressor(object):
         is_gguf_format = (f := getattr(self, "formats", None)) is not None and len(f) > 0 and f[0].is_gguf()
         if not is_gguf_format:
             predefined_ignore_layers = get_predefined_ignore_layers(self.model)
+
+            # Filter out ignore_layers that don't belong to any quantized block.
+            if predefined_ignore_layers and self.quant_block_list:
+                block_prefixes = [b for group in self.quant_block_list for b in group]
+                predefined_ignore_layers = [
+                    name for name in predefined_ignore_layers
+                    if any(name.startswith(prefix) for prefix in block_prefixes)
+                ]
+
+            # Collapse numbered layer names into regex patterns so that
+            # extra_config gets one entry instead of N per-layer entries.
+            predefined_ignore_layers = collapse_ignore_layers(predefined_ignore_layers)
+
             compressed_predefined_ignore_layers = compress_layer_names(predefined_ignore_layers)
             if predefined_ignore_layers:
                 logger.info(f"Using predefined ignore_layers: {compressed_predefined_ignore_layers}")

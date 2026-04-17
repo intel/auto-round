@@ -803,3 +803,32 @@ def compress_layer_names(names: list) -> str:
     parts.extend(singles)
     parts.sort()
     return ", ".join(parts)
+
+
+def collapse_ignore_layers(names: list[str]) -> list[str]:
+    """Collapse numbered layer names into regex patterns.
+
+    Groups names that differ only by a numeric index and replaces
+    the index with ``\\d+``.  Single-element groups are kept as-is.
+
+    Example::
+
+        ["layers.0.mlp.gate", "layers.1.mlp.gate"]
+        → ["layers.\\d+.mlp.gate"]
+    """
+    groups: dict[tuple[str, str], list[str]] = {}
+    for name in names:
+        m = re.match(r"^(.*\.)(\d+)(\..+)$", name)
+        if m:
+            key = (m.group(1), m.group(3))
+            groups.setdefault(key, []).append(name)
+        else:
+            groups.setdefault((name, ""), []).append(name)
+
+    result: list[str] = []
+    for (prefix, suffix), members in groups.items():
+        if len(members) > 1:
+            result.append(f"{prefix}\\d+{suffix}")
+        else:
+            result.append(members[0])
+    return result
