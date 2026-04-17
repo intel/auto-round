@@ -27,6 +27,7 @@ from auto_round.algorithms.transforms import (
     BaseRotationConfig,
     apply_rotation,
 )
+from auto_round.compressors.utils import is_mx_fp, is_nv_fp
 from auto_round.compressors_new.shard_writer import ShardWriter
 from auto_round.compressors_new.utils import _get_save_folder_name, block_forward, set_layer_config
 from auto_round.context.compress import CompressContext
@@ -978,8 +979,12 @@ class BaseCompressor(object):
                 self.compress_context.low_cpu_mem_usage = False
                 self.is_immediate_saving = False
 
-        if self.is_immediate_saving and "int" not in self.quantize_config.data_type:
-            logger.warning("immediate_saving is only supported for int quantization, set to False")
+        if self.is_immediate_saving and not (
+            "int" in self.quantize_config.data_type
+            or is_nv_fp(self.quantize_config.data_type)
+            or is_mx_fp(self.quantize_config.data_type)
+        ):
+            logger.warning("immediate_saving is only supported for int/nv_fp/mx_fp quantization, set to False")
             self.is_immediate_saving = False
 
         if self.output_dir is None:
