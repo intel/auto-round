@@ -56,7 +56,7 @@ from auto_round.utils import (
     to_device,
 )
 from auto_round.utils.device import MemoryMonitor
-from auto_round.utils.offload import OffloadManager
+from auto_round.utils.offload import OffloadManager, load_model_meta_skeleton, materialize_non_block_layers
 from auto_round.wrapper import WrapperLinear
 
 __all__ = ["gen_layer_config"]
@@ -420,8 +420,8 @@ def model_forward_low_gpu(model, dataloader, major_device="cuda", pbar=None):
 
         for block_name in reversed(block_names):
 
-            # Retrieve stored inputs for the block
-            block_input_info = block_inputs.get(block_name, {})
+            # Retrieve stored inputs for the block (pop to free memory immediately)
+            block_input_info = block_inputs.pop(block_name, {})
 
             block_input_args = to_device(block_input_info.get("args", []), major_device)
             block_input_kwargs = to_device(block_input_info.get("kwargs", {}), major_device)
@@ -687,6 +687,15 @@ def _gen_layer_config(
     model.eval()
 
     block_name = get_block_names(model)[0]  # TODO need change to support vlm
+
+    # When model was loaded as meta skeleton, materialize non-block layers
+    # from checkpoint now.  Block weights stay as empty tensors and will be
+    # loaded on demand by OffloadManager hooks.
+    if offload_context is not None and model_name is not None:
+        _is_meta_skeleton = any(p.is_meta or p.numel() == 0 for p in model.parameters())
+        if _is_meta_skeleton:
+            materialize_non_block_layers(model, model_name, block_name)
+
     for name in block_name:
         module = get_module(model, name)
         module.in_block = True
@@ -972,8 +981,14 @@ def gen_layer_config(
     model_name = None
     if isinstance(model, str):
         model_name = model
-        # Load model on CPU only; do not apply automatic device map or tuning-aware placement at load time.
-        model, tokenizer, _ = llm_load_model(model_name, device_map="cpu")
+        if low_gpu_mem_usage and auto_scheme.low_cpu_mem_usage:
+            # Load model as meta skeleton (no real weights) to minimize peak RAM.
+            # Non-block layers will be materialized from checkpoint below;
+            # block weights are loaded on demand by OffloadManager hooks.
+            model, tokenizer, _ = load_model_meta_skeleton(model_name)
+        else:
+            # Load model on CPU only; do not apply automatic device map or tuning-aware placement at load time.
+            model, tokenizer, _ = llm_load_model(model_name, device_map="cpu")
     # Get major device
     major_device = get_major_device(device_map)
     if not low_gpu_mem_usage:
@@ -982,11 +997,17 @@ def gen_layer_config(
         else:
             model = dispatch_model_by_all_available_devices(model, device_map)
     else:
-        model.to("cpu")
-        if hasattr(model, "hf_device_map") and len(model.hf_device_map) > 1:
-            import accelerate
+        # Skip model.to("cpu") when model was loaded as meta skeleton --
+        # non-block layers are already on CPU and block weights are empty tensors.
+        _is_meta_loaded = model_name is not None and auto_scheme.low_cpu_mem_usage
+        if not _is_meta_loaded:
+            model.to("cpu")
+        if hasattr(model, "hf_device_map"):
+            if _is_meta_loaded or len(model.hf_device_map) > 1:
+                import accelerate
 
-            accelerate.hooks.remove_hook_from_submodules(model)
+                accelerate.hooks.remove_hook_from_submodules(model)
+                delattr(model, "hf_device_map")
         if (isinstance(device_map, str) and "," in device_map) or device_map == "auto":
             set_avg_auto_device_map(model, device_map)
         else:
