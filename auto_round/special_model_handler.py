@@ -89,6 +89,9 @@ def _patch_gemma4_model(model):
         return model
 
     rotary_emb = text_model.rotary_emb
+    # Shared dict to propagate KV state between anchor/sharer layers (like
+    # Gemma4TextModel.forward does in newer transformers versions).
+    shared_kv_states_global = {}
 
     for layer in text_model.layers:
         original_forward = layer.forward
@@ -98,17 +101,26 @@ def _patch_gemma4_model(model):
         head_dim = getattr(getattr(layer, "self_attn", None), "head_dim", None)
         is_full = layer_type == "full_attention"
 
-        def _make_layer_forward(orig_fwd, lt, hd, is_full_attn, re, cfg):
+        def _make_layer_forward(orig_fwd, lt, hd, is_full_attn, re, cfg, skv_global):
+            import inspect
+
+            orig_params = list(inspect.signature(orig_fwd).parameters)
+            orig_has_shared_kv = "shared_kv_states" in orig_params
 
             def patched_layer_forward(
                 self,
                 hidden_states,
                 per_layer_input=None,
+                shared_kv_states=None,
                 position_embeddings=None,
                 attention_mask=None,
                 position_ids=None,
                 **kwargs,
             ):
+                # Ensure shared_kv_states is always a dict (newer transformers
+                # versions pass it as positional arg 3; None causes item assignment crash)
+                if shared_kv_states is None:
+                    shared_kv_states = skv_global
                 # Recompute position_embeddings when cached dim doesn't match
                 if (
                     hd is not None
@@ -147,6 +159,16 @@ def _patch_gemma4_model(model):
                     except Exception:
                         pass  # fall back to whatever was cached
 
+                if orig_has_shared_kv:
+                    return orig_fwd(
+                        hidden_states,
+                        per_layer_input,
+                        shared_kv_states,
+                        position_embeddings=position_embeddings,
+                        attention_mask=attention_mask,
+                        position_ids=position_ids,
+                        **kwargs,
+                    )
                 return orig_fwd(
                     hidden_states,
                     per_layer_input,
@@ -159,7 +181,9 @@ def _patch_gemma4_model(model):
             return patched_layer_forward
 
         layer.forward = _types.MethodType(
-            _make_layer_forward(original_forward, layer_type, head_dim, is_full, rotary_emb, text_model.config),
+            _make_layer_forward(
+                original_forward, layer_type, head_dim, is_full, rotary_emb, text_model.config, shared_kv_states_global
+            ),
             layer,
         )
 
