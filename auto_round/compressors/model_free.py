@@ -365,7 +365,7 @@ def _download_metadata_files(
     snapshot_download(
         repo_id=model_name_or_path,
         local_dir=local_dir,
-        ignore_patterns=["*.safetensors"],
+        ignore_patterns=["*.safetensors", "*.bin", "*.pth", "*.pt"],
     )
     return local_dir
 
@@ -434,7 +434,6 @@ def _quantize_single_tensor(
         in_features = orig_in_features
         if in_features % group_size != 0:
             in_features += group_size - in_features % group_size
-        out[f"{layer_name}.g_idx"] = torch.arange(in_features, dtype=torch.int32) // group_size
 
         logger.debug(f"Quantized: {layer_name} (bits={bits}, group_size={group_size}, sym={sym})")
         return layer_name, out, layer_name, None
