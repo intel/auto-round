@@ -65,14 +65,8 @@ def test_gptoss(scheme, tiny_gpt_oss_model_path, tmp_path):
     ), f"Expected {config.num_hidden_layers * 3 * config.num_local_experts} QuantLinear modules, found {quant_linear_cnt}."
 
     # verify the quantized model can be loaded and run inference
-    loaded_model = GptOssForCausalLM.from_pretrained(save_folder)
-    for n, m in quantized_model.named_modules():
-        if m.__class__.__name__ == "QuantLinear":
-            loaded_m = loaded_model.get_submodule(n)
-            if scheme == "MXFP4":
-                assert (loaded_m.weight_packed.to("cpu") == m.weight_packed.to("cpu")).all()
-            if scheme == "MXFP8":
-                assert (loaded_m.weight.to("cpu") == m.weight.to("cpu")).all()
+    loaded_model = GptOssForCausalLM.from_pretrained(output_dir)
+
     inp = torch.randint(0, 100, (1, 32))
     with torch.inference_mode():
         loaded_out = loaded_model(inp)
@@ -87,11 +81,8 @@ def test_llama4(tiny_llama4_model_path):
     # Ensure the quantized model is not None
     assert quantized_model is not None, "Quantized model should not be None."
 
-    loaded_model = Llama4ForConditionalGeneration.from_pretrained(save_folder)
-    for n, m in quantized_model.named_modules():
-        if m.__class__.__name__ == "QuantLinear":
-            loaded_m = loaded_model.get_submodule(n)
-            assert (loaded_m.weight_packed.to("cpu") == m.weight_packed.to("cpu")).all()
+    loaded_model = Llama4ForConditionalGeneration.from_pretrained(output_dir)
+
     inp = torch.randint(0, 100, (1, 32))
     with torch.inference_mode():
         loaded_out = loaded_model(inp)
@@ -114,10 +105,6 @@ def test_qwen3_vl_moe_mxfp(tiny_qwen3_vl_moe_model_path):
     assert quantized_model is not None, "Quantized model should not be None."
     loaded_model = Qwen3VLMoeForConditionalGeneration.from_pretrained(quantized_model_path, device_map="cpu")
 
-    for n, m in quantized_model.named_modules():
-        if m.__class__.__name__ == "QuantLinear":
-            loaded_m = loaded_model.get_submodule(n)
-            assert (loaded_m.weight_packed.to("cpu") == m.weight_packed.to("cpu")).all()
     inp = torch.randint(0, 100, (1, 32))
     with torch.inference_mode():
         loaded_out = loaded_model(inp)

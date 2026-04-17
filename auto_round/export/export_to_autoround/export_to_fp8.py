@@ -175,7 +175,7 @@ def pack_layer(layer_name, model, data_type, device=None, unsqueeze=False):
     )
     if (
         unsqueeze
-        and isinstance(linear_cls, FP8QLinear)
+        and isinstance(my_linear, FP8QLinear)
         and len(my_linear.weight_scale.shape)
         and my_linear.weight_scale.shape[0] != 1
     ):
