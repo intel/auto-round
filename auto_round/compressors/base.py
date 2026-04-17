@@ -62,7 +62,13 @@ from auto_round.formats import OutputFormat, get_formats
 from auto_round.logger import logger
 from auto_round.modeling.fused_moe.replace_modules import materialize_model_, safe_to_cpu_
 from auto_round.modeling.unfused_moe import apply_model_monkey_patches
-from auto_round.schemes import QuantizationScheme, _handle_special_schemes, get_gguf_scheme, preset_name_to_scheme
+from auto_round.schemes import (
+    QuantizationScheme,
+    _handle_special_schemes,
+    get_gguf_scheme,
+    preset_name_to_scheme,
+    scheme_to_preset_name,
+)
 from auto_round.sign_sgd import SignSGD
 from auto_round.special_model_handler import get_predefined_ignore_layers, update_module
 from auto_round.utils import (
@@ -555,16 +561,12 @@ class BaseCompressor(object):
 
         # apply hadamard transform
         if hadamard_config:
+            logger.info("Applying Hadamard transform to the model.")
             from auto_round.experimental.transform.apply import apply_hadamard_transform
-            from auto_round.experimental.utils import check_supported_schemes, normalize_hadamard_config
+            from auto_round.experimental.utils import normalize_hadamard_config
 
-            check_supported_schemes(self.scheme)
-
-            self.model = apply_hadamard_transform(
-                self.model, hadamard_config, need_calibration=True if self.iters > 0 else False
-            )
-
-            self.hadamard_config = normalize_hadamard_config(hadamard_config)
+            self.hadamard_config = normalize_hadamard_config(hadamard_config, self.data_type)
+            self.model = apply_hadamard_transform(self.model, self.hadamard_config, data_type=self.data_type)
 
     def _gen_auto_scheme(self) -> dict[str, dict]:
         if self.mllm:
@@ -1744,8 +1746,10 @@ class BaseCompressor(object):
                 self.low_cpu_mem_usage = False
                 self.is_immediate_saving = False
 
-        if self.is_immediate_saving and "int" not in self.data_type:
-            logger.warning("immediate_saving is only supported for int quantization, set to False")
+        if self.is_immediate_saving and not (
+            "int" in self.data_type or is_nv_fp(self.data_type) or is_mx_fp(self.data_type)
+        ):
+            logger.warning("immediate_saving is only supported for int/nv_fp/mx_fp quantization, set to False")
             self.is_immediate_saving = False
 
         if self.orig_output_dir is None:

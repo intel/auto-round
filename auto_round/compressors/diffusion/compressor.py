@@ -47,6 +47,8 @@ pipeline_utils = LazyImport("diffusers.pipelines.pipeline_utils")
 output_configs = {
     "FluxTransformerBlock": ["encoder_hidden_states", "hidden_states"],
     "FluxSingleTransformerBlock": ["encoder_hidden_states", "hidden_states"],
+    "OvisImageTransformerBlock": ["encoder_hidden_states", "hidden_states"],
+    "OvisImageSingleTransformerBlock": ["encoder_hidden_states", "hidden_states"],
 }
 
 
@@ -116,7 +118,7 @@ class DiffusionCompressor(BaseCompressor):
         pipeline_fn: callable = None,
         **kwargs,
     ):
-        logger.warning("Diffusion model quantization is experimental and is only validated on Flux models.")
+        logger.warning("Diffusion model quantization is experimental and is only validated on a few models.")
         if dataset == "NeelNanda/pile-10k":
             dataset = "coco2014"
             logger.warning(
