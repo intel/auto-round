@@ -241,7 +241,11 @@ def _set_tensor_in_model(model: torch.nn.Module, full_name: str, tensor: torch.T
     param_name = parts[-1]
     old = getattr(target, param_name, None)
     if isinstance(old, torch.nn.Parameter):
-        setattr(target, param_name, torch.nn.Parameter(tensor.to(dtype=old.dtype), requires_grad=old.requires_grad))
+        setattr(
+            target,
+            param_name,
+            torch.nn.Parameter(tensor.to(dtype=old.dtype), requires_grad=old.requires_grad),
+        )
     else:
         setattr(target, param_name, tensor)
 
@@ -401,7 +405,10 @@ def materialize_non_block_layers(model, model_name, block_names):
     _reinit_computed_buffers(model)
 
     n_loaded = len(non_block_layer_names)
-    logger.info(f"Materialized {n_loaded} non-block layers from checkpoint " f"(block weights stay offloaded)")
+    logger.info(
+        f"Materialized {n_loaded} non-block layers from checkpoint "
+        f"(block weights stay offloaded)"
+    )
 
 
 def _reinit_computed_buffers(model):
@@ -438,7 +445,9 @@ def _reinit_computed_buffers(model):
                     f"Could not recompute buffer {module_name}.{buf_name}, "
                     "using zeros (may slightly affect AutoScheme scoring accuracy)"
                 )
-                module.register_buffer(buf_name, torch.zeros(buf.shape, dtype=buf.dtype, device="cpu"))
+                module.register_buffer(
+                    buf_name, torch.zeros(buf.shape, dtype=buf.dtype, device="cpu")
+                )
 
 
 # =====================================================================
