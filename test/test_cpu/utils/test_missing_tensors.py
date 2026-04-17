@@ -669,13 +669,22 @@ class TestCopyMissingTensorsFromSource(unittest.TestCase):
                 os.path.join(source_dir, "model.safetensors"),
             )
             _save_safetensors(
-                {"thinker.model.layers.0.mlp.experts.0.up_proj.qweight": torch.randint(0, 16, (8, 32), dtype=torch.int32)},
+                {
+                    "thinker.model.layers.0.mlp.experts.0.up_proj.qweight": torch.randint(
+                        0, 16, (8, 32), dtype=torch.int32
+                    )
+                },
                 os.path.join(target_dir, "model.safetensors"),
             )
             with open(os.path.join(target_dir, "config.json"), "w") as f:
                 json.dump(
                     self._make_auto_round_config(bits=4, group_size=64, sym=True)
-                    | {"quantization_config": self._make_auto_round_config(bits=4, group_size=64, sym=True)["quantization_config"] | {"block_name_to_quantize": "thinker.model.layers"}},
+                    | {
+                        "quantization_config": self._make_auto_round_config(bits=4, group_size=64, sym=True)[
+                            "quantization_config"
+                        ]
+                        | {"block_name_to_quantize": "thinker.model.layers"}
+                    },
                     f,
                 )
 

@@ -585,9 +585,11 @@ def _woq_quantize_missing_tensors(target_dir: str, missing_tensors_dict: dict) -
             return False
         # Only quantize weights that fall under the quantized blocks.
         if block_name_to_quantize:
-            blocks = block_name_to_quantize if isinstance(block_name_to_quantize, list) else [
-                b.strip() for b in block_name_to_quantize.split(",") if b.strip()
-            ]
+            blocks = (
+                block_name_to_quantize
+                if isinstance(block_name_to_quantize, list)
+                else [b.strip() for b in block_name_to_quantize.split(",") if b.strip()]
+            )
             if not any(k.startswith(b + ".") or k.startswith(b + "[") for b in blocks):
                 return False
         layer_name = k[: -len(".weight")]

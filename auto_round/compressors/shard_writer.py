@@ -123,7 +123,9 @@ class ShardWriter:
 
         model_type = getattr(getattr(self.model, "config", None), "model_type", None)
         skip_prefixes = MOE_SKIP_PREFIXES.get(model_type, []) if model_type is not None else []
-        if not any(prefix == skip_prefix.rstrip(".") or prefix.startswith(skip_prefix) for skip_prefix in skip_prefixes):
+        if not any(
+            prefix == skip_prefix.rstrip(".") or prefix.startswith(skip_prefix) for skip_prefix in skip_prefixes
+        ):
             return None
 
         config = KNOWN_PROJECTION_PATTERNS.get(attr_name)
@@ -202,10 +204,11 @@ class ShardWriter:
                 filtered_tensors[name] = tensor
                 continue
 
-            ptr = tensor.untyped_storage().data_ptr()
+            ptr = tensor.untyped_storage().data_ptr() + tensor.storage_offset() * tensor.element_size()
             if ptr not in storage_map:
                 storage_map.add(ptr)
                 filtered_tensors[name] = tensor
+
         self.current_shard_tensors = filtered_tensors
 
     def _flush_shard(self):

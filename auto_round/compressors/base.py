@@ -81,8 +81,8 @@ from auto_round.utils import (
     check_seqlen_compatible,
     check_to_quantized,
     clear_memory,
-    compile_func,
     collapse_ignore_layers,
+    compile_func,
     compress_layer_names,
     convert_dtype_str2torch,
     convert_module_to_hp_if_necessary,
@@ -1663,7 +1663,8 @@ class BaseCompressor(object):
             if predefined_ignore_layers and self.quant_block_list:
                 block_prefixes = [b for group in self.quant_block_list for b in group]
                 predefined_ignore_layers = [
-                    name for name in predefined_ignore_layers
+                    name
+                    for name in predefined_ignore_layers
                     if any(name.startswith(prefix) for prefix in block_prefixes)
                 ]
 
@@ -1760,8 +1761,10 @@ class BaseCompressor(object):
                 self.low_cpu_mem_usage = False
                 self.is_immediate_saving = False
 
-        if self.is_immediate_saving and "int" not in self.data_type:
-            logger.warning("immediate_saving is only supported for int quantization, set to False")
+        if self.is_immediate_saving and not (
+            "int" in self.data_type or is_nv_fp(self.data_type) or is_mx_fp(self.data_type)
+        ):
+            logger.warning("immediate_saving is only supported for int/nv_fp/mx_fp quantization, set to False")
             self.is_immediate_saving = False
 
         if self.orig_output_dir is None:
