@@ -20,6 +20,7 @@ from functools import partial
 from typing import Union
 
 import torch
+from accelerate.utils import get_max_memory
 from tqdm import tqdm
 
 from auto_round.compressors.base import BaseCompressor
@@ -138,9 +139,15 @@ class DiffusionCompressor(BaseCompressor):
         to_quant_block_names: Union[str, list, None] = kwargs.pop("to_quant_block_names", None)
         if device_map is None:
             device_map = 0
+        load_device = device_map if isinstance(device_map, (str, int, torch.device)) else None
         self._set_device(device_map)
 
-        pipe, model = diffusion_load_model(model, platform=platform, device=self.device, model_dtype=model_dtype)
+        pipe, model = diffusion_load_model(
+            model,
+            platform=platform,
+            device=load_device if load_device is not None else self.device,
+            model_dtype=model_dtype,
+        )
 
         self.model = model
         self._current_transformer_name = "transformer"
@@ -216,6 +223,79 @@ class DiffusionCompressor(BaseCompressor):
     def _requires_calibration_image(self) -> bool:
         image_param = inspect.signature(self.pipe.__call__).parameters.get("image")
         return image_param is not None and image_param.default is inspect.Parameter.empty
+
+    def _get_module_device(self, module: torch.nn.Module) -> torch.device:
+        try:
+            return next(module.parameters()).device
+        except StopIteration:
+            return torch.device(self.device)
+
+    def _get_module_nbytes(self, module: torch.nn.Module) -> int:
+        total = 0
+        for param in module.parameters():
+            total += param.numel() * param.element_size()
+        for buffer in module.buffers():
+            total += buffer.numel() * buffer.element_size()
+        return total
+
+    def _place_auxiliary_components(self):
+        devices = [device for device in self.device_list if device != "cpu"]
+        if len(devices) <= 1:
+            return
+
+        component_entries = []
+        for comp_name in self.pipe.components:
+            comp = getattr(self.pipe, comp_name, None)
+            if comp is None or comp is self.model or not isinstance(comp, torch.nn.Module):
+                continue
+            if not hasattr(comp, "to"):
+                continue
+            if isinstance(comp, torch.nn.Module) and hasattr(comp, "dtype") and comp.dtype != self.model.dtype:
+                comp.to(dtype=self.model.dtype)
+            component_entries.append((comp_name, comp, self._get_module_nbytes(comp)))
+
+        if not component_entries:
+            return
+
+        total_aux_nbytes = sum(item[2] for item in component_entries)
+        max_memory = get_max_memory()
+        free_bytes_by_device = {}
+        for device in devices:
+            if ":" in device:
+                key = int(device.split(":")[-1])
+            elif device == "cpu":
+                key = "cpu"
+            else:
+                key = 0
+            free_bytes_by_device[device] = int(max_memory[key] * 0.9)
+
+        # If one card can hold all auxiliary modules, keep them co-located there.
+        fit_device = None
+        if free_bytes_by_device:
+            best_device = max(free_bytes_by_device, key=free_bytes_by_device.get)
+            if free_bytes_by_device[best_device] >= total_aux_nbytes:
+                fit_device = best_device
+
+        if fit_device is not None:
+            for _, comp, _ in component_entries:
+                try:
+                    comp.to(fit_device)
+                except (NotImplementedError, RuntimeError):
+                    continue
+            return
+
+        # Largest-first greedy placement to avoid piling all large auxiliaries onto one device.
+        component_entries.sort(key=lambda item: item[2], reverse=True)
+        assigned_bytes = {device: 0 for device in devices}
+
+        for comp_name, comp, comp_nbytes in component_entries:
+            target_device = min(assigned_bytes, key=assigned_bytes.get)
+            try:
+                comp.to(target_device)
+                assigned_bytes[target_device] += comp_nbytes
+            except (NotImplementedError, RuntimeError):
+                # Component may have meta/unmaterialized tensors (already quantized & saved)
+                continue
 
     def _get_calibration_image(self, batch_size: int):
         from PIL import Image  # pylint: disable=E0401
@@ -357,36 +437,12 @@ class DiffusionCompressor(BaseCompressor):
         """Dispatch multi-device before caching so accelerate hooks are added before _replace_forward."""
         multi_device_diffusion = is_auto_device_mapping(self.device_map) and len(self.device_list) > 1
         if multi_device_diffusion:
+            # Spread auxiliary pipeline components across visible GPUs before
+            # dispatching the current transformer, instead of piling them onto
+            # a single card.
+            self._place_auxiliary_components()
+
             if not (hasattr(self.model, "hf_device_map") and len(self.model.hf_device_map) > 1):
-                # Place other pipeline components on GPU/XPU *before* dispatching the
-                # current transformer.  dispatch_model_block_wise queries free memory
-                # so it will leave room for these components automatically.
-                comp_device = self.device_list[-1]
-                for comp_name in self.pipe.components:
-                    comp = getattr(self.pipe, comp_name, None)
-                    if comp is None or comp is self.model:
-                        continue
-                    if not hasattr(comp, "to"):
-                        continue
-                    is_other_transformer = (
-                        comp_name.startswith("transformer")
-                        and isinstance(comp, torch.nn.Module)
-                        and next(comp.parameters()).device.type == "cpu"
-                    )
-                    is_other_component = not comp_name.startswith("transformer")
-                    if is_other_transformer or is_other_component:
-                        # Convert dtype on CPU first to reduce GPU/XPU memory for large components
-                        if (
-                            isinstance(comp, torch.nn.Module)
-                            and hasattr(comp, "dtype")
-                            and comp.dtype != self.model.dtype
-                        ):
-                            comp.to(dtype=self.model.dtype)
-                        try:
-                            comp.to(comp_device)
-                        except (NotImplementedError, RuntimeError):
-                            # Component may have meta/unmaterialized tensors (already quantized & saved)
-                            continue
                 self.model = dispatch_model_block_wise(self.model, self.device_map)
                 setattr(self.pipe, self._current_transformer_name, self.model)
         return super().cache_inter_data(block_names, nsamples, layer_names, last_cache_name)
@@ -433,10 +489,29 @@ class DiffusionCompressor(BaseCompressor):
             if self.generator_seed is None
             else torch.Generator(device=self.pipe.device).manual_seed(self.generator_seed)
         )
+        multi_device_diffusion = is_auto_device_mapping(self.device_map) and len(self.device_list) > 1
         extra_kwargs = {}
         if self._requires_calibration_image():
             extra_kwargs["image"] = self._get_calibration_image(len(prompts) if isinstance(prompts, list) else 1)
             extra_kwargs["prompt"] = prompts
+        if (
+            multi_device_diffusion
+            and self.pipeline_fn is None
+            and prompts is not None
+            and hasattr(self.pipe, "encode_prompt")
+            and isinstance(getattr(self.pipe, "text_encoder", None), torch.nn.Module)
+        ):
+            text_device = self._get_module_device(self.pipe.text_encoder)
+            prompt_embeds, negative_prompt_embeds = self.pipe.encode_prompt(
+                prompt=prompts,
+                do_classifier_free_guidance=self.guidance_scale > 1,
+                device=text_device,
+                dtype=self.pipe.text_encoder.dtype,
+            )
+            extra_kwargs["prompt_embeds"] = prompt_embeds
+            extra_kwargs["negative_prompt_embeds"] = negative_prompt_embeds
+            extra_kwargs.pop("prompt", None)
+            prompts = None
         if self.pipeline_fn is not None:
             self.pipeline_fn(
                 self.pipe,

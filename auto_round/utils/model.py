@@ -741,6 +741,14 @@ def diffusion_load_model(
 
     # non-meta model uses model.save_pretrained for model and config saving
     setattr(model, "save_pretrained", partial(model_save_pretrained, model))
+
+    # For auto/multi-device diffusion loading, keep the transformer on CPU here.
+    # The compressor will dispatch the pipeline/model afterwards. Eagerly moving
+    # the full transformer to `device` would collapse the whole model onto a
+    # single GPU (typically cuda:0) and can OOM before dispatch happens.
+    if use_auto_mapping:
+        return pipe, model
+
     return pipe, model.to(device)
 
 
