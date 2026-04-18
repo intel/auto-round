@@ -50,6 +50,8 @@ pipeline_utils = LazyImport("diffusers.pipelines.pipeline_utils")
 output_configs = {
     "FluxTransformerBlock": ["encoder_hidden_states", "hidden_states"],
     "FluxSingleTransformerBlock": ["encoder_hidden_states", "hidden_states"],
+    "OvisImageTransformerBlock": ["encoder_hidden_states", "hidden_states"],
+    "OvisImageSingleTransformerBlock": ["encoder_hidden_states", "hidden_states"],
     "WanTransformerBlock": ["hidden_states"],
 }
 
@@ -423,10 +425,20 @@ class DiffusionCompressor(BaseCompressor):
         extra_kwargs = {}
         if self._requires_calibration_image():
             extra_kwargs["image"] = self._get_calibration_image(len(prompts) if isinstance(prompts, list) else 1)
+            extra_kwargs["prompt"] = prompts
         if self.pipeline_fn is not None:
             self.pipeline_fn(
                 self.pipe,
                 prompts,
+                guidance_scale=self.guidance_scale,
+                num_inference_steps=self.num_inference_steps,
+                generator=generator,
+                **extra_kwargs,
+            )
+        elif "prompt" in extra_kwargs:
+            # I2V pipelines: 'image' is the first positional arg, so pass
+            # 'prompt' as keyword to avoid "multiple values for argument 'image'".
+            self.pipe(
                 guidance_scale=self.guidance_scale,
                 num_inference_steps=self.num_inference_steps,
                 generator=generator,
@@ -480,8 +492,8 @@ class DiffusionCompressor(BaseCompressor):
                     self._run_pipeline(prompts)
                 except NotImplementedError:
                     pass
-                except Exception:
-                    raise
+                except Exception as error:
+                    raise error
                 step = len(prompts)
                 total_cnt += step
                 pbar.update(step)
@@ -594,6 +606,11 @@ class DiffusionCompressor(BaseCompressor):
             all_blocks = get_block_names(self.model)
             self.quant_block_list = find_matching_blocks(self.model, all_blocks, None)
             self.layer_config = {}
+
+            # After primary quantization, base.quantize() moved the model to
+            # CPU via mv_module_from_gpu.  Re-place pipeline components on-device
+            # so calibration inference works for the secondary transformer.
+            self._align_device_and_dtype()
 
             self.quantize()
 
@@ -734,5 +751,13 @@ class DiffusionCompressor(BaseCompressor):
             exit(-1)
 
         self.pipe.to(self.model.dtype)
+
+        # For multi-GPU + secondary transformer, skip full pipeline dispatch here;
+        # cache_inter_data handles per-transformer dispatch via dispatch_model_block_wise
+        # which is more memory-efficient (only dispatches the current transformer,
+        # places other components on a single GPU).
+        multi_device = is_auto_device_mapping(self.device_map) and len(self.device_list) > 1
+        if multi_device and self._current_transformer_name != "transformer":
+            return
 
         dispatch_model_by_all_available_devices(self.pipe, self.device_map)

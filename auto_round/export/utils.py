@@ -59,6 +59,18 @@ def _resolve_pipeline_source_dir(model: nn.Module) -> str | None:
     return None
 
 
+def _resolve_model_source_dir(model: nn.Module) -> str | None:
+    candidates = [
+        getattr(model, "name_or_path", None),
+        getattr(getattr(model, "config", None), "_name_or_path", None),
+        getattr(getattr(model, "config", None), "name_or_path", None),
+    ]
+    for candidate in candidates:
+        if isinstance(candidate, str) and candidate:
+            return candidate
+    return None
+
+
 def _copy_pipeline_artifact(model_dir: str, relative_path: str, output_dir: str) -> None:
     target_path = os.path.join(output_dir, relative_path)
     os.makedirs(os.path.dirname(target_path), exist_ok=True)
@@ -192,16 +204,14 @@ def save_model(
     else:
         model.save_pretrained(save_dir, max_shard_size=max_shard_size, safe_serialization=safe_serialization)
 
+    source_dir = _resolve_model_source_dir(model)
+
     # Allow disabling copy_missing_tensors_from_source via env var AR_DISABLE_COPY_MTP_WEIGHTS, default enabled
     if not envs.AR_DISABLE_COPY_MTP_WEIGHTS:
         try:
-            if (
-                hasattr(model, "config")
-                and hasattr(model.config, "_name_or_path")
-                and model.config.name_or_path is not None  # set None for tiny model
-            ):
+            if source_dir is not None:
                 copy_missing_tensors_from_source(
-                    source_dir=model.config._name_or_path,
+                    source_dir=source_dir,
                     target_dir=save_dir,
                 )
         except Exception as e:
@@ -225,11 +235,7 @@ def save_model(
             json.dump(model.config.quantization_config, f, indent=2)
 
     try:
-        if (
-            hasattr(model, "config")
-            and hasattr(model.config, "_name_or_path")
-            and model.config.name_or_path is not None  # set None for tiny model
-        ):
+        if source_dir is not None:
             copy_python_files_from_model_cache(model, save_dir)
     except Exception as e:
         logger.warning("Skipping source model Python file copy due to error: %s", e)
