@@ -2,6 +2,7 @@ import os
 import shutil
 
 import pytest
+import torch
 import transformers
 
 from auto_round import AutoRound
@@ -168,6 +169,48 @@ class TestAutoRound:
         assert device_list == ["cuda:0", "cuda:1", "cpu"]
         device_list = parse_available_devices("0,1")
         assert len(device_list) == 1 and "cpu" in device_list
+
+    def test_plan_diffusion_component_device_map_memory_aware(self):
+        from auto_round.utils.device import _plan_diffusion_component_device_map
+
+        class DummyModule(torch.nn.Module):
+            def __init__(self, shape):
+                super().__init__()
+                self.weight = torch.nn.Parameter(torch.empty(shape, dtype=torch.float32))
+
+        components = {
+            "text_encoder": DummyModule((2048, 2048)),
+            "vae": DummyModule((512, 512)),
+        }
+        free_memory = {
+            "cuda:0": 1 * 1024**3,
+            "cuda:1": 8 * 1024**3,
+        }
+        device_map = _plan_diffusion_component_device_map(components, ["cuda:0", "cuda:1"], free_memory)
+        assert device_map["text_encoder"] == "cuda:1"
+        assert device_map["vae"] == "cuda:1"
+
+    def test_plan_diffusion_component_device_map_round_robin_fallback(self):
+        from auto_round.utils.device import _plan_diffusion_component_device_map
+
+        class DummyModule(torch.nn.Module):
+            def __init__(self):
+                super().__init__()
+                self.weight = torch.nn.Parameter(torch.empty((8, 8), dtype=torch.float32))
+
+        components = {
+            "component_a": DummyModule(),
+            "component_b": DummyModule(),
+            "component_c": DummyModule(),
+        }
+        device_map = _plan_diffusion_component_device_map(
+            components,
+            ["cuda:0", "cuda:1"],
+            {"cuda:0": None, "cuda:1": None},
+        )
+        assert device_map["component_a"] == "cuda:0"
+        assert device_map["component_b"] == "cuda:1"
+        assert device_map["component_c"] == "cuda:0"
 
     def test_set_scheme(self, tiny_qwen_model_path):
         ar = AutoRound(

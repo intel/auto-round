@@ -1778,19 +1778,38 @@ def dispatch_model_by_all_available_devices(
             pipe.to(devices[0] if devices else "cuda:0")
             return pipe
         # Multi-device path: recursively dispatch the main sub-model,
-        # then move all remaining pipeline components to the primary device.
+        # then distribute remaining pipeline components based on available memory.
         main_model = getattr(pipe, main_attr)
         dispatched = dispatch_model_by_all_available_devices(main_model, _device_map)
         setattr(pipe, main_attr, dispatched)
-        primary_device = devices[0]
+
+        non_main_components = {
+            attr: component
+            for attr, component in pipe.components.items()
+            if attr != main_attr and isinstance(component, torch.nn.Module)
+        }
+        component_device_plan = _plan_diffusion_component_device_map(non_main_components, devices)
+
         for attr, component in pipe.components.items():
             if attr == main_attr:
                 continue
             if isinstance(component, torch.nn.Module):
-                try:
-                    component.to(primary_device)
-                except Exception:
-                    pass
+                target_device = component_device_plan.get(attr, devices[0])
+                candidate_devices = [target_device] + [dev for dev in devices if dev != target_device]
+                moved = False
+                for dev in candidate_devices:
+                    try:
+                        component.to(dev)
+                        moved = True
+                        break
+                    except Exception:
+                        continue
+                if not moved:
+                    logger.warning_once(
+                        f"Failed to move pipeline component '{attr}' to GPU/XPU devices {candidate_devices}; "
+                        "falling back to CPU."
+                    )
+                    component.to("cpu")
         return pipe
 
     if device_map is None:
@@ -1839,3 +1858,71 @@ def dispatch_model_by_all_available_devices(
     device_map = infer_auto_device_map(model, max_memory=new_max_memory, no_split_module_classes=no_split_modules)
     model = dispatch_model(model, device_map=device_map)
     return model
+
+
+def _get_module_memory_bytes(module: torch.nn.Module) -> int:
+    return sum(param.numel() * param.element_size() for param in module.parameters()) + sum(
+        buf.numel() * buf.element_size() for buf in module.buffers()
+    )
+
+
+def _get_free_memory_bytes(device: str) -> Optional[int]:
+    try:
+        device_obj = torch.device(device)
+    except Exception:
+        return None
+
+    try:
+        if device_obj.type == "cuda" and torch.cuda.is_available():
+            return int(torch.cuda.mem_get_info(device_obj.index or 0)[0])
+        if device_obj.type == "xpu" and hasattr(torch, "xpu") and torch.xpu.is_available():
+            mem_get_info = getattr(torch.xpu, "mem_get_info", None)
+            if callable(mem_get_info):
+                return int(mem_get_info(device_obj.index or 0)[0])
+    except Exception:
+        return None
+    return None
+
+
+def _plan_diffusion_component_device_map(
+    components: dict[str, torch.nn.Module], devices: list[str], free_memory_by_device: Optional[dict[str, int]] = None
+) -> dict[str, str]:
+    if len(devices) == 0:
+        return {}
+    if len(devices) == 1 or len(components) == 0:
+        return {name: devices[0] for name in components}
+
+    if free_memory_by_device is None:
+        free_memory_by_device = {dev: _get_free_memory_bytes(dev) for dev in devices}
+    else:
+        free_memory_by_device = {dev: free_memory_by_device.get(dev) for dev in devices}
+
+    unknown_budget_devices = [dev for dev in devices if free_memory_by_device.get(dev) is None]
+    known_budget_devices = [dev for dev in devices if free_memory_by_device.get(dev) is not None]
+
+    assignments = {}
+    round_robin_idx = 0
+    sorted_components = sorted(components.items(), key=lambda item: _get_module_memory_bytes(item[1]), reverse=True)
+    for name, component in sorted_components:
+        component_bytes = _get_module_memory_bytes(component)
+        if known_budget_devices:
+            ranked_devices = sorted(
+                known_budget_devices,
+                key=lambda dev: free_memory_by_device[dev],
+                reverse=True,
+            )
+            selected_device = None
+            for dev in ranked_devices:
+                if free_memory_by_device[dev] >= component_bytes:
+                    selected_device = dev
+                    break
+            if selected_device is None:
+                selected_device = ranked_devices[0]
+            free_memory_by_device[selected_device] -= component_bytes
+        elif unknown_budget_devices:
+            selected_device = unknown_budget_devices[round_robin_idx % len(unknown_budget_devices)]
+            round_robin_idx += 1
+        else:
+            selected_device = devices[0]
+        assignments[name] = selected_device
+    return assignments
