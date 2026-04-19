@@ -698,7 +698,7 @@ BackendInfos["hpu_zp"] = BackendInfo(
 
 # MLX Backend for Apple Silicon (M1, M2, M3, etc.)
 BackendInfos["mlx"] = BackendInfo(
-    device=["cpu"],  # MLX runs on Apple Silicon CPU
+    device=["cpu", "mps"],  # MLX runs on Apple Silicon (CPU or MPS)
     sym=[True, False],
     packing_format=["mlx"] + GPTQ_FORMAT + GPTQ_FORMAT_NO_ZP,
     bits=[2, 3, 4, 8, 16],
