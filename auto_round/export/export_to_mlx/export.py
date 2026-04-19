@@ -212,6 +212,7 @@ def pack_layer(name, model, device=None, **kwargs):
     logger.debug(f"Packed layer {name} for MLX format (bits={bits}, group_size={group_size})")
 
 
+
 def save_quantized_as_mlx(
     output_dir: str,
     model: nn.Module = None,
@@ -240,8 +241,6 @@ def save_quantized_as_mlx(
 
     bits = serialization_dict.get("bits", 4) if serialization_dict else 4
     group_size = serialization_dict.get("group_size", 128) if serialization_dict else 128
-    if group_size == -1:
-        group_size = 128
 
     # Pack all quantized layers (skip if already packed by immediate_pack)
     if layer_config:

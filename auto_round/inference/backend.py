@@ -700,7 +700,7 @@ BackendInfos["hpu_zp"] = BackendInfo(
 BackendInfos["mlx"] = BackendInfo(
     device=["cpu"],  # MLX runs on Apple Silicon CPU
     sym=[True, False],
-    packing_format=["mlx"],
+    packing_format=["mlx"] + GPTQ_FORMAT + GPTQ_FORMAT_NO_ZP,
     bits=[2, 3, 4, 8, 16],
     compute_dtype=["float32", "float16", "bfloat16"],
     data_type=["int"],
@@ -708,7 +708,7 @@ BackendInfos["mlx"] = BackendInfo(
     group_size=[-1, 32, 64, 128, 256, 512],
     priority=10,  # High priority for Apple Silicon users
     alias=["mlx"],
-    requirements=[],  # MLX optional, but transformers will work as fallback
+    requirements=["mlx>=0.16.0"],
     systems=["darwin"],  # Only on macOS
 )
 
@@ -786,7 +786,7 @@ def check_compatible(
     return True
 
 
-def dynamic_import_inference_linear(backend, config):
+def dynamic_import_inference_linear(backend, config, packing_format=None):
     """Dynamically imports and returns the appropriate QuantLinear class based on the given backend.
 
     This function dynamically loads the correct `QuantLinear` class based on the backend and quantization
@@ -811,7 +811,13 @@ def dynamic_import_inference_linear(backend, config):
 
     # MLX backend
     if "mlx" in backend:
-        from auto_round_extension.torch.qlinear_mlx import QuantLinearMLX
+        # If loading a GPTQ-format checkpoint, use GPTQ QuantLinear for buffer name compatibility.
+        # The layers will be converted to MLX in post_init.
+        if packing_format and "mlx" not in packing_format:
+            from auto_round_extension.torch.qlinear_torch import QuantLinear
+
+            return QuantLinear
+        from auto_round_extension.mlx.qlinear_mlx import QuantLinearMLX
 
         return QuantLinearMLX
 

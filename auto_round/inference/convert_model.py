@@ -375,7 +375,7 @@ def _replace_by_quant_layers(
         logger.debug(f"{layer_name}: {layer_backend} backend is used")
 
         # Create and replace layer
-        new_layer = _create_quant_layer(layer, layer_backend, config, in_features, out_features)
+        new_layer = _create_quant_layer(layer, layer_backend, config, in_features, out_features, packing_format)
         set_module(module, layer_name, new_layer)
 
     return used_backends
@@ -402,13 +402,13 @@ def _import_exllamav2_kernels():
         logger.warning_once("try to fallback to other autogptq backends for now")
 
 
-def _create_quant_layer(layer, layer_backend, config, in_features, out_features):
+def _create_quant_layer(layer, layer_backend, config, in_features, out_features, packing_format=None):
     """Creates a quantized layer using the appropriate class."""
-    QuantLinear = dynamic_import_inference_linear(layer_backend, config)
+    QuantLinear = dynamic_import_inference_linear(layer_backend, config, packing_format=packing_format)
     bias = layer.bias is not None
 
-    # MLX backend
-    if "mlx" in layer_backend:
+    # MLX backend with MLX packing format (native MLX checkpoint)
+    if "mlx" in layer_backend and (packing_format is None or "mlx" in packing_format):
         return QuantLinear(
             bits=config["bits"],
             group_size=config["group_size"],
@@ -517,6 +517,157 @@ def convert_gptq_v1_to_v2_format(model: nn.Module):
                 logger.warning_once("Converting gptq v1 to v2 format")
 
 
+def _maybe_convert_gptq_to_mlx(model: nn.Module, used_backends: list[str]) -> None:
+    """On macOS with MLX available, convert GPTQ QuantLinear layers to MLX QuantLinearMLX for faster inference.
+
+    This repacks qweight/qzeros/scales (GPTQ format) into weight/scales/biases (MLX format)
+    so that mx.quantized_matmul can be used for hardware-accelerated inference on Apple Silicon.
+    """
+    import platform
+    if platform.system() != "Darwin":
+        return
+
+    # Check if any GPTQ-style layers exist (including MLX backend loading GPTQ format)
+    has_gptq = any(
+        "auto_round:torch" in b or "auto_gptq" in b or "triton" in b or "mlx" in b
+        for b in used_backends
+    )
+    if not has_gptq:
+        return
+
+    try:
+        import mlx.core as mx  # noqa: F401
+    except ImportError:
+        logger.debug("MLX not installed, skipping GPTQ-to-MLX conversion")
+        return
+
+    from auto_round.export.export_to_mlx.export import _pack_weight_mlx
+    from auto_round_extension.mlx.qlinear_mlx import QuantLinearMLX
+
+    # Use CPU for conversion to avoid MPS compatibility issues with bitwise ops
+    convert_device = torch.device("cpu")
+
+    # Get sym flag from model config (once, outside loop)
+    quant_config = getattr(model.config, "quantization_config", {})
+    if hasattr(quant_config, "to_dict"):
+        quant_config = quant_config.to_dict()
+    sym = quant_config.get("sym", False)
+
+    converted = 0
+    skipped = 0
+    for name, module in list(model.named_modules()):
+        if not hasattr(module, "QUANT_TYPE"):
+            continue
+        if module.QUANT_TYPE in ("mlx",):
+            continue
+        if not hasattr(module, "qweight"):
+            continue
+
+        try:
+            bits = module.bits
+            group_size = module.group_size
+            if bits not in [2, 3, 4, 8]:
+                skipped += 1
+                continue
+
+            qweight = module.qweight.to(convert_device)  # [in//32*bits, out] int32
+            scales_gptq = module.scales.to(convert_device)  # [groups, out] float16
+
+            out_features = scales_gptq.shape[1]
+            in_features = qweight.shape[0] * 32 // bits
+
+            # Unpack GPTQ qweight -> int weight [in_features, out_features]
+            if bits in [2, 4, 8]:
+                elems_per_int = 32 // bits
+                wf = torch.arange(0, 32, bits, dtype=torch.int32, device=convert_device)
+                weight_int = torch.bitwise_right_shift(
+                    qweight.unsqueeze(1).expand(-1, elems_per_int, -1),
+                    wf.unsqueeze(-1),
+                ).to(torch.int16 if bits == 8 else torch.int8)
+                weight_int = torch.bitwise_and(weight_int, (1 << bits) - 1)
+                weight_int = weight_int.reshape(-1, out_features)
+            else:  # bits == 3
+                from auto_round_extension.torch.qlinear_torch import get_wf_3bits_tensor
+                wf = get_wf_3bits_tensor(convert_device)
+                weight_int = qweight.reshape(qweight.shape[0] // 3, 3, 1, qweight.shape[1]).expand(-1, -1, 12, -1)
+                weight_int = (weight_int >> wf.unsqueeze(-1)) & 0x7
+                weight_int[:, 0, 10] = (weight_int[:, 0, 10] & 0x3) | ((weight_int[:, 1, 0] << 2) & 0x4)
+                weight_int[:, 1, 11] = (weight_int[:, 1, 11] & 0x1) | ((weight_int[:, 2, 0] << 1) & 0x6)
+                weight_int = weight_int & 0x7
+                weight_int = torch.cat([weight_int[:, 0, :11], weight_int[:, 1, 1:12], weight_int[:, 2, 1:11]], dim=1)
+                weight_int = weight_int.reshape(-1, out_features)
+
+            # Determine zeros
+            # For symmetric quantization, zero point is always 2^(bits-1), avoids GPTQ qzeros ±1 offset issues
+            if sym:
+                zero_val = 2 ** (bits - 1)
+                zeros = torch.full(scales_gptq.shape, zero_val, dtype=torch.int32, device=convert_device)
+            else:
+                # Asymmetric: unpack qzeros
+                if not hasattr(module, "qzeros") or module.qzeros is None:
+                    # No zero-point format: zero is at midpoint
+                    zero_val = 2 ** (bits - 1)
+                    zeros = torch.full(scales_gptq.shape, zero_val, dtype=torch.int32, device=convert_device)
+                else:
+                    qzeros = module.qzeros.to(convert_device)
+                    if bits in [2, 4, 8]:
+                        elems_per_int = 32 // bits
+                        wf = torch.arange(0, 32, bits, dtype=torch.int32, device=convert_device)
+                        zeros = torch.bitwise_right_shift(
+                            qzeros.unsqueeze(2).expand(-1, -1, elems_per_int),
+                            wf.unsqueeze(0),
+                        ).to(torch.int16 if bits == 8 else torch.int8)
+                        zeros = torch.bitwise_and(zeros, (1 << bits) - 1)
+                        zeros = zeros.reshape(scales_gptq.shape)
+                    else:  # bits == 3
+                        from auto_round_extension.torch.qlinear_torch import get_wf_3bits_tensor
+                        wf = get_wf_3bits_tensor(convert_device)
+                        zeros = qzeros.reshape(qzeros.shape[0], qzeros.shape[1] // 3, 3, 1).expand(-1, -1, -1, 12)
+                        zeros = zeros >> wf.unsqueeze(0)
+                        zeros[:, :, 0, 10] = (zeros[:, :, 0, 10] & 0x3) | ((zeros[:, :, 1, 0] << 2) & 0x4)
+                        zeros[:, :, 1, 11] = (zeros[:, :, 1, 11] & 0x1) | ((zeros[:, :, 2, 0] << 1) & 0x6)
+                        zeros = zeros & 0x7
+                        zeros = torch.cat([zeros[:, :, 0, :11], zeros[:, :, 1, 1:12], zeros[:, :, 2, 1:11]], dim=2)
+                        zeros = zeros.reshape(scales_gptq.shape)
+
+            # GPTQ: w = scale * (w_int - zero)
+            # MLX:  w = mlx_scale * w_int + mlx_bias
+            # => mlx_scale = scale, mlx_bias = -scale * zero
+            weight_int_t = weight_int.t().contiguous().to(torch.int32)
+            scales_mlx = scales_gptq.t().contiguous().to(torch.float16)
+            biases_mlx = (-scales_gptq.float().t().contiguous() * zeros.float().t().contiguous()).to(torch.float16)
+
+            packed_weight = _pack_weight_mlx(weight_int_t, bits)
+
+            # Create MLX layer and replace
+            has_bias = module.bias is not None
+            mlx_layer = QuantLinearMLX(
+                bits=bits,
+                group_size=group_size,
+                infeatures=in_features,
+                outfeatures=out_features,
+                bias=has_bias,
+            )
+            mlx_layer.weight.copy_(packed_weight)
+            mlx_layer.scales.copy_(scales_mlx)
+            mlx_layer.biases.copy_(biases_mlx)
+            if has_bias:
+                mlx_layer.bias.copy_(module.bias.to(torch.float16))
+
+            set_module(model, name, mlx_layer)
+            converted += 1
+
+        except Exception as e:
+            logger.warning(f"Failed to convert layer '{name}' to MLX format: {e}")
+            skipped += 1
+            continue
+
+    if converted > 0:
+        logger.info(f"Auto-converted {converted} GPTQ layers to MLX format for Apple Silicon acceleration")
+    if skipped > 0:
+        logger.warning(f"Skipped {skipped} layers during GPTQ-to-MLX conversion")
+
+
 def post_init(model: torch.nn.Module, used_backends: list[str]) -> None:
     """Performs post-initialization for different quantization backends.
 
@@ -597,6 +748,9 @@ def post_init(model: torch.nn.Module, used_backends: list[str]) -> None:
     # ExLLaMAv2 kernels
     if used_gptq_exllamav2:
         _import_exllamav2_kernels()
+
+    # On macOS (Apple Silicon), auto-convert GPTQ layers to MLX for faster inference
+    _maybe_convert_gptq_to_mlx(model, used_backends)
 
     # Determine common data type across backends
     data_types = [set(BackendInfos[b].compute_dtype) for b in used_backends]
