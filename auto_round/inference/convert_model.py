@@ -300,9 +300,7 @@ def get_layer_config(model, quantization_config):
     # block_name_to_quantize may still reference composite-level paths (e.g. "model.language_model.layers")
     # while the actual module paths are "model.layers". Use conversion_mapping to remap if no layers matched.
     if not layer_names and quant_block_list:
-        quant_block_list, extra_config = _remap_paths_for_text_model(
-            model, quant_block_list, extra_config
-        )
+        quant_block_list, extra_config = _remap_paths_for_text_model(model, quant_block_list, extra_config)
         for n, m in model.named_modules():
             if type(m) not in SUPPORTED_LAYER_TYPES:
                 continue
