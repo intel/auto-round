@@ -69,7 +69,7 @@ class AutoRoundExportFormat(str, Enum):
     NV_FP = "nv_fp"
     MX_FP_RCEIL = "mx_fp_rceil"
     NV_FP4_WITH_STATIC_GS = "nv_fp4_with_static_gs"
-    INT8_W8A8 = "int8_w8a8"
+    INT8 = "int8_w8a8"
     FP8_BLOCK = "fp8_block"
     MXINT4 = "mxint4"
     MX_INT = "mx_int"
@@ -350,7 +350,18 @@ class FakeFormat(OutputFormat):
 
 @OutputFormat.register("llm_compressor")
 class LLMCompressorFormat(OutputFormat):
-    support_schemes = ["MXFP4", "MXFP8", "NVFP4", "FPW8A16", "FP8_STATIC", "INT8_W8A8", "FP8_BLOCK", "W4A16", "W8A16"]
+    support_schemes = [
+        "MXFP4",
+        "MXFP8",
+        "NVFP4",
+        "FPW8A16",
+        "FP8_STATIC",
+        "INT8",
+        "INT8_W8A8",
+        "FP8_BLOCK",
+        "W4A16",
+        "W8A16",
+    ]
     format_name = "llm_compressor"
 
     def __init__(self, format, ar):
@@ -388,7 +399,8 @@ class LLMCompressorFormat(OutputFormat):
                 from auto_round.export.export_to_llmcompressor import check_compressed_tensors_supported
 
                 check_compressed_tensors_supported()
-                self.backend = LLMCompressorFormat(AutoRoundExportFormat.INT8_W8A8.value, ar)
+                self.backend = LLMCompressorFormat(AutoRoundExportFormat.INT8.name, ar)
+                self.backend.output_format = f"llm_compressor:{AutoRoundExportFormat.INT8.value}"
             elif is_wint_woq(ar):
                 from auto_round.export.export_to_llmcompressor import check_compressed_tensors_supported
 
@@ -475,7 +487,7 @@ class LLMCompressorFormat(OutputFormat):
             from auto_round.export.export_to_llmcompressor.export_to_static_fp import pack_layer
 
             return pack_layer(layer_name, model, self.get_backend_name(), device=device)
-        elif re.search(f"{AutoRoundExportFormat.INT8_W8A8.value}", self.output_format):
+        elif re.search(f"{AutoRoundExportFormat.INT8.value}", self.output_format):
             from auto_round.export.export_to_llmcompressor.export import pack_layer
 
             return pack_layer(layer_name, model, device=device)
