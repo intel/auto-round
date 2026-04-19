@@ -177,7 +177,9 @@ class QuantLinearMLX(nn.Module):
         scales = self.scales.cpu().float().repeat_interleave(self.group_size, dim=1)[:, : self.infeatures]
         biases = self.biases.cpu().float().repeat_interleave(self.group_size, dim=1)[:, : self.infeatures]
         weight = scales * intweight + biases
-        out = torch.nn.functional.linear(x.cpu().to(weight.dtype), weight, self.bias.cpu() if self.bias is not None else None)
+        out = torch.nn.functional.linear(
+            x.cpu().to(weight.dtype), weight, self.bias.cpu() if self.bias is not None else None
+        )
         return out.to(input_dtype).to(input_device)
 
     def _unpack_weight_torch(self, device=None):
@@ -214,4 +216,3 @@ class QuantLinearMLX(nn.Module):
         if MLX_AVAILABLE:
             return self._forward_mlx(x)
         return self._forward_torch(x)
-
