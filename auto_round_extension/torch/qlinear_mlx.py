@@ -14,4 +14,4 @@
 
 """Backward compatibility shim. Use auto_round_extension.mlx.qlinear_mlx instead."""
 
-from auto_round_extension.mlx.qlinear_mlx import QuantLinearMLX, MLX_AVAILABLE  # noqa: F401
+from auto_round_extension.mlx.qlinear_mlx import MLX_AVAILABLE, QuantLinearMLX  # noqa: F401

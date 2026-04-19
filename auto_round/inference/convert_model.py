@@ -524,14 +524,12 @@ def _maybe_convert_gptq_to_mlx(model: nn.Module, used_backends: list[str]) -> No
     so that mx.quantized_matmul can be used for hardware-accelerated inference on Apple Silicon.
     """
     import platform
+
     if platform.system() != "Darwin":
         return
 
     # Check if any GPTQ-style layers exist (including MLX backend loading GPTQ format)
-    has_gptq = any(
-        "auto_round:torch" in b or "auto_gptq" in b or "triton" in b or "mlx" in b
-        for b in used_backends
-    )
+    has_gptq = any("auto_round:torch" in b or "auto_gptq" in b or "triton" in b or "mlx" in b for b in used_backends)
     if not has_gptq:
         return
 
@@ -588,6 +586,7 @@ def _maybe_convert_gptq_to_mlx(model: nn.Module, used_backends: list[str]) -> No
                 weight_int = weight_int.reshape(-1, out_features)
             else:  # bits == 3
                 from auto_round_extension.torch.qlinear_torch import get_wf_3bits_tensor
+
                 wf = get_wf_3bits_tensor(convert_device)
                 weight_int = qweight.reshape(qweight.shape[0] // 3, 3, 1, qweight.shape[1]).expand(-1, -1, 12, -1)
                 weight_int = (weight_int >> wf.unsqueeze(-1)) & 0x7
@@ -621,6 +620,7 @@ def _maybe_convert_gptq_to_mlx(model: nn.Module, used_backends: list[str]) -> No
                         zeros = zeros.reshape(scales_gptq.shape)
                     else:  # bits == 3
                         from auto_round_extension.torch.qlinear_torch import get_wf_3bits_tensor
+
                         wf = get_wf_3bits_tensor(convert_device)
                         zeros = qzeros.reshape(qzeros.shape[0], qzeros.shape[1] // 3, 3, 1).expand(-1, -1, -1, 12)
                         zeros = zeros >> wf.unsqueeze(0)

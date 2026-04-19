@@ -212,7 +212,6 @@ def pack_layer(name, model, device=None, **kwargs):
     logger.debug(f"Packed layer {name} for MLX format (bits={bits}, group_size={group_size})")
 
 
-
 def save_quantized_as_mlx(
     output_dir: str,
     model: nn.Module = None,
