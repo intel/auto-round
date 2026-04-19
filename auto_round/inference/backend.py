@@ -811,9 +811,9 @@ def dynamic_import_inference_linear(backend, config):
 
     # MLX backend
     if "mlx" in backend:
-        from auto_round_extension.torch.qlinear_torch import QuantLinear
+        from auto_round_extension.torch.qlinear_mlx import QuantLinearMLX
 
-        return QuantLinear
+        return QuantLinearMLX
 
     if "torch_fp8_static" in backend:
         return ar_qmodules.WeightFP8ActFP8StaticQuantLinear

@@ -262,7 +262,19 @@ def save_quantized_as_mlx(
             config = json.load(f)
         quant_cfg = {"group_size": group_size, "bits": bits}
         config["quantization"] = quant_cfg
-        config["quantization_config"] = quant_cfg
+        autoround_format = kwargs.get("autoround_format", False)
+        if autoround_format:
+            quant_cfg_full = {
+                "quant_method": "auto-round",
+                "packing_format": "mlx",
+                "bits": bits,
+                "group_size": group_size,
+                "sym": serialization_dict.get("sym", True) if serialization_dict else True,
+                "data_type": serialization_dict.get("data_type", "int") if serialization_dict else "int",
+            }
+            config["quantization_config"] = quant_cfg_full
+        else:
+            config["quantization_config"] = quant_cfg
         # Flatten rope_parameters for mlx-lm (expects rope_theta at top level)
         rope_params = config.pop("rope_parameters", None)
         if rope_params and isinstance(rope_params, dict):

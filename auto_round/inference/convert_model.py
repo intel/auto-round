@@ -231,7 +231,12 @@ def get_layer_config(model, quantization_config):
 
     # Determine the quantization block list
     quant_block_list = getattr(quantization_config, "quant_block_list", None)
-    if quant_block_list is None:
+    if quant_block_list is not None:
+        # Handle nested list format: [[block1, block2, ...], ...] -> [prefix1, ...]
+        if quant_block_list and isinstance(quant_block_list[0], (list, tuple)):
+            for i in range(len(quant_block_list)):
+                quant_block_list[i] = os.path.commonprefix(quant_block_list[i]).rstrip(".")
+    elif quant_block_list is None:
         to_quant_block_names = getattr(quantization_config, "block_name_to_quantize", None)  # Prioritize this parameter
         if to_quant_block_names is None:
             to_quant_block_names = getattr(quantization_config, "to_quant_block_names", None)
@@ -401,6 +406,16 @@ def _create_quant_layer(layer, layer_backend, config, in_features, out_features)
     """Creates a quantized layer using the appropriate class."""
     QuantLinear = dynamic_import_inference_linear(layer_backend, config)
     bias = layer.bias is not None
+
+    # MLX backend
+    if "mlx" in layer_backend:
+        return QuantLinear(
+            bits=config["bits"],
+            group_size=config["group_size"],
+            infeatures=in_features,
+            outfeatures=out_features,
+            bias=bias,
+        )
 
     # Special handling for auto-round-lib AWQ layers
     from auto_round_extension.ark.qlinear import QuantLinearAWQ
@@ -671,6 +686,8 @@ def convert_hf_model(model: nn.Module, target_device: str = "cpu") -> tuple[nn.M
         packing_format = "auto_round:auto_awq"
     elif packing_format == "auto_round:gptq":
         packing_format = "auto_round:auto_gptq"
+    elif packing_format in ("mlx", "auto_round:mlx"):
+        pass  # keep as-is for MLX backend selection
     is_applied = apply_modeling_patch(model)
     if not is_applied:
         # Preprocess model before replace layers

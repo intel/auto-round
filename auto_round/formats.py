@@ -1132,6 +1132,7 @@ class MLXFormat(OutputFormat):
 @OutputFormat.register("auto_round:llm_compressor")
 @OutputFormat.register("auto_round:gptqmodel", "auto_round:auto_gptq")
 @OutputFormat.register("auto_round:fp8")
+@OutputFormat.register("auto_round:mlx")
 class AutoRoundFormat(OutputFormat):
     support_schemes = [
         "W4A16",
@@ -1186,10 +1187,15 @@ class AutoRoundFormat(OutputFormat):
                 )
         # for auto_round:fp8_static, auto_round:nv_fp etc.
         elif not format.startswith("auto_round"):
-            if format.upper() not in list(AutoRoundExportFormat.__members__.keys()):
+            if format == "mlx":
+                self.backend = MLXFormat("mlx", ar)
+            elif format.upper() not in list(AutoRoundExportFormat.__members__.keys()):
                 raise KeyError(f"Unsupported backend format auto_round:{format}, please check")
-            self.output_format = f"auto_round:{format}"
-            self.backend = None
+            else:
+                self.output_format = f"auto_round:{format}"
+                self.backend = None
+        elif format == "auto_round:mlx":
+            self.backend = MLXFormat("mlx", ar)
         else:
             backend = format.split(":")[1] if ":" in format else None
             self.backend = self._format_list.get(backend)(format, ar) if backend else None
@@ -1262,6 +1268,9 @@ class AutoRoundFormat(OutputFormat):
         **kwargs,
     ) -> torch.nn.Module:
         if self.backend is not None:
+            extra_kwargs = {}
+            if isinstance(self.backend, MLXFormat):
+                extra_kwargs["autoround_format"] = True
             return self.backend.save_quantized(
                 output_dir=output_dir,
                 model=model,
@@ -1270,6 +1279,7 @@ class AutoRoundFormat(OutputFormat):
                 inplace=inplace,
                 device=device,
                 serialization_dict=serialization_dict,
+                **extra_kwargs,
                 **kwargs,
             )
         backend = self.get_backend_name()
