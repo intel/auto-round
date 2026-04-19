@@ -713,7 +713,6 @@ BackendInfos["mlx"] = BackendInfo(
 )
 
 
-
 def check_compatible(
     backend_name: str,
     device: str,
@@ -813,6 +812,7 @@ def dynamic_import_inference_linear(backend, config):
     # MLX backend
     if "mlx" in backend:
         from auto_round_extension.torch.qlinear_torch import QuantLinear
+
         return QuantLinear
 
     if "torch_fp8_static" in backend:

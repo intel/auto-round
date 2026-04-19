@@ -7,8 +7,9 @@ Tests quantization with W4A16 scheme on Qwen3-0.6B model.
 
 import os
 import sys
-import torch
 from pathlib import Path
+
+import torch
 
 # Add project root to path
 project_root = Path(__file__).parent.parent
@@ -44,17 +45,18 @@ def test_mlx_export():
         print(f"✗ Failed to load model: {e}")
         return False
 
-    print(f"\n[2/4] Quantizing model to MLX format...")
+    print("\n[2/4] Quantizing model to MLX format...")
     try:
         ar.quantize_and_save(output_dir=output_dir, format="mlx")
         print(f"✓ Model quantized and saved to {output_dir}")
     except Exception as e:
         print(f"✗ Failed to quantize and save model: {e}")
         import traceback
+
         traceback.print_exc()
         return False
 
-    print(f"\n[3/4] Verifying output files...")
+    print("\n[3/4] Verifying output files...")
     try:
         # Check if required files exist
         required_files = [
@@ -74,10 +76,11 @@ def test_mlx_export():
 
         # Print quantization config
         import json
+
         quantization_config_path = output_path / "quantization_config.json"
-        with open(quantization_config_path, 'r') as f:
+        with open(quantization_config_path, "r") as f:
             config = json.load(f)
-        print(f"\n  Quantization Config:")
+        print("\n  Quantization Config:")
         print(f"    - Format: {config.get('format')}")
         print(f"    - Quant Method: {config.get('quant_method')}")
         print(f"    - Bits: {config.get('bits')}")
@@ -88,7 +91,7 @@ def test_mlx_export():
         print(f"✗ Failed to verify output files: {e}")
         return False
 
-    print(f"\n[4/4] Testing model loading from MLX format...")
+    print("\n[4/4] Testing model loading from MLX format...")
     try:
         from transformers import AutoModelForCausalLM, AutoTokenizer
 
@@ -125,7 +128,7 @@ def test_mlx_export_w3a16():
     model_name = "Qwen/Qwen3-0.6B"
     output_dir = "./mlx_model_w3a16"
 
-    print(f"\n[1/3] Loading and quantizing model with W3A16...")
+    print("\n[1/3] Loading and quantizing model with W3A16...")
     try:
         ar = AutoRound(
             model_name,
@@ -142,7 +145,7 @@ def test_mlx_export_w3a16():
         print(f"✗ Failed to load model: {e}")
         return False
 
-    print(f"\n[2/3] Saving model in MLX format...")
+    print("\n[2/3] Saving model in MLX format...")
     try:
         ar.quantize_and_save(output_dir=output_dir, format="mlx")
         print(f"✓ Model saved to {output_dir}")
@@ -150,18 +153,19 @@ def test_mlx_export_w3a16():
         print(f"✗ Failed to save model: {e}")
         return False
 
-    print(f"\n[3/3] Verifying MLX format files...")
+    print("\n[3/3] Verifying MLX format files...")
     try:
         output_path = Path(output_dir)
         quantization_config_path = output_path / "quantization_config.json"
 
         import json
-        with open(quantization_config_path, 'r') as f:
+
+        with open(quantization_config_path, "r") as f:
             config = json.load(f)
 
-        assert config.get('bits') == 3, f"Expected bits=3, got {config.get('bits')}"
-        print(f"  ✓ Bits set correctly to 3")
-        print(f"  ✓ All verifications passed")
+        assert config.get("bits") == 3, f"Expected bits=3, got {config.get('bits')}"
+        print("  ✓ Bits set correctly to 3")
+        print("  ✓ All verifications passed")
 
     except Exception as e:
         print(f"✗ Verification failed: {e}")
@@ -186,4 +190,3 @@ if __name__ == "__main__":
     else:
         print("\n❌ Some tests failed!")
         sys.exit(1)
-

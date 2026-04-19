@@ -42,8 +42,8 @@ from auto_round.utils import (
     check_to_quantized,
     copy_python_files_from_model_cache,
     get_module,
-    set_module,
     get_packing_device,
+    set_module,
 )
 
 SUPPORTED_LAYER_TYPES = [nn.Linear, nn.Conv2d, transformers.pytorch_utils.Conv1D]
@@ -69,8 +69,9 @@ def _pack_weight_mlx(intweight, bits):
     if 32 % bits == 0:
         # Simple case: bits evenly divides 32 (2, 4, 8)
         elems_per_int = 32 // bits
-        assert in_features % elems_per_int == 0, \
-            f"in_features ({in_features}) must be divisible by {elems_per_int} for {bits}-bit packing"
+        assert (
+            in_features % elems_per_int == 0
+        ), f"in_features ({in_features}) must be divisible by {elems_per_int} for {bits}-bit packing"
 
         intweight = intweight.to(torch.int32)
         intweight = intweight.reshape(out_features, -1, elems_per_int)
@@ -80,8 +81,7 @@ def _pack_weight_mlx(intweight, bits):
     else:
         # Cross-word packing: 32 elements → `bits` uint32s
         # MLX packs as a contiguous bit stream across uint32 boundaries
-        assert in_features % 32 == 0, \
-            f"in_features ({in_features}) must be divisible by 32 for {bits}-bit packing"
+        assert in_features % 32 == 0, f"in_features ({in_features}) must be divisible by 32 for {bits}-bit packing"
 
         intweight = intweight.to(torch.int64)
         num_groups = in_features // 32
@@ -117,9 +117,9 @@ class _MLXPackedLayer(nn.Module):
 
     def __init__(self, weight, scales, biases, bias):
         super().__init__()
-        self.register_buffer("weight", weight)    # uint32
-        self.register_buffer("scales", scales)    # float16
-        self.register_buffer("biases", biases)    # float16
+        self.register_buffer("weight", weight)  # uint32
+        self.register_buffer("scales", scales)  # float16
+        self.register_buffer("biases", biases)  # float16
         if bias is not None:
             self.register_buffer("bias", bias)
         else:
@@ -156,7 +156,7 @@ def pack_layer(name, model, device=None, **kwargs):
     bits = int(layer.bits)
     group_size = int(layer.group_size)
     scale = layer.scale  # [out_features, num_groups]
-    zp = layer.zp        # [out_features, num_groups] or scalar
+    zp = layer.zp  # [out_features, num_groups] or scalar
 
     # Get weight in [out_features, in_features] layout
     W = layer.weight.data.to(device).clone().float()
@@ -169,7 +169,7 @@ def pack_layer(name, model, device=None, **kwargs):
     if group_size == -1:
         group_size = in_features
 
-    maxq = 2 ** bits - 1
+    maxq = 2**bits - 1
 
     # Quantize: w_int = round(W / scale + zp), clamped to [0, maxq]
     scale_dev = scale.to(device).float()
@@ -287,8 +287,6 @@ def save_quantized_as_mlx(
         logger.warning(f"Failed to copy Python files from model cache: {e}")
 
     logger.info(f"Model saved to {output_dir} in MLX format (bits={bits}, group_size={group_size})")
-    logger.info(f"Load with: from mlx_lm import load, generate; "
-                f"model, tokenizer = load('{output_dir}')")
+    logger.info(f"Load with: from mlx_lm import load, generate; " f"model, tokenizer = load('{output_dir}')")
 
     return model
-
