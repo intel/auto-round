@@ -696,6 +696,23 @@ BackendInfos["hpu_zp"] = BackendInfo(
     priority=0,
 )
 
+# MLX Backend for Apple Silicon (M1, M2, M3, etc.)
+BackendInfos["mlx"] = BackendInfo(
+    device=["cpu"],  # MLX runs on Apple Silicon CPU
+    sym=[True, False],
+    packing_format=["mlx"],
+    bits=[2, 3, 4, 8, 16],
+    compute_dtype=["float32", "float16", "bfloat16"],
+    data_type=["int"],
+    act_bits=WOQ_DEFAULT_ACT_BITS,
+    group_size=[-1, 32, 64, 128, 256, 512],
+    priority=10,  # High priority for Apple Silicon users
+    alias=["mlx"],
+    requirements=[],  # MLX optional, but transformers will work as fallback
+    systems=["darwin"],  # Only on macOS
+)
+
+
 
 def check_compatible(
     backend_name: str,
@@ -774,12 +791,12 @@ def dynamic_import_inference_linear(backend, config):
     """Dynamically imports and returns the appropriate QuantLinear class based on the given backend.
 
     This function dynamically loads the correct `QuantLinear` class based on the backend and quantization
-    configuration (e.g., ark, marlin, hpu, gptq, awq). It imports specific modules or raises
+    configuration (e.g., ark, marlin, hpu, gptq, awq, mlx). It imports specific modules or raises
     errors if the required packages are not installed or the environment is not set up.
 
     Args:
         backend (str):
-            The backend to be used for quantization (e.g., 'ark', 'marlin', 'hpu', 'gptq', 'awq').
+            The backend to be used for quantization (e.g., 'ark', 'marlin', 'hpu', 'gptq', 'awq', 'mlx').
         config (QuantizationScheme):
             The quantization configuration containing parameters like bits, group_size, and sym.
 
@@ -792,6 +809,12 @@ def dynamic_import_inference_linear(backend, config):
             If required modules are missing for a backend (e.g., ark, GPTQ, auto_awq).
     """
     bits, group_size, sym = config["bits"], config["group_size"], config["sym"]
+
+    # MLX backend
+    if "mlx" in backend:
+        from auto_round_extension.torch.qlinear_torch import QuantLinear
+        return QuantLinear
+
     if "torch_fp8_static" in backend:
         return ar_qmodules.WeightFP8ActFP8StaticQuantLinear
     if "torch_mxfp8" in backend:

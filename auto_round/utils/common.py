@@ -443,6 +443,7 @@ class SupportedFormats:
             "llm_compressor",
             "fp8",
             "auto_round:fp8",
+            "mlx",
         )
         self._gguf_format = tuple(sorted(GGUF_CONFIG.keys()))
         self._support_list = self._support_format + self._gguf_format
