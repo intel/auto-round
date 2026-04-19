@@ -69,7 +69,7 @@ class QuantLinearMLX(nn.Module):
         self.outfeatures = outfeatures
         self.bits = bits
         self.group_size = group_size if group_size != -1 else infeatures
-        self.maxq = 2 ** self.bits - 1
+        self.maxq = 2**self.bits - 1
 
         # MLX packing: [out_features, in_features * bits / 32]
         packed_dim = infeatures * bits // 32
@@ -134,8 +134,8 @@ class QuantLinearMLX(nn.Module):
     def _forward_torch(self, x):
         """Fallback forward pass using pure PyTorch dequantization."""
         intweight = self._unpack_weight_torch().float()
-        scales = self.scales.float().repeat_interleave(self.group_size, dim=1)[:, :self.infeatures]
-        biases = self.biases.float().repeat_interleave(self.group_size, dim=1)[:, :self.infeatures]
+        scales = self.scales.float().repeat_interleave(self.group_size, dim=1)[:, : self.infeatures]
+        biases = self.biases.float().repeat_interleave(self.group_size, dim=1)[:, : self.infeatures]
         weight = scales * intweight + biases
         return torch.nn.functional.linear(x.to(weight.dtype), weight, self.bias)
 
@@ -165,7 +165,7 @@ class QuantLinearMLX(nn.Module):
                 unpacked[:, :, i] = val & mask
             unpacked = unpacked.reshape(out_features, -1).to(torch.int32)
 
-        return unpacked[:, :self.infeatures]
+        return unpacked[:, : self.infeatures]
 
     def forward(self, x):
         if MLX_AVAILABLE:
