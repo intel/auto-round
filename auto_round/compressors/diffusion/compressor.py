@@ -446,18 +446,12 @@ class DiffusionCompressor(BaseCompressor):
                 generator=generator,
                 **extra_kwargs,
             )
-        elif "prompt" in extra_kwargs:
+        else:
             # I2V pipelines: 'image' is the first positional arg, so pass
             # 'prompt' as keyword to avoid "multiple values for argument 'image'".
+            pipe_args = () if "prompt" in extra_kwargs else (prompts,)
             self.pipe(
-                guidance_scale=self.guidance_scale,
-                num_inference_steps=self.num_inference_steps,
-                generator=generator,
-                **extra_kwargs,
-            )
-        else:
-            self.pipe(
-                prompts,
+                *pipe_args,
                 guidance_scale=self.guidance_scale,
                 num_inference_steps=self.num_inference_steps,
                 generator=generator,
