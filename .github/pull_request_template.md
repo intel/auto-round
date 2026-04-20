@@ -4,7 +4,7 @@ Please briefly describe your main changes, the motivation.
 
 ## Type of Change (select one)
 
-<!-- Select one option by changing `( )` to `(x)` and remove the lines that do not apply. -->
+<!-- Select one option by changing `( )` to `(x)`. -->
 - ( ) Bug fix
 - ( ) New feature
 - ( ) Documentation update
