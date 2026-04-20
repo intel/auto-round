@@ -790,7 +790,7 @@ if __name__ == "__main__":
     model_name = "/models/Qwen3-8B"
     tokenizer = AutoTokenizer.from_pretrained(model_name)
     model = AutoModelForCausalLM.from_pretrained(model_name, torch_dtype=torch.float16, device_map="auto")
-    apply_hadamard_rotation(model, group_size=-1, allow_online_hadamard=True,fuse_online_to_weight=False)
+    apply_hadamard_rotation(model, group_size=-1, allow_online_hadamard=True,fuse_online_to_weight=True)
     model.to("cuda")
     text = "There is a girl who likes adventure,"
     inputs = tokenizer(text, return_tensors="pt").to(model.device)
@@ -801,7 +801,7 @@ if __name__ == "__main__":
     model_name = "/models/Meta-Llama-3.1-8B-Instruct"
     tokenizer = AutoTokenizer.from_pretrained(model_name)
     model = AutoModelForCausalLM.from_pretrained(model_name, torch_dtype=torch.float16, device_map="auto")
-    apply_hadamard_rotation(model,fuse_online_to_weight=False,group_size=32)
+    apply_hadamard_rotation(model,fuse_online_to_weight=True,group_size=32)
     model.to("cuda")
     text = "There is a girl who likes adventure,"
     inputs = tokenizer(text, return_tensors="pt").to(model.device)
