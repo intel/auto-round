@@ -286,6 +286,7 @@ class BasicArgumentParser(argparse.ArgumentParser):
             help="Disable optimization for RTN (Round-To-Nearest) mode when iters=0. "
             "RTN is fast but less accurate; keeping optimization enabled is recommended.",
         )
+
         group_opt_rtn.add_argument(
             "--enable_opt_rtn",
             action="store_const",

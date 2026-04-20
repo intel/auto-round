@@ -36,6 +36,7 @@ environment_variables: dict[str, Callable[[], Any]] = {
     in ("1", "true", "yes"),
     "AR_ACT_SCALE": lambda: float(os.getenv("AR_ACT_SCALE", "1.0")),
     "AR_DISABLE_ACT_MINMAX_TUNING": lambda: os.getenv("AR_DISABLE_ACT_MINMAX_TUNING", "0").lower() in ("1", "true", "yes"),
+    "AR_FUSE_ONLINE_TO_WEIGHT": lambda: os.getenv("AR_FUSE_ONLINE_TO_WEIGHT", "0").lower() in ("1", "true", "yes"),
 }
 
 

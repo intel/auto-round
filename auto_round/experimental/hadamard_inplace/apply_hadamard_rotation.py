@@ -342,8 +342,13 @@ def _rotate_weights(
     layers = _resolve(model, mapping.layers_attr)
     for layer in tqdm.tqdm(layers, unit="layer", desc=desc):
         if fuse_online_to_weight:
-            # ---- fuse mode: residual stream rotation + online Had stacked ----
-            # Attention inputs: Q/K/V  (residual stream + optional online Had)
+            # ---- fuse mode: QuaRot-style residual stream rotation ----
+            # Q/K/V: only residual Q on input (no online Had stacking, no hook).
+            #   When Q == online Had (e.g. preset="hadamard"), Q @ Q = I cancels
+            #   the rotation entirely, destroying quantization benefit.
+            # gate/up: only residual Q on input (no online Had stacking, no hook).
+            # down_proj: residual Q^T on output + online Had on input (+ hook).
+            # v_proj/o_proj: per-head/cross-head Had below (+ hook on o_proj).
             for attr in (mapping.attn_q, mapping.attn_k, mapping.attn_v):
                 mod = _resolve(layer, attr)
                 if is_grouped:
@@ -353,18 +358,6 @@ def _rotate_weights(
                     )
                 else:
                     _rotate_linear_by_Q(mod, Q, side="input", compute_device=compute_device)
-                # Stack online Had on top of residual
-                if is_grouped:
-                    _rotate_linear_grouped(
-                        mod, group_size, side="input",
-                        use_fast_had=online_fast, compute_device=compute_device, had_matrix=online_had_matrix,
-                    )
-                else:
-                    apply_exact_had_to_linear(
-                        mod, had_dim=-1, output=False,
-                        use_fast_had=online_fast, compute_device=compute_device,
-                        had_matrix=_online_had(hidden_size),
-                    )
 
             # o_proj: residual stream output rotation
             if is_grouped:
@@ -377,7 +370,7 @@ def _rotate_weights(
                     _resolve(layer, mapping.attn_o), Q, side="output", compute_device=compute_device
                 )
 
-            # gate/up: residual + online Had
+            # gate/up: only residual Q on input
             for attr in mapping.mlp_in:
                 mod = _resolve(layer, attr)
                 if is_grouped:
@@ -387,17 +380,6 @@ def _rotate_weights(
                     )
                 else:
                     _rotate_linear_by_Q(mod, Q, side="input", compute_device=compute_device)
-                if is_grouped:
-                    _rotate_linear_grouped(
-                        mod, group_size, side="input",
-                        use_fast_had=online_fast, compute_device=compute_device, had_matrix=online_had_matrix,
-                    )
-                else:
-                    apply_exact_had_to_linear(
-                        mod, had_dim=-1, output=False,
-                        use_fast_had=online_fast, compute_device=compute_device,
-                        had_matrix=_online_had(hidden_size),
-                    )
 
             # down_proj: residual output + online input Had
             down_proj = _resolve(layer, mapping.mlp_out)
@@ -646,13 +628,18 @@ def _register_online_hooks(
                 h = module.register_forward_pre_hook(_make_hidden_had_hook())
                 handles.append(h)
         elif suffix in attn_qkv_suffixes:
-            # Q/K/V: full Had on hidden_size input
-            h = module.register_forward_pre_hook(_make_hidden_had_hook())
-            handles.append(h)
+            if not fuse_online_to_weight:
+                # Q/K/V: full Had on hidden_size input (unfused mode only).
+                # In fused mode Q/K/V only have residual Q on weight (no online Had),
+                # and activations come pre-rotated from residual stream → no hook needed.
+                h = module.register_forward_pre_hook(_make_hidden_had_hook())
+                handles.append(h)
         elif suffix in mlp_in_suffixes:
-            # gate/up: full Had on hidden_size input
-            h = module.register_forward_pre_hook(_make_hidden_had_hook())
-            handles.append(h)
+            if not fuse_online_to_weight:
+                # gate/up: full Had on hidden_size input (unfused mode only).
+                # Same reasoning as Q/K/V above.
+                h = module.register_forward_pre_hook(_make_hidden_had_hook())
+                handles.append(h)
 
     return handles
 

@@ -52,7 +52,8 @@ def search_scales(data: torch.Tensor, bits: int, qw: Union[None, torch.Tensor, f
         step = 0.01
     else:
         grid = 200
-        search_min = nmax/2 # 4
+        search_min = nmax / 2
+        # search_min = nmax*3/4 # 4
         step = search_min/grid * 2 # 0.08
         search_min = int(search_min/step)
     # Iterative search over small adjustments
@@ -155,6 +156,7 @@ def quant_tensor_rtn_sym(
     max_v = (2 * (wmax_abs < wmin_abs).int() - 1) * torch.max(wmax_abs, wmin_abs)
     scale = (max_v / maxq).to(scale_dtype)
     scale = torch.where(scale < 0, torch.clamp(scale, max=-q_scale_thresh), torch.clamp(scale, min=q_scale_thresh))
+    scale = scale.unsqueeze(dim=-1)
     int_w = tensor.div(scale).round_().clamp_(-maxq, maxq - 1)
     qdq_result = (int_w.mul_(scale)).to(tensor.dtype)
     qdq_result = revert_tensor_by_pad(qdq_result, orig_shape=orig_shape, pad_len=pad_len)
