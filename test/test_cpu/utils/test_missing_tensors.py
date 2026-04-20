@@ -371,6 +371,52 @@ class TestCopyMissingTensorsFromSource(unittest.TestCase):
             extra_shard = os.path.join(target_dir, "model_extra_tensors.safetensors")
             self.assertFalse(os.path.exists(extra_shard), "No extra shard expected: tensor already present")
 
+    def test_prefix_mismatch_not_treated_as_missing(self):
+        """Source prefix differs from saved prefix — not a missing tensor.
+
+        Reproduces the Nemotron-H / transformers mismatch: on-disk checkpoint
+        uses ``backbone.*`` but ``AutoModelForCausalLM`` re-exposes the same
+        trunk as ``model.*``. Without the symmetric "drop first path
+        component" shortcut on the source side, every ``backbone.layers.*``
+        tensor would be flagged as missing and duplicated into the output.
+        """
+        with tempfile.TemporaryDirectory() as source_dir, tempfile.TemporaryDirectory() as target_dir:
+            _save_safetensors(
+                {
+                    "backbone.layers.0.mixer.out_proj.weight": torch.randn(32, 64),
+                    "backbone.embeddings.weight": torch.randn(8, 64),
+                },
+                os.path.join(source_dir, "model.safetensors"),
+            )
+            # Target: same logical weights under the transformers-normalised
+            # ``model.*`` prefix, in quantised form.
+            _save_safetensors(
+                {
+                    "model.layers.0.mixer.out_proj.qweight": torch.randint(
+                        0, 2**31, (8, 32), dtype=torch.int32
+                    ),
+                    "model.layers.0.mixer.out_proj.qzeros": torch.randint(
+                        0, 2**31, (1, 4), dtype=torch.int32
+                    ),
+                    "model.layers.0.mixer.out_proj.scales": torch.randn(1, 32, dtype=torch.bfloat16),
+                    "model.embeddings.qweight": torch.randint(0, 2**31, (2, 32), dtype=torch.int32),
+                    "model.embeddings.qzeros": torch.randint(0, 2**31, (1, 4), dtype=torch.int32),
+                    "model.embeddings.scales": torch.randn(1, 64, dtype=torch.float16),
+                },
+                os.path.join(target_dir, "model.safetensors"),
+            )
+            _write_config(target_dir)
+
+            copy_missing_tensors_from_source(source_dir, target_dir)
+
+            extra_shard = os.path.join(target_dir, "model_extra_tensors.safetensors")
+            self.assertFalse(
+                os.path.exists(extra_shard),
+                "backbone.* source tensors must not be copied when the same "
+                "logical weights already exist under the model.* prefix in "
+                "the saved output",
+            )
+
     def test_detects_multiple_missing_tensors_from_different_blocks(self):
         """All source tensors from blocks absent in the saved output are copied."""
         with tempfile.TemporaryDirectory() as source_dir, tempfile.TemporaryDirectory() as target_dir:

@@ -23,6 +23,7 @@ import transformers
 from tqdm import tqdm
 
 from auto_round.data_type.utils import reshape_pad_tensor_by_group_size, revert_tensor_by_pad
+from auto_round.export.export_to_autoround.export import _cast_norm_modules, _resolve_dtype_spec
 from auto_round.export.export_to_autoround.utils import check_neq_config
 from auto_round.export.utils import filter_quantization_config, release_layer_safely, save_model
 from auto_round.logger import logger
@@ -248,6 +249,10 @@ def save_quantized_as_autoround(
 
     if len(extra_config) > 0:
         quantization_config["extra_config"] = extra_config
+    norm_dtype = _resolve_dtype_spec(kwargs.get("norm_dtype"))
+    if norm_dtype is not None:
+        _cast_norm_modules(model, norm_dtype)
+        quantization_config["norm_dtype"] = str(norm_dtype).split(".")[-1]
     filter_quantization_config(quantization_config)
     if hasattr(model, "config"):
         model.config.quantization_config = quantization_config

@@ -825,4 +825,4 @@ CUDA_VISIBLE_DEVICES=0,1 auto-round "your_model_path" --eval --tasks lambada_ope
 
 部分视觉语言模型（VLM）需要手动适配。
 
-暂不支持 Mamba 架构的模型。
+暂不支持纯 Mamba 架构。自 2026-04 起，已初步支持 Mamba2 + Attention + MoE 混合架构（例如 `nvidia/Nemotron-Cascade-2-30B-A3B`），集成模式详见 `adapt-unfused-moe` 技能文档。

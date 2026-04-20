@@ -63,7 +63,7 @@ from auto_round.export.export_to_gguf.config import GGUF_INNER_CONFIG
 from auto_round.formats import OutputFormat, get_formats
 from auto_round.logger import logger
 from auto_round.modeling.fused_moe.replace_modules import materialize_model_, safe_to_cpu_
-from auto_round.modeling.unfused_moe import apply_model_monkey_patches
+from auto_round.modeling.unfused_moe import apply_model_monkey_patches, apply_post_load_fixups
 from auto_round.schemes import (
     QuantizationScheme,
     _handle_special_schemes,
@@ -333,6 +333,15 @@ class BaseCompressor(object):
             )
         check_and_mark_quantized_module(model)
         self.model = model.eval()
+        # Architecture-specific post-load fix-ups registered via
+        # ``MODEL_CONFIG``.  No-op for any ``model_type`` without a
+        # ``post_load_fn`` entry — currently only Nemotron-H uses this
+        # to patch ``Zamba2RMSNormGated.group_size`` (bypassed by HF
+        # ``low_cpu_mem_usage``) and to restore SSM-recurrence / router
+        # bias tensors at FP32 from the source checkpoint.  Both are
+        # correctness requirements, not quality tweaks.
+        post_load_overrides = kwargs.pop("post_load_overrides", None) or {}
+        apply_post_load_fixups(self.model, **post_load_overrides)
         self.tokenizer = tokenizer
         self.shared_cache_keys = get_shared_keys(self.model)
 
@@ -504,6 +513,13 @@ class BaseCompressor(object):
         # Whether to pack the layer immediately after tuning
         self.is_immediate_packing = False
         self.is_immediate_saving = False
+
+        # Optional override for norm-layer dtype at export time (set via
+        # quantize_and_save / save_quantized kwargs). When non-None, the
+        # ShardWriter and save_quantized_as_autoround paths upcast norm
+        # parameters to this dtype before serialisation to reduce residual-
+        # stream precision loss during inference.
+        self.norm_dtype: Optional[torch.dtype] = None
 
         # KV cache, this one does not affect tuning but will collect some infos during tuning
         self.static_kv_dtype = static_kv_dtype
@@ -1123,6 +1139,16 @@ class BaseCompressor(object):
             inplace = False
         self.inplace = kwargs.get("inplace", inplace)
         kwargs.pop("inplace", None)
+
+        # Stash norm_dtype onto self so ShardWriter (LCMU / immediate_saving
+        # path) can honour it while tensors are still materialised. We keep
+        # it in kwargs too, so save_quantized_as_autoround can pick it up in
+        # the non-immediate-saving path.
+        norm_dtype_kwarg = kwargs.get("norm_dtype")
+        if norm_dtype_kwarg is not None:
+            from auto_round.export.export_to_autoround.export import _resolve_dtype_spec
+
+            self.norm_dtype = _resolve_dtype_spec(norm_dtype_kwarg)
 
         # Perform model quantization
         if self.static_attention_dtype is not None:

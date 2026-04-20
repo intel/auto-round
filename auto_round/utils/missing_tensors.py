@@ -208,9 +208,16 @@ def copy_missing_tensors_from_source(
         if name == "lm_head.weight":
             return False
         aliases = _name_aliases(name)
+        # Apply the same "drop first path component" shortcut that's applied to
+        # saved_block_prefix / saved_parent_layers, symmetrically on the source
+        # side. This handles models whose in-memory top-level module differs
+        # from the on-disk checkpoint prefix (e.g. Nemotron-H serialises
+        # weights under ``backbone.*`` but ``AutoModelForCausalLM`` exposes
+        # them under ``model.*``).
+        aliases |= {a.split(".", 1)[1] for a in set(aliases) if "." in a}
         if aliases & saved_tensor_names:
             return False
-        parents = {a.rsplit(".", 1)[0] for a in aliases}
+        parents = {a.rsplit(".", 1)[0] for a in aliases if "." in a}
         if parents & saved_parent_layers:
             return False
         # For split experts, name is changed but block name is the same.
