@@ -2,14 +2,15 @@
 
 Please briefly describe your main changes, the motivation.
 
-## Type of Change
+## Type of Change (select one)
 
-- [ ] Bug fix
-- [ ] New feature
-- [ ] Documentation update
-- [ ] Performance improvement
-- [ ] Code refactoring
-- [ ] Other (please specify):
+<!-- Select one option by changing `( )` to `(x)` and remove the lines that do not apply. -->
+- ( ) Bug fix
+- ( ) New feature
+- ( ) Documentation update
+- ( ) Performance improvement
+- ( ) Code refactoring
+- ( ) Other (please specify):
 
 ## Related Issues
 
