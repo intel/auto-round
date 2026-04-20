@@ -682,6 +682,7 @@ def model_free_quantize(
     format: str = "auto_round",
     device: str = "cpu",
     quant_lm_head: bool = False,
+    quant_nontext_module: bool = False,
 ) -> str:
     """Perform model-free RTN quantization.
 
@@ -717,6 +718,9 @@ def model_free_quantize(
         quant_lm_head: If True, quantize ``lm_head`` as well.  By default
             ``lm_head`` and any layer containing ``embed`` are kept in full
             precision.
+        quant_nontext_module: If True, quantize non-text modules (vision,
+            audio, image components) as well.  By default these multimodal
+            modules are kept in full precision.
 
     Returns:
         Path to the output directory.
@@ -787,6 +791,14 @@ def model_free_quantize(
         if "lm_head" not in ignore_patterns:
             ignore_patterns.append("lm_head")
 
+    # By default keep non-text modules (vision/audio/image) in full precision,
+    # consistent with get_block_names(..., quant_vision=False) behaviour.
+    if not quant_nontext_module:
+        _nontext_keywords = ("vision", "visual", "image", "img", "audio", "speech", "wav", "waveform")
+        for kw in _nontext_keywords:
+            if kw not in ignore_patterns:
+                ignore_patterns.append(kw)
+
     # ---- Setup output directory ----
     os.makedirs(output_dir, exist_ok=True)
 
@@ -854,6 +866,7 @@ def model_free_quantize(
         f"  Shards: {len(shard_names)}\n"
         f"  Streaming download: {is_streaming}\n"
         f"  Quant lm_head: {quant_lm_head}\n"
+        f"  Quant nontext module: {quant_nontext_module}\n"
         f"  Device: {device}"
     )
 
@@ -1010,5 +1023,6 @@ def model_free_quantize(
         f"  Quantized layers ({len(all_quantized_layers)}): {compressed_quantized}\n"
         f"  Ignored layers ({len(set(all_ignored_layers))}): {compressed_ignored}\n"
     )
+    shutil.rmtree(work_dir, ignore_errors=True)
 
     return output_dir

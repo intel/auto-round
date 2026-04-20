@@ -629,6 +629,7 @@ def tune(args):
             format=args.format,
             device=device,
             quant_lm_head=getattr(args, "quant_lm_head", False),
+            quant_nontext_module=getattr(args, "quant_nontext_module", False),
         )
         return
 
