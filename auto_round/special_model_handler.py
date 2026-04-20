@@ -589,7 +589,10 @@ register_ignore_layers(
         ModelTypeMatcher(r"qwen3_5", mode="in"),
     ],
     ignore_layers=[
+        "mlp.gate",
+        "mlp.shared_expert_gate",
         "mtp.fc",
+        "mtp.gate",
     ],
 )
 
