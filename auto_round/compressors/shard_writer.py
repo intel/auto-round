@@ -103,6 +103,55 @@ class ShardWriter:
             param_name = f"{prefix}.{k}"
             self._add_tensor(param_name, v)
 
+    def _expand_fused_experts(self, name: str, tensor: torch.Tensor) -> list[tuple[str, torch.Tensor]] | None:
+        """Expand a fused 3D expert parameter into per-expert 2D weight tensors.
+
+        Non-quantized MoE modules (e.g. talker in Qwen3-Omni) are kept fused
+        during quantization to prevent memory eviction under disk offloading.
+        This method converts them to the per-expert checkpoint format at save time.
+
+        Returns:
+            List of (key, 2D tensor) pairs, or None if not a fused expert param.
+        """
+        from auto_round.modeling.fused_moe.moe_experts_interface import KNOWN_PROJECTION_PATTERNS
+        from auto_round.modeling.fused_moe.replace_modules import MOE_SKIP_PREFIXES
+
+        parts = name.rsplit(".", 1)
+        if len(parts) != 2:
+            return None
+        prefix, attr_name = parts
+
+        model_type = getattr(getattr(self.model, "config", None), "model_type", None)
+        skip_prefixes = MOE_SKIP_PREFIXES.get(model_type, []) if model_type is not None else []
+        if not any(
+            prefix == skip_prefix.rstrip(".") or prefix.startswith(skip_prefix) for skip_prefix in skip_prefixes
+        ):
+            return None
+
+        config = KNOWN_PROJECTION_PATTERNS.get(attr_name)
+        if config is None:
+            return None
+
+        module = get_module(self.model, prefix)
+        is_transposed = getattr(module, "is_transposed", False) if module else False
+        if is_transposed:
+            tensor = tensor.transpose(1, 2).contiguous()
+
+        num_experts = tensor.shape[0]
+        result = []
+
+        split_into = config.get("split_into")
+        if split_into:
+            chunks = tensor.chunk(len(split_into), dim=1)
+            for split_name, chunk in zip(split_into, chunks):
+                for i in range(num_experts):
+                    result.append((f"{prefix}.{i}.{split_name}.weight", chunk[i].clone()))
+        else:
+            for i in range(num_experts):
+                result.append((f"{prefix}.{i}.{attr_name}.weight", tensor[i].clone()))
+
+        return result
+
     def _add_tensor(self, name: str, tensor: torch.Tensor):
         if isinstance(tensor, torch.Tensor) and tensor.device.type == "meta":
             self.skipped_meta_tensors.append(name)
@@ -111,6 +160,15 @@ class ShardWriter:
         # Guard against duplicate saving of the same parameter
         if name in self._all_saved or name in self.current_shard_tensors:
             return
+
+        # Expand fused 3D expert parameters into per-expert 2D tensors if necessary
+        if tensor.dim() == 3:
+            expanded = self._expand_fused_experts(name, tensor)
+            if expanded is not None:
+                self._all_saved.add(name)
+                for sub_name, sub_tensor in expanded:
+                    self._add_tensor(sub_name, sub_tensor)
+                return
 
         t_size = tensor.nbytes
         self.total_param_elems += tensor.numel()

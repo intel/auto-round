@@ -631,6 +631,69 @@ class TestCopyMissingTensorsFromSource(unittest.TestCase):
             extra_shard = os.path.join(target_dir, "model_extra_tensors.safetensors")
             self.assertFalse(os.path.exists(extra_shard), "No extra shard expected: block prefix is known")
 
+    def test_talker_missing_projection_is_copied_by_exact_name(self):
+        """Talker expert tensors are preserved by exact source key, even when sibling projections exist."""
+        with tempfile.TemporaryDirectory() as source_dir, tempfile.TemporaryDirectory() as target_dir:
+            _save_safetensors(
+                {
+                    "talker.model.layers.0.mlp.experts.0.gate_proj.weight": torch.randn(32, 64),
+                    "talker.model.layers.0.mlp.experts.0.up_proj.weight": torch.randn(32, 64),
+                    "talker.model.layers.0.mlp.experts.0.down_proj.weight": torch.randn(64, 32),
+                },
+                os.path.join(source_dir, "model.safetensors"),
+            )
+            _save_safetensors(
+                {
+                    "talker.model.layers.0.mlp.experts.0.gate_proj.weight": torch.randn(32, 64),
+                    "talker.model.layers.0.mlp.experts.0.down_proj.weight": torch.randn(64, 32),
+                },
+                os.path.join(target_dir, "model.safetensors"),
+            )
+            _write_config(target_dir)
+
+            copy_missing_tensors_from_source(source_dir, target_dir)
+
+            extra_shard = os.path.join(target_dir, "model_extra_tensors.safetensors")
+            self.assertTrue(os.path.exists(extra_shard), "Missing talker projection should be copied")
+
+            result = _load_safetensors(extra_shard)
+            self.assertIn("talker.model.layers.0.mlp.experts.0.up_proj.weight", result)
+            self.assertNotIn("talker.model.layers.0.mlp.experts.0.gate_proj.weight", result)
+
+    def test_talker_missing_weight_is_never_woq_quantized(self):
+        """Talker weights must stay BF16/full precision even in WOQ exports."""
+        with tempfile.TemporaryDirectory() as source_dir, tempfile.TemporaryDirectory() as target_dir:
+            talker_weight = torch.randn(32, 64, dtype=torch.bfloat16)
+            _save_safetensors(
+                {"talker.model.layers.0.mlp.experts.0.up_proj.weight": talker_weight},
+                os.path.join(source_dir, "model.safetensors"),
+            )
+            _save_safetensors(
+                {
+                    "thinker.model.layers.0.mlp.experts.0.up_proj.qweight": torch.randint(
+                        0, 16, (8, 32), dtype=torch.int32
+                    )
+                },
+                os.path.join(target_dir, "model.safetensors"),
+            )
+            with open(os.path.join(target_dir, "config.json"), "w") as f:
+                json.dump(
+                    self._make_auto_round_config(bits=4, group_size=64, sym=True)
+                    | {
+                        "quantization_config": self._make_auto_round_config(bits=4, group_size=64, sym=True)[
+                            "quantization_config"
+                        ]
+                        | {"block_name_to_quantize": "thinker.model.layers"}
+                    },
+                    f,
+                )
+
+            copy_missing_tensors_from_source(source_dir, target_dir)
+
+            result = _load_safetensors(os.path.join(target_dir, "model_extra_tensors.safetensors"))
+            self.assertIn("talker.model.layers.0.mlp.experts.0.up_proj.weight", result)
+            self.assertNotIn("talker.model.layers.0.mlp.experts.0.up_proj.qweight", result)
+
 
 if __name__ == "__main__":
     unittest.main()

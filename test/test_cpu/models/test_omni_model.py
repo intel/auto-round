@@ -97,17 +97,17 @@ class TestQwen2_5Omni:
         shutil.rmtree("runs", ignore_errors=True)
 
     def test_block_names_default(self):
-        """Test that get_block_names returns thinker + talker layers."""
+        """Test that get_block_names returns thinker layers only by default."""
         from auto_round.utils import get_block_names
 
         block_names = get_block_names(self.model, quant_vision=False)
-        # Should have thinker.model.layers and talker.model.layers
+        # Should have thinker.model.layers but not talker.model.layers
         assert any(
             "thinker.model.layers" in str(b) for b in block_names
         ), f"Expected thinker.model.layers in block_names, got: {block_names}"
-        assert any(
+        assert not any(
             "talker.model.layers" in str(b) for b in block_names
-        ), f"Expected talker.model.layers in block_names, got: {block_names}"
+        ), f"Did not expect talker.model.layers by default, got: {block_names}"
 
     def test_block_names_quant_vision(self):
         """Test that quant_vision adds visual and audio blocks."""
@@ -168,7 +168,7 @@ class TestQwen3OmniMoeBlockNames:
     """Test block name discovery for Qwen3-Omni-MoE."""
 
     def test_block_names_default(self):
-        """Test that get_block_names returns thinker + talker layers."""
+        """Test that get_block_names returns thinker layers only by default."""
         from auto_round.utils import get_block_names
 
         config = _make_tiny_qwen3_omni_moe_config()
@@ -178,9 +178,9 @@ class TestQwen3OmniMoeBlockNames:
         assert any(
             "thinker.model.layers" in str(b) for b in block_names
         ), f"Expected thinker.model.layers, got: {block_names}"
-        assert any(
+        assert not any(
             "talker.model.layers" in str(b) for b in block_names
-        ), f"Expected talker.model.layers, got: {block_names}"
+        ), f"Did not expect talker.model.layers by default, got: {block_names}"
 
     def test_block_names_quant_vision(self):
         """Test that quant_vision adds visual and audio blocks."""
@@ -214,15 +214,15 @@ class TestQwen3OmniMoeReplacement:
     """Test MoE module replacement for Qwen3-Omni-MoE."""
 
     def test_replacement_registered(self):
-        """Test that both thinker and talker MoE blocks are registered."""
+        """Test that thinker MoE block is registered."""
         from auto_round.modeling.fused_moe.qwen3_omni import (
-            LinearQwen3OmniTalkerSparseMoeBlock,
             LinearQwen3OmniThinkerSparseMoeBlock,
         )
         from auto_round.modeling.fused_moe.replace_modules import ReplacementModuleBase
 
         assert ReplacementModuleBase.is_registered("Qwen3OmniMoeThinkerTextSparseMoeBlock")
-        assert ReplacementModuleBase.is_registered("Qwen3OmniMoeTalkerTextSparseMoeBlock")
+        # Talker has no replacement class — it stays fused and is excluded via MOE_SKIP_PREFIXES
+        assert not ReplacementModuleBase.is_registered("Qwen3OmniMoeTalkerTextSparseMoeBlock")
 
     def test_builtin_modules_entry(self):
         """Test that qwen3_omni_moe is in BUILTIN_MODULES."""
@@ -239,28 +239,38 @@ class TestQwen3OmniMoeReplacement:
         assert is_custom_model(model)
 
     def test_apply_replacements(self):
-        """Test that MoE blocks are correctly replaced."""
+        """Test that only thinker MoE blocks are replaced; talker stays fused."""
         from auto_round.modeling.fused_moe.replace_modules import apply_replacements
 
         config = _make_tiny_qwen3_omni_moe_config()
         model = Qwen3OmniMoeForConditionalGeneration(config)
 
+        original_talker_class = model.talker.model.layers[0].mlp.__class__.__name__
         model = apply_replacements(model)
 
-        # Check that thinker MoE was replaced
+        # Check that thinker MoE was custom-replaced
         thinker_mlp = model.thinker.model.layers[0].mlp
         assert (
             "LinearQwen3OmniThinker" in thinker_mlp.__class__.__name__
         ), f"Expected LinearQwen3OmniThinker, got {thinker_mlp.__class__.__name__}"
 
-        # Check that talker MoE was replaced
+        # Talker MoE stays fused (excluded from both custom replacement and generic unfuse)
+        # to prevent memory eviction during disk-offloaded quantization.
+        # ShardWriter handles fused→per-expert conversion at save time.
         talker_mlp = model.talker.model.layers[0].mlp
         assert (
-            "LinearQwen3OmniTalker" in talker_mlp.__class__.__name__
-        ), f"Expected LinearQwen3OmniTalker, got {talker_mlp.__class__.__name__}"
+            talker_mlp.__class__.__name__ == original_talker_class
+        ), f"Expected talker MoE to stay original ({original_talker_class}), got {talker_mlp.__class__.__name__}"
+        assert hasattr(
+            model.talker.model.layers[0].mlp.experts, "gate_up_proj"
+        ), "Talker experts should keep fused gate_up_proj"
 
     def test_weight_fidelity(self):
-        """Test that unfused weights match original fused weights."""
+        """Test that unfused thinker weights match original fused weights.
+
+        Talker MoE stays fused (excluded from quantization), so only
+        thinker experts are verified here.
+        """
         from auto_round.modeling.fused_moe.replace_modules import apply_replacements, materialize_model_
 
         torch.manual_seed(42)
@@ -271,11 +281,9 @@ class TestQwen3OmniMoeReplacement:
         config = _make_tiny_qwen3_omni_moe_config()
         model = Qwen3OmniMoeForConditionalGeneration(config)
 
-        # Save original fused weights
+        # Save original fused thinker weights
         thinker_gate_up = model.thinker.model.layers[0].mlp.experts.gate_up_proj.data.clone()
         thinker_down = model.thinker.model.layers[0].mlp.experts.down_proj.data.clone()
-        talker_gate_up = model.talker.model.layers[0].mlp.experts.gate_up_proj.data.clone()
-        talker_down = model.talker.model.layers[0].mlp.experts.down_proj.data.clone()
 
         model = apply_replacements(model)
         materialize_model_(model)
@@ -288,20 +296,13 @@ class TestQwen3OmniMoeReplacement:
             assert_same_weights(expert.up_proj.weight.data, thinker_gate_up[i, intermediate:, :])
             assert_same_weights(expert.down_proj.weight.data, thinker_down[i])
 
-        # Verify talker expert weights
-        for i in range(4):
-            expert = model.talker.model.layers[0].mlp.experts[i]
-            assert_same_weights(expert.gate_proj.weight.data, talker_gate_up[i, :intermediate, :])
-            assert_same_weights(expert.up_proj.weight.data, talker_gate_up[i, intermediate:, :])
-            assert_same_weights(expert.down_proj.weight.data, talker_down[i])
-
     def test_forward_output_match(self):
-        """Test that replaced MoE forward output matches original."""
+        """Test that replaced thinker MoE forward output matches original.
+
+        Talker MoE is not replaced, so only thinker output is verified.
+        """
         from auto_round.modeling.fused_moe.replace_modules import apply_replacements, materialize_model_
 
-        # Fix seed for deterministic model weights and use small-scale input to
-        # prevent numerical overflow with random weights (talker has a larger
-        # shared_expert MLP that can produce NaN otherwise).
         torch.manual_seed(0)
         config = _make_tiny_qwen3_omni_moe_config()
         model = Qwen3OmniMoeForConditionalGeneration(config)
@@ -309,31 +310,22 @@ class TestQwen3OmniMoeReplacement:
         x = torch.randn(1, 4, 64) * 0.1
         with torch.no_grad():
             orig_thinker_out = model.thinker.model.layers[0].mlp(x)
-            orig_talker_out = model.talker.model.layers[0].mlp(x)
 
         model = apply_replacements(model)
         materialize_model_(model)
 
         with torch.no_grad():
             new_thinker_out = model.thinker.model.layers[0].mlp(x)
-            new_talker_out = model.talker.model.layers[0].mlp(x)
 
-        # Use a NaN-safe comparison: check that NaN positions match, then
-        # compare finite values.  This avoids false failures when random
-        # weights cause some outputs to overflow to NaN.
-        for name, orig, new in [
-            ("Thinker", orig_thinker_out, new_thinker_out),
-            ("Talker", orig_talker_out, new_talker_out),
-        ]:
-            assert orig.shape == new.shape, f"{name} shape mismatch: {orig.shape} vs {new.shape}"
-            orig_nan = torch.isnan(orig)
-            new_nan = torch.isnan(new)
-            assert torch.equal(orig_nan, new_nan), f"{name} NaN positions differ"
-            finite_mask = ~orig_nan
-            if finite_mask.any():
-                assert torch.allclose(
-                    orig[finite_mask], new[finite_mask], atol=1e-5
-                ), f"{name} MoE forward mismatch on finite values"
+        assert orig_thinker_out.shape == new_thinker_out.shape, "Thinker shape mismatch"
+        orig_nan = torch.isnan(orig_thinker_out)
+        new_nan = torch.isnan(new_thinker_out)
+        assert torch.equal(orig_nan, new_nan), "Thinker NaN positions differ"
+        finite_mask = ~orig_nan
+        if finite_mask.any():
+            assert torch.allclose(
+                orig_thinker_out[finite_mask], new_thinker_out[finite_mask], atol=1e-5
+            ), "Thinker MoE forward mismatch on finite values"
 
 
 class TestQwen3OmniMoeProcessor:

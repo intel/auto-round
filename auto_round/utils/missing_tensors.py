@@ -210,6 +210,11 @@ def copy_missing_tensors_from_source(
         aliases = _name_aliases(name)
         if aliases & saved_tensor_names:
             return False
+        # Qwen-Omni talker weights must be preserved exactly as BF16 source tensors.
+        # If an individual talker tensor is absent from the export, copy that exact key
+        # regardless of whether sibling tensors from the same expert/block were saved.
+        if any(alias.startswith("talker.") for alias in aliases):
+            return True
         parents = {a.rsplit(".", 1)[0] for a in aliases}
         if parents & saved_parent_layers:
             return False
@@ -578,6 +583,15 @@ def _woq_quantize_missing_tensors(target_dir: str, missing_tensors_dict: dict) -
             return False
         if missing_tensors_dict[k].dim() != 2:
             return False
+        # Only quantize weights that fall under the quantized blocks.
+        if block_name_to_quantize:
+            blocks = (
+                block_name_to_quantize
+                if isinstance(block_name_to_quantize, list)
+                else [b.strip() for b in block_name_to_quantize.split(",") if b.strip()]
+            )
+            if not any(k.startswith(b + ".") or k.startswith(b + "[") for b in blocks):
+                return False
         layer_name = k[: -len(".weight")]
         layer_cfg = _resolve_layer_cfg(layer_name)
         # If extra_config explicitly covers this layer, trust its decision
