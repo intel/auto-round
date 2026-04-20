@@ -82,8 +82,9 @@ listing only the expert-bundling converter targets.
 Zero extra kwargs — the registry drives everything:
 
 ```python
-AutoRound("nvidia/Nemotron-Cascade-2-30B-A3B", bits=4, group_size=128,
-          sym=True, low_cpu_mem_usage=True).quantize_and_save(output_dir=...)
+AutoRound(
+    "nvidia/Nemotron-Cascade-2-30B-A3B", bits=4, group_size=128, sym=True, low_cpu_mem_usage=True
+).quantize_and_save(output_dir=...)
 ```
 
 Opt-out for offline environments where the source checkpoint isn't reachable:

@@ -25,13 +25,9 @@ import pytest
 import torch
 import torch.nn as nn
 
-from auto_round.export.export_to_autoround.qlinear_triton_act import (
-    QuantLinear as TritonActQuantLinear,
-)
+from auto_round.export.export_to_autoround.qlinear_triton_act import QuantLinear as TritonActQuantLinear
 from auto_round_extension.torch.qlinear_torch import QuantLinear as TorchQuantLinear
-from auto_round_extension.torch.qlinear_torch_zp import (
-    QuantLinear as TorchZpQuantLinear,
-)
+from auto_round_extension.torch.qlinear_torch_zp import QuantLinear as TorchZpQuantLinear
 
 
 def _build_linear(in_features: int, out_features: int) -> nn.Linear:
@@ -70,15 +66,11 @@ def test_default_scale_dtype_unchanged(qlinear_cls, default_dtype):
     match the historical default for that class. This guards every existing
     quantized checkpoint against silent dtype churn."""
 
-    layer = qlinear_cls(
-        bits=4, group_size=32, infeatures=64, outfeatures=64, bias=False
-    )
+    layer = qlinear_cls(bits=4, group_size=32, infeatures=64, outfeatures=64, bias=False)
     assert layer.scales.dtype == default_dtype
 
 
-@pytest.mark.parametrize(
-    "qlinear_cls", [TorchQuantLinear, TorchZpQuantLinear, TritonActQuantLinear]
-)
+@pytest.mark.parametrize("qlinear_cls", [TorchQuantLinear, TorchZpQuantLinear, TritonActQuantLinear])
 def test_explicit_bf16_scale_dtype(qlinear_cls):
     """When BF16 is requested, the scales buffer is BF16."""
 
@@ -93,18 +85,14 @@ def test_explicit_bf16_scale_dtype(qlinear_cls):
     assert layer.scales.dtype == torch.bfloat16
 
 
-@pytest.mark.parametrize(
-    "qlinear_cls", [TorchQuantLinear, TorchZpQuantLinear]
-)
+@pytest.mark.parametrize("qlinear_cls", [TorchQuantLinear, TorchZpQuantLinear])
 def test_pack_does_not_downcast_bf16_scales(qlinear_cls):
     """Pack a BF16-scale layer and verify the scales buffer stays BF16 *and*
     preserves the small-magnitude entry that would underflow in FP16."""
 
     in_features, out_features, group_size = 64, 32, 32
     linear = _build_linear(in_features, out_features)
-    scales, zeros = _build_scales_zeros(
-        in_features, out_features, group_size, dtype=torch.bfloat16
-    )
+    scales, zeros = _build_scales_zeros(in_features, out_features, group_size, dtype=torch.bfloat16)
 
     qlayer = qlinear_cls(
         bits=4,
@@ -131,17 +119,13 @@ def test_pack_does_not_downcast_bf16_scales(qlinear_cls):
     )
 
 
-@pytest.mark.parametrize(
-    "qlinear_cls", [TorchQuantLinear, TorchZpQuantLinear]
-)
+@pytest.mark.parametrize("qlinear_cls", [TorchQuantLinear, TorchZpQuantLinear])
 def test_pack_default_fp16_unchanged(qlinear_cls):
     """The historical FP16 path must keep producing FP16 scales after pack."""
 
     in_features, out_features, group_size = 64, 32, 32
     linear = _build_linear(in_features, out_features)
-    scales, zeros = _build_scales_zeros(
-        in_features, out_features, group_size, dtype=torch.float16
-    )
+    scales, zeros = _build_scales_zeros(in_features, out_features, group_size, dtype=torch.float16)
 
     qlayer = qlinear_cls(
         bits=4,
@@ -207,18 +191,14 @@ def test_end_to_end_mixed_scale_dtype(tmp_path):
 
     target_key = f"{target_layer}.scales"
     assert target_key in scale_dtypes, (
-        f"override target {target_key} not present in saved scales — keys: "
-        f"{list(scale_dtypes)[:5]}..."
+        f"override target {target_key} not present in saved scales — keys: " f"{list(scale_dtypes)[:5]}..."
     )
-    assert scale_dtypes[target_key] == torch.bfloat16, (
-        f"override layer scales saved as {scale_dtypes[target_key]}, expected bfloat16"
-    )
+    assert (
+        scale_dtypes[target_key] == torch.bfloat16
+    ), f"override layer scales saved as {scale_dtypes[target_key]}, expected bfloat16"
 
-    other_dtypes = {
-        k: dt for k, dt in scale_dtypes.items() if k != target_key
-    }
+    other_dtypes = {k: dt for k, dt in scale_dtypes.items() if k != target_key}
     fp16_count = sum(1 for dt in other_dtypes.values() if dt == torch.float16)
     assert fp16_count == len(other_dtypes), (
-        "Default-path layers must remain FP16 (no regression). Got mixed dtypes: "
-        f"{set(other_dtypes.values())}"
+        "Default-path layers must remain FP16 (no regression). Got mixed dtypes: " f"{set(other_dtypes.values())}"
     )

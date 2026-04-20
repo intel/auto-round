@@ -158,9 +158,7 @@ def _resolve_source_dir(model: nn.Module) -> str | None:
     config = getattr(model, "config", None)
     if config is None:
         return None
-    name_or_path = getattr(config, "_name_or_path", None) or getattr(
-        config, "name_or_path", None
-    )
+    name_or_path = getattr(config, "_name_or_path", None) or getattr(config, "name_or_path", None)
     if not name_or_path:
         return None
 
@@ -216,8 +214,7 @@ def _apply_high_precision_overrides(
         )
     except Exception as exc:  # pragma: no cover - defensive
         logger.warning(
-            "nemotron_h: high-precision override failed (%s); "
-            "continuing with BF16 SSM/router tensors.",
+            "nemotron_h: high-precision override failed (%s); " "continuing with BF16 SSM/router tensors.",
             exc,
         )
         return 0

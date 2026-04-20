@@ -290,20 +290,14 @@ def apply_model_monkey_patches(model_name: str, trust_remote_code: bool = True) 
             target_module = importlib.import_module(module_path)
             dispatch = getattr(target_module, dict_name, None)
             if not isinstance(dispatch, dict) or dict_key not in dispatch:
-                logger.warning(
-                    f"dispatch_dict_patch skipped: {module_path}.{dict_name}[{dict_key!r}] not found"
-                )
+                logger.warning(f"dispatch_dict_patch skipped: {module_path}.{dict_name}[{dict_key!r}] not found")
                 continue
             replacement_module_path, replacement_class_name = replacement_path.rsplit(".", 1)
             replacement_module = importlib.import_module(replacement_module_path)
             dispatch[dict_key] = getattr(replacement_module, replacement_class_name)
-            logger.info(
-                f"Patched dispatch dict: {module_path}.{dict_name}[{dict_key!r}] -> {replacement_path}"
-            )
+            logger.info(f"Patched dispatch dict: {module_path}.{dict_name}[{dict_key!r}] -> {replacement_path}")
         except Exception as e:
-            logger.warning(
-                f"Failed to patch dispatch dict {module_path}.{dict_name}[{dict_key!r}]: {e}"
-            )
+            logger.warning(f"Failed to patch dispatch dict {module_path}.{dict_name}[{dict_key!r}]: {e}")
 
     for orig_path, custom_path in cfg.get("block_patch", []):
         orig_module_path, orig_class_name = orig_path.rsplit(".", 1)

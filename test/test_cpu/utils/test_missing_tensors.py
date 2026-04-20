@@ -392,12 +392,8 @@ class TestCopyMissingTensorsFromSource(unittest.TestCase):
             # ``model.*`` prefix, in quantised form.
             _save_safetensors(
                 {
-                    "model.layers.0.mixer.out_proj.qweight": torch.randint(
-                        0, 2**31, (8, 32), dtype=torch.int32
-                    ),
-                    "model.layers.0.mixer.out_proj.qzeros": torch.randint(
-                        0, 2**31, (1, 4), dtype=torch.int32
-                    ),
+                    "model.layers.0.mixer.out_proj.qweight": torch.randint(0, 2**31, (8, 32), dtype=torch.int32),
+                    "model.layers.0.mixer.out_proj.qzeros": torch.randint(0, 2**31, (1, 4), dtype=torch.int32),
                     "model.layers.0.mixer.out_proj.scales": torch.randn(1, 32, dtype=torch.bfloat16),
                     "model.embeddings.qweight": torch.randint(0, 2**31, (2, 32), dtype=torch.int32),
                     "model.embeddings.qzeros": torch.randint(0, 2**31, (1, 4), dtype=torch.int32),

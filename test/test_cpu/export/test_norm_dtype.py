@@ -36,10 +36,10 @@ from auto_round.export.export_to_autoround.export import (
     _resolve_dtype_spec,
 )
 
-
 # ---------------------------------------------------------------------------
 # Classifier
 # ---------------------------------------------------------------------------
+
 
 class _LlamaRMSNorm(nn.Module):
     """Mimics HF's custom norm naming — class lives outside torch.nn."""
@@ -86,6 +86,7 @@ def test_is_norm_module_classifier(module, expected):
 # Dtype spec parsing
 # ---------------------------------------------------------------------------
 
+
 @pytest.mark.parametrize(
     "spec,expected",
     [
@@ -118,6 +119,7 @@ def test_resolve_dtype_spec_bad_type():
 # ---------------------------------------------------------------------------
 # In-memory cast
 # ---------------------------------------------------------------------------
+
 
 def _toy_model(base_dtype: torch.dtype = torch.bfloat16) -> nn.Module:
     """A mini-transformer-shaped module: linear + norm + custom RMSNorm."""
@@ -169,6 +171,7 @@ def test_cast_norm_modules_idempotent():
 # End-to-end: quantize + serialise with norm_dtype=float32
 # ---------------------------------------------------------------------------
 
+
 @pytest.mark.slow
 def test_end_to_end_norm_dtype_float32(tmp_path):
     """Smallest real model that exercises compressor → export → safetensors.
@@ -211,28 +214,24 @@ def test_end_to_end_norm_dtype_float32(tmp_path):
     for shard in shards:
         with safe_open(shard, framework="pt") as f:
             for k in f.keys():
-                if "layer_norm" in k or k.endswith("final_layer_norm.weight") \
-                   or k.endswith("final_layer_norm.bias") \
-                   or k.endswith("self_attn_layer_norm.weight") \
-                   or k.endswith("self_attn_layer_norm.bias"):
+                if (
+                    "layer_norm" in k
+                    or k.endswith("final_layer_norm.weight")
+                    or k.endswith("final_layer_norm.bias")
+                    or k.endswith("self_attn_layer_norm.weight")
+                    or k.endswith("self_attn_layer_norm.bias")
+                ):
                     norm_dtypes[k] = f.get_tensor(k).dtype
                 elif k.endswith(".scales"):
                     scale_dtypes[k] = f.get_tensor(k).dtype
 
-    assert norm_dtypes, (
-        "No norm tensors found in shards — test assumption about opt-125m "
-        "parameter names is broken."
-    )
+    assert norm_dtypes, "No norm tensors found in shards — test assumption about opt-125m " "parameter names is broken."
     bad = {k: dt for k, dt in norm_dtypes.items() if dt != torch.float32}
-    assert not bad, (
-        f"Expected every norm tensor to be float32; got non-F32: {bad}"
-    )
+    assert not bad, f"Expected every norm tensor to be float32; got non-F32: {bad}"
 
     # Quantized-path dtype unchanged (F16 is the default for the torch QuantLinear).
     non_f16_scales = {k: dt for k, dt in scale_dtypes.items() if dt != torch.float16}
-    assert not non_f16_scales, (
-        f"norm_dtype must not leak into scale buffers; got: {non_f16_scales}"
-    )
+    assert not non_f16_scales, f"norm_dtype must not leak into scale buffers; got: {non_f16_scales}"
 
 
 @pytest.mark.slow
@@ -285,6 +284,5 @@ def test_end_to_end_default_path_unchanged(tmp_path):
 
     assert seen_norm_dtypes, "default path: no norm tensors seen on disk"
     assert seen_norm_dtypes == {expected_norm_dtype}, (
-        f"Default path changed norm dtype. Expected {expected_norm_dtype}, "
-        f"saw {seen_norm_dtypes}."
+        f"Default path changed norm dtype. Expected {expected_norm_dtype}, " f"saw {seen_norm_dtypes}."
     )

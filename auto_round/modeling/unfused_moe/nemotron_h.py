@@ -70,10 +70,7 @@ class LinearNemotronHMoE(nn.Module):
         # slice of the bundled NemotronHExperts tensors.
         self.n_routed_experts = config.n_routed_experts
         self.experts = nn.ModuleList(
-            [
-                NemotronHMLP(config, intermediate_size=config.moe_intermediate_size)
-                for _ in range(self.n_routed_experts)
-            ]
+            [NemotronHMLP(config, intermediate_size=config.moe_intermediate_size) for _ in range(self.n_routed_experts)]
         )
 
         # Shared expert(s) — already use nn.Linear in upstream.
@@ -92,12 +89,8 @@ class LinearNemotronHMoE(nn.Module):
         # Optional latent projection. ``Identity`` for Nemotron-Cascade-2
         # because ``moe_latent_size is None``.
         if config.moe_latent_size is not None:
-            self.fc1_latent_proj = nn.Linear(
-                config.hidden_size, config.moe_latent_size, bias=config.mlp_bias
-            )
-            self.fc2_latent_proj = nn.Linear(
-                config.moe_latent_size, config.hidden_size, bias=config.mlp_bias
-            )
+            self.fc1_latent_proj = nn.Linear(config.hidden_size, config.moe_latent_size, bias=config.mlp_bias)
+            self.fc2_latent_proj = nn.Linear(config.moe_latent_size, config.hidden_size, bias=config.mlp_bias)
         else:
             self.fc1_latent_proj = nn.Identity()
             self.fc2_latent_proj = nn.Identity()
@@ -111,9 +104,7 @@ class LinearNemotronHMoE(nn.Module):
         router_logits = router_logits.sigmoid()
         router_logits_for_choice = router_logits + self.gate.e_score_correction_bias
         group_scores = (
-            router_logits_for_choice.view(
-                -1, self.n_group, self.n_routed_experts // self.n_group
-            )
+            router_logits_for_choice.view(-1, self.n_group, self.n_routed_experts // self.n_group)
             .topk(2, dim=-1)[0]
             .sum(dim=-1)
         )
@@ -149,9 +140,7 @@ class LinearNemotronHMoE(nn.Module):
         out = torch.zeros_like(flat)
 
         with torch.no_grad():
-            expert_mask = torch.nn.functional.one_hot(
-                topk_indices, num_classes=self.n_routed_experts
-            ).permute(2, 1, 0)
+            expert_mask = torch.nn.functional.one_hot(topk_indices, num_classes=self.n_routed_experts).permute(2, 1, 0)
             expert_hit = torch.greater(expert_mask.sum(dim=(-1, -2)), 0).nonzero().squeeze(-1)
 
         for expert_idx in expert_hit.tolist():
@@ -167,5 +156,3 @@ class LinearNemotronHMoE(nn.Module):
         out = out.view(*orig_shape)
         out = out + self.shared_experts(residuals)
         return out
-
-

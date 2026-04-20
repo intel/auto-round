@@ -76,8 +76,7 @@ def test_nemotron_h_preserves_prefix_rename_drops_expert_bundles_and_embedding_a
 
     cfg = MODEL_CONFIG["nemotron_h"]
     assert cfg.get("preserve_upstream_conversion_mapping") is True, (
-        "nemotron_h must preserve the upstream conversion mapping "
-        "(backbone.→model.) — see regression note."
+        "nemotron_h must preserve the upstream conversion mapping " "(backbone.→model.) — see regression note."
     )
     drop_targets = cfg.get("drop_conversion_target_patterns", [])
     assert "mixer.experts.up_proj" in drop_targets
@@ -88,9 +87,7 @@ def test_nemotron_h_preserves_prefix_rename_drops_expert_bundles_and_embedding_a
     )
 
     upstream = conversion_mapping.get_checkpoint_conversion_mapping("nemotron_h")
-    upstream_targets = {
-        tuple(getattr(rule, "target_patterns", []) or []) for rule in upstream
-    }
+    upstream_targets = {tuple(getattr(rule, "target_patterns", []) or []) for rule in upstream}
 
     # Sanity: the upstream mapping itself contains the rules we depend on.
     assert ("model.",) in upstream_targets, (
@@ -123,17 +120,16 @@ def test_apply_model_monkey_patches_rewires_nemotron_h():
 
     pytest.importorskip("transformers.models.nemotron_h")
 
+    from transformers.models.nemotron_h import modeling_nemotron_h
+
     from auto_round.modeling.unfused_moe import apply_model_monkey_patches
     from auto_round.modeling.unfused_moe.nemotron_h import LinearNemotronHMoE
-    from transformers.models.nemotron_h import modeling_nemotron_h
 
     # Snapshot originals so we can restore — keeps the test idempotent.
     orig_class = modeling_nemotron_h.NemotronHMoE
     orig_mixer = modeling_nemotron_h.MIXER_TYPES.get("moe")
     try:
-        applied = apply_model_monkey_patches(
-            "nvidia/Nemotron-Cascade-2-30B-A3B", trust_remote_code=False
-        )
+        applied = apply_model_monkey_patches("nvidia/Nemotron-Cascade-2-30B-A3B", trust_remote_code=False)
         assert applied is True, "apply_model_monkey_patches returned False for nemotron_h"
 
         assert modeling_nemotron_h.NemotronHMoE is LinearNemotronHMoE

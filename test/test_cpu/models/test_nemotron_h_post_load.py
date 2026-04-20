@@ -69,9 +69,7 @@ def test_default_layer_config_patterns_returns_out_proj_overlay():
     # Exactly one pattern key matching ``mixer.out_proj`` is expected; the
     # content may evolve but BF16 scale_dtype must remain.
     assert any("mixer" in k and "out_proj" in k for k in patterns), patterns
-    out_proj_overlay = next(
-        v for k, v in patterns.items() if "mixer" in k and "out_proj" in k
-    )
+    out_proj_overlay = next(v for k, v in patterns.items() if "mixer" in k and "out_proj" in k)
     assert out_proj_overlay["scale_dtype"] is torch.bfloat16
 
 
@@ -84,9 +82,7 @@ def test_apply_nemotron_h_post_load_patches_zamba2_instances_and_class():
     # 64 * 64 / 8 = 512
     expected_group_size = 512
 
-    summary = apply_nemotron_h_post_load(
-        model, enable_high_precision_overrides=False
-    )
+    summary = apply_nemotron_h_post_load(model, enable_high_precision_overrides=False)
     assert summary["zamba2_patched"] == 3
 
     for i in range(3):
@@ -104,9 +100,7 @@ def test_apply_nemotron_h_post_load_noop_for_other_model_types():
     model = _build_fake_nh_model()
     model.config.model_type = "llama"  # change to non-NH
 
-    summary = apply_nemotron_h_post_load(
-        model, enable_high_precision_overrides=False
-    )
+    summary = apply_nemotron_h_post_load(model, enable_high_precision_overrides=False)
     assert summary == {"zamba2_patched": 0, "high_precision_restored": 0}
     # And no instance should have been patched.
     for i in range(3):
@@ -124,9 +118,7 @@ def test_apply_post_load_fixups_dispatches_to_model_config():
     # 32 * 128 / 8 = 512
     expected_group_size = 512
 
-    summary = apply_post_load_fixups(
-        model, enable_high_precision_overrides=False
-    )
+    summary = apply_post_load_fixups(model, enable_high_precision_overrides=False)
     assert summary.get("zamba2_patched") == 3
     assert getattr(model.norm_0, "group_size") == expected_group_size
 

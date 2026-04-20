@@ -249,9 +249,7 @@ NEMOTRON_H_SSM_CORE_PATTERNS: tuple[str, ...] = (
     r"\.mixer\.dt_bias$",
 )
 
-NEMOTRON_H_ROUTER_BIAS_PATTERNS: tuple[str, ...] = (
-    r"\.mixer\.gate\.e_score_correction_bias$",
-)
+NEMOTRON_H_ROUTER_BIAS_PATTERNS: tuple[str, ...] = (r"\.mixer\.gate\.e_score_correction_bias$",)
 
 
 def _nemotron_h_source_to_module(src_key: str) -> str:

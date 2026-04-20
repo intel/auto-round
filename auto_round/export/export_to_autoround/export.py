@@ -52,7 +52,6 @@ from auto_round.utils import (
     unsupported_meta_device,
 )
 
-
 # Matches torch built-in norms (LayerNorm, RMSNorm, GroupNorm, BatchNorm2d,
 # InstanceNorm3d, ...) and HF custom subclasses (LlamaRMSNorm, NemotronHRMSNorm,
 # MambaRMSNorm, Gemma2RMSNorm, ...). Rejects non-norm lookalikes such as
@@ -97,12 +96,9 @@ def _resolve_dtype_spec(dtype_spec) -> Optional[torch.dtype]:
         if key in _DTYPE_STRING_ALIASES:
             return _DTYPE_STRING_ALIASES[key]
         raise ValueError(
-            f"Unsupported dtype string: {dtype_spec!r}. "
-            f"Supported: {sorted(set(_DTYPE_STRING_ALIASES))}"
+            f"Unsupported dtype string: {dtype_spec!r}. " f"Supported: {sorted(set(_DTYPE_STRING_ALIASES))}"
         )
-    raise TypeError(
-        f"Expected torch.dtype or str, got {type(dtype_spec).__name__}: {dtype_spec!r}"
-    )
+    raise TypeError(f"Expected torch.dtype or str, got {type(dtype_spec).__name__}: {dtype_spec!r}")
 
 
 def _cast_norm_modules(model: nn.Module, dtype: Optional[torch.dtype]) -> int:
@@ -252,7 +248,14 @@ def pack_qact_layer(name, model):
     if isinstance(scale, torch.Tensor) and _quant_linear_accepts(QuantLinear, "scale_dtype"):
         extra_kwargs["scale_dtype"] = scale.dtype
     new_layer = QuantLinear(  ##pylint: disable=E1123
-        bits, group_size, in_features, out_features, bias, weight_dtype=layer.weight.dtype, use_pc=use_pc, **extra_kwargs
+        bits,
+        group_size,
+        in_features,
+        out_features,
+        bias,
+        weight_dtype=layer.weight.dtype,
+        use_pc=use_pc,
+        **extra_kwargs,
     )
     new_layer.device = device
     set_module(model, name, new_layer)

@@ -154,9 +154,7 @@ def test_restore_router_bias_with_gate_submodule():
             class _Gate(nn.Module):
                 def __init__(self):
                     super().__init__()
-                    self.register_buffer(
-                        "e_score_correction_bias", torch.zeros(4, dtype=torch.bfloat16)
-                    )
+                    self.register_buffer("e_score_correction_bias", torch.zeros(4, dtype=torch.bfloat16))
 
             self.gate = _Gate()
 
@@ -202,7 +200,10 @@ def test_restore_router_bias_with_gate_submodule():
 def test_unknown_source_dir_returns_empty():
     model = _Root()
     out = restore_tensors_from_source(
-        model, "/nonexistent/path", [r"\.A_log$"], torch.float32,
+        model,
+        "/nonexistent/path",
+        [r"\.A_log$"],
+        torch.float32,
     )
     assert out == {}
 
@@ -212,7 +213,10 @@ def test_no_pattern_match_logs_and_returns_empty():
         _make_source_checkpoint(tmpdir)
         model = _Root()
         out = restore_tensors_from_source(
-            model, tmpdir, [r"\.does_not_exist$"], torch.float32,
+            model,
+            tmpdir,
+            [r"\.does_not_exist$"],
+            torch.float32,
         )
         assert out == {}
 
@@ -243,9 +247,7 @@ def test_shape_mismatch_skipped():
 
 
 def test_nemotron_h_source_to_module_renames():
-    assert _nemotron_h_source_to_module("backbone.layers.0.mixer.A_log") == \
-        "model.layers.0.mixer.A_log"
-    assert _nemotron_h_source_to_module("backbone.embedding.weight") == \
-        "model.embeddings.weight"
+    assert _nemotron_h_source_to_module("backbone.layers.0.mixer.A_log") == "model.layers.0.mixer.A_log"
+    assert _nemotron_h_source_to_module("backbone.embedding.weight") == "model.embeddings.weight"
     # Non-matching keys pass through untouched.
     assert _nemotron_h_source_to_module("lm_head.weight") == "lm_head.weight"
