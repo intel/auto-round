@@ -353,8 +353,12 @@ def _rotate_weights(
                 mod = _resolve(layer, attr)
                 if is_grouped:
                     _rotate_linear_grouped(
-                        mod, group_size, side="input",
-                        use_fast_had=fused_fast, compute_device=compute_device, had_matrix=had_matrix,
+                        mod,
+                        group_size,
+                        side="input",
+                        use_fast_had=fused_fast,
+                        compute_device=compute_device,
+                        had_matrix=had_matrix,
                     )
                 else:
                     _rotate_linear_by_Q(mod, Q, side="input", compute_device=compute_device)
@@ -362,21 +366,27 @@ def _rotate_weights(
             # o_proj: residual stream output rotation
             if is_grouped:
                 _rotate_linear_grouped(
-                    _resolve(layer, mapping.attn_o), group_size, side="output",
-                    use_fast_had=fused_fast, compute_device=compute_device, had_matrix=had_matrix,
+                    _resolve(layer, mapping.attn_o),
+                    group_size,
+                    side="output",
+                    use_fast_had=fused_fast,
+                    compute_device=compute_device,
+                    had_matrix=had_matrix,
                 )
             else:
-                _rotate_linear_by_Q(
-                    _resolve(layer, mapping.attn_o), Q, side="output", compute_device=compute_device
-                )
+                _rotate_linear_by_Q(_resolve(layer, mapping.attn_o), Q, side="output", compute_device=compute_device)
 
             # gate/up: only residual Q on input
             for attr in mapping.mlp_in:
                 mod = _resolve(layer, attr)
                 if is_grouped:
                     _rotate_linear_grouped(
-                        mod, group_size, side="input",
-                        use_fast_had=fused_fast, compute_device=compute_device, had_matrix=had_matrix,
+                        mod,
+                        group_size,
+                        side="input",
+                        use_fast_had=fused_fast,
+                        compute_device=compute_device,
+                        had_matrix=had_matrix,
                     )
                 else:
                     _rotate_linear_by_Q(mod, Q, side="input", compute_device=compute_device)
@@ -385,18 +395,29 @@ def _rotate_weights(
             down_proj = _resolve(layer, mapping.mlp_out)
             if is_grouped:
                 _rotate_linear_grouped(
-                    down_proj, group_size, side="output",
-                    use_fast_had=fused_fast, compute_device=compute_device, had_matrix=had_matrix,
+                    down_proj,
+                    group_size,
+                    side="output",
+                    use_fast_had=fused_fast,
+                    compute_device=compute_device,
+                    had_matrix=had_matrix,
                 )
                 _rotate_linear_grouped(
-                    down_proj, group_size, side="input",
-                    use_fast_had=online_fast, compute_device=compute_device, had_matrix=online_had_matrix,
+                    down_proj,
+                    group_size,
+                    side="input",
+                    use_fast_had=online_fast,
+                    compute_device=compute_device,
+                    had_matrix=online_had_matrix,
                 )
             else:
                 _rotate_linear_by_Q(down_proj, Q, side="output", compute_device=compute_device)
                 apply_exact_had_to_linear(
-                    down_proj, had_dim=-1, output=False,
-                    use_fast_had=online_fast, compute_device=compute_device,
+                    down_proj,
+                    had_dim=-1,
+                    output=False,
+                    use_fast_had=online_fast,
+                    compute_device=compute_device,
                     had_matrix=_online_had(intermediate_size),
                 )
 
@@ -408,23 +429,37 @@ def _rotate_weights(
             else:
                 online_head_had = _online_had(head_dim)
                 apply_exact_had_to_linear(
-                    v_proj, had_dim=head_dim, output=True,
-                    use_fast_had=online_fast, compute_device=compute_device, had_matrix=online_head_had,
+                    v_proj,
+                    had_dim=head_dim,
+                    output=True,
+                    use_fast_had=online_fast,
+                    compute_device=compute_device,
+                    had_matrix=online_head_had,
                 )
                 if preset == "random_hadamard":
                     apply_exact_had_to_linear(
-                        o_proj, had_dim=head_dim, output=False,
-                        use_fast_had=online_fast, compute_device=compute_device, had_matrix=online_head_had,
+                        o_proj,
+                        had_dim=head_dim,
+                        output=False,
+                        use_fast_had=online_fast,
+                        compute_device=compute_device,
+                        had_matrix=online_head_had,
                     )
                     apply_cross_head_had_to_linear(
-                        o_proj, num_heads, head_dim,
-                        use_fast_had=online_fast, compute_device=compute_device,
+                        o_proj,
+                        num_heads,
+                        head_dim,
+                        use_fast_had=online_fast,
+                        compute_device=compute_device,
                         had_matrix=_online_had(num_heads),
                     )
                 else:
                     apply_exact_had_to_linear(
-                        o_proj, had_dim=-1, output=False,
-                        use_fast_had=online_fast, compute_device=compute_device,
+                        o_proj,
+                        had_dim=-1,
+                        output=False,
+                        use_fast_had=online_fast,
+                        compute_device=compute_device,
                     )
 
         else:
@@ -438,13 +473,20 @@ def _rotate_weights(
                 mod = _resolve(layer, attr)
                 if is_grouped:
                     _rotate_linear_grouped(
-                        mod, group_size, side="input",
-                        use_fast_had=online_fast, compute_device=compute_device, had_matrix=online_had_matrix,
+                        mod,
+                        group_size,
+                        side="input",
+                        use_fast_had=online_fast,
+                        compute_device=compute_device,
+                        had_matrix=online_had_matrix,
                     )
                 else:
                     apply_exact_had_to_linear(
-                        mod, had_dim=-1, output=False,
-                        use_fast_had=online_fast, compute_device=compute_device,
+                        mod,
+                        had_dim=-1,
+                        output=False,
+                        use_fast_had=online_fast,
+                        compute_device=compute_device,
                         had_matrix=_online_had(hidden_size),
                     )
 
@@ -452,13 +494,20 @@ def _rotate_weights(
             o_proj = _resolve(layer, mapping.attn_o)
             if is_grouped:
                 _rotate_linear_grouped(
-                    o_proj, group_size, side="input",
-                    use_fast_had=online_fast, compute_device=compute_device, had_matrix=online_had_matrix,
+                    o_proj,
+                    group_size,
+                    side="input",
+                    use_fast_had=online_fast,
+                    compute_device=compute_device,
+                    had_matrix=online_had_matrix,
                 )
             else:
                 apply_exact_had_to_linear(
-                    o_proj, had_dim=-1, output=False,
-                    use_fast_had=online_fast, compute_device=compute_device,
+                    o_proj,
+                    had_dim=-1,
+                    output=False,
+                    use_fast_had=online_fast,
+                    compute_device=compute_device,
                     had_matrix=_online_had(hidden_size),
                 )
 
@@ -467,13 +516,20 @@ def _rotate_weights(
                 mod = _resolve(layer, attr)
                 if is_grouped:
                     _rotate_linear_grouped(
-                        mod, group_size, side="input",
-                        use_fast_had=online_fast, compute_device=compute_device, had_matrix=online_had_matrix,
+                        mod,
+                        group_size,
+                        side="input",
+                        use_fast_had=online_fast,
+                        compute_device=compute_device,
+                        had_matrix=online_had_matrix,
                     )
                 else:
                     apply_exact_had_to_linear(
-                        mod, had_dim=-1, output=False,
-                        use_fast_had=online_fast, compute_device=compute_device,
+                        mod,
+                        had_dim=-1,
+                        output=False,
+                        use_fast_had=online_fast,
+                        compute_device=compute_device,
                         had_matrix=_online_had(hidden_size),
                     )
 
@@ -481,13 +537,20 @@ def _rotate_weights(
             down_proj = _resolve(layer, mapping.mlp_out)
             if is_grouped:
                 _rotate_linear_grouped(
-                    down_proj, group_size, side="input",
-                    use_fast_had=online_fast, compute_device=compute_device, had_matrix=online_had_matrix,
+                    down_proj,
+                    group_size,
+                    side="input",
+                    use_fast_had=online_fast,
+                    compute_device=compute_device,
+                    had_matrix=online_had_matrix,
                 )
             else:
                 apply_exact_had_to_linear(
-                    down_proj, had_dim=-1, output=False,
-                    use_fast_had=online_fast, compute_device=compute_device,
+                    down_proj,
+                    had_dim=-1,
+                    output=False,
+                    use_fast_had=online_fast,
+                    compute_device=compute_device,
                     had_matrix=_online_had(intermediate_size),
                 )
 
@@ -553,9 +616,7 @@ def _register_online_hooks(
     attn_o_suffix = mapping.attn_o.split(".")[-1]
 
     # Suffixes for Q/K/V and gate/up (for online input Had hooks)
-    attn_qkv_suffixes = set(
-        attr.split(".")[-1] for attr in (mapping.attn_q, mapping.attn_k, mapping.attn_v)
-    )
+    attn_qkv_suffixes = set(attr.split(".")[-1] for attr in (mapping.attn_q, mapping.attn_k, mapping.attn_v))
     mlp_in_suffixes = set(attr.split(".")[-1] for attr in mapping.mlp_in)
 
     # --- Build hook factories ---
@@ -654,7 +715,7 @@ def apply_rotation_transform(
     group_size: int = None,
     allow_online_rotation: bool = True,
     rotation_matrix: Union[str, torch.Tensor, Dict[int, torch.Tensor], None] = None,
-    compute_device: torch.device| str = None,
+    compute_device: torch.device | str = None,
     fp32_had: bool = False,
     fuse_online_to_weight: bool = True,
 ):
@@ -728,7 +789,7 @@ def apply_rotation_transform(
     )
 
     handles = []
-    if fuse_online_to_weight or allow_online_rotation :
+    if fuse_online_to_weight or allow_online_rotation:
         handles = _register_online_hooks(
             model,
             mapping,
@@ -768,7 +829,9 @@ if __name__ == "__main__":
     inputs = tokenizer(text, return_tensors="pt").to(model.device)
     print(tokenizer.decode(model.generate(**inputs, max_new_tokens=50)[0]))
 
-    apply_rotation_transform(model, group_size=-1, allow_online_rotation=True, rotation_matrix="random_hadamard", fuse_online_to_weight=False)
+    apply_rotation_transform(
+        model, group_size=-1, allow_online_rotation=True, rotation_matrix="random_hadamard", fuse_online_to_weight=False
+    )
     model.to("cuda")
     text = "There is a girl who likes adventure,"
     inputs = tokenizer(text, return_tensors="pt").to(model.device)

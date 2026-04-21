@@ -17,8 +17,8 @@ from typing import Any
 import torch
 
 from auto_round.compressors.utils import is_mx_fp, is_nv_fp
-from auto_round.experimental.transform.rotation_config import RotationConfig
 from auto_round.experimental.transform.hadamards import HADAMARDS
+from auto_round.experimental.transform.rotation_config import RotationConfig
 from auto_round.utils import logger
 
 SUPPORTED_QUANTIZATION_SCHEMES = ["MXFP8", "MXFP4", "NVFP4"]
@@ -136,11 +136,12 @@ def is_triton_kernel_available(data_type: str) -> bool:
 
     return True
 
-def dump_group_size_to_rotation_config(
-    rotation_config:str | dict | RotationConfig,group_size:int):
+
+def dump_group_size_to_rotation_config(rotation_config: str | dict | RotationConfig, group_size: int):
     rotation_dict = to_dict_rotation_config(rotation_config)
     if rotation_dict["block_size"] is None:
         rotation_dict["block_size"] = group_size
+
 
 def to_dict_rotation_config(rotation_config: str | dict | RotationConfig):
     if isinstance(rotation_config, str):

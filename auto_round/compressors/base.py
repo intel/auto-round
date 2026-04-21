@@ -57,7 +57,7 @@ from auto_round.compressors.utils import (
 from auto_round.data_type import QUANT_FUNC_WITH_DTYPE
 from auto_round.data_type.utils import reshape_pad_tensor_by_group_size, update_block_global_scale_if_needed
 from auto_round.experimental.transform.rotation_config import RotationConfig
-from auto_round.experimental.utils import normalize_rotation_config, dump_group_size_to_rotation_config
+from auto_round.experimental.utils import dump_group_size_to_rotation_config, normalize_rotation_config
 from auto_round.export.export_to_gguf.config import GGUF_INNER_CONFIG
 from auto_round.formats import OutputFormat, get_formats
 from auto_round.logger import logger
@@ -569,13 +569,12 @@ class BaseCompressor(object):
         if rotation_config is not None:
             from auto_round.experimental.apply_rotation_transform import apply_hadamard_rotation
 
-
             default_block_size = self.group_size
-            if self.act_bits<16:
+            if self.act_bits < 16:
                 default_block_size = self.act_group_size
-            rotation_config = dump_group_size_to_rotation_config(rotation_config,default_block_size)
+            rotation_config = dump_group_size_to_rotation_config(rotation_config, default_block_size)
 
-            self.model,_= apply_hadamard_rotation(
+            self.model, _ = apply_hadamard_rotation(
                 self.model,
                 rotation_config,
                 data_type=self.data_type,

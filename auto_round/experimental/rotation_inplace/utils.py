@@ -362,8 +362,6 @@ def get_hadK(n: int, transpose=False) -> (torch.Tensor, int):
         assert is_pow2(n)
 
 
-
-
 def matmul_hadU(X, transpose=False):
     n = X.shape[-1]
     hadK, K = get_hadK(n, transpose)

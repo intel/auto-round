@@ -5,8 +5,8 @@ import torch
 import tqdm
 
 from auto_round.experimental.qmodules.base import QModuleBase
-from auto_round.experimental.transform.rotation_config import RotationConfig
 from auto_round.experimental.transform.hadamards import build_hadamard_transform
+from auto_round.experimental.transform.rotation_config import RotationConfig
 from auto_round.experimental.utils import is_triton_kernel_available, normalize_rotation_config
 
 __all__ = ["apply_rotation_transform"]
@@ -66,9 +66,9 @@ def apply_rotation_transform(
 
     # attach config to model for compression/serialization
     setattr(model, "rotation_config", config)
-    hooks=None
+    hooks = None
 
-    return model,hooks
+    return model, hooks
 
 
 def _apply_to_module(
