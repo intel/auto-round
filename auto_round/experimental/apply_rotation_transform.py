@@ -117,7 +117,6 @@ def apply_hadamard_rotation(
     elif envs.AR_FUSE_ONLINE_TO_WEIGHT:
         fuse_online_to_weight = bool(envs.AR_FUSE_ONLINE_TO_WEIGHT)
 
-
     logger.info(
         f"Applying Hadamard (backend={backend}, "
         f"data_type={data_type}, fuse_online_to_weight={fuse_online_to_weight if backend == 'inplace' else False})."

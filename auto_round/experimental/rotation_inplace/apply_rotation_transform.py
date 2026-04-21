@@ -15,9 +15,10 @@ import torch
 import tqdm
 
 from auto_round.experimental.rotation_inplace.model_config import (
+    MAPPING_REGISTRY,
     RotationMapping,
     _resolve,
-    infer_mapping_from_model, MAPPING_REGISTRY,
+    infer_mapping_from_model,
 )
 from auto_round.experimental.rotation_inplace.utils import (
     CrossHeadOnlineHadamardHook,
