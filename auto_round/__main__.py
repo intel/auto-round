@@ -670,7 +670,7 @@ def tune(args):
         act_group_size=args.act_group_size,
         act_data_type=args.act_data_type,
         act_dynamic=act_dynamic,
-        act_sym=None if args.asym==False else False,
+        act_sym=None if not args.asym else False,
         super_bits=args.super_bits,
         super_group_size=args.super_group_size,
         quant_lm_head=args.quant_lm_head,
