@@ -15,14 +15,11 @@
 import copy
 import json
 import os
-from concurrent.futures import ThreadPoolExecutor
 from dataclasses import fields
 from typing import Callable, Union
 
-import threadpoolctl as tctl
 import torch
 import transformers
-from tqdm import tqdm
 
 from auto_round.data_type.utils import reshape_pad_tensor_by_group_size, revert_tensor_by_pad
 from auto_round.export.export_to_autoround.utils import check_neq_config
@@ -240,20 +237,9 @@ def save_quantized_as_autoround(
     if len(extra_config) > 0:
         quantization_config["extra_config"] = extra_config
     names = list(layer_config.keys())
-    max_workers = 1
-    if not torch.cuda.is_available() and not torch.xpu.is_available():
-        max_workers = 2  ## 2 with cuda packing will cause hang occasionally
-    with ThreadPoolExecutor(max_workers=max_workers) as executor:
-        with tqdm(total=len(names), leave=True) as pbar:
-
-            def wrapper(name):
-                pbar.set_description(f"packing {name}")
-                with tctl.threadpool_limits(limits=1):
-                    pack_layer(name, model, serialization_dict.get("data_type", "fp8"), device)
-                pbar.update(1)
-
-            for _ in executor.map(wrapper, names):
-                pass
+    for name in names:
+        logger.info(f"Packing layer {name} ....")
+        pack_layer(name, model, serialization_dict.get("data_type", "fp8"), device)
     regex_config = quantization_config.pop("regex_config")
     if regex_config is not None:
         for name in regex_config.keys():
