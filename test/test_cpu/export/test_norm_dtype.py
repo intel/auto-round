@@ -235,6 +235,62 @@ def test_end_to_end_norm_dtype_float32(tmp_path):
 
 
 @pytest.mark.slow
+@pytest.mark.parametrize(
+    "spec,expected",
+    [
+        ("fp16", torch.float16),
+        ("bf16", torch.bfloat16),
+        (torch.bfloat16, torch.bfloat16),
+    ],
+    ids=["str-fp16", "str-bf16", "dtype-bf16"],
+)
+def test_end_to_end_norm_dtype_opt_in_variants(tmp_path, spec, expected):
+    """E2E coverage for the opt-in ``norm_dtype`` beyond fp32.
+
+    Complements ``test_end_to_end_norm_dtype_float32`` by exercising the
+    low-precision overrides and both the string alias and raw ``torch.dtype``
+    input forms. Scales must stay fp16 regardless of norm_dtype.
+    """
+    pytest.importorskip("safetensors")
+    from safetensors import safe_open
+
+    from auto_round import AutoRound
+
+    from ...helpers import opt_name_or_path
+
+    save_dir = str(tmp_path / f"saved_norm_{expected}".replace(".", "_"))
+    autoround = AutoRound(
+        model=opt_name_or_path,
+        bits=4,
+        group_size=32,
+        sym=True,
+        iters=1,
+        seqlen=2,
+        nsamples=1,
+    )
+    autoround.quantize_and_save(output_dir=save_dir, format="auto_round", norm_dtype=spec)
+
+    import glob
+
+    norm_dtypes: dict[str, torch.dtype] = {}
+    scale_dtypes: dict[str, torch.dtype] = {}
+    for shard in glob.glob(f"{save_dir}/*.safetensors"):
+        with safe_open(shard, framework="pt") as f:
+            for k in f.keys():
+                if "layer_norm" in k:
+                    norm_dtypes[k] = f.get_tensor(k).dtype
+                elif k.endswith(".scales"):
+                    scale_dtypes[k] = f.get_tensor(k).dtype
+
+    assert norm_dtypes, "no norm tensors seen on disk"
+    bad = {k: dt for k, dt in norm_dtypes.items() if dt != expected}
+    assert not bad, f"Expected every norm tensor to be {expected}; got: {bad}"
+
+    non_f16_scales = {k: dt for k, dt in scale_dtypes.items() if dt != torch.float16}
+    assert not non_f16_scales, f"norm_dtype must not leak into scale buffers; got: {non_f16_scales}"
+
+
+@pytest.mark.slow
 def test_end_to_end_default_path_unchanged(tmp_path):
     """Without ``norm_dtype``, norm weight dtypes match the model default.
 
@@ -243,25 +299,25 @@ def test_end_to_end_default_path_unchanged(tmp_path):
     """
     pytest.importorskip("safetensors")
     from safetensors import safe_open
-    from transformers import AutoModelForCausalLM
+    from transformers import AutoConfig
 
     from auto_round import AutoRound
+    from auto_round.utils.device import CpuInfo, detect_device
 
     from ...helpers import opt_name_or_path
 
-    # Sample the expected dtype from a fresh copy of the base model so we
-    # compare against ground truth rather than a hardcoded assumption. Use
-    # torch_dtype="auto" to match auto_round's internal llm_load_model, which
-    # honours the checkpoint's native dtype (FP16 for opt-125m) rather than
-    # HF's FP32 default.
-    baseline = AutoModelForCausalLM.from_pretrained(opt_name_or_path, torch_dtype="auto")
-    expected_norm_dtype = None
-    for _, m in baseline.named_modules():
-        if _is_norm_module(m) and any(True for _ in m.parameters()):
-            expected_norm_dtype = next(m.parameters()).dtype
-            break
-    del baseline
-    assert expected_norm_dtype is not None, "opt-125m has no norm params?"
+    # Expectation (computed before execution): AutoRound's ``_set_amp_dtype``
+    # casts the model to bf16 on CPU/HPU (or fp32 if CPU lacks bf16 support)
+    # and to the checkpoint native dtype on GPU/XPU. The on-disk norm dtype
+    # follows that cast.
+    device = str(detect_device(None))
+    if device.startswith("cpu"):
+        expected_norm_dtype = torch.bfloat16 if CpuInfo().bf16 else torch.float32
+    elif "hpu" in device:
+        expected_norm_dtype = torch.bfloat16
+    else:
+        ckpt_dtype = getattr(AutoConfig.from_pretrained(opt_name_or_path), "torch_dtype", None)
+        expected_norm_dtype = ckpt_dtype if isinstance(ckpt_dtype, torch.dtype) else torch.float16
 
     save_dir = str(tmp_path / "saved_default")
     autoround = AutoRound(
