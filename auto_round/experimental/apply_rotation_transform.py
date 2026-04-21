@@ -75,8 +75,8 @@ def resolve_hadamard_backend(config: RotationConfig, data_type: str) -> str:
                 "Use backend='inplace' or backend='auto' for other dtypes."
             )
         if not allow_online_rotation:
-            raise ValueError(f"backend='transform_backend_name' only supports `allow_online_rotation`=True")
-       
+            raise ValueError("backend='transform_backend_name' only supports `allow_online_rotation`=True")
+
         return "transform"
 
     # backend == "auto"
@@ -87,12 +87,11 @@ def resolve_hadamard_backend(config: RotationConfig, data_type: str) -> str:
     return "inplace"
 
 
-
 def apply_hadamard_rotation(
     model: torch.nn.Module,
     rotation_config: Union[str, dict, RotationConfig, None],
     data_type: str,
-    compute_device: torch.device|str = None,
+    compute_device: torch.device | str = None,
 ) -> torch.nn.Module:
     """Apply Hadamard rotation/transform to *model*, dispatching by backend.
 
@@ -132,7 +131,7 @@ def apply_hadamard_rotation(
         bs = config.block_size
         group_size = bs if (bs is not None and bs > 0) else None
 
-        model, hooks=apply_rotation_transform(
+        model, hooks = apply_rotation_transform(
             model,
             group_size=group_size,
             allow_online_rotation=config.allow_online_rotation,
@@ -142,14 +141,14 @@ def apply_hadamard_rotation(
         )
         # Stash for downstream (export / serialization).
         setattr(model, "rotation_config", config)
-        return model,hooks
+        return model, hooks
 
     elif backend == "transform":
         supported_hadamard_types = ("hadamard", "random_hadamard")
         if config.hadamard_type not in supported_hadamard_types:
             raise ValueError("this backend only supports hadamard or random_hadamard")
         from auto_round.experimental.transform.apply import apply_rotation_transform
-    
+
         return apply_rotation_transform(model, config, data_type=data_type)
     else:
         raise ValueError(f"Unsupported Hadamard backend {backend!r}")

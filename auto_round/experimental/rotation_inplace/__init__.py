@@ -3,4 +3,3 @@
 
 from auto_round.experimental.rotation_inplace.apply_rotation_transform import apply_rotation_transform
 from auto_round.experimental.rotation_inplace.utils import clear_random_hadamard_cache
-
