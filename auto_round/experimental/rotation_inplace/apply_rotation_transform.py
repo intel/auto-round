@@ -817,9 +817,6 @@ def apply_rotation_transform(
 if __name__ == "__main__":
     from transformers import AutoModelForCausalLM, AutoTokenizer
 
-    import auto_round
-    from auto_round.experimental.transform.utils.hadamard import _fetch_hadamard_divisor
-
     model_name = "/models/opt-125m"
     tokenizer = AutoTokenizer.from_pretrained(model_name)
     model = AutoModelForCausalLM.from_pretrained(model_name, torch_dtype=torch.float16, device_map="auto")
