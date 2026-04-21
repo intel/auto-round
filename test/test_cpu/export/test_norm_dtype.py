@@ -250,8 +250,11 @@ def test_end_to_end_default_path_unchanged(tmp_path):
     from ...helpers import opt_name_or_path
 
     # Sample the expected dtype from a fresh copy of the base model so we
-    # compare against ground truth rather than a hardcoded assumption.
-    baseline = AutoModelForCausalLM.from_pretrained(opt_name_or_path)
+    # compare against ground truth rather than a hardcoded assumption. Use
+    # torch_dtype="auto" to match auto_round's internal llm_load_model, which
+    # honours the checkpoint's native dtype (FP16 for opt-125m) rather than
+    # HF's FP32 default.
+    baseline = AutoModelForCausalLM.from_pretrained(opt_name_or_path, torch_dtype="auto")
     expected_norm_dtype = None
     for _, m in baseline.named_modules():
         if _is_norm_module(m) and any(True for _ in m.parameters()):
