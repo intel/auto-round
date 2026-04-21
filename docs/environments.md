@@ -80,10 +80,10 @@ export AR_ACT_SCALE=0.9
 ```
 
 ### AR_ENABLE_ACT_MINMAX_TUNING
-- **Description**: Enable tuning of activation min/max scale parameters (`act_min_scale`, `act_max_scale`) during quantization optimization. When enabled, these scales remain fixed at 1.0.
+- **Description**: Enables tuning of activation min/max scale parameters (`act_min_scale`, `act_max_scale`) during quantization optimization. When enabled, these scales become tunable instead of remaining fixed at `1.0`.
 - **Default**: `False` (equivalent to `"0"`)
-- **Valid Values**: `"1"`, `"true"`, `"yes"` (case-insensitive) for disabling tuning; any other value to keep tuning enabled
-- **Usage**: Set this to disable activation min-max scale tuning
+- **Valid Values**: `"1"`, `"true"`, `"yes"` (case-insensitive) for enabling tuning; any other value keeps tuning disabled
+- **Usage**: Set this to enable activation min-max scale tuning
 
 ```bash
 export AR_ENABLE_ACT_MINMAX_TUNING=1
