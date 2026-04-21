@@ -329,9 +329,6 @@ class WrapperLinear(torch.nn.Module):
         Returns:
             torch.nn.Module: The unwrapped and restored original layer.
         """
-
-        if len(self.orig_layer._forward_pre_hooks) > 0:
-            logger.info(f"{self.orig_layer.global_name} has prehook")
         best_params = best_params or {}
         v = best_params.get("value", torch.tensor(0.0)).to(self.device)
         min_scale = best_params.get("min_scale", torch.tensor(1.0)).to(self.device)
