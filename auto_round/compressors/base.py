@@ -52,7 +52,7 @@ from auto_round.compressors.utils import (
     is_static_wfp8afp8,
     is_wfp8afp8,
     reset_params,
-    set_layer_config,
+    set_layer_config, is_wint4aint4,
 )
 from auto_round.data_type import QUANT_FUNC_WITH_DTYPE
 from auto_round.data_type.utils import reshape_pad_tensor_by_group_size, update_block_global_scale_if_needed
@@ -1203,8 +1203,10 @@ class BaseCompressor(object):
                     hook = module.register_forward_hook(get_imatrix_hook)
                     hook_handles.append(hook)
             return hook_handles
-
-        hooks = register_act_hook(model)
+        if not is_wint4aint4(self): # INT4 no imatrix is much better
+            hooks = register_act_hook(model)
+        else:
+            hooks=[]
 
         try:
             if hasattr(model, "hf_device_map") and len(model.hf_device_map) > 1:

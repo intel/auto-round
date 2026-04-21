@@ -17,9 +17,8 @@ import torch
 
 from auto_round.data_type.register import register_dtype
 from auto_round.data_type.utils import reshape_pad_tensor_by_group_size, revert_tensor_by_pad, round_ste
-from auto_round.logger import logger
 from auto_round.utils import get_reciprocal
-
+from auto_round import envs
 
 def search_scales(data: torch.Tensor, bits: int, qw: Union[None, torch.Tensor, float] = None) -> torch.Tensor:
     # Maximum absolute value for symmetric quantization
@@ -41,7 +40,6 @@ def search_scales(data: torch.Tensor, bits: int, qw: Union[None, torch.Tensor, f
     # Set default weight if None
     if qw is None:
         qw = 1.0
-    qw = 1.0  # TODO harded code now
     # Compute initial best loss
     best_loss = ((scales * L - data).to(torch.float32)) ** 2
     if isinstance(qw, torch.Tensor):
@@ -51,10 +49,8 @@ def search_scales(data: torch.Tensor, bits: int, qw: Union[None, torch.Tensor, f
         search_min = -18 * 5
         step = 0.01
     else:
-        from auto_round import envs
-
         grid = 200
-        search_ratio = envs.AR_SEARCH_SCALE_RATIO  # default 0.5 -> nmax/2
+        search_ratio = envs.AR_SEARCH_SCALE_RATIO if envs.AR_SEARCH_SCALE_RATIO else 0.75 # default 0.5 -> nmax/2
         search_min = nmax * search_ratio
         step = search_min / grid * 2  # 0.08
         search_min = int(search_min / step)

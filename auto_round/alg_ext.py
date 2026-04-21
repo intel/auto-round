@@ -24,7 +24,7 @@ from torch import autocast
 from torch.functional import F
 
 from auto_round import AutoRound
-from auto_round.compressors.utils import check_need_act_calibration, is_nv_fp
+from auto_round.compressors.utils import check_need_act_calibration, is_nv_fp, is_wint4aint4
 from auto_round.data_type.int import search_scales
 from auto_round.data_type.mxfp import MXFP_FORMAT_CACHE, quant_element
 from auto_round.data_type.nvfp import FLOAT4_E2M1_MAX, FLOAT8_E4M3_MAX, ref_nvfp4_quant
@@ -47,7 +47,7 @@ def wrapper_autoround(cls: AutoRound):
         if cls.bits > 2 and (not cls.data_type.startswith("mx") or not cls.data_type.startswith("nv")):
             logger.warning_once(
                 "algorithm extension has only undergone limited validation on "
-                "INT2,mxfp4 and nvfp4; use with caution."
+                "W2A16,INT4, MXFP4 and NVFP4; use with caution."
             )
         cls._get_loss = types.MethodType(_get_loss_ext, cls)
         setattr(cls, "wrapper_block", wrapper_block_v2)
@@ -336,21 +336,23 @@ class WrapperLinearV2(WrapperLinear):
             imatrix = imatrix.expand(weight_reshape.numel() // imatrix.numel(), -1)
             imatrix = imatrix.reshape(weight_reshape.shape)
             imatrix = imatrix.to(orig_weight.device)
-            if self.orig_layer.data_type.startswith("int"):
-                self.init_scale = search_scales(weight_reshape, self.orig_layer.bits, imatrix)
-                self.init_scale = torch.where(
-                    self.init_scale < 0,
-                    torch.clamp(self.init_scale, max=-self.q_scale_thresh),
-                    torch.clamp(self.init_scale, min=self.q_scale_thresh),
-                )
-            elif self.orig_layer.data_type.startswith("mx"):
-                self.init_scale = mx_init(weight_reshape, self.orig_layer.bits, imatrix)
-            elif self.orig_layer.data_type.startswith("nv"):
-                self.init_scale = nv_init(weight_reshape, self.orig_layer.bits, imatrix)
-            self.orig_layer.imatrix = None
-            delattr(self.orig_layer, "imatrix")
+        else:
+            imatrix = 1.0
+        if self.orig_layer.data_type.startswith("int"):
+            self.init_scale = search_scales(weight_reshape, self.orig_layer.bits, imatrix)
+            self.init_scale = torch.where(
+                self.init_scale < 0,
+                torch.clamp(self.init_scale, max=-self.q_scale_thresh),
+                torch.clamp(self.init_scale, min=self.q_scale_thresh),
+            )
+        elif self.orig_layer.data_type.startswith("mx"):
+            self.init_scale = mx_init(weight_reshape, self.orig_layer.bits, imatrix)
+        elif self.orig_layer.data_type.startswith("nv"):
+            self.init_scale = nv_init(weight_reshape, self.orig_layer.bits, imatrix)
         else:
             self.init_scale = 1.0
+        self.orig_layer.imatrix = None
+        delattr(self.orig_layer, "imatrix")
 
         # self.weight_quant_func, self.data_type = get_quant_func(orig_layer.data_type, orig_layer.bits, orig_layer.sym)
         if self.orig_layer.data_type.startswith("int"):
@@ -490,8 +492,9 @@ def _register_act_max_hook_ext(self, model):
 
     for n, m in model.named_modules():
         if isinstance(m, self.supported_types) and check_to_quantized(m):
-            hook = m.register_forward_hook(get_imatrix_hook)
-            hook_handles.append(hook)
+            if not is_wint4aint4(self): # INT4 no imatrix is much better
+                hook = m.register_forward_hook(get_imatrix_hook)
+                hook_handles.append(hook)
 
         if (
             hasattr(m, "act_dynamic")
