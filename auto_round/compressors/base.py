@@ -574,7 +574,6 @@ class BaseCompressor(object):
             # Use fused mode (residual stream rotation, QuaRot-style) which gives
             # the best W4A4 results. Unfused mode (per-layer Had + hook) introduced
             # in commit 8095ab12 caused PIQA regression from 0.62 -> 0.52.
-            from auto_round import envs
 
             apply_hadamard_rotation(
                 self.model,

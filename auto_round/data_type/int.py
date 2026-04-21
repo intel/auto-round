@@ -51,9 +51,10 @@ def search_scales(data: torch.Tensor, bits: int, qw: Union[None, torch.Tensor, f
         search_min = -18 * 5
         step = 0.01
     else:
+        from auto_round import envs
         grid = 200
-        search_min = nmax / 2
-        # search_min = nmax*3/4 # 4
+        search_ratio = envs.AR_SEARCH_SCALE_RATIO  # default 0.5 -> nmax/2
+        search_min = nmax * search_ratio
         step = search_min/grid * 2 # 0.08
         search_min = int(search_min/step)
     # Iterative search over small adjustments

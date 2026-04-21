@@ -71,22 +71,22 @@ export AR_DISABLE_DATASET_SUBPROCESS=true
 
 ### AR_ACT_SCALE
 - **Description**: Controls the scaling factor applied to activation min/max values during activation quantization. A value less than 1.0 shrinks the clipping range, which can reduce outlier impact.
-- **Default**: `0.9`
+- **Default**: `1.0`
 - **Valid Values**: Any float, e.g. `0.8`, `0.9`, `1.0`
 - **Usage**: Set this to adjust the activation clipping range
 
 ```bash
-export AR_ACT_SCALE=0.8
+export AR_ACT_SCALE=0.9
 ```
 
-### AR_DISABLE_ACT_MINMAX_TUNING
-- **Description**: Disables tuning of activation min/max scale parameters (`act_min_scale`, `act_max_scale`) during quantization optimization. When enabled, these scales remain fixed at 1.0.
+### AR_ENABLE_ACT_MINMAX_TUNING
+- **Description**: Enable tuning of activation min/max scale parameters (`act_min_scale`, `act_max_scale`) during quantization optimization. When enabled, these scales remain fixed at 1.0.
 - **Default**: `False` (equivalent to `"0"`)
 - **Valid Values**: `"1"`, `"true"`, `"yes"` (case-insensitive) for disabling tuning; any other value to keep tuning enabled
 - **Usage**: Set this to disable activation min-max scale tuning
 
 ```bash
-export AR_DISABLE_ACT_MINMAX_TUNING=1
+export AR_ENABLE_ACT_MINMAX_TUNING=1
 ```
 
 ## Usage Examples

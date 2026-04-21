@@ -192,8 +192,9 @@ class WrapperLinear(torch.nn.Module):
             )
             if self.enable_torch_compile:
                 self.act_quant_func = compile_func(self.act_quant_func, self.device)
-            self._init_params("act_max_scale", p_dtype, (1), 1.0, not envs.AR_DISABLE_ACT_MINMAX_TUNING)
-            self._init_params("act_min_scale", p_dtype, (1), 1.0, not envs.AR_DISABLE_ACT_MINMAX_TUNING)
+            self._init_params("act_max_scale", p_dtype, (1), 1.0, envs.AR_ENABLE_ACT_MINMAX_TUNING
+                              or (not orig_layer.act_dynamic))
+            self._init_params("act_min_scale", p_dtype, (1), 1.0, envs.AR_ENABLE_ACT_MINMAX_TUNING)
 
         # Bias tuning
         if self.enable_norm_bias_tuning:
@@ -268,7 +269,7 @@ class WrapperLinear(torch.nn.Module):
             weight_q = weight_q.t()
         return weight_q, scale, zp
 
-    def _qdq_act(self, x, act_min_scale, act_max_scale, act_max=None):
+    def _qdq_act(self, x, act_min_scale=torch.tensor(1.0), act_max_scale=torch.tensor(1.0), act_max=None):
         """Quantizes and dequantizes activations.
 
         Args:
@@ -281,7 +282,7 @@ class WrapperLinear(torch.nn.Module):
         """
         act_max_scale.data.clamp_(0, 1.0)
         act_min_scale.data.clamp_(0, 1.0)
-        act_scale = envs.AR_ACT_SCALE
+        env_act_scale = envs.AR_ACT_SCALE # fixed activation ratio,priotize to use this one if setted
         x, scale, zp = self.act_quant_func(
             x,
             bits=self.orig_layer.act_bits,
@@ -289,8 +290,9 @@ class WrapperLinear(torch.nn.Module):
             scale_dtype=self.orig_layer.scale_dtype,
             q_scale_thresh=self.q_scale_thresh,
             data_type=self.act_data_type,
-            max_scale=act_max_scale if math.isclose(act_scale, 1.0, rel_tol=1e-6) else act_scale,
-            min_scale=act_min_scale if math.isclose(act_scale, 1.0, rel_tol=1e-6) else act_scale,
+            tensor_max=act_max, # for static
+            max_scale=act_max_scale if math.isclose(env_act_scale, 1.0, rel_tol=1e-6) else env_act_scale,
+            min_scale=act_min_scale if math.isclose(env_act_scale, 1.0, rel_tol=1e-6) else env_act_scale,
             global_scale=getattr(self, "input_global_scale", None),
         )
         return x, scale, zp
@@ -573,39 +575,31 @@ class WrapperWALayer(torch.nn.Module):
         import auto_round.envs as envs
 
         act_scale = envs.AR_ACT_SCALE
-        # act_max = self.orig_layer.act_max if hasattr(self.orig_layer, "act_max") else None
-        # if self.orig_layer.group_size == -1:
-        #     tensor = x.reshape(-1, x.shape[-1])
-        # elif self.orig_layer.group_size > 0:
-        #     tensor = x.reshape(-1, self.orig_layer.group_size)
-        # else:
-        #     tensor = x.reshape(-1)
-        # tensor_min = torch.clamp(tensor.min(-1)[0], max=0) * act_scale
-        # tensor_max = torch.clamp(tensor.max(-1)[0], min=0) * act_scale
+        act_max = self.orig_layer.act_max if hasattr(self.orig_layer, "act_max") else None
+
         max_scale = self.orig_layer.act_max_scale if math.isclose(act_scale, 1.0, rel_tol=1e-6) else act_scale
         min_scale = self.orig_layer.act_min_scale if math.isclose(act_scale, 1.0, rel_tol=1e-6) else act_scale
-        # if act_max is None:
-        x, _, _ = self.orig_layer.act_quant_func(
-            x,
-            bits=self.orig_layer.act_bits,
-            group_size=self.orig_layer.act_group_size,
-            scale_dtype=self.orig_layer.scale_dtype,
-            q_scale_thresh=self.orig_layer.q_scale_thresh,
-            data_type=self.orig_layer.act_data_type,
-            min_scale=min_scale,
-            max_scale=max_scale,
-        )
-        # else:
-        #     x, _, _ = self.orig_layer.act_quant_func(
-        #         x,
-        #         bits=self.orig_layer.act_bits,
-        #         group_size=self.orig_layer.act_group_size,
-        #         scale_dtype=self.orig_layer.scale_dtype,
-        #         q_scale_thresh=self.orig_layer.q_scale_thresh,
-        #         data_type=self.orig_layer.act_data_type,
-        #         tensor_min=tensor_min,
-        #         tensor_max=tensor_max,
-        #     )
+        if act_max is None:
+            x, _, _ = self.orig_layer.act_quant_func(
+                x,
+                bits=self.orig_layer.act_bits,
+                group_size=self.orig_layer.act_group_size,
+                scale_dtype=self.orig_layer.scale_dtype,
+                q_scale_thresh=self.orig_layer.q_scale_thresh,
+                data_type=self.orig_layer.act_data_type,
+                min_scale=min_scale,
+                max_scale=max_scale,
+            )
+        else:
+            x, _, _ = self.orig_layer.act_quant_func(
+                x,
+                bits=self.orig_layer.act_bits,
+                group_size=self.orig_layer.act_group_size,
+                scale_dtype=self.orig_layer.scale_dtype,
+                q_scale_thresh=self.orig_layer.q_scale_thresh,
+                data_type=self.orig_layer.act_data_type,
+                act_max=act_max,
+            )
         # 3) Linear computation via orig_layer (pre_hooks already removed, no double execution)
         return self.orig_layer.forward(x)
 

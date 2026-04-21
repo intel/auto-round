@@ -70,7 +70,7 @@ export AR_DISABLE_DATASET_SUBPROCESS=true
 ```
 
 ### AR_ACT_SCALE
-- **描述**：控制激活量化时对激活值最小/最大值的缩放系数。小于 1.0 的值会缩小裁剪范围，有助于减小离群值的影响。
+- **描述**：只用于研究性质，控制激活量化时对激活值最小/最大值的缩放系数。小于 1.0 的值会缩小裁剪范围，有助于减小离群值的影响。
 - **默认值**：`0.9`
 - **有效值**：任意浮点数，如 `0.8`、`0.9`、`1.0`
 - **用途**：调整激活裁剪范围
@@ -79,14 +79,14 @@ export AR_DISABLE_DATASET_SUBPROCESS=true
 export AR_ACT_SCALE=0.8
 ```
 
-### AR_DISABLE_ACT_MINMAX_TUNING
-- **描述**：禁用激活量化中最小/最大缩放参数（`act_min_scale`、`act_max_scale`）的调优。启用后，这些缩放参数将固定为 1.0。
+### AR_ENABLE_ACT_MINMAX_TUNING 
+- **描述**：只用于研究性质，使用激活量化中最小/最大缩放参数（`act_min_scale`、`act_max_scale`）的调优。启用后，这些缩放参数将固定为 1.0。
 - **默认值**：`False`（等同于 `"0"`）
 - **有效值**：`"1"`、`"true"`、`"yes"`（不区分大小写）表示禁用调优；其他值表示保持调优
 - **用途**：禁用激活最小-最大缩放参数的调优
 
 ```bash
-export AR_DISABLE_ACT_MINMAX_TUNING=1
+export AR_ENABLE_ACT_MINMAX_TUNING=1
 ```
 
 ## 使用示例
