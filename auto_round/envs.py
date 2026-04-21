@@ -41,7 +41,9 @@ environment_variables: dict[str, Callable[[], Any]] = {
     # Controls the search range ratio for symmetric int scale search in
     # `auto_round.data_type.int.search_scales`. The search bound is
     # `nmax * AR_SEARCH_SCALE_RATIO` (default 0.5, i.e. nmax/2).
-    "AR_SEARCH_SCALE_RATIO": lambda: float(os.getenv("AR_SEARCH_SCALE_RATIO")) if os.getenv("AR_SEARCH_SCALE_RATIO") is not None else None,
+    "AR_SEARCH_SCALE_RATIO": lambda: (
+        float(os.getenv("AR_SEARCH_SCALE_RATIO")) if os.getenv("AR_SEARCH_SCALE_RATIO") is not None else None
+    ),
 }
 
 

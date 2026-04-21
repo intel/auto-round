@@ -492,7 +492,7 @@ def _register_act_max_hook_ext(self, model):
 
     for n, m in model.named_modules():
         if isinstance(m, self.supported_types) and check_to_quantized(m):
-            if not is_wint4aint4(self): # INT4 no imatrix is much better
+            if not is_wint4aint4(self):  # INT4 no imatrix is much better
                 hook = m.register_forward_hook(get_imatrix_hook)
                 hook_handles.append(hook)
 
