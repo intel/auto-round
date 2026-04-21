@@ -75,9 +75,7 @@ def resolve_hadamard_backend(config: RotationConfig, data_type: str) -> str:
                 "Use backend='inplace' or backend='auto' for other dtypes."
             )
         if not allow_online_rotation:
-            raise ValueError(
-                f"backend='{transform_backend_name}' only supports `allow_online_rotation`=True"
-            )
+            raise ValueError(f"backend='{transform_backend_name}' only supports `allow_online_rotation`=True")
 
         return "transform"
 
