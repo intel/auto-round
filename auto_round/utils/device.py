@@ -228,8 +228,7 @@ def patch_xpu_sdpa_drop_causal_mask():
         tri_up = torch.triu(torch.ones(s, s, dtype=torch.bool, device=mask.device), 1)
         return bool(torch.isinf(m2d[tri_up]).all().item()) and bool((m2d[~tri_up] == 0).all().item())
 
-    def _patched_sdpa(query, key, value, attn_mask=None, dropout_p=0.0,
-                      is_causal=False, scale=None, **kwargs):
+    def _patched_sdpa(query, key, value, attn_mask=None, dropout_p=0.0, is_causal=False, scale=None, **kwargs):
         if (
             query.device.type == "xpu"
             and attn_mask is not None
@@ -240,9 +239,14 @@ def patch_xpu_sdpa_drop_causal_mask():
             attn_mask = None
             is_causal = True
         return _orig_sdpa(
-            query, key, value,
-            attn_mask=attn_mask, dropout_p=dropout_p,
-            is_causal=is_causal, scale=scale, **kwargs,
+            query,
+            key,
+            value,
+            attn_mask=attn_mask,
+            dropout_p=dropout_p,
+            is_causal=is_causal,
+            scale=scale,
+            **kwargs,
         )
 
     torch.nn.functional.scaled_dot_product_attention = _patched_sdpa
