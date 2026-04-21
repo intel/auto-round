@@ -670,7 +670,7 @@ def tune(args):
         act_group_size=args.act_group_size,
         act_data_type=args.act_data_type,
         act_dynamic=act_dynamic,
-        act_sym=not args.act_asym,
+        act_sym=None if args.asym==False else False,
         super_bits=args.super_bits,
         super_group_size=args.super_group_size,
         quant_lm_head=args.quant_lm_head,
@@ -721,6 +721,7 @@ def tune(args):
         from auto_round.experimental.transform.rotation_config import RotationConfig
 
         rot_config = RotationConfig(hadamard_type=args.rotation_type)
+
     autoround: BaseCompressor = AutoRound(
         model=model_name,
         platform=args.platform,
