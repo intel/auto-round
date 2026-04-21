@@ -139,7 +139,7 @@ def is_triton_kernel_available(data_type: str) -> bool:
 
 def dump_group_size_to_rotation_config(rotation_config: str | dict | RotationConfig, group_size: int):
     rotation_dict = to_dict_rotation_config(rotation_config)
-    if rotation_dict.get("block_size",None) is None:
+    if rotation_dict.get("block_size", None) is None:
         rotation_dict["block_size"] = group_size
     return rotation_dict
 
