@@ -141,7 +141,7 @@ def dump_group_size_to_rotation_config(rotation_config: str | dict | RotationCon
     rotation_dict = to_dict_rotation_config(rotation_config)
     if rotation_dict["block_size"] is None:
         rotation_dict["block_size"] = group_size
-    return  rotation_dict
+    return rotation_dict
 
 
 def to_dict_rotation_config(rotation_config: str | dict | RotationConfig):
