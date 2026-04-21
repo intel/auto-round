@@ -192,8 +192,9 @@ class WrapperLinear(torch.nn.Module):
             )
             if self.enable_torch_compile:
                 self.act_quant_func = compile_func(self.act_quant_func, self.device)
-            self._init_params("act_max_scale", p_dtype, (1), 1.0, envs.AR_ENABLE_ACT_MINMAX_TUNING
-                              or (not orig_layer.act_dynamic))
+            self._init_params(
+                "act_max_scale", p_dtype, (1), 1.0, envs.AR_ENABLE_ACT_MINMAX_TUNING or (not orig_layer.act_dynamic)
+            )
             self._init_params("act_min_scale", p_dtype, (1), 1.0, envs.AR_ENABLE_ACT_MINMAX_TUNING)
 
         # Bias tuning
@@ -282,7 +283,7 @@ class WrapperLinear(torch.nn.Module):
         """
         act_max_scale.data.clamp_(0, 1.0)
         act_min_scale.data.clamp_(0, 1.0)
-        env_act_scale = envs.AR_ACT_SCALE # fixed activation ratio,priotize to use this one if setted
+        env_act_scale = envs.AR_ACT_SCALE  # fixed activation ratio,prioritize to use this one if set
         x, scale, zp = self.act_quant_func(
             x,
             bits=self.orig_layer.act_bits,
@@ -290,7 +291,7 @@ class WrapperLinear(torch.nn.Module):
             scale_dtype=self.orig_layer.scale_dtype,
             q_scale_thresh=self.q_scale_thresh,
             data_type=self.act_data_type,
-            tensor_max=act_max, # for static
+            tensor_max=act_max,  # for static
             max_scale=act_max_scale if math.isclose(env_act_scale, 1.0, rel_tol=1e-6) else env_act_scale,
             min_scale=act_min_scale if math.isclose(env_act_scale, 1.0, rel_tol=1e-6) else env_act_scale,
             global_scale=getattr(self, "input_global_scale", None),
@@ -414,8 +415,10 @@ class WrapperLinear(torch.nn.Module):
                     elif self.orig_layer.act_group_size == -1:
                         tmp_shape = (act_max.shape[0], 1)
                     _, act_scale, _ = self._qdq_act(
-                        torch.zeros(tmp_shape).to(self.device), act_min_scale=self.act_min_scale,
-                        act_max_scale=self.act_max_scale, act_max=act_max
+                        torch.zeros(tmp_shape).to(self.device),
+                        act_min_scale=self.act_min_scale,
+                        act_max_scale=self.act_max_scale,
+                        act_max=act_max,
                     )
                     self.orig_layer.act_max = self.orig_layer.act_max * act_max_scale.item()
                     self.orig_layer.act_max = self.orig_layer.act_max.to("cpu")
@@ -507,7 +510,9 @@ class WrapperLinear(torch.nn.Module):
                 if result is not None:
                     x = result[0] if isinstance(result, tuple) else result
             act_max = self.orig_layer.act_max if hasattr(self.orig_layer, "act_max") else None
-            x, _, _ = self._qdq_act(x, act_max_scale=self.act_max_scale, act_min_scale=self.act_min_scale, act_max=act_max)
+            x, _, _ = self._qdq_act(
+                x, act_max_scale=self.act_max_scale, act_min_scale=self.act_min_scale, act_max=act_max
+            )
         elif len(self.orig_layer._forward_pre_hooks) > 0:
             # Even without act_quant, run pre-hooks for online Hadamard correctness
             # (when fuse_online_to_weight=False, pre-hooks transform activations).
