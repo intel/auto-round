@@ -35,6 +35,7 @@ class BackendDataType(str, Enum):
     STANDARD_FP = "fp"
     MX_FP = "mx_fp"
     NV_FP = "nv_fp"
+    MX_INT = "mx_int"
 
 
 def is_standard_fp(backend):
@@ -45,6 +46,11 @@ def is_standard_fp(backend):
 def is_mx_fp(backend):
     backend = backend.lower()
     return BackendDataType.MX_FP in backend
+
+
+def is_mx_int(backend):
+    backend = backend.lower()
+    return BackendDataType.MX_INT in backend
 
 
 def is_nv_fp(backend):
@@ -87,6 +93,16 @@ def is_static_wfp8afp8(ar_or_format: Union[str, Callable]) -> bool:
     if is_wfp8afp8(ar_or_format):
         return True
     return False
+
+
+def is_wint_woq(ar: Callable) -> bool:
+    """Returns True for integer weight-only quantization with non-quantized activations (`act_bits >= 16`)."""
+    return "int" in ar.data_type and ar.act_bits >= 16 and ar.super_group_size is None
+
+
+def is_wint_a16(ar: Callable) -> bool:
+    """Backward-compatible alias for `is_wint_woq()`."""
+    return is_wint_woq(ar)
 
 
 def is_dynamic_wint8aint8(ar_or_format: Union[str, Callable]) -> bool:
@@ -347,9 +363,11 @@ def set_layer_config(
     extra_scheme_keys = ("scale_dtype",)
     scheme_keys = tuple(f.name for f in fields(QuantizationScheme)) + ("scale_dtype",)
     layer_config = copy.deepcopy(layer_config) or {}
+    ignore_layer_patterns = set()
     if ignore_layers:
         ignore_layers = ignore_layers.replace(" ", "").split(",")
         ignore_layers = [name + "." if name[-1].isdigit() else name for name in ignore_layers]
+        ignore_layer_patterns = set(ignore_layers)
 
     # 1. ignore_layers -> force 16
     for name in get_fp_layer_names(model, ignore_layers):
@@ -434,11 +452,16 @@ def set_layer_config(
         if name in all_module_names:
             m = get_module(model, name)
             if len(list(m.children())) == 0 and type(m) not in supported_types:
-                layer_config.pop(name)
-                logger.warning(
-                    f"'{name}' exists in the model but is not a supported quantization target "
-                    f"in the current scheme, ignoring its setting in `layer_config`"
-                )
+                val = layer_config.pop(name)
+                if name in ignore_layer_patterns:
+                    # Keep unsupported ignore_layers entries so export can serialize
+                    # them into regex-based extra_config for loaders like vLLM INC.
+                    regex_config[name] = val
+                else:
+                    logger.warning(
+                        f"'{name}' exists in the model but is not a supported quantization target "
+                        f"in the current scheme, ignoring its setting in `layer_config`"
+                    )
                 continue
 
         regex = re.compile(to_standard_regex(name))

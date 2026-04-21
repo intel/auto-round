@@ -70,8 +70,8 @@ def random_hadamard_matrix(
     :param gen: Optional generator random values
     :return: randomly generated hadamard matrix
     """
-    Q = torch.randint(low=0, high=2, size=(size,), generator=gen, dtype=dtype)  # cpu
-    Q = Q.to(device=device)
+    Q = torch.randint(low=0, high=2, size=(size,), generator=gen, device="cpu")  # cpu
+    Q = Q.to(device=device, dtype=dtype)
     Q = Q * 2 - 1
     Q = torch.diag(Q)
     return _matmul_hadU(Q)
@@ -137,7 +137,7 @@ def _matmul_hadU(X: torch.Tensor) -> torch.Tensor:
         output[:, :, 0, :] = input[:, :, 0, :] + input[:, :, 1, :]
         output[:, :, 1, :] = input[:, :, 0, :] - input[:, :, 1, :]
         output = output.view(input.shape[0], input.shape[1], -1)
-        (input, output) = (output, input)
+        input, output = (output, input)
     assert input.shape[1] == K
     del output
 

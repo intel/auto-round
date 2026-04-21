@@ -52,7 +52,7 @@ def eval_generated_prompt(
 
 
 def evaluate_accuracy(
-    model_or_save_dir, tokenizer=None, task="lambada_openai", threshold=0.25, batch_size="auto", limit=None
+    model_or_save_dir, tokenizer=None, task="lambada_openai", threshold=0.25, batch_size="auto", limit=None, device=None
 ):
     """Helper function to evaluate model accuracy on a given task.
 
@@ -75,13 +75,15 @@ def evaluate_accuracy(
     if isinstance(model_or_save_dir, str):
         # save_dir mode
         model_args = f"pretrained={model_or_save_dir}"
-        result = simple_evaluate(model="hf", model_args=model_args, tasks=task, batch_size=batch_size)
+        result = simple_evaluate(model="hf", model_args=model_args, tasks=task, batch_size=batch_size, device=device)
     else:
         # model object mode
         if tokenizer is None:
             raise ValueError("tokenizer is required when model_or_save_dir is a model object")
+        if device and device != "cpu":
+            model_or_save_dir = model_or_save_dir.to(device)
         result = simple_evaluate_user_model(
-            model_or_save_dir, tokenizer, batch_size=batch_size, tasks=task, limit=limit
+            model_or_save_dir, tokenizer, batch_size=batch_size, tasks=task, limit=limit, device=device
         )
 
     acc = result["results"][task]["acc,none"]
@@ -220,8 +222,27 @@ def _reduce_config_layers(config, num_layers, num_experts=None):
                     _apply(inner_cfg)
 
 
+def _apply_config_overrides(config, overrides):
+    """Apply arbitrary key-value overrides to a config (dict or object)."""
+    if not overrides:
+        return
+    for key, value in overrides.items():
+        if isinstance(config, dict):
+            if key in config:
+                config[key] = value
+        elif hasattr(config, key):
+            setattr(config, key, value)
+
+
 def get_tiny_model(
-    model_name_or_path, num_layers=2, num_experts=None, is_mllm=False, from_config=False, is_diffusion=False, **kwargs
+    model_name_or_path,
+    num_layers=2,
+    num_experts=None,
+    is_mllm=False,
+    from_config=False,
+    is_diffusion=False,
+    config_overrides=None,
+    **kwargs,
 ):
     """Generate a tiny model by slicing layers from the original model.
 
@@ -264,12 +285,14 @@ def get_tiny_model(
                     with open(os.path.join(local_dir, folder_name, "config.json"), "r", encoding="utf-8") as f:
                         config = json.load(f)
                     _reduce_config_layers(config, num_layers, num_experts)
+                    _apply_config_overrides(config, config_overrides)
                     return getattr(getattr(diffusers_module, mod_name), "from_config")(config)
                 else:
                     config = transformers.AutoConfig.from_pretrained(
                         os.path.join(local_dir, folder_name, "config.json")
                     )
                     _reduce_config_layers(config, num_layers, num_experts)
+                    _apply_config_overrides(config, config_overrides)
                     return getattr(getattr(transformers_module, mod_name), "_from_config")(config)
 
             with open(os.path.join(local_dir, "model_index.json"), "r", encoding="utf-8") as f:
@@ -368,6 +391,7 @@ def save_tiny_model(
     force_untie=False,
     from_config=False,
     is_diffusion=False,
+    config_overrides=None,
     **kwargs,
 ):
     """Generate  a tiny model and save to the specified path.
@@ -390,6 +414,7 @@ def save_tiny_model(
         is_mllm=is_mllm,
         from_config=from_config,
         is_diffusion=is_diffusion,
+        config_overrides=config_overrides,
         **kwargs,
     )
     if force_untie:

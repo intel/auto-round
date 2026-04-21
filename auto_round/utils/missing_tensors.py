@@ -617,6 +617,9 @@ def _woq_quantize_missing_tensors(target_dir: str, missing_tensors_dict: dict) -
                     )
             if weight_keys:
                 existing = qcfg.get("block_name_to_quantize") or []
+                # In cases where this attribute is lacking
+                if not existing:
+                    return qcfg
                 if isinstance(existing, str):
                     existing = [b.strip() for b in existing.split(",") if b.strip()]
                 existing_set = set(existing)
@@ -682,6 +685,15 @@ def _woq_quantize_missing_tensors(target_dir: str, missing_tensors_dict: dict) -
         layer_name = weight_key[: -len(".weight")]
         layer_cfg = _resolve_layer_cfg(layer_name)
         bits = layer_cfg["bits"]
+        if bits not in [4, 8]:
+            if bits < 4:
+                bits = 4
+            elif 4 < bits < 8:
+                bits = 8
+            logger.warning(
+                f"Unsupported bits={layer_cfg['bits']} for layer '{layer_name}' in extra_config, "
+                f"falling back to bits={bits} for quantization."
+            )
         group_size = layer_cfg["group_size"]
         sym = layer_cfg["sym"]
 
