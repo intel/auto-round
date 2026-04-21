@@ -4,7 +4,7 @@
 import torch
 import tqdm
 
-from auto_round.experimental.qmodules.mx import MXQuantLinearBase
+from auto_round.experimental.qmodules.base import QModuleBase
 from auto_round.experimental.transform.hadamard_config import HadamardConfig
 from auto_round.experimental.transform.hadamards import build_hadamard_transform
 from auto_round.experimental.utils import is_triton_kernel_available, normalize_hadamard_config
@@ -15,10 +15,10 @@ __all__ = ["apply_hadamard_transform"]
 def apply_hadamard_transform(
     model: torch.nn.Module,
     config: str | dict | HadamardConfig | None,
-    need_calibration: bool = False,
     location: str = "weight",
     use_tqdm=True,
     desc=None,
+    data_type="mx_fp",
 ):
     """
     Apply a transform configuration to a model.
@@ -29,7 +29,6 @@ def apply_hadamard_transform(
     :param model: Model to which the transform configuration will be applied.
     :param config: Transform configuration to apply. Supported values are:
         * ``str``: A named/preset transform configuration. In this case,
-          ``scheme`` is typically required so that the preset can be
           resolved to a concrete quantization/transform configuration.
         * ``dict``: A raw configuration mapping that will be normalized
           (via :func:`normalize_hadamard_config`) and then passed to
@@ -39,13 +38,9 @@ def apply_hadamard_transform(
           normalization.
         * ``None``: Uses the default behavior of
           :func:`_normalize_hadamard_config` (for example, inferring a
-          configuration from ``scheme`` or other project defaults), if
+          configuration from ``data_type`` or other project defaults), if
           supported.
-    :param scheme: Optional quantization/transform scheme identifier used
-        when ``config`` is a ``str`` (and, if supported, when it is
-        ``None``) to determine which concrete configuration to build.
-        Ignored when ``config`` is already a ``dict`` or
-        :class:`TransformConfig`.
+    :param data_type: quantization data type.
     :param use_tqdm: If ``True``, wrap the per-module application in a
         tqdm progress bar.
     :param desc: Optional description string to show in the tqdm progress
@@ -53,21 +48,21 @@ def apply_hadamard_transform(
         ``config.transform_type``.
     """
 
-    config = normalize_hadamard_config(config)
+    config = normalize_hadamard_config(config, data_type)
     if not isinstance(config, HadamardConfig):
         config = HadamardConfig(**config)
 
     modules_config = [
         (name, module, config)
         for name, module in model.named_modules()
-        if isinstance(module, torch.nn.Linear) or isinstance(module, MXQuantLinearBase)
+        if isinstance(module, torch.nn.Linear) or isinstance(module, QModuleBase)
     ]
 
     desc = f"Applying {config.hadamard_type} transforms" if desc is None else desc
     for name, module, config in tqdm.tqdm(modules_config, desc=desc, disable=(not use_tqdm)):
-        if "lm_head" in name:  # TODO unrobust
+        if "lm_head" in name:
             continue
-        _apply_to_module(model, module, config, need_calibration, location)
+        _apply_to_module(model, module, config, location, data_type)
 
     # attach config to model for compression/serialization
     setattr(model, "hadamard_config", config)
@@ -76,9 +71,11 @@ def apply_hadamard_transform(
 
 
 def _apply_to_module(
+    model: torch.nn.Module,
     module: torch.nn.Module,
     config: HadamardConfig,
     location: str = "weight",
+    data_type: str = "mx_fp",
 ):
     """
     Create transforms and apply them to the module
@@ -86,6 +83,9 @@ def _apply_to_module(
     :param model: model which module belongs to
     :param module: target module to apply transforms to
     """
+
+    # create transform as submodule
+    hadamard_name = config.hadamard_type
 
     if location == "input":
 
@@ -95,7 +95,7 @@ def _apply_to_module(
             location="input",
             inverse=True,
             device="cpu",
-            precision=module.dtype,
+            precision=module.dtype,  # for online activation, the transform dtype maybe bfloat16/float16.
         )
 
         if config.hadamard_type != "random_hadamard":
@@ -103,21 +103,24 @@ def _apply_to_module(
         else:
             hadamard_weight = None
 
-        if is_triton_kernel_available():
+        if is_triton_kernel_available(data_type):
             from auto_round.experimental.transform.triton.mxfp4 import mxfp4_forward_kernel_wrapper
 
             def input_hook(self, args):
                 input = args[0]
                 # transform(input)
                 orig_shape = input.shape
+                orig_dtype = input.dtype
                 x_flat = input.contiguous().flatten(end_dim=-2)
                 qdq_input, _ = mxfp4_forward_kernel_wrapper(
                     x_flat,
                     (
-                        hadamard_weight if hadamard_weight is not None else self.hadamard_matrix.T
+                        hadamard_weight.to(orig_dtype)
+                        if hadamard_weight is not None
+                        else self.hadamard_matrix.T.to(orig_dtype)
                     ),  # this matrix from w_transform, needs transpose
                 )
-                return qdq_input.reshape(orig_shape)
+                return qdq_input.reshape(orig_shape).to(orig_dtype)
 
             # for fused transform + quantization kernel
             module.pre_dequantized_input = True
@@ -130,13 +133,20 @@ def _apply_to_module(
                 input = args[0]
 
                 ori_shape = input.shape
+                orig_dtype = input.dtype
 
                 if hadamard_weight is not None:
                     input = input.view(-1, hadamard_weight.shape[0])
-                    return _multihead_matmul(input, hadamard_weight.to(input.device)).view(ori_shape)
+                    return (
+                        (_multihead_matmul(input, hadamard_weight.to(input.device).to(orig_dtype)))
+                        .view(ori_shape)
+                        .to(orig_dtype)
+                    )
                 else:
                     input = input.view(-1, self.hadamard_matrix.shape[0])
-                    return _multihead_matmul(input, self.hadamard_matrix.T).view(ori_shape)
+                    return (
+                        (_multihead_matmul(input, self.hadamard_matrix.T.to(orig_dtype))).view(ori_shape).to(orig_dtype)
+                    )
 
             # for fused transform + quantization kernel
             module.pre_dequantized_input = False
@@ -151,42 +161,32 @@ def _apply_to_module(
             **config.model_dump(),
             location="weight",
             device=module.weight.device,
-            precision=module.weight.dtype,
         )
 
         # need save random hadamard matrix needed when inference
         if config.hadamard_type == "random_hadamard":
-            module.register_module(config.hadamard_type, weight_hadamard_transform)
             # for saving transform weight
             from auto_round.experimental.transform.patch_modules import patch_quantlinear
 
-            patch_quantlinear(config.hadamard_type)
+            patch_quantlinear(weight_hadamard_transform)
 
-        if need_calibration:
-            # for training, the weight changes with every forward pass
-            # for autoround tuning: patch wrapper linear qdq_weight func
-            from auto_round.experimental.transform.patch_modules import (
-                patch_wrapperlinear_to_apply_transform,
-                patch_wrapperwalayer_forward_to_apply_transform,
-            )
+        # for autoround tuning: weight not tuning
+        # for rtn: weight transformed before saving
+        from auto_round.experimental.transform.patch_modules import (
+            patch_wrapperlinear_to_apply_transform,
+            patch_wrapperwalayer_forward_to_apply_transform,
+        )
 
-            input_hadamard_transform = build_hadamard_transform(
-                **config.model_dump(),
-                location="input",
-                inverse=True,
-                device=module.weight.device,
-                precision=module.weight.dtype,
-            )
+        input_hadamard_transform = build_hadamard_transform(
+            **config.model_dump(),
+            location="input",
+            inverse=True,
+            device=module.weight.device,
+            precision=module.weight.dtype,  # for online activation, the transform dtype maybe bfloat16/float16.
+        )
 
-            patch_wrapperlinear_to_apply_transform(weight_hadamard_transform, input_hadamard_transform)
-            patch_wrapperwalayer_forward_to_apply_transform(input_hadamard_transform)
-
-        else:
-            # transform is no longer needed (unfusing is not supported)
-            # delattr(module, transform_name)
-            # fuse transform into weight
-            with torch.no_grad():
-                getattr(module, "weight").copy_(weight_hadamard_transform(module.weight).to(module.weight.device))
+        patch_wrapperlinear_to_apply_transform(weight_hadamard_transform, input_hadamard_transform)
+        patch_wrapperwalayer_forward_to_apply_transform(input_hadamard_transform)
 
     else:
         # TODO: apply transform to output/q/k
