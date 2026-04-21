@@ -820,13 +820,6 @@ if __name__ == "__main__":
     import auto_round
     from auto_round.experimental.transform.utils.hadamard import _fetch_hadamard_divisor
 
-    K_list = [172, 156, 140, 108, 60, 52, 36, 28, 40, 20, 12]
-    for d in K_list:
-        fn = getattr(auto_round.experimental.rotation_inplace.hadamard_matrix, f"get_had{d}")
-        quarot_had = fn()
-        hadK = _fetch_hadamard_divisor(d, torch.float, torch.device("cpu"))
-        torch.equal(quarot_had, hadK)
-    print("equal test passed")
     model_name = "/models/opt-125m"
     tokenizer = AutoTokenizer.from_pretrained(model_name)
     model = AutoModelForCausalLM.from_pretrained(model_name, torch_dtype=torch.float16, device_map="auto")
