@@ -114,16 +114,15 @@ def is_dynamic_wint8aint8(ar_or_format: Union[str, Callable]) -> bool:
         return True
     return False
 
-def is_wint4aint4(ar_or_scheme:Union[str, Callable]):
+
+def is_wint4aint4(ar_or_scheme: Union[str, Callable]):
     if isinstance(ar_or_scheme, str):
         return "int4" in ar_or_scheme
-    elif (("int4" in ar_or_scheme.act_data_type or ("int" in ar_or_scheme.act_data_type and
-                                                   ar_or_scheme.act_bits == 4)) and
-          ("int4" in ar_or_scheme.data_type or ("int" in ar_or_scheme.data_type and ar_or_scheme.bits == 4)
-    )):
+    elif (
+        "int4" in ar_or_scheme.act_data_type or ("int" in ar_or_scheme.act_data_type and ar_or_scheme.act_bits == 4)
+    ) and ("int4" in ar_or_scheme.data_type or ("int" in ar_or_scheme.data_type and ar_or_scheme.bits == 4)):
         return True
     return False
-
 
 
 def is_dynamic_afp8(ar_or_format: Callable) -> bool:
