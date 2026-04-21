@@ -203,7 +203,7 @@ function run_unit_test_sglang() {
 
     cd ${REPO_PATH}/test
     rm -rf .coverage* *.xml *.html
-    uv pip install -r test_cuda/requirements_sglang.txt
+    uv pip install -r test_cuda/requirements_sglang.txt --prerelease=allow
     cd ${REPO_PATH} && uv pip install . && cd ${REPO_PATH}/test
 
     pip list > ${LOG_DIR}/sglang_ut_pip_list.txt
