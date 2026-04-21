@@ -304,7 +304,9 @@ class BasicArgumentParser(argparse.ArgumentParser):
             help="Group size for weight quantization.",
         )
         scheme.add_argument("--asym", action="store_true", help="Use asymmetric quantization instead of symmetric.")
-        scheme.add_argument("--act_asym", action="store_true", help="Use asymmetric quantization for activation instead of symmetric.")
+        scheme.add_argument(
+            "--act_asym", action="store_true", help="Use asymmetric quantization for activation instead of symmetric."
+        )
         scheme.add_argument(
             "--data_type",
             "--dtype",

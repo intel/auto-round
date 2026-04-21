@@ -41,29 +41,30 @@ def search_scales(data: torch.Tensor, bits: int, qw: Union[None, torch.Tensor, f
     # Set default weight if None
     if qw is None:
         qw = 1.0
-    qw=1.0 # TODO harded code now
+    qw = 1.0  # TODO harded code now
     # Compute initial best loss
     best_loss = ((scales * L - data).to(torch.float32)) ** 2
     if isinstance(qw, torch.Tensor):
         best_loss.mul_(qw)  # inplace multiply by weight
     best_loss = torch.sum(best_loss, dim=-1)
-    if bits==2:
+    if bits == 2:
         search_min = -18 * 5
         step = 0.01
     else:
         from auto_round import envs
+
         grid = 200
         search_ratio = envs.AR_SEARCH_SCALE_RATIO  # default 0.5 -> nmax/2
         search_min = nmax * search_ratio
-        step = search_min/grid * 2 # 0.08
-        search_min = int(search_min/step)
+        step = search_min / grid * 2  # 0.08
+        search_min = int(search_min / step)
     # Iterative search over small adjustments
-    for _is in range(-search_min, search_min+1):
+    for _is in range(-search_min, search_min + 1):
         if _is == 0:
             continue
 
         # Update iscales in-place
-        iscales_tmp = -(nmax -step * _is) * get_reciprocal(group_max)
+        iscales_tmp = -(nmax - step * _is) * get_reciprocal(group_max)
 
         # Compute temporary quantized values (in-place round + clamp)
         tmp_L = torch.empty_like(data)

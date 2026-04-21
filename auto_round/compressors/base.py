@@ -585,13 +585,12 @@ class BaseCompressor(object):
                 fuse_online_to_weight=envs.AR_FUSE_ONLINE_TO_WEIGHT,
             )
 
-           
-#             logger.info("Applying Hadamard transform to the model.")
-#             from auto_round.experimental.transform.apply import apply_hadamard_transform
-#             from auto_round.experimental.utils import normalize_hadamard_config
+        #             logger.info("Applying Hadamard transform to the model.")
+        #             from auto_round.experimental.transform.apply import apply_hadamard_transform
+        #             from auto_round.experimental.utils import normalize_hadamard_config
 
-#             self.hadamard_config = normalize_hadamard_config(hadamard_config, self.data_type)
-#             self.model = apply_hadamard_transform(self.model, self.hadamard_config, data_type=self.data_type)
+        #             self.hadamard_config = normalize_hadamard_config(hadamard_config, self.data_type)
+        #             self.model = apply_hadamard_transform(self.model, self.hadamard_config, data_type=self.data_type)
         tmp = 1
 
     def _gen_auto_scheme(self) -> dict[str, dict]:

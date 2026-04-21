@@ -833,4 +833,3 @@ def register_online_had_hooks_grouped(model, mapping, group_size, fp32_had=False
             handles.append(h)
 
     return handles
-
