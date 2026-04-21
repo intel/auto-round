@@ -86,7 +86,7 @@ def search_scales(data: torch.Tensor, bits: int, qw: Union[None, torch.Tensor, f
 
 
 @register_dtype("opt_rtn_int_sym")
-def quant_tensor_rtn_sym(tensor, bits=4, group_size=-1, v=0, q_scale_thresh=1e-5, imatrix=None, **kwargs):
+def quant_tensor_opt_rtn_sym(tensor, bits=4, group_size=-1, v=0, q_scale_thresh=1e-5, imatrix=None, **kwargs):
     """Quantize and de-quantize tensor asymmetrically. full range, credict goes to llamacpp community
 
     Args:
