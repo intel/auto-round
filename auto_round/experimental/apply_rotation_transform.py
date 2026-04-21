@@ -112,15 +112,16 @@ def apply_hadamard_rotation(
     backend = resolve_hadamard_backend(config, data_type)
 
     # Resolve fuse flag: explicit > env var > default(True)
-    fuse_flag: bool
+    fuse_online_to_weight = config.fuse_online_to_weight
     if config.fuse_online_to_weight is not None:
-        fuse_flag = bool(config.fuse_online_to_weight)
-    else:
-        fuse_flag = bool(envs.AR_FUSE_ONLINE_TO_WEIGHT)
+        fuse_online_to_weight = bool(config.fuse_online_to_weight)
+    elif envs.AR_FUSE_ONLINE_TO_WEIGHT:
+        fuse_online_to_weight = bool(envs.AR_FUSE_ONLINE_TO_WEIGHT)
+
 
     logger.info(
-        f"Applying Hadamard (backend={backend},"
-        f"data_type={data_type}, fuse_online_to_weight={fuse_flag if backend == 'inplace' else False})."
+        f"Applying Hadamard (backend={backend}, "
+        f"data_type={data_type}, fuse_online_to_weight={fuse_online_to_weight if backend == 'inplace' else False})."
     )
 
     if backend == "inplace":
@@ -136,7 +137,7 @@ def apply_hadamard_rotation(
             group_size=group_size,
             allow_online_rotation=config.allow_online_rotation,
             rotation_matrix=config.hadamard_type,
-            fuse_online_to_weight=fuse_flag,
+            fuse_online_to_weight=fuse_online_to_weight,
             compute_device=compute_device,
         )
         # Stash for downstream (export / serialization).

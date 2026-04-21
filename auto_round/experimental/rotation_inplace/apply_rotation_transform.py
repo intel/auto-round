@@ -17,7 +17,7 @@ import tqdm
 from auto_round.experimental.rotation_inplace.model_config import (
     RotationMapping,
     _resolve,
-    infer_mapping_from_model,
+    infer_mapping_from_model, MAPPING_REGISTRY,
 )
 from auto_round.experimental.rotation_inplace.utils import (
     CrossHeadOnlineHadamardHook,
@@ -656,7 +656,7 @@ def apply_rotation_transform(
     rotation_matrix: Union[str, torch.Tensor, Dict[int, torch.Tensor], None] = None,
     compute_device: torch.device| str = None,
     fp32_had: bool = False,
-    fuse_online_to_weight: bool = True,
+    fuse_online_to_weight: bool = None,
 ):
     """Fuse layer norms, rotate weights, and register online Hadamard hooks.
 
@@ -681,6 +681,11 @@ def apply_rotation_transform(
 
     Returns:
         list of hook handles."""
+    if fuse_online_to_weight is None:
+        if model.config.model_type in MAPPING_REGISTRY or model.__class__.__name__ in MAPPING_REGISTRY:
+            fuse_online_to_weight = True
+        else:
+            fuse_online_to_weight = False
     had_dict, use_fast_had, preset = _normalize_rotation_matrix(rotation_matrix, group_size)
     compute_device = _resolve_compute_device(compute_device)
 
