@@ -83,12 +83,18 @@ def _rotate_linear_by_Q(module: torch.nn.Linear, Q: torch.Tensor, side: str, com
     W_ = module.weight.data.to(device=cdev, dtype=torch.float64)
     Q_ = Q.to(device=cdev)
     if side == "input":
-        module.weight.data = torch.matmul(W_, Q_).to(device=dev, dtype=dtype)
+        new_W = torch.matmul(W_, Q_).to(device=dev, dtype=dtype)
     else:
-        module.weight.data = torch.matmul(Q_.T, W_).to(device=dev, dtype=dtype)
-        if module.bias is not None:
-            b = module.bias.data.to(device=cdev, dtype=torch.float64)
-            module.bias.data = torch.matmul(Q_.T, b).to(device=dev, dtype=dtype)
+        new_W = torch.matmul(Q_.T, W_).to(device=dev, dtype=dtype)
+    # Release fp64 copy before assigning back so peak memory ≈ 1× weight + 1× rotated.
+    del W_
+    module.weight.data = new_W
+    if side == "output" and module.bias is not None:
+        b = module.bias.data.to(device=cdev, dtype=torch.float64)
+        new_b = torch.matmul(Q_.T, b).to(device=dev, dtype=dtype)
+        del b
+        module.bias.data = new_b
+    del Q_
 
 
 def _untie_word_embeddings(model, mapping: RotationMapping) -> None:
@@ -306,7 +312,9 @@ def _rotate_weights(
             dev = embedding.weight.data.device
             cdev = compute_device
             W_ = embedding.weight.data.to(device=cdev, dtype=torch.float64)
-            embedding.weight.data = torch.matmul(W_, Q.to(cdev)).to(device=dev, dtype=dtype)
+            new_W = torch.matmul(W_, Q.to(cdev)).to(device=dev, dtype=dtype)
+            del W_
+            embedding.weight.data = new_W
 
         if mapping.positional_embedding is not None:
             pos_emb = _resolve(model, mapping.positional_embedding)
@@ -319,7 +327,9 @@ def _rotate_weights(
                 pos_dev = pos_emb.weight.data.device
                 cdev = compute_device
                 P_ = pos_emb.weight.data.to(device=cdev, dtype=torch.float64)
-                pos_emb.weight.data = torch.matmul(P_, Q.to(cdev)).to(device=pos_dev, dtype=pos_dtype)
+                new_P = torch.matmul(P_, Q.to(cdev)).to(device=pos_dev, dtype=pos_dtype)
+                del P_
+                pos_emb.weight.data = new_P
 
         # ---- Top-level: lm_head ----
         lm_head = _resolve(model, mapping.lm_head)
@@ -555,6 +565,13 @@ def _rotate_weights(
                     had_matrix=_online_had(intermediate_size),
                 )
 
+        # Per-layer cleanup: drop fp64 temporaries and CUDA caching allocator
+        # blocks so peak memory stays at ~1 layer's worth instead of accumulating
+        # across all 32+ decoder layers (was the main cause of 33 GB RAM on 8B).
+        gc.collect()
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+
 
 # ---------------------------------------------------------------------------
 # Unified online hook registration
@@ -600,12 +617,14 @@ def _register_online_hooks(
     # that was cached in had_dict by _rotate_weights.
     online_fast = False
 
-    # -- Matrix resolution (must match _rotate_weights) --
-    had_matrix, _ = _get_custom_had(had_dict, group_size) if is_grouped else (None, False)
-    if preset == "random_hadamard" and had_matrix is None:
-        had_matrix = get_or_create_random_hadamard(group_size if is_grouped else hidden_size)
+    # -- Matrix resolution (must match the *online-paired* matrix used by
+    # _rotate_weights for down_proj input / OV pair). Variable name kept in
+    # sync with _rotate_weights to make any future drift obvious.
+    online_had_matrix, _ = _get_custom_had(had_dict, group_size) if is_grouped else (None, False)
+    if preset == "random_hadamard" and online_had_matrix is None:
+        online_had_matrix = get_or_create_random_hadamard(group_size if is_grouped else hidden_size)
     if preset == "quarot_hadamard" and is_grouped:
-        had_matrix = None
+        online_had_matrix = None
 
     # -- Helper: look up cached random matrix for online-paired hooks --
     def _online_had(dim):
@@ -624,7 +643,7 @@ def _register_online_hooks(
     def _make_down_proj_hook():
         if is_grouped:
             return GroupOnlineHadamardHook(
-                group_size=group_size, fp32_had=fp32_had, use_fast_had=online_fast, had_matrix=had_matrix
+                group_size=group_size, fp32_had=fp32_had, use_fast_had=online_fast, had_matrix=online_had_matrix
             )
         online_mat = _online_had(intermediate_size)
         if online_mat is not None:
@@ -638,7 +657,7 @@ def _register_online_hooks(
         """Full Had hook on hidden_size (for Q/K/V and gate/up input)."""
         if is_grouped:
             return GroupOnlineHadamardHook(
-                group_size=group_size, fp32_had=fp32_had, use_fast_had=online_fast, had_matrix=had_matrix
+                group_size=group_size, fp32_had=fp32_had, use_fast_had=online_fast, had_matrix=online_had_matrix
             )
         online_mat = _online_had(hidden_size)
         if online_mat is not None:

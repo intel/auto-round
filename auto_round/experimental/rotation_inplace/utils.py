@@ -739,7 +739,9 @@ def _rotate_embedding_grouped(embedding, group_size, use_fast_had=True, compute_
     compute_dev = _resolve_compute_device(compute_device)
     W = embedding.weight.data.to(device=compute_dev, dtype=torch.float64)
     W = _apply_grouped_had_to_weight(W, group_size, side="input", use_fast_had=use_fast_had, had_matrix=had_matrix)
-    embedding.weight.data = W.to(device=dev, dtype=dtype)
+    new_W = W.to(device=dev, dtype=dtype)
+    del W
+    embedding.weight.data = new_W
 
 
 def register_online_had_hooks_grouped(model, mapping, group_size, fp32_had=False, use_fast_had=True):
