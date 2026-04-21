@@ -5,16 +5,16 @@ import torch
 import tqdm
 
 from auto_round.experimental.qmodules.base import QModuleBase
-from auto_round.experimental.transform.hadamard_config import HadamardConfig
+from auto_round.experimental.transform.rotation_config import RotationConfig
 from auto_round.experimental.transform.hadamards import build_hadamard_transform
-from auto_round.experimental.utils import is_triton_kernel_available, normalize_hadamard_config
+from auto_round.experimental.utils import is_triton_kernel_available, normalize_rotation_config
 
-__all__ = ["apply_hadamard_transform"]
+__all__ = ["apply_rotation_transform"]
 
 
-def apply_hadamard_transform(
+def apply_rotation_transform(
     model: torch.nn.Module,
-    config: str | dict | HadamardConfig | None,
+    config: str | dict | RotationConfig | None,
     location: str = "weight",
     use_tqdm=True,
     desc=None,
@@ -31,13 +31,13 @@ def apply_hadamard_transform(
         * ``str``: A named/preset transform configuration. In this case,
           resolved to a concrete quantization/transform configuration.
         * ``dict``: A raw configuration mapping that will be normalized
-          (via :func:`normalize_hadamard_config`) and then passed to
+          (via :func:`normalize_rotation_config`) and then passed to
           :class:`TransformConfig`.
         * :class:`TransformConfig`: An existing configuration instance.
           This will be used to construct the final configuration after
           normalization.
         * ``None``: Uses the default behavior of
-          :func:`_normalize_hadamard_config` (for example, inferring a
+          :func:`_normalize_rotation_config` (for example, inferring a
           configuration from ``data_type`` or other project defaults), if
           supported.
     :param data_type: quantization data type.
@@ -48,9 +48,9 @@ def apply_hadamard_transform(
         ``config.transform_type``.
     """
 
-    config = normalize_hadamard_config(config, data_type)
-    if not isinstance(config, HadamardConfig):
-        config = HadamardConfig(**config)
+    config = normalize_rotation_config(config, data_type)
+    if not isinstance(config, RotationConfig):
+        config = RotationConfig(**config)
 
     modules_config = [
         (name, module, config)
@@ -65,15 +65,16 @@ def apply_hadamard_transform(
         _apply_to_module(model, module, config, location, data_type)
 
     # attach config to model for compression/serialization
-    setattr(model, "hadamard_config", config)
+    setattr(model, "rotation_config", config)
+    hooks=None
 
-    return model
+    return model,hooks
 
 
 def _apply_to_module(
     model: torch.nn.Module,
     module: torch.nn.Module,
-    config: HadamardConfig,
+    config: RotationConfig,
     location: str = "weight",
     data_type: str = "mx_fp",
 ):

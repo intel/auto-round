@@ -36,7 +36,7 @@ class QuantizationScheme:
     act_dynamic: Optional[bool] = None
     super_bits: Optional[int] = None
     super_group_size: Optional[int] = None
-    hadamard_config: Optional[dict] = None
+    rotation_config: Optional[dict] = None
 
     @classmethod
     def from_dict(cls, config: dict):
@@ -88,7 +88,7 @@ class QuantizationScheme:
                 continue
             self_val = getattr(self, field)
             other_val = getattr(other, field)
-            # Treat None and empty dict as equivalent for dict fields like hadamard_config
+            # Treat None and empty dict as equivalent for dict fields like rotation_config
             if self_val != other_val:
                 if isinstance(self_val, dict) and not self_val and other_val is None:
                     continue
@@ -343,6 +343,20 @@ INT8 = QuantizationScheme.from_dict(
     }
 )
 
+INT4 = QuantizationScheme.from_dict(
+    {
+        "bits": 4,
+        "group_size": -1,
+        "data_type": "int",
+        "sym": True,
+        "act_bits": 4,
+        "act_group_size": -1,
+        "act_data_type": "int",
+        "act_dynamic": True,
+        "act_sym": True,
+    }
+)
+
 
 # For AutoScheme 16 bits options
 BF16 = QuantizationScheme.from_dict(
@@ -372,6 +386,7 @@ PRESET_SCHEMES = {
     "FP8_STATIC": FP8_STATIC,
     "BF16": BF16,
     "W4A16_MIXED": W4A16,
+    "INT4": INT4,
     "INT8": INT8,
     "INT8_W8A8": INT8,
     "FP8_BLOCK": FP8_BLOCK,

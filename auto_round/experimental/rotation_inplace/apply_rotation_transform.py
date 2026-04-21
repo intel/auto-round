@@ -14,12 +14,12 @@ from typing import Dict, Union
 import torch
 import tqdm
 
-from auto_round.experimental.hadamard_inplace.model_config import (
+from auto_round.experimental.rotation_inplace.model_config import (
     RotationMapping,
     _resolve,
     infer_mapping_from_model,
 )
-from auto_round.experimental.hadamard_inplace.utils import (
+from auto_round.experimental.rotation_inplace.utils import (
     CrossHeadOnlineHadamardHook,
     FullOnlineHadamardHook,
     GroupOnlineHadamardHook,
@@ -221,7 +221,7 @@ def _rotate_weights(
         compute_device: Device to run Hadamard computation on (e.g. ``"cuda:0"``).
             Weights are moved there temporarily and moved back afterwards.
             If ``None``, auto-detects GPU availability.
-        allow_online_hadamard: If ``True`` (default), apply extra input-side
+        allow_online_rotation: If ``True`` (default), apply extra input-side
             Hadamard rotations on ``down_proj`` and the OV pair (``v_proj``
             output + ``o_proj`` input) that require compensating online hooks
             at inference time.  If ``False``, skip those extra rotations so
@@ -649,12 +649,12 @@ def _register_online_hooks(
 # ---------------------------------------------------------------------------
 
 
-def apply_hadamard_rotation(
+def apply_rotation_transform(
     model,
     group_size: int = None,
-    allow_online_hadamard: bool = True,
+    allow_online_rotation: bool = True,
     rotation_matrix: Union[str, torch.Tensor, Dict[int, torch.Tensor], None] = None,
-    compute_device: torch.device = None,
+    compute_device: torch.device| str = None,
     fp32_had: bool = False,
     fuse_online_to_weight: bool = True,
 ):
@@ -668,7 +668,7 @@ def apply_hadamard_rotation(
         fp32_had: Whether to compute the online Hadamard transform in fp32.
         group_size: If ``None`` (default), use full-dimension Hadamard rotation.
         compute_device: Device to run Hadamard computation on.
-        allow_online_hadamard: If ``True`` (default), apply online Hadamard
+        allow_online_rotation: If ``True`` (default), apply online Hadamard
             rotations on ``down_proj`` input and the OV pair.
         rotation_matrix: Rotation matrix selection (``"hadamard"``,
             ``"random_hadamard"``, ``"quarot_hadamard"``, Tensor, dict, or None).
@@ -728,7 +728,7 @@ def apply_hadamard_rotation(
     )
 
     handles = []
-    if fuse_online_to_weight or allow_online_hadamard :
+    if fuse_online_to_weight or allow_online_rotation :
         handles = _register_online_hooks(
             model,
             mapping,
@@ -740,7 +740,7 @@ def apply_hadamard_rotation(
             fuse_online_to_weight=fuse_online_to_weight,
         )
 
-    return handles
+    return model, handles
 
 
 # ---------------------------------------------------------------------------
@@ -755,7 +755,7 @@ if __name__ == "__main__":
 
     K_list = [172, 156, 140, 108, 60, 52, 36, 28, 40, 20, 12]
     for d in K_list:
-        fn = getattr(auto_round.experimental.hadamard_inplace.hadamard_matrix, f"get_had{d}")
+        fn = getattr(auto_round.experimental.rotation_inplace.hadamard_matrix, f"get_had{d}")
         quarot_had = fn()
         hadK = _fetch_hadamard_divisor(d, torch.float, torch.device("cpu"))
         torch.equal(quarot_had, hadK)
@@ -768,7 +768,7 @@ if __name__ == "__main__":
     inputs = tokenizer(text, return_tensors="pt").to(model.device)
     print(tokenizer.decode(model.generate(**inputs, max_new_tokens=50)[0]))
 
-    apply_hadamard_rotation(model, group_size=-1, allow_online_hadamard=True, rotation_matrix="random_hadamard",fuse_online_to_weight=False)
+    apply_rotation_transform(model, group_size=-1, allow_online_rotation=True, rotation_matrix="random_hadamard", fuse_online_to_weight=False)
     model.to("cuda")
     text = "There is a girl who likes adventure,"
     inputs = tokenizer(text, return_tensors="pt").to(model.device)
@@ -777,7 +777,7 @@ if __name__ == "__main__":
     model_name = "/models/Qwen3-8B"
     tokenizer = AutoTokenizer.from_pretrained(model_name)
     model = AutoModelForCausalLM.from_pretrained(model_name, torch_dtype=torch.float16, device_map="auto")
-    apply_hadamard_rotation(model, group_size=-1, allow_online_hadamard=True,fuse_online_to_weight=True)
+    apply_rotation_transform(model, group_size=-1, allow_online_rotation=True, fuse_online_to_weight=True)
     model.to("cuda")
     text = "There is a girl who likes adventure,"
     inputs = tokenizer(text, return_tensors="pt").to(model.device)
@@ -788,7 +788,7 @@ if __name__ == "__main__":
     model_name = "/models/Meta-Llama-3.1-8B-Instruct"
     tokenizer = AutoTokenizer.from_pretrained(model_name)
     model = AutoModelForCausalLM.from_pretrained(model_name, torch_dtype=torch.float16, device_map="auto")
-    apply_hadamard_rotation(model,fuse_online_to_weight=True,group_size=32)
+    apply_rotation_transform(model, fuse_online_to_weight=True, group_size=32)
     model.to("cuda")
     text = "There is a girl who likes adventure,"
     inputs = tokenizer(text, return_tensors="pt").to(model.device)

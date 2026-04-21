@@ -214,7 +214,7 @@ def get_layer_config(model, quantization_config):
     act_data_type = getattr(quantization_config, "act_data_type", None)
     act_dynamic = getattr(quantization_config, "act_dynamic", False)
 
-    hadamard_config = getattr(quantization_config, "hadamard_config", None)
+    rotation_config = getattr(quantization_config, "rotation_config", None)
 
     default_quant_scheme = QuantizationScheme(
         bits=bits,
@@ -226,7 +226,7 @@ def get_layer_config(model, quantization_config):
         act_sym=act_sym,
         act_data_type=act_data_type,
         act_dynamic=act_dynamic,
-        hadamard_config=hadamard_config,
+        rotation_config=rotation_config,
     )
 
     # Determine the quantization block list
@@ -680,19 +680,19 @@ def convert_hf_model(model: nn.Module, target_device: str = "cpu") -> tuple[nn.M
     layer_configs = get_layer_config(model, quantization_config)
     used_backends = _replace_by_quant_layers(model, layer_configs, backend, target_device, packing_format)
 
-    hadamard_config = getattr(quantization_config, "hadamard_config", None)
-    if hadamard_config is not None and hadamard_config:
-        from auto_round.experimental.transform.apply import apply_hadamard_transform
-        from auto_round.experimental.transform.hadamard_config import HadamardConfig
+    rotation_config = getattr(quantization_config, "rotation_config", None)
+    if rotation_config is not None and rotation_config:
+        from auto_round.experimental.transform.apply import apply_rotation_transform
+        from auto_round.experimental.transform.rotation_config import RotationConfig
 
         # apply forward hook
-        act_hadamard_config = HadamardConfig(
-            block_size=hadamard_config["block_size"],
-            hadamard_type=hadamard_config["hadamard_type"],
+        act_rotation_config = RotationConfig(
+            block_size=rotation_config["block_size"],
+            hadamard_type=rotation_config["hadamard_type"],
         )  # apply to activation
-        model = apply_hadamard_transform(
+        model = apply_rotation_transform(
             model,
-            act_hadamard_config,
+            act_rotation_config,
             location="input",
             desc="Register pre forward hook for hadamard transform",
             data_type=quantization_config.data_type,

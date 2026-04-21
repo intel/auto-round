@@ -375,6 +375,13 @@ class BasicArgumentParser(argparse.ArgumentParser):
             choices=["fp8", "float8_e4m3fn"],
             help="Data type for static quantize attention. ",
         )
+        scheme.add_argument(
+            "--rotation_type",
+            default=None,
+            type=str,
+            choices=["hadamard", "random_hadamard"],
+            help="Research feature: applies a rotation (e.g., Hadamard) to reduce activation/weight outliers",
+        )
         gguf = self.add_argument_group("Double Quant Arguments")
         gguf.add_argument(
             "--super_group_size", default=None, type=int, help="Super group size for double quantization."
@@ -707,7 +714,10 @@ def tune(args):
             low_gpu_mem_usage=True,  # force it to be True as it uses much smaller vram but similar time cost
             low_cpu_mem_usage=low_cpu_mem_usage,
         )
-
+    rot_config = None
+    if args.rotation_type:
+        from auto_round.experimental.transform.rotation_config import RotationConfig
+        rot_config = RotationConfig(hadamard_type=args.rotation_type)
     autoround: BaseCompressor = AutoRound(
         model=model_name,
         platform=args.platform,
@@ -730,7 +740,7 @@ def tune(args):
         model_dtype=args.model_dtype,
         momentum=args.momentum,
         trust_remote_code=not args.disable_trust_remote_code,
-        hadamard_config="default",
+        rotation_config=rot_config,
     )
 
     model_name = args.model.rstrip("/")

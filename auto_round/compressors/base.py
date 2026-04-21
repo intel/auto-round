@@ -56,7 +56,8 @@ from auto_round.compressors.utils import (
 )
 from auto_round.data_type import QUANT_FUNC_WITH_DTYPE
 from auto_round.data_type.utils import reshape_pad_tensor_by_group_size, update_block_global_scale_if_needed
-from auto_round.experimental.transform.hadamard_config import HadamardConfig
+from auto_round.experimental.transform.rotation_config import RotationConfig
+from auto_round.experimental.utils import normalize_rotation_config, dump_group_size_to_rotation_config
 from auto_round.export.export_to_gguf.config import GGUF_INNER_CONFIG
 from auto_round.formats import OutputFormat, get_formats
 from auto_round.logger import logger
@@ -153,7 +154,7 @@ SERIALIZATION_KEYS = (
     "super_bits",
     "super_group_size",
     "to_quant_block_names",
-    "hadamard_config",
+    "rotation_config",
 )
 
 
@@ -204,7 +205,7 @@ class BaseCompressor(object):
         disable_opt_rtn: bool | None = None,
         seed: int = 42,
         low_cpu_mem_usage: bool = True,
-        hadamard_config: str | dict | HadamardConfig | None = None,
+        rotation_config: str | dict | RotationConfig | None = None,
         **kwargs,
     ):
         """Initialize AutoRound with quantization and tuning configuration.
@@ -559,40 +560,28 @@ class BaseCompressor(object):
             except (ImportError, ModuleNotFoundError):
                 logger.error("algorithm extension import error, fallback to default mode")
 
-        hadamard_config = 1
-        if hadamard_config:
-            # self.enable_hadamard = True
-            from auto_round.experimental.hadamard_inplace import apply_hadamard_rotation
+        # Hadamard rotation / transform – unified entry that auto-dispatches
+        # between the "inplace" (QuaRot-style residual rotation; supports any
+        # dtype incl. INT4/INT8/FPx; can fuse online Had into weights) and
+        # "transform" (per-Linear weight+activation Had with fused triton
+        # kernel; only MXFP4 / NVFP4; cannot fuse) backends.
+        # See :class:`RotationConfig` for routing rules.
+        if rotation_config is not None:
+            from auto_round.experimental.apply_rotation_transform import apply_hadamard_rotation
 
-            # from auto_round.experimental.utils import normalize_hadamard_config
 
-            #
-            # _hcfg = normalize_hadamard_config(hadamard_config)
-            # if not isinstance(_hcfg, HadamardConfig):
-            #     _hcfg = HadamardConfig(**_hcfg)
-            # group_size = _hcfg.block_size  # e.g. 32 for MXFP4
+            default_block_size = self.group_size
+            if self.act_bits<16:
+                default_block_size = self.act_group_size
+            rotation_config = dump_group_size_to_rotation_config(rotation_config,default_block_size)
 
-            self.model.to("cuda")
-            # Use fused mode (residual stream rotation, QuaRot-style) which gives
-            # the best W4A4 results. Unfused mode (per-layer Had + hook) introduced
-            # in commit 8095ab12 caused PIQA regression from 0.62 -> 0.52.
-
-            apply_hadamard_rotation(
+            self.model,_= apply_hadamard_rotation(
                 self.model,
-                group_size=self.group_size,
-                allow_online_hadamard=True,
-                rotation_matrix="hadamard",
-                fuse_online_to_weight=envs.AR_FUSE_ONLINE_TO_WEIGHT,
+                rotation_config,
+                data_type=self.data_type,
+                compute_device=self.device,
             )
-
-           
-#             logger.info("Applying Hadamard transform to the model.")
-#             from auto_round.experimental.transform.apply import apply_hadamard_transform
-#             from auto_round.experimental.utils import normalize_hadamard_config
-
-#             self.hadamard_config = normalize_hadamard_config(hadamard_config, self.data_type)
-#             self.model = apply_hadamard_transform(self.model, self.hadamard_config, data_type=self.data_type)
-        tmp = 1
+            self.rotation_config = getattr(self.model, "rotation_config", rotation_config)
 
     def _gen_auto_scheme(self) -> dict[str, dict]:
         if self.mllm:
