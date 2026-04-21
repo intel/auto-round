@@ -16,6 +16,7 @@ pr:
       - .azure-pipelines/template/ut-template.yml
       - .azure-pipelines/unit-test-xpu.yml
       - .azure-pipelines/scripts/ut/run_ut_xpu.sh
+      - .azure-pipelines/docker/Dockerfile_xpu.devel
     exclude:
       - "*.md"
       - "**/*.md"

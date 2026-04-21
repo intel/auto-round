@@ -58,6 +58,7 @@ from auto_round.utils import (
     get_packing_device,
     is_quantized_input_module,
     is_separate_tensor,
+    is_transformers_version_greater_or_equal_5_4_0,
     logger,
 )
 
@@ -220,7 +221,7 @@ def _quant_data_with_args(
 
 def need_modify_tensor(cls, name):
     hf_arch = getattr(cls, "hf_arch", "")
-    if hf_arch == "Qwen3NextForCausalLM" and "in_proj_qkvz.weight" in name:
+    if hf_arch in "Qwen3NextForCausalLM" and "in_proj_qkvz.weight" in name:
         return True
     return False
 
@@ -254,21 +255,48 @@ def _quant_data(cls, data_torch, data_qtype, name, modify_name, new_name, bid, d
         "wmin": None,
         "imatrix": None,
     }
-    # support for MOE model with cls eexperts not linear
-    # if hasattr(module, "scale") or ("exps" in new_name and len(data_torch.shape) == 3):
-    for attr in ["scale", "zp", "w_d_scale", "w_d_wmin", "w_wmin"]:
-        if hasattr(module, attr) and getattr(module, attr) is not None:
+    # patch for Qwen3_5, Qwen3_5 handles some weights specially,
+    # but the scale doesn't match; these weights are handled by gguf itself.
+    # Define model architectures that need special handling
+    QWEN3_5_MODELS = {
+        "Qwen3_5ForCausalLM",
+        "Qwen3_5MoeForCausalLM",
+        "Qwen3_5MoeForConditionalGeneration",
+        "Qwen3_5ForConditionalGeneration",
+    }
+
+    QWEN3_5_SKIP_KEYS = {
+        ".in_proj_qkv.",
+        ".in_proj_z",
+        ".conv1d",
+        ".in_proj_b.",
+        ".in_proj_a.",
+        ".A_log",
+        ".dt_bias",
+        ".out_proj.",
+    }
+
+    hf_arch = getattr(cls, "hf_arch", "")
+    should_skip = hf_arch in QWEN3_5_MODELS and any(key in name for key in QWEN3_5_SKIP_KEYS)
+
+    if not should_skip:
+        # support for MOE model with cls experts not linear
+        for attr in ["scale", "zp", "w_d_scale", "w_d_wmin", "w_wmin"]:
+            if not (hasattr(module, attr) and getattr(module, attr) is not None):
+                continue
+
             attr_tensor = getattr(module, attr)
             if not isinstance(attr_tensor, torch.Tensor):
                 continue
+
             if hasattr(cls, "permute") or need_modify_tensor(cls, name):
                 bs = module.weight.shape[0]
                 attr_tensors_dict = dict(cls.modify_tensors(attr_tensor.reshape(bs, -1), modify_name, bid))
                 attr_tensor = attr_tensors_dict[new_name]
-            if attr in kwargs:
-                kwargs[attr] = attr_tensor.to(torch.float32)
-            else:
-                kwargs[attr.replace("w_", "")] = attr_tensor.to(torch.float32)
+
+            # Map attribute names to kwargs keys: w_d_scale -> d_scale, w_d_wmin -> d_wmin, w_wmin -> wmin
+            kwargs_key = attr.replace("w_", "") if attr.startswith("w_") else attr
+            kwargs[kwargs_key] = attr_tensor.to(torch.float32)
     data_torch = data_torch.to(torch.float32)
 
     data = ggml_quant(data_torch, data_qtype.name.lower(), device=device, **kwargs)
@@ -341,6 +369,11 @@ def get_qtype_by_layer_config(layer_config, name, data_qtype):
 
 
 def _special_name_handle(cls, name):
+    # using transformers >= 5.4, model.language_model.embed_tokens.weight changed to
+    # model.language_model.model.embed_tokens.weight after saved
+    if is_transformers_version_greater_or_equal_5_4_0():
+        name = name.replace("language_model.model.", "language_model.")
+
     # for Qwen2VL
     def remove_prefix(name, key_list):
         for key in key_list:
@@ -379,8 +412,13 @@ def _special_name_handle(cls, name):
 
 
 def prepare_tensors(cls):
-    max_name_len = max(len(s) for _, s in cls.tensor_map.mapping.values()) + len(".weight,")
     device = get_packing_device(cls.device)
+
+    # Handle empty tensor_map for models with block_count=0 (like MobileNetV5)
+    if cls.tensor_map.mapping:
+        max_name_len = max(len(s) for _, s in cls.tensor_map.mapping.values()) + len(".weight,")
+    else:
+        max_name_len = len("vision_encoder.weight,")  # Default reasonable length
 
     for name, data_torch in chain(cls.generate_extra_tensors(), cls.get_tensors()):
         if name in getattr(cls.model, "_tied_weights_keys", []) and not is_separate_tensor(cls.model, name):
@@ -441,6 +479,7 @@ def prepare_tensors(cls):
                     cls.match_model_tensor_name(new_name, key, bid)
                     for key in (
                         gguf.MODEL_TENSOR.FFN_GATE_INP,
+                        gguf.MODEL_TENSOR.FFN_GATE_INP_SHEXP,
                         gguf.MODEL_TENSOR.POS_EMBD,
                         gguf.MODEL_TENSOR.TOKEN_TYPES,
                         gguf.MODEL_TENSOR.SSM_CONV1D,
@@ -457,6 +496,10 @@ def prepare_tensors(cls):
                         gguf.MODEL_TENSOR.A_ENC_EMBD_POS,
                         gguf.MODEL_TENSOR.ALTUP_CORRECT_COEF,
                         gguf.MODEL_TENSOR.ALTUP_PREDICT_COEF,
+                        # Kimi KDA conv weights should be F32
+                        gguf.MODEL_TENSOR.SSM_CONV1D_Q,
+                        gguf.MODEL_TENSOR.SSM_CONV1D_K,
+                        gguf.MODEL_TENSOR.SSM_CONV1D_V,
                     )
                 )
                 or not new_name.endswith(".weight")

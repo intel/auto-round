@@ -39,6 +39,8 @@ BUILTIN_MODULES = {
     "qwen3_5_moe_text": LazyImport("auto_round.modeling.fused_moe.qwen3_5_moe"),
     # Step 3.5 MoE: splits fused MoELinear into per-expert nn.Linear
     "step3p5": LazyImport("auto_round.modeling.fused_moe.step3_5_moe"),
+    # Qwen3-Omni MoE: thinker (no shared expert) + talker (with shared expert)
+    "qwen3_omni_moe": LazyImport("auto_round.modeling.fused_moe.qwen3_omni"),
 }
 
 

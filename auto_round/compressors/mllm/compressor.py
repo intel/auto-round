@@ -502,6 +502,7 @@ class MLLMCompressor(BaseCompressor):
             format=format,
             inplace=inplace,
             processor=self.processor,
+            image_processor=self.image_processor,
             quant_nontext_module=self.quant_nontext_module if hasattr(self, "quant_nontext_module") else False,
             **kwargs,
         )

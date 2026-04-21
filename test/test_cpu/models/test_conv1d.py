@@ -18,8 +18,11 @@ class TestQuantizationConv1d:
 
     @classmethod
     def teardown_class(self):
-        shutil.rmtree("./saved", ignore_errors=True)
         shutil.rmtree("runs", ignore_errors=True)
+
+    @pytest.fixture(autouse=True)
+    def setup_save_dir(self, tmp_path):
+        self.save_dir = str(tmp_path / "saved")
 
     def test_quant(self, dataloader):
         self.model = AutoModelForCausalLM.from_pretrained(self.model_name, torch_dtype="auto", trust_remote_code=True)
@@ -36,7 +39,7 @@ class TestQuantizationConv1d:
         )
 
         autoround.quantize()
-        autoround.save_quantized("./saved")
+        autoround.save_quantized(self.save_dir)
 
-        model = AutoModelForCausalLM.from_pretrained("./saved", device_map="cpu", trust_remote_code=True)
+        model = AutoModelForCausalLM.from_pretrained(self.save_dir, device_map="cpu", trust_remote_code=True)
         model_infer(model, self.tokenizer)

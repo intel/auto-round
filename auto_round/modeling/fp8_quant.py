@@ -17,7 +17,7 @@ from transformers.quantizers.quantizer_finegrained_fp8 import (
     FineGrainedFP8HfQuantizer as OriginalFineGrainedFP8HfQuantizer,
 )
 
-from auto_round.utils import is_transformers_version_greater_or_equal_5
+from auto_round.utils import is_transformers_version_greater_or_equal_5, is_transformers_version_greater_or_equal_5_4_0
 from auto_round.utils import logger as auto_round_logger
 from auto_round.utils.device import override_cuda_device_capability
 
@@ -57,6 +57,7 @@ def oot_replace_with_fp8_linear(
         # we need this to correctly materialize the weights during quantization
         module_kwargs = {} if pre_quantized else {"dtype": None}
         new_module = None
+
         with torch.device("meta"):
             # Note: Disable replacing experts, as we do not want concatenated experts
             # if module_name.endswith(".experts"):
@@ -65,10 +66,14 @@ def oot_replace_with_fp8_linear(
             #     )
             # elif isinstance(module, nn.Linear):
             if isinstance(module, torch.nn.Linear):
+                # handle bias
+                if is_transformers_version_greater_or_equal_5_4_0():
+                    module_kwargs["has_bias"] = module.bias is not None
+                else:
+                    module_kwargs["bias"] = module.bias is not None
                 new_module = FP8Linear(
                     in_features=module.in_features,
                     out_features=module.out_features,
-                    bias=module.bias is not None,
                     activation_scheme=quantization_config.activation_scheme,
                     block_size=quantization_config.weight_block_size,
                     **module_kwargs,

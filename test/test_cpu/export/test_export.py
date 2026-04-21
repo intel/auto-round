@@ -27,14 +27,18 @@ class TestAutoRound:
     @classmethod
     def setup_class(self):
         self.model_name = opt_name_or_path
-        self.save_dir = "./saved"
         self.model = AutoModelForCausalLM.from_pretrained(self.model_name, torch_dtype="auto", trust_remote_code=True)
         self.tokenizer = AutoTokenizer.from_pretrained(self.model_name, trust_remote_code=True)
 
     @classmethod
     def teardown_class(self):
-        shutil.rmtree("./saved", ignore_errors=True)
         shutil.rmtree("runs", ignore_errors=True)
+
+    @pytest.fixture(autouse=True)
+    def _save_dir(self, tmp_path):
+        self.save_dir = str(tmp_path / "saved")
+        yield
+        shutil.rmtree(self.save_dir, ignore_errors=True)
 
     def test_autogptq_format(self, dataloader):
         for group_size in [-1, 32, 128]:
@@ -50,11 +54,10 @@ class TestAutoRound:
                 dataset=dataloader,
             )
 
-            quantized_model_path = "./saved"
+            quantized_model_path = self.save_dir
             autoround.quantize_and_save(output_dir=quantized_model_path, format="auto_gptq")
 
             if group_size == -1:
-                shutil.rmtree("./saved", ignore_errors=True)
                 continue
             quantization_config = AutoRoundConfig()
             model = AutoModelForCausalLM.from_pretrained(
@@ -64,7 +67,6 @@ class TestAutoRound:
             text = "There is a girl who likes adventure,"
             inputs = tokenizer(text, return_tensors="pt").to(model.device)
             print(tokenizer.decode(model.generate(**inputs, max_new_tokens=50)[0]))
-            shutil.rmtree("./saved", ignore_errors=True)
 
     def test_autoround_format(self, dataloader):
         for group_size in [-1, 32, 128]:
@@ -79,18 +81,16 @@ class TestAutoRound:
                 seqlen=2,
                 dataset=dataloader,
             )
-            quantized_model_path = "./saved"
+            quantized_model_path = self.save_dir
             autoround.quantize_and_save(output_dir=quantized_model_path, format="auto_round")
 
             if group_size == -1:
-                shutil.rmtree("./saved", ignore_errors=True)
                 continue
             model = AutoModelForCausalLM.from_pretrained(quantized_model_path, device_map="cpu")
             tokenizer = AutoTokenizer.from_pretrained(quantized_model_path)
             text = "There is a girl who likes adventure,"
             inputs = tokenizer(text, return_tensors="pt").to(model.device)
             print(tokenizer.decode(model.generate(**inputs, max_new_tokens=50)[0]))
-            shutil.rmtree("./saved", ignore_errors=True)
 
     def test_autoround_awq_format(self, dataloader):
         for group_size in [-1, 32, 128]:
@@ -105,7 +105,7 @@ class TestAutoRound:
                 seqlen=2,
                 dataset=dataloader,
             )
-            quantized_model_path = "./saved"
+            quantized_model_path = self.save_dir
 
             autoround.quantize_and_save(output_dir=quantized_model_path, format="auto_round:auto_awq")
 
@@ -120,7 +120,6 @@ class TestAutoRound:
             text = "There is a girl who likes adventure,"
             inputs = tokenizer(text, return_tensors="pt").to(model.device)
             print(tokenizer.decode(model.generate(**inputs, max_new_tokens=50)[0]))
-            shutil.rmtree("./saved", ignore_errors=True)
 
     def test_autoawq_format(self, dataloader):
         for group_size in [-1, 32, 128]:
@@ -136,11 +135,10 @@ class TestAutoRound:
                 dataset=dataloader,
             )
             autoround.quantize()
-            quantized_model_path = "./saved"
+            quantized_model_path = self.save_dir
 
             autoround.save_quantized(output_dir=quantized_model_path, inplace=False, format="auto_awq")
             if group_size == -1:
-                shutil.rmtree("./saved", ignore_errors=True)
                 continue
             quantization_config = AutoRoundConfig()
 
@@ -151,7 +149,6 @@ class TestAutoRound:
             text = "There is a girl who likes adventure,"
             inputs = tokenizer(text, return_tensors="pt").to(model.device)
             print(tokenizer.decode(model.generate(**inputs, max_new_tokens=50)[0]))
-            shutil.rmtree("./saved", ignore_errors=True)
 
     def test_autoround_3bit_asym_format(self, dataloader):
         bits, group_size, sym = 3, 128, False
@@ -175,7 +172,6 @@ class TestAutoRound:
         text = "There is a girl who likes adventure,"
         inputs = tokenizer(text, return_tensors="pt").to(model.device)
         print(tokenizer.decode(model.generate(**inputs, max_new_tokens=50)[0]))
-        shutil.rmtree(quantized_model_path, ignore_errors=True)
 
     def test_autoround_3bit_sym_format(self, dataloader):
         bits, group_size, sym = 3, 128, True
@@ -199,7 +195,6 @@ class TestAutoRound:
         text = "There is a girl who likes adventure,"
         inputs = tokenizer(text, return_tensors="pt").to(model.device)
         print(tokenizer.decode(model.generate(**inputs, max_new_tokens=50)[0]))
-        shutil.rmtree(quantized_model_path, ignore_errors=True)
 
     @pytest.mark.parametrize("static_kv_dtype", ["fp8", "float16"])
     def test_static_afp8_export(self, static_kv_dtype):
@@ -220,7 +215,7 @@ class TestAutoRound:
             seqlen=2,
             static_kv_dtype=static_kv_dtype,
         )
-        quantized_model_path = "./saved"
+        quantized_model_path = self.save_dir
         autoround.quantize_and_save(output_dir=quantized_model_path, format="auto_round")
         f = safe_open(os.path.join(quantized_model_path, "model.safetensors"), framework="pt")
         assert "model.decoder.layers.8.self_attn.k_proj.input_scale" in f.keys()
@@ -264,7 +259,6 @@ class TestAutoRound:
                 f.get_tensor("model.decoder.layers.5.self_attn.k_scale").dtype == torch.float32
                 or f.get_tensor("model.decoder.layers.5.self_attn.k_scale").dtype == torch.bfloat16
             )
-        shutil.rmtree(quantized_model_path, ignore_errors=True)
 
         model = AutoModelForCausalLM.from_pretrained(model_name, torch_dtype="auto", trust_remote_code=True)
         autoround = AutoRound(
@@ -281,7 +275,7 @@ class TestAutoRound:
             act_dynamic=False,
             act_group_size=0,
         )
-        quantized_model_path = "./saved"
+        quantized_model_path = self.save_dir
         autoround.quantize_and_save(output_dir=quantized_model_path, format="auto_round")
 
         f = safe_open(os.path.join(quantized_model_path, "model.safetensors"), framework="pt")
@@ -289,7 +283,6 @@ class TestAutoRound:
         assert "model.decoder.layers.8.self_attn.k_proj.weight_scale" in f.keys()
         assert f.get_tensor("model.decoder.layers.5.self_attn.v_proj.input_scale").shape == torch.Size([1])
         assert f.get_tensor("model.decoder.layers.5.self_attn.v_proj.weight").dtype == torch.float8_e4m3fn
-        shutil.rmtree(quantized_model_path, ignore_errors=True)
 
     def test_static_fp8_attn(self):
         import os
@@ -307,7 +300,7 @@ class TestAutoRound:
             scheme="FP8_STATIC",
             static_attention_dtype="fp8",
         )
-        quantized_model_path = "./saved"
+        quantized_model_path = self.save_dir
         autoround.quantize_and_save(output_dir=quantized_model_path, format="auto_round")
         f = safe_open(os.path.join(quantized_model_path, "model.safetensors"), framework="pt")
         assert "model.decoder.layers.8.self_attn.k_proj.input_scale" in f.keys()
@@ -320,8 +313,6 @@ class TestAutoRound:
             assert weight_name in f.keys()
             assert f.get_tensor(weight_name).shape == torch.Size([1])
             assert f.get_tensor(weight_name).dtype == torch.float32 or f.get_tensor(weight_name).dtype == torch.bfloat16
-
-        shutil.rmtree(quantized_model_path, ignore_errors=True)
 
     def test_awq_lmhead_export(self, dataloader):
         bits, sym, group_size = 4, False, 128
@@ -341,13 +332,12 @@ class TestAutoRound:
             layer_config=layer_config,
             dataset=dataloader,
         )
-        quantized_model_path = "./saved"
+        quantized_model_path = self.save_dir
         compressed_model, _ = autoround.quantize_and_save(output_dir=quantized_model_path, format="auto_awq")
         lm_head = compressed_model.lm_head
         from auto_round.export.export_to_awq.utils import WQLinear_GEMM
 
         assert isinstance(lm_head, WQLinear_GEMM), "Illegal AWQ quantization for lm_head layer"
-        shutil.rmtree(quantized_model_path, ignore_errors=True)
 
     def test_gptq_lmhead_export(self, dataloader):
         bits, sym, group_size = 4, True, 128
@@ -368,7 +358,7 @@ class TestAutoRound:
             layer_config=layer_config,
             dataset=dataloader,
         )
-        quantized_model_path = "./saved"
+        quantized_model_path = self.save_dir
         compressed_model, _ = autoround.quantize_and_save(output_dir=quantized_model_path, format="auto_gptq")
         lm_head = compressed_model.lm_head
         assert hasattr(lm_head, "bits") and lm_head.bits == 4, "Illegal GPTQ quantization for lm_head layer"
@@ -381,7 +371,6 @@ class TestAutoRound:
         inputs = tokenizer(text, return_tensors="pt").to(model.device)
         res = tokenizer.decode(model.generate(**inputs, max_new_tokens=5)[0])
         print(res)
-        shutil.rmtree(quantized_model_path, ignore_errors=True)
 
     def test_export_format(self):
         from auto_round.formats import get_formats
@@ -411,13 +400,24 @@ class TestAutoRound:
 
         autoround = AutoRound(
             model=self.model_name,
-            scheme="INT8_W8A8",
+            scheme="INT8",
         )
         format_list = get_formats("llm_compressor, auto_round:llm_compressor", autoround)
         assert format_list[0].output_format == "llm_compressor"
         assert format_list[0].get_backend_name() == "llm_compressor:int8_w8a8"
         assert format_list[1].output_format == "auto_round"
         assert format_list[1].get_backend_name() == "auto_round:llm_compressor:int8_w8a8"
+
+        # Verify backward compatibility: INT8_W8A8 (old name) produces identical formats to INT8
+        autoround_old = AutoRound(
+            model=self.model_name,
+            scheme="INT8_W8A8",
+        )
+        format_list_old = get_formats("llm_compressor, auto_round:llm_compressor", autoround_old)
+        assert format_list_old[0].output_format == "llm_compressor"
+        assert format_list_old[0].get_backend_name() == "llm_compressor:int8_w8a8"
+        assert format_list_old[1].output_format == "auto_round"
+        assert format_list_old[1].get_backend_name() == "auto_round:llm_compressor:int8_w8a8"
 
     def test_export_format_with_scheme(self, tiny_qwen_model_path):
         from auto_round.formats import get_formats
@@ -464,7 +464,7 @@ class TestAutoRound:
             batch_size=1,
             dataset=dataloader,
         )
-        quantized_model_path = "./saved"
+        quantized_model_path = self.save_dir
         autoround.quantize_and_save(output_dir=quantized_model_path, inplace=False, format="auto_awq")
 
         # Check items of modules_to_not_convert in quantization config
@@ -482,30 +482,73 @@ class TestAutoRound:
             "model.visual.blocks" in modules_to_not_convert
         ), f"'model.visual.blocks' should be in modules_to_not_convert. Got: {modules_to_not_convert}"
 
-    def test_llmc_dynamic_wint8aint8_export(self):
+    @pytest.mark.parametrize(
+        "iters,use_dataloader,scheme",
+        [
+            (0, False, "INT8"),  # RTN with new scheme name
+            (1, True, "INT8"),  # tuning with new scheme name
+            (0, False, "INT8_W8A8"),  # RTN with old scheme name (backward compat)
+        ],
+        ids=["rtn", "tuning", "rtn-old-scheme"],
+    )
+    def test_llmc_dynamic_wint8aint8_export(self, iters, use_dataloader, scheme, dataloader):
         from safetensors import safe_open
 
+        dataset = dataloader if use_dataloader else None
         autoround = AutoRound(
             self.model_name,
-            iters=0,
+            iters=iters,
             nsamples=2,
             seqlen=2,
-            scheme="INT8_W8A8",
+            dataset=dataset,
+            scheme=scheme,
         )
-        quantized_model_path = "./saved"
+        quantized_model_path = self.save_dir
         autoround.quantize_and_save(output_dir=quantized_model_path, format="llm_compressor")
         with safe_open(os.path.join(quantized_model_path, "model.safetensors"), framework="pt") as f:
             assert "model.decoder.layers.8.self_attn.k_proj.weight_scale" in f.keys()
             assert f.get_tensor("model.decoder.layers.5.self_attn.v_proj.weight").dtype == torch.int8
         shutil.rmtree(quantized_model_path, ignore_errors=True)
 
-    def test_llmc_dynamic_wint8aint8_export_with_tuning(self, dataloader):
+    @pytest.mark.parametrize(
+        "scheme,bits,group_size,sym",
+        [
+            ("W4A16", 4, 128, True),
+            ("W4A16", 4, -1, True),
+            ("W8A16", 8, -1, True),
+        ],
+    )
+    def test_llmc_wint_a16_export(self, scheme, bits, group_size, sym):
         from safetensors import safe_open
 
-        autoround = AutoRound(self.model_name, iters=1, nsamples=2, seqlen=2, dataset=dataloader, scheme="INT8_W8A8")
-        quantized_model_path = "./saved"
+        autoround = AutoRound(
+            self.model_name,
+            iters=2,
+            nsamples=2,
+            seqlen=2,
+            scheme=scheme,
+            bits=bits,
+            group_size=group_size,
+            sym=sym,
+        )
+        quantized_model_path = self.save_dir
         autoround.quantize_and_save(output_dir=quantized_model_path, format="llm_compressor")
         with safe_open(os.path.join(quantized_model_path, "model.safetensors"), framework="pt") as f:
-            assert "model.decoder.layers.8.self_attn.k_proj.weight_scale" in f.keys()
-            assert f.get_tensor("model.decoder.layers.5.self_attn.v_proj.weight").dtype == torch.int8
+            # weights must be packed as int32 (compressed-tensors stores both int4 and int8 as torch.int32)
+            weight = f.get_tensor("model.decoder.layers.5.self_attn.v_proj.weight_packed")
+            assert weight.dtype == torch.int32, f"Expected int32 weight for {scheme}, got {weight.dtype}"
+            # weight_scale must be present and be a float tensor
+            scale_key = "model.decoder.layers.8.self_attn.k_proj.weight_scale"
+            assert scale_key in f.keys(), f"Missing {scale_key} for {scheme} export"
+            scale = f.get_tensor(scale_key)
+            assert scale.dtype in (
+                torch.float32,
+                torch.float16,
+                torch.bfloat16,
+            ), f"Expected float weight_scale for {scheme}, got {scale.dtype}"
+            # No input_scale should be present for weight-only quantization
+            input_scale_keys = [k for k in f.keys() if k.endswith(".input_scale")]
+            assert (
+                len(input_scale_keys) == 0
+            ), f"Expected no input_scale for weight-only {scheme}, but found: {input_scale_keys[:5]}"
         shutil.rmtree(quantized_model_path, ignore_errors=True)

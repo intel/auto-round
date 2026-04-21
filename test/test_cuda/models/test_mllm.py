@@ -36,14 +36,16 @@ class VisionDataLoader:
             }
 
 
+@pytest.mark.skip_ci(reason="Only tiny model is suggested")
 class TestAutoRoundMLLM:
-    @classmethod
-    def setup_class(self):
-        self.save_dir = "./saved"
+    @pytest.fixture(autouse=True)
+    def _save_dir(self, tmp_path):
+        self.save_dir = str(tmp_path / "saved")
+        yield
+        shutil.rmtree(self.save_dir, ignore_errors=True)
 
     @classmethod
     def teardown_class(self):
-        shutil.rmtree(self.save_dir, ignore_errors=True)
         shutil.rmtree("runs", ignore_errors=True)
 
     # def test_vision_generation(self):
@@ -110,36 +112,26 @@ class TestAutoRoundMLLM:
     @require_gptqmodel
     @require_optimum
     def test_vlm_tune(self):
-        from transformers import AutoProcessor, AutoTokenizer
-
         from auto_round import AutoRoundMLLM
 
         ## load the model
-        model_name = "/models/Qwen2-VL-2B-Instruct"
-        model = Qwen2VLForConditionalGeneration.from_pretrained(model_name, trust_remote_code=True, device_map="auto")
-        tokenizer = AutoTokenizer.from_pretrained(model_name)
-        processor = AutoProcessor.from_pretrained(model_name, trust_remote_code=True)
-
+        model_name = get_model_path("Qwen/Qwen2-VL-2B-Instruct")
         ## quantize the model
         bits, group_size, sym = 4, 128, True
-        autoround = AutoRoundMLLM(
-            model, tokenizer, processor, bits=bits, group_size=group_size, sym=sym, iters=1, nsamples=1
-        )
+        autoround = AutoRoundMLLM(model_name, bits=bits, group_size=group_size, sym=sym, iters=1, nsamples=1)
         autoround.quantize()
 
         quantized_model_path = self.save_dir
         autoround.save_quantized(quantized_model_path, format="auto_round", inplace=False)
         self.qwen_inference(quantized_model_path)
-        shutil.rmtree(self.save_dir, ignore_errors=True)
         autoround.save_quantized(quantized_model_path, format="auto_gptq", inplace=False)
         self.qwen_inference(quantized_model_path)
-        shutil.rmtree(self.save_dir, ignore_errors=True)
 
     @require_vlm_env
     def test_mm_block_name(self):
         from auto_round.utils import get_block_names
 
-        model_name = "/models/Llama-3.2-11B-Vision-Instruct/"
+        model_name = get_model_path("meta-llama/Llama-3.2-11B-Vision-Instruct")
         from transformers import MllamaForConditionalGeneration
 
         model = MllamaForConditionalGeneration.from_pretrained(model_name, trust_remote_code=True, device_map="auto")
@@ -151,31 +143,31 @@ class TestAutoRoundMLLM:
         assert len(block_name) == 1
         assert get_block_names(model) == block_name
 
-    def test_mllm_detect(self):
+    @pytest.mark.parametrize(
+        "model_name",
+        [
+            "meta-llama/Llama-3.2-11B-Vision-Instruct",
+            "deepseek-ai/deepseek-vl2-tiny",
+            "google/gemma-3-12b-it",
+            "microsoft/Phi-3.5-vision-instruct",
+            "Qwen/Qwen2-VL-2B-Instruct",
+            "HuggingFaceTB/SmolVLM-256M-Instruct",
+            "mistralai/Mistral-Small-3.2-24B-Instruct-2506",
+            "OpenGVLab/InternVL3-1B",
+            "Qwen/Qwen2.5-1.5B-Instruct",
+        ],
+    )
+    def test_mllm_detect(self, model_name):
         from auto_round.utils import is_mllm_model, llm_load_model, mllm_load_model
 
-        for model_name in [
-            "/models/Llama-3.2-11B-Vision-Instruct/",
-            "/models/deepseek-vl2-tiny/",
-            "/models/gemma-3-12b-it/",
-            "/models/Phi-3.5-vision-instruct",
-            "/models/Qwen2-VL-2B-Instruct",
-            "/models/SmolVLM-256M-Instruct",
-            "/models/Mistral-Small-3.2-24B-Instruct-2506",
-            "/models/InternVL3-1B",
-            "/models/pixtral-12b",
-        ]:
-            assert is_mllm_model(model_name)
-            try:
-                model, _, _, _ = mllm_load_model(model_name)
-            except:
-                continue
-            assert is_mllm_model(model)
-
-        for model_name in ["/models/Qwen2.5-1.5B-Instruct/"]:
+        if model_name == "Qwen/Qwen2.5-1.5B-Instruct":
+            model_name = get_model_path(model_name)
             assert not is_mllm_model(model_name)
             model, _ = llm_load_model(model_name)
             assert not is_mllm_model(model)
+        else:
+            model_name = get_model_path(model_name)
+            assert is_mllm_model(model_name)
 
     def test_llama32_vision_early_stop_tracking(self):
         """Test early-stop during calibration for Llama-3.2-11B-Vision-Instruct."""

@@ -65,7 +65,11 @@ class ShardWriter:
         self.skipped_meta_tensors = []
 
         # Directory Setup
-        self.output_dir = os.path.join(rounder._get_save_folder_name(rounder.formats[0]), "")
+        base_dir = rounder._get_save_folder_name(rounder.formats[0])
+        subfolder = getattr(self.model, "_autoround_pipeline_subfolder", None)
+        if subfolder:
+            base_dir = os.path.join(base_dir, subfolder)
+        self.output_dir = os.path.join(base_dir, "")
         os.makedirs(self.output_dir, exist_ok=True)
 
     def _parse_size(self, size_str: str) -> int:
@@ -127,6 +131,28 @@ class ShardWriter:
             self.current_shard_tensors[name] = tensor
             self.current_shard_size += t_size
 
+    def _handle_tied_weights(self):
+        """
+        Detects tied weights in the current shard and ensures they are only saved once.
+        This is done by tracking storage pointers of tensors and skipping duplicates.
+        """
+        from collections import defaultdict
+
+        storage_map = set()
+        filtered_tensors = {}
+
+        for name, tensor in self.current_shard_tensors.items():
+            if not isinstance(tensor, torch.Tensor):
+                filtered_tensors[name] = tensor
+                continue
+
+            ptr = tensor.untyped_storage().data_ptr() + tensor.storage_offset() * tensor.element_size()
+            if ptr not in storage_map:
+                storage_map.add(ptr)
+                filtered_tensors[name] = tensor
+
+        self.current_shard_tensors = filtered_tensors
+
     def _flush_shard(self):
         if not self.current_shard_tensors:
             return
@@ -134,10 +160,16 @@ class ShardWriter:
         self.shard_counter += 1
         tmp_name = f"model-shard-{self.shard_counter:05d}.{self.shard_suffix}"
         tmp_path = os.path.join(self.output_dir, tmp_name)
+        self._handle_tied_weights()
 
         if self.use_safetensors:
             from safetensors.torch import save_file
 
+            # Ensure tensors are contiguous in-place to avoid duplicating them in a separate dict,
+            # which can increase peak RAM usage during saving.
+            for k, v in list(self.current_shard_tensors.items()):
+                if isinstance(v, torch.Tensor) and not v.is_contiguous():
+                    self.current_shard_tensors[k] = v.contiguous()
             save_file(self.current_shard_tensors, tmp_path)
         else:
             torch.save(self.current_shard_tensors, tmp_path)
@@ -171,8 +203,18 @@ class ShardWriter:
         # 1. Capture remaining weights not yet saved
         full_sd = self.model.state_dict()
         tie_word_embeddings = False
+        config = getattr(self.model, "config", None)
         if hasattr(self.model, "config") and hasattr(self.model.config, "tie_word_embeddings"):
             tie_word_embeddings = self.model.config.tie_word_embeddings
+        if tie_word_embeddings is None:
+            # For multimodal models, check nested text/thinker configs
+            for sub_attr in ("text_config", "thinker_config", "language_config", "llm_config"):
+                sub_config = getattr(config, sub_attr, None)
+                if sub_config is not None:
+                    val = getattr(sub_config, "tie_word_embeddings", None)
+                    if val is not None:
+                        tie_word_embeddings = val
+                        break
 
         finalize_skipped_meta_tensors = []
         for pname, tensor in full_sd.items():

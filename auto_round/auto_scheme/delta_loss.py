@@ -27,7 +27,6 @@ from auto_round.auto_scheme.utils import (
     apply_quant_scheme,
     compute_avg_bits_for_scheme,
     compute_layer_bits,
-    dispatch_model_by_all_available_devices,
     parse_shared_layers,
     remove_quant_scheme,
 )
@@ -45,6 +44,7 @@ from auto_round.utils import (
     SUPPORTED_LAYER_TYPES,
     check_to_quantized,
     clear_memory,
+    dispatch_model_by_all_available_devices,
     get_block_names,
     get_major_device,
     get_module,
@@ -559,6 +559,9 @@ def get_score_for_scheme(
 
         model_forward_low_gpu(model, dataloader, major_device=major_device, pbar=pbar)
     else:
+        for n, m in model.named_modules():
+            if hasattr(m, "grad_mode"):
+                m.grad_mode = True
         dataloader = get_dataloader(tokenizer, seqlen, dataset_name=dataset, seed=42, bs=batch_size, nsamples=nsamples)
         for data in dataloader:
             data = to_device(data, model.device)
