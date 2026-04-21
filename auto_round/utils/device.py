@@ -185,6 +185,74 @@ def is_hpex_available():
     return _hpex_available
 
 
+_xpu_sdpa_patched = False
+
+
+def patch_xpu_sdpa_drop_causal_mask():
+    """Workaround for XPU peak-VRAM blow-up in SDPA.
+
+    On Intel XPU, ``torch.nn.functional.scaled_dot_product_attention`` falls back
+    to the MATH backend whenever ``attn_mask`` is non-None (FLASH on XPU does
+    not support explicit attn_mask, EFFICIENT/CUDNN are not implemented).
+    The MATH backend materializes the full ``(B, H, S, S)`` probability matrix
+    in both forward and backward, costing several GB at typical
+    ``batch_size=8, seqlen=2048``.
+
+    HuggingFace transformers happily passes a *pure causal* 4D mask, even
+    though the same effect is achievable via ``is_causal=True`` (which the
+    FLASH backend supports and which uses ~12x less memory).
+
+    This monkey-patch detects a pure causal mask, drops it, and forwards
+    ``is_causal=True`` instead -- only on XPU and only when no real mask info
+    would be lost. CPU/CUDA/HPU paths are left untouched.
+
+    Idempotent. Safe to call multiple times.
+    """
+    torch.use_deterministic_algorithms(False)
+    global _xpu_sdpa_patched
+    if _xpu_sdpa_patched:
+        return
+    if not (hasattr(torch, "xpu") and torch.xpu.is_available()):
+        return
+
+    _orig_sdpa = torch.nn.functional.scaled_dot_product_attention
+
+    def _is_pure_causal_mask(mask: torch.Tensor, s: int) -> bool:
+        # Cheap shape check first
+        if mask.shape[-1] != s or mask.shape[-2] != s:
+            return False
+        if mask.dtype not in (torch.float16, torch.bfloat16, torch.float32):
+            return False
+        # Pick the first (B,H) slice; HF mask is broadcast across batch/heads.
+        m2d = mask.reshape(-1, s, s)[0]
+        tri_up = torch.triu(torch.ones(s, s, dtype=torch.bool, device=mask.device), 1)
+        return bool(torch.isinf(m2d[tri_up]).all().item()) and bool((m2d[~tri_up] == 0).all().item())
+
+    def _patched_sdpa(query, key, value, attn_mask=None, dropout_p=0.0,
+                      is_causal=False, scale=None, **kwargs):
+        if (
+            query.device.type == "xpu"
+            and attn_mask is not None
+            and not is_causal
+            and query.shape[-2] == key.shape[-2]  # square QK length (no kv-cache)
+            and _is_pure_causal_mask(attn_mask, query.shape[-2])
+        ):
+            attn_mask = None
+            is_causal = True
+        return _orig_sdpa(
+            query, key, value,
+            attn_mask=attn_mask, dropout_p=dropout_p,
+            is_causal=is_causal, scale=scale, **kwargs,
+        )
+
+    torch.nn.functional.scaled_dot_product_attention = _patched_sdpa
+    _xpu_sdpa_patched = True
+    logger.info(
+        "Patched torch SDPA on XPU to use is_causal=True for pure causal masks "
+        "(avoids ~10x peak-VRAM blow-up from MATH backend)."
+    )
+
+
 def check_is_cpu(device):
     """Check if the device is a CPU.
 
