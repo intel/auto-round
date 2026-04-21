@@ -29,7 +29,7 @@ Routing is controlled by :class:`RotationConfig.backend`:
 
 from __future__ import annotations
 
-from typing import Union, Any
+from typing import Any, Union
 
 import torch
 
@@ -92,7 +92,7 @@ def apply_hadamard_rotation(
     rotation_config: Union[str, dict, RotationConfig, None],
     data_type: str,
     compute_device: torch.device | str = None,
-) -> (torch.nn.Module,Any):
+) -> (torch.nn.Module, Any):
     """Apply Hadamard rotation/transform to *model*, dispatching by backend.
 
     Args:
