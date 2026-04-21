@@ -49,7 +49,7 @@ def wrapper_autoround(cls: AutoRound):
                 "algorithm extension has only undergone limited validation on "
                 "W2A16,INT4, MXFP4 and NVFP4; use with caution."
             )
-        # cls._get_loss = types.MethodType(_get_loss_ext, cls)
+        cls._get_loss = types.MethodType(_get_loss_ext, cls)
         setattr(cls, "wrapper_block", wrapper_block_v2)
     if cls.data_type.endswith("dq"):
         setattr(cls, "wrapper_block", dq_wrapper_block)
