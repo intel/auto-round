@@ -67,6 +67,7 @@ from auto_round.schemes import (
     _handle_special_schemes,
     get_gguf_scheme,
     preset_name_to_scheme,
+    scheme_to_preset_name,
 )
 from auto_round.sign_sgd import SignSGD
 from auto_round.special_model_handler import get_predefined_ignore_layers, update_module
@@ -92,6 +93,7 @@ from auto_round.utils import (
     get_lm_head_name,
     get_module,
     global_state,
+    hook_ngram_embeddings_on_cpu,
     htcore,
     is_auto_device_mapping,
     is_debug_mode,
@@ -583,16 +585,13 @@ class BaseCompressor(object):
                 fuse_online_to_weight=envs.AR_FUSE_ONLINE_TO_WEIGHT,
             )
 
-            # from auto_round.experimental.transform.apply import apply_hadamard_transform
-            # from auto_round.experimental.utils import check_supported_schemes, normalize_hadamard_config
-            #
-            # check_supported_schemes(self.scheme)
-            #
-            # self.model = apply_hadamard_transform(
-            #     self.model, hadamard_config, need_calibration=True if self.iters > 0 else False
-            # )
-            #
-            # self.hadamard_config = normalize_hadamard_config(hadamard_config)
+           
+#             logger.info("Applying Hadamard transform to the model.")
+#             from auto_round.experimental.transform.apply import apply_hadamard_transform
+#             from auto_round.experimental.utils import normalize_hadamard_config
+
+#             self.hadamard_config = normalize_hadamard_config(hadamard_config, self.data_type)
+#             self.model = apply_hadamard_transform(self.model, self.hadamard_config, data_type=self.data_type)
         tmp = 1
 
     def _gen_auto_scheme(self) -> dict[str, dict]:
@@ -1602,7 +1601,11 @@ class BaseCompressor(object):
                 block = convert_module_to_hp_if_necessary(block, dtype=self.amp_dtype, device=self.device)
                 update_block_global_scale_if_needed(block, self.data_type, self.group_size)
                 self._register_act_max_hook(block)
-                if is_auto_device_mapping(self.device_map) and len(self.device_list) > 1:
+                if (
+                    is_auto_device_mapping(self.device_map)
+                    and len(self.device_list) > 1
+                    and not getattr(self, "is_diffusion", False)
+                ):
                     set_auto_device_map_for_block_with_tuning(
                         block, self.device_map, input_ids, self.low_gpu_mem_usage, self.batch_size, self.device
                     )
@@ -1773,8 +1776,10 @@ class BaseCompressor(object):
                 self.low_cpu_mem_usage = False
                 self.is_immediate_saving = False
 
-        if self.is_immediate_saving and "int" not in self.data_type:
-            logger.warning("immediate_saving is only supported for int quantization, set to False")
+        if self.is_immediate_saving and not (
+            "int" in self.data_type or is_nv_fp(self.data_type) or is_mx_fp(self.data_type)
+        ):
+            logger.warning("immediate_saving is only supported for int/nv_fp/mx_fp quantization, set to False")
             self.is_immediate_saving = False
 
         if self.orig_output_dir is None:
@@ -2242,8 +2247,15 @@ class BaseCompressor(object):
                     self.model(*data_new, **kwargs)
                 else:
                     self.model(**data_new, **kwargs)
-            except NotImplementedError:
-                pass
+            except NotImplementedError as error:
+                error_msg = str(error)
+                # Raise NotImplementedError to fallback to CUDA device
+                if "flash_attn::" in error_msg and "CPU" in error_msg:
+                    raise NotImplementedError(
+                        "Could not run 'flash_attn::_flash_attn_varlen_forward' with arguments from the 'CPU' backend."
+                    )
+                else:
+                    pass
             except RuntimeError as error:
                 error_msg = str(error)
                 if "The expanded size of the tensor" in str(error_msg) and "must match the existing size" in error_msg:
@@ -2291,6 +2303,9 @@ class BaseCompressor(object):
             layer_names = []
         if layer_names is None:
             layer_names = []
+
+        calibrate_on_cpu = False
+        cannot_calibrate_on_cpu = False
         if self.low_gpu_mem_usage or (
             len(block_names) == 1
             and len(layer_names) == 0
@@ -2298,8 +2313,19 @@ class BaseCompressor(object):
             and (last_cache_name is None or last_cache_name in block_names)
         ):
             # low_gpu_mem_usage or calibrate only the embedding layer, which is also very fast on CPU
-            all_inputs = self.cache_inter_data(block_names, nsamples, layer_names=[], last_cache_name=last_cache_name)
-        else:
+            calibrate_on_cpu = True
+            try:
+                all_inputs = self.cache_inter_data(
+                    block_names, nsamples, layer_names=[], last_cache_name=last_cache_name
+                )
+            except NotImplementedError as error:
+                error_msg = str(error)
+                if "flash_attn::" in error_msg and "CPU" in error_msg:
+                    cannot_calibrate_on_cpu = True  # fallback to GPU when flash attention is not supported on CPU
+                else:
+                    raise error
+
+        if not calibrate_on_cpu or cannot_calibrate_on_cpu:
             try:
                 if any(p.device.type == "meta" for p in self.model.parameters()):
                     materialize_model_(self.model)
@@ -2344,13 +2370,15 @@ class BaseCompressor(object):
                                 "No non-CPU device available in accelerate's reported memory. "
                                 "Falling back to CPU caching."
                             )
-
+                        # Keep ngram_embeddings on CPU
+                        has_ngram_embeddings, raw_ngram_embeddings = hook_ngram_embeddings_on_cpu(self.model)
                         new_max_memory = get_balanced_memory(
                             self.model,
                             max_memory=new_max_memory,
                             no_split_module_classes=no_split_modules,
                         )
-                        self.model.tie_weights()
+                        if hasattr(self.model, "tie_weights") and callable(self.model.tie_weights):
+                            self.model.tie_weights()
                         device_map = infer_auto_device_map(
                             self.model, max_memory=new_max_memory, no_split_module_classes=no_split_modules
                         )
@@ -2361,8 +2389,9 @@ class BaseCompressor(object):
                             )
 
                         try:
-
                             self.model = dispatch_model(self.model, device_map=device_map)
+                            if has_ngram_embeddings:
+                                self.model.model.ngram_embeddings = raw_ngram_embeddings
                         except ValueError as e:
                             if "offload_dir" in e.__str__():
                                 logger.warning(
@@ -2375,7 +2404,6 @@ class BaseCompressor(object):
                             else:
                                 raise
                     else:
-
                         self.model = self.model.to(self.device)
 
                 all_inputs = self.cache_inter_data(
@@ -2384,7 +2412,9 @@ class BaseCompressor(object):
                 if hasattr(self.model, "hf_device_map") and len(self.model.hf_device_map) > 1:
                     accelerate.hooks.remove_hook_from_submodules(self.model)
 
-            except torch.OutOfMemoryError:
+            except torch.OutOfMemoryError as e:
+                if cannot_calibrate_on_cpu:
+                    raise e
                 cuda_error_msg = traceback.format_exc()
                 try:
                     logger.info("switch to cpu to cache block inputs")
@@ -2445,13 +2475,16 @@ class BaseCompressor(object):
         calib_bs = self.batch_size
         self.hook_handles = []
         self._replace_forward()
-        self.calib(nsamples, calib_bs)
-        self._recover_forward()
+        try:
+            self.calib(nsamples, calib_bs)
+        finally:
+            # Use finally to recover_forward and delattr in case of that
+            # self.calib raises NotImplementedError, such as: flash_attn on CPU.
+            self._recover_forward()
+            for attr in ("last_cache_name", "_cache_target_set", "_cache_seen_targets", "to_cached_layers"):
+                if hasattr(self, attr):
+                    delattr(self, attr)
         res = self.inputs
-        del self.last_cache_name
-        del self._cache_target_set
-        del self._cache_seen_targets
-        del self.to_cached_layers
         if tmp_dtype is not None:
             self.model = self.model.to(tmp_dtype)
 
@@ -2643,7 +2676,6 @@ class BaseCompressor(object):
 
     def _replace_forward(self):
         """Replaces the forward function."""
-
         for n, m in self.model.named_modules():
             if n in self.to_cached_layers and type(m) not in self.supported_types:  ##block
                 m.orig_forward = m.forward
@@ -3010,7 +3042,11 @@ class BaseCompressor(object):
         if auto_offload:
             # card_0_in_high_risk indicates that card_0 memory is already in high usage (90%) w/o any weights
             # loss_device is used to calculate loss on the second device if available and card_0_in_high_risk
-            if is_auto_device_mapping(self.device_map) and len(self.device_list) > 1:
+            if (
+                is_auto_device_mapping(self.device_map)
+                and len(self.device_list) > 1
+                and not getattr(self, "is_diffusion", False)
+            ):
                 card_0_in_high_risk, loss_device = set_auto_device_map_for_block_with_tuning(
                     block, self.device_map, input_ids, self.low_gpu_mem_usage, self.batch_size, device
                 )
@@ -3454,8 +3490,8 @@ class BaseCompressor(object):
                 continue
             layer = get_module(self.model, key)
             if layer is None:
-                logger.error(f"could not find layer {key} in the model, exit...")
-                exit(-1)
+                logger.warning_once(f"could not find layer {key} in the model, skipping")
+                continue
             if type(layer) in self.supported_types and check_to_quantized(self.layer_config[key]):
                 layer_names.append(key)
 

@@ -760,7 +760,11 @@ def tune(args):
                     suffix = f"a{autoround.act_bits}"
             else:
                 suffix = f"g{autoround.group_size}"
-        prefix = autoround.data_type.lower().replace("_", "") if "int" not in autoround.data_type else ""
+        prefix = (
+            autoround.data_type.lower().replace("_", "")
+            if "int" not in autoround.data_type or "mx" in autoround.data_type
+            else ""
+        )
         export_dir = os.path.join(
             args.output_dir,
             model_name.split("/")[-1] + (f"-{prefix}" if prefix else "") + f"-w{autoround.bits}{suffix}",
@@ -841,6 +845,10 @@ def run_light():
 
 def run_fast():
     start("fast")
+
+
+def run_mllm():
+    run()
 
 
 if __name__ == "__main__":
