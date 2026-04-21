@@ -94,3 +94,17 @@ def test_finalize_skips_lm_head_when_tie_word_embeddings_true(tmp_path):
     assert "transformer_blocks.0.linear.weight" in saved_tensors
     assert "lm_head.weight" not in saved_tensors, "lm_head must be skipped when tied"
     assert model.lm_head.weight.device.type == "meta"
+
+
+def test_finalize_offloads_module_with_tensor_in_parameters(tmp_path):
+    model = _DiffusionStyleModel()
+    model.transformer_blocks[0].linear._parameters["weight"] = model.transformer_blocks[0].linear.weight.to("cpu")
+    rounder = _RounderStub(model, str(tmp_path))
+    writer = ShardWriter(rounder)
+
+    writer.save_module(model.transformer_blocks[0], "transformer_blocks.0")
+    writer.finalize()
+
+    offloaded_weight = model.transformer_blocks[0].linear._parameters["weight"]
+    assert isinstance(offloaded_weight, torch.nn.Parameter)
+    assert offloaded_weight.device.type == "meta"

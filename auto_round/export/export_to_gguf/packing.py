@@ -77,11 +77,21 @@ def ggml_quant(
     n_blocks = data.nelement() // block_size
     split_num = 16 if max(data.shape) > 100_000 else 1
     blocks = data.reshape((n_blocks, block_size))
-    scale = scale.to(device).reshape(blocks.shape[0], -1) if scale is not None else scale
-    zp = zp.to(device).reshape(blocks.shape[0], -1) if zp is not None and isinstance(zp, torch.Tensor) else zp
-    wmin = wmin.to(device).reshape(blocks.shape[0], -1) if wmin is not None else wmin
-    d_scale = d_scale.to(device).reshape(blocks.shape[0], -1) if d_scale is not None else d_scale
-    d_wmin = d_wmin.to(device).reshape(blocks.shape[0], -1) if d_wmin is not None else d_wmin
+
+    def _safe_reshape(t):
+        if t is None or not isinstance(t, torch.Tensor):
+            return t
+        # Q4_0 / Q5_0 etc. compute their own scales; metadata from a different
+        # group size (e.g. 256 vs block_size 32) cannot be reshaped and is unused.
+        if t.nelement() % blocks.shape[0] != 0:
+            return None
+        return t.to(device).reshape(blocks.shape[0], -1)
+
+    scale = _safe_reshape(scale)
+    zp = _safe_reshape(zp)
+    wmin = _safe_reshape(wmin)
+    d_scale = _safe_reshape(d_scale)
+    d_wmin = _safe_reshape(d_wmin)
     quant_func = GGML_QUANT_TYPE[ggml_type]
     results = []
     chunk_size = (n_blocks + split_num - 1) // split_num
