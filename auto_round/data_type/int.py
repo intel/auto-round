@@ -47,7 +47,7 @@ def search_scales(data: torch.Tensor, bits: int, qw: Union[None, torch.Tensor, f
         best_loss.mul_(qw)  # inplace multiply by weight
     best_loss = torch.sum(best_loss, dim=-1)
     if bits == 2:
-        search_min = -18 * 5
+        search_min = 18 * 5
         step = 0.01
     else:
         grid = 200
@@ -88,7 +88,7 @@ def search_scales(data: torch.Tensor, bits: int, qw: Union[None, torch.Tensor, f
 
 @register_dtype("opt_rtn_int_sym")
 def quant_tensor_opt_rtn_sym(tensor, bits=4, group_size=-1, v=0, q_scale_thresh=1e-5, imatrix=None, **kwargs):
-    """Quantize and de-quantize tensor asymmetrically. full range, credict goes to llamacpp community
+    """Quantize and de-quantize tensor asymmetrically. full range, credit goes to llamacpp community
 
     Args:
         tensor: Tensor containing the tensor to be quantized
@@ -133,7 +133,7 @@ def quant_tensor_rtn_sym(
     scale_dtype=torch.float16,
     **kwargs
 ):
-    """Quantize and de-quantize tensor asymmetrically. full range, credict goes to llamacpp community
+    """Quantize and de-quantize tensor asymmetrically. full range, credit goes to llamacpp community
 
     Args:
         tensor: Tensor containing the tensor to be quantized
@@ -176,7 +176,7 @@ def quant_tensor_sym(
     q_scale_thresh=1e-5,
     **kwargs
 ):
-    """Quantize and de-quantize tensor asymmetrically. full range, credict goes to llamacpp community
+    """Quantize and de-quantize tensor asymmetrically. full range, credit goes to llamacpp community
 
     Args:
         tensor: Tensor containing the tensor to be quantized
