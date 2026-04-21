@@ -580,7 +580,14 @@ class BaseCompressor(object):
                 data_type=self.data_type,
                 compute_device=self.device,
             )
-            self.rotation_config = getattr(self.model, "rotation_config", rotation_config)
+            stored = getattr(self.model, "rotation_config", rotation_config)
+            # Normalize to a plain dict so it round-trips through JSON
+            # (HF saves quantization_config to config.json on save_pretrained).
+            if hasattr(stored, "model_dump"):
+                stored = stored.model_dump()
+            self.rotation_config = stored
+            # Mirror the JSON-safe form back onto the model.
+            setattr(self.model, "rotation_config", stored)
 
     def _gen_auto_scheme(self) -> dict[str, dict]:
         if self.mllm:

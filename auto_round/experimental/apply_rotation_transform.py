@@ -138,8 +138,9 @@ def apply_hadamard_rotation(
             fuse_online_to_weight=fuse_online_to_weight,
             compute_device=compute_device,
         )
-        # Stash for downstream (export / serialization).
-        setattr(model, "rotation_config", config)
+        # Stash for downstream (export / serialization). Plain dict so JSON
+        # serialization (HF save_pretrained -> config.json) round-trips.
+        setattr(model, "rotation_config", config.model_dump() if hasattr(config, "model_dump") else config)
         return model, hooks
 
     elif backend == "transform":

@@ -64,8 +64,10 @@ def apply_rotation_transform(
             continue
         _apply_to_module(model, module, config, location, data_type)
 
-    # attach config to model for compression/serialization
-    setattr(model, "rotation_config", config)
+    # attach config to model for compression/serialization. Use a plain dict so
+    # that downstream HF `save_pretrained` -> JSON works (RotationConfig is a
+    # pydantic model and is not directly JSON serializable).
+    setattr(model, "rotation_config", config.model_dump() if hasattr(config, "model_dump") else config)
     hooks = None
 
     return model, hooks
