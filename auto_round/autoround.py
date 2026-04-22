@@ -186,7 +186,7 @@ class AutoRound:
             model_cls.append(DiffusionCompressor)
             if extra_config:
                 extra_config.mllm_config = None
-        elif use_vllm_loading or is_vllm_model(model):
+        elif (use_vllm_loading and isinstance(model, str)) or (not isinstance(model, str) and is_vllm_model(model)):
             logger.info("using vllm to load model.")
             model_cls.append(VllmCompressor)
             if extra_config:

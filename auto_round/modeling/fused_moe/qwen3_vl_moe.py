@@ -16,7 +16,7 @@ import torch
 import transformers
 from packaging import version
 
-from auto_round.modeling.fused_moe.replace_modules import ReplacementModuleBase
+from auto_round.modeling.replace_modules import ReplacementModuleBase
 from auto_round.utils import clear_memory, unsupported_meta_device
 
 transformers_version = version.parse(transformers.__version__)

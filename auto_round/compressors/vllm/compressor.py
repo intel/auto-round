@@ -1,4 +1,4 @@
-# Copyright (c) 2025 Intel Corporation
+# Copyright (c) 2023 Intel Corporation
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -12,17 +12,30 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import copy
+import os
+import sys
+import time
+import traceback
 from collections import defaultdict
-from copy import deepcopy
-from typing import Union, Any
+from contextlib import nullcontext
+from dataclasses import asdict, fields
+from functools import partial
+from typing import Any, Callable, Optional, Union
 
+import accelerate
 import torch
+from accelerate.big_modeling import dispatch_model, infer_auto_device_map
+from accelerate.utils import get_balanced_memory, get_max_memory
+from packaging import version
+from torch import autocast
 from tqdm import tqdm
+from transformers import AutoConfig, set_seed
 
+from auto_round import envs
+from auto_round.auto_scheme.gen_auto_scheme import AutoScheme
 from auto_round.compressors.base import BaseCompressor
-from auto_round.compressors.utils import block_forward
-from auto_round.logger import logger
-from auto_round.schemes import QuantizationScheme
+from auto_round.compressors.shard_writer import shard_writer
 from auto_round.compressors.utils import (
     IndexSampler,
     block_forward,
@@ -30,48 +43,72 @@ from auto_round.compressors.utils import (
     check_skippable_keywords,
     collect_best_params,
     get_shared_keys,
-    immediate_saving,
     infer_bits_by_data_type,
     init_cache,
+    is_block_wfp8,
+    is_dynamic_afp8,
+    is_dynamic_wint8aint8,
     is_mx_fp,
     is_nv_fp,
-    is_standard_fp,
     is_static_wfp8afp8,
     is_wfp8afp8,
     reset_params,
     set_layer_config,
 )
+from auto_round.data_type import QUANT_FUNC_WITH_DTYPE
+from auto_round.data_type.utils import reshape_pad_tensor_by_group_size, update_block_global_scale_if_needed
+from auto_round.experimental.transform.hadamard_config import HadamardConfig
+from auto_round.export.export_to_gguf.config import GGUF_INNER_CONFIG
+from auto_round.formats import OutputFormat, get_formats
+from auto_round.logger import logger
+from auto_round.modeling.replace_modules import materialize_model_, safe_to_cpu_
+from auto_round.modeling.unfused_moe import apply_model_monkey_patches
+from auto_round.schemes import (
+    QuantizationScheme,
+    _handle_special_schemes,
+    get_gguf_scheme,
+    preset_name_to_scheme,
+)
+from auto_round.special_model_handler import (
+    _handle_special_model,
+)
+from auto_round.sign_sgd import SignSGD
+from auto_round.special_model_handler import get_predefined_ignore_layers, update_module
 from auto_round.utils import (
     INNER_SUPPORTED_LAYER_TYPES,
     SUPPORTED_DTYPES,
     SUPPORTED_LAYER_TYPES,
     TORCH_VERSION_AT_LEAST_2_6,
     CpuInfo,
-    check_and_mark_fp8_model,
+    check_and_mark_quantized_module,
     check_seqlen_compatible,
     check_to_quantized,
     check_vllm_installed,
     clear_memory,
     compile_func,
+    compress_layer_names,
     convert_dtype_str2torch,
-    convert_fp8_layer_to_linear,
-    convert_fp8_model_to_16b_model,
-    copy_python_files_from_model_cache,
+    convert_module_to_hp_if_necessary,
     detect_device,
     extract_block_names_to_str,
     find_matching_blocks,
     flatten_list,
     get_block_names,
     get_layer_names_in_block,
+    get_lm_head_name,
     get_module,
+    global_state,
+    htcore,
     is_auto_device_mapping,
     is_debug_mode,
-    is_fp8_linear,
-    is_fp8_model,
+    is_hpex_available,
     is_moe_model,
+    is_moe_model_via_config,
+    is_quantized_input_module,
     llm_load_model,
     memory_monitor,
     mv_module_from_gpu,
+    normalize_no_split_modules,
     set_amax_for_all_moe_layers,
     set_module,
     to_device,
@@ -79,31 +116,65 @@ from auto_round.utils import (
     unsupported_meta_device,
     vllm_load_model,
 )
+from auto_round.utils.device import (
+    clear_memory_if_reached_threshold,
+    get_major_device,
+    parse_available_devices,
+    set_auto_device_map_for_block_with_tuning,
+    set_non_auto_device_map,
+)
+from auto_round.utils.distributed import setup_ddp_if_needed_
+from auto_round.utils.offload import OffloadManager
+from auto_round.wrapper import WrapperLinear, WrapperMultiblock, unwrapper_block, unwrapper_layer, wrapper_block
+
+SERIALIZATION_KEYS = (
+    "bits",
+    "act_bits",
+    "data_type",
+    "act_data_type",
+    "group_size",
+    "act_group_size",
+    "sym",
+    "act_sym",
+    "act_dynamic",
+    "amp",
+    "batch_size",
+    "enable_minmax_tuning",
+    "enable_norm_bias_tuning",
+    "enable_quanted_input",
+    "gradient_accumulate_steps",
+    "iters",
+    "lr",
+    "low_gpu_mem_usage",
+    "minmax_lr",
+    "nsamples",
+    "quant_block_list",
+    "regex_config",
+    "scale_dtype",
+    "seqlen",
+    "supported_types",
+    "static_attention_dtype",
+    "static_kv_dtype",
+    "super_bits",
+    "super_group_size",
+    "to_quant_block_names",
+    "hadamard_config",
+)
 
 
 class VllmCompressor(BaseCompressor):
-    """Class for automatic rounding-based quantization with Diffusion models.
+    """Vllm compressor for vllm loading model quantization
 
-    Args:
-        model: The PyTorch model to be quantized.
-        tokenizer: An optional tokenizer for processing input data, is not used for diffusion models.
+    Attributes:
+        model (torch.nn.Module): The loaded PyTorch model in eval mode.
+        tokenizer: Tokenizer used to prepare input text for calibration/tuning.
         platform (str): The platform to load pretrained moded, options: ["hf", "model_scope"]
-        guidance_scale (float): Control how much the image generation process follows the text prompt.
-                                The more it is, the more closely it follows the prompt (default is 7.5).
-        num_inference_steps (int): The reference number of denoising steps (default is 50).
-        generator_seed (int): A sees that controls the initial noise from which an image is generated (default is None).
-        scheme: (str| dict | QuantizationScheme ): A preset scheme that defines the quantization configurations.
-        layer_config (dict): Configuration for weight quantization (default is None).
-        dataset: The path or name of the calib dataset.
-        iters (int): Number of iterations (default is 200).
-        seqlen (int): Length of the sequence.
-        nsamples (int): Number of samples (default is 128).
-        batch_size (int): Batch size for training (default is 8).
-        gradient_accumulate_steps (int): Number of gradient accumulation steps (default is 1).
-        low_gpu_mem_usage (bool): Whether to use low GPU memory (default is False).
-        device_map (str | dict | int | torch.device, optional): Device placement map. Defaults to 0.
-        enable_torch_compile (bool): Whether to enable torch compile to optimize quant_block/layer
-        **kwargs: Additional keyword arguments.
+        bits (int): Weight quantization bits.
+        group_size (int): Per-group size for weight quantization.
+        sym (bool): Whether to use symmetric weight quantization.
+        layer_config (dict): Per-layer quantization configuration.
+        nsamples (int): Number of calibration samples.
+        enable_torch_compile (bool): Whether to enable compile_func for quant blocks/layers.
     """
 
     bits: int | None
@@ -120,12 +191,12 @@ class VllmCompressor(BaseCompressor):
 
     def __init__(
         self,
-        model: Union[object, str],
+        model: Union[torch.nn.Module, str],
         tokenizer=None,
-        platform: str = "hf",
-        scheme: Union[str, dict, QuantizationScheme] = "W4A16",
+        platform="hf",
+        scheme: Union[str, dict, QuantizationScheme, AutoScheme] = "W4A16",
         layer_config: dict[str, Union[str, dict, QuantizationScheme]] = None,
-        dataset: Union[str, list, tuple, torch.utils.data.DataLoader] = "coco2014",
+        dataset: Union[str, list, tuple, torch.utils.data.DataLoader] = "NeelNanda/pile-10k",
         iters: int = 200,
         seqlen: int = 2048,
         nsamples: int = 128,
@@ -137,15 +208,73 @@ class VllmCompressor(BaseCompressor):
         seed: int = 42,
         **kwargs,
     ):
+        """Initialize AutoRound with quantization and tuning configuration.
+
+        Args:
+            model (torch.nn.Module | str): Model object or model name to load.
+            tokenizer: Tokenizer for text processing. Required if `model` is not a string and `iters > 0`.
+            scheme (str| dict | QuantizationScheme ): A preset scheme that defines the quantization configurations
+            bits (int, optional): Weight quantization bits. Defaults to 4.
+            group_size (int, optional): Weight quantization group size. Defaults to 128.
+            sym (bool, optional): Symmetric weight quantization. Defaults to True.
+            layer_config (dict, optional): Layer-wise quantization config. Defaults to None.
+            batch_size (int, optional): Calibration batch size. Defaults to 8.
+            amp (bool, optional): Use AMP for tuning. Defaults to True.
+            device (str | torch.device | int, optional): Compute device. Defaults to 0.
+            dataset (str | list | tuple | DataLoader, optional): Calibration data. Defaults to "NeelNanda/pile-10k".
+            enable_minmax_tuning (bool, optional): Enable weight min-max tuning. Defaults to True.
+            lr (float, optional): Learning rate; if None, set to 1.0 / iters except when iters==0.
+            minmax_lr (float, optional): Learning rate for min-max tuning; defaults to `lr`.
+            low_gpu_mem_usage (bool, optional): Lower GPU memory mode. Defaults to False.
+            low_cpu_mem_usage (bool, optional): Lower CPU memory mode. Defaults to False.
+            iters (int, optional): Optimization iterations. Defaults to 200.
+            seqlen (int, optional): Calibration sequence length. Defaults to 2048.
+            nsamples (int, optional): Number of calibration samples. Defaults to 128.
+            seed (int, optional): Random seed. Defaults to 42.
+            gradient_accumulate_steps (int, optional): Gradient accumulation steps. Defaults to 1.
+            data_type (str, optional): Weight data type string, e.g., "int". Defaults to "int".
+            act_bits (int, optional): Activation quantization bits. Defaults to 16.
+            act_group_size (int, optional): Activation group size. Defaults to None.
+            act_sym (bool, optional): Symmetric activation quantization. Defaults to None.
+            act_data_type (str, optional): Activation data type; inherits weight dtype if None and act_bits < 16.
+            act_dynamic (bool, optional): Dynamic activation quantization. Defaults to True.
+            enable_torch_compile (bool, optional): Enable torch.compile for quant blocks/layers. Defaults to False.
+            device_map (str | dict, optional): Device placement map. Defaults to None.
+            disable_opt_rtn (bool, optional): Disable RTN-mode optimization (iters=0). Defaults to None.
+            enable_alg_ext (bool, optional): Enable algorithm extension (primarily for INT2). Defaults to False.
+            **kwargs: Backward compatible options:
+                - enable_alg_ext, quant_lm_head, lr, lr_scheduler, not_use_best_mse, dynamic_max_gap,
+                  super_group_size, super_bits, scale_dtype ("fp16" etc.),
+                  nblocks, to_quant_block_names,
+                  enable_norm_bias_tuning, enable_quanted_input, enable_opt_rtn,
+                  disable_deterministic_algorithms, mllm, static_kv_dtype,enable_deterministic_algorithms,momentum
+        Raises:
+            ValueError: If invalid device is provided or tokenizer is missing for non-str model with iters > 0.
+            RuntimeError: If model parameters are on meta device.
+        Example:
+            Layer-wise configuration structure:
+
+            >>> layer_config = {
+            ...     "layer1": {
+            ...         "bits": 3,
+            ...         "group_size": 128,
+            ...         "sym": True,
+            ...     },
+            ...     "layer2": {
+            ...         "W8A16"
+            ...      }
+            ...     # ...
+            ... }
+        """
         check_vllm_installed()
         from vllm import LLM
 
         logger.warning("vllm model quantization is experimental.")
         self.llm, model, tokenizer = vllm_load_model(model)
-
-        to_quant_block_names: Union[str, list, None] = kwargs.pop("to_quant_block_names", None)
+        check_and_mark_quantized_module(model)
 
         all_blocks = get_block_names(model)
+        to_quant_block_names: Union[str, list, None] = kwargs.pop("to_quant_block_names", None)
         self.quant_block_list = find_matching_blocks(model, all_blocks, to_quant_block_names)
         if to_quant_block_names is None:
             to_quant_block_names = extract_block_names_to_str(self.quant_block_list)
@@ -156,12 +285,8 @@ class VllmCompressor(BaseCompressor):
             )
             iters = 0
 
-        if nsamples % batch_size != 0:
-            nsamples = (nsamples // batch_size + 1) * batch_size
-            logger.warning(f"'nsamples' is not divisible by 'batch_size', will adjusted to {nsamples}")
-
-        seqlen = 2048 if seqlen is None else seqlen
-
+        model = _handle_special_model(model)
+        kwargs["vllm_loading"] = True
         super(VllmCompressor, self).__init__(
             model=model,
             tokenizer=tokenizer,
@@ -181,82 +306,6 @@ class VllmCompressor(BaseCompressor):
             to_quant_block_names=to_quant_block_names,
             **kwargs,
         )
-
-
-    @torch.inference_mode()
-    def _quantize_rtn(self) -> tuple[torch.nn.Module, dict[str, Any]]:
-        """Quantize all modules in the model using RTN (Round-To-Nearest) strategy.
-
-        If the target format includes GGUF with `k`, and optimized RTN is enabled,
-        blockwise quantization with input caching and imatrix is used.
-
-        Returns:
-            tuple[nn.Module, Dict[str, Any]]: The quantized model and the layer configuration.
-        """
-        all_to_quantized_module_names: list[str] = [n for n, m in self.model.named_modules() if check_to_quantized(m)]
-        if is_nv_fp(self.data_type):
-            from auto_round.data_type.nvfp import calculate_gparam
-            from auto_round.data_type.utils import update_fused_layer_global_scales
-
-            pbar = tqdm(all_to_quantized_module_names)
-            for name in pbar:
-                pbar.set_description(f"Calculate weight global scale: {name}")
-                m = get_module(self.model, name)
-                if is_fp8_linear(m):
-                    convert_fp8_layer_to_linear(m, self.amp_dtype, self.device)
-                weight_global_scale = calculate_gparam(m.weight, self.group_size)
-                setattr(m, "weight_global_scale", weight_global_scale)
-
-            logger.info("Start to update fused layer global scales, it may take some time.")
-            for name, module in self.model.named_modules():
-                update_fused_layer_global_scales(module)
-            logger.info("Finished updating fused layer global scales.")
-
-        # Release memory
-        clear_memory(device_list=self.device_list)
-
-        enable_imatrix = False
-        if not self.disable_opt_rtn and self.data_type == "int" and self.sym:
-            enable_imatrix = True
-        if enable_imatrix:
-            self._quant_rtn_with_imatrix(all_to_quantized_module_names)
-        elif self.act_bits <= 8 and check_need_act_calibration(
-            self.act_dynamic,
-            self.act_data_type,
-            self.act_bits,
-            self.static_kv_dtype,
-            self.static_attention_dtype,
-        ):  # TODO, mixed datatype has bug
-            hook_handles = self._register_act_max_hook(self.model)
-            self.calib(self.nsamples, self.batch_size)
-            for handle in hook_handles:
-                handle.remove()
-            if is_nv_fp(self.act_data_type) or is_static_wfp8afp8(self):
-                # enable moe experts act_max automatic generation for Linear
-                set_amax_for_all_moe_layers(self.model, attr_name="act_max")
-            for name, m in self.model.named_modules():
-                if hasattr(m, "global_name") and m.global_name in all_to_quantized_module_names:
-                    self._quantize_layer_via_rtn(m.global_name, to_cpu=self.low_gpu_mem_usage)
-                    all_to_quantized_module_names.remove(m.global_name)
-        else:
-            block_names_cnt = len(flatten_list(get_block_names(self.model, True)))
-            clear_mem_freq = len(all_to_quantized_module_names) // block_names_cnt
-            if clear_mem_freq == 0:
-                clear_mem_freq = 1
-            pbar = tqdm(all_to_quantized_module_names)
-            cnt = 1
-            for name in pbar:
-                pbar.set_description(f"Quantizing {name}")
-                self._quantize_layer_via_rtn(name)
-                if cnt % clear_mem_freq == 0:
-                    clear_memory(device_list=self.device_list)
-                    cnt = 1
-                cnt += 1
-        # Convert remaining fp8
-        if is_fp8_model(self.model):
-            convert_fp8_model_to_16b_model(self.model, self.amp_dtype, self.device)
-        self.quantized = True
-        return self.model, self.layer_config
 
     def _quant_rtn_with_imatrix(self, all_to_quantized_module_names: list[str]) -> None:
         """Performs RTN quantization using input activation statistics (imatrix).
@@ -316,7 +365,6 @@ class VllmCompressor(BaseCompressor):
         for hook in hooks:
             hook.remove()
 
-        # self._quantize_via_rtn_blockwise(all_to_quantized_module_names)
         all_to_quantized_module_names = list(set(all_to_quantized_module_names))
 
         all_blocks = self.quant_block_list if self.quant_block_list else get_block_names(self.model)
@@ -349,15 +397,105 @@ class VllmCompressor(BaseCompressor):
             if self.super_group_size is not None:
                 dtype = torch.float32
             self._quantize_layer_via_rtn(name, dtype=dtype)
-            # clear_memory(device_list=self.device_list)
 
-    def _postprocess_shard_module(self, module_id, new_mod):
-        """Replace shared module to quantized module."""
+    # Use no_grad instead of inference mode
+    # https://github.com/intel/auto-round/issues/1620
+    @torch.no_grad()
+    def _quantize_rtn(self) -> tuple[torch.nn.Module, dict[str, Any]]:
+        """Quantize all modules in the model using RTN (Round-To-Nearest) strategy.
+
+        If the target format includes GGUF with `k`, and optimized RTN is enabled,
+        blockwise quantization with input caching and imatrix is used.
+
+        Returns:
+            tuple[nn.Module, Dict[str, Any]]: The quantized model and the layer configuration.
+        """
+        if self.amp and self.model.dtype != self.amp_dtype:
+            self.model.to(self.amp_dtype)
+
+        all_to_quantized_module_names: list[str] = [n for n, m in self.model.named_modules() if check_to_quantized(m)]
+        self.all_to_quantized_module_names = all_to_quantized_module_names
+
+        if not (any(fmt.is_gguf() for fmt in getattr(self, "formats", [])) or self.super_bits is not None):
+            self._quantize_embedding_layer()  # leave to gguf itself to handle
+
+        # Release memory
+        clear_memory(device_list=self.device_list)
+
+        enable_imatrix = False
+        if not self.disable_opt_rtn:
+            has_gguf_k = (
+                any(fmt.is_gguf() and "k" in fmt.output_format for fmt in getattr(self, "formats", []))
+                or self.super_bits is not None
+            )
+            if has_gguf_k:
+                enable_imatrix = True
+            elif self.data_type == "int" and self.sym:
+                enable_imatrix = True
+        if enable_imatrix:
+            self._quant_rtn_with_imatrix(all_to_quantized_module_names)
+        elif self.act_bits <= 8 and check_need_act_calibration(
+            self.act_dynamic,
+            self.act_data_type,
+            self.act_bits,
+            self.static_kv_dtype,
+            self.static_attention_dtype,
+        ):  # TODO, mixed datatype has bug
+            hook_handles = self._register_act_max_hook(self.model)
+            for handle in hook_handles:
+                handle.remove()
+
+        tied_weights_keys = getattr(self.model, "_tied_weights_keys", [])
+        if tied_weights_keys is None:
+            tied_weights_keys = []
+        if isinstance(tied_weights_keys, dict):
+            tied_weights_values = list(tied_weights_keys.values())
+        else:
+            tied_weights_values = list(tied_weights_keys)
+        tied_weights_layers = [".".join(val.split(".")[:-1]) for val in tied_weights_values]  # rm weight/bias
+        # In fact, we should detect whether it is is_separate_lm_head, to simplify, we don't do it
+        if hasattr(self, "formats") and self.formats[0].is_gguf():
+            lm_head_name = get_lm_head_name(self.model)
+            if lm_head_name is not None:
+                tied_weights_layers.append(lm_head_name)
+
+        # materialize_model_(self.model)
+        block_names_cnt = len(flatten_list(get_block_names(self.model, True)))
+        clear_mem_freq = len(all_to_quantized_module_names) // block_names_cnt
+        cnt = 0
+        pbar = tqdm(all_to_quantized_module_names)
+
         for n, m in self.model.named_modules():
-            if id(m) == module_id and check_to_quantized(m):
-                print("!!!!!", n)
-                set_module(self.model, n, new_mod)
+            if hasattr(m, "global_name") and m.global_name in all_to_quantized_module_names:
+                pbar.set_description(f"Quantizing {m.global_name}")
+                self._quantize_layer_via_rtn(m.global_name)
+                cnt += 1
+                pbar.update()
+                if cnt % clear_mem_freq == 0:
+                    clear_memory(device_list=self.device_list)
+                    memory_monitor.log_summary()
 
+            elif (
+                not any(m.children())
+                and len(m.state_dict()) > 0
+                and n not in tied_weights_layers
+                and self.is_immediate_saving
+            ):
+                set_module(self.model, n, copy.deepcopy(m))
+                shard_writer(self, name=n)
+                m.to("meta")
+
+        # Convert remaining fp8
+        convert_module_to_hp_if_necessary(self.model, self.amp_dtype, self.device)
+        if self.low_cpu_mem_usage:
+            self._offloader.reload(self.model)
+        if self.is_immediate_saving:
+            shard_writer(self, is_finalize=True)
+
+        self.quantized = True
+        return self.model, self.layer_config
+
+    @torch.no_grad()
     def calib(self, nsamples, bs):
         """Perform calibration for quantization.
 
@@ -388,7 +526,6 @@ class VllmCompressor(BaseCompressor):
             )
         else:
             self.dataloader = self.dataset
-
         total_cnt = 0
         total = nsamples if not hasattr(self.dataloader, "len") else min(nsamples, len(self.dataloader))
 
@@ -427,10 +564,14 @@ class VllmCompressor(BaseCompressor):
                     f"valid samples is less than batch_size({self.batch_size}),"
                     " please adjust self.batch_size or seqlen."
                 )
-            max_len = (total_cnt // self.batch_size) * self.batch_size
-        # torch.cuda.empty_cache()
 
-    def save_quantized(self, output_dir=None, format="auto_round", inplace=True, **kwargs):
+    def save_quantized(
+        self,
+        output_dir: str = None,
+        format: Union[str, list[OutputFormat]] = "auto_round",
+        inplace: bool = True,
+        **kwargs,
+    ) -> torch.nn.Module:
         """Save the quantized model to the specified output directory in the specified format.
 
         Args:
@@ -446,21 +587,33 @@ class VllmCompressor(BaseCompressor):
         import json
         from functools import partial
         from huggingface_hub import split_torch_state_dict_into_shards
-        from safetensors.torch import save_file as safe_save_file
+        from safetensors.torch import save_file, _remove_duplicate_names
 
         def save_pretrained(model_to_save, save_directory, max_shard_size="5GB", safe_serialization=True, **kwargs):
+            if (
+                hasattr(model_to_save.config, "rope_parameters")
+                and model_to_save.config.rope_parameters.get("type", None) is not None
+                and model_to_save.config.rope_parameters.get("rope_type", None) is not None
+                and model_to_save.config.rope_parameters["type"] != model_to_save.config.rope_parameters["rope_type"]
+            ):
+                model_to_save.config.rope_parameters.pop("rope_type")
             model_to_save.config.save_pretrained(save_directory)
+
             state_dict = model_to_save.state_dict()
+            duplicates = _remove_duplicate_names(state_dict)
+            metadata = {}
+            metadata["format"] = "pt"
+
+            for kept_name, duplicate_group in duplicates.items():
+                for duplicate_name in duplicate_group:
+                    state_dict[duplicate_name] = state_dict[kept_name].clone()
+
             filename_pattern = "model{suffix}.safetensors"
 
             state_dict_split = split_torch_state_dict_into_shards(
                 state_dict, filename_pattern=filename_pattern, max_shard_size=max_shard_size
             )
 
-            metadata = {}
-            metadata["format"] = "pt"
-
-            index = None
             if state_dict_split.is_sharded:
                 total_params = list(model_to_save.named_parameters())
                 total_numel = []
@@ -469,24 +622,27 @@ class VllmCompressor(BaseCompressor):
                 index = {
                     "metadata": {"total_parameters": sum(total_numel), **state_dict_split.metadata},
                     "weight_map": state_dict_split.tensor_to_filename,
-            }
-            for shard_file, tensor_names in state_dict_split.filename_to_tensors.items():
-                filename = os.path.join(save_directory, shard_file)
-                shard_state_dict = {}
-                for tensor_name in tensor_names:
-                    # Get the tensor, and remove it from state_dict to avoid keeping the ref
-                    tensor = state_dict.pop(tensor_name)
-                    shard_state_dict[tensor_name] = tensor.contiguous()
-                safe_save_file(shard_state_dict, filename, metadata=metadata)
-            del shard_state_dict
+                }
+                for shard_file, tensor_names in state_dict_split.filename_to_tensors.items():
+                    filename = os.path.join(save_directory, shard_file)
+                    shard_state_dict = {}
+                    for tensor_name in tensor_names:
+                        # Get the tensor, and remove it from state_dict to avoid keeping the ref
+                        tensor = state_dict.pop(tensor_name)
+                        shard_state_dict[tensor_name] = tensor.contiguous()
+                    save_file(shard_state_dict, filename, metadata=metadata)
+                del shard_state_dict
 
-            if index is not None:
                 save_index_file = os.path.join(save_directory, "model.safetensors.index.json")
                 # Save the index as well
                 with open(save_index_file, "w", encoding="utf-8") as f:
                     content = json.dumps(index, indent=2, sort_keys=True) + "\n"
                     f.write(content)
+            else:
+                filename = os.path.join(save_directory, list(state_dict_split.filename_to_tensors.keys())[0])
+                save_file(state_dict, filename, metadata=metadata)
 
+        print(self.model)
         self.model.save_pretrained = partial(save_pretrained, self.model)
         compressed_model = super().save_quantized(output_dir=output_dir, format=format, inplace=inplace, **kwargs)
         return compressed_model

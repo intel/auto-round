@@ -755,7 +755,14 @@ def vllm_load_model(
         os.environ["VLLM_ENABLE_V1_MULTIPROCESSING"] = "0"
         logger.warning("VLLM_ENABLE_V1_MULTIPROCESSING is set to 0 for vllm model quantization")
 
-        llm = LLM(pretrained_model_name_or_path, enforce_eager=True, cpu_offload_gb=1024, gpu_memory_utilization=0.5)
+        llm = LLM(
+            pretrained_model_name_or_path,
+            enforce_eager=True,
+            #cpu_offload_gb=1024,
+            gpu_memory_utilization=0.5,
+            max_model_len=8192,
+            kv_cache_memory_bytes=1024 * 1024 * 1024 * 16,
+        )
         model = llm.llm_engine.engine_core.engine_core.model_executor.driver_worker.worker.model_runner.model
     elif isinstance(pretrained_model_name_or_path, LLM):
         llm = pretrained_model_name_or_path
@@ -867,19 +874,21 @@ def is_diffusion_model(model_or_path: Union[str, object]) -> bool:
         return False
 
 
-def is_vllm_model(model_or_path: Union[str, object]) -> bool:
-    if not isinstance(model_or_path, torch.nn.Module) and "vllm" in str(type(model_or_path)):
+def is_vllm_model(model_or_path: object) -> bool:
+    if "vllm" in str(type(model_or_path)):
         check_vllm_installed()
-
-        attr = get_nested_attr(
-            model_or_path,
-            "llm_engine.engine_core.engine_core.model_executor.driver_worker.worker.model_runner.model"
-        )
-        if attr is None:
-            raise ValueError(
-                "Please add VLLM_ENABLE_V1_MULTIPROCESSING=0 and use enforce_eager=True to load vllm model"
+        if not isinstance(model_or_path, torch.nn.Module):
+            attr = get_nested_attr(
+                model_or_path,
+                "llm_engine.engine_core.engine_core.model_executor.driver_worker.worker.model_runner.model"
             )
-        return True
+            if attr is None:
+                raise ValueError(
+                    "Please add VLLM_ENABLE_V1_MULTIPROCESSING=0 and use enforce_eager=True to load vllm model"
+                )
+            return True
+        else:
+            return True
     else:
         return False
 
