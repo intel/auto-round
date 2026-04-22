@@ -8,8 +8,9 @@ from packaging import version
 from transformers import AutoModelForCausalLM, AutoRoundConfig, AutoTokenizer
 
 from auto_round import AutoRound
+from auto_round.export.export_to_autoround import export_to_nvfp_mx as autoround_nvfp_mx_export
 
-from ...helpers import is_model_outputs_similar, transformers_version
+from ...helpers import forbid_threaded_packing, is_model_outputs_similar, transformers_version
 
 
 def _get_folder_size(path: str) -> float:
@@ -21,8 +22,6 @@ def _get_folder_size(path: str) -> float:
             if os.path.isfile(fp):
                 total_size += os.path.getsize(fp)
     return total_size / (1024**3)  # convert to GB
-
-
 class TestAutoRoundFP:
     @pytest.fixture(autouse=True)
     def setup_save_dir(self, tmp_path):
@@ -289,7 +288,7 @@ class TestAutoRoundFP:
             and tmp_layer.weight_scale.shape[0] == 768
         ), "Illegal NVFP4 packing name or data_type or shape"
 
-    def test_nvfp4_autoround_save_quantized(self, tiny_opt_model_path, dataloader):
+    def test_nvfp4_autoround_save_quantized(self, tiny_opt_model_path, dataloader, monkeypatch):
         model_name = tiny_opt_model_path
         from transformers import AutoConfig
 
@@ -303,6 +302,7 @@ class TestAutoRoundFP:
         )
         quantized_model_path = self.save_dir
         autoround.quantize()
+        forbid_threaded_packing(monkeypatch, autoround_nvfp_mx_export)
         compressed_model = autoround.save_quantized(output_dir=quantized_model_path, format="auto_round")
         tmp_layer = compressed_model.model.decoder.layers[1].self_attn.q_proj
         assert (
