@@ -25,6 +25,8 @@ def _get_folder_size(path: str) -> float:
             if os.path.isfile(fp):
                 total_size += os.path.getsize(fp)
     return total_size / (1024**3)  # convert to GB
+
+
 class TestAutoRound:
     @classmethod
     def setup_class(self):
