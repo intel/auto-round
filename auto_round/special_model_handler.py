@@ -204,7 +204,7 @@ def _handle_special_model(model):
         from functools import partial
 
         model.forward = partial(_qwen3_omni_moe_forward, model)
-    if hasattr(model, "config") and model.config.model_type == "gemma4":
+    if hasattr(model, "config") and model_type == "gemma4":
         import transformers
         from packaging import version
 

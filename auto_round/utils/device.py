@@ -40,7 +40,6 @@ DEVICE_ENVIRON_VARIABLE_MAPPING = {
     "hpu": "HABANA_VISIBLE_MODULES",
 }
 
-
 # Note on HPU usage:
 # There are two modes available for enabling auto-round on HPU:
 # 1. Compile Mode
@@ -284,7 +283,13 @@ def detect_device(device: Union[None, str, int, torch.device] = None) -> str:
     return device
 
 
-def get_device_and_parallelism(device: Union[str, torch.device, int]) -> tuple[str, bool]:
+def get_device_and_parallelism(device: Union[str, torch.device, int, dict]) -> tuple[str, bool]:
+    if isinstance(device, dict):
+        unique_devices = set(device.values())
+        if len(unique_devices) == 1:
+            device = next(iter(unique_devices))
+        else:
+            device = "auto"
     if isinstance(device, str):
         if device in ["cuda", "xpu", "hpu"]:
             device = detect_device(device)

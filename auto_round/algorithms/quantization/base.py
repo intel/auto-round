@@ -467,9 +467,16 @@ class BaseQuantizers:
         for key in input_others.keys():
             if "positional_inputs" in key:
                 continue
-            if (key not in share_cache_keys or len(indices) == 1) and not isinstance(
-                input_others[key], (str, bool, type(None))
-            ):
+            if key in share_cache_keys:
+                # Shared keys are stored once (not per-sample), often wrapped in a
+                # 1-element list by the caching hook.  Unwrap so the model receives
+                # the raw value (e.g. (cos, sin) tuple, not [(cos, sin)]).
+                val = input_others[key]
+                if isinstance(val, list) and len(val) == 1:
+                    current_input_others[key] = val[0]
+                else:
+                    current_input_others[key] = val
+            elif not isinstance(input_others[key], (str, bool, type(None))):
                 current_input_others[key] = None
                 if input_others[key] is not None:
                     current_input_others[key] = [input_others[key][i] for i in indices]

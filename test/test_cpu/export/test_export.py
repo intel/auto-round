@@ -24,6 +24,7 @@ def _get_folder_size(path: str) -> float:
 
 
 class TestAutoRound:
+
     @classmethod
     def setup_class(self):
         self.model_name = opt_name_or_path
@@ -420,6 +421,7 @@ class TestAutoRound:
             model=self.model_name,
             scheme="INT8_W8A8",
         )
+        autoround_old.post_init()
         format_list_old = get_formats("llm_compressor, auto_round:llm_compressor", autoround_old)
         assert format_list_old[0].output_format == "llm_compressor"
         assert format_list_old[0].get_backend_name() == "llm_compressor:int8_w8a8"
