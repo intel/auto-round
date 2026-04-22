@@ -1,7 +1,7 @@
 
 ### Algorithm Details
 
-| Alg       | Rotation Type | Activation Clip Ratio | weight quantizer | w/a symetric |
+| Alg       | Rotation Type | Activation Clip Ratio | weight quantizer | w/a symmetric |
 |-----------|---------------|-----------------------|------------------|--------------|
 | Quarot    | fixed         | 0.9                   | GPTQ             | yes          |
 | FlatQuant | learnable     | learnable             | GPTQ             | yes          |
