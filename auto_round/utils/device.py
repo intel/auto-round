@@ -208,12 +208,12 @@ def patch_xpu_sdpa_drop_causal_mask():
 
     Idempotent. Safe to call multiple times.
     """
-    torch.use_deterministic_algorithms(False)
     global _xpu_sdpa_patched
     if _xpu_sdpa_patched:
         return
     if not (hasattr(torch, "xpu") and torch.xpu.is_available()):
         return
+    torch.use_deterministic_algorithms(False)
 
     _orig_sdpa = torch.nn.functional.scaled_dot_product_attention
 
