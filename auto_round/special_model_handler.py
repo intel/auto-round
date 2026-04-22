@@ -719,6 +719,18 @@ register_ignore_layers(
     ],
 )
 
+register_ignore_layers(
+    matchers=[
+        ModelTypeMatcher(r"qwen3_5", mode="in"),
+    ],
+    ignore_layers=[
+        "mlp.gate",
+        "mlp.shared_expert_gate",
+        "mtp.fc",
+        "mtp.gate",
+    ],
+)
+
 
 def get_predefined_ignore_layers(model: torch.nn.Module) -> list[str]:
     layers = []
