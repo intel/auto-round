@@ -60,7 +60,7 @@ export AR_DISABLE_OFFLOAD=1
 ```
 
 ### AR_DISABLE_DATASET_SUBPROCESS
-- **Description**: Disables the use of a subprocess for dataset preprocessing. By default, AutoRound uses a subprocess to ensure all temporary memory is reclaimed by the OS.
+- **Description**: Only for research. Disables the use of a subprocess for dataset preprocessing. By default, AutoRound uses a subprocess to ensure all temporary memory is reclaimed by the OS.
 - **Default**: `False`
 - **Valid Values**: `"1"`, `"true"` (case-insensitive) for disabling; any other value for enabling
 - **Usage**: Set this to run dataset preprocessing in the main process
@@ -70,7 +70,7 @@ export AR_DISABLE_DATASET_SUBPROCESS=true
 ```
 
 ### AR_ACT_SCALE
-- **Description**: Controls the scaling factor applied to activation min/max values during activation quantization. A value less than 1.0 shrinks the clipping range, which can reduce outlier impact.
+- **Description**: Only for research. Controls the scaling factor applied to activation min/max values during activation quantization. A value less than 1.0 shrinks the clipping range, which can reduce outlier impact.
 - **Default**: `1.0`
 - **Valid Values**: float>=0.0, e.g. `0.8`, `0.9`, `1.0`
 - **Usage**: Set this to adjust the activation clipping range
@@ -87,6 +87,16 @@ export AR_ACT_SCALE=0.9
 
 ```bash
 export AR_ENABLE_ACT_MINMAX_TUNING=1
+```
+
+### AR_SEARCH_SCALE_RATIO
+- **Description**: Controls the search range ratio used by the symmetric INT scale search in `auto_round.data_type.int.search_scales`. The search bound is `nmax * AR_SEARCH_SCALE_RATIO`, where `nmax = 2^(bits-1)`. Smaller values restrict the search to a tighter neighborhood around the initial scale (faster, less thorough); larger values broaden the search (slower, may improve accuracy on outlier-heavy weights).
+- **Default**: unset → falls back to the built-in default (`0.5`, i.e. `nmax/2`).
+- **Valid Values**: positive float, e.g. `0.25`, `0.5`, `0.75`, `1.0`
+- **Usage**: Set this to override the default scale-search range
+
+```bash
+export AR_SEARCH_SCALE_RATIO=0.75
 ```
 
 ## Usage Examples
