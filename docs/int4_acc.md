@@ -1,10 +1,10 @@
 ### Algorithm Details
 
-| Alg       | Rotation Type | Activation Clip Ratio | weight quantizer | w&a symmetric |
+| Alg       | Rotation Type | Activation Clip Ratio | Weight Quantizer | W&A symmetric |
 |-----------|---------------|-----------------------|------------------|---------------|
 | Quarot    | fixed         | 0.9                   | GPTQ             | yes           |
 | FlatQuant | learnable     | learnable             | GPTQ             | yes           |
-| Ours      | fixed         | 0.9                   | SignRound        | yes           |
+| Ours      | fixed         | 0.9                   | SignRoundV2      | yes           |
 
 ### Eval Details
 
@@ -21,7 +21,7 @@ All results below `exclude` KV-cache quantization, as it is not yet supported in
 ### How to Reproduce
 
 ~~~ bash
-AR_ACT_SCALE=0.9  auto-round Qwen/Qwen3-8B  --scheme INT4 --rotation_type hadamard --format fake --tasks mmlu 
+AR_ACT_SCALE=0.9  auto-round Qwen/Qwen3-8B  --scheme INT4 --rotation_type hadamard --enable_alg_ext --format fake --tasks mmlu 
 ~~~
 
 ### Qwen3-8B
