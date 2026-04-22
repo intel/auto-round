@@ -7,3 +7,4 @@ threadpoolctl
 torch
 tqdm
 transformers>=4.38
+pydantic

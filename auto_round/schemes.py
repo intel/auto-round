@@ -36,6 +36,7 @@ class QuantizationScheme:
     act_dynamic: Optional[bool] = None
     super_bits: Optional[int] = None
     super_group_size: Optional[int] = None
+    hadamard_config: Optional[dict] = None
 
     @classmethod
     def from_dict(cls, config: dict):
@@ -85,7 +86,14 @@ class QuantizationScheme:
         for field in self.get_attributes():
             if skip_act_check and field.startswith("act_"):
                 continue
-            if getattr(self, field) != getattr(other, field):
+            self_val = getattr(self, field)
+            other_val = getattr(other, field)
+            # Treat None and empty dict as equivalent for dict fields like hadamard_config
+            if self_val != other_val:
+                if isinstance(self_val, dict) and not self_val and other_val is None:
+                    continue
+                if isinstance(other_val, dict) and not other_val and self_val is None:
+                    continue
                 return False
         return True
 
@@ -97,8 +105,26 @@ def preset_name_to_scheme(name: str) -> QuantizationScheme:
     if name not in PRESET_SCHEMES:
         raise KeyError(f"Unknown preset scheme name {name}, " f"available names: {list(PRESET_SCHEMES.keys())}")
 
+    if name == "INT8_W8A8":
+        logger.warning_once(
+            "The 'INT8_W8A8' scheme name is deprecated and will be removed in a future release. "
+            "Please use 'INT8' instead."
+        )
+
     scheme_args = deepcopy(PRESET_SCHEMES[name])
     return scheme_args
+
+
+def scheme_to_preset_name(scheme: Union[str, QuantizationScheme]) -> str:
+    """Get preset scheme name from a QuantizationScheme instance."""
+    if isinstance(scheme, str):
+        name = scheme.upper()
+        return name if name in PRESET_SCHEMES else ""
+
+    for key, val in PRESET_SCHEMES.items():
+        if val == scheme:
+            return key
+    return ""
 
 
 def is_preset_scheme(name: str) -> bool:
@@ -220,6 +246,18 @@ MXFP8_RCEIL = QuantizationScheme.from_dict(
     }
 )
 
+MXINT4 = QuantizationScheme.from_dict(
+    {
+        "bits": 4,
+        "group_size": 32,
+        "data_type": "mx_int",
+        "act_bits": 4,
+        "act_data_type": "mx_int",
+        "act_group_size": 32,
+        "act_sym": True,
+        "act_dynamic": True,
+    }
+)
 
 NVFP4 = QuantizationScheme.from_dict(
     {
@@ -244,6 +282,18 @@ FPW8A16 = QuantizationScheme.from_dict(
     }
 )
 
+FP8_BLOCK = QuantizationScheme.from_dict(
+    {
+        "bits": 8,
+        "group_size": (128, 128),
+        "data_type": "fp",
+        "act_bits": 8,
+        "act_group_size": 128,
+        "act_data_type": "fp",
+        "act_dynamic": True,
+        "act_sym": True,
+    }
+)
 
 # FP8 = asdict(QuantArgs.from_dict({
 #     "bits": 8,
@@ -266,7 +316,7 @@ FP8_STATIC = QuantizationScheme.from_dict(
     }
 )
 
-INT8_W8A8 = QuantizationScheme.from_dict(
+INT8 = QuantizationScheme.from_dict(
     {
         "bits": 8,
         "group_size": -1,
@@ -308,7 +358,10 @@ PRESET_SCHEMES = {
     "FP8_STATIC": FP8_STATIC,
     "BF16": BF16,
     "W4A16_MIXED": W4A16,
-    "INT8_W8A8": INT8_W8A8,
+    "INT8": INT8,
+    "INT8_W8A8": INT8,
+    "FP8_BLOCK": FP8_BLOCK,
+    "MXINT4": MXINT4,
 }
 from auto_round.export.export_to_gguf.config import GGUF_CONFIG
 

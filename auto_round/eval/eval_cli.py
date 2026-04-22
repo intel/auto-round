@@ -20,10 +20,12 @@ import torch.nn
 from transformers.utils.versions import require_version
 
 from auto_round.utils import (
+    DEVICE_ENVIRON_VARIABLE_MAPPING,
+    detect_device,
     dispatch_model_block_wise,
     get_device_and_parallelism,
-    get_device_str,
     get_model_dtype,
+    is_diffusion_model,
     set_cuda_visible_devices,
 )
 
@@ -113,6 +115,59 @@ class EvalArgumentParser(argparse.ArgumentParser):
             help="(for vllm) Custom vllm arguments in format: 'arg1=value1,arg2=value2'. "
             "Example: 'tensor_parallel_size=2,gpu_memory_utilization=0.9'",
         )
+        # Diffusion model specific arguments
+        diffusion_args = self.add_argument_group("diffusion model arguments")
+        diffusion_args.add_argument(
+            "--prompt_file",
+            default=None,
+            type=str,
+            help="File containing prompts for evaluation, one per line. "
+            "Use this for batch evaluation with multiple prompts.",
+        )
+        diffusion_args.add_argument(
+            "--prompt",
+            default=None,
+            type=str,
+            help="Single prompt for quick testing. " "Overrides prompt_file if both are specified.",
+        )
+        diffusion_args.add_argument(
+            "--metrics",
+            "--metric",
+            default="clip",
+            help="Evaluation metrics for generated images. "
+            "'clip': CLIP score measuring text-image alignment. "
+            "'clip-iqa': CLIP-based image quality assessment. "
+            "'imagereward': Learned metric for image quality.",
+        )
+        diffusion_args.add_argument(
+            "--image_save_dir",
+            default="./tmp_image_save",
+            type=str,
+            help="Directory to save generated images during evaluation. " "Useful for visual inspection of results.",
+        )
+        diffusion_args.add_argument(
+            "--guidance_scale",
+            default=7.5,
+            type=float,
+            help="Classifier-free guidance scale for diffusion models. "
+            "Higher values (7-20) make the model follow the prompt more closely. "
+            "Lower values give more creative/random results.",
+        )
+        diffusion_args.add_argument(
+            "--num_inference_steps",
+            default=50,
+            type=int,
+            help="Number of denoising steps in the diffusion process. "
+            "More steps (50-100) usually give better quality but take longer. "
+            "Fewer steps (10-30) are faster but lower quality.",
+        )
+        diffusion_args.add_argument(
+            "--generator_seed",
+            default=None,
+            type=int,
+            help="Random seed for image generation reproducibility. "
+            "Using the same seed produces identical results across runs.",
+        )
 
 
 def _eval_init(tasks, model_path, device, disable_trust_remote_code=False, dtype="auto"):
@@ -134,6 +189,13 @@ def eval(args):
         "lm_eval>=0.4.2", "lm-eval is required for evaluation, please install it with `pip install 'lm-eval>=0.4.2'`"
     )
 
+    if is_diffusion_model(args.model):
+        from auto_round.eval.evaluation import evaluate_diffusion_model
+        from auto_round.utils import diffusion_load_model
+
+        pipe, _ = diffusion_load_model(args.model)
+        evaluate_diffusion_model(args, pipe=pipe)
+        return
     if args.eval_backend == "vllm":
         assert isinstance(args.model, str), "vllm evaluation only supports model name or path."
         eval_with_vllm(args)
@@ -224,29 +286,36 @@ def eval_with_vllm(args):
         logger.info(f"Overriding VLLM parameters with custom args: {custom_vllm_kwargs}")
         vllm_kwargs.update(custom_vllm_kwargs)
 
-    device = get_device_str()
-    environ_mapping = {
-        "cuda": "CUDA_VISIBLE_DEVICES",
-        "xpu": "ZE_AFFINITY_MASK",
-        "hpu": "HABANA_VISIBLE_MODULES",
-    }
+    device = detect_device()
     if "tensor_parallel_size" not in vllm_kwargs:
-        # Parse device_map to determine tensor_parallel_size and set CUDA_VISIBLE_DEVICES
-        # Only accept formats like "0" or "0,1,2"
-        assert device in environ_mapping, f"Device {device} not supported for vllm tensor parallelism."
-        environ_name = environ_mapping[device]
+        # Parse device_map to determine tensor_parallel_size and set the relevant env var
+        # Only accept formats like "0" or "0,1,2". If the environment variable is
+        # already set externally, do not overwrite it — but still derive
+        # `tensor_parallel_size` from the existing value.
+        assert device in DEVICE_ENVIRON_VARIABLE_MAPPING, f"Device {device} not supported for vllm tensor parallelism."
+        env_name = DEVICE_ENVIRON_VARIABLE_MAPPING[device]
         device_map = args.device_map
         device_ids = [d.strip() for d in str(device_map).split(",") if d.strip().isdigit()]
-        if device_ids:
+
+        from auto_round.logger import logger
+
+        existing_env = os.environ.get(env_name)
+        if existing_env:
+            existing_ids = [d.strip() for d in existing_env.split(",") if d.strip()]
+            if existing_ids:
+                tensor_parallel_size = len(existing_ids)
+                vllm_kwargs["tensor_parallel_size"] = tensor_parallel_size
+                logger.info(
+                    f"Detected existing {env_name}={existing_env}, skipping overwrite; "
+                    f"tensor_parallel_size={tensor_parallel_size} derived from {env_name}"
+                )
+        elif device_ids:
             device_id_str = ",".join(device_ids)
-            os.environ[environ_name] = device_id_str
+            os.environ[env_name] = device_id_str
             tensor_parallel_size = len(device_ids)
             vllm_kwargs["tensor_parallel_size"] = tensor_parallel_size
-            from auto_round.logger import logger
 
-            logger.info(
-                f"Set {environ_name}={os.environ[environ_name]}, " f"tensor_parallel_size={tensor_parallel_size}"
-            )
+            logger.info(f"Set {env_name}={os.environ[env_name]}, tensor_parallel_size={tensor_parallel_size}")
 
     vllm_lm = VLLM_VLM(**vllm_kwargs) if args.mllm else VLLM(**vllm_kwargs)
     res = evaluator.simple_evaluate(
@@ -429,7 +498,7 @@ def _evaluate_tasks_with_retry(tasks, hflm, device_str, batch_size, limit, retry
             except Exception as e:
                 cuda_error_msg = traceback.format_exc()
                 try:
-                    ori_batch_sizes = hflm.batch_sizes if hflm.batch_sizes else {"0": 64}
+                    ori_batch_sizes = hflm.batch_sizes or {"0": 64}
                     if not hflm.batch_sizes:
                         hflm.batch_sizes = ori_batch_sizes.copy()
                     try:

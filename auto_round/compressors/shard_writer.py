@@ -17,6 +17,7 @@ import os
 from collections import OrderedDict
 
 import torch
+from torch.nn import Parameter
 
 from auto_round.logger import logger
 from auto_round.utils import get_lm_head_name, get_module
@@ -55,12 +56,21 @@ class ShardWriter:
         self.global_weight_map = {}
         self.shard_counter = 0
 
+        # Persistent set of all parameter names already flushed to a shard file.
+        # Maintained incrementally in _flush_shard to avoid O(N^2) rebuilds in _add_tensor.
+        self._all_saved = set()
+
         # Stats
         self.total_param_elems = 0
         self.total_param_size_bytes = 0
+        self.skipped_meta_tensors = []
 
         # Directory Setup
-        self.output_dir = os.path.join(rounder._get_save_folder_name(rounder.formats[0]), "")
+        base_dir = rounder._get_save_folder_name(rounder.formats[0])
+        subfolder = getattr(self.model, "_autoround_pipeline_subfolder", None)
+        if subfolder:
+            base_dir = os.path.join(base_dir, subfolder)
+        self.output_dir = os.path.join(base_dir, "")
         os.makedirs(self.output_dir, exist_ok=True)
 
     def _parse_size(self, size_str: str) -> int:
@@ -95,6 +105,14 @@ class ShardWriter:
             self._add_tensor(param_name, v)
 
     def _add_tensor(self, name: str, tensor: torch.Tensor):
+        if isinstance(tensor, torch.Tensor) and tensor.device.type == "meta":
+            self.skipped_meta_tensors.append(name)
+            return
+
+        # Guard against duplicate saving of the same parameter
+        if name in self._all_saved or name in self.current_shard_tensors:
+            return
+
         t_size = tensor.nbytes
         self.total_param_elems += tensor.numel()
         self.total_param_size_bytes += t_size
@@ -114,6 +132,28 @@ class ShardWriter:
             self.current_shard_tensors[name] = tensor
             self.current_shard_size += t_size
 
+    def _handle_tied_weights(self):
+        """
+        Detects tied weights in the current shard and ensures they are only saved once.
+        This is done by tracking storage pointers of tensors and skipping duplicates.
+        """
+        from collections import defaultdict
+
+        storage_map = set()
+        filtered_tensors = {}
+
+        for name, tensor in self.current_shard_tensors.items():
+            if not isinstance(tensor, torch.Tensor):
+                filtered_tensors[name] = tensor
+                continue
+
+            ptr = tensor.untyped_storage().data_ptr() + tensor.storage_offset() * tensor.element_size()
+            if ptr not in storage_map:
+                storage_map.add(ptr)
+                filtered_tensors[name] = tensor
+
+        self.current_shard_tensors = filtered_tensors
+
     def _flush_shard(self):
         if not self.current_shard_tensors:
             return
@@ -121,16 +161,23 @@ class ShardWriter:
         self.shard_counter += 1
         tmp_name = f"model-shard-{self.shard_counter:05d}.{self.shard_suffix}"
         tmp_path = os.path.join(self.output_dir, tmp_name)
+        self._handle_tied_weights()
 
         if self.use_safetensors:
             from safetensors.torch import save_file
 
+            # Ensure tensors are contiguous in-place to avoid duplicating them in a separate dict,
+            # which can increase peak RAM usage during saving.
+            for k, v in list(self.current_shard_tensors.items()):
+                if isinstance(v, torch.Tensor) and not v.is_contiguous():
+                    self.current_shard_tensors[k] = v.contiguous()
             save_file(self.current_shard_tensors, tmp_path)
         else:
             torch.save(self.current_shard_tensors, tmp_path)
 
         saved_params = list(self.current_shard_tensors.keys())
         self.shard_meta.append({"tmp_file": tmp_name, "params": saved_params})
+        self._all_saved.update(saved_params)
 
         # Offload logic: move modules to meta device once all params are saved
         self._offload_to_meta(saved_params)
@@ -140,35 +187,73 @@ class ShardWriter:
 
     def _offload_to_meta(self, saved_params):
         """Attempts to move fully saved modules to the 'meta' device to free RAM."""
-        # Using a set for faster lookup of all saved parameters
-        all_saved = {p for meta in self.shard_meta for p in meta["params"]}
-
         for param_full_name in saved_params:
             module_path = param_full_name.rsplit(".", 1)[0]
 
             module = get_module(self.model, module_path)
-            # Check if all parameters of this module are now in 'all_saved'
-            if module is not None and all(f"{module_path}.{k}" in all_saved for k in module.state_dict().keys()):
-                module.to("meta")
+            # Check if all parameters of this module are now in '_all_saved'
+            if (
+                module is not None
+                and isinstance(module, torch.nn.Module)
+                and all(f"{module_path}.{k}" in self._all_saved for k in module.state_dict().keys())
+            ):
+                self._move_module_to_meta(module)
+
+    def _move_module_to_meta(self, module: torch.nn.Module):
+        for child in module.children():
+            self._move_module_to_meta(child)
+
+        for name, param in list(module._parameters.items()):
+            if param is None:
+                continue
+            if isinstance(param, Parameter):
+                meta_param = Parameter(param.detach().to(device="meta"), requires_grad=param.requires_grad)
+            elif isinstance(param, torch.Tensor):
+                meta_param = Parameter(param.detach().to(device="meta"), requires_grad=param.requires_grad)
+            else:
+                continue
+            module._parameters[name] = meta_param
+
+        for name, buffer in list(module._buffers.items()):
+            if isinstance(buffer, torch.Tensor):
+                module._buffers[name] = buffer.detach().to(device="meta")
 
     def finalize(self):
         """Saves remaining weights, renames files, and writes the index JSON."""
         # 1. Capture remaining weights not yet saved
         full_sd = self.model.state_dict()
-        tie_word_embeddings = getattr(getattr(self.model, "config", None), "tie_word_embeddings", True)
-        all_saved_names = {p for meta in self.shard_meta for p in meta["params"]}
+        tie_word_embeddings = False
+        config = getattr(self.model, "config", None)
+        if hasattr(self.model, "config") and hasattr(self.model.config, "tie_word_embeddings"):
+            tie_word_embeddings = self.model.config.tie_word_embeddings
+        if tie_word_embeddings is None:
+            # For multimodal models, check nested text/thinker configs
+            for sub_attr in ("text_config", "thinker_config", "language_config", "llm_config"):
+                sub_config = getattr(config, sub_attr, None)
+                if sub_config is not None:
+                    val = getattr(sub_config, "tie_word_embeddings", None)
+                    if val is not None:
+                        tie_word_embeddings = val
+                        break
 
+        finalize_skipped_meta_tensors = []
         for pname, tensor in full_sd.items():
-            if pname in all_saved_names:
+            if pname in self._all_saved:
+                continue
+            if tensor.device.type == "meta":
                 continue
             layer_name = ".".join(pname.split(".")[:-1])
             if self.lm_head_name is not None and layer_name == self.lm_head_name and tie_word_embeddings:
                 lm_head_module = get_module(self.model, self.lm_head_name)
-                lm_head_module.to("meta")  # Must to meta, otherwise model's saver will dump it again
+                self._move_module_to_meta(lm_head_module)  # Must to meta, otherwise model's saver will dump it again
                 continue
             self._add_tensor(pname, tensor.detach().to("cpu"))
 
         self._flush_shard()
+
+        total_skipped = len(self.skipped_meta_tensors) + len(finalize_skipped_meta_tensors)
+        if total_skipped > 0:
+            examples = (self.skipped_meta_tensors + finalize_skipped_meta_tensors)[:5]
 
         # 2. Rename temp files to HF standard and map weights
         if self.shard_counter == 0:

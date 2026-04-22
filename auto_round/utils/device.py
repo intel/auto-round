@@ -11,16 +11,19 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
+import ctypes
 import functools
 import gc
 import os
 import re
+import shutil
 import sys
+import tempfile
 from contextlib import ContextDecorator, contextmanager
 from functools import lru_cache
 from itertools import combinations
 from threading import Lock
-from typing import Callable, Union
+from typing import Any, Callable, Optional, Union
 
 import cpuinfo
 import psutil
@@ -30,6 +33,13 @@ from accelerate.utils import get_balanced_memory, get_max_memory
 
 from auto_round.logger import logger
 from auto_round.utils.model import check_to_quantized, get_block_names, get_layer_features, get_module
+
+DEVICE_ENVIRON_VARIABLE_MAPPING = {
+    "cuda": "CUDA_VISIBLE_DEVICES",
+    "xpu": "ZE_AFFINITY_MASK",
+    "hpu": "HABANA_VISIBLE_MODULES",
+}
+
 
 # Note on HPU usage:
 # There are two modes available for enabling auto-round on HPU:
@@ -513,6 +523,7 @@ def _clear_memory_for_cpu_and_cuda(
             tensor[i] = None
     tensor = None
     gc.collect()
+    _maybe_trim_malloc()
 
     # ------------------------
     # Normalize device_list
@@ -556,6 +567,40 @@ def _clear_memory_for_cpu_and_cuda(
         torch.xpu.empty_cache()
 
 
+_malloc_trim_counter = 0
+
+
+def _maybe_trim_malloc() -> None:
+    """Optionally release glibc heap pages back to OS on Linux.
+
+    Controlled by environment variables:
+    - AR_ENABLE_MALLOC_TRIM: default "1" (enabled)
+    - AR_MALLOC_TRIM_EVERY: default "10" (trigger every N clear_memory calls)
+    """
+    global _malloc_trim_counter
+
+    if os.name != "posix":
+        return
+    if os.environ.get("AR_ENABLE_MALLOC_TRIM", "1") != "1":
+        return
+
+    try:
+        every = int(os.environ.get("AR_MALLOC_TRIM_EVERY", "10"))
+    except ValueError:
+        every = 10
+    every = max(1, every)
+
+    _malloc_trim_counter += 1
+    if _malloc_trim_counter % every != 0:
+        return
+
+    try:
+        libc = ctypes.CDLL("libc.so.6")
+        libc.malloc_trim(0)
+    except Exception:
+        pass
+
+
 class ClearMemory:
     def __init__(self, device_list: list | tuple | None = None):
         self.device_list = device_list
@@ -568,7 +613,7 @@ class ClearMemory:
         from auto_round.utils.device import is_hpex_available
 
         if is_hpex_available():
-            memory_monitor.update_cpu()
+            memory_monitor.update_hpu(device_list)
             return
         else:
             if device_list is not None:
@@ -645,7 +690,9 @@ def check_memory_availability(device, inputs, weight, org_seqlen, org_bs):
         free_space = total_memory - used_memory
     elif "hpu" in device:  # pragma: no cover
         current_hpu_index = torch.hpu.current_device()
-        free_space = torch.hpu.memory_reserved(current_hpu_index)
+        total_memory = torch.hpu.memory_cached(current_hpu_index)
+        used_memory = torch.hpu.memory_allocated(current_hpu_index)
+        free_space = total_memory - used_memory
     else:
         return True, org_seqlen, org_bs
 
@@ -1547,6 +1594,13 @@ class MemoryMonitor:
                 device_list = list(range(torch.cuda.device_count()))
             elif torch.xpu.is_available():
                 device_list = list(range(torch.xpu.device_count()))
+            elif is_hpex_available():
+                try:
+                    import habana_frameworks.torch.hpu as hthpu  # pylint: disable=E0401
+
+                    device_list = list(range(hthpu.device_count()))
+                except Exception:
+                    device_list = [0]
 
         for device in device_list:
             if str(device) == "cpu":
@@ -1558,6 +1612,13 @@ class MemoryMonitor:
             elif torch.xpu.is_available():
                 current_vram = torch.xpu.memory_reserved(device) / 1024**3  # GB
                 if device == "xpu":
+                    device = "0"
+            elif is_hpex_available():
+                try:
+                    current_vram = torch.hpu.memory_allocated(device) / 1024**3  # GB
+                except Exception:
+                    current_vram = 0.0
+                if device == "hpu":
                     device = "0"
             else:
                 return
@@ -1575,6 +1636,40 @@ class MemoryMonitor:
         process = psutil.Process()
         current_ram = process.memory_info().rss / 1024**3  # GB
         self.peak_ram = max(self.peak_ram, current_ram)
+
+    def update_hpu(self, device_list=None):
+        """Update memory usage for HPU devices."""
+        if not self.enabled:
+            return
+        # Track RAM
+        self.update_cpu()
+        # Track HPU VRAM
+        if not is_hpex_available():
+            return
+        if device_list is None:
+            try:
+                import habana_frameworks.torch.hpu as hthpu  # pylint: disable=E0401
+
+                device_list = list(range(hthpu.device_count()))
+            except Exception:
+                device_list = [0]
+        elif not isinstance(device_list, (list, tuple)):
+            device_list = [device_list]
+        for device in device_list:
+            if str(device) == "cpu":
+                continue
+            try:
+                current_vram = torch.hpu.memory_allocated(device) / 1024**3  # GB
+            except Exception:
+                continue
+            dev_key = str(device)
+            if dev_key == "hpu":
+                dev_key = "0"
+            dev_key = dev_key.split(":")[-1]
+            if current_vram > 0:
+                if dev_key not in self.peak_vram:
+                    self.peak_vram[dev_key] = 0.0
+                self.peak_vram[dev_key] = max(self.peak_vram[dev_key], current_vram)
 
     def reset(self):
         """Reset all statistics."""
@@ -1598,21 +1693,12 @@ class MemoryMonitor:
         """Log memory usage summary."""
         summary = self.get_summary()
         logger_method = getattr(logger, level.lower(), logger.info)
-        logger_method(f"{msg} {summary}")
+        if len(msg):
+            logger_method(f"{msg} {summary}")
+        else:
+            logger_method(f"{summary}")
 
         return summary
-
-
-def get_device_str():
-    """Get a string representation of the automatically detected device."""
-    if torch.cuda.is_available():
-        return "cuda"
-    elif torch.xpu.is_available():  # pragma: no cover
-        return "xpu"
-    elif is_hpex_available():  # pragma: no cover
-        return "hpu"
-    else:  # pragma: no cover
-        return "cpu"
 
 
 # Global singleton instance
@@ -1649,3 +1735,107 @@ def dump_mem_usage(msg: str = "", log_level: str = "info"):
         return wrapper
 
     return decorator
+
+
+# This function is designed for Auto Scheme and Diffusion Pipeline,
+# which requires dispatching the whole model on all available devices.
+def dispatch_model_by_all_available_devices(
+    model: torch.nn.Module, device_map: Union[str, int, dict, None]
+) -> torch.nn.Module:
+    # Important Notice: This dispatch does not follow dict device_map, just extract all available devices and use them
+    device_type = detect_device()
+    if device_type in DEVICE_ENVIRON_VARIABLE_MAPPING:
+        existing_env = os.environ.get(DEVICE_ENVIRON_VARIABLE_MAPPING[device_type])
+        if existing_env is None:
+            logger.warning_once(
+                "`get_balanced_memory` is used here, but no environment variable "
+                + "is set to specify device visibility. This may lead to OOM issue even the memory "
+                + "is large enough."
+            )
+
+    # Handle DiffusionPipeline: dispatch only the main sub-model (transformer / unet)
+    # across devices and move the remaining pipeline components to the primary device.
+    is_diffusion_pipeline = False
+    try:
+        from diffusers.pipelines.pipeline_utils import DiffusionPipeline
+
+        if isinstance(model, DiffusionPipeline):
+            is_diffusion_pipeline = True
+    except ImportError:
+        pass
+    if is_diffusion_pipeline:
+        pipe = model
+        _device_map = 0 if device_map is None else device_map
+        devices = parse_available_devices(_device_map)
+        # Identify the main quantisable sub-model
+        main_attr = next(
+            (attr for attr in ("transformer", "unet") if isinstance(getattr(pipe, attr, None), torch.nn.Module)),
+            None,
+        )
+        if main_attr is None or len(devices) == 1:
+            # No identifiable main sub-model, or single target device:
+            # move the entire pipeline to the (first) device.
+            pipe.to(devices[0] if devices else "cuda:0")
+            return pipe
+        # Multi-device path: recursively dispatch the main sub-model,
+        # then move all remaining pipeline components to the primary device.
+        main_model = getattr(pipe, main_attr)
+        dispatched = dispatch_model_by_all_available_devices(main_model, _device_map)
+        setattr(pipe, main_attr, dispatched)
+        primary_device = devices[0]
+        for attr, component in pipe.components.items():
+            if attr == main_attr:
+                continue
+            if isinstance(component, torch.nn.Module):
+                try:
+                    component.to(primary_device)
+                except Exception:
+                    pass
+        return pipe
+
+    if device_map is None:
+        device_map = 0
+
+    from auto_round.utils.common import normalize_no_split_modules
+
+    no_split_modules = normalize_no_split_modules(getattr(model, "_no_split_modules", []))
+    if device_map == "auto":
+        max_memory = get_balanced_memory(
+            model,
+            max_memory=None,
+            no_split_module_classes=no_split_modules,
+        )
+        device_map = infer_auto_device_map(model, max_memory=max_memory, no_split_module_classes=no_split_modules)
+        model = dispatch_model(model, device_map=device_map)
+        return model
+
+    devices = parse_available_devices(device_map)
+
+    if len(devices) == 1:
+        model.to(devices[0])
+        return model
+
+    max_memory = get_balanced_memory(
+        model,
+        max_memory=None,
+        no_split_module_classes=no_split_modules,
+    )
+
+    # Filter max_memory with devices
+    #  assume only one GPU model
+    new_max_memory = {}
+    for device in devices:
+        if ":" in device:
+            device = int(device.split(":")[-1])
+        elif device == "cpu":
+            device = "cpu"
+        elif isinstance(device, str):
+            device = 0
+        else:
+            raise ValueError(f"Unsupported device {device} in device_map: {device_map}")
+        new_max_memory[device] = max_memory[device]
+    if hasattr(model, "tie_weights") and callable(model.tie_weights):
+        model.tie_weights()
+    device_map = infer_auto_device_map(model, max_memory=new_max_memory, no_split_module_classes=no_split_modules)
+    model = dispatch_model(model, device_map=device_map)
+    return model

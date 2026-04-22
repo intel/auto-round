@@ -23,6 +23,7 @@ pr:
       - test/test_hpu
       - test/test_ark
       - test/test_xpu
+      - test/test_cuda
       - "*.md"
       - "**/*.md"
       - .azure-pipelines/scripts/ut/run_ut_hpu.sh

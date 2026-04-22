@@ -11,16 +11,20 @@ from ...helpers import opt_name_or_path
 
 
 class TestAutoRoundFormatGeneration:
+    @pytest.fixture(autouse=True)
+    def setup_save_folder(self, tmp_path):
+        self.save_folder = str(tmp_path / "saved")
+        yield
+        shutil.rmtree(self.save_folder, ignore_errors=True)
+
     @classmethod
     def setup_class(self):
         self.model_name = opt_name_or_path
         self.model = AutoModelForCausalLM.from_pretrained(self.model_name, torch_dtype="auto", trust_remote_code=True)
         self.tokenizer = AutoTokenizer.from_pretrained(self.model_name, trust_remote_code=True)
-        self.save_folder = "./saved"
 
     @classmethod
     def teardown_class(self):
-        shutil.rmtree(self.save_folder, ignore_errors=True)
         shutil.rmtree("runs", ignore_errors=True)
 
     def test_4bits_sym(self, dataloader):
@@ -72,7 +76,7 @@ class TestAutoRoundFormatGeneration:
                 seqlen=2,
                 dataset=dataloader,
             )
-            quantized_model_path = "./saved"
+            quantized_model_path = self.save_folder
 
             autoround.quantize_and_save(output_dir=quantized_model_path, format="auto_round")
 
@@ -85,4 +89,3 @@ class TestAutoRoundFormatGeneration:
             res = tokenizer.decode(model.generate(**inputs, max_new_tokens=50)[0])
             print(res)
             assert "!!!" not in res
-            shutil.rmtree(self.save_folder, ignore_errors=True)

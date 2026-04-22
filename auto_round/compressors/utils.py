@@ -12,6 +12,8 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 import copy
+import json
+import os
 import random
 import re
 import sys
@@ -26,13 +28,14 @@ from torch.amp import autocast
 from auto_round.export.export_to_gguf.config import GGML_QUANT_SIZES, GGUF_CONFIG, GGUF_INNER_CONFIG, QK_K, ModelType
 from auto_round.logger import logger
 from auto_round.schemes import QuantizationScheme, get_gguf_scheme, preset_name_to_scheme
-from auto_round.utils import check_to_quantized
+from auto_round.utils import check_to_quantized, to_standard_regex
 
 
 class BackendDataType(str, Enum):
     STANDARD_FP = "fp"
     MX_FP = "mx_fp"
     NV_FP = "nv_fp"
+    MX_INT = "mx_int"
 
 
 def is_standard_fp(backend):
@@ -43,6 +46,11 @@ def is_standard_fp(backend):
 def is_mx_fp(backend):
     backend = backend.lower()
     return BackendDataType.MX_FP in backend
+
+
+def is_mx_int(backend):
+    backend = backend.lower()
+    return BackendDataType.MX_INT in backend
 
 
 def is_nv_fp(backend):
@@ -87,6 +95,16 @@ def is_static_wfp8afp8(ar_or_format: Union[str, Callable]) -> bool:
     return False
 
 
+def is_wint_woq(ar: Callable) -> bool:
+    """Returns True for integer weight-only quantization with non-quantized activations (`act_bits >= 16`)."""
+    return "int" in ar.data_type and ar.act_bits >= 16 and ar.super_group_size is None
+
+
+def is_wint_a16(ar: Callable) -> bool:
+    """Backward-compatible alias for `is_wint_woq()`."""
+    return is_wint_woq(ar)
+
+
 def is_dynamic_wint8aint8(ar_or_format: Union[str, Callable]) -> bool:
     if isinstance(ar_or_format, str):
         return "int8_w8a8" in ar_or_format.lower()
@@ -95,6 +113,19 @@ def is_dynamic_wint8aint8(ar_or_format: Union[str, Callable]) -> bool:
     if is_wint8aint8(ar_or_format):
         return True
     return False
+
+
+def is_dynamic_afp8(ar_or_format: Callable) -> bool:
+    return ar_or_format.act_dynamic and ar_or_format.act_data_type.startswith("fp") and ar_or_format.act_bits == 8
+
+
+def is_block_wfp8(ar_or_format: Callable) -> bool:
+    return (
+        isinstance(ar_or_format.group_size, tuple)
+        and len(ar_or_format.group_size) == 2
+        and ar_or_format.data_type.startswith("fp")
+        and ar_or_format.bits == 8
+    )
 
 
 def block_forward(
@@ -208,6 +239,63 @@ def infer_bits_by_data_type(data_type: str):
     return None
 
 
+def _get_safetensor_layer_names_not_in_model(model, all_module_names: list) -> list:
+    """Collect layer names from safetensor files that are not loaded into the model.
+
+    Some tensors (e.g. MTP layers) exist in the original checkpoint but are not
+    instantiated by ``transformers``.  This function discovers them so that regex
+    patterns in ``layer_config`` can still match them.
+
+    Returns:
+        List of layer names (the path without the ``.weight`` suffix) for weight
+        tensors present in the safetensor files but absent from *all_module_names*.
+    """
+    name_or_path = None
+    if hasattr(model, "config") and hasattr(model.config, "name_or_path"):
+        name_or_path = model.config.name_or_path
+    if not name_or_path:
+        return []
+
+    if not os.path.isdir(name_or_path):
+        try:
+            from auto_round.utils.model import download_hf_model
+
+            name_or_path = download_hf_model(name_or_path)
+        except Exception as e:
+            logger.debug(f"Could not resolve source model path to check for missing tensors: {e}")
+            return []
+
+    try:
+        from safetensors import safe_open
+    except ImportError:
+        return []
+
+    # Build tensor-name list from the safetensors index or single file
+    source_index_file = os.path.join(name_or_path, "model.safetensors.index.json")
+    source_single_file = os.path.join(name_or_path, "model.safetensors")
+
+    tensor_names: list = []
+    if os.path.exists(source_index_file):
+        with open(source_index_file) as f:
+            src_index = json.load(f)
+        tensor_names = list(src_index["weight_map"].keys())
+    elif os.path.exists(source_single_file):
+        with safe_open(source_single_file, framework="pt", device="cpu") as f:
+            tensor_names = list(f.keys())
+    else:
+        return []
+
+    module_name_set = set(all_module_names)
+    extra_layer_names = []
+    for tensor_name in tensor_names:
+        if not tensor_name.endswith(".weight"):
+            continue
+        layer_name = tensor_name[: -len(".weight")]
+        if layer_name not in module_name_set:
+            extra_layer_names.append(layer_name)
+    return extra_layer_names
+
+
 def set_layer_config(
     model: torch.nn.Module,
     layer_config: dict[str, Union[str, dict, "QuantizationScheme"]],
@@ -235,6 +323,10 @@ def set_layer_config(
         """Assign scheme values as attributes to matched modules."""
         for layer_name, scheme in layer_config.items():
             module = get_module(model, layer_name)
+            if module is None:
+                # Layer exists in safetensor files but is not loaded into the model
+                # (e.g. MTP layers that transformers does not instantiate). Skip.
+                continue
             for attr, value in scheme.items():
                 setattr(module, attr, value)
 
@@ -245,6 +337,12 @@ def set_layer_config(
         elif isinstance(item, QuantizationScheme):
             config = asdict(item)
         elif isinstance(item, dict):
+            # Support "scheme" key inside dict: resolve the preset and merge overrides
+            if "scheme" in item:
+                scheme_name = item.pop("scheme")
+                base = asdict(preset_name_to_scheme(scheme_name.upper()))
+                base.update(item)
+                item = base
             invalid = set(item) - set(scheme_keys + ("fixed_by_user", "scale_dtype"))
             if invalid:
                 raise ValueError(
@@ -265,6 +363,11 @@ def set_layer_config(
     extra_scheme_keys = ("scale_dtype",)
     scheme_keys = tuple(f.name for f in fields(QuantizationScheme)) + ("scale_dtype",)
     layer_config = copy.deepcopy(layer_config) or {}
+    ignore_layer_patterns = set()
+    if ignore_layers:
+        ignore_layers = ignore_layers.replace(" ", "").split(",")
+        ignore_layers = [name + "." if name[-1].isdigit() else name for name in ignore_layers]
+        ignore_layer_patterns = set(ignore_layers)
 
     # 1. ignore_layers -> force 16
     for name in get_fp_layer_names(model, ignore_layers):
@@ -337,6 +440,10 @@ def set_layer_config(
         if isinstance(m, embedding_types) or m.__class__.__name__.endswith("Embedding"):
             embedding_layer_names.append(n)
 
+    # Also include layer names from safetensor files not loaded into the model
+    # (e.g. MTP layers that transformers does not instantiate).
+    safetensor_only_names = _get_safetensor_layer_names_not_in_model(model, all_module_names)
+
     # 6. expand regex configs
     regex_config = {}
     for name in list(layer_config.keys()):
@@ -345,19 +452,32 @@ def set_layer_config(
         if name in all_module_names:
             m = get_module(model, name)
             if len(list(m.children())) == 0 and type(m) not in supported_types:
-                layer_config.pop(name)
-                logger.warning(f"{name} is not supported in current scheme, ignoring its setting in `layer_config`")
+                val = layer_config.pop(name)
+                if name in ignore_layer_patterns:
+                    # Keep unsupported ignore_layers entries so export can serialize
+                    # them into regex-based extra_config for loaders like vLLM INC.
+                    regex_config[name] = val
+                else:
+                    logger.warning(
+                        f"'{name}' exists in the model but is not a supported quantization target "
+                        f"in the current scheme, ignoring its setting in `layer_config`"
+                    )
                 continue
 
-        regex = re.compile(name)
+        regex = re.compile(to_standard_regex(name))
         matched = [ln for ln in all_supported_layer_names if regex.search(ln)]
-        if not matched:
-            raise ValueError(f"Invalid '{name}' in layer_config, no match found.")
+        safetensor_only_matched = [ln for ln in safetensor_only_names if regex.search(ln)]
+        # skip it for mtp layers not loaded in transformers
+        if not matched and not safetensor_only_matched:
+            # type(mlp.gate) is Qwen3VLMoeTextTopKRouter instead of Linear
+            logger.warning_once(
+                f"Layer name or regex '{name}' in layer_config does not match any supported layers. "
+                + "Please check for typos or update the regex pattern, ignore it for now"
+            )
         val = layer_config.pop(name)
         regex_config[name] = val  # keep regex config
         for match in matched:
             layer_config[match] = val
-    # regex_config = None if len(regex_config)==0 else regex_config
 
     # 7. lm_head
     lm_head_name = get_lm_head_name(model)
@@ -546,9 +666,16 @@ def get_layer_config_by_gguf_format(layer_config, target_gguf_format: str, model
     # from auto_round.export.export_to_gguf.convert import ModelBase, get_model_architecture
     convert_hf_to_gguf = LazyImport("auto_round.export.export_to_gguf.convert_hf_to_gguf")
 
-    model_architecture = convert_hf_to_gguf.get_model_architecture(
-        hparams=model.config.to_dict(), model_type=model_type
-    )
+    try:
+        model_architecture = convert_hf_to_gguf.get_model_architecture(
+            hparams=model.config.to_dict(), model_type=model_type
+        )
+    except AttributeError as e:
+        raise ImportError(
+            "Please use the latest gguf-py, you can use the following command to install it:\n"
+            "git clone https://github.com/ggml-org/llama.cpp.git && cd llama.cpp/gguf-py"
+            " && pip install . sentencepiece"
+        )
     try:
         if model_type != ModelType.TEXT:
             model_class_vision = convert_hf_to_gguf.ModelBase.from_model_architecture(
@@ -618,13 +745,16 @@ def get_layer_config_by_gguf_format(layer_config, target_gguf_format: str, model
     i_attention_wv = 0
     i_ffn_down = 0
     layer_config_copy = copy.deepcopy(layer_config)
-    target_bits = None
+    base_target_bits = None
     if inner_gguf_format.startswith("gguf:q") and len(inner_gguf_format) >= 7 and (inner_gguf_format[6]).isdigit():
-        target_bits = int(inner_gguf_format[6])
+        base_target_bits = int(inner_gguf_format[6])
 
     for layer_name, config in layer_config_copy.items():
         if not check_to_quantized(config):
             continue
+        # Reset target_bits each iteration to prevent lm_head/embedding settings
+        # from bleeding into subsequent block layers and bypassing their special logic.
+        target_bits = base_target_bits
         new_type = GGUF_CONFIG[target_gguf_format]["mostly"]
         layer = get_module(model, layer_name)
         if type(layer) == transformers.pytorch_utils.Conv1D:
@@ -873,7 +1003,7 @@ def get_fp_layer_names(model: torch.nn.Module, ignore_layers: str):
 
     if not ignore_layers:
         return []
-    ignore_layers = ignore_layers.replace(" ", "").split(",")
+
     all_layer_names = []
     for n, m in model.named_modules():
         if type(m) in SUPPORTED_LAYER_TYPES:
@@ -886,11 +1016,10 @@ def get_fp_layer_names(model: torch.nn.Module, ignore_layers: str):
         if fp_layer in all_layer_names:
             not_to_quantized_layers.append(fp_layer)
             continue
-        if fp_layer[-1].isdigit():
-            fp_layer = fp_layer + "."  ##tricky setting
         for name in all_layer_names:
             if fp_layer in name:
                 not_to_quantized_layers.append(name)
+    not_to_quantized_layers.extend(ignore_layers)  # keep regex name for later use
     logger.trace(f"not_to_quantized_layers: {not_to_quantized_layers}")
     return not_to_quantized_layers
 

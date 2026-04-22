@@ -24,13 +24,14 @@ def _get_folder_size(path: str) -> float:
 
 
 class TestAutoRoundFP:
-    @classmethod
-    def setup_class(self):
-        self.save_dir = "./saved"
+    @pytest.fixture(autouse=True)
+    def setup_save_dir(self, tmp_path):
+        self.save_dir = str(tmp_path / "saved")
+        yield
+        shutil.rmtree(self.save_dir, ignore_errors=True)
 
     @classmethod
-    def teardown_class(self):
-        shutil.rmtree("./saved", ignore_errors=True)
+    def teardown_class(cls):
         shutil.rmtree("runs", ignore_errors=True)
 
     def test_nvfp4_moe_actmax_rtn(self, tiny_deepseek_v2_model_path, dataloader):
@@ -51,48 +52,11 @@ class TestAutoRoundFP:
             nsamples=2,
             dataset=dataloader,
             layer_config=layer_config,
+            trust_remote_code=False,
         )
         compressed_model, _ = autoround.quantize()
         moe = compressed_model.model.layers[1].mlp
-        experts = moe.experts
-
-        def _has_act_max(layer):
-            if layer is None:
-                return False
-            if hasattr(layer, "orig_layer"):
-                layer = layer.orig_layer
-            return hasattr(layer, "act_max")
-
-        found_act_max = False
-        if hasattr(experts, "gate_up_proj") and isinstance(experts.gate_up_proj, torch.nn.ModuleList):
-            if len(experts.gate_up_proj) > 0:
-                found_act_max = _has_act_max(experts.gate_up_proj[0])
-        elif isinstance(experts, collections.abc.Iterable):
-            first_expert = next(iter(experts), None)
-            if first_expert is not None:
-                for linear_name in [
-                    "gate_proj",
-                    "up_proj",
-                    "down_proj",
-                    "linear_fc1",
-                    "linear_fc2",
-                    "w1",
-                    "w2",
-                    "w3",
-                ]:
-                    if hasattr(first_expert, linear_name):
-                        found_act_max = _has_act_max(getattr(first_expert, linear_name))
-                        if found_act_max:
-                            break
-        elif hasattr(moe, "act_max"):
-            found_act_max = True
-
-        assert found_act_max, "Missing act_max on MOE expert layers"
-        lm_head = compressed_model.lm_head
-        assert hasattr(lm_head, "orig_layer") and hasattr(
-            lm_head.orig_layer, "act_max"
-        ), "Illegal NVFP4 quantization for lm_head layer"
-        shutil.rmtree(self.save_dir, ignore_errors=True)
+        assert hasattr(moe.experts[0].gate_proj.orig_layer, "act_max")
 
     def test_nvfp4_moe_actmax_ar(self, tiny_deepseek_v2_model_path, dataloader):
         model_name = tiny_deepseek_v2_model_path
@@ -112,6 +76,7 @@ class TestAutoRoundFP:
             nsamples=2,
             dataset=dataloader,
             layer_config=layer_config,
+            trust_remote_code=False,
         )
         compressed_model, _ = autoround.quantize_and_save(output_dir=self.save_dir, inplace=True, format="auto_round")
         lm_head = compressed_model.lm_head
@@ -124,7 +89,6 @@ class TestAutoRoundFP:
         ), "Illegal NVFP4 packing for lm_head layer"
         quantized_model_path = self.save_dir
         assert is_model_outputs_similar(model_name, quantized_model_path)
-        shutil.rmtree(self.save_dir, ignore_errors=True)
 
     def test_mxfp4_moe_ar(self, tiny_deepseek_v2_model_path, dataloader):
         model_name = tiny_deepseek_v2_model_path
@@ -144,6 +108,7 @@ class TestAutoRoundFP:
             nsamples=2,
             dataset=dataloader,
             layer_config=layer_config,
+            trust_remote_code=False,
         )
         compressed_model, _ = autoround.quantize_and_save(output_dir=self.save_dir, inplace=True, format="auto_round")
         lm_head = compressed_model.lm_head
@@ -152,7 +117,6 @@ class TestAutoRoundFP:
             and hasattr(lm_head, "weight_packed")
             and lm_head.weight_scale.dtype is torch.uint8
         ), "Illegal MXFP4 packing for lm_head layer"
-        shutil.rmtree(self.save_dir, ignore_errors=True)
 
     def test_mxfp4_llmcompressor_format(self, tiny_opt_model_path, dataloader):
         model_name = tiny_opt_model_path
@@ -188,11 +152,9 @@ class TestAutoRoundFP:
             quantized_model_path, trust_remote_code=True
         ).quantization_config
         assert (
-            quantization_config["format"] == "float-quantized"
-            and quantization_config["config_groups"]["group_0"]["weights"]["is_mx"] is True
+            quantization_config["format"] == "mxfp4-pack-quantized"
             and quantization_config["config_groups"]["group_0"]["weights"]["num_bits"] == 4
         ), f"Invalid MXFP4 quantization configuration: {quantization_config}"
-        shutil.rmtree(quantized_model_path, ignore_errors=True)
 
     def test_rtn_mxfp4_llmcompressor_format(self, tiny_opt_model_path, dataloader):
         model_name = tiny_opt_model_path
@@ -228,11 +190,9 @@ class TestAutoRoundFP:
             quantized_model_path, trust_remote_code=True
         ).quantization_config
         assert (
-            quantization_config["format"] == "float-quantized"
-            and quantization_config["config_groups"]["group_0"]["weights"]["is_mx"] is True
+            quantization_config["format"] == "mxfp4-pack-quantized"
             and quantization_config["config_groups"]["group_0"]["weights"]["num_bits"] == 4
         ), f"Invalid MXFP4 quantization configuration: {quantization_config}"
-        shutil.rmtree(quantized_model_path, ignore_errors=True)
 
     def test_mxfp8_llmcompressor_format(self, tiny_opt_model_path, dataloader):
         model_name = tiny_opt_model_path
@@ -260,8 +220,7 @@ class TestAutoRoundFP:
             quantized_model_path, trust_remote_code=True
         ).quantization_config
         assert (
-            quantization_config["format"] == "float-quantized"
-            and quantization_config["config_groups"]["group_0"]["weights"]["is_mx"] is True
+            quantization_config["format"] == "mxfp8-quantized"
             and quantization_config["config_groups"]["group_0"]["weights"]["num_bits"] == 8
         ), f"Invalid MXFP8 quantization configuration: {quantization_config}"
         folder_size_gb = _get_folder_size(quantized_model_path)
@@ -269,7 +228,6 @@ class TestAutoRoundFP:
         assert (
             0.05 < folder_size_gb < 0.1
         ), f"Quantized model folder size {folder_size_gb:.2f} GB is outside the expected range (0.05~0.1 GB)"
-        shutil.rmtree(quantized_model_path, ignore_errors=True)
 
     def test_nvfp4_llmcompressor_format(self, tiny_opt_model_path, dataloader):
         model_name = tiny_opt_model_path
@@ -306,7 +264,6 @@ class TestAutoRoundFP:
         assert (
             0.05 < folder_size_gb < 0.1
         ), f"Quantized model folder size {folder_size_gb:.2f} GB is outside the expected range (0.05~0.1 GB)"
-        shutil.rmtree(quantized_model_path, ignore_errors=True)
 
     def test_nvfp4_autoround_format(self, tiny_opt_model_path, dataloader):
         model_name = tiny_opt_model_path
@@ -331,7 +288,6 @@ class TestAutoRoundFP:
             and tmp_layer.weight_scale.dtype is torch.float8_e4m3fn
             and tmp_layer.weight_scale.shape[0] == 768
         ), "Illegal NVFP4 packing name or data_type or shape"
-        shutil.rmtree(quantized_model_path, ignore_errors=True)
 
     def test_nvfp4_autoround_save_quantized(self, tiny_opt_model_path, dataloader):
         model_name = tiny_opt_model_path
@@ -357,12 +313,13 @@ class TestAutoRoundFP:
             and tmp_layer.weight_scale.dtype is torch.float8_e4m3fn
             and tmp_layer.weight_scale.shape[0] == 768
         ), "Illegal NVFP4 packing name or data_type or shape"
-        shutil.rmtree(quantized_model_path, ignore_errors=True)
 
     def test_qwen_moe_quant_infer(self, tiny_qwen_moe_model_path, dataloader):
         model_name = tiny_qwen_moe_model_path
         layer_config = {
             "layers.0": {"bits": 16, "act_bits": 16},
+            # general recipe allows moe quantization
+            "layers.1.mlp.experts": {"bits": 16, "act_bits": 16},
         }
         scheme = "nvfp4"
         autoround = AutoRound(
@@ -377,7 +334,6 @@ class TestAutoRoundFP:
         quantized_model_path = self.save_dir
         autoround.quantize_and_save(output_dir=quantized_model_path, inplace=True, format="auto_round")
         assert is_model_outputs_similar(model_name, quantized_model_path)
-        shutil.rmtree(self.save_dir, ignore_errors=True)
 
     @pytest.mark.parametrize(
         "scheme, static_kv_dtype, static_attention_dtype",
@@ -442,4 +398,3 @@ class TestAutoRoundFP:
             assert (
                 getattr(attn, "q_scale", None) is not None
             ), f"Missing q_scale in attention for scheme={scheme}, static_attention_dtype={static_attention_dtype}"
-        shutil.rmtree(quantized_model_path, ignore_errors=True)

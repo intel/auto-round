@@ -2,7 +2,7 @@
 set -xe
 
 CONDA_ENV_NAME="unittest_cuda"
-PYTHON_VERSION="3.10"
+PYTHON_VERSION="3.12"
 REPO_PATH=$(git rev-parse --show-toplevel)
 LOG_DIR=${REPO_PATH}/ut_log_dir
 SUMMARY_LOG=${LOG_DIR}/results_summary.log
@@ -27,13 +27,10 @@ function create_conda_env() {
 
     # install AutoRound
     cd ${REPO_PATH}
-    uv pip install torch==2.10.0 torchvision
-    uv pip install -r requirements.txt
     if [ -d "/proc/driver/nvidia" ]; then
         export PATH=/usr/local/cuda/bin${PATH:+:${PATH}}
         export LD_LIBRARY_PATH=$(python -c "import site; print(site.getsitepackages()[0])")/nvidia/nvjitlink/lib:$LD_LIBRARY_PATH
     fi
-    uv pip install --no-build-isolation .
     uv pip install pytest-cov pytest-html cmake
 }
 
@@ -94,22 +91,24 @@ function run_unit_test() {
     cd ${REPO_PATH}/test
     rm -rf .coverage* *.xml *.html
 
-    uv pip install -v git+https://github.com/casper-hansen/AutoAWQ.git --no-build-isolation
+    uv pip install torch==2.11.0 torchvision --index-url https://download.pytorch.org/whl/cu128
     uv pip install gptqmodel --no-build-isolation
     uv pip install -r https://raw.githubusercontent.com/ModelCloud/GPTQModel/refs/heads/main/requirements.txt
-    CMAKE_ARGS="-DGGML_CUDA=on -DLLAVA_BUILD=off" uv pip install llama-cpp-python
+    uv pip install https://github.com/XuehaoSun/llama-cpp-python/releases/download/v0.3.16/llama_cpp_python-0.3.16-cp312-cp312-linux_x86_64.whl
     uv pip install 'git+https://github.com/ggml-org/llama.cpp.git#subdirectory=gguf-py'
     uv pip install -r test_cuda/requirements.txt
     uv pip install -r test_cuda/requirements_diffusion.txt
-    uv pip install torch==2.10.0 torchvision
     uv pip install -U transformers
+    uv pip uninstall torch torchvision
+    uv pip install torch==2.11.0 torchvision --index-url https://download.pytorch.org/whl/cu128
+    cd ${REPO_PATH} && uv pip install . && cd ${REPO_PATH}/test
 
     pip list > ${LOG_DIR}/ut_pip_list.txt
     export COVERAGE_RCFILE=${REPO_PATH}/.azure-pipelines/scripts/ut/.coverage
     local auto_round_path=$(python -c 'import auto_round; print(auto_round.__path__[0])')
 
     # run unit tests individually with separate logs
-    for test_file in $(find ./test_cuda -name "test_*.py" ! -name "test_*vlms.py" ! -name "test_llmc*.py" ! -name "test_*sglang*.py" | sort); do
+    for test_file in $(find ./test_cuda -type f -name "test_*.py" | grep -Ev "vlms|llmc|sglang|vllm|multiple_card" | sort); do
         local test_basename=$(basename ${test_file} .py)
         local ut_log_name=${LOG_DIR}/unittest_cuda_${test_basename}.log
         echo "Running ${test_file}..."
@@ -117,8 +116,10 @@ function run_unit_test() {
         python -m pytest --cov="${auto_round_path}" --cov-report term --html=report.html --self-contained-html --cov-report xml:coverage.xml --cov-append -vs --disable-warnings ${test_file} 2>&1 | tee ${ut_log_name}
     done
 
-    mv report.html ${LOG_DIR}/
-    mv coverage.xml ${LOG_DIR}/
+    if [ -f "report.html" ] && [ -f "coverage.xml" ]; then
+        mv report.html ${LOG_DIR}/
+        mv coverage.xml ${LOG_DIR}/
+    fi
 
     # Print test results table and check for failures
     if ! print_test_results_table "unittest_cuda_test_*.log" "CUDA Unit Tests"; then
@@ -132,14 +133,13 @@ function run_unit_test_vlm() {
     cd ${REPO_PATH}/test
     rm -rf .coverage* *.xml *.html
 
+    uv pip install torch==2.11.0 torchvision --index-url https://download.pytorch.org/whl/cu128
+    uv pip install https://github.com/XuehaoSun/GPTQModel/releases/download/v5.8.0/gptqmodel-5.8.0+cu128torch2.11-cp312-cp312-linux_x86_64.whl
     uv pip install git+https://github.com/haotian-liu/LLaVA.git@v1.2.2 --no-deps
-    local site_path=$(python -c "import site; print(site.getsitepackages()[0])")
-    # reference https://github.com/haotian-liu/LLaVA/issues/1448#issuecomment-2119845242
-    sed -i '/inputs\[.*image_sizes.*\] = image_sizes/a\        inputs.pop("cache_position")' ${site_path}/llava/model/language_model/llava_llama.py
-    uv pip install git+https://github.com/deepseek-ai/DeepSeek-VL2.git timm attrdict --no-deps
     uv pip install -v git+https://github.com/casper-hansen/AutoAWQ.git@v0.2.0 --no-build-isolation
-    uv pip install flash-attn==2.7.4.post1 --no-build-isolation
-    uv pip install -r test_cuda/requirements_vlm.txt
+    uv pip install flash-attn==2.8.3 --no-build-isolation
+    uv pip install -r test_cuda/requirements_vlm.txt --extra-index-url https://download.pytorch.org/whl/cu128
+    cd ${REPO_PATH} && uv pip install . && cd ${REPO_PATH}/test
 
     pip list > ${LOG_DIR}/vlm_ut_pip_list.txt
     export COVERAGE_RCFILE=${REPO_PATH}/.azure-pipelines/scripts/ut/.coverage
@@ -154,8 +154,10 @@ function run_unit_test_vlm() {
         python -m pytest --cov="${auto_round_path}" --cov-report term --html=report_vlms.html --self-contained-html --cov-report xml:coverage_vlms.xml --cov-append -vs --disable-warnings ${test_file} 2>&1 | tee ${ut_log_name}
     done
 
-    mv report_vlms.html ${LOG_DIR}/
-    mv coverage_vlms.xml ${LOG_DIR}/
+    if [ -f "report_vlms.html" ] && [ -f "coverage_vlms.xml" ]; then
+        mv report_vlms.html ${LOG_DIR}/
+        mv coverage_vlms.xml ${LOG_DIR}/
+    fi
 
     # Print test results table and check for failures
     if ! print_test_results_table "unittest_cuda_vlm_test*.log" "CUDA VLM Tests"; then
@@ -169,7 +171,8 @@ function run_unit_test_llmc() {
 
     cd ${REPO_PATH}/test
     rm -rf .coverage* *.xml *.html
-    uv pip install -r test_cuda/requirements_llmc.txt
+    BUILD_TYPE="nightly" uv pip install -r test_cuda/requirements_llmc.txt --extra-index-url https://download.pytorch.org/whl/cu128 --index-strategy unsafe-best-match
+    cd ${REPO_PATH} && uv pip install . && cd ${REPO_PATH}/test
 
     pip list > ${LOG_DIR}/llmc_ut_pip_list.txt
     export COVERAGE_RCFILE=${REPO_PATH}/.azure-pipelines/scripts/ut/.coverage
@@ -184,8 +187,10 @@ function run_unit_test_llmc() {
         python -m pytest --cov="${auto_round_path}" --cov-report term --html=report_llmc.html --self-contained-html --cov-report xml:coverage_llmc.xml --cov-append -vs --disable-warnings ${test_file} 2>&1 | tee ${ut_log_name}
     done
 
-    mv report_llmc.html ${LOG_DIR}/
-    mv coverage_llmc.xml ${LOG_DIR}/
+    if [ -f "report_llmc.html" ] && [ -f "coverage_llmc.xml" ]; then
+        mv report_llmc.html ${LOG_DIR}/
+        mv coverage_llmc.xml ${LOG_DIR}/
+    fi
     # Print test results table and check for failures
     if ! print_test_results_table "unittest_cuda_llmc_test_*.log" "CUDA LLMC Tests"; then
         echo "Some CUDA LLMC tests failed. Please check the individual log files for details."
@@ -198,8 +203,8 @@ function run_unit_test_sglang() {
 
     cd ${REPO_PATH}/test
     rm -rf .coverage* *.xml *.html
-    uv pip install torch==2.9.1 torchvision
-    uv pip install -r test_cuda/requirements_sglang.txt
+    uv pip install -r test_cuda/requirements_sglang.txt --prerelease=allow
+    cd ${REPO_PATH} && uv pip install . && cd ${REPO_PATH}/test
 
     pip list > ${LOG_DIR}/sglang_ut_pip_list.txt
     export COVERAGE_RCFILE=${REPO_PATH}/.azure-pipelines/scripts/ut/.coverage
@@ -214,15 +219,51 @@ function run_unit_test_sglang() {
         python -m pytest --cov="${auto_round_path}" --cov-report term --html=report_sglang.html --self-contained-html --cov-report xml:coverage_sglang.xml --cov-append -vs --disable-warnings ${test_file} 2>&1 | tee ${ut_log_name}
     done
 
-    mv report_sglang.html ${LOG_DIR}/
-    mv coverage_sglang.xml ${LOG_DIR}/
+    if [ -f "report_sglang.html" ] && [ -f "coverage_sglang.xml" ]; then
+        mv report_sglang.html ${LOG_DIR}/
+        mv coverage_sglang.xml ${LOG_DIR}/
+    fi
     # Print test results table and check for failures
     if ! print_test_results_table "unittest_cuda_sglang_test*.log" "CUDA SGLang Unit Tests"; then
         echo "Some CUDA SGLang unit tests failed. Please check the individual log files for details."
     fi
 }
 
+function run_unit_test_vllm() {
+    # install unit test dependencies
+    create_conda_env
+    unset LD_LIBRARY_PATH
+
+    cd ${REPO_PATH}/test
+    rm -rf .coverage* *.xml *.html
+    uv pip install -r test_cuda/requirements_vllm.txt --extra-index-url https://download.pytorch.org/whl/cu128 --index-strategy unsafe-best-match
+    cd ${REPO_PATH} && uv pip install . && cd ${REPO_PATH}/test
+
+    pip list > ${LOG_DIR}/vllm_ut_pip_list.txt
+    export COVERAGE_RCFILE=${REPO_PATH}/.azure-pipelines/scripts/ut/.coverage
+    local auto_round_path=$(python -c 'import auto_round; print(auto_round.__path__[0])')
+
+    # run unit tests individually with separate logs
+    for test_file in $(find ./test_cuda -name "test_vllm*.py" | sort); do
+        local test_basename=$(basename ${test_file} .py)
+        local ut_log_name=${LOG_DIR}/unittest_cuda_vllm_${test_basename}.log
+        echo "Running ${test_file}..."
+
+        python -m pytest --cov="${auto_round_path}" --cov-report term --html=report_vllm.html --self-contained-html --cov-report xml:coverage_vllm.xml --cov-append -vs --disable-warnings ${test_file} 2>&1 | tee ${ut_log_name}
+    done
+
+    if [ -f "report_vllm.html" ] && [ -f "coverage_vllm.xml" ]; then
+        mv report_vllm.html ${LOG_DIR}/
+        mv coverage_vllm.xml ${LOG_DIR}/
+    fi
+    # Print test results table and check for failures
+    if ! print_test_results_table "unittest_cuda_vllm_test*.log" "CUDA VLLM Unit Tests"; then
+        echo "Some CUDA VLLM unit tests failed. Please check the individual log files for details."
+    fi
+}
+
 function main() {
+    run_unit_test_vllm
     run_unit_test_vlm
     run_unit_test_llmc
     run_unit_test_sglang

@@ -32,25 +32,60 @@ from auto_round.utils import (
 from auto_round.wrapper import WrapperWALayer
 
 
+def _get_weight_scheme_strategy(group_size):
+    if group_size == 0:
+        return "tensor"
+    if group_size == -1:
+        return "channel"
+    if isinstance(group_size, tuple):
+        return "block"
+    if isinstance(group_size, int):
+        return "group"
+    return None
+
+
+def _get_act_scheme_strategy(group_size):
+    if group_size == 0:
+        return "tensor"
+    if group_size == -1:
+        return "token"
+    if isinstance(group_size, int):
+        return "group"
+    return None
+
+
+def _get_scheme_type(data_type):
+    if "int" in data_type:
+        return "int"
+    if "fp" in data_type or "float" in data_type:
+        return "float"
+    raise NotImplementedError("only support `int` and `fp` data type")
+
+
 def construct_ct_scheme(layer):
     from compressed_tensors.quantization import QuantizationArgs, QuantizationScheme  # pylint: disable=E0401
 
     weights_args = QuantizationArgs(
         num_bits=layer.bits,
-        type=layer.data_type.split("_")[-2],  # int_sym, rtn_int_sym
+        type=_get_scheme_type(layer.data_type),
         symmetric=layer.sym,
         dynamic=False,
-        group_size=None,
-        strategy="tensor" if layer.act_group_size == 0 else "channel" if layer.act_group_size == -1 else None,
+        group_size=layer.group_size if _get_weight_scheme_strategy(layer.group_size) == "group" else None,
+        strategy=_get_weight_scheme_strategy(layer.group_size),
+        block_structure=layer.group_size if _get_weight_scheme_strategy(layer.group_size) == "block" else None,
     )
-    activations_args = QuantizationArgs(
-        num_bits=layer.act_bits,
-        type=layer.act_data_type.split("_")[-2],  # int_sym, rtn_int_sym
-        symmetric=layer.act_sym,
-        dynamic=layer.act_dynamic,
-        group_size=None,
-        strategy="tensor" if layer.act_group_size == 0 else "token" if layer.act_group_size == -1 else None,
-    )
+    # Weight-only quantization (W4A16, W8A16, etc.): no activation quantization
+    if layer.act_bits >= 16 or layer.act_data_type is None:
+        activations_args = None
+    else:
+        activations_args = QuantizationArgs(
+            num_bits=layer.act_bits,
+            type=_get_scheme_type(layer.act_data_type),
+            symmetric=layer.act_sym,
+            dynamic=layer.act_dynamic,
+            group_size=layer.act_group_size if _get_act_scheme_strategy(layer.act_group_size) == "group" else None,
+            strategy=_get_act_scheme_strategy(layer.act_group_size),
+        )
     scheme = QuantizationScheme(
         targets=[layer.__class__.__name__],
         weights=weights_args,
@@ -59,14 +94,49 @@ def construct_ct_scheme(layer):
     return scheme
 
 
+def _get_quant_format(model):
+    for n, m in model.named_modules():
+        if hasattr(m, "quantization_scheme") and hasattr(m.quantization_scheme, "format"):
+            return m.quantization_scheme.format
+    return None
+
+
+def _compress_and_set_format(layer, scheme, device=None):
+    """Compress a layer and set its quantization format.
+
+    Compatible with multiple compressed_tensors versions.
+    """
+    try:
+        # Newer compressed_tensors export path
+        from compressed_tensors.compressors import compress_module as _compress_module  # pylint: disable=E0401
+    except ImportError:
+        try:
+            # Older versions expose this from module path only
+            from compressed_tensors.compressors.base import compress_module as _compress_module  # pylint: disable=E0401
+        except ImportError as e:
+            logger.error(
+                "Unable to import compress_module from compressed_tensors "
+                "(tried compressed_tensors.compressors and "
+                "compressed_tensors.compressors.base). "
+                "Please install/upgrade compressed-tensors."
+            )
+            raise ImportError(
+                "compress_module not found in compressed_tensors. " "Install a compatible version."
+            ) from e
+    _compress_module(layer)
+
+
 def pack_layer(name, model, device=None):
-    from compressed_tensors.compressors import IntQuantizationCompressor  # pylint: disable=E0401
     from compressed_tensors.quantization import QuantizationStatus  # pylint: disable=E0401
-    from compressed_tensors.utils import delete_offload_parameter, register_offload_parameter  # pylint: disable=E0401
 
     layer = get_module(model, name)
     if type(layer) not in SUPPORTED_LAYER_TYPES and not isinstance(layer, WrapperWALayer):  ##already packed
         return
+
+    if hasattr(layer, "orig_layer"):  # revert WrapperWALayer for offline usage
+        wp_layer = layer
+        layer = wp_layer.orig_layer
+        set_module(model, name, layer)
 
     if not check_to_quantized(layer):
         return
@@ -74,9 +144,12 @@ def pack_layer(name, model, device=None):
     if hasattr(layer, "quantization_status") and layer.quantization_status == QuantizationStatus.COMPRESSED:
         return
 
+    # explicitly obtain the underlying device to prevent RuntimeError mismatched tensors
+    weight_device = layer.weight.device
+
     scheme = construct_ct_scheme(layer)
     setattr(layer, "quantization_scheme", scheme)
-    setattr(layer, "weight_scale", torch.nn.Parameter(layer.scale.to(device)))
+    setattr(layer, "weight_scale", torch.nn.Parameter(layer.scale.to(weight_device)))
     if not isinstance(layer.zp, torch.Tensor):
         if layer.sym:
             zp = torch.full_like(layer.weight_scale, 0).to(torch.int8)
@@ -85,22 +158,10 @@ def pack_layer(name, model, device=None):
     else:
         zp = layer.zp
 
-    setattr(layer, "weight_zero_point", torch.nn.Parameter(zp.to(device), requires_grad=False))
+    setattr(layer, "weight_zero_point", torch.nn.Parameter(zp.to(weight_device), requires_grad=False))
     delattr(layer, "scale")
 
-    compressor = IntQuantizationCompressor()
-    q_state_dict = compressor.compress(layer.state_dict(), names_to_scheme={"": scheme}, show_progress=False)
-
-    # remove any existing parameters
-    for name, _ in list(layer.named_parameters(recurse=False)):
-        delete_offload_parameter(layer, name)
-
-    # replace with compressed parameters
-    for name, value in q_state_dict.items():
-        param = torch.nn.Parameter(value, requires_grad=False)
-        register_offload_parameter(layer, name, param, device)
-
-    layer.quantization_status = QuantizationStatus.COMPRESSED
+    _compress_and_set_format(layer, scheme, device)
 
 
 @torch.no_grad()
@@ -158,20 +219,17 @@ def save_quantized_as_llmcompressor(
         for n, m in model.named_modules():
             pack_layer(n, model, device)
 
+    quant_format = _get_quant_format(model)
+    quantization_config = QuantizationConfig.from_pretrained(model, format=quant_format)
+    model.config.quantization_config = quantization_config.to_dict()
+
     if output_dir is None:
         return model
 
-    quantization_config = QuantizationConfig.from_pretrained(model)
     # save model.config, model.state_dict()
-    model.config.quantization_config = quantization_config.to_dict()
     model.config.save_pretrained(output_dir)
 
-    try:
-        save_model(model, output_dir, safe_serialization=safe_serialization)
-    except ValueError as e:
-        if hasattr(model, "generation_config"):
-            setattr(model.generation_config, "do_sample", True)
-        save_model(model, output_dir, safe_serialization=safe_serialization)
+    save_model(model, output_dir, safe_serialization=safe_serialization)
 
     try:
         copy_python_files_from_model_cache(model, output_dir)

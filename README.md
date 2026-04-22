@@ -10,7 +10,8 @@
 <h3> Advanced Quantization Algorithm for LLMs</h3>
 
 [![python](https://img.shields.io/badge/python-3.10%2B-blue)](https://github.com/intel/auto-round)
-[![version](https://img.shields.io/badge/release-0.10.2-green)](https://github.com/intel/auto-round)
+[![version](https://img.shields.io/badge/release-0.12.0-green)](https://github.com/intel/auto-round/releases)
+[![nightly](https://img.shields.io/badge/pypi-nightly-green)](https://pypi.org/project/auto-round-nightly)
 [![license](https://img.shields.io/badge/license-Apache%202-9C27B0)](https://github.com/intel/auto-round/blob/main/LICENSE)
 <a href="https://huggingface.co/Intel">
 <img alt="Model Checkpoints" src="https://img.shields.io/badge/%F0%9F%A4%97%20HF-Models-F57C00">
@@ -35,6 +36,9 @@ See our papers [SignRoundV1](https://arxiv.org/pdf/2309.05516) and [SignRoundV2]
 
 
 ## 🆕 What's New
+* [2026/03] **Block-wise FP8** quantization is available via `--scheme FP8_BLOCK --iters 0 --disable_opt_rtn`.
+
+* [2026/03] MTP layer quantization has been supported in [PR](https://github.com/intel/auto-round/pull/1526)
 
 * [2025/12] The **SignRoundV2** paper is available. Turn on  `enable_alg_ext` and use the **AutoScheme** API for mixed-precision quantization to reproduce the results: [*Paper*](http://arxiv.org/abs/2512.04746), [*Notes for evaluating LLaMA models*](./docs/alg_202508.md).
 
@@ -52,7 +56,7 @@ See our papers [SignRoundV1](https://arxiv.org/pdf/2309.05516) and [SignRoundV2]
 
 * [2025/07] **GGUF** format is supported: [*Usage*](./docs/step_by_step.md#gguf-format). 
 
-* [2025/05] AutoRound has been integrated into **vLLM**: [*Usage*](https://docs.vllm.ai/en/latest/features/quantization/auto_round/), [*Medium blog*](https://medium.com/@NeuralCompressor/accelerating-vllm-and-sglang-deployment-using-autoround-45fdc0b2683e), [*小红书*](https://www.xiaohongshu.com/explore/69396bc6000000000d03e473?note_flow_source=wechat&xsec_token=CB6G3F_yM99q8XfusvyRlJqm8Db4Es2k0kYIHdIUiSQ9g=).
+* [2025/05] AutoRound has been integrated into **vLLM**: [*Usage*](https://docs.vllm.ai/en/latest/features/quantization/inc/), [*Medium blog*](https://medium.com/@NeuralCompressor/accelerating-vllm-and-sglang-deployment-using-autoround-45fdc0b2683e), [*小红书*](https://www.xiaohongshu.com/explore/69396bc6000000000d03e473?note_flow_source=wechat&xsec_token=CB6G3F_yM99q8XfusvyRlJqm8Db4Es2k0kYIHdIUiSQ9g=).
 
 * [2025/05] AutoRound has been integrated into **Transformers**: [*Blog*](https://huggingface.co/blog/autoround).
 
@@ -99,6 +103,9 @@ Includes [multiple gpus quantization](https://github.com/intel/auto-round/blob/m
 ```bash
 # CPU(Xeon)/GPU(CUDA)
 pip install auto-round
+
+# CPU(Xeon)/GPU(CUDA) nightly
+pip install auto-round-nightly
 
 # HPU(Gaudi)
 # install inside the hpu docker container, e.g. vault.habana.ai/gaudi-docker/1.23.0/ubuntu24.04/habanalabs/pytorch-installer-2.9.0:latest  
@@ -243,7 +250,7 @@ ar.quantize_and_save(output_dir="./qmodel", format="auto_round")
 | **auto_round**     | W4A16(Recommended), W2A16, W3A16, W8A16, W2A16G64, W2A16G32, `MXFP4`, `MXFP8`, `MXFP4_RCEIL`, `MXFP8_RCEIL`, `NVFP4`, `FPW8A16`, `FP8_STATIC`, `BF16`                     |
 | **auto_awq**       | W4A16(Recommended), BF16                                                                                                                                                  |
 | **auto_gptq**      | W4A16(Recommended), W2A16, W3A16, W8A16, W2A16G64, W2A16G32,BF16                                                                                                          |
-| **llm_compressor** | NVFP4(Recommended), `MXFP4`, `MXFP8`, `FPW8A16`, `FP8_STATIC`                                                                                                             |
+| **llm_compressor** | NVFP4(Recommended), `MXFP4`, `MXFP8`, `FPW8A16`, `FP8_STATIC`, `FP8_BLOCK`, `INT8`, `W4A16`, `W8A16`                                                                   |
 | **gguf**           | GGUF:Q4_K_M(Recommended), GGUF:Q2_K_S, GGUF:Q3_K_S, GGUF:Q3_K_M, GGUF:Q3_K_L, GGUF:Q4_K_S, GGUF:Q5_K_S, GGUF:Q5_K_M, GGUF:Q6_K, GGUF:Q4_0, GGUF:Q4_1, GGUF:Q5_0, GGUF:Q5_1,GGUF:Q8_0 |
 | **fake**           | `all schemes (only for research)`                                                                                                                                         |
 </details>
@@ -288,7 +295,7 @@ ar.quantize_and_save()
 
 By default, AutoRound only quantize the text module of VLMs and uses `NeelNanda/pile-10k` for calibration. To
 quantize the entire model, you can enable `quant_nontext_module` by setting it to True, though support for this feature
-is limited. For more information, please refer to the AutoRound [readme](./auto_round/mllm/README.md).
+is limited. For more information, please refer to the AutoRound [readme](auto_round/compressors/mllm/README.md).
 
 ```python
 from auto_round import AutoRound

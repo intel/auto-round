@@ -36,11 +36,12 @@ class TestFP8ReQuant(unittest.TestCase):
         in_features, out_features = 128, 64
         layer = MockFP8Layer(in_features, out_features)
 
-        dq_weight = _dequant_fp8_linear_weight(layer.weight, layer.weight_scale, block_size=None)
+        tmp_weight = layer.weight.clone()
+        dq_weight = _dequant_fp8_linear_weight(layer.weight, layer.weight_scale, block_size=None)  # in-place operation
         self.assertEqual(dq_weight.shape, (out_features, in_features))
         self.assertEqual(dq_weight.dtype, torch.bfloat16)
 
-        expected = layer.weight.to(torch.bfloat16) * layer.weight_scale.to(torch.bfloat16)
+        expected = tmp_weight.to(torch.bfloat16) * layer.weight_scale.to(torch.bfloat16)
         torch.testing.assert_close(dq_weight, expected)
 
     def test_per_channel_dequant(self):
@@ -50,14 +51,18 @@ class TestFP8ReQuant(unittest.TestCase):
 
         # Per-channel scale (out_features)
         scale = torch.randn(out_features)
-        dq_weight = _dequant_fp8_linear_weight(weight, scale, block_size=None)
-        expected = weight.to(torch.bfloat16) * scale.view(-1, 1).to(torch.bfloat16)
+        tmp_weight = weight.clone()
+        # in-place operation
+        dq_weight = _dequant_fp8_linear_weight(tmp_weight, scale, block_size=None)
+        expected = tmp_weight.to(torch.bfloat16) * scale.view(-1, 1).to(torch.bfloat16)
         torch.testing.assert_close(dq_weight, expected)
 
         # Per-channel scale (in_features)
         scale = torch.randn(in_features)
-        dq_weight = _dequant_fp8_linear_weight(weight, scale, block_size=None)
-        expected = weight.to(torch.bfloat16) * scale.view(1, -1).to(torch.bfloat16)
+        tmp_weight = weight.clone()
+        # in-place operation
+        dq_weight = _dequant_fp8_linear_weight(tmp_weight, scale, block_size=None)
+        expected = tmp_weight.to(torch.bfloat16) * scale.view(1, -1).to(torch.bfloat16)
         torch.testing.assert_close(dq_weight, expected)
 
     def test_devstral_model_structure(self):
@@ -87,6 +92,9 @@ class TestFP8ReQuant(unittest.TestCase):
                 self.data_type = "fp8"
 
         mock_layer = FP8Linear(in_features, out_features)
+        # mock_layer will to meta after converting.
+        mock_weight = mock_layer.weight.clone()
+        mock_weight_scale = mock_layer.weight_scale.clone()
 
         # This should now pass without AttributeError for 'block_size'
         check_and_mark_quantized_module(mock_layer)
@@ -97,6 +105,6 @@ class TestFP8ReQuant(unittest.TestCase):
         self.assertEqual(new_layer.out_features, out_features)
         self.assertEqual(new_layer.weight.dtype, torch.bfloat16)
 
-        expected = mock_layer.weight.to(torch.bfloat16) * mock_layer.weight_scale.to(torch.bfloat16)
+        expected = mock_weight.to(torch.bfloat16) * mock_weight_scale.to(torch.bfloat16)
         torch.testing.assert_close(new_layer.weight, expected)
         print("Devstral layer conversion successful!")

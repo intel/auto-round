@@ -6,6 +6,7 @@ import torch
 from transformers import AutoConfig, AutoModelForCausalLM, AutoTokenizer
 
 from auto_round import AutoRound
+from auto_round.modeling.fused_moe import apply_replacements
 from auto_round.utils.model import get_module, set_amax_for_all_moe_layers
 
 from ...helpers import get_model_path
@@ -17,11 +18,11 @@ deepseek_v2_lite_path = get_model_path("deepseek-ai/DeepSeek-V2-Lite-Chat")
 def setup_deepseek_v2_lite():
     """Fixture to set up the DeepSeek-V2-Lite model for testing."""
     model_name = deepseek_v2_lite_path
-    tokenizer = AutoTokenizer.from_pretrained(model_name, trust_remote_code=True)
-    config = AutoConfig.from_pretrained(model_name, trust_remote_code=True)
+    tokenizer = AutoTokenizer.from_pretrained(model_name, trust_remote_code=False)
+    config = AutoConfig.from_pretrained(model_name, trust_remote_code=False)
     # Reduce layers for faster testing
     config.num_hidden_layers = 2
-    model = AutoModelForCausalLM.from_config(config, trust_remote_code=True)
+    model = AutoModelForCausalLM.from_config(config, trust_remote_code=False)
     output_dir = "./tmp/test_moe_alignment_deepseek"
     return model, tokenizer, output_dir, config
 
@@ -109,6 +110,7 @@ def test_set_amax_for_all_moe_layers_direct(setup_deepseek_v2_lite):
     os.environ["AR_ENABLE_UNIFY_MOE_INPUT_SCALE"] = "true"
 
     model, tokenizer, output_dir, config = setup_deepseek_v2_lite
+    apply_replacements(model)
 
     # Find the first MoE block and manually set different act_max values
     moe_block = None

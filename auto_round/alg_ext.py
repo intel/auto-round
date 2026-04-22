@@ -31,7 +31,7 @@ from auto_round.data_type.nvfp import FLOAT4_E2M1_MAX, FLOAT8_E4M3_MAX, ref_nvfp
 from auto_round.data_type.utils import floor_ste, reshape_pad_tensor_by_group_size, revert_tensor_by_pad, round_ste
 from auto_round.logger import logger
 from auto_round.utils import SUPPORTED_LAYER_TYPES, check_to_quantized, compile_func, get_reciprocal, set_module
-from auto_round.wrapper import NORM_MAPPING, WrapperLinear, reshape_and_pad_tensor
+from auto_round.wrapper import NORM_MAPPING, WrapperLinear
 
 __all__ = ["wrapper_autoround"]
 
@@ -156,7 +156,7 @@ def qdq_mxfp(tensor, max_val, max_norm, emax, ebits, mbits):
     scale_emax = 2 ** (8 - 1) - 1
     shared_exp = (shared_exp - emax).clamp(min=-scale_emax, max=scale_emax)
 
-    scale = torch.pow(2, shared_exp)
+    scale = torch.pow(2.0, shared_exp)
     tensor = tensor / scale
     tensor = torch.clamp(tensor, min=-max_norm, max=max_norm)
     tensor = quant_element(tensor, ebits, mbits, max_norm)
@@ -271,7 +271,7 @@ def quant_mx(
     scale_emax = 2 ** (8 - 1) - 1
     shared_exp = (shared_exp - emax).clamp(min=-scale_emax, max=scale_emax)
 
-    scale = torch.pow(2, shared_exp)
+    scale = torch.pow(2.0, shared_exp)
     tensor = tensor / scale + v
     tensor = torch.clamp(tensor, min=-max_norm, max=max_norm)
     tensor = quant_element(tensor, ebits, mbits, max_norm, mantissa_rounding)
@@ -335,7 +335,7 @@ class WrapperLinearV2(WrapperLinear):
         super()._init_tuning_params_and_quant_func()
 
         orig_weight = getattr(self.orig_layer, "get_weight", lambda: self.orig_layer.weight)()
-        weight_reshape = reshape_and_pad_tensor(orig_weight.data, self.orig_layer.group_size)
+        weight_reshape, _, _ = reshape_pad_tensor_by_group_size(orig_weight.data, self.orig_layer.group_size)
         if hasattr(self.orig_layer, "imatrix"):  # MOE model may have no imatrix
             imatrix = self.orig_layer.imatrix.reshape(1, -1)
             imatrix = reshape_pad_tensor_by_group_size(imatrix, self.orig_layer.group_size, val=1e-5)[0].view(1, -1)
@@ -561,9 +561,13 @@ def make_qp_quants(nmax, data, quant_weights, v=0):
     L = torch.round(iscale * data + v).clip(max=nmax)
     sumlx = torch.sum(quant_weights * data * L, dim=-1)
     suml2 = torch.sum(quant_weights * L * L, dim=-1)
-    return sumlx / suml2, L
+    # When suml2 is zero (all L=0 or all quant_weights=0), fall back to the
+    # simple max-based scale estimate to avoid NaN propagating into the GGUF file.
+    fallback_d = group_max.squeeze(-1) / nmax
+    return torch.where(suml2 > 0, sumlx / suml2, fallback_d), L
 
 
+# @torch._disable_dynamo()
 def iterative_wls_quant_search(data, bits=4, rrmin=-1.0, rdelta=0.1, nstep=20, use_mad=False, weights=None, v=0):
     """Adapted from Llamacpp. Performs iterative weighted least squares quantization search.
 
@@ -685,7 +689,10 @@ def make_qp_new_quants(data, orig_scale, orig_mins, quant_weights, bits=4, super
     quant_weights = quant_weights.view(orig_scale.shape)
     sumlx = torch.sum(quant_weights * orig_scale * L, dim=-1)
     suml2 = torch.sum(quant_weights * L * L, dim=-1)
-    return sumlx / suml2, L
+    # When suml2 is zero, fall back to the simple max-based scale estimate
+    # to avoid NaN propagating into the GGUF file.
+    fallback_d = group_max.squeeze(-1) / nmax
+    return torch.where(suml2 > 0, sumlx / suml2, fallback_d), L
 
 
 def quant_tensor_gguf_asym_dq(

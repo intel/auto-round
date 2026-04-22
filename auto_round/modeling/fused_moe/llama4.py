@@ -82,8 +82,14 @@ class SequentialLlama4TextMoe(ReplacementModuleBase):
             router_scores = torch.sigmoid(router_scores.float()).to(hidden_states.dtype)
 
         out = self.shared_expert(hidden_states)
-        for i in range(self.num_experts):
-            out += self.experts[i](hidden_states) * router_scores[i].reshape(-1, 1)
+
+        # Only process experts that actually received tokens (expert_hit pattern),
+        # skipping experts with zero routing weight to save compute during calibration.
+        with torch.no_grad():
+            expert_hit = torch.greater(router_scores.sum(dim=-1), 0).nonzero()
+        for expert_idx in expert_hit:
+            expert_idx = expert_idx[0]
+            out += self.experts[expert_idx](hidden_states) * router_scores[expert_idx].reshape(-1, 1)
 
         return out, router_logits
 

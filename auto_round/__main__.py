@@ -12,7 +12,9 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 import argparse
+import json
 import os
+import re
 import sys
 
 from auto_round.auto_scheme import AutoScheme
@@ -24,6 +26,7 @@ from auto_round.utils import (
     clear_memory,
     get_device_and_parallelism,
     get_model_dtype,
+    parse_layer_config_arg,
 )
 
 RECIPES = {
@@ -137,10 +140,18 @@ class BasicArgumentParser(argparse.ArgumentParser):
             "Useful when working with large models that don't fit in GPU memory.",
         )
         basic.add_argument(
-            "--low_cpu_mem_usage", action="store_true", help="Deprecated, Lower CPU memory mode. Defaults to False."
+            "--low_cpu_mem_usage",
+            action="store_true",
+            help=(
+                "Deprecated: low CPU memory mode is enabled by default. "
+                "This flag is kept only for backward compatibility and has no effect "
+                "beyond explicitly re-enabling the default behavior."
+            ),
         )
         basic.add_argument(
-            "--disable_low_cpu_mem_usage", action="store_true", help="disable lower CPU memory mode. Defaults to False."
+            "--disable_low_cpu_mem_usage",
+            action="store_true",
+            help=("Disable low CPU memory mode. " "Use this flag to turn off the default low CPU memory behavior."),
         )
         basic.add_argument(
             "--format",
@@ -285,7 +296,12 @@ class BasicArgumentParser(argparse.ArgumentParser):
 
         scheme = self.add_argument_group("Scheme Arguments")
         scheme.add_argument("--bits", default=None, type=int, help="Number of bits for weight quantization. ")
-        scheme.add_argument("--group_size", default=None, type=int, help="Group size for weight quantization.")
+        scheme.add_argument(
+            "--group_size",
+            default=None,
+            type=lambda s: int(s) if s.lstrip("-").isdigit() else tuple([int(x.strip()) for x in s.split(",")]),
+            help="Group size for weight quantization.",
+        )
         scheme.add_argument("--asym", action="store_true", help="Use asymmetric quantization instead of symmetric.")
         scheme.add_argument(
             "--data_type",
@@ -311,6 +327,15 @@ class BasicArgumentParser(argparse.ArgumentParser):
         )
         scheme.add_argument(
             "--disable_act_dynamic", action="store_true", help="Use static instead of dynamic activation quantization. "
+        )
+        scheme.add_argument(
+            "--layer_config",
+            default=None,
+            type=str,
+            help="Per-layer quantization config for missing tensors (e.g., MTP layers) as a JSON string. "
+            "Keys are name prefixes, values are config dicts with optional bits/group_size/sym. "
+            'Example: "{mtp:{bits:8,data_type:int},mtp.fc:{bits:16}}". '
+            "These settings are saved to extra_config and override the global quantization config.",
         )
         scheme.add_argument(
             "--shared_layers",
@@ -655,19 +680,30 @@ def tune(args):
     extra_config.diffusion_config = diffusion_config
 
     layer_config = {}
+    if args.layer_config:
+        layer_config = parse_layer_config_arg(args.layer_config)
+        args.layer_config = layer_config
+
+    low_cpu_mem_usage = True
+    if args.disable_low_cpu_mem_usage:
+        low_cpu_mem_usage = False
 
     if args.avg_bits is not None:
         if args.options is None:
             raise ValueError("please set --options for auto scheme")
+        if enable_torch_compile:
+            logger.warning(
+                "`enable_torch_compile=True` with AutoScheme may cause compile errors "
+                "on some models. If so, try removing `--enable_torch_compile`."
+            )
         scheme = AutoScheme(
             options=args.options,
             avg_bits=args.avg_bits,
             shared_layers=args.shared_layers,
             ignore_scale_zp_bits=args.ignore_scale_zp_bits,
+            low_gpu_mem_usage=True,  # force it to be True as it uses much smaller vram but similar time cost
+            low_cpu_mem_usage=low_cpu_mem_usage,
         )
-    low_cpu_mem_usage = True
-    if args.disable_low_cpu_mem_usage:
-        low_cpu_mem_usage = False
 
     autoround: BaseCompressor = AutoRound(
         model=model_name,
@@ -709,14 +745,26 @@ def tune(args):
     elif model_name.split("./")[-1].strip("./") != "" and "gguf" in args.format:
         export_dir = os.path.join(args.output_dir, model_name.split("/")[-1] + "-gguf")
     else:
-        if autoround.group_size <= 0:
-            if "fp" in autoround.act_data_type:
-                suffix = f"afp{autoround.act_bits}"
-            else:
-                suffix = f"a{autoround.act_bits}"
+        if isinstance(autoround.group_size, tuple):
+            assert len(autoround.group_size) == 2, f"Only support 2D group_size, but get {autoround.group_size}"
+            suffix = f"g{autoround.group_size[0]}x{autoround.group_size[1]}"
         else:
-            suffix = f"g{autoround.group_size}"
-        export_dir = os.path.join(args.output_dir, model_name.split("/")[-1] + f"-w{autoround.bits}{suffix}")
+            if autoround.group_size <= 0:
+                if "fp" in autoround.act_data_type:
+                    suffix = f"afp{autoround.act_bits}"
+                else:
+                    suffix = f"a{autoround.act_bits}"
+            else:
+                suffix = f"g{autoround.group_size}"
+        prefix = (
+            autoround.data_type.lower().replace("_", "")
+            if "int" not in autoround.data_type or "mx" in autoround.data_type
+            else ""
+        )
+        export_dir = os.path.join(
+            args.output_dir,
+            model_name.split("/")[-1] + (f"-{prefix}" if prefix else "") + f"-w{autoround.bits}{suffix}",
+        )
 
     # ======================= Quantize and save model =======================
     model, folders = autoround.quantize_and_save(export_dir, format=args.format)  # pylint: disable=E1101
@@ -793,6 +841,10 @@ def run_light():
 
 def run_fast():
     start("fast")
+
+
+def run_mllm():
+    run()
 
 
 if __name__ == "__main__":

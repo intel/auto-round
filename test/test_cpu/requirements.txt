@@ -5,7 +5,9 @@ sentencepiece
 torchvision
 pillow
 numba
-llmcompressor @ git+https://github.com/vllm-project/llm-compressor.git@main
+pytest
 lm_eval >= 0.4.10  # for transformers >= 5.0.0
 diffusers
 protobuf
+compressed-tensors >= 0.15.0
+transformers >= 5.5.0

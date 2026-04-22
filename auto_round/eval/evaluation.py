@@ -85,23 +85,33 @@ def simple_evaluate(
     )
 
 
-def evaluate_diffusion_model(autoround, model, args):
+def evaluate_diffusion_model(args, autoround=None, model=None, pipe=None):
     """
     Evaluate diffusion models.
 
     Args:
-        autoround: AutoRound instance
-        model: Quantized model
         args: Command line arguments
+        autoround: AutoRound instance (option 1)
+        model: Diffusion model instance (option 1)
+        pipe: Diffusion pipeline instance (option 2)
     """
+    if pipe is None and (autoround is None or model is None):
+        raise ValueError("Either 'pipe' must be provided, or both 'autoround' and 'model' must be provided.")
+
     import torch
 
-    from auto_round.utils import detect_device, get_model_dtype, logger
+    from auto_round.utils import detect_device, get_model_dtype, logger, unsupported_meta_device
 
     # Prepare inference pipeline
-    pipe = autoround.pipe
-    pipe.to(model.dtype)
-    pipe.transformer = model
+    if pipe is None:
+        if model is not None and unsupported_meta_device(model):
+            logger.error(
+                "Quantized model is meta and diffusers doesn't support loading auto-round quantized model now. Exit."
+            )
+            exit(0)
+        pipe = autoround.pipe
+        pipe.to(model.dtype)
+        pipe.transformer = model
     device_str = detect_device(args.device_map if hasattr(args, "device_map") else "0")
     pipe = pipe.to(device_str)
 
@@ -134,11 +144,11 @@ def evaluate_diffusion_model(autoround, model, args):
         logger.info(f"Image generated with prompt {args.prompt} is saved as {save_path}")
 
     # Batch prompt evaluation
-    if args.prompt_file is not None:
+    elif args.prompt_file is not None:
         from auto_round.compressors.diffusion import diffusion_eval
 
         metrics = args.metrics.split(",")
-        diffusion_eval(pipe, args.prompt_file, metrics, args.image_save_dir, 1, gen_kwargs)
+        diffusion_eval(pipe, args.prompt_file, metrics, args.image_save_dir, 1, gen_kwargs, args.limit)
 
 
 def load_gguf_model_for_eval(eval_folder, formats, args):
@@ -375,7 +385,7 @@ def run_model_evaluation(model, tokenizer, autoround, folders, formats, device_s
 
     # Handle diffusion models separately
     if getattr(autoround, "diffusion", False):
-        evaluate_diffusion_model(autoround, model, args)
+        evaluate_diffusion_model(args, autoround=autoround, model=model)
         return
 
     # Check if evaluation is needed for language models

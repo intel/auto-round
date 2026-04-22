@@ -11,10 +11,14 @@ from ...helpers import get_model_path
 
 
 class TestModelScope:
+    @pytest.fixture(autouse=True)
+    def setup_saved_path(self, tmp_path):
+        self.saved_path = str(tmp_path / "saved")
+        yield
+        shutil.rmtree(self.saved_path, ignore_errors=True)
+
     @classmethod
     def setup_class(self):
-        self.saved_path = "./saved"
-
         self.source_path, self.cache_path = "/tf_dataset/auto_round/modelscope", "/home/hostuser/.cache/modelscope"
         if os.path.exists(self.source_path):
             if not os.path.exists("/home/hostuser/.cache"):
@@ -23,7 +27,6 @@ class TestModelScope:
 
     @classmethod
     def teardown_class(self):
-        shutil.rmtree("./saved", ignore_errors=True)
         shutil.rmtree("runs", ignore_errors=True)
         if os.path.exists(self.cache_path):
             shutil.rmtree(self.cache_path, ignore_errors=True)

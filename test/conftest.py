@@ -9,6 +9,31 @@ from .fixtures import *
 # Easy debugging without installing auto-round.
 sys.path.insert(0, "..")
 
+# Workaround: some gguf builds report version 'N/A' which is not PEP 440
+# compliant and causes packaging.version.InvalidVersion inside transformers.
+try:
+    import gguf as _gguf_mod
+    from packaging.version import Version
+
+    try:
+        Version(_gguf_mod.__version__)
+    except Exception:
+        _gguf_mod.__version__ = "0.10.0"
+except ImportError:
+    pass
+
+
+try:
+    import torch
+
+    # When loaded via the "meta" device, `gptqmodel==6.0.3` raises an error because the
+    # internal loading process within the `transformers` library defaults to "meta" mode.
+    # Importing under a CPU device context avoids that failure during module loading.
+    with torch.device("cpu"):
+        import gptqmodel  # pylint: disable=E0401
+except ImportError:
+    pass
+
 
 ### HPU related configuration, usage: `pytest --mode=compile/lazy``
 def pytest_addoption(parser):

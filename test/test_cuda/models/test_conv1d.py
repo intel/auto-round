@@ -12,22 +12,16 @@ from ...helpers import get_model_path, get_tiny_model, model_infer
 
 
 class TestQuantizationConv1d:
+
+    @pytest.fixture(autouse=True)
+    def _save_dir(self, tmp_path):
+        self.save_dir = str(tmp_path / "saved")
+        yield
+        shutil.rmtree(self.save_dir, ignore_errors=True)
+
     @pytest.fixture(autouse=True, scope="class")
     def setup_and_teardown_class(self):
-        # ===== SETUP (setup_class) =====
-        print("[Setup] Running before any test in class")
-
-        # Yield to hand control to the test methods
         yield
-
-        # ===== TEARDOWN (teardown_class) =====
-        print("[Teardown] Running after all tests in class")
-        shutil.rmtree("./saved", ignore_errors=True)
-        shutil.rmtree("runs", ignore_errors=True)
-
-    @classmethod
-    def teardown_class(self):
-        shutil.rmtree("./saved", ignore_errors=True)
         shutil.rmtree("runs", ignore_errors=True)
 
     @require_gptqmodel
@@ -50,8 +44,8 @@ class TestQuantizationConv1d:
         )
 
         autoround.quantize()
-        autoround.save_quantized("./saved")
+        autoround.save_quantized(self.save_dir)
 
-        model = AutoModelForCausalLM.from_pretrained("./saved", device_map="cuda", trust_remote_code=True)
-        tokenizer = AutoTokenizer.from_pretrained("./saved", trust_remote_code=True)
+        model = AutoModelForCausalLM.from_pretrained(self.save_dir, device_map="cuda", trust_remote_code=True)
+        tokenizer = AutoTokenizer.from_pretrained(self.save_dir, trust_remote_code=True)
         model_infer(model, tokenizer)

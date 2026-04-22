@@ -12,6 +12,12 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from auto_round.experimental.qmodules.mx import MXFP4QuantLinear, MXFP8QuantLinear
+
+from auto_round.experimental.qmodules.mx import (
+    MXFP4QuantLinear,
+    MXFP8QuantLinear,
+    MXINT4QuantLinear,
+)
+
 from auto_round.experimental.qmodules.nvfp4 import NVFP4QuantLinear
 from auto_round.experimental.qmodules.fp8_static import WeightFP8ActFP8StaticQuantLinear

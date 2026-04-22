@@ -46,18 +46,22 @@ steps:
     - script: |
         if [ "${{ parameters.utScriptFileName }}" == "run_ut_xpu" ];then
           docker exec ${{ parameters.utContainerName }} bash -c "cd /auto-round \
-            && uv pip install torch==2.10.0 --index-url https://download.pytorch.org/whl/xpu \
+            && uv pip install -r .azure-pipelines/scripts/ut/constraints.txt --extra-index-url https://download.pytorch.org/whl/xpu \
+            && uv pip install auto-round-lib --constraint .azure-pipelines/scripts/ut/constraints.txt \
             && uv pip install -r requirements.txt \
             && uv pip install -r test/test_ark/requirements.txt \
+            && uv pip install -r test/test_xpu/requirements.txt --extra-index-url https://download.pytorch.org/whl/xpu \
+            && uv pip install -r .azure-pipelines/scripts/ut/constraints.txt --extra-index-url https://download.pytorch.org/whl/xpu \
             && cd /auto-round && uv pip install . \
             && uv pip list"
         else 
           docker exec ${{ parameters.utContainerName }} bash -c "cd /auto-round \
-            && uv pip install torch==2.9.1 torchvision --index-url https://download.pytorch.org/whl/cpu \
-            && uv pip install torch==2.9.1 auto-round-lib \
+            && uv pip install -r .azure-pipelines/scripts/ut/constraints.txt --extra-index-url https://download.pytorch.org/whl/cpu \
+            && uv pip install auto-round-lib --constraint .azure-pipelines/scripts/ut/constraints.txt \
             && uv pip install -r requirements.txt \
             && uv pip install -r requirements-cpu.txt \
-            && uv pip install -r test/test_cpu/requirements.txt \
+            && uv pip install -r test/test_cpu/requirements.txt --extra-index-url https://download.pytorch.org/whl/cpu \
+            && uv pip install -r .azure-pipelines/scripts/ut/constraints.txt --extra-index-url https://download.pytorch.org/whl/cpu \
             && uv pip list"
         fi
       displayName: "Env Setup"
@@ -65,14 +69,15 @@ steps:
   - ${{ if eq(parameters.imageSource, 'pull') }}:
     - script: |
         docker exec ${{ parameters.utContainerName }} bash -c "cd /auto-round \
-          && python setup.py bdist_wheel hpu \
+          && pip install build \
+          && BUILD_HPU_ONLY=1 python -m build \
           && pip install dist/*.whl \
           && pip install -r test/test_hpu/requirements.txt \
           && pip list"
       displayName: "HPU Env Setup"
 
   - script: |
-      docker exec -e NUMA_NODE=${NUMA_NODE} -e NUMA_CPUSET=${NUMA_CPUSET} ${{ parameters.utContainerName }} \
+      docker exec -e NUMA_NODE=${NUMA_NODE} -e NUMA_CPUSET=${NUMA_CPUSET} -e ZE_AFFINITY_MASK=${ZE_AFFINITY_MASK} ${{ parameters.utContainerName }} \
       bash -c "cd /auto-round/.azure-pipelines/scripts \
         && bash ut/${{ parameters.utScriptFileName }}.sh ${{ parameters.utTestMode }}"
     displayName: "Run UT"

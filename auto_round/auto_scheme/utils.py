@@ -21,12 +21,14 @@ from accelerate.utils import get_balanced_memory
 
 from auto_round.schemes import QuantizationScheme, preset_name_to_scheme
 from auto_round.utils import (
+    DEVICE_ENVIRON_VARIABLE_MAPPING,
     SUPPORTED_LAYER_TYPES,
     check_to_quantized,
     get_block_names,
     get_layer_features,
     get_module,
     is_hpex_available,
+    normalize_no_split_modules,
     parse_available_devices,
 )
 
@@ -105,7 +107,10 @@ def compute_avg_bits_for_scheme(
         #     continue
         if not hasattr(module, "weight"):
             continue
-        total_params += module.weight.numel()
+        n_param = module.weight.numel()
+        if n_param == 0 and hasattr(module, "_cached_weight_numel"):
+            n_param = module._cached_weight_numel
+        total_params += n_param
         layer_bits, _ = compute_layer_bits(module, ignore_scale_zp_bits)
         total_quantized_bits += layer_bits
     avg_bits = float(total_quantized_bits) / total_params
@@ -133,7 +138,10 @@ def compute_avg_bits_for_model(model: torch.nn.Module, ignore_scale_zp_bits: boo
             continue
         if not hasattr(module, "weight"):
             continue
-        total_params += module.weight.numel()
+        n_param = module.weight.numel()
+        if n_param == 0 and hasattr(module, "_cached_weight_numel"):
+            n_param = module._cached_weight_numel
+        total_params += n_param
         layer_bits, _ = compute_layer_bits(module, ignore_scale_zp_bits)
         total_quantized_bits += layer_bits
 
@@ -157,6 +165,9 @@ def compute_layer_bits(
     """
     weight = layer.weight
     n_param = weight.numel()
+    # Use cached numel when weight has been cleared to an empty tensor (low_cpu_mem_usage offload)
+    if n_param == 0 and hasattr(layer, "_cached_weight_numel"):
+        n_param = layer._cached_weight_numel
     weight_bits = getattr(layer, "bits", 16)
     group_size = getattr(layer, "group_size", 128)
     data_type = getattr(layer, "data_type", "int")
@@ -201,55 +212,6 @@ def compute_layer_bits(
     total_bits = weight_bits * n_param + aux_total_bits
     avg_bits = total_bits / n_param
     return total_bits, avg_bits
-
-
-# Important Notice This dispatch does not follow dict device_map, just extract all available devices and use them
-def dispatch_model_by_all_available_devices(
-    model: torch.nn.Module, device_map: Union[str, int, dict, None]
-) -> torch.nn.Module:
-    if device_map is None:
-        device_map = 0
-
-    no_split_modules = list(getattr(model, "_no_split_modules", []))
-    if device_map == "auto":
-        max_memory = get_balanced_memory(
-            model,
-            max_memory=None,
-            no_split_module_classes=no_split_modules,
-        )
-        device_map = infer_auto_device_map(model, max_memory=max_memory, no_split_module_classes=no_split_modules)
-        model = dispatch_model(model, device_map=device_map)
-        return model
-
-    devices = parse_available_devices(device_map)
-
-    if len(devices) == 1:
-        model.to(devices[0])
-        return model
-
-    max_memory = get_balanced_memory(
-        model,
-        max_memory=None,
-        no_split_module_classes=no_split_modules,
-    )
-
-    # Filter max_memory with devices
-    #  assume only one GPU model
-    new_max_memory = {}
-    for device in devices:
-        if ":" in device:
-            device = int(device.split(":")[-1])
-        elif device == "cpu":
-            device = "cpu"
-        elif isinstance(device, str):
-            device = 0
-        else:
-            raise ValueError(f"Unsupported device {device} in device_map: {device_map}")
-        new_max_memory[device] = max_memory[device]
-    model.tie_weights()
-    device_map = infer_auto_device_map(model, max_memory=max_memory, no_split_module_classes=no_split_modules)
-    model = dispatch_model(model, device_map=device_map)
-    return model
 
 
 def merge_lists_unionfind(list_of_lists):

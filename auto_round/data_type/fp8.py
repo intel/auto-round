@@ -25,8 +25,62 @@ from auto_round.data_type.utils import (
 from auto_round.utils import is_gaudi2, logger
 
 
+@register_dtype(("block_fp8_sym", "block_fp8", "block_fp8_e4m3"))
+def quant_block_fp_sym(tensor, max_scale=1.0, tensor_max=None, group_size=(128, 128), v=0, tensor_min=None, **kwargs):
+    """Symmetric quantization using block float8 format.
+
+    Args:
+        tensor (torch.Tensor): Input tensor to quantize.
+        max_scale (float, optional): Maximum scaling factor. Defaults to 1.0.
+        tensor_max (float, optional): Maximum tensor value for precomputed scale. Defaults to None.
+        **kwargs: Additional arguments for compatibility.
+
+    Returns:
+        tuple:
+            - Quantized and dequantized tensor (torch.Tensor).
+            - Scale tensor used for quantization (torch.Tensor).
+            - Placeholder for zp (None).
+    """
+    info = torch.finfo(torch.float8_e4m3fn)
+    orig_dtype = tensor.dtype
+    tensor, orig_shape, pad_len = reshape_pad_tensor_by_group_size(tensor, group_size)
+    if isinstance(max_scale, torch.Tensor):
+        max_scale = max_scale.to(tensor.device)
+    if isinstance(v, torch.Tensor):
+        v = v.to(tensor.device)
+    if tensor_max is None:
+        max_tensor = tensor.abs().amax(dim=(-2, -1)) * max_scale
+    elif isinstance(tensor_max, torch.Tensor):
+        max_tensor = (
+            tensor_max.to(tensor.device) * max_scale
+            if tensor_min is None
+            else torch.maximum(tensor_max.abs(), tensor_min.abs()).to(tensor.device) * max_scale
+        )
+    else:
+        max_tensor = (
+            torch.tensor(tensor_max).to(tensor.device) * max_scale
+            if tensor_min is None
+            else torch.maximum(torch.tensor(tensor_max).abs(), torch.tensor(tensor_min).abs()).to(tensor.device)
+            * max_scale
+        )
+    scale = max_tensor / info.max
+    assert len(scale.shape) == 2, f"Only support 2D group_size, but get {len(scale.shape)}"
+    min_scaling_factor = float(1.0 / (info.max * 512.0))  ##copy from vllm
+    scale = torch.clip(scale, min=min_scaling_factor)
+    if tensor.dtype == torch.float16:  ## Avoid NaN gradients with float16
+        tensor = tensor.to(torch.bfloat16)
+
+    fp8_res = tensor / scale.unsqueeze(-1).unsqueeze(-1) + v
+    fp8_res = torch.clip(fp8_res, info.min, info.max)
+    fp8_res = float8_e4m3fn_ste(fp8_res)
+    qdq_res = fp8_res * scale.unsqueeze(-1).unsqueeze(-1)
+    qdq_res = revert_tensor_by_pad(qdq_res, orig_shape=orig_shape, pad_len=pad_len)
+    qdq_res = qdq_res.to(orig_dtype)
+    return qdq_res, scale, None
+
+
 @register_dtype(("fp8_sym", "fp8", "fp8_e4m3"))
-def quant_fp8_sym(tensor, max_scale=1.0, tensor_max=None, group_size=-1, v=0, **kwargs):
+def quant_fp8_sym(tensor, max_scale=1.0, tensor_max=None, group_size=-1, v=0, tensor_min=None, **kwargs):
     """Symmetric quantization using float8 format.
 
     Allows both dynamic per-token scaling and tensor-wide quantization depending on input.
@@ -53,9 +107,18 @@ def quant_fp8_sym(tensor, max_scale=1.0, tensor_max=None, group_size=-1, v=0, **
     if tensor_max is None:  ##dynamic per-token
         max_tensor = torch.max(torch.abs(tensor), dim=-1)[0] * max_scale
     elif isinstance(tensor_max, torch.Tensor):
-        max_tensor = tensor_max.to(tensor.device) * max_scale
+        max_tensor = (
+            tensor_max.to(tensor.device) * max_scale
+            if tensor_min is None
+            else torch.maximum(tensor_max.abs(), tensor_min.abs()).to(tensor.device) * max_scale
+        )
     else:
-        max_tensor = torch.tensor(tensor_max).to(tensor.device) * max_scale
+        max_tensor = (
+            torch.tensor(tensor_max).to(tensor.device) * max_scale
+            if tensor_min is None
+            else torch.maximum(torch.tensor(tensor_max).abs(), torch.tensor(tensor_min).abs()).to(tensor.device)
+            * max_scale
+        )
     scale = max_tensor.to(torch.float32) / info.max
     min_scaling_factor = float(1.0 / (info.max * 512.0))  ##copy from vllm
     scale = torch.clip(scale, min=min_scaling_factor)
@@ -72,7 +135,7 @@ def quant_fp8_sym(tensor, max_scale=1.0, tensor_max=None, group_size=-1, v=0, **
 
 
 @register_dtype("fp8_e5m2")
-def quant_fp8_e5m2(tensor, max_scale=1.0, tensor_max=None, group_size=-1, v=0, **kwargs):
+def quant_fp8_e5m2(tensor, max_scale=1.0, tensor_max=None, group_size=-1, v=0, tensor_min=None, **kwargs):
     """Symmetric quantization using float8 format.
 
     Allows both dynamic per-token scaling and tensor-wide quantization depending on input.
@@ -95,9 +158,18 @@ def quant_fp8_e5m2(tensor, max_scale=1.0, tensor_max=None, group_size=-1, v=0, *
     if tensor_max is None:  ##dynamic per-token
         max_tensor = torch.max(torch.abs(tensor), dim=-1)[0] * max_scale
     elif isinstance(tensor_max, torch.Tensor):
-        max_tensor = tensor_max.to(tensor.device) * max_scale
+        max_tensor = (
+            tensor_max.to(tensor.device) * max_scale
+            if tensor_min is None
+            else torch.maximum(tensor_max.abs(), tensor_min.abs()).to(tensor.device) * max_scale
+        )
     else:
-        max_tensor = torch.tensor(tensor_max).to(tensor.device) * max_scale
+        max_tensor = (
+            torch.tensor(tensor_max).to(tensor.device) * max_scale
+            if tensor_min is None
+            else torch.maximum(torch.tensor(tensor_max).abs(), torch.tensor(tensor_min).abs()).to(tensor.device)
+            * max_scale
+        )
     scale = max_tensor.to(torch.float32) / info.max
     min_scaling_factor = float(1.0 / (info.max * 512.0))  ##copy from vllm
     scale = torch.clip(scale, min=min_scaling_factor)
@@ -180,7 +252,7 @@ def quant_fp8_e5m2_unit_scale(tensor, max_scale=1.0, tensor_max=None, group_size
 
 
 @register_dtype("fp8_gaudi3_sym")
-def quant_fp8_sym_gaudi3(tensor, max_scale=1.0, tensor_max=None, **kwargs):
+def quant_fp8_sym_gaudi3(tensor, max_scale=1.0, tensor_max=None, tensor_min=None, **kwargs):
     """Symmetric quantization using float8 format.
 
     Allows both dynamic per-token scaling and tensor-wide quantization depending on input.
@@ -205,9 +277,19 @@ def quant_fp8_sym_gaudi3(tensor, max_scale=1.0, tensor_max=None, **kwargs):
         tensor = tensor.reshape(-1, orig_shape[-1])
         max_tensor = torch.max(torch.abs(tensor), dim=-1)[0] * max_scale
     elif isinstance(tensor_max, torch.Tensor):
-        max_tensor = tensor_max.clone().detach().to(tensor.device) * max_scale
+        max_tensor = (
+            tensor_max.to(tensor.device) * max_scale
+            if tensor_min is None
+            else torch.maximum(tensor_max.clone().detach().abs(), tensor_min.clone().detach().abs()).to(tensor.device)
+            * max_scale
+        )
     else:
-        max_tensor = torch.tensor(tensor_max).to(tensor.device) * max_scale
+        max_tensor = (
+            torch.tensor(tensor_max).to(tensor.device) * max_scale
+            if tensor_min is None
+            else torch.maximum(torch.tensor(tensor_max).abs(), torch.tensor(tensor_min).abs()).to(tensor.device)
+            * max_scale
+        )
     scale = max_tensor.to(torch.float32) / fp8_max
     min_scaling_factor = float(1.0 / (fp8_max * 512.0))  ##copy from vllm
     scale = torch.clip(scale, min=min_scaling_factor)
@@ -226,7 +308,9 @@ def quant_fp8_sym_gaudi3(tensor, max_scale=1.0, tensor_max=None, **kwargs):
 if is_gaudi2():
 
     @register_dtype(("fp8_sym", "fp8", "fp8_e4m3"))
-    def quant_fp8_sym(tensor, max_scale=1.0, tensor_max=None, group_size=-1, v=0, **kwargs):  # pylint: disable=E0102
+    def quant_fp8_sym(
+        tensor, max_scale=1.0, tensor_max=None, group_size=-1, v=0, tensor_min=None, **kwargs
+    ):  # pylint: disable=E0102
         """Symmetric quantization using float8 format.
 
         Allows both dynamic per-token scaling and tensor-wide quantization depending on input.
@@ -255,9 +339,18 @@ if is_gaudi2():
         if tensor_max is None:  ##dynamic per-token
             max_tensor = torch.max(torch.abs(tensor), dim=-1)[0] * max_scale
         elif isinstance(tensor_max, torch.Tensor):
-            max_tensor = tensor_max.to(tensor.device) * max_scale
+            max_tensor = (
+                tensor_max.to(tensor.device) * max_scale
+                if tensor_min is None
+                else torch.maximum(tensor_max.abs(), tensor_min.abs()).to(tensor.device) * max_scale
+            )
         else:
-            max_tensor = torch.tensor(tensor_max).to(tensor.device) * max_scale
+            max_tensor = (
+                torch.tensor(tensor_max).to(tensor.device) * max_scale
+                if tensor_min is None
+                else torch.maximum(torch.tensor(tensor_max).abs(), torch.tensor(tensor_min).abs()).to(tensor.device)
+                * max_scale
+            )
         scale = max_tensor.to(torch.float32) / info.max
         min_scaling_factor = float(1.0 / (info.max * 512.0))  ##copy from vllm
         scale = torch.clip(scale, min=min_scaling_factor)

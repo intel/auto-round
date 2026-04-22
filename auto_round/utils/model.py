@@ -12,6 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 import collections
+import inspect
 import json
 import os
 import re
@@ -34,6 +35,8 @@ from auto_round.utils.weight_handler import (
     convert_module_to_hp_if_necessary,
     is_quantized_input_module,
 )
+
+FIX_MISTRAL_REGEX_MODEL_TYPE_LIST = ["longcat_next"]
 
 
 def clean_module_parameter(submodule: torch.nn.Module, param_name: str) -> None:
@@ -248,6 +251,38 @@ def _check_accelerate_version():
         )
 
 
+_MXFP4_SUPPORTED_MODEL_TYPES = {"gpt_oss"}
+
+
+def _is_mxfp4_model(model_path, trust_remote_code=True):
+    """Check if a model is an MXFP4 quantized model supported for direct loading.
+
+    Only checks when transformers >= 5.0.0. Returns False immediately for older versions,
+    adding zero overhead to non-MXFP4 model loading.
+    """
+    from transformers import AutoConfig
+
+    try:  # in case of config loading failure for new models
+        config = AutoConfig.from_pretrained(model_path, trust_remote_code=trust_remote_code)
+    except:
+        return False
+
+    model_type = getattr(config, "model_type", "")
+    if model_type not in _MXFP4_SUPPORTED_MODEL_TYPES:
+        return False
+
+    quant_config = getattr(config, "quantization_config", None)
+    if quant_config is None:
+        return False
+
+    quant_method = (
+        quant_config.get("quant_method", "")
+        if isinstance(quant_config, dict)
+        else getattr(quant_config, "quant_method", "")
+    )
+    return quant_method == "mxfp4" and model_type in _MXFP4_SUPPORTED_MODEL_TYPES
+
+
 def llm_load_model(
     pretrained_model_name_or_path: str,
     platform: str = "hf",
@@ -284,6 +319,20 @@ def llm_load_model(
     if device_str is not None and "hpu" in device_str:
         torch_dtype = torch.bfloat16
 
+    load_kwargs = {
+        "torch_dtype": torch_dtype,
+        "trust_remote_code": trust_remote_code,
+        "device_map": "auto" if use_auto_mapping else None,
+    }
+
+    if version.parse(transformers.__version__) >= version.parse("5.0.0"):
+        is_mxfp4 = _is_mxfp4_model(pretrained_model_name_or_path, trust_remote_code=trust_remote_code)
+        if is_mxfp4:
+            from transformers import Mxfp4Config
+
+            load_kwargs["quantization_config"] = Mxfp4Config(dequantized=True)
+            logger.info("Detected MXFP4 quantized model, using Mxfp4Config(dequantized=True) for loading.")
+
     is_glm = bool(re.search("chatglm", pretrained_model_name_or_path.lower()))
 
     tokenizer = AutoTokenizer.from_pretrained(pretrained_model_name_or_path, trust_remote_code=trust_remote_code)
@@ -295,29 +344,14 @@ def llm_load_model(
     if is_hpex_available():
         # For loading FP8 model on HPU
         with fake_cuda_for_hpu(), fake_triton_for_hpu(), override_cuda_device_capability():
-            model = model_cls.from_pretrained(
-                pretrained_model_name_or_path,
-                torch_dtype=torch_dtype,
-                trust_remote_code=trust_remote_code,
-                device_map="auto" if use_auto_mapping else None,
-            )
+            model = model_cls.from_pretrained(pretrained_model_name_or_path, **load_kwargs)
     else:
         try:
-            model = model_cls.from_pretrained(
-                pretrained_model_name_or_path,
-                torch_dtype=torch_dtype,
-                trust_remote_code=trust_remote_code,
-                device_map="auto" if use_auto_mapping else None,
-            )
+            model = model_cls.from_pretrained(pretrained_model_name_or_path, **load_kwargs)
         except ValueError as e:
             if "FP8 quantized" in str(e):
                 with override_cuda_device_capability():
-                    model = model_cls.from_pretrained(
-                        pretrained_model_name_or_path,
-                        torch_dtype=torch_dtype,
-                        trust_remote_code=trust_remote_code,
-                        device_map="auto" if use_auto_mapping else None,
-                    )
+                    model = model_cls.from_pretrained(pretrained_model_name_or_path, **load_kwargs)
                 logger.warning("the support for fp8 model as input is experimental, please use with caution.")
             else:
                 raise
@@ -325,17 +359,84 @@ def llm_load_model(
         except OSError as e:
             logger.warning(f"fail to load {pretrained_model_name_or_path}, set trust_remote_code to False and retry.")
             model = model_cls.from_pretrained(
-                pretrained_model_name_or_path,
-                torch_dtype=torch_dtype,
-                trust_remote_code=False,
-                device_map="auto" if use_auto_mapping else None,
+                pretrained_model_name_or_path, **{**load_kwargs, "trust_remote_code": False}
             )
 
     model = model.eval()
     check_and_mark_quantized_module(model)
+    handle_generation_config(model)
     model = _to_model_dtype(model, model_dtype)
 
     return model, tokenizer
+
+
+def _find_pipeline_model_subfolder(model_dir_or_repo: str, file_list: list = None) -> tuple:
+    """Find model/processor subfolders from a pipeline's model_index.json.
+
+    Works for both local directories and remote HF repos.
+
+    Args:
+        model_dir_or_repo: Local directory path or HF repo id.
+        file_list: If provided, treat *model_dir_or_repo* as a remote HF repo
+            and use *file_list* (from ``list_repo_files``) to check file existence.
+            If ``None``, treat it as a local directory.
+
+    Returns:
+        (model_subfolder, processor_subfolder, config_dict)
+    """
+    is_local = file_list is None
+
+    if is_local:
+        index_path = os.path.join(model_dir_or_repo, "model_index.json")
+        if not os.path.exists(index_path):
+            raise FileNotFoundError(f"No config.json or model_index.json found under {model_dir_or_repo}")
+    else:
+        from huggingface_hub import hf_hub_download
+
+        index_path = hf_hub_download(model_dir_or_repo, "model_index.json")
+
+    with open(index_path, "r", encoding="utf-8") as f:
+        model_index = json.load(f)
+
+    processor_subfolder = None
+    for name, value in model_index.items():
+        if name == "processor" and isinstance(value, list):
+            processor_subfolder = "processor"
+            break
+
+    candidates = []
+    for name, value in model_index.items():
+        if name.startswith("_") or not isinstance(value, list) or len(value) < 2:
+            continue
+        # Load component config.json
+        if is_local:
+            cfg_path = os.path.join(model_dir_or_repo, name, "config.json")
+            if not os.path.isfile(cfg_path):
+                continue
+            with open(cfg_path, "r", encoding="utf-8") as f:
+                comp_config = json.load(f)
+        else:
+            comp_config_file = f"{name}/config.json"
+            if comp_config_file not in file_list:
+                continue
+            cfg_path = hf_hub_download(model_dir_or_repo, comp_config_file)
+            with open(cfg_path, "r", encoding="utf-8") as f:
+                comp_config = json.load(f)
+
+        if "architectures" in comp_config:
+            candidates.append((name, comp_config))
+
+    if not candidates:
+        raise FileNotFoundError(
+            f"model_index.json found in {model_dir_or_repo} but no component with 'architectures' in its config.json"
+        )
+
+    for name, comp_config in candidates:
+        arch = comp_config["architectures"][0]
+        if "CausalLM" in arch or "ConditionalGeneration" in arch:
+            return name, processor_subfolder, comp_config
+
+    return candidates[0][0], processor_subfolder, candidates[0][1]
 
 
 def mllm_load_model(
@@ -376,17 +477,27 @@ def mllm_load_model(
     torch_dtype = "auto"
     if device_str is not None and "hpu" in device_str:
         torch_dtype = torch.bfloat16
+    model_subfolder = None
+    processor_subfolder = None
     if os.path.isdir(pretrained_model_name_or_path):
-        config = json.load(open(os.path.join(pretrained_model_name_or_path, "config.json")))
+        config_path = os.path.join(pretrained_model_name_or_path, "config.json")
+        if os.path.exists(config_path):
+            with open(config_path, "r", encoding="utf-8") as f:
+                config = json.load(f)
+        else:
+            model_subfolder, processor_subfolder, config = _find_pipeline_model_subfolder(pretrained_model_name_or_path)
     else:
         from huggingface_hub import hf_hub_download, list_repo_files
 
         file_list = list_repo_files(pretrained_model_name_or_path)
         if "config.json" in file_list:
-            # Load plain JSON
             config_path = hf_hub_download(pretrained_model_name_or_path, "config.json")
             with open(config_path, "r", encoding="utf-8") as f:
                 config = json.load(f)
+        elif "model_index.json" in file_list:
+            model_subfolder, processor_subfolder, config = _find_pipeline_model_subfolder(
+                pretrained_model_name_or_path, file_list
+            )
         elif "config.json.gz" in file_list:
             # Load gzipped JSON
             import gzip
@@ -401,6 +512,20 @@ def mllm_load_model(
         model_type = config["model_type"]
     else:
         model_type = None
+
+    if model_type == "qwen2_5_omni":
+        if version.parse(transformers.__version__) < version.parse("4.52.0"):
+            raise RuntimeError(
+                f"Qwen2.5-Omni requires transformers >= 4.52.0, but found {transformers.__version__}. "
+                "Please upgrade: pip install transformers>=4.52.0"
+            )
+
+    if model_type == "qwen3_omni_moe":
+        if version.parse(transformers.__version__) < version.parse("5.1.0"):
+            raise RuntimeError(
+                f"Qwen3-Omni requires transformers >= 5.1.0, but found {transformers.__version__}. "
+                "Please upgrade: pip install transformers>=5.1.0"
+            )
 
     processor, image_processor = None, None
     if "deepseek_vl_v2" == model_type:
@@ -435,20 +560,28 @@ def mllm_load_model(
             else:
                 cls = AutoModelForCausalLM
             try:
+                model_load_kwargs = {}
+                if model_subfolder is not None:
+                    model_load_kwargs["subfolder"] = model_subfolder
                 model = cls.from_pretrained(
                     pretrained_model_name_or_path,
                     trust_remote_code=trust_remote_code,
                     torch_dtype=torch_dtype,
                     device_map="auto" if use_auto_mapping else None,
+                    **model_load_kwargs,
                 )
             except ValueError as e:
                 if "FP8 quantized" in str(e):
                     with override_cuda_device_capability():
+                        model_load_kwargs = {}
+                        if model_subfolder is not None:
+                            model_load_kwargs["subfolder"] = model_subfolder
                         model = cls.from_pretrained(
                             pretrained_model_name_or_path,
                             trust_remote_code=trust_remote_code,
                             torch_dtype=torch_dtype,
                             device_map="auto" if use_auto_mapping else None,
+                            **model_load_kwargs,
                         )
                     logger.warning("the support for fp8 model as input is experimental, please use with caution.")
                 else:
@@ -462,11 +595,19 @@ def mllm_load_model(
                 else:
                     tokenizer = MistralTokenizer.from_hf_hub(pretrained_model_name_or_path)
             else:
+                processor_load_kwargs = {}
+                if processor_subfolder is not None:
+                    processor_load_kwargs["subfolder"] = processor_subfolder
                 tokenizer = AutoTokenizer.from_pretrained(
-                    pretrained_model_name_or_path, trust_remote_code=trust_remote_code
+                    pretrained_model_name_or_path,
+                    trust_remote_code=trust_remote_code,
+                    fix_mistral_regex=True if model_type in FIX_MISTRAL_REGEX_MODEL_TYPE_LIST else False,
+                    **processor_load_kwargs,
                 )
                 processor = AutoProcessor.from_pretrained(
-                    pretrained_model_name_or_path, trust_remote_code=trust_remote_code
+                    pretrained_model_name_or_path,
+                    trust_remote_code=trust_remote_code,
+                    **processor_load_kwargs,
                 )
             try:
                 if platform == "model_scope":
@@ -474,15 +615,29 @@ def mllm_load_model(
                 else:
                     from transformers import AutoImageProcessor
 
+                image_processor_load_kwargs = {}
+                if processor_subfolder is not None:
+                    image_processor_load_kwargs["subfolder"] = processor_subfolder
                 image_processor = AutoImageProcessor.from_pretrained(
-                    pretrained_model_name_or_path, trust_remote_code=trust_remote_code
+                    pretrained_model_name_or_path,
+                    trust_remote_code=trust_remote_code,
+                    **image_processor_load_kwargs,
                 )
             except Exception as e:
                 pass
 
+            if model_type == "glm_image" and image_processor is not None:
+                from transformers.models.glm_image.processing_glm_image import GlmImageProcessor
+
+                processor = GlmImageProcessor(image_processor=image_processor, tokenizer=tokenizer)
+
     model = model.eval()
     check_and_mark_quantized_module(model)
+    handle_generation_config(model)
     model = _to_model_dtype(model, model_dtype)
+
+    if model_subfolder is not None:
+        model._autoround_pipeline_subfolder = model_subfolder
 
     return model, processor, tokenizer, image_processor
 
@@ -497,6 +652,8 @@ def diffusion_load_model(
     model_dtype: str = None,
     **kwargs,
 ):
+    from functools import partial
+
     from auto_round.utils.common import LazyImport
     from auto_round.utils.device import get_device_and_parallelism
 
@@ -512,13 +669,71 @@ def diffusion_load_model(
     if device_str is not None and "hpu" in device_str:
         torch_dtype = torch.bfloat16
 
-    pipelines = LazyImport("diffusers.pipelines")
+    try:
+        from transformers import AutoConfig
 
-    pipe = pipelines.auto_pipeline.AutoPipelineForText2Image.from_pretrained(
-        pretrained_model_name_or_path, torch_dtype=torch_dtype
-    )
+        config = AutoConfig.from_pretrained(pretrained_model_name_or_path, trust_remote_code=trust_remote_code)
+    except:
+        config = None
+
+    model_type = getattr(config, "model_type", "")
+    # A special case for NextStep
+    if model_type == "nextstep":
+        from auto_round.special_model_handler import load_next_step_diffusion
+
+        pipe, model = load_next_step_diffusion(pretrained_model_name_or_path, device_str)
+        return pipe, pipe.model
+
+    pipelines = LazyImport("diffusers.pipelines")
+    if isinstance(pretrained_model_name_or_path, str):
+        if torch_dtype == "auto":
+            torch_dtype = {}
+            model_index = os.path.join(pretrained_model_name_or_path, "model_index.json")
+            with open(model_index, "r", encoding="utf-8") as file:
+                config = json.load(file)
+            for k, v in config.items():
+                component_folder = os.path.join(pretrained_model_name_or_path, k)
+                if isinstance(v, list) and os.path.exists(os.path.join(component_folder, "config.json")):
+                    component_folder = os.path.join(pretrained_model_name_or_path, k)
+                    with open(os.path.join(component_folder, "config.json"), "r", encoding="utf-8") as file:
+                        component_config = json.load(file)
+                    torch_dtype[k] = component_config.get("torch_dtype", "auto")
+
+        pipe = pipelines.auto_pipeline.AutoPipelineForText2Image.from_pretrained(
+            pretrained_model_name_or_path, torch_dtype=torch_dtype
+        )
+        pipe_config = pipe.load_config(pretrained_model_name_or_path)
+
+    elif isinstance(pretrained_model_name_or_path, pipelines.pipeline_utils.DiffusionPipeline):
+        pipe = pretrained_model_name_or_path
+        pipe_config = pipe.load_config(pipe.config["_name_or_path"])
+
+    else:
+        raise ValueError(
+            f"Only support str or DiffusionPipeline class for model, but get {type(pretrained_model_name_or_path)}"
+        )
+
+    # add missing key
+    for k, v in pipe_config.items():
+        if k not in pipe.config:
+            pipe.config[k] = v
+
     pipe = _to_model_dtype(pipe, model_dtype)
     model = pipe.transformer
+
+    # meta model uses model.config.save_pretrained for config saving
+    setattr(model.config, "save_pretrained", partial(config_save_pretrained, model.config, "config.json", model=model))
+    setattr(pipe.config, "save_pretrained", partial(config_save_pretrained, pipe.config, "model_index.json"))
+
+    def model_save_pretrained(model, save_directory, **kwargs):
+        super(model.__class__, model).save_pretrained(save_directory, **kwargs)
+        if hasattr(model.config, "quantization_config"):
+            model.config["quantization_config"] = model.config.quantization_config
+        with open(os.path.join(save_directory, "config.json"), "w", encoding="utf-8") as writer:
+            writer.write(json.dumps(dict(model.config), indent=2, sort_keys=True) + "\n")
+
+    # non-meta model uses model.save_pretrained for model and config saving
+    setattr(model, "save_pretrained", partial(model_save_pretrained, model))
     return pipe, model.to(device)
 
 
@@ -584,6 +799,23 @@ def is_gguf_model(model_path: Union[str, torch.nn.Module]) -> bool:
 def is_diffusion_model(model_or_path: Union[str, object]) -> bool:
     from auto_round.utils.common import LazyImport
 
+    # First check if it's a known diffusion pipeline by config/model_type
+    # to avoid unnecessary imports and file checks for non-diffusion models, which can be time-consuming.
+    try:
+        from transformers import AutoConfig
+
+        config = AutoConfig.from_pretrained(model_or_path, trust_remote_code=True)
+        model_type = getattr(config, "model_type", "")
+        # A special case for NextStep
+        if model_type == "nextstep":
+            return True
+    except:
+        logger.warning(
+            f"Failed to load config for {model_or_path}, trying to check model_index.json for diffusion pipeline."
+        )
+
+    # Then check if model_index.json exists for diffusion pipeline,
+    # which is a strong signal of being a diffusion pipeline.
     if isinstance(model_or_path, str):
         index_file = None
         if not os.path.isdir(model_or_path):
@@ -624,6 +856,8 @@ def is_moe_layer(module: torch.nn.Module) -> bool:
             "Qwen2MoeSparseMoeBlock".lower(),
             "Qwen3MoeSparseMoeBlock".lower(),
             "Qwen3VLMoeTextSparseMoeBlock".lower(),
+            "Qwen3OmniMoeThinkerTextSparseMoeBlock".lower(),
+            "Qwen3OmniMoeTalkerTextSparseMoeBlock".lower(),
         ]
     )
 
@@ -662,7 +896,8 @@ def get_block_names(model, quant_vision=False):
                 block_names[i].append(target_m[0] + "." + n)
         return block_names
 
-    def _get_vlm_block_names(model, quant_vision=False):
+    def _get_vlm_block_names(model, quant_vision=False, ignore_audio=True):
+        # Since calibration dataset doesn't contain audio data, audio-related blocks will be ignored by default.
         if (
             hasattr(model, "config")
             and hasattr(model.config, "model_type")
@@ -672,10 +907,13 @@ def get_block_names(model, quant_vision=False):
         block_names = []
         target_modules = []
         vision_blocks_tuple = ("vision", "visual", "image", "img")
+        audio_blocks_tuple = ("audio", "speech", "wav", "waveform")
         target_modules = _search_block("", model)
 
         for i, target_m in enumerate(target_modules):
             if quant_vision or all(key not in target_m[0].lower() for key in (vision_blocks_tuple)):
+                if ignore_audio and any(key in target_m[0].lower() for key in audio_blocks_tuple):
+                    continue
                 block_names.append([])
                 for n, m in target_m[1].named_children():
                     block_names[-1].append(target_m[0] + "." + n)
@@ -723,6 +961,8 @@ def get_expert_linear_names(module: torch.nn.Module) -> list[str]:
             "DeepseekV2MoE",
             "DeepseekV3MoE",
             "Qwen3VLMoeTextSparseMoeBlock",
+            "Qwen3OmniMoeThinkerTextSparseMoeBlock",
+            "Qwen3OmniMoeTalkerTextSparseMoeBlock",
         ],
     ):
         return ["gate_proj", "down_proj", "up_proj"]
@@ -758,6 +998,8 @@ def get_expert_input_proj_names(module: torch.nn.Module) -> list[str]:
             "Qwen2MoeSparseMoeBlock",
             "Qwen3MoeSparseMoeBlock",
             "Qwen3VLMoeTextSparseMoeBlock",
+            "Qwen3OmniMoeThinkerTextSparseMoeBlock",
+            "Qwen3OmniMoeTalkerTextSparseMoeBlock",
             "DeepseekMoE",
             "DeepseekV2MoE",
             "DeepseekV3MoE",
@@ -949,38 +1191,53 @@ def _to_model_dtype(model, model_dtype):
     return model
 
 
-def get_module(module, key):
-    """Get module from model by key name.
+def get_attr(module, key):
+    """Get attribute (including parameters like `...weight`) by dotted key.
 
-    Args:
-        module (torch.nn.Module): original model
-        key (str): module name to be replaced
+    Missing keys return `None` (legacy behavior relied on by tests).
     """
     name_list = key.split(".")
     for name in name_list:
+        if module is None:
+            return None
         module = getattr(module, name, None)
     return module
 
 
-def set_module(model, key, new_module):
-    """Set new module into model by key name.
+def set_attr(model, key, new_attr):
+    """Set attribute (including parameters like `...weight`) by dotted key.
 
-    Args:
-        model (torch.nn.Module): original model
-        key (str): module name to be replaced
-        new_module (torch.nn.Module): new module to be inserted
+    If an intermediate parent doesn't exist, this is a no-op.
     """
     module = model
     name_list = key.split(".")
     for name in name_list[:-1]:
-        if hasattr(module, name):
-            module = getattr(module, name)
-    setattr(module, name_list[-1], new_module)
+        if not hasattr(module, name):
+            return
+        module = getattr(module, name)
+    setattr(module, name_list[-1], new_attr)
 
 
-# For getting and setting attribution, such as 'lm_head.weight'
-get_attr = get_module
-set_attr = set_module
+def get_module(module, key):
+    """Get module from model by key name using PyTorch native API.
+
+    Missing paths return `None` to preserve legacy non-fail-fast behavior.
+    """
+    try:
+        return module.get_submodule(key)
+    except (AttributeError, KeyError):
+        return None
+
+
+def set_module(model, key, new_module):
+    """Set new module into model by key name using PyTorch native API.
+
+    Missing paths are ignored (no-op) to preserve legacy behavior.
+    """
+    try:
+        model.set_submodule(key, new_module)
+    except (AttributeError, KeyError):
+        return
 
 
 def get_layer_features(layer):
@@ -1076,13 +1333,71 @@ def mv_module_from_gpu(module):
     The module on the specified device.
     """
     if hasattr(module, "device"):
-        target_device = "cpu"
-        if module.device.type == target_device:
+        if module.device.type in ("cpu", "meta"):
             return module
-        else:
-            return module.to(target_device)
-    else:
-        return module.to("cpu")
+
+    has_meta = any(p.device.type == "meta" for p in module.parameters())
+    if not has_meta:
+        has_meta = any(b.device.type == "meta" for b in module.buffers())
+
+    if has_meta:
+        for _, child in module.named_children():
+            mv_module_from_gpu(child)
+        for attr_name in list(module._parameters.keys()):
+            p = module._parameters[attr_name]
+            if p is not None and p.device.type != "meta" and p.device.type != "cpu":
+                module._parameters[attr_name] = torch.nn.Parameter(p.to("cpu"), requires_grad=p.requires_grad)
+        for attr_name in list(module._buffers.keys()):
+            b = module._buffers[attr_name]
+            if b is not None and b.device.type != "meta" and b.device.type != "cpu":
+                module._buffers[attr_name] = b.to("cpu")
+        return module
+
+    return module.to("cpu")
+
+
+def safe_device_move_with_meta_handling(
+    model,
+    target_device="cpu",
+    *,
+    materialize_meta=None,
+    logger=None,
+):
+    """Move model to target device, handling meta parameters and buffers correctly.
+        Skipping module move on target/meta device.
+
+    Args:
+        target_device: Target device ('cpu', 'cuda', etc.)
+        materialize_meta: Optional callable to materialize meta tensors before movement
+        logger: Optional logger for warnings if needed
+    """
+    target_type = torch.device(target_device).type
+
+    # Materialize meta tensors if handler provided
+    if materialize_meta is not None:
+        materialize_meta(model)
+
+    meta_count = 0
+
+    # Move parameters
+    for p in model.parameters():
+        if p.device.type in (target_type, "meta"):
+            meta_count += p.device.type == "meta"
+            continue
+        p.data = p.data.to(target_device)
+
+    # Move buffers
+    for m in model.modules():
+        for n, b in m._buffers.items():
+            if b is None or b.device.type in (target_type, "meta"):
+                meta_count += b is not None and b.device.type == "meta"
+                continue
+            m._buffers[n] = b.to(target_device)
+
+    if meta_count and logger is not None:
+        logger.warning(f"{meta_count} tensors still on meta device after movement")
+
+    return model
 
 
 def is_moe_model(model: torch.nn.Module) -> bool:
@@ -1097,10 +1412,9 @@ def is_moe_model(model: torch.nn.Module) -> bool:
 
 
 def is_moe_model_via_config(config) -> bool:
-    if hasattr(config, "to_dict"):
-        for key in config.to_dict().keys():
-            if "moe" in key or "expert" in key:
-                return True
+    config_str = str(config).lower()
+    if "moe" in config_str or "expert" in config_str:
+        return True
     return False
 
 
@@ -1237,10 +1551,7 @@ def set_amax_for_all_moe_layers(model: torch.nn.Module, layer_name=None, attr_na
         expert_input_proj_names = get_expert_input_proj_names(sub_module)
 
         # Check experts structure and handle accordingly
-        if _is_unfused_experts_module(sub_module.experts):
-            # Unfused experts: gate_up_proj/down_proj are nn.ModuleList
-            _set_amax_for_unfused_experts(sub_module.experts, attr_name=attr_name)
-        elif _is_fused_experts_module(sub_module.experts):
+        if _is_fused_experts_module(sub_module.experts):
             # Fused experts: 3D Parameters (e.g., DeepseekV2Experts)
             # For fused experts, act_max is set on the parent MOE module, not individual experts
             # Skip processing here as they don't have individual Linear layers to calibrate
@@ -1281,13 +1592,6 @@ def set_amax_for_all_moe_layers(model: torch.nn.Module, layer_name=None, attr_na
             )
 
 
-def _is_unfused_experts_module(module: torch.nn.Module) -> bool:
-    """Check if the module is an unfused experts module (has ModuleList gate_up_proj/down_proj)."""
-    if not hasattr(module, "gate_up_proj") or not hasattr(module, "down_proj"):
-        return False
-    return isinstance(module.gate_up_proj, torch.nn.ModuleList) and isinstance(module.down_proj, torch.nn.ModuleList)
-
-
 def _is_fused_experts_module(module: torch.nn.Module) -> bool:
     """Check if the module is a fused experts module (has 3D Parameter gate_up_proj/down_proj)."""
     if not hasattr(module, "gate_up_proj") or not hasattr(module, "down_proj"):
@@ -1298,29 +1602,6 @@ def _is_fused_experts_module(module: torch.nn.Module) -> bool:
         and module.gate_up_proj.dim() == 3
         and module.down_proj.dim() == 3
     )
-
-
-def _set_amax_for_unfused_experts(experts_module: torch.nn.Module, attr_name: str = "act_max"):
-    """Set amax for unfused experts module with ModuleList attributes.
-
-    This handles experts modules that have been unfused to have:
-    - gate_up_proj: nn.ModuleList of nn.Linear (input projections, unified scale)
-    - down_proj: nn.ModuleList of nn.Linear (output projections)
-    """
-    if hasattr(experts_module, "gate_up_proj") and isinstance(experts_module.gate_up_proj, torch.nn.ModuleList):
-        unify_scale = envs.AR_ENABLE_UNIFY_MOE_INPUT_SCALE
-        set_amax_for_uncalibrated_experts(
-            list(experts_module.gate_up_proj),
-            attr_name=attr_name,
-            unify_all=unify_scale,
-        )
-
-    if hasattr(experts_module, "down_proj") and isinstance(experts_module.down_proj, torch.nn.ModuleList):
-        set_amax_for_uncalibrated_experts(
-            list(experts_module.down_proj),
-            attr_name=attr_name,
-            unify_all=False,
-        )
 
 
 def _set_amax_for_moe_auxiliary_layers(moe_module: torch.nn.Module, attr_name: str = "act_max"):
@@ -1393,17 +1674,8 @@ def _get_reference_amax_from_experts(moe_module: torch.nn.Module, attr_name: str
 
     experts = moe_module.experts
 
-    # Handle unfused experts (ModuleList)
-    if _is_unfused_experts_module(experts):
-        for proj_list in [getattr(experts, "gate_up_proj", None), getattr(experts, "down_proj", None)]:
-            if proj_list is not None and isinstance(proj_list, torch.nn.ModuleList):
-                for layer in proj_list:
-                    amax = get_nested_attr(layer, attr_name)
-                    if amax is not None:
-                        amax_values.append(amax)
-
     # Handle iterable experts (list of modules)
-    elif isinstance(experts, collections.abc.Iterable):
+    if isinstance(experts, collections.abc.Iterable):
         expert_linear_names = get_expert_linear_names(moe_module)
         for expert in experts:
             for linear_name in expert_linear_names:
@@ -1422,43 +1694,93 @@ def _get_reference_amax_from_experts(moe_module: torch.nn.Module, attr_name: str
     return torch.max(all_values)
 
 
+# Extra non-weight files that some models require at load time but are not saved
+# by model.save_pretrained().  These are copied from the source model cache to
+# the quantized output directory so that from_pretrained() works out of the box.
+_EXTRA_MODEL_FILES = {
+    "spk_dict.pt",  # Qwen2.5-Omni speaker dictionary for audio output
+}
+
+
+def _copy_extra_model_files(src_dir: str, dst_dir: str):
+    """Copy known extra model files from *src_dir* to *dst_dir* if they exist."""
+    import os
+    import shutil
+
+    for file in os.listdir(src_dir):
+        if file in _EXTRA_MODEL_FILES:
+            src_file = os.path.join(src_dir, file)
+            dst_file = os.path.join(dst_dir, file)
+            if os.path.isfile(src_file) and not os.path.exists(dst_file):
+                logger.debug(f"Transferring extra model file {src_file} to {dst_dir}")
+                shutil.copy(src_file, dst_dir)
+
+
 # Adapted from https://github.com/vllm-project/llm-compressor/blob/
 # 5b3ddff74cae9651f24bef15d3255c4ee053fc60/src/llmcompressor/pytorch/model_load/helpers.py#L144
-def copy_python_files_from_model_cache(model, save_path: str):
+def copy_python_files_from_model_cache(model, save_path: str, copy_folders: bool | list[str] | tuple[str, ...] = False):
+    """Copy Python files (and optionally subdirectories) from the model cache to *save_path*.
+
+    Args:
+        model: The model whose ``config._name_or_path`` points to the source cache.
+        save_path (str): Destination directory.
+        copy_folders (bool | list[str] | tuple[str, ...]): Controls which subdirectories
+            are copied from the cache root to *save_path*:
+
+            * ``False`` (default) – no folders are copied.
+            * ``True`` – every subdirectory that does not already exist in *save_path*
+              is copied (e.g. all of ``vae``, ``scheduler``, …).
+            * A list/tuple of folder names (e.g. ``["vae", "scheduler"]``) – only the
+              named subdirectories are copied.
+    """
+    import shutil
+
+    from huggingface_hub import hf_hub_download
+
     config = model.config
-    if hasattr(config, "_name_or_path"):
-        import os
-        import shutil
+    if not hasattr(config, "_name_or_path"):
+        return
 
-        from huggingface_hub import hf_hub_download
+    if version.parse(transformers.__version__) < version.parse("5.0.0"):
+        from transformers.utils import TRANSFORMERS_CACHE
 
-        if version.parse(transformers.__version__) < version.parse("5.0.0"):
-            from transformers.utils import TRANSFORMERS_CACHE
+        cache_dir = os.environ.get("HF_HOME", TRANSFORMERS_CACHE)
+    else:
+        from huggingface_hub.constants import HF_HUB_CACHE
 
-            cache_dir = os.environ.get("HF_HOME", TRANSFORMERS_CACHE)
-        else:
-            from huggingface_hub.constants import HF_HUB_CACHE
+        cache_dir = os.environ.get("HF_HOME", HF_HUB_CACHE)
+    from transformers.utils import http_user_agent
 
-            cache_dir = os.environ.get("HF_HOME", HF_HUB_CACHE)
-        from transformers.utils import http_user_agent
+    cache_path = config._name_or_path
+    if not os.path.exists(cache_path):
+        user_agent = http_user_agent()
+        config_file_path = hf_hub_download(
+            repo_id=cache_path,
+            filename="config.json",
+            cache_dir=cache_dir,
+            force_download=False,
+            user_agent=user_agent,
+        )
+        cache_path = os.path.sep.join(config_file_path.split(os.path.sep)[:-1])
 
-        cache_path = config._name_or_path
-        if not os.path.exists(cache_path):
-            user_agent = http_user_agent()
-            config_file_path = hf_hub_download(
-                repo_id=cache_path,
-                filename="config.json",
-                cache_dir=cache_dir,
-                force_download=False,
-                user_agent=user_agent,
-            )
-            cache_path = os.path.sep.join(config_file_path.split(os.path.sep)[:-1])
+    for file in os.listdir(cache_path):
+        full_file_name = os.path.join(cache_path, file)
+        if file.endswith(".py") and os.path.isfile(full_file_name):
+            logger.debug(f"Transferring {full_file_name} to {save_path}")
+            shutil.copy(full_file_name, save_path)
 
-        for file in os.listdir(cache_path):
-            full_file_name = os.path.join(cache_path, file)
-            if file.endswith(".py") and os.path.isfile(full_file_name):
-                logger.debug(f"Transferring {full_file_name} to {save_path}")
-                shutil.copy(full_file_name, save_path)
+    _copy_extra_model_files(cache_path, save_path)
+
+    if copy_folders is not False:
+        for entry in os.listdir(cache_path):
+            src_entry = os.path.join(cache_path, entry)
+            dst_entry = os.path.join(save_path, entry)
+            if not os.path.isdir(src_entry):
+                continue
+            if copy_folders is True or entry in copy_folders:
+                if not os.path.exists(dst_entry):
+                    logger.debug(f"Transferring folder {src_entry} to {save_path}")
+                    shutil.copytree(src_entry, dst_entry)
 
 
 def extract_block_names_to_str(quant_block_list):
@@ -1552,3 +1874,136 @@ def is_separate_tensor(model: torch.nn.Module, tensor_name: str) -> bool:
             return True
         else:
             return False
+
+
+def handle_generation_config(model: torch.nn.Module):
+    if hasattr(model, "generation_config"):
+        generation_config = model.generation_config
+        if hasattr(generation_config, "top_p") and generation_config.top_p != 1.0:
+            model.generation_config.do_sample = True
+        if hasattr(generation_config, "top_k") and generation_config.top_k != 0:
+            model.generation_config.do_sample = True
+        if hasattr(generation_config, "temperature") and generation_config.temperature != 1.0:
+            model.generation_config.do_sample = True
+
+
+def merge_block_output_keys(block, input_others, extra_keys):
+    """Merge block output keys into input_others, resolving positional/keyword conflicts.
+
+    When a block is called with positional args (stored in input_others["positional_inputs"]),
+    and the block output produces updated values for those same parameters (e.g.,
+    encoder_hidden_states), we must update the positional arg rather than adding a duplicate
+    keyword arg, which would cause "got multiple values for argument" errors.
+    """
+    positional_inputs = input_others.get("positional_inputs")
+    if not positional_inputs or not extra_keys:
+        input_others.update(extra_keys)
+        return
+
+    try:
+        sig = inspect.signature(block.forward)
+    except (ValueError, TypeError):
+        input_others.update(extra_keys)
+        return
+
+    params = [p for p in sig.parameters.keys() if p != "self"]
+    # params[0] = hidden_states (passed as input_ids separately)
+    # params[1:] correspond to positional_inputs[0], [1], ...
+
+    positional_inputs = list(positional_inputs)
+    for key, value in extra_keys.items():
+        if key in params:
+            pos_idx = params.index(key) - 1  # -1 because hidden_states is params[0]
+            if 0 <= pos_idx < len(positional_inputs):
+                positional_inputs[pos_idx] = value
+                continue
+        input_others[key] = value
+    input_others["positional_inputs"] = tuple(positional_inputs)
+
+
+def wrap_block_forward_positional_to_kwargs(base_hook):
+    """Wrap a block forward hook to convert positional inputs to keyword args.
+
+    Models like GLM-Image call transformer blocks with positional args
+    (e.g. block(hidden_states, encoder_hidden_states, temb, ...)).  The base
+    hook only stores positional_inputs once (from the first sample), losing
+    per-sample variation for encoder_hidden_states etc.  By converting
+    positional args to keyword args, all inputs are properly accumulated
+    across calibration samples.
+    """
+    _param_names = None
+
+    def forward(m, hidden_states=None, *positional_inputs, **kwargs):
+        nonlocal _param_names
+        if positional_inputs:
+            if _param_names is None:
+                sig = inspect.signature(m.orig_forward)
+                _param_names = [p for p in sig.parameters.keys() if p != "self"]
+            for i, val in enumerate(positional_inputs):
+                param_idx = i + 1  # hidden_states is params[0]
+                if param_idx < len(_param_names):
+                    param_name = _param_names[param_idx]
+                    if param_name not in kwargs:
+                        kwargs[param_name] = val
+            positional_inputs = ()
+        return base_hook(m, hidden_states, *positional_inputs, **kwargs)
+
+    return forward
+
+
+def config_save_pretrained(config, file_name, save_directory, model=None):
+    if os.path.isfile(save_directory):
+        raise AssertionError(f"Provided path ({save_directory}) should be a directory, not a file")
+    os.makedirs(save_directory, exist_ok=True)
+    output_config_file = os.path.join(save_directory, file_name)
+
+    config_dict = dict(config)
+    if model is not None:
+        if file_name == "config.json" and hasattr(model.config, "quantization_config"):
+            config_dict["quantization_config"] = model.config.quantization_config
+
+    with open(output_config_file, "w", encoding="utf-8") as writer:
+        writer.write(json.dumps(config_dict, indent=2, sort_keys=True) + "\n")
+
+
+def rename_weights_files(path: str, prefix="diffusion_pytorch_model"):
+    """Rename weight files for diffusion models."""
+    import glob
+    import json
+    import os
+
+    # rename safetensors
+    files = sorted(glob.glob(f"{path}/*.safetensors"))
+    total = len(files)
+
+    for i, f in enumerate(files, 1):
+        new = f"{prefix}-{i:05d}-of-{total:05d}.safetensors"
+        os.rename(f, os.path.join(path, new))
+
+    # rename index.json
+    idx = os.path.join(path, "model.safetensors.index.json")
+    if os.path.exists(idx):
+        d = json.load(open(idx))
+        d["weight_map"] = {k: v.replace("model-", prefix + "-") for k, v in d["weight_map"].items()}
+        new_idx = os.path.join(path, f"{prefix}.safetensors.index.json")
+        json.dump(d, open(new_idx, "w"), indent=2)
+        os.remove(idx)
+
+
+def hook_ngram_embeddings_on_cpu(model):
+    has_ngram_embeddings = hasattr(model, "model") and hasattr(model.model, "ngram_embeddings")
+    if has_ngram_embeddings:
+        raw_ngram_embeddings = model.model.ngram_embeddings
+
+        def hook_input_output_device_for_cpu_module(module):
+            from accelerate.hooks import AlignDevicesHook, add_hook_to_module
+
+            hook = AlignDevicesHook(
+                io_same_device=True,
+                execution_device="cpu",
+            )
+
+            add_hook_to_module(module, hook)
+
+        hook_input_output_device_for_cpu_module(raw_ngram_embeddings)
+    return has_ngram_embeddings, raw_ngram_embeddings if has_ngram_embeddings else None

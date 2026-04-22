@@ -53,7 +53,7 @@ def is_flash_attn_available():
 
 def is_gptqmodel_available():
     try:
-        require_version("gptqmodel>=2.0")
+        require_version("gptqmodel>=5.7.0")
         return True
     except ImportError:
         return False
