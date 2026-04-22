@@ -201,7 +201,7 @@ class DiffusionMixin:
                 and val.config._name_or_path == self.model.config._name_or_path
             ):
                 compressed_model = super().save_quantized(
-                    output_dir=sub_module_path if not self.is_immediate_saving else output_dir,
+                    output_dir=sub_module_path if not self.compress_context.is_immediate_saving else output_dir,
                     format=format,
                     inplace=inplace,
                     **kwargs,

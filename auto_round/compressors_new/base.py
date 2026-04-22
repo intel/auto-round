@@ -41,7 +41,7 @@ from auto_round.schemes import (
     get_gguf_scheme,
     preset_name_to_scheme,
 )
-from auto_round.special_model_handler import get_predefined_ignore_layers
+from auto_round.special_model_handler import get_predefined_fixed_attr, get_predefined_ignore_layers
 from auto_round.utils import (
     INNER_SUPPORTED_LAYER_TYPES,
     SUPPORTED_LAYER_TYPES,
@@ -216,8 +216,7 @@ class BaseCompressor(object):
         self.enable_torch_compile = enable_torch_compile
 
         # Whether to pack the layer immediately after tuning
-        self.is_immediate_packing = False
-        self.is_immediate_saving = False
+        # Managed via self.compress_context.is_immediate_packing / is_immediate_saving
 
         torch.set_printoptions(precision=3, sci_mode=True)
 
@@ -255,8 +254,6 @@ class BaseCompressor(object):
             low_gpu_mem_usage,
             device_map,
             enable_torch_compile,
-            is_immediate_packing=self.is_immediate_packing,
-            is_immediate_saving=self.is_immediate_saving,
             formats=self.formats,
             static_kv_dtype=self.static_kv_dtype,
             static_attention_dtype=self.static_attention_dtype,
@@ -275,6 +272,12 @@ class BaseCompressor(object):
         # reflects the correct value immediately after construction (not only after post_init).
         self._adjust_torch_compile(enable_torch_compile)
         self.compress_context.enable_torch_compile = self.enable_torch_compile
+
+        self.blocks_requiring_input_ids = []
+        self.has_variable_block_shape = False
+        fixed_attr = get_predefined_fixed_attr(self.model_context.model) or {}
+        for key, value in fixed_attr.items():
+            setattr(self, key, value)
 
     # ── Scheme resolution ─────────────────────────────────────────────────────
 
@@ -848,8 +851,8 @@ class BaseCompressor(object):
         Postconditions:
           - ``self.block_forward`` is ready for use.
           - ``compress_context.enable_torch_compile`` is final.
-          - ``self.inplace`` and ``self.is_immediate_packing`` /
-            ``self.is_immediate_saving`` are set to their definitive values.
+          - ``self.inplace`` and ``compress_context.is_immediate_packing`` /
+            ``compress_context.is_immediate_saving`` are set to their definitive values.
         """
         set_non_auto_device_map(self.model_context.model, self.compress_context.device_map)
         # Re-evaluate torch.compile eligibility now that data_type is resolved.
@@ -921,46 +924,38 @@ class BaseCompressor(object):
 
         formats = getattr(self, "formats", [])
         if len(formats) == 1 and not formats[0].is_fake() and self.inplace:
-            self.is_immediate_packing = True
+            self.compress_context.is_immediate_packing = True
 
         if self.has_qlayer_outside_block and self.need_calib:
-            self.is_immediate_packing = False
+            self.compress_context.is_immediate_packing = False
 
         if not ("causallm" in self.model_context.model.__class__.__name__.lower() and not self.model_context.is_mllm):
             # TODO For tied keys, there may some issues, we haven't not verified this
             tied_weight_keys = getattr(self.model_context.model, "_tied_weight_keys", {})
             if len(tied_weight_keys) > 1:
-                self.is_immediate_saving = False
+                self.compress_context.is_immediate_saving = False
                 if self.compress_context.low_cpu_mem_usage:
                     logger.warning("reset low_cpu_mem_usage to False due to tied weights")
                 return
             if len(tied_weight_keys) == 1:
                 key = list(tied_weight_keys.keys())[0]
                 if "lm_head" not in key:
-                    self.is_immediate_saving = False
+                    self.compress_context.is_immediate_saving = False
                     if self.compress_context.low_cpu_mem_usage:
                         logger.warning("reset low_cpu_mem_usage to False due to tied weights")
                     return
 
-        if self.compress_context.low_cpu_mem_usage and self.is_immediate_packing:
-            self.is_immediate_saving = True
+        if self.compress_context.low_cpu_mem_usage and self.compress_context.is_immediate_packing:
+            self.compress_context.is_immediate_saving = True
 
-        if self.compress_context.low_cpu_mem_usage and not self.is_immediate_packing:
-            logger.info(
-                "`low_cpu_mem_usage` is only supported when `immediate_packing` is True. "
-                "Setting `low_cpu_mem_usage` to False."
-            )
-            self.compress_context.low_cpu_mem_usage = False
-            self.is_immediate_saving = False
-
-        if self.compress_context.low_cpu_mem_usage and self.is_immediate_packing:
+        if self.compress_context.low_cpu_mem_usage and self.compress_context.is_immediate_packing:
             if formats[0].is_gguf():
                 logger.warning(
                     "`low_cpu_mem_usage` is not fully supported for gguf format. "
                     "Setting `low_cpu_mem_usage` to False."
                 )
                 self.compress_context.low_cpu_mem_usage = False
-                self.is_immediate_saving = False
+                self.compress_context.is_immediate_saving = False
             elif (
                 self.has_qlayer_outside_block
                 and getattr(self, "disable_opt_rtn", None)
@@ -977,26 +972,23 @@ class BaseCompressor(object):
                     "Setting low_cpu_mem_usage to False."
                 )
                 self.compress_context.low_cpu_mem_usage = False
-                self.is_immediate_saving = False
+                self.compress_context.is_immediate_saving = False
 
-        if self.is_immediate_saving and not (
+        if self.compress_context.is_immediate_saving and not (
             "int" in self.quantize_config.data_type
             or is_nv_fp(self.quantize_config.data_type)
             or is_mx_fp(self.quantize_config.data_type)
         ):
             logger.warning("immediate_saving is only supported for int/nv_fp/mx_fp quantization, set to False")
-            self.is_immediate_saving = False
+            self.compress_context.is_immediate_saving = False
 
         if self.output_dir is None:
-            self.is_immediate_saving = False
-
-        self.compress_context.is_immediate_packing = self.is_immediate_packing
-        self.compress_context.is_immediate_saving = self.is_immediate_saving
+            self.compress_context.is_immediate_saving = False
 
         # Create ShardWriter eagerly only when immediate saving is active
         # (it interleaves with the quantize loop).  Otherwise keep it deferred
         # until save_quantized() to avoid heap fragmentation during init.
-        if self.is_immediate_saving:
+        if self.compress_context.is_immediate_saving:
             self._ensure_shard_writer()
 
     def _ensure_shard_writer(self):

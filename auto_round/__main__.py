@@ -809,5 +809,9 @@ def run_fast():
     start("fast")
 
 
+def run_mllm():
+    run()
+
+
 if __name__ == "__main__":
     run()

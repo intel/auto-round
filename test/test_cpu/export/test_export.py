@@ -406,7 +406,7 @@ class TestAutoRound:
 
         autoround = AutoRound(
             model=self.model_name,
-            scheme="INT8_W8A8",
+            scheme="INT8",
         )
         autoround.post_init()
         format_list = get_formats("llm_compressor, auto_round:llm_compressor", autoround)
@@ -414,6 +414,17 @@ class TestAutoRound:
         assert format_list[0].get_backend_name() == "llm_compressor:int8_w8a8"
         assert format_list[1].output_format == "auto_round"
         assert format_list[1].get_backend_name() == "auto_round:llm_compressor:int8_w8a8"
+
+        # Verify backward compatibility: INT8_W8A8 (old name) produces identical formats to INT8
+        autoround_old = AutoRound(
+            model=self.model_name,
+            scheme="INT8_W8A8",
+        )
+        format_list_old = get_formats("llm_compressor, auto_round:llm_compressor", autoround_old)
+        assert format_list_old[0].output_format == "llm_compressor"
+        assert format_list_old[0].get_backend_name() == "llm_compressor:int8_w8a8"
+        assert format_list_old[1].output_format == "auto_round"
+        assert format_list_old[1].get_backend_name() == "auto_round:llm_compressor:int8_w8a8"
 
     def test_export_format_with_scheme(self, tiny_qwen_model_path):
         from auto_round.formats import get_formats
@@ -484,14 +495,15 @@ class TestAutoRound:
         ), f"'model.visual.blocks' should be in modules_to_not_convert. Got: {modules_to_not_convert}"
 
     @pytest.mark.parametrize(
-        "iters,use_dataloader",
+        "iters,use_dataloader,scheme",
         [
-            (0, False),  # RTN (no tuning)
-            (1, True),  # with tuning
+            (0, False, "INT8"),  # RTN with new scheme name
+            (1, True, "INT8"),  # tuning with new scheme name
+            (0, False, "INT8_W8A8"),  # RTN with old scheme name (backward compat)
         ],
-        ids=["rtn", "tuning"],
+        ids=["rtn", "tuning", "rtn-old-scheme"],
     )
-    def test_llmc_dynamic_wint8aint8_export(self, iters, use_dataloader, dataloader):
+    def test_llmc_dynamic_wint8aint8_export(self, iters, use_dataloader, scheme, dataloader):
         from safetensors import safe_open
 
         dataset = dataloader if use_dataloader else None
@@ -501,7 +513,7 @@ class TestAutoRound:
             nsamples=2,
             seqlen=2,
             dataset=dataset,
-            scheme="INT8_W8A8",
+            scheme=scheme,
         )
         quantized_model_path = self.save_dir
         _, quantized_model_path = autoround.quantize_and_save(output_dir=quantized_model_path, format="llm_compressor")

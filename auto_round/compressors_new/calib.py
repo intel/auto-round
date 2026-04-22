@@ -49,6 +49,7 @@ from auto_round.utils import (
     clear_memory,
     compress_layer_names,
     convert_module_to_hp_if_necessary,
+    flatten_list,
     get_block_names,
     get_module,
     hook_ngram_embeddings_on_cpu,
@@ -126,6 +127,10 @@ class CalibCompressor(BaseCompressor):
             layer_names = []
         if layer_names is None:
             layer_names = []
+
+        block_names = flatten_list(block_names)
+        self.blocks_requiring_input_ids = [data if isinstance(data, str) else data[0] for data in block_names]
+
         calibrate_on_cpu = False
         cannot_calibrate_on_cpu = False
         if self.compress_context.low_gpu_mem_usage or (
@@ -133,6 +138,7 @@ class CalibCompressor(BaseCompressor):
             and len(layer_names) == 0
             and not self.quantizer.has_qlayer_outside_block
             and (last_cache_name is None or last_cache_name in block_names)
+            and not getattr(self, "mllm", False)
         ):
             # low_gpu_mem_usage or calibrate only the embedding layer, which is also very fast on CPU
             calibrate_on_cpu = True
@@ -306,6 +312,7 @@ class CalibCompressor(BaseCompressor):
             self.quantizer.attention_mask = []
 
         self.inputs = {}
+        block_names = flatten_list(block_names)
         self.to_cached_layers = block_names + layer_names
 
         tmp_dtype = None  # TODO delete this as most model is not fp32 now
@@ -574,9 +581,17 @@ class CalibCompressor(BaseCompressor):
                     or isinstance(kwargs[key], list)
                     or isinstance(kwargs[key], tuple)
                 ):
+                    if (
+                        self.has_variable_block_shape
+                        and name not in self.blocks_requiring_input_ids
+                        and key == "hidden_states"
+                    ):
+                        continue
                     if key not in self.inputs[name].keys():  # initialization
                         data = to_device(kwargs[key], device=torch.device("cpu"))
-                        if data is None or key in self.model_context.shared_cache_keys:
+                        if data is None or (
+                            self.quantizer.batch_size > 1 and key in self.model_context.shared_cache_keys
+                        ):
                             self.inputs[name][key] = data
                             continue
                         if self.quantizer.batch_size <= 1:
@@ -682,12 +697,11 @@ class CalibCompressor(BaseCompressor):
     def _preprocess_block_inputs(self, inputs, first_input_name="input_ids"):
         input_ids, input_others = self._split_inputs(inputs, first_input_name)
         clear_memory(device_list=self.compress_context.device_list)
-        input_ids = to_device(input_ids, self.compress_context.cache_device)
-        input_others = to_device(input_others, self.compress_context.cache_device)
-        # As in calibration phase, we may use bf16 for calibration due to low_gpu_memory usage
-
         tmp_dtype = self.model_context.amp_dtype if self.model_context.amp else torch.float32
-        input_ids = to_dtype(input_ids, tmp_dtype)
+        if input_ids is not None:
+            input_ids = to_device(input_ids, self.compress_context.cache_device)
+            input_ids = to_dtype(input_ids, tmp_dtype)
+        input_others = to_device(input_others, self.compress_context.cache_device)
 
         for key in input_others.keys():
             if isinstance(input_others[key], torch.Tensor) and (
@@ -705,7 +719,7 @@ class CalibCompressor(BaseCompressor):
             input_ids = {k: inputs.pop(k, None) for k in input_id_str}
             input_others = inputs
             return input_ids, input_others
-        input_ids = inputs[first_input_name]
+        input_ids = inputs.get(first_input_name, None)
         inputs.pop(first_input_name, None)
         input_others = inputs
         return input_ids, input_others
@@ -879,6 +893,7 @@ class CalibCompressor(BaseCompressor):
         q_input: torch.Tensor = None,
         nblocks: int = 1,
         pbar: tqdm = None,
+        input_others_extra_blocks: dict = None,
     ):
         """Quantize and dequantize the weights of the specified blocks in the model.
 
@@ -902,6 +917,10 @@ class CalibCompressor(BaseCompressor):
             pbar = tqdm(range(0, len(block_names), nblocks))
 
         for i in range(0, len(block_names), nblocks):
+            if input_others_extra_blocks and block_names[i] in input_others_extra_blocks:
+                input_others = input_others_extra_blocks[block_names[i]]
+                _, input_others = self._preprocess_block_inputs(input_others)
+                input_others_extra_blocks.pop(block_names[i])
             if i != 0:
                 pbar.update(1)
             if nblocks == 1:
@@ -1011,7 +1030,7 @@ class CalibCompressor(BaseCompressor):
             memory_monitor.log_summary()
 
             # ── Infrastructure: immediate_pack / shard write ──────────────────
-            if self.compress_context.is_immediate_saving:
+            if self.compress_context.is_immediate_packing:
                 for _n, _mod in m.named_modules():
                     if hasattr(_mod, "bits") and check_to_quantized(_mod):
                         from auto_round.compressors_new.utils import immediate_pack as _immediate_pack
@@ -1020,10 +1039,10 @@ class CalibCompressor(BaseCompressor):
 
             input_ids = next_input_ids
 
-            if self.is_immediate_saving:
+            if self.compress_context.is_immediate_saving:
                 self.shard_writer.write(m, is_finalize=False)
 
-            if self.compress_context.low_cpu_mem_usage and not self.is_immediate_saving:
+            if self.compress_context.low_cpu_mem_usage and not self.compress_context.is_immediate_saving:
                 if nblocks == 1:
                     self._offloader(model, n, overwrite=True)
                 else:
@@ -1032,7 +1051,7 @@ class CalibCompressor(BaseCompressor):
         if pbar is not None:
             pbar.update(1)
 
-        if not self.is_immediate_saving:
+        if not self.compress_context.is_immediate_saving:
             self.model = mv_module_from_gpu(self.model)
         for n, m in self.model.named_modules():
             if hasattr(m, "name"):
@@ -1073,7 +1092,10 @@ class CalibCompressor(BaseCompressor):
             supported_types=SUPPORTED_LAYER_TYPES,
             quant_block_list=self.quantizer.quant_block_list,
         )
-        all_first_block_names = [block[0] for block in all_blocks]
+        if not self.has_variable_block_shape:
+            to_cache_block_names = [block[0] for block in all_blocks]
+        else:
+            to_cache_block_names = flatten_list(all_blocks)
         if len(layer_names) > 0:
             logger.info(
                 "Starting to cache block inputs. This may be slow due to external block layers: %s", layer_names
@@ -1081,7 +1103,7 @@ class CalibCompressor(BaseCompressor):
         else:
             logger.info("start to cache block inputs")
         all_inputs = self.try_cache_inter_data_gpucpu(
-            all_first_block_names,
+            to_cache_block_names,
             self.nsamples,
             layer_names,
         )
@@ -1092,7 +1114,7 @@ class CalibCompressor(BaseCompressor):
         if is_quantized_embedding:
             all_inputs = copy.deepcopy(self.inputs)
             clear_memory(self.inputs, device_list=self.compress_context.device_list)
-            all_q_inputs = self.try_cache_inter_data_gpucpu(all_first_block_names, self.nsamples, layer_names)
+            all_q_inputs = self.try_cache_inter_data_gpucpu(to_cache_block_names, self.nsamples, layer_names)
         # Remove accelerate dispatch hooks before moving parameters.
         # hf_device_map is kept for reference but hooks are no longer needed.
         if hasattr(self.model_context.model, "hf_device_map") and len(self.model_context.model.hf_device_map) > 1:
@@ -1138,8 +1160,9 @@ class CalibCompressor(BaseCompressor):
                 q_input=q_inputs if q_inputs is not None else None,
                 nblocks=self.nblocks,
                 pbar=pbar,
+                input_others_extra_blocks=all_inputs,
             )
-            if self.is_immediate_packing and len(self.formats) != 1:
+            if self.compress_context.is_immediate_packing and len(self.formats) != 1:
                 raise ValueError(
                     f"Expected exactly one packing format when 'immediate_packing' is True, "
                     f"but got {len(self.formats)} formats."
@@ -1153,7 +1176,7 @@ class CalibCompressor(BaseCompressor):
         convert_module_to_hp_if_necessary(
             self.model_context.model, self.model_context.amp_dtype, self.compress_context.device, to_cpu=True
         )
-        if self.is_immediate_saving:
+        if self.compress_context.is_immediate_saving:
             self.shard_writer.write(is_finalize=True)
 
         end_time = time.time()
@@ -1245,7 +1268,7 @@ class CalibCompressor(BaseCompressor):
 
         if hasattr(self, "formats") and self.formats is not None:
             has_gguf = any(format_.is_gguf() for format_ in self.formats)
-        if has_gguf and self.is_immediate_packing:
+        if has_gguf and self.compress_context.is_immediate_packing:
             enable_quanted_input = False
 
         if hasattr(self.model, "hf_device_map") and len(self.model.hf_device_map) > 1 and enable_quanted_input:
@@ -1258,7 +1281,7 @@ class CalibCompressor(BaseCompressor):
                 accelerate.hooks.remove_hook_from_submodules(
                     self.model
                 )  # self.model.hf_device_map has not been changed
-        if not self.is_immediate_saving:
+        if not self.compress_context.is_immediate_saving:
             self.model = mv_module_from_gpu(self.model)
         clear_memory(device_list=self.compress_context.device_list)
         quant_layer = self.quantizer.quantize_layer_outside_block
@@ -1268,10 +1291,10 @@ class CalibCompressor(BaseCompressor):
             q_layer_input = q_layer_inputs.get(layer_name, None) if q_layer_inputs is not None else None
             q_layer_input = to_device(q_layer_input, self.compress_context.cache_device)
             quant_layer(layer_name, layer_input, q_layer_input, device=self.compress_context.device)
-            if self.is_immediate_packing:
+            if self.compress_context.is_immediate_packing:
                 immediate_pack(layer_name, self.quantizer.layer_config)
 
-            if self.is_immediate_saving:
+            if self.compress_context.is_immediate_saving:
                 m = get_module(self.model, layer_name)
                 self.shard_writer.write(m, name=layer_name, is_finalize=False)
             del layer_input
@@ -1350,22 +1373,29 @@ class CalibratedRTNCompressor(CalibCompressor):
         if not all_blocks:
             raise ValueError("Could not find any blocks. Check the model or quant_block_list.")
 
-        all_first_block_names = [block[0] for block in all_blocks]
+        if not self.has_variable_block_shape:
+            to_cache_block_names = [block[0] for block in all_blocks]
+        else:
+            to_cache_block_names = flatten_list(all_blocks)
         layer_names = _get_quantized_layer_names_outside_blocks(
             model=self.model_context.model,
             layer_config=self.quantizer.layer_config,
             supported_types=SUPPORTED_LAYER_TYPES,
             quant_block_list=self.quantizer.quant_block_list,
         )
-        if self.quantize_config.is_act_quantize and (not self.quantize_config.act_dynamic or len(layer_names) > 0):
+        if (
+            self.quantize_config.is_act_quantize
+            and (not self.quantize_config.act_dynamic or len(layer_names) > 0)
+            or self.has_variable_block_shape
+        ):
             if len(layer_names) > 0:
                 logger.warning(
                     "quantize layers outside blocks for static activation quantizaiton"
                     " will significantly increase calibration time"
                 )
-            all_inputs = self.try_cache_inter_data_gpucpu(all_first_block_names, self.nsamples, layer_names)
+            all_inputs = self.try_cache_inter_data_gpucpu(to_cache_block_names, self.nsamples, layer_names)
         else:
-            all_inputs = self.cache_inter_data(all_first_block_names, self.nsamples)
+            all_inputs = self.cache_inter_data(to_cache_block_names, self.nsamples)
 
         # Clear hooks for multi-GPU setups
         if hasattr(self.model_context.model, "hf_device_map") and len(self.model_context.model.hf_device_map) > 1:
@@ -1390,19 +1420,27 @@ class CalibratedRTNCompressor(CalibCompressor):
                 self.quantize_config.batch_size = total_samples
                 logger.warning(f"Forcing batch size to {total_samples}")
 
-            input_ids = to_device(inputs.pop("input_ids"), self.compress_context.cache_device)
-            input_others = to_device(inputs, self.compress_context.cache_device)
-
             tmp_dtype = self.model_context.amp_dtype if self.model_context.amp else torch.float32
+
+            input_ids = to_device(inputs.pop("input_ids"), self.compress_context.cache_device)
             input_ids = [id_.to(tmp_dtype) for id_ in input_ids]
 
-            for key, val in input_others.items():
-                if isinstance(val, torch.Tensor) and val.dtype in (torch.float16, torch.bfloat16):
-                    input_others[key] = val.to(tmp_dtype)
-                elif isinstance(val, list):
-                    input_others[key] = [to_dtype(v, tmp_dtype) for v in val]
+            def process_input_others(input_others):
+                input_others = to_device(input_others, self.compress_context.cache_device)
+                for key, val in input_others.items():
+                    if isinstance(val, torch.Tensor) and val.dtype in (torch.float16, torch.bfloat16):
+                        input_others[key] = val.to(tmp_dtype)
+                    elif isinstance(val, list):
+                        input_others[key] = [to_dtype(v, tmp_dtype) for v in val]
+                return input_others
 
+            input_others = inputs
+            input_others = process_input_others(input_others)
             for block_name in block_names:
+                if block_name in all_inputs.keys():
+                    input_others = all_inputs[block_name]
+                    input_others = process_input_others(input_others)
+                    all_inputs.pop(block_name)
                 pbar.set_description(f"Quantizing {block_name}")
                 block = get_module(self.model_context.model, block_name)
 
@@ -1460,7 +1498,7 @@ class CalibratedRTNCompressor(CalibCompressor):
                 # ── Infrastructure: cleanup ───────────────────────────────────
                 mv_module_from_gpu(block)
 
-                if self.compress_context.low_cpu_mem_usage and not self.is_immediate_saving:
+                if self.compress_context.low_cpu_mem_usage and not self.compress_context.is_immediate_saving:
                     self._offloader(self.model_context.model, block_name)
                 if block_name == block_names[-1]:
                     clear_memory(input_ids, device_list=self.compress_context.device_list)
@@ -1488,7 +1526,7 @@ class CalibratedRTNCompressor(CalibCompressor):
                 dtype = torch.float32
             self.quantizer.quantize_layer_outside_block(name, dtype=dtype)
             # clear_memory(device_list=self.compress_context.device_list)
-        # if self.is_immediate_saving:
+        # if self.compress_context.is_immediate_saving:
         #     shard_writer(self, is_finalize=True)
 
     def _quant_rtn_with_imatrix(self) -> None:
@@ -1635,7 +1673,7 @@ class CalibratedRTNCompressor(CalibCompressor):
         )
         if self.compress_context.low_cpu_mem_usage:
             self._offloader.reload(self.model_context.model)
-        if self.is_immediate_saving:
+        if self.compress_context.is_immediate_saving:
             self.shard_writer.write(is_finalize=True)
 
         self.model_context.quantized = True

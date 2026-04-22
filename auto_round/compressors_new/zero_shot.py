@@ -172,7 +172,7 @@ class ZeroShotCompressor(BaseCompressor):
                         set_amax_for_all_moe_layers(block, attr_name="act_max")
 
                     # ── Infrastructure: shard write / device cleanup ──────────
-                    if self.is_immediate_saving:
+                    if self.compress_context.is_immediate_saving:
                         # Save non-quantized leaf modules (e.g. norms, embeddings in block).
                         for _n, m in block.named_modules():
                             if (
@@ -240,7 +240,7 @@ class ZeroShotCompressor(BaseCompressor):
                     not any(m.children())
                     and len(m.state_dict()) > 0
                     and n not in tied_weights_layers
-                    and self.is_immediate_saving
+                    and self.compress_context.is_immediate_saving
                 ):
                     set_module(self.model, n, copy.deepcopy(m))
                     self.shard_writer.write(name=n)
@@ -250,7 +250,7 @@ class ZeroShotCompressor(BaseCompressor):
         convert_module_to_hp_if_necessary(self.model, self.amp_dtype, self.device)
         if self.low_cpu_mem_usage:
             self._offloader.reload(self.model)
-        if self.is_immediate_saving:
+        if self.compress_context.is_immediate_saving:
             self.shard_writer.write(is_finalize=True)
 
         self.model_context.quantized = True
