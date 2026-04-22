@@ -36,7 +36,7 @@ class QuantizationScheme:
     act_dynamic: Optional[bool] = None
     super_bits: Optional[int] = None
     super_group_size: Optional[int] = None
-    hadamard_config: Optional[dict] = None
+    rotation_config: Optional[dict] = None
 
     @classmethod
     def from_dict(cls, config: dict):
@@ -88,7 +88,7 @@ class QuantizationScheme:
                 continue
             self_val = getattr(self, field)
             other_val = getattr(other, field)
-            # Treat None and empty dict as equivalent for dict fields like hadamard_config
+            # Treat None and empty dict as equivalent for dict fields like rotation_config
             if self_val != other_val:
                 if isinstance(self_val, dict) and not self_val and other_val is None:
                     continue
@@ -199,6 +199,19 @@ MXFP4 = QuantizationScheme.from_dict(
         "group_size": 32,
         "data_type": "mx_fp",
         "act_bits": 4,
+        "act_data_type": "mx_fp",
+        "act_group_size": 32,
+        "act_sym": True,
+        "act_dynamic": True,
+    }
+)
+
+MXFP6 = QuantizationScheme.from_dict(
+    {
+        "bits": 6,
+        "group_size": 32,
+        "data_type": "mx_fp",
+        "act_bits": 6,
         "act_data_type": "mx_fp",
         "act_group_size": 32,
         "act_sym": True,
@@ -330,6 +343,20 @@ INT8 = QuantizationScheme.from_dict(
     }
 )
 
+INT4 = QuantizationScheme.from_dict(
+    {
+        "bits": 4,
+        "group_size": -1,
+        "data_type": "int",
+        "sym": True,
+        "act_bits": 4,
+        "act_group_size": -1,
+        "act_data_type": "int",
+        "act_dynamic": True,
+        "act_sym": True,
+    }
+)
+
 
 # For AutoScheme 16 bits options
 BF16 = QuantizationScheme.from_dict(
@@ -348,6 +375,7 @@ PRESET_SCHEMES = {
     "W3A16": W3A16,
     "W8A16": W8A16,
     "MXFP4": MXFP4,
+    "MXFP6": MXFP6,
     "MXFP4_RCEIL": MXFP4_RCEIL,
     "MXFP8": MXFP8,
     "MXFP8_RCEIL": MXFP8_RCEIL,
@@ -358,6 +386,7 @@ PRESET_SCHEMES = {
     "FP8_STATIC": FP8_STATIC,
     "BF16": BF16,
     "W4A16_MIXED": W4A16,
+    "INT4": INT4,
     "INT8": INT8,
     "INT8_W8A8": INT8,
     "FP8_BLOCK": FP8_BLOCK,

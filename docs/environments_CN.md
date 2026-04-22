@@ -69,6 +69,36 @@ export AR_DISABLE_OFFLOAD=1
 export AR_DISABLE_DATASET_SUBPROCESS=true
 ```
 
+### AR_ACT_SCALE
+- **描述**：只用于研究性质，控制激活量化时对激活值最小/最大值的缩放系数。小于 1.0 的值会缩小裁剪范围，有助于减小离群值的影响。
+- **默认值**：`1.0`
+- **有效值**：任意浮点数，如 `0.8`、`0.9`、`1.0`
+- **用途**：调整激活裁剪范围
+
+```bash
+export AR_ACT_SCALE=0.9
+```
+
+### AR_ENABLE_ACT_MINMAX_TUNING 
+- **描述**：只用于研究性质，使用激活量化中最小/最大缩放参数（`act_min_scale`、`act_max_scale`）的调优。启用后，这些缩放参数将固定为 1.0。
+- **默认值**：`False`（等同于 `"0"`）
+- **有效值**：`"1"`、`"true"`、`"yes"`（不区分大小写）表示禁用调优；其他值表示保持调优
+- **用途**：禁用激活最小-最大缩放参数的调优
+
+```bash
+export AR_ENABLE_ACT_MINMAX_TUNING=1
+```
+
+### AR_SEARCH_SCALE_RATIO
+- **描述**：控制 `auto_round.data_type.int.search_scales` 中对称 INT 量化 scale 搜索的范围比例。搜索上界为 `nmax * AR_SEARCH_SCALE_RATIO`，其中 `nmax = 2^(bits-1)`。值越小搜索范围越窄（更快，但可能漏掉较优解）；值越大搜索范围越广（更慢，对离群权重可能更准）。
+- **默认值**：未设置 → 走内置默认值（`0.5`，即 `nmax/2`）。
+- **有效值**：正浮点数，如 `0.25`、`0.5`、`0.75`、`1.0`
+- **用途**：覆盖默认的 scale 搜索范围
+
+```bash
+export AR_SEARCH_SCALE_RATIO=0.75
+```
+
 ## 使用示例
 
 ### 设置环境变量
