@@ -36,9 +36,11 @@ See our papers [SignRoundV1](https://arxiv.org/pdf/2309.05516) and [SignRoundV2]
 
 
 ## 🆕 What's New
+* [2026/04] We demonstrate that AutoRound achieves SOTA or near SOTA performance under INT4 (W4A4) quantization [accuracy data](./docs/int_acc.md). This capability is currently a **research-only** feature, with no production model export.
+
 * [2026/03] **Block-wise FP8** quantization is available via `--scheme FP8_BLOCK --iters 0 --disable_opt_rtn`.
 
-* [2026/03] MTP layer quantization has been supported in [PR](https://github.com/intel/auto-round/pull/1526)
+* [2026/03]  **MTP layer quantization** has been supported in this [PR](https://github.com/intel/auto-round/pull/1526)
 
 * [2025/12] The **SignRoundV2** paper is available. Turn on  `enable_alg_ext` and use the **AutoScheme** API for mixed-precision quantization to reproduce the results: [*Paper*](http://arxiv.org/abs/2512.04746), [*Notes for evaluating LLaMA models*](./docs/alg_202508.md).
 

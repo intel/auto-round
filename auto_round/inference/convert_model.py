@@ -690,7 +690,7 @@ def convert_hf_model(model: nn.Module, target_device: str = "cpu") -> tuple[nn.M
             block_size=rotation_config["block_size"],
             hadamard_type=rotation_config["hadamard_type"],
         )  # apply to activation
-        model = apply_rotation_transform(
+        model,_ = apply_rotation_transform(
             model,
             act_rotation_config,
             location="input",
