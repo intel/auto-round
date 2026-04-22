@@ -251,9 +251,7 @@ def patch_xpu_sdpa_drop_causal_mask():
 
     torch.nn.functional.scaled_dot_product_attention = _patched_sdpa
     _xpu_sdpa_patched = True
-    logger.info(
-        "torch.use_deterministic_algorithms(False) is set for XPU."
-    )
+    logger.info("torch.use_deterministic_algorithms(False) is set for XPU.")
     logger.info(
         "Patched torch SDPA on XPU to use is_causal=True for pure causal masks "
         "(avoids ~10x peak-VRAM blow-up from MATH backend)."
