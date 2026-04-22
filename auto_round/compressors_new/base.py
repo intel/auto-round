@@ -864,7 +864,10 @@ class BaseCompressor(object):
         _needs_plain_forward = (cfg.is_act_quantize and (not cfg.act_dynamic or cfg.is_act_nv_fp)) or getattr(
             cfg, "enable_alg_ext", False
         )
-        if self.enable_torch_compile and not _needs_plain_forward:
+        # Only compile block_forward when it will actually be used (calibration path).
+        # For zero-shot compressors (need_calib=False), block_forward is never called,
+        # so skipping compilation avoids unnecessary HPU workspace allocation.
+        if self.enable_torch_compile and not _needs_plain_forward and self.need_calib:
             self.block_forward = compile_func(block_forward, self.compress_context.device)
         else:
             self.block_forward = block_forward
