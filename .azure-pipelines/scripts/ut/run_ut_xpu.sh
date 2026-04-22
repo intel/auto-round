@@ -60,7 +60,7 @@ function run_unit_test() {
 
 function run_unit_test_vllm() {
     echo "##[group]set up vllm UT env..."
-    uv pip install -r ./test_xpu/requirements_llmc.txt
+    BUILD_TYPE="nightly" uv pip install -r ./test_xpu/requirements_llmc.txt
     uv pip list
     echo "##[endgroup]" 
 
