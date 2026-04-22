@@ -284,6 +284,9 @@ def detect_device(device: Union[None, str, int, torch.device] = None) -> str:
 
 
 def get_device_and_parallelism(device: Union[str, torch.device, int, dict]) -> tuple[str, bool]:
+    if device is None:
+        device = detect_device(device)
+        return device, False
     if isinstance(device, dict):
         unique_devices = set(device.values())
         if len(unique_devices) == 1:

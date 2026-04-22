@@ -2,7 +2,6 @@
 # # SPDX-License-Identifier: Apache-2.0
 
 import os
-from types import SimpleNamespace
 from typing import Any, Callable, Optional, Union
 
 import torch
@@ -13,11 +12,10 @@ from auto_round.algorithms.quantization.sign_round.config import SignRoundConfig
 from auto_round.algorithms.transforms.hadamard.config import HadamardConfig
 from auto_round.auto_scheme.gen_auto_scheme import AutoScheme
 from auto_round.compressors_new.calib import CalibCompressor, CalibratedRTNCompressor
-from auto_round.compressors_new.utils import check_need_act_calibration, is_static_wfp8afp8
+from auto_round.compressors_new.utils import check_need_act_calibration
 from auto_round.compressors_new.zero_shot import ZeroShotCompressor
 from auto_round.logger import logger
 from auto_round.schemes import QuantizationScheme, _parse_scheme
-from auto_round.utils.device import get_device_and_parallelism
 
 
 def _preview_resolved_attrs(config, scheme=None) -> dict:
@@ -73,52 +71,6 @@ def _eager_validate_scheme(config, scheme=None) -> None:
     for key, value in final_attrs.items():
         setattr(temp_config, key, value)
     temp_config.check_config()  # raises ValueError / NotImplementedError if invalid
-
-
-def _needs_hpu_fp8_static_eager_guard(config, scheme, device_map) -> bool:
-    """Return True when new-arch HPU FP8_STATIC should disable eager pipelines.
-
-    On HPU, the new architecture's static FP8 calibration path can trigger
-    persistent host-side eager-pipeline growth across blocks. Disabling eager
-    pipeline restores old-arch-like host RAM usage for this specific path.
-    """
-    device, _ = get_device_and_parallelism(device_map)
-    if not str(device).startswith("hpu"):
-        return False
-
-    resolved = _preview_resolved_attrs(config, scheme)
-    attrs = SimpleNamespace(
-        bits=resolved.get("bits", getattr(config, "bits", None)),
-        act_bits=resolved.get("act_bits", getattr(config, "act_bits", None)),
-        data_type=resolved.get("data_type", getattr(config, "data_type", None)),
-        act_data_type=resolved.get("act_data_type", getattr(config, "act_data_type", None)),
-        act_dynamic=resolved.get("act_dynamic", getattr(config, "act_dynamic", None)),
-    )
-    return is_static_wfp8afp8(attrs)
-
-
-def _maybe_disable_hpu_eager_pipeline(config, scheme, device_map) -> None:
-    """Apply the HPU eager-pipeline guard for the affected new-arch path.
-
-    Respect explicit user configuration. If either environment variable is set,
-    AutoRound assumes the caller intentionally chose the runtime behavior.
-    """
-    if not _needs_hpu_fp8_static_eager_guard(config, scheme, device_map):
-        return
-
-    eager_keys = (
-        "PT_HPU_EAGER_PIPELINE_ENABLE",
-        "PT_HPU_EAGER_COLLECTIVE_PIPELINE_ENABLE",
-    )
-    if any(key in os.environ for key in eager_keys):
-        return
-
-    os.environ["PT_HPU_EAGER_PIPELINE_ENABLE"] = "0"
-    os.environ["PT_HPU_EAGER_COLLECTIVE_PIPELINE_ENABLE"] = "0"
-    logger.warning_once(
-        "Disabling HPU eager pipeline for new-architecture FP8_STATIC tuning to avoid host RAM growth. "
-        "Set PT_HPU_EAGER_PIPELINE_ENABLE/PT_HPU_EAGER_COLLECTIVE_PIPELINE_ENABLE explicitly to override."
-    )
 
 
 # ---------------------------------------------------------------------------
@@ -257,10 +209,6 @@ class AutoRound(object):
         # This mirrors old-arch _check_configs() called at __init__ time so that
         # callers get ValueError/NotImplementedError on construction, not deferred.
         _eager_validate_scheme(quant_config, scheme)
-
-        # Guard the known HPU FP8_STATIC host-RAM regression before any HPU
-        # runtime initialization performed by the concrete compressor.
-        _maybe_disable_hpu_eager_pipeline(quant_config, scheme, device_map)
 
         # using different compressor base on AlgConfigs
         local_args = {k: v for k, v in locals().items() if k not in cls.SKIP_ARGS}
