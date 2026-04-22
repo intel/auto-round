@@ -40,7 +40,7 @@ def quant_tensor_sym_dq(
     super_bits=6,
     **kwargs,
 ):
-    """Quantize and de-quantize tensor symmetrically. full range, credict goes to llamacpp community
+    """Quantize and de-quantize tensor symmetrically. full range, credit goes to llamacpp community
 
     Args:
         tensor: Tensor containing the tensor to be quantized
