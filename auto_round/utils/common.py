@@ -200,6 +200,91 @@ def _patch_tensor_get_dtype_for_prequantized_loading():
     torch.Tensor.get_dtype = _tensor_get_dtype
 
 
+def _patch_default_rope_init():
+    """Restore legacy ``rope_type='default'`` support for older remote-code models.
+
+    Some third-party model implementations still look up ``ROPE_INIT_FUNCTIONS["default"]``
+    directly when no explicit rope scaling is configured. Newer transformers releases no
+    longer register that key, even though the standard RoPE parameterization is still valid.
+    Register a small compatibility shim that computes the original default inverse frequencies.
+    """
+    try:
+        from transformers.modeling_rope_utils import ROPE_INIT_FUNCTIONS
+    except ImportError:
+        return
+
+    if "default" in ROPE_INIT_FUNCTIONS:
+        return
+
+    def _compute_default_rope_parameters(config=None, device=None, seq_len=None, layer_type=None):
+        del seq_len  # Unused for the default RoPE type.
+
+        if config is None:
+            raise ValueError("config must be provided to compute default RoPE parameters")
+
+        rope_parameters = {}
+        if hasattr(config, "standardize_rope_params") and hasattr(config, "rope_parameters"):
+            config.standardize_rope_params()
+            rope_parameters = config.rope_parameters[layer_type] if layer_type is not None else config.rope_parameters
+        elif hasattr(config, "rope_scaling") and isinstance(config.rope_scaling, dict):
+            rope_parameters = config.rope_scaling
+
+        base = rope_parameters.get("rope_theta", getattr(config, "rope_theta", 10000.0))
+        partial_rotary_factor = rope_parameters.get(
+            "partial_rotary_factor", getattr(config, "partial_rotary_factor", 1.0)
+        )
+        head_dim = getattr(config, "head_dim", None) or config.hidden_size // config.num_attention_heads
+        dim = int(head_dim * partial_rotary_factor)
+        if dim <= 0:
+            raise ValueError(f"Invalid RoPE dimension {dim} for config {config.__class__.__name__}")
+
+        inv_freq = 1.0 / (
+            base ** (torch.arange(0, dim, 2, dtype=torch.int64).to(device=device, dtype=torch.float) / dim)
+        )
+        return inv_freq, 1.0
+
+    ROPE_INIT_FUNCTIONS["default"] = _compute_default_rope_parameters
+
+
+def _patch_rotary_embedding_init_for_legacy_remote_code():
+    """Patch transformers weight init to support legacy remote-code RotaryEmbedding modules.
+
+    transformers 5.5+ expects RotaryEmbedding modules using ``rope_type='default'``
+    to expose ``compute_default_rope_parameters``. Older remote-code models often do
+    not define that helper and instead looked up the default entry in
+    ``ROPE_INIT_FUNCTIONS`` directly.
+    """
+    pre_trained_model = transformers.modeling_utils.PreTrainedModel
+    original_init_weights = pre_trained_model._init_weights
+
+    if getattr(original_init_weights, "_auto_round_rotary_default_patch", False):
+        return
+
+    @wraps(original_init_weights)
+    def _patched_init_weights(self, module):
+        try:
+            return original_init_weights(self, module)
+        except AttributeError as exc:
+            if (
+                "compute_default_rope_parameters" not in str(exc)
+                or "RotaryEmbedding" not in module.__class__.__name__
+                or not hasattr(module, "original_inv_freq")
+                or not hasattr(module, "inv_freq")
+                or getattr(module, "rope_type", None) != "default"
+            ):
+                raise
+
+            from transformers.modeling_rope_utils import ROPE_INIT_FUNCTIONS
+
+            buffer_value, _ = ROPE_INIT_FUNCTIONS["default"](module.config)
+            with torch.no_grad():
+                module.inv_freq.copy_(buffer_value)
+                module.original_inv_freq.copy_(buffer_value)
+
+    _patched_init_weights._auto_round_rotary_default_patch = True
+    pre_trained_model._init_weights = _patched_init_weights
+
+
 # TODO: only AutoModelForCausalLM is patched; other Auto* classes are not covered yet
 def monkey_patch_transformers():
     transformers_version = getattr(transformers, "__version__", None)
@@ -228,6 +313,8 @@ def monkey_patch_transformers():
         # transformers 5.3.0 calls tensor.get_dtype() on plain torch.Tensor objects
         # while loading pre-quantized checkpoints.
         _patch_tensor_get_dtype_for_prequantized_loading()
+    _patch_default_rope_init()
+    _patch_rotary_embedding_init_for_legacy_remote_code()
     if parsed_version >= version.parse("4.56.0"):
         _patch_classmethod_kwargs(transformers.AutoModelForCausalLM, "from_pretrained", torch_dtype="dtype")
     else:
@@ -246,6 +333,7 @@ def monkey_patch_model(model) -> None:
     class-level patches in ``monkey_patch_transformers``).
     """
     _patch_prepare_inputs_for_generation(model)
+    _patch_mimo_attention_forward(model)
 
 
 def _patch_prepare_inputs_for_generation(model) -> None:
@@ -267,6 +355,36 @@ def _patch_prepare_inputs_for_generation(model) -> None:
         _patch_qwen25_omni_talker(model)
     elif model_type == "qwen3_omni_moe":
         _patch_qwen3_omni_moe_talker(model)
+
+
+def _patch_mimo_attention_forward(model) -> None:
+    """Patch MiMo remote-code attention helpers for newer transformers call sites."""
+    model_type = getattr(getattr(model, "config", None), "model_type", None)
+    if model_type != "mimo_v2_flash":
+        return
+
+    module = importlib.import_module(model.__class__.__module__)
+    eager_attention_forward = getattr(module, "eager_attention_forward", None)
+    if eager_attention_forward is None or getattr(eager_attention_forward, "_auto_round_mimo_patch", False):
+        return
+
+    @wraps(eager_attention_forward)
+    def _patched_eager_attention_forward(
+        module_obj,
+        query,
+        key,
+        value,
+        attention_mask,
+        scaling,
+        dropout=0.0,
+        sinks=None,
+        **kwargs,
+    ):
+        del kwargs
+        return eager_attention_forward(module_obj, query, key, value, attention_mask, scaling, dropout, sinks)
+
+    _patched_eager_attention_forward._auto_round_mimo_patch = True
+    module.eager_attention_forward = _patched_eager_attention_forward
 
 
 def _patch_qwen25_omni_talker(model) -> None:
