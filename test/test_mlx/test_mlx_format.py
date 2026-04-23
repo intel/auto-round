@@ -35,7 +35,7 @@ import torch
 
 from auto_round import AutoRound
 
-from ...helpers import qwen_name_or_path
+from test.helpers import qwen_name_or_path
 
 
 MLX_AVAILABLE = importlib.util.find_spec("mlx") is not None
@@ -250,7 +250,13 @@ class TestMLXFormat:
 
     # ---- 3) Mixed-bit via layer_config ---------------------------------- #
     def test_mixed_bits_mlx_export(self):
-        """Mixed-bit layer_config exported in native MLX format."""
+        """Mixed-bit layer_config exported in native MLX format.
+
+        Verifies the resulting ``config.json`` follows the mlx-community
+        mixed-bit convention: per-layer ``{group_size, bits}`` overrides for
+        layers quantized with a non-default scheme, and ``false`` for layers
+        we explicitly kept in fp16 (e.g. ``lm_head``).
+        """
         layer_config = {
             "lm_head": {"bits": 16},
             "model.layers.0.self_attn.q_proj": {"bits": 8, "group_size": 128, "sym": True},
@@ -267,8 +273,19 @@ class TestMLXFormat:
             layer_config=layer_config,
         )
         assert os.path.exists(os.path.join(self.save_dir, "config.json"))
-        qcfg = _read_quant_config(self.save_dir)
-        assert qcfg.get("bits") == 4  # global default
+
+        with open(os.path.join(self.save_dir, "config.json"), "r", encoding="utf-8") as f:
+            cfg = json.load(f)
+        quant = cfg.get("quantization", {})
+        # global defaults
+        assert quant.get("bits") == 4
+        assert quant.get("group_size") == 128
+        # per-layer overrides
+        assert quant.get("model.layers.0.self_attn.q_proj") == {"group_size": 128, "bits": 8}
+        assert quant.get("model.layers.0.self_attn.k_proj") == {"group_size": 128, "bits": 8}
+        assert quant.get("model.layers.0.mlp.down_proj") == {"group_size": 128, "bits": 2}
+        # lm_head kept at fp16 must be marked False so mlx-lm does not auto-quantize it
+        assert quant.get("lm_head") is False, f"expected lm_head=False, got {quant.get('lm_head')!r}"
 
     def test_mixed_bits_auto_round_export(self):
         """Mixed-bit layer_config exported as auto_round."""

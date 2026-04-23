@@ -49,6 +49,162 @@ from auto_round.utils import (
 SUPPORTED_LAYER_TYPES = [nn.Linear, nn.Conv2d, transformers.pytorch_utils.Conv1D]
 
 
+def _is_mlx_quantizable(module: nn.Module, group_size: int) -> bool:
+    """Predicate matching mlx-lm's default quantization predicate.
+
+    A layer is considered quantizable by mlx-lm if its inner dim is a multiple
+    of ``group_size`` and its outer dim is a multiple of 64. Embeddings are also
+    eligible. Layers that fail this predicate are skipped at load time, so we do
+    NOT need to emit ``false`` entries for them.
+    """
+    if isinstance(module, nn.Linear):
+        in_dim, out_dim = module.in_features, module.out_features
+    elif isinstance(module, nn.Embedding):
+        in_dim, out_dim = module.embedding_dim, module.num_embeddings
+    else:
+        return False
+    return (in_dim % group_size == 0) and (out_dim % 64 == 0)
+
+
+# Sub-modules whose layers we never want to auto-quantize on the mlx side.
+# Vision / audio towers in VLMs are conventionally kept in fp16 by mlx-vlm,
+# so emitting per-layer ``false`` for hundreds of vision linears just bloats
+# the config. We simply skip these subtrees.
+_DEFAULT_SKIP_PREFIXES = (
+    "vision_tower",
+    "vision_model",
+    "visual",
+    "audio_tower",
+    "audio_model",
+    "image_newline",
+    "multi_modal_projector",
+)
+
+
+def _build_mlx_quantization_config(
+    model: nn.Module,
+    default_bits: int,
+    default_group_size: int,
+    skip_prefixes: tuple = _DEFAULT_SKIP_PREFIXES,
+) -> dict:
+    """Build the ``quantization`` dict for an MLX ``config.json``.
+
+    Mirrors the mlx-community mixed-bit format (see e.g.
+    ``mlx-community/GLM-4.7-REAP-50-mixed-3-4-bits``)::
+
+        "quantization": {
+            "group_size": 64,
+            "bits": 4,
+            "model.layers.0.self_attn.q_proj": {"group_size": 64, "bits": 3},
+            "model.layers.0.mlp.down_proj": false,
+            ...
+        }
+
+    * Top-level ``group_size`` / ``bits`` give the default scheme.
+    * Per-layer ``{group_size, bits}`` overrides differing layers.
+    * Per-layer ``false`` marks an mlx-quantizable layer that should be kept
+      in fp16 (e.g. ``lm_head`` left at 16 bits in our ``layer_config``).
+
+    For VLMs, ``skip_prefixes`` lists sub-trees (vision/audio towers, projectors)
+    whose un-quantized layers we do NOT emit ``false`` entries for. Quantized
+    layers inside those sub-trees are still recorded faithfully.
+
+    Note: AutoRound may leave non-quantized layers wrapped in ``WrapperLinear``
+    (``.orig_layer`` points to the real ``nn.Linear``); we unwrap before testing
+    so that e.g. ``lm_head`` with ``bits=16`` is correctly emitted as ``false``.
+    """
+    quant_cfg: dict = {"group_size": default_group_size, "bits": default_bits}
+
+    def _is_skipped(layer_name: str) -> bool:
+        return any(
+            layer_name == p or layer_name.startswith(p + ".") for p in skip_prefixes
+        )
+
+    for name, module in model.named_modules():
+        if isinstance(module, _MLXPackedLayer):
+            # Always record packed layers, even if inside a skipped sub-tree
+            # (user explicitly asked for them to be quantized).
+            quant_cfg[name] = {
+                "group_size": int(module.group_size) if module.group_size is not None else default_group_size,
+                "bits": int(module.bits) if module.bits is not None else default_bits,
+            }
+            continue
+
+        if _is_skipped(name):
+            continue
+
+        # Unwrap auto-round WrapperLinear (and similar) before the predicate test.
+        target = module
+        while hasattr(target, "orig_layer") and target.orig_layer is not None:
+            target = target.orig_layer
+
+        if _is_mlx_quantizable(target, default_group_size):
+            # mlx-lm would auto-quantize this layer using the default scheme,
+            # but since we deliberately left it un-quantized, mark it explicitly.
+            quant_cfg[name] = False
+    return quant_cfg
+
+
+# Sub-config keys commonly used by HF multi-modal / dual-tower configs that
+# carry their own ``rope_parameters`` and may want a ``quantization`` block.
+_TEXT_SUB_CONFIG_KEYS = ("text_config", "language_config", "thinker_config")
+
+
+def _flatten_rope_parameters_recursive(cfg: dict) -> None:
+    """Pop ``rope_parameters`` and surface its keys to the same level.
+
+    mlx-lm / mlx-vlm both expect ``rope_theta`` (and friends) at the same level
+    as the rest of the model config — i.e. on the top-level config for LLMs and
+    on ``text_config`` for VLMs. We walk every nested dict so both cases work.
+    """
+    if not isinstance(cfg, dict):
+        return
+    rope_params = cfg.pop("rope_parameters", None)
+    if isinstance(rope_params, dict):
+        for k, v in rope_params.items():
+            cfg.setdefault(k, v)
+    for v in cfg.values():
+        if isinstance(v, dict):
+            _flatten_rope_parameters_recursive(v)
+
+
+def _strip_prefix(name: str, prefix: str) -> str:
+    """Return ``name`` with ``prefix.`` removed, or ``name`` if no match."""
+    if name == prefix:
+        return name
+    pref = prefix + "."
+    return name[len(pref):] if name.startswith(pref) else name
+
+
+def _build_text_subconfig_quantization(quant_cfg: dict, text_prefix: str) -> dict:
+    """Re-key a top-level quantization dict for placement under ``text_config``.
+
+    mlx-vlm's language-model loader queries ``text_config["quantization"]`` with
+    keys *relative to the language model* (e.g. ``model.layers.0...``), so we
+    strip the outer ``language_model.`` / ``text_model.`` prefix from each entry.
+    Entries that don't belong to the language model are dropped.
+    """
+    sub: dict = {"group_size": quant_cfg["group_size"], "bits": quant_cfg["bits"]}
+    pref = text_prefix + "."
+    for k, v in quant_cfg.items():
+        if k in ("group_size", "bits"):
+            continue
+        if k == text_prefix or k.startswith(pref):
+            sub[_strip_prefix(k, text_prefix)] = v
+    return sub
+
+
+def _detect_text_module_prefix(model: nn.Module) -> str:
+    """Best-effort detection of the language-model sub-module name in a VLM.
+
+    Returns an empty string if the model is text-only.
+    """
+    for cand in ("language_model", "text_model", "thinker"):
+        if hasattr(model, cand):
+            return cand
+    return ""
+
+
 def _pack_weight_mlx(intweight, bits):
     """Pack integer weights into uint32 in MLX format.
 
@@ -113,9 +269,11 @@ class _MLXPackedLayer(nn.Module):
     """Holds MLX-packed quantized tensors for serialization.
 
     Tensor names match MLX convention: weight, scales, biases, bias.
+    The ``bits`` / ``group_size`` attributes are kept so that mixed-bit
+    quantization can be reflected in the exported ``config.json``.
     """
 
-    def __init__(self, weight, scales, biases, bias):
+    def __init__(self, weight, scales, biases, bias, bits=None, group_size=None):
         super().__init__()
         self.register_buffer("weight", weight)  # uint32
         self.register_buffer("scales", scales)  # float16
@@ -124,6 +282,8 @@ class _MLXPackedLayer(nn.Module):
             self.register_buffer("bias", bias)
         else:
             self.bias = None
+        self.bits = bits
+        self.group_size = group_size
 
 
 def pack_layer(name, model, device=None, **kwargs):
@@ -207,6 +367,8 @@ def pack_layer(name, model, device=None, **kwargs):
         mlx_scales.cpu(),
         mlx_biases.cpu(),
         orig_bias,
+        bits=bits,
+        group_size=group_size,
     )
     set_module(model, name, new_layer)
     logger.debug(f"Packed layer {name} for MLX format (bits={bits}, group_size={group_size})")
@@ -258,9 +420,11 @@ def save_quantized_as_mlx(
     if os.path.exists(config_path):
         with open(config_path, "r") as f:
             config = json.load(f)
-        quant_cfg = {"group_size": group_size, "bits": bits}
+        # Build mixed-bit aware quantization dict (mlx-community format).
+        quant_cfg = _build_mlx_quantization_config(model, default_bits=bits, default_group_size=group_size)
         config["quantization"] = quant_cfg
         autoround_format = kwargs.get("autoround_format", False)
+        quant_cfg_full = None
         if autoround_format:
             quant_cfg_full = {
                 "quant_method": "auto-round",
@@ -273,11 +437,25 @@ def save_quantized_as_mlx(
             config["quantization_config"] = quant_cfg_full
         else:
             config["quantization_config"] = quant_cfg
-        # Flatten rope_parameters for mlx-lm (expects rope_theta at top level)
-        rope_params = config.pop("rope_parameters", None)
-        if rope_params and isinstance(rope_params, dict):
-            if "rope_theta" in rope_params and "rope_theta" not in config:
-                config["rope_theta"] = rope_params["rope_theta"]
+
+        # ---- VLM support ------------------------------------------------ #
+        # If the model has a language-model sub-module (e.g. Qwen-VL family),
+        # mlx-vlm's language loader queries the quantization dict under
+        # ``text_config`` (or its alias) with keys relative to that sub-module.
+        # Mirror our config there so both code paths work.
+        text_prefix = _detect_text_module_prefix(model)
+        if text_prefix:
+            sub_quant = _build_text_subconfig_quantization(quant_cfg, text_prefix)
+            for sub_key in _TEXT_SUB_CONFIG_KEYS:
+                sub_cfg = config.get(sub_key)
+                if isinstance(sub_cfg, dict):
+                    sub_cfg["quantization"] = sub_quant
+                    if autoround_format and quant_cfg_full is not None:
+                        sub_cfg["quantization_config"] = quant_cfg_full
+
+        # Flatten rope_parameters recursively so mlx-lm/mlx-vlm find rope_theta
+        # at the level it expects (top-level for LLMs, text_config for VLMs).
+        _flatten_rope_parameters_recursive(config)
         with open(config_path, "w") as f:
             json.dump(config, f, indent=2)
 
