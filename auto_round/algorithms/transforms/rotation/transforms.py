@@ -68,7 +68,7 @@ class HadamardTransform(nn.Module):
 
     def __init__(
         self,
-        block_size: int = 32,
+        block_size: int | None = 32,
         device: torch.device | None = None,
         precision: torch.dtype | None = None,
         location: str = "weight",
@@ -76,7 +76,7 @@ class HadamardTransform(nn.Module):
         inverse: bool = False,
     ) -> None:
         super().__init__()
-        self.size = block_size
+        self.size = block_size if block_size is not None else 32
         self.scale = 1.0 / math.sqrt(self.size)
         self.location = location
         self.module_type = module_type
