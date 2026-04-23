@@ -24,7 +24,7 @@ MLX QuantizedLinear dequantization (affine mode):
 where w_int is packed into uint32, each holding (32 // bits) elements,
 and scale/bias (called "biases" in MLX) have shape [out_features, num_groups].
 
-Supported schemes: W2A16, W3A16, W4A16, W8A16
+Supported schemes: W2A16, W3A16, W4A16, W5A16, W6A16, W8A16
 """
 
 import copy
