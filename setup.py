@@ -186,5 +186,10 @@ if __name__ == "__main__":
             "License :: OSI Approved :: Apache Software License",
         ],
         include_package_data=True,
-        package_data={"": ["mllm/templates/*.json", "experimental/transform/utils/hadamards.safetensors"]},
+        package_data={
+            "": [
+                "mllm/templates/*.json",
+                "algorithms/transforms/rotation/utils/hadamards.safetensors",
+            ]
+        },
     )
