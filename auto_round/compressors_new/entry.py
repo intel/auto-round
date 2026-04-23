@@ -9,7 +9,7 @@ import torch
 from auto_round.algorithms.alg_config import AlgConfig
 from auto_round.algorithms.quantization.rtn.config import RTNConfig
 from auto_round.algorithms.quantization.sign_round.config import SignRoundConfig
-from auto_round.algorithms.transforms.hadamard.config import HadamardConfig
+from auto_round.algorithms.transforms.hadamard.config import RotationConfig as _NewArchRotationConfig
 from auto_round.auto_scheme.gen_auto_scheme import AutoScheme
 from auto_round.compressors_new.calib import CalibCompressor, CalibratedRTNCompressor
 from auto_round.compressors_new.utils import check_need_act_calibration
@@ -153,7 +153,7 @@ class AutoRound(object):
         "sign_round": SignRoundConfig,
         "signround": SignRoundConfig,
         "rtn": RTNConfig,
-        "hadamard": HadamardConfig,
+        "hadamard": _NewArchRotationConfig,
     }
 
     @classmethod
@@ -455,16 +455,14 @@ class AutoRoundCompatible:
         # Determine output format if specified
         format = kwargs.pop("format", None)
 
-        # Extract rotation_config (old-API kwarg) and convert to HadamardConfig for new arch.
+        # Extract rotation_config (old-API kwarg) and convert to new arch RotationConfig.
         # In old arch, rotation_config was a keyword arg; in new arch, rotation transforms
         # are passed as part of alg_configs list.  "inplace" backend is not yet supported
         # in the new arch (requires CUDA/triton), so we only convert transform-compatible configs.
         _rotation_config_raw = kwargs.pop("rotation_config", None)
         if _rotation_config_raw is not None:
-            from auto_round.algorithms.transforms.hadamard.config import (
-                HadamardConfig,
-                normalize_hadamard_config,
-            )
+            from auto_round.algorithms.transforms.hadamard.config import RotationConfig as _NARotCfg
+            from auto_round.algorithms.transforms.hadamard.config import normalize_rotation_config as _normalize_rc
             from auto_round.experimental.transform.rotation_config import RotationConfig as _RotationConfig
 
             # Resolve to a RotationConfig to check the backend field
@@ -480,15 +478,15 @@ class AutoRoundCompatible:
                 logger.warning(
                     "rotation_config with backend='inplace' is not yet supported in the new architecture. "
                     "The rotation will be skipped. Use backend='transform' or backend='auto' "
-                    "with an MXFP4/NVFP4 scheme, or pass HadamardConfig() explicitly via alg_configs."
+                    "with an MXFP4/NVFP4 scheme, or pass RotationConfig() explicitly via alg_configs."
                 )
             else:
-                # Convert to HadamardConfig understood by the new arch.
-                # normalize_hadamard_config only accepts None/str/dict/HadamardConfig, so
-                # convert RotationConfig instances to dict first (dropping backend field).
+                # Convert to new arch RotationConfig.
+                # normalize_rotation_config accepts None/str/dict/RotationConfig, so
+                # convert old-arch RotationConfig instances to dict first (dropping backend field).
                 _raw_for_norm = _rc.model_dump(exclude={"backend", "fuse_online_to_weight", "allow_online_rotation"})
-                hadamard_dict = normalize_hadamard_config(_raw_for_norm)
-                hadamard_cfg = HadamardConfig.model_validate(hadamard_dict)
+                hadamard_dict = _normalize_rc(_raw_for_norm)
+                hadamard_cfg = _NARotCfg.model_validate(hadamard_dict)
                 config = [config, hadamard_cfg]
 
         # Extract MLLM-specific parameters

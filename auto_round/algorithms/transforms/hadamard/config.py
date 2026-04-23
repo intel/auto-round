@@ -23,13 +23,13 @@ from auto_round.algorithms.transforms.base import BaseRotationConfig
 from auto_round.compressors.utils import is_mx_fp, is_nv_fp
 from auto_round.utils import logger
 
-__all__ = ["HadamardConfig", "normalize_hadamard_config"]
+__all__ = ["RotationConfig", "normalize_rotation_config", "HadamardConfig", "normalize_hadamard_config"]
 
 # Supported Hadamard transform types (also used by HadamardTransform registry).
-HADAMARD_TYPES: frozenset[str] = frozenset({"hadamard", "random_hadamard"})
+HADAMARD_TYPES: frozenset[str] = frozenset({"hadamard", "random_hadamard", "quarot_hadamard"})
 
 
-class HadamardConfig(BaseModel, BaseRotationConfig):
+class RotationConfig(BaseModel, BaseRotationConfig):
     """Configuration for Hadamard rotation transforms.
 
     This config is designed to be embedded inside a model's ``config.json``
@@ -40,8 +40,8 @@ class HadamardConfig(BaseModel, BaseRotationConfig):
         algorithm: Fixed to ``"hadamard"`` – identifies this config in the
             :class:`~auto_round.algorithms.transforms.base.BaseRotation` registry.
         block_size: Block size for the block-diagonal Hadamard matrix.
-        hadamard_type: Which transform to use (``"hadamard"`` or
-            ``"random_hadamard"``).
+        hadamard_type: Which transform to use (``"hadamard"``, ``"random_hadamard"``,
+            or ``"quarot_hadamard"``).
         random_seed: For ``"random_hadamard"`` – seed the generator for
             reproducibility.  Excluded from serialisation (``exclude=True``)
             because it is a calibration-time detail.
@@ -63,25 +63,29 @@ class HadamardConfig(BaseModel, BaseRotationConfig):
         return v
 
 
-def normalize_hadamard_config(
-    config: str | dict | HadamardConfig | None,
+# Backward-compatibility alias
+HadamardConfig = RotationConfig
+
+
+def normalize_rotation_config(
+    config: str | dict | RotationConfig | None,
     data_type: str = "mx_fp",
 ) -> dict[str, Any]:
-    """Normalise various input forms to a canonical ``dict`` for :class:`HadamardConfig`.
+    """Normalise various input forms to a canonical ``dict`` for :class:`RotationConfig`.
 
     Args:
         config: One of:
 
             * ``None``            → returns ``{}``
-            * ``dict``            → validated via :class:`HadamardConfig`
-            * :class:`HadamardConfig` → converted to ``dict``
+            * ``dict``            → validated via :class:`RotationConfig`
+            * :class:`RotationConfig` → converted to ``dict``
             * ``str`` shorthand  → treated as ``hadamard_type``
-              (``"default"`` → default :class:`HadamardConfig`)
+              (``"default"`` → default :class:`RotationConfig`)
         data_type: Quantization data type. Used to infer ``block_size``
             when not explicitly set (mx_fp → 32, nv_fp → 16).
 
     Returns:
-        A validated ``dict`` that can be passed to ``HadamardConfig(**result)``.
+        A validated ``dict`` that can be passed to ``RotationConfig(**result)``.
 
     Raises:
         ValueError: If the config is invalid.
@@ -100,7 +104,7 @@ def normalize_hadamard_config(
             else:
                 logger.warning(
                     f"block_size is not set and cannot be inferred for data_type {data_type!r}; "
-                    "please set block_size explicitly in hadamard_config if needed."
+                    "please set block_size explicitly in rotation_config if needed."
                 )
         else:
             if is_mx_fp(data_type) and block_size != 32:
@@ -113,24 +117,24 @@ def normalize_hadamard_config(
     if config is None:
         return {}
 
-    if isinstance(config, HadamardConfig):
+    if isinstance(config, RotationConfig):
         raw_cfg_dict = config.model_dump(exclude_unset=True)
         block_size_explicitly_set = "block_size" in raw_cfg_dict
         cfg_dict = dict(raw_cfg_dict)
         cfg_dict = _apply_data_type_block_size(cfg_dict, block_size_explicitly_set)
         try:
-            return HadamardConfig.model_validate(cfg_dict).model_dump()
+            return RotationConfig.model_validate(cfg_dict).model_dump()
         except Exception as exc:
-            raise ValueError(f"Invalid HadamardConfig: {exc}") from exc
+            raise ValueError(f"Invalid RotationConfig: {exc}") from exc
 
     if isinstance(config, dict):
         block_size_explicitly_set = "block_size" in config
         cfg_dict = dict(config)
         cfg_dict = _apply_data_type_block_size(cfg_dict, block_size_explicitly_set)
         try:
-            return HadamardConfig.model_validate(cfg_dict).model_dump()
+            return RotationConfig.model_validate(cfg_dict).model_dump()
         except Exception as exc:
-            raise ValueError(f"Invalid HadamardConfig dict: {exc}") from exc
+            raise ValueError(f"Invalid RotationConfig dict: {exc}") from exc
 
     if isinstance(config, str):
         key = config.strip()
@@ -140,19 +144,23 @@ def normalize_hadamard_config(
             cfg_dict = {}
             cfg_dict = _apply_data_type_block_size(cfg_dict, block_size_explicitly_set=False)
             try:
-                return HadamardConfig.model_validate(cfg_dict).model_dump()
+                return RotationConfig.model_validate(cfg_dict).model_dump()
             except Exception as exc:
-                raise ValueError(f"Invalid default hadamard_config after data_type adjustment: {exc}") from exc
+                raise ValueError(f"Invalid default rotation_config after data_type adjustment: {exc}") from exc
         if key not in HADAMARD_TYPES:
             raise ValueError(
-                f"Unrecognised hadamard config string: {key!r}. "
+                f"Unrecognised rotation config string: {key!r}. "
                 f"Expected one of {sorted(HADAMARD_TYPES)} or 'default'."
             )
         cfg_dict = {"hadamard_type": key}
         cfg_dict = _apply_data_type_block_size(cfg_dict, block_size_explicitly_set=False)
         try:
-            return HadamardConfig.model_validate(cfg_dict).model_dump()
+            return RotationConfig.model_validate(cfg_dict).model_dump()
         except Exception as exc:
-            raise ValueError(f"Failed to build HadamardConfig from {key!r}: {exc}") from exc
+            raise ValueError(f"Failed to build RotationConfig from {key!r}: {exc}") from exc
 
-    raise TypeError("hadamard_config must be None, dict, HadamardConfig, or str " f"(got {type(config).__name__})")
+    raise TypeError("rotation_config must be None, dict, RotationConfig, or str " f"(got {type(config).__name__})")
+
+
+# Backward-compatibility alias
+normalize_hadamard_config = normalize_rotation_config

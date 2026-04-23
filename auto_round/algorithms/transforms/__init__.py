@@ -51,7 +51,10 @@ from auto_round.algorithms.transforms.hadamard import (
     HadamardConfig,
     HadamardRotation,
     apply_hadamard_transform,
+    apply_rotation_transform,
     normalize_hadamard_config,
+    normalize_rotation_config as _normalize_hadamard_for_transforms,
+    RotationConfig,
 )
 
 __all__ = [
@@ -60,7 +63,10 @@ __all__ = [
     "BaseRotationConfig",
     "ROTATION_SUPPORTED_SCHEMES",
     "check_supported_schemes",
-    # Hadamard
+    # Config (new names)
+    "RotationConfig",
+    "apply_rotation_transform",
+    # Config (backward-compat aliases)
     "HadamardConfig",
     "HadamardRotation",
     "apply_hadamard_transform",
@@ -96,14 +102,14 @@ def normalize_rotation_config(
     if isinstance(config, dict):
         alg = config.get("algorithm", "hadamard")
         if alg == "hadamard":
-            return HadamardConfig.model_validate(config)
+            return RotationConfig.model_validate(config)
         raise ValueError(
             f"Unknown rotation algorithm: {alg!r}. " f"Registered algorithms: {sorted(BaseRotation._REGISTRY)}"
         )
 
     if isinstance(config, str):
         # String shorthand → treat as Hadamard config.
-        return HadamardConfig.model_validate(normalize_hadamard_config(config))
+        return RotationConfig.model_validate(_normalize_hadamard_for_transforms(config))
 
     raise TypeError(
         f"Unsupported rotation config type: {type(config).__name__}. "

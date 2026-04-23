@@ -27,12 +27,12 @@ import torch
 import tqdm
 
 from auto_round.algorithms.transforms.base import BaseRotation
-from auto_round.algorithms.transforms.hadamard.config import HadamardConfig, normalize_hadamard_config
+from auto_round.algorithms.transforms.hadamard.config import RotationConfig, normalize_rotation_config
 from auto_round.algorithms.transforms.hadamard.transforms import build_hadamard_transform
 from auto_round.compressors.utils import is_nv_fp
 from auto_round.experimental.qmodules.base import QModuleBase
 
-__all__ = ["HadamardRotation", "apply_hadamard_transform"]
+__all__ = ["HadamardRotation", "apply_rotation_transform", "apply_hadamard_transform"]
 
 
 def _triton_available(data_type: str = "mx_fp") -> bool:
@@ -71,14 +71,14 @@ class HadamardRotation(BaseRotation):
         model = apply_hadamard_transform(model, config=HadamardConfig(), need_calibration=True)
     """
 
-    def __init__(self, config: HadamardConfig) -> None:
+    def __init__(self, config: RotationConfig) -> None:
         super().__init__(config)
 
     @classmethod
-    def from_config(cls, config: dict | HadamardConfig) -> "HadamardRotation":
-        """Build a :class:`HadamardRotation` from a raw dict or :class:`HadamardConfig`."""
+    def from_config(cls, config: dict | RotationConfig) -> "HadamardRotation":
+        """Build a :class:`HadamardRotation` from a raw dict or :class:`RotationConfig`."""
         if isinstance(config, dict):
-            config = HadamardConfig.model_validate(config)
+            config = RotationConfig.model_validate(config)
         return cls(config)
 
     def apply_to_model(
@@ -102,8 +102,8 @@ class HadamardRotation(BaseRotation):
             **kwargs:        Reserved for future use.
 
         Returns:
-            The mutated *model* with ``model.hadamard_config`` set to the
-            normalised :class:`HadamardConfig`.
+            The mutated *model* with ``model.rotation_config`` set to the
+            normalised :class:`RotationConfig` dict.
         """
         cfg = self.config
 
@@ -119,7 +119,7 @@ class HadamardRotation(BaseRotation):
             _apply_to_module(model, module, cfg, location, data_type)
 
         # Store config on model for serialisation / downstream inspection.
-        setattr(model, "hadamard_config", cfg)
+        setattr(model, "rotation_config", cfg.model_dump())
         return model
 
 
@@ -131,7 +131,7 @@ class HadamardRotation(BaseRotation):
 def _apply_to_module(
     model: torch.nn.Module,
     module: torch.nn.Module,
-    config: HadamardConfig,
+    config: RotationConfig,
     location: str,
     data_type: str = "mx_fp",
 ) -> None:
@@ -146,7 +146,7 @@ def _apply_to_module(
         raise NotImplementedError(f"Unsupported transform location: {location!r}")
 
 
-def _apply_input_transform(module: torch.nn.Module, config: HadamardConfig, data_type: str = "mx_fp") -> None:
+def _apply_input_transform(module: torch.nn.Module, config: RotationConfig, data_type: str = "mx_fp") -> None:
     """Register a forward pre-hook that applies the Hadamard to the input activation."""
     from auto_round.algorithms.transforms.hadamard.utils.matrix import multihead_matmul
 
@@ -196,7 +196,7 @@ def _apply_input_transform(module: torch.nn.Module, config: HadamardConfig, data
 
 def _apply_weight_transform(
     module: torch.nn.Module,
-    config: HadamardConfig,
+    config: RotationConfig,
 ) -> None:
     """Fuse or patch the Hadamard rotation into the weight of *module*."""
     from auto_round.algorithms.transforms.hadamard.patch import (
@@ -238,9 +238,9 @@ def _apply_weight_transform(
 # ---------------------------------------------------------------------------
 
 
-def apply_hadamard_transform(
+def apply_rotation_transform(
     model: torch.nn.Module,
-    config: str | dict | HadamardConfig | None,
+    config: str | dict | RotationConfig | None,
     location: str = "weight",
     use_tqdm: bool = True,
     desc: str | None = None,
@@ -253,7 +253,7 @@ def apply_hadamard_transform(
 
     Args:
         model:            Target model.
-        config:           One of: :class:`HadamardConfig`, ``dict``, ``str``
+        config:           One of: :class:`RotationConfig`, ``dict``, ``str``
                           shorthand, or ``None`` (no-op).
         location:         ``"weight"`` or ``"input"``.
         use_tqdm:         Show progress bar.
@@ -263,7 +263,7 @@ def apply_hadamard_transform(
     Returns:
         The transformed model.
     """
-    normalised = normalize_hadamard_config(config)
+    normalised = normalize_rotation_config(config)
     if not normalised:
         return model
     rotation = HadamardRotation.from_config(normalised)
@@ -274,3 +274,7 @@ def apply_hadamard_transform(
         desc=desc,
         data_type=data_type,
     )
+
+
+# Backward-compatibility alias
+apply_hadamard_transform = apply_rotation_transform
