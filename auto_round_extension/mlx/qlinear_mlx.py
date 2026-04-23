@@ -274,6 +274,14 @@ class QuantLinearMLX(nn.Module):
             weight_int = weight_int.reshape(-1, out_features)
 
         # Determine zeros
+        # NOTE on GPTQ qzeros offset:
+        #   GPTQ packs qzeros as ``(actual_zero - 1) & maxq`` (a quirk of the
+        #   original GPTQ kernel). When unpacking we MUST add 1 (mod 2**bits)
+        #   to recover the true zero point. AutoRound's own asymmetric W4A16
+        #   actually exports to AWQ format, but third-party GPTQ checkpoints
+        #   loaded via ``auto_gptq`` / ``gptqmodel`` (packing format
+        #   ``auto_round:auto_gptq``) hit this code path and require the +1.
+        maxq = (1 << bits) - 1
         if sym:
             zero_val = 2 ** (bits - 1)
             zeros = torch.full(scales_gptq.shape, zero_val, dtype=torch.int32, device=convert_device)
@@ -290,8 +298,8 @@ class QuantLinearMLX(nn.Module):
                         qzeros.unsqueeze(2).expand(-1, -1, elems_per_int),
                         wf.unsqueeze(0),
                     ).to(torch.int16 if bits == 8 else torch.int8)
-                    zeros = torch.bitwise_and(zeros, (1 << bits) - 1)
-                    zeros = zeros.reshape(scales_gptq.shape)
+                    zeros = torch.bitwise_and(zeros, maxq)
+                    zeros = zeros.reshape(scales_gptq.shape).to(torch.int32)
                 else:  # bits == 3
                     from auto_round_extension.torch.qlinear_torch import get_wf_3bits_tensor
 
@@ -304,7 +312,10 @@ class QuantLinearMLX(nn.Module):
                     zeros = torch.cat(
                         [zeros[:, :, 0, :11], zeros[:, :, 1, 1:12], zeros[:, :, 2, 1:11]], dim=2
                     )
-                    zeros = zeros.reshape(scales_gptq.shape)
+                    zeros = zeros.reshape(scales_gptq.shape).to(torch.int32)
+
+                # GPTQ qzeros are stored off-by-one; recover the true zero point.
+                zeros = (zeros + 1) & maxq
 
         # GPTQ: w = scale * (w_int - zero)
         # MLX:  w = mlx_scale * w_int + mlx_bias

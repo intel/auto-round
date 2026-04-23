@@ -198,6 +198,11 @@ AWQ_FORMAT = ["auto_round:auto_awq"]
 LLM_COMPRESSOR_FORMAT = ["auto_round:llm_compressor"]
 WOQ_DEFAULT_ACT_BITS = [None, 16, 32]
 
+# CPU backends that target Intel/x86 (ark / ipex / auto_round_kernel) cannot
+# run on Apple Silicon. Restrict them so the MLX backend wins on Darwin and we
+# don't try to load auto-round-lib / intel-extension-for-pytorch on macOS.
+_NON_DARWIN_SYSTEMS = ["linux", "windows"]
+
 # AutoGPTQ is no longer maintained, supports transformers < 5.0.0
 BackendInfos["auto_gptq:exllamav2"] = BackendInfo(
     device=["cuda"],
@@ -519,7 +524,6 @@ BackendInfos["auto_awq:gemm"] = BackendInfo(
     data_type=["int"],
     act_bits=WOQ_DEFAULT_ACT_BITS,
     alias=["auto_awq:gemm", "awq", "awq:gemm", "auto_awq"],
-    requirements=["autoawq"],
 )
 
 BackendInfos["auto_round_kernel"] = BackendInfo(
@@ -535,6 +539,7 @@ BackendInfos["auto_round_kernel"] = BackendInfo(
     data_type=["int"],
     act_bits=WOQ_DEFAULT_ACT_BITS,
     requirements=["torch>=2.8.0", "auto-round-lib"],
+    systems=_NON_DARWIN_SYSTEMS,  # auto-round-lib targets x86; not for Apple Silicon
 )
 
 BackendInfos["auto_round_kernel_xpu"] = BackendInfo(
@@ -565,6 +570,7 @@ BackendInfos["auto_round_kernel_zp"] = BackendInfo(
     data_type=["int"],
     act_bits=WOQ_DEFAULT_ACT_BITS,
     requirements=["torch>=2.8.0", "auto-round-lib"],
+    systems=_NON_DARWIN_SYSTEMS,
 )
 
 BackendInfos["auto_round_kernel_zp_xpu"] = BackendInfo(
@@ -595,6 +601,7 @@ BackendInfos["auto_round_kernel_awq"] = BackendInfo(
     data_type=["int"],
     act_bits=WOQ_DEFAULT_ACT_BITS,
     requirements=["torch>=2.8.0", "auto-round-lib"],
+    systems=_NON_DARWIN_SYSTEMS,
 )
 
 BackendInfos["auto_round_kernel_awq_xpu"] = BackendInfo(
@@ -625,6 +632,7 @@ BackendInfos["ipex_gptq_cpu"] = BackendInfo(
     act_bits=WOQ_DEFAULT_ACT_BITS,
     alias=["ipex"],
     requirements=["torch<2.9", "intel-extension-for-pytorch>=2.5"],
+    systems=_NON_DARWIN_SYSTEMS,  # intel-extension-for-pytorch is Intel x86 only
 )
 
 BackendInfos["ipex_gptq"] = BackendInfo(
@@ -655,6 +663,7 @@ BackendInfos["ipex_awq_cpu"] = BackendInfo(
     act_bits=WOQ_DEFAULT_ACT_BITS,
     alias=["ipex"],
     requirements=["torch<2.9", "intel-extension-for-pytorch>=2.5"],
+    systems=_NON_DARWIN_SYSTEMS,
 )
 
 BackendInfos["ipex_awq"] = BackendInfo(
@@ -1183,9 +1192,16 @@ def get_layer_backend(
 def get_highest_priority_backend(
     quantization_config: "AutoRoundConfig", device: str, packing_format: str
 ) -> str | None:
+    current_system = platform.system().lower()
     supported_backends = []
     for key in BackendInfos.keys():
         backend = BackendInfos[key]
+        # Filter by operating system (e.g. MLX is Darwin-only; ark/ipex CPU
+        # backends are non-Darwin only).
+        if backend.systems is not None:
+            if current_system not in [s.lower() for s in backend.systems]:
+                continue
+
         # Check if device is supported by the backend
         if device not in backend.device:
             continue

@@ -35,11 +35,12 @@ import torch
 
 from auto_round import AutoRound
 
-from test.helpers import qwen_name_or_path
+from test.helpers import qwen_name_or_path, qwen_3_vl_9b_name_or_path
 
 
 MLX_AVAILABLE = importlib.util.find_spec("mlx") is not None
 MLX_LM_AVAILABLE = importlib.util.find_spec("mlx_lm") is not None
+MLX_VLM_AVAILABLE = importlib.util.find_spec("mlx_vlm") is not None
 IS_DARWIN = platform.system() == "Darwin"
 
 # Native mlx checkpoint needs Darwin + mlx_lm to actually load & run.
@@ -51,6 +52,21 @@ requires_mlx_lm_runtime = pytest.mark.skipif(
 requires_mlx_runtime = pytest.mark.skipif(
     not (IS_DARWIN and MLX_AVAILABLE),
     reason="QuantLinearMLX post-init requires macOS (Darwin) with 'mlx' installed.",
+)
+# Native mlx VLM checkpoint needs Darwin + mlx_vlm to actually load & run.
+requires_mlx_vlm_runtime = pytest.mark.skipif(
+    not (IS_DARWIN and MLX_VLM_AVAILABLE),
+    reason="Native MLX VLM inference requires macOS (Darwin) with 'mlx_vlm' installed.",
+)
+# Skip large 9B VLM tests when the model isn't materialized locally — we don't
+# want CI to silently kick off a ~18 GB HuggingFace download.
+_qwen3_vl_9b_local = os.path.isdir(qwen_3_vl_9b_name_or_path)
+requires_qwen3_vl_9b_local = pytest.mark.skipif(
+    not _qwen3_vl_9b_local,
+    reason=(
+        f"Qwen3-VL-9B model not found locally at '{qwen_3_vl_9b_name_or_path}'. "
+        "Place the weights under one of the test model paths to enable this test."
+    ),
 )
 
 
@@ -346,3 +362,132 @@ class TestMLXFormat:
         assert _count_mlx_layers(model) > 0
         assert isinstance(text, str) and len(text) > 0
 
+    @requires_qwen3_vl_9b_local
+    def test_qwen3_vl_9b_mlx_export_config(self, tmp_path):
+        """Quantize Qwen3-VL-9B (RTN W4A16) and validate the VLM-aware MLX config.
+
+        Verifies the four VLM-specific guarantees of the MLX exporter:
+          1. Top-level ``quantization`` exists with global defaults.
+          2. Language-tower quantized layers are recorded with their full path.
+          3. ``text_config.quantization`` exists and uses paths *relative* to
+             the language sub-module (i.e. without the ``language_model.``
+             prefix), matching mlx-vlm's loader expectations.
+          4. ``vision_tower``/``visual`` un-quantized layers do NOT bloat the
+             config with ``false`` entries.
+          5. ``rope_parameters`` has been flattened (``rope_theta`` surfaced).
+        """
+        from auto_round import AutoRoundMLLM
+
+        save_dir = str(tmp_path / "qwen3_vl_9b_mlx")
+        try:
+            ar = AutoRoundMLLM(
+                qwen_3_vl_9b_name_or_path,
+                scheme="W4A16",
+                bits=4,
+                group_size=128,
+                sym=True,
+                iters=0,
+                nsamples=1,
+                seqlen=32,
+                disable_opt_rtn=True,
+            )
+            ar.quantize_and_save(output_dir=save_dir, format="mlx")
+
+            cfg_path = os.path.join(save_dir, "config.json")
+            assert os.path.exists(cfg_path), "config.json missing after VLM mlx export"
+            with open(cfg_path, "r", encoding="utf-8") as f:
+                cfg = json.load(f)
+
+            # 1) top-level defaults
+            quant = cfg.get("quantization", {})
+            assert quant.get("bits") == 4
+            assert quant.get("group_size") == 128
+
+            # 2) at least some language-tower layers are recorded with their full path
+            lang_keys = [
+                k for k in quant
+                if isinstance(k, str)
+                and k.startswith(("language_model.", "model.language_model."))
+                and isinstance(quant[k], dict)
+                and quant[k].get("bits") == 4
+            ]
+            assert lang_keys, "No language_model.* quantized entries in top-level quantization dict"
+
+            # 3) text_config.quantization mirrors them with the prefix stripped
+            sub = None
+            for sub_key in ("text_config", "language_config", "thinker_config"):
+                cand = cfg.get(sub_key)
+                if isinstance(cand, dict) and "quantization" in cand:
+                    sub = cand["quantization"]
+                    break
+            assert sub is not None, "expected text_config.quantization to be injected for VLM"
+            assert sub.get("bits") == 4 and sub.get("group_size") == 128
+
+            # Pick one full-path key and verify its prefix-stripped form is in sub
+            sample = lang_keys[0]
+            for prefix in ("language_model.", "model.language_model."):
+                if sample.startswith(prefix):
+                    stripped = sample[len(prefix):]
+                    break
+            assert stripped in sub, (
+                f"text_config.quantization missing prefix-stripped key '{stripped}' "
+                f"(derived from top-level '{sample}')"
+            )
+
+            # 4) vision tower must NOT pollute the config with ``false`` entries
+            vision_false_keys = [
+                k for k, v in quant.items()
+                if isinstance(k, str)
+                and any(k.startswith(p + ".") for p in ("vision_tower", "vision_model", "visual"))
+                and v is False
+            ]
+            assert not vision_false_keys, (
+                f"Expected vision_tower un-quantized layers to be skipped, "
+                f"but found {len(vision_false_keys)} ``false`` entries (e.g. {vision_false_keys[:3]})"
+            )
+
+            # 5) rope_parameters flattened — either at top level or inside text_config
+            assert "rope_parameters" not in cfg, "top-level rope_parameters should be flattened"
+            for sub_key in ("text_config", "language_config", "thinker_config"):
+                sc = cfg.get(sub_key)
+                if isinstance(sc, dict):
+                    assert "rope_parameters" not in sc, (
+                        f"{sub_key}.rope_parameters should have been flattened"
+                    )
+        finally:
+            shutil.rmtree(save_dir, ignore_errors=True)
+
+    @requires_qwen3_vl_9b_local
+    @requires_mlx_vlm_runtime
+    def test_qwen3_vl_9b_mlx_inference_with_mlx_vlm(self, tmp_path):
+        """End-to-end: quantize Qwen3-VL-9B → mlx → load & generate via mlx_vlm."""
+        from auto_round import AutoRoundMLLM
+        from mlx_vlm import generate, load
+        from mlx_vlm.prompt_utils import apply_chat_template
+        from mlx_vlm.utils import load_config
+
+        save_dir = str(tmp_path / "qwen3_vl_9b_mlx_run")
+        try:
+            ar = AutoRoundMLLM(
+                qwen_3_vl_9b_name_or_path,
+                scheme="W4A16",
+                bits=4,
+                group_size=128,
+                sym=True,
+                iters=0,
+                nsamples=1,
+                seqlen=32,
+                disable_opt_rtn=True,
+            )
+            ar.quantize_and_save(output_dir=save_dir, format="mlx")
+
+            model, processor = load(save_dir)
+            mlx_cfg = load_config(save_dir)
+            prompt_text = "Describe this image in one sentence."
+            formatted = apply_chat_template(processor, mlx_cfg, prompt_text, num_images=1)
+            # Use a public example image so the test does not need local assets.
+            image_url = "https://huggingface.co/datasets/huggingface/documentation-images/resolve/main/p-blog/candy.JPG"
+            output = generate(model, processor, formatted, image=[image_url], max_tokens=32)
+            assert isinstance(output, str) and len(output) > 0
+        finally:
+            shutil.rmtree(save_dir, ignore_errors=True)
