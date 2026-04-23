@@ -36,9 +36,11 @@ See our papers [SignRoundV1](https://arxiv.org/pdf/2309.05516) and [SignRoundV2]
 
 
 ## 🆕 What's New
+* [2026/04] We demonstrate that AutoRound achieves SOTA or near SOTA performance under INT4 (W4A4) quantization [accuracy data](./docs/int4_acc.md). This capability is currently a **research-only** feature, with no production model export.
+
 * [2026/03] **Block-wise FP8** quantization is available via `--scheme FP8_BLOCK --iters 0 --disable_opt_rtn`.
 
-* [2026/03] MTP layer quantization has been supported in [PR](https://github.com/intel/auto-round/pull/1526)
+* [2026/03]  **MTP layer quantization** has been supported in this [PR](https://github.com/intel/auto-round/pull/1526)
 
 * [2025/12] The **SignRoundV2** paper is available. Turn on  `enable_alg_ext` and use the **AutoScheme** API for mixed-precision quantization to reproduce the results: [*Paper*](http://arxiv.org/abs/2512.04746), [*Notes for evaluating LLaMA models*](./docs/alg_202508.md).
 
@@ -226,7 +228,7 @@ ar.quantize_and_save(output_dir="./qmodel", format="auto_round")
 - **`iters` (int)**: Number of tuning iterations (default is `200`). Common values: 0 (RTN mode), 50 (with lr=5e-3 recommended), 1000. Higher values increase accuracy but slow down tuning.
 - **`lr` (float)**: The learning rate for rounding value (default is `None`). When None, it will be set to `1.0/iters` automatically.
 - **`batch_size` (int)**: Batch size for training (default is `8`). 4 is also commonly used.
-- ** `enable_deterministic_algorithms` (bool)**: Whether to enable deterministic algorithms for reproducibility (default is `False`).
+- **`enable_deterministic_algorithms` (bool)**: Whether to enable deterministic algorithms for reproducibility (default is `False`).
 
 ##### Calibration Dataset
 - **`dataset` (str|list|tuple|torch.utils.data.DataLoader)**: The dataset for tuning (default is `"NeelNanda/pile-10k"`). Supports local JSON files and dataset combinations, e.g. `"./tmp.json,NeelNanda/pile-10k:train,mbpp:train+validation+test"`.
@@ -250,7 +252,7 @@ ar.quantize_and_save(output_dir="./qmodel", format="auto_round")
 | **auto_round**     | W4A16(Recommended), W2A16, W3A16, W8A16, W2A16G64, W2A16G32, `MXFP4`, `MXFP8`, `MXFP4_RCEIL`, `MXFP8_RCEIL`, `NVFP4`, `FPW8A16`, `FP8_STATIC`, `BF16`                     |
 | **auto_awq**       | W4A16(Recommended), BF16                                                                                                                                                  |
 | **auto_gptq**      | W4A16(Recommended), W2A16, W3A16, W8A16, W2A16G64, W2A16G32,BF16                                                                                                          |
-| **llm_compressor** | NVFP4(Recommended), `MXFP4`, `MXFP8`, `FPW8A16`, `FP8_STATIC`, `FP8_BLOCK`, `INT8_W8A8`, `W4A16`, `W8A16`                                                                   |
+| **llm_compressor** | NVFP4(Recommended), `MXFP4`, `MXFP8`, `FPW8A16`, `FP8_STATIC`, `FP8_BLOCK`, `INT8`, `W4A16`, `W8A16`                                                                   |
 | **gguf**           | GGUF:Q4_K_M(Recommended), GGUF:Q2_K_S, GGUF:Q3_K_S, GGUF:Q3_K_M, GGUF:Q3_K_L, GGUF:Q4_K_S, GGUF:Q5_K_S, GGUF:Q5_K_M, GGUF:Q6_K, GGUF:Q4_0, GGUF:Q4_1, GGUF:Q5_0, GGUF:Q5_1,GGUF:Q8_0 |
 | **fake**           | `all schemes (only for research)`                                                                                                                                         |
 </details>
