@@ -171,6 +171,8 @@ class TestMLXFormat:
             (2, "W2A16"),
             (3, "W3A16"),
             (4, "W4A16"),
+            (5, "W5A16"),
+            (6, "W6A16"),
             (8, "W8A16"),
         ],
     )
@@ -196,6 +198,8 @@ class TestMLXFormat:
             (2, "W2A16"),
             (3, "W3A16"),
             (4, "W4A16"),
+            (5, "W5A16"),
+            (6, "W6A16"),
             (8, "W8A16"),
         ],
     )
@@ -487,7 +491,7 @@ class TestMLXFormat:
             formatted = apply_chat_template(processor, mlx_cfg, prompt_text, num_images=1)
             # Use a public example image so the test does not need local assets.
             image_url = "https://huggingface.co/datasets/huggingface/documentation-images/resolve/main/p-blog/candy.JPG"
-            output = generate(model, processor, formatted, image=[image_url], max_tokens=32)
+            output = generate(model, processor, formatted, image=[image_url], max_tokens=32).text
             assert isinstance(output, str) and len(output) > 0
         finally:
             shutil.rmtree(save_dir, ignore_errors=True)

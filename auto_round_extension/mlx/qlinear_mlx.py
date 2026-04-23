@@ -85,8 +85,8 @@ class QuantLinearMLX(nn.Module):
 
     def __init__(self, bits, group_size, infeatures, outfeatures, bias, **kwargs):
         super().__init__()
-        if bits not in [2, 3, 4, 8]:
-            raise NotImplementedError("Only 2, 3, 4, 8 bits are supported.")
+        if bits not in [2, 3, 4, 5, 6, 8]:
+            raise NotImplementedError("Only 2, 3, 4, 5, 6, 8 bits are supported.")
         self.infeatures = infeatures
         self.outfeatures = outfeatures
         self.bits = bits

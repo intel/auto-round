@@ -1086,13 +1086,13 @@ class FP8Format(OutputFormat):
 
 @OutputFormat.register("mlx")
 class MLXFormat(OutputFormat):
-    support_schemes = ["W2A16", "W3A16", "W4A16", "W8A16", "BF16"]
+    support_schemes = ["W2A16", "W3A16", "W4A16", "W5A16", "W6A16", "W8A16", "BF16"]
     format_name = "mlx"
 
     @classmethod
     def check_scheme_args(cls: OutputFormat, scheme: QuantizationScheme) -> bool:
         error_logs = []
-        if scheme.bits not in [2, 3, 4, 8, 16]:
+        if scheme.bits not in [2, 3, 4, 5, 6, 8, 16]:
             error_logs.append(f"bits={scheme.bits}")
         if scheme.act_bits != 16:
             error_logs.append(f"act_bits={scheme.act_bits}")
