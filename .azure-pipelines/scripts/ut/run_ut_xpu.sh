@@ -93,6 +93,8 @@ function print_summary() {
             echo "$line"
         fi
     done < "${SUMMARY_LOG}"
+    # sleep 2h for local debug after UT, should be removed later
+    sleep 7200
     exit $status
 }
 
@@ -110,8 +112,6 @@ function main() {
     run_unit_test_vllm
     collect_log
     print_summary
-    # sleep 2h for local debug after UT, should be removed later
-    sleep 7200
 }
 
 main
