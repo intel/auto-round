@@ -455,6 +455,42 @@ class AutoRoundCompatible:
         # Determine output format if specified
         format = kwargs.pop("format", None)
 
+        # Extract rotation_config (old-API kwarg) and convert to HadamardConfig for new arch.
+        # In old arch, rotation_config was a keyword arg; in new arch, rotation transforms
+        # are passed as part of alg_configs list.  "inplace" backend is not yet supported
+        # in the new arch (requires CUDA/triton), so we only convert transform-compatible configs.
+        _rotation_config_raw = kwargs.pop("rotation_config", None)
+        if _rotation_config_raw is not None:
+            from auto_round.algorithms.transforms.hadamard.config import (
+                HadamardConfig,
+                normalize_hadamard_config,
+            )
+            from auto_round.experimental.transform.rotation_config import RotationConfig as _RotationConfig
+
+            # Resolve to a RotationConfig to check the backend field
+            if isinstance(_rotation_config_raw, _RotationConfig):
+                _rc = _rotation_config_raw
+            elif isinstance(_rotation_config_raw, dict):
+                _rc = _RotationConfig.model_validate(_rotation_config_raw)
+            else:
+                # str ("default", "random_hadamard", …) or plain dict
+                _rc = _RotationConfig()
+
+            if _rc.backend == "inplace":
+                logger.warning(
+                    "rotation_config with backend='inplace' is not yet supported in the new architecture. "
+                    "The rotation will be skipped. Use backend='transform' or backend='auto' "
+                    "with an MXFP4/NVFP4 scheme, or pass HadamardConfig() explicitly via alg_configs."
+                )
+            else:
+                # Convert to HadamardConfig understood by the new arch.
+                # normalize_hadamard_config only accepts None/str/dict/HadamardConfig, so
+                # convert RotationConfig instances to dict first (dropping backend field).
+                _raw_for_norm = _rc.model_dump(exclude={"backend", "fuse_online_to_weight", "allow_online_rotation"})
+                hadamard_dict = normalize_hadamard_config(_raw_for_norm)
+                hadamard_cfg = HadamardConfig.model_validate(hadamard_dict)
+                config = [config, hadamard_cfg]
+
         # Extract MLLM-specific parameters
         processor = kwargs.pop("processor", None)
         image_processor = kwargs.pop("image_processor", None)
