@@ -116,9 +116,7 @@ def _build_mlx_quantization_config(
     quant_cfg: dict = {"group_size": default_group_size, "bits": default_bits}
 
     def _is_skipped(layer_name: str) -> bool:
-        return any(
-            layer_name == p or layer_name.startswith(p + ".") for p in skip_prefixes
-        )
+        return any(layer_name == p or layer_name.startswith(p + ".") for p in skip_prefixes)
 
     for name, module in model.named_modules():
         if isinstance(module, _MLXPackedLayer):
@@ -256,7 +254,7 @@ def _strip_prefix(name: str, prefix: str) -> str:
     if name == prefix:
         return name
     pref = prefix + "."
-    return name[len(pref):] if name.startswith(pref) else name
+    return name.removeprefix(pref)
 
 
 def _build_text_subconfig_quantization(quant_cfg: dict, text_prefix: str) -> dict:
