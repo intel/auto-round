@@ -59,7 +59,7 @@ SPECIAL_MODEL_REGISTRY: List[SpecialModelEntry] = []
 
 
 def register_special_model(entry: SpecialModelEntry) -> SpecialModelEntry:
-    """Append *entry* to the registry. First-registered wins on conflict."""
+    """Append *entry* to the registry. Later-registered entries win on conflict."""
     SPECIAL_MODEL_REGISTRY.append(entry)
     return entry
 
