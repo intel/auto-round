@@ -213,8 +213,7 @@ class TestAutoRound:
         from gguf.gguf_reader import GGUFReader
 
         model_path = get_model_path("Qwen/Qwen3-1.7B")
-        tiny_model_path = "./tmp/tiny_qwen3_1b"
-        save_tiny_model(model_path, tiny_model_path, num_layers=8)
+        tiny_model_path = save_tiny_model(model_path, "./tmp/tiny_qwen3_1b", num_layers=8)
         autoround = AutoRound(
             tiny_model_path,
             iters=0,
