@@ -187,4 +187,3 @@ def apply_special_overrides(model, kwargs: Dict[str, Any]) -> Dict[str, Any]:
                 )
             kwargs[key] = forced_value
     return kwargs
-
