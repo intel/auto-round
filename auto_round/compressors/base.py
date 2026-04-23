@@ -51,12 +51,14 @@ from auto_round.compressors.utils import (
     is_nv_fp,
     is_static_wfp8afp8,
     is_wfp8afp8,
+    is_wint4aint4,
     reset_params,
     set_layer_config,
 )
 from auto_round.data_type import QUANT_FUNC_WITH_DTYPE
 from auto_round.data_type.utils import reshape_pad_tensor_by_group_size, update_block_global_scale_if_needed
-from auto_round.experimental.transform.hadamard_config import HadamardConfig
+from auto_round.experimental.transform.rotation_config import RotationConfig
+from auto_round.experimental.utils import dump_group_size_to_rotation_config, normalize_rotation_config
 from auto_round.export.export_to_gguf.config import GGUF_INNER_CONFIG
 from auto_round.formats import OutputFormat, get_formats
 from auto_round.logger import logger
@@ -153,7 +155,7 @@ SERIALIZATION_KEYS = (
     "super_bits",
     "super_group_size",
     "to_quant_block_names",
-    "hadamard_config",
+    "rotation_config",
 )
 
 
@@ -204,7 +206,7 @@ class BaseCompressor(object):
         disable_opt_rtn: bool | None = None,
         seed: int = 42,
         low_cpu_mem_usage: bool = True,
-        hadamard_config: str | dict | HadamardConfig | None = None,
+        rotation_config: str | dict | RotationConfig | None = None,
         **kwargs,
     ):
         """Initialize AutoRound with quantization and tuning configuration.
@@ -275,7 +277,6 @@ class BaseCompressor(object):
                 value = kwargs.pop(k)
                 if value is not None:
                     self.user_scheme_overrides[k] = value
-
         # Model related
         model_dtype = kwargs.pop("model_dtype", None)
         self.mllm = kwargs.pop("mllm") if "mllm" in kwargs else False
@@ -559,14 +560,34 @@ class BaseCompressor(object):
             except (ImportError, ModuleNotFoundError):
                 logger.error("algorithm extension import error, fallback to default mode")
 
-        # apply hadamard transform
-        if hadamard_config:
-            logger.info("Applying Hadamard transform to the model.")
-            from auto_round.experimental.transform.apply import apply_hadamard_transform
-            from auto_round.experimental.utils import normalize_hadamard_config
+        # Hadamard rotation / transform – unified entry that auto-dispatches
+        # between the "inplace" (QuaRot-style residual rotation; supports any
+        # dtype incl. INT4/INT8/FPx; can fuse online Had into weights) and
+        # "transform" (per-Linear weight+activation Had with fused triton
+        # kernel; only MXFP4 / NVFP4; cannot fuse) backends.
+        # See :class:`RotationConfig` for routing rules.
+        if rotation_config is not None:
+            from auto_round.experimental.apply_rotation_transform import apply_hadamard_rotation
 
-            self.hadamard_config = normalize_hadamard_config(hadamard_config, self.data_type)
-            self.model = apply_hadamard_transform(self.model, self.hadamard_config, data_type=self.data_type)
+            default_block_size = self.group_size
+            if self.act_bits < 16:
+                default_block_size = self.act_group_size
+            rotation_config = dump_group_size_to_rotation_config(rotation_config, default_block_size)
+
+            self.model, _ = apply_hadamard_rotation(
+                self.model,
+                rotation_config,
+                data_type=self.data_type,
+                compute_device=self.device,
+            )
+            stored = getattr(self.model, "rotation_config", rotation_config)
+            # Normalize to a plain dict so it round-trips through JSON
+            # (HF saves quantization_config to config.json on save_pretrained).
+            if hasattr(stored, "model_dump"):
+                stored = stored.model_dump()
+            self.rotation_config = stored
+            # Mirror the JSON-safe form back onto the model.
+            setattr(self.model, "rotation_config", stored)
 
         self.blocks_requiring_input_ids = []
         self.has_variable_block_shape = False
@@ -1081,7 +1102,9 @@ class BaseCompressor(object):
                 dtype = f"{dtype}_{'sym' if config['sym'] else 'asym'}"
 
             # Optionally use optimized rounding (RTN) variant
-            if not self.disable_opt_rtn and f"rtn_{dtype}" in QUANT_FUNC_WITH_DTYPE:
+            if not self.disable_opt_rtn and f"opt_rtn_{dtype}" in QUANT_FUNC_WITH_DTYPE:
+                dtype = f"opt_rtn_{dtype}"
+            elif f"rtn_{dtype}" in QUANT_FUNC_WITH_DTYPE:
                 dtype = f"rtn_{dtype}"
 
             quant_func = QUANT_FUNC_WITH_DTYPE[dtype]
@@ -1194,7 +1217,10 @@ class BaseCompressor(object):
                     hook_handles.append(hook)
             return hook_handles
 
-        hooks = register_act_hook(model)
+        if not is_wint4aint4(self):  # INT4 no imatrix is much better
+            hooks = register_act_hook(model)
+        else:
+            hooks = []
 
         try:
             if hasattr(model, "hf_device_map") and len(model.hf_device_map) > 1:
@@ -1284,6 +1310,7 @@ class BaseCompressor(object):
                     enable_round_tuning=False,
                     enable_torch_compile=self.enable_torch_compile,
                     disable_opt_rtn=disable_opt_rtn,
+                    iters=self.iters,
                 )
                 m = m.unwrapper({})
             except torch.OutOfMemoryError:
@@ -1299,6 +1326,7 @@ class BaseCompressor(object):
                         enable_norm_bias_tuning=False,
                         enable_round_tuning=False,
                         enable_torch_compile=self.enable_torch_compile,
+                        iters=self.iters,
                     )
                     m = m.unwrapper({})
                 except Exception as e:
@@ -1985,6 +2013,7 @@ class BaseCompressor(object):
                     enable_torch_compile=self.enable_torch_compile,
                     device=self.device,
                     disable_opt_rtn=self.disable_opt_rtn,
+                    iters=self.iters,
                 )
                 new_layer = wrapper_layer.unwrapper({})
                 set_module(self.model, layer_name, new_layer)
@@ -2792,6 +2821,7 @@ class BaseCompressor(object):
             enable_minmax_tuning=self.enable_minmax_tuning,
             enable_torch_compile=self.enable_torch_compile,
             device=device,
+            iters=self.iters,
         ).to(device)
         round_params = []
         minmax_params = []
@@ -3107,6 +3137,7 @@ class BaseCompressor(object):
             self.enable_norm_bias_tuning,
             enable_torch_compile=self.enable_torch_compile,
             device=device,
+            iters=self.iters,
         )
         # Call this before quantization and after applying the block wrapper.
         if is_nv_fp(self.data_type):  # enable qkv and moe structure global_scale fuse.
