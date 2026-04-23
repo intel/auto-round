@@ -130,7 +130,6 @@ PKG_INSTALL_CFG = {
 # python setup.py hpu install
 ###############################################################################
 
-
 HPU_REQUIREMENTS_FILE = "requirements-hpu.txt"
 HPU_INSTALL_CFG = {
     "include_packages": find_packages(
@@ -143,7 +142,6 @@ HPU_INSTALL_CFG = {
     ),
     "install_requires": fetch_requirements(HPU_REQUIREMENTS_FILE),
 }
-
 
 # Support legacy `python setup.py hpu install` invocation for backward compatibility.
 # For python -m build / uv build, use the BUILD_HPU_ONLY=1 environment variable instead.

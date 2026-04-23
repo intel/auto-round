@@ -138,9 +138,7 @@ def is_triton_kernel_available(data_type: str) -> bool:
 
 
 def dump_group_size_to_rotation_config(rotation_config: str | dict | RotationConfig, group_size: int):
-    from auto_round.algorithms.transforms.rotation.config import (
-        dump_group_size_to_rotation_config as _impl,
-    )
+    from auto_round.algorithms.transforms.rotation.config import dump_group_size_to_rotation_config as _impl
 
     return _impl(rotation_config, group_size)
 
