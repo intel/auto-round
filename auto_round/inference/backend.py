@@ -525,7 +525,6 @@ BackendInfos["auto_awq:gemm"] = BackendInfo(
     act_bits=WOQ_DEFAULT_ACT_BITS,
     alias=["auto_awq:gemm", "awq", "awq:gemm", "auto_awq"],
     requirements=["autoawq"],
-
 )
 
 BackendInfos["auto_round_kernel"] = BackendInfo(
@@ -712,7 +711,7 @@ BackendInfos["mlx"] = BackendInfo(
     device=["cpu", "mps"],  # MLX runs on Apple Silicon (CPU or MPS)
     sym=[True, False],
     packing_format=["mlx"] + GPTQ_FORMAT + GPTQ_FORMAT_NO_ZP,
-    bits=[2, 3, 4, 5, 6, 8 ],
+    bits=[2, 3, 4, 5, 6, 8],
     compute_dtype=["float32", "float16", "bfloat16"],
     data_type=["int"],
     act_bits=WOQ_DEFAULT_ACT_BITS,
