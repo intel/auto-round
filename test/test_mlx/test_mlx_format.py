@@ -29,14 +29,12 @@ import os
 import platform
 import shutil
 from pathlib import Path
+from test.helpers import qwen_3_vl_9b_name_or_path, qwen_name_or_path
 
 import pytest
 import torch
 
 from auto_round import AutoRound
-
-from test.helpers import qwen_name_or_path, qwen_3_vl_9b_name_or_path
-
 
 MLX_AVAILABLE = importlib.util.find_spec("mlx") is not None
 MLX_LM_AVAILABLE = importlib.util.find_spec("mlx_lm") is not None
@@ -409,7 +407,8 @@ class TestMLXFormat:
 
             # 2) at least some language-tower layers are recorded with their full path
             lang_keys = [
-                k for k in quant
+                k
+                for k in quant
                 if isinstance(k, str)
                 and k.startswith(("language_model.", "model.language_model."))
                 and isinstance(quant[k], dict)
@@ -431,7 +430,7 @@ class TestMLXFormat:
             sample = lang_keys[0]
             for prefix in ("language_model.", "model.language_model."):
                 if sample.startswith(prefix):
-                    stripped = sample[len(prefix):]
+                    stripped = sample[len(prefix) :]
                     break
             assert stripped in sub, (
                 f"text_config.quantization missing prefix-stripped key '{stripped}' "
@@ -440,7 +439,8 @@ class TestMLXFormat:
 
             # 4) vision tower must NOT pollute the config with ``false`` entries
             vision_false_keys = [
-                k for k, v in quant.items()
+                k
+                for k, v in quant.items()
                 if isinstance(k, str)
                 and any(k.startswith(p + ".") for p in ("vision_tower", "vision_model", "visual"))
                 and v is False
@@ -455,9 +455,7 @@ class TestMLXFormat:
             for sub_key in ("text_config", "language_config", "thinker_config"):
                 sc = cfg.get(sub_key)
                 if isinstance(sc, dict):
-                    assert "rope_parameters" not in sc, (
-                        f"{sub_key}.rope_parameters should have been flattened"
-                    )
+                    assert "rope_parameters" not in sc, f"{sub_key}.rope_parameters should have been flattened"
         finally:
             shutil.rmtree(save_dir, ignore_errors=True)
 
@@ -465,10 +463,11 @@ class TestMLXFormat:
     @requires_mlx_vlm_runtime
     def test_qwen3_vl_9b_mlx_inference_with_mlx_vlm(self, tmp_path):
         """End-to-end: quantize Qwen3-VL-9B → mlx → load & generate via mlx_vlm."""
-        from auto_round import AutoRoundMLLM
         from mlx_vlm import generate, load
         from mlx_vlm.prompt_utils import apply_chat_template
         from mlx_vlm.utils import load_config
+
+        from auto_round import AutoRoundMLLM
 
         save_dir = str(tmp_path / "qwen3_vl_9b_mlx_run")
         try:

@@ -268,9 +268,7 @@ class QuantLinearMLX(nn.Module):
             weight_int[:, 0, 10] = (weight_int[:, 0, 10] & 0x3) | ((weight_int[:, 1, 0] << 2) & 0x4)
             weight_int[:, 1, 11] = (weight_int[:, 1, 11] & 0x1) | ((weight_int[:, 2, 0] << 1) & 0x6)
             weight_int = weight_int & 0x7
-            weight_int = torch.cat(
-                [weight_int[:, 0, :11], weight_int[:, 1, 1:12], weight_int[:, 2, 1:11]], dim=1
-            )
+            weight_int = torch.cat([weight_int[:, 0, :11], weight_int[:, 1, 1:12], weight_int[:, 2, 1:11]], dim=1)
             weight_int = weight_int.reshape(-1, out_features)
 
         # Determine zeros
@@ -309,9 +307,7 @@ class QuantLinearMLX(nn.Module):
                     zeros[:, :, 0, 10] = (zeros[:, :, 0, 10] & 0x3) | ((zeros[:, :, 1, 0] << 2) & 0x4)
                     zeros[:, :, 1, 11] = (zeros[:, :, 1, 11] & 0x1) | ((zeros[:, :, 2, 0] << 1) & 0x6)
                     zeros = zeros & 0x7
-                    zeros = torch.cat(
-                        [zeros[:, :, 0, :11], zeros[:, :, 1, 1:12], zeros[:, :, 2, 1:11]], dim=2
-                    )
+                    zeros = torch.cat([zeros[:, :, 0, :11], zeros[:, :, 1, 1:12], zeros[:, :, 2, 1:11]], dim=2)
                     zeros = zeros.reshape(scales_gptq.shape).to(torch.int32)
 
                 # GPTQ qzeros are stored off-by-one; recover the true zero point.
@@ -341,4 +337,3 @@ class QuantLinearMLX(nn.Module):
         if has_bias:
             mlx_layer.bias.copy_(module.bias.to(torch.float16))
         return mlx_layer
-
