@@ -712,12 +712,12 @@ BackendInfos["mlx"] = BackendInfo(
     device=["cpu", "mps"],  # MLX runs on Apple Silicon (CPU or MPS)
     sym=[True, False],
     packing_format=["mlx"] + GPTQ_FORMAT + GPTQ_FORMAT_NO_ZP,
-    bits=[2, 3, 4, 5, 6, 8, 16],
+    bits=[2, 3, 4, 5, 6, 8 ],
     compute_dtype=["float32", "float16", "bfloat16"],
     data_type=["int"],
     act_bits=WOQ_DEFAULT_ACT_BITS,
     group_size=[-1, 32, 64, 128, 256, 512],
-    priority=10,  # High priority for Apple Silicon users
+    priority=5,  # High priority for Apple Silicon users
     alias=["mlx"],
     requirements=["mlx>=0.16.0"],
     systems=["darwin"],  # Only on macOS
