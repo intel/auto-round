@@ -27,11 +27,11 @@ from typing import Any, Callable, Dict
 import torch
 import torch.nn as nn
 
-from auto_round.algorithms.transforms.hadamard.utils.math import (
+from auto_round.algorithms.transforms.rotation.utils.math import (
     deterministic_hadamard_matrix,
     random_hadamard_matrix,
 )
-from auto_round.algorithms.transforms.hadamard.utils.matrix import apply_transform_weight
+from auto_round.algorithms.transforms.rotation.utils.matrix import apply_transform_weight
 
 __all__ = [
     "HadamardTransform",

@@ -23,7 +23,7 @@ from auto_round.algorithms.transforms.base import BaseRotationConfig
 from auto_round.compressors.utils import is_mx_fp, is_nv_fp
 from auto_round.utils import logger
 
-__all__ = ["RotationConfig", "normalize_rotation_config", "HadamardConfig", "normalize_hadamard_config"]
+__all__ = ["RotationConfig", "normalize_rotation_config"]
 
 # Supported Hadamard transform types (also used by HadamardTransform registry).
 HADAMARD_TYPES: frozenset[str] = frozenset({"hadamard", "random_hadamard", "quarot_hadamard"})
@@ -34,7 +34,7 @@ class RotationConfig(BaseModel, BaseRotationConfig):
 
     This config is designed to be embedded inside a model's ``config.json``
     for serialisation, and is also used at runtime to drive
-    :class:`~auto_round.algorithms.transforms.hadamard.apply.HadamardRotation`.
+    :class:`~auto_round.algorithms.transforms.rotation.apply.HadamardRotation`.
 
     Attributes:
         algorithm: Fixed to ``"hadamard"`` – identifies this config in the
@@ -61,10 +61,6 @@ class RotationConfig(BaseModel, BaseRotationConfig):
         if v not in HADAMARD_TYPES:
             raise ValueError(f"Unsupported hadamard_type: {v!r}. " f"Supported values: {sorted(HADAMARD_TYPES)}")
         return v
-
-
-# Backward-compatibility alias
-HadamardConfig = RotationConfig
 
 
 def normalize_rotation_config(
@@ -160,7 +156,3 @@ def normalize_rotation_config(
             raise ValueError(f"Failed to build RotationConfig from {key!r}: {exc}") from exc
 
     raise TypeError("rotation_config must be None, dict, RotationConfig, or str " f"(got {type(config).__name__})")
-
-
-# Backward-compatibility alias
-normalize_hadamard_config = normalize_rotation_config

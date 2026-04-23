@@ -502,7 +502,6 @@ INT4 = QuantizationScheme.from_dict(
     }
 )
 
-
 # For AutoScheme 16 bits options
 BF16 = QuantizationScheme.from_dict(
     {

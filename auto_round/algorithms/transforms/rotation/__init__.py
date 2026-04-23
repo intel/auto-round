@@ -13,18 +13,15 @@
 # limitations under the License.
 """Hadamard rotation sub-package for ``algorithms/transforms``."""
 
-from auto_round.algorithms.transforms.hadamard.apply import (
+from auto_round.algorithms.transforms.rotation.apply import (
     HadamardRotation,
     apply_rotation_transform,
-    apply_hadamard_transform,
 )
-from auto_round.algorithms.transforms.hadamard.config import (
+from auto_round.algorithms.transforms.rotation.config import (
     RotationConfig,
     normalize_rotation_config,
-    HadamardConfig,
-    normalize_hadamard_config,
 )
-from auto_round.algorithms.transforms.hadamard.transforms import (
+from auto_round.algorithms.transforms.rotation.transforms import (
     HADAMARDS,
     HadamardTransform,
     RandomHadamardTransform,
@@ -34,19 +31,14 @@ from auto_round.algorithms.transforms.hadamard.transforms import (
 __all__ = [
     # Algorithm class
     "HadamardRotation",
-    # Config (new names)
+    # Config
     "RotationConfig",
     "normalize_rotation_config",
-    # Config (backward-compat aliases)
-    "HadamardConfig",
-    "normalize_hadamard_config",
     # Transform modules
     "HadamardTransform",
     "RandomHadamardTransform",
     "HADAMARDS",
     "build_hadamard_transform",
-    # One-shot convenience (new name)
+    # One-shot convenience
     "apply_rotation_transform",
-    # One-shot convenience (backward-compat alias)
-    "apply_hadamard_transform",
 ]

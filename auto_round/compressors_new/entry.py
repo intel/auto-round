@@ -9,7 +9,7 @@ import torch
 from auto_round.algorithms.alg_config import AlgConfig
 from auto_round.algorithms.quantization.rtn.config import RTNConfig
 from auto_round.algorithms.quantization.sign_round.config import SignRoundConfig
-from auto_round.algorithms.transforms.hadamard.config import RotationConfig as _NewArchRotationConfig
+from auto_round.algorithms.transforms.rotation.config import RotationConfig as _NewArchRotationConfig
 from auto_round.auto_scheme.gen_auto_scheme import AutoScheme
 from auto_round.compressors_new.calib import CalibCompressor, CalibratedRTNCompressor
 from auto_round.compressors_new.utils import check_need_act_calibration
@@ -461,8 +461,8 @@ class AutoRoundCompatible:
         # in the new arch (requires CUDA/triton), so we only convert transform-compatible configs.
         _rotation_config_raw = kwargs.pop("rotation_config", None)
         if _rotation_config_raw is not None:
-            from auto_round.algorithms.transforms.hadamard.config import RotationConfig as _NARotCfg
-            from auto_round.algorithms.transforms.hadamard.config import normalize_rotation_config as _normalize_rc
+            from auto_round.algorithms.transforms.rotation.config import RotationConfig as _NARotCfg
+            from auto_round.algorithms.transforms.rotation.config import normalize_rotation_config as _normalize_rc
             from auto_round.experimental.transform.rotation_config import RotationConfig as _RotationConfig
 
             # Resolve to a RotationConfig to check the backend field

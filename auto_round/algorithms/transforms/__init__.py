@@ -20,7 +20,7 @@ quantisation step to improve numerical properties.
 Current algorithms
 ------------------
 * **hadamard** – Block-diagonal Hadamard rotations (QuaRot / SpinQuant style).
-  See :mod:`auto_round.algorithms.transforms.hadamard`.
+  See :mod:`auto_round.algorithms.transforms.rotation`.
 
 Adding a new algorithm
 -----------------------
@@ -47,13 +47,10 @@ from auto_round.algorithms.transforms.base import (
     ROTATION_SUPPORTED_SCHEMES,
     check_supported_schemes,
 )
-from auto_round.algorithms.transforms.hadamard import (
-    HadamardConfig,
+from auto_round.algorithms.transforms.rotation import (
     HadamardRotation,
-    apply_hadamard_transform,
     apply_rotation_transform,
-    normalize_hadamard_config,
-    normalize_rotation_config as _normalize_hadamard_for_transforms,
+    normalize_rotation_config as _normalize_hadamard_config,
     RotationConfig,
 )
 
@@ -63,14 +60,10 @@ __all__ = [
     "BaseRotationConfig",
     "ROTATION_SUPPORTED_SCHEMES",
     "check_supported_schemes",
-    # Config (new names)
+    # Config
     "RotationConfig",
-    "apply_rotation_transform",
-    # Config (backward-compat aliases)
-    "HadamardConfig",
     "HadamardRotation",
-    "apply_hadamard_transform",
-    "normalize_hadamard_config",
+    "apply_rotation_transform",
     # Unified entry
     "apply_rotation",
     "normalize_rotation_config",
@@ -86,7 +79,7 @@ def normalize_rotation_config(
     legacy dicts that only carry Hadamard keys).
 
     Args:
-        config: One of: ``None``, :class:`HadamardConfig`, a ``dict`` with
+        config: One of: ``None``, :class:`RotationConfig`, a ``dict`` with
                 an ``"algorithm"`` key, or a plain Hadamard shorthand string.
 
     Returns:
@@ -109,7 +102,7 @@ def normalize_rotation_config(
 
     if isinstance(config, str):
         # String shorthand → treat as Hadamard config.
-        return RotationConfig.model_validate(_normalize_hadamard_for_transforms(config))
+        return RotationConfig.model_validate(_normalize_hadamard_config(config))
 
     raise TypeError(
         f"Unsupported rotation config type: {type(config).__name__}. "
@@ -133,7 +126,7 @@ def apply_rotation(
         config:           Rotation configuration.  Accepts:
 
                           * ``None`` – no-op, returns *model* unmodified.
-                          * :class:`HadamardConfig` or compatible ``dict``/``str``.
+                          * :class:`RotationConfig` or compatible ``dict``/``str``.
                           * Any :class:`BaseRotationConfig` subclass.
 
         data_type:        Quantization data type (e.g. ``"mx_fp"``).
