@@ -49,6 +49,17 @@ class TestAutoRound:
         # skip model saving since it takes much time
         autoround.quantize()
 
+    def test_z_image_tune(self, tiny_z_image_model_path, tmp_path):
+        autoround = AutoRoundDiffusion(
+            tiny_z_image_model_path,
+            iters=1,
+            nsamples=1,
+            num_inference_steps=2,
+            dataset=get_captions_dataset_path(),
+        )
+        # skip model saving since it takes much time
+        autoround.quantize_and_save("tmp_path")
+
     @require_optimum
     def test_diffusion_tune(self, tiny_flux_model_path, tmp_path):
         from diffusers import AutoPipelineForText2Image
