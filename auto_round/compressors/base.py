@@ -401,7 +401,8 @@ class BaseCompressor(object):
         else:
             torch.use_deterministic_algorithms(True, warn_only=True)
 
-        # XPU SDPA workaround: drop pure causal masks so FLASH backend is used, and set torch.use_deterministic_algorithms(False)
+        # XPU SDPA workaround: drop pure causal masks so FLASH backend is used,
+        # and set torch.use_deterministic_algorithms(False)
         # instead of MATH (avoids ~10x peak-VRAM blow-up during block tuning).
         patch_xpu_sdpa_drop_causal_mask()
 
