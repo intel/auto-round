@@ -494,6 +494,7 @@ def get_score_for_scheme(
     offload_context: Optional[OffloadManager] = None,
     processor=None,
     is_vlm: bool = False,
+    force_mllm: bool = False,
     model_name: Optional[str] = None,
 ):
     scores_dict = {}  # Key=name,Val=[quant_total_bits, loss]
@@ -575,11 +576,10 @@ def get_score_for_scheme(
     def _build_mllm_calib_dataloader():
         """Build the multimodal calibration dataloader (image + text).
 
-        Used only as a fallback when text-only forward fails on a VLM.
         Returns ``None`` if we can't build one (no processor / template /
         dataset issue) so the caller can surface a clearer error.
         """
-        if not (is_vlm and processor is not None):
+        if processor is None:
             return None
         from auto_round.compressors.mllm.dataset import get_mllm_dataloader
 
@@ -591,7 +591,7 @@ def get_score_for_scheme(
         if ds == "pile-10k" or ds is None:
             ds = "liuhaotian/llava_conv_58k"
         try:
-            loader, _, _ = get_mllm_dataloader(
+            loader, _, _, _ = get_mllm_dataloader(
                 template=template,
                 model=model,
                 tokenizer=tokenizer,
@@ -613,20 +613,33 @@ def get_score_for_scheme(
         return data["input_ids"]
 
     if low_gpu_mem_usage:
-        try:
-            dataloader = _build_calib_dataloader()
-            model_forward_low_gpu(model, dataloader, major_device=major_device, pbar=pbar)
-        except Exception as exc:  # noqa: BLE001
-            if not is_vlm:
-                raise
-            logger.warning(
-                f"Text-only calibration failed on VLM ({exc}); "
-                f"falling back to multimodal calibration dataloader."
-            )
+        if force_mllm:
             mllm_loader = _build_mllm_calib_dataloader()
             if mllm_loader is None:
-                raise
+                raise RuntimeError(
+                    "AutoScheme is asked to score vision-tower layers "
+                    "(`quant_nontext_module=True`) but a multimodal calibration "
+                    "dataloader could not be built. Vision layers receive no "
+                    "gradient under text-only calibration, so a multimodal "
+                    "(image+text) dataset is required. Provide a `processor` "
+                    "and a multimodal `dataset` (e.g. `liuhaotian/llava_conv_58k`)."
+                )
             model_forward_low_gpu(model, mllm_loader, major_device=major_device, pbar=pbar)
+        else:
+            try:
+                dataloader = _build_calib_dataloader()
+                model_forward_low_gpu(model, dataloader, major_device=major_device, pbar=pbar)
+            except Exception as exc:  # noqa: BLE001
+                if not is_vlm:
+                    raise
+                logger.warning(
+                    f"Text-only calibration failed on VLM ({exc}); "
+                    f"falling back to multimodal calibration dataloader."
+                )
+                mllm_loader = _build_mllm_calib_dataloader()
+                if mllm_loader is None:
+                    raise
+                model_forward_low_gpu(model, mllm_loader, major_device=major_device, pbar=pbar)
     else:
         for n, m in model.named_modules():
             if hasattr(m, "grad_mode"):
@@ -646,19 +659,32 @@ def get_score_for_scheme(
                 if pbar is not None:
                     pbar.update(1)
 
-        try:
-            _run_forward_loop(_build_calib_dataloader())
-        except Exception as exc:  # noqa: BLE001
-            if not is_vlm:
-                raise
-            logger.warning(
-                f"Text-only calibration failed on VLM ({exc}); "
-                f"falling back to multimodal calibration dataloader."
-            )
+        if force_mllm:
             mllm_loader = _build_mllm_calib_dataloader()
             if mllm_loader is None:
-                raise
+                raise RuntimeError(
+                    "AutoScheme is asked to score vision-tower layers "
+                    "(`quant_nontext_module=True`) but a multimodal calibration "
+                    "dataloader could not be built. Vision layers receive no "
+                    "gradient under text-only calibration, so a multimodal "
+                    "(image+text) dataset is required. Provide a `processor` "
+                    "and a multimodal `dataset` (e.g. `liuhaotian/llava_conv_58k`)."
+                )
             _run_forward_loop(mllm_loader)
+        else:
+            try:
+                _run_forward_loop(_build_calib_dataloader())
+            except Exception as exc:  # noqa: BLE001
+                if not is_vlm:
+                    raise
+                logger.warning(
+                    f"Text-only calibration failed on VLM ({exc}); "
+                    f"falling back to multimodal calibration dataloader."
+                )
+                mllm_loader = _build_mllm_calib_dataloader()
+                if mllm_loader is None:
+                    raise
+                _run_forward_loop(mllm_loader)
 
         for n, m in model.named_parameters():
             m.grad = None
@@ -857,6 +883,43 @@ def _gen_layer_config(
         else:
             batch_size = 1
 
+    # ------------------------------------------------------------------ #
+    # Decide whether AutoScheme has to use a multimodal calibration set.  #
+    # If vision-tower layers are part of the scoring set (typically       #
+    # because the user passed ``--quant_nontext_module``), text-only      #
+    # forward bypasses the vision encoder on most VLMs and leaves those   #
+    # layers with zero gradient — AutoScheme would silently make nonsense #
+    # decisions for them. Force the multimodal dataloader in that case    #
+    # AND clamp ``batch_size`` to 1 because image sizes differ across     #
+    # samples (the multimodal collator can't stack them otherwise).       #
+    # ------------------------------------------------------------------ #
+    embedding_layers_names = []
+    for name in quant_layer_names:
+        module = get_module(model, name)
+        if isinstance(module, torch.nn.Embedding):
+            embedding_layers_names.append(name)
+    quant_layer_names = list(set(quant_layer_names) - set(embedding_layers_names))
+
+    vision_markers = ("vision", "visual", "image", "img")
+    force_mllm = is_vlm and any(
+        any(marker in n.lower() for marker in vision_markers) for n in quant_layer_names
+    )
+    if force_mllm:
+        if batch_size != 1:
+            logger.info(
+                "AutoScheme: vision-tower layers are in the scoring set; "
+                "forcing multimodal calibration dataloader and clamping "
+                "batch_size from %d to 1 (image sizes differ across samples).",
+                batch_size,
+            )
+            batch_size = 1
+        else:
+            logger.info(
+                "AutoScheme: vision-tower layers are in the scoring set; "
+                "forcing multimodal calibration dataloader (text-only would "
+                "leave vision params without gradient)."
+            )
+
     pbar_cnt = 0
     need_weight_grad = False
     for index, scheme in enumerate(schemes):
@@ -876,12 +939,6 @@ def _gen_layer_config(
             pbar_cnt += len(block_name) * 2 * ((nsamples + batch_size - 1) // batch_size)  # forward backward
     shared_layers = parse_shared_layers(model, auto_scheme.shared_layers)
 
-    embedding_layers_names = []
-    for name in quant_layer_names:
-        module = get_module(model, name)
-        if isinstance(module, torch.nn.Embedding):
-            embedding_layers_names.append(name)
-    quant_layer_names = list(set(quant_layer_names) - set(embedding_layers_names))
 
     options_scores = []
     if auto_scheme.low_gpu_mem_usage and not disable_opt_rtn:
@@ -942,6 +999,7 @@ def _gen_layer_config(
                 offload_context=offload_context,
                 processor=processor,
                 is_vlm=is_vlm,
+                force_mllm=force_mllm,
                 model_name=model_name,
             )
         # Track peak RAM after each scheme scoring
@@ -1087,10 +1145,10 @@ def gen_layer_config(
     disable_opt_rtn=True,
     low_gpu_mem_usage=True,
     min_avg_bit_scheme=None,
+    processor=None,
     **kwargs,
 ):
     model_name = None
-    processor = None
     is_vlm = False
     if isinstance(model, str):
         model_name = model

@@ -61,10 +61,12 @@ class GenScheme:
         device_map: Union[str, torch.device, int, dict, None] = None,
         tokenizer=None,
         enable_torch_compile=False,
+        processor=None,
     ):
         self.auto_scheme = auto_scheme
         self.model = model
         self.tokenizer = tokenizer
+        self.processor = processor
         self.quant_layer_names = quant_layer_names
         self.fixed_layer_scheme = fixed_layer_scheme
         self.dataset = dataset
@@ -130,6 +132,7 @@ class GenScheme:
             disable_opt_rtn=self.disable_opt_rtn,
             low_gpu_mem_usage=self.auto_scheme.low_gpu_mem_usage,
             min_avg_bit_scheme=self.min_avg_bit_scheme,
+            processor=self.processor,
         )
         layer_config = self.fallback_gguf_layer_config(layer_config)
         return layer_config

@@ -656,55 +656,64 @@ class BaseCompressor(object):
         )
         quant_layer_names = layer_config.keys()
 
-        # ---- VLM: restrict AutoScheme to the language tower ----------- #
-        # When quantizing a multimodal model without ``quant_nontext_module``
-        # (the default), vision / audio sub-trees stay at fp16. Including them
-        # in the avg_bits computation pushes the achievable range way above
-        # the user's target (e.g. 9B VLM: range = [5.7, 7.3] instead of
-        # [2.x, 8.0]) because the vision tower's fp16 params dominate the
-        # weighted average. AutoScheme should therefore score and average
-        # *only* the language-tower layers, matching the mlx-community
-        # convention where e.g. ``Qwen3-VL-9B-MLX-4bit`` refers to language
-        # bits only.
+        # ---- VLM: peel non-text sub-trees AutoScheme should not score ---- #
+        # Behavior matches ``--quant_nontext_module``:
+        #   * default (False): peel BOTH vision and audio; AutoScheme only
+        #     scores the language tower (vision/audio kept at their original
+        #     16-bit configuration).
+        #   * True: peel only audio; AutoScheme also scores the vision tower
+        #     (audio is always peeled because we don't ship an audio
+        #     calibration dataset, so any score for it would be unreliable).
         nontext_skipped_layers: dict[str, dict] = {}
-        if self.mllm and not getattr(self, "quant_nontext_module", False):
+        if self.mllm:
             from auto_round.utils import get_block_names
 
-            language_blocks = get_block_names(self.model, quant_vision=False)
-            language_block_prefixes = tuple(
-                blk for group in language_blocks for blk in group
+            quant_nontext = getattr(self, "quant_nontext_module", False)
+            # ``_get_vlm_block_names`` always drops audio blocks regardless of
+            # ``quant_vision``.
+            scoreable_blocks = get_block_names(self.model, quant_vision=quant_nontext)
+            scoreable_block_prefixes = tuple(
+                blk for group in scoreable_blocks for blk in group
             )
-            # Layers that belong to the language tower (i.e. live under one of
-            # its ModuleList blocks) OR are top-level non-tower layers we'd
-            # still want to quantize (lm_head, embed_tokens) are kept;
-            # everything else (vision_tower / visual / audio_tower / ...) is
-            # peeled off and re-attached after GenScheme runs.
-            vision_audio_markers = ("vision", "visual", "image", "audio", "speech", "wav", "waveform")
+            if quant_nontext:
+                # vision stays in; only audio gets peeled.
+                peel_markers = ("audio", "speech", "wav", "waveform")
+                tower_label = "language+vision"
+                peel_label = "audio/speech"
+            else:
+                # default: peel both vision and audio.
+                peel_markers = (
+                    "vision", "visual", "image", "img",
+                    "audio", "speech", "wav", "waveform",
+                )
+                tower_label = "language"
+                peel_label = "vision/audio"
 
-            def _is_language_layer(name: str) -> bool:
-                # Quick prefix test against detected language blocks.
-                if any(name == p or name.startswith(p + ".") for p in language_block_prefixes):
+            def _is_scoreable_layer(name: str) -> bool:
+                # Quick prefix test against detected scoreable blocks.
+                if any(name == p or name.startswith(p + ".") for p in scoreable_block_prefixes):
                     return True
-                # Fallback: drop anything containing a vision/audio marker.
+                # Fallback: drop anything matching a peel marker.
                 lname = name.lower()
-                return not any(marker in lname for marker in vision_audio_markers)
+                return not any(marker in lname for marker in peel_markers)
 
-            language_layer_config = {}
+            scoreable_layer_config = {}
             for name, cfg in layer_config.items():
-                if _is_language_layer(name):
-                    language_layer_config[name] = cfg
+                if _is_scoreable_layer(name):
+                    scoreable_layer_config[name] = cfg
                 else:
                     nontext_skipped_layers[name] = cfg
 
             if nontext_skipped_layers:
                 logger.info(
-                    "AutoScheme (VLM): restricting bit assignment to %d language-tower "
-                    "layers; %d vision/audio-tower layers kept at their original "
-                    "16 bits configuration.",
-                    len(language_layer_config),
+                    "AutoScheme (VLM): scoring %d %s-tower layers; "
+                    "%d %s-tower layers kept at their original 16-bit configuration.",
+                    len(scoreable_layer_config),
+                    tower_label,
                     len(nontext_skipped_layers),
+                    peel_label,
                 )
-                layer_config = language_layer_config
+                layer_config = scoreable_layer_config
                 quant_layer_names = layer_config.keys()
 
         scheme_keys = {f.name for f in fields(QuantizationScheme)}
@@ -728,6 +737,7 @@ class BaseCompressor(object):
             device_map=self.device_map,
             tokenizer=self.tokenizer,
             enable_torch_compile=self.enable_torch_compile,
+            processor=getattr(self, "processor", None),
         )
         layer_config = self.scheme_generator.get_layer_config()
         # Re-attach vision/audio-tower layers we peeled off earlier so the
