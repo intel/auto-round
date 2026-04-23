@@ -488,7 +488,7 @@ BackendInfos["gptqmodel:awq_gemm"] = BackendInfo(
     packing_format=AWQ_FORMAT,
     bits=[4],
     group_size=[-1, 16, 32, 64, 128],
-    priority=3,
+    priority=4,
     compute_dtype=["float16"],
     data_type=["int"],
     act_bits=WOQ_DEFAULT_ACT_BITS,
@@ -519,11 +519,13 @@ BackendInfos["auto_awq:gemm"] = BackendInfo(
     packing_format=AWQ_FORMAT,
     bits=[4],
     group_size=None,
-    priority=4,
+    priority=3,
     compute_dtype=["float16"],
     data_type=["int"],
     act_bits=WOQ_DEFAULT_ACT_BITS,
     alias=["auto_awq:gemm", "awq", "awq:gemm", "auto_awq"],
+    requirements=["autoawq"],
+
 )
 
 BackendInfos["auto_round_kernel"] = BackendInfo(
