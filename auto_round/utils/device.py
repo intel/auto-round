@@ -1194,15 +1194,6 @@ def estimate_tuning_block_mem(
         # and multiple expert activations. Here we use a conservative estimate.
         moe_additional_memory = additional_memory * 6  # GB
         additional_memory += moe_additional_memory
-    if torch.xpu.is_available():
-        # https://github.com/intel/torch-xpu-ops/issues/2232
-        # TODO: XPU takes more memory than expected. for llama 8B, it's about 12 GB
-        xpu_additional_memory = 12  # GB
-        additional_memory += xpu_additional_memory
-    # logger.warning_once(
-    #     "[Memory Estimation]: If there is an abnormal memory issue, please collect log with "
-    #     + "AR_LOG_LEVEL=debug and raise issue to us."
-    # )
 
     return layer_memory_dict, layer_activation_memory, block_input_output_memory, additional_memory
 
