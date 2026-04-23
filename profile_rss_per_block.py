@@ -9,6 +9,7 @@ Usage:
     # Old arch:
     AR_DISABLE_NEW_ARCH=1 python profile_rss_per_block.py
 """
+
 import gc
 import os
 import resource
@@ -35,18 +36,19 @@ _proc = psutil.Process()
 
 def live_rss_mb():
     """Current RSS in MB (not peak)."""
-    return _proc.memory_info().rss / (1024*1024)
+    return _proc.memory_info().rss / (1024 * 1024)
 
 
 def live_rss_mb_clean():
     gc.collect()
     try:
         import ctypes
+
         libc = ctypes.CDLL("libc.so.6")
         libc.malloc_trim(0)
     except Exception:
         pass
-    return _proc.memory_info().rss / (1024*1024)
+    return _proc.memory_info().rss / (1024 * 1024)
 
 
 arch = os.environ.get("AR_DISABLE_NEW_ARCH", "0")
@@ -60,6 +62,7 @@ print(f"Before import RSS: {live_rss_mb():.1f} MB")
 if arch != "1":
     # NEW ARCH: patch CalibCompressor._quantize_single_block
     from auto_round.compressors_new import calib as calib_mod
+
     _orig_quantize_single_block = calib_mod.CalibCompressor._quantize_single_block
     _orig_quantize_blocks = calib_mod.CalibCompressor._quantize_blocks
 
@@ -76,6 +79,7 @@ if arch != "1":
         rss_after_gc = live_rss_mb()
         try:
             import ctypes
+
             libc = ctypes.CDLL("libc.so.6")
             libc.malloc_trim(0)
         except Exception:
@@ -83,21 +87,22 @@ if arch != "1":
         rss_after_trim = live_rss_mb()
 
         entry = {
-            'block': block_idx,
-            'before': rss_before,
-            'after_return': rss_after_return,
-            'after_gc': rss_after_gc,
-            'after_trim': rss_after_trim,
-            'delta_return': rss_after_return - rss_before,
-            'delta_gc': rss_after_gc - rss_before,
-            'delta_trim': rss_after_trim - rss_before,
+            "block": block_idx,
+            "before": rss_before,
+            "after_return": rss_after_return,
+            "after_gc": rss_after_gc,
+            "after_trim": rss_after_trim,
+            "delta_return": rss_after_return - rss_before,
+            "delta_gc": rss_after_gc - rss_before,
+            "delta_trim": rss_after_trim - rss_before,
         }
         _block_rss_log.append(entry)
         print(
             f"  Block {block_idx:2d}: before={rss_before:.1f}  after_ret={rss_after_return:.1f}  "
             f"after_gc={rss_after_gc:.1f}  after_trim={rss_after_trim:.1f}  "
             f"delta_ret={entry['delta_return']:+.1f}  delta_trim={entry['delta_trim']:+.1f} MB",
-            flush=True)
+            flush=True,
+        )
         return result
 
     calib_mod.CalibCompressor._quantize_single_block = _patched_quantize_single_block
@@ -105,6 +110,7 @@ if arch != "1":
 else:
     # OLD ARCH: patch LLMCompressor._quantize_block
     from auto_round.compressors import base as base_mod
+
     _orig_quantize_block = base_mod.LLMCompressor._quantize_block
 
     _block_rss_log = []
@@ -120,6 +126,7 @@ else:
         rss_after_gc = live_rss_mb()
         try:
             import ctypes
+
             libc = ctypes.CDLL("libc.so.6")
             libc.malloc_trim(0)
         except Exception:
@@ -127,21 +134,22 @@ else:
         rss_after_trim = live_rss_mb()
 
         entry = {
-            'block': block_idx,
-            'before': rss_before,
-            'after_return': rss_after_return,
-            'after_gc': rss_after_gc,
-            'after_trim': rss_after_trim,
-            'delta_return': rss_after_return - rss_before,
-            'delta_gc': rss_after_gc - rss_before,
-            'delta_trim': rss_after_trim - rss_before,
+            "block": block_idx,
+            "before": rss_before,
+            "after_return": rss_after_return,
+            "after_gc": rss_after_gc,
+            "after_trim": rss_after_trim,
+            "delta_return": rss_after_return - rss_before,
+            "delta_gc": rss_after_gc - rss_before,
+            "delta_trim": rss_after_trim - rss_before,
         }
         _block_rss_log.append(entry)
         print(
             f"  Block {block_idx:2d}: before={rss_before:.1f}  after_ret={rss_after_return:.1f}  "
             f"after_gc={rss_after_gc:.1f}  after_trim={rss_after_trim:.1f}  "
             f"delta_ret={entry['delta_return']:+.1f}  delta_trim={entry['delta_trim']:+.1f} MB",
-            flush=True)
+            flush=True,
+        )
         return result
 
     base_mod.LLMCompressor._quantize_block = _patched_quantize_block
@@ -157,7 +165,7 @@ import shutil
 save_dir = "/tmp/profile_rss_output"
 shutil.rmtree(save_dir, ignore_errors=True)
 
-print(f"\nCreating AutoRound instance...")
+print("\nCreating AutoRound instance...")
 ar = AutoRound(
     model="Qwen/Qwen3-0.6B",
     scheme="FP8_STATIC",
@@ -168,7 +176,7 @@ ar = AutoRound(
 print(f"After init RSS: {live_rss_mb():.1f} MB")
 print(f"After init RSS (clean): {live_rss_mb_clean():.1f} MB")
 
-print(f"\nStarting quantize_and_save...\n")
+print("\nStarting quantize_and_save...\n")
 model, folder = ar.quantize_and_save(output_dir=save_dir, format="llm_compressor")
 
 print(f"\n{'='*70}")
@@ -176,16 +184,17 @@ print(f"  SUMMARY ({arch_label} Architecture)")
 print(f"{'='*70}")
 print(f"Final RSS: {live_rss_mb():.1f} MB")
 print(f"Final RSS (clean): {live_rss_mb_clean():.1f} MB")
-print(f"\nPer-block deltas (after return, after gc+trim):")
+print("\nPer-block deltas (after return, after gc+trim):")
 for e in _block_rss_log:
     print(
         f"  Block {e['block']:2d}: delta_ret={e['delta_return']:+.1f}  delta_trim={e['delta_trim']:+.1f} MB  "
-        f"(abs: {e['after_trim']:.1f} MB)")
+        f"(abs: {e['after_trim']:.1f} MB)"
+    )
 
 # Compute growth rate
 if len(_block_rss_log) >= 2:
-    first = _block_rss_log[0]['after_trim']
-    last = _block_rss_log[-1]['after_trim']
+    first = _block_rss_log[0]["after_trim"]
+    last = _block_rss_log[-1]["after_trim"]
     n = len(_block_rss_log) - 1
     print(f"\nGrowth: {first:.1f} -> {last:.1f} MB over {n} blocks = {(last-first)/n:.1f} MB/block avg")
 

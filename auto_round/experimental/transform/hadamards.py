@@ -6,11 +6,13 @@ The canonical implementation now lives in
 :mod:`auto_round.algorithms.transforms.rotation.transforms`.
 """
 
-from auto_round.algorithms.transforms.rotation.transforms import (  # noqa: F401
+from auto_round.algorithms.transforms.rotation.transforms import (
     HADAMARDS,
     HadamardTransform,
     RandomHadamardTransform,
-    _filter_kwargs as filter_kwarg_dict,
+)
+from auto_round.algorithms.transforms.rotation.transforms import _filter_kwargs as filter_kwarg_dict  # noqa: F401
+from auto_round.algorithms.transforms.rotation.transforms import (
     build_hadamard_transform,
 )
 

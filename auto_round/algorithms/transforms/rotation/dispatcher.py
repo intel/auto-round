@@ -34,9 +34,8 @@ from typing import Any, Union
 import torch
 
 import auto_round.envs as envs
+from auto_round.algorithms.transforms.rotation.config import RotationConfig, normalize_rotation_config
 from auto_round.compressors.utils import is_mx_fp, is_nv_fp
-from auto_round.algorithms.transforms.rotation.config import RotationConfig
-from auto_round.algorithms.transforms.rotation.config import normalize_rotation_config
 from auto_round.utils import logger
 
 __all__ = ["apply_hadamard_rotation", "resolve_hadamard_backend"]

@@ -37,7 +37,7 @@ On HPU, new-arch `FP8_STATIC` (static W8A8-FP8) tuning leaked ~GBs of host RAM p
 1. **Immediate packing trigger flag**  
    `auto_round/compressors_new/calib.py` ~L1031:
    ```python
-   if self.compress_context.is_immediate_packing:   # was: is_immediate_saving
+   if self.compress_context.is_immediate_packing:  # was: is_immediate_saving
        ...
    ```
    Without this, packed weights were held in CPU RAM indefinitely.

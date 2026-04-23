@@ -10,18 +10,23 @@ import subprocess
 import sys
 import time
 
-
 MODEL = "Qwen/Qwen3-0.6B"
 ITERS = "200"
 SCHEME = "W4A16"
 DEVICE = "cuda:0"
 
 CMD_TEMPLATE = [
-    sys.executable, "-m", "auto_round",
-    "--model_name", MODEL,
-    "--scheme", SCHEME,
-    "--iters", ITERS,
-    "--device", DEVICE,
+    sys.executable,
+    "-m",
+    "auto_round",
+    "--model_name",
+    MODEL,
+    "--scheme",
+    SCHEME,
+    "--iters",
+    ITERS,
+    "--device",
+    DEVICE,
 ]
 
 

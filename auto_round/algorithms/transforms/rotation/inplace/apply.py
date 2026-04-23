@@ -14,12 +14,6 @@ from typing import Dict, Union
 import torch
 import tqdm
 
-from auto_round.algorithms.transforms.rotation.inplace.model_config import (
-    MAPPING_REGISTRY,
-    RotationMapping,
-    _resolve,
-    infer_mapping_from_model,
-)
 from auto_round.algorithms.transforms.rotation.inplace.hooks import (
     CrossHeadOnlineHadamardHook,
     FullOnlineHadamardHook,
@@ -34,6 +28,12 @@ from auto_round.algorithms.transforms.rotation.inplace.hooks import (
     deterministic_hadamard_matrix,
     get_hadK,
     get_or_create_random_hadamard,
+)
+from auto_round.algorithms.transforms.rotation.inplace.model_config import (
+    MAPPING_REGISTRY,
+    RotationMapping,
+    _resolve,
+    infer_mapping_from_model,
 )
 
 # ---------------------------------------------------------------------------
