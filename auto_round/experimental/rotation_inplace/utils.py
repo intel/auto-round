@@ -218,8 +218,12 @@ class CrossHeadOnlineHadamardHook(nn.Module):
             fp32_had: Compute in fp32.
             use_fast_had: If True use fast_hadamard_transform; if False use matmul_hadU.
             had_matrix: Optional custom rotation matrix of shape ``(num_heads, num_heads)``.
+            num_heads: Optional, accepted for backward compatibility. The runtime
+                ``num_heads`` is always derived from the input shape and
+                ``head_dim``, so this argument is ignored.
         """
         super().__init__()
+
         self.custom_had = had_matrix is not None
         if had_matrix is not None:
             self.register_buffer("had_matrix", had_matrix)
@@ -303,7 +307,13 @@ def register_online_had_hooks(model, mapping=None, fp32_had=False, use_fast_had=
     num_heads = getattr(config, mapping.num_heads_attr)
     hidden_size = getattr(config, mapping.hidden_size_attr)
     intermediate_size = getattr(config, mapping.intermediate_size_attr)
-    head_dim = mapping.attn_head_dim or (hidden_size // num_heads)
+    # Resolve head_dim, preferring an explicit ``config.head_dim`` (e.g. Qwen-3
+    # declares ``head_dim`` separately from ``hidden_size // num_heads``).
+    if mapping.attn_head_dim:
+        head_dim = mapping.attn_head_dim
+    else:
+        cfg_head_dim = getattr(config, "head_dim", None)
+        head_dim = cfg_head_dim if isinstance(cfg_head_dim, int) and cfg_head_dim > 0 else hidden_size // num_heads
 
     # down_proj: full Hadamard on intermediate_size
     had_K_full, K_full = get_hadK(intermediate_size)
@@ -446,13 +456,56 @@ def apply_exact_had_to_linear(
     in_features, out_features = module.in_features, module.out_features
 
     if had_dim != -1 and had_matrix is None:
-        assert is_pow2(had_dim), "Hadamard dimension must be a power of 2!"
+        # When had_dim is not a power of 2, the fast Hadamard transform
+        # kernel cannot be used. Fall back to the generic ``matmul_hadU``
+        # path, which supports non-pow2 sizes via known Hadamard divisors
+        # (see ``get_hadK``). If no divisor is available, ``get_hadK`` will
+        # raise; we surface a clearer error here.
+        if not is_pow2(had_dim):
+            _hadK_probe, _ = get_hadK(had_dim)
+            assert _hadK_probe is not None, (
+                f"Hadamard dimension {had_dim} is not a power of 2 and no "
+                "known Hadamard divisor is available for it."
+            )
+            use_fast_had = False
 
     W_ = module.weight.data
     dtype = W_.dtype
     dev = W_.device
     init_shape = W_.shape
     compute_dev = _resolve_compute_device(compute_device)
+
+    # ---- Fast path: full-dim custom matrix (most common heavy path: down_proj
+    # input rotation under random_hadamard / quarot_hadamard). Done in chunks
+    # along the *free* axis so we never materialise the full fp64 weight,
+    # which on Qwen3-14B's down_proj is ~712 MB on its own.
+    if had_matrix is not None and had_dim == -1:
+        H_T = had_matrix.to(device=compute_dev, dtype=torch.float64).T.contiguous()
+        out = torch.empty_like(W_)
+        if output:
+            # W ← W @ H.T   (rows of W are independent → chunk over rows).
+            R = W_.shape[0]
+            chunk = max(1, min(R, 4096))
+            for i in range(0, R, chunk):
+                j = min(i + chunk, R)
+                blk = W_.data[i:j].to(device=compute_dev, dtype=torch.float64)
+                rotated = (blk @ H_T).to(device=dev, dtype=dtype)
+                out[i:j].copy_(rotated)
+                del blk, rotated
+        else:
+            # Same expression in current code (W_ @ H.T), but chunk over rows.
+            R = W_.shape[0]
+            chunk = max(1, min(R, 4096))
+            for i in range(0, R, chunk):
+                j = min(i + chunk, R)
+                blk = W_.data[i:j].to(device=compute_dev, dtype=torch.float64)
+                rotated = (blk @ H_T).to(device=dev, dtype=dtype)
+                out[i:j].copy_(rotated)
+                del blk, rotated
+        del H_T
+        module.weight.data = out
+        return
+
     W_ = W_.double().to(compute_dev)
 
     if had_matrix is not None:

@@ -381,7 +381,7 @@ class BasicArgumentParser(argparse.ArgumentParser):
             "--rotation_type",
             default=None,
             type=str,
-            choices=["hadamard", "random_hadamard"],
+            choices=["hadamard", "random_hadamard","quarot_hadamard"],
             help="Research feature: applies a rotation (e.g., Hadamard) to reduce activation/weight outliers",
         )
         gguf = self.add_argument_group("Double Quant Arguments")
