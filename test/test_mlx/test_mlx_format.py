@@ -253,7 +253,7 @@ class TestMLXFormat:
             output_dir=self.save_dir,
             scheme=scheme,
             bits=bits,
-            fmt="auto_round",
+            fmt="auto_round:auto_gptq",
             sym=sym,
             group_size=128,
         )

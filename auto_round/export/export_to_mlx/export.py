@@ -156,16 +156,99 @@ def _flatten_rope_parameters_recursive(cfg: dict) -> None:
     mlx-lm / mlx-vlm both expect ``rope_theta`` (and friends) at the same level
     as the rest of the model config — i.e. on the top-level config for LLMs and
     on ``text_config`` for VLMs. We walk every nested dict so both cases work.
+
+    Two ``rope_parameters`` shapes appear in the wild and both are handled:
+      1. ``{"rope_theta": 1e6, "rope_type": "default", ...}`` (flat)
+      2. ``{"default": {"rope_theta": 1e6, "rope_type": "default", ...}, ...}``
+         (newer HF "by-mode" layout — we surface keys from the ``"default"``
+         entry, falling back to the first sub-dict if absent).
     """
     if not isinstance(cfg, dict):
         return
     rope_params = cfg.pop("rope_parameters", None)
     if isinstance(rope_params, dict):
-        for k, v in rope_params.items():
-            cfg.setdefault(k, v)
+        # If the dict is nested by mode, prefer "default", else any sub-dict.
+        sub_dicts = {k: v for k, v in rope_params.items() if isinstance(v, dict)}
+        if sub_dicts:
+            chosen = sub_dicts.get("default") or next(iter(sub_dicts.values()))
+            for k, v in chosen.items():
+                cfg.setdefault(k, v)
+        else:
+            for k, v in rope_params.items():
+                cfg.setdefault(k, v)
     for v in cfg.values():
         if isinstance(v, dict):
             _flatten_rope_parameters_recursive(v)
+
+
+def _extract_rope_theta_from_obj(config_obj) -> "float | None":
+    """Best-effort extraction of ``rope_theta`` from a HF config object.
+
+    Newer transformers versions stop exposing ``rope_theta`` as a direct
+    attribute on the config and only expose ``rope_parameters`` (which can be
+    a dict, a typed object, or a by-mode mapping like
+    ``{"default": <obj-or-dict>}``). This helper tries every shape we've
+    encountered in the wild.
+    """
+    if config_obj is None:
+        return None
+    direct = getattr(config_obj, "rope_theta", None)
+    if direct is not None:
+        return direct
+
+    rope_params = getattr(config_obj, "rope_parameters", None)
+    if rope_params is None:
+        return None
+
+    # Case A: dict-like
+    if isinstance(rope_params, dict):
+        if "rope_theta" in rope_params:
+            return rope_params["rope_theta"]
+        # by-mode: {"default": {...}, ...}
+        sub_dicts = [v for v in rope_params.values() if isinstance(v, (dict,)) or hasattr(v, "rope_theta")]
+        chosen = None
+        if "default" in rope_params and (
+            isinstance(rope_params["default"], dict) or hasattr(rope_params["default"], "rope_theta")
+        ):
+            chosen = rope_params["default"]
+        elif sub_dicts:
+            chosen = sub_dicts[0]
+        if chosen is not None:
+            return _extract_rope_theta_from_obj(chosen) if not isinstance(chosen, dict) else chosen.get("rope_theta")
+        return None
+
+    # Case B: object with attributes
+    inner = getattr(rope_params, "rope_theta", None)
+    if inner is not None:
+        return inner
+    # by-mode object: try .default
+    inner_default = getattr(rope_params, "default", None)
+    if inner_default is not None:
+        return _extract_rope_theta_from_obj(inner_default)
+    return None
+
+
+def _ensure_rope_theta_from_config_obj(cfg: dict, config_obj) -> None:
+    """Backfill ``rope_theta`` on every level by probing the live HF config object.
+
+    HF model configs may carry ``rope_theta`` only inside ``rope_parameters`` (or
+    not at all on the serialized JSON when ``rope_parameters`` is nested by mode
+    and the JSON-side flatten couldn't reach a usable value). Walk the config
+    object alongside the JSON dict and copy ``rope_theta`` over wherever it's
+    still missing — at top level for LLMs, and on
+    ``text_config`` / ``language_config`` / ``thinker_config`` for VLMs.
+    """
+    if not isinstance(cfg, dict) or config_obj is None:
+        return
+    if "rope_theta" not in cfg:
+        rope_theta = _extract_rope_theta_from_obj(config_obj)
+        if rope_theta is not None:
+            cfg["rope_theta"] = rope_theta
+    for sub_key in _TEXT_SUB_CONFIG_KEYS + ("vision_config", "audio_config"):
+        sub_cfg = cfg.get(sub_key)
+        sub_obj = getattr(config_obj, sub_key, None)
+        if isinstance(sub_cfg, dict) and sub_obj is not None:
+            _ensure_rope_theta_from_config_obj(sub_cfg, sub_obj)
 
 
 def _strip_prefix(name: str, prefix: str) -> str:
@@ -315,8 +398,9 @@ def pack_layer(name, model, device=None, **kwargs):
 
     bits = int(layer.bits)
     group_size = int(layer.group_size)
+    sym = bool(getattr(layer, "sym", False))
     scale = layer.scale  # [out_features, num_groups]
-    zp = layer.zp  # [out_features, num_groups] or scalar
+    zp = layer.zp  # [out_features, num_groups] or scalar (asym only)
 
     # Get weight in [out_features, in_features] layout
     W = layer.weight.data.to(device).clone().float()
@@ -331,16 +415,24 @@ def pack_layer(name, model, device=None, **kwargs):
 
     maxq = 2**bits - 1
 
-    # Quantize: w_int = round(W / scale + zp), clamped to [0, maxq]
+    # Quantize: w_int = round(W / scale + zp), clamped to [0, maxq].
+    # For symmetric mode we deliberately IGNORE layer.zp (it may be a tensor /
+    # carry rounding noise / be device-dependent) and use the fixed integer
+    # zero point ``2**(bits-1)`` (e.g. 8 for 4-bit, 4 for 3-bit, 128 for 8-bit).
+    # This matches QuantLinearMLX.from_gptq's sym branch and the GPTQ sym
+    # convention used everywhere else in auto-round.
     scale_dev = scale.to(device).float()
     repeat_scales = scale_dev.repeat_interleave(group_size, dim=1)[:, :in_features]
 
-    if isinstance(zp, torch.Tensor):
+    if sym:
+        zp_dev = float(2 ** (bits - 1))
+        repeat_zp = zp_dev
+    elif isinstance(zp, torch.Tensor):
         zp_dev = zp.to(device).float()
         repeat_zp = zp_dev.repeat_interleave(group_size, dim=1)[:, :in_features]
     else:
-        zp_dev = zp
-        repeat_zp = zp
+        zp_dev = float(zp)
+        repeat_zp = zp_dev
 
     intweight = torch.round(W / repeat_scales + repeat_zp).clamp(0, maxq).to(torch.int32)
 
@@ -351,11 +443,7 @@ def pack_layer(name, model, device=None, **kwargs):
     # auto-round:  w_float = scale * (w_int - zp) = scale * w_int - scale * zp
     # So: mlx_scale = scale, mlx_bias = -scale * zp
     mlx_scales = scale_dev.contiguous().to(torch.float16)
-
-    if isinstance(zp_dev, torch.Tensor):
-        mlx_biases = (-scale_dev * zp_dev).contiguous().to(torch.float16)
-    else:
-        mlx_biases = (-scale_dev * zp_dev).contiguous().to(torch.float16)
+    mlx_biases = (-scale_dev * zp_dev).contiguous().to(torch.float16)
 
     # Preserve original bias
     orig_bias = None
@@ -456,6 +544,13 @@ def save_quantized_as_mlx(
         # Flatten rope_parameters recursively so mlx-lm/mlx-vlm find rope_theta
         # at the level it expects (top-level for LLMs, text_config for VLMs).
         _flatten_rope_parameters_recursive(config)
+
+        # Backfill rope_theta from the live model.config object — required by
+        # HF's model __init__ for the ``auto_round:mlx`` packing format (the
+        # checkpoint is loaded through transformers.AutoModelForCausalLM, which
+        # raises KeyError for missing rope_theta on Qwen-family models).
+        _ensure_rope_theta_from_config_obj(config, getattr(model, "config", None))
+
         with open(config_path, "w") as f:
             json.dump(config, f, indent=2)
 
