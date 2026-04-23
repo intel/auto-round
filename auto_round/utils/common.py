@@ -717,43 +717,133 @@ def is_transformers_version_greater_or_equal_4():
     return version.parse(transformers.__version__) >= version.parse("4.0.0")
 
 
+import json
+
+
 def parse_layer_config_arg(s: str) -> dict:
-    """Parse --layer_config with unquoted keys/values.
+    def strip_matching_quotes(token: str) -> str:
+        token = token.strip().replace("“", '"').replace("”", '"')
+        if len(token) >= 2 and token[0] == token[-1] and token[0] in ("'", '"'):
+            return token[1:-1]
+        return token
 
-    Delimiters are ``{``, ``}``, ``,``, ``:``.  Each non-delimiter token is
-    auto-typed: numeric strings become ``int``, everything else stays ``str``.
+    def normalize_scalar(value):
+        if not isinstance(value, str):
+            return value
 
-    Example::
-
-        {mtp:{bits:8},mtp.fc:{bits:16,data_type:fp}}
-    """
-    tokens = re.findall(r"[{}:,]|[^\s{}:,]+", s)
-    pos = [0]
-
-    def _val():
-        tok = tokens[pos[0]]
-        if tok == "{":
-            return _dict()
-        pos[0] += 1
+        value = strip_matching_quotes(value)
+        if value.lstrip("-").isdigit():
+            return int(value)
         try:
-            return int(tok)
+            return float(value)
         except ValueError:
-            return tok
+            pass
 
-    def _dict():
-        pos[0] += 1  # consume '{'
+        lower_value = value.lower()
+        if lower_value == "true":
+            return True
+        if lower_value == "false":
+            return False
+        if lower_value in ("null", "none"):
+            return None
+        return value
+
+    def normalize_tree(value):
+        if isinstance(value, dict):
+            return {normalize_scalar(k): normalize_tree(v) for k, v in value.items()}
+        if isinstance(value, list):
+            return [normalize_tree(item) for item in value]
+        return normalize_scalar(value)
+
+    def escape_invalid_json_backslashes(text: str) -> str:
+        escaped = []
+        in_string = False
+        index = 0
+
+        while index < len(text):
+            ch = text[index]
+            if not in_string:
+                if ch == '"':
+                    in_string = True
+                escaped.append(ch)
+                index += 1
+                continue
+
+            if ch == "\\":
+                next_ch = text[index + 1] if index + 1 < len(text) else ""
+                if next_ch not in {'"', "\\", "/", "b", "f", "n", "r", "t", "u"}:
+                    escaped.append("\\\\")
+                    index += 1
+                    continue
+
+            if ch == '"':
+                in_string = False
+            escaped.append(ch)
+            index += 1
+
+    s = strip_matching_quotes(s)
+
+    # 1. Prefer strict JSON.
+    try:
+        return normalize_tree(json.loads(s))
+    except Exception:
+        pass
+
+    # 2. Repair shell-friendly regex strings like "\d" into valid JSON escapes.
+    try:
+        return normalize_tree(json.loads(escape_invalid_json_backslashes(s)))
+    except Exception:
+        pass
+
+    # 3. Fallback parser for CLI-friendly dict syntax.
+    tokens = re.findall(r"[{}:,]|[^\s{}:,]+", s)
+    pos = 0
+
+    def peek():
+        return tokens[pos] if pos < len(tokens) else None
+
+    def consume(expected=None):
+        nonlocal pos
+        tok = peek()
+        if tok is None:
+            raise ValueError("Unexpected end of input")
+        if expected and tok != expected:
+            raise ValueError(f"Expected '{expected}', got '{tok}'")
+        pos += 1
+        return tok
+
+    def parse_value():
+        tok = peek()
+        if tok == "{":
+            return parse_dict()
+
+        consume()
+        return normalize_scalar(tok)
+
+    def parse_dict():
+        consume("{")
         result = {}
-        while tokens[pos[0]] != "}":
-            key = tokens[pos[0]]
-            pos[0] += 1  # key
-            pos[0] += 1  # consume ':'
-            result[key] = _val()
-            if tokens[pos[0]] == ",":
-                pos[0] += 1  # consume ','
-        pos[0] += 1  # consume '}'
+
+        while True:
+            tok = peek()
+            if tok == "}":
+                consume("}")
+                break
+
+            key = normalize_scalar(consume())
+            consume(":")
+            value = parse_value()
+            result[key] = value
+
+            if peek() == ",":
+                consume(",")
+
         return result
 
-    return _dict()
+    result = parse_dict()
+    if not isinstance(result, dict):
+        raise ValueError("--layer_config must parse to a dictionary")
+    return result
 
 
 def compress_layer_names(names: list) -> str:
