@@ -26,9 +26,10 @@ from auto_round.compressors import (
     MLLMCompressor,
 )
 from auto_round.compressors.diffusion.hybrid import HybridCompressor, is_hybrid_diffusion_model
+from auto_round.compressors.model_free import ModelFreeQuantizer
 from auto_round.logger import deprecated, logger
 from auto_round.schemes import QuantizationScheme
-from auto_round.utils import is_diffusion_model, is_mllm_model
+from auto_round.utils import is_diffusion_model, is_mllm_model, is_model_free_route
 
 if TYPE_CHECKING:
     from auto_round.auto_scheme.gen_auto_scheme import AutoScheme
@@ -159,6 +160,24 @@ class AutoRound:
         """
 
         local_args = {k: v for k, v in locals().items() if k not in cls.SKIP_ARGS}
+
+        # ---- Model-free fast-path detection --------------------------------
+        if is_model_free_route(model, scheme, iters, disable_opt_rtn, kwargs):
+            if not isinstance(model, str):
+                raise ValueError("model_free=True requires `model` to be a HuggingFace ID or local path string.")
+            if not bool(kwargs.get("model_free", False)):
+                logger.info(
+                    "Auto-routing to model-free quantization "
+                    "(iters=0, disable_opt_rtn=True, supported scheme). "
+                    "Pass disable_model_free=True to use the regular flow."
+                )
+            kwargs.pop("model_free", None)
+            kwargs.pop("disable_model_free", None)
+            if extra_config is not None:
+                local_args.update(extra_config.to_dict())
+            local_args["model_name_or_path"] = local_args.pop("model")
+            return ModelFreeQuantizer(**local_args, **kwargs)
+        # --------------------------------------------------------------------
 
         model_cls = []
 

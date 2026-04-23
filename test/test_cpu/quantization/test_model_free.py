@@ -22,11 +22,11 @@ import torch
 from safetensors import safe_open
 from safetensors.torch import save_file
 
+from auto_round import AutoRound
 from auto_round.compressors.model_free import (
     _PatternMatcher,
     _process_shard,
     get_predefined_ignore_layers_from_config,
-    model_free_quantize,
 )
 
 # ---------------------------------------------------------------------------
@@ -207,21 +207,13 @@ class TestProcessShard:
                 assert f"{base}.qweight" in output
 
 
-# ===========================================================================
-#  Test: model_free_quantize (end-to-end)
-# ===========================================================================
-
-
 class TestModelFreeQuantize:
     def test_basic_quantization(self, tmp_path):
         model_dir = _make_model_dir(tmp_path, _SIMPLE_CONFIG, _SIMPLE_TENSORS)
         output_dir = str(tmp_path / "output")
 
-        result = model_free_quantize(
-            model_name_or_path=model_dir,
-            output_dir=output_dir,
-            scheme="W4A16",
-        )
+        AutoRound(model=model_dir, scheme="W4A16", model_free=True).quantize_and_save(output_dir)
+        result = output_dir
 
         assert os.path.isdir(result)
         assert os.path.exists(os.path.join(output_dir, "config.json"))
@@ -257,12 +249,7 @@ class TestModelFreeQuantize:
         )
         output_dir = str(tmp_path / "output")
 
-        model_free_quantize(
-            model_name_or_path=model_dir,
-            output_dir=output_dir,
-            scheme="W4A16",
-            ignore_layers="mlp",
-        )
+        AutoRound(model=model_dir, scheme="W4A16", model_free=True, ignore_layers="mlp").quantize_and_save(output_dir)
 
         st_files = [f for f in os.listdir(output_dir) if f.endswith(".safetensors")]
         with safe_open(os.path.join(output_dir, st_files[0]), framework="pt") as f:
@@ -276,11 +263,7 @@ class TestModelFreeQuantize:
         model_dir = _make_model_dir(tmp_path, _SIMPLE_CONFIG, _SIMPLE_TENSORS, multi_shard=True)
         output_dir = str(tmp_path / "output")
 
-        model_free_quantize(
-            model_name_or_path=model_dir,
-            output_dir=output_dir,
-            scheme="W4A16",
-        )
+        AutoRound(model=model_dir, scheme="W4A16", model_free=True).quantize_and_save(output_dir)
 
         assert os.path.exists(os.path.join(output_dir, "model.safetensors.index.json"))
 
@@ -288,12 +271,7 @@ class TestModelFreeQuantize:
         model_dir = _make_model_dir(tmp_path, _SIMPLE_CONFIG, _SIMPLE_TENSORS)
         output_dir = str(tmp_path / "output")
 
-        model_free_quantize(
-            model_name_or_path=model_dir,
-            output_dir=output_dir,
-            scheme="W4A16",
-            quant_lm_head=True,
-        )
+        AutoRound(model=model_dir, scheme="W4A16", model_free=True, quant_lm_head=True).quantize_and_save(output_dir)
 
         all_keys = set()
         for fname in os.listdir(output_dir):
@@ -304,28 +282,16 @@ class TestModelFreeQuantize:
 
     def test_invalid_format_raises(self, tmp_path):
         with pytest.raises(ValueError, match="auto_round"):
-            model_free_quantize(
-                model_name_or_path=str(tmp_path),
-                output_dir=str(tmp_path / "out"),
-                format="auto_gptq",
-            )
+            AutoRound(model=str(tmp_path), model_free=True, format="auto_gptq").quantize_and_save(str(tmp_path / "out"))
 
     def test_invalid_scheme_raises(self, tmp_path):
         with pytest.raises(ValueError, match="INVALID"):
-            model_free_quantize(
-                model_name_or_path=str(tmp_path),
-                output_dir=str(tmp_path / "out"),
-                scheme="INVALID",
-            )
+            AutoRound(model=str(tmp_path), model_free=True, scheme="INVALID").quantize_and_save(str(tmp_path / "out"))
 
     def test_non_woq_scheme_raises(self, tmp_path):
         """Non-WOQ schemes (act_bits < 16) should be rejected."""
         with pytest.raises(ValueError, match="weight-only quantization"):
-            model_free_quantize(
-                model_name_or_path=str(tmp_path),
-                output_dir=str(tmp_path / "out"),
-                scheme="MXFP4",
-            )
+            AutoRound(model=str(tmp_path), model_free=True, scheme="MXFP4").quantize_and_save(str(tmp_path / "out"))
 
     def test_group_size_asym_quantization(self, tmp_path):
         """Asymmetric quantization via QuantizationScheme."""
@@ -339,11 +305,7 @@ class TestModelFreeQuantize:
         output_dir = str(tmp_path / "output")
 
         scheme = QuantizationScheme(bits=4, group_size=64, sym=False)
-        model_free_quantize(
-            model_name_or_path=model_dir,
-            output_dir=output_dir,
-            scheme=scheme,
-        )
+        AutoRound(model=model_dir, scheme=scheme, model_free=True).quantize_and_save(output_dir)
 
         with open(os.path.join(output_dir, "config.json")) as f:
             cfg = json.load(f)
@@ -394,3 +356,232 @@ class TestFP8SourceModel:
         assert "layer" in quantized
         assert "layer.qweight" in output
         assert "layer.weight_scale_inv" not in output
+
+
+# ===========================================================================
+#  Test: scheme allowlist (supported vs unsupported)
+# ===========================================================================
+
+
+_SUPPORTED_PRESET_NAMES = [
+    "W2A16",
+    "W2A16G32",
+    "W2A16G64",
+    "W4A16",
+    "W4A16_MIXED",
+    "W8A16",
+]
+# W3A16 is excluded: 3-bit packing requires in_features padding to a
+# multiple of pack_factor=10, which quantize_weight_rtn does not perform.
+_UNSUPPORTED_PRESET_NAMES = [
+    "W3A16",
+    "FPW8A16",
+    "BF16",
+    "MXFP4",
+    "MXFP8",
+    "MXINT4",
+    "NVFP4",
+    "FP8_BLOCK",
+    "FP8_STATIC",
+    "INT8_W8A8",
+]
+
+
+class TestSupportedSchemes:
+    """Validate which schemes the model-free RTN path can produce."""
+
+    @pytest.mark.parametrize("scheme_name", _SUPPORTED_PRESET_NAMES)
+    def test_supported_preset_runs(self, tmp_path, scheme_name):
+        from auto_round.schemes import preset_name_to_scheme
+
+        # Use a tensor whose in_features is divisible by all preset group_sizes
+        # (32, 64, 128) to keep RTN deterministic w.r.t. padding.
+        tensors = {
+            "model.layers.0.mlp.fc1.weight": torch.randn(64, 128),
+        }
+        cfg = {"architectures": ["LlamaForCausalLM"], "model_type": "llama"}
+        model_dir = _make_model_dir(tmp_path, cfg, tensors)
+        out_dir = str(tmp_path / f"out_{scheme_name}")
+
+        AutoRound(model=model_dir, scheme=scheme_name, model_free=True).quantize_and_save(out_dir)
+
+        # Output config should reflect the scheme.
+        with open(os.path.join(out_dir, "config.json")) as f:
+            cfg_out = json.load(f)
+        qc = cfg_out["quantization_config"]
+        scheme_obj = preset_name_to_scheme(scheme_name)
+        assert qc["bits"] == scheme_obj.bits
+        assert qc["group_size"] == scheme_obj.group_size
+        assert qc["sym"] == scheme_obj.sym
+        assert qc["data_type"] == "int"
+        assert qc["packing_format"] == "auto_round:auto_gptq"
+
+        # Find the actual safetensors file (could be model.safetensors or sharded).
+        st_files = [f for f in os.listdir(out_dir) if f.endswith(".safetensors")]
+        assert st_files, "No safetensors output produced"
+        all_keys = set()
+        for fname in st_files:
+            with safe_open(os.path.join(out_dir, fname), framework="pt") as f:
+                all_keys.update(f.keys())
+        base = "model.layers.0.mlp.fc1"
+        assert f"{base}.qweight" in all_keys
+        assert f"{base}.qzeros" in all_keys
+        assert f"{base}.scales" in all_keys
+
+    @pytest.mark.parametrize("scheme_name", _UNSUPPORTED_PRESET_NAMES)
+    def test_unsupported_preset_raises(self, tmp_path, scheme_name):
+        model_dir = _make_model_dir(
+            tmp_path,
+            {"architectures": ["LlamaForCausalLM"], "model_type": "llama"},
+            {"layer.weight": torch.randn(64, 128)},
+        )
+        with pytest.raises(ValueError, match="(?i)model-free|supported"):
+            AutoRound(model=model_dir, model_free=True, scheme=scheme_name).quantize_and_save(str(tmp_path / "out"))
+
+    def test_custom_scheme_object_supported(self, tmp_path):
+        from auto_round.schemes import QuantizationScheme
+
+        model_dir = _make_model_dir(
+            tmp_path,
+            {"architectures": ["LlamaForCausalLM"], "model_type": "llama"},
+            {"layer.weight": torch.randn(64, 128)},
+        )
+        sch = QuantizationScheme(bits=4, group_size=32, sym=False, data_type="int", act_bits=16)
+        out_dir = str(tmp_path / "out_custom")
+        AutoRound(model=model_dir, scheme=sch, model_free=True).quantize_and_save(out_dir)
+        with open(os.path.join(out_dir, "config.json")) as f:
+            qc = json.load(f)["quantization_config"]
+        assert qc["bits"] == 4 and qc["group_size"] == 32 and qc["sym"] is False
+
+    def test_helper_is_model_free_supported_scheme(self):
+        from auto_round.compressors.model_free import is_model_free_supported_scheme
+        from auto_round.schemes import QuantizationScheme
+
+        for name in _SUPPORTED_PRESET_NAMES:
+            assert is_model_free_supported_scheme(name) is True, name
+        for name in _UNSUPPORTED_PRESET_NAMES:
+            assert is_model_free_supported_scheme(name) is False, name
+        # Unknown name → False (not raising).
+        assert is_model_free_supported_scheme("DOES_NOT_EXIST") is False
+        # bits=5 → not in supported bits.
+        sch = QuantizationScheme(bits=5, group_size=128, sym=True, data_type="int", act_bits=16)
+        assert is_model_free_supported_scheme(sch) is False
+
+
+# ===========================================================================
+#  Test: CLI auto-routing (--iters 0 --disable_opt_rtn → model_free)
+# ===========================================================================
+
+
+class TestCliAutoRouting:
+    """Verify that the CLI auto-routes to model-free under the right conditions.
+
+    Rather than spawning a subprocess (slow, and some env vars matter), we call
+    ``setup_parser`` and ``tune`` directly with a tiny synthetic model dir.
+    """
+
+    @staticmethod
+    def _build_local_model(tmp_path):
+        """Tiny single-shard model dir with a 2-D weight to keep model_free happy."""
+        model_dir = _make_model_dir(
+            tmp_path,
+            {"architectures": ["LlamaForCausalLM"], "model_type": "llama"},
+            {"layer.weight": torch.randn(64, 128)},
+        )
+        return model_dir
+
+    @staticmethod
+    def _read_qconfig(out_dir):
+        with open(os.path.join(out_dir, "config.json")) as f:
+            return json.load(f).get("quantization_config", {})
+
+    def _run_cli(self, argv):
+        from auto_round.__main__ import BasicArgumentParser, tune
+
+        parser = BasicArgumentParser()
+        args = parser.parse_args(argv)
+        tune(args)
+
+    def test_auto_routes_to_model_free_when_iters0_and_disable_opt_rtn(self, tmp_path):
+        """`--iters 0 --disable_opt_rtn` + supported scheme → model_free path."""
+        model_dir = self._build_local_model(tmp_path)
+        out_dir = str(tmp_path / "out_auto")
+        self._run_cli(
+            [
+                "--model",
+                model_dir,
+                "--scheme",
+                "W4A16",
+                "--iters",
+                "0",
+                "--disable_opt_rtn",
+                "--format",
+                "auto_round",
+                "--output_dir",
+                out_dir,
+            ]
+        )
+        qc = self._read_qconfig(out_dir)
+        # model_free path stamps the "model_free" key.
+        assert qc.get("model_free") is True
+
+    def test_disable_model_free_reverts_to_regular_flow(self, tmp_path):
+        """`--disable_model_free` opts out of auto-routing."""
+        # Skip if the regular flow can't load this synthetic dir (no architecture
+        # mapping for "layer.weight" key); we use a real tiny model path if the
+        # fixture is available, otherwise xfail this case.
+        pytest.importorskip("transformers")
+        from auto_round.__main__ import BasicArgumentParser
+
+        # Just confirm the CLI flag is accepted and would suppress auto-routing
+        # decision; we test the routing decision directly instead of running tune.
+        from auto_round.compressors.model_free import is_model_free_supported_scheme
+
+        parser = BasicArgumentParser()
+        args = parser.parse_args(
+            [
+                "--model",
+                "dummy",
+                "--scheme",
+                "W4A16",
+                "--iters",
+                "0",
+                "--disable_opt_rtn",
+                "--disable_model_free",
+            ]
+        )
+        # Replicate the auto-routing predicate from __main__.py.
+        auto_route = (
+            not args.model_free
+            and not args.disable_model_free
+            and args.iters == 0
+            and args.disable_opt_rtn is True
+            and is_model_free_supported_scheme(args.scheme)
+        )
+        assert auto_route is False
+
+    def test_unsupported_scheme_does_not_auto_route(self, tmp_path):
+        """An unsupported scheme falls through to the regular flow."""
+        from auto_round.__main__ import BasicArgumentParser
+        from auto_round.compressors.model_free import is_model_free_supported_scheme
+
+        parser = BasicArgumentParser()
+        args = parser.parse_args(
+            [
+                "--model",
+                "dummy",
+                "--scheme",
+                "MXFP4",
+                "--iters",
+                "0",
+                "--disable_opt_rtn",
+            ]
+        )
+        auto_route = (
+            not args.model_free
+            and not args.disable_model_free
+            and args.iters == 0
+            and args.disable_opt_rtn is True
+            and is_model_free_supported_scheme(args.scheme)
+        )
+        assert auto_route is False

@@ -12,7 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Model-free RTN quantization.
+"""Model-free RTN quantization (class-based).
 
 This module performs weight-only quantization (WOQ) using RTN (Round-To-Nearest)
 **without** loading the full model into memory.  It reads safetensors files
@@ -20,22 +20,22 @@ This module performs weight-only quantization (WOQ) using RTN (Round-To-Nearest)
 ``nn.Linear`` weight tensors shard-by-shard, and writes the packed result to
 the output directory.
 
-Key features
-------------
-* **No model object required** – only ``config.json`` and safetensors files are
-  needed.
-* **Streaming mode** – when the model is not locally available, shards are
-  downloaded one at a time and deleted after quantization so that only one
-  copy of a shard is ever on disk.
-* **Per-layer configuration** – honours ``--layer_config`` overrides and
-  ``--ignore_layers`` for fine-grained control.
-* **Predefined ignore layers** – inspects
-  :func:`~auto_round.special_model_handler.get_predefined_ignore_layers_from_config`
-  so that model-specific quirks (e.g. MoE gates, MTP layers) are respected even
-  without a live model object.
-* **GPU acceleration** – when ``device="cuda"``, each weight tensor is
-  transferred to GPU and quantized there; the packed results are returned on
-  CPU ready for safetensors serialisation.
+The main entry point is the :class:`ModelFreeQuantizer` class.
+
+Supported schemes
+-----------------
+Model-free mode currently supports **integer weight-only** quantization
+schemes packed in the ``auto_round:auto_gptq`` format only.  Specifically:
+
+* Preset names: ``W2A16``, ``W2A16G32``, ``W2A16G64``, ``W3A16``, ``W4A16``,
+  ``W8A16``.
+* Custom :class:`~auto_round.schemes.QuantizationScheme` instances with
+  ``data_type="int"``, ``bits in {2, 3, 4, 8}``, ``act_bits >= 16``, and any
+  symmetric / asymmetric configuration.
+
+Schemes that require special packing (FP8, MXFP4, NVFP4, GGUF, INT8_W8A8,
+BF16, FPW8A16, ...) are **not** supported in model-free mode and will raise
+``ValueError``.  Use the standard AutoRound flow for those.
 
 Usage (CLI)
 -----------
@@ -50,12 +50,13 @@ Usage (API)
 -----------
 ::
 
-    from auto_round.compressors.model_free import model_free_quantize
-    model_free_quantize(
-        model_name_or_path="facebook/opt-125m",
+    from auto_round import AutoRound
+
+    AutoRound(
+        model="facebook/opt-125m",
         scheme="W4A16",
-        output_dir="./int4-125m",
-    )
+        model_free=True,
+    ).quantize_and_save("./int4-125m")
 """
 
 from __future__ import annotations
@@ -79,7 +80,48 @@ from auto_round.utils.common import compress_layer_names, to_standard_regex
 from auto_round.utils.device import clear_memory, memory_monitor
 from auto_round.utils.missing_tensors import quantize_weight_rtn, split_fused_expert_tensors
 
+# ---------------------------------------------------------------------------
+# Constants
+# ---------------------------------------------------------------------------
+
 _BLOCK_NAME_TO_IGNORE = ["shared_expert_gate.", "mlp.gate.", "embed"]
+
+# Integer WOQ preset schemes that model-free mode can produce.
+# Other presets (FP8/MX/NV/GGUF/BF16/INT8_W8A8/FPW8A16) require different
+# packing kernels not implemented by ``quantize_weight_rtn``.
+#
+# Note: ``W3A16`` (3-bit) is intentionally excluded.  3-bit packing requires
+# in_features to be padded to a multiple of pack_factor=10, which the current
+# ``quantize_weight_rtn`` implementation does not handle correctly.
+SUPPORTED_PRESET_SCHEMES: tuple[str, ...] = (
+    "W2A16",
+    "W2A16G32",
+    "W2A16G64",
+    "W4A16",
+    "W4A16_MIXED",
+    "W8A16",
+)
+
+# Allowed ``bits`` values for integer WOQ.
+# 3-bit is excluded — see note above.
+_SUPPORTED_INT_BITS: tuple[int, ...] = (2, 4, 8)
+
+# Multimodal keywords kept in full precision by default.
+_NONTEXT_KEYWORDS: tuple[str, ...] = (
+    "vision",
+    "visual",
+    "image",
+    "img",
+    "audio",
+    "speech",
+    "wav",
+    "waveform",
+)
+
+
+# ---------------------------------------------------------------------------
+# Predefined ignore-layer rules
+# ---------------------------------------------------------------------------
 
 
 def get_predefined_ignore_layers_from_config(config: dict) -> list[str]:
@@ -117,6 +159,11 @@ def get_predefined_ignore_layers_from_config(config: dict) -> list[str]:
             continue
 
     return list(dict.fromkeys(layers))
+
+
+# ---------------------------------------------------------------------------
+# I/O helpers (model resolution, shard discovery, downloads)
+# ---------------------------------------------------------------------------
 
 
 def _is_model_cached(model_name_or_path: str) -> bool:
@@ -158,7 +205,6 @@ def _list_safetensor_shards(source_dir: str) -> list[str]:
     if os.path.exists(index_file):
         with open(index_file) as f:
             index = json.load(f)
-        # Unique shards in order
         seen = set()
         shards = []
         for shard_file in index["weight_map"].values():
@@ -177,133 +223,9 @@ def _is_eligible_weight(tensor_name: str, tensor: torch.Tensor) -> bool:
     return tensor_name.endswith(".weight") and tensor.dim() == 2
 
 
-class _PatternMatcher:
-    """Precompiled pattern matcher with result caching.
-
-    Merges *ignore_patterns* and ``_BLOCK_NAME_TO_IGNORE`` into single
-    compiled regexes, precompiles ``layer_config`` regex patterns, and
-    caches all match results so that repeated lookups (common across
-    shards) are O(1) dict hits.
-    """
-
-    __slots__ = (
-        "_ignore_re",
-        "_skip_re",
-        "_layer_config",
-        "_default_scheme",
-        "_compiled_lc",
-        "_ignore_cache",
-        "_scheme_cache",
-    )
-
-    def __init__(
-        self,
-        ignore_patterns: list[str],
-        layer_config: dict[str, dict],
-        default_scheme: dict,
-    ):
-        self._default_scheme = default_scheme
-        self._layer_config = layer_config
-
-        # ---- Combined ignore regex (user-specified patterns) ----
-        self._ignore_re: re.Pattern | None = self._build_ignore_regex(ignore_patterns)
-
-        # ---- Combined skip regex (_BLOCK_NAME_TO_IGNORE) ----
-        skip_parts = [re.escape(b) for b in _BLOCK_NAME_TO_IGNORE]
-        self._skip_re: re.Pattern | None = re.compile("|".join(skip_parts)) if skip_parts else None
-
-        # ---- Precompile layer_config patterns ----
-        # Each entry: (compiled_regex | None, plain_string | None, cfg_dict)
-        # Uses to_standard_regex for consistent pattern matching with
-        # set_layer_config (auto-wrapping plain names with .* etc.)
-        self._compiled_lc: list[tuple[re.Pattern | None, str | None, dict]] = []
-        for pattern, cfg in layer_config.items():
-            try:
-                self._compiled_lc.append((re.compile(to_standard_regex(pattern)), None, cfg))
-            except re.error:
-                self._compiled_lc.append((None, pattern, cfg))
-
-        # ---- Result caches (thread-safe under CPython GIL) ----
-        self._ignore_cache: dict[str, bool] = {}
-        self._scheme_cache: dict[str, dict | None] = {}
-
-    # ---- helpers ----
-
-    @staticmethod
-    def _build_ignore_regex(patterns: list[str]) -> re.Pattern | None:
-        """Merge ignore patterns into one compiled regex.
-
-        Uses :func:`~auto_round.utils.common.to_standard_regex` so that
-        plain names are automatically wrapped with ``.*`` on both sides
-        (substring matching) and regex meta-characters in user patterns
-        are preserved — consistent with ``set_layer_config``.
-        """
-        if not patterns:
-            return None
-        parts: list[str] = []
-        for p in patterns:
-            if p.endswith("."):
-                # Pattern ending with '.' (e.g. "layer.1.") — match as prefix
-                std = to_standard_regex(p.rstrip("."))
-                # Replace trailing .* with a dot-or-end anchor so "layer.1"
-                # won't accidentally match "layer.10"
-                std = std.removesuffix(".*")
-                parts.append(f"{std}(?:\\.|$)")
-            else:
-                parts.append(to_standard_regex(p))
-        return re.compile("|".join(parts))
-
-    # ---- public API ----
-
-    def should_ignore(self, tensor_name: str) -> bool:
-        """Check user-specified ignore patterns (merged regex + cache)."""
-        cached = self._ignore_cache.get(tensor_name)
-        if cached is not None:
-            return cached
-        layer_name = tensor_name.rsplit(".", 1)[0] if "." in tensor_name else tensor_name
-        result = bool(self._ignore_re and self._ignore_re.search(layer_name))
-        self._ignore_cache[tensor_name] = result
-        return result
-
-    def should_skip(self, tensor_name: str) -> bool:
-        """Check predefined skip patterns (routing gates, embeddings, etc.)."""
-        return bool(self._skip_re and self._skip_re.search(tensor_name))
-
-    def resolve_scheme(self, tensor_name: str) -> dict | None:
-        """Resolve quantization scheme for *tensor_name* (cached).
-
-        Returns ``None`` when the layer should stay in full precision.
-        """
-        if tensor_name in self._scheme_cache:
-            return self._scheme_cache[tensor_name]
-        result = self._resolve_uncached(tensor_name)
-        self._scheme_cache[tensor_name] = result
-        return result
-
-    def _resolve_uncached(self, tensor_name: str) -> dict | None:
-        layer_name = tensor_name.rsplit(".", 1)[0] if "." in tensor_name else tensor_name
-        default = self._default_scheme
-
-        # Exact match
-        if layer_name in self._layer_config:
-            cfg = self._layer_config[layer_name]
-            if cfg.get("bits", default.get("bits", 4)) >= 16:
-                return None
-            return {**default, **cfg}
-
-        # Precompiled pattern match
-        for compiled, plain, cfg in self._compiled_lc:
-            if compiled is not None:
-                if compiled.search(layer_name):
-                    if cfg.get("bits", default.get("bits", 4)) >= 16:
-                        return None
-                    return {**default, **cfg}
-            elif plain is not None and plain in layer_name:
-                if cfg.get("bits", default.get("bits", 4)) >= 16:
-                    return None
-                return {**default, **cfg}
-
-        return default
+def _is_safetensors_shard(fname: str) -> bool:
+    """Return True if *fname* is a safetensors weight shard (not the index)."""
+    return fname.endswith(".safetensors") and not fname.endswith(".index.json")
 
 
 def _download_single_shard(
@@ -326,17 +248,11 @@ def _download_single_shard(
 
     from huggingface_hub import hf_hub_download
 
-    downloaded = hf_hub_download(
+    return hf_hub_download(
         repo_id=model_name_or_path,
         filename=shard_filename,
         local_dir=local_dir,
     )
-    return downloaded
-
-
-def _is_safetensors_shard(fname: str) -> bool:
-    """Return True if *fname* is a safetensors weight shard (not the index)."""
-    return fname.endswith(".safetensors") and not fname.endswith(".index.json")
 
 
 def _download_metadata_files(
@@ -369,6 +285,130 @@ def _download_metadata_files(
     return local_dir
 
 
+# ---------------------------------------------------------------------------
+# Pattern matcher
+# ---------------------------------------------------------------------------
+
+
+class _PatternMatcher:
+    """Precompiled pattern matcher with result caching.
+
+    Merges *ignore_patterns* and ``_BLOCK_NAME_TO_IGNORE`` into single
+    compiled regexes, precompiles ``layer_config`` regex patterns, and
+    caches all match results so that repeated lookups (common across
+    shards) are O(1) dict hits.
+    """
+
+    __slots__ = (
+        "_ignore_re",
+        "_skip_re",
+        "_layer_config",
+        "_default_scheme",
+        "_compiled_lc",
+        "_ignore_cache",
+        "_scheme_cache",
+    )
+
+    def __init__(
+        self,
+        ignore_patterns: list[str],
+        layer_config: dict[str, dict],
+        default_scheme: dict,
+    ):
+        self._default_scheme = default_scheme
+        self._layer_config = layer_config
+
+        self._ignore_re: re.Pattern | None = self._build_ignore_regex(ignore_patterns)
+
+        skip_parts = [re.escape(b) for b in _BLOCK_NAME_TO_IGNORE]
+        self._skip_re: re.Pattern | None = re.compile("|".join(skip_parts)) if skip_parts else None
+
+        # Each entry: (compiled_regex | None, plain_string | None, cfg_dict)
+        self._compiled_lc: list[tuple[re.Pattern | None, str | None, dict]] = []
+        for pattern, cfg in layer_config.items():
+            try:
+                self._compiled_lc.append((re.compile(to_standard_regex(pattern)), None, cfg))
+            except re.error:
+                self._compiled_lc.append((None, pattern, cfg))
+
+        self._ignore_cache: dict[str, bool] = {}
+        self._scheme_cache: dict[str, dict | None] = {}
+
+    @staticmethod
+    def _build_ignore_regex(patterns: list[str]) -> re.Pattern | None:
+        """Merge ignore patterns into one compiled regex.
+
+        Uses :func:`~auto_round.utils.common.to_standard_regex` so that
+        plain names are automatically wrapped with ``.*`` on both sides
+        (substring matching) and regex meta-characters in user patterns
+        are preserved — consistent with ``set_layer_config``.
+        """
+        if not patterns:
+            return None
+        parts: list[str] = []
+        for p in patterns:
+            if p.endswith("."):
+                std = to_standard_regex(p.rstrip("."))
+                std = std.removesuffix(".*")
+                parts.append(f"{std}(?:\\.|$)")
+            else:
+                parts.append(to_standard_regex(p))
+        return re.compile("|".join(parts))
+
+    def should_ignore(self, tensor_name: str) -> bool:
+        """Check user-specified ignore patterns (merged regex + cache)."""
+        cached = self._ignore_cache.get(tensor_name)
+        if cached is not None:
+            return cached
+        layer_name = tensor_name.rsplit(".", 1)[0] if "." in tensor_name else tensor_name
+        result = bool(self._ignore_re and self._ignore_re.search(layer_name))
+        self._ignore_cache[tensor_name] = result
+        return result
+
+    def should_skip(self, tensor_name: str) -> bool:
+        """Check predefined skip patterns (routing gates, embeddings, etc.)."""
+        return bool(self._skip_re and self._skip_re.search(tensor_name))
+
+    def resolve_scheme(self, tensor_name: str) -> dict | None:
+        """Resolve quantization scheme for *tensor_name* (cached).
+
+        Returns ``None`` when the layer should stay in full precision.
+        """
+        if tensor_name in self._scheme_cache:
+            return self._scheme_cache[tensor_name]
+        result = self._resolve_uncached(tensor_name)
+        self._scheme_cache[tensor_name] = result
+        return result
+
+    def _resolve_uncached(self, tensor_name: str) -> dict | None:
+        layer_name = tensor_name.rsplit(".", 1)[0] if "." in tensor_name else tensor_name
+        default = self._default_scheme
+
+        if layer_name in self._layer_config:
+            cfg = self._layer_config[layer_name]
+            if cfg.get("bits", default.get("bits", 4)) >= 16:
+                return None
+            return {**default, **cfg}
+
+        for compiled, plain, cfg in self._compiled_lc:
+            if compiled is not None:
+                if compiled.search(layer_name):
+                    if cfg.get("bits", default.get("bits", 4)) >= 16:
+                        return None
+                    return {**default, **cfg}
+            elif plain is not None and plain in layer_name:
+                if cfg.get("bits", default.get("bits", 4)) >= 16:
+                    return None
+                return {**default, **cfg}
+
+        return default
+
+
+# ---------------------------------------------------------------------------
+# Per-tensor / per-shard helpers
+# ---------------------------------------------------------------------------
+
+
 def _quantize_single_tensor(
     tensor_name: str,
     tensor: torch.Tensor,
@@ -377,19 +417,11 @@ def _quantize_single_tensor(
 ) -> tuple[str, dict[str, torch.Tensor], str | None, str | None]:
     """Quantize one eligible weight tensor and return packed outputs.
 
-    The *tensor* is expected on CPU.  When *device* is a CUDA device,
-    :func:`~auto_round.utils.missing_tensors.quantize_weight_rtn` moves it
-    to GPU for quantization and returns packed results on CPU.
-
-    Non-quantizable tensors (non-2-D, ignored, skipped, or ≥ 16-bit) are
-    returned as-is without any device transfer.
-
     Returns:
         (layer_name, output_tensors_dict, quantized_layer_or_None, ignored_layer_or_None)
     """
     layer_name = tensor_name.rsplit(".", 1)[0]
 
-    # ---- eligibility / skip checks ----
     if not _is_eligible_weight(tensor_name, tensor):
         return layer_name, {tensor_name: tensor}, None, None
 
@@ -413,9 +445,7 @@ def _quantize_single_tensor(
     if bits >= 16:
         return layer_name, {tensor_name: tensor}, None, layer_name
 
-    # ---- RTN quantization ----
     try:
-        orig_in_features = tensor.shape[1]
         qweight, qzeros, scales = quantize_weight_rtn(
             weight=tensor,
             bits=bits,
@@ -430,10 +460,6 @@ def _quantize_single_tensor(
             f"{layer_name}.scales": scales,
         }
 
-        in_features = orig_in_features
-        if in_features % group_size != 0:
-            in_features += group_size - in_features % group_size
-
         logger.debug(f"Quantized: {layer_name} (bits={bits}, group_size={group_size}, sym={sym})")
         return layer_name, out, layer_name, None
 
@@ -446,18 +472,14 @@ def _dequant_fp8_tensors(
     raw_tensors: dict[str, torch.Tensor],
     block_size: list | None = None,
 ) -> dict[str, torch.Tensor]:
-    """Dequantize FP8 weight tensors in-place and remove their scale tensors.
+    """Dequantize FP8 weight tensors and remove their scale tensors.
 
     FP8 models (e.g. DeepSeek-V3-FP8) store weights as ``float8_e4m3fn``
-    with per-block scales in ``weight_scale_inv`` tensors.  This function
-    converts them back to ``bfloat16`` so that downstream RTN quantization
-    can proceed normally.
-
-    Returns a new dict with dequantized weights and scale tensors removed.
+    with per-block scales in ``weight_scale_inv`` tensors.  This converts
+    them back to ``bfloat16`` so downstream RTN quantization can proceed.
     """
     from auto_round.utils.weight_handler import _dequant_fp8_linear_weight
 
-    # Identify FP8 weight tensors and their scales
     fp8_weight_names: list[str] = []
     for name, tensor in raw_tensors.items():
         if not name.endswith(".weight"):
@@ -493,25 +515,6 @@ def _process_shard(
 ) -> tuple[dict[str, torch.Tensor], list[str], list[str]]:
     """Quantize eligible weights in a single safetensors shard.
 
-    Loads every tensor from *shard_path*, iterates over them sequentially,
-    and delegates each to :func:`_quantize_single_tensor`.  When *device*
-    is a CUDA device the actual RTN computation happens on GPU (handled
-    inside ``quantize_weight_rtn``); all returned tensors are on CPU.
-
-    When *matcher* is provided it is used directly (preferred for
-    cross-shard cache reuse).  Otherwise a new :class:`_PatternMatcher`
-    is built from *default_scheme*, *layer_config*, and *ignore_patterns*.
-
-    Args:
-        shard_path: Path to the safetensors file.
-        default_scheme: Default quantization parameters.
-        layer_config: Per-layer overrides.
-        ignore_patterns: Layer name patterns to skip.
-        device: Computation device (``"cpu"`` or ``"cuda"``).  Passed
-            through to ``quantize_weight_rtn`` which handles the H2D
-            transfer internally.
-        matcher: Precompiled :class:`_PatternMatcher` instance.
-
     Returns:
         (output_tensors, quantized_layer_names, ignored_layer_names)
     """
@@ -531,14 +534,10 @@ def _process_shard(
     with safe_open(shard_path, framework="pt", device="cpu") as f:
         raw_tensors = {name: f.get_tensor(name) for name in f.keys()}
 
-    # Split fused expert tensors (3-D) into per-expert 2-D tensors
     raw_tensors = split_fused_expert_tensors(raw_tensors)
-
-    # Dequantize FP8 weight tensors (e.g. DeepSeek-V3-FP8) to bfloat16
     raw_tensors = _dequant_fp8_tensors(raw_tensors, block_size=fp8_block_size)
 
-    tensor_names = list(raw_tensors.keys())
-    for tensor_name in tensor_names:
+    for tensor_name in list(raw_tensors.keys()):
         tensor = raw_tensors.pop(tensor_name)
         _layer_name, out_dict, q_layer, ig_layer = _quantize_single_tensor(
             tensor_name,
@@ -553,6 +552,11 @@ def _process_shard(
             ignored_layers.append(ig_layer)
 
     return output_tensors, quantized_layers, ignored_layers
+
+
+# ---------------------------------------------------------------------------
+# Output writers
+# ---------------------------------------------------------------------------
 
 
 def _build_quantization_config(
@@ -583,13 +587,11 @@ def _build_quantization_config(
     if block_name_to_quantize:
         qconfig["block_name_to_quantize"] = block_name_to_quantize
 
-    # Build extra_config for layers with non-default settings
     extra_config = {}
     for layer_name, cfg in layer_config.items():
         if cfg.get("bits", default_scheme["bits"]) >= 16:
             extra_config[layer_name] = {k: cfg.get(k) for k in scheme_keys if cfg.get(k) is not None}
             continue
-        # Check if config differs from default
         differs = False
         for key in ("bits", "group_size", "sym"):
             if cfg.get(key) is not None and cfg[key] != default_scheme.get(key):
@@ -598,14 +600,10 @@ def _build_quantization_config(
         if differs:
             extra_config[layer_name] = {k: cfg.get(k) for k in scheme_keys if cfg.get(k) is not None}
 
-    # Add ignored layers to extra_config
     unique_ignored = list(dict.fromkeys(ignored_layers))
     for layer_name in unique_ignored:
         if layer_name not in extra_config:
-            extra_config[layer_name] = {
-                "bits": 16,
-                "data_type": "float",
-            }
+            extra_config[layer_name] = {"bits": 16, "data_type": "float"}
 
     if extra_config:
         qconfig["extra_config"] = extra_config
@@ -630,9 +628,8 @@ def _write_output_shard(
 
 
 def _write_index_file(output_dir: str, weight_map: dict[str, str]):
-    """Write model.safetensors.index.json."""
+    """Write model.safetensors.index.json (or rename single shard)."""
     if len(set(weight_map.values())) <= 1:
-        # Single shard – rename to model.safetensors if needed
         shard_names = list(set(weight_map.values()))
         if shard_names and shard_names[0] != "model.safetensors":
             src = os.path.join(output_dir, shard_names[0])
@@ -642,12 +639,8 @@ def _write_index_file(output_dir: str, weight_map: dict[str, str]):
             weight_map = {k: "model.safetensors" for k in weight_map}
         return
 
-    index = {
-        "metadata": {"total_size": 0},
-        "weight_map": weight_map,
-    }
-    index_path = os.path.join(output_dir, "model.safetensors.index.json")
-    with open(index_path, "w") as f:
+    index = {"metadata": {"total_size": 0}, "weight_map": weight_map}
+    with open(os.path.join(output_dir, "model.safetensors.index.json"), "w") as f:
         json.dump(index, f, indent=2)
 
 
@@ -658,11 +651,7 @@ def _prefetch_shard(
     source_dir: str,
     streaming: bool,
 ) -> str | None:
-    """Return the local path of the next shard (download if needed).
-
-    Runs in a background thread so the I/O overlaps with quantization
-    of the current shard.
-    """
+    """Return the local path of the next shard (download if needed)."""
     try:
         if streaming:
             return _download_single_shard(model_name_or_path, shard_name, work_dir)
@@ -673,356 +662,589 @@ def _prefetch_shard(
         return None
 
 
-def model_free_quantize(
-    model_name_or_path: str,
-    output_dir: str,
-    scheme: Union[str, QuantizationScheme] = "W4A16",
-    layer_config: Optional[dict] = None,
-    ignore_layers: str = "",
-    format: str = "auto_round",
-    device: str = "cpu",
-    quant_lm_head: bool = False,
-    quant_nontext_module: bool = False,
-) -> str:
-    """Perform model-free RTN quantization.
+# ---------------------------------------------------------------------------
+# Scheme validation
+# ---------------------------------------------------------------------------
 
-    Reads safetensors shards, applies RTN quantization to each eligible
-    ``nn.Linear`` weight tensor, and saves the packed model in auto-round
-    format.  No model object is loaded — only ``config.json`` and the
-    safetensors files are needed.
 
-    The function automatically decides the I/O strategy:
+def _normalize_scheme(scheme: Union[str, QuantizationScheme]) -> QuantizationScheme:
+    """Convert *scheme* to a :class:`QuantizationScheme` instance.
 
-    * If the model is already available locally (a directory path or
-      previously cached by ``huggingface_hub``), all shards are read
-      directly from disk.
-    * Otherwise, shards are downloaded one at a time and deleted after
-      quantization to minimise disk usage.
+    Raises ``ValueError`` for unknown preset names and ``TypeError`` for
+    unsupported types.
+    """
+    if isinstance(scheme, str):
+        scheme_name = scheme.upper()
+        if scheme_name not in PRESET_SCHEMES:
+            raise ValueError(f"Unknown scheme '{scheme}'. Available: {list(PRESET_SCHEMES.keys())}")
+        return preset_name_to_scheme(scheme_name)
+    if isinstance(scheme, QuantizationScheme):
+        return scheme
+    raise TypeError(f"Unsupported scheme type: {type(scheme)}")
 
-    When ``device="cuda"``, each weight tensor is sent to GPU for
-    quantization; the packed results are always returned on CPU.
+
+def _validate_supported_scheme(
+    scheme_obj: QuantizationScheme,
+    scheme_input: Union[str, QuantizationScheme],
+) -> None:
+    """Raise ``ValueError`` if *scheme_obj* is not supported by model-free.
+
+    Model-free only supports integer weight-only quantization (sym/asym),
+    packed in the ``auto_round:auto_gptq`` format.
+    """
+    act_bits = scheme_obj.act_bits if scheme_obj.act_bits is not None else 16
+    if act_bits < 16:
+        raise ValueError(
+            f"Model-free mode only supports weight-only quantization (WOQ) schemes "
+            f"where act_bits >= 16, but '{scheme_input}' has act_bits={act_bits}. "
+            f"Supported preset schemes: {list(SUPPORTED_PRESET_SCHEMES)}."
+        )
+
+    data_type = (scheme_obj.data_type or "int").lower()
+    if data_type != "int":
+        raise ValueError(
+            f"Model-free mode only supports integer weight quantization "
+            f"(data_type='int'), but '{scheme_input}' has data_type='{data_type}'. "
+            f"FP8 / MXFP / NVFP / GGUF / BF16 schemes require the standard "
+            f"AutoRound flow.  Supported preset schemes: "
+            f"{list(SUPPORTED_PRESET_SCHEMES)}."
+        )
+
+    bits = scheme_obj.bits
+    if bits is None or bits not in _SUPPORTED_INT_BITS:
+        raise ValueError(
+            f"Model-free mode supports bits in {_SUPPORTED_INT_BITS}, "
+            f"but '{scheme_input}' requests bits={bits}. "
+            f"Supported preset schemes: {list(SUPPORTED_PRESET_SCHEMES)}."
+        )
+
+
+def is_model_free_supported_scheme(scheme: Union[str, QuantizationScheme]) -> bool:
+    """Return True if *scheme* can be quantized via model-free mode.
+
+    Useful for CLI auto-routing logic.  Never raises.
+    """
+    try:
+        scheme_obj = _normalize_scheme(scheme)
+        _validate_supported_scheme(scheme_obj, scheme)
+        return True
+    except (ValueError, TypeError):
+        return False
+
+
+# ---------------------------------------------------------------------------
+# Main class
+# ---------------------------------------------------------------------------
+
+
+class _ModelFreeQuantizerCore:
+    """Class-based driver for model-free RTN quantization.
+
+    The lifecycle is:
+
+    1. ``__init__`` — store user inputs.
+    2. :meth:`run` — perform validation, IO, quantization and writing.
+
+    Internal helpers are split into focused methods so that the flow is
+    readable end-to-end.
 
     Args:
         model_name_or_path: HuggingFace model ID or local directory path.
         output_dir: Directory to save the quantized model.
         scheme: Quantization scheme name (e.g. ``"W4A16"``) or a
-            :class:`~auto_round.schemes.QuantizationScheme` instance.
-        layer_config: Per-layer quantization overrides.  Keys are layer names
-            or regex patterns; values are dicts with ``bits``, ``group_size``,
-            ``sym``, etc.
-        ignore_layers: Comma-separated list of layer name patterns to keep in
-            full precision.
-        format: Output format (only ``"auto_round"`` is supported in
-            model-free mode).
-        device: Device for quantization computation (``"cpu"`` or ``"cuda"``).
+            :class:`QuantizationScheme` instance.
+        layer_config: Per-layer quantization overrides.  Keys are layer
+            names or regex patterns; values are dicts with ``bits``,
+            ``group_size``, ``sym`` etc.
+        ignore_layers: Comma-separated list of layer name patterns to keep
+            in full precision.
+        format: Output format (only ``"auto_round"`` is supported).
+        device: Device for quantization computation (``"cpu"`` or
+            ``"cuda"``).
         quant_lm_head: If True, quantize ``lm_head`` as well.  By default
-            ``lm_head`` and any layer containing ``embed`` are kept in full
-            precision.
-        quant_nontext_module: If True, quantize non-text modules (vision,
-            audio, image components) as well.  By default these multimodal
+            ``lm_head`` and any layer containing ``embed`` are kept in
+            full precision.
+        quant_nontext_module: If True, quantize non-text modules
+            (vision/audio/image) as well.  By default these multimodal
             modules are kept in full precision.
-
-    Returns:
-        Path to the output directory.
     """
-    # ---- Validate format ----
-    supported_formats = ("auto_round",)
-    format_lower = format.lower().replace(" ", "").split(",")[0]
-    if format_lower not in supported_formats:
-        raise ValueError(
-            f"Model-free mode only supports {supported_formats} format, got '{format}'. "
-            f"Please use --format auto_round."
-        )
 
-    # ---- Parse scheme ----
-    if isinstance(scheme, str):
-        scheme_name = scheme.upper()
-        if scheme_name not in PRESET_SCHEMES:
-            raise ValueError(f"Unknown scheme '{scheme}'. Available: {list(PRESET_SCHEMES.keys())}")
-        scheme_obj = preset_name_to_scheme(scheme_name)
-    elif isinstance(scheme, QuantizationScheme):
-        scheme_obj = scheme
-    else:
-        raise TypeError(f"Unsupported scheme type: {type(scheme)}")
+    SUPPORTED_FORMATS: tuple[str, ...] = ("auto_round",)
 
-    # ---- Validate WOQ (weight-only quantization) ----
-    act_bits = scheme_obj.act_bits if scheme_obj.act_bits is not None else 16
-    if act_bits < 16:
-        raise ValueError(
-            f"Model-free mode only supports weight-only quantization (WOQ) schemes "
-            f"where act_bits >= 16, but '{scheme}' has act_bits={act_bits}. "
-            f"Supported schemes include: W4A16, W2A16, W3A16, W8A16, etc."
-        )
+    def __init__(
+        self,
+        model_name_or_path: str,
+        output_dir: str,
+        scheme: Union[str, QuantizationScheme] = "W4A16",
+        layer_config: Optional[dict] = None,
+        ignore_layers: str = "",
+        format: str = "auto_round",
+        device: str = "cpu",
+        quant_lm_head: bool = False,
+        quant_nontext_module: bool = False,
+    ):
+        # --- raw inputs ---
+        self.model_name_or_path = model_name_or_path
+        self.output_dir = output_dir
+        self.scheme_input = scheme
+        self.layer_config_input = layer_config
+        self.ignore_layers_input = ignore_layers
+        self.format = format
+        self.device = device
+        self.quant_lm_head = quant_lm_head
+        self.quant_nontext_module = quant_nontext_module
 
-    default_scheme = asdict(scheme_obj)
-    default_scheme = {k: v for k, v in default_scheme.items() if v is not None}
+        # --- derived state populated during run() ---
+        self.scheme_obj: QuantizationScheme | None = None
+        self.default_scheme: dict = {}
+        self.layer_config: dict = {}
+        self.ignore_patterns: list[str] = []
+        self.matcher: _PatternMatcher | None = None
+        self.config: dict = {}
+        self.fp8_block_size: list | None = None
+        self.is_streaming: bool = False
+        self.work_dir: str = ""
+        self.source_dir: str = ""
+        self.shard_names: list[str] = []
+        self.all_quantized_layers: list[str] = []
+        self.all_ignored_layers: list[str] = []
+        self.output_weight_map: dict[str, str] = {}
 
-    # ---- Parse layer_config ----
-    layer_config = copy.deepcopy(layer_config) if layer_config else {}
-    # Normalize layer_config keys: append '.' to names ending with a digit
-    # to avoid partial matches (e.g. "layer.1" matching "layer.10")
-    for key in list(layer_config.keys()):
-        if key and key[-1].isdigit():
-            layer_config[key + "."] = layer_config.pop(key)
+    # -------------------------------------------------------------------
+    # Validation / parsing
+    # -------------------------------------------------------------------
 
-    # Normalize layer_config values
-    for key, val in list(layer_config.items()):
-        if isinstance(val, str):
-            parsed = asdict(preset_name_to_scheme(val.upper()))
-            layer_config[key] = {k: v for k, v in parsed.items() if v is not None}
-        elif isinstance(val, QuantizationScheme):
-            layer_config[key] = {k: v for k, v in asdict(val).items() if v is not None}
-        elif isinstance(val, dict):
-            pass  # already a dict
-        else:
-            raise TypeError(f"Unsupported layer_config value type for '{key}': {type(val)}")
+    def _validate_format(self) -> None:
+        format_lower = self.format.lower().replace(" ", "").split(",")[0]
+        if format_lower not in self.SUPPORTED_FORMATS:
+            raise ValueError(
+                f"Model-free mode only supports {self.SUPPORTED_FORMATS} format, "
+                f"got '{self.format}'. Please use --format auto_round."
+            )
 
-    # ---- Parse ignore_layers ----
-    ignore_patterns: list[str] = []
-    if ignore_layers:
-        ignore_patterns = [p.strip() for p in ignore_layers.replace(" ", "").split(",") if p.strip()]
-        # Append '.' to names ending with a digit to avoid partial matches
-        # e.g. "layer.1" -> "layer.1." so it won't match "layer.10", "layer.11", etc.
-        ignore_patterns = [p + "." if p and p[-1].isdigit() else p for p in ignore_patterns]
+    def _parse_scheme(self) -> None:
+        self.scheme_obj = _normalize_scheme(self.scheme_input)
+        _validate_supported_scheme(self.scheme_obj, self.scheme_input)
+        ds = asdict(self.scheme_obj)
+        self.default_scheme = {k: v for k, v in ds.items() if v is not None}
 
-    # By default keep lm_head in full precision; embed layers are always
-    # skipped via _BLOCK_NAME_TO_IGNORE regardless of quant_lm_head
-    if not quant_lm_head:
-        if "lm_head" not in ignore_patterns:
+    def _parse_layer_config(self) -> None:
+        lc = copy.deepcopy(self.layer_config_input) if self.layer_config_input else {}
+
+        # Append '.' to keys ending with a digit to avoid partial numeric matches.
+        for key in list(lc.keys()):
+            if key and key[-1].isdigit():
+                lc[key + "."] = lc.pop(key)
+
+        # Normalize values to dicts.
+        for key, val in list(lc.items()):
+            if isinstance(val, str):
+                parsed = asdict(preset_name_to_scheme(val.upper()))
+                lc[key] = {k: v for k, v in parsed.items() if v is not None}
+            elif isinstance(val, QuantizationScheme):
+                lc[key] = {k: v for k, v in asdict(val).items() if v is not None}
+            elif isinstance(val, dict):
+                pass
+            else:
+                raise TypeError(f"Unsupported layer_config value type for '{key}': {type(val)}")
+
+        self.layer_config = lc
+
+    def _build_ignore_patterns(self) -> None:
+        ignore_patterns: list[str] = []
+        if self.ignore_layers_input:
+            ignore_patterns = [p.strip() for p in self.ignore_layers_input.replace(" ", "").split(",") if p.strip()]
+            ignore_patterns = [p + "." if p and p[-1].isdigit() else p for p in ignore_patterns]
+
+        if not self.quant_lm_head and "lm_head" not in ignore_patterns:
             ignore_patterns.append("lm_head")
 
-    # By default keep non-text modules (vision/audio/image) in full precision,
-    # consistent with get_block_names(..., quant_vision=False) behaviour.
-    if not quant_nontext_module:
-        _nontext_keywords = ("vision", "visual", "image", "img", "audio", "speech", "wav", "waveform")
-        for kw in _nontext_keywords:
-            if kw not in ignore_patterns:
-                ignore_patterns.append(kw)
+        if not self.quant_nontext_module:
+            for kw in _NONTEXT_KEYWORDS:
+                if kw not in ignore_patterns:
+                    ignore_patterns.append(kw)
 
-    # ---- Setup output directory ----
-    os.makedirs(output_dir, exist_ok=True)
+        self.ignore_patterns = ignore_patterns
 
-    # ---- Decide I/O strategy ----
-    # If the model is already local or in HF cache, read directly;
-    # otherwise download one shard at a time to save disk.
-    is_streaming = not _is_model_cached(model_name_or_path)
-    if is_streaming:
-        logger.info("Model not found locally or in cache — using streaming download mode.")
+    # -------------------------------------------------------------------
+    # Source resolution and discovery
+    # -------------------------------------------------------------------
 
-    # ---- Resolve source and load config ----
-    work_dir: str = ""
-    source_dir: str = ""
-    if is_streaming:
-        # Download only metadata first
-        work_dir = os.path.join(envs.AR_WORK_SPACE, "_model_free_tmp")
-        _download_metadata_files(model_name_or_path, work_dir)
-        config = _load_config(work_dir)
-    else:
-        source_dir = _resolve_source_dir(model_name_or_path)
-        config = _load_config(source_dir)
-
-    # ---- Get predefined ignore layers from config ----
-    predefined_ignore = get_predefined_ignore_layers_from_config(config)
-    if predefined_ignore:
-        compressed = compress_layer_names(predefined_ignore)
-        logger.info(f"Using predefined ignore_layers from config: {compressed}")
-        ignore_patterns.extend(predefined_ignore)
-
-    # ---- Build precompiled pattern matcher (shared across all shards) ----
-    matcher = _PatternMatcher(ignore_patterns, layer_config, default_scheme)
-
-    # ---- Detect FP8 source model (e.g. DeepSeek-V3-FP8) ----
-    fp8_block_size = None
-    quant_config = config.get("quantization_config", {})
-    if quant_config.get("quant_method") == "fp8" or quant_config.get("quantization_type") == "fp8":
-        fp8_block_size = quant_config.get("weight_block_size")
-        logger.info(
-            f"Detected FP8 source model (block_size={fp8_block_size}). "
-            f"FP8 weights will be dequantized before quantization."
-        )
-
-    # Discover shards
-    if is_streaming:
-        # Get shard list from index file or by checking the repo
-        index_file = os.path.join(work_dir, "model.safetensors.index.json")
-        if os.path.exists(index_file):
-            with open(index_file) as f:
-                index_data = json.load(f)
-            seen = set()
-            shard_names = []
-            for shard_file in index_data["weight_map"].values():
-                if shard_file not in seen:
-                    seen.add(shard_file)
-                    shard_names.append(shard_file)
+    def _resolve_source(self) -> None:
+        os.makedirs(self.output_dir, exist_ok=True)
+        self.is_streaming = not _is_model_cached(self.model_name_or_path)
+        if self.is_streaming:
+            logger.info("Model not found locally or in cache — using streaming download mode.")
+            self.work_dir = os.path.join(envs.AR_WORK_SPACE, "_model_free_tmp")
+            _download_metadata_files(self.model_name_or_path, self.work_dir)
+            self.config = _load_config(self.work_dir)
         else:
-            shard_names = ["model.safetensors"]
-    else:
-        shard_names = _list_safetensor_shards(source_dir)
+            self.source_dir = _resolve_source_dir(self.model_name_or_path)
+            self.config = _load_config(self.source_dir)
 
-    logger.info(
-        f"Model-free quantization: {model_name_or_path}\n"
-        f"  Scheme: {scheme_obj}\n"
-        f"  Output: {output_dir}\n"
-        f"  Shards: {len(shard_names)}\n"
-        f"  Streaming download: {is_streaming}\n"
-        f"  Quant lm_head: {quant_lm_head}\n"
-        f"  Quant nontext module: {quant_nontext_module}\n"
-        f"  Device: {device}"
-    )
+    def _apply_predefined_ignore_layers(self) -> None:
+        predefined = get_predefined_ignore_layers_from_config(self.config)
+        if predefined:
+            logger.info(f"Using predefined ignore_layers from config: " f"{compress_layer_names(predefined)}")
+            self.ignore_patterns.extend(predefined)
 
-    # ---- Process each shard ----
-    all_quantized_layers: list[str] = []
-    all_ignored_layers: list[str] = []
-    output_weight_map: dict[str, str] = {}
+    def _detect_fp8_source(self) -> None:
+        quant_config = self.config.get("quantization_config", {})
+        if quant_config.get("quant_method") == "fp8" or quant_config.get("quantization_type") == "fp8":
+            self.fp8_block_size = quant_config.get("weight_block_size")
+            logger.info(
+                f"Detected FP8 source model (block_size={self.fp8_block_size}). "
+                f"FP8 weights will be dequantized before quantization."
+            )
 
-    start_time = time.time()
-    memory_monitor.reset()
+    def _discover_shards(self) -> None:
+        if self.is_streaming:
+            index_file = os.path.join(self.work_dir, "model.safetensors.index.json")
+            if os.path.exists(index_file):
+                with open(index_file) as f:
+                    index_data = json.load(f)
+                seen, names = set(), []
+                for shard_file in index_data["weight_map"].values():
+                    if shard_file not in seen:
+                        seen.add(shard_file)
+                        names.append(shard_file)
+                self.shard_names = names
+            else:
+                self.shard_names = ["model.safetensors"]
+        else:
+            self.shard_names = _list_safetensor_shards(self.source_dir)
 
-    try:
-        from tqdm import tqdm as _tqdm
-    except ImportError:
-        _tqdm = None
-
-    # ---- I/O pipeline: prefetch next shard while quantizing current ----
-    prefetch_pool = ThreadPoolExecutor(max_workers=1)
-    write_pool = ThreadPoolExecutor(max_workers=1)
-    prefetch_future = None
-    write_future = None
-
-    # Kick off prefetch of the very first shard
-    if shard_names:
-        prefetch_future = prefetch_pool.submit(
-            _prefetch_shard,
-            model_name_or_path,
-            shard_names[0],
-            work_dir,
-            source_dir,
-            is_streaming,
+    def _build_matcher(self) -> None:
+        self.matcher = _PatternMatcher(
+            self.ignore_patterns,
+            self.layer_config,
+            self.default_scheme,
         )
 
-    shard_iter = (
-        _tqdm(enumerate(shard_names), total=len(shard_names), desc="Processing shards", unit="shard")
-        if _tqdm
-        else enumerate(shard_names)
-    )
+    # -------------------------------------------------------------------
+    # Shard processing pipeline
+    # -------------------------------------------------------------------
 
-    for shard_idx, shard_name in shard_iter:
-        # Wait for the prefetched shard path
-        shard_path = prefetch_future.result() if prefetch_future else None
+    def _process_all_shards(self) -> None:
+        try:
+            from tqdm import tqdm as _tqdm
+        except ImportError:
+            _tqdm = None
 
-        # Kick off prefetch of the *next* shard immediately
-        if shard_idx + 1 < len(shard_names):
+        prefetch_pool = ThreadPoolExecutor(max_workers=1)
+        write_pool = ThreadPoolExecutor(max_workers=1)
+        prefetch_future = None
+        write_future = None
+
+        if self.shard_names:
             prefetch_future = prefetch_pool.submit(
                 _prefetch_shard,
-                model_name_or_path,
-                shard_names[shard_idx + 1],
-                work_dir,
-                source_dir,
-                is_streaming,
+                self.model_name_or_path,
+                self.shard_names[0],
+                self.work_dir,
+                self.source_dir,
+                self.is_streaming,
             )
-        else:
-            prefetch_future = None
 
-        if shard_path is None or not os.path.exists(shard_path):
-            logger.warning(f"Shard not found: {shard_name}, skipping")
-            continue
-
-        output_tensors, quantized, ignored = _process_shard(
-            shard_path=shard_path,
-            device=device,
-            matcher=matcher,
-            fp8_block_size=fp8_block_size,
+        shard_iter = (
+            _tqdm(
+                enumerate(self.shard_names),
+                total=len(self.shard_names),
+                desc="Processing shards",
+                unit="shard",
+            )
+            if _tqdm
+            else enumerate(self.shard_names)
         )
-        memory_monitor.update()
-        clear_memory()
-        if len(shard_names) > 1:
-            mem_summary = memory_monitor.get_summary()
-            logger.info(f"Memory usage: {mem_summary}")
 
-        all_quantized_layers.extend(quantized)
-        all_ignored_layers.extend(ignored)
+        for shard_idx, shard_name in shard_iter:
+            shard_path = prefetch_future.result() if prefetch_future else None
 
-        # Wait for previous async write before starting a new one
+            # Kick off prefetch of the next shard.
+            if shard_idx + 1 < len(self.shard_names):
+                prefetch_future = prefetch_pool.submit(
+                    _prefetch_shard,
+                    self.model_name_or_path,
+                    self.shard_names[shard_idx + 1],
+                    self.work_dir,
+                    self.source_dir,
+                    self.is_streaming,
+                )
+            else:
+                prefetch_future = None
+
+            if shard_path is None or not os.path.exists(shard_path):
+                logger.warning(f"Shard not found: {shard_name}, skipping")
+                continue
+
+            output_tensors, quantized, ignored = _process_shard(
+                shard_path=shard_path,
+                device=self.device,
+                matcher=self.matcher,
+                fp8_block_size=self.fp8_block_size,
+            )
+            memory_monitor.update()
+            clear_memory()
+            if len(self.shard_names) > 1:
+                logger.info(f"Memory usage: {memory_monitor.get_summary()}")
+
+            self.all_quantized_layers.extend(quantized)
+            self.all_ignored_layers.extend(ignored)
+
+            if write_future is not None:
+                write_future.result()
+
+            out_shard_name = f"model-{shard_idx + 1:05d}-of-{len(self.shard_names):05d}.safetensors"
+            write_future = write_pool.submit(
+                _write_output_shard,
+                self.output_dir,
+                out_shard_name,
+                output_tensors,
+                self.output_weight_map,
+            )
+
+            if self.is_streaming:
+                try:
+                    os.remove(shard_path)
+                    logger.debug(f"Deleted source shard: {shard_path}")
+                except OSError as e:
+                    logger.warning(f"Could not delete source shard {shard_path}: {e}")
+
+        prefetch_pool.shutdown(wait=False)
         if write_future is not None:
             write_future.result()
+        write_pool.shutdown(wait=True)
 
-        out_shard_name = f"model-{shard_idx + 1:05d}-of-{len(shard_names):05d}.safetensors"
-        write_future = write_pool.submit(
-            _write_output_shard, output_dir, out_shard_name, output_tensors, output_weight_map
+    # -------------------------------------------------------------------
+    # Output
+    # -------------------------------------------------------------------
+
+    def _write_index(self) -> None:
+        _write_index_file(self.output_dir, self.output_weight_map)
+
+    def _write_config_files(self) -> None:
+        quantization_config = _build_quantization_config(
+            default_scheme=self.default_scheme,
+            layer_config=self.layer_config,
+            ignore_patterns=self.ignore_patterns,
+            quantized_layers=self.all_quantized_layers,
+            ignored_layers=self.all_ignored_layers,
         )
 
-        # In streaming mode, delete the source shard to save disk space
-        if is_streaming:
-            try:
-                os.remove(shard_path)
-                logger.debug(f"Deleted source shard: {shard_path}")
-            except OSError as e:
-                logger.warning(f"Could not delete source shard {shard_path}: {e}")
+        self.config["quantization_config"] = quantization_config
+        with open(os.path.join(self.output_dir, "config.json"), "w") as f:
+            json.dump(self.config, f, indent=2)
 
-    prefetch_pool.shutdown(wait=False)
+        with open(os.path.join(self.output_dir, "quantization_config.json"), "w") as f:
+            json.dump(quantization_config, f, indent=2)
 
-    # Wait for the last async write to complete
-    if write_future is not None:
-        write_future.result()
-    write_pool.shutdown(wait=True)
+    def _copy_metadata_files(self) -> None:
+        copy_src_dir = self.work_dir if self.is_streaming else self.source_dir
+        for fname in os.listdir(copy_src_dir):
+            if _is_safetensors_shard(fname):
+                continue
+            src = os.path.join(copy_src_dir, fname)
+            dst = os.path.join(self.output_dir, fname)
+            if os.path.isdir(src):
+                if not os.path.exists(dst):
+                    shutil.copytree(src, dst)
+            elif os.path.isfile(src) and not os.path.exists(dst):
+                shutil.copy2(src, dst)
 
-    # ---- Write index file ----
-    _write_index_file(output_dir, output_weight_map)
+        if self.is_streaming:
+            shutil.rmtree(self.work_dir, ignore_errors=True)
 
-    # ---- Write config.json ----
-    quantization_config = _build_quantization_config(
-        default_scheme=default_scheme,
-        layer_config=layer_config,
-        ignore_patterns=ignore_patterns,
-        quantized_layers=all_quantized_layers,
-        ignored_layers=all_ignored_layers,
-    )
+    def _log_summary(self, total_time: float) -> None:
+        compressed_quantized = compress_layer_names(self.all_quantized_layers)
+        compressed_ignored = compress_layer_names(list(dict.fromkeys(self.all_ignored_layers)))
+        logger.info(
+            f"\nModel-free quantization complete.\n"
+            f"  Output directory: {self.output_dir}\n"
+            f"  Total time: {total_time:.2f} seconds\n"
+            f"  Memory usage: {memory_monitor.get_summary()}\n"
+            f"  Quantized layers ({len(self.all_quantized_layers)}): "
+            f"{compressed_quantized}\n"
+            f"  Ignored layers ({len(set(self.all_ignored_layers))}): "
+            f"{compressed_ignored}\n"
+        )
 
-    # Copy and update config.json
-    config["quantization_config"] = quantization_config
-    config_path = os.path.join(output_dir, "config.json")
-    with open(config_path, "w") as f:
-        json.dump(config, f, indent=2)
+    # -------------------------------------------------------------------
+    # Public entry point
+    # -------------------------------------------------------------------
 
-    # Write standalone quantization_config.json
-    qconfig_path = os.path.join(output_dir, "quantization_config.json")
-    with open(qconfig_path, "w") as f:
-        json.dump(quantization_config, f, indent=2)
+    def run(self) -> str:
+        """Execute the full model-free quantization pipeline.
 
-    # ---- Copy non-safetensors files (tokenizer, config, modeling code, etc.) ----
-    copy_src_dir = work_dir if is_streaming else source_dir
-    for fname in os.listdir(copy_src_dir):
-        if _is_safetensors_shard(fname):
-            continue
-        src = os.path.join(copy_src_dir, fname)
-        dst = os.path.join(output_dir, fname)
-        if os.path.isdir(src):
-            if not os.path.exists(dst):
-                shutil.copytree(src, dst)
-        elif os.path.isfile(src) and not os.path.exists(dst):
-            shutil.copy2(src, dst)
+        Returns:
+            Absolute path to the output directory.
+        """
+        # ---- preflight ----
+        self._validate_format()
+        self._parse_scheme()
+        self._parse_layer_config()
+        self._build_ignore_patterns()
 
-    if is_streaming:
-        # Clean up temp dir
-        try:
-            shutil.rmtree(work_dir)
-        except OSError:
-            pass
+        # ---- source resolution ----
+        self._resolve_source()
+        self._apply_predefined_ignore_layers()
+        self._build_matcher()
+        self._detect_fp8_source()
+        self._discover_shards()
 
-    end_time = time.time()
-    total_time = end_time - start_time
-    # ---- Summary ----
-    compressed_quantized = compress_layer_names(all_quantized_layers)
-    compressed_ignored = compress_layer_names(list(dict.fromkeys(all_ignored_layers)))
-    mem_summary = memory_monitor.get_summary()
-    logger.info(
-        f"\nModel-free quantization complete.\n"
-        f"  Output directory: {output_dir}\n"
-        f"  Total time: {total_time:.2f} seconds\n"
-        f"  Memory usage: {mem_summary}\n"
-        f"  Quantized layers ({len(all_quantized_layers)}): {compressed_quantized}\n"
-        f"  Ignored layers ({len(set(all_ignored_layers))}): {compressed_ignored}\n"
-    )
-    shutil.rmtree(work_dir, ignore_errors=True)
+        logger.info(
+            f"Model-free quantization: {self.model_name_or_path}\n"
+            f"  Scheme: {self.scheme_obj}\n"
+            f"  Output: {self.output_dir}\n"
+            f"  Shards: {len(self.shard_names)}\n"
+            f"  Streaming download: {self.is_streaming}\n"
+            f"  Quant lm_head: {self.quant_lm_head}\n"
+            f"  Quant nontext module: {self.quant_nontext_module}\n"
+            f"  Device: {self.device}"
+        )
 
-    return output_dir
+        start_time = time.time()
+        memory_monitor.reset()
+
+        # ---- main loop ----
+        self._process_all_shards()
+
+        # ---- write outputs ----
+        self._write_index()
+        self._write_config_files()
+        self._copy_metadata_files()
+
+        self._log_summary(time.time() - start_time)
+        return self.output_dir
+
+
+# ---------------------------------------------------------------------------
+# AutoRound-compatible compressor: ModelFreeQuantizer doubles as the
+# compressor object returned by AutoRound.__new__ when model-free mode is
+# selected.  It owns both the quantization pipeline (run()) AND the
+# AutoRound-facing interface (quantize_and_save()).
+# ---------------------------------------------------------------------------
+
+
+class ModelFreeQuantizer(_ModelFreeQuantizerCore):
+    """Model-free RTN quantizer that also acts as an AutoRound compressor.
+
+    When constructed via ``AutoRound(model_free=True, ...)`` the instance is
+    returned directly from ``AutoRound.__new__``.  The caller then invokes
+    :meth:`quantize_and_save` exactly as they would on any other compressor.
+
+    When used as a pure-quantization driver (CLI / functional API) call
+    :meth:`run` instead.
+
+    Args:
+        model_name_or_path: HuggingFace model ID or local directory path.
+            In the AutoRound compressor role this is the ``model`` argument.
+        output_dir: Where to write the quantized model.  May be ``None``
+            when used as a compressor (output_dir is passed to
+            :meth:`quantize_and_save` later).
+        scheme: Quantization scheme name or :class:`QuantizationScheme`.
+        layer_config: Per-layer overrides.
+        ignore_layers: Comma-separated layer name patterns to skip.
+        format: Output format (only ``"auto_round"`` is supported).
+        device: Compute device.
+        quant_lm_head: Whether to quantize ``lm_head``.
+        quant_nontext_module: Whether to quantize non-text modules.
+        **kwargs: When called from ``AutoRound.__new__`` the full AutoRound
+            kwargs are forwarded here.  Unknown kwargs are silently ignored
+            so that calibration-only parameters (``nsamples``, ``iters``,
+            ``dataset``, …) do not cause errors.
+    """
+
+    def __init__(
+        self,
+        model_name_or_path: str,
+        output_dir: Optional[str] = None,
+        scheme: Union[str, QuantizationScheme] = "W4A16",
+        layer_config: Optional[dict] = None,
+        ignore_layers: str = "",
+        format: str = "auto_round",
+        device: str = "cpu",
+        quant_lm_head: bool = False,
+        quant_nontext_module: bool = False,
+        # --- AutoRound compressor-role aliases ---
+        tokenizer=None,
+        device_map=None,
+        **kwargs,
+    ):
+        import copy
+        from dataclasses import fields as dc_fields
+
+        # Collect per-field scheme overrides forwarded from AutoRound
+        # (e.g. bits=4, sym=False passed as individual kwargs).
+        self.user_scheme_overrides: dict = {}
+        for field in dc_fields(QuantizationScheme):
+            if field.name in kwargs:
+                val = kwargs.pop(field.name)
+                if val is not None:
+                    self.user_scheme_overrides[field.name] = val
+
+        # Resolve device: AutoRound passes device_map; the core API uses device.
+        if device_map is not None:
+            from auto_round.utils import detect_device
+
+            device = detect_device(device_map)
+
+        # Initialise the core quantizer
+        super().__init__(
+            model_name_or_path=model_name_or_path,
+            output_dir=output_dir or "tmp_autoround",
+            scheme=scheme,
+            layer_config=layer_config,
+            ignore_layers=ignore_layers,
+            format=format,
+            device=device,
+            quant_lm_head=quant_lm_head,
+            quant_nontext_module=quant_nontext_module,
+        )
+
+        # Compressor-role state (mirrors BaseCompressor attributes used by
+        # AutoRound's post-processing code)
+        self._output_dir_override: Optional[str] = None  # set by quantize_and_save
+        self.model = None
+        self.tokenizer = tokenizer
+        self.model_free = True
+        self.model_free_path = model_name_or_path
+        self.iters = 0
+        self.disable_opt_rtn = True
+        self.formats = None
+        self.quantized = False
+        # remaining kwargs intentionally consumed/ignored
+
+    # ------------------------------------------------------------------
+    # AutoRound compressor interface
+    # ------------------------------------------------------------------
+
+    def quantize_and_save(
+        self,
+        output_dir: str = "tmp_autoround",
+        format: str = "auto_round",
+        inplace: bool = True,
+        **kwargs,
+    ):
+        """Quantize and save — AutoRound compressor entry point."""
+        if format not in ["auto_round", "auto_round:auto_gptq"]:
+            raise ValueError(f"Model-free compressor only supports 'auto_round' format, got '{format}'.")
+
+        # Apply user scheme overrides before running
+        if self.user_scheme_overrides:
+            scheme_obj = _normalize_scheme(self.scheme_input)
+            for k, v in self.user_scheme_overrides.items():
+                if v is not None and hasattr(scheme_obj, k):
+                    setattr(scheme_obj, k, v)
+            self.scheme_input = scheme_obj
+
+        # Temporarily point output_dir at what the caller requested
+        orig = self.output_dir
+        self.output_dir = output_dir
+        out_path = self.run()
+        self.output_dir = orig
+        self.quantized = True
+        return None, [out_path]
+
+
+# Backward-compat alias (the old standalone driver class)
+ModelFreeCompressor = ModelFreeQuantizer

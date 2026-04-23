@@ -2007,3 +2007,50 @@ def hook_ngram_embeddings_on_cpu(model):
 
         hook_input_output_device_for_cpu_module(raw_ngram_embeddings)
     return has_ngram_embeddings, raw_ngram_embeddings if has_ngram_embeddings else None
+
+
+def is_model_free_route(
+    model,
+    scheme,
+    iters: int,
+    disable_opt_rtn,
+    kwargs: dict,
+) -> bool:
+    """Return True when the model-free fast-path should be taken.
+
+    Mirrors the ``is_diffusion_model`` / ``is_mllm_model`` helpers used in
+    ``AutoRound.__new__`` to select the right compressor class.
+
+    Model-free mode is activated when **either** of the following holds:
+
+    * ``model_free=True`` is explicitly set in *kwargs*.
+    * All of the following are true:
+
+      - ``disable_model_free`` is not set (or False) in *kwargs*
+      - *model* is a string (HF hub ID or local path)
+      - *iters* == 0
+      - *disable_opt_rtn* is exactly ``True``
+      - *scheme* is a supported model-free preset
+
+    Note: this function only *reads* kwargs; it does **not** pop any keys.
+    """
+    from auto_round.compressors.model_free import is_model_free_supported_scheme
+
+    explicit = bool(kwargs.get("model_free", False))
+    disabled = bool(kwargs.get("disable_model_free", False))
+    if explicit:
+        return True
+    # Only auto-route when format is auto_round (or not specified).
+    fmt = kwargs.get("format", "auto_round")
+    if fmt is None:
+        fmt = "auto_round"
+    fmt_first = str(fmt).lower().replace(" ", "").split(",")[0]
+    if fmt_first != "auto_round":
+        return False
+    return (
+        not disabled
+        and isinstance(model, str)
+        and iters == 0
+        and disable_opt_rtn is True
+        and is_model_free_supported_scheme(scheme)
+    )

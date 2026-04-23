@@ -434,19 +434,53 @@ ar.quantize_and_save(output_dir, format="auto_round")
 
 免模型量化模式（Model-Free Mode）可以**无需将完整模型加载到内存中**即可执行 RTN WOQ 量化。它直接下载 safetensors 文件，逐分片地对每个 Linear 权重张量进行量化并保存打包结果。当您需要快速、无标定数据的量化且资源有限时，该模式非常实用。
 
+> **默认自动启用。** 自 v0.13 起，当您同时传入 `--iters 0 --disable_opt_rtn` 与一个受支持的 INT WOQ scheme 时，CLI 会自动走免模型路径。该路径与原始 `--iters 0 --disable_opt_rtn` 流程**位级（bit-exact）等价**，但内存占用大幅降低。如需关闭自动路由、强制使用原始流程，可加 `--disable_model_free`。
+
 **主要特性：**
 - **无需模型对象** — 仅需 `config.json` 和 safetensors 文件
 - **低磁盘内存** (如果无本地模型) — 逐个下载并量化分片，处理完成后立即删除源分片
 - **逐层配置** — 支持 `--layer_config` 设置逐层位宽，以及 `--ignore_layers` 保持特定层全精度
 - **预定义忽略层** — 根据模型配置自动跳过特定层（如 MoE 门控层、MTP 层等）
+- 与标准 `--iters 0 --disable_opt_rtn` 流程对所有受支持的 scheme **位级等价**
+
+**支持的 Scheme**
+
+免模型模式当前支持以下整数权重量化预设（均使用 `auto_round:auto_gptq` 打包格式）：
+
+| Preset | Bits | Group size | Sym |
+| --- | --- | --- | --- |
+| `W2A16` | 2 | 128 | true |
+| `W2A16G32` | 2 | 32 | true |
+| `W2A16G64` | 2 | 64 | true |
+| `W4A16`（默认） | 4 | 128 | true |
+| `W4A16_MIXED` | 4 | 128 | true |
+| `W8A16` | 8 | 128 | true |
+
+上述 2-bit 和 8-bit 预设（`W2A16`、`W2A16G32`、`W2A16G64`、`W8A16`）同样支持**非对称量化**（`sym=False`），输出使用 `auto_round:auto_gptq` 打包格式，并与标准流程**位级等价**。4-bit 非对称量化时标准流程建议使用 `auto_round:auto_awq` 打包格式，如需该场景请使用标准 AutoRound 流程。
+
+也可以传入自定义的 `QuantizationScheme(bits=N, group_size=G, sym=True/False, data_type="int", act_bits=16)`，其中 `bits ∈ {2, 4, 8}`，group_size / sym 可任意设置。
+
+需要特殊打包内核的 scheme（`W3A16`、`FPW8A16`、`BF16`、`MXFP4`、`MXFP8`、`MXINT4`、`NVFP4`、`FP8_BLOCK`、`FP8_STATIC`、`INT8_W8A8`、`GGUF:*` 等）**不被支持**，传入会抛 `ValueError`。这些请使用标准 AutoRound 流程。
 
 #### 命令行用法
 
 ```bash
-# 基本免模型量化
+# 最简单：--iters 0 --disable_opt_rtn 自动路由到免模型
+auto_round meta-llama/Llama-3.2-1B-Instruct \
+  --scheme W4A16 \
+  --iters 0 --disable_opt_rtn \
+  --output_dir ./int4-llama
+
+# 等价的显式调用
 auto_round meta-llama/Llama-3.2-1B-Instruct \
   --model_free \
   --scheme W4A16 \
+  --output_dir ./int4-llama
+
+# 关闭自动路由，强制使用原始流程
+auto_round meta-llama/Llama-3.2-1B-Instruct \
+  --scheme W4A16 \
+  --iters 0 --disable_opt_rtn --disable_model_free \
   --output_dir ./int4-llama
 
 # 搭配逐层配置和忽略层
@@ -463,29 +497,21 @@ auto_round meta-llama/Llama-3.2-1B-Instruct \
 #### API 用法
 
 ```python
-from auto_round.compressors.model_free import model_free_quantize
+from auto_round import AutoRound
 
-# 基本用法
-model_free_quantize(
-    model_name_or_path="meta-llama/Llama-3.2-1B-Instruct",
-    scheme="W4A16",
-    output_dir="./int4-llama",
-)
-
-# 搭配低磁盘内存模式及逐层配置
-model_free_quantize(
-    model_name_or_path="meta-llama/Llama-3.2-1B-Instruct",
-    scheme="W4A16",  # 支持自定义scheme对象，用于设置`group_size`, `sym`
-    output_dir="./int4-llama",
+AutoRound(
+    model="meta-llama/Llama-3.2-1B-Instruct",
+    scheme="W4A16",  # 也支持 QuantizationScheme 对象自定义 group_size / sym
     layer_config={
         ".*k_proj": {"bits": 8, "group_size": 32},
         ".*v_proj": {"bits": 8, "group_size": 32},
     },
     ignore_layers="mlp",
-)
+    model_free=True,
+).quantize_and_save("./int4-llama")
 ```
 
-> **注意：** 免模型量化模式仅支持 `auto_round` 输出格式，并使用 RTN（无标定数据、无迭代调优）。如需更高质量的量化结果，请使用标准 AutoRound 流程。
+> **注意：** 免模型量化模式仅支持 `auto_round` 输出格式，并使用 RTN（无标定数据、无迭代调优）。如需更高质量的量化结果或使用受支持列表外的 scheme，请使用标准 AutoRound 流程。
 
 ### GGUF 格式量化
 实验性功能。该格式适用 CPU 设备，在社区应用广泛。

@@ -442,19 +442,53 @@ ar.quantize_and_save(output_dir, format="auto_round")
 
 Model-free mode performs RTN WOQ quantization **without loading the full model into memory**. It downloads safetensors files directly, quantizes each Linear weight tensor shard-by-shard, and saves the packed result. This is useful when you want fast, no-calibration quantization with minimal resource requirements.
 
+> **Auto-enabled by default.** As of v0.13, when you pass `--iters 0 --disable_opt_rtn` together with a supported INT WOQ scheme, the CLI automatically takes the model-free path.  This is **bit-exactly equivalent** to the regular `--iters 0 --disable_opt_rtn` flow but uses far less memory.  Use `--disable_model_free` to opt out and force the original flow.
+
 **Key features:**
 - **No model object required** – only `config.json` and safetensors files are needed
 - **Low disk memory required** (If no local model files) – downloads and quantizes one shard at a time, deleting the source shard after processing
 - **Per-layer configuration** – supports `--layer_config` for per-layer bit-width overrides and `--ignore_layers` to keep specific layers in full precision
 - **Predefined ignore layers** – automatically skips model-specific layers (e.g., MoE gates, MTP layers) based on config detection
+- **Bit-exact parity** with the standard `--iters 0 --disable_opt_rtn` flow for all supported schemes
+
+**Supported schemes**
+
+Model-free mode currently supports the following **integer weight-only** preset schemes (packed in the `auto_round:auto_gptq` format):
+
+| Preset | Bits | Group size | Sym |
+| --- | --- | --- | --- |
+| `W2A16` | 2 | 128 | true |
+| `W2A16G32` | 2 | 32 | true |
+| `W2A16G64` | 2 | 64 | true |
+| `W4A16` (default) | 4 | 128 | true |
+| `W4A16_MIXED` | 4 | 128 | true |
+| `W8A16` | 8 | 128 | true |
+
+All of the above presets also support **asymmetric quantization** (`sym=False`) for 2-bit and 8-bit variants (`W2A16`, `W2A16G32`, `W2A16G64`, `W8A16`), producing `auto_round:auto_gptq`-packed output with bit-exact parity to the regular flow.  For 4-bit asymmetric quantization the regular flow uses `auto_round:auto_awq` packing as suggested; use the standard AutoRound flow for that case.
+
+You can also pass a custom `QuantizationScheme(bits=N, group_size=G, sym=True/False, data_type="int", act_bits=16)` with `bits ∈ {2, 4, 8}` and any group_size / sym configuration.
+
+Schemes that require special packing kernels (`W3A16`, `FPW8A16`, `BF16`, `MXFP4`, `MXFP8`, `MXINT4`, `NVFP4`, `FP8_BLOCK`, `FP8_STATIC`, `INT8_W8A8`, `GGUF:*`, ...) are **not** supported in model-free mode and will raise `ValueError`.  Use the regular AutoRound flow for those.
 
 #### CLI Usage
 
 ```bash
-# Basic model-free quantization
+# Easiest: --iters 0 --disable_opt_rtn auto-routes to model-free
+auto_round meta-llama/Llama-3.2-1B-Instruct \
+  --scheme W4A16 \
+  --iters 0 --disable_opt_rtn \
+  --output_dir ./int4-llama
+
+# Equivalent explicit invocation
 auto_round meta-llama/Llama-3.2-1B-Instruct \
   --model_free \
   --scheme W4A16 \
+  --output_dir ./int4-llama
+
+# Opt out of auto-routing and use the regular flow instead
+auto_round meta-llama/Llama-3.2-1B-Instruct \
+  --scheme W4A16 \
+  --iters 0 --disable_opt_rtn --disable_model_free \
   --output_dir ./int4-llama
 
 # With per-layer configuration and ignored layers
@@ -471,29 +505,21 @@ auto_round meta-llama/Llama-3.2-1B-Instruct \
 #### API Usage
 
 ```python
-from auto_round.compressors.model_free import model_free_quantize
+from auto_round import AutoRound
 
-# Basic usage
-model_free_quantize(
-    model_name_or_path="meta-llama/Llama-3.2-1B-Instruct",
-    scheme="W4A16",
-    output_dir="./int4-llama",
-)
-
-# With low disk memory and per-layer config
-model_free_quantize(
-    model_name_or_path="meta-llama/Llama-3.2-1B-Instruct",
-    scheme="W4A16",  # Supports custom scheme object for configuring `group_size` and `sym`.
-    output_dir="./int4-llama",
+AutoRound(
+    model="meta-llama/Llama-3.2-1B-Instruct",
+    scheme="W4A16",  # Or a QuantizationScheme instance for custom group_size / sym.
     layer_config={
         ".*k_proj": {"bits": 8, "group_size": 32},
         ".*v_proj": {"bits": 8, "group_size": 32},
     },
     ignore_layers="mlp",
-)
+    model_free=True,
+).quantize_and_save("./int4-llama")
 ```
 
-> **Note:** Model-free mode only supports the `auto_round` output format and uses RTN (no calibration data, no iterative tuning). For higher quality quantization, use the standard AutoRound flow.
+> **Note:** Model-free mode only supports the `auto_round` output format and uses RTN (no calibration data, no iterative tuning).  For higher-quality quantization or schemes outside the supported list, use the standard AutoRound flow.
 
 ### GGUF format
 Experimental feature. This format is well-suited for CPU devices and is widely adopted by the community. 

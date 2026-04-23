@@ -531,35 +531,69 @@ def quantize_weight_rtn(
     # Reshape for group-wise ops: [padded_out, num_groups, group_size]
     w_grouped = weight.reshape(padded_out, num_groups, group_size)
 
-    if sym:
-        half_range = (1 << (bits - 1)) - 1  # e.g. 7 for 4-bit
-        zero_point = 1 << (bits - 1)  # e.g. 8 for 4-bit
+    q_scale_thresh = 1e-5  # match quant_tensor_sym / quant_tensor_asym threshold
 
-        w_absmax = w_grouped.abs().amax(dim=-1, keepdim=True).clamp_(min=1e-10)
-        scales_full = w_absmax / half_range  # [padded_out, num_groups, 1]
-        del w_absmax
+    if sym:
+        # Full-range symmetric quantization — aligned with quant_tensor_sym
+        # in auto_round/data_type/int.py:
+        #   maxq = 2^(bits-1)  (e.g. 8 for 4-bit)
+        #   scale = signed_max(wmin, wmax) / maxq  (can be negative)
+        #   q = clamp(round(w / scale), -maxq, maxq - 1)
+        maxq = 1 << (bits - 1)  # e.g. 8 for 4-bit
+        zero_point = maxq  # unsigned offset for packing
+
+        w_min = w_grouped.amin(dim=-1, keepdim=True)
+        w_max = w_grouped.amax(dim=-1, keepdim=True)
+        # clamp so that 0 is always representable
+        w_min = torch.clamp(w_min, max=0)
+        w_max = torch.clamp(w_max, min=0)
+        wmin_abs = -w_min
+        wmax_abs = w_max
+        # signed max: preserves the sign of the dominant extreme
+        max_v = (2 * (wmax_abs < wmin_abs).int() - 1) * torch.max(wmax_abs, wmin_abs)
+        del w_min, w_max, wmin_abs, wmax_abs
+
+        scales_full = (max_v / maxq).to(torch.float16)
+        # Clamp small scales for numerical stability (match q_scale_thresh)
+        scales_full = torch.where(
+            scales_full < 0,
+            torch.clamp(scales_full, max=-q_scale_thresh),
+            torch.clamp(scales_full, min=q_scale_thresh),
+        )
+        scales_full = scales_full.float()  # compute in fp32
+        del max_v
 
         # In-place ops to minimise peak GPU memory.
         q = w_grouped / scales_full
         del weight, w_grouped  # free the (potentially large) float32 weight storage
-        q.round_().clamp_(-half_range - 1, half_range)
-        q += zero_point
+        q.round_().clamp_(-maxq, maxq - 1)
+        q += zero_point  # shift to unsigned [0, 2*maxq - 1]
         q = q.to(torch.int32)  # new int32 tensor; float32 q is freed
 
         zp = torch.full((num_groups, padded_out), zero_point, dtype=torch.int32, device=device)
     else:
+        # Asymmetric quantization — aligned with quant_tensor_asym
+        # in auto_round/data_type/int.py:
+        #   maxq = 2^bits - 1
+        #   wmin = clamp(min, max=0), wmax = clamp(max, min=0)
+        #   scale = (wmax - wmin) / maxq
+        #   zp = round(-wmin / scale)
+        #   q = clamp(round(w / scale) + zp, 0, maxq)
         max_int = (1 << bits) - 1
-        w_min = w_grouped.amin(dim=-1, keepdim=True)
-        w_max = w_grouped.amax(dim=-1, keepdim=True)
+        w_min = torch.clamp(w_grouped.amin(dim=-1, keepdim=True), max=0)
+        w_max = torch.clamp(w_grouped.amax(dim=-1, keepdim=True), min=0)
 
-        scales_full = ((w_max - w_min).clamp_(min=1e-10)) / max_int
+        scales_full = ((w_max - w_min) / max_int).to(torch.float16)
+        scales_full = torch.clamp(scales_full, min=q_scale_thresh)
+        scales_full = scales_full.float()  # compute in fp32
         zp_full = torch.round(-w_min / scales_full).clamp_(0, max_int).to(torch.int32)
         del w_min, w_max
 
         q = w_grouped / scales_full
         del weight, w_grouped
-        q += zp_full.float()
-        q.round_().clamp_(0, max_int)
+        q.round_()  # round FIRST (matches regular path: round(w/scale) then + zp)
+        q += zp_full.float()  # then add zp
+        q.clamp_(0, max_int)
         q = q.to(torch.int32)
 
         zp = zp_full.squeeze(-1).t().contiguous()  # [num_groups, padded_out]
@@ -582,6 +616,9 @@ def quantize_weight_rtn(
     del q_packed
 
     # ---- Pack qzeros: [num_groups, padded_out // pack_factor] ----
+    # The auto_round:auto_gptq format (qlinear_torch_zp) adds +1 to zeros
+    # after unpacking, so we must subtract 1 before packing to compensate.
+    zp -= 1
     zp_packed = zp.reshape(num_groups, padded_out // pack_factor, pack_factor).to(torch.int64)
     del zp
     qzeros = (zp_packed << _shifts[None, None, :]).sum(dim=2).to(torch.int32)
