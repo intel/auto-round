@@ -188,6 +188,8 @@ def is_hpex_available():
 _xpu_sdpa_patched = False
 
 
+# TODO: This is a workaround for the XPU SDPA memory blow-up issue. We should remove this patch after the issue is fixed in XPU side.
+# https://github.com/intel/auto-round/issues/990
 def patch_xpu_sdpa_drop_causal_mask():
     """Workaround for XPU peak-VRAM blow-up in SDPA.
 
