@@ -359,13 +359,30 @@ def _patch_prepare_inputs_for_generation(model) -> None:
 
 def _patch_mimo_attention_forward(model) -> None:
     """Patch MiMo remote-code attention helpers for newer transformers call sites."""
-    model_type = getattr(getattr(model, "config", None), "model_type", None)
-    if model_type != "mimo_v2_flash":
+    # Check if this is a MiMo model by class name (remote code models may not have model_type)
+    model_class_name = model.__class__.__name__
+    logger.info(f"_patch_mimo_attention_forward called for {model_class_name}")
+
+    if "MiMo" not in model_class_name and "mimo" not in model_class_name.lower():
+        logger.info(f"Skipping patch: not a MiMo model (class name: {model_class_name})")
         return
 
-    module = importlib.import_module(model.__class__.__module__)
+    try:
+        module = importlib.import_module(model.__class__.__module__)
+        logger.info(f"Imported module: {model.__class__.__module__}")
+    except ImportError as e:
+        logger.warning(f"Could not import module {model.__class__.__module__}: {e}")
+        return
+
     eager_attention_forward = getattr(module, "eager_attention_forward", None)
-    if eager_attention_forward is None or getattr(eager_attention_forward, "_auto_round_mimo_patch", False):
+    logger.info(f"eager_attention_forward found: {eager_attention_forward is not None}")
+
+    if eager_attention_forward is None:
+        logger.info("Skipping patch: eager_attention_forward not found in module")
+        return
+
+    if getattr(eager_attention_forward, "_auto_round_mimo_patch", False):
+        logger.info("Skipping patch: already patched")
         return
 
     @wraps(eager_attention_forward)
@@ -385,6 +402,7 @@ def _patch_mimo_attention_forward(model) -> None:
 
     _patched_eager_attention_forward._auto_round_mimo_patch = True
     module.eager_attention_forward = _patched_eager_attention_forward
+    logger.info(f"Successfully patched eager_attention_forward in {model.__class__.__module__}")
 
 
 def _patch_qwen25_omni_talker(model) -> None:
