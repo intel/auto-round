@@ -901,9 +901,7 @@ def _gen_layer_config(
     quant_layer_names = list(set(quant_layer_names) - set(embedding_layers_names))
 
     vision_markers = ("vision", "visual", "image", "img")
-    force_mllm = is_vlm and any(
-        any(marker in n.lower() for marker in vision_markers) for n in quant_layer_names
-    )
+    force_mllm = is_vlm and any(any(marker in n.lower() for marker in vision_markers) for n in quant_layer_names)
     if force_mllm:
         if batch_size != 1:
             logger.info(
@@ -938,7 +936,6 @@ def _gen_layer_config(
         if auto_scheme.low_gpu_mem_usage:
             pbar_cnt += len(block_name) * 2 * ((nsamples + batch_size - 1) // batch_size)  # forward backward
     shared_layers = parse_shared_layers(model, auto_scheme.shared_layers)
-
 
     options_scores = []
     if auto_scheme.low_gpu_mem_usage and not disable_opt_rtn:
