@@ -101,30 +101,33 @@ def _config_matches(model, model_type: str = None, **expected) -> bool:
 # Built-in entries
 # ---------------------------------------------------------------------------
 
-# Qwen3-14B: deterministic Hadamard hurts accuracy badly on this model;
-# force the random Hadamard preset. Detection by name first (cheap & exact),
-# then by the unique architectural fingerprint (hidden=5120, layers=40,
-# heads=40 — distinguishes 14B from 0.6B/1.7B/4B/8B/32B).
-def _is_qwen3_14b(model) -> bool:
-    if _name_contains(model, "qwen3-14b"):
-        return True
-    return _config_matches(
-        model,
-        model_type="qwen3",
-        hidden_size=5120,
-        num_hidden_layers=40,
-        num_attention_heads=40,
-    )
-
-
-register_special_model(
-    SpecialModelEntry(
-        name="Qwen3-14B",
-        matches=_is_qwen3_14b,
-        overrides={"rotation_matrix": "random_hadamard"},
-        reason="deterministic Hadamard is known to hurt accuracy on this model",
-    )
-)
+# ---- Example: Qwen3-14B (no longer needed, kept as reference) ----
+# Qwen3-14B previously required a forced ``random_hadamard`` override because
+# the o_proj weight rotation used a single full-dimension Hadamard whose
+# butterfly construction violated the Kronecker decomposition assumed by the
+# cross-head online hook when ``num_heads`` is not a power of 2.  This has
+# been fixed in ``_rotate_weights`` — all presets now use the decomposed
+# per-head + cross-head form — so the override is no longer needed.
+#
+# def _is_qwen3_14b(model) -> bool:
+#     if _name_contains(model, "qwen3-14b"):
+#         return True
+#     return _config_matches(
+#         model,
+#         model_type="qwen3",
+#         hidden_size=5120,
+#         num_hidden_layers=40,
+#         num_attention_heads=40,
+#     )
+#
+# register_special_model(
+#     SpecialModelEntry(
+#         name="Qwen3-14B",
+#         matches=_is_qwen3_14b,
+#         overrides={"rotation_matrix": "random_hadamard"},
+#         reason="deterministic Hadamard is known to hurt accuracy on this model",
+#     )
+# )
 
 
 # ---------------------------------------------------------------------------

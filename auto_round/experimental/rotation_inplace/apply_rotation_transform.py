@@ -493,7 +493,18 @@ def _rotate_weights(
                     had_matrix=_online_had(intermediate_size),
                 )
 
-            # OV projection: v_proj per-head output + o_proj full/cross-head input
+            # OV projection: v_proj per-head output + o_proj decomposed input
+            #
+            # The online hook on o_proj applies  (H_cross ⊗ I_head)⁻¹  at
+            # runtime, so the weight-side rotation must equal exactly
+            # (H_cross ⊗ I_head)(I_heads ⊗ H_head) = H_cross ⊗ H_head.
+            #
+            # IMPORTANT: we must NOT use a single full-dimension Hadamard
+            # (``had_dim=-1``) on o_proj, because the butterfly construction
+            # ``matmul_hadU(hidden_size)`` does NOT satisfy the Kronecker
+            # decomposition ``H_hidden = H_num_heads ⊗ H_head_dim`` when
+            # ``num_heads`` is not a power of 2 (e.g. Qwen3-14B, num_heads=40).
+            # Instead we always apply per-head + cross-head separately.
             v_proj = _resolve(layer, mapping.attn_v)
             o_proj = _resolve(layer, mapping.attn_o)
             if is_grouped:
@@ -508,31 +519,22 @@ def _rotate_weights(
                     compute_device=compute_device,
                     had_matrix=online_head_had,
                 )
-                if preset == "random_hadamard":
-                    apply_exact_had_to_linear(
-                        o_proj,
-                        had_dim=head_dim,
-                        output=False,
-                        use_fast_had=online_fast,
-                        compute_device=compute_device,
-                        had_matrix=online_head_had,
-                    )
-                    apply_cross_head_had_to_linear(
-                        o_proj,
-                        num_heads,
-                        head_dim,
-                        use_fast_had=online_fast,
-                        compute_device=compute_device,
-                        had_matrix=_online_had(num_heads),
-                    )
-                else:
-                    apply_exact_had_to_linear(
-                        o_proj,
-                        had_dim=-1,
-                        output=False,
-                        use_fast_had=online_fast,
-                        compute_device=compute_device,
-                    )
+                apply_exact_had_to_linear(
+                    o_proj,
+                    had_dim=head_dim,
+                    output=False,
+                    use_fast_had=online_fast,
+                    compute_device=compute_device,
+                    had_matrix=online_head_had,
+                )
+                apply_cross_head_had_to_linear(
+                    o_proj,
+                    num_heads,
+                    head_dim,
+                    use_fast_had=online_fast,
+                    compute_device=compute_device,
+                    had_matrix=_online_had(num_heads),
+                )
 
         else:
             # ---- unfused mode: no residual rotation, only input-side Had ----
@@ -915,11 +917,11 @@ def apply_rotation_transform(
 if __name__ == "__main__":
     from transformers import AutoModelForCausalLM, AutoTokenizer
 
-    model_name = "/models/Qwen3-32B"
+    model_name = "/models/Qwen3-14B"
     tokenizer = AutoTokenizer.from_pretrained(model_name)
     model = AutoModelForCausalLM.from_pretrained(model_name, device_map="auto")
     apply_rotation_transform(
-        model, group_size=-1, allow_online_rotation=True, rotation_matrix="quarot_hadamard", fuse_online_to_weight=True
+        model, group_size=128, allow_online_rotation=True, rotation_matrix="hadamard", fuse_online_to_weight=True
     )
     text = "There is a girl who likes adventure,"
     inputs = tokenizer(text, return_tensors="pt").to(model.device)
