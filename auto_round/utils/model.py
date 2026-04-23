@@ -743,8 +743,9 @@ def diffusion_load_model(
             and comp is not None
             and isinstance(comp, torch.nn.Module)
         ):
-            setattr(comp.config, "save_pretrained",
-                    partial(config_save_pretrained, comp.config, "config.json", model=comp))
+            setattr(
+                comp.config, "save_pretrained", partial(config_save_pretrained, comp.config, "config.json", model=comp)
+            )
             setattr(comp, "save_pretrained", partial(model_save_pretrained, comp))
 
     return pipe, model.to(device)
