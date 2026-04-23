@@ -589,9 +589,7 @@ class CalibCompressor(BaseCompressor):
                         continue
                     if key not in self.inputs[name].keys():  # initialization
                         data = to_device(kwargs[key], device=torch.device("cpu"))
-                        if data is None or (
-                            self.quantizer.batch_size > 1 and key in self.model_context.shared_cache_keys
-                        ):
+                        if data is None or key in self.model_context.shared_cache_keys:
                             self.inputs[name][key] = data
                             continue
                         if self.quantizer.batch_size <= 1:
