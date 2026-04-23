@@ -6,9 +6,9 @@ The canonical implementation now lives in
 :mod:`auto_round.algorithms.transforms.rotation.utils.math`.
 """
 
-from auto_round.algorithms.transforms.rotation.utils.math import (  # noqa: F401
+from auto_round.algorithms.transforms.rotation.utils.math import _HADAMARD_MATRICES_PATH as REPO_PATH  # noqa: F401
+from auto_round.algorithms.transforms.rotation.utils.math import (
     _fetch_hadamard_divisor,
-    _HADAMARD_MATRICES_PATH as REPO_PATH,
     _matmul_hadU,
     deterministic_hadamard_matrix,
     is_pow2,

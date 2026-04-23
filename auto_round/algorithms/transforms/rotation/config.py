@@ -128,9 +128,7 @@ def to_dict_rotation_config(rotation_config: str | dict | RotationConfig | None)
     return dict(rotation_config)
 
 
-def dump_group_size_to_rotation_config(
-    rotation_config: str | dict | RotationConfig, group_size: int
-) -> dict[str, Any]:
+def dump_group_size_to_rotation_config(rotation_config: str | dict | RotationConfig, group_size: int) -> dict[str, Any]:
     """Return *rotation_config* as a dict with ``block_size`` populated from *group_size* (if unset)."""
     rotation_dict = to_dict_rotation_config(rotation_config)
     if rotation_dict.get("block_size", None) is None:
