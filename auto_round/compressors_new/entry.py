@@ -455,24 +455,19 @@ class AutoRoundCompatible:
         # Determine output format if specified
         format = kwargs.pop("format", None)
 
-        # Extract rotation_config (old-API kwarg) and convert to new arch RotationConfig.
-        # In old arch, rotation_config was a keyword arg; in new arch, rotation transforms
-        # are passed as part of alg_configs list.  "inplace" backend is not yet supported
-        # in the new arch (requires CUDA/triton), so we only convert transform-compatible configs.
+        # Extract rotation_config (old-API kwarg) and thread it into alg_configs.
+        # In old arch this was a standalone keyword arg; the new arch passes rotation
+        # transforms as part of the alg_configs list.  backend='inplace' is not yet
+        # wired into the new-arch alg_configs pipeline, so warn and skip.
         _rotation_config_raw = kwargs.pop("rotation_config", None)
         if _rotation_config_raw is not None:
-            from auto_round.algorithms.transforms.rotation.config import RotationConfig as _NARotCfg
-            from auto_round.algorithms.transforms.rotation.config import normalize_rotation_config as _normalize_rc
-            from auto_round.experimental.transform.rotation_config import RotationConfig as _RotationConfig
-
-            # Resolve to a RotationConfig to check the backend field
-            if isinstance(_rotation_config_raw, _RotationConfig):
+            if isinstance(_rotation_config_raw, _NewArchRotationConfig):
                 _rc = _rotation_config_raw
             elif isinstance(_rotation_config_raw, dict):
-                _rc = _RotationConfig.model_validate(_rotation_config_raw)
+                _rc = _NewArchRotationConfig.model_validate(_rotation_config_raw)
             else:
-                # str ("default", "random_hadamard", …) or plain dict
-                _rc = _RotationConfig()
+                # str alias ("default", "random_hadamard", …) -> default config
+                _rc = _NewArchRotationConfig()
 
             if _rc.backend == "inplace":
                 logger.warning(
@@ -481,13 +476,7 @@ class AutoRoundCompatible:
                     "with an MXFP4/NVFP4 scheme, or pass RotationConfig() explicitly via alg_configs."
                 )
             else:
-                # Convert to new arch RotationConfig.
-                # normalize_rotation_config accepts None/str/dict/RotationConfig, so
-                # convert old-arch RotationConfig instances to dict first (dropping backend field).
-                _raw_for_norm = _rc.model_dump(exclude={"backend", "fuse_online_to_weight", "allow_online_rotation"})
-                hadamard_dict = _normalize_rc(_raw_for_norm)
-                hadamard_cfg = _NARotCfg.model_validate(hadamard_dict)
-                config = [config, hadamard_cfg]
+                config = [config, _rc]
 
         # Extract MLLM-specific parameters
         processor = kwargs.pop("processor", None)
