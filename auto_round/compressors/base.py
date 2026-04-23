@@ -1983,6 +1983,12 @@ class BaseCompressor(object):
         for layer_name in copy.deepcopy(layer_names):
             if layer_name not in layer_inputs:
                 if self.act_bits < 16 and not self.act_dynamic:
+                    if "lm_head" in layer_name:
+                        logger.warning_once(
+                            "Static activation quantization for lm_head is not fully supported yet. "
+                            "If lm_head calibration inputs are missing, activation scale may fall back to unit scale "
+                            "or quantization may be skipped."
+                        )
                     # Activation quantization requires collected inputs
                     msg_prefix = (
                         f"Activation max hook for layer '{layer_name}' is unavailable due to "
