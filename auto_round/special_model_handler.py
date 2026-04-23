@@ -720,7 +720,6 @@ register_ignore_layers(
 )
 
 
-
 def get_predefined_ignore_layers(model: torch.nn.Module) -> list[str]:
     layers = []
     for rule in _PRE_DEFINED_IGNORE_LAYERS:
