@@ -34,6 +34,16 @@ environment_variables: dict[str, Callable[[], Any]] = {
     "AR_DISABLE_DATASET_SUBPROCESS": lambda: os.getenv("AR_DISABLE_DATASET_SUBPROCESS", "0").lower() in ("1", "true"),
     "AR_DISABLE_COPY_MTP_WEIGHTS": lambda: os.getenv("AR_DISABLE_COPY_MTP_WEIGHTS", "0").lower()
     in ("1", "true", "yes"),
+    "AR_ACT_SCALE": lambda: float(os.getenv("AR_ACT_SCALE", "1.0")),
+    "AR_ENABLE_ACT_MINMAX_TUNING": lambda: os.getenv("AR_ENABLE_ACT_MINMAX_TUNING", "0").lower()
+    in ("1", "true", "yes"),
+    "AR_FUSE_ONLINE_ROTATION": lambda: os.getenv("AR_FUSE_ONLINE_ROTATION", "0").lower() in ("1", "true", "yes"),
+    # Controls the search range ratio for symmetric int scale search in
+    # `auto_round.data_type.int.search_scales`. The search bound is
+    # `nmax * AR_SEARCH_SCALE_RATIO` (default None).
+    "AR_SEARCH_SCALE_RATIO": lambda: (
+        float(os.getenv("AR_SEARCH_SCALE_RATIO")) if os.getenv("AR_SEARCH_SCALE_RATIO") is not None else None
+    ),
 }
 
 

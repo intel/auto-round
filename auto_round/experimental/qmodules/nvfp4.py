@@ -119,9 +119,9 @@ class NVFP4QuantLinear(QModuleBase):
             ),
         )
 
-        hadamard_config = getattr(config, "hadamard_config", None)
-        # TODO: remove the limit: hadamard_config["hadamard_type"] == "random_hadamard"
-        if hadamard_config is not None and hadamard_config["hadamard_type"] == "random_hadamard":
+        rotation_config = getattr(config, "rotation_config", None)
+        # TODO: remove the limit: rotation_config["hadamard_type"] == "random_hadamard"
+        if rotation_config is not None and rotation_config["hadamard_type"] == "random_hadamard":
             self.enable_transform = True
             self.register_buffer(
                 "hadamard_matrix",
