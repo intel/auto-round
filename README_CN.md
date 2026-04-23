@@ -309,6 +309,15 @@ ar.quantize_and_save(output_dir)
 </details>
 
 
+### FAQ：Matryoshka Quantization（arXiv:2502.06786）
+
+- **论文中的量化 group 是怎么选的？**  
+  AutoRound 并未直接实现 Matryoshka Quantization，当前仓库里也没有针对 arXiv:2502.06786 的专用 group 选择逻辑。在 AutoRound 中，`group_size` 是显式可配的量化超参数（标准 scheme 常用 128，RTN 模式通常推荐 32）。
+
+- **“FFN-only” 是否表示只量化 FFN？**  
+  是。按 LLM 量化中的常见用法（以及 AutoRound 社区讨论语境），“FFN-only”就是只量化 FFN/MLP 层，而将 attention 的投影层保持在更高精度。
+
+
 
 ## 模型推理
 

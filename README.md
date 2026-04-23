@@ -313,6 +313,15 @@ ar.quantize_and_save(output_dir)
 </details>
 
 
+### FAQ: Matryoshka Quantization (arXiv:2502.06786)
+
+- **How is the quantization group chosen in that paper?**  
+  AutoRound does not implement Matryoshka Quantization directly, and this repository does not contain paper-specific group-selection logic for arXiv:2502.06786. In AutoRound itself, `group_size` is an explicit quantization hyperparameter (commonly 128 in standard schemes, and 32 is often recommended for RTN mode).
+
+- **Does "FFN-only" mean only FFN is quantized?**  
+  Yes. In common LLM quantization usage (including how users discuss settings around AutoRound), "FFN-only" means quantizing only FFN/MLP layers while keeping attention projection layers at higher precision.
+
+
 
 ## Model Inference
 
@@ -393,4 +402,3 @@ Special thanks to open-source low precision libraries such as AutoGPTQ, AutoAWQ,
 
 ## 🌟 Support Us
 If you find AutoRound helpful, please ⭐ star the repo and share it with your community!
-
