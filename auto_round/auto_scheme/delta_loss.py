@@ -620,8 +620,7 @@ def get_score_for_scheme(
             if not is_vlm:
                 raise
             logger.warning(
-                f"Text-only calibration failed on VLM ({exc}); "
-                f"falling back to multimodal calibration dataloader."
+                f"Text-only calibration failed on VLM ({exc}); " f"falling back to multimodal calibration dataloader."
             )
             mllm_loader = _build_mllm_calib_dataloader()
             if mllm_loader is None:
@@ -652,8 +651,7 @@ def get_score_for_scheme(
             if not is_vlm:
                 raise
             logger.warning(
-                f"Text-only calibration failed on VLM ({exc}); "
-                f"falling back to multimodal calibration dataloader."
+                f"Text-only calibration failed on VLM ({exc}); " f"falling back to multimodal calibration dataloader."
             )
             mllm_loader = _build_mllm_calib_dataloader()
             if mllm_loader is None:

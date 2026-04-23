@@ -671,9 +671,7 @@ class BaseCompressor(object):
             from auto_round.utils import get_block_names
 
             language_blocks = get_block_names(self.model, quant_vision=False)
-            language_block_prefixes = tuple(
-                blk for group in language_blocks for blk in group
-            )
+            language_block_prefixes = tuple(blk for group in language_blocks for blk in group)
             # Layers that belong to the language tower (i.e. live under one of
             # its ModuleList blocks) OR are top-level non-tower layers we'd
             # still want to quantize (lm_head, embed_tokens) are kept;
@@ -745,11 +743,7 @@ class BaseCompressor(object):
                 "scheme",
             }
             for name, cfg in nontext_skipped_layers.items():
-                clean_cfg = (
-                    {k: v for k, v in cfg.items() if k in allowed_keys}
-                    if isinstance(cfg, dict)
-                    else cfg
-                )
+                clean_cfg = {k: v for k, v in cfg.items() if k in allowed_keys} if isinstance(cfg, dict) else cfg
                 layer_config.setdefault(name, clean_cfg)
         return layer_config
 
