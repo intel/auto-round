@@ -98,8 +98,16 @@ class GenScheme:
             self.auto_scheme.avg_bits = target
 
         if not (min_avg_bit <= target <= max_avg_bit):
+            details = ", ".join(f"{opt}={bits:.3f}" for opt, bits in getattr(self, "_option_avg_bits", []))
+            hint = (
+                "Provide at least one option whose avg_bits is <= target and one whose avg_bits is >= target. "
+                "Note that layers fixed to high-precision (e.g. lm_head/embed kept at bf16) inflate the lower bound; "
+                "use `quant_lm_head=True`/adjust `layer_config`/`ignore_layers` if needed."
+            )
             raise ValueError(
-                f"Target avg_bits={target:.3f} is outside the valid range " f"[{min_avg_bit:.3f}, {max_avg_bit:.3f}]."
+                f"Target avg_bits={target:.3f} is outside the achievable range "
+                f"[{min_avg_bit:.3f}, {max_avg_bit:.3f}] for options={list(self.auto_scheme.options)} "
+                f"(per-option avg_bits: {details}). {hint}"
             )
 
     def get_layer_config(self) -> dict[str, dict]:
@@ -183,6 +191,10 @@ class GenScheme:
             )[0]
             for option in self.auto_scheme.options
         ]
+        # Cache per-option avg bits so log/error messages can reference them.
+        self._option_avg_bits = list(zip(list(self.auto_scheme.options), avg_bits))
+        for opt, bits in self._option_avg_bits:
+            logger.info("AutoScheme option %s -> avg_bits=%.4f", opt, bits)
         min_avg_bit, max_avg_bit = min(avg_bits), max(avg_bits)
         min_avg_bit_scheme = self.auto_scheme.options[avg_bits.index(min_avg_bit)]
         return min_avg_bit, max_avg_bit, min_avg_bit_scheme

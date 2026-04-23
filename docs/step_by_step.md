@@ -119,6 +119,8 @@ AutoRound supports several Schemes:
 
 - **W4A16**(bits:4,group_size:128,sym:True,act_bits:16)
 - **W8A16**(bits:8,group_size:128,sym:True,act_bits:16)
+- **W6A16**(bits:6,group_size:128,sym:True,act_bits:16) — `mlx` format only
+- **W5A16**(bits:5,group_size:128,sym:True,act_bits:16) — `mlx` format only
 - **W3A16**(bits:3,group_size:128,sym:True,act_bits:16)
 - **W2A16**(bits:2,group_size:128,sym:True,act_bits:16)
 - **GGUF:Q4_K_M**(all Q*_K,Q*_0,Q*_1 provided by llamacpp are supported)
@@ -152,6 +154,11 @@ adopted within the community, **only 4-bits quantization is supported**. Please 
 
 **LLM-Compressor Format**: **NVFP4, MXFP4(kernel in WIP), MXFP8 are supported**. Please set `--format llm_compressor`
 
+**MLX Format**: This format targets Apple Silicon (M1/M2/M3/...) and is loaded directly by [`mlx-lm`](https://github.com/ml-explore/mlx-lm) (text-only LLM) or [`mlx-vlm`](https://github.com/Blaizzy/mlx-vlm) (vision/audio + language).
+- Supports **2, 3, 4, 5, 6, 8 bits** (5/6 bits are MLX-exclusive — GPTQ/AWQ have no standard packing for them).
+- Native **mixed-bit / mixed-group_size** via `layer_config` or AutoScheme (`--target_bits 3.5 --options "..."`); 
+- Use `--format mlx` for a native MLX checkpoint; use `--format auto_round:mlx` if you want HuggingFace `transformers` + AutoRound to load it (post-init repacks each layer into MLX `QuantLinear` on Darwin).
+- Limitation: embedding layer quantization has not supported
 #### Format and scheme support matrix
 > Gray indicates the absence of a kernel or the presence of only an inefficient/reference kernel. BF16 is mainly for AutoScheme
 
@@ -162,13 +169,14 @@ adopted within the community, **only 4-bits quantization is supported**. Please 
 | **auto_awq** | W4A16, BF16                                                                                                                                                             |
 | **auto_gptq** | W4A16, W2A16, W3A16, W8A16,W2A16G64, W2A16G32, BF16                                                                                                                     |
 | **llm_compressor** | NVFP4, `MXFP4`, `MXFP8`, `FPW8A16`, `FP8_STATIC`, FP8_BLOCK                                                                                                   |
+| **mlx** / **auto_round:mlx** | W2A16, W3A16, W4A16, W5A16, W6A16, W8A16, BF16, mixed-bit / mixed-group_size (Apple Silicon only)                                                  |
 | **gguf** | GGUF:Q4_K_M, GGUF:Q2_K_S, GGUF:Q3_K_S, GGUF:Q3_K_M, GGUF:Q3_K_L, GGUF:Q4_K_S, GGUF:Q5_K_S, GGUF:Q5_K_M, GGUF:Q6_K, GGUF:Q4_0, GGUF:Q4_1, GGUF:Q5_0, GGUF:Q5_1,GGUF:Q8_0 |
 | **fp8**  | FP8_BLOCK                                                                                                                                                               |
 | **fake** | `all schemes (only for research)`                                                                                                                                       |
 
 ### Hardware Compatibility
 
-CPU, Intel GPU, HPU and CUDA for both quantization and inference.
+CPU, Intel GPU, HPU and CUDA for both quantization and inference. The **MLX format** is exclusive to **Apple Silicon (macOS / Darwin)** at inference time; quantization (export) itself can be done on any platform.
 
 ### Environment Configuration
 

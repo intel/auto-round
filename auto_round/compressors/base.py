@@ -597,8 +597,15 @@ class BaseCompressor(object):
 
     def _gen_auto_scheme(self) -> dict[str, dict]:
         if self.mllm:
-            logger.info("AutoScheme is not yet supported for multimodal LLMs.")
-            sys.exit(-1)
+            # AutoScheme on a VLM only scores the language tower (the block
+            # walker in delta_loss already skips vision/audio sub-trees) and
+            # uses a pure-text calibration dataset by default, falling back to
+            # the multimodal dataloader if the VLM rejects text-only forward.
+            logger.info(
+                "AutoScheme on multimodal LLM: scoring the language tower only "
+                "with text-only calibration (multimodal dataloader will be used "
+                "as a fallback if needed)."
+            )
 
         if is_quantized_input_module(self.model):
             logger.info("AutoScheme does not currently support quantized input models (e.g., FP8).")
@@ -648,6 +655,58 @@ class BaseCompressor(object):
             is_mllm=self.mllm,
         )
         quant_layer_names = layer_config.keys()
+
+        # ---- VLM: restrict AutoScheme to the language tower ----------- #
+        # When quantizing a multimodal model without ``quant_nontext_module``
+        # (the default), vision / audio sub-trees stay at fp16. Including them
+        # in the avg_bits computation pushes the achievable range way above
+        # the user's target (e.g. 9B VLM: range = [5.7, 7.3] instead of
+        # [2.x, 8.0]) because the vision tower's fp16 params dominate the
+        # weighted average. AutoScheme should therefore score and average
+        # *only* the language-tower layers, matching the mlx-community
+        # convention where e.g. ``Qwen3-VL-9B-MLX-4bit`` refers to language
+        # bits only.
+        nontext_skipped_layers: dict[str, dict] = {}
+        if self.mllm and not getattr(self, "quant_nontext_module", False):
+            from auto_round.utils import get_block_names
+
+            language_blocks = get_block_names(self.model, quant_vision=False)
+            language_block_prefixes = tuple(
+                blk for group in language_blocks for blk in group
+            )
+            # Layers that belong to the language tower (i.e. live under one of
+            # its ModuleList blocks) OR are top-level non-tower layers we'd
+            # still want to quantize (lm_head, embed_tokens) are kept;
+            # everything else (vision_tower / visual / audio_tower / ...) is
+            # peeled off and re-attached after GenScheme runs.
+            vision_audio_markers = ("vision", "visual", "image", "audio", "speech", "wav", "waveform")
+
+            def _is_language_layer(name: str) -> bool:
+                # Quick prefix test against detected language blocks.
+                if any(name == p or name.startswith(p + ".") for p in language_block_prefixes):
+                    return True
+                # Fallback: drop anything containing a vision/audio marker.
+                lname = name.lower()
+                return not any(marker in lname for marker in vision_audio_markers)
+
+            language_layer_config = {}
+            for name, cfg in layer_config.items():
+                if _is_language_layer(name):
+                    language_layer_config[name] = cfg
+                else:
+                    nontext_skipped_layers[name] = cfg
+
+            if nontext_skipped_layers:
+                logger.info(
+                    "AutoScheme (VLM): restricting bit assignment to %d language-tower "
+                    "layers; %d vision/audio-tower layers kept at their original "
+                    "16 bits configuration.",
+                    len(language_layer_config),
+                    len(nontext_skipped_layers),
+                )
+                layer_config = language_layer_config
+                quant_layer_names = layer_config.keys()
+
         scheme_keys = {f.name for f in fields(QuantizationScheme)}
         fixed_layer_scheme_new = {
             k: {key: v[key] for key in scheme_keys & v.keys()}
@@ -671,6 +730,27 @@ class BaseCompressor(object):
             enable_torch_compile=self.enable_torch_compile,
         )
         layer_config = self.scheme_generator.get_layer_config()
+        # Re-attach vision/audio-tower layers we peeled off earlier so the
+        # downstream quantization pipeline sees the complete layer map.
+        # NOTE: ``nontext_skipped_layers`` was populated *after* the first
+        # ``set_layer_config`` call, so each cfg already carries internal-only
+        # keys such as ``in_blocks`` that the second ``set_layer_config`` call
+        # in ``configure_layer_config`` would reject via its ``normalize_item``
+        # validator. Strip those keys (keep only the allowed scheme fields)
+        # before merging.
+        if nontext_skipped_layers:
+            allowed_keys = {f.name for f in fields(QuantizationScheme)} | {
+                "fixed_by_user",
+                "scale_dtype",
+                "scheme",
+            }
+            for name, cfg in nontext_skipped_layers.items():
+                clean_cfg = (
+                    {k: v for k, v in cfg.items() if k in allowed_keys}
+                    if isinstance(cfg, dict)
+                    else cfg
+                )
+                layer_config.setdefault(name, clean_cfg)
         return layer_config
 
     def _set_device(self, device_map: Union[str, torch.device, int, dict]) -> None:

@@ -177,9 +177,11 @@ class QuantLinearMLX(nn.Module):
         scales = self.scales.cpu().float().repeat_interleave(self.group_size, dim=1)[:, : self.infeatures]
         biases = self.biases.cpu().float().repeat_interleave(self.group_size, dim=1)[:, : self.infeatures]
         weight = scales * intweight + biases
-        out = torch.nn.functional.linear(
-            x.cpu().to(weight.dtype), weight, self.bias.cpu() if self.bias is not None else None
-        )
+        # NOTE: self.bias is registered as float16 but ``weight`` here is float32 because
+        # we promoted intweight via .float(). F.linear requires bias dtype to match weight
+        # dtype, otherwise it raises RuntimeError. Cast explicitly.
+        bias = self.bias.cpu().to(weight.dtype) if self.bias is not None else None
+        out = torch.nn.functional.linear(x.cpu().to(weight.dtype), weight, bias)
         return out.to(input_dtype).to(input_device)
 
     def _unpack_weight_torch(self, device=None):

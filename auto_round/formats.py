@@ -1086,7 +1086,7 @@ class FP8Format(OutputFormat):
 
 @OutputFormat.register("mlx")
 class MLXFormat(OutputFormat):
-    support_schemes = ["W2A16", "W3A16", "W4A16", "W5A16", "W6A16", "W8A16", "BF16"]
+    support_schemes = ["W2A16", "W2A16G32", "W2A16G64", "W3A16", "W4A16", "W5A16", "W6A16", "W8A16", "BF16"]
     format_name = "mlx"
 
     @classmethod

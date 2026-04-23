@@ -48,7 +48,9 @@ from auto_round.utils import (
     get_block_names,
     get_major_device,
     get_module,
+    is_mllm_model,
     llm_load_model,
+    mllm_load_model,
     parse_available_devices,
     set_avg_auto_device_map,
     set_module,
@@ -401,7 +403,11 @@ def model_forward_low_gpu(model, dataloader, major_device="cuda", pbar=None):
         last_block_backward_hook = last_block.register_full_backward_pre_hook(backward_pre_hook)
 
         data = to_device(data, model.device)
-        output = model.forward(**data, labels=data["input_ids"], use_cache=False)
+        # VLM datasets often already include ``labels``; LLM ones don't. Strip
+        # any pre-existing ``labels`` from kwargs so we don't pass it twice.
+        labels = data["labels"] if isinstance(data, dict) and "labels" in data else data["input_ids"]
+        data_for_forward = {k: v for k, v in data.items() if k != "labels"}
+        output = model.forward(**data_for_forward, labels=labels, use_cache=False)
 
         try:
             # Backward pass (will be interrupted by the hook)
@@ -432,12 +438,7 @@ def model_forward_low_gpu(model, dataloader, major_device="cuda", pbar=None):
             for n, m in block_module.named_modules():
                 if hasattr(m, "grad_mode"):
                     m.grad_mode = True
-                if hasattr(m, "orig_layer"):
-                    m.to(m.orig_layer.tuning_device)
-                elif hasattr(m, "tuning_device"):
-                    m.to(m.tuning_device)
-                elif len(list(m.children())) == 0:
-                    m.to(major_device)
+            move_module_to_tuning_device(block_module, major_device=major_device)
 
             # Set the block to eval mode while enabling gradient computation
             block_module.eval()
@@ -491,6 +492,9 @@ def get_score_for_scheme(
     batch_size=1,
     disable_opt_rtn=True,
     offload_context: Optional[OffloadManager] = None,
+    processor=None,
+    is_vlm: bool = False,
+    model_name: Optional[str] = None,
 ):
     scores_dict = {}  # Key=name,Val=[quant_total_bits, loss]
     for n, m in model.named_modules():
@@ -554,23 +558,107 @@ def get_score_for_scheme(
             set_module(model, name, new_m)
     if offload_context is not None:
         offload_context.flush_loaded(model)
-    if low_gpu_mem_usage:
-        dataloader = get_dataloader(tokenizer, seqlen, dataset_name=dataset, seed=42, bs=batch_size, nsamples=nsamples)
 
-        model_forward_low_gpu(model, dataloader, major_device=major_device, pbar=pbar)
+    def _build_calib_dataloader():
+        """Pick the calibration dataloader.
+
+        Since AutoScheme only scores the language tower (``get_block_names``
+        already skips the vision/audio sub-trees on VLMs), a pure-text
+        calibration dataset is sufficient and far cheaper for VLMs too — most
+        VLMs accept a text-only forward and simply skip the vision encoder.
+        We therefore use ``get_dataloader`` (text-only) by default and only
+        fall back to the multimodal ``get_mllm_dataloader`` if a VLM truly
+        rejects text-only inputs (caller can detect that in the calling loop).
+        """
+        return get_dataloader(tokenizer, seqlen, dataset_name=dataset, seed=42, bs=batch_size, nsamples=nsamples)
+
+    def _build_mllm_calib_dataloader():
+        """Build the multimodal calibration dataloader (image + text).
+
+        Used only as a fallback when text-only forward fails on a VLM.
+        Returns ``None`` if we can't build one (no processor / template /
+        dataset issue) so the caller can surface a clearer error.
+        """
+        if not (is_vlm and processor is not None):
+            return None
+        from auto_round.compressors.mllm.dataset import get_mllm_dataloader
+
+        template = None
+        if hasattr(model, "config") and hasattr(model.config, "model_type"):
+            template = model.config.model_type
+        # Default VLM dataset if user kept the LLM-only ``pile-10k`` default.
+        ds = dataset
+        if ds == "pile-10k" or ds is None:
+            ds = "liuhaotian/llava_conv_58k"
+        try:
+            loader, _, _ = get_mllm_dataloader(
+                template=template,
+                model=model,
+                tokenizer=tokenizer,
+                processor=processor,
+                dataset=ds,
+                seqlen=seqlen,
+                bs=batch_size,
+                nsamples=nsamples,
+            )
+            return loader
+        except Exception as exc:  # noqa: BLE001
+            logger.warning(f"Failed to build mllm calibration dataloader: {exc}")
+            return None
+
+    def _labels_for(data):
+        """VLM datasets often already provide ``labels``; LLM ones don't."""
+        if isinstance(data, dict) and "labels" in data:
+            return data["labels"]
+        return data["input_ids"]
+
+    if low_gpu_mem_usage:
+        try:
+            dataloader = _build_calib_dataloader()
+            model_forward_low_gpu(model, dataloader, major_device=major_device, pbar=pbar)
+        except Exception as exc:  # noqa: BLE001
+            if not is_vlm:
+                raise
+            logger.warning(
+                f"Text-only calibration failed on VLM ({exc}); "
+                f"falling back to multimodal calibration dataloader."
+            )
+            mllm_loader = _build_mllm_calib_dataloader()
+            if mllm_loader is None:
+                raise
+            model_forward_low_gpu(model, mllm_loader, major_device=major_device, pbar=pbar)
     else:
         for n, m in model.named_modules():
             if hasattr(m, "grad_mode"):
                 m.grad_mode = True
-        dataloader = get_dataloader(tokenizer, seqlen, dataset_name=dataset, seed=42, bs=batch_size, nsamples=nsamples)
-        for data in dataloader:
-            data = to_device(data, model.device)
-            output = model.forward(**data, labels=data["input_ids"], use_cache=False)
-            output.loss.backward()
-            for n, m in model.named_parameters():  # This should be kept to reduce VRAM footprint
-                m.grad = None
-            if pbar is not None:
-                pbar.update(1)
+
+        def _run_forward_loop(loader):
+            for data in loader:
+                data = to_device(data, model.device)
+                labels = _labels_for(data)
+                # Strip ``labels`` from the kwargs in case the dataset already had one,
+                # then re-add it as a single source of truth.
+                data_for_forward = {k: v for k, v in data.items() if k != "labels"}
+                output = model.forward(**data_for_forward, labels=labels, use_cache=False)
+                output.loss.backward()
+                for n, m in model.named_parameters():  # This should be kept to reduce VRAM footprint
+                    m.grad = None
+                if pbar is not None:
+                    pbar.update(1)
+
+        try:
+            _run_forward_loop(_build_calib_dataloader())
+        except Exception as exc:  # noqa: BLE001
+            if not is_vlm:
+                raise
+            logger.warning(
+                f"Text-only calibration failed on VLM ({exc}); "
+                f"falling back to multimodal calibration dataloader."
+            )
+            mllm_loader = _build_mllm_calib_dataloader()
+            if mllm_loader is None:
+                raise
+            _run_forward_loop(mllm_loader)
 
         for n, m in model.named_parameters():
             m.grad = None
@@ -644,13 +732,40 @@ def choose_bits_per_layer_with_path(layers: dict, P: int):
 
 
 def move_module_to_tuning_device(module, major_device="cpu"):
+    def _normalize(dev):
+        return dev if isinstance(dev, torch.device) else torch.device(dev)
+
+    def _move_own_tensors(m, device):
+        # Cover non-leaf modules that directly hold nn.Parameter / buffers
+        # (e.g. Mamba/GDN linear_attn with A_log & dt_bias). Also relocate
+        # p.grad together with p.data — otherwise the next backward's grad
+        # accumulation hits a cuda/cpu device mismatch.
+        target = _normalize(device)
+        for p in m.parameters(recurse=False):
+            if p.device != target:
+                p.data = p.data.to(target)
+            if p.grad is not None and p.grad.device != target:
+                p.grad.data = p.grad.data.to(target)
+        for b_name, b in list(m.named_buffers(recurse=False)):
+            if b is None:
+                continue
+            if b.device != target:
+                m._buffers[b_name] = b.to(target)
+
     for n, m in module.named_modules():
         if hasattr(m, "orig_layer"):
-            m.to(m.orig_layer.tuning_device)
+            target = m.orig_layer.tuning_device
+            m.to(target)
+            _move_own_tensors(m, target)
         elif hasattr(m, "tuning_device"):
-            m.to(m.tuning_device)
+            target = m.tuning_device
+            m.to(target)
+            _move_own_tensors(m, target)
         elif len(list(m.children())) == 0:
             m.to(major_device)
+            _move_own_tensors(m, major_device)
+        else:
+            _move_own_tensors(m, major_device)
 
 
 def _gen_layer_config(
@@ -667,6 +782,8 @@ def _gen_layer_config(
     model_name=None,
     major_device="cpu",
     device_list=None,
+    processor=None,
+    is_vlm: bool = False,
 ):
     # Initialize memory tracking for AutoScheme
     memory_monitor = MemoryMonitor()
@@ -823,6 +940,9 @@ def _gen_layer_config(
                 batch_size=batch_size,
                 disable_opt_rtn=auto_scheme.disable_opt_rtn,
                 offload_context=offload_context,
+                processor=processor,
+                is_vlm=is_vlm,
+                model_name=model_name,
             )
         # Track peak RAM after each scheme scoring
         memory_monitor.update_cpu()
@@ -970,10 +1090,30 @@ def gen_layer_config(
     **kwargs,
 ):
     model_name = None
+    processor = None
+    is_vlm = False
     if isinstance(model, str):
         model_name = model
-        # Load model on CPU only; do not apply automatic device map or tuning-aware placement at load time.
-        model, tokenizer, _ = llm_load_model(model_name, device_map="cpu")
+        # Detect VLM (Qwen-VL / Qwen3-VL / LLaVA / etc.) and load via the MLLM
+        # path so we get a usable ``processor`` for the multimodal calibration
+        # dataloader. The block walker auto-detects VLMs too and skips the
+        # vision tower when scoring.
+        is_vlm = is_mllm_model(model_name)
+        if is_vlm:
+            model, processor, tokenizer, _ = mllm_load_model(
+                model_name,
+                device="cpu",
+                use_auto_mapping=False,
+            )
+        else:
+            # Load model on CPU only; do not apply automatic device map or tuning-aware placement at load time.
+            model, tokenizer, _ = llm_load_model(model_name, device_map="cpu")
+    else:
+        # Object passed in: still try to detect VLM so we can pick the right dataloader later.
+        try:
+            is_vlm = is_mllm_model(model)
+        except Exception:  # noqa: BLE001
+            is_vlm = False
     # Get major device
     major_device = get_major_device(device_map)
     if not low_gpu_mem_usage:
@@ -1022,6 +1162,8 @@ def gen_layer_config(
             major_device=major_device,
             device_list=device_list,
             min_avg_bit_scheme=min_avg_bit_scheme,
+            processor=processor,
+            is_vlm=is_vlm,
         )
     except torch.OutOfMemoryError:
         logger.warning(
@@ -1052,6 +1194,8 @@ def gen_layer_config(
             major_device=major_device,
             device_list=device_list,
             min_avg_bit_scheme=min_avg_bit_scheme,
+            processor=processor,
+            is_vlm=is_vlm,
         )
 
     return res
