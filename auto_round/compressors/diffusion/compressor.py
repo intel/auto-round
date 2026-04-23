@@ -554,7 +554,13 @@ class DiffusionCompressor(BaseCompressor):
         """Quantize all transformer components and save the pipeline."""
         additional = self._find_additional_transformers()
         if not additional:
-            return super().quantize_and_save(output_dir, format=format, inplace=inplace, **kwargs)
+            # Ensure consistent return value regardless of transformer count.
+            # super() may return (model, folders) or just model depending on
+            # return_folders, so always unpack with a fallback.
+            result = super().quantize_and_save(output_dir, format=format, inplace=inplace, **kwargs)
+            if isinstance(result, tuple):
+                return result
+            return result, None
 
         # Setup (mirrors BaseCompressor.quantize_and_save)
         from auto_round.formats import get_formats
@@ -632,11 +638,15 @@ class DiffusionCompressor(BaseCompressor):
         self.num_inference_steps = orig_steps
 
         # Save everything
-        self.save_quantized(output_dir, format=self.formats, inplace=inplace, return_folders=True, **kwargs)
+        model, folders = self.save_quantized(
+            output_dir, format=self.formats, inplace=inplace, return_folders=True, **kwargs
+        )
 
         from auto_round.utils import memory_monitor
 
         memory_monitor.log_summary()
+
+        return model, folders
 
     def _get_save_folder_name(self, format: OutputFormat) -> str:
         """Generates the save folder name based on the provided format string.
@@ -662,42 +672,46 @@ class DiffusionCompressor(BaseCompressor):
 
         # Use a subfolder only if there are multiple formats
         if len(self.formats) > 1:
-            return (
-                os.path.join(self.orig_output_dir, sanitized_format, "transformer")
-                if self.is_immediate_saving
-                else os.path.join(self.orig_output_dir, sanitized_format, "transformer")
-            )
+            return os.path.join(self.orig_output_dir, sanitized_format, "transformer")
 
         # if use is_immediate_saving, we need to save model in self.orig_output_dir/transformer folder
         return os.path.join(self.orig_output_dir, "transformer") if self.is_immediate_saving else self.orig_output_dir
 
-    def save_quantized(self, output_dir=None, format="auto_round", inplace=True, **kwargs):
+    def save_quantized(self, output_dir=None, format="auto_round", inplace=True, return_folders=False, **kwargs):
         """Save the quantized model to the specified output directory in the specified format.
 
         Args:
             output_dir (str, optional): The directory to save the quantized model. Defaults to None.
             format (str, optional): The format in which to save the model. Defaults to "auto_round".
             inplace (bool, optional): Whether to modify the model in place. Defaults to True.
+            return_folders (bool, optional): Whether to return the save folder paths. Defaults to False.
             **kwargs: Additional keyword arguments specific to the export format.
 
         Returns:
-            object: The compressed model object.
+            object: The compressed model object, or (compressed_model, folders) if return_folders is True.
         """
         if output_dir is None:
-            return super().save_quantized(output_dir, format=format, inplace=inplace, **kwargs)
+            return super().save_quantized(
+                output_dir, format=format, inplace=inplace, return_folders=return_folders, **kwargs
+            )
 
         quantized_transformers = getattr(self, "_quantized_transformers", {})
         compressed_model = None
+        folders = []
+
         if hasattr(self.model, "config") and getattr(self.model.config, "model_type", None) == "nextstep":
-            compressed_model = super().save_quantized(
+            result = super().save_quantized(
                 output_dir=output_dir,
                 format=format,
                 inplace=inplace,
+                return_folders=False,
                 **kwargs,
             )
             self.pipe.tokenizer.save_pretrained(output_dir)
             copy_python_files_from_model_cache(self.model, output_dir, copy_folders=["models", "vae", "utils"])
-            return compressed_model
+            if return_folders:
+                return result, [output_dir]
+            return result
 
         for name in self.pipe.components.keys():
             val = getattr(self.pipe, name)
@@ -711,6 +725,7 @@ class DiffusionCompressor(BaseCompressor):
                     output_dir=sub_module_path if not self.is_immediate_saving else output_dir,
                     format=format,
                     inplace=inplace,
+                    return_folders=False,
                     **kwargs,
                 )
                 self.model, self.layer_config = saved_model, saved_lc
@@ -719,23 +734,30 @@ class DiffusionCompressor(BaseCompressor):
                     output_dir=sub_module_path if not self.is_immediate_saving else output_dir,
                     format=format,
                     inplace=inplace,
+                    return_folders=False,
                     **kwargs,
                 )
             elif val is not None and hasattr(val, "save_pretrained"):
                 val.save_pretrained(sub_module_path)
+                continue
 
             if name == "transformer":
-                # To suit "diffusion_pytorch_model.safetensors"
                 for single_format in format:
                     rename_weights_files(self._get_save_folder_name(single_format))
+
+            for single_format in self.formats:
+                folders.append(self._get_save_folder_name(single_format))
+
         if not hasattr(self.pipe.config, "save_pretrained"):
-            # For Z-Image, tuning will cause this attribute missing, we need to add it back before saving config
             setattr(
                 self.pipe.config,
                 "save_pretrained",
                 partial(config_save_pretrained, self.pipe.config, "model_index.json"),
             )
         self.pipe.config.save_pretrained(output_dir)
+
+        if return_folders:
+            return compressed_model, folders
         return compressed_model
 
     def _align_device_and_dtype(self):
