@@ -107,6 +107,39 @@ class HadamardRotation(BaseRotation):
         """
         cfg = self.config
 
+        # Dispatch by backend.  The transform backend (triton-fused per-Linear)
+        # is implemented below; the inplace (QuaRot) backend is delegated to
+        # :mod:`auto_round.algorithms.transforms.rotation.inplace`.
+        from auto_round.algorithms.transforms.rotation.dispatcher import resolve_hadamard_backend
+
+        backend = resolve_hadamard_backend(cfg, data_type)
+        if backend == "inplace":
+            import auto_round.envs as envs
+            from auto_round.algorithms.transforms.rotation.inplace import apply_rotation_transform as _inplace_apply
+
+            # Resolve fuse flag: explicit > env var > default(False).
+            fuse_online_to_weight = cfg.fuse_online_to_weight
+            if cfg.fuse_online_to_weight is not None:
+                fuse_online_to_weight = bool(cfg.fuse_online_to_weight)
+            elif envs.AR_FUSE_ONLINE_ROTATION:
+                fuse_online_to_weight = bool(envs.AR_FUSE_ONLINE_ROTATION)
+
+            bs = cfg.block_size
+            group_size = bs if (bs is not None and bs > 0) else None
+
+            compute_device = kwargs.get("compute_device")
+            model, _hooks = _inplace_apply(
+                model,
+                group_size=group_size,
+                allow_online_rotation=cfg.allow_online_rotation,
+                rotation_matrix=cfg.hadamard_type,
+                fuse_online_to_weight=fuse_online_to_weight,
+                compute_device=compute_device,
+            )
+            setattr(model, "rotation_config", cfg.model_dump())
+            return model
+
+        # backend == "transform": original per-Linear triton-fused path.
         # Collect target modules.
         target_types = (torch.nn.Linear, QModuleBase)
 

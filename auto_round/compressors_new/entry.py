@@ -457,8 +457,8 @@ class AutoRoundCompatible:
 
         # Extract rotation_config (old-API kwarg) and thread it into alg_configs.
         # In old arch this was a standalone keyword arg; the new arch passes rotation
-        # transforms as part of the alg_configs list.  backend='inplace' is not yet
-        # wired into the new-arch alg_configs pipeline, so warn and skip.
+        # transforms as part of the alg_configs list.  All backends (auto / inplace /
+        # transform) are dispatched inside ``HadamardRotation.apply_to_model``.
         _rotation_config_raw = kwargs.pop("rotation_config", None)
         if _rotation_config_raw is not None:
             if isinstance(_rotation_config_raw, _NewArchRotationConfig):
@@ -468,15 +468,7 @@ class AutoRoundCompatible:
             else:
                 # str alias ("default", "random_hadamard", …) -> default config
                 _rc = _NewArchRotationConfig()
-
-            if _rc.backend == "inplace":
-                logger.warning(
-                    "rotation_config with backend='inplace' is not yet supported in the new architecture. "
-                    "The rotation will be skipped. Use backend='transform' or backend='auto' "
-                    "with an MXFP4/NVFP4 scheme, or pass RotationConfig() explicitly via alg_configs."
-                )
-            else:
-                config = [config, _rc]
+            config = [config, _rc]
 
         # Extract MLLM-specific parameters
         processor = kwargs.pop("processor", None)
