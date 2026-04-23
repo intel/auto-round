@@ -110,6 +110,8 @@ function main() {
     run_unit_test_vllm
     collect_log
     print_summary
+    # sleep 2h for local debug after UT, should be removed later
+    sleep 7200
 }
 
 main
