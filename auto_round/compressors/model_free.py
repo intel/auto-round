@@ -507,33 +507,133 @@ def _dequant_fp8_tensors(
     raw_tensors: dict[str, torch.Tensor],
     block_size: list | None = None,
 ) -> dict[str, torch.Tensor]:
-    """Dequantize FP8 weight tensors and remove their scale tensors.
+    """Dequantize FP8 / FP4-packed weight tensors and remove their scale tensors.
 
-    FP8 models (e.g. DeepSeek-V3-FP8) store weights as ``float8_e4m3fn``
-    with per-block scales in ``weight_scale_inv`` tensors.  This converts
-    them back to ``bfloat16`` so downstream RTN quantization can proceed.
+    Handles three storage conventions:
+
+    1. **DeepSeek-V3 FP8** — weight dtype ``float8_e4m3fn`` + ``weight_scale_inv``
+       (per-block float32 scales, NOT E8M0).
+    2. **FP8 + UE8M0 scale** — weight dtype ``float8_e4m3fn`` + ``.scale``
+       (F8_E8M0 / ``ue8m0`` format, e.g. ``scale_fmt=ue8m0``).
+    3. **FP4-packed I8 + UE8M0 scale** — weight dtype ``torch.int8`` where each
+       byte stores two FP4 E2M1 nibbles, paired with a ``.scale`` tensor in
+       F8_E8M0 format.  Shape relationship: ``weight[rows, cols/2]`` and
+       ``scale[rows, (cols/2)*2/block_size]`` where ``block_size`` is inferred
+       from the ratio ``weight.shape[1] * 2 / scale.shape[1]``.
+
+    All cases are converted to ``bfloat16`` so downstream RTN quantization can
+    proceed normally.
     """
     from auto_round.utils.weight_handler import _dequant_fp8_linear_weight
 
-    fp8_weight_names: list[str] = []
+    E8M0_EXPONENT_BIAS = 127
+
+    def _e8m0_to_float(scale_tensor: torch.Tensor) -> torch.Tensor:
+        """Convert E8M0 (power-of-2 exponent) scale tensor to float."""
+        raw = scale_tensor.view(torch.uint8).to(torch.int16) - E8M0_EXPONENT_BIAS
+        return torch.pow(2.0, raw.to(torch.float32)).to(torch.bfloat16)
+
+    def _dequant_fp4_packed_weight(
+        weight_i8: torch.Tensor,
+        scale_e8m0: torch.Tensor,
+    ) -> torch.Tensor:
+        """Dequantize FP4-packed int8 weight with E8M0 block scales to bfloat16.
+
+        Each ``int8`` byte stores two FP4 E2M1 values: the low nibble is the
+        first element and the high nibble is the second.  Block size is inferred
+        from the shape ratio ``weight.shape[1] * 2 / scale.shape[1]``.
+
+        Args:
+            weight_i8:   Packed weight tensor, shape ``[rows, cols_packed]``,
+                         dtype ``torch.int8``.  ``cols_packed = cols / 2``.
+            scale_e8m0:  Per-block scale tensor, shape ``[rows, n_blocks]``,
+                         stored as raw uint8 bytes in F8_E8M0 (ue8m0) format.
+
+        Returns:
+            Dequantized weight, shape ``[rows, cols]``, dtype ``bfloat16``.
+        """
+        # FP4 E2M1 lookup table — index is the 4-bit pattern (0..15)
+        # Layout: positive range at indices 0-7, negative at 8-15.
+        FP4_LUT = torch.tensor(
+            [0.0, 0.5, 1.0, 1.5, 2.0, 3.0, 4.0, 6.0, -0.0, -0.5, -1.0, -1.5, -2.0, -3.0, -4.0, -6.0],
+            dtype=torch.bfloat16,
+            device=weight_i8.device,
+        )
+        rows = weight_i8.shape[0]
+
+        # Re-interpret int8 storage as uint8 for bit operations.
+        weight_u8 = weight_i8.view(torch.uint8)
+        lo = (weight_u8 & 0x0F).to(torch.long)  # low  nibble → first  element
+        hi = ((weight_u8 >> 4) & 0x0F).to(torch.long)  # high nibble → second element
+        # Interleave lo/hi along the last dim: [rows, cols_packed, 2] → [rows, cols]
+        unpacked = torch.stack([lo, hi], dim=-1).reshape(rows, -1)
+        cols = unpacked.shape[1]
+
+        # Decode 4-bit patterns to bfloat16 float values via the lookup table.
+        decoded = FP4_LUT[unpacked]  # [rows, cols]
+
+        # Convert E8M0 per-block scales to float32 → bfloat16.
+        scale_f = _e8m0_to_float(scale_e8m0)  # [rows, n_blocks]
+        n_blocks = scale_f.shape[1]
+        block_size_inner = cols // n_blocks  # inferred block size (e.g. 32)
+
+        # Multiply each block of decoded values by its corresponding scale.
+        decoded = decoded.reshape(rows, n_blocks, block_size_inner)
+        return (decoded * scale_f.unsqueeze(-1)).reshape(rows, cols)
+
+    # ------------------------------------------------------------------
+    # Collect quantized weight entries.
+    # Tuple layout: (weight_name, scale_name, is_e8m0, is_fp4_packed)
+    #   is_e8m0      – scale tensor is in F8_E8M0 format (needs _e8m0_to_float)
+    #   is_fp4_packed – weight is int8-packed FP4; use _dequant_fp4_packed_weight
+    # ------------------------------------------------------------------
+    quant_entries: list[tuple[str, str, bool, bool]] = []
+
     for name, tensor in raw_tensors.items():
         if not name.endswith(".weight"):
             continue
-        if tensor.dtype == torch.float8_e4m3fn or (tensor.element_size() == 1 and tensor.dtype != torch.float8_e4m3fn):
-            scale_name = name.replace(".weight", ".weight_scale_inv")
-            if scale_name in raw_tensors:
-                fp8_weight_names.append(name)
 
-    if not fp8_weight_names:
+        is_fp4_packed = tensor.dtype == torch.int8
+        is_fp8 = tensor.dtype == torch.float8_e4m3fn
+        # Also catch other 1-byte dtypes (e.g. float8_e5m2) by element size.
+        if not is_fp4_packed and not is_fp8:
+            if tensor.element_size() != 1:
+                continue
+            is_fp8 = True  # treat remaining 1-byte dtypes as FP8
+
+        # Convention 1: .weight_scale_inv (DeepSeek-V3 style, FP8 only)
+        scale_inv_name = name.replace(".weight", ".weight_scale_inv")
+        if scale_inv_name in raw_tensors and not is_fp4_packed:
+            quant_entries.append((name, scale_inv_name, False, False))
+            continue
+
+        # Convention 2: .scale in F8_E8M0 / ue8m0 format
+        scale_name = name.replace(".weight", ".scale")
+        if scale_name in raw_tensors:
+            quant_entries.append((name, scale_name, True, is_fp4_packed))
+
+    if not quant_entries:
         return raw_tensors
 
-    logger.info(f"Dequantizing {len(fp8_weight_names)} FP8 weight tensors to bfloat16.")
+    fp4_count = sum(1 for e in quant_entries if e[3])
+    fp8_count = len(quant_entries) - fp4_count
+    parts: list[str] = []
+    if fp8_count:
+        parts.append(f"{fp8_count} FP8")
+    if fp4_count:
+        parts.append(f"{fp4_count} FP4-packed (int8)")
+    logger.info(f"Dequantizing {' and '.join(parts)} weight tensor(s) to bfloat16.")
 
-    for weight_name in fp8_weight_names:
-        scale_name = weight_name.replace(".weight", ".weight_scale_inv")
+    for weight_name, scale_name, is_e8m0, is_fp4_packed in quant_entries:
         weight = raw_tensors[weight_name]
         scale = raw_tensors.pop(scale_name)
-        raw_tensors[weight_name] = _dequant_fp8_linear_weight(weight, scale, block_size=block_size)
+        if is_fp4_packed:
+            # FP4 E2M1 packed in int8 with UE8M0 per-block scale.
+            raw_tensors[weight_name] = _dequant_fp4_packed_weight(weight, scale)
+        else:
+            if is_e8m0:
+                scale = _e8m0_to_float(scale)
+            raw_tensors[weight_name] = _dequant_fp8_linear_weight(weight, scale, block_size=block_size)
 
     return raw_tensors
 
@@ -988,10 +1088,16 @@ class _ModelFreeQuantizerCore:
 
     def _detect_fp8_source(self) -> None:
         quant_config = self.config.get("quantization_config", {})
-        if quant_config.get("quant_method") == "fp8" or quant_config.get("quantization_type") == "fp8":
+        is_fp8 = (
+            quant_config.get("quant_method") == "fp8"
+            or quant_config.get("quantization_type") == "fp8"
+            or quant_config.get("fmt", "").startswith("e4m3")
+        )
+        if is_fp8:
             self.fp8_block_size = quant_config.get("weight_block_size")
             logger.info(
-                f"Detected FP8 source model (block_size={self.fp8_block_size}). "
+                f"Detected FP8 source model (block_size={self.fp8_block_size}, "
+                f"scale_fmt={quant_config.get('scale_fmt', 'N/A')}). "
                 f"FP8 weights will be dequantized before quantization."
             )
 
