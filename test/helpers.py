@@ -49,7 +49,7 @@ def eval_generated_prompt(
     assert target_text in generated_text, f"Expected {target_text} in generated text: {generated_text}"
 
 
-def eval_model_acc(
+def evaluate_accuracy(
     model_or_save_dir, tokenizer=None, task="lambada_openai", threshold=0.3, batch_size=8, limit=40, device="cpu"
 ):
     """Helper function to evaluate model accuracy on a given task.
@@ -436,7 +436,7 @@ def save_tiny_model(
     shutil.rmtree(tiny_model_path, ignore_errors=True)
 
     if not kwargs.get("trust_remote_code", True) and getattr(getattr(model, "config", None), "auto_map", None):
-        model.config.auto_map = None
+        del model.config.auto_map
 
     model.save_pretrained(tiny_model_path)
     if not is_diffusion:
