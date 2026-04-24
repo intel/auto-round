@@ -197,13 +197,34 @@ def _load_config(source_dir: str) -> dict:
         return json.load(f)
 
 
-def _list_safetensor_shards(source_dir: str) -> list[str]:
-    """Return list of safetensors shard filenames in order."""
-    index_file = os.path.join(source_dir, "model.safetensors.index.json")
-    single_file = os.path.join(source_dir, "model.safetensors")
+def _list_weight_shards(source_dir: str) -> list[str]:
+    """Return list of weight shard filenames in order.
 
-    if os.path.exists(index_file):
-        with open(index_file) as f:
+    Safetensors shards are preferred.  When no safetensors files are
+    found the function falls back to PyTorch ``.bin`` shards
+    (``pytorch_model.bin`` / ``pytorch_model-XXXXX-of-XXXXX.bin``).
+    """
+    # --- safetensors ---
+    st_index = os.path.join(source_dir, "model.safetensors.index.json")
+    st_single = os.path.join(source_dir, "model.safetensors")
+    if os.path.exists(st_index):
+        with open(st_index) as f:
+            index = json.load(f)
+        seen: set[str] = set()
+        shards: list[str] = []
+        for shard_file in index["weight_map"].values():
+            if shard_file not in seen:
+                seen.add(shard_file)
+                shards.append(shard_file)
+        return shards
+    if os.path.exists(st_single):
+        return ["model.safetensors"]
+
+    # --- pytorch .bin fallback ---
+    bin_index = os.path.join(source_dir, "pytorch_model.bin.index.json")
+    bin_single = os.path.join(source_dir, "pytorch_model.bin")
+    if os.path.exists(bin_index):
+        with open(bin_index) as f:
             index = json.load(f)
         seen = set()
         shards = []
@@ -212,10 +233,14 @@ def _list_safetensor_shards(source_dir: str) -> list[str]:
                 seen.add(shard_file)
                 shards.append(shard_file)
         return shards
-    elif os.path.exists(single_file):
-        return ["model.safetensors"]
-    else:
-        raise FileNotFoundError(f"No safetensors files found in {source_dir}")
+    if os.path.exists(bin_single):
+        return ["pytorch_model.bin"]
+
+    raise FileNotFoundError(f"No safetensors or .bin weight files found in {source_dir}")
+
+
+# Keep old name as an alias for backward compatibility.
+_list_safetensor_shards = _list_weight_shards
 
 
 def _is_eligible_weight(tensor_name: str, tensor: torch.Tensor) -> bool:
@@ -223,9 +248,19 @@ def _is_eligible_weight(tensor_name: str, tensor: torch.Tensor) -> bool:
     return tensor_name.endswith(".weight") and tensor.dim() == 2
 
 
-def _is_safetensors_shard(fname: str) -> bool:
-    """Return True if *fname* is a safetensors weight shard (not the index)."""
-    return fname.endswith(".safetensors") and not fname.endswith(".index.json")
+def _is_weight_shard(fname: str) -> bool:
+    """Return True if *fname* is a weight shard (safetensors or .bin).
+
+    Excludes index files (``*.index.json``) so that they are copied to the
+    output directory as normal metadata.
+    """
+    if fname.endswith(".index.json"):
+        return False
+    return fname.endswith(".safetensors") or fname.endswith(".bin")
+
+
+# Keep old name as an alias for backward compatibility.
+_is_safetensors_shard = _is_weight_shard
 
 
 def _download_single_shard(
@@ -264,7 +299,7 @@ def _download_metadata_files(
 
     if os.path.isdir(model_name_or_path):
         for fname in os.listdir(model_name_or_path):
-            if _is_safetensors_shard(fname):
+            if _is_weight_shard(fname):
                 continue
             src = os.path.join(model_name_or_path, fname)
             dst = os.path.join(local_dir, fname)
@@ -525,14 +560,25 @@ def _process_shard(
             default_scheme if default_scheme is not None else {},
         )
 
-    from safetensors import safe_open
-
     output_tensors: dict[str, torch.Tensor] = {}
     quantized_layers: list[str] = []
     ignored_layers: list[str] = []
 
-    with safe_open(shard_path, framework="pt", device="cpu") as f:
-        raw_tensors = {name: f.get_tensor(name) for name in f.keys()}
+    if shard_path.endswith(".bin"):
+        # PyTorch pickle checkpoint — load with weights_only where supported.
+        try:
+            raw_tensors = torch.load(shard_path, map_location="cpu", weights_only=True)
+        except TypeError:
+            # weights_only not available in older PyTorch versions
+            raw_tensors = torch.load(shard_path, map_location="cpu")  # nosec
+        # Flatten nested state-dict wrappers if present.
+        if not isinstance(raw_tensors, dict):
+            raise ValueError(f"Expected a dict from {shard_path}, got {type(raw_tensors)}")
+    else:
+        from safetensors import safe_open
+
+        with safe_open(shard_path, framework="pt", device="cpu") as f:
+            raw_tensors = {name: f.get_tensor(name) for name in f.keys()}
 
     raw_tensors = split_fused_expert_tensors(raw_tensors)
     raw_tensors = _dequant_fp8_tensors(raw_tensors, block_size=fp8_block_size)
@@ -621,8 +667,24 @@ def _write_output_shard(
     from safetensors.torch import save_file
 
     shard_path = os.path.join(output_dir, shard_name)
-    tensors = {k: v if v.is_contiguous() else v.contiguous() for k, v in tensors.items()}
-    save_file(tensors, shard_path)
+
+    # Detect shared-storage tensors (e.g. tie_word_embeddings: wte ↔ lm_head).
+    # safetensors refuses to serialise them as-is; clone the duplicates so each
+    # tensor occupies its own memory region.  The first occurrence keeps the
+    # original storage; subsequent aliases are cloned.
+    seen_data_ptrs: set[int] = set()
+    deduped: dict[str, torch.Tensor] = {}
+    for k, v in tensors.items():
+        if not v.is_contiguous():
+            v = v.contiguous()
+        ptr = v.data_ptr()
+        if ptr in seen_data_ptrs:
+            v = v.clone()
+        else:
+            seen_data_ptrs.add(ptr)
+        deduped[k] = v
+
+    save_file(deduped, shard_path)
     for tensor_name in tensors:
         weight_map[tensor_name] = shard_name
 
@@ -882,6 +944,42 @@ class _ModelFreeQuantizerCore:
             self.source_dir = _resolve_source_dir(self.model_name_or_path)
             self.config = _load_config(self.source_dir)
 
+    def _check_conv1d_and_embedding(self) -> None:
+        """Detect Conv1d and embedding layers and automatically add them to the ignore list."""
+        local_dir = self.work_dir if self.is_streaming else self.source_dir
+        if not local_dir or not os.path.isdir(local_dir):
+            return
+
+        try:
+            from auto_round.utils.model import find_layers_from_config
+
+            incompatible = find_layers_from_config(local_dir, class_names=["Embedding", "Conv1d", "Conv1D"])
+
+            if incompatible:
+                # Group by class for a cleaner warning message
+                incompatible_layers = []
+                for cls, layers in incompatible.items():
+                    incompatible_layers.extend(layers)
+                summary = ", ".join(f"{cls}({len(layers)})" for cls, layers in sorted(incompatible.items()))
+                self.ignore_patterns.extend(incompatible_layers)
+                logger.warning(
+                    f"Detected {len(incompatible)} layer(s) incompatible with model-free RTN "
+                    f"[{summary}]: {compress_layer_names(list(incompatible.keys()))}.\n"
+                    f"These layers have been automatically added to ignore_layers "
+                    f"and will be kept in full precision.\n"
+                    f"To override, pass --ignore_layers explicitly or disable "
+                    f"model-free mode (remove --model_free)."
+                )
+
+        except Exception as exc:
+            logger.warning(
+                f"Could not check model architecture for incompatible layers: {exc}.\n"
+                f"Models with Embedding or Conv1d layers may be incorrectly quantized "
+                f"in model-free mode (non-2D weights cannot be packed by the RTN kernel).\n"
+                f"If affected, either disable model-free mode (remove --model_free) or "
+                f"add those layers to --ignore_layers."
+            )
+
     def _apply_predefined_ignore_layers(self) -> None:
         predefined = get_predefined_ignore_layers_from_config(self.config)
         if predefined:
@@ -899,20 +997,27 @@ class _ModelFreeQuantizerCore:
 
     def _discover_shards(self) -> None:
         if self.is_streaming:
-            index_file = os.path.join(self.work_dir, "model.safetensors.index.json")
-            if os.path.exists(index_file):
-                with open(index_file) as f:
-                    index_data = json.load(f)
-                seen, names = set(), []
-                for shard_file in index_data["weight_map"].values():
-                    if shard_file not in seen:
-                        seen.add(shard_file)
-                        names.append(shard_file)
-                self.shard_names = names
-            else:
-                self.shard_names = ["model.safetensors"]
+            # Prefer safetensors index, then bin index, then single-file fallbacks.
+            for index_fname, single_fallback in [
+                ("model.safetensors.index.json", "model.safetensors"),
+                ("pytorch_model.bin.index.json", "pytorch_model.bin"),
+            ]:
+                index_file = os.path.join(self.work_dir, index_fname)
+                if os.path.exists(index_file):
+                    with open(index_file) as f:
+                        index_data = json.load(f)
+                    seen: set[str] = set()
+                    names: list[str] = []
+                    for shard_file in index_data["weight_map"].values():
+                        if shard_file not in seen:
+                            seen.add(shard_file)
+                            names.append(shard_file)
+                    self.shard_names = names
+                    return
+            # No index found — assume single-file model (safetensors preferred).
+            self.shard_names = ["model.safetensors"]
         else:
-            self.shard_names = _list_safetensor_shards(self.source_dir)
+            self.shard_names = _list_weight_shards(self.source_dir)
 
     def _build_matcher(self) -> None:
         self.matcher = _PatternMatcher(
@@ -1041,7 +1146,7 @@ class _ModelFreeQuantizerCore:
     def _copy_metadata_files(self) -> None:
         copy_src_dir = self.work_dir if self.is_streaming else self.source_dir
         for fname in os.listdir(copy_src_dir):
-            if _is_safetensors_shard(fname):
+            if _is_weight_shard(fname):
                 continue
             src = os.path.join(copy_src_dir, fname)
             dst = os.path.join(self.output_dir, fname)
@@ -1086,6 +1191,7 @@ class _ModelFreeQuantizerCore:
 
         # ---- source resolution ----
         self._resolve_source()
+        self._check_conv1d_and_embedding()
         self._apply_predefined_ignore_layers()
         self._build_matcher()
         self._detect_fp8_source()

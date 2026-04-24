@@ -2054,3 +2054,59 @@ def is_model_free_route(
         and disable_opt_rtn is True
         and is_model_free_supported_scheme(scheme)
     )
+
+
+def find_layers_from_config(model_dir: str, class_names: list[str] | None = None) -> dict[str, str]:
+    """Detect layers of given class names by loading the model on ``device='meta'``.
+
+    Only ``config.json`` is required — no weights are read.  Root directory
+    and every immediate sub-directory with a ``config.json`` are checked,
+    covering diffusion-style repos (``unet/``, ``vae/``, …).
+
+    Args:
+        model_dir: Local directory containing ``config.json``.
+        class_names: Class names to look for, matched against
+            ``type(module).__name__``.  Defaults to
+            ``["Embedding", "Conv1d", "Conv1D"]`` — the types incompatible
+            with model-free RTN packing.
+
+    Returns:
+        ``{layer_name: class_name}`` for every matched module.
+        Sub-directory layers are prefixed with ``<subdir>.``.
+        Returns an empty dict on any failure.
+    """
+    from transformers import AutoModel
+
+    if class_names is None:
+        class_names = ["Embedding", "Conv1d", "Conv1D"]
+    target = set(class_names)
+
+    # (prefix, config_dir) — root first, then sub-dirs
+    dirs: list[tuple[str, str]] = []
+    if os.path.exists(os.path.join(model_dir, "config.json")):
+        dirs.append(("", model_dir))
+    try:
+        dirs += [
+            (e.name, e.path)
+            for e in os.scandir(model_dir)
+            if e.is_dir() and os.path.exists(os.path.join(e.path, "config.json"))
+        ]
+    except OSError:
+        pass
+
+    result: dict[str, str] = {}
+    for prefix, config_dir in dirs:
+        try:
+            model = AutoModel.from_pretrained(config_dir, device_map="meta", trust_remote_code=True)
+        except Exception:
+            continue  # scheduler / feature_extractor / etc. — skip silently
+        for name, module in model.named_modules():
+            cls_name = type(module).__name__
+            if any(t in cls_name for t in target):
+                full_name = f"{prefix}.{name}" if prefix else name
+                if cls_name not in result:
+                    result[cls_name] = [full_name]
+                else:
+                    result[cls_name].append(full_name)
+        del model
+    return result
