@@ -98,9 +98,28 @@ class AutoSchemeWrapperLinear(WrapperLinear):
         if self.need_weight_grad:
             self.orig_layer.weight.requires_grad = True
 
+    def _apply_orig_pre_hooks(self, x):
+        """Run orig_layer.forward_pre_hooks (e.g., online Hadamard) on x.
+
+        Mirrors the behavior in ``WrapperLinear.forward`` so that activation
+        quantization, ``x_diff`` and ``max_act_value`` bookkeeping are all
+        computed on the post-hook activation, even when ``_qdq_act`` is
+        invoked outside the standard ``forward`` path.
+        """
+        for hook in self.orig_layer._forward_pre_hooks.values():
+            result = hook(self.orig_layer, (x,))
+            if result is not None:
+                x = result[0] if isinstance(result, tuple) else result
+        return x
+
     def _qdq_act(self, x, act_min_scale=1.0, act_max_scale=1.0, act_max=None):
         if hasattr(self.orig_layer, "act_bits") and self.orig_layer.act_bits > 8:
             return x, 1.0, None
+
+        # Apply orig_layer pre-hooks BEFORE activation quantization, so that the
+        # quantization error captured below (x - qdq_x) is measured in the
+        # post-hook activation domain.
+        x = self._apply_orig_pre_hooks(x)
 
         qdq_x, scale, zp = self.act_qdq_func(x, act_min_scale, act_max_scale, act_max)
         if self.grad_mode:
