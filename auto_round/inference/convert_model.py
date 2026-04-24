@@ -179,6 +179,43 @@ def get_available_devices():
     return devices
 
 
+def _remap_paths_for_text_model(model, quant_block_list, extra_config):
+    """Remap quantization paths when a composite model checkpoint is loaded as its text sub-model.
+
+    Uses Transformers' conversion_mapping WeightRenaming rules (e.g. "model.language_model" -> "model")
+    to fix path mismatches. Returns (remapped_block_list, remapped_extra_config).
+    """
+    try:
+        from transformers.conversion_mapping import get_checkpoint_conversion_mapping
+    except ImportError:
+        return quant_block_list, extra_config
+
+    model_type = getattr(getattr(model, "config", None), "model_type", None)
+    if model_type is None:
+        return quant_block_list, extra_config
+
+    mapping = get_checkpoint_conversion_mapping(model_type)
+    renamings = [r for r in mapping if type(r).__name__ == "WeightRenaming"]
+    if not renamings:
+        return quant_block_list, extra_config
+
+    def remap(path):
+        for r in renamings:
+            for src, tgt in zip(r.source_patterns, r.target_patterns):
+                new_path = re.sub(src, tgt, path)
+                if new_path != path:
+                    return new_path
+        return path
+
+    new_block_list = [remap(b) for b in quant_block_list]
+    new_extra_config = {remap(k): v for k, v in extra_config.items()} if extra_config else extra_config
+
+    if new_block_list != quant_block_list:
+        logger.info(f"Remapped block_name_to_quantize: {quant_block_list} -> {new_block_list}")
+
+    return new_block_list, new_extra_config
+
+
 def get_layer_config(model, quantization_config):
     """
     get a layer-wise quantization configuration for a given model.
@@ -214,7 +251,7 @@ def get_layer_config(model, quantization_config):
     act_data_type = getattr(quantization_config, "act_data_type", None)
     act_dynamic = getattr(quantization_config, "act_dynamic", False)
 
-    hadamard_config = getattr(quantization_config, "hadamard_config", None)
+    rotation_config = getattr(quantization_config, "rotation_config", None)
 
     default_quant_scheme = QuantizationScheme(
         bits=bits,
@@ -226,7 +263,7 @@ def get_layer_config(model, quantization_config):
         act_sym=act_sym,
         act_data_type=act_data_type,
         act_dynamic=act_dynamic,
-        hadamard_config=hadamard_config,
+        rotation_config=rotation_config,
     )
 
     # Determine the quantization block list
@@ -258,6 +295,17 @@ def get_layer_config(model, quantization_config):
 
     # Load extra configuration if available
     extra_config = getattr(quantization_config, "extra_config", {})
+
+    # When a composite model (e.g. VLM) is loaded as its text sub-model via AutoModelForCausalLM,
+    # block_name_to_quantize may still reference composite-level paths (e.g. "model.language_model.layers")
+    # while the actual module paths are "model.layers". Use conversion_mapping to remap if no layers matched.
+    if not layer_names and quant_block_list:
+        quant_block_list, extra_config = _remap_paths_for_text_model(model, quant_block_list, extra_config)
+        for n, m in model.named_modules():
+            if type(m) not in SUPPORTED_LAYER_TYPES:
+                continue
+            if check_start_with_block_name(n, quant_block_list):
+                layer_names.append(n)
 
     # Process GPTQ format: identify modules that should be quantized
     if getattr(quantization_config, "modules_in_block_to_quantize", None):
@@ -680,19 +728,19 @@ def convert_hf_model(model: nn.Module, target_device: str = "cpu") -> tuple[nn.M
     layer_configs = get_layer_config(model, quantization_config)
     used_backends = _replace_by_quant_layers(model, layer_configs, backend, target_device, packing_format)
 
-    hadamard_config = getattr(quantization_config, "hadamard_config", None)
-    if hadamard_config is not None and hadamard_config:
-        from auto_round.experimental.transform.apply import apply_hadamard_transform
-        from auto_round.experimental.transform.hadamard_config import HadamardConfig
+    rotation_config = getattr(quantization_config, "rotation_config", None)
+    if rotation_config is not None and rotation_config:
+        from auto_round.experimental.transform.apply import apply_rotation_transform
+        from auto_round.experimental.transform.rotation_config import RotationConfig
 
         # apply forward hook
-        act_hadamard_config = HadamardConfig(
-            block_size=hadamard_config["block_size"],
-            hadamard_type=hadamard_config["hadamard_type"],
+        act_rotation_config = RotationConfig(
+            block_size=rotation_config["block_size"],
+            hadamard_type=rotation_config["hadamard_type"],
         )  # apply to activation
-        model = apply_hadamard_transform(
+        model, _ = apply_rotation_transform(
             model,
-            act_hadamard_config,
+            act_rotation_config,
             location="input",
             desc="Register pre forward hook for hadamard transform",
             data_type=quantization_config.data_type,
