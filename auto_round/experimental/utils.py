@@ -17,8 +17,8 @@ from typing import Any
 import torch
 
 from auto_round.compressors.utils import is_mx_fp, is_nv_fp
-from auto_round.experimental.transform.hadamard_config import HadamardConfig
 from auto_round.experimental.transform.hadamards import HADAMARDS
+from auto_round.experimental.transform.rotation_config import RotationConfig
 from auto_round.utils import logger
 
 SUPPORTED_QUANTIZATION_SCHEMES = ["MXFP8", "MXFP4", "NVFP4"]
@@ -137,14 +137,38 @@ def is_triton_kernel_available(data_type: str) -> bool:
     return True
 
 
-def normalize_hadamard_config(hadamard_config: str | dict | HadamardConfig | None, data_type: str) -> dict[str, Any]:
+def dump_group_size_to_rotation_config(rotation_config: str | dict | RotationConfig, group_size: int):
+    rotation_dict = to_dict_rotation_config(rotation_config)
+    if rotation_dict.get("block_size", None) is None:
+        rotation_dict["block_size"] = group_size
+    return rotation_dict
+
+
+def to_dict_rotation_config(rotation_config: str | dict | RotationConfig):
+    if isinstance(rotation_config, str):
+        key = rotation_config.strip()
+        if not key:
+            return {}
+
+        if key == "default":
+            cfg_dict = {"hadamard_type": "hadamard"}
+        else:
+            cfg_dict = {"hadamard_type": key}
+    elif isinstance(rotation_config, RotationConfig):
+        cfg_dict = rotation_config.model_dump()
+    else:
+        cfg_dict = dict(rotation_config)
+    return cfg_dict
+
+
+def normalize_rotation_config(rotation_config: str | dict | RotationConfig | None, data_type: str) -> dict[str, Any]:
     """
-    Normalize and validate `hadamard_config`.
+    Normalize and validate `rotation_config`.
 
     Supported input types:
         - None           -> {}
-        - dict           -> validated via HadamardConfig
-        - HadamardConfig -> validated & converted to dict
+        - dict           -> validated via RotationConfig
+        - RotationConfig -> validated & converted to dict
         - str            -> shorthand for `hadamard_type` in HADAMARDS keys
 
     Additional behavior:
@@ -171,7 +195,7 @@ def normalize_hadamard_config(hadamard_config: str | dict | HadamardConfig | Non
             else:
                 logger.warning(
                     f"block_size is not set and cannot be inferred for data_type {data_type!r}; "
-                    "please set block_size explicitly in hadamard_config if needed."
+                    "please set block_size explicitly in rotation_config if needed."
                 )
         else:
             if is_mx_fp(data_type) and block_size != 32:
@@ -182,62 +206,16 @@ def normalize_hadamard_config(hadamard_config: str | dict | HadamardConfig | Non
         return cfg_dict
 
     # 1) None -> {}
-    if hadamard_config is None:
+    if rotation_config is None:
         return {}
 
-    # 2) HadamardConfig instance
-    if isinstance(hadamard_config, HadamardConfig):
-        raw_cfg_dict = hadamard_config.model_dump(exclude_unset=True)
-        block_size_explicitly_set = "block_size" in raw_cfg_dict
-
-        cfg_dict = dict(raw_cfg_dict)
-        cfg_dict = _apply_data_type_block_size(cfg_dict, block_size_explicitly_set)
-
-        try:
-            return HadamardConfig.model_validate(cfg_dict).model_dump()
-        except Exception as e:
-            raise ValueError(f"Invalid HadamardConfig: {e}") from e
-
-    # 3) dict
-    if isinstance(hadamard_config, dict):
-        block_size_explicitly_set = "block_size" in hadamard_config
-
-        cfg_dict = dict(hadamard_config)
-        cfg_dict = _apply_data_type_block_size(cfg_dict, block_size_explicitly_set)
-
-        try:
-            return HadamardConfig.model_validate(cfg_dict).model_dump()
-        except Exception as e:
-            raise ValueError(f"Invalid hadamard_config dict: {e}") from e
-
-    # 4) str -> shorthand for hadamard_type
-    if isinstance(hadamard_config, str):
-        key = hadamard_config.strip()
-        if not key:
-            return {}
-
-        if key == "default":
-            cfg_dict = {}
-            cfg_dict = _apply_data_type_block_size(cfg_dict, block_size_explicitly_set=False)
-            try:
-                return HadamardConfig.model_validate(cfg_dict).model_dump()
-            except Exception as e:
-                raise ValueError(f"Invalid default hadamard_config after data_type adjustment: {e}") from e
-
-        if key not in HADAMARDS:
-            raise ValueError(f"Invalid hadamard_config string: {key!r}. Expected one of {sorted(HADAMARDS.keys())}.")
-
-        cfg_dict = {"hadamard_type": key}
-        cfg_dict = _apply_data_type_block_size(cfg_dict, block_size_explicitly_set=False)
-
-        try:
-            return HadamardConfig.model_validate(cfg_dict).model_dump()
-        except Exception as e:
-            raise ValueError(f"hadamard_config built from string {key!r} is invalid for HadamardConfig: {e}") from e
-
-    raise TypeError(
-        "hadamard_config must be one of: None, dict, HadamardConfig, or str " f"(got {type(hadamard_config).__name__})"
-    )
+    rotation_dict = to_dict_rotation_config(rotation_config)
+    block_size_explicitly_set = "block_size" in rotation_dict
+    cfg_dict = _apply_data_type_block_size(rotation_dict, block_size_explicitly_set)
+    try:
+        return RotationConfig.model_validate(cfg_dict).model_dump()
+    except Exception as e:
+        raise ValueError(f"Invalid RotationConfig: {e}") from e
 
 
 def check_supported_schemes(scheme: str):

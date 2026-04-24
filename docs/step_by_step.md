@@ -743,8 +743,8 @@ from auto_round import AutoRound
 model_name_or_path = "meta-llama/Llama-3.1-8B-Instruct"
 output_dir = "./Llama-3.1-8B-Instruct-mxfp4-ht"
 
-# hadamard_config="default": block_size=32, hadamard_type="hadamard"
-ar = AutoRound(model_name_or_path, scheme="MXFP4", hadamard_config="default")
+# rotation_config="default": block_size=32, hadamard_type="hadamard"
+ar = AutoRound(model_name_or_path, scheme="MXFP4", rotation_config="default")
 
 ar.quantize_and_save(output_dir=output_dir, format="auto_round")
 ```

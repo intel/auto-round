@@ -55,8 +55,8 @@ def _write_config(target_dir: str, qcfg: dict | None = None) -> None:
         json.dump(config, f)
 
 
-def _make_auto_round_config(bits=4, group_size=128, sym=True) -> dict:
-    return {
+def _make_auto_round_config(bits=4, group_size=128, sym=True, block_name_to_quantize=None) -> dict:
+    qcfg: dict = {
         "quantization_config": {
             "quant_method": "auto-round",
             "packing_format": "auto_round:auto_gptq",
@@ -65,6 +65,9 @@ def _make_auto_round_config(bits=4, group_size=128, sym=True) -> dict:
             "sym": sym,
         }
     }
+    if block_name_to_quantize is not None:
+        qcfg["quantization_config"]["block_name_to_quantize"] = block_name_to_quantize
+    return qcfg
 
 
 # ===========================================================================
@@ -324,6 +327,32 @@ class TestCopyMissingTensorsFromSource:
         copy_missing_tensors_from_source(src, tgt)
         assert not os.path.exists(os.path.join(tgt, "model_extra_tensors.safetensors"))
 
+    def test_detects_multiple_missing_tensors_from_different_blocks(self, tmp_path):
+        """All source tensors from blocks absent in the saved output are copied."""
+        src, tgt = str(tmp_path / "src"), str(tmp_path / "tgt")
+        os.makedirs(src)
+        os.makedirs(tgt)
+        _save_safetensors(
+            {
+                "custom_block.0.norm.weight": torch.randn(64),
+                "mtp.0.norm.weight": torch.randn(64),
+                "model.embed_tokens.weight": torch.randn(8, 64),
+            },
+            os.path.join(src, "model.safetensors"),
+        )
+        _save_safetensors(
+            {"model.embed_tokens.weight": torch.randn(8, 64)},
+            os.path.join(tgt, "model.safetensors"),
+        )
+        _write_config(tgt)
+        copy_missing_tensors_from_source(src, tgt)
+        extra_shard = os.path.join(tgt, "model_extra_tensors.safetensors")
+        assert os.path.exists(extra_shard)
+        result = _load_safetensors(extra_shard)
+        assert "custom_block.0.norm.weight" in result
+        assert "mtp.0.norm.weight" in result
+        assert "model.embed_tokens.weight" not in result
+
     # ----- Fused expert splitting -----
 
     def test_fused_experts_split_and_copied(self, tmp_path):
@@ -433,6 +462,22 @@ class TestCopyMissingTensorsFromSource:
     # ----- Config / index file updates -----
 
     def test_config_updated_after_woq(self, tmp_path):
+        """block_name_to_quantize is extended with the new mtp block when one already exists."""
+        src, tgt = str(tmp_path / "src"), str(tmp_path / "tgt")
+        os.makedirs(src)
+        os.makedirs(tgt)
+        _save_safetensors({"mtp.0.ffn.weight": torch.randn(32, 128)}, os.path.join(src, "model.safetensors"))
+        _save_safetensors({"model.embed_tokens.weight": torch.randn(8, 64)}, os.path.join(tgt, "model.safetensors"))
+        with open(os.path.join(tgt, "config.json"), "w") as f:
+            json.dump(_make_auto_round_config(block_name_to_quantize=["model.layers"]), f)
+        copy_missing_tensors_from_source(src, tgt)
+        with open(os.path.join(tgt, "config.json")) as f:
+            cfg = json.load(f)
+        block_names = cfg.get("quantization_config", {}).get("block_name_to_quantize", [])
+        assert any("mtp" in b for b in block_names)
+
+    def test_config_updated_without_block_name_to_quantize_after_woq(self, tmp_path):
+        """When no block_name_to_quantize is set initially, it stays empty after WOQ."""
         src, tgt = str(tmp_path / "src"), str(tmp_path / "tgt")
         os.makedirs(src)
         os.makedirs(tgt)
@@ -444,7 +489,41 @@ class TestCopyMissingTensorsFromSource:
         with open(os.path.join(tgt, "config.json")) as f:
             cfg = json.load(f)
         block_names = cfg.get("quantization_config", {}).get("block_name_to_quantize", [])
-        assert any("mtp" in b for b in block_names)
+        assert block_names == [], f"Expected no block_name_to_quantize, got: {block_names}"
+
+    def test_config_updated_with_block_name_to_quantize_after_woq(self, tmp_path):
+        """When block_name_to_quantize is set, the new mtp block is appended."""
+        src, tgt = str(tmp_path / "src"), str(tmp_path / "tgt")
+        os.makedirs(src)
+        os.makedirs(tgt)
+        _save_safetensors({"mtp.0.ffn.weight": torch.randn(32, 128)}, os.path.join(src, "model.safetensors"))
+        _save_safetensors({"model.embed_tokens.weight": torch.randn(8, 64)}, os.path.join(tgt, "model.safetensors"))
+        with open(os.path.join(tgt, "config.json"), "w") as f:
+            json.dump(_make_auto_round_config(block_name_to_quantize=["model.layers"]), f)
+        copy_missing_tensors_from_source(src, tgt)
+        with open(os.path.join(tgt, "config.json")) as f:
+            cfg = json.load(f)
+        block_names = cfg.get("quantization_config", {}).get("block_name_to_quantize", [])
+        assert any("mtp" in b for b in block_names), f"Expected an 'mtp' block, got: {block_names}"
+
+    def test_config_updated_with_extra_config_for_unquantized_2d_weight(self, tmp_path):
+        """When a 2-D weight is skipped by BLOCK_NAME_TO_IGNORE, extra_config is updated
+        to mark it as full-precision so the inference stack knows not to dequantize it."""
+        src, tgt = str(tmp_path / "src"), str(tmp_path / "tgt")
+        os.makedirs(src)
+        os.makedirs(tgt)
+        _save_safetensors({"mtp.0.mlp.gate.weight": torch.randn(32, 128)}, os.path.join(src, "model.safetensors"))
+        _save_safetensors({"model.embed_tokens.weight": torch.randn(8, 64)}, os.path.join(tgt, "model.safetensors"))
+        with open(os.path.join(tgt, "config.json"), "w") as f:
+            json.dump(_make_auto_round_config(), f)
+        copy_missing_tensors_from_source(src, tgt)
+        with open(os.path.join(tgt, "config.json")) as f:
+            cfg = json.load(f)
+        extra_config = cfg.get("quantization_config", {}).get("extra_config", {})
+        assert "mtp.0.mlp.gate" in extra_config
+        layer_cfg = extra_config["mtp.0.mlp.gate"]
+        assert layer_cfg.get("bits") == 16
+        assert layer_cfg.get("data_type") == "fp"
 
     def test_index_json_updated_for_sharded_target(self, tmp_path):
         src, tgt = str(tmp_path / "src"), str(tmp_path / "tgt")
@@ -460,6 +539,26 @@ class TestCopyMissingTensorsFromSource:
         with open(os.path.join(tgt, "model.safetensors.index.json")) as f:
             idx = json.load(f)
         assert idx["weight_map"]["mtp.0.norm.weight"] == "model_extra_tensors.safetensors"
+
+    def test_index_json_is_created_for_single_file_target(self, tmp_path):
+        """When the target uses a single safetensors file and tensors are copied, a new
+        model.safetensors.index.json is created mapping all tensors to their shards."""
+        src, tgt = str(tmp_path / "src"), str(tmp_path / "tgt")
+        os.makedirs(src)
+        os.makedirs(tgt)
+        _save_safetensors({"mtp.0.norm.weight": torch.randn(64)}, os.path.join(src, "model.safetensors"))
+        _save_safetensors({"model.embed_tokens.weight": torch.randn(8, 64)}, os.path.join(tgt, "model.safetensors"))
+        _write_config(tgt)
+        copy_missing_tensors_from_source(src, tgt)
+        index_path = os.path.join(tgt, "model.safetensors.index.json")
+        assert os.path.exists(index_path), "An index.json should be created for single-file targets"
+        with open(index_path) as f:
+            index = json.load(f)
+        weight_map = index["weight_map"]
+        assert "mtp.0.norm.weight" in weight_map
+        assert "model.embed_tokens.weight" in weight_map
+        assert weight_map["mtp.0.norm.weight"] == "model_extra_tensors.safetensors"
+        assert weight_map["model.embed_tokens.weight"] == "model.safetensors"
 
     def test_known_block_prefix_not_copied_gemma(self, tmp_path):
         src, tgt = str(tmp_path / "src"), str(tmp_path / "tgt")

@@ -302,6 +302,7 @@ class BasicArgumentParser(argparse.ArgumentParser):
             help="Disable optimization for RTN (Round-To-Nearest) mode when iters=0. "
             "RTN is fast but less accurate; keeping optimization enabled is recommended.",
         )
+
         group_opt_rtn.add_argument(
             "--enable_opt_rtn",
             action="store_const",
@@ -319,6 +320,9 @@ class BasicArgumentParser(argparse.ArgumentParser):
             help="Group size for weight quantization.",
         )
         scheme.add_argument("--asym", action="store_true", help="Use asymmetric quantization instead of symmetric.")
+        scheme.add_argument(
+            "--act_asym", action="store_true", help="Use asymmetric quantization for activation instead of symmetric."
+        )
         scheme.add_argument(
             "--data_type",
             "--dtype",
@@ -388,6 +392,13 @@ class BasicArgumentParser(argparse.ArgumentParser):
             type=str,
             choices=["fp8", "float8_e4m3fn"],
             help="Data type for static quantize attention. ",
+        )
+        scheme.add_argument(
+            "--rotation_type",
+            default=None,
+            type=str,
+            choices=["hadamard", "random_hadamard"],
+            help="Research feature: applies a rotation (e.g., Hadamard) to reduce activation/weight outliers",
         )
         gguf = self.add_argument_group("Double Quant Arguments")
         gguf.add_argument(
@@ -739,6 +750,7 @@ def tune(args):
         act_group_size=args.act_group_size,
         act_data_type=args.act_data_type,
         act_dynamic=act_dynamic,
+        act_sym=None if not args.asym else False,
         super_bits=args.super_bits,
         super_group_size=args.super_group_size,
         quant_lm_head=args.quant_lm_head,
@@ -784,6 +796,11 @@ def tune(args):
             low_gpu_mem_usage=True,  # force it to be True as it uses much smaller vram but similar time cost
             low_cpu_mem_usage=low_cpu_mem_usage,
         )
+    rot_config = None
+    if args.rotation_type:
+        from auto_round.experimental.transform.rotation_config import RotationConfig
+
+        rot_config = RotationConfig(hadamard_type=args.rotation_type)
 
     autoround: BaseCompressor = AutoRound(
         model=model_name,
@@ -807,6 +824,7 @@ def tune(args):
         model_dtype=args.model_dtype,
         momentum=args.momentum,
         trust_remote_code=not args.disable_trust_remote_code,
+        rotation_config=rot_config,
     )
 
     model_name = args.model.rstrip("/")
@@ -921,6 +939,10 @@ def run_light():
 
 def run_fast():
     start("fast")
+
+
+def run_mllm():
+    run()
 
 
 if __name__ == "__main__":

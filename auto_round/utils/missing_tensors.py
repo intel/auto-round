@@ -662,7 +662,7 @@ def _woq_quantize_missing_tensors(target_dir: str, missing_tensors_dict: dict) -
     """
     import re as _re
 
-    BLOCK_NAME_TO_IGNORE = ["shared_expert_gate.", "mlp.gate.", "g_proj."]
+    BLOCK_NAME_TO_IGNORE = [".shared_expert_gate.", ".mlp.gate.", ".g_proj.", "mtp.fc."]
     qconfig = _get_woq_config_from_dir(target_dir)
     if qconfig is None:
         return missing_tensors_dict
@@ -782,6 +782,9 @@ def _woq_quantize_missing_tensors(target_dir: str, missing_tensors_dict: dict) -
                     )
             if weight_keys:
                 existing = qcfg.get("block_name_to_quantize") or []
+                # In cases where this attribute is lacking
+                if not existing:
+                    return qcfg
                 if isinstance(existing, str):
                     existing = [b.strip() for b in existing.split(",") if b.strip()]
                 existing_set = set(existing)
