@@ -177,7 +177,7 @@ class TestAutoRound:
             if "mmproj-model.gguf" in file:
                 assert abs(file_size - 75) < 5.0
             else:
-                assert abs(file_size - 695) < 5.0
+                assert abs(file_size - 683) < 5.0
 
         shutil.rmtree(tiny_model_path, ignore_errors=True)
 

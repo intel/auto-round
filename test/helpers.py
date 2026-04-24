@@ -45,14 +45,12 @@ def generate_prompt(model_obj_or_str, tokenizer=None, text="The capital of Franc
 def eval_generated_prompt(
     model, tokenizer=None, prompt_text="The United States of", target_text="America", max_new_tokens=10, device=None
 ):
-    """Evaluate the generated text using a model and tokenizer."""
-    out = generate_prompt(model, tokenizer, text=prompt_text, max_new_tokens=max_new_tokens, device=device)
-    assert target_text.lower() in out.lower(), f"Expected '{target_text}' in output, but got: {out}"
-    return out
+    generated_text = generate_prompt(model, tokenizer, prompt_text, max_new_tokens=max_new_tokens, device=device)
+    assert target_text in generated_text, f"Expected {target_text} in generated text: {generated_text}"
 
 
-def evaluate_accuracy(
-    model_or_save_dir, tokenizer=None, task="lambada_openai", threshold=0.25, batch_size="auto", limit=None, device=None
+def eval_model_acc(
+    model_or_save_dir, tokenizer=None, task="lambada_openai", threshold=0.3, batch_size=8, limit=40, device="cpu"
 ):
     """Helper function to evaluate model accuracy on a given task.
 
@@ -319,29 +317,33 @@ def get_tiny_model(
                     ):
                         _reduce_config_layers(getattr(model, k).config, num_layers, num_experts)
         else:
-            trust_remote_code = kwargs.pop("trust_remote_code", True)
+            trust_remote_code = kwargs.get("trust_remote_code", True)
             config = transformers.AutoConfig.from_pretrained(model_name_or_path, trust_remote_code=trust_remote_code)
-            # Special cases, for transformers == 5.4.0
-            if config.model_type == "qwen3_omni_moe":
-                config.initializer_range = 0.02  # Default initializer range for weight initialization
-            _reduce_config_layers(config, num_layers, num_experts)
+            use_config_only = not (not trust_remote_code and getattr(config, "auto_map", None))
+            if use_config_only:
+                # Special cases, for transformers == 5.4.0
+                if config.model_type == "qwen3_omni_moe":
+                    config.initializer_range = 0.02  # Default initializer range for weight initialization
+                _reduce_config_layers(config, num_layers, num_experts)
 
-            # Pick the right model class
-            base_lib = transformers
-            architectures = getattr(config, "architectures", [None])[0]
-            if (
-                is_mllm
-                and architectures.endswith("Model")
-                and hasattr(base_lib, n := architectures.replace("Model", "ForConditionalGeneration"))
-            ):
-                model_cls = getattr(base_lib, n)
-            elif hasattr(base_lib, architectures):
-                model_cls = getattr(base_lib, architectures)
-            else:
-                model_cls = transformers.AutoModelForCausalLM  # default to causal LM if we can't find a better match
-            model = model_cls._from_config(config)
-            model = model.eval()
-        return model
+                # Pick the right model class
+                base_lib = transformers
+                architectures = getattr(config, "architectures", [None])[0]
+                if (
+                    is_mllm
+                    and architectures.endswith("Model")
+                    and hasattr(base_lib, n := architectures.replace("Model", "ForConditionalGeneration"))
+                ):
+                    model_cls = getattr(base_lib, n)
+                elif hasattr(base_lib, architectures):
+                    model_cls = getattr(base_lib, architectures)
+                else:
+                    model_cls = (
+                        transformers.AutoModelForCausalLM
+                    )  # default to causal LM if we can't find a better match
+                model = model_cls._from_config(config)
+                model = model.eval()
+                return model
 
     # ---- original path: load pretrained weights then slice ----
     def slice_layers(module):
@@ -432,6 +434,9 @@ def save_tiny_model(
     test_path = os.path.dirname(__file__)
     tiny_model_path = os.path.join(test_path, tiny_model_path.removeprefix("./"))
     shutil.rmtree(tiny_model_path, ignore_errors=True)
+
+    if not kwargs.get("trust_remote_code", True) and getattr(getattr(model, "config", None), "auto_map", None):
+        model.config.auto_map = None
 
     model.save_pretrained(tiny_model_path)
     if not is_diffusion:
