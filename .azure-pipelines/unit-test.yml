@@ -6,6 +6,7 @@ pr:
   branches:
     include:
       - main
+      - 'v*.rc'
   paths:
     include:
       - auto_round
