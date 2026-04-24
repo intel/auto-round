@@ -316,6 +316,7 @@ def get_tiny_model(
                         and v[0] in ["diffusers", "transformers"]
                     ):
                         _reduce_config_layers(getattr(model, k).config, num_layers, num_experts)
+            return model
         else:
             trust_remote_code = kwargs.get("trust_remote_code", True)
             config = transformers.AutoConfig.from_pretrained(model_name_or_path, trust_remote_code=trust_remote_code)
