@@ -440,8 +440,8 @@ def save_tiny_model(
     if os.path.isfile(os.path.join(model_path, "tokenizer.model")):
         shutil.copy(os.path.join(model_path, "tokenizer.model"), os.path.join(tiny_model_path, "tokenizer.model"))
     if is_mllm:
-        processor = transformers.AutoProcessor.from_pretrained(model_name_or_path, **kwargs)
-        image_processor = transformers.AutoImageProcessor.from_pretrained(model_name_or_path, **kwargs)
+        processor = transformers.AutoProcessor.from_pretrained(model_path, **kwargs)
+        image_processor = transformers.AutoImageProcessor.from_pretrained(model_path, **kwargs)
         processor.save_pretrained(tiny_model_path)
         image_processor.save_pretrained(tiny_model_path)
     print(f"[Fixture]: built tiny model path:{tiny_model_path} for testing in session")
