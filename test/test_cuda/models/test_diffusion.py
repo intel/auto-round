@@ -8,7 +8,7 @@ import requests
 from packaging import version
 from PIL import Image
 
-from auto_round import AutoRoundDiffusion
+from auto_round import AutoRound
 
 from ...envs import multi_card, require_gptqmodel, require_optimum, require_vlm_env
 from ...helpers import get_model_path, transformers_version
@@ -37,7 +37,7 @@ class TestAutoRound:
         pipe.transformer.single_transformer_blocks = pipe.transformer.single_transformer_blocks[:2]
 
         ## quantize the model
-        autoround = AutoRoundDiffusion(
+        autoround = AutoRound(
             pipe,
             tokenizer=None,
             scheme="MXFP4",
@@ -50,7 +50,7 @@ class TestAutoRound:
         autoround.quantize()
 
     def test_z_image_tune(self, tiny_z_image_model_path, tmp_path):
-        autoround = AutoRoundDiffusion(
+        autoround = AutoRound(
             tiny_z_image_model_path,
             iters=1,
             nsamples=1,
@@ -82,7 +82,7 @@ class TestAutoRound:
 
         ## quantize the model
         # https://raw.githubusercontent.com/mlcommons/inference/refs/heads/master/text_to_image/coco2014/captions/captions_source.tsv
-        autoround = AutoRoundDiffusion(
+        autoround = AutoRound(
             pipe,
             tokenizer=None,
             scheme="MXFP4",
@@ -127,7 +127,7 @@ class TestAutoRound:
 
         ## quantize the model
         # https://raw.githubusercontent.com/mlcommons/inference/refs/heads/master/text_to_image/coco2014/captions/captions_source.tsv
-        autoround = AutoRoundDiffusion(
+        autoround = AutoRound(
             pipe,
             tokenizer=None,
             scheme="MXFP4",
