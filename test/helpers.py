@@ -50,7 +50,7 @@ def eval_generated_prompt(
 
 
 def evaluate_accuracy(
-    model_or_save_dir, tokenizer=None, task="lambada_openai", threshold=0.3, batch_size=8, limit=40, device="cpu"
+    model_or_save_dir, tokenizer=None, task="lambada_openai", threshold=0.25, batch_size="auto", limit=None, device=None
 ):
     """Helper function to evaluate model accuracy on a given task.
 
