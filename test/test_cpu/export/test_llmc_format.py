@@ -64,6 +64,7 @@ class TestLLMC:
         import json
 
         from safetensors import safe_open
+
         config = json.load(open(os.path.join(self.save_dir, "config.json")))
         assert "group_0" in config["quantization_config"]["config_groups"]
         assert config["quantization_config"]["config_groups"]["group_0"]["input_activations"]["num_bits"] == 8
