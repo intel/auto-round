@@ -45,10 +45,8 @@ def generate_prompt(model_obj_or_str, tokenizer=None, text="The capital of Franc
 def eval_generated_prompt(
     model, tokenizer=None, prompt_text="The United States of", target_text="America", max_new_tokens=10, device=None
 ):
-    """Evaluate the generated text using a model and tokenizer."""
-    out = generate_prompt(model, tokenizer, text=prompt_text, max_new_tokens=max_new_tokens, device=device)
-    assert target_text.lower() in out.lower(), f"Expected '{target_text}' in output, but got: {out}"
-    return out
+    generated_text = generate_prompt(model, tokenizer, prompt_text, max_new_tokens=max_new_tokens, device=device)
+    assert target_text in generated_text, f"Expected {target_text} in generated text: {generated_text}"
 
 
 def evaluate_accuracy(
@@ -257,6 +255,9 @@ def get_tiny_model(
         **kwargs: Extra keyword arguments forwarded to the model loader or
             ``AutoConfig.from_pretrained``.
     """
+    if "use_config" in kwargs:
+        from_config = kwargs.pop("use_config")
+
     model_name_or_path = get_model_path(model_name_or_path)
 
     if from_config:
@@ -315,30 +316,35 @@ def get_tiny_model(
                         and v[0] in ["diffusers", "transformers"]
                     ):
                         _reduce_config_layers(getattr(model, k).config, num_layers, num_experts)
+            return model
         else:
-            trust_remote_code = kwargs.pop("trust_remote_code", True)
+            trust_remote_code = kwargs.get("trust_remote_code", True)
             config = transformers.AutoConfig.from_pretrained(model_name_or_path, trust_remote_code=trust_remote_code)
-            # Special cases, for transformers == 5.4.0
-            if config.model_type == "qwen3_omni_moe":
-                config.initializer_range = 0.02  # Default initializer range for weight initialization
-            _reduce_config_layers(config, num_layers, num_experts)
+            use_config_only = not (not trust_remote_code and getattr(config, "auto_map", None))
+            if use_config_only:
+                # Special cases, for transformers == 5.4.0
+                if config.model_type == "qwen3_omni_moe":
+                    config.initializer_range = 0.02  # Default initializer range for weight initialization
+                _reduce_config_layers(config, num_layers, num_experts)
 
-            # Pick the right model class
-            base_lib = transformers
-            architectures = getattr(config, "architectures", [None])[0]
-            if (
-                is_mllm
-                and architectures.endswith("Model")
-                and hasattr(base_lib, n := architectures.replace("Model", "ForConditionalGeneration"))
-            ):
-                model_cls = getattr(base_lib, n)
-            elif hasattr(base_lib, architectures):
-                model_cls = getattr(base_lib, architectures)
-            else:
-                model_cls = transformers.AutoModelForCausalLM  # default to causal LM if we can't find a better match
-            model = model_cls._from_config(config)
-            model = model.eval()
-        return model
+                # Pick the right model class
+                base_lib = transformers
+                architectures = getattr(config, "architectures", [None])[0]
+                if (
+                    is_mllm
+                    and architectures.endswith("Model")
+                    and hasattr(base_lib, n := architectures.replace("Model", "ForConditionalGeneration"))
+                ):
+                    model_cls = getattr(base_lib, n)
+                elif hasattr(base_lib, architectures):
+                    model_cls = getattr(base_lib, architectures)
+                else:
+                    model_cls = (
+                        transformers.AutoModelForCausalLM
+                    )  # default to causal LM if we can't find a better match
+                model = model_cls._from_config(config)
+                model = model.eval()
+                return model
 
     # ---- original path: load pretrained weights then slice ----
     def slice_layers(module):
@@ -407,6 +413,9 @@ def save_tiny_model(
             weights instead of downloading the full checkpoint.
         **kwargs: Extra keyword arguments forwarded to the model loader.
     """
+    if "use_config" in kwargs:
+        from_config = kwargs.pop("use_config")
+
     model = get_tiny_model(
         model_name_or_path,
         num_layers=num_layers,
@@ -425,25 +434,48 @@ def save_tiny_model(
                 set_attr(model, key, copy.deepcopy(weight))
     test_path = os.path.dirname(__file__)
     tiny_model_path = os.path.join(test_path, tiny_model_path.removeprefix("./"))
+    shutil.rmtree(tiny_model_path, ignore_errors=True)
+
+    if not kwargs.get("trust_remote_code", True) and getattr(getattr(model, "config", None), "auto_map", None):
+        del model.config.auto_map
 
     model.save_pretrained(tiny_model_path)
     if not is_diffusion:
         tokenizer = transformers.AutoTokenizer.from_pretrained(model_name_or_path, **kwargs)
         tokenizer.save_pretrained(tiny_model_path)
     # copy tokenizer.model
+    model_path = model_name_or_path
     if not os.path.isdir(model_name_or_path):
+        from huggingface_hub.errors import GatedRepoError, HfHubHTTPError, HFValidationError
+
         from auto_round.utils import download_hf_model
 
-        model_path = download_hf_model(model_name_or_path)
-    else:
-        model_path = model_name_or_path
+        try:
+            model_path = download_hf_model(model_name_or_path)
+        except (GatedRepoError, HfHubHTTPError, HFValidationError):
+            model_path = model_name_or_path
     if os.path.isfile(os.path.join(model_path, "tokenizer.model")):
         shutil.copy(os.path.join(model_path, "tokenizer.model"), os.path.join(tiny_model_path, "tokenizer.model"))
     if is_mllm:
-        processor = transformers.AutoProcessor.from_pretrained(model_name_or_path, **kwargs)
-        image_processor = transformers.AutoImageProcessor.from_pretrained(model_name_or_path, **kwargs)
-        processor.save_pretrained(tiny_model_path)
-        image_processor.save_pretrained(tiny_model_path)
+        sources = [model_path]
+        if model_name_or_path not in sources:
+            sources.insert(0, model_name_or_path)
+
+        for source in sources:
+            try:
+                processor = transformers.AutoProcessor.from_pretrained(source, **kwargs)
+                processor.save_pretrained(tiny_model_path)
+                break
+            except (OSError, ValueError):
+                continue
+
+        for source in sources:
+            try:
+                image_processor = transformers.AutoImageProcessor.from_pretrained(source, **kwargs)
+                image_processor.save_pretrained(tiny_model_path)
+                break
+            except (OSError, ValueError):
+                continue
     print(f"[Fixture]: built tiny model path:{tiny_model_path} for testing in session")
     return tiny_model_path
 
@@ -505,6 +537,7 @@ def model_infer(model, tokenizer, apply_chat_template=False):
 
 # Dummy dataloader for testing
 class DataLoader:
+
     def __init__(self):
         self.batch_size = 1
 
