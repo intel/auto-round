@@ -673,7 +673,7 @@ def tune(args):
                 ar_kwargs["group_size"] = args.group_size
 
             ar = AutoRound(model_name, **ar_kwargs)
-            ar.quantize_and_save(output_dir=output_dir, format=args.format)
+            ar.quantize_and_save(output_dir=output_dir, format=args.format)  # pylint: disable=E1101
             return
 
     device_str, use_auto_mapping = get_device_and_parallelism(args.device_map)
