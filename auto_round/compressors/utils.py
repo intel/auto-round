@@ -107,10 +107,20 @@ def is_wint_a16(ar: Callable) -> bool:
 
 def is_dynamic_wint8aint8(ar_or_format: Union[str, Callable]) -> bool:
     if isinstance(ar_or_format, str):
-        return "int8_w8a8" in ar_or_format.lower()
+        return "int8_w8a8" in ar_or_format.lower() or "int8" in ar_or_format.lower()
     if not ar_or_format.act_dynamic:
         return False
     if is_wint8aint8(ar_or_format):
+        return True
+    return False
+
+
+def is_wint4aint4(ar_or_scheme: Union[str, Callable]):
+    if isinstance(ar_or_scheme, str):
+        return "int4" in ar_or_scheme.lower()
+    elif (
+        "int4" in ar_or_scheme.act_data_type or ("int" in ar_or_scheme.act_data_type and ar_or_scheme.act_bits == 4)
+    ) and ("int4" in ar_or_scheme.data_type or ("int" in ar_or_scheme.data_type and ar_or_scheme.bits == 4)):
         return True
     return False
 
