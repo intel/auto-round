@@ -153,7 +153,7 @@ class AutoSchemeWrapperLinear(WrapperLinear):
                 return None
 
             qdq_x.register_hook(save_grad)
-        self.orig_layer._forward_pre_hooks=orig_hooks
+        self.orig_layer._forward_pre_hooks = orig_hooks
         return qdq_x, scale, zp
 
     def _qdq_weight(self, value, min_scale, max_scale):
