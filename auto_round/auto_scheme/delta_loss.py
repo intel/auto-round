@@ -119,7 +119,9 @@ class AutoSchemeWrapperLinear(WrapperLinear):
         # Apply orig_layer pre-hooks BEFORE activation quantization, so that the
         # quantization error captured below (x - qdq_x) is measured in the
         # post-hook activation domain.
+        orig_hooks = self.orig_layer._forward_pre_hooks
         x = self._apply_orig_pre_hooks(x)
+        self.orig_layer._forward_pre_hooks = {}
 
         qdq_x, scale, zp = self.act_qdq_func(x, act_min_scale, act_max_scale, act_max)
         if self.grad_mode:
@@ -151,6 +153,7 @@ class AutoSchemeWrapperLinear(WrapperLinear):
                 return None
 
             qdq_x.register_hook(save_grad)
+        self.orig_layer._forward_pre_hooks=orig_hooks
         return qdq_x, scale, zp
 
     def _qdq_weight(self, value, min_scale, max_scale):
