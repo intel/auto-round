@@ -374,27 +374,6 @@ def _special_name_handle(cls, name):
     if is_transformers_version_greater_or_equal_5_4_0():
         name = name.replace("language_model.model.", "language_model.")
 
-    def canonicalize_gemma3_name(name):
-        if cls.model_arch != gguf.MODEL_ARCH.GEMMA3 and cls.__class__.__name__ != "Gemma3VisionModel":
-            return name
-
-        # AutoRound exports tensors from a live transformers model, while gguf tensor_mapping
-        # expects checkpoint-style names. Normalize known Gemma3 vision/projector variants.
-        replacements = {
-            "model.vision_tower.vision_model.": "vision_tower.vision_model.",
-            "vision_tower.embeddings.": "vision_tower.vision_model.embeddings.",
-            "model.multi_modal_projector.": "multi_modal_projector.",
-        }
-        for prefix, target in replacements.items():
-            if name.startswith(prefix):
-                name = target + name[len(prefix) :]
-                break
-
-        if name.startswith("multi_modal_projector.mm_input_projection_weight"):
-            name = name.replace("mm_input_projection_weight", "mm_input_projection.weight", 1)
-
-        return name
-
     # for Qwen2VL
     def remove_prefix(name, key_list):
         for key in key_list:
@@ -413,10 +392,15 @@ def _special_name_handle(cls, name):
 
     # # for gemma3
     if cls.model_arch == gguf.MODEL_ARCH.GEMMA3 or cls.__class__.__name__ == "Gemma3VisionModel":
-        name = canonicalize_gemma3_name(name)
         visual_keys = ["multi_modal_projector", "vision_tower", "multimodal_projector"]
         name = remove_prefix(name, visual_keys)
-        name = canonicalize_gemma3_name(name)
+
+        # AutoRound exports tensors from a live transformers model, while gguf tensor_mapping
+        # expects checkpoint-style names. Normalize known Gemma3 vision/projector variants.
+        if name.startswith("vision_tower.") and not name.startswith("vision_tower.vision_model."):
+            name = name.replace("vision_tower.", "vision_tower.vision_model.", 1)
+        if name.startswith("multi_modal_projector.mm_input_projection_weight"):
+            name = name.replace("mm_input_projection_weight", "mm_input_projection.weight", 1)
 
     # for LlavaForConditionalGeneration
     if cls.model_arch == gguf.MODEL_ARCH.LLAMA:

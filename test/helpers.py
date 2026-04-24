@@ -257,6 +257,9 @@ def get_tiny_model(
         **kwargs: Extra keyword arguments forwarded to the model loader or
             ``AutoConfig.from_pretrained``.
     """
+    if "use_config" in kwargs:
+        from_config = kwargs.pop("use_config")
+
     model_name_or_path = get_model_path(model_name_or_path)
 
     if from_config:
@@ -407,6 +410,9 @@ def save_tiny_model(
             weights instead of downloading the full checkpoint.
         **kwargs: Extra keyword arguments forwarded to the model loader.
     """
+    if "use_config" in kwargs:
+        from_config = kwargs.pop("use_config")
+
     model = get_tiny_model(
         model_name_or_path,
         num_layers=num_layers,
@@ -425,25 +431,45 @@ def save_tiny_model(
                 set_attr(model, key, copy.deepcopy(weight))
     test_path = os.path.dirname(__file__)
     tiny_model_path = os.path.join(test_path, tiny_model_path.removeprefix("./"))
+    shutil.rmtree(tiny_model_path, ignore_errors=True)
 
     model.save_pretrained(tiny_model_path)
     if not is_diffusion:
         tokenizer = transformers.AutoTokenizer.from_pretrained(model_name_or_path, **kwargs)
         tokenizer.save_pretrained(tiny_model_path)
     # copy tokenizer.model
+    model_path = model_name_or_path
     if not os.path.isdir(model_name_or_path):
+        from huggingface_hub.errors import GatedRepoError, HfHubHTTPError, HFValidationError
+
         from auto_round.utils import download_hf_model
 
-        model_path = download_hf_model(model_name_or_path)
-    else:
-        model_path = model_name_or_path
+        try:
+            model_path = download_hf_model(model_name_or_path)
+        except (GatedRepoError, HfHubHTTPError, HFValidationError):
+            model_path = model_name_or_path
     if os.path.isfile(os.path.join(model_path, "tokenizer.model")):
         shutil.copy(os.path.join(model_path, "tokenizer.model"), os.path.join(tiny_model_path, "tokenizer.model"))
     if is_mllm:
-        processor = transformers.AutoProcessor.from_pretrained(model_path, **kwargs)
-        image_processor = transformers.AutoImageProcessor.from_pretrained(model_path, **kwargs)
-        processor.save_pretrained(tiny_model_path)
-        image_processor.save_pretrained(tiny_model_path)
+        sources = [model_path]
+        if model_name_or_path not in sources:
+            sources.insert(0, model_name_or_path)
+
+        for source in sources:
+            try:
+                processor = transformers.AutoProcessor.from_pretrained(source, **kwargs)
+                processor.save_pretrained(tiny_model_path)
+                break
+            except (OSError, ValueError):
+                continue
+
+        for source in sources:
+            try:
+                image_processor = transformers.AutoImageProcessor.from_pretrained(source, **kwargs)
+                image_processor.save_pretrained(tiny_model_path)
+                break
+            except (OSError, ValueError):
+                continue
     print(f"[Fixture]: built tiny model path:{tiny_model_path} for testing in session")
     return tiny_model_path
 
@@ -505,6 +531,7 @@ def model_infer(model, tokenizer, apply_chat_template=False):
 
 # Dummy dataloader for testing
 class DataLoader:
+
     def __init__(self):
         self.batch_size = 1
 
