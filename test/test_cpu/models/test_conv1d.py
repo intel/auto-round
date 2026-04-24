@@ -43,3 +43,13 @@ class TestQuantizationConv1d:
 
         model = AutoModelForCausalLM.from_pretrained(self.save_dir, device_map="cpu", trust_remote_code=True)
         model_infer(model, self.tokenizer)
+
+
+def test_find_layers_from_config_lamini():
+    from auto_round.utils.model import find_layers_from_config
+
+    res = find_layers_from_config(lamini_name_or_path, class_names="Conv1d")
+    print(res)
+    assert "Conv1D" in res, "Conv1D should be detected in the model config"
+    assert "h.0.attn.c_attn" in res["Conv1D"], "Conv1D should be detected in the model config with correct prefix"
+    assert len(res["Conv1D"]) == 48, "At least one Conv1D layer should be detected in the model config"

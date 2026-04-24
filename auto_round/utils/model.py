@@ -2075,11 +2075,21 @@ def find_layers_from_config(model_dir: str, class_names: list[str] | None = None
         Sub-directory layers are prefixed with ``<subdir>.``.
         Returns an empty dict on any failure.
     """
+    from huggingface_hub import snapshot_download
     from transformers import AutoModel
 
     if class_names is None:
         class_names = ["Embedding", "Conv1d", "Conv1D"]
+    if isinstance(class_names, str):
+        class_names = [class_names]
     target = set(class_names)
+
+    # download if not local, but only the config files (fast)
+    if not os.path.exists(model_dir):
+        model_dir = snapshot_download(
+            repo_id=model_dir,
+            allow_patterns=["**/config.json"],
+        )
 
     # (prefix, config_dir) — root first, then sub-dirs
     dirs: list[tuple[str, str]] = []
@@ -2102,7 +2112,7 @@ def find_layers_from_config(model_dir: str, class_names: list[str] | None = None
             continue  # scheduler / feature_extractor / etc. — skip silently
         for name, module in model.named_modules():
             cls_name = type(module).__name__
-            if any(t in cls_name for t in target):
+            if any(t.lower() in cls_name.lower() for t in target):
                 full_name = f"{prefix}.{name}" if prefix else name
                 if cls_name not in result:
                     result[cls_name] = [full_name]
