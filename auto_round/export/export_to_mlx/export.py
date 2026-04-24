@@ -263,9 +263,54 @@ _PRESERVE_MODEL_TYPE_SUB_KEYS = (
 )
 
 
+def _load_original_config_json(model: nn.Module) -> "dict | None":
+    """Best-effort load of the *raw* ``config.json`` from the original checkpoint.
+
+    HF's in-memory ``model.config`` is unreliable for preserving ``model_type``
+    because newer ``transformers`` versions auto-rewrite sub-config
+    ``model_type`` values based on the registered child config class
+    (e.g. an original ``qwen3_5`` becomes ``qwen3_5_text`` /
+    ``qwen3_5_vision`` once the model is instantiated). The on-disk
+    ``config.json`` from the source checkpoint is the only faithful source.
+
+    We try ``model.config._name_or_path`` first, then ``model.name_or_path``.
+    Returns the parsed JSON dict, or ``None`` if it can't be located/read.
+    """
+    candidates = []
+    cfg_obj = getattr(model, "config", None)
+    if cfg_obj is not None:
+        nop = getattr(cfg_obj, "_name_or_path", None) or getattr(cfg_obj, "name_or_path", None)
+        if nop:
+            candidates.append(nop)
+    nop2 = getattr(model, "name_or_path", None)
+    if nop2 and nop2 not in candidates:
+        candidates.append(nop2)
+
+    for path in candidates:
+        try:
+            if isinstance(path, str) and os.path.isdir(path):
+                cfg_path = os.path.join(path, "config.json")
+            elif isinstance(path, str) and os.path.isfile(path) and path.endswith(".json"):
+                cfg_path = path
+            else:
+                continue
+            if not os.path.isfile(cfg_path):
+                continue
+            with open(cfg_path, "r", encoding="utf-8") as f:
+                return json.load(f)
+        except Exception as e:
+            logger.warning(f"[mlx-export] failed to read original config.json at {path!r}: {e}")
+    return None
+
+
 def _snapshot_original_model_types(model: nn.Module) -> "dict | None":
-    """Snapshot ``model_type`` for top-level and known sub-configs from the
-    *live* ``model.config`` object before HF's ``save_pretrained`` runs.
+    """Snapshot ``model_type`` for top-level and known sub-configs.
+
+    Prefer the original on-disk ``config.json`` (the only faithful source),
+    falling back to the in-memory ``model.config`` if the file isn't reachable.
+    Newer ``transformers`` versions rewrite sub-config ``model_type`` values
+    on instantiation (e.g. ``qwen3_5`` -> ``qwen3_5_text`` /
+    ``qwen3_5_vision``), so the in-memory copy can't be trusted for this.
 
     Returns a plain dict shaped like::
 
@@ -273,28 +318,36 @@ def _snapshot_original_model_types(model: nn.Module) -> "dict | None":
          "vision_config": {"model_type": "qwen3_5"},
          ...}
 
-    or ``None`` if ``model.config`` is unavailable. We deliberately use the
-    in-memory config (not a re-load from disk) because the caller has already
-    loaded the original checkpoint there — that's the source of truth.
+    or ``None`` if no config is available.
     """
-    cfg_obj = getattr(model, "config", None)
-    if cfg_obj is None:
-        logger.warning("[mlx-export] model has no .config; skipping model_type preservation")
-        return None
-    try:
-        cfg_dict = cfg_obj.to_dict() if hasattr(cfg_obj, "to_dict") else dict(cfg_obj.__dict__)
-    except Exception as e:
-        logger.warning(f"[mlx-export] failed to snapshot model.config: {e}")
-        return None
+    cfg_dict = _load_original_config_json(model)
+    source = "on-disk config.json"
+    if cfg_dict is None:
+        cfg_obj = getattr(model, "config", None)
+        if cfg_obj is None:
+            logger.warning("[mlx-export] model has no .config; skipping model_type preservation")
+            return None
+        try:
+            cfg_dict = cfg_obj.to_dict() if hasattr(cfg_obj, "to_dict") else dict(cfg_obj.__dict__)
+            source = "in-memory model.config (fallback; may be HF-rewritten)"
+        except Exception as e:
+            logger.warning(f"[mlx-export] failed to snapshot model.config: {e}")
+            return None
 
     snapshot: dict = {}
-    if "model_type" in cfg_dict:
-        snapshot["model_type"] = cfg_dict["model_type"]
+    top_model_type = cfg_dict.get("model_type")
+    if top_model_type is not None:
+        snapshot["model_type"] = top_model_type
+    # Force every known sub-config to share the top-level ``model_type``.
+    # Different ``transformers`` versions disagree on what sub-config
+    # ``model_type`` should be (some leave it equal to the parent, some append
+    # ``_text`` / ``_vision`` / ``_audio``). To keep the exported MLX config
+    # stable across versions we just propagate the top-level value down.
     for sub_key in _PRESERVE_MODEL_TYPE_SUB_KEYS:
         sub = cfg_dict.get(sub_key)
-        if isinstance(sub, dict) and "model_type" in sub:
-            snapshot[sub_key] = {"model_type": sub["model_type"]}
-    logger.info(f"[mlx-export] snapshotted original model_types: {snapshot!r}")
+        if isinstance(sub, dict) and top_model_type is not None:
+            snapshot[sub_key] = {"model_type": top_model_type}
+    logger.info(f"[mlx-export] snapshotted original model_types from {source}: {snapshot!r}")
     return snapshot
 
 
