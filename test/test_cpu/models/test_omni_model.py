@@ -263,6 +263,7 @@ class TestQwen3OmniMoeReplacement:
         """Test that unfused weights match original fused weights."""
         from auto_round.modeling.fused_moe.replace_modules import apply_replacements, materialize_model_
 
+        torch.manual_seed(42)
         config = _make_tiny_qwen3_omni_moe_config()
         model = Qwen3OmniMoeForConditionalGeneration(config)
 
