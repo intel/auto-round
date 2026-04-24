@@ -389,11 +389,7 @@ def set_layer_config(
             "fixed_by_user": True,
         }
 
-    # 1b. Merge architecture-specific default layer_config patterns
-    # (e.g. Nemotron-H Mamba2 ``mixer.out_proj`` → BF16 scales to avoid
-    # FP16 sub-normal collapse).  User-provided entries for the same
-    # regex key take precedence: we only add the pattern if the user
-    # hasn't already claimed it, and never overwrite user-set keys.
+    # Merge architecture-specific defaults; user entries win.
     try:
         from auto_round.modeling.unfused_moe import get_default_layer_config_patterns
 
@@ -402,15 +398,11 @@ def set_layer_config(
         model_default_patterns = {}
     for _pattern, _overlay in (model_default_patterns or {}).items():
         if _pattern in layer_config:
-            # User (or earlier pipeline step) already has an entry for
-            # this exact pattern — fill in only the keys they didn't set.
             existing = layer_config[_pattern]
             if isinstance(existing, dict):
                 for _k, _v in _overlay.items():
                     existing.setdefault(_k, _v)
         else:
-            # Shallow-copy so downstream mutation doesn't leak back into
-            # the module-level default dict.
             layer_config[_pattern] = dict(_overlay)
 
     # 2. normalize

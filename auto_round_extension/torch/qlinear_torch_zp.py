@@ -53,8 +53,6 @@ class QuantLinear(nn.Module):
         self.bits = bits
         self.group_size = group_size if group_size != -1 else infeatures
         self.maxq = 2**self.bits - 1
-        # See qlinear_torch.QuantLinear for the rationale behind exposing
-        # scale_dtype. Default stays float16 for backwards compatibility.
         self.scale_dtype = scale_dtype
 
         self.register_buffer(

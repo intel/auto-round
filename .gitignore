@@ -11,3 +11,7 @@ CMakeUserPresets.json
 tmp_autoround/
 ut_log_dir/
 test/tmp/
+
+# Local development / evaluation scripts
+/hf_quant_baseline.py
+/verify_quant.py

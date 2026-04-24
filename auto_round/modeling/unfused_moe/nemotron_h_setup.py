@@ -11,102 +11,29 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
+"""Nemotron-H post-load fix-ups and default layer_config patterns."""
 
-"""Post-load, architecture-specific setup for Nemotron-H-family models.
-
-This module centralises the work that must happen *after*
-``AutoModelForCausalLM.from_pretrained`` in order for a Nemotron-H MoE
-checkpoint (e.g. ``nvidia/Nemotron-Cascade-2-30B-A3B``) to be
-quantized by AutoRound into a model whose decoded output is coherent.
-
-Three concerns are handled here, all strictly gated on
-``config.model_type == "nemotron_h"`` by the single public entry
-:func:`apply_nemotron_h_post_load`:
-
-1. **Zamba2RMSNormGated ``group_size`` patch** — when transformers loads
-   a model with ``low_cpu_mem_usage=True`` it materialises modules via
-   ``init_empty_weights`` which calls ``cls.__new__(cls)``.  That
-   bypasses ``__init__``, so any attribute set in ``__init__`` (such as
-   ``self.group_size`` in ``Zamba2RMSNormGated``) is missing at forward
-   time and calibration crashes with ``AttributeError``.  We derive
-   ``group_size = mamba_num_heads * mamba_head_dim // n_groups`` from
-   the config and set it both per-instance and on the class (the latter
-   as a fallback for any subsequent re-wrap).
-
-2. **High-precision override of SSM recurrence + router bias** —
-   ``torch_dtype=bf16`` at ``from_pretrained`` time downcasts every
-   floating-point tensor including ``A_log``/``D``/``dt_bias``/
-   ``conv1d.weight`` (used via ``exp`` and accumulated across the
-   sequence) and ``e_score_correction_bias`` (dominates the router
-   additive term).  The precision loss cannot be recovered at save
-   time; we reload these few small tensors from the source checkpoint
-   at FP32.  Total footprint is < 1 MB for a 30B-class MoE.  If the
-   source checkpoint is not locally available and cannot be downloaded
-   (offline env) the override is logged and skipped — calibration still
-   works on the BF16 values.
-
-3. **Default layer_config patterns** — Mamba2 ``mixer.out_proj``
-   projects the SSM state (very small-magnitude values) back to the
-   hidden stream; FP16 per-group scales collapse to sub-normals for
-   many of its groups, making the packed weight unusable.  We promote
-   scales for this layer to BF16 by default.  This is exposed via
-   :func:`nemotron_h_default_layer_config_patterns` and consumed by
-   ``set_layer_config``.
-
-None of this fires for any other model type.
-"""
-
-from __future__ import annotations
-
-from typing import Any
+import json
+import os
+import re
+from collections.abc import Callable, Iterable
 
 import torch
 import torch.nn as nn
 
 from auto_round.logger import logger
 
-# Regex patterns for the default layer_config overlay.
-# (Wrapped in a function so callers always get a fresh dict — these
-# entries get mutated downstream by the layer_config pipeline.)
-#
-# The pattern is written in AutoRound's "standard regex input" form
-# accepted by ``set_layer_config`` / ``to_standard_regex``: plain dots
-# (not ``\.``) because that helper escapes bare dots itself, while it
-# does not re-unescape ``\.`` sequences — meaning a raw-string regex
-# like ``r".*\.mixer\.out_proj$"`` would end up with doubled
-# backslashes and silently match nothing.
 _NEMOTRON_H_OUT_PROJ_PATTERN = ".*mixer.out_proj$"
 
-
-def nemotron_h_default_layer_config_patterns() -> dict[str, dict[str, Any]]:
-    """Return the regex → overlay dict of default quantization-config
-    overrides that apply automatically to any Nemotron-H model.
-
-    Only ``scale_dtype`` is set — bits/group_size/sym follow the global
-    default.  User-provided ``layer_config`` entries for the same
-    pattern take precedence (see ``set_layer_config``).
-    """
-
-    return {
-        _NEMOTRON_H_OUT_PROJ_PATTERN: {
-            # BF16 per-group scales avoid FP16 sub-normal collapse on the
-            # SSM output projection, which has very small-magnitude
-            # weights.
-            "scale_dtype": torch.bfloat16,
-        },
-    }
+_NH_SSM_CORE_PATTERNS: tuple[str, ...] = (
+    r"\.mixer\.A_log$",
+    r"\.mixer\.D$",
+    r"\.mixer\.dt_bias$",
+)
+_NH_ROUTER_BIAS_PATTERNS: tuple[str, ...] = (r"\.mixer\.gate\.e_score_correction_bias$",)
 
 
 def _patch_zamba2_group_size(model: nn.Module) -> int:
-    """Set ``group_size`` on every ``Zamba2RMSNormGated`` instance and
-    class found in *model*.  Returns the number of instances patched.
-
-    Safe to call unconditionally — modules of other class names are
-    ignored.  If ``group_size`` is already correctly set (non-low-cpu
-    path) we skip the instance but still class-patch once as a defence
-    against later re-wraps.
-    """
-
     config = getattr(model, "config", None)
     if config is None:
         return 0
@@ -124,15 +51,10 @@ def _patch_zamba2_group_size(model: nn.Module) -> int:
     for module in model.modules():
         if module.__class__.__name__ != "Zamba2RMSNormGated":
             continue
-        # Always class-patch once — guards against accelerate/AutoRound
-        # re-instantiating the class via ``cls.__new__(cls)`` which would
-        # otherwise strand ``group_size`` at the Python default (missing).
         cls = module.__class__
         if cls not in patched_classes:
             cls.group_size = group_size
             patched_classes.add(cls)
-        # Instance patch (use object.__setattr__ so torch.nn.Module's
-        # __setattr__ doesn't reroute through _buffers/_parameters).
         if getattr(module, "group_size", None) != group_size:
             object.__setattr__(module, "group_size", group_size)
         patched_instances += 1
@@ -147,24 +69,121 @@ def _patch_zamba2_group_size(model: nn.Module) -> int:
     return patched_instances
 
 
+def _resolve_module(root: nn.Module, dotted_path: str) -> nn.Module | None:
+    if not dotted_path:
+        return root
+    mod: nn.Module | None = root
+    for part in dotted_path.split("."):
+        if mod is None:
+            return None
+        if part.isdigit():
+            try:
+                mod = mod[int(part)]  # type: ignore[index]
+            except (IndexError, TypeError, KeyError):
+                return None
+        else:
+            mod = getattr(mod, part, None)
+    return mod
+
+
+def _nh_source_to_module(src_key: str) -> str:
+    if src_key.startswith("backbone."):
+        src_key = "model." + src_key[len("backbone.") :]
+    if src_key.endswith(".embedding.weight"):
+        src_key = src_key[: -len(".embedding.weight")] + ".embeddings.weight"
+    return src_key
+
+
+def _restore_tensors_from_source(
+    model: nn.Module,
+    source_dir: str,
+    name_patterns: Iterable[str],
+    target_dtype: torch.dtype,
+    source_to_module: Callable[[str], str] = _nh_source_to_module,
+) -> dict[str, tuple[torch.dtype, torch.dtype]]:
+    try:
+        from safetensors import safe_open
+    except ImportError:
+        return {}
+
+    if not os.path.isdir(source_dir):
+        return {}
+
+    index_path = os.path.join(source_dir, "model.safetensors.index.json")
+    single_path = os.path.join(source_dir, "model.safetensors")
+    source_to_shard: dict[str, str] = {}
+    if os.path.exists(index_path):
+        with open(index_path) as f:
+            idx = json.load(f)
+        for k, shard in idx["weight_map"].items():
+            source_to_shard[k] = os.path.join(source_dir, shard)
+    elif os.path.exists(single_path):
+        with safe_open(single_path, framework="pt", device="cpu") as f:
+            for k in f.keys():
+                source_to_shard[k] = single_path
+    else:
+        return {}
+
+    compiled = [re.compile(p) for p in name_patterns]
+    if not compiled:
+        return {}
+
+    by_shard: dict[str, list[str]] = {}
+    for k, shard in source_to_shard.items():
+        if any(c.search(k) for c in compiled):
+            by_shard.setdefault(shard, []).append(k)
+
+    if not by_shard:
+        return {}
+
+    restored: dict[str, tuple[torch.dtype, torch.dtype]] = {}
+    for shard, keys in by_shard.items():
+        with safe_open(shard, framework="pt", device="cpu") as f:
+            for src_key in keys:
+                try:
+                    src_tensor = f.get_tensor(src_key)
+                except Exception as exc:
+                    logger.warning("failed to read %s from %s: %s", src_key, shard, exc)
+                    continue
+
+                module_path = source_to_module(src_key)
+                parts = module_path.split(".")
+                parent_path, attr_name = ".".join(parts[:-1]), parts[-1]
+                parent = _resolve_module(model, parent_path)
+                if parent is None or not hasattr(parent, attr_name):
+                    continue
+                old = getattr(parent, attr_name)
+                if not isinstance(old, torch.Tensor):
+                    continue
+                if old.shape != src_tensor.shape:
+                    logger.warning(
+                        "restore: shape mismatch for %s — model %s, source %s",
+                        module_path,
+                        list(old.shape),
+                        list(src_tensor.shape),
+                    )
+                    continue
+
+                new_tensor = src_tensor.to(target_dtype)
+                old_dtype = old.dtype
+                if isinstance(old, nn.Parameter):
+                    setattr(parent, attr_name, nn.Parameter(new_tensor, requires_grad=old.requires_grad))
+                else:
+                    persistent = attr_name not in getattr(parent, "_non_persistent_buffers_set", set())
+                    parent.register_buffer(attr_name, new_tensor, persistent=persistent)
+                restored[module_path] = (old_dtype, target_dtype)
+    return restored
+
+
 def _resolve_source_dir(model: nn.Module) -> str | None:
-    """Best-effort resolution of the original checkpoint directory for
-    ``restore_nemotron_h_high_precision``.  Returns ``None`` when the
-    model was constructed without a ``_name_or_path`` or the snapshot
-    cannot be located and downloading is not possible."""
-
-    import os
-
     config = getattr(model, "config", None)
     if config is None:
         return None
     name_or_path = getattr(config, "_name_or_path", None) or getattr(config, "name_or_path", None)
     if not name_or_path:
         return None
-
     if os.path.isdir(name_or_path):
         return name_or_path
-
     try:
         from huggingface_hub import snapshot_download
 
@@ -176,106 +195,33 @@ def _resolve_source_dir(model: nn.Module) -> str | None:
                 "model.safetensors",
             ],
         )
-    except Exception as exc:  # pragma: no cover - network / offline
-        logger.info(
-            "nemotron_h: snapshot_download for %r failed (%s); skipping "
-            "high-precision SSM/router overrides — calibration proceeds on BF16 values.",
-            name_or_path,
-            exc,
-        )
+    except Exception as exc:
+        logger.info("nemotron_h: snapshot_download for %r failed (%s); skipping overrides.", name_or_path, exc)
         return None
 
 
 def _apply_high_precision_overrides(
     model: nn.Module,
     *,
-    ssm_core_dtype: torch.dtype | None = torch.float32,
-    router_bias_dtype: torch.dtype | None = torch.float32,
+    ssm_core_dtype: torch.dtype | None,
+    router_bias_dtype: torch.dtype | None,
 ) -> int:
-    """Call ``restore_nemotron_h_high_precision`` against the resolved
-    source checkpoint.  Returns the number of tensors restored (0 on
-    offline / failure)."""
-
     if ssm_core_dtype is None and router_bias_dtype is None:
         return 0
     source_dir = _resolve_source_dir(model)
     if source_dir is None:
         return 0
+    restored: dict = {}
     try:
-        from auto_round.utils.source_tensor_overrides import (
-            restore_nemotron_h_high_precision,
-        )
-
-        restored = restore_nemotron_h_high_precision(
-            model,
-            source_dir,
-            ssm_core_dtype=ssm_core_dtype,
-            router_bias_dtype=router_bias_dtype,
-        )
-    except Exception as exc:  # pragma: no cover - defensive
-        logger.warning(
-            "nemotron_h: high-precision override failed (%s); " "continuing with BF16 SSM/router tensors.",
-            exc,
-        )
+        if ssm_core_dtype is not None:
+            restored.update(_restore_tensors_from_source(model, source_dir, _NH_SSM_CORE_PATTERNS, ssm_core_dtype))
+        if router_bias_dtype is not None:
+            restored.update(
+                _restore_tensors_from_source(model, source_dir, _NH_ROUTER_BIAS_PATTERNS, router_bias_dtype)
+            )
+    except Exception as exc:
+        logger.warning("nemotron_h: high-precision override failed (%s); continuing.", exc)
         return 0
     if restored:
-        logger.info(
-            "nemotron_h: restored %d tensor(s) at high precision (ssm_core=%s, router_bias=%s)",
-            len(restored),
-            ssm_core_dtype,
-            router_bias_dtype,
-        )
+        logger.info("nemotron_h: restored %d tensor(s) at high precision", len(restored))
     return len(restored)
-
-
-def apply_nemotron_h_post_load(
-    model: nn.Module,
-    *,
-    ssm_core_dtype: torch.dtype | None = torch.float32,
-    router_bias_dtype: torch.dtype | None = torch.float32,
-    enable_high_precision_overrides: bool = True,
-) -> dict[str, int]:
-    """Apply every Nemotron-H-specific fix-up that must happen between
-    ``from_pretrained`` and AutoRound calibration.
-
-    Safe to call on any model — a quick ``model_type`` check at the top
-    makes this a no-op for non-NH models.
-
-    Args:
-        model: The loaded ``nn.Module`` (in-place modified).
-        ssm_core_dtype: Dtype to restore SSM recurrence tensors (``A_log``,
-            ``D``, ``dt_bias``, ``conv1d.weight``) to.  ``None`` disables.
-        router_bias_dtype: Dtype to restore ``e_score_correction_bias`` to.
-            ``None`` disables.
-        enable_high_precision_overrides: When ``False``, skip the
-            source-checkpoint reload step even if dtypes are supplied
-            (useful for offline environments).
-
-    Returns:
-        Summary dict ``{"zamba2_patched": int, "high_precision_restored": int}``.
-    """
-
-    summary = {"zamba2_patched": 0, "high_precision_restored": 0}
-    config = getattr(model, "config", None)
-    if config is None or getattr(config, "model_type", None) != "nemotron_h":
-        return summary
-
-    # Idempotency sentinel — if a caller has already applied these
-    # fix-ups (e.g. a legacy launcher script that pre-patches before
-    # handing the model to AutoRound), we skip so we don't re-download
-    # the source checkpoint or re-cast tensors already at FP32.
-    if getattr(model, "_autoround_nh_post_load_applied", False):
-        return summary
-
-    summary["zamba2_patched"] = _patch_zamba2_group_size(model)
-    if enable_high_precision_overrides:
-        summary["high_precision_restored"] = _apply_high_precision_overrides(
-            model,
-            ssm_core_dtype=ssm_core_dtype,
-            router_bias_dtype=router_bias_dtype,
-        )
-    try:
-        setattr(model, "_autoround_nh_post_load_applied", True)
-    except Exception:  # pragma: no cover - nn.Module.__setattr__ edge
-        pass
-    return summary

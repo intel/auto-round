@@ -333,13 +333,6 @@ class BaseCompressor(object):
             )
         check_and_mark_quantized_module(model)
         self.model = model.eval()
-        # Architecture-specific post-load fix-ups registered via
-        # ``MODEL_CONFIG``.  No-op for any ``model_type`` without a
-        # ``post_load_fn`` entry — currently only Nemotron-H uses this
-        # to patch ``Zamba2RMSNormGated.group_size`` (bypassed by HF
-        # ``low_cpu_mem_usage``) and to restore SSM-recurrence / router
-        # bias tensors at FP32 from the source checkpoint.  Both are
-        # correctness requirements, not quality tweaks.
         post_load_overrides = kwargs.pop("post_load_overrides", None) or {}
         apply_post_load_fixups(self.model, **post_load_overrides)
         self.tokenizer = tokenizer
@@ -514,11 +507,6 @@ class BaseCompressor(object):
         self.is_immediate_packing = False
         self.is_immediate_saving = False
 
-        # Optional override for norm-layer dtype at export time (set via
-        # quantize_and_save / save_quantized kwargs). When non-None, the
-        # ShardWriter and save_quantized_as_autoround paths upcast norm
-        # parameters to this dtype before serialisation to reduce residual-
-        # stream precision loss during inference.
         self.norm_dtype: Optional[torch.dtype] = None
 
         # KV cache, this one does not affect tuning but will collect some infos during tuning
@@ -1140,10 +1128,6 @@ class BaseCompressor(object):
         self.inplace = kwargs.get("inplace", inplace)
         kwargs.pop("inplace", None)
 
-        # Stash norm_dtype onto self so ShardWriter (LCMU / immediate_saving
-        # path) can honour it while tensors are still materialised. We keep
-        # it in kwargs too, so save_quantized_as_autoround can pick it up in
-        # the non-immediate-saving path.
         norm_dtype_kwarg = kwargs.get("norm_dtype")
         if norm_dtype_kwarg is not None:
             from auto_round.export.export_to_autoround.export import _resolve_dtype_spec

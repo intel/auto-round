@@ -602,14 +602,6 @@ auto-round --model_name Qwen/Qwen3-0.6B  --scheme "W4A16" --quant_lm_head --form
 添加 `--adam` 参数即可启用；**注意**：在我们的多项测试场景中，AdamW 优化器的效果均不如符号梯度下降（sign gradient descent）。
 
 
-#### 残差流精度（`norm_dtype`）
-
-`quantize_and_save` / `save_quantized` 的可选参数。在深层残差架构中——尤其是 Nemotron-H 等 SSM+MoE 混合模型——逐层累加 BF16 归一化输出会逐步损失精度。传入 `norm_dtype="fp32"` 可将归一化权重以 FP32 导出，而不影响量化 Linear 层；对 30B 规模模型磁盘/显存开销 <0.1%。推荐用于此类混合架构，其他模型可选启用。接受 `"fp16" | "bf16" | "fp32"`（字符串别名）或原始 `torch.dtype`。未传参时：归一化 dtype 与计算 `amp_dtype` 一致（GPU/XPU + FP16 checkpoint → FP16，CPU/HPU → BF16）。
-
-```python
-autoround.quantize_and_save(output_dir=out, format="auto_round", norm_dtype="fp32")
-```
-
 
 ### Hadamard变换
 
@@ -833,4 +825,4 @@ CUDA_VISIBLE_DEVICES=0,1 auto-round "your_model_path" --eval --tasks lambada_ope
 
 部分视觉语言模型（VLM）需要手动适配。
 
-暂不支持纯 Mamba 架构。自 2026-04 起，已初步支持 Mamba2 + Attention + MoE 混合架构（例如 `nvidia/Nemotron-Cascade-2-30B-A3B`），集成模式详见 `adapt-unfused-moe` 技能文档。
+暂不支持 Mamba 架构的模型。

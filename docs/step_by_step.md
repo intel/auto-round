@@ -640,7 +640,7 @@ autoround.save_quantized(format="auto_awq", output_dir="tmp_autoround")
 
 - **Residual-stream precision (`norm_dtype`):**
 
-  Opt-in kwarg on `quantize_and_save` / `save_quantized`. In deep residual architectures — especially hybrid SSM + MoE models such as Nemotron-H — accumulating residuals through BF16 norm outputs can lose precision layer over layer. Passing `norm_dtype="fp32"` exports norm weights in FP32 without touching quantized linears; disk/VRAM cost is <0.1% of a 30B model. Recommended for such hybrid architectures; optional elsewhere. Accepts `"fp16" | "bf16" | "fp32"` (string aliases) or a raw `torch.dtype`. Default (kwarg omitted): norm dtype follows the compute `amp_dtype` (FP16 on GPU/XPU with an FP16 checkpoint, BF16 on CPU/HPU).
+  Opt-in kwarg on `quantize_and_save` / `save_quantized` that exports norm weights at higher precision. Accepts `"fp16" | "bf16" | "fp32"` or a `torch.dtype`. Recommended for deep hybrid SSM + MoE architectures (e.g. Nemotron-H) where BF16 residual accumulation loses precision.
 
     ```python
     autoround.quantize_and_save(output_dir=out, format="auto_round", norm_dtype="fp32")
@@ -875,6 +875,5 @@ Randomness in quantization may affect tuning results for some models, set `enabl
 Some VLMs require manual support.
 
 
-Pure Mamba architectures are not supported. Initial support for hybrid Mamba2 + Attention + MoE models (e.g. `nvidia/Nemotron-Cascade-2-30B-A3B`) has landed as of 2026-04; see the `adapt-unfused-moe` skill for the integration pattern.
-
+Pure Mamba architectures are not supported. Hybrid Mamba2 + Attention + MoE models are supported (e.g. `nvidia/Nemotron-Cascade-2-30B-A3B`).
 

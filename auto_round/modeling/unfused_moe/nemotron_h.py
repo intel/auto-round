@@ -11,46 +11,13 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-"""Unfused-MoE handler for Nemotron-H (Mamba2 + Attention + MoE hybrid).
-
-Nemotron-H stores routed-MoE expert weights as bundled 3-D Parameters
-inside ``NemotronHExperts``:
-
-    self.up_proj   : nn.Parameter[num_experts, intermediate, hidden]
-    self.down_proj : nn.Parameter[num_experts, hidden, intermediate]
-
-AutoRound's quantization path walks ``nn.Linear`` modules and never sees
-bundled Parameters, so without this handler it quantizes 0 routed
-experts — ~94 % of the model. ``LinearNemotronHMoE`` re-expresses the
-routed experts as a ``ModuleList[NemotronHMLP]`` whose entries each
-contain regular ``nn.Linear`` ``up_proj`` / ``down_proj`` modules. The
-on-disk safetensors checkpoint already stores experts under individual
-keys (``backbone.layers.{i}.mixer.experts.{e}.up_proj.weight``), so the
-state-dict loads straight into the ModuleList.
-
-The forward path — group-top-k routing with
-``e_score_correction_bias`` and ``routed_scaling_factor`` — is a
-verbatim port of ``transformers.models.nemotron_h.modeling_nemotron_h.NemotronHMoE``;
-that logic is load-bearing for both inference accuracy and
-calibration-time token routing.
-"""
-
-from __future__ import annotations
 
 import torch
 import torch.nn as nn
 
 
 class LinearNemotronHMoE(nn.Module):
-    """Linear-discoverable replacement for ``NemotronHMoE``.
-
-    Forward semantics are byte-identical to the upstream block; the
-    sole structural difference is that routed experts live in
-    ``self.experts: nn.ModuleList[NemotronHMLP]`` rather than a single
-    bundled ``NemotronHExperts`` module.
-    """
-
-    def __init__(self, config, layer_idx: int | None = None):
+    def __init__(self, config):
         super().__init__()
         from transformers.models.nemotron_h.modeling_nemotron_h import (
             NemotronHMLP,
@@ -58,36 +25,21 @@ class LinearNemotronHMoE(nn.Module):
         )
 
         self.config = config
-
-        # Router — its only learnable piece is a single Parameter
-        # ``[num_experts, hidden_size]`` plus a buffer
-        # ``e_score_correction_bias``. AutoRound finds no nn.Linear inside
-        # NemotronHTopkRouter so it is automatically left in BF16.
         self.gate = NemotronHTopkRouter(config)
-
-        # Routed experts — the whole point of this handler. Each expert
-        # is a standard 2-linear ReLU^2 MLP with the same shape as one
-        # slice of the bundled NemotronHExperts tensors.
         self.n_routed_experts = config.n_routed_experts
         self.experts = nn.ModuleList(
             [NemotronHMLP(config, intermediate_size=config.moe_intermediate_size) for _ in range(self.n_routed_experts)]
         )
-
-        # Shared expert(s) — already use nn.Linear in upstream.
         self.shared_experts = NemotronHMLP(
             config=config,
             intermediate_size=config.moe_shared_expert_intermediate_size,
         )
-
-        # Routing hyper-parameters mirrored from upstream.
         self.n_group = config.n_group
         self.topk_group = config.topk_group
         self.norm_topk_prob = config.norm_topk_prob
         self.routed_scaling_factor = config.routed_scaling_factor
         self.top_k = config.num_experts_per_tok
 
-        # Optional latent projection. ``Identity`` for Nemotron-Cascade-2
-        # because ``moe_latent_size is None``.
         if config.moe_latent_size is not None:
             self.fc1_latent_proj = nn.Linear(config.hidden_size, config.moe_latent_size, bias=config.mlp_bias)
             self.fc2_latent_proj = nn.Linear(config.moe_latent_size, config.hidden_size, bias=config.mlp_bias)
@@ -95,11 +47,6 @@ class LinearNemotronHMoE(nn.Module):
             self.fc1_latent_proj = nn.Identity()
             self.fc2_latent_proj = nn.Identity()
 
-    # ------------------------------------------------------------------ #
-    # Identical to upstream NemotronHMoE.route_tokens_to_experts. The
-    # group-top-k + score-correction-bias path is load-bearing — do not
-    # simplify.
-    # ------------------------------------------------------------------ #
     def route_tokens_to_experts(self, router_logits: torch.Tensor):
         router_logits = router_logits.sigmoid()
         router_logits_for_choice = router_logits + self.gate.e_score_correction_bias
@@ -125,18 +72,12 @@ class LinearNemotronHMoE(nn.Module):
         topk_weights = topk_weights * self.routed_scaling_factor
         return topk_indices, topk_weights
 
-    def forward(self, hidden_states: torch.Tensor) -> torch.Tensor:
-        residuals = hidden_states
-        orig_shape = hidden_states.shape
-        hidden_dim = hidden_states.shape[-1]
-
-        router_logits = self.gate(hidden_states)
-        topk_indices, topk_weights = self.route_tokens_to_experts(router_logits)
-        topk_weights = topk_weights.to(hidden_states.dtype)
-
-        flat = hidden_states.view(-1, hidden_dim)
-        flat = self.fc1_latent_proj(flat)
-
+    def experts_forward(
+        self,
+        flat: torch.Tensor,
+        topk_indices: torch.Tensor,
+        topk_weights: torch.Tensor,
+    ) -> torch.Tensor:
         out = torch.zeros_like(flat)
 
         with torch.no_grad():
@@ -152,7 +93,67 @@ class LinearNemotronHMoE(nn.Module):
             current_out = current_out * topk_weights[token_idx, top_k_pos, None]
             out.index_add_(0, token_idx, current_out.to(out.dtype))
 
+        return out
+
+    def forward(self, hidden_states: torch.Tensor) -> torch.Tensor:
+        residuals = hidden_states
+        orig_shape = hidden_states.shape
+        hidden_dim = hidden_states.shape[-1]
+
+        router_logits = self.gate(hidden_states)
+        topk_indices, topk_weights = self.route_tokens_to_experts(router_logits)
+        topk_weights = topk_weights.to(hidden_states.dtype)
+
+        flat = hidden_states.view(-1, hidden_dim)
+        flat = self.fc1_latent_proj(flat)
+
+        out = self.experts_forward(flat, topk_indices, topk_weights)
+
         out = self.fc2_latent_proj(out)
         out = out.view(*orig_shape)
         out = out + self.shared_experts(residuals)
         return out
+
+
+def nemotron_h_default_layer_config_patterns():
+    from auto_round.modeling.unfused_moe.nemotron_h_setup import _NEMOTRON_H_OUT_PROJ_PATTERN
+
+    return {
+        _NEMOTRON_H_OUT_PROJ_PATTERN: {
+            "scale_dtype": torch.bfloat16,
+        },
+    }
+
+
+def apply_nemotron_h_post_load(
+    model: nn.Module,
+    *,
+    ssm_core_dtype=torch.float32,
+    router_bias_dtype=torch.float32,
+    enable_high_precision_overrides: bool = True,
+):
+    from auto_round.modeling.unfused_moe.nemotron_h_setup import (
+        _apply_high_precision_overrides,
+        _patch_zamba2_group_size,
+    )
+
+    summary = {"zamba2_patched": 0, "high_precision_restored": 0}
+    config = getattr(model, "config", None)
+    if config is None or getattr(config, "model_type", None) != "nemotron_h":
+        return summary
+
+    if getattr(model, "_autoround_nh_post_load_applied", False):
+        return summary
+
+    summary["zamba2_patched"] = _patch_zamba2_group_size(model)
+    if enable_high_precision_overrides:
+        summary["high_precision_restored"] = _apply_high_precision_overrides(
+            model,
+            ssm_core_dtype=ssm_core_dtype,
+            router_bias_dtype=router_bias_dtype,
+        )
+    try:
+        setattr(model, "_autoround_nh_post_load_applied", True)
+    except Exception:
+        pass
+    return summary

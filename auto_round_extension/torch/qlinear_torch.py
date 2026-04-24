@@ -71,9 +71,6 @@ class QuantLinear(nn.Module):
         self.bits = bits
         self.group_size = group_size if group_size != -1 else infeatures
         self.maxq = 2**self.bits - 1
-        # scale_dtype defaults to float16 to preserve historical behaviour. Pass
-        # bfloat16 (or float32) when scale magnitudes risk FP16 sub-normal
-        # collapse — e.g. Mamba2 / SSM `out_proj` layers.
         self.scale_dtype = scale_dtype
 
         self.register_buffer(

@@ -99,52 +99,19 @@ MODEL_CONFIG = {
             )
         ],
     },
-    # Nemotron-H is a Mamba2 + Attention + MoE hybrid. ``NemotronHBlock``
-    # resolves its mixer via a module-level dispatch dict
-    # (``MIXER_TYPES``), so the standard setattr-based ``block_patch`` is
-    # not sufficient — we also rewrite the dict entry, which is the
-    # purpose of ``dispatch_dict_patch`` (see ``apply_model_monkey_patches``).
     "nemotron_h": {
         "min_transformers_version": "5.0.0",
         "max_transformers_version": "6.0.0",
-        # Nemotron-H stores weights on disk under ``backbone.*`` and
-        # ``embedding.weight``, but the in-memory ``NemotronHForCausalLM``
-        # exposes them as ``model.*`` and ``embeddings.weight``.  The
-        # upstream conversion mapping renames these on load.  Returning an
-        # empty list here would silently drop those renames — every
-        # ``backbone.*`` tensor would fail to match any module parameter
-        # and the entire backbone (router, attention, Mamba2, MLP) would
-        # remain at random init while quantization happily proceeded on
-        # garbage.  ``preserve_upstream_conversion_mapping`` keeps the
-        # upstream rules; ``drop_conversion_target_patterns`` removes only
-        # the expert-bundling ``WeightConverter`` entries that fan
-        # individual on-disk per-expert tensors back into a single
-        # bundled Parameter (the very thing the unfused handler exists
-        # to avoid).
         "checkpoint_mapping": [],
         "preserve_upstream_conversion_mapping": True,
         "drop_conversion_target_patterns": [
             "mixer.experts.up_proj",
             "mixer.experts.down_proj",
-            # Upstream ships a legacy ``embedding.weight → embeddings.weight``
-            # WeightRenaming that is a no-op at load time for the current
-            # on-disk checkpoint (already plural), but is applied in reverse
-            # at save time — turning the saved tensor into singular
-            # ``backbone.embedding.weight``. That creates a name mismatch
-            # against the source checkpoint's ``backbone.embeddings.weight``
-            # which ``copy_missing_tensors_from_source`` then resolves by
-            # RTN-quantizing the source embedding and emitting a phantom
-            # ``backbone.embeddings.qweight`` alongside the unquantized BF16
-            # copy. Dropping the rule keeps load/save symmetric (plural on
-            # both sides) and prevents the double-store.
             "embeddings.weight",
         ],
-        # Architecture-specific defaults applied automatically by
-        # ``apply_post_load_fixups`` and ``set_layer_config`` — see
-        # ``nemotron_h_setup.py`` for the rationale of each item.
-        "post_load_fn": "auto_round.modeling.unfused_moe.nemotron_h_setup.apply_nemotron_h_post_load",
+        "post_load_fn": "auto_round.modeling.unfused_moe.nemotron_h.apply_nemotron_h_post_load",
         "default_layer_config_patterns_fn": (
-            "auto_round.modeling.unfused_moe.nemotron_h_setup.nemotron_h_default_layer_config_patterns"
+            "auto_round.modeling.unfused_moe.nemotron_h.nemotron_h_default_layer_config_patterns"
         ),
         "block_patch": [
             (
@@ -152,7 +119,6 @@ MODEL_CONFIG = {
                 "auto_round.modeling.unfused_moe.nemotron_h.LinearNemotronHMoE",
             )
         ],
-        # (module_path, dict_attribute_name, key_to_overwrite, replacement_class_path)
         "dispatch_dict_patch": [
             (
                 "transformers.models.nemotron_h.modeling_nemotron_h",
@@ -173,15 +139,7 @@ def get_checkpoint_conversion_mapping_ar(model_type):
 
     cfg = MODEL_CONFIG.get(model_type)
     if cfg:
-        # Some models (notably Nemotron-H) require the upstream rename rules
-        # — e.g. ``backbone.*`` → ``model.*`` — to remain in effect or
-        # nothing in the backbone will load and the in-memory parameters
-        # silently keep their random init values.  When
-        # ``preserve_upstream_conversion_mapping`` is set, fetch the
-        # upstream mapping and only filter out the explicit
-        # ``drop_conversion_target_patterns`` (used to suppress
-        # expert-bundling rules that conflict with the unfused module
-        # layout).
+        # Preserve upstream renames; filter out drop_conversion_target_patterns.
         if cfg.get("preserve_upstream_conversion_mapping"):
             try:
                 upstream = conversion_mapping.orig_get_checkpoint_conversion_mapping(model_type)
@@ -279,12 +237,6 @@ def apply_model_monkey_patches(model_name: str, trust_remote_code: bool = True) 
     model_type = getattr(config, "model_type")
 
     cfg = MODEL_CONFIG[model_type]
-    # Some hybrid models (e.g. Nemotron-H) resolve their mixer/MoE block
-    # via a module-level dispatch dict instead of a direct symbol
-    # reference. ``setattr(orig_module, orig_class_name, custom_class)``
-    # alone leaves the dict entry pointing at the original class. Apply
-    # the configured dispatch-dict patches first so any subsequent model
-    # load picks up the replacement.
     for module_path, dict_name, dict_key, replacement_path in cfg.get("dispatch_dict_patch", []):
         try:
             target_module = importlib.import_module(module_path)
@@ -335,46 +287,42 @@ def _resolve_dotted(path: str):
     return getattr(module, attr)
 
 
-def apply_post_load_fixups(model: torch.nn.Module, **overrides) -> dict:
-    """Apply architecture-specific post-load patches for *model*.
+def _resolve_registered_fn(model, cfg_key, caller):
+    """Resolve (model_type, fn_path, callable) for a registered function on model_type.
 
-    Looks up ``model.config.model_type`` in :data:`MODEL_CONFIG` and, if
-    a ``post_load_fn`` is registered there, invokes it with *model*
-    plus any caller-supplied ``overrides`` (forwarded as kwargs).
-
-    This is a no-op for models whose ``model_type`` is not registered
-    in :data:`MODEL_CONFIG` or that don't ship a ``post_load_fn`` —
-    making it safe to call unconditionally from the quantization
-    pipeline.
-
-    Typical post-load concerns (see e.g.
-    ``nemotron_h_setup.apply_nemotron_h_post_load``) include setting
-    attributes that HF ``low_cpu_mem_usage`` skipped via
-    ``init_empty_weights``, or reloading specific tensors from the
-    source checkpoint at higher precision.
+    Returns (None, None, None) if no config, no model_type, no cfg entry, or no
+    registered path. Emits a warning tagged with ``caller`` if resolution fails.
     """
-
     config = getattr(model, "config", None)
     if config is None:
-        return {}
+        return None, None, None
     model_type = getattr(config, "model_type", None)
     if model_type is None:
-        return {}
+        return None, None, None
     cfg = MODEL_CONFIG.get(model_type)
     if not cfg:
-        return {}
-    fn_path = cfg.get("post_load_fn")
+        return None, None, None
+    fn_path = cfg.get(cfg_key)
     if not fn_path:
-        return {}
+        return None, None, None
     try:
         fn = _resolve_dotted(fn_path)
     except Exception as exc:  # pragma: no cover - defensive
         logger.warning(
-            "apply_post_load_fixups: failed to resolve %r for model_type=%r: %s",
+            "%s: failed to resolve %r for model_type=%r: %s",
+            caller,
             fn_path,
             model_type,
             exc,
         )
+        return None, None, None
+    return model_type, fn_path, fn
+
+
+def apply_post_load_fixups(model: torch.nn.Module, **overrides) -> dict:
+    """Invoke the registered ``post_load_fn`` for model_type, or no-op."""
+    _, fn_path, fn = _resolve_registered_fn(model, "post_load_fn", "apply_post_load_fixups")
+    if fn is None:
         return {}
     try:
         return fn(model, **overrides) or {}
@@ -388,35 +336,11 @@ def apply_post_load_fixups(model: torch.nn.Module, **overrides) -> dict:
 
 
 def get_default_layer_config_patterns(model: torch.nn.Module) -> dict:
-    """Return the architecture-specific default ``layer_config``
-    patterns for *model* (a mapping of regex string → overlay dict),
-    or an empty dict when none are registered.
-
-    The patterns are merged into the user-supplied ``layer_config``
-    by ``set_layer_config`` (per-pattern, user entries take
-    precedence).  No-op for non-registered models.
-    """
-
-    config = getattr(model, "config", None)
-    if config is None:
-        return {}
-    model_type = getattr(config, "model_type", None)
-    if model_type is None:
-        return {}
-    cfg = MODEL_CONFIG.get(model_type)
-    if not cfg:
-        return {}
-    fn_path = cfg.get("default_layer_config_patterns_fn")
-    if not fn_path:
-        return {}
-    try:
-        fn = _resolve_dotted(fn_path)
-    except Exception as exc:  # pragma: no cover - defensive
-        logger.warning(
-            "get_default_layer_config_patterns: failed to resolve %r: %s",
-            fn_path,
-            exc,
-        )
+    """Return registered default layer_config patterns for model_type."""
+    _, fn_path, fn = _resolve_registered_fn(
+        model, "default_layer_config_patterns_fn", "get_default_layer_config_patterns"
+    )
+    if fn is None:
         return {}
     try:
         patterns = fn() or {}

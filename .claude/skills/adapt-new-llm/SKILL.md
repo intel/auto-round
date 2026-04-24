@@ -156,13 +156,6 @@ BUILTIN_MODULES["your_model_type"] = LazyImport("auto_round.modeling.fused_moe.y
 | `step3p5` | `fused_moe/step3_5_moe.py` | Splits fused MoELinear |
 | `qwen3_omni_moe` | `fused_moe/qwen3_omni.py` | Thinker + talker MoE |
 
-> **Transformers ≥ 5.0 and hybrid SSM+MoE models** register via
-> `auto_round/modeling/unfused_moe/` (not `fused_moe/`) and need
-> `MODEL_CONFIG` entries with `block_patch` / `post_load_fn` /
-> `default_layer_config_patterns_fn`. See
-> [adapt-unfused-moe](../adapt-unfused-moe/SKILL.md) for that pipeline
-> and the Nemotron-H hybrid-SSM reference.
-
 ## Step 3: Add Custom Forward Pass
 
 Some models have non-standard forward passes that don't get calibrated correctly

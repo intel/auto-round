@@ -52,10 +52,6 @@ from auto_round.utils import (
     unsupported_meta_device,
 )
 
-# Matches torch built-in norms (LayerNorm, RMSNorm, GroupNorm, BatchNorm2d,
-# InstanceNorm3d, ...) and HF custom subclasses (LlamaRMSNorm, NemotronHRMSNorm,
-# MambaRMSNorm, Gemma2RMSNorm, ...). Rejects non-norm lookalikes such as
-# ``Normalize`` (used for vision transforms) because the suffix differs.
 _NORM_CLASS_SUFFIX = re.compile(r".*Norm(?:\d+d)?\Z")
 
 _DTYPE_STRING_ALIASES: dict[str, torch.dtype] = {
@@ -72,21 +68,10 @@ _DTYPE_STRING_ALIASES: dict[str, torch.dtype] = {
 
 
 def _is_norm_module(module: nn.Module) -> bool:
-    """Heuristic: ``module`` is a normalization layer in the residual stream.
-
-    Uses the class name suffix because HF models define custom norm subclasses
-    outside of ``torch.nn.modules.normalization`` (e.g. ``LlamaRMSNorm``),
-    which makes ``isinstance`` checks against torch built-ins unreliable.
-    """
     return _NORM_CLASS_SUFFIX.match(type(module).__name__) is not None
 
 
 def _resolve_dtype_spec(dtype_spec) -> Optional[torch.dtype]:
-    """Normalize a dtype spec (``torch.dtype`` or string alias) to ``torch.dtype``.
-
-    Returns ``None`` when the caller did not request an override. String inputs
-    are matched against ``_DTYPE_STRING_ALIASES`` case-insensitively.
-    """
     if dtype_spec is None:
         return None
     if isinstance(dtype_spec, torch.dtype):
@@ -102,19 +87,7 @@ def _resolve_dtype_spec(dtype_spec) -> Optional[torch.dtype]:
 
 
 def _cast_norm_modules(model: nn.Module, dtype: Optional[torch.dtype]) -> int:
-    """Cast parameters and floating-point buffers of norm modules to ``dtype``.
-
-    Residual-stream accumulation in deep transformers/SSM hybrids can lose
-    precision when norm outputs are themselves BF16 because the per-layer add
-    rounds at BF16 mantissa width. Exporting norm weights in higher precision
-    (typically F32) lets the inference engine upcast-free through the norm and,
-    if it chooses, carry the residual accumulator in F32. Norm parameters are
-    a negligible fraction of the model (≪ 0.1% for ≥30B LLMs), so the disk/VRAM
-    cost of this upcast is essentially zero.
-
-    Returns the number of modules cast. When ``dtype`` is ``None`` or when the
-    model is on the meta device, returns 0 without modifying anything.
-    """
+    """Upcast norm module parameters/buffers to ``dtype`` for residual precision."""
     if dtype is None:
         return 0
     count = 0
@@ -122,13 +95,9 @@ def _cast_norm_modules(model: nn.Module, dtype: Optional[torch.dtype]) -> int:
     for name, module in model.named_modules():
         if not _is_norm_module(module):
             continue
-        # Per-module meta check: norms aren't quantized, so their params are
-        # normally on a real device. If they *are* on meta (e.g. ``low_cpu_mem``
-        # with deferred materialization), skip silently — casting meta tensors
-        # raises NotImplementedError.
         try:
             first_param = next(module.parameters(), None)
-        except Exception:  # defensive; _parameters iteration shouldn't raise
+        except Exception:
             first_param = None
         if first_param is not None and first_param.device.type == "meta":
             skipped_meta += 1
@@ -150,13 +119,6 @@ def _cast_norm_modules(model: nn.Module, dtype: Optional[torch.dtype]) -> int:
 
 @functools.lru_cache(maxsize=None)
 def _quant_linear_accepts(qlinear_cls, kwarg_name: str) -> bool:
-    """Return True if ``qlinear_cls.__init__`` accepts ``kwarg_name``.
-
-    Used by :func:`pack_layer` to decide whether to forward a (possibly
-    novel) keyword argument such as ``scale_dtype`` to the QuantLinear
-    constructor. Third-party backends (AWQ, auto-gptq) typically do not
-    accept these kwargs, so we silently drop them rather than crash.
-    """
     target_cls = qlinear_cls
     if isinstance(target_cls, functools.partial):
         target_cls = target_cls.func
@@ -318,10 +280,6 @@ def pack_layer(layer_name, model, backend, device=None):
         out_features = layer.weight.shape[1]
     bias = layer.bias is not None
 
-    # Honour the dtype of the calibrated scale tensor when building the
-    # QuantLinear container. Only forward the kwarg to backends whose
-    # __init__ explicitly accepts it (or accepts **kwargs); third-party
-    # backends (AWQ, auto-gptq) keep their existing call signature.
     extra_kwargs: dict[str, "torch.dtype"] = {}
     if isinstance(scale, torch.Tensor) and _quant_linear_accepts(QuantLinear, "scale_dtype"):
         extra_kwargs["scale_dtype"] = scale.dtype
@@ -445,8 +403,6 @@ def save_quantized_as_autoround(
     if not unsupported_meta_device(model):
         for name in tqdm(names, desc="packing", leave=True):
             pack_layer(name, model, backend, device)
-    # Optional: upcast norm weights before serialization. See _cast_norm_modules
-    # docstring for the residual-precision rationale.
     norm_dtype = _resolve_dtype_spec(kwargs.get("norm_dtype"))
     if norm_dtype is not None:
         _cast_norm_modules(model, norm_dtype)
