@@ -249,6 +249,98 @@ def _ensure_rope_theta_from_config_obj(cfg: dict, config_obj) -> None:
             _ensure_rope_theta_from_config_obj(sub_cfg, sub_obj)
 
 
+# Sub-config keys whose ``model_type`` we want to preserve verbatim from the
+# *original* checkpoint's ``config.json``. Newer ``transformers`` versions
+# have a bug where they rewrite a sub-config's ``model_type`` on save (e.g.
+# ``vision_config.model_type`` becomes ``qwen3_5_vision`` while the original
+# checkpoint had ``qwen3_5``). We snapshot the original JSON and restore.
+_PRESERVE_MODEL_TYPE_SUB_KEYS = (
+    "text_config",
+    "language_config",
+    "thinker_config",
+    "vision_config",
+    "audio_config",
+)
+
+
+def _snapshot_original_model_types(model: nn.Module) -> "dict | None":
+    """Snapshot ``model_type`` for top-level and known sub-configs from the
+    *live* ``model.config`` object before HF's ``save_pretrained`` runs.
+
+    Returns a plain dict shaped like::
+
+        {"model_type": "qwen3_5",
+         "vision_config": {"model_type": "qwen3_5"},
+         ...}
+
+    or ``None`` if ``model.config`` is unavailable. We deliberately use the
+    in-memory config (not a re-load from disk) because the caller has already
+    loaded the original checkpoint there — that's the source of truth.
+    """
+    cfg_obj = getattr(model, "config", None)
+    if cfg_obj is None:
+        logger.warning("[mlx-export] model has no .config; skipping model_type preservation")
+        return None
+    try:
+        cfg_dict = cfg_obj.to_dict() if hasattr(cfg_obj, "to_dict") else dict(cfg_obj.__dict__)
+    except Exception as e:
+        logger.warning(f"[mlx-export] failed to snapshot model.config: {e}")
+        return None
+
+    snapshot: dict = {}
+    if "model_type" in cfg_dict:
+        snapshot["model_type"] = cfg_dict["model_type"]
+    for sub_key in _PRESERVE_MODEL_TYPE_SUB_KEYS:
+        sub = cfg_dict.get(sub_key)
+        if isinstance(sub, dict) and "model_type" in sub:
+            snapshot[sub_key] = {"model_type": sub["model_type"]}
+    logger.info(f"[mlx-export] snapshotted original model_types: {snapshot!r}")
+    return snapshot
+
+
+def _preserve_original_model_types(new_cfg: dict, orig_cfg: "dict | None") -> None:
+    """Make ``new_cfg``'s ``model_type`` fields exactly match ``orig_cfg``.
+
+    For the top-level config and each known sub-config (``text_config``,
+    ``vision_config``, etc.):
+      * If the original had a ``model_type`` value, write it back.
+      * If the original did **not** have ``model_type`` at all, delete the key
+        from the new config (so HF can't sneak in a renamed default like
+        ``qwen3_5`` → ``qwen3_5_vision``).
+      * If the original sub-config doesn't exist in the new config, nothing to do.
+
+    No-op if ``orig_cfg`` is ``None``.
+    """
+    if not isinstance(new_cfg, dict):
+        logger.warning("[mlx-export] new config is not a dict; skip model_type preservation")
+        return
+    if not isinstance(orig_cfg, dict):
+        # Already warned in _load_original_config_json.
+        return
+
+    def _align(sub_new: dict, sub_orig: dict, label: str) -> None:
+        new_val = sub_new.get("model_type", "<missing>")
+        if "model_type" in sub_orig:
+            orig_val = sub_orig["model_type"]
+            if new_val != orig_val:
+                logger.info(f"[mlx-export] restoring {label}.model_type: {new_val!r} -> {orig_val!r}")
+                sub_new["model_type"] = orig_val
+        else:
+            if "model_type" in sub_new:
+                logger.info(
+                    f"[mlx-export] removing {label}.model_type ({new_val!r}); "
+                    f"original config did not declare one"
+                )
+                sub_new.pop("model_type", None)
+
+    _align(new_cfg, orig_cfg, "top-level")
+    for sub_key in _PRESERVE_MODEL_TYPE_SUB_KEYS:
+        sub_new = new_cfg.get(sub_key)
+        sub_orig = orig_cfg.get(sub_key)
+        if isinstance(sub_new, dict) and isinstance(sub_orig, dict):
+            _align(sub_new, sub_orig, sub_key)
+
+
 def _strip_prefix(name: str, prefix: str) -> str:
     """Return ``name`` with ``prefix.`` removed, or ``name`` if no match."""
     if name == prefix:
@@ -494,6 +586,12 @@ def save_quantized_as_mlx(
         for layer_name in layer_config:
             pack_layer(layer_name, model, device=device)
 
+    # Snapshot ``model_type`` (top-level + sub-configs) from the live
+    # ``model.config`` BEFORE HF's ``save_pretrained`` runs. The in-memory
+    # config still holds the original strings — newer ``transformers`` only
+    # corrupts them on serialize.
+    orig_model_types = _snapshot_original_model_types(model)
+
     # Save model weights (uint32 packed weights are saved directly by safetensors)
     if not unsupported_meta_device(model):
         model.save_pretrained(output_dir, safe_serialization=True)
@@ -548,6 +646,11 @@ def save_quantized_as_mlx(
         # checkpoint is loaded through transformers.AutoModelForCausalLM, which
         # raises KeyError for missing rope_theta on Qwen-family models).
         _ensure_rope_theta_from_config_obj(config, getattr(model, "config", None))
+
+        # Restore ``model_type`` (top-level + sub-configs) from the in-memory
+        # snapshot so that newer ``transformers`` versions don't silently
+        # rename them on save (e.g. vision_config: qwen3_5 -> qwen3_5_vision).
+        _preserve_original_model_types(config, orig_model_types)
 
         with open(config_path, "w") as f:
             json.dump(config, f, indent=2)
