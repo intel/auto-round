@@ -123,41 +123,6 @@ def get_model_path(model_name: str) -> str:
         return model_name
 
 
-def get_captions_dataset_path() -> str:
-    """Find captions_source.tsv locally or download it to tmp.
-
-    Checks /dataset/, /tf_dataset/, and test/tmp/ for the file.
-    If not found, downloads from the mlcommons URL to test/tmp/.
-
-    Returns:
-        str: The path to captions_source.tsv.
-    """
-    import urllib.request
-
-    filename = "captions_source.tsv"
-    url = (
-        "https://raw.githubusercontent.com/mlcommons/inference/refs/heads/master/"
-        "text_to_image/coco2014/captions/captions_source.tsv"
-    )
-
-    local_candidates = [
-        f"/dataset/{filename}",
-        f"/tf_dataset/{filename}",
-        os.path.join(os.path.dirname(__file__), "tmp", filename),
-    ]
-    for path in local_candidates:
-        if os.path.exists(path):
-            return path
-
-    # Download to tmp
-    tmp_dir = os.path.join(os.path.dirname(__file__), "tmp")
-    os.makedirs(tmp_dir, exist_ok=True)
-    tmp_path = os.path.join(tmp_dir, filename)
-    print(f"[Helper] Downloading {filename} from {url} to {tmp_path}")
-    urllib.request.urlretrieve(url, tmp_path)
-    return tmp_path
-
-
 opt_name_or_path = get_model_path("facebook/opt-125m")
 qwen_name_or_path = get_model_path("Qwen/Qwen3-0.6B")
 lamini_name_or_path = get_model_path("MBZUAI/LaMini-GPT-124M")
@@ -328,7 +293,8 @@ def get_tiny_model(
                         and isinstance(v, list)
                         and v[0] in ["diffusers", "transformers"]
                     ):
-                        _reduce_config_layers(getattr(model, k).config, num_layers, num_experts)
+                        tiny_module = _get_module(v[0], v[1], k)
+                        setattr(model, k, tiny_module)
             return model
         else:
             trust_remote_code = kwargs.get("trust_remote_code", True)
