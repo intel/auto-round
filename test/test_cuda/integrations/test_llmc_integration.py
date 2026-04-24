@@ -7,6 +7,8 @@ from transformers import AutoModelForCausalLM, AutoTokenizer
 
 from auto_round.calib_dataset import get_dataset
 
+from ...envs import multi_card
+
 recipe_str = """
 quant_stage:
     quant_modifiers:
@@ -52,6 +54,7 @@ recipe_modifier_mxfp4 = AutoRoundModifier(
 w8a8_dynamic_recipe_modifier = AutoRoundModifier(
     ignore=["lm_head"],
     iters=0,
+    enable_torch_compile=False,
     config_groups={
         "group_0": QuantizationScheme(
             targets=["Linear"],
@@ -64,6 +67,7 @@ w8a8_dynamic_recipe_modifier = AutoRoundModifier(
 w8a8_static_recipe_modifier = AutoRoundModifier(
     ignore=["lm_head"],
     iters=0,
+    enable_torch_compile=False,
     config_groups={
         "group_0": QuantizationScheme(
             targets=["Linear"],
@@ -74,7 +78,6 @@ w8a8_static_recipe_modifier = AutoRoundModifier(
 )
 
 
-@pytest.mark.skipif(torch.cuda.device_count() < 1, reason="test requires at least 1 Cuda GPU")
 @pytest.mark.parametrize(
     "recipe",
     [
@@ -84,9 +87,9 @@ w8a8_static_recipe_modifier = AutoRoundModifier(
         recipe_modifier_mxfp4,
     ],
 )
-def test_oneshot_application(recipe, tmp_path):
+def test_oneshot_application(tiny_tiny_llama_model_path, recipe, tmp_path):
     output = tmp_path / "oneshot_output"
-    model = "TinyLlama/TinyLlama-1.1B-Chat-v1.0"
+    model = tiny_tiny_llama_model_path
     tokenizer = AutoTokenizer.from_pretrained(model)
     dataset = get_dataset(
         tokenizer=tokenizer,
@@ -129,10 +132,10 @@ def test_oneshot_application(recipe, tmp_path):
     assert not hasattr(not_targeted, "quantization_scheme")
 
 
-@pytest.mark.skipif(torch.cuda.device_count() < 2, reason="test requires at least 2 Cuda GPUs")
-def test_oneshot_with_device_ids(tmp_path):
+@multi_card
+def test_oneshot_with_device_ids(tiny_tiny_llama_model_path, tmp_path):
     output = tmp_path / "oneshot_output"
-    model = "TinyLlama/TinyLlama-1.1B-Chat-v1.0"
+    model = tiny_tiny_llama_model_path
     tokenizer = AutoTokenizer.from_pretrained(model)
     dataset = get_dataset(
         tokenizer=tokenizer,
@@ -140,7 +143,7 @@ def test_oneshot_with_device_ids(tmp_path):
         nsamples=4,
     )
 
-    device = "cuda:0"
+    device = "cuda:0" if torch.cuda.is_available() else "cpu"
 
     recipe = AutoRoundModifier(
         ignore=["lm_head"],
@@ -187,14 +190,13 @@ def test_oneshot_with_device_ids(tmp_path):
     assert not hasattr(not_targeted, "quantization_scheme")
 
 
-@pytest.mark.skipif(torch.cuda.device_count() < 1, reason="test requires at least 1 Cuda GPU")
 @pytest.mark.parametrize(
     "recipe",
     [w8a8_dynamic_recipe_modifier, w8a8_static_recipe_modifier],
 )
-def test_rtn_oneshot(recipe, tmp_path):
+def test_rtn_oneshot(recipe, tmp_path, tiny_tiny_llama_model_path):
     output = tmp_path / "oneshot_output"
-    model = "TinyLlama/TinyLlama-1.1B-Chat-v1.0"
+    model = tiny_tiny_llama_model_path
     tokenizer = AutoTokenizer.from_pretrained(model)
     dataset = get_dataset(
         tokenizer=tokenizer,
