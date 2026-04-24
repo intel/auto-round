@@ -1,3 +1,4 @@
+import concurrent.futures
 import copy
 import os
 import re
@@ -12,6 +13,18 @@ from auto_round.eval.evaluation import simple_evaluate, simple_evaluate_user_mod
 from auto_round.utils import detect_device, diffusion_load_model, get_attr, llm_load_model, mllm_load_model, set_attr
 
 transformers_version = version.parse(transformers.__version__)
+
+
+def _raise_threaded_packing(*args, **kwargs):
+    raise AssertionError("Packing should not create a thread pool or call threadpoolctl.")
+
+
+def forbid_threaded_packing(monkeypatch, module):
+    monkeypatch.setattr(concurrent.futures, "ThreadPoolExecutor", _raise_threaded_packing)
+    monkeypatch.setattr(module, "ThreadPoolExecutor", _raise_threaded_packing, raising=False)
+    tctl = getattr(module, "tctl", None)
+    if tctl is not None:
+        monkeypatch.setattr(tctl, "threadpool_limits", _raise_threaded_packing)
 
 
 def generate_prompt(model_obj_or_str, tokenizer=None, text="The capital of France is,", max_new_tokens=10, device=None):

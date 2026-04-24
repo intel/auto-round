@@ -8,8 +8,12 @@ from packaging import version
 from transformers import AutoModelForCausalLM, AutoRoundConfig, AutoTokenizer
 
 from auto_round import AutoRound
+from auto_round.export.export_to_autogptq import export as autogptq_export
+from auto_round.export.export_to_autoround import export as autoround_export
+from auto_round.export.export_to_autoround import export_to_fp8 as autoround_fp8_export
+from auto_round.export.export_to_awq import export as awq_export
 
-from ...helpers import get_model_path, opt_name_or_path, transformers_version
+from ...helpers import forbid_threaded_packing, get_model_path, opt_name_or_path, transformers_version
 
 
 def _get_folder_size(path: str) -> float:
@@ -552,3 +556,46 @@ class TestAutoRound:
                 len(input_scale_keys) == 0
             ), f"Expected no input_scale for weight-only {scheme}, but found: {input_scale_keys[:5]}"
         shutil.rmtree(quantized_model_path, ignore_errors=True)
+
+
+@pytest.mark.parametrize(
+    "format_name,export_module,sym",
+    [
+        ("auto_gptq", autogptq_export, False),
+        ("auto_awq", awq_export, False),
+        ("auto_round", autoround_export, True),
+    ],
+)
+def test_weight_only_exports_pack_serially(tiny_opt_model_path, tmp_path, monkeypatch, format_name, export_module, sym):
+    autoround = AutoRound(
+        tiny_opt_model_path,
+        bits=4,
+        group_size=128,
+        sym=sym,
+        iters=0,
+        disable_opt_rtn=True,
+    )
+    autoround.quantize()
+    forbid_threaded_packing(monkeypatch, export_module)
+    autoround.save_quantized(output_dir=tmp_path, inplace=False, format=format_name)
+    assert os.path.exists(os.path.join(tmp_path, "config.json"))
+
+
+def test_fp8_autoround_export_packs_serially(tiny_opt_model_path, tmp_path, monkeypatch):
+    from safetensors import safe_open
+
+    autoround = AutoRound(
+        tiny_opt_model_path,
+        bits=8,
+        group_size=-1,
+        iters=0,
+        scheme="FP8_STATIC",
+        nsamples=2,
+        seqlen=2,
+        static_kv_dtype="fp8",
+    )
+    autoround.quantize()
+    forbid_threaded_packing(monkeypatch, autoround_fp8_export)
+    autoround.save_quantized(output_dir=tmp_path, format="auto_round")
+    with safe_open(os.path.join(tmp_path, "model.safetensors"), framework="pt") as f:
+        assert "model.decoder.layers.0.self_attn.k_proj.weight_scale" in f.keys()

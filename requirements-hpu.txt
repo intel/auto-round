@@ -7,4 +7,3 @@ tqdm
 packaging
 pillow
 transformers
-threadpoolctl
