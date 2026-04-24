@@ -381,8 +381,7 @@ def _preserve_original_model_types(new_cfg: dict, orig_cfg: "dict | None") -> No
         else:
             if "model_type" in sub_new:
                 logger.info(
-                    f"[mlx-export] removing {label}.model_type ({new_val!r}); "
-                    f"original config did not declare one"
+                    f"[mlx-export] removing {label}.model_type ({new_val!r}); " f"original config did not declare one"
                 )
                 sub_new.pop("model_type", None)
 
