@@ -672,9 +672,7 @@ class BaseCompressor(object):
             # ``_get_vlm_block_names`` always drops audio blocks regardless of
             # ``quant_vision``.
             scoreable_blocks = get_block_names(self.model, quant_vision=quant_nontext)
-            scoreable_block_prefixes = tuple(
-                blk for group in scoreable_blocks for blk in group
-            )
+            scoreable_block_prefixes = tuple(blk for group in scoreable_blocks for blk in group)
             if quant_nontext:
                 # vision stays in; only audio gets peeled.
                 peel_markers = ("audio", "speech", "wav", "waveform")
@@ -683,8 +681,14 @@ class BaseCompressor(object):
             else:
                 # default: peel both vision and audio.
                 peel_markers = (
-                    "vision", "visual", "image", "img",
-                    "audio", "speech", "wav", "waveform",
+                    "vision",
+                    "visual",
+                    "image",
+                    "img",
+                    "audio",
+                    "speech",
+                    "wav",
+                    "waveform",
                 )
                 tower_label = "language"
                 peel_label = "vision/audio"
@@ -755,11 +759,7 @@ class BaseCompressor(object):
                 "scheme",
             }
             for name, cfg in nontext_skipped_layers.items():
-                clean_cfg = (
-                    {k: v for k, v in cfg.items() if k in allowed_keys}
-                    if isinstance(cfg, dict)
-                    else cfg
-                )
+                clean_cfg = {k: v for k, v in cfg.items() if k in allowed_keys} if isinstance(cfg, dict) else cfg
                 layer_config.setdefault(name, clean_cfg)
         return layer_config
 
