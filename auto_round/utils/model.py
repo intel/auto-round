@@ -684,6 +684,13 @@ def diffusion_load_model(
         pipe, model = load_next_step_diffusion(pretrained_model_name_or_path, device_str)
         return pipe, pipe.model
 
+    # HunyuanImage-3.0-Instruct has no model_index.json, use special loading
+    if model_type == "hunyuan_image_3_moe":
+        from auto_round.special_model_handler import load_hunyuan_image3_diffusion
+
+        pipe, model = load_hunyuan_image3_diffusion(pretrained_model_name_or_path, device_str)
+        return pipe, model
+
     pipelines = LazyImport("diffusers.pipelines")
     if isinstance(pretrained_model_name_or_path, str):
         if torch_dtype == "auto":
@@ -808,6 +815,9 @@ def is_diffusion_model(model_or_path: Union[str, object]) -> bool:
         model_type = getattr(config, "model_type", "")
         # A special case for NextStep
         if model_type == "nextstep":
+            return True
+        # HunyuanImage-3.0-Instruct is a diffusion image model with a custom pipeline
+        if model_type == "hunyuan_image_3_moe":
             return True
     except:
         logger.warning(

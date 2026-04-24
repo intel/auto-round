@@ -771,6 +771,84 @@ def get_predefined_fixed_attr(model: torch.nn.Module) -> dict | None:
     return None
 
 
+def load_hunyuan_image3_diffusion(pretrained_model_name_or_path, device_str):
+    """Load HunyuanImage-3.0-Instruct as a diffusion pipeline.
+
+    This model has no model_index.json so it cannot use AutoPipelineForText2Image.
+    Instead, we manually assemble the pipeline from the model files.
+    """
+    import os
+    import json
+
+    from transformers import AutoModel, AutoTokenizer
+
+    tokenizer = AutoTokenizer.from_pretrained(
+        pretrained_model_name_or_path, local_files_only=True, trust_remote_code=True
+    )
+
+    # Load via AutoModel to trigger auto_map -> HunyuanImage3ForCausalMM
+    # Use device_map="auto" and low_cpu_mem_usage=True so accelerate loads
+    # safetensors shards directly to GPU shard-by-shard instead of first loading
+    # everything to CPU then copying. For a 157GB model across 32 shards, this
+    # is dramatically faster (seconds vs minutes) and avoids the "Loading weights"
+    # hang that occurs with the default sequential CPU->GPU copy via .to().
+    model = AutoModel.from_pretrained(
+        pretrained_model_name_or_path,
+        local_files_only=True,
+        trust_remote_code=True,
+        device_map="auto",
+        low_cpu_mem_usage=True,
+        torch_dtype=torch.bfloat16,
+    )
+    model.eval()
+
+    # Attach tokenizer to model (required by the forward pass for tokenization)
+    model._tokenizer = tokenizer
+
+    # Create pipeline using the model's built-in pipeline property
+    # HunyuanImage3ForCausalMM.pipeline lazily creates the pipeline with correct scheduler settings.
+    # We only need to attach the tokenizer.
+    pipe = model.pipeline
+    pipe._tokenizer = tokenizer
+
+    # Set tokenizer wrapper for pipeline usage
+    try:
+        from modeling_hunyuan_image_3 import HunyuanImage3TokenizerFast
+        pipe._tkwrapper = HunyuanImage3TokenizerFast.from_pretrained(
+            pretrained_model_name_or_path, local_files_only=True, trust_remote_code=True
+        )
+    except Exception:
+        pipe._tkwrapper = tokenizer
+
+    def _hunyuan_image3_pipeline_fn(
+        pipe, prompts, guidance_scale=5.0, num_inference_steps=50, generator=None, **kwargs
+    ):
+        """Pipeline fn for HunyuanImage-3.0-Instruct calibration.
+
+        The HunyuanImage3 pipeline handles the full multi-step diffusion loop internally.
+        """
+        if isinstance(prompts, str):
+            prompts = [prompts]
+        # HunyuanImage3 uses 1024x1024 as default image size
+        image_size = kwargs.pop("image_size", (1024, 1024))
+
+        for prompt in prompts:
+            pipe(
+                batch_size=1,
+                image_size=image_size,
+                num_inference_steps=num_inference_steps,
+                guidance_scale=guidance_scale,
+                generator=generator,
+                prompt=prompt,
+            )
+
+    pipe._autoround_pipeline_fn = _hunyuan_image3_pipeline_fn
+
+    # Return (pipe, transformer) to match diffusion_load_model's expected return signature
+    # The transformer is model.model (HunyuanImage3Model) which contains the decoder layers
+    return pipe, model.model
+
+
 def load_next_step_diffusion(pretrained_model_name_or_path, device_str):
     try:
         from models.gen_pipeline import NextStepPipeline  # pylint: disable=E0401

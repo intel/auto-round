@@ -326,7 +326,11 @@ def _detect_expert_projections(module: nn.Module) -> dict[str, dict]:
         for attr_name in dir(module):
             if attr_name.startswith("_"):
                 continue
-            param = getattr(module, attr_name, None)
+            try:
+                param = getattr(module, attr_name, None)
+            except Exception:
+                # Some attributes raise exceptions when accessed (e.g., lazy-initialized properties)
+                continue
             if param is not None and isinstance(param, nn.Parameter) and param.dim() == 3:
                 # Use default config for unknown projections
                 logger.debug(f"Discovered unknown 3D projection: {attr_name}")

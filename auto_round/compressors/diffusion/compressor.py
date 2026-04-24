@@ -49,6 +49,7 @@ output_configs = {
     "FluxSingleTransformerBlock": ["encoder_hidden_states", "hidden_states"],
     "OvisImageTransformerBlock": ["encoder_hidden_states", "hidden_states"],
     "OvisImageSingleTransformerBlock": ["encoder_hidden_states", "hidden_states"],
+    "HunyuanImage3DecoderLayer": ["hidden_states"],
 }
 
 
