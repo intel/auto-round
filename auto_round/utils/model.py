@@ -1975,6 +1975,10 @@ def rename_weights_files(path: str, prefix="diffusion_pytorch_model"):
     # rename safetensors
     files = sorted(glob.glob(f"{path}/*.safetensors"))
     total = len(files)
+    if total == 1:
+        new = f"{prefix}.safetensors"
+        os.rename(files[0], os.path.join(path, new))
+        return
 
     for i, f in enumerate(files, 1):
         new = f"{prefix}-{i:05d}-of-{total:05d}.safetensors"
