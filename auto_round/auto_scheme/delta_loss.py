@@ -997,7 +997,8 @@ def _gen_layer_config(
     if auto_scheme.low_gpu_mem_usage:
         model.eval()
     else:
-        model.train()  # to trigger gradicent checkpoint, but it will enable dropout, bachnorm, which is not good for accuracy
+        # To trigger gradient checkpoint, but it will enable dropout, batchnorm, which is not good for accuracy
+        model.train()
 
     # Filter out embedding layers from the scoring set (they aren't linear
     # quantization targets in any of our schemes).
