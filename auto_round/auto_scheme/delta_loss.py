@@ -394,8 +394,7 @@ def _prepare_mllm_inputs(data, model):
     so the caller knows whether to use ``model(x)`` / ``model(*x)`` /
     ``model(**x)``.
     """
-    _img_keys = ("images", "image", "pixel_values", "pixel_values_videos",
-                 "pixel_values_images", "image_pixel_values")
+    _img_keys = ("images", "image", "pixel_values", "pixel_values_videos", "pixel_values_images", "image_pixel_values")
 
     if isinstance(data, torch.Tensor):
         return data.to(model.device), "tensor"
@@ -460,9 +459,7 @@ def model_forward_low_gpu(model, dataloader, major_device="cuda", pbar=None):
         # Route through the unified mllm forward so ``pixel_values`` /
         # ``images`` get cast to ``model.dtype`` (otherwise the vision tower
         # is silently bypassed on dtype mismatch and vision grad stays 0).
-        output, _prepared = mllm_model_forward(
-            model, data_for_forward, labels=labels, use_cache=False
-        )
+        output, _prepared = mllm_model_forward(model, data_for_forward, labels=labels, use_cache=False)
 
         try:
             # Backward pass (will be interrupted by the hook)
@@ -529,7 +526,6 @@ def model_forward_low_gpu(model, dataloader, major_device="cuda", pbar=None):
             pbar.update(1)
 
 
-
 def get_score_for_scheme(
     model,
     tokenizer,
@@ -552,7 +548,6 @@ def get_score_for_scheme(
     is_vlm: bool = False,
     force_mllm: bool = False,
     model_name: Optional[str] = None,
-
 ):
     scores_dict = {}  # Key=name,Val=[quant_total_bits, loss]
     for n, m in model.named_modules():
@@ -654,8 +649,12 @@ def get_score_for_scheme(
     if force_mllm:
         _re_enabled_w = 0
         for _, _m in model.named_modules():
-            if hasattr(_m, "orig_layer") and hasattr(_m.orig_layer, "weight") \
-                    and _m.orig_layer.weight is not None and not _m.orig_layer.weight.requires_grad:
+            if (
+                hasattr(_m, "orig_layer")
+                and hasattr(_m.orig_layer, "weight")
+                and _m.orig_layer.weight is not None
+                and not _m.orig_layer.weight.requires_grad
+            ):
                 _m.orig_layer.weight.requires_grad_(True)
                 _re_enabled_w += 1
 
@@ -674,8 +673,9 @@ def get_score_for_scheme(
                     _re_enabled_v += 1
 
         logger.info(
-            "AutoScheme(force_mllm): kept requires_grad on %d wrapper weights, "
-            "%d vision-side params.", _re_enabled_w, _re_enabled_v,
+            "AutoScheme(force_mllm): kept requires_grad on %d wrapper weights, " "%d vision-side params.",
+            _re_enabled_w,
+            _re_enabled_v,
         )
 
     def _build_calib_dataloader():
@@ -716,15 +716,13 @@ def get_score_for_scheme(
         # explicitly catch that case here and override to a known-good
         # multimodal dataset so the user doesn't end up with silent garbage.
         ds = dataset
-        _is_real_mllm = (
-            isinstance(ds, str)
-            and (_os.path.isfile(ds) or ds in MLLM_DATASET.keys())
-        )
+        _is_real_mllm = isinstance(ds, str) and (_os.path.isfile(ds) or ds in MLLM_DATASET.keys())
         if not _is_real_mllm:
             _fallback = "liuhaotian/llava_conv_58k"
             logger.warning_once(
-                "AutoScheme(force_mllm): dataset=%r is text-only, "
-                "overriding to %r.", ds, _fallback,
+                "AutoScheme(force_mllm): dataset=%r is text-only, " "overriding to %r.",
+                ds,
+                _fallback,
             )
             ds = _fallback
 
@@ -780,8 +778,12 @@ def get_score_for_scheme(
         def _run_forward_loop(loader):
             _checked_pixel = False
             _pixel_keys = (
-                "pixel_values", "pixel_values_videos", "pixel_values_images",
-                "image_pixel_values", "images", "image",
+                "pixel_values",
+                "pixel_values_videos",
+                "pixel_values_images",
+                "image_pixel_values",
+                "images",
+                "image",
             )
             for data in loader:
                 # Pull labels out of the batch (VLM datasets often carry them;
@@ -800,9 +802,7 @@ def get_score_for_scheme(
                 # Unified mllm-aware forward (casts pixel_values/images to
                 # model.dtype, handles dict-with-text/str/tuple paths the same
                 # way AutoRoundMLLM.calib does).
-                output, _prepared = mllm_model_forward(
-                    model, data_for_forward, labels=labels, use_cache=False
-                )
+                output, _prepared = mllm_model_forward(model, data_for_forward, labels=labels, use_cache=False)
                 output.loss.backward()
 
                 # One-shot sanity check: when scoring vision layers, the batch
@@ -997,7 +997,7 @@ def _gen_layer_config(
     if auto_scheme.low_gpu_mem_usage:
         model.eval()
     else:
-        model.train() # to trigger gradicent checkpoint, but it will enable dropout, bachnorm, which is not good for accuracy
+        model.train()  # to trigger gradicent checkpoint, but it will enable dropout, bachnorm, which is not good for accuracy
 
     # Filter out embedding layers from the scoring set (they aren't linear
     # quantization targets in any of our schemes).
@@ -1014,9 +1014,7 @@ def _gen_layer_config(
     # dataloader. The actual switch from low_gpu to full forward+backward
     # is done upstream in ``gen_layer_config``.
     vision_markers = ("vision", "visual", "image", "img")
-    force_mllm = is_vlm and any(
-        any(marker in n.lower() for marker in vision_markers) for n in quant_layer_names
-    )
+    force_mllm = is_vlm and any(any(marker in n.lower() for marker in vision_markers) for n in quant_layer_names)
 
     block_name = get_block_names(model)[0]  # TODO need change to support vlm
     for name in block_name:
@@ -1099,7 +1097,6 @@ def _gen_layer_config(
         if auto_scheme.low_gpu_mem_usage:
             pbar_cnt += len(block_name) * 2 * ((nsamples + batch_size - 1) // batch_size)  # forward backward
     shared_layers = parse_shared_layers(model, auto_scheme.shared_layers)
-
 
     options_scores = []
     if auto_scheme.low_gpu_mem_usage and not disable_opt_rtn:
@@ -1348,10 +1345,7 @@ def gen_layer_config(
         any(marker in n.lower() for marker in vision_markers) for n in quant_layer_names
     )
     if force_mllm_for_vision and low_gpu_mem_usage:
-        logger.warning(
-            "AutoScheme: scoring vision layers requires full backward; "
-            "disabling low_gpu_mem_usage."
-        )
+        logger.warning("AutoScheme: scoring vision layers requires full backward; " "disabling low_gpu_mem_usage.")
         low_gpu_mem_usage = False
         try:
             auto_scheme.low_gpu_mem_usage = False
