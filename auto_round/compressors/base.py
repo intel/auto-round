@@ -660,6 +660,17 @@ class BaseCompressor(object):
 
         if not self.enable_torch_compile and self.super_bits is None and not self.orig_scheme.low_gpu_mem_usage:
             logger.warning("we strongly recommend to set `enable_torch_compile` to True for AutoScheme to save VRAM")
+
+        # When low_cpu_mem_usage is enabled, pass the model path (string) to
+        # AutoScheme so it can load a meta skeleton instead of keeping the full
+        # model in RAM.  The loaded model is freed here and reloaded afterward.
+        _need_reload = False
+        _model_path = None
+        if self.orig_scheme.low_cpu_mem_usage and self.orig_scheme.low_gpu_mem_usage:
+            _model_path = getattr(self.model.config, "_name_or_path", None)
+            if _model_path is not None and os.path.isdir(_model_path):
+                _need_reload = True
+
         self.scheme_generator = GenScheme(
             self.orig_scheme,
             self.model,
@@ -670,7 +681,41 @@ class BaseCompressor(object):
             tokenizer=self.tokenizer,
             enable_torch_compile=self.enable_torch_compile,
         )
+
+        if _need_reload:
+            # GenScheme.__init__ has computed avg bit ranges using the model.
+            # Now swap the model reference with the path string so that
+            # gen_layer_config will load a meta skeleton instead.
+            self.scheme_generator.model = _model_path
+            del self.model
+            self.model = None
+            import gc
+
+            gc.collect()
+            clear_memory(device_list=self.device_list)
+            logger.info("Released loaded model before AutoScheme (will reload after)")
+
         layer_config = self.scheme_generator.get_layer_config()
+
+        if _need_reload:
+            logger.info("Reloading model after AutoScheme")
+            self.model, self.tokenizer = llm_load_model(
+                _model_path,
+                device="cpu",
+                trust_remote_code=self.trust_remote_code,
+            )
+            self.model = self.model.eval()
+            check_and_mark_quantized_module(self.model)
+            # Re-apply module structure updates that quantize() applied before AutoScheme
+            formats = self.formats if hasattr(self, "formats") else None
+            if not self.diffusion and formats is not None:
+                self.model = update_module(
+                    self.model, formats=formats, trust_remote_code=self.trust_remote_code, cleanup_original=False
+                )
+            for n, m in self.model.named_modules():
+                m.global_name = n
+            self.shared_cache_keys = get_shared_keys(self.model)
+
         return layer_config
 
     def _set_device(self, device_map: Union[str, torch.device, int, dict]) -> None:

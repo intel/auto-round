@@ -57,7 +57,11 @@ import torch
 from auto_round.logger import logger
 from auto_round.utils.model import get_module
 
-__all__ = ["OffloadManager"]
+__all__ = [
+    "OffloadManager",
+    "load_model_meta_skeleton",
+    "materialize_non_block_layers",
+]
 
 # =====================================================================
 # Low-level helpers
@@ -109,11 +113,15 @@ def _clear_module_weights(
     if module is None:
         return
     if hasattr(module, "orig_layer"):
+        # Delegate to the original layer inside the wrapper so that the
+        # real weight tensors get cleared.  The wrapper's own tuning params
+        # are preserved because they won't be in restorable_params.
+        _clear_module_weights(module.orig_layer, cache_numel, restorable_params)
         return
 
     with torch.no_grad():
         for name, param in list(module.named_parameters(recurse=False)):
-            if param is None or param.numel() == 0:
+            if param is None or (param.numel() == 0 and not param.is_meta):
                 continue
             if restorable_params is not None and name not in restorable_params:
                 continue
@@ -126,7 +134,7 @@ def _clear_module_weights(
                 torch.nn.Parameter(torch.empty(0, dtype=param.dtype, device="cpu"), requires_grad=param.requires_grad),
             )
         for name, buf in list(module.named_buffers(recurse=False)):
-            if buf is None or buf.numel() == 0:
+            if buf is None or (buf.numel() == 0 and not buf.is_meta):
                 continue
             if restorable_params is not None and name not in restorable_params:
                 continue
@@ -180,7 +188,65 @@ def _build_weight_map(model_dir: str) -> dict[str, str]:
     )
 
 
-def load_block_from_model_files(model_dir: str, block_name: str, block: torch.nn.Module) -> None:
+def _load_layers_from_model_files(model_dir: str, layer_names: list[str], model: torch.nn.Module) -> None:
+    """Load specific layers' weights from the original model checkpoint.
+
+    this function loads multiple individual layers
+    in a single pass, grouping shard reads for efficiency.
+
+    Args:
+        model_dir: Path to the model directory.
+        layer_names: Full dotted module names (e.g. ``["model.embed_tokens", "model.norm"]``).
+        model: The root ``nn.Module``.
+    """
+    model_dir = _resolve_model_dir(model_dir)
+    weight_map = _build_weight_map(model_dir)
+
+    # Collect all matching tensor names
+    matching: dict[str, str] = {}  # tensor_name -> shard_file
+    for tensor_name, shard_file in weight_map.items():
+        for layer_name in layer_names:
+            if tensor_name == layer_name or tensor_name.startswith(layer_name + "."):
+                matching[tensor_name] = shard_file
+                break
+    if not matching:
+        return
+
+    shard_to_tensors: dict[str, list[str]] = defaultdict(list)
+    for tensor_name, shard_file in matching.items():
+        shard_to_tensors[shard_file].append(tensor_name)
+
+    for shard_file, tensor_names in shard_to_tensors.items():
+        shard_path = os.path.join(model_dir, shard_file)
+        if shard_file.endswith(".safetensors"):
+            from safetensors import safe_open
+
+            with safe_open(shard_path, framework="pt", device="cpu") as f:
+                for name in tensor_names:
+                    _set_tensor_in_model(model, name, f.get_tensor(name))
+        else:
+            full_state = torch.load(shard_path, map_location="cpu")
+            for name in tensor_names:
+                if name in full_state:
+                    _set_tensor_in_model(model, name, full_state[name])
+            del full_state
+
+
+def _set_tensor_in_model(model: torch.nn.Module, full_name: str, tensor: torch.Tensor) -> None:
+    """Set a single tensor into the model by its full dotted name."""
+    parts = full_name.split(".")
+    target = model
+    for part in parts[:-1]:
+        target = getattr(target, part)
+    param_name = parts[-1]
+    old = getattr(target, param_name, None)
+    if isinstance(old, torch.nn.Parameter):
+        setattr(target, param_name, torch.nn.Parameter(tensor.to(dtype=old.dtype), requires_grad=old.requires_grad))
+    else:
+        setattr(target, param_name, tensor)
+
+
+def _load_block_from_model_files(model_dir: str, block_name: str, block: torch.nn.Module) -> None:
     """Reload a module's weights directly from the original model checkpoint.
 
     Selectively loads only tensors belonging to *block_name* without loading
@@ -221,6 +287,158 @@ def load_block_from_model_files(model_dir: str, block_name: str, block: torch.nn
             del full_state
 
     _load_state_dict_into_module(state_dict, block)
+
+
+# =====================================================================
+# Meta-skeleton helpers (for low-CPU-memory AutoScheme)
+# =====================================================================
+
+
+def load_model_meta_skeleton(model_name: str):
+    """Load a model as a meta-device skeleton (no real weight data in RAM).
+
+    Uses HuggingFace ``from_pretrained`` with ``low_cpu_mem_usage=True`` and
+    ``device_map="meta"`` so that all parameters live on the meta device.
+    The model structure is fully intact but occupies near-zero CPU RAM.
+
+    Returns:
+        (model, tokenizer, None) -- same signature as ``llm_load_model``.
+    """
+    import re
+
+    from transformers import AutoModel, AutoModelForCausalLM, AutoTokenizer
+
+    is_glm = bool(re.search("chatglm", model_name.lower()))
+    model_cls = AutoModel if is_glm else AutoModelForCausalLM
+
+    tokenizer = AutoTokenizer.from_pretrained(model_name, trust_remote_code=True)
+    model = model_cls.from_pretrained(
+        model_name,
+        torch_dtype="auto",
+        trust_remote_code=True,
+        low_cpu_mem_usage=True,
+        device_map="meta",
+    )
+    model = model.eval()
+    logger.info("Loaded model as meta skeleton for low-memory AutoScheme")
+    return model, tokenizer, None
+
+
+def materialize_non_block_layers(model, model_name, block_names):
+    """Materialize non-block layers from checkpoint into CPU memory.
+
+    Block weights stay as cleared (empty) tensors and will be loaded
+    on demand by OffloadManager.  Non-block modules (embeddings, norms,
+    lm_head, etc.) are loaded from the original checkpoint files and
+    moved to CPU.
+
+    Computed buffers (e.g. ``inv_freq`` in rotary embeddings) that are not
+    stored in the checkpoint are re-created by re-initializing their parent
+    modules on CPU.
+
+    Args:
+        model: The model with meta/empty tensors.
+        model_name: Path to the model checkpoint directory.
+        block_names: List of block name prefixes (e.g. ``["model.layers.0", ...]``).
+    """
+    block_prefixes = tuple(bn + "." for bn in block_names)
+
+    # Build weight map to distinguish checkpoint tensors from computed ones
+    model_dir = _resolve_model_dir(model_name)
+    weight_map = _build_weight_map(model_dir)
+
+    with torch.no_grad():
+        # Replace all meta PARAMETERS with empty CPU tensors.
+        # Block params will be loaded on demand by OffloadManager.
+        # Non-block params will be loaded from checkpoint below.
+        for name, param in list(model.named_parameters()):
+            if param.is_meta:
+                parts = name.split(".")
+                target = model
+                for part in parts[:-1]:
+                    target = getattr(target, part)
+                param_attr = parts[-1]
+                # Cache numel/shape for block params so compute_layer_bits works
+                if any(name.startswith(bp) for bp in block_prefixes) and param_attr == "weight":
+                    target._cached_weight_numel = param.numel()
+                    target._cached_weight_shape = tuple(param.shape)
+                setattr(
+                    target,
+                    param_attr,
+                    torch.nn.Parameter(
+                        torch.empty(0, dtype=param.dtype, device="cpu"),
+                        requires_grad=param.requires_grad,
+                    ),
+                )
+
+        # Replace meta BUFFERS that ARE in the checkpoint with empty CPU tensors.
+        # Leave non-checkpoint meta buffers (computed in __init__) untouched for now;
+        # they will be re-created by reinit_computed_buffers below.
+        for name, buf in list(model.named_buffers()):
+            if buf.is_meta and name in weight_map:
+                parts = name.split(".")
+                target = model
+                for part in parts[:-1]:
+                    target = getattr(target, part)
+                target.register_buffer(parts[-1], torch.empty(0, dtype=buf.dtype, device="cpu"))
+
+    # Load non-block layers from checkpoint
+    non_block_layer_names = []
+    for name in list(weight_map.keys()):
+        if not any(name.startswith(bp) for bp in block_prefixes):
+            module_name = ".".join(name.split(".")[:-1]) if "." in name else name
+            if module_name not in non_block_layer_names:
+                non_block_layer_names.append(module_name)
+
+    if non_block_layer_names:
+        _load_layers_from_model_files(model_name, non_block_layer_names, model)
+
+    # Re-establish tied weights
+    if hasattr(model, "tie_weights"):
+        model.tie_weights()
+
+    # Re-create computed buffers (non-checkpoint meta buffers like inv_freq)
+    _reinit_computed_buffers(model)
+
+    n_loaded = len(non_block_layer_names)
+    logger.info(f"Materialized {n_loaded} non-block layers from checkpoint " f"(block weights stay offloaded)")
+
+
+def _reinit_computed_buffers(model):
+    """Re-create non-checkpoint meta buffers on CPU with correct values.
+
+    These buffers were computed during ``__init__`` on meta device and
+    aren't stored in the checkpoint.  For parameter-free modules (e.g.
+    rotary embeddings), we re-run ``__init__`` to recompute the buffers
+    on CPU.  For others, we fall back to zeros with a warning.
+    """
+    config = getattr(model, "config", None)
+
+    for module_name, module in model.named_modules():
+        meta_bufs = [(n, b) for n, b in module.named_buffers(recurse=False) if b.is_meta]
+        if not meta_bufs:
+            continue
+
+        # If the module has no learnable parameters, it's safe to re-init
+        has_params = any(True for _ in module.parameters(recurse=False))
+        if not has_params and config is not None:
+            try:
+                module.__class__.__init__(module, config=config)
+                # Verify all buffers are no longer meta
+                still_meta = any(b.is_meta for _, b in module.named_buffers(recurse=False))
+                if not still_meta:
+                    continue
+            except Exception:
+                pass
+
+        # Fallback: replace remaining meta buffers with zeros
+        for buf_name, buf in meta_bufs:
+            if buf.is_meta:
+                logger.warning(
+                    f"Could not recompute buffer {module_name}.{buf_name}, "
+                    "using zeros (may slightly affect AutoScheme scoring accuracy)"
+                )
+                module.register_buffer(buf_name, torch.zeros(buf.shape, dtype=buf.dtype, device="cpu"))
 
 
 # =====================================================================
@@ -505,7 +723,7 @@ class OffloadManager:
             if self.model_dir is None:
                 logger.warning("OffloadManager: model_dir is required for clean mode")
                 return
-            load_block_from_model_files(self.model_dir, name, module)
+            _load_block_from_model_files(self.model_dir, name, module)
 
     # ------------------------------------------------------------------
     # Hook-based transparent offloading
@@ -813,12 +1031,12 @@ class OffloadManager:
 
     @staticmethod
     def _needs_loading(module: torch.nn.Module) -> bool:
-        """Return *True* if any parameter in *module* has been cleared."""
+        """Return *True* if any parameter in *module* has been cleared or is on meta device."""
         for submodule in module.modules():
             if hasattr(submodule, "orig_layer"):
                 submodule = submodule.orig_layer
             for param in submodule.parameters(recurse=False):
-                if param is not None and param.numel() == 0:
+                if param is not None and (param.numel() == 0 or param.is_meta):
                     return True
         return False
 
