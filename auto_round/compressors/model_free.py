@@ -20,7 +20,7 @@ This module performs weight-only quantization (WOQ) using RTN (Round-To-Nearest)
 ``nn.Linear`` weight tensors shard-by-shard, and writes the packed result to
 the output directory.
 
-The main entry point is the :class:`ModelFreeQuantizer` class.
+The main entry point is the :class:`ModelFreeCompressor` class.
 
 Supported schemes
 -----------------
@@ -751,6 +751,11 @@ def _build_quantization_config(
         if layer_name not in extra_config:
             extra_config[layer_name] = {"bits": 16, "data_type": "float"}
 
+    quantized_layer_set = set(quantized_layers)
+    if "lm_head" in quantized_layer_set and "lm_head" not in extra_config:
+        lm_head_cfg = layer_config.get("lm_head", default_scheme)
+        extra_config["lm_head"] = {k: lm_head_cfg.get(k) for k in scheme_keys if lm_head_cfg.get(k) is not None}
+
     if extra_config:
         qconfig["extra_config"] = extra_config
 
@@ -899,7 +904,7 @@ def is_model_free_supported_scheme(scheme: Union[str, QuantizationScheme]) -> bo
 # ---------------------------------------------------------------------------
 
 
-class _ModelFreeQuantizerCore:
+class _ModelFreeCompressorCore:
     """Class-based driver for model-free RTN quantization.
 
     The lifecycle is:
@@ -1330,14 +1335,14 @@ class _ModelFreeQuantizerCore:
 
 
 # ---------------------------------------------------------------------------
-# AutoRound-compatible compressor: ModelFreeQuantizer doubles as the
+# AutoRound-compatible compressor: ModelFreeCompressor doubles as the
 # compressor object returned by AutoRound.__new__ when model-free mode is
 # selected.  It owns both the quantization pipeline (run()) AND the
 # AutoRound-facing interface (quantize_and_save()).
 # ---------------------------------------------------------------------------
 
 
-class ModelFreeQuantizer(_ModelFreeQuantizerCore):
+class ModelFreeCompressor(_ModelFreeCompressorCore):
     """Model-free RTN quantizer that also acts as an AutoRound compressor.
 
     When constructed via ``AutoRound(model_free=True, ...)`` the instance is
@@ -1385,6 +1390,8 @@ class ModelFreeQuantizer(_ModelFreeQuantizerCore):
         import copy
         from dataclasses import fields as dc_fields
 
+        fallback_kwargs = dict(kwargs)
+
         # Collect per-field scheme overrides forwarded from AutoRound
         # (e.g. bits=4, sym=False passed as individual kwargs).
         self.user_scheme_overrides: dict = {}
@@ -1424,7 +1431,39 @@ class ModelFreeQuantizer(_ModelFreeQuantizerCore):
         self.disable_opt_rtn = True
         self.formats = None
         self.quantized = False
+        self._fallback_init_kwargs = {
+            **fallback_kwargs,
+            "model": model_name_or_path,
+            "tokenizer": tokenizer,
+            "scheme": copy.deepcopy(scheme),
+            "layer_config": copy.deepcopy(layer_config),
+            "ignore_layers": ignore_layers,
+            "device_map": device_map,
+            "device": device,
+            "quant_lm_head": quant_lm_head,
+            "quant_nontext_module": quant_nontext_module,
+        }
         # remaining kwargs intentionally consumed/ignored
+
+    def _fallback_to_base_compressor(
+        self,
+        output_dir: str,
+        format: str,
+        inplace: bool,
+        **kwargs,
+    ):
+        from auto_round.autoround import AutoRound
+
+        logger.info(
+            "Format '%s' is not supported by model-free mode; falling back to the regular AutoRound flow.",
+            format,
+        )
+        logger.info(
+            "fallbacked_init_kwargs: %s",
+            self._fallback_init_kwargs,
+        )
+        compressor = AutoRound(**self._fallback_init_kwargs, disable_model_free=True)
+        return compressor.quantize_and_save(output_dir=output_dir, format=format, inplace=inplace, **kwargs)
 
     # ------------------------------------------------------------------
     # AutoRound compressor interface
@@ -1439,7 +1478,7 @@ class ModelFreeQuantizer(_ModelFreeQuantizerCore):
     ):
         """Quantize and save — AutoRound compressor entry point."""
         if format not in ["auto_round", "auto_round:auto_gptq"]:
-            raise ValueError(f"Model-free compressor only supports 'auto_round' format, got '{format}'.")
+            return self._fallback_to_base_compressor(output_dir=output_dir, format=format, inplace=inplace, **kwargs)
 
         # Apply user scheme overrides before running
         if self.user_scheme_overrides:
@@ -1456,7 +1495,3 @@ class ModelFreeQuantizer(_ModelFreeQuantizerCore):
         self.output_dir = orig
         self.quantized = True
         return None, [out_path]
-
-
-# Backward-compat alias (the old standalone driver class)
-ModelFreeCompressor = ModelFreeQuantizer

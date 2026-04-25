@@ -280,9 +280,39 @@ class TestModelFreeQuantize:
                     all_keys.update(f.keys())
         assert "lm_head.qweight" in all_keys
 
-    def test_invalid_format_raises(self, tmp_path):
-        with pytest.raises(ValueError, match="auto_round"):
-            AutoRound(model=str(tmp_path), model_free=True, format="auto_gptq").quantize_and_save(str(tmp_path / "out"))
+        with open(os.path.join(output_dir, "quantization_config.json")) as f:
+            quant_config = json.load(f)
+
+        assert "lm_head" in quant_config["extra_config"]
+        assert quant_config["extra_config"]["lm_head"]["bits"] == 4
+
+    def test_unsupported_format_falls_back_to_regular_flow(self, tmp_path, monkeypatch):
+        calls = {}
+
+        class DummyCompressor:
+            def quantize_and_save(self, output_dir, format, inplace=True, **kwargs):
+                calls["quantize_and_save"] = {
+                    "output_dir": output_dir,
+                    "format": format,
+                    "inplace": inplace,
+                    "kwargs": kwargs,
+                }
+                return "dummy_model", [output_dir]
+
+        def fake_autoround(*args, **kwargs):
+            calls["init_kwargs"] = kwargs
+            return DummyCompressor()
+
+        monkeypatch.setattr("auto_round.autoround.AutoRound", fake_autoround)
+
+        result = AutoRound(model=str(tmp_path), model_free=True, format="auto_gptq").quantize_and_save(
+            str(tmp_path / "out"), format="auto_gptq"
+        )
+
+        assert calls["init_kwargs"]["model"] == str(tmp_path)
+        assert calls["init_kwargs"]["disable_model_free"] is True
+        assert calls["quantize_and_save"]["format"] == "auto_gptq"
+        assert result == ("dummy_model", [str(tmp_path / "out")])
 
     def test_invalid_scheme_raises(self, tmp_path):
         with pytest.raises(ValueError, match="INVALID"):

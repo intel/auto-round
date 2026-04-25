@@ -26,7 +26,7 @@ from auto_round.compressors import (
     MLLMCompressor,
 )
 from auto_round.compressors.diffusion.hybrid import HybridCompressor, is_hybrid_diffusion_model
-from auto_round.compressors.model_free import ModelFreeQuantizer
+from auto_round.compressors.model_free import ModelFreeCompressor
 from auto_round.logger import deprecated, logger
 from auto_round.schemes import QuantizationScheme
 from auto_round.utils import is_diffusion_model, is_mllm_model, is_model_free_route
@@ -176,7 +176,7 @@ class AutoRound:
             if extra_config is not None:
                 local_args.update(extra_config.to_dict())
             local_args["model_name_or_path"] = local_args.pop("model")
-            return ModelFreeQuantizer(**local_args, **kwargs)
+            return ModelFreeCompressor(**local_args, **kwargs)
         # --------------------------------------------------------------------
 
         model_cls = []
