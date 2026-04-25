@@ -17,12 +17,10 @@ import functools
 import inspect
 import json
 import os
-from concurrent.futures import ThreadPoolExecutor
 from dataclasses import fields
 from enum import Enum
 from typing import Callable, Union
 
-import threadpoolctl as tctl
 import torch
 import torch.nn as nn
 import transformers
@@ -308,21 +306,9 @@ def save_quantized_as_autoround(
         quantization_config["extra_config"] = extra_config
 
     names = list(layer_config.keys())
-    max_workers = 1
-    if not torch.cuda.is_available() and not torch.xpu.is_available():
-        max_workers = 2  ## 2 with cuda packing will cause hang occasionally
     if not unsupported_meta_device(model):
-        with ThreadPoolExecutor(max_workers=max_workers) as executor:
-            with tqdm(total=len(names), leave=True) as pbar:
-
-                def wrapper(name):
-                    pbar.set_description(f"packing {name}")
-                    with tctl.threadpool_limits(limits=1):
-                        pack_layer(name, model, backend, device)
-                    pbar.update(1)
-
-                for _ in executor.map(wrapper, names):
-                    pass
+        for name in tqdm(names, desc="packing", leave=True):
+            pack_layer(name, model, backend, device)
     filter_quantization_config(quantization_config)
     if hasattr(model, "config"):
         model.config.quantization_config = quantization_config

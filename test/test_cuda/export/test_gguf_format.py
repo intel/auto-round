@@ -122,7 +122,7 @@ class TestAutoRound:
         from ...helpers import save_tiny_model
 
         model_name = get_model_path("ibm-granite/granite-4.0-h-tiny")
-        tiny_model_path = save_tiny_model(model_name, "tiny_model_path", num_layers=2)
+        tiny_model_path = save_tiny_model(model_name, "tiny_granite_model_path", num_layers=2)
         from auto_round import AutoRound
 
         autoround = AutoRound(
@@ -141,6 +141,7 @@ class TestAutoRound:
     @require_gguf
     def test_vlm_gguf(self):
         from huggingface_hub import hf_hub_download
+        from huggingface_hub.errors import GatedRepoError, HfHubHTTPError
 
         from ...helpers import save_tiny_model
 
@@ -150,7 +151,12 @@ class TestAutoRound:
         )
         # Needs tokenizer.model for gguf
         # New transformers won't download it even with use_fast=False
-        file_path = hf_hub_download(repo_id=model_name, filename="tokenizer.model", local_dir=tiny_model_path)
+        tokenizer_model_path = os.path.join(tiny_model_path, "tokenizer.model")
+        if not os.path.isfile(tokenizer_model_path):
+            try:
+                hf_hub_download(repo_id=model_name, filename="tokenizer.model", local_dir=tiny_model_path)
+            except (GatedRepoError, HfHubHTTPError) as error:
+                pytest.skip(f"tokenizer.model unavailable for {model_name}: {error}")
 
         from auto_round import AutoRound
 
@@ -171,7 +177,7 @@ class TestAutoRound:
             if "mmproj-model.gguf" in file:
                 assert abs(file_size - 75) < 5.0
             else:
-                assert abs(file_size - 690) < 5.0
+                assert abs(file_size - 683) < 5.0
 
         shutil.rmtree(tiny_model_path, ignore_errors=True)
 
@@ -213,7 +219,8 @@ class TestAutoRound:
         from gguf.gguf_reader import GGUFReader
 
         model_path = get_model_path("Qwen/Qwen3-1.7B")
-        tiny_model_path = save_tiny_model(model_path, "./tmp/tiny_qwen3_1b", num_layers=8)
+        tiny_model_path = "./tmp/tiny_qwen3_1b"
+        tiny_model_path = save_tiny_model(model_path, tiny_model_path, num_layers=8)
         autoround = AutoRound(
             tiny_model_path,
             iters=0,

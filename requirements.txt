@@ -3,7 +3,6 @@ accelerate
 datasets
 numpy
 py-cpuinfo
-threadpoolctl
 torch
 tqdm
 transformers>=4.38
