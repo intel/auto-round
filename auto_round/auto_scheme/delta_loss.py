@@ -353,7 +353,7 @@ def prepare_model_low_gpu(model, block_inputs: dict = None, pbar=None, major_dev
             block_inputs[module_name] = input_info
 
             module.to("cpu")
-            # torch.cuda.empty_cache()
+            clear_memory()
 
             # Enable gradients for the output of the last block
             if module.tmp_name == block_names[-1]:
@@ -410,6 +410,8 @@ def model_forward_low_gpu(model, dataloader, major_device="cuda", pbar=None):
             pass
 
         current_grad = last_grad_input
+        del output, data
+        clear_memory()
 
         # Manually compute gradients block by block
         last_block_backward_hook.remove()
@@ -468,8 +470,9 @@ def model_forward_low_gpu(model, dataloader, major_device="cuda", pbar=None):
                 print(f"Warning: No suitable input gradient found for {block_name}")
                 break
 
+            del block_output, main_output, block_input_args, block_input_kwargs
             block_module.to("cpu")
-            # clear_memory()
+            clear_memory()
             pbar.update(1)
 
 
