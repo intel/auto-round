@@ -160,6 +160,9 @@ def pack_layer(name, model, backend, device=None):
     elif type(layer) == transformers.pytorch_utils.Conv1D:
         in_features = layer.weight.shape[0]
         out_features = layer.weight.shape[1]
+    else:
+        in_features = layer.weight.shape[0]
+        out_features = layer.weight.shape[1]
 
     bias = layer.bias is not None
     ##bias = True  ## if using the above, llama3 lambada RTN will be NAN , TODO why?

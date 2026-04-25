@@ -39,7 +39,9 @@ from vllm.model_executor.layers.linear import (
     )
 from vllm.model_executor.layers.fused_moe import SharedFusedMoE
 
+
 state_dict_mapping = {
+    "experts._": "",
     "gate_up_proj.gate_proj.": "gate_proj.",
     "gate_up_proj.up_proj.": "up_proj.",
     "qkv_proj.q_proj.": "q_proj.",
@@ -47,10 +49,6 @@ state_dict_mapping = {
     "qkv_proj.v_proj.": "v_proj.",
     "self_attn.mla_attn.mla_attn." : "self_attn.",
     "self_attn.mla_attn." : "self_attn.",
-    "experts._shared_experts.": "experts.",
-    "experts._shared_experts.gate_up_proj.": "experts.",
-    "experts._gate.": "experts.gate.",
-    "experts._experts.": "experts.",
 }
 
 key_to_remove = [
@@ -67,17 +65,22 @@ def state_dict_hook(module, state_dict, prefix, *args):
     for key in keys:
         for k in state_dict_mapping:
             if k in key:
-                weight_to_update.append((key, key.replace(k, state_dict_mapping[k])))
+                weight_to_update.append(key)
+                break
         for k in key_to_remove:
             if k in key:
                 weight_to_remove.append(key)
+                break
 
     for name in weight_to_remove:
         state_dict.pop(name)
 
-    for old_name, new_name in weight_to_update:
-        if old_name in state_dict:
-            state_dict[new_name] = state_dict.pop(old_name)
+    for name in weight_to_update:
+        if name in state_dict:
+            new_name = name
+            for old_pattern, new_pattern in state_dict_mapping.items():
+                new_name = new_name.replace(old_pattern, new_pattern)
+            state_dict[new_name] = state_dict.pop(name)
 
 class VllmAttention(ReplacementModuleBase):
     """Replaces Vllm Attention with VllmAttention modules."""
@@ -162,8 +165,8 @@ class VllmMergedColumnParallelLinear(ReplacementModuleBase):
     def _materialize_weights(self) -> None:
         original = self._get_original_module()
         if not unsupported_meta_device(original):
-            _update_parameter(self.gate_proj, "weight", original.weight[:self.gate_proj.weight.shape[1], :])
-            _update_parameter(self.up_proj, "weight", original.weight[self.up_proj.weight.shape[1]:, :])
+            _update_parameter(self.gate_proj, "weight", original.weight[:self.gate_proj.weight.shape[0], :])
+            _update_parameter(self.up_proj, "weight", original.weight[self.up_proj.weight.shape[0]:, :])
             original.to_empty(device="meta")  # release original experts parameters
             clear_memory()
 
@@ -220,9 +223,9 @@ class SequentialExperts(torch.nn.ModuleList):
                 down = original.w2_weight[i]
                 gate_proj = gate_up[:gate_up.shape[0] // 2, :]
                 up_proj = gate_up[gate_up.shape[0] // 2:, :]
-                _update_parameter(self[i].gate_proj, "weight", gate_proj.t().contiguous())
-                _update_parameter(self[i].up_proj, "weight", up_proj.t().contiguous())
-                _update_parameter(self[i].down_proj, "weight", down.t().contiguous())
+                _update_parameter(self[i].gate_proj, "weight", gate_proj.contiguous())
+                _update_parameter(self[i].up_proj, "weight", up_proj.contiguous())
+                _update_parameter(self[i].down_proj, "weight", down.contiguous())
             del gate_up, down, gate_proj, up_proj
             original.w13_weight.to("meta")  # release original experts parameters
             original.w2_weight.to("meta")
@@ -266,4 +269,6 @@ class VllmSharedFusedMoE(ReplacementModuleBase):
         **kwargs,
     ) -> "VllmSharedFusedMoE":
         """Create an instance from the original module."""
-        return cls(original, config)
+        new_module = cls(original, config)
+        new_module.register_state_dict_post_hook(state_dict_hook)
+        return new_module
