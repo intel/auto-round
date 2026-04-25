@@ -625,7 +625,7 @@ def tune(args):
         and not getattr(args, "disable_model_free", False)
         and getattr(args, "iters", None) == 0
         and getattr(args, "disable_opt_rtn", None) is True
-        and is_model_free_supported_scheme(args.scheme)
+        and is_model_free_supported_scheme(args.scheme, vars(args))
         and (
             str(getattr(args, "format", "auto_round") or "auto_round").lower().replace(" ", "").split(",")[0]
             == "auto_round"
@@ -637,7 +637,7 @@ def tune(args):
         scheme = args.scheme.upper()
         if scheme not in PRESET_SCHEMES:
             raise ValueError(f"{scheme} is not supported. Only {list(PRESET_SCHEMES.keys())} are supported")
-        if not is_model_free_supported_scheme(scheme) and not explicit_model_free:
+        if not is_model_free_supported_scheme(scheme, vars(args)) and not explicit_model_free:
             logger.info(
                 f"Auto-routing to model-free is skipped: scheme '{scheme}' is not in "
                 f"the model-free allowlist. Falling back to the regular AutoRound flow."

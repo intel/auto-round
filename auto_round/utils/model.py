@@ -2055,7 +2055,7 @@ def is_model_free_route(
         and isinstance(model, str)
         and iters == 0
         and disable_opt_rtn is True
-        and is_model_free_supported_scheme(scheme)
+        and is_model_free_supported_scheme(scheme, kwargs)
     )
 
 

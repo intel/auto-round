@@ -496,6 +496,9 @@ class TestSupportedSchemes:
         # bits=5 → not in supported bits.
         sch = QuantizationScheme(bits=5, group_size=128, sym=True, data_type="int", act_bits=16)
         assert is_model_free_supported_scheme(sch) is False
+        # Overrides must be considered too, otherwise auto-routing can diverge
+        # from the effective scheme used at runtime.
+        assert is_model_free_supported_scheme("W4A16", {"bits": 2, "data_type": "int_asym_dq"}) is False
 
 
 # ===========================================================================

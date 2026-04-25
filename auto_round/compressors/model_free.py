@@ -850,6 +850,22 @@ def _normalize_scheme(scheme: Union[str, QuantizationScheme]) -> QuantizationSch
     raise TypeError(f"Unsupported scheme type: {type(scheme)}")
 
 
+def _apply_scheme_overrides(
+    scheme: Union[str, QuantizationScheme],
+    scheme_overrides: Optional[dict] = None,
+) -> QuantizationScheme:
+    """Return the effective scheme after applying non-None overrides."""
+    scheme_obj = copy.deepcopy(_normalize_scheme(scheme))
+    if not scheme_overrides:
+        return scheme_obj
+
+    valid_fields = {field.name for field in fields(QuantizationScheme)}
+    for key, value in scheme_overrides.items():
+        if key in valid_fields and value is not None:
+            setattr(scheme_obj, key, value)
+    return scheme_obj
+
+
 def _validate_supported_scheme(
     scheme_obj: QuantizationScheme,
     scheme_input: Union[str, QuantizationScheme],
@@ -886,14 +902,17 @@ def _validate_supported_scheme(
         )
 
 
-def is_model_free_supported_scheme(scheme: Union[str, QuantizationScheme]) -> bool:
+def is_model_free_supported_scheme(
+    scheme: Union[str, QuantizationScheme],
+    scheme_overrides: Optional[dict] = None,
+) -> bool:
     """Return True if *scheme* can be quantized via model-free mode.
 
     Useful for CLI auto-routing logic.  Never raises.
     """
     try:
-        scheme_obj = _normalize_scheme(scheme)
-        _validate_supported_scheme(scheme_obj, scheme)
+        scheme_obj = _apply_scheme_overrides(scheme, scheme_overrides)
+        _validate_supported_scheme(scheme_obj, scheme_obj)
         return True
     except (ValueError, TypeError):
         return False
@@ -1482,11 +1501,7 @@ class ModelFreeCompressor(_ModelFreeCompressorCore):
 
         # Apply user scheme overrides before running
         if self.user_scheme_overrides:
-            scheme_obj = _normalize_scheme(self.scheme_input)
-            for k, v in self.user_scheme_overrides.items():
-                if v is not None and hasattr(scheme_obj, k):
-                    setattr(scheme_obj, k, v)
-            self.scheme_input = scheme_obj
+            self.scheme_input = _apply_scheme_overrides(self.scheme_input, self.user_scheme_overrides)
 
         # Temporarily point output_dir at what the caller requested
         orig = self.output_dir

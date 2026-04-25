@@ -77,6 +77,7 @@ class TestAutoRound:
             disable_opt_rtn=True,
             dataset=dataloader,
             low_cpu_mem_usage=False,
+            disable_model_free=True,
         )
         ar.quantize_and_save(self.save_folder)
         model = transformers.Qwen2_5_VLForConditionalGeneration.from_pretrained(self.save_folder)
