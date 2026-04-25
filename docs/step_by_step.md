@@ -560,17 +560,14 @@ The 3B and 14B models were evaluated on Qwen 2.5, the 8X7B model is Mixtral, whi
 | 2.5  w/o torch compile                                                                      | 8min<br/>10GB | 16min<br/>20GB | 30min<br/>25GB | 140min<br/>49GB | 50min<br/>49GB |
 
 W4G128 Quantization Time and Memory Usage (Intel GPU B60 24G)
-Testing was conducted on the Intel GPU B60 24G using the release version of PyTorch 2.11.0+xpu. Please note that data loading and packing costs have been excluded from the evaluation. Time and memory usage were measured using Qwen3-series models.
+Testing was conducted on the Intel GPU B60 24G using the release version of PyTorch 2.11.0+xpu. Please note that data loading and packing costs have been excluded from the evaluation. Time and memory usage were measured using Qwen2.5-series models.
 
-| Torch version/Config W4G128                                                                                            | 0.6B              | 1.7B              | 4B                  | 8B                  | 30B-A3B             |
-|------------------------------------------------------------------------------------------------------------------------|-------------------|-------------------|---------------------|---------------------|---------------------|
-| 2.11.0+xpu with torch compile                                                                                          | 20min<br/>10.7GB  | 26min<br/>13.2GB  | 58min<br/>22.8GB    | OOM                 | OOM                 |
-| 2.11.0+xpu with torch compile<br/>low_gpu_mem_usage=True                                                               | 29min<br/>9.5GB   | 38min<br/>9.8GB   | 1h 23min<br/>19.4GB | 1h 32min<br/>20.1GB | 5h 33min<br/>22.8GB |
-| 2.11.0+xpu with torch compile<br/>low_gpu_mem_usage=True<br/>gradient_accumulate_steps=8,bs=1                          | 41min<br/>1.3GB   | 42min<br/>1.8GB   | 1h 29min<br/>3.6GB  | 2h 4min<br/>4.6GB   | 21h 41min<br/>10.2GB  |
-| 2.11.0+xpu w/o torch compile                                                                                           | 20min<br/>10.9GB  | 28min<br/>13.2GB  | OOM                 | OOM                 | OOM                 |
-
-
-
+| Torch version/Config W4G128                                                                                            | 0.5B              | 1.5B              | 3B                  | 7B                  |
+|------------------------------------------------------------------------------------------------------------------------|-------------------|-------------------|---------------------|---------------------|
+| 2.11.0+xpu with torch compile                                                                                          | 6min<br/>2.9GB    | 13min<br/>5.4GB   | 22min<br/>7.1GB     | 40min<br/>14.9GB    |
+| 2.11.0+xpu with torch compile<br/>low_gpu_mem_usage=True                                                               | 10min<br/>1.7GB   | 17min<br/>3.3GB   | 30min<br/>4.3GB     | 50min<br/>8.5GB     |
+| 2.11.0+xpu with torch compile<br/>low_gpu_mem_usage=True<br/>gradient_accumulate_steps=8,bs=1                          | 14min<br/>0.4GB   | 22min<br/>1.1GB   | 38min<br/>1.5GB     | 1h 4min<br/>4.1GB   |
+| 2.11.0+xpu w/o torch compile                                                                                           | 6min<br/>2.9GB    | 14min<br/>5.7GB   | 26min<br/>7.6GB     | 51min<br/>15.5GB    |
 
 ### Device/Multi-GPU setting in Quantization
 **The tuning device is specified using the `device_map` argument in AutoRound API, _not_ through the `device_map` 

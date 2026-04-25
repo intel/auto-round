@@ -7,8 +7,10 @@ import transformers
 from transformers import AutoModelForCausalLM, AutoTokenizer
 
 from auto_round import AutoRound, AutoScheme
+from auto_round.export.export_to_llmcompressor import export_to_fp as llmc_fp_export
+from auto_round.export.export_to_llmcompressor import export_to_static_fp as llmc_static_fp_export
 
-from ...helpers import get_model_path, opt_name_or_path
+from ...helpers import forbid_threaded_packing, get_model_path, opt_name_or_path
 
 
 class TestLLMC:
@@ -156,3 +158,31 @@ class TestLLMC:
             and quantization_config["config_groups"]["group_1"]["format"] == "mxfp4-pack-quantized"
             and quantization_config["ignore"] == ["lm_head"]
         ), f"Invalid mixed precision quantization configuration: {quantization_config}"
+
+
+def test_llmcompressor_static_fp_export_packs_serially(tiny_opt_model_path, tmp_path, monkeypatch):
+    autoround = AutoRound(
+        tiny_opt_model_path,
+        scheme="FP8_STATIC",
+        seqlen=8,
+        nsamples=2,
+        iters=0,
+    )
+    autoround.quantize()
+    forbid_threaded_packing(monkeypatch, llmc_static_fp_export)
+    autoround.save_quantized(tmp_path, format="llm_compressor")
+    assert os.path.exists(os.path.join(tmp_path, "config.json"))
+
+
+def test_llmcompressor_mxfp8_export_packs_serially(tmp_path, monkeypatch):
+    autoround = AutoRound(
+        model=opt_name_or_path,
+        iters=0,
+        disable_opt_rtn=True,
+        scheme="mxfp8",
+    )
+    autoround.quantize()
+    forbid_threaded_packing(monkeypatch, llmc_fp_export)
+    compressed_model = autoround.save_quantized(output_dir=tmp_path, format="llm_compressor")
+    tmp_layer = compressed_model.model.decoder.layers[1].self_attn.q_proj
+    assert hasattr(tmp_layer, "weight_scale")
