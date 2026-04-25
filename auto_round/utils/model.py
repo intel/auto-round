@@ -1348,7 +1348,7 @@ def mv_module_from_gpu(module):
         for attr_name in list(module._parameters.keys()):
             p = module._parameters[attr_name]
             if p is not None and p.device.type != "meta" and p.device.type != "cpu":
-                module._parameters[attr_name] = p.to("cpu")
+                module._parameters[attr_name] = torch.nn.Parameter(p.to("cpu"), requires_grad=p.requires_grad)
         for attr_name in list(module._buffers.keys()):
             b = module._buffers[attr_name]
             if b is not None and b.device.type != "meta" and b.device.type != "cpu":
@@ -1977,6 +1977,10 @@ def rename_weights_files(path: str, prefix="diffusion_pytorch_model"):
     # rename safetensors
     files = sorted(glob.glob(f"{path}/*.safetensors"))
     total = len(files)
+    if total == 1:
+        new = f"{prefix}.safetensors"
+        os.rename(files[0], os.path.join(path, new))
+        return
 
     for i, f in enumerate(files, 1):
         new = f"{prefix}-{i:05d}-of-{total:05d}.safetensors"

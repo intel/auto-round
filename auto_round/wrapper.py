@@ -12,12 +12,14 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import math
 from math import ceil
 
 import torch
 import transformers
 from torch.functional import F
 
+import auto_round.envs as envs
 from auto_round.compressors.utils import is_nv_fp
 from auto_round.data_type import get_quant_func, reshape_pad_tensor_by_group_size
 from auto_round.logger import logger
@@ -92,6 +94,7 @@ class WrapperLinear(torch.nn.Module):
         """
         super(WrapperLinear, self).__init__()
         self.orig_layer = orig_layer
+        self.orig_layer.iters = kwargs.pop("iters", 200)
         self.disable_opt_rtn = disable_opt_rtn
         self.output_device = device
         self.device = self.orig_layer.tuning_device if hasattr(self.orig_layer, "tuning_device") else device
@@ -169,18 +172,30 @@ class WrapperLinear(torch.nn.Module):
         self._init_params("max_scale", p_dtype, shape, 1.0, (self.enable_minmax_tuning and self.orig_layer.bits < 16))
 
         self.weight_quant_func, self.data_type = get_quant_func(
-            orig_layer.data_type, orig_layer.bits, orig_layer.sym, self.disable_opt_rtn, orig_layer.group_size
+            orig_layer.data_type,
+            orig_layer.bits,
+            orig_layer.sym,
+            self.disable_opt_rtn,
+            orig_layer.group_size,
+            iters=orig_layer.iters,
         )
         if self.enable_torch_compile:
             self.weight_quant_func = compile_func(self.weight_quant_func, self.device)
 
         if self.enable_act_quant:
             self.act_quant_func, self.act_data_type = get_quant_func(
-                orig_layer.act_data_type, orig_layer.act_bits, orig_layer.act_sym, self.disable_opt_rtn
+                orig_layer.act_data_type,
+                orig_layer.act_bits,
+                orig_layer.act_sym,
+                disable_opt_rtn=True,
+                iters=orig_layer.iters,
             )
             if self.enable_torch_compile:
                 self.act_quant_func = compile_func(self.act_quant_func, self.device)
-            self._init_params("act_max_scale", p_dtype, (1), 1.0, not orig_layer.act_dynamic)
+            self._init_params(
+                "act_max_scale", p_dtype, (1), 1.0, envs.AR_ENABLE_ACT_MINMAX_TUNING or (not orig_layer.act_dynamic)
+            )
+            self._init_params("act_min_scale", p_dtype, (1), 1.0, envs.AR_ENABLE_ACT_MINMAX_TUNING)
 
         # Bias tuning
         if self.enable_norm_bias_tuning:
@@ -221,8 +236,8 @@ class WrapperLinear(torch.nn.Module):
         """
         if self.orig_layer.bits >= 16:
             return self.orig_layer.weight, None, None
-        min_scale.data.clamp_(0, 1.0)
-        max_scale.data.clamp_(0, 1.0)
+        min_scale.data.clamp_(0.0, 1.0)
+        max_scale.data.clamp_(0.0, 1.0)
         weight = self.orig_layer.weight
         if weight.device.type == "meta":
             weight = self.orig_layer.get_weight().to(self.device)
@@ -255,7 +270,7 @@ class WrapperLinear(torch.nn.Module):
             weight_q = weight_q.t()
         return weight_q, scale, zp
 
-    def _qdq_act(self, x, act_max_scale, act_max=None):
+    def _qdq_act(self, x, act_min_scale=torch.tensor(1.0), act_max_scale=torch.tensor(1.0), act_max=None):
         """Quantizes and dequantizes activations.
 
         Args:
@@ -267,6 +282,8 @@ class WrapperLinear(torch.nn.Module):
             tuple: Quantized activation, scale, and zero point.
         """
         act_max_scale.data.clamp_(0, 1.0)
+        act_min_scale.data.clamp_(0, 1.0)
+        env_act_scale = envs.AR_ACT_SCALE  # fixed activation ratio,prioritize to use this one if set
         x, scale, zp = self.act_quant_func(
             x,
             bits=self.orig_layer.act_bits,
@@ -274,8 +291,9 @@ class WrapperLinear(torch.nn.Module):
             scale_dtype=self.orig_layer.scale_dtype,
             q_scale_thresh=self.q_scale_thresh,
             data_type=self.act_data_type,
-            max_scale=act_max_scale,
-            tensor_max=act_max,
+            tensor_max=act_max,  # for static
+            max_scale=act_max_scale if math.isclose(env_act_scale, 1.0, rel_tol=1e-6) else env_act_scale,
+            min_scale=act_min_scale if math.isclose(env_act_scale, 1.0, rel_tol=1e-6) else env_act_scale,
             global_scale=getattr(self, "input_global_scale", None),
         )
         return x, scale, zp
@@ -394,7 +412,10 @@ class WrapperLinear(torch.nn.Module):
                     elif self.orig_layer.act_group_size == -1:
                         tmp_shape = (act_max.shape[0], 1)
                     _, act_scale, _ = self._qdq_act(
-                        torch.zeros(tmp_shape).to(self.device), act_max_scale=self.act_max_scale, act_max=act_max
+                        torch.zeros(tmp_shape).to(self.device),
+                        act_min_scale=self.act_min_scale,
+                        act_max_scale=self.act_max_scale,
+                        act_max=act_max,
                     )
                     self.orig_layer.act_max = self.orig_layer.act_max * act_max_scale.item()
                     self.orig_layer.act_max = self.orig_layer.act_max.to("cpu")
@@ -404,6 +425,8 @@ class WrapperLinear(torch.nn.Module):
 
             self.orig_layer.q_scale_thresh = self.q_scale_thresh
             self.orig_layer.data_type = self.data_type
+            self.orig_layer.act_min_scale = self.act_min_scale
+            self.orig_layer.act_max_scale = self.act_max_scale
 
             self.orig_layer.act_data_type = self.act_data_type
             self.orig_layer.act_quant_func = self.act_quant_func
@@ -477,8 +500,23 @@ class WrapperLinear(torch.nn.Module):
         weight_q, *_ = self._qdq_weight(self.value, self.min_scale, self.max_scale)
 
         if self.enable_act_quant:
+            # Run orig_layer's forward_pre_hooks (e.g., online Hadamard transform)
+            # BEFORE activation quantization, to match inference behavior in WrapperWALayer.
+            for hook in self.orig_layer._forward_pre_hooks.values():
+                result = hook(self.orig_layer, (x,))
+                if result is not None:
+                    x = result[0] if isinstance(result, tuple) else result
             act_max = self.orig_layer.act_max if hasattr(self.orig_layer, "act_max") else None
-            x, _, _ = self._qdq_act(x, act_max_scale=self.act_max_scale, act_max=act_max)
+            x, _, _ = self._qdq_act(
+                x, act_max_scale=self.act_max_scale, act_min_scale=self.act_min_scale, act_max=act_max
+            )
+        elif len(self.orig_layer._forward_pre_hooks) > 0:
+            # Even without act_quant, run pre-hooks for online Hadamard correctness
+            # (when fuse_online_to_weight=False, pre-hooks transform activations).
+            for hook in self.orig_layer._forward_pre_hooks.values():
+                result = hook(self.orig_layer, (x,))
+                if result is not None:
+                    x = result[0] if isinstance(result, tuple) else result
 
         # pylint: disable=not-callable
         bias = self.orig_layer.bias
@@ -488,6 +526,14 @@ class WrapperLinear(torch.nn.Module):
             bias, _, _ = self._qdq_bias(bias, self.bias_v)
 
         output = self.orig_forward(x, weight_q, bias).to(self.output_device)
+
+        # Execute post-hooks from orig_layer (e.g., v_proj per-head Hadamard
+        # when online rotation is not fused into weights).
+        for hook in self.orig_layer._forward_hooks.values():
+            hook_result = hook(self.orig_layer, (x,), output)
+            if hook_result is not None:
+                output = hook_result
+
         return output
 
 
@@ -504,6 +550,12 @@ class WrapperWALayer(torch.nn.Module):
             self.act_quant_func = compile_func(self.act_quant_func, self.device)
         self.extra_repr_org = orig_layer.extra_repr
 
+        # Steal forward_pre_hooks from orig_layer (e.g., Hadamard transform hooks)
+        # and remove them from orig_layer so they won't fire again inside orig_layer.forward().
+        # We will run them explicitly in our forward() BEFORE activation quantization.
+        self._stolen_pre_hooks = list(orig_layer._forward_pre_hooks.values())
+        orig_layer._forward_pre_hooks.clear()
+
     @property
     def weight(self):
         """Exposes the weight of the wrapped layer for external access."""
@@ -515,16 +567,42 @@ class WrapperWALayer(torch.nn.Module):
         return self.orig_layer.bias
 
     def forward(self, x):
+        # 1) Run stolen pre_hooks first (e.g., online Hadamard) → smooths activation
+        for hook in self._stolen_pre_hooks:
+            result = hook(self.orig_layer, (x,))
+            if result is not None:
+                x = result[0] if isinstance(result, tuple) else result
+
+        # 2) Activation quantization on the smoothed activation
+        import auto_round.envs as envs
+
+        act_scale = envs.AR_ACT_SCALE
         act_max = self.orig_layer.act_max if hasattr(self.orig_layer, "act_max") else None
-        x, _, _ = self.orig_layer.act_quant_func(
-            x,
-            bits=self.orig_layer.act_bits,
-            group_size=self.orig_layer.act_group_size,
-            scale_dtype=self.orig_layer.scale_dtype,
-            q_scale_thresh=self.orig_layer.q_scale_thresh,
-            data_type=self.orig_layer.act_data_type,
-            tensor_max=act_max,
-        )
+
+        max_scale = self.orig_layer.act_max_scale if math.isclose(act_scale, 1.0, rel_tol=1e-6) else act_scale
+        min_scale = self.orig_layer.act_min_scale if math.isclose(act_scale, 1.0, rel_tol=1e-6) else act_scale
+        if act_max is None:
+            x, _, _ = self.orig_layer.act_quant_func(
+                x,
+                bits=self.orig_layer.act_bits,
+                group_size=self.orig_layer.act_group_size,
+                scale_dtype=self.orig_layer.scale_dtype,
+                q_scale_thresh=self.orig_layer.q_scale_thresh,
+                data_type=self.orig_layer.act_data_type,
+                min_scale=min_scale,
+                max_scale=max_scale,
+            )
+        else:
+            x, _, _ = self.orig_layer.act_quant_func(
+                x,
+                bits=self.orig_layer.act_bits,
+                group_size=self.orig_layer.act_group_size,
+                scale_dtype=self.orig_layer.scale_dtype,
+                q_scale_thresh=self.orig_layer.q_scale_thresh,
+                data_type=self.orig_layer.act_data_type,
+                act_max=act_max,
+            )
+        # 3) Linear computation via orig_layer (pre_hooks already removed, no double execution)
         return self.orig_layer.forward(x)
 
     def extra_repr(self):
@@ -640,6 +718,7 @@ NORM_MAPPING["Qwen2RMSNorm"] = WrapperLlamaNorm
 NORM_MAPPING["Phi3RMSNorm"] = WrapperLlamaNorm
 NORM_MAPPING["MistralRMSNorm"] = WrapperLlamaNorm
 NORM_MAPPING["Qwen3RMSNorm"] = WrapperLlamaNorm
+NORM_MAPPING["Qwen3_5MoeRMSNorm"] = WrapperLlamaNorm
 
 
 class WrapperMultiblock(torch.nn.Module):
@@ -653,10 +732,10 @@ class WrapperMultiblock(torch.nn.Module):
         super(WrapperMultiblock, self).__init__()
         self.layers = torch.nn.ModuleList(module_list)
 
-    def forward(self, x, **kwargs):
+    def forward(self, x, *args, **kwargs):
         hidden_states = x
         for idx, decoder_layer in enumerate(self.layers):
-            layer_outputs = decoder_layer(hidden_states, **kwargs)
+            layer_outputs = decoder_layer(hidden_states, *args, **kwargs)
             hidden_states = layer_outputs
             if isinstance(hidden_states, tuple) or isinstance(hidden_states, list):
                 hidden_states = layer_outputs[0]
