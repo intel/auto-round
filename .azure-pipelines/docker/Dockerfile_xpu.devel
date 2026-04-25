@@ -17,7 +17,10 @@ RUN apt-get update && apt-get install -y --no-install-recommends --fix-missing \
     wget \
     bc \
     jq \
-    vim
+    vim \
+    python3.12 \
+    python3.12-dev \
+    python3-pip
 
 RUN apt-get install -y software-properties-common \
     && add-apt-repository -y ppa:kobuk-team/intel-graphics \
