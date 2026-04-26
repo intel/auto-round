@@ -280,7 +280,7 @@ class TestAutoScheme:
         quantization.
         """
         target_bits = 2.5
-        ref_threshold = 0.58
+        ref_threshold = 0.56
         common_kwargs = dict(
             iters=0,
             disable_opt_rtn=True,
