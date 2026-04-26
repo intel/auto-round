@@ -84,7 +84,7 @@ from auto_round.utils.missing_tensors import quantize_weight_rtn, split_fused_ex
 # Constants
 # ---------------------------------------------------------------------------
 
-_BLOCK_NAME_TO_IGNORE = ["shared_expert_gate.", "mlp.gate.", "embed"]
+_BLOCK_NAME_TO_IGNORE = ["shared_expert_gate.", "mlp.gate."]
 
 # Integer WOQ preset schemes that model-free mode can produce.
 # Other presets (FP8/MX/NV/GGUF/BF16/INT8_W8A8/FPW8A16) require different

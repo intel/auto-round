@@ -443,6 +443,9 @@ ar.quantize_and_save(output_dir, format="auto_round")
 - **预定义忽略层** — 根据模型配置自动跳过特定层（如 MoE 门控层、MTP 层等）
 - 与标准 `--iters 0 --disable_opt_rtn` 流程对所有受支持的 scheme **位级等价**
 
+<details>
+  <summary>点击展开支持的 Scheme 与示例</summary>
+
 **支持的 Scheme**
 
 免模型模式当前支持以下整数权重量化预设（均使用 `auto_round:auto_gptq` 打包格式）：
@@ -512,6 +515,8 @@ AutoRound(
 ```
 
 > **注意：** 免模型量化模式仅支持 `auto_round` 输出格式，并使用 RTN（无标定数据、无迭代调优）。如需更高质量的量化结果或使用受支持列表外的 scheme，请使用标准 AutoRound 流程。
+
+</details>
 
 ### GGUF 格式量化
 实验性功能。该格式适用 CPU 设备，在社区应用广泛。

@@ -451,6 +451,9 @@ Model-free mode performs RTN WOQ quantization **without loading the full model i
 - **Predefined ignore layers** – automatically skips model-specific layers (e.g., MoE gates, MTP layers) based on config detection
 - **Bit-exact parity** with the standard `--iters 0 --disable_opt_rtn` flow for all supported schemes
 
+<details>
+  <summary>Click to expand supported schemes and examples</summary>
+
 **Supported schemes**
 
 Model-free mode currently supports the following **integer weight-only** preset schemes (packed in the `auto_round:auto_gptq` format):
@@ -520,6 +523,8 @@ AutoRound(
 ```
 
 > **Note:** Model-free mode only supports the `auto_round` output format and uses RTN (no calibration data, no iterative tuning).  For higher-quality quantization or schemes outside the supported list, use the standard AutoRound flow.
+
+</details>
 
 ### GGUF format
 Experimental feature. This format is well-suited for CPU devices and is widely adopted by the community. 
