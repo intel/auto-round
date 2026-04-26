@@ -18,10 +18,9 @@ import functools
 import inspect
 import json
 import os
-import re
 from dataclasses import fields
 from enum import Enum
-from typing import Callable, Optional, Union
+from typing import Callable, Union
 
 import torch
 import torch.nn as nn
@@ -51,71 +50,6 @@ from auto_round.utils import (
     to_standard_regex,
     unsupported_meta_device,
 )
-
-_NORM_CLASS_SUFFIX = re.compile(r".*Norm(?:\d+d)?\Z")
-
-_DTYPE_STRING_ALIASES: dict[str, torch.dtype] = {
-    "fp32": torch.float32,
-    "float32": torch.float32,
-    "f32": torch.float32,
-    "fp16": torch.float16,
-    "float16": torch.float16,
-    "f16": torch.float16,
-    "half": torch.float16,
-    "bf16": torch.bfloat16,
-    "bfloat16": torch.bfloat16,
-}
-
-
-def _is_norm_module(module: nn.Module) -> bool:
-    return _NORM_CLASS_SUFFIX.match(type(module).__name__) is not None
-
-
-def _resolve_dtype_spec(dtype_spec) -> Optional[torch.dtype]:
-    if dtype_spec is None:
-        return None
-    if isinstance(dtype_spec, torch.dtype):
-        return dtype_spec
-    if isinstance(dtype_spec, str):
-        key = dtype_spec.strip().lower()
-        if key in _DTYPE_STRING_ALIASES:
-            return _DTYPE_STRING_ALIASES[key]
-        raise ValueError(
-            f"Unsupported dtype string: {dtype_spec!r}. " f"Supported: {sorted(set(_DTYPE_STRING_ALIASES))}"
-        )
-    raise TypeError(f"Expected torch.dtype or str, got {type(dtype_spec).__name__}: {dtype_spec!r}")
-
-
-def _cast_norm_modules(model: nn.Module, dtype: Optional[torch.dtype]) -> int:
-    """Upcast norm module parameters/buffers to ``dtype`` for residual precision."""
-    if dtype is None:
-        return 0
-    count = 0
-    skipped_meta = 0
-    for name, module in model.named_modules():
-        if not _is_norm_module(module):
-            continue
-        try:
-            first_param = next(module.parameters(), None)
-        except Exception:
-            first_param = None
-        if first_param is not None and first_param.device.type == "meta":
-            skipped_meta += 1
-            continue
-        try:
-            module.to(dtype)
-            count += 1
-        except (NotImplementedError, RuntimeError) as exc:
-            logger.warning("Skipping norm cast for %s (%s): %s", name, type(module).__name__, exc)
-    if count:
-        logger.info("Cast %d norm module(s) to %s for residual-precision export.", count, dtype)
-    if skipped_meta:
-        logger.warning(
-            "Skipped %d norm module(s) on meta device; their dtype was not changed.",
-            skipped_meta,
-        )
-    return count
-
 
 @functools.lru_cache(maxsize=None)
 def _quant_linear_accepts(qlinear_cls, kwarg_name: str) -> bool:
@@ -403,10 +337,6 @@ def save_quantized_as_autoround(
     if not unsupported_meta_device(model):
         for name in tqdm(names, desc="packing", leave=True):
             pack_layer(name, model, backend, device)
-    norm_dtype = _resolve_dtype_spec(kwargs.get("norm_dtype"))
-    if norm_dtype is not None:
-        _cast_norm_modules(model, norm_dtype)
-        quantization_config["norm_dtype"] = str(norm_dtype).split(".")[-1]
     filter_quantization_config(quantization_config)
     if hasattr(model, "config"):
         model.config.quantization_config = quantization_config

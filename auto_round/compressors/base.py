@@ -333,8 +333,7 @@ class BaseCompressor(object):
             )
         check_and_mark_quantized_module(model)
         self.model = model.eval()
-        post_load_overrides = kwargs.pop("post_load_overrides", None) or {}
-        apply_post_load_fixups(self.model, **post_load_overrides)
+        apply_post_load_fixups(self.model)
         self.tokenizer = tokenizer
         self.shared_cache_keys = get_shared_keys(self.model)
 
@@ -506,8 +505,6 @@ class BaseCompressor(object):
         # Whether to pack the layer immediately after tuning
         self.is_immediate_packing = False
         self.is_immediate_saving = False
-
-        self.norm_dtype: Optional[torch.dtype] = None
 
         # KV cache, this one does not affect tuning but will collect some infos during tuning
         self.static_kv_dtype = static_kv_dtype
@@ -1127,12 +1124,6 @@ class BaseCompressor(object):
             inplace = False
         self.inplace = kwargs.get("inplace", inplace)
         kwargs.pop("inplace", None)
-
-        norm_dtype_kwarg = kwargs.get("norm_dtype")
-        if norm_dtype_kwarg is not None:
-            from auto_round.export.export_to_autoround.export import _resolve_dtype_spec
-
-            self.norm_dtype = _resolve_dtype_spec(norm_dtype_kwarg)
 
         # Perform model quantization
         if self.static_attention_dtype is not None:

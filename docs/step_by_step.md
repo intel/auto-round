@@ -638,15 +638,6 @@ autoround.save_quantized(format="auto_awq", output_dir="tmp_autoround")
   Include the flag `--adam`. Note that AdamW is less effective than sign gradient descent in many scenarios we tested.
 
 
-- **Residual-stream precision (`norm_dtype`):**
-
-  Opt-in kwarg on `quantize_and_save` / `save_quantized` that exports norm weights at higher precision. Accepts `"fp16" | "bf16" | "fp32"` or a `torch.dtype`. Recommended for deep hybrid SSM + MoE architectures (e.g. Nemotron-H) where BF16 residual accumulation loses precision.
-
-    ```python
-    autoround.quantize_and_save(output_dir=out, format="auto_round", norm_dtype="fp32")
-    ```
-
-
 ### Hadamard Transform
 
 AutoRound supports Hadamard transform as an optional weight/activation transformation technique, which can improve quantization accuracy by rotating the weight/activation matrix. This is particularly useful for certain quantization scenarios.

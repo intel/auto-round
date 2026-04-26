@@ -19,7 +19,6 @@ from collections import OrderedDict
 import torch
 from torch.nn import Parameter
 
-from auto_round.export.export_to_autoround.export import _is_norm_module
 from auto_round.logger import logger
 from auto_round.utils import get_lm_head_name, get_module
 
@@ -47,7 +46,6 @@ class ShardWriter:
         # Configuration
         self.max_shard_size = self._parse_size(getattr(rounder, "max_shard_size", f"{model_size}GB"))
         self.safe_serialization = getattr(rounder, "safe_serialization", True)
-        self.norm_dtype: "torch.dtype | None" = getattr(rounder, "norm_dtype", None)
 
         # Internal State
         self.use_safetensors = self._check_safetensors()
@@ -104,31 +102,7 @@ class ShardWriter:
             if not isinstance(v, torch.Tensor):
                 continue
             param_name = f"{prefix}.{k}"
-            v = self._maybe_upcast_norm_tensor(m, k, v, param_name)
             self._add_tensor(param_name, v)
-
-    def _maybe_upcast_norm_tensor(
-        self,
-        owner: torch.nn.Module,
-        local_name: str,
-        tensor: torch.Tensor,
-        param_full_name: str,
-    ) -> torch.Tensor:
-        if self.norm_dtype is None or not isinstance(tensor, torch.Tensor):
-            return tensor
-        if not tensor.is_floating_point() or tensor.dtype == self.norm_dtype:
-            return tensor
-        if tensor.device.type == "meta":
-            return tensor
-        leaf_path = local_name.rsplit(".", 1)[0] if "." in local_name else ""
-        leaf = owner
-        for part in leaf_path.split(".") if leaf_path else []:
-            leaf = getattr(leaf, part, None)
-            if leaf is None:
-                return tensor
-        if not isinstance(leaf, torch.nn.Module) or not _is_norm_module(leaf):
-            return tensor
-        return tensor.to(self.norm_dtype)
 
     def _add_tensor(self, name: str, tensor: torch.Tensor):
         if isinstance(tensor, torch.Tensor) and tensor.device.type == "meta":
@@ -273,10 +247,6 @@ class ShardWriter:
                 lm_head_module = get_module(self.model, self.lm_head_name)
                 self._move_module_to_meta(lm_head_module)  # Must to meta, otherwise model's saver will dump it again
                 continue
-            if self.norm_dtype is not None and tensor.is_floating_point() and tensor.dtype != self.norm_dtype:
-                owner = get_module(self.model, layer_name)
-                if owner is not None and _is_norm_module(owner):
-                    tensor = tensor.to(self.norm_dtype)
             self._add_tensor(pname, tensor.detach().to("cpu"))
 
         self._flush_shard()

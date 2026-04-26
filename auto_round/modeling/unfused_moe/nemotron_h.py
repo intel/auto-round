@@ -17,7 +17,7 @@ import torch.nn as nn
 
 
 class LinearNemotronHMoE(nn.Module):
-    def __init__(self, config):
+    def __init__(self, config, layer_idx: int | None = None):
         super().__init__()
         from transformers.models.nemotron_h.modeling_nemotron_h import (
             NemotronHMLP,
