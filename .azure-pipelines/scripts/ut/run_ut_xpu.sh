@@ -45,10 +45,31 @@ function run_unit_test() {
         echo "##[endgroup]"
     done
 
-    for test_file in $(find ./test_xpu -name "test*.py" | sort); do
+    for test_file in $(find ./test_xpu -name "test*.py" ! -name "test_llmc_integration.py" | sort); do
         local test_basename=$(basename ${test_file} .py)
 
         echo "##[group]Running xpu ${test_file}..."
+        local ut_log_name="${LOG_DIR}/unittest_xpu_${test_basename}.log"
+        numactl --physcpubind="${NUMA_CPUSET:-0-27}" --membind="${NUMA_NODE:-0}" pytest --cov="${auto_round_path}" \
+            --cov-report term --html=report.html --self-contained-html \
+            --cov-report xml:coverage.xml --cov-append -vs --disable-warnings \
+            ${test_file} 2>&1 | tee ${ut_log_name}
+        echo "##[endgroup]"
+    done
+}
+
+function run_unit_test_vllm() {
+    echo "##[group]set up vllm UT env..."
+    BUILD_TYPE="nightly" uv pip install -r ./test_xpu/requirements_llmc.txt
+    uv pip list
+    echo "##[endgroup]" 
+
+    auto_round_path=$(python -c 'import auto_round; print(auto_round.__path__[0])')
+
+    for test_file in $(find ./test_xpu -name "test_llmc_integration.py" | sort); do
+        local test_basename=$(basename ${test_file} .py)
+
+        echo "##[group]Running xpu vLLM ${test_file}..."
         local ut_log_name="${LOG_DIR}/unittest_xpu_${test_basename}.log"
         numactl --physcpubind="${NUMA_CPUSET:-0-27}" --membind="${NUMA_NODE:-0}" pytest --cov="${auto_round_path}" \
             --cov-report term --html=report.html --self-contained-html \
@@ -86,6 +107,7 @@ function collect_log() {
 function main() {
     setup_environment
     run_unit_test
+    run_unit_test_vllm
     collect_log
     print_summary
 }
