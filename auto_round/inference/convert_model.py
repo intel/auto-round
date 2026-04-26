@@ -45,7 +45,7 @@ from auto_round.utils import (
     set_module,
 )
 
-supported_devices = ("cpu", "hpu", "xpu", "cuda")
+supported_devices = ("cpu", "hpu", "xpu", "cuda", "mps")
 
 
 def flatten_list(nested_list):
@@ -174,6 +174,9 @@ def get_available_devices():
     if hasattr(torch, "xpu") and torch.xpu.is_available():
         devices.append("xpu")
 
+    if hasattr(torch.backends, "mps") and torch.backends.mps.is_available():
+        devices.append("mps")
+
     devices.append("cpu")  # Always available
 
     return devices
@@ -268,7 +271,12 @@ def get_layer_config(model, quantization_config):
 
     # Determine the quantization block list
     quant_block_list = getattr(quantization_config, "quant_block_list", None)
-    if quant_block_list is None:
+    if quant_block_list is not None:
+        # Handle nested list format: [[block1, block2, ...], ...] -> [prefix1, ...]
+        if quant_block_list and isinstance(quant_block_list[0], (list, tuple)):
+            for i in range(len(quant_block_list)):
+                quant_block_list[i] = os.path.commonprefix(quant_block_list[i]).rstrip(".")
+    elif quant_block_list is None:
         to_quant_block_names = getattr(quantization_config, "block_name_to_quantize", None)  # Prioritize this parameter
         if to_quant_block_names is None:
             to_quant_block_names = getattr(quantization_config, "to_quant_block_names", None)
@@ -418,7 +426,7 @@ def _replace_by_quant_layers(
         logger.debug(f"{layer_name}: {layer_backend} backend is used")
 
         # Create and replace layer
-        new_layer = _create_quant_layer(layer, layer_backend, config, in_features, out_features)
+        new_layer = _create_quant_layer(layer, layer_backend, config, in_features, out_features, packing_format)
         set_module(module, layer_name, new_layer)
 
     return used_backends
@@ -445,10 +453,20 @@ def _import_exllamav2_kernels():
         logger.warning_once("try to fallback to other autogptq backends for now")
 
 
-def _create_quant_layer(layer, layer_backend, config, in_features, out_features):
+def _create_quant_layer(layer, layer_backend, config, in_features, out_features, packing_format=None):
     """Creates a quantized layer using the appropriate class."""
-    QuantLinear = dynamic_import_inference_linear(layer_backend, config)
+    QuantLinear = dynamic_import_inference_linear(layer_backend, config, packing_format=packing_format)
     bias = layer.bias is not None
+
+    # MLX backend with MLX packing format (native MLX checkpoint)
+    if "mlx" in layer_backend and (packing_format is None or "mlx" in packing_format):
+        return QuantLinear(
+            bits=config["bits"],
+            group_size=config["group_size"],
+            infeatures=in_features,
+            outfeatures=out_features,
+            bias=bias,
+        )
 
     # Special handling for auto-round-lib AWQ layers
     from auto_round_extension.ark.qlinear import QuantLinearAWQ
@@ -550,6 +568,71 @@ def convert_gptq_v1_to_v2_format(model: nn.Module):
                 logger.warning_once("Converting gptq v1 to v2 format")
 
 
+def _maybe_convert_gptq_to_mlx(model: nn.Module, used_backends: list[str]) -> None:
+    """On macOS with MLX available, convert GPTQ-format QuantLinear layers to MLX QuantLinearMLX.
+
+    This is the MLX equivalent of the IPEX/ARK post_init step: when an MLX backend was
+    selected but the checkpoint layers were materialized in GPTQ packing format, we
+    re-pack them into the MLX format so that ``mx.quantized_matmul`` can be used for
+    hardware-accelerated inference on Apple Silicon. All conversion logic lives in
+    :meth:`QuantLinearMLX.from_gptq`.
+    """
+    import platform
+
+    if platform.system() != "Darwin":
+        return
+
+    # Only run if an MLX-related backend was selected for some layer.
+    if not any("mlx" in b for b in used_backends):
+        return
+
+    try:
+        import mlx.core as mx  # noqa: F401
+    except ImportError:
+        logger.debug("MLX not installed, skipping GPTQ-to-MLX conversion")
+        return
+
+    from auto_round_extension.mlx.qlinear_mlx import QuantLinearMLX
+
+    # Collect GPTQ-style layers that need re-packing into MLX format.
+    layers = []
+    for name, module in model.named_modules():
+        if not hasattr(module, "QUANT_TYPE"):
+            continue
+        if getattr(module, "QUANT_TYPE", None) == "mlx":
+            continue
+        if not hasattr(module, "qweight"):
+            continue
+        layers.append((name, module))
+
+    if not layers:
+        return
+
+    # Get sym flag from model config (once, outside loop)
+    quant_config = getattr(model.config, "quantization_config", {})
+    if hasattr(quant_config, "to_dict"):
+        quant_config = quant_config.to_dict()
+    sym = quant_config.get("sym", False)
+
+    converted = 0
+    skipped = 0
+    for name, module in tqdm(layers, desc="repacking to MLX format", total=len(layers), leave=True):
+        try:
+            mlx_layer = QuantLinearMLX.from_gptq(module, sym=sym)
+            set_module(model, name, mlx_layer)
+            converted += 1
+
+        except Exception as e:
+            logger.warning(f"Failed to convert layer '{name}' to MLX format: {e}")
+            skipped += 1
+            continue
+
+    if converted > 0:
+        logger.info(f"Auto-converted {converted} GPTQ layers to MLX format for Apple Silicon acceleration")
+    if skipped > 0:
+        logger.warning(f"Skipped {skipped} layers during GPTQ-to-MLX conversion")
+
+
 def post_init(model: torch.nn.Module, used_backends: list[str]) -> None:
     """Performs post-initialization for different quantization backends.
 
@@ -630,6 +713,9 @@ def post_init(model: torch.nn.Module, used_backends: list[str]) -> None:
     # ExLLaMAv2 kernels
     if used_gptq_exllamav2:
         _import_exllamav2_kernels()
+
+    # On macOS (Apple Silicon), auto-convert GPTQ layers to MLX for faster inference
+    _maybe_convert_gptq_to_mlx(model, used_backends)
 
     # Determine common data type across backends
     data_types = [set(BackendInfos[b].compute_dtype) for b in used_backends]
@@ -719,6 +805,8 @@ def convert_hf_model(model: nn.Module, target_device: str = "cpu") -> tuple[nn.M
         packing_format = "auto_round:auto_awq"
     elif packing_format == "auto_round:gptq":
         packing_format = "auto_round:auto_gptq"
+    elif packing_format in ("mlx", "auto_round:mlx"):
+        pass  # keep as-is for MLX backend selection
     is_applied = apply_modeling_patch(model)
     if not is_applied:
         # Preprocess model before replace layers
