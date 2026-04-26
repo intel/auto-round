@@ -51,6 +51,7 @@ from auto_round.utils import (
     unsupported_meta_device,
 )
 
+
 @functools.lru_cache(maxsize=None)
 def _quant_linear_accepts(qlinear_cls, kwarg_name: str) -> bool:
     target_cls = qlinear_cls

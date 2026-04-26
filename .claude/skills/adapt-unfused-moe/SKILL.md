@@ -35,8 +35,9 @@ Reference: `nemotron_h.py` + `nemotron_h_setup.py`.
 ## User API
 
 ```python
-AutoRound("nvidia/Nemotron-Cascade-2-30B-A3B", bits=4, group_size=128, sym=True,
-          low_cpu_mem_usage=True).quantize_and_save(...)
+AutoRound(
+    "nvidia/Nemotron-Cascade-2-30B-A3B", bits=4, group_size=128, sym=True, low_cpu_mem_usage=True
+).quantize_and_save(...)
 # offline: post_load_overrides={"enable_high_precision_overrides": False}
 ```
 
