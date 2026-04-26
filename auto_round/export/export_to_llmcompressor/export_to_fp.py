@@ -17,10 +17,8 @@ import inspect
 import json
 import os
 import sys
-from concurrent.futures import ThreadPoolExecutor
 from typing import Callable, Union
 
-import threadpoolctl as tctl
 import torch
 import torch.nn as nn
 import transformers
@@ -264,21 +262,9 @@ def save_quantized_as_fp(
             update_fused_layer_global_scales(module, base_name="input")
 
     names = list(layer_config.keys())
-    max_workers = 1
-    if not torch.cuda.is_available() or not torch.xpu.is_available():
-        max_workers = 2  ## 2 with cuda packing will cause hang occasionally
     if not unsupported_meta_device(model):
-        with ThreadPoolExecutor(max_workers=max_workers) as executor:
-            with tqdm(total=len(names), leave=True) as pbar:
-
-                def wrapper(name):
-                    pbar.set_description(f"packing {name}")
-                    with tctl.threadpool_limits(limits=1):
-                        pack_layer(name, model, device)
-                    pbar.update(1)
-
-                for _ in executor.map(wrapper, names):
-                    pass
+        for name in tqdm(names, desc="packing", leave=True):
+            pack_layer(name, model, device)
 
     ignore = generate_ignore_regex_list(regex_config=regex_config, layer_config=layer_config)
     lm_head_name = get_lm_head_name(model)
