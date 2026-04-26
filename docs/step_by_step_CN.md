@@ -114,6 +114,8 @@ pip install auto-round
 AutoRound 支持多种量化配置：
 - **W4A16**（bits:4, group_size:128, sym:True, act_bits:16）  # 4位权重，分组大小为128，对称量化，16位激活，
 - **W8A16**（bits:8, group_size:128, sym:True, act_bits:16）  
+- **W6A16**（bits:6, group_size:128, sym:True, act_bits:16） — 仅 `mlx` 格式支持
+- **W5A16**（bits:5, group_size:128, sym:True, act_bits:16） — 仅 `mlx` 格式支持
 - **W3A16**（bits:3, group_size:128, sym:True, act_bits:16）  
 - **W2A16**（bits:2, group_size:128, sym:True, act_bits:16）  
 - **GGUF:Q4_K_M**（支持 llamacpp 提供的所有 Q*_K、Q*_0、Q*_1 量化类型）
@@ -143,6 +145,12 @@ AutoRound 支持多种量化配置：
 
 **LLM-Compressor 格式**：**支持 NVFP4、MXFP4（kernel 开发中）、MXFP8** 等。需设置 `--format llm_compressor`。
 
+**MLX 格式**：面向 Apple Silicon (M1/M2/M3/...)，可直接被 [`mlx-lm`](https://github.com/ml-explore/mlx-lm)（纯文本 LLM）或 [`mlx-vlm`](https://github.com/Blaizzy/mlx-vlm)（多模态 VLM）加载推理。
+- 支持 **2、3、4、5、6、8 bits**（其中 5/6 bits 是 MLX 独有，GPTQ/AWQ 没有标准打包格式）。
+- 原生支持 **混合 bit / 混合 group_size**：通过 `layer_config` 或 AutoScheme（如 `--target_bits 3.5 --options "..."`），按层覆盖会写入 `config.json["quantization"]`，
+- `--format mlx` 导出原生 MLX checkpoint；`--format auto_round:mlx` 则让 HuggingFace `transformers` + AutoRound 加载它（在 Darwin 上 post-init 会把每层重新打包成 MLX 的 `QuantLinear`）。
+- 已经问题: 没有支持嵌入层的量化
+
 #### 格式与方案支持对照表
 
 > 灰色背景的 schemes 表示它没有专门优化的内核，或只有效率极低的参考内核。
@@ -153,13 +161,14 @@ AutoRound 支持多种量化配置：
 | **auto_awq**    | W4A16、BF16                                                                                                                                                                                                   |
 | **auto_gptq**   | W4A16、W2A16、W3A16、W8A16、W2A16G64、W2A16G32、BF16                                                                                                                                                           |
 | **llm_compressor** | NVFP4、`MXFP4`、`MXFP8`、`FPW8A16`、`FP8_STATIC`、FP8_BLOCK                                                                                                                                                              |
+| **mlx** / **auto_round:mlx** | W2A16、W3A16、W4A16、W5A16、W6A16、W8A16、BF16、混合 bit / 混合 group_size（仅 Apple Silicon）                                                                                                                  |
 | **gguf**        | GGUF:Q4_K_M、GGUF:Q2_K_S、GGUF:Q3_K_S、GGUF:Q3_K_M、GGUF:Q3_K_L、GGUF:Q4_K_S、GGUF:Q5_K_S、GGUF:Q5_K_M、GGUF:Q6_K、GGUF:Q4_0、GGUF:Q4_1、GGUF:Q5_0、GGUF:Q5_1、GGUF:Q8_0                                           |
 | **fp8**         | FP8_BLOCK  |
 | **fake**        | `所有方案（仅用于研究场景）`                                                                                                                                                                                   |
 
 ### 硬件兼容性
 
-量化和推理均支持 CPU、英特尔 GPU、HPU 和 CUDA。
+量化和推理均支持 CPU、英特尔 GPU、HPU 和 CUDA。**MLX 格式**的推理仅支持 **Apple Silicon (macOS / Darwin)**，但量化（导出）阶段在任意平台均可进行。
 
 ### 环境参数配置
 
