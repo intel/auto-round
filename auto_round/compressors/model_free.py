@@ -1450,6 +1450,7 @@ class ModelFreeCompressor(_ModelFreeCompressorCore):
         self.disable_opt_rtn = True
         self.formats = None
         self.quantized = False
+        self._fallback_compressor = None
         self._fallback_init_kwargs = {
             **fallback_kwargs,
             "model": model_name_or_path,
@@ -1464,13 +1465,7 @@ class ModelFreeCompressor(_ModelFreeCompressorCore):
         }
         # remaining kwargs intentionally consumed/ignored
 
-    def _fallback_to_base_compressor(
-        self,
-        output_dir: str,
-        format: str,
-        inplace: bool,
-        **kwargs,
-    ):
+    def _fallback_to_base_compressor(self):
         from auto_round.autoround import AutoRound
 
         logger.info(
@@ -1482,7 +1477,58 @@ class ModelFreeCompressor(_ModelFreeCompressorCore):
             self._fallback_init_kwargs,
         )
         compressor = AutoRound(**self._fallback_init_kwargs, disable_model_free=True)
-        return compressor.quantize_and_save(output_dir=output_dir, format=format, inplace=inplace, **kwargs)
+        self._fallback_compressor = compressor
+
+    def _fallback_to_quantize_and_save(
+        self,
+        output_dir: str,
+        format: str,
+        inplace: bool,
+        **kwargs,
+    ):
+        self._fallback_to_base_compressor()
+        return self._fallback_compressor.quantize_and_save(
+            output_dir=output_dir, format=format, inplace=inplace, **kwargs
+        )  # pylint: disable=E1101
+
+    def quantize(
+        self,
+    ):
+        """fallback to base compressor's quantize."""
+        self._fallback_to_base_compressor()
+        return self._fallback_compressor.quantize()  # pylint: disable=E1101
+
+    def __getattribute__(self, name: str):
+        """Prefer attributes from the fallback compressor when available.
+
+        Once model-free flow falls back to the regular AutoRound compressor,
+        external attribute reads on this wrapper should observe the fallback
+        compressor's state first.
+        """
+        local_only_names = {
+            "_fallback_compressor",
+            "_fallback_init_kwargs",
+            "_fallback_to_base_compressor",
+            "__dict__",
+            "__class__",
+            "__getattribute__",
+            "__setattr__",
+            "__delattr__",
+        }
+
+        if name in local_only_names or name.startswith("__"):
+            return super().__getattribute__(name)
+
+        fallback = super().__getattribute__("__dict__").get("_fallback_compressor")
+        if fallback is not None:
+            if name == "compressor":
+                return fallback
+            try:
+                return getattr(fallback, name)
+            except AttributeError:
+                pass
+
+        return super().__getattribute__(name)
 
     # ------------------------------------------------------------------
     # AutoRound compressor interface
