@@ -617,8 +617,11 @@ def tune(args):
 
     if args.quant_lm_head:
         for format in formats:
-            if "auto_round" not in format and "fake" not in format:
-                auto_round_formats = [s for s in SUPPORTED_FORMATS if s.startswith("auto_round")]
+            # MLX (native ``mlx`` and ``auto_round:mlx``) supports per-layer
+            # mixed-bit quantization including lm_head; treat it the same as
+            # auto_round / fake here.
+            if "auto_round" not in format and "fake" not in format and "mlx" not in format:
+                auto_round_formats = [s for s in SUPPORTED_FORMATS if s.startswith("auto_round") or s == "mlx"]
                 raise ValueError(
                     f"{format} is not supported for lm-head quantization, please change to {auto_round_formats}"
                 )
