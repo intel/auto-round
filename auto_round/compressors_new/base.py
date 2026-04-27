@@ -57,7 +57,12 @@ from auto_round.utils import (
     is_quantized_input_module,
     memory_monitor,
 )
-from auto_round.utils.device import _force_trim_malloc, get_major_device, set_non_auto_device_map
+from auto_round.utils.device import (
+    _force_trim_malloc,
+    get_major_device,
+    patch_xpu_sdpa_drop_causal_mask,
+    set_non_auto_device_map,
+)
 from auto_round.utils.offload import OffloadManager
 from auto_round.wrapper import wrapper_block
 
@@ -202,6 +207,11 @@ class BaseCompressor(object):
             torch.use_deterministic_algorithms(True, warn_only=False)
         else:
             torch.use_deterministic_algorithms(True, warn_only=True)
+
+        # XPU SDPA workaround: drop pure causal masks so FLASH backend is used,
+        # and set torch.use_deterministic_algorithms(False)
+        # instead of MATH (avoids ~10x peak-VRAM blow-up during block tuning).
+        patch_xpu_sdpa_drop_causal_mask()
 
         device = kwargs.pop("device", None)
         if device is not None:
@@ -349,7 +359,15 @@ class BaseCompressor(object):
     def _gen_auto_scheme(self) -> dict[str, dict]:
         """Generate per-layer config via AutoScheme delta-loss selection."""
         if self.model_context.is_mllm:
-            raise NotImplementedError("AutoScheme is not yet supported for multimodal LLMs.")
+            # AutoScheme on a VLM only scores the language tower (the block
+            # walker in delta_loss already skips vision/audio sub-trees) and
+            # uses a pure-text calibration dataset by default, falling back to
+            # the multimodal dataloader if the VLM rejects text-only forward.
+            logger.info(
+                "AutoScheme on multimodal LLM: scoring the language tower only "
+                "with text-only calibration (multimodal dataloader will be used "
+                "as a fallback if needed)."
+            )
 
         if is_quantized_input_module(self.model_context.model):
             raise NotImplementedError("AutoScheme does not currently support quantized input models (e.g., FP8).")
@@ -394,6 +412,58 @@ class BaseCompressor(object):
             is_mllm=self.model_context.is_mllm,
         )
         quant_layer_names = layer_config.keys()
+
+        # ---- VLM: peel non-text sub-trees AutoScheme should not score ---- #
+        nontext_skipped_layers: dict[str, dict] = {}
+        if self.model_context.is_mllm:
+            from auto_round.utils import get_block_names
+
+            quant_nontext = getattr(self, "quant_nontext_module", False)
+            scoreable_blocks = get_block_names(self.model_context.model, quant_vision=quant_nontext)
+            scoreable_block_prefixes = tuple(blk for group in scoreable_blocks for blk in group)
+            if quant_nontext:
+                peel_markers = ("audio", "speech", "wav", "waveform")
+                tower_label = "language+vision"
+                peel_label = "audio/speech"
+            else:
+                peel_markers = (
+                    "vision",
+                    "visual",
+                    "image",
+                    "img",
+                    "audio",
+                    "speech",
+                    "wav",
+                    "waveform",
+                )
+                tower_label = "language"
+                peel_label = "vision/audio"
+
+            def _is_scoreable_layer(name: str) -> bool:
+                if any(name == p or name.startswith(p + ".") for p in scoreable_block_prefixes):
+                    return True
+                lname = name.lower()
+                return not any(marker in lname for marker in peel_markers)
+
+            scoreable_layer_config = {}
+            for name, cfg in layer_config.items():
+                if _is_scoreable_layer(name):
+                    scoreable_layer_config[name] = cfg
+                else:
+                    nontext_skipped_layers[name] = cfg
+
+            if nontext_skipped_layers:
+                logger.info(
+                    "AutoScheme (VLM): scoring %d %s-tower layers; "
+                    "%d %s-tower layers kept at their original 16-bit configuration.",
+                    len(scoreable_layer_config),
+                    tower_label,
+                    len(nontext_skipped_layers),
+                    peel_label,
+                )
+                layer_config = scoreable_layer_config
+                quant_layer_names = layer_config.keys()
+
         scheme_keys = {f.name for f in fields(QuantizationScheme)}
         fixed_layer_scheme_new = {
             k: {key: v[key] for key in scheme_keys & v.keys()}
@@ -418,8 +488,20 @@ class BaseCompressor(object):
             device_map=self.compress_context.device_map,
             tokenizer=self.model_context.tokenizer,
             enable_torch_compile=self.compress_context.enable_torch_compile,
+            processor=self.model_context.processor,
         )
         layer_config = self.scheme_generator.get_layer_config()
+        # Re-attach vision/audio-tower layers we peeled off earlier so the
+        # downstream quantization pipeline sees the complete layer map.
+        if nontext_skipped_layers:
+            allowed_keys = {f.name for f in fields(QuantizationScheme)} | {
+                "fixed_by_user",
+                "scale_dtype",
+                "scheme",
+            }
+            for name, cfg in nontext_skipped_layers.items():
+                clean_cfg = {k: v for k, v in cfg.items() if k in allowed_keys} if isinstance(cfg, dict) else cfg
+                layer_config.setdefault(name, clean_cfg)
         return layer_config
 
     def configure_layer_config(self, enable_gguf_official_mixed: bool | None = True) -> None:
