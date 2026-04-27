@@ -48,7 +48,12 @@ class BaseQuantizers:
     # Subclasses that support diffusion models should override this with the
     # appropriate output key mapping, e.g.:
     #   DIFFUSION_OUTPUT_CONFIGS = {"FluxTransformerBlock": ["encoder_hidden_states", "hidden_states"]}
-    DIFFUSION_OUTPUT_CONFIGS: dict = {}
+    DIFFUSION_OUTPUT_CONFIGS: dict = {
+        "FluxTransformerBlock": ["encoder_hidden_states", "hidden_states"],
+        "FluxSingleTransformerBlock": ["encoder_hidden_states", "hidden_states"],
+        "OvisImageTransformerBlock": ["encoder_hidden_states", "hidden_states"],
+        "OvisImageSingleTransformerBlock": ["encoder_hidden_states", "hidden_states"],
+    }
 
     def __init__(self, config: QuantizationConfig):
         self.config = config

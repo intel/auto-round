@@ -11,7 +11,6 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-import inspect
 import os
 from typing import Union
 
@@ -52,28 +51,70 @@ class DiffusionMixin:
         self.guidance_scale = guidance_scale
         self.num_inference_steps = num_inference_steps
         self.generator_seed = generator_seed
-        self.height = kwargs.pop("height", None)
-        self.width = kwargs.pop("width", None)
+
+        # Mirror old-arch DiffusionCompressor.__init__: when iters > 0, diffusion calibration
+        # cannot use batch_size > 1 for non-text modules; fold the extra batch into
+        # gradient_accumulate_steps so the effective sample count is unchanged.
+        # The authoritative batch_size lives on the AlgConfig (args[0]); kwargs may also
+        # carry it from AutoRoundCompatible. Patch BOTH (same pattern as MLLMMixin).
+        iters = kwargs.get("iters", None)
+        _alg_cfg = args[0] if args else None
+        if iters is None and _alg_cfg is not None:
+            cfgs = _alg_cfg if isinstance(_alg_cfg, list) else [_alg_cfg]
+            for cfg in cfgs:
+                if hasattr(cfg, "iters") and cfg.iters is not None:
+                    iters = cfg.iters
+                    break
+        if iters is None:
+            iters = 200
+
+        if iters > 0:
+            batch_size = kwargs.get("batch_size", None)
+            if batch_size is None and _alg_cfg is not None:
+                cfgs = _alg_cfg if isinstance(_alg_cfg, list) else [_alg_cfg]
+                for cfg in cfgs:
+                    if hasattr(cfg, "batch_size") and cfg.batch_size is not None:
+                        batch_size = cfg.batch_size
+                        break
+            if batch_size is not None and batch_size != 1:
+                grad_acc = kwargs.get("gradient_accumulate_steps", 1)
+                if _alg_cfg is not None:
+                    cfgs = _alg_cfg if isinstance(_alg_cfg, list) else [_alg_cfg]
+                    for cfg in cfgs:
+                        if hasattr(cfg, "gradient_accumulate_steps") and cfg.gradient_accumulate_steps is not None:
+                            grad_acc = cfg.gradient_accumulate_steps
+                            break
+                new_grad_acc = batch_size * grad_acc
+                kwargs["gradient_accumulate_steps"] = new_grad_acc
+                kwargs["batch_size"] = 1
+                if _alg_cfg is not None:
+                    cfgs = _alg_cfg if isinstance(_alg_cfg, list) else [_alg_cfg]
+                    for cfg in cfgs:
+                        if hasattr(cfg, "batch_size"):
+                            cfg.batch_size = 1
+                        if hasattr(cfg, "gradient_accumulate_steps"):
+                            cfg.gradient_accumulate_steps = new_grad_acc
+                logger.warning(
+                    f"reset batch_size({batch_size}) to 1 and "
+                    f"gradient_accumulate_steps to {new_grad_acc} "
+                    f"because batch_size={batch_size} cannot be used for calibrating non-text modules."
+                )
 
         # Call parent class __init__ (will be CalibCompressor, ImatrixCompressor, etc)
         super().__init__(*args, **kwargs)
 
-    def _get_pipeline_call_kwargs(self, pipe) -> dict:
-        """Build optional pipeline kwargs for calibration.
-
-        Prefer latent outputs during calibration when the pipeline supports them,
-        since transformer-block caching does not require VAE decode and this
-        avoids dtype mismatches in tiny/random diffusion fixtures.
-        """
-        pipe_sig = inspect.signature(pipe.__call__)
-        extra = {}
-        if "height" in pipe_sig.parameters and self.height is not None:
-            extra["height"] = self.height
-        if "width" in pipe_sig.parameters and self.width is not None:
-            extra["width"] = self.width
-        if "output_type" in pipe_sig.parameters:
-            extra["output_type"] = "latent"
-        return extra
+        # Mirror old-arch DiffusionCompressor._align_device_and_dtype: unconditionally
+        # cast the full diffusion pipeline (VAE, text encoder, etc.) to the transformer's
+        # dtype so that calibration's pipe(...) call doesn't crash with dtype mismatches
+        # when the transformer is force-cast to bf16 for activation quantization.
+        # Note: pipe.dtype only reflects the primary component, so an equality check would
+        # miss mixed-dtype pipelines where e.g. the VAE is still float32.
+        pipe = getattr(self.model_context, "pipe", None)
+        model = getattr(self.model_context, "model", None)
+        if pipe is not None and model is not None:
+            is_nextstep = hasattr(model, "config") and getattr(model.config, "model_type", None) == "nextstep"
+            if not is_nextstep:
+                pipe.to(model.dtype)
 
     def _get_block_forward_func(self, name: str):
         """Diffusion models pass positional args; wrap the base forward func accordingly.
@@ -127,9 +168,6 @@ class DiffusionMixin:
         total_cnt = 0
 
         total = nsamples if not hasattr(self.dataloader, "len") else min(nsamples, len(self.dataloader))
-        extra = self._get_pipeline_call_kwargs(pipe)
-        if pipe.dtype != self.model.dtype:
-            pipe.to(self.model.dtype)
 
         if (
             hasattr(self.model, "hf_device_map")
@@ -152,7 +190,7 @@ class DiffusionMixin:
                     prompts = list(prompts)
                 try:
                     pipe(
-                        prompt=prompts,
+                        prompts,
                         guidance_scale=self.guidance_scale,
                         num_inference_steps=self.num_inference_steps,
                         generator=(
@@ -160,7 +198,6 @@ class DiffusionMixin:
                             if self.generator_seed is None
                             else torch.Generator(device=pipe.device).manual_seed(self.generator_seed)
                         ),
-                        **extra,
                     )
                 except NotImplementedError:
                     pass
