@@ -2083,7 +2083,7 @@ def find_layers_from_config(model_dir: str, class_names: list[str] | None = None
         Returns an empty dict on any failure.
     """
     from huggingface_hub import snapshot_download
-    from transformers import AutoModel
+    from transformers import AutoConfig, AutoModel
 
     if class_names is None:
         class_names = ["Embedding", "Conv1d", "Conv1D"]
@@ -2112,9 +2112,12 @@ def find_layers_from_config(model_dir: str, class_names: list[str] | None = None
     result: dict[str, str] = {}
     for prefix, config_dir in dirs:
         try:
-            model = AutoModel.from_pretrained(config_dir, device_map="meta", trust_remote_code=True)
-        except Exception:
-            continue  # scheduler / feature_extractor / etc. — skip silently
+            with torch.device("meta"):
+                config = AutoConfig.from_pretrained(config_dir, trust_remote_code=True)
+                model = AutoModel.from_config(config, trust_remote_code=True)
+        except Exception as e:
+            logger.warning(f"Failed to load model from {config_dir} for layer detection. Skipping. Error: {e}")
+            continue  # skip silently
         for name, module in model.named_modules():
             cls_name = type(module).__name__
             if any(t.lower() in cls_name.lower() for t in target):

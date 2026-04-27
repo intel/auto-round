@@ -84,7 +84,8 @@ from auto_round.utils.missing_tensors import quantize_weight_rtn, split_fused_ex
 # Constants
 # ---------------------------------------------------------------------------
 
-_BLOCK_NAME_TO_IGNORE = ["shared_expert_gate.", "mlp.gate."]
+# add "embed", "conv" in case of auto detection failure in _check_conv1d_and_embedding
+_BLOCK_NAME_TO_IGNORE = ["shared_expert_gate.", "mlp.gate.", "embed", "conv"]
 
 # Integer WOQ preset schemes that model-free mode can produce.
 # Other presets (FP8/MX/NV/GGUF/BF16/INT8_W8A8/FPW8A16) require different
@@ -231,11 +232,6 @@ def _list_weight_shards(source_dir: str) -> list[str]:
         if fname.endswith(".safetensors.index.json"):
             return _shards_from_index(os.path.join(source_dir, fname))
 
-    # --- safetensors: single file ---
-    st_single = os.path.join(source_dir, "model.safetensors")
-    if os.path.exists(st_single):
-        return ["model.safetensors"]
-
     # --- safetensors: any single .safetensors file ---
     st_files = sorted(f for f in os.listdir(source_dir) if f.endswith(".safetensors"))
     if len(st_files) == 1:
@@ -261,11 +257,8 @@ def _list_weight_shards(source_dir: str) -> list[str]:
     if len(bin_files) == 1:
         return bin_files
 
-    raise FileNotFoundError(f"No safetensors or .bin weight files found in {source_dir}")
-
-
-# Keep old name as an alias for backward compatibility.
-_list_safetensor_shards = _list_weight_shards
+    # --- safetensors: single file ---
+    return ["model.safetensors"]
 
 
 def _is_eligible_weight(tensor_name: str, tensor: torch.Tensor) -> bool:
@@ -1141,8 +1134,8 @@ class _ModelFreeCompressorCore:
                 summary = ", ".join(f"{cls}({len(layers)})" for cls, layers in sorted(incompatible.items()))
                 self.ignore_patterns.extend(incompatible_layers)
                 logger.warning(
-                    f"Detected {len(incompatible)} layer(s) incompatible with model-free RTN "
-                    f"[{summary}]: {compress_layer_names(list(incompatible.keys()))}.\n"
+                    f"Detected {len(incompatible)} layer(s) incompatible with model-free RTN"
+                    f": {compress_layer_names(incompatible_layers)}.\n"
                     f"These layers have been automatically added to ignore_layers "
                     f"and will be kept in full precision.\n"
                     f"To override, pass --ignore_layers explicitly or disable "
