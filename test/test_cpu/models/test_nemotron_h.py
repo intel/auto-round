@@ -122,10 +122,8 @@ def test_apply_model_monkey_patches_rewires_nemotron_h():
         # motivated this guard.
         assert conversion_mapping.get_checkpoint_conversion_mapping is get_checkpoint_conversion_mapping_ar
 
-        fake_model = types.SimpleNamespace(
-            config=types.SimpleNamespace(model_type="nemotron_h"),
-            __class__=type("Fake", (), {"__mro__": (object,)}),
-        )
+        fake_model = nn.Module()
+        fake_model.config = types.SimpleNamespace(model_type="nemotron_h")
         resolved = conversion_mapping.get_model_conversion_mapping(fake_model, add_legacy=False)
         targets = {tuple(getattr(rule, "target_patterns", []) or []) for rule in resolved}
         assert ("model.",) in targets, f"backbone.→model. rename missing from resolved mapping: {targets}"
