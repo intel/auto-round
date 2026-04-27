@@ -11,6 +11,7 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
+import inspect
 import os
 from typing import Union
 
@@ -51,9 +52,28 @@ class DiffusionMixin:
         self.guidance_scale = guidance_scale
         self.num_inference_steps = num_inference_steps
         self.generator_seed = generator_seed
+        self.height = kwargs.pop("height", None)
+        self.width = kwargs.pop("width", None)
 
         # Call parent class __init__ (will be CalibCompressor, ImatrixCompressor, etc)
         super().__init__(*args, **kwargs)
+
+    def _get_pipeline_call_kwargs(self, pipe) -> dict:
+        """Build optional pipeline kwargs for calibration.
+
+        Prefer latent outputs during calibration when the pipeline supports them,
+        since transformer-block caching does not require VAE decode and this
+        avoids dtype mismatches in tiny/random diffusion fixtures.
+        """
+        pipe_sig = inspect.signature(pipe.__call__)
+        extra = {}
+        if "height" in pipe_sig.parameters and self.height is not None:
+            extra["height"] = self.height
+        if "width" in pipe_sig.parameters and self.width is not None:
+            extra["width"] = self.width
+        if "output_type" in pipe_sig.parameters:
+            extra["output_type"] = "latent"
+        return extra
 
     def _get_block_forward_func(self, name: str):
         """Diffusion models pass positional args; wrap the base forward func accordingly.
@@ -107,6 +127,7 @@ class DiffusionMixin:
         total_cnt = 0
 
         total = nsamples if not hasattr(self.dataloader, "len") else min(nsamples, len(self.dataloader))
+        extra = self._get_pipeline_call_kwargs(pipe)
         if pipe.dtype != self.model.dtype:
             pipe.to(self.model.dtype)
 
@@ -139,6 +160,7 @@ class DiffusionMixin:
                             if self.generator_seed is None
                             else torch.Generator(device=pipe.device).manual_seed(self.generator_seed)
                         ),
+                        **extra,
                     )
                 except NotImplementedError:
                     pass

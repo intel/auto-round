@@ -413,7 +413,7 @@ class BaseQuantizers:
         _bf = self._resolve_block_forward()
 
         if getattr(self.model_context, "is_diffusion", False):
-            output_config = self.DIFFUSION_OUTPUT_CONFIGS.get(block.__class__.__name__, [])
+            output_config = self.DIFFUSION_OUTPUT_CONFIGS.get(block.__class__.__name__, ["hidden_states"])
             idx = None if "hidden_states" not in output_config else output_config.index("hidden_states")
             if isinstance(current_input_ids, dict):
                 hidden_states = current_input_ids.pop("hidden_states")
@@ -510,7 +510,7 @@ class BaseQuantizers:
         support for new diffusion architectures.
         """
         output = defaultdict(list)
-        output_config = self.DIFFUSION_OUTPUT_CONFIGS.get(block.__class__.__name__, [])
+        output_config = self.DIFFUSION_OUTPUT_CONFIGS.get(block.__class__.__name__, ["hidden_states"])
         if isinstance(input_ids, dict):
             nsamples = len(input_ids["hidden_states"])
         else:
