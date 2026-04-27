@@ -47,7 +47,7 @@ def wrapper_autoround(cls: AutoRound):
         if cls.bits > 2 and (not cls.data_type.startswith("mx") or not cls.data_type.startswith("nv")):
             logger.warning_once(
                 "algorithm extension has only undergone limited validation on "
-                "W2A16,INT4, MXFP4 and NVFP4; use with caution."
+                "W2A16, INT4, MXFP4 and NVFP4. Please use with caution."
             )
         cls._get_loss = types.MethodType(_get_loss_ext, cls)
         setattr(cls, "wrapper_block", wrapper_block_v2)

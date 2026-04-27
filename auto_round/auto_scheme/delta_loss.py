@@ -103,6 +103,11 @@ class AutoSchemeWrapperLinear(WrapperLinear):
         if hasattr(self.orig_layer, "act_bits") and self.orig_layer.act_bits > 8:
             return x, 1.0, None
 
+        # NOTE: AR_ACT_SCALE is already handled inside the parent
+        # WrapperLinear._qdq_act (it overrides max_scale/min_scale when the env
+        # var is explicitly set). Do NOT re-apply it here, otherwise we would
+        # pass a Python float into the parent, which calls
+        # ``act_max_scale.data.clamp_()`` and crashes on non-Tensor inputs.
         qdq_x, scale, zp = self.act_qdq_func(x, act_min_scale, act_max_scale, act_max)
         if self.grad_mode:
             with torch.no_grad():
@@ -688,7 +693,19 @@ def _gen_layer_config(
         offload_context = OffloadManager(enabled=True, mode="clean", model_dir=_model_dir, cache_numel=True)
 
     target_bits = auto_scheme.avg_bits
-    model.eval()
+    # HuggingFace transformer blocks gate gradient checkpointing on
+    # `self.gradient_checkpointing and self.training`. Under low_gpu_mem_usage
+    # we drive our own block-by-block forward and never go through HF's
+    # block.forward, so eval() is correct (no ckpt would fire anyway).
+    # Under low_gpu_mem_usage=False we go through model.forward → block.forward,
+    # so we need self.training=True for ckpt to actually take effect and save
+    # block-activation memory during the backward used for sensitivity scoring.
+    # The outer gen_layer_config() restores the previous training state in its
+    # finally block, so this is safe to flip here.
+    if auto_scheme.low_gpu_mem_usage:
+        model.eval()
+    else:
+        model.train()
 
     block_name = get_block_names(model)[0]  # TODO need change to support vlm
     for name in block_name:
@@ -1003,59 +1020,86 @@ def gen_layer_config(
 
     device_list = parse_available_devices(device_map)
 
-    # Enable gradient checkpointing if supported
-    if model.supports_gradient_checkpointing:
+    # Enable gradient checkpointing if supported.
+    # IMPORTANT: remember the original state and restore it before returning,
+    # otherwise the downstream quantize() pipeline (block-wise tuning, hooks,
+    # alg_ext, etc.) runs under checkpointing=ON, which double-fires
+    # forward_hooks during recompute and silently degrades the final accuracy
+    # of the mixed-bit model — sometimes worse than uniform low-bit.
+    prev_grad_ckpt = bool(getattr(model, "is_gradient_checkpointing", False))
+    enabled_grad_ckpt_here = False
+    if model.supports_gradient_checkpointing and not prev_grad_ckpt:
         model.gradient_checkpointing_enable()
+        enabled_grad_ckpt_here = True
+
+    # Remember the caller's training mode so we can restore it after AutoScheme.
+    # Inside _gen_layer_config we may flip to model.train() (low_gpu=False) so
+    # HF's block-level ckpt actually fires; we must not leak that into the main
+    # quantization loop.
+    prev_training = bool(getattr(model, "training", False))
 
     for name in quant_layer_names:
         m = get_module(model, name)
         m.tmp_name = name
 
     try:
-        res = _gen_layer_config(
-            auto_scheme,
-            model,
-            quant_layer_names,
-            fixed_layer_scheme,
-            dataset=dataset,
-            tokenizer=tokenizer,
-            model_name=model_name,
-            enable_torch_compile=enable_torch_compile,
-            disable_opt_rtn=disable_opt_rtn,
-            device_map=device_map,
-            major_device=major_device,
-            device_list=device_list,
-            min_avg_bit_scheme=min_avg_bit_scheme,
-        )
-    except torch.OutOfMemoryError:
-        logger.warning(
-            "Fallback to CPU for automatic scheme generation."
-            " Using multiple devices is strongly recommended (e.g., --device_map 0,1,2,3)."
-        )
-        model.to("cpu")
-        for n, m in model.named_modules():
-            if hasattr(m, "orig_layer"):
-                set_module(model, n, m.orig_layer)
-        clear_memory(device_list=device_list)
-        if hasattr(model, "hf_device_map") and len(model.hf_device_map) > 1:
-            import accelerate
+        try:
+            res = _gen_layer_config(
+                auto_scheme,
+                model,
+                quant_layer_names,
+                fixed_layer_scheme,
+                dataset=dataset,
+                tokenizer=tokenizer,
+                model_name=model_name,
+                enable_torch_compile=enable_torch_compile,
+                disable_opt_rtn=disable_opt_rtn,
+                device_map=device_map,
+                major_device=major_device,
+                device_list=device_list,
+                min_avg_bit_scheme=min_avg_bit_scheme,
+            )
+        except torch.OutOfMemoryError:
+            logger.warning(
+                "Fallback to CPU for automatic scheme generation."
+                " Using multiple devices is strongly recommended (e.g., --device_map 0,1,2,3)."
+            )
+            model.to("cpu")
+            for n, m in model.named_modules():
+                if hasattr(m, "orig_layer"):
+                    set_module(model, n, m.orig_layer)
+            clear_memory(device_list=device_list)
+            if hasattr(model, "hf_device_map") and len(model.hf_device_map) > 1:
+                import accelerate
 
-            accelerate.hooks.remove_hook_from_submodules(model)
-            delattr(model, "hf_device_map")
-        res = _gen_layer_config(
-            auto_scheme,
-            model,
-            quant_layer_names,
-            fixed_layer_scheme,
-            dataset=dataset,
-            tokenizer=tokenizer,
-            model_name=model_name,
-            enable_torch_compile=enable_torch_compile,
-            disable_opt_rtn=disable_opt_rtn,
-            device_map=device_map,
-            major_device=major_device,
-            device_list=device_list,
-            min_avg_bit_scheme=min_avg_bit_scheme,
-        )
+                accelerate.hooks.remove_hook_from_submodules(model)
+                delattr(model, "hf_device_map")
+            res = _gen_layer_config(
+                auto_scheme,
+                model,
+                quant_layer_names,
+                fixed_layer_scheme,
+                dataset=dataset,
+                tokenizer=tokenizer,
+                model_name=model_name,
+                enable_torch_compile=enable_torch_compile,
+                disable_opt_rtn=disable_opt_rtn,
+                device_map=device_map,
+                major_device=major_device,
+                device_list=device_list,
+                min_avg_bit_scheme=min_avg_bit_scheme,
+            )
+    finally:
+        # Restore gradient_checkpointing to whatever the caller set, so it
+        # does not leak into the main quantization loop.
+        if enabled_grad_ckpt_here and isinstance(model, torch.nn.Module):
+            try:
+                model.gradient_checkpointing_disable()
+            except Exception as e:  # pragma: no cover - defensive
+                logger.warning(f"Failed to disable gradient checkpointing after AutoScheme: {e}")
+        # Restore the caller's original training mode (we may have flipped to
+        # train() inside _gen_layer_config under low_gpu_mem_usage=False).
+        if isinstance(model, torch.nn.Module):
+            model.train(prev_training)
 
     return res

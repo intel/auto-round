@@ -283,7 +283,7 @@ class WrapperLinear(torch.nn.Module):
         """
         act_max_scale.data.clamp_(0, 1.0)
         act_min_scale.data.clamp_(0, 1.0)
-        env_act_scale = envs.AR_ACT_SCALE  # fixed activation ratio,prioritize to use this one if set
+        env_act_scale = envs.AR_ACT_SCALE  # fixed activation ratio, only used when explicitly set
         x, scale, zp = self.act_quant_func(
             x,
             bits=self.orig_layer.act_bits,
@@ -292,8 +292,8 @@ class WrapperLinear(torch.nn.Module):
             q_scale_thresh=self.q_scale_thresh,
             data_type=self.act_data_type,
             tensor_max=act_max,  # for static
-            max_scale=act_max_scale if math.isclose(env_act_scale, 1.0, rel_tol=1e-6) else env_act_scale,
-            min_scale=act_min_scale if math.isclose(env_act_scale, 1.0, rel_tol=1e-6) else env_act_scale,
+            max_scale=act_max_scale if env_act_scale is None else env_act_scale,
+            min_scale=act_min_scale if env_act_scale is None else env_act_scale,
             global_scale=getattr(self, "input_global_scale", None),
         )
         return x, scale, zp
@@ -579,8 +579,8 @@ class WrapperWALayer(torch.nn.Module):
         act_scale = envs.AR_ACT_SCALE
         act_max = self.orig_layer.act_max if hasattr(self.orig_layer, "act_max") else None
 
-        max_scale = self.orig_layer.act_max_scale if math.isclose(act_scale, 1.0, rel_tol=1e-6) else act_scale
-        min_scale = self.orig_layer.act_min_scale if math.isclose(act_scale, 1.0, rel_tol=1e-6) else act_scale
+        max_scale = self.orig_layer.act_max_scale if act_scale is None else act_scale
+        min_scale = self.orig_layer.act_min_scale if act_scale is None else act_scale
         if act_max is None:
             x, _, _ = self.orig_layer.act_quant_func(
                 x,
