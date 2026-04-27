@@ -112,7 +112,7 @@ class DiffusionMixin:
 
         if (
             hasattr(self.model, "hf_device_map")
-            and len(self.model.hf_device_map) > 0
+            and len(self.model.hf_device_map) > 1
             and pipe.device != self.model.device
             and torch.device(self.model.device).type in ["cuda", "xpu"]
         ):

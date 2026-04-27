@@ -81,10 +81,10 @@ def patch_wrapperlinear_to_apply_transform(
 
     _orig_qdq_act = WrapperLinear._qdq_act
 
-    def _qdq_act_patched(self, x, act_max_scale, act_max=None):
+    def _qdq_act_patched(self, x, act_min_scale=torch.tensor(1.0), act_max_scale=torch.tensor(1.0), act_max=None):
         x = inp_transform(x)
 
-        return _orig_qdq_act(self, x, act_max_scale, act_max)
+        return _orig_qdq_act(self, x, act_min_scale=act_min_scale, act_max_scale=act_max_scale, act_max=act_max)
 
     WrapperLinear._qdq_weight = _qdq_weight_patched
     WrapperLinear._qdq_act = _qdq_act_patched
