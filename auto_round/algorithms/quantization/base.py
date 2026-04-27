@@ -546,6 +546,8 @@ class BaseQuantizers:
                 device,
                 None,
             )
+            if isinstance(tmp_output, torch.Tensor):
+                tmp_output = [tmp_output]
             assert len(output_config) == len(tmp_output)
             tmp_output = dict(zip(output_config, tmp_output))
 
