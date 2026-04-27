@@ -31,7 +31,7 @@ from auto_round.compressors_new.utils import (
     collect_best_params,
     immediate_pack,
 )
-from auto_round.data_type.utils import reshape_pad_tensor_by_group_size
+from auto_round.data_type.utils import reshape_pad_tensor_by_group_size, update_fused_layer_global_scales
 from auto_round.logger import logger
 from auto_round.utils import (
     check_to_quantized,
@@ -189,8 +189,10 @@ class SignRoundQuantizer(BaseQuantizers):
             self.enable_norm_bias_tuning,
             enable_torch_compile=self.compress_context.enable_torch_compile,
             device=device,
-            is_nv_fp=self.config.is_nv_fp,
         )
+        if self.config.is_nv_fp:
+            for module in block.modules():
+                update_fused_layer_global_scales(module)
         round_params = []
         minmax_params = []
         for n, m in block.named_modules():

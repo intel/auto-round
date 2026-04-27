@@ -380,7 +380,7 @@ class LLMCompressorFormat(OutputFormat):
             if is_nv_fp(ar.data_type) or is_mx_fp(ar.data_type):
                 from auto_round.export.export_to_llmcompressor import check_compressed_tensors_supported
 
-                check_compressed_tensors_supported()
+                check_compressed_tensors_supported(raise_error=True)
                 self.backend = LLMCompressorFormat(ar.data_type, ar)
             elif is_dynamic_afp8(ar) and is_block_wfp8(ar):
                 self.backend = LLMCompressorFormat(AutoRoundExportFormat.FP8_BLOCK.value, ar)

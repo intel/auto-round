@@ -153,7 +153,7 @@ def save_quantized_as_static_fp(
             pack_layer(name, model, serialization_dict.get("data_type", "fp8"), device)
 
     # Get llm-compressor format config
-    check_compressed_tensors_supported()
+    check_compressed_tensors_supported(raise_error=True)
     from compressed_tensors.quantization import (  # pylint: disable=E0401
         QuantizationArgs,
         QuantizationConfig,

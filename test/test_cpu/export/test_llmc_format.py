@@ -10,7 +10,10 @@ from auto_round import AutoRound, AutoScheme
 from auto_round.export.export_to_llmcompressor import export_to_fp as llmc_fp_export
 from auto_round.export.export_to_llmcompressor import export_to_static_fp as llmc_static_fp_export
 
+from ...envs import is_compressed_tensors_available
 from ...helpers import forbid_threaded_packing, get_model_path, opt_name_or_path
+
+pytestmark = pytest.mark.skipif(not is_compressed_tensors_available(), reason="test requires compressed-tensors")
 
 
 class TestLLMC:

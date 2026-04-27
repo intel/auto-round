@@ -28,6 +28,7 @@ from packaging import version
 from auto_round import envs
 from auto_round.export.export_to_gguf.config import ModelType
 from auto_round.logger import logger
+from auto_round.utils.common import monkey_patch_model
 from auto_round.utils.weight_handler import (
     _dequant_fp8_linear_weight,
     check_and_mark_quantized_module,
@@ -365,6 +366,7 @@ def llm_load_model(
             )
 
     model = model.eval()
+    monkey_patch_model(model)
     check_and_mark_quantized_module(model)
     handle_generation_config(model)
     model = _to_model_dtype(model, model_dtype)

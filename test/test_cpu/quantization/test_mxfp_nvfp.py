@@ -10,6 +10,7 @@ from transformers import AutoModelForCausalLM, AutoRoundConfig, AutoTokenizer
 from auto_round import AutoRound
 from auto_round.export.export_to_autoround import export_to_nvfp_mx as autoround_nvfp_mx_export
 
+from ...envs import require_compressed_tensors
 from ...helpers import forbid_threaded_packing, is_model_outputs_similar, transformers_version
 
 
@@ -120,6 +121,7 @@ class TestAutoRoundFP:
             and lm_head.weight_scale.dtype is torch.uint8
         ), "Illegal MXFP4 packing for lm_head layer"
 
+    @require_compressed_tensors
     def test_mxfp4_llmcompressor_format(self, tiny_opt_model_path, dataloader):
         model_name = tiny_opt_model_path
         from transformers import AutoConfig
@@ -158,6 +160,7 @@ class TestAutoRoundFP:
             and quantization_config["config_groups"]["group_0"]["weights"]["num_bits"] == 4
         ), f"Invalid MXFP4 quantization configuration: {quantization_config}"
 
+    @require_compressed_tensors
     def test_rtn_mxfp4_llmcompressor_format(self, tiny_opt_model_path, dataloader):
         model_name = tiny_opt_model_path
         from transformers import AutoConfig
@@ -196,6 +199,7 @@ class TestAutoRoundFP:
             and quantization_config["config_groups"]["group_0"]["weights"]["num_bits"] == 4
         ), f"Invalid MXFP4 quantization configuration: {quantization_config}"
 
+    @require_compressed_tensors
     def test_mxfp8_llmcompressor_format(self, tiny_opt_model_path, dataloader):
         model_name = tiny_opt_model_path
         from transformers import AutoConfig
@@ -233,6 +237,7 @@ class TestAutoRoundFP:
             0.05 < folder_size_gb < 0.1
         ), f"Quantized model folder size {folder_size_gb:.2f} GB is outside the expected range (0.05~0.1 GB)"
 
+    @require_compressed_tensors
     def test_nvfp4_llmcompressor_format(self, tiny_opt_model_path, dataloader):
         model_name = tiny_opt_model_path
         from transformers import AutoConfig

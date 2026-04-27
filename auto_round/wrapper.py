@@ -749,7 +749,6 @@ def wrapper_block(
     enable_norm_bias_tuning,
     enable_torch_compile=False,
     device="cpu",
-    is_nv_fp=False,
     **kwargs,
 ):
     """Wraps the layers in the given block with a custom Wrapper module.
@@ -797,11 +796,6 @@ def wrapper_block(
                     set_module(block, n, new_m)
                 else:
                     logger.warning_once(f"{m.__class__.__name__} is not supported")
-    if is_nv_fp:
-        from auto_round.data_type.utils import update_fused_layer_global_scales
-
-        for module in block.modules():
-            update_fused_layer_global_scales(module)
     return quantized_layers, unquantized_layers
 
 
@@ -818,6 +812,19 @@ def unwrapper_layer(model, layer, layer_name, best_params):
 
     if hasattr(layer, "orig_layer"):
         orig_layer = layer.unwrapper(best_params)
+        act_max = getattr(orig_layer, "act_max", None)
+        act_scale = getattr(orig_layer, "act_scale", None)
+        if (
+            "lm_head" in layer_name
+            and getattr(layer, "enable_act_quant", False)
+            and not getattr(orig_layer, "act_dynamic", True)
+            and act_scale is not None
+            and act_max is None
+        ):
+            logger.warning_once(
+                "Static activation quantization for lm_head is not fully supported yet. "
+                "lm_head activation statistics are missing, so activation scale falls back to unit scale."
+            )
         orig_layer = orig_layer.to("cpu")
         set_module(model, layer_name, orig_layer)
 

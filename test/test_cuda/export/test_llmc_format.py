@@ -7,7 +7,10 @@ import transformers
 from auto_round import AutoRound
 from auto_round import schemes as ar_schemes
 
+from ...envs import is_compressed_tensors_available
 from ...helpers import eval_generated_prompt, get_model_path, is_cuda_support_fp8
+
+pytestmark = pytest.mark.skipif(not is_compressed_tensors_available(), reason="test requires compressed-tensors")
 
 
 class TestAutoRound:
