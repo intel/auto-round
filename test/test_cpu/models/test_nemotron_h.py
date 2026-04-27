@@ -122,8 +122,18 @@ def test_apply_model_monkey_patches_rewires_nemotron_h():
         # motivated this guard.
         assert conversion_mapping.get_checkpoint_conversion_mapping is get_checkpoint_conversion_mapping_ar
 
-        fake_model = nn.Module()
-        fake_model.config = types.SimpleNamespace(model_type="nemotron_h")
+        from transformers import PretrainedConfig, PreTrainedModel
+
+        class _FakeNHPretrainedConfig(PretrainedConfig):
+            model_type = "nemotron_h"
+
+        class _FakeNHPreTrainedModel(PreTrainedModel):
+            config_class = _FakeNHPretrainedConfig
+
+            def __init__(self):
+                super().__init__(_FakeNHPretrainedConfig())
+
+        fake_model = _FakeNHPreTrainedModel()
         resolved = conversion_mapping.get_model_conversion_mapping(fake_model, add_legacy=False)
         targets = {tuple(getattr(rule, "target_patterns", []) or []) for rule in resolved}
         assert ("model.",) in targets, f"backbone.→model. rename missing from resolved mapping: {targets}"
