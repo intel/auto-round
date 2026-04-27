@@ -36,8 +36,9 @@ Reference: `nemotron_h.py` + `nemotron_h_setup.py`.
 
 ```python
 AutoRound(
-    "nvidia/Nemotron-Cascade-2-30B-A3B", bits=4, group_size=128, sym=True, low_cpu_mem_usage=True
+    "nvidia/Nemotron-Cascade-2-30B-A3B", bits=4, group_size=64, sym=True, low_cpu_mem_usage=True
 ).quantize_and_save(...)
+# group_size=64 because intermediate_size=1856 is not divisible by 128 (1856/128=14.5); 1856/64=29 ✓
 # offline: post_load_overrides={"enable_high_precision_overrides": False}
 ```
 
