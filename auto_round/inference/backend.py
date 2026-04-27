@@ -198,6 +198,11 @@ AWQ_FORMAT = ["auto_round:auto_awq"]
 LLM_COMPRESSOR_FORMAT = ["auto_round:llm_compressor"]
 WOQ_DEFAULT_ACT_BITS = [None, 16, 32]
 
+# CPU backends that target Intel/x86 (ark / ipex / auto_round_kernel) cannot
+# run on Apple Silicon. Restrict them so the MLX backend wins on Darwin and we
+# don't try to load auto-round-lib / intel-extension-for-pytorch on macOS.
+_NON_DARWIN_SYSTEMS = ["linux", "windows"]
+
 # AutoGPTQ is no longer maintained, supports transformers < 5.0.0
 BackendInfos["auto_gptq:exllamav2"] = BackendInfo(
     device=["cuda"],
@@ -483,7 +488,7 @@ BackendInfos["gptqmodel:awq_gemm"] = BackendInfo(
     packing_format=AWQ_FORMAT,
     bits=[4],
     group_size=[-1, 16, 32, 64, 128],
-    priority=3,
+    priority=4,
     compute_dtype=["float16"],
     data_type=["int"],
     act_bits=WOQ_DEFAULT_ACT_BITS,
@@ -514,7 +519,7 @@ BackendInfos["auto_awq:gemm"] = BackendInfo(
     packing_format=AWQ_FORMAT,
     bits=[4],
     group_size=None,
-    priority=4,
+    priority=3,
     compute_dtype=["float16"],
     data_type=["int"],
     act_bits=WOQ_DEFAULT_ACT_BITS,
@@ -535,6 +540,7 @@ BackendInfos["auto_round_kernel"] = BackendInfo(
     data_type=["int"],
     act_bits=WOQ_DEFAULT_ACT_BITS,
     requirements=["torch>=2.8.0", "auto-round-lib"],
+    systems=_NON_DARWIN_SYSTEMS,  # auto-round-lib targets x86; not for Apple Silicon
 )
 
 BackendInfos["auto_round_kernel_xpu"] = BackendInfo(
@@ -565,6 +571,7 @@ BackendInfos["auto_round_kernel_zp"] = BackendInfo(
     data_type=["int"],
     act_bits=WOQ_DEFAULT_ACT_BITS,
     requirements=["torch>=2.8.0", "auto-round-lib"],
+    systems=_NON_DARWIN_SYSTEMS,
 )
 
 BackendInfos["auto_round_kernel_zp_xpu"] = BackendInfo(
@@ -595,6 +602,7 @@ BackendInfos["auto_round_kernel_awq"] = BackendInfo(
     data_type=["int"],
     act_bits=WOQ_DEFAULT_ACT_BITS,
     requirements=["torch>=2.8.0", "auto-round-lib"],
+    systems=_NON_DARWIN_SYSTEMS,
 )
 
 BackendInfos["auto_round_kernel_awq_xpu"] = BackendInfo(
@@ -625,6 +633,7 @@ BackendInfos["ipex_gptq_cpu"] = BackendInfo(
     act_bits=WOQ_DEFAULT_ACT_BITS,
     alias=["ipex"],
     requirements=["torch<2.9", "intel-extension-for-pytorch>=2.5"],
+    systems=_NON_DARWIN_SYSTEMS,  # intel-extension-for-pytorch is Intel x86 only
 )
 
 BackendInfos["ipex_gptq"] = BackendInfo(
@@ -655,6 +664,7 @@ BackendInfos["ipex_awq_cpu"] = BackendInfo(
     act_bits=WOQ_DEFAULT_ACT_BITS,
     alias=["ipex"],
     requirements=["torch<2.9", "intel-extension-for-pytorch>=2.5"],
+    systems=_NON_DARWIN_SYSTEMS,
 )
 
 BackendInfos["ipex_awq"] = BackendInfo(
@@ -694,6 +704,22 @@ BackendInfos["hpu_zp"] = BackendInfo(
     act_bits=WOQ_DEFAULT_ACT_BITS,
     alias=["hpu"],
     priority=0,
+)
+
+# MLX Backend for Apple Silicon (M1, M2, M3, etc.)
+BackendInfos["mlx"] = BackendInfo(
+    device=["cpu", "mps"],  # MLX runs on Apple Silicon (CPU or MPS)
+    sym=[True, False],
+    packing_format=["mlx"] + GPTQ_FORMAT + GPTQ_FORMAT_NO_ZP,
+    bits=[2, 3, 4, 5, 6, 8],
+    compute_dtype=["float32", "float16", "bfloat16"],
+    data_type=["int"],
+    act_bits=WOQ_DEFAULT_ACT_BITS,
+    group_size=[-1, 32, 64, 128, 256, 512],
+    priority=5,  # High priority for Apple Silicon users
+    alias=["mlx"],
+    requirements=["mlx>=0.16.0"],
+    systems=["darwin"],  # Only on macOS
 )
 
 
@@ -770,16 +796,16 @@ def check_compatible(
     return True
 
 
-def dynamic_import_inference_linear(backend, config):
+def dynamic_import_inference_linear(backend, config, packing_format=None):
     """Dynamically imports and returns the appropriate QuantLinear class based on the given backend.
 
     This function dynamically loads the correct `QuantLinear` class based on the backend and quantization
-    configuration (e.g., ark, marlin, hpu, gptq, awq). It imports specific modules or raises
+    configuration (e.g., ark, marlin, hpu, gptq, awq, mlx). It imports specific modules or raises
     errors if the required packages are not installed or the environment is not set up.
 
     Args:
         backend (str):
-            The backend to be used for quantization (e.g., 'ark', 'marlin', 'hpu', 'gptq', 'awq').
+            The backend to be used for quantization (e.g., 'ark', 'marlin', 'hpu', 'gptq', 'awq', 'mlx').
         config (QuantizationScheme):
             The quantization configuration containing parameters like bits, group_size, and sym.
 
@@ -792,6 +818,19 @@ def dynamic_import_inference_linear(backend, config):
             If required modules are missing for a backend (e.g., ark, GPTQ, auto_awq).
     """
     bits, group_size, sym = config["bits"], config["group_size"], config["sym"]
+
+    # MLX backend
+    if "mlx" in backend:
+        # If loading a GPTQ-format checkpoint, use GPTQ QuantLinear for buffer name compatibility.
+        # The layers will be converted to MLX in post_init.
+        if packing_format and "mlx" not in packing_format:
+            from auto_round_extension.torch.qlinear_torch import QuantLinear
+
+            return QuantLinear
+        from auto_round_extension.mlx.qlinear_mlx import QuantLinearMLX
+
+        return QuantLinearMLX
+
     if "torch_fp8_static" in backend:
         return ar_qmodules.WeightFP8ActFP8StaticQuantLinear
     if "torch_mxfp8" in backend:
@@ -1154,9 +1193,16 @@ def get_layer_backend(
 def get_highest_priority_backend(
     quantization_config: "AutoRoundConfig", device: str, packing_format: str
 ) -> str | None:
+    current_system = platform.system().lower()
     supported_backends = []
     for key in BackendInfos.keys():
         backend = BackendInfos[key]
+        # Filter by operating system (e.g. MLX is Darwin-only; ark/ipex CPU
+        # backends are non-Darwin only).
+        if backend.systems is not None:
+            if current_system not in [s.lower() for s in backend.systems]:
+                continue
+
         # Check if device is supported by the backend
         if device not in backend.device:
             continue
