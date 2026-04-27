@@ -469,7 +469,8 @@ def _handle_special_schemes(
                 if "expert" in n and "shared" not in n:
                     layer_config[n] = {"bits": 4, "data_type": "int"}
                 elif n != lm_head_name and mllm:
-                    layer_config[n] = {"bits": 16}
+                    # layer_config[n] = {"bits": 16}
+                    continue
                 elif n != lm_head_name:
                     layer_config[n] = {"bits": 8, "data_type": "int"}
                 elif n == lm_head_name and quant_lm_head:
