@@ -381,7 +381,7 @@ class BasicArgumentParser(argparse.ArgumentParser):
             "--rotation_type",
             default=None,
             type=str,
-            choices=["hadamard", "random_hadamard"],
+            choices=["hadamard", "random_hadamard", "quarot_hadamard"],
             help="Research feature: applies a rotation (e.g., Hadamard) to reduce activation/weight outliers",
         )
         gguf = self.add_argument_group("Double Quant Arguments")
@@ -717,7 +717,7 @@ def tune(args):
             shared_layers=args.shared_layers,
             ignore_scale_zp_bits=args.ignore_scale_zp_bits,
             low_gpu_mem_usage=True,  # force it to be True as it uses much smaller vram but similar time cost
-            low_cpu_mem_usage=low_cpu_mem_usage,
+            low_cpu_mem_usage=False,
         )
     rot_config = None
     if args.rotation_type:
