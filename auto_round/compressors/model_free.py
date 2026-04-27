@@ -201,14 +201,17 @@ def _list_weight_shards(source_dir: str) -> list[str]:
     """Return list of weight shard filenames in order.
 
     Safetensors shards are preferred.  When no safetensors files are
-    found the function falls back to PyTorch ``.bin`` shards
-    (``pytorch_model.bin`` / ``pytorch_model-XXXXX-of-XXXXX.bin``).
+    found the function falls back to PyTorch ``.bin`` shards.
+
+    Handles both standard naming (``model.safetensors``,
+    ``pytorch_model.bin``) and custom prefixes such as
+    ``diffusion_pytorch_model-XXXXX-of-XXXXX.safetensors`` by scanning
+    all ``*.safetensors.index.json`` / ``*.bin.index.json`` index files
+    in the directory when no standard index is found.
     """
-    # --- safetensors ---
-    st_index = os.path.join(source_dir, "model.safetensors.index.json")
-    st_single = os.path.join(source_dir, "model.safetensors")
-    if os.path.exists(st_index):
-        with open(st_index) as f:
+
+    def _shards_from_index(index_path: str) -> list[str]:
+        with open(index_path) as f:
             index = json.load(f)
         seen: set[str] = set()
         shards: list[str] = []
@@ -217,24 +220,46 @@ def _list_weight_shards(source_dir: str) -> list[str]:
                 seen.add(shard_file)
                 shards.append(shard_file)
         return shards
+
+    # --- safetensors: standard index ---
+    st_index = os.path.join(source_dir, "model.safetensors.index.json")
+    if os.path.exists(st_index):
+        return _shards_from_index(st_index)
+
+    # --- safetensors: custom-prefix index (e.g. diffusion_pytorch_model.safetensors.index.json) ---
+    for fname in sorted(os.listdir(source_dir)):
+        if fname.endswith(".safetensors.index.json"):
+            return _shards_from_index(os.path.join(source_dir, fname))
+
+    # --- safetensors: single file ---
+    st_single = os.path.join(source_dir, "model.safetensors")
     if os.path.exists(st_single):
         return ["model.safetensors"]
 
-    # --- pytorch .bin fallback ---
+    # --- safetensors: any single .safetensors file ---
+    st_files = sorted(f for f in os.listdir(source_dir) if f.endswith(".safetensors"))
+    if len(st_files) == 1:
+        return st_files
+
+    # --- pytorch .bin: standard index ---
     bin_index = os.path.join(source_dir, "pytorch_model.bin.index.json")
-    bin_single = os.path.join(source_dir, "pytorch_model.bin")
     if os.path.exists(bin_index):
-        with open(bin_index) as f:
-            index = json.load(f)
-        seen = set()
-        shards = []
-        for shard_file in index["weight_map"].values():
-            if shard_file not in seen:
-                seen.add(shard_file)
-                shards.append(shard_file)
-        return shards
+        return _shards_from_index(bin_index)
+
+    # --- pytorch .bin: custom-prefix index ---
+    for fname in sorted(os.listdir(source_dir)):
+        if fname.endswith(".bin.index.json"):
+            return _shards_from_index(os.path.join(source_dir, fname))
+
+    # --- pytorch .bin: single file ---
+    bin_single = os.path.join(source_dir, "pytorch_model.bin")
     if os.path.exists(bin_single):
         return ["pytorch_model.bin"]
+
+    # --- pytorch .bin: any single .bin file ---
+    bin_files = sorted(f for f in os.listdir(source_dir) if f.endswith(".bin"))
+    if len(bin_files) == 1:
+        return bin_files
 
     raise FileNotFoundError(f"No safetensors or .bin weight files found in {source_dir}")
 
@@ -989,6 +1014,8 @@ class _ModelFreeCompressorCore:
         self.config: dict = {}
         self.fp8_block_size: list | None = None
         self.is_streaming: bool = False
+        self.is_diffusion_model: bool = False
+        self.diffusion_root_dir: str = ""
         self.work_dir: str = ""
         self.source_dir: str = ""
         self.shard_names: list[str] = []
@@ -1044,6 +1071,7 @@ class _ModelFreeCompressorCore:
 
         if not self.quant_lm_head and "lm_head" not in ignore_patterns:
             ignore_patterns.append("lm_head")
+            ignore_patterns.append("head")  # for deepseek v4
 
         if not self.quant_nontext_module:
             for kw in _NONTEXT_KEYWORDS:
@@ -1061,11 +1089,37 @@ class _ModelFreeCompressorCore:
         self.is_streaming = not _is_model_cached(self.model_name_or_path)
         if self.is_streaming:
             logger.info("Model not found locally or in cache — using streaming download mode.")
-            self.work_dir = os.path.join(envs.AR_WORK_SPACE, "_model_free_tmp")
+            self.work_dir = self.output_dir
             _download_metadata_files(self.model_name_or_path, self.work_dir)
+            transformer_work_dir = os.path.join(self.work_dir, "transformer")
+            if (
+                not os.path.exists(os.path.join(self.work_dir, "config.json"))
+                and os.path.isdir(transformer_work_dir)
+                and os.path.exists(os.path.join(transformer_work_dir, "config.json"))
+            ):
+                self.is_diffusion_model = True
+                self.diffusion_root_dir = self.work_dir
+                self.work_dir = transformer_work_dir
+                logger.info(
+                    "Detected diffusion model (no root config.json, found transformer/ subfolder). "
+                    "Only the transformer component will be quantized; other sub-components are skipped."
+                )
             self.config = _load_config(self.work_dir)
         else:
             self.source_dir = _resolve_source_dir(self.model_name_or_path)
+            transformer_source_dir = os.path.join(self.source_dir, "transformer")
+            if (
+                not os.path.exists(os.path.join(self.source_dir, "config.json"))
+                and os.path.isdir(transformer_source_dir)
+                and os.path.exists(os.path.join(transformer_source_dir, "config.json"))
+            ):
+                self.is_diffusion_model = True
+                self.diffusion_root_dir = self.source_dir
+                self.source_dir = transformer_source_dir
+                logger.info(
+                    "Detected diffusion model (no root config.json, found transformer/ subfolder). "
+                    "Only the transformer component will be quantized; other sub-components are skipped."
+                )
             self.config = _load_config(self.source_dir)
 
     def _check_conv1d_and_embedding(self) -> None:
@@ -1126,28 +1180,8 @@ class _ModelFreeCompressorCore:
             )
 
     def _discover_shards(self) -> None:
-        if self.is_streaming:
-            # Prefer safetensors index, then bin index, then single-file fallbacks.
-            for index_fname, single_fallback in [
-                ("model.safetensors.index.json", "model.safetensors"),
-                ("pytorch_model.bin.index.json", "pytorch_model.bin"),
-            ]:
-                index_file = os.path.join(self.work_dir, index_fname)
-                if os.path.exists(index_file):
-                    with open(index_file) as f:
-                        index_data = json.load(f)
-                    seen: set[str] = set()
-                    names: list[str] = []
-                    for shard_file in index_data["weight_map"].values():
-                        if shard_file not in seen:
-                            seen.add(shard_file)
-                            names.append(shard_file)
-                    self.shard_names = names
-                    return
-            # No index found — assume single-file model (safetensors preferred).
-            self.shard_names = ["model.safetensors"]
-        else:
-            self.shard_names = _list_weight_shards(self.source_dir)
+        search_dir = self.work_dir if self.is_streaming else self.source_dir
+        self.shard_names = _list_weight_shards(search_dir)
 
     def _build_matcher(self) -> None:
         self.matcher = _PatternMatcher(
@@ -1155,6 +1189,18 @@ class _ModelFreeCompressorCore:
             self.layer_config,
             self.default_scheme,
         )
+
+    @property
+    def _quant_output_dir(self) -> str:
+        """Effective output directory for quantized weight shards and config.
+
+        For diffusion models the quantized transformer component is written
+        to ``<output_dir>/transformer/``; for all other models the top-level
+        ``output_dir`` is used directly.
+        """
+        if self.is_diffusion_model:
+            return os.path.join(self.output_dir, "transformer")
+        return self.output_dir
 
     # -------------------------------------------------------------------
     # Shard processing pipeline
@@ -1229,10 +1275,11 @@ class _ModelFreeCompressorCore:
             if write_future is not None:
                 write_future.result()
 
+            os.makedirs(self._quant_output_dir, exist_ok=True)
             out_shard_name = f"model-{shard_idx + 1:05d}-of-{len(self.shard_names):05d}.safetensors"
             write_future = write_pool.submit(
                 _write_output_shard,
-                self.output_dir,
+                self._quant_output_dir,
                 out_shard_name,
                 output_tensors,
                 self.output_weight_map,
@@ -1255,7 +1302,7 @@ class _ModelFreeCompressorCore:
     # -------------------------------------------------------------------
 
     def _write_index(self) -> None:
-        _write_index_file(self.output_dir, self.output_weight_map)
+        _write_index_file(self._quant_output_dir, self.output_weight_map)
 
     def _write_config_files(self) -> None:
         quantization_config = _build_quantization_config(
@@ -1267,27 +1314,44 @@ class _ModelFreeCompressorCore:
         )
 
         self.config["quantization_config"] = quantization_config
-        with open(os.path.join(self.output_dir, "config.json"), "w") as f:
+        os.makedirs(self._quant_output_dir, exist_ok=True)
+        with open(os.path.join(self._quant_output_dir, "config.json"), "w") as f:
             json.dump(self.config, f, indent=2)
 
-        with open(os.path.join(self.output_dir, "quantization_config.json"), "w") as f:
+        with open(os.path.join(self._quant_output_dir, "quantization_config.json"), "w") as f:
             json.dump(quantization_config, f, indent=2)
 
     def _copy_metadata_files(self) -> None:
-        copy_src_dir = self.work_dir if self.is_streaming else self.source_dir
-        for fname in os.listdir(copy_src_dir):
+        if self.is_streaming:
+            # Metadata was downloaded directly to output_dir (or output_dir/transformer/
+            # for diffusion models) — nothing to copy or clean up.
+            return
+
+        if self.is_diffusion_model:
+            # For diffusion models, copy only root-level non-weight metadata files
+            # (model_index.json, tokenizer files, etc.) to output_dir.
+            # Sub-components other than transformer (vae, scheduler, …) are skipped
+            # per the "only quantize transformer" policy; the quantized transformer
+            # component is already written to output_dir/transformer/ by the pipeline.
+            for fname in os.listdir(self.diffusion_root_dir):
+                src = os.path.join(self.diffusion_root_dir, fname)
+                dst = os.path.join(self.output_dir, fname)
+                if os.path.isdir(src):
+                    continue
+                if os.path.isfile(src) and not os.path.exists(dst):
+                    shutil.copy2(src, dst)
+            return
+
+        for fname in os.listdir(self.source_dir):
             if _is_weight_shard(fname):
                 continue
-            src = os.path.join(copy_src_dir, fname)
+            src = os.path.join(self.source_dir, fname)
             dst = os.path.join(self.output_dir, fname)
             if os.path.isdir(src):
                 if not os.path.exists(dst):
                     shutil.copytree(src, dst)
             elif os.path.isfile(src) and not os.path.exists(dst):
                 shutil.copy2(src, dst)
-
-        if self.is_streaming:
-            shutil.rmtree(self.work_dir, ignore_errors=True)
 
     def _log_summary(self, total_time: float) -> None:
         compressed_quantized = compress_layer_names(self.all_quantized_layers)
@@ -1333,6 +1397,7 @@ class _ModelFreeCompressorCore:
             f"  Output: {self.output_dir}\n"
             f"  Shards: {len(self.shard_names)}\n"
             f"  Streaming download: {self.is_streaming}\n"
+            f"  Diffusion model: {self.is_diffusion_model}\n"
             f"  Quant lm_head: {self.quant_lm_head}\n"
             f"  Quant nontext module: {self.quant_nontext_module}\n"
             f"  Device: {self.device}"

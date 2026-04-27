@@ -2062,20 +2062,24 @@ def is_model_free_route(
 def find_layers_from_config(model_dir: str, class_names: list[str] | None = None) -> dict[str, str]:
     """Detect layers of given class names by loading the model on ``device='meta'``.
 
-    Only ``config.json`` is required — no weights are read.  Root directory
-    and every immediate sub-directory with a ``config.json`` are checked,
-    covering diffusion-style repos (``unet/``, ``vae/``, …).
+    Only ``config.json`` is required — no weights are read.
+
+    For regular models the root directory is checked.  For diffusion-style
+    repos (no root ``config.json`` but a ``transformer/`` subfolder), only the
+    ``transformer/`` subfolder is checked — other sub-components (``vae/``,
+    ``scheduler/``, …) are intentionally skipped because only the transformer
+    is quantized in model-free mode.
 
     Args:
-        model_dir: Local directory containing ``config.json``.
+        model_dir: Local directory containing ``config.json``, or a diffusion
+            repo root whose ``transformer/`` subfolder contains ``config.json``.
         class_names: Class names to look for, matched against
             ``type(module).__name__``.  Defaults to
             ``["Embedding", "Conv1d", "Conv1D"]`` — the types incompatible
             with model-free RTN packing.
 
     Returns:
-        ``{layer_name: class_name}`` for every matched module.
-        Sub-directory layers are prefixed with ``<subdir>.``.
+        ``{class_name: [layer_name, ...]}`` for every matched module.
         Returns an empty dict on any failure.
     """
     from huggingface_hub import snapshot_download
@@ -2094,18 +2098,16 @@ def find_layers_from_config(model_dir: str, class_names: list[str] | None = None
             allow_patterns=["**/config.json"],
         )
 
-    # (prefix, config_dir) — root first, then sub-dirs
+    # Build the list of (prefix, config_dir) pairs to inspect.
+    # For diffusion repos (no root config.json) only check transformer/.
+    # For regular repos only check the root directory.
     dirs: list[tuple[str, str]] = []
     if os.path.exists(os.path.join(model_dir, "config.json")):
         dirs.append(("", model_dir))
-    try:
-        dirs += [
-            (e.name, e.path)
-            for e in os.scandir(model_dir)
-            if e.is_dir() and os.path.exists(os.path.join(e.path, "config.json"))
-        ]
-    except OSError:
-        pass
+    else:
+        transformer_dir = os.path.join(model_dir, "transformer")
+        if os.path.isdir(transformer_dir) and os.path.exists(os.path.join(transformer_dir, "config.json")):
+            dirs.append(("", transformer_dir))
 
     result: dict[str, str] = {}
     for prefix, config_dir in dirs:
