@@ -98,7 +98,6 @@ class AutoSchemeWrapperLinear(WrapperLinear):
         if self.need_weight_grad:
             self.orig_layer.weight.requires_grad = True
 
-
     def _qdq_act(self, x, act_min_scale=1.0, act_max_scale=1.0, act_max=None):
         if hasattr(self.orig_layer, "act_bits") and self.orig_layer.act_bits > 8:
             return x, 1.0, None
