@@ -1,6 +1,6 @@
+import json
 import os
 import shutil
-import json
 
 import pytest
 import torch
