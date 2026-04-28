@@ -442,6 +442,10 @@ def set_layer_config(
         all_module_names.append(n)
         # cleanup stale attributes
         for key in scheme_keys:
+            # `rotation_config` on the root model carries the active
+            # Hadamard rotation state (weights + hooks)
+            if n == "" and key == "rotation_config":
+                continue
             if hasattr(m, key):
                 delattr(m, key)
         if type(m) not in supported_types and m.__class__.__name__ not in inner_supported_types:

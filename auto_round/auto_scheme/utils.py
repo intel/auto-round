@@ -66,8 +66,16 @@ def remove_quant_scheme(
         model: The model whose layers are to be cleared.
     """
     scheme_keys = [f.name for f in fields(QuantizationScheme)] + ["scale_dtype"]
+    # `rotation_config` is a QuantizationScheme field but on the model root
+    # it carries the active Hadamard rotation state (weights + hooks). Deleting
+    # it there would silently corrupt the rotation transform, so we never strip
+    # `rotation_config` from the top-level model object.
+    root_preserve = {"rotation_config"}
     for n, m in model.named_modules():
+        is_root = n == ""
         for key in scheme_keys:
+            if is_root and key in root_preserve:
+                continue
             if hasattr(m, key):
                 delattr(m, key)
 
