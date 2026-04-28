@@ -40,7 +40,6 @@ DEVICE_ENVIRON_VARIABLE_MAPPING = {
     "hpu": "HABANA_VISIBLE_MODULES",
 }
 
-
 # Note on HPU usage:
 # There are two modes available for enabling auto-round on HPU:
 # 1. Compile Mode
@@ -360,7 +359,16 @@ def detect_device(device: Union[None, str, int, torch.device] = None) -> str:
     return device
 
 
-def get_device_and_parallelism(device: Union[str, torch.device, int]) -> tuple[str, bool]:
+def get_device_and_parallelism(device: Union[str, torch.device, int, dict]) -> tuple[str, bool]:
+    if device is None:
+        device = detect_device(device)
+        return device, False
+    if isinstance(device, dict):
+        unique_devices = set(device.values())
+        if len(unique_devices) == 1:
+            device = next(iter(unique_devices))
+        else:
+            device = "auto"
     if isinstance(device, str):
         if device in ["cuda", "xpu", "hpu"]:
             device = detect_device(device)
@@ -481,6 +489,7 @@ class fake_triton_for_hpu(ContextDecorator):
 
             # Create and inject fake triton module
             class FakeTriton:
+
                 def __getattr__(self, name):
                     return None
 
@@ -646,6 +655,25 @@ def _clear_memory_for_cpu_and_cuda(
 _malloc_trim_counter = 0
 
 
+def _force_trim_malloc() -> None:
+    """Unconditionally release glibc heap pages back to the OS on Linux.
+
+    Unlike :func:`_maybe_trim_malloc`, this ignores the call-count throttle and
+    always invokes ``malloc_trim(0)``.  Use at critical lifecycle boundaries
+    (end of model loading, end of post_init, start of quantize loop) where a
+    one-time trim has a meaningful impact on peak RSS.
+    """
+    if os.name != "posix":
+        return
+    if os.environ.get("AR_ENABLE_MALLOC_TRIM", "1") != "1":
+        return
+    try:
+        libc = ctypes.CDLL("libc.so.6")
+        libc.malloc_trim(0)
+    except Exception:
+        pass
+
+
 def _maybe_trim_malloc() -> None:
     """Optionally release glibc heap pages back to OS on Linux.
 
@@ -678,6 +706,7 @@ def _maybe_trim_malloc() -> None:
 
 
 class ClearMemory:
+
     def __init__(self, device_list: list | tuple | None = None):
         self.device_list = device_list
 
@@ -689,6 +718,13 @@ class ClearMemory:
         from auto_round.utils.device import is_hpex_available
 
         if is_hpex_available():
+            # Clear CPU-side references so Python can reclaim them.
+            if isinstance(tensor, list):
+                for i in range(len(tensor)):
+                    tensor[i] = None
+            tensor = None
+            gc.collect()
+            _force_trim_malloc()
             memory_monitor.update_hpu(device_list)
             return
         else:
@@ -1789,6 +1825,7 @@ def dump_mem_usage(msg: str = "", log_level: str = "info"):
     """Decorator to dump memory usage before and after a function call."""
 
     def decorator(func):
+
         @functools.wraps(func)
         def wrapper(*args, **kwargs):
             memory_monitor.update_cpu()
