@@ -163,7 +163,8 @@ function run_unit_test_vllm() {
     rm -rf /root/.venv
     uv venv --python=3.12 /root/.venv
     uv pip install -U pytest-cov pytest-html
-    uv pip install -r test/test_cuda/requirements_vllm.txt --extra-index-url https://download.pytorch.org/whl/cu128 --index-strategy unsafe-best-match
+    uv pip install vllm --extra-index-url https://wheels.vllm.ai/0.20.0/cu129
+    uv pip install -r test/test_cuda/requirements_vllm.txt --torch-backend=cu129
     uv pip install .
     uv pip list
     echo "##[endgroup]"
