@@ -140,6 +140,78 @@ class TestPatternMatcher:
         )
         assert m.resolve_scheme("model.layers.0.fc1.weight") is None
 
+    def test_resolve_scheme_substring_pattern(self):
+        """Substring patterns like '.ffn.experts.' should match via regex."""
+        default = {"bits": 4, "group_size": 128, "sym": True}
+        lc = {".ffn.experts.": {"bits": 2, "group_size": 64}}
+        m = _matcher(layer_config=lc, default=default)
+
+        r = m.resolve_scheme("model.layers.0.ffn.experts.3.gate_proj.weight")
+        assert r is not None
+        assert r["bits"] == 2
+        assert r["group_size"] == 64
+
+        # Non-expert layer should use default
+        r2 = m.resolve_scheme("model.layers.0.self_attn.q_proj.weight")
+        assert r2 == default
+
+    def test_resolve_scheme_with_scheme_key_in_layer_config(self):
+        """layer_config with 'scheme' key like {'scheme': 'W2A16'} should resolve."""
+        from auto_round.compressors.model_free import _ModelFreeCompressorCore
+
+        core = _ModelFreeCompressorCore(
+            model_name_or_path="dummy",
+            output_dir="dummy_out",
+            scheme="W4A16",
+        )
+        core.layer_config_input = {
+            ".ffn.experts.": {"scheme": "W2A16"},
+        }
+        core._parse_scheme()
+        core._parse_layer_config()
+
+        # The resolved layer_config should have bits=2 from W2A16
+        lc = core.layer_config
+        # Key may have '.' appended or not; find it
+        expert_cfg = None
+        for k, v in lc.items():
+            if "ffn.experts" in k:
+                expert_cfg = v
+                break
+        assert expert_cfg is not None, f"Expected expert config in layer_config, got: {lc}"
+        assert expert_cfg["bits"] == 2
+        assert "scheme" not in expert_cfg  # 'scheme' key should be consumed
+
+        # Build matcher and verify resolution
+        m = _matcher(layer_config=lc, default=core.default_scheme)
+        r = m.resolve_scheme("model.layers.0.ffn.experts.3.gate_proj.weight")
+        assert r is not None
+        assert r["bits"] == 2
+
+    def test_resolve_scheme_with_scheme_key_and_overrides(self):
+        """Dict with 'scheme' + explicit overrides: explicit keys win."""
+        from auto_round.compressors.model_free import _ModelFreeCompressorCore
+
+        core = _ModelFreeCompressorCore(
+            model_name_or_path="dummy",
+            output_dir="dummy_out",
+            scheme="W4A16",
+        )
+        core.layer_config_input = {
+            ".ffn.experts.": {"scheme": "W2A16", "group_size": 32},
+        }
+        core._parse_scheme()
+        core._parse_layer_config()
+
+        expert_cfg = None
+        for k, v in core.layer_config.items():
+            if "ffn.experts" in k:
+                expert_cfg = v
+                break
+        assert expert_cfg is not None
+        assert expert_cfg["bits"] == 2  # from W2A16
+        assert expert_cfg["group_size"] == 32  # explicit override wins
+
 
 # ===========================================================================
 #  Test: get_predefined_ignore_layers_from_config

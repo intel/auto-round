@@ -1050,7 +1050,19 @@ class _ModelFreeCompressorCore:
             elif isinstance(val, QuantizationScheme):
                 lc[key] = {k: v for k, v in asdict(val).items() if v is not None}
             elif isinstance(val, dict):
-                pass
+                # Resolve 'scheme' key inside dict values, e.g. {'scheme': 'W2A16'}
+                if "scheme" in val:
+                    scheme_val = val.pop("scheme")
+                    if isinstance(scheme_val, str):
+                        parsed = asdict(preset_name_to_scheme(scheme_val.upper()))
+                        resolved = {k: v for k, v in parsed.items() if v is not None}
+                    elif isinstance(scheme_val, QuantizationScheme):
+                        resolved = {k: v for k, v in asdict(scheme_val).items() if v is not None}
+                    else:
+                        resolved = {}
+                    # Explicit keys in val override the resolved scheme values
+                    resolved.update(val)
+                    lc[key] = resolved
             else:
                 raise TypeError(f"Unsupported layer_config value type for '{key}': {type(val)}")
 
