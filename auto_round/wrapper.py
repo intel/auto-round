@@ -100,6 +100,7 @@ class WrapperLinear(torch.nn.Module):
         self.enable_torch_compile = enable_torch_compile
         self.enable_norm_bias_tuning = enable_norm_bias_tuning and (orig_layer.bias is not None)
         self.enable_act_quant = self.orig_layer.act_bits <= 8
+        self._compile_warmed_up = not (self.enable_torch_compile and self.enable_activation_checkpointing)
         self.weight_global_scale = getattr(self.orig_layer, "weight_global_scale", None)
         if is_nv_fp(self.orig_layer.data_type) and self.weight_global_scale is None:
             from auto_round.data_type.nvfp import calculate_gparam
@@ -472,9 +473,24 @@ class WrapperLinear(torch.nn.Module):
         Returns:
             torch.Tensor: Output tensor after applying the wrapped layer.
         """
+        if not self._compile_warmed_up:
+            self._warmup_compiled_forward(x)
         if self.enable_activation_checkpointing and torch.is_grad_enabled():
             return self._checkpointed_forward(x)
         return self._forward_impl(x)
+
+    def _warmup_compiled_forward(self, x):
+        """Compile the QDQ path once outside checkpoint so recompute sees the same graph.
+
+        torch.compile is lazy on first invocation. If that first invocation happens inside a
+        checkpointed forward, the original forward may run through Dynamo tracing while the
+        backward recomputation runs the cached compiled graph, which can change the sequence
+        of tensors checkpoint saves for autograd. Warming up once with the same input shape
+        avoids that forward/recompute mismatch.
+        """
+        with torch.no_grad():
+            self._forward_impl(x.detach())
+        self._compile_warmed_up = True
 
     def _checkpointed_forward(self, x):
         """Run forward inside torch.utils.checkpoint so QDQ intermediates are not saved by autograd.
