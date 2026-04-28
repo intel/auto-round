@@ -27,6 +27,7 @@ This document presents step-by-step instructions for auto-round llm quantization
     - [API Usage](#api-usage-1)
     - [Hyperparameters in AutoScheme](#hyperparameters-in-autoscheme)
   + [OPT RTN mode](#opt-rtn-mode)
+  + [AWQ Algorithm](#awq-algorithm)
   + [GGUF format](#gguf-format)
   + [Quantization Costs](#quantization-costs)
   + [Device/Multi-GPU setting in Quantization](#devicemulti-gpu-setting-in-quantization)
@@ -320,6 +321,36 @@ W2G64 Average Accuracy of 13 tasks and Time Cost Results(Testing was conducted o
 | Light   | 0.2760(2m)            | 0.4063(3m)      | 0.4764(5m)          | 0.4810(7m)      | 0.6581(38m)          |
 
 </details>
+
+### AWQ Algorithm
+
+AWQ (Activation-Aware Weight Quantization) is available as an alternative quantization algorithm. AWQ protects salient weight channels by analyzing activation patterns and applying channel-wise scaling before standard RTN quantization.
+
+The canonical AWQ deployment path is **W4A16** served by vLLM's AWQ/Marlin CUDA kernels. **W8A8** with AWQ smoothing can also be served via vLLM's compressed_tensors backend (cutlass INT8 GEMM).
+
+#### CLI Usage
+
+```bash
+auto-round --model Qwen/Qwen3-0.6B --scheme "W4A16" --algorithm awq --format "auto_round"
+```
+
+AWQ-specific options:
+- `--duo_scaling`: Use both activations and weights for scaling. Options: `true`, `false`, or `both` (searches both modes and picks the best). (default: True).
+- `--n_grid`: Number of grid points for scaling ratio search (default: 20).
+
+#### API Usage
+
+```python
+from auto_round import AutoRound
+ar = AutoRound(
+    "Qwen/Qwen3-0.6B",
+    scheme="INT8",
+    algorithm="awq",
+)
+
+output_dir = "./tmp_awq"
+ar.quantize_and_save(output_dir, format="auto_round:llm_compressor")
+```
 
 ### AutoScheme
 

@@ -466,8 +466,9 @@ class BaseCompressor(object):
             disable_opt_rtn = False
         self.orig_disable_opt_rtn = disable_opt_rtn
 
-        if self.iters != 0 and self.orig_disable_opt_rtn is not None:
-            logger.warning("`disable_opt_rtn` only works when `iters` is set to 0, ignore it now.")
+        if self.iters != 0:
+            if self.orig_disable_opt_rtn is not None:
+                logger.warning("`disable_opt_rtn` only works when `iters` is set to 0, ignore it now.")
             disable_opt_rtn = True
         if (
             self.bits >= 8
