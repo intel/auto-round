@@ -163,15 +163,9 @@ class AWQCompressor(CalibCompressor):
         # ── Resolve AWQ mappings once for all blocks ──────────────────────
         self.quantizer.resolve_all_mappings(model)
 
-        all_blocks = (
-            self.quantizer.quant_block_list
-            if self.quantizer.quant_block_list
-            else get_block_names(model)
-        )
+        all_blocks = self.quantizer.quant_block_list or get_block_names(model)
         if not all_blocks:
-            raise ValueError(
-                "Could not find any blocks. Check the model or quant_block_list."
-            )
+            raise ValueError("Could not find any blocks. Check the model or quant_block_list.")
 
         # ── Cache first block inputs ─────────────────────────────────────
         # AWQ only needs the first block's input (embedding output).
@@ -182,21 +176,14 @@ class AWQCompressor(CalibCompressor):
         # when has_qlayer_outside_block is True (irrelevant to AWQ).
         first_block_names = [block[0] for block in all_blocks]
         try:
-            all_inputs = self.cache_inter_data(
-                first_block_names, self.nsamples
-            )
+            all_inputs = self.cache_inter_data(first_block_names, self.nsamples)
         except NotImplementedError:
             # Flash attention doesn't support CPU — fall back to GPU caching
             logger.info("CPU caching failed, falling back to GPU caching")
-            all_inputs = self.try_cache_inter_data_gpucpu(
-                first_block_names, self.nsamples
-            )
+            all_inputs = self.try_cache_inter_data_gpucpu(first_block_names, self.nsamples)
 
         # Move model to CPU after caching
-        if (
-            hasattr(model, "hf_device_map")
-            and len(model.hf_device_map) > 1
-        ):
+        if hasattr(model, "hf_device_map") and len(model.hf_device_map) > 1:
             accelerate.hooks.remove_hook_from_submodules(model)
         model = mv_module_from_gpu(model)
         clear_memory(device_list=self.compress_context.device_list)
@@ -208,7 +195,9 @@ class AWQCompressor(CalibCompressor):
         if self.compress_context.low_cpu_mem_usage:
             if self.model_context.is_model_patched and not self.compress_context.is_immediate_saving:
                 self._offloader(
-                    model, all_blocks, clear_memory=True,
+                    model,
+                    all_blocks,
+                    clear_memory=True,
                     device_list=self.compress_context.device_list,
                 )
                 if not self._offloader.enabled:
@@ -232,8 +221,7 @@ class AWQCompressor(CalibCompressor):
             input_keys = [k for k in inputs if k.startswith("hidden_state")]
             if len(input_keys) != 1:
                 raise RuntimeError(
-                    "hidden_states arg mismatch. Please file an issue at "
-                    "https://github.com/intel/auto-round/issues"
+                    "hidden_states arg mismatch. Please file an issue at " "https://github.com/intel/auto-round/issues"
                 )
             inputs["input_ids"] = inputs.pop(input_keys[0])
 
@@ -251,11 +239,7 @@ class AWQCompressor(CalibCompressor):
             input_others = to_device(inputs, "cpu")
 
             # Dtype handling
-            tmp_dtype = (
-                self.model_context.amp_dtype
-                if self.model_context.amp
-                else torch.float32
-            )
+            tmp_dtype = self.model_context.amp_dtype if self.model_context.amp else torch.float32
             input_ids = [id_.to(tmp_dtype) for id_ in input_ids]
             for key, val in input_others.items():
                 if isinstance(val, torch.Tensor) and val.dtype in (
@@ -305,16 +289,11 @@ class AWQCompressor(CalibCompressor):
                         )
 
                         for _, _mod in block.named_modules():
-                            if (
-                                len(list(_mod.children())) != 0
-                                or not hasattr(_mod, "tuning_device")
-                            ):
+                            if len(list(_mod.children())) != 0 or not hasattr(_mod, "tuning_device"):
                                 continue
                             add_hook_to_module(
                                 _mod,
-                                AlignDevicesHook(
-                                    _mod.tuning_device, io_same_device=True
-                                ),
+                                AlignDevicesHook(_mod.tuning_device, io_same_device=True),
                                 True,
                             )
                 else:
@@ -333,13 +312,9 @@ class AWQCompressor(CalibCompressor):
                 # reflect the post-smoothing reality (smooth_output /= s).
                 # For W4A16 (act_bits>=16) this is moot (zero hooks), but
                 # for W8A8 it is a correctness requirement.
-                awq_hooks = self.quantizer.register_activation_hooks(
-                    model, block_prefix=block_name
-                )
+                awq_hooks = self.quantizer.register_activation_hooks(model, block_prefix=block_name)
                 block_input_ids = input_ids  # keep ref for post-smooth forward
-                input_ids = self.quantizer._get_block_outputs(
-                    block, block_input_ids, input_others, bs
-                )
+                input_ids = self.quantizer._get_block_outputs(block, block_input_ids, input_others, bs)
                 for h in awq_hooks:
                     h.remove()
 
@@ -358,7 +333,10 @@ class AWQCompressor(CalibCompressor):
                 act_max_hooks = self.quantizer._register_act_max_hook(block)
                 if act_max_hooks:
                     self.quantizer._get_block_outputs(
-                        block, block_input_ids, input_others, bs,
+                        block,
+                        block_input_ids,
+                        input_others,
+                        bs,
                         save_output=False,
                     )
                     for h in act_max_hooks:
@@ -397,10 +375,7 @@ class AWQCompressor(CalibCompressor):
                     self._ensure_shard_writer()
                     self.shard_writer.write(block, is_finalize=False)
 
-                if (
-                    self.compress_context.low_cpu_mem_usage
-                    and not self.compress_context.is_immediate_saving
-                ):
+                if self.compress_context.low_cpu_mem_usage and not self.compress_context.is_immediate_saving:
                     self._offloader(model, block_name)
 
                 if block_name == block_names[-1]:
@@ -419,20 +394,13 @@ class AWQCompressor(CalibCompressor):
         pbar.close()
 
         # ── Quantize remaining layers outside blocks ──────────────────────
-        block_name_set = set(
-            name for block in all_blocks for name in block
-        )
+        block_name_set = set(name for block in all_blocks for name in block)
         for n, m in model.named_modules():
             if not check_to_quantized(m):
                 continue
-            if any(
-                n == bn or n.startswith(f"{bn}.")
-                for bn in block_name_set
-            ):
+            if any(n == bn or n.startswith(f"{bn}.") for bn in block_name_set):
                 continue
-            dtype = (
-                torch.float32 if self.super_group_size is not None else None
-            )
+            dtype = torch.float32 if self.super_group_size is not None else None
             self.quantizer.quantize_layer_outside_block(n, dtype=dtype)
 
         # ── Finalize ──────────────────────────────────────────────────────
