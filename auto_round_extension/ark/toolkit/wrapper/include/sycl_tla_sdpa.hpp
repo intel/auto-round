@@ -116,7 +116,7 @@ struct Options {
   }
 };
 
-// 3 input matrices: (K)eys, (Q)ueries and (V)alues.
+// 3 input matrices: (K)eys, (Q)queries and (V)values.
 using LayoutQ = cutlass::layout::RowMajor;
 using LayoutK = cutlass::layout::ColumnMajor;
 using LayoutV = cutlass::layout::RowMajor;
