@@ -1566,8 +1566,8 @@ class PaddingTransInterleaveCvt : protected xbyak::JitAvx512f {
 // Complex number matrix(interleaved) - vector(as diagonal matrix) multiplication; Typically used for
 // shift-RoPE
 //
-// vector: fp16 values; view every adjacent 2 values on colunm as a complex num
-// src: bf16 ⌈row/row_pack⌉ x n_tile x row_pack; view every adjacent 2 values on colunm as a complex num
+// vector: fp16 values; view every adjacent 2 values on column as a complex num
+// src: bf16 ⌈row/row_pack⌉ x n_tile x row_pack; view every adjacent 2 values on column as a complex num
 // dst: same as src
 class CScaleInterleavedBF16FP16 : protected xbyak::JitAvx512_fp16 {
  public:
