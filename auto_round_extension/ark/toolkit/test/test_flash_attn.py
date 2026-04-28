@@ -22,10 +22,10 @@ This tests the ARK Flash Attention kernel at the unit test level
 """
 
 import math
+
 import pytest
 import torch
 from ut_utils import *
-
 
 ark = auto_round_kernel.ARK()
 
@@ -38,7 +38,7 @@ def has_flash_attn():
     """Check if Flash Attention kernel is available."""
     if ark.xpu_lib is None:
         return False
-    return hasattr(ark.xpu_lib, "sdpa") 
+    return hasattr(ark.xpu_lib, "sdpa")
 
 
 def reference_attention(Q, K, V, scale, is_causal=True):
@@ -48,7 +48,15 @@ def reference_attention(Q, K, V, scale, is_causal=True):
     # V: [batch, num_heads, seq_kv, head_dim]
 
     # Compute attention scores: [batch, num_heads, seq_q, seq_kv]
-    ref = torch.nn.functional.scaled_dot_product_attention(Q, K, V, scale=scale, attn_mask=None, is_causal=is_causal, enable_gqa=True if K.shape[1] != Q.shape[1] else False)
+    ref = torch.nn.functional.scaled_dot_product_attention(
+        Q,
+        K,
+        V,
+        scale=scale,
+        attn_mask=None,
+        is_causal=is_causal,
+        enable_gqa=True if K.shape[1] != Q.shape[1] else False,
+    )
     return ref
 
 
@@ -60,15 +68,15 @@ class TestSDPA:
     def sdpa_basic(self, batch, num_heads, num_headskv, seq_len, seq_lenkv, head_dim, dtype, is_causal):
 
         Q = torch.randn(batch, num_heads, seq_len, head_dim, dtype=dtype, device="xpu") - 0.5
-        K = torch.randn(batch, num_headskv, seq_lenkv, head_dim, dtype=dtype, device="xpu") -0.5
-        V = torch.randn(batch, num_headskv, seq_lenkv, head_dim, dtype=dtype, device="xpu") -0.5
+        K = torch.randn(batch, num_headskv, seq_lenkv, head_dim, dtype=dtype, device="xpu") - 0.5
+        V = torch.randn(batch, num_headskv, seq_lenkv, head_dim, dtype=dtype, device="xpu") - 0.5
 
         scale = 1.0 / math.sqrt(head_dim)
 
         output = ark.sdpa(Q, K, V, scale=scale, is_causal=is_causal)
         ref_output = reference_attention(Q, K, V, scale, is_causal=is_causal)
         torch.testing.assert_close(output.to(ref_output.dtype), ref_output, rtol=1e-2, atol=1e-2)
-        
+
     @pytest.mark.parametrize("num_heads_q, num_heads_kv", [(32, 8), (64, 8), (64, 1)])
     def test_prefill_gqa(self, num_heads_q, num_heads_kv):
         """Test prefill with Grouped Query Attention (GQA)."""
@@ -103,7 +111,7 @@ class TestSDPA:
         seq_len = 64
         head_dim = 64
         dtype = torch.float16
-        self.sdpa_basic(batch, num_heads, num_heads, seq_len,seq_len, head_dim, dtype=dtype, is_causal=False)
+        self.sdpa_basic(batch, num_heads, num_heads, seq_len, seq_len, head_dim, dtype=dtype, is_causal=False)
 
     @pytest.mark.parametrize("head_dim", [64, 128, 96, 192])
     def test_decode_various_head_dims(self, head_dim):
@@ -123,14 +131,10 @@ class TestSDPA:
         dtype = torch.float16
         self.sdpa_basic(batch, num_heads, num_heads, 1, seq_len, head_dim, dtype=dtype, is_causal=False)
 
+
 if __name__ == "__main__":
     import pathlib
 
     test_file = pathlib.Path(__file__).resolve()
     ark_root = test_file.parent.parent
-    pytest.main([
-        str(test_file),
-        "-v",
-        "--confcutdir",
-        str(test_file.parent)
-    ])
+    pytest.main([str(test_file), "-v", "--confcutdir", str(test_file.parent)])

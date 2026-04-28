@@ -124,7 +124,7 @@ class WeightS2T {
     int ldbn = in.ldb * blocksize;
     auto deq_kernel = [&](sycl::handler& cgh) {
       cgh.parallel_for(
-          sycl::nd_range<1>(problem, group), [=](sycl::nd_item<1> it) [[sycl::reqd_sub_group_size(SgSize)]] {
+          sycl::and_range<1>(problem, group), [=](sycl::and_item<1> it) [[sycl::reqd_sub_group_size(SgSize)]] {
             int g_idx = it.get_group(0);
             auto sg = it.get_sub_group();
             int sg_id = sg.get_local_id()[0];
@@ -201,7 +201,7 @@ class WeightS2T {
     int newblks = newblocksize == -1 ? 1 : k / newblocksize;
     auto deq_kernel = [&](sycl::handler& cgh) {
       cgh.parallel_for(
-          sycl::nd_range<1>(problem, group), [=](sycl::nd_item<1> it) [[sycl::reqd_sub_group_size(SgSize)]] {
+          sycl::and_range<1>(problem, group), [=](sycl::and_item<1> it) [[sycl::reqd_sub_group_size(SgSize)]] {
             int g_idx = it.get_group(0);
             auto sg = it.get_sub_group();
             int sg_id = sg.get_local_id()[0];
@@ -290,7 +290,7 @@ class WeightS2T {
     int k_0 = utils::padto_le(k, SGK0);
     auto ev = q->submit([&](sycl::handler& cgh) {
       cgh.parallel_for(
-          sycl::nd_range<1>(problem, group), [=](sycl::nd_item<1> it) [[sycl::reqd_sub_group_size(SgSize)]] {
+          sycl::and_range<1>(problem, group), [=](sycl::and_item<1> it) [[sycl::reqd_sub_group_size(SgSize)]] {
             int g_idx = it.get_group(0);
             auto sg = it.get_sub_group();
             int sg_id = sg.get_local_id()[0];
@@ -423,7 +423,7 @@ class WeightS4T {
     int ldbn = in.ldb * blocksize;
     auto deq_kernel = [&](sycl::handler& cgh) {
       cgh.parallel_for(
-          sycl::nd_range<1>(problem, group), [=](sycl::nd_item<1> it) [[sycl::reqd_sub_group_size(SgSize)]] {
+          sycl::and_range<1>(problem, group), [=](sycl::and_item<1> it) [[sycl::reqd_sub_group_size(SgSize)]] {
             int g_idx = it.get_group(0);
             auto sg = it.get_sub_group();
             int sg_id = sg.get_local_id()[0];
@@ -498,7 +498,7 @@ class WeightS4T {
     int newblks = newblocksize == -1 ? 1 : k / newblocksize;
     auto deq_kernel = [&](sycl::handler& cgh) {
       cgh.parallel_for(
-          sycl::nd_range<1>(problem, group), [=](sycl::nd_item<1> it) [[sycl::reqd_sub_group_size(SgSize)]] {
+          sycl::and_range<1>(problem, group), [=](sycl::and_item<1> it) [[sycl::reqd_sub_group_size(SgSize)]] {
             int g_idx = it.get_group(0);
             auto sg = it.get_sub_group();
             int sg_id = sg.get_local_id()[0];
@@ -583,7 +583,7 @@ class WeightS4T {
     int k_0 = utils::padto_le(k, SGK0);
     auto ev = q->submit([&](sycl::handler& cgh) {
       cgh.parallel_for(
-          sycl::nd_range<1>(problem, group), [=](sycl::nd_item<1> it) [[sycl::reqd_sub_group_size(SgSize)]] {
+          sycl::and_range<1>(problem, group), [=](sycl::and_item<1> it) [[sycl::reqd_sub_group_size(SgSize)]] {
             int g_idx = it.get_group(0);
             auto sg = it.get_sub_group();
             int sg_id = sg.get_local_id()[0];
@@ -701,7 +701,7 @@ class WeightS8T {
     int ldbn = in.ldb * blocksize;
     auto deq_kernel = [&](sycl::handler& cgh) {
       cgh.parallel_for(
-          sycl::nd_range<1>(problem, group), [=](sycl::nd_item<1> it) [[sycl::reqd_sub_group_size(SgSize)]] {
+          sycl::and_range<1>(problem, group), [=](sycl::and_item<1> it) [[sycl::reqd_sub_group_size(SgSize)]] {
             int g_idx = it.get_group(0);
             auto sg = it.get_sub_group();
             int sg_id = sg.get_local_id()[0];
@@ -766,8 +766,8 @@ class WeightS8T {
     int constexpr SGK1 = TileK1 * SgSize;
     int k_0 = utils::padto_le(k, SGK0);
     auto ev = q->submit([&](sycl::handler& cgh) {
-      cgh.parallel_for(sycl::nd_range<1>(problem, group),
-                       [=](sycl::nd_item<1> it) [[sycl::reqd_sub_group_size(SgSize)]] {
+      cgh.parallel_for(sycl::and_range<1>(problem, group),
+                       [=](sycl::and_item<1> it) [[sycl::reqd_sub_group_size(SgSize)]] {
                          int g_idx = it.get_group(0);
                          auto sg = it.get_sub_group();
                          int sg_id = sg.get_local_id()[0];
@@ -874,7 +874,7 @@ class WeightF8T {
     auto deq_kernel = [&](sycl::handler& cgh) {
       sycl::local_accessor<BType, 1> slm_lut(sycl::range<1>(128), cgh);
       cgh.parallel_for(
-          sycl::nd_range<1>(problem, group), [=](sycl::nd_item<1> it) [[sycl::reqd_sub_group_size(SgSize)]] {
+          sycl::and_range<1>(problem, group), [=](sycl::and_item<1> it) [[sycl::reqd_sub_group_size(SgSize)]] {
             init_slm_lut(slm_lut, it);
             int g_idx = it.get_group(0);
             auto sg = it.get_sub_group();
@@ -953,8 +953,8 @@ class WeightF8T {
     int k_1 = utils::padto_le(k, SGK1);
     auto ev = q->submit([&](sycl::handler& cgh) {
       sycl::local_accessor<T, 1> slm_lut(sycl::range<1>(128), cgh);
-      cgh.parallel_for(sycl::nd_range<1>(problem, group),
-                       [=](sycl::nd_item<1> it) [[sycl::reqd_sub_group_size(SgSize)]] {
+      cgh.parallel_for(sycl::and_range<1>(problem, group),
+                       [=](sycl::and_item<1> it) [[sycl::reqd_sub_group_size(SgSize)]] {
                          init_slm_lut(slm_lut, it);
                          int g_idx = it.get_group(0);
                          auto sg = it.get_sub_group();

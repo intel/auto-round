@@ -65,7 +65,7 @@ class ActivationBase {
     auto ker = [&](sycl::handler& cgh) {
       sycl::local_accessor<float, 1> slm_maxabs(sycl::range(SG_Num), cgh);
       cgh.parallel_for(
-          sycl::nd_range<1>(problem, group), [=](sycl::nd_item<1> it) [[sycl::reqd_sub_group_size(SgSize)]] {
+          sycl::and_range<1>(problem, group), [=](sycl::and_item<1> it) [[sycl::reqd_sub_group_size(SgSize)]] {
             int g_idx = it.get_group(0);
             auto sg = it.get_sub_group();
             auto wg_idx = it.get_local_id();
@@ -122,7 +122,7 @@ class ActivationBase {
     auto ker2 = [&](sycl::handler& cgh) {
       sycl::local_accessor<float, 1> slm_maxabs(sycl::range(SG_Num), cgh);
       cgh.parallel_for(
-          sycl::nd_range<1>(problem, group), [=](sycl::nd_item<1> it) [[sycl::reqd_sub_group_size(SgSize)]] {
+          sycl::and_range<1>(problem, group), [=](sycl::and_item<1> it) [[sycl::reqd_sub_group_size(SgSize)]] {
             int g_idx = it.get_group(0);
             auto sg = it.get_sub_group();
             auto wg_idx = it.get_local_id();

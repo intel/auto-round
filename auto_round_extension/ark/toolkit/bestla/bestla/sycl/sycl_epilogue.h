@@ -31,7 +31,7 @@ class OutputBase {
   using CType = typename GemmCoreT::TACC;
   using DstType = DstT;
   using Param = ParamOutputBase<DstType>;
-  static void store(const Param& _param, CType* tmpAcc, const sycl_utils::nd_item_helper<GemmCoreT>& helper) {
+  static void store(const Param& _param, CType* tmpAcc, const sycl_utils::and_item_helper<GemmCoreT>& helper) {
 #pragma unroll
     for (int im = 0; im < GemmCoreT::TileM; im++) {
       *(sycl::vec<CType, GemmCoreT::TileN>*)&_param.C[(helper.item_g_m() + im) * _param.ldc + helper.item_g_n()] =
@@ -39,7 +39,7 @@ class OutputBase {
     }
   }
 
-  static void store_tail(const Param& _param, CType* tmpAcc, const sycl_utils::nd_item_helper<GemmCoreT>& helper,
+  static void store_tail(const Param& _param, CType* tmpAcc, const sycl_utils::and_item_helper<GemmCoreT>& helper,
                          int m_tail) {
     if (m_tail) {
 #pragma unroll(4)

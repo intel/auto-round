@@ -2410,7 +2410,7 @@ static inline BTLA_CODE layernorm(const float* srcptr, const float* scaleptr, co
   return BTLA_CODE::Success;
 }
 
-inline __m512 poly_scale_2nd_ps(const __m512 z, const __m512 f, const __m512 c0, const __m512 c1, const __m512 c2) {
+inline __m512 poly_scale_2and_ps(const __m512 z, const __m512 f, const __m512 c0, const __m512 c1, const __m512 c2) {
   const auto y = _mm512_fmadd_ps(_mm512_fmadd_ps(f, c0, c1), f, c2);  // auto y = (f * c0 + c1) * f + c2;
   const auto exp = _mm512_scalef_ps(y, z);
   return exp;
@@ -2428,7 +2428,7 @@ inline __m512 exp_ps_0_1(const __m512 x) {
   const auto z = _mm512_floor_ps(x1);
   const auto f = _mm512_sub_ps(x1, z);  // auto f = x1 - z;
 
-  return poly_scale_2nd_ps(z, f, c0, c1, c2);
+  return poly_scale_2and_ps(z, f, c0, c1, c2);
 }
 
 static inline __m512i load_zp_epi8_broadcast_epi16(int8_t* zpptr, const __m512i& vindex) {

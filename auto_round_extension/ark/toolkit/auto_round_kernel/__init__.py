@@ -366,9 +366,7 @@ class ARK:
         if query.dtype not in (torch.float16, torch.bfloat16):
             raise ValueError(f"Q must be float16 or bfloat16, got {query.dtype}")
         if key.dtype != query.dtype or value.dtype != query.dtype:
-            raise ValueError(
-                f"K/V dtype must match Q dtype, got K={key.dtype}, V={value.dtype}, Q={query.dtype}"
-            )
+            raise ValueError(f"K/V dtype must match Q dtype, got K={key.dtype}, V={value.dtype}, Q={query.dtype}")
 
         if query.ndim != 4 or key.ndim != 4 or value.ndim != 4:
             raise ValueError("Q/K/V must be 4D tensors")
@@ -401,9 +399,7 @@ class ARK:
                 raise ValueError(f"attn_mask must be float32 (additive bias), got {attn_mask.dtype}")
             expected_mask_shape = (B, 1, Sq, Skv)
             if attn_mask.shape != expected_mask_shape:
-                raise ValueError(
-                    f"attn_mask shape must be {expected_mask_shape}, got {tuple(attn_mask.shape)}"
-                )
+                raise ValueError(f"attn_mask shape must be {expected_mask_shape}, got {tuple(attn_mask.shape)}")
 
         lib = self.get_lib(query)
         stream = get_stream(query)
@@ -424,11 +420,11 @@ class ARK:
             Sq,
             Skv,
             D,
-            float(scale) if scale is not None else 1.0 / (D ** 0.5),
+            float(scale) if scale is not None else 1.0 / (D**0.5),
             bool(is_causal),
         )
         return O
-    
+
     def sage(
         self,
         query: torch.Tensor,
@@ -510,7 +506,7 @@ class ARK:
             bool(is_causal),
         )
         return O
-    
+
     def sagev1(
         self,
         query: torch.Tensor,
@@ -538,7 +534,15 @@ class ARK:
         - O: [B, Hq, Sq, D] (same dtype as value)
         """
         if quant_block_size <= 0:
-            return self.sdpa(query=query, key=key, value=value, attn_mask=attn_mask, dropout_p=dropout_p, is_causal=is_causal, scale=scale)
+            return self.sdpa(
+                query=query,
+                key=key,
+                value=value,
+                attn_mask=attn_mask,
+                dropout_p=dropout_p,
+                is_causal=is_causal,
+                scale=scale,
+            )
         if query.device.type != "xpu":
             raise NotImplementedError("sdpa is only supported on XPU")
         if query.dtype not in (torch.float16,):
@@ -696,7 +700,9 @@ class ARK:
 
         # Call SAGE v1 with matching scale_block_size
         out = self.sage(
-            q_i8, k_i8, value,
+            q_i8,
+            k_i8,
+            value,
             attn_mask=attn_mask,
             is_causal=is_causal,
             scale=scale,
@@ -739,7 +745,7 @@ class ARK:
         if activations.dtype not in (torch.float16, torch.bfloat16):
             raise ValueError(f"activations must be fp16/bf16, got {activations.dtype}")
         if weights.dtype != activations.dtype:
-            raise ValueError(f"weights dtype must match activations dtype")
+            raise ValueError("weights dtype must match activations dtype")
 
         if activations.ndim != 2 or weights.ndim != 3:
             raise ValueError("activations must be 2D [total_tokens, K], weights must be 3D [num_experts, K, N]")
@@ -760,7 +766,9 @@ class ARK:
             raise ValueError(f"K dimension mismatch: activations K={K}, weights K={K_w}")
 
         if num_tokens_per_expert.shape[0] != num_experts:
-            raise ValueError(f"num_tokens_per_expert length {num_tokens_per_expert.shape[0]} != num_experts {num_experts}")
+            raise ValueError(
+                f"num_tokens_per_expert length {num_tokens_per_expert.shape[0]} != num_experts {num_experts}"
+            )
 
         # Validate total tokens
         expected_total = int(num_tokens_per_expert.sum().item())
@@ -905,10 +913,7 @@ def repack_quantized_weight(*args, **kwargs):
         else:
             weight_type, compute_type = a4, a5
     else:
-        raise TypeError(
-            "repack_quantized_weight() expects 8 or 9 positional arguments; "
-            f"got {len(args)}"
-        )
+        raise TypeError("repack_quantized_weight() expects 8 or 9 positional arguments; " f"got {len(args)}")
 
     # Some native paths may still expect a valid zp pointer even when asym=False.
     if (zp is None) or (isinstance(zp, torch.Tensor) and zp.numel() == 0):
@@ -931,7 +936,9 @@ def repack_quantized_weight(*args, **kwargs):
     )
 
 
-def unpack_weight(blob: torch.Tensor, out_dtype: torch.dtype, n, k, groupsize, compute_type, weight_type, scale_type, asym):
+def unpack_weight(
+    blob: torch.Tensor, out_dtype: torch.dtype, n, k, groupsize, compute_type, weight_type, scale_type, asym
+):
     return _ark_instance().unpack_weight(blob, out_dtype, n, k, groupsize, compute_type, weight_type, scale_type, asym)
 
 
@@ -975,4 +982,3 @@ def woq_linear(
     )
     out.copy_(result)
     return out
-

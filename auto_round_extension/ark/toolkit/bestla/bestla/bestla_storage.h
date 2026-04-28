@@ -108,7 +108,7 @@ class ObjectAlignedBuffer : public ISerialObject {
 
   void resize(size_t bytes) { mBufSize = bytes; }
 
-  // ser
+  // set
   int8_t* mBufPtr = nullptr;
   size_t mBufSize = 0;
   size_t mBufOffset = 0;
@@ -150,7 +150,7 @@ class ObjectAlignedBuffer : public ISerialObject {
 
 class ObjectBuffer : public ISerialObjectV2 {
  public:
-  // ser
+  // set
   int8_t* buf_ptr_ = nullptr;
   size_t buf_size_ = 0;
 
@@ -179,7 +179,7 @@ class ObjectOptionalBuffer : public ObjectAlignedBuffer<ALIGN> {
     mNotEmpty = bytes > 0;
   }
 
-  // ser
+  // set
   bool mNotEmpty{false};
 
   virtual size_t getSerializedSize() override {
@@ -217,7 +217,7 @@ enum class Layout : uint32_t {
 };
 
 class ObjectQuantCorrection : public ISerialObject {
-  // ser
+  // set
  public:
   size_t mCSize = 0;
   int mCStep = 0;
@@ -226,7 +226,7 @@ class ObjectQuantCorrection : public ISerialObject {
   ObjectOptionalBuffer<Alignment> mZpBuf, mRedBuf;
   ObjectOptionalBuffer<Alignment> mDQCorrectionBuf;
 
-  // non-ser
+  // non-set
  public:
   int mScaEleSize = 0, mZpEleSize = 0;
 
@@ -686,14 +686,14 @@ class StorageWeight : public ICollection {
 };
 
 class ObjectCorrection : public ISerialObjectV2 {
-  // ser
+  // set
  public:
   size_t size_ = 0;
   int step_ = 0;
   BTLA_DTYPE sdtype_ = BTLA_DTYPE::F32, zdtype_ = BTLA_DTYPE::S8;
   ObjectBuffer scale_buf_, zp_buf_, red_buf_, dq_buf_;
 
-  // non-ser
+  // non-set
  public:
   inline int8_t* sptr() const { return scale_buf_.buf_size_ ? scale_buf_.buf_ptr_ : nullptr; }
   inline int8_t* zptr() const { return zp_buf_.buf_size_ ? zp_buf_.buf_ptr_ : nullptr; }

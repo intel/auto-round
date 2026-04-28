@@ -1,3 +1,6 @@
+# # Copyright (C) 2026 Intel Corporation
+# # SPDX-License-Identifier: Apache-2.0
+
 """Benchmark our FP16 SDPA and INT8 sage_dynquant against reference sage_attention_page on BMG.
 
 Configurations extracted from the reference performance table:
@@ -6,13 +9,13 @@ Configurations extracted from the reference performance table:
   head_dim in {64, 128}, block_size=512, dtype=float16, prefill (non-causal)
 """
 
-import math
-import time
 import csv
+import math
 import sys
-import torch
-import auto_round_kernel
+import time
 
+import auto_round_kernel
+import torch
 
 ark = None
 
@@ -127,27 +130,26 @@ CONFIGS = [
 def compute_flops(batch, q_seq, k_seq, q_head, kv_head, head_dim):
     """Compute total FLOPs for attention (Q*K + softmax + S*V)."""
     group = q_head // kv_head
-    flops = group * kv_head * q_seq * head_dim * k_seq * 2   # Q*K^T
-    flops += group * kv_head * q_seq * k_seq * 2              # softmax
-    flops += group * kv_head * q_seq * head_dim * k_seq * 2   # S*V
+    flops = group * kv_head * q_seq * head_dim * k_seq * 2  # Q*K^T
+    flops += group * kv_head * q_seq * k_seq * 2  # softmax
+    flops += group * kv_head * q_seq * head_dim * k_seq * 2  # S*V
     flops *= batch
-    
+
     return flops
 
 
 def compute_mem_bytes(batch, q_seq, k_seq, q_head, kv_head, head_dim, elem_size=2):
     """Compute read+write bytes (Q + K + V + O)."""
-    read_bytes = q_head * q_seq * head_dim * elem_size           # Q
-    read_bytes += kv_head * k_seq * head_dim * elem_size         # K
-    read_bytes += kv_head * k_seq * head_dim * elem_size         # V
-    write_bytes = q_head * q_seq * head_dim * elem_size          # O
+    read_bytes = q_head * q_seq * head_dim * elem_size  # Q
+    read_bytes += kv_head * k_seq * head_dim * elem_size  # K
+    read_bytes += kv_head * k_seq * head_dim * elem_size  # V
+    write_bytes = q_head * q_seq * head_dim * elem_size  # O
     read_bytes *= batch
     write_bytes *= batch
     return read_bytes, write_bytes
 
 
-def run_one(batch, q_seq, k_seq, q_head, kv_head, head_dim, block_size,
-            dt=torch.float16, is_causal=False, dev="xpu"):
+def run_one(batch, q_seq, k_seq, q_head, kv_head, head_dim, block_size, dt=torch.float16, is_causal=False, dev="xpu"):
     """Run both FP16 SDPA and INT8 sage_dynquant for one configuration."""
     scale = 1.0 / math.sqrt(head_dim)
     q = torch.randn(batch, q_head, q_seq, head_dim, dtype=dt, device=dev)
@@ -155,26 +157,25 @@ def run_one(batch, q_seq, k_seq, q_head, kv_head, head_dim, block_size,
     v = torch.randn(batch, kv_head, k_seq, head_dim, dtype=dt, device=dev)
 
     # --- FP16 SDPA (our kernel) ---
-    dur_fp16 = bench(lambda: get_ark().sdpa(
-        q, k, v, scale=scale, is_causal=is_causal))
+    dur_fp16 = bench(lambda: get_ark().sdpa(q, k, v, scale=scale, is_causal=is_causal))
     fp16_us = dur_fp16 * 1e6
 
     # --- INT8 sage_dynquant (our kernel) ---
-    dur_i8 = bench(lambda: get_ark().sagev1(
-        q, k, v, scale=scale, is_causal=is_causal, quant_block_size=block_size))
+    dur_i8 = bench(lambda: get_ark().sagev1(q, k, v, scale=scale, is_causal=is_causal, quant_block_size=block_size))
     i8_us = dur_i8 * 1e6
 
     # Correctness: INT8 vs PyTorch FP16
-    out_i8 = get_ark().sagev1(q, k, v, scale=scale, is_causal=is_causal,
-                                      quant_block_size=block_size)
+    out_i8 = get_ark().sagev1(q, k, v, scale=scale, is_causal=is_causal, quant_block_size=block_size)
     ref = torch.nn.functional.scaled_dot_product_attention(
-        q, k, v, scale=scale, is_causal=is_causal,
-        enable_gqa=(q_head // kv_head) > 1)
+        q, k, v, scale=scale, is_causal=is_causal, enable_gqa=(q_head // kv_head) > 1
+    )
     dff = (ref - out_i8).abs()
 
     # Metrics
     flops = compute_flops(batch, q_seq, k_seq, q_head, kv_head, head_dim)
-    ratio = 1 if not is_causal else ((k_seq - q_seq) + q_seq/2) / k_seq # Approximate ratio of effective k_seq for causal attention
+    ratio = (
+        1 if not is_causal else ((k_seq - q_seq) + q_seq / 2) / k_seq
+    )  # Approximate ratio of effective k_seq for causal attention
     flops = flops * ratio  # Adjust FLOPs for causal case where effective k_seq is smaller
     fp16_tflops = flops / dur_fp16 / 1e12 if dur_fp16 > 0 else 0
     i8_tflops = flops / dur_i8 / 1e12 if dur_i8 > 0 else 0
@@ -213,34 +214,37 @@ def main():
     is_causal = True
 
     print("=" * 160)
-    print(f"BMG Benchmark: Our FP16 SDPA vs Our INT8 sage_dynquant vs Reference sage_attention_page")
+    print("BMG Benchmark: Our FP16 SDPA vs Our INT8 sage_dynquant vs Reference sage_attention_page")
     print(f"dtype={dt}, causal={is_causal}, device={dev}")
     print("=" * 160)
 
-    header = (f"{'Hq':>4s} {'Hkv':>3s} {'D':>4s} {'Sq':>5s} {'Skv':>6s} "
-              f"{'Ref(us)':>10s} "
-              f"{'FP16(us)':>10s} {'TFLOPS':>7s} {'MFU':>5s} {'vs Ref':>7s} "
-              f"{'INT8(us)':>10s} {'TFLOPS':>7s} {'MFU':>5s} {'vs Ref':>7s} {'vs FP16':>7s} "
-              f"{'DiffMax':>9s} {'DiffMean':>9s}")
+    header = (
+        f"{'Hq':>4s} {'Hkv':>3s} {'D':>4s} {'Sq':>5s} {'Skv':>6s} "
+        f"{'Ref(us)':>10s} "
+        f"{'FP16(us)':>10s} {'TFLOPS':>7s} {'MFU':>5s} {'vs Ref':>7s} "
+        f"{'INT8(us)':>10s} {'TFLOPS':>7s} {'MFU':>5s} {'vs Ref':>7s} {'vs FP16':>7s} "
+        f"{'DiffMax':>9s} {'DiffMean':>9s}"
+    )
     print(header)
     print("-" * 160)
 
     results = []
     for batch, q_seq, k_seq, q_head, kv_head, head_dim, block_size in CONFIGS:
-        r = run_one(batch, q_seq, k_seq, q_head, kv_head, head_dim, block_size,
-                    dt=dt, is_causal=is_causal, dev=dev)
+        r = run_one(batch, q_seq, k_seq, q_head, kv_head, head_dim, block_size, dt=dt, is_causal=is_causal, dev=dev)
         results.append(r)
 
-        ref_str = f"{r['ref_us']:.0f}" if r['ref_us'] else "N/A"
-        fp16_vs_ref = f"{r['fp16_vs_ref']:.2f}x" if r['fp16_vs_ref'] else "N/A"
-        i8_vs_ref = f"{r['i8_vs_ref']:.2f}x" if r['i8_vs_ref'] else "N/A"
-        i8_vs_fp16 = f"{r['i8_vs_fp16']:.2f}x" if r['i8_vs_fp16'] else "N/A"
+        ref_str = f"{r['ref_us']:.0f}" if r["ref_us"] else "N/A"
+        fp16_vs_ref = f"{r['fp16_vs_ref']:.2f}x" if r["fp16_vs_ref"] else "N/A"
+        i8_vs_ref = f"{r['i8_vs_ref']:.2f}x" if r["i8_vs_ref"] else "N/A"
+        i8_vs_fp16 = f"{r['i8_vs_fp16']:.2f}x" if r["i8_vs_fp16"] else "N/A"
 
-        print(f"{r['q_head_num']:4d} {r['kv_head_num']:3d} {r['head_dim']:4d} {r['q_seq_len']:5d} {r['k_seq_len']:6d} "
-              f"{ref_str:>10s} "
-              f"{r['fp16_us']:10.0f} {r['fp16_tflops']:7.1f} {r['fp16_mfu']:4.0%} {fp16_vs_ref:>7s} "
-              f"{r['i8_us']:10.0f} {r['i8_tflops']:7.1f} {r['i8_mfu']:4.0%} {i8_vs_ref:>7s} {i8_vs_fp16:>7s} "
-              f"{r['diff_max']:9.4f} {r['diff_mean']:9.6f}")
+        print(
+            f"{r['q_head_num']:4d} {r['kv_head_num']:3d} {r['head_dim']:4d} {r['q_seq_len']:5d} {r['k_seq_len']:6d} "
+            f"{ref_str:>10s} "
+            f"{r['fp16_us']:10.0f} {r['fp16_tflops']:7.1f} {r['fp16_mfu']:4.0%} {fp16_vs_ref:>7s} "
+            f"{r['i8_us']:10.0f} {r['i8_tflops']:7.1f} {r['i8_mfu']:4.0%} {i8_vs_ref:>7s} {i8_vs_fp16:>7s} "
+            f"{r['diff_max']:9.4f} {r['diff_mean']:9.6f}"
+        )
 
     # Write CSV
     csv_path = f"bench_bmg_comparison_{'causal' if is_causal else 'non_causal'}.csv"
@@ -256,27 +260,27 @@ def main():
     print("Summary")
     print("=" * 100)
 
-    fp16_ratios = [r['fp16_vs_ref'] for r in results if r['fp16_vs_ref']]
-    i8_ratios = [r['i8_vs_ref'] for r in results if r['i8_vs_ref']]
-    i8_fp16_ratios = [r['i8_vs_fp16'] for r in results if r['i8_vs_fp16']]
+    fp16_ratios = [r["fp16_vs_ref"] for r in results if r["fp16_vs_ref"]]
+    i8_ratios = [r["i8_vs_ref"] for r in results if r["i8_vs_ref"]]
+    i8_fp16_ratios = [r["i8_vs_fp16"] for r in results if r["i8_vs_fp16"]]
 
     if fp16_ratios:
         faster_fp16 = sum(1 for x in fp16_ratios if x < 1.0)
-        print(f"\n  Our FP16 SDPA vs Reference sage_attention_page:")
+        print("\n  Our FP16 SDPA vs Reference sage_attention_page:")
         print(f"    Faster configs: {faster_fp16}/{len(fp16_ratios)}")
         print(f"    Avg ratio:      {sum(fp16_ratios)/len(fp16_ratios):.3f}x")
         print(f"    Best:           {min(fp16_ratios):.3f}x    Worst: {max(fp16_ratios):.3f}x")
 
     if i8_ratios:
         faster_i8 = sum(1 for x in i8_ratios if x < 1.0)
-        print(f"\n  Our INT8 sage_dynquant vs Reference sage_attention_page:")
+        print("\n  Our INT8 sage_dynquant vs Reference sage_attention_page:")
         print(f"    Faster configs: {faster_i8}/{len(i8_ratios)}")
         print(f"    Avg ratio:      {sum(i8_ratios)/len(i8_ratios):.3f}x")
         print(f"    Best:           {min(i8_ratios):.3f}x    Worst: {max(i8_ratios):.3f}x")
 
     if i8_fp16_ratios:
         faster_i8_fp16 = sum(1 for x in i8_fp16_ratios if x < 1.0)
-        print(f"\n  Our INT8 vs Our FP16:")
+        print("\n  Our INT8 vs Our FP16:")
         print(f"    INT8 faster configs: {faster_i8_fp16}/{len(i8_fp16_ratios)}")
         print(f"    Avg ratio:           {sum(i8_fp16_ratios)/len(i8_fp16_ratios):.3f}x")
         print(f"    Best:                {min(i8_fp16_ratios):.3f}x    Worst: {max(i8_fp16_ratios):.3f}x")

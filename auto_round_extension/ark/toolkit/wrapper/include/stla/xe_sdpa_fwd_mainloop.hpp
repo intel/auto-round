@@ -85,7 +85,7 @@ struct SDPAFwdMainloop<sdpa::XeDefault<Stages>, CausalMask_, FullMask_, CachedKV
   using TileShapePV = decltype(TiledMMAPV{}.tile_mnk());
   static constexpr int VTiles = VTiles_;
   using SubgroupLayoutQK = decltype(TiledMMAQK{}.get_atom_layout_mnk());
-  using SGPerWG = decltype(product(take<1, 4>(shape(typename TiledMMAQK::ThrLayoutVMNK{}))));
+  using SGPerWG = decltype(product(take<1, 4>(shape(typename TiledMMAQK::TheLayoutVMNK{}))));
 
   using TensorQ = TensorQ_;
   using TensorK = TensorK_;
@@ -196,7 +196,7 @@ struct SDPAFwdMainloop<sdpa::XeDefault<Stages>, CausalMask_, FullMask_, CachedKV
                                  int blk_k0,             // K block range: [K0,K1)
                                  int blk_k1,
                                  int total_blk,  // Total # of K blocks
-                                 int thr_id, int seq_len, int seq_len_kv_cache, int l_coord, int full_tile_offset,
+                                 int the_id, int seq_len, int seq_len_kv_cache, int l_coord, int full_tile_offset,
                                  int discard_seq_coord, TensorK_cache2D const& K_cache_2D = TensorK_cache2D{},
                                  TensorV_cache2D const& V_cache_2D = TensorV_cache2D{}) {
     using namespace sycl::ext::oneapi::this_work_item;
@@ -242,33 +242,33 @@ struct SDPAFwdMainloop<sdpa::XeDefault<Stages>, CausalMask_, FullMask_, CachedKV
     TiledMMAPV mma_pv{};
 
     /* Slice TiledCopy/TiledMMA operations down to to work-item level */
-    auto thr_copy_q = copy_q.get_slice(thr_id);
-    auto thr_copy_k = copy_k.get_slice(thr_id);
-    auto thr_copy_v = copy_v.get_slice(thr_id);
-    auto thr_copy_k_cache = copy_k_cache.get_slice(thr_id);
-    auto thr_copy_v_cache = copy_v_cache.get_slice(thr_id);
-    auto thr_mma_qk = mma_qk.get_slice(thr_id);
-    auto thr_mma_pv = mma_pv.get_slice(thr_id);
+    auto the_copy_q = copy_q.get_slice(the_id);
+    auto the_copy_k = copy_k.get_slice(the_id);
+    auto the_copy_v = copy_v.get_slice(the_id);
+    auto the_copy_k_cache = copy_k_cache.get_slice(the_id);
+    auto the_copy_v_cache = copy_v_cache.get_slice(the_id);
+    auto the_mma_qk = mma_qk.get_slice(the_id);
+    auto the_mma_pv = mma_pv.get_slice(the_id);
 
     /* Partition coordinate tensors for copy */
-    auto tQgQ = thr_copy_q.partition_S(gQ);        // (atom_val,q',d',D)
-    auto tKgK = thr_copy_k.partition_S(gK);        // (atom_val,k',d',K,D)
-    auto tVgV = thr_copy_v.partition_S(gV_split);  // (atom_val,v',k',VV,K)
-    auto tKgK_cache = thr_copy_k_cache.partition_S(gK_cache);
-    auto tVgV_cache = thr_copy_v_cache.partition_S(gV_cache_split);
+    auto tQgQ = the_copy_q.partition_S(gQ);        // (atom_val,q',d',D)
+    auto tKgK = the_copy_k.partition_S(gK);        // (atom_val,k',d',K,D)
+    auto tVgV = the_copy_v.partition_S(gV_split);  // (atom_val,v',k',VV,K)
+    auto tKgK_cache = the_copy_k_cache.partition_S(gK_cache);
+    auto tVgV_cache = the_copy_v_cache.partition_S(gV_cache_split);
 
     /* Create register fragments for MMA and copies */
-    auto tQrQ = thr_copy_q.partition_sg_fragment_D(gQ(_, _, 0));
-    auto tSrQ = thr_mma_qk.partition_sg_fragment_A(gQ(_, _, 0));
+    auto tQrQ = the_copy_q.partition_sg_fragment_D(gQ(_, _, 0));
+    auto tSrQ = the_mma_qk.partition_sg_fragment_A(gQ(_, _, 0));
 
-    auto tKrK = thr_copy_k.partition_sg_fragment_D(gK(_, _, 0, 0));
-    auto tSrK = thr_mma_qk.partition_sg_fragment_B(gK(_, _, 0, 0));
+    auto tKrK = the_copy_k.partition_sg_fragment_D(gK(_, _, 0, 0));
+    auto tSrK = the_mma_qk.partition_sg_fragment_B(gK(_, _, 0, 0));
 
-    auto tSrS = thr_mma_qk.partition_sg_fragment_C(cP);
-    auto tArP = thr_mma_pv.partition_sg_fragment_A(cP);
+    auto tSrS = the_mma_qk.partition_sg_fragment_C(cP);
+    auto tArP = the_mma_pv.partition_sg_fragment_A(cP);
 
-    auto tVrV = thr_copy_v.partition_sg_fragment_D(gV_split(_, _, 0, 0));
-    auto tArV = thr_mma_pv.partition_sg_fragment_B(gV_split(_, _, 0, 0));
+    auto tVrV = the_copy_v.partition_sg_fragment_D(gV_split(_, _, 0, 0));
+    auto tArV = the_mma_pv.partition_sg_fragment_B(gV_split(_, _, 0, 0));
 
     /* Create TiledCopy objects for prefetches */
     auto prefetch_q = make_block_2d_prefetch(copy_q);
@@ -278,11 +278,11 @@ struct SDPAFwdMainloop<sdpa::XeDefault<Stages>, CausalMask_, FullMask_, CachedKV
     auto prefetch_v_cache = make_block_2d_prefetch(copy_v_cache);
 
     /* Partition global tensors for prefetch */
-    auto pQgQ = prefetch_q.get_slice(thr_id).partition_S(gQ);
-    auto pKgK = prefetch_k.get_slice(thr_id).partition_S(gK);
-    auto pVgV = prefetch_v.get_slice(thr_id).partition_S(gV_split);
-    auto pKgK_cache = prefetch_k_cache.get_slice(thr_id).partition_S(gK_cache);
-    auto pVgV_cache = prefetch_v_cache.get_slice(thr_id).partition_S(gV_cache_split);
+    auto pQgQ = prefetch_q.get_slice(the_id).partition_S(gQ);
+    auto pKgK = prefetch_k.get_slice(the_id).partition_S(gK);
+    auto pVgV = prefetch_v.get_slice(the_id).partition_S(gV_split);
+    auto pKgK_cache = prefetch_k_cache.get_slice(the_id).partition_S(gK_cache);
+    auto pVgV_cache = prefetch_v_cache.get_slice(the_id).partition_S(gV_cache_split);
 
     // ------
     // Kernel
@@ -359,7 +359,7 @@ struct SDPAFwdMainloop<sdpa::XeDefault<Stages>, CausalMask_, FullMask_, CachedKV
           // Need to get global col and row indices to mask the elements
           Tensor cPgP = make_identity_tensor(make_shape(seq_len, seq_len));
           Tensor gP = local_tile(cPgP, take<0, 2>(TileShapeQK{}), make_coord(get<0>(blk_qv), K));
-          auto cS_thread = thr_mma_qk.partition_C(gP);
+          auto cS_thread = the_mma_qk.partition_C(gP);
           CUTLASS_PRAGMA_UNROLL
           for (int i = 0; i < tSrS.size(); ++i) {
             int row_idx = get<0>(cS_thread(i));
@@ -374,7 +374,7 @@ struct SDPAFwdMainloop<sdpa::XeDefault<Stages>, CausalMask_, FullMask_, CachedKV
           // Need to get global col and row indices to mask the elements
           Tensor cPgP = make_identity_tensor(make_shape(seq_len, seq_len));
           Tensor gP = local_tile(cPgP, take<0, 2>(TileShapeQK{}), make_coord(get<0>(blk_qv), K));
-          auto cS_thread = thr_mma_qk.partition_C(gP);
+          auto cS_thread = the_mma_qk.partition_C(gP);
           int row_idx_begin = get<0>(cS_thread(0));
           int row_idx_end = row_idx_begin + q_sg_tile;
           int col_idx_begin = get<1>(cS_thread(0));

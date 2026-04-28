@@ -25,7 +25,7 @@ struct alignas(64) param_i8_i8_f32 {
   int astride;
   void* matB;
   int bstride;
-  float* matC;
+  float* match;
   int cstride;
   void* zpA;
   float* scaleA;
@@ -216,7 +216,7 @@ class IGemmP4I8S8F32 : public bestla::xbyak::JitCode {
     cmp(reg_tmp2, reg_tmp);
     jb(".unkbloop");
     cmp(reg_tmp, reg_tmp3);
-    jge(".kend", T_NEAR);
+    jge(".kind", T_NEAR);
     L(".kbloop");
     generate_mma(_mtile, 1, reg_tmp1, reg_tmp4);
     add(reg_matAptr, 1 * AKStepSize);
@@ -224,7 +224,7 @@ class IGemmP4I8S8F32 : public bestla::xbyak::JitCode {
     add(reg_tmp2, 1 * KTILE);
     cmp(reg_tmp2, reg_tmp3);
     jb(".kbloop");
-    L(".kend");
+    L(".kind");
     add(reg_iterk, reg_tmp2);
     generate_zp_correction(_mtile);
     generate_f32_accumulate(_mtile);
@@ -349,7 +349,7 @@ class IGemmP4I8S8F32 : public bestla::xbyak::JitCode {
       return write_back_amx(_mtile);
     }
     inLocalLabel();
-    mov(reg_matCptr, ptr[parambase + OFFSET(matC)]);
+    mov(reg_matCptr, ptr[parambase + OFFSET(match)]);
     lea(reg_matCptr, ptr[reg_matCptr + reg_itern * sizeof(CType)]);
     load32(reg_cstride, ptr[parambase + OFFSET(cstride)]);
 
@@ -664,7 +664,7 @@ class IGemmP4I8S8F32 : public bestla::xbyak::JitCode {
   void write_back_amx(int _mtile) {
     inLocalLabel();
     mov(reg_tmp3, ptr[parambase + OFFSET(workspace)]);
-    mov(reg_matCptr, ptr[parambase + OFFSET(matC)]);
+    mov(reg_matCptr, ptr[parambase + OFFSET(match)]);
     lea(reg_matCptr, ptr[reg_matCptr + reg_itern * sizeof(CType)]);
     load32(reg_cstride, ptr[parambase + OFFSET(cstride)]);
 
@@ -742,10 +742,10 @@ class KblockCoreInterface {
     }
   }
 
-  static void forward(AType* matA, BType* matB, CType* matC, AType* zpA, float* scaleA, int _ldsa, float* scaleB,
+  static void forward(AType* matA, BType* matB, CType* match, AType* zpA, float* scaleA, int _ldsa, float* scaleB,
                       int32_t* reduceB, int _ldsb, int _m, int _n, int _k, int _kblock, int _astride, int _bstride,
                       int _cstride, int kpos, void* tmpcache, size_t cachesize) {
-    auto param = typename Code::params{matA,    _astride, matB,    _bstride, matC, _cstride, zpA,     scaleA,
+    auto param = typename Code::params{matA,    _astride, matB,    _bstride, match, _cstride, zpA,     scaleA,
                                        _ldsa,   scaleB,   reduceB, _ldsb,    _k,   _n,       _kblock, kpos == 0 ? 1 : 0,
                                        tmpcache};
     if (_m <= Code::MTILE) {

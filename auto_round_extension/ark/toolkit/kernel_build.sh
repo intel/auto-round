@@ -1,3 +1,6 @@
+# # Copyright (C) 2026 Intel Corporation
+# # SPDX-License-Identifier: Apache-2.0
+
 # rm -rf build
 rm -f ./auto_round_kernel/*.so
 cmake -B build -DCMAKE_BUILD_TYPE=Release

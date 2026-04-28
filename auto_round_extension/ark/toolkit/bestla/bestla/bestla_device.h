@@ -358,12 +358,12 @@ class CpuDevice {
         uint32_t tmp[4];
         _cpu.getCpuid(1, tmp);
         if (p) printf("!!!\t%x\t%x\t%x\t%x!!!\n", tmp[0], tmp[1], tmp[2], tmp[3]);
-        const int famliy = (tmp[0] >> 8) & ((1u << 4) - 1);          // cpu.extractBit(a[0], 8, 11);
+        const int family = (tmp[0] >> 8) & ((1u << 4) - 1);          // cpu.extractBit(a[0], 8, 11);
         const int extendedModel = (tmp[0] >> 16) & ((1u << 4) - 1);  // cpu.extractBit(a[0], 16, 24);
         {
           for (int i = 0; i < int(BTLA_ISA::ISA_COUNT); i++) PE[i] = 1.0f;
           // CPU identification refer to: https://en.wikichip.org/wiki/intel/cpuid
-          if (famliy == 6) switch (extendedModel) {
+          if (family == 6) switch (extendedModel) {
               case 9:  // ALD
                 PE[int(BTLA_ISA::AVX2)] = 3.0f;
                 PE[int(BTLA_ISA::AVX_VNNI)] = 5.0f;

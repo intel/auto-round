@@ -34,7 +34,7 @@ using Ymm = Xbyak::Ymm;
 using Xmm = Xbyak::Xmm;
 class eltwise_injector {
  public:
-  eltwise_injector(BTLA_ELTWISEOP eltwiseop) : elt_op(eltwiseop) { reigster_table_entries(); }
+  eltwise_injector(BTLA_ELTWISEOP eltwiseop) : elt_op(eltwiseop) { register_table_entries(); }
   virtual ~eltwise_injector() {}
 
   void assign_resources(Xbyak::CodeGenerator* ptr, const std::set<int>& used_zmm_idx, const Xbyak::Reg64& table_reg,
@@ -126,7 +126,7 @@ class eltwise_injector {
   }
 
  private:
-  void reigster_table_entries() {
+  void register_table_entries() {
     static const table_t common_values{
         {zero, {0x00000000, true}},      {half, {0x3f000000, true}},          {one, {0x3f800000, true}},
         {two, {0x40000000, true}},       {minus_one, {0xbf800000, true}},     {minus_two, {0xc0000000, true}},

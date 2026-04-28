@@ -162,7 +162,7 @@ class Avx2N8P1 : protected bestla::xbyak::JitAvx2 {
     int astride;
     BType* matB;
     int bstride;
-    CType* matC;
+    CType* match;
     int cstride;
     int k;
     int n;
@@ -277,7 +277,7 @@ class Avx2N8P1 : protected bestla::xbyak::JitAvx2 {
     cmp(reg_iterk, reg_tmp);  // k iteration variable
     jb(".unkloop");
     cmp(reg_tmp, reg_ksize);
-    jge(".kend", T_NEAR);
+    jge(".kind", T_NEAR);
     L(".kloop");
     generate_fma(_mtile, 1);
     add(reg_matAptr, 1 * AKStepSize);
@@ -285,7 +285,7 @@ class Avx2N8P1 : protected bestla::xbyak::JitAvx2 {
     add(reg_iterk, 1 * KTILE);
     cmp(reg_iterk, reg_ksize);  // k iteration variable
     jb(".kloop");
-    L(".kend");
+    L(".kind");
     outLocalLabel();
   }
 
@@ -333,7 +333,7 @@ class Avx2N8P1 : protected bestla::xbyak::JitAvx2 {
     }
     jmp(".end", T_NEAR);
     L(".read");
-    mov(reg_matCptr, ptr[parambase + OFFSET(matC)]);
+    mov(reg_matCptr, ptr[parambase + OFFSET(match)]);
     lea(reg_matCptr, ptr[reg_matCptr + reg_itern * sizeof(CType)]);
     load32(reg_cstride, ptr[parambase + OFFSET(cstride)]);
     for (int i = 0; i < _mtile; i++) {
@@ -348,7 +348,7 @@ class Avx2N8P1 : protected bestla::xbyak::JitAvx2 {
 
   void write_back(int _mtile) {
     inLocalLabel();
-    mov(reg_matCptr, ptr[parambase + OFFSET(matC)]);
+    mov(reg_matCptr, ptr[parambase + OFFSET(match)]);
     load32(reg_cstride, ptr[parambase + OFFSET(cstride)]);
     lea(reg_matCptr, ptr[reg_matCptr + reg_itern * sizeof(CType)]);
     for (int i = 0; i < _mtile; i++) {
@@ -382,7 +382,7 @@ class Avx512fN16P1 : protected bestla::xbyak::JitAvx512f {
     int astride;
     BType* matB;
     int bstride;
-    CType* matC;
+    CType* match;
     int cstride;
     int k;
     int n;
@@ -497,7 +497,7 @@ class Avx512fN16P1 : protected bestla::xbyak::JitAvx512f {
     cmp(reg_iterk, reg_tmp);  // k iteration variable
     jb(".unkloop");
     cmp(reg_tmp, reg_ksize);
-    jge(".kend", T_NEAR);
+    jge(".kind", T_NEAR);
     L(".kloop");
     generate_fma(_mtile, 1);
     add(reg_matAptr, 1 * AKStepSize);
@@ -505,7 +505,7 @@ class Avx512fN16P1 : protected bestla::xbyak::JitAvx512f {
     add(reg_iterk, 1 * KTILE);
     cmp(reg_iterk, reg_ksize);  // k iteration variable
     jb(".kloop");
-    L(".kend");
+    L(".kind");
     outLocalLabel();
   }
 
@@ -553,7 +553,7 @@ class Avx512fN16P1 : protected bestla::xbyak::JitAvx512f {
     }
     jmp(".end", T_NEAR);
     L(".read");
-    mov(reg_matCptr, ptr[parambase + OFFSET(matC)]);
+    mov(reg_matCptr, ptr[parambase + OFFSET(match)]);
     lea(reg_matCptr, ptr[reg_matCptr + reg_itern * sizeof(CType)]);
     load32(reg_cstride, ptr[parambase + OFFSET(cstride)]);
     for (int i = 0; i < _mtile; i++) {
@@ -568,7 +568,7 @@ class Avx512fN16P1 : protected bestla::xbyak::JitAvx512f {
 
   void write_back(int _mtile) {
     inLocalLabel();
-    mov(reg_matCptr, ptr[parambase + OFFSET(matC)]);
+    mov(reg_matCptr, ptr[parambase + OFFSET(match)]);
     load32(reg_cstride, ptr[parambase + OFFSET(cstride)]);
     lea(reg_matCptr, ptr[reg_matCptr + reg_itern * sizeof(CType)]);
     for (int i = 0; i < _mtile; i++) {
@@ -602,7 +602,7 @@ class Avx512fp16N32P1 : protected bestla::xbyak::JitAvx512_fp16 {
     int astride;
     BType* matB;
     int bstride;
-    CType* matC;
+    CType* match;
     int cstride;
     int k;
     int n;
@@ -717,7 +717,7 @@ class Avx512fp16N32P1 : protected bestla::xbyak::JitAvx512_fp16 {
     cmp(reg_iterk, reg_tmp);  // k iteration variable
     jb(".unkloop");
     cmp(reg_tmp, reg_ksize);
-    jge(".kend", T_NEAR);
+    jge(".kind", T_NEAR);
     L(".kloop");
     generate_fma(_mtile, 1);
     add(reg_matAptr, 1 * AKStepSize);
@@ -725,7 +725,7 @@ class Avx512fp16N32P1 : protected bestla::xbyak::JitAvx512_fp16 {
     add(reg_iterk, 1 * KTILE);
     cmp(reg_iterk, reg_ksize);  // k iteration variable
     jb(".kloop");
-    L(".kend");
+    L(".kind");
     outLocalLabel();
   }
 
@@ -773,7 +773,7 @@ class Avx512fp16N32P1 : protected bestla::xbyak::JitAvx512_fp16 {
     }
     jmp(".end", T_NEAR);
     L(".read");
-    mov(reg_matCptr, ptr[parambase + OFFSET(matC)]);
+    mov(reg_matCptr, ptr[parambase + OFFSET(match)]);
     lea(reg_matCptr, ptr[reg_matCptr + reg_itern * sizeof(CType)]);
     load32(reg_cstride, ptr[parambase + OFFSET(cstride)]);
     for (int i = 0; i < _mtile; i++) {
@@ -788,7 +788,7 @@ class Avx512fp16N32P1 : protected bestla::xbyak::JitAvx512_fp16 {
 
   void write_back(int _mtile) {
     inLocalLabel();
-    mov(reg_matCptr, ptr[parambase + OFFSET(matC)]);
+    mov(reg_matCptr, ptr[parambase + OFFSET(match)]);
     load32(reg_cstride, ptr[parambase + OFFSET(cstride)]);
     lea(reg_matCptr, ptr[reg_matCptr + reg_itern * sizeof(CType)]);
     for (int i = 0; i < _mtile; i++) {
@@ -822,7 +822,7 @@ class Avx512bf16N16P2 : protected bestla::xbyak::JitAvx512_bf16 {
     int astride;
     BType* matB;
     int bstride;
-    CType* matC;
+    CType* match;
     int cstride;
     int k;
     int n;
@@ -937,7 +937,7 @@ class Avx512bf16N16P2 : protected bestla::xbyak::JitAvx512_bf16 {
     cmp(reg_iterk, reg_tmp);  // k iteration variable
     jb(".unkloop");
     cmp(reg_tmp, reg_ksize);
-    jge(".kend", T_NEAR);
+    jge(".kind", T_NEAR);
     L(".kloop");
     generate_fma(_mtile, 1);
     add(reg_matAptr, 1 * AKStepSize);
@@ -945,7 +945,7 @@ class Avx512bf16N16P2 : protected bestla::xbyak::JitAvx512_bf16 {
     add(reg_iterk, 1 * KTILE);
     cmp(reg_iterk, reg_ksize);  // k iteration variable
     jb(".kloop");
-    L(".kend");
+    L(".kind");
     outLocalLabel();
   }
 
@@ -993,7 +993,7 @@ class Avx512bf16N16P2 : protected bestla::xbyak::JitAvx512_bf16 {
     }
     jmp(".end", T_NEAR);
     L(".read");
-    mov(reg_matCptr, ptr[parambase + OFFSET(matC)]);
+    mov(reg_matCptr, ptr[parambase + OFFSET(match)]);
     lea(reg_matCptr, ptr[reg_matCptr + reg_itern * sizeof(CType)]);
     load32(reg_cstride, ptr[parambase + OFFSET(cstride)]);
     for (int i = 0; i < _mtile; i++) {
@@ -1008,7 +1008,7 @@ class Avx512bf16N16P2 : protected bestla::xbyak::JitAvx512_bf16 {
 
   void write_back(int _mtile) {
     inLocalLabel();
-    mov(reg_matCptr, ptr[parambase + OFFSET(matC)]);
+    mov(reg_matCptr, ptr[parambase + OFFSET(match)]);
     load32(reg_cstride, ptr[parambase + OFFSET(cstride)]);
     lea(reg_matCptr, ptr[reg_matCptr + reg_itern * sizeof(CType)]);
     for (int i = 0; i < _mtile; i++) {
@@ -1041,7 +1041,7 @@ class Avx512vnniN16P4 : protected bestla::xbyak::JitAvx512vnni {
     int astride;
     BType* matB;
     int bstride;
-    CType* matC;
+    CType* match;
     int cstride;
     int k;
     int n;
@@ -1156,7 +1156,7 @@ class Avx512vnniN16P4 : protected bestla::xbyak::JitAvx512vnni {
     cmp(reg_iterk, reg_tmp);  // k iteration variable
     jb(".unkloop");
     cmp(reg_tmp, reg_ksize);
-    jge(".kend", T_NEAR);
+    jge(".kind", T_NEAR);
     L(".kloop");
     generate_fma(_mtile, 1);
     add(reg_matAptr, 1 * AKStepSize);
@@ -1164,7 +1164,7 @@ class Avx512vnniN16P4 : protected bestla::xbyak::JitAvx512vnni {
     add(reg_iterk, 1 * KTILE);
     cmp(reg_iterk, reg_ksize);  // k iteration variable
     jb(".kloop");
-    L(".kend");
+    L(".kind");
     outLocalLabel();
   }
 
@@ -1212,7 +1212,7 @@ class Avx512vnniN16P4 : protected bestla::xbyak::JitAvx512vnni {
     }
     jmp(".end", T_NEAR);
     L(".read");
-    mov(reg_matCptr, ptr[parambase + OFFSET(matC)]);
+    mov(reg_matCptr, ptr[parambase + OFFSET(match)]);
     lea(reg_matCptr, ptr[reg_matCptr + reg_itern * sizeof(CType)]);
     load32(reg_cstride, ptr[parambase + OFFSET(cstride)]);
     for (int i = 0; i < _mtile; i++) {
@@ -1227,7 +1227,7 @@ class Avx512vnniN16P4 : protected bestla::xbyak::JitAvx512vnni {
 
   void write_back(int _mtile) {
     inLocalLabel();
-    mov(reg_matCptr, ptr[parambase + OFFSET(matC)]);
+    mov(reg_matCptr, ptr[parambase + OFFSET(match)]);
     load32(reg_cstride, ptr[parambase + OFFSET(cstride)]);
     lea(reg_matCptr, ptr[reg_matCptr + reg_itern * sizeof(CType)]);
     for (int i = 0; i < _mtile; i++) {
@@ -1261,7 +1261,7 @@ class Avx512bwN16P4 : protected bestla::xbyak::JitAvx512bw {
     int astride;
     BType* matB;
     int bstride;
-    CType* matC;
+    CType* match;
     int cstride;
     int k;
     int n;
@@ -1378,7 +1378,7 @@ class Avx512bwN16P4 : protected bestla::xbyak::JitAvx512bw {
     cmp(reg_iterk, reg_tmp);  // k iteration variable
     jb(".unkloop");
     cmp(reg_tmp, reg_ksize);
-    jge(".kend", T_NEAR);
+    jge(".kind", T_NEAR);
     L(".kloop");
     generate_fma(_mtile, 1);
     add(reg_matAptr, 1 * AKStepSize);
@@ -1386,7 +1386,7 @@ class Avx512bwN16P4 : protected bestla::xbyak::JitAvx512bw {
     add(reg_iterk, 1 * KTILE);
     cmp(reg_iterk, reg_ksize);  // k iteration variable
     jb(".kloop");
-    L(".kend");
+    L(".kind");
     outLocalLabel();
   }
   void generate_fma(int _mtile, int _kunroll) {
@@ -1434,7 +1434,7 @@ class Avx512bwN16P4 : protected bestla::xbyak::JitAvx512bw {
     }
     jmp(".end", T_NEAR);
     L(".read");
-    mov(reg_matCptr, ptr[parambase + OFFSET(matC)]);
+    mov(reg_matCptr, ptr[parambase + OFFSET(match)]);
     lea(reg_matCptr, ptr[reg_matCptr + reg_itern * sizeof(CType)]);
     load32(reg_cstride, ptr[parambase + OFFSET(cstride)]);
     for (int i = 0; i < _mtile; i++) {
@@ -1449,7 +1449,7 @@ class Avx512bwN16P4 : protected bestla::xbyak::JitAvx512bw {
 
   void write_back(int _mtile) {
     inLocalLabel();
-    mov(reg_matCptr, ptr[parambase + OFFSET(matC)]);
+    mov(reg_matCptr, ptr[parambase + OFFSET(match)]);
     load32(reg_cstride, ptr[parambase + OFFSET(cstride)]);
     lea(reg_matCptr, ptr[reg_matCptr + reg_itern * sizeof(CType)]);
     for (int i = 0; i < _mtile; i++) {
@@ -1484,7 +1484,7 @@ class AvxvnniN8P4 : protected bestla::xbyak::JitAvxvnni {
     int astride;
     BType* matB;
     int bstride;
-    CType* matC;
+    CType* match;
     int cstride;
     int k;
     int n;
@@ -1602,7 +1602,7 @@ class AvxvnniN8P4 : protected bestla::xbyak::JitAvxvnni {
     cmp(reg_iterk, reg_tmp);  // k iteration variable
     jb(".unkloop");
     cmp(reg_tmp, reg_ksize);
-    jge(".kend", T_NEAR);
+    jge(".kind", T_NEAR);
     L(".kloop");
     generate_fma(_mtile, 1);
     add(reg_matAptr, 1 * AKStepSize);
@@ -1610,7 +1610,7 @@ class AvxvnniN8P4 : protected bestla::xbyak::JitAvxvnni {
     add(reg_iterk, 1 * KTILE);
     cmp(reg_iterk, reg_ksize);  // k iteration variable
     jb(".kloop");
-    L(".kend");
+    L(".kind");
     outLocalLabel();
   }
 
@@ -1675,7 +1675,7 @@ class AvxvnniN8P4 : protected bestla::xbyak::JitAvxvnni {
     }
     jmp(".end", T_NEAR);
     L(".read");
-    mov(reg_matCptr, ptr[parambase + OFFSET(matC)]);
+    mov(reg_matCptr, ptr[parambase + OFFSET(match)]);
     lea(reg_matCptr, ptr[reg_matCptr + reg_itern * sizeof(CType)]);
     load32(reg_cstride, ptr[parambase + OFFSET(cstride)]);
     for (int i = 0; i < _mtile; i++) {
@@ -1690,7 +1690,7 @@ class AvxvnniN8P4 : protected bestla::xbyak::JitAvxvnni {
 
   void write_back(int _mtile) {
     inLocalLabel();
-    mov(reg_matCptr, ptr[parambase + OFFSET(matC)]);
+    mov(reg_matCptr, ptr[parambase + OFFSET(match)]);
     load32(reg_cstride, ptr[parambase + OFFSET(cstride)]);
     lea(reg_matCptr, ptr[reg_matCptr + reg_itern * sizeof(CType)]);
     for (int i = 0; i < _mtile; i++) {
@@ -1731,7 +1731,7 @@ class Avx2vnniN8P4 : protected bestla::xbyak::JitAvx2 {
     int astride;
     BType* matB;
     int bstride;
-    CType* matC;
+    CType* match;
     int cstride;
     int k;
     int n;
@@ -1852,7 +1852,7 @@ class Avx2vnniN8P4 : protected bestla::xbyak::JitAvx2 {
     cmp(reg_iterk, reg_tmp);  // k iteration variable
     jb(".unkloop");
     cmp(reg_tmp, reg_ksize);
-    jge(".kend", T_NEAR);
+    jge(".kind", T_NEAR);
     L(".kloop");
     generate_fma(_mtile, 1);
     add(reg_matAptr, 1 * AKStepSize);
@@ -1860,7 +1860,7 @@ class Avx2vnniN8P4 : protected bestla::xbyak::JitAvx2 {
     add(reg_iterk, 1 * KTILE);
     cmp(reg_iterk, reg_ksize);  // k iteration variable
     jb(".kloop");
-    L(".kend");
+    L(".kind");
     outLocalLabel();
   }
 
@@ -1928,7 +1928,7 @@ class Avx2vnniN8P4 : protected bestla::xbyak::JitAvx2 {
     }
     jmp(".end", T_NEAR);
     L(".read");
-    mov(reg_matCptr, ptr[parambase + OFFSET(matC)]);
+    mov(reg_matCptr, ptr[parambase + OFFSET(match)]);
     lea(reg_matCptr, ptr[reg_matCptr + reg_itern * sizeof(CType)]);
     load32(reg_cstride, ptr[parambase + OFFSET(cstride)]);
     for (int i = 0; i < _mtile; i++) {
@@ -1943,7 +1943,7 @@ class Avx2vnniN8P4 : protected bestla::xbyak::JitAvx2 {
 
   void write_back(int _mtile) {
     inLocalLabel();
-    mov(reg_matCptr, ptr[parambase + OFFSET(matC)]);
+    mov(reg_matCptr, ptr[parambase + OFFSET(match)]);
     load32(reg_cstride, ptr[parambase + OFFSET(cstride)]);
     lea(reg_matCptr, ptr[reg_matCptr + reg_itern * sizeof(CType)]);
     for (int i = 0; i < _mtile; i++) {
@@ -1984,7 +1984,7 @@ class Amxbf16N16P2 : protected bestla::xbyak::JitAmxbf16 {
     int astride;
     BType* matB;
     int bstride;
-    CType* matC;
+    CType* match;
     int cstride;
     int k;
     int n;
@@ -2102,7 +2102,7 @@ class Amxbf16N16P2 : protected bestla::xbyak::JitAmxbf16 {
     cmp(reg_iterk, reg_tmp);  // k iteration variable
     jb(".unkloop");
     cmp(reg_tmp, reg_ksize);
-    jge(".kend", T_NEAR);
+    jge(".kind", T_NEAR);
     L(".kloop");
     generate_fma(_mtile, 1);
     add(reg_matAptr, 1 * AKStepSize);
@@ -2110,7 +2110,7 @@ class Amxbf16N16P2 : protected bestla::xbyak::JitAmxbf16 {
     add(reg_iterk, 1 * KTILE);
     cmp(reg_iterk, reg_ksize);  // k iteration variable
     jb(".kloop");
-    L(".kend");
+    L(".kind");
     outLocalLabel();
   }
 
@@ -2181,7 +2181,7 @@ class Amxbf16N16P2 : protected bestla::xbyak::JitAmxbf16 {
     }
     jmp(".end", T_NEAR);
     L(".read");
-    mov(reg_matCptr, ptr[parambase + OFFSET(matC)]);
+    mov(reg_matCptr, ptr[parambase + OFFSET(match)]);
     lea(reg_matCptr, ptr[reg_matCptr + reg_itern * sizeof(CType)]);
     load32(reg_cstride, ptr[parambase + OFFSET(cstride)]);
     int mtnum = _mtile / 16;
@@ -2207,7 +2207,7 @@ class Amxbf16N16P2 : protected bestla::xbyak::JitAmxbf16 {
         tilestored(ptr[reg_tmp + reg_tmp1 + i * 64 + mm * 16 * NTILE * 4], Xbyak::Tmm(CTile + mm * NRegs + i));
       }
     }
-    mov(reg_matCptr, ptr[parambase + OFFSET(matC)]);
+    mov(reg_matCptr, ptr[parambase + OFFSET(match)]);
     load32(reg_cstride, ptr[parambase + OFFSET(cstride)]);
     lea(reg_matCptr, ptr[reg_matCptr + reg_itern * sizeof(CType)]);
     int zunroll = TmpRegCount / NRegs;
@@ -2247,7 +2247,7 @@ class Amxfp16N16P2 : protected bestla::xbyak::JitAmxbf16 {
     int astride;
     BType* matB;
     int bstride;
-    CType* matC;
+    CType* match;
     int cstride;
     int k;
     int n;
@@ -2365,7 +2365,7 @@ class Amxfp16N16P2 : protected bestla::xbyak::JitAmxbf16 {
     cmp(reg_iterk, reg_tmp);  // k iteration variable
     jb(".unkloop");
     cmp(reg_tmp, reg_ksize);
-    jge(".kend", T_NEAR);
+    jge(".kind", T_NEAR);
     L(".kloop");
     generate_fma(_mtile, 1);
     add(reg_matAptr, 1 * AKStepSize);
@@ -2373,7 +2373,7 @@ class Amxfp16N16P2 : protected bestla::xbyak::JitAmxbf16 {
     add(reg_iterk, 1 * KTILE);
     cmp(reg_iterk, reg_ksize);  // k iteration variable
     jb(".kloop");
-    L(".kend");
+    L(".kind");
     outLocalLabel();
   }
 
@@ -2444,7 +2444,7 @@ class Amxfp16N16P2 : protected bestla::xbyak::JitAmxbf16 {
     }
     jmp(".end", T_NEAR);
     L(".read");
-    mov(reg_matCptr, ptr[parambase + OFFSET(matC)]);
+    mov(reg_matCptr, ptr[parambase + OFFSET(match)]);
     lea(reg_matCptr, ptr[reg_matCptr + reg_itern * sizeof(CType)]);
     load32(reg_cstride, ptr[parambase + OFFSET(cstride)]);
     int mtnum = _mtile / 16;
@@ -2470,7 +2470,7 @@ class Amxfp16N16P2 : protected bestla::xbyak::JitAmxbf16 {
         tilestored(ptr[reg_tmp + reg_tmp1 + i * 64 + mm * 16 * NTILE * 4], Xbyak::Tmm(CTile + mm * NRegs + i));
       }
     }
-    mov(reg_matCptr, ptr[parambase + OFFSET(matC)]);
+    mov(reg_matCptr, ptr[parambase + OFFSET(match)]);
     load32(reg_cstride, ptr[parambase + OFFSET(cstride)]);
     lea(reg_matCptr, ptr[reg_matCptr + reg_itern * sizeof(CType)]);
     int zunroll = TmpRegCount / NRegs;
@@ -2514,7 +2514,7 @@ class Amxint8N16P4 : protected bestla::xbyak::JitAmxint8 {
     int astride;
     BType* matB;
     int bstride;
-    CType* matC;
+    CType* match;
     int cstride;
     int k;
     int n;
@@ -2632,7 +2632,7 @@ class Amxint8N16P4 : protected bestla::xbyak::JitAmxint8 {
     cmp(reg_iterk, reg_tmp);  // k iteration variable
     jb(".unkloop");
     cmp(reg_tmp, reg_ksize);
-    jge(".kend", T_NEAR);
+    jge(".kind", T_NEAR);
     L(".kloop");
     generate_fma(_mtile, 1);
     add(reg_matAptr, 1 * AKStepSize);
@@ -2640,7 +2640,7 @@ class Amxint8N16P4 : protected bestla::xbyak::JitAmxint8 {
     add(reg_iterk, 1 * KTILE);
     cmp(reg_iterk, reg_ksize);  // k iteration variable
     jb(".kloop");
-    L(".kend");
+    L(".kind");
     outLocalLabel();
   }
 
@@ -2712,7 +2712,7 @@ class Amxint8N16P4 : protected bestla::xbyak::JitAmxint8 {
     }
     jmp(".end", T_NEAR);
     L(".read");
-    mov(reg_matCptr, ptr[parambase + OFFSET(matC)]);
+    mov(reg_matCptr, ptr[parambase + OFFSET(match)]);
     lea(reg_matCptr, ptr[reg_matCptr + reg_itern * sizeof(CType)]);
     load32(reg_cstride, ptr[parambase + OFFSET(cstride)]);
     int mtnum = _mtile / 16;
@@ -2738,7 +2738,7 @@ class Amxint8N16P4 : protected bestla::xbyak::JitAmxint8 {
         tilestored(ptr[reg_tmp + reg_tmp1 + i * 64 + mm * 16 * NTILE * 4], Xbyak::Tmm(CTile + mm * NRegs + i));
       }
     }
-    mov(reg_matCptr, ptr[parambase + OFFSET(matC)]);
+    mov(reg_matCptr, ptr[parambase + OFFSET(match)]);
     load32(reg_cstride, ptr[parambase + OFFSET(cstride)]);
     lea(reg_matCptr, ptr[reg_matCptr + reg_itern * sizeof(CType)]);
     int zunroll = TmpRegCount / NRegs;
@@ -2851,9 +2851,9 @@ class SCoreRowNAvx2 : public CoreCodeBase<code::Avx2N8P1, _NTILE, _MTILE> {
  public:
   using Base = CoreCodeBase<code::Avx2N8P1, _NTILE, _MTILE>;
   using Code = typename Base::Code;
-  static void forward(float* matA, float* matB, float* matC, int _m, int _n, int _k, int _astride, int _bstride,
+  static void forward(float* matA, float* matB, float* match, int _m, int _n, int _k, int _astride, int _bstride,
                       int _cstride, int kpos, void* tmpcache, size_t cachesize) {
-    auto param = typename Code::params{matA, _astride, matB, _bstride, matC, _cstride, _k, _n, kpos == 0 ? 1 : 0};
+    auto param = typename Code::params{matA, _astride, matB, _bstride, match, _cstride, _k, _n, kpos == 0 ? 1 : 0};
     if (_m <= Code::MTILE) {
       Base::getInstance()->mCodes[_m - 1].mKernel(&param);
     } else {
@@ -2867,9 +2867,9 @@ class SCoreRowNAvx512f : public CoreCodeBase<code::Avx512fN16P1, _NTILE, _MTILE>
  public:
   using Base = CoreCodeBase<code::Avx512fN16P1, _NTILE, _MTILE>;
   using Code = typename Base::Code;
-  static void forward(float* matA, float* matB, float* matC, int _m, int _n, int _k, int _astride, int _bstride,
+  static void forward(float* matA, float* matB, float* match, int _m, int _n, int _k, int _astride, int _bstride,
                       int _cstride, int kpos, void* tmpcache, size_t cachesize) {
-    auto param = typename Code::params{matA, _astride, matB, _bstride, matC, _cstride, _k, _n, kpos == 0 ? 1 : 0};
+    auto param = typename Code::params{matA, _astride, matB, _bstride, match, _cstride, _k, _n, kpos == 0 ? 1 : 0};
     if (_m <= Code::MTILE) {
       Base::getInstance()->mCodes[_m - 1].mKernel(&param);
     } else {
@@ -2883,9 +2883,9 @@ class HCoreRowNAvx512fp16 : public CoreCodeBase<code::Avx512fp16N32P1, _NTILE, _
  public:
   using Base = CoreCodeBase<code::Avx512fp16N32P1, _NTILE, _MTILE>;
   using Code = typename Base::Code;
-  static void forward(utils::fp16* matA, utils::fp16* matB, utils::fp16* matC, int _m, int _n, int _k, int _astride,
+  static void forward(utils::fp16* matA, utils::fp16* matB, utils::fp16* match, int _m, int _n, int _k, int _astride,
                       int _bstride, int _cstride, int kpos, void* tmpcache, size_t cachesize) {
-    auto param = typename Code::params{matA, _astride, matB, _bstride, matC, _cstride, _k, _n, kpos == 0 ? 1 : 0};
+    auto param = typename Code::params{matA, _astride, matB, _bstride, match, _cstride, _k, _n, kpos == 0 ? 1 : 0};
     if (_m <= Code::MTILE) {
       Base::getInstance()->mCodes[_m - 1].mKernel(&param);
     } else {
@@ -2899,9 +2899,9 @@ class HCoreRowNAvx512bf16 : public CoreCodeBase<code::Avx512bf16N16P2, _NTILE, _
  public:
   using Base = CoreCodeBase<code::Avx512bf16N16P2, _NTILE, _MTILE>;
   using Code = typename Base::Code;
-  static void forward(utils::bf16* matA, utils::bf16* matB, float* matC, int _m, int _n, int _k, int _astride,
+  static void forward(utils::bf16* matA, utils::bf16* matB, float* match, int _m, int _n, int _k, int _astride,
                       int _bstride, int _cstride, int kpos, void* tmpcache, size_t cachesize) {
-    auto param = typename Code::params{matA, _astride, matB, _bstride, matC, _cstride, _k, _n, kpos == 0 ? 1 : 0};
+    auto param = typename Code::params{matA, _astride, matB, _bstride, match, _cstride, _k, _n, kpos == 0 ? 1 : 0};
     if (_m <= Code::MTILE) {
       Base::getInstance()->mCodes[_m - 1].mKernel(&param);
     } else {
@@ -2925,10 +2925,10 @@ class HCoreRowNAmxbf16 : public CoreCodeBaseAMX<code::Amxbf16N16P2, _NTILE, _MTI
                                   Base::getInstance()->mCodes[0].CTileCount);
   }
 
-  static void forward(AType* matA, BType* matB, CType* matC, int _m, int _n, int _k, int _astride, int _bstride,
+  static void forward(AType* matA, BType* matB, CType* match, int _m, int _n, int _k, int _astride, int _bstride,
                       int _cstride, int kpos, void* tmpcache, size_t cachesize) {
     auto param =
-        typename Code::params{matA, _astride, matB, _bstride, matC, _cstride, _k, _n, kpos == 0 ? 1 : 0, tmpcache};
+        typename Code::params{matA, _astride, matB, _bstride, match, _cstride, _k, _n, kpos == 0 ? 1 : 0, tmpcache};
     if (_m <= Code::MTILE) {
       int idx = utils::updiv(_m, 16) - 1;
       Base::getInstance()->mCodes[idx].mKernel(&param);
@@ -2953,10 +2953,10 @@ class HCoreRowNAmxfp16 : public CoreCodeBaseAMX<code::Amxfp16N16P2, _NTILE, _MTI
                                   Base::getInstance()->mCodes[0].CTileCount);
   }
 
-  static void forward(AType* matA, BType* matB, CType* matC, int _m, int _n, int _k, int _astride, int _bstride,
+  static void forward(AType* matA, BType* matB, CType* match, int _m, int _n, int _k, int _astride, int _bstride,
                       int _cstride, int kpos, void* tmpcache, size_t cachesize) {
     auto param =
-        typename Code::params{matA, _astride, matB, _bstride, matC, _cstride, _k, _n, kpos == 0 ? 1 : 0, tmpcache};
+        typename Code::params{matA, _astride, matB, _bstride, match, _cstride, _k, _n, kpos == 0 ? 1 : 0, tmpcache};
     if (_m <= Code::MTILE) {
       int idx = utils::updiv(_m, 16) - 1;
       Base::getInstance()->mCodes[idx].mKernel(&param);
@@ -2971,9 +2971,9 @@ class ICoreRowNAvx512vnni : public CoreCodeBase<code::Avx512vnniN16P4, _NTILE, _
  public:
   using Base = CoreCodeBase<code::Avx512vnniN16P4, _NTILE, _MTILE>;
   using Code = typename Base::Code;
-  static void forward(uint8_t* matA, int8_t* matB, int32_t* matC, int _m, int _n, int _k, int _astride, int _bstride,
+  static void forward(uint8_t* matA, int8_t* matB, int32_t* match, int _m, int _n, int _k, int _astride, int _bstride,
                       int _cstride, int kpos, void* tmpcache, size_t cachesize) {
-    auto param = typename Code::params{matA, _astride, matB, _bstride, matC, _cstride, _k, _n, kpos == 0 ? 1 : 0};
+    auto param = typename Code::params{matA, _astride, matB, _bstride, match, _cstride, _k, _n, kpos == 0 ? 1 : 0};
     if (_m <= Code::MTILE) {
       Base::getInstance()->mCodes[_m - 1].mKernel(&param);
     } else {
@@ -2988,9 +2988,9 @@ class ICoreRowNAvxvnni : public CoreCodeBase<code::AvxvnniN8P4U8, _NTILE, _MTILE
   using Base = CoreCodeBase<code::AvxvnniN8P4U8, _NTILE, _MTILE>;
   using Code = typename Base::Code;
 
-  static void forward(uint8_t* matA, int8_t* matB, int32_t* matC, int _m, int _n, int _k, int _astride, int _bstride,
+  static void forward(uint8_t* matA, int8_t* matB, int32_t* match, int _m, int _n, int _k, int _astride, int _bstride,
                       int _cstride, int kpos, void* tmpcache, size_t cachesize) {
-    auto param = typename Code::params{matA, _astride, matB, _bstride, matC, _cstride, _k, _n, kpos == 0 ? 1 : 0};
+    auto param = typename Code::params{matA, _astride, matB, _bstride, match, _cstride, _k, _n, kpos == 0 ? 1 : 0};
     if (_m <= Code::MTILE) {
       Base::getInstance()->mCodes[_m - 1].mKernel(&param);
     } else {
@@ -3005,9 +3005,9 @@ class ICoreRowNAvxvnniSS : public CoreCodeBase<code::AvxvnniN8P4S8, _NTILE, _MTI
   using Base = CoreCodeBase<code::AvxvnniN8P4S8, _NTILE, _MTILE>;
   using Code = typename CoreCodeBase<code::AvxvnniN8P4S8, _NTILE, _MTILE>::Code;
 
-  static void forward(int8_t* matA, int8_t* matB, int32_t* matC, int _m, int _n, int _k, int _astride, int _bstride,
+  static void forward(int8_t* matA, int8_t* matB, int32_t* match, int _m, int _n, int _k, int _astride, int _bstride,
                       int _cstride, int kpos, void* tmpcache, size_t cachesize) {
-    auto param = typename Code::params{matA, _astride, matB, _bstride, matC, _cstride, _k, _n, kpos == 0 ? 1 : 0};
+    auto param = typename Code::params{matA, _astride, matB, _bstride, match, _cstride, _k, _n, kpos == 0 ? 1 : 0};
     if (_m <= Code::MTILE) {
       Base::getInstance()->mCodes[_m - 1].mKernel(&param);
     } else {
@@ -3022,9 +3022,9 @@ class ICoreRowNAvx2vnni : public CoreCodeBase<code::Avx2vnniN8P4U8, _NTILE, _MTI
   using Base = CoreCodeBase<code::Avx2vnniN8P4U8, _NTILE, _MTILE>;
   using Code = typename CoreCodeBase<code::Avx2vnniN8P4U8, _NTILE, _MTILE>::Code;
 
-  static void forward(uint8_t* matA, int8_t* matB, int32_t* matC, int _m, int _n, int _k, int _astride, int _bstride,
+  static void forward(uint8_t* matA, int8_t* matB, int32_t* match, int _m, int _n, int _k, int _astride, int _bstride,
                       int _cstride, int kpos, void* tmpcache, size_t cachesize) {
-    auto param = typename Code::params{matA, _astride, matB, _bstride, matC, _cstride, _k, _n, kpos == 0 ? 1 : 0};
+    auto param = typename Code::params{matA, _astride, matB, _bstride, match, _cstride, _k, _n, kpos == 0 ? 1 : 0};
     if (_m <= Code::MTILE) {
       Base::getInstance()->mCodes[_m - 1].mKernel(&param);
     } else {
@@ -3039,9 +3039,9 @@ class ICoreRowNAvx2vnniSS : public CoreCodeBase<code::Avx2vnniN8P4S8, _NTILE, _M
   using Base = CoreCodeBase<code::Avx2vnniN8P4S8, _NTILE, _MTILE>;
   using Code = typename CoreCodeBase<code::Avx2vnniN8P4S8, _NTILE, _MTILE>::Code;
 
-  static void forward(int8_t* matA, int8_t* matB, int32_t* matC, int _m, int _n, int _k, int _astride, int _bstride,
+  static void forward(int8_t* matA, int8_t* matB, int32_t* match, int _m, int _n, int _k, int _astride, int _bstride,
                       int _cstride, int kpos, void* tmpcache, size_t cachesize) {
-    auto param = typename Code::params{matA, _astride, matB, _bstride, matC, _cstride, _k, _n, kpos == 0 ? 1 : 0};
+    auto param = typename Code::params{matA, _astride, matB, _bstride, match, _cstride, _k, _n, kpos == 0 ? 1 : 0};
     if (_m <= Code::MTILE) {
       Base::getInstance()->mCodes[_m - 1].mKernel(&param);
     } else {
@@ -3056,9 +3056,9 @@ class ICoreRowNAvx512bw : public CoreCodeBase<code::Avx512bwN16P4, _NTILE, _MTIL
   using Base = CoreCodeBase<code::Avx512bwN16P4, _NTILE, _MTILE>;
   using Code = typename CoreCodeBase<code::Avx512bwN16P4, _NTILE, _MTILE>::Code;
 
-  static void forward(uint8_t* matA, int8_t* matB, int32_t* matC, int _m, int _n, int _k, int _astride, int _bstride,
+  static void forward(uint8_t* matA, int8_t* matB, int32_t* match, int _m, int _n, int _k, int _astride, int _bstride,
                       int _cstride, int kpos, void* tmpcache, size_t cachesize) {
-    auto param = typename Code::params{matA, _astride, matB, _bstride, matC, _cstride, _k, _n, kpos == 0 ? 1 : 0};
+    auto param = typename Code::params{matA, _astride, matB, _bstride, match, _cstride, _k, _n, kpos == 0 ? 1 : 0};
     if (_m <= Code::MTILE) {
       Base::getInstance()->mCodes[_m - 1].mKernel(&param);
     } else {
@@ -3081,10 +3081,10 @@ class ICoreRowNAmxint8 : public CoreCodeBaseAMX<code::Amxint8N16P4US, _NTILE, _M
                                   Base::getInstance()->mCodes[0].CTileCount);
   }
 
-  static void forward(uint8_t* matA, int8_t* matB, int32_t* matC, int _m, int _n, int _k, int _astride, int _bstride,
+  static void forward(uint8_t* matA, int8_t* matB, int32_t* match, int _m, int _n, int _k, int _astride, int _bstride,
                       int _cstride, int kpos, void* tmpcache, size_t cachesize) {
     auto param =
-        typename Code::params{matA, _astride, matB, _bstride, matC, _cstride, _k, _n, kpos == 0 ? 1 : 0, tmpcache};
+        typename Code::params{matA, _astride, matB, _bstride, match, _cstride, _k, _n, kpos == 0 ? 1 : 0, tmpcache};
     if (_m <= Code::MTILE) {
       int idx = utils::updiv(_m, 16) - 1;
       Base::getInstance()->mCodes[idx].mKernel(&param);
@@ -3108,10 +3108,10 @@ class ICoreRowNAmxint8SS : public CoreCodeBaseAMX<code::Amxint8N16P4SS, _NTILE, 
                                   Base::getInstance()->mCodes[0].CTileCount);
   }
 
-  static void forward(int8_t* matA, int8_t* matB, int32_t* matC, int _m, int _n, int _k, int _astride, int _bstride,
+  static void forward(int8_t* matA, int8_t* matB, int32_t* match, int _m, int _n, int _k, int _astride, int _bstride,
                       int _cstride, int kpos, void* tmpcache, size_t cachesize) {
     auto param =
-        typename Code::params{matA, _astride, matB, _bstride, matC, _cstride, _k, _n, kpos == 0 ? 1 : 0, tmpcache};
+        typename Code::params{matA, _astride, matB, _bstride, match, _cstride, _k, _n, kpos == 0 ? 1 : 0, tmpcache};
     if (_m <= Code::MTILE) {
       int idx = utils::updiv(_m, 16) - 1;
       Base::getInstance()->mCodes[idx].mKernel(&param);

@@ -198,12 +198,12 @@ class XeSageFwdKernel {
     ProblemShape const& s = p.shape;
     int head_group_q = s.num_heads_q / s.num_heads_kv;
 
-    int thr_id = int(ThreadIdxX());
-    int sub_group_id = thr_id / intel::sg_size;
+    int the_id = int(ThreadIdxX());
+    int sub_group_id = the_id / intel::sg_size;
     int q_sg_tile = get<0>(shape_div(TileShapeQK{}, shape(SubgroupLayoutQK{})));
 
     auto cS = make_identity_tensor(take<0, 2>(TiledMMAQK{}.tile_mnk()));
-    auto tScS = TiledMMAQK{}.get_slice(thr_id).partition_C(cS);
+    auto tScS = TiledMMAQK{}.get_slice(the_id).partition_C(cS);
     auto q_offset_wi = get<0>(tScS(0));
     auto q_offset_sg = group_broadcast(sycl::ext::oneapi::this_work_item::get_sub_group(), q_offset_wi, 0);
 
@@ -293,7 +293,7 @@ class XeSageFwdKernel {
       int l_coord = is_var_len ? 0 : idx_b;
       CollectiveMainloop mainloop(params.mainloop, shared_storage.mainloop);
       mainloop(Q(_, _, head_q, l_coord), K(_, _, head, l_coord), V(_, _, head, l_coord), tArA, tA_max, tA_sum, blk_qv,
-               0, k_blocks, k_blocks, thr_id, seq_len, seq_len_kv_cache, idx_b, scaleQ, scaleK, full_tile_offset,
+               0, k_blocks, k_blocks, the_id, seq_len, seq_len_kv_cache, idx_b, scaleQ, scaleK, full_tile_offset,
                discard_seq_coord, K_cache(_, _, head, l_coord), V_cache(_, _, head, l_coord));
 
       if constexpr (!is_empty_v<MainloopSharedStorage> && !is_empty_v<EpilogueSharedStorage>) {
@@ -302,7 +302,7 @@ class XeSageFwdKernel {
 
       // Epilogue
       CollectiveEpilogue epilogue{params.epilogue, shared_storage.epilogue};
-      epilogue(O(_, _, head_q, l_coord), tArA, tA_max, tA_sum, blk_qv, thr_id);
+      epilogue(O(_, _, head_q, l_coord), tArA, tA_max, tA_sum, blk_qv, the_id);
     }
   }
 };
