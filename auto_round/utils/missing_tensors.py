@@ -208,9 +208,11 @@ def copy_missing_tensors_from_source(
         if name == "lm_head.weight":
             return False
         aliases = _name_aliases(name)
+        # Symmetric first-component shortcut (e.g. NH backbone.*↔model.*).
+        aliases |= {a.split(".", 1)[1] for a in set(aliases) if "." in a}
         if aliases & saved_tensor_names:
             return False
-        parents = {a.rsplit(".", 1)[0] for a in aliases}
+        parents = {a.rsplit(".", 1)[0] for a in aliases if "." in a}
         if parents & saved_parent_layers:
             return False
         # For split experts, name is changed but block name is the same.

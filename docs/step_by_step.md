@@ -866,6 +866,5 @@ Randomness in quantization may affect tuning results for some models, set `enabl
 Some VLMs require manual support.
 
 
-Mamba is not supported.
-
+Pure Mamba architectures are not supported. Hybrid Mamba2 + Attention + MoE models are supported (e.g. `nvidia/Nemotron-Cascade-2-30B-A3B`).
 

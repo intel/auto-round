@@ -64,7 +64,7 @@ from auto_round.export.export_to_gguf.config import GGUF_INNER_CONFIG
 from auto_round.formats import OutputFormat, get_formats
 from auto_round.logger import logger
 from auto_round.modeling.fused_moe.replace_modules import materialize_model_, safe_to_cpu_
-from auto_round.modeling.unfused_moe import apply_model_monkey_patches
+from auto_round.modeling.unfused_moe import apply_model_monkey_patches, apply_post_load_fixups
 from auto_round.schemes import (
     QuantizationScheme,
     _handle_special_schemes,
@@ -333,6 +333,7 @@ class BaseCompressor(object):
             )
         check_and_mark_quantized_module(model)
         self.model = model.eval()
+        apply_post_load_fixups(self.model)
         self.tokenizer = tokenizer
         self.shared_cache_keys = get_shared_keys(self.model)
 

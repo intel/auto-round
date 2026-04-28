@@ -49,7 +49,17 @@ logger = getLogger(__name__)
 class QuantLinear(nn.Module):
     QUANT_TYPE = "triton"
 
-    def __init__(self, bits, group_size, infeatures, outfeatures, bias, trainable=False, **kwargs):
+    def __init__(
+        self,
+        bits,
+        group_size,
+        infeatures,
+        outfeatures,
+        bias,
+        trainable=False,
+        scale_dtype=torch.bfloat16,
+        **kwargs,
+    ):
         super().__init__()
         if bits not in [2, 4, 8]:
             raise NotImplementedError("Only 2,4,8 bits are supported.")
@@ -60,6 +70,7 @@ class QuantLinear(nn.Module):
         self.bits = bits
         self.group_size = group_size if group_size != -1 else infeatures
         self.maxq = 2**self.bits - 1
+        self.scale_dtype = scale_dtype
 
         self.register_buffer(
             "qweight",
@@ -79,7 +90,7 @@ class QuantLinear(nn.Module):
             "scales",
             torch.zeros(
                 (math.ceil(infeatures / self.group_size), outfeatures),
-                dtype=torch.bfloat16,
+                dtype=self.scale_dtype,
             ),
         )
         use_pc = kwargs.pop("use_pc", False)
@@ -126,7 +137,7 @@ class QuantLinear(nn.Module):
         self.w_bf16_to_fp8_scale.data.copy_(w_bf16_to_fp8_scale.squeeze().clone())
         if linear.bias is not None:
             self.bias = linear.bias.clone().half()
-        self.scales = scales_t.clone().half()
+        self.scales = scales_t.clone().to(self.scales.dtype)
 
         W = linear.weight.data.to(device).clone()
         if type(linear) == nn.Conv2d:

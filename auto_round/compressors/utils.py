@@ -365,6 +365,22 @@ def set_layer_config(
             "fixed_by_user": True,
         }
 
+    # Merge architecture-specific defaults; user entries win.
+    try:
+        from auto_round.modeling.unfused_moe import get_default_layer_config_patterns
+
+        model_default_patterns = get_default_layer_config_patterns(model)
+    except Exception:
+        model_default_patterns = {}
+    for _pattern, _overlay in (model_default_patterns or {}).items():
+        if _pattern in layer_config:
+            existing = layer_config[_pattern]
+            if isinstance(existing, dict):
+                for _k, _v in _overlay.items():
+                    existing.setdefault(_k, _v)
+        else:
+            layer_config[_pattern] = dict(_overlay)
+
     # 2. normalize
     layer_config = {k: normalize_item(v, k) for k, v in layer_config.items()}
 

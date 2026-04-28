@@ -51,6 +51,21 @@ from auto_round.utils import (
 )
 
 
+@functools.lru_cache(maxsize=None)
+def _quant_linear_accepts(qlinear_cls, kwarg_name: str) -> bool:
+    target_cls = qlinear_cls
+    if isinstance(target_cls, functools.partial):
+        target_cls = target_cls.func
+    try:
+        sig = inspect.signature(target_cls.__init__)
+    except (TypeError, ValueError):
+        return False
+    params = sig.parameters
+    if kwarg_name in params:
+        return True
+    return any(p.kind == inspect.Parameter.VAR_KEYWORD for p in params.values())
+
+
 def dynamic_import_quant_linear_for_packing(backend, bits, group_size, sym, act_bits=16):
     """
     Dynamically imports and returns the appropriate QuantLinear class based on the specified backend and parameters.
@@ -125,8 +140,18 @@ def pack_qact_layer(name, model):
         out_features = layer.weight.shape[1]
     bias = layer.bias is not None
     use_pc = False
+    extra_kwargs: dict[str, "torch.dtype"] = {}
+    if isinstance(scale, torch.Tensor) and _quant_linear_accepts(QuantLinear, "scale_dtype"):
+        extra_kwargs["scale_dtype"] = scale.dtype
     new_layer = QuantLinear(  ##pylint: disable=E1123
-        bits, group_size, in_features, out_features, bias, weight_dtype=layer.weight.dtype, use_pc=use_pc
+        bits,
+        group_size,
+        in_features,
+        out_features,
+        bias,
+        weight_dtype=layer.weight.dtype,
+        use_pc=use_pc,
+        **extra_kwargs,
     )
     new_layer.device = device
     set_module(model, name, new_layer)
@@ -189,8 +214,11 @@ def pack_layer(layer_name, model, backend, device=None):
         out_features = layer.weight.shape[1]
     bias = layer.bias is not None
 
+    extra_kwargs: dict[str, "torch.dtype"] = {}
+    if isinstance(scale, torch.Tensor) and _quant_linear_accepts(QuantLinear, "scale_dtype"):
+        extra_kwargs["scale_dtype"] = scale.dtype
     new_layer = QuantLinear(  ##pylint: disable=E1123
-        bits, group_size, in_features, out_features, bias=bias, weight_dtype=layer.weight.dtype
+        bits, group_size, in_features, out_features, bias=bias, weight_dtype=layer.weight.dtype, **extra_kwargs
     )
     new_layer.device = orig_device
     set_module(model, layer_name, new_layer)
