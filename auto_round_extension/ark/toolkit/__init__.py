@@ -13,6 +13,7 @@
 # limitations under the License.
 
 from auto_round_extension.ark.qlinear import QuantLinear, QuantLinearGPTQ, QuantLinearAWQ
+
 qlinear_classes = (QuantLinear, QuantLinearGPTQ)
 
 awq_classes = (QuantLinearAWQ,)

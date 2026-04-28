@@ -1,26 +1,28 @@
-import sys
+# # Copyright (C) 2026 Intel Corporation
+# # SPDX-License-Identifier: Apache-2.0
+
+import ctypes
 import os
 import subprocess
-import ctypes
+import sys
 from pathlib import Path
-from setuptools import setup, Extension
-from setuptools.command.build_py import build_py
-from setuptools.command.build_ext import build_ext
-from setuptools import find_packages
 
+from setuptools import Extension, find_packages, setup
+from setuptools.command.build_ext import build_ext
+from setuptools.command.build_py import build_py
 
 build_mapping = {
     "2025.3": {
         "deps": ["torch>=2.10.0", "dpcpp-cpp-rt~=2025.3.0", "onednn~=2025.3.0; sys_platform=='linux'"],
-        "default_build_version": "0.10.3.2"
+        "default_build_version": "0.10.3.2",
     },
     "2025.2": {
         "deps": ["torch~=2.9.0", "dpcpp-cpp-rt~=2025.2.0", "onednn~=2025.2.0; sys_platform=='linux'"],
-        "default_build_version": "0.10.2.2"
+        "default_build_version": "0.10.2.2",
     },
     "2025.1": {
         "deps": ["torch~=2.8.0", "dpcpp-cpp-rt~=2025.1.0", "onednn~=2025.1.0; sys_platform=='linux'"],
-        "default_build_version": "0.10.1.2"
+        "default_build_version": "0.10.1.2",
     },
 }
 
@@ -34,7 +36,9 @@ oneapi_version = os.environ.get("ONEAPI_VERSION")
 if oneapi_version:
     oneapi_version = ".".join(oneapi_version.split(".")[:2])
 else:
-    raise RuntimeError("Please set ONEAPI_VERSION environment variable to match your sourced oneAPI version, e.g., 2025.3")
+    raise RuntimeError(
+        "Please set ONEAPI_VERSION environment variable to match your sourced oneAPI version, e.g., 2025.3"
+    )
 
 build_config = build_mapping.get(oneapi_version)
 if build_config is None:
@@ -56,9 +60,10 @@ def get_system_memory_gb():
         if page_size is not None and "SC_PHYS_PAGES" in os.sysconf_names:
             phys_pages = os.sysconf("SC_PHYS_PAGES")
             if phys_pages > 0:
-                return (page_size * phys_pages) / (1024 ** 3)
+                return (page_size * phys_pages) / (1024**3)
 
     if sys.platform == "win32":
+
         class MEMORYSTATUSEX(ctypes.Structure):
             _fields_ = [
                 ("dwLength", ctypes.c_ulong),
@@ -75,14 +80,16 @@ def get_system_memory_gb():
         memory_status = MEMORYSTATUSEX()
         memory_status.dwLength = ctypes.sizeof(MEMORYSTATUSEX)
         if ctypes.windll.kernel32.GlobalMemoryStatusEx(ctypes.byref(memory_status)):
-            return memory_status.ullTotalPhys / (1024 ** 3)
+            return memory_status.ullTotalPhys / (1024**3)
 
     return 64
 
 
 def get_sycl_tla_job_count(cpu_job_count):
     memory_gb = get_system_memory_gb()
-    memory_based_jobs = max(1, int(memory_gb // 16)) # about 5GB/job for SYCL TLA build, use at most 5/16 of total memory to avoid OOM
+    memory_based_jobs = max(
+        1, int(memory_gb // 16)
+    )  # about 5GB/job for SYCL TLA build, use at most 5/16 of total memory to avoid OOM
     return min(cpu_job_count, memory_based_jobs)
 
 
@@ -94,7 +101,7 @@ class CMakeBuild(build_ext):
             cmake_cmd.append("-GNinja")
         subprocess.check_call(cmake_cmd)
         n_job = os.cpu_count() or 2
-        n_job = n_job // 2 # use half of available cores for the build to avoid OOM on CI machines
+        n_job = n_job // 2  # use half of available cores for the build to avoid OOM on CI machines
         subprocess.check_call(["cmake", "--build", "build", "-j", str(n_job)])
 
         if sys.platform == "win32":

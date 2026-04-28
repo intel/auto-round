@@ -25,7 +25,6 @@ import pytest
 import torch
 from ut_utils import *
 
-
 ark = auto_round_kernel.ARK()
 
 
@@ -134,7 +133,7 @@ class TestMoEGemm:
         active_experts = [0, 8, 16, 24, 32, 40, 48, 56]
         for i, exp_idx in enumerate(active_experts):
             tokens_per_expert[exp_idx] = 16
-        
+
         num_tokens_per_expert = torch.tensor(tokens_per_expert, dtype=torch.int32, device="xpu")
 
         output = ark.moe_gemm(activations, weights, num_tokens_per_expert)
@@ -142,12 +141,15 @@ class TestMoEGemm:
         assert output.shape == (total_tokens, N)
         print(f"Many experts ({num_experts}) MOE GEMM test passed!")
 
-    @pytest.mark.parametrize("N,K", [
-        (256, 128),
-        (512, 256),
-        (1024, 512),
-        (2048, 1024),
-    ])
+    @pytest.mark.parametrize(
+        "N,K",
+        [
+            (256, 128),
+            (512, 256),
+            (1024, 512),
+            (2048, 1024),
+        ],
+    )
     def test_moe_gemm_various_sizes(self, N, K):
         """Test MOE GEMM with various matrix sizes."""
         num_experts = 8
