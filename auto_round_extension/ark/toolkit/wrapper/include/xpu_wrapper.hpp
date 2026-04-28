@@ -126,8 +126,8 @@ class XpuWrapper {
     auto psrc = raws8;
     constexpr int SG_SIZE = 16;
     auto ker = [&](sycl::handler& cgh) {
-      cgh.parallel_for(sycl::and_range<2>({k, n}, {1, SG_SIZE}),
-                       [=](sycl::and_item<2> it) [[sycl::reqd_sub_group_size(SG_SIZE)]]
+      cgh.parallel_for(sycl::nd_range<2>({k, n}, {1, SG_SIZE}),
+                       [=](sycl::nd_item<2> it) [[sycl::reqd_sub_group_size(SG_SIZE)]]
                        {
                          auto g_0 = it.get_global_id()[0];
                          auto g_1 = it.get_global_id()[1];
@@ -144,8 +144,8 @@ class XpuWrapper {
     auto psrc = raws8;
     constexpr int SG_SIZE = 16;
     auto ker = [&](sycl::handler& cgh) {
-      cgh.parallel_for(sycl::and_range<2>({k / 2, n}, {1, SG_SIZE}),
-                       [=](sycl::and_item<2> it) [[sycl::reqd_sub_group_size(SG_SIZE)]]
+      cgh.parallel_for(sycl::nd_range<2>({k / 2, n}, {1, SG_SIZE}),
+                       [=](sycl::nd_item<2> it) [[sycl::reqd_sub_group_size(SG_SIZE)]]
                        {
                          auto g_0 = it.get_global_id()[0];
                          auto g_1 = it.get_global_id()[1];
@@ -164,8 +164,8 @@ class XpuWrapper {
     auto psrc = raws8;
     constexpr int SG_SIZE = 16;
     auto ker = [&](sycl::handler& cgh) {
-      cgh.parallel_for(sycl::and_range<2>({k / 4, n}, {1, SG_SIZE}),
-                       [=](sycl::and_item<2> it) [[sycl::reqd_sub_group_size(SG_SIZE)]]
+      cgh.parallel_for(sycl::nd_range<2>({k / 4, n}, {1, SG_SIZE}),
+                       [=](sycl::nd_item<2> it) [[sycl::reqd_sub_group_size(SG_SIZE)]]
                        {
                          auto g_0 = it.get_global_id()[0];
                          auto g_1 = it.get_global_id()[1];
@@ -192,8 +192,8 @@ class XpuWrapper {
       auto psrc_f32 = (const float*)scaleptr;
       auto pdst_s8 = (int8_t*)dstptr;
       auto ker = [&](sycl::handler& cgh) {
-        cgh.parallel_for(sycl::and_range<2>({blks, n}, {1, SG_SIZE}),
-                         [=](sycl::and_item<2> it) [[sycl::reqd_sub_group_size(SG_SIZE)]] {
+        cgh.parallel_for(sycl::nd_range<2>({blks, n}, {1, SG_SIZE}),
+                         [=](sycl::nd_item<2> it) [[sycl::reqd_sub_group_size(SG_SIZE)]] {
                            auto g_0 = it.get_global_id()[0];
                            auto g_1 = it.get_global_id()[1];
                            float v = psrc_f32[g_0 * n + g_1];
@@ -208,8 +208,8 @@ class XpuWrapper {
     }
     auto psrc = (int8_t*)scaleptr;
     auto ker = [&](sycl::handler& cgh) {
-      cgh.parallel_for(sycl::and_range<2>({blks, n}, {1, SG_SIZE}),
-                       [=](sycl::and_item<2> it) [[sycl::reqd_sub_group_size(SG_SIZE)]]
+      cgh.parallel_for(sycl::nd_range<2>({blks, n}, {1, SG_SIZE}),
+                       [=](sycl::nd_item<2> it) [[sycl::reqd_sub_group_size(SG_SIZE)]]
                        {
                          auto g_0 = it.get_global_id()[0];
                          auto g_1 = it.get_global_id()[1];
@@ -232,8 +232,8 @@ class XpuWrapper {
       if (st == BTLA_DTYPE::F32) {
         using T = float;
         auto ker2 = [&](sycl::handler& cgh) {
-          cgh.parallel_for(sycl::and_range<2>({1, n}, {1, SG_SIZE}),
-                           [=](sycl::and_item<2> it) [[sycl::reqd_sub_group_size(SG_SIZE)]]
+          cgh.parallel_for(sycl::nd_range<2>({1, n}, {1, SG_SIZE}),
+                           [=](sycl::nd_item<2> it) [[sycl::reqd_sub_group_size(SG_SIZE)]]
                            {
                              auto g_1 = it.get_global_id()[1];
                              auto sg = it.get_sub_group();
@@ -255,8 +255,8 @@ class XpuWrapper {
       if (st == BTLA_DTYPE::F16) {
         using T = sycl::half;
         auto ker2 = [&](sycl::handler& cgh) {
-          cgh.parallel_for(sycl::and_range<2>({1, n}, {1, SG_SIZE}),
-                           [=](sycl::and_item<2> it) [[sycl::reqd_sub_group_size(SG_SIZE)]]
+          cgh.parallel_for(sycl::nd_range<2>({1, n}, {1, SG_SIZE}),
+                           [=](sycl::nd_item<2> it) [[sycl::reqd_sub_group_size(SG_SIZE)]]
                            {
                              auto g_1 = it.get_global_id()[1];
                              auto sg = it.get_sub_group();
@@ -288,8 +288,8 @@ class XpuWrapper {
     auto dstptr = (int8_t*)blob + get_zp_offset(p);
     constexpr int SG_SIZE = 16;
     auto ker = [&](sycl::handler& cgh) {
-      cgh.parallel_for(sycl::and_range<2>({blks, n}, {1, SG_SIZE}),
-                       [=](sycl::and_item<2> it) [[sycl::reqd_sub_group_size(SG_SIZE)]]
+      cgh.parallel_for(sycl::nd_range<2>({blks, n}, {1, SG_SIZE}),
+                       [=](sycl::nd_item<2> it) [[sycl::reqd_sub_group_size(SG_SIZE)]]
                        {
                          auto g_0 = it.get_global_id()[0];
                          auto g_1 = it.get_global_id()[1];
@@ -305,8 +305,8 @@ class XpuWrapper {
     auto psrc = (uint8_t*)raws8;
     constexpr int SG_SIZE = 16;
     auto ker = [&](sycl::handler& cgh) {
-      cgh.parallel_for(sycl::and_range<2>({k, n}, {1, SG_SIZE}),
-                       [=](sycl::and_item<2> it) [[sycl::reqd_sub_group_size(SG_SIZE)]]
+      cgh.parallel_for(sycl::nd_range<2>({k, n}, {1, SG_SIZE}),
+                       [=](sycl::nd_item<2> it) [[sycl::reqd_sub_group_size(SG_SIZE)]]
                        {
                          auto g_0 = it.get_global_id()[0];
                          auto g_1 = it.get_global_id()[1];
@@ -502,7 +502,7 @@ class XpuWrapper {
     }
   }
 
-  static int woq_gemv(sycl::queue* q, size_t m, QuantParam* p, const void* matA, const void* blobB, void* match,
+  static int woq_gemv(sycl::queue* q, size_t m, QuantParam* p, const void* matA, const void* blobB, void* matC,
                       const void* bias, BTLA_DTYPE outt) {
     if (m > 1) return -2;
     using namespace bestla;
@@ -517,7 +517,7 @@ class XpuWrapper {
         using T = float;
         using ProB = WeightS2T<ST>;
         ProB::gemv<ProB::CfgGemvF32>((const T*)matA,
-                                     {(const uint8_t*)qptr, (ST*)scale_ptr, blks, (const T*)bias, zp_ptr}, (T*)match,
+                                     {(const uint8_t*)qptr, (ST*)scale_ptr, blks, (const T*)bias, zp_ptr}, (T*)matC,
                                      p->n, p->k, p->blocksize, q);
       }
       if (p->scale_type == BTLA_DTYPE::F16) {
@@ -525,7 +525,7 @@ class XpuWrapper {
         using ProB = WeightS2T<ST>;
         using T = sycl::half;
         ProB::gemv<ProB::CfgGemvF16>((const T*)matA,
-                                     {(const uint8_t*)qptr, (ST*)scale_ptr, blks, (const T*)bias, zp_ptr}, (T*)match,
+                                     {(const uint8_t*)qptr, (ST*)scale_ptr, blks, (const T*)bias, zp_ptr}, (T*)matC,
                                      p->n, p->k, p->blocksize, q);
       }
       if (p->scale_type == BTLA_DTYPE::BF16) {
@@ -539,7 +539,7 @@ class XpuWrapper {
         using T = float;
         using ProB = WeightS4T<ST>;
         ProB::gemv<ProB::CfgGemvF32>((const T*)matA,
-                                     {(const uint8_t*)qptr, (ST*)scale_ptr, blks, (const T*)bias, zp_ptr}, (T*)match,
+                                     {(const uint8_t*)qptr, (ST*)scale_ptr, blks, (const T*)bias, zp_ptr}, (T*)matC,
                                      p->n, p->k, p->blocksize, q);
       }
       if (p->scale_type == BTLA_DTYPE::F16) {
@@ -547,7 +547,7 @@ class XpuWrapper {
         using ProB = WeightS4T<ST>;
         using T = sycl::half;
         ProB::gemv<ProB::CfgGemvF16>((const T*)matA,
-                                     {(const uint8_t*)qptr, (ST*)scale_ptr, blks, (const T*)bias, zp_ptr}, (T*)match,
+                                     {(const uint8_t*)qptr, (ST*)scale_ptr, blks, (const T*)bias, zp_ptr}, (T*)matC,
                                      p->n, p->k, p->blocksize, q);
       }
       if (p->scale_type == BTLA_DTYPE::BF16) {
@@ -561,7 +561,7 @@ class XpuWrapper {
         using T = float;
         using ProB = WeightS8T<ST>;
         ProB::gemv<ProB::CfgGemvF32>((const T*)matA,
-                                     {(const int8_t*)qptr, (ST*)scale_ptr, blks, (const T*)bias, zp_ptr}, (T*)match,
+                                     {(const int8_t*)qptr, (ST*)scale_ptr, blks, (const T*)bias, zp_ptr}, (T*)matC,
                                      p->n, p->k, p->blocksize, q);
       }
       if (p->scale_type == BTLA_DTYPE::F16) {
@@ -569,7 +569,7 @@ class XpuWrapper {
         using ProB = WeightS8T<ST>;
         using T = sycl::half;
         ProB::gemv<ProB::CfgGemvF16>((const T*)matA,
-                                     {(const int8_t*)qptr, (ST*)scale_ptr, blks, (const T*)bias, zp_ptr}, (T*)match,
+                                     {(const int8_t*)qptr, (ST*)scale_ptr, blks, (const T*)bias, zp_ptr}, (T*)matC,
                                      p->n, p->k, p->blocksize, q);
       }
       if (p->scale_type == BTLA_DTYPE::BF16) {
@@ -585,13 +585,13 @@ class XpuWrapper {
           if (p->scale_type == BTLA_DTYPE::F32) {
             using T = float;
             using ProB = WeightF8T<T, E4M3_T>;
-            ProB::gemv((T*)matA, {(const uint8_t*)qptr, (T*)scale_ptr, blks, bias}, (T*)match, p->n, p->k, p->blocksize,
+            ProB::gemv((T*)matA, {(const uint8_t*)qptr, (T*)scale_ptr, blks, bias}, (T*)matC, p->n, p->k, p->blocksize,
                        q);
           }
           if (p->scale_type == BTLA_DTYPE::F16) {
             using T = sycl::half;
             using ProB = WeightF8T<T, E4M3_T>;
-            ProB::gemv((T*)matA, {(const uint8_t*)qptr, (T*)scale_ptr, blks, bias}, (T*)match, p->n, p->k, p->blocksize,
+            ProB::gemv((T*)matA, {(const uint8_t*)qptr, (T*)scale_ptr, blks, bias}, (T*)matC, p->n, p->k, p->blocksize,
                        q);
           }
         } else {
@@ -599,13 +599,13 @@ class XpuWrapper {
           if (p->scale_type == BTLA_DTYPE::F32) {
             using T = float;
             using ProB = WeightF8T<T, E4M3_T>;
-            ProB::gemv((T*)matA, {(const uint8_t*)qptr, (T*)scale_ptr, blks, bias}, (T*)match, p->n, p->k, p->blocksize,
+            ProB::gemv((T*)matA, {(const uint8_t*)qptr, (T*)scale_ptr, blks, bias}, (T*)matC, p->n, p->k, p->blocksize,
                        q);
           }
           if (p->scale_type == BTLA_DTYPE::F16) {
             using T = sycl::half;
             using ProB = WeightF8T<T, E4M3_T>;
-            ProB::gemv((T*)matA, {(const uint8_t*)qptr, (T*)scale_ptr, blks, bias}, (T*)match, p->n, p->k, p->blocksize,
+            ProB::gemv((T*)matA, {(const uint8_t*)qptr, (T*)scale_ptr, blks, bias}, (T*)matC, p->n, p->k, p->blocksize,
                        q);
           }
         }
@@ -616,12 +616,12 @@ class XpuWrapper {
           using ProB = WeightF8T<ST, E4M3_T>;
           if (outt == BTLA_DTYPE::F32) {
             using T = float;
-            ProB::gemv((T*)matA, {(const uint8_t*)qptr, (ST*)scale_ptr, blks, bias}, (T*)match, p->n, p->k, p->blocksize,
+            ProB::gemv((T*)matA, {(const uint8_t*)qptr, (ST*)scale_ptr, blks, bias}, (T*)matC, p->n, p->k, p->blocksize,
                        q);
           }
           if (outt == BTLA_DTYPE::F16) {
             using T = sycl::half;
-            ProB::gemv((T*)matA, {(const uint8_t*)qptr, (ST*)scale_ptr, blks, bias}, (T*)match, p->n, p->k, p->blocksize,
+            ProB::gemv((T*)matA, {(const uint8_t*)qptr, (ST*)scale_ptr, blks, bias}, (T*)matC, p->n, p->k, p->blocksize,
                        q);
           }
         } else {
@@ -630,12 +630,12 @@ class XpuWrapper {
           using ProB = WeightF8T<ST, E4M3_T>;
           if (outt == BTLA_DTYPE::F32) {
             using T = float;
-            ProB::gemv((T*)matA, {(const uint8_t*)qptr, (ST*)scale_ptr, blks, bias}, (T*)match, p->n, p->k, p->blocksize,
+            ProB::gemv((T*)matA, {(const uint8_t*)qptr, (ST*)scale_ptr, blks, bias}, (T*)matC, p->n, p->k, p->blocksize,
                        q);
           }
           if (outt == BTLA_DTYPE::F16) {
             using T = sycl::half;
-            ProB::gemv((T*)matA, {(const uint8_t*)qptr, (ST*)scale_ptr, blks, bias}, (T*)match, p->n, p->k, p->blocksize,
+            ProB::gemv((T*)matA, {(const uint8_t*)qptr, (ST*)scale_ptr, blks, bias}, (T*)matC, p->n, p->k, p->blocksize,
                        q);
           }
         }
@@ -713,8 +713,8 @@ class XpuWrapper {
       // Ensure wg_size is a multiple of SG_SIZE
       wg_size = ((wg_size + SG_SIZE - 1) / SG_SIZE) * SG_SIZE;
 
-      q->parallel_for(sycl::and_range<1>(num_blocks * wg_size, wg_size),
-                      [=](sycl::and_item<1> item) [[intel::reqd_sub_group_size(SG_SIZE)]] {
+      q->parallel_for(sycl::nd_range<1>(num_blocks * wg_size, wg_size),
+                      [=](sycl::nd_item<1> item) [[intel::reqd_sub_group_size(SG_SIZE)]] {
                         int block_id = item.get_group(0);
                         int row_id = block_id / n_seq_blk;
                         int seq_id = block_id % n_seq_blk;
@@ -760,8 +760,8 @@ class XpuWrapper {
                       });
     } else {
       int wg_size = MAX_WG_SIZE;
-      q->parallel_for(sycl::and_range<1>(num_blocks * wg_size, wg_size),
-                      [=](sycl::and_item<1> item) [[intel::reqd_sub_group_size(SG_SIZE)]] {
+      q->parallel_for(sycl::nd_range<1>(num_blocks * wg_size, wg_size),
+                      [=](sycl::nd_item<1> item) [[intel::reqd_sub_group_size(SG_SIZE)]] {
                         int seq_id = item.get_group(0);
                         int row_id = seq_id / n_seq_blk;
                         seq_id = seq_id % n_seq_blk;

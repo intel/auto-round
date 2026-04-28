@@ -144,7 +144,7 @@ class UT_PaddngInterleaveCvt {
   }
 };
 #ifdef BTLA_UT_KERNEL_JIT
-static UT_PaddngInterleaveCvt sUT_Padding_InterleaveCvt;
+static UT_PaddngInterleaveCvt sUT_Pading_InterleaveCvt;
 #endif
 
 class UT_PaddingTransInterleaveCvt {

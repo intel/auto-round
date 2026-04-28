@@ -3532,7 +3532,7 @@ static inline BTLA_CODE decompress_kblock_bit2_packrow_fp(utils::bit2x4* bit2ptr
   return BTLA_CODE::Success;
 }
 
-inline __m256 poly_scale_2and_ps(const __m256i z, const __m256 f, const __m256 c0, const __m256 c1, const __m256 c2) {
+inline __m256 poly_scale_2nd_ps(const __m256i z, const __m256 f, const __m256 c0, const __m256 c1, const __m256 c2) {
   const auto y = _mm256_fmadd_ps(_mm256_fmadd_ps(f, c0, c1), f, c2);  // auto y = (f * c0 + c1) * f + c2;
   static const auto mask_exp = _mm256_set1_epi32(0x7f800000);
   static const auto mask_not_exp = _mm256_set1_epi32(~0x7f800000);
@@ -3561,7 +3561,7 @@ inline __m256 exp_ps_0_1(const __m256 x) {
   const auto z = _mm256_floor_ps(x1);
   const auto f = _mm256_sub_ps(x1, z);  // auto f = x1 - z;
 
-  return poly_scale_2and_ps(_mm256_cvtps_epi32(z), f, c0, c1, c2);
+  return poly_scale_2nd_ps(_mm256_cvtps_epi32(z), f, c0, c1, c2);
 }
 
 #ifdef __GNUC__

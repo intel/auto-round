@@ -77,11 +77,11 @@ class event_helper {
   }
 };
 template <class GemmCoreT>
-class and_item_helper {
+class nd_item_helper {
  public:
-  const sycl::and_item<2> it;
+  const sycl::nd_item<2> it;
   const sycl::sub_group sg;
-  and_item_helper(sycl::and_item<2>& _it) : it(_it), sg(it.get_sub_group()) {}
+  nd_item_helper(sycl::nd_item<2>& _it) : it(_it), sg(it.get_sub_group()) {}
 
   constexpr inline void local_barrier() const { it.barrier(sycl::access::fence_space::local_space); }
 

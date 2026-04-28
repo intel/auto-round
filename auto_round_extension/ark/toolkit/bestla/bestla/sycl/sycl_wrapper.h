@@ -59,9 +59,9 @@ class Launcher {
     sycl::range<2> problem{static_cast<size_t>(m_pad), static_cast<size_t>(n) / GemmCore::TileN};
     auto ev = q->submit([&](sycl::handler& cgh) {
       sycl::local_accessor<BType, 1> slm_b(sycl::range(GemmCore::SLM_B_Size), cgh);
-      cgh.parallel_for(sycl::and_range<2>(problem, group),
-                       [=](sycl::and_item<2> it) [[sycl::reqd_sub_group_size(GemmCore::SgSize)]] {
-                         sycl_utils::and_item_helper<GemmCore> helper(it);
+      cgh.parallel_for(sycl::nd_range<2>(problem, group),
+                       [=](sycl::nd_item<2> it) [[sycl::reqd_sub_group_size(GemmCore::SgSize)]] {
+                         sycl_utils::nd_item_helper<GemmCore> helper(it);
                          if constexpr (debug) {
                            compute_tile(k, B, ldb, slm_b, A, lda, C, ldc, it);
                          } else {
@@ -79,8 +79,8 @@ class Launcher {
   }
 
   static void compute_tile(int k, const BType* B, int ldb, const sycl::local_accessor<BType, 1>& slm_b, const AType* A,
-                           int lda, CType* C, int ldc, sycl::and_item<2>& it) {
-    sycl_utils::and_item_helper<GemmCore> helper(it);
+                           int lda, CType* C, int ldc, sycl::nd_item<2>& it) {
+    sycl_utils::nd_item_helper<GemmCore> helper(it);
     ACCType tmp[GemmCore::TileM * GemmCore::TileN];
     for (size_t im = 0; im < GemmCore::TileM; im++)
       for (size_t in = 0; in < GemmCore::TileN; in++) tmp[im * GemmCore::TileN + in] = ACCType(0.f);
@@ -94,8 +94,8 @@ class Launcher {
   }
 
   static void compute_tail(int k, const BType* B, int ldb, const sycl::local_accessor<BType, 1>& slm_b, const AType* A,
-                           int lda, CType* C, int ldc, int m_tail, sycl::and_item<2>& it) {
-    sycl_utils::and_item_helper<GemmCore> helper(it);
+                           int lda, CType* C, int ldc, int m_tail, sycl::nd_item<2>& it) {
+    sycl_utils::nd_item_helper<GemmCore> helper(it);
     ACCType tmp[GemmCore::TileM * GemmCore::TileN];
     for (size_t im = 0; im < GemmCore::TileM; im++)
       for (size_t in = 0; in < GemmCore::TileN; in++) tmp[im * GemmCore::TileN + in] = ACCType(0.f);
@@ -133,7 +133,7 @@ class LauncherWOQ {
 
   template <typename ParamT>
   static inline void load_weight_tile(const ParamT& paramB, const sycl::local_accessor<BType, 1>& slm_b, int koffset,
-                                      int blocksize, const sycl_utils::and_item_helper<GemmCore>& helper,
+                                      int blocksize, const sycl_utils::nd_item_helper<GemmCore>& helper,
                                       const sycl::local_accessor<BType, 1>* slm_lut) {
     if constexpr (NeedFp8Lut) {
       PrologueB::getWeight(paramB, slm_b, koffset, blocksize, helper, *slm_lut);
@@ -157,9 +157,9 @@ class LauncherWOQ {
     auto ev = q->submit([&](sycl::handler& cgh) {
       sycl::local_accessor<BType, 1> slm_b(sycl::range(GemmCore::SLM_B_Size), cgh);
       [[maybe_unused]] sycl::local_accessor<BType, 1> slm_lut(sycl::range<1>(NeedFp8Lut ? 256 : 1), cgh);
-      cgh.parallel_for(sycl::and_range<2>(problem, group),
-                       [=](sycl::and_item<2> it) [[sycl::reqd_sub_group_size(GemmCore::SgSize)]] {
-                         sycl_utils::and_item_helper<GemmCore> helper(it);
+      cgh.parallel_for(sycl::nd_range<2>(problem, group),
+                       [=](sycl::nd_item<2> it) [[sycl::reqd_sub_group_size(GemmCore::SgSize)]] {
+                         sycl_utils::nd_item_helper<GemmCore> helper(it);
                          if constexpr (debug) {
                            compute_tile(k, blocksize, B, B_scale, ldb, slm_b, A, lda, C, ldc, it,
                                         NeedFp8Lut ? &slm_lut : nullptr);
@@ -182,8 +182,8 @@ class LauncherWOQ {
   template <typename ScaleT>
   static void compute_tile(int k, int blocksize, const uint8_t* B, const ScaleT* B_scale, int ldb,
                            const sycl::local_accessor<BType, 1>& slm_b, const AType* A, int lda, CType* C, int ldc,
-                           sycl::and_item<2>& it, const sycl::local_accessor<BType, 1>* slm_lut) {
-    sycl_utils::and_item_helper<GemmCore> helper(it);
+                           sycl::nd_item<2>& it, const sycl::local_accessor<BType, 1>* slm_lut) {
+    sycl_utils::nd_item_helper<GemmCore> helper(it);
     if constexpr (NeedFp8Lut) {
       PrologueB::init_slm_lut(*slm_lut, it);
     }
@@ -204,8 +204,8 @@ class LauncherWOQ {
   template <typename ScaleT>
   static void compute_tail(int k, int blocksize, int m_tail, const uint8_t* B, const ScaleT* B_scale, int ldb,
                            const sycl::local_accessor<BType, 1>& slm_b, const AType* A, int lda, CType* C, int ldc,
-                           sycl::and_item<2>& it, const sycl::local_accessor<BType, 1>* slm_lut) {
-    sycl_utils::and_item_helper<GemmCore> helper(it);
+                           sycl::nd_item<2>& it, const sycl::local_accessor<BType, 1>* slm_lut) {
+    sycl_utils::nd_item_helper<GemmCore> helper(it);
     if constexpr (NeedFp8Lut) {
       PrologueB::init_slm_lut(*slm_lut, it);
     }
@@ -291,9 +291,9 @@ struct SDPA {
     aligned_wg = g_m_aligned * g_ncnt;
   }
 
-  inline sycl::and_range<2> get_range() { return sycl::and_range<2>({wg_repeat, wg_size}, {1, wg_size}); }
+  inline sycl::nd_range<2> get_range() { return sycl::nd_range<2>({wg_repeat, wg_size}, {1, wg_size}); }
 
-  void operator() [[sycl::reqd_sub_group_size(sg_size)]] (sycl::and_item<2> it) const {
+  void operator() [[sycl::reqd_sub_group_size(sg_size)]] (sycl::nd_item<2> it) const {
     auto sg = it.get_sub_group();
     int g_id = it.get_group(0);
     int g_n = g_id % g_ncnt;

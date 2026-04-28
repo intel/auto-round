@@ -175,8 +175,8 @@ static void sage_dynamic_quant(torch_ptr stream, torch_ptr input, torch_ptr outp
     // Ensure wg_size is a multiple of SG_SIZE
     wg_size = ((wg_size + SG_SIZE - 1) / SG_SIZE) * SG_SIZE;
 
-    q->parallel_for(sycl::and_range<1>(num_blocks * wg_size, wg_size),
-                    [=](sycl::and_item<1> item) [[intel::reqd_sub_group_size(SG_SIZE)]] {
+    q->parallel_for(sycl::nd_range<1>(num_blocks * wg_size, wg_size),
+                    [=](sycl::nd_item<1> item) [[intel::reqd_sub_group_size(SG_SIZE)]] {
                       int block_id = item.get_group(0);
                       int tid = item.get_local_id(0);
                       auto wg = item.get_group();
@@ -217,8 +217,8 @@ static void sage_dynamic_quant(torch_ptr stream, torch_ptr input, torch_ptr outp
                     });
   } else {
     int wg_size = MAX_WG_SIZE;
-    q->parallel_for(sycl::and_range<1>(num_blocks * wg_size, wg_size),
-                    [=](sycl::and_item<1> item) [[intel::reqd_sub_group_size(SG_SIZE)]] {
+    q->parallel_for(sycl::nd_range<1>(num_blocks * wg_size, wg_size),
+                    [=](sycl::nd_item<1> item) [[intel::reqd_sub_group_size(SG_SIZE)]] {
                       int block_id = item.get_group(0);
                       int tid = item.get_local_id(0);
                       auto wg = item.get_group();

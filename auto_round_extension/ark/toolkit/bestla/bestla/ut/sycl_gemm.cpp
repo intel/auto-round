@@ -95,7 +95,7 @@ class UT_SyclS4IGemm {
     auto dev = UT_Device::get();
     auto q = dev->getQueue();
     printf("Test Case: %d %d %d Device:%s\n", m, n, k, dev->getName().c_str());
-    avector<float> matAfp(m * k), scaleA(m), matB(k * n), match(m * n), ref(m * n);
+    avector<float> matAfp(m * k), scaleA(m), matB(k * n), matC(m * n), ref(m * n);
     avector<int8_t> matA(m * k);
     fill_buffer_randn(scaleA.data(), scaleA.size(), 0.001f, 0.005f);
     fill_buffer_randn(matA.data(), matA.size(), int8_t(-128), int8_t(127));
@@ -122,7 +122,7 @@ class UT_SyclS4IGemm {
     gemmref_fp32fp32fp32(m, n, k, matAfp.data(), matBNT.data(), ref.data(), k, n, n);
     avector<int> testRef(m * n), O32(m * n);
     gemmref_s8s8s32(m, n, k, matA.data(), B_s8NT.data(), testRef.data(), k, n, n);
-    sycl_vector<float> dB(matB.size(), q), dC(match.size(), q), dB_scale(B_scale.size(), q), dA_scale(m, q);
+    sycl_vector<float> dB(matB.size(), q), dC(matC.size(), q), dB_scale(B_scale.size(), q), dA_scale(m, q);
     sycl_vector<int8_t> dA(B_s8.size(), q), dBs8(B_s8.size(), q);
     sycl_vector<int> dO(m * n, q);
     sycl_vector<int> dws0(m * n, q);
@@ -150,8 +150,8 @@ class UT_SyclS4IGemm {
       // sycl::local_accessor<int, 1> slm_b(sycl::range(BN * BM), cgh);
       // sycl::local_accessor<float, 1> slm_bf(sycl::range(BN * BM), cgh);
       cgh.parallel_for(
-          sycl::and_range<2>({wg_repeat, wg_size}, {1, wg_size}),
-          [=](sycl::and_item<2> it) [[sycl::reqd_sub_group_size(sg_size)]]
+          sycl::nd_range<2>({wg_repeat, wg_size}, {1, wg_size}),
+          [=](sycl::nd_item<2> it) [[sycl::reqd_sub_group_size(sg_size)]]
           {
             auto sg = it.get_sub_group();
             int g_id = it.get_group(0);
@@ -331,10 +331,10 @@ class UT_SyclS4IGemm {
     auto t_ms = tm.stop() / runs;
     double ops = (double)m * n * k * 2;
     printf("Time %f us, %f GFLOPS\n", t_ms, ops / t_ms / 1e3);
-    q->memcpy(match.data(), C_d, match.size() * 4).wait();
-    // q->memcpy(O32.data(), C_d_s32, match.size() * 4).wait();
+    q->memcpy(matC.data(), C_d, matC.size() * 4).wait();
+    // q->memcpy(O32.data(), C_d_s32, matC.size() * 4).wait();
     // buffer_error(testRef.data(), O32.data(), testRef.size(), 0);
-    buffer_error(ref.data(), match.data(), ref.size(), 0.01f);
+    buffer_error(ref.data(), matC.data(), ref.size(), 0.01f);
   }
 
   void ut_testT3_half(int m, int n, int k, int blocksize) {
@@ -367,7 +367,7 @@ class UT_SyclS4IGemm {
     int blks = k / blocksize;
     printf("Test Case: %d %d %d %d Device:%s\n", m, n, k, blocksize, dev->getName().c_str());
     avector<float> matAfp(m * k), matB(k * n), ref(m * n);
-    avector<bestla::utils::fp16> B_scale(size_t(blks) * n), scaleA(m), match(m * n);
+    avector<bestla::utils::fp16> B_scale(size_t(blks) * n), scaleA(m), matC(m * n);
     avector<int8_t> matA(m * k);
     fill_buffer_randn(scaleA.data(), scaleA.size(), bestla::utils::fp16(0.001f), bestla::utils::fp16(0.005f));
     fill_buffer_randn(matA.data(), matA.size(), int8_t(-128), int8_t(127));
@@ -397,7 +397,7 @@ class UT_SyclS4IGemm {
 
     avector<int> testRef(m * n), O32(m * n);
     gemmref_s8s8s32(m, n, k, matA.data(), B_s8NT.data(), testRef.data(), k, n, n);
-    sycl_vector<sycl::half> dC(match.size(), q), dB_scale(B_scale.size(), q), dA_scale(m, q);
+    sycl_vector<sycl::half> dC(matC.size(), q), dB_scale(B_scale.size(), q), dA_scale(m, q);
     sycl_vector<int8_t> dA(B_s8.size(), q), dBs8(B_s8.size(), q);
     q->memcpy(dA.data(), matA.data(), matA.size() * 1).wait();
     q->memcpy(dBs8.data(), B_s8.data(), B_s8.size() * 1).wait();
@@ -420,8 +420,8 @@ class UT_SyclS4IGemm {
       // sycl::stream out(65536, 256, cgh);
       // sycl::local_accessor<int, 1> slm_b(sycl::range(BN * BM), cgh);
       cgh.parallel_for(
-          sycl::and_range<2>({wg_repeat, wg_size}, {1, wg_size}),
-          [=](sycl::and_item<2> it) [[sycl::reqd_sub_group_size(sg_size)]]
+          sycl::nd_range<2>({wg_repeat, wg_size}, {1, wg_size}),
+          [=](sycl::nd_item<2> it) [[sycl::reqd_sub_group_size(sg_size)]]
           {
             auto sg = it.get_sub_group();
             int g_id = it.get_group(0);
@@ -596,10 +596,10 @@ class UT_SyclS4IGemm {
     auto t_ms = tm.stop() / runs;
     double ops = (double)m * n * k * 2;
     printf("Time %f us, %f GFLOPS\n", t_ms, ops / t_ms / 1e3);
-    q->memcpy(match.data(), C_d, match.size() * 2).wait();
-    // q->memcpy(O32.data(), C_d_s32, match.size() * 4).wait();
+    q->memcpy(matC.data(), C_d, matC.size() * 2).wait();
+    // q->memcpy(O32.data(), C_d_s32, matC.size() * 4).wait();
     // buffer_error(testRef.data(), O32.data(), testRef.size(), 0);
-    buffer_error(ref_half.data(), match.data(), ref_half.size(), bestla::utils::fp16(0.01f));
+    buffer_error(ref_half.data(), matC.data(), ref_half.size(), bestla::utils::fp16(0.01f));
   }
 
   template <typename T1, typename T2>
@@ -638,7 +638,7 @@ class UT_SyclS4IGemm {
     auto dev = UT_Device::get();
     auto q = dev->getQueue();
     printf("Test Case: %d %d %d Block:%d Device:%s\n", m, n, k, blocksize, dev->getName().c_str());
-    avector<float> matAfp(m * k), scaleA(m), matB(k * n), match(m * n), ref(m * n);
+    avector<float> matAfp(m * k), scaleA(m), matB(k * n), matC(m * n), ref(m * n);
     avector<int8_t> matA(m * k);
     fill_buffer_randn(scaleA.data(), scaleA.size(), 0.001f, 0.005f);
     fill_buffer_randn(matA.data(), matA.size(), int8_t(-128), int8_t(127));
@@ -673,7 +673,7 @@ class UT_SyclS4IGemm {
 
     avector<int> testRef(m * n), O32(m * n);
     gemmref_s8s8s32(m, n, k, matA.data(), B_s8NT.data(), testRef.data(), k, n, n);
-    sycl_vector<float> dB(matB.size(), q), dC(match.size(), q), dB_scale(B_scale.size(), q), dA_scale(m, q), dBias(n, q);
+    sycl_vector<float> dB(matB.size(), q), dC(matC.size(), q), dB_scale(B_scale.size(), q), dA_scale(m, q), dBias(n, q);
     sycl_vector<int8_t> dA(B_s8.size(), q), dBs8(B_s8.size(), q);
     sycl_vector<int> dO(m * n, q);
     q->memcpy(dA.data(), matA.data(), matA.size() * 1).wait();
@@ -703,8 +703,8 @@ class UT_SyclS4IGemm {
       // sycl::stream out(65536, 256, cgh);
       // sycl::local_accessor<int, 1> slm_b(sycl::range(BN * BM), cgh);
       cgh.parallel_for(
-          sycl::and_range<2>({wg_repeat, wg_size}, {1, wg_size}),
-          [=](sycl::and_item<2> it) [[sycl::reqd_sub_group_size(sg_size)]] [[sycl_grf_size]]
+          sycl::nd_range<2>({wg_repeat, wg_size}, {1, wg_size}),
+          [=](sycl::nd_item<2> it) [[sycl::reqd_sub_group_size(sg_size)]] [[sycl_grf_size]]
           {
             syclex::properties volatile kernel_properties{syclintelex::grf_size<256>};
             (void)kernel_properties;
@@ -890,10 +890,10 @@ class UT_SyclS4IGemm {
     auto t_ms = tm.stop() / runs;
     double ops = (double)m * n * k * 2;
     printf("Time %f us, %f GFLOPS\n", t_ms, ops / t_ms / 1e3);
-    q->memcpy(match.data(), C_d, match.size() * 4).wait();
-    // q->memcpy(O32.data(), C_d_s32, match.size() * 4).wait();
+    q->memcpy(matC.data(), C_d, matC.size() * 4).wait();
+    // q->memcpy(O32.data(), C_d_s32, matC.size() * 4).wait();
     // buffer_error(testRef.data(), O32.data(), testRef.size(), 0);
-    buffer_error(ref.data(), match.data(), ref.size(), 0.01f);
+    buffer_error(ref.data(), matC.data(), ref.size(), 0.01f);
   }
 
   void ut_testT2() {
@@ -910,7 +910,7 @@ class UT_SyclS4IGemm {
     auto q = dev->getQueue();
     printf("Test Case: %d %d %d Device:%s\n", m, n, k, dev->getName().c_str());
     avector<int8_t> matA(m * k), matB(k * n), matBT(k * n), matBT4(k * n / 2);
-    avector<int32_t> match(m * n), ref(m * n);
+    avector<int32_t> matC(m * n), ref(m * n);
     fill_buffer_randn(matA.data(), matA.size(), int8_t(-128), int8_t(127));
     fill_buffer_randn(matB.data(), matB.size(), int8_t(-8), int8_t(7));
     gemmref_s8s8s32(m, n, k, matA.data(), matB.data(), ref.data(), k, n, n);
@@ -926,7 +926,7 @@ class UT_SyclS4IGemm {
     }
 
     bestla::sycl_vector<int8_t> dA(matA.size(), q), dB4(matBT4.size(), q);
-    bestla::sycl_vector<int32_t> dC(match.size(), q);
+    bestla::sycl_vector<int32_t> dC(matC.size(), q);
     q->memcpy(dA.data(), matA.data(), matA.size() * 1).wait();
     q->memcpy(dB4.data(), matBT4.data(), matBT4.size() * 1).wait();
     auto A_d = dA.data();
@@ -936,7 +936,7 @@ class UT_SyclS4IGemm {
     auto ker = [&](sycl::handler& cgh) {
       sycl::stream out(65536, 256, cgh);
       cgh.parallel_for(
-          sycl::and_range<2>({1, sg_size}, {1, sg_size}), [=](sycl::and_item<2> it) [[sycl::reqd_sub_group_size(sg_size)]]
+          sycl::nd_range<2>({1, sg_size}, {1, sg_size}), [=](sycl::nd_item<2> it) [[sycl::reqd_sub_group_size(sg_size)]]
           {
             auto sg = it.get_sub_group();
             int g_id = it.get_group(0);
@@ -1014,8 +1014,8 @@ class UT_SyclS4IGemm {
     auto t_ms = tm.stop() / 1;
     double ops = (double)m * n * k * 2;
     printf("Time %f us, %f GFLOPS\n", t_ms, ops / t_ms / 1e3);
-    q->memcpy(match.data(), C_d, match.size() * 4).wait();
-    buffer_error(ref.data(), match.data(), ref.size(), 0);
+    q->memcpy(matC.data(), C_d, matC.size() * 4).wait();
+    buffer_error(ref.data(), matC.data(), ref.size(), 0);
   }
 
   void ut_testT1(int m, int n, int k) {
@@ -1046,7 +1046,7 @@ class UT_SyclS4IGemm {
     auto q = dev->getQueue();
     printf("Test Case: %d %d %d Device:%s\n", m, n, k, dev->getName().c_str());
     avector<int8_t> matA(m * k), matB(k * n), matBT(k * n), matBT4(k * n / 2);
-    avector<int32_t> match(m * n), ref(m * n);
+    avector<int32_t> matC(m * n), ref(m * n);
     fill_buffer_randn(matA.data(), matA.size(), int8_t(-128), int8_t(127));
     fill_buffer_randn(matB.data(), matB.size(), int8_t(-8), int8_t(7));
     gemmref_s8s8s32(m, n, k, matA.data(), matB.data(), ref.data(), k, n, n);
@@ -1061,7 +1061,7 @@ class UT_SyclS4IGemm {
       }
     }
     bestla::sycl_vector<int8_t> dA(matA.size(), q), dB(matBT4.size(), q);
-    bestla::sycl_vector<int32_t> dC(match.size(), q);
+    bestla::sycl_vector<int32_t> dC(matC.size(), q);
     q->memcpy(dA.data(), matA.data(), matA.size() * 1).wait();
     q->memcpy(dB.data(), matBT4.data(), matBT4.size() * 1).wait();
     auto A_d = dA.data();
@@ -1078,8 +1078,8 @@ class UT_SyclS4IGemm {
       // sycl::stream out(65536, 256, cgh);
       // sycl::local_accessor<int8_t, 2> slm_b(sycl::range(BN_STRIDE, TK * UnrollK), cgh);
       cgh.parallel_for(
-          sycl::and_range<2>({wg_repeat, wg_size}, {1, wg_size}),
-          [=](sycl::and_item<2> it) [[sycl::reqd_sub_group_size(sg_size)]]
+          sycl::nd_range<2>({wg_repeat, wg_size}, {1, wg_size}),
+          [=](sycl::nd_item<2> it) [[sycl::reqd_sub_group_size(sg_size)]]
           {
             auto sg = it.get_sub_group();
             int g_id = it.get_group(0);
@@ -1236,8 +1236,8 @@ class UT_SyclS4IGemm {
     auto t_ms = tm.stop() / runs;
     double ops = (double)m * n * k * 2;
     printf("Time %f us, %f GFLOPS\n", t_ms, ops / t_ms / 1e3);
-    q->memcpy(match.data(), C_d, match.size() * 4).wait();
-    buffer_error(ref.data(), match.data(), ref.size(), 0);
+    q->memcpy(matC.data(), C_d, matC.size() * 4).wait();
+    buffer_error(ref.data(), matC.data(), ref.size(), 0);
   }
 
   void ut_testT2(int m, int n, int k) {
@@ -1268,7 +1268,7 @@ class UT_SyclS4IGemm {
     auto q = dev->getQueue();
     printf("Test Case: %d %d %d Device:%s\n", m, n, k, dev->getName().c_str());
     avector<int8_t> matA(m * k), matB(k * n), matBT(k * n), matBT4(k * n / 2);
-    avector<int32_t> match(m * n), ref(m * n);
+    avector<int32_t> matC(m * n), ref(m * n);
     fill_buffer_randn(matA.data(), matA.size(), int8_t(-128), int8_t(127));
     fill_buffer_randn(matB.data(), matB.size(), int8_t(-8), int8_t(7));
     gemmref_s8s8s32(m, n, k, matA.data(), matB.data(), ref.data(), k, n, n);
@@ -1283,7 +1283,7 @@ class UT_SyclS4IGemm {
       }
     }
     bestla::sycl_vector<int8_t> dA(matA.size(), q), dB(matBT4.size(), q);
-    bestla::sycl_vector<int32_t> dC(match.size(), q);
+    bestla::sycl_vector<int32_t> dC(matC.size(), q);
     q->memcpy(dA.data(), matA.data(), matA.size() * 1).wait();
     q->memcpy(dB.data(), matBT4.data(), matBT4.size() * 1).wait();
     auto A_d = dA.data();
@@ -1300,8 +1300,8 @@ class UT_SyclS4IGemm {
       // sycl::stream out(65536, 256, cgh);
       sycl::local_accessor<int8_t, 2> slm_b(sycl::range(BN_STRIDE, TK * UnrollK), cgh);
       cgh.parallel_for(
-          sycl::and_range<2>({wg_repeat, wg_size}, {1, wg_size}),
-          [=](sycl::and_item<2> it) [[sycl::reqd_sub_group_size(sg_size)]]
+          sycl::nd_range<2>({wg_repeat, wg_size}, {1, wg_size}),
+          [=](sycl::nd_item<2> it) [[sycl::reqd_sub_group_size(sg_size)]]
           {
             auto sg = it.get_sub_group();
             int g_id = it.get_group(0);
@@ -1451,8 +1451,8 @@ class UT_SyclS4IGemm {
     auto t_ms = tm.stop() / runs;
     double ops = (double)m * n * k * 2;
     printf("Time %f us, %f GFLOPS\n", t_ms, ops / t_ms / 1e3);
-    q->memcpy(match.data(), C_d, match.size() * 4).wait();
-    buffer_error(ref.data(), match.data(), ref.size(), 0);
+    q->memcpy(matC.data(), C_d, matC.size() * 4).wait();
+    buffer_error(ref.data(), matC.data(), ref.size(), 0);
   }
 };
 #ifdef BTLA_UT_SYCL
@@ -1506,13 +1506,13 @@ class UT_SyclIGemm {
     auto q = dev->getQueue();
     printf("Test Case: %d %d %d Device:%s\n", m, n, k, dev->getName().c_str());
     avector<int8_t> matA(m * k), matB(k * n), matBT(k * n);
-    avector<int32_t> match(m * n), ref(m * n);
+    avector<int32_t> matC(m * n), ref(m * n);
     fill_buffer_randn(matA.data(), matA.size(), int8_t(-128), int8_t(127));
     fill_buffer_randn(matB.data(), matB.size(), int8_t(-128), int8_t(127));
     gemmref_s8s8s32(m, n, k, matA.data(), matB.data(), ref.data(), k, n, n);
     bestla::kernel::wrapper::Transpose2D<int8_t>::forward_auto(matB.data(), matBT.data(), k, n, n, k);
     bestla::sycl_vector<int8_t> dA(matA.size(), q), dB(matB.size(), q);
-    bestla::sycl_vector<int32_t> dC(match.size(), q);
+    bestla::sycl_vector<int32_t> dC(matC.size(), q);
     q->memcpy(dA.data(), matA.data(), matA.size() * 1).wait();
     q->memcpy(dB.data(), matBT.data(), matBT.size() * 1).wait();
     auto A_d = dA.data();
@@ -1529,8 +1529,8 @@ class UT_SyclIGemm {
       // sycl::stream out(65536, 256, cgh);
       // sycl::local_accessor<int8_t, 2> slm_b(sycl::range(BN_STRIDE, TK * UnrollK), cgh);
       cgh.parallel_for(
-          sycl::and_range<2>({wg_repeat, wg_size}, {1, wg_size}),
-          [=](sycl::and_item<2> it) [[sycl::reqd_sub_group_size(sg_size)]]
+          sycl::nd_range<2>({wg_repeat, wg_size}, {1, wg_size}),
+          [=](sycl::nd_item<2> it) [[sycl::reqd_sub_group_size(sg_size)]]
           {
             auto sg = it.get_sub_group();
             int g_id = it.get_group(0);
@@ -1663,8 +1663,8 @@ class UT_SyclIGemm {
     auto t_ms = tm.stop() / runs;
     double ops = (double)m * n * k * 2;
     printf("Time %f us, %f GFLOPS\n", t_ms, ops / t_ms / 1e3);
-    q->memcpy(match.data(), C_d, match.size() * 4).wait();
-    buffer_error(ref.data(), match.data(), ref.size(), 0);
+    q->memcpy(matC.data(), C_d, matC.size() * 4).wait();
+    buffer_error(ref.data(), matC.data(), ref.size(), 0);
   }
 
   template <typename T, typename ST = T>
@@ -1675,7 +1675,7 @@ class UT_SyclIGemm {
     printf("Test Case: %d %d %d Device:%s\n", m, n, k, dev->getName().c_str());
     avector<int8_t> matA(m * k), matB(k * n), matBT(k * n);
     avector<int32_t> ref(m * n);
-    avector<T> match(m * n), ref0(m * n), scaleA(m), scaleB(n), bias(n);
+    avector<T> matC(m * n), ref0(m * n), scaleA(m), scaleB(n), bias(n);
     fill_buffer_randn(matA.data(), matA.size(), int8_t(-128), int8_t(127));
     fill_buffer_randn(matB.data(), matB.size(), int8_t(-128), int8_t(127));
     fill_buffer_randn(scaleA.data(), scaleA.size(), T(0.001), T(0.004));
@@ -1690,7 +1690,7 @@ class UT_SyclIGemm {
 
     bestla::kernel::wrapper::Transpose2D<int8_t>::forward_auto(matB.data(), matBT.data(), k, n, n, k);
     bestla::sycl_vector<int8_t> dA(matA.size(), q), dB(matB.size(), q);
-    bestla::sycl_vector<T> dscaleA(m, q), dscaleB(n, q), dbias(n, q), dC(match.size(), q);
+    bestla::sycl_vector<T> dscaleA(m, q), dscaleB(n, q), dbias(n, q), dC(matC.size(), q);
     q->memcpy(dA.data(), matA.data(), matA.size() * 1).wait();
     q->memcpy(dB.data(), matBT.data(), matBT.size() * 1).wait();
     q->memcpy(dscaleA.data(), scaleA.data(), scaleA.size() * sizeof(T)).wait();
@@ -1716,8 +1716,8 @@ class UT_SyclIGemm {
     auto t_ms = tm.stop() / runs;
     double ops = (double)m * n * k * 2;
     printf("Time %f us, %f GFLOPS\n", t_ms, ops / t_ms / 1e3);
-    q->memcpy(match.data(), C_d, match.size() * sizeof(T)).wait();
-    buffer_error(ref0.data(), match.data(), ref0.size(), T(0.2));
+    q->memcpy(matC.data(), C_d, matC.size() * sizeof(T)).wait();
+    buffer_error(ref0.data(), matC.data(), ref0.size(), T(0.2));
   }
 };
 #ifdef BTLA_UT_SYCL
@@ -1766,11 +1766,11 @@ class UT_SyclHGemm {
     auto dev = UT_Device::get();
     auto q = dev->getQueue();
     printf("Test Case: %d %d %d Device:%s\n", m, n, k, dev->getName().c_str());
-    avector<utils::fp16> matA(m * k), matB(k * n), match(m * n), ref(m * n);
+    avector<utils::fp16> matA(m * k), matB(k * n), matC(m * n), ref(m * n);
     fill_buffer_randn(matA.data(), matA.size(), utils::fp16(-0.5f), utils::fp16(0.5f));
     fill_buffer_randn(matB.data(), matB.size(), utils::fp16(-0.5f), utils::fp16(0.5f));
     gemmref_fp16fp16fp16(m, n, k, matA.data(), matB.data(), ref.data(), k, n, n);
-    sycl_vector<DT> dA(matA.size(), q), dB(matB.size(), q), dC(match.size(), q);
+    sycl_vector<DT> dA(matA.size(), q), dB(matB.size(), q), dC(matC.size(), q);
     q->memcpy(dA.data(), matA.data(), matA.size() * 2).wait();
     q->memcpy(dB.data(), matB.data(), matB.size() * 2).wait();
     auto A_d = dA.data();
@@ -1781,8 +1781,8 @@ class UT_SyclHGemm {
       sycl::local_accessor<float, 1> slm_a(sycl::range(BM_STRIDE * TK), cgh);
       sycl::local_accessor<float, 1> slm_b(sycl::range(BN_STRIDE * TK), cgh);
       cgh.parallel_for(
-          sycl::and_range<2>({wg_repeat, wg_size}, {1, wg_size}),
-          [=](sycl::and_item<2> it) [[sycl::reqd_sub_group_size(sg_size)]]
+          sycl::nd_range<2>({wg_repeat, wg_size}, {1, wg_size}),
+          [=](sycl::nd_item<2> it) [[sycl::reqd_sub_group_size(sg_size)]]
           {
             auto sg = it.get_sub_group();
             int sgSize = sg.get_local_range()[0];
@@ -1861,8 +1861,8 @@ class UT_SyclHGemm {
     auto t_ms = tm.stop() / runs;
     double ops = (double)m * n * k * 2 * wg_repeat;
     printf("Time %f ms, %f GFLOPS\n", t_ms, ops / t_ms / 1e3);
-    q->memcpy(match.data(), C_d, match.size() * 2).wait();
-    buffer_error(ref.data(), match.data(), ref.size(), utils::fp16(0.2f));
+    q->memcpy(matC.data(), C_d, matC.size() * 2).wait();
+    buffer_error(ref.data(), matC.data(), ref.size(), utils::fp16(0.2f));
   }
 
   template <typename CFG>
@@ -1943,9 +1943,9 @@ class UT_SyclHGemm {
       aligned_wg = g_m_aligned * g_ncnt;
     }
 
-    sycl::and_range<2> get_range() { return sycl::and_range<2>({wg_repeat, wg_size}, {1, wg_size}); }
+    sycl::nd_range<2> get_range() { return sycl::nd_range<2>({wg_repeat, wg_size}, {1, wg_size}); }
 
-    void operator() [[sycl::reqd_sub_group_size(sg_size)]] (sycl::and_item<2> it) const {
+    void operator() [[sycl::reqd_sub_group_size(sg_size)]] (sycl::nd_item<2> it) const {
       auto sg = it.get_sub_group();
       int g_id = it.get_group(0);
       int g_n = g_id % g_ncnt;
@@ -2070,7 +2070,7 @@ class UT_SyclHGemm {
     auto dev = UT_Device::get();
     auto q = dev->getQueue();
     printf("Test Case: %d %d %d Device:%s\n", m, n, k, dev->getName().c_str());
-    avector<utils::fp16> matA(m * k), matB(k * n), matBT(k * n), match(m * n), ref(m * n), bias(n);
+    avector<utils::fp16> matA(m * k), matB(k * n), matBT(k * n), matC(m * n), ref(m * n), bias(n);
     fill_buffer_randn(matA.data(), matA.size(), utils::fp16(-0.5f), utils::fp16(0.5f));
     fill_buffer_randn(matB.data(), matB.size(), utils::fp16(-0.5f), utils::fp16(0.5f));
     fill_buffer_randn(bias.data(), bias.size(), utils::fp16(-0.5f), utils::fp16(0.5f));
@@ -2081,7 +2081,7 @@ class UT_SyclHGemm {
       }
     }
     bestla::kernel::wrapper::Transpose2D<utils::fp16>::forward_auto(matB.data(), matBT.data(), k, n, n, k);
-    bestla::sycl_vector<DT> dA(matA.size(), q), dB(matB.size(), q), dC(match.size(), q), dBias(bias.size(), q);
+    bestla::sycl_vector<DT> dA(matA.size(), q), dB(matB.size(), q), dC(matC.size(), q), dBias(bias.size(), q);
     q->memcpy(dA.data(), matA.data(), matA.size() * 2).wait();
     q->memcpy(dB.data(), matBT.data(), matBT.size() * 2).wait();
     q->memcpy(dBias.data(), bias.data(), bias.size() * 2).wait();
@@ -2097,8 +2097,8 @@ class UT_SyclHGemm {
     auto ker = [&](sycl::handler& cgh) {
       // sycl::local_accessor<DT, 2> slm_b(sycl::range(BN_STRIDE, TK * UnrollK), cgh);
       cgh.parallel_for(
-          sycl::and_range<2>({wg_repeat, wg_size}, {1, wg_size}),
-          [=](sycl::and_item<2> it) [[sycl::reqd_sub_group_size(sg_size)]]
+          sycl::nd_range<2>({wg_repeat, wg_size}, {1, wg_size}),
+          [=](sycl::nd_item<2> it) [[sycl::reqd_sub_group_size(sg_size)]]
           {
             auto sg = it.get_sub_group();
             int g_id = it.get_group(0);
@@ -2234,8 +2234,8 @@ class UT_SyclHGemm {
     auto t_ms = tm.stop() / runs;
     double ops = (double)m * n * k * 2;
     printf("Time %f us, %f GFLOPS\n", t_ms, ops / t_ms / 1e3);
-    q->memcpy(match.data(), C_d, match.size() * 2).wait();
-    buffer_error(ref.data(), match.data(), ref.size(), utils::fp16(0.3f));
+    q->memcpy(matC.data(), C_d, matC.size() * 2).wait();
+    buffer_error(ref.data(), matC.data(), ref.size(), utils::fp16(0.3f));
   }
 
   void ut_fp32(int m, int n, int k) {
@@ -2244,7 +2244,7 @@ class UT_SyclHGemm {
     auto q = dev->getQueue();
     printf("Test Case: %d %d %d Device:%s\n", m, n, k, dev->getName().c_str());
     avector<utils::fp16> matA(m * k), matB(k * n), matBT(k * n);
-    avector<float> match(m * n), ref(m * n), bias(n);
+    avector<float> matC(m * n), ref(m * n), bias(n);
     fill_buffer_randn(matA.data(), matA.size(), utils::fp16(-0.5f), utils::fp16(0.5f));
     fill_buffer_randn(matB.data(), matB.size(), utils::fp16(-0.5f), utils::fp16(0.5f));
     fill_buffer_randn(bias.data(), bias.size(), -0.5f, 0.5f);
@@ -2257,7 +2257,7 @@ class UT_SyclHGemm {
 
     bestla::kernel::wrapper::Transpose2D<utils::fp16>::forward_auto(matB.data(), matBT.data(), k, n, n, k);
     bestla::sycl_vector<DT> dA(matA.size(), q), dB(matB.size(), q);
-    sycl_vector<float> dC(match.size(), q), dBias(bias.size(), q);
+    sycl_vector<float> dC(matC.size(), q), dBias(bias.size(), q);
     q->memcpy(dA.data(), matA.data(), matA.size() * 2).wait();
     q->memcpy(dB.data(), matBT.data(), matBT.size() * 2).wait();
     q->memcpy(dBias.data(), bias.data(), bias.size() * 4).wait();
@@ -2282,8 +2282,8 @@ class UT_SyclHGemm {
     auto t_ms = tm.stop() / runs;
     double ops = (double)m * n * k * 2;
     printf("Time %f us, %f GFLOPS\n", t_ms, ops / t_ms / 1e3);
-    q->memcpy(match.data(), C_d, match.size() * 4).wait();
-    buffer_error(ref.data(), match.data(), ref.size(), float(0.3f));
+    q->memcpy(matC.data(), C_d, matC.size() * 4).wait();
+    buffer_error(ref.data(), matC.data(), ref.size(), float(0.3f));
   }
 
   void ut_testT(int m, int n, int k) {
@@ -2310,12 +2310,12 @@ class UT_SyclHGemm {
     auto dev = UT_Device::get();
     auto q = dev->getQueue();
     printf("Test Case: %d %d %d Device:%s\n", m, n, k, dev->getName().c_str());
-    avector<utils::fp16> matA(m * k), matB(k * n), matBT(k * n), match(m * n), ref(m * n);
+    avector<utils::fp16> matA(m * k), matB(k * n), matBT(k * n), matC(m * n), ref(m * n);
     fill_buffer_randn(matA.data(), matA.size(), utils::fp16(-0.5f), utils::fp16(0.5f));
     fill_buffer_randn(matB.data(), matB.size(), utils::fp16(-0.5f), utils::fp16(0.5f));
     gemmref_fp16fp16fp16(m, n, k, matA.data(), matB.data(), ref.data(), k, n, n);
     bestla::kernel::wrapper::Transpose2D<utils::fp16>::forward_auto(matB.data(), matBT.data(), k, n, n, k);
-    bestla::sycl_vector<DT> dA(matA.size(), q), dB(matB.size(), q), dC(match.size(), q);
+    bestla::sycl_vector<DT> dA(matA.size(), q), dB(matB.size(), q), dC(matC.size(), q);
     q->memcpy(dA.data(), matA.data(), matA.size() * 2).wait();
     q->memcpy(dB.data(), matBT.data(), matBT.size() * 2).wait();
     auto A_d = dA.data();
@@ -2326,8 +2326,8 @@ class UT_SyclHGemm {
       sycl::local_accessor<float, 1> slm_a(sycl::range(BM_STRIDE * TK), cgh);
       sycl::local_accessor<float, 1> slm_b(sycl::range(BN_STRIDE * TK), cgh);
       cgh.parallel_for(
-          sycl::and_range<2>({wg_repeat, wg_size}, {1, wg_size}),
-          [=](sycl::and_item<2> it) [[sycl::reqd_sub_group_size(sg_size)]]
+          sycl::nd_range<2>({wg_repeat, wg_size}, {1, wg_size}),
+          [=](sycl::nd_item<2> it) [[sycl::reqd_sub_group_size(sg_size)]]
           {
             auto sg = it.get_sub_group();
             int sgSize = sg.get_local_range()[0];
@@ -2396,8 +2396,8 @@ class UT_SyclHGemm {
     auto t_ms = tm.stop() / runs;
     double ops = (double)m * n * k * 2 * wg_repeat;
     printf("Time %f ms, %f GFLOPS\n", t_ms, ops / t_ms / 1e3);
-    q->memcpy(match.data(), C_d, match.size() * 2).wait();
-    buffer_error(ref.data(), match.data(), ref.size(), utils::fp16(0.2f));
+    q->memcpy(matC.data(), C_d, matC.size() * 2).wait();
+    buffer_error(ref.data(), matC.data(), ref.size(), utils::fp16(0.2f));
   }
 };
 #ifdef BTLA_UT_SYCL
@@ -2419,21 +2419,21 @@ class UT_SyclHGemmBF16 {
     auto dev = UT_Device::get();
     auto q = dev->getQueue();
     printf("Test Case: %d %d %d Device:%s\n", m, n, k, dev->getName().c_str());
-    avector<utils::bf16> matA(m * k), matB(k * n), matBT(k * n), match(m * n), ref(m * n);
+    avector<utils::bf16> matA(m * k), matB(k * n), matBT(k * n), matC(m * n), ref(m * n);
     fill_buffer_randn(matA.data(), matA.size(), utils::bf16(-0.5f), utils::bf16(0.5f));
     fill_buffer_randn(matB.data(), matB.size(), utils::bf16(-0.5f), utils::bf16(0.5f));
     gemmref_bf16bf16bf16(m, n, k, matA.data(), matB.data(), ref.data(), k, n, n);
     bestla::kernel::wrapper::Transpose2D<utils::bf16>::forward_auto(matB.data(), matBT.data(), k, n, n, k);
 
-    sycl_vector<sycl::ext::oneapi::bfloat16> dA(matA.size(), q), dB(matB.size(), q), dC(match.size(), q);
+    sycl_vector<sycl::ext::oneapi::bfloat16> dA(matA.size(), q), dB(matB.size(), q), dC(matC.size(), q);
     q->memcpy(dA.data(), matA.data(), matA.size() * 2).wait();
     q->memcpy(dB.data(), matBT.data(), matBT.size() * 2).wait();
     auto A_d = dA.data();
     auto B_d = dB.data();
     auto C_d = dC.data();
     Launcher<xmx::HGemmBf16Cfg, xmx::GemmCore>::run(q, {A_d, B_d, C_d, m, n, k, k, k, n});
-    q->memcpy(match.data(), C_d, match.size() * 2).wait();
-    buffer_error(ref.data(), match.data(), ref.size(), utils::bf16(2.6f));
+    q->memcpy(matC.data(), C_d, matC.size() * 2).wait();
+    buffer_error(ref.data(), matC.data(), ref.size(), utils::bf16(2.6f));
     int constexpr runs = 100;
     q->wait();
     for (size_t i = 0; i < runs; i++) {
@@ -2456,22 +2456,22 @@ class UT_SyclHGemmBF16 {
     auto q = dev->getQueue();
     printf("Test Case: %d %d %d Device:%s\n", m, n, k, dev->getName().c_str());
     avector<utils::bf16> matA(m * k), matB(k * n), matBT(k * n);
-    avector<float> match(m * n), ref(m * n);
+    avector<float> matC(m * n), ref(m * n);
     fill_buffer_randn(matA.data(), matA.size(), utils::bf16(-0.5f), utils::bf16(0.5f));
     fill_buffer_randn(matB.data(), matB.size(), utils::bf16(-0.5f), utils::bf16(0.5f));
     gemmref_bf16bf16fp32(m, n, k, matA.data(), matB.data(), ref.data(), k, n, n);
     bestla::kernel::wrapper::Transpose2D<utils::bf16>::forward_auto(matB.data(), matBT.data(), k, n, n, k);
 
     sycl_vector<sycl::ext::oneapi::bfloat16> dA(matA.size(), q), dB(matB.size(), q);
-    sycl_vector<float> dC(match.size(), q);
+    sycl_vector<float> dC(matC.size(), q);
     q->memcpy(dA.data(), matA.data(), matA.size() * 2).wait();
     q->memcpy(dB.data(), matBT.data(), matBT.size() * 2).wait();
     auto A_d = dA.data();
     auto B_d = dB.data();
     auto C_d = dC.data();
     Launcher<xmx::HGemmBf16Fp32Cfg, xmx::GemmCore>::run(q, {A_d, B_d, C_d, m, n, k, k, k, n});
-    q->memcpy(match.data(), C_d, match.size() * 4).wait();
-    buffer_error(ref.data(), match.data(), ref.size(), float(1.6f));
+    q->memcpy(matC.data(), C_d, matC.size() * 4).wait();
+    buffer_error(ref.data(), matC.data(), ref.size(), float(1.6f));
     int constexpr runs = 100;
     q->wait();
     for (size_t i = 0; i < runs; i++) {
@@ -2965,7 +2965,7 @@ class UT_MHASgemm {
       int nf = hnum * hsize;
       auto ev = q->submit([&](sycl::handler& cgh) {
         sycl::local_accessor<T, 1> slm(sycl::range(std::max(seq_acc, 1024)), cgh);
-        cgh.parallel_for(sycl::and_range<1>(WgSize * batch * seq * hnum, WgSize),
+        cgh.parallel_for(sycl::nd_range<1>(WgSize * batch * seq * hnum, WgSize),
                          [=](auto it) [[intel::reqd_sub_group_size(SgSize)]] {
                            auto sg = it.get_sub_group();
                            auto sg_idx = sg.get_group_id()[0];

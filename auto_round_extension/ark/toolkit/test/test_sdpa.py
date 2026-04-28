@@ -1,13 +1,9 @@
-# # Copyright (C) 2026 Intel Corporation
-# # SPDX-License-Identifier: Apache-2.0
-
 import math
-import time
 from weakref import ref
-
-import pandas as pd
 import torch
+import pandas as pd
 from ut_utils import *
+import time
 
 ark = None
 
@@ -110,9 +106,11 @@ def benchmark_ark_sdpa_case(
     v = torch.rand(batch, h_kv, seq_kv, head_size_vo, dtype=dt, device=dev)
     attn_bias = build_attn_bias(seq, seq_kv, dt, q.device, is_causal)
     scale = 1 / math.sqrt(head_size_qk)
-    ref = torch.nn.functional.scaled_dot_product_attention(q, k, v, scale=scale, enable_gqa=group > 1, is_causal=True)
+    ref = torch.nn.functional.scaled_dot_product_attention(
+            q, k, v, scale=scale, enable_gqa=group > 1, is_causal=True
+        )
     ret = get_ark().sdpa(q, k, v, scale=scale, is_causal=is_causal)
-    dff = abs(ref - ret)
+    dff = abs(ref -ret)
     print_top_diffs(dff, ref, ret, topk=4, threshold=1)
     for _ in range(warmup_runs):
         get_ark().sdpa(q, k, v, scale=scale, is_causal=is_causal)
@@ -142,7 +140,6 @@ def benchmark_ark_sdpa_case(
         "CRI Time (ms)": dur * 1e3,
     }
 
-
 TEST_CASES = [
     # #--- bfloat16 Cases ---
     ("prefill", "float16", 128, 1, 96, 8, 4096, 4096, True, False, "F16 Case 10 Prefill"),
@@ -150,16 +147,16 @@ TEST_CASES = [
     ("prefill", "float16", 128, 1, 96, 8, 8192, 8192, True, False, "F16 Case 10 Prefill"),
     ("prefill", "float16", 128, 1, 96, 8, 16384, 16384, True, False, "F16 Case 10 Prefill"),
     # ("prefill", "float16", 128, 1, 96, 8, 32768, 32768, True, False, "F16 Case 10 Prefill"),
-    # mode, dtype, hdim, batch, nh_q, nh_kv, seq_qo, seq_kv, is_causal, is_varlen, comment
+# mode, dtype, hdim, batch, nh_q, nh_kv, seq_qo, seq_kv, is_causal, is_varlen, comment
     # ("decode", "bfloat16", 1, 32, 8, 1, 4096, False, False, "BF16 Case 10"),
+
     # # --- MXFP8 Cases ---
     # ("prefill", "mx_float_e4m3", 1, 4, 4, 512, 512, False, False, "MXFP8 e4m3 Case 1 Prefill"),
-    #
+    # 
     # ("prefill", "mx_float_e5m2", 1, 4, 4, 512, 512, False, False, "MXFP8 e5m2 Case 5 Prefill"),
     # # --- FP8 Cases ---
     # ("prefill", "float_e4m3", 1, 4, 4, 512, 512, False, False, "FP8 e4m3 Case 1 Prefill"),
 ]
-
 
 def run_ark_sdpa_to_excel(
     test_cases,
@@ -173,19 +170,7 @@ def run_ark_sdpa_to_excel(
     print(f"Starting ARK SDPA benchmark run... ({len(test_cases)} cases)")
 
     for idx, case in enumerate(test_cases, start=1):
-        (
-            mode,
-            dtype,
-            head_dim,
-            batch,
-            num_heads_q,
-            num_heads_kv,
-            seq_len_qo,
-            seq_len_kv,
-            is_causal,
-            is_varlen,
-            comment,
-        ) = case
+        mode, dtype, head_dim, batch, num_heads_q, num_heads_kv, seq_len_qo, seq_len_kv, is_causal, is_varlen, comment = case
         torch_dtype = resolve_torch_dtype(dtype)
         row_data = {
             "#": idx,
@@ -242,10 +227,8 @@ def run_ark_sdpa_to_excel(
     print(f"Success! Results saved to {output_file}")
     return pd.DataFrame(results)
 
-
 def is_xpu_available():
     return hasattr(torch, "xpu") and torch.xpu.is_available()
-
 
 def get_ark():
     """Lazily initialize and return the ARK instance."""
@@ -255,7 +238,6 @@ def get_ark():
             raise RuntimeError("XPU is not available; cannot initialize auto_round_kernel.ARK()")
         ark = auto_round_kernel.ARK()
     return ark
-
 
 def has_sdpa():
     """Check if Flash Attention kernel is available."""
@@ -267,7 +249,6 @@ def has_sdpa():
         return False
     return hasattr(ark_instance.xpu_lib, "sdpa")
 
-
 def build_mask(seq, seq_kv, dt=torch.float32, dev="xpu", const_count=0, const_value=0.0):
     mask = torch.rand(seq, seq_kv, dtype=dt, device=dev)
     if const_count <= 0:
@@ -277,7 +258,6 @@ def build_mask(seq, seq_kv, dt=torch.float32, dev="xpu", const_count=0, const_va
     indices = torch.randperm(flat_mask.numel(), device=flat_mask.device)[:const_count]
     flat_mask[indices] = const_value
     return mask
-
 
 def print_top_diffs(diff, ref, out, topk=10, threshold=0):
     flat_diff = diff.reshape(-1)
@@ -293,7 +273,9 @@ def print_top_diffs(diff, ref, out, topk=10, threshold=0):
             coord = tuple(int(index.item()) for index in torch.unravel_index(flat_index, diff.shape))
             ref_value = flat_ref[flat_index].item()
             out_value = flat_out[flat_index].item()
-            print(f"#{rank}: index={coord}, diff={value.item()}, ref={ref_value}, out={out_value}")
+            print(
+                f"#{rank}: index={coord}, diff={value.item()}, ref={ref_value}, out={out_value}"
+            )
 
 
 def sftm(seq, h, block=-1, dt=torch.float32, dev="xpu"):
@@ -390,21 +372,7 @@ def bench_torch(seq, seq_kv, h_q, h_kv, H, H_v, dt=torch.float32, dev="xpu", mas
     # print(out)
 
 
-def bench_ark(
-    batch,
-    seq,
-    seq_kv,
-    h_q,
-    h_kv,
-    H,
-    H_v,
-    dt=torch.float32,
-    dev="xpu",
-    mask_const_count=0,
-    mask_const_value=0.0,
-    has_mask=False,
-    is_causal=False,
-):
+def bench_ark(batch, seq, seq_kv, h_q, h_kv, H, H_v, dt=torch.float32, dev="xpu", mask_const_count=0, mask_const_value=0.0, has_mask=False, is_causal=False):
     group = h_q // h_kv
     q = torch.rand(batch, h_q, seq, H, dtype=dt, device=dev)
     k = torch.rand(batch, h_kv, seq_kv, H, dtype=dt, device=dev)
@@ -431,9 +399,7 @@ def bench_ark(
     MEM += h_kv * seq_kv * H * dt.itemsize  # q
     MEM += h_kv * seq_kv * H_v * dt.itemsize  # q
     MEM *= batch
-    print(
-        f"Batch:{batch} Seq_Q:{seq}, Seq_KV:{seq_kv}, HeadNum_Q:{h_q}, HeadNum_KV:{h_kv}, HeadDim_QK:{H}, HeadDim_V:{H_v} Causal:{is_causal}"
-    )
+    print(f"Batch:{batch} Seq_Q:{seq}, Seq_KV:{seq_kv}, HeadNum_Q:{h_q}, HeadNum_KV:{h_kv}, HeadDim_QK:{H}, HeadDim_V:{H_v} Causal:{is_causal}")
     print(f"Time:{dur*1e3:.3f} FLOPS:{OPS/dur/1e9:.2f} G, MEM:{MEM/dur/1e9:.2f} GB/s")
     # out = out.reshape(h_q, seq, H_v)
     # out = out.transpose(0, 1)
@@ -484,13 +450,13 @@ def compare_sdpa_ark(
     attn_bias.masked_fill_(temp_mask.logical_not(), float("-inf"))
     scale = 1 / math.sqrt(H)
     ref = torch.nn.functional.scaled_dot_product_attention(
-        q, k, v, attn_mask=attn_bias, scale=scale, enable_gqa=group > 1, is_causal=False
-    )
+            q, k, v, attn_mask=attn_bias, scale=scale, enable_gqa=group > 1, is_causal=False
+        )
     if not decode:
         out = get_ark().sdpa(q, k, v, attn_bias, softmax_scale=scale, is_causal=False)
         diff = abs(ref - out)
         print_top_diffs(diff, ref, out, topk=4, threshold=1)
-
+        
         out2 = get_ark().sdpa(q, k, v, softmax_scale=scale, is_causal=True)
         diff = abs(out2 - out)
         print_top_diffs(diff, out2, out, topk=4)
@@ -498,16 +464,15 @@ def compare_sdpa_ark(
         out = get_ark().sdpa(q, k, v, softmax_scale=scale, is_causal=True)
         diff = abs(ref - out)
         print_top_diffs(diff, ref, out, topk=4, threshold=1)
-
-
+        
 def compare_sdpa_sage(batch, seq, seq_kv, h_q, h_kv, H, H_v, dt=torch.float16, dev="xpu"):
     group = h_q // h_kv
     q = torch.randint(-4, 4, (batch, h_q, seq, H), dtype=torch.int8, device=dev)
     k = torch.randint(-4, 4, (batch, h_kv, seq_kv, H), dtype=torch.int8, device=dev)
-    v = torch.rand(batch, h_kv, seq_kv, H_v, dtype=dt, device=dev) * 100
+    v = torch.rand(batch, h_kv, seq_kv, H_v, dtype=dt, device=dev)*100
     scale = 1 / math.sqrt(H)
     out = get_ark().sdpa(q, k, v, softmax_scale=scale, is_causal=False)
-
+    
     n_runs = 100
     for i in range(n_runs):
         ref = get_ark().sdpa(q, k, v, softmax_scale=scale, is_causal=False)
@@ -520,19 +485,17 @@ def compare_sdpa_sage(batch, seq, seq_kv, h_q, h_kv, H, H_v, dt=torch.float16, d
         torch.xpu.synchronize()
     et = time.time()
     dur = (et - st) / n_runs
-
+    
     q = q.view(batch, group, h_kv, seq, H).contiguous().to(torch.float32)
     k = k.view(batch, 1, h_kv, seq_kv, H).transpose(3, 4).contiguous().to(torch.float32)
     score = torch.matmul(q, k)
     score = score * scale
     score = torch.softmax(score, dim=-1)
-
-    ref = torch.matmul(score.to(dt), v.view(batch, 1, h_kv, seq_kv, H_v)).view(
-        batch, h_q, seq, H
-    )  # group, h_kv, seq, H_v
+    
+    ref = torch.matmul(score.to(dt), v.view(batch, 1, h_kv, seq_kv, H_v)).view(batch, h_q, seq, H)  # group, h_kv, seq, H_v
     dff = abs(ref - out)
     print_top_diffs(dff, ref, out, topk=4, threshold=1)
-
+    
     OPS = group * h_kv * seq * H * seq_kv * 2  # q*k
     OPS += group * h_kv * seq * seq_kv * 2  # sfmx
     OPS += group * h_kv * seq * H_v * seq_kv * 2  # s*v
@@ -541,26 +504,24 @@ def compare_sdpa_sage(batch, seq, seq_kv, h_q, h_kv, H, H_v, dt=torch.float16, d
     MEM += h_kv * seq_kv * H * dt.itemsize  # q
     MEM += h_kv * seq_kv * H_v * dt.itemsize  # q
     MEM *= batch
-    print(
-        f"Batch:{batch} Seq_Q:{seq}, Seq_KV:{seq_kv}, HeadNum_Q:{h_q}, HeadNum_KV:{h_kv}, HeadDim_QK:{H}, HeadDim_V:{H_v}"
-    )
+    print(f"Batch:{batch} Seq_Q:{seq}, Seq_KV:{seq_kv}, HeadNum_Q:{h_q}, HeadNum_KV:{h_kv}, HeadDim_QK:{H}, HeadDim_V:{H_v}")
     print(f"Time:{dur*1e3:.3f} FLOPS:{OPS/dur/1e9:.2f} G, MEM:{MEM/dur/1e9:.2f} GB/s")
 
-
+      
 def compare_sdpa_sage_scale(batch, seq, seq_kv, h_q, h_kv, H, H_v, dt=torch.float16, is_causal=False, dev="xpu"):
     group = h_q // h_kv
     block_size = 64
-    seq = seq // block_size * block_size
-    seq_kv = seq_kv // block_size * block_size
+    seq = seq//block_size*block_size
+    seq_kv = seq_kv//block_size*block_size
     q = torch.randint(-128, 127, (batch, h_q, seq, H), dtype=torch.int8, device=dev)
     k = torch.randint(-128, 127, (batch, h_kv, seq_kv, H), dtype=torch.int8, device=dev)
     if block_size:
-        q_scale = torch.randn(batch, h_q, seq // block_size, 1, dtype=torch.float32, device=dev) / 100 + 0.001
-        k_scale = torch.randn(batch, h_kv, seq_kv // block_size, 1, dtype=torch.float32, device=dev) / 100 + 0.001
+        q_scale =torch.randn(batch, h_q, seq//block_size, 1, dtype=torch.float32, device=dev)/100+0.001
+        k_scale =torch.randn(batch, h_kv, seq_kv//block_size, 1, dtype=torch.float32, device=dev)/100+0.001
     else:
         q_scale = None
         k_scale = None
-    v = torch.rand(batch, h_kv, seq_kv, H_v, dtype=dt, device=dev) * 100
+    v = torch.rand(batch, h_kv, seq_kv, H_v, dtype=dt, device=dev)*100
     scale = 1 / math.sqrt(H)
     # q_scale[...]=1
     # k_scale[...]=1
@@ -570,22 +531,16 @@ def compare_sdpa_sage_scale(batch, seq, seq_kv, h_q, h_kv, H, H_v, dt=torch.floa
     scale = 1 / math.sqrt(H)
     # attn_bias = None
 
-    out = get_ark().sage(
-        q, k, v, quant_block_size=block_size, qscale=q_scale, kscale=k_scale, scale=scale, is_causal=is_causal
-    )
+    out = get_ark().sage(q, k, v, quant_block_size=block_size, qscale=q_scale, kscale=k_scale, scale=scale, is_causal=is_causal)
 
     n_runs = 10 if seq > 8192 else 100
     for i in range(n_runs):
-        ref = get_ark().sage(
-            q, k, v, quant_block_size=block_size, qscale=q_scale, kscale=k_scale, scale=scale, is_causal=is_causal
-        )
+        ref = get_ark().sage(q, k, v, quant_block_size=block_size, qscale=q_scale, kscale=k_scale, scale=scale, is_causal=is_causal)
     if dev == "xpu":
         torch.xpu.synchronize()
     st = time.time()
     for i in range(n_runs):
-        ref = get_ark().sage(
-            q, k, v, quant_block_size=block_size, qscale=q_scale, kscale=k_scale, scale=scale, is_causal=is_causal
-        )
+        ref = get_ark().sage(q, k, v, quant_block_size=block_size, qscale=q_scale, kscale=k_scale, scale=scale, is_causal=is_causal)
     if dev == "xpu":
         torch.xpu.synchronize()
     et = time.time()
@@ -596,14 +551,12 @@ def compare_sdpa_sage_scale(batch, seq, seq_kv, h_q, h_kv, H, H_v, dt=torch.floa
     else:
         q_fp = q.to(dt)
         k_fp = k.to(dt)
-    ref = torch.nn.functional.scaled_dot_product_attention(
-        q_fp, k_fp, v, scale=scale, is_causal=is_causal, enable_gqa=group > 1
-    )
+    ref = torch.nn.functional.scaled_dot_product_attention(q_fp, k_fp, v, scale=scale, is_causal=is_causal, enable_gqa=group > 1)
     # out = get_ark().sdpa(q_fp, k_fp, v, softmax_scale=scale, is_causal=is_causal)
     # print(ref)
     dff = abs(ref - out)
     print_top_diffs(dff, ref, out, topk=4, threshold=1)
-
+    
     OPS = group * h_kv * seq * H * seq_kv * 2  # q*k
     OPS += group * h_kv * seq * seq_kv * 2  # sfmx
     OPS += group * h_kv * seq * H_v * seq_kv * 2  # s*v
@@ -612,15 +565,11 @@ def compare_sdpa_sage_scale(batch, seq, seq_kv, h_q, h_kv, H, H_v, dt=torch.floa
     MEM += h_kv * seq_kv * H * dt.itemsize  # q
     MEM += h_kv * seq_kv * H_v * dt.itemsize  # q
     MEM *= batch
-    print(
-        f"Batch:{batch} Seq_Q:{seq}, Seq_KV:{seq_kv}, HeadNum_Q:{h_q}, HeadNum_KV:{h_kv}, HeadDim_QK:{H}, HeadDim_V:{H_v}"
-    )
+    print(f"Batch:{batch} Seq_Q:{seq}, Seq_KV:{seq_kv}, HeadNum_Q:{h_q}, HeadNum_KV:{h_kv}, HeadDim_QK:{H}, HeadDim_V:{H_v}")
     print(f"Time:{dur*1e3:.3f} FLOPS:{OPS/dur/1e9:.2f} G, MEM:{MEM/dur/1e9:.2f} GB/s")
 
 
-def compare_sdpa_sage_dynquant(
-    batch, seq, seq_kv, h_q, h_kv, H, H_v, dt=torch.float16, is_causal=False, dev="xpu", quant_block_size=64
-):
+def compare_sdpa_sage_dynquant(batch, seq, seq_kv, h_q, h_kv, H, H_v, dt=torch.float16, is_causal=False, dev="xpu", quant_block_size=64):
     """Test dynamic quantization SAGE attention.
 
     Q, K, V are FP16 inputs. The kernel dynamically quantizes Q, K to INT8
@@ -632,10 +581,10 @@ def compare_sdpa_sage_dynquant(
     v = torch.randn(batch, h_kv, seq_kv, H_v, dtype=dt, device=dev) * 100
     scale = 1 / math.sqrt(H)
     if seq_kv > 4096 and is_causal:
-        if seq_kv == seq:
+        if seq_kv == seq:  
             ref = torch.nn.functional.scaled_dot_product_attention(
-                q, k, v, scale=scale, enable_gqa=group > 1, is_causal=is_causal
-            )
+                    q, k, v, scale=scale, enable_gqa=group > 1, is_causal=is_causal
+                )
         else:
             ref = torch.zeros_like(q)
     else:
@@ -645,21 +594,21 @@ def compare_sdpa_sage_dynquant(
         scale = 1 / math.sqrt(H)
         if is_causal:
             ref = torch.nn.functional.scaled_dot_product_attention(
-                q, k, v, scale=scale, enable_gqa=group > 1, is_causal=False, attn_mask=attn_bias
-            )
+                    q, k, v, scale=scale, enable_gqa=group > 1, is_causal=False, attn_mask=attn_bias
+                )
         else:
             ref = torch.nn.functional.scaled_dot_product_attention(
-                q, k, v, scale=scale, enable_gqa=group > 1, is_causal=is_causal
-            )
+                    q, k, v, scale=scale, enable_gqa=group > 1, is_causal=is_causal
+                )
+            
 
     # Dynamic quantization SAGE kernel
     out = get_ark().sagev1(q, k, v, scale=scale, is_causal=is_causal, quant_block_size=quant_block_size)
 
+
     dff = abs(ref - out)
     print(f"=== Dynamic Quantization SAGE Test (block_size={quant_block_size}) ===")
-    print(
-        f"Batch:{batch} Seq_Q:{seq}, Seq_KV:{seq_kv}, HeadNum_Q:{h_q}, HeadNum_KV:{h_kv}, HeadDim_QK:{H}, HeadDim_V:{H_v}, Causal:{is_causal}"
-    )
+    print(f"Batch:{batch} Seq_Q:{seq}, Seq_KV:{seq_kv}, HeadNum_Q:{h_q}, HeadNum_KV:{h_kv}, HeadDim_QK:{H}, HeadDim_V:{H_v}, Causal:{is_causal}")
     print_top_diffs(dff, ref, out, topk=4, threshold=1)
 
     # Benchmark

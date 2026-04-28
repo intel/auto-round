@@ -786,7 +786,7 @@ class SchedulerBase : public Scheduler2D {
 
   constexpr static BTLA_ISA gemm_ISA() { return _GemmCore_T::ISA; }
 
-  constexpr int valid_threads() { return mThdValid; }
+  constexpr int valid_theads() { return mThdValid; }
 
   virtual void print() {
     printf("Thread Block:(%d,%d)\n", mThdSize[0], mThdSize[1]);

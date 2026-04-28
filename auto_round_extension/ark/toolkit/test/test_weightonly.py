@@ -16,7 +16,6 @@
 # limitations under the License.
 
 import os
-
 from ut_utils import *
 
 ark = auto_round_kernel.ARK()

@@ -37,7 +37,7 @@ namespace xve {
 template <class ConfigT>
 class GemmCoreSharedB {
  public:
-  using Helper_t = sycl_utils::and_item_helper<GemmCoreSharedB<ConfigT>>;
+  using Helper_t = sycl_utils::nd_item_helper<GemmCoreSharedB<ConfigT>>;
   static int constexpr SgSize = ConfigT::sg_size;
   static int constexpr WgM = ConfigT::wg_m;
   static int constexpr WgN = ConfigT::wg_n;
@@ -189,7 +189,7 @@ using DefaultHGemmCoreBF16 = GemmCoreSharedB<Config_Bf16Bf16Bf16>;
 template <class ConfigT>
 class GemmCoreSharedBT {
  public:
-  using Helper_t = sycl_utils::and_item_helper<GemmCoreSharedBT<ConfigT>>;
+  using Helper_t = sycl_utils::nd_item_helper<GemmCoreSharedBT<ConfigT>>;
   static int constexpr SgSize = ConfigT::sg_size;
   static int constexpr WgM = ConfigT::wg_m;
   static int constexpr WgN = ConfigT::wg_n;
@@ -417,9 +417,9 @@ struct GemmCore {
     aligned_wg = g_m_aligned * g_ncnt;
   }
 
-  inline sycl::and_range<2> get_range() { return sycl::and_range<2>({wg_repeat, wg_size}, {1, wg_size}); }
+  inline sycl::nd_range<2> get_range() { return sycl::nd_range<2>({wg_repeat, wg_size}, {1, wg_size}); }
 
-  void operator() [[sycl::reqd_sub_group_size(sg_size)]] (sycl::and_item<2> it) const {
+  void operator() [[sycl::reqd_sub_group_size(sg_size)]] (sycl::nd_item<2> it) const {
     auto sg = it.get_sub_group();
     int g_id = it.get_group(0);
     int g_n = g_id % g_ncnt;
@@ -711,9 +711,9 @@ struct GemmCore {
     aligned_wg = g_m_aligned * g_ncnt;
   }
 
-  inline sycl::and_range<2> get_range() { return sycl::and_range<2>({wg_repeat, wg_size}, {1, wg_size}); }
+  inline sycl::nd_range<2> get_range() { return sycl::nd_range<2>({wg_repeat, wg_size}, {1, wg_size}); }
 
-  void operator() [[sycl::reqd_sub_group_size(sg_size)]] (sycl::and_item<2> it) const {
+  void operator() [[sycl::reqd_sub_group_size(sg_size)]] (sycl::nd_item<2> it) const {
     auto sg = it.get_sub_group();
     int g_id = it.get_group(0);
     int g_n = g_id % g_ncnt;
@@ -884,9 +884,9 @@ struct IGemmDQCore {
     aligned_wg = g_m_aligned * g_ncnt;
   }
 
-  inline sycl::and_range<2> get_range() { return sycl::and_range<2>({wg_repeat, wg_size}, {1, wg_size}); }
+  inline sycl::nd_range<2> get_range() { return sycl::nd_range<2>({wg_repeat, wg_size}, {1, wg_size}); }
 
-  void operator() [[sycl::reqd_sub_group_size(sg_size)]] (sycl::and_item<2> it) const {
+  void operator() [[sycl::reqd_sub_group_size(sg_size)]] (sycl::nd_item<2> it) const {
     auto sg = it.get_sub_group();
     int g_id = it.get_group(0);
     int g_n = g_id % g_ncnt;
@@ -1064,9 +1064,9 @@ struct IKblockGemmDQCore {
     aligned_wg = g_m_aligned * g_ncnt;
   }
 
-  inline sycl::and_range<2> get_range() { return sycl::and_range<2>({wg_repeat, wg_size}, {1, wg_size}); }
+  inline sycl::nd_range<2> get_range() { return sycl::nd_range<2>({wg_repeat, wg_size}, {1, wg_size}); }
 
-  void operator() [[sycl::reqd_sub_group_size(sg_size)]] (sycl::and_item<2> it) const {
+  void operator() [[sycl::reqd_sub_group_size(sg_size)]] (sycl::nd_item<2> it) const {
     auto sg = it.get_sub_group();
     int g_id = it.get_group(0);
     int g_n = g_id % g_ncnt;

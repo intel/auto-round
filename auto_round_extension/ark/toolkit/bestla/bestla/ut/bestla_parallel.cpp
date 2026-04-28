@@ -227,7 +227,7 @@ class UT_SchedulerGemmBase {
     sch.update({threads, gp, 0, 0, l2cache == 0 ? _cd->getL2CacheSize() : l2cache,
                 l1cache == 0 ? _cd->getL1CacheSize() : l1cache});
     sch.print();
-    parallel::gemm::ThreadProblemBase prb{sch.valid_threads() - 1};
+    parallel::gemm::ThreadProblemBase prb{sch.valid_theads() - 1};
     sch.getIndex(prb);
     prb.print();
   }
@@ -267,7 +267,7 @@ class UT_SchedulerGemmKBlockNew {
     utils::GemmProblem gp(1, m, n, k, kblock);
     sch.update({threads, gp, 0, 0, _cd->getL2CacheSize(), l1cache == 0 ? _cd->getL1CacheSize() : l1cache});
     sch.print();
-    parallel::gemm::ThreadProblemBase prb{sch.valid_threads() - 1};
+    parallel::gemm::ThreadProblemBase prb{sch.valid_theads() - 1};
     sch.getIndex(prb);
     prb.print();
   }

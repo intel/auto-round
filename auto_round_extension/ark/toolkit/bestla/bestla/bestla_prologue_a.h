@@ -409,9 +409,9 @@ class ShuffleActivationKBlockQuantize : public ActivationKBlockQuantize<_GemmCor
     if (_param.indices) {
       auto shuffle_src = _param.reordered->template APtr<SRC_T>();
       threading->parallel_for([&](int tidx) {
-        auto enable_the = threading->num_threads();
-        auto align_m = m / enable_the;
-        auto process_m = (tidx + 1) == enable_the ? (m - tidx * align_m) : align_m;
+        auto enable_thr = threading->num_threads();
+        auto align_m = m / enable_thr;
+        auto process_m = (tidx + 1) == enable_thr ? (m - tidx * align_m) : align_m;
         kernel::ref::shuffle_activation(const_cast<SRC_T*>(_param.A), shuffle_src + tidx * align_m * k, process_m, k,
                                         tidx * align_m, 0, _param.indices, k, k);
       });

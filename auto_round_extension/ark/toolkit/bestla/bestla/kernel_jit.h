@@ -1144,7 +1144,7 @@ static inline BTLA_CODE decompress_s4_s8(utils::int4x2* srcptr, int8_t* dstptr, 
   return BTLA_CODE::Success;
 }
 
-// src: row x col => dst: ⌈col/n_tile⌉ x ⌈row/row_pack⌉ x n_tile x row_pack (zero-padded)
+// src: row x col => dst: ⌈col/n_tile⌉ x ⌈row/row_pack⌉ x n_tile x row_pack (zeor-padded)
 // Extra padding can be applied with memset calls in `static void forward(...)`
 class PaddingInterleaveCvt : protected xbyak::JitAvx512f {
  public:
@@ -1350,7 +1350,7 @@ class PaddingInterleaveCvt : protected xbyak::JitAvx512f {
   }
 };
 
-// src: row x col => dst: ⌈row/m_tile⌉ x ⌈col/(trans_cell*col_pack==64/sizeof(t_dst))⌉ x m_tile x col_pack (zero-padded)
+// src: row x col => dst: ⌈row/m_tile⌉ x ⌈col/(trans_cell*col_pack==64/sizeof(t_dst))⌉ x m_tile x col_pack (zeor-padded)
 // Note1: the extra padding on the dimension of col due to the implementation limitation
 // Note2: dst will only be zero-padded to a multiple of trans_cell in the dimension of m_tile
 // Extra padding can be applied with memset calls in `static void forward(...)`
@@ -1566,8 +1566,8 @@ class PaddingTransInterleaveCvt : protected xbyak::JitAvx512f {
 // Complex number matrix(interleaved) - vector(as diagonal matrix) multiplication; Typically used for
 // shift-RoPE
 //
-// vector: fp16 values; view every adjacent 2 values on column as a complex num
-// src: bf16 ⌈row/row_pack⌉ x n_tile x row_pack; view every adjacent 2 values on column as a complex num
+// vector: fp16 values; view every adjacent 2 values on colunm as a complex num
+// src: bf16 ⌈row/row_pack⌉ x n_tile x row_pack; view every adjacent 2 values on colunm as a complex num
 // dst: same as src
 class CScaleInterleavedBF16FP16 : protected xbyak::JitAvx512_fp16 {
  public:
