@@ -1557,9 +1557,9 @@ class ModelFreeCompressor(_ModelFreeCompressorCore):
         **kwargs,
     ):
         self._fallback_to_base_compressor()
-        return self._fallback_compressor.quantize_and_save(
+        return self._fallback_compressor.quantize_and_save(  # pylint: disable=E1101
             output_dir=output_dir, format=format, inplace=inplace, **kwargs
-        )  # pylint: disable=E1101
+        )
 
     def quantize(
         self,
@@ -1613,7 +1613,7 @@ class ModelFreeCompressor(_ModelFreeCompressorCore):
     ):
         """Quantize and save — AutoRound compressor entry point."""
         if format not in ["auto_round", "auto_round:auto_gptq"]:
-            return self._fallback_to_base_compressor(output_dir=output_dir, format=format, inplace=inplace, **kwargs)
+            return self._fallback_to_base_compressor()
 
         # Apply user scheme overrides before running
         if self.user_scheme_overrides:
