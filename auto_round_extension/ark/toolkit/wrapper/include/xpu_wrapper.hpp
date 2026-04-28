@@ -502,7 +502,7 @@ class XpuWrapper {
     }
   }
 
-  static int woq_gemv(sycl::queue* q, size_t m, QuantParam* p, const void* matA, const void* blobB, void* match,
+  static int woq_gemv(sycl::queue* q, size_t m, QuantParam* p, const void* matA, const void* blobB, void* matC,
                       const void* bias, BTLA_DTYPE outt) {
     if (m > 1) return -2;
     using namespace bestla;
@@ -517,7 +517,7 @@ class XpuWrapper {
         using T = float;
         using ProB = WeightS2T<ST>;
         ProB::gemv<ProB::CfgGemvF32>((const T*)matA,
-                                     {(const uint8_t*)qptr, (ST*)scale_ptr, blks, (const T*)bias, zp_ptr}, (T*)match,
+                                     {(const uint8_t*)qptr, (ST*)scale_ptr, blks, (const T*)bias, zp_ptr}, (T*)matC,
                                      p->n, p->k, p->blocksize, q);
       }
       if (p->scale_type == BTLA_DTYPE::F16) {
@@ -525,7 +525,7 @@ class XpuWrapper {
         using ProB = WeightS2T<ST>;
         using T = sycl::half;
         ProB::gemv<ProB::CfgGemvF16>((const T*)matA,
-                                     {(const uint8_t*)qptr, (ST*)scale_ptr, blks, (const T*)bias, zp_ptr}, (T*)match,
+                                     {(const uint8_t*)qptr, (ST*)scale_ptr, blks, (const T*)bias, zp_ptr}, (T*)matC,
                                      p->n, p->k, p->blocksize, q);
       }
       if (p->scale_type == BTLA_DTYPE::BF16) {
@@ -539,7 +539,7 @@ class XpuWrapper {
         using T = float;
         using ProB = WeightS4T<ST>;
         ProB::gemv<ProB::CfgGemvF32>((const T*)matA,
-                                     {(const uint8_t*)qptr, (ST*)scale_ptr, blks, (const T*)bias, zp_ptr}, (T*)match,
+                                     {(const uint8_t*)qptr, (ST*)scale_ptr, blks, (const T*)bias, zp_ptr}, (T*)matC,
                                      p->n, p->k, p->blocksize, q);
       }
       if (p->scale_type == BTLA_DTYPE::F16) {
@@ -547,7 +547,7 @@ class XpuWrapper {
         using ProB = WeightS4T<ST>;
         using T = sycl::half;
         ProB::gemv<ProB::CfgGemvF16>((const T*)matA,
-                                     {(const uint8_t*)qptr, (ST*)scale_ptr, blks, (const T*)bias, zp_ptr}, (T*)match,
+                                     {(const uint8_t*)qptr, (ST*)scale_ptr, blks, (const T*)bias, zp_ptr}, (T*)matC,
                                      p->n, p->k, p->blocksize, q);
       }
       if (p->scale_type == BTLA_DTYPE::BF16) {
@@ -561,7 +561,7 @@ class XpuWrapper {
         using T = float;
         using ProB = WeightS8T<ST>;
         ProB::gemv<ProB::CfgGemvF32>((const T*)matA,
-                                     {(const int8_t*)qptr, (ST*)scale_ptr, blks, (const T*)bias, zp_ptr}, (T*)match,
+                                     {(const int8_t*)qptr, (ST*)scale_ptr, blks, (const T*)bias, zp_ptr}, (T*)matC,
                                      p->n, p->k, p->blocksize, q);
       }
       if (p->scale_type == BTLA_DTYPE::F16) {
@@ -569,7 +569,7 @@ class XpuWrapper {
         using ProB = WeightS8T<ST>;
         using T = sycl::half;
         ProB::gemv<ProB::CfgGemvF16>((const T*)matA,
-                                     {(const int8_t*)qptr, (ST*)scale_ptr, blks, (const T*)bias, zp_ptr}, (T*)match,
+                                     {(const int8_t*)qptr, (ST*)scale_ptr, blks, (const T*)bias, zp_ptr}, (T*)matC,
                                      p->n, p->k, p->blocksize, q);
       }
       if (p->scale_type == BTLA_DTYPE::BF16) {
@@ -585,13 +585,13 @@ class XpuWrapper {
           if (p->scale_type == BTLA_DTYPE::F32) {
             using T = float;
             using ProB = WeightF8T<T, E4M3_T>;
-            ProB::gemv((T*)matA, {(const uint8_t*)qptr, (T*)scale_ptr, blks, bias}, (T*)match, p->n, p->k, p->blocksize,
+            ProB::gemv((T*)matA, {(const uint8_t*)qptr, (T*)scale_ptr, blks, bias}, (T*)matC, p->n, p->k, p->blocksize,
                        q);
           }
           if (p->scale_type == BTLA_DTYPE::F16) {
             using T = sycl::half;
             using ProB = WeightF8T<T, E4M3_T>;
-            ProB::gemv((T*)matA, {(const uint8_t*)qptr, (T*)scale_ptr, blks, bias}, (T*)match, p->n, p->k, p->blocksize,
+            ProB::gemv((T*)matA, {(const uint8_t*)qptr, (T*)scale_ptr, blks, bias}, (T*)matC, p->n, p->k, p->blocksize,
                        q);
           }
         } else {
@@ -599,13 +599,13 @@ class XpuWrapper {
           if (p->scale_type == BTLA_DTYPE::F32) {
             using T = float;
             using ProB = WeightF8T<T, E4M3_T>;
-            ProB::gemv((T*)matA, {(const uint8_t*)qptr, (T*)scale_ptr, blks, bias}, (T*)match, p->n, p->k, p->blocksize,
+            ProB::gemv((T*)matA, {(const uint8_t*)qptr, (T*)scale_ptr, blks, bias}, (T*)matC, p->n, p->k, p->blocksize,
                        q);
           }
           if (p->scale_type == BTLA_DTYPE::F16) {
             using T = sycl::half;
             using ProB = WeightF8T<T, E4M3_T>;
-            ProB::gemv((T*)matA, {(const uint8_t*)qptr, (T*)scale_ptr, blks, bias}, (T*)match, p->n, p->k, p->blocksize,
+            ProB::gemv((T*)matA, {(const uint8_t*)qptr, (T*)scale_ptr, blks, bias}, (T*)matC, p->n, p->k, p->blocksize,
                        q);
           }
         }
@@ -616,12 +616,12 @@ class XpuWrapper {
           using ProB = WeightF8T<ST, E4M3_T>;
           if (outt == BTLA_DTYPE::F32) {
             using T = float;
-            ProB::gemv((T*)matA, {(const uint8_t*)qptr, (ST*)scale_ptr, blks, bias}, (T*)match, p->n, p->k, p->blocksize,
+            ProB::gemv((T*)matA, {(const uint8_t*)qptr, (ST*)scale_ptr, blks, bias}, (T*)matC, p->n, p->k, p->blocksize,
                        q);
           }
           if (outt == BTLA_DTYPE::F16) {
             using T = sycl::half;
-            ProB::gemv((T*)matA, {(const uint8_t*)qptr, (ST*)scale_ptr, blks, bias}, (T*)match, p->n, p->k, p->blocksize,
+            ProB::gemv((T*)matA, {(const uint8_t*)qptr, (ST*)scale_ptr, blks, bias}, (T*)matC, p->n, p->k, p->blocksize,
                        q);
           }
         } else {
@@ -630,12 +630,12 @@ class XpuWrapper {
           using ProB = WeightF8T<ST, E4M3_T>;
           if (outt == BTLA_DTYPE::F32) {
             using T = float;
-            ProB::gemv((T*)matA, {(const uint8_t*)qptr, (ST*)scale_ptr, blks, bias}, (T*)match, p->n, p->k, p->blocksize,
+            ProB::gemv((T*)matA, {(const uint8_t*)qptr, (ST*)scale_ptr, blks, bias}, (T*)matC, p->n, p->k, p->blocksize,
                        q);
           }
           if (outt == BTLA_DTYPE::F16) {
             using T = sycl::half;
-            ProB::gemv((T*)matA, {(const uint8_t*)qptr, (ST*)scale_ptr, blks, bias}, (T*)match, p->n, p->k, p->blocksize,
+            ProB::gemv((T*)matA, {(const uint8_t*)qptr, (ST*)scale_ptr, blks, bias}, (T*)matC, p->n, p->k, p->blocksize,
                        q);
           }
         }

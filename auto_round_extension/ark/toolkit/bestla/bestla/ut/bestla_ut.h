@@ -380,7 +380,7 @@ struct UT_GEMMData_Row_u8s8 {
       : M(m), N(n), K(k), LDA(lda), LDB(ldb), LDC(ldc), LDD(ldd), interleaved(interleaved_) {
     matA.resize(m * lda);
     matB.resize((interleaved ? n : k) * ldb);
-    match.resize(m * ldc);
+    matC.resize(m * ldc);
     if (ldd == 0) {
       matD.resize(n);
     } else {
@@ -414,31 +414,31 @@ struct UT_GEMMData_Row_u8s8 {
         _cmax = ftmp > _cmax ? ftmp : _cmax;
       }
     }
-    match.scales.resize(1);
-    match.zeropoints.resize(1);
-    match.scales[0] = (_cmax - _cmin) / (255.f);
-    match.zeropoints[0] = int((0 - _cmin) / match.scales[0]);
-    auto tmpscale = 1.f / match.scales[0];
+    matC.scales.resize(1);
+    matC.zeropoints.resize(1);
+    matC.scales[0] = (_cmax - _cmin) / (255.f);
+    matC.zeropoints[0] = int((0 - _cmin) / matC.scales[0]);
+    auto tmpscale = 1.f / matC.scales[0];
 #pragma omp parallel for
     for (int j = 0; j < M; j++) {
       for (int i = 0; i < N; i += 1) {
-        match.data()[j * LDC + i] = utils::cast<float, uint8_t>(matCRef[j * LDC + i] * tmpscale + match.zeropoints[0]);
+        matC.data()[j * LDC + i] = utils::cast<float, uint8_t>(matCRef[j * LDC + i] * tmpscale + matC.zeropoints[0]);
       }
     }
     matCDequan.resize(matCRef.size());
 #pragma omp parallel for
     for (int j = 0; j < M; j++) {
       for (int i = 0; i < N; i += 1) {
-        matCDequan.data()[j * LDC + i] = ((int)match.data()[j * LDC + i] - match.zeropoints[0]) * match.scales[0];
+        matCDequan.data()[j * LDC + i] = ((int)matC.data()[j * LDC + i] - matC.zeropoints[0]) * matC.scales[0];
       }
     }
 
     /*utils::ut::buffer_error(matCRef.data(), matCDequan.data(),
                                                     matCDequan.size(),
-       match.scales[0]);*/
+       matC.scales[0]);*/
   }
 
-  UT_vector_u8 matA, match, matD;
+  UT_vector_u8 matA, matC, matD;
   utils::aligned_vector<float> matCRef, matCDequan;
   UT_vector_s8 matB;
   int M, N, K, LDA, LDB, LDC, LDD;
@@ -523,7 +523,7 @@ struct UT_GEMMData_Row_bf16 {
       : M(m), N(n), K(k), LDA(lda), LDB(ldb), LDC(ldc), LDD(ldd) {
     matA.resize(m * lda);
     matB.resize(k * ldb);
-    match.resize(m * ldc);
+    matC.resize(m * ldc);
     if (ldd == 0) {
       matD.resize(n);
     } else {
@@ -551,11 +551,11 @@ struct UT_GEMMData_Row_bf16 {
           tmp += tmpA * tmpB;
         }
         tmp = tmp * alpha + utils::cast<utils::bf16, float>({matD.data()[i * LDD + j]}) * beta;
-        match.data()[i * LDC + j] = utils::cast<float, utils::bf16>(tmp);
+        matC.data()[i * LDC + j] = utils::cast<float, utils::bf16>(tmp);
       }
     }
   }
-  utils::aligned_vector<utils::bf16> matA, match, matD;
+  utils::aligned_vector<utils::bf16> matA, matC, matD;
   utils::aligned_vector<utils::bf16> matB;
   int M, N, K, LDA, LDB, LDC, LDD;
 };
@@ -650,13 +650,13 @@ static inline void gemmref_fp16fp16fp32(int m, int n, int k, utils::fp16* A, uti
 }
 
 struct UT_GEMMData_Row_fp16 {
-  utils::aligned_vector<utils::fp16> matA, matB, match, matD;
+  utils::aligned_vector<utils::fp16> matA, matB, matC, matD;
   int M, N, K, LDA, LDB, LDC, LDD;
   UT_GEMMData_Row_fp16(int m, int n, int k, int lda, int ldb, int ldc, int ldd)
       : M(m), N(n), K(k), LDA(lda), LDB(ldb), LDC(ldc), LDD(ldd) {
     matA.resize(m * lda);
     matB.resize(k * ldb);
-    match.resize(m * ldc);
+    matC.resize(m * ldc);
     if (ldd == 0) {
       matD.resize(n);
     } else {
@@ -680,20 +680,20 @@ struct UT_GEMMData_Row_fp16 {
         }
         float ftmp = float(tmp);
         ftmp = ftmp * alpha + utils::cast<utils::fp16, float>(matD.data()[i * LDD + j]) * beta;
-        match.data()[i * LDC + j] = utils::cast<float, utils::fp16>(ftmp);
+        matC.data()[i * LDC + j] = utils::cast<float, utils::fp16>(ftmp);
       }
     }
   }
 };
 
 struct UT_GEMMData_Row_f32 {
-  utils::aligned_vector<float> matA, matB, match, matD, matRef;
+  utils::aligned_vector<float> matA, matB, matC, matD, matRef;
   int M, N, K, LDA, LDB, LDC, LDD;
   UT_GEMMData_Row_f32(int m, int n, int k, int lda, int ldb, int ldc, int ldd)
       : M(m), N(n), K(k), LDA(lda), LDB(ldb), LDC(ldc), LDD(ldd) {
     matA.resize(m * lda);
     matB.resize(k * ldb);
-    match.resize(m * ldc);
+    matC.resize(m * ldc);
     if (ldd == 0) {
       matD.resize(n);
     } else {
@@ -705,10 +705,10 @@ struct UT_GEMMData_Row_f32 {
   }
 
   void calc_ref(float alpha, float beta) {
-    matRef.resize(match.size());
+    matRef.resize(matC.size());
     ref_NN_f32(matA.data(), matB.data(), matRef.data(), matD.data(), M, N, K, LDA, LDB, LDC, LDD, alpha, beta);
   }
-  static void ref_NN_f32(float* matA, float* matB, float* match, float* matD, int m, int n, int k, int lda, int ldb,
+  static void ref_NN_f32(float* matA, float* matB, float* matC, float* matD, int m, int n, int k, int lda, int ldb,
                          int ldc, int ldd, float alpha, float beta) {
     int NBlock = 128;
 #if 1
@@ -722,7 +722,7 @@ struct UT_GEMMData_Row_f32 {
             tmp += matA[ik + j * lda] * matB[ik * ldb + i + ii];
           }
           tmp = tmp * alpha + matD[(i + ii) + j * ldd] * beta;
-          match[(i + ii) + j * ldc] = tmp;
+          matC[(i + ii) + j * ldc] = tmp;
         }
       }
     }
@@ -735,7 +735,7 @@ struct UT_GEMMData_Row_f32 {
           tmp += matA[ik + j * lda] * matB[ik * ldb + i];
         }
         tmp = tmp * alpha + matD[i + j * ldd] * beta;
-        match[i + j * ldc] = tmp;
+        matC[i + j * ldc] = tmp;
       }
     }
 #endif

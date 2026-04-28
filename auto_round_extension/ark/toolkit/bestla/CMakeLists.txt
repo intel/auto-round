@@ -58,7 +58,7 @@ endforeach()
 set(sycl_headers)
 set(sycl_libs)
 if(BTLA_SYCL)
-  set(BTLA_UT_NOASAN ON) # hang issue with sanitizer
+  set(BTLA_UT_NOASAN ON) # hang issue with santizer
   file(GLOB sycl_headers ${PROJECT_NAME}/sycl/*.h ${PROJECT_NAME}/sycl/*.hpp)
   target_compile_definitions(${PROJECT_NAME} INTERFACE BTLA_SYCL)
   list(APPEND sycl_libs IntelSYCL::SYCL_CXX)

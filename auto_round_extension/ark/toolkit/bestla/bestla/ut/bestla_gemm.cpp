@@ -7,7 +7,7 @@ namespace bestla {
 using namespace utils;
 
 template <int NTILE>
-void ref_bf16(utils::bf16* matA, utils::bf16* matB, float* match, int _m, int _n, int _k, int _astride, int _bstride,
+void ref_bf16(utils::bf16* matA, utils::bf16* matB, float* matC, int _m, int _n, int _k, int _astride, int _bstride,
               int _cstride, int kpos) {
   int lda = _astride / sizeof(utils::bf16);
   int ldb = _bstride / sizeof(utils::bf16);
@@ -30,14 +30,14 @@ void ref_bf16(utils::bf16* matA, utils::bf16* matB, float* match, int _m, int _n
             tmp += tmpA * tmpB;
           }
         }
-        match[i * ldc + j + ij] = tmp;
+        matC[i * ldc + j + ij] = tmp;
       }
     }
   }
 }
 
 template <int NTILE>
-void ref_fp16(utils::fp16* matA, utils::fp16* matB, utils::fp16* match, int _m, int _n, int _k, int _astride,
+void ref_fp16(utils::fp16* matA, utils::fp16* matB, utils::fp16* matC, int _m, int _n, int _k, int _astride,
               int _bstride, int _cstride, int kpos) {
   int lda = _astride / sizeof(utils::fp16);
   int ldb = _bstride / sizeof(utils::fp16);
@@ -60,14 +60,14 @@ void ref_fp16(utils::fp16* matA, utils::fp16* matB, utils::fp16* match, int _m, 
             tmp = float(tmp) + tmpA * tmpB;
           }
         }
-        match[i * ldc + j + ij] = tmp;
+        matC[i * ldc + j + ij] = tmp;
       }
     }
   }
 }
 
 template <int NTILE>
-void ref_fp16_fp32(utils::fp16* matA, utils::fp16* matB, float* match, int _m, int _n, int _k, int _astride,
+void ref_fp16_fp32(utils::fp16* matA, utils::fp16* matB, float* matC, int _m, int _n, int _k, int _astride,
                    int _bstride, int _cstride, int kpos) {
   int lda = _astride / sizeof(utils::fp16);
   int ldb = _bstride / sizeof(utils::fp16);
@@ -90,14 +90,14 @@ void ref_fp16_fp32(utils::fp16* matA, utils::fp16* matB, float* match, int _m, i
             tmp += tmpA * tmpB;
           }
         }
-        match[i * ldc + j + ij] = tmp;
+        matC[i * ldc + j + ij] = tmp;
       }
     }
   }
 }
 
 template <int NTILE>
-void ref_fp32(float* matA, float* matB, float* match, int _m, int _n, int _k, int _astride, int _bstride, int _cstride,
+void ref_fp32(float* matA, float* matB, float* matC, int _m, int _n, int _k, int _astride, int _bstride, int _cstride,
               int kpos) {
   int lda = _astride / sizeof(float);
   int ldb = _bstride / sizeof(float);
@@ -120,14 +120,14 @@ void ref_fp32(float* matA, float* matB, float* match, int _m, int _n, int _k, in
             tmp += tmpA * tmpB;
           }
         }
-        match[i * ldc + j + ij] = tmp;
+        matC[i * ldc + j + ij] = tmp;
       }
     }
   }
 }
 
 template <int NTILE, class T_A_, class T_B_>
-void ref_int8(T_A_* matA, T_B_* matB, int32_t* match, int _m, int _n, int _k, int _astride, int _bstride, int _cstride,
+void ref_int8(T_A_* matA, T_B_* matB, int32_t* matC, int _m, int _n, int _k, int _astride, int _bstride, int _cstride,
               int kpos) {
   int lda = _astride / sizeof(T_A_);
   int ldb = _bstride / sizeof(T_B_);
@@ -150,19 +150,19 @@ void ref_int8(T_A_* matA, T_B_* matB, int32_t* match, int _m, int _n, int _k, in
             tmp += tmpA * tmpB;
           }
         }
-        match[i * ldc + j + ij] = tmp;
+        matC[i * ldc + j + ij] = tmp;
       }
     }
   }
 }
 
 template <int NTILE, typename T_SB_>
-void ref_kblock_int8(uint8_t* matA, int8_t* matB, float* match, uint8_t* zpA, float* scaleA, int _ldsa, T_SB_* scaleB,
+void ref_kblock_int8(uint8_t* matA, int8_t* matB, float* matC, uint8_t* zpA, float* scaleA, int _ldsa, T_SB_* scaleB,
                      int* reduceB, int _ldsb, int _m, int _n, int _k, int _kblock, int _astride, int _bstride,
                      int _cstride, int kpos) {
   int lda = _astride / sizeof(matA[0]);
   int ldb = _bstride / sizeof(matB[0]);
-  int ldc = _cstride / sizeof(match[0]);
+  int ldc = _cstride / sizeof(matC[0]);
   for (int i = 0; i < _m; i++) {
     for (int j = 0; j < _n; j += NTILE) {
       for (int ij = 0; ij < NTILE; ij++) {
@@ -184,18 +184,18 @@ void ref_kblock_int8(uint8_t* matA, int8_t* matB, float* match, uint8_t* zpA, fl
           tmp -= zpval * reduceB[j + ij + k / _kblock * _ldsb];
           tmpf += tmp * scaleA[i * _ldsa + k / _kblock] * float(scaleB[j + ij + k / _kblock * _ldsb]);
         }
-        match[i * ldc + j + ij] = tmpf;
+        matC[i * ldc + j + ij] = tmpf;
       }
     }
   }
 }
 
 template <int NTILE, typename T_SB_>
-void ref_kblock_int8_ss(int8_t* matA, int8_t* matB, float* match, float* scaleA, int _ldsa, T_SB_* scaleB, int _ldsb,
+void ref_kblock_int8_ss(int8_t* matA, int8_t* matB, float* matC, float* scaleA, int _ldsa, T_SB_* scaleB, int _ldsb,
                         int _m, int _n, int _k, int _kblock, int _astride, int _bstride, int _cstride, int kpos) {
   int lda = _astride / sizeof(matA[0]);
   int ldb = _bstride / sizeof(matB[0]);
-  int ldc = _cstride / sizeof(match[0]);
+  int ldc = _cstride / sizeof(matC[0]);
   for (int i = 0; i < _m; i++) {
     for (int j = 0; j < _n; j += NTILE) {
       for (int ij = 0; ij < NTILE; ij++) {
@@ -215,7 +215,7 @@ void ref_kblock_int8_ss(int8_t* matA, int8_t* matB, float* match, float* scaleA,
           }
           tmpf += tmp * scaleA[i * _ldsa + k / _kblock] * float(scaleB[j + ij + k / _kblock * _ldsb]);
         }
-        match[i * ldc + j + ij] = tmpf;
+        matC[i * ldc + j + ij] = tmpf;
       }
     }
   }
@@ -664,14 +664,14 @@ class UT_GEMM_AVX512FP16 {
       return;
     }
 
-    avector<utils::fp16> matAbf16(m * k), matBbf16(k * n), match(m * n), refC(m * n);
+    avector<utils::fp16> matAbf16(m * k), matBbf16(k * n), matC(m * n), refC(m * n);
     fill_buffer_randn(matAbf16.data(), matAbf16.size(), utils::fp16(-0.5f), utils::fp16(0.5f));
     fill_buffer_randn(matBbf16.data(), matBbf16.size(), utils::fp16(-0.5f), utils::fp16(0.5f));
     int reordered_bstride = k * 2;
     ref_fp16<Core::NTILE>(matAbf16.data(), matBbf16.data(), refC.data(), m, n, k, k * 2, reordered_bstride, n * 2, 0);
-    gemm.forward(matAbf16.data(), matBbf16.data(), match.data(), m, n, k, k * sizeof(fp16), k * sizeof(fp16),
+    gemm.forward(matAbf16.data(), matBbf16.data(), matC.data(), m, n, k, k * sizeof(fp16), k * sizeof(fp16),
                  n * sizeof(fp16), 0, cache, CacheSize);
-    ut::buffer_error(refC.data(), match.data(), refC.size(), fp16(FP16_ERR));
+    ut::buffer_error(refC.data(), matC.data(), refC.size(), fp16(FP16_ERR));
   }
 };
 #ifdef BTLA_UT_GEMM
@@ -701,13 +701,13 @@ class UT_GEMM_AVX512BF16 {
     }
 
     avector<utils::bf16> matAbf16(m * k), matBbf16(k * n);
-    avector<float> match(m * n), refC(m * n);
+    avector<float> matC(m * n), refC(m * n);
     fill_buffer_randn(matAbf16.data(), matAbf16.size(), utils::bf16(-0.5f), utils::bf16(0.5f));
     fill_buffer_randn(matBbf16.data(), matBbf16.size(), utils::bf16(-0.5f), utils::bf16(0.5f));
     ref_bf16<Core::NTILE>(matAbf16.data(), matBbf16.data(), refC.data(), m, n, k, k * 2, k * 2, n * 4, 0);
-    gemm.forward(matAbf16.data(), matBbf16.data(), match.data(), m, n, k, k * sizeof(bf16), k * sizeof(bf16),
+    gemm.forward(matAbf16.data(), matBbf16.data(), matC.data(), m, n, k, k * sizeof(bf16), k * sizeof(bf16),
                  n * sizeof(float), 0, cache, CacheSize);
-    ut::buffer_error(refC.data(), match.data(), refC.size(), 0.001f);
+    ut::buffer_error(refC.data(), matC.data(), refC.size(), 0.001f);
   }
 };
 #ifdef BTLA_UT_GEMM
@@ -738,15 +738,15 @@ class UT_GEMM_AMXBF16 {
     }
 
     avector<utils::bf16> matAbf16(m * k), matBbf16(k * n);
-    avector<float> match(Core::Code::MTILE * n), refC(Core::Code::MTILE * n);
+    avector<float> matC(Core::Code::MTILE * n), refC(Core::Code::MTILE * n);
     fill_buffer_randn(matAbf16.data(), matAbf16.size(), utils::bf16(-0.5f), utils::bf16(0.5f));
     fill_buffer_randn(matBbf16.data(), matBbf16.size(), utils::bf16(-0.5f), utils::bf16(0.5f));
     ref_bf16<Core::NTILE>(matAbf16.data(), matBbf16.data(), refC.data(), m, n, k, k * 2, k * 2, n * 4, 0);
     gemm.configure(m, n, k);
 
-    gemm.forward(matAbf16.data(), matBbf16.data(), match.data(), m, n, k, k * sizeof(bf16), k * sizeof(bf16),
+    gemm.forward(matAbf16.data(), matBbf16.data(), matC.data(), m, n, k, k * sizeof(bf16), k * sizeof(bf16),
                  n * sizeof(float), 0, cache, CacheSize);
-    ut::buffer_error(refC.data(), match.data(), m * n, 0.001f);
+    ut::buffer_error(refC.data(), matC.data(), m * n, 0.001f);
   }
 };
 #ifdef BTLA_UT_GEMM
@@ -777,15 +777,15 @@ class UT_GEMM_AMXFP16 {
     }
 
     avector<utils::fp16> matAfp16(m * k), matBfp16(k * n);
-    avector<float> match(Core::Code::MTILE * n), refC(Core::Code::MTILE * n);
+    avector<float> matC(Core::Code::MTILE * n), refC(Core::Code::MTILE * n);
     fill_buffer_randn(matAfp16.data(), matAfp16.size(), utils::fp16(-0.5f), utils::fp16(0.5f));
     fill_buffer_randn(matBfp16.data(), matBfp16.size(), utils::fp16(-0.5f), utils::fp16(0.5f));
     ref_fp16_fp32<Core::NTILE>(matAfp16.data(), matBfp16.data(), refC.data(), m, n, k, k * 2, k * 2, n * 4, 0);
     gemm.configure(m, n, k);
 
-    gemm.forward(matAfp16.data(), matBfp16.data(), match.data(), m, n, k, k * sizeof(fp16), k * sizeof(fp16),
+    gemm.forward(matAfp16.data(), matBfp16.data(), matC.data(), m, n, k, k * sizeof(fp16), k * sizeof(fp16),
                  n * sizeof(float), 0, cache, CacheSize);
-    ut::buffer_error(refC.data(), match.data(), m * n, 0.001f);
+    ut::buffer_error(refC.data(), matC.data(), m * n, 0.001f);
   }
 };
 #ifdef BTLA_UT_GEMM

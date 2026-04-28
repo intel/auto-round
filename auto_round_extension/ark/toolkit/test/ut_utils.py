@@ -15,13 +15,12 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import torch
 import inspect
 import time
-from functools import wraps
-
-import auto_round_kernel
 import pytest
-import torch
+from functools import wraps
+import auto_round_kernel
 
 
 def is_xpu_available():

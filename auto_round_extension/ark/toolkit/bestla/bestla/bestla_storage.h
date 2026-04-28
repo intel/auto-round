@@ -108,7 +108,7 @@ class ObjectAlignedBuffer : public ISerialObject {
 
   void resize(size_t bytes) { mBufSize = bytes; }
 
-  // set
+  // ser
   int8_t* mBufPtr = nullptr;
   size_t mBufSize = 0;
   size_t mBufOffset = 0;
@@ -150,7 +150,7 @@ class ObjectAlignedBuffer : public ISerialObject {
 
 class ObjectBuffer : public ISerialObjectV2 {
  public:
-  // set
+  // ser
   int8_t* buf_ptr_ = nullptr;
   size_t buf_size_ = 0;
 
@@ -179,7 +179,7 @@ class ObjectOptionalBuffer : public ObjectAlignedBuffer<ALIGN> {
     mNotEmpty = bytes > 0;
   }
 
-  // set
+  // ser
   bool mNotEmpty{false};
 
   virtual size_t getSerializedSize() override {
@@ -217,7 +217,7 @@ enum class Layout : uint32_t {
 };
 
 class ObjectQuantCorrection : public ISerialObject {
-  // set
+  // ser
  public:
   size_t mCSize = 0;
   int mCStep = 0;
@@ -686,7 +686,7 @@ class StorageWeight : public ICollection {
 };
 
 class ObjectCorrection : public ISerialObjectV2 {
-  // set
+  // ser
  public:
   size_t size_ = 0;
   int step_ = 0;

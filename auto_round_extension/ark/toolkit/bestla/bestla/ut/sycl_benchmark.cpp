@@ -126,7 +126,7 @@ class Benchmark_Fp32Fp32 {
     sycl_vector<BType> dB(size_t(n) * k * batch, q);
     sycl_vector<CType> dC(size_t(m) * n * batch, q);
     sycl_vector<CType> dBias(n * batch, q);
-    avector<float> match(m * n), ref(m * n), bias(n);
+    avector<float> matC(m * n), ref(m * n), bias(n);
     avector<float> matA(m * k), matBT(k * n);
     if (verify) {
       fill_buffer_randn(matA.data(), matA.size(), (-0.5f), (0.5f));
@@ -144,8 +144,8 @@ class Benchmark_Fp32Fp32 {
 
     if (verify) {
       gemmref_fp32fp32fp32(m, n, k, matA.data(), matBT.data(), ref.data(), k, k, n, bias.data(), true);
-      q->memcpy(match.data(), dC.data(), m * n * 4).wait();
-      buffer_error(ref.data(), match.data(), match.size(), (1.f));
+      q->memcpy(matC.data(), dC.data(), m * n * 4).wait();
+      buffer_error(ref.data(), matC.data(), matC.size(), (1.f));
     }
   }
 };
@@ -222,7 +222,7 @@ class Benchmark_Fp16Fp16 {
     sycl_vector<BType> dB(size_t(n) * k * batch, q);
     sycl_vector<CType> dC(size_t(m) * n * batch, q);
     sycl_vector<CType> dBias(n * batch, q);
-    avector<utils::fp16> match(m * n), ref(m * n), bias(n);
+    avector<utils::fp16> matC(m * n), ref(m * n), bias(n);
     avector<utils::fp16> matA(m * k), matBT(k * n);
     if (verify) {
       fill_buffer_randn(matA.data(), matA.size(), utils::fp16(-0.5f), utils::fp16(0.5f));
@@ -240,8 +240,8 @@ class Benchmark_Fp16Fp16 {
 
     if (verify) {
       gemmref_fp16fp16fp16(m, n, k, matA.data(), matBT.data(), ref.data(), k, k, n, bias.data(), true);
-      q->memcpy(match.data(), dC.data(), m * n * 2).wait();
-      buffer_error(ref.data(), match.data(), match.size(), utils::fp16(1.f));
+      q->memcpy(matC.data(), dC.data(), m * n * 2).wait();
+      buffer_error(ref.data(), matC.data(), matC.size(), utils::fp16(1.f));
     }
   }
 };
@@ -316,7 +316,7 @@ class Benchmark_Bf16Bf16 {
     sycl_vector<BType> dB(size_t(n) * k * batch, q);
     sycl_vector<CType> dC(size_t(m) * n * batch, q);
     sycl_vector<CType> dBias(n * batch, q);
-    avector<utils::bf16> match(m * n), ref(m * n), bias(n);
+    avector<utils::bf16> matC(m * n), ref(m * n), bias(n);
     avector<utils::bf16> matA(m * k), matBT(k * n);
     if (verify) {
       fill_buffer_randn(matA.data(), matA.size(), utils::bf16(-0.5f), utils::bf16(0.5f));
@@ -334,8 +334,8 @@ class Benchmark_Bf16Bf16 {
 
     if (verify) {
       gemmref_bf16bf16bf16(m, n, k, matA.data(), matBT.data(), ref.data(), k, k, n, bias.data(), true);
-      q->memcpy(match.data(), dC.data(), m * n * 2).wait();
-      buffer_error(ref.data(), match.data(), match.size(), utils::bf16(1.f));
+      q->memcpy(matC.data(), dC.data(), m * n * 2).wait();
+      buffer_error(ref.data(), matC.data(), matC.size(), utils::bf16(1.f));
     }
   }
 };
