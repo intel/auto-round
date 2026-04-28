@@ -8,7 +8,7 @@ import requests
 from PIL import Image
 from transformers import AutoModelForImageTextToText, AutoProcessor, AutoTokenizer, Qwen2VLForConditionalGeneration
 
-from auto_round import AutoRoundMLLM
+from auto_round import AutoRound
 from auto_round.utils import get_block_names
 
 from ...envs import require_gptqmodel, require_optimum, require_vlm_env
@@ -16,6 +16,7 @@ from ...helpers import get_model_path
 
 
 class VisionDataLoader:
+
     def __init__(self):
         self.batch_size = 1
 
@@ -37,7 +38,8 @@ class VisionDataLoader:
 
 
 @pytest.mark.skip_ci(reason="Only tiny model is suggested")
-class TestAutoRoundMLLM:
+class TestAutoRound:
+
     @pytest.fixture(autouse=True)
     def _save_dir(self, tmp_path):
         self.save_dir = str(tmp_path / "saved")
@@ -112,13 +114,13 @@ class TestAutoRoundMLLM:
     @require_gptqmodel
     @require_optimum
     def test_vlm_tune(self):
-        from auto_round import AutoRoundMLLM
+        from auto_round import AutoRound
 
         ## load the model
         model_name = get_model_path("Qwen/Qwen2-VL-2B-Instruct")
         ## quantize the model
         bits, group_size, sym = 4, 128, True
-        autoround = AutoRoundMLLM(model_name, bits=bits, group_size=group_size, sym=sym, iters=1, nsamples=1)
+        autoround = AutoRound(model_name, bits=bits, group_size=group_size, sym=sym, iters=1, nsamples=1)
         autoround.quantize()
 
         quantized_model_path = self.save_dir
@@ -181,7 +183,7 @@ class TestAutoRoundMLLM:
             model_path, trust_remote_code=True, device_map="auto", torch_dtype="auto"
         )
 
-        autoround = AutoRoundMLLM(
+        autoround = AutoRound(
             model=model,
             tokenizer=tokenizer,
             processor=processor,

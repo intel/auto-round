@@ -10,11 +10,11 @@ import torch
 
 from auto_round import AutoRound
 
-from ...helpers import get_model_path, opt_name_or_path
+from ...helpers import get_model_path, qwen_name_or_path
 
 
 class TestAutoRound:
-    model_name = opt_name_or_path
+    model_name = qwen_name_or_path
 
     @pytest.fixture(autouse=True)
     def _save_dir(self, tmp_path):
@@ -35,6 +35,20 @@ class TestAutoRound:
         shutil.rmtree("runs", ignore_errors=True)
 
     def _run_sglang_inference(self, model_path: Path):
+        # SM 12.x (Blackwell) GPUs require CUDA >= 12.9 for sglang's gptq_marlin_repack JIT kernel.
+        # Skip inference when the environment is known to be incompatible.
+        if torch.cuda.is_available():
+            try:
+                major, minor = torch.cuda.get_device_capability()
+                if major >= 12:
+                    cuda_ver = tuple(int(x) for x in (torch.version.cuda or "0.0").split(".")[:2])
+                    if cuda_ver < (12, 9):
+                        pytest.skip(
+                            f"SM {major}.{minor} GPU requires CUDA >= 12.9 for sglang GPTQ JIT kernels "
+                            f"(installed: CUDA {torch.version.cuda})"
+                        )
+            except Exception:
+                pass
         llm = sgl.Engine(
             model_path=str(model_path), mem_fraction_static=0.5, disable_piecewise_cuda_graph=True, cuda_graph_bs=[1]
         )
@@ -58,13 +72,13 @@ class TestAutoRound:
             dataset=dataloader,
         )
 
-        autoround.quantize_and_save(
+        _, quantized_model_path = autoround.quantize_and_save(
             output_dir=self.save_dir,
             inplace=True,
             format="auto_round",
         )
 
-        generated_text = self._run_sglang_inference(self.save_dir)
+        generated_text = self._run_sglang_inference(quantized_model_path)
         print(generated_text)
 
         assert "!!!" not in generated_text
@@ -73,7 +87,7 @@ class TestAutoRound:
         layer_config = {
             "self_attn": {"bits": 8},
             "lm_head": {"bits": 16},
-            "fc1": {"bits": 16, "act_bits": 16},
+            "mlp": {"bits": 16, "act_bits": 16},
         }
 
         autoround = AutoRound(
@@ -85,22 +99,22 @@ class TestAutoRound:
             layer_config=layer_config,
         )
 
-        autoround.quantize_and_save(
+        _, quantized_model_path = autoround.quantize_and_save(
             output_dir=self.save_dir,
             inplace=True,
             format="auto_round",
         )
-        config_file = Path(self.save_dir) / "config.json"
+        config_file = Path(quantized_model_path) / "config.json"
         with open(config_file, "r", encoding="utf-8") as f:
             config = json.load(f)
         quant_config = config.get("quantization_config", {})
         extra_config = quant_config.get("extra_config", {})
         # check extra_config only saved attributes differing from Scheme values
-        assert "act_bits" not in extra_config[".*fc1.*"].keys()
-        assert "group_size" not in extra_config[".*fc1.*"].keys()
-        assert "bits" in extra_config[".*fc1.*"].keys() and extra_config[".*fc1.*"]["bits"] == 16
+        assert "act_bits" not in extra_config[".*mlp.*"].keys()
+        assert "group_size" not in extra_config[".*mlp.*"].keys()
+        assert "bits" in extra_config[".*mlp.*"].keys() and extra_config[".*mlp.*"]["bits"] == 16
         assert "bits" in extra_config[".*self_attn.*"].keys() and extra_config[".*self_attn.*"]["bits"] == 8
-        generated_text = self._run_sglang_inference(self.save_dir)
+        generated_text = self._run_sglang_inference(quantized_model_path)
         print(generated_text)
 
         assert "!!!" not in generated_text
@@ -117,13 +131,13 @@ class TestAutoRound:
             dataset=dataloader,
         )
 
-        autoround.quantize_and_save(
+        _, quantized_model_path = autoround.quantize_and_save(
             output_dir=self.save_dir,
             inplace=True,
             format="auto_round:auto_awq",
         )
 
-        generated_text = self._run_sglang_inference(self.save_dir)
+        generated_text = self._run_sglang_inference(quantized_model_path)
         print(generated_text)
 
         assert "!!!" not in generated_text

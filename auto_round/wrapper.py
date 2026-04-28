@@ -744,7 +744,12 @@ class WrapperMultiblock(torch.nn.Module):
 
 
 def wrapper_block(
-    block, enable_minmax_tuning, enable_norm_bias_tuning, enable_torch_compile=False, device="cpu", **kwargs
+    block,
+    enable_minmax_tuning,
+    enable_norm_bias_tuning,
+    enable_torch_compile=False,
+    device="cpu",
+    **kwargs,
 ):
     """Wraps the layers in the given block with a custom Wrapper module.
 

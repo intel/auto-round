@@ -12,7 +12,6 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-
 import torch
 import transformers
 from packaging import version
@@ -33,6 +32,7 @@ from auto_round.utils import clear_memory, unsupported_meta_device
 
 
 class GPTOssSingleExpert(nn.Module):
+
     def __init__(self, hidden_size: int, intermediate_size: int, dtype: torch.dtype | None = None):
         super().__init__()
         self.hidden_size = hidden_size
@@ -101,16 +101,25 @@ class SequentialGPTOSSMoE(ReplacementModuleBase):
         B, T, H = hidden_states.shape
         x = hidden_states.reshape(-1, H)
 
-        # Use the original router (it returns scores and indices already softmaxed over top-k)
-        router_scores, router_indices = self.router(x)  # scores: [tokens, E], indices: [tokens, k]
+        # Use the original router (it returns logits, scores and indices)
+        router_out = self.router(x)
+        if len(router_out) == 3:
+            _, router_scores, router_indices = router_out
+        else:
+            router_scores, router_indices = router_out
 
         final_hidden_states = self.shared_expert(x) if self.shared_expert is not None else torch.zeros_like(x)
         num_all_tokens, total_num_experts = x.size(0), self.num_experts
         mask_weights = torch.zeros((num_all_tokens, total_num_experts), dtype=x.dtype, device=x.device)
-        topk_ids, experts_mask = router_indices, router_scores
-        topk_ids = topk_ids.to(torch.int64)
+        topk_ids = router_indices.to(torch.int64)
 
         mask_weights.scatter_(-1, topk_ids, 1)
+
+        # Build per-expert routing score matrix: shape (num_experts, num_tokens)
+        # experts_mask[e, t] = router score of expert e for token t (0 if not selected)
+        expert_score_matrix = torch.zeros_like(mask_weights)
+        expert_score_matrix.scatter_(-1, topk_ids, router_scores)
+        expert_score_matrix = expert_score_matrix.transpose(0, 1)  # (num_experts, num_tokens)
 
         mask_weights = mask_weights[:num_all_tokens, :total_num_experts]
         mask_weights = mask_weights.transpose(0, 1)
@@ -124,7 +133,7 @@ class SequentialGPTOSSMoE(ReplacementModuleBase):
             mask_weight = mask_weights[expert_idx].unsqueeze(1)
             current_state_static = x * mask_weight
             expert_output = self.experts[expert_idx](current_state_static)
-            expert_output = expert_output * experts_mask[expert_idx].unsqueeze(1)
+            expert_output = expert_output * expert_score_matrix[expert_idx].unsqueeze(1)
             final_hidden_states += expert_output
 
         return final_hidden_states.view(B, T, H), router_scores.view(B * T, -1)

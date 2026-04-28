@@ -45,7 +45,9 @@ from auto_round.schemes import (
     get_gguf_scheme,
 )
 from auto_round.utils import (
+    INNER_SUPPORTED_LAYER_TYPES,
     SUPPORTED_FORMATS,
+    SUPPORTED_LAYER_TYPES,
     check_to_quantized,
     compress_layer_names,
     copy_python_files_from_model_cache,
@@ -158,7 +160,7 @@ def _check_divisible_by_32(ar):
     skipped_layers = []
     if default_dict["data_type"] == "int" and default_dict["act_bits"] >= 16:
         for n, m in ar.model.named_modules():
-            if type(m) in ar.supported_types or m.__class__.__name__ in ar.inner_supported_types:
+            if type(m) in SUPPORTED_LAYER_TYPES or m.__class__.__name__ in INNER_SUPPORTED_LAYER_TYPES:
                 if m.weight.shape[0] % 32 or m.weight.shape[1] % 32:
                     if ar.layer_config is None:
                         ar.layer_config = {}
@@ -378,7 +380,7 @@ class LLMCompressorFormat(OutputFormat):
             if is_nv_fp(ar.data_type) or is_mx_fp(ar.data_type):
                 from auto_round.export.export_to_llmcompressor import check_compressed_tensors_supported
 
-                check_compressed_tensors_supported()
+                check_compressed_tensors_supported(raise_error=True)
                 self.backend = LLMCompressorFormat(ar.data_type, ar)
             elif is_dynamic_afp8(ar) and is_block_wfp8(ar):
                 self.backend = LLMCompressorFormat(AutoRoundExportFormat.FP8_BLOCK.value, ar)
@@ -690,7 +692,7 @@ class AutoAWQFormat(OutputFormat):
         if not awq_supported:
             logger.warning(f"The AutoAWQ format may not be supported due to {info}")
         if ar.bits != 4:
-            raise ValueError("The AWQ format only supports W4 quantization ")
+            raise ValueError(f"auto_awq format support quantization scheme with W4A16 but got bits={ar.bits}")
 
         if self.backend is None:
             _check_divisible_by_32(ar)
@@ -759,6 +761,7 @@ class GGUFFormat(OutputFormat):
 
     def __init__(self, format: str, ar: BaseCompressor):
         if format.startswith("gguf:"):
+            self._original_format = format  # preserve "gguf:q2_k_mixed" etc. for Phase 2b
             self.gguf_args_check(ar, format, model_type=ModelType.TEXT)
             if ar.mllm:
                 self.gguf_args_check(ar, format, model_type=ModelType.MMPROJ)
@@ -794,14 +797,14 @@ class GGUFFormat(OutputFormat):
         return True
 
     def check_and_reset_format(self, ar):
-        if ar.iters != 0 and ar.bits != 3 and not ar.enable_alg_ext:
+        if getattr(ar, "iters", 0) != 0 and ar.bits != 3 and not ar.enable_alg_ext:
             logger.warning_once(
                 "`iters=0` is recommended when exporting to current GGUF format"
                 " or add `enable_alg_ext` for better accuracy with much more tuning cost."
                 " Please refer to https://github.com/intel/auto-round/tree/main/docs/gguf_alg_ext_acc.md"
                 " for the accuracy results."
             )
-        elif ar.bits >= 8 and ar.iters != 0:
+        elif ar.bits >= 8 and getattr(ar, "iters", 0) != 0:
             logger.warning_once("`iters=0` is recommended for bits>=8")
 
         if getattr(ar, "quant_nontext_module", False):
