@@ -312,8 +312,8 @@ class BasicArgumentParser(argparse.ArgumentParser):
             default=True,
             type=lambda s: "both" if s.lower() == "both" else s.lower() in ("true", "1", "yes"),
             help="Whether to use both activations and weights for AWQ scaling. "
-                 "Options: true/false/'both'. 'both' searches both modes and picks the best. "
-                 "(default: True).",
+            "Options: true/false/'both'. 'both' searches both modes and picks the best. "
+            "(default: True).",
         )
         awq_group.add_argument(
             "--n_grid",

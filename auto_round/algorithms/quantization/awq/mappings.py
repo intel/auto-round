@@ -42,8 +42,8 @@ import torch
 
 from auto_round.logger import logger
 
-
 # ── Data structures ───────────────────────────────────────────────────────────
+
 
 @dataclass
 class AWQMapping:
@@ -88,8 +88,7 @@ _gemma_mappings = [
 _cohere_mappings = [
     AWQMapping(
         r"input_layernorm$",
-        [r"self_attn\.q_proj$", r"self_attn\.k_proj$", r"self_attn\.v_proj$",
-         r"mlp\.gate_proj$", r"mlp\.up_proj$"],
+        [r"self_attn\.q_proj$", r"self_attn\.k_proj$", r"self_attn\.v_proj$", r"mlp\.gate_proj$", r"mlp\.up_proj$"],
     ),
     AWQMapping(r"v_proj$", [r"o_proj$"]),
     AWQMapping(r"up_proj$", [r"down_proj$"]),
@@ -142,8 +141,7 @@ _exaone4_mappings = [
 _afmoe_mappings = [
     AWQMapping(
         r"input_layernorm$",
-        [r"self_attn\.q_proj$", r"self_attn\.k_proj$", r"self_attn\.v_proj$",
-         r"self_attn\.gate_proj$"],
+        [r"self_attn\.q_proj$", r"self_attn\.k_proj$", r"self_attn\.v_proj$", r"self_attn\.gate_proj$"],
     ),
     AWQMapping(r"v_proj$", [r"o_proj$"]),
     AWQMapping(
@@ -201,6 +199,7 @@ AWQ_MAPPING_REGISTRY: dict[str, list[AWQMapping]] = {
 
 # ── Helper functions ──────────────────────────────────────────────────────────
 
+
 def _get_module(model: torch.nn.Module, name: str) -> torch.nn.Module | None:
     """Safely retrieve a sub-module by dotted name."""
     try:
@@ -257,13 +256,13 @@ def _get_mappings_for_model(model: torch.nn.Module) -> list[AWQMapping]:
         return AWQ_MAPPING_REGISTRY[cls_name]
 
     logger.info(
-        f"Architecture '{cls_name}' not found in AWQ mapping registry. "
-        f"Using default mappings (Llama-like)."
+        f"Architecture '{cls_name}' not found in AWQ mapping registry. " f"Using default mappings (Llama-like)."
     )
     return default_mappings
 
 
 # ── Public API ────────────────────────────────────────────────────────────────
+
 
 def resolve_mappings(
     model: torch.nn.Module,
@@ -281,10 +280,7 @@ def resolve_mappings(
         List of ``ResolvedMapping`` objects ready for AWQ grid search.
     """
     if user_mappings is not None:
-        mapping_defs = [
-            AWQMapping(m["smooth_layer"], m["balance_layers"])
-            for m in user_mappings
-        ]
+        mapping_defs = [AWQMapping(m["smooth_layer"], m["balance_layers"]) for m in user_mappings]
     else:
         mapping_defs = _get_mappings_for_model(model)
 
@@ -318,10 +314,7 @@ def _resolve_mapping_defs(
     for prefix, names_in_block in block_modules.items():
         for mapping_def in mapping_defs:
             # Find smooth layer(s) in this block
-            smooth_matches = [
-                n for n in names_in_block
-                if re.search(mapping_def.smooth_layer, n)
-            ]
+            smooth_matches = [n for n in names_in_block if re.search(mapping_def.smooth_layer, n)]
             if not smooth_matches:
                 continue
 
@@ -349,9 +342,7 @@ def _resolve_mapping_defs(
                 # Verify dimensional compatibility (filters out GQA
                 # mismatches for v_proj → o_proj automatically)
                 smooth_dim = smooth_layer.weight.shape[0]
-                compatible = all(
-                    bl.in_features == smooth_dim for bl in balance_layers
-                )
+                compatible = all(bl.in_features == smooth_dim for bl in balance_layers)
                 if not compatible:
                     logger.warning_once(
                         f"Skipping AWQ for '{smooth_name}': incompatible "
@@ -361,9 +352,7 @@ def _resolve_mapping_defs(
                     )
                     continue
 
-                parent_name, parent = _find_parent(
-                    model, balance_names
-                )
+                parent_name, parent = _find_parent(model, balance_names)
                 resolved.append(
                     ResolvedMapping(
                         smooth_name=smooth_name,
@@ -385,9 +374,7 @@ def _resolve_mapping_defs(
     else:
         first_prefix = next(iter(block_modules))
         n_blocks = len(block_modules)
-        mappings_per_block = sum(
-            1 for r in resolved if r.smooth_name.startswith(first_prefix)
-        )
+        mappings_per_block = sum(1 for r in resolved if r.smooth_name.startswith(first_prefix))
         logger.info(
             f"AWQ resolved {matched_count} smooth-balance mappings "
             f"({mappings_per_block} per block × {n_blocks} blocks)."
@@ -397,6 +384,7 @@ def _resolve_mapping_defs(
 
 
 # ── Model compatibility diagnostics ───────────────────────────────────────────
+
 
 def check_model_compatibility(
     model: torch.nn.Module,
@@ -436,14 +424,11 @@ def check_model_compatibility(
     mappings_per_block = 0
     if n_blocks > 0 and resolved:
         first_prefix = min(all_prefixes)
-        mappings_per_block = sum(
-            1 for r in resolved if r.smooth_name.startswith(first_prefix)
-        )
+        mappings_per_block = sum(1 for r in resolved if r.smooth_name.startswith(first_prefix))
 
     if not resolved:
         warnings_list.append(
-            "No AWQ mappings could be resolved. The model architecture may "
-            "not be supported for auto-detection."
+            "No AWQ mappings could be resolved. The model architecture may " "not be supported for auto-detection."
         )
 
     return {
