@@ -339,6 +339,7 @@ W8A8 搭配 AWQ 平滑化：
 
 ```python
 from auto_round import AutoRound
+
 ar = AutoRound(
     "Qwen/Qwen3-0.6B",
     scheme="INT8",

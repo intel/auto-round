@@ -55,9 +55,7 @@ class AWQConfig(QuantizationConfig):
         super().__init__(**kwargs)
 
         if isinstance(duo_scaling, str) and duo_scaling != "both":
-            raise ValueError(
-                f"duo_scaling must be True, False, or 'both', got '{duo_scaling}'"
-            )
+            raise ValueError(f"duo_scaling must be True, False, or 'both', got '{duo_scaling}'")
         self.duo_scaling = duo_scaling
         self.n_grid = n_grid
         self.seqlen = seqlen

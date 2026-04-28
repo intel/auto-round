@@ -74,9 +74,7 @@ class AWQQuantizer(RTNQuantizer):
 
     # ── Public API ────────────────────────────────────────────────────────────
 
-    def resolve_all_mappings(
-        self, model: torch.nn.Module
-    ) -> dict[str, list[ResolvedMapping]]:
+    def resolve_all_mappings(self, model: torch.nn.Module) -> dict[str, list[ResolvedMapping]]:
         """Resolve all AWQ mappings and group by block prefix.
 
         Call this once before the block-by-block loop.  The resolved mappings
@@ -129,16 +127,12 @@ class AWQQuantizer(RTNQuantizer):
 
         for mapping in tqdm(self._resolved_mappings, desc="AWQ Smoothing"):
             if mapping.smooth_name not in self._activation_stats:
-                logger.warning(
-                    f"No activation stats for '{mapping.smooth_name}', skipping this layer."
-                )
+                logger.warning(f"No activation stats for '{mapping.smooth_name}', skipping this layer.")
                 continue
 
             act_sum, act_count = self._activation_stats.pop(mapping.smooth_name)
             if act_count == 0:
-                logger.warning(
-                    f"Zero activation count for '{mapping.smooth_name}', skipping this layer."
-                )
+                logger.warning(f"Zero activation count for '{mapping.smooth_name}', skipping this layer.")
                 continue
 
             # Mean activation per channel (act_count is a plain int now,
@@ -175,22 +169,15 @@ class AWQQuantizer(RTNQuantizer):
             block_prefix: Block prefix (e.g. "model.layers.0") identifying
                 which mappings to smooth.
         """
-        block_mappings = [
-            m for m in self._resolved_mappings
-            if _extract_block_prefix(m.smooth_name) == block_prefix
-        ]
+        block_mappings = [m for m in self._resolved_mappings if _extract_block_prefix(m.smooth_name) == block_prefix]
         for mapping in block_mappings:
             if mapping.smooth_name not in self._activation_stats:
-                logger.warning(
-                    f"No activation stats for '{mapping.smooth_name}', skipping."
-                )
+                logger.warning(f"No activation stats for '{mapping.smooth_name}', skipping.")
                 continue
 
             act_sum, act_count = self._activation_stats.pop(mapping.smooth_name)
             if act_count == 0:
-                logger.warning(
-                    f"Zero activation count for '{mapping.smooth_name}', skipping."
-                )
+                logger.warning(f"Zero activation count for '{mapping.smooth_name}', skipping.")
                 continue
 
             x_mean = (act_sum / act_count).to(torch.float32)
@@ -230,9 +217,7 @@ class AWQQuantizer(RTNQuantizer):
             yield
             return
 
-        modules_to_move = [mapping.parent, mapping.smooth_layer] + list(
-            mapping.balance_layers
-        )
+        modules_to_move = [mapping.parent, mapping.smooth_layer] + list(mapping.balance_layers)
         # Deduplicate (parent may overlap with smooth/balance)
         seen = set()
         unique = []
@@ -283,10 +268,7 @@ class AWQQuantizer(RTNQuantizer):
 
         mappings = self._resolved_mappings
         if block_prefix is not None:
-            mappings = [
-                m for m in mappings
-                if _extract_block_prefix(m.smooth_name) == block_prefix
-            ]
+            mappings = [m for m in mappings if _extract_block_prefix(m.smooth_name) == block_prefix]
 
         hooks = []
         smooth_names = {m.smooth_name for m in mappings}
@@ -310,9 +292,7 @@ class AWQQuantizer(RTNQuantizer):
                     # single [channels] tensor; .cpu() immediately frees the
                     # GPU allocation (aligned with AR's "immediate CPU move"
                     # pattern from CalibCompressor hooks).
-                    channel_sum = (
-                        x.detach().float().flatten(0, -2).abs().sum(dim=0).cpu()
-                    )
+                    channel_sum = x.detach().float().flatten(0, -2).abs().sum(dim=0).cpu()
                     count = x.shape[:-1].numel()
 
                     if layer_name not in self._activation_stats:
@@ -344,9 +324,7 @@ class AWQQuantizer(RTNQuantizer):
                     # search loss, use all calibration data without subsampling.
                     mod_cls_id = id(type(mod))
                     if mod_cls_id not in self._parent_signatures:
-                        self._parent_signatures[mod_cls_id] = inspect.signature(
-                            mod.forward
-                        )
+                        self._parent_signatures[mod_cls_id] = inspect.signature(mod.forward)
                     sig = self._parent_signatures[mod_cls_id]
                     bound = sig.bind(*args, **kwargs)
                     bound.apply_defaults()
@@ -354,15 +332,10 @@ class AWQQuantizer(RTNQuantizer):
                     for k, v in bound.arguments.items():
                         if isinstance(v, torch.Tensor):
                             stored[k] = v.detach()
-                        elif isinstance(v, tuple) and any(
-                            isinstance(t, torch.Tensor) for t in v
-                        ):
+                        elif isinstance(v, tuple) and any(isinstance(t, torch.Tensor) for t in v):
                             # Detach tensors in tuples (e.g. position_embeddings
                             # = (cos, sin)) to release computation graph refs.
-                            stored[k] = tuple(
-                                t.detach() if isinstance(t, torch.Tensor) else t
-                                for t in v
-                            )
+                            stored[k] = tuple(t.detach() if isinstance(t, torch.Tensor) else t for t in v)
                         elif hasattr(v, "key_cache"):
                             # Null out KV cache objects (DynamicCache etc.)
                             stored[k] = None
@@ -373,9 +346,7 @@ class AWQQuantizer(RTNQuantizer):
 
                 return hook_fn
 
-            h = parent.register_forward_pre_hook(
-                _make_parent_hook(parent), with_kwargs=True
-            )
+            h = parent.register_forward_pre_hook(_make_parent_hook(parent), with_kwargs=True)
             hooks.append(h)
 
         return hooks
@@ -398,25 +369,15 @@ class AWQQuantizer(RTNQuantizer):
                     for duo_scaling in [False, True]
                 ]
             case False:
-                return [
-                    (grid_idx / (self.n_grid - 1), False)
-                    for grid_idx in range(self.n_grid)
-                ]
+                return [(grid_idx / (self.n_grid - 1), False) for grid_idx in range(self.n_grid)]
             # True: include identity (0.0, False) as first, then duo points
             case True:
-                return [(0.0, False)] + [
-                    (grid_idx / (self.n_grid - 2), True)
-                    for grid_idx in range(self.n_grid - 1)
-                ]
+                return [(0.0, False)] + [(grid_idx / (self.n_grid - 2), True) for grid_idx in range(self.n_grid - 1)]
             case _:
-                raise ValueError(
-                    f"Found unexpected duo_scaling configuration {self.duo_scaling}"
-                )
+                raise ValueError(f"Found unexpected duo_scaling configuration {self.duo_scaling}")
 
     @staticmethod
-    def _compute_layer_means(
-        layers: list[torch.nn.Module], group_size: int
-    ) -> torch.Tensor:
+    def _compute_layer_means(layers: list[torch.nn.Module], group_size: int) -> torch.Tensor:
         """Compute per-channel mean of normalised weights.
 
         Within each quantization group, weights are normalized by their group max
@@ -472,9 +433,7 @@ class AWQQuantizer(RTNQuantizer):
         # Compute normalised weight means
         group_size = self.group_size if self.group_size > 0 else -1
         if self.duo_scaling is not False:
-            w_mean = self._compute_layer_means(
-                mapping.balance_layers, group_size
-            ).to(device)
+            w_mean = self._compute_layer_means(mapping.balance_layers, group_size).to(device)
 
         # Try to run parent module forward for output-based loss
         parent_kwargs_list = self._parent_args_cache.get(mapping.parent, [])
@@ -482,21 +441,15 @@ class AWQQuantizer(RTNQuantizer):
 
         if use_parent_forward:
             # Compute fp16 baseline outputs for loss computation
-            fp16_outputs = self._run_parent_samples(
-                mapping.parent, parent_kwargs_list
-            )
+            fp16_outputs = self._run_parent_samples(mapping.parent, parent_kwargs_list)
             if not fp16_outputs or all(f.numel() == 0 for f in fp16_outputs):
                 use_parent_forward = False
 
         if not use_parent_forward:
-            orig_weights = {
-                bl: bl.weight.data.clone() for bl in mapping.balance_layers
-            }
+            orig_weights = {bl: bl.weight.data.clone() for bl in mapping.balance_layers}
 
         # Save original weights for restoration during grid search
-        orig_state = {
-            bl: bl.weight.data.clone() for bl in mapping.balance_layers
-        }
+        orig_state = {bl: bl.weight.data.clone() for bl in mapping.balance_layers}
 
         best_error = float("inf")
         best_scales = None
@@ -523,9 +476,7 @@ class AWQQuantizer(RTNQuantizer):
         for ratio, use_duo in grid_params:
             # Compute scales
             if use_duo:
-                scales = (
-                    x_mean.pow(ratio) / (w_mean.pow(1 - ratio) + 1e-4)
-                ).clamp(min=1e-4)
+                scales = (x_mean.pow(ratio) / (w_mean.pow(1 - ratio) + 1e-4)).clamp(min=1e-4)
             else:
                 scales = x_mean.pow(ratio).clamp(min=1e-4).view(-1)
             scales = scales / (scales.max() * scales.min()).sqrt()
@@ -538,20 +489,17 @@ class AWQQuantizer(RTNQuantizer):
                 for bl in mapping.balance_layers:
                     bl.weight.data.copy_(orig_state[bl] * scales_view)
                     w_qdq = self._quantize_dequantize_weight(
-                        bl, bl.weight.data.float(),
+                        bl,
+                        bl.weight.data.float(),
                         quant_func=cached_quant_func,
                     )
                     if w_qdq is not None:
-                        bl.weight.data = (w_qdq / scales_view).to(
-                            bl.weight.dtype
-                        )
+                        bl.weight.data = (w_qdq / scales_view).to(bl.weight.dtype)
                     else:
                         bl.weight.data.copy_(orig_state[bl])
 
                 # Collect quantized outputs then compute loss
-                int_w_outputs = self._run_parent_samples(
-                    mapping.parent, parent_kwargs_list
-                )
+                int_w_outputs = self._run_parent_samples(mapping.parent, parent_kwargs_list)
                 total_loss = self._compute_loss(fp16_outputs, int_w_outputs)
                 del int_w_outputs
 
@@ -565,15 +513,15 @@ class AWQQuantizer(RTNQuantizer):
                     w_orig = orig_weights[bl].to(device)
                     w_scaled = w_orig * scales_view
                     w_qdq = self._quantize_dequantize_weight(
-                        bl, w_scaled, quant_func=cached_quant_func,
+                        bl,
+                        w_scaled,
+                        quant_func=cached_quant_func,
                     )
                     if w_qdq is None:
                         total_loss = float("inf")
                         break
                     w_qdq_unscaled = w_qdq / scales_view
-                    total_loss += (
-                        (w_orig - w_qdq_unscaled).pow(2).sum().item()
-                    )
+                    total_loss += (w_orig - w_qdq_unscaled).pow(2).sum().item()
 
             if total_loss < best_error:
                 best_error = total_loss
@@ -581,16 +529,10 @@ class AWQQuantizer(RTNQuantizer):
                 best_ratio = ratio
 
         if best_ratio < 0:
-            logger.warning(
-                f"AWQ grid search failed for '{mapping.smooth_name}': "
-                "no finite error found."
-            )
+            logger.warning(f"AWQ grid search failed for '{mapping.smooth_name}': " "no finite error found.")
             return None
 
-        logger.debug(
-            f"AWQ '{mapping.smooth_name}': best_ratio={best_ratio:.2f}, "
-            f"best_error={best_error:.3e}"
-        )
+        logger.debug(f"AWQ '{mapping.smooth_name}': best_ratio={best_ratio:.2f}, " f"best_error={best_error:.3e}")
         return best_scales
 
     # ── Parent module forward ─────────────────────────────
@@ -621,8 +563,7 @@ class AWQQuantizer(RTNQuantizer):
         fp16_outputs: list[torch.Tensor],
         int_w_outputs: list[torch.Tensor],
     ) -> float:
-        """Compute normalised MSE between fp16 and quantized outputs.
-        """
+        """Compute normalised MSE between fp16 and quantized outputs."""
         device = fp16_outputs[0].device
         loss = torch.tensor(0.0, device=device)
         num_elements = torch.tensor(0, device=device, dtype=torch.long)
@@ -640,7 +581,9 @@ class AWQQuantizer(RTNQuantizer):
         return (loss / num_elements).item()
 
     def _quantize_dequantize_weight(
-        self, layer: torch.nn.Module, weight: torch.Tensor,
+        self,
+        layer: torch.nn.Module,
+        weight: torch.Tensor,
         quant_func=None,
     ) -> torch.Tensor | None:
         """Quantize-dequantize a weight tensor using the layer's config.
@@ -662,7 +605,9 @@ class AWQQuantizer(RTNQuantizer):
         if quant_func is None:
             try:
                 quant_func, _ = get_quant_func(
-                    data_type, bits, sym,
+                    data_type,
+                    bits,
+                    sym,
                     disable_opt_rtn=True,  # AWQ always uses plain RTN
                     group_size=group_size,
                     iters=0,  # Route to rtn_int_sym, not int_sym
@@ -686,9 +631,7 @@ class AWQQuantizer(RTNQuantizer):
     # ── Apply scales ──────────────────────────────────────────────────────────
 
     @torch.no_grad()
-    def _apply_scales(
-        self, mapping: ResolvedMapping, scales: torch.Tensor
-    ) -> None:
+    def _apply_scales(self, mapping: ResolvedMapping, scales: torch.Tensor) -> None:
         """Apply the computed AWQ scales to smooth and balance layers.
 
         - Balance layers (Linear): weight *= scales (along input channels)
@@ -711,7 +654,7 @@ class AWQQuantizer(RTNQuantizer):
             # in_features (e.g. fused qkv_proj smoothing o_proj). Scale the
             # last output features (aligned with AutoAWQ).
             # https://github.com/casper-hansen/AutoAWQ/blob/main/awq/quantize/scale.py#L123
-            smooth.weight.data[-s.size(0):].div_(s.view(-1, 1))
+            smooth.weight.data[-s.size(0) :].div_(s.view(-1, 1))
 
         if hasattr(smooth, "bias") and smooth.bias is not None:
             smooth.bias.data.div_(s)
