@@ -71,8 +71,18 @@ class BasicArgumentParser(argparse.ArgumentParser):
             # choices=["W4A16", "W2A16", "W3A16", "W8A16", "MXFP4", "MXFP8", "NVFP4", "FPW8A16", "FP8_STATIC"],
             help="Quantization scheme to use. "
             "W4A16: 4-bit weights with 16-bit activations (default). "
-            "Other options include W2A16, W3A16, W8A16 for different bit widths, "
+            "Other options include W2A16, W3A16, W8A16, W8A8 for different bit widths, "
             "and MXFP4/MXFP8/NVFP4 for different data type.",
+        )
+        basic.add_argument(
+            "--algorithm",
+            default=None,
+            type=str,
+            choices=["auto_round", "rtn", "awq"],
+            help="Quantization algorithm to use. "
+            "auto_round: SignSGD-based optimization (default when iters > 0). "
+            "rtn: Round-to-nearest (default when iters == 0). "
+            "awq: Activation-Aware Weight Quantization (AWQ smoothing + RTN).",
         )
         basic.add_argument(
             "--batch_size",
@@ -294,6 +304,22 @@ class BasicArgumentParser(argparse.ArgumentParser):
             const=False,
             dest="disable_opt_rtn",
             help="Enable optimization for RTN mode when iters=0.",
+        )
+
+        awq_group = self.add_argument_group("AWQ Arguments")
+        awq_group.add_argument(
+            "--duo_scaling",
+            default=True,
+            type=lambda s: "both" if s.lower() == "both" else s.lower() in ("true", "1", "yes"),
+            help="Whether to use both activations and weights for AWQ scaling. "
+            "Options: true/false/'both'. 'both' searches both modes and picks the best. "
+            "(default: True).",
+        )
+        awq_group.add_argument(
+            "--n_grid",
+            default=20,
+            type=int,
+            help="Number of grid points for AWQ scaling ratio search (default: 20).",
         )
 
         scheme = self.add_argument_group("Scheme Arguments")
@@ -749,6 +775,9 @@ def tune(args):
         momentum=args.momentum,
         trust_remote_code=not args.disable_trust_remote_code,
         rotation_config=rot_config,
+        algorithm=getattr(args, "algorithm", None),
+        duo_scaling=getattr(args, "duo_scaling", True),
+        n_grid=getattr(args, "n_grid", 20),
     )
 
     # ======================= Quantize and save model =======================

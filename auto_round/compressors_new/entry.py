@@ -7,10 +7,12 @@ from typing import Any, Callable, Optional, Union
 import torch
 
 from auto_round.algorithms.alg_config import AlgConfig
+from auto_round.algorithms.quantization.awq.config import AWQConfig
 from auto_round.algorithms.quantization.rtn.config import RTNConfig
 from auto_round.algorithms.quantization.sign_round.config import SignRoundConfig
 from auto_round.algorithms.transforms.rotation.config import RotationConfig as _NewArchRotationConfig
 from auto_round.auto_scheme.gen_auto_scheme import AutoScheme
+from auto_round.compressors_new.awq import AWQCompressor
 from auto_round.compressors_new.calib import CalibCompressor, CalibratedRTNCompressor
 from auto_round.compressors_new.utils import check_need_act_calibration
 from auto_round.compressors_new.zero_shot import ZeroShotCompressor
@@ -225,6 +227,10 @@ class AutoRound(object):
         if isinstance(quant_config, SignRoundConfig):
             return _get_compressor_class(model_type, CalibCompressor)(alg_configs, **local_args, **kwargs)
 
+        elif isinstance(quant_config, AWQConfig):
+            # AWQ requires calibration for activation collection + smoothing
+            return _get_compressor_class(model_type, AWQCompressor)(alg_configs, **local_args, **kwargs)
+
         elif isinstance(quant_config, RTNConfig):
             enable_imatrix = False
             disable_opt_rtn = getattr(quant_config, "disable_opt_rtn", False)
@@ -382,11 +388,18 @@ class AutoRoundCompatible:
         enable_torch_compile: bool = False,
         seed: int = 42,
         low_cpu_mem_usage: bool = True,
+        algorithm: str = None,
         **kwargs,
     ):
         """Create AutoRoundCompatible instance using new AutoRound architecture.
 
         This method translates old AutoRoundCompatible API to new AutoRound API.
+
+        Args:
+            algorithm: Quantization algorithm to use. Options:
+                - None or "auto_round": SignSGD-based optimization (default when iters > 0)
+                - "rtn": Round-to-nearest (default when iters == 0)
+                - "awq": Activation-Aware Weight Quantization (AWQ smoothing + RTN)
         """
         from auto_round.utils import is_diffusion_model, is_mllm_model
 
@@ -404,7 +417,30 @@ class AutoRoundCompatible:
         act_dynamic = kwargs.pop("act_dynamic", None)
 
         # Decide which algorithm to use
-        if iters == 0:
+        if algorithm and algorithm.lower() == "awq":
+            # AWQ mode: activation-aware weight quantization
+            duo_scaling = kwargs.pop("duo_scaling", True)
+            n_grid = kwargs.pop("n_grid", 20)
+            awq_mappings = kwargs.pop("mappings", None)
+            config = AWQConfig(
+                bits=bits,
+                group_size=group_size,
+                sym=sym,
+                data_type=data_type,
+                act_bits=act_bits,
+                act_group_size=act_group_size,
+                act_sym=act_sym,
+                act_data_type=act_data_type,
+                act_dynamic=act_dynamic,
+                duo_scaling=duo_scaling,
+                n_grid=n_grid,
+                seqlen=seqlen,
+                nsamples=nsamples,
+                batch_size=batch_size,
+                mappings=awq_mappings,
+                **common_config_kwargs,
+            )
+        elif iters == 0:
             # RTN mode
             disable_opt_rtn = kwargs.pop("disable_opt_rtn", None)
             config = RTNConfig(

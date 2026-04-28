@@ -27,6 +27,7 @@
     - [API 用法](#api-用法)
     - [AutoScheme 中的超参数](#autoscheme-超参数说明)
   + [OPT RTN 模式](#opt-rtn-模式)
+  + [AWQ 算法](#awq-算法)
   + [GGUF 格式](#gguf-格式量化)
   + [量化成本](#量化成本)
   + [设备及多卡量化设置](#设备及多卡量化设置)
@@ -315,6 +316,40 @@ W2G64 在 13 个任务上的平均精度与耗时
 | 高速方案（Light）     | 0.2760(2分钟)          | 0.4063(3分钟)  | 0.4764(5分钟)       | 0.4810(7分钟)   | 0.6581(38分钟)       |
 
 </details>
+
+### AWQ 算法
+
+AWQ（Activation-Aware Weight Quantization，激活感知权重量化）是一种可选的量化算法。AWQ 通过分析激活模式来保护关键权重通道，在标准量化前对权重施加通道级缩放，从而降低量化误差。
+
+AWQ 的标准部署路径是 **W4A16**，通过 vLLM 的 AWQ/Marlin CUDA 内核提供服务。**W8A8** 搭配 AWQ 平滑化也可通过 vLLM 的 compressed_tensors 后端（cutlass INT8 GEMM）提供服务。
+
+#### 命令行用法
+
+```bash
+auto-round --model Qwen/Qwen3-0.6B --scheme "W4A16" --algorithm awq --format "auto_round"
+```
+
+AWQ 专用选项：
+- `--duo_scaling`：同时使用激活和权重计算缩放因子。选项：`true`、`false` 或 `both`（搜索两种模式并选择最佳）。（默认：True）。
+- `--n_grid`：缩放比率搜索的网格点数（默认：20）。
+
+#### API 用法
+
+W8A8 搭配 AWQ 平滑化：
+
+```python
+from auto_round import AutoRound
+
+ar = AutoRound(
+    "Qwen/Qwen3-0.6B",
+    scheme="INT8",
+    algorithm="awq",
+)
+
+output_dir = "./tmp_awq"
+ar.quantize_and_save(output_dir, format="auto_round:llm_compressor")
+```
+
 
 ### AutoScheme 自动混合精度量化方案
 AutoScheme 采用自动化算法，可生成 **自适应的混合精度与数据类型** 的量化方案（mixed bits/data type quantization recipes）。相关测试结果请参考[《AutoScheme精度报告》](./auto_scheme_acc.md)。
