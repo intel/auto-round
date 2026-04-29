@@ -33,6 +33,7 @@ from tqdm import tqdm
 from transformers import AutoConfig, set_seed
 
 from auto_round import envs
+from auto_round.algorithms.quantization.sign_round.sign_sgd import SignSGD
 from auto_round.auto_scheme.gen_auto_scheme import AutoScheme
 from auto_round.compressors.shard_writer import shard_writer
 from auto_round.compressors.utils import (
@@ -71,7 +72,6 @@ from auto_round.schemes import (
     preset_name_to_scheme,
     scheme_to_preset_name,
 )
-from auto_round.sign_sgd import SignSGD
 from auto_round.special_model_handler import get_predefined_fixed_attr, get_predefined_ignore_layers, update_module
 from auto_round.utils import (
     INNER_SUPPORTED_LAYER_TYPES,
@@ -1865,6 +1865,14 @@ class BaseCompressor(object):
         if self.low_cpu_mem_usage and self.is_immediate_packing:
             self.is_immediate_saving = True
 
+        if self.low_cpu_mem_usage and not self.is_immediate_packing:
+            logger.info(
+                "`low_cpu_mem_usage` is only supported when `immediate_packing` is True. "
+                "Setting `low_cpu_mem_usage` to False."
+            )
+            self.low_cpu_mem_usage = False
+            self.is_immediate_saving = False
+
         if self.low_cpu_mem_usage and self.is_immediate_packing:
             if formats[0].is_gguf():
                 logger.warning(
@@ -2079,6 +2087,12 @@ class BaseCompressor(object):
         for layer_name in copy.deepcopy(layer_names):
             if layer_name not in layer_inputs:
                 if self.act_bits < 16 and not self.act_dynamic:
+                    if "lm_head" in layer_name:
+                        logger.warning_once(
+                            "Static activation quantization for lm_head is not fully supported yet. "
+                            "If lm_head calibration inputs are missing, activation scale may fall back to unit scale "
+                            "or quantization may be skipped."
+                        )
                     # Activation quantization requires collected inputs
                     msg_prefix = (
                         f"Activation max hook for layer '{layer_name}' is unavailable due to "
@@ -2673,10 +2687,10 @@ class BaseCompressor(object):
                 Processed data or None
             """
             new_data = data
-            if batch_size <= 1:
-                return new_data
             if data_name in self.shared_cache_keys:
                 return None
+            if batch_size <= 1:
+                return new_data
             if "alibi" in data_name:
                 if isinstance(data, torch.Tensor):
                     alibi = data
@@ -2730,7 +2744,7 @@ class BaseCompressor(object):
                         continue
                     if key not in self.inputs[name].keys():  # initialization
                         data = to_device(kwargs[key], device=torch.device("cpu"))
-                        if data is None or (self.batch_size > 1 and key in self.shared_cache_keys):
+                        if data is None or key in self.shared_cache_keys:
                             self.inputs[name][key] = data
                             continue
                         if self.batch_size <= 1:
@@ -3737,21 +3751,23 @@ class BaseCompressor(object):
         for key in input_others.keys():
             if "positional_inputs" in key:
                 continue
-            if (key not in share_cache_keys or len(indices) == 1) and not isinstance(
-                input_others[key], (str, bool, type(None))
-            ):
-                current_input_others[key] = None
-                if input_others[key] is not None:
-                    current_input_others[key] = [input_others[key][i] for i in indices]
-                    if len(indices) == 1:
-                        current_input_others[key] = current_input_others[key][0]
-                    else:
-                        try:
-                            current_input_others[key] = torch.cat(current_input_others[key], dim=0)
-                        except TypeError as err:
-                            logger.warning_once("Please check the model cache inputs or try setting batch_size to 1.")
-            else:
+            # Shared cache keys (e.g. position_embeddings, position_ids, cache_position) are stored
+            # directly as-is (not wrapped in a per-sample list) when batch_size > 1.  Indexing such
+            # values by sample index would incorrectly decompose them (e.g. (cos, sin)[0] == cos).
+            # Always pass them through unchanged.
+            if key in share_cache_keys or isinstance(input_others[key], (str, bool, type(None))):
                 current_input_others[key] = input_others[key]
+            elif input_others[key] is not None:
+                current_input_others[key] = [input_others[key][i] for i in indices]
+                if len(indices) == 1:
+                    current_input_others[key] = current_input_others[key][0]
+                else:
+                    try:
+                        current_input_others[key] = torch.cat(current_input_others[key], dim=0)
+                    except TypeError as err:
+                        logger.warning_once("Please check the model cache inputs or try setting batch_size to 1.")
+            else:
+                current_input_others[key] = None
 
         return current_input_ids, current_input_others
 

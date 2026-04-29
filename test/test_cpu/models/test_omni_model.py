@@ -11,7 +11,6 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-
 """Unit tests for Qwen2.5-Omni and Qwen3-Omni-MoE model support.
 
 Tests cover:
@@ -282,6 +281,8 @@ class TestQwen3OmniMoeReplacement:
 
         intermediate = 32  # moe_intermediate_size
         # Verify thinker expert weights
+        # Use equal_nan=True because fused expert parameters may contain
+        # uninitialized memory with NaN bit patterns, and NaN != NaN in IEEE 754.
         for i in range(4):
             expert = model.thinker.model.layers[0].mlp.experts[i]
             assert_same_weights(expert.gate_proj.weight.data, thinker_gate_up[i, :intermediate, :])

@@ -11,6 +11,7 @@ from ...helpers import get_model_path, get_tiny_model, opt_name_or_path, qwen_na
 
 
 class TestAutoRound:
+
     @pytest.fixture(autouse=True)
     def setup_save_folder(self, tmp_path):
         self.save_folder = str(tmp_path / "saved")
@@ -35,10 +36,12 @@ class TestAutoRound:
 
     def test_w4a16(self, tiny_opt_model_path, dataloader):
         ar = AutoRound(tiny_opt_model_path, scheme="W4A16", nsamples=1, iters=1, seqlen=2, dataset=dataloader)
+        ar.post_init()
         assert ar.bits == 4
 
     def test_w2a16_rtn(self, tiny_opt_model_path, dataloader):
         ar = AutoRound(tiny_opt_model_path, scheme="W2A16", nsamples=1, iters=0, seqlen=2, dataset=dataloader)
+        ar.post_init()
         assert ar.bits == 2
 
     def test_w4a16_mixed(self, tiny_qwen_moe_model_path, dataloader):
@@ -56,13 +59,13 @@ class TestAutoRound:
             low_cpu_mem_usage=False,
             layer_config=layer_config,
         )
-        ar.quantize_and_save(self.save_folder)
+        _, quantized_model_path = ar.quantize_and_save(self.save_folder)
         assert ar.bits == 4
         assert ar.model.model.layers[0].self_attn.q_proj.bits == 8
         assert ar.model.model.layers[0].self_attn.k_proj.bits == 16
         assert ar.model.model.layers[0].mlp.experts[0].up_proj.bits == 4
         # assert ar.model.model.layers[0].mlp.shared_expert.gate_proj.bits == 8 # gate has been added to ignore_layers
-        model = transformers.AutoModelForCausalLM.from_pretrained(self.save_folder, trust_remote_code=True)
+        model = transformers.AutoModelForCausalLM.from_pretrained(quantized_model_path, trust_remote_code=True)
         assert model is not None, "Model loading failed after quantization with W4A16_MIXED scheme on MoE"
 
     def test_w4a16_mixed_mllm(self, tiny_qwen_2_5_vl_model_path, dataloader):
@@ -79,8 +82,8 @@ class TestAutoRound:
             low_cpu_mem_usage=False,
             disable_model_free=True,
         )
-        ar.quantize_and_save(self.save_folder)
-        model = transformers.Qwen2_5_VLForConditionalGeneration.from_pretrained(self.save_folder)
+        _, quantized_model_path = ar.quantize_and_save(self.save_folder)
+        model = transformers.Qwen2_5_VLForConditionalGeneration.from_pretrained(quantized_model_path)
         assert model is not None, "Model loading failed after quantization with W4A16_MIXED scheme on MLLM"
         assert ar.bits == 4
         assert ar.model.model.language_model.layers[0].self_attn.q_proj.bits == 16
@@ -88,6 +91,7 @@ class TestAutoRound:
 
     def test_mxfp4(self, tiny_opt_model_path, dataloader):
         ar = AutoRound(tiny_opt_model_path, scheme="MXFP4", nsamples=1, iters=1, seqlen=2, dataset=dataloader)
+        ar.post_init()
         assert ar.bits == 4
         assert ar.act_bits == 4
         assert ar.data_type == "mx_fp"
@@ -95,29 +99,32 @@ class TestAutoRound:
 
     def test_mxfp4_rceil(self, tiny_opt_model_path):
         ar = AutoRound(tiny_opt_model_path, scheme="MXFP4_RCEIL", nsamples=1, iters=1)
+        ar.post_init()
         assert ar.bits == 4
         assert ar.act_bits == 4
         assert ar.data_type == "mx_fp"
         assert ar.act_data_type == "mx_fp_rceil"
-        ar.quantize_and_save()
-        model = transformers.AutoModelForCausalLM.from_pretrained("tmp_autoround", trust_remote_code=True)
+        _, quantized_model_path = ar.quantize_and_save()
+        model = transformers.AutoModelForCausalLM.from_pretrained(quantized_model_path, trust_remote_code=True)
         assert model is not None, "Model loading failed after quantization with MXFP4 scheme"
 
     def test_vlm(self, tiny_qwen_vl_model_path):
-        from auto_round import AutoRoundMLLM
+        from auto_round import AutoRound
 
-        ar = AutoRoundMLLM(tiny_qwen_vl_model_path, scheme="W2A16", nsamples=1, iters=1, seqlen=2)
+        ar = AutoRound(tiny_qwen_vl_model_path, scheme="W2A16", nsamples=1, iters=1, seqlen=2)
+        ar.post_init()
         assert ar.bits == 2
         assert ar.act_bits == 16
 
     def test_nvfp4(self, tiny_opt_model_path, dataloader):
         ar = AutoRound(tiny_opt_model_path, scheme="NVFP4", nsamples=1, iters=1, seqlen=2, dataset=dataloader)
+        ar.post_init()
         assert ar.bits == 4
         assert ar.act_bits == 4
         assert ar.data_type == "nv_fp"
         assert ar.act_data_type == "nv_fp4_with_static_gs"
-        ar.quantize_and_save(self.save_folder)
-        model = transformers.AutoModelForCausalLM.from_pretrained(self.save_folder, trust_remote_code=True)
+        _, quantized_model_path = ar.quantize_and_save(self.save_folder)
+        model = transformers.AutoModelForCausalLM.from_pretrained(quantized_model_path, trust_remote_code=True)
         assert model is not None, "Model loading failed after quantization with NVFP4 scheme"
 
     @pytest.mark.parametrize(
@@ -199,24 +206,26 @@ class TestAutoRound:
 
     def test_fp8_static(self, tiny_opt_model_path):
         ar = AutoRound(tiny_opt_model_path, scheme="FP8_STATIC", nsamples=1, iters=1)
+        ar.post_init()
         assert ar.bits == 8
         assert ar.act_bits == 8
         assert ar.data_type == "fp"
         assert ar.act_data_type == "fp"
         assert ar.group_size == -1
         assert ar.act_dynamic is False
-        ar.quantize_and_save()
-        model = transformers.AutoModelForCausalLM.from_pretrained("tmp_autoround", trust_remote_code=True)
+        _, quantized_model_path = ar.quantize_and_save()
+        model = transformers.AutoModelForCausalLM.from_pretrained(quantized_model_path, trust_remote_code=True)
         assert model is not None, "Model loading failed after quantization with FP8_STATIC scheme"
 
     def test_fp8_static_rtn(self, tiny_opt_model_path):
         ar = AutoRound(tiny_opt_model_path, scheme="FP8_STATIC", nsamples=1, iters=0, disable_opt_rtn=True)
+        ar.post_init()
         assert ar.bits == 8
         assert ar.act_bits == 8
         assert ar.data_type == "fp"
         assert ar.act_data_type == "fp"
         assert ar.group_size == -1
         assert ar.act_dynamic is False
-        ar.quantize_and_save(self.save_folder)
-        model = transformers.AutoModelForCausalLM.from_pretrained(self.save_folder, trust_remote_code=True)
+        _, quantized_model_path = ar.quantize_and_save(self.save_folder)
+        model = transformers.AutoModelForCausalLM.from_pretrained(quantized_model_path, trust_remote_code=True)
         assert model is not None, "Model loading failed after quantization with FP8_STATIC scheme"

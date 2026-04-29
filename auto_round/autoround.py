@@ -17,6 +17,7 @@ from typing import TYPE_CHECKING, Optional, Union
 
 import torch
 
+import auto_round.envs as envs
 from auto_round.compressors import (
     AdamCompressor,
     BaseCompressor,
@@ -33,6 +34,9 @@ from auto_round.utils import is_diffusion_model, is_mllm_model, is_model_free_ro
 
 if TYPE_CHECKING:
     from auto_round.auto_scheme.gen_auto_scheme import AutoScheme
+
+# Default to new architecture; set AR_DISABLE_NEW_ARCH=true/1 to force old architecture.
+NEW_ARCH = not envs.AR_DISABLE_NEW_ARCH
 
 
 class AutoRound:
@@ -54,7 +58,7 @@ class AutoRound:
         enable_torch_compile (bool): Whether to enable torch.compile for quant blocks/layers.
     """
 
-    SKIP_ARGS = ("local_args", "kwargs", "cls", "model_cls", "dynamic_compressor", "extra_config", "enable_adam")
+    SKIP_ARGS = ("local_args", "kwargs", "cls", "model_cls", "dynamic_compressor", "extra_config")
 
     bits: int | None
     group_size: int | tuple | None
@@ -161,6 +165,11 @@ class AutoRound:
 
         local_args = {k: v for k, v in locals().items() if k not in cls.SKIP_ARGS}
 
+        if NEW_ARCH:
+            from auto_round.compressors_new.entry import AutoRoundCompatible
+
+            return AutoRoundCompatible(**local_args, **kwargs)
+
         # ---- Model-free fast-path detection --------------------------------
         if is_model_free_route(model, scheme, iters, disable_opt_rtn, kwargs):
             if not isinstance(model, str):
@@ -255,21 +264,23 @@ class AutoRound:
         for key in input_others.keys():
             if "positional_inputs" in key:
                 continue
-            if (key not in share_cache_keys or len(indices) == 1) and not isinstance(
-                input_others[key], (str, bool, type(None))
-            ):
-                current_input_others[key] = None
-                if input_others[key] is not None:
-                    current_input_others[key] = [input_others[key][i] for i in indices]
-                    if len(indices) == 1:
-                        current_input_others[key] = current_input_others[key][0]
-                    else:
-                        try:
-                            current_input_others[key] = torch.cat(current_input_others[key], dim=0)
-                        except TypeError as err:
-                            logger.warning_once("Please check the model cache inputs or try setting batch_size to 1.")
-            else:
+            # Shared cache keys (e.g. position_embeddings, position_ids, cache_position) are stored
+            # directly as-is (not wrapped in a per-sample list) when batch_size > 1.  Indexing such
+            # values by sample index would incorrectly decompose them (e.g. (cos, sin)[0] == cos).
+            # Always pass them through unchanged.
+            if key in share_cache_keys or isinstance(input_others[key], (str, bool, type(None))):
                 current_input_others[key] = input_others[key]
+            elif input_others[key] is not None:
+                current_input_others[key] = [input_others[key][i] for i in indices]
+                if len(indices) == 1:
+                    current_input_others[key] = current_input_others[key][0]
+                else:
+                    try:
+                        current_input_others[key] = torch.cat(current_input_others[key], dim=0)
+                    except TypeError as err:
+                        logger.warning_once("Please check the model cache inputs or try setting batch_size to 1.")
+            else:
+                current_input_others[key] = None
 
         return current_input_ids, current_input_others
 

@@ -97,6 +97,6 @@ class TestCompressedTensor:
             iters=2,
             nsamples=2,
         )
-        ar.quantize_and_save(tmp_path, format="llm_compressor")
-        model = transformers.AutoModelForCausalLM.from_pretrained(tmp_path)
+        _, quantized_model_path = ar.quantize_and_save(tmp_path, format="llm_compressor")
+        model = transformers.AutoModelForCausalLM.from_pretrained(quantized_model_path)
         assert model, "Failed to load the quantized model"
