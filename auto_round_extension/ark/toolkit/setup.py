@@ -12,7 +12,7 @@ from setuptools import Extension, find_packages, setup
 from setuptools.command.build_ext import build_ext
 from setuptools.command.build_py import build_py
 
-DEFAULT_VERSION = "0.10.3.2"
+DEFAULT_VERSION = "0.12.0"
 REQUIREMENTS = ["torch>=2.10.0", "dpcpp-cpp-rt~=2025.3.0", "onednn~=2025.3.0; sys_platform=='linux'"]
 
 
