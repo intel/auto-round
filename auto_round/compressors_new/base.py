@@ -99,7 +99,7 @@ class SerializedCompressorConfig:
     super_bits: Optional[int] = None
     super_group_size: Optional[int] = None
     to_quant_block_names: Optional[list[str]] = None
-    transform_configs: Optional[list[dict[str, Any]]] = None
+    rotation_configs: Optional[list[dict[str, Any]]] = None
 
 
 class BaseCompressor(object):

@@ -371,7 +371,7 @@ def filter_quantization_config(quantization_config):
         quantization_config.pop("act_sym", None)
         quantization_config.pop("act_group_size", None)
 
-    clean_list = ("supported_types", "quant_block_list", "transform_configs")
+    clean_list = ("supported_types", "quant_block_list", "rotation_configs")
     for key in list(quantization_config.keys()):
         if callable(key):
             quantization_config.pop(key)
