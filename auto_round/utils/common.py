@@ -1055,3 +1055,22 @@ def infer_bits_by_data_type(data_type: str):
             if str.isdigit(data_type[len(supported_dtype)]):
                 return int(data_type[len(supported_dtype)])
     return None
+
+
+def revert_checkpoint_conversion_mapping(name: str, reverse_key_mapping: dict[str, str]) -> str:
+    for pattern, replacement in reverse_key_mapping.items():
+        replacement = replacement.lstrip("^")  # strip off un-needed chars and patterns
+        replacement = re.sub(r"\(.*\)", "", replacement)
+        name, n_replace = re.subn(pattern, replacement, name)
+        # Early exit of the loop
+        if n_replace > 0:
+            break
+    return name
+
+def apply_checkpoint_conversion_mapping(name: str, key_mapping: dict[str, str]) -> str:
+    for pattern, replacement in key_mapping.items():
+        name, n_replace = re.subn(pattern, replacement, name)
+        # Early exit of the loop
+        if n_replace > 0:
+            break
+    return name

@@ -163,6 +163,7 @@ class AutoRound:
         """
 
         local_args = {k: v for k, v in locals().items() if k not in cls.SKIP_ARGS}
+        local_args.update({k: v for k, v in extra_config.to_dict().items() if k in local_args})
 
         if NEW_ARCH:
             from auto_round.compressors_new.entry import AutoRoundCompatible
