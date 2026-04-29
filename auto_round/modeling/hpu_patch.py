@@ -61,7 +61,11 @@ def patch_finegrained_fp8():
 
         logger.info(
             "✓ Patched transformers.integrations.finegrained_fp8 with HPU-compatible"
-            f" overrides from {patch_file_name}: {patched_names}"
+            f" overrides from {patch_file_name} ({len(patched_names)} symbols)"
+        )
+        logger.debug(
+            "Patched symbols for transformers.integrations.finegrained_fp8 from "
+            f"{patch_file_name}: {patched_names}"
         )
 
     except Exception as e:
