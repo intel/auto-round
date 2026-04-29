@@ -36,11 +36,32 @@ def patch_finegrained_fp8():
 
         finegrained_fp8_patch = importlib.import_module(patch_file_name)
 
-        # Replace transformers.integrations.finegrained_fp8 in sys.modules
-        sys.modules["transformers.integrations.finegrained_fp8"] = finegrained_fp8_patch
+        # Patch the upstream transformers module in-place rather than replacing it
+        # entirely. Replacing the whole module via sys.modules drops other public
+        # symbols that newer transformers (e.g. >=4.57) expects to import from
+        # `transformers.integrations.finegrained_fp8` (such as
+        # `ALL_FP8_EXPERTS_FUNCTIONS`, `FP8Experts`, ...), causing ImportError.
+        try:
+            upstream = importlib.import_module("transformers.integrations.finegrained_fp8")
+        except Exception as import_err:  # pragma: no cover - defensive
+            # Fallback to legacy behavior if the upstream module cannot be imported.
+            sys.modules["transformers.integrations.finegrained_fp8"] = finegrained_fp8_patch
+            logger.warning(
+                "Failed to import upstream transformers.integrations.finegrained_fp8"
+                f" ({import_err}); falling back to full module replacement."
+            )
+            return
+
+        patched_names = []
+        for name in dir(finegrained_fp8_patch):
+            if name.startswith("_"):
+                continue
+            setattr(upstream, name, getattr(finegrained_fp8_patch, name))
+            patched_names.append(name)
 
         logger.info(
-            "✓ Replaced transformers.integrations.finegrained_fp8 with auto_round.modeling.finegrained_fp8_patch"
+            "✓ Patched transformers.integrations.finegrained_fp8 with HPU-compatible"
+            f" overrides from {patch_file_name}: {patched_names}"
         )
 
     except Exception as e:
