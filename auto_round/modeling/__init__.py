@@ -16,5 +16,5 @@
 # `transformers.modeling_utils` (e.g. `fp8_quant`), otherwise the upstream
 # `transformers.integrations.finegrained_fp8` module is loaded without the
 # HPU-compatible overrides.
-from .hpu_patch import *
+from . import hpu_patch as _hpu_patch
 from .fp8_quant import *
