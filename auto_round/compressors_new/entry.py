@@ -11,7 +11,7 @@ from auto_round.algorithms.quantization.rtn.config import RTNConfig
 from auto_round.algorithms.quantization.sign_round.config import SignRoundConfig
 from auto_round.algorithms.transforms.rotation.config import RotationConfig as _NewArchRotationConfig
 from auto_round.auto_scheme.gen_auto_scheme import AutoScheme
-from auto_round.compressors_new.calib import CalibCompressor, CalibratedRTNCompressor
+from auto_round.compressors_new.data_driven import CalibratedRTNCompressor, DataDrivenCompressor
 from auto_round.compressors_new.utils import check_need_act_calibration
 from auto_round.compressors_new.zero_shot import ZeroShotCompressor
 from auto_round.logger import logger
@@ -223,7 +223,7 @@ class AutoRound(object):
             model_type = "mllm"
 
         if isinstance(quant_config, SignRoundConfig):
-            return _get_compressor_class(model_type, CalibCompressor)(alg_configs, **local_args, **kwargs)
+            return _get_compressor_class(model_type, DataDrivenCompressor)(alg_configs, **local_args, **kwargs)
 
         elif isinstance(quant_config, RTNConfig):
             enable_imatrix = False
@@ -418,8 +418,6 @@ class AutoRoundCompatible:
                 act_data_type=act_data_type,
                 act_dynamic=act_dynamic,
                 disable_opt_rtn=disable_opt_rtn,
-                # for optRTN
-                batch_size=batch_size,
                 **common_config_kwargs,
             )
         else:
@@ -432,7 +430,6 @@ class AutoRoundCompatible:
 
             config = SignRoundConfig(
                 iters=iters,
-                batch_size=batch_size,
                 gradient_accumulate_steps=gradient_accumulate_steps,
                 bits=bits,
                 group_size=group_size,

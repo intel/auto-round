@@ -58,14 +58,10 @@ class SignRoundQuantizer(BaseQuantizers):
 
     def __init__(self, config: SignRoundConfig):
         super().__init__(config)
-        self.attention_mask = []
-
         self.iters = config.iters
         self.lr = config.lr
         self.minmax_lr = config.minmax_lr
         self.lr_scheduler = config.lr_scheduler
-        self.batch_size = config.batch_size
-        self.batch_dim = config.batch_dim
         self.momentum = config.momentum
         self.infer_bs_coeff = config.infer_bs_coeff
         self.enable_minmax_tuning = config.enable_minmax_tuning

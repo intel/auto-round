@@ -12,21 +12,18 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-import torch
-
 from auto_round.logger import logger
-from auto_round.utils import to_device
 
 
 class MLLMMixin:
     """MLLM-specific functionality mixin.
 
-    This mixin adds MLLM-specific functionality to any compressor (CalibCompressor,
+    This mixin adds MLLM-specific functionality to any compressor (DataDrivenCompressor,
     ZeroShotCompressor, ImatrixCompressor, etc). It handles multi-modal models
     (vision-language models) that require special data loading and processing logic.
 
     Can be combined with:
-    - CalibCompressor (for AutoRound with calibration)
+    - DataDrivenCompressor (for AutoRound with calibration)
     - ImatrixCompressor (for RTN with importance matrix)
     - ZeroShotCompressor (for basic RTN)
 
@@ -68,28 +65,21 @@ class MLLMMixin:
         # because vision encoder blocks have non-standard hidden_states shapes that
         # break batch_dim detection, and image collation fails with batch_size > 1.
         if quant_nontext_module:
-            # batch_size may come from kwargs (placed there by AutoRoundCompatible local_args)
-            # or from the AlgConfig object in args[0] (the authoritative source for quantizer.batch_size).
-            # We must update both so that quantizer.batch_size is also reset to 1.
+            # ``batch_size`` is owned by the compressor / shared
+            # CalibrationState; it only comes from kwargs now (entry.py forwards
+            # it explicitly).  AlgConfig no longer carries it.
             batch_size = kwargs.get("batch_size", None)
-            _alg_cfg = args[0] if args else None
-            if batch_size is None and _alg_cfg is not None:
-                cfgs = _alg_cfg if isinstance(_alg_cfg, list) else [_alg_cfg]
-                for cfg in cfgs:
-                    if hasattr(cfg, "batch_size") and cfg.batch_size is not None:
-                        batch_size = cfg.batch_size
-                        break
             if batch_size is not None and batch_size != 1:
                 grad_acc = kwargs.get("gradient_accumulate_steps", 1)
                 new_grad_acc = batch_size * grad_acc
                 kwargs["gradient_accumulate_steps"] = new_grad_acc
                 kwargs["batch_size"] = 1
-                # Also patch the AlgConfig object so that BaseCompressor.quantize_config.batch_size == 1
+                # Also patch ``gradient_accumulate_steps`` on AlgConfig (still
+                # owned there) so behaviour matches the old arch.
+                _alg_cfg = args[0] if args else None
                 if _alg_cfg is not None:
                     cfgs = _alg_cfg if isinstance(_alg_cfg, list) else [_alg_cfg]
                     for cfg in cfgs:
-                        if hasattr(cfg, "batch_size"):
-                            cfg.batch_size = 1
                         if hasattr(cfg, "gradient_accumulate_steps"):
                             cfg.gradient_accumulate_steps = new_grad_acc
                 logger.warning(
@@ -108,147 +98,13 @@ class MLLMMixin:
         if image_processor is not None:
             self.model_context.image_processor = image_processor
 
-    @torch.no_grad()
-    def calib(self, nsamples, bs):
-        """Perform MLLM-specific calibration for quantization.
+    def _get_calibrator_kind(self) -> str:
+        """Select the MLLM calibration strategy.
 
-        Override parent's calib method to use MLLM dataset loading logic.
-        All multimodal artifacts are read from ``self.model_context``.
+        ``MLLMCalibrator`` lives at :mod:`auto_round.calibration.mllm`
+        and owns what used to be ``MLLMMixin.calib``.
         """
-        from transformers import PreTrainedModel
-
-        from auto_round.compressors.mllm.dataset import get_mllm_dataloader
-        from auto_round.compressors.mllm.template import get_template
-        from auto_round.special_model_handler import MISTRAL_3_2_MODELS
-
-        mc = self.model_context
-        processor = mc.processor
-        image_processor = mc.image_processor
-        tokenizer = mc.tokenizer
-
-        # Handle template selection
-        if isinstance(mc.model, PreTrainedModel):
-            model_type = getattr(mc.model.config, "model_type", None)
-            if model_type == "llava" and self.template is None:
-                self.template = "default"
-
-        if hasattr(mc.model, "name_or_path"):
-            name = mc.model.name_or_path
-            if any([m in name for m in MISTRAL_3_2_MODELS]):
-                self.template = "mistral3_2"
-
-        template_name = self.template
-        if template_name is None and hasattr(mc.model.config, "model_type"):
-            template_name = mc.model.config.model_type
-        if template_name is None:
-            template_name = "default"
-
-        self.template_obj = get_template(
-            template_name,
-            model=mc.model,
-            tokenizer=tokenizer,
-            processor=processor,
-            image_processor=image_processor,
-            use_rtn=getattr(self.quantize_config, "iters", None) == 0,
-            quiet=not self.quant_nontext_module,
-        )
-
-        logger.info(f"Using MLLM template: {template_name}")
-
-        dataset = self.dataset.replace(" ", "") if isinstance(self.dataset, str) else self.dataset
-        if dataset is None:
-            dataset = self.template_obj.default_dataset
-
-        if isinstance(self.dataset, str):
-            dataset = self.dataset.replace(" ", "")
-            # Mirror old arch __init__: switch text-only dataset to MLLM dataset when
-            # quant_nontext_module=True, as text datasets cannot calibrate vision modules.
-            from auto_round.calib_dataset import CALIB_DATASETS
-
-            if self.quant_nontext_module and dataset in CALIB_DATASETS:
-                logger.warning(
-                    "Text only dataset cannot be used for calibrating non-text modules,"
-                    " switching to liuhaotian/llava_conv_58k"
-                )
-                dataset = "liuhaotian/llava_conv_58k"
-            (
-                self.dataloader,
-                self.batch_size,
-                self.seqlen,
-                self.gradient_accumulate_steps,
-            ) = get_mllm_dataloader(
-                template=self.template_obj,
-                model=mc.model,
-                tokenizer=tokenizer,
-                processor=processor,
-                image_processor=image_processor,
-                dataset=dataset,
-                extra_data_dir=self.extra_data_dir,
-                seqlen=self.seqlen,
-                bs=bs,
-                seed=self.seed,
-                nsamples=nsamples,
-                quant_nontext_module=self.quant_nontext_module,
-            )
-        else:
-            self.dataloader = self.dataset
-
-        # Process data through the model for calibration
-        total_cnt = 0
-        for data in self.dataloader:
-            if data is None:
-                continue
-
-            try:
-                if isinstance(data, str):
-                    # List-of-strings dataset: process through template → model inputs
-                    processed = self.template_obj.processor.get_input(
-                        text=data, images=None, max_length=self.seqlen, squeeze=False
-                    )
-                    data_new = {k: to_device(v, mc.model.device) for k, v in processed.items()}
-                elif isinstance(data, dict) and "text" in data:
-                    # FakeDataLoader-style {"text": ..., "image": ...}: process through template
-                    text = data["text"]
-                    if isinstance(text, dict):
-                        text = [text]
-                    input_text = self.template_obj._encode(text)
-                    processed = self.template_obj.processor.get_input(
-                        text=input_text,
-                        images=data.get("image", None),
-                        max_length=self.seqlen,
-                        squeeze=False,
-                    )
-                    data_new = {}
-                    for key, value in processed.items():
-                        tensor_val = value if isinstance(value, torch.Tensor) else torch.as_tensor(value)
-                        data_new[key] = to_device(tensor_val, mc.model.device)
-                elif isinstance(data, dict):
-                    data_new = {
-                        key: value.to(mc.model.device) if isinstance(value, torch.Tensor) else value
-                        for key, value in data.items()
-                    }
-                else:
-                    data_new = data
-
-                if isinstance(data_new, dict):
-                    mc.model(**data_new)
-                else:
-                    mc.model(data_new)
-            except NotImplementedError:
-                pass
-            except Exception as e:
-                logger.warning(f"Calibration forward pass failed: {e}")
-                continue
-
-            total_cnt += bs
-            if total_cnt >= nsamples:
-                break
-
-        if total_cnt == 0:
-            logger.error("no data has been cached, please provide more data")
-            exit(-1)
-        elif total_cnt < nsamples:
-            logger.warning(f"Insufficient number of samples: required {nsamples}, but only {total_cnt} were processed.")
+        return "mllm"
 
     def save_quantized(self, output_dir=None, format="auto_round", inplace=True, **kwargs):
         """Save the quantized model to the specified output directory in the specified format.

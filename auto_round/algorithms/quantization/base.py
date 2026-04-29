@@ -73,17 +73,62 @@ class BaseQuantizers:
         self.ignore_layers = config.ignore_layers
         self.quant_lm_head = config.quant_lm_head
         self.to_quant_block_names = config.to_quant_block_names
-        # Calibration / sampling attrs – synced from compressor in post_init.
-        self.seqlen = 2048
-        self.nsamples = 128
-        self.batch_size = getattr(config, "batch_size", 8)
-        self.batch_dim = getattr(config, "batch_dim", None)
+        # Calibration-time state lives on a shared
+        # :class:`~auto_round.calibration.state.CalibrationState` instance.
+        # The compressor wires its own instance here in ``_resolve_scheme``;
+        # until then we own a private placeholder so property-based reads /
+        # writes during construction don't blow up.
+        from auto_round.calibration.state import CalibrationState
+
+        self._calibration_state = CalibrationState()
         self.infer_bs_coeff = getattr(config, "infer_bs_coeff", 1)
         # Whether to feed quantized-block outputs as inputs to the next block.
         # Subclasses that support cascaded quantized-input (e.g. SignRoundQuantizer)
         # override this from their config.  Defaults to False for zero-shot algorithms
         # (RTN) where activations are not used during weight optimization.
         self.enable_quanted_input = getattr(config, "enable_quanted_input", False)
+
+    # ── Shared CalibrationState forwarders ───────────────────────────────────────
+    @property
+    def calibration_state(self):
+        return self._calibration_state
+
+    @calibration_state.setter
+    def calibration_state(self, new_state) -> None:
+        # Compressor-supplied shared instance; just rebind.
+        self._calibration_state = new_state
+
+    @property
+    def attention_mask(self) -> list:
+        return self._calibration_state.attention_mask
+
+    @attention_mask.setter
+    def attention_mask(self, value) -> None:
+        self._calibration_state.attention_mask = value if value is not None else []
+
+    @property
+    def batch_dim(self):
+        return self._calibration_state.batch_dim
+
+    @batch_dim.setter
+    def batch_dim(self, value) -> None:
+        self._calibration_state.batch_dim = value
+
+    @property
+    def batch_size(self) -> int:
+        return self._calibration_state.batch_size
+
+    @batch_size.setter
+    def batch_size(self, value) -> None:
+        self._calibration_state.batch_size = value
+
+    @property
+    def nsamples(self) -> int:
+        return self._calibration_state.nsamples
+
+    @property
+    def seqlen(self) -> int:
+        return self._calibration_state.seqlen
 
     @classmethod
     def from_config(cls, config: QuantizationConfig):
@@ -93,6 +138,24 @@ class BaseQuantizers:
             module = importlib.import_module("auto_round.algorithms.quantization")
             alg_cls = getattr(module, config._alg_cls)
             return alg_cls(config)
+
+    def bind(self, compressor) -> None:
+        """Wire shared state from the owning compressor.
+
+        The compressor owns the authoritative ``model_context`` /
+        ``compress_context`` / ``CalibrationState`` and resolves
+        ``scale_dtype`` (string → torch dtype).  All quantizer fields that
+        merely mirror the compressor are pulled from here in one place.
+        """
+        self.model_context = compressor.model_context
+        self.compress_context = compressor.compress_context
+        self.scale_dtype = compressor.scale_dtype
+        # Share the compressor's CalibrationState instance.
+        self._calibration_state = compressor._calibration_state
+
+    @property
+    def model(self):
+        return self.model_context.model if self.model_context is not None else None
 
     @property
     def formats(self):
