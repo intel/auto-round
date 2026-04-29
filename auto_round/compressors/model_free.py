@@ -1613,9 +1613,7 @@ class ModelFreeCompressor(_ModelFreeCompressorCore):
     ):
         """Quantize and save — AutoRound compressor entry point."""
         if format not in ["auto_round", "auto_round:auto_gptq"]:
-            return self._fallback_to_quantize_and_save(
-                output_dir=output_dir, format=format, inplace=inplace, **kwargs
-            )
+            return self._fallback_to_quantize_and_save(output_dir=output_dir, format=format, inplace=inplace, **kwargs)
 
         # Apply user scheme overrides before running
         if self.user_scheme_overrides:

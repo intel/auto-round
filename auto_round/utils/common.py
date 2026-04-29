@@ -1049,6 +1049,7 @@ def compress_layer_names(names: list) -> str:
     current.sort()
     return ", ".join(current)
 
+
 def infer_bits_by_data_type(data_type: str):
     """Infer bits by data_type
 
