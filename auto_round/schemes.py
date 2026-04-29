@@ -314,6 +314,21 @@ INT8_W8A8 = QuantizationScheme.from_dict(
 )
 
 
+INT4 = QuantizationScheme.from_dict(
+    {
+        "bits": 4,
+        "group_size": -1,
+        "data_type": "int",
+        "sym": True,
+        "act_bits": 4,
+        "act_group_size": -1,
+        "act_data_type": "int",
+        "act_dynamic": True,
+        "act_sym": True,
+    }
+)
+
+
 # For AutoScheme 16 bits options
 BF16 = QuantizationScheme.from_dict(
     {
@@ -343,6 +358,7 @@ PRESET_SCHEMES = {
     "BF16": BF16,
     "W4A16_MIXED": W4A16,
     "INT8_W8A8": INT8_W8A8,
+    "INT4": INT4,
     "FP8_BLOCK": FP8_BLOCK,
 }
 from auto_round.export.export_to_gguf.config import GGUF_CONFIG
