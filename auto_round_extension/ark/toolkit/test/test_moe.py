@@ -21,9 +21,9 @@ Unit tests for MOE GEMM kernel.
 This tests the ARK MOE GEMM kernel at the unit test level
 """
 
+import auto_round_kernel
 import pytest
 import torch
-from ut_utils import *
 
 ark = auto_round_kernel.ARK()
 

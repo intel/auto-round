@@ -23,9 +23,9 @@ This tests the ARK Flash Attention kernel at the unit test level
 
 import math
 
+import auto_round_kernel
 import pytest
 import torch
-from ut_utils import *
 
 ark = auto_round_kernel.ARK()
 
