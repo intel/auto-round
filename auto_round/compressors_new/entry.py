@@ -505,6 +505,7 @@ class AutoRoundCompatible:
             layer_config=layer_config,
             nsamples=nsamples,
             seqlen=seqlen,
+            batch_size=batch_size,
             # MLLM parameters
             processor=processor,
             image_processor=image_processor,

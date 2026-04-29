@@ -61,15 +61,9 @@ class MLLMMixin:
         # Pass quant_nontext_module to ModelContext so get_block_names can include vision blocks
         kwargs.setdefault("quant_nontext_module", quant_nontext_module)
 
-        # Mirror old arch: reset batch_size to 1 when quantizing non-text modules,
-        # because vision encoder blocks have non-standard hidden_states shapes that
-        # break batch_dim detection, and image collation fails with batch_size > 1.
         if quant_nontext_module:
-            # ``batch_size`` is owned by the compressor / shared
-            # CalibrationState; it only comes from kwargs now (entry.py forwards
-            # it explicitly).  AlgConfig no longer carries it.
-            batch_size = kwargs.get("batch_size", None)
-            if batch_size is not None and batch_size != 1:
+            batch_size = kwargs.get("batch_size", 8)
+            if batch_size != 1:
                 grad_acc = kwargs.get("gradient_accumulate_steps", 1)
                 new_grad_acc = batch_size * grad_acc
                 kwargs["gradient_accumulate_steps"] = new_grad_acc

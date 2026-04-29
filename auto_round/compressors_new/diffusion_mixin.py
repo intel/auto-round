@@ -69,9 +69,11 @@ class DiffusionMixin:
         if iters > 0:
             # ``batch_size`` is owned by the compressor / shared
             # CalibrationState; it only comes from kwargs now (entry.py forwards
-            # it explicitly).  AlgConfig no longer carries it.
-            batch_size = kwargs.get("batch_size", None)
-            if batch_size is not None and batch_size != 1:
+            # it explicitly).  AlgConfig no longer carries it.  Treat a missing
+            # value as ``BaseCompressor``'s default (8) so the reset path always
+            # triggers when the user didn't explicitly opt out.
+            batch_size = kwargs.get("batch_size", 8)
+            if batch_size != 1:
                 grad_acc = kwargs.get("gradient_accumulate_steps", 1)
                 if _alg_cfg is not None:
                     cfgs = _alg_cfg if isinstance(_alg_cfg, list) else [_alg_cfg]
