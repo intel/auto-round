@@ -1,30 +1,21 @@
-# # Copyright (C) 2026 Intel Corporation
-# # SPDX-License-Identifier: Apache-2.0
-
-import ctypes
+import sys
 import os
 import subprocess
-import sys
+import ctypes
+import re
 from pathlib import Path
-
-from setuptools import Extension, find_packages, setup
-from setuptools.command.build_ext import build_ext
+from setuptools import setup, Extension
 from setuptools.command.build_py import build_py
+from setuptools.command.build_ext import build_ext
+from setuptools import find_packages
 
-build_mapping = {
-    "2025.3": {
-        "deps": ["torch>=2.10.0", "dpcpp-cpp-rt~=2025.3.0", "onednn~=2025.3.0; sys_platform=='linux'"],
-        "default_build_version": "0.10.3.2",
-    },
-    "2025.2": {
-        "deps": ["torch~=2.9.0", "dpcpp-cpp-rt~=2025.2.0", "onednn~=2025.2.0; sys_platform=='linux'"],
-        "default_build_version": "0.10.2.2",
-    },
-    "2025.1": {
-        "deps": ["torch~=2.8.0", "dpcpp-cpp-rt~=2025.1.0", "onednn~=2025.1.0; sys_platform=='linux'"],
-        "default_build_version": "0.10.1.2",
-    },
-}
+
+DEFAULT_VERSION = "0.10.3.2"
+REQUIREMENTS = [
+    "torch>=2.10.0", 
+    "dpcpp-cpp-rt~=2025.3.0", 
+    "onednn~=2025.3.0; sys_platform=='linux'"
+]
 
 
 def parse_major_minor(version_str):
@@ -32,18 +23,45 @@ def parse_major_minor(version_str):
     return int(major), int(minor)
 
 
-oneapi_version = os.environ.get("ONEAPI_VERSION")
-if oneapi_version:
-    oneapi_version = ".".join(oneapi_version.split(".")[:2])
-else:
+def detect_oneapi_version():
+    """
+    Auto-detect the sourced oneAPI version using the icx compiler or environment variables.
+    Returns a string like '2025.3' or None if detection fails.
+    """
+    try:
+        result = subprocess.run(
+            ["icx", "--version"], 
+            stdout=subprocess.PIPE, 
+            stderr=subprocess.PIPE, 
+            text=True, 
+            check=True
+        )
+        match = re.search(r'Compiler\s+(\d{4}\.\d+)', result.stdout)
+        if match:
+            return match.group(1)
+    except (FileNotFoundError, subprocess.CalledProcessError):
+        pass
+    cmplr_root = os.environ.get("CMPLR_ROOT", "")
+    match = re.search(r'compiler[/\\](\d{4}\.\d+)', cmplr_root, re.IGNORECASE)
+    if match:
+        return match.group(1)
+
+    return None
+
+oneapi_version = detect_oneapi_version()
+print(f"oneapi_version detected: {oneapi_version}")
+
+if not oneapi_version:
     raise RuntimeError(
-        "Please set ONEAPI_VERSION environment variable to match your sourced oneAPI version, e.g., 2025.3"
+        "Failed to auto-detect oneAPI version. "
+        "Please ensure you have sourced the oneAPI environment (e.g., source /opt/intel/oneapi/setvars.sh) "
+        "and that the 'icx' compiler is in your PATH."
     )
 
-build_config = build_mapping.get(oneapi_version)
-if build_config is None:
-    raise RuntimeError(f"Unsupported ONEAPI_VERSION: {oneapi_version}")
-
+build_config = {
+    "deps": REQUIREMENTS,
+    "default_build_version": DEFAULT_VERSION
+}
 requirements = build_config["deps"]
 version = os.environ.get("RELEASE_VERSION") or build_config["default_build_version"]
 enable_sycl_tla = parse_major_minor(oneapi_version) >= (2025, 3)
@@ -60,10 +78,9 @@ def get_system_memory_gb():
         if page_size is not None and "SC_PHYS_PAGES" in os.sysconf_names:
             phys_pages = os.sysconf("SC_PHYS_PAGES")
             if phys_pages > 0:
-                return (page_size * phys_pages) / (1024**3)
+                return (page_size * phys_pages) / (1024 ** 3)
 
     if sys.platform == "win32":
-
         class MEMORYSTATUSEX(ctypes.Structure):
             _fields_ = [
                 ("dwLength", ctypes.c_ulong),
@@ -80,16 +97,14 @@ def get_system_memory_gb():
         memory_status = MEMORYSTATUSEX()
         memory_status.dwLength = ctypes.sizeof(MEMORYSTATUSEX)
         if ctypes.windll.kernel32.GlobalMemoryStatusEx(ctypes.byref(memory_status)):
-            return memory_status.ullTotalPhys / (1024**3)
+            return memory_status.ullTotalPhys / (1024 ** 3)
 
     return 64
 
 
 def get_sycl_tla_job_count(cpu_job_count):
     memory_gb = get_system_memory_gb()
-    memory_based_jobs = max(
-        1, int(memory_gb // 16)
-    )  # about 5GB/job for SYCL TLA build, use at most 5/16 of total memory to avoid OOM
+    memory_based_jobs = max(1, int(memory_gb // 16)) # about 5GB/job for SYCL TLA build, use at most 5/16 of total memory to avoid OOM
     return min(cpu_job_count, memory_based_jobs)
 
 
@@ -101,7 +116,7 @@ class CMakeBuild(build_ext):
             cmake_cmd.append("-GNinja")
         subprocess.check_call(cmake_cmd)
         n_job = os.cpu_count() or 2
-        n_job = n_job // 2  # use half of available cores for the build to avoid OOM on CI machines
+        n_job = n_job // 2 # use half of available cores for the build to avoid OOM on CI machines
         subprocess.check_call(["cmake", "--build", "build", "-j", str(n_job)])
 
         if sys.platform == "win32":
@@ -151,6 +166,16 @@ class BuildPyThenCMake(build_py):
         self.run_command("build_ext")
         super().run()
 
+        source_qlinear = Path(__file__).resolve().parent.parent / "qlinear.py"
+        if not source_qlinear.is_file():
+            print(f"Cannot find source qlinear.py at {source_qlinear}, skipping copy.")
+            return
+
+        target_pkg = Path(self.build_lib) / "auto_round_kernel"
+        target_pkg.mkdir(parents=True, exist_ok=True)
+
+        self.copy_file(str(source_qlinear), str(target_pkg / "qlinear.py"))
+
 
 ext_modules = [Extension("auto_round_kernel.auto_round_kernel", sources=[])]
 
@@ -171,7 +196,7 @@ setup(
         "build_ext": CMakeBuild,
         "build_py": BuildPyThenCMake,
     },
-    install_requires=requirements,
+    install_requires=REQUIREMENTS,
     classifiers=[
         "Intended Audience :: Science/Research",
         "Programming Language :: Python :: 3",

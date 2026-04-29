@@ -19,11 +19,14 @@ import torch.nn as nn
 
 try:
     import auto_round_kernel
+except ImportError:
+    try:
+        from auto_round_extension.ark import auto_round_kernel
+    except ImportError:
+        auto_round_kernel = None
 
-    ARK_INSTALLED = True
-    ark = auto_round_kernel.ARK()
-except:
-    ARK_INSTALLED = False
+ARK_INSTALLED = auto_round_kernel is not None
+ark = auto_round_kernel.ARK() if ARK_INSTALLED else None
 
 BITS_DTYPE_MAPPING = {
     2: "int2",
@@ -428,7 +431,7 @@ class QuantLinearFP8(nn.Module):
                     )
 
                 else:
-                    logger.error(
+                    print(
                         f"Cannot reshape scale! loaded_scale.numel()={numel}, expected={expected_numel}, out_features={out_features}"
                     )
         super()._load_from_state_dict(
