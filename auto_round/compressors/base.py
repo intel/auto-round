@@ -577,7 +577,7 @@ class BaseCompressor(object):
 
             apply_hadamard_rotation(
                 self.model,
-                group_size=self.group_size,
+                group_size=None,
                 allow_online_hadamard=True,
                 rotation_matrix="hadamard",
                 fuse_online_to_weight=True,
