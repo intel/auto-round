@@ -17,44 +17,32 @@ import subprocess
 import sys
 
 
-def get_torch_minor():
+def check_torch_version():
     try:
         import torch
 
         m = re.match(r"^(\d+)\.(\d+)", torch.__version__)
-        return f"{m.group(1)}.{m.group(2)}" if m else None
+        if m:
+            major, minor = int(m.group(1)), int(m.group(2))
+            if major < 2 or (major == 2 and minor < 10):
+                raise RuntimeError(
+                    f"Torch version 2.10 or higher is required for oneAPI 2025.3 environment. "
+                    f"Found: {torch.__version__}"
+                )
+            return True
+        return False
     except ImportError:
-        return None
-
-
-def get_auto_round_minor():
-    try:
-        import auto_round
-
-        m = re.match(r"^(\d+)\.(\d+)", auto_round.__version__)
-        return f"{m.group(1)}.{m.group(2)}" if m else None
-    except ImportError:
-        return None
-
-
-# Map torch minor version to kernel version
-auto_round_minor = "0.9" if get_auto_round_minor() is None else get_auto_round_minor()
-KERNEL_MAP = {
-    "2.8": f"auto-round-lib~={auto_round_minor}.1.0",
-    "2.9": f"auto-round-lib~={auto_round_minor}.2.0",
-    "2.10": f"auto-round-lib~={auto_round_minor}.3.0",
-}
+        raise RuntimeError("PyTorch is not installed. Please install torch>=2.10.0 first.")
 
 
 def main():
-    torch_minor = get_torch_minor()
-    if torch_minor and torch_minor in KERNEL_MAP:
-        pkg = KERNEL_MAP[torch_minor]
-        print(f"Detected torch {torch_minor}, installing {pkg} ...")
-        subprocess.check_call([sys.executable, "-m", "pip", "install", pkg, "--upgrade-strategy", "only-if-needed"])
-    else:
-        print("torch not found or no mapping for your version. Installing the latest auto-round-lib ...")
-        subprocess.check_call([sys.executable, "-m", "pip", "install", "auto-round-lib"])
+    print("Checking environment for oneAPI 2025.3 compatibility...")
+    check_torch_version()
+
+    pkg = "auto-round-lib"
+
+    print(f"Environment check passed. Installing {pkg} ...")
+    subprocess.check_call([sys.executable, "-m", "pip", "install", pkg, "--upgrade-strategy", "only-if-needed"])
 
 
 if __name__ == "__main__":
