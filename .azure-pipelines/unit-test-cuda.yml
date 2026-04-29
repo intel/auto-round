@@ -125,6 +125,8 @@ stages:
                   echo "Running on GPU Agent: $(Agent.Name)"
                   nvidia-smi
                   lscpu
+                  cd .azure-pipelines/scripts/cuda_unit_test
+                  nohup uv run monitor_gpu.py daemon > monitor.log 2>&1 &
                 displayName: "Verify GPU Access"
 
               - script: |
@@ -145,6 +147,11 @@ stages:
                       --test_part=${{ pair.value.PART }}
                   fi
                 displayName: "Run GPU Tests"
+
+              - script: |
+                  cd .azure-pipelines/scripts/cuda_unit_test
+                  uv run monitor_gpu.py stop
+                displayName: "GPU Monitor"
 
               - task: PublishPipelineArtifact@1
                 condition: succeededOrFailed()
