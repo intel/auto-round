@@ -12,9 +12,5 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-# NOTE: hpu_patch must be imported before any module that triggers loading of
-# `transformers.modeling_utils` (e.g. `fp8_quant`), otherwise the upstream
-# `transformers.integrations.finegrained_fp8` module is loaded without the
-# HPU-compatible overrides.
-from .hpu_patch import *
 from .fp8_quant import *
+from .hpu_patch import *
