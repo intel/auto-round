@@ -3136,7 +3136,7 @@ class BaseCompressor(object):
         device: Union[str, torch.device] = "cpu",
     ):
         autocast_ctx = (
-            nullcontext() if self.amp else autocast(device_type=str(device).split(":")[0], dtype=self.amp_dtype)
+            nullcontext() if not self.amp else autocast(device_type=str(device).split(":")[0], dtype=self.amp_dtype)
         )
         if self.attention_mask:
             tmp_attention_mask = [self.attention_mask[i] for i in indices]
