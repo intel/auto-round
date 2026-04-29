@@ -621,7 +621,7 @@ class BaseCompressor(object):
     def _get_calibration_dataset(self) -> str:
         """Resolve calibration dataset: self.dataset > AutoScheme.dataset > default."""
         dataset = self.__dict__.get("dataset", None)
-        if dataset is None:
+        if dataset is not None:
             return dataset
         from auto_round.auto_scheme.gen_auto_scheme import AutoScheme
 
