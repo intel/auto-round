@@ -184,10 +184,18 @@ def cast_to_ue5m3(tensor):
     return res
 
 
-def cast_to_ue5m3_ste(x):
-    fp4 = (cast_to_ue5m3(x).to(x.dtype) - x).detach() + x
+class _UE5M3CastSTE(torch.autograd.Function):
+    @staticmethod
+    def forward(ctx, x: torch.Tensor):
+        return cast_to_ue5m3(x).to(x.dtype)
 
-    return fp4
+    @staticmethod
+    def backward(ctx, grad_output: torch.Tensor):
+        return grad_output
+
+
+def cast_to_ue5m3_ste(x):
+    return _UE5M3CastSTE.apply(x)
 
 
 def ref_fp4_quant(x, global_scale, block_size=16, v=0, max_scale=1.0):
