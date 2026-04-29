@@ -52,8 +52,8 @@ def search_scales(data: torch.Tensor, bits: int, qw: Union[None, torch.Tensor, f
         step = 0.01
     else:
         grid = 200
-        search_min = nmax / 2
-        # search_min = nmax*3/4 # 4
+        ##search_min = nmax / 2
+        search_min = nmax*3/4 # 4
         step = search_min/grid * 2 # 0.08
         search_min = int(search_min/step)
     # Iterative search over small adjustments
