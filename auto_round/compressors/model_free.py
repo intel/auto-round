@@ -1529,10 +1529,10 @@ class ModelFreeCompressor(_ModelFreeCompressorCore):
             "layer_config": copy.deepcopy(layer_config),
             "ignore_layers": ignore_layers,
             "device_map": device_map,
-            "device": device,
             "quant_lm_head": quant_lm_head,
-            "quant_nontext_module": quant_nontext_module,
         }
+        if quant_nontext_module:
+            self._fallback_init_kwargs["quant_nontext_module"] = quant_nontext_module
         # remaining kwargs intentionally consumed/ignored
 
     def _fallback_to_base_compressor(self):
@@ -1613,7 +1613,9 @@ class ModelFreeCompressor(_ModelFreeCompressorCore):
     ):
         """Quantize and save — AutoRound compressor entry point."""
         if format not in ["auto_round", "auto_round:auto_gptq"]:
-            return self._fallback_to_base_compressor()
+            return self._fallback_to_quantize_and_save(
+                output_dir=output_dir, format=format, inplace=inplace, **kwargs
+            )
 
         # Apply user scheme overrides before running
         if self.user_scheme_overrides:

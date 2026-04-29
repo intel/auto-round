@@ -171,8 +171,6 @@ class AutoRound:
                     "(iters=0, disable_opt_rtn=True, supported scheme). "
                     "Pass disable_model_free=True to use the regular flow."
                 )
-            kwargs.pop("model_free", None)
-            kwargs.pop("disable_model_free", None)
             if extra_config is not None:
                 local_args.update(extra_config.to_dict())
             local_args["model_name_or_path"] = local_args.pop("model")

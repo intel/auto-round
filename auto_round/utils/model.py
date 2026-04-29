@@ -2039,8 +2039,8 @@ def is_model_free_route(
     """
     from auto_round.compressors.model_free import is_model_free_supported_scheme
 
-    explicit = bool(kwargs.get("model_free", False))
-    disabled = bool(kwargs.get("disable_model_free", False))
+    explicit = bool(kwargs.pop("model_free", False))
+    disabled = bool(kwargs.pop("disable_model_free", False))
     if explicit:
         return True
     # Only auto-route when format is auto_round (or not specified).
