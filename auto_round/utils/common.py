@@ -1067,6 +1067,7 @@ def revert_checkpoint_conversion_mapping(name: str, reverse_key_mapping: dict[st
             break
     return name
 
+
 def apply_checkpoint_conversion_mapping(name: str, key_mapping: dict[str, str]) -> str:
     for pattern, replacement in key_mapping.items():
         name, n_replace = re.subn(pattern, replacement, name)

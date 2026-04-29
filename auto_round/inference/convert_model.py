@@ -278,8 +278,7 @@ def get_layer_config(model, quantization_config):
         if quant_block_list and isinstance(quant_block_list[0], (list, tuple)):
             for i in range(len(quant_block_list)):
                 quant_block_list[i] = apply_checkpoint_conversion_mapping(
-                    os.path.commonprefix(quant_block_list[i]).rstrip("."),
-                    checkpoint_conversion_mapping
+                    os.path.commonprefix(quant_block_list[i]).rstrip("."), checkpoint_conversion_mapping
                 )
     elif quant_block_list is None:
         to_quant_block_names = getattr(quantization_config, "block_name_to_quantize", None)  # Prioritize this parameter
@@ -298,7 +297,9 @@ def get_layer_config(model, quantization_config):
             for i in range(len(quant_block_list)):
                 quant_block_list[i] = os.path.commonprefix(quant_block_list[i]).rstrip(".")
         for i in range(len(quant_block_list)):
-            quant_block_list[i] = apply_checkpoint_conversion_mapping(quant_block_list[i], checkpoint_conversion_mapping)
+            quant_block_list[i] = apply_checkpoint_conversion_mapping(
+                quant_block_list[i], checkpoint_conversion_mapping
+            )
 
     # Get layer names that will be quantized
     layer_names = []

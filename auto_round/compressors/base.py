@@ -107,11 +107,11 @@ from auto_round.utils import (
     memory_monitor,
     mv_module_from_gpu,
     normalize_no_split_modules,
+    revert_checkpoint_conversion_mapping,
     set_amax_for_all_moe_layers,
     set_module,
     to_device,
     to_dtype,
-    revert_checkpoint_conversion_mapping,
     unsupported_meta_device,
 )
 from auto_round.utils.device import (
@@ -3605,7 +3605,7 @@ class BaseCompressor(object):
             if "scale_dtype" in serialization_dict.keys():
                 serialization_dict["scale_dtype"] = str(serialization_dict["scale_dtype"])
 
-            # to match the original name 
+            # to match the original name
             if hasattr(self.model, "_checkpoint_conversion_mapping"):
                 reverse_key_mapping = {v: k for k, v in self.model._checkpoint_conversion_mapping.items()}
 

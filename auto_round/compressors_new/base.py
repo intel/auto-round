@@ -1149,7 +1149,7 @@ class BaseCompressor(object):
             if "scale_dtype" in serialization_dict.keys():
                 serialization_dict["scale_dtype"] = str(serialization_dict["scale_dtype"])
 
-            # to match the original name 
+            # to match the original name
             if hasattr(self.model, "_checkpoint_conversion_mapping"):
                 reverse_key_mapping = {v: k for k, v in self.model._checkpoint_conversion_mapping.items()}
 
