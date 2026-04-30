@@ -40,7 +40,6 @@ class SignRoundConfig(QuantizationConfig):
         minmax_lr: float = None,
         lr_scheduler=None,
         momentum: float = 0.0,
-        batch_size: int = 8,
         nblocks: int = 1,
         enable_minmax_tuning: bool = True,
         enable_norm_bias_tuning: bool = False,
@@ -71,14 +70,13 @@ class SignRoundConfig(QuantizationConfig):
         self.minmax_lr = minmax_lr or self.lr
         self.lr_scheduler = lr_scheduler
 
-        self.batch_size, self.gradient_accumulate_steps = batch_size, gradient_accumulate_steps
+        self.gradient_accumulate_steps = gradient_accumulate_steps
         self.nblocks = nblocks
         self.momentum = momentum
         self.enable_alg_ext = enable_alg_ext
 
         # Some helpers
         self.infer_bs_coeff = 1
-        self.batch_dim = None
 
         self.enable_minmax_tuning = enable_minmax_tuning
         self.enable_norm_bias_tuning = enable_norm_bias_tuning
@@ -101,8 +99,6 @@ class SignRoundConfig(QuantizationConfig):
         """
         super().check_config()
 
-        if self.batch_size <= 0:
-            raise ValueError("`batch_size` must be positive")
         if self.iters < 0:
             raise ValueError("`iters` must be non-negative")
         if self.nblocks <= 0:

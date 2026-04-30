@@ -208,8 +208,6 @@ class OptimizedRTNQuantizer(RTNQuantizer):
 
     def __init__(self, config: RTNConfig):
         BaseQuantizers.__init__(self, config)
-        self.batch_size = config.batch_size
-        self.batch_dim = config.batch_dim
         self.data_type = config.data_type
         self.group_size = config.group_size
         self.infer_bs_coeff = config.infer_bs_coeff

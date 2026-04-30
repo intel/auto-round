@@ -64,7 +64,6 @@ from auto_round.utils.device import (
     set_non_auto_device_map,
 )
 from auto_round.utils.offload import OffloadManager
-from auto_round.wrapper import wrapper_block
 
 
 @dataclass
@@ -143,6 +142,19 @@ class BaseCompressor(object):
         seqlen: int = None,
         **kwargs,
     ):
+        # ``CalibrationState`` is the single source of truth for calibration
+        # runtime state.  Seed every calibration field here in one block so
+        # the rest of ``__init__`` only ever interacts with the state object
+        # via property forwarders.  ``_resolve_scheme`` later wires this same
+        # instance onto the quantizer so the two share state.
+        from auto_round.calibration.state import CalibrationState
+
+        self._calibration_state = CalibrationState(
+            nsamples=nsamples if nsamples is not None else 128,
+            seqlen=seqlen if seqlen is not None else 2048,
+            batch_size=kwargs.pop("batch_size", 8),
+        )
+
         self.quantize_config = None
         self.transform_configs: list[BaseRotationConfig] = []
         _config_list = config if isinstance(config, list) else [config]
@@ -153,15 +165,18 @@ class BaseCompressor(object):
                 self.transform_configs.append(_cfg)
         assert self.quantize_config is not None, "QuantizationConfig is required for Compressor"
 
-        # Compressor-level calibration/layer params (do not live in QuantizationConfig).
+        # Compressor-level layer params (do not live in QuantizationConfig).
+        # Calibration params (nsamples/seqlen/batch_size) are owned by
+        # ``self._calibration_state`` (seeded above) and exposed via
+        # ``@property`` forwarders.
         self.layer_config = layer_config
-        self.nsamples = nsamples if nsamples is not None else 128
-        self.seqlen = seqlen if seqlen is not None else 2048
 
         # Scheme is passed directly to the compressor, not stored in QuantizationConfig.
         self.scheme = scheme
 
-        # TODO: refactor calibration
+        # Calibrator strategy (auto_round.calibration.base.Calibrator).  Constructed
+        # lazily by ``DataDrivenCompressor.post_init`` based on ``_get_calibrator_kind()``;
+        # remains ``None`` for ``ZeroShotCompressor`` (RTN does not need data).
         self.calibration = None
 
         self.formats = format
@@ -283,7 +298,10 @@ class BaseCompressor(object):
         self._adjust_torch_compile(enable_torch_compile)
         self.compress_context.enable_torch_compile = self.enable_torch_compile
 
-        self.blocks_requiring_input_ids = []
+        # ``self._calibration_state`` was created at the top of __init__ so
+        # all calibration-related property writes above (nsamples / seqlen /
+        # batch_size from kwargs) have already routed through it.
+
         self.has_variable_block_shape = False
         fixed_attr = get_predefined_fixed_attr(self.model_context.model) or {}
         for key, value in fixed_attr.items():
@@ -620,7 +638,7 @@ class BaseCompressor(object):
 
     def _get_calibration_dataset(self) -> str:
         """Resolve calibration dataset: self.dataset > AutoScheme.dataset > default."""
-        dataset = self.__dict__.get("dataset", None)
+        dataset = getattr(self, "dataset", None)
         if dataset:
             return dataset
         from auto_round.auto_scheme.gen_auto_scheme import AutoScheme
@@ -638,9 +656,10 @@ class BaseCompressor(object):
         ``quantize_and_save()`` does this automatically before entering the
         inference-mode quantize loop.
 
-        Delegates to five ordered pipeline phases; see each ``_resolve_scheme``,
-        ``_resolve_formats``, ``_patch_model``, ``_build_layer_config``, and
-        ``_hardware_setup`` for the precise preconditions and postconditions.
+        Delegates to ordered pipeline phases; see each ``_resolve_scheme``,
+        ``_build_quantizer``, ``_resolve_formats``, ``_patch_model``,
+        ``_build_layer_config``, and ``_hardware_setup`` for the precise
+        preconditions and postconditions.
         """
         if self._post_init_done:
             return
@@ -659,6 +678,7 @@ class BaseCompressor(object):
             if self.model_context.model.dtype != torch.bfloat16:
                 self.model_context.model = self.model_context.model.to(torch.bfloat16)
 
+        self._build_quantizer()
         self._resolve_formats()
         self._patch_model()
         self._build_layer_config()
@@ -681,7 +701,7 @@ class BaseCompressor(object):
     # ── Pipeline phase methods ────────────────────────────────────────────────
 
     def _resolve_scheme(self) -> None:
-        """Phase 1 – Scheme resolution and quantizer construction.
+        """Phase 1 – Scheme resolution.
 
         Preconditions:
           - ``self.quantize_config`` is a valid :class:`QuantizationConfig`.
@@ -692,14 +712,9 @@ class BaseCompressor(object):
           - Calls :meth:`resolve_scheme` to derive ``data_type``, ``bits``,
             ``sym``, ``scale_dtype`` etc. and write them back to both ``self``
             and ``self.quantize_config``.
-          - Constructs ``self.quantizer`` from the now-resolved config and wires
-            it to the current model / context.
-          - Binds ``self.wrapper_block`` for later use in quantizers.
 
         Postconditions:
           - ``self.scheme`` and ``self.quantize_config`` carry resolved scheme attrs.
-          - ``self.quantizer`` is ready; calibration params (``seqlen``,
-            ``nsamples``) are synced.
         """
         cfg = self.quantize_config
         self.scale_dtype = cfg.scale_dtype
@@ -716,23 +731,34 @@ class BaseCompressor(object):
             dataset=self._get_calibration_dataset(),
         )
 
-        # Create the quantizer now that the config holds resolved values.
+    def _build_quantizer(self) -> None:
+        """Phase 1b – Quantizer construction and wiring.
+
+        Preconditions:
+          - :meth:`_resolve_scheme` complete: ``self.quantize_config`` carries
+            resolved scheme attrs.
+
+        Work performed:
+          - Constructs ``self.quantizer`` from the resolved config.
+          - Calls ``quantizer.bind(self)`` so the quantizer pulls
+            ``model_context`` / ``compress_context`` / ``scale_dtype`` /
+            ``CalibrationState`` from this compressor.  ``quantizer.model``
+            is a property that reads ``model_context.model``.
+
+        Postconditions:
+          - ``self.quantizer`` is ready and shares ``CalibrationState`` with
+            the compressor.
+        """
         self.quantizer = BaseQuantizers.from_config(self.quantize_config)
-        self.quantizer.model_context = self.model_context
-        self.quantizer.compress_context = self.compress_context
-        self.quantizer.model = self.model_context.model
-        self.quantizer.scale_dtype = self.scale_dtype
-        # Sync compressor-owned calibration params to quantizer.
-        self.quantizer.seqlen = self.seqlen
-        self.quantizer.nsamples = self.nsamples
-        self.wrapper_block = wrapper_block
+        self.quantizer.bind(self)
 
     def _resolve_formats(self) -> None:
         """Phase 2 – Format resolution, GGUF attr sync, and rotation application.
 
         Preconditions:
-          - Phase 1 complete: ``self.quantizer`` is initialised and the scheme
-            is resolved (``data_type``, ``bits``, ``sym`` etc. are final).
+          - Phase 1 complete: ``self.quantizer`` exists (built by
+            :meth:`_build_quantizer`) and the scheme is resolved
+            (``data_type``, ``bits``, ``sym`` etc. are final).
 
         Work performed:
           - Converts a string ``self.formats`` to a list of
@@ -980,6 +1006,105 @@ class BaseCompressor(object):
                 continue
 
         raise AttributeError(f"'{type(self).__name__}' object has no attribute '{name}'")
+
+    # ── Forwarding properties to ``self._calibration_state`` ──────────────────
+    @property
+    def calibration_state(self):
+        return self._calibration_state
+
+    @calibration_state.setter
+    def calibration_state(self, value) -> None:
+        self._calibration_state = value
+        # Re-wire quantizer if it already exists so they keep sharing.
+        q = self.__dict__.get("quantizer")
+        if q is not None:
+            q.calibration_state = value
+
+    @property
+    def inputs(self) -> dict:
+        return self._calibration_state.inputs
+
+    @inputs.setter
+    def inputs(self, value: dict) -> None:
+        self._calibration_state.inputs = value if value is not None else {}
+
+    @property
+    def to_cached_layers(self) -> list:
+        return self._calibration_state.to_cached_layers
+
+    @to_cached_layers.setter
+    def to_cached_layers(self, value: list) -> None:
+        self._calibration_state.to_cached_layers = value if value is not None else []
+
+    @to_cached_layers.deleter
+    def to_cached_layers(self) -> None:
+        self._calibration_state.to_cached_layers = []
+
+    @property
+    def last_cache_name(self):
+        return self._calibration_state.last_cache_name
+
+    @last_cache_name.setter
+    def last_cache_name(self, value) -> None:
+        self._calibration_state.last_cache_name = value
+
+    @last_cache_name.deleter
+    def last_cache_name(self) -> None:
+        self._calibration_state.last_cache_name = None
+
+    @property
+    def blocks_requiring_input_ids(self) -> list:
+        return self._calibration_state.blocks_requiring_input_ids
+
+    @blocks_requiring_input_ids.setter
+    def blocks_requiring_input_ids(self, value: list) -> None:
+        self._calibration_state.blocks_requiring_input_ids = value if value is not None else []
+
+    @property
+    def batch_size(self) -> int:
+        return self._calibration_state.batch_size
+
+    @batch_size.setter
+    def batch_size(self, value: int) -> None:
+        self._calibration_state.batch_size = value
+
+    @property
+    def nsamples(self) -> int:
+        return self._calibration_state.nsamples
+
+    @nsamples.setter
+    def nsamples(self, value: int) -> None:
+        if value is not None:
+            self._calibration_state.nsamples = value
+
+    @property
+    def seqlen(self) -> int:
+        return self._calibration_state.seqlen
+
+    @seqlen.setter
+    def seqlen(self, value: int) -> None:
+        if value is not None:
+            self._calibration_state.seqlen = value
+
+    @property
+    def dataset(self):
+        return self._calibration_state.dataset
+
+    @dataset.setter
+    def dataset(self, value) -> None:
+        self._calibration_state.dataset = value
+
+    @property
+    def dataloader(self):
+        return self._calibration_state.dataloader
+
+    @dataloader.setter
+    def dataloader(self, value) -> None:
+        self._calibration_state.dataloader = value
+
+    @dataloader.deleter
+    def dataloader(self) -> None:
+        self._calibration_state.dataloader = None
 
     @property
     def optimizer(self):
