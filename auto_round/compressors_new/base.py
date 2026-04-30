@@ -971,10 +971,10 @@ class BaseCompressor(object):
         # Only compile block_forward when it will actually be used (calibration path).
         # For zero-shot compressors (need_calib=False), block_forward is never called,
         # so skipping compilation avoids unnecessary HPU workspace allocation.
-        if self.enable_torch_compile and not _needs_plain_forward and self.need_calib:
-            self.block_forward = compile_func(block_forward, self.compress_context.device)
-        else:
-            self.block_forward = block_forward
+        # if self.enable_torch_compile and not _needs_plain_forward and self.need_calib:
+        #     self.block_forward = compile_func(block_forward, self.compress_context.device)
+        # else:
+        #     self.block_forward = block_forward
         if self.compress_context.low_cpu_mem_usage:
             self._offloader.reset()
 
