@@ -123,6 +123,7 @@ class TestAutoRound:
 
     def test_qwen2_5_vl_loading(self, tiny_qwen_2_5_vl_model_path):
         from auto_round.utils import mllm_load_model
+
         layer_config = {
             "self_attn": {"bits": 8},
             "lm_head": {"bits": 16},
