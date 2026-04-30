@@ -6,4 +6,4 @@ numpy
 tqdm
 packaging
 pillow
-transformers
+transformers<5.7.0
