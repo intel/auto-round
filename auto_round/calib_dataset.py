@@ -161,9 +161,12 @@ def get_pile_dataset(
 
     split = "train"
 
-    tokenizer_function = get_tokenizer_function(
-        tokenizer, seqlen, apply_chat_template=apply_chat_template, system_prompt=system_prompt
-    )
+    if tokenizer is not None:
+        tokenizer_function = get_tokenizer_function(
+            tokenizer, seqlen, apply_chat_template=apply_chat_template, system_prompt=system_prompt
+        )
+    else:
+        tokenizer_function = None
     try:
         calib_dataset = load_dataset("NeelNanda/pile-10k", split=split)
     except Exception as e:
@@ -181,13 +184,14 @@ def get_pile_dataset(
             logger.error(f"Failed to load the dataset: {error_message}")
         sys.exit(1)
     calib_dataset = calib_dataset.shuffle(seed=seed)
-    calib_dataset = calib_dataset.map(
-        tokenizer_function,
-        batched=True,
-        new_fingerprint=_make_map_fingerprint(
-            calib_dataset, tokenizer, seqlen, apply_chat_template, system_prompt, "text"
-        ),
-    )
+    if tokenizer_function is not None:
+        calib_dataset = calib_dataset.map(
+            tokenizer_function,
+            batched=True,
+            new_fingerprint=_make_map_fingerprint(
+                calib_dataset, tokenizer, seqlen, apply_chat_template, system_prompt, "text"
+            ),
+        )
 
     return calib_dataset
 
@@ -218,9 +222,12 @@ def get_pile_val_dataset(
 
     split = "validation"
 
-    tokenizer_function = get_tokenizer_function(
-        tokenizer, seqlen, apply_chat_template=apply_chat_template, system_prompt=system_prompt
-    )
+    if tokenizer is not None:
+        tokenizer_function = get_tokenizer_function(
+            tokenizer, seqlen, apply_chat_template=apply_chat_template, system_prompt=system_prompt
+        )
+    else:
+        tokenizer_function = None
     from transformers.utils.versions import require_version
 
     require_version(
@@ -233,7 +240,8 @@ def get_pile_val_dataset(
         "swift/pile-val-backup", "default", split=split
     ).to_iterable_dataset()  # , use_streaming=True
     calib_dataset = calib_dataset.shuffle(seed=seed).take(10000)
-    calib_dataset = calib_dataset.map(tokenizer_function, batched=True)
+    if tokenizer_function is not None:
+        calib_dataset = calib_dataset.map(tokenizer_function, batched=True)
 
     return calib_dataset
 
@@ -257,13 +265,17 @@ def get_cci3_hq_dataset(
     """
     from datasets import load_dataset
 
-    tokenizer_function = get_tokenizer_function(
-        tokenizer, seqlen, apply_chat_template=apply_chat_template, system_prompt=system_prompt
-    )
+    if tokenizer is not None:
+        tokenizer_function = get_tokenizer_function(
+            tokenizer, seqlen, apply_chat_template=apply_chat_template, system_prompt=system_prompt
+        )
+    else:
+        tokenizer_function = None
 
     calib_dataset = load_dataset("BAAI/CCI3-HQ", split="train", streaming=True)
     calib_dataset = calib_dataset.shuffle(seed=seed).take(10000)
-    calib_dataset = calib_dataset.map(tokenizer_function, batched=True)
+    if tokenizer_function is not None:
+        calib_dataset = calib_dataset.map(tokenizer_function, batched=True)
 
     return calib_dataset
 
@@ -315,7 +327,7 @@ def get_github_code_clean_dataset(
 
         return default_tokenizer_function
 
-    tokenizer_function = get_default_tokenizer_function()
+    tokenizer_function = get_default_tokenizer_function() if tokenizer is not None else None
     try:
         dataset_mit = load_dataset(
             "codeparrot/github-code-clean", "all-mit", split="train", trust_remote_code=True, streaming=True
@@ -333,7 +345,8 @@ def get_github_code_clean_dataset(
             raise error
     calib_dataset = concatenate_datasets([dataset_mit, dataset_apache])
     calib_dataset = calib_dataset.shuffle(seed=seed).take(10000)  ##TODO concat data'shuffle may have bugs
-    calib_dataset = calib_dataset.map(tokenizer_function, batched=True)
+    if tokenizer_function is not None:
+        calib_dataset = calib_dataset.map(tokenizer_function, batched=True)
 
     return calib_dataset
 

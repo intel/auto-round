@@ -26,6 +26,7 @@ from auto_round.utils import (
     dump_memory_usage_ctx,
     global_state,
     is_transformers_version_greater_or_equal_5,
+    is_vllm_model,
     logger,
 )
 
@@ -41,6 +42,9 @@ BUILTIN_MODULES = {
     "step3p5": LazyImport("auto_round.modeling.fused_moe.step3_5_moe"),
     # Qwen3-Omni MoE: thinker (no shared expert) + talker (with shared expert)
     "qwen3_omni_moe": LazyImport("auto_round.modeling.fused_moe.qwen3_omni"),
+    "Attention": LazyImport("auto_round.modeling.vllm_module"),
+    "QKVParallelLinear": LazyImport("auto_round.modeling.vllm_module"),
+    "MergedColumnParallelLinear": LazyImport("auto_round.modeling.vllm_module"),
 }
 
 
@@ -88,6 +92,14 @@ def _import_required_replacements(model: torch.nn.Module) -> None:
     model_type = model.config.model_type
     _ = BUILTIN_MODULES[model_type].__name__  # Trigger lazy import
     logger.debug(f"Loaded replacement module for {model_type}")
+
+
+def _import_required_replacements_by_module(model: torch.nn.Module) -> None:
+    """Scan model and trigger lazy imports for registered replacement modules."""
+    for _, module in model.named_modules():
+        if module.__class__.__name__ in BUILTIN_MODULES:
+            _ = BUILTIN_MODULES[module.__class__.__name__].__name__
+            logger.debug(f"Loaded replacement module for {module.__class__.__name__}")
 
 
 def is_custom_model(model: torch.nn.Module) -> bool:
@@ -294,10 +306,11 @@ def apply_replacements(
         The model with modules replaced.
     """
     _import_required_replacements(model)
+    _import_required_replacements_by_module(model)
     _raw_expert_is_logged = False
 
     # Custom replacements first
-    if is_custom_model(model):
+    if is_custom_model(model) or is_vllm_model(model):
 
         if not _raw_expert_is_logged:
             _raw_expert_is_logged = _log_first_moe_block(model, "before replacement")

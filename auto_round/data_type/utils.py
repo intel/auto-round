@@ -326,7 +326,7 @@ def update_fused_layer_global_scales(
         )
 
     def _is_mlp_module(module: Module):
-        return "mlp" in module.__class__.__name__.lower() and (
+        return ("mlp" in module.__class__.__name__.lower() or "mlp" in getattr(module, "global_name", "").lower()) and (
             hasattr(module, "gate_proj") and hasattr(module, "up_proj")
         )
 

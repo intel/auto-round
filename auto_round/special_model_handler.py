@@ -18,8 +18,8 @@ from typing import Any, Callable
 import torch
 
 from auto_round.formats import OutputFormat
-from auto_round.modeling.fused_moe.replace_modules import apply_replacements, release_original_module_
-from auto_round.utils import is_moe_model_via_config, logger
+from auto_round.modeling.replace_modules import apply_replacements, release_original_module_
+from auto_round.utils import is_moe_model_via_config, logger, check_vllm_installed, is_vllm_model, get_module
 
 mllms_with_limited_bs = (
     "llava",
@@ -210,6 +210,9 @@ def _handle_special_model(model):
 
         if version.parse(transformers.__version__) < version.parse("5.6"):
             _patch_gemma4_model(model)
+
+    if check_vllm_installed() and is_vllm_model(model):
+        model = _handle_vllm_model(model)
     return model
 
 
@@ -224,6 +227,26 @@ def update_module(
     if cleanup_original:
         release_original_module_(model)
 
+    return model
+
+
+def _handle_vllm_model(model):
+    from vllm.model_executor.layers.mla import MultiHeadLatentAttentionWrapper, MLAAttention
+    modules_to_remove = []
+    for full_name, module in model.named_modules():
+        if isinstance(module, (MultiHeadLatentAttentionWrapper, MLAAttention)):
+            parent_name, _ = full_name.rsplit(".", 1)
+            parent = get_module(model, parent_name)
+            parent_children = {}
+            for n, child in parent.named_children():
+                parent_children[id(child)] = n
+            for n, child in module.named_children():
+                if id(child) in parent_children:
+                    modules_to_remove.append(".".join((parent_name, parent_children[id(child)])))
+
+    for module_name in modules_to_remove:
+        parent = get_module(model, module_name.rsplit(".", 1)[0])
+        delattr(parent, module_name.rsplit(".", 1)[1])
     return model
 
 
@@ -738,7 +761,7 @@ def get_predefined_ignore_layers(model: torch.nn.Module) -> list[str]:
     config = getattr(model, "config", None)
     if not layers and is_moe_model_via_config(config):
         for name, _ in model.named_modules():
-            if name.endswith(".gate"):
+            if name.endswith(".gate") or name.endswith("._gate"):
                 layers.append(name)
 
     return list(dict.fromkeys(layers))

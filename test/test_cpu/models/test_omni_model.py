@@ -135,7 +135,7 @@ class TestQwen2_5Omni:
         assert not is_moe_layer(thinker_mlp), "Qwen2.5-Omni should not be detected as MoE"
 
     def test_not_custom_model(self):
-        from auto_round.modeling.fused_moe.replace_modules import is_custom_model
+        from auto_round.modeling.replace_modules import is_custom_model
 
         assert not is_custom_model(self.model), "Qwen2.5-Omni should not be in BUILTIN_MODULES"
 
@@ -218,20 +218,20 @@ class TestQwen3OmniMoeReplacement:
             LinearQwen3OmniTalkerSparseMoeBlock,
             LinearQwen3OmniThinkerSparseMoeBlock,
         )
-        from auto_round.modeling.fused_moe.replace_modules import ReplacementModuleBase
+        from auto_round.modeling.replace_modules import ReplacementModuleBase
 
         assert ReplacementModuleBase.is_registered("Qwen3OmniMoeThinkerTextSparseMoeBlock")
         assert ReplacementModuleBase.is_registered("Qwen3OmniMoeTalkerTextSparseMoeBlock")
 
     def test_builtin_modules_entry(self):
         """Test that qwen3_omni_moe is in BUILTIN_MODULES."""
-        from auto_round.modeling.fused_moe.replace_modules import BUILTIN_MODULES
+        from auto_round.modeling.replace_modules import BUILTIN_MODULES
 
         assert "qwen3_omni_moe" in BUILTIN_MODULES
 
     def test_is_custom_model(self):
         """Test that is_custom_model returns True for Qwen3-Omni-MoE."""
-        from auto_round.modeling.fused_moe.replace_modules import is_custom_model
+        from auto_round.modeling.replace_modules import is_custom_model
 
         config = _make_tiny_qwen3_omni_moe_config()
         model = Qwen3OmniMoeForConditionalGeneration(config)
@@ -239,7 +239,7 @@ class TestQwen3OmniMoeReplacement:
 
     def test_apply_replacements(self):
         """Test that MoE blocks are correctly replaced."""
-        from auto_round.modeling.fused_moe.replace_modules import apply_replacements
+        from auto_round.modeling.replace_modules import apply_replacements
 
         config = _make_tiny_qwen3_omni_moe_config()
         model = Qwen3OmniMoeForConditionalGeneration(config)
@@ -260,7 +260,7 @@ class TestQwen3OmniMoeReplacement:
 
     def test_weight_fidelity(self):
         """Test that unfused weights match original fused weights."""
-        from auto_round.modeling.fused_moe.replace_modules import apply_replacements, materialize_model_
+        from auto_round.modeling.replace_modules import apply_replacements, materialize_model_
 
         torch.manual_seed(42)
 
@@ -298,7 +298,7 @@ class TestQwen3OmniMoeReplacement:
 
     def test_forward_output_match(self):
         """Test that replaced MoE forward output matches original."""
-        from auto_round.modeling.fused_moe.replace_modules import apply_replacements, materialize_model_
+        from auto_round.modeling.replace_modules import apply_replacements, materialize_model_
 
         # Fix seed for deterministic model weights and use small-scale input to
         # prevent numerical overflow with random weights (talker has a larger

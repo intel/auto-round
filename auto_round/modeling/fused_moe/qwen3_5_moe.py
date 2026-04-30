@@ -6,7 +6,7 @@ import torch.nn.functional as F
 from transformers.models.qwen3_5_moe.modeling_qwen3_5_moe import Qwen3_5MoeMLP
 from transformers.utils.versions import require_version
 
-from auto_round.modeling.fused_moe.replace_modules import ReplacementModuleBase
+from auto_round.modeling.replace_modules import ReplacementModuleBase
 from auto_round.utils import clear_memory, unsupported_meta_device
 
 require_version("transformers>=5.2.0")
