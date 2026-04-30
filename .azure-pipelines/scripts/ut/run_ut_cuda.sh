@@ -92,8 +92,6 @@ function run_unit_test() {
     rm -rf .coverage* *.xml *.html
 
     uv pip install torch==2.11.0 torchvision --index-url https://download.pytorch.org/whl/cu128
-    uv pip install gptqmodel --no-build-isolation
-    uv pip install -r https://raw.githubusercontent.com/ModelCloud/GPTQModel/refs/heads/main/requirements.txt
     uv pip install https://github.com/XuehaoSun/llama-cpp-python/releases/download/v0.3.16/llama_cpp_python-0.3.16-cp312-cp312-linux_x86_64.whl
     uv pip install 'git+https://github.com/ggml-org/llama.cpp.git#subdirectory=gguf-py'
     uv pip install -r test_cuda/requirements.txt

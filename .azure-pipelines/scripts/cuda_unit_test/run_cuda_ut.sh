@@ -62,8 +62,7 @@ function run_unit_test() {
     # install unit test dependencies
     echo "##[group]set up UT env..."
     cd "${BUILD_SOURCESDIRECTORY}" || exit 1
-    uv pip install https://github.com/ModelCloud/GPTQModel/releases/download/v6.0.3/gptqmodel-6.0.3+cu128torch2.11-cp312-cp312-linux_x86_64.whl
-    uv pip install -r https://raw.githubusercontent.com/ModelCloud/GPTQModel/refs/tags/v6.0.3/requirements.txt
+    uv pip install torch==2.11.0 torchvision --index-url https://download.pytorch.org/whl/cu128
     uv pip install https://github.com/XuehaoSun/llama-cpp-python/releases/download/v0.3.16/llama_cpp_python-0.3.16-cp312-cp312-linux_x86_64.whl
     uv pip install 'git+https://github.com/ggml-org/llama.cpp.git#subdirectory=gguf-py'
     uv pip install -r test/test_cuda/requirements.txt
