@@ -148,17 +148,18 @@ stages:
                   fi
                 displayName: "Run GPU Tests"
 
-              - script: |
-                  cd .azure-pipelines/scripts/cuda_unit_test
-                  uv run monitor_gpu.py stop
-                displayName: "GPU Monitor"
-
               - task: PublishPipelineArtifact@1
                 condition: succeededOrFailed()
                 inputs:
                   targetPath: $(Build.SourcesDirectory)/ut_log_dir
                   artifact: PART_${{ pair.value.PART }}_logs
                   publishLocation: "pipeline"
+
+              - script: |
+                  cd .azure-pipelines/scripts/cuda_unit_test
+                  uv run monitor_gpu.py stop
+                condition: always()
+                displayName: "GPU Monitor"
 
       - stage: Cleanup_Verification_${{ pair.key }}
         displayName: "Verify Pod Cleanup ${{ pair.value.PART }}"
