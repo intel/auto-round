@@ -19,14 +19,11 @@ import torch.nn as nn
 
 try:
     import auto_round_kernel
-except ImportError:
-    try:
-        from auto_round_extension.ark import auto_round_kernel
-    except ImportError:
-        auto_round_kernel = None
 
-ARK_INSTALLED = auto_round_kernel is not None
-ark = auto_round_kernel.ARK() if ARK_INSTALLED else None
+    ARK_INSTALLED = True
+    ark = auto_round_kernel.ARK()
+except:
+    ARK_INSTALLED = False
 
 BITS_DTYPE_MAPPING = {
     2: "int2",
