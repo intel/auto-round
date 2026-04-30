@@ -1059,8 +1059,10 @@ def infer_bits_by_data_type(data_type: str):
 
 def get_checkpoint_conversion_mapping(model):
     """Get the checkpoint conversion mapping for a given model, if it exists."""
+    checkpoint_conversion_mapping = {}
+
     # transformers <= 5.3.0 use _checkpoint_conversion_mapping
-    checkpoint_conversion_mapping = getattr(model, "_checkpoint_conversion_mapping", {})
+    checkpoint_conversion_mapping.update(getattr(model, "_checkpoint_conversion_mapping", {}))
 
     # transformers > 5.3.0 use get_checkpoint_conversion_mapping
     if hasattr(transformers, "conversion_mapping") and (
