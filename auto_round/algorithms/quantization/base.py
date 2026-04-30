@@ -377,12 +377,6 @@ class BaseQuantizers:
             self.config.is_act_quantize and (not self.config.act_dynamic or self.config.is_act_nv_fp)
         ) or self.enable_alg_ext:
             self._resolved_block_forward = block_forward
-        elif self.compress_context.enable_torch_compile:
-            compiled = self.__dict__.get("_compiled_block_forward")
-            if compiled is None:
-                compiled = compile_func(block_forward, self.compress_context.device)
-                self._compiled_block_forward = compiled
-            self._resolved_block_forward = compiled
         else:
             self._resolved_block_forward = block_forward
         return self._resolved_block_forward
