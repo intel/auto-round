@@ -1071,9 +1071,10 @@ def get_checkpoint_conversion_mapping(model):
         )
 
         conversion_mappings = transformers_get_checkpoint_conversion_mapping(model.config.model_type)
-        for conversion_mapping in conversion_mappings:
-            for source_pattern in conversion_mapping.source_patterns:
-                checkpoint_conversion_mapping[source_pattern] = conversion_mapping.target_patterns
+        if conversion_mappings is not None:
+            for conversion_mapping in conversion_mappings:
+                for source_pattern in conversion_mapping.source_patterns:
+                    checkpoint_conversion_mapping[source_pattern] = conversion_mapping.target_patterns
     return checkpoint_conversion_mapping
 
 
