@@ -17,6 +17,7 @@ import torch
 import transformers
 from packaging import version
 from torch import nn
+from typing import Any
 
 transformers_version = version.parse(transformers.__version__)
 if transformers_version < version.parse("5.0.0"):
@@ -29,15 +30,15 @@ from transformers.activations import ACT2FN
 
 from auto_round.modeling.replace_modules import ReplacementModuleBase
 from auto_round.modeling.fused_moe.utils import _update_parameter
-from auto_round.utils import clear_memory, unsupported_meta_device
+from auto_round.utils import clear_memory, unsupported_meta_device, LazyImport
 
 from vllm.model_executor.layers.attention import Attention
 from vllm.model_executor.layers.linear import (
         MergedColumnParallelLinear,
-        RowParallelLinear,
         QKVParallelLinear,
     )
-from vllm.model_executor.layers.fused_moe import SharedFusedMoE
+SharedFusedMoE = LazyImport("vllm.model_executor.layers.fused_moe.SharedFusedMoE")
+FusedMoE = LazyImport("vllm.model_executor.layers.fused_moe.FusedMoE")
 
 
 state_dict_mapping = {
@@ -173,7 +174,7 @@ class VllmMergedColumnParallelLinear(ReplacementModuleBase):
     def forward(self, hidden_states: torch.Tensor) -> torch.Tensor:
         gate_out = self.gate_proj(hidden_states)
         up_out = self.up_proj(hidden_states)
-        return torch.cat([gate_out, up_out], dim=0)
+        return torch.cat([gate_out, up_out], dim=1), None
 
     @classmethod
     def original_module_class(cls) -> str:
@@ -237,7 +238,7 @@ class SequentialExperts(torch.nn.ModuleList):
 class VllmSharedFusedMoE(ReplacementModuleBase):
     """Replaces Vllm SharedFusedMoE with VllmSharedFusedMoE modules."""
 
-    def __init__(self, original: SharedFusedMoE, config: PreTrainedConfig):
+    def __init__(self, original: Any, config: PreTrainedConfig):
         super().__init__(original)
         dtype_str = getattr(config, "torch_dtype", None) or getattr(config, "dtype", None)
         dtype = torch.bfloat16 if str(dtype_str).endswith("bfloat16") else torch.float32
@@ -246,10 +247,30 @@ class VllmSharedFusedMoE(ReplacementModuleBase):
 
         self._shared_experts = original._shared_experts
         self._gate = original._gate
+        self.router = original.router
+        self.is_internal_router = original.is_internal_router
         self._materialize_weights()
 
-    def forward(self, hidden_states: torch.Tensor) -> torch.Tensor:
-        return hidden_states
+    def forward(self, hidden_states: torch.Tensor, router_logits: torch.Tensor) -> torch.Tensor:
+        router_logits, _ = self._gate(hidden_states)
+        topk_weights, topk_indices = self.router.select_experts(hidden_states=hidden_states, router_logits=router_logits)
+        final_hidden_states = torch.zeros_like(hidden_states)
+
+        with torch.no_grad():
+            expert_mask = torch.nn.functional.one_hot(topk_indices.to(torch.long), num_classes=self._experts.num_experts)
+            expert_mask = expert_mask.permute(2, 1, 0)
+            expert_hit = torch.greater(expert_mask.sum(dim=(-1, -2)), 0).nonzero()
+
+        for expert_idx in expert_hit:
+            expert_idx = expert_idx[0]
+            if expert_idx == self._experts.num_experts:
+                continue
+            top_k_pos, token_idx = torch.where(expert_mask[expert_idx])
+            current_state = hidden_states[token_idx]
+            current_hidden_states = self._experts[expert_idx](current_state) * topk_weights[token_idx, top_k_pos, None]
+            final_hidden_states.index_add_(0, token_idx, current_hidden_states.to(final_hidden_states.dtype))
+
+        return self._shared_experts(hidden_states), final_hidden_states
 
     def _materialize_weights(self) -> None:
         original = self._get_original_module()
@@ -264,7 +285,7 @@ class VllmSharedFusedMoE(ReplacementModuleBase):
     @classmethod
     def from_original(
         cls,
-        original: SharedFusedMoE,
+        original: Any,
         config: PreTrainedConfig,
         **kwargs,
     ) -> "VllmSharedFusedMoE":
@@ -272,3 +293,55 @@ class VllmSharedFusedMoE(ReplacementModuleBase):
         new_module = cls(original, config)
         new_module.register_state_dict_post_hook(state_dict_hook)
         return new_module
+
+
+def apply_moe(
+    layer: torch.nn.Module,
+    x: torch.Tensor,
+    topk_weights: torch.Tensor,
+    topk_ids: torch.Tensor | None,
+    shared_experts_input: torch.Tensor | None = None,) -> torch.Tensor:
+    hidden_states = x
+    final_hidden_states = torch.zeros_like(hidden_states)
+    with torch.no_grad():
+        expert_mask = torch.nn.functional.one_hot(topk_ids.to(torch.long), num_classes=layer._experts.num_experts)
+        expert_mask = expert_mask.permute(2, 1, 0)
+        expert_hit = torch.greater(expert_mask.sum(dim=(-1, -2)), 0).nonzero()
+    for expert_idx in expert_hit:
+        expert_idx = expert_idx[0]
+        if expert_idx == layer._experts.num_experts:
+            continue
+        top_k_pos, token_idx = torch.where(expert_mask[expert_idx])
+        current_state = hidden_states[token_idx]
+        current_hidden_states = layer._experts[expert_idx](current_state) * topk_weights[token_idx, top_k_pos, None]
+        final_hidden_states.index_add_(0, token_idx, current_hidden_states.to(final_hidden_states.dtype))
+
+    return final_hidden_states
+
+
+class VllmFusedMoE(ReplacementModuleBase):
+    """Replaces Vllm FusedMoE with VllmFusedMoE modules."""
+
+    def __init__(self, original: Any, config: PreTrainedConfig):
+        super().__init__(original)
+
+    @classmethod
+    def original_module_class(cls) -> str:
+        """Return the class name of the module this replaces."""
+        return "FusedMoE"
+
+    @classmethod
+    def from_original(
+        cls,
+        original: Any,
+        config: PreTrainedConfig,
+        **kwargs,
+    ) -> "VllmSharedFusedMoE":
+        """Create an instance from the original module."""
+        with no_init_weights(), torch.device("meta"):
+            experts = SequentialExperts(config, original)
+        experts._materialize_weights(original)
+        original._experts = experts
+        original.runner.quant_method.apply = apply_moe
+        original.register_state_dict_post_hook(state_dict_hook)
+        return original

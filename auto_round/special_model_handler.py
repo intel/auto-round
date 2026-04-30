@@ -95,11 +95,9 @@ def update_module(
 
 def _handle_vllm_model(model):
     from vllm.model_executor.layers.mla import MultiHeadLatentAttentionWrapper, MLAAttention
-    from vllm.model_executor.layers.fused_moe import SharedFusedMoE
-
     modules_to_remove = []
     for full_name, module in model.named_modules():
-        if isinstance(module, (MultiHeadLatentAttentionWrapper, SharedFusedMoE, MLAAttention)):
+        if isinstance(module, (MultiHeadLatentAttentionWrapper, MLAAttention)):
             parent_name, _ = full_name.rsplit(".", 1)
             parent = get_module(model, parent_name)
             parent_children = {}

@@ -285,6 +285,7 @@ class VllmCompressor(BaseCompressor):
             )
             iters = 0
 
+        batch_size = 1
         model = _handle_special_model(model)
         kwargs["vllm_loading"] = True
         super(VllmCompressor, self).__init__(
@@ -442,6 +443,17 @@ class VllmCompressor(BaseCompressor):
             self.static_attention_dtype,
         ):  # TODO, mixed datatype has bug
             hook_handles = self._register_act_max_hook(self.model)
+            all_blocks = self.quant_block_list or get_block_names(self.model)
+            pbar = tqdm(range(sum(len(block) for block in all_blocks)))
+            for block_names in all_blocks:
+                for block_name in block_names:
+                    pbar.set_description(f"Quantizing {block_name}")
+                    block = get_module(self.model, block_name)
+
+                    block = convert_module_to_hp_if_necessary(block, dtype=self.amp_dtype, device=self.device)
+                    update_block_global_scale_if_needed(block, self.data_type, self.group_size)
+
+            self.calib(self.nsamples, self.batch_size)
             for handle in hook_handles:
                 handle.remove()
 
