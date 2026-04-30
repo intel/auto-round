@@ -25,11 +25,12 @@ from auto_round.compressors import (
     ExtraConfig,
     LLMCompressor,
     MLLMCompressor,
+    VllmCompressor
 )
 from auto_round.compressors.diffusion.hybrid import HybridCompressor, is_hybrid_diffusion_model
 from auto_round.logger import deprecated, logger
 from auto_round.schemes import QuantizationScheme
-from auto_round.utils import is_diffusion_model, is_mllm_model
+from auto_round.utils import is_diffusion_model, is_mllm_model, is_vllm_model
 
 if TYPE_CHECKING:
     from auto_round.auto_scheme.gen_auto_scheme import AutoScheme
@@ -76,15 +77,26 @@ class AutoRound:
         cls,
         model: Union[torch.nn.Module, str],
         tokenizer=None,
+        use_vllm_loading = kwargs.pop("use_vllm_loading", False)
         platform: str = "hf",
         scheme: Union[str, dict, QuantizationScheme, AutoScheme] = "W4A16",
+            if use_vllm_loading:
+                logger.warning(
+                    "`use_vllm_loading` currently uses the legacy architecture path; "
+                    "set AR_DISABLE_NEW_ARCH=1 to avoid this fallback warning."
+                )
+            else:
+                from auto_round.compressors_new.entry import AutoRoundCompatible
+
+                return AutoRoundCompatible(**local_args, **kwargs)
+
+        if NEW_ARCH and use_vllm_loading:
+            logger.info("using legacy AutoRound path for vLLM model loading support.")
+
+        if NEW_ARCH and not use_vllm_loading:
         layer_config: dict[str, Union[str, dict, QuantizationScheme]] = None,
         dataset: Union[str, list, tuple, torch.utils.data.DataLoader] = "NeelNanda/pile-10k",
         iters: int = 200,
-        seqlen: int = 2048,
-        nsamples: int = 128,
-        batch_size: int = 8,
-        gradient_accumulate_steps: int = 1,
         low_gpu_mem_usage: bool = False,
         device_map: Union[str, torch.device, int, dict] = 0,
         enable_torch_compile: bool = False,
@@ -163,11 +175,17 @@ class AutoRound:
         """
 
         local_args = {k: v for k, v in locals().items() if k not in cls.SKIP_ARGS}
+        use_vllm_loading = kwargs.pop("use_vllm_loading", False)
 
-        if NEW_ARCH:
+        if NEW_ARCH and not use_vllm_loading:
             from auto_round.compressors_new.entry import AutoRoundCompatible
 
             return AutoRoundCompatible(**local_args, **kwargs)
+        if NEW_ARCH and use_vllm_loading:
+            logger.warning(
+                "`use_vllm_loading` currently uses the legacy architecture path; "
+                "set AR_DISABLE_NEW_ARCH=1 to avoid this fallback warning."
+            )
 
         model_cls = []
 
@@ -193,6 +211,12 @@ class AutoRound:
             model_cls.append(DiffusionCompressor)
             if extra_config:
                 extra_config.mllm_config = None
+        elif (use_vllm_loading and isinstance(model, str)) or (not isinstance(model, str) and is_vllm_model(model)):
+            logger.info("using vllm to load model.")
+            model_cls.append(VllmCompressor)
+            if extra_config:
+                extra_config.mllm_config = None
+                extra_config.diffusion_config = None
         else:
             if extra_config:
                 extra_config.mllm_config = None

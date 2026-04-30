@@ -183,6 +183,7 @@ class BasicArgumentParser(argparse.ArgumentParser):
             help="Disable trusting remote code when loading models. "
             "Use for security if you don't trust the model source.",
         )
+        basic.add_argument("--use_vllm_loading", action="store_true", help="Use vllm to load model.")
 
         tuning = self.add_argument_group("Tuning Arguments")
         tuning.add_argument(
@@ -749,6 +750,7 @@ def tune(args):
         momentum=args.momentum,
         trust_remote_code=not args.disable_trust_remote_code,
         rotation_config=rot_config,
+        use_vllm_loading=args.use_vllm_loading,
     )
 
     # ======================= Quantize and save model =======================

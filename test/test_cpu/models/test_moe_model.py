@@ -144,7 +144,7 @@ class Step3p5MoEMLP(nn.Module):
 
 def test_step3p5_moe_replacement():
     """Verify that apply_replacements swaps Step3p5MoEMLP → LinearStep3p5MoEMLP."""
-    from auto_round.modeling.fused_moe.replace_modules import apply_replacements, materialize_model_
+    from auto_round.modeling.replace_modules import apply_replacements, materialize_model_
     from auto_round.modeling.fused_moe.step3_5_moe import LinearStep3p5MoEMLP, Step3p5ExpertMLP
 
     num_experts, hidden_size = 4, 32
