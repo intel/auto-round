@@ -20,7 +20,7 @@ import torch
 from torch.nn import Parameter
 
 from auto_round.logger import logger
-from auto_round.utils import get_lm_head_name, get_module, revert_checkpoint_conversion_mapping
+from auto_round.utils import get_lm_head_name, get_module, revert_checkpoint_conversion_mapping, get_reverse_checkpoint_conversion_mapping
 
 
 class ShardWriter:
@@ -55,9 +55,7 @@ class ShardWriter:
         self.shard_meta = []  # List of {tmp_file: str, params: list}
         self.global_weight_map = {}
         self.shard_counter = 0
-        self.reverse_key_mapping = {}
-        if hasattr(self.model, "_checkpoint_conversion_mapping"):
-            self.reverse_key_mapping = {v: k for k, v in self.model._checkpoint_conversion_mapping.items()}
+        self.reverse_checkpoint_conversion_mapping = get_reverse_checkpoint_conversion_mapping(self.model)
 
         # Persistent set of all parameter names already flushed to a shard file.
         # Maintained incrementally in _flush_shard to avoid O(N^2) rebuilds in _add_tensor.
@@ -110,7 +108,7 @@ class ShardWriter:
     def _add_tensor(self, name: str, tensor: torch.Tensor):
 
         # transformers will handle _checkpoint_conversion_mapping automatically if is_immediate_saving=False
-        name = revert_checkpoint_conversion_mapping(name, self.reverse_key_mapping)
+        name = revert_checkpoint_conversion_mapping(name, self.reverse_checkpoint_conversion_mapping)
 
         if isinstance(tensor, torch.Tensor) and tensor.device.type == "meta":
             self.skipped_meta_tensors.append(name)

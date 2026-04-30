@@ -602,11 +602,10 @@ def mllm_load_model(
                 processor_load_kwargs = {}
                 if processor_subfolder is not None:
                     processor_load_kwargs["subfolder"] = processor_subfolder
-                if model_type in FIX_MISTRAL_REGEX_MODEL_TYPE_LIST:
-                    processor_load_kwargs["fix_mistral_regex"] = True
                 tokenizer = AutoTokenizer.from_pretrained(
                     pretrained_model_name_or_path,
                     trust_remote_code=trust_remote_code,
+                    fix_mistral_regex=True if model_type in FIX_MISTRAL_REGEX_MODEL_TYPE_LIST else False,
                     **processor_load_kwargs,
                 )
                 processor = AutoProcessor.from_pretrained(

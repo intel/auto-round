@@ -1057,21 +1057,56 @@ def infer_bits_by_data_type(data_type: str):
     return None
 
 
-def revert_checkpoint_conversion_mapping(name: str, reverse_key_mapping: dict[str, str]) -> str:
-    for pattern, replacement in reverse_key_mapping.items():
-        replacement = replacement.lstrip("^")  # strip off un-needed chars and patterns
-        replacement = re.sub(r"\(.*\)", "", replacement)
-        name, n_replace = re.subn(pattern, replacement, name)
-        # Early exit of the loop
-        if n_replace > 0:
-            break
+def get_checkpoint_conversion_mapping(model):
+    """Get the checkpoint conversion mapping for a given model, if it exists."""
+    # transformers <= 5.3.0 use _checkpoint_conversion_mapping
+    checkpoint_conversion_mapping = getattr(model, "_checkpoint_conversion_mapping", {})
+
+    # transformers > 5.3.0 use get_checkpoint_conversion_mapping
+    if hasattr(transformers, "conversion_mapping") and (hasattr(model, "config") and hasattr(model.config, "model_type")):
+        from transformers.conversion_mapping import get_checkpoint_conversion_mapping as transformers_get_checkpoint_conversion_mapping
+        conversion_mappings = transformers_get_checkpoint_conversion_mapping(model.config.model_type)
+        for conversion_mapping in conversion_mappings:
+            for source_pattern in conversion_mapping.source_patterns:
+                checkpoint_conversion_mapping[source_pattern] = conversion_mapping.target_patterns
+    return checkpoint_conversion_mapping
+
+
+def get_reverse_checkpoint_conversion_mapping(model):
+    """Get the reverse checkpoint conversion mapping for a given model, if it exists."""
+    reverse_checkpoint_conversion_mapping = {v: k for k, v in getattr(model, "_checkpoint_conversion_mapping", {}).items()}
+
+    if hasattr(model, "_weight_conversions"):
+        weight_conversions = model._weight_conversions
+        for weight_conversion in weight_conversions:
+            reverse_conversion_mapping = weight_conversion.reverse_transform()
+            for source_pattern in reverse_conversion_mapping.source_patterns:
+                reverse_checkpoint_conversion_mapping[source_pattern] = reverse_conversion_mapping.target_patterns
+
+    return reverse_checkpoint_conversion_mapping
+
+
+def revert_checkpoint_conversion_mapping(name: str, key_mapping: dict[str, str]) -> str:
+    for source_pattern, target_patterns in key_mapping.items():
+        if isinstance(target_patterns, str):
+            target_patterns = [target_patterns]
+        for target_pattern in target_patterns:
+            source_pattern = source_pattern.lstrip("^")  # strip off un-needed chars and patterns
+            source_pattern = re.sub(r"\(.*\)", "", source_pattern)
+            name, n_replace = re.subn(source_pattern, target_pattern, name)
+            # Early exit of the loop
+            if n_replace > 0:
+                return name
     return name
 
 
 def apply_checkpoint_conversion_mapping(name: str, key_mapping: dict[str, str]) -> str:
-    for pattern, replacement in key_mapping.items():
-        name, n_replace = re.subn(pattern, replacement, name)
-        # Early exit of the loop
-        if n_replace > 0:
-            break
+    for source_pattern, target_patterns in key_mapping.items():
+        if isinstance(target_patterns, str):
+            target_patterns = [target_patterns]
+        for target_pattern in target_patterns:
+            name, n_replace = re.subn(source_pattern, target_pattern, name)
+            # Early exit of the loop
+            if n_replace > 0:
+                return name
     return name

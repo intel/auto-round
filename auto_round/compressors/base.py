@@ -94,6 +94,7 @@ from auto_round.utils import (
     get_layer_names_in_block,
     get_lm_head_name,
     get_module,
+    get_reverse_checkpoint_conversion_mapping,
     global_state,
     hook_ngram_embeddings_on_cpu,
     htcore,
@@ -3606,19 +3607,18 @@ class BaseCompressor(object):
                 serialization_dict["scale_dtype"] = str(serialization_dict["scale_dtype"])
 
             # to match the original name
-            if hasattr(self.model, "_checkpoint_conversion_mapping"):
-                reverse_key_mapping = {v: k for k, v in self.model._checkpoint_conversion_mapping.items()}
+            reverse_checkpoint_conversion_mapping = get_reverse_checkpoint_conversion_mapping(self.model)
 
-                if isinstance(serialization_dict["to_quant_block_names"], str):
-                    serialization_dict["to_quant_block_names"] = revert_checkpoint_conversion_mapping(
-                        serialization_dict["to_quant_block_names"], reverse_key_mapping
+            if isinstance(serialization_dict["to_quant_block_names"], str):
+                serialization_dict["to_quant_block_names"] = revert_checkpoint_conversion_mapping(
+                    serialization_dict["to_quant_block_names"], reverse_checkpoint_conversion_mapping
+                )
+
+            elif isinstance(serialization_dict["to_quant_block_names"], list):
+                for idx in range(len(serialization_dict["to_quant_block_names"])):
+                    serialization_dict["to_quant_block_names"][idx] = revert_checkpoint_conversion_mapping(
+                        serialization_dict["to_quant_block_names"][idx], reverse_checkpoint_conversion_mapping
                     )
-
-                elif isinstance(serialization_dict["to_quant_block_names"], list):
-                    for idx in range(len(serialization_dict["to_quant_block_names"])):
-                        serialization_dict["to_quant_block_names"][idx] = revert_checkpoint_conversion_mapping(
-                            serialization_dict["to_quant_block_names"][idx], reverse_key_mapping
-                        )
 
             compressed_model = format.save_quantized(
                 save_folder,

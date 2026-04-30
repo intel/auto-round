@@ -42,6 +42,7 @@ from auto_round.utils import (
     get_block_names,
     get_module,
     is_hpex_available,
+    get_checkpoint_conversion_mapping,
     is_transformers_version_greater_or_equal_5,
     set_module,
 )
@@ -271,7 +272,7 @@ def get_layer_config(model, quantization_config):
     )
 
     # Determine the quantization block list
-    checkpoint_conversion_mapping = getattr(model, "_checkpoint_conversion_mapping", {})
+    checkpoint_conversion_mapping = get_checkpoint_conversion_mapping(model)
     quant_block_list = getattr(quantization_config, "quant_block_list", None)
     if quant_block_list is not None:
         # Handle nested list format: [[block1, block2, ...], ...] -> [prefix1, ...]
