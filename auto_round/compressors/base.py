@@ -546,7 +546,7 @@ class BaseCompressor(object):
         #     self.block_forward = (
         #         compile_func(block_forward, self.device) if self.enable_torch_compile else block_forward
         #     )
-
+        self.block_forward = block_forward
         self._check_configs()
         torch.set_printoptions(precision=3, sci_mode=True)
 

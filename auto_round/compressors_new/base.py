@@ -975,6 +975,7 @@ class BaseCompressor(object):
         #     self.block_forward = compile_func(block_forward, self.compress_context.device)
         # else:
         #     self.block_forward = block_forward
+        self.block_forward = block_forward
         if self.compress_context.low_cpu_mem_usage:
             self._offloader.reset()
 
