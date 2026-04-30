@@ -121,6 +121,40 @@ class TestAutoRound:
 
         shutil.rmtree(self.save_dir, ignore_errors=True)
 
+    def test_qwen2_5_vl_loading(self, tiny_qwen_2_5_vl_model_path):
+        from auto_round.utils import mllm_load_model
+
+        layer_config = {
+            "self_attn": {"bits": 8},
+            "lm_head": {"bits": 16},
+            "mlp": {"bits": 16, "act_bits": 16},
+        }
+
+        model, processor, tokenizer, image_processor = mllm_load_model(tiny_qwen_2_5_vl_model_path)
+
+        autoround = AutoRound(
+            model,
+            tokenizer,
+            scheme="W4A16",
+            iters=1,
+            nsamples=1,
+            seqlen=32,
+            processor=processor,
+            image_processor=image_processor,
+            layer_config=layer_config,
+        )
+
+        _, quantized_model_path = autoround.quantize_and_save(
+            output_dir=self.save_dir,
+            inplace=True,
+            format="auto_round",
+        )
+
+        generated_text = self._run_sglang_inference(quantized_model_path)
+        print(generated_text)
+
+        assert "!!!" not in generated_text
+
     @pytest.mark.skip_ci(reason="Cannot work well in CI env")
     def test_awq_format_sglang(self, dataloader):
         autoround = AutoRound(

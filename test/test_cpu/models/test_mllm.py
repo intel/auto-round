@@ -236,6 +236,7 @@ class TestAutoRound:
         model = Qwen2_5_VLForConditionalGeneration.from_pretrained(
             quantized_model_path, torch_dtype="auto", device_map="auto"
         )
+        assert model.config.quantization_config.block_name_to_quantize == "model.visual.blocks,model.layers"
         image_url = "https://qianwen-res.oss-cn-beijing.aliyuncs.com/Qwen-VL/assets/demo.jpeg"
         processor = AutoProcessor.from_pretrained(quantized_model_path)
         messages = [

@@ -52,10 +52,12 @@ from auto_round.utils import (
     extract_block_names_to_str,
     find_matching_blocks,
     get_block_names,
+    get_reverse_checkpoint_conversion_mapping,
     is_debug_mode,
     is_hpex_available,
     is_quantized_input_module,
     memory_monitor,
+    revert_checkpoint_conversion_mapping,
 )
 from auto_round.utils.device import (
     _force_trim_malloc,
@@ -1169,6 +1171,20 @@ class BaseCompressor(object):
                 serialization_dict["to_quant_block_names"] = extract_block_names_to_str(self.quantizer.quant_block_list)
             if "scale_dtype" in serialization_dict.keys():
                 serialization_dict["scale_dtype"] = str(serialization_dict["scale_dtype"])
+
+            # to match the original name
+            reverse_checkpoint_conversion_mapping = get_reverse_checkpoint_conversion_mapping(self.model)
+
+            if isinstance(serialization_dict["to_quant_block_names"], str):
+                serialization_dict["to_quant_block_names"] = revert_checkpoint_conversion_mapping(
+                    serialization_dict["to_quant_block_names"], reverse_checkpoint_conversion_mapping
+                )
+
+            elif isinstance(serialization_dict["to_quant_block_names"], list):
+                for idx in range(len(serialization_dict["to_quant_block_names"])):
+                    serialization_dict["to_quant_block_names"][idx] = revert_checkpoint_conversion_mapping(
+                        serialization_dict["to_quant_block_names"][idx], reverse_checkpoint_conversion_mapping
+                    )
 
             compressed_model = format.save_quantized(
                 save_folder,
