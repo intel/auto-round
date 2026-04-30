@@ -6,10 +6,11 @@
 # ]
 # ///
 
+import math
+import os
 import sys
 import time
-import os
-import math
+
 import plotille
 from nvitop import Device
 
