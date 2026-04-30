@@ -1063,8 +1063,13 @@ def get_checkpoint_conversion_mapping(model):
     checkpoint_conversion_mapping = getattr(model, "_checkpoint_conversion_mapping", {})
 
     # transformers > 5.3.0 use get_checkpoint_conversion_mapping
-    if hasattr(transformers, "conversion_mapping") and (hasattr(model, "config") and hasattr(model.config, "model_type")):
-        from transformers.conversion_mapping import get_checkpoint_conversion_mapping as transformers_get_checkpoint_conversion_mapping
+    if hasattr(transformers, "conversion_mapping") and (
+        hasattr(model, "config") and hasattr(model.config, "model_type")
+    ):
+        from transformers.conversion_mapping import (
+            get_checkpoint_conversion_mapping as transformers_get_checkpoint_conversion_mapping,
+        )
+
         conversion_mappings = transformers_get_checkpoint_conversion_mapping(model.config.model_type)
         for conversion_mapping in conversion_mappings:
             for source_pattern in conversion_mapping.source_patterns:
@@ -1074,7 +1079,9 @@ def get_checkpoint_conversion_mapping(model):
 
 def get_reverse_checkpoint_conversion_mapping(model):
     """Get the reverse checkpoint conversion mapping for a given model, if it exists."""
-    reverse_checkpoint_conversion_mapping = {v: k for k, v in getattr(model, "_checkpoint_conversion_mapping", {}).items()}
+    reverse_checkpoint_conversion_mapping = {
+        v: k for k, v in getattr(model, "_checkpoint_conversion_mapping", {}).items()
+    }
 
     if hasattr(model, "_weight_conversions"):
         weight_conversions = model._weight_conversions

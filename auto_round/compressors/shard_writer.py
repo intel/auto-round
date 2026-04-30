@@ -20,7 +20,12 @@ import torch
 from torch.nn import Parameter
 
 from auto_round.logger import logger
-from auto_round.utils import get_lm_head_name, get_module, revert_checkpoint_conversion_mapping, get_reverse_checkpoint_conversion_mapping
+from auto_round.utils import (
+    get_lm_head_name,
+    get_module,
+    get_reverse_checkpoint_conversion_mapping,
+    revert_checkpoint_conversion_mapping,
+)
 
 
 class ShardWriter:

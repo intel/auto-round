@@ -40,9 +40,9 @@ from auto_round.utils import (
     check_to_quantized,
     find_matching_blocks,
     get_block_names,
+    get_checkpoint_conversion_mapping,
     get_module,
     is_hpex_available,
-    get_checkpoint_conversion_mapping,
     is_transformers_version_greater_or_equal_5,
     set_module,
 )
