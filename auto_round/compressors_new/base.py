@@ -101,7 +101,7 @@ class SerializedCompressorConfig:
     super_bits: Optional[int] = None
     super_group_size: Optional[int] = None
     to_quant_block_names: Optional[list[str]] = None
-    transform_configs: Optional[list[dict[str, Any]]] = None
+    rotation_configs: Optional[list[dict[str, Any]]] = None
 
 
 class BaseCompressor(object):
@@ -146,13 +146,13 @@ class BaseCompressor(object):
         **kwargs,
     ):
         self.quantize_config = None
-        self.transform_configs: list[BaseRotationConfig] = []
+        self.rotation_configs: list[BaseRotationConfig] = []
         _config_list = config if isinstance(config, list) else [config]
         for _cfg in _config_list:
             if isinstance(_cfg, QuantizationConfig):
                 self.quantize_config = _cfg
             elif isinstance(_cfg, BaseRotationConfig):
-                self.transform_configs.append(_cfg)
+                self.rotation_configs.append(_cfg)
         assert self.quantize_config is not None, "QuantizationConfig is required for Compressor"
 
         # Compressor-level calibration/layer params (do not live in QuantizationConfig).
@@ -623,7 +623,7 @@ class BaseCompressor(object):
     def _get_calibration_dataset(self) -> str:
         """Resolve calibration dataset: self.dataset > AutoScheme.dataset > default."""
         dataset = self.__dict__.get("dataset", None)
-        if dataset:
+        if dataset is not None:
             return dataset
         from auto_round.auto_scheme.gen_auto_scheme import AutoScheme
 
@@ -664,6 +664,7 @@ class BaseCompressor(object):
         self._resolve_formats()
         self._patch_model()
         self._build_layer_config()
+        self._apply_rotations()
 
         # Reclaim temporaries from Phases 1-4 (scheme resolution, format
         # parsing, model patching, layer-config walk) before Phase 5
@@ -730,7 +731,7 @@ class BaseCompressor(object):
         self.wrapper_block = wrapper_block
 
     def _resolve_formats(self) -> None:
-        """Phase 2 – Format resolution, GGUF attr sync, and rotation application.
+        """Phase 2 – Format resolution and GGUF attr sync.
 
         Preconditions:
           - Phase 1 complete: ``self.quantizer`` is initialised and the scheme
@@ -747,14 +748,12 @@ class BaseCompressor(object):
             have written onto ``self`` inside ``get_formats``, syncs them to
             ``self.quantizer``, and rebuilds ``self.scheme`` accordingly.
           - Merges any GGUF-injected entries into ``self.layer_config``.
-          - **(2d)** Applies rotation transforms from ``self.transform_configs``.
 
         Postconditions:
           - ``self.formats`` is a list (or ``None``).
           - ``self.compress_context.formats`` mirrors ``self.formats``.
           - ``self.quantizer`` carries the GGUF-adjusted scheme attrs.
           - ``self.scheme`` is consistent with the final quantization attrs.
-          - All rotation transforms have been applied to ``self.model_context.model``.
         """
         # get_formats() inspects data_type / bits etc. that were just resolved.
         if isinstance(self.formats, str):
@@ -845,15 +844,38 @@ class BaseCompressor(object):
             for _lname, _lval in _gguf_layer_cfg.items():
                 self.layer_config.setdefault(_lname, _lval)
 
-        # ── 2d: apply rotation transforms ────────────────────────────────────
-        if self.transform_configs:
-            logger.info("Applying Hadamard transform to the model.")
-            for rotation_cfg in self.transform_configs:
-                self.model_context.model = apply_rotation(
-                    self.model_context.model,
-                    rotation_cfg,
-                    data_type=self.quantize_config.data_type,
-                )
+    def _apply_rotations(self) -> None:
+        """Phase 4.5 – Apply Hadamard / rotation transforms to the model.
+
+        Preconditions:
+          - Phase 3 complete: model topology is final (``apply_patches`` has
+            replaced / merged layers, e.g. MoE experts), so rotation operates
+            on the same modules that quantization will later see.
+          - Phase 4 complete: ``self.layer_config`` is built; rotation only
+            transforms weights and does not change layer names, so this
+            ordering matches the old arch where rotation ran after
+            ``configure_layer_config``.
+          - ``self.quantize_config.data_type`` is final (rotation backend
+            dispatch depends on it).
+
+        Work performed:
+          - Iterates ``self.rotation_configs`` and calls
+            :func:`~auto_round.algorithms.transforms.apply_rotation` on the
+            model for each config.
+
+        Postconditions:
+          - ``self.model_context.model`` carries the rotated weights and any
+            inserted online-Hadamard hooks.
+        """
+        if not self.rotation_configs:
+            return
+        logger.info("Applying Hadamard transform to the model.")
+        for rotation_cfg in self.rotation_configs:
+            self.model_context.model = apply_rotation(
+                self.model_context.model,
+                rotation_cfg,
+                data_type=self.quantize_config.data_type,
+            )
 
     def _patch_model(self) -> None:
         """Phase 3 – Model structure patching.
