@@ -1,3 +1,4 @@
+import json
 import os
 import shutil
 
@@ -164,18 +165,98 @@ class TestLLMC:
         ), f"Invalid mixed precision quantization configuration: {quantization_config}"
 
 
-def test_llmcompressor_static_fp_export_packs_serially(tiny_opt_model_path, tmp_path, monkeypatch):
+def test_llmcompressor_static_fp_export_packs_serially(tiny_opt_model_path, dataloader, tmp_path, monkeypatch):
     autoround = AutoRound(
         tiny_opt_model_path,
         scheme="FP8_STATIC",
         seqlen=8,
         nsamples=2,
         iters=0,
+        dataset=dataloader,
     )
     autoround.quantize()
     forbid_threaded_packing(monkeypatch, llmc_static_fp_export)
     autoround.save_quantized(tmp_path, format="llm_compressor")
     assert os.path.exists(os.path.join(tmp_path, "config.json"))
+
+
+def test_llmcompressor_static_fp8_kv_config(tiny_opt_model_path, dataloader, tmp_path):
+    autoround = AutoRound(
+        tiny_opt_model_path,
+        scheme="FP8_STATIC",
+        seqlen=8,
+        nsamples=2,
+        iters=0,
+        dataset=dataloader,
+        static_kv_dtype="fp8",
+    )
+    _, quantized_model_path = autoround.quantize_and_save(tmp_path, format="llm_compressor")
+
+    with open(os.path.join(quantized_model_path, "config.json")) as f:
+        config = json.load(f)
+    kv_cache_scheme = config["quantization_config"]["kv_cache_scheme"]
+    assert kv_cache_scheme is not None
+    assert kv_cache_scheme["num_bits"] == 8
+    assert kv_cache_scheme["type"] == "float"
+    assert kv_cache_scheme["strategy"] == "tensor"
+    assert kv_cache_scheme["dynamic"] is False
+    assert kv_cache_scheme["symmetric"] is True
+
+
+def test_llmcompressor_static_fp8_attention_config(dataloader, tmp_path):
+    model_name = get_model_path("stas/tiny-random-llama-2")
+    autoround = AutoRound(
+        model_name,
+        scheme="FP8_STATIC",
+        seqlen=8,
+        nsamples=2,
+        iters=0,
+        dataset=dataloader,
+        static_attention_dtype="fp8",
+    )
+    _, quantized_model_path = autoround.quantize_and_save(tmp_path, format="llm_compressor")
+
+    with open(os.path.join(quantized_model_path, "config.json")) as f:
+        saved_config = json.load(f)
+    saved_groups = saved_config["quantization_config"]["config_groups"]
+    attention_group = None
+    for group in saved_groups.values():
+        if "Linear" not in group["targets"]:
+            attention_group = group
+            break
+
+    assert attention_group is not None
+    assert attention_group["weights"] is None
+    assert attention_group["input_activations"]["num_bits"] == 8
+    assert attention_group["input_activations"]["type"] == "float"
+    assert attention_group["input_activations"]["strategy"] == "tensor"
+    assert attention_group["input_activations"]["dynamic"] is False
+    assert attention_group["input_activations"]["symmetric"] is True
+    assert saved_config["quantization_config"]["kv_cache_scheme"] is not None
+
+    model = AutoModelForCausalLM.from_pretrained(quantized_model_path, torch_dtype="auto", trust_remote_code=True)
+    quantization_config = model.config.quantization_config
+    config = quantization_config.to_dict() if hasattr(quantization_config, "to_dict") else quantization_config
+    config_groups = config["config_groups"]
+
+    assert "group_0" in config_groups
+    attention_group = None
+    for group in config_groups.values():
+        targets = group["targets"]
+        if "Linear" not in targets:
+            attention_group = group
+            break
+
+    assert attention_group is not None
+    assert attention_group["targets"] == [model.model.layers[0].self_attn.__class__.__name__]
+    assert attention_group["weights"] is None
+    assert attention_group["input_activations"]["num_bits"] == 8
+    assert attention_group["input_activations"]["type"] == "float"
+    assert attention_group["input_activations"]["strategy"] == "tensor"
+    assert attention_group["input_activations"]["dynamic"] is False
+    assert attention_group["input_activations"]["symmetric"] is True
+    assert getattr(model.model.layers[0].self_attn, "q_scale", None) is not None
+    assert config["kv_cache_scheme"] is not None
 
 
 def test_llmcompressor_mxfp8_export_packs_serially(tmp_path, monkeypatch):
