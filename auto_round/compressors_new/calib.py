@@ -138,7 +138,6 @@ class CalibCompressor(BaseCompressor):
             and len(layer_names) == 0
             and not self.quantizer.has_qlayer_outside_block
             and (last_cache_name is None or last_cache_name in block_names)
-            and not getattr(self, "mllm", False)
         ):
             # low_gpu_mem_usage or calibrate only the embedding layer, which is also very fast on CPU
             calibrate_on_cpu = True
