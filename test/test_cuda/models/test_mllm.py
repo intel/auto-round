@@ -240,8 +240,7 @@ class TestAutoRound:
             autoround._should_stop_cache_forward = original_should_stop
 
     def test_mllm_text_dataset_low_vram(self):
-        """Test that MLLM with string/text dataset uses CPU caching to reduce peak VRAM.
-        """
+        """Test that MLLM with string/text dataset uses CPU caching to reduce peak VRAM."""
         from auto_round.utils.device import memory_monitor
 
         model_name = get_model_path("Qwen/Qwen2-VL-2B-Instruct")
