@@ -238,3 +238,34 @@ class TestAutoRound:
             assert len(inputs) >= 3, "Should have cached at least 3 input keys"
         finally:
             autoround._should_stop_cache_forward = original_should_stop
+
+    def test_mllm_text_dataset_low_vram(self):
+        """Test that MLLM with string/text dataset uses CPU caching to reduce peak VRAM."""
+        from auto_round.utils.device import memory_monitor
+
+        model_name = get_model_path("Qwen/Qwen2-VL-2B-Instruct")
+        dataset = ["a small test sentence", "another test input"]
+
+        memory_monitor.reset()
+        memory_monitor._initialized = True
+
+        autoround = AutoRound(
+            model=model_name,
+            bits=4,
+            group_size=128,
+            nsamples=1,
+            iters=1,
+            dataset=dataset,
+            seqlen=8,
+        )
+        autoround.quantize()
+
+        peak_vram_gb = memory_monitor.peak_vram.get("0", 0) / 1024
+        print(f"peak_vram: {peak_vram_gb:.2f}GB")
+
+        # CPU caching keeps the model off GPU except for individual blocks, so peak VRAM
+        # should be well below the full model size.
+        assert peak_vram_gb < 2, (
+            f"Expected peak_vram < 2GB with CPU caching for MLLM, got {peak_vram_gb:.2f}GB. "
+            "MLLM models with text datasets should use CPU caching to reduce peak VRAM."
+        )
