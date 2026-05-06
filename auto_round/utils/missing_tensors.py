@@ -528,80 +528,62 @@ def quantize_weight_rtn(
         weight = torch.nn.functional.pad(weight, (0, 0, 0, out_pad))
     padded_out = weight.shape[0]
 
-    # Reshape for group-wise ops: [padded_out, num_groups, group_size]
-    w_grouped = weight.reshape(padded_out, num_groups, group_size)
-
-    q_scale_thresh = 1e-5  # match quant_tensor_sym / quant_tensor_asym threshold
+    # Use quantization functions from auto_round/data_type/int.py
+    from auto_round.data_type.int import quant_tensor_rtn_sym, quant_tensor_asym
+    from auto_round.data_type.utils import reshape_pad_tensor_by_group_size
 
     if sym:
-        # Full-range symmetric quantization — aligned with quant_tensor_sym
-        # in auto_round/data_type/int.py:
-        #   maxq = 2^(bits-1)  (e.g. 8 for 4-bit)
-        #   scale = signed_max(wmin, wmax) / maxq  (can be negative)
-        #   q = clamp(round(w / scale), -maxq, maxq - 1)
+        # Full-range symmetric quantization via quant_tensor_rtn_sym
         maxq = 1 << (bits - 1)  # e.g. 8 for 4-bit
         zero_point = maxq  # unsigned offset for packing
 
-        w_min = w_grouped.amin(dim=-1, keepdim=True)
-        w_max = w_grouped.amax(dim=-1, keepdim=True)
-        # clamp so that 0 is always representable
-        w_min = torch.clamp(w_min, max=0)
-        w_max = torch.clamp(w_max, min=0)
-        wmin_abs = -w_min
-        wmax_abs = w_max
-        # signed max: preserves the sign of the dominant extreme
-        max_v = (2 * (wmax_abs < wmin_abs).int() - 1) * torch.max(wmax_abs, wmin_abs)
-        del w_min, w_max, wmin_abs, wmax_abs
+        # quant_tensor_rtn_sym returns (qdq_result, scale, maxq)
+        # scale shape: [padded_out * num_groups, 1]
+        _, scale, _ = quant_tensor_rtn_sym(weight, bits=bits, group_size=group_size)
 
-        scales_full = (max_v / maxq).to(torch.float16)
-        # Clamp small scales for numerical stability (match q_scale_thresh)
-        scales_full = torch.where(
-            scales_full < 0,
-            torch.clamp(scales_full, max=-q_scale_thresh),
-            torch.clamp(scales_full, min=q_scale_thresh),
-        )
-        scales_full = scales_full.float()  # compute in fp32
-        del max_v
+        # Reshape weight for group-wise quantization: [padded_out * num_groups, group_size]
+        w_grouped, _, _ = reshape_pad_tensor_by_group_size(weight, group_size)
+        w_grouped = w_grouped.to(device=device, dtype=torch.float32)
+        del weight
 
-        # In-place ops to minimise peak GPU memory.
-        q = w_grouped / scales_full
-        del weight, w_grouped  # free the (potentially large) float32 weight storage
-        q.round_().clamp_(-maxq, maxq - 1)
+        # Compute integer values for packing
+        q = (w_grouped / scale).round_().clamp_(-maxq, maxq - 1)
+        del w_grouped
         q += zero_point  # shift to unsigned [0, 2*maxq - 1]
-        q = q.to(torch.int32)  # new int32 tensor; float32 q is freed
+        q = q.to(torch.int32)
+
+        # scale → [num_groups, padded_out] (float16)
+        scales_out = scale.squeeze(-1).reshape(padded_out, num_groups).t().contiguous().to(torch.float16)
+        del scale
 
         zp = torch.full((num_groups, padded_out), zero_point, dtype=torch.int32, device=device)
     else:
-        # Asymmetric quantization — aligned with quant_tensor_asym
-        # in auto_round/data_type/int.py:
-        #   maxq = 2^bits - 1
-        #   wmin = clamp(min, max=0), wmax = clamp(max, min=0)
-        #   scale = (wmax - wmin) / maxq
-        #   zp = round(-wmin / scale)
-        #   q = clamp(round(w / scale) + zp, 0, maxq)
+        # Asymmetric quantization via quant_tensor_asym
         max_int = (1 << bits) - 1
-        w_min = torch.clamp(w_grouped.amin(dim=-1, keepdim=True), max=0)
-        w_max = torch.clamp(w_grouped.amax(dim=-1, keepdim=True), min=0)
 
-        scales_full = ((w_max - w_min) / max_int).to(torch.float16)
-        scales_full = torch.clamp(scales_full, min=q_scale_thresh)
-        scales_full = scales_full.float()  # compute in fp32
-        zp_full = torch.round(-w_min / scales_full).clamp_(0, max_int).to(torch.int32)
-        del w_min, w_max
+        # quant_tensor_asym returns (qdq_result, scale, zp)
+        # scale shape: [padded_out * num_groups, 1], zp shape: [padded_out * num_groups, 1]
+        _, scale, zp_val = quant_tensor_asym(weight, bits=bits, group_size=group_size)
 
-        q = w_grouped / scales_full
-        del weight, w_grouped
-        q.round_()  # round FIRST (matches regular path: round(w/scale) then + zp)
-        q += zp_full.float()  # then add zp
+        # Reshape weight for group-wise quantization
+        w_grouped, _, _ = reshape_pad_tensor_by_group_size(weight, group_size)
+        w_grouped = w_grouped.to(device=device, dtype=torch.float32)
+        del weight
+
+        # Compute integer values for packing
+        q = (w_grouped / scale).round_()
+        del w_grouped
+        q += zp_val
         q.clamp_(0, max_int)
         q = q.to(torch.int32)
 
-        zp = zp_full.squeeze(-1).t().contiguous()  # [num_groups, padded_out]
-        del zp_full
+        # scale → [num_groups, padded_out] (float16)
+        scales_out = scale.squeeze(-1).reshape(padded_out, num_groups).t().contiguous().to(torch.float16)
+        del scale
 
-    # scales → [num_groups, padded_out] (float16)
-    scales_out = scales_full.squeeze(-1).t().contiguous().to(torch.float16)
-    del scales_full
+        # zp → [num_groups, padded_out]
+        zp = zp_val.squeeze(-1).reshape(padded_out, num_groups).t().contiguous().to(torch.int32)
+        del zp_val
 
     # q → [in_features, padded_out]
     q = q.reshape(padded_out, in_features).t().contiguous()
