@@ -103,37 +103,47 @@ def get_sycl_tla_job_count(cpu_job_count):
     return min(cpu_job_count, memory_based_jobs)
 
 
+ROOT = Path(__file__).resolve().parent
+SRC_DIR = ROOT / "auto_round_kernel"
+BUILD_DIR = ROOT / "build"
+XBUILD_DIR = ROOT / "xbuild"
+
+
 class CMakeBuild(build_ext):
     def run(self):
-        # Step 1: cmake configure and build for default settings
-        cmake_cmd = ["cmake", "-B", "build", "-DCMAKE_BUILD_TYPE=Release"]
+        cmake_cmd = [
+            "cmake",
+            "-S",
+            str(SRC_DIR),
+            "-B",
+            str(BUILD_DIR),
+            "-DCMAKE_BUILD_TYPE=Release",
+        ]
         if sys.platform == "win32":
             cmake_cmd.append("-GNinja")
         subprocess.check_call(cmake_cmd)
+
         n_job = os.cpu_count() or 2
-        n_job = n_job // 2  # use half of available cores for the build to avoid OOM on CI machines
-        subprocess.check_call(["cmake", "--build", "build", "-j", str(n_job)])
+        n_job = n_job // 2
+        subprocess.check_call(["cmake", "--build", str(BUILD_DIR), "-j", str(n_job)])
 
-        if sys.platform == "win32":
-            ext = "pyd"
-        else:
-            ext = "so"
+        ext = "pyd" if sys.platform == "win32" else "so"
 
-        # Step 2: copy .so files from the first build
-        so_files = list(Path("build").rglob(f"auto_round_kernel*.{ext}"))
+        so_files = list(BUILD_DIR.rglob(f"auto_round_kernel*.{ext}"))
         if not so_files:
-            raise RuntimeError("Can't find auto_round_kernel*.so in 'build', please check cmake outputs！")
+            raise RuntimeError(f"Can't find auto_round_kernel*.{ext} in '{BUILD_DIR}'")
 
         target = Path(self.build_lib) / "auto_round_kernel"
         target.mkdir(parents=True, exist_ok=True)
         for so in so_files:
-            print(f"Copying {so} → {target}")
             self.copy_file(str(so), str(target / so.name))
 
         cmake_cmd = [
             "cmake",
+            "-S",
+            str(SRC_DIR),
             "-B",
-            "xbuild",
+            str(XBUILD_DIR),
             "-DCMAKE_BUILD_TYPE=Release",
             "-DCMAKE_CXX_COMPILER=icx",
             "-DARK_XPU=ON",
@@ -141,18 +151,15 @@ class CMakeBuild(build_ext):
         ]
         if sys.platform == "win32":
             cmake_cmd.append("-GNinja")
-        # Step 3: cmake configure and build for XPU settings
         xpu_n_job = get_sycl_tla_job_count(n_job) if enable_sycl_tla else n_job
         subprocess.check_call(cmake_cmd)
-        subprocess.check_call(["cmake", "--build", "xbuild", "-j", str(xpu_n_job)])
+        subprocess.check_call(["cmake", "--build", str(XBUILD_DIR), "-j", str(xpu_n_job)])
 
-        # Step 4: copy .so files from the second build
-        so_files = list(Path("xbuild").rglob(f"auto_round_kernel*.{ext}"))
+        so_files = list(XBUILD_DIR.rglob(f"auto_round_kernel*.{ext}"))
         if not so_files:
-            raise RuntimeError("Can't find auto_round_kernel*.so in 'xbuild', please check cmake outputs！")
+            raise RuntimeError(f"Can't find auto_round_kernel*.{ext} in '{XBUILD_DIR}'")
 
         for so in so_files:
-            print(f"Copying {so} → {target}")
             self.copy_file(str(so), str(target / so.name))
 
 
@@ -160,16 +167,6 @@ class BuildPyThenCMake(build_py):
     def run(self):
         self.run_command("build_ext")
         super().run()
-
-        source_qlinear = Path(__file__).resolve().parent.parent / "qlinear.py"
-        if not source_qlinear.is_file():
-            print(f"Cannot find source qlinear.py at {source_qlinear}, skipping copy.")
-            return
-
-        target_pkg = Path(self.build_lib) / "auto_round_kernel"
-        target_pkg.mkdir(parents=True, exist_ok=True)
-
-        self.copy_file(str(source_qlinear), str(target_pkg / "qlinear.py"))
 
 
 ext_modules = [Extension("auto_round_kernel.auto_round_kernel", sources=[])]
