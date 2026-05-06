@@ -563,9 +563,9 @@ def convert_gptq_v1_to_v2_format(model: nn.Module):
     import gptqmodel
 
     if Version(gptqmodel.__version__) >= Version("7.0.0"):
-        from gptqmodel.nn_modules.qlinear.exllamav2 import (
-            ExllamaV2Linear as ExllamaV2QuantLinear,  # pylint: disable=E0401
-        )
+        from gptqmodel.nn_modules.qlinear.exllamav2 import ExllamaV2Linear  # pylint: disable=E0401
+
+        ExllamaV2QuantLinear = ExllamaV2Linear  # pylint: disable=E0401
     else:
         from gptqmodel.nn_modules.qlinear.exllamav2 import ExllamaV2QuantLinear  # pylint: disable=E0401
 
