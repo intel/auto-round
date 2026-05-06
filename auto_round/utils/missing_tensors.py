@@ -529,7 +529,7 @@ def quantize_weight_rtn(
     padded_out = weight.shape[0]
 
     # Use quantization functions from auto_round/data_type/int.py
-    from auto_round.data_type.int import quant_tensor_rtn_sym, quant_tensor_asym
+    from auto_round.data_type.int import quant_tensor_asym, quant_tensor_rtn_sym
     from auto_round.data_type.utils import reshape_pad_tensor_by_group_size
 
     q_scale_thresh = 1e-5  # match quant_tensor_sym / quant_tensor_asym threshold
