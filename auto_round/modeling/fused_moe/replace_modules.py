@@ -34,6 +34,8 @@ BUILTIN_MODULES = {
     "llama4": LazyImport("auto_round.modeling.fused_moe.llama4"),
     # DeepseekV2Attention enables q_scale calibration for deepseek v2 on Gaudi (#1299)
     "deepseek_v2": LazyImport("auto_round.modeling.fused_moe.deepseek_v2"),
+    # DeepSeek-V4 downstream standalone patches replace experts with per-expert MXFP4Linear modules.
+    # "deepseek_v4": LazyImport("auto_round.modeling.fused_moe.deepseek_v4"),
     # supports transformers >= 5.0.0
     "qwen3_5_moe": LazyImport("auto_round.modeling.fused_moe.qwen3_5_moe"),
     "qwen3_5_moe_text": LazyImport("auto_round.modeling.fused_moe.qwen3_5_moe"),

@@ -606,7 +606,7 @@ SUPPORTED_DTYPES = ("int", "mx_fp", "fp", "nv_fp", "mx_int")
 SUPPORTED_FORMATS = SupportedFormats()
 SUPPORTED_LAYER_TYPES = (torch.nn.Linear, transformers.pytorch_utils.Conv1D)
 # Changed to str as it relies on triton or others lib to load this
-INNER_SUPPORTED_LAYER_TYPES = ("FP8Linear", "CompressedLinear")
+INNER_SUPPORTED_LAYER_TYPES = ("FP8Linear", "CompressedLinear", "MXFP4Linear")
 # transformers.integrations.finegrained_fp8.FP8Linear
 if deepspeed_exists:
     from deepspeed.module_inject import LinearAllreduce, LinearLayer

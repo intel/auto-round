@@ -19,6 +19,7 @@ from auto_round.utils.weight_handler import (
     convert_module_to_hp_if_necessary,
     detect_weight_type,
     is_quantized_input_module,
+    prepare_module_for_shard_write_if_necessary,
 )
 from auto_round.utils.missing_tensors import copy_missing_tensors_from_source
 

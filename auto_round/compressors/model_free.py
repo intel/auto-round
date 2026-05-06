@@ -648,10 +648,10 @@ def _dequant_fp8_tensors(
         if is_fp4_packed:
             # FP4 E2M1 packed in int8 with UE8M0 per-block scale.
             raw_tensors[weight_name] = _dequant_fp4_packed_weight(weight, scale)
-        else:
-            if is_e8m0:
-                scale = _e8m0_to_float(scale)
-            raw_tensors[weight_name] = _dequant_fp8_linear_weight(weight, scale, block_size=block_size)
+        # else:
+        #     if is_e8m0:
+        #         scale = _e8m0_to_float(scale)
+        #     raw_tensors[weight_name] = _dequant_fp8_linear_weight(weight, scale, block_size=block_size)
 
     return raw_tensors
 

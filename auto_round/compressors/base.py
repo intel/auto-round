@@ -107,6 +107,7 @@ from auto_round.utils import (
     memory_monitor,
     mv_module_from_gpu,
     normalize_no_split_modules,
+    prepare_module_for_shard_write_if_necessary,
     set_amax_for_all_moe_layers,
     set_module,
     to_device,
@@ -1556,7 +1557,7 @@ class BaseCompressor(object):
                         block = get_module(self.model, block_name)
 
                         materialize_model_(block)
-
+                        block = convert_module_to_hp_if_necessary(block, dtype=self.amp_dtype, device=self.device)
                         for name, m in block.named_modules():
                             if hasattr(m, "global_name") and m.global_name in all_to_quantized_module_names:
                                 self._quantize_layer_via_rtn(m.global_name, to_cpu=self.low_gpu_mem_usage)
@@ -1567,7 +1568,14 @@ class BaseCompressor(object):
                                 and m.global_name not in tied_weights_layers
                                 and self.is_immediate_saving
                             ):
-                                set_module(self.model, m.global_name, copy.deepcopy(m))
+                                prepared_m = prepare_module_for_shard_write_if_necessary(
+                                    self.model,
+                                    m.global_name,
+                                    dtype=self.amp_dtype,
+                                    device=self.device,
+                                )
+                                if prepared_m is m:
+                                    set_module(self.model, m.global_name, copy.deepcopy(m))
                                 if self.is_immediate_saving:
                                     shard_writer(self, name=m.global_name)
                                     copied_m = get_module(self.model, m.global_name)
@@ -1619,7 +1627,14 @@ class BaseCompressor(object):
                         and n not in tied_weights_layers
                         and self.is_immediate_saving
                     ):
-                        set_module(self.model, n, copy.deepcopy(m))
+                        prepared_m = prepare_module_for_shard_write_if_necessary(
+                            self.model,
+                            n,
+                            dtype=self.amp_dtype,
+                            device=self.device,
+                        )
+                        if prepared_m is m:
+                            set_module(self.model, n, copy.deepcopy(m))
                         shard_writer(self, name=n)
                         m.to("meta")
 

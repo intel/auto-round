@@ -375,6 +375,50 @@ def remove_existed_quantization_config(model: torch.nn.Module):
                 delattr(config_attr, "quantization_config")
 
 
+def _has_local_meta_tensors(module: torch.nn.Module) -> bool:
+    """Return True if a module stores parameters or buffers on the meta device.
+
+    Meta-only shells can appear in immediate-saving / low-memory flows after a
+    layer has already been packed or flushed to disk. At that point there is no
+    tensor data left to dequantize, so cleanup should skip the shell instead of
+    trying to materialize it with ``module.to(device)``.
+    """
+    for param in module.parameters(recurse=False):
+        if param is not None and param.device.type == "meta":
+            return True
+    for buffer in module.buffers(recurse=False):
+        if buffer is not None and buffer.device.type == "meta":
+            return True
+    return False
+
+
+def prepare_module_for_shard_write_if_necessary(
+    model: torch.nn.Module,
+    module_name: str,
+    dtype: torch.dtype = torch.bfloat16,
+    device: str = "cpu",
+) -> torch.nn.Module:
+    """Convert a marked quantized-input leaf before immediate shard writing.
+
+    In immediate-saving flows, non-target leaf modules may be serialized before
+    the final cleanup pass runs. Quantized-input leaves such as standalone
+    MXFP4Linear must therefore be converted before sharding, otherwise the
+    original low-precision source tensors are written out unchanged.
+    """
+    from auto_round.utils.model import get_module, set_module
+
+    module = get_module(model, module_name)
+    if getattr(module, "quantized_weight_type", None) is None:
+        return module
+
+    prepared_module = convert_module_to_hp_if_necessary(module, dtype=dtype, device=device, to_cpu=True)
+    if prepared_module is not module:
+        set_module(model, module_name, prepared_module)
+        return prepared_module
+
+    return module
+
+
 # --- Main Conversion Function ---
 def convert_module_to_hp_if_necessary(
     model_or_layer: torch.nn.Module,
@@ -413,7 +457,13 @@ def convert_module_to_hp_if_necessary(
     remove_existed_quantization_config(model_or_layer)
     # Check if it's a single quantized layer (has the attribute directly)
     if hasattr(model_or_layer, "quantized_weight_type") and model_or_layer.quantized_weight_type is not None:
+        if _has_local_meta_tensors(model_or_layer):
+            model_or_layer.quantized_weight_type = None
+            return model_or_layer
         handler = get_handler(model_or_layer.quantized_weight_type)
+        if handler is None or not handler.detect_layer(model_or_layer):
+            model_or_layer.quantized_weight_type = None
+            return model_or_layer
         new_module = handler.convert_layer(model_or_layer, dtype, device, to_cpu)
         _sync_serialization_attrs(model_or_layer, new_module)
         return new_module
@@ -423,7 +473,13 @@ def convert_module_to_hp_if_necessary(
     cnt = 0
     for n, m in model_or_layer.named_modules():
         if hasattr(m, "quantized_weight_type") and m.quantized_weight_type is not None:
+            if _has_local_meta_tensors(m):
+                m.quantized_weight_type = None
+                continue
             handler = get_handler(m.quantized_weight_type)
+            if handler is None or not handler.detect_layer(m):
+                m.quantized_weight_type = None
+                continue
             new_module = handler.convert_layer(m, dtype, device, to_cpu)
             _sync_serialization_attrs(m, new_module)
             new_module.quantized_weight_type = None  # Clear quantized type after conversion
@@ -642,10 +698,72 @@ class FP8Handler(WeightTypeHandler):
 # ----------------------------------------------------------------------------
 @register_weight_type_handler(ModuleWeightType.MXFP4)
 class MXFP4Handler(WeightTypeHandler):
-    """Handler for MXFP4 quantized layers (CompressedLinear with MXFP4PackedCompressor)."""
+    """Handler for MXFP4 quantized layers.
+
+    This handler supports:
+        - CompressedLinear layers with MXFP4PackedCompressor
+        - Standalone MXFP4Linear layers used by downstream DeepSeek patches
+    """
+
+    @staticmethod
+    def _is_standalone_scale_dtype(scale: torch.Tensor) -> bool:
+        mxfp4_scale_dtype = getattr(torch, "float8_e8m0fnu", None)
+        return scale.dtype == torch.uint8 or (mxfp4_scale_dtype is not None and scale.dtype == mxfp4_scale_dtype)
+
+    @staticmethod
+    def _is_packed_mxfp4_weight_dtype(weight: torch.Tensor) -> bool:
+        fp4_packed_dtype = getattr(torch, "float4_e2m1fn_x2", None)
+        return weight.dtype in (torch.uint8, torch.int8) or (
+            fp4_packed_dtype is not None and weight.dtype == fp4_packed_dtype
+        )
+
+    def _is_standalone_mxfp4_linear(self, module: torch.nn.Module) -> bool:
+        """Detect standalone MXFP4 layers by storage layout instead of class name."""
+        weight = getattr(module, "weight", None)
+        scale = getattr(module, "scale", None)
+        in_features = getattr(module, "in_features", None)
+        out_features = getattr(module, "out_features", None)
+
+        if not isinstance(weight, torch.Tensor) or not isinstance(scale, torch.Tensor):
+            return False
+        if not isinstance(in_features, int) or not isinstance(out_features, int):
+            return False
+        if weight.ndim != 2 or scale.ndim != 2:
+            return False
+        if not self._is_packed_mxfp4_weight_dtype(weight) or not self._is_standalone_scale_dtype(scale):
+            return False
+
+        return (
+            weight.shape[0] == out_features
+            and weight.shape[1] * 2 == in_features
+            and scale.shape[0] == out_features
+            and scale.shape[1] * 32 == in_features
+        )
+
+    def _get_mxfp4_tensors(self, layer: torch.nn.Module) -> tuple[torch.Tensor | None, torch.Tensor | None]:
+        """Return packed MXFP4 weights and their E8M0 scales from either layout."""
+        weight_packed = getattr(layer, "weight_packed", None)
+        if weight_packed is None:
+            weight_packed = getattr(layer, "weight", None)
+
+        weight_scale = getattr(layer, "weight_scale", None)
+        if weight_scale is None and self._is_standalone_mxfp4_linear(layer):
+            weight_scale = getattr(layer, "scale", None)
+
+        if weight_scale is not None and weight_scale.dtype != torch.uint8:
+            if self._is_standalone_scale_dtype(weight_scale):
+                weight_scale = weight_scale.view(torch.uint8)
+            else:
+                weight_scale = weight_scale.to(torch.uint8)
+
+        if weight_packed is not None and weight_packed.dtype != torch.uint8:
+            if self._is_packed_mxfp4_weight_dtype(weight_packed):
+                weight_packed = weight_packed.view(torch.uint8)
+
+        return weight_packed, weight_scale
 
     def detect_layer(self, module: torch.nn.Module) -> bool:
-        """Check if a module is an MXFP4 CompressedLinear layer."""
+        """Check if a module is an MXFP4 layer."""
         if module.__class__.__name__ == "CompressedLinear":
             if hasattr(module, "compressor") and module.compressor is not None:
                 compressor_name = module.compressor.__class__.__name__
@@ -664,6 +782,8 @@ class MXFP4Handler(WeightTypeHandler):
                     and q_scheme.input_activations.group_size == 32
                 ):
                     return True
+        if self._is_standalone_mxfp4_linear(module):
+            return True
         return False
 
     def convert_layer(
@@ -673,7 +793,7 @@ class MXFP4Handler(WeightTypeHandler):
         device: str = "cpu",
         to_cpu: bool = False,
     ) -> torch.nn.Module:
-        """Convert an MXFP4 CompressedLinear layer to a standard Linear layer."""
+        """Convert an MXFP4 layer to a standard Linear layer."""
         from auto_round.schemes import QuantizationScheme
         from auto_round.utils.device import is_gaudi2
 
@@ -695,21 +815,15 @@ class MXFP4Handler(WeightTypeHandler):
         # MXFP4 dequantization using to_dtype from mxfp4_qdq_utils
         from auto_round_extension.vllm_ext.mxfp4_qdq_utils import to_dtype
 
-        # Get packed weight and scale from layer
-        # MXFP4 weights are stored as packed uint8 in weight_packed
-        weight_packed = getattr(layer, "weight_packed", None)
-        if weight_packed is None:
-            weight_packed = getattr(layer, "weight", None)
-        weight_scale = getattr(layer, "weight_scale", None)
-        weight_scale = weight_scale.to(torch.uint8)
+        weight_packed, weight_scale = self._get_mxfp4_tensors(layer)
 
         if weight_packed is None or weight_scale is None:
-            raise ValueError("MXFP4 layer must have weight_packed and weight_scale attributes")
+            raise ValueError("MXFP4 layer must have packed weights and an E8M0 scale tensor")
 
         # Dequantize using to_dtype function
         dq_weight = to_dtype(
-            data_lp=weight_packed,
-            scale_e8m0=weight_scale,
+            data_lp=weight_packed.contiguous(),
+            scale_e8m0=weight_scale.contiguous(),
             elem_dtype="fp4_e2m1",
             block_size=32,
             target_dtype=dtype,

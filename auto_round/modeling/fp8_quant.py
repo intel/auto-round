@@ -65,7 +65,19 @@ def oot_replace_with_fp8_linear(
             #         config=model.config, block_size=quantization_config.weight_block_size, **module_kwargs
             #     )
             # elif isinstance(module, nn.Linear):
-            if isinstance(module, torch.nn.Linear):
+            # Preserve `nn.Linear` subclasses that override `forward` (for example
+            # grouped / block-diagonal projections): replacing them with a plain
+            # FP8Linear would silently change the module semantics. If such a
+            # module exposes `enable_fp8_weight_loading`, let it keep its custom
+            # forward and prepare its own FP8 weight / scale parameters instead.
+            if (
+                isinstance(module, torch.nn.Linear)
+                and module.__class__.forward is not torch.nn.Linear.forward
+                and hasattr(module, "enable_fp8_weight_loading")
+            ):
+                module.enable_fp8_weight_loading(quantization_config.weight_block_size, pre_quantized=pre_quantized)
+                has_been_replaced = True
+            elif isinstance(module, torch.nn.Linear):
                 # handle bias
                 if is_transformers_version_greater_or_equal_5_4_0():
                     module_kwargs["has_bias"] = module.bias is not None
