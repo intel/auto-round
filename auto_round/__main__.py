@@ -657,8 +657,11 @@ def tune(args):
 
             from auto_round import AutoRound
 
-            ar_kwargs = dict(
+            ar = AutoRound(
+                model_name,
                 scheme=scheme,
+                sym=ar_kwargs.get("sym", None),
+                group_size=ar_kwargs.get("group_size", None),
                 iters=0,
                 disable_opt_rtn=True,
                 model_free=True,
@@ -668,12 +671,6 @@ def tune(args):
                 quant_nontext_module=getattr(args, "quant_nontext_module", False),
                 device_map=args.device_map,
             )
-            if args.asym:
-                ar_kwargs["sym"] = False
-            if args.group_size:
-                ar_kwargs["group_size"] = args.group_size
-
-            ar = AutoRound(model_name, **ar_kwargs)
             ar.quantize_and_save(output_dir=output_dir, format=args.format)  # pylint: disable=E1101
             return
 
