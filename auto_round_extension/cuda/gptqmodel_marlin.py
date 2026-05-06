@@ -40,6 +40,10 @@ def get_marlin_layer():  ##use an ugly wrapper to  import gptqmodel on demand
     NEW_VERSION_6_0 = False
     if Version(gptqmodel.__version__) >= Version("6.0.0"):
         NEW_VERSION_6_0 = True
+    NEW_VERSION_7_0 = False
+    if Version(gptqmodel.__version__) >= Version("7.0.0"):
+        NEW_VERSION_7_0 = True
+
     from gptqmodel.models._const import DEVICE, PLATFORM  # pylint: disable=E0401
     from gptqmodel.nn_modules.qlinear import BaseQuantLinear  # pylint: disable=E0401
     from gptqmodel.utils.backend import BACKEND  # pylint: disable=E0401
@@ -51,10 +55,13 @@ def get_marlin_layer():  ##use an ugly wrapper to  import gptqmodel on demand
             NEW_VERSION = False
 
     marlin_import_exception = None
-    try:
-        import gptqmodel_marlin_kernels  # pylint: disable=E0401
-    except ImportError as e:
-        marlin_import_exception = e
+    if NEW_VERSION_7_0:
+        import gptqmodel.utils.marlin as gptqmodel_marlin_kernels
+    else:
+        try:
+            import gptqmodel_marlin_kernels  # pylint: disable=E0401
+        except ImportError as e:
+            marlin_import_exception = e
 
     from auto_round.utils import logger
 
@@ -187,7 +194,7 @@ def get_marlin_layer():  ##use an ugly wrapper to  import gptqmodel on demand
                 g_idx,
                 g_idx_sort_indices,
                 workspace,
-                wtype.id,
+                wtype if NEW_VERSION_7_0 else wtype.id,
                 reshaped_x.shape[0],
                 output_size_per_partition,
                 input_size_per_partition,

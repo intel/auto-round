@@ -110,9 +110,6 @@ def get_model_path(model_name: str) -> str:
     local_path = f"/models/{model_name.split('/')[-1]}"
     local_path_1 = f"/dataset/{model_name.split('/')[-1]}"
 
-    if "DeepSeek-V2-Lite" in model_name and os.path.exists("/data0/deepseek-ai/DeepSeek-V2-Lite"):
-        return "/data0/deepseek-ai/DeepSeek-V2-Lite"
-
     if os.path.exists(ut_path):
         return ut_path
     elif os.path.exists(local_path):
@@ -300,31 +297,27 @@ def get_tiny_model(
         else:
             trust_remote_code = kwargs.get("trust_remote_code", True)
             config = transformers.AutoConfig.from_pretrained(model_name_or_path, trust_remote_code=trust_remote_code)
-            use_config_only = not (not trust_remote_code and getattr(config, "auto_map", None))
-            if use_config_only:
-                # Special cases, for transformers == 5.4.0
-                if config.model_type == "qwen3_omni_moe":
-                    config.initializer_range = 0.02  # Default initializer range for weight initialization
-                _reduce_config_layers(config, num_layers, num_experts)
+            # Special cases, for transformers == 5.4.0
+            if config.model_type == "qwen3_omni_moe":
+                config.initializer_range = 0.02  # Default initializer range for weight initialization
+            _reduce_config_layers(config, num_layers, num_experts)
 
-                # Pick the right model class
-                base_lib = transformers
-                architectures = getattr(config, "architectures", [None])[0]
-                if (
-                    is_mllm
-                    and architectures.endswith("Model")
-                    and hasattr(base_lib, n := architectures.replace("Model", "ForConditionalGeneration"))
-                ):
-                    model_cls = getattr(base_lib, n)
-                elif hasattr(base_lib, architectures):
-                    model_cls = getattr(base_lib, architectures)
-                else:
-                    model_cls = (
-                        transformers.AutoModelForCausalLM
-                    )  # default to causal LM if we can't find a better match
-                model = model_cls._from_config(config)
-                model = model.eval()
-                return model
+            # Pick the right model class
+            base_lib = transformers
+            architectures = getattr(config, "architectures", [None])[0]
+            if (
+                is_mllm
+                and architectures.endswith("Model")
+                and hasattr(base_lib, n := architectures.replace("Model", "ForConditionalGeneration"))
+            ):
+                model_cls = getattr(base_lib, n)
+            elif hasattr(base_lib, architectures):
+                model_cls = getattr(base_lib, architectures)
+            else:
+                model_cls = transformers.AutoModelForCausalLM  # default to causal LM if we can't find a better match
+            model = model_cls._from_config(config)
+            model = model.eval()
+            return model
 
     # ---- original path: load pretrained weights then slice ----
     def slice_layers(module):
