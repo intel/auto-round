@@ -37,30 +37,15 @@ AutoRound Kernel provides weight-only linear computational capabilities for LLM 
   
 
 ## Installation
-### Install via pip
+### 1. Install via pip
 ```bash
-# Install the latest auto-round kernel which may upgrade your PyTorch version automatically
 pip install auto-round-lib
 ```
 
-<details>
-<summary>Other Installation Methods</summary>
-
-### Install via Script
+### 2. Install from Source
 ```bash
-curl -fsSL https://raw.githubusercontent.com/intel/auto-round/main/auto_round_extension/ark/install_kernel.py
-python3 install_kernel.py
+python setup.py bdist_wheel;pip install dist/*
 ```
-**Notes:**  
-This installation script will detect the current environment and install the auto-round-lib.
-
-### Install via auto_round
-```bash
-pip install auto-round
-auto-round-lib-install
-```
-
-</details>
 
 ### Validated Hardware Environment
 #### CPU based on [Intel 64 architecture or compatible processors](https://en.wikipedia.org/wiki/X86-64):

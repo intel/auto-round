@@ -847,7 +847,7 @@ def dynamic_import_inference_linear(backend, config, packing_format=None):
             import auto_round_kernel as ark  # pylint: disable=E0611, E0401
         except Exception as e:
             raise ImportError("Please install auto-round-lib for CPU/XPU, e.g., using: pip install auto-round-lib")
-        import auto_round_kernel.qlinear as qlinear
+        import auto_round_kernel.qlinear as qlinear  # pylint: disable=E0611, E0401
 
         if "zp" in backend:
             return qlinear.QuantLinearGPTQ

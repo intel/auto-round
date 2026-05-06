@@ -181,8 +181,8 @@ setup(
     keywords="quantization,auto-around,LLM,kernel",
     license="Apache 2.0",
     url="https://github.com/intel/auto-round",
-    packages=find_packages(include=["auto_round_kernel", "auto_round_kernel.*"]),
-    include_package_data=True,
+    packages=["auto_round_kernel"],
+    include_package_data=False,
     ext_modules=ext_modules,
     cmdclass={
         "build_ext": CMakeBuild,
