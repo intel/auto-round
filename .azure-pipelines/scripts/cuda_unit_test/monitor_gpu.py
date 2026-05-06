@@ -158,7 +158,7 @@ def stop_and_plot():
 
 if __name__ == "__main__":
     if len(sys.argv) < 2:
-        print("Usage: python gpu_monitor.py [daemon|stop]")
+        print("Usage: python monitor_gpu.py [daemon|stop]")
         sys.exit(1)
 
     command = sys.argv[1]
