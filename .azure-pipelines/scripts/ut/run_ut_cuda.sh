@@ -235,7 +235,7 @@ function run_unit_test_vllm() {
     cd ${REPO_PATH}/test
     rm -rf .coverage* *.xml *.html
     uv pip install -r test_cuda/requirements_vllm.txt \
-        --extra-index-url https://wheels.vllm.ai/0.20.0/cu129 \
+        --extra-index-url https://wheels.vllm.ai/0.20.1/cu129 \
         --extra-index-url https://download.pytorch.org/whl/cu128 \
         --index-strategy unsafe-best-match
     cd ${REPO_PATH} && uv pip install . && cd ${REPO_PATH}/test
