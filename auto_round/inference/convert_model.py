@@ -469,7 +469,7 @@ def _create_quant_layer(layer, layer_backend, config, in_features, out_features,
         )
 
     # Special handling for auto-round-lib AWQ layers
-    from auto_round_extension.ark.qlinear import QuantLinearAWQ
+    from auto_round_kernel.qlinear import QuantLinearAWQ  # pylint: disable=E0611, E0401
 
     if "auto_round_kernel" in layer_backend:
         return QuantLinear(

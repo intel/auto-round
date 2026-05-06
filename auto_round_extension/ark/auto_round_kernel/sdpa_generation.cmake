@@ -1,0 +1,33 @@
+file(MAKE_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR}/generated/sdpa)
+set(SDPA_DECLARATIONS_FILE ${CMAKE_CURRENT_BINARY_DIR}/generated/sdpa/sdpa_kernel_declarations.hpp)
+
+function(generate_sdpa_instantiation mode dtype_name dtype_type head_dim template_name function_name)
+  set(SDPA_FUNCTION_NAME ${function_name})
+  set(SDPA_TEMPLATE_NAME ${template_name})
+  set(SDPA_ELEMENT_TYPE ${dtype_type})
+  string(APPEND SDPA_KERNEL_DECLARATIONS "int ${function_name}(Options const& options);\n")
+  set(SDPA_KERNEL_DECLARATIONS ${SDPA_KERNEL_DECLARATIONS} PARENT_SCOPE)
+  set(_generated_src
+    ${CMAKE_CURRENT_BINARY_DIR}/generated/sdpa/${mode}_${dtype_name}_${head_dim}.cpp)
+  configure_file(${CMAKE_CURRENT_LIST_DIR}/sdpa_kernel_instantiation.cpp.in ${_generated_src} @ONLY)
+  list(APPEND SDPA_GENERATED_SRCS ${_generated_src})
+  set(SDPA_GENERATED_SRCS ${SDPA_GENERATED_SRCS} PARENT_SCOPE)
+endfunction()
+
+foreach(mode IN ITEMS prefill decode)
+  foreach(dtype_name IN ITEMS f16 bf16)
+    if(dtype_name STREQUAL "f16")
+      set(dtype_type "cute::half_t")
+    else()
+      set(dtype_type "cute::bfloat16_t")
+    endif()
+
+    foreach(head_dim IN ITEMS 128 64 96 192)
+      set(template_name launch_${mode}_kernel_${head_dim})
+      set(function_name launch_${mode}_kernel_${dtype_name}_${head_dim})
+      generate_sdpa_instantiation(${mode} ${dtype_name} "${dtype_type}" ${head_dim} ${template_name} ${function_name})
+    endforeach()
+  endforeach()
+endforeach()
+
+configure_file(${CMAKE_CURRENT_LIST_DIR}/sdpa_kernel_declarations.hpp.in ${SDPA_DECLARATIONS_FILE} @ONLY)

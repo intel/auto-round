@@ -37,52 +37,15 @@ AutoRound Kernel provides weight-only linear computational capabilities for LLM 
   
 
 ## Installation
-### Install via pip
+### 1. Install via pip
 ```bash
-# Install the latest auto-round kernel which may upgrade your PyTorch version automatically
-pip install auto-round-lib 
-# Install auto-round kernel with respective to specific PyTorch version (e.g., v2.8.x)
-pip install auto-round-lib torch~=2.8.0 
+pip install auto-round-lib
 ```
 
-<details>
-<summary>Other Installation Methods</summary>
-
-### Install via Script
+### 2. Install from Source
 ```bash
-curl -fsSL https://raw.githubusercontent.com/intel/auto-round/main/auto_round_extension/ark/install_kernel.py
-python3 install_kernel.py
+python setup.py bdist_wheel;pip install dist/*
 ```
-**Notes:**  
-Recommend to use this method if you want to keep your current PyTorch and auto-round versions.  
-This installation script will detect the current environment and install the corresponding auto-round-lib version. 
-
-### Install via auto_round
-```bash
-pip install auto-round
-auto-round-lib-install
-```
-
-</details>
-
-### Versioning Scheme
-The version number of auto-round-lib follows the format:  
-`{auto-round major version}.{auto-round minor version}.{oneAPI version}.{lib version}`   
-
-**For example: v0.10.1.1**  
-- The first two digits (0.10) correspond to the major and minor version of the auto_round framework.
-- The third component (1) represents the major version of Intel oneAPI: `1` indicates support for oneAPI 2025.1 (typically Torch 2.8), `2` indicates support for oneAPI 2025.2 (typically Torch 2.9), and `3` indicates support for oneAPI 2025.3 (typically Torch 2.10).
-- The final digit (1) is the patch version of auto-round-lib, reflecting updates, bug fixes, or improvements to the kernel package itself.
-
-**Version mapping table**
-
-| auto-round-lib Version | auto-round Version | oneAPI Version | Typical PyTorch Version |
-|:----------------------:|:------------------:|:--------------:|:-----------------------:|
-|        0.10.1.x        |       0.10.x       |     2025.1     |          2.8.x          |
-|        0.10.2.x        |       0.10.x       |     2025.2     |          2.9.x          |
-|        0.10.3.x        |       0.10.x       |     2025.3     |         2.10.x          |
-
-**Notes:** oneAPI version is aligned with PyTorch version during auto-round-lib binary build, but oneAPI toolkit is not required in runtime. 
 
 ### Validated Hardware Environment
 #### CPU based on [Intel 64 architecture or compatible processors](https://en.wikipedia.org/wiki/X86-64):
