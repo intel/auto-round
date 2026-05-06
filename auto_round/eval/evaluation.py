@@ -385,6 +385,10 @@ def run_model_evaluation(model, tokenizer, autoround, folders, formats, device_s
 
     # Handle diffusion models separately
     if getattr(autoround, "diffusion", False):
+        prompt = getattr(args, "prompt", None)
+        prompt_file = getattr(args, "prompt_file", None)
+        if prompt is None and prompt_file is None:
+            return
         evaluate_diffusion_model(args, autoround=autoround, model=model)
         return
 

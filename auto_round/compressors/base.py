@@ -1914,9 +1914,10 @@ class BaseCompressor(object):
         formats = self.formats if hasattr(self, "formats") else None
         # It is best to modify the model structure in the quantize function and check the format,
         # because it may cause the gguf format to not be exported normally.
-        self.model = update_module(
-            self.model, formats=formats, trust_remote_code=self.trust_remote_code, cleanup_original=False
-        )
+        if not self.diffusion:
+            self.model = update_module(
+                self.model, formats=formats, trust_remote_code=self.trust_remote_code, cleanup_original=False
+            )
 
         # Temporary names must be assigned after handle_moe_model;
         # placing them earlier would cause them to be removed when the module is replaced.
@@ -3197,7 +3198,7 @@ class BaseCompressor(object):
         else:
             card_0_in_high_risk, loss_device = False, device
 
-        if len(self.device_list) > 1 and auto_offload:
+        if len(self.device_list) > 1 and auto_offload and not self.diffusion:
             for n, m in block.named_modules():
                 if len(list(m.children())) != 0 or not hasattr(m, "tuning_device"):
                     continue

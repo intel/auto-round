@@ -703,7 +703,7 @@ def diffusion_load_model(
                         component_config = json.load(file)
                     torch_dtype[k] = component_config.get("torch_dtype", "auto")
 
-        pipe = pipelines.auto_pipeline.AutoPipelineForText2Image.from_pretrained(
+        pipe = pipelines.pipeline_utils.DiffusionPipeline.from_pretrained(
             pretrained_model_name_or_path, torch_dtype=torch_dtype
         )
         pipe_config = pipe.load_config(pretrained_model_name_or_path)
@@ -738,6 +738,20 @@ def diffusion_load_model(
 
     # non-meta model uses model.save_pretrained for model and config saving
     setattr(model, "save_pretrained", partial(model_save_pretrained, model))
+
+    for comp_name in pipe.components:
+        comp = getattr(pipe, comp_name, None)
+        if (
+            comp_name.startswith("transformer")
+            and comp_name != "transformer"
+            and comp is not None
+            and isinstance(comp, torch.nn.Module)
+        ):
+            setattr(
+                comp.config, "save_pretrained", partial(config_save_pretrained, comp.config, "config.json", model=comp)
+            )
+            setattr(comp, "save_pretrained", partial(model_save_pretrained, comp))
+
     return pipe, model.to(device)
 
 
