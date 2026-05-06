@@ -660,8 +660,8 @@ def tune(args):
             ar = AutoRound(
                 model_name,
                 scheme=scheme,
-                sym=ar_kwargs.get("sym", None),
-                group_size=ar_kwargs.get("group_size", None),
+                sym=getattr(args, "sym", None),
+                group_size=getattr(args, "group_size", None),
                 iters=0,
                 disable_opt_rtn=True,
                 model_free=True,
