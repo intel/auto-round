@@ -132,7 +132,6 @@ function run_unit_test_vlm() {
     rm -rf .coverage* *.xml *.html
 
     uv pip install torch==2.11.0 torchvision --index-url https://download.pytorch.org/whl/cu128
-    uv pip install https://github.com/XuehaoSun/GPTQModel/releases/download/v5.8.0/gptqmodel-5.8.0+cu128torch2.11-cp312-cp312-linux_x86_64.whl
     uv pip install git+https://github.com/haotian-liu/LLaVA.git@v1.2.2 --no-deps
     uv pip install -v git+https://github.com/casper-hansen/AutoAWQ.git@v0.2.0 --no-build-isolation
     uv pip install flash-attn==2.8.3 --no-build-isolation
