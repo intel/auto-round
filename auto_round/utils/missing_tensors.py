@@ -532,6 +532,8 @@ def quantize_weight_rtn(
     from auto_round.data_type.int import quant_tensor_rtn_sym, quant_tensor_asym
     from auto_round.data_type.utils import reshape_pad_tensor_by_group_size
 
+    q_scale_thresh = 1e-5  # match quant_tensor_sym / quant_tensor_asym threshold
+
     if sym:
         # Full-range symmetric quantization via quant_tensor_rtn_sym
         maxq = 1 << (bits - 1)  # e.g. 8 for 4-bit

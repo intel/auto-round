@@ -361,28 +361,28 @@ def _patch_mimo_attention_forward(model) -> None:
     """Patch MiMo remote-code attention helpers for newer transformers call sites."""
     # Check if this is a MiMo model by class name (remote code models may not have model_type)
     model_class_name = model.__class__.__name__
-    logger.info(f"_patch_mimo_attention_forward called for {model_class_name}")
+    logger.debug(f"_patch_mimo_attention_forward called for {model_class_name}")
 
     if "MiMo" not in model_class_name and "mimo" not in model_class_name.lower():
-        logger.info(f"Skipping patch: not a MiMo model (class name: {model_class_name})")
+        logger.debug(f"Skipping patch: not a MiMo model (class name: {model_class_name})")
         return
 
     try:
         module = importlib.import_module(model.__class__.__module__)
-        logger.info(f"Imported module: {model.__class__.__module__}")
+        logger.debug(f"Imported module: {model.__class__.__module__}")
     except ImportError as e:
         logger.warning(f"Could not import module {model.__class__.__module__}: {e}")
         return
 
     eager_attention_forward = getattr(module, "eager_attention_forward", None)
-    logger.info(f"eager_attention_forward found: {eager_attention_forward is not None}")
+    logger.debug(f"eager_attention_forward found: {eager_attention_forward is not None}")
 
     if eager_attention_forward is None:
-        logger.info("Skipping patch: eager_attention_forward not found in module")
+        logger.debug("Skipping patch: eager_attention_forward not found in module")
         return
 
     if getattr(eager_attention_forward, "_auto_round_mimo_patch", False):
-        logger.info("Skipping patch: already patched")
+        logger.debug("Skipping patch: already patched")
         return
 
     @wraps(eager_attention_forward)
@@ -402,7 +402,7 @@ def _patch_mimo_attention_forward(model) -> None:
 
     _patched_eager_attention_forward._auto_round_mimo_patch = True
     module.eager_attention_forward = _patched_eager_attention_forward
-    logger.info(f"Successfully patched eager_attention_forward in {model.__class__.__module__}")
+    logger.debug(f"Successfully patched eager_attention_forward in {model.__class__.__module__}")
 
 
 def _patch_qwen25_omni_talker(model) -> None:
