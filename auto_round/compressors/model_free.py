@@ -85,7 +85,7 @@ from auto_round.utils.missing_tensors import quantize_weight_rtn, split_fused_ex
 # ---------------------------------------------------------------------------
 
 # add "embed", "conv" in case of auto detection failure in _check_conv1d_and_embedding
-_BLOCK_NAME_TO_IGNORE = ["shared_expert_gate.", "mlp.gate.", "embed", "conv"]
+_BLOCK_NAME_TO_IGNORE = ["shared_expert_gate.", ".gate.", "embed", "conv"]
 
 # Integer WOQ preset schemes that model-free mode can produce.
 # Other presets (FP8/MX/NV/GGUF/BF16/INT8_W8A8/FPW8A16) require different
@@ -143,21 +143,17 @@ def get_predefined_ignore_layers_from_config(config: dict) -> list[str]:
 
     layers: list[str] = []
     for rule in _PRE_DEFINED_IGNORE_LAYERS:
-        try:
-            if all(m(wrapper) for m in rule.matchers):
-                for ignore_layer in rule.ignore_layers:
-                    if isinstance(ignore_layer, str):
-                        layers.append(ignore_layer)
-                    else:
-                        # callable (e.g. get_glm_flash_ignore_layers)
-                        res = ignore_layer(wrapper)
-                        if isinstance(res, str):
-                            layers.append(res)
-                        elif isinstance(res, list):
-                            layers.extend(res)
-                break
-        except Exception:
-            continue
+        if all(m(wrapper) for m in rule.matchers):
+            for ignore_layer in rule.ignore_layers:
+                if isinstance(ignore_layer, str):
+                    layers.append(ignore_layer)
+                else:
+                    # callable (e.g. get_glm_flash_ignore_layers)
+                    res = ignore_layer(wrapper)
+                    if isinstance(res, str):
+                        layers.append(res)
+                    elif isinstance(res, list):
+                        layers.extend(res)
 
     return list(dict.fromkeys(layers))
 

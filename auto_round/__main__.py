@@ -185,21 +185,6 @@ class BasicArgumentParser(argparse.ArgumentParser):
             help="Disable trusting remote code when loading models. "
             "Use for security if you don't trust the model source.",
         )
-        basic.add_argument(
-            "--model_free",
-            action="store_true",
-            help="Force model-free quantization mode. "
-            "Downloads and quantizes safetensors files directly using RTN, "
-            "without loading the full model into memory. "
-            "Only supports auto_round output format.",
-        )
-        basic.add_argument(
-            "--disable_model_free",
-            action="store_true",
-            help="Disable the automatic model-free routing that activates when "
-            "--iters 0 --disable_opt_rtn is combined with a supported INT WOQ scheme. "
-            "Use this to force the regular AutoRound flow.",
-        )
         tuning = self.add_argument_group("Tuning Arguments")
         tuning.add_argument(
             "--ignore_scale_zp_bits",
@@ -303,13 +288,28 @@ class BasicArgumentParser(argparse.ArgumentParser):
             help="Disable optimization for RTN (Round-To-Nearest) mode when iters=0. "
             "RTN is fast but less accurate; keeping optimization enabled is recommended.",
         )
-
         group_opt_rtn.add_argument(
             "--enable_opt_rtn",
             action="store_const",
             const=False,
             dest="disable_opt_rtn",
             help="Enable optimization for RTN mode when iters=0.",
+        )
+        group_model_free = tuning.add_mutually_exclusive_group()
+        group_model_free.add_argument(
+            "--model_free",
+            action="store_true",
+            help="Force model-free quantization mode. "
+            "Downloads and quantizes safetensors files directly using RTN, "
+            "without loading the full model into memory. "
+            "Only supports auto_round output format.",
+        )
+        group_model_free.add_argument(
+            "--disable_model_free",
+            action="store_true",
+            help="Disable the automatic model-free routing that activates when "
+            "--iters 0 --disable_opt_rtn is combined with a supported INT WOQ scheme. "
+            "Use this to force the regular AutoRound flow.",
         )
 
         scheme = self.add_argument_group("Scheme Arguments")
