@@ -22,6 +22,31 @@ class TestAutoRoundAsym:
     def teardown_class(cls):
         shutil.rmtree("runs", ignore_errors=True)
 
+    # use parameters later
+    def test_asym_format(self, tiny_opt_model_path):
+        for format in ["auto_round", "auto_round:auto_gptq", "auto_round:gptqmodel"]:
+            bits, group_size, sym = 4, 128, False
+            ar = AutoRound(
+                tiny_opt_model_path,
+                bits=bits,
+                group_size=group_size,
+                sym=sym,
+                iters=0,
+                seqlen=2,
+                nsamples=1,
+                disable_opt_rtn=True,
+            )
+            _, quantized_model_path = ar.quantize_and_save(format=format, output_dir=self.save_folder)
+
+            model = AutoModelForCausalLM.from_pretrained(
+                quantized_model_path,
+                torch_dtype="auto",
+                device_map="auto",
+            )
+
+            tokenizer = AutoTokenizer.from_pretrained(quantized_model_path)
+            model_infer(model, tokenizer)
+
     def test_asym_group_size(self, tiny_opt_model_path):
         for group_size in [32, 64, 128]:
             bits, sym = 4, False
@@ -46,31 +71,6 @@ class TestAutoRoundAsym:
                 tiny_opt_model_path, bits=bits, group_size=group_size, sym=sym, iters=0, seqlen=2, nsamples=1
             )
             _, quantized_model_path = ar.quantize_and_save(format="auto_round", output_dir=self.save_folder)
-
-            model = AutoModelForCausalLM.from_pretrained(
-                quantized_model_path,
-                torch_dtype="auto",
-                device_map="auto",
-            )
-
-            tokenizer = AutoTokenizer.from_pretrained(quantized_model_path)
-            model_infer(model, tokenizer)
-
-    # use parameters later
-    def test_asym_format(self, tiny_opt_model_path):
-        for format in ["auto_round", "auto_round:auto_gptq", "auto_round:gptqmodel"]:
-            bits, group_size, sym = 4, 128, False
-            ar = AutoRound(
-                tiny_opt_model_path,
-                bits=bits,
-                group_size=group_size,
-                sym=sym,
-                iters=0,
-                seqlen=2,
-                nsamples=1,
-                disable_opt_rtn=True,
-            )
-            _, quantized_model_path = ar.quantize_and_save(format=format, output_dir=self.save_folder)
 
             model = AutoModelForCausalLM.from_pretrained(
                 quantized_model_path,

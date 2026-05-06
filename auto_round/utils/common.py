@@ -985,52 +985,69 @@ def parse_layer_config_arg(s: str) -> dict:
 
 
 def compress_layer_names(names: list) -> str:
-    """Compress numbered layer names, e.g. layer.0, layer.1, layer.2 → layer.[0-2]."""
-    import re as _re
+    """Compress numbered layer names, e.g. layer.0, layer.1, layer.2 → layer.[0-2].
 
-    # group by (prefix, suffix) where the number varies
+    Runs the compression pass repeatedly until stable so that multi-level
+    numbering is fully reduced.  For example::
+
+        layers.0.experts.[0-255].down_proj
+        layers.10.experts.[0-255].down_proj
+        →  layers.[0,10].experts.[0-255].down_proj
+    """
+    import re as _re
     from collections import defaultdict
 
-    groups: dict = defaultdict(list)
-    singles: list = []
-    for name in names:
-        m = _re.match(r"^(.*\.)?(\d+)(\..+)?$", name)
-        if m:
-            prefix = m.group(1) or ""
-            num = int(m.group(2))
-            suffix = m.group(3) or ""
-            groups[(prefix, suffix)].append(num)
-        else:
-            singles.append(name)
-    parts: list = []
-    for (prefix, suffix), nums in groups.items():
-        nums_sorted = sorted(set(nums))
-        if len(nums_sorted) == 1:
-            parts.append(f"{prefix}{nums_sorted[0]}{suffix}")
-        else:
-            # Build comma-separated contiguous ranges, e.g. [0,2-3,5]
-            ranges = []
-            start = prev = nums_sorted[0]
-            for n in nums_sorted[1:]:
-                if n == prev + 1:
-                    prev = n
-                    continue
-                # Close the current range
+    def _compress_once(name_list: list) -> list:
+        groups: dict = defaultdict(list)
+        singles: list = []
+        for name in name_list:
+            m = _re.match(r"^(.*\.)?(\d+)(\..+)?$", name)
+            if m:
+                prefix = m.group(1) or ""
+                num = int(m.group(2))
+                suffix = m.group(3) or ""
+                groups[(prefix, suffix)].append(num)
+            else:
+                singles.append(name)
+        parts: list = []
+        for (prefix, suffix), nums in groups.items():
+            nums_sorted = sorted(set(nums))
+            if len(nums_sorted) == 1:
+                parts.append(f"{prefix}{nums_sorted[0]}{suffix}")
+            else:
+                # Build comma-separated contiguous ranges, e.g. [0,2-3,5]
+                ranges = []
+                start = prev = nums_sorted[0]
+                for n in nums_sorted[1:]:
+                    if n == prev + 1:
+                        prev = n
+                        continue
+                    # Close the current range
+                    if start == prev:
+                        ranges.append(str(start))
+                    else:
+                        ranges.append(f"{start}-{prev}")
+                    start = prev = n
+                # Close the final range
                 if start == prev:
                     ranges.append(str(start))
                 else:
                     ranges.append(f"{start}-{prev}")
-                start = prev = n
-            # Close the final range
-            if start == prev:
-                ranges.append(str(start))
-            else:
-                ranges.append(f"{start}-{prev}")
-            range_str = ",".join(ranges)
-            parts.append(f"{prefix}[{range_str}]{suffix}")
-    parts.extend(singles)
-    parts.sort()
-    return ", ".join(parts)
+                range_str = ",".join(ranges)
+                parts.append(f"{prefix}[{range_str}]{suffix}")
+        parts.extend(singles)
+        return parts
+
+    current = list(names)
+    while True:
+        compressed = _compress_once(current)
+        # Stop when no further merging occurred
+        if len(compressed) >= len(current):
+            break
+        current = compressed
+
+    current.sort()
+    return ", ".join(current)
 
 
 def infer_bits_by_data_type(data_type: str):
