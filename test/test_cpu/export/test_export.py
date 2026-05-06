@@ -8,8 +8,12 @@ from packaging import version
 from transformers import AutoModelForCausalLM, AutoRoundConfig, AutoTokenizer
 
 from auto_round import AutoRound
+from auto_round.export.export_to_autogptq import export as autogptq_export
+from auto_round.export.export_to_autoround import export as autoround_export
+from auto_round.export.export_to_autoround import export_to_fp8 as autoround_fp8_export
+from auto_round.export.export_to_awq import export as awq_export
 
-from ...helpers import get_model_path, opt_name_or_path, transformers_version
+from ...helpers import forbid_threaded_packing, get_model_path, opt_name_or_path, transformers_version
 
 
 def _get_folder_size(path: str) -> float:
@@ -24,6 +28,7 @@ def _get_folder_size(path: str) -> float:
 
 
 class TestAutoRound:
+
     @classmethod
     def setup_class(self):
         self.model_name = opt_name_or_path
@@ -55,7 +60,7 @@ class TestAutoRound:
             )
 
             quantized_model_path = self.save_dir
-            autoround.quantize_and_save(output_dir=quantized_model_path, format="auto_gptq")
+            _, quantized_model_path = autoround.quantize_and_save(output_dir=quantized_model_path, format="auto_gptq")
 
             if group_size == -1:
                 continue
@@ -82,7 +87,7 @@ class TestAutoRound:
                 dataset=dataloader,
             )
             quantized_model_path = self.save_dir
-            autoround.quantize_and_save(output_dir=quantized_model_path, format="auto_round")
+            _, quantized_model_path = autoround.quantize_and_save(output_dir=quantized_model_path, format="auto_round")
 
             if group_size == -1:
                 continue
@@ -107,7 +112,9 @@ class TestAutoRound:
             )
             quantized_model_path = self.save_dir
 
-            autoround.quantize_and_save(output_dir=quantized_model_path, format="auto_round:auto_awq")
+            _, quantized_model_path = autoround.quantize_and_save(
+                output_dir=quantized_model_path, format="auto_round:auto_awq"
+            )
 
             # quantization_config = AutoRoundConfig(
             #     backend="cpu"
@@ -216,7 +223,7 @@ class TestAutoRound:
             static_kv_dtype=static_kv_dtype,
         )
         quantized_model_path = self.save_dir
-        autoround.quantize_and_save(output_dir=quantized_model_path, format="auto_round")
+        _, quantized_model_path = autoround.quantize_and_save(output_dir=quantized_model_path, format="auto_round")
         f = safe_open(os.path.join(quantized_model_path, "model.safetensors"), framework="pt")
         assert "model.decoder.layers.8.self_attn.k_proj.input_scale" in f.keys()
         assert "model.decoder.layers.8.self_attn.k_proj.weight_scale" in f.keys()
@@ -276,7 +283,7 @@ class TestAutoRound:
             act_group_size=0,
         )
         quantized_model_path = self.save_dir
-        autoround.quantize_and_save(output_dir=quantized_model_path, format="auto_round")
+        _, quantized_model_path = autoround.quantize_and_save(output_dir=quantized_model_path, format="auto_round")
 
         f = safe_open(os.path.join(quantized_model_path, "model.safetensors"), framework="pt")
         assert "model.decoder.layers.8.self_attn.k_proj.input_scale" in f.keys()
@@ -301,7 +308,7 @@ class TestAutoRound:
             static_attention_dtype="fp8",
         )
         quantized_model_path = self.save_dir
-        autoround.quantize_and_save(output_dir=quantized_model_path, format="auto_round")
+        _, quantized_model_path = autoround.quantize_and_save(output_dir=quantized_model_path, format="auto_round")
         f = safe_open(os.path.join(quantized_model_path, "model.safetensors"), framework="pt")
         assert "model.decoder.layers.8.self_attn.k_proj.input_scale" in f.keys()
         assert "model.decoder.layers.8.self_attn.k_proj.weight_scale" in f.keys()
@@ -359,7 +366,9 @@ class TestAutoRound:
             dataset=dataloader,
         )
         quantized_model_path = self.save_dir
-        compressed_model, _ = autoround.quantize_and_save(output_dir=quantized_model_path, format="auto_gptq")
+        compressed_model, quantized_model_path = autoround.quantize_and_save(
+            output_dir=quantized_model_path, format="auto_gptq"
+        )
         lm_head = compressed_model.lm_head
         assert hasattr(lm_head, "bits") and lm_head.bits == 4, "Illegal GPTQ quantization for lm_head layer"
         quantization_config = AutoRoundConfig()
@@ -379,6 +388,7 @@ class TestAutoRound:
             self.model_name,
             scheme="FP8_STATIC",
         )
+        autoround.post_init()
         format_list = get_formats("auto_round, llm_compressor, auto_round:llm_compressor", autoround)
         assert len(format_list) == 3
         assert format_list[0].output_format == "auto_round"
@@ -392,6 +402,7 @@ class TestAutoRound:
             self.model_name,
             scheme="W4A16",
         )
+        autoround.post_init()
         format_list = get_formats("auto_round:auto_awq, auto_gptq", autoround)
         assert format_list[0].output_format == "auto_round"
         assert format_list[0].get_backend_name() == "auto_round:auto_awq"
@@ -402,6 +413,7 @@ class TestAutoRound:
             model=self.model_name,
             scheme="INT8",
         )
+        autoround.post_init()
         format_list = get_formats("llm_compressor, auto_round:llm_compressor", autoround)
         assert format_list[0].output_format == "llm_compressor"
         assert format_list[0].get_backend_name() == "llm_compressor:int8_w8a8"
@@ -413,6 +425,7 @@ class TestAutoRound:
             model=self.model_name,
             scheme="INT8_W8A8",
         )
+        autoround_old.post_init()
         format_list_old = get_formats("llm_compressor, auto_round:llm_compressor", autoround_old)
         assert format_list_old[0].output_format == "llm_compressor"
         assert format_list_old[0].get_backend_name() == "llm_compressor:int8_w8a8"
@@ -429,6 +442,7 @@ class TestAutoRound:
             group_size=32,
             sym=True,
         )
+        ar.post_init()
         with pytest.raises(ValueError, match="auto_awq format support quantization scheme with W4A16 but got bits=2"):
             get_formats("auto_round:auto_awq", ar)
 
@@ -442,6 +456,7 @@ class TestAutoRound:
             group_size=32,
             sym=True,
         )
+        ar.post_init()
         with pytest.raises(ValueError, match="but got data_type=fp, bits=4"):
             get_formats("auto_round:llm_compressor", ar)
 
@@ -452,6 +467,7 @@ class TestAutoRound:
             group_size=256,
             sym=True,
         )
+        ar.post_init()
         get_formats("auto_round:auto_awq", ar)
 
     def test_autoawq_qwen3_vl_infer(self, dataloader):
@@ -465,7 +481,9 @@ class TestAutoRound:
             dataset=dataloader,
         )
         quantized_model_path = self.save_dir
-        autoround.quantize_and_save(output_dir=quantized_model_path, inplace=False, format="auto_awq")
+        _, quantized_model_path = autoround.quantize_and_save(
+            output_dir=quantized_model_path, inplace=False, format="auto_awq"
+        )
 
         # Check items of modules_to_not_convert in quantization config
         quantization_config_path = f"{quantized_model_path}/quantization_config.json"
@@ -504,7 +522,7 @@ class TestAutoRound:
             scheme=scheme,
         )
         quantized_model_path = self.save_dir
-        autoround.quantize_and_save(output_dir=quantized_model_path, format="llm_compressor")
+        _, quantized_model_path = autoround.quantize_and_save(output_dir=quantized_model_path, format="llm_compressor")
         with safe_open(os.path.join(quantized_model_path, "model.safetensors"), framework="pt") as f:
             assert "model.decoder.layers.8.self_attn.k_proj.weight_scale" in f.keys()
             assert f.get_tensor("model.decoder.layers.5.self_attn.v_proj.weight").dtype == torch.int8
@@ -532,7 +550,7 @@ class TestAutoRound:
             sym=sym,
         )
         quantized_model_path = self.save_dir
-        autoround.quantize_and_save(output_dir=quantized_model_path, format="llm_compressor")
+        _, quantized_model_path = autoround.quantize_and_save(output_dir=quantized_model_path, format="llm_compressor")
         with safe_open(os.path.join(quantized_model_path, "model.safetensors"), framework="pt") as f:
             # weights must be packed as int32 (compressed-tensors stores both int4 and int8 as torch.int32)
             weight = f.get_tensor("model.decoder.layers.5.self_attn.v_proj.weight_packed")
@@ -552,3 +570,46 @@ class TestAutoRound:
                 len(input_scale_keys) == 0
             ), f"Expected no input_scale for weight-only {scheme}, but found: {input_scale_keys[:5]}"
         shutil.rmtree(quantized_model_path, ignore_errors=True)
+
+
+@pytest.mark.parametrize(
+    "format_name,export_module,sym",
+    [
+        ("auto_gptq", autogptq_export, False),
+        ("auto_awq", awq_export, False),
+        ("auto_round", autoround_export, True),
+    ],
+)
+def test_weight_only_exports_pack_serially(tiny_opt_model_path, tmp_path, monkeypatch, format_name, export_module, sym):
+    autoround = AutoRound(
+        tiny_opt_model_path,
+        bits=4,
+        group_size=128,
+        sym=sym,
+        iters=0,
+        disable_opt_rtn=True,
+    )
+    autoround.quantize()
+    forbid_threaded_packing(monkeypatch, export_module)
+    autoround.save_quantized(output_dir=tmp_path, inplace=False, format=format_name)
+    assert os.path.exists(os.path.join(tmp_path, "config.json"))
+
+
+def test_fp8_autoround_export_packs_serially(tiny_opt_model_path, tmp_path, monkeypatch):
+    from safetensors import safe_open
+
+    autoround = AutoRound(
+        tiny_opt_model_path,
+        bits=8,
+        group_size=-1,
+        iters=0,
+        scheme="FP8_STATIC",
+        nsamples=2,
+        seqlen=2,
+        static_kv_dtype="fp8",
+    )
+    autoround.quantize()
+    forbid_threaded_packing(monkeypatch, autoround_fp8_export)
+    autoround.save_quantized(output_dir=tmp_path, format="auto_round")
+    with safe_open(os.path.join(tmp_path, "model.safetensors"), framework="pt") as f:
+        assert "model.decoder.layers.0.self_attn.k_proj.weight_scale" in f.keys()

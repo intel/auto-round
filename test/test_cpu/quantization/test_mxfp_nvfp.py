@@ -8,8 +8,10 @@ from packaging import version
 from transformers import AutoModelForCausalLM, AutoRoundConfig, AutoTokenizer
 
 from auto_round import AutoRound
+from auto_round.export.export_to_autoround import export_to_nvfp_mx as autoround_nvfp_mx_export
 
-from ...helpers import is_model_outputs_similar, transformers_version
+from ...envs import require_compressed_tensors
+from ...helpers import forbid_threaded_packing, is_model_outputs_similar, transformers_version
 
 
 def _get_folder_size(path: str) -> float:
@@ -78,7 +80,9 @@ class TestAutoRoundFP:
             layer_config=layer_config,
             trust_remote_code=False,
         )
-        compressed_model, _ = autoround.quantize_and_save(output_dir=self.save_dir, inplace=True, format="auto_round")
+        compressed_model, quantized_model_path = autoround.quantize_and_save(
+            output_dir=self.save_dir, inplace=True, format="auto_round"
+        )
         lm_head = compressed_model.lm_head
         assert (
             hasattr(lm_head, "weight_scale")
@@ -87,7 +91,6 @@ class TestAutoRoundFP:
             and lm_head.weight_packed.dtype is torch.uint8
             and lm_head.weight_scale.dtype is torch.float8_e4m3fn
         ), "Illegal NVFP4 packing for lm_head layer"
-        quantized_model_path = self.save_dir
         assert is_model_outputs_similar(model_name, quantized_model_path)
 
     def test_mxfp4_moe_ar(self, tiny_deepseek_v2_model_path, dataloader):
@@ -118,6 +121,7 @@ class TestAutoRoundFP:
             and lm_head.weight_scale.dtype is torch.uint8
         ), "Illegal MXFP4 packing for lm_head layer"
 
+    @require_compressed_tensors
     def test_mxfp4_llmcompressor_format(self, tiny_opt_model_path, dataloader):
         model_name = tiny_opt_model_path
         from transformers import AutoConfig
@@ -156,6 +160,7 @@ class TestAutoRoundFP:
             and quantization_config["config_groups"]["group_0"]["weights"]["num_bits"] == 4
         ), f"Invalid MXFP4 quantization configuration: {quantization_config}"
 
+    @require_compressed_tensors
     def test_rtn_mxfp4_llmcompressor_format(self, tiny_opt_model_path, dataloader):
         model_name = tiny_opt_model_path
         from transformers import AutoConfig
@@ -194,6 +199,7 @@ class TestAutoRoundFP:
             and quantization_config["config_groups"]["group_0"]["weights"]["num_bits"] == 4
         ), f"Invalid MXFP4 quantization configuration: {quantization_config}"
 
+    @require_compressed_tensors
     def test_mxfp8_llmcompressor_format(self, tiny_opt_model_path, dataloader):
         model_name = tiny_opt_model_path
         from transformers import AutoConfig
@@ -207,7 +213,9 @@ class TestAutoRoundFP:
             dataset=dataloader,
         )
         quantized_model_path = self.save_dir
-        compressed_model, _ = autoround.quantize_and_save(output_dir=quantized_model_path, format="llm_compressor")
+        compressed_model, quantized_model_path = autoround.quantize_and_save(
+            output_dir=quantized_model_path, format="llm_compressor"
+        )
         tmp_layer = compressed_model.model.decoder.layers[1].self_attn.q_proj
         assert (
             hasattr(tmp_layer, "weight_scale")
@@ -229,6 +237,7 @@ class TestAutoRoundFP:
             0.05 < folder_size_gb < 0.1
         ), f"Quantized model folder size {folder_size_gb:.2f} GB is outside the expected range (0.05~0.1 GB)"
 
+    @require_compressed_tensors
     def test_nvfp4_llmcompressor_format(self, tiny_opt_model_path, dataloader):
         model_name = tiny_opt_model_path
         from transformers import AutoConfig
@@ -242,7 +251,9 @@ class TestAutoRoundFP:
             dataset=dataloader,
         )
         quantized_model_path = self.save_dir
-        compressed_model, _ = autoround.quantize_and_save(output_dir=quantized_model_path, format="llm_compressor")
+        compressed_model, quantized_model_path = autoround.quantize_and_save(
+            output_dir=quantized_model_path, format="llm_compressor"
+        )
         tmp_layer = compressed_model.model.decoder.layers[1].self_attn.q_proj
         assert (
             hasattr(tmp_layer, "weight_scale")
@@ -278,7 +289,9 @@ class TestAutoRoundFP:
             dataset=dataloader,
         )
         quantized_model_path = self.save_dir
-        compressed_model, _ = autoround.quantize_and_save(output_dir=quantized_model_path, format="auto_round")
+        compressed_model, quantized_model_path = autoround.quantize_and_save(
+            output_dir=quantized_model_path, format="auto_round"
+        )
         tmp_layer = compressed_model.model.decoder.layers[1].self_attn.q_proj
         assert (
             hasattr(tmp_layer, "weight_scale")
@@ -289,7 +302,7 @@ class TestAutoRoundFP:
             and tmp_layer.weight_scale.shape[0] == 768
         ), "Illegal NVFP4 packing name or data_type or shape"
 
-    def test_nvfp4_autoround_save_quantized(self, tiny_opt_model_path, dataloader):
+    def test_nvfp4_autoround_save_quantized(self, tiny_opt_model_path, dataloader, monkeypatch):
         model_name = tiny_opt_model_path
         from transformers import AutoConfig
 
@@ -303,6 +316,7 @@ class TestAutoRoundFP:
         )
         quantized_model_path = self.save_dir
         autoround.quantize()
+        forbid_threaded_packing(monkeypatch, autoround_nvfp_mx_export)
         compressed_model = autoround.save_quantized(output_dir=quantized_model_path, format="auto_round")
         tmp_layer = compressed_model.model.decoder.layers[1].self_attn.q_proj
         assert (
@@ -332,7 +346,9 @@ class TestAutoRoundFP:
             layer_config=layer_config,
         )
         quantized_model_path = self.save_dir
-        autoround.quantize_and_save(output_dir=quantized_model_path, inplace=True, format="auto_round")
+        _, quantized_model_path = autoround.quantize_and_save(
+            output_dir=quantized_model_path, inplace=True, format="auto_round"
+        )
         assert is_model_outputs_similar(model_name, quantized_model_path)
 
     @pytest.mark.parametrize(
@@ -369,7 +385,7 @@ class TestAutoRoundFP:
         )
 
         quantized_model_path = self.save_dir
-        compressed_model, _ = autoround.quantize_and_save(
+        compressed_model, quantized_model_path = autoround.quantize_and_save(
             output_dir=quantized_model_path,
             format="auto_round",
         )

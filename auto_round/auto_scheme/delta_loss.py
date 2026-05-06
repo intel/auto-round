@@ -48,12 +48,15 @@ from auto_round.utils import (
     get_block_names,
     get_major_device,
     get_module,
+    is_mllm_model,
     llm_load_model,
+    mllm_load_model,
     parse_available_devices,
     set_avg_auto_device_map,
     set_module,
     set_non_auto_device_map,
     to_device,
+    to_dtype,
 )
 from auto_round.utils.device import MemoryMonitor
 from auto_round.utils.offload import OffloadManager
@@ -353,7 +356,7 @@ def prepare_model_low_gpu(model, block_inputs: dict = None, pbar=None, major_dev
             block_inputs[module_name] = input_info
 
             module.to("cpu")
-            # torch.cuda.empty_cache()
+            clear_memory()
 
             # Enable gradients for the output of the last block
             if module.tmp_name == block_names[-1]:
@@ -375,6 +378,51 @@ def prepare_model_low_gpu(model, block_inputs: dict = None, pbar=None, major_dev
     for block_name in block_names:
         module = get_module(model, block_name)
         module.forward = wrap_forward(module, block_name)
+
+
+def _prepare_mllm_inputs(data, model):
+    """Normalize one batch from a (possibly mllm) dataloader into a form the
+    model can be called on.
+
+    Crucially this casts ``images`` / ``pixel_values`` / ``pixel_values_videos``
+    to ``model.dtype`` — without it, vision tensors arrive as float32 while
+    the vision tower is bf16/fp16, and several HF VLM implementations silently
+    bypass the vision branch on dtype mismatch (which manifests downstream as
+    "vision grad = 0").
+
+    Returns ``(prepared, kind)`` where ``kind`` is ``"tensor" | "seq" | "dict"``
+    so the caller knows whether to use ``model(x)`` / ``model(*x)`` /
+    ``model(**x)``.
+    """
+    _img_keys = ("images", "image", "pixel_values", "pixel_values_videos", "pixel_values_images", "image_pixel_values")
+
+    if isinstance(data, torch.Tensor):
+        return data.to(model.device), "tensor"
+
+    if isinstance(data, (tuple, list)):
+        return to_device(data, model.device), "seq"
+
+    # Plain dict (the common path: HF VLM ``data_collator`` outputs).
+    new = {}
+    for key, value in data.items():
+        t = to_device(value, model.device)
+        if key in _img_keys:
+            t = to_dtype(t, model.dtype)
+        new[key] = t
+    return new, "dict"
+
+
+def mllm_model_forward(model, data, **forward_kwargs):
+    """Single entry point for "run a (possibly multimodal) batch through the
+    model". Used by both AutoScheme paths so that ``pixel_values`` / ``images``
+    are cast to ``model.dtype`` (otherwise VLMs silently skip the vision tower
+    → vision grad = 0)."""
+    prepared, kind = _prepare_mllm_inputs(data, model)
+    if kind == "tensor":
+        return model(prepared, **forward_kwargs), prepared
+    if kind == "seq":
+        return model(*prepared, **forward_kwargs), prepared
+    return model(**prepared, **forward_kwargs), prepared
 
 
 def model_forward_low_gpu(model, dataloader, major_device="cuda", pbar=None):
@@ -401,7 +449,17 @@ def model_forward_low_gpu(model, dataloader, major_device="cuda", pbar=None):
         last_block_backward_hook = last_block.register_full_backward_pre_hook(backward_pre_hook)
 
         data = to_device(data, model.device)
-        output = model.forward(**data, labels=data["input_ids"], use_cache=False)
+        # VLM datasets often already include ``labels``; LLM ones don't. Strip
+        # any pre-existing ``labels`` from kwargs so we don't pass it twice.
+        labels = data["labels"] if isinstance(data, dict) and "labels" in data else data["input_ids"]
+        if isinstance(data, dict):
+            data_for_forward = {k: v for k, v in data.items() if k != "labels"}
+        else:
+            data_for_forward = data
+        # Route through the unified mllm forward so ``pixel_values`` /
+        # ``images`` get cast to ``model.dtype`` (otherwise the vision tower
+        # is silently bypassed on dtype mismatch and vision grad stays 0).
+        output, _prepared = mllm_model_forward(model, data_for_forward, labels=labels, use_cache=False)
 
         try:
             # Backward pass (will be interrupted by the hook)
@@ -410,6 +468,8 @@ def model_forward_low_gpu(model, dataloader, major_device="cuda", pbar=None):
             pass
 
         current_grad = last_grad_input
+        del output, data
+        clear_memory()
 
         # Manually compute gradients block by block
         last_block_backward_hook.remove()
@@ -432,12 +492,7 @@ def model_forward_low_gpu(model, dataloader, major_device="cuda", pbar=None):
             for n, m in block_module.named_modules():
                 if hasattr(m, "grad_mode"):
                     m.grad_mode = True
-                if hasattr(m, "orig_layer"):
-                    m.to(m.orig_layer.tuning_device)
-                elif hasattr(m, "tuning_device"):
-                    m.to(m.tuning_device)
-                elif len(list(m.children())) == 0:
-                    m.to(major_device)
+            move_module_to_tuning_device(block_module, major_device=major_device)
 
             # Set the block to eval mode while enabling gradient computation
             block_module.eval()
@@ -468,8 +523,9 @@ def model_forward_low_gpu(model, dataloader, major_device="cuda", pbar=None):
                 print(f"Warning: No suitable input gradient found for {block_name}")
                 break
 
+            del block_output, main_output, block_input_args, block_input_kwargs
             block_module.to("cpu")
-            # clear_memory()
+            clear_memory()
             pbar.update(1)
 
 
@@ -491,6 +547,10 @@ def get_score_for_scheme(
     batch_size=1,
     disable_opt_rtn=True,
     offload_context: Optional[OffloadManager] = None,
+    processor=None,
+    is_vlm: bool = False,
+    force_mllm: bool = False,
+    model_name: Optional[str] = None,
 ):
     scores_dict = {}  # Key=name,Val=[quant_total_bits, loss]
     for n, m in model.named_modules():
@@ -554,23 +614,242 @@ def get_score_for_scheme(
             set_module(model, name, new_m)
     if offload_context is not None:
         offload_context.flush_loaded(model)
-    if low_gpu_mem_usage:
-        dataloader = get_dataloader(tokenizer, seqlen, dataset_name=dataset, seed=42, bs=batch_size, nsamples=nsamples)
 
-        model_forward_low_gpu(model, dataloader, major_device=major_device, pbar=pbar)
+    # ---- Memory: only wrapper.orig_layer.weight needs ``requires_grad`` ---- #
+    # AutoScheme scoring uses ``iters=0`` (RTN), so we never UPDATE any
+    # parameter. The only parameters that need to participate in autograd
+    # are the wrappers' ``orig_layer.weight`` (so qdq_w in the backward
+    # graph can trace back to them and the weight-grad hook fires).
+    # All other parameters (norms, non-wrapped linears, vision-tower
+    # layers when ``--quant_nontext_module`` is off, …) just waste a full
+    # ``.grad`` buffer (~one model-worth of VRAM) during ``loss.backward()``.
+    # This is the biggest single VRAM win for the non-low_gpu_mem_usage
+    # path used to score VLMs.
+    wrapper_weight_ids = set()
+    for _, _m in model.named_modules():
+        if hasattr(_m, "orig_layer") and hasattr(_m.orig_layer, "weight") and _m.orig_layer.weight is not None:
+            wrapper_weight_ids.add(id(_m.orig_layer.weight))
+    _trimmed = 0
+    for _p in model.parameters():
+        if id(_p) not in wrapper_weight_ids and _p.requires_grad:
+            _p.requires_grad_(False)
+            _trimmed += 1
+    if _trimmed:
+        logger.info(
+            "AutoScheme: disabled requires_grad on %d non-wrapper parameters "
+            "(only wrapper.orig_layer.weight needs grad for scoring; saves "
+            "~one model-worth of grad buffer during backward).",
+            _trimmed,
+        )
+
+    # When scoring vision-tower layers, keep the autograd chain alive end-to-end:
+    #   (1) every wrapper's orig weight must require grad — otherwise the STE
+    #       output of W-only-low-bit wrappers has no grad path and act-score
+    #       hooks never fire.
+    #   (2) every vision sub-tree leaf param must require grad — so the very
+    #       first vision op (patch_embed / first conv) enters autograd; its
+    #       input ``pixel_values`` is a plain tensor with no grad.
+    if force_mllm:
+        _re_enabled_w = 0
+        for _, _m in model.named_modules():
+            if (
+                hasattr(_m, "orig_layer")
+                and hasattr(_m.orig_layer, "weight")
+                and _m.orig_layer.weight is not None
+                and not _m.orig_layer.weight.requires_grad
+            ):
+                _m.orig_layer.weight.requires_grad_(True)
+                _re_enabled_w += 1
+
+        _vision_markers = ("vision", "visual", "image_encoder", "img_encoder", "patch_embed")
+        _re_enabled_v = 0
+        _seen = set()
+        for _mod_name, _mod in model.named_modules():
+            if not any(mk in _mod_name.lower() for mk in _vision_markers):
+                continue
+            for _p in _mod.parameters(recurse=False):
+                if id(_p) in _seen:
+                    continue
+                _seen.add(id(_p))
+                if not _p.requires_grad:
+                    _p.requires_grad_(True)
+                    _re_enabled_v += 1
+
+        logger.info(
+            "AutoScheme(force_mllm): kept requires_grad on %d wrapper weights, " "%d vision-side params.",
+            _re_enabled_w,
+            _re_enabled_v,
+        )
+
+    def _build_calib_dataloader():
+        """Pick the calibration dataloader.
+
+        Since AutoScheme only scores the language tower (``get_block_names``
+        already skips the vision/audio sub-trees on VLMs), a pure-text
+        calibration dataset is sufficient and far cheaper for VLMs too — most
+        VLMs accept a text-only forward and simply skip the vision encoder.
+        We therefore use ``get_dataloader`` (text-only) by default and only
+        fall back to the multimodal ``get_mllm_dataloader`` if a VLM truly
+        rejects text-only inputs (caller can detect that in the calling loop).
+        """
+        return get_dataloader(tokenizer, seqlen, dataset_name=dataset, seed=42, bs=batch_size, nsamples=nsamples)
+
+    def _build_mllm_calib_dataloader():
+        """Build the multimodal calibration dataloader (image + text).
+
+        Returns ``None`` if we can't build one (no processor / template /
+        dataset issue) so the caller can surface a clearer error.
+        """
+        if processor is None:
+            return None
+        import os as _os
+
+        from auto_round.compressors.mllm.dataset import MLLM_DATASET, get_mllm_dataloader
+
+        template = None
+        if hasattr(model, "config") and hasattr(model.config, "model_type"):
+            template = model.config.model_type
+
+        # Decide the effective dataset.
+        # ``get_mllm_dataloader`` only treats ``dataset`` as multimodal when it
+        # is either a local file OR a key registered in ``MLLM_DATASET``.
+        # Otherwise it silently falls back to ``get_dataloader`` (text-only),
+        # which produces batches with NO ``pixel_values`` -> the vision tower
+        # is never invoked -> every vision score / grad collapses to 0. We
+        # explicitly catch that case here and override to a known-good
+        # multimodal dataset so the user doesn't end up with silent garbage.
+        ds = dataset
+        _is_real_mllm = isinstance(ds, str) and (_os.path.isfile(ds) or ds in MLLM_DATASET.keys())
+        if not _is_real_mllm:
+            _fallback = "liuhaotian/llava_conv_58k"
+            logger.warning_once(
+                "AutoScheme(force_mllm): dataset=%r is text-only, " "overriding to %r.",
+                ds,
+                _fallback,
+            )
+            ds = _fallback
+
+        try:
+            loader, _, _, _ = get_mllm_dataloader(
+                template=template,
+                model=model,
+                tokenizer=tokenizer,
+                processor=processor,
+                dataset=ds,
+                seqlen=seqlen,
+                bs=batch_size,
+                nsamples=nsamples,
+                # If, for any reason, get_mllm_dataloader still falls back to
+                # text-only, force it to hard-error rather than silently
+                # producing image-less batches.
+                quant_nontext_module=True,
+            )
+            return loader
+        except Exception as exc:  # noqa: BLE001
+            logger.warning(f"Failed to build mllm calibration dataloader: {exc}")
+            return None
+
+    if low_gpu_mem_usage:
+        if force_mllm:
+            mllm_loader = _build_mllm_calib_dataloader()
+            if mllm_loader is None:
+                raise RuntimeError(
+                    "AutoScheme(force_mllm): cannot build mllm dataloader. "
+                    "Provide a `processor` and a multimodal `dataset`."
+                )
+            model_forward_low_gpu(model, mllm_loader, major_device=major_device, pbar=pbar)
+        else:
+            try:
+                dataloader = _build_calib_dataloader()
+                model_forward_low_gpu(model, dataloader, major_device=major_device, pbar=pbar)
+            except Exception as exc:  # noqa: BLE001
+                if not is_vlm:
+                    raise
+                logger.warning(
+                    f"Text-only calibration failed on VLM ({exc}); "
+                    f"falling back to multimodal calibration dataloader."
+                )
+                mllm_loader = _build_mllm_calib_dataloader()
+                if mllm_loader is None:
+                    raise
+                model_forward_low_gpu(model, mllm_loader, major_device=major_device, pbar=pbar)
     else:
         for n, m in model.named_modules():
             if hasattr(m, "grad_mode"):
                 m.grad_mode = True
-        dataloader = get_dataloader(tokenizer, seqlen, dataset_name=dataset, seed=42, bs=batch_size, nsamples=nsamples)
-        for data in dataloader:
-            data = to_device(data, model.device)
-            output = model.forward(**data, labels=data["input_ids"], use_cache=False)
-            output.loss.backward()
-            for n, m in model.named_parameters():  # This should be kept to reduce VRAM footprint
-                m.grad = None
-            if pbar is not None:
-                pbar.update(1)
+
+        def _run_forward_loop(loader):
+            _checked_pixel = False
+            _pixel_keys = (
+                "pixel_values",
+                "pixel_values_videos",
+                "pixel_values_images",
+                "image_pixel_values",
+                "images",
+                "image",
+            )
+            for data in loader:
+                # Pull labels out of the batch (VLM datasets often carry them;
+                # LLM ones don't) before mllm_model_forward casts dtypes.
+                _src = data if isinstance(data, dict) else None
+                labels = (
+                    _src["labels"]
+                    if _src is not None and "labels" in _src
+                    else (_src["input_ids"] if _src is not None and "input_ids" in _src else None)
+                )
+                if _src is not None and "labels" in _src:
+                    data_for_forward = {k: v for k, v in _src.items() if k != "labels"}
+                else:
+                    data_for_forward = data
+
+                # Unified mllm-aware forward (casts pixel_values/images to
+                # model.dtype, handles dict-with-text/str/tuple paths the same
+                # way AutoRoundMLLM.calib does).
+                output, _prepared = mllm_model_forward(model, data_for_forward, labels=labels, use_cache=False)
+                output.loss.backward()
+
+                # One-shot sanity check: when scoring vision layers, the batch
+                # MUST carry image data, otherwise the vision tower is bypassed
+                # by the model and every vision score is silently 0.
+                if not _checked_pixel and force_mllm:
+                    _checked_pixel = True
+                    _has_pixel = isinstance(_prepared, dict) and any(k in _prepared for k in _pixel_keys)
+                    if not _has_pixel:
+                        _keys = list(_prepared.keys()) if isinstance(_prepared, dict) else type(_prepared).__name__
+                        raise RuntimeError(
+                            f"AutoScheme(force_mllm) batch has no pixel_values "
+                            f"(keys: {_keys}). Vision scores would all be 0. "
+                            f"Use a real multimodal dataset (e.g. "
+                            f"liuhaotian/llava_conv_58k) and pass a processor."
+                        )
+
+                for _, m in model.named_parameters():  # zero grads to keep VRAM low
+                    m.grad = None
+                if pbar is not None:
+                    pbar.update(1)
+
+        if force_mllm:
+            mllm_loader = _build_mllm_calib_dataloader()
+            if mllm_loader is None:
+                raise RuntimeError(
+                    "AutoScheme(force_mllm): cannot build mllm dataloader. "
+                    "Provide a `processor` and a multimodal `dataset`."
+                )
+            _run_forward_loop(mllm_loader)
+        else:
+            try:
+                _run_forward_loop(_build_calib_dataloader())
+            except Exception as exc:  # noqa: BLE001
+                if not is_vlm:
+                    raise
+                logger.warning(
+                    f"Text-only calibration failed on VLM ({exc}); "
+                    f"falling back to multimodal calibration dataloader."
+                )
+                mllm_loader = _build_mllm_calib_dataloader()
+                if mllm_loader is None:
+                    raise
+                _run_forward_loop(mllm_loader)
 
         for n, m in model.named_parameters():
             m.grad = None
@@ -644,13 +923,40 @@ def choose_bits_per_layer_with_path(layers: dict, P: int):
 
 
 def move_module_to_tuning_device(module, major_device="cpu"):
+    def _normalize(dev):
+        return dev if isinstance(dev, torch.device) else torch.device(dev)
+
+    def _move_own_tensors(m, device):
+        # Cover non-leaf modules that directly hold nn.Parameter / buffers
+        # (e.g. Mamba/GDN linear_attn with A_log & dt_bias). Also relocate
+        # p.grad together with p.data — otherwise the next backward's grad
+        # accumulation hits a cuda/cpu device mismatch.
+        target = _normalize(device)
+        for p in m.parameters(recurse=False):
+            if p.device != target:
+                p.data = p.data.to(target)
+            if p.grad is not None and p.grad.device != target:
+                p.grad.data = p.grad.data.to(target)
+        for b_name, b in list(m.named_buffers(recurse=False)):
+            if b is None:
+                continue
+            if b.device != target:
+                m._buffers[b_name] = b.to(target)
+
     for n, m in module.named_modules():
         if hasattr(m, "orig_layer"):
-            m.to(m.orig_layer.tuning_device)
+            target = m.orig_layer.tuning_device
+            m.to(target)
+            _move_own_tensors(m, target)
         elif hasattr(m, "tuning_device"):
-            m.to(m.tuning_device)
+            target = m.tuning_device
+            m.to(target)
+            _move_own_tensors(m, target)
         elif len(list(m.children())) == 0:
             m.to(major_device)
+            _move_own_tensors(m, major_device)
+        else:
+            _move_own_tensors(m, major_device)
 
 
 def _gen_layer_config(
@@ -667,6 +973,8 @@ def _gen_layer_config(
     model_name=None,
     major_device="cpu",
     device_list=None,
+    processor=None,
+    is_vlm: bool = False,
 ):
     # Initialize memory tracking for AutoScheme
     memory_monitor = MemoryMonitor()
@@ -684,7 +992,33 @@ def _gen_layer_config(
         offload_context = OffloadManager(enabled=True, mode="clean", model_dir=_model_dir, cache_numel=True)
 
     target_bits = auto_scheme.avg_bits
-    model.eval()
+    # HF gates gradient checkpointing on ``self.training`` — it's a no-op in eval mode.
+    # In the non-low_gpu path we run a full forward+backward through the whole model,
+    # so we want checkpointing to actually kick in (train mode). In the low_gpu path
+    # we drive the blocks manually and don't want dropout / training-only side effects,
+    # so keep eval mode.
+    if auto_scheme.low_gpu_mem_usage:
+        model.eval()
+    else:
+        # To trigger gradient checkpoint, but it will enable dropout, batchnorm, which is not good for accuracy
+        model.train()
+
+    # Filter out embedding layers from the scoring set (they aren't linear
+    # quantization targets in any of our schemes).
+    embedding_layers_names = []
+    for name in quant_layer_names:
+        module = get_module(model, name)
+        if isinstance(module, torch.nn.Embedding):
+            embedding_layers_names.append(name)
+    quant_layer_names = list(set(quant_layer_names) - set(embedding_layers_names))
+
+    # Decide whether AutoScheme has to score vision-tower layers (typically
+    # because the user passed ``--quant_nontext_module``). Used below to
+    # clamp batch_size to 1 (image sizes vary) and to pick the multimodal
+    # dataloader. The actual switch from low_gpu to full forward+backward
+    # is done upstream in ``gen_layer_config``.
+    vision_markers = ("vision", "visual", "image", "img")
+    force_mllm = is_vlm and any(any(marker in n.lower() for marker in vision_markers) for n in quant_layer_names)
 
     block_name = get_block_names(model)[0]  # TODO need change to support vlm
     for name in block_name:
@@ -729,7 +1063,6 @@ def _gen_layer_config(
             nsamples = 64
         else:
             nsamples = 16
-
     seqlen = auto_scheme.seqlen if auto_scheme.seqlen is not None else 256
 
     if auto_scheme.batch_size is not None:
@@ -738,6 +1071,16 @@ def _gen_layer_config(
         if auto_scheme.low_gpu_mem_usage:
             batch_size = 8
         else:
+            batch_size = 1
+
+    # ------------------------------------------------------------------ #
+    # Multimodal calibration: ``batch_size`` must be 1 because image      #
+    # sizes differ across samples (the multimodal collator can't stack    #
+    # them otherwise).                                                    #
+    # ------------------------------------------------------------------ #
+    if force_mllm:
+        if batch_size != 1:
+            logger.info("AutoScheme(force_mllm): clamping batch_size %d -> 1.", batch_size)
             batch_size = 1
 
     pbar_cnt = 0
@@ -759,13 +1102,6 @@ def _gen_layer_config(
             pbar_cnt += len(block_name) * 2 * ((nsamples + batch_size - 1) // batch_size)  # forward backward
     shared_layers = parse_shared_layers(model, auto_scheme.shared_layers)
 
-    embedding_layers_names = []
-    for name in quant_layer_names:
-        module = get_module(model, name)
-        if isinstance(module, torch.nn.Embedding):
-            embedding_layers_names.append(name)
-    quant_layer_names = list(set(quant_layer_names) - set(embedding_layers_names))
-
     options_scores = []
     if auto_scheme.low_gpu_mem_usage and not disable_opt_rtn:
         logger.warning("low_gpu_mem_usage is enabled, disable_opt_rtn will be set to True automatically")
@@ -782,7 +1118,7 @@ def _gen_layer_config(
             if need_imatrix:
                 break
         if need_imatrix:  # TODO change to block way in low_gpu_mem_usage
-            dataloader = get_dataloader(tokenizer, seqlen=256, dataset_name=dataset, seed=42, bs=8, nsamples=16)
+            dataloader = get_dataloader(tokenizer, seqlen=256, dataset_name=dataset, seed=42, bs=8, nsamples=nsamples)
             logger.info("start to compute imatrix for GGUF-K quantization in AutoScheme")
             cal_imatrix(model, dataloader)
             logger.info("finish calculating imatrix")
@@ -823,6 +1159,10 @@ def _gen_layer_config(
                 batch_size=batch_size,
                 disable_opt_rtn=auto_scheme.disable_opt_rtn,
                 offload_context=offload_context,
+                processor=processor,
+                is_vlm=is_vlm,
+                force_mllm=force_mllm,
+                model_name=model_name,
             )
         # Track peak RAM after each scheme scoring
         memory_monitor.update_cpu()
@@ -967,13 +1307,54 @@ def gen_layer_config(
     disable_opt_rtn=True,
     low_gpu_mem_usage=True,
     min_avg_bit_scheme=None,
+    processor=None,
     **kwargs,
 ):
     model_name = None
+    is_vlm = False
     if isinstance(model, str):
         model_name = model
-        # Load model on CPU only; do not apply automatic device map or tuning-aware placement at load time.
-        model, tokenizer, _ = llm_load_model(model_name, device_map="cpu")
+        # Detect VLM (Qwen-VL / Qwen3-VL / LLaVA / etc.) and load via the MLLM
+        # path so we get a usable ``processor`` for the multimodal calibration
+        # dataloader. The block walker auto-detects VLMs too and skips the
+        # vision tower when scoring.
+        is_vlm = is_mllm_model(model_name)
+        if is_vlm:
+            model, processor, tokenizer, _ = mllm_load_model(
+                model_name,
+                device="cpu",
+                use_auto_mapping=False,
+            )
+        else:
+            # Load model on CPU only; do not apply automatic device map or tuning-aware placement at load time.
+            model, tokenizer, _ = llm_load_model(model_name, device_map="cpu")
+    else:
+        # Object passed in: still try to detect VLM so we can pick the right dataloader later.
+        try:
+            is_vlm = is_mllm_model(model)
+        except Exception:  # noqa: BLE001
+            is_vlm = False
+
+    # ---- Vision-tower scoring requires a full backward ---- #
+    # ``model_forward_low_gpu`` only walks the language tower (it uses
+    # ``get_block_names(model)[0]``, which excludes vision blocks by default)
+    # and interrupts ``loss.backward()`` at the LAST language block via
+    # ``backward_pre_hook`` -> ``MyCustomError``. As a result, gradient never
+    # propagates into the vision tower and any AutoScheme score for vision
+    # layers comes out as 0. If the caller asked us to score vision layers
+    # (typically because ``--quant_nontext_module`` was passed), force a
+    # full forward+backward instead.
+    vision_markers = ("vision", "visual", "image", "img")
+    force_mllm_for_vision = is_vlm and any(
+        any(marker in n.lower() for marker in vision_markers) for n in quant_layer_names
+    )
+    if force_mllm_for_vision and low_gpu_mem_usage:
+        logger.warning("AutoScheme: scoring vision layers requires full backward; " "disabling low_gpu_mem_usage.")
+        low_gpu_mem_usage = False
+        try:
+            auto_scheme.low_gpu_mem_usage = False
+        except Exception:  # noqa: BLE001
+            pass
     # Get major device
     major_device = get_major_device(device_map)
     if not low_gpu_mem_usage:
@@ -999,9 +1380,30 @@ def gen_layer_config(
 
     device_list = parse_available_devices(device_map)
 
-    # Enable gradient checkpointing if supported
-    if model.supports_gradient_checkpointing:
-        model.gradient_checkpointing_enable()
+    # Enable gradient checkpointing if supported.
+    #
+    # IMPORTANT: we must use ``use_reentrant=False``. The reentrant
+    # implementation requires the inputs that enter the checkpointed region to
+    # have ``requires_grad=True`` — otherwise its backward sees "no grad-
+    # requiring input" and returns ``None`` for the input gradient, which kills
+    # the autograd chain *before* the checkpoint boundary. In AutoScheme we
+    # aggressively turn off ``requires_grad`` on every non-wrapper parameter
+    # (token embeddings, norms, vision-tower non-linear layers, patch embeds,
+    # …), so ``inputs_embeds`` entering the first text decoder block often does
+    # NOT require grad. With reentrant=True that means gradient never flows
+    # back into the vision tower → vision wrapper hooks see grad=0.
+    # ``use_reentrant=False`` (saved-tensor-hooks impl) does not have this
+    # restriction.
+    def _enable_gc(mod):
+        if not getattr(mod, "supports_gradient_checkpointing", False):
+            return
+        try:
+            mod.gradient_checkpointing_enable(gradient_checkpointing_kwargs={"use_reentrant": False})
+        except TypeError:
+            # Older transformers without the kwargs argument.
+            mod.gradient_checkpointing_enable()
+
+    _enable_gc(model)
 
     for name in quant_layer_names:
         m = get_module(model, name)
@@ -1022,6 +1424,8 @@ def gen_layer_config(
             major_device=major_device,
             device_list=device_list,
             min_avg_bit_scheme=min_avg_bit_scheme,
+            processor=processor,
+            is_vlm=is_vlm,
         )
     except torch.OutOfMemoryError:
         logger.warning(
@@ -1052,6 +1456,8 @@ def gen_layer_config(
             major_device=major_device,
             device_list=device_list,
             min_avg_bit_scheme=min_avg_bit_scheme,
+            processor=processor,
+            is_vlm=is_vlm,
         )
 
     return res

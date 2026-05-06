@@ -16,10 +16,8 @@ import copy
 import json
 import os
 import sys
-from concurrent.futures import ThreadPoolExecutor
 from typing import Callable, Union
 
-import threadpoolctl as tctl
 import torch
 import transformers
 from tqdm import tqdm
@@ -36,7 +34,6 @@ from auto_round.utils import (
     get_module,
     get_packing_device,
     is_gaudi2,
-    is_hpex_available,
     logger,
     set_module,
     unsupported_meta_device,
@@ -151,29 +148,12 @@ def save_quantized_as_static_fp(
     image_processor = kwargs.get("image_processor", None)
 
     names = list(layer_config.keys())
-    max_workers = 1
-    if not torch.cuda.is_available() and not torch.xpu.is_available():
-        max_workers = 2  ## 2 with cuda packing will cause hang occasionally
     if not unsupported_meta_device(model):
-
-        if is_hpex_available():  # packing will cause hang occasionally on hpu
-            for name in tqdm(names, total=len(names), leave=True, desc="packing"):
-                pack_layer(name, model, serialization_dict.get("data_type", "fp8"), device)
-        else:
-            with ThreadPoolExecutor(max_workers=max_workers) as executor:
-                with tqdm(total=len(names), leave=True) as pbar:
-
-                    def wrapper(name):
-                        pbar.set_description(f"packing {name}")
-                        with tctl.threadpool_limits(limits=1):
-                            pack_layer(name, model, serialization_dict.get("data_type", "fp8"), device)
-                        pbar.update(1)
-
-                    for _ in executor.map(wrapper, names):
-                        pass
+        for name in tqdm(names, desc="packing", leave=True):
+            pack_layer(name, model, serialization_dict.get("data_type", "fp8"), device)
 
     # Get llm-compressor format config
-    check_compressed_tensors_supported()
+    check_compressed_tensors_supported(raise_error=True)
     from compressed_tensors.quantization import (  # pylint: disable=E0401
         QuantizationArgs,
         QuantizationConfig,

@@ -4,13 +4,14 @@ import shutil
 import pytest
 from transformers import AutoModelForImageTextToText, AutoProcessor, AutoTokenizer, Qwen2VLForConditionalGeneration
 
-from auto_round import AutoRoundMLLM
+from auto_round import AutoRound
 from auto_round.utils import get_block_names
 
 from ...helpers import get_model_path, opt_name_or_path
 
 
 class FakeDataLoader:
+
     def __init__(self):
         self.batch_size = 1
 
@@ -27,7 +28,8 @@ class FakeDataLoader:
             yield self.data
 
 
-class TestAutoRoundMLLM:
+class TestAutoRound:
+
     @classmethod
     def setup_class(self):
         self.model_name = get_model_path("Qwen/Qwen2-VL-2B-Instruct")
@@ -43,7 +45,7 @@ class TestAutoRoundMLLM:
 
     def test_tune(self, tiny_qwen_vl_model_path):
         bits, group_size = 4, 128
-        autoround = AutoRoundMLLM(
+        autoround = AutoRound(
             model=tiny_qwen_vl_model_path,
             bits=bits,
             group_size=group_size,
@@ -64,7 +66,7 @@ class TestAutoRoundMLLM:
             tiny_qwen_vl_model_path, trust_remote_code=True, device_map="auto"
         )
         bits, group_size = 4, 128
-        autoround = AutoRoundMLLM(
+        autoround = AutoRound(
             model,
             tokenizer,
             processor=processor,
@@ -120,7 +122,7 @@ class TestAutoRoundMLLM:
         )
         bits, group_size = 4, 128
         dataset = ["dataset test", "list test"]
-        autoround = AutoRoundMLLM(
+        autoround = AutoRound(
             model,
             tokenizer,
             processor=processor,
@@ -154,7 +156,7 @@ class TestAutoRoundMLLM:
         )
         bits, group_size = 4, 128
         dataset = ["test pure text", "input for mllm"]
-        autoround = AutoRoundMLLM(
+        autoround = AutoRound(
             model,
             tokenizer,
             processor=processor,
@@ -215,7 +217,7 @@ class TestAutoRoundMLLM:
 
         model_name = tiny_qwen_2_5_vl_model_path
         model, processor, tokenizer, image_processor = mllm_load_model(model_name)
-        autoround = AutoRoundMLLM(
+        autoround = AutoRound(
             model,
             tokenizer,
             iters=1,
@@ -225,15 +227,17 @@ class TestAutoRoundMLLM:
             processor=processor,
             image_processor=image_processor,
         )
-        autoround.quantize_and_save(self.save_dir, format="auto_round")
+        _, quantized_model_path = autoround.quantize_and_save(self.save_dir, format="auto_round")
 
         import requests
         from PIL import Image
         from transformers import AutoProcessor, AutoTokenizer, Qwen2_5_VLForConditionalGeneration
 
-        model = Qwen2_5_VLForConditionalGeneration.from_pretrained(self.save_dir, torch_dtype="auto", device_map="auto")
+        model = Qwen2_5_VLForConditionalGeneration.from_pretrained(
+            quantized_model_path, torch_dtype="auto", device_map="auto"
+        )
         image_url = "https://qianwen-res.oss-cn-beijing.aliyuncs.com/Qwen-VL/assets/demo.jpeg"
-        processor = AutoProcessor.from_pretrained(self.save_dir)
+        processor = AutoProcessor.from_pretrained(quantized_model_path)
         messages = [
             {
                 "role": "user",
@@ -269,7 +273,7 @@ class TestAutoRoundMLLM:
 
         model_name = tiny_qwen_2_5_vl_model_path
         model, processor, tokenizer, image_processor = mllm_load_model(model_name)
-        autoround = AutoRoundMLLM(
+        autoround = AutoRound(
             model,
             tokenizer,
             iters=1,

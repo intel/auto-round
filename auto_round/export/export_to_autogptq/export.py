@@ -16,11 +16,8 @@ import copy
 import inspect
 import json
 import os
-from concurrent.futures import ThreadPoolExecutor
 from dataclasses import fields
 from typing import Any, Callable, Dict, Union
-
-import threadpoolctl as tctl
 
 # MIT License
 #
@@ -208,7 +205,7 @@ def save_quantized_as_autogptq(
 
     # --- 1️⃣ Extract inputs & configs ---
     quantization_config = serialization_dict
-    quant_block_list = serialization_dict.get("quant_block_list", get_block_names(model))
+    quant_block_list = serialization_dict.get("quant_block_list") or get_block_names(model)
     processor = kwargs.get("processor")
     image_processor = kwargs.get("image_processor")
     safe_serialization = kwargs.get("safe_serialization", True)
@@ -252,7 +249,7 @@ def save_quantized_as_autogptq(
             continue
         # Handle block layers
         if in_blocks or (block_name_to_quantize and check_start_with_block_name(layer_name, block_name_to_quantize)):
-            neq_keys = check_neq_config(cfg, **{k: quantization_config[k] for k in scheme_keys})
+            neq_keys = check_neq_config(cfg, **{k: quantization_config.get(k) for k in scheme_keys})
             if neq_keys:
                 if matches_any_regex(layer_name, regex_config):
                     continue
@@ -295,21 +292,9 @@ def save_quantized_as_autogptq(
         model = copy.deepcopy(model.to("cpu"))
 
     names = list(layer_config.keys())
-    max_workers = 1
-    if not torch.cuda.is_available() and not torch.xpu.is_available():
-        max_workers = 2  ## 2 with cuda packing will cause hang occasionally
     if not unsupported_meta_device(model):
-        with ThreadPoolExecutor(max_workers=max_workers) as executor:
-            with tqdm(total=len(names), leave=True) as pbar:
-
-                def wrapper(name):
-                    pbar.set_description(f"packing {name}")
-                    with tctl.threadpool_limits(limits=1):
-                        pack_layer(name, model, backend, device)
-                    pbar.update(1)
-
-                for _ in executor.map(wrapper, names):
-                    pass
+        for name in tqdm(names, desc="packing", leave=True):
+            pack_layer(name, model, backend, device)
     if output_dir is None:
         return model
     quantization_config["lm_head"] = lm_head_quantized

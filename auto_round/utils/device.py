@@ -40,7 +40,6 @@ DEVICE_ENVIRON_VARIABLE_MAPPING = {
     "hpu": "HABANA_VISIBLE_MODULES",
 }
 
-
 # Note on HPU usage:
 # There are two modes available for enabling auto-round on HPU:
 # 1. Compile Mode
@@ -185,6 +184,82 @@ def is_hpex_available():
     return _hpex_available
 
 
+_xpu_sdpa_patched = False
+
+
+# TODO: This is a workaround for the XPU SDPA memory blow-up issue.
+# We should remove this patch after the issue is fixed in XPU side.
+# https://github.com/intel/auto-round/issues/990
+def patch_xpu_sdpa_drop_causal_mask():
+    """Workaround for XPU peak-VRAM blow-up in SDPA.
+
+    On Intel XPU, ``torch.nn.functional.scaled_dot_product_attention`` falls back
+    to the MATH backend whenever ``attn_mask`` is non-None (FLASH on XPU does
+    not support explicit attn_mask, EFFICIENT/CUDNN are not implemented).
+    The MATH backend materializes the full ``(B, H, S, S)`` probability matrix
+    in both forward and backward, costing several GB at typical
+    ``batch_size=8, seqlen=2048``.
+
+    HuggingFace transformers happily passes a *pure causal* 4D mask, even
+    though the same effect is achievable via ``is_causal=True`` (which the
+    FLASH backend supports and which uses ~12x less memory).
+
+    This monkey-patch detects a pure causal mask, drops it, and forwards
+    ``is_causal=True`` instead -- only on XPU and only when no real mask info
+    would be lost. CPU/CUDA/HPU paths are left untouched.
+
+    Idempotent. Safe to call multiple times.
+    """
+    global _xpu_sdpa_patched
+    if _xpu_sdpa_patched:
+        return
+    if not (hasattr(torch, "xpu") and torch.xpu.is_available()):
+        return
+    torch.use_deterministic_algorithms(False)
+
+    _orig_sdpa = torch.nn.functional.scaled_dot_product_attention
+
+    def _is_pure_causal_mask(mask: torch.Tensor, s: int) -> bool:
+        # Cheap shape check first
+        if mask.shape[-1] != s or mask.shape[-2] != s:
+            return False
+        if mask.dtype not in (torch.float16, torch.bfloat16, torch.float32):
+            return False
+        # Pick the first (B,H) slice; HF mask is broadcast across batch/heads.
+        m2d = mask.reshape(-1, s, s)[0]
+        tri_up = torch.triu(torch.ones(s, s, dtype=torch.bool, device=mask.device), 1)
+        return bool(torch.isinf(m2d[tri_up]).all().item()) and bool((m2d[~tri_up] == 0).all().item())
+
+    def _patched_sdpa(query, key, value, attn_mask=None, dropout_p=0.0, is_causal=False, scale=None, **kwargs):
+        if (
+            query.device.type == "xpu"
+            and attn_mask is not None
+            and not is_causal
+            and query.shape[-2] == key.shape[-2]  # square QK length (no kv-cache)
+            and _is_pure_causal_mask(attn_mask, query.shape[-2])
+        ):
+            attn_mask = None
+            is_causal = True
+        return _orig_sdpa(
+            query,
+            key,
+            value,
+            attn_mask=attn_mask,
+            dropout_p=dropout_p,
+            is_causal=is_causal,
+            scale=scale,
+            **kwargs,
+        )
+
+    torch.nn.functional.scaled_dot_product_attention = _patched_sdpa
+    _xpu_sdpa_patched = True
+    logger.info("torch.use_deterministic_algorithms(False) is set for XPU.")
+    logger.info(
+        "Patched torch SDPA on XPU to use is_causal=True for pure causal masks "
+        "(avoids ~10x peak-VRAM blow-up from MATH backend)."
+    )
+
+
 def check_is_cpu(device):
     """Check if the device is a CPU.
 
@@ -284,7 +359,16 @@ def detect_device(device: Union[None, str, int, torch.device] = None) -> str:
     return device
 
 
-def get_device_and_parallelism(device: Union[str, torch.device, int]) -> tuple[str, bool]:
+def get_device_and_parallelism(device: Union[str, torch.device, int, dict]) -> tuple[str, bool]:
+    if device is None:
+        device = detect_device(device)
+        return device, False
+    if isinstance(device, dict):
+        unique_devices = set(device.values())
+        if len(unique_devices) == 1:
+            device = next(iter(unique_devices))
+        else:
+            device = "auto"
     if isinstance(device, str):
         if device in ["cuda", "xpu", "hpu"]:
             device = detect_device(device)
@@ -405,6 +489,7 @@ class fake_triton_for_hpu(ContextDecorator):
 
             # Create and inject fake triton module
             class FakeTriton:
+
                 def __getattr__(self, name):
                     return None
 
@@ -570,6 +655,25 @@ def _clear_memory_for_cpu_and_cuda(
 _malloc_trim_counter = 0
 
 
+def _force_trim_malloc() -> None:
+    """Unconditionally release glibc heap pages back to the OS on Linux.
+
+    Unlike :func:`_maybe_trim_malloc`, this ignores the call-count throttle and
+    always invokes ``malloc_trim(0)``.  Use at critical lifecycle boundaries
+    (end of model loading, end of post_init, start of quantize loop) where a
+    one-time trim has a meaningful impact on peak RSS.
+    """
+    if os.name != "posix":
+        return
+    if os.environ.get("AR_ENABLE_MALLOC_TRIM", "1") != "1":
+        return
+    try:
+        libc = ctypes.CDLL("libc.so.6")
+        libc.malloc_trim(0)
+    except Exception:
+        pass
+
+
 def _maybe_trim_malloc() -> None:
     """Optionally release glibc heap pages back to OS on Linux.
 
@@ -602,6 +706,7 @@ def _maybe_trim_malloc() -> None:
 
 
 class ClearMemory:
+
     def __init__(self, device_list: list | tuple | None = None):
         self.device_list = device_list
 
@@ -613,6 +718,13 @@ class ClearMemory:
         from auto_round.utils.device import is_hpex_available
 
         if is_hpex_available():
+            # Clear CPU-side references so Python can reclaim them.
+            if isinstance(tensor, list):
+                for i in range(len(tensor)):
+                    tensor[i] = None
+            tensor = None
+            gc.collect()
+            _force_trim_malloc()
             memory_monitor.update_hpu(device_list)
             return
         else:
@@ -1121,15 +1233,6 @@ def estimate_tuning_block_mem(
         # and multiple expert activations. Here we use a conservative estimate.
         moe_additional_memory = additional_memory * 6  # GB
         additional_memory += moe_additional_memory
-    if torch.xpu.is_available():
-        # https://github.com/intel/torch-xpu-ops/issues/2232
-        # TODO: XPU takes more memory than expected. for llama 8B, it's about 12 GB
-        xpu_additional_memory = 12  # GB
-        additional_memory += xpu_additional_memory
-    # logger.warning_once(
-    #     "[Memory Estimation]: If there is an abnormal memory issue, please collect log with "
-    #     + "AR_LOG_LEVEL=debug and raise issue to us."
-    # )
 
     return layer_memory_dict, layer_activation_memory, block_input_output_memory, additional_memory
 
@@ -1723,6 +1826,7 @@ def dump_mem_usage(msg: str = "", log_level: str = "info"):
     """Decorator to dump memory usage before and after a function call."""
 
     def decorator(func):
+
         @functools.wraps(func)
         def wrapper(*args, **kwargs):
             memory_monitor.update_cpu()

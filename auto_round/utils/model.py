@@ -18,7 +18,7 @@ import os
 import re
 from collections import UserDict
 from pathlib import Path
-from typing import Union
+from typing import TYPE_CHECKING, Union
 
 import psutil
 import torch
@@ -28,7 +28,7 @@ from packaging import version
 from auto_round import envs
 from auto_round.export.export_to_gguf.config import ModelType
 from auto_round.logger import logger
-from auto_round.schemes import QuantizationScheme
+from auto_round.utils.common import monkey_patch_model
 from auto_round.utils.weight_handler import (
     _dequant_fp8_linear_weight,
     check_and_mark_quantized_module,
@@ -37,6 +37,9 @@ from auto_round.utils.weight_handler import (
 )
 
 FIX_MISTRAL_REGEX_MODEL_TYPE_LIST = ["longcat_next"]
+
+if TYPE_CHECKING:
+    from auto_round.schemes import QuantizationScheme
 
 
 def clean_module_parameter(submodule: torch.nn.Module, param_name: str) -> None:
@@ -363,6 +366,7 @@ def llm_load_model(
             )
 
     model = model.eval()
+    monkey_patch_model(model)
     check_and_mark_quantized_module(model)
     handle_generation_config(model)
     model = _to_model_dtype(model, model_dtype)
@@ -774,7 +778,10 @@ def is_mllm_model(model_or_path: Union[str, torch.nn.Module], platform: str = No
 
     model_path = model_or_path if isinstance(model_or_path, str) else model_or_path.name_or_path
     # For dummy model, model_path could be "".
-    if model_path and not os.path.isdir(model_path):
+    # Only try to download if the path looks like a HF repo id (not a local filesystem path).
+    # Skip download for absolute paths or relative paths that contain current/parent dir markers.
+    _is_local_path = os.path.isabs(model_path) or model_path.startswith("./") or model_path.startswith("../")
+    if model_path and not os.path.isdir(model_path) and not _is_local_path:
         model_path = download_or_get_path(model_path, platform=platform)
 
     if isinstance(model_path, str):
@@ -810,27 +817,26 @@ def is_gguf_model(model_path: Union[str, torch.nn.Module]) -> bool:
     return is_gguf_file
 
 
-def is_diffusion_model(model_or_path: Union[str, object]) -> bool:
+def is_diffusion_model(model_or_path: Union[str, object], trust_remote_code: bool = True) -> bool:
     from auto_round.utils.common import LazyImport
-
-    # First check if it's a known diffusion pipeline by config/model_type
-    # to avoid unnecessary imports and file checks for non-diffusion models, which can be time-consuming.
-    try:
-        from transformers import AutoConfig
-
-        config = AutoConfig.from_pretrained(model_or_path, trust_remote_code=True)
-        model_type = getattr(config, "model_type", "")
-        # A special case for NextStep
-        if model_type == "nextstep":
-            return True
-    except:
-        logger.warning(
-            f"Failed to load config for {model_or_path}, trying to check model_index.json for diffusion pipeline."
-        )
 
     # Then check if model_index.json exists for diffusion pipeline,
     # which is a strong signal of being a diffusion pipeline.
     if isinstance(model_or_path, str):
+        # First check if it's a known diffusion pipeline by config/model_type
+        # to avoid unnecessary imports and file checks for non-diffusion models, which can be time-consuming.
+        try:
+            from transformers import AutoConfig
+
+            config = AutoConfig.from_pretrained(model_or_path, trust_remote_code=trust_remote_code)
+            model_type = getattr(config, "model_type", "")
+            # A special case for NextStep
+            if model_type == "nextstep":
+                return True
+        except:
+            logger.warning(
+                f"Failed to load config for {model_or_path}, trying to check model_index.json for diffusion pipeline."
+            )
         index_file = None
         if not os.path.isdir(model_or_path):
             try:
@@ -1142,6 +1148,7 @@ def check_to_quantized(config):
         bool: True if the configuration is valid for quantization (bits <= 8),
             False otherwise.
     """
+    from auto_round.schemes import QuantizationScheme
 
     if isinstance(config, (dict, QuantizationScheme)):
         bits = config.get("bits", None)
@@ -1989,6 +1996,10 @@ def rename_weights_files(path: str, prefix="diffusion_pytorch_model"):
     # rename safetensors
     files = sorted(glob.glob(f"{path}/*.safetensors"))
     total = len(files)
+    if total == 1:
+        new = f"{prefix}.safetensors"
+        os.rename(files[0], os.path.join(path, new))
+        return
 
     for i, f in enumerate(files, 1):
         new = f"{prefix}-{i:05d}-of-{total:05d}.safetensors"

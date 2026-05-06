@@ -45,7 +45,9 @@ from auto_round.schemes import (
     get_gguf_scheme,
 )
 from auto_round.utils import (
+    INNER_SUPPORTED_LAYER_TYPES,
     SUPPORTED_FORMATS,
+    SUPPORTED_LAYER_TYPES,
     check_to_quantized,
     compress_layer_names,
     copy_python_files_from_model_cache,
@@ -158,7 +160,7 @@ def _check_divisible_by_32(ar):
     skipped_layers = []
     if default_dict["data_type"] == "int" and default_dict["act_bits"] >= 16:
         for n, m in ar.model.named_modules():
-            if type(m) in ar.supported_types or m.__class__.__name__ in ar.inner_supported_types:
+            if type(m) in SUPPORTED_LAYER_TYPES or m.__class__.__name__ in INNER_SUPPORTED_LAYER_TYPES:
                 if m.weight.shape[0] % 32 or m.weight.shape[1] % 32:
                     if ar.layer_config is None:
                         ar.layer_config = {}
@@ -378,7 +380,7 @@ class LLMCompressorFormat(OutputFormat):
             if is_nv_fp(ar.data_type) or is_mx_fp(ar.data_type):
                 from auto_round.export.export_to_llmcompressor import check_compressed_tensors_supported
 
-                check_compressed_tensors_supported()
+                check_compressed_tensors_supported(raise_error=True)
                 self.backend = LLMCompressorFormat(ar.data_type, ar)
             elif is_dynamic_afp8(ar) and is_block_wfp8(ar):
                 self.backend = LLMCompressorFormat(AutoRoundExportFormat.FP8_BLOCK.value, ar)
@@ -690,7 +692,7 @@ class AutoAWQFormat(OutputFormat):
         if not awq_supported:
             logger.warning(f"The AutoAWQ format may not be supported due to {info}")
         if ar.bits != 4:
-            raise ValueError("The AWQ format only supports W4 quantization ")
+            raise ValueError(f"auto_awq format support quantization scheme with W4A16 but got bits={ar.bits}")
 
         if self.backend is None:
             _check_divisible_by_32(ar)
@@ -759,6 +761,7 @@ class GGUFFormat(OutputFormat):
 
     def __init__(self, format: str, ar: BaseCompressor):
         if format.startswith("gguf:"):
+            self._original_format = format  # preserve "gguf:q2_k_mixed" etc. for Phase 2b
             self.gguf_args_check(ar, format, model_type=ModelType.TEXT)
             if ar.mllm:
                 self.gguf_args_check(ar, format, model_type=ModelType.MMPROJ)
@@ -794,14 +797,14 @@ class GGUFFormat(OutputFormat):
         return True
 
     def check_and_reset_format(self, ar):
-        if ar.iters != 0 and ar.bits != 3 and not ar.enable_alg_ext:
+        if getattr(ar, "iters", 0) != 0 and ar.bits != 3 and not ar.enable_alg_ext:
             logger.warning_once(
                 "`iters=0` is recommended when exporting to current GGUF format"
                 " or add `enable_alg_ext` for better accuracy with much more tuning cost."
                 " Please refer to https://github.com/intel/auto-round/tree/main/docs/gguf_alg_ext_acc.md"
                 " for the accuracy results."
             )
-        elif ar.bits >= 8 and ar.iters != 0:
+        elif ar.bits >= 8 and getattr(ar, "iters", 0) != 0:
             logger.warning_once("`iters=0` is recommended for bits>=8")
 
         if getattr(ar, "quant_nontext_module", False):
@@ -1084,11 +1087,67 @@ class FP8Format(OutputFormat):
         )
 
 
+@OutputFormat.register("mlx")
+class MLXFormat(OutputFormat):
+    support_schemes = ["W2A16", "W2A16G32", "W2A16G64", "W3A16", "W4A16", "W5A16", "W6A16", "W8A16", "BF16"]
+    format_name = "mlx"
+
+    @classmethod
+    def check_scheme_args(cls: OutputFormat, scheme: QuantizationScheme) -> bool:
+        error_logs = []
+        if scheme.bits not in [2, 3, 4, 5, 6, 8, 16]:
+            error_logs.append(f"bits={scheme.bits}")
+        if scheme.act_bits != 16:
+            error_logs.append(f"act_bits={scheme.act_bits}")
+        if not re.search("int", scheme.data_type):
+            error_logs.append(f"data_type={scheme.data_type}")
+        if scheme.super_bits:
+            error_logs.append(f"super_bits={scheme.super_bits}")
+        if scheme.super_group_size:
+            error_logs.append(f"super_group_size={scheme.super_group_size}")
+        if error_logs:
+            raise ValueError(
+                f"MLX format support quantization scheme with {','.join(cls.support_schemes)} "
+                f"but got {', '.join(error_logs)}, please have a check."
+            )
+        return True
+
+    def pack_layer(self, layer_name, model, device=None, **kwargs):
+        from auto_round.export.export_to_mlx.export import pack_layer
+
+        pack_layer(layer_name, model, device=device, **kwargs)
+
+    def save_quantized(
+        self,
+        output_dir: str,
+        model: torch.nn.Module = None,
+        tokenizer: Callable = None,
+        layer_config: dict = None,
+        inplace: bool = True,
+        device: Union[str, torch.device] = "cpu",
+        serialization_dict: dict = None,
+        **kwargs,
+    ) -> torch.nn.Module:
+        from auto_round.export.export_to_mlx.export import save_quantized_as_mlx
+
+        return save_quantized_as_mlx(
+            output_dir=output_dir,
+            model=model,
+            tokenizer=tokenizer,
+            layer_config=layer_config,
+            inplace=inplace,
+            device=device,
+            serialization_dict=serialization_dict,
+            **kwargs,
+        )
+
+
 @OutputFormat.register("auto_round")
 @OutputFormat.register("auto_round:auto_awq")
 @OutputFormat.register("auto_round:llm_compressor")
 @OutputFormat.register("auto_round:gptqmodel", "auto_round:auto_gptq")
 @OutputFormat.register("auto_round:fp8")
+@OutputFormat.register("auto_round:mlx")
 class AutoRoundFormat(OutputFormat):
     support_schemes = [
         "W4A16",
@@ -1143,10 +1202,15 @@ class AutoRoundFormat(OutputFormat):
                 )
         # for auto_round:fp8_static, auto_round:nv_fp etc.
         elif not format.startswith("auto_round"):
-            if format.upper() not in list(AutoRoundExportFormat.__members__.keys()):
+            if format == "mlx":
+                self.backend = MLXFormat("mlx", ar)
+            elif format.upper() not in list(AutoRoundExportFormat.__members__.keys()):
                 raise KeyError(f"Unsupported backend format auto_round:{format}, please check")
-            self.output_format = f"auto_round:{format}"
-            self.backend = None
+            else:
+                self.output_format = f"auto_round:{format}"
+                self.backend = None
+        elif format == "auto_round:mlx":
+            self.backend = MLXFormat("mlx", ar)
         else:
             backend = format.split(":")[1] if ":" in format else None
             self.backend = self._format_list.get(backend)(format, ar) if backend else None
@@ -1219,6 +1283,9 @@ class AutoRoundFormat(OutputFormat):
         **kwargs,
     ) -> torch.nn.Module:
         if self.backend is not None:
+            extra_kwargs = {}
+            if isinstance(self.backend, MLXFormat):
+                extra_kwargs["autoround_format"] = True
             return self.backend.save_quantized(
                 output_dir=output_dir,
                 model=model,
@@ -1227,6 +1294,7 @@ class AutoRoundFormat(OutputFormat):
                 inplace=inplace,
                 device=device,
                 serialization_dict=serialization_dict,
+                **extra_kwargs,
                 **kwargs,
             )
         backend = self.get_backend_name()
