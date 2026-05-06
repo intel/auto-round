@@ -20,9 +20,9 @@ function create_conda_env() {
     # create conda env
     source activate base > /dev/null 2>&1 
     if conda info --envs | grep -q "^$CONDA_ENV_NAME\s"; then conda remove -n ${CONDA_ENV_NAME} --all -y; fi
-    conda create -n ${CONDA_ENV_NAME} python=${PYTHON_VERSION} setuptools -y
+    conda create --quiet -n ${CONDA_ENV_NAME} python=${PYTHON_VERSION} setuptools -y
     source activate ${CONDA_ENV_NAME} > /dev/null 2>&1
-    conda install -c conda-forge git gxx=11.2.0 gcc=11.2.0 gdb sysroot_linux-64 libgcc uv -y
+    conda install --quiet -c conda-forge git gxx=11.2.0 gcc=11.2.0 gdb sysroot_linux-64 libgcc uv -y
     export LD_PRELOAD=${CONDA_PREFIX}/lib/libstdc++.so.6
 
     # install AutoRound
@@ -234,8 +234,9 @@ function run_unit_test_vllm() {
 
     cd ${REPO_PATH}/test
     rm -rf .coverage* *.xml *.html
+    vllm_version=$(curl -s https://api.github.com/repos/vllm-project/vllm/releases/latest | jq -r .tag_name | sed 's/^v//')
     uv pip install -r test_cuda/requirements_vllm.txt \
-        --extra-index-url https://wheels.vllm.ai/0.20.1/cu129 \
+        --extra-index-url https://wheels.vllm.ai/${vllm_version}/cu129 \
         --extra-index-url https://download.pytorch.org/whl/cu128 \
         --index-strategy unsafe-best-match
     cd ${REPO_PATH} && uv pip install . && cd ${REPO_PATH}/test
