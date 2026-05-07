@@ -13,8 +13,12 @@ from setuptools.command.build_ext import build_ext
 from setuptools.command.build_py import build_py
 
 DEFAULT_VERSION = "0.12.0"
-REQUIREMENTS = ["torch>=2.10.0", "dpcpp-cpp-rt~=2025.3.0", "onednn~=2025.3.0; sys_platform=='linux'"]
 
+def fetch_requirements(path):
+    requirements = []
+    with open(path, "r") as fd:
+        requirements = [r.strip() for r in fd]
+    return requirements
 
 def parse_major_minor(version_str):
     major, minor = version_str.split(".")[:2]
@@ -53,11 +57,9 @@ if not oneapi_version:
         "and that the 'icx' compiler is in your PATH."
     )
 
-build_config = {"deps": REQUIREMENTS, "default_build_version": DEFAULT_VERSION}
-requirements = build_config["deps"]
-version = os.environ.get("RELEASE_VERSION") or build_config["default_build_version"]
+requirements = fetch_requirements("requirements.txt")
+version = os.environ.get("RELEASE_VERSION") or DEFAULT_VERSION
 enable_sycl_tla = parse_major_minor(oneapi_version) >= (2025, 3)
-
 
 def get_system_memory_gb():
     if hasattr(os, "sysconf"):
@@ -180,7 +182,7 @@ setup(
     long_description_content_type="text/markdown",
     keywords="quantization,auto-around,LLM,kernel",
     license="Apache 2.0",
-    url="https://github.com/intel/auto-round",
+    url="https://github.com/intel/auto-round/auto_round_extension/ark",
     packages=["auto_round_kernel"],
     include_package_data=False,
     ext_modules=ext_modules,
@@ -188,7 +190,7 @@ setup(
         "build_ext": CMakeBuild,
         "build_py": BuildPyThenCMake,
     },
-    install_requires=REQUIREMENTS,
+    install_requires=requirements,
     classifiers=[
         "Intended Audience :: Science/Research",
         "Programming Language :: Python :: 3",
