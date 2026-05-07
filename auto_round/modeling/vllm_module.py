@@ -13,30 +13,32 @@
 # limitations under the License.
 
 
+from typing import Any
+
 import torch
 import transformers
 from packaging import version
 from torch import nn
-from typing import Any
 
 transformers_version = version.parse(transformers.__version__)
 if transformers_version < version.parse("5.0.0"):
-    from transformers.modeling_utils import no_init_weights
     from transformers.configuration_utils import PretrainedConfig as PreTrainedConfig
+    from transformers.modeling_utils import no_init_weights
 else:
     from transformers.initialization import no_init_weights
     from transformers.configuration_utils import PreTrainedConfig
+
 from transformers.activations import ACT2FN
-
-from auto_round.modeling.replace_modules import ReplacementModuleBase
-from auto_round.modeling.fused_moe.utils import _update_parameter
-from auto_round.utils import clear_memory, unsupported_meta_device, LazyImport
-
 from vllm.model_executor.layers.attention import Attention
 from vllm.model_executor.layers.linear import (
-        MergedColumnParallelLinear,
-        QKVParallelLinear,
-    )
+    MergedColumnParallelLinear,
+    QKVParallelLinear,
+)
+
+from auto_round.modeling.fused_moe.utils import _update_parameter
+from auto_round.modeling.replace_modules import ReplacementModuleBase
+from auto_round.utils import LazyImport, clear_memory, unsupported_meta_device
+
 SharedFusedMoE = LazyImport("vllm.model_executor.layers.fused_moe.SharedFusedMoE")
 FusedMoE = LazyImport("vllm.model_executor.layers.fused_moe.FusedMoE")
 
@@ -48,8 +50,8 @@ state_dict_mapping = {
     "qkv_proj.q_proj.": "q_proj.",
     "qkv_proj.k_proj.": "k_proj.",
     "qkv_proj.v_proj.": "v_proj.",
-    "self_attn.mla_attn.mla_attn." : "self_attn.",
-    "self_attn.mla_attn." : "self_attn.",
+    "self_attn.mla_attn.mla_attn.": "self_attn.",
+    "self_attn.mla_attn.": "self_attn.",
 }
 
 key_to_remove = [
@@ -58,6 +60,7 @@ key_to_remove = [
     "attn._v_scale",
     "attn._prob_scale",
 ]
+
 
 def state_dict_hook(module, state_dict, prefix, *args):
     keys = state_dict.keys()
@@ -82,6 +85,7 @@ def state_dict_hook(module, state_dict, prefix, *args):
             for old_pattern, new_pattern in state_dict_mapping.items():
                 new_name = new_name.replace(old_pattern, new_pattern)
             state_dict[new_name] = state_dict.pop(name)
+
 
 class VllmAttention(ReplacementModuleBase):
     """Replaces Vllm Attention with VllmAttention modules."""
@@ -129,9 +133,15 @@ class VllmQKVParallelLinear(ReplacementModuleBase):
     def _materialize_weights(self) -> None:
         original = self._get_original_module()
         if not unsupported_meta_device(original):
-            _update_parameter(self.q_proj, "weight", original.weight[:self.q_proj.weight.shape[1], :])
-            _update_parameter(self.k_proj, "weight", original.weight[self.q_proj.weight.shape[1]:self.q_proj.weight.shape[1] + self.k_proj.weight.shape[1], :])
-            _update_parameter(self.v_proj, "weight", original.weight[-self.v_proj.weight.shape[1]:, :])
+            _update_parameter(self.q_proj, "weight", original.weight[: self.q_proj.weight.shape[1], :])
+            _update_parameter(
+                self.k_proj,
+                "weight",
+                original.weight[
+                    self.q_proj.weight.shape[1] : self.q_proj.weight.shape[1] + self.k_proj.weight.shape[1], :
+                ],
+            )
+            _update_parameter(self.v_proj, "weight", original.weight[-self.v_proj.weight.shape[1] :, :])
             original.to_empty(device="meta")
             clear_memory()
 
@@ -166,8 +176,8 @@ class VllmMergedColumnParallelLinear(ReplacementModuleBase):
     def _materialize_weights(self) -> None:
         original = self._get_original_module()
         if not unsupported_meta_device(original):
-            _update_parameter(self.gate_proj, "weight", original.weight[:self.gate_proj.weight.shape[0], :])
-            _update_parameter(self.up_proj, "weight", original.weight[self.up_proj.weight.shape[0]:, :])
+            _update_parameter(self.gate_proj, "weight", original.weight[: self.gate_proj.weight.shape[0], :])
+            _update_parameter(self.up_proj, "weight", original.weight[self.up_proj.weight.shape[0] :, :])
             original.to_empty(device="meta")  # release original experts parameters
             clear_memory()
 
@@ -222,8 +232,8 @@ class SequentialExperts(torch.nn.ModuleList):
             for i in range(self.num_experts):
                 gate_up = original.w13_weight[i]
                 down = original.w2_weight[i]
-                gate_proj = gate_up[:gate_up.shape[0] // 2, :]
-                up_proj = gate_up[gate_up.shape[0] // 2:, :]
+                gate_proj = gate_up[: gate_up.shape[0] // 2, :]
+                up_proj = gate_up[gate_up.shape[0] // 2 :, :]
                 _update_parameter(self[i].gate_proj, "weight", gate_proj.contiguous())
                 _update_parameter(self[i].up_proj, "weight", up_proj.contiguous())
                 _update_parameter(self[i].down_proj, "weight", down.contiguous())
@@ -253,11 +263,15 @@ class VllmSharedFusedMoE(ReplacementModuleBase):
 
     def forward(self, hidden_states: torch.Tensor, router_logits: torch.Tensor) -> torch.Tensor:
         router_logits, _ = self._gate(hidden_states)
-        topk_weights, topk_indices = self.router.select_experts(hidden_states=hidden_states, router_logits=router_logits)
+        topk_weights, topk_indices = self.router.select_experts(
+            hidden_states=hidden_states, router_logits=router_logits
+        )
         final_hidden_states = torch.zeros_like(hidden_states)
 
         with torch.no_grad():
-            expert_mask = torch.nn.functional.one_hot(topk_indices.to(torch.long), num_classes=self._experts.num_experts)
+            expert_mask = torch.nn.functional.one_hot(
+                topk_indices.to(torch.long), num_classes=self._experts.num_experts
+            )
             expert_mask = expert_mask.permute(2, 1, 0)
             expert_hit = torch.greater(expert_mask.sum(dim=(-1, -2)), 0).nonzero()
 
@@ -300,7 +314,8 @@ def apply_moe(
     x: torch.Tensor,
     topk_weights: torch.Tensor,
     topk_ids: torch.Tensor | None,
-    shared_experts_input: torch.Tensor | None = None,) -> torch.Tensor:
+    shared_experts_input: torch.Tensor | None = None,
+) -> torch.Tensor:
     hidden_states = x
     final_hidden_states = torch.zeros_like(hidden_states)
     with torch.no_grad():

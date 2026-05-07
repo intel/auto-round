@@ -13,8 +13,8 @@ into individual nn.Linear layers, enabling per-expert quantization with meta dev
 
 import torch
 
-from auto_round.modeling.replace_modules import ReplacementModuleBase
 from auto_round.modeling.fused_moe.utils import _update_parameter
+from auto_round.modeling.replace_modules import ReplacementModuleBase
 from auto_round.utils import clear_memory, unsupported_meta_device
 
 # ---------------------------------------------------------------------------

@@ -621,9 +621,9 @@ if vllm_exists:
     from vllm.model_executor.layers.linear import (
         ColumnParallelLinear,
         MergedColumnParallelLinear,
-        RowParallelLinear,
-        ReplicatedLinear,
         QKVParallelLinear,
+        ReplicatedLinear,
+        RowParallelLinear,
     )
 
     SUPPORTED_LAYER_TYPES += (

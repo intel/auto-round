@@ -19,7 +19,7 @@ import torch
 
 from auto_round.formats import OutputFormat
 from auto_round.modeling.replace_modules import apply_replacements, release_original_module_
-from auto_round.utils import is_moe_model_via_config, logger, check_vllm_installed, is_vllm_model, get_module
+from auto_round.utils import check_vllm_installed, get_module, is_moe_model_via_config, is_vllm_model, logger
 
 mllms_with_limited_bs = (
     "llava",
@@ -231,7 +231,8 @@ def update_module(
 
 
 def _handle_vllm_model(model):
-    from vllm.model_executor.layers.mla import MultiHeadLatentAttentionWrapper, MLAAttention
+    from vllm.model_executor.layers.mla import MLAAttention, MultiHeadLatentAttentionWrapper
+
     modules_to_remove = []
     for full_name, module in model.named_modules():
         if isinstance(module, (MultiHeadLatentAttentionWrapper, MLAAttention)):
