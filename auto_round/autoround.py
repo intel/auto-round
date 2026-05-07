@@ -25,7 +25,7 @@ from auto_round.compressors import (
     ExtraConfig,
     LLMCompressor,
     MLLMCompressor,
-    VllmCompressor
+    VllmCompressor,
 )
 from auto_round.compressors.diffusion.hybrid import HybridCompressor, is_hybrid_diffusion_model
 from auto_round.logger import deprecated, logger

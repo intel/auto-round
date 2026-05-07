@@ -756,11 +756,12 @@ def vllm_load_model(
     **kwargs,
 ):
     check_vllm_installed()
-    from vllm import LLM
     from transformers import AutoConfig, AutoTokenizer
+    from vllm import LLM
 
     if isinstance(pretrained_model_name_or_path, str):
         import os
+
         os.environ["VLLM_ENABLE_V1_MULTIPROCESSING"] = "0"
         logger.warning("VLLM_ENABLE_V1_MULTIPROCESSING is set to 0 for vllm model quantization")
 
@@ -785,7 +786,7 @@ def vllm_load_model(
         llm = LLM(
             pretrained_model_name_or_path,
             enforce_eager=True,
-            #cpu_offload_gb=1024,
+            # cpu_offload_gb=1024,
             gpu_memory_utilization=0.5,
             max_model_len=max_model_len,
             kv_cache_memory_bytes=1024 * 1024 * 1024 * 16,
@@ -800,17 +801,21 @@ def vllm_load_model(
 
     tokenizer = AutoTokenizer.from_pretrained(llm.llm_engine.model_config.model)
 
-    if not hasattr(model.__class__, 'dtype'):
+    if not hasattr(model.__class__, "dtype"):
+
         @property
         def dtype(self):
             return self.lm_head.weight.dtype
-        setattr(model.__class__, 'dtype', dtype)
 
-    if not hasattr(model.__class__, 'device'):
+        setattr(model.__class__, "dtype", dtype)
+
+    if not hasattr(model.__class__, "device"):
+
         @property
         def device(self):
             return self.lm_head.weight.device
-        setattr(model.__class__, 'device', device)
+
+        setattr(model.__class__, "device", device)
 
     return llm, model, tokenizer
 
@@ -927,7 +932,7 @@ def is_vllm_model(model_or_path: object) -> bool:
         if not isinstance(model_or_path, torch.nn.Module):
             attr = get_nested_attr(
                 model_or_path,
-                "llm_engine.engine_core.engine_core.model_executor.driver_worker.worker.model_runner.model"
+                "llm_engine.engine_core.engine_core.model_executor.driver_worker.worker.model_runner.model",
             )
             if attr is None:
                 raise ValueError(

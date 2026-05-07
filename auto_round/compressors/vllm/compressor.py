@@ -33,6 +33,7 @@ from tqdm import tqdm
 from transformers import AutoConfig, set_seed
 
 from auto_round import envs
+from auto_round.algorithms.quantization.sign_round.sign_sgd import SignSGD
 from auto_round.auto_scheme.gen_auto_scheme import AutoScheme
 from auto_round.compressors.base import BaseCompressor
 from auto_round.compressors.shard_writer import shard_writer
@@ -71,9 +72,9 @@ from auto_round.schemes import (
 )
 from auto_round.special_model_handler import (
     _handle_special_model,
+    get_predefined_ignore_layers,
+    update_module,
 )
-from auto_round.algorithms.quantization.sign_round.sign_sgd import SignSGD
-from auto_round.special_model_handler import get_predefined_ignore_layers, update_module
 from auto_round.utils import (
     INNER_SUPPORTED_LAYER_TYPES,
     SUPPORTED_DTYPES,
@@ -280,9 +281,7 @@ class VllmCompressor(BaseCompressor):
             to_quant_block_names = extract_block_names_to_str(self.quant_block_list)
 
         if iters != 0:
-            logger.warning(
-                "Currently vllm format model doesn't support tuning (iters > 0)"
-            )
+            logger.warning("Currently vllm format model doesn't support tuning (iters > 0)")
             iters = 0
 
         batch_size = 1
@@ -368,7 +367,7 @@ class VllmCompressor(BaseCompressor):
 
         all_to_quantized_module_names = list(set(all_to_quantized_module_names))
 
-        all_blocks = self.quant_block_list if self.quant_block_list else get_block_names(self.model)
+        all_blocks = self.quant_block_list or get_block_names(self.model)
         pbar = tqdm(range(sum(len(block) for block in all_blocks)))
 
         if not all_blocks:
@@ -542,6 +541,7 @@ class VllmCompressor(BaseCompressor):
         total = nsamples if not hasattr(self.dataloader, "len") else min(nsamples, len(self.dataloader))
 
         from vllm import SamplingParams
+
         sampling_params = SamplingParams(temperature=0.8, top_p=0.95)
         with tqdm(range(1, total + 1), desc="cache block inputs") as pbar:
             for prompts in self.dataloader:
@@ -595,11 +595,10 @@ class VllmCompressor(BaseCompressor):
         Returns:
             object: The compressed model object.
         """
-        import os
         import json
-        from functools import partial
+
         from huggingface_hub import split_torch_state_dict_into_shards
-        from safetensors.torch import save_file, _remove_duplicate_names
+        from safetensors.torch import _remove_duplicate_names, save_file
 
         def save_pretrained(model_to_save, save_directory, max_shard_size="5GB", safe_serialization=True, **kwargs):
             if (
