@@ -272,6 +272,15 @@ class VllmCompressor(BaseCompressor):
 
         logger.warning("vllm model quantization is experimental.")
         self.llm, model, tokenizer = vllm_load_model(model, max_model_len=seqlen)
+        # Calibration can run with zero requested output tokens, so prompts can
+        # safely use the full model context length.
+        max_prompt_len = max(1, self.llm.llm_engine.model_config.max_model_len)
+        effective_seqlen = min(seqlen, max_prompt_len)
+        if effective_seqlen != seqlen:
+            logger.warning(
+                f"Change sequence length to {effective_seqlen} due to vLLM/model context limitation"
+            )
+            seqlen = effective_seqlen
         check_and_mark_quantized_module(model)
 
         all_blocks = get_block_names(model)
@@ -542,10 +551,12 @@ class VllmCompressor(BaseCompressor):
 
         from vllm import SamplingParams
 
-        sampling_params = SamplingParams(temperature=0.8, top_p=0.95)
+        # Calibration only needs prefill activations, no decoding tokens.
+        sampling_params = SamplingParams(temperature=0.8, top_p=0.95, max_tokens=0)
         with tqdm(range(1, total + 1), desc="cache block inputs") as pbar:
             for prompts in self.dataloader:
-                prompts = self.tokenizer.batch_decode(prompts["input_ids"])
+                prompt_token_ids = [input_ids.tolist() for input_ids in prompts["input_ids"]]
+                prompts = [{"prompt_token_ids": token_ids} for token_ids in prompt_token_ids]
                 try:
                     self.llm.generate(prompts, sampling_params)
                 except NotImplementedError:

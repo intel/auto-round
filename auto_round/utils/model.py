@@ -782,6 +782,12 @@ def vllm_load_model(
         max_model_len = user_max_model_len
         if max_model_len is None:
             max_model_len = derived_max_model_len if derived_max_model_len is not None else 2048
+        elif derived_max_model_len is not None and max_model_len > derived_max_model_len:
+            logger.warning(
+                f"Requested max_model_len {max_model_len} exceeds model-supported context "
+                f"{derived_max_model_len}; clamping automatically."
+            )
+            max_model_len = derived_max_model_len
 
         llm = LLM(
             pretrained_model_name_or_path,
