@@ -71,12 +71,18 @@ stages:
                   script: |
                     export PYTHONUNBUFFERED=1
                     cd ${BUILD_SOURCESDIRECTORY}
+                    if [ ${{ pair.value.PART }} -eq 0 ]; then
+                      CUDA_VERSION="13.0"
+                    else
+                      CUDA_VERSION="any"
+                    fi
                     python .azure-pipelines/scripts/cuda_unit_test/runpod_manager.py \
                       --action create \
                       --api_key $(RUNPOD_API_KEY) \
                       --name "ci-$(Build.BuildId)-${{ pair.value.PART }}" \
                       --container_disk_size "100" \
                       --part ${{ pair.value.PART }} \
+                      --cuda_version "${CUDA_VERSION}" \
                       --env AZP_URL=$(System.CollectionUri) AZP_TOKEN=$(AZP_DEVOPS_PAT) AZP_POOL=$(POOL_NAME) AZP_AGENT_NAME="$(AGENT_NAME)-part${{ pair.value.PART }}"
 
               - task: Bash@3

@@ -111,7 +111,10 @@ function run_unit_test_llmc() {
     rm -rf /root/.venv
     uv venv --python=3.12 /root/.venv
     uv pip install -U pytest-cov pytest-html
-    BUILD_TYPE="nightly" uv pip install -r test/test_cuda/requirements_llmc.txt --extra-index-url https://download.pytorch.org/whl/cu128 --index-strategy unsafe-best-match
+    BUILD_TYPE="nightly" uv pip install \
+        -r test/test_cuda/requirements_llmc.txt \
+        --extra-index-url https://download.pytorch.org/whl/cu130 \
+        --index-strategy unsafe-best-match
     uv pip install .
     uv pip list
     echo "##[endgroup]"
@@ -137,7 +140,12 @@ function run_unit_test_sglang() {
     rm -rf /root/.venv
     uv venv --python=3.12 /root/.venv
     uv pip install -U pytest-cov pytest-html
-    uv pip install -r test/test_cuda/requirements_sglang.txt --prerelease=allow
+    uv pip install -r test/test_cuda/requirements_sglang.txt \
+        --prerelease=allow \
+        --extra-index-url https://download.pytorch.org/whl/cu130 \
+        --index-strategy unsafe-best-match
+    uv pip uninstall torch torchvision
+    uv pip install torch==2.11.0 torchvision --index-url https://download.pytorch.org/whl/cu130
     uv pip install .
     uv pip list
     echo "##[endgroup]"
@@ -164,8 +172,7 @@ function run_unit_test_vllm() {
     uv pip install -U pytest-cov pytest-html
     vllm_version=$(curl -s https://api.github.com/repos/vllm-project/vllm/releases/latest | jq -r .tag_name | sed 's/^v//')
     uv pip install -r test/test_cuda/requirements_vllm.txt \
-        --extra-index-url https://wheels.vllm.ai/${vllm_version}/cu129 \
-        --extra-index-url https://download.pytorch.org/whl/cu128 \
+        --extra-index-url https://download.pytorch.org/whl/cu130 \
         --index-strategy unsafe-best-match
     uv pip install .
     uv pip list

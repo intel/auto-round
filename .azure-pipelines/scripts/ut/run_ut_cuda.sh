@@ -267,7 +267,7 @@ function main() {
     run_unit_test_vllm
     run_unit_test_vlm
     run_unit_test_llmc
-    run_unit_test_sglang
+    # run_unit_test_sglang
     run_unit_test
     cat ${SUMMARY_LOG}
 }
