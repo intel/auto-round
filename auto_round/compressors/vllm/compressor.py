@@ -277,9 +277,7 @@ class VllmCompressor(BaseCompressor):
         max_prompt_len = max(1, self.llm.llm_engine.model_config.max_model_len)
         effective_seqlen = min(seqlen, max_prompt_len)
         if effective_seqlen != seqlen:
-            logger.warning(
-                f"Change sequence length to {effective_seqlen} due to vLLM/model context limitation"
-            )
+            logger.warning(f"Change sequence length to {effective_seqlen} due to vLLM/model context limitation")
             seqlen = effective_seqlen
         check_and_mark_quantized_module(model)
 
