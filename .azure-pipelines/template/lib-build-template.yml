@@ -73,9 +73,9 @@ stages:
                   -v /intel/oneapi:/intel/oneapi \
                   -w /auto-round/auto_round_extension/ark \
                   quay.io/pypa/manylinux_2_28_x86_64 \
-                  bash -lc " /opt/python/cp312-cp312/bin/python -m venv venv \
+                  bash -c " /opt/python/cp312-cp312/bin/python -m venv venv \
                   && source venv/bin/activate \
-                  && source /opt/intel/oneapi/2025.3/oneapi-vars.sh \
+                  && source /intel/oneapi/2025.3/oneapi-vars.sh \
                   && python -m pip install --upgrade pip build twine \
                   && python -m build --wheel --no-isolation \
                   && auditwheel repair dist/*.whl --exclude lib* -w wheelhouse/ \
@@ -111,5 +111,5 @@ stages:
                     -e TWINE_USERNAME \
                     -e TWINE_PASSWORD \
                     quay.io/pypa/manylinux_2_28_x86_64 \
-                    bash -lc "python -m pip install --upgrade twine \
+                    bash -c "python -m pip install --upgrade twine \
                     && twine upload --repository-url https://test.pypi.org/legacy/ wheelhouse/*.whl"
