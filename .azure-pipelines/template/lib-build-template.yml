@@ -51,7 +51,7 @@ stages:
       - job: BuildArkWheel
         displayName: Build ark wheel in manylinux
         pool: LIB-BUILD-POOL
-        timeoutInMinutes: 90
+        timeoutInMinutes: 10
         steps:
           - checkout: self
             clean: true
