@@ -12,13 +12,14 @@ from setuptools import Extension, find_packages, setup
 from setuptools.command.build_ext import build_ext
 from setuptools.command.build_py import build_py
 
-build_mode=os.environ.get("BUILD_MODE", "dev").lower()
+build_mode = os.environ.get("BUILD_MODE", "dev").lower()
 try:
     file_path = "./auto_round_kernel/version.py"
     with open(file_path) as version_file:
         (__version__,) = re.findall('__version__ = "(.*)"', version_file.read())
 except Exception as error:
     assert False, f"Failed to read version from {file_path}: {error}"
+
 
 def get_build_version():
     if os.path.exists("PKG-INFO"):
@@ -36,13 +37,14 @@ def get_build_version():
         return f"{__version__}.dev{distance}+{commit}"
     except subprocess.CalledProcessError:
         return __version__
-    
+
 
 def fetch_requirements(path):
     requirements = []
     with open(path, "r") as fd:
         requirements = [r.strip() for r in fd]
     return requirements
+
 
 def parse_major_minor(version_str):
     major, minor = version_str.split(".")[:2]
@@ -83,6 +85,7 @@ if not oneapi_version:
 
 requirements = fetch_requirements("requirements.txt")
 enable_sycl_tla = parse_major_minor(oneapi_version) >= (2025, 3)
+
 
 def get_system_memory_gb():
     if hasattr(os, "sysconf"):
