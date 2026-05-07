@@ -271,10 +271,13 @@ class VllmCompressor(BaseCompressor):
         from vllm import LLM
 
         logger.warning("vllm model quantization is experimental.")
-        self.llm, model, tokenizer = vllm_load_model(model, max_model_len=seqlen)
-        # Calibration can run with zero requested output tokens, so prompts can
-        # safely use the full model context length.
-        max_prompt_len = max(1, self.llm.llm_engine.model_config.max_model_len)
+        # vLLM validates max_tokens >= 1 in SamplingParams. Reserve one token in
+        # engine context so calibration prompts can still use the full target seqlen.
+        self.llm, model, tokenizer = vllm_load_model(model, max_model_len=seqlen + 1)
+        model_max_len = self.llm.llm_engine.model_config.max_model_len
+        if model_max_len <= 1:
+            raise ValueError(f"Invalid vLLM max_model_len={model_max_len}; must be greater than 1")
+        max_prompt_len = model_max_len - 1
         effective_seqlen = min(seqlen, max_prompt_len)
         if effective_seqlen != seqlen:
             logger.warning(f"Change sequence length to {effective_seqlen} due to vLLM/model context limitation")
@@ -549,8 +552,8 @@ class VllmCompressor(BaseCompressor):
 
         from vllm import SamplingParams
 
-        # Calibration only needs prefill activations, no decoding tokens.
-        sampling_params = SamplingParams(temperature=0.8, top_p=0.95, max_tokens=0)
+        # vLLM requires max_tokens >= 1, so use one decode token for compatibility.
+        sampling_params = SamplingParams(temperature=0.8, top_p=0.95, max_tokens=1)
         with tqdm(range(1, total + 1), desc="cache block inputs") as pbar:
             for prompts in self.dataloader:
                 prompt_token_ids = [input_ids.tolist() for input_ids in prompts["input_ids"]]
