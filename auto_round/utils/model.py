@@ -757,20 +757,39 @@ def vllm_load_model(
 ):
     check_vllm_installed()
     from vllm import LLM
-    from transformers import AutoTokenizer
+    from transformers import AutoConfig, AutoTokenizer
 
     if isinstance(pretrained_model_name_or_path, str):
         import os
         os.environ["VLLM_ENABLE_V1_MULTIPROCESSING"] = "0"
         logger.warning("VLLM_ENABLE_V1_MULTIPROCESSING is set to 0 for vllm model quantization")
 
+        # Keep max_model_len consistent with model config by default to avoid
+        # vLLM validation errors on short-context models.
+        user_max_model_len = kwargs.pop("max_model_len", None)
+        derived_max_model_len = None
+        try:
+            config = AutoConfig.from_pretrained(pretrained_model_name_or_path, trust_remote_code=True)
+            for attr in ("max_position_embeddings", "n_positions", "seq_length"):
+                value = getattr(config, attr, None)
+                if isinstance(value, (int, float)) and value > 0:
+                    derived_max_model_len = int(value)
+                    break
+        except Exception as err:
+            logger.warning(f"Failed to derive max_model_len from config, fallback to safe default: {err}")
+
+        max_model_len = user_max_model_len
+        if max_model_len is None:
+            max_model_len = derived_max_model_len if derived_max_model_len is not None else 2048
+
         llm = LLM(
             pretrained_model_name_or_path,
             enforce_eager=True,
             #cpu_offload_gb=1024,
             gpu_memory_utilization=0.5,
-            max_model_len=8192,
+            max_model_len=max_model_len,
             kv_cache_memory_bytes=1024 * 1024 * 1024 * 16,
+            **kwargs,
         )
         model = llm.llm_engine.engine_core.engine_core.model_executor.driver_worker.worker.model_runner.model
     elif isinstance(pretrained_model_name_or_path, LLM):
