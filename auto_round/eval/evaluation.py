@@ -388,8 +388,11 @@ def run_model_evaluation(model, tokenizer, autoround, folders, formats, device_s
         evaluate_diffusion_model(args, autoround=autoround, model=model)
         return
 
-    # Check if evaluation is needed for language models
-    eval_folder = folders[-1] if folders else None
+    # Check if evaluation Compressoris needed for language models
+    if isinstance(folders, list):
+        eval_folder = folders[-1] if folders else None
+    else:
+        eval_folder = folders
     if args.tasks is None or args.tasks == "" or eval_folder is None:
         return
 

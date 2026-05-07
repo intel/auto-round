@@ -12,6 +12,7 @@ from ..helpers import get_model_path
 
 
 class TestAutoRoundXPU:
+
     @classmethod
     def setup_class(self):
         self.device = "xpu"
@@ -47,7 +48,7 @@ class TestAutoRoundXPU:
             dataset=dataloader,
         )
         quantized_model_path = self.save_dir
-        autoround.quantize_and_save(output_dir=quantized_model_path)
+        _, quantized_model_path = autoround.quantize_and_save(output_dir=quantized_model_path)
 
         quantization_config = AutoRoundConfig(backend="auto")
         model = AutoModelForCausalLM.from_pretrained(
@@ -78,7 +79,9 @@ class TestAutoRoundXPU:
             dataset=dataloader,
         )
         quantized_model_path = self.save_dir
-        autoround.quantize_and_save(output_dir=quantized_model_path, format="auto_round:auto_awq")
+        _, quantized_model_path = autoround.quantize_and_save(
+            output_dir=quantized_model_path, format="auto_round:auto_awq"
+        )
 
         quantization_config = AutoRoundConfig(backend="auto")
         model = AutoModelForCausalLM.from_pretrained(
@@ -109,7 +112,9 @@ class TestAutoRoundXPU:
             dataset=dataloader,
         )
         quantized_model_path = "./saved"
-        ar.quantize_and_save(output_dir=quantized_model_path, inplace=True, format="auto_round")
+        _, quantized_model_path = ar.quantize_and_save(
+            output_dir=quantized_model_path, inplace=True, format="auto_round"
+        )
 
         # test loading
         if scheme not in ["FPW8A16"]:  # FPW8A16 group_size is 0
@@ -140,7 +145,9 @@ class TestAutoRoundXPU:
         )
 
         quantized_model_path = "./saved"
-        ar.quantize_and_save(output_dir=quantized_model_path, inplace=True, format="auto_round")
+        _, quantized_model_path = ar.quantize_and_save(
+            output_dir=quantized_model_path, inplace=True, format="auto_round"
+        )
 
         quantization_config = AutoRoundConfig(backend="auto")
         import requests
@@ -211,7 +218,9 @@ class TestAutoRoundXPU:
             dataset=dataloader,
         )
         quantized_model_path = "./saved"
-        ar.quantize_and_save(output_dir=quantized_model_path, inplace=True, format="auto_round")
+        _, quantized_model_path = ar.quantize_and_save(
+            output_dir=quantized_model_path, inplace=True, format="auto_round"
+        )
 
         quantization_config = AutoRoundConfig(backend="auto")
         model = AutoModelForCausalLM.from_pretrained(

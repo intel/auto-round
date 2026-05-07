@@ -73,10 +73,10 @@ class TestQwen2_5OmniQuantization:
         for extra_file in ["spk_dict.pt"]:
             src = os.path.join(tiny_qwen2_5_omni_model_path, extra_file)
             if os.path.exists(src):
-                shutil.copy2(src, tmp_path)
+                shutil.copy2(src, save_folder)
 
         # Reload
-        loaded_model = Qwen2_5OmniForConditionalGeneration.from_pretrained(tmp_path, device_map="cuda")
+        loaded_model = Qwen2_5OmniForConditionalGeneration.from_pretrained(save_folder, device_map="cuda")
 
         # Run inference on thinker
         inp = torch.randint(0, 100, (1, 64)).to("cuda")
@@ -111,7 +111,7 @@ class TestQwen3OmniMoeQuantization:
         assert quantized_model is not None, "Quantized model should not be None"
 
         # Reload
-        loaded_model = Qwen3OmniMoeForConditionalGeneration.from_pretrained(self.save_dir, device_map="cuda")
+        loaded_model = Qwen3OmniMoeForConditionalGeneration.from_pretrained(save_folder, device_map="cuda")
 
         # Run inference on thinker
         inp = torch.randint(0, 100, (1, 64)).to("cuda")
@@ -134,7 +134,7 @@ class TestQwen3OmniMoeQuantization:
         assert quantized_model is not None, "MXFP4 quantized model should not be None"
 
         # Reload and inference
-        loaded_model = Qwen3OmniMoeForConditionalGeneration.from_pretrained(self.save_dir, device_map="cuda")
+        loaded_model = Qwen3OmniMoeForConditionalGeneration.from_pretrained(save_folder, device_map="cuda")
 
         inp = torch.randint(0, 100, (1, 64)).to("cuda")
         with torch.inference_mode():

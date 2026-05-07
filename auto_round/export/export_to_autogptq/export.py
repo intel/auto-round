@@ -205,7 +205,7 @@ def save_quantized_as_autogptq(
 
     # --- 1️⃣ Extract inputs & configs ---
     quantization_config = serialization_dict
-    quant_block_list = serialization_dict.get("quant_block_list", get_block_names(model))
+    quant_block_list = serialization_dict.get("quant_block_list") or get_block_names(model)
     processor = kwargs.get("processor")
     image_processor = kwargs.get("image_processor")
     safe_serialization = kwargs.get("safe_serialization", True)
@@ -249,7 +249,7 @@ def save_quantized_as_autogptq(
             continue
         # Handle block layers
         if in_blocks or (block_name_to_quantize and check_start_with_block_name(layer_name, block_name_to_quantize)):
-            neq_keys = check_neq_config(cfg, **{k: quantization_config[k] for k in scheme_keys})
+            neq_keys = check_neq_config(cfg, **{k: quantization_config.get(k) for k in scheme_keys})
             if neq_keys:
                 if matches_any_regex(layer_name, regex_config):
                     continue

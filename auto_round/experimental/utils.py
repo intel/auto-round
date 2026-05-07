@@ -138,84 +138,21 @@ def is_triton_kernel_available(data_type: str) -> bool:
 
 
 def dump_group_size_to_rotation_config(rotation_config: str | dict | RotationConfig, group_size: int):
-    rotation_dict = to_dict_rotation_config(rotation_config)
-    if rotation_dict.get("block_size", None) is None:
-        rotation_dict["block_size"] = group_size
-    return rotation_dict
+    from auto_round.algorithms.transforms.rotation.config import dump_group_size_to_rotation_config as _impl
+
+    return _impl(rotation_config, group_size)
 
 
 def to_dict_rotation_config(rotation_config: str | dict | RotationConfig):
-    if isinstance(rotation_config, str):
-        key = rotation_config.strip()
-        if not key:
-            return {}
+    from auto_round.algorithms.transforms.rotation.config import to_dict_rotation_config as _impl
 
-        if key == "default":
-            cfg_dict = {"hadamard_type": "hadamard"}
-        else:
-            cfg_dict = {"hadamard_type": key}
-    elif isinstance(rotation_config, RotationConfig):
-        cfg_dict = rotation_config.model_dump()
-    else:
-        cfg_dict = dict(rotation_config)
-    return cfg_dict
+    return _impl(rotation_config)
 
 
 def normalize_rotation_config(rotation_config: str | dict | RotationConfig | None, data_type: str) -> dict[str, Any]:
-    """
-    Normalize and validate `rotation_config`.
+    from auto_round.algorithms.transforms.rotation.config import normalize_rotation_config as _impl
 
-    Supported input types:
-        - None           -> {}
-        - dict           -> validated via RotationConfig
-        - RotationConfig -> validated & converted to dict
-        - str            -> shorthand for `hadamard_type` in HADAMARDS keys
-
-    Additional behavior:
-        - If block_size is not set by user:
-            - mx_fp -> default block_size to 32
-            - nv_fp -> default block_size to 16
-            - other data types -> emit a warning
-        - If block_size is set but does not match the recommended value:
-            - mx_fp expects 32
-            - nv_fp expects 16
-            - emit a warning
-    """
-
-    def _apply_data_type_block_size(cfg_dict: dict[str, Any], block_size_explicitly_set: bool) -> dict[str, Any]:
-        block_size = cfg_dict.get("block_size")
-
-        if not block_size_explicitly_set or block_size is None:
-            if is_mx_fp(data_type):
-                cfg_dict["block_size"] = 32
-                logger.warning("block_size is not set for data_type 'mx_fp'; defaulting to 32.")
-            elif is_nv_fp(data_type):
-                cfg_dict["block_size"] = 16
-                logger.warning("block_size is not set for data_type 'nv_fp'; defaulting to 16.")
-            else:
-                logger.warning(
-                    f"block_size is not set and cannot be inferred for data_type {data_type!r}; "
-                    "please set block_size explicitly in rotation_config if needed."
-                )
-        else:
-            if is_mx_fp(data_type) and block_size != 32:
-                logger.warning(f"data_type is 'mx_fp' but block_size={block_size}; recommended value is 32.")
-            elif is_nv_fp(data_type) and block_size != 16:
-                logger.warning(f"data_type is 'nv_fp' but block_size={block_size}; recommended value is 16.")
-
-        return cfg_dict
-
-    # 1) None -> {}
-    if rotation_config is None:
-        return {}
-
-    rotation_dict = to_dict_rotation_config(rotation_config)
-    block_size_explicitly_set = "block_size" in rotation_dict
-    cfg_dict = _apply_data_type_block_size(rotation_dict, block_size_explicitly_set)
-    try:
-        return RotationConfig.model_validate(cfg_dict).model_dump()
-    except Exception as e:
-        raise ValueError(f"Invalid RotationConfig: {e}") from e
+    return _impl(rotation_config, data_type)
 
 
 def check_supported_schemes(scheme: str):

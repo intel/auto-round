@@ -21,6 +21,31 @@ from ...helpers import get_model_path
 
 os.environ["VLLM_WORKER_MULTIPROC_METHOD"] = "spawn"
 
+
+def _is_sm12_with_old_cuda() -> bool:
+    """Return True when the GPU is SM 12.x (Blackwell) and CUDA < 12.9.
+
+    vLLM's gptq_marlin JIT kernels require CUDA >= 12.9 on SM 12.x devices.
+    """
+    try:
+        import torch
+
+        if not torch.cuda.is_available():
+            return False
+        major, _ = torch.cuda.get_device_capability()
+        if major < 12:
+            return False
+        cuda_ver = tuple(int(x) for x in (torch.version.cuda or "0.0").split(".")[:2])
+        return cuda_ver < (12, 9)
+    except Exception:
+        return False
+
+
+pytestmark = pytest.mark.skipif(
+    _is_sm12_with_old_cuda(),
+    reason="SM 12.x (Blackwell) GPU requires CUDA >= 12.9 for vLLM GPTQ marlin JIT kernels",
+)
+
 MODELS = [
     "OPEA/Qwen2.5-0.5B-Instruct-int4-sym-inc",  ##auto_round:auto_gptq
     "Intel/Qwen2-0.5B-Instruct-int4-sym-AutoRound",  ##auto_round:auto_awq
@@ -100,7 +125,7 @@ def test_mixed_llmcompressor_format_vllm(tiny_opt_model_path, dataloader, tmp_pa
         layer_config=layer_config,
     )
     quantized_model_path = str(tmp_path / "saved")
-    autoround.quantize_and_save(output_dir=quantized_model_path, format="llm_compressor")
+    _, quantized_model_path = autoround.quantize_and_save(output_dir=quantized_model_path, format="llm_compressor")
 
     # verify loading.
     llm = LLM(
@@ -165,9 +190,9 @@ def test_auto_round_awq_format_vllm():
         iters=1,
         seqlen=2,
     )
-    autoround.quantize_and_save(output_dir=save_dir, format="auto_round:auto_awq")
+    _, quantized_model_path = autoround.quantize_and_save(output_dir=save_dir, format="auto_round:auto_awq")
     sampling_params = SamplingParams(temperature=0.8, top_p=0.95, max_tokens=32)
-    llm = LLM(model=save_dir, trust_remote_code=True, tensor_parallel_size=1, gpu_memory_utilization=0.7)
+    llm = LLM(model=quantized_model_path, trust_remote_code=True, tensor_parallel_size=1, gpu_memory_utilization=0.7)
     outputs = llm.generate(["The capital of France is"], sampling_params)
     generated_text = outputs[0].outputs[0].text
     print(generated_text)
