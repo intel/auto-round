@@ -146,8 +146,6 @@ def detect_model_type(model):
 
 
 class AutoRound(object):
-    SKIP_ARGS = ("local_args", "kwargs", "cls", "alg_configs", "quant_config", "quant_configs")
-
     # Mapping from string alias to config class (and optional defaults override).
     _CONFIG_ALIASES: dict[str, type] = {
         "sign_round": SignRoundConfig,
@@ -210,8 +208,24 @@ class AutoRound(object):
         # callers get ValueError/NotImplementedError on construction, not deferred.
         _eager_validate_scheme(quant_config, scheme)
 
-        # using different compressor base on AlgConfigs
-        local_args = {k: v for k, v in locals().items() if k not in cls.SKIP_ARGS}
+        # Explicitly build the dict of constructor args to forward to the
+        # compressor.  This avoids the fragile locals()-based approach that
+        # required a growing SKIP_ARGS blocklist.
+        local_args = dict(
+            model=model,
+            tokenizer=tokenizer,
+            platform=platform,
+            format=format,
+            scheme=scheme,
+            low_gpu_mem_usage=low_gpu_mem_usage,
+            device_map=device_map,
+            enable_torch_compile=enable_torch_compile,
+            seed=seed,
+            low_cpu_mem_usage=low_cpu_mem_usage,
+            layer_config=layer_config,
+            nsamples=nsamples,
+            seqlen=seqlen,
+        )
 
         # Detect model type to determine if we need special compressor
         model_type = detect_model_type(model)
@@ -221,6 +235,13 @@ class AutoRound(object):
         has_multimodal_assets = kwargs.get("processor") is not None or kwargs.get("image_processor") is not None
         if has_multimodal_assets and model_type != "mllm":
             model_type = "mllm"
+
+        # Pop kwargs that are only consumed by specific Mixins so they don't
+        # leak through to BaseCompressor as unrecognized keys.
+        if model_type != "diffusion":
+            for _k in ("guidance_scale", "num_inference_steps", "generator_seed"):
+                kwargs.pop(_k, None)
+        kwargs.pop("disable_opt_rtn", None)  # consumed by RTN routing above, not a compressor param
 
         if isinstance(quant_config, SignRoundConfig):
             return _get_compressor_class(model_type, DataDrivenCompressor)(alg_configs, **local_args, **kwargs)
