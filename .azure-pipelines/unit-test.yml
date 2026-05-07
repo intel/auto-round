@@ -52,7 +52,7 @@ stages:
     dependsOn: [DetectArkChanges, BuildArkWheel]
     condition: and(succeeded('DetectArkChanges'), in(dependencies.BuildArkWheel.result, 'Succeeded', 'Skipped'))
     variables:
-      BUILD_ARK_WHEEL: $[ stageDependencies.DetectArkChanges.Detect.outputs['SetArkWheelFlag.NEED_ARK_WHEEL'] ]
+      BUILD_ARK_WHEEL: $[ stageDependencies.DetectArkChanges.Detect.outputs['SetArkWheelFlag.BUILD_ARK_WHEEL'] ]
     jobs:
       - job:
         timeoutInMinutes: 120

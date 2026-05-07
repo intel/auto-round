@@ -45,13 +45,21 @@ steps:
       repo: ${{ parameters.repo }}
       imageSource: ${{ parameters.imageSource }}
 
-  - ${{ if eq(parameters.buildARKWheel, 'true') }}:
-    - task: DownloadPipelineArtifact@2
-      inputs:
-        artifact: auto-round-lib-wheel
-        patterns: '*.whl'
-        path: $(Build.SourcesDirectory)/ark_wheel
-      displayName: "Download ark wheel"
+  - task: Bash@3
+    displayName: "Debug ark wheel gating"
+    inputs:
+      targetType: inline
+      script: |
+        echo "template parameter buildARKWheel=${{ parameters.buildARKWheel }}"
+        echo "runtime variable BUILD_ARK_WHEEL=$(BUILD_ARK_WHEEL)"
+
+  - task: DownloadPipelineArtifact@2
+    condition: and(succeeded(), eq('${{ parameters.buildARKWheel }}', 'true'))
+    inputs:
+      artifact: auto-round-lib-wheel
+      patterns: '*.whl'
+      path: $(Build.SourcesDirectory)/ark_wheel
+    displayName: "Download ark wheel"
 
   - ${{ if eq(parameters.imageSource, 'build') }}:
     - script: |
