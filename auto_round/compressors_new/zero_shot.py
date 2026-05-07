@@ -90,9 +90,9 @@ class ZeroShotCompressor(BaseCompressor):
         Returns:
             tuple: ``(None, None)`` — RTN does not produce reference outputs.
         """
-        assert not self.mllm and not self.diffusion, (
-            f"Currently, {self.__class__.__name__} does not support quantize_block " "for MLLM / diffusion models."
-        )
+        assert (
+            not self.diffusion
+        ), f"Currently, {self.__class__.__name__} does not support quantize_block for diffusion models."
 
         if not self._post_init_done:
             self.post_init()

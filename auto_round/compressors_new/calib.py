@@ -788,9 +788,9 @@ class CalibCompressor(BaseCompressor):
             ``enable_quanted_input`` is ``False``), and *reference_output* is the
             full-precision reference output collected before optimization.
         """
-        assert not self.mllm and not self.diffusion, (
-            f"Currently, {self.__class__.__name__} does not support quantize_block " "for MLLM / diffusion models."
-        )
+        assert (
+            not self.diffusion
+        ), f"Currently, {self.__class__.__name__} does not support quantize_block for diffusion models."
 
         # Ensure post_init has been called (sets up model_context, compress_context,
         # quantizer, layer_config, etc.).
