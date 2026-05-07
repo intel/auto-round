@@ -46,10 +46,13 @@ stages:
       - ${{ if eq(parameters.enableChangeDetection, true) }}:
         - DetectArkChanges
     ${{ if eq(parameters.enableChangeDetection, true) }}:
-      condition: and(succeeded(), eq(dependencies.DetectArkChanges.outputs['Detect.SetArkWheelFlag.BUILD_ARK_WHEEL'], 'true'))
+      variables:
+        BUILD_ARK_WHEEL: $[ stageDependencies.DetectArkChanges.Detect.outputs['SetArkWheelFlag.BUILD_ARK_WHEEL'] ]
     jobs:
       - job: BuildArkWheel
         displayName: Build ark wheel in manylinux
+        ${{ if eq(parameters.enableChangeDetection, true) }}:
+          condition: and(succeeded(), eq(variables['BUILD_ARK_WHEEL'], 'true'))
         pool: LIB-BUILD-POOL
         timeoutInMinutes: 10
         steps:
