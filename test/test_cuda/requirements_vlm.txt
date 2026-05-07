@@ -5,6 +5,7 @@
 bitsandbytes
 einops
 flash-attn
+gptqmodel
 lm-eval>=0.4.2,<0.5
 optimum
 pandas
