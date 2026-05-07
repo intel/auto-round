@@ -57,7 +57,7 @@ from auto_round.compressors.utils import (
 )
 from auto_round.data_type import QUANT_FUNC_WITH_DTYPE
 from auto_round.data_type.utils import reshape_pad_tensor_by_group_size, update_block_global_scale_if_needed
-from auto_round.experimental.transform.hadamard_config import HadamardConfig
+from auto_round.experimental.transform.rotation_config import RotationConfig
 from auto_round.export.export_to_gguf.config import GGUF_INNER_CONFIG
 from auto_round.formats import OutputFormat, get_formats
 from auto_round.logger import logger
@@ -72,7 +72,7 @@ from auto_round.schemes import (
 from auto_round.special_model_handler import (
     _handle_special_model,
 )
-from auto_round.sign_sgd import SignSGD
+from auto_round.algorithms.quantization.sign_round.sign_sgd import SignSGD
 from auto_round.special_model_handler import get_predefined_ignore_layers, update_module
 from auto_round.utils import (
     INNER_SUPPORTED_LAYER_TYPES,
@@ -270,7 +270,7 @@ class VllmCompressor(BaseCompressor):
         from vllm import LLM
 
         logger.warning("vllm model quantization is experimental.")
-        self.llm, model, tokenizer = vllm_load_model(model)
+        self.llm, model, tokenizer = vllm_load_model(model, max_model_len=seqlen)
         check_and_mark_quantized_module(model)
 
         all_blocks = get_block_names(model)
