@@ -63,21 +63,25 @@ stages:
               targetType: inline
               script: |
                 set -euxo pipefail
-                docker pull pytorch/manylinux2_28-builder:xpu-v2.10.0-rc7
-                docker run --rm --privileged \
+                docker run --rm \
+                  --user "$(id -u):$(id -g)" \
+                  -e HOME=/tmp \
                   -v $(Build.SourcesDirectory):/auto-round \
                   -v /intel/oneapi:/intel/oneapi \
                   -w /auto-round/auto_round_extension/ark \
-                  pytorch/manylinux2_28-builder:xpu-v2.10.0-rc7 \
-                  bash -lc "source /opt/intel/oneapi/2025.3/oneapi-vars.sh \
-                  && python3 -m pip install --upgrade pip build twine \
-                  && python3 -m build --wheel --no-isolation \
-                  && ls -lah dist"
+                  quay.io/pypa/manylinux_2_28_x86_64 \
+                  bash -lc " /opt/python/cp312-cp312/bin/python -m venv venv \
+                  && source venv/bin/activate \
+                  && source /opt/intel/oneapi/2025.3/oneapi-vars.sh \
+                  && python -m pip install --upgrade pip build twine \
+                  && python -m build --wheel --no-isolation \
+                  && auditwheel repair dist/*.whl --exclude lib* -w wheelhouse/ \
+                  && ls -lah wheelhouse"
 
           - task: PublishPipelineArtifact@1
             displayName: Publish wheel artifact
             inputs:
-              targetPath: $(Build.SourcesDirectory)/auto_round_extension/ark/dist
+              targetPath: $(Build.SourcesDirectory)/auto_round_extension/ark/wheelhouse
               artifact: auto-round-lib-wheel
               publishLocation: pipeline
 
@@ -97,10 +101,12 @@ stages:
                     exit 1
                   fi
                   docker run --rm --privileged \
+                    --user "$(id -u):$(id -g)" \
+                    -e HOME=/tmp \
                     -v $(Build.SourcesDirectory):/auto-round \
                     -w /auto-round/auto_round_extension/ark \
                     -e TWINE_USERNAME \
                     -e TWINE_PASSWORD \
-                    pytorch/manylinux2_28-builder:xpu-v2.10.0-rc7 \
-                    bash -lc "python3 -m pip install --upgrade twine \
-                    && twine upload --repository-url https://test.pypi.org/legacy/ dist/*.whl"
+                    quay.io/pypa/manylinux_2_28_x86_64 \
+                    bash -lc "python -m pip install --upgrade twine \
+                    && twine upload --repository-url https://test.pypi.org/legacy/ wheelhouse/*.whl"
