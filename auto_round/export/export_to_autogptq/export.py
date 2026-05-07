@@ -272,15 +272,21 @@ def save_quantized_as_autogptq(
     modules_in_block_to_quantize = []
     # for backward compatibility
     for block_names in all_blocks:
-        first_block = get_module(model, block_names[0])
-        for n, m in first_block.named_modules():
-            if m.global_name not in layer_config:
-                continue
-            if not check_to_quantized(layer_config[m.global_name]):
-                all_to_quantized = False
-            else:
-                modules_in_block_to_quantize.append(n)
-    modules_in_block_to_quantize = [modules_in_block_to_quantize]
+        quantized_in_group = set()
+        not_quantized_in_group = set()
+        for block_name in block_names:
+            block = get_module(model, block_name)
+            for n, m in block.named_modules():
+                if m.global_name not in layer_config:
+                    continue
+                if not check_to_quantized(layer_config[m.global_name]):
+                    not_quantized_in_group.add(n)
+                else:
+                    quantized_in_group.add(n)
+        if not_quantized_in_group:
+            all_to_quantized = False
+        modules_in_block_to_quantize.append(sorted(quantized_in_group))
+    
 
     if all_to_quantized:
         modules_in_block_to_quantize = None
