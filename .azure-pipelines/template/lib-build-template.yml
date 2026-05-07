@@ -33,8 +33,10 @@ stages:
                   changed_files="$(git diff --name-only "${target_ref}"...HEAD)"
                   echo "$changed_files"
                   if echo "$changed_files" | grep '^auto_round_extension/ark/' | grep -q -v '\.md$'; then
+                    echo "ARK code changes detected, need to build ark wheel."
                     echo "##vso[task.setvariable variable=NEED_ARK_WHEEL;isOutput=true]true"
                   else
+                    echo "No ARK code changes detected, skip building ark wheel."
                     echo "##vso[task.setvariable variable=NEED_ARK_WHEEL;isOutput=true]false"
                   fi
 
@@ -48,6 +50,7 @@ stages:
     jobs:
       - job: BuildArkWheel
         displayName: Build ark wheel in manylinux
+        pool: LIB-BUILD-POOL
         timeoutInMinutes: 90
         steps:
           - checkout: self
