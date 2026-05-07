@@ -162,7 +162,7 @@ class ModelContext(BaseContext):
                 and is_moe_model_via_config(config)
                 and version.parse(transformers.__version__) >= version.parse("5.0.0")
             ):
-                from auto_round.modeling.fused_moe.replace_modules import BUILTIN_MODULES
+                from auto_round.modeling.replace_modules import BUILTIN_MODULES
 
                 model_type = getattr(config, "model_type", None)
                 if model_type is not None and model_type not in BUILTIN_MODULES:
@@ -197,7 +197,7 @@ class ModelContext(BaseContext):
             return
 
         module = importlib.import_module(module_name)
-        from auto_round.modeling.fused_moe.replace_modules import BUILTIN_MODULES
+        from auto_round.modeling.replace_modules import BUILTIN_MODULES
 
         BUILTIN_MODULES.setdefault(model_type, module)
         logger.debug(f"Loaded custom MoE replacement module for {model_type}")

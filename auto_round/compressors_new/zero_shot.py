@@ -21,7 +21,7 @@ from auto_round.algorithms.alg_config import AlgConfig
 from auto_round.compressors_new.base import BaseCompressor
 from auto_round.compressors_new.utils import is_nv_fp, is_static_wfp8afp8
 from auto_round.logger import logger
-from auto_round.modeling.fused_moe.replace_modules import materialize_model_
+from auto_round.modeling.replace_modules import materialize_model_
 from auto_round.utils import (
     check_to_quantized,
     clear_memory,

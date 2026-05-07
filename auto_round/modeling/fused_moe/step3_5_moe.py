@@ -19,7 +19,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 from transformers.activations import ACT2FN
 
-from auto_round.modeling.fused_moe.replace_modules import ReplacementModuleBase
+from auto_round.modeling.replace_modules import ReplacementModuleBase
 from auto_round.modeling.fused_moe.utils import _update_parameter
 from auto_round.utils import clear_memory, unsupported_meta_device
 
