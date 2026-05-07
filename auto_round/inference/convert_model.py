@@ -560,12 +560,12 @@ def infer_target_device(device_map: Union[dict, int, str, None] = None) -> str:
 
 def convert_gptq_v1_to_v2_format(model: nn.Module):
     """Convert gptq v1 to v2 format to ensure compatible with gptqmodel:exllamav2 backend."""
-    import gptqmodel
+    import gptqmodel  # pylint: disable=E0401
 
     if Version(gptqmodel.__version__) >= Version("7.0.0"):
-        from gptqmodel.nn_modules.qlinear.exllamav2 import (
-            ExllamaV2Linear as ExllamaV2QuantLinear,  # pylint: disable=E0401
-        )
+        from gptqmodel.nn_modules.qlinear.exllamav2 import ExllamaV2Linear  # pylint: disable=E0401
+
+        ExllamaV2QuantLinear = ExllamaV2Linear  # pylint: disable=E0401
     else:
         from gptqmodel.nn_modules.qlinear.exllamav2 import ExllamaV2QuantLinear  # pylint: disable=E0401
 

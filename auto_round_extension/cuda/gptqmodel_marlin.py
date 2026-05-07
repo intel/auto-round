@@ -56,7 +56,7 @@ def get_marlin_layer():  ##use an ugly wrapper to  import gptqmodel on demand
 
     marlin_import_exception = None
     if NEW_VERSION_7_0:
-        import gptqmodel.utils.marlin as gptqmodel_marlin_kernels
+        import gptqmodel.utils.marlin as gptqmodel_marlin_kernels  # pylint: disable=E0401
     else:
         try:
             import gptqmodel_marlin_kernels  # pylint: disable=E0401

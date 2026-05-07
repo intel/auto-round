@@ -891,13 +891,10 @@ def dynamic_import_inference_linear(backend, config, packing_format=None):
         return get_autogptq_infer_linear(backend, bits, group_size, sym)
 
     if "awq" in backend:
-        if "gptqmodel" in backend:
-            return get_gptqmodel_infer_linear(backend, is_awq=True)
-        else:
-            # Fallback to autoawq for backward compatibility
-            from awq.modules.linear import WQLinear_GEMM  # pylint: disable=E0401
+        # Fallback to autoawq for backward compatibility
+        from awq.modules.linear import WQLinear_GEMM  # pylint: disable=E0401
 
-            return WQLinear_GEMM
+        return WQLinear_GEMM
 
     if backend == "auto_round:tritonv2":
         from auto_round_extension.triton.qlinear_tritonv2 import QuantLinear
