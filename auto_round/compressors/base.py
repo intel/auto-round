@@ -63,7 +63,7 @@ from auto_round.experimental.utils import dump_group_size_to_rotation_config, no
 from auto_round.export.export_to_gguf.config import GGUF_INNER_CONFIG
 from auto_round.formats import OutputFormat, get_formats
 from auto_round.logger import logger
-from auto_round.modeling.fused_moe.replace_modules import materialize_model_, safe_to_cpu_
+from auto_round.modeling.replace_modules import materialize_model_, safe_to_cpu_
 from auto_round.modeling.unfused_moe import apply_model_monkey_patches
 from auto_round.schemes import (
     QuantizationScheme,
@@ -283,6 +283,7 @@ class BaseCompressor(object):
         self.mllm = kwargs.pop("mllm") if "mllm" in kwargs else False
         self.trust_remote_code = kwargs.pop("trust_remote_code") if "trust_remote_code" in kwargs else True
         self.diffusion = kwargs.pop("diffusion") if "diffusion" in kwargs else False
+        self.vllm_loading = kwargs.pop("vllm_loading") if "vllm_loading" in kwargs else False
         self.quantized = False
         self.is_model_patched = False
         if isinstance(model, str):
@@ -308,7 +309,7 @@ class BaseCompressor(object):
                 and is_moe_model_via_config(config)
                 and version.parse(transformers.__version__) >= version.parse("5.0.0")
             ):
-                from auto_round.modeling.fused_moe.replace_modules import BUILTIN_MODULES
+                from auto_round.modeling.replace_modules import BUILTIN_MODULES
 
                 model_type = getattr(config, "model_type", None)
                 if model_type is not None and model_type not in BUILTIN_MODULES:
@@ -1902,6 +1903,9 @@ class BaseCompressor(object):
             self.is_immediate_saving = False
 
         if self.orig_output_dir is None:
+            self.is_immediate_saving = False
+
+        if self.vllm_loading:
             self.is_immediate_saving = False
 
     def quantize(self) -> tuple[torch.nn.Module, dict[str, Any]]:

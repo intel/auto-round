@@ -159,6 +159,16 @@ def check_diffusers_installed():  # pragma: no cover
         exit(-1)
 
 
+def check_vllm_installed():  # pragma: no cover
+    try:
+        from vllm import LLM, SamplingParams  # noqa: F401
+
+        return True
+    except ImportError:
+        logger.error("Please install vllm via 'pip install vllm'" " to run vllm model")
+        exit(-1)
+
+
 def check_start_with_block_name(name: str, block_name_to_quantize: list):
     """
     Checks if the given layer name starts with any of the block names to be quantized.
@@ -741,6 +751,75 @@ def diffusion_load_model(
     return pipe, model.to(device)
 
 
+def vllm_load_model(
+    pretrained_model_name_or_path: str,
+    **kwargs,
+):
+    check_vllm_installed()
+    from transformers import AutoConfig, AutoTokenizer
+    from vllm import LLM
+
+    if isinstance(pretrained_model_name_or_path, str):
+        import os
+
+        os.environ["VLLM_ENABLE_V1_MULTIPROCESSING"] = "0"
+        logger.warning("VLLM_ENABLE_V1_MULTIPROCESSING is set to 0 for vllm model quantization")
+
+        # Keep max_model_len consistent with model config by default to avoid
+        # vLLM validation errors on short-context models.
+        user_max_model_len = kwargs.pop("max_model_len", None)
+        derived_max_model_len = None
+        try:
+            config = AutoConfig.from_pretrained(pretrained_model_name_or_path, trust_remote_code=True)
+            for attr in ("max_position_embeddings", "n_positions", "seq_length"):
+                value = getattr(config, attr, None)
+                if isinstance(value, (int, float)) and value > 0:
+                    derived_max_model_len = int(value)
+                    break
+        except Exception as err:
+            logger.warning(f"Failed to derive max_model_len from config, fallback to safe default: {err}")
+
+        max_model_len = user_max_model_len
+        if max_model_len is None:
+            max_model_len = derived_max_model_len if derived_max_model_len is not None else 2048
+
+        llm = LLM(
+            pretrained_model_name_or_path,
+            enforce_eager=True,
+            # cpu_offload_gb=1024,
+            gpu_memory_utilization=0.5,
+            max_model_len=max_model_len,
+            kv_cache_memory_bytes=1024 * 1024 * 1024 * 16,
+            **kwargs,
+        )
+        model = llm.llm_engine.engine_core.engine_core.model_executor.driver_worker.worker.model_runner.model
+    elif isinstance(pretrained_model_name_or_path, LLM):
+        llm = pretrained_model_name_or_path
+        model = llm.llm_engine.engine_core.engine_core.model_executor.driver_worker.worker.model_runner.model
+    else:
+        raise ValueError(f"Only support str or LLM class for model, but get {type(model)}")
+
+    tokenizer = AutoTokenizer.from_pretrained(llm.llm_engine.model_config.model)
+
+    if not hasattr(model.__class__, "dtype"):
+
+        @property
+        def dtype(self):
+            return self.lm_head.weight.dtype
+
+        setattr(model.__class__, "dtype", dtype)
+
+    if not hasattr(model.__class__, "device"):
+
+        @property
+        def device(self):
+            return self.lm_head.weight.device
+
+        setattr(model.__class__, "device", device)
+
+    return llm, model, tokenizer
+
+
 def is_pure_text_model(model):
     """verify on: phi-3.5, Mistral-Small-3.1, gemma-3, qwen2-vl,"""
     if hasattr(model, "config") and hasattr(model.config, "vision_config"):
@@ -762,7 +841,8 @@ def is_pure_text_model(model):
 def is_mllm_model(model_or_path: Union[str, torch.nn.Module], platform: str = None):
     from auto_round.utils.common import MM_KEYS
 
-    model_path = model_or_path if isinstance(model_or_path, str) else model_or_path.name_or_path
+    model_path = model_or_path if isinstance(model_or_path, str) else getattr(model_or_path, "name_or_path", None)
+
     # For dummy model, model_path could be "".
     # Only try to download if the path looks like a HF repo id (not a local filesystem path).
     # Skip download for absolute paths or relative paths that contain current/parent dir markers.
@@ -838,10 +918,29 @@ def is_diffusion_model(model_or_path: Union[str, object], trust_remote_code: boo
             check_diffusers_installed()
             index_file = os.path.join(model_or_path, "model_index.json")
         return index_file is not None
-    elif not isinstance(model_or_path, torch.nn.Module):
+    elif not isinstance(model_or_path, torch.nn.Module) and "diffusers" in str(type(model_or_path)):
         check_diffusers_installed()
         pipeline_utils = LazyImport("diffusers.pipelines.pipeline_utils")
         return isinstance(model_or_path, pipeline_utils.DiffusionPipeline)
+    else:
+        return False
+
+
+def is_vllm_model(model_or_path: object) -> bool:
+    if "vllm" in str(type(model_or_path)):
+        check_vllm_installed()
+        if not isinstance(model_or_path, torch.nn.Module):
+            attr = get_nested_attr(
+                model_or_path,
+                "llm_engine.engine_core.engine_core.model_executor.driver_worker.worker.model_runner.model",
+            )
+            if attr is None:
+                raise ValueError(
+                    "Please add VLLM_ENABLE_V1_MULTIPROCESSING=0 and use enforce_eager=True to load vllm model"
+                )
+            return True
+        else:
+            return True
     else:
         return False
 

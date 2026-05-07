@@ -1,4 +1,4 @@
-# Copyright (c) 2025 Intel Corporation
+# Copyright (c) 2026 Intel Corporation
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -12,17 +12,4 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from auto_round.compressors.adam import AdamCompressor
-from auto_round.compressors.base import BaseCompressor
-from auto_round.compressors.base import LLMCompressor
-from auto_round.compressors.mllm.compressor import MLLMCompressor
-from auto_round.compressors.diffusion.compressor import DiffusionCompressor
-from auto_round.compressors.diffusion.hybrid import HybridCompressor
 from auto_round.compressors.vllm.compressor import VllmCompressor
-from auto_round.compressors.config import (
-    DiffusionExtraConfig,
-    ExtraConfig,
-    MLLMExtraConfig,
-    SchemeExtraConfig,
-    TuningExtraConfig,
-)

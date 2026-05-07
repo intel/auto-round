@@ -603,6 +603,10 @@ if importlib.util.find_spec("deepspeed"):  # check if deepspeed is installed
     deepspeed_exists = True
 
 SUPPORTED_DTYPES = ("int", "mx_fp", "fp", "nv_fp", "mx_int")
+vllm_exists = False
+if importlib.util.find_spec("vllm"):
+    vllm_exists = True
+
 SUPPORTED_FORMATS = SupportedFormats()
 SUPPORTED_LAYER_TYPES = (torch.nn.Linear, transformers.pytorch_utils.Conv1D)
 # Changed to str as it relies on triton or others lib to load this
@@ -612,6 +616,23 @@ if deepspeed_exists:
     from deepspeed.module_inject import LinearAllreduce, LinearLayer
 
     SUPPORTED_LAYER_TYPES = SUPPORTED_LAYER_TYPES + (LinearLayer, LinearAllreduce)
+
+if vllm_exists:
+    from vllm.model_executor.layers.linear import (
+        ColumnParallelLinear,
+        MergedColumnParallelLinear,
+        QKVParallelLinear,
+        ReplicatedLinear,
+        RowParallelLinear,
+    )
+
+    SUPPORTED_LAYER_TYPES += (
+        ColumnParallelLinear,
+        MergedColumnParallelLinear,
+        RowParallelLinear,
+        ReplicatedLinear,
+        QKVParallelLinear,
+    )
 
 MM_KEYS = [
     "multi_modal_projector",
