@@ -140,12 +140,7 @@ function run_unit_test_sglang() {
     rm -rf /root/.venv
     uv venv --python=3.12 /root/.venv
     uv pip install -U pytest-cov pytest-html
-    uv pip install -r test/test_cuda/requirements_sglang.txt \
-        --prerelease=allow \
-        --extra-index-url https://download.pytorch.org/whl/cu130 \
-        --index-strategy unsafe-best-match
-    uv pip uninstall torch torchvision
-    uv pip install torch==2.11.0 torchvision --index-url https://download.pytorch.org/whl/cu130
+    uv pip install -r test/test_cuda/requirements_sglang.txt --prerelease=allow
     uv pip install .
     uv pip list
     echo "##[endgroup]"
