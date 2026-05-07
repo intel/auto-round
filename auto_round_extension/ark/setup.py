@@ -12,7 +12,31 @@ from setuptools import Extension, find_packages, setup
 from setuptools.command.build_ext import build_ext
 from setuptools.command.build_py import build_py
 
-DEFAULT_VERSION = "0.12.0"
+build_mode=os.environ.get("BUILD_MODE", "dev").lower()
+try:
+    file_path = "./auto_round_kernel/version.py"
+    with open(file_path) as version_file:
+        (__version__,) = re.findall('__version__ = "(.*)"', version_file.read())
+except Exception as error:
+    assert False, f"Failed to read version from {file_path}: {error}"
+
+def get_build_version():
+    if os.path.exists("PKG-INFO"):
+        with open("PKG-INFO", encoding="utf-8") as f:
+            for line in f:
+                if line.startswith("Version:"):
+                    return line.split(":", 1)[1].strip()
+
+    if build_mode == "release":
+        return __version__
+    try:
+        result = subprocess.run(["git", "describe", "--tags"], capture_output=True, text=True, check=True)
+        distance = result.stdout.strip().split("-")[-2]
+        commit = result.stdout.strip().split("-")[-1]
+        return f"{__version__}.dev{distance}+{commit}"
+    except subprocess.CalledProcessError:
+        return __version__
+    
 
 def fetch_requirements(path):
     requirements = []
@@ -58,7 +82,6 @@ if not oneapi_version:
     )
 
 requirements = fetch_requirements("requirements.txt")
-version = os.environ.get("RELEASE_VERSION") or DEFAULT_VERSION
 enable_sycl_tla = parse_major_minor(oneapi_version) >= (2025, 3)
 
 def get_system_memory_gb():
@@ -175,7 +198,7 @@ ext_modules = [Extension("auto_round_kernel.auto_round_kernel", sources=[])]
 
 setup(
     name="auto-round-lib",
-    version=version,
+    version=get_build_version(),
     description="Auto Round Kernel binary package",
     author_email="yu.luo@intel.com",
     long_description=open("README.md", "r", encoding="utf-8").read(),

@@ -1,0 +1,103 @@
+parameters:
+  - name: enableChangeDetection
+    type: boolean
+    default: false
+  - name: publishToTestPyPI
+    type: boolean
+    default: false
+
+stages:
+  - ${{ if eq(parameters.enableChangeDetection, true) }}:
+    - stage: DetectArkChanges
+      displayName: Detect ark changes
+      dependsOn: []
+      jobs:
+        - job: Detect
+          displayName: Detect ark changes in PR
+          pool:
+            vmImage: "ubuntu-latest"
+          steps:
+            - checkout: self
+              clean: true
+              fetchDepth: 0
+
+            - task: Bash@3
+              name: SetArkWheelFlag
+              displayName: Set ark wheel flag
+              inputs:
+                targetType: inline
+                script: |
+                  set -euxo pipefail
+                  target_ref="${SYSTEM_PULLREQUEST_TARGETBRANCH:-refs/heads/main}"
+                  git fetch origin "+${target_ref}:${target_ref}"
+                  changed_files="$(git diff --name-only "${target_ref}"...HEAD)"
+                  echo "$changed_files"
+                  if echo "$changed_files" | grep '^auto_round_extension/ark/' | grep -q -v '\.md$'; then
+                    echo "##vso[task.setvariable variable=NEED_ARK_WHEEL;isOutput=true]true"
+                  else
+                    echo "##vso[task.setvariable variable=NEED_ARK_WHEEL;isOutput=true]false"
+                  fi
+
+  - stage: BuildArkWheel
+    displayName: Build ark wheel
+    dependsOn:
+      - ${{ if eq(parameters.enableChangeDetection, true) }}:
+        - DetectArkChanges
+    ${{ if eq(parameters.enableChangeDetection, true) }}:
+      condition: and(succeeded(), eq(dependencies.DetectArkChanges.outputs['Detect.SetArkWheelFlag.NEED_ARK_WHEEL'], 'true'))
+    jobs:
+      - job: BuildArkWheel
+        displayName: Build ark wheel in manylinux
+        timeoutInMinutes: 90
+        steps:
+          - checkout: self
+            clean: true
+            fetchTags: true
+
+          - task: Bash@3
+            displayName: Build wheel in manylinux container
+            inputs:
+              targetType: inline
+              script: |
+                set -euxo pipefail
+                docker pull pytorch/manylinux2_28-builder:xpu-v2.10.0-rc7
+                docker run --rm --privileged \
+                  -v $(Build.SourcesDirectory):/auto-round \
+                  -v /intel/oneapi:/intel/oneapi \
+                  -w /auto-round/auto_round_extension/ark \
+                  pytorch/manylinux2_28-builder:xpu-v2.10.0-rc7 \
+                  bash -lc "source /opt/intel/oneapi/2025.3/oneapi-vars.sh \
+                  && python3 -m pip install --upgrade pip build twine \
+                  && python3 -m build --wheel --no-isolation \
+                  && ls -lah dist"
+
+          - task: PublishPipelineArtifact@1
+            displayName: Publish wheel artifact
+            inputs:
+              targetPath: $(Build.SourcesDirectory)/auto_round_extension/ark/dist
+              artifact: auto-round-lib-wheel
+              publishLocation: pipeline
+
+          - ${{ if eq(parameters.publishToTestPyPI, true) }}:
+            - task: Bash@3
+              displayName: Publish wheel to TestPyPI
+              condition: and(succeeded(), eq(variables['Build.SourceBranch'], 'refs/heads/main'), or(eq(variables['Build.Reason'], 'IndividualCI'), eq(variables['Build.Reason'], 'BatchedCI')))
+              env:
+                TWINE_USERNAME: "__token__"
+                TWINE_PASSWORD: "$(TESTPYPI_PASSWORD)"
+              inputs:
+                targetType: inline
+                script: |
+                  set -euxo pipefail
+                  if [ -z "${TWINE_PASSWORD}" ]; then
+                    echo "TESTPYPI_PASSWORD is empty, skip publishing."
+                    exit 1
+                  fi
+                  docker run --rm --privileged \
+                    -v $(Build.SourcesDirectory):/auto-round \
+                    -w /auto-round/auto_round_extension/ark \
+                    -e TWINE_USERNAME \
+                    -e TWINE_PASSWORD \
+                    pytorch/manylinux2_28-builder:xpu-v2.10.0-rc7 \
+                    bash -lc "python3 -m pip install --upgrade twine \
+                    && twine upload --repository-url https://test.pypi.org/legacy/ dist/*.whl"
