@@ -77,26 +77,15 @@ class AutoRound:
         cls,
         model: Union[torch.nn.Module, str],
         tokenizer=None,
-        use_vllm_loading = kwargs.pop("use_vllm_loading", False)
         platform: str = "hf",
         scheme: Union[str, dict, QuantizationScheme, AutoScheme] = "W4A16",
-            if use_vllm_loading:
-                logger.warning(
-                    "`use_vllm_loading` currently uses the legacy architecture path; "
-                    "set AR_DISABLE_NEW_ARCH=1 to avoid this fallback warning."
-                )
-            else:
-                from auto_round.compressors_new.entry import AutoRoundCompatible
-
-                return AutoRoundCompatible(**local_args, **kwargs)
-
-        if NEW_ARCH and use_vllm_loading:
-            logger.info("using legacy AutoRound path for vLLM model loading support.")
-
-        if NEW_ARCH and not use_vllm_loading:
         layer_config: dict[str, Union[str, dict, QuantizationScheme]] = None,
         dataset: Union[str, list, tuple, torch.utils.data.DataLoader] = "NeelNanda/pile-10k",
         iters: int = 200,
+        seqlen: int = 2048,
+        nsamples: int = 128,
+        batch_size: int = 8,
+        gradient_accumulate_steps: int = 1,
         low_gpu_mem_usage: bool = False,
         device_map: Union[str, torch.device, int, dict] = 0,
         enable_torch_compile: bool = False,
