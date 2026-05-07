@@ -17,7 +17,7 @@ from transformers import (
 from auto_round import AutoRound
 from auto_round.utils import get_block_names, is_pure_text_model
 
-from ...helpers import get_model_path, transformers_version, save_tiny_model
+from ...helpers import get_model_path, save_tiny_model, transformers_version
 
 
 @pytest.mark.skip_ci(reason="Only tiny model is suggested")
@@ -163,7 +163,9 @@ class TestAutoRound:
 
     def test_gemma3(self, tmp_path):
         model_name = get_model_path("google/gemma-3-12b-it")
-        save_tiny_model(model_name, tmp_path, from_config=True)  # make sure the model is downloaded before the test, to avoid timeout in the test
+        save_tiny_model(
+            model_name, tmp_path, from_config=True
+        )  # make sure the model is downloaded before the test, to avoid timeout in the test
         model = Gemma3ForConditionalGeneration.from_pretrained(tmp_path, torch_dtype="auto", trust_remote_code=True)
         block_names = get_block_names(model)
         self.check_block_names(block_names, ["model.language_model.layers"], [48])
