@@ -286,7 +286,6 @@ def save_quantized_as_autogptq(
         if not_quantized_in_group:
             all_to_quantized = False
         modules_in_block_to_quantize.append(sorted(quantized_in_group))
-    
 
     if all_to_quantized:
         modules_in_block_to_quantize = None
