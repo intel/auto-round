@@ -1,35 +1,36 @@
 """Smoke test for the device-backend refactor (round 2)."""
 
+import torch
+
 from auto_round.utils.device import (
+    DEVICE_ENVIRON_VARIABLE_MAPPING,
+    _clear_memory_for_cpu_and_cuda,
+    check_memory_availability,
+    clear_memory,
+    compile_func,
     detect_device,
     detect_device_count,
-    out_of_vram,
-    compile_func,
-    is_hpu_lazy_mode,
-    is_hpex_available,
-    is_gaudi2,
-    parse_available_devices,
-    clear_memory,
-    _clear_memory_for_cpu_and_cuda,
-    DEVICE_ENVIRON_VARIABLE_MAPPING,
     get_device_and_parallelism,
     get_packing_device,
-    check_memory_availability,
+    is_gaudi2,
+    is_hpex_available,
+    is_hpu_lazy_mode,
     memory_monitor,
+    out_of_vram,
+    parse_available_devices,
 )
 from auto_round.utils.device_backend import (
     DeviceBackend,
-    register_device_backend,
+    auto_select_device,
     get_device_backend,
-    iter_registered_backends,
+    get_known_device_types,
     is_accelerator_device,
     is_accelerator_type,
-    get_known_device_types,
-    strip_device_prefix,
+    iter_registered_backends,
+    register_device_backend,
     split_device_spec,
-    auto_select_device,
+    strip_device_prefix,
 )
-import torch
 
 
 def hr(s):
@@ -120,4 +121,3 @@ clear_memory()
 _clear_memory_for_cpu_and_cuda(device_list=None)
 _clear_memory_for_cpu_and_cuda(device_list=["cuda:0", "hpu:0", "cpu"])
 print("OK")
-
