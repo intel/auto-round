@@ -103,7 +103,6 @@ class TestAutoRound:
         )
         quantized_model_path = tmp_path
         _, quantized_model_path = autoround.quantize_and_save(output_dir=quantized_model_path, format="auto_gptq")
-        breakpoint()
         # test original GPTQModel inference
         from gptqmodel import GPTQModel
 
