@@ -46,10 +46,10 @@ stages:
 
                   if [[ "$build_ark_wheel" == "true" ]]; then
                     echo "ARK code changes detected, need to build ark wheel."
-                    printf '##vso[task.setvariable variable=BUILD_ARK_WHEEL;isOutput=true]true\n'
+                    printf '%s\n' '##vso[task.setvariable variable=BUILD_ARK_WHEEL;isOutput=true]true'
                   else
                     echo "No ARK code changes detected, skip building ark wheel."
-                    printf '##vso[task.setvariable variable=BUILD_ARK_WHEEL;isOutput=true]false\n'
+                    printf '%s\n' '##vso[task.setvariable variable=BUILD_ARK_WHEEL;isOutput=true]false'
                   fi
 
   - stage: BuildArkWheel
