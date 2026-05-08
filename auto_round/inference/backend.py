@@ -202,7 +202,7 @@ WOQ_DEFAULT_ACT_BITS = [None, 16, 32]
 
 # CPU backends that target Intel/x86 (ark / auto_round_kernel) cannot
 # run on Apple Silicon. Restrict them so the MLX backend wins on Darwin and we
-# don't try to load auto-round-lib / intel-extension-for-pytorch on macOS.
+# don't try to load auto-round-lib on macOS.
 _NON_DARWIN_SYSTEMS = ["linux", "windows"]
 
 # AutoGPTQ is no longer maintained, supports transformers < 5.0.0
@@ -1204,13 +1204,6 @@ def process_requirement(requirements: list, target_device="cuda", logger_level="
 
     # Instructional messages
     install_instructions = []
-
-    for cmd in pip_cmds:
-        if "intel-extension-for-pytorch" in cmd and target_device == "xpu":
-            install_instructions.append(
-                "Please refer to https://pytorch-extension.intel.com/installation?platform=gpu "
-                "to install intel-extension-for-pytorch. Ensure that the version matches your installed PyTorch."
-            )
 
     prefix_msg = (
         "Better backend is found, please install all the following requirements to enable it."
