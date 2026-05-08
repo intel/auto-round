@@ -121,6 +121,8 @@ class TestAutoRound:
 
         shutil.rmtree(self.save_dir, ignore_errors=True)
 
+    # TODO: transformers already fixed this bug, need to upgrade sglang
+    @pytest.mark.xfail(reason="sglang is not upgraded with latest transformers")
     def test_qwen2_5_vl_loading(self, tiny_qwen_2_5_vl_model_path):
         from auto_round.utils import mllm_load_model
 
