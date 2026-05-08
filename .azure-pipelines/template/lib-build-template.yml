@@ -76,7 +76,7 @@ stages:
                   bash -c " /opt/python/cp312-cp312/bin/python -m venv venv \
                   && source venv/bin/activate \
                   && source /intel/oneapi/2025.3/oneapi-vars.sh \
-                  && python -m pip install --upgrade pip build twine \
+                  && pip install -U pip build cmake setuptools \
                   && python -m build --wheel --no-isolation \
                   && auditwheel repair dist/*.whl --exclude lib* -w wheelhouse/ \
                   && ls -lah wheelhouse"
