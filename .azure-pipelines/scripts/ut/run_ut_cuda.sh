@@ -20,9 +20,9 @@ function create_conda_env() {
     # create conda env
     source activate base > /dev/null 2>&1 
     if conda info --envs | grep -q "^$CONDA_ENV_NAME\s"; then conda remove -n ${CONDA_ENV_NAME} --all -y; fi
-    conda create -n ${CONDA_ENV_NAME} python=${PYTHON_VERSION} setuptools -y
+    conda create --quiet -n ${CONDA_ENV_NAME} python=${PYTHON_VERSION} setuptools -y
     source activate ${CONDA_ENV_NAME} > /dev/null 2>&1
-    conda install -c conda-forge git gxx=11.2.0 gcc=11.2.0 gdb sysroot_linux-64 libgcc uv -y
+    conda install --quiet -c conda-forge git gxx=11.2.0 gcc=11.2.0 gdb sysroot_linux-64 libgcc uv -y
     export LD_PRELOAD=${CONDA_PREFIX}/lib/libstdc++.so.6
 
     # install AutoRound
@@ -92,8 +92,6 @@ function run_unit_test() {
     rm -rf .coverage* *.xml *.html
 
     uv pip install torch==2.11.0 torchvision --index-url https://download.pytorch.org/whl/cu128
-    uv pip install gptqmodel --no-build-isolation
-    uv pip install -r https://raw.githubusercontent.com/ModelCloud/GPTQModel/refs/heads/main/requirements.txt
     uv pip install https://github.com/XuehaoSun/llama-cpp-python/releases/download/v0.3.16/llama_cpp_python-0.3.16-cp312-cp312-linux_x86_64.whl
     uv pip install 'git+https://github.com/ggml-org/llama.cpp.git#subdirectory=gguf-py'
     uv pip install -r test_cuda/requirements.txt
@@ -134,7 +132,6 @@ function run_unit_test_vlm() {
     rm -rf .coverage* *.xml *.html
 
     uv pip install torch==2.11.0 torchvision --index-url https://download.pytorch.org/whl/cu128
-    uv pip install https://github.com/XuehaoSun/GPTQModel/releases/download/v5.8.0/gptqmodel-5.8.0+cu128torch2.11-cp312-cp312-linux_x86_64.whl
     uv pip install git+https://github.com/haotian-liu/LLaVA.git@v1.2.2 --no-deps
     uv pip install -v git+https://github.com/casper-hansen/AutoAWQ.git@v0.2.0 --no-build-isolation
     uv pip install flash-attn==2.8.3 --no-build-isolation
@@ -236,8 +233,9 @@ function run_unit_test_vllm() {
 
     cd ${REPO_PATH}/test
     rm -rf .coverage* *.xml *.html
+    vllm_version=$(curl -s https://api.github.com/repos/vllm-project/vllm/releases/latest | jq -r .tag_name | sed 's/^v//')
     uv pip install -r test_cuda/requirements_vllm.txt \
-        --extra-index-url https://wheels.vllm.ai/0.20.0/cu129 \
+        --extra-index-url https://wheels.vllm.ai/${vllm_version}/cu129 \
         --extra-index-url https://download.pytorch.org/whl/cu128 \
         --index-strategy unsafe-best-match
     cd ${REPO_PATH} && uv pip install . && cd ${REPO_PATH}/test
