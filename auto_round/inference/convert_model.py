@@ -659,6 +659,7 @@ def post_init(model: torch.nn.Module, used_backends: list[str]) -> None:
 
     need_autogptq_init = False
     need_gptqmodel_init = False
+    need_ark_init = False
     used_gptq_exllamav2 = False
     # Determine which backends require post-init
     for backend in used_backends:
@@ -668,6 +669,8 @@ def post_init(model: torch.nn.Module, used_backends: list[str]) -> None:
                 used_gptq_exllamav2 = True
         elif backend.startswith("gptqmodel"):
             need_gptqmodel_init = True
+        elif backend.startswith("auto_round_kernel"):
+            need_ark_init = True
 
     # AutoGPTQ post-init
     if need_autogptq_init:
@@ -698,6 +701,17 @@ def post_init(model: torch.nn.Module, used_backends: list[str]) -> None:
                 if hasattr(m, "validate_once"):
                     m.validate_once()
             model = gptq_post_init(model, use_act_order=False)
+
+    # ARK post-init
+    if need_ark_init:
+        message = "repacking to CPU/XPU format"
+        layers = []  ## ark post_init  will add one more layer
+        for n, m in model.named_modules():
+            if hasattr(m, "QUANT_TYPE") and "ark" in m.QUANT_TYPE:
+                layers.append(m)
+
+        for layer in tqdm(layers, desc=message, total=len(layers), leave=True):
+            layer.post_init()
 
     # ExLLaMAv2 kernels
     if used_gptq_exllamav2:
