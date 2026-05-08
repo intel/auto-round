@@ -537,6 +537,7 @@ class BaseCompressor(object):
             (self.act_bits < 16 and (not self.act_dynamic or self.data_type == "nvfp"))  # have hooks
             or self.enable_alg_ext  # Use imatrix
             or not self.disable_opt_rtn  # Use imatrix
+            or self.mllm
         ):
             self.block_forward = block_forward
         else:

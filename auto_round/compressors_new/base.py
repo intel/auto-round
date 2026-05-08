@@ -967,7 +967,7 @@ class BaseCompressor(object):
         cfg = self.quantize_config
         _needs_plain_forward = (cfg.is_act_quantize and (not cfg.act_dynamic or cfg.is_act_nv_fp)) or getattr(
             cfg, "enable_alg_ext", False
-        )
+        ) or self.mllm
         # Only compile block_forward when it will actually be used (calibration path).
         # For zero-shot compressors (need_calib=False), block_forward is never called,
         # so skipping compilation avoids unnecessary HPU workspace allocation.
