@@ -32,7 +32,19 @@ stages:
                   git fetch origin "+${target_ref}:${target_ref}"
                   changed_files="$(git diff --name-only "${target_ref}"...HEAD)"
                   echo "$changed_files"
-                  if echo "$changed_files" | grep '^auto_round_extension/ark/' | grep -q -v '\.md$'; then
+                  build_ark_wheel=false
+                  while IFS= read -r changed_file; do
+                    case "$changed_file" in
+                      auto_round_extension/ark/*.md)
+                        ;;
+                      auto_round_extension/ark/*)
+                        build_ark_wheel=true
+                        break
+                        ;;
+                    esac
+                  done <<< "$changed_files"
+
+                  if [[ "$build_ark_wheel" == "true" ]]; then
                     echo "ARK code changes detected, need to build ark wheel."
                     printf '##vso[task.setvariable variable=BUILD_ARK_WHEEL;isOutput=true]true\n'
                   else
