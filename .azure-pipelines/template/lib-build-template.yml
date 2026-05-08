@@ -70,12 +70,11 @@ stages:
                   --user "$(id -u):$(id -g)" \
                   -e HOME=/tmp \
                   -v $(Build.SourcesDirectory):/auto-round \
-                  -v /intel/oneapi:/intel/oneapi \
                   -w /auto-round/auto_round_extension/ark \
-                  quay.io/pypa/manylinux_2_28_x86_64 \
+                  pytorch/manylinux2_28-builder:xpu-v2.10.0-rc7 \
                   bash -c " /opt/python/cp312-cp312/bin/python -m venv venv \
                   && source venv/bin/activate \
-                  && source /intel/oneapi/setvars.sh \
+                  && source /opt/intel/oneapi/setvars.sh \
                   && pip install -U pip build cmake setuptools \
                   && python -m build --wheel --no-isolation \
                   && auditwheel repair dist/*.whl --exclude lib* -w wheelhouse/ \
@@ -110,6 +109,6 @@ stages:
                     -w /auto-round/auto_round_extension/ark \
                     -e TWINE_USERNAME \
                     -e TWINE_PASSWORD \
-                    quay.io/pypa/manylinux_2_28_x86_64 \
+                    pytorch/manylinux2_28-builder:xpu-v2.10.0-rc7 \
                     bash -c "python -m pip install --upgrade twine \
                     && twine upload --repository-url https://test.pypi.org/legacy/ wheelhouse/*.whl"
