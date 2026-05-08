@@ -161,8 +161,9 @@ class TestAutoRound:
         )
         assert not is_pure_text_model(model)
 
-    def test_gemma3(self, tmp_path):
+    def test_gemma3(self):
         model_name = get_model_path("google/gemma-3-12b-it")
+        tmp_path = "./tmp/tiny_gemma3"  # fixture:clean_tmp_model_folder will clean it
         save_tiny_model(
             model_name, tmp_path, from_config=True
         )  # make sure the model is downloaded before the test, to avoid timeout in the test
