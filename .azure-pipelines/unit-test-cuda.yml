@@ -71,12 +71,18 @@ stages:
                   script: |
                     export PYTHONUNBUFFERED=1
                     cd ${BUILD_SOURCESDIRECTORY}
+                    if [ ${{ pair.value.PART }} -eq 0 ]; then
+                      CUDA_VERSION="13.0"
+                    else
+                      CUDA_VERSION="any"
+                    fi
                     python .azure-pipelines/scripts/cuda_unit_test/runpod_manager.py \
                       --action create \
                       --api_key $(RUNPOD_API_KEY) \
                       --name "ci-$(Build.BuildId)-${{ pair.value.PART }}" \
                       --container_disk_size "100" \
                       --part ${{ pair.value.PART }} \
+                      --cuda_version "${CUDA_VERSION}" \
                       --env AZP_URL=$(System.CollectionUri) AZP_TOKEN=$(AZP_DEVOPS_PAT) AZP_POOL=$(POOL_NAME) AZP_AGENT_NAME="$(AGENT_NAME)-part${{ pair.value.PART }}"
 
               - task: Bash@3
@@ -125,6 +131,8 @@ stages:
                   echo "Running on GPU Agent: $(Agent.Name)"
                   nvidia-smi
                   lscpu
+                  cd .azure-pipelines/scripts/cuda_unit_test
+                  nohup uv run monitor_gpu.py daemon > monitor.log 2>&1 &
                 displayName: "Verify GPU Access"
 
               - script: |
@@ -135,8 +143,8 @@ stages:
                 displayName: "Install Python Dependencies"
 
               - script: |
+                  export UV_NO_CACHE=0
                   if [ ${{ pair.value.PART }} -eq 0 ]; then
-                    export UV_NO_CACHE=0
                     bash .azure-pipelines/scripts/cuda_unit_test/run_cuda_ut.sh \
                       --test_case=specific
                   else
@@ -152,6 +160,12 @@ stages:
                   targetPath: $(Build.SourcesDirectory)/ut_log_dir
                   artifact: PART_${{ pair.value.PART }}_logs
                   publishLocation: "pipeline"
+
+              - script: |
+                  cd .azure-pipelines/scripts/cuda_unit_test
+                  uv run monitor_gpu.py stop
+                condition: always()
+                displayName: "GPU Monitor"
 
       - stage: Cleanup_Verification_${{ pair.key }}
         displayName: "Verify Pod Cleanup ${{ pair.value.PART }}"
