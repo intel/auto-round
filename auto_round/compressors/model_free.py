@@ -1621,4 +1621,4 @@ class ModelFreeCompressor(_ModelFreeCompressorCore):
         out_path = self.run()
         self.output_dir = orig
         self.quantized = True
-        return None, [out_path]
+        return None, out_path
