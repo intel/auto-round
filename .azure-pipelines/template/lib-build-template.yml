@@ -34,10 +34,10 @@ stages:
                   echo "$changed_files"
                   if echo "$changed_files" | grep '^auto_round_extension/ark/' | grep -q -v '\.md$'; then
                     echo "ARK code changes detected, need to build ark wheel."
-                    echo "##vso[task.setvariable variable=BUILD_ARK_WHEEL;isOutput=true]true"
+                    printf '##vso[task.setvariable variable=BUILD_ARK_WHEEL;isOutput=true]true\n'
                   else
                     echo "No ARK code changes detected, skip building ark wheel."
-                    echo "##vso[task.setvariable variable=BUILD_ARK_WHEEL;isOutput=true]false"
+                    printf '##vso[task.setvariable variable=BUILD_ARK_WHEEL;isOutput=true]false\n'
                   fi
 
   - stage: BuildArkWheel
