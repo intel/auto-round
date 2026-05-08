@@ -161,23 +161,19 @@ def get_available_devices():
     """
     Returns a list of available devices in the current environment.
 
+    Sourced from the backend registry, so newly-registered backends
+    (NPU, MPS, ...) appear automatically as long as they implement
+    ``is_available``.
+
     Returns:
-        List[str]: A list of device identifiers like "cuda", "hpu", "xpu", "cpu".
+        List[str]: A list of device identifiers like ``"cuda"`` / ``"hpu"`` / ``"xpu"`` / ``"cpu"``.
     """
-    devices = []
+    from auto_round.utils.device_backend import iter_active_backends
 
-    if torch.cuda.is_available():
-        devices.append("cuda")
-
-    if is_hpex_available():
-        devices.append("hpu")
-
-    if hasattr(torch, "xpu") and torch.xpu.is_available():
-        devices.append("xpu")
-
-    if hasattr(torch.backends, "mps") and torch.backends.mps.is_available():
+    devices = [b.name for b in sorted(iter_active_backends(), key=lambda b: b.priority, reverse=True)]
+    # MPS is not registered as a first-class backend yet; keep the legacy probe.
+    if hasattr(torch.backends, "mps") and torch.backends.mps.is_available() and "mps" not in devices:
         devices.append("mps")
-
     devices.append("cpu")  # Always available
 
     return devices

@@ -169,16 +169,18 @@ class DiffusionMixin:
 
         total = nsamples if not hasattr(self.dataloader, "len") else min(nsamples, len(self.dataloader))
 
+        from auto_round.utils.device_backend import is_accelerator_device
+
         if (
             hasattr(self.model, "hf_device_map")
             and len(self.model.hf_device_map) > 1
             and pipe.device != self.model.device
-            and torch.device(self.model.device).type in ["cuda", "xpu"]
+            and is_accelerator_device(self.model.device)
         ):
             logger.error(
-                "Diffusion model is activated sequential model offloading, it will crash during moving to GPU/XPU. "
-                "Please use model path for quantization or "
-                "move the pipeline object to GPU/XPU before passing them into API."
+                "Diffusion model is activated sequential model offloading, it will crash during moving to "
+                "the accelerator. Please use model path for quantization or move the pipeline object to "
+                "the accelerator before passing them into the API."
             )
             exit(-1)
 

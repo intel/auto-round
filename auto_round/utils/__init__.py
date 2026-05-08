@@ -13,6 +13,15 @@
 # limitations under the License.
 
 from auto_round.utils.device import *
+from auto_round.utils.device_backend import (
+    DeviceBackend,
+    auto_select_device,
+    get_device_backend,
+    iter_active_backends,
+    iter_registered_backends,
+    register_device_backend,
+    resolve_device_type,
+)
 from auto_round.utils.common import *
 from auto_round.utils.model import *
 from auto_round.utils.weight_handler import (

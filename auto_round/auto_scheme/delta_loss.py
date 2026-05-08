@@ -437,8 +437,9 @@ def model_forward_low_gpu(model, dataloader, major_device="cuda", pbar=None):
         """Hook executed before backward propagation."""
         global last_grad_input
         last_grad_input = grad_input
-        if torch.cuda.is_available():
-            torch.cuda.synchronize()
+        from auto_round.utils.device_backend import auto_select_device
+
+        auto_select_device().synchronize()
         raise MyCustomError("Interrupt backward pass")
 
     for data in dataloader:
@@ -595,7 +596,9 @@ def get_score_for_scheme(
         with torch.no_grad():
             if low_gpu_mem_usage:
                 device = m.tuning_device if hasattr(m, "tuning_device") else major_device
-                if "cuda" in device or "xpu" in device:
+                from auto_round.utils.device_backend import is_accelerator_device
+
+                if is_accelerator_device(device):
                     device = major_device
             else:
                 device = m.weight.device
