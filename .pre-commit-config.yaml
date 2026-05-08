@@ -77,3 +77,14 @@ repos:
     hooks:
       - id: markdown-link-check
         args: [-q, -c .azure-pipelines/scripts/codeScan/markdown-link-check/markdown-link-check.json]
+
+  - repo: https://github.com/PyCQA/bandit
+    rev: "1.9.4"
+    hooks:
+      - id: bandit
+        files: |
+          (?x)^(
+            auto_round/.*\.py|
+            auto_round_extension/.*\.py
+          )$
+        args: [-r, -lll, -iii, auto_round/, auto_round_extension/]
