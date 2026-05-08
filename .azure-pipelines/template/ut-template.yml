@@ -72,7 +72,7 @@ steps:
         if [ "${{ parameters.utScriptFileName }}" == "run_ut_xpu" ];then
           docker exec ${{ parameters.utContainerName }} bash -c "cd /auto-round \
             && uv pip install -r .azure-pipelines/scripts/ut/constraints.txt --extra-index-url https://download.pytorch.org/whl/xpu \
-            && uv pip install -r extensions/ark/requirements.txt \
+            && uv pip install -r auto_round_extension/ark/requirements.txt \
             && ${ARK_WHEEL_INSTALL} \
             && uv pip install -r requirements.txt \
             && uv pip install -r test/test_ark/requirements.txt \
@@ -83,7 +83,7 @@ steps:
         else 
           docker exec ${{ parameters.utContainerName }} bash -c "cd /auto-round \
             && uv pip install -r .azure-pipelines/scripts/ut/constraints.txt --extra-index-url https://download.pytorch.org/whl/cpu \
-            && uv pip install -r extensions/ark/requirements.txt \
+            && uv pip install -r auto_round_extension/ark/requirements.txt \
             && ${ARK_WHEEL_INSTALL} \
             && uv pip install -r requirements.txt \
             && uv pip install -r requirements-cpu.txt \
