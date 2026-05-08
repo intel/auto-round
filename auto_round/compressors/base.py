@@ -3136,7 +3136,7 @@ class BaseCompressor(object):
         device: Union[str, torch.device] = "cpu",
     ):
         autocast_ctx = (
-            nullcontext() if self.amp else autocast(device_type=str(device).split(":")[0], dtype=self.amp_dtype)
+            nullcontext() if not self.amp else autocast(device_type=str(device).split(":")[0], dtype=self.amp_dtype)
         )
         if self.attention_mask:
             tmp_attention_mask = [self.attention_mask[i] for i in indices]
@@ -3616,6 +3616,8 @@ class BaseCompressor(object):
             folders.append(save_folder)
 
         if return_folders:
+            if len(folders) == 1:
+                folders = folders[0]
             return compressed_model, folders
         else:
             return compressed_model
