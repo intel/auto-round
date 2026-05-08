@@ -943,7 +943,11 @@ class CalibCompressor(BaseCompressor):
             materialize_model_(m)
             convert_module_to_hp_if_necessary(m, self.model_context.amp_dtype, self.compress_context.device)
 
-            if is_auto_device_mapping(self.compress_context.device_map) and len(self.compress_context.device_list) > 1:
+            if (
+                is_auto_device_mapping(self.compress_context.device_map)
+                and len(self.compress_context.device_list) > 1
+                and not self.model_context.is_diffusion
+            ):
                 from auto_round.utils.device import set_auto_device_map_for_block_with_tuning
 
                 card_0_in_high_risk, loss_device = set_auto_device_map_for_block_with_tuning(
@@ -1457,6 +1461,7 @@ class CalibratedRTNCompressor(CalibCompressor):
                 if (
                     is_auto_device_mapping(self.compress_context.device_map)
                     and len(self.compress_context.device_list) > 1
+                    and not self.model_context.is_diffusion
                 ):
                     from auto_round.utils.device import set_auto_device_map_for_block_with_tuning
 
