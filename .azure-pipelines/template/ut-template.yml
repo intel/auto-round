@@ -54,7 +54,7 @@ steps:
         echo "runtime variable BUILD_ARK_WHEEL=$(BUILD_ARK_WHEEL)"
 
   - task: DownloadPipelineArtifact@2
-    condition: and(succeeded(), eq('${{ parameters.buildARKWheel }}', 'true'))
+    condition: and(succeeded(), eq(variables['BUILD_ARK_WHEEL'], 'true'))
     inputs:
       artifact: auto-round-lib-wheel
       patterns: '*.whl'
