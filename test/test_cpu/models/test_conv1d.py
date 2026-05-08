@@ -39,7 +39,7 @@ class TestQuantizationConv1d:
         )
 
         autoround.quantize()
-        autoround.save_quantized(self.save_dir)
+        _, quantized_model_path = autoround.save_quantized(self.save_dir, return_folders=True)
 
-        model = AutoModelForCausalLM.from_pretrained(self.save_dir, device_map="cpu", trust_remote_code=True)
+        model = AutoModelForCausalLM.from_pretrained(quantized_model_path, device_map="cpu", trust_remote_code=True)
         model_infer(model, self.tokenizer)

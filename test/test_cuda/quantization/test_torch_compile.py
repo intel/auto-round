@@ -64,9 +64,9 @@ class TestTorchCompile:
             seqlen=16,
             enable_torch_compile=True,
         )
-        autoround.quantize_and_save(output_dir=self.save_dir, format="gguf:q2_k_s")
+        _, quantized_model_path = autoround.quantize_and_save(output_dir=self.save_dir, format="gguf:q2_k_s")
 
-        saved_files = [f for f in os.listdir(self.save_dir) if f.endswith(".gguf")]
+        saved_files = [f for f in os.listdir(quantized_model_path) if f.endswith(".gguf")]
         assert len(saved_files) > 0, "No GGUF file was generated"
 
         shutil.rmtree(self.save_dir, ignore_errors=True)

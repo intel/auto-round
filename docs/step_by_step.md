@@ -119,6 +119,8 @@ AutoRound supports several Schemes:
 
 - **W4A16**(bits:4,group_size:128,sym:True,act_bits:16)
 - **W8A16**(bits:8,group_size:128,sym:True,act_bits:16)
+- **W6A16**(bits:6,group_size:128,sym:True,act_bits:16) — `mlx` format only
+- **W5A16**(bits:5,group_size:128,sym:True,act_bits:16) — `mlx` format only
 - **W3A16**(bits:3,group_size:128,sym:True,act_bits:16)
 - **W2A16**(bits:2,group_size:128,sym:True,act_bits:16)
 - **GGUF:Q4_K_M**(all Q*_K,Q*_0,Q*_1 provided by llamacpp are supported)
@@ -152,6 +154,11 @@ adopted within the community, **only 4-bits quantization is supported**. Please 
 
 **LLM-Compressor Format**: **NVFP4, MXFP4(kernel in WIP), MXFP8 are supported**. Please set `--format llm_compressor`
 
+**MLX Format**: This format targets Apple Silicon (M1/M2/M3/...) and is loaded directly by [`mlx-lm`](https://github.com/ml-explore/mlx-lm) (text-only LLM) or [`mlx-vlm`](https://github.com/Blaizzy/mlx-vlm) (vision/audio + language).
+- Supports **2, 3, 4, 5, 6, 8 bits** (5/6 bits are MLX-exclusive — GPTQ/AWQ have no standard packing for them).
+- Native **mixed-bit / mixed-group_size** via `layer_config` or AutoScheme (`--target_bits 3.5 --options "..."`); 
+- Use `--format mlx` for a native MLX checkpoint; use `--format auto_round:mlx` if you want HuggingFace `transformers` + AutoRound to load it (post-init repacks each layer into MLX `QuantLinear` on Darwin).
+- Limitation: embedding layer quantization has not supported
 #### Format and scheme support matrix
 > Gray indicates the absence of a kernel or the presence of only an inefficient/reference kernel. BF16 is mainly for AutoScheme
 
@@ -162,13 +169,14 @@ adopted within the community, **only 4-bits quantization is supported**. Please 
 | **auto_awq** | W4A16, BF16                                                                                                                                                             |
 | **auto_gptq** | W4A16, W2A16, W3A16, W8A16,W2A16G64, W2A16G32, BF16                                                                                                                     |
 | **llm_compressor** | NVFP4, `MXFP4`, `MXFP8`, `FPW8A16`, `FP8_STATIC`, FP8_BLOCK                                                                                                   |
+| **mlx** / **auto_round:mlx** | W2A16, W3A16, W4A16, W5A16, W6A16, W8A16, BF16, mixed-bit / mixed-group_size (Apple Silicon only)                                                  |
 | **gguf** | GGUF:Q4_K_M, GGUF:Q2_K_S, GGUF:Q3_K_S, GGUF:Q3_K_M, GGUF:Q3_K_L, GGUF:Q4_K_S, GGUF:Q5_K_S, GGUF:Q5_K_M, GGUF:Q6_K, GGUF:Q4_0, GGUF:Q4_1, GGUF:Q5_0, GGUF:Q5_1,GGUF:Q8_0 |
 | **fp8**  | FP8_BLOCK                                                                                                                                                               |
 | **fake** | `all schemes (only for research)`                                                                                                                                       |
 
 ### Hardware Compatibility
 
-CPU, Intel GPU, HPU and CUDA for both quantization and inference.
+CPU, Intel GPU, HPU and CUDA for both quantization and inference. The **MLX format** is exclusive to **Apple Silicon (macOS / Darwin)** at inference time; quantization (export) itself can be done on any platform.
 
 ### Environment Configuration
 
@@ -476,17 +484,14 @@ The 3B and 14B models were evaluated on Qwen 2.5, the 8X7B model is Mixtral, whi
 | 2.5  w/o torch compile                                                                      | 8min<br/>10GB | 16min<br/>20GB | 30min<br/>25GB | 140min<br/>49GB | 50min<br/>49GB |
 
 W4G128 Quantization Time and Memory Usage (Intel GPU B60 24G)
-Testing was conducted on the Intel GPU B60 24G using the release version of PyTorch 2.11.0+xpu. Please note that data loading and packing costs have been excluded from the evaluation. Time and memory usage were measured using Qwen3-series models.
+Testing was conducted on the Intel GPU B60 24G using the release version of PyTorch 2.11.0+xpu. Please note that data loading and packing costs have been excluded from the evaluation. Time and memory usage were measured using Qwen2.5-series models.
 
-| Torch version/Config W4G128                                                                                            | 0.6B              | 1.7B              | 4B                  | 8B                  | 30B-A3B             |
-|------------------------------------------------------------------------------------------------------------------------|-------------------|-------------------|---------------------|---------------------|---------------------|
-| 2.11.0+xpu with torch compile                                                                                          | 20min<br/>10.7GB  | 26min<br/>13.2GB  | 58min<br/>22.8GB    | OOM                 | OOM                 |
-| 2.11.0+xpu with torch compile<br/>low_gpu_mem_usage=True                                                               | 29min<br/>9.5GB   | 38min<br/>9.8GB   | 1h 23min<br/>19.4GB | 1h 32min<br/>20.1GB | 5h 33min<br/>22.8GB |
-| 2.11.0+xpu with torch compile<br/>low_gpu_mem_usage=True<br/>gradient_accumulate_steps=8,bs=1                          | 41min<br/>1.3GB   | 42min<br/>1.8GB   | 1h 29min<br/>3.6GB  | 2h 4min<br/>4.6GB   | 21h 41min<br/>10.2GB  |
-| 2.11.0+xpu w/o torch compile                                                                                           | 20min<br/>10.9GB  | 28min<br/>13.2GB  | OOM                 | OOM                 | OOM                 |
-
-
-
+| Torch version/Config W4G128                                                                                            | 0.5B              | 1.5B              | 3B                  | 7B                  |
+|------------------------------------------------------------------------------------------------------------------------|-------------------|-------------------|---------------------|---------------------|
+| 2.11.0+xpu with torch compile                                                                                          | 6min<br/>2.9GB    | 13min<br/>5.4GB   | 22min<br/>7.1GB     | 40min<br/>14.9GB    |
+| 2.11.0+xpu with torch compile<br/>low_gpu_mem_usage=True                                                               | 10min<br/>1.7GB   | 17min<br/>3.3GB   | 30min<br/>4.3GB     | 50min<br/>8.5GB     |
+| 2.11.0+xpu with torch compile<br/>low_gpu_mem_usage=True<br/>gradient_accumulate_steps=8,bs=1                          | 14min<br/>0.4GB   | 22min<br/>1.1GB   | 38min<br/>1.5GB     | 1h 4min<br/>4.1GB   |
+| 2.11.0+xpu w/o torch compile                                                                                           | 6min<br/>2.9GB    | 14min<br/>5.7GB   | 26min<br/>7.6GB     | 51min<br/>15.5GB    |
 
 ### Device/Multi-GPU setting in Quantization
 **The tuning device is specified using the `device_map` argument in AutoRound API, _not_ through the `device_map` 

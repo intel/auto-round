@@ -451,8 +451,25 @@ def _pad_block_fp8_weight_naive(
     weight, orig_M, orig_N = _pad_weight(weight, block_size)
     M, N = weight.shape[-2:]
 
-    assert weight_scale_m == M // block_size_m
-    assert weight_scale_n == N // block_size_n
+    # Check if scale tensor is large enough to cover the weight dimensions
+    # Some models may use over-provisioned scale tensors (e.g., for memory alignment),
+    # but undersized scales are invalid and should be rejected early
+    expected_scale_m = M // block_size_m
+    expected_scale_n = N // block_size_n
+    if weight_scale_m < expected_scale_m or weight_scale_n < expected_scale_n:
+        raise ValueError(
+            "FP8 weight scale shape is smaller than required for the padded weight: "
+            f"weight_shape={tuple(weight.shape)}, scale_shape={tuple(weight_scale.shape)}, block_size={block_size}"
+        )
+
+    # Handle over-provisioned scale tensors: if the scale tensor covers more blocks
+    # than the weight dimensions require, pad the weight to match the scale coverage.
+    target_M = max(M, weight_scale_m * block_size_m)
+    target_N = max(N, weight_scale_n * block_size_n)
+    if target_M != M or target_N != N:
+        pad_M = target_M - M
+        pad_N = target_N - N
+        weight = torch.nn.functional.pad(weight, (0, pad_N, 0, pad_M), mode="constant", value=0)
 
     return weight, orig_M, orig_N
 

@@ -191,19 +191,20 @@ def _patch_gemma4_model(model):
 
 
 def _handle_special_model(model):
-    if hasattr(model, "config") and model.config.model_type == "deepseek_vl_v2":
+    model_type = getattr(getattr(model, "config", None), "model_type", None)
+    if model_type == "deepseek_vl_v2":
         from functools import partial
 
         model.forward = partial(_deepseek_vl2_forward, model)
-    if hasattr(model, "config") and model.config.model_type == "qwen2_5_omni":
+    if model_type == "qwen2_5_omni":
         from functools import partial
 
         model.forward = partial(_qwen2_5_omni_forward, model)
-    if hasattr(model, "config") and model.config.model_type == "qwen3_omni_moe":
+    if model_type == "qwen3_omni_moe":
         from functools import partial
 
         model.forward = partial(_qwen3_omni_moe_forward, model)
-    if hasattr(model, "config") and model.config.model_type == "gemma4":
+    if hasattr(model, "config") and model_type == "gemma4":
         import transformers
         from packaging import version
 
@@ -716,18 +717,6 @@ register_ignore_layers(
     ignore_layers=[
         "vision_tower",
         "mm_projector",
-    ],
-)
-
-register_ignore_layers(
-    matchers=[
-        ModelTypeMatcher(r"qwen3_5", mode="in"),
-    ],
-    ignore_layers=[
-        "mlp.gate",
-        "mlp.shared_expert_gate",
-        "mtp.fc",
-        "mtp.gate",
     ],
 )
 

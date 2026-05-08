@@ -38,6 +38,7 @@ RECIPES = {
 
 
 class BasicArgumentParser(argparse.ArgumentParser):
+
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
         self.add_argument(
@@ -616,8 +617,11 @@ def tune(args):
 
     if args.quant_lm_head:
         for format in formats:
-            if "auto_round" not in format and "fake" not in format:
-                auto_round_formats = [s for s in SUPPORTED_FORMATS if s.startswith("auto_round")]
+            # MLX (native ``mlx`` and ``auto_round:mlx``) supports per-layer
+            # mixed-bit quantization including lm_head; treat it the same as
+            # auto_round / fake here.
+            if "auto_round" not in format and "fake" not in format and "mlx" not in format:
+                auto_round_formats = [s for s in SUPPORTED_FORMATS if s.startswith("auto_round") or s == "mlx"]
                 raise ValueError(
                     f"{format} is not supported for lm-head quantization, please change to {auto_round_formats}"
                 )
@@ -747,45 +751,10 @@ def tune(args):
         rotation_config=rot_config,
     )
 
-    model_name = args.model.rstrip("/")
-
-    if model_name.split("/")[-1].strip(".") == "" and "gguf" not in args.format:
-        if autoround.group_size <= 0:
-            if "fp" in autoround.act_data_type:
-                suffix = f"afp{autoround.act_bits}"
-            else:
-                suffix = f"a{autoround.act_bits}"
-        else:
-            suffix = f"g{autoround.group_size}"
-        export_dir = os.path.join(args.output_dir, f"w{autoround.bits}{suffix}")
-    elif model_name.split("/")[-1].strip(".") == "" and "gguf" in args.format:
-        export_dir = args.output_dir
-    elif model_name.split("./")[-1].strip("./") != "" and "gguf" in args.format:
-        export_dir = os.path.join(args.output_dir, model_name.split("/")[-1] + "-gguf")
-    else:
-        if isinstance(autoround.group_size, tuple):
-            assert len(autoround.group_size) == 2, f"Only support 2D group_size, but get {autoround.group_size}"
-            suffix = f"g{autoround.group_size[0]}x{autoround.group_size[1]}"
-        else:
-            if autoround.group_size <= 0:
-                if "fp" in autoround.act_data_type:
-                    suffix = f"afp{autoround.act_bits}"
-                else:
-                    suffix = f"a{autoround.act_bits}"
-            else:
-                suffix = f"g{autoround.group_size}"
-        prefix = (
-            autoround.data_type.lower().replace("_", "")
-            if "int" not in autoround.data_type or "mx" in autoround.data_type
-            else ""
-        )
-        export_dir = os.path.join(
-            args.output_dir,
-            model_name.split("/")[-1] + (f"-{prefix}" if prefix else "") + f"-w{autoround.bits}{suffix}",
-        )
-
     # ======================= Quantize and save model =======================
-    model, folders = autoround.quantize_and_save(export_dir, format=args.format)  # pylint: disable=E1101
+    # Export directory is now derived automatically inside quantize_and_save via
+    # BaseCompressor._get_export_dir(), so we only need to pass the base output_dir.
+    model, folders = autoround.quantize_and_save(args.output_dir, format=args.format)  # pylint: disable=E1101
     tokenizer = autoround.tokenizer  # pylint: disable=E1101
 
     model.eval()

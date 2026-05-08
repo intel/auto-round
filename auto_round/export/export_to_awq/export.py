@@ -23,10 +23,8 @@
 import copy
 import json
 import os
-from concurrent.futures import ThreadPoolExecutor
 from typing import Callable, Union
 
-import threadpoolctl as tctl
 import torch
 import torch.nn as nn
 from tqdm import tqdm
@@ -179,21 +177,9 @@ def save_quantized_as_autoawq(
     names = list(layer_config.keys())
 
     backend = None
-    max_workers = 1
-    if not torch.cuda.is_available() and not torch.xpu.is_available():
-        max_workers = 2  ## 2 with cuda packing will cause hang occasionally
     if not unsupported_meta_device(model):
-        with ThreadPoolExecutor(max_workers=max_workers) as executor:
-            with tqdm(total=len(names), leave=True) as pbar:
-
-                def wrapper(name):
-                    pbar.set_description(f"packing {name}")
-                    with tctl.threadpool_limits(limits=1):
-                        pack_layer(name, compressed_model, backend, device)
-                    pbar.update(1)
-
-                for _ in executor.map(wrapper, names):
-                    pass
+        for name in tqdm(names, desc="packing", leave=True):
+            pack_layer(name, compressed_model, backend, device)
     if output_dir is None:
         return model
 

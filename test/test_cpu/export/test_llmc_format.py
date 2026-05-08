@@ -7,11 +7,17 @@ import transformers
 from transformers import AutoModelForCausalLM, AutoTokenizer
 
 from auto_round import AutoRound, AutoScheme
+from auto_round.export.export_to_llmcompressor import export_to_fp as llmc_fp_export
+from auto_round.export.export_to_llmcompressor import export_to_static_fp as llmc_static_fp_export
 
-from ...helpers import get_model_path, opt_name_or_path
+from ...envs import is_compressed_tensors_available
+from ...helpers import forbid_threaded_packing, get_model_path, opt_name_or_path
+
+pytestmark = pytest.mark.skipif(not is_compressed_tensors_available(), reason="test requires compressed-tensors")
 
 
 class TestLLMC:
+
     @classmethod
     def setup_class(self):
         self.model_name = get_model_path("stas/tiny-random-llama-2")
@@ -50,7 +56,7 @@ class TestLLMC:
             nsamples=2,
             iters=0,
         )
-        autoround.quantize_and_save(tmp_path, format="llm_compressor")
+        _, quantized_model_path = autoround.quantize_and_save(tmp_path, format="llm_compressor")
         # from vllm import LLM
         # model = LLM(tmp_path)
         # result = model.generate("Hello my name is")
@@ -60,13 +66,13 @@ class TestLLMC:
 
         from safetensors import safe_open
 
-        config = json.load(open(os.path.join(tmp_path, "config.json")))
+        config = json.load(open(os.path.join(quantized_model_path, "config.json")))
         assert "group_0" in config["quantization_config"]["config_groups"]
         assert config["quantization_config"]["config_groups"]["group_0"]["input_activations"]["num_bits"] == 8
         assert config["quantization_config"]["config_groups"]["group_0"]["weights"]["strategy"] == "channel"
         assert config["quantization_config"]["quant_method"] == "compressed-tensors"
 
-        f = safe_open(os.path.join(tmp_path, "model.safetensors"), framework="pt")
+        f = safe_open(os.path.join(quantized_model_path, "model.safetensors"), framework="pt")
         assert len(f.get_tensor("model.decoder.layers.0.fc1.weight_scale").shape) == 2
 
     def test_autoround_llmcompressor_fp8(self, tmp_path):
@@ -80,11 +86,11 @@ class TestLLMC:
             nsamples=2,
             iters=0,
         )
-        autoround.quantize_and_save(tmp_path, format="auto_round:llm_compressor")
+        _, quantized_model_path = autoround.quantize_and_save(tmp_path, format="auto_round:llm_compressor")
 
         import json
 
-        config = json.load(open(os.path.join(tmp_path, "config.json")))
+        config = json.load(open(os.path.join(quantized_model_path, "config.json")))
         assert "group_0" in config["quantization_config"]["config_groups"]
         assert config["quantization_config"]["config_groups"]["group_0"]["input_activations"]["num_bits"] == 8
         assert config["quantization_config"]["config_groups"]["group_0"]["weights"]["strategy"] == "tensor"
@@ -99,7 +105,7 @@ class TestLLMC:
             disable_opt_rtn=True,
             scheme=scheme,
         )
-        compressed_model, _ = ar.quantize_and_save(output_dir=tmp_path, format="llm_compressor")
+        compressed_model, tmp_path = ar.quantize_and_save(output_dir=tmp_path, format="llm_compressor")
         tmp_layer = compressed_model.model.decoder.layers[1].self_attn.q_proj
         assert (
             hasattr(tmp_layer, "weight_scale")
@@ -133,7 +139,7 @@ class TestLLMC:
             disable_opt_rtn=True,
             scheme=scheme,
         )
-        ar.quantize_and_save(output_dir=tmp_path, format="llm_compressor")
+        _, tmp_path = ar.quantize_and_save(output_dir=tmp_path, format="llm_compressor")
         model = AutoModelForCausalLM.from_pretrained(tmp_path, torch_dtype="auto", trust_remote_code=True)
         op = model.model.decoder.layers[0].fc1
         if op.quantization_scheme.targets != ["Linear"]:
@@ -156,3 +162,31 @@ class TestLLMC:
             and quantization_config["config_groups"]["group_1"]["format"] == "mxfp4-pack-quantized"
             and quantization_config["ignore"] == ["lm_head"]
         ), f"Invalid mixed precision quantization configuration: {quantization_config}"
+
+
+def test_llmcompressor_static_fp_export_packs_serially(tiny_opt_model_path, tmp_path, monkeypatch):
+    autoround = AutoRound(
+        tiny_opt_model_path,
+        scheme="FP8_STATIC",
+        seqlen=8,
+        nsamples=2,
+        iters=0,
+    )
+    autoround.quantize()
+    forbid_threaded_packing(monkeypatch, llmc_static_fp_export)
+    autoround.save_quantized(tmp_path, format="llm_compressor")
+    assert os.path.exists(os.path.join(tmp_path, "config.json"))
+
+
+def test_llmcompressor_mxfp8_export_packs_serially(tmp_path, monkeypatch):
+    autoround = AutoRound(
+        model=opt_name_or_path,
+        iters=0,
+        disable_opt_rtn=True,
+        scheme="mxfp8",
+    )
+    autoround.quantize()
+    forbid_threaded_packing(monkeypatch, llmc_fp_export)
+    compressed_model = autoround.save_quantized(output_dir=tmp_path, format="llm_compressor")
+    tmp_layer = compressed_model.model.decoder.layers[1].self_attn.q_proj
+    assert hasattr(tmp_layer, "weight_scale")
