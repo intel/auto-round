@@ -11,6 +11,7 @@ TARGET_GPUS = [
     "NVIDIA RTX 6000 Ada Generation",
     "NVIDIA L40S",
     "NVIDIA RTX PRO 6000 Blackwell Server Edition",
+    "NVIDIA RTX PRO 6000 Blackwell Workstation Edition",
 ]
 DATA_CENTER_IDS = [
     "AP-JP-1",
@@ -40,10 +41,11 @@ DATA_CENTER_IDS = [
     "US-TX-4",
     "US-WA-1",
 ]
-DATA_CENTER_BAN_LIST = ["EUR-IS-2", "US-IL-1"]
+DATA_CENTER_BAN_LIST = ["EUR-IS-1", "EUR-IS-2", "US-IL-1"]
 DATA_CENTER_SELECT_LIST = [dc for dc in DATA_CENTER_IDS if dc not in DATA_CENTER_BAN_LIST]
 REQUIRED_COUNT = 1
 IMAGES_NAME = "xuehaosu/azure-agent:v0.1"
+CUDA_VERSIONS = ["13.0", "12.9", "12.8", "12.7", "12.6", "12.5", "12.4", "12.3", "12.2", "12.1", "12.0", "11.8"]
 
 
 def run_create_pod(api_key, payload):
@@ -89,6 +91,7 @@ def create_pod(args):
         env_dict = {kv.split("=", 1)[0]: kv.split("=", 1)[1] for kv in args.env}
 
     payload = {
+        "allowedCudaVersions": [args.cuda_version] if (args.cuda_version and args.cuda_version in CUDA_VERSIONS) else CUDA_VERSIONS,
         "cloudType": "SECURE",
         "containerDiskInGb": args.container_disk_size,
         "dataCenterIds": DATA_CENTER_SELECT_LIST,
@@ -195,6 +198,7 @@ def main():
     parser.add_argument("--gpu_count", type=int, default=1)
     parser.add_argument("--container_disk_size", type=int, default=50)
     parser.add_argument("--part", type=int, default=0)
+    parser.add_argument("--cuda_version", help="CUDA version for the pod")
     parser.add_argument("--env", nargs="*", help="Environment variables in KEY=VALUE format")
 
     args = parser.parse_args()
