@@ -7,22 +7,25 @@ Run:
     python bench_triton_matmul.py --dtype fp16 --sym
     python bench_triton_matmul.py --bits 4 --group_size 128
 """
+
 import argparse
 
 import torch
 
 from auto_round_extension.triton.triton_utils.dequant import (
-    quant_matmul_248 as ref_dequant_matmul,  # dequant -> cuBLAS (NOT fused)
     dequant248,
 )
-from auto_round_extension.triton.triton_utils.kernels import (
-    quant_matmul_248 as ref_fused_matmul,    # existing fused kernel (w/ g_idx)
+from auto_round_extension.triton.triton_utils.dequant import (
+    quant_matmul_248 as ref_dequant_matmul,  # dequant -> cuBLAS (NOT fused)
 )
 from auto_round_extension.triton.triton_utils.fused_matmul import (
-    fused_quant_matmul,
-    fused_quant_gemv,
     auto_quant_matmul,
     fast_dequant248,
+    fused_quant_gemv,
+    fused_quant_matmul,
+)
+from auto_round_extension.triton.triton_utils.kernels import (
+    quant_matmul_248 as ref_fused_matmul,  # existing fused kernel (w/ g_idx)
 )
 
 
@@ -38,7 +41,7 @@ def make_fake_qweight(K, N, bits, group_size, sym, device, dtype, sym_zp=None):
     for i in range(pack):
         qweight |= (w_int[i::pack] & maxq) << (i * bits)
 
-    scales = (torch.rand((G, N), device=device, dtype=dtype) * 0.02 + 0.005)
+    scales = torch.rand((G, N), device=device, dtype=dtype) * 0.02 + 0.005
 
     if sym:
         z_int = torch.full((G, N), sym_zp, dtype=torch.int32, device=device)
@@ -49,7 +52,7 @@ def make_fake_qweight(K, N, bits, group_size, sym, device, dtype, sym_zp=None):
     for i in range(pack):
         qzeros |= (z_int[:, i::pack] & maxq) << (i * bits)
 
-    g_idx = (torch.arange(K, device=device, dtype=torch.int32) // group_size)
+    g_idx = torch.arange(K, device=device, dtype=torch.int32) // group_size
     return qweight, scales, qzeros, g_idx, sym_zp
 
 
@@ -94,14 +97,12 @@ def _safe_bench(label, fn):
             _ERR_PRINTED.add(key)
             print(f"\n[BENCH ERR] label={label}: {type(e).__name__}", file=sys.stderr)
             traceback.print_exc(file=sys.stderr)
-            print("", file=sys.stderr)
+            print(file=sys.stderr)
         return float("nan"), f"ERR:{msg_first_line}", None
 
 
 def run_case(M, K, N, bits, group_size, sym, dtype, device, check=True):
-    qweight, scales, qzeros, g_idx, sym_zp = make_fake_qweight(
-        K, N, bits, group_size, sym, device, dtype
-    )
+    qweight, scales, qzeros, g_idx, sym_zp = make_fake_qweight(K, N, bits, group_size, sym, device, dtype)
     x = torch.randn((M, K), device=device, dtype=dtype) * 0.1
     maxq = (1 << bits) - 1
 
@@ -112,28 +113,55 @@ def run_case(M, K, N, bits, group_size, sym, dtype, device, check=True):
         return ref_fused_matmul(x, qweight, scales, qzeros, g_idx, bits, maxq)
 
     if sym:
+
         def fused_new_call():
             return fused_quant_matmul(
-                x, qweight, scales, qzeros=None,
-                bits=bits, group_size=group_size, sym=True, sym_zp=sym_zp,
+                x,
+                qweight,
+                scales,
+                qzeros=None,
+                bits=bits,
+                group_size=group_size,
+                sym=True,
+                sym_zp=sym_zp,
             )
 
         def hybrid_call():
             return auto_quant_matmul(
-                x, qweight, scales, qzeros=None, g_idx=g_idx,
-                bits=bits, group_size=group_size, sym=True, sym_zp=sym_zp,
+                x,
+                qweight,
+                scales,
+                qzeros=None,
+                g_idx=g_idx,
+                bits=bits,
+                group_size=group_size,
+                sym=True,
+                sym_zp=sym_zp,
             )
+
     else:
+
         def fused_new_call():
             return fused_quant_matmul(
-                x, qweight, scales, qzeros,
-                bits=bits, group_size=group_size, sym=False,
+                x,
+                qweight,
+                scales,
+                qzeros,
+                bits=bits,
+                group_size=group_size,
+                sym=False,
             )
 
         def hybrid_call():
             return auto_quant_matmul(
-                x, qweight, scales, qzeros=qzeros, g_idx=g_idx,
-                bits=bits, group_size=group_size, sym=False,
+                x,
+                qweight,
+                scales,
+                qzeros=qzeros,
+                g_idx=g_idx,
+                bits=bits,
+                group_size=group_size,
+                sym=False,
             )
 
     w_fp16 = dequant248(qweight, scales, qzeros, g_idx, bits, input_dtype=dtype)
@@ -144,10 +172,13 @@ def run_case(M, K, N, bits, group_size, sym, dtype, device, check=True):
     # fast dequant + cuBLAS (the optimised prefill path)
     def fast_deq_call():
         w = fast_dequant248(
-            qweight, scales,
+            qweight,
+            scales,
             qzeros=qzeros if not sym else None,
-            bits=bits, group_size=group_size,
-            sym=sym, sym_zp=sym_zp,
+            bits=bits,
+            group_size=group_size,
+            sym=sym,
+            sym_zp=sym_zp,
             out_dtype=dtype,
         )
         return x @ w
@@ -178,17 +209,25 @@ def run_case(M, K, N, bits, group_size, sym, dtype, device, check=True):
             st_fdq = "OK" if (st_fdq == "OK" and ok) else (st_fdq if st_fdq != "OK" else "DIFF")
 
     flops = 2.0 * M * N * K
+
     def tf(t):
         return float("nan") if (t != t) else flops / (t * 1e-3) / 1e12
+
     def spd(num, den):
         if num != num or den != den:
             return float("nan")
         return num / den
 
     return dict(
-        M=M, K=K, N=N,
-        deq_ms=t_deq, fdq_ms=t_fdq, old_ms=t_old, new_ms=t_new,
-        hyb_ms=t_hyb, fp16_ms=t_fp16,
+        M=M,
+        K=K,
+        N=N,
+        deq_ms=t_deq,
+        fdq_ms=t_fdq,
+        old_ms=t_old,
+        new_ms=t_new,
+        hyb_ms=t_hyb,
+        fp16_ms=t_fp16,
         spd_vs_deq=spd(t_deq, t_new),
         spd_vs_old=spd(t_old, t_new),
         spd_hyb_vs_deq=spd(t_deq, t_hyb),
@@ -199,8 +238,13 @@ def run_case(M, K, N, bits, group_size, sym, dtype, device, check=True):
         new_tflops=tf(t_new),
         hyb_tflops=tf(t_hyb),
         fp16_tflops=tf(t_fp16),
-        status_old=st_old, status_new=st_new, status_hyb=st_hyb, status_fdq=st_fdq,
-        err_old=err_old, err_new=err_new, err_fdq=err_fdq,
+        status_old=st_old,
+        status_new=st_new,
+        status_hyb=st_hyb,
+        status_fdq=st_fdq,
+        err_old=err_old,
+        err_new=err_new,
+        err_fdq=err_fdq,
     )
 
 
@@ -218,31 +262,33 @@ def main():
     device = args.device
 
     shapes = [
-        ("llama7b-qkv  decode",   1, 4096, 4096),
-        ("llama7b-down decode",   1, 11008, 4096),
-        ("llama7b-up   decode",   1, 4096, 11008),
-        ("llama7b-qkv  bs16",    16, 4096, 4096),
-        ("llama7b-down bs16",    16, 11008, 4096),
-        ("llama7b-up   bs16",    16, 4096, 11008),
-        ("llama7b-qkv  bs64",    64, 4096, 4096),
-        ("llama7b-down bs64",    64, 11008, 4096),
-        ("llama7b-up   bs64",    64, 4096, 11008),
-        ("llama7b-qkv  pref",   512, 4096, 4096),
-        ("llama7b-down pref",   512, 11008, 4096),
-        ("llama7b-up   pref",   512, 4096, 11008),
-        ("llama7b-qkv  bs2k",  2048, 4096, 4096),
-        ("llama7b-down bs2k",  2048, 11008, 4096),
-        ("llama7b-up   bs2k",  2048, 4096, 11008),
-        ("llama70b-qkv decode",   1, 8192, 8192),
-        ("llama70b-up  decode",   1, 8192, 28672),
-        ("llama70b-qkv bs64",    64, 8192, 8192),
-        ("llama70b-up  bs64",    64, 8192, 28672),
-        ("llama70b-qkv bs512",  512, 8192, 8192),
-        ("llama70b-up  bs512",  512, 8192, 28672),
+        ("llama7b-qkv  decode", 1, 4096, 4096),
+        ("llama7b-down decode", 1, 11008, 4096),
+        ("llama7b-up   decode", 1, 4096, 11008),
+        ("llama7b-qkv  bs16", 16, 4096, 4096),
+        ("llama7b-down bs16", 16, 11008, 4096),
+        ("llama7b-up   bs16", 16, 4096, 11008),
+        ("llama7b-qkv  bs64", 64, 4096, 4096),
+        ("llama7b-down bs64", 64, 11008, 4096),
+        ("llama7b-up   bs64", 64, 4096, 11008),
+        ("llama7b-qkv  pref", 512, 4096, 4096),
+        ("llama7b-down pref", 512, 11008, 4096),
+        ("llama7b-up   pref", 512, 4096, 11008),
+        ("llama7b-qkv  bs2k", 2048, 4096, 4096),
+        ("llama7b-down bs2k", 2048, 11008, 4096),
+        ("llama7b-up   bs2k", 2048, 4096, 11008),
+        ("llama70b-qkv decode", 1, 8192, 8192),
+        ("llama70b-up  decode", 1, 8192, 28672),
+        ("llama70b-qkv bs64", 64, 8192, 8192),
+        ("llama70b-up  bs64", 64, 8192, 28672),
+        ("llama70b-qkv bs512", 512, 8192, 8192),
+        ("llama70b-up  bs512", 512, 8192, 28672),
     ]
 
-    print(f"=== bits={args.bits}  group_size={args.group_size}  "
-          f"dtype={args.dtype}  sym={args.sym}  device={device} ===")
+    print(
+        f"=== bits={args.bits}  group_size={args.group_size}  "
+        f"dtype={args.dtype}  sym={args.sym}  device={device} ==="
+    )
     print(f"GPU: {torch.cuda.get_device_name(0)}")
 
     header = (
@@ -264,17 +310,20 @@ def main():
         if K % args.group_size != 0:
             continue
         try:
-            r = run_case(M, K, N, args.bits, args.group_size, args.sym,
-                         dtype, device, check=not args.no_check)
+            r = run_case(M, K, N, args.bits, args.group_size, args.sym, dtype, device, check=not args.no_check)
         except Exception as e:
             print(f"{name:22s}  ERROR: {e}")
             continue
+
         def fmt_ms(v):
             return f"{v:>8.3f}" if v == v else f"{'n/a':>8s}"
+
         def fmt_spd(v):
             return f"{v:>6.2f}x" if v == v else f"{'n/a':>7s}"
+
         def fmt_tf(v):
             return f"{v:>6.2f}" if v == v else f"{'n/a':>6s}"
+
         print(
             f"{name:22s} {r['M']:>5d} {r['K']:>6d} {r['N']:>6d} | "
             f"{fmt_ms(r['deq_ms'])} {fmt_ms(r['fdq_ms'])} {fmt_ms(r['old_ms'])} "
@@ -285,20 +334,26 @@ def main():
             f"{r['status_fdq'][:4]:>4s} {r['status_old'][:4]:>4s} "
             f"{r['status_new'][:4]:>4s} {r['err_new']:>9.2e}"
         )
-        if r['spd_vs_deq'] == r['spd_vs_deq']:
-            geo_deq *= r['spd_vs_deq']; n_deq += 1
-        if r['spd_vs_old'] == r['spd_vs_old']:
-            geo_old *= r['spd_vs_old']; n_old += 1
-        if r['spd_hyb_vs_deq'] == r['spd_hyb_vs_deq']:
-            geo_hyb *= r['spd_hyb_vs_deq']; n_hyb += 1
-        if r['spd_fdq_vs_deq'] == r['spd_fdq_vs_deq']:
-            geo_fdq *= r['spd_fdq_vs_deq']; n_fdq += 1
+        if r["spd_vs_deq"] == r["spd_vs_deq"]:
+            geo_deq *= r["spd_vs_deq"]
+            n_deq += 1
+        if r["spd_vs_old"] == r["spd_vs_old"]:
+            geo_old *= r["spd_vs_old"]
+            n_old += 1
+        if r["spd_hyb_vs_deq"] == r["spd_hyb_vs_deq"]:
+            geo_hyb *= r["spd_hyb_vs_deq"]
+            n_hyb += 1
+        if r["spd_fdq_vs_deq"] == r["spd_fdq_vs_deq"]:
+            geo_fdq *= r["spd_fdq_vs_deq"]
+            n_fdq += 1
         n += 1
 
     if n:
         print("-" * len(header))
         if n_fdq:
-            print(f"geomean over {n_fdq} shapes:  fast_deq+cuBLAS vs deq+cuBLAS = {geo_fdq ** (1.0/n_fdq):.2f}x   (dequant-only optimisation)")
+            print(
+                f"geomean over {n_fdq} shapes:  fast_deq+cuBLAS vs deq+cuBLAS = {geo_fdq ** (1.0/n_fdq):.2f}x   (dequant-only optimisation)"
+            )
         if n_deq:
             print(f"geomean over {n_deq} shapes:  new (fused)   vs deq+cuBLAS    = {geo_deq ** (1.0/n_deq):.2f}x")
         if n_hyb:
@@ -310,4 +365,3 @@ def main():
 if __name__ == "__main__":
     torch.manual_seed(0)
     main()
-

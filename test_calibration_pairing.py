@@ -10,6 +10,7 @@ needed leaf modules directly.  Verifies:
    guaranteed to cancel: H Â· Háµ€ = I).
 3. Selected matrices are orthogonal up to numerical noise.
 """
+
 import importlib.util
 import logging
 import pathlib
@@ -113,9 +114,7 @@ class _FakeInner(torch.nn.Module):
     def __init__(self, vocab, hidden, intermediate, num_heads, n_layers):
         super().__init__()
         self.embed_tokens = torch.nn.Embedding(vocab, hidden)
-        self.layers = torch.nn.ModuleList(
-            [_FakeLayer(hidden, intermediate, num_heads) for _ in range(n_layers)]
-        )
+        self.layers = torch.nn.ModuleList([_FakeLayer(hidden, intermediate, num_heads) for _ in range(n_layers)])
         self.norm = _FakeRMSNorm(hidden)
 
 
@@ -209,9 +208,7 @@ print("\n=== Per-layer matrix diversity ===")
 for d in (INTERM, HEAD_DIM, NHEADS):
     mats = [calib.get_calibration_hadamard_for_layer(L, d) for L in range(N_LAYERS)]
     n_distinct = len({m.data_ptr() for m in mats})  # tensor identity
-    n_value_distinct = sum(
-        1 for L in range(1, N_LAYERS) if not torch.equal(mats[0], mats[L])
-    )
+    n_value_distinct = sum(1 for L in range(1, N_LAYERS) if not torch.equal(mats[0], mats[L]))
     print(f"  dim={d:4d}: {N_LAYERS} layers, value-distinct vs L0: {n_value_distinct}")
     # At least one layer's matrix should differ from layer 0 (otherwise we
     # collapsed back to a single matrix, defeating per-layer).
@@ -263,8 +260,6 @@ for L in range(N_LAYERS):
 H = calib.get_calibration_hadamard(HIDDEN)
 err = (H @ H.T - torch.eye(HIDDEN, dtype=H.dtype)).abs().max().item()
 assert err < 1e-6
-print(f"  All orthogonality errors < 1e-6")
+print("  All orthogonality errors < 1e-6")
 
 print("\nALL PER-LAYER PAIRING TESTS PASSED")
-
-
