@@ -1,11 +1,9 @@
 # # Copyright (C) 2026 Intel Corporation
 # # SPDX-License-Identifier: Apache-2.0
+"""Backward-compat re-export shim.
 
-"""Online Hadamard transform hooks.
-
-After weight rotation, down_proj and o_proj require an online Hadamard
-transform on their *input activations* at inference time.  This module
-provides the hooks and a helper to register them on the model.
+The canonical implementation now lives in
+:mod:`auto_round.algorithms.transforms.rotation.inplace.hooks`.
 """
 
 import math

@@ -39,6 +39,10 @@ def is_optimum_available():
     return importlib.util.find_spec("optimum") is not None
 
 
+def is_compressed_tensors_available():
+    return importlib.util.find_spec("compressed_tensors") is not None
+
+
 def is_ipex_available():
     try:
         require_version("intel-extension-for-pytorch>=2.5")
@@ -133,6 +137,16 @@ def require_optimum(test_case):
 
     """
     return unittest.skipUnless(is_optimum_available(), "test requires optimum")(test_case)
+
+
+def require_compressed_tensors(test_case):
+    """
+    Decorator marking a test that requires compressed-tensors.
+
+    These tests are skipped when compressed-tensors isn't installed.
+
+    """
+    return unittest.skipUnless(is_compressed_tensors_available(), "test requires compressed-tensors")(test_case)
 
 
 def require_greater_than_050(test_case):

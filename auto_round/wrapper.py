@@ -538,6 +538,7 @@ class WrapperLinear(torch.nn.Module):
 
 
 class WrapperWALayer(torch.nn.Module):
+
     def __init__(self, orig_layer, enable_torch_compile=False, device="cpu"):
         super(WrapperWALayer, self).__init__()
         self.orig_layer = orig_layer
@@ -743,7 +744,12 @@ class WrapperMultiblock(torch.nn.Module):
 
 
 def wrapper_block(
-    block, enable_minmax_tuning, enable_norm_bias_tuning, enable_torch_compile=False, device="cpu", **kwargs
+    block,
+    enable_minmax_tuning,
+    enable_norm_bias_tuning,
+    enable_torch_compile=False,
+    device="cpu",
+    **kwargs,
 ):
     """Wraps the layers in the given block with a custom Wrapper module.
 
@@ -806,6 +812,19 @@ def unwrapper_layer(model, layer, layer_name, best_params):
 
     if hasattr(layer, "orig_layer"):
         orig_layer = layer.unwrapper(best_params)
+        act_max = getattr(orig_layer, "act_max", None)
+        act_scale = getattr(orig_layer, "act_scale", None)
+        if (
+            "lm_head" in layer_name
+            and getattr(layer, "enable_act_quant", False)
+            and not getattr(orig_layer, "act_dynamic", True)
+            and act_scale is not None
+            and act_max is None
+        ):
+            logger.warning_once(
+                "Static activation quantization for lm_head is not fully supported yet. "
+                "lm_head activation statistics are missing, so activation scale falls back to unit scale."
+            )
         orig_layer = orig_layer.to("cpu")
         set_module(model, layer_name, orig_layer)
 

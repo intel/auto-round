@@ -37,6 +37,7 @@ environment_variables: dict[str, Callable[[], Any]] = {
     # None means "not set" — fall back to the wrapper's own act_min/max_scale
     # parameters. Only when the env var is explicitly provided do we override.
     "AR_ACT_SCALE": lambda: float(os.environ["AR_ACT_SCALE"]) if "AR_ACT_SCALE" in os.environ else None,
+    "AR_DISABLE_NEW_ARCH": lambda: os.getenv("AR_DISABLE_NEW_ARCH", "0").lower() in ("1", "true", "yes"),
     "AR_ENABLE_ACT_MINMAX_TUNING": lambda: os.getenv("AR_ENABLE_ACT_MINMAX_TUNING", "0").lower()
     in ("1", "true", "yes"),
     "AR_FUSE_ONLINE_ROTATION": lambda: os.getenv("AR_FUSE_ONLINE_ROTATION", "0").lower() in ("1", "true", "yes"),
@@ -81,8 +82,8 @@ def set_config(**kwargs):
     for key, value in kwargs.items():
         if key in environment_variables:
             # Convert value to appropriate string format
-            if key == "AR_USE_MODELSCOPE":
-                # Handle boolean values for AR_USE_MODELSCOPE
+            if key in ("AR_USE_MODELSCOPE", "AR_DISABLE_NEW_ARCH"):
+                # Handle boolean values for boolean env flags
                 str_value = "true" if value in [True, "True", "true", "1", 1] else "false"
             else:
                 # For other variables, convert to string

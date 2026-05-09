@@ -33,6 +33,7 @@ from tqdm import tqdm
 from transformers import AutoConfig, set_seed
 
 from auto_round import envs
+from auto_round.algorithms.quantization.sign_round.sign_sgd import SignSGD
 from auto_round.auto_scheme.gen_auto_scheme import AutoScheme
 from auto_round.compressors.shard_writer import shard_writer
 from auto_round.compressors.utils import (
@@ -71,7 +72,6 @@ from auto_round.schemes import (
     preset_name_to_scheme,
     scheme_to_preset_name,
 )
-from auto_round.sign_sgd import SignSGD
 from auto_round.special_model_handler import get_predefined_fixed_attr, get_predefined_ignore_layers, update_module
 from auto_round.utils import (
     INNER_SUPPORTED_LAYER_TYPES,
@@ -94,6 +94,7 @@ from auto_round.utils import (
     get_layer_names_in_block,
     get_lm_head_name,
     get_module,
+    get_reverse_checkpoint_conversion_mapping,
     global_state,
     hook_ngram_embeddings_on_cpu,
     htcore,
@@ -107,6 +108,7 @@ from auto_round.utils import (
     memory_monitor,
     mv_module_from_gpu,
     normalize_no_split_modules,
+    revert_checkpoint_conversion_mapping,
     set_amax_for_all_moe_layers,
     set_module,
     to_device,
@@ -603,8 +605,15 @@ class BaseCompressor(object):
 
     def _gen_auto_scheme(self) -> dict[str, dict]:
         if self.mllm:
-            logger.info("AutoScheme is not yet supported for multimodal LLMs.")
-            sys.exit(-1)
+            # AutoScheme on a VLM only scores the language tower (the block
+            # walker in delta_loss already skips vision/audio sub-trees) and
+            # uses a pure-text calibration dataset by default, falling back to
+            # the multimodal dataloader if the VLM rejects text-only forward.
+            logger.info(
+                "AutoScheme on multimodal LLM: scoring the language tower only "
+                "with text-only calibration (multimodal dataloader will be used "
+                "as a fallback if needed)."
+            )
 
         if is_quantized_input_module(self.model):
             logger.info("AutoScheme does not currently support quantized input models (e.g., FP8).")
@@ -654,6 +663,71 @@ class BaseCompressor(object):
             is_mllm=self.mllm,
         )
         quant_layer_names = layer_config.keys()
+
+        # ---- VLM: peel non-text sub-trees AutoScheme should not score ---- #
+        # Behavior matches ``--quant_nontext_module``:
+        #   * default (False): peel BOTH vision and audio; AutoScheme only
+        #     scores the language tower (vision/audio kept at their original
+        #     16-bit configuration).
+        #   * True: peel only audio; AutoScheme also scores the vision tower
+        #     (audio is always peeled because we don't ship an audio
+        #     calibration dataset, so any score for it would be unreliable).
+        nontext_skipped_layers: dict[str, dict] = {}
+        if self.mllm:
+            from auto_round.utils import get_block_names
+
+            quant_nontext = getattr(self, "quant_nontext_module", False)
+            # ``_get_vlm_block_names`` always drops audio blocks regardless of
+            # ``quant_vision``.
+            scoreable_blocks = get_block_names(self.model, quant_vision=quant_nontext)
+            scoreable_block_prefixes = tuple(blk for group in scoreable_blocks for blk in group)
+            if quant_nontext:
+                # vision stays in; only audio gets peeled.
+                peel_markers = ("audio", "speech", "wav", "waveform")
+                tower_label = "language+vision"
+                peel_label = "audio/speech"
+            else:
+                # default: peel both vision and audio.
+                peel_markers = (
+                    "vision",
+                    "visual",
+                    "image",
+                    "img",
+                    "audio",
+                    "speech",
+                    "wav",
+                    "waveform",
+                )
+                tower_label = "language"
+                peel_label = "vision/audio"
+
+            def _is_scoreable_layer(name: str) -> bool:
+                # Quick prefix test against detected scoreable blocks.
+                if any(name == p or name.startswith(p + ".") for p in scoreable_block_prefixes):
+                    return True
+                # Fallback: drop anything matching a peel marker.
+                lname = name.lower()
+                return not any(marker in lname for marker in peel_markers)
+
+            scoreable_layer_config = {}
+            for name, cfg in layer_config.items():
+                if _is_scoreable_layer(name):
+                    scoreable_layer_config[name] = cfg
+                else:
+                    nontext_skipped_layers[name] = cfg
+
+            if nontext_skipped_layers:
+                logger.info(
+                    "AutoScheme (VLM): scoring %d %s-tower layers; "
+                    "%d %s-tower layers kept at their original 16-bit configuration.",
+                    len(scoreable_layer_config),
+                    tower_label,
+                    len(nontext_skipped_layers),
+                    peel_label,
+                )
+                layer_config = scoreable_layer_config
+                quant_layer_names = layer_config.keys()
+
         scheme_keys = {f.name for f in fields(QuantizationScheme)}
         fixed_layer_scheme_new = {
             k: {key: v[key] for key in scheme_keys & v.keys()}
@@ -675,8 +749,26 @@ class BaseCompressor(object):
             device_map=self.device_map,
             tokenizer=self.tokenizer,
             enable_torch_compile=self.enable_torch_compile,
+            processor=getattr(self, "processor", None),
         )
         layer_config = self.scheme_generator.get_layer_config()
+        # Re-attach vision/audio-tower layers we peeled off earlier so the
+        # downstream quantization pipeline sees the complete layer map.
+        # NOTE: ``nontext_skipped_layers`` was populated *after* the first
+        # ``set_layer_config`` call, so each cfg already carries internal-only
+        # keys such as ``in_blocks`` that the second ``set_layer_config`` call
+        # in ``configure_layer_config`` would reject via its ``normalize_item``
+        # validator. Strip those keys (keep only the allowed scheme fields)
+        # before merging.
+        if nontext_skipped_layers:
+            allowed_keys = {f.name for f in fields(QuantizationScheme)} | {
+                "fixed_by_user",
+                "scale_dtype",
+                "scheme",
+            }
+            for name, cfg in nontext_skipped_layers.items():
+                clean_cfg = {k: v for k, v in cfg.items() if k in allowed_keys} if isinstance(cfg, dict) else cfg
+                layer_config.setdefault(name, clean_cfg)
         return layer_config
 
     def _set_device(self, device_map: Union[str, torch.device, int, dict]) -> None:
@@ -1775,6 +1867,14 @@ class BaseCompressor(object):
         if self.low_cpu_mem_usage and self.is_immediate_packing:
             self.is_immediate_saving = True
 
+        if self.low_cpu_mem_usage and not self.is_immediate_packing:
+            logger.info(
+                "`low_cpu_mem_usage` is only supported when `immediate_packing` is True. "
+                "Setting `low_cpu_mem_usage` to False."
+            )
+            self.low_cpu_mem_usage = False
+            self.is_immediate_saving = False
+
         if self.low_cpu_mem_usage and self.is_immediate_packing:
             if formats[0].is_gguf():
                 logger.warning(
@@ -1989,6 +2089,12 @@ class BaseCompressor(object):
         for layer_name in copy.deepcopy(layer_names):
             if layer_name not in layer_inputs:
                 if self.act_bits < 16 and not self.act_dynamic:
+                    if "lm_head" in layer_name:
+                        logger.warning_once(
+                            "Static activation quantization for lm_head is not fully supported yet. "
+                            "If lm_head calibration inputs are missing, activation scale may fall back to unit scale "
+                            "or quantization may be skipped."
+                        )
                     # Activation quantization requires collected inputs
                     msg_prefix = (
                         f"Activation max hook for layer '{layer_name}' is unavailable due to "
@@ -2583,10 +2689,10 @@ class BaseCompressor(object):
                 Processed data or None
             """
             new_data = data
-            if batch_size <= 1:
-                return new_data
             if data_name in self.shared_cache_keys:
                 return None
+            if batch_size <= 1:
+                return new_data
             if "alibi" in data_name:
                 if isinstance(data, torch.Tensor):
                     alibi = data
@@ -2640,7 +2746,7 @@ class BaseCompressor(object):
                         continue
                     if key not in self.inputs[name].keys():  # initialization
                         data = to_device(kwargs[key], device=torch.device("cpu"))
-                        if data is None or (self.batch_size > 1 and key in self.shared_cache_keys):
+                        if data is None or key in self.shared_cache_keys:
                             self.inputs[name][key] = data
                             continue
                         if self.batch_size <= 1:
@@ -3032,7 +3138,7 @@ class BaseCompressor(object):
         device: Union[str, torch.device] = "cpu",
     ):
         autocast_ctx = (
-            nullcontext() if self.amp else autocast(device_type=str(device).split(":")[0], dtype=self.amp_dtype)
+            nullcontext() if not self.amp else autocast(device_type=str(device).split(":")[0], dtype=self.amp_dtype)
         )
         if self.attention_mask:
             tmp_attention_mask = [self.attention_mask[i] for i in indices]
@@ -3499,6 +3605,21 @@ class BaseCompressor(object):
             serialization_dict["autoround_version"] = __version__
             if "scale_dtype" in serialization_dict.keys():
                 serialization_dict["scale_dtype"] = str(serialization_dict["scale_dtype"])
+
+            # to match the original name
+            reverse_checkpoint_conversion_mapping = get_reverse_checkpoint_conversion_mapping(self.model)
+
+            if isinstance(serialization_dict["to_quant_block_names"], str):
+                serialization_dict["to_quant_block_names"] = revert_checkpoint_conversion_mapping(
+                    serialization_dict["to_quant_block_names"], reverse_checkpoint_conversion_mapping
+                )
+
+            elif isinstance(serialization_dict["to_quant_block_names"], list):
+                for idx in range(len(serialization_dict["to_quant_block_names"])):
+                    serialization_dict["to_quant_block_names"][idx] = revert_checkpoint_conversion_mapping(
+                        serialization_dict["to_quant_block_names"][idx], reverse_checkpoint_conversion_mapping
+                    )
+
             compressed_model = format.save_quantized(
                 save_folder,
                 model=self.model,
@@ -3512,6 +3633,8 @@ class BaseCompressor(object):
             folders.append(save_folder)
 
         if return_folders:
+            if len(folders) == 1:
+                folders = folders[0]
             return compressed_model, folders
         else:
             return compressed_model
@@ -3647,21 +3770,23 @@ class BaseCompressor(object):
         for key in input_others.keys():
             if "positional_inputs" in key:
                 continue
-            if (key not in share_cache_keys or len(indices) == 1) and not isinstance(
-                input_others[key], (str, bool, type(None))
-            ):
-                current_input_others[key] = None
-                if input_others[key] is not None:
-                    current_input_others[key] = [input_others[key][i] for i in indices]
-                    if len(indices) == 1:
-                        current_input_others[key] = current_input_others[key][0]
-                    else:
-                        try:
-                            current_input_others[key] = torch.cat(current_input_others[key], dim=0)
-                        except TypeError as err:
-                            logger.warning_once("Please check the model cache inputs or try setting batch_size to 1.")
-            else:
+            # Shared cache keys (e.g. position_embeddings, position_ids, cache_position) are stored
+            # directly as-is (not wrapped in a per-sample list) when batch_size > 1.  Indexing such
+            # values by sample index would incorrectly decompose them (e.g. (cos, sin)[0] == cos).
+            # Always pass them through unchanged.
+            if key in share_cache_keys or isinstance(input_others[key], (str, bool, type(None))):
                 current_input_others[key] = input_others[key]
+            elif input_others[key] is not None:
+                current_input_others[key] = [input_others[key][i] for i in indices]
+                if len(indices) == 1:
+                    current_input_others[key] = current_input_others[key][0]
+                else:
+                    try:
+                        current_input_others[key] = torch.cat(current_input_others[key], dim=0)
+                    except TypeError as err:
+                        logger.warning_once("Please check the model cache inputs or try setting batch_size to 1.")
+            else:
+                current_input_others[key] = None
 
         return current_input_ids, current_input_others
 

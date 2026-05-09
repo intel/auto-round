@@ -272,7 +272,7 @@ def save_quantized_as_fp(
         ignore.append(lm_head_name)
 
     # get llm-compressor format config
-    check_compressed_tensors_supported()
+    check_compressed_tensors_supported(raise_error=True)
 
     # Detect mixed precision by grouping quantized layers by (bits, data_type)
     scheme_groups = {}  # (bits, data_type) -> list of layer names

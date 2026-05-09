@@ -1,10 +1,9 @@
 # # Copyright (C) 2026 Intel Corporation
 # # SPDX-License-Identifier: Apache-2.0
+"""Backward-compat re-export shim.
 
-"""Hadamard inplace rotation — public API and rotation primitives.
-
-Supports LLaMA-2, LLaMA-3, Qwen-3 (and any model with the same layout).
-The entry point is :func:`apply_hadamard_rotation`.
+The canonical implementation now lives in
+:mod:`auto_round.algorithms.transforms.rotation.inplace.apply`.
 """
 
 import gc
