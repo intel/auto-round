@@ -689,7 +689,15 @@ class DQWrapperLinear(WrapperLinear):
                 split_num=1,
                 v=v_r,
             )
-            return {"scale": scale, "wmin": wmin, "d_scale": d_scale, "d_wmin": d_wmin}
+            # Search funcs are decorated with ``@torch.inference_mode()``; their
+            # outputs are inference tensors and cannot be saved for backward.
+            # Clone to detach from inference mode so autograd may use them.
+            return {
+                "scale": scale.clone(),
+                "wmin": wmin.clone(),
+                "d_scale": d_scale.clone(),
+                "d_wmin": d_wmin.clone(),
+            }
 
         # sym path
         group_size = 16
@@ -709,7 +717,8 @@ class DQWrapperLinear(WrapperLinear):
         scale = torch.where(torch.abs(scale) < 1e-30, torch.zeros_like(scale), scale)
         scale, d_scale = double_quant_tensor_sym_rtn(scale, super_bits)
         scale = scale.unsqueeze(-1)
-        return {"scale": scale, "d_scale": d_scale}
+        # Clone to escape inference-mode tensors (see asym branch comment).
+        return {"scale": scale.clone(), "d_scale": d_scale.clone()}
 
     def _qdq_weight(self, value, min_scale, max_scale, scale_v=None, iter=None):
         """Quantizes and dequantizes weights with tuning parameters.
