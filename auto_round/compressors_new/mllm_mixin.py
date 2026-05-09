@@ -13,6 +13,7 @@
 # limitations under the License.
 
 import gc
+
 import torch
 
 from auto_round.logger import logger

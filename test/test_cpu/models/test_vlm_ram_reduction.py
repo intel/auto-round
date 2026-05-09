@@ -29,7 +29,6 @@ import pytest
 import torch
 import torch.nn as nn
 
-
 # ---------------------------------------------------------------------------
 # 1. Tests for per-sample-constant tensor skipping in _get_block_forward_func
 # ---------------------------------------------------------------------------
@@ -53,11 +52,7 @@ class TestBlockForwardTensorSkipping:
         is_tensor = True
         shared_cache_keys = set()
 
-        should_skip = (
-            key != "hidden_states"
-            and is_tensor
-            and key not in shared_cache_keys
-        )
+        should_skip = key != "hidden_states" and is_tensor and key not in shared_cache_keys
         assert not should_skip, "hidden_states must not be skipped"
 
     def test_per_sample_constant_tensor_is_skipped(self):
@@ -66,11 +61,7 @@ class TestBlockForwardTensorSkipping:
         is_tensor = True
         shared_cache_keys = set()
 
-        should_skip = (
-            key != "hidden_states"
-            and is_tensor
-            and key not in shared_cache_keys
-        )
+        should_skip = key != "hidden_states" and is_tensor and key not in shared_cache_keys
         assert should_skip, "attention_mask (per-sample constant) must be skipped"
 
     def test_position_embeddings_skipped_when_not_shared(self):
@@ -79,11 +70,7 @@ class TestBlockForwardTensorSkipping:
         is_tensor = True
         shared_cache_keys = set()  # empty = position_embeddings not shared
 
-        should_skip = (
-            key != "hidden_states"
-            and is_tensor
-            and key not in shared_cache_keys
-        )
+        should_skip = key != "hidden_states" and is_tensor and key not in shared_cache_keys
         assert should_skip, "position_embeddings must be skipped when not in shared_cache_keys"
 
     def test_position_embeddings_kept_when_shared(self):
@@ -92,22 +79,14 @@ class TestBlockForwardTensorSkipping:
         is_tensor = True
         shared_cache_keys = {"position_embeddings"}
 
-        should_skip = (
-            key != "hidden_states"
-            and is_tensor
-            and key not in shared_cache_keys
-        )
+        should_skip = key != "hidden_states" and is_tensor and key not in shared_cache_keys
         assert not should_skip, "position_embeddings must be kept when in shared_cache_keys"
 
     def test_non_tensor_args_not_affected(self):
         """Non-tensor args (str, bool, None) must follow the original path."""
         for key, is_tensor in [("use_cache", False), ("return_dict", False), ("output_attentions", False)]:
             shared_cache_keys = set()
-            should_skip = (
-                key != "hidden_states"
-                and is_tensor
-                and key not in shared_cache_keys
-            )
+            should_skip = key != "hidden_states" and is_tensor and key not in shared_cache_keys
             assert not should_skip, f"{key} (non-tensor) must not be skipped by tensor branch"
 
 
@@ -165,8 +144,8 @@ class TestDiffusionMultiDeviceDispatch:
             def __init__(self):
                 super().__init__()
                 self.transformer = FakeComponent(1000)  # main: 1000 * 2 = 2000 bytes
-                self.text_encoder = FakeComponent(100)   # non-main: 100 * 2 = 200 bytes
-                self.vae = FakeComponent(50)             # non-main: 50 * 2 = 100 bytes
+                self.text_encoder = FakeComponent(100)  # non-main: 100 * 2 = 200 bytes
+                self.vae = FakeComponent(50)  # non-main: 50 * 2 = 100 bytes
                 # total non-main: 300 params = 600 bytes * 1.2 buffer = 720 bytes
 
         pipe = FakePipe()
@@ -219,7 +198,9 @@ class TestMLLMCalibMemoryCleanup:
                 self.inputs = {}
                 self.quant_nontext_module = False
                 self.dataloader = [{"text": "hello"}]
-                self.template_obj = types.SimpleNamespace(processor=types.SimpleNamespace(get_input=lambda **kw: {"input_ids": torch.tensor([[1, 2]])}))
+                self.template_obj = types.SimpleNamespace(
+                    processor=types.SimpleNamespace(get_input=lambda **kw: {"input_ids": torch.tensor([[1, 2]])})
+                )
                 self.seqlen = 128
                 self.seed = 42
 
@@ -277,6 +258,7 @@ class TestLastCacheNameRAMReduction:
 
     def test_should_stop_after_first_block(self):
         """With last_cache_name set to the first block, caching must stop there."""
+
         class FakeCompressor:
             def __init__(self):
                 self.last_cache_name = "model.layers.0"
@@ -304,6 +286,7 @@ class TestLastCacheNameRAMReduction:
 
     def test_without_last_cache_name_all_blocks_cached(self):
         """Without last_cache_name, all blocks must be cached before stopping."""
+
         class FakeCompressor:
             def __init__(self):
                 self.last_cache_name = None
@@ -326,7 +309,7 @@ class TestLastCacheNameRAMReduction:
 
         c = FakeCompressor()
         assert c._should_stop_cache_forward("model.layers.0") is False  # not all seen yet
-        assert c._should_stop_cache_forward("model.layers.1") is True   # all seen → lock and stop
+        assert c._should_stop_cache_forward("model.layers.1") is True  # all seen → lock and stop
 
     def test_last_cache_name_logic_in_quantize(self):
         """Verify that last_cache_name is set to first block when there are multiple blocks."""

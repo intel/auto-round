@@ -1115,7 +1115,9 @@ class CalibCompressor(BaseCompressor):
         if is_quantized_embedding:
             all_inputs = copy.deepcopy(self.inputs)
             clear_memory(self.inputs, device_list=self.compress_context.device_list)
-            all_q_inputs = self.try_cache_inter_data_gpucpu(to_cache_block_names, self.nsamples, layer_names, last_cache_name=_last_cache_name)
+            all_q_inputs = self.try_cache_inter_data_gpucpu(
+                to_cache_block_names, self.nsamples, layer_names, last_cache_name=_last_cache_name
+            )
         # Remove accelerate dispatch hooks before moving parameters.
         # hf_device_map is kept for reference but hooks are no longer needed.
         if hasattr(self.model_context.model, "hf_device_map") and len(self.model_context.model.hf_device_map) > 1:
@@ -1123,6 +1125,7 @@ class CalibCompressor(BaseCompressor):
             # Re-apply special model patches (e.g., Gemma4 position embedding
             # recomputation) that were undone by remove_hook_from_submodules
             from auto_round.special_model_handler import _handle_special_model
+
             self.model_context.model = _handle_special_model(self.model_context.model)
         self.model_context.model = mv_module_from_gpu(self.model_context.model)
         clear_memory(device_list=self.compress_context.device_list)

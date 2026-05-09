@@ -182,8 +182,8 @@ def _patch_gemma4_model(model):
             return patched_layer_forward
 
         # Skip if already patched (idempotent re-application after hook removal)
-        _fwd_func = getattr(layer.forward, '__func__', layer.forward)
-        if getattr(_fwd_func, '_is_gemma4_patch', False):
+        _fwd_func = getattr(layer.forward, "__func__", layer.forward)
+        if getattr(_fwd_func, "_is_gemma4_patch", False):
             continue
 
         layer.forward = _types.MethodType(
