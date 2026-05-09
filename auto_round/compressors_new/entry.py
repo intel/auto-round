@@ -439,6 +439,7 @@ class AutoRoundCompatible:
                 act_data_type=act_data_type,
                 act_dynamic=act_dynamic,
                 disable_opt_rtn=disable_opt_rtn,
+                batch_size=batch_size,
                 **common_config_kwargs,
             )
         else:
@@ -451,6 +452,7 @@ class AutoRoundCompatible:
 
             config = SignRoundConfig(
                 iters=iters,
+                batch_size=batch_size,
                 gradient_accumulate_steps=gradient_accumulate_steps,
                 bits=bits,
                 group_size=group_size,

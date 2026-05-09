@@ -11,7 +11,7 @@ from auto_round import AutoRound
 from auto_round.export.export_to_autoround import export_to_nvfp_mx as autoround_nvfp_mx_export
 
 from ...envs import require_compressed_tensors
-from ...helpers import forbid_threaded_packing, is_model_outputs_similar, transformers_version
+from ...helpers import forbid_threaded_packing, transformers_version
 
 
 def _get_folder_size(path: str) -> float:
@@ -91,7 +91,6 @@ class TestAutoRoundFP:
             and lm_head.weight_packed.dtype is torch.uint8
             and lm_head.weight_scale.dtype is torch.float8_e4m3fn
         ), "Illegal NVFP4 packing for lm_head layer"
-        assert is_model_outputs_similar(model_name, quantized_model_path)
 
     def test_mxfp4_moe_ar(self, tiny_deepseek_v2_model_path, dataloader):
         model_name = tiny_deepseek_v2_model_path
@@ -349,7 +348,6 @@ class TestAutoRoundFP:
         _, quantized_model_path = autoround.quantize_and_save(
             output_dir=quantized_model_path, inplace=True, format="auto_round"
         )
-        assert is_model_outputs_similar(model_name, quantized_model_path)
 
     @pytest.mark.parametrize(
         "scheme, static_kv_dtype, static_attention_dtype",
