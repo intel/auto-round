@@ -17,6 +17,8 @@ from auto_round.utils.weight_handler import (
 
 from ...helpers import evaluate_accuracy, generate_prompt, get_model_path, get_tiny_model, transformers_version
 
+DEVICE_CAPABILITY = torch.cuda.get_device_capability()
+
 
 class TestAutoRound:
 
@@ -59,7 +61,7 @@ class TestAutoRound:
         model_name = get_model_path("Qwen/Qwen3-0.6B-FP8")
         ar = AutoRound(model=model_name, iters=0, disable_opt_rtn=True)
         _, folder = ar.quantize_and_save(output_dir=self.save_dir)
-        with patch("torch.cuda.get_device_capability", return_value=(8, 0)):  # revert mock_fp8_capable_device
+        with patch("torch.cuda.get_device_capability", return_value=DEVICE_CAPABILITY):  # revert DEVICE_CAPABILITY
             evaluate_accuracy(folder, threshold=0.25)
 
     @pytest.mark.skip_ci(reason="Triton issue; time-consuming")
@@ -67,24 +69,23 @@ class TestAutoRound:
         model_name = get_model_path("Qwen/Qwen3-0.6B-FP8")
         ar = AutoRound(model=model_name, iters=1)
         _, folder = ar.quantize_and_save(output_dir=self.save_dir)
-        with patch("torch.cuda.get_device_capability", return_value=(8, 0)):  # revert mock_fp8_capable_device
+        with patch("torch.cuda.get_device_capability", return_value=DEVICE_CAPABILITY):  # revert DEVICE_CAPABILITY
             evaluate_accuracy(folder, threshold=0.25)
 
-    @pytest.mark.skip_ci(reason="Triton issue; time-consuming")
-    def test_medium_model_rtn(self, mock_fp8_capable_device):
+    def test_small_model_opt_rtn(self, mock_fp8_capable_device):
         model_name = get_model_path("Qwen/Qwen3-0.6B-FP8")
         ar = AutoRound(model=model_name, iters=0)
         _, folder = ar.quantize_and_save(output_dir=self.save_dir)
-        with patch("torch.cuda.get_device_capability", return_value=(8, 0)):  # revert mock_fp8_capable_device
+        with patch("torch.cuda.get_device_capability", return_value=DEVICE_CAPABILITY):  # revert DEVICE_CAPABILITY
             evaluate_accuracy(folder, threshold=0.33)
 
     @pytest.mark.skip_ci(reason="Triton issue; time-consuming")
-    def test_medium_model_rtn_with_lm_head(self, mock_fp8_capable_device):
+    def test_small_model_rtn_with_lm_head(self, mock_fp8_capable_device):
         model_name = get_model_path("Qwen/Qwen3-0.6B-FP8")
         layer_config = {"lm_head": {"bits": 4}}
         ar = AutoRound(model=model_name, iters=0, layer_config=layer_config)
         _, folder = ar.quantize_and_save(output_dir=self.save_dir)
-        with patch("torch.cuda.get_device_capability", return_value=(8, 0)):  # revert mock_fp8_capable_device
+        with patch("torch.cuda.get_device_capability", return_value=DEVICE_CAPABILITY):  # revert DEVICE_CAPABILITY
             evaluate_accuracy(folder, threshold=0.33)
 
     def test_fp8_model_gguf_q4(self, mock_fp8_capable_device, tiny_fp8_qwen_model_path):
