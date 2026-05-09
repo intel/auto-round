@@ -178,7 +178,13 @@ def _patch_gemma4_model(model):
                     **kwargs,
                 )
 
+            patched_layer_forward._is_gemma4_patch = True
             return patched_layer_forward
+
+        # Skip if already patched (idempotent re-application after hook removal)
+        _fwd_func = getattr(layer.forward, '__func__', layer.forward)
+        if getattr(_fwd_func, '_is_gemma4_patch', False):
+            continue
 
         layer.forward = _types.MethodType(
             _make_layer_forward(
@@ -205,11 +211,7 @@ def _handle_special_model(model):
 
         model.forward = partial(_qwen3_omni_moe_forward, model)
     if hasattr(model, "config") and model_type == "gemma4":
-        import transformers
-        from packaging import version
-
-        if version.parse(transformers.__version__) < version.parse("5.6"):
-            _patch_gemma4_model(model)
+        _patch_gemma4_model(model)
     return model
 
 

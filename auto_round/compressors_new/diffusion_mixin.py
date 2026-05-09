@@ -143,6 +143,7 @@ class DiffusionMixin:
         The diffusion pipeline is read from ``self.model_context.pipe``.
         """
         from auto_round.compressors.diffusion.dataset import get_diffusion_dataloader
+        from auto_round.utils.device import dispatch_model_by_all_available_devices, parse_available_devices
 
         pipe = self.model_context.pipe
         if pipe is None:
@@ -169,20 +170,16 @@ class DiffusionMixin:
 
         total = nsamples if not hasattr(self.dataloader, "len") else min(nsamples, len(self.dataloader))
 
-        if (
-            hasattr(self.model, "hf_device_map")
-            and len(self.model.hf_device_map) > 1
-            and pipe.device != self.model.device
-            and torch.device(self.model.device).type in ["cuda", "xpu"]
-        ):
-            logger.error(
-                "Diffusion model is activated sequential model offloading, it will crash during moving to GPU/XPU. "
-                "Please use model path for quantization or "
-                "move the pipeline object to GPU/XPU before passing them into API."
-            )
-            exit(-1)
-
-        if pipe.device != self.model.device:
+        # For multi-device, dispatch_model_by_all_available_devices reserves memory
+        # on the primary GPU for non-target components (text encoder, VAE, etc.)
+        device_map = getattr(self.compress_context, "device_map", None)
+        already_dispatched = hasattr(self.model, "hf_device_map") and len(self.model.hf_device_map) > 1
+        if device_map is not None and not already_dispatched:
+            devices = parse_available_devices(device_map)
+            if len(devices) >= 1:
+                pipe = dispatch_model_by_all_available_devices(pipe, device_map)
+                self.model_context.pipe = pipe
+        elif not already_dispatched and pipe.device != self.model.device:
             pipe.to(self.model.device)
         with tqdm(range(1, total + 1), desc="cache block inputs") as pbar:
             for ids, prompts in self.dataloader:

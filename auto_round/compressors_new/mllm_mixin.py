@@ -12,10 +12,11 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import gc
 import torch
 
 from auto_round.logger import logger
-from auto_round.utils import to_device
+from auto_round.utils import clear_memory, to_device
 
 
 class MLLMMixin:
@@ -234,8 +235,13 @@ class MLLMMixin:
                     mc.model(**data_new)
                 else:
                     mc.model(data_new)
+                # Clean up activation tensors between samples to reduce fragmentation.
+                gc.collect()
+                clear_memory(device_list=self.compress_context.device_list)
             except NotImplementedError:
                 pass
+            except torch.OutOfMemoryError:
+                raise  # let try_cache_inter_data_gpucpu OOM handler in calib.py catch and switch to CPU
             except Exception as e:
                 logger.warning(f"Calibration forward pass failed: {e}")
                 continue

@@ -1881,12 +1881,61 @@ def dispatch_model_by_all_available_devices(
             # move the entire pipeline to the (first) device.
             pipe.to(devices[0] if devices else "cuda:0")
             return pipe
-        # Multi-device path: recursively dispatch the main sub-model,
-        # then move all remaining pipeline components to the primary device.
+        # Multi-device path: dispatch the main sub-model across devices,
+        # reserving memory on the primary device for non-target components
+        # (text encoder, VAE, etc.) to avoid OOM.
         main_model = getattr(pipe, main_attr)
-        dispatched = dispatch_model_by_all_available_devices(main_model, _device_map)
-        setattr(pipe, main_attr, dispatched)
         primary_device = devices[0]
+
+        # Calculate memory needed for non-target pipeline components
+        non_main_bytes = 0
+        for attr, component in pipe.components.items():
+            if attr == main_attr:
+                continue
+            if isinstance(component, torch.nn.Module):
+                non_main_bytes += sum(p.numel() * p.element_size() for p in component.parameters())
+        # Add 20% buffer for activations and overhead
+        non_main_reserved = int(non_main_bytes * 1.2) if non_main_bytes > 0 else 0
+
+        from auto_round.utils.common import normalize_no_split_modules
+
+        no_split_modules = normalize_no_split_modules(getattr(main_model, "_no_split_modules", []))
+        max_memory = get_balanced_memory(
+            main_model, max_memory=None, no_split_module_classes=no_split_modules
+        )
+
+        # Reserve space on primary device for non-target components
+        primary_idx = int(primary_device.split(":")[-1]) if ":" in primary_device else 0
+        if primary_idx in max_memory and non_main_reserved > 0:
+            original = max_memory[primary_idx]
+            reserved = max(original - non_main_reserved, 0)
+            max_memory[primary_idx] = reserved
+            logger.info(
+                f"Diffusion dispatch: reserving {non_main_reserved / 1e9:.1f}GB on device {primary_idx} "
+                f"for non-target components ({original / 1e9:.1f}GB -> {reserved / 1e9:.1f}GB)"
+            )
+
+        new_max_memory = {}
+        for device in devices:
+            if ":" in device:
+                d = int(device.split(":")[-1])
+            elif device == "cpu":
+                d = "cpu"
+            elif isinstance(device, str):
+                d = 0
+            else:
+                raise ValueError(f"Unsupported device {device} in device_map: {device_map}")
+            if d in max_memory:
+                new_max_memory[d] = max_memory[d]
+
+        if hasattr(main_model, "tie_weights") and callable(main_model.tie_weights):
+            main_model.tie_weights()
+        main_device_map = infer_auto_device_map(
+            main_model, max_memory=new_max_memory, no_split_module_classes=no_split_modules
+        )
+        dispatched = dispatch_model(main_model, device_map=main_device_map)
+        setattr(pipe, main_attr, dispatched)
+
         for attr, component in pipe.components.items():
             if attr == main_attr:
                 continue
