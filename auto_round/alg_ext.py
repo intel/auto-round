@@ -86,7 +86,7 @@ def _get_loss_ext(
     device: Union[str, torch.device] = "cpu",
 ):
     _, mask = get_abs_top_percent_mask(torch.abs(output_q - current_output))
-    autocast_ctx = nullcontext() if self.amp else autocast(device_type=str(device).split(":")[0], dtype=self.amp_dtype)
+    autocast_ctx = autocast(device_type=str(device).split(":")[0], dtype=self.amp_dtype) if self.amp else nullcontext()
     if self.attention_mask:
         tmp_attention_mask = [self.attention_mask[i] for i in indices]
         tmp_attention_mask = torch.cat(tmp_attention_mask, dim=0).to(device)

@@ -110,9 +110,6 @@ def get_model_path(model_name: str) -> str:
     local_path = f"/models/{model_name.split('/')[-1]}"
     local_path_1 = f"/dataset/{model_name.split('/')[-1]}"
 
-    if "DeepSeek-V2-Lite" in model_name and os.path.exists("/data0/deepseek-ai/DeepSeek-V2-Lite"):
-        return "/data0/deepseek-ai/DeepSeek-V2-Lite"
-
     if os.path.exists(ut_path):
         return ut_path
     elif os.path.exists(local_path):
@@ -300,31 +297,27 @@ def get_tiny_model(
         else:
             trust_remote_code = kwargs.get("trust_remote_code", True)
             config = transformers.AutoConfig.from_pretrained(model_name_or_path, trust_remote_code=trust_remote_code)
-            use_config_only = not (not trust_remote_code and getattr(config, "auto_map", None))
-            if use_config_only:
-                # Special cases, for transformers == 5.4.0
-                if config.model_type == "qwen3_omni_moe":
-                    config.initializer_range = 0.02  # Default initializer range for weight initialization
-                _reduce_config_layers(config, num_layers, num_experts)
+            # Special cases, for transformers == 5.4.0
+            if config.model_type == "qwen3_omni_moe":
+                config.initializer_range = 0.02  # Default initializer range for weight initialization
+            _reduce_config_layers(config, num_layers, num_experts)
 
-                # Pick the right model class
-                base_lib = transformers
-                architectures = getattr(config, "architectures", [None])[0]
-                if (
-                    is_mllm
-                    and architectures.endswith("Model")
-                    and hasattr(base_lib, n := architectures.replace("Model", "ForConditionalGeneration"))
-                ):
-                    model_cls = getattr(base_lib, n)
-                elif hasattr(base_lib, architectures):
-                    model_cls = getattr(base_lib, architectures)
-                else:
-                    model_cls = (
-                        transformers.AutoModelForCausalLM
-                    )  # default to causal LM if we can't find a better match
-                model = model_cls._from_config(config)
-                model = model.eval()
-                return model
+            # Pick the right model class
+            base_lib = transformers
+            architectures = getattr(config, "architectures", [None])[0]
+            if (
+                is_mllm
+                and architectures.endswith("Model")
+                and hasattr(base_lib, n := architectures.replace("Model", "ForConditionalGeneration"))
+            ):
+                model_cls = getattr(base_lib, n)
+            elif hasattr(base_lib, architectures):
+                model_cls = getattr(base_lib, architectures)
+            else:
+                model_cls = transformers.AutoModelForCausalLM  # default to causal LM if we can't find a better match
+            model = model_cls._from_config(config)
+            model = model.eval()
+            return model
 
     # ---- original path: load pretrained weights then slice ----
     def slice_layers(module):
@@ -537,76 +530,6 @@ def get_output(model_name_or_path):
         model, processor, tokenizer, image_processor = mllm_load_model(model_name_or_path)
     outputs = model(fixed_input)[0]
     return outputs.detach().cpu()
-
-
-@torch.inference_mode()
-def is_model_outputs_similar(model_path_1, model_path_2, metric="cosine_similarity", threshold=0.98, k=5, verbose=True):
-    """
-    Compare outputs from two models using specified metric and return pass/fail.
-
-    Args:
-        model_path_1: Path to first model
-        model_path_2: Path to second model
-        metric: Metric to use - "mse", "cosine_similarity"/"cos_sim", or "topk"
-        threshold: Threshold value for pass/fail
-        k: K value for top-k metric (only used when metric="topk")
-        verbose: Whether to print detailed results
-
-    Returns:
-        bool: True if metric passes threshold, False otherwise
-    """
-    if verbose:
-        print(f"\n{'='*70}")
-        print("Comparing Model Outputs")
-        print(f"{'='*70}")
-        print(f"Model 1: {model_path_1}")
-        print(f"Model 2: {model_path_2}")
-        print(f"Metric:  {metric} | Threshold: {threshold}" + (f" | K: {k}" if "top" in metric.lower() else ""))
-        print(f"{'='*70}\n")
-
-    output_1 = get_output(model_path_1)
-    output_2 = get_output(model_path_2)
-    metric = metric.lower().replace("-", "_")
-
-    # Calculate metric and check threshold
-    if metric == "mse":
-        value = torch.mean((output_1.float() - output_2.float()) ** 2).item()
-        passed = value <= threshold
-        if verbose:
-            print(f"MSE: {value:.6f} | Threshold: <= {threshold} | {'✓ PASS' if passed else '✗ FAIL'}\n")
-
-    elif metric in ["cosine_similarity", "cos_sim", "cosine"]:
-        out1 = output_1.float().flatten()
-        out2 = output_2.float().flatten()
-        value = torch.nn.functional.cosine_similarity(out1.unsqueeze(0), out2.unsqueeze(0)).item()
-        passed = value >= threshold
-        if verbose:
-            print(f"Cosine Similarity: {value:.6f} | Threshold: >= {threshold} | {'✓ PASS' if passed else '✗ FAIL'}\n")
-
-    elif metric in ["topk", "top_k"]:
-        _, topk_1 = torch.topk(output_1, k=min(k, output_1.size(-1)), dim=-1)
-        _, topk_2 = torch.topk(output_2, k=min(k, output_2.size(-1)), dim=-1)
-
-        total_agreement = 0
-        total_positions = topk_1.numel() // topk_1.size(-1)
-
-        for i in range(topk_1.size(0)):
-            for j in range(topk_1.size(1)):
-                set1 = set(topk_1[i, j].tolist())
-                set2 = set(topk_2[i, j].tolist())
-                total_agreement += len(set1 & set2) / k
-
-        value = total_agreement / total_positions
-        passed = value >= threshold
-        if verbose:
-            print(
-                f"Top-{k} Agreement: {value:.4%} | Threshold: >= {threshold:.4%} | {'✓ PASS' if passed else '✗ FAIL'}\n"
-            )
-
-    else:
-        raise ValueError(f"Unknown metric: {metric}. Choose from: 'mse', 'cosine_similarity', 'topk'")
-
-    return passed
 
 
 def is_cuda_support_fp8(major=9, minor=0):

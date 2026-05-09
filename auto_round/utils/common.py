@@ -361,28 +361,28 @@ def _patch_mimo_attention_forward(model) -> None:
     """Patch MiMo remote-code attention helpers for newer transformers call sites."""
     # Check if this is a MiMo model by class name (remote code models may not have model_type)
     model_class_name = model.__class__.__name__
-    logger.info(f"_patch_mimo_attention_forward called for {model_class_name}")
+    logger.debug(f"_patch_mimo_attention_forward called for {model_class_name}")
 
     if "MiMo" not in model_class_name and "mimo" not in model_class_name.lower():
-        logger.info(f"Skipping patch: not a MiMo model (class name: {model_class_name})")
+        logger.debug(f"Skipping patch: not a MiMo model (class name: {model_class_name})")
         return
 
     try:
         module = importlib.import_module(model.__class__.__module__)
-        logger.info(f"Imported module: {model.__class__.__module__}")
+        logger.debug(f"Imported module: {model.__class__.__module__}")
     except ImportError as e:
         logger.warning(f"Could not import module {model.__class__.__module__}: {e}")
         return
 
     eager_attention_forward = getattr(module, "eager_attention_forward", None)
-    logger.info(f"eager_attention_forward found: {eager_attention_forward is not None}")
+    logger.debug(f"eager_attention_forward found: {eager_attention_forward is not None}")
 
     if eager_attention_forward is None:
-        logger.info("Skipping patch: eager_attention_forward not found in module")
+        logger.debug("Skipping patch: eager_attention_forward not found in module")
         return
 
     if getattr(eager_attention_forward, "_auto_round_mimo_patch", False):
-        logger.info("Skipping patch: already patched")
+        logger.debug("Skipping patch: already patched")
         return
 
     @wraps(eager_attention_forward)
@@ -402,7 +402,7 @@ def _patch_mimo_attention_forward(model) -> None:
 
     _patched_eager_attention_forward._auto_round_mimo_patch = True
     module.eager_attention_forward = _patched_eager_attention_forward
-    logger.info(f"Successfully patched eager_attention_forward in {model.__class__.__module__}")
+    logger.debug(f"Successfully patched eager_attention_forward in {model.__class__.__module__}")
 
 
 def _patch_qwen25_omni_talker(model) -> None:
@@ -1055,3 +1055,68 @@ def infer_bits_by_data_type(data_type: str):
             if str.isdigit(data_type[len(supported_dtype)]):
                 return int(data_type[len(supported_dtype)])
     return None
+
+
+def get_checkpoint_conversion_mapping(model):
+    """Get the checkpoint conversion mapping for a given model, if it exists."""
+    checkpoint_conversion_mapping = {}
+
+    # transformers <= 5.3.0 use _checkpoint_conversion_mapping
+    checkpoint_conversion_mapping.update(getattr(model, "_checkpoint_conversion_mapping", {}))
+
+    # transformers > 5.3.0 use get_checkpoint_conversion_mapping
+    if hasattr(transformers, "conversion_mapping") and (
+        hasattr(model, "config") and hasattr(model.config, "model_type")
+    ):
+        from transformers.conversion_mapping import (
+            get_checkpoint_conversion_mapping as transformers_get_checkpoint_conversion_mapping,
+        )
+
+        conversion_mappings = transformers_get_checkpoint_conversion_mapping(model.config.model_type)
+        if conversion_mappings is not None:
+            for conversion_mapping in conversion_mappings:
+                for source_pattern in conversion_mapping.source_patterns:
+                    checkpoint_conversion_mapping[source_pattern] = conversion_mapping.target_patterns
+    return checkpoint_conversion_mapping
+
+
+def get_reverse_checkpoint_conversion_mapping(model):
+    """Get the reverse checkpoint conversion mapping for a given model, if it exists."""
+    reverse_checkpoint_conversion_mapping = {
+        v: k for k, v in getattr(model, "_checkpoint_conversion_mapping", {}).items()
+    }
+
+    if hasattr(model, "_weight_conversions"):
+        weight_conversions = model._weight_conversions
+        for weight_conversion in weight_conversions:
+            reverse_conversion_mapping = weight_conversion.reverse_transform()
+            for source_pattern in reverse_conversion_mapping.source_patterns:
+                reverse_checkpoint_conversion_mapping[source_pattern] = reverse_conversion_mapping.target_patterns
+
+    return reverse_checkpoint_conversion_mapping
+
+
+def revert_checkpoint_conversion_mapping(name: str, key_mapping: dict[str, str]) -> str:
+    for source_pattern, target_patterns in key_mapping.items():
+        if isinstance(target_patterns, str):
+            target_patterns = [target_patterns]
+        for target_pattern in target_patterns:
+            source_pattern = source_pattern.lstrip("^")  # strip off un-needed chars and patterns
+            source_pattern = re.sub(r"\(.*\)", "", source_pattern)
+            name, n_replace = re.subn(source_pattern, target_pattern, name)
+            # Early exit of the loop
+            if n_replace > 0:
+                return name
+    return name
+
+
+def apply_checkpoint_conversion_mapping(name: str, key_mapping: dict[str, str]) -> str:
+    for source_pattern, target_patterns in key_mapping.items():
+        if isinstance(target_patterns, str):
+            target_patterns = [target_patterns]
+        for target_pattern in target_patterns:
+            name, n_replace = re.subn(source_pattern, target_pattern, name)
+            # Early exit of the loop
+            if n_replace > 0:
+                return name
+    return name

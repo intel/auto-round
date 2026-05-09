@@ -17,6 +17,7 @@ from typing import Union
 
 import torch
 import torch.nn as nn
+from packaging.version import Version
 from tqdm import tqdm
 from transformers.pytorch_utils import Conv1D
 
@@ -35,10 +36,12 @@ from auto_round.schemes import QuantizationScheme
 from auto_round.special_model_handler import update_module
 from auto_round.utils import (
     SUPPORTED_LAYER_TYPES,
+    apply_checkpoint_conversion_mapping,
     check_start_with_block_name,
     check_to_quantized,
     find_matching_blocks,
     get_block_names,
+    get_checkpoint_conversion_mapping,
     get_module,
     is_hpex_available,
     is_transformers_version_greater_or_equal_5,
@@ -270,12 +273,15 @@ def get_layer_config(model, quantization_config):
     )
 
     # Determine the quantization block list
+    checkpoint_conversion_mapping = get_checkpoint_conversion_mapping(model)
     quant_block_list = getattr(quantization_config, "quant_block_list", None)
     if quant_block_list is not None:
         # Handle nested list format: [[block1, block2, ...], ...] -> [prefix1, ...]
         if quant_block_list and isinstance(quant_block_list[0], (list, tuple)):
             for i in range(len(quant_block_list)):
-                quant_block_list[i] = os.path.commonprefix(quant_block_list[i]).rstrip(".")
+                quant_block_list[i] = apply_checkpoint_conversion_mapping(
+                    os.path.commonprefix(quant_block_list[i]).rstrip("."), checkpoint_conversion_mapping
+                )
     elif quant_block_list is None:
         to_quant_block_names = getattr(quantization_config, "block_name_to_quantize", None)  # Prioritize this parameter
         if to_quant_block_names is None:
@@ -292,6 +298,10 @@ def get_layer_config(model, quantization_config):
             # Speed up the matching
             for i in range(len(quant_block_list)):
                 quant_block_list[i] = os.path.commonprefix(quant_block_list[i]).rstrip(".")
+        for i in range(len(quant_block_list)):
+            quant_block_list[i] = apply_checkpoint_conversion_mapping(
+                quant_block_list[i], checkpoint_conversion_mapping
+            )
 
     # Get layer names that will be quantized
     layer_names = []
@@ -559,7 +569,14 @@ def infer_target_device(device_map: Union[dict, int, str, None] = None) -> str:
 
 def convert_gptq_v1_to_v2_format(model: nn.Module):
     """Convert gptq v1 to v2 format to ensure compatible with gptqmodel:exllamav2 backend."""
-    from gptqmodel.nn_modules.qlinear.exllamav2 import ExllamaV2QuantLinear  # pylint: disable=E0401
+    import gptqmodel  # pylint: disable=E0401
+
+    if Version(gptqmodel.__version__) >= Version("7.0.0"):
+        from gptqmodel.nn_modules.qlinear.exllamav2 import ExllamaV2Linear  # pylint: disable=E0401
+
+        ExllamaV2QuantLinear = ExllamaV2Linear  # pylint: disable=E0401
+    else:
+        from gptqmodel.nn_modules.qlinear.exllamav2 import ExllamaV2QuantLinear  # pylint: disable=E0401
 
     for n, m in model.named_modules():
         if isinstance(m, ExllamaV2QuantLinear):
