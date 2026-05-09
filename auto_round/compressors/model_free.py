@@ -1517,16 +1517,22 @@ class ModelFreeCompressor(_ModelFreeCompressorCore):
         self.formats = None
         self.quantized = False
         self._fallback_compressor = None
-        self._fallback_init_kwargs = {
-            **fallback_kwargs,
-            "model": model_name_or_path,
-            "tokenizer": tokenizer,
-            "scheme": copy.deepcopy(scheme),
-            "layer_config": copy.deepcopy(layer_config),
-            "ignore_layers": ignore_layers,
-            "device_map": device_map,
-            "quant_lm_head": quant_lm_head,
-        }
+        # Start from the remaining user kwargs and explicitly set/override
+        # known compressor init parameters for clarity.
+        fallback_init = dict(fallback_kwargs)
+        fallback_init.update(
+            model=model_name_or_path,
+            iters=0,
+            disable_opt_rtn=True,
+            tokenizer=tokenizer,
+            scheme=copy.deepcopy(scheme),
+            layer_config=copy.deepcopy(layer_config),
+            ignore_layers=ignore_layers,
+            device_map=device_map,
+            quant_lm_head=quant_lm_head,
+        )
+
+        self._fallback_init_kwargs = fallback_init
         if quant_nontext_module:
             self._fallback_init_kwargs["quant_nontext_module"] = quant_nontext_module
         # remaining kwargs intentionally consumed/ignored
