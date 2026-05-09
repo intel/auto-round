@@ -797,6 +797,13 @@ class CalibCompressor(BaseCompressor):
         if not self._post_init_done:
             self.post_init()
 
+        # When called from LLM-Compressor, `wrapped_model` is a single decoder layer
+        # (not the full VL model), so it must not be treated as an MLLM regardless of
+        # whether the original model had multimodal assets.  Force is_mllm=False for
+        # the duration of this call to stay on the standard LLM quantize_block path.
+        orig_is_mllm = self.model_context.is_mllm
+        self.model_context.is_mllm = False
+
         self.normalize_decoding_layer_inputs_(inputs)
         block_inputs = self.inputs[self.quant_block_list[0][0]]
         input_ids, input_others = self._preprocess_block_inputs(block_inputs, "hidden_states")
@@ -881,6 +888,7 @@ class CalibCompressor(BaseCompressor):
             accelerate.hooks.remove_hook_from_submodules(block)
         mv_module_from_gpu(block)
 
+        self.model_context.is_mllm = orig_is_mllm
         return q_outputs, reference_output
 
     def _quantize_blocks(
