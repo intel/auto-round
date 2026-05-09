@@ -25,7 +25,6 @@ class SignRoundConfig(QuantizationConfig):
         lr (float): The learning rate (default is 0.005).
         minmax_lr (float): The learning rate for min-max tuning (default is None).
         lr_scheduler: The learning rate scheduler to be used.
-        batch_size (int): Batch size for training (default is 8).
         enable_minmax_tuning (bool): Whether to enable min-max tuning (default is True).
         enable_norm_bias_tuning (bool): Whether to enable fast norm/layer_bias tuning
     """
@@ -39,7 +38,6 @@ class SignRoundConfig(QuantizationConfig):
         lr: float = None,
         minmax_lr: float = None,
         lr_scheduler=None,
-        batch_size: int = 8,
         momentum: float = 0.0,
         nblocks: int = 1,
         enable_minmax_tuning: bool = True,
@@ -54,7 +52,7 @@ class SignRoundConfig(QuantizationConfig):
         **kwargs,
     ):
         super().__init__(**kwargs)
-        self.batch_size, self.gradient_accumulate_steps = batch_size, gradient_accumulate_steps
+        self.gradient_accumulate_steps = gradient_accumulate_steps
         self.iters = iters
         if self.iters < 0:
             logger.warning("`iters` must be non-negative, reset it to 200")

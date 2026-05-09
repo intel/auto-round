@@ -241,6 +241,9 @@ class AutoRound(object):
         if model_type != "diffusion":
             for _k in ("guidance_scale", "num_inference_steps", "generator_seed"):
                 kwargs.pop(_k, None)
+        if model_type != "mllm":
+            for _k in ("processor", "image_processor", "template", "extra_data_dir", "quant_nontext_module"):
+                kwargs.pop(_k, None)
         kwargs.pop("disable_opt_rtn", None)  # consumed by RTN routing above, not a compressor param
 
         if isinstance(quant_config, SignRoundConfig):
@@ -439,7 +442,6 @@ class AutoRoundCompatible:
                 act_data_type=act_data_type,
                 act_dynamic=act_dynamic,
                 disable_opt_rtn=disable_opt_rtn,
-                batch_size=batch_size,
                 **common_config_kwargs,
             )
         else:
@@ -452,7 +454,6 @@ class AutoRoundCompatible:
 
             config = SignRoundConfig(
                 iters=iters,
-                batch_size=batch_size,
                 gradient_accumulate_steps=gradient_accumulate_steps,
                 bits=bits,
                 group_size=group_size,
