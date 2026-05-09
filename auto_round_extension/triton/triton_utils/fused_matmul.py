@@ -23,6 +23,7 @@ Expected layouts (matching AutoGPTQ / GPTQ-Triton):
   input   : (M, K)                fp16/bf16
   output  : (M, N)                same dtype as input
 """
+
 import os as _os
 
 import torch
@@ -43,37 +44,37 @@ def _make_configs():
     # iter). They will be pruned at runtime when group_size < 128.
     tile_shapes = [
         # decode / small-M
-        (16, 64,  64),
+        (16, 64, 64),
         (16, 128, 64),
         (16, 128, 128),
         (16, 256, 32),
         (16, 256, 64),
-        (32, 64,  64),
+        (32, 64, 64),
         (32, 128, 64),
         (32, 128, 128),
         (32, 256, 32),
         (32, 256, 64),
         # mid-M
-        (64, 64,  64),
-        (64, 64,  128),
+        (64, 64, 64),
+        (64, 64, 128),
         (64, 128, 64),
         (64, 128, 128),
         (64, 256, 32),
         (64, 256, 64),
         # large-M / compute-bound (Marlin's sweet spot)
-        (128, 64,  64),
-        (128, 64,  128),
+        (128, 64, 64),
+        (128, 64, 128),
         (128, 128, 32),
         (128, 128, 64),
         (128, 128, 128),
         (128, 256, 32),
         (128, 256, 64),
-        (256, 64,  64),
-        (256, 64,  128),
+        (256, 64, 64),
+        (256, 64, 128),
         (256, 128, 32),
         (256, 128, 64),
     ]
-    for (bm, bn, bk) in tile_shapes:
+    for bm, bn, bk in tile_shapes:
         tile = bm * bn
         if tile >= 128 * 128:
             stage_warp = [(3, 8), (4, 8), (3, 4)]
@@ -84,9 +85,9 @@ def _make_configs():
         for ns, nw in stage_warp:
             cfgs.append(
                 triton.Config(
-                    {"BLOCK_SIZE_M": bm, "BLOCK_SIZE_N": bn,
-                     "BLOCK_SIZE_K": bk, "GROUP_SIZE_M": 8},
-                    num_stages=ns, num_warps=nw,
+                    {"BLOCK_SIZE_M": bm, "BLOCK_SIZE_N": bn, "BLOCK_SIZE_K": bk, "GROUP_SIZE_M": 8},
+                    num_stages=ns,
+                    num_warps=nw,
                 )
             )
     return cfgs
@@ -97,35 +98,41 @@ def _prune_configs_for_group_size(configs, named_args, **kwargs):
     gs = kwargs.get("group_size") or named_args.get("group_size")
     if gs is None:
         return configs
-    return [
-        c for c in configs
-        if (c.kwargs["BLOCK_SIZE_K"] <= gs and gs % c.kwargs["BLOCK_SIZE_K"] == 0)
-    ]
+    return [c for c in configs if (c.kwargs["BLOCK_SIZE_K"] <= gs and gs % c.kwargs["BLOCK_SIZE_K"] == 0)]
 
 
 @triton.autotune(
     configs=_make_configs(),
     key=["M", "N", "K", "bits", "SYM", "SPLIT_K"],
-    prune_configs_by={"early_config_prune": _prune_configs_for_group_size,
-                      "perf_model": None, "top_k": None},
+    prune_configs_by={"early_config_prune": _prune_configs_for_group_size, "perf_model": None, "top_k": None},
 )
 @triton.jit
 def _fused_matmul_kernel(
-    a_ptr, b_ptr, c_ptr,
-    scratch_ptr,                # (SPLIT_K, M, N) fp32, used when SPLIT_K > 1
-    scales_ptr, zeros_ptr,
-    M, N, K,
-    stride_am, stride_ak,
-    stride_bk, stride_bn,
-    stride_cm, stride_cn,
-    stride_sg, stride_sn,
-    stride_zg, stride_zn,
+    a_ptr,
+    b_ptr,
+    c_ptr,
+    scratch_ptr,  # (SPLIT_K, M, N) fp32, used when SPLIT_K > 1
+    scales_ptr,
+    zeros_ptr,
+    M,
+    N,
+    K,
+    stride_am,
+    stride_ak,
+    stride_bk,
+    stride_bn,
+    stride_cm,
+    stride_cn,
+    stride_sg,
+    stride_sn,
+    stride_zg,
+    stride_zn,
     bits: tl.constexpr,
     maxq: tl.constexpr,
     group_size: tl.constexpr,
     SYM: tl.constexpr,
     SYM_ZP: tl.constexpr,
-    SPLIT_K: tl.constexpr,      # 1, 2, 4, 8: K-dim parallelism for small M
+    SPLIT_K: tl.constexpr,  # 1, 2, 4, 8: K-dim parallelism for small M
     BLOCK_SIZE_M: tl.constexpr,
     BLOCK_SIZE_N: tl.constexpr,
     BLOCK_SIZE_K: tl.constexpr,
@@ -154,7 +161,7 @@ def _fused_matmul_kernel(
 
     # ---- swizzled program ids (grouped along M for L2 reuse) -----------
     pid = tl.program_id(0)
-    pid_k = tl.program_id(1)               # 0 .. SPLIT_K-1
+    pid_k = tl.program_id(1)  # 0 .. SPLIT_K-1
     num_pid_m = tl.cdiv(M, BLOCK_SIZE_M)
     num_pid_n = tl.cdiv(N, BLOCK_SIZE_N)
     num_pid_in_group = GROUP_SIZE_M * num_pid_n
@@ -176,15 +183,11 @@ def _fused_matmul_kernel(
     k_start = g_start * group_size
 
     # advance A and B pointers to the correct K-offset for this split
-    a_ptrs = a_ptr + (offs_am[:, None] * stride_am
-                      + (k_start + offs_k[None, :]) * stride_ak)
+    a_ptrs = a_ptr + (offs_am[:, None] * stride_am + (k_start + offs_k[None, :]) * stride_ak)
     a_mask = offs_am[:, None] < M
 
-    b_ptrs = b_ptr + (
-        ((k_start + offs_k[:, None]) // pack) * stride_bk
-        + offs_bn[None, :] * stride_bn
-    )
-    shifter = (offs_k % pack) * bits          # (BK,)
+    b_ptrs = b_ptr + (((k_start + offs_k[:, None]) // pack) * stride_bk + offs_bn[None, :] * stride_bn)
+    shifter = (offs_k % pack) * bits  # (BK,)
 
     # Alignment hints help Triton emit 128-bit vector loads on bf16 inputs.
     # Safe because BLOCK_SIZE_M/N/K are powers of 2 and >= 16, and the
@@ -214,8 +217,7 @@ def _fused_matmul_kernel(
             zp_scaled = SYM_ZP_F * scales
         else:
             qz = tl.load(
-                zeros_ptr + g * stride_zg
-                + (offs_bn // pack) * stride_zn,
+                zeros_ptr + g * stride_zg + (offs_bn // pack) * stride_zn,
                 eviction_policy="evict_last",
             )
             zeros_int = (qz >> zeros_shifter) & maxq
@@ -224,8 +226,7 @@ def _fused_matmul_kernel(
         for ki in tl.static_range(K_PER_GROUP):
             # ``evict_first`` for the streamed input/weight loads — they are
             # consumed once per tile and shouldn't pollute L2.
-            a = tl.load(a_ptrs, mask=a_mask, other=0.0,
-                        eviction_policy="evict_first")
+            a = tl.load(a_ptrs, mask=a_mask, other=0.0, eviction_policy="evict_first")
             b_packed = tl.load(b_ptrs, eviction_policy="evict_first")
             b_int = (b_packed >> shifter[:, None]) & maxq
             b_fp = b_int.to(fp_dtype) * scales[None, :] - zp_scaled[None, :]
@@ -249,9 +250,7 @@ def _fused_matmul_kernel(
         tl.store(c_ptrs, c, mask=c_mask)
     else:
         # scratch layout (SPLIT_K, M, N), contiguous along N
-        scr_off = (pid_k * M * N
-                   + offs_cm[:, None] * N
-                   + offs_cn[None, :])
+        scr_off = pid_k * M * N + offs_cm[:, None] * N + offs_cn[None, :]
         s_mask = (offs_cm[:, None] < M) & (offs_cn[None, :] < N)
         tl.store(scratch_ptr + scr_off, accumulator, mask=s_mask)
 
@@ -282,10 +281,13 @@ def _make_gemv_configs():
         for bk in (32, 64, 128):
             for nw in (4, 8):
                 for ns in (2, 3, 4):
-                    cfgs.append(triton.Config(
-                        {"BLOCK_N": bn, "BLOCK_K": bk},
-                        num_stages=ns, num_warps=nw,
-                    ))
+                    cfgs.append(
+                        triton.Config(
+                            {"BLOCK_N": bn, "BLOCK_K": bk},
+                            num_stages=ns,
+                            num_warps=nw,
+                        )
+                    )
     return cfgs
 
 
@@ -293,37 +295,42 @@ def _prune_gemv_configs(configs, named_args, **kwargs):
     gs = kwargs.get("group_size") or named_args.get("group_size")
     if gs is None:
         return configs
-    return [c for c in configs
-            if c.kwargs["BLOCK_K"] <= gs and gs % c.kwargs["BLOCK_K"] == 0]
+    return [c for c in configs if c.kwargs["BLOCK_K"] <= gs and gs % c.kwargs["BLOCK_K"] == 0]
 
 
 @triton.autotune(
     configs=_make_gemv_configs(),
     key=["M", "N", "K", "bits", "SYM", "SPLIT_K", "BLOCK_M"],
-    prune_configs_by={"early_config_prune": _prune_gemv_configs,
-                      "perf_model": None, "top_k": None},
+    prune_configs_by={"early_config_prune": _prune_gemv_configs, "perf_model": None, "top_k": None},
 )
 @triton.jit
 def _fused_gemv_kernel(
-    x_ptr,         # (M, K) fp_dtype
-    qw_ptr,        # (K/pack, N) i32
-    scales_ptr,    # (G, N) fp_dtype
-    qz_ptr,        # (G, N/pack) i32  (unused when SYM)
-    out_ptr,       # (M, N) fp_dtype  (only used when SPLIT_K == 1)
-    scratch_ptr,   # (SPLIT_K, M, N) fp32 (only used when SPLIT_K > 1)
-    M, N, K,
-    stride_xm, stride_xk,
-    stride_qk, stride_qn,
-    stride_sg, stride_sn,
-    stride_zg, stride_zn,
-    stride_om, stride_on,
+    x_ptr,  # (M, K) fp_dtype
+    qw_ptr,  # (K/pack, N) i32
+    scales_ptr,  # (G, N) fp_dtype
+    qz_ptr,  # (G, N/pack) i32  (unused when SYM)
+    out_ptr,  # (M, N) fp_dtype  (only used when SPLIT_K == 1)
+    scratch_ptr,  # (SPLIT_K, M, N) fp32 (only used when SPLIT_K > 1)
+    M,
+    N,
+    K,
+    stride_xm,
+    stride_xk,
+    stride_qk,
+    stride_qn,
+    stride_sg,
+    stride_sn,
+    stride_zg,
+    stride_zn,
+    stride_om,
+    stride_on,
     bits: tl.constexpr,
     maxq: tl.constexpr,
     group_size: tl.constexpr,
     SYM: tl.constexpr,
     SYM_ZP: tl.constexpr,
     SPLIT_K: tl.constexpr,
-    BLOCK_M: tl.constexpr,         # 1, 2, 4, or 8 (no tl.dot path)
+    BLOCK_M: tl.constexpr,  # 1, 2, 4, or 8 (no tl.dot path)
     BLOCK_N: tl.constexpr,
     BLOCK_K: tl.constexpr,
 ):
@@ -362,16 +369,13 @@ def _fused_gemv_kernel(
         zeros_shifter = (offs_n % pack) * bits
 
     for g in range(g_start, g_end):
-        scales = tl.load(scales_ptr + g * stride_sg + offs_n * stride_sn,
-                         mask=n_mask, other=0.0)
+        scales = tl.load(scales_ptr + g * stride_sg + offs_n * stride_sn, mask=n_mask, other=0.0)
         if SYM:
             zp_scaled = SYM_ZP_F * scales
         else:
-            qz = tl.load(qz_ptr + g * stride_zg + (offs_n // pack) * stride_zn,
-                         mask=n_mask, other=0)
+            qz = tl.load(qz_ptr + g * stride_zg + (offs_n // pack) * stride_zn, mask=n_mask, other=0)
             zeros_int = (qz >> zeros_shifter) & maxq
             zp_scaled = zeros_int.to(fp_dtype) * scales
-
 
         for ki in tl.static_range(K_PER_GROUP):
             k_offs = g * group_size + ki * BLOCK_K + tl.arange(0, BLOCK_K)
@@ -380,14 +384,16 @@ def _fused_gemv_kernel(
             # x: (BM, BK) fp_dtype
             x = tl.load(
                 x_ptr + offs_m[:, None] * stride_xm + k_offs[None, :] * stride_xk,
-                mask=m_mask[:, None] & k_mask[None, :], other=0.0,
+                mask=m_mask[:, None] & k_mask[None, :],
+                other=0.0,
             )
 
             qrow = k_offs // pack
             shifter = (k_offs % pack) * bits
             qw = tl.load(
                 qw_ptr + qrow[:, None] * stride_qk + offs_n[None, :] * stride_qn,
-                mask=k_mask[:, None] & n_mask[None, :], other=0,
+                mask=k_mask[:, None] & n_mask[None, :],
+                other=0,
             )
             b_int = (qw >> shifter[:, None]) & maxq
 
@@ -401,9 +407,9 @@ def _fused_gemv_kernel(
                 # Specialised 2D path: avoids the 3D broadcast intermediate
                 # which Triton struggles to fuse fully when M=1.
                 # acc[0, n] += sum_k x[0, k] * b_fp[k, n]
-                x_row = tl.reshape(x, (BLOCK_K,))             # (BK,)
+                x_row = tl.reshape(x, (BLOCK_K,))  # (BK,)
                 prod = (x_row[:, None] * b_fp).to(tl.float32)  # (BK, BN)
-                acc_row = tl.sum(prod, axis=0)                # (BN,)
+                acc_row = tl.sum(prod, axis=0)  # (BN,)
                 acc += tl.reshape(acc_row, (1, BLOCK_N))
             else:
                 # M ∈ {2, 4, 8}: 3D broadcast then reduce K. Triton lowers
@@ -414,20 +420,15 @@ def _fused_gemv_kernel(
 
     # --- Output ---------------------------------------------------------
     if SPLIT_K == 1:
-        out_off = (offs_m[:, None] * stride_om + offs_n[None, :] * stride_on)
-        tl.store(out_ptr + out_off, acc.to(fp_dtype),
-                 mask=m_mask[:, None] & n_mask[None, :])
+        out_off = offs_m[:, None] * stride_om + offs_n[None, :] * stride_on
+        tl.store(out_ptr + out_off, acc.to(fp_dtype), mask=m_mask[:, None] & n_mask[None, :])
     else:
         # scratch: (SPLIT_K, M, N) fp32, contiguous M-major within split
-        scr_off = (pid_k * M * N
-                   + offs_m[:, None] * N
-                   + offs_n[None, :])
-        tl.store(scratch_ptr + scr_off, acc,
-                 mask=m_mask[:, None] & n_mask[None, :])
+        scr_off = pid_k * M * N + offs_m[:, None] * N + offs_n[None, :]
+        tl.store(scratch_ptr + scr_off, acc, mask=m_mask[:, None] & n_mask[None, :])
 
 
-def _pick_split_k(K: int, N: int, M: int = 1,
-                  block_n_guess: int = 128) -> int:
+def _pick_split_k(K: int, N: int, M: int = 1, block_n_guess: int = 128) -> int:
     """Choose SPLIT_K conservatively.
 
     Aggressive split-K hurts when:
@@ -473,10 +474,10 @@ SMALL_M_THRESHOLD = 16  # below this, use GEMV-style; >=16 use tl.dot GEMM
 
 
 def fused_quant_gemv(
-    input: torch.Tensor,           # (..., K)
-    qweight: torch.Tensor,         # (K/pack, N)
-    scales: torch.Tensor,          # (G, N)
-    qzeros: torch.Tensor = None,   # (G, N/pack) or None for sym
+    input: torch.Tensor,  # (..., K)
+    qweight: torch.Tensor,  # (K/pack, N)
+    scales: torch.Tensor,  # (G, N)
+    qzeros: torch.Tensor = None,  # (G, N/pack) or None for sym
     bits: int = 4,
     group_size: int = 128,
     sym: bool = False,
@@ -506,9 +507,15 @@ def fused_quant_gemv(
     if M >= SMALL_M_THRESHOLD:
         # Out of the GEMV regime; defer to tl.dot GEMM.
         return fused_quant_matmul(
-            input, qweight, scales, qzeros=qzeros,
-            bits=bits, group_size=group_size,
-            sym=sym, sym_zp=sym_zp, maxq=maxq,
+            input,
+            qweight,
+            scales,
+            qzeros=qzeros,
+            bits=bits,
+            group_size=group_size,
+            sym=sym,
+            sym_zp=sym_zp,
+            maxq=maxq,
         )
 
     x = input.reshape(M, K).contiguous()
@@ -523,31 +530,44 @@ def fused_quant_gemv(
         z_ptr = qzeros
         sz_g, sz_n = qzeros.stride(0), qzeros.stride(1)
     else:
-        z_ptr = scales      # dummy
+        z_ptr = scales  # dummy
         sz_g, sz_n = 0, 0
 
     out = torch.empty((M, N), device=input.device, dtype=input.dtype)
     if split_k == 1:
         scratch = out  # placeholder, not dereferenced
     else:
-        scratch = torch.empty((split_k, M, N), device=input.device,
-                              dtype=torch.float32)
+        scratch = torch.empty((split_k, M, N), device=input.device, dtype=torch.float32)
 
     grid = lambda META: (
         triton.cdiv(N, META["BLOCK_N"]),
         split_k,
     )
     _fused_gemv_kernel[grid](
-        x, qweight, scales, z_ptr,
-        out, scratch,
-        M, N, K,
-        x.stride(0), x.stride(1),
-        qweight.stride(0), qweight.stride(1),
-        scales.stride(0), scales.stride(1),
-        sz_g, sz_n,
-        out.stride(0), out.stride(1),
-        bits=bits, maxq=maxq, group_size=group_size,
-        SYM=sym, SYM_ZP=int(sym_zp) if sym else 0,
+        x,
+        qweight,
+        scales,
+        z_ptr,
+        out,
+        scratch,
+        M,
+        N,
+        K,
+        x.stride(0),
+        x.stride(1),
+        qweight.stride(0),
+        qweight.stride(1),
+        scales.stride(0),
+        scales.stride(1),
+        sz_g,
+        sz_n,
+        out.stride(0),
+        out.stride(1),
+        bits=bits,
+        maxq=maxq,
+        group_size=group_size,
+        SYM=sym,
+        SYM_ZP=int(sym_zp) if sym else 0,
         SPLIT_K=split_k,
         BLOCK_M=block_m,
     )
@@ -571,10 +591,12 @@ def fused_quant_gemv(
 # ---------------------------------------------------------------------------
 @triton.jit
 def _split_k_reduce_kernel(
-    scratch_ptr,        # (SPLIT_K, M, N) fp32
-    out_ptr,            # (M, N) fp_dtype
-    M, N,
-    stride_om, stride_on,
+    scratch_ptr,  # (SPLIT_K, M, N) fp32
+    out_ptr,  # (M, N) fp_dtype
+    M,
+    N,
+    stride_om,
+    stride_on,
     SPLIT_K: tl.constexpr,
     BLOCK_M: tl.constexpr,
     BLOCK_N: tl.constexpr,
@@ -590,16 +612,14 @@ def _split_k_reduce_kernel(
     acc = tl.zeros((BLOCK_M, BLOCK_N), dtype=tl.float32)
     # SPLIT_K is constexpr -> compiler fully unrolls
     for s in tl.static_range(SPLIT_K):
-        ptr = (scratch_ptr + s * M * N
-               + offs_m[:, None] * N + offs_n[None, :])
+        ptr = scratch_ptr + s * M * N + offs_m[:, None] * N + offs_n[None, :]
         acc += tl.load(ptr, mask=mn_mask, other=0.0)
 
     out_ptrs = out_ptr + offs_m[:, None] * stride_om + offs_n[None, :] * stride_on
     tl.store(out_ptrs, acc.to(out_ptr.dtype.element_ty), mask=mn_mask)
 
 
-def _split_k_reduce(scratch: torch.Tensor, out: torch.Tensor,
-                    split_k: int) -> None:
+def _split_k_reduce(scratch: torch.Tensor, out: torch.Tensor, split_k: int) -> None:
     """In-place: out = scratch.sum(dim=0).to(out.dtype)."""
     M, N = out.shape
     # Tile sizes are tiny here; M=1..32, N=4k..32k. Use big BLOCK_N for
@@ -608,9 +628,12 @@ def _split_k_reduce(scratch: torch.Tensor, out: torch.Tensor,
     BLOCK_N = 256
     grid = (triton.cdiv(M, BLOCK_M), triton.cdiv(N, BLOCK_N))
     _split_k_reduce_kernel[grid](
-        scratch, out,
-        M, N,
-        out.stride(0), out.stride(1),
+        scratch,
+        out,
+        M,
+        N,
+        out.stride(0),
+        out.stride(1),
         SPLIT_K=split_k,
         BLOCK_M=BLOCK_M,
         BLOCK_N=BLOCK_N,
@@ -618,8 +641,7 @@ def _split_k_reduce(scratch: torch.Tensor, out: torch.Tensor,
     )
 
 
-def _pick_gemm_split_k(M: int, N: int, K: int, group_size: int,
-                       num_sms: int = 108) -> int:
+def _pick_gemm_split_k(M: int, N: int, K: int, group_size: int, num_sms: int = 108) -> int:
     """Choose SPLIT_K for the GEMM kernel.
 
     Same intuition as production triton_kernels matmul: aim for ~1 wave of
@@ -644,7 +666,7 @@ def _pick_gemm_split_k(M: int, N: int, K: int, group_size: int,
     base_ctas = m_tiles * n_tiles
 
     desired = max(1, num_sms // base_ctas)
-    max_split_by_groups = max(1, K // (4 * group_size))   # at least 4 groups per split
+    max_split_by_groups = max(1, K // (4 * group_size))  # at least 4 groups per split
     sk = min(desired, max_split_by_groups, 8)
     for cand in (8, 4, 2, 1):
         if sk >= cand:
@@ -691,9 +713,7 @@ def fused_quant_matmul(
     a = input.reshape(-1, K)
     M = a.shape[0]
 
-    assert scales.shape[0] * group_size == K, (
-        f"scales rows {scales.shape[0]} * group_size {group_size} != K {K}"
-    )
+    assert scales.shape[0] * group_size == K, f"scales rows {scales.shape[0]} * group_size {group_size} != K {K}"
     assert scales.shape[1] == N
     assert group_size % 16 == 0, "group_size must be multiple of 16"
 
@@ -723,8 +743,7 @@ def fused_quant_matmul(
 
     if split_k > 1:
         # scratch (SPLIT_K, M, N) fp32 — kernel writes partials, then reduce.
-        scratch = torch.empty((split_k, M, N), device=input.device,
-                              dtype=torch.float32)
+        scratch = torch.empty((split_k, M, N), device=input.device, dtype=torch.float32)
     else:
         # 1-element placeholder; kernel only stores to scratch when SPLIT_K>1.
         scratch = torch.empty(1, device=input.device, dtype=torch.float32)
@@ -735,14 +754,25 @@ def fused_quant_matmul(
     )
 
     _fused_matmul_kernel[grid](
-        a, qweight, c, scratch,
-        scales, z_ptr,
-        M, N, K,
-        a.stride(0), a.stride(1),
-        qweight.stride(0), qweight.stride(1),
-        c.stride(0), c.stride(1),
-        scales.stride(0), scales.stride(1),
-        sz_g, sz_n,
+        a,
+        qweight,
+        c,
+        scratch,
+        scales,
+        z_ptr,
+        M,
+        N,
+        K,
+        a.stride(0),
+        a.stride(1),
+        qweight.stride(0),
+        qweight.stride(1),
+        c.stride(0),
+        c.stride(1),
+        scales.stride(0),
+        scales.stride(1),
+        sz_g,
+        sz_n,
         bits=bits,
         maxq=maxq,
         group_size=group_size,
@@ -773,29 +803,44 @@ def fused_quant_matmul(
 # ---------------------------------------------------------------------------
 def _make_dequant_configs():
     cfgs = []
-    for (bk, bn) in [
-        (32, 128), (32, 256),
-        (64, 128), (64, 256),
-        (128, 64), (128, 128), (128, 256),
+    for bk, bn in [
+        (32, 128),
+        (32, 256),
+        (64, 128),
+        (64, 256),
+        (128, 64),
+        (128, 128),
+        (128, 256),
     ]:
         for nw in (4, 8):
             for ns in (2, 3, 4):
-                cfgs.append(triton.Config(
-                    {"BLOCK_K": bk, "BLOCK_N": bn},
-                    num_stages=ns, num_warps=nw,
-                ))
+                cfgs.append(
+                    triton.Config(
+                        {"BLOCK_K": bk, "BLOCK_N": bn},
+                        num_stages=ns,
+                        num_warps=nw,
+                    )
+                )
     return cfgs
 
 
 @triton.autotune(configs=_make_dequant_configs(), key=["K", "N", "bits", "SYM"])
 @triton.jit
 def _fast_dequant_kernel(
-    qweight_ptr, scales_ptr, qzeros_ptr, out_ptr,
-    K, N,
-    stride_qk, stride_qn,
-    stride_sg, stride_sn,
-    stride_zg, stride_zn,
-    stride_ok, stride_on,
+    qweight_ptr,
+    scales_ptr,
+    qzeros_ptr,
+    out_ptr,
+    K,
+    N,
+    stride_qk,
+    stride_qn,
+    stride_sg,
+    stride_sn,
+    stride_zg,
+    stride_zn,
+    stride_ok,
+    stride_on,
     bits: tl.constexpr,
     maxq: tl.constexpr,
     group_size: tl.constexpr,
@@ -818,7 +863,7 @@ def _fast_dequant_kernel(
     n_mask = offs_n < N
 
     # --- load qweight: BK rows from BK/pack i32 words (compiler/L1 dedupes) -
-    qrow = offs_k // pack          # (BK,)
+    qrow = offs_k // pack  # (BK,)
     shifter = (offs_k % pack) * bits  # (BK,)
     qw = tl.load(
         qweight_ptr + qrow[:, None] * stride_qk + offs_n[None, :] * stride_qn,
@@ -830,8 +875,9 @@ def _fast_dequant_kernel(
     # --- group is constant across the BK rows (BK <= group_size enforced) ---
     g = k_start // group_size
 
-    scales = tl.load(scales_ptr + g * stride_sg + offs_n * stride_sn,
-                     mask=n_mask, other=0.0)  # (BN,) fp_dtype (matches output)
+    scales = tl.load(
+        scales_ptr + g * stride_sg + offs_n * stride_sn, mask=n_mask, other=0.0
+    )  # (BN,) fp_dtype (matches output)
 
     # Dtype housekeeping (see _fused_matmul_kernel comment): keep math in
     # the output dtype, never let an int-constexpr * bf16 get promoted to
@@ -841,16 +887,17 @@ def _fast_dequant_kernel(
 
     if SYM:
         # FMA-style dequant: w = b_int.to(fp) * s - (SYM_ZP * s)
-        zp_scaled = SYM_ZP_F * scales                   # (BN,) fp_dtype
+        zp_scaled = SYM_ZP_F * scales  # (BN,) fp_dtype
         w = w_int.to(fp_dtype) * scales[None, :] - zp_scaled[None, :]
     else:
         zeros_shifter = (offs_n % pack) * bits
         qz = tl.load(
             qzeros_ptr + g * stride_zg + (offs_n // pack) * stride_zn,
-            mask=n_mask, other=0,
+            mask=n_mask,
+            other=0,
         )
-        zeros_int = (qz >> zeros_shifter) & maxq        # (BN,) int32
-        zp_scaled = zeros_int.to(fp_dtype) * scales     # (BN,) fp_dtype
+        zeros_int = (qz >> zeros_shifter) & maxq  # (BN,) int32
+        zp_scaled = zeros_int.to(fp_dtype) * scales  # (BN,) fp_dtype
         w = w_int.to(fp_dtype) * scales[None, :] - zp_scaled[None, :]
 
     tl.store(
@@ -893,7 +940,7 @@ def fast_dequant248(
         z_ptr = qzeros
         sz_g, sz_n = qzeros.stride(0), qzeros.stride(1)
     else:
-        z_ptr = scales      # dummy, not dereferenced
+        z_ptr = scales  # dummy, not dereferenced
         sz_g, sz_n = 0, 0
 
     out = torch.empty((K, N), device=qweight.device, dtype=out_dtype)
@@ -903,14 +950,25 @@ def fast_dequant248(
         triton.cdiv(N, META["BLOCK_N"]),
     )
     _fast_dequant_kernel[grid](
-        qweight, scales, z_ptr, out,
-        K, N,
-        qweight.stride(0), qweight.stride(1),
-        scales.stride(0), scales.stride(1),
-        sz_g, sz_n,
-        out.stride(0), out.stride(1),
-        bits=bits, maxq=maxq, group_size=group_size,
-        SYM=sym, SYM_ZP=int(sym_zp) if sym else 0,
+        qweight,
+        scales,
+        z_ptr,
+        out,
+        K,
+        N,
+        qweight.stride(0),
+        qweight.stride(1),
+        scales.stride(0),
+        scales.stride(1),
+        sz_g,
+        sz_n,
+        out.stride(0),
+        out.stride(1),
+        bits=bits,
+        maxq=maxq,
+        group_size=group_size,
+        SYM=sym,
+        SYM_ZP=int(sym_zp) if sym else 0,
     )
     return out
 
@@ -961,16 +1019,18 @@ def auto_quant_matmul(
         # prefill path: fast 2D-tiled dequant + cuBLAS GEMM.
         # No need to materialise qzeros for sym, no g_idx required.
         w = fast_dequant248(
-            qweight, scales,
+            qweight,
+            scales,
             qzeros=qzeros if not sym else None,
-            bits=bits, group_size=group_size,
-            sym=sym, sym_zp=sym_zp, maxq=maxq,
+            bits=bits,
+            group_size=group_size,
+            sym=sym,
+            sym_zp=sym_zp,
+            maxq=maxq,
             out_dtype=input.dtype,
         )
         orig_shape = input.shape
-        return (input.reshape(-1, w.shape[0]) @ w).reshape(
-            *orig_shape[:-1], w.shape[1]
-        )
+        return (input.reshape(-1, w.shape[0]) @ w).reshape(*orig_shape[:-1], w.shape[1])
 
     # decode / small-M path: fused GEMM kernel with SPLIT_K.
     #
@@ -988,9 +1048,13 @@ def auto_quant_matmul(
     # ``fused_quant_gemv`` is retained for experimentation but unused by
     # the default dispatcher.
     return fused_quant_matmul(
-        input, qweight, scales, qzeros=qzeros,
-        bits=bits, group_size=group_size,
-        sym=sym, sym_zp=sym_zp, maxq=maxq,
+        input,
+        qweight,
+        scales,
+        qzeros=qzeros,
+        bits=bits,
+        group_size=group_size,
+        sym=sym,
+        sym_zp=sym_zp,
+        maxq=maxq,
     )
-
-

@@ -33,6 +33,7 @@ type is added.
 
 See ``docs/adding_new_device.md`` for a concrete worked example.
 """
+
 from __future__ import annotations
 
 import functools
@@ -42,7 +43,6 @@ from contextlib import contextmanager
 from typing import Iterable, Optional, Union
 
 import torch
-
 
 __all__ = [
     "DeviceBackend",
@@ -527,9 +527,7 @@ def strip_device_prefix(spec: str) -> str:
     one-off ``re.sub("xpu:|hpu:|cuda:", "", ...)`` previously scattered
     around the codebase.
     """
-    known = {b.name for b in iter_registered_backends()} | {
-        a for b in iter_registered_backends() for a in b.aliases
-    }
+    known = {b.name for b in iter_registered_backends()} | {a for b in iter_registered_backends() for a in b.aliases}
     out = []
     for tok in spec.split(","):
         tok = tok.strip()
@@ -838,4 +836,3 @@ def _try_import(module_name: str) -> bool:
         return find_spec(module_name) is not None
     except Exception:  # pragma: no cover
         return False
-
