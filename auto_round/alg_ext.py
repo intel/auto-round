@@ -522,7 +522,7 @@ def _dq_asym_qdq(tensor, scale, wmin, bits, group_size, v=0):
     tensor, orig_shape, pad_len = reshape_pad_tensor_by_group_size(tensor, group_size)
     orig_dtype = tensor.dtype
     tensor = tensor.to(torch.float32)
-    maxq = int(2.0 ** bits) - 1
+    maxq = int(2.0**bits) - 1
     inverse_scale = get_reciprocal(scale)
     int_w = torch.clamp(round_ste((tensor + wmin) * inverse_scale + v), 0, maxq)
     qdq = (scale * int_w - wmin).to(orig_dtype)
@@ -645,14 +645,10 @@ class DQWrapperLinear(WrapperLinear):
             self.weight_quant_func = quant_tensor_asym
         self.data_type = self.orig_layer.data_type
         if self.enable_act_quant:
-            from auto_round.data_type.gguf import (
-                quant_tensor_gguf_asym_dq as _gguf_asym_dq,
-                quant_tensor_gguf_sym_dq as _gguf_sym_dq,
-            )
+            from auto_round.data_type.gguf import quant_tensor_gguf_asym_dq as _gguf_asym_dq
+            from auto_round.data_type.gguf import quant_tensor_gguf_sym_dq as _gguf_sym_dq
 
-            self.act_quant_func = (
-                _gguf_asym_dq if self.orig_layer.act_data_type == "int_asym_dq" else _gguf_sym_dq
-            )
+            self.act_quant_func = _gguf_asym_dq if self.orig_layer.act_data_type == "int_asym_dq" else _gguf_sym_dq
             if self.enable_torch_compile:
                 self.act_quant_func = compile_func(self.act_quant_func, self.device)
             self._init_params("act_max_scale", p_dtype, (1), 1.0, not self.orig_layer.act_dynamic)
