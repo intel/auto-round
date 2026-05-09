@@ -41,7 +41,6 @@ from auto_round.utils import (
     find_matching_blocks,
     get_block_names,
     get_module,
-    is_hpex_available,
     is_transformers_version_greater_or_equal_5,
     set_module,
 )

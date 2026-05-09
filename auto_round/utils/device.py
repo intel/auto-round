@@ -624,6 +624,18 @@ def _clear_memory_for_cpu_and_cuda(
     if isinstance(device_list, (str, torch.device)):
         device_list = [device_list]
 
+    # Default backend for bare integer entries (e.g. the default
+    # ``device_list=[0]`` on ``ClearMemory``): the highest-priority active
+    # accelerator.  Without this, integers like ``0`` end up classified as
+    # the unknown device-type ``"0"`` and silently skipped, which caused
+    # ``empty_cache`` to never run on the default ``clear_memory()`` path
+    # and made peak VRAM grow unbounded.
+    default_dtype: Optional[str] = None
+    for cand in sorted(iter_active_backends(), key=lambda b: b.priority, reverse=True):
+        if cand.device_count() > 0:
+            default_dtype = cand.name
+            break
+
     per_backend: dict[str, list] = {}
     if device_list:
         for dev in device_list:
@@ -637,6 +649,11 @@ def _clear_memory_for_cpu_and_cuda(
                     idx_val = int(idx)
                 except ValueError:
                     idx_val = 0
+            elif isinstance(dev, int) or dev_str.isdigit():
+                # Bare integer index → route to the default accelerator.
+                if default_dtype is None:
+                    continue
+                dtype, idx_val = default_dtype, int(dev_str)
             else:
                 dtype, idx_val = dev_str, None
             per_backend.setdefault(dtype, []).append(idx_val)
@@ -655,8 +672,12 @@ def _clear_memory_for_cpu_and_cuda(
             backend.synchronize()
             backend.empty_cache()
         elif indices:
+            # Sync each requested device, then empty the (process-wide) cache once.
             for idx in indices:
-                backend.synchronize(idx)
+                if idx is None:
+                    backend.synchronize()
+                else:
+                    backend.synchronize(idx)
             backend.empty_cache()
         # else: device_list specified but no entry for this backend → skip.
 

@@ -38,6 +38,7 @@ from __future__ import annotations
 import functools
 import os
 from abc import ABC, abstractmethod
+from contextlib import contextmanager
 from typing import Iterable, Optional, Union
 
 import torch
@@ -63,6 +64,11 @@ __all__ = [
     "get_known_device_types",
     "strip_device_prefix",
     "split_device_spec",
+    "set_forced_backend",
+    "clear_forced_backend",
+    "get_forced_backend",
+    "fallback_to_cpu",
+    "forced_backend",
 ]
 
 
@@ -335,19 +341,44 @@ def get_device_backend(device: Union[None, str, int, torch.device, DeviceBackend
     return _BACKENDS["cpu"]
 
 
-def auto_select_device() -> DeviceBackend:
+def auto_select_device(refresh: bool = False) -> DeviceBackend:
     """Return the highest-priority *available* backend (falls back to CPU).
 
-    Prefers :func:`torch.accelerator.current_accelerator` (PyTorch ≥ 2.6) when
-    available so we agree with whatever upstream torch decides; otherwise
-    walks the registry by descending priority.
+    The result is **cached** at module level so subsequent calls return the
+    same backend without re-running the detection cascade.  This also makes
+    OOM fallbacks "sticky": once :func:`fallback_to_cpu` (or
+    :func:`set_forced_backend`) has been called, *every* future call returns
+    the pinned backend until :func:`clear_forced_backend` is invoked.
+
+    Resolution order:
+
+    1. An explicit override set via :func:`set_forced_backend` /
+       :func:`fallback_to_cpu` (highest priority).
+    2. Cached result from a previous call (unless ``refresh=True``).
+    3. :func:`torch.accelerator.current_accelerator` (PyTorch ≥ 2.6).
+    4. The registered backend with the highest ``priority`` whose
+       ``is_available()`` returns ``True``.
+    5. ``CPUBackend`` as the last resort.
+
+    Args:
+        refresh: When ``True``, ignore both the forced override *and* the
+                 cached result and recompute from scratch.  Useful in tests.
     """
+    global _AUTO_DEVICE_CACHE
+
+    if not refresh:
+        if _FORCED_BACKEND is not None:
+            return _FORCED_BACKEND
+        if _AUTO_DEVICE_CACHE is not None:
+            return _AUTO_DEVICE_CACHE
+
     # Fast path: ask torch which accelerator is currently active.
     accel_name = current_accelerator_type()
     if accel_name and accel_name in _BACKENDS:
         backend = _BACKENDS[accel_name]
         try:
             if backend.is_available():
+                _AUTO_DEVICE_CACHE = backend
                 return backend
         except Exception:  # pragma: no cover
             pass
@@ -357,10 +388,99 @@ def auto_select_device() -> DeviceBackend:
     for b in candidates:
         try:
             if b.is_available():
+                _AUTO_DEVICE_CACHE = b
                 return b
         except Exception:  # pragma: no cover
             continue
-    return _BACKENDS["cpu"]
+    _AUTO_DEVICE_CACHE = _BACKENDS["cpu"]
+    return _AUTO_DEVICE_CACHE
+
+
+# ---------------------------------------------------------------------------
+# Forced backend / OOM fallback
+# ---------------------------------------------------------------------------
+
+
+_FORCED_BACKEND: Optional["DeviceBackend"] = None
+_AUTO_DEVICE_CACHE: Optional["DeviceBackend"] = None
+
+
+def set_forced_backend(device: Union[str, "DeviceBackend", torch.device, None]) -> "DeviceBackend":
+    """Pin :func:`auto_select_device` (and therefore most ``"auto"`` device
+    resolution paths) to a specific backend until further notice.
+
+    Pass ``None`` to clear the override (equivalent to
+    :func:`clear_forced_backend`).
+
+    Returns the pinned backend (or the freshly-recomputed auto choice when
+    the override is cleared).
+    """
+    global _FORCED_BACKEND
+    if device is None:
+        _FORCED_BACKEND = None
+        return auto_select_device(refresh=True)
+    backend = device if isinstance(device, DeviceBackend) else get_device_backend(device)
+    _FORCED_BACKEND = backend
+    return backend
+
+
+def clear_forced_backend() -> "DeviceBackend":
+    """Remove a previously-installed forced backend and return the new auto choice."""
+    return set_forced_backend(None)
+
+
+def get_forced_backend() -> Optional["DeviceBackend"]:
+    """Return the currently-forced backend, or ``None`` if no override is set."""
+    return _FORCED_BACKEND
+
+
+def fallback_to_cpu(reason: str = "") -> "DeviceBackend":
+    """Pin the auto-selected backend to CPU and return the CPU backend.
+
+    Designed for use inside OOM handlers, e.g.::
+
+        try:
+            run_on(auto_select_device())
+        except RuntimeError as e:
+            if out_of_vram(str(e)):
+                fallback_to_cpu(reason=str(e))
+                run_on(auto_select_device())     # now returns CPU
+
+    Logs a warning so the fallback is visible in normal logs.  Idempotent:
+    calling it twice is a no-op.
+    """
+    cpu = _BACKENDS["cpu"]
+    if _FORCED_BACKEND is cpu:
+        return cpu
+    try:
+        from auto_round.logger import logger as _logger
+
+        if reason:
+            _logger.warning_once(f"Falling back to CPU backend due to: {reason}")
+        else:
+            _logger.warning_once("Falling back to CPU backend.")
+    except Exception:  # pragma: no cover
+        pass
+    return set_forced_backend(cpu)
+
+
+@contextmanager
+def forced_backend(device: Union[str, "DeviceBackend", torch.device, None]):
+    """Context manager that temporarily pins the auto-selected backend.
+
+    ::
+
+        with forced_backend("cpu"):
+            run_calibration()      # any auto_select_device() inside returns CPU
+        # original choice restored on exit
+    """
+    global _FORCED_BACKEND
+    prev = _FORCED_BACKEND
+    try:
+        set_forced_backend(device)
+        yield get_forced_backend()
+    finally:
+        _FORCED_BACKEND = prev
 
 
 def get_known_device_types(include_cpu: bool = True) -> tuple[str, ...]:

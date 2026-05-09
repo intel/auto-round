@@ -16,11 +16,16 @@ from auto_round.utils.device import *
 from auto_round.utils.device_backend import (
     DeviceBackend,
     auto_select_device,
+    clear_forced_backend,
+    fallback_to_cpu,
+    forced_backend,
     get_device_backend,
+    get_forced_backend,
     iter_active_backends,
     iter_registered_backends,
     register_device_backend,
     resolve_device_type,
+    set_forced_backend,
 )
 from auto_round.utils.common import *
 from auto_round.utils.model import *
