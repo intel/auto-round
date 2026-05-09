@@ -130,21 +130,28 @@ def torch_roundf(n):
     return torch.sign(n) * b
 
 
-def make_qx_quants_chunk(data, bits, rmse_type=0, qw=None, split_num=1):
+def make_qx_quants_chunk(data, bits, rmse_type=0, qw=None, split_num=1, v=0):
     """
     Extreme VRAM-optimized version of quantization.
 
     - Processes data in chunks along the batch dimension (dim=0) to reduce peak memory usage.
     - Uses inplace operations to avoid unnecessary tensor copies.
     - Reuses buffers for temporary calculations wherever possible.
+
+    Args:
+        v: Optional rounding perturbation. Either a scalar or a tensor with the
+            same shape as ``data``; added before each ``round`` to support
+            AutoRound-style tuning.
     """
     nmax = 2 ** (bits - 1)
     scales_list = []
     L_list = []
     chunk_size = (data.shape[0] + split_num - 1) // split_num
+    v_is_tensor = isinstance(v, torch.Tensor)
     for start in range(0, data.shape[0], chunk_size):
         end = min(start + chunk_size, data.shape[0])
         chunk = data[start:end]  # Slice a batch chunk to reduce memory footprint
+        v_chunk = v[start:end] if v_is_tensor else v
 
         # Compute absolute values inplace to avoid extra tensor allocation
         chunk_abs = chunk.abs()
@@ -156,7 +163,7 @@ def make_qx_quants_chunk(data, bits, rmse_type=0, qw=None, split_num=1):
         iscales = -nmax * get_reciprocal(group_max)
 
         # L buffer stores quantized values, modified inplace to save memory
-        L = (chunk * iscales).round_().clamp_(-nmax, nmax - 1)
+        L = (chunk * iscales + v_chunk).round_().clamp_(-nmax, nmax - 1)
 
         # Simple case: rmse_type == 0
         if rmse_type == 0:
@@ -204,7 +211,7 @@ def make_qx_quants_chunk(data, bits, rmse_type=0, qw=None, split_num=1):
                 continue
             iscales_tmp = -(nmax + -0.1 * _is) / group_max
             # Use a temporary L buffer to avoid creating new large tensor
-            L_tmp = (chunk * iscales_tmp).round_().clamp_(-nmax, nmax - 1)
+            L_tmp = (chunk * iscales_tmp + v_chunk).round_().clamp_(-nmax, nmax - 1)
             sumlx_tmp = (w * chunk * L_tmp).sum(dim=-1)
             suml2_tmp = (w * L_tmp * L_tmp).sum(dim=-1)
             # Determine which elements should be replaced
@@ -283,7 +290,7 @@ def make_qx_quants(data, bits, rmse_type=0, qw=None):
     return scales, L
 
 
-def make_q3_quants(data, bits, do_rmse=False):
+def make_q3_quants(data, bits, do_rmse=False, v=0):
     # Maximum absolute integer value for symmetric quantization
     nmax = 1 << (bits - 1)  # equivalent to pow(2, bits-1)
 
@@ -299,7 +306,7 @@ def make_q3_quants(data, bits, do_rmse=False):
     if do_rmse:
         # Initial quantization L (in-place round and clamp)
         L = torch.empty_like(data)
-        torch.round(iscale * data, out=L)
+        torch.round(iscale * data + v, out=L)
         L.clamp_(-nmax, nmax - 1)
 
         # Weight for RMSE = x^2 (in-place)
@@ -349,7 +356,7 @@ def make_q3_quants(data, bits, do_rmse=False):
 
     # Fast path: quantize without RMSE (in-place round, clamp, shift)
     L = torch.empty_like(data)
-    torch.round(iscale * data, out=L)
+    torch.round(iscale * data + v, out=L)
     L.clamp_(-nmax, nmax - 1)
     L.add_(nmax)
 

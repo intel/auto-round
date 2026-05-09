@@ -23,7 +23,7 @@ from auto_round.utils import get_reciprocal
 
 def search_scales(data: torch.Tensor, bits: int, qw: Union[None, torch.Tensor, float] = None) -> torch.Tensor:
     # Maximum absolute value for symmetric quantization
-    nmax = 1 << (bits - 1)  # equivalent to pow(2, bits-1)
+    nmax = int(2.0 ** (bits - 1))
 
     # Find per-group max along the last dimension
     imax = torch.abs(data).argmax(dim=-1, keepdim=True)
@@ -103,7 +103,7 @@ def quant_tensor_opt_rtn_sym(tensor, bits=4, group_size=-1, v=0, q_scale_thresh=
     from auto_round.data_type.gguf import _imatrix_handle_zero
 
     tensor, orig_shape, pad_len = reshape_pad_tensor_by_group_size(tensor, group_size)
-    maxq = 2 ** (bits - 1)
+    maxq = int(2.0 ** (bits - 1))
     if imatrix is None:
         imatrix = 1.0
     else:
@@ -146,7 +146,7 @@ def quant_tensor_rtn_sym(
         Quantized and de-quantized tensor, scale, zero-point
     """
     tensor, orig_shape, pad_len = reshape_pad_tensor_by_group_size(tensor, group_size)
-    maxq = 2 ** (bits - 1)
+    maxq = int(2.0 ** (bits - 1))
 
     wmin_tmp = torch.clamp(tensor.min(-1)[0], max=0)
     wmax_tmp = torch.clamp(tensor.max(-1)[0], min=0)
@@ -195,7 +195,7 @@ def quant_tensor_sym(
     """
 
     tensor, orig_shape, pad_len = reshape_pad_tensor_by_group_size(tensor, group_size)
-    maxq = 2 ** (bits - 1)
+    maxq = int(2.0 ** (bits - 1))
     if tensor_min is None or tensor_max is None:
         wmin_tmp = torch.clamp(tensor.min(-1)[0], max=0)
         wmax_tmp = torch.clamp(tensor.max(-1)[0], min=0)
@@ -248,7 +248,7 @@ def quant_tensor_asym(
         Quantized and de-quantized tensor, scale, zero-point
     """
     tensor, orig_shape, pad_len = reshape_pad_tensor_by_group_size(tensor, group_size)
-    maxq = 2**bits - 1
+    maxq = int(2.0 ** bits) - 1
     if tensor_min is None or tensor_max is None:
         wmin_tmp = torch.clamp(tensor.min(-1)[0], max=0)
         wmax_tmp = torch.clamp(tensor.max(-1)[0], min=0)
@@ -305,7 +305,7 @@ def quant_tensor_sym_gptq(
         Quantized and de-quantized tensor, scale, zero-point
     """
     tensor, orig_shape, pad_len = reshape_pad_tensor_by_group_size(tensor, group_size)
-    maxq = 2**bits - 1
+    maxq = int(2.0 ** bits) - 1
     if tensor_min is None or tensor_max is None:
         wmin_tmp = torch.clamp(tensor.min(-1)[0], max=0)
         wmax_tmp = torch.clamp(tensor.max(-1)[0], min=0)
@@ -368,7 +368,7 @@ def quant_tensor_asym_wo_round(
         Quantized and de-quantize tensor, scale, zero-point
     """
     tensor, orig_shape, pad_len = reshape_pad_tensor_by_group_size(tensor, group_size)
-    maxq = 2**bits - 1
+    maxq = int(2.0 ** bits) - 1
     if tensor_min is None or tensor_max is None:
         wmin_tmp = torch.clamp(tensor.min(-1)[0], max=0)
         wmax_tmp = torch.clamp(tensor.max(-1)[0], min=0)
