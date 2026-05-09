@@ -26,6 +26,37 @@ class TestAlgExt:
         yield
         shutil.rmtree("runs", ignore_errors=True)
 
+    def test_gguf_q2_k_s_uses_dq_wrapper_block(self, tiny_qwen_model_path):
+        """Regression test: enable_alg_ext + gguf:q2_k_s must use DQWrapperLinear.
+
+        gguf:q2_k_s overrides data_type to "int_asym_dq" at format-resolution
+        time.  The quantizer must be created *after* that override so that
+        wrapper_autoround() sees the final data_type and sets dq_wrapper_block
+        (which wraps layers with DQWrapperLinear) instead of falling back to
+        the plain wrapper_block (which produces WrapperLinear).
+        """
+        from auto_round.alg_ext import DQWrapperLinear, dq_wrapper_block
+
+        ar = AutoRound(
+            tiny_qwen_model_path,
+            bits=4,
+            format="gguf:q2_k_s",
+            iters=1,
+            nsamples=1,
+            seqlen=32,
+            enable_alg_ext=True,
+        )
+        # post_init() runs the full pipeline (resolve_scheme → resolve_formats →
+        # create_quantizer → ...).  quantizer only exists afterwards.
+        ar.post_init()
+
+        assert ar.quantizer.wrapper_block.__name__ == dq_wrapper_block.__name__, (
+            f"Expected wrapper_block to be '{dq_wrapper_block.__name__}', "
+            f"got '{ar.quantizer.wrapper_block.__name__}'. "
+            "This likely means the quantizer was created before GGUF format "
+            "overrides were applied (data_type was not yet 'int_asym_dq')."
+        )
+
     @pytest.mark.parametrize("scheme", ["MXFP4", "NVFP4", "W2A16G64", "gguf:q2_k_s,gguf:q4_k_s"])
     def test_all_support_dtype(self, scheme, tiny_qwen_model_path):
         from auto_round.auto_scheme import AutoScheme
