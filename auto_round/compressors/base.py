@@ -94,6 +94,7 @@ from auto_round.utils import (
     get_layer_names_in_block,
     get_lm_head_name,
     get_module,
+    get_reverse_checkpoint_conversion_mapping,
     global_state,
     hook_ngram_embeddings_on_cpu,
     htcore,
@@ -107,6 +108,7 @@ from auto_round.utils import (
     memory_monitor,
     mv_module_from_gpu,
     normalize_no_split_modules,
+    revert_checkpoint_conversion_mapping,
     set_amax_for_all_moe_layers,
     set_module,
     to_device,
@@ -3603,6 +3605,21 @@ class BaseCompressor(object):
             serialization_dict["autoround_version"] = __version__
             if "scale_dtype" in serialization_dict.keys():
                 serialization_dict["scale_dtype"] = str(serialization_dict["scale_dtype"])
+
+            # to match the original name
+            reverse_checkpoint_conversion_mapping = get_reverse_checkpoint_conversion_mapping(self.model)
+
+            if isinstance(serialization_dict["to_quant_block_names"], str):
+                serialization_dict["to_quant_block_names"] = revert_checkpoint_conversion_mapping(
+                    serialization_dict["to_quant_block_names"], reverse_checkpoint_conversion_mapping
+                )
+
+            elif isinstance(serialization_dict["to_quant_block_names"], list):
+                for idx in range(len(serialization_dict["to_quant_block_names"])):
+                    serialization_dict["to_quant_block_names"][idx] = revert_checkpoint_conversion_mapping(
+                        serialization_dict["to_quant_block_names"][idx], reverse_checkpoint_conversion_mapping
+                    )
+
             compressed_model = format.save_quantized(
                 save_folder,
                 model=self.model,
