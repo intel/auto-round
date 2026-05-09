@@ -351,6 +351,7 @@ def register_online_had_hooks(model, mapping=None, fp32_had=False, use_fast_had=
 def is_pow2(n):
     return (n & (n - 1) == 0) and (n > 0)
 
+
 # the hadamard matrix is same, but the order is not same
 # # Adapted from https://github.com/Cornell-RelaxML/quip-sharp/blob/main/lib/utils/matmul_had.py
 # def get_hadK(n: int, transpose=False) -> (torch.Tensor, int):
@@ -371,6 +372,8 @@ def is_pow2(n):
 
 # Adapted from https://github.com/Cornell-RelaxML/quip-sharp/blob/main/lib/utils/matmul_had.py
 from auto_round.experimental.rotation_inplace.hadamard_matrix import *
+
+
 def get_hadK(n: int, transpose=False) -> (torch.Tensor, int):
     hadK, K = None, None
     if n % 172 == 0:  # llama-2-7b up
@@ -430,6 +433,7 @@ def get_hadK(n: int, transpose=False) -> (torch.Tensor, int):
             assert is_pow2(n)
 
     return hadK, K
+
 
 def matmul_hadU(X, transpose=False):
     n = X.shape[-1]
