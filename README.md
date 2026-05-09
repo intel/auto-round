@@ -25,8 +25,7 @@
 <div align="left">
 
 ## Notes
-If you are using main branch, please `export AR_DISABLE_NEW_ARCH=1` to disable the new architecture, which is not stable for now.
-
+If you are using the main branch, please run `export AR_DISABLE_NEW_ARCH=1` to disable the new architecture, as it is currently not stable.
 
 ## 🚀 What is AutoRound?
 
