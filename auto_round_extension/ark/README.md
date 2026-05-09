@@ -52,3 +52,33 @@ python setup.py bdist_wheel;pip install dist/*
 * Intel Xeon Scalable processor (Granite Rapids)
 #### GPU built on Intel's Xe architecture:
 * Intel Arc B-Series Graphics (Battlemage)
+
+### Resources
+
+#### QuantLinear API
+  ARK exposes a unified weight-only linear interface through QuantLinear, QuantLinearGPTQ, QuantLinearAWQ, and QuantLinearFP8. Please refer to the [QLinear](auto_round_kernel/qlinear.py) for more integration details.
+
+  The expected lifecycle is: create the module, load quantized tensors from the checkpoint, call post_init() once to repack weights into the ARK-friendly layout, and then call forward() during inference.
+
+   Minimal usage:
+```python
+from auto_round_kernel.qlinear import QuantLinear
+
+qlinear = QuantLinear(
+    bits=4,
+    group_size=128,
+    sym=True,
+    in_features=in_features,
+    out_features=out_features,
+    bias=bias is not None,
+    weight_dtype=weight_dtype,
+)
+# Load qweight, qzeros, scales, and bias from checkpoint.
+qlinear.post_init()
+
+# Run inference
+y = qlinear(x)
+```
+
+#### A Weight-Only Example
+  A runnable end-to-end example is available in [test_weightonly.py](test/test_weightonly.py). It demonstrates how to prepare quantized weights and scales, call repack_quantized_weight to build ARK-packed weights, verify correctness with unpack_weight, and run woqgemm on CPU and XPU.
