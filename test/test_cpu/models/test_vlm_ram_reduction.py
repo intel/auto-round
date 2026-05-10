@@ -32,7 +32,6 @@ import torch.nn as nn
 
 from auto_round.utils.common import flatten_list
 
-
 # ---------------------------------------------------------------------------
 # 1. Tests for per-sample-constant tensor skipping in _get_block_forward_func
 # ---------------------------------------------------------------------------
@@ -76,10 +75,7 @@ class TestBlockForwardTensorSkipping:
         has_variable_block_shape = False
 
         should_skip = (
-            key != "hidden_states"
-            and is_tensor
-            and key not in shared_cache_keys
-            and not has_variable_block_shape
+            key != "hidden_states" and is_tensor and key not in shared_cache_keys and not has_variable_block_shape
         )
         assert should_skip, "position_embeddings must be skipped when not shared and no variable block shape"
 
@@ -91,10 +87,7 @@ class TestBlockForwardTensorSkipping:
         has_variable_block_shape = True
 
         should_skip = (
-            key != "hidden_states"
-            and is_tensor
-            and key not in shared_cache_keys
-            and not has_variable_block_shape
+            key != "hidden_states" and is_tensor and key not in shared_cache_keys and not has_variable_block_shape
         )
         assert not should_skip, "position_embeddings must be cached per-block when variable block shape is enabled"
 
@@ -106,10 +99,7 @@ class TestBlockForwardTensorSkipping:
         has_variable_block_shape = False
 
         should_skip = (
-            key != "hidden_states"
-            and is_tensor
-            and key not in shared_cache_keys
-            and not has_variable_block_shape
+            key != "hidden_states" and is_tensor and key not in shared_cache_keys and not has_variable_block_shape
         )
         assert not should_skip, "position_embeddings must be kept when in shared_cache_keys"
 
@@ -121,10 +111,7 @@ class TestBlockForwardTensorSkipping:
         has_variable_block_shape = True
 
         should_skip = (
-            key != "hidden_states"
-            and is_tensor
-            and key not in shared_cache_keys
-            and not has_variable_block_shape
+            key != "hidden_states" and is_tensor and key not in shared_cache_keys and not has_variable_block_shape
         )
         assert not should_skip, "hidden_states must never be skipped"
 

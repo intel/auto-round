@@ -1894,12 +1894,16 @@ def dispatch_model_by_all_available_devices(
                 continue
             if isinstance(component, torch.nn.Module):
                 non_main_bytes += sum(p.numel() * p.element_size() for p in component.parameters())
-        # Add 20% buffer for activations and overhead
-        non_main_reserved = int(non_main_bytes * 1.2) if non_main_bytes > 0 else 0
+        # Buffer for activations and runtime overhead (beyond weights).
+        # This ratio compounds with get_balanced_memory's internal 0.9 ratio,
+        # so the net reservation for non-main components is non_main_bytes * (1.2 * 0.9) ≈ non_main_bytes * 1.08.
+        NON_MAIN_WEIGHT_BUFFER_RATIO = 1.2
+        non_main_reserved = int(non_main_bytes * NON_MAIN_WEIGHT_BUFFER_RATIO) if non_main_bytes > 0 else 0
 
         from auto_round.utils.common import normalize_no_split_modules
 
         no_split_modules = normalize_no_split_modules(getattr(main_model, "_no_split_modules", []))
+        # get_balanced_memory applies a 0.9 ratio internally to leave headroom.
         max_memory = get_balanced_memory(main_model, max_memory=None, no_split_module_classes=no_split_modules)
 
         # Reserve space on primary device for non-target components
