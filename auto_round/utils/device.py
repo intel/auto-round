@@ -1900,9 +1900,7 @@ def dispatch_model_by_all_available_devices(
         from auto_round.utils.common import normalize_no_split_modules
 
         no_split_modules = normalize_no_split_modules(getattr(main_model, "_no_split_modules", []))
-        max_memory = get_balanced_memory(
-            main_model, max_memory=None, no_split_module_classes=no_split_modules
-        )
+        max_memory = get_balanced_memory(main_model, max_memory=None, no_split_module_classes=no_split_modules)
 
         # Reserve space on primary device for non-target components
         primary_idx = int(primary_device.split(":")[-1]) if ":" in primary_device else 0
