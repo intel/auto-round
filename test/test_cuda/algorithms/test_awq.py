@@ -188,9 +188,7 @@ class TestAWQW8A8LLMCompressor:
         )
         outputs = llm.generate(["Hello, my name is"], sampling_params)
         generated_text = outputs[0].outputs[0].text
-        assert (
-            len(generated_text.strip()) > 0 and "!!!" not in generated_text
-        ), "vLLM produced empty/meaningless output"
+        assert len(generated_text.strip()) > 0 and "!!!" not in generated_text, "vLLM produced empty/meaningless output"
 
 
 # ---------------------------------------------------------------------------
