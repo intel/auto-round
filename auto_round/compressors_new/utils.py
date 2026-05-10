@@ -175,9 +175,8 @@ def block_forward(
     _pe = input_others.get("position_embeddings")
     _attn = getattr(block, "self_attn", None)
     _head_dim = getattr(_attn, "head_dim", None)
-    _need_pe = (
-        _pe is None
-        or (_head_dim is not None and isinstance(_pe, (tuple, list)) and _pe and _pe[0].shape[-1] != _head_dim)
+    _need_pe = _pe is None or (
+        _head_dim is not None and isinstance(_pe, (tuple, list)) and _pe and _pe[0].shape[-1] != _head_dim
     )
     if _need_pe:
         _rotary_emb = None
