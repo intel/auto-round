@@ -170,6 +170,20 @@ def block_forward(
     if "alibi" in input_others.keys() and input_others["alibi"] is not None:
         alibi = input_others["alibi"]
         input_others["alibi"] = alibi.reshape(-1, alibi.shape[2], alibi.shape[3])
+
+    # Gemma4 uses a dict keyed by layer_type (sliding_attention / full_attention).
+    # Block 0 caches only its own key; later blocks need the key for their type.
+    # If _rotary_emb is attached (transformers >= 5.6), recompute the missing key.
+    pe = input_others.get("position_embeddings")
+    if isinstance(pe, dict):
+        layer_type = getattr(getattr(block, "self_attn", None), "layer_type", None)
+        if layer_type is not None and layer_type not in pe:
+            _rotary_emb_ref = getattr(block, "_rotary_emb_ref", None)
+            rotary_emb = _rotary_emb_ref[0] if _rotary_emb_ref else getattr(block, "_rotary_emb", None)
+            position_ids = input_others.get("position_ids")
+            if rotary_emb is not None and position_ids is not None:
+                pe[layer_type] = rotary_emb(input_ids, position_ids, layer_type)
+
     if amp:
         with autocast(device_type=str(device).split(":")[0], dtype=amp_dtype):  # pragma: no cover
             output = block(input_ids, *input_tuple, **input_others)

@@ -57,6 +57,7 @@ SPECIAL_SHARED_CACHE_KEYS = {
     "Gemma3ForConditionalGeneration": ("position_embeddings_global", "position_embeddings_local")
 }
 SPECIAL_SHARED_CACHE_KEYS["MiniMaxText01ForCausalLM"] = ("slope_rate",)
+SPECIAL_SHARED_CACHE_KEYS["Gemma4ForConditionalGeneration"] = ("position_ids",)
 MISTRAL_3_2_MODELS = ["Mistral-Small-3.2", "Magistral-Small", "Devstral-Small"]
 
 
@@ -178,13 +179,7 @@ def _patch_gemma4_model(model):
                     **kwargs,
                 )
 
-            patched_layer_forward._is_gemma4_patch = True
             return patched_layer_forward
-
-        # Skip if already patched (idempotent re-application after hook removal)
-        _fwd_func = getattr(layer.forward, '__func__', layer.forward)
-        if getattr(_fwd_func, '_is_gemma4_patch', False):
-            continue
 
         layer.forward = _types.MethodType(
             _make_layer_forward(
@@ -211,7 +206,13 @@ def _handle_special_model(model):
 
         model.forward = partial(_qwen3_omni_moe_forward, model)
     if hasattr(model, "config") and model_type == "gemma4":
-        _patch_gemma4_model(model)
+        import transformers
+        from packaging import version
+
+        if version.parse(transformers.__version__) < version.parse("5.6"):
+            _patch_gemma4_model(model)
+        else:
+            _attach_gemma4_rotary_emb(model)
     return model
 
 
@@ -750,6 +751,34 @@ def get_predefined_ignore_layers(model: torch.nn.Module) -> list[str]:
 # Only used when transformers >= 5.6, which natively supports per-block
 # position_embedding recomputation (has_variable_block_shape).
 _PRE_DEFINED_FIXED_ATTR = {"gemma4": {"has_variable_block_shape": True}}
+
+
+def _attach_gemma4_rotary_emb(model):
+    """Attach ``_rotary_emb`` to each Gemma4 decoder layer.
+
+    For transformers >= 5.6 the per-layer forward patch is unnecessary, but
+    ``block_forward`` still needs access to ``rotary_emb`` (which lives on the
+    parent ``Gemma4TextModel``) to recompute ``position_embeddings`` when the
+    cached version from block 0 has the wrong dimension.
+    """
+    try:
+        from transformers.models.gemma4.modeling_gemma4 import Gemma4TextModel
+    except ImportError:
+        return
+
+    text_model = None
+    for _, submodule in model.named_modules():
+        if isinstance(submodule, Gemma4TextModel):
+            text_model = submodule
+            break
+
+    if text_model is None:
+        return
+
+    for layer in text_model.layers:
+        # Store in a plain list to prevent nn.Module from registering rotary_emb
+        # as a child submodule (which would cause meta-tensor errors during .to(device)).
+        object.__setattr__(layer, "_rotary_emb_ref", [text_model.rotary_emb])
 
 
 def get_predefined_fixed_attr(model: torch.nn.Module) -> dict | None:

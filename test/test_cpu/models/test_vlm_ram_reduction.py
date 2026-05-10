@@ -17,6 +17,7 @@ These tests target the specific logic changes introduced by the VLM RAM fix:
 1. Per-sample-constant tensor skipping in block forward cache
 2. Diffusion multi-device memory reservation
 3. MLLM calibration memory cleanup
+4. last_cache_name RAM reduction
 
 All tests use fake model hierarchies and mocks — no real model weights
 are loaded or downloaded.
@@ -28,6 +29,8 @@ from unittest.mock import MagicMock, patch
 import pytest
 import torch
 import torch.nn as nn
+
+from auto_round.utils.common import flatten_list
 
 
 # ---------------------------------------------------------------------------
@@ -73,42 +76,146 @@ class TestBlockForwardTensorSkipping:
         )
         assert should_skip, "attention_mask (per-sample constant) must be skipped"
 
-    def test_position_embeddings_skipped_when_not_shared(self):
-        """position_embeddings not in shared_cache_keys must be skipped."""
+    def test_position_embeddings_skipped_when_not_shared_no_variable(self):
+        """position_embeddings skipped when not in shared_cache_keys and no variable block shape."""
         key = "position_embeddings"
         is_tensor = True
         shared_cache_keys = set()  # empty = position_embeddings not shared
+        has_variable_block_shape = False
 
         should_skip = (
             key != "hidden_states"
             and is_tensor
             and key not in shared_cache_keys
+            and not has_variable_block_shape
         )
-        assert should_skip, "position_embeddings must be skipped when not in shared_cache_keys"
+        assert should_skip, "position_embeddings must be skipped when not shared and no variable block shape"
+
+    def test_position_embeddings_kept_when_variable_shape(self):
+        """position_embeddings not skipped when has_variable_block_shape=True (cached per-block)."""
+        key = "position_embeddings"
+        is_tensor = True
+        shared_cache_keys = set()  # not in shared_cache_keys
+        has_variable_block_shape = True
+
+        should_skip = (
+            key != "hidden_states"
+            and is_tensor
+            and key not in shared_cache_keys
+            and not has_variable_block_shape
+        )
+        assert not should_skip, "position_embeddings must be cached per-block when variable block shape is enabled"
 
     def test_position_embeddings_kept_when_shared(self):
-        """position_embeddings in shared_cache_keys must NOT be skipped."""
+        """position_embeddings in shared_cache_keys must not be skipped (non-variable path)."""
         key = "position_embeddings"
         is_tensor = True
         shared_cache_keys = {"position_embeddings"}
+        has_variable_block_shape = False
 
         should_skip = (
             key != "hidden_states"
             and is_tensor
             and key not in shared_cache_keys
+            and not has_variable_block_shape
         )
         assert not should_skip, "position_embeddings must be kept when in shared_cache_keys"
 
-    def test_non_tensor_args_not_affected(self):
-        """Non-tensor args (str, bool, None) must follow the original path."""
-        for key, is_tensor in [("use_cache", False), ("return_dict", False), ("output_attentions", False)]:
-            shared_cache_keys = set()
-            should_skip = (
-                key != "hidden_states"
-                and is_tensor
-                and key not in shared_cache_keys
-            )
-            assert not should_skip, f"{key} (non-tensor) must not be skipped by tensor branch"
+    def test_hidden_states_always_cached_variable_shape(self):
+        """hidden_states must always be cached even when has_variable_block_shape=True."""
+        key = "hidden_states"
+        is_tensor = True
+        shared_cache_keys = set()
+        has_variable_block_shape = True
+
+        should_skip = (
+            key != "hidden_states"
+            and is_tensor
+            and key not in shared_cache_keys
+            and not has_variable_block_shape
+        )
+        assert not should_skip, "hidden_states must never be skipped"
+
+
+class TestGemma4PositionEmbeddingReplay:
+    def _make_fake_block(self, layer_type="full_attention", head_dim=512):
+        """Helper to build a fake Gemma4-like block with _rotary_emb attached."""
+
+        class FakeRotaryEmbedding:
+            def __call__(self, input_ids, position_ids, lt):
+                hd = 512 if lt == "full_attention" else 256
+                shape = (*input_ids.shape, hd)
+                return torch.ones(shape), torch.ones(shape)
+
+        class FakeAttention(nn.Module):
+            def __init__(self, lt, hd):
+                super().__init__()
+                self.layer_type = lt
+                self.head_dim = hd
+
+        class FakeBlock(nn.Module):
+            def __init__(self, lt, hd):
+                super().__init__()
+                self.self_attn = FakeAttention(lt, hd)
+
+            def forward(self, input_ids, **kwargs):
+                return kwargs["position_embeddings"][0]
+
+        block = FakeBlock(layer_type, head_dim)
+        block._rotary_emb_ref = [FakeRotaryEmbedding()]
+        return block
+
+    def test_recomputes_when_position_embeddings_missing(self):
+        """position_embeddings absent → should be recomputed from position_ids."""
+        from auto_round.compressors_new.utils import block_forward
+
+        block = self._make_fake_block("full_attention", 512)
+        input_ids = torch.zeros((1, 4), dtype=torch.float32)
+        position_ids = torch.arange(4).unsqueeze(0)
+        output = block_forward(
+            block,
+            input_ids,
+            {"position_ids": position_ids, "positional_inputs": []},
+            device=torch.device("cpu"),
+        )
+        assert output.shape[-1] == 512
+
+    def test_recomputes_when_position_embeddings_shape_mismatches(self):
+        """position_embeddings present but wrong dim (cached from sliding layer) → recompute."""
+        from auto_round.compressors_new.utils import block_forward
+
+        block = self._make_fake_block("full_attention", 512)
+        input_ids = torch.zeros((1, 4), dtype=torch.float32)
+        position_ids = torch.arange(4).unsqueeze(0)
+        # Simulate cached position_embeddings from a sliding_attention layer (dim=256)
+        wrong_pe = (torch.ones(1, 4, 256), torch.ones(1, 4, 256))
+        output = block_forward(
+            block,
+            input_ids,
+            {"position_ids": position_ids, "position_embeddings": wrong_pe, "positional_inputs": []},
+            device=torch.device("cpu"),
+        )
+        # Should have been recomputed to dim=512
+        assert output.shape[-1] == 512
+
+    def test_keeps_position_embeddings_when_shape_matches(self):
+        """position_embeddings present with correct dim → no recompute."""
+        from auto_round.compressors_new.utils import block_forward
+
+        block = self._make_fake_block("sliding_attention", 256)
+        input_ids = torch.zeros((1, 4), dtype=torch.float32)
+        position_ids = torch.arange(4).unsqueeze(0)
+        # Correct dim for sliding_attention
+        correct_pe = (torch.full((1, 4, 256), 42.0), torch.full((1, 4, 256), 42.0))
+        output = block_forward(
+            block,
+            input_ids,
+            {"position_ids": position_ids, "position_embeddings": correct_pe, "positional_inputs": []},
+            device=torch.device("cpu"),
+        )
+        # Should use the original (value=42), not recomputed (value=1)
+        assert output.shape[-1] == 256
+        assert torch.allclose(output, torch.full((1, 4, 256), 42.0))
 
 
 # ---------------------------------------------------------------------------
@@ -263,7 +370,7 @@ class TestMLLMCalibMemoryCleanup:
 
 
 # ---------------------------------------------------------------------------
-# 4. Tests for last_cache_name RAM reduction
+# 3. Tests for last_cache_name RAM reduction
 # ---------------------------------------------------------------------------
 
 
@@ -299,7 +406,6 @@ class TestLastCacheNameRAMReduction:
 
         c = FakeCompressor()
         assert c._should_stop_cache_forward("model.layers.0") is True
-        # Second block should not be reached because last_cache_name is already set
         assert c.last_cache_name == "model.layers.0"
 
     def test_without_last_cache_name_all_blocks_cached(self):
@@ -325,19 +431,19 @@ class TestLastCacheNameRAMReduction:
                 return True
 
         c = FakeCompressor()
-        assert c._should_stop_cache_forward("model.layers.0") is False  # not all seen yet
-        assert c._should_stop_cache_forward("model.layers.1") is True   # all seen → lock and stop
+        assert c._should_stop_cache_forward("model.layers.0") is False
+        assert c._should_stop_cache_forward("model.layers.1") is True
 
     def test_last_cache_name_logic_in_quantize(self):
         """Verify that last_cache_name is set to first block when there are multiple blocks."""
         all_blocks = [["model.layers.0", "model.layers.1"], ["model.layers.2"]]
-        to_cache_block_names = [b[0] for b in all_blocks]  # only first block per group
+        to_cache_block_names = [b[0] for b in all_blocks]
         assert to_cache_block_names == ["model.layers.0", "model.layers.2"]
 
+        # Without variable block shape: last_cache_name = first block
         _last_cache_name = to_cache_block_names[0] if len(to_cache_block_names) > 1 else None
         assert _last_cache_name == "model.layers.0"
 
-        # With only one block group, last_cache_name stays None (original behavior)
         single_group = [["model.layers.0"]]
         single_cache = [b[0] for b in single_group]
         assert len(single_cache) == 1

@@ -162,6 +162,33 @@ def block_forward(
     if "alibi" in input_others.keys() and input_others["alibi"] is not None:
         alibi = input_others["alibi"]
         input_others["alibi"] = alibi.reshape(-1, alibi.shape[2], alibi.shape[3])
+
+    # Inject shared_kv_states for layers with store_full_length_kv=True. (e.g. Gemma4)
+    # This arg is not captured in cached inputs during block-wise quantization.
+    if "shared_kv_states" not in input_others:
+        attn = getattr(block, "self_attn", None)
+        if attn is not None and hasattr(attn, "store_full_length_kv"):
+            input_others["shared_kv_states"] = {}
+
+    # Recompute position_embeddings when missing or when cached shape
+    # mismatches the block's head_dim (e.g. Gemma4).
+    _pe = input_others.get("position_embeddings")
+    _attn = getattr(block, "self_attn", None)
+    _head_dim = getattr(_attn, "head_dim", None)
+    _need_pe = (
+        _pe is None
+        or (_head_dim is not None and isinstance(_pe, (tuple, list)) and _pe and _pe[0].shape[-1] != _head_dim)
+    )
+    if _need_pe:
+        _rotary_emb = None
+        _rotary_emb_ref = getattr(block, "_rotary_emb_ref", None)
+        if _rotary_emb_ref:
+            _rotary_emb = _rotary_emb_ref[0]
+        _layer_type = getattr(_attn, "layer_type", None)
+        _position_ids = input_others.get("position_ids")
+        if _rotary_emb and _layer_type and _position_ids is not None:
+            input_others["position_embeddings"] = _rotary_emb(input_ids, _position_ids, _layer_type)
+
     if amp:
         with autocast(device_type=str(device).split(":")[0], dtype=amp_dtype):  # pragma: no cover
             output = block(input_ids, *input_tuple, **input_others)

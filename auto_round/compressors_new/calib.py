@@ -381,6 +381,9 @@ class CalibCompressor(BaseCompressor):
         else:
             self.dataloader = self.dataset
         total_cnt = 0
+        if self.dataloader.__class__.__name__ == "BatchEncoding":
+            self.dataloader = [self.dataloader.data]
+
         for data in self.dataloader:
             if data.__class__.__name__ == "BatchEncoding":
                 data = data.data
@@ -418,6 +421,7 @@ class CalibCompressor(BaseCompressor):
                     and "attention_mask" in data_new
                     and data_new["attention_mask"] is not None
                 ):
+                    # Default all ones
                     new_attention_mask = data_new["attention_mask"]
                 elif (
                     self.model_context.tokenizer is not None
@@ -433,15 +437,23 @@ class CalibCompressor(BaseCompressor):
                     batch_size, seq_len = input_ids.shape
                     for i in range(batch_size):
                         last_token = input_ids[i, -1]
+                        # Check for trailing repeats
                         j = seq_len - 2
                         repeated = False
                         while j >= 0 and input_ids[i, j] == last_token:
                             repeated = True
                             new_attention_mask[i, j] = 0
                             j -= 1
+                        # If there was at least one repeat, set last token mask to 0
                         if repeated:
                             new_attention_mask[i, -1] = 0
 
+                # Workaround: some models treat an all-1 attention mask as equivalent to None and
+                # will internally replace it with None for block inputs, which can cause tensor
+                # concatenation / shape-mismatch issues in downstream code. To avoid providing an
+                # all-1 mask, we force the last token in each sequence to be masked out (set to 0)
+                # so that the mask is never "all ones". This means the model will not attend to the
+                # last position, so the impact on accuracy is minimal as basically equivalent to dropping a single token
                 new_attention_mask[:, -1] = 0
 
                 if not hasattr(self.quantizer, "attention_mask"):
@@ -575,13 +587,6 @@ class CalibCompressor(BaseCompressor):
                         and key == "hidden_states"
                     ):
                         continue
-                    # Skip non-hidden_states tensor args that are per-sample constants.
-                    # Only hidden_states varies per sample and must be cached.
-                    # However, shared_cache_keys tensors (e.g. position_ids) must still
-                    # be stored once — they are needed by special model patches.
-                    if key not in ("hidden_states",) and isinstance(kwargs[key], torch.Tensor):
-                        if key not in self.model_context.shared_cache_keys:
-                            continue
                     if key not in self.inputs[name].keys():  # initialization
                         data = to_device(kwargs[key], device=torch.device("cpu"))
                         if data is None or key in self.model_context.shared_cache_keys:
@@ -1089,12 +1094,10 @@ class CalibCompressor(BaseCompressor):
             supported_types=SUPPORTED_LAYER_TYPES,
             quant_block_list=self.quantizer.quant_block_list,
         )
-        if not self.has_variable_block_shape:
-            to_cache_block_names = [block[0] for block in all_blocks]
-        else:
-            to_cache_block_names = flatten_list(all_blocks)
-        # Only cache the first layer's inputs to reduce RAM usage.
-        # Each block's quantization uses block[0]'s cached inputs as reference,
+        # When has_variable_block_shape is enabled (e.g. Gemma4), position_embeddings
+        # are not skipped. We only cache the first block's inputs; subsequent blocks
+        # recompute per-block position_embeddings at runtime via _rotary_emb.
+        to_cache_block_names = [block[0] for block in all_blocks]
         _last_cache_name = to_cache_block_names[0] if len(to_cache_block_names) > 1 else None
         if len(layer_names) > 0:
             logger.info(
@@ -1120,10 +1123,6 @@ class CalibCompressor(BaseCompressor):
         # hf_device_map is kept for reference but hooks are no longer needed.
         if hasattr(self.model_context.model, "hf_device_map") and len(self.model_context.model.hf_device_map) > 1:
             accelerate.hooks.remove_hook_from_submodules(self.model_context.model)
-            # Re-apply special model patches (e.g., Gemma4 position embedding
-            # recomputation) that were undone by remove_hook_from_submodules
-            from auto_round.special_model_handler import _handle_special_model
-            self.model_context.model = _handle_special_model(self.model_context.model)
         self.model_context.model = mv_module_from_gpu(self.model_context.model)
         clear_memory(device_list=self.compress_context.device_list)
         logger.info("caching done")

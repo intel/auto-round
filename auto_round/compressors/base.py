@@ -1665,10 +1665,6 @@ class BaseCompressor(object):
         # Clear hooks for multi-GPU setups
         if hasattr(self.model, "hf_device_map") and len(self.model.hf_device_map) > 1:
             accelerate.hooks.remove_hook_from_submodules(self.model)
-            # Re-apply special model patches (e.g., Gemma4 position embedding
-            # recomputation) that were undone by remove_hook_from_submodules
-            from auto_round.special_model_handler import _handle_special_model
-            self.model = _handle_special_model(self.model)
 
         pbar = tqdm(range(sum(len(block) for block in all_blocks)))
 
