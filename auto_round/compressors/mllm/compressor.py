@@ -65,18 +65,24 @@ def _only_text_test(model, tokenizer, device, model_type):
         new_tokenizer.pad_token = new_tokenizer.eos_token
     inputs = new_tokenizer(text, return_tensors="pt", padding=True, truncation=True)
 
-    # Estimate model size and check if it fits in GPU memory.
-    # When the model is too large, we skip the GPU transfer and test on CPU only.
+    # Estimate model size and check if it fits in accelerator memory.
+    # When the model is too large, we skip the transfer and test on CPU only.
+    from auto_round.utils.device_backend import get_device_backend, is_accelerator_device
+
     use_gpu = True if device != "cpu" else False
-    if device != "cpu" and torch.cuda.is_available():
+    if use_gpu and is_accelerator_device(device):
+        backend = get_device_backend(device)
         model_bytes = sum(p.numel() * p.element_size() for p in model.parameters())
         dev_idx_str = device.split(":")[-1] if ":" in device else "0"
-        if dev_idx_str.isdigit():
-            dev_idx = int(dev_idx_str)
-            if 0 <= dev_idx < torch.cuda.device_count():
-                free_bytes, _ = torch.cuda.mem_get_info(dev_idx)
-                if model_bytes > free_bytes * 0.9:
-                    use_gpu = False
+        dev_idx = int(dev_idx_str) if dev_idx_str.isdigit() else 0
+        try:
+            total = backend.total_memory(dev_idx)
+            used = backend.memory_allocated(dev_idx)
+            free_bytes = max(total - used, 0)
+            if total > 0 and model_bytes > free_bytes * 0.9:
+                use_gpu = False
+        except Exception:
+            pass
 
     if use_gpu:
         try:
@@ -87,16 +93,20 @@ def _only_text_test(model, tokenizer, device, model_type):
         except RuntimeError as e:
             model = model.to("cpu")
             inputs = inputs.to("cpu")
-            if torch.cuda.is_available():
-                torch.cuda.empty_cache()
+            try:
+                get_device_backend(device).empty_cache()
+            except Exception:
+                pass
             try:
                 model(**inputs)
             except Exception:
                 return False
             return True
         except Exception as e:
-            if torch.cuda.is_available():
-                torch.cuda.empty_cache()
+            try:
+                get_device_backend(device).empty_cache()
+            except Exception:
+                pass
             return False
 
     # Model too large for GPU — run the test on CPU directly

@@ -30,11 +30,12 @@ def _resolve_compute_device(compute_device) -> torch.device:
     """
     if compute_device is not None:
         return torch.device(compute_device) if not isinstance(compute_device, torch.device) else compute_device
-    if torch.cuda.is_available():
-        return torch.device("cuda:0")
-    if hasattr(torch, "xpu") and torch.xpu.is_available():
-        return torch.device("xpu:0")
-    return torch.device("cpu")
+    from auto_round.utils.device_backend import auto_select_device
+
+    backend = auto_select_device()
+    if backend.name == "cpu":
+        return torch.device("cpu")
+    return torch.device(f"{backend.name}:0")
 
 
 BUILTIN_ROTATION_PRESETS = {"quarot_hadamard", "hadamard", "random_hadamard"}
