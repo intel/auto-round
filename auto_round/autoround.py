@@ -171,11 +171,6 @@ class AutoRound:
 
             return AutoRoundCompatible(**local_args, **kwargs)
 
-        if NEW_ARCH:
-            from auto_round.compressors_new.entry import AutoRoundCompatible
-
-            return AutoRoundCompatible(**local_args, **kwargs)
-
         model_cls = []
 
         has_multimodal_assets = kwargs.get("processor") is not None or kwargs.get("image_processor") is not None

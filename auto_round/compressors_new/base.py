@@ -1185,6 +1185,9 @@ class BaseCompressor(object):
                     serialization_dict["to_quant_block_names"][idx] = revert_checkpoint_conversion_mapping(
                         serialization_dict["to_quant_block_names"][idx], reverse_checkpoint_conversion_mapping
                     )
+            
+            # Pass algorithm name
+            _algorithm = getattr(self.quantize_config, '_alg_cls', None) or ''
 
             compressed_model = format.save_quantized(
                 save_folder,
@@ -1194,6 +1197,7 @@ class BaseCompressor(object):
                 tokenizer=self.model_context.tokenizer,
                 device=self.compress_context.device,
                 serialization_dict=serialization_dict,
+                algorithm=_algorithm,
                 **kwargs,
             )
             folders.append(save_folder)

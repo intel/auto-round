@@ -359,17 +359,9 @@ class AWQCompressor(CalibCompressor):
                     torch._dynamo.reset()
                     self.quantizer._invalidate_block_forward_cache()
 
-                if self.compress_context.is_immediate_packing:
-                    for _n, _mod in block.named_modules():
-                        if hasattr(_mod, "bits") and check_to_quantized(_mod):
-                            from auto_round.compressors_new.utils import (
-                                immediate_pack,
-                            )
-
-                            immediate_pack(
-                                _mod.global_name,
-                                self.quantizer.layer_config,
-                            )
+                # Note: immediate_packing is already handled by
+                # RTNQuantizer.quantize_layer → _immediate_pack_and_save_module
+                # inside quantize_block()
 
                 if self.compress_context.is_immediate_saving:
                     self._ensure_shard_writer()

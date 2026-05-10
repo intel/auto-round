@@ -41,6 +41,7 @@ from dataclasses import dataclass
 import torch
 
 from auto_round.logger import logger
+from auto_round.utils.model import is_moe_model
 
 # ── Data structures ───────────────────────────────────────────────────────────
 
@@ -102,6 +103,14 @@ _phi_mappings = [
     AWQMapping(r"gate_up_proj$", [r"down_proj$"]),
 ]
 
+# OPT: uses self_attn_layer_norm / final_layer_norm / out_proj / fc1 / fc2.
+_opt_mappings = [
+    AWQMapping(r"self_attn_layer_norm$", [r"self_attn\.q_proj$", r"self_attn\.k_proj$", r"self_attn\.v_proj$"]),
+    AWQMapping(r"self_attn\.v_proj$", [r"self_attn\.out_proj$"]),
+    AWQMapping(r"final_layer_norm$", [r"fc1$"]),
+    AWQMapping(r"fc1$", [r"fc2$"]),
+]
+
 # Bloom: different naming convention.
 # Note: query_key_value → dense mapping, see
 # https://github.com/mit-han-lab/llm-awq/issues/2#issuecomment-1606297469
@@ -160,6 +169,8 @@ AWQ_MAPPING_REGISTRY: dict[str, list[AWQMapping]] = {
     "AfmoeForCausalLM": _afmoe_mappings,
     # Bloom
     "BloomForCausalLM": _bloom_mappings,
+    # OPT
+    "OPTForCausalLM": _opt_mappings,
     # Cohere / Command-R
     "CohereForCausalLM": _cohere_mappings,
     "Cohere2ForCausalLM": _cohere_mappings,
@@ -247,9 +258,147 @@ def _get_model_class_name(model: torch.nn.Module) -> str:
     return type(model).__name__
 
 
+# ── Dynamic mapping builders ─────────────────────────────────────────────────
+# For hybrid attention models (mix of full self-attention and linear/Gated
+# DeltaNet attention) that need layer-index-specific AWQ mappings.
+
+
+def _get_hybrid_attention_config(model: torch.nn.Module) -> tuple[list[str], int] | None:
+    """Extract layer_types and num_hidden_layers from a hybrid attention model.
+
+    Checks text_config for VL models, then top-level config.
+    Returns (layer_types, num_hidden_layers) or None if not hybrid.
+    """
+    config = getattr(model, "config", None)
+    if config is None:
+        return None
+
+    text_config = getattr(config, "text_config", config)
+    layer_types = getattr(text_config, "layer_types", None)
+    num_layers = getattr(text_config, "num_hidden_layers", None)
+
+    if layer_types is None or num_layers is None:
+        return None
+
+    if "full_attention" not in layer_types or "linear_attention" not in layer_types:
+        return None
+
+    return layer_types, num_layers
+
+
+def _detect_linear_attn_projections(model: torch.nn.Module) -> list[str]:
+    """Detect linear attention projection names from the model.
+
+    Different architectures use different projection layouts:
+      - Qwen3Next: in_proj_qkvz, in_proj_ba
+      - Qwen3.5:   in_proj_qkv, in_proj_z, in_proj_b, in_proj_a
+    """
+    proj_names = []
+    for name, _ in model.named_modules():
+        if ".linear_attn." not in name:
+            continue
+        sub = name.rsplit("linear_attn.", 1)[-1]
+        if sub.startswith("in_proj_"):
+            proj_names.append(sub)
+    return list(dict.fromkeys(proj_names))
+
+
+def _build_hybrid_attention_mappings(model: torch.nn.Module) -> list[AWQMapping] | None:
+    """Dynamically build AWQ mappings for hybrid attention models.
+
+    Reads ``layer_types`` from model config to determine which layers use
+    full vs linear attention, then inspects module names to detect the correct
+    linear attention projection names and MLP structure (MoE vs dense).
+    """
+    result = _get_hybrid_attention_config(model)
+    if result is None:
+        return None
+
+    layer_types, num_layers = result
+
+    full_indices = [i for i in range(num_layers) if layer_types[i] == "full_attention"]
+    linear_indices = [i for i in range(num_layers) if layer_types[i] == "linear_attention"]
+
+    if not full_indices or not linear_indices:
+        logger.warning(
+            "Hybrid attention model detected but missing indices for "
+            "both full and linear attention layers. Falling back."
+        )
+        return None
+
+    full_re = "|".join(str(i) for i in full_indices)
+    linear_re = "|".join(str(i) for i in linear_indices)
+
+    linear_proj_names = _detect_linear_attn_projections(model)
+    is_moe = is_moe_model(model)
+
+    mappings = []
+
+    # Full attention layers: input_layernorm → q/k/v_proj
+    mappings.append(
+        AWQMapping(
+            rf"layers\.({full_re})\.input_layernorm$",
+            [r"self_attn\.q_proj$", r"self_attn\.k_proj$", r"self_attn\.v_proj$"],
+        )
+    )
+
+    # Linear attention layers: input_layernorm → linear_attn projections
+    if linear_proj_names:
+        mappings.append(
+            AWQMapping(
+                rf"layers\.({linear_re})\.input_layernorm$",
+                [rf"linear_attn\.{p}$" for p in linear_proj_names],
+            )
+        )
+
+    # MLP: MoE vs dense
+    if is_moe:
+        mappings.append(
+            AWQMapping(
+                r"post_attention_layernorm$",
+                [r"mlp\.experts\.\d+\.gate_proj$", r"mlp\.experts\.\d+\.up_proj$",
+                 r"mlp\.shared_expert\.gate_proj$", r"mlp\.shared_expert\.up_proj$"],
+            )
+        )
+    else:
+        mappings.append(
+            AWQMapping(r"post_attention_layernorm$", [r"gate_proj$", r"up_proj$"]),
+        )
+
+    mappings.append(AWQMapping(r"up_proj$", [r"down_proj$"]))
+
+    logger.info(
+        f"Built dynamic hybrid-attention AWQ mappings: "
+        f"{len(full_indices)} full-attention, {len(linear_indices)} linear-attention, "
+        f"projections={linear_proj_names}, MoE={is_moe}"
+    )
+    return mappings
+
+
+AWQ_DYNAMIC_MAPPING_REGISTRY: dict[str, callable] = {
+    "Qwen3NextForCausalLM": _build_hybrid_attention_mappings,
+    "Qwen3_5ForCausalLM": _build_hybrid_attention_mappings,
+    "Qwen3_5ForConditionalGeneration": _build_hybrid_attention_mappings,
+    "Qwen3_5MoeForCausalLM": _build_hybrid_attention_mappings,
+    "Qwen3_5MoeForConditionalGeneration": _build_hybrid_attention_mappings,
+}
+
+
 def _get_mappings_for_model(model: torch.nn.Module) -> list[AWQMapping]:
-    """Look up mappings for a model from the registry, with default fallback."""
+    """Look up mappings for a model from the registry, with default fallback.
+
+    Resolution order:
+      1. Dynamic registry — runtime-generated per-layer mappings
+         (e.g. hybrid attention models like Qwen3.5 MoE).
+      2. Static registry — ``AWQ_MAPPING_REGISTRY``.
+      3. ``default_mappings`` — Llama-like fallback.
+    """
     cls_name = _get_model_class_name(model)
+
+    if cls_name in AWQ_DYNAMIC_MAPPING_REGISTRY:
+        mappings = AWQ_DYNAMIC_MAPPING_REGISTRY[cls_name](model)
+        if mappings is not None:
+            return mappings
 
     if cls_name in AWQ_MAPPING_REGISTRY:
         logger.info(f"Using registered AWQ mappings for {cls_name}.")

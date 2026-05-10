@@ -328,14 +328,29 @@ class AWQQuantizer(RTNQuantizer):
                     sig = self._parent_signatures[mod_cls_id]
                     bound = sig.bind(*args, **kwargs)
                     bound.apply_defaults()
+
+                    # Infer the parent's compute dtype so that tensors
+                    # upcasted by nn.LayerNorm (float32) are stored in the
+                    # weight dtype (e.g. bfloat16).  This avoids repeated
+                    # per-sample casting in the grid search stage.
+                    param = next(mod.parameters(), None)
+                    w_dtype = param.dtype if param is not None else None
+
                     stored = {}
                     for k, v in bound.arguments.items():
                         if isinstance(v, torch.Tensor):
-                            stored[k] = v.detach()
+                            v = v.detach()
+                            if w_dtype is not None and v.is_floating_point() and v.dtype != w_dtype:
+                                v = v.to(w_dtype)
+                            stored[k] = v
                         elif isinstance(v, tuple) and any(isinstance(t, torch.Tensor) for t in v):
                             # Detach tensors in tuples (e.g. position_embeddings
                             # = (cos, sin)) to release computation graph refs.
-                            stored[k] = tuple(t.detach() if isinstance(t, torch.Tensor) else t for t in v)
+                            stored[k] = tuple(
+                                (t.detach().to(w_dtype) if w_dtype and t.is_floating_point() and t.dtype != w_dtype
+                                 else t.detach()) if isinstance(t, torch.Tensor) else t
+                                for t in v
+                            )
                         elif hasattr(v, "key_cache"):
                             # Null out KV cache objects (DynamicCache etc.)
                             stored[k] = None

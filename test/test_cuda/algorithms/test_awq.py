@@ -1,0 +1,324 @@
+# Copyright (c) 2026 Intel Corporation
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#    http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+"""CUDA CI tests for AWQ (Activation-Aware Weight Quantization) algorithm.
+
+Covers:
+- Normal LLM (Like OPT-125m): W4A16 quantization, inference, export check
+- INT W8A8: llm_compressor export args, vLLM inference
+- Tiny Qwen MoE: dynamic smoothing, quantized layer checks, quant config saving
+- Accuracy: lm_eval on OPT-125m AWQ W4A16 (lambada_openai, limit=50)
+"""
+
+import json
+import os
+import shutil
+
+import pytest
+import torch
+import transformers
+from transformers import AutoConfig, AutoModelForCausalLM, AutoTokenizer
+
+from auto_round import AutoRound
+
+from ...helpers import evaluate_accuracy, generate_prompt, get_model_path, opt_name_or_path, save_tiny_model
+
+
+# ---------------------------------------------------------------------------
+# Section 1: Normal LLM (OPT-125m) – W4A16 quantize, inference, export args
+# ---------------------------------------------------------------------------
+
+
+class TestAWQLLM:
+    """AWQ W4A16 on a tiny OPT model with CUDA acceleration."""
+
+    @pytest.fixture(autouse=True)
+    def _save_dir(self, tmp_path):
+        self.save_dir = str(tmp_path / "saved")
+        yield
+        shutil.rmtree(self.save_dir, ignore_errors=True)
+
+    def test_awq_w4a16_quantize_and_inference(self, tiny_opt_model_path):
+        """W4A16 AWQ quantization and CUDA inference smoke test."""
+        ar = AutoRound(
+            tiny_opt_model_path,
+            scheme="W4A16",
+            algorithm="awq",
+            nsamples=2,
+            seqlen=32,
+            batch_size=2,
+        )
+        model, layer_config = ar.quantize()
+
+        assert model is not None
+        assert len(layer_config) > 0
+        for name, cfg in layer_config.items():
+            assert cfg["bits"] == 4, f"Layer {name} expected bits=4, got {cfg['bits']}"
+
+        # CUDA inference
+        tokenizer = AutoTokenizer.from_pretrained(tiny_opt_model_path)
+        output = generate_prompt(model, tokenizer, device="cuda")
+        assert len(output) > 0 and "!!!" not in output, f"Unexpected generation output: {output}"
+
+    def test_awq_w4a16_export_auto_round_args(self, tiny_opt_model_path):
+        """Export to auto_round format: verify quantization_config fields."""
+        bits, group_size, sym = 8, 64, True
+        ar = AutoRound(
+            tiny_opt_model_path,
+            bits=bits,
+            group_size=group_size,
+            sym=sym,
+            algorithm="awq",
+            nsamples=2,
+            seqlen=32,
+            batch_size=2,
+        )
+        _, save_path = ar.quantize_and_save(output_dir=self.save_dir, format="auto_round")
+
+        config = AutoConfig.from_pretrained(save_path)
+        qconfig = config.quantization_config
+        assert qconfig is not None
+        assert qconfig["bits"] == bits
+        assert qconfig["group_size"] == group_size
+        assert qconfig["sym"] == sym
+        assert "auto-round" in qconfig["quant_method"]
+
+    def test_awq_w4a16_load_and_generate(self, tiny_opt_model_path):
+        """Quantize, save, reload, and generate on CUDA to verify round-trip."""
+        ar = AutoRound(
+            tiny_opt_model_path,
+            scheme="W4A16",
+            algorithm="awq",
+            nsamples=2,
+            seqlen=32,
+            batch_size=2,
+        )
+        _, save_path = ar.quantize_and_save(output_dir=self.save_dir, format="auto_round")
+
+        loaded_model = AutoModelForCausalLM.from_pretrained(save_path, device_map="auto")
+        tokenizer = AutoTokenizer.from_pretrained(save_path)
+        output = generate_prompt(loaded_model, tokenizer, device="cuda")
+        assert len(output) > 0 and "!!!" not in output, f"Unexpected generation output: {output}"
+
+
+# ---------------------------------------------------------------------------
+# Section 2: INT W8A8 – llm_compressor export args + vLLM inference
+# ---------------------------------------------------------------------------
+
+
+class TestAWQW8A8LLMCompressor:
+    """AWQ INT W8A8 with llm_compressor export format, then vLLM inference."""
+
+    @pytest.fixture(autouse=True)
+    def _save_dir(self, tmp_path):
+        self.save_dir = str(tmp_path / "saved")
+        yield
+        shutil.rmtree(self.save_dir, ignore_errors=True)
+
+    def test_awq_w8a8_llmc_export_config_args(self, tiny_opt_model_path):
+        """W8A8 AWQ → llm_compressor: verify compressed-tensors metadata fields."""
+        ar = AutoRound(
+            tiny_opt_model_path,
+            scheme="INT8",
+            algorithm="awq",
+            nsamples=2,
+            seqlen=32,
+            batch_size=2,
+        )
+        _, save_path = ar.quantize_and_save(output_dir=self.save_dir, format="llm_compressor")
+
+        config = AutoConfig.from_pretrained(save_path, trust_remote_code=True)
+        qconfig = config.quantization_config
+
+        assert qconfig["quant_method"] == "compressed-tensors"
+
+        group0 = qconfig["config_groups"]["group_0"]
+        # Weight args
+        assert group0["weights"]["num_bits"] == 8
+        assert group0["weights"]["type"] == "int"
+        assert group0["weights"]["symmetric"] is True
+        # Activation args
+        assert group0["input_activations"]["num_bits"] == 8
+        # Targets
+        targets = group0.get("targets")
+        assert targets is not None and len(targets) > 0
+
+        # QuantLinear check: verify saved weights are int8 with per-channel scales
+        from safetensors import safe_open
+        st_files = [f for f in os.listdir(save_path) if f.endswith(".safetensors")]
+        assert len(st_files) > 0, f"No safetensors files in {save_path}"
+        with safe_open(os.path.join(save_path, st_files[0]), framework="pt") as f:
+            weight = f.get_tensor("model.decoder.layers.0.self_attn.k_proj.weight")
+            assert weight.dtype == torch.int8, (
+                f"Expected int8 weight, got {weight.dtype}"
+            )
+            scale = f.get_tensor("model.decoder.layers.0.self_attn.k_proj.weight_scale")
+            assert scale.shape[1] == 1, (
+                f"Expected per-channel scale shape (out, 1), got {scale.shape}"
+            )
+
+
+    def test_awq_w8a8_llmc_vllm_inference(self, tiny_opt_model_path):
+        """W8A8 AWQ → llm_compressor → vLLM: end-to-end inference test."""
+        from vllm import LLM, SamplingParams
+
+        ar = AutoRound(
+            tiny_opt_model_path,
+            scheme="INT8",
+            algorithm="awq",
+            nsamples=2,
+            seqlen=32,
+            batch_size=2,
+        )
+        _, save_path = ar.quantize_and_save(output_dir=self.save_dir, format="llm_compressor")
+
+        os.environ["VLLM_WORKER_MULTIPROC_METHOD"] = "spawn"
+        sampling_params = SamplingParams(temperature=0.0, max_tokens=50)
+        llm = LLM(
+            model=save_path,
+            trust_remote_code=True,
+            tensor_parallel_size=1,
+            gpu_memory_utilization=0.8,
+        )
+        outputs = llm.generate(["Hello, my name is"], sampling_params)
+        generated_text = outputs[0].outputs[0].text
+        assert len(generated_text.strip()) > 0 and "!!!" not in generated_text, f"vLLM produced empty/meaningless output"
+
+
+# ---------------------------------------------------------------------------
+# Section 3: Tiny Qwen MoE – dynamic smoothing, quantized layers, config
+# ---------------------------------------------------------------------------
+
+
+class TestAWQMoE:
+    """AWQ on a tiny MoE model with CUDA: smoothing, layers, config saving."""
+
+    @pytest.fixture(autouse=True)
+    def _save_dir(self, tmp_path):
+        self.save_dir = str(tmp_path / "saved")
+        yield
+        shutil.rmtree(self.save_dir, ignore_errors=True)
+
+    def test_awq_moe_dynamic_smoothing(self, tiny_qwen_moe_model_path):
+        """AWQ mapping resolution works on MoE model."""
+        from auto_round.algorithms.quantization.awq.mappings import resolve_mappings
+
+        model = AutoModelForCausalLM.from_pretrained(
+            tiny_qwen_moe_model_path, torch_dtype=torch.bfloat16,
+            device_map="auto", trust_remote_code=True,
+        )
+        resolved = resolve_mappings(model, user_mappings=None)
+
+        # Tiny Qwen MoE (2 blocks, 60 experts each):
+        #   63 mappings per block × 2 blocks = 126 total
+        assert len(resolved) == 126, (
+            f"Expected 126 resolved mappings, got {len(resolved)}"
+        )
+
+        # Smooth layers should be unique
+        smooth_names = [r.smooth_name for r in resolved]
+        assert len(smooth_names) == len(set(smooth_names)), (
+            f"Duplicate smooth names: {[n for n in smooth_names if smooth_names.count(n) > 1]}"
+        )
+
+        # Verify MoE-specific layers are present in smooth targets
+        expert_smooths = [n for n in smooth_names if "mlp.experts." in n]
+        attn_smooths = [n for n in smooth_names if "input_layernorm" in n or "self_attn.v_proj" in n]
+        assert len(expert_smooths) == 120, (
+            f"Expected 120 expert smooth layers (60 experts × 2 blocks), got {len(expert_smooths)}"
+        )
+        assert len(attn_smooths) == 4, (
+            f"Expected 4 attn/layernorm smooth layers (2 per block), got {len(attn_smooths)}"
+        )
+        del model
+
+
+    def test_awq_moe_quantized_layers_check(self, tiny_qwen_moe_model_path):
+        """Expert layers quantized to W4, gates/routers stay fp."""
+        ar = AutoRound(
+            tiny_qwen_moe_model_path,
+            scheme="W4A16",
+            algorithm="awq",
+            nsamples=2,
+            seqlen=32,
+            batch_size=2,
+        )
+        model, layer_config = ar.quantize()
+        assert model is not None
+        assert len(layer_config) > 0
+
+        # Categorize layers
+        q4_layers = {k for k, v in layer_config.items() if v["bits"] == 4}
+        fp_layers = {k for k, v in layer_config.items() if v["bits"] >= 16}
+        other_layers = {k: v["bits"] for k, v in layer_config.items()
+                        if v["bits"] != 4 and v["bits"] < 16}
+
+        # Tiny Qwen MoE (2 layers, 10 experts each):
+        #   374 W4 quantized layers, 4 FP gate/router layers, 378 total
+        assert len(other_layers) == 0, f"Unexpected bit widths: {other_layers}"
+        assert len(layer_config) == 378, (
+            f"Expected 378 total layers, got {len(layer_config)}"
+        )
+        assert len(q4_layers) == 374, (
+            f"Expected 374 W4 layers, got {len(q4_layers)}"
+        )
+        assert len(fp_layers) == 4, (
+            f"Expected 4 FP gate/router layers, got {len(fp_layers)}: {sorted(fp_layers)}"
+        )
+
+        # FP layers must be exactly the gate/router layers (not gate_proj)
+        for name in fp_layers:
+            assert "gate" in name.lower() and "gate_proj" not in name, (
+                f"Unexpected FP layer (not a router/gate): {name}"
+            )
+
+
+class TestAWQEval:
+    """AWQ accuracy evaluation on OPT-125m using lm_eval.
+
+    Uses the full OPT-125m model (not tiny) for meaningful accuracy check.
+    lambada_openai task, add limit for CI speed.
+    """
+
+    @classmethod
+    def setup_class(cls):
+        model_name = opt_name_or_path
+        cls.model_name = model_name
+        cls.tokenizer = AutoTokenizer.from_pretrained(model_name, trust_remote_code=True)
+
+    @classmethod
+    def teardown_class(cls):
+        shutil.rmtree("runs", ignore_errors=True)
+
+    def test_awq_w4a16_lmeval(self):
+        """AWQ W4A16 on OPT-125m: lambada_openai accuracy check."""
+        ar = AutoRound(
+            self.model_name,
+            scheme="W4A16",
+            algorithm="awq",
+            nsamples=32,
+            seqlen=32,
+            batch_size=8,
+        )
+        model, _ = ar.quantize()
+
+        evaluate_accuracy(
+            model,
+            self.tokenizer,
+            task="lambada_openai",
+            threshold=0.3,
+            batch_size="auto:8",
+            limit=50,
+            device="cuda",
+        )
