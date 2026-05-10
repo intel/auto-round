@@ -347,8 +347,15 @@ class AWQQuantizer(RTNQuantizer):
                             # Detach tensors in tuples (e.g. position_embeddings
                             # = (cos, sin)) to release computation graph refs.
                             stored[k] = tuple(
-                                (t.detach().to(w_dtype) if w_dtype and t.is_floating_point() and t.dtype != w_dtype
-                                 else t.detach()) if isinstance(t, torch.Tensor) else t
+                                (
+                                    (
+                                        t.detach().to(w_dtype)
+                                        if w_dtype and t.is_floating_point() and t.dtype != w_dtype
+                                        else t.detach()
+                                    )
+                                    if isinstance(t, torch.Tensor)
+                                    else t
+                                )
                                 for t in v
                             )
                         elif hasattr(v, "key_cache"):

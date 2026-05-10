@@ -356,8 +356,12 @@ def _build_hybrid_attention_mappings(model: torch.nn.Module) -> list[AWQMapping]
         mappings.append(
             AWQMapping(
                 r"post_attention_layernorm$",
-                [r"mlp\.experts\.\d+\.gate_proj$", r"mlp\.experts\.\d+\.up_proj$",
-                 r"mlp\.shared_expert\.gate_proj$", r"mlp\.shared_expert\.up_proj$"],
+                [
+                    r"mlp\.experts\.\d+\.gate_proj$",
+                    r"mlp\.experts\.\d+\.up_proj$",
+                    r"mlp\.shared_expert\.gate_proj$",
+                    r"mlp\.shared_expert\.up_proj$",
+                ],
             )
         )
     else:
