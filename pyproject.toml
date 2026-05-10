@@ -22,6 +22,7 @@ extend-exclude = [
     ".azure-pipelines/scripts/cuda_unit_test/runpod_manager.py"
 ]
 [tool.typos.default.extend-words]
+ba = "ba"
 ue = "ue"
 endianess = "endianess"
 thw = "thw"
