@@ -80,7 +80,6 @@ save_tiny_model(model_path, save_path)  # Save tiny model to disk
 **Model Inference:**
 ```python
 model_infer(model, tokenizer, input_text)  # Run inference and return output
-is_model_outputs_similar(out1, out2)  # Compare two model outputs
 ```
 
 **Data Utilities:**
