@@ -45,6 +45,13 @@ environment_variables: dict[str, Callable[[], Any]] = {
     "AR_SEARCH_SCALE_RATIO": lambda: (
         float(os.getenv("AR_SEARCH_SCALE_RATIO")) if os.getenv("AR_SEARCH_SCALE_RATIO") is not None else None
     ),
+    # Minimum value to which torch._dynamo cache_size_limit /
+    # accumulated_cache_size_limit / recompile_limit are bumped when
+    # ``enable_torch_compile`` is used. The default of 16 is enough to cover
+    # all distinct linear-weight shapes inside one transformer block (q/k/v/
+    # o_proj, gate/up/down_proj, ...) so that per-layer static recompiles do
+    # not exceed dynamo's default limit (8) and fall back to eager.
+    "AR_DYNAMO_CACHE_SIZE_LIMIT": lambda: int(os.getenv("AR_DYNAMO_CACHE_SIZE_LIMIT", "16")),
 }
 
 

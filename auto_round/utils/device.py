@@ -87,7 +87,7 @@ def _use_hpu_compile_mode():
     return TORCH_VERSION_AT_LEAST_2_4 and not is_hpu_lazy_mode()
 
 
-def _bump_dynamo_cache_limit(min_size: int = 16):
+def _bump_dynamo_cache_limit(min_size: Optional[int] = None):
     """Raise torch._dynamo cache/recompile limits.
 
     The same quant function (e.g. ``quant_tensor_sym``) is reused across
@@ -98,8 +98,15 @@ def _bump_dynamo_cache_limit(min_size: int = 16):
     exceed the default ``recompile_limit`` (8) and trigger a fallback to
     eager with a noisy warning. We keep static-shape compilation (best
     perf) and just allow more cache entries.
+
+    The threshold can be overridden via the ``AR_DYNAMO_CACHE_SIZE_LIMIT``
+    environment variable (default: 16).
     """
     try:
+        if min_size is None:
+            from auto_round import envs
+
+            min_size = envs.AR_DYNAMO_CACHE_SIZE_LIMIT
         from torch._dynamo import config as _dynamo_config
 
         for attr in ("cache_size_limit", "accumulated_cache_size_limit", "recompile_limit"):
