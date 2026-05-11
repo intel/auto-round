@@ -32,13 +32,12 @@ def get_build_version():
                     print(f"Read version from PKG-INFO: {version}")
                     return version
     try:
-        result = subprocess.run(["git", "describe", "--tags"], capture_output=True, text=True, check=True)
-        distance = result.stdout.strip().split("-")[-2]
-        commit = result.stdout.strip().split("-")[-1]
-        print(f"Git describe output: {result.stdout.strip()}, distance: {distance}, commit: {commit}, version: {__version__}.dev{distance}+{commit}")
-        return f"{__version__}.dev{distance}+{commit}"
+        result = subprocess.run(["git", "rev-parse", "--short", "HEAD"], capture_output=True, text=True, check=True)
+        commit = result.stdout.strip()
+        print(f"Git commit: {commit}, version: {__version__}.dev{commit}")
+        return f"{__version__}.dev{commit}"
     except subprocess.CalledProcessError as e:
-        print(f"Warning: 'git describe --tags' failed: {e}. Falling back to version {__version__}")
+        print(f"Warning: 'git rev-parse --short HEAD' failed: {e}. Falling back to version {__version__}")
         return __version__
 
 

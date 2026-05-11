@@ -70,8 +70,6 @@ stages:
         steps:
           - checkout: self
             clean: true
-            fetchDepth: 0
-            fetchTags: true
 
           - task: Bash@3
             displayName: Build wheel in manylinux container
