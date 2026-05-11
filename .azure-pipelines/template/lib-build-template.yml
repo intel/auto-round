@@ -102,7 +102,6 @@ stages:
           - ${{ if eq(parameters.publishToTestPyPI, true) }}:
             - task: Bash@3
               displayName: Publish wheel to TestPyPI
-              condition: and(succeeded(), eq(variables['Build.SourceBranch'], 'refs/heads/main'), or(eq(variables['Build.Reason'], 'IndividualCI'), eq(variables['Build.Reason'], 'BatchedCI')))
               env:
                 TWINE_USERNAME: "__token__"
                 TWINE_PASSWORD: "$(TESTPYPI_PASSWORD)"
