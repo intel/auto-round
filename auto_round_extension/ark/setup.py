@@ -30,7 +30,8 @@ def get_build_version():
         commit = result.stdout.strip().split("-")[-1]
         print(f"Git describe output: {result.stdout.strip()}, distance: {distance}, commit: {commit}, version: {__version__}.dev{distance}+{commit}")
         return f"{__version__}.dev{distance}+{commit}"
-    except subprocess.CalledProcessError:
+    except subprocess.CalledProcessError as e:
+        print(f"Warning: 'git describe --tags' failed: {e}. Falling back to version {__version__}")
         return __version__
 
 
