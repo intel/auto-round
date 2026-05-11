@@ -20,14 +20,8 @@ try:
 except Exception as error:
     assert False, f"Failed to read version from {file_path}: {error}"
 
-print(f"Building auto-round-lib version: {__version__} (build mode: {build_mode})")
 def get_build_version():
-    if os.path.exists("PKG-INFO"):
-        with open("PKG-INFO", encoding="utf-8") as f:
-            for line in f:
-                if line.startswith("Version:"):
-                    return line.split(":", 1)[1].strip()
-
+    print(f"Getting build version for build mode: {build_mode}")
     if build_mode == "release":
         return __version__
     try:
