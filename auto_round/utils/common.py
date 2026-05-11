@@ -985,52 +985,69 @@ def parse_layer_config_arg(s: str) -> dict:
 
 
 def compress_layer_names(names: list) -> str:
-    """Compress numbered layer names, e.g. layer.0, layer.1, layer.2 → layer.[0-2]."""
-    import re as _re
+    """Compress numbered layer names, e.g. layer.0, layer.1, layer.2 → layer.[0-2].
 
-    # group by (prefix, suffix) where the number varies
+    Runs the compression pass repeatedly until stable so that multi-level
+    numbering is fully reduced.  For example::
+
+        layers.0.experts.[0-255].down_proj
+        layers.10.experts.[0-255].down_proj
+        →  layers.[0,10].experts.[0-255].down_proj
+    """
+    import re as _re
     from collections import defaultdict
 
-    groups: dict = defaultdict(list)
-    singles: list = []
-    for name in names:
-        m = _re.match(r"^(.*\.)?(\d+)(\..+)?$", name)
-        if m:
-            prefix = m.group(1) or ""
-            num = int(m.group(2))
-            suffix = m.group(3) or ""
-            groups[(prefix, suffix)].append(num)
-        else:
-            singles.append(name)
-    parts: list = []
-    for (prefix, suffix), nums in groups.items():
-        nums_sorted = sorted(set(nums))
-        if len(nums_sorted) == 1:
-            parts.append(f"{prefix}{nums_sorted[0]}{suffix}")
-        else:
-            # Build comma-separated contiguous ranges, e.g. [0,2-3,5]
-            ranges = []
-            start = prev = nums_sorted[0]
-            for n in nums_sorted[1:]:
-                if n == prev + 1:
-                    prev = n
-                    continue
-                # Close the current range
+    def _compress_once(name_list: list) -> list:
+        groups: dict = defaultdict(list)
+        singles: list = []
+        for name in name_list:
+            m = _re.match(r"^(.*\.)?(\d+)(\..+)?$", name)
+            if m:
+                prefix = m.group(1) or ""
+                num = int(m.group(2))
+                suffix = m.group(3) or ""
+                groups[(prefix, suffix)].append(num)
+            else:
+                singles.append(name)
+        parts: list = []
+        for (prefix, suffix), nums in groups.items():
+            nums_sorted = sorted(set(nums))
+            if len(nums_sorted) == 1:
+                parts.append(f"{prefix}{nums_sorted[0]}{suffix}")
+            else:
+                # Build comma-separated contiguous ranges, e.g. [0,2-3,5]
+                ranges = []
+                start = prev = nums_sorted[0]
+                for n in nums_sorted[1:]:
+                    if n == prev + 1:
+                        prev = n
+                        continue
+                    # Close the current range
+                    if start == prev:
+                        ranges.append(str(start))
+                    else:
+                        ranges.append(f"{start}-{prev}")
+                    start = prev = n
+                # Close the final range
                 if start == prev:
                     ranges.append(str(start))
                 else:
                     ranges.append(f"{start}-{prev}")
-                start = prev = n
-            # Close the final range
-            if start == prev:
-                ranges.append(str(start))
-            else:
-                ranges.append(f"{start}-{prev}")
-            range_str = ",".join(ranges)
-            parts.append(f"{prefix}[{range_str}]{suffix}")
-    parts.extend(singles)
-    parts.sort()
-    return ", ".join(parts)
+                range_str = ",".join(ranges)
+                parts.append(f"{prefix}[{range_str}]{suffix}")
+        parts.extend(singles)
+        return parts
+
+    current = list(names)
+    while True:
+        compressed = _compress_once(current)
+        # Stop when no further merging occurred
+        if len(compressed) >= len(current):
+            break
+        current = compressed
+
+    current.sort()
+    return ", ".join(current)
 
 
 def infer_bits_by_data_type(data_type: str):
@@ -1055,3 +1072,68 @@ def infer_bits_by_data_type(data_type: str):
             if str.isdigit(data_type[len(supported_dtype)]):
                 return int(data_type[len(supported_dtype)])
     return None
+
+
+def get_checkpoint_conversion_mapping(model):
+    """Get the checkpoint conversion mapping for a given model, if it exists."""
+    checkpoint_conversion_mapping = {}
+
+    # transformers <= 5.3.0 use _checkpoint_conversion_mapping
+    checkpoint_conversion_mapping.update(getattr(model, "_checkpoint_conversion_mapping", {}))
+
+    # transformers > 5.3.0 use get_checkpoint_conversion_mapping
+    if hasattr(transformers, "conversion_mapping") and (
+        hasattr(model, "config") and hasattr(model.config, "model_type")
+    ):
+        from transformers.conversion_mapping import (
+            get_checkpoint_conversion_mapping as transformers_get_checkpoint_conversion_mapping,
+        )
+
+        conversion_mappings = transformers_get_checkpoint_conversion_mapping(model.config.model_type)
+        if conversion_mappings is not None:
+            for conversion_mapping in conversion_mappings:
+                for source_pattern in conversion_mapping.source_patterns:
+                    checkpoint_conversion_mapping[source_pattern] = conversion_mapping.target_patterns
+    return checkpoint_conversion_mapping
+
+
+def get_reverse_checkpoint_conversion_mapping(model):
+    """Get the reverse checkpoint conversion mapping for a given model, if it exists."""
+    reverse_checkpoint_conversion_mapping = {
+        v: k for k, v in getattr(model, "_checkpoint_conversion_mapping", {}).items()
+    }
+
+    if hasattr(model, "_weight_conversions"):
+        weight_conversions = model._weight_conversions
+        for weight_conversion in weight_conversions:
+            reverse_conversion_mapping = weight_conversion.reverse_transform()
+            for source_pattern in reverse_conversion_mapping.source_patterns:
+                reverse_checkpoint_conversion_mapping[source_pattern] = reverse_conversion_mapping.target_patterns
+
+    return reverse_checkpoint_conversion_mapping
+
+
+def revert_checkpoint_conversion_mapping(name: str, key_mapping: dict[str, str]) -> str:
+    for source_pattern, target_patterns in key_mapping.items():
+        if isinstance(target_patterns, str):
+            target_patterns = [target_patterns]
+        for target_pattern in target_patterns:
+            source_pattern = source_pattern.lstrip("^")  # strip off un-needed chars and patterns
+            source_pattern = re.sub(r"\(.*\)", "", source_pattern)
+            name, n_replace = re.subn(source_pattern, target_pattern, name)
+            # Early exit of the loop
+            if n_replace > 0:
+                return name
+    return name
+
+
+def apply_checkpoint_conversion_mapping(name: str, key_mapping: dict[str, str]) -> str:
+    for source_pattern, target_patterns in key_mapping.items():
+        if isinstance(target_patterns, str):
+            target_patterns = [target_patterns]
+        for target_pattern in target_patterns:
+            name, n_replace = re.subn(source_pattern, target_pattern, name)
+            # Early exit of the loop
+            if n_replace > 0:
+                return name
+    return name

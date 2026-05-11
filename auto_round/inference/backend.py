@@ -200,9 +200,9 @@ AWQ_FORMAT = ["auto_round:auto_awq"]
 LLM_COMPRESSOR_FORMAT = ["auto_round:llm_compressor"]
 WOQ_DEFAULT_ACT_BITS = [None, 16, 32]
 
-# CPU backends that target Intel/x86 (ark / ipex / auto_round_kernel) cannot
+# CPU backends that target Intel/x86 (ark / auto_round_kernel) cannot
 # run on Apple Silicon. Restrict them so the MLX backend wins on Darwin and we
-# don't try to load auto-round-lib / intel-extension-for-pytorch on macOS.
+# don't try to load auto-round-lib on macOS.
 _NON_DARWIN_SYSTEMS = ["linux", "windows"]
 
 # AutoGPTQ is no longer maintained, supports transformers < 5.0.0
@@ -622,68 +622,6 @@ BackendInfos["auto_round_kernel_awq_xpu"] = BackendInfo(
     requirements=["torch>=2.8.0", "auto-round-lib"],
 )
 
-BackendInfos["ipex_gptq_cpu"] = BackendInfo(
-    device=["cpu"],
-    sym=[True, False],
-    packing_format=GPTQ_FORMAT,
-    bits=[4],
-    group_size=None,
-    priority=5,
-    checkers=[],
-    compute_dtype=["float16", "bfloat16"],
-    data_type=["int"],
-    act_bits=WOQ_DEFAULT_ACT_BITS,
-    alias=["ipex"],
-    requirements=["torch<2.9", "intel-extension-for-pytorch>=2.5"],
-    systems=_NON_DARWIN_SYSTEMS,  # intel-extension-for-pytorch is Intel x86 only
-)
-
-BackendInfos["ipex_gptq"] = BackendInfo(
-    device=["xpu"],
-    sym=[True, False],
-    packing_format=GPTQ_FORMAT,
-    bits=[4],
-    group_size=None,
-    priority=5,
-    checkers=[],
-    compute_dtype=["float16", "bfloat16"],
-    data_type=["int"],
-    act_bits=WOQ_DEFAULT_ACT_BITS,
-    alias=["ipex"],
-    requirements=["intel-extension-for-pytorch>=2.5"],
-)
-
-BackendInfos["ipex_awq_cpu"] = BackendInfo(
-    device=["cpu"],
-    sym=[True, False],
-    packing_format=AWQ_FORMAT,
-    bits=[4],
-    group_size=None,
-    priority=5,
-    checkers=[],
-    compute_dtype=["float16", "bfloat16"],
-    data_type=["int"],
-    act_bits=WOQ_DEFAULT_ACT_BITS,
-    alias=["ipex"],
-    requirements=["torch<2.9", "intel-extension-for-pytorch>=2.5"],
-    systems=_NON_DARWIN_SYSTEMS,
-)
-
-BackendInfos["ipex_awq"] = BackendInfo(
-    device=["xpu"],
-    sym=[True, False],
-    packing_format=AWQ_FORMAT,
-    bits=[4],
-    group_size=None,
-    priority=5,
-    checkers=[],
-    compute_dtype=["float16", "bfloat16"],
-    data_type=["int"],
-    act_bits=WOQ_DEFAULT_ACT_BITS,
-    alias=["ipex"],
-    requirements=["intel-extension-for-pytorch>=2.5"],
-)
-
 BackendInfos["hpu"] = BackendInfo(
     device=["hpu"],
     sym=[True, False],
@@ -857,16 +795,6 @@ def dynamic_import_inference_linear(backend, config, packing_format=None):
             return qlinear.QuantLinearAWQ
         else:  # auto_round must be at the end
             return qlinear.QuantLinear
-
-    if "ipex_gptq" in backend:
-        from auto_round_extension.ipex.qlinear_ipex_gptq import QuantLinear
-
-        return QuantLinear
-
-    if "ipex_awq" in backend:
-        from auto_round_extension.ipex.qlinear_ipex_awq import QuantLinear
-
-        return QuantLinear
 
     if "hpu" in backend:
         try:
@@ -1193,7 +1121,7 @@ def get_highest_priority_backend(
     supported_backends = []
     for key in BackendInfos.keys():
         backend = BackendInfos[key]
-        # Filter by operating system (e.g. MLX is Darwin-only; ark/ipex CPU
+        # Filter by operating system (e.g. MLX is Darwin-only; ark CPU
         # backends are non-Darwin only).
         if backend.systems is not None:
             if current_system not in [s.lower() for s in backend.systems]:
@@ -1276,13 +1204,6 @@ def process_requirement(requirements: list, target_device="cuda", logger_level="
 
     # Instructional messages
     install_instructions = []
-
-    for cmd in pip_cmds:
-        if "intel-extension-for-pytorch" in cmd and target_device == "xpu":
-            install_instructions.append(
-                "Please refer to https://pytorch-extension.intel.com/installation?platform=gpu "
-                "to install intel-extension-for-pytorch. Ensure that the version matches your installed PyTorch."
-            )
 
     prefix_msg = (
         "Better backend is found, please install all the following requirements to enable it."

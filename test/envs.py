@@ -43,14 +43,6 @@ def is_compressed_tensors_available():
     return importlib.util.find_spec("compressed_tensors") is not None
 
 
-def is_ipex_available():
-    try:
-        require_version("intel-extension-for-pytorch>=2.5")
-        return True
-    except ImportError:
-        return False
-
-
 def is_flash_attn_available():
     return importlib.util.find_spec("flash_attn") is not None
 
@@ -117,16 +109,6 @@ def require_awq(test_case):
 
     """
     return unittest.skipUnless(is_awq_available(), "test requires autoawq")(test_case)
-
-
-def require_ipex(test_case):
-    """
-    Decorator marking a test that requires intel-extension-for-pytorch.
-
-    These tests are skipped when intel-extension-for-pytorch isn't installed.
-
-    """
-    return unittest.skipUnless(is_ipex_available(), "test requires intel-extension-for-pytorch>=2.5")(test_case)
 
 
 def require_optimum(test_case):

@@ -22,7 +22,12 @@ from auto_round.compressors_new.utils import _get_save_folder_name
 from auto_round.context.compress import CompressContext
 from auto_round.context.model import ModelContext
 from auto_round.logger import logger
-from auto_round.utils import get_lm_head_name, get_module
+from auto_round.utils import (
+    get_lm_head_name,
+    get_module,
+    get_reverse_checkpoint_conversion_mapping,
+    revert_checkpoint_conversion_mapping,
+)
 
 
 class ShardWriter:
@@ -78,6 +83,7 @@ class ShardWriter:
         self.shard_meta = []  # List of {tmp_file: str, params: list}
         self.global_weight_map = {}
         self.shard_counter = 0
+        self.reverse_checkpoint_conversion_mapping = get_reverse_checkpoint_conversion_mapping(self.model)
 
         # Persistent set of all parameter names already flushed to a shard file.
         # Maintained incrementally in _flush_shard to avoid O(N^2) rebuilds in _add_tensor.
@@ -154,6 +160,10 @@ class ShardWriter:
             self._add_tensor(param_name, v)
 
     def _add_tensor(self, name: str, tensor: torch.Tensor):
+
+        # transformers will handle _checkpoint_conversion_mapping automatically if is_immediate_saving=False
+        name = revert_checkpoint_conversion_mapping(name, self.reverse_checkpoint_conversion_mapping)
+
         if isinstance(tensor, torch.Tensor) and tensor.device.type == "meta":
             self.skipped_meta_tensors.append(name)
             return

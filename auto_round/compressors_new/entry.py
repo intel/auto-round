@@ -389,6 +389,29 @@ class AutoRoundCompatible:
         This method translates old AutoRoundCompatible API to new AutoRound API.
         """
         from auto_round.utils import is_diffusion_model, is_mllm_model
+        from auto_round.utils.model import is_model_free_route
+
+        # ---- Model-free fast-path detection --------------------------------
+        if is_model_free_route(model, scheme, iters, kwargs.get("disable_opt_rtn"), kwargs):
+            from auto_round.compressors_new.model_free import ModelFreeCompressor
+
+            if not isinstance(model, str):
+                raise ValueError("model_free=True requires `model` to be a HuggingFace ID or local path string.")
+            if not bool(kwargs.get("model_free", False)):
+                logger.info(
+                    "Auto-routing to model-free quantization "
+                    "(iters=0, disable_opt_rtn=True, supported scheme). "
+                    "Pass disable_model_free=True to use the regular flow."
+                )
+            return ModelFreeCompressor(
+                model_name_or_path=model,
+                scheme=scheme,
+                layer_config=layer_config,
+                tokenizer=tokenizer,
+                device_map=device_map,
+                **kwargs,
+            )
+        # --------------------------------------------------------------------
 
         common_config_kwargs, auto_round_config_kwargs = cls._pop_config_kwargs(kwargs)
 
