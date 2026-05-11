@@ -1068,7 +1068,6 @@ class FP8Format(OutputFormat):
                     ignored_layers.append(layer_name)
             if len(ignored_layers) > 0:
                 serialization_dict["ignored_layers"] = ignored_layers
-                serialization_dict["modules_to_not_convert"] = ignored_layers
 
         return save_quantized_as_autoround(
             output_dir=output_dir,
