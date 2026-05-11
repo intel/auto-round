@@ -1,6 +1,6 @@
 ---
 name: add-inference-backend
-description: "Add a new hardware inference backend to AutoRound for deploying quantized models (e.g., CUDA/Marlin, Triton, IPEX/CPU, HPU, ARK). Use when implementing QuantLinear kernels, registering backend capabilities, or enabling quantized model inference on a new hardware platform."
+description: "Add a new hardware inference backend to AutoRound for deploying quantized models (e.g., CUDA/Marlin, Triton, CPU, HPU, ARK). Use when implementing QuantLinear kernels, registering backend capabilities, or enabling quantized model inference on a new hardware platform."
 ---
 
 # Adding a New Inference Backend to AutoRound
@@ -238,7 +238,6 @@ def test_your_backend_e2e(tiny_opt_model_path, dataloader):
 | `auto_round:torch_*` | CPU/CUDA | `torch/` | Pure PyTorch fallback |
 | `auto_round:ark` | ARK | `ark/` | ARK accelerator kernels |
 | HPU backends | HPU | `hpu/` | Habana Gaudi optimized |
-| IPEX backends | CPU | `ipex/` | Intel Extension for PyTorch |
 
 ## Key Registration Points
 
