@@ -24,6 +24,13 @@ def get_build_version():
     print(f"Getting build version for build mode: {build_mode}")
     if build_mode == "release":
         return __version__
+    if os.path.exists("PKG-INFO"):
+        with open("PKG-INFO", encoding="utf-8") as f:
+            for line in f:
+                if line.startswith("Version:"):
+                    version = line.split(":", 1)[1].strip()
+                    print(f"Read version from PKG-INFO: {version}")
+                    return version
     try:
         result = subprocess.run(["git", "describe", "--tags"], capture_output=True, text=True, check=True)
         distance = result.stdout.strip().split("-")[-2]

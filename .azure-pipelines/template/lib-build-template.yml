@@ -70,6 +70,7 @@ stages:
         steps:
           - checkout: self
             clean: true
+            fetchDepth: 0
             fetchTags: true
 
           - task: Bash@3
@@ -122,6 +123,5 @@ stages:
                     -e TWINE_PASSWORD \
                     pytorch/manylinux2_28-builder:xpu-v2.10.0-rc7 \
                     bash -c "source venv/bin/activate \
-                    && && git describe --tags \
                     && python -m pip install --upgrade twine \
                     && twine upload --repository-url https://test.pypi.org/legacy/ wheelhouse/*.whl"
