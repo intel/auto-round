@@ -249,4 +249,3 @@ class OptimizedRTNQuantizer(RTNQuantizer):
                 m.imatrix /= m.imatrix_cnt
             if hasattr(m, "global_name") and check_to_quantized(m):
                 self.quantize_layer(m.global_name)
-

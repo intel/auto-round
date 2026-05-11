@@ -359,14 +359,13 @@ class BaseQuantizers:
         if not self.compress_context.enable_torch_compile:
             return False
         if (
-                (self.act_bits < 16 and (not self.act_dynamic or self.data_type == "nvfp"))  # have hooks
-                or self.enable_alg_ext  # Use imatrix
-                #or not self.disable_opt_rtn  # Use imatrix
-                or self.model_context.mllm  # too many recompiling and warnings
+            (self.act_bits < 16 and (not self.act_dynamic or self.data_type == "nvfp"))  # have hooks
+            or self.enable_alg_ext  # Use imatrix
+            # or not self.disable_opt_rtn  # Use imatrix
+            or self.model_context.mllm  # too many recompiling and warnings
         ):
             return False
-        return  True
-
+        return True
 
     def _resolve_block_forward(self):
         """Resolve and cache the block forward function once.
@@ -392,7 +391,6 @@ class BaseQuantizers:
             self._resolved_block_forward = compiled
         self._resolved_block_forward = block_forward
         return self._resolved_block_forward
-
 
     def _invalidate_block_forward_cache(self):
         """Clear the cached block forward function (call when block changes)."""
