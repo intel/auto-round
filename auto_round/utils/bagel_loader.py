@@ -14,11 +14,11 @@
 
 """Loader for BAGEL-7B-MoT (ByteDance-Seed/BAGEL-7B-MoT) model.
 
-BAGEL uses a Qwen2-based LLM with MOT (Mixture of Transformers) extensions.
+BAGEL uses a Qwen2-based LLM with NOT (Mixture of Transformers) extensions.
 Since transformers doesn't natively support the 'bagel' model_type, we construct
 the model manually by:
   1. Building a standard Qwen2ForCausalLM from the llm_config
-  2. Adding MOT generation-path modules (mlp_moe_gen, *_moe_gen projections)
+  2. Adding NOT generation-path modules (mlp_moe_gen, *_moe_gen projections)
   3. Loading all weights from safetensors
   4. Wrapping in BagelForQuantization for auto_round compatibility
 """
@@ -45,7 +45,7 @@ class BagelConfig(PretrainedConfig):
 
 
 def _add_mot_extensions(language_model, llm_config):
-    """Add MOT (Mixture of Transformers) generation-path modules to a Qwen2 model.
+    """Add NOT (Mixture of Transformers) generation-path modules to a Qwen2 model.
 
     Each transformer layer gets additional modules for the generation path:
       - Attention: q_proj_moe_gen, k_proj_moe_gen, v_proj_moe_gen, o_proj_moe_gen
@@ -68,13 +68,13 @@ def _add_mot_extensions(language_model, llm_config):
             attn.q_norm = Qwen2RMSNorm(head_dim, eps=rms_norm_eps)
             attn.k_norm = Qwen2RMSNorm(head_dim, eps=rms_norm_eps)
 
-        # MOT attention projections for generation path
+        # NOT attention projections for generation path
         attn.q_proj_moe_gen = nn.Linear(hidden_size, num_heads * head_dim, bias=True)
         attn.k_proj_moe_gen = nn.Linear(hidden_size, num_kv_heads * head_dim, bias=True)
         attn.v_proj_moe_gen = nn.Linear(hidden_size, num_kv_heads * head_dim, bias=True)
         attn.o_proj_moe_gen = nn.Linear(num_heads * head_dim, hidden_size, bias=False)
 
-        # MOT QK norms for generation path
+        # NOT QK norms for generation path
         if use_qk_norm:
             attn.q_norm_moe_gen = Qwen2RMSNorm(head_dim, eps=rms_norm_eps)
             attn.k_norm_moe_gen = Qwen2RMSNorm(head_dim, eps=rms_norm_eps)
@@ -82,10 +82,10 @@ def _add_mot_extensions(language_model, llm_config):
             attn.q_norm_moe_gen = nn.Identity()
             attn.k_norm_moe_gen = nn.Identity()
 
-        # MOT MLP for generation path (duplicate of understanding MLP)
+        # NOT MLP for generation path (duplicate of understanding MLP)
         layer.mlp_moe_gen = Qwen2MLP(llm_config)
 
-        # MOT LayerNorms for generation path
+        # NOT LayerNorms for generation path
         layer.input_layernorm_moe_gen = Qwen2RMSNorm(hidden_size, eps=rms_norm_eps)
         layer.post_attention_layernorm_moe_gen = Qwen2RMSNorm(hidden_size, eps=rms_norm_eps)
 
@@ -175,7 +175,7 @@ def _load_safetensors_weights(model_path):
 class BagelForQuantization(nn.Module):
     """Wrapper for BAGEL model that's compatible with auto_round quantization.
 
-    Contains the language_model (Qwen2+MOT) as the primary quantization target,
+    Contains the language_model (Qwen2+NOT) as the primary quantization target,
     plus non-text modules (connector, vit, etc.) stored as generic parameter holders.
 
     The forward() delegates to language_model for text-only calibration.
@@ -290,9 +290,9 @@ def load_bagel_model(model_path, torch_dtype="auto", device_map=None):
     else:
         resolved_dtype = torch_dtype
 
-    logger.info("Building Qwen2ForCausalLM with MOT extensions for BAGEL...")
+    logger.info("Building Qwen2ForCausalLM with NOT extensions for BAGEL...")
 
-    # Create the language model (Qwen2 + MOT extensions)
+    # Create the language model (Qwen2 + NOT extensions)
     language_model = Qwen2ForCausalLM(llm_config)
     _add_mot_extensions(language_model, llm_config)
 
