@@ -362,7 +362,6 @@ class BaseQuantizers:
             (self.act_bits < 16 and (not self.act_dynamic or self.data_type == "nvfp"))  # have hooks
             or self.enable_alg_ext  # Use imatrix
             # or not self.disable_opt_rtn  # Use imatrix
-            or self.model_context.mllm  # too many recompiling and warnings
         ):
             return False
         return True
@@ -410,7 +409,7 @@ class BaseQuantizers:
 
         Handles both LLM and diffusion model block formats.  Uses the compiled
         block_forward when enable_torch_compile is True (same as _get_block_outputs),
-        matching old-arch behaviour where self.block_forward was compiled at init.
+        matching old-arch behavior where self.block_forward was compiled at init.
         """
         current_input_ids, current_input_others = self._sampling_inputs(
             input_ids,
