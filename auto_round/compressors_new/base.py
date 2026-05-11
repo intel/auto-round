@@ -29,7 +29,7 @@ from auto_round.algorithms.transforms import (
 )
 from auto_round.compressors.utils import is_mx_fp, is_nv_fp
 from auto_round.compressors_new.shard_writer import ShardWriter
-from auto_round.compressors_new.utils import _get_save_folder_name, block_forward, set_layer_config
+from auto_round.compressors_new.utils import _get_save_folder_name, set_layer_config
 from auto_round.context.compress import CompressContext
 from auto_round.context.model import ModelContext
 from auto_round.formats import OutputFormat, get_formats
@@ -46,7 +46,6 @@ from auto_round.utils import (
     INNER_SUPPORTED_LAYER_TYPES,
     SUPPORTED_LAYER_TYPES,
     TORCH_VERSION_AT_LEAST_2_6,
-    compile_func,
     compress_layer_names,
     convert_dtype_str2torch,
     extract_block_names_to_str,
@@ -952,46 +951,14 @@ class BaseCompressor(object):
     def _hardware_setup(self) -> None:
         """Phase 5 – Hardware and compile configuration.
 
-        Preconditions:
-          - Phase 4 complete: ``layer_config`` is built and
-            ``has_qlayer_outside_block`` is known.
-          - ``self.quantize_config.data_type`` is the final resolved value
-            (needed by :meth:`_adjust_torch_compile`).
-
-        Work performed:
-          - Applies the device map via :func:`~auto_round.utils.device.set_non_auto_device_map`.
-          - Re-evaluates ``torch.compile`` eligibility now that ``data_type`` is
-            resolved and writes the result back to ``compress_context``.
-          - Selects ``self.block_forward`` (compiled or plain).
-          - Resets the offload manager when ``low_cpu_mem_usage`` is active.
-          - Disables ``self.inplace`` when quantized layers live outside
-            transformer blocks (incompatible with in-place rewriting).
-          - Calls :meth:`_adjust_immediate_packing_and_saving` to decide whether
-            layers should be packed / written immediately after each block.
-
-        Postconditions:
-          - ``self.block_forward`` is ready for use.
-          - ``compress_context.enable_torch_compile`` is final.
-          - ``self.inplace`` and ``compress_context.is_immediate_packing`` /
-            ``compress_context.is_immediate_saving`` are set to their definitive values.
+        Runs after layer_config is built and format/scheme attrs are final.
+        Applies device placement, re-checks torch.compile eligibility, resets
+        offload state, and finalizes inplace/immediate packing flags.
         """
         set_non_auto_device_map(self.model_context.model, self.compress_context.device_map)
         # Re-evaluate torch.compile eligibility now that data_type is resolved.
         self._adjust_torch_compile(self.enable_torch_compile)
         self.compress_context.enable_torch_compile = self.enable_torch_compile
-        # Apply the same act-quantization / alg-ext guard as
-        # _resolve_block_forward() so we never compile when hooks are present.
-        cfg = self.quantize_config
-        _needs_plain_forward = (cfg.is_act_quantize and (not cfg.act_dynamic or cfg.is_act_nv_fp)) or getattr(
-            cfg, "enable_alg_ext", False
-        )
-        # Only compile block_forward when it will actually be used (calibration path).
-        # For zero-shot compressors (need_calib=False), block_forward is never called,
-        # so skipping compilation avoids unnecessary HPU workspace allocation.
-        if self.enable_torch_compile and not _needs_plain_forward and self.need_calib:
-            self.block_forward = compile_func(block_forward, self.compress_context.device)
-        else:
-            self.block_forward = block_forward
         if self.compress_context.low_cpu_mem_usage:
             self._offloader.reset()
 
