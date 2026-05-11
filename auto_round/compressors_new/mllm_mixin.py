@@ -12,8 +12,6 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-import gc
-
 import torch
 
 from auto_round.logger import logger
@@ -237,7 +235,6 @@ class MLLMMixin:
                 else:
                     mc.model(data_new)
                 # Clean up activation tensors between samples to reduce fragmentation.
-                gc.collect()
                 clear_memory(device_list=self.compress_context.device_list)
             except NotImplementedError:
                 pass

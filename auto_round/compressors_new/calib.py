@@ -1098,7 +1098,7 @@ class CalibCompressor(BaseCompressor):
         # are not skipped. We only cache the first block's inputs; subsequent blocks
         # recompute per-block position_embeddings at runtime via _rotary_emb.
         to_cache_block_names = [block[0] for block in all_blocks]
-        _last_cache_name = to_cache_block_names[0] if len(to_cache_block_names) > 1 else None
+        _last_cache_name = to_cache_block_names[-1] if len(to_cache_block_names) > 1 else None
         if len(layer_names) > 0:
             logger.info(
                 "Starting to cache block inputs. This may be slow due to external block layers: %s", layer_names
