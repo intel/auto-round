@@ -14,9 +14,11 @@
 import functools
 import platform
 from dataclasses import dataclass, field
+from importlib import import_module
 from typing import TYPE_CHECKING, Any, Optional
 
 import torch
+from packaging.version import Version
 from transformers.utils.versions import require_version
 
 import auto_round_extension.cuda.gptqmodel_marlin
@@ -198,9 +200,9 @@ AWQ_FORMAT = ["auto_round:auto_awq"]
 LLM_COMPRESSOR_FORMAT = ["auto_round:llm_compressor"]
 WOQ_DEFAULT_ACT_BITS = [None, 16, 32]
 
-# CPU backends that target Intel/x86 (ark / ipex / auto_round_kernel) cannot
+# CPU backends that target Intel/x86 (ark / auto_round_kernel) cannot
 # run on Apple Silicon. Restrict them so the MLX backend wins on Darwin and we
-# don't try to load auto-round-lib / intel-extension-for-pytorch on macOS.
+# don't try to load auto-round-lib on macOS.
 _NON_DARWIN_SYSTEMS = ["linux", "windows"]
 
 # AutoGPTQ is no longer maintained, supports transformers < 5.0.0
@@ -620,68 +622,6 @@ BackendInfos["auto_round_kernel_awq_xpu"] = BackendInfo(
     requirements=["torch>=2.8.0", "auto-round-lib"],
 )
 
-BackendInfos["ipex_gptq_cpu"] = BackendInfo(
-    device=["cpu"],
-    sym=[True, False],
-    packing_format=GPTQ_FORMAT,
-    bits=[4],
-    group_size=None,
-    priority=5,
-    checkers=[],
-    compute_dtype=["float16", "bfloat16"],
-    data_type=["int"],
-    act_bits=WOQ_DEFAULT_ACT_BITS,
-    alias=["ipex"],
-    requirements=["torch<2.9", "intel-extension-for-pytorch>=2.5"],
-    systems=_NON_DARWIN_SYSTEMS,  # intel-extension-for-pytorch is Intel x86 only
-)
-
-BackendInfos["ipex_gptq"] = BackendInfo(
-    device=["xpu"],
-    sym=[True, False],
-    packing_format=GPTQ_FORMAT,
-    bits=[4],
-    group_size=None,
-    priority=5,
-    checkers=[],
-    compute_dtype=["float16", "bfloat16"],
-    data_type=["int"],
-    act_bits=WOQ_DEFAULT_ACT_BITS,
-    alias=["ipex"],
-    requirements=["intel-extension-for-pytorch>=2.5"],
-)
-
-BackendInfos["ipex_awq_cpu"] = BackendInfo(
-    device=["cpu"],
-    sym=[True, False],
-    packing_format=AWQ_FORMAT,
-    bits=[4],
-    group_size=None,
-    priority=5,
-    checkers=[],
-    compute_dtype=["float16", "bfloat16"],
-    data_type=["int"],
-    act_bits=WOQ_DEFAULT_ACT_BITS,
-    alias=["ipex"],
-    requirements=["torch<2.9", "intel-extension-for-pytorch>=2.5"],
-    systems=_NON_DARWIN_SYSTEMS,
-)
-
-BackendInfos["ipex_awq"] = BackendInfo(
-    device=["xpu"],
-    sym=[True, False],
-    packing_format=AWQ_FORMAT,
-    bits=[4],
-    group_size=None,
-    priority=5,
-    checkers=[],
-    compute_dtype=["float16", "bfloat16"],
-    data_type=["int"],
-    act_bits=WOQ_DEFAULT_ACT_BITS,
-    alias=["ipex"],
-    requirements=["intel-extension-for-pytorch>=2.5"],
-)
-
 BackendInfos["hpu"] = BackendInfo(
     device=["hpu"],
     sym=[True, False],
@@ -856,16 +796,6 @@ def dynamic_import_inference_linear(backend, config, packing_format=None):
         else:  # auto_round must be at the end
             return qlinear.QuantLinear
 
-    if "ipex_gptq" in backend:
-        from auto_round_extension.ipex.qlinear_ipex_gptq import QuantLinear
-
-        return QuantLinear
-
-    if "ipex_awq" in backend:
-        from auto_round_extension.ipex.qlinear_ipex_awq import QuantLinear
-
-        return QuantLinear
-
     if "hpu" in backend:
         try:
             import habana_frameworks.torch.hpu  # pylint: disable=E0401
@@ -881,21 +811,18 @@ def dynamic_import_inference_linear(backend, config, packing_format=None):
 
             return QuantLinear
 
-    # Handle gptqmodel GPTQ backends
-    if "gptqmodel" in backend and "awq" not in backend:
-        return get_gptqmodel_infer_linear(backend, bits, group_size, sym)
+    # Handle gptqmodel GPTQ/AWQ backends
+    if "gptqmodel" in backend:
+        return get_gptqmodel_infer_linear(backend, is_awq="awq" in backend)
 
     if "gptq" in backend and "gptqmodel" not in backend:
         return get_autogptq_infer_linear(backend, bits, group_size, sym)
 
     if "awq" in backend:
-        if "gptqmodel" in backend:
-            return get_gptqmodel_awq_infer_linear(backend)
-        else:
-            # Fallback to autoawq for backward compatibility
-            from awq.modules.linear import WQLinear_GEMM  # pylint: disable=E0401
+        # Fallback to autoawq for backward compatibility
+        from awq.modules.linear import WQLinear_GEMM  # pylint: disable=E0401
 
-            return WQLinear_GEMM
+        return WQLinear_GEMM
 
     if backend == "auto_round:tritonv2":
         from auto_round_extension.triton.qlinear_tritonv2 import QuantLinear
@@ -938,46 +865,43 @@ def safe_import_gptqmodel():
         torch.set_default_dtype(dtype)
 
 
-def get_gptqmodel_awq_infer_linear(backend):
-    """Returns the appropriate gptqmodel AWQ QuantLinear class for inference."""
-
+def get_gptqmodel_infer_linear(backend, is_awq=False):
     gptqmodel = safe_import_gptqmodel()
-
-    # Select AWQ kernel based on the BackendInfos key
-    if "marlin" in backend:
-        from gptqmodel.nn_modules.qlinear.marlin_awq import AwqMarlinQuantLinear  # pylint: disable=E0401
-
-        return AwqMarlinQuantLinear
-    elif "exllamav2" in backend:
-        from gptqmodel.nn_modules.qlinear.exllamav2_awq import AwqExllamaV2QuantLinear  # pylint: disable=E0401
-
-        return AwqExllamaV2QuantLinear
-    elif "gemm" in backend:
-        from gptqmodel.nn_modules.qlinear.gemm_awq import AwqGEMMQuantLinear  # pylint: disable=E0401
-
-        return AwqGEMMQuantLinear
-    elif "torch" in backend:
-        from gptqmodel.nn_modules.qlinear.torch_awq import AwqTorchQuantLinear  # pylint: disable=E0401
-
-        return AwqTorchQuantLinear
+    new_version = Version(gptqmodel.__version__) >= Version("7.0.0")
+    if is_awq:
+        backend_specs = (
+            ("marlin", "gptqmodel.nn_modules.qlinear.marlin_awq", "AwqMarlinLinear", "AwqMarlinQuantLinear"),
+            (
+                "exllamav2",
+                "gptqmodel.nn_modules.qlinear.exllamav2_awq",
+                "AwqExllamaV2Linear",
+                "AwqExllamaV2QuantLinear",
+            ),
+            ("gemm", "gptqmodel.nn_modules.qlinear.gemm_awq", "AwqGEMMLinear", "AwqGEMMQuantLinear"),
+            ("torch", "gptqmodel.nn_modules.qlinear.torch_awq", "AwqTorchLinear", "AwqTorchQuantLinear"),
+        )
     else:
-        raise ValueError(f"Unsupported {backend}")
+        backend_specs = (
+            ("marlin", auto_round_extension.cuda.gptqmodel_marlin.get_marlin_layer),
+            ("exllamav2", "gptqmodel.nn_modules.qlinear.exllamav2", "ExllamaV2Linear", "ExllamaV2QuantLinear"),
+            ("tritonv2", "gptqmodel.nn_modules.qlinear.tritonv2", "TritonV2Linear", "TritonV2QuantLinear"),
+            ("torch", "gptqmodel.nn_modules.qlinear.torch", "TorchLinear", "TorchQuantLinear"),
+        )
 
+    for spec in backend_specs:
+        if spec[0] not in backend:
+            continue
+        if is_awq:
+            _, module_path, new_name, legacy_name = spec
+            module = import_module(module_path)
+            return getattr(module, new_name) if new_version else getattr(module, legacy_name)
+        if spec[0] == "marlin":
+            return spec[1]()
+        _, module_path, new_name, legacy_name = spec
+        module = import_module(module_path)
+        return getattr(module, new_name) if new_version else getattr(module, legacy_name)
 
-def get_gptqmodel_infer_linear(backend, bits=4, group_size=128, sym=False):
-    gptqmodel = safe_import_gptqmodel()
-
-    if "marlin" in backend:
-        return auto_round_extension.cuda.gptqmodel_marlin.get_marlin_layer()
-        # return gptqmodel.nn_modules.qlinear.marlin.MarlinQuantLinear
-    elif "exllamav2" in backend:
-        return gptqmodel.nn_modules.qlinear.exllamav2.ExllamaV2QuantLinear
-    elif "tritonv2" in backend:
-        return gptqmodel.nn_modules.qlinear.tritonv2.TritonV2QuantLinear
-    elif "torch" in backend:
-        return gptqmodel.nn_modules.qlinear.torch.TorchQuantLinear
-    else:
-        raise ValueError(f"Unsupported {backend}")
+    raise ValueError(f"Unsupported {backend}")
 
 
 def get_autogptq_infer_linear(backend, bits=4, group_size=128, sym=False):
@@ -1197,7 +1121,7 @@ def get_highest_priority_backend(
     supported_backends = []
     for key in BackendInfos.keys():
         backend = BackendInfos[key]
-        # Filter by operating system (e.g. MLX is Darwin-only; ark/ipex CPU
+        # Filter by operating system (e.g. MLX is Darwin-only; ark CPU
         # backends are non-Darwin only).
         if backend.systems is not None:
             if current_system not in [s.lower() for s in backend.systems]:
@@ -1280,13 +1204,6 @@ def process_requirement(requirements: list, target_device="cuda", logger_level="
 
     # Instructional messages
     install_instructions = []
-
-    for cmd in pip_cmds:
-        if "intel-extension-for-pytorch" in cmd and target_device == "xpu":
-            install_instructions.append(
-                "Please refer to https://pytorch-extension.intel.com/installation?platform=gpu "
-                "to install intel-extension-for-pytorch. Ensure that the version matches your installed PyTorch."
-            )
 
     prefix_msg = (
         "Better backend is found, please install all the following requirements to enable it."

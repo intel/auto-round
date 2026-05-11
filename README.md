@@ -24,6 +24,9 @@
 ---
 <div align="left">
 
+## Notes
+If you are using the main branch, please run `export AR_DISABLE_NEW_ARCH=1` to disable the new architecture, as it is currently not stable.
+
 ## 🚀 What is AutoRound?
 
 AutoRound is an advanced quantization toolkit designed for Large Language Models (LLMs) and Vision-Language Models (VLMs). 
@@ -36,8 +39,6 @@ See our papers [SignRoundV1](https://arxiv.org/pdf/2309.05516) and [SignRoundV2]
 
 
 ## 🆕 What's New
-* [2026/04] We demonstrate that AutoRound achieves SOTA or near SOTA performance under INT4 (W4A4) quantization [accuracy data](./docs/int4_acc.md). This capability is currently a **research-only** feature, with no production model export.
-
 * [2026/03] **Block-wise FP8** quantization is available via `--scheme FP8_BLOCK --iters 0 --disable_opt_rtn`.
 
 * [2026/03]  **MTP layer quantization** has been supported in this [PR](https://github.com/intel/auto-round/pull/1526)
