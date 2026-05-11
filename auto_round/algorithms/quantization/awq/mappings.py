@@ -489,6 +489,19 @@ def _resolve_mapping_defs(
                                 balance_names.append(n)
                                 balance_layers.append(m)
 
+                # Fallback: search child blocks for MoE cross-level mappings
+                # (e.g., post_attention_layernorm → experts.N.gate_proj/up_proj)
+                if not balance_layers:
+                    for bp in mapping_def.balance_layers:
+                        for child_prefix, child_names in block_modules.items():
+                            if child_prefix != prefix and child_prefix.startswith(prefix + "."):
+                                for n in child_names:
+                                    if re.search(bp, n):
+                                        m = _get_module(model, n)
+                                        if m is not None and isinstance(m, torch.nn.Linear):
+                                            balance_names.append(n)
+                                            balance_layers.append(m)
+
                 if not balance_layers:
                     continue
 

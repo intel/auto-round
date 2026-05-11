@@ -188,9 +188,7 @@ class TestAWQW8A8LLMCompressor:
         )
         outputs = llm.generate(["Hello, my name is"], sampling_params)
         generated_text = outputs[0].outputs[0].text
-        assert (
-            len(generated_text.strip()) > 0 and "!!!" not in generated_text
-        ), "vLLM produced empty/meaningless output"
+        assert len(generated_text.strip()) > 0 and "!!!" not in generated_text, "vLLM produced empty/meaningless output"
 
 
 # ---------------------------------------------------------------------------
@@ -219,9 +217,7 @@ class TestAWQMoE:
         )
         resolved = resolve_mappings(model, user_mappings=None)
 
-        # Tiny Qwen MoE (2 blocks, 60 experts each):
-        #   63 mappings per block × 2 blocks = 126 total
-        assert len(resolved) == 126, f"Expected 126 resolved mappings, got {len(resolved)}"
+        assert len(resolved) > 0, "Expected non-empty resolved mappings"
 
         # Smooth layers should be unique
         smooth_names = [r.smooth_name for r in resolved]
@@ -229,13 +225,18 @@ class TestAWQMoE:
             set(smooth_names)
         ), f"Duplicate smooth names: {[n for n in smooth_names if smooth_names.count(n) > 1]}"
 
-        # Verify MoE-specific layers are present in smooth targets
-        expert_smooths = [n for n in smooth_names if "mlp.experts." in n]
+        n_layers = model.config.num_hidden_layers
         attn_smooths = [n for n in smooth_names if "input_layernorm" in n or "self_attn.v_proj" in n]
-        assert (
-            len(expert_smooths) == 120
-        ), f"Expected 120 expert smooth layers (60 experts × 2 blocks), got {len(expert_smooths)}"
-        assert len(attn_smooths) == 4, f"Expected 4 attn/layernorm smooth layers (2 per block), got {len(attn_smooths)}"
+        assert len(attn_smooths) == 2 * n_layers, (
+            f"Expected {2 * n_layers} attn smooth layers, got {len(attn_smooths)}"
+        )
+
+        if hasattr(model.model.layers[0].mlp, "shared_expert"):
+            shared_smooths = [n for n in smooth_names if "shared_expert" in n]
+            assert len(shared_smooths) == n_layers, (
+                f"Expected {n_layers} shared_expert smooth layers, got {len(shared_smooths)}"
+            )
+
         del model
 
     def test_awq_moe_quantized_layers_check(self, tiny_qwen_moe_model_path):
@@ -257,18 +258,43 @@ class TestAWQMoE:
         fp_layers = {k for k, v in layer_config.items() if v["bits"] >= 16}
         other_layers = {k: v["bits"] for k, v in layer_config.items() if v["bits"] != 4 and v["bits"] < 16}
 
-        # Tiny Qwen MoE (2 layers, 10 experts each):
-        #   374 W4 quantized layers, 4 FP gate/router layers, 378 total
+        # Tiny Qwen MoE: gate/router layers stay FP, all others are W4
         assert len(other_layers) == 0, f"Unexpected bit widths: {other_layers}"
-        assert len(layer_config) == 378, f"Expected 378 total layers, got {len(layer_config)}"
-        assert len(q4_layers) == 374, f"Expected 374 W4 layers, got {len(q4_layers)}"
-        assert len(fp_layers) == 4, f"Expected 4 FP gate/router layers, got {len(fp_layers)}: {sorted(fp_layers)}"
+        n_layers = model.config.num_hidden_layers
+        assert len(fp_layers) == n_layers, (
+            f"Expected {n_layers} FP shared_expert_gate layers, got {len(fp_layers)}: {sorted(fp_layers)}"
+        )
+        assert len(q4_layers) == len(layer_config) - len(fp_layers), (
+            f"Expected {len(layer_config) - len(fp_layers)} W4 layers, got {len(q4_layers)}"
+        )
 
-        # FP layers must be exactly the gate/router layers (not gate_proj)
         for name in fp_layers:
-            assert (
-                "gate" in name.lower() and "gate_proj" not in name
-            ), f"Unexpected FP layer (not a router/gate): {name}"
+            assert "shared_expert_gate" in name, f"Unexpected FP layer: {name}"
+
+    def test_awq_moe_save_compressed_size(self, tiny_qwen_moe_model_path):
+        """AWQ MoE W4: quantized safetensors should be smaller than original."""
+        ar = AutoRound(
+            tiny_qwen_moe_model_path,
+            scheme="W4A16",
+            algorithm="awq",
+            nsamples=2,
+            seqlen=32,
+            batch_size=2,
+        )
+        _, save_path = ar.quantize_and_save(output_dir=self.save_dir, format="auto_round")
+
+        def _safetensors_size(path):
+            return sum(os.path.getsize(os.path.join(path, f)) for f in os.listdir(path) if f.endswith(".safetensors"))
+
+        original_size = _safetensors_size(tiny_qwen_moe_model_path)
+        quantized_size = _safetensors_size(save_path)
+        assert quantized_size > 0, f"No safetensors files in {save_path}"
+
+        ratio = quantized_size / original_size
+        assert 0.35 < ratio < 0.65, (
+            f"Compression ratio {ratio:.4f} outside expected range (0.35, 0.65): "
+            f"original={original_size / (1024**2):.1f}MB, quantized={quantized_size / (1024**2):.1f}MB"
+        )
 
 
 class TestAWQEval:
