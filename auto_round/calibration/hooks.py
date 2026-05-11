@@ -24,7 +24,8 @@ passed in as the mutable holder of the following attributes:
 - ``has_variable_block_shape``     : bool
 - ``blocks_requiring_input_ids``   : list[str]
 - ``model_context``                : ``ModelContext`` (uses ``shared_cache_keys`` / ``replace_forward``)
-- ``_should_stop_cache_forward``   : callable(name) -> bool   (kept on ``state`` so subclasses can override it; e.g. DiffusionMixin always returns False)
+- ``_should_stop_cache_forward``   : callable(name) -> bool
+    (kept on ``state`` so subclasses can override it; e.g. DiffusionMixin always returns False)
 - ``to_cached_layers``             : list[str]   (only required by ``replace_forward``)
 """
 
