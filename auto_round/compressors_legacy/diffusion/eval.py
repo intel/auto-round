@@ -19,7 +19,7 @@ import numpy as np
 import torch
 from tqdm import tqdm
 
-from auto_round.compressors.diffusion.dataset import get_diffusion_dataloader
+from auto_round.compressors_legacy.diffusion.dataset import get_diffusion_dataloader
 from auto_round.utils import LazyImport
 
 metrics = LazyImport("torchmetrics.multimodal")

@@ -145,7 +145,7 @@ def evaluate_diffusion_model(args, autoround=None, model=None, pipe=None):
 
     # Batch prompt evaluation
     elif args.prompt_file is not None:
-        from auto_round.compressors.diffusion import diffusion_eval
+        from auto_round.compressors_legacy.diffusion import diffusion_eval
 
         metrics = args.metrics.split(",")
         diffusion_eval(pipe, args.prompt_file, metrics, args.image_save_dir, 1, gen_kwargs, args.limit)

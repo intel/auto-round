@@ -21,9 +21,9 @@ from typing import Union
 import torch
 from tqdm import tqdm
 
-from auto_round.compressors.base import BaseCompressor
-from auto_round.compressors.diffusion.dataset import get_diffusion_dataloader
-from auto_round.compressors.utils import block_forward
+from auto_round.compressors_legacy.base import BaseCompressor
+from auto_round.compressors_legacy.diffusion.dataset import get_diffusion_dataloader
+from auto_round.compressors_legacy.utils import block_forward
 from auto_round.formats import OutputFormat
 from auto_round.logger import logger
 from auto_round.schemes import QuantizationScheme

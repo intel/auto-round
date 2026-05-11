@@ -21,7 +21,7 @@ from packaging import version
 from transformers import AutoConfig
 
 from auto_round import envs
-from auto_round.compressors.utils import get_shared_keys
+from auto_round.compressors_legacy.utils import get_shared_keys
 from auto_round.context.base import BaseContext
 from auto_round.logger import logger
 from auto_round.modeling.unfused_moe import apply_model_monkey_patches

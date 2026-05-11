@@ -11,9 +11,9 @@ from auto_round.algorithms.quantization.rtn.config import RTNConfig
 from auto_round.algorithms.quantization.sign_round.config import SignRoundConfig
 from auto_round.algorithms.transforms.rotation.config import RotationConfig as _NewArchRotationConfig
 from auto_round.auto_scheme.gen_auto_scheme import AutoScheme
-from auto_round.compressors_new.data_driven import CalibratedRTNCompressor, DataDrivenCompressor
-from auto_round.compressors_new.utils import check_need_act_calibration
-from auto_round.compressors_new.zero_shot import ZeroShotCompressor
+from auto_round.compressors.data_driven import CalibratedRTNCompressor, DataDrivenCompressor
+from auto_round.compressors.utils import check_need_act_calibration
+from auto_round.compressors.zero_shot import ZeroShotCompressor
 from auto_round.logger import logger
 from auto_round.schemes import QuantizationScheme, _parse_scheme
 
@@ -94,11 +94,11 @@ def _get_compressor_class(model_type: str, base_cls: type) -> type:
     if key in _COMPRESSOR_REGISTRY:
         return _COMPRESSOR_REGISTRY[key]
     if model_type == "mllm":
-        from auto_round.compressors_new.mllm_mixin import MLLMMixin
+        from auto_round.compressors.mllm_mixin import MLLMMixin
 
         mixin = MLLMMixin
     elif model_type == "diffusion":
-        from auto_round.compressors_new.diffusion_mixin import DiffusionMixin
+        from auto_round.compressors.diffusion_mixin import DiffusionMixin
 
         mixin = DiffusionMixin
     else:
@@ -333,7 +333,7 @@ class AutoRoundCompatible:
 
     Example:
         >>> # Old API - still works
-        >>> from auto_round.compressors_new.entry import AutoRoundCompatible
+        >>> from auto_round.compressors.entry import AutoRoundCompatible
         >>> autoround = AutoRoundCompatible(
         ...     model="/models/opt-125m",
         ...     bits=4,

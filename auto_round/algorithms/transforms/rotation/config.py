@@ -40,7 +40,7 @@ from typing import Any, Optional
 from pydantic import BaseModel, Field, field_validator
 
 from auto_round.algorithms.transforms.base import BaseRotationConfig
-from auto_round.compressors.utils import is_mx_fp, is_nv_fp
+from auto_round.compressors_legacy.utils import is_mx_fp, is_nv_fp
 from auto_round.utils import logger
 
 __all__ = [

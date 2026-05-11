@@ -24,7 +24,7 @@ from torch import autocast
 from auto_round.algorithms.quantization.base import BaseQuantizers
 from auto_round.algorithms.quantization.sign_round.config import SignRoundConfig
 from auto_round.algorithms.quantization.sign_round.sign_sgd import SignSGD
-from auto_round.compressors_new.utils import (
+from auto_round.compressors.utils import (
     IndexSampler,
     block_forward,
     check_need_act_calibration,
@@ -74,15 +74,6 @@ class SignRoundQuantizer(BaseQuantizers):
 
         self.optimizer = self._get_optimizer(optimizer=config.optimizer)
         self.wrapper_block = wrapper_block
-
-        if self.enable_alg_ext:
-            try:
-                logger.info("using algorithm extension for quantization.")
-                from auto_round.alg_ext import wrapper_autoround
-
-                wrapper_autoround(self)
-            except (ImportError, ModuleNotFoundError):
-                logger.error("algorithm extension import error, fallback to default mode")
 
     def _get_current_output(self, output: list[torch.Tensor], indices: list[int]) -> torch.Tensor:
         if self.model_context.is_diffusion:

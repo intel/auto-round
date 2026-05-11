@@ -18,7 +18,7 @@ from typing import TYPE_CHECKING, Optional, Union
 import torch
 
 import auto_round.envs as envs
-from auto_round.compressors import (
+from auto_round.compressors_legacy import (
     AdamCompressor,
     BaseCompressor,
     DiffusionCompressor,
@@ -26,7 +26,7 @@ from auto_round.compressors import (
     LLMCompressor,
     MLLMCompressor,
 )
-from auto_round.compressors.diffusion.hybrid import HybridCompressor, is_hybrid_diffusion_model
+from auto_round.compressors_legacy.diffusion.hybrid import HybridCompressor, is_hybrid_diffusion_model
 from auto_round.logger import deprecated, logger
 from auto_round.schemes import QuantizationScheme
 from auto_round.utils import is_diffusion_model, is_mllm_model
@@ -167,7 +167,7 @@ class AutoRound:
             local_args.update({k: v for k, v in extra_config.to_dict().items() if k in local_args and v is not None})
 
         if NEW_ARCH:
-            from auto_round.compressors_new.entry import AutoRoundCompatible
+            from auto_round.compressors.entry import AutoRoundCompatible
 
             return AutoRoundCompatible(**local_args, **kwargs)
 

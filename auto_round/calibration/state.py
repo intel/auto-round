@@ -14,7 +14,7 @@
 """``CalibrationState`` — single source of truth for calibration-time state.
 
 This dataclass owns every per-run calibration field shared between
-:class:`~auto_round.compressors_new.base.BaseCompressor` and
+:class:`~auto_round.compressors.base.BaseCompressor` and
 :class:`~auto_round.algorithms.quantization.base.BaseQuantizers`:
 
 - Cache state ``(inputs, to_cached_layers, last_cache_name, blocks_requiring_input_ids)``
@@ -27,7 +27,7 @@ All legacy attribute reads/writes are routed here through ``@property``
 forwarders, so existing call sites need no changes.
 
 The dataclass also provides two behavioural helpers that previously lived
-inline in :class:`~auto_round.compressors_new.data_driven.DataDrivenCompressor`:
+inline in :class:`~auto_round.compressors.data_driven.DataDrivenCompressor`:
 
 - :meth:`clamp_seqlen` — clamps ``self.seqlen`` to model / tokenizer limits.
 - :meth:`ensure_dataloader` — builds ``self.dataloader`` from

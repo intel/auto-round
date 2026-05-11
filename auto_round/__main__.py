@@ -18,7 +18,7 @@ import re
 import sys
 
 from auto_round.auto_scheme import AutoScheme
-from auto_round.compressors import BaseCompressor
+from auto_round.compressors_legacy import BaseCompressor
 from auto_round.eval.eval_cli import EvalArgumentParser, eval, eval_task_by_task
 from auto_round.eval.evaluation import run_model_evaluation
 from auto_round.schemes import PRESET_SCHEMES
@@ -642,7 +642,7 @@ def tune(args):
             " please use enable_deterministic_algorithms instead. "
         )
 
-    from auto_round.compressors import (
+    from auto_round.compressors_legacy import (
         DiffusionExtraConfig,
         ExtraConfig,
         MLLMExtraConfig,

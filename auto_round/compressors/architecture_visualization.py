@@ -129,7 +129,7 @@ def print_usage_examples():
     print("Example 1: MLLM + AutoRoundCompatible (gradient-based)")
     print("-" * 110)
     print("""
-from auto_round.compressors_new.entry import AutoRound
+from auto_round.compressors.entry import AutoRound
 from auto_round.algorithms.quantization.sign_round.config import SignRoundConfig
 
 config = SignRoundConfig(scheme="W4A16", iters=200, nsamples=128)

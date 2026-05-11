@@ -21,8 +21,8 @@ import torch
 from auto_round.algorithms.quantization.base import BaseQuantizers
 from auto_round.algorithms.quantization.rtn.config import RTNConfig
 from auto_round.algorithms.quantization.sign_round.quantizer import SignRoundQuantizer
-from auto_round.compressors_new.shard_writer import ShardWriter
-from auto_round.compressors_new.utils import (
+from auto_round.compressors.shard_writer import ShardWriter
+from auto_round.compressors.utils import (
     IndexSampler,
     block_forward,
     check_need_act_calibration,

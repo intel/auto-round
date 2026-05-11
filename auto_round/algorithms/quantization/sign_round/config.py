@@ -89,6 +89,8 @@ class SignRoundConfig(QuantizationConfig):
 
         if self.enable_adam:
             self._alg_cls = "AdamRoundQuantizer"
+        elif self.enable_alg_ext:
+            self._alg_cls = "SignRoundV2Quantizer"
 
     def check_configs(self) -> None:
         """Checks if the configurations are valid.

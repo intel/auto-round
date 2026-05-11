@@ -34,7 +34,7 @@ import torch.nn as nn
 import transformers
 
 import auto_round.envs as envs
-from auto_round.compressors.utils import BackendDataType
+from auto_round.compressors_legacy.utils import BackendDataType
 from auto_round.data_type.mxfp import FP32_EXPONENT_BIAS, FP32_MIN_NORMAL
 from auto_round.data_type.utils import reshape_pad_tensor_by_group_size, revert_tensor_by_pad
 from auto_round.utils import get_packing_device, logger

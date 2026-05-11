@@ -33,7 +33,7 @@ from typing import Callable
 
 import torch
 
-from auto_round.compressors_new.utils import check_skippable_keywords, init_cache, reset_params
+from auto_round.compressors.utils import check_skippable_keywords, init_cache, reset_params
 from auto_round.logger import logger
 from auto_round.utils import SUPPORTED_LAYER_TYPES, to_device
 

@@ -19,7 +19,7 @@ from typing import Union
 import torch
 
 from auto_round.algorithms.quantization.config import QuantizationConfig
-from auto_round.compressors_new.utils import (
+from auto_round.compressors.utils import (
     block_forward,
     check_need_act_calibration,
 )

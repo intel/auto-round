@@ -37,7 +37,7 @@ from typing import Any, Union
 
 import torch
 
-from auto_round.compressors.diffusion.compressor import DiffusionCompressor, output_configs
+from auto_round.compressors_legacy.diffusion.compressor import DiffusionCompressor, output_configs
 from auto_round.logger import logger
 from auto_round.schemes import QuantizationScheme
 from auto_round.utils import (
@@ -280,7 +280,7 @@ class HybridCompressor(DiffusionCompressor):
         self._saved_dit_model = dit_model
         self._saved_ar_model = self.ar_model
 
-        from auto_round.compressors.base import BaseCompressor
+        from auto_round.compressors_legacy.base import BaseCompressor
 
         BaseCompressor.__init__(
             self,
@@ -337,7 +337,7 @@ class HybridCompressor(DiffusionCompressor):
 
             # Preserve serialization-relevant attributes from the AR compressor
             # so save_quantized can build the correct serialization_dict.
-            from auto_round.compressors.base import SERIALIZATION_KEYS
+            from auto_round.compressors_legacy.base import SERIALIZATION_KEYS
 
             self._ar_serialization = {k: getattr(ar_compressor, k, None) for k in SERIALIZATION_KEYS}
 
@@ -381,7 +381,7 @@ class HybridCompressor(DiffusionCompressor):
 
     def _create_ar_compressor(self):
         """Create an MLLM compressor for the AR component."""
-        from auto_round.compressors.mllm.compressor import MLLMCompressor
+        from auto_round.compressors_legacy.mllm.compressor import MLLMCompressor
 
         processor = getattr(self.pipe, "processor", None)
         tokenizer = getattr(self.pipe, "tokenizer", None)
@@ -439,7 +439,7 @@ class HybridCompressor(DiffusionCompressor):
         # Replicate parent calib() with extra kwargs injected into the pipe call
         from tqdm import tqdm
 
-        from auto_round.compressors.diffusion.dataset import get_diffusion_dataloader
+        from auto_round.compressors_legacy.diffusion.dataset import get_diffusion_dataloader
         from auto_round.utils import clear_memory
 
         logger.warning(
@@ -595,7 +595,7 @@ class HybridCompressor(DiffusionCompressor):
             logger.warning("output_dir is None, skipping save")
             return
 
-        from auto_round.compressors.base import BaseCompressor
+        from auto_round.compressors_legacy.base import BaseCompressor
         from auto_round.formats import get_formats
 
         saved_formats = self.formats  # preserve original

@@ -26,7 +26,7 @@ from typing import TYPE_CHECKING, Callable, Union
 import torch
 import transformers
 
-from auto_round.compressors.utils import (
+from auto_round.compressors_legacy.utils import (
     is_block_wfp8,
     is_dynamic_afp8,
     is_dynamic_wint8aint8,
@@ -79,7 +79,7 @@ class AutoRoundExportFormat(str, Enum):
 
 
 if TYPE_CHECKING:
-    from auto_round.compressors.base import BaseCompressor
+    from auto_round.compressors_legacy.base import BaseCompressor
 
 
 def _check_compatibility(formats: list[str], ar: BaseCompressor):

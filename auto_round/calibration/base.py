@@ -29,7 +29,7 @@ from abc import ABC, abstractmethod
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
-    from auto_round.compressors_new.base import BaseCompressor
+    from auto_round.compressors.base import BaseCompressor
 
 
 class Calibrator(ABC):

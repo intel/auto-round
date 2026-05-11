@@ -12,6 +12,16 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from auto_round.compressors.diffusion.dataset import get_diffusion_dataloader
-from auto_round.compressors.diffusion.compressor import DiffusionCompressor
-from auto_round.compressors.diffusion.eval import diffusion_eval
+from auto_round.compressors_legacy.adam import AdamCompressor
+from auto_round.compressors_legacy.base import BaseCompressor
+from auto_round.compressors_legacy.base import LLMCompressor
+from auto_round.compressors_legacy.mllm.compressor import MLLMCompressor
+from auto_round.compressors_legacy.diffusion.compressor import DiffusionCompressor
+from auto_round.compressors_legacy.diffusion.hybrid import HybridCompressor
+from auto_round.compressors_legacy.config import (
+    DiffusionExtraConfig,
+    ExtraConfig,
+    MLLMExtraConfig,
+    SchemeExtraConfig,
+    TuningExtraConfig,
+)

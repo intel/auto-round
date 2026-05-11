@@ -20,7 +20,7 @@ from typing import List, Union
 import torch
 from torch.nn import Linear, Module
 
-from auto_round.compressors.utils import is_nv_fp
+from auto_round.compressors_legacy.utils import is_nv_fp
 from auto_round.data_type.register import QUANT_FUNC_WITH_DTYPE
 from auto_round.utils import check_to_quantized, logger
 
