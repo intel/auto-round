@@ -34,7 +34,7 @@ import torch.nn as nn
 import transformers
 
 import auto_round.envs as envs
-from auto_round.compressors_legacy.utils import BackendDataType, is_mx_fp, is_nv_fp
+from auto_round.compressors.utils import BackendDataType, is_mx_fp, is_nv_fp
 from auto_round.data_type.mxfp import FP32_EXPONENT_BIAS, FP32_MIN_NORMAL
 from auto_round.data_type.nvfp import cast_to_fp4, get_reciprocal
 from auto_round.data_type.utils import reshape_pad_tensor_by_group_size, revert_tensor_by_pad

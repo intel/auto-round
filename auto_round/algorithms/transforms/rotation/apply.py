@@ -29,7 +29,7 @@ import tqdm
 from auto_round.algorithms.transforms.base import BaseRotation
 from auto_round.algorithms.transforms.rotation.config import RotationConfig, normalize_rotation_config
 from auto_round.algorithms.transforms.rotation.transforms import build_hadamard_transform
-from auto_round.compressors_legacy.utils import is_nv_fp
+from auto_round.compressors.utils import is_nv_fp
 from auto_round.experimental.qmodules.base import QModuleBase
 
 __all__ = ["HadamardRotation", "apply_rotation_transform"]

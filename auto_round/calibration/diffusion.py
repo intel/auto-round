@@ -54,7 +54,7 @@ class DiffusionCalibrator(LLMCalibrator):
 
         Verbatim port of the legacy ``DiffusionMixin.calib``.
         """
-        from auto_round.compressors_legacy.diffusion.dataset import get_diffusion_dataloader
+        from auto_round.compressors.diffusion.dataset import get_diffusion_dataloader
 
         c = self.compressor
         pipe = c.model_context.pipe

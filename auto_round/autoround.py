@@ -19,21 +19,31 @@ import torch
 
 import auto_round.envs as envs
 from auto_round.compressors.model_free import ModelFreeCompressor
-from auto_round.compressors_legacy import (
-    AdamCompressor,
-    BaseCompressor,
-    DiffusionCompressor,
-    ExtraConfig,
-    LLMCompressor,
-    MLLMCompressor,
-)
-from auto_round.compressors_legacy.diffusion.hybrid import HybridCompressor, is_hybrid_diffusion_model
 from auto_round.logger import deprecated, logger
 from auto_round.schemes import QuantizationScheme
 from auto_round.utils import is_diffusion_model, is_mllm_model, is_model_free_route
 
+try:
+    from auto_round.compressors_legacy import AdamCompressor, DiffusionCompressor, LLMCompressor, MLLMCompressor
+except ImportError:
+
+    class _UnavailableLegacyCompressor:
+
+        def __init__(self, *args, **kwargs):
+            raise ImportError(
+                "The deprecated AutoRound legacy compressor classes require auto_round.compressors_legacy. "
+                "Use AutoRound with the new architecture instead."
+            )
+
+    AdamCompressor = _UnavailableLegacyCompressor
+    DiffusionCompressor = _UnavailableLegacyCompressor
+    LLMCompressor = _UnavailableLegacyCompressor
+    MLLMCompressor = _UnavailableLegacyCompressor
+
 if TYPE_CHECKING:
     from auto_round.auto_scheme.gen_auto_scheme import AutoScheme
+    from auto_round.compressors.base import BaseCompressor
+    from auto_round.compressors.config import ExtraConfig
 
 # Default to new architecture; set AR_DISABLE_NEW_ARCH=true/1 to force old architecture.
 NEW_ARCH = not envs.AR_DISABLE_NEW_ARCH
@@ -91,12 +101,12 @@ class AutoRound:
         enable_torch_compile: bool = False,
         seed: int = 42,
         enable_adam: bool = False,
-        extra_config: ExtraConfig = None,
+        extra_config: "ExtraConfig" = None,
         enable_alg_ext: bool = False,
         disable_opt_rtn: bool | None = None,
         low_cpu_mem_usage: bool = True,
         **kwargs,
-    ) -> BaseCompressor:
+    ) -> "BaseCompressor":
         """Initialize AutoRound with quantization and tuning configuration.
 
         Args:
@@ -171,6 +181,14 @@ class AutoRound:
             from auto_round.compressors.entry import AutoRoundCompatible
 
             return AutoRoundCompatible(**local_args, **kwargs)
+
+        from auto_round.compressors_legacy import (
+            AdamCompressor,
+            DiffusionCompressor,
+            LLMCompressor,
+            MLLMCompressor,
+        )
+        from auto_round.compressors_legacy.diffusion.hybrid import HybridCompressor, is_hybrid_diffusion_model
 
         # ---- Model-free fast-path detection --------------------------------
         if is_model_free_route(model, scheme, iters, disable_opt_rtn, kwargs):

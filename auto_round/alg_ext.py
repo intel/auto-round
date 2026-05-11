@@ -24,7 +24,7 @@ from torch import autocast
 from torch.functional import F
 
 from auto_round import AutoRound
-from auto_round.compressors_legacy.utils import check_need_act_calibration, is_nv_fp, is_wint4aint4
+from auto_round.compressors.utils import check_need_act_calibration, is_nv_fp, is_wint4aint4
 from auto_round.data_type.int import search_scales
 from auto_round.data_type.mxfp import MXFP_FORMAT_CACHE, quant_element
 from auto_round.data_type.nvfp import FLOAT4_E2M1_MAX, FLOAT8_E4M3_MAX, ref_nvfp4_quant

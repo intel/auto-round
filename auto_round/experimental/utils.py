@@ -16,7 +16,7 @@ from typing import Any
 
 import torch
 
-from auto_round.compressors_legacy.utils import is_mx_fp, is_nv_fp
+from auto_round.compressors.utils import is_mx_fp, is_nv_fp
 from auto_round.experimental.transform.hadamards import HADAMARDS
 from auto_round.experimental.transform.rotation_config import RotationConfig
 from auto_round.utils import logger

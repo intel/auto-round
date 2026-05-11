@@ -11,7 +11,6 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-
 """
 Extensible Module Weight Type Conversion Framework.
 
@@ -403,7 +402,7 @@ def convert_module_to_hp_if_necessary(
 
     def _sync_serialization_attrs(src_module: torch.nn.Module, dst_module: torch.nn.Module) -> None:
         """Copy serialization-related attributes from source to destination module."""
-        from auto_round.compressors_legacy.base import SERIALIZATION_KEYS
+        from auto_round.compressors.base import SERIALIZATION_KEYS
 
         orig_module_keys = list(SERIALIZATION_KEYS) + ["global_name"]
         for key in orig_module_keys:

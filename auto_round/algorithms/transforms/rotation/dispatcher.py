@@ -5,7 +5,6 @@
 # You may obtain a copy of the License at
 #
 #    http://www.apache.org/licenses/LICENSE-2.0
-
 """Unified entry point for Hadamard rotation/transform.
 
 Two backend implementations exist:
@@ -35,7 +34,7 @@ import torch
 
 import auto_round.envs as envs
 from auto_round.algorithms.transforms.rotation.config import RotationConfig, normalize_rotation_config
-from auto_round.compressors_legacy.utils import is_mx_fp, is_nv_fp
+from auto_round.compressors.utils import is_mx_fp, is_nv_fp
 from auto_round.utils import logger
 
 __all__ = ["apply_hadamard_rotation", "resolve_hadamard_backend"]

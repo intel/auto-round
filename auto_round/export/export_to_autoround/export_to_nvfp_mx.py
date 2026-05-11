@@ -24,7 +24,7 @@ import torch.nn as nn
 import transformers
 from tqdm import tqdm
 
-from auto_round.compressors_legacy.utils import is_mx_fp, is_nv_fp
+from auto_round.compressors.utils import is_mx_fp, is_nv_fp
 from auto_round.export.export_to_autoround.utils import check_neq_config
 from auto_round.export.utils import filter_quantization_config, release_layer_safely, save_model
 from auto_round.logger import logger

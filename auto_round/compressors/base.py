@@ -101,6 +101,9 @@ class SerializedCompressorConfig:
     rotation_configs: Optional[list[dict[str, Any]]] = None
 
 
+SERIALIZATION_KEYS = tuple(field.name for field in fields(SerializedCompressorConfig))
+
+
 class BaseCompressor(object):
     need_calib: bool = True
     compress_context: CompressContext = None

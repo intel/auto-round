@@ -20,7 +20,7 @@ import transformers
 from torch.functional import F
 
 import auto_round.envs as envs
-from auto_round.compressors_legacy.utils import is_nv_fp
+from auto_round.compressors.utils import is_nv_fp
 from auto_round.data_type import get_quant_func, reshape_pad_tensor_by_group_size
 from auto_round.logger import logger
 from auto_round.utils import (
