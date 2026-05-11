@@ -20,7 +20,7 @@ try:
 except Exception as error:
     assert False, f"Failed to read version from {file_path}: {error}"
 
-
+print(f"Building auto-round-lib version: {__version__} (build mode: {build_mode})")
 def get_build_version():
     if os.path.exists("PKG-INFO"):
         with open("PKG-INFO", encoding="utf-8") as f:
@@ -34,6 +34,7 @@ def get_build_version():
         result = subprocess.run(["git", "describe", "--tags"], capture_output=True, text=True, check=True)
         distance = result.stdout.strip().split("-")[-2]
         commit = result.stdout.strip().split("-")[-1]
+        print(f"Git describe output: {result.stdout.strip()}, distance: {distance}, commit: {commit}, version: {__version__}.dev{distance}+{commit}")
         return f"{__version__}.dev{distance}+{commit}"
     except subprocess.CalledProcessError:
         return __version__

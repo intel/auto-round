@@ -122,5 +122,6 @@ stages:
                     -e TWINE_USERNAME \
                     -e TWINE_PASSWORD \
                     pytorch/manylinux2_28-builder:xpu-v2.10.0-rc7 \
-                    bash -c "python -m pip install --upgrade twine \
+                    bash -c "source venv/bin/activate \
+                    && python -m pip install --upgrade twine \
                     && twine upload --repository-url https://test.pypi.org/legacy/ wheelhouse/*.whl"
