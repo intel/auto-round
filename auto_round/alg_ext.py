@@ -462,6 +462,7 @@ def wrapper_block_v2(block, enable_minmax_tuning, enable_norm_bias_tuning, devic
 
 
 def _register_act_max_hook_ext(self, model):
+
     def get_act_max_hook(module, input, output):
         if isinstance(input, (tuple, list)):
             input = input[0]

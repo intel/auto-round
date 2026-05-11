@@ -35,7 +35,7 @@ class TestAlgExt:
         (which wraps layers with DQWrapperLinear) instead of falling back to
         the plain wrapper_block (which produces WrapperLinear).
         """
-        from auto_round.alg_ext import DQWrapperLinear, dq_wrapper_block
+        from auto_round.alg_ext import dq_wrapper_block
 
         ar = AutoRound(
             tiny_qwen_model_path,
@@ -56,6 +56,28 @@ class TestAlgExt:
             "This likely means the quantizer was created before GGUF format "
             "overrides were applied (data_type was not yet 'int_asym_dq')."
         )
+
+    def test_int2_g64_enable_alg_ext_uses_wrapper_linear_v2(self, tiny_qwen_model_path):
+        """Regression test: --bits 2 --group_size 64 --enable_alg_ext uses alg ext."""
+        from auto_round.alg_ext import wrapper_block_v2
+
+        ar = AutoRound(
+            tiny_qwen_model_path,
+            bits=2,
+            group_size=64,
+            iters=1,
+            nsamples=1,
+            seqlen=32,
+            enable_alg_ext=True,
+        )
+        ar.post_init()
+
+        assert ar.quantizer.sym is True
+        assert ar.quantizer.wrapper_block.__name__ == wrapper_block_v2.__name__, (
+            f"Expected wrapper_block to be '{wrapper_block_v2.__name__}', "
+            f"got '{ar.quantizer.wrapper_block.__name__}'."
+        )
+        assert ar.quantizer._get_loss.__name__ == "_get_loss_ext"
 
     @pytest.mark.parametrize("scheme", ["MXFP4", "NVFP4", "W2A16G64", "gguf:q2_k_s,gguf:q4_k_s"])
     def test_all_support_dtype(self, scheme, tiny_qwen_model_path):
