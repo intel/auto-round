@@ -853,8 +853,11 @@ def tune(args):
         trust_remote_code=not args.disable_trust_remote_code,
         rotation_config=rot_config,
         algorithm=getattr(args, "algorithm", None),
-        **({"duo_scaling": args.duo_scaling, "n_grid": args.n_grid}
-            if getattr(args, "algorithm", None) == "awq" else {}),
+        **(
+            {"duo_scaling": args.duo_scaling, "n_grid": args.n_grid}
+            if getattr(args, "algorithm", None) == "awq"
+            else {}
+        ),
     )
 
     # ======================= Quantize and save model =======================

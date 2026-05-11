@@ -28,8 +28,9 @@ import shutil
 import pytest
 import torch
 from transformers import AutoConfig, AutoModelForCausalLM, AutoTokenizer
-from vllm.platforms import current_platform
 from vllm import LLM, SamplingParams
+from vllm.platforms import current_platform
+
 from auto_round import AutoRound
 
 from ...helpers import evaluate_accuracy, generate_prompt, get_model_path, opt_name_or_path, save_tiny_model
@@ -227,15 +228,13 @@ class TestAWQMoE:
 
         n_layers = model.config.num_hidden_layers
         attn_smooths = [n for n in smooth_names if "input_layernorm" in n or "self_attn.v_proj" in n]
-        assert len(attn_smooths) == 2 * n_layers, (
-            f"Expected {2 * n_layers} attn smooth layers, got {len(attn_smooths)}"
-        )
+        assert len(attn_smooths) == 2 * n_layers, f"Expected {2 * n_layers} attn smooth layers, got {len(attn_smooths)}"
 
         if hasattr(model.model.layers[0].mlp, "shared_expert"):
             shared_smooths = [n for n in smooth_names if "shared_expert" in n]
-            assert len(shared_smooths) == n_layers, (
-                f"Expected {n_layers} shared_expert smooth layers, got {len(shared_smooths)}"
-            )
+            assert (
+                len(shared_smooths) == n_layers
+            ), f"Expected {n_layers} shared_expert smooth layers, got {len(shared_smooths)}"
 
         del model
 
@@ -261,12 +260,12 @@ class TestAWQMoE:
         # Tiny Qwen MoE: gate/router layers stay FP, all others are W4
         assert len(other_layers) == 0, f"Unexpected bit widths: {other_layers}"
         n_layers = model.config.num_hidden_layers
-        assert len(fp_layers) == n_layers, (
-            f"Expected {n_layers} FP shared_expert_gate layers, got {len(fp_layers)}: {sorted(fp_layers)}"
-        )
-        assert len(q4_layers) == len(layer_config) - len(fp_layers), (
-            f"Expected {len(layer_config) - len(fp_layers)} W4 layers, got {len(q4_layers)}"
-        )
+        assert (
+            len(fp_layers) == n_layers
+        ), f"Expected {n_layers} FP shared_expert_gate layers, got {len(fp_layers)}: {sorted(fp_layers)}"
+        assert len(q4_layers) == len(layer_config) - len(
+            fp_layers
+        ), f"Expected {len(layer_config) - len(fp_layers)} W4 layers, got {len(q4_layers)}"
 
         for name in fp_layers:
             assert "shared_expert_gate" in name, f"Unexpected FP layer: {name}"
