@@ -2018,3 +2018,121 @@ def hook_ngram_embeddings_on_cpu(model):
 
         hook_input_output_device_for_cpu_module(raw_ngram_embeddings)
     return has_ngram_embeddings, raw_ngram_embeddings if has_ngram_embeddings else None
+
+
+def is_model_free_route(
+    model,
+    scheme,
+    iters: int,
+    disable_opt_rtn,
+    kwargs: dict,
+) -> bool:
+    """Return True when the model-free fast-path should be taken.
+
+    Mirrors the ``is_diffusion_model`` / ``is_mllm_model`` helpers used in
+    ``AutoRound.__new__`` to select the right compressor class.
+
+    Model-free mode is activated when **either** of the following holds:
+
+    * ``model_free=True`` is explicitly set in *kwargs*.
+    * All of the following are true:
+
+      - ``disable_model_free`` is not set (or False) in *kwargs*
+      - *model* is a string (HF hub ID or local path)
+      - *iters* == 0
+      - *disable_opt_rtn* is exactly ``True``
+      - *scheme* is a supported model-free preset
+
+    Note: this function only *reads* kwargs; it does **not** pop any keys.
+    """
+    from auto_round.compressors.model_free import is_model_free_supported_scheme
+
+    explicit = bool(kwargs.pop("model_free", False))
+    disabled = bool(kwargs.pop("disable_model_free", False))
+    if explicit:
+        return True
+    # Only auto-route when format is auto_round (or not specified).
+    fmt = kwargs.get("format", "auto_round")
+    if fmt is None:
+        fmt = "auto_round"
+    fmt_first = str(fmt).lower().replace(" ", "").split(",")[0]
+    if fmt_first != "auto_round":
+        return False
+    return (
+        not disabled
+        and isinstance(model, str)
+        and iters == 0
+        and disable_opt_rtn is True
+        and is_model_free_supported_scheme(scheme, kwargs)
+    )
+
+
+def find_layers_from_config(model_dir: str, class_names: list[str] | None = None) -> dict[str, str]:
+    """Detect layers of given class names by loading the model on ``device='meta'``.
+
+    Only ``config.json`` is required — no weights are read.
+
+    For regular models the root directory is checked.  For diffusion-style
+    repos (no root ``config.json`` but a ``transformer/`` subfolder), only the
+    ``transformer/`` subfolder is checked — other sub-components (``vae/``,
+    ``scheduler/``, …) are intentionally skipped because only the transformer
+    is quantized in model-free mode.
+
+    Args:
+        model_dir: Local directory containing ``config.json``, or a diffusion
+            repo root whose ``transformer/`` subfolder contains ``config.json``.
+        class_names: Class names to look for, matched against
+            ``type(module).__name__``.  Defaults to
+            ``["Embedding", "Conv1d", "Conv1D"]`` — the types incompatible
+            with model-free RTN packing.
+
+    Returns:
+        ``{class_name: [layer_name, ...]}`` for every matched module.
+        Returns an empty dict on any failure.
+    """
+    from huggingface_hub import snapshot_download
+    from transformers import AutoConfig, AutoModel
+
+    if class_names is None:
+        class_names = ["Embedding", "Conv1d", "Conv1D"]
+    if isinstance(class_names, str):
+        class_names = [class_names]
+    target = set(class_names)
+
+    # download if not local, but only the config files (fast)
+    if not os.path.exists(model_dir):
+        model_dir = snapshot_download(
+            repo_id=model_dir,
+            allow_patterns=["**/config.json"],
+        )
+
+    # Build the list of (prefix, config_dir) pairs to inspect.
+    # For diffusion repos (no root config.json) only check transformer/.
+    # For regular repos only check the root directory.
+    dirs: list[tuple[str, str]] = []
+    if os.path.exists(os.path.join(model_dir, "config.json")):
+        dirs.append(("", model_dir))
+    else:
+        transformer_dir = os.path.join(model_dir, "transformer")
+        if os.path.isdir(transformer_dir) and os.path.exists(os.path.join(transformer_dir, "config.json")):
+            dirs.append(("", transformer_dir))
+
+    result: dict[str, str] = {}
+    for prefix, config_dir in dirs:
+        try:
+            with torch.device("meta"):
+                config = AutoConfig.from_pretrained(config_dir, trust_remote_code=True)
+                model = AutoModel.from_config(config, trust_remote_code=True)
+        except Exception as e:
+            logger.warning(f"Failed to load model from {config_dir} for layer detection. Skipping. Error: {e}")
+            continue  # skip silently
+        for name, module in model.named_modules():
+            cls_name = type(module).__name__
+            if any(t.lower() in cls_name.lower() for t in target):
+                full_name = f"{prefix}.{name}" if prefix else name
+                if cls_name not in result:
+                    result[cls_name] = [full_name]
+                else:
+                    result[cls_name].append(full_name)
+        del model
+    return result

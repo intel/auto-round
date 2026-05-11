@@ -588,7 +588,7 @@ def convert_gptq_v1_to_v2_format(model: nn.Module):
 def _maybe_convert_gptq_to_mlx(model: nn.Module, used_backends: list[str]) -> None:
     """On macOS with MLX available, convert GPTQ-format QuantLinear layers to MLX QuantLinearMLX.
 
-    This is the MLX equivalent of the IPEX/ARK post_init step: when an MLX backend was
+    This is the MLX equivalent of the ARK post_init step: when an MLX backend was
     selected but the checkpoint layers were materialized in GPTQ packing format, we
     re-pack them into the MLX format so that ``mx.quantized_matmul`` can be used for
     hardware-accelerated inference on Apple Silicon. All conversion logic lives in
@@ -654,7 +654,7 @@ def post_init(model: torch.nn.Module, used_backends: list[str]) -> None:
     """Performs post-initialization for different quantization backends.
 
     This function handles backend-specific post-init steps, including AutoGPTQ,
-    GPTQModel, IPEX layers, and ExLLaMAv2 kernels. It also ensures the
+    GPTQModel, and ExLLaMAv2 kernels. It also ensures the
     model's data type is compatible with all used backends.
 
     Args:
@@ -668,7 +668,7 @@ def post_init(model: torch.nn.Module, used_backends: list[str]) -> None:
 
     need_autogptq_init = False
     need_gptqmodel_init = False
-    need_ipex_init = False
+    need_ark_init = False
     used_gptq_exllamav2 = False
     # Determine which backends require post-init
     for backend in used_backends:
@@ -678,13 +678,8 @@ def post_init(model: torch.nn.Module, used_backends: list[str]) -> None:
                 used_gptq_exllamav2 = True
         elif backend.startswith("gptqmodel"):
             need_gptqmodel_init = True
-        elif backend.startswith(("ipex", "auto_round_kernel")):
-            need_ipex_init = True
-            if backend.startswith("ipex"):
-                logger.warning_once(
-                    f"Backend '{backend}' is deprecated and will be removed in a future release. "
-                    "Please use the 'ark' backend instead (requires auto-round-lib and torch>=2.8.0)."
-                )
+        elif backend.startswith("auto_round_kernel"):
+            need_ark_init = True
 
     # AutoGPTQ post-init
     if need_autogptq_init:
@@ -716,12 +711,12 @@ def post_init(model: torch.nn.Module, used_backends: list[str]) -> None:
                     m.validate_once()
             model = gptq_post_init(model, use_act_order=False)
 
-    # IPEX post-init
-    if need_ipex_init:
+    # ARK post-init
+    if need_ark_init:
         message = "repacking to CPU/XPU format"
-        layers = []  ## ipex post_init  will add one more layer
+        layers = []  ## ark post_init  will add one more layer
         for n, m in model.named_modules():
-            if hasattr(m, "QUANT_TYPE") and ("ark" in m.QUANT_TYPE or "ipex" in m.QUANT_TYPE):
+            if hasattr(m, "QUANT_TYPE") and "ark" in m.QUANT_TYPE:
                 layers.append(m)
 
         for layer in tqdm(layers, desc=message, total=len(layers), leave=True):

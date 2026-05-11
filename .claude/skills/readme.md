@@ -22,7 +22,7 @@ include:
 - `add-vlm-model`: walks through adding support for a new Vision-Language Model,
   including template, calibration dataset, and block handler registration
 - `add-inference-backend`: guides integration of a new hardware inference backend
-  (e.g., CUDA, HPU, IPEX, Triton)
+  (e.g., CUDA, HPU, Triton)
 - `review-pr`: provides a structured workflow for reviewing pull requests,
   including Chinese translation verification
 

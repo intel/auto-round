@@ -17,11 +17,13 @@ import os
 import re
 import sys
 
+import torch
+
 from auto_round.auto_scheme import AutoScheme
 from auto_round.compressors import BaseCompressor
 from auto_round.eval.eval_cli import EvalArgumentParser, eval, eval_task_by_task
 from auto_round.eval.evaluation import run_model_evaluation
-from auto_round.schemes import PRESET_SCHEMES
+from auto_round.schemes import PRESET_SCHEMES, preset_name_to_scheme
 from auto_round.utils import (
     clear_memory,
     get_device_and_parallelism,
@@ -183,7 +185,6 @@ class BasicArgumentParser(argparse.ArgumentParser):
             help="Disable trusting remote code when loading models. "
             "Use for security if you don't trust the model source.",
         )
-
         tuning = self.add_argument_group("Tuning Arguments")
         tuning.add_argument(
             "--ignore_scale_zp_bits",
@@ -287,13 +288,28 @@ class BasicArgumentParser(argparse.ArgumentParser):
             help="Disable optimization for RTN (Round-To-Nearest) mode when iters=0. "
             "RTN is fast but less accurate; keeping optimization enabled is recommended.",
         )
-
         group_opt_rtn.add_argument(
             "--enable_opt_rtn",
             action="store_const",
             const=False,
             dest="disable_opt_rtn",
             help="Enable optimization for RTN mode when iters=0.",
+        )
+        group_model_free = tuning.add_mutually_exclusive_group()
+        group_model_free.add_argument(
+            "--model_free",
+            action="store_true",
+            help="Force model-free quantization mode. "
+            "Downloads and quantizes safetensors files directly using RTN, "
+            "without loading the full model into memory. "
+            "Only supports auto_round output format.",
+        )
+        group_model_free.add_argument(
+            "--disable_model_free",
+            action="store_true",
+            help="Disable the automatic model-free routing that activates when "
+            "--iters 0 --disable_opt_rtn is combined with a supported INT WOQ scheme. "
+            "Use this to force the regular AutoRound flow.",
         )
 
         scheme = self.add_argument_group("Scheme Arguments")
@@ -595,9 +611,70 @@ def tune(args):
     if "marlin" in args.format and args.asym is True:
         raise RuntimeError("marlin backend only supports sym quantization, please remove --asym")
 
-    device_str, use_auto_mapping = get_device_and_parallelism(args.device_map)
+    # ======================= Model-Free Mode =======================
+    # The model-free path is now integrated into AutoRound itself.  We only
+    # need to forward the relevant flags; AutoRound handles auto-routing
+    # (when iters=0 + disable_opt_rtn + supported scheme) and explicit
+    # ``--model_free``.  Layer config / ignore-layers / output-dir handling
+    # for model-free still needs special treatment because the model is
+    # never loaded here.
+    explicit_model_free = bool(getattr(args, "model_free", False))
+    from auto_round.compressors.model_free import is_model_free_supported_scheme
 
-    import torch
+    auto_model_free = (
+        not explicit_model_free
+        and not getattr(args, "disable_model_free", False)
+        and getattr(args, "iters", None) == 0
+        and getattr(args, "disable_opt_rtn", None) is True
+        and is_model_free_supported_scheme(args.scheme, vars(args))
+        and (
+            str(getattr(args, "format", "auto_round") or "auto_round").lower().replace(" ", "").split(",")[0]
+            == "auto_round"
+            or format.startswith("auto_round")
+        )
+    )
+
+    if explicit_model_free or auto_model_free:
+        scheme = args.scheme.upper()
+        if scheme not in PRESET_SCHEMES:
+            raise ValueError(f"{scheme} is not supported. Only {list(PRESET_SCHEMES.keys())} are supported")
+        if not is_model_free_supported_scheme(scheme, vars(args)) and not explicit_model_free:
+            logger.info(
+                f"Auto-routing to model-free is skipped: scheme '{scheme}' is not in "
+                f"the model-free allowlist. Falling back to the regular AutoRound flow."
+            )
+        else:
+            layer_config = {}
+            if args.layer_config:
+                layer_config = parse_layer_config_arg(args.layer_config)
+
+            model_name = args.model.rstrip("/")
+            output_dir = args.output_dir
+            if output_dir == "./tmp_autoround" and model_name.split("/")[-1].strip(".") != "":
+                s = preset_name_to_scheme(scheme)
+                suffix = f"g{s.group_size}" if s.group_size > 0 else f"a{s.act_bits}"
+                output_dir = os.path.join(args.output_dir, model_name.split("/")[-1] + f"-w{s.bits}{suffix}")
+
+            from auto_round import AutoRound
+
+            ar = AutoRound(
+                model_name,
+                scheme=scheme,
+                sym=getattr(args, "sym", None),
+                group_size=getattr(args, "group_size", None),
+                iters=0,
+                disable_opt_rtn=True,
+                model_free=True,
+                layer_config=layer_config,
+                ignore_layers=args.ignore_layers,
+                quant_lm_head=getattr(args, "quant_lm_head", False),
+                quant_nontext_module=getattr(args, "quant_nontext_module", False),
+                device_map=args.device_map,
+            )
+            ar.quantize_and_save(output_dir=output_dir, format=args.format)  # pylint: disable=E1101
+            return
+
+    device_str, use_auto_mapping = get_device_and_parallelism(args.device_map)
 
     if args.enable_torch_compile:
         logger.info(
