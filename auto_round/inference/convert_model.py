@@ -479,7 +479,10 @@ def _create_quant_layer(layer, layer_backend, config, in_features, out_features,
             bias=bias,
             weight_dtype=layer.weight.dtype,
         )
-    if "awq" in layer_backend and f"{QuantLinear.__module__}.{QuantLinear.__class__.__name__}" == "auto_round_kernel.qlinear.QuantLinearAWQ":
+    if (
+        "awq" in layer_backend
+        and f"{QuantLinear.__module__}.{QuantLinear.__class__.__name__}" == "auto_round_kernel.qlinear.QuantLinearAWQ"
+    ):
         return QuantLinear.from_linear(
             layer, config["bits"], config["group_size"], init_only=True, has_zero_points=not config["sym"]
         )
