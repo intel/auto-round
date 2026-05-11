@@ -199,16 +199,14 @@ class TestAWQMoE:
         # Must have attention-related mappings (input_layernorm→qkv, v_proj→o_proj)
         n_layers = model.config.num_hidden_layers
         attn_smooths = [n for n in smooth_names if "input_layernorm" in n or "self_attn.v_proj" in n]
-        assert len(attn_smooths) == 2 * n_layers, (
-            f"Expected {2 * n_layers} attn smooth layers, got {len(attn_smooths)}"
-        )
+        assert len(attn_smooths) == 2 * n_layers, f"Expected {2 * n_layers} attn smooth layers, got {len(attn_smooths)}"
 
         # Shared expert up→down should resolve at block level
         if hasattr(model.model.layers[0].mlp, "shared_expert"):
             shared_smooths = [n for n in smooth_names if "shared_expert" in n]
-            assert len(shared_smooths) == n_layers, (
-                f"Expected {n_layers} shared_expert smooth layers, got {len(shared_smooths)}"
-            )
+            assert (
+                len(shared_smooths) == n_layers
+            ), f"Expected {n_layers} shared_expert smooth layers, got {len(shared_smooths)}"
 
         del model
 
@@ -233,12 +231,12 @@ class TestAWQMoE:
         # Tiny Qwen MoE: gate/router layers stay FP, all others are W4
         assert len(other_layers) == 0, f"Unexpected bit widths: {other_layers}"
         n_layers = model.config.num_hidden_layers
-        assert len(fp_layers) == n_layers, (
-            f"Expected {n_layers} FP shared_expert_gate layers, got {len(fp_layers)}: {sorted(fp_layers)}"
-        )
-        assert len(q4_layers) == len(layer_config) - len(fp_layers), (
-            f"Expected {len(layer_config) - len(fp_layers)} W4 layers, got {len(q4_layers)}"
-        )
+        assert (
+            len(fp_layers) == n_layers
+        ), f"Expected {n_layers} FP shared_expert_gate layers, got {len(fp_layers)}: {sorted(fp_layers)}"
+        assert len(q4_layers) == len(layer_config) - len(
+            fp_layers
+        ), f"Expected {len(layer_config) - len(fp_layers)} W4 layers, got {len(q4_layers)}"
 
         for name in fp_layers:
             assert "shared_expert_gate" in name, f"Unexpected FP layer: {name}"
