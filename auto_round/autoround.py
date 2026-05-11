@@ -18,6 +18,7 @@ from typing import TYPE_CHECKING, Optional, Union
 import torch
 
 import auto_round.envs as envs
+from auto_round.compressors.model_free import ModelFreeCompressor
 from auto_round.compressors_legacy import (
     AdamCompressor,
     BaseCompressor,
@@ -29,7 +30,7 @@ from auto_round.compressors_legacy import (
 from auto_round.compressors_legacy.diffusion.hybrid import HybridCompressor, is_hybrid_diffusion_model
 from auto_round.logger import deprecated, logger
 from auto_round.schemes import QuantizationScheme
-from auto_round.utils import is_diffusion_model, is_mllm_model
+from auto_round.utils import is_diffusion_model, is_mllm_model, is_model_free_route
 
 if TYPE_CHECKING:
     from auto_round.auto_scheme.gen_auto_scheme import AutoScheme
@@ -170,6 +171,22 @@ class AutoRound:
             from auto_round.compressors.entry import AutoRoundCompatible
 
             return AutoRoundCompatible(**local_args, **kwargs)
+
+        # ---- Model-free fast-path detection --------------------------------
+        if is_model_free_route(model, scheme, iters, disable_opt_rtn, kwargs):
+            if not isinstance(model, str):
+                raise ValueError("model_free=True requires `model` to be a HuggingFace ID or local path string.")
+            if not bool(kwargs.get("model_free", False)):
+                logger.info(
+                    "Auto-routing to model-free quantization "
+                    "(iters=0, disable_opt_rtn=True, supported scheme). "
+                    "Pass disable_model_free=True to use the regular flow."
+                )
+            if extra_config is not None:
+                local_args.update(extra_config.to_dict())
+            local_args["model_name_or_path"] = local_args.pop("model")
+            return ModelFreeCompressor(**local_args, **kwargs)
+        # --------------------------------------------------------------------
 
         model_cls = []
 

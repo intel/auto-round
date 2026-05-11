@@ -18,16 +18,32 @@
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
-    from auto_round.compressors.data_driven import DataDrivenCompressor, CalibratedRTNCompressor
+    from auto_round.compressors.base import BaseCompressor
+    from auto_round.compressors.config import (
+        DiffusionExtraConfig,
+        ExtraConfig,
+        MLLMExtraConfig,
+        SchemeExtraConfig,
+        TuningExtraConfig,
+    )
+    from auto_round.compressors.data_driven import CalibratedRTNCompressor, DataDrivenCompressor
     from auto_round.compressors.entry import AutoRoundCompatible, AutoRound
+    from auto_round.compressors.model_free import ModelFreeCompressor
     from auto_round.compressors.zero_shot import ZeroShotCompressor
 
 __all__ = [
     "AutoRound",
+    "BaseCompressor",
     "DataDrivenCompressor",
     "CalibratedRTNCompressor",
     "ZeroShotCompressor",
     "AutoRoundCompatible",
+    "ModelFreeCompressor",
+    "ExtraConfig",
+    "TuningExtraConfig",
+    "SchemeExtraConfig",
+    "MLLMExtraConfig",
+    "DiffusionExtraConfig",
 ]
 
 
@@ -39,6 +55,10 @@ def __getattr__(name):
         if name == "AutoRound":
             return AutoRound
         return AutoRoundCompatible
+    elif name == "BaseCompressor":
+        from auto_round.compressors.base import BaseCompressor
+
+        return BaseCompressor
     elif name in ("DataDrivenCompressor", "CalibratedRTNCompressor"):
         from auto_round.compressors.data_driven import DataDrivenCompressor, CalibratedRTNCompressor
 
@@ -50,4 +70,24 @@ def __getattr__(name):
         from auto_round.compressors.zero_shot import ZeroShotCompressor
 
         return ZeroShotCompressor
+    elif name == "ModelFreeCompressor":
+        from auto_round.compressors.model_free import ModelFreeCompressor
+
+        return ModelFreeCompressor
+    elif name in ("ExtraConfig", "TuningExtraConfig", "SchemeExtraConfig", "MLLMExtraConfig", "DiffusionExtraConfig"):
+        from auto_round.compressors.config import (
+            DiffusionExtraConfig,
+            ExtraConfig,
+            MLLMExtraConfig,
+            SchemeExtraConfig,
+            TuningExtraConfig,
+        )
+
+        return {
+            "ExtraConfig": ExtraConfig,
+            "TuningExtraConfig": TuningExtraConfig,
+            "SchemeExtraConfig": SchemeExtraConfig,
+            "MLLMExtraConfig": MLLMExtraConfig,
+            "DiffusionExtraConfig": DiffusionExtraConfig,
+        }[name]
     raise AttributeError(f"module '{__name__}' has no attribute '{name}'")
