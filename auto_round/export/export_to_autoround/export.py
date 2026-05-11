@@ -44,6 +44,7 @@ from auto_round.utils import (
     check_start_with_block_name,
     check_to_quantized,
     copy_python_files_from_model_cache,
+    get_block_names,
     get_module,
     set_module,
     to_standard_regex,

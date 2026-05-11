@@ -606,15 +606,17 @@ def _handle_special_schemes(
             from auto_round.utils import INNER_SUPPORTED_LAYER_TYPES
 
             inner_supported_types = INNER_SUPPORTED_LAYER_TYPES
+        non_text_keywords = ("vision", "visual", "image", "img", "video", "audio", "speech")
         for n, m in model.named_modules():
             if n in layer_config:
                 continue
             if type(m) in supported_types or type(m) in inner_supported_types:
+                if mllm and any(key in n.lower() for key in non_text_keywords):
+                    continue
                 if "expert" in n and "shared" not in n:
                     layer_config[n] = {"bits": 4, "data_type": "int"}
                 elif n != lm_head_name and mllm:
-                    # layer_config[n] = {"bits": 16}
-                    continue
+                    layer_config[n] = {"bits": 16}
                 elif n != lm_head_name:
                     layer_config[n] = {"bits": 8, "data_type": "int"}
                 elif n == lm_head_name and quant_lm_head:
