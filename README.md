@@ -24,6 +24,9 @@
 ---
 <div align="left">
 
+## Notes
+If you are using the main branch, please run `export AR_DISABLE_NEW_ARCH=1` to disable the new architecture, as it is currently not stable.
+
 ## 🚀 What is AutoRound?
 
 AutoRound is an advanced quantization toolkit designed for Large Language Models (LLMs) and Vision-Language Models (VLMs). 
