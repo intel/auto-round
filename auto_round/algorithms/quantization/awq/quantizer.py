@@ -391,10 +391,12 @@ class AWQQuantizer(RTNQuantizer):
                     for duo_scaling in [False, True]
                 ]
             case False:
-                return [(grid_idx / (self.n_grid - 1), False) for grid_idx in range(self.n_grid)]
+                n_grid = max(self.n_grid, 2)
+                return [(grid_idx / (n_grid - 1), False) for grid_idx in range(n_grid)]
             # True: include identity (0.0, False) as first, then duo points
             case True:
-                return [(0.0, False)] + [(grid_idx / (self.n_grid - 2), True) for grid_idx in range(self.n_grid - 1)]
+                n_grid = max(self.n_grid, 3)
+                return [(0.0, False)] + [(grid_idx / (n_grid - 2), True) for grid_idx in range(n_grid - 1)]
             case _:
                 raise ValueError(f"Found unexpected duo_scaling configuration {self.duo_scaling}")
 

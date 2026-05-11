@@ -439,12 +439,14 @@ class AutoRoundCompatible:
         act_data_type = kwargs.pop("act_data_type", None)
         act_dynamic = kwargs.pop("act_dynamic", None)
 
+        # Pop AWQ-only kwargs early so they don't leak into non-AWQ constructors
+        duo_scaling = kwargs.pop("duo_scaling", True)
+        n_grid = kwargs.pop("n_grid", 20)
+        awq_mappings = kwargs.pop("mappings", None)
+
         # Decide which algorithm to use
         if algorithm and algorithm.lower() == "awq":
             # AWQ mode: activation-aware weight quantization
-            duo_scaling = kwargs.pop("duo_scaling", True)
-            n_grid = kwargs.pop("n_grid", 20)
-            awq_mappings = kwargs.pop("mappings", None)
             config = AWQConfig(
                 bits=bits,
                 group_size=group_size,
@@ -463,7 +465,7 @@ class AutoRoundCompatible:
                 mappings=awq_mappings,
                 **common_config_kwargs,
             )
-        elif iters == 0:
+        elif (algorithm and algorithm.lower() == "rtn") or iters == 0:
             # RTN mode
             disable_opt_rtn = kwargs.pop("disable_opt_rtn", None)
             config = RTNConfig(

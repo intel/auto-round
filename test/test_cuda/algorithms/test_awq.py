@@ -27,9 +27,9 @@ import shutil
 
 import pytest
 import torch
-import transformers
 from transformers import AutoConfig, AutoModelForCausalLM, AutoTokenizer
-
+from vllm.platforms import current_platform
+from vllm import LLM, SamplingParams
 from auto_round import AutoRound
 
 from ...helpers import evaluate_accuracy, generate_prompt, get_model_path, opt_name_or_path, save_tiny_model
@@ -125,7 +125,7 @@ class TestAWQW8A8LLMCompressor:
         yield
         shutil.rmtree(self.save_dir, ignore_errors=True)
 
-    def test_awq_w8a8_llmc_export_config_args(self, tiny_opt_model_path):
+    def test_llmc_awq_w8a8_export_config_args(self, tiny_opt_model_path):
         """W8A8 AWQ → llm_compressor: verify compressed-tensors metadata fields."""
         ar = AutoRound(
             tiny_opt_model_path,
@@ -164,9 +164,10 @@ class TestAWQW8A8LLMCompressor:
             scale = f.get_tensor("model.decoder.layers.0.self_attn.k_proj.weight_scale")
             assert scale.shape[1] == 1, f"Expected per-channel scale shape (out, 1), got {scale.shape}"
 
-    def test_awq_w8a8_llmc_vllm_inference(self, tiny_opt_model_path):
+    @pytest.mark.skip_ci(reason="due to vllm and CT Dependency conflict.")
+    def test_vllm_awq_w8a8_llmc_inference(self, tiny_opt_model_path, monkeypatch):
         """W8A8 AWQ → llm_compressor → vLLM: end-to-end inference test."""
-        from vllm import LLM, SamplingParams
+        monkeypatch.setenv("VLLM_WORKER_MULTIPROC_METHOD", "spawn")
 
         ar = AutoRound(
             tiny_opt_model_path,
@@ -178,8 +179,7 @@ class TestAWQW8A8LLMCompressor:
         )
         _, save_path = ar.quantize_and_save(output_dir=self.save_dir, format="llm_compressor")
 
-        os.environ["VLLM_WORKER_MULTIPROC_METHOD"] = "spawn"
-        sampling_params = SamplingParams(temperature=0.0, max_tokens=50)
+        sampling_params = SamplingParams(temperature=0.8, top_p=0.95, max_tokens=50)
         llm = LLM(
             model=save_path,
             trust_remote_code=True,
@@ -227,13 +227,15 @@ class TestAWQMoE:
 
         n_layers = model.config.num_hidden_layers
         attn_smooths = [n for n in smooth_names if "input_layernorm" in n or "self_attn.v_proj" in n]
-        assert len(attn_smooths) == 2 * n_layers, f"Expected {2 * n_layers} attn smooth layers, got {len(attn_smooths)}"
+        assert len(attn_smooths) == 2 * n_layers, (
+            f"Expected {2 * n_layers} attn smooth layers, got {len(attn_smooths)}"
+        )
 
         if hasattr(model.model.layers[0].mlp, "shared_expert"):
             shared_smooths = [n for n in smooth_names if "shared_expert" in n]
-            assert (
-                len(shared_smooths) == n_layers
-            ), f"Expected {n_layers} shared_expert smooth layers, got {len(shared_smooths)}"
+            assert len(shared_smooths) == n_layers, (
+                f"Expected {n_layers} shared_expert smooth layers, got {len(shared_smooths)}"
+            )
 
         del model
 
@@ -259,12 +261,12 @@ class TestAWQMoE:
         # Tiny Qwen MoE: gate/router layers stay FP, all others are W4
         assert len(other_layers) == 0, f"Unexpected bit widths: {other_layers}"
         n_layers = model.config.num_hidden_layers
-        assert (
-            len(fp_layers) == n_layers
-        ), f"Expected {n_layers} FP shared_expert_gate layers, got {len(fp_layers)}: {sorted(fp_layers)}"
-        assert len(q4_layers) == len(layer_config) - len(
-            fp_layers
-        ), f"Expected {len(layer_config) - len(fp_layers)} W4 layers, got {len(q4_layers)}"
+        assert len(fp_layers) == n_layers, (
+            f"Expected {n_layers} FP shared_expert_gate layers, got {len(fp_layers)}: {sorted(fp_layers)}"
+        )
+        assert len(q4_layers) == len(layer_config) - len(fp_layers), (
+            f"Expected {len(layer_config) - len(fp_layers)} W4 layers, got {len(q4_layers)}"
+        )
 
         for name in fp_layers:
             assert "shared_expert_gate" in name, f"Unexpected FP layer: {name}"

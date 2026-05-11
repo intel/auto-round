@@ -79,7 +79,7 @@ class BasicArgumentParser(argparse.ArgumentParser):
         basic.add_argument(
             "--algorithm",
             default=None,
-            type=str,
+            type=str.lower,
             choices=["auto_round", "rtn", "awq"],
             help="Quantization algorithm to use. "
             "auto_round: SignSGD-based optimization (default when iters > 0). "
@@ -853,8 +853,8 @@ def tune(args):
         trust_remote_code=not args.disable_trust_remote_code,
         rotation_config=rot_config,
         algorithm=getattr(args, "algorithm", None),
-        duo_scaling=getattr(args, "duo_scaling", True),
-        n_grid=getattr(args, "n_grid", 20),
+        **({"duo_scaling": args.duo_scaling, "n_grid": args.n_grid}
+            if getattr(args, "algorithm", None) == "awq" else {}),
     )
 
     # ======================= Quantize and save model =======================
