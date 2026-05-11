@@ -72,7 +72,7 @@ from auto_round.schemes import (
     preset_name_to_scheme,
     scheme_to_preset_name,
 )
-from auto_round.special_model_handler import get_predefined_fixed_attr, get_predefined_ignore_layers, update_module
+from auto_round.special_model_handler import get_predefined_ignore_layers, update_module
 from auto_round.utils import (
     INNER_SUPPORTED_LAYER_TYPES,
     SUPPORTED_DTYPES,
@@ -599,9 +599,6 @@ class BaseCompressor(object):
 
         self.blocks_requiring_input_ids = []
         self.has_variable_block_shape = False
-        fixed_attr = get_predefined_fixed_attr(self.model) or {}
-        for key, value in fixed_attr.items():
-            setattr(self, key, value)
 
     def _gen_auto_scheme(self) -> dict[str, dict]:
         if self.mllm:
