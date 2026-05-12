@@ -584,6 +584,7 @@ class TestCopyMissingTensorsFromSource:
         _write_config(tgt)
         copy_missing_tensors_from_source(src, tgt)
         assert not os.path.exists(os.path.join(tgt, "model_extra_tensors.safetensors"))
+
     def test_talker_missing_projection_is_copied_by_exact_name(self):
         """Talker expert tensors are preserved by exact source key, even when sibling projections exist."""
         with tempfile.TemporaryDirectory() as source_dir, tempfile.TemporaryDirectory() as target_dir:
