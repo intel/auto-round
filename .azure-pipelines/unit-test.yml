@@ -14,12 +14,13 @@ pr:
       - setup.py
       - requirements.txt
       - requirements-cpu.txt
+      - .azure-pipelines/build-auto-round-lib.yml
       - .azure-pipelines/scripts/ut
       - .azure-pipelines/unit-test.yml
+      - .azure-pipelines/template/lib-build-template.yml
       - .azure-pipelines/template/ut-template.yml
       - .azure-pipelines/template/docker-template.yml
     exclude:
-      - auto_round_extension/ark
       - test/test_hpu
       - test/test_ark
       - test/test_xpu
@@ -41,9 +42,17 @@ variables:
   REPO: $(Build.Repository.Uri)
 
 stages:
+  - template: template/lib-build-template.yml
+    parameters:
+      enableChangeDetection: true
+      publishToTestPyPI: false
+
   - stage: Unit_test
     displayName: Unit Test
-    dependsOn: []
+    dependsOn: [DetectArkChanges, BuildArkWheel]
+    condition: and(succeeded('DetectArkChanges'), in(dependencies.BuildArkWheel.result, 'Succeeded', 'Skipped'))
+    variables:
+      BUILD_ARK_WHEEL: $[ stageDependencies.DetectArkChanges.Detect.outputs['SetArkWheelFlag.BUILD_ARK_WHEEL'] ]
     jobs:
       - job:
         timeoutInMinutes: 120
@@ -68,6 +77,7 @@ stages:
               utArtifact: "ut-$(PART)"
               utTestMode: $(PART)
               utContainerName: "AutoRoundUnitTest$(NODE_LABEL)"
+              buildARKWheel: $(BUILD_ARK_WHEEL)
 
   - stage: Coverage
     displayName: "Collect Coverage"

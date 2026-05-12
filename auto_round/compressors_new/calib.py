@@ -788,14 +788,21 @@ class CalibCompressor(BaseCompressor):
             ``enable_quanted_input`` is ``False``), and *reference_output* is the
             full-precision reference output collected before optimization.
         """
-        assert not self.mllm and not self.diffusion, (
-            f"Currently, {self.__class__.__name__} does not support quantize_block " "for MLLM / diffusion models."
-        )
+        assert (
+            not self.diffusion
+        ), f"Currently, {self.__class__.__name__} does not support quantize_block for diffusion models."
 
         # Ensure post_init has been called (sets up model_context, compress_context,
         # quantizer, layer_config, etc.).
         if not self._post_init_done:
             self.post_init()
+
+        # When called from LLM-Compressor, `wrapped_model` is a single decoder layer
+        # (not the full VL model), so it must not be treated as an MLLM regardless of
+        # whether the original model had multimodal assets.  Force is_mllm=False for
+        # the duration of this call to stay on the standard LLM quantize_block path.
+        orig_is_mllm = self.model_context.is_mllm
+        self.model_context.is_mllm = False
 
         self.normalize_decoding_layer_inputs_(inputs)
         block_inputs = self.inputs[self.quant_block_list[0][0]]
@@ -881,6 +888,7 @@ class CalibCompressor(BaseCompressor):
             accelerate.hooks.remove_hook_from_submodules(block)
         mv_module_from_gpu(block)
 
+        self.model_context.is_mllm = orig_is_mllm
         return q_outputs, reference_output
 
     def _quantize_blocks(

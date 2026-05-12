@@ -36,10 +36,12 @@ from auto_round.schemes import QuantizationScheme
 from auto_round.special_model_handler import update_module
 from auto_round.utils import (
     SUPPORTED_LAYER_TYPES,
+    apply_checkpoint_conversion_mapping,
     check_start_with_block_name,
     check_to_quantized,
     find_matching_blocks,
     get_block_names,
+    get_checkpoint_conversion_mapping,
     get_module,
     is_hpex_available,
     is_transformers_version_greater_or_equal_5,
@@ -271,12 +273,15 @@ def get_layer_config(model, quantization_config):
     )
 
     # Determine the quantization block list
+    checkpoint_conversion_mapping = get_checkpoint_conversion_mapping(model)
     quant_block_list = getattr(quantization_config, "quant_block_list", None)
     if quant_block_list is not None:
         # Handle nested list format: [[block1, block2, ...], ...] -> [prefix1, ...]
         if quant_block_list and isinstance(quant_block_list[0], (list, tuple)):
             for i in range(len(quant_block_list)):
-                quant_block_list[i] = os.path.commonprefix(quant_block_list[i]).rstrip(".")
+                quant_block_list[i] = apply_checkpoint_conversion_mapping(
+                    os.path.commonprefix(quant_block_list[i]).rstrip("."), checkpoint_conversion_mapping
+                )
     elif quant_block_list is None:
         to_quant_block_names = getattr(quantization_config, "block_name_to_quantize", None)  # Prioritize this parameter
         if to_quant_block_names is None:
@@ -293,6 +298,10 @@ def get_layer_config(model, quantization_config):
             # Speed up the matching
             for i in range(len(quant_block_list)):
                 quant_block_list[i] = os.path.commonprefix(quant_block_list[i]).rstrip(".")
+        for i in range(len(quant_block_list)):
+            quant_block_list[i] = apply_checkpoint_conversion_mapping(
+                quant_block_list[i], checkpoint_conversion_mapping
+            )
 
     # Get layer names that will be quantized
     layer_names = []
@@ -469,9 +478,6 @@ def _create_quant_layer(layer, layer_backend, config, in_features, out_features,
             bias=bias,
         )
 
-    # Special handling for auto-round-lib AWQ layers
-    from auto_round_extension.ark.qlinear import QuantLinearAWQ
-
     if "auto_round_kernel" in layer_backend:
         return QuantLinear(
             bits=config["bits"],
@@ -482,7 +488,10 @@ def _create_quant_layer(layer, layer_backend, config, in_features, out_features,
             bias=bias,
             weight_dtype=layer.weight.dtype,
         )
-    if "awq" in layer_backend and isinstance(QuantLinear, QuantLinearAWQ):
+    if (
+        "awq" in layer_backend
+        and f"{QuantLinear.__module__}.{QuantLinear.__class__.__name__}" == "auto_round_kernel.qlinear.QuantLinearAWQ"
+    ):
         return QuantLinear.from_linear(
             layer, config["bits"], config["group_size"], init_only=True, has_zero_points=not config["sym"]
         )
@@ -579,7 +588,7 @@ def convert_gptq_v1_to_v2_format(model: nn.Module):
 def _maybe_convert_gptq_to_mlx(model: nn.Module, used_backends: list[str]) -> None:
     """On macOS with MLX available, convert GPTQ-format QuantLinear layers to MLX QuantLinearMLX.
 
-    This is the MLX equivalent of the IPEX/ARK post_init step: when an MLX backend was
+    This is the MLX equivalent of the ARK post_init step: when an MLX backend was
     selected but the checkpoint layers were materialized in GPTQ packing format, we
     re-pack them into the MLX format so that ``mx.quantized_matmul`` can be used for
     hardware-accelerated inference on Apple Silicon. All conversion logic lives in
@@ -645,7 +654,7 @@ def post_init(model: torch.nn.Module, used_backends: list[str]) -> None:
     """Performs post-initialization for different quantization backends.
 
     This function handles backend-specific post-init steps, including AutoGPTQ,
-    GPTQModel, IPEX layers, and ExLLaMAv2 kernels. It also ensures the
+    GPTQModel, and ExLLaMAv2 kernels. It also ensures the
     model's data type is compatible with all used backends.
 
     Args:
@@ -659,7 +668,7 @@ def post_init(model: torch.nn.Module, used_backends: list[str]) -> None:
 
     need_autogptq_init = False
     need_gptqmodel_init = False
-    need_ipex_init = False
+    need_ark_init = False
     used_gptq_exllamav2 = False
     # Determine which backends require post-init
     for backend in used_backends:
@@ -669,13 +678,8 @@ def post_init(model: torch.nn.Module, used_backends: list[str]) -> None:
                 used_gptq_exllamav2 = True
         elif backend.startswith("gptqmodel"):
             need_gptqmodel_init = True
-        elif backend.startswith(("ipex", "auto_round_kernel")):
-            need_ipex_init = True
-            if backend.startswith("ipex"):
-                logger.warning_once(
-                    f"Backend '{backend}' is deprecated and will be removed in a future release. "
-                    "Please use the 'ark' backend instead (requires auto-round-lib and torch>=2.8.0)."
-                )
+        elif backend.startswith("auto_round_kernel"):
+            need_ark_init = True
 
     # AutoGPTQ post-init
     if need_autogptq_init:
@@ -707,12 +711,12 @@ def post_init(model: torch.nn.Module, used_backends: list[str]) -> None:
                     m.validate_once()
             model = gptq_post_init(model, use_act_order=False)
 
-    # IPEX post-init
-    if need_ipex_init:
+    # ARK post-init
+    if need_ark_init:
         message = "repacking to CPU/XPU format"
-        layers = []  ## ipex post_init  will add one more layer
+        layers = []  ## ark post_init  will add one more layer
         for n, m in model.named_modules():
-            if hasattr(m, "QUANT_TYPE") and ("ark" in m.QUANT_TYPE or "ipex" in m.QUANT_TYPE):
+            if hasattr(m, "QUANT_TYPE") and "ark" in m.QUANT_TYPE:
                 layers.append(m)
 
         for layer in tqdm(layers, desc=message, total=len(layers), leave=True):

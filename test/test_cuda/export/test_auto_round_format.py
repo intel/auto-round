@@ -13,7 +13,6 @@ from ...envs import (
     require_awq,
     require_gptqmodel,
     require_greater_than_050,
-    require_ipex,
 )
 from ...helpers import eval_generated_prompt, evaluate_accuracy, get_model_path, is_cuda_support_fp8
 
@@ -130,93 +129,6 @@ class TestAutoRound:
         tokenizer = AutoTokenizer.from_pretrained(model_name)
         eval_generated_prompt(model, tokenizer)
         torch.cuda.empty_cache()
-
-    @pytest.mark.skip_ci(reason="IPEX is deprecated.")
-    @require_ipex
-    def test_autoround_gptq_sym_format(self, tiny_opt_model_path, dataloader):
-        bits, group_size, sym = 4, 128, True
-        autoround = AutoRound(
-            tiny_opt_model_path,
-            bits=bits,
-            group_size=group_size,
-            sym=sym,
-            iters=2,
-            seqlen=2,
-            dataset=dataloader,
-        )
-        quantized_model_path = self.save_dir
-
-        _, quantized_model_path = autoround.quantize_and_save(output_dir=quantized_model_path)
-
-        from transformers import AutoRoundConfig
-
-        quantization_config = AutoRoundConfig(backend="ipex")
-
-        model = AutoModelForCausalLM.from_pretrained(
-            quantized_model_path, device_map="cpu", trust_remote_code=True, quantization_config=quantization_config
-        )
-        tokenizer = AutoTokenizer.from_pretrained(quantized_model_path)
-        text = "There is a girl who likes adventure,"
-        inputs = tokenizer(text, return_tensors="pt").to(model.device)
-        res = tokenizer.decode(model.generate(**inputs, max_new_tokens=50)[0])
-        print(res)
-        assert "!!!" not in res
-
-        model = AutoModelForCausalLM.from_pretrained(quantized_model_path, device_map="auto", trust_remote_code=True)
-        tokenizer = AutoTokenizer.from_pretrained(quantized_model_path)
-        text = "There is a girl who likes adventure,"
-        inputs = tokenizer(text, return_tensors="pt").to(model.device)
-        res = tokenizer.decode(model.generate(**inputs, max_new_tokens=50)[0])
-        print(res)
-        assert "!!!" not in res
-
-        model = AutoModelForCausalLM.from_pretrained(
-            quantized_model_path, device_map="cpu", trust_remote_code=True, quantization_config=quantization_config
-        )
-        tokenizer = AutoTokenizer.from_pretrained(quantized_model_path)
-        text = "There is a girl who likes adventure,"
-        inputs = tokenizer(text, return_tensors="pt").to(model.device)
-        res = tokenizer.decode(model.generate(**inputs, max_new_tokens=50)[0])
-        print(res)
-        assert "!!!" not in res
-
-    @pytest.mark.skip_ci(reason="IPEX is deprecated.")
-    @require_awq
-    @require_ipex
-    def test_autoround_awq_sym_format(self, tiny_opt_model_path, dataloader):
-        bits, group_size, sym = 4, 128, True
-        autoround = AutoRound(
-            tiny_opt_model_path,
-            bits=bits,
-            group_size=group_size,
-            sym=sym,
-            iters=2,
-            seqlen=2,
-            dataset=dataloader,
-        )
-        quantized_model_path = self.save_dir
-
-        _, quantized_model_path = autoround.quantize_and_save(
-            output_dir=quantized_model_path, format="auto_round:auto_awq"
-        )
-
-        model = AutoModelForCausalLM.from_pretrained(quantized_model_path, device_map="auto", trust_remote_code=True)
-        tokenizer = AutoTokenizer.from_pretrained(quantized_model_path)
-        text = "There is a girl who likes adventure,"
-        inputs = tokenizer(text, return_tensors="pt").to(model.device)
-        res = tokenizer.decode(model.generate(**inputs, max_new_tokens=50)[0])
-        print(res)
-        assert "!!!" not in res
-
-        model = AutoModelForCausalLM.from_pretrained(
-            quantized_model_path, device_map="cpu", trust_remote_code=True, torch_dtype=torch.bfloat16
-        )
-        tokenizer = AutoTokenizer.from_pretrained(quantized_model_path)
-        text = "There is a girl who likes adventure,"
-        inputs = tokenizer(text, return_tensors="pt").to(model.device)
-        res = tokenizer.decode(model.generate(**inputs, max_new_tokens=50)[0])
-        print(res)
-        assert "!!!" not in res
 
     def test_fp8_block_fp8_format(self):
         model_name = "Qwen/Qwen3-0.6B"
