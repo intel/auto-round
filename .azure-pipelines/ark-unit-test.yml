@@ -78,8 +78,8 @@ stages:
                     pip install $(Build.SourcesDirectory)/ark_wheel/*.whl
                     pip install pytest pandas
                     export LD_LIBRARY_PATH=${CONDA_PREFIX}/lib:$LD_LIBRARY_PATH
-
-                    pytest -v ./test | tee kernel_ut.log 2>&1
+                    export ZE_AFFINITY_MASK=${ZE_AFFINITY_MASK}
+                    numactl --physcpubind="${NUMA_CPUSET:-0-27}" --membind="${NUMA_NODE:-0}" pytest -v ./test | tee kernel_ut.log 2>&1
                     conda deactivate
                     if [ $(grep -c "ERROR" kernel_ut.log) != 0 ];then
                         echo "Find errors in UT test, please check the output..."
