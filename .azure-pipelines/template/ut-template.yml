@@ -58,7 +58,7 @@ steps:
         if [ "${{ parameters.buildARKWheel }}" == "true" ]; then
           ARK_WHEEL_INSTALL="uv pip install /auto-round/ark_wheel/*.whl --no-deps"
         else
-          ARK_WHEEL_INSTALL="uv pip install --index-url https://test.pypi.org/simple/ auto-round-lib --no-deps"
+          ARK_WHEEL_INSTALL="uv pip install --index-url https://test.pypi.org/simple/ auto-round-lib --pre --no-deps"
         fi
 
         docker exec ${{ parameters.utContainerName }} bash -c "cd /auto-round \
