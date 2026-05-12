@@ -180,6 +180,7 @@ class BaseCompressor(object):
         model_dtype = kwargs.pop("model_dtype", None)
         trust_remote_code = kwargs.pop("trust_remote_code") if "trust_remote_code" in kwargs else True
         quant_nontext_module = kwargs.pop("quant_nontext_module", False)
+        use_vllm_loading = kwargs.pop("use_vllm_loading", False)
 
         self.static_attention_dtype = kwargs.pop("static_attention_dtype", None)
         # Attention static dtype
@@ -258,6 +259,7 @@ class BaseCompressor(object):
             formats=self.formats,
             is_act_quantize=self.quantize_config.is_act_quantize,
             quant_nontext_module=quant_nontext_module,
+            use_vllm_loading=use_vllm_loading,
         )
         # Alternatively, you can use CompressContext.create_context
         self.compress_context = CompressContext(

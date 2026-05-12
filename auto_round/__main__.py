@@ -180,6 +180,11 @@ class BasicArgumentParser(argparse.ArgumentParser):
             "--enable_torch_compile", action="store_true", help="Enable PyTorch compilation for faster execution. "
         )
         basic.add_argument(
+            "--use_vllm_loading",
+            action="store_true",
+            help="Use vLLM loading path for calibration/quantization (experimental).",
+        )
+        basic.add_argument(
             "--disable_trust_remote_code",
             action="store_true",
             help="Disable trusting remote code when loading models. "
@@ -670,6 +675,7 @@ def tune(args):
                 quant_lm_head=getattr(args, "quant_lm_head", False),
                 quant_nontext_module=getattr(args, "quant_nontext_module", False),
                 device_map=args.device_map,
+                use_vllm_loading=args.use_vllm_loading,
             )
             ar.quantize_and_save(output_dir=output_dir, format=args.format)  # pylint: disable=E1101
             return
@@ -825,6 +831,7 @@ def tune(args):
         model_dtype=args.model_dtype,
         momentum=args.momentum,
         trust_remote_code=not args.disable_trust_remote_code,
+        use_vllm_loading=args.use_vllm_loading,
         rotation_config=rot_config,
     )
 

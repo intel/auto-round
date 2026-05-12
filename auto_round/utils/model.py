@@ -159,6 +159,15 @@ def check_diffusers_installed():  # pragma: no cover
         exit(-1)
 
 
+def check_vllm_installed() -> bool:  # pragma: no cover
+    try:
+        import vllm  # noqa: F401
+
+        return True
+    except ImportError:
+        return False
+
+
 def check_start_with_block_name(name: str, block_name_to_quantize: list):
     """
     Checks if the given layer name starts with any of the block names to be quantized.
@@ -741,6 +750,82 @@ def diffusion_load_model(
     return pipe, model.to(device)
 
 
+def vllm_load_model(
+    pretrained_model_name_or_path: object,
+    trust_remote_code: bool = True,
+    max_model_len: int = None,
+    **kwargs,
+):
+    if not check_vllm_installed():
+        raise ImportError("Please install vllm via 'pip install vllm' to use --use_vllm_loading")
+
+    from transformers import AutoConfig, AutoTokenizer
+    from vllm import LLM
+
+    if isinstance(pretrained_model_name_or_path, str):
+        os.environ.setdefault("VLLM_ENABLE_V1_MULTIPROCESSING", "0")
+
+        user_max_model_len = max_model_len
+        derived_max_model_len = None
+        if user_max_model_len is None:
+            try:
+                config = AutoConfig.from_pretrained(
+                    pretrained_model_name_or_path,
+                    trust_remote_code=trust_remote_code,
+                )
+                for attr in ("max_position_embeddings", "n_positions", "seq_length"):
+                    value = getattr(config, attr, None)
+                    if isinstance(value, (int, float)) and value > 0:
+                        derived_max_model_len = int(value)
+                        break
+            except Exception as err:
+                logger.warning("Failed to derive max_model_len from config, fallback to safe default: %s", err)
+
+        max_model_len = user_max_model_len if user_max_model_len is not None else (derived_max_model_len or 2048)
+        llm = LLM(
+            model=pretrained_model_name_or_path,
+            trust_remote_code=trust_remote_code,
+            enforce_eager=True,
+            max_model_len=max_model_len,
+            **kwargs,
+        )
+    elif "vllm" in str(type(pretrained_model_name_or_path)).lower():
+        llm = pretrained_model_name_or_path
+    else:
+        raise ValueError(
+            "Only support model path string or vLLM LLM object for vllm_load_model, "
+            f"but got {type(pretrained_model_name_or_path)}"
+        )
+
+    model = get_nested_attr(llm, "llm_engine.engine_core.engine_core.model_executor.driver_worker.worker.model_runner.model")
+    if model is None:
+        model = get_nested_attr(llm, "llm_engine.model_executor.driver_worker.model_runner.model")
+    if model is None:
+        raise ValueError(
+            "Cannot find vLLM internal model. Please set VLLM_ENABLE_V1_MULTIPROCESSING=0 and enforce_eager=True."
+        )
+
+    tokenizer = AutoTokenizer.from_pretrained(llm.llm_engine.model_config.model, trust_remote_code=trust_remote_code)
+
+    if not hasattr(model.__class__, "dtype"):
+
+        @property
+        def dtype(self):
+            return self.lm_head.weight.dtype
+
+        setattr(model.__class__, "dtype", dtype)
+
+    if not hasattr(model.__class__, "device"):
+
+        @property
+        def device(self):
+            return self.lm_head.weight.device
+
+        setattr(model.__class__, "device", device)
+
+    return llm, model, tokenizer
+
+
 def is_pure_text_model(model):
     """verify on: phi-3.5, Mistral-Small-3.1, gemma-3, qwen2-vl,"""
     if hasattr(model, "config") and hasattr(model.config, "vision_config"):
@@ -858,6 +943,19 @@ def is_diffusion_model(model_or_path: Union[str, object], trust_remote_code: boo
         return isinstance(model_or_path, pipeline_utils.DiffusionPipeline)
     else:
         return False
+
+
+def is_vllm_model(model_or_path: object) -> bool:
+    if model_or_path is None:
+        return False
+    if "vllm" not in str(type(model_or_path)).lower():
+        return False
+    if isinstance(model_or_path, torch.nn.Module):
+        return True
+    model = get_nested_attr(model_or_path, "llm_engine.engine_core.engine_core.model_executor.driver_worker.worker.model_runner.model")
+    if model is None:
+        model = get_nested_attr(model_or_path, "llm_engine.model_executor.driver_worker.model_runner.model")
+    return model is not None
 
 
 def is_moe_layer(module: torch.nn.Module) -> bool:

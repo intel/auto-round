@@ -34,7 +34,9 @@ from auto_round.utils import (
     is_mllm_model,
     is_moe_model,
     is_moe_model_via_config,
+    is_vllm_model,
     llm_load_model,
+    vllm_load_model,
     mllm_load_model,
     unsupported_meta_device,
 )
@@ -68,6 +70,7 @@ class ModelContext(BaseContext):
         formats=None,
         is_act_quantize=False,
         quant_nontext_module=False,
+        use_vllm_loading=False,
     ):
         super().__init__()
         self.quantized = False
@@ -80,6 +83,8 @@ class ModelContext(BaseContext):
         self.model = model
         self.tokenizer = tokenizer
         self.device = device
+        self.use_vllm_loading = use_vllm_loading
+        self.llm = None
 
         # MLLM / diffusion artifacts – always present so callers need no getattr guards.
         # _load_model() will populate the ones that are relevant to the model type.
@@ -138,6 +143,24 @@ class ModelContext(BaseContext):
             self.pipe, self.model = diffusion_load_model(
                 self.model, platform=self.platform, device="cpu", model_dtype=self.model_dtype
             )
+        elif self.use_vllm_loading and (isinstance(self.model, str) or is_vllm_model(self.model)):
+            logger.warning("use_vllm_loading is experimental in new architecture.")
+            try:
+                self.llm, self.model, self.tokenizer = vllm_load_model(
+                    self.model,
+                    trust_remote_code=self.trust_remote_code,
+                )
+            except Exception as e:
+                logger.warning("Failed to initialize vLLM loading path, fallback to regular loading: %s", e)
+                self.use_vllm_loading = False
+                if isinstance(self.model, str):
+                    self.model, self.tokenizer = llm_load_model(
+                        self.model,
+                        platform=self.platform,
+                        device="cpu",
+                        model_dtype=self.model_dtype,
+                        trust_remote_code=self.trust_remote_code,
+                    )
         elif isinstance(self.model, str):
             config: Optional[AutoConfig] = None
             try:

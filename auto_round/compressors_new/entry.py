@@ -101,6 +101,10 @@ def _get_compressor_class(model_type: str, base_cls: type) -> type:
         from auto_round.compressors_new.diffusion_mixin import DiffusionMixin
 
         mixin = DiffusionMixin
+    elif model_type == "vllm":
+        from auto_round.compressors_new.vllm_mixin import VllmMixin
+
+        mixin = VllmMixin
     else:
         return base_cls
     combined = type(f"{model_type.capitalize()}{base_cls.__name__}", (mixin, base_cls), {})
@@ -131,7 +135,10 @@ def detect_model_type(model):
     Returns:
         str: "mllm", "diffusion", or "llm"
     """
-    from auto_round.utils import is_diffusion_model, is_mllm_model
+    from auto_round.utils import is_diffusion_model, is_mllm_model, is_vllm_model
+
+    if is_vllm_model(model):
+        return "vllm"
 
     # Check if it's a diffusion model first (more specific)
     if is_diffusion_model(model):
@@ -215,6 +222,8 @@ class AutoRound(object):
 
         # Detect model type to determine if we need special compressor
         model_type = detect_model_type(model)
+        if kwargs.get("use_vllm_loading", False):
+            model_type = "vllm"
 
         # If the user explicitly passes processor/image_processor, treat as MLLM even if
         # auto-detection missed it (mirrors the has_multimodal_assets check in autoround.py).
