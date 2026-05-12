@@ -1,0 +1,126 @@
+parameters:
+  - name: enableChangeDetection
+    type: boolean
+    default: false
+  - name: publishToTestPyPI
+    type: boolean
+    default: false
+
+stages:
+  - ${{ if eq(parameters.enableChangeDetection, true) }}:
+    - stage: DetectArkChanges
+      displayName: Detect ark changes
+      dependsOn: []
+      jobs:
+        - job: Detect
+          displayName: Detect ark changes in PR
+          pool:
+            vmImage: "ubuntu-latest"
+          steps:
+            - checkout: self
+              clean: true
+              fetchDepth: 0
+
+            - task: Bash@3
+              name: SetArkWheelFlag
+              displayName: Set ark wheel flag
+              inputs:
+                targetType: inline
+                script: |
+                  set -euxo pipefail
+                  target_ref="${SYSTEM_PULLREQUEST_TARGETBRANCH:-refs/heads/main}"
+                  git fetch origin "+${target_ref}:${target_ref}"
+                  changed_files="$(git diff --name-only "${target_ref}"...HEAD)"
+                  echo "$changed_files"
+                  build_ark_wheel=false
+                  while IFS= read -r changed_file; do
+                    case "$changed_file" in
+                      auto_round_extension/ark/*.md)
+                        ;;
+                      auto_round_extension/ark/*)
+                        build_ark_wheel=true
+                        break
+                        ;;
+                    esac
+                  done <<< "$changed_files"
+
+                  if [[ "$build_ark_wheel" == "true" ]]; then
+                    echo "ARK code changes detected, need to build ark wheel."
+                    printf '%s\n' '##vso[task.setvariable variable=BUILD_ARK_WHEEL;isOutput=true]true'
+                  else
+                    echo "No ARK code changes detected, skip building ark wheel."
+                    printf '%s\n' '##vso[task.setvariable variable=BUILD_ARK_WHEEL;isOutput=true]false'
+                  fi
+
+  - stage: BuildArkWheel
+    displayName: Build ark wheel
+    dependsOn:
+      - ${{ if eq(parameters.enableChangeDetection, true) }}:
+        - DetectArkChanges
+    ${{ if eq(parameters.enableChangeDetection, true) }}:
+      variables:
+        BUILD_ARK_WHEEL: $[ stageDependencies.DetectArkChanges.Detect.outputs['SetArkWheelFlag.BUILD_ARK_WHEEL'] ]
+    jobs:
+      - job: BuildArkWheel
+        displayName: Build ark wheel in manylinux
+        ${{ if eq(parameters.enableChangeDetection, true) }}:
+          condition: and(succeeded(), eq(variables['BUILD_ARK_WHEEL'], 'true'))
+        pool: LIB-BUILD-POOL
+        timeoutInMinutes: 10
+        steps:
+          - checkout: self
+            clean: true
+            fetchTags: true
+
+          - task: Bash@3
+            displayName: Build wheel in manylinux container
+            inputs:
+              targetType: inline
+              script: |
+                set -euxo pipefail
+                docker run --rm \
+                  --user "$(id -u):$(id -g)" \
+                  -e HOME=/tmp \
+                  -v $(Build.SourcesDirectory):/auto-round \
+                  -w /auto-round/auto_round_extension/ark \
+                  pytorch/manylinux2_28-builder:xpu-v2.10.0-rc7 \
+                  bash -c " /opt/python/cp312-cp312/bin/python -m venv venv \
+                  && source venv/bin/activate \
+                  && source /opt/intel/oneapi/setvars.sh \
+                  && pip install -U pip build cmake setuptools \
+                  && python -m build --wheel --no-isolation \
+                  && auditwheel repair dist/*.whl --exclude lib* -w wheelhouse/ \
+                  && ls -lah wheelhouse"
+
+          - task: PublishPipelineArtifact@1
+            displayName: Publish wheel artifact
+            inputs:
+              targetPath: $(Build.SourcesDirectory)/auto_round_extension/ark/wheelhouse
+              artifact: auto-round-lib-wheel
+              publishLocation: pipeline
+
+          - ${{ if eq(parameters.publishToTestPyPI, true) }}:
+            - task: Bash@3
+              displayName: Publish wheel to TestPyPI
+              condition: and(succeeded(), eq(variables['Build.SourceBranch'], 'refs/heads/main'), or(eq(variables['Build.Reason'], 'IndividualCI'), eq(variables['Build.Reason'], 'BatchedCI')))
+              env:
+                TWINE_USERNAME: "__token__"
+                TWINE_PASSWORD: "$(TESTPYPI_PASSWORD)"
+              inputs:
+                targetType: inline
+                script: |
+                  set -euxo pipefail
+                  if [ -z "${TWINE_PASSWORD}" ]; then
+                    echo "TESTPYPI_PASSWORD is empty, skip publishing."
+                    exit 1
+                  fi
+                  docker run --rm --privileged \
+                    --user "$(id -u):$(id -g)" \
+                    -e HOME=/tmp \
+                    -v $(Build.SourcesDirectory):/auto-round \
+                    -w /auto-round/auto_round_extension/ark \
+                    -e TWINE_USERNAME \
+                    -e TWINE_PASSWORD \
+                    pytorch/manylinux2_28-builder:xpu-v2.10.0-rc7 \
+                    bash -c "python -m pip install --upgrade twine \
+                    && twine upload --repository-url https://test.pypi.org/legacy/ wheelhouse/*.whl"
