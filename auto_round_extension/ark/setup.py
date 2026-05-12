@@ -20,6 +20,7 @@ try:
 except Exception as error:
     assert False, f"Failed to read version from {file_path}: {error}"
 
+
 def get_build_version():
     print(f"Getting build version for build mode: {build_mode}")
     if build_mode == "release":
@@ -33,8 +34,7 @@ def get_build_version():
                     return version
     try:
         result = subprocess.run(
-            ["git", "log", "-1", "--format=%cd", "--date=format:%Y%m%d%H%M"],
-            capture_output=True, text=True, check=True
+            ["git", "log", "-1", "--format=%cd", "--date=format:%Y%m%d%H%M"], capture_output=True, text=True, check=True
         )
         date_str = result.stdout.strip()
         version = f"{__version__}.dev{date_str}"
