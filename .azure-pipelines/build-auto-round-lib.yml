@@ -5,8 +5,6 @@ trigger:
   paths:
     include:
       - auto_round_extension/ark/**
-      - .azure-pipelines/build-auto-round-lib.yml
-      - .azure-pipelines/template/lib-build-template.yml
     exclude:
       - "*.md"
       - "**/*.md"

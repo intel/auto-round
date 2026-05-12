@@ -64,7 +64,7 @@ stages:
                   targetType: inline
                   script: |
                     source ${HOME}/miniforge3/etc/profile.d/conda.sh
-                    set -eo pipefail
+                    set -eox pipefail
                     cd auto_round_extension/ark
                     CONDA_ENV="${condaName}"
                     PYTHON_VERSION="${{ pythonVersion }}"
