@@ -46,6 +46,7 @@ class _RounderStub:
     def _get_save_folder_name(self, _format):
         return self._output_dir
 
+
 def test_finalize_saves_tail_layer_when_tie_word_embeddings_missing(tmp_path):
     model = _DiffusionStyleModel()
     rounder = _RounderStub(model, str(tmp_path))
