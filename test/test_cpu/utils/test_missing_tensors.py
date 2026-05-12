@@ -623,7 +623,11 @@ class TestCopyMissingTensorsFromSource:
                 os.path.join(source_dir, "model.safetensors"),
             )
             _save_safetensors(
-                {"thinker.model.layers.0.mlp.experts.0.up_proj.qweight": torch.randint(0, 16, (8, 32), dtype=torch.int32)},
+                {
+                    "thinker.model.layers.0.mlp.experts.0.up_proj.qweight": torch.randint(
+                        0, 16, (8, 32), dtype=torch.int32
+                    )
+                },
                 os.path.join(target_dir, "model.safetensors"),
             )
             with open(os.path.join(target_dir, "config.json"), "w") as f:
