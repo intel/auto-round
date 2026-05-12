@@ -554,6 +554,21 @@ class CalibCompressor(BaseCompressor):
             Returns:
                 NotImplementedError: Getting the first layer inputs and then raise the error to save runtime.
             """
+            # During the quantization tuning loop (after cache_inter_data finishes),
+            # _quantizing is set so that block forward passes skip the data-saving
+            # logic.  The wrapped forward is still active at this point because
+            # recover_forward was NOT called after cache_inter_data finished (the
+            # wrapped forward is needed for the same reason: block_forward in
+            # utils.py goes through the wrapper).  Without this guard the wrapped
+            # forward would try to re-populate self.inputs which is already
+            # populated and may have stale structure for the current forward.
+            if getattr(self, "_quantizing", False):
+                if hidden_states is not None:
+                    kwargs.pop("hidden_states", None)
+                    return m.orig_forward(hidden_states, *positional_inputs, **kwargs)
+                else:
+                    return m.orig_forward(*positional_inputs, **kwargs)
+
             if name not in self.inputs:
                 self.inputs[name] = {}
                 init_cache(positional_inputs, self.inputs[name])
@@ -628,12 +643,15 @@ class CalibCompressor(BaseCompressor):
             if self._should_stop_cache_forward(name):
                 raise NotImplementedError
             else:
+                # Call the true unwrapped forward.  _true_orig_forward is set by
+                # _replace_forward before wrapping and is kept in the module's __dict__
+                # (never deleted) so this direct attribute access is always safe.
                 if hidden_states is not None:
                     kwargs.pop("hidden_states")
-                    return m.orig_forward(hidden_states, *positional_inputs, **kwargs)
+                    return m._true_orig_forward(hidden_states, *positional_inputs, **kwargs)
                 else:
                     # Currently only for Llama-3.2-Vision-Instruct Series
-                    return m.orig_forward(*positional_inputs, **kwargs)
+                    return m._true_orig_forward(*positional_inputs, **kwargs)
 
         return forward
 
@@ -662,14 +680,24 @@ class CalibCompressor(BaseCompressor):
 
         def register_hook(n, m, hook_handles):
             if n in self.to_cached_layers and type(m) not in SUPPORTED_LAYER_TYPES:  ##block
+                # Save the TRUE original forward before wrapping.  recover_forward restores
+                # this so block_forward's wrapper can call the real forward later.
+                m._true_orig_forward = m.forward
+                # Save the wrapped forward (e.g. from wrap_block_forward_positional_to_kwargs)
+                # so LLM recover_forward(restore_positional_wrapper=True) can restore it.
+                wrapped = partial(self._get_block_forward_func(n), m)
+                m._wrapped_forward_before_replace = wrapped
                 m.orig_forward = m.forward
-                m.forward = partial(self._get_block_forward_func(n), m)
+                m.forward = wrapped
             elif n in self.to_cached_layers:  ##linear layer or conv1d layer
                 hook_func = self._get_cache_data_hook_for_layer(n)
                 hook_handle = m.register_forward_hook(hook_func)
                 hook_handles.append(hook_handle)
 
         self.model_context.replace_forward(register_hook)
+        # Signal to recover_forward that this is new-arch mode where the positional
+        # wrapper should be fully stripped after caching.
+        self.model_context._has_true_orig_forward_set = True
 
     def _should_stop_cache_forward(self, name: str) -> bool:
         """Determine whether current forward pass can stop after caching `name`."""
@@ -714,6 +742,11 @@ class CalibCompressor(BaseCompressor):
     def _split_inputs(self, inputs: dict, first_input_name: str) -> tuple[torch.Tensor, dict]:
         if self.model_context.is_diffusion:
             input_id_str = [key for key in inputs.keys() if "hidden_state" in key]
+            if input_id_str == ["hidden_states"]:
+                input_ids = inputs.pop("hidden_states", None)
+                input_others = inputs
+                return input_ids, input_others
+
             input_ids = {k: inputs.pop(k, None) for k in input_id_str}
             input_others = inputs
             return input_ids, input_others
@@ -827,7 +860,7 @@ class CalibCompressor(BaseCompressor):
         else:
             card_0_in_high_risk, loss_device = False, device
 
-        if len(self.compress_context.device_list) > 1 and auto_offload:
+        if len(self.compress_context.device_list) > 1 and auto_offload and not self.model_context.is_diffusion:
             from accelerate.hooks import AlignDevicesHook, add_hook_to_module
 
             for n, m in block.named_modules():
@@ -911,6 +944,19 @@ class CalibCompressor(BaseCompressor):
 
         input_ids, input_others = self._preprocess_block_inputs(inputs)
 
+        # For diffusion models, the heuristic split ("hidden_state" in key) may
+        # place keys like encoder_hidden_states in input_ids even though they are
+        # not block outputs.  Move those to input_others so they persist across
+        # blocks (only output keys get refreshed via reference_output each iteration).
+        if self.model_context.is_diffusion and isinstance(input_ids, dict):
+            first_block = get_module(model, block_names[0])
+            output_config = self.quantizer.DIFFUSION_OUTPUT_CONFIGS.get(
+                first_block.__class__.__name__, ["hidden_states"]
+            )
+            extra_keys = [k for k in list(input_ids.keys()) if k not in output_config]
+            for k in extra_keys:
+                input_others[k] = input_ids.pop(k)
+
         if pbar is None:
             pbar = tqdm(range(0, len(block_names), nblocks))
 
@@ -943,7 +989,11 @@ class CalibCompressor(BaseCompressor):
             materialize_model_(m)
             convert_module_to_hp_if_necessary(m, self.model_context.amp_dtype, self.compress_context.device)
 
-            if is_auto_device_mapping(self.compress_context.device_map) and len(self.compress_context.device_list) > 1:
+            if (
+                is_auto_device_mapping(self.compress_context.device_map)
+                and len(self.compress_context.device_list) > 1
+                and not self.model_context.is_diffusion
+            ):
                 from auto_round.utils.device import set_auto_device_map_for_block_with_tuning
 
                 card_0_in_high_risk, loss_device = set_auto_device_map_for_block_with_tuning(
@@ -955,10 +1005,24 @@ class CalibCompressor(BaseCompressor):
                     self.compress_context.device,
                 )
             else:
-                m = m.to(self.compress_context.device)
-                card_0_in_high_risk, loss_device = False, self.compress_context.device
+                # For diffusion with multi-device dispatch, sub-modules were placed
+                # by dispatch_model_by_all_available_devices during caching, but the
+                # model was moved to CPU after caching (mv_module_from_gpu).  Move the
+                # block to the primary quantization device so its parameters
+                # (e.g. scale_shift_table) are on GPU alongside the input tensors.
+                is_diffusion_multi_device = (
+                    self.model_context.is_diffusion
+                    and hasattr(self.model_context.model, "hf_device_map")
+                    and len(self.model_context.model.hf_device_map) > 1
+                )
+                if is_diffusion_multi_device:
+                    m = m.to(self.compress_context.device)
+                    card_0_in_high_risk, loss_device = False, self.compress_context.device
+                else:
+                    m = m.to(self.compress_context.device)
+                    card_0_in_high_risk, loss_device = False, self.compress_context.device
 
-            if len(self.compress_context.device_list) > 1:
+            if len(self.compress_context.device_list) > 1 and not self.model_context.is_diffusion:
                 from accelerate.hooks import AlignDevicesHook, add_hook_to_module
 
                 for _n, _mod in m.named_modules():
@@ -970,14 +1034,14 @@ class CalibCompressor(BaseCompressor):
             bs = self.quantizer.batch_size * self.quantizer.infer_bs_coeff
             if q_input is None:
                 hook_handles = self.quantizer._register_act_max_hook(m)
-                reference_output = self.quantizer._get_block_outputs(m, input_ids, input_others, bs)
+                reference_output = self.quantizer._get_block_outputs(m, input_ids, input_others, bs, device_override=loss_device)
                 for h in hook_handles:
                     h.remove()
             else:
-                reference_output = self.quantizer._get_block_outputs(m, input_ids, input_others, bs)
+                reference_output = self.quantizer._get_block_outputs(m, input_ids, input_others, bs, device_override=loss_device)
                 hook_handles = self.quantizer._register_act_max_hook(m)
                 if hook_handles:
-                    self.quantizer._get_block_outputs(m, q_input, input_others, bs, save_output=False)
+                    self.quantizer._get_block_outputs(m, q_input, input_others, bs, save_output=False, device_override=loss_device)
                 for h in hook_handles:
                     h.remove()
 
@@ -1011,7 +1075,7 @@ class CalibCompressor(BaseCompressor):
                 q_input = None
 
             # ── Infrastructure: hook removal, device cleanup, logging ─────────
-            if len(self.compress_context.device_list) > 1:
+            if len(self.compress_context.device_list) > 1 and not self.model_context.is_diffusion:
                 accelerate.hooks.remove_hook_from_submodules(m)
             mv_module_from_gpu(m)
             if self.enable_torch_compile:
@@ -1122,7 +1186,7 @@ class CalibCompressor(BaseCompressor):
         logger.info("caching done")
         if self.compress_context.low_cpu_mem_usage:
             if self.model_context.is_model_patched and not self.compress_context.is_immediate_saving:
-                self._offloader(self.model_context.model, all_blocks, clear_memory=True, device_list=self.device_list)
+                self._offloader(self.model_context.model, all_blocks, clear_memory=True, device_list=self.compress_context.device_list)
                 if not self._offloader.enabled:
                     self.compress_context.low_cpu_mem_usage = False
             else:
@@ -1457,6 +1521,7 @@ class CalibratedRTNCompressor(CalibCompressor):
                 if (
                     is_auto_device_mapping(self.compress_context.device_map)
                     and len(self.compress_context.device_list) > 1
+                    and not self.model_context.is_diffusion
                 ):
                     from auto_round.utils.device import set_auto_device_map_for_block_with_tuning
 
@@ -1468,7 +1533,7 @@ class CalibratedRTNCompressor(CalibCompressor):
                         self.quantizer.batch_size,
                         self.compress_context.device,
                     )
-                    if len(self.compress_context.device_list) > 1:
+                    if len(self.compress_context.device_list) > 1 and not self.model_context.is_diffusion:
                         from accelerate.hooks import AlignDevicesHook, add_hook_to_module
 
                         for _, _mod in block.named_modules():

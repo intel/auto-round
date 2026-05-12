@@ -45,8 +45,13 @@ def _update_inputs(inputs: dict, q_inputs: dict) -> tuple[dict, torch.Tensor]:
 
     model_context = ModelContext()
     if model_context.is_diffusion:
-        # flux transformer model's blocks will update hidden_states and encoder_hidden_states
         input_id_str = [key for key in inputs.keys() if "hidden_state" in key]
+        if input_id_str == ["hidden_states"]:
+            if q_inputs is not None:
+                q_inputs = q_inputs.pop("hidden_states", None)
+            return inputs, q_inputs
+
+        # flux-like diffusion blocks update both hidden_states and encoder_hidden_states
         if q_inputs is not None:
             q_inputs = {k: q_inputs.pop(k, None) for k in input_id_str}
         return inputs, q_inputs

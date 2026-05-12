@@ -12,6 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 import copy
+import inspect
 import json
 import os
 import random
@@ -155,18 +156,72 @@ def block_forward(
     """
     from auto_round.utils.model import to_device
 
+    # Quantization may reuse the same cached input_others across multiple blocks.
+    # Never mutate that shared cache in-place while normalizing positional args.
+    input_others = dict(input_others)
+
+    # For diffusion with multi-device dispatch, blocks are already on their target devices
+    # (device=None tells block_forward to skip to_device and let the dispatched placement govern).
+    # Infer the actual target device from the block's parameters when device is None.
+    if device is None:
+        device = next((p.device for _, p in block.named_parameters() if p.device.type != "meta"), torch.device("cpu"))
+
     if input_ids.device != device:
         input_ids = to_device(input_ids, device)
         input_others = to_device(input_others, device)
-    input_tuple = input_others.pop("positional_inputs", None)
-    if "alibi" in input_others.keys() and input_others["alibi"] is not None:
-        alibi = input_others["alibi"]
-        input_others["alibi"] = alibi.reshape(-1, alibi.shape[2], alibi.shape[3])
+
+    positional = input_others.pop("positional_inputs", None)
+    if "alibi" in input_others and input_others["alibi"] is not None:
+        input_others["alibi"] = input_others["alibi"].reshape(-1, input_others["alibi"].shape[2], input_others["alibi"].shape[3])
+
+    # For diffusion blocks (e.g. WanTransformerBlock) the forward signature has
+    # positional parameters (hidden_states, encoder_hidden_states, temb, rotary_emb)
+    # that may also appear as top-level keys in input_others.  Passing them both
+    # positionally (*input_tuple) and as **input_others would raise
+    # "got multiple values for argument".  Resolve by moving each positional param
+    # from input_others into a list so it is only passed once.
+    extra_positional = []
+    if positional is not None:
+        try:
+            sig = inspect.signature(block.forward)
+            param_names = [p for p in sig.parameters if p != "self"]
+        except (ValueError, TypeError):
+            param_names = []
+        # Pop consecutive params from input_others into positional args.
+        # Stop at the first gap (missing param) to avoid positional misalignment.
+        for name in param_names[1:]:  # skip first param (input_ids / hidden_states)
+            if name in input_others:
+                extra_positional.append(input_others.pop(name))
+            else:
+                break
+    combined_positional = (positional or ()) + tuple(extra_positional)
+
+    # Move positional inputs to the target device.  positional and extra_positional
+    # are lists/tuples that to_device (which operates on dict values) cannot reach.
+    if device:
+        device = torch.device(device) if isinstance(device, str) else device
+    if device and device.type != "cpu":
+        device_tensor_items = []
+        for val in combined_positional:
+            if isinstance(val, torch.Tensor):
+                device_tensor_items.append(to_device(val, device))
+            elif isinstance(val, (list, tuple)):
+                moved = []
+                for item in val:
+                    if isinstance(item, torch.Tensor):
+                        moved.append(to_device(item, device))
+                    else:
+                        moved.append(item)
+                device_tensor_items.append(moved if isinstance(combined_positional[0], (list, tuple)) else type(val)(moved))
+            else:
+                device_tensor_items.append(val)
+        combined_positional = tuple(device_tensor_items)
+
     if amp:
         with autocast(device_type=str(device).split(":")[0], dtype=amp_dtype):  # pragma: no cover
-            output = block(input_ids, *input_tuple, **input_others)
+            output = block(input_ids, *combined_positional, **input_others)
     else:
-        output = block(input_ids, *input_tuple, **input_others)
+        output = block(input_ids, *combined_positional, **input_others)
     if isinstance(output_return_id, int) and (isinstance(output, list) or isinstance(output, tuple)):
         output = output[output_return_id]
     return output

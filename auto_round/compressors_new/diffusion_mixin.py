@@ -11,14 +11,18 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
+import inspect
 import os
 from typing import Union
 
 import torch
+from PIL import Image
 from tqdm import tqdm
 
 from auto_round.logger import logger
 from auto_round.utils.model import wrap_block_forward_positional_to_kwargs
+from auto_round.utils.device import dispatch_model_by_all_available_devices, is_auto_device_mapping
+from auto_round.utils import clear_memory
 
 
 class DiffusionMixin:
@@ -51,6 +55,7 @@ class DiffusionMixin:
         self.guidance_scale = guidance_scale
         self.num_inference_steps = num_inference_steps
         self.generator_seed = generator_seed
+        self.pipeline_call_kwargs = dict(kwargs.pop("pipeline_call_kwargs", {}) or {})
 
         # Mirror old-arch DiffusionCompressor.__init__: when iters > 0, diffusion calibration
         # cannot use batch_size > 1 for non-text modules; fold the extra batch into
@@ -116,12 +121,43 @@ class DiffusionMixin:
             if not is_nextstep:
                 pipe.to(model.dtype)
 
+    def _build_pipeline_call_kwargs(self, pipe, prompts):
+        call_kwargs = {
+            "guidance_scale": self.guidance_scale,
+            "num_inference_steps": self.num_inference_steps,
+            "generator": (
+                None if self.generator_seed is None else torch.Generator(device=pipe.device).manual_seed(self.generator_seed)
+            ),
+        }
+        call_kwargs.update(self.pipeline_call_kwargs)
+
+        if self._requires_calibration_image():
+            call_kwargs.setdefault("image", self._get_calibration_image(len(prompts) if isinstance(prompts, list) else 1))
+            call_kwargs.setdefault("prompt", prompts)
+
+        return call_kwargs
+
     def _get_block_forward_func(self, name: str):
         """Diffusion models pass positional args; wrap the base forward func accordingly.
 
         The MRO guarantees that super() resolves to CalibCompressor._get_block_forward_func,
         mirroring the old-arch pattern in compressors/diffusion/compressor.py.
         """
+        # For diffusion with multi-device dispatch, the pipeline manages device placement
+        # automatically.
+        if (
+            self.model_context.is_diffusion
+            and hasattr(self.model_context.model, "hf_device_map")
+            and len(self.model_context.model.hf_device_map) > 1
+        ):
+            def passthrough_block_forward(block, hidden_states=None, *positional_inputs, **kwargs):
+                # Call _true_orig_forward directly to avoid recursion (block.forward is
+                # this wrapper) and to avoid the "multiple values" error that would occur
+                # if hidden_states were passed as both positional and keyword arg.
+                if hidden_states is not None:
+                    return block._true_orig_forward(hidden_states, *positional_inputs, **kwargs)
+                return block._true_orig_forward(*positional_inputs, **kwargs)
+            return passthrough_block_forward
         return wrap_block_forward_positional_to_kwargs(super()._get_block_forward_func(name))
 
     def _should_stop_cache_forward(self, name: str) -> bool:
@@ -134,6 +170,45 @@ class DiffusionMixin:
         nsamples * num_inference_steps.
         """
         return False
+
+    def _requires_calibration_image(self) -> bool:
+        """Return True when the pipeline's __call__ has a required 'image' parameter.
+
+        I2V (image-to-video) pipelines like WanImageToVideoPipeline require a PIL/torch
+        image as input. This is detected by checking whether 'image' is a positional-or-
+        keyword parameter without a default value.
+        """
+        image_param = inspect.signature(self.model_context.pipe.__call__).parameters.get("image")
+        return image_param is not None and image_param.default is inspect.Parameter.empty
+
+    def _get_calibration_image(self, batch_size: int):
+        """Return a synthetic PIL Image for I2V pipeline calibration.
+
+        Respects the pipeline's declared height/width defaults so that the resulting
+        image satisfies any divisibility constraints (e.g. WanImageToVideoPipeline
+        requires height % 16 == 0 and width % 16 == 0).
+
+        Args:
+            batch_size: Number of images to return.  If 1 a single Image is returned,
+                        otherwise a list of Image copies is returned.
+        """
+        params = inspect.signature(self.model_context.pipe.__call__).parameters
+        width_param = params.get("width")
+        height_param = params.get("height")
+        width = (
+            832
+            if width_param is None or width_param.default in (inspect.Parameter.empty, None)
+            else width_param.default
+        )
+        height = (
+            480
+            if height_param is None or height_param.default in (inspect.Parameter.empty, None)
+            else height_param.default
+        )
+        image = Image.new("RGB", (int(width), int(height)), color=(127, 127, 127))
+        if batch_size == 1:
+            return image
+        return [image.copy() for _ in range(batch_size)]
 
     @torch.no_grad()
     def calib(self, nsamples, bs):
@@ -169,40 +244,77 @@ class DiffusionMixin:
 
         total = nsamples if not hasattr(self.dataloader, "len") else min(nsamples, len(self.dataloader))
 
+        # NOTE: we intentionally skip the sequential offloading check here (the guard that
+        # exits when pipe is already dispatched).  In new-arch diffusion, the pipe may
+        # already be dispatched to multi-device in a prior calib call.  The dispatch
+        # state is preserved across calls, so re-dispatching or moving is unnecessary and
+        # would break the existing placement.
         if (
             hasattr(self.model, "hf_device_map")
             and len(self.model.hf_device_map) > 1
             and pipe.device != self.model.device
             and torch.device(self.model.device).type in ["cuda", "xpu"]
         ):
-            logger.error(
-                "Diffusion model is activated sequential model offloading, it will crash during moving to GPU/XPU. "
-                "Please use model path for quantization or "
-                "move the pipeline object to GPU/XPU before passing them into API."
+            logger.warning(
+                "Diffusion model is activated sequential model offloading. "
+                "Pipe may already be dispatched from a prior calib call. "
+                "Skipping re-dispatch to avoid breaking the existing placement."
             )
-            exit(-1)
 
-        if pipe.device != self.model.device:
-            pipe.to(self.model.device)
+        # Mirror old-arch DiffusionCompressor.cache_inter_data: dispatch the full pipeline
+        # across the requested device_map so that inference runs on GPU, not CPU.
+        device_map = getattr(self.compress_context, "device_map", None)
+        device_list = getattr(self.compress_context, "device_list", [])
+        # Only dispatch if the pipe has not been dispatched yet (not yet in hf_device_map).
+        # When _inputs_cached is set, we are in the second calib call and the pipe is
+        # already dispatched from the first call.
+        if not getattr(self, "_inputs_cached", False) and device_map is not None and is_auto_device_mapping(device_map) and len(device_list) > 1:
+            pipe = dispatch_model_by_all_available_devices(pipe, device_map)
+
         with tqdm(range(1, total + 1), desc="cache block inputs") as pbar:
             for ids, prompts in self.dataloader:
+                logger.info(f"[DiffusionMixin calib] step, prompts type={type(prompts)}, ids type={type(ids)}")
                 if isinstance(prompts, tuple):
                     prompts = list(prompts)
+                pipe_kwargs = self._build_pipeline_call_kwargs(pipe, prompts)
+                logger.info(f"[NEW ARCH] pipe call START, pipe={type(pipe).__name__}, pipe_device={pipe.device}, model_device={self.model.device}, prompts_count={len(prompts)}")
+                import time as _time_module
+                if torch.cuda.is_available():
+                    torch.cuda.synchronize()
+                _t0 = _time_module.time()
+                _t_pipe_call = None
                 try:
-                    pipe(
-                        prompts,
-                        guidance_scale=self.guidance_scale,
-                        num_inference_steps=self.num_inference_steps,
-                        generator=(
-                            None
-                            if self.generator_seed is None
-                            else torch.Generator(device=pipe.device).manual_seed(self.generator_seed)
-                        ),
-                    )
+                    logger.info(f"[NEW ARCH] calib: prompts={type(prompts).__name__}, pipe_kwargs={list(pipe_kwargs.keys())}, "
+                                f"num_frames={pipe_kwargs.get('num_frames', 'DEFAULT')}, "
+                                f"height={pipe_kwargs.get('height', 'DEFAULT')}, "
+                                f"width={pipe_kwargs.get('width', 'DEFAULT')}, "
+                                f"output_type={pipe_kwargs.get('output_type', 'DEFAULT')}, "
+                                f"guidance_scale={pipe_kwargs.get('guidance_scale')}, "
+                                f"num_inference_steps={pipe_kwargs.get('num_inference_steps')}, "
+                                f"_requires_calibration_image={self._requires_calibration_image()}")
+                    _t_before = _time_module.time()
+                    if self._requires_calibration_image() or "prompt" in pipe_kwargs:
+                        # I2V pipeline: 'image' is the first positional arg, so pass
+                        # 'prompt' as keyword to avoid "multiple values for argument 'image'".
+                        result = pipe(**pipe_kwargs)
+                    else:
+                        result = pipe(prompts, **pipe_kwargs)
+                    if torch.cuda.is_available():
+                        torch.cuda.synchronize()
+                    _t_pipe_call = _time_module.time() - _t_before
+                    logger.info(f"[NEW ARCH] pipe call END, elapsed={_t_pipe_call:.1f}s")
                 except NotImplementedError:
-                    pass
+                    _t_pipe_call = None
                 except Exception as error:
+                    if torch.cuda.is_available():
+                        torch.cuda.synchronize()
+                    _elapsed = _time_module.time() - _t0
+                    logger.error(f"[NEW ARCH] pipe call failed after {_elapsed:.1f}s: {error}")
                     raise error
+                if torch.cuda.is_available():
+                    torch.cuda.synchronize()
+                _total = _time_module.time() - _t0
+                logger.info(f"[NEW ARCH] calib step done, total={_total:.1f}s, pipe_call={_t_pipe_call:.1f}s, overhead={_total - (_t_pipe_call or 0):.3f}s")
                 step = len(prompts)
                 total_cnt += step
                 pbar.update(step)
@@ -231,6 +343,57 @@ class DiffusionMixin:
                         self.inputs[k][key] = v[key][:max_len]
 
         # torch.cuda.empty_cache()
+
+    def try_cache_inter_data_gpucpu(self, *args, **kwargs):
+        """Skip re-caching when DiffusionMixin.quantize has already populated self.inputs.
+
+        CalibCompressor.quantize() always calls try_cache_inter_data_gpucpu, but for
+        diffusion models the inputs were already collected by the diffusion pipeline
+        in DiffusionMixin.quantize().  Return the cached data directly.
+        """
+        if getattr(self, "_inputs_cached", False):
+            self._inputs_cached = False
+            return self.inputs
+        return super().try_cache_inter_data_gpucpu(*args, **kwargs)
+
+    def quantize(self):
+        """Quantize the diffusion model.
+
+        Overrides the parent to use diffusion-specific cache_inter_data instead of
+        the LLM-specific calib path.  The diffusion pipeline forward is used to collect
+        block inputs (via _replace_forward hooks), then those inputs are passed to the
+        standard CalibCompressor quantization loop.
+        """
+        from auto_round.utils import get_block_names, flatten_list
+
+        self.post_init()
+
+        # Get block names and call cache_inter_data to populate self.inputs
+        if bool(self.quantizer.quant_block_list):
+            all_blocks = self.quantizer.quant_block_list
+        else:
+            all_blocks = get_block_names(self.model_context.model)
+        if len(all_blocks) == 0:
+            logger.warning("could not find blocks, exit with original model")
+            return self.model_context.model, self.quantizer.layer_config
+
+        if not self.has_variable_block_shape:
+            to_cache_block_names = [block[0] for block in all_blocks]
+        else:
+            to_cache_block_names = flatten_list(all_blocks)
+
+        logger.info("start to cache block inputs")
+        all_inputs = self.try_cache_inter_data_gpucpu(
+            to_cache_block_names,
+            self.nsamples,
+            layer_names=[],
+        )
+        self.inputs = all_inputs
+        clear_memory(device_list=self.compress_context.device_list)
+
+        # Signal that caching is done so super().quantize() skips the cache step
+        self._inputs_cached = True
+        return super().quantize()
 
     def save_quantized(self, output_dir=None, format="auto_round", inplace=True, **kwargs):
         """Save the quantized model to the specified output directory in the specified format.
@@ -267,5 +430,5 @@ class DiffusionMixin:
                 )
             elif val is not None and hasattr(val, "save_pretrained"):
                 val.save_pretrained(sub_module_path)
-        pipe.config.save_pretrained(output_dir)
+        pipe.save_config(output_dir)
         return compressed_model

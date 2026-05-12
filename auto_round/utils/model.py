@@ -1958,7 +1958,10 @@ def wrap_block_forward_positional_to_kwargs(base_hook):
         nonlocal _param_names
         if positional_inputs:
             if _param_names is None:
-                sig = inspect.signature(m.orig_forward)
+                # Prefer _true_orig_forward (set by new-arch CalibCompressor._replace_forward)
+                # over orig_forward (which points to the wrapped forward after wrapping).
+                sig_target = getattr(m, "_true_orig_forward", None) or m.orig_forward
+                sig = inspect.signature(sig_target)
                 _param_names = [p for p in sig.parameters.keys() if p != "self"]
             for i, val in enumerate(positional_inputs):
                 param_idx = i + 1  # hidden_states is params[0]
