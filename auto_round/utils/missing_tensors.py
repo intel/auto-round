@@ -726,11 +726,31 @@ def _woq_quantize_missing_tensors(target_dir: str, missing_tensors_dict: dict) -
                 return True
         return False
 
+    if block_name_to_quantize:
+        existing_blocks = (
+            block_name_to_quantize
+            if isinstance(block_name_to_quantize, list)
+            else [b.strip() for b in block_name_to_quantize.split(",") if b.strip()]
+        )
+        existing_set = set(existing_blocks)
+        new_prefixes = {
+            ".".join(k.split(".")[:i])
+            for k in missing_tensors_dict
+            if k.endswith(".weight") and missing_tensors_dict[k].dim() == 2
+            for i, p in enumerate(k.split("."))
+            if p.isdigit() and ".".join(k.split(".")[:i])
+        }
+        added = sorted(new_prefixes - existing_set)
+        if added:
+            block_name_to_quantize = existing_blocks + added
+
     # Identify weight tensors eligible for quantization (2D Linear weights)
     def _is_eligible(k: str) -> bool:
         if not k.endswith(".weight"):
             return False
         if missing_tensors_dict[k].dim() != 2:
+            return False
+        if k.startswith("talker."):
             return False
         # Only quantize weights that fall under the quantized blocks.
         if block_name_to_quantize:
