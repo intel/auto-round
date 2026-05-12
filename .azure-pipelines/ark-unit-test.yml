@@ -74,14 +74,16 @@ stages:
                     if conda env list | grep -q "${CONDA_ENV}"; then conda remove -n ${CONDA_ENV} --all -y; fi
                     conda create -n ${CONDA_ENV} python=${PYTHON_VERSION} -y
                     conda activate ${CONDA_ENV}
-                    echo -e "[pytest]\ntestpaths = .\n" > ./test/pytest.ini
-                    cat ./test/pytest.ini
-                    
-                    pip install torch=="${TORCH_VERSION}" --index-url https://download.pytorch.org/whl/xpu
-                    pip install $(Build.SourcesDirectory)/ark_wheel/*.whl
-                    pip install pytest pandas
+                    conda install pip -y
+                    pip install uv
+                    uv pip install torch=="${TORCH_VERSION}" --index-url https://download.pytorch.org/whl/xpu
+                    uv pip install $(Build.SourcesDirectory)/ark_wheel/*.whl
+                    uv pip install pytest pandas
                     export LD_LIBRARY_PATH=${CONDA_PREFIX}/lib:$LD_LIBRARY_PATH
                     export ZE_AFFINITY_MASK=${ZE_AFFINITY_MASK}
+
+                    echo -e "[pytest]\ntestpaths = .\n" > ./test/pytest.ini
+                    cat ./test/pytest.ini
                     numactl --physcpubind="${NUMA_CPUSET:-0-27}" --membind="${NUMA_NODE:-0}" pytest -v ./test | tee kernel_ut.log 2>&1
                     conda deactivate
                     if [ $(grep -c "ERROR" kernel_ut.log) != 0 ];then
