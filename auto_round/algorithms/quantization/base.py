@@ -355,16 +355,6 @@ class BaseQuantizers:
 
         return output
 
-    def _is_compile_block_forward(self):
-        if not self.compress_context.enable_torch_compile:
-            return False
-        if (
-            (self.act_bits < 16 and (not self.act_dynamic or self.data_type == "nvfp"))  # have hooks
-            or self.enable_alg_ext  # Use imatrix
-            # or not self.disable_opt_rtn  # Use imatrix
-        ):
-            return False
-        return True
 
     def _resolve_block_forward(self):
         """Resolve and cache the block forward function once.
