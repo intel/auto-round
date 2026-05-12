@@ -33,6 +33,13 @@ parameters:
       - none
       - testpypi
       - pypi
+  - name: buildMode
+    displayName: "Build mode"
+    type: string
+    default: "dev"
+    values:
+      - dev
+      - release
 
 variables:
   - name: ARTIFACT_DIR
@@ -42,6 +49,7 @@ stages:
   - template: template/lib-build-template.yml
     parameters:
       pythonVersions: ${{ parameters.pythonVersions }}
+      buildMode: ${{ parameters.buildMode }}
 
   - stage: TestArk
     displayName: Test Ark

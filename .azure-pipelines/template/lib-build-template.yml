@@ -9,6 +9,9 @@ parameters:
     type: object
     default:
       - "3.12"
+  - name: buildMode
+    type: string
+    default: "dev"
 
 stages:
   - ${{ if eq(parameters.enableChangeDetection, true) }}:
@@ -93,6 +96,7 @@ stages:
                     && source venv/bin/activate \
                     && source /opt/intel/oneapi/setvars.sh \
                     && pip install -U pip build cmake setuptools \
+                    && export BUILD_MODE=${{ parameters.buildMode }} \
                     && python -m build --wheel --no-isolation \
                     && auditwheel repair dist/*.whl --exclude lib* -w wheelhouse/ \
                     && ls -lah wheelhouse"
