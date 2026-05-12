@@ -614,12 +614,12 @@ class BaseCompressor(object):
             self.enable_torch_compile = False
             logger.warning_once("reset enable_torch_compile to `False` as nvfp4 is enabled")
         super_group_size = getattr(cfg, "super_group_size", None)
-        enable_alg_ext = getattr(cfg, "enable_alg_ext", False)
-        if self.enable_torch_compile and super_group_size is not None and enable_alg_ext:
-            self.enable_torch_compile = False
-            logger.warning_once(
-                "reset enable_torch_compile to `False` as super_group_size is set for algorithm extension"
-            )
+        # enable_alg_ext = getattr(cfg, "enable_alg_ext", False)
+        # if self.enable_torch_compile and super_group_size is not None and enable_alg_ext:
+        #     self.enable_torch_compile = False
+        #     logger.warning_once(
+        #         "reset enable_torch_compile to `False` as super_group_size is set for algorithm extension"
+        #     )
 
     def _get_calibration_dataset(self) -> str:
         """Resolve calibration dataset: self.dataset > AutoScheme.dataset > default."""
