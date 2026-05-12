@@ -307,98 +307,107 @@ class DataDrivenCompressor(BaseCompressor):
         if not self._post_init_done:
             self.post_init()
 
-        if isinstance(inputs, CalibrationState):
-            # Caller already produced a CalibrationState (typically via
-            # ``Calibrator.collect``).  Bind it as the authoritative store so
-            # the quantizer reads the same ``inputs`` / ``attention_mask`` /
-            # ``batch_dim``.
-            self.calibration_state = inputs
-        else:
-            self.normalize_decoding_layer_inputs_(inputs)
-        block_inputs = self.inputs[self.quant_block_list[0][0]]
-        input_ids, input_others = self._preprocess_block_inputs(block_inputs, "hidden_states")
+        # When called from LLM-Compressor, `wrapped_model` is a single decoder layer
+        # (not the full VL model), so it must not be treated as an MLLM regardless of
+        # whether the original model had multimodal assets.  Force is_mllm=False for
+        # the duration of this call to stay on the standard LLM quantize_block path.
+        orig_is_mllm = self.model_context.is_mllm
+        self.model_context.is_mllm = False
 
-        # ── Infrastructure: materialize, dtype convert, device placement ──────
-        materialize_model_(block)
-        convert_module_to_hp_if_necessary(block, self.model_context.amp_dtype, device)
-
-        if auto_offload:
-            if (
-                is_auto_device_mapping(self.compress_context.device_map)
-                and len(self.compress_context.device_list) > 1
-                and not self.model_context.is_diffusion
-            ):
-                from auto_round.utils.device import set_auto_device_map_for_block_with_tuning
-
-                card_0_in_high_risk, loss_device = set_auto_device_map_for_block_with_tuning(
-                    block,
-                    self.compress_context.device_map,
-                    input_ids,
-                    self.compress_context.low_gpu_mem_usage,
-                    self.quantizer.batch_size,
-                    device,
-                )
+        try:
+            if isinstance(inputs, CalibrationState):
+                # Caller already produced a CalibrationState (typically via
+                # ``Calibrator.collect``).  Bind it as the authoritative store so
+                # the quantizer reads the same ``inputs`` / ``attention_mask`` /
+                # ``batch_dim``.
+                self.calibration_state = inputs
             else:
-                block = block.to(device)
+                self.normalize_decoding_layer_inputs_(inputs)
+            block_inputs = self.inputs[self.quant_block_list[0][0]]
+            input_ids, input_others = self._preprocess_block_inputs(block_inputs, "hidden_states")
+
+            # ── Infrastructure: materialize, dtype convert, device placement ──────
+            materialize_model_(block)
+            convert_module_to_hp_if_necessary(block, self.model_context.amp_dtype, device)
+
+            if auto_offload:
+                if (
+                    is_auto_device_mapping(self.compress_context.device_map)
+                    and len(self.compress_context.device_list) > 1
+                    and not self.model_context.is_diffusion
+                ):
+                    from auto_round.utils.device import set_auto_device_map_for_block_with_tuning
+
+                    card_0_in_high_risk, loss_device = set_auto_device_map_for_block_with_tuning(
+                        block,
+                        self.compress_context.device_map,
+                        input_ids,
+                        self.compress_context.low_gpu_mem_usage,
+                        self.quantizer.batch_size,
+                        device,
+                    )
+                else:
+                    block = block.to(device)
+                    card_0_in_high_risk, loss_device = False, device
+            else:
                 card_0_in_high_risk, loss_device = False, device
-        else:
-            card_0_in_high_risk, loss_device = False, device
 
-        if len(self.compress_context.device_list) > 1 and auto_offload:
-            from accelerate.hooks import AlignDevicesHook, add_hook_to_module
+            if len(self.compress_context.device_list) > 1 and auto_offload:
+                from accelerate.hooks import AlignDevicesHook, add_hook_to_module
 
-            for n, m in block.named_modules():
-                if len(list(m.children())) != 0 or not hasattr(m, "tuning_device"):
-                    continue
-                add_hook_to_module(m, AlignDevicesHook(m.tuning_device, io_same_device=True), True)
+                for n, m in block.named_modules():
+                    if len(list(m.children())) != 0 or not hasattr(m, "tuning_device"):
+                        continue
+                    add_hook_to_module(m, AlignDevicesHook(m.tuning_device, io_same_device=True), True)
 
-        # ── Infrastructure: collect reference output and act_max ──────────────
-        bs = self.quantizer.batch_size * self.quantizer.infer_bs_coeff
-        if q_input is None:
-            hook_handles = self.quantizer._register_act_max_hook(block)
-            reference_output = self.quantizer._get_block_outputs(block, input_ids, input_others, bs)
-            for h in hook_handles:
-                h.remove()
-        else:
-            reference_output = self.quantizer._get_block_outputs(block, input_ids, input_others, bs)
-            hook_handles = self.quantizer._register_act_max_hook(block)
-            if hook_handles:
-                self.quantizer._get_block_outputs(block, q_input, input_others, bs, save_output=False)
-            for h in hook_handles:
-                h.remove()
-            if input_ids is not q_input:
-                clear_memory(input_ids, device_list=self.compress_context.device_list)
+            # ── Infrastructure: collect reference output and act_max ──────────────
+            bs = self.quantizer.batch_size * self.quantizer.infer_bs_coeff
+            if q_input is None:
+                hook_handles = self.quantizer._register_act_max_hook(block)
+                reference_output = self.quantizer._get_block_outputs(block, input_ids, input_others, bs)
+                for h in hook_handles:
+                    h.remove()
             else:
-                clear_memory(device_list=self.compress_context.device_list)
-            input_ids = q_input
+                reference_output = self.quantizer._get_block_outputs(block, input_ids, input_others, bs)
+                hook_handles = self.quantizer._register_act_max_hook(block)
+                if hook_handles:
+                    self.quantizer._get_block_outputs(block, q_input, input_others, bs, save_output=False)
+                for h in hook_handles:
+                    h.remove()
+                if input_ids is not q_input:
+                    clear_memory(input_ids, device_list=self.compress_context.device_list)
+                else:
+                    clear_memory(device_list=self.compress_context.device_list)
+                input_ids = q_input
 
-        # ── Pure algorithm: delegates to quantizer ────────────────────────────
-        mid_iter_mem_check = self.compress_context.low_gpu_mem_usage and card_0_in_high_risk
-        self.quantizer.quantize_block(
-            block,
-            input_ids,
-            input_others,
-            reference_output,
-            loss_device=loss_device,
-            mid_iter_mem_check=mid_iter_mem_check,
-        )
+            # ── Pure algorithm: delegates to quantizer ────────────────────────────
+            mid_iter_mem_check = self.compress_context.low_gpu_mem_usage and card_0_in_high_risk
+            self.quantizer.quantize_block(
+                block,
+                input_ids,
+                input_others,
+                reference_output,
+                loss_device=loss_device,
+                mid_iter_mem_check=mid_iter_mem_check,
+            )
 
-        # ── MoE scale alignment for FP8 dispatch efficiency ────────────────
-        if is_nv_fp(self.quantizer.act_data_type) or is_static_wfp8afp8(self.quantizer):
-            set_amax_for_all_moe_layers(block, attr_name="act_max")
+            # ── MoE scale alignment for FP8 dispatch efficiency ────────────────
+            if is_nv_fp(self.quantizer.act_data_type) or is_static_wfp8afp8(self.quantizer):
+                set_amax_for_all_moe_layers(block, attr_name="act_max")
 
-        # ── Collect quantized-block outputs ───────────────────────────────────
-        if self.quantizer.enable_quanted_input:
-            q_outputs = self.quantizer._get_block_outputs(block, input_ids, input_others, bs)
-        else:
-            q_outputs = None
+            # ── Collect quantized-block outputs ───────────────────────────────────
+            if self.quantizer.enable_quanted_input:
+                q_outputs = self.quantizer._get_block_outputs(block, input_ids, input_others, bs)
+            else:
+                q_outputs = None
 
-        # ── Cleanup ───────────────────────────────────────────────────────────
-        if len(self.compress_context.device_list) > 1:
-            accelerate.hooks.remove_hook_from_submodules(block)
-        mv_module_from_gpu(block)
-
-        return q_outputs, reference_output
+            # ── Cleanup ───────────────────────────────────────────────────────────
+            if len(self.compress_context.device_list) > 1:
+                accelerate.hooks.remove_hook_from_submodules(block)
+            mv_module_from_gpu(block)
+            return q_outputs, reference_output
+        finally:
+            self.model_context.is_mllm = orig_is_mllm
 
     def _quantize_blocks(
         self,

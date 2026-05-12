@@ -215,7 +215,7 @@ class BaseCompressor(object):
             logger.warning("The static kv is experimental and currently has limited support.")
 
         if kwargs:
-            logger.warning(
+            logger.warning_once(
                 f"unrecognized keys {list(kwargs.keys())} were passed. "
                 "Please check them. If you use old api, just ignore this warning."
             )
@@ -635,16 +635,18 @@ class BaseCompressor(object):
         # On HPU, we rely on torch.compile to speed up the model execution.
         if self.enable_torch_compile and is_raw_fp8 and not is_hpex_available():
             self.enable_torch_compile = False
-            logger.warning("reset enable_torch_compile to `False` as fp8 is enabled")
+            logger.warning_once("reset enable_torch_compile to `False` as fp8 is enabled")
         # TODO: fix https://github.com/intel/auto-round/issues/1109
         if self.enable_torch_compile and is_raw_nv_fp:
             self.enable_torch_compile = False
-            logger.warning("reset enable_torch_compile to `False` as nvfp4 is enabled")
+            logger.warning_once("reset enable_torch_compile to `False` as nvfp4 is enabled")
         super_group_size = getattr(cfg, "super_group_size", None)
         enable_alg_ext = getattr(cfg, "enable_alg_ext", False)
         if self.enable_torch_compile and super_group_size is not None and enable_alg_ext:
             self.enable_torch_compile = False
-            logger.warning("reset enable_torch_compile to `False` as super_group_size is set for algorithm extension")
+            logger.warning_once(
+                "reset enable_torch_compile to `False` as super_group_size is set for algorithm extension"
+            )
 
     def _get_calibration_dataset(self) -> str:
         """Resolve calibration dataset: self.dataset > AutoScheme.dataset > default."""
@@ -667,7 +669,7 @@ class BaseCompressor(object):
         inference-mode quantize loop.
 
         Delegates to ordered pipeline phases; see each ``_resolve_scheme``,
-        ``_build_quantizer``, ``_resolve_formats``, ``_patch_model``,
+        ``_resolve_formats``, ``_build_quantizer``, ``_patch_model``,
         ``_build_layer_config``, and ``_hardware_setup`` for the precise
         preconditions and postconditions.
         """
@@ -688,8 +690,8 @@ class BaseCompressor(object):
             if self.model_context.model.dtype != torch.bfloat16:
                 self.model_context.model = self.model_context.model.to(torch.bfloat16)
 
-        self._build_quantizer()
         self._resolve_formats()
+        self._build_quantizer()
         self._patch_model()
         self._build_layer_config()
         self._apply_rotations()
@@ -746,8 +748,10 @@ class BaseCompressor(object):
         """Phase 1b – Quantizer construction and wiring.
 
         Preconditions:
-          - :meth:`_resolve_scheme` complete: ``self.quantize_config`` carries
-            resolved scheme attrs.
+                    - :meth:`_resolve_scheme` complete: ``self.quantize_config`` carries
+                        resolved scheme attrs.
+                    - :meth:`_resolve_formats` complete: format-driven overrides have
+                        been synced back to ``self.quantize_config``.
 
         Work performed:
           - Constructs ``self.quantizer`` from the resolved config.
@@ -764,12 +768,11 @@ class BaseCompressor(object):
         self.quantizer.bind(self)
 
     def _resolve_formats(self) -> None:
-        """Phase 2 – Format resolution and GGUF attr sync.
+        """Phase 2 – Format resolution and config attr sync.
 
         Preconditions:
-          - Phase 1 complete: ``self.quantizer`` exists (built by
-            :meth:`_build_quantizer`) and the scheme is resolved
-            (``data_type``, ``bits``, ``sym`` etc. are final).
+                    - Phase 1 complete: the scheme is resolved (``data_type``, ``bits``,
+                        ``sym`` etc. are set on both ``self`` and ``self.quantize_config``).
 
         Work performed:
           - Converts a string ``self.formats`` to a list of
@@ -777,17 +780,16 @@ class BaseCompressor(object):
             :func:`~auto_round.formats.get_formats`.
           - Initialises :class:`~auto_round.compressors.shard_writer.ShardWriter`
             when formats are present.
-          - **(2b)** Detects GGUF-driven attribute mutations (``bits``, ``sym``,
+                    - **(2b)** Detects format-driven attribute mutations (``bits``, ``sym``,
             ``data_type``, ``group_size``, etc.) that ``gguf_args_check`` may
-            have written onto ``self`` inside ``get_formats``, syncs them to
-            ``self.quantizer``, and rebuilds ``self.scheme`` accordingly.
-          - Merges any GGUF-injected entries into ``self.layer_config``.
+                        have written onto ``self`` inside ``get_formats``, syncs them back
+                        to ``self.quantize_config``, and rebuilds ``self.scheme`` accordingly.
+                    - Merges any format-injected entries into ``self.layer_config``.
 
         Postconditions:
           - ``self.formats`` is a list (or ``None``).
           - ``self.compress_context.formats`` mirrors ``self.formats``.
-          - ``self.quantizer`` carries the GGUF-adjusted scheme attrs.
-          - ``self.scheme`` is consistent with the final quantization attrs.
+                    - ``self.quantize_config`` and ``self.scheme`` reflect the final attrs.
         """
         # get_formats() inspects data_type / bits etc. that were just resolved.
         if isinstance(self.formats, str):
@@ -798,16 +800,16 @@ class BaseCompressor(object):
             # Defer ShardWriter construction to _ensure_shard_writer() to avoid
             # heap fragmentation during post_init (parameter iteration).
 
-        # Snapshot the user-specified layer_config before GGUF processing may
-        # add extra entries, so we can distinguish them later in step 2b.
+        # Snapshot the user-specified layer_config before format processing may
+        # inject extra per-layer entries (e.g. GGUF embedding / lm_head).
         _pre_gguf_layer_config = copy.copy(self.layer_config) or {}
 
-        # ── 2b: propagate GGUF-adjusted attrs back to quantizer ──────────────
+        # ── 2b: propagate format-adjusted attrs back to quantize_config ─────
         # gguf_args_check (called inside get_formats) may have overridden
         # bits / sym / data_type / super_bits / super_group_size / group_size
-        # on *this* BaseCompressor object.  The quantizer stored its own copies
-        # from Phase 1 (resolve_scheme), so we must sync them now, before
-        # _scheme_post_init() builds the layer_config in Phase 4.
+        # on *this* BaseCompressor object via setattr(self, ...).  Sync those
+        # changes to self.quantize_config before creating the quantizer so it is
+        # constructed with the definitive final values.
         _gguf_forwarded_attrs = (
             "bits",
             "sym",
@@ -820,14 +822,16 @@ class BaseCompressor(object):
         )
         _any_gguf_attr_changed = False
         for _attr in _gguf_forwarded_attrs:
-            if _attr in self.__dict__ and hasattr(self.quantizer, _attr):
-                if _attr not in ("scale_dtype", "act_bits") and getattr(self.quantizer, _attr) != self.__dict__[_attr]:
-                    _any_gguf_attr_changed = True
-                setattr(self.quantizer, _attr, self.__dict__[_attr])
-        # If gguf_args_check changed scheme attrs, rebuild the scheme on both
-        # the compressor (SchemeMixin) and the quantizer so that
-        # configure_layer_config() and set_layer_config() use the correct
-        # default_dict and gguf_name.
+            if _attr not in self.__dict__:
+                continue
+            config_val = getattr(self.quantize_config, _attr, None)
+            self_val = self.__dict__[_attr]
+            if _attr not in ("scale_dtype", "act_bits") and config_val != self_val:
+                _any_gguf_attr_changed = True
+            if config_val != self_val:
+                setattr(self.quantize_config, _attr, self_val)
+        # If format resolution changed scheme attrs, rebuild self.scheme so that
+        # configure_layer_config() / set_layer_config() see the correct values.
         if _any_gguf_attr_changed:
             from auto_round.schemes import PRESET_SCHEMES
             from auto_round.schemes import QuantizationScheme as _QS
