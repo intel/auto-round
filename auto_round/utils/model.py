@@ -793,6 +793,7 @@ _is_mllm_model_cache: dict = {}
 # (text-only calibration, non-text modules excluded from quantization).
 _LLM_ONLY_MODEL_TYPES = {"bagel"}
 
+
 def is_mllm_model(model_or_path: Union[str, torch.nn.Module], platform: str = None):
     from auto_round.utils.common import MM_KEYS
 
