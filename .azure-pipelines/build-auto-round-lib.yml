@@ -10,6 +10,7 @@ trigger:
     exclude:
       - "*.md"
       - "**/*.md"
+pr: none
 
 stages:
   - template: template/lib-build-template.yml

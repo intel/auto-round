@@ -39,7 +39,6 @@ variables:
 stages:
   - template: template/lib-build-template.yml
     parameters:
-      enableChangeDetection: true
       pythonVersions: ${{ parameters.pythonVersions }}
 
   - stage: TestArk
