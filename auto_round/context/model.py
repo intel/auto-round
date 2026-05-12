@@ -36,9 +36,9 @@ from auto_round.utils import (
     is_moe_model_via_config,
     is_vllm_model,
     llm_load_model,
-    vllm_load_model,
     mllm_load_model,
     unsupported_meta_device,
+    vllm_load_model,
 )
 from auto_round.utils.device import _force_trim_malloc
 

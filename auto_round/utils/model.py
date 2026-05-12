@@ -797,7 +797,9 @@ def vllm_load_model(
             f"but got {type(pretrained_model_name_or_path)}"
         )
 
-    model = get_nested_attr(llm, "llm_engine.engine_core.engine_core.model_executor.driver_worker.worker.model_runner.model")
+    model = get_nested_attr(
+        llm, "llm_engine.engine_core.engine_core.model_executor.driver_worker.worker.model_runner.model"
+    )
     if model is None:
         model = get_nested_attr(llm, "llm_engine.model_executor.driver_worker.model_runner.model")
     if model is None:
@@ -952,7 +954,9 @@ def is_vllm_model(model_or_path: object) -> bool:
         return False
     if isinstance(model_or_path, torch.nn.Module):
         return True
-    model = get_nested_attr(model_or_path, "llm_engine.engine_core.engine_core.model_executor.driver_worker.worker.model_runner.model")
+    model = get_nested_attr(
+        model_or_path, "llm_engine.engine_core.engine_core.model_executor.driver_worker.worker.model_runner.model"
+    )
     if model is None:
         model = get_nested_attr(model_or_path, "llm_engine.model_executor.driver_worker.model_runner.model")
     return model is not None

@@ -50,8 +50,9 @@ class VllmMixin:
             logger.warning("vLLM loading requested but engine is unavailable; fallback to regular calibration.")
             return super().calib(nsamples, bs)
 
-        from auto_round.calib_dataset import get_dataloader
         from vllm import SamplingParams
+
+        from auto_round.calib_dataset import get_dataloader
 
         if isinstance(self.dataset, str):
             dataset = self.dataset.replace(" ", "")
