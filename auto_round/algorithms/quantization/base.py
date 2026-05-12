@@ -355,7 +355,6 @@ class BaseQuantizers:
 
         return output
 
-
     def _resolve_block_forward(self):
         """Resolve and cache the block forward function once.
 
