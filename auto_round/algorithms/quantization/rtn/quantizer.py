@@ -218,6 +218,9 @@ class OptimizedRTNQuantizer(RTNQuantizer):
 
         self.enable_alg_ext = True
 
+    def quantize_layer_outside_block(self, *args, **kwargs):
+        return self.quantize_layer(*args, **kwargs)
+
     @torch.no_grad()
     def quantize_block(
         self, block: torch.nn.Module, input_ids=None, input_others=None, reference_output=None, **kwargs
@@ -248,4 +251,4 @@ class OptimizedRTNQuantizer(RTNQuantizer):
             if hasattr(m, "imatrix"):
                 m.imatrix /= m.imatrix_cnt
             if hasattr(m, "global_name") and check_to_quantized(m):
-                self.quantize_layer(m.global_name)
+                self.quantize_layer_outside_block(m.global_name)

@@ -380,7 +380,8 @@ class BaseQuantizers:
                 compiled = compile_func(block_forward, self.compress_context.device)
                 self._compiled_block_forward = compiled
             self._resolved_block_forward = compiled
-        self._resolved_block_forward = block_forward
+        else:
+            self._resolved_block_forward = block_forward
         return self._resolved_block_forward
 
     def _invalidate_block_forward_cache(self):
