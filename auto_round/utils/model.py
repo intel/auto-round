@@ -759,10 +759,18 @@ def is_pure_text_model(model):
     return True
 
 
+_is_mllm_model_cache: dict = {}
+
+
 def is_mllm_model(model_or_path: Union[str, torch.nn.Module], platform: str = None):
     from auto_round.utils.common import MM_KEYS
 
     model_path = model_or_path if isinstance(model_or_path, str) else model_or_path.name_or_path
+
+    # Fast path: return cached result for already-seen paths
+    if model_path in _is_mllm_model_cache:
+        return _is_mllm_model_cache[model_path]
+
     # For dummy model, model_path could be "".
     # Only try to download if the path looks like a HF repo id (not a local filesystem path).
     # Skip download for absolute paths or relative paths that contain current/parent dir markers.
@@ -770,24 +778,30 @@ def is_mllm_model(model_or_path: Union[str, torch.nn.Module], platform: str = No
     if model_path and not os.path.isdir(model_path) and not _is_local_path:
         model_path = download_or_get_path(model_path, platform=platform)
 
+    result = False
     if isinstance(model_path, str):
         if os.path.exists(os.path.join(model_path, "preprocessor_config.json")):
-            return True
-        if os.path.exists(os.path.join(model_path, "processor_config.json")):
-            return True
-        if os.path.exists(os.path.join(model_path, "config.json")):
+            result = True
+        elif os.path.exists(os.path.join(model_path, "processor_config.json")):
+            result = True
+        elif os.path.exists(os.path.join(model_path, "config.json")):
             with open(os.path.join(model_path, "config.json")) as f:
                 config = json.load(f)
             for key in config.keys():
                 if any([k in key for k in MM_KEYS]):
-                    return True
+                    result = True
+                    break
 
-    if isinstance(model_or_path, torch.nn.Module):
+    if not result and isinstance(model_or_path, torch.nn.Module):
         for name, module in model_or_path.named_modules():
             if any([k in name for k in MM_KEYS]):
-                return True
+                result = True
+                break
 
-    return False
+    # Cache by the original path key (model_path may have been resolved above)
+    original_key = model_or_path if isinstance(model_or_path, str) else model_or_path.name_or_path
+    _is_mllm_model_cache[original_key] = result
+    return result
 
 
 def is_gguf_model(model_path: Union[str, torch.nn.Module]) -> bool:

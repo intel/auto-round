@@ -119,7 +119,7 @@ class ModelContext(BaseContext):
             if self.model.dtype != torch.bfloat16:
                 self.model = self.model.to(torch.bfloat16)
         else:
-            logger.info(f"using {self.model.dtype} for quantization tuning")
+            logger.debug(f"using {self.model.dtype} for quantization tuning")
 
         # Reclaim C heap fragmentation left by model/tokenizer loading so
         # that the quantize loop starts from a tighter RSS baseline.

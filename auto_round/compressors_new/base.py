@@ -192,7 +192,7 @@ class BaseCompressor(object):
             logger.warning("The static kv is experimental and currently has limited support.")
 
         if kwargs:
-            logger.warning(
+            logger.warning_once(
                 f"unrecognized keys {list(kwargs.keys())} were passed. "
                 "Please check them. If you use old api, just ignore this warning."
             )
@@ -609,16 +609,18 @@ class BaseCompressor(object):
         # On HPU, we rely on torch.compile to speed up the model execution.
         if self.enable_torch_compile and is_raw_fp8 and not is_hpex_available():
             self.enable_torch_compile = False
-            logger.warning("reset enable_torch_compile to `False` as fp8 is enabled")
+            logger.warning_once("reset enable_torch_compile to `False` as fp8 is enabled")
         # TODO: fix https://github.com/intel/auto-round/issues/1109
         if self.enable_torch_compile and is_raw_nv_fp:
             self.enable_torch_compile = False
-            logger.warning("reset enable_torch_compile to `False` as nvfp4 is enabled")
+            logger.warning_once("reset enable_torch_compile to `False` as nvfp4 is enabled")
         super_group_size = getattr(cfg, "super_group_size", None)
         enable_alg_ext = getattr(cfg, "enable_alg_ext", False)
         if self.enable_torch_compile and super_group_size is not None and enable_alg_ext:
             self.enable_torch_compile = False
-            logger.warning("reset enable_torch_compile to `False` as super_group_size is set for algorithm extension")
+            logger.warning_once(
+                "reset enable_torch_compile to `False` as super_group_size is set for algorithm extension"
+            )
 
     def _get_calibration_dataset(self) -> str:
         """Resolve calibration dataset: self.dataset > AutoScheme.dataset > default."""
