@@ -102,7 +102,7 @@ class VllmMixin:
         if total_cnt == 0:
             logger.error(
                 "no data has been cached, please provide more data with sequence length "
-                f">={self.seqlen} in the dataset or decease the sequence length"
+                f">={self.seqlen} in the dataset or decrease the sequence length"
             )
             exit(-1)
         if total_cnt < nsamples:
