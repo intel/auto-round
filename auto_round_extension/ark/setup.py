@@ -32,12 +32,16 @@ def get_build_version():
                     print(f"Read version from PKG-INFO: {version}")
                     return version
     try:
-        result = subprocess.run(["git", "rev-parse", "--short", "HEAD"], capture_output=True, text=True, check=True)
-        commit = result.stdout.strip()
-        print(f"Git commit: {commit}, version: {__version__}.dev{commit}")
-        return f"{__version__}.dev{commit}"
+        result = subprocess.run(
+            ["git", "log", "-1", "--format=%cd", "--date=format:%Y%m%d%H%M"],
+            capture_output=True, text=True, check=True
+        )
+        date_str = result.stdout.strip()
+        version = f"{__version__}.dev{date_str}"
+        print(f"Git commit date: {date_str}, version: {version}")
+        return version
     except subprocess.CalledProcessError as e:
-        print(f"Warning: 'git rev-parse --short HEAD' failed: {e}. Falling back to version {__version__}")
+        print(f"Warning: git command failed: {e}. Falling back to version {__version__}")
         return __version__
 
 
