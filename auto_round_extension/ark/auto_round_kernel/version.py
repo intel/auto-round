@@ -1,4 +1,4 @@
-# Copyright (c) 2025 Intel Corporation
+# Copyright (c) 2023 Intel Corporation
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -11,9 +11,7 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
+"""Intel® auto-round: An open-source Python library
+supporting popular model weight only compression based on signround."""
 
-from auto_round_extension.ark.qlinear import QuantLinear, QuantLinearGPTQ, QuantLinearAWQ
-
-qlinear_classes = (QuantLinear, QuantLinearGPTQ)
-
-awq_classes = (QuantLinearAWQ,)
+__version__ = "0.13.0"
