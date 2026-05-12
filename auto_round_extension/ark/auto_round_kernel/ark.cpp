@@ -153,10 +153,11 @@ static void moe_gemm_wrapper(torch_ptr stream, torch_ptr activations, torch_ptr 
                 (void*)outputs, (BTLA_DTYPE)(dtype), N, K, (int*)num_tokens_per_expert, num_experts);
 }
 
-static void sage_dynamic_quant(torch_ptr stream, torch_ptr input, torch_ptr output, torch_ptr scale_out, int num_rows,
-                               int head_dim, int block_size) {
+static void sage_dynamic_quant(torch_ptr stream, torch_ptr input, torch_ptr bias, torch_ptr output, torch_ptr scale_out,
+                               int num_rows, int head_dim, int block_size) {
   auto* q = (sycl::queue*)stream;
   auto* in_ptr = (sycl::half*)input;
+  auto* bias_ptr = bias ? (sycl::half*)bias : nullptr;
   auto* out_ptr = (int8_t*)output;
   auto* scale_ptr = (float*)scale_out;
 
@@ -181,6 +182,7 @@ static void sage_dynamic_quant(torch_ptr stream, torch_ptr input, torch_ptr outp
                       int tid = item.get_local_id(0);
                       auto wg = item.get_group();
                       auto* block_in = in_ptr + (size_t)block_id * elems_per_block;
+                      auto* block_bias = bias_ptr ? bias_ptr + (size_t)block_id * elems_per_block : nullptr;
                       auto* block_out = out_ptr + (size_t)block_id * elems_per_block;
 
                       // Phase 1: compute absmax across entire block
@@ -189,6 +191,9 @@ static void sage_dynamic_quant(torch_ptr stream, torch_ptr input, torch_ptr outp
                       local_max_vec = sycl::vec<sycl::half, Unroll>(0.0f);
                       for (int i = tid * Unroll; i < elems_per_block; i += wg_size * Unroll) {
                         local_data = *(sycl::vec<sycl::half, Unroll>*)(&block_in[i]);
+                        if (block_bias) {
+                          local_data = local_data - *(sycl::vec<sycl::half, Unroll>*)(&block_bias[i]);
+                        }
                         local_max_vec = sycl::fmax(local_max_vec, sycl::fabs(local_data));
                       }
                       for (int i = 0; i < Unroll; ++i) {
@@ -208,7 +213,11 @@ static void sage_dynamic_quant(torch_ptr stream, torch_ptr input, torch_ptr outp
                       for (int i = tid * Unroll; i < elems_per_block; i += wg_size * Unroll) {
 #pragma unroll
                         for (int j = 0; j < Unroll; ++j) {
-                          float val = static_cast<float>(block_in[i + j]) * inv_scale;
+                          float val = static_cast<float>(block_in[i + j]);
+                          if (block_bias) {
+                            val -= static_cast<float>(block_bias[i + j]);
+                          }
+                          val *= inv_scale;
                           int iv = static_cast<int>(val + (val >= 0.0f ? 0.5f : -0.5f));
                           iv = sycl::clamp(iv, -127, 127);
                           block_out[i + j] = static_cast<int8_t>(iv);
@@ -223,6 +232,7 @@ static void sage_dynamic_quant(torch_ptr stream, torch_ptr input, torch_ptr outp
                       int tid = item.get_local_id(0);
                       auto wg = item.get_group();
                       auto* block_in = in_ptr + (size_t)block_id * elems_per_block;
+                      auto* block_bias = bias_ptr ? bias_ptr + (size_t)block_id * elems_per_block : nullptr;
                       auto* block_out = out_ptr + (size_t)block_id * elems_per_block;
 
                       // Phase 1: compute absmax across entire block
@@ -232,6 +242,9 @@ static void sage_dynamic_quant(torch_ptr stream, torch_ptr input, torch_ptr outp
                       int local_i = 0;
                       for (int i = tid * Unroll; i < elems_per_block; i += wg_size * Unroll, local_i++) {
                         local_data[local_i] = *(sycl::vec<sycl::half, Unroll>*)&block_in[i];
+                        if (block_bias) {
+                          local_data[local_i] = local_data[local_i] - *(sycl::vec<sycl::half, Unroll>*)(&block_bias[i]);
+                        }
                         local_max_vec = sycl::fmax(local_max_vec, sycl::fabs(local_data[local_i]));
                       }
 #pragma unroll

@@ -675,6 +675,7 @@ class ARK:
         lib.sage_dynamic_quant(
             stream,
             query.data_ptr(),
+            0,
             q_i8.data_ptr(),
             q_scale.data_ptr(),
             q_num_rows,
@@ -690,6 +691,7 @@ class ARK:
         lib.sage_dynamic_quant(
             stream,
             key.data_ptr(),
+            0,
             k_i8.data_ptr(),
             k_scale.data_ptr(),
             k_num_rows,
