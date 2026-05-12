@@ -68,7 +68,7 @@ stages:
                     source ${HOME}/miniforge3/etc/profile.d/conda.sh
                     set -eox pipefail
                     cd auto_round_extension/ark
-                    CONDA_ENV="${condaName}"
+                    CONDA_ENV="$(condaName)"
                     PYTHON_VERSION="${{ pythonVersion }}"
                     TORCH_VERSION="${{ torchVersion }}"
                     if conda env list | grep -q "${CONDA_ENV}"; then conda remove -n ${CONDA_ENV} --all -y; fi
