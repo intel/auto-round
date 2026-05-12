@@ -1,3 +1,5 @@
+trigger: none
+
 pr: 
   autoCancel: true
   drafts: false
