@@ -389,6 +389,29 @@ class AutoRoundCompatible:
         This method translates old AutoRoundCompatible API to new AutoRound API.
         """
         from auto_round.utils import is_diffusion_model, is_mllm_model
+        from auto_round.utils.model import is_model_free_route
+
+        # ---- Model-free fast-path detection --------------------------------
+        if is_model_free_route(model, scheme, iters, kwargs.get("disable_opt_rtn"), kwargs):
+            from auto_round.compressors_new.model_free import ModelFreeCompressor
+
+            if not isinstance(model, str):
+                raise ValueError("model_free=True requires `model` to be a HuggingFace ID or local path string.")
+            if not bool(kwargs.get("model_free", False)):
+                logger.info(
+                    "Auto-routing to model-free quantization "
+                    "(iters=0, disable_opt_rtn=True, supported scheme). "
+                    "Pass disable_model_free=True to use the regular flow."
+                )
+            return ModelFreeCompressor(
+                model_name_or_path=model,
+                scheme=scheme,
+                layer_config=layer_config,
+                tokenizer=tokenizer,
+                device_map=device_map,
+                **kwargs,
+            )
+        # --------------------------------------------------------------------
 
         common_config_kwargs, auto_round_config_kwargs = cls._pop_config_kwargs(kwargs)
 
@@ -482,13 +505,14 @@ class AutoRoundCompatible:
         num_inference_steps = kwargs.pop("num_inference_steps", 50)
         generator_seed = kwargs.pop("generator_seed", None)
 
-        # Check model type for logging
+        # Check model type for logging (use warning_once to avoid repeating for every block
+        # when called from LLM-Compressor which instantiates AutoRound per block)
         if is_mllm_model(model, platform=platform):
-            logger.info("Using MLLM mode for multimodal model (new architecture).")
+            logger.warning_once("Using MLLM mode for multimodal model (new architecture).")
         elif is_diffusion_model(model):
-            logger.info("Using Diffusion mode for diffusion model (new architecture).")
+            logger.warning_once("Using Diffusion mode for diffusion model (new architecture).")
         else:
-            logger.info("Using LLM mode (new architecture).")
+            logger.warning_once("Using LLM mode (new architecture).")
 
         # Create AutoRound instance using new architecture
         compressor = AutoRound(

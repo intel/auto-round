@@ -29,6 +29,9 @@ parameters:
   - name: dockerFileName
     type: string
     default: "Dockerfile"
+  - name: buildARKWheel
+    type: string
+    default: "false"
 
 
 steps:
@@ -42,26 +45,38 @@ steps:
       repo: ${{ parameters.repo }}
       imageSource: ${{ parameters.imageSource }}
 
+  - task: DownloadPipelineArtifact@2
+    condition: and(succeeded(), eq(variables['BUILD_ARK_WHEEL'], 'true'))
+    inputs:
+      artifact: auto-round-lib-wheel
+      patterns: '*.whl'
+      path: $(Build.SourcesDirectory)/ark_wheel
+    displayName: "Download ark wheel"
+
   - ${{ if eq(parameters.imageSource, 'build') }}:
     - script: |
+        if [ "${{ parameters.buildARKWheel }}" == "true" ]; then
+          ARK_WHEEL_INSTALL="uv pip install /auto-round/ark_wheel/*.whl --no-deps"
+        else
+          ARK_WHEEL_INSTALL="uv pip install --index-url https://test.pypi.org/simple/ auto-round-lib --no-deps"
+        fi
+
+        docker exec ${{ parameters.utContainerName }} bash -c "cd /auto-round \
+          && uv pip install -r .azure-pipelines/scripts/ut/constraints.txt --extra-index-url https://download.pytorch.org/whl/xpu \
+          && uv pip install -r auto_round_extension/ark/requirements.txt \
+          && ${ARK_WHEEL_INSTALL} \
+          && uv pip install -r requirements.txt"
+        
         if [ "${{ parameters.utScriptFileName }}" == "run_ut_xpu" ];then
           docker exec ${{ parameters.utContainerName }} bash -c "cd /auto-round \
-            && uv pip install -r .azure-pipelines/scripts/ut/constraints.txt --extra-index-url https://download.pytorch.org/whl/xpu \
-            && uv pip install auto-round-lib --constraint .azure-pipelines/scripts/ut/constraints.txt \
-            && uv pip install -r requirements.txt \
             && uv pip install -r test/test_ark/requirements.txt \
             && uv pip install -r test/test_xpu/requirements.txt --extra-index-url https://download.pytorch.org/whl/xpu \
-            && uv pip install -r .azure-pipelines/scripts/ut/constraints.txt --extra-index-url https://download.pytorch.org/whl/xpu \
             && cd /auto-round && uv pip install . \
             && uv pip list"
         else 
           docker exec ${{ parameters.utContainerName }} bash -c "cd /auto-round \
-            && uv pip install -r .azure-pipelines/scripts/ut/constraints.txt --extra-index-url https://download.pytorch.org/whl/cpu \
-            && uv pip install auto-round-lib --constraint .azure-pipelines/scripts/ut/constraints.txt \
-            && uv pip install -r requirements.txt \
             && uv pip install -r requirements-cpu.txt \
             && uv pip install -r test/test_cpu/requirements.txt --extra-index-url https://download.pytorch.org/whl/cpu \
-            && uv pip install -r .azure-pipelines/scripts/ut/constraints.txt --extra-index-url https://download.pytorch.org/whl/cpu \
             && uv pip list"
         fi
       displayName: "Env Setup"
