@@ -1,1 +1,1 @@
-sglang >= 0.5.10
+sglang < 0.5.11 # due to not support cu128
