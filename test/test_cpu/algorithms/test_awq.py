@@ -227,18 +227,20 @@ class TestAWQMoE:
         fp_layers = {k for k, v in layer_config.items() if v["bits"] >= 16}
         other_layers = {k: v["bits"] for k, v in layer_config.items() if v["bits"] != 4 and v["bits"] < 16}
 
-        # Tiny Qwen MoE: gate/router layers stay FP, all others are W4
+        # Tiny Qwen MoE: both mlp.gate (MoE router) and mlp.shared_expert_gate
+        # are excluded from quantization → 2 FP gate layers per block.
         assert len(other_layers) == 0, f"Unexpected bit widths: {other_layers}"
         n_layers = model.config.num_hidden_layers
-        assert (
-            len(fp_layers) == n_layers
-        ), f"Expected {n_layers} FP shared_expert_gate layers, got {len(fp_layers)}: {sorted(fp_layers)}"
-        assert len(q4_layers) == len(layer_config) - len(
-            fp_layers
-        ), f"Expected {len(layer_config) - len(fp_layers)} W4 layers, got {len(q4_layers)}"
+        assert len(fp_layers) == 2 * n_layers, (
+            f"Expected {2 * n_layers} FP gate layers (mlp.gate + mlp.shared_expert_gate per block), "
+            f"got {len(fp_layers)}: {sorted(fp_layers)}"
+        )
+        assert len(q4_layers) == len(layer_config) - len(fp_layers), (
+            f"Expected {len(layer_config) - len(fp_layers)} W4 layers, got {len(q4_layers)}"
+        )
 
         for name in fp_layers:
-            assert "shared_expert_gate" in name, f"Unexpected FP layer: {name}"
+            assert name.endswith("gate"), f"Unexpected FP layer: {name}"
 
     def test_awq_moe_save_quant_config(self, tiny_qwen_moe_model_path):
         """AWQ MoE: saved quantization_config should be consistent and loadable."""
