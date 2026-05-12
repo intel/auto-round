@@ -950,10 +950,10 @@ def is_diffusion_model(model_or_path: Union[str, object], trust_remote_code: boo
 def is_vllm_model(model_or_path: object) -> bool:
     if model_or_path is None:
         return False
-    if "vllm" not in str(type(model_or_path)).lower():
-        return False
     if isinstance(model_or_path, torch.nn.Module):
         return True
+    if "vllm" not in str(type(model_or_path)).lower():
+        return False
     model = get_nested_attr(
         model_or_path, "llm_engine.engine_core.engine_core.model_executor.driver_worker.worker.model_runner.model"
     )
