@@ -14,13 +14,15 @@ pr:
 
 parameters:
   - name: pythonVersions
-    displayName: "Python versions (JSON array)"
-    type: string
-    default: '["3.12"]'
+    displayName: "Python versions"
+    type: object
+    default:
+      - "3.12"
   - name: torchVersions
-    displayName: "Torch versions (JSON array)"
-    type: string
-    default: '["2.11.0"]'
+    displayName: "Torch versions"
+    type: object
+    default:
+      - "2.11.0"
   - name: publishTarget
     displayName: "Publish wheels to"
     type: string
@@ -38,14 +40,14 @@ stages:
   - template: template/lib-build-template.yml
     parameters:
       enableChangeDetection: true
-      pythonVersions: ${{ fromJson(parameters.pythonVersions) }}
+      pythonVersions: ${{ parameters.pythonVersions }}
 
   - stage: TestArk
     displayName: Test Ark
     dependsOn: BuildArkWheel
     jobs:
-      - ${{ each pythonVersion in fromJson(parameters.pythonVersions) }}:
-        - ${{ each torchVersion in fromJson(parameters.torchVersions) }}:
+      - ${{ each pythonVersion in parameters.pythonVersions }}:
+        - ${{ each torchVersion in parameters.torchVersions }}:
           - job: TestArk_py${{ replace(pythonVersion, '.', '') }}_torch${{ replace(replace(torchVersion, '.', ''), '+', '_') }}
             displayName: "Test py${{ pythonVersion }} torch${{ torchVersion }}"
             pool: B60
@@ -98,7 +100,7 @@ stages:
         steps:
           - checkout: none
 
-          - ${{ each pythonVersion in fromJson(parameters.pythonVersions) }}:
+          - ${{ each pythonVersion in parameters.pythonVersions }}:
             - task: DownloadPipelineArtifact@2
               displayName: Download wheel (py${{ pythonVersion }})
               inputs:
