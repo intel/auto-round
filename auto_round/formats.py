@@ -102,6 +102,11 @@ def _check_compatibility(formats: list[str], ar: BaseCompressor):
             )
             formats = tmp_format_name.split(",")
 
+    if isinstance(ar.group_size, tuple) and any(["auto_round" in f.lower() for f in formats]):
+        logger.warning(
+            "auto_round:fp8 format only supports vLLM inference for now. We recommend using the FP8 format via --format fp8 instead."
+        )
+
     return formats
 
 
