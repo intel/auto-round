@@ -1709,11 +1709,17 @@ class MemoryMonitor:
             if str(device) == "cpu":
                 continue
             if torch.cuda.is_available():
-                current_vram = torch.cuda.memory_reserved(device) / 1024**3  # GB
+                try:
+                    current_vram = torch.cuda.memory_reserved(device) / 1024**3  # GB
+                except (RuntimeError, Exception):
+                    continue  # Skip devices that are not initialized or out of range
                 if device == "cuda":
                     device = "0"
             elif torch.xpu.is_available():
-                current_vram = torch.xpu.memory_reserved(device) / 1024**3  # GB
+                try:
+                    current_vram = torch.xpu.memory_reserved(device) / 1024**3  # GB
+                except (RuntimeError, Exception):
+                    continue  # Skip devices that are not initialized or out of range
                 if device == "xpu":
                     device = "0"
             elif is_hpex_available():

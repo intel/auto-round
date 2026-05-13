@@ -83,3 +83,32 @@ class TestAutoRound:
         )
         tokenizer = AutoTokenizer.from_pretrained(quantized_model_path)
         eval_generated_prompt(model, tokenizer)
+
+    @require_gptqmodel
+    def test_mixed_gptqmodel(self, tiny_opt_model_path, dataloader, tmp_path):
+        layer_config = {
+            "k_proj": {"scheme": "W8A16"},  # part name
+            "lm_head": {"scheme": "w4a16"},  # set lm_head quant, useless due to tied weights
+            "fc1": {"bits": 16},
+            "model.decoder.layers.0.self_attn.v_proj": {"bits": 16},
+            "model.decoder.layers.0.self_attn.q_proj": {"bits": 8},  # full name
+        }
+        autoround = AutoRound(
+            model=tiny_opt_model_path,
+            scheme="W4A16",
+            iters=2,
+            seqlen=2,
+            layer_config=layer_config,
+            dataset=dataloader,
+        )
+        quantized_model_path = tmp_path
+        _, quantized_model_path = autoround.quantize_and_save(output_dir=quantized_model_path, format="auto_gptq")
+        # test original GPTQModel inference
+        from gptqmodel import GPTQModel
+
+        model = GPTQModel.load(quantized_model_path)
+        assert model.model.model.decoder.layers[0].self_attn.k_proj.bits == 8
+        assert model.model.model.decoder.layers[0].self_attn.q_proj.bits == 8
+        assert model.model.model.decoder.layers[1].self_attn.v_proj.bits == 4
+        result = model.generate("Uncovering deep insights begins with")[0]  # tokens
+        assert "!!!" not in model.tokenizer.decode(result)  # string output
