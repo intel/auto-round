@@ -1,3 +1,6 @@
+# # Copyright (C) 2026 Intel Corporation
+# # SPDX-License-Identifier: Apache-2.0
+
 from __future__ import annotations
 
 import logging
@@ -37,13 +40,9 @@ def _validate_backend(backend: str, quant_block_size: int) -> str:
     return backend
 
 
-def _normalize_attn_mask(
-    attn_mask: torch.Tensor, batch: int, seq_q: int, seq_kv: int
-) -> torch.Tensor:
+def _normalize_attn_mask(attn_mask: torch.Tensor, batch: int, seq_q: int, seq_kv: int) -> torch.Tensor:
     if attn_mask.dtype == torch.bool:
-        raise ValueError(
-            "Boolean attention masks are not supported by the ARK SDPA patch"
-        )
+        raise ValueError("Boolean attention masks are not supported by the ARK SDPA patch")
 
     if attn_mask.ndim == 2:
         if attn_mask.shape != (seq_q, seq_kv):
@@ -75,12 +74,8 @@ def _is_pure_causal_mask(attn_mask: torch.Tensor) -> bool:
         return False
 
     mask_2d = attn_mask.reshape(-1, seq_q, seq_kv)[0]
-    tri_up = torch.triu(
-        torch.ones(seq_q, seq_kv, dtype=torch.bool, device=attn_mask.device), 1
-    )
-    return bool(torch.isinf(mask_2d[tri_up]).all().item()) and bool(
-        (mask_2d[~tri_up] == 0).all().item()
-    )
+    tri_up = torch.triu(torch.ones(seq_q, seq_kv, dtype=torch.bool, device=attn_mask.device), 1)
+    return bool(torch.isinf(mask_2d[tri_up]).all().item()) and bool((mask_2d[~tri_up] == 0).all().item())
 
 
 def _can_use_ark_attention(
@@ -123,9 +118,7 @@ def _can_use_ark_attention(
     return True
 
 
-def patch_torch_sdpa_with_ark(
-    *, strict: bool = False, backend: str = "sdpa", quant_block_size: int = 64
-) -> bool:
+def patch_torch_sdpa_with_ark(*, strict: bool = False, backend: str = "sdpa", quant_block_size: int = 64) -> bool:
     global _ARK_SDPA_PATCHED, _ORIG_SDPA, _PATCH_CONFIG
 
     backend = _validate_backend(backend, quant_block_size)
@@ -175,9 +168,7 @@ def patch_torch_sdpa_with_ark(
         normalized_mask = None
         if attn_mask is not None:
             try:
-                normalized_mask = _normalize_attn_mask(
-                    attn_mask, query.shape[0], query.shape[-2], key.shape[-2]
-                )
+                normalized_mask = _normalize_attn_mask(attn_mask, query.shape[0], query.shape[-2], key.shape[-2])
             except ValueError:
                 return orig_sdpa(
                     query,
