@@ -279,9 +279,9 @@ class BaseCompressor(object):
         # from quantize() as a fallback for non-AutoScheme cases.
         self._post_init_done = False
 
-        # Apply torch compile adjustments eagerly so that ar.enable_torch_compile
-        # reflects the correct value immediately after construction (not only after post_init).
-        self._adjust_torch_compile(enable_torch_compile)
+        # Apply eager state-only adjustments so ar.enable_torch_compile reflects
+        # unsupported combinations immediately after construction.
+        self._apply_eager_torch_compile_guards(enable_torch_compile)
         self.compress_context.enable_torch_compile = self.enable_torch_compile
 
         self.blocks_requiring_input_ids = []
@@ -571,11 +571,8 @@ class BaseCompressor(object):
     def diffusion(self):
         return self.model_context.is_diffusion
 
-    def _adjust_torch_compile(self, enable_torch_compile: bool) -> None:
-        """Sets the torch compile configuration for the tuning."""
-        self.enable_torch_compile = enable_torch_compile
-
-        # Determine fp8 / nvfp4 intent from raw config before scheme resolution.
+    def _get_torch_compile_state(self) -> dict[str, Any]:
+        """Collect raw torch.compile decision inputs from the current config state."""
         cfg = self.quantize_config
         raw_scheme = self.scheme if isinstance(self.scheme, str) else ""
         raw_dt = (cfg.data_type or "").lower()
@@ -592,33 +589,52 @@ class BaseCompressor(object):
         )
 
         act_bits = getattr(cfg, "act_bits", 16) or 16
+        super_group_size = getattr(cfg, "super_group_size", None)
+        enable_alg_ext = getattr(cfg, "enable_alg_ext", False)
+        return {
+            "is_raw_nv_fp": is_raw_nv_fp,
+            "is_raw_fp8": is_raw_fp8,
+            "act_bits": act_bits,
+            "super_group_size": super_group_size,
+            "enable_alg_ext": enable_alg_ext,
+        }
+
+    def _apply_eager_torch_compile_guards(self, enable_torch_compile: bool) -> None:
+        """Apply torch.compile disable rules that should take effect at construction time."""
+        self.enable_torch_compile = enable_torch_compile
+        state = self._get_torch_compile_state()
+
+        # On HPU, we rely on torch.compile to speed up the model execution.
+        if self.enable_torch_compile and state["is_raw_fp8"] and not is_hpex_available():
+            self.enable_torch_compile = False
+            logger.warning_once("reset enable_torch_compile to `False` as fp8 is enabled")
+        # TODO: fix https://github.com/intel/auto-round/issues/1109
+        if self.enable_torch_compile and state["is_raw_nv_fp"]:
+            self.enable_torch_compile = False
+            logger.warning_once("reset enable_torch_compile to `False` as nvfp4 is enabled")
+        if self.enable_torch_compile and state["super_group_size"] is not None and state["enable_alg_ext"]:
+            self.enable_torch_compile = False
+            logger.warning_once(
+                "reset enable_torch_compile to `False` as super_group_size is set for algorithm extension"
+            )
+
+    def _adjust_torch_compile(self, enable_torch_compile: bool) -> None:
+        """Finalize torch compile configuration for tuning after init state is resolved."""
+        state = self._get_torch_compile_state()
+        self._apply_eager_torch_compile_guards(enable_torch_compile)
+
         if (
-            not self.enable_torch_compile
+            not enable_torch_compile
             and TORCH_VERSION_AT_LEAST_2_6
-            and act_bits > 8
+            and state["act_bits"] > 8
             and not is_debug_mode()
-            and not is_raw_fp8
+            and not state["is_raw_fp8"]
             and self.need_calib
         ):
             logger.info(
                 "%s",
                 "'enable_torch_compile' is set to `False` by default. "
                 "Enabling it can reduce tuning cost by 20%, but it might throw an exception.",
-            )
-        # On HPU, we rely on torch.compile to speed up the model execution.
-        if self.enable_torch_compile and is_raw_fp8 and not is_hpex_available():
-            self.enable_torch_compile = False
-            logger.warning_once("reset enable_torch_compile to `False` as fp8 is enabled")
-        # TODO: fix https://github.com/intel/auto-round/issues/1109
-        if self.enable_torch_compile and is_raw_nv_fp:
-            self.enable_torch_compile = False
-            logger.warning_once("reset enable_torch_compile to `False` as nvfp4 is enabled")
-        super_group_size = getattr(cfg, "super_group_size", None)
-        enable_alg_ext = getattr(cfg, "enable_alg_ext", False)
-        if self.enable_torch_compile and super_group_size is not None and enable_alg_ext:
-            self.enable_torch_compile = False
-            logger.warning_once(
-                "reset enable_torch_compile to `False` as super_group_size is set for algorithm extension"
             )
 
     def _get_calibration_dataset(self) -> str:
