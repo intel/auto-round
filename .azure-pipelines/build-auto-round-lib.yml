@@ -10,6 +10,8 @@ trigger:
       - "**/*.md"
 pr: none
 
+pr: none
+
 stages:
   - template: template/lib-build-template.yml
     parameters:

@@ -505,13 +505,14 @@ class AutoRoundCompatible:
         num_inference_steps = kwargs.pop("num_inference_steps", 50)
         generator_seed = kwargs.pop("generator_seed", None)
 
-        # Check model type for logging
+        # Check model type for logging (use warning_once to avoid repeating for every block
+        # when called from LLM-Compressor which instantiates AutoRound per block)
         if is_mllm_model(model, platform=platform):
-            logger.info("Using MLLM mode for multimodal model (new architecture).")
+            logger.warning_once("Using MLLM mode for multimodal model (new architecture).")
         elif is_diffusion_model(model):
-            logger.info("Using Diffusion mode for diffusion model (new architecture).")
+            logger.warning_once("Using Diffusion mode for diffusion model (new architecture).")
         else:
-            logger.info("Using LLM mode (new architecture).")
+            logger.warning_once("Using LLM mode (new architecture).")
 
         # Create AutoRound instance using new architecture
         compressor = AutoRound(
