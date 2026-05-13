@@ -607,8 +607,7 @@ def get_audiocaps_dataset(
             with open(cache_file, "w", encoding="utf-8") as f:
                 f.write(resp.text)
         except Exception as e:
-            logger.error(f"Failed to download AudioCaps dataset: {e}")
-            sys.exit(1)
+            raise RuntimeError(f"Failed to download AudioCaps dataset: {e}")
     else:
         logger.info(f"Loading AudioCaps dataset from cache: {cache_file}")
 
@@ -621,8 +620,7 @@ def get_audiocaps_dataset(
                 samples.append({"text": caption})
 
     if not samples:
-        logger.error("AudioCaps dataset is empty or could not be parsed.")
-        sys.exit(1)
+        raise RuntimeError("AudioCaps dataset is empty or could not be parsed.")
 
     random.Random(seed).shuffle(samples)
     import datasets as ds

@@ -148,13 +148,26 @@ def get_diffusion_dataloader(
         dataset = "captions_source.tsv"
 
     if dataset in AUDIOCAPS_URL:
+        import tempfile
+
         import requests
 
-        logger.info(f"use dataset {dataset}, downloading ...")
-        text_data = requests.get(AUDIOCAPS_URL[dataset]).text
-        with open("audiocaps_train.csv", "w") as f:
-            f.write(text_data)
-        dataset = "audiocaps_train.csv"
+        cache_dir = os.path.join(tempfile.gettempdir(), "audiocaps_cache")
+        os.makedirs(cache_dir, exist_ok=True)
+        cache_file = os.path.join(cache_dir, "train.csv")
+
+        if not os.path.exists(cache_file):
+            logger.info(f"use dataset {dataset}, downloading ...")
+            try:
+                resp = requests.get(AUDIOCAPS_URL[dataset], timeout=60)
+                resp.raise_for_status()
+                with open(cache_file, "w", encoding="utf-8") as f:
+                    f.write(resp.text)
+            except Exception as e:
+                raise RuntimeError(f"Failed to download AudioCaps dataset: {e}")
+        else:
+            logger.info(f"Loading AudioCaps dataset from cache: {cache_file}")
+        dataset = cache_file
 
     if isinstance(dataset, str) and os.path.exists(dataset):
         if dataset.endswith(".csv"):
