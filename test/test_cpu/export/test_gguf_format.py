@@ -53,6 +53,18 @@ class TestGGUF:
         assert gguf_file.endswith(".gguf"), "Saved file is not in gguf format"
         # Accuracy test is covered in test_cuda/export/test_gguf_format.py::TestAutoRound::test_q4_0_accuracy
 
+    def test_q2_k_s_routes_calibrated_rtn(self, tiny_qwen_model_path):
+        autoround = AutoRound(
+            tiny_qwen_model_path,
+            scheme="gguf:q2_k_s",
+            iters=0,
+            nsamples=1,
+            seqlen=8,
+        )
+
+        assert type(autoround).__name__ == "CalibratedRTNCompressor"
+        assert autoround.quantize_config._alg_cls == "OptimizedRTNQuantizer"
+
     def test_func(self):
         bits, group_size, sym = 4, 128, True
         autoround = AutoRound(
