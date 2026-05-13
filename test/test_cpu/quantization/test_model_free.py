@@ -408,3 +408,162 @@ class TestPredefinedIgnoreLayers:
             "shared_head",
             "layers.45",
         ]
+
+
+# ===========================================================================
+#  Copy metadata & subfolder handling
+# ===========================================================================
+
+
+def _make_diffusion_model_dir(tmp_path, transformer_config, transformer_tensors):
+    """Create a minimal diffusion model directory layout.
+
+    Layout::
+
+        root/
+            model_index.json
+            transformer/
+                config.json
+                model.safetensors
+            vae/
+                config.json
+            scheduler/
+                scheduler_config.json
+            tokenizer/
+                tokenizer.json
+                nested/
+                    vocab.txt
+    """
+    root_dir = str(tmp_path / "diffusion_model")
+    os.makedirs(root_dir, exist_ok=True)
+    with open(os.path.join(root_dir, "model_index.json"), "w") as f:
+        json.dump({"_class_name": "FluxPipeline"}, f)
+
+    # transformer component with weights
+    transformer_dir = os.path.join(root_dir, "transformer")
+    os.makedirs(transformer_dir, exist_ok=True)
+    with open(os.path.join(transformer_dir, "config.json"), "w") as f:
+        json.dump(transformer_config, f)
+    save_file(transformer_tensors, os.path.join(transformer_dir, "model.safetensors"))
+
+    # vae component
+    vae_dir = os.path.join(root_dir, "vae")
+    os.makedirs(vae_dir, exist_ok=True)
+    with open(os.path.join(vae_dir, "config.json"), "w") as f:
+        json.dump({"_class_name": "AutoencoderKL"}, f)
+
+    # scheduler component
+    sched_dir = os.path.join(root_dir, "scheduler")
+    os.makedirs(sched_dir, exist_ok=True)
+    with open(os.path.join(sched_dir, "scheduler_config.json"), "w") as f:
+        json.dump({"_class_name": "FlowMatchEulerDiscreteScheduler"}, f)
+
+    # tokenizer component with nested subdir
+    tok_dir = os.path.join(root_dir, "tokenizer")
+    os.makedirs(os.path.join(tok_dir, "nested"), exist_ok=True)
+    with open(os.path.join(tok_dir, "tokenizer.json"), "w") as f:
+        json.dump({"type": "BPE"}, f)
+    with open(os.path.join(tok_dir, "nested", "vocab.txt"), "w") as f:
+        f.write("hello\nworld\n")
+
+    return root_dir
+
+
+_TRANSFORMER_CONFIG = {
+    "architectures": ["FluxTransformer2DModel"],
+    "model_type": "flux",
+    "hidden_size": 128,
+    "num_hidden_layers": 1,
+}
+
+_TRANSFORMER_TENSORS = {
+    "transformer_blocks.0.attn.to_q.weight": torch.randn(128, 128),
+    "transformer_blocks.0.attn.to_k.weight": torch.randn(128, 128),
+    "transformer_blocks.0.ff.net.0.proj.weight": torch.randn(512, 128),
+    "transformer_blocks.0.ff.net.2.weight": torch.randn(128, 512),
+}
+
+
+class TestCopyMetadataSubfolders:
+    """Tests for _copy_metadata_files including subdirectory handling."""
+
+    def test_non_diffusion_copies_subfolders(self, tmp_path):
+        """Non-diffusion model: subdirectories should be copied to output."""
+        model_dir = _make_model_dir(tmp_path, _SIMPLE_CONFIG, _SIMPLE_TENSORS)
+        # Add a subdirectory with files
+        tokenizer_dir = os.path.join(model_dir, "tokenizer")
+        os.makedirs(os.path.join(tokenizer_dir, "nested"), exist_ok=True)
+        with open(os.path.join(tokenizer_dir, "tokenizer.json"), "w") as f:
+            json.dump({"type": "BPE"}, f)
+        with open(os.path.join(tokenizer_dir, "nested", "vocab.txt"), "w") as f:
+            f.write("hello\nworld\n")
+
+        output_dir = str(tmp_path / "output")
+        core = _ModelFreeCompressorCore(
+            model_name_or_path=model_dir,
+            output_dir=output_dir,
+            scheme="W4A16",
+        )
+        core.run()
+
+        assert os.path.isdir(os.path.join(output_dir, "tokenizer"))
+        assert os.path.isfile(os.path.join(output_dir, "tokenizer", "tokenizer.json"))
+        assert os.path.isdir(os.path.join(output_dir, "tokenizer", "nested"))
+        assert os.path.isfile(os.path.join(output_dir, "tokenizer", "nested", "vocab.txt"))
+
+    def test_diffusion_copies_subfolders(self, tmp_path):
+        """Diffusion model: non-transformer subdirectories should be copied."""
+        root_dir = _make_diffusion_model_dir(
+            tmp_path, _TRANSFORMER_CONFIG, _TRANSFORMER_TENSORS
+        )
+        output_dir = str(tmp_path / "output")
+
+        core = _ModelFreeCompressorCore(
+            model_name_or_path=root_dir,
+            output_dir=output_dir,
+            scheme="W4A16",
+        )
+        core.run()
+
+        # Non-transformer subdirs must be present
+        assert os.path.isdir(os.path.join(output_dir, "vae"))
+        assert os.path.isfile(os.path.join(output_dir, "vae", "config.json"))
+        assert os.path.isdir(os.path.join(output_dir, "scheduler"))
+        assert os.path.isfile(os.path.join(output_dir, "scheduler", "scheduler_config.json"))
+        assert os.path.isdir(os.path.join(output_dir, "tokenizer"))
+        assert os.path.isfile(os.path.join(output_dir, "tokenizer", "tokenizer.json"))
+        assert os.path.isfile(os.path.join(output_dir, "tokenizer", "nested", "vocab.txt"))
+        # Root-level file
+        assert os.path.isfile(os.path.join(output_dir, "model_index.json"))
+        # Quantized transformer must also exist
+        assert os.path.isdir(os.path.join(output_dir, "transformer"))
+        assert os.path.isfile(os.path.join(output_dir, "transformer", "config.json"))
+
+    def test_diffusion_does_not_overwrite_quantized_transformer(self, tmp_path):
+        """Copying subfolders must not overwrite the quantized transformer."""
+        root_dir = _make_diffusion_model_dir(
+            tmp_path, _TRANSFORMER_CONFIG, _TRANSFORMER_TENSORS
+        )
+        output_dir = str(tmp_path / "output")
+
+        core = _ModelFreeCompressorCore(
+            model_name_or_path=root_dir,
+            output_dir=output_dir,
+            scheme="W4A16",
+        )
+        core.run()
+
+        # The output transformer/ should contain quantized weights, not
+        # the original model.safetensors from the source.
+        transformer_out = os.path.join(output_dir, "transformer")
+        out_files = os.listdir(transformer_out)
+        # The original single shard would have been renamed to model.safetensors
+        # by _write_index_file; confirm it has quantized tensor names.
+        keys = set()
+        for f in out_files:
+            if f.endswith(".safetensors"):
+                with safe_open(os.path.join(transformer_out, f), framework="pt") as sf:
+                    keys.update(sf.keys())
+        assert any(k.endswith(".qweight") for k in keys), (
+            f"Quantized transformer should contain .qweight tensors, got: {keys}"
+        )

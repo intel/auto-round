@@ -772,8 +772,6 @@ def tune(args):
     # BaseCompressor._get_export_dir(), so we only need to pass the base output_dir.
     model, folders = autoround.quantize_and_save(args.output_dir, format=args.format)  # pylint: disable=E1101
     tokenizer = autoround.tokenizer  # pylint: disable=E1101
-
-    model.eval()
     clear_memory()
 
     # ======================= Model evaluation =======================
