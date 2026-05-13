@@ -40,7 +40,7 @@ class AutoScheme:
     enable_torch_compile: Optional[bool] = None
     disable_opt_rtn: bool = True
     low_gpu_mem_usage: bool = True
-    low_cpu_mem_usage: bool = True
+    low_cpu_mem_usage: bool = False  # TODO bug for INT4 INT8 mixed bug
 
     def __post_init__(self):
         if isinstance(self.options, str):
