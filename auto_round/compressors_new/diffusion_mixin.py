@@ -57,11 +57,6 @@ class DiffusionMixin:
         self.generator_seed = generator_seed
         self.pipeline_call_kwargs = dict(kwargs.pop("pipeline_call_kwargs", {}) or {})
 
-        # Mirror old-arch DiffusionCompressor.__init__: when iters > 0, diffusion calibration
-        # cannot use batch_size > 1 for non-text modules; fold the extra batch into
-        # gradient_accumulate_steps so the effective sample count is unchanged.
-        # The authoritative batch_size lives on the AlgConfig (args[0]); kwargs may also
-        # carry it from AutoRoundCompatible. Patch BOTH (same pattern as MLLMMixin).
         iters = kwargs.get("iters", None)
         _alg_cfg = args[0] if args else None
         if iters is None and _alg_cfg is not None:
@@ -108,12 +103,6 @@ class DiffusionMixin:
         # Call parent class __init__ (will be CalibCompressor, ImatrixCompressor, etc)
         super().__init__(*args, **kwargs)
 
-        # Mirror old-arch DiffusionCompressor._align_device_and_dtype: unconditionally
-        # cast the full diffusion pipeline (VAE, text encoder, etc.) to the transformer's
-        # dtype so that calibration's pipe(...) call doesn't crash with dtype mismatches
-        # when the transformer is force-cast to bf16 for activation quantization.
-        # Note: pipe.dtype only reflects the primary component, so an equality check would
-        # miss mixed-dtype pipelines where e.g. the VAE is still float32.
         pipe = getattr(self.model_context, "pipe", None)
         model = getattr(self.model_context, "model", None)
         if pipe is not None and model is not None:
@@ -336,8 +325,6 @@ class DiffusionMixin:
                 "Skipping re-dispatch to avoid breaking the existing placement."
             )
 
-        # Mirror old-arch DiffusionCompressor.cache_inter_data: dispatch the full pipeline
-        # across the requested device_map so that inference runs on GPU, not CPU.
         device_map = getattr(self.compress_context, "device_map", None)
         device_list = getattr(self.compress_context, "device_list", [])
         # Skip dispatch for secondary transformers

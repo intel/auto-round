@@ -48,5 +48,6 @@ ENV UV_NO_PROGRESS=1 \
 
 RUN uv venv --python=3.12 /home/hostuser/.venv
 RUN which python && python --version
+RUN uv pip install torch==2.11.0 torchvision==0.26.0 --extra-index-url https://download.pytorch.org/whl/xpu
 
 WORKDIR /home/hostuser
