@@ -66,6 +66,7 @@ __all__ = ["gen_layer_config"]
 
 
 class AutoSchemeWrapperLinear(WrapperLinear):
+
     def __init__(
         self,
         orig_layer,
@@ -167,6 +168,7 @@ class AutoSchemeWrapperLinear(WrapperLinear):
 
 
 class AutoSchemeWrapperLinearForGGUFK(AutoSchemeWrapperLinear):
+
     def __init__(
         self,
         orig_layer,
@@ -212,6 +214,7 @@ class AutoSchemeWrapperLinearForGGUFK(AutoSchemeWrapperLinear):
 
 
 class AutoSchemeWrapperLinearForGGUFKImatrix(AutoSchemeWrapperLinear):
+
     def __init__(
         self,
         orig_layer,
@@ -291,6 +294,7 @@ class AutoSchemeWrapperLinearForGGUFKImatrix(AutoSchemeWrapperLinear):
 
 @torch.no_grad()
 def cal_imatrix(model, dataloader):
+
     def register_act_hook(model):
         """Registers hooks to accumulate activation squared norms into `imatrix`."""
 
@@ -923,6 +927,7 @@ def choose_bits_per_layer_with_path(layers: dict, P: int):
 
 
 def move_module_to_tuning_device(module, major_device="cpu"):
+
     def _normalize(dev):
         return dev if isinstance(dev, torch.device) else torch.device(dev)
 

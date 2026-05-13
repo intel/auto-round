@@ -45,7 +45,6 @@ stages:
   - template: template/lib-build-template.yml
     parameters:
       enableChangeDetection: true
-      publishToTestPyPI: false
 
   - stage: Unit_test
     displayName: Unit Test
