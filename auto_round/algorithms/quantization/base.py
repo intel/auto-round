@@ -401,7 +401,7 @@ class BaseQuantizers:
 
         Handles both LLM and diffusion model block formats.  Uses the compiled
         block_forward when enable_torch_compile is True (same as _get_block_outputs),
-        matching old-arch behaviour where self.block_forward was compiled at init.
+        matching old-arch behavior where self.block_forward was compiled at init.
         """
         current_input_ids, current_input_others = self._sampling_inputs(
             input_ids,
