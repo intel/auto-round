@@ -80,17 +80,6 @@ stages:
               clean: true
 
             - task: Bash@3
-              displayName: Build manylinux_2_28_x86_64:ark-test image
-              inputs:
-                targetType: inline
-                script: |
-                  set -euxo pipefail
-                  docker build \
-                    -t manylinux_2_28_x86_64:ark-test \
-                    -f $(Build.SourcesDirectory)/.azure-pipelines/docker/Dockerfile_ark.devel \
-                    $(Build.SourcesDirectory)/.azure-pipelines/docker
-
-            - task: Bash@3
               displayName: Build wheel in manylinux container
               inputs:
                 targetType: inline
