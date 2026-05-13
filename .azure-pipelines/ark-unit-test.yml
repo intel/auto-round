@@ -74,7 +74,7 @@ stages:
                   targetType: inline
                   script: |
                     source ${HOME}/miniforge3/etc/profile.d/conda.sh
-                    set -eox pipefail
+                    set -eo pipefail
                     cd auto_round_extension/ark
                     CONDA_ENV="$(condaName)"
                     PYTHON_VERSION="${{ trim(pythonVersion) }}"
@@ -105,8 +105,7 @@ stages:
     jobs:
       - job: PublishWheels
         displayName: Publish all wheels to ${{ parameters.publishTarget }}
-        pool: 
-          vmImage: "ubuntu-latest"
+        pool: B60
         steps:
           - checkout: none
 
@@ -128,6 +127,8 @@ stages:
             inputs:
               targetType: inline
               script: |
+                source ${HOME}/miniforge3/etc/profile.d/conda.sh
+                conda activate base
                 set -euxo pipefail
                 if [ -z "${TWINE_PASSWORD}" ]; then
                   echo "Publish password is empty, skip publishing."
