@@ -28,6 +28,7 @@ from auto_round import envs
 from auto_round.algorithms.alg_config import AlgConfig
 from auto_round.calibration.utils import (
     _infer_last_cache_name,
+    _split_inputs_diffusion,
     _update_inputs,
 )
 from auto_round.compressors_new.base import BaseCompressor
@@ -741,15 +742,7 @@ class CalibCompressor(BaseCompressor):
 
     def _split_inputs(self, inputs: dict, first_input_name: str) -> tuple[torch.Tensor, dict]:
         if self.model_context.is_diffusion:
-            input_id_str = [key for key in inputs.keys() if "hidden_state" in key]
-            if input_id_str == ["hidden_states"]:
-                input_ids = inputs.pop("hidden_states", None)
-                input_others = inputs
-                return input_ids, input_others
-
-            input_ids = {k: inputs.pop(k, None) for k in input_id_str}
-            input_others = inputs
-            return input_ids, input_others
+            return _split_inputs_diffusion(inputs)
         input_ids = inputs.get(first_input_name, None)
         inputs.pop(first_input_name, None)
         input_others = inputs

@@ -20,8 +20,8 @@ from PIL import Image
 from tqdm import tqdm
 
 from auto_round.logger import logger
-from auto_round.utils.model import wrap_block_forward_positional_to_kwargs
-from auto_round.utils.device import dispatch_model_by_all_available_devices, is_auto_device_mapping
+from auto_round.utils.model import wrap_block_forward_positional_to_kwargs, rename_weights_files
+from auto_round.utils.device import detect_device, get_major_device, dispatch_model_block_wise, dispatch_model_by_all_available_devices, is_auto_device_mapping
 from auto_round.utils import clear_memory
 
 
@@ -143,21 +143,6 @@ class DiffusionMixin:
         The MRO guarantees that super() resolves to CalibCompressor._get_block_forward_func,
         mirroring the old-arch pattern in compressors/diffusion/compressor.py.
         """
-        # For diffusion with multi-device dispatch, the pipeline manages device placement
-        # automatically.
-        if (
-            self.model_context.is_diffusion
-            and hasattr(self.model_context.model, "hf_device_map")
-            and len(self.model_context.model.hf_device_map) > 1
-        ):
-            def passthrough_block_forward(block, hidden_states=None, *positional_inputs, **kwargs):
-                # Call _true_orig_forward directly to avoid recursion (block.forward is
-                # this wrapper) and to avoid the "multiple values" error that would occur
-                # if hidden_states were passed as both positional and keyword arg.
-                if hidden_states is not None:
-                    return block._true_orig_forward(hidden_states, *positional_inputs, **kwargs)
-                return block._true_orig_forward(*positional_inputs, **kwargs)
-            return passthrough_block_forward
         return wrap_block_forward_positional_to_kwargs(super()._get_block_forward_func(name))
 
     def _should_stop_cache_forward(self, name: str) -> bool:
@@ -180,6 +165,96 @@ class DiffusionMixin:
         """
         image_param = inspect.signature(self.model_context.pipe.__call__).parameters.get("image")
         return image_param is not None and image_param.default is inspect.Parameter.empty
+
+    def _find_additional_transformers(self):
+        """Find transformer components beyond the primary one (e.g. transformer_2 in WAN).
+        """
+        pipe = getattr(self.model_context, "pipe", None)
+        if pipe is None:
+            return []
+        result = []
+        for comp_name in pipe.components:
+            comp = getattr(pipe, comp_name, None)
+            if (
+                comp_name.startswith("transformer")
+                and comp_name != "transformer"
+                and comp is not None
+                and isinstance(comp, torch.nn.Module)
+            ):
+                result.append((comp_name, comp))
+        return result
+
+    def _align_device_and_dtype_for_secondary(self, transformer_name: str):
+        """Align dtype and dispatch secondary transformer for multi-transformer pipelines.
+
+        Moves the secondary transformer (e.g. transformer_2) to GPU(s) so the pipeline
+        can run during calibration.  Uses dispatch_model_block_wise instead of the full
+        pipeline dispatch to avoid accidentally re-dispatching the already-dispatched
+        primary transformer.
+        """
+        pipe = getattr(self.model_context, "pipe", None)
+        model = getattr(self.model_context, "model", None)
+        if pipe is None or model is None:
+            return
+
+        # Cast full pipeline to transformer's dtype (same as __init__ alignment)
+        is_nextstep = hasattr(model, "config") and getattr(model.config, "model_type", None) == "nextstep"
+        if not is_nextstep:
+            pipe.to(model.dtype)
+
+        # Dispatch secondary transformer to GPU(s)
+        device_map = getattr(self.compress_context, "device_map", None)
+        device_list = getattr(self.compress_context, "device_list", [])
+        multi_device = is_auto_device_mapping(device_map) and len(device_list) > 1
+
+        if multi_device:
+            # first, then dispatch the current transformer block-wise across GPUs.
+            comp_device = device_list[-1]
+            for comp_name in pipe.components:
+                comp = getattr(pipe, comp_name, None)
+                if comp is None or comp is model or not hasattr(comp, "to"):
+                    continue
+                is_other_transformer = (
+                    comp_name.startswith("transformer")
+                    and isinstance(comp, torch.nn.Module)
+                    and next(comp.parameters()).device.type == "cpu"
+                )
+                is_other_component = not comp_name.startswith("transformer")
+                if is_other_transformer or is_other_component:
+                    if isinstance(comp, torch.nn.Module) and hasattr(comp, "dtype") and comp.dtype != model.dtype:
+                        comp.to(dtype=model.dtype)
+                    try:
+                        comp.to(comp_device)
+                    except (NotImplementedError, RuntimeError):
+                        # Component may have meta/unmaterialized tensors (already quantized).
+                        continue
+
+            self.model_context.model = dispatch_model_block_wise(model, device_map)
+            setattr(pipe, transformer_name, self.model_context.model)
+        elif device_map is not None:
+            # Single-GPU / single-device: move full pipeline to GPU.
+            target_device = get_major_device(device_map)
+            pipe.to(target_device)
+
+    def _materialize_lazy_params(self, module: torch.nn.Module, device: str):
+        """Move any lazy/uninitialized parameters from meta device to the target device.
+        """
+        for name, param in module.named_parameters():
+            if param.device.type == "meta":
+                with torch.no_grad():
+                    new_param = torch.nn.Parameter(
+                        torch.empty_like(param, device=device, dtype=param.dtype),
+                        requires_grad=param.requires_grad,
+                    )
+                    param.data = new_param.data
+        for name, buf in module.named_buffers():
+            if buf.device.type == "meta":
+                with torch.no_grad():
+                    new_buf = torch.empty_like(buf, device=device, dtype=buf.dtype)
+                    buf.data = new_buf.data
+        for child in module.children():
+            self._materialize_lazy_params(child, device)
+
 
     def _get_calibration_image(self, batch_size: int):
         """Return a synthetic PIL Image for I2V pipeline calibration.
@@ -265,56 +340,30 @@ class DiffusionMixin:
         # across the requested device_map so that inference runs on GPU, not CPU.
         device_map = getattr(self.compress_context, "device_map", None)
         device_list = getattr(self.compress_context, "device_list", [])
-        # Only dispatch if the pipe has not been dispatched yet (not yet in hf_device_map).
-        # When _inputs_cached is set, we are in the second calib call and the pipe is
-        # already dispatched from the first call.
+        # Skip dispatch for secondary transformers
         if not getattr(self, "_inputs_cached", False) and device_map is not None and is_auto_device_mapping(device_map) and len(device_list) > 1:
-            pipe = dispatch_model_by_all_available_devices(pipe, device_map)
+            pipe_transformer = getattr(pipe, "transformer", None)
+            if self.model_context.model is not pipe_transformer:
+                pass  # secondary transformer — skip pipeline dispatch
+            else:
+                pipe = dispatch_model_by_all_available_devices(pipe, device_map)
 
         with tqdm(range(1, total + 1), desc="cache block inputs") as pbar:
             for ids, prompts in self.dataloader:
-                logger.info(f"[DiffusionMixin calib] step, prompts type={type(prompts)}, ids type={type(ids)}")
                 if isinstance(prompts, tuple):
                     prompts = list(prompts)
                 pipe_kwargs = self._build_pipeline_call_kwargs(pipe, prompts)
-                logger.info(f"[NEW ARCH] pipe call START, pipe={type(pipe).__name__}, pipe_device={pipe.device}, model_device={self.model.device}, prompts_count={len(prompts)}")
-                import time as _time_module
-                if torch.cuda.is_available():
-                    torch.cuda.synchronize()
-                _t0 = _time_module.time()
-                _t_pipe_call = None
                 try:
-                    logger.info(f"[NEW ARCH] calib: prompts={type(prompts).__name__}, pipe_kwargs={list(pipe_kwargs.keys())}, "
-                                f"num_frames={pipe_kwargs.get('num_frames', 'DEFAULT')}, "
-                                f"height={pipe_kwargs.get('height', 'DEFAULT')}, "
-                                f"width={pipe_kwargs.get('width', 'DEFAULT')}, "
-                                f"output_type={pipe_kwargs.get('output_type', 'DEFAULT')}, "
-                                f"guidance_scale={pipe_kwargs.get('guidance_scale')}, "
-                                f"num_inference_steps={pipe_kwargs.get('num_inference_steps')}, "
-                                f"_requires_calibration_image={self._requires_calibration_image()}")
-                    _t_before = _time_module.time()
                     if self._requires_calibration_image() or "prompt" in pipe_kwargs:
                         # I2V pipeline: 'image' is the first positional arg, so pass
                         # 'prompt' as keyword to avoid "multiple values for argument 'image'".
                         result = pipe(**pipe_kwargs)
                     else:
                         result = pipe(prompts, **pipe_kwargs)
-                    if torch.cuda.is_available():
-                        torch.cuda.synchronize()
-                    _t_pipe_call = _time_module.time() - _t_before
-                    logger.info(f"[NEW ARCH] pipe call END, elapsed={_t_pipe_call:.1f}s")
                 except NotImplementedError:
-                    _t_pipe_call = None
+                    pass
                 except Exception as error:
-                    if torch.cuda.is_available():
-                        torch.cuda.synchronize()
-                    _elapsed = _time_module.time() - _t0
-                    logger.error(f"[NEW ARCH] pipe call failed after {_elapsed:.1f}s: {error}")
                     raise error
-                if torch.cuda.is_available():
-                    torch.cuda.synchronize()
-                _total = _time_module.time() - _t0
-                logger.info(f"[NEW ARCH] calib step done, total={_total:.1f}s, pipe_call={_t_pipe_call:.1f}s, overhead={_total - (_t_pipe_call or 0):.3f}s")
                 step = len(prompts)
                 total_cnt += step
                 pbar.update(step)
@@ -363,8 +412,12 @@ class DiffusionMixin:
         the LLM-specific calib path.  The diffusion pipeline forward is used to collect
         block inputs (via _replace_forward hooks), then those inputs are passed to the
         standard CalibCompressor quantization loop.
+
+        For dual-transformer pipelines (e.g. WAN with transformer + transformer_2),
+        this method quantizes all transformers sequentially.
         """
-        from auto_round.utils import get_block_names, flatten_list
+        from auto_round.utils import get_block_names, find_matching_blocks
+        from auto_round.utils.common import flatten_list
 
         self.post_init()
 
@@ -382,7 +435,58 @@ class DiffusionMixin:
         else:
             to_cache_block_names = flatten_list(all_blocks)
 
-        logger.info("start to cache block inputs")
+        # Check for additional transformers (e.g. transformer_2 in WAN)
+        additional = self._find_additional_transformers()
+        if not additional:
+            # Single-transformer path: let calib() own pipeline dispatch.
+            pipe = self.model_context.pipe
+            device_map = getattr(self.compress_context, "device_map", None)
+            if device_map is not None and not is_auto_device_mapping(device_map):
+                # Non-auto device_map (e.g. device_map=3): move full pipeline to GPU
+                target_device = get_major_device(device_map)
+                pipe.to(target_device)
+
+            logger.info("start to cache block inputs")
+            all_inputs = self.try_cache_inter_data_gpucpu(
+                to_cache_block_names,
+                self.nsamples,
+                layer_names=[],
+            )
+            self.inputs = all_inputs
+            clear_memory(device_list=self.compress_context.device_list)
+            self._inputs_cached = True
+            return super().quantize()
+
+        # Dual-transformer path: quantize all transformers sequentially
+        logger.info("Detected multi-transformer diffusion pipeline, quantizing all transformers")
+
+        # Ensure at least 2 inference steps so both transformers are exercised during calibration
+        orig_steps = getattr(self, "num_inference_steps", None) or 50
+        if orig_steps < 2:
+            logger.warning(
+                f"num_inference_steps={orig_steps} is too low for dual-transformer "
+                f"quantization — increasing to 2 so all transformers receive calibration data."
+            )
+            self.num_inference_steps = 2
+
+        # Disable low_cpu_mem_usage so quantized models stay in memory during multi-transformer
+        # quantization.
+        orig_low_cpu = self.compress_context.low_cpu_mem_usage
+        orig_immediate_saving = self.compress_context.is_immediate_saving
+        self.compress_context.low_cpu_mem_usage = False
+        # Defer shard writing until all transformers are quantized. Immediate saving
+        # offloads the primary transformer to meta during the first pass, which breaks
+        # later calibration when the pipeline switches to transformer_2.
+        self.compress_context.is_immediate_saving = False
+
+        # Store primary transformer state
+        primary_model = self.model_context.model
+        primary_layer_config = dict(self.layer_config) if self.layer_config else {}
+        primary_quant_block_list = list(self.quant_block_list) if self.quant_block_list else []
+        quantized_extras = {}
+
+        # Quantize primary transformer
+        logger.info("start to cache block inputs for primary transformer")
         all_inputs = self.try_cache_inter_data_gpucpu(
             to_cache_block_names,
             self.nsamples,
@@ -390,45 +494,172 @@ class DiffusionMixin:
         )
         self.inputs = all_inputs
         clear_memory(device_list=self.compress_context.device_list)
-
-        # Signal that caching is done so super().quantize() skips the cache step
         self._inputs_cached = True
-        return super().quantize()
+        super().quantize()
 
-    def save_quantized(self, output_dir=None, format="auto_round", inplace=True, **kwargs):
+        # Clear stale hf_device_map so cache_inter_data can re-dispatch for next transformer
+        if hasattr(primary_model, "hf_device_map"):
+            delattr(primary_model, "hf_device_map")
+
+        # Quantize additional transformers
+        for comp_name, transformer in additional:
+            logger.info(f"Quantizing {comp_name}")
+
+            # Reset quantization state for new transformer
+            self.model_context.model = transformer
+            self.model_context.quantized = False
+            self._post_init_done = False
+
+            # Re-align device/dtype and dispatch pipeline for secondary transformer
+            self._align_device_and_dtype_for_secondary(comp_name)
+
+            # Re-run post_init to set up quantizer for new model
+            self.post_init()
+
+            # Get block names for new transformer
+            all_blocks = get_block_names(self.model_context.model)
+            self.quant_block_list = find_matching_blocks(self.model_context.model, all_blocks, None)
+            self.layer_config = {}
+
+            # Get new block names for caching
+            if bool(self.quantizer.quant_block_list):
+                all_blocks = self.quantizer.quant_block_list
+            else:
+                all_blocks = get_block_names(self.model_context.model)
+            if len(all_blocks) == 0:
+                logger.warning(f"could not find blocks in {comp_name}, skipping")
+                continue
+
+            if not self.has_variable_block_shape:
+                to_cache_block_names = [block[0] for block in all_blocks]
+            else:
+                to_cache_block_names = flatten_list(all_blocks)
+
+            logger.info(f"start to cache block inputs for {comp_name}")
+            all_inputs = self.try_cache_inter_data_gpucpu(
+                to_cache_block_names,
+                self.nsamples,
+                layer_names=[],
+            )
+            self.inputs = all_inputs
+            clear_memory(device_list=self.compress_context.device_list)
+            self._inputs_cached = True
+            super().quantize()
+
+            # Store quantized transformer
+            quantized_extras[comp_name] = (self.model_context.model, dict(self.layer_config))
+            # Also update the pipeline to reference the quantized transformer
+            setattr(self.model_context.pipe, comp_name, self.model_context.model)
+
+        # Restore primary transformer state
+        self.model_context.model = primary_model
+        self.model_context.quantized = True
+        self.layer_config = primary_layer_config
+        self.quant_block_list = primary_quant_block_list
+        self._quantized_transformers = quantized_extras
+        self.compress_context.low_cpu_mem_usage = orig_low_cpu
+        self.compress_context.is_immediate_saving = orig_immediate_saving
+        self.num_inference_steps = orig_steps
+
+        return self.model_context.model, self.quantizer.layer_config
+
+    def save_quantized(self, output_dir=None, format="auto_round", inplace=True, return_folders=False, **kwargs):
         """Save the quantized model to the specified output directory in the specified format.
+
+        For multi-transformer pipelines, all quantized transformers are saved.
 
         Args:
             output_dir (str, optional): The directory to save the quantized model. Defaults to None.
             format (str, optional): The format in which to save the model. Defaults to "auto_round".
             inplace (bool, optional): Whether to modify the model in place. Defaults to True.
+            return_folders (bool, optional): Whether to return the save folder paths. Defaults to False.
             **kwargs: Additional keyword arguments specific to the export format.
 
         Returns:
-            object: The compressed model object.
+            object: The compressed model object, or (compressed_model, folders) if return_folders is True.
         """
         if output_dir is None:
-            return super().save_quantized(output_dir, format=format, inplace=inplace, **kwargs)
+            return super().save_quantized(
+                output_dir, format=format, inplace=inplace, return_folders=return_folders, **kwargs
+            )
 
         pipe = self.model_context.pipe
+        quantized_transformers = getattr(self, "_quantized_transformers", {})
         compressed_model = None
+        folders = []
+        has_multiple_quantized_transformers = bool(quantized_transformers)
+
+        # Handle multi-format (convert string to list if needed)
+        _format = format
+        if isinstance(_format, str):
+            from auto_round.formats import get_formats
+            _format = get_formats(_format, self)
+
         for name in pipe.components.keys():
             val = getattr(pipe, name)
             sub_module_path = (
                 os.path.join(output_dir, name) if os.path.basename(os.path.normpath(output_dir)) != name else output_dir
             )
-            if (
-                hasattr(val, "config")
-                and hasattr(val.config, "_name_or_path")
-                and val.config._name_or_path == self.model.config._name_or_path
-            ):
+            target_output_dir = (
+                sub_module_path
+                if has_multiple_quantized_transformers or not self.compress_context.is_immediate_saving
+                else output_dir
+            )
+            if name in quantized_transformers:
+                # Save secondary quantized transformer
+                saved_model = self.model_context.model
+                saved_lc = self.layer_config
+                saved_immediate_saving = self.compress_context.is_immediate_saving
+                self.model_context.model, self.layer_config = quantized_transformers[name]
+                saved_subfolder = getattr(self.model_context.model, "_autoround_pipeline_subfolder", None)
+                if has_multiple_quantized_transformers:
+                    self.compress_context.is_immediate_saving = False
+                    if saved_subfolder is not None:
+                        delattr(self.model_context.model, "_autoround_pipeline_subfolder")
                 compressed_model = super().save_quantized(
-                    output_dir=sub_module_path if not self.compress_context.is_immediate_saving else output_dir,
-                    format=format,
+                    output_dir=target_output_dir,
+                    format=_format,
                     inplace=inplace,
+                    return_folders=False,
                     **kwargs,
                 )
+                self.compress_context.is_immediate_saving = saved_immediate_saving
+                if saved_subfolder is not None:
+                    self.model_context.model._autoround_pipeline_subfolder = saved_subfolder
+                self.model_context.model = saved_model
+                self.layer_config = saved_lc
+            elif val is self.model_context.model:
+                # Save primary quantized transformer
+                saved_immediate_saving = self.compress_context.is_immediate_saving
+                saved_subfolder = getattr(self.model_context.model, "_autoround_pipeline_subfolder", None)
+                if has_multiple_quantized_transformers:
+                    self.compress_context.is_immediate_saving = False
+                    if saved_subfolder is not None:
+                        delattr(self.model_context.model, "_autoround_pipeline_subfolder")
+                compressed_model = super().save_quantized(
+                    output_dir=target_output_dir,
+                    format=_format,
+                    inplace=inplace,
+                    return_folders=False,
+                    **kwargs,
+                )
+                self.compress_context.is_immediate_saving = saved_immediate_saving
+                if saved_subfolder is not None:
+                    self.model_context.model._autoround_pipeline_subfolder = saved_subfolder
             elif val is not None and hasattr(val, "save_pretrained"):
                 val.save_pretrained(sub_module_path)
+                continue
+
+            if name == "transformer":
+                for single_format in (_format if isinstance(_format, list) else [_format]):
+                    from auto_round.compressors_new.utils import _get_save_folder_name
+                    rename_weights_files(target_output_dir)
+
+            for single_format in (_format if isinstance(_format, list) else [_format]):
+                folders.append(target_output_dir)
+
         pipe.save_config(output_dir)
+
+        if return_folders:
+            return compressed_model, folders
         return compressed_model
