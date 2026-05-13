@@ -17,14 +17,14 @@ pr:
 parameters:
   - name: pythonVersions
     displayName: "Python versions"
-    type: object
-    default:
-      - "3.12"
+    type: string
+    # Comma-separated list to avoid YAML float parsing in runtime inputs.
+    default: "3.12"
   - name: torchVersions
     displayName: "Torch versions"
-    type: object
-    default:
-      - "2.11.0"
+    type: string
+    # Comma-separated list to align with pythonVersions runtime input style.
+    default: "2.11.0"
   - name: publishTarget
     displayName: "Publish wheels to"
     type: string
@@ -55,17 +55,17 @@ stages:
     displayName: Test Ark
     dependsOn: BuildArkWheel
     jobs:
-      - ${{ each pythonVersion in parameters.pythonVersions }}:
-        - ${{ each torchVersion in parameters.torchVersions }}:
-          - job: TestArk_py${{ replace(pythonVersion, '.', '') }}_torch${{ replace(replace(torchVersion, '.', ''), '+', '_') }}
-            displayName: "Test py${{ pythonVersion }} torch${{ torchVersion }}"
+      - ${{ each pythonVersion in split(parameters.pythonVersions, ',') }}:
+        - ${{ each torchVersion in split(parameters.torchVersions, ',') }}:
+          - job: TestArk_py${{ replace(trim(pythonVersion), '.', '') }}_torch${{ replace(replace(trim(torchVersion), '.', ''), '+', '_') }}
+            displayName: "Test py${{ trim(pythonVersion) }} torch${{ trim(torchVersion) }}"
             pool: B60
             variables:
-              condaName: "kernel_binary_test_py${{ replace(pythonVersion, '.', '') }}$(NODE_LABEL)"
+              condaName: "kernel_binary_test_py${{ replace(trim(pythonVersion), '.', '') }}$(NODE_LABEL)"
             steps:
               - task: DownloadPipelineArtifact@2
                 inputs:
-                  artifact: auto-round-lib-wheel-cp${{ replace(pythonVersion, '.', '') }}
+                  artifact: auto-round-lib-wheel-cp${{ replace(trim(pythonVersion), '.', '') }}
                   path: $(Build.SourcesDirectory)/ark_wheel
                 
               - task: Bash@3
@@ -77,8 +77,8 @@ stages:
                     set -eox pipefail
                     cd auto_round_extension/ark
                     CONDA_ENV="$(condaName)"
-                    PYTHON_VERSION="${{ pythonVersion }}"
-                    TORCH_VERSION="${{ torchVersion }}"
+                    PYTHON_VERSION="${{ trim(pythonVersion) }}"
+                    TORCH_VERSION="${{ trim(torchVersion) }}"
                     if conda env list | grep -q "${CONDA_ENV}"; then conda remove -n ${CONDA_ENV} --all -y; fi
                     conda create -n ${CONDA_ENV} python=${PYTHON_VERSION} -y
                     conda activate ${CONDA_ENV}
@@ -110,11 +110,11 @@ stages:
         steps:
           - checkout: none
 
-          - ${{ each pythonVersion in parameters.pythonVersions }}:
+          - ${{ each pythonVersion in split(parameters.pythonVersions, ',') }}:
             - task: DownloadPipelineArtifact@2
-              displayName: Download wheel (py${{ pythonVersion }})
+              displayName: Download wheel (py${{ trim(pythonVersion) }})
               inputs:
-                artifact: auto-round-lib-wheel-cp${{ replace(pythonVersion, '.', '') }}
+                artifact: auto-round-lib-wheel-cp${{ replace(trim(pythonVersion), '.', '') }}
                 path: $(Pipeline.Workspace)/wheels
 
           - task: Bash@3

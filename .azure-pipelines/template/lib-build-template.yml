@@ -6,9 +6,9 @@ parameters:
     type: boolean
     default: false
   - name: pythonVersions
-    type: object
-    default:
-      - "3.12"
+    type: string
+    # Comma-separated list to avoid YAML float parsing (e.g. 3.10 -> 3.1).
+    default: "3.12"
   - name: buildMode
     type: string
     default: "dev"
@@ -68,9 +68,9 @@ stages:
       variables:
         BUILD_ARK_WHEEL: $[ stageDependencies.DetectArkChanges.Detect.outputs['SetArkWheelFlag.BUILD_ARK_WHEEL'] ]
     jobs:
-      - ${{ each pythonVersion in parameters.pythonVersions }}:
-        - job: BuildArkWheel_cp${{ replace(pythonVersion, '.', '') }}
-          displayName: Build ark wheel (py${{ pythonVersion }})
+      - ${{ each pythonVersion in split(parameters.pythonVersions, ',') }}:
+        - job: BuildArkWheel_cp${{ replace(trim(pythonVersion), '.', '') }}
+          displayName: Build ark wheel (py${{ trim(pythonVersion) }})
           ${{ if eq(parameters.enableChangeDetection, true) }}:
             condition: and(succeeded(), eq(variables['BUILD_ARK_WHEEL'], 'true'))
           pool: GAUDI
@@ -85,7 +85,7 @@ stages:
                 targetType: inline
                 script: |
                   set -euxo pipefail
-                  python_version_fix=${{ replace(pythonVersion, '.', '') }}
+                  python_version_fix=${{ replace(trim(pythonVersion), '.', '') }}
                   docker run --rm \
                     --user "$(id -u):$(id -g)" \
                     -e HOME=/tmp \
@@ -106,7 +106,7 @@ stages:
               displayName: Publish wheel artifact
               inputs:
                 targetPath: $(Build.SourcesDirectory)/auto_round_extension/ark/wheelhouse
-                artifact: auto-round-lib-wheel-cp${{ replace(pythonVersion, '.', '') }}
+                artifact: auto-round-lib-wheel-cp${{ replace(trim(pythonVersion), '.', '') }}
                 publishLocation: pipeline
 
             - ${{ if eq(parameters.publishToTestPyPI, true) }}:
