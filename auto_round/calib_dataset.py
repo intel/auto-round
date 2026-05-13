@@ -552,9 +552,7 @@ def get_mbpp_dataset(
     return calib_dataset
 
 
-AUDIOCAPS_URL = (
-    "https://raw.githubusercontent.com/cdjkim/audiocaps/master/dataset2.0/train.csv"
-)
+AUDIOCAPS_URL = "https://raw.githubusercontent.com/cdjkim/audiocaps/master/dataset2.0/train.csv"
 
 
 @register_dataset(["audiocaps", "AudioCaps"])

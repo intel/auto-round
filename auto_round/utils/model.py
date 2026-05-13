@@ -466,7 +466,13 @@ def mllm_load_model(
 
     if platform == "model_scope":
         import modelscope  # pylint: disable=E0401
-        from modelscope import AutoConfig, AutoModel, AutoModelForCausalLM, AutoProcessor, AutoTokenizer  # pylint: disable=E0401
+        from modelscope import (  # pylint: disable=E0401
+            AutoConfig,
+            AutoModel,
+            AutoModelForCausalLM,
+            AutoProcessor,
+            AutoTokenizer,
+        )
 
         base_lib = modelscope
     else:
@@ -534,7 +540,7 @@ def mllm_load_model(
     processor, image_processor = None, None
     if "qwen3_tts" == model_type:
         try:
-            from qwen_tts.core.models import Qwen3TTSForConditionalGeneration, Qwen3TTSConfig
+            from qwen_tts.core.models import Qwen3TTSConfig, Qwen3TTSForConditionalGeneration
             from qwen_tts.core.models.processing_qwen3_tts import Qwen3TTSProcessor
 
             AutoConfig.register("qwen3_tts", Qwen3TTSConfig)
@@ -542,10 +548,7 @@ def mllm_load_model(
             AutoModelForCausalLM.register(Qwen3TTSConfig, Qwen3TTSForConditionalGeneration)
             AutoProcessor.register(Qwen3TTSConfig, Qwen3TTSProcessor)
         except ImportError:
-            raise ImportError(
-                "Qwen3-TTS requires the 'qwen-tts' package. "
-                "Please install it: pip install qwen-tts"
-            )
+            raise ImportError("Qwen3-TTS requires the 'qwen-tts' package. " "Please install it: pip install qwen-tts")
 
     if "deepseek_vl_v2" == model_type:
         from deepseek_vl2.models import DeepseekVLV2ForCausalLM, DeepseekVLV2Processor  # pylint: disable=E0401

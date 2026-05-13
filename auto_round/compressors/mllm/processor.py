@@ -415,13 +415,15 @@ class Qwen3TTSProcessor(BasicProcessor):
 
     def get_input(self, text, images, squeeze=True, max_length=None, truncation=False, **kwargs):
         if isinstance(text, list):
-            if hasattr(self.tokenizer, 'chat_template') and self.tokenizer.chat_template is not None:
+            if hasattr(self.tokenizer, "chat_template") and self.tokenizer.chat_template is not None:
                 text = self.tokenizer.apply_chat_template(text, tokenize=False, add_generation_prompt=True)
             else:
                 # No chat template; extract plain text from messages
-                text = " ".join(
-                    msg["content"] for msg in text if isinstance(msg, dict) and "content" in msg
-                ) if all(isinstance(msg, dict) for msg in text) else " ".join(text)
+                text = (
+                    " ".join(msg["content"] for msg in text if isinstance(msg, dict) and "content" in msg)
+                    if all(isinstance(msg, dict) for msg in text)
+                    else " ".join(text)
+                )
 
         if max_length is not None:
             text = self.tokenizer.decode(self.tokenizer(text).input_ids[:max_length])

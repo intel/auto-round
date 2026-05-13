@@ -32,11 +32,7 @@ COCO_URL = {
     )
 }
 
-AUDIOCAPS_URL = {
-    "audiocaps": (
-        "https://raw.githubusercontent.com/cdjkim/audiocaps/master/dataset2.0/train.csv"
-    )
-}
+AUDIOCAPS_URL = {"audiocaps": ("https://raw.githubusercontent.com/cdjkim/audiocaps/master/dataset2.0/train.csv")}
 
 
 def register_dataset(name_list):

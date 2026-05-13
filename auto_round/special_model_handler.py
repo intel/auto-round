@@ -386,14 +386,10 @@ def _get_mimo_audio_multimodal_block(model, ignore_audio=True, quant_vision=Fals
     if not ignore_audio:
         if hasattr(model, "input_local_transformer") and hasattr(model.input_local_transformer, "layers"):
             block_names.append(
-                [f"input_local_transformer.layers.{i}"
-                 for i in range(len(model.input_local_transformer.layers))]
+                [f"input_local_transformer.layers.{i}" for i in range(len(model.input_local_transformer.layers))]
             )
         if hasattr(model, "local_transformer") and hasattr(model.local_transformer, "layers"):
-            block_names.append(
-                [f"local_transformer.layers.{i}"
-                 for i in range(len(model.local_transformer.layers))]
-            )
+            block_names.append([f"local_transformer.layers.{i}" for i in range(len(model.local_transformer.layers))])
 
     # Main LLM decoder layers
     if hasattr(model, "model") and hasattr(model.model, "layers"):
@@ -417,15 +413,11 @@ def _get_qwen3_tts_multimodal_block(model, ignore_audio=True, quant_vision=False
     # Try tts_model.model.layers
     if hasattr(model, "tts_model") and hasattr(model.tts_model, "model"):
         if hasattr(model.tts_model.model, "layers"):
-            block_names.append(
-                [f"tts_model.model.layers.{i}" for i in range(len(model.tts_model.model.layers))]
-            )
+            block_names.append([f"tts_model.model.layers.{i}" for i in range(len(model.tts_model.model.layers))])
     # Try talker.model.layers (alternative attr name from talker_config)
     elif hasattr(model, "talker") and hasattr(model.talker, "model"):
         if hasattr(model.talker.model, "layers"):
-            block_names.append(
-                [f"talker.model.layers.{i}" for i in range(len(model.talker.model.layers))]
-            )
+            block_names.append([f"talker.model.layers.{i}" for i in range(len(model.talker.model.layers))])
     # Fallback: model.model.layers (standard structure)
     elif hasattr(model, "model") and hasattr(model.model, "layers"):
         block_names.append([f"model.layers.{i}" for i in range(len(model.model.layers))])
