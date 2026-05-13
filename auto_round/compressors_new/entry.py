@@ -222,8 +222,12 @@ class AutoRound(object):
 
         # Detect model type to determine if we need special compressor
         model_type = detect_model_type(model)
-        if kwargs.get("use_vllm_loading", False):
-            model_type = "vllm"
+        use_vllm_loading = kwargs.get("use_vllm_loading", False)
+        if use_vllm_loading and model_type != "vllm":
+            logger.warning(
+                "Ignoring use_vllm_loading=True because the model was detected as %s, not vllm.",
+                model_type,
+            )
 
         # If the user explicitly passes processor/image_processor, treat as MLLM even if
         # auto-detection missed it (mirrors the has_multimodal_assets check in autoround.py).

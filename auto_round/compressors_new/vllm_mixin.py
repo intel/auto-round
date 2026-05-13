@@ -71,7 +71,7 @@ class VllmMixin:
         total_cnt = 0
         total = nsamples if not hasattr(self.dataloader, "__len__") else min(nsamples, len(self.dataloader))
 
-        with tqdm(range(1, total + 1), desc="cache block inputs") as pbar:
+        with tqdm(total=total, desc="cache block inputs") as pbar:
             for prompts in self.dataloader:
                 if prompts is None:
                     continue

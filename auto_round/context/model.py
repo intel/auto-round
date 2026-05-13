@@ -151,9 +151,9 @@ class ModelContext(BaseContext):
                     trust_remote_code=self.trust_remote_code,
                 )
             except Exception as e:
-                logger.warning("Failed to initialize vLLM loading path, fallback to regular loading: %s", e)
-                self.use_vllm_loading = False
                 if isinstance(self.model, str):
+                    logger.warning("Failed to initialize vLLM loading path, fallback to regular loading: %s", e)
+                    self.use_vllm_loading = False
                     self.model, self.tokenizer = llm_load_model(
                         self.model,
                         platform=self.platform,
@@ -161,6 +161,11 @@ class ModelContext(BaseContext):
                         model_dtype=self.model_dtype,
                         trust_remote_code=self.trust_remote_code,
                     )
+                else:
+                    raise RuntimeError(
+                        "Failed to initialize vLLM loading for a vLLM object input; "
+                        "fallback to llm_load_model is only supported for string model paths."
+                    ) from e
         elif isinstance(self.model, str):
             config: Optional[AutoConfig] = None
             try:
