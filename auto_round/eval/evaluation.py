@@ -255,10 +255,6 @@ def prepare_model_for_eval(model, device_map, eval_model_dtype):
     Returns:
         model: Prepared model
     """
-    import torch
-
-    from auto_round.utils import detect_device
-
     model = _normalize_model_eval_dtype(model, eval_model_dtype)
 
     # Handle multi-device model
