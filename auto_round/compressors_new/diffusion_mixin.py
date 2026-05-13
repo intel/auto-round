@@ -20,9 +20,15 @@ from PIL import Image
 from tqdm import tqdm
 
 from auto_round.logger import logger
-from auto_round.utils.model import wrap_block_forward_positional_to_kwargs, rename_weights_files
-from auto_round.utils.device import detect_device, get_major_device, dispatch_model_block_wise, dispatch_model_by_all_available_devices, is_auto_device_mapping
 from auto_round.utils import clear_memory
+from auto_round.utils.device import (
+    detect_device,
+    dispatch_model_block_wise,
+    dispatch_model_by_all_available_devices,
+    get_major_device,
+    is_auto_device_mapping,
+)
+from auto_round.utils.model import rename_weights_files, wrap_block_forward_positional_to_kwargs
 
 
 class DiffusionMixin:
@@ -126,13 +132,17 @@ class DiffusionMixin:
             "guidance_scale": self.guidance_scale,
             "num_inference_steps": self.num_inference_steps,
             "generator": (
-                None if self.generator_seed is None else torch.Generator(device=pipe.device).manual_seed(self.generator_seed)
+                None
+                if self.generator_seed is None
+                else torch.Generator(device=pipe.device).manual_seed(self.generator_seed)
             ),
         }
         call_kwargs.update(self.pipeline_call_kwargs)
 
         if self._requires_calibration_image():
-            call_kwargs.setdefault("image", self._get_calibration_image(len(prompts) if isinstance(prompts, list) else 1))
+            call_kwargs.setdefault(
+                "image", self._get_calibration_image(len(prompts) if isinstance(prompts, list) else 1)
+            )
             call_kwargs.setdefault("prompt", prompts)
 
         return call_kwargs
@@ -167,8 +177,7 @@ class DiffusionMixin:
         return image_param is not None and image_param.default is inspect.Parameter.empty
 
     def _find_additional_transformers(self):
-        """Find transformer components beyond the primary one (e.g. transformer_2 in WAN).
-        """
+        """Find transformer components beyond the primary one (e.g. transformer_2 in WAN)."""
         pipe = getattr(self.model_context, "pipe", None)
         if pipe is None:
             return []
@@ -237,8 +246,7 @@ class DiffusionMixin:
             pipe.to(target_device)
 
     def _materialize_lazy_params(self, module: torch.nn.Module, device: str):
-        """Move any lazy/uninitialized parameters from meta device to the target device.
-        """
+        """Move any lazy/uninitialized parameters from meta device to the target device."""
         for name, param in module.named_parameters():
             if param.device.type == "meta":
                 with torch.no_grad():
@@ -254,7 +262,6 @@ class DiffusionMixin:
                     buf.data = new_buf.data
         for child in module.children():
             self._materialize_lazy_params(child, device)
-
 
     def _get_calibration_image(self, batch_size: int):
         """Return a synthetic PIL Image for I2V pipeline calibration.
@@ -341,7 +348,12 @@ class DiffusionMixin:
         device_map = getattr(self.compress_context, "device_map", None)
         device_list = getattr(self.compress_context, "device_list", [])
         # Skip dispatch for secondary transformers
-        if not getattr(self, "_inputs_cached", False) and device_map is not None and is_auto_device_mapping(device_map) and len(device_list) > 1:
+        if (
+            not getattr(self, "_inputs_cached", False)
+            and device_map is not None
+            and is_auto_device_mapping(device_map)
+            and len(device_list) > 1
+        ):
             pipe_transformer = getattr(pipe, "transformer", None)
             if self.model_context.model is not pipe_transformer:
                 pass  # secondary transformer — skip pipeline dispatch
@@ -416,7 +428,7 @@ class DiffusionMixin:
         For dual-transformer pipelines (e.g. WAN with transformer + transformer_2),
         this method quantizes all transformers sequentially.
         """
-        from auto_round.utils import get_block_names, find_matching_blocks
+        from auto_round.utils import find_matching_blocks, get_block_names
         from auto_round.utils.common import flatten_list
 
         self.post_init()
@@ -593,6 +605,7 @@ class DiffusionMixin:
         _format = format
         if isinstance(_format, str):
             from auto_round.formats import get_formats
+
             _format = get_formats(_format, self)
 
         for name in pipe.components.keys():
@@ -653,6 +666,7 @@ class DiffusionMixin:
             if name == "transformer":
                 for single_format in (_format if isinstance(_format, list) else [_format]):
                     from auto_round.compressors_new.utils import _get_save_folder_name
+
                     rename_weights_files(target_output_dir)
 
             for single_format in (_format if isinstance(_format, list) else [_format]):
