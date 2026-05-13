@@ -256,7 +256,8 @@ class DiffusionMixin:
             if height_param is None or height_param.default in (inspect.Parameter.empty, None)
             else height_param.default
         )
-        from PIL import Image # pylint: disable=E0401
+        from PIL import Image  # pylint: disable=E0401
+
         image = Image.new("RGB", (int(width), int(height)), color=(127, 127, 127))
         if batch_size == 1:
             return image
