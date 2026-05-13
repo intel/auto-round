@@ -14,13 +14,12 @@
 """Rotation/transform configuration (canonical, unified).
 
 This module is the **single source of truth** for the ``RotationConfig``
-schema.  The legacy location
-``auto_round.experimental.transform.rotation_config`` re-exports from here.
+schema.
 
 Two implementation backends share this one schema (method B):
 
 * ``backend="inplace"``  – QuaRot-style residual-stream rotation, implemented
-  under :mod:`auto_round.experimental.rotation_inplace`.  Works for any
+    under :mod:`auto_round.algorithms.transforms.rotation.inplace`.  Works for any
   weight/activation dtype and can optionally fuse the online Hadamard into
   weights (``fuse_online_to_weight=True``).
 

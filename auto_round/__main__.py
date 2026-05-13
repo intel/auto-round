@@ -799,7 +799,7 @@ def tune(args):
         )
     rot_config = None
     if args.rotation_type:
-        from auto_round.experimental.transform.rotation_config import RotationConfig
+        from auto_round.algorithms.transforms.rotation.config import RotationConfig
 
         rot_config = RotationConfig(hadamard_type=args.rotation_type)
 

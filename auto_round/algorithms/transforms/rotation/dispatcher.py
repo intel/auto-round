@@ -13,7 +13,7 @@ Two backend implementations exist:
     QuaRot-style residual-stream rotation. Works for any weight/activation
     dtype. Optionally fuses the online Hadamard into weights
     (``fuse_online_to_weight=True``).
-* ``transform`` – :mod:`auto_round.experimental.transform`
+* ``transform`` – :mod:`auto_round.algorithms.transforms.rotation`
     Per-Linear weight + activation Hadamard with a fused triton kernel.
     Only supports MXFP4 / NVFP4 and **cannot** fuse online to weight.
 
