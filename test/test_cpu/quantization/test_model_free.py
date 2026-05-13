@@ -513,9 +513,7 @@ class TestCopyMetadataSubfolders:
 
     def test_diffusion_copies_subfolders(self, tmp_path):
         """Diffusion model: non-transformer subdirectories should be copied."""
-        root_dir = _make_diffusion_model_dir(
-            tmp_path, _TRANSFORMER_CONFIG, _TRANSFORMER_TENSORS
-        )
+        root_dir = _make_diffusion_model_dir(tmp_path, _TRANSFORMER_CONFIG, _TRANSFORMER_TENSORS)
         output_dir = str(tmp_path / "output")
 
         core = _ModelFreeCompressorCore(
@@ -541,9 +539,7 @@ class TestCopyMetadataSubfolders:
 
     def test_diffusion_does_not_overwrite_quantized_transformer(self, tmp_path):
         """Copying subfolders must not overwrite the quantized transformer."""
-        root_dir = _make_diffusion_model_dir(
-            tmp_path, _TRANSFORMER_CONFIG, _TRANSFORMER_TENSORS
-        )
+        root_dir = _make_diffusion_model_dir(tmp_path, _TRANSFORMER_CONFIG, _TRANSFORMER_TENSORS)
         output_dir = str(tmp_path / "output")
 
         core = _ModelFreeCompressorCore(
@@ -564,6 +560,6 @@ class TestCopyMetadataSubfolders:
             if f.endswith(".safetensors"):
                 with safe_open(os.path.join(transformer_out, f), framework="pt") as sf:
                     keys.update(sf.keys())
-        assert any(k.endswith(".qweight") for k in keys), (
-            f"Quantized transformer should contain .qweight tensors, got: {keys}"
-        )
+        assert any(
+            k.endswith(".qweight") for k in keys
+        ), f"Quantized transformer should contain .qweight tensors, got: {keys}"
