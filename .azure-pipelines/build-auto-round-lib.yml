@@ -5,11 +5,11 @@ trigger:
   paths:
     include:
       - auto_round_extension/ark/**
-      - .azure-pipelines/build-auto-round-lib.yml
-      - .azure-pipelines/template/lib-build-template.yml
     exclude:
       - "*.md"
       - "**/*.md"
+
+pr: none
 
 stages:
   - template: template/lib-build-template.yml
