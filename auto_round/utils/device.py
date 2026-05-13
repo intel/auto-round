@@ -1944,13 +1944,8 @@ def dispatch_model_by_all_available_devices(
                         target = next(module.parameters()).device
                     except StopIteration:
                         target = _first_param_device
-                    new_args = tuple(
-                        a.to(target) if isinstance(a, torch.Tensor) else a for a in args
-                    )
-                    new_kwargs = {
-                        k: v.to(target) if isinstance(v, torch.Tensor) else v
-                        for k, v in kwargs.items()
-                    }
+                    new_args = tuple(a.to(target) if isinstance(a, torch.Tensor) else a for a in args)
+                    new_kwargs = {k: v.to(target) if isinstance(v, torch.Tensor) else v for k, v in kwargs.items()}
                     return new_args, new_kwargs
 
                 def _move_outputs_back_hook(module, input, output):
@@ -1963,6 +1958,7 @@ def dispatch_model_by_all_available_devices(
                         if isinstance(obj, dict):
                             return {k: _to_device(v, device) for k, v in obj.items()}
                         return obj
+
                     return _to_device(output, _pipeline_device)
 
                 dispatched.register_forward_pre_hook(_align_all_inputs_pre_hook, with_kwargs=True)

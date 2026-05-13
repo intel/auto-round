@@ -172,7 +172,9 @@ def block_forward(
 
     positional = input_others.pop("positional_inputs", None)
     if "alibi" in input_others and input_others["alibi"] is not None:
-        input_others["alibi"] = input_others["alibi"].reshape(-1, input_others["alibi"].shape[2], input_others["alibi"].shape[3])
+        input_others["alibi"] = input_others["alibi"].reshape(
+            -1, input_others["alibi"].shape[2], input_others["alibi"].shape[3]
+        )
 
     # For diffusion blocks (e.g. WanTransformerBlock) the forward signature has
     # positional parameters (hidden_states, encoder_hidden_states, temb, rotary_emb)
@@ -212,7 +214,9 @@ def block_forward(
                         moved.append(to_device(item, device))
                     else:
                         moved.append(item)
-                device_tensor_items.append(moved if isinstance(combined_positional[0], (list, tuple)) else type(val)(moved))
+                device_tensor_items.append(
+                    moved if isinstance(combined_positional[0], (list, tuple)) else type(val)(moved)
+                )
             else:
                 device_tensor_items.append(val)
         combined_positional = tuple(device_tensor_items)

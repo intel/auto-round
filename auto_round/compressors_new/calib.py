@@ -1035,14 +1035,20 @@ class CalibCompressor(BaseCompressor):
             bs = self.quantizer.batch_size * self.quantizer.infer_bs_coeff
             if q_input is None:
                 hook_handles = self.quantizer._register_act_max_hook(m)
-                reference_output = self.quantizer._get_block_outputs(m, input_ids, input_others, bs, device_override=loss_device)
+                reference_output = self.quantizer._get_block_outputs(
+                    m, input_ids, input_others, bs, device_override=loss_device
+                )
                 for h in hook_handles:
                     h.remove()
             else:
-                reference_output = self.quantizer._get_block_outputs(m, input_ids, input_others, bs, device_override=loss_device)
+                reference_output = self.quantizer._get_block_outputs(
+                    m, input_ids, input_others, bs, device_override=loss_device
+                )
                 hook_handles = self.quantizer._register_act_max_hook(m)
                 if hook_handles:
-                    self.quantizer._get_block_outputs(m, q_input, input_others, bs, save_output=False, device_override=loss_device)
+                    self.quantizer._get_block_outputs(
+                        m, q_input, input_others, bs, save_output=False, device_override=loss_device
+                    )
                 for h in hook_handles:
                     h.remove()
 
@@ -1187,7 +1193,12 @@ class CalibCompressor(BaseCompressor):
         logger.info("caching done")
         if self.compress_context.low_cpu_mem_usage:
             if self.model_context.is_model_patched and not self.compress_context.is_immediate_saving:
-                self._offloader(self.model_context.model, all_blocks, clear_memory=True, device_list=self.compress_context.device_list)
+                self._offloader(
+                    self.model_context.model,
+                    all_blocks,
+                    clear_memory=True,
+                    device_list=self.compress_context.device_list,
+                )
                 if not self._offloader.enabled:
                     self.compress_context.low_cpu_mem_usage = False
             else:
