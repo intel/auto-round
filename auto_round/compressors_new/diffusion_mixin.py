@@ -16,7 +16,6 @@ import os
 from typing import Union
 
 import torch
-from PIL import Image
 from tqdm import tqdm
 
 from auto_round.logger import logger
@@ -276,6 +275,7 @@ class DiffusionMixin:
             if height_param is None or height_param.default in (inspect.Parameter.empty, None)
             else height_param.default
         )
+        from PIL import Image
         image = Image.new("RGB", (int(width), int(height)), color=(127, 127, 127))
         if batch_size == 1:
             return image
