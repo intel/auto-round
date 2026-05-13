@@ -13,6 +13,7 @@ AUTO_ROUND_PATH = "/".join(AUTO_ROUND_PATH[: AUTO_ROUND_PATH.index("test")])
 
 
 class TestAutoRoundCmd:
+
     @pytest.fixture(autouse=True)
     def setup_save_dir(self, tmp_path):
         self.save_dir = str(tmp_path / "saved")
@@ -186,3 +187,32 @@ def test_run_rtn_preserves_eval_args(monkeypatch, tmp_path):
     assert args.output_dir == str(tmp_path / "out")
     assert args.iters == 0
     assert args.disable_opt_rtn is True
+
+
+def test_run_opt_rtn_uses_recipe(monkeypatch):
+    from auto_round import __main__ as cli_main
+
+    captured = {}
+
+    def fake_tune(args):
+        captured["args"] = args
+
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "auto_round_opt_rtn",
+            "--model",
+            "dummy-model",
+        ],
+    )
+    monkeypatch.setattr(cli_main, "tune", fake_tune)
+
+    cli_main.run_opt_rtn()
+
+    args = captured["args"]
+    assert args.model_name == "dummy-model"
+    assert args.iters == 0
+    assert args.disable_opt_rtn is False
+    assert args.batch_size == 8
+    assert args.nsamples == 512
