@@ -32,6 +32,12 @@ COCO_URL = {
     )
 }
 
+AUDIOCAPS_URL = {
+    "audiocaps": (
+        "https://raw.githubusercontent.com/cdjkim/audiocaps/master/dataset2.0/train.csv"
+    )
+}
+
 
 def register_dataset(name_list):
     """Class decorator to register a DATASET subclass to the registry.
@@ -84,6 +90,44 @@ class Text2ImgDataset(Dataset):
         return self.caption_ids[i], self.captions[i]
 
 
+@register_dataset("audiocaps")
+class AudioCapsDataset(Dataset):
+    """Dataset for AudioCaps caption-based calibration.
+
+    AudioCaps CSV contains columns like ``audiocap_id``, ``youtube_id``,
+    ``start_time``, and ``caption``. For diffusion calibration we use
+    ``audiocap_id`` as the sample id and ``caption`` as the text prompt.
+    """
+
+    def __init__(self, dataset_path, nsamples=128) -> None:
+        super().__init__()
+        self.captions = []
+        self.caption_ids = []
+
+        logger.info(f"use dataset {dataset_path}, loading from disk...")
+        df = pd.read_csv(dataset_path)
+
+        id_col = "audiocap_id" if "audiocap_id" in df.columns else "id"
+        if "caption" not in df.columns:
+            raise ValueError("AudioCaps dataset must contain a 'caption' column")
+
+        for index, row in df.iterrows():
+            if nsamples > 0 and index + 1 > nsamples:
+                break
+            caption_id = row.get(id_col, index)
+            caption_text = str(row.get("caption", "")).strip()
+            if not caption_text:
+                continue
+            self.caption_ids.append(caption_id)
+            self.captions.append(caption_text)
+
+    def __len__(self):
+        return len(self.captions)
+
+    def __getitem__(self, i) -> Dict[str, torch.Tensor]:
+        return self.caption_ids[i], self.captions[i]
+
+
 def get_diffusion_dataloader(
     dataset="coco2014",
     bs=1,
@@ -107,10 +151,22 @@ def get_diffusion_dataloader(
             f.write(text_data)
         dataset = "captions_source.tsv"
 
+    if dataset in AUDIOCAPS_URL:
+        import requests
+
+        logger.info(f"use dataset {dataset}, downloading ...")
+        text_data = requests.get(AUDIOCAPS_URL[dataset]).text
+        with open("audiocaps_train.csv", "w") as f:
+            f.write(text_data)
+        dataset = "audiocaps_train.csv"
+
     if isinstance(dataset, str) and os.path.exists(dataset):
-        dataset = DIFFUSION_DATASET["local"](dataset, nsamples)
+        if dataset.endswith(".csv"):
+            dataset = DIFFUSION_DATASET["audiocaps"](dataset, nsamples)
+        else:
+            dataset = DIFFUSION_DATASET["local"](dataset, nsamples)
     else:
-        raise ValueError("Only support coco2014 dataset or loading local tsv file now.")
+        raise ValueError("Only support coco2014/audiocaps dataset or loading local tsv/csv file now.")
     set_seed(seed)
     dataloader_params = {"batch_size": bs, "shuffle": True}
 

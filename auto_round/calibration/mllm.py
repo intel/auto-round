@@ -45,6 +45,7 @@ class MLLMCalibrator(LLMCalibrator):
         from auto_round.compressors.mllm.dataset import get_mllm_dataloader
         from auto_round.compressors.mllm.template import get_template
         from auto_round.special_model_handler import MISTRAL_3_2_MODELS
+        from auto_round.utils.model import resolve_model_type
 
         c = self.compressor
         mc = c.model_context
@@ -64,8 +65,8 @@ class MLLMCalibrator(LLMCalibrator):
                 c.template = "mistral3_2"
 
         template_name = c.template
-        if template_name is None and hasattr(mc.model.config, "model_type"):
-            template_name = mc.model.config.model_type
+        if template_name is None:
+            template_name = resolve_model_type(mc.model) or getattr(mc.model.config, "model_type", None)
         if template_name is None:
             template_name = "default"
 

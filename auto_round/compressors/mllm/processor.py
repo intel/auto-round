@@ -367,6 +367,71 @@ class Qwen3OmniProcessor(HFProcessor):
         return ret
 
 
+@register_processor("mimo_audio")
+class MiMoAudioProcessor(BasicProcessor):
+    """Processor for MiMo-Audio models (MiMoAudioForCausalLM).
+
+    MiMo-Audio supports text and audio inputs. For backbone quantization
+    we use text-only calibration via the tokenizer.
+    """
+
+    def post_init(self, model, tokenizer, processor=None, image_processor=None, use_rtn=False, **kwargs):
+        assert tokenizer is not None, "tokenizer should not be None"
+        self.model = model
+        self.tokenizer = tokenizer
+        self.processor = processor
+        self.image_processor = image_processor
+        self.use_rtn = use_rtn
+
+    def get_input(self, text, images, squeeze=True, max_length=None, truncation=False, **kwargs):
+        if isinstance(text, list):
+            # Conversation format - apply chat template
+            text = self.tokenizer.apply_chat_template(text, tokenize=False, add_generation_prompt=True)
+
+        if max_length is not None:
+            text = self.tokenizer.decode(self.tokenizer(text).input_ids[:max_length])
+
+        ret = self.tokenizer(text, return_tensors="pt")
+        if squeeze:
+            ret = self.squeeze_result(ret)
+        return ret
+
+
+@register_processor("qwen3_tts")
+class Qwen3TTSProcessor(BasicProcessor):
+    """Processor for Qwen3-TTS models (Qwen3TTSForConditionalGeneration).
+
+    Qwen3-TTS is a text-to-speech model. For backbone quantization
+    we use text-only calibration via the tokenizer.
+    """
+
+    def post_init(self, model, tokenizer, processor=None, image_processor=None, use_rtn=False, **kwargs):
+        assert tokenizer is not None, "tokenizer should not be None"
+        self.model = model
+        self.tokenizer = tokenizer
+        self.processor = processor
+        self.image_processor = image_processor
+        self.use_rtn = use_rtn
+
+    def get_input(self, text, images, squeeze=True, max_length=None, truncation=False, **kwargs):
+        if isinstance(text, list):
+            if hasattr(self.tokenizer, 'chat_template') and self.tokenizer.chat_template is not None:
+                text = self.tokenizer.apply_chat_template(text, tokenize=False, add_generation_prompt=True)
+            else:
+                # No chat template; extract plain text from messages
+                text = " ".join(
+                    msg["content"] for msg in text if isinstance(msg, dict) and "content" in msg
+                ) if all(isinstance(msg, dict) for msg in text) else " ".join(text)
+
+        if max_length is not None:
+            text = self.tokenizer.decode(self.tokenizer(text).input_ids[:max_length])
+
+        ret = self.tokenizer(text, return_tensors="pt")
+        if squeeze:
+            ret = self.squeeze_result(ret)
+        return ret
+
+
 @register_processor("cogvlm2")
 class CogVLM2Processor(BasicProcessor):
     def get_input(self, text, images, truncation=False, squeeze=True, max_length=None, **kwargs):

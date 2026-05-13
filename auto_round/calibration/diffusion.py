@@ -97,21 +97,32 @@ class DiffusionCalibrator(LLMCalibrator):
 
         if pipe.device != c.model.device:
             pipe.to(c.model.device)
+        pipeline_fn = getattr(pipe, "_autoround_pipeline_fn", None)
         with tqdm(range(1, total + 1), desc="cache block inputs") as pbar:
             for ids, prompts in c.dataloader:
                 if isinstance(prompts, tuple):
                     prompts = list(prompts)
                 try:
-                    pipe(
-                        prompts,
-                        guidance_scale=c.guidance_scale,
-                        num_inference_steps=c.num_inference_steps,
-                        generator=(
-                            None
-                            if c.generator_seed is None
-                            else torch.Generator(device=pipe.device).manual_seed(c.generator_seed)
-                        ),
+                    generator = (
+                        None
+                        if c.generator_seed is None
+                        else torch.Generator(device=pipe.device).manual_seed(c.generator_seed)
                     )
+                    if pipeline_fn is not None:
+                        pipeline_fn(
+                            pipe,
+                            prompts,
+                            guidance_scale=c.guidance_scale,
+                            num_inference_steps=c.num_inference_steps,
+                            generator=generator,
+                        )
+                    else:
+                        pipe(
+                            prompts,
+                            guidance_scale=c.guidance_scale,
+                            num_inference_steps=c.num_inference_steps,
+                            generator=generator,
+                        )
                 except NotImplementedError:
                     pass
                 except Exception as error:

@@ -466,12 +466,12 @@ def mllm_load_model(
 
     if platform == "model_scope":
         import modelscope  # pylint: disable=E0401
-        from modelscope import AutoModel, AutoModelForCausalLM, AutoProcessor, AutoTokenizer  # pylint: disable=E0401
+        from modelscope import AutoConfig, AutoModel, AutoModelForCausalLM, AutoProcessor, AutoTokenizer  # pylint: disable=E0401
 
         base_lib = modelscope
     else:
         import transformers
-        from transformers import AutoModel, AutoModelForCausalLM, AutoProcessor, AutoTokenizer
+        from transformers import AutoConfig, AutoModel, AutoModelForCausalLM, AutoProcessor, AutoTokenizer
 
         base_lib = transformers
 
@@ -532,6 +532,21 @@ def mllm_load_model(
             )
 
     processor, image_processor = None, None
+    if "qwen3_tts" == model_type:
+        try:
+            from qwen_tts.core.models import Qwen3TTSForConditionalGeneration, Qwen3TTSConfig
+            from qwen_tts.core.models.processing_qwen3_tts import Qwen3TTSProcessor
+
+            AutoConfig.register("qwen3_tts", Qwen3TTSConfig)
+            AutoModel.register(Qwen3TTSConfig, Qwen3TTSForConditionalGeneration)
+            AutoModelForCausalLM.register(Qwen3TTSConfig, Qwen3TTSForConditionalGeneration)
+            AutoProcessor.register(Qwen3TTSConfig, Qwen3TTSProcessor)
+        except ImportError:
+            raise ImportError(
+                "Qwen3-TTS requires the 'qwen-tts' package. "
+                "Please install it: pip install qwen-tts"
+            )
+
     if "deepseek_vl_v2" == model_type:
         from deepseek_vl2.models import DeepseekVLV2ForCausalLM, DeepseekVLV2Processor  # pylint: disable=E0401
 
@@ -646,6 +661,26 @@ def mllm_load_model(
     return model, processor, tokenizer, image_processor
 
 
+def _attach_diffusion_pipeline_fn(pipe):
+    """Attach a custom pipeline function for diffusion models that need special API calls."""
+    pipe_class_name = type(pipe).__name__
+    if pipe_class_name == "StableAudioPipeline":
+
+        def _stable_audio_pipeline_fn(
+            pipe, prompts, guidance_scale=7.0, num_inference_steps=100, generator=None, **kwargs
+        ):
+            audio_end_in_s = kwargs.pop("audio_end_in_s", 10.0)
+            pipe(
+                prompts,
+                guidance_scale=guidance_scale,
+                num_inference_steps=num_inference_steps,
+                audio_end_in_s=audio_end_in_s,
+                generator=generator,
+            )
+
+        pipe._autoround_pipeline_fn = _stable_audio_pipeline_fn
+
+
 def diffusion_load_model(
     pretrained_model_name_or_path: str,
     platform: str = "hf",
@@ -703,9 +738,15 @@ def diffusion_load_model(
                         component_config = json.load(file)
                     torch_dtype[k] = component_config.get("torch_dtype", "auto")
 
-        pipe = pipelines.auto_pipeline.AutoPipelineForText2Image.from_pretrained(
-            pretrained_model_name_or_path, torch_dtype=torch_dtype
-        )
+        try:
+            pipe = pipelines.auto_pipeline.AutoPipelineForText2Image.from_pretrained(
+                pretrained_model_name_or_path, torch_dtype=torch_dtype
+            )
+        except (ValueError, KeyError):
+            # Fallback for pipelines not mapped in AutoPipelineForText2Image (e.g. StableAudioPipeline)
+            pipe = pipelines.pipeline_utils.DiffusionPipeline.from_pretrained(
+                pretrained_model_name_or_path, torch_dtype=torch_dtype
+            )
         pipe_config = pipe.load_config(pretrained_model_name_or_path)
 
     elif isinstance(pretrained_model_name_or_path, pipelines.pipeline_utils.DiffusionPipeline):
@@ -724,6 +765,9 @@ def diffusion_load_model(
 
     pipe = _to_model_dtype(pipe, model_dtype)
     model = pipe.transformer
+
+    # Attach custom pipeline function for models that need special API calls
+    _attach_diffusion_pipeline_fn(pipe)
 
     # meta model uses model.config.save_pretrained for config saving
     setattr(model.config, "save_pretrained", partial(config_save_pretrained, model.config, "config.json", model=model))
@@ -918,12 +962,11 @@ def get_block_names(model, quant_vision=False):
 
     def _get_vlm_block_names(model, quant_vision=False, ignore_audio=True):
         # Since calibration dataset doesn't contain audio data, audio-related blocks will be ignored by default.
-        if (
-            hasattr(model, "config")
-            and hasattr(model.config, "model_type")
-            and model.config.model_type in SPECIAL_MULTIMODAL_BLOCK.keys()
-        ):
-            return SPECIAL_MULTIMODAL_BLOCK.get(model.config.model_type)(model, quant_vision=quant_vision)
+        from auto_round.special_model_handler import resolve_model_type
+
+        effective_type = resolve_model_type(model)
+        if effective_type and effective_type in SPECIAL_MULTIMODAL_BLOCK:
+            return SPECIAL_MULTIMODAL_BLOCK[effective_type](model, quant_vision=quant_vision)
         block_names = []
         target_modules = []
         vision_blocks_tuple = ("vision", "visual", "image", "img")
@@ -938,6 +981,14 @@ def get_block_names(model, quant_vision=False):
                 for n, m in target_m[1].named_children():
                     block_names[-1].append(target_m[0] + "." + n)
         return block_names
+
+    # Check architecture-based special handlers first (e.g. MiMo-Audio has model_type="qwen2"
+    # but is_pure_text_model returns True since it has no vision modules — only audio ones).
+    from auto_round.special_model_handler import resolve_model_type
+
+    effective_type = resolve_model_type(model)
+    if effective_type and effective_type in SPECIAL_MULTIMODAL_BLOCK:
+        return SPECIAL_MULTIMODAL_BLOCK[effective_type](model, quant_vision=quant_vision)
 
     if quant_vision or not is_pure_text_model(model):
         return _get_vlm_block_names(model, quant_vision=quant_vision)

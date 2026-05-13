@@ -67,6 +67,8 @@ For diffusion models, currently we validate quantization on the following models
 | Tongyi-MAI/Z-Image-Turb | COCO2014 | - |
 | stepfun-ai/NextStep-1.1 | COCO2014 | - |
 | AIDC-AI/Ovis-Image-7B | COCO2014 | - |
+| stabilityai/stable-audio-open-1.0 | audiocaps | - |
+
 
 <details>
 <summary style="font-size:17px;">Calibration Dataset</summary>

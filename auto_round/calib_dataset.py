@@ -552,6 +552,94 @@ def get_mbpp_dataset(
     return calib_dataset
 
 
+AUDIOCAPS_URL = (
+    "https://raw.githubusercontent.com/cdjkim/audiocaps/master/dataset2.0/train.csv"
+)
+
+
+@register_dataset(["audiocaps", "AudioCaps"])
+def get_audiocaps_dataset(
+    tokenizer,
+    seqlen,
+    dataset_name="audiocaps",
+    split=None,
+    seed=42,
+    apply_chat_template=False,
+    system_prompt=None,
+):
+    """Returns a calibration dataset from AudioCaps (audio caption text).
+
+    AudioCaps provides human-written captions describing audio events.  The captions
+    are rich in descriptive language about sounds, music, and speech — making them
+    well-suited as calibration text for audio-related model quantization.
+
+    The dataset CSV is downloaded from the official GitHub repository on first use.
+
+    Args:
+        tokenizer: The tokenizer to be used for tokenization.
+        seqlen: The maximum sequence length.
+        dataset_name: Dataset identifier (ignored, always loads AudioCaps).
+        split: Unused (AudioCaps train split is always used).
+        seed: The random seed for shuffling.
+        apply_chat_template: Whether to apply chat template in tokenization.
+        system_prompt: Optional system prompt for chat template.
+
+    Returns:
+        A HuggingFace Dataset with tokenized audio captions.
+    """
+    import csv
+    import io
+    import tempfile
+
+    import requests
+
+    tokenizer_function = get_tokenizer_function(
+        tokenizer, seqlen, apply_chat_template=apply_chat_template, system_prompt=system_prompt
+    )
+
+    cache_dir = os.path.join(tempfile.gettempdir(), "audiocaps_cache")
+    os.makedirs(cache_dir, exist_ok=True)
+    cache_file = os.path.join(cache_dir, "train.csv")
+
+    if not os.path.exists(cache_file):
+        logger.info("Downloading AudioCaps dataset from GitHub...")
+        try:
+            resp = requests.get(AUDIOCAPS_URL, timeout=60)
+            resp.raise_for_status()
+            with open(cache_file, "w", encoding="utf-8") as f:
+                f.write(resp.text)
+        except Exception as e:
+            logger.error(f"Failed to download AudioCaps dataset: {e}")
+            sys.exit(1)
+    else:
+        logger.info(f"Loading AudioCaps dataset from cache: {cache_file}")
+
+    samples = []
+    with open(cache_file, "r", encoding="utf-8") as f:
+        reader = csv.DictReader(f)
+        for row in reader:
+            caption = row.get("caption", "").strip()
+            if caption:
+                samples.append({"text": caption})
+
+    if not samples:
+        logger.error("AudioCaps dataset is empty or could not be parsed.")
+        sys.exit(1)
+
+    random.Random(seed).shuffle(samples)
+    import datasets as ds
+
+    calib_dataset = ds.Dataset.from_list(samples)
+    calib_dataset = calib_dataset.map(
+        tokenizer_function,
+        batched=True,
+        new_fingerprint=_make_map_fingerprint(
+            calib_dataset, tokenizer, seqlen, apply_chat_template, system_prompt, "text"
+        ),
+    )
+    return calib_dataset
+
+
 @register_dataset("local")
 def get_local_dataset(
     tokenizer, seqlen, dataset_name="./tmp.json", split=None, seed=42, apply_chat_template=False, system_prompt=None
