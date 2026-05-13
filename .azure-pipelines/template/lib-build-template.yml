@@ -73,7 +73,8 @@ stages:
           displayName: Build ark wheel (py${{ pythonVersion }})
           ${{ if eq(parameters.enableChangeDetection, true) }}:
             condition: and(succeeded(), eq(variables['BUILD_ARK_WHEEL'], 'true'))
-          pool: LIB-BUILD-POOL
+          pool: 
+            vmImage: "ubuntu-latest"
           timeoutInMinutes: 10
           steps:
             - checkout: self
