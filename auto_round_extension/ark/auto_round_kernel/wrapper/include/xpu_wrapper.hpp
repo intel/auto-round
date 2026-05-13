@@ -11,8 +11,11 @@
 //
 
 #pragma once
+#include <algorithm>
 #include <cmath>
 #include <cstdio>
+#include <limits>
+#include <vector>
 #include "utils.hpp"
 #include "dnnl_wrapper.hpp"
 #include "sycl_tla_common.hpp"
@@ -736,6 +739,31 @@ class XpuWrapper {
                     });
   }
 
+  template <typename T>
+  static void print_value_distribution(sycl::queue* q, const T* dev_ptr, size_t count, const char* name) {
+    if (dev_ptr == nullptr || count == 0) {
+      std::printf("[%s] empty\n", name);
+      return;
+    }
+
+    std::vector<T> host_values(count);
+    q->memcpy(host_values.data(), dev_ptr, count * sizeof(T)).wait();
+
+    float min_value = std::numeric_limits<float>::max();
+    float max_value = std::numeric_limits<float>::lowest();
+    double sum = 0.0;
+
+    for (size_t i = 0; i < count; ++i) {
+      float value = static_cast<float>(host_values[i]);
+      min_value = std::min(min_value, value);
+      max_value = std::max(max_value, value);
+      sum += value;
+    }
+
+    double mean = sum / static_cast<double>(count);
+    std::printf("[%s] min=%f max=%f mean=%f\n", name, min_value, max_value, static_cast<float>(mean));
+  }
+
   // input: num_rows x head_dim matrix, output: int8 quantized matrix + scale (per block)
   // scale: num_rows // block_size
   template <typename T>
@@ -1038,6 +1066,9 @@ class XpuWrapper {
                      seq_len_q, seq_q_blk, head_dim, scale_block_size);
     if (use_mean_bias) {
       compute_seq_mean_bias<sycl::half>(q, (sycl::half*)K_ptr, kbias, batch * num_heads_kv, seq_len_kv, head_dim);
+      if (env_params::Instance()->sage_print_kbias != 0) {
+        print_value_distribution(q, kbias, size_t(batch) * num_heads_kv * head_dim, "kbias");
+      }
     }
     sage_dynamic_quant<sycl::half>(q, (sycl::half*)K_ptr, (int8_t*)k_out_ptr, (float*)kscale, batch * num_heads_kv,
                      seq_len_kv, seq_kv_blk, head_dim, scale_block_size, kbias);
