@@ -180,6 +180,10 @@ class BaseCompressor(object):
         # ``self._calibration_state`` (seeded above) and exposed via
         # ``@property`` forwarders.
         self.layer_config = layer_config
+        # ``post_init()`` may run before ``quantize_and_save()`` in tests and
+        # compatibility paths, so seed the same default used by
+        # ``quantize_and_save(..., inplace=True)`` here.
+        self.inplace = True
 
         # Scheme is passed directly to the compressor, not stored in QuantizationConfig.
         self.scheme = scheme

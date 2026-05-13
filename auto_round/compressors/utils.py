@@ -353,12 +353,14 @@ def set_layer_config(
             # "in_blocks" is an internal bookkeeping key injected by LLM-Compressor;
             # silently drop it before validation.
             item = {k: v for k, v in item.items() if k != "in_blocks"}
+            scheme_name = item.pop("scheme", None)
+            config = asdict(preset_name_to_scheme(scheme_name.upper())) if scheme_name is not None else {}
             invalid = set(item) - set(scheme_keys + ("fixed_by_user", "scale_dtype"))
             if invalid:
                 raise ValueError(
                     f"Invalid keys {invalid} in layer_config for '{layer_name}'. " f"Allowed keys: {scheme_keys}"
                 )
-            config = dict(item)
+            config.update(item)
         else:
             raise TypeError(
                 f"Unsupported type for layer_config[{layer_name}]: {type(item)}. "

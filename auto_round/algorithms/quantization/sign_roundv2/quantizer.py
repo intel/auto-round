@@ -32,6 +32,12 @@ from auto_round.utils import check_to_quantized, compile_func
 from auto_round.wrapper import WrapperLinear, wrapper_block
 
 
+def _named_wrapper_block(wrapper_cls, name: str):
+    wrapped = partial(wrapper_block, wrapper_cls=wrapper_cls)
+    wrapped.__name__ = name
+    return wrapped
+
+
 class SignRoundOptimizedWrapperLinear(WrapperLinear):
     minmax_scale_bound = (0.0, 2.0)
 
@@ -148,10 +154,10 @@ class SignRoundV2Quantizer(SignRoundQuantizer):
                     "W2A16,INT4, MXFP4 and NVFP4; use with caution."
                 )
             self._use_outlier_suppressed_loss = True
-            self.wrapper_block = partial(wrapper_block, wrapper_cls=SignRoundOptimizedWrapperLinear)
+            self.wrapper_block = _named_wrapper_block(SignRoundOptimizedWrapperLinear, "wrapper_block")
 
         if self.data_type.endswith("dq"):
-            self.wrapper_block = partial(wrapper_block, wrapper_cls=SignRoundDQWrapperLinear)
+            self.wrapper_block = _named_wrapper_block(SignRoundDQWrapperLinear, "dq_wrapper_block")
 
     def _get_loss(
         self,
