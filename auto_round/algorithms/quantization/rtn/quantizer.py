@@ -64,6 +64,7 @@ class RTNQuantizer(BaseQuantizers):
     def __init__(self, config: RTNConfig):
         BaseQuantizers.__init__(self, config)
 
+    @torch.no_grad()
     def quantize_block(
         self, block: torch.nn.Module, input_ids=None, input_others=None, reference_output=None, **kwargs
     ) -> dict:
@@ -97,6 +98,7 @@ class RTNQuantizer(BaseQuantizers):
                 self.quantize_layer(m.global_name)
         return {}
 
+    @torch.no_grad()
     def quantize_layer(self, name: str, dtype: torch.dtype = None) -> None:
         """Quantizes a layer using RTN (Round-To-Nearest) if available.
 
@@ -219,6 +221,7 @@ class OptimizedRTNQuantizer(RTNQuantizer):
     def quantize_layer_outside_block(self, *args, **kwargs):
         return self.quantize_layer(*args, **kwargs)
 
+    @torch.no_grad()
     def quantize_block(
         self, block: torch.nn.Module, input_ids=None, input_others=None, reference_output=None, **kwargs
     ):
@@ -249,5 +252,3 @@ class OptimizedRTNQuantizer(RTNQuantizer):
                 m.imatrix /= m.imatrix_cnt
             if hasattr(m, "global_name") and check_to_quantized(m):
                 self.quantize_layer_outside_block(m.global_name)
-
-    # _get_block_outputs and _sampling_inputs are defined in BaseQuantizers and inherited.
