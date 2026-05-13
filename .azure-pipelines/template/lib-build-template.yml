@@ -74,10 +74,21 @@ stages:
           ${{ if eq(parameters.enableChangeDetection, true) }}:
             condition: and(succeeded(), eq(variables['BUILD_ARK_WHEEL'], 'true'))
           pool: GAUDI
-          timeoutInMinutes: 10
+          timeoutInMinutes: 30
           steps:
             - checkout: self
               clean: true
+
+            - task: Bash@3
+              displayName: Build manylinux_2_28_x86_64:ark-test image
+              inputs:
+                targetType: inline
+                script: |
+                  set -euxo pipefail
+                  docker build \
+                    -t manylinux_2_28_x86_64:ark-test \
+                    -f $(Build.SourcesDirectory)/.azure-pipelines/docker/Dockerfile_ark.devel \
+                    $(Build.SourcesDirectory)/.azure-pipelines/docker
 
             - task: Bash@3
               displayName: Build wheel in manylinux container
@@ -90,8 +101,9 @@ stages:
                     --user "$(id -u):$(id -g)" \
                     -e HOME=/tmp \
                     -v $(Build.SourcesDirectory):/auto-round \
+                    -v /opt/intel/oneapi:/opt/intel/oneapi \
                     -w /auto-round/auto_round_extension/ark \
-                    pytorch/manylinux2_28-builder:xpu-v2.10.0-rc7 \
+                    quay.io/pypa/manylinux_2_28_x86_64 \
                     bash -c " /opt/python/cp${python_version_fix}-cp${python_version_fix}/bin/python -m venv venv \
                     && source venv/bin/activate \
                     && source /opt/intel/oneapi/setvars.sh \
@@ -129,7 +141,7 @@ stages:
                       -w /auto-round/auto_round_extension/ark \
                       -e TWINE_USERNAME \
                       -e TWINE_PASSWORD \
-                      pytorch/manylinux2_28-builder:xpu-v2.10.0-rc7 \
+                      quay.io/pypa/manylinux_2_28_x86_64 \
                       bash -c "source venv/bin/activate \
                       && python -m pip install --upgrade twine \
                       && twine upload --repository-url https://test.pypi.org/legacy/ wheelhouse/*.whl"
