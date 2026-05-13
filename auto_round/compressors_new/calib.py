@@ -555,21 +555,6 @@ class CalibCompressor(BaseCompressor):
             Returns:
                 NotImplementedError: Getting the first layer inputs and then raise the error to save runtime.
             """
-            # During the quantization tuning loop (after cache_inter_data finishes),
-            # _quantizing is set so that block forward passes skip the data-saving
-            # logic.  The wrapped forward is still active at this point because
-            # recover_forward was NOT called after cache_inter_data finished (the
-            # wrapped forward is needed for the same reason: block_forward in
-            # utils.py goes through the wrapper).  Without this guard the wrapped
-            # forward would try to re-populate self.inputs which is already
-            # populated and may have stale structure for the current forward.
-            if getattr(self, "_quantizing", False):
-                if hidden_states is not None:
-                    kwargs.pop("hidden_states", None)
-                    return m.orig_forward(hidden_states, *positional_inputs, **kwargs)
-                else:
-                    return m.orig_forward(*positional_inputs, **kwargs)
-
             if name not in self.inputs:
                 self.inputs[name] = {}
                 init_cache(positional_inputs, self.inputs[name])
@@ -1006,22 +991,8 @@ class CalibCompressor(BaseCompressor):
                     self.compress_context.device,
                 )
             else:
-                # For diffusion with multi-device dispatch, sub-modules were placed
-                # by dispatch_model_by_all_available_devices during caching, but the
-                # model was moved to CPU after caching (mv_module_from_gpu).  Move the
-                # block to the primary quantization device so its parameters
-                # (e.g. scale_shift_table) are on GPU alongside the input tensors.
-                is_diffusion_multi_device = (
-                    self.model_context.is_diffusion
-                    and hasattr(self.model_context.model, "hf_device_map")
-                    and len(self.model_context.model.hf_device_map) > 1
-                )
-                if is_diffusion_multi_device:
-                    m = m.to(self.compress_context.device)
-                    card_0_in_high_risk, loss_device = False, self.compress_context.device
-                else:
-                    m = m.to(self.compress_context.device)
-                    card_0_in_high_risk, loss_device = False, self.compress_context.device
+                m = m.to(self.compress_context.device)
+                card_0_in_high_risk, loss_device = False, self.compress_context.device
 
             if len(self.compress_context.device_list) > 1 and not self.model_context.is_diffusion:
                 from accelerate.hooks import AlignDevicesHook, add_hook_to_module

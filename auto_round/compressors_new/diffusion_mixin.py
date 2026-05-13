@@ -21,7 +21,6 @@ from tqdm import tqdm
 from auto_round.logger import logger
 from auto_round.utils import clear_memory
 from auto_round.utils.device import (
-    detect_device,
     dispatch_model_block_wise,
     dispatch_model_by_all_available_devices,
     get_major_device,
@@ -233,24 +232,6 @@ class DiffusionMixin:
             target_device = get_major_device(device_map)
             pipe.to(target_device)
 
-    def _materialize_lazy_params(self, module: torch.nn.Module, device: str):
-        """Move any lazy/uninitialized parameters from meta device to the target device."""
-        for name, param in module.named_parameters():
-            if param.device.type == "meta":
-                with torch.no_grad():
-                    new_param = torch.nn.Parameter(
-                        torch.empty_like(param, device=device, dtype=param.dtype),
-                        requires_grad=param.requires_grad,
-                    )
-                    param.data = new_param.data
-        for name, buf in module.named_buffers():
-            if buf.device.type == "meta":
-                with torch.no_grad():
-                    new_buf = torch.empty_like(buf, device=device, dtype=buf.dtype)
-                    buf.data = new_buf.data
-        for child in module.children():
-            self._materialize_lazy_params(child, device)
-
     def _get_calibration_image(self, batch_size: int):
         """Return a synthetic PIL Image for I2V pipeline calibration.
 
@@ -356,9 +337,9 @@ class DiffusionMixin:
                     if self._requires_calibration_image() or "prompt" in pipe_kwargs:
                         # I2V pipeline: 'image' is the first positional arg, so pass
                         # 'prompt' as keyword to avoid "multiple values for argument 'image'".
-                        result = pipe(**pipe_kwargs)
+                        pipe(**pipe_kwargs)
                     else:
-                        result = pipe(prompts, **pipe_kwargs)
+                        pipe(prompts, **pipe_kwargs)
                 except NotImplementedError:
                     pass
                 except Exception as error:
@@ -650,14 +631,10 @@ class DiffusionMixin:
                 val.save_pretrained(sub_module_path)
                 continue
 
-            if name == "transformer":
-                for single_format in (_format if isinstance(_format, list) else [_format]):
-                    from auto_round.compressors_new.utils import _get_save_folder_name
+            if name.startswith("transformer"):
+                rename_weights_files(target_output_dir)
 
-                    rename_weights_files(target_output_dir)
-
-            for single_format in (_format if isinstance(_format, list) else [_format]):
-                folders.append(target_output_dir)
+            folders.append(target_output_dir)
 
         pipe.save_config(output_dir)
 

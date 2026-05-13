@@ -314,8 +314,8 @@ class ModelContext(BaseContext):
                     # Full recovery: restore the true original forward.  Used for diffusion
                     # where the positional wrapper must be fully removed after caching.
                     m.forward = true_orig
-                    # Restore _true_orig_forward in __dict__ so any wrapped_forward base_hook
-                    # closures that try m._true_orig_forward will find it there.
+                    # Keep _true_orig_forward so the wrapped forward's base_hook can
+                    # still call it during quantization tuning.
                     m._true_orig_forward = true_orig
                     delattr(m, "orig_forward")
                     if hasattr(m, "_wrapped_forward_before_replace"):
