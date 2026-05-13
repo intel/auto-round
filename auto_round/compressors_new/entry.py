@@ -122,6 +122,19 @@ def is_weight_scheme(scheme):
     return False
 
 
+def is_gguf_k_target(value) -> bool:
+    if isinstance(value, str):
+        normalized = value.strip().lower()
+        return normalized.startswith("gguf:") and "_k" in normalized
+    if isinstance(value, AutoScheme):
+        opts = value.options
+        if isinstance(opts, str):
+            opts = [opts]
+        if isinstance(opts, (list, tuple)):
+            return any(isinstance(opt, str) and is_gguf_k_target(opt) for opt in opts)
+    return False
+
+
 def detect_model_type(model):
     """Detect the type of model (LLM, MLLM, or Diffusion).
 
@@ -227,6 +240,7 @@ class AutoRound(object):
 
         elif isinstance(quant_config, RTNConfig):
             enable_imatrix = False
+            _resolved = {}
             disable_opt_rtn = getattr(quant_config, "disable_opt_rtn", False)
             # If disable_opt_rtn was not explicitly set and scheme is W8A16/W8A8,
             # auto-disable optimization to improve efficiency.
@@ -236,7 +250,7 @@ class AutoRound(object):
                     disable_opt_rtn = True
                     quant_config.disable_opt_rtn = True
             if not disable_opt_rtn:
-                has_gguf_k = "gguf" in format.lower() and "_k" in format.lower() if format else False
+                has_gguf_k = is_gguf_k_target(format) or is_gguf_k_target(scheme)
                 if has_gguf_k:
                     enable_imatrix = True
                 else:

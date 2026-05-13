@@ -55,26 +55,30 @@ steps:
 
   - ${{ if eq(parameters.imageSource, 'build') }}:
     - script: |
+        set -eo pipefail
+
         if [ "${{ parameters.buildARKWheel }}" == "true" ]; then
           ARK_WHEEL_INSTALL="uv pip install /auto-round/ark_wheel/*.whl --no-deps"
         else
-          ARK_WHEEL_INSTALL="uv pip install --index-url https://test.pypi.org/simple/ auto-round-lib --no-deps"
+          ARK_WHEEL_INSTALL="uv pip install --index-url https://test.pypi.org/simple/ auto-round-lib --pre --no-deps"
         fi
 
-        docker exec ${{ parameters.utContainerName }} bash -c "cd /auto-round \
-          && uv pip install -r .azure-pipelines/scripts/ut/constraints.txt --extra-index-url https://download.pytorch.org/whl/xpu \
-          && uv pip install -r auto_round_extension/ark/requirements.txt \
-          && ${ARK_WHEEL_INSTALL} \
-          && uv pip install -r requirements.txt"
-        
         if [ "${{ parameters.utScriptFileName }}" == "run_ut_xpu" ];then
           docker exec ${{ parameters.utContainerName }} bash -c "cd /auto-round \
+            && uv pip install -r .azure-pipelines/scripts/ut/constraints.txt --extra-index-url https://download.pytorch.org/whl/xpu \
+            && uv pip install -r auto_round_extension/ark/requirements.txt \
+            && ${ARK_WHEEL_INSTALL} \
+            && uv pip install -r requirements.txt \
             && uv pip install -r test/test_ark/requirements.txt \
             && uv pip install -r test/test_xpu/requirements.txt --extra-index-url https://download.pytorch.org/whl/xpu \
             && cd /auto-round && uv pip install . \
             && uv pip list"
         else 
           docker exec ${{ parameters.utContainerName }} bash -c "cd /auto-round \
+            && uv pip install -r .azure-pipelines/scripts/ut/constraints.txt --extra-index-url https://download.pytorch.org/whl/cpu \
+            && uv pip install -r auto_round_extension/ark/requirements.txt \
+            && ${ARK_WHEEL_INSTALL} \
+            && uv pip install -r requirements.txt \
             && uv pip install -r requirements-cpu.txt \
             && uv pip install -r test/test_cpu/requirements.txt --extra-index-url https://download.pytorch.org/whl/cpu \
             && uv pip list"
@@ -83,6 +87,8 @@ steps:
 
   - ${{ if eq(parameters.imageSource, 'pull') }}:
     - script: |
+        set -eo pipefail
+
         docker exec ${{ parameters.utContainerName }} bash -c "cd /auto-round \
           && pip install build \
           && BUILD_HPU_ONLY=1 python -m build \
@@ -92,6 +98,8 @@ steps:
       displayName: "HPU Env Setup"
 
   - script: |
+      set -eo pipefail
+
       docker exec -e NUMA_NODE=${NUMA_NODE} -e NUMA_CPUSET=${NUMA_CPUSET} -e ZE_AFFINITY_MASK=${ZE_AFFINITY_MASK} ${{ parameters.utContainerName }} \
       bash -c "cd /auto-round/.azure-pipelines/scripts \
         && bash ut/${{ parameters.utScriptFileName }}.sh ${{ parameters.utTestMode }}"
