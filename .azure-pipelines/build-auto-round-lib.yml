@@ -8,7 +8,6 @@ trigger:
     exclude:
       - "*.md"
       - "**/*.md"
-pr: none
 
 pr: none
 
