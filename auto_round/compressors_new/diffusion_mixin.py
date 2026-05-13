@@ -276,6 +276,7 @@ class DiffusionMixin:
             else height_param.default
         )
         from PIL import Image
+
         image = Image.new("RGB", (int(width), int(height)), color=(127, 127, 127))
         if batch_size == 1:
             return image
