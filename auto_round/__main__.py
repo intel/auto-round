@@ -807,6 +807,7 @@ def tune(args):
     autoround: BaseCompressor = AutoRound(
         model=model_name,
         platform=args.platform,
+        format=args.format,
         scheme=scheme,
         dataset=args.dataset,
         iters=args.iters,
