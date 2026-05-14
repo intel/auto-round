@@ -828,7 +828,7 @@ class ARK:
                   at the lower K index).
                 * Int2 (``weight_bits=2``): ``torch.uint8`` packed,
                   ``K_packed == K // 4`` (four 2-bit values per byte; field j at
-                  K index ``4*i + j`` is bits ``[2j+1:2j]`` of byte i).
+                  K index ``4*i + j`` occupies bits 2j and 2j+1 of byte i).
                 * FP8 (``torch.float8_e4m3fn`` / ``torch.float8_e5m2``):
                   ``K_packed == K``. ``weight_bits`` is ignored; ``asym`` must
                   be ``False`` (no zero-points for FP8).
