@@ -202,6 +202,7 @@ def quant_matmul_248_kernel(
         # Now we need to unpack b (which is N-bit values) into 32-bit values
         b = (b >> shifter[:, None]) & maxq  # Extract the N-bit values
         b = (b - zeros) * scales  # Scale and shift
+        b = b.to(a.dtype)  # ensure dtype matches A for tl.dot (bf16 safe)
 
         accumulator += tl.dot(a, b)
         a_ptrs += BLOCK_SIZE_K

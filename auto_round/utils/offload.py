@@ -272,6 +272,7 @@ class OffloadManager:
         model_dir: Optional[str] = None,
         offload_dir_prefix: str = "ar_offload",
         cache_numel: bool = False,
+        retain_saved_entries: bool = False,
     ):
         from auto_round import envs
 
@@ -280,6 +281,7 @@ class OffloadManager:
         self.model_dir = model_dir
         self.cache_numel = cache_numel
         self._prefix = offload_dir_prefix
+        self.retain_saved_entries = retain_saved_entries
 
         # Disk state (offload mode)
         self._tempdir: Optional[str] = None
@@ -500,7 +502,8 @@ class OffloadManager:
             return
         if self.mode == "offload":
             self._load_from_disk(name, module)
-            self._remove_saved_entry(name)
+            if not self.retain_saved_entries:
+                self._remove_saved_entry(name)
         else:
             if self.model_dir is None:
                 logger.warning("OffloadManager: model_dir is required for clean mode")
