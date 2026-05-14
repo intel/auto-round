@@ -136,6 +136,16 @@ def test_mixed_llmcompressor_format_vllm(tiny_opt_model_path, dataloader, tmp_pa
     )
 
 
+def test_vllm_loading_requires_rtn_mode(tiny_opt_model_path):
+    with pytest.raises(ValueError, match="iters=0"):
+        AutoRound(
+            model=tiny_opt_model_path,
+            scheme="W4A16",
+            iters=1,
+            use_vllm_loading=True,
+        )
+
+
 # ================ Test Evaluation function ===============
 
 

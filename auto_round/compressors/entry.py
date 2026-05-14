@@ -11,9 +11,9 @@ from auto_round.algorithms.quantization.rtn.config import RTNConfig
 from auto_round.algorithms.quantization.sign_round.config import SignRoundConfig
 from auto_round.algorithms.transforms.rotation.config import RotationConfig as _NewArchRotationConfig
 from auto_round.auto_scheme.gen_auto_scheme import AutoScheme
-from auto_round.compressors_new.calib import CalibCompressor, CalibratedRTNCompressor
-from auto_round.compressors_new.utils import check_need_act_calibration
-from auto_round.compressors_new.zero_shot import ZeroShotCompressor
+from auto_round.compressors.data_driven import CalibratedRTNCompressor, DataDrivenCompressor
+from auto_round.compressors.utils import check_need_act_calibration
+from auto_round.compressors.zero_shot import ZeroShotCompressor
 from auto_round.logger import logger
 from auto_round.schemes import QuantizationScheme, _parse_scheme
 
@@ -94,15 +94,15 @@ def _get_compressor_class(model_type: str, base_cls: type) -> type:
     if key in _COMPRESSOR_REGISTRY:
         return _COMPRESSOR_REGISTRY[key]
     if model_type == "mllm":
-        from auto_round.compressors_new.mllm_mixin import MLLMMixin
+        from auto_round.compressors.mllm_mixin import MLLMMixin
 
         mixin = MLLMMixin
     elif model_type == "diffusion":
-        from auto_round.compressors_new.diffusion_mixin import DiffusionMixin
+        from auto_round.compressors.diffusion_mixin import DiffusionMixin
 
         mixin = DiffusionMixin
     elif model_type == "vllm":
-        from auto_round.compressors_new.vllm_mixin import VllmMixin
+        from auto_round.compressors.vllm_mixin import VllmMixin
 
         mixin = VllmMixin
     else:
@@ -123,6 +123,19 @@ def is_weight_scheme(scheme):
             return all(isinstance(s, str) and s.upper().startswith("W") for s in opts)
         if isinstance(opts, str):
             return opts.upper().startswith("W")
+    return False
+
+
+def is_gguf_k_target(value) -> bool:
+    if isinstance(value, str):
+        normalized = value.strip().lower()
+        return normalized.startswith("gguf:") and "_k" in normalized
+    if isinstance(value, AutoScheme):
+        opts = value.options
+        if isinstance(opts, str):
+            opts = [opts]
+        if isinstance(opts, (list, tuple)):
+            return any(isinstance(opt, str) and is_gguf_k_target(opt) for opt in opts)
     return False
 
 
@@ -153,8 +166,6 @@ def detect_model_type(model):
 
 
 class AutoRound(object):
-    SKIP_ARGS = ("local_args", "kwargs", "cls", "alg_configs", "quant_config", "quant_configs")
-
     # Mapping from string alias to config class (and optional defaults override).
     _CONFIG_ALIASES: dict[str, type] = {
         "sign_round": SignRoundConfig,
@@ -217,12 +228,30 @@ class AutoRound(object):
         # callers get ValueError/NotImplementedError on construction, not deferred.
         _eager_validate_scheme(quant_config, scheme)
 
-        # using different compressor base on AlgConfigs
-        local_args = {k: v for k, v in locals().items() if k not in cls.SKIP_ARGS}
+        # Explicitly build the dict of constructor args to forward to the
+        # compressor.  This avoids the fragile locals()-based approach that
+        # required a growing SKIP_ARGS blocklist.
+        local_args = dict(
+            model=model,
+            tokenizer=tokenizer,
+            platform=platform,
+            format=format,
+            scheme=scheme,
+            low_gpu_mem_usage=low_gpu_mem_usage,
+            device_map=device_map,
+            enable_torch_compile=enable_torch_compile,
+            seed=seed,
+            low_cpu_mem_usage=low_cpu_mem_usage,
+            layer_config=layer_config,
+            nsamples=nsamples,
+            seqlen=seqlen,
+        )
 
         # Detect model type to determine if we need special compressor
         model_type = detect_model_type(model)
         use_vllm_loading = kwargs.get("use_vllm_loading", False)
+        if use_vllm_loading and getattr(quant_config, "iters", 0) > 0:
+            raise ValueError("vLLM loading path only supports RTN/Opt-RTN mode (`iters=0`).")
         if use_vllm_loading and model_type != "vllm":
             logger.warning(
                 "Ignoring use_vllm_loading=True because the model was detected as %s, not vllm.",
@@ -235,11 +264,22 @@ class AutoRound(object):
         if has_multimodal_assets and model_type != "mllm":
             model_type = "mllm"
 
+        # Pop kwargs that are only consumed by specific Mixins so they don't
+        # leak through to BaseCompressor as unrecognized keys.
+        if model_type != "diffusion":
+            for _k in ("guidance_scale", "num_inference_steps", "generator_seed"):
+                kwargs.pop(_k, None)
+        if model_type != "mllm":
+            for _k in ("processor", "image_processor", "template", "extra_data_dir", "quant_nontext_module"):
+                kwargs.pop(_k, None)
+        kwargs.pop("disable_opt_rtn", None)  # consumed by RTN routing above, not a compressor param
+
         if isinstance(quant_config, SignRoundConfig):
-            return _get_compressor_class(model_type, CalibCompressor)(alg_configs, **local_args, **kwargs)
+            return _get_compressor_class(model_type, DataDrivenCompressor)(alg_configs, **local_args, **kwargs)
 
         elif isinstance(quant_config, RTNConfig):
             enable_imatrix = False
+            _resolved = {}
             disable_opt_rtn = getattr(quant_config, "disable_opt_rtn", False)
             # If disable_opt_rtn was not explicitly set and scheme is W8A16/W8A8,
             # auto-disable optimization to improve efficiency.
@@ -249,7 +289,7 @@ class AutoRound(object):
                     disable_opt_rtn = True
                     quant_config.disable_opt_rtn = True
             if not disable_opt_rtn:
-                has_gguf_k = "gguf" in format.lower() and "_k" in format.lower() if format else False
+                has_gguf_k = is_gguf_k_target(format) or is_gguf_k_target(scheme)
                 if has_gguf_k:
                     enable_imatrix = True
                 else:
@@ -322,7 +362,7 @@ class AutoRoundCompatible:
 
     Example:
         >>> # Old API - still works
-        >>> from auto_round.compressors_new.entry import AutoRoundCompatible
+        >>> from auto_round.compressors.entry import AutoRoundCompatible
         >>> autoround = AutoRoundCompatible(
         ...     model="/models/opt-125m",
         ...     bits=4,
@@ -406,7 +446,7 @@ class AutoRoundCompatible:
 
         # ---- Model-free fast-path detection --------------------------------
         if is_model_free_route(model, scheme, iters, kwargs.get("disable_opt_rtn"), kwargs):
-            from auto_round.compressors_new.model_free import ModelFreeCompressor
+            from auto_round.compressors.model_free import ModelFreeCompressor
 
             if not isinstance(model, str):
                 raise ValueError("model_free=True requires `model` to be a HuggingFace ID or local path string.")
@@ -454,8 +494,6 @@ class AutoRoundCompatible:
                 act_data_type=act_data_type,
                 act_dynamic=act_dynamic,
                 disable_opt_rtn=disable_opt_rtn,
-                # for optRTN
-                batch_size=batch_size,
                 **common_config_kwargs,
             )
         else:
@@ -468,7 +506,6 @@ class AutoRoundCompatible:
 
             config = SignRoundConfig(
                 iters=iters,
-                batch_size=batch_size,
                 gradient_accumulate_steps=gradient_accumulate_steps,
                 bits=bits,
                 group_size=group_size,
@@ -545,6 +582,7 @@ class AutoRoundCompatible:
             layer_config=layer_config,
             nsamples=nsamples,
             seqlen=seqlen,
+            batch_size=batch_size,
             # MLLM parameters
             processor=processor,
             image_processor=image_processor,

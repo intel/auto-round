@@ -84,9 +84,9 @@ w8a8_static_recipe_modifier = AutoRoundModifier(
         recipe_modifier_mxfp4,
     ],
 )
-def test_oneshot_application(recipe, tmp_path):
+def test_oneshot_application(recipe, tmp_path, tiny_tiny_llama_model_path):
     output = tmp_path / "oneshot_output"
-    model = "TinyLlama/TinyLlama-1.1B-Chat-v1.0"
+    model = tiny_tiny_llama_model_path
     tokenizer = AutoTokenizer.from_pretrained(model)
     dataset = get_dataset(
         tokenizer=tokenizer,
@@ -128,9 +128,9 @@ def test_oneshot_application(recipe, tmp_path):
 
 
 @pytest.mark.skipif(torch.xpu.device_count() < 2, reason="test requires at least 2 XPUs")
-def test_oneshot_with_device_ids(tmp_path):
+def test_oneshot_with_device_ids(tmp_path, tiny_tiny_llama_model_path):
     output = tmp_path / "oneshot_output"
-    model = "TinyLlama/TinyLlama-1.1B-Chat-v1.0"
+    model = tiny_tiny_llama_model_path
     tokenizer = AutoTokenizer.from_pretrained(model)
     dataset = get_dataset(
         tokenizer=tokenizer,
@@ -188,9 +188,9 @@ def test_oneshot_with_device_ids(tmp_path):
     "recipe",
     [w8a8_dynamic_recipe_modifier, w8a8_static_recipe_modifier],
 )
-def test_rtn_oneshot(recipe, tmp_path):
+def test_rtn_oneshot(recipe, tmp_path, tiny_tiny_llama_model_path):
     output = tmp_path / "oneshot_output"
-    model = "TinyLlama/TinyLlama-1.1B-Chat-v1.0"
+    model = tiny_tiny_llama_model_path
     tokenizer = AutoTokenizer.from_pretrained(model)
     dataset = get_dataset(
         tokenizer=tokenizer,

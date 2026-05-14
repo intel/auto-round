@@ -759,12 +759,12 @@ def vllm_load_model(
     if not check_vllm_installed():
         raise ImportError("Please install vllm via 'pip install vllm' to use --use_vllm_loading")
 
+    os.environ.setdefault("VLLM_ENABLE_V1_MULTIPROCESSING", "0")
+
     from transformers import AutoConfig, AutoTokenizer
     from vllm import LLM
 
     if isinstance(pretrained_model_name_or_path, str):
-        os.environ.setdefault("VLLM_ENABLE_V1_MULTIPROCESSING", "0")
-
         user_max_model_len = max_model_len
         derived_max_model_len = None
         if user_max_model_len is None:
@@ -950,9 +950,9 @@ def is_diffusion_model(model_or_path: Union[str, object], trust_remote_code: boo
 def is_vllm_model(model_or_path: object) -> bool:
     if model_or_path is None:
         return False
-    if isinstance(model_or_path, torch.nn.Module):
-        return True
-    if "vllm" not in str(type(model_or_path)).lower():
+    model_type = type(model_or_path)
+    type_hint = f"{model_type.__module__}.{model_type.__name__}".lower()
+    if "vllm" not in type_hint and not hasattr(model_or_path, "llm_engine"):
         return False
     model = get_nested_attr(
         model_or_path, "llm_engine.engine_core.engine_core.model_executor.driver_worker.worker.model_runner.model"

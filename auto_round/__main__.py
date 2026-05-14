@@ -20,7 +20,7 @@ import sys
 import torch
 
 from auto_round.auto_scheme import AutoScheme
-from auto_round.compressors import BaseCompressor
+from auto_round.compressors.base import BaseCompressor
 from auto_round.eval.eval_cli import EvalArgumentParser, eval, eval_task_by_task
 from auto_round.eval.evaluation import run_model_evaluation
 from auto_round.schemes import PRESET_SCHEMES, preset_name_to_scheme
@@ -180,7 +180,9 @@ class BasicArgumentParser(argparse.ArgumentParser):
             "--enable_torch_compile", action="store_true", help="Enable PyTorch compilation for faster execution. "
         )
         basic.add_argument(
+            "--enable_vllm_loading",
             "--use_vllm_loading",
+            dest="enable_vllm_loading",
             action="store_true",
             help="Use vLLM loading path for calibration/quantization (experimental).",
         )
@@ -675,7 +677,7 @@ def tune(args):
                 quant_lm_head=getattr(args, "quant_lm_head", False),
                 quant_nontext_module=getattr(args, "quant_nontext_module", False),
                 device_map=args.device_map,
-                use_vllm_loading=args.use_vllm_loading,
+                use_vllm_loading=args.enable_vllm_loading,
             )
             ar.quantize_and_save(output_dir=output_dir, format=args.format)  # pylint: disable=E1101
             return
@@ -805,13 +807,14 @@ def tune(args):
         )
     rot_config = None
     if args.rotation_type:
-        from auto_round.experimental.transform.rotation_config import RotationConfig
+        from auto_round.algorithms.transforms.rotation.config import RotationConfig
 
         rot_config = RotationConfig(hadamard_type=args.rotation_type)
 
     autoround: BaseCompressor = AutoRound(
         model=model_name,
         platform=args.platform,
+        format=args.format,
         scheme=scheme,
         dataset=args.dataset,
         iters=args.iters,
@@ -831,7 +834,7 @@ def tune(args):
         model_dtype=args.model_dtype,
         momentum=args.momentum,
         trust_remote_code=not args.disable_trust_remote_code,
-        use_vllm_loading=args.use_vllm_loading,
+        use_vllm_loading=args.enable_vllm_loading,
         rotation_config=rot_config,
     )
 

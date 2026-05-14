@@ -96,7 +96,8 @@ liuhaotian/llava_instruct_80k", "liuhaotian/llava_instruct_150k" or a file path 
 
 For autoround MLLMs, using Template to customize different operations for different models. User can use template to support new model which not in support list.
 ```python
-from auto_round.mllm.template import _register_template
+from auto_round.compressors.mllm.processor import PROCESSORS
+from auto_round.compressors.mllm.template import _register_template
 
 model_type = model.config.model_type
 _register_template(model_type=model_type, default_dataset="NeelNanda/pile-10k", processor=PROCESSORS["hf"])
@@ -106,7 +107,7 @@ _register_template(model_type=model_type, default_dataset="NeelNanda/pile-10k", 
 
 Processor is callback interface for calling different processors, such as texts or images processors, for MLLMs. User
 can define own processor and use registration function to declare. For more information, please refer to the relevant
-code in ```auto_round/mllm/processor.py```.
+code in ```auto_round/compressors/mllm/processor.py```.
 
 </details>
 

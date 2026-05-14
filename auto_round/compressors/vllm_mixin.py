@@ -12,6 +12,8 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import gc
+
 import torch
 from tqdm import tqdm
 
@@ -67,7 +69,7 @@ class VllmMixin:
         else:
             self.dataloader = self.dataset
 
-        sampling_params = SamplingParams(temperature=0.8, top_p=0.95, max_tokens=1)
+        sampling_params = SamplingParams(temperature=1.0, top_p=0.95, max_tokens=1)
         total_cnt = 0
         total = nsamples if not hasattr(self.dataloader, "__len__") else min(nsamples, len(self.dataloader))
 
@@ -110,3 +112,7 @@ class VllmMixin:
                 "Insufficient number of samples collected may affect the quantization. "
                 f"target samples count is {nsamples}, while valid samples count is {total_cnt}"
             )
+
+        self.model_context.llm = None
+        del llm
+        gc.collect()
