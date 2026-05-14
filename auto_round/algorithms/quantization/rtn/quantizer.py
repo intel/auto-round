@@ -21,8 +21,8 @@ import torch
 from auto_round.algorithms.quantization.base import BaseQuantizers
 from auto_round.algorithms.quantization.rtn.config import RTNConfig
 from auto_round.algorithms.quantization.sign_round.quantizer import SignRoundQuantizer
-from auto_round.compressors_new.shard_writer import ShardWriter
-from auto_round.compressors_new.utils import (
+from auto_round.compressors.shard_writer import ShardWriter
+from auto_round.compressors.utils import (
     IndexSampler,
     block_forward,
     check_need_act_calibration,
@@ -210,8 +210,6 @@ class OptimizedRTNQuantizer(RTNQuantizer):
 
     def __init__(self, config: RTNConfig):
         BaseQuantizers.__init__(self, config)
-        self.batch_size = config.batch_size
-        self.batch_dim = config.batch_dim
         self.data_type = config.data_type
         self.group_size = config.group_size
         self.infer_bs_coeff = config.infer_bs_coeff

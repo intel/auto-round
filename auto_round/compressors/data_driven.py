@@ -30,8 +30,8 @@ from auto_round.calibration.utils import (
     _infer_last_cache_name,
     _update_inputs,
 )
-from auto_round.compressors_new.base import BaseCompressor
-from auto_round.compressors_new.utils import (
+from auto_round.compressors.base import BaseCompressor
+from auto_round.compressors.utils import (
     _get_quantized_layer_names_outside_blocks,
     check_skippable_keywords,
     immediate_pack,
@@ -70,7 +70,7 @@ from auto_round.utils.device import (
 from auto_round.wrapper import WrapperLinear, WrapperMultiblock
 
 
-class CalibCompressor(BaseCompressor):
+class DataDrivenCompressor(BaseCompressor):
     need_calib: bool = True
 
     def __init__(
@@ -89,7 +89,6 @@ class CalibCompressor(BaseCompressor):
         low_cpu_mem_usage: bool = True,
         **kwargs,
     ):
-        self.dataset = dataset
         self.iters = iters
         super().__init__(
             config=config,
@@ -104,623 +103,125 @@ class CalibCompressor(BaseCompressor):
             low_cpu_mem_usage=low_cpu_mem_usage,
             **kwargs,
         )
+        # Routed to ``self._calibration_state.dataset`` via @property.
+        # Set after ``super().__init__()`` because the state object is created there.
+        self.dataset = dataset
         if iters == 0:
             self.lr = 5e-3
 
+    def post_init(self) -> None:
+        """Run base post-init then attach the registered calibrator strategy.
+
+        Subclasses (MLLM/Diffusion) override ``calib`` directly on the
+        Compressor; the calibrator owns ``try_cache_inter_data_gpucpu`` /
+        ``cache_inter_data`` orchestration plus the LLM ``calib`` body.
+        """
+        if self._post_init_done:
+            return
+        super().post_init()
+        if self.calibration is None:
+            from auto_round.calibration import get_calibrator
+
+            kind = self._get_calibrator_kind()
+            self.calibration = get_calibrator(kind)(self)
+
+    def _get_calibrator_kind(self) -> str:
+        """Return the registry name of the calibrator to use.
+
+        Default ``"llm"``.  ``MLLMMixin`` / ``DiffusionMixin`` override this
+        to select ``"mllm"`` / ``"diffusion"``.
+        """
+        return "llm"
+
     @torch.no_grad()
     def try_cache_inter_data_gpucpu(self, block_names, nsamples, layer_names=None, last_cache_name=None):
-        """Attempts to cache intermediate data on GPU, if failed, then using CPU.
+        """Thin wrapper around ``self.calibration.collect``.
 
-        Args:
-            block_names (list): List of block names to cache data for.
-            nsamples (int): Number of samples to use for caching.
-            layer_names (list, optional): List of layer names to cache data for. Defaults to [].
-            last_cache_name (str, optional): Name of the last cache. Defaults to None.
-
-        Returns:
-            all_inputs: Cached intermediate data.
-
-        Raises:
-            Exception: If caching on GPU fails, switches to CPU and caches there.
+        Public API kept for backward compatibility (entry.py and
+        LLM-Compressor integration).
         """
-        if is_quantized_input_module(self.model_context.model):
-            layer_names = []
-        if layer_names is None:
-            layer_names = []
-
-        block_names = flatten_list(block_names)
-        self.blocks_requiring_input_ids = [data if isinstance(data, str) else data[0] for data in block_names]
-
-        calibrate_on_cpu = False
-        cannot_calibrate_on_cpu = False
-        if self.compress_context.low_gpu_mem_usage or (
-            len(block_names) == 1
-            and len(layer_names) == 0
-            and not self.quantizer.has_qlayer_outside_block
-            and (last_cache_name is None or last_cache_name in block_names)
-            and not getattr(self, "mllm", False)
-        ):
-            # low_gpu_mem_usage or calibrate only the embedding layer, which is also very fast on CPU
-            calibrate_on_cpu = True
-            try:
-                all_inputs = self.cache_inter_data(
-                    block_names, nsamples, layer_names=[], last_cache_name=last_cache_name
-                )
-            except NotImplementedError as error:
-                error_msg = str(error)
-                if "flash_attn::" in error_msg and "CPU" in error_msg:
-                    cannot_calibrate_on_cpu = True  # fallback to GPU when flash attention is not supported on CPU
-                else:
-                    raise error
-
-        if not calibrate_on_cpu or cannot_calibrate_on_cpu:
-            try:
-                if any(p.device.type == "meta" for p in self.model_context.model.parameters()):
-                    materialize_model_(self.model_context.model)
-
-                if (
-                    hasattr(self.model_context.model, "hf_device_map")
-                    and len(self.model_context.model.hf_device_map) > 1
-                ):
-                    self.model_context.model = dispatch_model(
-                        self.model_context.model, device_map=self.model_context.model.hf_device_map
-                    )
-                else:
-                    # Change this if new device is supported
-                    if str(self.model_context.model.device) == "cpu" and (
-                        not self.compress_context.device.startswith("hpu")
-                    ):
-                        # type(self.model_context.model._no_split_modules) changes from list to set
-                        # when transformers > 5.0
-                        no_split_modules = list(getattr(self.model_context.model, "_no_split_modules", []))
-                        devices = parse_available_devices(self.compress_context.device_map)
-
-                        max_memory = get_max_memory()
-                        new_max_memory = {}
-                        if "cpu" not in devices:
-                            devices.append("cpu")
-                        for device in devices:
-                            if ":" in device:
-                                device = int(device.split(":")[-1])
-                            elif device == "cpu":
-                                device = "cpu"
-                            elif isinstance(device, str):
-                                device = 0
-                            else:
-                                raise ValueError(
-                                    f"Unsupported device {device} in device_map: {self.compress_context.device_map}"
-                                )
-                            if device not in max_memory:
-                                # Skip devices that aee not reported by accelerate's max_memory.
-                                # This is expected when a device is unavailable or cannot provide memory info.
-                                continue
-                            # Use 90% of the reported max memory to leave headroom for activations,
-                            # temporary tensors, other processes, and allocator fragmentation, reducing
-                            # the chance of runtime OOM while still utilizing most available memory.
-                            new_max_memory[device] = max_memory[device] * 0.9
-
-                        # If non-CPU devices were requested but none survived, fall back to CPU caching
-                        # via the OOM handler below, avoiding unnecessary dispatch overhead.
-                        requested_non_cpu = any((d != "cpu") for d in devices)
-                        has_non_cpu_memory = any((k != "cpu") for k in new_max_memory)
-                        if requested_non_cpu and not has_non_cpu_memory:
-                            raise torch.OutOfMemoryError(
-                                "No non-CPU device available in accelerate's reported memory. "
-                                "Falling back to CPU caching."
-                            )
-
-                        # Keep ngram_embeddings on CPU
-                        has_ngram_embeddings, raw_ngram_embeddings = hook_ngram_embeddings_on_cpu(
-                            self.model_context.model
-                        )
-                        new_max_memory = get_balanced_memory(
-                            self.model_context.model,
-                            max_memory=new_max_memory,
-                            no_split_module_classes=no_split_modules,
-                        )
-                        if hasattr(self.model_context.model, "tie_weights"):
-                            self.model_context.model.tie_weights()
-                        device_map = infer_auto_device_map(
-                            self.model_context.model,
-                            max_memory=new_max_memory,
-                            no_split_module_classes=no_split_modules,
-                        )
-                        if len(devices) > 1 and "cpu" in device_map.values():
-                            logger.warning(
-                                "Some layers are offloaded to cpu, which may severely impact calibration speed."
-                                " Please consider using more cards."
-                            )
-
-                        try:
-
-                            self.model_context.model = dispatch_model(self.model_context.model, device_map=device_map)
-                            if has_ngram_embeddings:
-                                self.model_context.model.model.ngram_embeddings = raw_ngram_embeddings
-                        except ValueError as e:
-                            if "offload_dir" in e.__str__():
-                                logger.warning(
-                                    f"Due to insufficient resources, disk is used to store the model."
-                                    f" `offload_dir={envs.AR_WORK_SPACE}`"
-                                )
-                                self.model_context.model = dispatch_model(
-                                    self.model_context.model, device_map=device_map, offload_dir=envs.AR_WORK_SPACE
-                                )
-                            else:
-                                raise
-                    else:
-
-                        self.model_context.model = self.model_context.model.to(self.compress_context.device)
-
-                all_inputs = self.cache_inter_data(
-                    block_names, nsamples, layer_names=layer_names, last_cache_name=last_cache_name
-                )
-                if (
-                    hasattr(self.model_context.model, "hf_device_map")
-                    and len(self.model_context.model.hf_device_map) > 1
-                ):
-                    accelerate.hooks.remove_hook_from_submodules(self.model_context.model)
-
-            except torch.OutOfMemoryError as e:
-                if cannot_calibrate_on_cpu:
-                    raise e
-                cuda_error_msg = traceback.format_exc()
-                try:
-                    logger.info("switch to cpu to cache block inputs")
-                    self.compress_context.cache_device = torch.device("cpu")
-                    if self.quantizer.has_qlayer_outside_block or self.__class__.__name__ == "AutoRoundMLLM":
-                        logger.warning(
-                            "we recommend using more GPUs in calibration."
-                            " Otherwise, some layers may fall back to `rtn` mode, which can affect accuracy."
-                        )
-                    accelerate.hooks.remove_hook_from_submodules(self.model_context.model)
-                    self.model_context.model = mv_module_from_gpu(self.model_context.model)
-                    clear_memory(device_list=self.compress_context.device_list)
-                    # Important change after v0.51, on cpu, we use rtn mode for layers in layer_names
-                    all_inputs = self.cache_inter_data(
-                        block_names, nsamples, layer_names=[], last_cache_name=last_cache_name
-                    )
-                except Exception as e:
-                    logger.error(cuda_error_msg)
-                    raise
-        return all_inputs
+        if self.calibration is None:
+            self.post_init()
+        return self.calibration.collect(block_names, nsamples, layer_names=layer_names, last_cache_name=last_cache_name)
 
     @torch.no_grad()
     def cache_inter_data(self, block_names, nsamples, layer_names=None, last_cache_name=None):
-        """Save the inputs of block_name for calibration.
+        """Thin wrapper around ``self.calibration.cache_inter_data``.
 
-        This method temporarily replaces the forward method of the model to capture
-        the inputs passing through the specified block. It then calibrates the model
-        using a specified number of samples. Finally, it restores the original forward
-        method and returns the inputs for the specified block.
-        Args:
-            block_names (list): The names of the blocks for which inputs are to be saved.
-            layer_names (list):The names of the layers for which inputs are to be saved.
-            nsamples (int): The number of samples to use for calibration.
-            last_cache_name (str, optional): The name of the last layer to be cached,
-                                       we could break the forward in this layer to save time
-
-        Returns:
-            dict: A dictionary containing the inputs for the specified block.
+        Public API kept for backward compatibility.
         """
-        if layer_names is None:
-            layer_names = []
-
-        if not self._post_init_done:
+        if self.calibration is None:
             self.post_init()
-
-        if hasattr(self, "quantizer") and hasattr(self.quantizer, "attention_mask"):
-            self.quantizer.attention_mask = []
-
-        self.inputs = {}
-        block_names = flatten_list(block_names)
-        self.to_cached_layers = block_names + layer_names
-
-        tmp_dtype = None  # TODO delete this as most model is not fp32 now
-        ## have bug if block name is not the first block
-        if (len(block_names) > 1 or len(layer_names) > 0) and self.compress_context.low_gpu_mem_usage:
-            tmp_dtype = self.model_context.model.dtype
-            if self.model_context.amp:
-                if self.model_context.model.dtype != self.model_context.model.dtype:
-                    self.model_context.model = self.model_context.model.to(torch.bfloat16)
-            else:
-                self.model_context.model = self.model_context.model.to(torch.float32)  ##model on cpu
-
-        self.last_cache_name = _infer_last_cache_name(block_names, layer_names, last_cache_name)
-        self._cache_target_set = set(self.to_cached_layers)
-        self._cache_seen_targets = set()
-        calib_bs = self.quantizer.batch_size
-        self.hook_handles = []
-        self._replace_forward()
-        try:
-            self.calib(nsamples, calib_bs)
-        finally:
-            # Use finally to recover_forward and delattr in case of that
-            # self.calib raises NotImplementedError, such as: flash_attn on CPU.
-            self.model_context.recover_forward()
-            for attr in ("last_cache_name", "_cache_target_set", "_cache_seen_targets", "to_cached_layers"):
-                if hasattr(self, attr):
-                    delattr(self, attr)
-            # Release calibration dataloader to free tokenized sample tensors
-            if hasattr(self, "dataloader"):
-                del self.dataloader
-        res = self.inputs
-        if tmp_dtype is not None:
-            self.model_context.model = self.model_context.model.to(tmp_dtype)
-
-        return res
+        return self.calibration.cache_inter_data(
+            block_names, nsamples, layer_names=layer_names, last_cache_name=last_cache_name
+        )
 
     @torch.no_grad()
     def calib(self, nsamples, bs):
-        """Perform calibration for quantization.
+        """Thin wrapper around ``self.calibration.calib``.
 
-        This method calibrates the model for quantization by processing a specified
-        number of samples from the calibration dataset. It ensures that the data is
-        properly formatted and feeds it to the model. If the number of samples processed
-        is less than the specified number, it logs a warning. If no samples are processed,
-        it logs an error and exits.
-        Args:
-            nsamples (int): The number of samples to use for calibration.
-            bs (int): The number of samples to use for calibration
+        ``MLLMMixin`` and ``DiffusionMixin`` override this method directly via
+        Python MRO; for plain LLM models this routes into ``LLMCalibrator.calib``.
         """
-        from auto_round.calib_dataset import get_dataloader
-
-        need_attention_mask = True
-        if isinstance(self.dataset, str):
-            need_attention_mask = False  # all supported datasets does not use pad
-            dataset = self.dataset.replace(" ", "")  ##remove all whitespaces
-
-            # slow here
-            self.dataloader = get_dataloader(
-                self.model_context.tokenizer,
-                self.seqlen,
-                dataset,
-                self.seed,
-                bs,
-                self.nsamples,
-            )
-        else:
-            self.dataloader = self.dataset
-        total_cnt = 0
-        if self.dataloader.__class__.__name__ == "BatchEncoding":
-            self.dataloader = [self.dataloader.data]
-
-        for data in self.dataloader:
-            if data.__class__.__name__ == "BatchEncoding":
-                data = data.data
-            if data is None:
-                continue
-            if isinstance(data, torch.Tensor):
-                input_ids = data.to(self.model.device)
-                data_new = input_ids
-            elif isinstance(data, str):
-                if self.model_context.tokenizer is None:
-                    logger.error("please provide tokenizer for string input")
-                    exit(-1)
-                data = self.model_context.tokenizer(
-                    data, truncation=True, max_length=self.seqlen, return_tensors="pt"
-                ).data
-                data_new = {}
-                for key in data.keys():
-                    data_new[key] = data[key].to(self.model.device)
-                input_ids = data_new["input_ids"]
-            elif isinstance(data, tuple) or isinstance(data, list):
-                data_new = to_device(data, self.model.device)
-                input_ids = data_new[0]
-            else:
-                data_new = {}
-                for key in data.keys():
-                    data_new[key] = to_device(data[key], self.model.device)
-                    if key == "images":
-                        data_new[key] = to_dtype(data_new[key], self.model.dtype)
-                input_ids = data_new["input_ids"]
-            if input_ids.shape[-1] < self.seqlen:
-                continue
-            if need_attention_mask:
-                if (
-                    isinstance(data_new, dict)
-                    and "attention_mask" in data_new
-                    and data_new["attention_mask"] is not None
-                ):
-                    new_attention_mask = data_new["attention_mask"]
-                elif (
-                    self.model_context.tokenizer is not None
-                    and hasattr(self.model_context.tokenizer, "pad_token")
-                    and self.model_context.tokenizer.pad_token is not None
-                ):
-                    new_attention_mask = (input_ids != self.model_context.tokenizer.pad_token_id).to(torch.long)
-                else:
-                    # Default all ones
-                    new_attention_mask = torch.ones_like(input_ids, dtype=torch.long)
-
-                    # For each sample, check if there are trailing repeated tokens
-                    # If so, set the mask of the last token to 0
-                    batch_size, seq_len = input_ids.shape
-                    for i in range(batch_size):
-                        last_token = input_ids[i, -1]
-                        # Check for trailing repeats
-                        j = seq_len - 2
-                        repeated = False
-                        while j >= 0 and input_ids[i, j] == last_token:
-                            repeated = True
-                            new_attention_mask[i, j] = 0
-                            j -= 1
-                        # If there was at least one repeat, set last token mask to 0
-                        if repeated:
-                            new_attention_mask[i, -1] = 0
-
-                # Workaround: some models treat an all-1 attention mask as equivalent to None and
-                # will internally replace it with None for block inputs, which can cause tensor
-                # concatenation / shape-mismatch issues in downstream code. To avoid providing an
-                # all-1 mask, we force the last token in each sequence to be masked out (set to 0)
-                # so that the mask is never "all ones". This means the model will not attend to the
-                # last position, so the impact on accuracy is minimal as basically equivalent to dropping a single token
-                new_attention_mask[:, -1] = 0
-
-                if not hasattr(self.quantizer, "attention_mask"):
-                    self.quantizer.attention_mask = []
-                self.quantizer.attention_mask.extend(list(torch.split(new_attention_mask, 1, dim=0)))
-            else:
-                new_attention_mask = None
-            try:
-                kwargs = {"use_cache": False}
-                if new_attention_mask is not None and not (isinstance(data_new, dict) and "attention_mask" in data_new):
-                    kwargs["attention_mask"] = new_attention_mask
-
-                if isinstance(data_new, torch.Tensor):
-                    self.model(data_new, **kwargs)
-                elif isinstance(data_new, tuple) or isinstance(data_new, list):
-                    self.model(*data_new, **kwargs)
-                else:
-                    self.model(**data_new, **kwargs)
-            except NotImplementedError as error:
-                error_msg = str(error)
-                # Raise NotImplementedError to fallback to CUDA device
-                if "flash_attn::" in error_msg and "CPU" in error_msg:
-                    raise NotImplementedError(
-                        "Could not run 'flash_attn::_flash_attn_varlen_forward'"
-                        " with arguments from the 'CPU' backend."
-                    )
-                else:
-                    pass
-            except RuntimeError as error:
-                error_msg = str(error)
-                if "The expanded size of the tensor" in str(error_msg) and "must match the existing size" in error_msg:
-                    check_seqlen_compatible(self.seqlen, self.model_context.tokenizer, self.model)
-                logger.warning(
-                    "When quantization encounters tensor shape mismatch error, "
-                    "you can try to avoid it with batch_size=1"
-                )
-                raise error
-            except Exception as error:
-                raise error
-
-            total_cnt += input_ids.shape[0] if len(input_ids.shape) > 1 else 1
-            if total_cnt >= nsamples:
-                break
-        if total_cnt == 0:
-            logger.error(
-                f"no data has been cached, please provide more data with sequence length "
-                f">={self.seqlen} in the dataset or decease the sequence length"
-            )
-            exit(-1)
-        elif total_cnt < nsamples:
-            logger.warning_once(
-                f"An insufficient number of samples likely reduces the accuracy of the quantized model. "
-                f"Target samples count is {nsamples}, while valid samples count is {total_cnt}"
-            )
+        if self.calibration is None:
+            self.post_init()
+        return self.calibration.calib(nsamples, bs)
 
     @torch.no_grad()
     def _get_block_forward_func(self, name: str) -> Callable:
-        """Gets the forward function.
+        """Build the block-forward replacement, then let the calibrator wrap it.
 
-        Args:
-            name (str): The name of the function.
-        Returns:
-            function: The forward function.
+        ``Calibrator.wrap_block_forward`` defaults to passthrough; the
+        Diffusion calibrator overrides it to convert positional → kwargs.
         """
+        from auto_round.calibration.hooks import make_block_forward_func
 
-        def post_process_cache_data(batch_size, data, data_name):
-            """
-            Processes store data for batch handling, reshaping if necessary.
-
-            Args:
-                batch_size (int): The size of the batch.
-                data: The data value to store, potentially for caching.
-                data_name (str): Name of the data.
-
-            Returns:
-                Processed data or None
-            """
-            new_data = data
-            if data_name in self.model_context.shared_cache_keys:
-                return None
-            if batch_size <= 1:
-                return new_data
-            if "alibi" in data_name:
-                if isinstance(data, torch.Tensor):
-                    alibi = data
-                    alibi = alibi.reshape(batch_size, -1, alibi.shape[1], alibi.shape[2])
-                    new_data = alibi
-            return new_data
-
-        def forward(m, hidden_states=None, *positional_inputs, **kwargs):
-            """Rewrite forward function, process and collect input data.
-
-            Args:
-                hidden_states (torch.Tensor): The hidden states tensor.
-                *positional_inputs: Variable number of positional arguments.
-                **kwargs: Variable number of keyword arguments.
-
-            Returns:
-                NotImplementedError: Getting the first layer inputs and then raise the error to save runtime.
-            """
-            if name not in self.inputs:
-                self.inputs[name] = {}
-                init_cache(positional_inputs, self.inputs[name])
-
-            if self.quantizer.batch_dim is None:
-                self.quantizer.batch_dim = 0
-                if hidden_states is not None and self.quantizer.batch_size > 1:
-                    if hidden_states.shape[0] > self.quantizer.batch_size:
-                        self.quantizer.batch_dim = 1
-                        if len(hidden_states.shape) > 1 and hidden_states.shape[1] > self.quantizer.batch_size:
-                            logger.error(
-                                "this model has not been supported, "
-                                "please raise an issue in https://github.com/intel/auto-round/issues"
-                                " or try to set the `batch_size` to 1 and "
-                                "`gradient_accumulate_steps` to your current batch size."
-                            )
-                            exit(-1)
-
-            if hidden_states is not None:
-                kwargs["hidden_states"] = hidden_states
-
-            for key in kwargs.keys():
-                if (
-                    isinstance(kwargs[key], torch.Tensor)
-                    or isinstance(kwargs[key], list)
-                    or isinstance(kwargs[key], tuple)
-                ):
-                    if (
-                        self.has_variable_block_shape
-                        and name not in self.blocks_requiring_input_ids
-                        and key == "hidden_states"
-                    ):
-                        continue
-                    if key not in self.inputs[name].keys():  # initialization
-                        data = to_device(kwargs[key], device=torch.device("cpu"))
-                        if data is None or key in self.model_context.shared_cache_keys:
-                            self.inputs[name][key] = data
-                            continue
-                        if self.quantizer.batch_size <= 1:
-                            self.inputs[name][key] = [data]
-                        else:
-                            data = post_process_cache_data(self.quantizer.batch_size, data, key)
-                            if isinstance(data, torch.Tensor):
-                                self.inputs[name][key] = list(torch.split(data, 1, dim=self.quantizer.batch_dim))
-                            else:
-                                self.inputs[name][key] = [data]
-                    else:  # append cache inputs
-                        new_data = post_process_cache_data(self.quantizer.batch_size, kwargs[key], key)
-                        if new_data is None:  # shareable args or NoneType
-                            continue
-                        new_data = to_device(new_data, device=torch.device("cpu"))
-                        if self.quantizer.batch_size <= 1:
-                            self.inputs[name][key].append(new_data)
-                        else:
-                            if isinstance(new_data, torch.Tensor):
-                                self.inputs[name][key].extend(
-                                    list(torch.split(new_data, 1, dim=self.quantizer.batch_dim))
-                                )
-                            else:
-                                self.inputs[name][key].append(new_data)
-                elif isinstance(kwargs[key], (str, bool, type(None))):
-                    if key not in self.inputs[name].keys():
-                        self.inputs[name][key] = kwargs[key]
-                else:
-                    # Parameters not to be cached
-                    if check_skippable_keywords(key):
-                        logger.warning_once(
-                            f"Please note that '{key}' key" " is not currently used in quantization fine-tuning."
-                        )
-            reset_params(self.inputs[name])
-
-            if self._should_stop_cache_forward(name):
-                raise NotImplementedError
-            else:
-                if hidden_states is not None:
-                    kwargs.pop("hidden_states")
-                    return m.orig_forward(hidden_states, *positional_inputs, **kwargs)
-                else:
-                    # Currently only for Llama-3.2-Vision-Instruct Series
-                    return m.orig_forward(*positional_inputs, **kwargs)
-
-        return forward
+        fn = make_block_forward_func(self, name)
+        if self.calibration is not None:
+            fn = self.calibration.wrap_block_forward(fn)
+        return fn
 
     @torch.no_grad()
     def _get_cache_data_hook_for_layer(self, name):
-        """A forward hook to save input max of a module
-        :param name: the module name
-        :return: A hook function."""
+        """Thin wrapper around ``auto_round.calibration.hooks.make_layer_cache_hook``."""
+        from auto_round.calibration.hooks import make_layer_cache_hook
 
-        def cache_input_hook(module, inputs, outputs):
-            input = inputs
-            if isinstance(inputs, tuple) or isinstance(input, list):
-                input = inputs[0]
-            if name in self.inputs:
-                self.inputs[name].extend(list(torch.split(input.to("cpu"), 1, dim=0)))
-            else:
-                self.inputs[name] = list(torch.split(input.to("cpu"), 1, dim=0))
-
-            if self._should_stop_cache_forward(name):
-                raise NotImplementedError
-
-        return cache_input_hook
+        return make_layer_cache_hook(self, name)
 
     def _replace_forward(self):
-        """Replaces the forward function."""
+        """Thin wrapper around ``auto_round.calibration.hooks.replace_forward_with_hooks``."""
+        from auto_round.calibration.hooks import replace_forward_with_hooks
 
-        def register_hook(n, m, hook_handles):
-            if n in self.to_cached_layers and type(m) not in SUPPORTED_LAYER_TYPES:  ##block
-                m.orig_forward = m.forward
-                m.forward = partial(self._get_block_forward_func(n), m)
-            elif n in self.to_cached_layers:  ##linear layer or conv1d layer
-                hook_func = self._get_cache_data_hook_for_layer(n)
-                hook_handle = m.register_forward_hook(hook_func)
-                hook_handles.append(hook_handle)
-
-        self.model_context.replace_forward(register_hook)
+        replace_forward_with_hooks(self)
 
     def _should_stop_cache_forward(self, name: str) -> bool:
-        """Determine whether current forward pass can stop after caching `name`."""
-        if name == self.last_cache_name:
-            return True
+        """Delegate the early-stop policy to the active calibrator.
 
-        if self.last_cache_name is not None:
-            return False
+        Falls back to the default helper when the calibrator has not been
+        constructed yet (very early init code paths).
+        """
+        if self.calibration is not None:
+            return self.calibration.should_stop(name)
+        from auto_round.calibration.hooks import should_stop_cache_forward
 
-        if not hasattr(self, "_cache_target_set") or not hasattr(self, "_cache_seen_targets"):
-            return False
-
-        if name in self._cache_target_set:
-            self._cache_seen_targets.add(name)
-
-        if not self._cache_target_set.issubset(self._cache_seen_targets):
-            return False
-
-        # Lock the last cache name after the first full forward pass.
-        self.last_cache_name = name
-        return True
+        return should_stop_cache_forward(self, name)
 
     def _preprocess_block_inputs(self, inputs, first_input_name="input_ids"):
-        input_ids, input_others = self._split_inputs(inputs, first_input_name)
-        clear_memory(device_list=self.compress_context.device_list)
-        tmp_dtype = self.model_context.amp_dtype if self.model_context.amp else torch.float32
-        if input_ids is not None:
-            input_ids = to_device(input_ids, self.compress_context.cache_device)
-            input_ids = to_dtype(input_ids, tmp_dtype)
-        input_others = to_device(input_others, self.compress_context.cache_device)
+        # Thin wrapper around auto_round.calibration.inputs.preprocess_block_inputs.
+        from auto_round.calibration.inputs import preprocess_block_inputs
 
-        for key in input_others.keys():
-            if isinstance(input_others[key], torch.Tensor) and (
-                input_others[key].dtype == torch.float16 or input_others[key].dtype == torch.bfloat16
-            ):
-                input_others[key] = input_others[key].to(tmp_dtype)
-            elif isinstance(input_others[key], list):
-                for i in range(len(input_others[key])):
-                    to_dtype(input_others[key][i], tmp_dtype)
-        return input_ids, input_others
+        return preprocess_block_inputs(
+            inputs,
+            model_context=self.model_context,
+            compress_context=self.compress_context,
+            first_input_name=first_input_name,
+        )
 
     def _split_inputs(self, inputs: dict, first_input_name: str) -> tuple[torch.Tensor, dict]:
-        if self.model_context.is_diffusion:
-            input_id_str = [key for key in inputs.keys() if "hidden_state" in key]
-            input_ids = {k: inputs.pop(k, None) for k in input_id_str}
-            input_others = inputs
-            return input_ids, input_others
-        input_ids = inputs.get(first_input_name, None)
-        inputs.pop(first_input_name, None)
-        input_others = inputs
-        return input_ids, input_others
+        # Thin wrapper around auto_round.calibration.inputs.split_inputs.
+        from auto_round.calibration.inputs import split_inputs
+
+        return split_inputs(inputs, first_input_name, is_diffusion=self.model_context.is_diffusion)
 
     def normalize_decoding_layer_inputs_(self, decoding_layer_inputs: list[tuple[tuple[Any, dict[str, Any]]]]) -> None:
         """Replay captured decoding-layer calls to populate ``self.inputs``.
@@ -755,7 +256,7 @@ class CalibCompressor(BaseCompressor):
     def quantize_block(
         self,
         block: torch.nn.Module,
-        inputs: tuple,
+        inputs,
         q_input: Union[torch.Tensor, dict, None] = None,
         device: Union[str, torch.device] = "cpu",
         auto_offload: bool = True,
@@ -774,8 +275,15 @@ class CalibCompressor(BaseCompressor):
 
         Args:
             block: The transformer block (decoder layer) to quantize.
-            inputs: Raw decoding-layer inputs captured by LLM-Compressor's hook.
-                Format: list of ``((args, kwargs),)`` tuples as produced by the hook.
+            inputs: Either:
+
+                - the raw decoding-layer inputs captured by
+                  LLM-Compressor's hook (list of ``((args, kwargs),)`` tuples),
+                  in which case they are normalized via
+                  :meth:`normalize_decoding_layer_inputs_`; **or**
+                - a :class:`~auto_round.calibration.state.CalibrationState`
+                  instance produced by a :class:`~auto_round.calibration.base.Calibrator`,
+                  which is bound directly without re-normalization.
             q_input: Optional quantized input from the previous block.  ``None`` on
                 the first block.
             device: Target device for quantization (e.g. ``"cuda:0"``).
@@ -788,9 +296,11 @@ class CalibCompressor(BaseCompressor):
             ``enable_quanted_input`` is ``False``), and *reference_output* is the
             full-precision reference output collected before optimization.
         """
-        assert (
-            not self.diffusion
-        ), f"Currently, {self.__class__.__name__} does not support quantize_block for diffusion models."
+        from auto_round.calibration.state import CalibrationState
+
+        assert not self.mllm and not self.diffusion, (
+            f"Currently, {self.__class__.__name__} does not support quantize_block " "for MLLM / diffusion models."
+        )
 
         # Ensure post_init has been called (sets up model_context, compress_context,
         # quantizer, layer_config, etc.).
@@ -804,92 +314,100 @@ class CalibCompressor(BaseCompressor):
         orig_is_mllm = self.model_context.is_mllm
         self.model_context.is_mllm = False
 
-        self.normalize_decoding_layer_inputs_(inputs)
-        block_inputs = self.inputs[self.quant_block_list[0][0]]
-        input_ids, input_others = self._preprocess_block_inputs(block_inputs, "hidden_states")
-
-        # ── Infrastructure: materialize, dtype convert, device placement ──────
-        materialize_model_(block)
-        convert_module_to_hp_if_necessary(block, self.model_context.amp_dtype, device)
-
-        if auto_offload:
-            if (
-                is_auto_device_mapping(self.compress_context.device_map)
-                and len(self.compress_context.device_list) > 1
-                and not self.model_context.is_diffusion
-            ):
-                from auto_round.utils.device import set_auto_device_map_for_block_with_tuning
-
-                card_0_in_high_risk, loss_device = set_auto_device_map_for_block_with_tuning(
-                    block,
-                    self.compress_context.device_map,
-                    input_ids,
-                    self.compress_context.low_gpu_mem_usage,
-                    self.quantizer.batch_size,
-                    device,
-                )
+        try:
+            if isinstance(inputs, CalibrationState):
+                # Caller already produced a CalibrationState (typically via
+                # ``Calibrator.collect``).  Bind it as the authoritative store so
+                # the quantizer reads the same ``inputs`` / ``attention_mask`` /
+                # ``batch_dim``.
+                self.calibration_state = inputs
             else:
-                block = block.to(device)
+                self.normalize_decoding_layer_inputs_(inputs)
+            block_inputs = self.inputs[self.quant_block_list[0][0]]
+            input_ids, input_others = self._preprocess_block_inputs(block_inputs, "hidden_states")
+
+            # ── Infrastructure: materialize, dtype convert, device placement ──────
+            materialize_model_(block)
+            convert_module_to_hp_if_necessary(block, self.model_context.amp_dtype, device)
+
+            if auto_offload:
+                if (
+                    is_auto_device_mapping(self.compress_context.device_map)
+                    and len(self.compress_context.device_list) > 1
+                    and not self.model_context.is_diffusion
+                ):
+                    from auto_round.utils.device import set_auto_device_map_for_block_with_tuning
+
+                    card_0_in_high_risk, loss_device = set_auto_device_map_for_block_with_tuning(
+                        block,
+                        self.compress_context.device_map,
+                        input_ids,
+                        self.compress_context.low_gpu_mem_usage,
+                        self.quantizer.batch_size,
+                        device,
+                    )
+                else:
+                    block = block.to(device)
+                    card_0_in_high_risk, loss_device = False, device
+            else:
                 card_0_in_high_risk, loss_device = False, device
-        else:
-            card_0_in_high_risk, loss_device = False, device
 
-        if len(self.compress_context.device_list) > 1 and auto_offload:
-            from accelerate.hooks import AlignDevicesHook, add_hook_to_module
+            if len(self.compress_context.device_list) > 1 and auto_offload:
+                from accelerate.hooks import AlignDevicesHook, add_hook_to_module
 
-            for n, m in block.named_modules():
-                if len(list(m.children())) != 0 or not hasattr(m, "tuning_device"):
-                    continue
-                add_hook_to_module(m, AlignDevicesHook(m.tuning_device, io_same_device=True), True)
+                for n, m in block.named_modules():
+                    if len(list(m.children())) != 0 or not hasattr(m, "tuning_device"):
+                        continue
+                    add_hook_to_module(m, AlignDevicesHook(m.tuning_device, io_same_device=True), True)
 
-        # ── Infrastructure: collect reference output and act_max ──────────────
-        bs = self.quantizer.batch_size * self.quantizer.infer_bs_coeff
-        if q_input is None:
-            hook_handles = self.quantizer._register_act_max_hook(block)
-            reference_output = self.quantizer._get_block_outputs(block, input_ids, input_others, bs)
-            for h in hook_handles:
-                h.remove()
-        else:
-            reference_output = self.quantizer._get_block_outputs(block, input_ids, input_others, bs)
-            hook_handles = self.quantizer._register_act_max_hook(block)
-            if hook_handles:
-                self.quantizer._get_block_outputs(block, q_input, input_others, bs, save_output=False)
-            for h in hook_handles:
-                h.remove()
-            if input_ids is not q_input:
-                clear_memory(input_ids, device_list=self.compress_context.device_list)
+            # ── Infrastructure: collect reference output and act_max ──────────────
+            bs = self.quantizer.batch_size * self.quantizer.infer_bs_coeff
+            if q_input is None:
+                hook_handles = self.quantizer._register_act_max_hook(block)
+                reference_output = self.quantizer._get_block_outputs(block, input_ids, input_others, bs)
+                for h in hook_handles:
+                    h.remove()
             else:
-                clear_memory(device_list=self.compress_context.device_list)
-            input_ids = q_input
+                reference_output = self.quantizer._get_block_outputs(block, input_ids, input_others, bs)
+                hook_handles = self.quantizer._register_act_max_hook(block)
+                if hook_handles:
+                    self.quantizer._get_block_outputs(block, q_input, input_others, bs, save_output=False)
+                for h in hook_handles:
+                    h.remove()
+                if input_ids is not q_input:
+                    clear_memory(input_ids, device_list=self.compress_context.device_list)
+                else:
+                    clear_memory(device_list=self.compress_context.device_list)
+                input_ids = q_input
 
-        # ── Pure algorithm: delegates to quantizer ────────────────────────────
-        mid_iter_mem_check = self.compress_context.low_gpu_mem_usage and card_0_in_high_risk
-        self.quantizer.quantize_block(
-            block,
-            input_ids,
-            input_others,
-            reference_output,
-            loss_device=loss_device,
-            mid_iter_mem_check=mid_iter_mem_check,
-        )
+            # ── Pure algorithm: delegates to quantizer ────────────────────────────
+            mid_iter_mem_check = self.compress_context.low_gpu_mem_usage and card_0_in_high_risk
+            self.quantizer.quantize_block(
+                block,
+                input_ids,
+                input_others,
+                reference_output,
+                loss_device=loss_device,
+                mid_iter_mem_check=mid_iter_mem_check,
+            )
 
-        # ── MoE scale alignment for FP8 dispatch efficiency ────────────────
-        if is_nv_fp(self.quantizer.act_data_type) or is_static_wfp8afp8(self.quantizer):
-            set_amax_for_all_moe_layers(block, attr_name="act_max")
+            # ── MoE scale alignment for FP8 dispatch efficiency ────────────────
+            if is_nv_fp(self.quantizer.act_data_type) or is_static_wfp8afp8(self.quantizer):
+                set_amax_for_all_moe_layers(block, attr_name="act_max")
 
-        # ── Collect quantized-block outputs ───────────────────────────────────
-        if self.quantizer.enable_quanted_input:
-            q_outputs = self.quantizer._get_block_outputs(block, input_ids, input_others, bs)
-        else:
-            q_outputs = None
+            # ── Collect quantized-block outputs ───────────────────────────────────
+            if self.quantizer.enable_quanted_input:
+                q_outputs = self.quantizer._get_block_outputs(block, input_ids, input_others, bs)
+            else:
+                q_outputs = None
 
-        # ── Cleanup ───────────────────────────────────────────────────────────
-        if len(self.compress_context.device_list) > 1:
-            accelerate.hooks.remove_hook_from_submodules(block)
-        mv_module_from_gpu(block)
-
-        self.model_context.is_mllm = orig_is_mllm
-        return q_outputs, reference_output
+            # ── Cleanup ───────────────────────────────────────────────────────────
+            if len(self.compress_context.device_list) > 1:
+                accelerate.hooks.remove_hook_from_submodules(block)
+            mv_module_from_gpu(block)
+            return q_outputs, reference_output
+        finally:
+            self.model_context.is_mllm = orig_is_mllm
 
     def _quantize_blocks(
         self,
@@ -1043,7 +561,7 @@ class CalibCompressor(BaseCompressor):
             if self.compress_context.is_immediate_packing:
                 for _n, _mod in m.named_modules():
                     if hasattr(_mod, "bits") and check_to_quantized(_mod):
-                        from auto_round.compressors_new.utils import immediate_pack as _immediate_pack
+                        from auto_round.compressors.utils import immediate_pack as _immediate_pack
 
                         _immediate_pack(_mod.global_name, self.quantizer.layer_config)
 
@@ -1319,26 +837,8 @@ class CalibCompressor(BaseCompressor):
 
     def _check_compatibility(self) -> None:
         """Checks compatibility of the configurations and model."""
-        if (
-            self.seqlen is not None
-            and hasattr(self.model_context.model, "config")
-            and hasattr(self.model_context.model.config, "max_position_embeddings")
-        ):
-            if self.model_context.model.config.max_position_embeddings < self.seqlen:
-                logger.warning(
-                    f"Change sequence length to {self.model_context.model.config.max_position_embeddings} "
-                    "due to the limitation of max_position_embeddings"
-                )
-                self.seqlen = min(self.seqlen, self.model_context.model.config.max_position_embeddings)
-
-        if self.seqlen is not None and hasattr(self.model_context.tokenizer, "model_max_length"):
-            if self.model_context.tokenizer.model_max_length < self.seqlen:
-                logger.warning(
-                    f"Change sequence length to {self.model_context.tokenizer.model_max_length} "
-                    "due to the limitation of model_max_length. "
-                    "You can also try to increase the model_max_length to avoid this issue."
-                )
-                self.seqlen = min(self.seqlen, self.model_context.tokenizer.model_max_length)
+        # ``seqlen`` clamping is owned by ``CalibrationState``.
+        self._calibration_state.clamp_seqlen(self.model_context)
 
         if self.group_size == 0 and "fp8" not in self.data_type:
             logger.warning("`group_size==0` is not supported for data_type other than fp8 ")
@@ -1353,8 +853,8 @@ class CalibCompressor(BaseCompressor):
             )
 
 
-class CalibratedRTNCompressor(CalibCompressor):
-    """CalibCompressor variant for iters=0 RTN that needs calibration data.
+class CalibratedRTNCompressor(DataDrivenCompressor):
+    """DataDrivenCompressor variant for iters=0 RTN that needs calibration data.
 
     Handles two cases that require forward passes through the model:
       - Weight quantization with imatrix (importance-matrix statistics for
@@ -1432,8 +932,8 @@ class CalibratedRTNCompressor(CalibCompressor):
             clear_memory(self.inputs, device_list=self.compress_context.device_list)
 
             total_samples = len(inputs["input_ids"])
-            if total_samples < self.quantize_config.batch_size:
-                self.quantize_config.batch_size = total_samples
+            if total_samples < self.batch_size:
+                self.batch_size = total_samples
                 logger.warning(f"Forcing batch size to {total_samples}")
 
             tmp_dtype = self.model_context.amp_dtype if self.model_context.amp else torch.float32
@@ -1558,23 +1058,8 @@ class CalibratedRTNCompressor(CalibCompressor):
         """
         logger.info("start to compute imatrix")
 
-        # Load dataset
-        from auto_round.calib_dataset import get_dataloader
-
-        if isinstance(self.dataset, str):
-            if self.model_context.tokenizer is None:
-                raise ValueError("A tokenizer must be set for the model when using a dataset string.")
-            dataset_name = self.dataset.replace(" ", "")
-            self.dataloader = get_dataloader(
-                self.model_context.tokenizer,
-                self.seqlen,
-                dataset_name,
-                self.seed,
-                self.quantize_config.batch_size,
-                self.nsamples,
-            )
-        else:
-            self.dataloader = self.dataset
+        # Dataloader resolution is owned by ``CalibrationState``.
+        self._calibration_state.ensure_dataloader(self.model_context, self.seed)
 
         model = self.model_context.model
 
