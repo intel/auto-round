@@ -174,6 +174,7 @@ def quant_tensor_sym(
     tensor_min=None,
     tensor_max=None,
     q_scale_thresh=1e-5,
+    init_scale=None,
     **kwargs
 ):
     """Quantize and de-quantize tensor asymmetrically. full range, credit goes to llamacpp community
@@ -196,6 +197,16 @@ def quant_tensor_sym(
 
     tensor, orig_shape, pad_len = reshape_pad_tensor_by_group_size(tensor, group_size)
     maxq = 2 ** (bits - 1)
+    if init_scale is not None:
+        scale = init_scale * max_scale.unsqueeze(dim=-1)
+        scale = scale.to(scale_dtype)
+        scale = torch.where(scale < 0, torch.clamp(scale, max=-q_scale_thresh), torch.clamp(scale, min=q_scale_thresh))
+        int_w = round_ste(tensor / scale + v)
+        q = torch.clamp(int_w, -maxq, maxq - 1)
+        qdq_result = (scale * q).to(tensor.dtype)
+        qdq_result = revert_tensor_by_pad(qdq_result, orig_shape=orig_shape, pad_len=pad_len)
+        return qdq_result, scale, maxq
+
     if tensor_min is None or tensor_max is None:
         wmin_tmp = torch.clamp(tensor.min(-1)[0], max=0)
         wmax_tmp = torch.clamp(tensor.max(-1)[0], min=0)

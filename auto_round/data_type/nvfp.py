@@ -79,15 +79,38 @@ def ref_nvfp4_quant(x, global_scale, block_size=16, v=0, scale_coeff=1.0):
     return (cast_to_fp4(clipped_x) * get_reciprocal(output_scale)).reshape(m, n), scale
 
 
+def search_nvfp4_scale(tensor, bits=4, qw=None):
+    tensor = tensor.to(torch.float32)
+    qdq_t, dummy_scale, _ = nv_fp4(tensor, bits=bits, group_size=16, v=0, max_scale=1.0)
+    best_loss = torch.sum((qdq_t - tensor) ** 2 * qw, dim=-1)
+    scales = torch.ones_like(dummy_scale)
+    for scale_value in range(50, 152):
+        tmp_scale = scale_value / 100.0
+        if tmp_scale == 1.0:
+            continue
+        scales_new = torch.ones_like(dummy_scale) * tmp_scale
+        tmp_qdq_t, _, _ = nv_fp4(tensor, bits=bits, group_size=16, v=0, max_scale=scales_new)
+        loss = torch.sum((tmp_qdq_t - tensor) ** 2 * qw, dim=-1)
+        replace_id = loss < best_loss
+        scales[replace_id] = scales_new[replace_id]
+        best_loss[replace_id] = loss[replace_id]
+    return scales
+
+
 @register_dtype("nv_fp4")
-def nv_fp4(tensor, bits=4, group_size=16, v=0, global_scale=None, max_scale=1.0, **kwargs):
+def nv_fp4(tensor, bits=4, group_size=16, v=0, global_scale=None, max_scale=1.0, init_scale=1.0, **kwargs):
     orig_dtype = tensor.dtype
+    init_scale = 1.0 if init_scale is None else init_scale
     tensor, orig_shape, pad_len = reshape_pad_tensor_by_group_size(tensor, group_size)
     if global_scale is None:
         tensor_max = tensor.abs().max().to(torch.float32)
         global_scale = FLOAT8_E4M3_MAX * FLOAT4_E2M1_MAX * get_reciprocal(tensor_max)
     global_scale = global_scale.to(device=tensor.device, dtype=torch.float32)
-    qdq_res, scale = ref_nvfp4_quant(tensor, global_scale, group_size, v, scale_coeff=max_scale)
+    if isinstance(max_scale, torch.Tensor):
+        max_scale = max_scale.view(-1).to(tensor.device)
+    if isinstance(init_scale, torch.Tensor):
+        init_scale = init_scale.view(-1).to(tensor.device)
+    qdq_res, scale = ref_nvfp4_quant(tensor, global_scale, group_size, v, scale_coeff=max_scale * init_scale)
     qdq_res = revert_tensor_by_pad(qdq_res, orig_shape=orig_shape, pad_len=pad_len)
     return qdq_res.to(orig_dtype), scale, None
 

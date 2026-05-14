@@ -2,17 +2,17 @@
 
 This feature is experimental and may be subject to changes, including potential bug fixes, API modifications, or adjustments to default parameters.
 
+AutoRound uses the new compressor and calibration architecture for diffusion quantization. Diffusion models are routed by `auto_round/compressors/entry.py`, diffusion-specific compressor behavior lives in `auto_round/compressors/diffusion_mixin.py`, and calibration is handled by `auto_round/calibration/diffusion.py`.
+
 ## Quantization
 
 Quantization for diffusion models is limited:
 
-1. Only transformer module of diffusion models will be quantized..
-2. Loading quantized model is not supported yet, so please use `fake` format for quantization.
-3. Calibration dataset only supports `coco2014` and user customized `.tsv` file.
-
+1. Only the transformer module of diffusion models is quantized.
+2. Loading quantized diffusion models is not supported yet, so use `fake` format for quantization.
+3. Calibration dataset currently supports `coco2014` and user customized `.tsv` files.
 
 ### API Usage (CPU/GPU) Recommended
-
 
 ```python
 import torch
@@ -31,24 +31,20 @@ autoround = AutoRound(
 
 # Save the quantized model
 output_dir = "./tmp_autoround"
-# Currently loading the quantized diffusion model is not supported, so use fake format
+# Loading quantized diffusion models is not supported yet, so use fake format.
 autoround.quantize_and_save(output_dir, format="fake", inplace=True)
 ```
 
-- `dataset`: the dataset for quantization training. Currently only support coco2014 and user customized .tsv file.
+- `dataset`: the dataset for quantization training. Currently supports `coco2014` and user customized `.tsv` files.
+- `num_inference_steps`: the reference number of denoising steps.
+- `guidance_scale`: controls how much the image generation process follows the text prompt.
+- `generator_seed`: a seed that controls the initial noise from which an image is generated.
 
-- `num_inference_steps`: The reference number of denoising steps.
-
-- `guidance_scale`: Control how much the image generation process follows the text prompt. The more it is, the more closely it follows the prompt.
-
-- `generator_seed`: A seed that controls the initial noise from which an image is generated.
-
-for more hyperparameters introduction, please refer [Homepage Detailed Hyperparameters](../../../README.md#quantization-scheme--configuration)
+For more hyperparameters, refer to [Homepage Detailed Hyperparameters](../../../README.md#quantization-scheme--configuration).
 
 ### CLI Usage
 
-A user guide detailing the full list of supported arguments is provided by calling ```auto-round -h``` on the
-terminal.
+A user guide detailing the full list of supported arguments is provided by calling `auto-round -h` on the terminal.
 
 ```bash
 auto-round \
@@ -64,29 +60,29 @@ auto-round \
 
 For diffusion models, currently we validate quantization on the following models, which involves quantizing the transformer component of the pipeline.
 
-| Model         | calibration dataset |  Model Link  |
-|---------------|---------------------|--------------|
-| black-forest-labs/FLUX.1-dev  | COCO2014      | - |
-| Tongyi-MAI/Z-Image            | COCO2014      | - |
-| Tongyi-MAI/Z-Image-Turb       | COCO2014      | - |
-| stepfun-ai/NextStep-1.1       | COCO2014      | - |
-| AIDC-AI/Ovis-Image-7B         | COCO2014      | - |
-
+| Model | calibration dataset | Model Link |
+| --- | --- | --- |
+| black-forest-labs/FLUX.1-dev | COCO2014 | - |
+| Tongyi-MAI/Z-Image | COCO2014 | - |
+| Tongyi-MAI/Z-Image-Turb | COCO2014 | - |
+| stepfun-ai/NextStep-1.1 | COCO2014 | - |
+| AIDC-AI/Ovis-Image-7B | COCO2014 | - |
 
 <details>
 <summary style="font-size:17px;">Calibration Dataset</summary>
 
-For diffusion models, we used [**coco2014**](https://github.com/mlcommons/inference/raw/refs/heads/master/text_to_image/coco2014/captions/captions_source.tsv) calibration dataset as our default.
+For diffusion models, we use [**coco2014**](https://github.com/mlcommons/inference/raw/refs/heads/master/text_to_image/coco2014/captions/captions_source.tsv) calibration dataset as the default.
 
-If users want to use their own dataset, please build the dataset file in ".tsv" format following below structure and use it through argument --dataset (tsv file):
-```
+To use a custom dataset, build a `.tsv` file with the following structure and pass it through `--dataset`:
+
+```text
 id      caption
 0       YOUR_PROMPT
 1       YOUR_PROMPT
 ...     ...
 ```
-- `id`: The id used to map generated images and prompts.
-- `caption`: The text prompt used to generate the images.
 
+- `id`: the id used to map generated images and prompts.
+- `caption`: the text prompt used to generate the images.
 
 </details>

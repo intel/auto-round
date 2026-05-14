@@ -99,6 +99,16 @@ export AR_ENABLE_ACT_MINMAX_TUNING=1
 export AR_SEARCH_SCALE_RATIO=0.75
 ```
 
+### AR_DYNAMO_CACHE_SIZE_LIMIT
+- **描述**：在启用 `enable_torch_compile=True` 时，将 `torch._dynamo` 的 `cache_size_limit`、`accumulated_cache_size_limit` 与 `recompile_limit` 提升到的最小值。同一个被编译的量化函数会被 transformer block 内的所有 linear 层（q/k/v/o_proj、gate/up/down_proj 等）复用，但每层权重 shape 不同，按层的静态重编译会很快超过 dynamo 默认上限（8），导致打印告警并退回 eager。提高该上限可以保留静态 shape 编译（性能最佳），仅增加缓存条目数。
+- **默认值**：`16`
+- **有效值**：正整数
+- **用途**：当模型单个 block 内 linear 权重 shape 种类超过 16 时（较少见）可调大。
+
+```bash
+export AR_DYNAMO_CACHE_SIZE_LIMIT=32
+```
+
 ## 使用示例
 
 ### 设置环境变量

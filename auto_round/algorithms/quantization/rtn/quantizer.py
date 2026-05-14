@@ -21,8 +21,8 @@ import torch
 from auto_round.algorithms.quantization.base import BaseQuantizers
 from auto_round.algorithms.quantization.rtn.config import RTNConfig
 from auto_round.algorithms.quantization.sign_round.quantizer import SignRoundQuantizer
-from auto_round.compressors_new.shard_writer import ShardWriter
-from auto_round.compressors_new.utils import (
+from auto_round.compressors.shard_writer import ShardWriter
+from auto_round.compressors.utils import (
     IndexSampler,
     block_forward,
     check_need_act_calibration,
@@ -64,6 +64,7 @@ class RTNQuantizer(BaseQuantizers):
     def __init__(self, config: RTNConfig):
         BaseQuantizers.__init__(self, config)
 
+    @torch.no_grad()
     def quantize_block(
         self, block: torch.nn.Module, input_ids=None, input_others=None, reference_output=None, **kwargs
     ) -> dict:
@@ -97,6 +98,7 @@ class RTNQuantizer(BaseQuantizers):
                 self.quantize_layer(m.global_name)
         return {}
 
+    @torch.no_grad()
     def quantize_layer(self, name: str, dtype: torch.dtype = None) -> None:
         """Quantizes a layer using RTN (Round-To-Nearest) if available.
 
@@ -208,8 +210,6 @@ class OptimizedRTNQuantizer(RTNQuantizer):
 
     def __init__(self, config: RTNConfig):
         BaseQuantizers.__init__(self, config)
-        self.batch_size = config.batch_size
-        self.batch_dim = config.batch_dim
         self.data_type = config.data_type
         self.group_size = config.group_size
         self.infer_bs_coeff = config.infer_bs_coeff
@@ -219,6 +219,7 @@ class OptimizedRTNQuantizer(RTNQuantizer):
     def quantize_layer_outside_block(self, *args, **kwargs):
         return self.quantize_layer(*args, **kwargs)
 
+    @torch.no_grad()
     def quantize_block(
         self, block: torch.nn.Module, input_ids=None, input_others=None, reference_output=None, **kwargs
     ):
@@ -249,5 +250,3 @@ class OptimizedRTNQuantizer(RTNQuantizer):
                 m.imatrix /= m.imatrix_cnt
             if hasattr(m, "global_name") and check_to_quantized(m):
                 self.quantize_layer_outside_block(m.global_name)
-
-    # _get_block_outputs and _sampling_inputs are defined in BaseQuantizers and inherited.
