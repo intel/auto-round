@@ -35,8 +35,8 @@ RECIPES = {
     "default": {"batch_size": 8, "iters": 200, "seqlen": 2048, "nsamples": 128, "lr": None},
     "best": {"batch_size": 8, "iters": 1000, "seqlen": 2048, "nsamples": 512, "lr": None},
     "light": {"batch_size": 8, "iters": 50, "seqlen": 2048, "nsamples": 128, "lr": 5e-3},
-    "rtn": {"batch_size": 8, "iters": 0, "seqlen": 2048, "nsamples": 512, "lr": None, "disable_opt_rtn": True},
-    "opt_rtn": {"batch_size": 8, "iters": 0, "seqlen": 2048, "nsamples": 512, "lr": None, "disable_opt_rtn": False},
+    "rtn": {"batch_size": 8, "iters": 0, "seqlen": 2048, "nsamples": 1, "lr": None, "disable_opt_rtn": True},
+    "opt_rtn": {"batch_size": 8, "iters": 0, "seqlen": 2048, "nsamples": 128, "lr": None, "disable_opt_rtn": False},
 }
 
 
