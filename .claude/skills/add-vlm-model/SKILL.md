@@ -14,7 +14,7 @@ multi-modal data.
 
 The integration involves three parts:
 1. **Multimodal Block Handler** — Tell AutoRound how to find quantizable blocks
-2. **Calibration Template** — Define how to build calibration prompts
+2. **MLLM Calibration Path** — Ensure `MLLMCalibrator` can build and feed calibration samples
 3. **Special Model Handler** — Handle model-specific forward pass quirks
 
 ## Prerequisites
@@ -94,11 +94,29 @@ mllms_with_limited_bs = (
 )
 ```
 
-## Step 2: Add Calibration Template
+## Step 2: Wire MLLM Calibration
 
-### 2a. Create template JSON
+The new architecture routes multimodal calibration through:
 
-Create `auto_round/compressors/mllm/templates/your_vlm.json`:
+- `auto_round/compressors/mllm_mixin.py` for compressor construction and calibrator selection
+- `auto_round/calibration/mllm.py` for template selection, dataloader creation, and calibration forward calls
+- `auto_round/special_model_handler.py` for multimodal block discovery and special forwards
+
+If your model works with an existing template/processor, prefer passing
+`template=...`, `processor=...`, or `image_processor=...` through `AutoRound` /
+`ExtraConfig` instead of adding compressor code.
+
+## Step 3: Add Calibration Template
+
+The built-in MLLM template and processor registries live in
+`auto_round/compressors/mllm/` and are consumed by the new architecture through
+`MLLMCalibrator`. When adding a new built-in template, keep the
+new-architecture caller in mind: `auto_round/calibration/mllm.py` will load it
+via `get_template()`.
+
+### 3a. Create template JSON
+
+Create a template JSON file in `auto_round/compressors/mllm/templates/`:
 
 ```json
 {
@@ -116,9 +134,10 @@ Create `auto_round/compressors/mllm/templates/your_vlm.json`:
 Adjust the template fields to match your model's chat format. Check the model's
 `tokenizer_config.json` or documentation for the correct chat template.
 
-### 2b. Register the template
+### 3b. Register the template
 
-Edit `auto_round/compressors/mllm/template.py`:
+Register it in the MLLM template registry loaded by
+`auto_round/calibration/mllm.py`:
 
 ```python
 _register_template(
@@ -128,10 +147,11 @@ _register_template(
 )
 ```
 
-### 2c. Add a custom processor (if needed)
+### 3c. Add a custom processor (if needed)
 
 If your model requires special image/prompt processing for calibration, create a
-processor in `auto_round/compressors/mllm/template.py`:
+processor in `auto_round/compressors/mllm/processor.py`, which is used by
+`MLLMCalibrator`:
 
 ```python
 def _your_vlm_processor(raw_data, model_path, seqlen, processor=None, **kwargs):
@@ -155,7 +175,7 @@ Register it:
 PROCESSORS["your_vlm"] = _your_vlm_processor
 ```
 
-## Step 3: Handle Special Forward Pass (If Needed)
+## Step 4: Handle Special Forward Pass (If Needed)
 
 If your VLM's `forward()` method is non-standard (e.g., requires special
 kwargs, has multiple model components that need separate handling), add a
@@ -181,7 +201,7 @@ def _handle_special_model(model):
     return model
 ```
 
-## Step 4: Add Custom Calibration Dataset (Optional)
+## Step 5: Add Custom Calibration Dataset (Optional)
 
 If your model needs a specialized calibration dataset loader, create one in
 `auto_round/calib_dataset.py` using the `@register_dataset` decorator:
@@ -199,7 +219,7 @@ class YourVLMDataset:
             yield sample
 ```
 
-## Step 5: Test
+## Step 6: Test
 
 ```python
 def test_your_vlm_quantization():
@@ -226,7 +246,7 @@ ar = AutoRound(
 )
 ```
 
-## Step 6: Update Documentation
+## Step 7: Update Documentation
 
 1. Add your model to the supported VLM list in `README.md`
 2. Update `README_CN.md` with the same changes (Chinese translation required)
@@ -251,7 +271,9 @@ ar = AutoRound(
 | Block handler | `special_model_handler.py` | `SPECIAL_MULTIMODAL_BLOCK[model_type]` |
 | Text-only support | `special_model_handler.py` | `SUPPORT_ONLY_TEXT_MODELS` list |
 | Batch limit | `special_model_handler.py` | `mllms_with_limited_bs` tuple |
-| Template | `compressors/mllm/templates/*.json` | `_register_template()` |
-| Processor | `compressors/mllm/template.py` | `PROCESSORS` dict |
+| MLLM routing | `compressors/mllm_mixin.py` | `_get_calibrator_kind() -> "mllm"` |
+| MLLM calibration | `calibration/mllm.py` | `MLLMCalibrator.calib()` |
+| Template | `compressors/mllm/template.py` | `_register_template()` |
+| Processor | `compressors/mllm/processor.py` | `PROCESSORS` dict |
 | Custom forward | `special_model_handler.py` | `_handle_special_model()` |
 | Dataset loader | `calib_dataset.py` | `@register_dataset()` |

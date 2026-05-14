@@ -5,6 +5,13 @@ parameters:
   - name: publishToTestPyPI
     type: boolean
     default: false
+  - name: pythonVersions
+    type: string
+    # Comma-separated list to avoid YAML float parsing (e.g. 3.10 -> 3.1).
+    default: "3.12"
+  - name: buildMode
+    type: string
+    default: "dev"
 
 stages:
   - ${{ if eq(parameters.enableChangeDetection, true) }}:
@@ -61,66 +68,69 @@ stages:
       variables:
         BUILD_ARK_WHEEL: $[ stageDependencies.DetectArkChanges.Detect.outputs['SetArkWheelFlag.BUILD_ARK_WHEEL'] ]
     jobs:
-      - job: BuildArkWheel
-        displayName: Build ark wheel in manylinux
-        ${{ if eq(parameters.enableChangeDetection, true) }}:
-          condition: and(succeeded(), eq(variables['BUILD_ARK_WHEEL'], 'true'))
-        pool: LIB-BUILD-POOL
-        timeoutInMinutes: 10
-        steps:
-          - checkout: self
-            clean: true
-            fetchTags: true
+      - ${{ each pythonVersion in split(parameters.pythonVersions, ',') }}:
+        - job: BuildArkWheel_cp${{ replace(trim(pythonVersion), '.', '') }}
+          displayName: Build ark wheel (py${{ trim(pythonVersion) }})
+          ${{ if eq(parameters.enableChangeDetection, true) }}:
+            condition: and(succeeded(), eq(variables['BUILD_ARK_WHEEL'], 'true'))
+          pool: GAUDI
+          timeoutInMinutes: 30
+          steps:
+            - checkout: self
+              clean: true
 
-          - task: Bash@3
-            displayName: Build wheel in manylinux container
-            inputs:
-              targetType: inline
-              script: |
-                set -euxo pipefail
-                docker run --rm \
-                  --user "$(id -u):$(id -g)" \
-                  -e HOME=/tmp \
-                  -v $(Build.SourcesDirectory):/auto-round \
-                  -w /auto-round/auto_round_extension/ark \
-                  pytorch/manylinux2_28-builder:xpu-v2.10.0-rc7 \
-                  bash -c " /opt/python/cp312-cp312/bin/python -m venv venv \
-                  && source venv/bin/activate \
-                  && source /opt/intel/oneapi/setvars.sh \
-                  && pip install -U pip build cmake setuptools \
-                  && python -m build --wheel --no-isolation \
-                  && auditwheel repair dist/*.whl --exclude lib* -w wheelhouse/ \
-                  && ls -lah wheelhouse"
-
-          - task: PublishPipelineArtifact@1
-            displayName: Publish wheel artifact
-            inputs:
-              targetPath: $(Build.SourcesDirectory)/auto_round_extension/ark/wheelhouse
-              artifact: auto-round-lib-wheel
-              publishLocation: pipeline
-
-          - ${{ if eq(parameters.publishToTestPyPI, true) }}:
             - task: Bash@3
-              displayName: Publish wheel to TestPyPI
-              condition: and(succeeded(), eq(variables['Build.SourceBranch'], 'refs/heads/main'), or(eq(variables['Build.Reason'], 'IndividualCI'), eq(variables['Build.Reason'], 'BatchedCI')))
-              env:
-                TWINE_USERNAME: "__token__"
-                TWINE_PASSWORD: "$(TESTPYPI_PASSWORD)"
+              displayName: Build wheel in manylinux container
               inputs:
                 targetType: inline
                 script: |
                   set -euxo pipefail
-                  if [ -z "${TWINE_PASSWORD}" ]; then
-                    echo "TESTPYPI_PASSWORD is empty, skip publishing."
-                    exit 1
-                  fi
-                  docker run --rm --privileged \
+                  python_version_fix=${{ replace(trim(pythonVersion), '.', '') }}
+                  docker run --rm \
                     --user "$(id -u):$(id -g)" \
                     -e HOME=/tmp \
                     -v $(Build.SourcesDirectory):/auto-round \
+                    -v /opt/intel/oneapi:/opt/intel/oneapi \
                     -w /auto-round/auto_round_extension/ark \
-                    -e TWINE_USERNAME \
-                    -e TWINE_PASSWORD \
-                    pytorch/manylinux2_28-builder:xpu-v2.10.0-rc7 \
-                    bash -c "python -m pip install --upgrade twine \
-                    && twine upload --repository-url https://test.pypi.org/legacy/ wheelhouse/*.whl"
+                    quay.io/pypa/manylinux_2_28_x86_64 \
+                    bash -c " /opt/python/cp${python_version_fix}-cp${python_version_fix}/bin/python -m venv venv \
+                    && source venv/bin/activate \
+                    && source /opt/intel/oneapi/setvars.sh \
+                    && pip install -U pip build cmake setuptools \
+                    && export BUILD_MODE=${{ parameters.buildMode }} \
+                    && python -m build --wheel --no-isolation \
+                    && auditwheel repair dist/*.whl --exclude lib* -w wheelhouse/ \
+                    && ls -lah wheelhouse"
+
+            - task: PublishPipelineArtifact@1
+              displayName: Publish wheel artifact
+              inputs:
+                targetPath: $(Build.SourcesDirectory)/auto_round_extension/ark/wheelhouse
+                artifact: auto-round-lib-wheel-cp${{ replace(trim(pythonVersion), '.', '') }}
+                publishLocation: pipeline
+
+            - ${{ if eq(parameters.publishToTestPyPI, true) }}:
+              - task: Bash@3
+                displayName: Publish wheel to TestPyPI
+                env:
+                  TWINE_USERNAME: "__token__"
+                  TWINE_PASSWORD: "$(TESTPYPI_PASSWORD)"
+                inputs:
+                  targetType: inline
+                  script: |
+                    set -euxo pipefail
+                    if [ -z "${TWINE_PASSWORD}" ]; then
+                      echo "TESTPYPI_PASSWORD is empty, skip publishing."
+                      exit 1
+                    fi
+                    docker run --rm --privileged \
+                      --user "$(id -u):$(id -g)" \
+                      -e HOME=/tmp \
+                      -v $(Build.SourcesDirectory):/auto-round \
+                      -w /auto-round/auto_round_extension/ark \
+                      -e TWINE_USERNAME \
+                      -e TWINE_PASSWORD \
+                      quay.io/pypa/manylinux_2_28_x86_64 \
+                      bash -c "source venv/bin/activate \
+                      && python -m pip install --upgrade twine \
+                      && twine upload --repository-url https://test.pypi.org/legacy/ wheelhouse/*.whl"
