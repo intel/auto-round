@@ -151,12 +151,19 @@ class AutoRound:
         """
 
         local_args = {k: v for k, v in locals().items() if k not in cls.SKIP_ARGS}
+        extra_kwargs = {}
         if extra_config is not None:
-            local_args.update({k: v for k, v in extra_config.to_dict().items() if k in local_args and v is not None})
+            extra_kwargs = {k: v for k, v in extra_config.to_dict().items() if v is not None}
+            local_args.update({k: v for k, v in extra_kwargs.items() if k in local_args})
 
         from auto_round.compressors.entry import AutoRoundCompatible
 
-        return AutoRoundCompatible(**local_args, **kwargs)
+        forwarded_kwargs = dict(kwargs)
+        for key, value in extra_kwargs.items():
+            if key not in local_args and key not in forwarded_kwargs:
+                forwarded_kwargs[key] = value
+
+        return AutoRoundCompatible(**local_args, **forwarded_kwargs)
 
     @classmethod
     @torch.no_grad()

@@ -7,6 +7,7 @@ from packaging import version
 from transformers import AutoModelForCausalLM, AutoRoundConfig, AutoTokenizer
 
 from auto_round import AutoRound
+from auto_round.compressors import ExtraConfig
 from auto_round.utils import get_module
 
 from ...helpers import (
@@ -36,6 +37,27 @@ class TestAutoRound:
     @classmethod
     def teardown_class(self):
         shutil.rmtree("runs", ignore_errors=True)
+
+    def test_extra_config_scheme_overrides_are_forwarded(self, monkeypatch):
+        captured = {}
+
+        class FakeAutoRoundCompatible:
+            def __new__(cls, **kwargs):
+                captured.update(kwargs)
+                return kwargs
+
+        monkeypatch.setattr("auto_round.compressors.entry.AutoRoundCompatible", FakeAutoRoundCompatible)
+
+        result = AutoRound(
+            model="dummy-model",
+            scheme="W4A16",
+            iters=1,
+            extra_config=ExtraConfig(group_size=32, bits=4),
+        )
+
+        assert isinstance(result, dict)
+        assert captured["group_size"] == 32
+        assert captured["bits"] == 4
 
     def test_bits_setting(self, tiny_opt_model_path):
         layer_config = {"model.decoder.layers.0.self_attn.k_proj": {"data_type": "mx_fp8", "group_size": 32}}
