@@ -16,7 +16,6 @@ import os
 from typing import Union
 
 import torch
-from tqdm import tqdm
 
 from auto_round.logger import logger
 from auto_round.utils import clear_memory
@@ -26,19 +25,19 @@ from auto_round.utils.device import (
     get_major_device,
     is_auto_device_mapping,
 )
-from auto_round.utils.model import rename_weights_files, wrap_block_forward_positional_to_kwargs
+from auto_round.utils.model import rename_weights_files
 
 
 class DiffusionMixin:
     """Diffusion-specific functionality mixin.
 
     This mixin adds diffusion model-specific functionality to any compressor
-    (CalibCompressor, ZeroShotCompressor, ImatrixCompressor, etc). It handles
+    (DataDrivenCompressor, ZeroShotCompressor, ImatrixCompressor, etc). It handles
     diffusion models (like Stable Diffusion, FLUX) that require special pipeline
     handling and data generation logic.
 
     Can be combined with:
-    - CalibCompressor (for AutoRound with calibration)
+    - DataDrivenCompressor (for AutoRound with calibration)
     - ImatrixCompressor (for RTN with importance matrix)
     - ZeroShotCompressor (for basic RTN)
 
@@ -73,14 +72,13 @@ class DiffusionMixin:
             iters = 200
 
         if iters > 0:
-            batch_size = kwargs.get("batch_size", None)
-            if batch_size is None and _alg_cfg is not None:
-                cfgs = _alg_cfg if isinstance(_alg_cfg, list) else [_alg_cfg]
-                for cfg in cfgs:
-                    if hasattr(cfg, "batch_size") and cfg.batch_size is not None:
-                        batch_size = cfg.batch_size
-                        break
-            if batch_size is not None and batch_size != 1:
+            # ``batch_size`` is owned by the compressor / shared
+            # CalibrationState; it only comes from kwargs now (entry.py forwards
+            # it explicitly).  AlgConfig no longer carries it.  Treat a missing
+            # value as ``BaseCompressor``'s default (8) so the reset path always
+            # triggers when the user didn't explicitly opt out.
+            batch_size = kwargs.get("batch_size", 8)
+            if batch_size != 1:
                 grad_acc = kwargs.get("gradient_accumulate_steps", 1)
                 if _alg_cfg is not None:
                     cfgs = _alg_cfg if isinstance(_alg_cfg, list) else [_alg_cfg]
@@ -94,8 +92,6 @@ class DiffusionMixin:
                 if _alg_cfg is not None:
                     cfgs = _alg_cfg if isinstance(_alg_cfg, list) else [_alg_cfg]
                     for cfg in cfgs:
-                        if hasattr(cfg, "batch_size"):
-                            cfg.batch_size = 1
                         if hasattr(cfg, "gradient_accumulate_steps"):
                             cfg.gradient_accumulate_steps = new_grad_acc
                 logger.warning(
@@ -104,7 +100,7 @@ class DiffusionMixin:
                     f"because batch_size={batch_size} cannot be used for calibrating non-text modules."
                 )
 
-        # Call parent class __init__ (will be CalibCompressor, ImatrixCompressor, etc)
+        # Call parent class __init__ (will be DataDrivenCompressor, ImatrixCompressor, etc)
         super().__init__(*args, **kwargs)
 
         pipe = getattr(self.model_context, "pipe", None)
@@ -114,7 +110,18 @@ class DiffusionMixin:
             if not is_nextstep:
                 pipe.to(model.dtype)
 
+    def _get_calibrator_kind(self) -> str:
+        """Select the diffusion calibration strategy.
+
+        ``DiffusionCalibrator`` lives at
+        :mod:`auto_round.calibration.diffusion` and owns what used to be
+        ``DiffusionMixin.calib`` / ``_get_block_forward_func`` /
+        ``_should_stop_cache_forward``.
+        """
+        return "diffusion"
+
     def _build_pipeline_call_kwargs(self, pipe, prompts):
+        """Build kwargs for pipeline.__call__."""
         call_kwargs = {
             "guidance_scale": self.guidance_scale,
             "num_inference_steps": self.num_inference_steps,
@@ -134,25 +141,6 @@ class DiffusionMixin:
 
         return call_kwargs
 
-    def _get_block_forward_func(self, name: str):
-        """Diffusion models pass positional args; wrap the base forward func accordingly.
-
-        The MRO guarantees that super() resolves to CalibCompressor._get_block_forward_func,
-        mirroring the old-arch pattern in compressors/diffusion/compressor.py.
-        """
-        return wrap_block_forward_positional_to_kwargs(super()._get_block_forward_func(name))
-
-    def _should_stop_cache_forward(self, name: str) -> bool:
-        """Diffusion models must run all denoising steps to collect enough inputs.
-
-        Mirrors old-arch DiffusionCompressor._should_stop_cache_forward which always
-        returns False so the pipeline never exits early after the first block hit.
-        Without this, CalibCompressor._should_stop_cache_forward would stop after the
-        first inference step, yielding only nsamples inputs instead of
-        nsamples * num_inference_steps.
-        """
-        return False
-
     def _requires_calibration_image(self) -> bool:
         """Return True when the pipeline's __call__ has a required 'image' parameter.
 
@@ -162,6 +150,19 @@ class DiffusionMixin:
         """
         image_param = inspect.signature(self.model_context.pipe.__call__).parameters.get("image")
         return image_param is not None and image_param.default is inspect.Parameter.empty
+
+    def _get_calibration_image(self, batch_size: int):
+        """Return a synthetic PIL Image for I2V pipeline calibration."""
+        params = inspect.signature(self.model_context.pipe.__call__).parameters
+        width_param = params.get("width")
+        height_param = params.get("height")
+        width = 832 if width_param is None or width_param.default in (inspect.Parameter.empty, None) else width_param.default
+        height = 480 if height_param is None or height_param.default in (inspect.Parameter.empty, None) else height_param.default
+        from PIL import Image  # pylint: disable=E0401
+        image = Image.new("RGB", (int(width), int(height)), color=(127, 127, 127))
+        if batch_size == 1:
+            return image
+        return [image.copy() for _ in range(batch_size)]
 
     def _find_additional_transformers(self):
         """Find transformer components beyond the primary one (e.g. transformer_2 in WAN)."""
@@ -181,19 +182,13 @@ class DiffusionMixin:
         return result
 
     def _align_device_and_dtype_for_secondary(self, transformer_name: str):
-        """Align dtype and dispatch secondary transformer for multi-transformer pipelines.
-
-        Moves the secondary transformer (e.g. transformer_2) to GPU(s) so the pipeline
-        can run during calibration.  Uses dispatch_model_block_wise instead of the full
-        pipeline dispatch to avoid accidentally re-dispatching the already-dispatched
-        primary transformer.
-        """
+        """Align dtype and dispatch secondary transformer for multi-transformer pipelines."""
         pipe = getattr(self.model_context, "pipe", None)
         model = getattr(self.model_context, "model", None)
         if pipe is None or model is None:
             return
 
-        # Cast full pipeline to transformer's dtype (same as __init__ alignment)
+        # Cast full pipeline to transformer's dtype
         is_nextstep = hasattr(model, "config") and getattr(model.config, "model_type", None) == "nextstep"
         if not is_nextstep:
             pipe.to(model.dtype)
@@ -204,7 +199,6 @@ class DiffusionMixin:
         multi_device = is_auto_device_mapping(device_map) and len(device_list) > 1
 
         if multi_device:
-            # first, then dispatch the current transformer block-wise across GPUs.
             comp_device = device_list[-1]
             for comp_name in pipe.components:
                 comp = getattr(pipe, comp_name, None)
@@ -222,156 +216,13 @@ class DiffusionMixin:
                     try:
                         comp.to(comp_device)
                     except (NotImplementedError, RuntimeError):
-                        # Component may have meta/unmaterialized tensors (already quantized).
                         continue
 
             self.model_context.model = dispatch_model_block_wise(model, device_map)
             setattr(pipe, transformer_name, self.model_context.model)
         elif device_map is not None:
-            # Single-GPU / single-device: move full pipeline to GPU.
             target_device = get_major_device(device_map)
             pipe.to(target_device)
-
-    def _get_calibration_image(self, batch_size: int):
-        """Return a synthetic PIL Image for I2V pipeline calibration.
-
-        Respects the pipeline's declared height/width defaults so that the resulting
-        image satisfies any divisibility constraints (e.g. WanImageToVideoPipeline
-        requires height % 16 == 0 and width % 16 == 0).
-
-        Args:
-            batch_size: Number of images to return.  If 1 a single Image is returned,
-                        otherwise a list of Image copies is returned.
-        """
-        params = inspect.signature(self.model_context.pipe.__call__).parameters
-        width_param = params.get("width")
-        height_param = params.get("height")
-        width = (
-            832
-            if width_param is None or width_param.default in (inspect.Parameter.empty, None)
-            else width_param.default
-        )
-        height = (
-            480
-            if height_param is None or height_param.default in (inspect.Parameter.empty, None)
-            else height_param.default
-        )
-        from PIL import Image # pylint: disable=E0401
-        image = Image.new("RGB", (int(width), int(height)), color=(127, 127, 127))
-        if batch_size == 1:
-            return image
-        return [image.copy() for _ in range(batch_size)]
-
-    @torch.no_grad()
-    def calib(self, nsamples, bs):
-        """Perform diffusion-specific calibration for quantization.
-
-        Override parent's calib method to use diffusion dataset loading logic.
-        The diffusion pipeline is read from ``self.model_context.pipe``.
-        """
-        from auto_round.compressors.diffusion.dataset import get_diffusion_dataloader
-
-        pipe = self.model_context.pipe
-        if pipe is None:
-            raise ValueError(
-                "Diffusion pipeline not found in model_context. " "Ensure the model was loaded as a diffusion model."
-            )
-
-        logger.warning(
-            "Diffusion model will catch nsamples * num_inference_steps inputs, "
-            "you can reduce nsamples or num_inference_steps if OOM or take too much time."
-        )
-        if isinstance(self.dataset, str):
-            dataset = self.dataset.replace(" ", "")
-            self.dataloader, self.batch_size, self.gradient_accumulate_steps = get_diffusion_dataloader(
-                dataset=dataset,
-                bs=self.batch_size,
-                seed=self.seed,
-                nsamples=self.nsamples,
-                gradient_accumulate_steps=self.gradient_accumulate_steps,
-            )
-        else:
-            self.dataloader = self.dataset
-        total_cnt = 0
-
-        total = nsamples if not hasattr(self.dataloader, "len") else min(nsamples, len(self.dataloader))
-
-        # NOTE: we intentionally skip the sequential offloading check here (the guard that
-        # exits when pipe is already dispatched).  In new-arch diffusion, the pipe may
-        # already be dispatched to multi-device in a prior calib call.  The dispatch
-        # state is preserved across calls, so re-dispatching or moving is unnecessary and
-        # would break the existing placement.
-        if (
-            hasattr(self.model, "hf_device_map")
-            and len(self.model.hf_device_map) > 1
-            and pipe.device != self.model.device
-            and torch.device(self.model.device).type in ["cuda", "xpu"]
-        ):
-            logger.warning(
-                "Diffusion model is activated sequential model offloading. "
-                "Pipe may already be dispatched from a prior calib call. "
-                "Skipping re-dispatch to avoid breaking the existing placement."
-            )
-
-        device_map = getattr(self.compress_context, "device_map", None)
-        device_list = getattr(self.compress_context, "device_list", [])
-        # Skip dispatch for secondary transformers
-        if (
-            not getattr(self, "_inputs_cached", False)
-            and device_map is not None
-            and is_auto_device_mapping(device_map)
-            and len(device_list) > 1
-        ):
-            pipe_transformer = getattr(pipe, "transformer", None)
-            if self.model_context.model is not pipe_transformer:
-                pass  # secondary transformer — skip pipeline dispatch
-            else:
-                pipe = dispatch_model_by_all_available_devices(pipe, device_map)
-
-        with tqdm(range(1, total + 1), desc="cache block inputs") as pbar:
-            for ids, prompts in self.dataloader:
-                if isinstance(prompts, tuple):
-                    prompts = list(prompts)
-                pipe_kwargs = self._build_pipeline_call_kwargs(pipe, prompts)
-                try:
-                    if self._requires_calibration_image() or "prompt" in pipe_kwargs:
-                        # I2V pipeline: 'image' is the first positional arg, so pass
-                        # 'prompt' as keyword to avoid "multiple values for argument 'image'".
-                        pipe(**pipe_kwargs)
-                    else:
-                        pipe(prompts, **pipe_kwargs)
-                except NotImplementedError:
-                    pass
-                except Exception as error:
-                    raise error
-                step = len(prompts)
-                total_cnt += step
-                pbar.update(step)
-                if total_cnt >= nsamples:
-                    break
-        if total_cnt == 0:
-            logger.error(
-                f"no data has been cached, please provide more data with sequence length >={self.seqlen} in the "
-                f"dataset or decease the sequence length"
-            )
-            exit(-1)
-        elif total_cnt < nsamples:
-            logger.warning(
-                f"Insufficient number of samples collected may affect the quantization. "
-                f"target samples count is {nsamples}, while valid samples count is {total_cnt}"
-            )
-            if total_cnt < self.batch_size:
-                raise ValueError(
-                    f"valid samples is less than batch_size({self.batch_size}),"
-                    " please adjust self.batch_size or seqlen."
-                )
-            max_len = (total_cnt // self.batch_size) * self.batch_size
-            for k, v in self.inputs.items():
-                for key in v:
-                    if isinstance(v[key], list) and len(v[key]) == total_cnt:
-                        self.inputs[k][key] = v[key][:max_len]
-
-        # torch.cuda.empty_cache()
 
     def try_cache_inter_data_gpucpu(self, *args, **kwargs):
         """Skip re-caching when DiffusionMixin.quantize has already populated self.inputs.
