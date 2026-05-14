@@ -1472,4 +1472,3 @@ class BaseCompressor(object):
         memory_monitor.log_summary()
 
         return model, folders
-
