@@ -285,6 +285,9 @@ class DiffusionMixin:
                 "Skipping re-dispatch to avoid breaking the existing placement."
             )
 
+        if pipe.device != self.model.device:
+            pipe.to(self.model.device)
+
         device_map = getattr(self.compress_context, "device_map", None)
         device_list = getattr(self.compress_context, "device_list", [])
         # Skip dispatch for secondary transformers
