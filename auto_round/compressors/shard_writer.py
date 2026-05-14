@@ -17,8 +17,10 @@ import os
 from collections import OrderedDict
 
 import torch
-from torch.nn import Parameter
 
+from auto_round.compressors.utils import _get_save_folder_name
+from auto_round.context.compress import CompressContext
+from auto_round.context.model import ModelContext
 from auto_round.logger import logger
 from auto_round.utils import (
     get_lm_head_name,
@@ -33,8 +35,28 @@ class ShardWriter:
     Handles shard-saving of model parameters to disk with memory management.
     """
 
-    def __init__(self, rounder):
-        self.model = rounder.model
+    _instance = None
+    _initialized = False
+
+    model = None
+    lm_head_name = None
+
+    def __new__(cls, *args, **kwargs):
+        if cls._instance is None:
+            cls._instance = super().__new__(cls)
+            cls._instance._data = {}
+        return cls._instance
+
+    def __init__(
+        self,
+        model,
+        bits,
+        max_shard_size=None,
+        safe_serialization=True,
+    ):
+        if ShardWriter._initialized:
+            return
+        self.model = model
         self.lm_head_name = get_lm_head_name(self.model)
         total_params = sum(p.numel() for p in self.model.parameters())
         # Heuristic estimate of model size in GB used to choose a default max_shard_size:
@@ -45,12 +67,13 @@ class ShardWriter:
         #                                         smaller than the full model; this intentionally
         #                                         underestimates size before clamping below.
         max_split_num = 10
-        model_size = int(total_params * rounder.bits // 1e9 // 8 + max_split_num - 1) / max_split_num
+        model_size = int(total_params * bits // 1e9 // 8 + max_split_num - 1) / max_split_num
         model_size = max(1, min(int(model_size), 5))
 
         # Configuration
-        self.max_shard_size = self._parse_size(getattr(rounder, "max_shard_size", f"{model_size}GB"))
-        self.safe_serialization = getattr(rounder, "safe_serialization", True)
+        max_shard_size = max_shard_size or f"{model_size}GB"
+        self.max_shard_size = self._parse_size(max_shard_size)
+        self.safe_serialization = safe_serialization
 
         # Internal State
         self.use_safetensors = self._check_safetensors()
@@ -71,13 +94,39 @@ class ShardWriter:
         self.total_param_size_bytes = 0
         self.skipped_meta_tensors = []
 
-        # Directory Setup
-        base_dir = rounder._get_save_folder_name(rounder.formats[0])
+        ShardWriter._initialized = True
+
+    @property
+    def output_dir(self) -> str:
+        """Derive the output directory from the current CompressContext at access time.
+
+        Reading from context rather than caching the path at construction time ensures
+        the ShardWriter always uses the final export directory even if
+        ``CompressContext.output_dir`` is updated after the ShardWriter was created
+        (e.g. by ``_get_export_dir()`` in ``quantize_and_save()``).
+        """
+        compress_context = CompressContext.get_context()
+        formats = compress_context.formats
+        base_dir = _get_save_folder_name(formats[0])
         subfolder = getattr(self.model, "_autoround_pipeline_subfolder", None)
         if subfolder:
             base_dir = os.path.join(base_dir, subfolder)
-        self.output_dir = os.path.join(base_dir, "")
-        os.makedirs(self.output_dir, exist_ok=True)
+        return os.path.join(base_dir, "")
+
+    @classmethod
+    def reset(cls):
+        """Reset the singleton state so the next instantiation creates a fresh ShardWriter."""
+        cls._initialized = False
+        cls._instance = None
+
+    @classmethod
+    def get_shard_writer(cls, *args, **kwargs):
+        """Return the current singleton instance, or None if not yet initialized.
+
+        Callers that require a valid writer should guard the result with
+        ``if self.compress_context.is_immediate_saving`` before use.
+        """
+        return cls._instance
 
     def _parse_size(self, size_str: str) -> int:
         if isinstance(size_str, int):
@@ -147,8 +196,6 @@ class ShardWriter:
         Detects tied weights in the current shard and ensures they are only saved once.
         This is done by tracking storage pointers of tensors and skipping duplicates.
         """
-        from collections import defaultdict
-
         storage_map = set()
         filtered_tensors = {}
 
@@ -161,7 +208,6 @@ class ShardWriter:
             if ptr not in storage_map:
                 storage_map.add(ptr)
                 filtered_tensors[name] = tensor
-
         self.current_shard_tensors = filtered_tensors
 
     def _flush_shard(self):
@@ -169,8 +215,10 @@ class ShardWriter:
             return
 
         self.shard_counter += 1
+        output_dir = self.output_dir
+        os.makedirs(output_dir, exist_ok=True)
         tmp_name = f"model-shard-{self.shard_counter:05d}.{self.shard_suffix}"
-        tmp_path = os.path.join(self.output_dir, tmp_name)
+        tmp_path = os.path.join(output_dir, tmp_name)
         self._handle_tied_weights()
 
         if self.use_safetensors:
@@ -186,7 +234,7 @@ class ShardWriter:
             torch.save(self.current_shard_tensors, tmp_path)
 
         saved_params = list(self.current_shard_tensors.keys())
-        self.shard_meta.append({"tmp_file": tmp_name, "params": saved_params})
+        self.shard_meta.append({"tmp_file": tmp_name, "params": saved_params, "dir": output_dir})
         self._all_saved.update(saved_params)
 
         # Offload logic: move modules to meta device once all params are saved
@@ -207,44 +255,15 @@ class ShardWriter:
                 and isinstance(module, torch.nn.Module)
                 and all(f"{module_path}.{k}" in self._all_saved for k in module.state_dict().keys())
             ):
-                self._move_module_to_meta(module)
-
-    def _move_module_to_meta(self, module: torch.nn.Module):
-        for child in module.children():
-            self._move_module_to_meta(child)
-
-        for name, param in list(module._parameters.items()):
-            if param is None:
-                continue
-            if isinstance(param, Parameter):
-                meta_param = Parameter(param.detach().to(device="meta"), requires_grad=param.requires_grad)
-            elif isinstance(param, torch.Tensor):
-                meta_param = Parameter(param.detach().to(device="meta"), requires_grad=param.requires_grad)
-            else:
-                continue
-            module._parameters[name] = meta_param
-
-        for name, buffer in list(module._buffers.items()):
-            if isinstance(buffer, torch.Tensor):
-                module._buffers[name] = buffer.detach().to(device="meta")
+                module.to("meta")
 
     def finalize(self):
         """Saves remaining weights, renames files, and writes the index JSON."""
         # 1. Capture remaining weights not yet saved
         full_sd = self.model.state_dict()
         tie_word_embeddings = False
-        config = getattr(self.model, "config", None)
         if hasattr(self.model, "config") and hasattr(self.model.config, "tie_word_embeddings"):
             tie_word_embeddings = self.model.config.tie_word_embeddings
-        if tie_word_embeddings is None:
-            # For multimodal models, check nested text/thinker configs
-            for sub_attr in ("text_config", "thinker_config", "language_config", "llm_config"):
-                sub_config = getattr(config, sub_attr, None)
-                if sub_config is not None:
-                    val = getattr(sub_config, "tie_word_embeddings", None)
-                    if val is not None:
-                        tie_word_embeddings = val
-                        break
 
         finalize_skipped_meta_tensors = []
         for pname, tensor in full_sd.items():
@@ -255,7 +274,7 @@ class ShardWriter:
             layer_name = ".".join(pname.split(".")[:-1])
             if self.lm_head_name is not None and layer_name == self.lm_head_name and tie_word_embeddings:
                 lm_head_module = get_module(self.model, self.lm_head_name)
-                self._move_module_to_meta(lm_head_module)  # Must to meta, otherwise model's saver will dump it again
+                lm_head_module.to("meta")  # Must to meta, otherwise model's saver will dump it again
                 continue
             self._add_tensor(pname, tensor.detach().to("cpu"))
 
@@ -270,21 +289,23 @@ class ShardWriter:
             logger.warning("No tensors saved.")
             return
 
+        output_dir = self.output_dir
         for idx, meta in enumerate(self.shard_meta, start=1):
-            old_path = os.path.join(self.output_dir, meta["tmp_file"])
+            shard_dir = meta.get("dir", output_dir)
+            old_path = os.path.join(shard_dir, meta["tmp_file"])
             new_name = (
                 f"model.{self.shard_suffix}"
                 if self.shard_counter == 1
                 else f"model-{idx:05d}-of-{self.shard_counter:05d}.{self.shard_suffix}"
             )
-
-            os.rename(old_path, os.path.join(self.output_dir, new_name))
+            new_path = os.path.join(shard_dir, new_name)
+            os.rename(old_path, new_path)
             for p in meta["params"]:
                 self.global_weight_map[p] = new_name
 
         # 3. Write Index JSON
         index_ext = "safetensors.index.json" if self.use_safetensors else "bin.index.json"
-        index_path = os.path.join(self.output_dir, f"model.{index_ext}")
+        index_path = os.path.join(output_dir, f"model.{index_ext}")
 
         index_data = {
             "metadata": {
@@ -302,21 +323,17 @@ class ShardWriter:
 
         logger.info(f"model has been saved to {self.output_dir}")
 
+    @torch.no_grad()
+    def write(self, m: torch.nn.Module = None, name: str = None, is_finalize: bool = False):
+        if m is None and name is None and not is_finalize and not is_finalize:
+            raise ValueError("Must specify either name or m")
+        if m is None and name is not None:
+            m = get_module(self.model, name)
+            # Perform the save
+        if m is not None:
+            self.save_module(m, name)
 
-@torch.no_grad()
-def shard_writer(rounder: object, m: torch.nn.Module = None, name: str = None, is_finalize: bool = False):
-    if m is None and name is None and not is_finalize and not is_finalize:
-        raise ValueError("Must specify either name or m")
-    if not hasattr(rounder, "_shard_writer"):
-        rounder._shard_writer = ShardWriter(rounder)
-
-    if m is None and name is not None:
-        m = get_module(rounder.model, name)
-        # Perform the save
-    if m is not None:
-        rounder._shard_writer.save_module(m, name)
-
-    if is_finalize:
-        rounder._shard_writer.finalize()
-        # Optional: cleanup the saver object from rounder
-        del rounder._shard_writer
+        if is_finalize:
+            self.finalize()
+            ShardWriter._initialized = False
+            ShardWriter._instance = None

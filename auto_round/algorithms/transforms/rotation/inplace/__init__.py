@@ -2,8 +2,7 @@
 # # SPDX-License-Identifier: Apache-2.0
 """Inplace (QuaRot-style) Hadamard rotation backend.
 
-Canonical home of the residual-stream Hadamard rotation implementation
-(formerly under :mod:`auto_round.experimental.rotation_inplace`).
+Canonical home of the residual-stream Hadamard rotation implementation.
 """
 
 from auto_round.algorithms.transforms.rotation.inplace.apply import apply_rotation_transform  # noqa: F401

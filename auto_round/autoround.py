@@ -17,26 +17,13 @@ from typing import TYPE_CHECKING, Optional, Union
 
 import torch
 
-import auto_round.envs as envs
-from auto_round.compressors import (
-    AdamCompressor,
-    BaseCompressor,
-    DiffusionCompressor,
-    ExtraConfig,
-    LLMCompressor,
-    MLLMCompressor,
-)
-from auto_round.compressors.diffusion.hybrid import HybridCompressor, is_hybrid_diffusion_model
-from auto_round.compressors.model_free import ModelFreeCompressor
 from auto_round.logger import deprecated, logger
 from auto_round.schemes import QuantizationScheme
-from auto_round.utils import is_diffusion_model, is_mllm_model, is_model_free_route
 
 if TYPE_CHECKING:
     from auto_round.auto_scheme.gen_auto_scheme import AutoScheme
-
-# Default to new architecture; set AR_DISABLE_NEW_ARCH=true/1 to force old architecture.
-NEW_ARCH = not envs.AR_DISABLE_NEW_ARCH
+    from auto_round.compressors.base import BaseCompressor
+    from auto_round.compressors.config import ExtraConfig
 
 
 class AutoRound:
@@ -91,12 +78,12 @@ class AutoRound:
         enable_torch_compile: bool = False,
         seed: int = 42,
         enable_adam: bool = False,
-        extra_config: ExtraConfig = None,
+        extra_config: "ExtraConfig" = None,
         enable_alg_ext: bool = False,
         disable_opt_rtn: bool | None = None,
         low_cpu_mem_usage: bool = True,
         **kwargs,
-    ) -> BaseCompressor:
+    ) -> "BaseCompressor":
         """Initialize AutoRound with quantization and tuning configuration.
 
         Args:
@@ -167,73 +154,9 @@ class AutoRound:
         if extra_config is not None:
             local_args.update({k: v for k, v in extra_config.to_dict().items() if k in local_args and v is not None})
 
-        if NEW_ARCH:
-            from auto_round.compressors_new.entry import AutoRoundCompatible
+        from auto_round.compressors.entry import AutoRoundCompatible
 
-            return AutoRoundCompatible(**local_args, **kwargs)
-
-        # ---- Model-free fast-path detection --------------------------------
-        if is_model_free_route(model, scheme, iters, disable_opt_rtn, kwargs):
-            if not isinstance(model, str):
-                raise ValueError("model_free=True requires `model` to be a HuggingFace ID or local path string.")
-            if not bool(kwargs.get("model_free", False)):
-                logger.info(
-                    "Auto-routing to model-free quantization "
-                    "(iters=0, disable_opt_rtn=True, supported scheme). "
-                    "Pass disable_model_free=True to use the regular flow."
-                )
-            if extra_config is not None:
-                local_args.update(extra_config.to_dict())
-            local_args["model_name_or_path"] = local_args.pop("model")
-            return ModelFreeCompressor(**local_args, **kwargs)
-        # --------------------------------------------------------------------
-
-        model_cls = []
-
-        has_multimodal_assets = kwargs.get("processor") is not None or kwargs.get("image_processor") is not None
-
-        if is_hybrid_diffusion_model(model):
-            logger.info("using Hybrid AR+Diffusion mode for hybrid model.")
-            model_cls.append(HybridCompressor)
-            if extra_config:
-                extra_config.mllm_config = None
-                extra_config.diffusion_config = None
-        elif (
-            (extra_config and not extra_config.mllm_config.is_default())
-            or has_multimodal_assets
-            or is_mllm_model(model, platform=platform)
-        ):
-            logger.info("using MLLM mode for multimodal model.")
-            model_cls.append(MLLMCompressor)
-            if extra_config:
-                extra_config.diffusion_config = None
-        elif (extra_config and not extra_config.diffusion_config.is_default()) or is_diffusion_model(model):
-            logger.info("using Diffusion mode for diffusion model.")
-            model_cls.append(DiffusionCompressor)
-            if extra_config:
-                extra_config.mllm_config = None
-        else:
-            if extra_config:
-                extra_config.mllm_config = None
-                extra_config.diffusion_config = None
-            model_cls.append(LLMCompressor)
-
-        if enable_adam:
-            model_cls.append(AdamCompressor)
-        dynamic_compressor = type("AutoRound", tuple(model_cls), {})
-        if "fp_layers" in kwargs:
-            logger.warning_once(
-                "'fp_layers' is deprecated, please use 'ignore_layers' to set layers not to be quantized."
-            )
-            kwargs["ignore_layers"] = kwargs.pop("fp_layers")
-
-        if extra_config is not None:
-            local_args.update(extra_config.to_dict())
-        ar = dynamic_compressor(
-            **local_args,
-            **kwargs,
-        )
-        return ar
+        return AutoRoundCompatible(**local_args, **kwargs)
 
     @classmethod
     @torch.no_grad()
@@ -288,347 +211,29 @@ class AutoRound:
 
 
 @deprecated("AutoRound")
-class AutoRoundLLM(LLMCompressor):
-    """Class for LLM quantization
+class AutoRoundLLM:
 
-    Args:
-        model (torch.nn.Module | str): Model object or model name to load.
-        tokenizer: Tokenizer for text processing. Required if `model` is not a string and `iters > 0`.
-        scheme (str| dict | QuantizationScheme ): A preset scheme that defines the quantization configurations
-        bits (int, optional): Weight quantization bits. Defaults to 4.
-        group_size (int or tuple, optional): Weight quantization group size. Defaults to 128.
-        sym (bool, optional): Symmetric weight quantization. Defaults to True.
-        layer_config (dict, optional): Layer-wise quantization config. Defaults to None.
-        batch_size (int, optional): Calibration batch size. Defaults to 8.
-        amp (bool, optional): Use AMP for tuning. Defaults to True.
-        device (str | torch.device | int, optional): Compute device. Defaults to 0.
-        dataset (str | list | tuple | DataLoader, optional): Calibration data. Defaults to "NeelNanda/pile-10k".
-        enable_minmax_tuning (bool, optional): Enable weight min-max tuning. Defaults to True.
-        lr (float, optional): Learning rate; if None, set to 1.0 / iters except when iters==0.
-        minmax_lr (float, optional): Learning rate for min-max tuning; defaults to `lr`.
-        low_gpu_mem_usage (bool, optional): Lower GPU memory mode. Defaults to False.
-        iters (int, optional): Optimization iterations. Defaults to 200.
-        seqlen (int, optional): Calibration sequence length. Defaults to 2048.
-        nsamples (int, optional): Number of calibration samples. Defaults to 128.
-        seed (int, optional): Random seed. Defaults to 42.
-        gradient_accumulate_steps (int, optional): Gradient accumulation steps. Defaults to 1.
-        data_type (str, optional): Weight data type string, e.g., "int". Defaults to "int".
-        act_bits (int, optional): Activation quantization bits. Defaults to 16.
-        act_group_size (int, optional): Activation group size. Defaults to None.
-        act_sym (bool, optional): Symmetric activation quantization. Defaults to None.
-        act_data_type (str, optional): Activation data type; inherits weight dtype if None and act_bits < 16.
-        act_dynamic (bool, optional): Dynamic activation quantization. Defaults to True.
-        enable_torch_compile (bool, optional): Enable torch.compile for quant blocks/layers. Defaults to False.
-        device_map (str | dict, optional): Device placement map. Defaults to None.
-        disable_opt_rtn (bool, optional): Disable RTN-mode optimization (iters=0). Defaults to None.
-        enable_alg_ext (bool, optional): Enable algorithm extension (primarily for INT2). Defaults to False.
-        **kwargs: Backward compatible options:
-            - enable_alg_ext, quant_lm_head, lr, lr_scheduler, sampler, not_use_best_mse, dynamic_max_gap,
-                super_group_size, super_bits, scale_dtype ("fp16" etc.),
-                nblocks, to_quant_block_names,
-                enable_norm_bias_tuning, enable_quanted_input,
-                disable_deterministic_algorithms, mllm, static_kv_dtype
-    Raises:
-        ValueError: If invalid device is provided or tokenizer is missing for non-str model with iters > 0.
-        RuntimeError: If model parameters are on meta device.
-    Example:
-        Layer-wise configuration structure:
-
-        >>> layer_config = {
-        ...     "layer1": {
-        ...         "data_type": "int",
-        ...         "bits": 4,
-        ...         "group_size": 128,
-        ...         "sym": True,
-        ...         "act_data_type": None,
-        ...         "act_bits": 16,
-        ...         "act_group_size": None,
-        ...         "act_sym": None,
-        ...     },
-        ...     # ...
-        ... }
-    """
-
-    bits: int | None
-    group_size: int | tuple | None
-    sym: bool | None
-    data_type: str | None
-    act_bits: int | None
-    act_group_size: int | None
-    act_sym: bool | None
-    act_data_type: str | None
-    act_dynamic: bool | None
-    super_bits: int | None
-    super_group_size: int | None
-
-    def __init__(
-        self,
-        model: Union[torch.nn.Module, str],
-        tokenizer=None,
-        platform: str = "hf",
-        scheme: Union[str, dict, QuantizationScheme] = "W4A16",
-        layer_config: dict[str, Union[str, dict, QuantizationScheme]] = None,
-        dataset: Union[str, list, tuple, torch.utils.data.DataLoader] = "NeelNanda/pile-10k",
-        iters: int = 200,
-        seqlen: int = 2048,
-        nsamples: int = 128,
-        batch_size: int = 8,
-        gradient_accumulate_steps: int = 1,
-        low_gpu_mem_usage: bool = False,
-        device_map: Union[str, torch.device, int, dict] = 0,
-        enable_torch_compile: bool = False,
-        seed: int = 42,
-        **kwargs,
-    ):
-        local_args = {k: v for k, v in locals().items() if k not in ("local_args", "kwargs", "self")}
-        super().__init__(
-            **local_args,
-            **kwargs,
-        )
+    def __new__(cls, *args, **kwargs):
+        return AutoRound(*args, **kwargs)
 
 
 @deprecated("AutoRound")
-class AutoRoundAdam(AdamCompressor):
-    """Class for quantization with optimizers like adamw of a PyTorch model.
+class AutoRoundAdam:
 
-    Args:
-        model: The PyTorch model to be quantized.
-        tokenizer: An optional tokenizer for processing input data.
-        platform (str): The platform to load pretrained moded, options: ["hf", "model_scope"]
-        scheme (str| dict | QuantizationScheme ): A preset scheme that defines the quantization configurations
-        bits (int): Number of bits for quantization (default is 4).
-        group_size (int or tuple): Size of the quantization group (default is 128).
-        sym (bool): Whether sym to be used (default is True).
-        layer_config (dict): Configuration for weight quantization (default is None).
-        batch_size (int): Batch size for training (default is 8).
-        amp (bool): Whether to use automatic mixed precision (default is True).
-        device: The device to be used for training (default is "auto").
-        lr_scheduler: The learning rate scheduler to be used.
-        dataset: The default dataset name (default is "NeelNanda/pile-10k").
-        enable_quanted_input (bool): Whether to use quantized input data (default is True).
-        enable_minmax_tuning (bool): Whether to enable min-max tuning (default is True).
-        lr (float): The learning rate (default is 0.005).
-        minmax_lr (float): The learning rate for min-max tuning (default is None).
-        low_gpu_mem_usage (bool): Whether to use low GPU memory (default is False).
-        iters (int): Number of iterations (default is 200).
-        seqlen (int): Length of the sequence.
-        nsamples (int): Number of samples (default is 128).
-        sampler (str): The sampling method (default is "rand").
-        seed (int): The random seed (default is 42).
-        nblocks (int): Number of blocks (default is 1).
-        gradient_accumulate_steps (int): Number of gradient accumulation steps (default is 1).
-        not_use_best_mse (bool): Whether to use mean squared error (default is False).
-        dynamic_max_gap (int): The dynamic maximum gap (default is -1).
-        data_type (str): The data type to be used (default is "int").
-        scale_dtype (str): The data type of quantization scale to be used (default is "float16"), different kernels
-                           have different choices.
-        act_bits (int): Number of bits for activation quantization. Default is 16.
-        act_group_size (int): Group size for activation quantization. Default is None.
-        act_sym (bool): Whether to use symmetric activation quantization. Default is None.
-        act_data_type (str): Specifies the data type for activations.
-                             Defaults to None, in which case it inherits the weight data type.
-        act_dynamic (bool): Whether to use dynamic activation quantization. Default is True.
-        to_quant_block_names (str|list): A string or list whose elements are list of
-                            block's layer names to be quantized.
-        enable_norm_bias_tuning (bool): Whether to enable fast norm/layer_bias tuning
-        enable_torch_compile (bool): Whether to enable torch compile to optimize quant_block/layer function
-        **kwargs: Additional keyword arguments.
-
-    Returns:
-        The quantized model.
-    """
-
-    bits: int | None
-    group_size: int | tuple | None
-    sym: bool | None
-    data_type: str | None
-    act_bits: int | None
-    act_group_size: int | None
-    act_sym: bool | None
-    act_data_type: str | None
-    act_dynamic: bool | None
-    super_bits: int | None
-    super_group_size: int | None
-
-    def __init__(
-        self,
-        model: Union[torch.nn.Module, str],
-        tokenizer=None,
-        platform: str = "hf",
-        scheme: Union[str, dict, QuantizationScheme] = "W4A16",
-        layer_config: dict[str, Union[str, dict, QuantizationScheme]] = None,
-        dataset: Union[str, list, tuple, torch.utils.data.DataLoader] = "NeelNanda/pile-10k",
-        iters: int = 200,
-        seqlen: int = 2048,
-        nsamples: int = 128,
-        batch_size: int = 8,
-        gradient_accumulate_steps: int = 1,
-        low_gpu_mem_usage: bool = False,
-        device_map: Union[str, int, torch.device, dict] = 0,
-        enable_torch_compile: bool = False,
-        seed: int = 42,
-        optimizer="AdamW",
-        **kwargs,
-    ):
-        local_args = {k: v for k, v in locals().items() if k not in ("local_args", "kwargs", "self")}
-        super().__init__(
-            **local_args,
-            **kwargs,
-        )
+    def __new__(cls, *args, **kwargs):
+        kwargs.setdefault("enable_adam", True)
+        return AutoRound(*args, **kwargs)
 
 
 @deprecated("AutoRound")
-class AutoRoundMLLM(MLLMCompressor):
-    """Class for automatic rounding-based quantization with MLLMs.
+class AutoRoundMLLM:
 
-    Args:
-        model: The PyTorch model to be quantized.
-        tokenizer: An optional tokenizer for processing input data.
-        platform (str): The platform to load pretrained moded, options: ["hf", "model_scope"]
-        processor: Any multi-modal model will require an object to encode or
-                   decode the data that groups several modalities (among text, vision and audio).
-        image_processor: Image processor for special model like llava.
-        bits (int): Number of bits for quantization (default is 4).
-        group_size (int or tuple): Size of the quantization group (default is 128).
-        sym (bool): Whether sym to be used (default is True).
-        layer_config (dict): Configuration for weight quantization (default is None).
-        batch_size (int): Batch size for training (default is 8).
-        amp (bool): Whether to use automatic mixed precision (default is True).
-        device: The device to be used for training (default is "auto").
-        lr_scheduler: The learning rate scheduler to be used.
-        dataset: The path or name of the calib dataset.
-        extra_data_dir: The path of extra data such as images, audio and videos.
-        template: The path or name of template used to specify process for different MLLMs.
-        quant_nontext_module: Whether to quantize nontext module.
-        enable_quanted_input (bool): Whether to use quantized input data (default is True).
-        enable_minmax_tuning (bool): Whether to enable min-max tuning (default is True).
-        lr (float): The learning rate (default is 0.005).
-        minmax_lr (float): The learning rate for min-max tuning (default is None).
-        low_gpu_mem_usage (bool): Whether to use low GPU memory (default is False).
-        iters (int): Number of iterations (default is 200).
-        seqlen (int): Length of the sequence.
-        nsamples (int): Number of samples (default is 128).
-        sampler (str): The sampling method (default is "rand").
-        seed (int): The random seed (default is 42).
-        nblocks (int): Number of blocks (default is 1).
-        gradient_accumulate_steps (int): Number of gradient accumulation steps (default is 1).
-        not_use_best_mse (bool): Whether to use mean squared error (default is False).
-        dynamic_max_gap (int): The dynamic maximum gap (default is -1).
-        data_type (str): The data type to be used (default is "int").
-        scale_dtype (str): The data type of quantization scale to be used (default is "float16"), different kernels
-                           have different choices.
-        act_bits (int): Number of bits for activation quantization. Default is 32.
-        act_group_size (int): Group size for activation quantization. Default is None.
-        act_sym (bool): Whether to use symmetric activation quantization. Default is None.
-        act_dynamic (bool): Whether to use dynamic activation quantization. Default is True.
-        to_quant_block_names (str|list): A string or list whose elements are list of
-                            block's layer names to be quantized.
-        enable_torch_compile (bool): Whether to enable torch compile to optimize quant_block/layer
-        **kwargs: Additional keyword arguments.
-    """
-
-    bits: int | None
-    group_size: int | tuple | None
-    sym: bool | None
-    data_type: str | None
-    act_bits: int | None
-    act_group_size: int | None
-    act_sym: bool | None
-    act_data_type: str | None
-    act_dynamic: bool | None
-    super_bits: int | None
-    super_group_size: int | None
-
-    def __init__(
-        self,
-        model: Union[torch.nn.Module, str],
-        tokenizer=None,
-        platform: str = "hf",
-        processor=None,
-        image_processor=None,
-        scheme: Union[str, dict, QuantizationScheme] = "W4A16",
-        layer_config: dict[str, Union[str, dict, QuantizationScheme]] = None,
-        dataset: Union[str, list, tuple, torch.utils.data.DataLoader] = "NeelNanda/pile-10k",
-        quant_nontext_module: bool = False,
-        iters: int = 200,
-        seqlen: int = 2048,
-        nsamples: int = 128,
-        batch_size: int = 8,
-        gradient_accumulate_steps: int = 1,
-        low_gpu_mem_usage: bool = False,
-        device_map: Union[str, torch.device, int, dict] = 0,
-        enable_torch_compile: bool = False,
-        seed: int = 42,
-        **kwargs,
-    ):
-        local_args = {k: v for k, v in locals().items() if k not in ("local_args", "kwargs", "self")}
-        super().__init__(
-            **local_args,
-            **kwargs,
-        )
+    def __new__(cls, *args, **kwargs):
+        return AutoRound(*args, **kwargs)
 
 
 @deprecated("AutoRound")
-class AutoRoundDiffusion(DiffusionCompressor):
-    """Class for automatic rounding-based quantization with Diffusion models.
+class AutoRoundDiffusion:
 
-    Args:
-        model: The PyTorch model to be quantized.
-        tokenizer: An optional tokenizer for processing input data, is not used for diffusion models.
-        platform (str): The platform to load pretrained moded, options: ["hf", "model_scope"]
-        guidance_scale (float): Control how much the image generation process follows the text prompt.
-                                The more it is, the more closely it follows the prompt (default is 7.5).
-        num_inference_steps (int): The reference number of denoising steps (default is 50).
-        generator_seed (int): A sees that controls the initial noise from which an image is generated (default is None).
-        scheme: (str| dict | QuantizationScheme ): A preset scheme that defines the quantization configurations.
-        layer_config (dict): Configuration for weight quantization (default is None).
-        dataset: The path or name of the calib dataset.
-        iters (int): Number of iterations (default is 200).
-        seqlen (int): Length of the sequence.
-        nsamples (int): Number of samples (default is 128).
-        batch_size (int): Batch size for training (default is 8).
-        gradient_accumulate_steps (int): Number of gradient accumulation steps (default is 1).
-        low_gpu_mem_usage (bool): Whether to use low GPU memory (default is False).
-        device_map (str | dict | int | torch.device, optional): Device placement map. Defaults to 0.
-        enable_torch_compile (bool): Whether to enable torch compile to optimize quant_block/layer
-        **kwargs: Additional keyword arguments.
-    """
-
-    bits: int | None
-    group_size: int | tuple | None
-    sym: bool | None
-    data_type: str | None
-    act_bits: int | None
-    act_group_size: int | None
-    act_sym: bool | None
-    act_data_type: str | None
-    act_dynamic: bool | None
-    super_bits: int | None
-    super_group_size: int | None
-
-    def __init__(
-        self,
-        model: Union[object, str],
-        tokenizer=None,
-        guidance_scale: float = 7.5,
-        num_inference_steps: int = 50,
-        generator_seed: int = None,
-        scheme: Union[str, dict, QuantizationScheme] = "W4A16",
-        layer_config: dict[str, Union[str, dict, QuantizationScheme]] = None,
-        dataset: Union[str, list, tuple, torch.utils.data.DataLoader] = "coco2014",
-        iters: int = 200,
-        seqlen: int = 2048,
-        nsamples: int = 128,
-        batch_size: int = 8,
-        gradient_accumulate_steps: int = 1,
-        low_gpu_mem_usage: bool = False,
-        device_map: Union[str, torch.device, int, dict] = 0,
-        enable_torch_compile: bool = False,
-        seed: int = 42,
-        **kwargs,
-    ):
-        local_args = {k: v for k, v in locals().items() if k not in ("local_args", "kwargs", "self")}
-        super().__init__(
-            **local_args,
-            **kwargs,
-        )
+    def __new__(cls, *args, **kwargs):
+        return AutoRound(*args, **kwargs)

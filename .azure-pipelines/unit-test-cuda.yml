@@ -19,6 +19,7 @@ pr:
     exclude:
       - "*.md"
       - "**/*.md"
+      - auto_round_extension/ark
 
 variables:
   - name: POOL_NAME
