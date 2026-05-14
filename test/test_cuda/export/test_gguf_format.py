@@ -122,7 +122,7 @@ class TestAutoRound:
         from ...helpers import save_tiny_model
 
         model_name = get_model_path("ibm-granite/granite-4.0-h-tiny")
-        tiny_model_path = save_tiny_model(model_name, "tiny_model_path", num_layers=2)
+        tiny_model_path = save_tiny_model(model_name, "tiny_granite_model_path", num_layers=2)
         from auto_round import AutoRound
 
         autoround = AutoRound(
@@ -132,7 +132,7 @@ class TestAutoRound:
             disable_opt_rtn=True,
         )
         quantized_model_path = self.save_dir
-        autoround.quantize_and_save(output_dir=quantized_model_path, format="gguf:q4_0")
+        _, quantized_model_path = autoround.quantize_and_save(output_dir=quantized_model_path, format="gguf:q4_0")
         file_name = os.listdir(quantized_model_path)[0]
         file_size = os.path.getsize(os.path.join(quantized_model_path, file_name)) / 1024**2
         assert abs(file_size - 307) < 5.0
@@ -141,6 +141,7 @@ class TestAutoRound:
     @require_gguf
     def test_vlm_gguf(self):
         from huggingface_hub import hf_hub_download
+        from huggingface_hub.errors import GatedRepoError, HfHubHTTPError
 
         from ...helpers import save_tiny_model
 
@@ -150,7 +151,12 @@ class TestAutoRound:
         )
         # Needs tokenizer.model for gguf
         # New transformers won't download it even with use_fast=False
-        file_path = hf_hub_download(repo_id=model_name, filename="tokenizer.model", local_dir=tiny_model_path)
+        tokenizer_model_path = os.path.join(tiny_model_path, "tokenizer.model")
+        if not os.path.isfile(tokenizer_model_path):
+            try:
+                hf_hub_download(repo_id=model_name, filename="tokenizer.model", local_dir=tiny_model_path)
+            except (GatedRepoError, HfHubHTTPError) as error:
+                pytest.skip(f"tokenizer.model unavailable for {model_name}: {error}")
 
         from auto_round import AutoRound
 
@@ -163,15 +169,15 @@ class TestAutoRound:
             quant_nontext_module=True,
         )
         quantized_model_path = self.save_dir
-        autoround.quantize_and_save(output_dir=quantized_model_path, format="gguf:q4_k_m")
-        assert "mmproj-model.gguf" in os.listdir(self.save_dir)
-        for file in os.listdir(self.save_dir):
-            print(f"{file}: {os.path.getsize(os.path.join(self.save_dir, file)) / 1024**2} MB")
-            file_size = os.path.getsize(os.path.join(self.save_dir, file)) / 1024**2
+        _, quantized_model_path = autoround.quantize_and_save(output_dir=quantized_model_path, format="gguf:q4_k_m")
+        assert "mmproj-model.gguf" in os.listdir(quantized_model_path)
+        for file in os.listdir(quantized_model_path):
+            print(f"{file}: {os.path.getsize(os.path.join(quantized_model_path, file)) / 1024**2} MB")
+            file_size = os.path.getsize(os.path.join(quantized_model_path, file)) / 1024**2
             if "mmproj-model.gguf" in file:
                 assert abs(file_size - 75) < 5.0
             else:
-                assert abs(file_size - 690) < 5.0
+                assert abs(file_size - 683) < 5.0
 
         shutil.rmtree(tiny_model_path, ignore_errors=True)
 
@@ -192,7 +198,7 @@ class TestAutoRound:
             disable_opt_rtn=True,
         )
         quantized_model_path = self.save_dir
-        autoround.quantize_and_save(output_dir=quantized_model_path, format="gguf:q2_k_mixed")
+        _, quantized_model_path = autoround.quantize_and_save(output_dir=quantized_model_path, format="gguf:q2_k_mixed")
         gguf_file = os.listdir(quantized_model_path)[0]
         file_size = os.path.getsize(os.path.join(quantized_model_path, gguf_file)) / 1024**2
         assert abs(file_size - 1236) < 5.0
@@ -214,7 +220,7 @@ class TestAutoRound:
 
         model_path = get_model_path("Qwen/Qwen3-1.7B")
         tiny_model_path = "./tmp/tiny_qwen3_1b"
-        save_tiny_model(model_path, tiny_model_path, num_layers=8)
+        tiny_model_path = save_tiny_model(model_path, tiny_model_path, num_layers=8)
         autoround = AutoRound(
             tiny_model_path,
             iters=0,
@@ -223,7 +229,7 @@ class TestAutoRound:
             disable_opt_rtn=True,
         )
         quantized_model_path = self.save_dir
-        autoround.quantize_and_save(output_dir=quantized_model_path, format="gguf:q2_k_s")
+        _, quantized_model_path = autoround.quantize_and_save(output_dir=quantized_model_path, format="gguf:q2_k_s")
         gguf_file = os.listdir(quantized_model_path)[0]
         gguf_model = GGUFReader(os.path.join(quantized_model_path, gguf_file))
         ffn_down_type = None
@@ -252,5 +258,7 @@ class TestAutoRound:
             disable_opt_rtn=True,
         )
         quantized_model_path = self.save_dir
-        autoround.quantize_and_save(output_dir=quantized_model_path, inplace=False, format="fake")
+        _, quantized_model_path = autoround.quantize_and_save(
+            output_dir=quantized_model_path, inplace=False, format="fake"
+        )
         eval_generated_prompt(quantized_model_path)

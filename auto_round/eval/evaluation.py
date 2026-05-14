@@ -21,6 +21,39 @@ from auto_round.utils import dispatch_model_block_wise
 os.environ["TOKENIZERS_PARALLELISM"] = "false"
 
 
+def _collect_model_floating_dtypes(model) -> set:
+    floating_dtypes = set()
+    for parameter in model.parameters():
+        if parameter.is_floating_point():
+            floating_dtypes.add(parameter.dtype)
+    for buffer in model.buffers():
+        if buffer.is_floating_point():
+            floating_dtypes.add(buffer.dtype)
+    return floating_dtypes
+
+
+def _normalize_model_eval_dtype(model, eval_model_dtype):
+    import torch
+
+    floating_dtypes = _collect_model_floating_dtypes(model)
+    if not floating_dtypes:
+        return model
+
+    if eval_model_dtype == "auto":
+        if len(floating_dtypes) > 1:
+            target_dtype = torch.bfloat16 if torch.bfloat16 in floating_dtypes else getattr(model, "dtype", None)
+            if target_dtype is None or not getattr(target_dtype, "is_floating_point", False):
+                return model
+            logger.info("Normalizing mixed floating dtypes to %s for evaluation.", target_dtype)
+            return model.to(target_dtype)
+        return model
+
+    target_dtype = getattr(torch, eval_model_dtype)
+    if floating_dtypes != {target_dtype}:
+        return model.to(target_dtype)
+    return model
+
+
 def simple_evaluate_user_model(
     user_model,
     tokenizer,
@@ -222,9 +255,7 @@ def prepare_model_for_eval(model, device_map, eval_model_dtype):
     Returns:
         model: Prepared model
     """
-    import torch
-
-    from auto_round.utils import detect_device
+    model = _normalize_model_eval_dtype(model, eval_model_dtype)
 
     # Handle multi-device model
     if hasattr(model, "hf_device_map") and len(model.hf_device_map) > 1:
@@ -233,10 +264,6 @@ def prepare_model_for_eval(model, device_map, eval_model_dtype):
         dispatch_model(model, model.hf_device_map)
     else:
         dispatch_model_block_wise(model, device_map)
-
-    # Convert dtype
-    if model.dtype != eval_model_dtype and eval_model_dtype != "auto":
-        model.to(getattr(torch, eval_model_dtype))
 
     return model
 
@@ -388,8 +415,11 @@ def run_model_evaluation(model, tokenizer, autoround, folders, formats, device_s
         evaluate_diffusion_model(args, autoround=autoround, model=model)
         return
 
-    # Check if evaluation is needed for language models
-    eval_folder = folders[-1] if folders else None
+    # Check if evaluation Compressoris needed for language models
+    if isinstance(folders, list):
+        eval_folder = folders[-1] if folders else None
+    else:
+        eval_folder = folders
     if args.tasks is None or args.tasks == "" or eval_folder is None:
         return
 
@@ -428,7 +458,7 @@ def run_model_evaluation(model, tokenizer, autoround, folders, formats, device_s
     eval_gguf_model = any(file.endswith("gguf") for file in os.listdir(eval_folder))
 
     # Determine if model instance evaluation is needed
-    need_model_instance = (autoround.act_bits <= 8 and formats[-1] == "fake") or eval_gguf_model
+    need_model_instance = formats[-1] == "fake" or eval_gguf_model
 
     if need_model_instance:
         # Load or prepare model instance

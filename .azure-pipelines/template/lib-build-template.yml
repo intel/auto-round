@@ -1,0 +1,136 @@
+parameters:
+  - name: enableChangeDetection
+    type: boolean
+    default: false
+  - name: publishToTestPyPI
+    type: boolean
+    default: false
+  - name: pythonVersions
+    type: string
+    # Comma-separated list to avoid YAML float parsing (e.g. 3.10 -> 3.1).
+    default: "3.12"
+  - name: buildMode
+    type: string
+    default: "dev"
+
+stages:
+  - ${{ if eq(parameters.enableChangeDetection, true) }}:
+    - stage: DetectArkChanges
+      displayName: Detect ark changes
+      dependsOn: []
+      jobs:
+        - job: Detect
+          displayName: Detect ark changes in PR
+          pool:
+            vmImage: "ubuntu-latest"
+          steps:
+            - checkout: self
+              clean: true
+              fetchDepth: 0
+
+            - task: Bash@3
+              name: SetArkWheelFlag
+              displayName: Set ark wheel flag
+              inputs:
+                targetType: inline
+                script: |
+                  set -euxo pipefail
+                  target_ref="${SYSTEM_PULLREQUEST_TARGETBRANCH:-refs/heads/main}"
+                  git fetch origin "+${target_ref}:${target_ref}"
+                  changed_files="$(git diff --name-only "${target_ref}"...HEAD)"
+                  echo "$changed_files"
+                  build_ark_wheel=false
+                  while IFS= read -r changed_file; do
+                    case "$changed_file" in
+                      auto_round_extension/ark/*.md)
+                        ;;
+                      auto_round_extension/ark/*)
+                        build_ark_wheel=true
+                        break
+                        ;;
+                    esac
+                  done <<< "$changed_files"
+
+                  if [[ "$build_ark_wheel" == "true" ]]; then
+                    echo "ARK code changes detected, need to build ark wheel."
+                    printf '%s\n' '##vso[task.setvariable variable=BUILD_ARK_WHEEL;isOutput=true]true'
+                  else
+                    echo "No ARK code changes detected, skip building ark wheel."
+                    printf '%s\n' '##vso[task.setvariable variable=BUILD_ARK_WHEEL;isOutput=true]false'
+                  fi
+
+  - stage: BuildArkWheel
+    displayName: Build ark wheel
+    dependsOn:
+      - ${{ if eq(parameters.enableChangeDetection, true) }}:
+        - DetectArkChanges
+    ${{ if eq(parameters.enableChangeDetection, true) }}:
+      variables:
+        BUILD_ARK_WHEEL: $[ stageDependencies.DetectArkChanges.Detect.outputs['SetArkWheelFlag.BUILD_ARK_WHEEL'] ]
+    jobs:
+      - ${{ each pythonVersion in split(parameters.pythonVersions, ',') }}:
+        - job: BuildArkWheel_cp${{ replace(trim(pythonVersion), '.', '') }}
+          displayName: Build ark wheel (py${{ trim(pythonVersion) }})
+          ${{ if eq(parameters.enableChangeDetection, true) }}:
+            condition: and(succeeded(), eq(variables['BUILD_ARK_WHEEL'], 'true'))
+          pool: GAUDI
+          timeoutInMinutes: 30
+          steps:
+            - checkout: self
+              clean: true
+
+            - task: Bash@3
+              displayName: Build wheel in manylinux container
+              inputs:
+                targetType: inline
+                script: |
+                  set -euxo pipefail
+                  python_version_fix=${{ replace(trim(pythonVersion), '.', '') }}
+                  docker run --rm \
+                    --user "$(id -u):$(id -g)" \
+                    -e HOME=/tmp \
+                    -v $(Build.SourcesDirectory):/auto-round \
+                    -v /opt/intel/oneapi:/opt/intel/oneapi \
+                    -w /auto-round/auto_round_extension/ark \
+                    quay.io/pypa/manylinux_2_28_x86_64 \
+                    bash -c " /opt/python/cp${python_version_fix}-cp${python_version_fix}/bin/python -m venv venv \
+                    && source venv/bin/activate \
+                    && source /opt/intel/oneapi/setvars.sh \
+                    && pip install -U pip build cmake setuptools \
+                    && export BUILD_MODE=${{ parameters.buildMode }} \
+                    && python -m build --wheel --no-isolation \
+                    && auditwheel repair dist/*.whl --exclude lib* -w wheelhouse/ \
+                    && ls -lah wheelhouse"
+
+            - task: PublishPipelineArtifact@1
+              displayName: Publish wheel artifact
+              inputs:
+                targetPath: $(Build.SourcesDirectory)/auto_round_extension/ark/wheelhouse
+                artifact: auto-round-lib-wheel-cp${{ replace(trim(pythonVersion), '.', '') }}
+                publishLocation: pipeline
+
+            - ${{ if eq(parameters.publishToTestPyPI, true) }}:
+              - task: Bash@3
+                displayName: Publish wheel to TestPyPI
+                env:
+                  TWINE_USERNAME: "__token__"
+                  TWINE_PASSWORD: "$(TESTPYPI_PASSWORD)"
+                inputs:
+                  targetType: inline
+                  script: |
+                    set -euxo pipefail
+                    if [ -z "${TWINE_PASSWORD}" ]; then
+                      echo "TESTPYPI_PASSWORD is empty, skip publishing."
+                      exit 1
+                    fi
+                    docker run --rm --privileged \
+                      --user "$(id -u):$(id -g)" \
+                      -e HOME=/tmp \
+                      -v $(Build.SourcesDirectory):/auto-round \
+                      -w /auto-round/auto_round_extension/ark \
+                      -e TWINE_USERNAME \
+                      -e TWINE_PASSWORD \
+                      quay.io/pypa/manylinux_2_28_x86_64 \
+                      bash -c "source venv/bin/activate \
+                      && python -m pip install --upgrade twine \
+                      && twine upload --repository-url https://test.pypi.org/legacy/ wheelhouse/*.whl"

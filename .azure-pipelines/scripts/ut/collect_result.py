@@ -114,8 +114,12 @@ class LogAnalyzer:
         return TestStatus.NO_TESTS
 
     def _extract_duration(self, content: str) -> str:
-        if match := self.TIME_PATTERN.search(content):
-            total_seconds = int(float(match.group(1)))
+        last_match = None
+        for match in self.TIME_PATTERN.finditer(content):
+            last_match = match
+
+        if last_match:
+            total_seconds = int(float(last_match.group(1)))
             hours, remainder = divmod(total_seconds, 3600)
             minutes, seconds = divmod(remainder, 60)
             return f"{hours:02d}:{minutes:02d}:{seconds:02d}"

@@ -16,10 +16,8 @@ import copy
 import json
 import os
 import sys
-from concurrent.futures import ThreadPoolExecutor
 from typing import Callable, Union
 
-import threadpoolctl as tctl
 import torch
 import transformers
 from tqdm import tqdm
@@ -36,7 +34,6 @@ from auto_round.utils import (
     get_module,
     get_packing_device,
     is_gaudi2,
-    is_hpex_available,
     logger,
     set_module,
     unsupported_meta_device,
@@ -65,21 +62,25 @@ def pack_layer(layer_name: str, model: torch.nn.Module, data_type: str, device: 
     fp8_pack_layer(layer_name, model, data_type, device, unsqueeze=True)
 
 
-def _construct_kv_scheme():
-    """Construct the default KV cache quantization scheme for FP8_STATIC export."""
+def _construct_fp8_args():
     from compressed_tensors.quantization import (  # pylint: disable=E0401
         QuantizationArgs,
         QuantizationStrategy,
         QuantizationType,
     )
 
-    default_kv_scheme = QuantizationArgs(
+    return QuantizationArgs(
         num_bits=8,
         type=QuantizationType.FLOAT,
         strategy=QuantizationStrategy.TENSOR,
         symmetric=True,
         dynamic=False,
     )
+
+
+def _construct_kv_scheme():
+    """Construct the default KV cache quantization scheme for FP8_STATIC export."""
+    default_kv_scheme = _construct_fp8_args()
 
     logger.warning_once(
         "Using default KV cache scheme: %s. "
@@ -96,6 +97,42 @@ def _use_fp8_kv(static_kv_dtype: str | None) -> bool:
         logger.warning_once("Exporting model with static KV cache in FP8 dtype.")
         return True
     return False
+
+
+def _use_fp8_attention(static_attention_dtype: str | None) -> bool:
+    """Return True if static attention should use FP8."""
+    if static_attention_dtype in ("fp8", "float8_e4m3fn"):
+        logger.warning_once("Exporting model with static attention in FP8 dtype.")
+        return True
+    return False
+
+
+def _get_attention_targets(model: torch.nn.Module) -> list[str]:
+    from compressed_tensors.quantization.lifecycle.initialize import is_attention_module  # pylint: disable=E0401
+
+    attention_targets = []
+    for module in model.modules():
+        if is_attention_module(module):
+            target = type(module).__name__
+            if target not in attention_targets:
+                attention_targets.append(target)
+    return attention_targets
+
+
+def _append_attention_group(config_groups: dict, model: torch.nn.Module) -> None:
+    from compressed_tensors.quantization import QuantizationScheme  # pylint: disable=E0401
+
+    attention_targets = _get_attention_targets(model)
+    if len(attention_targets) == 0:
+        logger.warning("Skipping FP8 attention config group because no attention modules were detected.")
+        return
+
+    group_name = f"group_{len(config_groups)}"
+    config_groups[group_name] = QuantizationScheme(
+        targets=attention_targets,
+        input_activations=_construct_fp8_args(),
+        weights=None,
+    )
 
 
 def _configure_gaudi2_fp8_dtype(quantization_config: dict) -> None:
@@ -151,29 +188,12 @@ def save_quantized_as_static_fp(
     image_processor = kwargs.get("image_processor", None)
 
     names = list(layer_config.keys())
-    max_workers = 1
-    if not torch.cuda.is_available() and not torch.xpu.is_available():
-        max_workers = 2  ## 2 with cuda packing will cause hang occasionally
     if not unsupported_meta_device(model):
-
-        if is_hpex_available():  # packing will cause hang occasionally on hpu
-            for name in tqdm(names, total=len(names), leave=True, desc="packing"):
-                pack_layer(name, model, serialization_dict.get("data_type", "fp8"), device)
-        else:
-            with ThreadPoolExecutor(max_workers=max_workers) as executor:
-                with tqdm(total=len(names), leave=True) as pbar:
-
-                    def wrapper(name):
-                        pbar.set_description(f"packing {name}")
-                        with tctl.threadpool_limits(limits=1):
-                            pack_layer(name, model, serialization_dict.get("data_type", "fp8"), device)
-                        pbar.update(1)
-
-                    for _ in executor.map(wrapper, names):
-                        pass
+        for name in tqdm(names, desc="packing", leave=True):
+            pack_layer(name, model, serialization_dict.get("data_type", "fp8"), device)
 
     # Get llm-compressor format config
-    check_compressed_tensors_supported()
+    check_compressed_tensors_supported(raise_error=True)
     from compressed_tensors.quantization import (  # pylint: disable=E0401
         QuantizationArgs,
         QuantizationConfig,
@@ -204,13 +224,7 @@ def save_quantized_as_static_fp(
             symmetric=True,
             dynamic=False,
         ),
-        input_activations=QuantizationArgs(
-            num_bits=8,
-            type=QuantizationType.FLOAT,
-            strategy=QuantizationStrategy.TENSOR,
-            symmetric=True,
-            dynamic=False,
-        ),
+        input_activations=_construct_fp8_args(),
     )
     targets = ["Linear"]
     ignore = []
@@ -220,13 +234,15 @@ def save_quantized_as_static_fp(
     config_groups = {}
     scheme = QuantizationScheme(targets=targets, **scheme_args)
     config_groups["group_0"] = scheme
+    if _use_fp8_attention(serialization_dict.get("static_attention_dtype", None)):
+        _append_attention_group(config_groups, model)
     quantization_config = QuantizationConfig(
         config_groups=config_groups,
         kv_cache_scheme=(
             _construct_kv_scheme()
             if (
                 _use_fp8_kv(serialization_dict.get("static_kv_dtype", None))
-                or _use_fp8_kv(serialization_dict.get("static_attention_dtype", None))
+                or _use_fp8_attention(serialization_dict.get("static_attention_dtype", None))
             )
             else None
         ),
