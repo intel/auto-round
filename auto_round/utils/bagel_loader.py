@@ -234,10 +234,12 @@ class BagelForQuantization(nn.Module):
         with open(config_path, "w", encoding="utf-8") as f:
             json.dump(config_dict, f, indent=2, ensure_ascii=False)
 
-        # Save all model parameters as safetensors
+        # Save all model parameters and buffers as safetensors
         state_dict = {}
         for name, param in self.named_parameters():
             state_dict[name] = param.data.contiguous()
+        for name, buffer in self.named_buffers():
+            state_dict[name] = buffer.data.contiguous()
 
         # Remap weight names to match original BAGEL checkpoint format
         # The BagelPipeline expects top-level names like:
@@ -285,6 +287,15 @@ def load_bagel_model(model_path, torch_dtype="auto", device_map=None):
             resolved_dtype = torch.bfloat16
         elif model_dtype_str == "float16":
             resolved_dtype = torch.float16
+        else:
+            resolved_dtype = torch.float32
+    elif isinstance(torch_dtype, str):
+        if torch_dtype == "bfloat16":
+            resolved_dtype = torch.bfloat16
+        elif torch_dtype == "float16":
+            resolved_dtype = torch.float16
+        elif torch_dtype == "float32":
+            resolved_dtype = torch.float32
         else:
             resolved_dtype = torch.float32
     else:
