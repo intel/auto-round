@@ -18,15 +18,19 @@ from types import SimpleNamespace
 import torch
 
 from auto_round.compressors.shard_writer import ShardWriter
+from auto_round.context.compress import CompressContext
+from auto_round.context.model import ModelContext
 
 
 class _ToyBlock(torch.nn.Module):
+
     def __init__(self):
         super().__init__()
         self.linear = torch.nn.Linear(4, 4)
 
 
 class _DiffusionStyleModel(torch.nn.Module):
+
     def __init__(self):
         super().__init__()
         self.transformer_blocks = torch.nn.ModuleList([_ToyBlock()])
@@ -34,23 +38,24 @@ class _DiffusionStyleModel(torch.nn.Module):
         self.config = SimpleNamespace(model_type="toy-diffusion")
 
 
-class _RounderStub:
-    def __init__(self, model, output_dir):
-        self.model = model
-        self.bits = 4
-        self.formats = [object()]
-        self.max_shard_size = "1MB"
-        self.safe_serialization = False
-        self._output_dir = output_dir
+class _FormatStub:
 
-    def _get_save_folder_name(self, _format):
-        return self._output_dir
+    def get_backend_name(self):
+        return "auto_round"
 
 
-def test_finalize_saves_tail_layer_when_tie_word_embeddings_missing(tmp_path):
+def _make_writer(model, output_dir, monkeypatch):
+    ShardWriter.reset()
+    compress_context = SimpleNamespace(formats=[_FormatStub()], output_dir=output_dir)
+    model_context = SimpleNamespace(is_diffusion=False)
+    monkeypatch.setattr(CompressContext, "get_context", classmethod(lambda cls: compress_context))
+    monkeypatch.setattr(ModelContext, "get_context", classmethod(lambda cls: model_context))
+    return ShardWriter(model, bits=4, max_shard_size="1MB", safe_serialization=False)
+
+
+def test_finalize_saves_tail_layer_when_tie_word_embeddings_missing(tmp_path, monkeypatch):
     model = _DiffusionStyleModel()
-    rounder = _RounderStub(model, str(tmp_path))
-    writer = ShardWriter(rounder)
+    writer = _make_writer(model, str(tmp_path), monkeypatch)
 
     assert writer.lm_head_name == "proj_out"
     assert not hasattr(model.config, "tie_word_embeddings")
@@ -76,12 +81,11 @@ class _LMStyleModel(torch.nn.Module):
         self.config = SimpleNamespace(model_type="toy-lm", tie_word_embeddings=True)
 
 
-def test_finalize_skips_lm_head_when_tie_word_embeddings_true(tmp_path):
+def test_finalize_skips_lm_head_when_tie_word_embeddings_true(tmp_path, monkeypatch):
     """Complementary test: when tie_word_embeddings=True the lm_head should be
     skipped (not written to disk) and offloaded to meta."""
     model = _LMStyleModel()
-    rounder = _RounderStub(model, str(tmp_path))
-    writer = ShardWriter(rounder)
+    writer = _make_writer(model, str(tmp_path), monkeypatch)
 
     assert writer.lm_head_name == "lm_head"
 
@@ -96,11 +100,10 @@ def test_finalize_skips_lm_head_when_tie_word_embeddings_true(tmp_path):
     assert model.lm_head.weight.device.type == "meta"
 
 
-def test_finalize_offloads_module_with_tensor_in_parameters(tmp_path):
+def test_finalize_offloads_module_with_tensor_in_parameters(tmp_path, monkeypatch):
     model = _DiffusionStyleModel()
     model.transformer_blocks[0].linear._parameters["weight"] = model.transformer_blocks[0].linear.weight.to("cpu")
-    rounder = _RounderStub(model, str(tmp_path))
-    writer = ShardWriter(rounder)
+    writer = _make_writer(model, str(tmp_path), monkeypatch)
 
     writer.save_module(model.transformer_blocks[0], "transformer_blocks.0")
     writer.finalize()

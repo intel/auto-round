@@ -830,8 +830,8 @@ def convert_hf_model(model: nn.Module, target_device: str = "cpu") -> tuple[nn.M
 
     rotation_config = getattr(quantization_config, "rotation_config", None)
     if rotation_config is not None and rotation_config:
-        from auto_round.experimental.transform.apply import apply_rotation_transform
-        from auto_round.experimental.transform.rotation_config import RotationConfig
+        from auto_round.algorithms.transforms.rotation.apply import apply_rotation_transform
+        from auto_round.algorithms.transforms.rotation.config import RotationConfig
 
         # apply forward hook
         act_rotation_config = RotationConfig(
