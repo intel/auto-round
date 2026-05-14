@@ -1137,3 +1137,37 @@ def apply_checkpoint_conversion_mapping(name: str, key_mapping: dict[str, str]) 
             if n_replace > 0:
                 return name
     return name
+
+
+AUDIOCAPS_URL = "https://raw.githubusercontent.com/cdjkim/audiocaps/master/dataset2.0/train.csv"
+
+
+def download_audiocaps_csv():
+    """Download AudioCaps train.csv and return the local cache path.
+
+    Downloads from GitHub on first use and caches in a temporary directory.
+
+    Returns:
+        str: Path to the cached CSV file.
+    """
+    import tempfile
+
+    import requests
+
+    cache_dir = os.path.join(tempfile.gettempdir(), "audiocaps_cache")
+    os.makedirs(cache_dir, exist_ok=True)
+    cache_file = os.path.join(cache_dir, "train.csv")
+
+    if not os.path.exists(cache_file):
+        logger.info("Downloading AudioCaps dataset from GitHub...")
+        try:
+            resp = requests.get(AUDIOCAPS_URL, timeout=60)
+            resp.raise_for_status()
+            with open(cache_file, "w", encoding="utf-8") as f:
+                f.write(resp.text)
+        except Exception as e:
+            raise RuntimeError(f"Failed to download AudioCaps dataset: {e}")
+    else:
+        logger.info(f"Loading AudioCaps dataset from cache: {cache_file}")
+
+    return cache_file

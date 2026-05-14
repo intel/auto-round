@@ -32,8 +32,6 @@ COCO_URL = {
     )
 }
 
-AUDIOCAPS_URL = {"audiocaps": ("https://raw.githubusercontent.com/cdjkim/audiocaps/master/dataset2.0/train.csv")}
-
 
 def register_dataset(name_list):
     """Class decorator to register a DATASET subclass to the registry.
@@ -147,26 +145,10 @@ def get_diffusion_dataloader(
             f.write(text_data)
         dataset = "captions_source.tsv"
 
-    if dataset in AUDIOCAPS_URL:
-        import tempfile
+    if dataset in ("audiocaps",):
+        from auto_round.utils.common import download_audiocaps_csv
 
-        import requests
-
-        cache_dir = os.path.join(tempfile.gettempdir(), "audiocaps_cache")
-        os.makedirs(cache_dir, exist_ok=True)
-        cache_file = os.path.join(cache_dir, "train.csv")
-
-        if not os.path.exists(cache_file):
-            logger.info(f"use dataset {dataset}, downloading ...")
-            try:
-                resp = requests.get(AUDIOCAPS_URL[dataset], timeout=60)
-                resp.raise_for_status()
-                with open(cache_file, "w", encoding="utf-8") as f:
-                    f.write(resp.text)
-            except Exception as e:
-                raise RuntimeError(f"Failed to download AudioCaps dataset: {e}")
-        else:
-            logger.info(f"Loading AudioCaps dataset from cache: {cache_file}")
+        cache_file = download_audiocaps_csv()
         dataset = cache_file
 
     if isinstance(dataset, str) and os.path.exists(dataset):

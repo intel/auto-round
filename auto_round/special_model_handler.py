@@ -726,9 +726,13 @@ def _qwen3_tts_forward(
         if input_ids is not None and inputs_embeds is None:
             text_embedding = getattr(tts_backbone.model, "text_embedding", None)
             text_projection = getattr(tts_backbone, "text_projection", None)
-            if text_embedding is not None and text_projection is not None:
-                inputs_embeds = text_projection(text_embedding(input_ids))
-                input_ids = None
+            if text_embedding is None or text_projection is None:
+                raise RuntimeError(
+                    "Qwen3-TTS backbone is missing text_embedding or text_projection. "
+                    "Cannot convert text input_ids to inputs_embeds for calibration."
+                )
+            inputs_embeds = text_projection(text_embedding(input_ids))
+            input_ids = None
 
         return tts_backbone(
             input_ids=input_ids,

@@ -552,9 +552,6 @@ def get_mbpp_dataset(
     return calib_dataset
 
 
-AUDIOCAPS_URL = "https://raw.githubusercontent.com/cdjkim/audiocaps/master/dataset2.0/train.csv"
-
-
 @register_dataset(["audiocaps", "AudioCaps"])
 def get_audiocaps_dataset(
     tokenizer,
@@ -586,30 +583,14 @@ def get_audiocaps_dataset(
         A HuggingFace Dataset with tokenized audio captions.
     """
     import csv
-    import io
-    import tempfile
 
-    import requests
+    from auto_round.utils.common import download_audiocaps_csv
 
     tokenizer_function = get_tokenizer_function(
         tokenizer, seqlen, apply_chat_template=apply_chat_template, system_prompt=system_prompt
     )
 
-    cache_dir = os.path.join(tempfile.gettempdir(), "audiocaps_cache")
-    os.makedirs(cache_dir, exist_ok=True)
-    cache_file = os.path.join(cache_dir, "train.csv")
-
-    if not os.path.exists(cache_file):
-        logger.info("Downloading AudioCaps dataset from GitHub...")
-        try:
-            resp = requests.get(AUDIOCAPS_URL, timeout=60)
-            resp.raise_for_status()
-            with open(cache_file, "w", encoding="utf-8") as f:
-                f.write(resp.text)
-        except Exception as e:
-            raise RuntimeError(f"Failed to download AudioCaps dataset: {e}")
-    else:
-        logger.info(f"Loading AudioCaps dataset from cache: {cache_file}")
+    cache_file = download_audiocaps_csv()
 
     samples = []
     with open(cache_file, "r", encoding="utf-8") as f:
