@@ -1,0 +1,143 @@
+trigger: none
+
+pr: 
+  autoCancel: true
+  drafts: false
+  branches:
+    include:
+      - main
+  paths:
+    include:
+      - auto_round_extension/ark/**
+      - .azure-pipelines/template/lib-build-template.yml
+    exclude:
+      - "*.md"
+      - "**/*.md"
+
+parameters:
+  - name: pythonVersions
+    displayName: "Python versions"
+    type: string
+    # Comma-separated list to avoid YAML float parsing in runtime inputs.
+    default: "3.12"
+  - name: torchVersions
+    displayName: "Torch versions"
+    type: string
+    # Comma-separated list to align with pythonVersions runtime input style.
+    default: "2.11.0"
+  - name: publishTarget
+    displayName: "Publish wheels to"
+    type: string
+    default: "none"
+    values:
+      - none
+      - testpypi
+      - pypi
+  - name: buildMode
+    displayName: "Build mode"
+    type: string
+    default: "dev"
+    values:
+      - dev
+      - release
+
+variables:
+  - name: ARTIFACT_DIR
+    value: $(Pipeline.Workspace)/auto-round-lib-wheel
+
+stages:
+  - template: template/lib-build-template.yml
+    parameters:
+      pythonVersions: ${{ parameters.pythonVersions }}
+      buildMode: ${{ parameters.buildMode }}
+
+  - stage: TestArk
+    displayName: Test Ark
+    dependsOn: BuildArkWheel
+    jobs:
+      - ${{ each pythonVersion in split(parameters.pythonVersions, ',') }}:
+        - ${{ each torchVersion in split(parameters.torchVersions, ',') }}:
+          - job: TestArk_py${{ replace(trim(pythonVersion), '.', '') }}_torch${{ replace(replace(trim(torchVersion), '.', ''), '+', '_') }}
+            displayName: "Test py${{ trim(pythonVersion) }} torch${{ trim(torchVersion) }}"
+            pool: B60
+            variables:
+              condaName: "kernel_binary_test_py${{ replace(trim(pythonVersion), '.', '') }}$(NODE_LABEL)"
+            steps:
+              - task: DownloadPipelineArtifact@2
+                inputs:
+                  artifact: auto-round-lib-wheel-cp${{ replace(trim(pythonVersion), '.', '') }}
+                  path: $(Build.SourcesDirectory)/ark_wheel
+                
+              - task: Bash@3
+                displayName: Run tests
+                inputs:
+                  targetType: inline
+                  script: |
+                    source ${HOME}/miniforge3/etc/profile.d/conda.sh
+                    set -eo pipefail
+                    cd auto_round_extension/ark
+                    CONDA_ENV="$(condaName)"
+                    PYTHON_VERSION="${{ trim(pythonVersion) }}"
+                    TORCH_VERSION="${{ trim(torchVersion) }}"
+                    if conda env list | grep -q "${CONDA_ENV}"; then conda remove -n ${CONDA_ENV} --all -y; fi
+                    conda create -n ${CONDA_ENV} python=${PYTHON_VERSION} -y
+                    conda activate ${CONDA_ENV}
+                    conda install pip -y
+                    pip install uv
+                    uv pip install torch=="${TORCH_VERSION}" --index-url https://download.pytorch.org/whl/xpu
+                    uv pip install $(Build.SourcesDirectory)/ark_wheel/*.whl
+                    uv pip install pytest pandas
+                    export LD_LIBRARY_PATH=${CONDA_PREFIX}/lib:$LD_LIBRARY_PATH
+                    export ZE_AFFINITY_MASK=${ZE_AFFINITY_MASK}
+
+                    echo -e "[pytest]\ntestpaths = .\n" > ./test/pytest.ini
+                    cat ./test/pytest.ini
+                    numactl --physcpubind="${NUMA_CPUSET:-0-27}" --membind="${NUMA_NODE:-0}" pytest -v ./test | tee kernel_ut.log 2>&1
+                    if [ $(grep -c "ERROR" kernel_ut.log) != 0 ];then
+                        echo "Find errors in UT test, please check the output..."
+                        exit 1
+                    fi
+
+  - stage: PublishWheels
+    displayName: Publish wheels (${{ parameters.publishTarget }})
+    dependsOn: TestArk
+    condition: and(succeeded(), ne('${{ parameters.publishTarget }}', 'none'))
+    jobs:
+      - job: PublishWheels
+        displayName: Publish all wheels to ${{ parameters.publishTarget }}
+        pool: B60
+        steps:
+          - checkout: none
+
+          - ${{ each pythonVersion in split(parameters.pythonVersions, ',') }}:
+            - task: DownloadPipelineArtifact@2
+              displayName: Download wheel (py${{ trim(pythonVersion) }})
+              inputs:
+                artifact: auto-round-lib-wheel-cp${{ replace(trim(pythonVersion), '.', '') }}
+                path: $(Pipeline.Workspace)/wheels
+
+          - task: Bash@3
+            displayName: Upload wheels to ${{ parameters.publishTarget }}
+            env:
+              TWINE_USERNAME: "__token__"
+              ${{ if eq(parameters.publishTarget, 'pypi') }}:
+                TWINE_PASSWORD: "$(PYPI_PASSWORD)"
+              ${{ else }}:
+                TWINE_PASSWORD: "$(TESTPYPI_PASSWORD)"
+            inputs:
+              targetType: inline
+              script: |
+                source ${HOME}/miniforge3/etc/profile.d/conda.sh
+                conda activate base
+                set -euxo pipefail
+                if [ -z "${TWINE_PASSWORD}" ]; then
+                  echo "Publish password is empty, skip publishing."
+                  exit 1
+                fi
+                pip install --upgrade twine
+                PUBLISH_TARGET="${{ parameters.publishTarget }}"
+                if [ "${PUBLISH_TARGET}" == "testpypi" ]; then
+                  twine upload --repository-url https://test.pypi.org/legacy/ $(Pipeline.Workspace)/wheels/*.whl
+                else
+                  twine upload $(Pipeline.Workspace)/wheels/*.whl
+                fi
