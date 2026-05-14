@@ -289,7 +289,7 @@ class BaseCompressor(object):
         # allocation early in the heap, matching the OLD arch allocation order
         # and reducing C-heap fragmentation (which is amplified on HPU).
         _device = get_major_device(device_map if device_map is not None else 0)
-        self._preload_model_config(model, trust_remote_code)
+        model_config = self._preload_model_config(model, trust_remote_code)
 
         self.model_context = ModelContext(
             model,
@@ -297,6 +297,7 @@ class BaseCompressor(object):
             platform=platform,
             model_dtype=model_dtype,
             trust_remote_code=trust_remote_code,
+            config=model_config,
             amp=amp,
             need_calib=self.need_calib,
             device=_device,
