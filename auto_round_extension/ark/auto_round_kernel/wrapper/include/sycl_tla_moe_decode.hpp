@@ -192,7 +192,10 @@ void launch_int4(sycl::queue* q, const ScalarT* activations, const uint8_t* weig
                w0 = (static_cast<float>(q0) - zero) * scale;
                w1 = (static_cast<float>(q1) - zero) * scale;
              } else {
-               // Sign-extend each nibble from 4-bit signed to 8-bit signed.
+               // Sign-extend each 4-bit signed nibble to 8-bit signed:
+               //   low nibble: shift left by 4 to move bit[3] into bit[7],
+               //               then arithmetic right-shift by 4 replicates the sign bit.
+               //   high nibble: same trick after masking off the low nibble.
                const int q0 = static_cast<int>(static_cast<int8_t>(packed << 4) >> 4);
                const int q1 = static_cast<int>(static_cast<int8_t>(packed & 0xF0) >> 4);
                w0 = static_cast<float>(q0) * scale;
