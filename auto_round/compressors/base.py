@@ -547,7 +547,9 @@ class BaseCompressor(object):
             if predefined_ignore_layers and self.quant_block_list:
                 block_prefixes = [block for group in self.quant_block_list for block in group]
                 predefined_ignore_layers = [
-                    name for name in predefined_ignore_layers if any(name.startswith(prefix) for prefix in block_prefixes)
+                    name
+                    for name in predefined_ignore_layers
+                    if any(name.startswith(prefix) for prefix in block_prefixes)
                 ]
             predefined_ignore_layers = collapse_ignore_layers(predefined_ignore_layers)
             compressed_predefined_ignore_layers = compress_layer_names(predefined_ignore_layers)
