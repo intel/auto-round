@@ -877,9 +877,7 @@ class ARK:
             if weights.dtype != torch.uint8:
                 raise ValueError("Int4 packed weights must be torch.uint8")
             if weights.shape[2] * 2 != K:
-                raise ValueError(
-                    f"Int4 packed weights last dim {weights.shape[2]} must equal K/2 ({K // 2})"
-                )
+                raise ValueError(f"Int4 packed weights last dim {weights.shape[2]} must equal K/2 ({K // 2})")
             if scales is None:
                 raise ValueError("scales is required for int4 weights")
             if scales.dtype != activations.dtype:

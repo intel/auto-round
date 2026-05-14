@@ -265,9 +265,7 @@ def _moe_decode_reference(activations, dequant_weights, num_tokens_per_expert):
 
 
 @pytest.mark.skipif(not is_xpu_available(), reason="XPU not available")
-@pytest.mark.skipif(
-    not has_moe_gemm_decode(), reason="MoE decode GEMV kernel not built (need ARK_SYCL_TLA=ON)"
-)
+@pytest.mark.skipif(not has_moe_gemm_decode(), reason="MoE decode GEMV kernel not built (need ARK_SYCL_TLA=ON)")
 class TestMoEGemmDecode:
     """Unit tests for the MoE decode GEMV kernel.
 
