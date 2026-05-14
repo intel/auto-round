@@ -19,7 +19,7 @@ import re
 import sys
 from dataclasses import asdict, fields
 from enum import Enum
-from typing import Callable, Union
+from typing import TYPE_CHECKING, Callable, Union
 
 import torch
 import transformers
@@ -27,8 +27,10 @@ from torch.amp import autocast
 
 from auto_round.export.export_to_gguf.config import GGML_QUANT_SIZES, GGUF_CONFIG, GGUF_INNER_CONFIG, QK_K, ModelType
 from auto_round.logger import logger
-from auto_round.schemes import QuantizationScheme, get_gguf_scheme, preset_name_to_scheme
-from auto_round.utils import check_to_quantized, infer_bits_by_data_type, to_standard_regex
+from auto_round.utils import check_to_quantized, get_layer_names_in_block, get_module, to_standard_regex
+
+if TYPE_CHECKING:
+    from auto_round.schemes import QuantizationScheme
 
 
 class BackendDataType(str, Enum):
@@ -56,6 +58,16 @@ def is_mx_int(backend):
 def is_nv_fp(backend):
     backend = backend.lower()
     return BackendDataType.NV_FP in backend
+
+
+def is_wint_woq(ar):
+    """Returns True for integer weight-only quantization with non-quantized activations (`act_bits >= 16`)."""
+    return "int" in ar.data_type and ar.act_bits >= 16 and ar.super_group_size is None
+
+
+def is_wint_a16(ar):
+    """Backward-compatible alias for `is_wint_woq()`."""
+    return is_wint_woq(ar)
 
 
 def _is_weight_fp8_activation_static_fp8(
@@ -95,19 +107,9 @@ def is_static_wfp8afp8(ar_or_format: Union[str, Callable]) -> bool:
     return False
 
 
-def is_wint_woq(ar: Callable) -> bool:
-    """Returns True for integer weight-only quantization with non-quantized activations (`act_bits >= 16`)."""
-    return "int" in ar.data_type and ar.act_bits >= 16 and ar.super_group_size is None
-
-
-def is_wint_a16(ar: Callable) -> bool:
-    """Backward-compatible alias for `is_wint_woq()`."""
-    return is_wint_woq(ar)
-
-
 def is_dynamic_wint8aint8(ar_or_format: Union[str, Callable]) -> bool:
     if isinstance(ar_or_format, str):
-        return "int8_w8a8" in ar_or_format.lower() or "int8" in ar_or_format.lower()
+        return "int8_w8a8" in ar_or_format.lower()
     if not ar_or_format.act_dynamic:
         return False
     if is_wint8aint8(ar_or_format):
@@ -225,6 +227,30 @@ def collect_best_params(block, cache_device="cpu"):
     return params
 
 
+def infer_bits_by_data_type(data_type: str):
+    """Infer bits by data_type
+
+    Args:
+        data_type (str): data_type
+
+    Returns:
+        int: bits inferred by data_type, None means cannot infer correct bits by data_type
+    """
+    from auto_round.utils import SUPPORTED_DTYPES
+
+    if data_type is None:
+        return 16
+    for supported_dtype in SUPPORTED_DTYPES:
+        if data_type.startswith(supported_dtype) and len(data_type) > len(supported_dtype):
+            ##first check the following two bits
+            suc_2str = data_type[len(supported_dtype) : len(supported_dtype) + 2]
+            if str.isdigit(suc_2str):
+                return int(suc_2str)
+            if str.isdigit(data_type[len(supported_dtype)]):
+                return int(data_type[len(supported_dtype)])
+    return None
+
+
 def _get_safetensor_layer_names_not_in_model(model, all_module_names: list) -> list:
     """Collect layer names from safetensor files that are not loaded into the model.
 
@@ -295,13 +321,14 @@ def set_layer_config(
     enable_gguf_official_mixed: bool = True,
     is_mllm: bool = False,
     fill_default_value=True,
+    gguf_format_name: str = None,
 ) -> tuple[dict, bool, dict]:
     """
     Normalize, validate, and expand layer-specific quantization configs.
     Returns (final_layer_config, has_quant_layer_outside_block)
     """
 
-    from auto_round.schemes import get_gguf_scheme
+    from auto_round.schemes import QuantizationScheme, get_gguf_scheme, preset_name_to_scheme
     from auto_round.utils.model import get_layer_names_in_block, get_lm_head_name, get_module, is_separate_lm_head
 
     # ---- helpers -------------------------------------------------
@@ -323,18 +350,17 @@ def set_layer_config(
         elif isinstance(item, QuantizationScheme):
             config = asdict(item)
         elif isinstance(item, dict):
-            # Support "scheme" key inside dict: resolve the preset and merge overrides
-            if "scheme" in item:
-                scheme_name = item.pop("scheme")
-                base = asdict(preset_name_to_scheme(scheme_name.upper()))
-                base.update(item)
-                item = base
+            # "in_blocks" is an internal bookkeeping key injected by LLM-Compressor;
+            # silently drop it before validation.
+            item = {k: v for k, v in item.items() if k != "in_blocks"}
+            scheme_name = item.pop("scheme", None)
+            config = asdict(preset_name_to_scheme(scheme_name.upper())) if scheme_name is not None else {}
             invalid = set(item) - set(scheme_keys + ("fixed_by_user", "scale_dtype"))
             if invalid:
                 raise ValueError(
                     f"Invalid keys {invalid} in layer_config for '{layer_name}'. " f"Allowed keys: {scheme_keys}"
                 )
-            config = dict(item)
+            config.update(item)
         else:
             raise TypeError(
                 f"Unsupported type for layer_config[{layer_name}]: {type(item)}. "
@@ -398,7 +424,7 @@ def set_layer_config(
 
     # 5. collect supported modules
     embedding_types = (torch.nn.Embedding,)
-    gguf_name = get_gguf_scheme(default_scheme)
+    gguf_name = gguf_format_name or get_gguf_scheme(default_scheme)
     if gguf_name:
         if torch.nn.Embedding not in supported_types:
             supported_types = (*supported_types, torch.nn.Embedding)
@@ -650,6 +676,7 @@ def get_layer_config_by_gguf_format(layer_config, target_gguf_format: str, model
 
     import gguf  # pylint: disable=E0401
 
+    from auto_round.schemes import QuantizationScheme, get_gguf_scheme
     from auto_round.utils.common import MM_KEYS, LazyImport
     from auto_round.utils.model import get_lm_head_name, get_module
 
@@ -1116,3 +1143,120 @@ class IndexSampler:
         batch = self.indices[self.index : self.index + self.batch_size]
         self.index += self.batch_size
         return batch
+
+
+def _get_quantized_layer_names_outside_blocks(model, layer_config, supported_types, quant_block_list) -> list:
+    """Gets the names of quantized layers outside blocks in the model.
+
+    Returns:
+        list: List of layer names outside blocks.
+    """
+    if layer_config is None or len(layer_config) == 0:
+        return []
+
+    layer_names = []
+    all_layers_in_block = get_layer_names_in_block(model, supported_types, quant_block_list)
+
+    for key in layer_config.keys():
+        if key in all_layers_in_block:
+            continue
+        layer = get_module(model, key)
+        if layer is None:
+            logger.error(f"could not find layer {key} in the model, exit...")
+            exit(-1)
+        if type(layer) in supported_types and check_to_quantized(layer_config[key]):
+            layer_names.append(key)
+
+    return layer_names
+
+
+def _get_diffusion_save_folder_name(format) -> str:
+    """Generates the save folder name based on the provided format string.
+
+    If there are multiple formats to handle, the function creates a subfolder
+    named after the format string with special characters replaced. If there's
+    only one format, it returns the original output directory directly.
+
+    Args:
+        format_str (str): The format identifier (e.g., 'gguf:q2_k_s').
+
+    Returns:
+        str: The path to the folder where results should be saved.
+    """
+    from auto_round.context.compress import CompressContext
+    from auto_round.context.model import ModelContext
+
+    compress_context = CompressContext.get_context()
+    model_context = ModelContext.get_context()
+
+    # Replace special characters to make the folder name filesystem-safe
+    sanitized_format = format.get_backend_name().replace(":", "-").replace("_", "-")
+
+    formats = compress_context.formats
+    # Use a subfolder only if there are multiple formats
+    if len(formats) > 1:
+        return (
+            os.path.join(compress_context.output_dir, sanitized_format, "transformer")
+            if compress_context.is_immediate_saving
+            else os.path.join(compress_context.output_dir, sanitized_format, "transformer")
+        )
+
+    # if use is_immediate_saving, we need to save model in self.output_dir/transformer folder
+    return (
+        os.path.join(compress_context.output_dir, "transformer")
+        if compress_context.is_immediate_saving
+        else compress_context.output_dir
+    )
+
+
+def _get_save_folder_name(format, *args, **kwargs) -> str:
+    """Generates the save folder name based on the provided format string.
+
+    If there are multiple formats to handle, the function creates a subfolder
+    named after the format string with special characters replaced. If there's
+    only one format, it returns the original output directory directly.
+
+    Args:
+        format_str (str): The format identifier (e.g., 'gguf:q2_k_s').
+
+    Returns:
+        str: The path to the folder where results should be saved.
+    """
+    from auto_round.context.compress import CompressContext
+    from auto_round.context.model import ModelContext
+
+    compress_context = CompressContext.get_context()
+    model_context = ModelContext.get_context()
+    if model_context.is_diffusion:
+        return _get_diffusion_save_folder_name(format)
+    # Replace special characters to make the folder name filesystem-safe
+    sanitized_format = format.get_backend_name().replace(":", "-").replace("_", "-")
+
+    # Use a subfolder only if there are multiple formats
+    if len(compress_context.formats) > 1:
+        return os.path.join(compress_context.output_dir, sanitized_format)
+
+    return compress_context.output_dir
+
+
+def immediate_pack(name: str, layer_config: dict):
+    from auto_round.context.compress import CompressContext
+    from auto_round.context.model import ModelContext
+
+    compress_context = CompressContext.get_context()
+    model_context = ModelContext.get_context()
+
+    if not compress_context.is_immediate_packing:
+        return
+    compress_context.formats[0].immediate_pack(
+        name=name,
+        model=model_context.model,
+        device=compress_context.device,
+        output_dir=_get_save_folder_name(compress_context.formats[0]),
+        layer_config=layer_config,
+        tokenizer=model_context.tokenizer,
+        mllm=model_context.is_mllm,
+        processor=getattr(model_context, "processor", None),
+        image_processor=getattr(model_context, "image_processor", None),
+        quant_nontext_module=getattr(model_context, "quant_nontext_module", False),
+    )

@@ -22,20 +22,26 @@ except Exception as error:
 
 
 def get_build_version():
+    print(f"Getting build version for build mode: {build_mode}")
+    if build_mode == "release":
+        return __version__
     if os.path.exists("PKG-INFO"):
         with open("PKG-INFO", encoding="utf-8") as f:
             for line in f:
                 if line.startswith("Version:"):
-                    return line.split(":", 1)[1].strip()
-
-    if build_mode == "release":
-        return __version__
+                    version = line.split(":", 1)[1].strip()
+                    print(f"Read version from PKG-INFO: {version}")
+                    return version
     try:
-        result = subprocess.run(["git", "describe", "--tags"], capture_output=True, text=True, check=True)
-        distance = result.stdout.strip().split("-")[-2]
-        commit = result.stdout.strip().split("-")[-1]
-        return f"{__version__}.dev{distance}+{commit}"
-    except subprocess.CalledProcessError:
+        result = subprocess.run(
+            ["git", "log", "-1", "--format=%cd", "--date=format:%Y%m%d%H%M"], capture_output=True, text=True, check=True
+        )
+        date_str = result.stdout.strip()
+        version = f"{__version__}.dev{date_str}"
+        print(f"Git commit date: {date_str}, version: {version}")
+        return version
+    except subprocess.CalledProcessError as e:
+        print(f"Warning: git command failed: {e}. Falling back to version {__version__}")
         return __version__
 
 

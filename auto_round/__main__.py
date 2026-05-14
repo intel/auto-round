@@ -20,7 +20,7 @@ import sys
 import torch
 
 from auto_round.auto_scheme import AutoScheme
-from auto_round.compressors import BaseCompressor
+from auto_round.compressors.base import BaseCompressor
 from auto_round.eval.eval_cli import EvalArgumentParser, eval, eval_task_by_task
 from auto_round.eval.evaluation import run_model_evaluation
 from auto_round.schemes import PRESET_SCHEMES, preset_name_to_scheme
@@ -799,7 +799,7 @@ def tune(args):
         )
     rot_config = None
     if args.rotation_type:
-        from auto_round.experimental.transform.rotation_config import RotationConfig
+        from auto_round.algorithms.transforms.rotation.config import RotationConfig
 
         rot_config = RotationConfig(hadamard_type=args.rotation_type)
 
