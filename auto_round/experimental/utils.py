@@ -16,11 +16,12 @@ from typing import Any
 
 import torch
 
-from auto_round.experimental.transform.hadamard_config import HadamardConfig
-from auto_round.experimental.transform.hadamards import HADAMARDS
+from auto_round.algorithms.transforms.rotation.config import RotationConfig
+from auto_round.algorithms.transforms.rotation.transforms import HADAMARDS
+from auto_round.compressors.utils import is_mx_fp, is_nv_fp
 from auto_round.utils import logger
 
-SUPPORTED_QUANTIZATION_SCHEMES = ["MXFP4"]
+SUPPORTED_QUANTIZATION_SCHEMES = ["MXFP8", "MXFP4", "NVFP4"]
 
 
 def per_tensor_fp8_qdq(
@@ -114,10 +115,12 @@ def clean_model_parameters_and_buffers_(model: torch.nn.Module, name_tuple: tupl
         _clean_param_or_buff_if_exists(module, name_tuple)
 
 
-def is_triton_kernel_available() -> bool:
+def is_triton_kernel_available(data_type: str) -> bool:
     """
     Best-effort check for whether Triton kernel path can be used.
     """
+    if is_nv_fp(data_type):
+        return False
     try:
         import triton  # pylint: disable=E0401
     except Exception:
@@ -127,70 +130,31 @@ def is_triton_kernel_available() -> bool:
         return False
 
     try:
-        from auto_round.experimental.transform.triton.mxfp4 import mxfp4_forward_kernel_wrapper  # pylint: disable=E0401
+        from auto_round.algorithms.transforms.rotation.utils.triton.mxfp4 import (  # pylint: disable=E0401
+            mxfp4_forward_kernel_wrapper,
+        )
     except Exception:
         return False
 
     return True
 
 
-def normalize_hadamard_config(hadamard_config: str | dict | HadamardConfig | None) -> dict[str, Any]:
-    """
-    Normalize and validate `hadamard_config`.
+def dump_group_size_to_rotation_config(rotation_config: str | dict | RotationConfig, group_size: int):
+    from auto_round.algorithms.transforms.rotation.config import dump_group_size_to_rotation_config as _impl
 
-    Supported input types:
-        - None          -> {}
-        - dict          -> validated via HadamardConfig
-        - HadamardConfig -> validated & converted to dict
-        - str           -> shorthand for `transform_type` in TRANSFORMS keys
+    return _impl(rotation_config, group_size)
 
-    On any validation failure, raises ValueError/TypeError.
-    """
-    # 1) None -> {}
-    if hadamard_config is None:
-        return {}
 
-    # 2) Already a HadamardConfig instance
-    if isinstance(hadamard_config, HadamardConfig):
-        # Ensure it passes its own validation and convert to dict
-        cfg = HadamardConfig.model_validate(hadamard_config).model_dump()
-        return cfg
+def to_dict_rotation_config(rotation_config: str | dict | RotationConfig):
+    from auto_round.algorithms.transforms.rotation.config import to_dict_rotation_config as _impl
 
-    # 3) dict -> validate via HadamardConfig
-    if isinstance(hadamard_config, dict):
-        try:
-            cfg = HadamardConfig.model_validate(hadamard_config).model_dump()
-        except Exception as e:
-            raise ValueError(f"Invalid hadamard_config dict: {e}") from e
-        return cfg
+    return _impl(rotation_config)
 
-    # 4) str -> shorthand for transform_type
-    if isinstance(hadamard_config, str):
-        key = hadamard_config.strip()
-        if not key:
-            return {}
 
-        if key == "default":
-            cfg = HadamardConfig()
-            return cfg.model_dump()
+def normalize_rotation_config(rotation_config: str | dict | RotationConfig | None, data_type: str) -> dict[str, Any]:
+    from auto_round.algorithms.transforms.rotation.config import normalize_rotation_config as _impl
 
-        if key not in HADAMARDS:
-            raise ValueError(
-                f"Invalid hadamard_config string: {key!r}. " f"Expected one of {sorted(HADAMARDS.keys())}."
-            )
-
-        cfg_dict = {"hadamard_type": key}
-
-        try:
-            cfg = HadamardConfig.model_validate(cfg_dict).model_dump()
-        except Exception as e:
-            raise ValueError(f"hadamard_config built from string {key!r} is invalid for HadamardConfig: {e}") from e
-
-        return cfg
-
-    raise TypeError(
-        "hadamard_config must be one of: None, dict, HadamardConfig, or str " f"(got {type(hadamard_config).__name__})"
-    )
+    return _impl(rotation_config, data_type)
 
 
 def check_supported_schemes(scheme: str):

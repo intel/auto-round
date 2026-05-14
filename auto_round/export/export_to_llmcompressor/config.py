@@ -28,16 +28,17 @@
 from auto_round.utils import logger
 
 
-def check_compressed_tensors_supported():  # pragma: no cover
+def check_compressed_tensors_supported(raise_error: bool = False):  # pragma: no cover
     try:
         import compressed_tensors  # noqa: F401
 
         return True
     except ImportError:
-        logger.error(
-            "Please install compressed-tensors via 'pip install compressed-tensors'" " to save as llm-compressor format"
-        )
-        exit(-1)
+        msg = "Please install compressed-tensors via 'pip install compressed-tensors' to save as llm-compressor format"
+        logger.error(msg)
+        if raise_error:
+            raise ImportError(msg) from None
+        return False
 
 
 if check_compressed_tensors_supported():
@@ -64,7 +65,7 @@ def initialize_quantization(scheme, targets=["Linear"], config_groups=None, kv_c
     kv_cache_scheme = kv_cache_scheme
     ignore = ignore
     using_mxfp4_for_mxfp8 = False
-    check_compressed_tensors_supported()
+    check_compressed_tensors_supported(raise_error=True)
     if scheme is not None and config_groups is not None:
         raise ValueError("Please specify either `scheme` or `config_groups`")
 

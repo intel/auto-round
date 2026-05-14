@@ -1,11 +1,14 @@
 import os
 import shutil
+from types import SimpleNamespace
 
 import pytest
-import torch
-from transformers import AutoModelForCausalLM, AutoTokenizer
+from transformers import AutoTokenizer
 
 from auto_round import AutoRound
+from auto_round.algorithms.quantization.base import BaseQuantizers
+from auto_round.algorithms.quantization.rtn.config import RTNConfig
+from auto_round.compressors.utils import block_forward
 
 from ...envs import require_gguf
 from ...helpers import get_model_path, get_tiny_model
@@ -64,9 +67,16 @@ class TestTorchCompile:
             seqlen=16,
             enable_torch_compile=True,
         )
-        autoround.quantize_and_save(output_dir=self.save_dir, format="gguf:q2_k_s")
+        _, quantized_model_path = autoround.quantize_and_save(output_dir=self.save_dir, format="gguf:q2_k_s")
 
-        saved_files = [f for f in os.listdir(self.save_dir) if f.endswith(".gguf")]
+        saved_files = [f for f in os.listdir(quantized_model_path) if f.endswith(".gguf")]
         assert len(saved_files) > 0, "No GGUF file was generated"
 
         shutil.rmtree(self.save_dir, ignore_errors=True)
+
+    def test_opt_rtn_uses_plain_block_forward(self):
+        config = RTNConfig(bits=4, data_type="int", act_bits=16, disable_opt_rtn=False)
+        quantizer = BaseQuantizers(config)
+        quantizer.compress_context = SimpleNamespace(enable_torch_compile=True, device="cpu")
+
+        assert quantizer._resolve_block_forward() is block_forward

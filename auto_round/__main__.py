@@ -17,11 +17,13 @@ import os
 import re
 import sys
 
+import torch
+
 from auto_round.auto_scheme import AutoScheme
-from auto_round.compressors import BaseCompressor
+from auto_round.compressors.base import BaseCompressor
 from auto_round.eval.eval_cli import EvalArgumentParser, eval, eval_task_by_task
 from auto_round.eval.evaluation import run_model_evaluation
-from auto_round.schemes import PRESET_SCHEMES
+from auto_round.schemes import PRESET_SCHEMES, preset_name_to_scheme
 from auto_round.utils import (
     clear_memory,
     get_device_and_parallelism,
@@ -38,6 +40,7 @@ RECIPES = {
 
 
 class BasicArgumentParser(argparse.ArgumentParser):
+
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
         self.add_argument(
@@ -182,7 +185,6 @@ class BasicArgumentParser(argparse.ArgumentParser):
             help="Disable trusting remote code when loading models. "
             "Use for security if you don't trust the model source.",
         )
-
         tuning = self.add_argument_group("Tuning Arguments")
         tuning.add_argument(
             "--ignore_scale_zp_bits",
@@ -293,6 +295,22 @@ class BasicArgumentParser(argparse.ArgumentParser):
             dest="disable_opt_rtn",
             help="Enable optimization for RTN mode when iters=0.",
         )
+        group_model_free = tuning.add_mutually_exclusive_group()
+        group_model_free.add_argument(
+            "--model_free",
+            action="store_true",
+            help="Force model-free quantization mode. "
+            "Downloads and quantizes safetensors files directly using RTN, "
+            "without loading the full model into memory. "
+            "Only supports auto_round output format.",
+        )
+        group_model_free.add_argument(
+            "--disable_model_free",
+            action="store_true",
+            help="Disable the automatic model-free routing that activates when "
+            "--iters 0 --disable_opt_rtn is combined with a supported INT WOQ scheme. "
+            "Use this to force the regular AutoRound flow.",
+        )
 
         scheme = self.add_argument_group("Scheme Arguments")
         scheme.add_argument("--bits", default=None, type=int, help="Number of bits for weight quantization. ")
@@ -303,6 +321,9 @@ class BasicArgumentParser(argparse.ArgumentParser):
             help="Group size for weight quantization.",
         )
         scheme.add_argument("--asym", action="store_true", help="Use asymmetric quantization instead of symmetric.")
+        scheme.add_argument(
+            "--act_asym", action="store_true", help="Use asymmetric quantization for activation instead of symmetric."
+        )
         scheme.add_argument(
             "--data_type",
             "--dtype",
@@ -372,6 +393,13 @@ class BasicArgumentParser(argparse.ArgumentParser):
             type=str,
             choices=["fp8", "float8_e4m3fn"],
             help="Data type for static quantize attention. ",
+        )
+        scheme.add_argument(
+            "--rotation_type",
+            default=None,
+            type=str,
+            choices=["hadamard", "random_hadamard"],
+            help="Research feature: applies a rotation (e.g., Hadamard) to reduce activation/weight outliers",
         )
         gguf = self.add_argument_group("Double Quant Arguments")
         gguf.add_argument(
@@ -583,9 +611,70 @@ def tune(args):
     if "marlin" in args.format and args.asym is True:
         raise RuntimeError("marlin backend only supports sym quantization, please remove --asym")
 
-    device_str, use_auto_mapping = get_device_and_parallelism(args.device_map)
+    # ======================= Model-Free Mode =======================
+    # The model-free path is now integrated into AutoRound itself.  We only
+    # need to forward the relevant flags; AutoRound handles auto-routing
+    # (when iters=0 + disable_opt_rtn + supported scheme) and explicit
+    # ``--model_free``.  Layer config / ignore-layers / output-dir handling
+    # for model-free still needs special treatment because the model is
+    # never loaded here.
+    explicit_model_free = bool(getattr(args, "model_free", False))
+    from auto_round.compressors.model_free import is_model_free_supported_scheme
 
-    import torch
+    auto_model_free = (
+        not explicit_model_free
+        and not getattr(args, "disable_model_free", False)
+        and getattr(args, "iters", None) == 0
+        and getattr(args, "disable_opt_rtn", None) is True
+        and is_model_free_supported_scheme(args.scheme, vars(args))
+        and (
+            str(getattr(args, "format", "auto_round") or "auto_round").lower().replace(" ", "").split(",")[0]
+            == "auto_round"
+            or format.startswith("auto_round")
+        )
+    )
+
+    if explicit_model_free or auto_model_free:
+        scheme = args.scheme.upper()
+        if scheme not in PRESET_SCHEMES:
+            raise ValueError(f"{scheme} is not supported. Only {list(PRESET_SCHEMES.keys())} are supported")
+        if not is_model_free_supported_scheme(scheme, vars(args)) and not explicit_model_free:
+            logger.info(
+                f"Auto-routing to model-free is skipped: scheme '{scheme}' is not in "
+                f"the model-free allowlist. Falling back to the regular AutoRound flow."
+            )
+        else:
+            layer_config = {}
+            if args.layer_config:
+                layer_config = parse_layer_config_arg(args.layer_config)
+
+            model_name = args.model.rstrip("/")
+            output_dir = args.output_dir
+            if output_dir == "./tmp_autoround" and model_name.split("/")[-1].strip(".") != "":
+                s = preset_name_to_scheme(scheme)
+                suffix = f"g{s.group_size}" if s.group_size > 0 else f"a{s.act_bits}"
+                output_dir = os.path.join(args.output_dir, model_name.split("/")[-1] + f"-w{s.bits}{suffix}")
+
+            from auto_round import AutoRound
+
+            ar = AutoRound(
+                model_name,
+                scheme=scheme,
+                sym=getattr(args, "sym", None),
+                group_size=getattr(args, "group_size", None),
+                iters=0,
+                disable_opt_rtn=True,
+                model_free=True,
+                layer_config=layer_config,
+                ignore_layers=args.ignore_layers,
+                quant_lm_head=getattr(args, "quant_lm_head", False),
+                quant_nontext_module=getattr(args, "quant_nontext_module", False),
+                device_map=args.device_map,
+            )
+            ar.quantize_and_save(output_dir=output_dir, format=args.format)  # pylint: disable=E1101
+            return
+
+    device_str, use_auto_mapping = get_device_and_parallelism(args.device_map)
 
     if args.enable_torch_compile:
         logger.info(
@@ -605,8 +694,11 @@ def tune(args):
 
     if args.quant_lm_head:
         for format in formats:
-            if "auto_round" not in format and "fake" not in format:
-                auto_round_formats = [s for s in SUPPORTED_FORMATS if s.startswith("auto_round")]
+            # MLX (native ``mlx`` and ``auto_round:mlx``) supports per-layer
+            # mixed-bit quantization including lm_head; treat it the same as
+            # auto_round / fake here.
+            if "auto_round" not in format and "fake" not in format and "mlx" not in format:
+                auto_round_formats = [s for s in SUPPORTED_FORMATS if s.startswith("auto_round") or s == "mlx"]
                 raise ValueError(
                     f"{format} is not supported for lm-head quantization, please change to {auto_round_formats}"
                 )
@@ -659,6 +751,7 @@ def tune(args):
         act_group_size=args.act_group_size,
         act_data_type=args.act_data_type,
         act_dynamic=act_dynamic,
+        act_sym=None if not args.asym else False,
         super_bits=args.super_bits,
         super_group_size=args.super_group_size,
         quant_lm_head=args.quant_lm_head,
@@ -704,10 +797,16 @@ def tune(args):
             low_gpu_mem_usage=True,  # force it to be True as it uses much smaller vram but similar time cost
             low_cpu_mem_usage=low_cpu_mem_usage,
         )
+    rot_config = None
+    if args.rotation_type:
+        from auto_round.algorithms.transforms.rotation.config import RotationConfig
+
+        rot_config = RotationConfig(hadamard_type=args.rotation_type)
 
     autoround: BaseCompressor = AutoRound(
         model=model_name,
         platform=args.platform,
+        format=args.format,
         scheme=scheme,
         dataset=args.dataset,
         iters=args.iters,
@@ -727,47 +826,13 @@ def tune(args):
         model_dtype=args.model_dtype,
         momentum=args.momentum,
         trust_remote_code=not args.disable_trust_remote_code,
+        rotation_config=rot_config,
     )
 
-    model_name = args.model.rstrip("/")
-
-    if model_name.split("/")[-1].strip(".") == "" and "gguf" not in args.format:
-        if autoround.group_size <= 0:
-            if "fp" in autoround.act_data_type:
-                suffix = f"afp{autoround.act_bits}"
-            else:
-                suffix = f"a{autoround.act_bits}"
-        else:
-            suffix = f"g{autoround.group_size}"
-        export_dir = os.path.join(args.output_dir, f"w{autoround.bits}{suffix}")
-    elif model_name.split("/")[-1].strip(".") == "" and "gguf" in args.format:
-        export_dir = args.output_dir
-    elif model_name.split("./")[-1].strip("./") != "" and "gguf" in args.format:
-        export_dir = os.path.join(args.output_dir, model_name.split("/")[-1] + "-gguf")
-    else:
-        if isinstance(autoround.group_size, tuple):
-            assert len(autoround.group_size) == 2, f"Only support 2D group_size, but get {autoround.group_size}"
-            suffix = f"g{autoround.group_size[0]}x{autoround.group_size[1]}"
-        else:
-            if autoround.group_size <= 0:
-                if "fp" in autoround.act_data_type:
-                    suffix = f"afp{autoround.act_bits}"
-                else:
-                    suffix = f"a{autoround.act_bits}"
-            else:
-                suffix = f"g{autoround.group_size}"
-        prefix = (
-            autoround.data_type.lower().replace("_", "")
-            if "int" not in autoround.data_type or "mx" in autoround.data_type
-            else ""
-        )
-        export_dir = os.path.join(
-            args.output_dir,
-            model_name.split("/")[-1] + (f"-{prefix}" if prefix else "") + f"-w{autoround.bits}{suffix}",
-        )
-
     # ======================= Quantize and save model =======================
-    model, folders = autoround.quantize_and_save(export_dir, format=args.format)  # pylint: disable=E1101
+    # Export directory is now derived automatically inside quantize_and_save via
+    # BaseCompressor._get_export_dir(), so we only need to pass the base output_dir.
+    model, folders = autoround.quantize_and_save(args.output_dir, format=args.format)  # pylint: disable=E1101
     tokenizer = autoround.tokenizer  # pylint: disable=E1101
 
     model.eval()
@@ -841,6 +906,10 @@ def run_light():
 
 def run_fast():
     start("fast")
+
+
+def run_mllm():
+    run()
 
 
 if __name__ == "__main__":

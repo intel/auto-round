@@ -85,7 +85,51 @@ def quant_element(tensor, ebits, mbits, max_norm, mantissa_rounding="even"):
     return tensor
 
 
-def quant_mx(tensor, bits=4, group_size=-1, v=0, max_scale=1.0, mantissa_rounding="even", data_type="mx_fp", **kwargs):
+@torch.inference_mode()
+def qdq_mxfp(tensor, max_val, max_norm, emax, ebits, mbits):
+    shared_exp = torch.where(max_val == 0, torch.ones_like(max_val), torch.log2(max_val))
+    shared_exp = torch.floor(shared_exp)
+    scale_emax = 2 ** (8 - 1) - 1
+    shared_exp = (shared_exp - emax).clamp(min=-scale_emax, max=scale_emax)
+
+    scale = torch.pow(2.0, shared_exp)
+    tensor = tensor / scale
+    tensor = torch.clamp(tensor, min=-max_norm, max=max_norm)
+    tensor = quant_element(tensor, ebits, mbits, max_norm)
+    return tensor * scale
+
+
+def search_mx_scale(tensor, bits, qw=None):
+    data_type = "mx_fp" + str(bits)
+    ebits, mbits, emax, max_norm, _ = MXFP_FORMAT_CACHE[data_type]
+    tensor = tensor.to(torch.float32)
+    max_val, _ = torch.max(torch.abs(tensor), dim=-1, keepdim=True)
+    qdq_t = qdq_mxfp(tensor, max_val, max_norm, emax, ebits, mbits)
+    best_loss = torch.sum((qdq_t - tensor) ** 2 * qw, dim=-1)
+    scales = torch.ones_like(max_val)
+    for scale_value in range(50, 152):
+        tmp_scale = scale_value / 100.0
+        if tmp_scale == 1.0:
+            continue
+        tmp_qdq_t = qdq_mxfp(tensor, max_val * tmp_scale, max_norm, emax, ebits, mbits)
+        loss = torch.sum((tmp_qdq_t - tensor) ** 2 * qw, dim=-1)
+        replace_id = loss < best_loss
+        scales[replace_id] = tmp_scale
+        best_loss[replace_id] = loss[replace_id]
+    return scales
+
+
+def quant_mx(
+    tensor,
+    bits=4,
+    group_size=-1,
+    v=0,
+    max_scale=1.0,
+    init_scale=1.0,
+    mantissa_rounding="even",
+    data_type="mx_fp",
+    **kwargs,
+):
     """Quantize the given tensor using the specified parameters.
 
     This function performs quantization on the `tensor` tensor according to the
@@ -109,15 +153,16 @@ def quant_mx(tensor, bits=4, group_size=-1, v=0, max_scale=1.0, mantissa_roundin
         KeyError: If `data_type` is not found in `MXFP_FORMAT_CACHE`.
     """
     tensor, orig_shape, pad_len = reshape_pad_tensor_by_group_size(tensor, group_size)
+    init_scale = 1.0 if init_scale is None else init_scale
     data_type = data_type if data_type in MXFP_FORMAT_CACHE else "mx_fp" + str(bits)
     ebits, mbits, emax, max_norm, min_norm = MXFP_FORMAT_CACHE[data_type]
     orig_dtype = tensor.dtype
     tensor = tensor.to(torch.float32)
     max_val, _ = torch.max(torch.abs(tensor), dim=-1, keepdim=True)
     if isinstance(max_scale, torch.Tensor):
-        max_val *= (max_scale.unsqueeze(dim=-1)).to(tensor.device)
+        max_val *= init_scale * (max_scale.unsqueeze(dim=-1)).to(tensor.device)
     else:
-        max_val *= max_scale
+        max_val *= init_scale * max_scale
 
     # shared_exp = torch.log2(shared_exp + FP32_MIN_NORMAL * (shared_exp == 0).type(shared_exp.dtype))
     shared_exp = torch.where(max_val == 0, torch.ones_like(max_val), torch.log2(max_val))

@@ -4,6 +4,15 @@ import torch
 from auto_round.export.export_to_autoround.qlinear_fp import FLOAT_TO_E2M1, pack_fp4_to_uint8
 
 
+def _cuda_device_has_more_than_40gb_memory():
+    if not torch.cuda.is_available():
+        return False
+
+    device_index = torch.cuda.current_device()
+    total_memory = torch.cuda.get_device_properties(device_index).total_memory
+    return total_memory > 40_000_000_000
+
+
 # Random sampling from FLOAT_TO_E2M1
 def _create_random_e2m1_tensor(shape):
     """Create a tensor of the given shape with random values from FLOAT_TO_E2M1."""
@@ -66,7 +75,12 @@ qwen_weight_shapes = [
     torch.Size([128, 2048]),
     torch.Size([512, 2048]),
     torch.Size([4096, 2048]),
-    torch.Size([151936, 2048]),
+    pytest.param(
+        torch.Size([151936, 2048]),
+        marks=pytest.mark.skipif(
+            not _cuda_device_has_more_than_40gb_memory(), reason="requires a CUDA device with more than 40 GB memory"
+        ),
+    ),
     torch.Size([2048, 4096]),
 ]
 

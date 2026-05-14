@@ -35,14 +35,14 @@ class TestAutoRoundTritonBackend:
         bits, group_size, sym = 2, 32, False
         autoround = AutoRound(model, tokenizer, bits=bits, group_size=group_size, sym=sym)
         quantized_model_path = self.save_folder
-        autoround.quantize_and_save(output_dir=quantized_model_path)
+        _, quantized_model_path = autoround.quantize_and_save(output_dir=quantized_model_path)
 
         quantization_config = AutoRoundConfig(backend="tritonv2")
         model = AutoModelForCausalLM.from_pretrained(
-            self.save_folder, torch_dtype=torch.float16, device_map="auto", quantization_config=quantization_config
+            quantized_model_path, torch_dtype=torch.float16, device_map="auto", quantization_config=quantization_config
         )
 
-        tokenizer = AutoTokenizer.from_pretrained(self.save_folder)
+        tokenizer = AutoTokenizer.from_pretrained(quantized_model_path)
         model_infer(model, tokenizer)
         evaluate_accuracy(model, tokenizer, threshold=0.19, batch_size=16)
         torch.cuda.empty_cache()
@@ -65,14 +65,16 @@ class TestAutoRoundTritonBackend:
             dataset=dataloader,
         )
         quantized_model_path = self.save_folder
-        autoround.quantize_and_save(output_dir=quantized_model_path, format="auto_round:gptqmodel")
+        _, quantized_model_path = autoround.quantize_and_save(
+            output_dir=quantized_model_path, format="auto_round:gptqmodel"
+        )
 
         quantization_config = AutoRoundConfig(backend="tritonv2")
         model = AutoModelForCausalLM.from_pretrained(
-            self.save_folder, torch_dtype=torch.float16, device_map="auto", quantization_config=quantization_config
+            quantized_model_path, torch_dtype=torch.float16, device_map="auto", quantization_config=quantization_config
         )
 
-        tokenizer = AutoTokenizer.from_pretrained(self.save_folder)
+        tokenizer = AutoTokenizer.from_pretrained(quantized_model_path)
         model_infer(model, tokenizer)
         evaluate_accuracy(model, tokenizer, threshold=0.34, batch_size=16)
         torch.cuda.empty_cache()
@@ -95,23 +97,23 @@ class TestAutoRoundTritonBackend:
             dataset=dataloader,
         )
         quantized_model_path = self.save_folder
-        autoround.quantize_and_save(output_dir=quantized_model_path)
+        _, quantized_model_path = autoround.quantize_and_save(output_dir=quantized_model_path)
 
         quantization_config = AutoRoundConfig(backend="tritonv2")
         model = AutoModelForCausalLM.from_pretrained(
-            self.save_folder, torch_dtype=torch.float16, device_map="auto", quantization_config=quantization_config
+            quantized_model_path, torch_dtype=torch.float16, device_map="auto", quantization_config=quantization_config
         )
 
-        tokenizer = AutoTokenizer.from_pretrained(self.save_folder)
+        tokenizer = AutoTokenizer.from_pretrained(quantized_model_path)
         model_infer(model, tokenizer)
         evaluate_accuracy(model, tokenizer, threshold=0.26, batch_size=16)
         torch.cuda.empty_cache()
 
         model = AutoModelForCausalLM.from_pretrained(
-            self.save_folder, torch_dtype=torch.bfloat16, device_map="auto", quantization_config=quantization_config
+            quantized_model_path, torch_dtype=torch.bfloat16, device_map="auto", quantization_config=quantization_config
         )
 
-        tokenizer = AutoTokenizer.from_pretrained(self.save_folder)
+        tokenizer = AutoTokenizer.from_pretrained(quantized_model_path)
         model_infer(model, tokenizer)
         evaluate_accuracy(model, tokenizer, threshold=0.26, batch_size=16)
         torch.cuda.empty_cache()
@@ -125,23 +127,23 @@ class TestAutoRoundTritonBackend:
         bits, group_size, sym = 4, 256, True
         autoround = AutoRound(model, tokenizer, bits=bits, group_size=group_size, sym=sym, nsamples=1, iters=1)
         quantized_model_path = self.save_folder
-        autoround.quantize_and_save(output_dir=quantized_model_path)
+        _, quantized_model_path = autoround.quantize_and_save(output_dir=quantized_model_path)
 
         quantization_config = AutoRoundConfig(backend="tritonv2")
         model = AutoModelForCausalLM.from_pretrained(
-            self.save_folder, torch_dtype=torch.float16, device_map="auto", quantization_config=quantization_config
+            quantized_model_path, torch_dtype=torch.float16, device_map="auto", quantization_config=quantization_config
         )
 
-        tokenizer = AutoTokenizer.from_pretrained(self.save_folder)
+        tokenizer = AutoTokenizer.from_pretrained(quantized_model_path)
         model_infer(model, tokenizer)
         evaluate_accuracy(model, tokenizer, threshold=0.27, batch_size=16)
         torch.cuda.empty_cache()
 
         model = AutoModelForCausalLM.from_pretrained(
-            self.save_folder, torch_dtype=torch.bfloat16, device_map="auto", quantization_config=quantization_config
+            quantized_model_path, torch_dtype=torch.bfloat16, device_map="auto", quantization_config=quantization_config
         )
 
-        tokenizer = AutoTokenizer.from_pretrained(self.save_folder)
+        tokenizer = AutoTokenizer.from_pretrained(quantized_model_path)
         model_infer(model, tokenizer)
         evaluate_accuracy(model, tokenizer, threshold=0.27, batch_size=16)
         torch.cuda.empty_cache()
@@ -161,23 +163,23 @@ class TestAutoRoundTritonBackend:
             sym=sym,
         )
         quantized_model_path = self.save_folder
-        autoround.quantize_and_save(output_dir=quantized_model_path)
+        _, quantized_model_path = autoround.quantize_and_save(output_dir=quantized_model_path)
 
         quantization_config = AutoRoundConfig(backend="tritonv2")
         model = AutoModelForCausalLM.from_pretrained(
-            self.save_folder, torch_dtype=torch.float16, device_map="auto", quantization_config=quantization_config
+            quantized_model_path, torch_dtype=torch.float16, device_map="auto", quantization_config=quantization_config
         )
 
-        tokenizer = AutoTokenizer.from_pretrained(self.save_folder)
+        tokenizer = AutoTokenizer.from_pretrained(quantized_model_path)
         model_infer(model, tokenizer)
         evaluate_accuracy(model, tokenizer, threshold=0.18, batch_size=16)
         torch.cuda.empty_cache()
 
         model = AutoModelForCausalLM.from_pretrained(
-            self.save_folder, torch_dtype=torch.bfloat16, device_map="auto", quantization_config=quantization_config
+            quantized_model_path, torch_dtype=torch.bfloat16, device_map="auto", quantization_config=quantization_config
         )
 
-        tokenizer = AutoTokenizer.from_pretrained(self.save_folder)
+        tokenizer = AutoTokenizer.from_pretrained(quantized_model_path)
         model_infer(model, tokenizer)
         evaluate_accuracy(model, tokenizer, threshold=0.18, batch_size=16)
         torch.cuda.empty_cache()

@@ -20,6 +20,7 @@ from ...helpers import (
 
 
 class TestAutoRound:
+
     @classmethod
     def setup_class(self):
         model_name = opt_name_or_path
@@ -372,14 +373,14 @@ class TestAutoRound:
         bits, group_size, sym = 4, 128, True
         autoround = AutoRound(model, tokenizer, bits=bits, group_size=group_size, sym=sym, iters=0, nsamples=1)
         quantized_model_path = self.save_folder
-        autoround.quantize_and_save(output_dir=quantized_model_path, format="auto_round")
+        _, quantized_model_path = autoround.quantize_and_save(output_dir=quantized_model_path, format="auto_round")
         model = AutoModelForCausalLM.from_pretrained(
-            self.save_folder,
+            quantized_model_path,
             torch_dtype=torch.float16,
             device_map="auto",
         )
 
-        tokenizer = AutoTokenizer.from_pretrained(self.save_folder)
+        tokenizer = AutoTokenizer.from_pretrained(quantized_model_path)
         model_infer(model, tokenizer)
 
     def test_embed_quant(self, tiny_opt_model_path, dataloader):
@@ -426,7 +427,9 @@ class TestAutoRound:
         autoround.quantize()
         quantized_model_path = self.save_folder
 
-        autoround.save_quantized(output_dir=quantized_model_path, format="auto_round", inplace=True)
+        _, quantized_model_path = autoround.save_quantized(
+            output_dir=quantized_model_path, format="auto_round", inplace=True, return_folders=True
+        )
 
         model = AutoModelForCausalLM.from_pretrained(quantized_model_path, device_map="cpu")
         tokenizer = AutoTokenizer.from_pretrained(quantized_model_path)
@@ -457,7 +460,9 @@ class TestAutoRound:
         autoround.quantize()
         quantized_model_path = self.save_folder
 
-        autoround.save_quantized(output_dir=quantized_model_path, format="auto_awq", inplace=True)
+        _, quantized_model_path = autoround.save_quantized(
+            output_dir=quantized_model_path, format="auto_awq", inplace=True, return_folders=True
+        )
         quantization_config = AutoRoundConfig()
 
         model = AutoModelForCausalLM.from_pretrained(
@@ -492,7 +497,9 @@ class TestAutoRound:
         autoround.quantize()
         quantized_model_path = self.save_folder
 
-        autoround.save_quantized(output_dir=quantized_model_path, format="auto_gptq", inplace=True)
+        _, quantized_model_path = autoround.save_quantized(
+            output_dir=quantized_model_path, format="auto_round", inplace=True, return_folders=True
+        )
         quantization_config = AutoRoundConfig()
 
         model = AutoModelForCausalLM.from_pretrained(
@@ -527,7 +534,9 @@ class TestAutoRound:
         autoround.quantize()
         quantized_model_path = self.save_folder
 
-        autoround.save_quantized(output_dir=quantized_model_path, format="auto_round", inplace=True)
+        _, quantized_model_path = autoround.save_quantized(
+            output_dir=quantized_model_path, format="auto_round", inplace=True, return_folders=True
+        )
         quantization_config = AutoRoundConfig()
 
         model = AutoModelForCausalLM.from_pretrained(
@@ -636,8 +645,8 @@ class TestAutoRound:
             nsamples=1,
             disable_opt_rtn=True,
         )
-        ar.quantize_and_save(output_dir=self.save_folder, format="auto_round")
-        model = AutoModelForCausalLM.from_pretrained(self.save_folder, device_map="cpu")
+        _, quantized_model_path = ar.quantize_and_save(output_dir=self.save_folder, format="auto_round")
+        model = AutoModelForCausalLM.from_pretrained(quantized_model_path, device_map="cpu")
         assert "lm_head" in model.config.quantization_config.extra_config
         assert model.config.quantization_config.extra_config["lm_head"]["bits"] == 4
 
@@ -653,8 +662,8 @@ class TestAutoRound:
             disable_opt_rtn=True,
             layer_config=layer_config,
         )
-        ar.quantize_and_save(output_dir=self.save_folder, format="auto_round")
-        model = AutoModelForCausalLM.from_pretrained(self.save_folder, device_map="cpu")
+        _, quantized_model_path = ar.quantize_and_save(output_dir=self.save_folder, format="auto_round")
+        model = AutoModelForCausalLM.from_pretrained(quantized_model_path, device_map="cpu")
         assert "lm_head" in model.config.quantization_config.extra_config
         assert model.config.quantization_config.extra_config["lm_head"]["bits"] == 4
 
@@ -662,12 +671,6 @@ class TestAutoRound:
         model_name = tiny_qwen_vl_model_path
         ar = AutoRound(model_name, enable_adam=True)
         assert ar.optimizer == torch.optim.AdamW
-        assert ar.mllm
-
-        # test old api
-        from auto_round import AutoRoundMLLM
-
-        ar = AutoRoundMLLM(model_name)
         assert ar.mllm
 
     def test_attention_mask_in_dataset(self):

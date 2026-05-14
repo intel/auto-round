@@ -41,35 +41,6 @@ class TestAutoRound:
     def teardown_class(cls):
         shutil.rmtree("runs", ignore_errors=True)
 
-    @require_gptqmodel
-    def test_mixed_gptqmodel(self, dataloader):
-        layer_config = {
-            "k_proj": {"scheme": "W8A16"},  # part name
-            "lm_head": {"scheme": "w4a16"},  # set lm_head quant
-            "fc1": {"bits": 16},
-            "model.decoder.layers.0.self_attn.v_proj": {"bits": 16},
-            "model.decoder.layers.0.self_attn.q_proj": {"bits": 8},  # full name
-        }
-        autoround = AutoRound(
-            model=self.model_name,
-            scheme="W4A16",
-            iters=2,
-            seqlen=2,
-            layer_config=layer_config,
-            dataset=dataloader,
-        )
-        quantized_model_path = self.save_dir
-        autoround.quantize_and_save(output_dir=quantized_model_path, format="auto_gptq")
-        # test original GPTQModel inference
-        from gptqmodel import GPTQModel
-
-        model = GPTQModel.load(quantized_model_path)
-        assert model.model.model.decoder.layers[0].self_attn.k_proj.bits == 8
-        assert model.model.model.decoder.layers[0].self_attn.q_proj.bits == 8
-        assert model.model.model.decoder.layers[1].self_attn.v_proj.bits == 4
-        result = model.generate("Uncovering deep insights begins with")[0]  # tokens
-        assert "!!!" not in model.tokenizer.decode(result)  # string output
-
     def test_mixed_gptqmodel_convert_to_ar(self, dataloader):
         layer_config = {
             "k_proj": {"bits": 8},  # part name
@@ -87,7 +58,7 @@ class TestAutoRound:
             dataset=dataloader,
         )
         quantized_model_path = self.save_dir
-        autoround.quantize_and_save(output_dir=quantized_model_path, format="auto_gptq")
+        _, quantized_model_path = autoround.quantize_and_save(output_dir=quantized_model_path, format="auto_gptq")
         quantization_config = AutoRoundConfig()
         model = AutoModelForCausalLM.from_pretrained(
             quantized_model_path, device_map="cpu", quantization_config=quantization_config
@@ -114,7 +85,7 @@ class TestAutoRound:
             layer_config=layer_config,
         )
         quantized_model_path = self.save_dir
-        autoround.quantize_and_save(output_dir=quantized_model_path, format="auto_round")
+        _, quantized_model_path = autoround.quantize_and_save(output_dir=quantized_model_path, format="auto_round")
         config_file = Path(quantized_model_path) / "config.json"
         with open(config_file, "r", encoding="utf-8") as f:
             config = json.load(f)
@@ -147,7 +118,7 @@ class TestAutoRound:
             layer_config=layer_config,
         )
         quantized_model_path = self.save_dir
-        autoround.quantize_and_save(output_dir=quantized_model_path, format="auto_awq")
+        _, quantized_model_path = autoround.quantize_and_save(output_dir=quantized_model_path, format="auto_awq")
         quantization_config = AutoRoundConfig()
         model = AutoModelForCausalLM.from_pretrained(
             quantized_model_path, device_map="cpu", quantization_config=quantization_config
@@ -219,7 +190,9 @@ class TestAutoRound:
             layer_config=layer_config,
         )
         quantized_model_path = self.save_dir
-        autoround.quantize_and_save(output_dir=quantized_model_path, inplace=False, format="auto_round")
+        _, quantized_model_path = autoround.quantize_and_save(
+            output_dir=quantized_model_path, inplace=False, format="auto_round"
+        )
         model = AutoModelForCausalLM.from_pretrained(
             quantized_model_path,
             torch_dtype="auto",

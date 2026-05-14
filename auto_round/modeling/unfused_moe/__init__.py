@@ -145,7 +145,10 @@ def get_file_path_via_model_name(model_or_path: str, file_name):
 
 def pre_check_config(model_name: str | torch.nn.Module, trust_remote_code: bool = True):
     if isinstance(model_name, str):
-        config = AutoConfig.from_pretrained(model_name, trust_remote_code=trust_remote_code)
+        try:
+            config = AutoConfig.from_pretrained(model_name, trust_remote_code=trust_remote_code)
+        except (OSError, EnvironmentError, ValueError):
+            return False
     elif isinstance(model_name, torch.nn.Module):
         config = getattr(model_name, "config", None)
         if config is None:

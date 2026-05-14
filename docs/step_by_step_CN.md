@@ -27,6 +27,7 @@
     - [API 用法](#api-用法)
     - [AutoScheme 中的超参数](#autoscheme-超参数说明)
   + [OPT RTN 模式](#opt-rtn-模式)
+  + [免模型量化模式](#免模型量化模式)
   + [GGUF 格式](#gguf-格式量化)
   + [量化成本](#量化成本)
   + [设备及多卡量化设置](#设备及多卡量化设置)
@@ -113,6 +114,8 @@ pip install auto-round
 AutoRound 支持多种量化配置：
 - **W4A16**（bits:4, group_size:128, sym:True, act_bits:16）  # 4位权重，分组大小为128，对称量化，16位激活，
 - **W8A16**（bits:8, group_size:128, sym:True, act_bits:16）  
+- **W6A16**（bits:6, group_size:128, sym:True, act_bits:16） — 仅 `mlx` 格式支持
+- **W5A16**（bits:5, group_size:128, sym:True, act_bits:16） — 仅 `mlx` 格式支持
 - **W3A16**（bits:3, group_size:128, sym:True, act_bits:16）  
 - **W2A16**（bits:2, group_size:128, sym:True, act_bits:16）  
 - **GGUF:Q4_K_M**（支持 llamacpp 提供的所有 Q*_K、Q*_0、Q*_1 量化类型）
@@ -142,6 +145,12 @@ AutoRound 支持多种量化配置：
 
 **LLM-Compressor 格式**：**支持 NVFP4、MXFP4（kernel 开发中）、MXFP8** 等。需设置 `--format llm_compressor`。
 
+**MLX 格式**：面向 Apple Silicon (M1/M2/M3/...)，可直接被 [`mlx-lm`](https://github.com/ml-explore/mlx-lm)（纯文本 LLM）或 [`mlx-vlm`](https://github.com/Blaizzy/mlx-vlm)（多模态 VLM）加载推理。
+- 支持 **2、3、4、5、6、8 bits**（其中 5/6 bits 是 MLX 独有，GPTQ/AWQ 没有标准打包格式）。
+- 原生支持 **混合 bit / 混合 group_size**：通过 `layer_config` 或 AutoScheme（如 `--target_bits 3.5 --options "..."`），按层覆盖会写入 `config.json["quantization"]`，
+- `--format mlx` 导出原生 MLX checkpoint；`--format auto_round:mlx` 则让 HuggingFace `transformers` + AutoRound 加载它（在 Darwin 上 post-init 会把每层重新打包成 MLX 的 `QuantLinear`）。
+- 已经问题: 没有支持嵌入层的量化
+
 #### 格式与方案支持对照表
 
 > 灰色背景的 schemes 表示它没有专门优化的内核，或只有效率极低的参考内核。
@@ -151,14 +160,15 @@ AutoRound 支持多种量化配置：
 | **auto_round**  | W4A16、W2A16、W3A16、W8A16、W2A16G64、W2A16G32、`MXFP4`、`MXFP8`、`MXFP4_RCEIL`、`MXFP8_RCEIL`、`NVFP4`、`FPW8A16`、`FP8_STATIC`、`FP8_BLOCK`、`BF16`, `MXINT4`                                                               |
 | **auto_awq**    | W4A16、BF16                                                                                                                                                                                                   |
 | **auto_gptq**   | W4A16、W2A16、W3A16、W8A16、W2A16G64、W2A16G32、BF16                                                                                                                                                           |
-| **llm_compressor** | NVFP4、`MXFP4`、`MXFP8`、`FPW8A16`、`FP8_STATIC`、FP8_STATIC                                                                                                                                                              |
+| **llm_compressor** | NVFP4、`MXFP4`、`MXFP8`、`FPW8A16`、`FP8_STATIC`、FP8_BLOCK                                                                                                                                                              |
+| **mlx** / **auto_round:mlx** | W2A16、W3A16、W4A16、W5A16、W6A16、W8A16、BF16、混合 bit / 混合 group_size（仅 Apple Silicon）                                                                                                                  |
 | **gguf**        | GGUF:Q4_K_M、GGUF:Q2_K_S、GGUF:Q3_K_S、GGUF:Q3_K_M、GGUF:Q3_K_L、GGUF:Q4_K_S、GGUF:Q5_K_S、GGUF:Q5_K_M、GGUF:Q6_K、GGUF:Q4_0、GGUF:Q4_1、GGUF:Q5_0、GGUF:Q5_1、GGUF:Q8_0                                           |
 | **fp8**         | FP8_BLOCK  |
 | **fake**        | `所有方案（仅用于研究场景）`                                                                                                                                                                                   |
 
 ### 硬件兼容性
 
-量化和推理均支持 CPU、英特尔 GPU、HPU 和 CUDA。
+量化和推理均支持 CPU、英特尔 GPU、HPU 和 CUDA。**MLX 格式**的推理仅支持 **Apple Silicon (macOS / Darwin)**，但量化（导出）阶段在任意平台均可进行。
 
 ### 环境参数配置
 
@@ -411,7 +421,7 @@ ar.quantize_and_save()
 #### 局限性
 AutoScheme 目前还**不支持对嵌入层（Embedding layer）进行自动量化**。该层将直接采用候选方案中精度最高的配置。
 
-## OPT-RTN 模式
+### OPT-RTN 模式
 AutoRound 还提供优化版 RTN（Round-To-Nearest，就近舍入）模式，无需标定数据即可实现快速基线量化。**启用方式为 `iters=0`**。同时为获得更好的效果，推荐搭配 `group_size=32` 。RTN 与 OPT RTN 模式的精度对比详见[《精度对比报告》](./opt_rtn.md)。
 
 对于 GGUF 格式，我们参考 llamacpp 的思路，优化了 RTN 算法。若需使用原始（非优化）RTN 算法，开启 `--disable_opt_rtn` 即可。
@@ -428,6 +438,94 @@ ar = AutoRound(
 output_dir = "./tmp_autoround"
 ar.quantize_and_save(output_dir, format="auto_round")
 ```
+
+### 免模型量化模式
+
+免模型量化模式（Model-Free Mode）可以**无需将完整模型加载到内存中**即可执行 RTN WOQ 量化。它直接下载 safetensors 文件，逐分片地对每个 Linear 权重张量进行量化并保存打包结果。当您需要快速、无标定数据的量化且资源有限时，该模式非常实用。
+
+> **默认自动启用。** 自 v0.13 起，当您同时传入 `--iters 0 --disable_opt_rtn` 与一个受支持的 INT WOQ scheme 时，CLI 会自动走免模型路径。该路径与原始 `--iters 0 --disable_opt_rtn` 流程**位级（bit-exact）等价**，但内存占用大幅降低。如需关闭自动路由、强制使用原始流程，可加 `--disable_model_free`。
+
+**主要特性：**
+- **无需模型对象** — 仅需 `config.json` 和 safetensors 文件
+- **低磁盘内存** (如果无本地模型) — 逐个下载并量化分片，处理完成后立即删除源分片
+- **逐层配置** — 支持 `--layer_config` 设置逐层位宽，以及 `--ignore_layers` 保持特定层全精度
+- **预定义忽略层** — 根据模型配置自动跳过特定层（如 MoE 门控层、MTP 层等）
+- 与标准 `--iters 0 --disable_opt_rtn` 流程对所有受支持的 scheme **位级等价**
+
+<details>
+  <summary>点击展开支持的 Scheme 与示例</summary>
+
+**支持的 Scheme**
+
+免模型模式当前支持以下整数权重量化预设（均使用 `auto_round:auto_gptq` 打包格式）：
+
+| Preset | Bits | Group size | Sym |
+| --- | --- | --- | --- |
+| `W2A16` | 2 | 128 | true |
+| `W2A16G32` | 2 | 32 | true |
+| `W2A16G64` | 2 | 64 | true |
+| `W4A16`（默认） | 4 | 128 | true |
+| `W4A16_MIXED` | 4 | 128 | true |
+| `W8A16` | 8 | 128 | true |
+
+上述 2-bit 和 8-bit 预设（`W2A16`、`W2A16G32`、`W2A16G64`、`W8A16`）同样支持**非对称量化**（`sym=False`），输出使用 `auto_round:auto_gptq` 打包格式，并与标准流程**位级等价**。4-bit 非对称量化时标准流程建议使用 `auto_round:auto_awq` 打包格式，如需该场景请使用标准 AutoRound 流程。
+
+也可以传入自定义的 `QuantizationScheme(bits=N, group_size=G, sym=True/False, data_type="int", act_bits=16)`，其中 `bits ∈ {2, 4, 8}`，group_size / sym 可任意设置。
+
+需要特殊打包内核的 scheme（`W3A16`、`FPW8A16`、`BF16`、`MXFP4`、`MXFP8`、`MXINT4`、`NVFP4`、`FP8_BLOCK`、`FP8_STATIC`、`INT8_W8A8`、`GGUF:*` 等）**不被支持**，传入会抛 `ValueError`。这些请使用标准 AutoRound 流程。
+
+#### 命令行用法
+
+```bash
+# 最简单：--iters 0 --disable_opt_rtn 自动路由到免模型
+auto_round meta-llama/Llama-3.2-1B-Instruct \
+  --scheme W4A16 \
+  --iters 0 --disable_opt_rtn \
+  --output_dir ./int4-llama
+
+# 等价的显式调用
+auto_round meta-llama/Llama-3.2-1B-Instruct \
+  --model_free \
+  --scheme W4A16 \
+  --output_dir ./int4-llama
+
+# 关闭自动路由，强制使用原始流程
+auto_round meta-llama/Llama-3.2-1B-Instruct \
+  --scheme W4A16 \
+  --iters 0 --disable_opt_rtn --disable_model_free \
+  --output_dir ./int4-llama
+
+# 搭配逐层配置和忽略层
+auto_round meta-llama/Llama-3.2-1B-Instruct \
+  --model_free \
+  --scheme W4A16 \
+  --group_size 32 \
+  --asym \
+  --layer_config "{k_proj:{bits:8},v_proj:{bits:8}}" \
+  --ignore_layers "mlp" \
+  --output_dir ./int4-llama
+```
+
+#### API 用法
+
+```python
+from auto_round import AutoRound
+
+AutoRound(
+    model="meta-llama/Llama-3.2-1B-Instruct",
+    scheme="W4A16",  # 也支持 QuantizationScheme 对象自定义 group_size / sym
+    layer_config={
+        ".*k_proj": {"bits": 8, "group_size": 32},
+        ".*v_proj": {"bits": 8, "group_size": 32},
+    },
+    ignore_layers="mlp",
+    model_free=True,
+).quantize_and_save("./int4-llama")
+```
+
+> **注意：** 免模型量化模式仅支持 `auto_round` 输出格式，并使用 RTN（无标定数据、无迭代调优）。如需更高质量的量化结果或使用受支持列表外的 scheme，请使用标准 AutoRound 流程。
+
+</details>
 
 ### GGUF 格式量化
 实验性功能。该格式适用 CPU 设备，在社区应用广泛。
@@ -462,14 +560,13 @@ ar.quantize_and_save(output_dir, format="gguf:q4_k_m")  # gguf:q*_k_s、gguf:q*_
 | 2.5 + 关闭 torch compile                                                           | 8min<br/>10GB | 16min<br/>20GB | 30min<br/>25GB | 140min<br/>49GB | 50min<br/>49GB |
 
 W4G128 量化耗时与显存占用（英特尔 GPU B60 24G）
-（测试环境：英特尔 GPU B60 24G，PyTorch 2.11.0+xpu 正式版。注意评测未计入数据加载和打包耗时。所有测试均使用 Qwen3 系列模型。）
-
-| Torch version/Config W4G128                                                                                            | 0.6B              | 1.7B              | 4B                  | 8B                  | 30B-A3B             |
-|------------------------------------------------------------------------------------------------------------------------|-------------------|-------------------|---------------------|---------------------|---------------------|
-| 2.11.0+xpu 开启 torch compile                                                                                          | 20min<br/>10.7GB  | 26min<br/>13.2GB  | 58min<br/>22.8GB    | OOM                 | OOM                 |
-| 2.11.0+xpu 开启 torch compile<br/>low_gpu_mem_usage=True                                                               | 29min<br/>9.5GB   | 38min<br/>9.8GB   | 1h 23min<br/>19.4GB | 1h 32min<br/>20.1GB | 5h 33min<br/>22.8GB |
-| 2.11.0+xpu 开启 torch compile<br/>low_gpu_mem_usage=True<br/>gradient_accumulate_steps=8,bs=1                          | 41min<br/>1.3GB   | 42min<br/>1.8GB   | 1h 29min<br/>3.6GB  | 2h 4min<br/>4.6GB   | 21h 41min<br/>10.2GB  |
-| 2.11.0+xpu 关闭 torch compile                                                                                          | 20min<br/>10.9GB  | 28min<br/>13.2GB  | OOM                 | OOM                 | OOM                 |
+（测试环境：英特尔 GPU B60 24G，PyTorch 2.11.0+xpu 正式版。注意评测未计入数据加载和打包耗时。所有测试均使用 Qwen2.5 系列模型。）
+| Torch version/Config W4G128                                                                                            | 0.5B              | 1.5B              | 3B                  | 7B                  |
+|------------------------------------------------------------------------------------------------------------------------|-------------------|-------------------|---------------------|---------------------|
+| 2.11.0+xpu 开启 torch compile                                                                                          | 6min<br/>2.9GB    | 13min<br/>5.4GB   | 22min<br/>7.1GB     | 40min<br/>14.9GB    |
+| 2.11.0+xpu 开启 torch compile<br/>low_gpu_mem_usage=True                                                               | 10min<br/>1.7GB   | 17min<br/>3.3GB   | 30min<br/>4.3GB     | 50min<br/>8.5GB     |
+| 2.11.0+xpu 开启 torch compile<br/>low_gpu_mem_usage=True<br/>gradient_accumulate_steps=8,bs=1                          | 14min<br/>0.4GB   | 22min<br/>1.1GB   | 38min<br/>1.5GB     | 1h 4min<br/>4.1GB   |
+| 2.11.0+xpu 关闭 torch compile                                                                                           | 6min<br/>2.9GB    | 14min<br/>5.7GB   | 26min<br/>7.6GB     | 51min<br/>15.5GB    |
 
 
 ### 设备及多卡量化设置
@@ -619,8 +716,8 @@ from auto_round import AutoRound
 model_name_or_path = "meta-llama/Llama-3.1-8B-Instruct"
 output_dir = "./Llama-3.1-8B-Instruct-mxfp4-ht"
 
-# hadamard_config="default": block_size=32, hadamard_type="hadamard"
-ar = AutoRound(model_name_or_path, scheme="MXFP4", hadamard_config="default")
+# rotation_config="default": block_size=32, hadamard_type="hadamard"
+ar = AutoRound(model_name_or_path, scheme="MXFP4", rotation_config="default")
 
 ar.quantize_and_save(output_dir=output_dir, format="auto_round")
 ```
@@ -736,10 +833,9 @@ print(tokenizer.decode(model.generate(**inputs, max_new_tokens=50, do_sample=Fal
 | ark                     | cpu            | 4              | FP32/FP16/BF16 | 6    | awq             | auto-round-lib<br/>torch>=2.8.0 |
 | ark                     | xpu            | 4、8           | FP32/FP16/BF16 | 6    | gptq/gptq_zp+-1 | auto-round-lib<br/>torch>=2.8.0 |
 | ark                     | xpu            | 4              | FP32/FP16/BF16 | 6    | awq             | auto-round-lib<br/>torch>=2.8.0 |
-| ipex（即将废弃）        | cpu/xpu        | 4              | BF16/FP16    | 5      | gptq_zp+-1/awq  | intel-extension-for-pytorch    |
 | marlin                  | cuda           | 4、8           | BF16/FP16    | 6      | gptq/gptq_zp+-1 | gptqmodel                      |
-| exllamav2/<br/>gptqmodel:exllamav2 | cuda    | 4              | BF16/FP16    | 5      | gptq            | gptqmodel                      |
-| exllamav2/<br/>gptq:exllamav2      | cuda    | 4              | FP16         | 5      | gptq_zp+-1      | auto-gptq<br/>transformers<5.0.0  |
+| exllamav2/<br/>gptqmodel:exllamav2 | cuda    | 4              | BF16/FP16    | 5      | gptq/gptq_zp+-1 | gptqmodel                      |
+| exllamav2/<br/>gptq:exllamav2      | cuda    | 4              | FP16         | 3      | gptq_zp+-1      | auto-gptq<br/>transformers<5.0.0  |
 | gptq:cuda               | cuda           | 2、3、4、8     | FP16         | 1      | gptq_zp+-1      | auto-gptq<br/>transformers<5.0.0  |
 | triton                  | xpu/cuda       | 2、4、8        | BF16/FP16    | 2      | gptq/gptq_zp+-1 | auto-round                     |
 | awq                     | cuda           | 4              | FP16         | 5      | awq             | auto-awq<br/>transformers<4.57.0 |

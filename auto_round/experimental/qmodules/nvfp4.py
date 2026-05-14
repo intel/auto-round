@@ -119,6 +119,19 @@ class NVFP4QuantLinear(QModuleBase):
             ),
         )
 
+        rotation_config = getattr(config, "rotation_config", None)
+        # TODO: remove the limit: rotation_config["hadamard_type"] == "random_hadamard"
+        if rotation_config is not None and rotation_config["hadamard_type"] == "random_hadamard":
+            self.enable_transform = True
+            self.register_buffer(
+                "hadamard_matrix",
+                torch.empty(
+                    self.group_size,
+                    self.group_size,
+                    dtype=self.dtype,
+                ),
+            )
+
     @staticmethod
     def _convert_global_scale_to_float32(state_dict: dict[str, torch.Tensor], name: str):
         if name not in state_dict or state_dict[name].dtype == torch.float32:
