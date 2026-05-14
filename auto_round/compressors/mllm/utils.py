@@ -61,6 +61,7 @@ def fetch_image(path_or_url):
         try:
             response = requests.get(path_or_url, stream=True, timeout=(3, 10))
             response.raise_for_status()
+            response.raw.decode_content = True
             image_obj = Image.open(response.raw)
         except (requests.exceptions.RequestException, OSError) as e:
             raise RuntimeError(f"Failed to fetch image from url: {path_or_url}") from e
