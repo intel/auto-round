@@ -16,6 +16,7 @@ import os
 from typing import Union
 
 import torch
+from tqdm import tqdm
 
 from auto_round.logger import logger
 from auto_round.utils import clear_memory
@@ -224,6 +225,116 @@ class DiffusionMixin:
             target_device = get_major_device(device_map)
             pipe.to(target_device)
 
+    @torch.no_grad()
+    def calib(self, nsamples, bs):
+        """Perform diffusion-specific calibration for quantization.
+
+        Override parent's calib method to use diffusion dataset loading logic.
+        The diffusion pipeline is read from ``self.model_context.pipe``.
+        """
+        from auto_round.compressors.diffusion.dataset import get_diffusion_dataloader
+
+        pipe = self.model_context.pipe
+        if pipe is None:
+            raise ValueError(
+                "Diffusion pipeline not found in model_context. " "Ensure the model was loaded as a diffusion model."
+            )
+
+        logger.warning(
+            "Diffusion model will catch nsamples * num_inference_steps inputs, "
+            "you can reduce nsamples or num_inference_steps if OOM or take too much time."
+        )
+        if isinstance(self.dataset, str):
+            dataset = self.dataset.replace(" ", "")
+            self.dataloader, self.batch_size, self.gradient_accumulate_steps = get_diffusion_dataloader(
+                dataset=dataset,
+                bs=self.batch_size,
+                seed=self.seed,
+                nsamples=self.nsamples,
+                gradient_accumulate_steps=self.gradient_accumulate_steps,
+            )
+        else:
+            self.dataloader = self.dataset
+        total_cnt = 0
+
+        total = nsamples if not hasattr(self.dataloader, "len") else min(nsamples, len(self.dataloader))
+
+        # NOTE: we intentionally skip the sequential offloading check here (the guard that
+        # exits when pipe is already dispatched).  In new-arch diffusion, the pipe may
+        # already be dispatched to multi-device in a prior calib call.  The dispatch
+        # state is preserved across calls, so re-dispatching or moving is unnecessary and
+        # would break the existing placement.
+        if (
+            hasattr(self.model, "hf_device_map")
+            and len(self.model.hf_device_map) > 1
+            and pipe.device != self.model.device
+            and torch.device(self.model.device).type in ["cuda", "xpu"]
+        ):
+            logger.warning(
+                "Diffusion model is activated sequential model offloading. "
+                "Pipe may already be dispatched from a prior calib call. "
+                "Skipping re-dispatch to avoid breaking the existing placement."
+            )
+
+        device_map = getattr(self.compress_context, "device_map", None)
+        device_list = getattr(self.compress_context, "device_list", [])
+        # Skip dispatch for secondary transformers
+        if (
+            not getattr(self, "_inputs_cached", False)
+            and device_map is not None
+            and is_auto_device_mapping(device_map)
+            and len(device_list) > 1
+        ):
+            pipe_transformer = getattr(pipe, "transformer", None)
+            if self.model_context.model is not pipe_transformer:
+                pass  # secondary transformer — skip pipeline dispatch
+            else:
+                pipe = dispatch_model_by_all_available_devices(pipe, device_map)
+
+        with tqdm(range(1, total + 1), desc="cache block inputs") as pbar:
+            for ids, prompts in self.dataloader:
+                if isinstance(prompts, tuple):
+                    prompts = list(prompts)
+                pipe_kwargs = self._build_pipeline_call_kwargs(pipe, prompts)
+                try:
+                    if self._requires_calibration_image() or "prompt" in pipe_kwargs:
+                        # I2V pipeline: 'image' is the first positional arg, so pass
+                        # 'prompt' as keyword to avoid "multiple values for argument 'image'".
+                        pipe(**pipe_kwargs)
+                    else:
+                        pipe(prompts, **pipe_kwargs)
+                except NotImplementedError:
+                    pass
+                except Exception as error:
+                    raise error
+                step = len(prompts)
+                total_cnt += step
+                pbar.update(step)
+                if total_cnt >= nsamples:
+                    break
+        if total_cnt == 0:
+            logger.error(
+                f"no data has been cached, please provide more data with sequence length >={self.seqlen} in the "
+                f"dataset or decease the sequence length"
+            )
+            exit(-1)
+        elif total_cnt < nsamples:
+            logger.warning(
+                f"Insufficient number of samples collected may affect the quantization. "
+                f"target samples count is {nsamples}, while valid samples count is {total_cnt}"
+            )
+            if total_cnt < self.batch_size:
+                raise ValueError(
+                    f"valid samples is less than batch_size({self.batch_size}),"
+                    " please adjust self.batch_size or seqlen."
+                )
+            max_len = (total_cnt // self.batch_size) * self.batch_size
+            for k, v in self.inputs.items():
+                for key in v:
+                    if isinstance(v[key], list) and len(v[key]) == total_cnt:
+                        self.inputs[k][key] = v[key][:max_len]
+
+        # torch.cuda.empty_cache()
     def try_cache_inter_data_gpucpu(self, *args, **kwargs):
         """Skip re-caching when DiffusionMixin.quantize has already populated self.inputs.
 
