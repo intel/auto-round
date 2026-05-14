@@ -757,10 +757,9 @@ class BaseCompressor(object):
         self.quant_lm_head = cfg.quant_lm_head
         self.to_quant_block_names = cfg.to_quant_block_names
         if self.to_quant_block_names is None:
-            _hint = getattr(self.model_context.model, "_autoround_to_quant_block_names", None)
-            if _hint is not None:
-                self.to_quant_block_names = _hint
-                self.quantize_config.to_quant_block_names = _hint
+            self.to_quant_block_names = getattr(self.model_context.model, "_autoround_to_quant_block_names", None)
+            if self.to_quant_block_names is not None:
+                self.quantize_config.to_quant_block_names = self.to_quant_block_names
 
         # Resolve the scheme (pure config work: sets data_type / bits / sym /
         # scale_dtype etc. on both self and self.quantize_config).
