@@ -247,6 +247,163 @@ def _dequant_int4_asym(packed, scales, zeros, group_size):
     return deq.reshape(E, N, K)
 
 
+# ---------------------------------------------------------------------------
+# Int8 / Int2 / FP8 helpers (decode-path).
+# ---------------------------------------------------------------------------
+
+
+def _pack_int8_sym(w_float, scales, group_size):
+    """Quantize [E, N, K] fp -> int8 (signed, [-127, 127]); fills scales in place."""
+    E, N, K = w_float.shape
+    G = K // group_size
+    w = w_float.reshape(E, N, G, group_size)
+    absmax = w.abs().amax(dim=-1, keepdim=True).clamp(min=1e-8)
+    s = (absmax / 127.0).squeeze(-1).to(scales.dtype)
+    scales.copy_(s)
+    q = torch.clamp(torch.round(w / s.to(w.dtype).unsqueeze(-1)), -127, 127).to(torch.int8)
+    # Reinterpret as uint8 with no value change.
+    return q.reshape(E, N, K).view(torch.uint8).contiguous()
+
+
+def _pack_int8_asym(w_float, scales, zeros, group_size):
+    """Quantize [E, N, K] fp -> uint8 ([0, 255]); fills scales/zeros in place."""
+    E, N, K = w_float.shape
+    G = K // group_size
+    w = w_float.reshape(E, N, G, group_size)
+    wmin = w.amin(dim=-1, keepdim=True)
+    wmax = w.amax(dim=-1, keepdim=True)
+    s = ((wmax - wmin) / 255.0).clamp(min=1e-8)
+    z = torch.round(-wmin / s).clamp(0, 255)
+    scales.copy_(s.squeeze(-1).to(scales.dtype))
+    zeros.copy_(z.squeeze(-1).to(zeros.dtype))
+    q = torch.clamp(torch.round(w / s + z), 0, 255).to(torch.int32)
+    return q.reshape(E, N, K).to(torch.uint8).contiguous()
+
+
+def _dequant_int8_sym(packed_u8, scales, group_size):
+    # Reinterpret uint8 bytes as signed int8.
+    q = packed_u8.view(torch.int8).to(scales.dtype)
+    E, N, K = q.shape
+    q = q.reshape(E, N, K // group_size, group_size)
+    return (q * scales.unsqueeze(-1)).reshape(E, N, K)
+
+
+def _dequant_int8_asym(packed_u8, scales, zeros, group_size):
+    q = packed_u8.to(torch.int32).to(scales.dtype)
+    E, N, K = q.shape
+    q = q.reshape(E, N, K // group_size, group_size)
+    deq = (q - zeros.to(scales.dtype).unsqueeze(-1)) * scales.unsqueeze(-1)
+    return deq.reshape(E, N, K)
+
+
+def _pack_int2_sym(w_float, scales, group_size):
+    """Quantize [E, N, K] fp -> packed int2 (signed [-2, 1]); shape [E, N, K/4].
+
+    Packing: byte = q0 | (q1<<2) | (q2<<4) | (q3<<6), where the j-th 2-bit
+    field corresponds to K index 4*i + j.
+    """
+    E, N, K = w_float.shape
+    assert K % 4 == 0, "K must be a multiple of 4 for int2 packing"
+    G = K // group_size
+    w = w_float.reshape(E, N, G, group_size)
+    # Symmetric int2 has signed range [-2, 1] (i.e. clip at 2 and -2 but -2 inclusive).
+    absmax = w.abs().amax(dim=-1, keepdim=True).clamp(min=1e-8)
+    s = (absmax / 2.0).squeeze(-1).to(scales.dtype)
+    scales.copy_(s)
+    q = torch.clamp(torch.round(w / s.to(w.dtype).unsqueeze(-1)), -2, 1).to(torch.int32)
+    q = q.reshape(E, N, K)
+    # Pack 4 values per byte.
+    q0 = q[..., 0::4] & 0x3
+    q1 = q[..., 1::4] & 0x3
+    q2 = q[..., 2::4] & 0x3
+    q3 = q[..., 3::4] & 0x3
+    packed = (q0 | (q1 << 2) | (q2 << 4) | (q3 << 6)).to(torch.uint8)
+    return packed
+
+
+def _pack_int2_asym(w_float, scales, zeros, group_size):
+    """Quantize [E, N, K] fp -> packed int2 (unsigned [0, 3]); shape [E, N, K/4]."""
+    E, N, K = w_float.shape
+    assert K % 4 == 0
+    G = K // group_size
+    w = w_float.reshape(E, N, G, group_size)
+    wmin = w.amin(dim=-1, keepdim=True)
+    wmax = w.amax(dim=-1, keepdim=True)
+    s = ((wmax - wmin) / 3.0).clamp(min=1e-8)
+    z = torch.round(-wmin / s).clamp(0, 3)
+    scales.copy_(s.squeeze(-1).to(scales.dtype))
+    zeros.copy_(z.squeeze(-1).to(zeros.dtype))
+    q = torch.clamp(torch.round(w / s + z), 0, 3).to(torch.int32)
+    q = q.reshape(E, N, K)
+    q0 = q[..., 0::4] & 0x3
+    q1 = q[..., 1::4] & 0x3
+    q2 = q[..., 2::4] & 0x3
+    q3 = q[..., 3::4] & 0x3
+    packed = (q0 | (q1 << 2) | (q2 << 4) | (q3 << 6)).to(torch.uint8)
+    return packed
+
+
+def _dequant_int2_sym(packed, scales, group_size):
+    E, N, K_q = packed.shape
+    K = K_q * 4
+    p = packed.to(torch.int32)
+    fields = torch.empty(E, N, K, dtype=torch.int32, device=packed.device)
+    fields[..., 0::4] = p & 0x3
+    fields[..., 1::4] = (p >> 2) & 0x3
+    fields[..., 2::4] = (p >> 4) & 0x3
+    fields[..., 3::4] = (p >> 6) & 0x3
+    # Sign-extend 2-bit (>=2 means negative).
+    fields = torch.where(fields >= 2, fields - 4, fields).to(scales.dtype)
+    fields = fields.reshape(E, N, K // group_size, group_size)
+    return (fields * scales.unsqueeze(-1)).reshape(E, N, K)
+
+
+def _dequant_int2_asym(packed, scales, zeros, group_size):
+    E, N, K_q = packed.shape
+    K = K_q * 4
+    p = packed.to(torch.int32)
+    fields = torch.empty(E, N, K, dtype=torch.int32, device=packed.device)
+    fields[..., 0::4] = p & 0x3
+    fields[..., 1::4] = (p >> 2) & 0x3
+    fields[..., 2::4] = (p >> 4) & 0x3
+    fields[..., 3::4] = (p >> 6) & 0x3
+    fields = fields.to(scales.dtype)
+    fields = fields.reshape(E, N, K // group_size, group_size)
+    deq = (fields - zeros.to(scales.dtype).unsqueeze(-1)) * scales.unsqueeze(-1)
+    return deq.reshape(E, N, K)
+
+
+def _pack_fp8(w_float, scales, group_size, fp8_dtype):
+    """Quantize [E, N, K] fp -> FP8 (e4m3fn/e5m2) with per-group scale.
+
+    Scales are filled in-place; ``w_float`` is divided by the scale, then cast
+    to ``fp8_dtype`` (rounding handled by torch). Returns the FP8 tensor.
+    """
+    assert fp8_dtype in (torch.float8_e4m3fn, torch.float8_e5m2)
+    E, N, K = w_float.shape
+    G = K // group_size
+    w = w_float.reshape(E, N, G, group_size)
+    absmax = w.abs().amax(dim=-1, keepdim=True).clamp(min=1e-8)
+    # Pick fp8 max representable magnitude for the chosen format.
+    if fp8_dtype == torch.float8_e4m3fn:
+        fp8_max = 448.0
+    else:  # e5m2
+        fp8_max = 57344.0
+    s = (absmax / fp8_max).squeeze(-1).to(scales.dtype)
+    scales.copy_(s)
+    scaled = (w / s.to(w.dtype).unsqueeze(-1)).reshape(E, N, K)
+    # Clamp to fp8 representable range before cast to avoid Inf/NaN.
+    scaled = scaled.clamp(-fp8_max, fp8_max)
+    return scaled.to(fp8_dtype).contiguous()
+
+
+def _dequant_fp8(packed_fp8, scales, group_size, out_dtype):
+    """Reference dequant: cast fp8 -> out_dtype and multiply per-group scale."""
+    E, N, K = packed_fp8.shape
+    w = packed_fp8.to(out_dtype).reshape(E, N, K // group_size, group_size)
+    return (w * scales.unsqueeze(-1)).reshape(E, N, K)
+
+
 def _moe_decode_reference(activations, dequant_weights, num_tokens_per_expert):
     """Reference: each token is matmul'd against its routed expert's weights."""
     total_tokens, K = activations.shape
@@ -385,6 +542,175 @@ class TestMoEGemmDecode:
                 group_size=128,
                 asym=True,
             )
+
+        # FP8 + asym is rejected
+        fp8_w = torch.zeros(num_experts, 64, 128, dtype=torch.float8_e4m3fn, device="xpu")
+        zeros = torch.empty(num_experts, 64, 1, dtype=torch.float16, device="xpu")
+        with pytest.raises(ValueError):
+            ark.moe_gemm_decode(
+                activations,
+                fp8_w,
+                num_tokens_per_expert,
+                scales=scales,
+                zeros=zeros,
+                group_size=128,
+                asym=True,
+            )
+
+    @pytest.mark.parametrize("dtype", [torch.float16, torch.bfloat16])
+    @pytest.mark.parametrize("group_size", [32, 128])
+    def test_decode_int8_sym(self, dtype, group_size):
+        num_experts = 4
+        tokens_per_expert = [1, 1, 0, 2]
+        total_tokens = sum(tokens_per_expert)
+        N, K = 256, 256
+
+        activations = torch.randn(total_tokens, K, dtype=dtype, device="xpu")
+        w_float = (torch.randn(num_experts, N, K, dtype=torch.float32, device="xpu") * 0.1).to(dtype)
+        scales = torch.empty(num_experts, N, K // group_size, dtype=dtype, device="xpu")
+        packed = _pack_int8_sym(w_float, scales, group_size)
+        num_tokens_per_expert = torch.tensor(tokens_per_expert, dtype=torch.int32, device="xpu")
+
+        out = ark.moe_gemm_decode(
+            activations,
+            packed,
+            num_tokens_per_expert,
+            scales=scales,
+            weight_bits=8,
+            group_size=group_size,
+            asym=False,
+        )
+
+        dequant = _dequant_int8_sym(packed, scales, group_size).to(dtype)
+        ref = _moe_decode_reference(activations, dequant, num_tokens_per_expert)
+        assert out.shape == (total_tokens, N)
+        torch.testing.assert_close(out, ref, rtol=5e-2, atol=5e-2)
+
+    @pytest.mark.parametrize("dtype", [torch.float16, torch.bfloat16])
+    def test_decode_int8_asym(self, dtype):
+        num_experts = 4
+        group_size = 128
+        tokens_per_expert = [0, 1, 2, 1]
+        total_tokens = sum(tokens_per_expert)
+        N, K = 256, 256
+
+        activations = torch.randn(total_tokens, K, dtype=dtype, device="xpu")
+        w_float = (torch.randn(num_experts, N, K, dtype=torch.float32, device="xpu") * 0.1).to(dtype)
+        scales = torch.empty(num_experts, N, K // group_size, dtype=dtype, device="xpu")
+        zeros = torch.empty(num_experts, N, K // group_size, dtype=dtype, device="xpu")
+        packed = _pack_int8_asym(w_float, scales, zeros, group_size)
+        num_tokens_per_expert = torch.tensor(tokens_per_expert, dtype=torch.int32, device="xpu")
+
+        out = ark.moe_gemm_decode(
+            activations,
+            packed,
+            num_tokens_per_expert,
+            scales=scales,
+            zeros=zeros,
+            weight_bits=8,
+            group_size=group_size,
+            asym=True,
+        )
+
+        dequant = _dequant_int8_asym(packed, scales, zeros, group_size).to(dtype)
+        ref = _moe_decode_reference(activations, dequant, num_tokens_per_expert)
+        assert out.shape == (total_tokens, N)
+        torch.testing.assert_close(out, ref, rtol=5e-2, atol=5e-2)
+
+    @pytest.mark.parametrize("dtype", [torch.float16, torch.bfloat16])
+    @pytest.mark.parametrize("group_size", [32, 128])
+    def test_decode_int2_sym(self, dtype, group_size):
+        num_experts = 4
+        tokens_per_expert = [1, 1, 0, 2]
+        total_tokens = sum(tokens_per_expert)
+        N, K = 256, 256
+
+        activations = torch.randn(total_tokens, K, dtype=dtype, device="xpu")
+        w_float = (torch.randn(num_experts, N, K, dtype=torch.float32, device="xpu") * 0.1).to(dtype)
+        scales = torch.empty(num_experts, N, K // group_size, dtype=dtype, device="xpu")
+        packed = _pack_int2_sym(w_float, scales, group_size)
+        num_tokens_per_expert = torch.tensor(tokens_per_expert, dtype=torch.int32, device="xpu")
+
+        out = ark.moe_gemm_decode(
+            activations,
+            packed,
+            num_tokens_per_expert,
+            scales=scales,
+            weight_bits=2,
+            group_size=group_size,
+            asym=False,
+        )
+
+        dequant = _dequant_int2_sym(packed, scales, group_size).to(dtype)
+        ref = _moe_decode_reference(activations, dequant, num_tokens_per_expert)
+        assert out.shape == (total_tokens, N)
+        # Int2 has much higher quant error; relax tolerance vs int4.
+        torch.testing.assert_close(out, ref, rtol=1e-1, atol=1e-1)
+
+    @pytest.mark.parametrize("dtype", [torch.float16, torch.bfloat16])
+    def test_decode_int2_asym(self, dtype):
+        num_experts = 4
+        group_size = 128
+        tokens_per_expert = [0, 1, 2, 1]
+        total_tokens = sum(tokens_per_expert)
+        N, K = 256, 256
+
+        activations = torch.randn(total_tokens, K, dtype=dtype, device="xpu")
+        w_float = (torch.randn(num_experts, N, K, dtype=torch.float32, device="xpu") * 0.1).to(dtype)
+        scales = torch.empty(num_experts, N, K // group_size, dtype=dtype, device="xpu")
+        zeros = torch.empty(num_experts, N, K // group_size, dtype=dtype, device="xpu")
+        packed = _pack_int2_asym(w_float, scales, zeros, group_size)
+        num_tokens_per_expert = torch.tensor(tokens_per_expert, dtype=torch.int32, device="xpu")
+
+        out = ark.moe_gemm_decode(
+            activations,
+            packed,
+            num_tokens_per_expert,
+            scales=scales,
+            zeros=zeros,
+            weight_bits=2,
+            group_size=group_size,
+            asym=True,
+        )
+
+        dequant = _dequant_int2_asym(packed, scales, zeros, group_size).to(dtype)
+        ref = _moe_decode_reference(activations, dequant, num_tokens_per_expert)
+        assert out.shape == (total_tokens, N)
+        torch.testing.assert_close(out, ref, rtol=1e-1, atol=1e-1)
+
+    @pytest.mark.parametrize("dtype", [torch.float16, torch.bfloat16])
+    @pytest.mark.parametrize(
+        "fp8_dtype", [torch.float8_e4m3fn, torch.float8_e5m2]
+    )
+    @pytest.mark.parametrize("group_size", [32, 128])
+    def test_decode_fp8(self, dtype, fp8_dtype, group_size):
+        num_experts = 4
+        tokens_per_expert = [1, 0, 2, 1]
+        total_tokens = sum(tokens_per_expert)
+        N, K = 256, 256
+
+        activations = torch.randn(total_tokens, K, dtype=dtype, device="xpu")
+        w_float = (torch.randn(num_experts, N, K, dtype=torch.float32, device="xpu") * 0.1).to(dtype)
+        scales = torch.empty(num_experts, N, K // group_size, dtype=dtype, device="xpu")
+        packed = _pack_fp8(w_float, scales, group_size, fp8_dtype)
+        num_tokens_per_expert = torch.tensor(tokens_per_expert, dtype=torch.int32, device="xpu")
+
+        out = ark.moe_gemm_decode(
+            activations,
+            packed,
+            num_tokens_per_expert,
+            scales=scales,
+            group_size=group_size,
+            asym=False,
+        )
+
+        dequant = _dequant_fp8(packed, scales, group_size, dtype)
+        ref = _moe_decode_reference(activations, dequant, num_tokens_per_expert)
+        assert out.shape == (total_tokens, N)
+        # E5M2 has only 2 mantissa bits -> coarser; relax tolerance for both.
+        rtol = 1e-1 if fp8_dtype == torch.float8_e5m2 else 5e-2
+        atol = 1e-1 if fp8_dtype == torch.float8_e5m2 else 5e-2
+        torch.testing.assert_close(out, ref, rtol=rtol, atol=atol)
 
 
 if __name__ == "__main__":

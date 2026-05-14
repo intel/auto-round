@@ -815,21 +815,35 @@ class ARK:
 
         Args:
             activations: ``[total_tokens, K]`` in fp16 or bf16.
-            weights:
-                * ``weight_bits=4``: packed uint8 of shape ``[E, N, K // 2]``
-                  (two int4 values per byte; low nibble at the lower K index).
-                * ``weight_bits=16``: fp16/bf16 of shape ``[E, N, K]`` matching
-                  the activations dtype.
+            weights: 3-D tensor ``[E, N, K_packed]``. The accepted layouts are:
+
+                * Unquantized (``weight_bits=16``): ``torch.float16`` / ``torch.bfloat16``
+                  matching the activations dtype, ``K_packed == K``.
+                * Int8 (``weight_bits=8``): ``torch.uint8``, ``K_packed == K``.
+                  Sym (``asym=False``) reinterprets each byte as signed int8;
+                  asym (``asym=True``) treats each byte as ``uint8`` with a
+                  per-group zero-point.
+                * Int4 (``weight_bits=4``): ``torch.uint8`` packed,
+                  ``K_packed == K // 2`` (two 4-bit values per byte; low nibble
+                  at the lower K index).
+                * Int2 (``weight_bits=2``): ``torch.uint8`` packed,
+                  ``K_packed == K // 4`` (four 2-bit values per byte; field j at
+                  K index ``4*i + j`` is bits ``[2j+1:2j]`` of byte i).
+                * FP8 (``torch.float8_e4m3fn`` / ``torch.float8_e5m2``):
+                  ``K_packed == K``. ``weight_bits`` is ignored; ``asym`` must
+                  be ``False`` (no zero-points for FP8).
             num_tokens_per_expert: ``[E]`` int32. Sum must equal
                 ``activations.shape[0]``.
             scales: ``[E, N, K // group_size]`` in activations dtype. Required
-                when ``weight_bits=4``; ignored otherwise.
+                for all quantized paths (int8/int4/int2/fp8); must be ``None``
+                for unquantized weights.
             zeros: ``[E, N, K // group_size]`` in activations dtype. Required
-                when ``weight_bits=4`` and ``asym=True``; otherwise None.
-            weight_bits: 4 (int4, S4_CLIP) or 16 (no quantization).
-            group_size: group along K for int4 weights (default 128).
-            asym: if True, weights are stored as unsigned nibbles and ``zeros``
-                must be provided.
+                when ``asym=True`` (int8/int4/int2 only); otherwise ``None``.
+            weight_bits: 2, 4, 8, or 16. Ignored when ``weights`` is an FP8
+                tensor (the FP8 sub-format is taken from ``weights.dtype``).
+            group_size: group along K for quantized weights (default 128).
+            asym: if ``True``, weights use unsigned encoding and ``zeros`` must
+                be provided. Not supported for FP8.
 
         Returns:
             outputs: ``[total_tokens, N]`` in the same dtype as activations.
@@ -843,7 +857,7 @@ class ARK:
         if activations.ndim != 2:
             raise ValueError("activations must be 2D [total_tokens, K]")
         if weights.ndim != 3:
-            raise ValueError("weights must be 3D [E, N, K] or [E, N, K//2]")
+            raise ValueError("weights must be 3D [E, N, K_packed]")
 
         if not activations.is_contiguous():
             activations = activations.contiguous()
@@ -864,8 +878,32 @@ class ARK:
                 f"num_tokens_per_expert length {num_tokens_per_expert.shape[0]} != num_experts {num_experts}"
             )
 
+        # Detect FP8 weight dtype first (overrides weight_bits).
+        is_fp8 = weights.dtype in (torch.float8_e4m3fn, torch.float8_e5m2)
+
         # Validate weight layout / dtype combination.
-        if weight_bits == 16:
+        if is_fp8:
+            if asym:
+                raise ValueError("FP8 weights do not support asym=True")
+            if weights.shape[2] != K:
+                raise ValueError(f"FP8 weights K dim {weights.shape[2]} != activations K {K}")
+            if scales is None:
+                raise ValueError("scales is required for FP8 weights")
+            if scales.dtype != activations.dtype:
+                raise ValueError("scales dtype must match activations dtype")
+            if K % group_size != 0:
+                raise ValueError("K must be a multiple of group_size")
+            expected_scale_shape = (num_experts, N, K // group_size)
+            if tuple(scales.shape) != expected_scale_shape:
+                raise ValueError(f"scales shape {tuple(scales.shape)} != expected {expected_scale_shape}")
+            if zeros is not None:
+                raise ValueError("zeros must be None for FP8 weights")
+            weight_dtype = (
+                ARK_DT.float8_e4m3 if weights.dtype == torch.float8_e4m3fn else ARK_DT.float8_e5m2
+            )
+            if not scales.is_contiguous():
+                scales = scales.contiguous()
+        elif weight_bits == 16:
             if weights.dtype != activations.dtype:
                 raise ValueError("Unquantized weights must match activations dtype")
             if weights.shape[2] != K:
@@ -873,17 +911,36 @@ class ARK:
             weight_dtype = cvt_dtype(activations.dtype)
             if scales is not None or zeros is not None:
                 raise ValueError("scales/zeros must be None when weight_bits=16")
-        elif weight_bits == 4:
+        elif weight_bits in (8, 4, 2):
             if weights.dtype != torch.uint8:
-                raise ValueError("Int4 packed weights must be torch.uint8")
-            if weights.shape[2] * 2 != K:
-                raise ValueError(f"Int4 packed weights last dim {weights.shape[2]} must equal K/2 ({K // 2})")
+                raise ValueError(f"Int{weight_bits} packed weights must be torch.uint8")
+            if weight_bits == 8:
+                k_packed_expected = K
+                k_div = 1
+            elif weight_bits == 4:
+                k_packed_expected = K // 2
+                k_div = 2
+            else:  # weight_bits == 2
+                k_packed_expected = K // 4
+                k_div = 4
+            if K % k_div != 0:
+                raise ValueError(f"K must be a multiple of {k_div} for weight_bits={weight_bits}")
+            if weights.shape[2] != k_packed_expected:
+                raise ValueError(
+                    f"Int{weight_bits} packed weights last dim {weights.shape[2]} must equal K/{k_div} "
+                    f"({k_packed_expected})"
+                )
             if scales is None:
-                raise ValueError("scales is required for int4 weights")
+                raise ValueError(f"scales is required for int{weight_bits} weights")
             if scales.dtype != activations.dtype:
                 raise ValueError("scales dtype must match activations dtype")
-            if K % group_size != 0 or (group_size & 1) != 0:
-                raise ValueError("K must be a multiple of group_size and group_size must be even")
+            if K % group_size != 0:
+                raise ValueError("K must be a multiple of group_size")
+            # Group_size constraints per dtype.
+            if weight_bits == 4 and (group_size & 1) != 0:
+                raise ValueError("group_size must be even for int4 weights")
+            if weight_bits == 2 and (group_size & 3) != 0:
+                raise ValueError("group_size must be a multiple of 4 for int2 weights")
             expected_scale_shape = (num_experts, N, K // group_size)
             if tuple(scales.shape) != expected_scale_shape:
                 raise ValueError(f"scales shape {tuple(scales.shape)} != expected {expected_scale_shape}")
@@ -897,14 +954,13 @@ class ARK:
             else:
                 if zeros is not None:
                     raise ValueError("zeros must be None when asym=False")
-            # S4_CLIP weight dtype, regardless of activations dtype.
-            weight_dtype = ARK_DT.int4
+            weight_dtype = {8: ARK_DT.int8, 4: ARK_DT.int4, 2: ARK_DT.int2}[weight_bits]
             if not scales.is_contiguous():
                 scales = scales.contiguous()
             if asym and not zeros.is_contiguous():
                 zeros = zeros.contiguous()
         else:
-            raise ValueError(f"Unsupported weight_bits={weight_bits} (supported: 4, 16)")
+            raise ValueError(f"Unsupported weight_bits={weight_bits} (supported: 2, 4, 8, 16)")
 
         if N % 16 != 0:
             raise ValueError(f"N must be a multiple of 16 (got {N})")
