@@ -40,7 +40,6 @@ from auto_round.utils.model import (
     mllm_load_model,
 )
 
-
 # ================= Fake BAGEL model for testing =================
 
 
@@ -180,6 +179,7 @@ class TestBagelSpecialModelHandler:
 
     def test_bagel_multimodal_block_returns_language_model_layers(self):
         """_get_bagel_multimodal_block should return block names for language_model layers."""
+
         # BAGEL's language_model is a Qwen2ForCausalLM (which has .model containing layers).
         # We create a minimal mock to avoid torch.nn.Module attribute resolution issues.
         class MockLayers(list):
@@ -202,6 +202,7 @@ class TestBagelSpecialModelHandler:
 
     def test_get_bagel_ignore_layers_structure(self):
         """get_bagel_ignore_layers should return generation-path modules."""
+
         # Use minimal mock matching BAGEL's attribute structure
         class MockLanguageModel:
             def __init__(self):
@@ -291,8 +292,7 @@ class TestBagelExtraModelFiles:
         """llm_config.json, vit_config.json, preprocessor_config.json should be in _EXTRA_MODEL_FILES."""
         expected = {"llm_config.json", "vit_config.json", "preprocessor_config.json"}
         assert expected.issubset(_EXTRA_MODEL_FILES), (
-            f"BAGEL extra files {expected} should be in _EXTRA_MODEL_FILES, "
-            f"got {_EXTRA_MODEL_FILES}"
+            f"BAGEL extra files {expected} should be in _EXTRA_MODEL_FILES, " f"got {_EXTRA_MODEL_FILES}"
         )
 
 
@@ -412,9 +412,7 @@ class TestBagelForQuantization:
 
         state = load_file(os.path.join(save_dir, "model.safetensors"))
         # The buffer we added should be in the saved state_dict
-        assert "test_buffer" in state, (
-            "named_buffers should be included in save_pretrained state_dict"
-        )
+        assert "test_buffer" in state, "named_buffers should be included in save_pretrained state_dict"
 
 
 # ================= Test: compressor base - to_quant_block_names hint =================
@@ -457,9 +455,7 @@ class TestBagelCompressorHint:
         with open(source_path) as f:
             source = f.read()
 
-        assert "_autoround_to_quant_block_names" in source, (
-            "BaseCompressor should read _autoround_to_quant_block_names"
-        )
+        assert "_autoround_to_quant_block_names" in source, "BaseCompressor should read _autoround_to_quant_block_names"
 
 
 # ================= Test: ValueError in AutoConfig.from_pretrained =================
@@ -476,9 +472,9 @@ class TestConfigErrorHandling:
 
         # The branch diff adds ValueError to the except clause around line 294
         # Verify the pattern appears (line numbers may shift)
-        assert "except (OSError, EnvironmentError, ValueError)" in content, (
-            "BaseCompressor should catch ValueError alongside OSError/EnvironmentError"
-        )
+        assert (
+            "except (OSError, EnvironmentError, ValueError)" in content
+        ), "BaseCompressor should catch ValueError alongside OSError/EnvironmentError"
 
     def test_autoconfig_valueerror_caught_in_model_context(self):
         """ModelContext: ValueError should be caught in AutoConfig.from_pretrained."""
@@ -487,9 +483,9 @@ class TestConfigErrorHandling:
             content = f.read()
 
         # The branch diff adds ValueError to the except clause around line 146
-        assert "except (OSError, EnvironmentError, ValueError)" in content, (
-            "ModelContext should catch ValueError alongside OSError/EnvironmentError"
-        )
+        assert (
+            "except (OSError, EnvironmentError, ValueError)" in content
+        ), "ModelContext should catch ValueError alongside OSError/EnvironmentError"
 
 
 # ================= Test: mllm_load_model for bagel =================
