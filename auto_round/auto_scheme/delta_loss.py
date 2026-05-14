@@ -66,6 +66,7 @@ __all__ = ["gen_layer_config"]
 
 
 class AutoSchemeWrapperLinear(WrapperLinear):
+
     def __init__(
         self,
         orig_layer,
@@ -167,6 +168,7 @@ class AutoSchemeWrapperLinear(WrapperLinear):
 
 
 class AutoSchemeWrapperLinearForGGUFK(AutoSchemeWrapperLinear):
+
     def __init__(
         self,
         orig_layer,
@@ -212,6 +214,7 @@ class AutoSchemeWrapperLinearForGGUFK(AutoSchemeWrapperLinear):
 
 
 class AutoSchemeWrapperLinearForGGUFKImatrix(AutoSchemeWrapperLinear):
+
     def __init__(
         self,
         orig_layer,
@@ -291,6 +294,7 @@ class AutoSchemeWrapperLinearForGGUFKImatrix(AutoSchemeWrapperLinear):
 
 @torch.no_grad()
 def cal_imatrix(model, dataloader):
+
     def register_act_hook(model):
         """Registers hooks to accumulate activation squared norms into `imatrix`."""
 
@@ -923,6 +927,7 @@ def choose_bits_per_layer_with_path(layers: dict, P: int):
 
 
 def move_module_to_tuning_device(module, major_device="cpu"):
+
     def _normalize(dev):
         return dev if isinstance(dev, torch.device) else torch.device(dev)
 
@@ -989,7 +994,15 @@ def _gen_layer_config(
         _model_dir = model_name
         if _model_dir is None and hasattr(model, "config"):
             _model_dir = getattr(model.config, "_name_or_path", None)
-        offload_context = OffloadManager(enabled=True, mode="clean", model_dir=_model_dir, cache_numel=True)
+        offload_mode = "clean"
+        offload_kwargs = {"model_dir": _model_dir}
+        # Rotation mutates weights in memory before AutoScheme starts. Clean-mode
+        # reloads from the original checkpoint and would silently discard those
+        # transformed weights during scoring and final restore.
+        if getattr(model, "rotation_config", None):
+            offload_mode = "offload"
+            offload_kwargs = {"offload_dir_prefix": "autoscheme", "retain_saved_entries": True}
+        offload_context = OffloadManager(enabled=True, mode=offload_mode, cache_numel=True, **offload_kwargs)
 
     target_bits = auto_scheme.avg_bits
     # HF gates gradient checkpointing on ``self.training`` — it's a no-op in eval mode.

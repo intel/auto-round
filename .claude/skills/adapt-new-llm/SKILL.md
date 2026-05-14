@@ -291,5 +291,7 @@ def test_your_model_quantization():
 | `auto_round/modeling/fused_moe/replace_modules.py` | MoE unfusing registry (`BUILTIN_MODULES`) |
 | `auto_round/utils/common.py` | `SUPPORTED_LAYER_TYPES`, `INNER_SUPPORTED_LAYER_TYPES` |
 | `auto_round/utils/model.py` | `get_block_names()`, `is_mllm_model()`, model loading |
-| `auto_round/compressors/base.py` | Core quantization loop, `calib()`, `_quantize_blocks()` |
+| `auto_round/compressors/data_driven.py` | New-architecture quantization loop and block scheduling |
+| `auto_round/algorithms/quantization/base.py` | Quantizer block execution, sampling, and diffusion output configs |
+| `auto_round/calibration/llm.py` | LLM calibration data collection and `calib()` flow |
 | `auto_round/autoround.py` | `AutoRound` factory — model type routing logic |

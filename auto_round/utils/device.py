@@ -87,13 +87,44 @@ def _use_hpu_compile_mode():
     return TORCH_VERSION_AT_LEAST_2_4 and not is_hpu_lazy_mode()
 
 
+def _bump_dynamo_cache_limit(min_size: Optional[int] = None):
+    """Raise torch._dynamo cache/recompile limits.
+
+    The same quant function (e.g. ``quant_tensor_sym``) is reused across
+    every linear layer in a transformer block (q/k/v/o_proj, gate/up/
+    down_proj, ...), each with a different weight shape. Because dynamo's
+    compile cache is keyed by the function's code object (shared across
+    all WrapperLinear instances), per-layer static recompiles quickly
+    exceed the default ``recompile_limit`` (8) and trigger a fallback to
+    eager with a noisy warning. We keep static-shape compilation (best
+    perf) and just allow more cache entries.
+
+    The threshold can be overridden via the ``AR_DYNAMO_CACHE_SIZE_LIMIT``
+    environment variable (default: 16).
+    """
+    try:
+        if min_size is None:
+            from auto_round import envs
+
+            min_size = envs.AR_DYNAMO_CACHE_SIZE_LIMIT
+        from torch._dynamo import config as _dynamo_config
+
+        for attr in ("cache_size_limit", "accumulated_cache_size_limit", "recompile_limit"):
+            if hasattr(_dynamo_config, attr) and getattr(_dynamo_config, attr) < min_size:
+                setattr(_dynamo_config, attr, min_size)
+    except Exception:  # pragma: no cover - best effort
+        pass
+
+
 def compile_func_on_hpu(func):
     if _use_hpu_compile_mode():
+        _bump_dynamo_cache_limit()
         return torch.compile(func, backend="hpu_backend")
     return func
 
 
 def compile_func_on_cuda_or_cpu(func):
+    _bump_dynamo_cache_limit()
     return torch.compile(func)
 
 

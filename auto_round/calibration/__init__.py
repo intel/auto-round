@@ -11,3 +11,21 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
+"""Calibration sub-package."""
+
+from auto_round.calibration.base import Calibrator
+from auto_round.calibration.state import CalibrationState
+from auto_round.calibration.register import CALIBRATORS, get_calibrator, register_calibrator
+
+# Importing the strategy modules triggers their ``@register_calibrator`` decorators.
+from auto_round.calibration import llm as _llm  # noqa: F401
+from auto_round.calibration import mllm as _mllm  # noqa: F401
+from auto_round.calibration import diffusion as _diffusion  # noqa: F401
+
+__all__ = [
+    "Calibrator",
+    "CalibrationState",
+    "CALIBRATORS",
+    "get_calibrator",
+    "register_calibrator",
+]

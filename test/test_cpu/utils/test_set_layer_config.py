@@ -65,6 +65,7 @@ class _Router(nn.Module):
 
 
 class _MoeBlock(nn.Module):
+
     def __init__(self, size: int = 32):
         super().__init__()
         self.gate = _Router(size)
@@ -72,6 +73,7 @@ class _MoeBlock(nn.Module):
 
 
 class _UnsupportedGateModel(nn.Module):
+
     def __init__(self, size: int = 32):
         super().__init__()
         self.mlp = _MoeBlock(size)
@@ -172,3 +174,22 @@ class TestIgnoreLayersRegexFallback:
         assert "mlp.gate" in regex_config
         assert regex_config["mlp.gate"]["bits"] == 16
         assert regex_config["mlp.gate"]["data_type"] == "float"
+
+
+class TestSchemeShorthand:
+    """layer_config dict entries may use a legacy scheme shorthand plus overrides."""
+
+    def test_scheme_key_resolves_before_validation(self, model):
+        layer_config, _, _ = _call_set_layer_config(
+            model,
+            layer_config={
+                "layers.0.fc1": {"scheme": "W8A16"},
+                "layers.0.fc2": {"scheme": "W2A16", "group_size": 32},
+            },
+        )
+
+        assert layer_config["layers.0.fc1"]["bits"] == 8
+        assert layer_config["layers.0.fc1"]["act_bits"] == 16
+        assert "scheme" not in layer_config["layers.0.fc1"]
+        assert layer_config["layers.0.fc2"]["bits"] == 2
+        assert layer_config["layers.0.fc2"]["group_size"] == 32
