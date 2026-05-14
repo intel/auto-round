@@ -804,7 +804,7 @@ def is_mllm_model(model_or_path: Union[str, torch.nn.Module], platform: str = No
         return _is_mllm_model_cache[model_path]
 
     # Check model_type exclusion: some models have multimodal components
-    # but should be quantized as LLM (e.g., BAGEL not).
+    # but should be quantized as LLM (e.g., BAGEL MoT).
     _model_type = None
     if isinstance(model_or_path, torch.nn.Module) and hasattr(model_or_path, "config"):
         _model_type = getattr(model_or_path.config, "model_type", None)
