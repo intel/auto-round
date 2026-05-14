@@ -1473,6 +1473,3 @@ class BaseCompressor(object):
 
         return model, folders
 
-
-class LLMCompressor(BaseCompressor):
-    pass
