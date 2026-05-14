@@ -8,7 +8,7 @@ from transformers import AutoTokenizer
 from auto_round import AutoRound
 from auto_round.algorithms.quantization.base import BaseQuantizers
 from auto_round.algorithms.quantization.rtn.config import RTNConfig
-from auto_round.compressors_new.utils import block_forward
+from auto_round.compressors.utils import block_forward
 
 from ...envs import require_gguf
 from ...helpers import get_model_path, get_tiny_model

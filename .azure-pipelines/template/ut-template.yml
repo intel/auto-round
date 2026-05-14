@@ -48,7 +48,7 @@ steps:
   - task: DownloadPipelineArtifact@2
     condition: and(succeeded(), eq(variables['BUILD_ARK_WHEEL'], 'true'))
     inputs:
-      artifact: auto-round-lib-wheel
+      artifact: auto-round-lib-wheel-cp312
       patterns: '*.whl'
       path: $(Build.SourcesDirectory)/ark_wheel
     displayName: "Download ark wheel"

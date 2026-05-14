@@ -24,19 +24,14 @@ class RTNConfig(QuantizationConfig):
         self,
         *,
         disable_opt_rtn: bool = None,
-        # for opt-rtn
-        batch_size: int = 8,
         **kwargs,
     ):
         # pop before super().__init__ so it doesn't leak into QuantizationConfig as an unknown kwarg
         enable_opt_rtn = kwargs.pop("enable_opt_rtn", None)
         super().__init__(**kwargs)
 
-        self.batch_size = batch_size
-
         # Some helpers
         self.infer_bs_coeff = 1
-        self.batch_dim = None
 
         if enable_opt_rtn:
             disable_opt_rtn = False
