@@ -557,7 +557,12 @@ def quant_tensor_gguf_asym_dq(
         d_wmin = prev_d_wmin.detach()
     if scale is None:
         scale, wmin, d_scale, d_wmin = search_gguf_scale_min_asym(
-            tensor, bits, scale_dtype, imatrix, split_num=split_num,v=v,
+            tensor,
+            bits,
+            scale_dtype,
+            imatrix,
+            split_num=split_num,
+            v=v,
         )
         scale = scale.clone()
         wmin = wmin.clone()
@@ -807,7 +812,7 @@ def quant_tensor_gguf_sym_dq(
         scale = prev_scale.detach()
         d_scale = prev_d_scale.detach()
     if scale is None or d_scale is None:
-        scale = search_gguf_scale_min_sym(tensor, bits, imatrix, scale_dtype, split_num=split_num,v=v)
+        scale = search_gguf_scale_min_sym(tensor, bits, imatrix, scale_dtype, split_num=split_num, v=v)
         scale = scale.to(scale_dtype)
         scale = torch.where(torch.abs(scale) < 1e-30, torch.zeros_like(scale), scale)
         scale, d_scale = double_quant_tensor_sym_rtn(scale, super_bits)
