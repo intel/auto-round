@@ -571,10 +571,7 @@ def mllm_load_model(
             AutoModelForCausalLM.register(Qwen3TTSConfig, Qwen3TTSForConditionalGeneration)
             AutoProcessor.register(Qwen3TTSConfig, Qwen3TTSProcessor)
         except ImportError:
-            raise ImportError(
-                "Qwen3-TTS requires the 'qwen-tts' package. "
-                "Please install it: pip install qwen-tts"
-            )
+            raise ImportError("Qwen3-TTS requires the 'qwen-tts' package. " "Please install it: pip install qwen-tts")
         except TypeError as e:
             if "check_model_inputs" in str(e):
                 raise ImportError(
@@ -591,17 +588,18 @@ def mllm_load_model(
 
     if _is_mimo_audio:
         try:
-            from mimo_audio.modeling_mimo_audio import MiMoAudioForCausalLM, MiMoAudioArguments
+            from mimo_audio.modeling_mimo_audio import MiMoAudioArguments, MiMoAudioForCausalLM
         except ImportError:
             # Try adding MIMO_AUDIO_PATH/src to sys.path
             mimo_path = os.environ.get("MIMO_AUDIO_PATH")
             if mimo_path:
                 import sys
+
                 src_path = os.path.join(mimo_path, "src")
                 if src_path not in sys.path:
                     sys.path.insert(0, src_path)
                 try:
-                    from mimo_audio.modeling_mimo_audio import MiMoAudioForCausalLM, MiMoAudioArguments
+                    from mimo_audio.modeling_mimo_audio import MiMoAudioArguments, MiMoAudioForCausalLM
                 except ImportError:
                     raise ImportError(
                         "MiMo-Audio requires the MiMo-Audio SDK. "
@@ -615,9 +613,7 @@ def mllm_load_model(
                     "MIMO_AUDIO_PATH to the repo root (e.g. export MIMO_AUDIO_PATH=/path/to/MiMo-Audio)."
                 )
 
-        tokenizer = AutoTokenizer.from_pretrained(
-            pretrained_model_name_or_path, trust_remote_code=trust_remote_code
-        )
+        tokenizer = AutoTokenizer.from_pretrained(pretrained_model_name_or_path, trust_remote_code=trust_remote_code)
         # Ensure special tokens are registered
         special_tokens = ["<|sosp|>", "<|eosp|>", "<|empty|>", "<|sostm|>", "<|eostm|>", "<|eot|>"]
         for token in special_tokens:
@@ -1578,7 +1574,7 @@ def is_moe_model_via_config(config) -> bool:
     try:
         config_str = str(config).lower()
     except Exception:
-        config_str = str(config.to_dict()).lower() if hasattr(config, 'to_dict') else ""
+        config_str = str(config.to_dict()).lower() if hasattr(config, "to_dict") else ""
     if "moe" in config_str or "expert" in config_str:
         return True
     return False
