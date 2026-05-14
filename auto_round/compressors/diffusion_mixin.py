@@ -157,9 +157,18 @@ class DiffusionMixin:
         params = inspect.signature(self.model_context.pipe.__call__).parameters
         width_param = params.get("width")
         height_param = params.get("height")
-        width = 832 if width_param is None or width_param.default in (inspect.Parameter.empty, None) else width_param.default
-        height = 480 if height_param is None or height_param.default in (inspect.Parameter.empty, None) else height_param.default
+        width = (
+            832
+            if width_param is None or width_param.default in (inspect.Parameter.empty, None)
+            else width_param.default
+        )
+        height = (
+            480
+            if height_param is None or height_param.default in (inspect.Parameter.empty, None)
+            else height_param.default
+        )
         from PIL import Image  # pylint: disable=E0401
+
         image = Image.new("RGB", (int(width), int(height)), color=(127, 127, 127))
         if batch_size == 1:
             return image
@@ -335,6 +344,7 @@ class DiffusionMixin:
                         self.inputs[k][key] = v[key][:max_len]
 
         # torch.cuda.empty_cache()
+
     def try_cache_inter_data_gpucpu(self, *args, **kwargs):
         """Skip re-caching when DiffusionMixin.quantize has already populated self.inputs.
 
