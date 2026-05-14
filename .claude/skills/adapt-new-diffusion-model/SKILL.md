@@ -7,11 +7,13 @@ description: "Adapt AutoRound to support a new diffusion model architecture (DiT
 
 ## Overview
 
-AutoRound's DiffusionCompressor works with standard diffusers pipelines
-(e.g., FLUX). This skill covers what code changes are needed when a new
-diffusion model doesn't work out-of-the-box. Common reasons for adaptation:
+AutoRound's new diffusion path uses `auto_round/compressors/diffusion_mixin.py`,
+`auto_round/calibration/diffusion.py`, and the quantizer implementations under
+`auto_round/algorithms/quantization/`. This skill covers what code changes are
+needed when a new diffusion model doesn't work out-of-the-box. Common reasons
+for adaptation:
 
-- Transformer block type not registered in `output_configs`
+- Transformer block type not registered in `DIFFUSION_OUTPUT_CONFIGS`
 - Non-standard pipeline API (not compatible with `pipe(prompts, ...)`)
 - Hybrid architecture with both AR and diffusion components
 - Model not detected as a diffusion model
@@ -49,16 +51,16 @@ def is_diffusion_model(model_or_path):
     # Checks for model_index.json presence
 ```
 
-If your model doesn't have `model_index.json`, either:
-- Create one in the model directory
-- Force diffusion mode via `ExtraConfig`:
+If your model doesn't have `model_index.json`, either create one in the model
+directory or pass diffusion-specific options through new-architecture
+`ExtraConfig` / `AutoRound` kwargs:
 
 ```python
-from auto_round.compressors import ExtraConfig
+from auto_round.compressors.config import ExtraConfig
 
 ar = AutoRound(
     model,
-    extra_config=ExtraConfig(diffusion_config=DiffusionConfig(...)),
+    extra_config=ExtraConfig(num_inference_steps=5),
 )
 ```
 
@@ -71,7 +73,7 @@ different attribute (e.g., `pipe.unet`), this needs adjustment in
 
 ## Step 2: Register Transformer Block Output Config
 
-This is the **most common** adaptation needed. The `output_configs` dict maps
+This is the **most common** adaptation needed. `DIFFUSION_OUTPUT_CONFIGS` maps
 transformer block class names to their output tensor names. Without this,
 calibration crashes because AutoRound doesn't know how to collect activations.
 
@@ -86,17 +88,18 @@ for name, module in pipe.transformer.named_modules():
         print(f"{name}: {type(module).__name__}")
 ```
 
-### Register in `output_configs`
+### Register in `DIFFUSION_OUTPUT_CONFIGS`
 
-Edit `auto_round/compressors/diffusion/compressor.py`:
+Edit `auto_round/algorithms/quantization/base.py`:
 
 ```python
-output_configs = {
-    "FluxTransformerBlock": ["encoder_hidden_states", "hidden_states"],
-    "FluxSingleTransformerBlock": ["encoder_hidden_states", "hidden_states"],
-    # Add your block type:
-    "YourTransformerBlock": ["hidden_states"],  # output tensor names in order
-}
+class BaseQuantizers:
+    DIFFUSION_OUTPUT_CONFIGS = {
+        "FluxTransformerBlock": ["encoder_hidden_states", "hidden_states"],
+        "FluxSingleTransformerBlock": ["encoder_hidden_states", "hidden_states"],
+        # Add your block type:
+        "YourTransformerBlock": ["hidden_states"],  # output tensor names in order
+    }
 ```
 
 The list must match the **exact order** of tensors returned by the block's
@@ -111,12 +114,12 @@ The list must match the **exact order** of tensors returned by the block's
 
 **Example**: If `forward()` returns `(hidden_states, encoder_hidden_states)`:
 ```python
-output_configs["YourBlock"] = ["hidden_states", "encoder_hidden_states"]
+BaseQuantizers.DIFFUSION_OUTPUT_CONFIGS["YourBlock"] = ["hidden_states", "encoder_hidden_states"]
 ```
 
 **Example**: If `forward()` returns just `hidden_states`:
 ```python
-output_configs["YourBlock"] = ["hidden_states"]
+BaseQuantizers.DIFFUSION_OUTPUT_CONFIGS["YourBlock"] = ["hidden_states"]
 ```
 
 ## Step 3: Handle Non-Standard Pipeline API
@@ -125,55 +128,60 @@ If your model's inference API differs from the standard
 `pipe(prompts, guidance_scale=..., num_inference_steps=...)`, provide a custom
 pipeline function.
 
-### Option A: Pass `pipeline_fn` parameter (no code changes)
+### Option A: Add a custom pipeline dispatch in `DiffusionCalibrator`
+
+Update `auto_round/calibration/diffusion.py` so `DiffusionCalibrator.calib()`
+dispatches through a small helper instead of calling `pipe(...)` directly:
 
 ```python
-def your_model_pipeline_fn(pipe, prompts, guidance_scale=7.5, num_inference_steps=28, generator=None, **kwargs):
-    """Custom pipeline function for YourModel."""
-    for prompt in (prompts if isinstance(prompts, list) else [prompts]):
-        pipe.generate(
-            prompt=prompt,
-            cfg_scale=guidance_scale,
-            steps=num_inference_steps,
+class DiffusionCalibrator(LLMCalibrator):
+    ...
+
+    def _run_pipeline(self, pipe, prompts, generator):
+        if getattr(pipe, "_autoround_pipeline_fn", None) is not None:
+            pipe._autoround_pipeline_fn(
+                pipe,
+                prompts,
+                guidance_scale=self.compressor.guidance_scale,
+                num_inference_steps=self.compressor.num_inference_steps,
+                generator=generator,
+            )
+            return
+        pipe(
+            prompts,
+            guidance_scale=self.compressor.guidance_scale,
+            num_inference_steps=self.compressor.num_inference_steps,
             generator=generator,
         )
-
-
-ar = AutoRound(
-    "your-model",
-    pipeline_fn=your_model_pipeline_fn,
-    num_inference_steps=28,
-    guidance_scale=7.5,
-)
 ```
 
-### Option B: Attach to pipe object
+### Option B: Attach a model-specific function during model loading
 
-If using `diffusion_load_model()` directly:
+For a known model family, attach `_autoround_pipeline_fn` in
+`auto_round/utils/model.py` or `auto_round/special_model_handler.py`:
 
 ```python
 pipe._autoround_pipeline_fn = your_model_pipeline_fn
 ```
 
-### Option C: Subclass DiffusionCompressor
+### Option C: Add a dedicated branch in `DiffusionCalibrator`
 
-For full control, override `_run_pipeline()`:
+For full control, update `auto_round/calibration/diffusion.py` so
+`DiffusionCalibrator.calib()` dispatches through your custom pipeline function:
 
 ```python
-from auto_round.compressors.diffusion.compressor import DiffusionCompressor
+class DiffusionCalibrator(LLMCalibrator):
+    ...
 
-
-class YourModelCompressor(DiffusionCompressor):
-    def _run_pipeline(self, prompts):
+    def _run_pipeline(self, pipe, prompts):
+        c = self.compressor
         generator = (
-            None
-            if self.generator_seed is None
-            else torch.Generator(device=self.pipe.device).manual_seed(self.generator_seed)
+            None if c.generator_seed is None else torch.Generator(device=pipe.device).manual_seed(c.generator_seed)
         )
-        self.pipe.your_custom_generate(
+        pipe.your_custom_generate(
             prompts,
-            steps=self.num_inference_steps,
-            cfg=self.guidance_scale,
+            steps=c.num_inference_steps,
+            cfg=c.guidance_scale,
             generator=generator,
         )
 ```
@@ -184,7 +192,10 @@ For models with both autoregressive and diffusion components (e.g., GLM-Image).
 
 ### 4a. Register AR component
 
-Edit `auto_round/compressors/diffusion/hybrid.py`:
+Add hybrid routing through the new architecture. Start with
+`auto_round/autoround.py`, `auto_round/compressors/entry.py`, and
+`auto_round/compressors/diffusion_mixin.py`.
+If a reusable AR-component registry is needed, place it near the new routing code:
 
 ```python
 HYBRID_AR_COMPONENTS = [
@@ -198,10 +209,10 @@ The attribute name must match what exists on the diffusers pipeline object
 
 ### 4b. Register DiT block output config
 
-Also in `hybrid.py`, add the DiT-specific output config:
+Add the DiT-specific output config in `BaseQuantizers.DIFFUSION_OUTPUT_CONFIGS`:
 
 ```python
-output_configs["YourDiTBlock"] = ["hidden_states", "encoder_hidden_states"]
+BaseQuantizers.DIFFUSION_OUTPUT_CONFIGS["YourDiTBlock"] = ["hidden_states", "encoder_hidden_states"]
 ```
 
 ### 4c. Register AR block handler
@@ -223,7 +234,7 @@ SPECIAL_MULTIMODAL_BLOCK["your_model_type"] = _get_your_hybrid_multimodal_block
 
 ### Hybrid quantization flow
 
-The `HybridCompressor` runs two phases:
+The new hybrid flow should run two phases:
 1. **Phase 1 (AR)**: Quantizes the AR component using text calibration data
    (MLLM-style)
 2. **Phase 2 (DiT)**: Quantizes the DiT component using diffusion pipeline
@@ -243,7 +254,10 @@ ar = AutoRound(
 
 If your model needs a specific dataset format:
 
-Edit `auto_round/compressors/diffusion/dataset.py`:
+Edit the diffusion calibration path used by the new architecture:
+
+- `auto_round/calibration/diffusion.py` for how diffusion prompts are loaded and consumed
+- `auto_round/calib_dataset.py` for reusable dataset registration helpers
 
 ```python
 def get_diffusion_dataloader(dataset_name, nsamples, ...):
@@ -288,12 +302,12 @@ ar = AutoRound(
 
 - [ ] `is_diffusion_model()` detects model (or forced via extra_config)
 - [ ] Transformer block class name identified
-- [ ] `output_configs` entry added with correct output tensor names and order
+- [ ] `DIFFUSION_OUTPUT_CONFIGS` entry added with correct output tensor names and order
 - [ ] Pipeline runs without errors during calibration
-- [ ] Custom `pipeline_fn` provided if non-standard API
+- [ ] Custom pipeline dispatch added in `DiffusionCalibrator` if non-standard API
 - [ ] For hybrid: AR component registered in `HYBRID_AR_COMPONENTS`
 - [ ] For hybrid: AR block handler in `SPECIAL_MULTIMODAL_BLOCK`
-- [ ] For hybrid: DiT output config in `hybrid.py`
+- [ ] For hybrid: DiT output config in `BaseQuantizers.DIFFUSION_OUTPUT_CONFIGS`
 - [ ] Quantization produces valid layers (check "Quantized X/Y layers" log)
 - [ ] Export to `fake` format works
 - [ ] README.md + README_CN.md updated
@@ -302,9 +316,10 @@ ar = AutoRound(
 
 | File | Purpose |
 |------|---------|
-| `auto_round/compressors/diffusion/compressor.py` | `DiffusionCompressor`, `output_configs` dict |
-| `auto_round/compressors/diffusion/hybrid.py` | `HybridCompressor`, `HYBRID_AR_COMPONENTS` |
-| `auto_round/compressors/diffusion/dataset.py` | Calibration dataset loading |
+| `auto_round/algorithms/quantization/base.py` | `BaseQuantizers.DIFFUSION_OUTPUT_CONFIGS` |
+| `auto_round/calibration/diffusion.py` | `DiffusionCalibrator`, pipeline-driving calibration logic |
+| `auto_round/compressors/diffusion_mixin.py` | Diffusion compressor mixin and calibrator routing |
+| `auto_round/compressors/entry.py` | New-architecture `AutoRoundCompatible` factory routing |
 | `auto_round/utils/model.py` | `is_diffusion_model()`, `diffusion_load_model()` |
 | `auto_round/special_model_handler.py` | AR block handlers for hybrid models |
 | `auto_round/autoround.py` | Model type routing (diffusion vs hybrid vs LLM) |
@@ -313,6 +328,6 @@ ar = AutoRound(
 
 | Model | Type | What Was Adapted |
 |-------|------|-----------------|
-| FLUX.1-dev | Pure DiT | `output_configs` for `FluxTransformerBlock`/`FluxSingleTransformerBlock` |
-| GLM-Image | Hybrid AR+DiT | `HYBRID_AR_COMPONENTS` + `SPECIAL_MULTIMODAL_BLOCK` + DiT `output_configs` |
-| NextStep | Custom pipeline | `pipeline_fn` parameter for non-standard inference API |
+| FLUX.1-dev | Pure DiT | `DIFFUSION_OUTPUT_CONFIGS` for `FluxTransformerBlock`/`FluxSingleTransformerBlock` |
+| GLM-Image | Hybrid AR+DiT | AR routing + `SPECIAL_MULTIMODAL_BLOCK` + DiT `DIFFUSION_OUTPUT_CONFIGS` |
+| NextStep | Custom pipeline | model-specific pipeline function attached by model handler / loader |
