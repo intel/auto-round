@@ -383,7 +383,8 @@ class DiffusionMixin:
         if getattr(self, "_inputs_cached", False):
             self._inputs_cached = False
             return self.inputs
-        return super().try_cache_inter_data_gpucpu(*args, **kwargs)
+        if hasattr(super(), "try_cache_inter_data_gpucpu"):
+            return super().try_cache_inter_data_gpucpu(*args, **kwargs)
 
     def quantize(self):
         """Quantize the diffusion model.
@@ -421,10 +422,15 @@ class DiffusionMixin:
             # Single-transformer path: let calib() own pipeline dispatch.
             pipe = self.model_context.pipe
             device_map = getattr(self.compress_context, "device_map", None)
-            if device_map is not None and not is_auto_device_mapping(device_map):
-                # Non-auto device_map (e.g. device_map=3): move full pipeline to GPU
+            if device_map is not None and not is_auto_device_mapping(device_map) and not isinstance(device_map, int):
                 target_device = get_major_device(device_map)
-                pipe.to(target_device)
+                # Skip if the transformer is already on the target device to avoid
+                # redundant full-model transfer that exhausts GPU memory.
+                transformer = getattr(pipe, "transformer", None) or getattr(pipe, "unet", None)
+                param = next(transformer.parameters(), None) if transformer else None
+                skip_move = param is not None and get_major_device(str(param.device)) == target_device
+                if not skip_move:
+                    pipe.to(target_device)
 
             logger.info("start to cache block inputs")
             all_inputs = self.try_cache_inter_data_gpucpu(

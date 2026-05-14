@@ -755,6 +755,7 @@ class CalibCompressor(BaseCompressor):
 
         fake_layer = _FakeDecodingLayer()
         fake_layer.orig_forward = fake_layer.forward
+        fake_layer._true_orig_forward = lambda *a, **kw: (a, kw)
         fake_layer.forward = partial(self._get_block_forward_func(first_block_name), fake_layer)
 
         self.inputs = {}
