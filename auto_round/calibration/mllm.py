@@ -44,7 +44,7 @@ class MLLMCalibrator(LLMCalibrator):
 
         from auto_round.compressors.mllm.dataset import get_mllm_dataloader
         from auto_round.compressors.mllm.template import get_template
-        from auto_round.special_model_handler import MISTRAL_3_2_MODELS
+        from auto_round.special_model_handler import MISTRAL_3_2_MODELS, NOT_SUPPORT_ONLY_TEXT_MODELS
 
         c = self.compressor
         mc = c.model_context
@@ -95,6 +95,12 @@ class MLLMCalibrator(LLMCalibrator):
                 logger.warning(
                     "Text only dataset cannot be used for calibrating non-text modules,"
                     " switching to liuhaotian/llava_conv_58k"
+                )
+                dataset = "liuhaotian/llava_conv_58k"
+            elif dataset in CALIB_DATASETS and c.template_obj.model_type in NOT_SUPPORT_ONLY_TEXT_MODELS:
+                logger.warning(
+                    f"{getattr(mc.model.config, 'model_type', c.template_obj.model_type)} does not support for {dataset},"
+                    " will use liuhaotian/llava_conv_58k with default config as an alternative."
                 )
                 dataset = "liuhaotian/llava_conv_58k"
             (

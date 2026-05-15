@@ -31,26 +31,6 @@ mllms_with_limited_bs = (
     "glm_image",
 )  # Limitations on batch_size
 
-SUPPORT_ONLY_TEXT_MODELS = [
-    "phi3_v",
-    "cogvlm2",
-    "llava",
-    "qwen2_vl",
-    "qwen2_5_vl",
-    "deepseek_vl_v2",
-    "chatglm",
-    "idefics3",
-    "llama4",
-    "internvl_chat",
-    "glm4v_moe",
-    "glm_image",
-    "qwen3_vl_moe",
-    "qwen2_5_omni",
-    "qwen3_omni_moe",
-    "gemma3",
-    "gemma4",
-]
-
 NOT_SUPPORT_ONLY_TEXT_MODELS = ["mllama", "mistral3_2"]
 
 SPECIAL_SHARED_CACHE_KEYS = {
