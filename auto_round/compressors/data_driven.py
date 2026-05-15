@@ -788,7 +788,7 @@ class DataDrivenCompressor(BaseCompressor):
                     enable_norm_bias_tuning=False,
                     enable_torch_compile=self.enable_torch_compile,
                     device=self.compress_context.device,
-                    disable_opt_rtn=getattr(self, "disable_opt_rtn", None),
+                    disable_opt_rtn=getattr(self, "disable_opt_rtn", True),
                 )
                 new_layer = wrapper_layer.unwrapper({})
                 set_module(self.model, layer_name, new_layer)
