@@ -27,6 +27,7 @@ def split_inputs(
     first_input_name: str,
     *,
     is_diffusion: bool,
+    shared_cache_keys: tuple = (),
 ) -> Tuple[object, dict]:
     """Split a captured ``inputs`` dict into ``(input_ids, input_others)``.
 
@@ -34,7 +35,8 @@ def split_inputs(
 
     - For diffusion models, every key containing ``"hidden_state"`` is pulled
       out into a dict and returned as ``input_ids``; the remaining kwargs are
-      returned as ``input_others``.
+      returned as ``input_others``.  Keys in *shared_cache_keys* are kept in
+      ``input_others`` even if they match ``"hidden_state"``.
     - Otherwise, ``inputs[first_input_name]`` is popped and returned as
       ``input_ids`` (may be ``None``); the remainder is ``input_others``.
 
@@ -42,7 +44,10 @@ def split_inputs(
     behaviour that downstream code relies on.
     """
     if is_diffusion:
-        input_id_str = [key for key in inputs.keys() if "hidden_state" in key]
+        input_id_str = [
+            key for key in inputs.keys()
+            if "hidden_state" in key and key not in shared_cache_keys
+        ]
         input_ids = {k: inputs.pop(k, None) for k in input_id_str}
         input_others = inputs
         return input_ids, input_others
@@ -66,7 +71,11 @@ def preprocess_block_inputs(
     ``is_diffusion``) and ``compress_context`` (for ``cache_device`` /
     ``device_list``) so it does not require a Compressor ``self``.
     """
-    input_ids, input_others = split_inputs(inputs, first_input_name, is_diffusion=model_context.is_diffusion)
+    input_ids, input_others = split_inputs(
+        inputs, first_input_name,
+        is_diffusion=model_context.is_diffusion,
+        shared_cache_keys=model_context.shared_cache_keys,
+    )
     clear_memory(device_list=compress_context.device_list)
     tmp_dtype = model_context.amp_dtype if model_context.amp else torch.float32
     if input_ids is not None:

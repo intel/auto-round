@@ -46,7 +46,18 @@ ARCHITECTURE_MODEL_TYPE_MAP = {
 
 
 def resolve_model_type(model):
-    """Resolve effective model_type, checking architecture class name mapping first."""
+    """Resolve the effective model type using architecture class name as primary source.
+
+    This function prioritizes the model's architecture class name (from config.architectures)
+    over config.model_type to handle models where the two diverge (e.g., MiMo-Audio has
+    architecture="MiMoAudioModel" but model_type="qwen2" on HuggingFace).
+
+    Args:
+        model: A model instance with optional config attribute.
+
+    Returns:
+        str or None: The resolved model type identifier, or None if config is missing.
+    """
     config = getattr(model, "config", None)
     if config is None:
         return None
@@ -816,26 +827,27 @@ def diffusion_load_model(
 
     pipelines = LazyImport("diffusers.pipelines")
     if isinstance(pretrained_model_name_or_path, str):
+        model_index = os.path.join(pretrained_model_name_or_path, "model_index.json")
+        with open(model_index, "r", encoding="utf-8") as file:
+            config = json.load(file)
+
         if torch_dtype == "auto":
             torch_dtype = {}
-            model_index = os.path.join(pretrained_model_name_or_path, "model_index.json")
-            with open(model_index, "r", encoding="utf-8") as file:
-                config = json.load(file)
             for k, v in config.items():
                 component_folder = os.path.join(pretrained_model_name_or_path, k)
                 if isinstance(v, list) and os.path.exists(os.path.join(component_folder, "config.json")):
-                    component_folder = os.path.join(pretrained_model_name_or_path, k)
                     with open(os.path.join(component_folder, "config.json"), "r", encoding="utf-8") as file:
                         component_config = json.load(file)
                     torch_dtype[k] = component_config.get("torch_dtype", "auto")
 
-        try:
-            pipe = pipelines.auto_pipeline.AutoPipelineForText2Image.from_pretrained(
+        # Use _class_name from model_index.json to choose the correct pipeline loader
+        pipe_class_name = config.get("_class_name", "")
+        if "Audio" in pipe_class_name:
+            pipe = pipelines.pipeline_utils.DiffusionPipeline.from_pretrained(
                 pretrained_model_name_or_path, torch_dtype=torch_dtype
             )
-        except (ValueError, KeyError):
-            # Fallback for pipelines not mapped in AutoPipelineForText2Image (e.g. StableAudioPipeline)
-            pipe = pipelines.pipeline_utils.DiffusionPipeline.from_pretrained(
+        else:
+            pipe = pipelines.auto_pipeline.AutoPipelineForText2Image.from_pretrained(
                 pretrained_model_name_or_path, torch_dtype=torch_dtype
             )
         pipe_config = pipe.load_config(pretrained_model_name_or_path)

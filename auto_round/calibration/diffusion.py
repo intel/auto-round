@@ -95,8 +95,9 @@ class DiffusionCalibrator(LLMCalibrator):
             )
             exit(-1)
 
-        if pipe.device != c.model.device:
-            pipe.to(c.model.device)
+        target_device = c.compress_context.device
+        if pipe.device != torch.device(target_device):
+            pipe.to(target_device)
         pipeline_fn = getattr(pipe, "_autoround_pipeline_fn", None)
         with tqdm(range(1, total + 1), desc="cache block inputs") as pbar:
             for ids, prompts in c.dataloader:

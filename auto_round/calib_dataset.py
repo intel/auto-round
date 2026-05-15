@@ -584,7 +584,7 @@ def get_audiocaps_dataset(
     """
     import csv
 
-    from auto_round.utils.common import download_audiocaps_csv
+    from auto_round.utils import download_audiocaps_csv
 
     tokenizer_function = get_tokenizer_function(
         tokenizer, seqlen, apply_chat_template=apply_chat_template, system_prompt=system_prompt

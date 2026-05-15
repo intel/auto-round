@@ -156,5 +156,13 @@ class DiffusionMixin:
                 )
             elif val is not None and hasattr(val, "save_pretrained"):
                 val.save_pretrained(sub_module_path)
-        pipe.config.save_pretrained(output_dir)
+        if hasattr(pipe.config, "save_pretrained"):
+            pipe.config.save_pretrained(output_dir)
+        else:
+            # FrozenDict / plain dict — write model_index.json manually
+            import json
+
+            model_index_path = os.path.join(output_dir, "model_index.json")
+            with open(model_index_path, "w", encoding="utf-8") as f:
+                f.write(json.dumps(dict(pipe.config), indent=2, sort_keys=True) + "\n")
         return compressed_model

@@ -20,7 +20,7 @@ import torch
 from torch.utils.data import DataLoader, Dataset
 from transformers import set_seed
 
-from auto_round.utils import logger
+from auto_round.utils import download_audiocaps_csv, logger
 
 DIFFUSION_DATASET: Dict[str, Dataset] = {}
 
@@ -146,10 +146,7 @@ def get_diffusion_dataloader(
         dataset = "captions_source.tsv"
 
     if dataset in ("audiocaps",):
-        from auto_round.utils.common import download_audiocaps_csv
-
-        cache_file = download_audiocaps_csv()
-        dataset = cache_file
+        dataset = download_audiocaps_csv()
 
     if isinstance(dataset, str) and os.path.exists(dataset):
         if dataset.endswith(".csv"):
