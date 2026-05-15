@@ -32,6 +32,11 @@ FetchContent_Declare(
 )
 set(libs dnnl)
 set(DNNL_LIBRARY_TYPE "STATIC" CACHE INTERNAL "")
+set(
+    DNNL_ENABLE_PRIMITIVE
+    "MATMUL;ELTWISE;REDUCTION;REORDER"
+    CACHE STRING "oneDNN primitives used by ARK production code"
+)
 
 set(DNNL_BUILD_EXAMPLES OFF CACHE INTERNAL "")
 set(DNNL_BUILD_TESTS OFF CACHE INTERNAL "")
