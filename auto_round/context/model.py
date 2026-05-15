@@ -114,9 +114,7 @@ class ModelContext(BaseContext):
         # sample's cached position_embeddings across later samples breaks visual
         # RoPE shapes (e.g. Qwen2-VL visual blocks) because image grid sizes vary.
         if self.is_mllm and self.quant_nontext_module and "position_embeddings" in self.shared_cache_keys:
-            self.shared_cache_keys = tuple(
-                key for key in self.shared_cache_keys if key != "position_embeddings"
-            )
+            self.shared_cache_keys = tuple(key for key in self.shared_cache_keys if key != "position_embeddings")
 
         self.is_moe_model = is_moe_model(self.model)
         self._import_custom_moe_replacements(getattr(self.model, "config", None))
