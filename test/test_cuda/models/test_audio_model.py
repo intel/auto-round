@@ -321,15 +321,12 @@ class TestMiMoAudioQuantization:
             disable_opt_rtn=True,
             enable_torch_compile=True,
         )
-        quantized_model, save_folder = autoround.quantize_and_save(
-            output_dir=str(tmp_path / "saved")
-        )
+        quantized_model, save_folder = autoround.quantize_and_save(output_dir=str(tmp_path / "saved"))
         assert quantized_model is not None
         assert save_folder is not None
         # Verify quantized model has QuantLinear layers
         has_quantlinear = any(m.__class__.__name__ == "QuantLinear" for m in quantized_model.modules())
         assert has_quantlinear, "Quantized model should contain QuantLinear layers"
-
 
     def test_quantize_with_tuning(self, tiny_mimo_audio_model_path, tmp_path):
         import transformers
@@ -349,9 +346,7 @@ class TestMiMoAudioQuantization:
             disable_opt_rtn=True,
             enable_torch_compile=True,
         )
-        quantized_model, _ = autoround.quantize_and_save(
-            output_dir=str(tmp_path / "saved")
-        )
+        quantized_model, _ = autoround.quantize_and_save(output_dir=str(tmp_path / "saved"))
         assert quantized_model is not None
         # Verify quantized model has QuantLinear layers
         has_quantlinear = any(m.__class__.__name__ == "QuantLinear" for m in quantized_model.modules())
@@ -380,14 +375,13 @@ class TestStableAudioQuantization:
             enable_torch_compile=True,
         )
         autoround.quantize_and_save(output_dir)
-        has_quantlinear = any(
-            m.__class__.__name__ == "QuantLinear" for m in pipe.transformer.modules()
-        )
+        has_quantlinear = any(m.__class__.__name__ == "QuantLinear" for m in pipe.transformer.modules())
         assert has_quantlinear, "Quantized transformer should contain QuantLinear layers"
         # Verify StableAudio-specific output: pipeline config and quantized transformer
         assert os.path.exists(os.path.join(output_dir, "model_index.json")), "model_index.json missing"
-        assert os.path.exists(os.path.join(output_dir, "transformer", "quantization_config.json")), \
-            "quantization_config.json missing in transformer directory"
+        assert os.path.exists(
+            os.path.join(output_dir, "transformer", "quantization_config.json")
+        ), "quantization_config.json missing in transformer directory"
         # Verify non-quantized pipeline components are also saved
         assert os.path.exists(os.path.join(output_dir, "text_encoder")), "text_encoder directory missing"
         assert os.path.exists(os.path.join(output_dir, "vae")), "vae directory missing"

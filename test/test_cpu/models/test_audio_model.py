@@ -27,11 +27,11 @@ import shutil
 from types import SimpleNamespace
 from unittest.mock import MagicMock
 
-from auto_round.compressors.mllm.processor import PROCESSORS
 import pytest
 import torch
 
 from auto_round import AutoRound
+from auto_round.compressors.mllm.processor import PROCESSORS
 from auto_round.special_model_handler import (
     ARCHITECTURE_MODEL_TYPE_MAP,
     SPECIAL_MULTIMODAL_BLOCK,
@@ -43,7 +43,6 @@ from auto_round.special_model_handler import (
     mllms_with_limited_bs,
     resolve_model_type,
 )
-
 
 # ====================== Mock Helpers =========================================
 
@@ -116,11 +115,12 @@ class TestMiMoAudioRegistration:
         assert "MiMoAudioForCausalLM" in ARCHITECTURE_MODEL_TYPE_MAP
         assert "mimo_audio" in SPECIAL_MULTIMODAL_BLOCK
         assert "mimo_audio" in SUPPORT_ONLY_TEXT_MODELS
-        from auto_round.compressors.mllm.processor import PROCESSORS
+
         assert "mimo_audio" in PROCESSORS
         from auto_round.compressors.mllm.template import TEMPLATES
+
         assert "mimo_audio" in TEMPLATES
-        
+
 
 class TestMiMoAudioForwardPatching:
     """Test that _handle_special_model patches the forward function."""
@@ -157,8 +157,7 @@ class TestMiMoAudioQuantization:
             enable_torch_compile=True,
             disable_opt_rtn=True,
         )
-        quantized_model, save_folder = autoround.quantize_and_save(output_dir=str(tmp_path / "saved")
-        )
+        quantized_model, save_folder = autoround.quantize_and_save(output_dir=str(tmp_path / "saved"))
         assert quantized_model is not None
         assert save_folder is not None
         # Verify quantized model has QuantLinear layers
@@ -183,9 +182,7 @@ class TestMiMoAudioQuantization:
             enable_torch_compile=True,
             disable_opt_rtn=True,
         )
-        quantized_model, _ = autoround.quantize_and_save(
-            format="auto_round", output_dir=str(tmp_path / "saved")
-        )
+        quantized_model, _ = autoround.quantize_and_save(format="auto_round", output_dir=str(tmp_path / "saved"))
         assert quantized_model is not None
         # Verify quantized model has QuantLinear layers
         has_quantlinear = any(m.__class__.__name__ == "QuantLinear" for m in quantized_model.modules())
@@ -254,15 +251,15 @@ class TestStableAudioQuantization:
         )
         autoround.quantize_and_save(output_dir)
         # Verify quantized transformer has QuantLinear layers
-        has_quantlinear = any(
-            m.__class__.__name__ == "QuantLinear" for m in pipe.transformer.modules()
-        )
+        has_quantlinear = any(m.__class__.__name__ == "QuantLinear" for m in pipe.transformer.modules())
         assert has_quantlinear, "Quantized transformer should contain QuantLinear layers"
         # Verify StableAudio-specific output: pipeline config and quantized transformer
         import os
+
         assert os.path.exists(os.path.join(output_dir, "model_index.json")), "model_index.json missing"
-        assert os.path.exists(os.path.join(output_dir, "transformer", "quantization_config.json")), \
-            "quantization_config.json missing in transformer directory"
+        assert os.path.exists(
+            os.path.join(output_dir, "transformer", "quantization_config.json")
+        ), "quantization_config.json missing in transformer directory"
         # Verify non-quantized pipeline components are also saved
         assert os.path.exists(os.path.join(output_dir, "text_encoder")), "text_encoder directory missing"
         assert os.path.exists(os.path.join(output_dir, "vae")), "vae directory missing"
