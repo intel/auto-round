@@ -748,7 +748,8 @@ class DataDrivenCompressor(BaseCompressor):
         # if there is no input for layer, we use rtn
 
         for layer_name in copy.deepcopy(layer_names):
-            if layer_name not in layer_inputs:
+            # if layer_name not in layer_inputs:
+            if True:
                 if self.act_bits < 16 and not self.act_dynamic:
                     if "lm_head" in layer_name:
                         logger.warning_once(
@@ -787,7 +788,7 @@ class DataDrivenCompressor(BaseCompressor):
                     enable_norm_bias_tuning=False,
                     enable_torch_compile=self.enable_torch_compile,
                     device=self.compress_context.device,
-                    disable_opt_rtn=self.disable_opt_rtn,
+                    disable_opt_rtn=getattr(self, "disable_opt_rtn", None),
                 )
                 new_layer = wrapper_layer.unwrapper({})
                 set_module(self.model, layer_name, new_layer)
