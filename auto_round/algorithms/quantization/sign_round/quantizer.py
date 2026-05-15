@@ -344,7 +344,29 @@ class SignRoundQuantizer(BaseQuantizers):
             None
         """
         if input_ids is None:
-            self._quantize_layer_outside_block_via_rtn(layer_name, device=device, dtype=dtype)
+            logger.info(f"using rtn to quantize {layer_name}")
+            layer = get_module(self.model, layer_name)
+            if hasattr(layer, "tuning_device"):
+                device = layer.tuning_device
+            if dtype is not None:
+                layer = layer.to(dtype)
+            layer = layer.to(device)
+            layer = convert_module_to_hp_if_necessary(layer, self.model_context.amp_dtype, device)
+            set_module(self.model, layer_name, layer)
+
+            wrapper_linear = WrapperLinear(
+                layer,
+                enable_round_tuning=False,
+                enable_minmax_tuning=False,
+                enable_norm_bias_tuning=False,
+                enable_torch_compile=self.compress_context.enable_torch_compile,
+                device=device,
+                disable_opt_rtn=getattr(self.config, "disable_opt_rtn", True),
+                iters=0,
+            )
+            new_layer = wrapper_linear.unwrapper({})
+            set_module(self.model, layer_name, new_layer)
+            layer.cpu()
             return
 
         logger.info(f"quantizing layer {layer_name}")
@@ -510,36 +532,6 @@ class SignRoundQuantizer(BaseQuantizers):
         mv_module_from_gpu(layer)
         dump_info = f"quantized {layer_name},  loss iter 0: {init_loss:.6f} -> iter {best_iter}: {last_loss:.6f}"
         logger.info(dump_info)
-
-    def _quantize_layer_outside_block_via_rtn(
-        self,
-        layer_name: str,
-        device: str = "cpu",
-        dtype: Optional[torch.dtype] = None,
-    ) -> None:
-        logger.info(f"using rtn to quantize {layer_name}")
-        layer = get_module(self.model, layer_name)
-        if hasattr(layer, "tuning_device"):
-            device = layer.tuning_device
-        if dtype is not None:
-            layer = layer.to(dtype)
-        layer = layer.to(device)
-        layer = convert_module_to_hp_if_necessary(layer, self.model_context.amp_dtype, device)
-        set_module(self.model, layer_name, layer)
-
-        wrapper_layer = WrapperLinear(
-            layer,
-            enable_round_tuning=False,
-            enable_minmax_tuning=False,
-            enable_norm_bias_tuning=False,
-            enable_torch_compile=self.compress_context.enable_torch_compile,
-            device=device,
-            disable_opt_rtn=getattr(self.config, "disable_opt_rtn", None),
-            iters=0,
-        )
-        new_layer = wrapper_layer.unwrapper({})
-        set_module(self.model, layer_name, new_layer)
-        layer.cpu()
 
     def _get_optimizer(self, optimizer: Any):
         """Returns the specified optimizer. In SignRound, we fix the optimizer.
