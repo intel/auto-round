@@ -44,6 +44,7 @@ from auto_round.utils import (
     memory_monitor,
     mv_module_from_gpu,
     set_amax_for_all_moe_layers,
+    set_module,
     to_device,
 )
 from auto_round.utils.device import (
@@ -324,19 +325,28 @@ class SignRoundQuantizer(BaseQuantizers):
         return best_params
 
     def quantize_layer_outside_block(
-        self, layer_name: str, input_ids: torch.Tensor, q_inputs: torch.Tensor = None, device: str = "cpu", **kwargs
+        self,
+        layer_name: str,
+        input_ids: Optional[list[torch.Tensor]] = None,
+        q_inputs: Optional[list[torch.Tensor]] = None,
+        device: str = "cpu",
+        dtype: Optional[torch.dtype] = None,
     ):
         """Quantize a specific layer of the model using the provided inputs.
 
         Args:
             layer_name (str): The name of the layer to quantize.
-            inputs (torch.Tensor): Input data for quantization.
+            input_ids (list[torch.Tensor], optional): Input data for quantization.
             q_inputs (torch.Tensor, optional): Quantized input data. Defaults to None.
             device (torch.device, optional): The device to use for quantization. Defaults to torch.device("cpu").
 
         Returns:
             None
         """
+        if input_ids is None:
+            self._quantize_layer_outside_block_via_rtn(layer_name, device=device, dtype=dtype)
+            return
+
         logger.info(f"quantizing layer {layer_name}")
         layer = get_module(self.model, layer_name)
         if hasattr(layer, "tuning_device"):
@@ -500,6 +510,36 @@ class SignRoundQuantizer(BaseQuantizers):
         mv_module_from_gpu(layer)
         dump_info = f"quantized {layer_name},  loss iter 0: {init_loss:.6f} -> iter {best_iter}: {last_loss:.6f}"
         logger.info(dump_info)
+
+    def _quantize_layer_outside_block_via_rtn(
+        self,
+        layer_name: str,
+        device: str = "cpu",
+        dtype: Optional[torch.dtype] = None,
+    ) -> None:
+        logger.info(f"using rtn to quantize {layer_name}")
+        layer = get_module(self.model, layer_name)
+        if hasattr(layer, "tuning_device"):
+            device = layer.tuning_device
+        if dtype is not None:
+            layer = layer.to(dtype)
+        layer = layer.to(device)
+        layer = convert_module_to_hp_if_necessary(layer, self.model_context.amp_dtype, device)
+        set_module(self.model, layer_name, layer)
+
+        wrapper_layer = WrapperLinear(
+            layer,
+            enable_round_tuning=False,
+            enable_minmax_tuning=False,
+            enable_norm_bias_tuning=False,
+            enable_torch_compile=self.compress_context.enable_torch_compile,
+            device=device,
+            disable_opt_rtn=getattr(self.config, "disable_opt_rtn", None),
+            iters=0,
+        )
+        new_layer = wrapper_layer.unwrapper({})
+        set_module(self.model, layer_name, new_layer)
+        layer.cpu()
 
     def _get_optimizer(self, optimizer: Any):
         """Returns the specified optimizer. In SignRound, we fix the optimizer.

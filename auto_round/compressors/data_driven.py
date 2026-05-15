@@ -58,7 +58,6 @@ from auto_round.utils import (
     memory_monitor,
     mv_module_from_gpu,
     set_amax_for_all_moe_layers,
-    set_module,
     to_device,
     to_dtype,
     wrap_block_forward_positional_to_kwargs,
@@ -67,7 +66,7 @@ from auto_round.utils.device import (
     _force_trim_malloc,
     parse_available_devices,
 )
-from auto_round.wrapper import WrapperLinear, WrapperMultiblock
+from auto_round.wrapper import WrapperMultiblock
 
 
 class DataDrivenCompressor(BaseCompressor):
@@ -748,8 +747,7 @@ class DataDrivenCompressor(BaseCompressor):
         # if there is no input for layer, we use rtn
 
         for layer_name in copy.deepcopy(layer_names):
-            # if layer_name not in layer_inputs:
-            if True:
+            if layer_name not in layer_inputs:
                 if self.act_bits < 16 and not self.act_dynamic:
                     if "lm_head" in layer_name:
                         logger.warning_once(
@@ -771,28 +769,11 @@ class DataDrivenCompressor(BaseCompressor):
                         )
                         layer_names.remove(layer_name)
                         continue
-                logger.info(f"using rtn to quantize {layer_name}")
-                from auto_round.data_type import QUANT_FUNC_WITH_DTYPE
-
-                layer = get_module(self.model, layer_name)
-                layer = layer.to(self.compress_context.device)
-                layer = convert_module_to_hp_if_necessary(
-                    layer, self.model_context.amp_dtype, self.compress_context.device
-                )
-                set_module(self.model, layer_name, layer)
-
-                wrapper_layer = WrapperLinear(
-                    layer,
-                    enable_round_tuning=False,
-                    enable_minmax_tuning=False,
-                    enable_norm_bias_tuning=False,
-                    enable_torch_compile=self.enable_torch_compile,
+                self.quantizer.quantize_layer_outside_block(
+                    layer_name,
+                    input_ids=None,
                     device=self.compress_context.device,
-                    disable_opt_rtn=getattr(self, "disable_opt_rtn", True),
                 )
-                new_layer = wrapper_layer.unwrapper({})
-                set_module(self.model, layer_name, new_layer)
-                layer.cpu()
                 layer_names.remove(layer_name)
         if len(layer_names) == 0:
             memory_monitor.update()

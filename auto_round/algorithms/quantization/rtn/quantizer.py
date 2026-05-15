@@ -216,8 +216,8 @@ class OptimizedRTNQuantizer(RTNQuantizer):
 
         self.enable_alg_ext = True
 
-    def quantize_layer_outside_block(self, *args, **kwargs):
-        return self.quantize_layer(*args, **kwargs)
+    def quantize_layer_outside_block(self, layer_name: str, input_ids=None, **kwargs):
+        return self.quantize_layer(layer_name, **kwargs)
 
     @torch.no_grad()
     def quantize_block(
