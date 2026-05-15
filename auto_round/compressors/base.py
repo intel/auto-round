@@ -644,7 +644,7 @@ class BaseCompressor(object):
         if self.enable_torch_compile and is_raw_nv_fp:
             self.enable_torch_compile = False
             logger.warning_once("reset enable_torch_compile to `False` as nvfp4 is enabled")
-        #super_group_size = getattr(cfg, "super_group_size", None)
+        # super_group_size = getattr(cfg, "super_group_size", None)
         # enable_alg_ext = getattr(cfg, "enable_alg_ext", False)
         # if self.enable_torch_compile and super_group_size is not None and enable_alg_ext:
         #     self.enable_torch_compile = False
