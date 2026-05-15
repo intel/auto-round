@@ -50,6 +50,7 @@ stages:
     parameters:
       pythonVersions: ${{ parameters.pythonVersions }}
       buildMode: ${{ parameters.buildMode }}
+      buildTarget: "xpu"
 
   - stage: TestArk
     displayName: Test Ark

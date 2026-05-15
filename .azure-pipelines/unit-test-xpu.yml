@@ -40,6 +40,7 @@ stages:
     parameters:
       enableChangeDetection: true
       publishToTestPyPI: false
+      buildTarget: "xpu"
 
   - stage: Unit_test
     displayName: Unit Test
