@@ -12,9 +12,6 @@ parameters:
   - name: buildMode
     type: string
     default: "dev"
-  - name: buildTarget
-    type: string
-    default: "all"
 
 stages:
   - ${{ if eq(parameters.enableChangeDetection, true) }}:
@@ -101,7 +98,6 @@ stages:
                     && source /opt/intel/oneapi/setvars.sh \
                     && pip install -U pip build cmake setuptools \
                     && export BUILD_MODE=${{ parameters.buildMode }} \
-                    && export ARK_BUILD_TARGET=${{ parameters.buildTarget }} \
                     && python -m build --wheel --no-isolation \
                     && auditwheel repair dist/*.whl --exclude lib* -w wheelhouse/ \
                     && ls -lah wheelhouse"
