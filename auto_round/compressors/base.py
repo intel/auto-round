@@ -197,6 +197,10 @@ class BaseCompressor(object):
 
         # Extra/legacy kwargs for backward compatibility
         # Major version releases may pack them with extra configuration options
+        kwargs.pop("iters", None)
+        kwargs.pop("gradient_accumulate_steps", None)
+        kwargs.pop("enable_alg_ext", None)
+        kwargs.pop("vlm", None)
         amp = kwargs.pop("amp", True)
         nblocks = kwargs.pop("nblocks", 1)
         disable_deterministic_algorithms = kwargs.pop("disable_deterministic_algorithms", True)
@@ -208,6 +212,9 @@ class BaseCompressor(object):
         model_dtype = kwargs.pop("model_dtype", None)
         trust_remote_code = kwargs.pop("trust_remote_code") if "trust_remote_code" in kwargs else True
         quant_nontext_module = kwargs.pop("quant_nontext_module", False)
+        device = kwargs.pop("device", None)
+        if device is not None:
+            logger.warning("`device` is deprecated, please use `device_map` instead")
 
         self.static_attention_dtype = kwargs.pop("static_attention_dtype", None)
         # Attention static dtype
@@ -241,10 +248,6 @@ class BaseCompressor(object):
         # and set torch.use_deterministic_algorithms(False)
         # instead of MATH (avoids ~10x peak-VRAM blow-up during block tuning).
         patch_xpu_sdpa_drop_causal_mask()
-
-        device = kwargs.pop("device", None)
-        if device is not None:
-            logger.warning("`device` is deprecated, please use `device_map` instead")
 
         # Tuning hyperparameters
         self.seed = seed
