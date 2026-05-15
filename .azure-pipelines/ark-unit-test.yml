@@ -109,6 +109,14 @@ stages:
         steps:
           - checkout: none
 
+          - task: Bash@3
+            displayName: Clean wheel download directory
+            inputs:
+              targetType: inline
+              script: |
+                rm -rf "$(Pipeline.Workspace)/wheels"
+                mkdir -p "$(Pipeline.Workspace)/wheels"
+
           - ${{ each pythonVersion in split(parameters.pythonVersions, ',') }}:
             - task: DownloadPipelineArtifact@2
               displayName: Download wheel (py${{ trim(pythonVersion) }})
