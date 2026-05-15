@@ -147,7 +147,8 @@ def make_qx_quants_chunk(data, bits, rmse_type=0, qw=None, split_num=1, v=0):
     scales_list = []
     L_list = []
     chunk_size = (data.shape[0] + split_num - 1) // split_num
-    v_is_tensor = isinstance(v, torch.Tensor)
+    # A 0-dim tensor (scalar tensor) cannot be sliced; treat it like a Python scalar.
+    v_is_tensor = isinstance(v, torch.Tensor) and v.dim() > 0
     for start in range(0, data.shape[0], chunk_size):
         end = min(start + chunk_size, data.shape[0])
         chunk = data[start:end]  # Slice a batch chunk to reduce memory footprint

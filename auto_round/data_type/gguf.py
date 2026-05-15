@@ -587,7 +587,8 @@ def iterative_wls_quant_search_chunk(
     maxq = int(2.0**bits) - 1
     minq = 0
     weights = 1.0 if weights is None else weights.to(dtype)
-    v_is_tensor = isinstance(v, torch.Tensor)
+    # A 0-dim tensor (scalar tensor) cannot be sliced; treat it like a Python scalar.
+    v_is_tensor = isinstance(v, torch.Tensor) and v.dim() > 0
 
     results_scale = []
     results_rmin = []
