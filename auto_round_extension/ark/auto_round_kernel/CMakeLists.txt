@@ -3,7 +3,7 @@ project(ark LANGUAGES CXX)
 
 option(ARK_XPU "Build XPU kernels" OFF)
 option(ARK_UT "Build XPU kernels UT" OFF)
-option(ARK_RESCALE "Exoerimental" OFF)
+option(ARK_RESCALE "Experimental" OFF)
 set(ARK_DNNL_BUILD_SOURCE ON CACHE BOOL "Build oneDNN from source" FORCE)
 
 # ARK_SYCL_TLA defaults to ON when ARK_XPU is enabled
