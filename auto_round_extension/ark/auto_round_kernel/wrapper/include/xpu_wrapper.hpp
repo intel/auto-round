@@ -11,8 +11,11 @@
 //
 
 #pragma once
+#include <algorithm>
 #include <cmath>
 #include <cstdio>
+#include <limits>
+#include <vector>
 #include "utils.hpp"
 #include "dnnl_wrapper.hpp"
 #include "sycl_tla_common.hpp"
@@ -693,11 +696,79 @@ class XpuWrapper {
     }
   }
 
+  template <typename T>
+  static void compute_seq_mean_bias(sycl::queue* q, const T* in_ptr, T* bias_ptr, int num_rows, int seq, int head_dim) {
+    constexpr int SG_SIZE = 32;
+    constexpr int WG_SIZE = 512;
+    constexpr int SG_PER_WG = WG_SIZE / SG_SIZE;
+    constexpr int SeqUnroll = 4;
+    size_t total = size_t(num_rows) * size_t(head_dim);
+    size_t num_groups = (total + SG_PER_WG - 1) / SG_PER_WG;
+    size_t global = num_groups * WG_SIZE;
+    q->parallel_for(sycl::nd_range<1>(global, WG_SIZE),
+                    [=](sycl::nd_item<1> item) [[intel::reqd_sub_group_size(SG_SIZE)]] {
+                      size_t group_id = item.get_group(0);
+                      int local_id = item.get_local_id(0);
+                      int subgroup_id = local_id / SG_SIZE;
+                      int lane_id = local_id % SG_SIZE;
+                      size_t index = group_id * SG_PER_WG + subgroup_id;
+                      if (index >= total) {
+                        return;
+                      }
+
+                      int row_id = index / head_dim;
+                      int dim_id = index % head_dim;
+                      const T* row_ptr = in_ptr + size_t(row_id) * seq * head_dim + dim_id;
+                      auto sg = item.get_sub_group();
+
+                      float sum = 0.0f;
+                      int token = lane_id;
+                      for (; token + (SeqUnroll - 1) * SG_SIZE < seq; token += SeqUnroll * SG_SIZE) {
+ #pragma unroll
+                        for (int unroll_idx = 0; unroll_idx < SeqUnroll; ++unroll_idx) {
+                          sum += static_cast<float>(row_ptr[size_t(token + unroll_idx * SG_SIZE) * head_dim]);
+                        }
+                      }
+                      for (; token < seq; token += SG_SIZE) {
+                        sum += static_cast<float>(row_ptr[size_t(token) * head_dim]);
+                      }
+                      sum = sycl::reduce_over_group(sg, sum, sycl::plus<float>{});
+                      if (lane_id == 0) {
+                        bias_ptr[index] = static_cast<T>(sum / static_cast<float>(seq));
+                      }
+                    });
+  }
+
+  template <typename T>
+  static void print_value_distribution(sycl::queue* q, const T* dev_ptr, size_t count, const char* name) {
+    if (dev_ptr == nullptr || count == 0) {
+      std::printf("[%s] empty\n", name);
+      return;
+    }
+
+    std::vector<T> host_values(count);
+    q->memcpy(host_values.data(), dev_ptr, count * sizeof(T)).wait();
+
+    float min_value = std::numeric_limits<float>::max();
+    float max_value = std::numeric_limits<float>::lowest();
+    double sum = 0.0;
+
+    for (size_t i = 0; i < count; ++i) {
+      float value = static_cast<float>(host_values[i]);
+      min_value = std::min(min_value, value);
+      max_value = std::max(max_value, value);
+      sum += value;
+    }
+
+    double mean = sum / static_cast<double>(count);
+    std::printf("[%s] min=%f max=%f mean=%f\n", name, min_value, max_value, static_cast<float>(mean));
+  }
+
   // input: num_rows x head_dim matrix, output: int8 quantized matrix + scale (per block)
   // scale: num_rows // block_size
   template <typename T>
   static void sage_dynamic_quant(sycl::queue* q, const T* in_ptr, int8_t* out_ptr, float* scale_ptr, int num_rows,
-                                 int seq, int n_seq_blk, int head_dim, int block_size) {
+                                 int seq, int n_seq_blk, int head_dim, int block_size, const T* bias_ptr = nullptr) {
     int num_blocks = num_rows * n_seq_blk;
     int elems_per_block = block_size * head_dim;
 
@@ -708,127 +779,299 @@ class XpuWrapper {
     constexpr int MAX_Reg = 64;
     constexpr int MAX_WG_SIZE = 256;
     constexpr int Unroll = 4;
+    bool fast_vector_bias = bias_ptr && (head_dim % Unroll == 0);
+    bool power_of_two_head_dim = fast_vector_bias && ((head_dim & (head_dim - 1)) == 0);
+    int bias_mask = head_dim - 1;
     if (elems_per_block > MAX_Reg * MAX_WG_SIZE) {
       int wg_size = (elems_per_block <= 256) ? SG_SIZE : 256;
       // Ensure wg_size is a multiple of SG_SIZE
       wg_size = ((wg_size + SG_SIZE - 1) / SG_SIZE) * SG_SIZE;
 
-      q->parallel_for(sycl::nd_range<1>(num_blocks * wg_size, wg_size),
-                      [=](sycl::nd_item<1> item) [[intel::reqd_sub_group_size(SG_SIZE)]] {
-                        int block_id = item.get_group(0);
-                        int row_id = block_id / n_seq_blk;
-                        int seq_id = block_id % n_seq_blk;
-                        int tid = item.get_local_id(0);
-                        auto wg = item.get_group();
-                        auto* block_in = in_ptr + (size_t)row_id * seq * head_dim + seq_id * block_size * head_dim;
-                        auto* block_out = out_ptr + (size_t)row_id * seq * head_dim + seq_id * block_size * head_dim;
+      if (bias_ptr) {
+        q->parallel_for(sycl::nd_range<1>(num_blocks * wg_size, wg_size),
+                        [=](sycl::nd_item<1> item) [[intel::reqd_sub_group_size(SG_SIZE)]] {
+                          int block_id = item.get_group(0);
+                          int row_id = block_id / n_seq_blk;
+                          int seq_id = block_id % n_seq_blk;
+                          int tid = item.get_local_id(0);
+                          auto wg = item.get_group();
+                          auto* block_in = in_ptr + (size_t)row_id * seq * head_dim + seq_id * block_size * head_dim;
+                          auto* block_out = out_ptr + (size_t)row_id * seq * head_dim + seq_id * block_size * head_dim;
+                          auto* row_bias = bias_ptr + (size_t)row_id * head_dim;
 
-                        int elems_this_wg =
-                            (seq_id + 1) * block_size <= seq ? elems_per_block : (seq - seq_id * block_size) * head_dim;
+                          int elems_this_wg = (seq_id + 1) * block_size <= seq ? elems_per_block
+                                                                                 : (seq - seq_id * block_size) * head_dim;
 
-                        // Phase 1: compute absmax across entire block
-                        float local_max = 0.0f;
-                        sycl::vec<T, Unroll> local_data, local_max_vec;
-                        local_max_vec = sycl::vec<T, Unroll>(0.0f);
-                        for (int i = tid * Unroll; i < elems_this_wg; i += wg_size * Unroll) {
-                          local_data = *(sycl::vec<T, Unroll>*)(&block_in[i]);
-                          local_max_vec = sycl::fmax(local_max_vec, sycl::fabs(local_data));
-                        }
-                        for (int i = 0; i < Unroll; ++i) {
-                          local_max = sycl::fmax(local_max, static_cast<float>(local_max_vec[i]));
-                        }
-                        float absmax = sycl::reduce_over_group(wg, local_max, sycl::maximum<float>{});
-
-                        // Compute scale
-                        float inv_scale = (absmax > 0.0f) ? (127.0f / absmax) : 0.0f;
-
-                        // Store scale (one thread writes)
-                        if (tid == 0) {
-                          scale_ptr[row_id * n_seq_blk + seq_id] = absmax / 127.0f;
-                        }
-
-                        // Phase 2: fused quantize
-                        for (int i = tid * Unroll; i < elems_this_wg; i += wg_size * Unroll) {
+                          float local_max = 0.0f;
+                          sycl::vec<T, Unroll> local_data, local_max_vec;
+                          local_max_vec = sycl::vec<T, Unroll>(0.0f);
+                          for (int i = tid * Unroll; i < elems_this_wg; i += wg_size * Unroll) {
+                            local_data = *(sycl::vec<T, Unroll>*)(&block_in[i]);
+                            if (fast_vector_bias) {
+                              int bias_offset = power_of_two_head_dim ? (i & bias_mask) : (i % head_dim);
+                              local_data = local_data - *(sycl::vec<T, Unroll>*)(&row_bias[bias_offset]);
+                            } else {
 #pragma unroll
-                          for (int j = 0; j < Unroll; ++j) {
-                            float val = static_cast<float>(block_in[i + j]) * inv_scale;
-                            int iv = static_cast<int>(val + (val >= 0.0f ? 0.5f : -0.5f));
-                            iv = sycl::clamp(iv, -127, 127);
-                            block_out[i + j] = static_cast<int8_t>(iv);
+                              for (int j = 0; j < Unroll; ++j) {
+                                local_data[j] = local_data[j] - row_bias[(i + j) % head_dim];
+                              }
+                            }
+                            local_max_vec = sycl::fmax(local_max_vec, sycl::fabs(local_data));
                           }
-                        }
-                      });
+                          for (int i = 0; i < Unroll; ++i) {
+                            local_max = sycl::fmax(local_max, static_cast<float>(local_max_vec[i]));
+                          }
+                          float absmax = sycl::reduce_over_group(wg, local_max, sycl::maximum<float>{});
+                          float inv_scale = (absmax > 0.0f) ? (127.0f / absmax) : 0.0f;
+
+                          if (tid == 0) {
+                            scale_ptr[row_id * n_seq_blk + seq_id] = absmax / 127.0f;
+                          }
+
+                          for (int i = tid * Unroll; i < elems_this_wg; i += wg_size * Unroll) {
+                            sycl::vec<T, Unroll> quant_input = *(sycl::vec<T, Unroll>*)(&block_in[i]);
+                            if (fast_vector_bias) {
+                              int bias_offset = power_of_two_head_dim ? (i & bias_mask) : (i % head_dim);
+                              quant_input = quant_input - *(sycl::vec<T, Unroll>*)(&row_bias[bias_offset]);
+                            } else {
+#pragma unroll
+                              for (int j = 0; j < Unroll; ++j) {
+                                quant_input[j] = quant_input[j] - row_bias[(i + j) % head_dim];
+                              }
+                            }
+                            sycl::vec<float, Unroll> val =
+                                quant_input.template convert<float, sycl::rounding_mode::automatic>();
+                            val = val * inv_scale;
+                            val = sycl::round(val);
+                            val = sycl::clamp(val, -127, 127);
+                            sycl::vec<int8_t, Unroll> qv =
+                                val.template convert<int8_t, sycl::rounding_mode::automatic>();
+                            *(sycl::vec<int8_t, Unroll>*)(&block_out[i]) = qv;
+                          }
+                        });
+      } else {
+        q->parallel_for(sycl::nd_range<1>(num_blocks * wg_size, wg_size),
+                        [=](sycl::nd_item<1> item) [[intel::reqd_sub_group_size(SG_SIZE)]] {
+                          int block_id = item.get_group(0);
+                          int row_id = block_id / n_seq_blk;
+                          int seq_id = block_id % n_seq_blk;
+                          int tid = item.get_local_id(0);
+                          auto wg = item.get_group();
+                          auto* block_in = in_ptr + (size_t)row_id * seq * head_dim + seq_id * block_size * head_dim;
+                          auto* block_out = out_ptr + (size_t)row_id * seq * head_dim + seq_id * block_size * head_dim;
+
+                          int elems_this_wg = (seq_id + 1) * block_size <= seq ? elems_per_block
+                                                                                 : (seq - seq_id * block_size) * head_dim;
+
+                          float local_max = 0.0f;
+                          sycl::vec<T, Unroll> local_data, local_max_vec;
+                          local_max_vec = sycl::vec<T, Unroll>(0.0f);
+                          for (int i = tid * Unroll; i < elems_this_wg; i += wg_size * Unroll) {
+                            local_data = *(sycl::vec<T, Unroll>*)(&block_in[i]);
+                            local_max_vec = sycl::fmax(local_max_vec, sycl::fabs(local_data));
+                          }
+                          for (int i = 0; i < Unroll; ++i) {
+                            local_max = sycl::fmax(local_max, static_cast<float>(local_max_vec[i]));
+                          }
+                          float absmax = sycl::reduce_over_group(wg, local_max, sycl::maximum<float>{});
+                          float inv_scale = (absmax > 0.0f) ? (127.0f / absmax) : 0.0f;
+
+                          if (tid == 0) {
+                            scale_ptr[row_id * n_seq_blk + seq_id] = absmax / 127.0f;
+                          }
+
+                          for (int i = tid * Unroll; i < elems_this_wg; i += wg_size * Unroll) {
+                            sycl::vec<T, Unroll> quant_input = *(sycl::vec<T, Unroll>*)(&block_in[i]);
+                            sycl::vec<float, Unroll> val =
+                                quant_input.template convert<float, sycl::rounding_mode::automatic>();
+                            val = val * inv_scale;
+                            val = sycl::round(val);
+                            val = sycl::clamp(val, -127, 127);
+                            sycl::vec<int8_t, Unroll> qv =
+                                val.template convert<int8_t, sycl::rounding_mode::automatic>();
+                            *(sycl::vec<int8_t, Unroll>*)(&block_out[i]) = qv;
+                          }
+                        });
+      }
     } else {
       int wg_size = MAX_WG_SIZE;
-      q->parallel_for(sycl::nd_range<1>(num_blocks * wg_size, wg_size),
-                      [=](sycl::nd_item<1> item) [[intel::reqd_sub_group_size(SG_SIZE)]] {
-                        int seq_id = item.get_group(0);
-                        int row_id = seq_id / n_seq_blk;
-                        seq_id = seq_id % n_seq_blk;
-                        int tid = item.get_local_id(0);
-                        auto wg = item.get_group();
-                        auto* block_in = in_ptr + (size_t)row_id * seq * head_dim + seq_id * block_size * head_dim;
-                        auto* block_out = out_ptr + (size_t)row_id * seq * head_dim + seq_id * block_size * head_dim;
+      if (bias_ptr) {
+        if (fast_vector_bias) {
+          q->parallel_for(sycl::nd_range<1>(num_blocks * wg_size, wg_size),
+                          [=](sycl::nd_item<1> item) [[intel::reqd_sub_group_size(SG_SIZE)]] {
+                            int seq_id = item.get_group(0);
+                            int row_id = seq_id / n_seq_blk;
+                            seq_id = seq_id % n_seq_blk;
+                            int tid = item.get_local_id(0);
+                            auto wg = item.get_group();
+                            auto* block_in = in_ptr + (size_t)row_id * seq * head_dim + seq_id * block_size * head_dim;
+                            auto* block_out = out_ptr + (size_t)row_id * seq * head_dim + seq_id * block_size * head_dim;
+                            auto* row_bias = bias_ptr + (size_t)row_id * head_dim;
 
-                        // Phase 1: compute absmax across entire block
-                        float local_max = 0.0f;
-                        sycl::vec<T, Unroll> local_data[MAX_Reg / Unroll], local_max_vec;
-                        local_max_vec = sycl::vec<T, Unroll>(0.0f);
-                        int local_i = 0;
-                        int elems_this_wg = (seq_id + 1) * block_size <= seq ? block_size * head_dim
-                                                                             : (seq - seq_id * block_size) * head_dim;
-                        for (int i = tid * Unroll; i < elems_this_wg; i += wg_size * Unroll, local_i++) {
-                          local_data[local_i] = *(sycl::vec<T, Unroll>*)&block_in[i];
-                          local_max_vec = sycl::fmax(local_max_vec, sycl::fabs(local_data[local_i]));
-                        }
+                            float local_max = 0.0f;
+                            sycl::vec<T, Unroll> local_data[MAX_Reg / Unroll], local_max_vec;
+                            local_max_vec = sycl::vec<T, Unroll>(0.0f);
+                            int local_i = 0;
+                            int elems_this_wg = (seq_id + 1) * block_size <= seq ? block_size * head_dim
+                                                                                 : (seq - seq_id * block_size) * head_dim;
+                            for (int i = tid * Unroll; i < elems_this_wg; i += wg_size * Unroll, local_i++) {
+                              int bias_offset = power_of_two_head_dim ? (i & bias_mask) : (i % head_dim);
+                              local_data[local_i] = *(sycl::vec<T, Unroll>*)&block_in[i];
+                              local_data[local_i] = local_data[local_i] - *(sycl::vec<T, Unroll>*)(&row_bias[bias_offset]);
+                              local_max_vec = sycl::fmax(local_max_vec, sycl::fabs(local_data[local_i]));
+                            }
 #pragma unroll
-                        for (int i = 0; i < Unroll; ++i) {
-                          local_max = sycl::fmax(local_max, static_cast<float>(local_max_vec[i]));
-                        }
-                        float absmax = sycl::reduce_over_group(wg, local_max, sycl::maximum<float>{});
+                            for (int i = 0; i < Unroll; ++i) {
+                              local_max = sycl::fmax(local_max, static_cast<float>(local_max_vec[i]));
+                            }
+                            float absmax = sycl::reduce_over_group(wg, local_max, sycl::maximum<float>{});
+                            float inv_scale = (absmax > 0.0f) ? (127.0f / absmax) : 0.0f;
 
-                        // Compute scale
-                        float inv_scale = (absmax > 0.0f) ? (127.0f / absmax) : 0.0f;
+                            if (tid == 0) {
+                              scale_ptr[row_id * n_seq_blk + seq_id] = absmax / 127.0f;
+                            }
 
-                        // Store scale (one thread writes)
-                        if (tid == 0) {
-                          scale_ptr[row_id * n_seq_blk + seq_id] = absmax / 127.0f;
-                        }
+                            local_i = 0;
+                            for (int i = tid * Unroll; i < elems_this_wg; i += wg_size * Unroll, local_i++) {
+                              sycl::vec<float, Unroll> val =
+                                  local_data[local_i].template convert<float, sycl::rounding_mode::automatic>();
+                              val = val * inv_scale;
+                              val = sycl::round(val);
+                              val = sycl::clamp(val, -127, 127);
+                              sycl::vec<int8_t, Unroll> qv =
+                                  val.template convert<int8_t, sycl::rounding_mode::automatic>();
+                              *(sycl::vec<int8_t, Unroll>*)(&block_out[i]) = qv;
+                            }
+                          });
+        } else {
+          q->parallel_for(sycl::nd_range<1>(num_blocks * wg_size, wg_size),
+                          [=](sycl::nd_item<1> item) [[intel::reqd_sub_group_size(SG_SIZE)]] {
+                            int seq_id = item.get_group(0);
+                            int row_id = seq_id / n_seq_blk;
+                            seq_id = seq_id % n_seq_blk;
+                            int tid = item.get_local_id(0);
+                            auto wg = item.get_group();
+                            auto* block_in = in_ptr + (size_t)row_id * seq * head_dim + seq_id * block_size * head_dim;
+                            auto* block_out = out_ptr + (size_t)row_id * seq * head_dim + seq_id * block_size * head_dim;
+                            auto* row_bias = bias_ptr + (size_t)row_id * head_dim;
 
-                        // Phase 2: fused quantize
-                        local_i = 0;
-                        for (int i = tid * Unroll; i < elems_this_wg; i += wg_size * Unroll, local_i++) {
-                          sycl::vec<float, Unroll> val =
-                              local_data[local_i].template convert<float, sycl::rounding_mode::automatic>();
-                          val = val * inv_scale;
-                          val = sycl::round(val);
-                          val = sycl::clamp(val, -127, 127);
-                          sycl::vec<int8_t, Unroll> qv = val.template convert<int8_t, sycl::rounding_mode::automatic>();
-                          *(sycl::vec<int8_t, Unroll>*)(&block_out[i]) = qv;
-                        }
-                      });
+                            float local_max = 0.0f;
+                            sycl::vec<T, Unroll> local_data[MAX_Reg / Unroll], local_max_vec;
+                            local_max_vec = sycl::vec<T, Unroll>(0.0f);
+                            int local_i = 0;
+                            int elems_this_wg = (seq_id + 1) * block_size <= seq ? block_size * head_dim
+                                                                                 : (seq - seq_id * block_size) * head_dim;
+                            for (int i = tid * Unroll; i < elems_this_wg; i += wg_size * Unroll, local_i++) {
+                              local_data[local_i] = *(sycl::vec<T, Unroll>*)&block_in[i];
+#pragma unroll
+                              for (int j = 0; j < Unroll; ++j) {
+                                local_data[local_i][j] = local_data[local_i][j] - row_bias[(i + j) % head_dim];
+                              }
+                              local_max_vec = sycl::fmax(local_max_vec, sycl::fabs(local_data[local_i]));
+                            }
+#pragma unroll
+                            for (int i = 0; i < Unroll; ++i) {
+                              local_max = sycl::fmax(local_max, static_cast<float>(local_max_vec[i]));
+                            }
+                            float absmax = sycl::reduce_over_group(wg, local_max, sycl::maximum<float>{});
+                            float inv_scale = (absmax > 0.0f) ? (127.0f / absmax) : 0.0f;
+
+                            if (tid == 0) {
+                              scale_ptr[row_id * n_seq_blk + seq_id] = absmax / 127.0f;
+                            }
+
+                            local_i = 0;
+                            for (int i = tid * Unroll; i < elems_this_wg; i += wg_size * Unroll, local_i++) {
+                              sycl::vec<float, Unroll> val =
+                                  local_data[local_i].template convert<float, sycl::rounding_mode::automatic>();
+                              val = val * inv_scale;
+                              val = sycl::round(val);
+                              val = sycl::clamp(val, -127, 127);
+                              sycl::vec<int8_t, Unroll> qv =
+                                  val.template convert<int8_t, sycl::rounding_mode::automatic>();
+                              *(sycl::vec<int8_t, Unroll>*)(&block_out[i]) = qv;
+                            }
+                          });
+        }
+      } else {
+        q->parallel_for(sycl::nd_range<1>(num_blocks * wg_size, wg_size),
+                        [=](sycl::nd_item<1> item) [[intel::reqd_sub_group_size(SG_SIZE)]] {
+                          int seq_id = item.get_group(0);
+                          int row_id = seq_id / n_seq_blk;
+                          seq_id = seq_id % n_seq_blk;
+                          int tid = item.get_local_id(0);
+                          auto wg = item.get_group();
+                          auto* block_in = in_ptr + (size_t)row_id * seq * head_dim + seq_id * block_size * head_dim;
+                          auto* block_out = out_ptr + (size_t)row_id * seq * head_dim + seq_id * block_size * head_dim;
+
+                          float local_max = 0.0f;
+                          sycl::vec<T, Unroll> local_data[MAX_Reg / Unroll], local_max_vec;
+                          local_max_vec = sycl::vec<T, Unroll>(0.0f);
+                          int local_i = 0;
+                          int elems_this_wg = (seq_id + 1) * block_size <= seq ? block_size * head_dim
+                                                                               : (seq - seq_id * block_size) * head_dim;
+                          for (int i = tid * Unroll; i < elems_this_wg; i += wg_size * Unroll, local_i++) {
+                            local_data[local_i] = *(sycl::vec<T, Unroll>*)&block_in[i];
+                            local_max_vec = sycl::fmax(local_max_vec, sycl::fabs(local_data[local_i]));
+                          }
+#pragma unroll
+                          for (int i = 0; i < Unroll; ++i) {
+                            local_max = sycl::fmax(local_max, static_cast<float>(local_max_vec[i]));
+                          }
+                          float absmax = sycl::reduce_over_group(wg, local_max, sycl::maximum<float>{});
+                          float inv_scale = (absmax > 0.0f) ? (127.0f / absmax) : 0.0f;
+
+                          if (tid == 0) {
+                            scale_ptr[row_id * n_seq_blk + seq_id] = absmax / 127.0f;
+                          }
+
+                          local_i = 0;
+                          for (int i = tid * Unroll; i < elems_this_wg; i += wg_size * Unroll, local_i++) {
+                            sycl::vec<float, Unroll> val =
+                                local_data[local_i].template convert<float, sycl::rounding_mode::automatic>();
+                            val = val * inv_scale;
+                            val = sycl::round(val);
+                            val = sycl::clamp(val, -127, 127);
+                            sycl::vec<int8_t, Unroll> qv =
+                                val.template convert<int8_t, sycl::rounding_mode::automatic>();
+                            *(sycl::vec<int8_t, Unroll>*)(&block_out[i]) = qv;
+                          }
+                        });
+      }
     }
   }
 
   static void sagev1(sycl::queue* q, void* Q_ptr, void* K_ptr, void* V_ptr, void* O_ptr, void* mask,
                      int scale_block_size, int batch, int num_heads_q, int num_heads_kv, int seq_len_q, int seq_len_kv,
                      int head_dim, float softmax_scale, bool is_causal) {
+    bool use_mean_bias = env_params::Instance()->sage_use_mean_bias != 0;
     size_t seq_q_blk = (seq_len_q + scale_block_size - 1) / scale_block_size;
     size_t seq_kv_blk = (seq_len_kv + scale_block_size - 1) / scale_block_size;
     size_t q_size = num_heads_q * seq_len_q * head_dim * batch;
     size_t q_scale_size = num_heads_q * seq_q_blk * batch;
     size_t k_size = num_heads_kv * seq_len_kv * head_dim * batch;
     size_t k_scale_size = num_heads_kv * seq_kv_blk * batch;
-    size_t total_size = k_size + q_size + k_scale_size * sizeof(float) + q_scale_size * sizeof(float);
+    size_t k_bias_size = use_mean_bias ? num_heads_kv * head_dim * batch * sizeof(sycl::half) : 0;
+    size_t total_size = k_size + q_size + k_scale_size * sizeof(float) + q_scale_size * sizeof(float) + k_bias_size;
     auto ptr = DnnlContext::Instance()->get_scratch_mem(total_size, 1, q);
     auto q_out_ptr = (int8_t*)ptr;
     auto k_out_ptr = (int8_t*)ptr + q_size;
     auto qscale = (float*)((int8_t*)ptr + q_size + k_size);
     auto kscale = (float*)((int8_t*)ptr + q_size + k_size + q_scale_size * sizeof(float));
+    auto kbias = use_mean_bias
+                     ? (sycl::half*)((int8_t*)ptr + q_size + k_size + q_scale_size * sizeof(float) +
+                                     k_scale_size * sizeof(float))
+                     : nullptr;
     sage_dynamic_quant<sycl::half>(q, (sycl::half*)Q_ptr, (int8_t*)q_out_ptr, (float*)qscale, batch * num_heads_q,
-                                   seq_len_q, seq_q_blk, head_dim, scale_block_size);
+                     seq_len_q, seq_q_blk, head_dim, scale_block_size);
+    if (use_mean_bias) {
+      compute_seq_mean_bias<sycl::half>(q, (sycl::half*)K_ptr, kbias, batch * num_heads_kv, seq_len_kv, head_dim);
+      if (env_params::Instance()->sage_print_kbias != 0) {
+        print_value_distribution(q, kbias, size_t(batch) * num_heads_kv * head_dim, "kbias");
+      }
+    }
     sage_dynamic_quant<sycl::half>(q, (sycl::half*)K_ptr, (int8_t*)k_out_ptr, (float*)kscale, batch * num_heads_kv,
-                                   seq_len_kv, seq_kv_blk, head_dim, scale_block_size);
+                     seq_len_kv, seq_kv_blk, head_dim, scale_block_size, kbias);
     ark::sdpa_impl_qks8_pvhalf(q, q_out_ptr, k_out_ptr, V_ptr, O_ptr, mask, scale_block_size, qscale, kscale, batch,
                                num_heads_q, num_heads_kv, seq_len_q, seq_len_kv, head_dim, softmax_scale, is_causal);
   }
