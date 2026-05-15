@@ -135,8 +135,8 @@ class SignRoundDQWrapperLinear(WrapperLinear):
 
     def __init__(self, *args, **kwargs):
         if "enable_minmax_tuning" in kwargs:
-            logger.warning_once("diable minmax tuning for a little better accuracy and lower cost")
-            kwargs["enable_minmax_tuning"] = False # a little faster and better
+            logger.warning_once("disable minmax tuning for a little better accuracy and lower cost")
+            kwargs["enable_minmax_tuning"] = False  # a little faster and better
         super().__init__(*args, **kwargs)
         self.prev_scale = None
         self.prev_wmin = None
@@ -237,7 +237,7 @@ class SignRoundDQWrapperLinear(WrapperLinear):
         if self.orig_layer.bits >= 16:
             return self.orig_layer.weight, None, None
         min_bound, max_bound = self.minmax_scale_bound
-        min_scale.data.clamp_(min_bound, max_bound) #  TODO this one could be deleted
+        min_scale.data.clamp_(min_bound, max_bound)  #  TODO this one could be deleted
         max_scale.data.clamp_(min_bound, max_bound)
         weight = self.orig_layer.weight
         if weight.device.type == "meta":
@@ -247,7 +247,7 @@ class SignRoundDQWrapperLinear(WrapperLinear):
 
         # Re-search every 10 steps; otherwise reuse the cached search results.
         iter_v = getattr(self, "cur_iter", 0)
-        need_search = (iter_v==0) or (iter_v == -1) or (self.prev_scale is None)
+        need_search = (iter_v == 0) or (iter_v == -1) or (self.prev_scale is None)
         if need_search:
             params = self._run_search(weight, value)
             self.prev_scale = params["scale"]
@@ -311,7 +311,7 @@ class SignRoundV2Quantizer(SignRoundQuantizer):
                     "algorithm extension has only undergone limited validation on "
                     "W2A16,INT4, MXFP4 and NVFP4; use with caution."
                 )
-            if self.act_bits<=4 or self.bits<4:
+            if self.act_bits <= 4 or self.bits < 4:
                 self._use_outlier_suppressed_loss = True
             else:
                 self._use_outlier_suppressed_loss = False
