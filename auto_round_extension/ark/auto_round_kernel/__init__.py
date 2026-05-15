@@ -675,6 +675,7 @@ class ARK:
         lib.sage_dynamic_quant(
             stream,
             query.data_ptr(),
+            0,
             q_i8.data_ptr(),
             q_scale.data_ptr(),
             q_num_rows,
@@ -690,6 +691,7 @@ class ARK:
         lib.sage_dynamic_quant(
             stream,
             key.data_ptr(),
+            0,
             k_i8.data_ptr(),
             k_scale.data_ptr(),
             k_num_rows,
@@ -859,7 +861,19 @@ if __name__ == "__main__":
     pack_unpack()
 
 
-__all__ = ["ARK"]
+def patch_torch_sdpa(*args, **kwargs):
+    from .torch_sdpa_patch import patch_torch_sdpa_with_ark
+
+    return patch_torch_sdpa_with_ark(*args, **kwargs)
+
+
+def unpatch_torch_sdpa():
+    from .torch_sdpa_patch import unpatch_torch_sdpa_with_ark
+
+    return unpatch_torch_sdpa_with_ark()
+
+
+__all__ = ["ARK", "patch_torch_sdpa", "unpatch_torch_sdpa"]
 
 
 # -----------------------------------------------------------------------------
@@ -937,7 +951,15 @@ def repack_quantized_weight(*args, **kwargs):
 
 
 def unpack_weight(
-    blob: torch.Tensor, out_dtype: torch.dtype, n, k, groupsize, compute_type, weight_type, scale_type, asym
+    blob: torch.Tensor,
+    out_dtype: torch.dtype,
+    n,
+    k,
+    groupsize,
+    compute_type,
+    weight_type,
+    scale_type,
+    asym,
 ):
     return _ark_instance().unpack_weight(blob, out_dtype, n, k, groupsize, compute_type, weight_type, scale_type, asym)
 
