@@ -72,7 +72,7 @@ def preprocess_block_inputs(
         inputs,
         first_input_name,
         is_diffusion=model_context.is_diffusion,
-        shared_cache_keys=model_context.shared_cache_keys,
+        shared_cache_keys=getattr(model_context, "shared_cache_keys", ()),
     )
     clear_memory(device_list=compress_context.device_list)
     tmp_dtype = model_context.amp_dtype if model_context.amp else torch.float32
