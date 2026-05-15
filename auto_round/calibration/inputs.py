@@ -44,10 +44,7 @@ def split_inputs(
     behaviour that downstream code relies on.
     """
     if is_diffusion:
-        input_id_str = [
-            key for key in inputs.keys()
-            if "hidden_state" in key and key not in shared_cache_keys
-        ]
+        input_id_str = [key for key in inputs.keys() if "hidden_state" in key and key not in shared_cache_keys]
         input_ids = {k: inputs.pop(k, None) for k in input_id_str}
         input_others = inputs
         return input_ids, input_others
@@ -72,7 +69,8 @@ def preprocess_block_inputs(
     ``device_list``) so it does not require a Compressor ``self``.
     """
     input_ids, input_others = split_inputs(
-        inputs, first_input_name,
+        inputs,
+        first_input_name,
         is_diffusion=model_context.is_diffusion,
         shared_cache_keys=model_context.shared_cache_keys,
     )

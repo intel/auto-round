@@ -222,7 +222,8 @@ class DataDrivenCompressor(BaseCompressor):
         from auto_round.calibration.inputs import split_inputs
 
         return split_inputs(
-            inputs, first_input_name,
+            inputs,
+            first_input_name,
             is_diffusion=self.model_context.is_diffusion,
             shared_cache_keys=self.model_context.shared_cache_keys,
         )

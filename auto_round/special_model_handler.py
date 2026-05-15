@@ -61,7 +61,6 @@ NOT_SUPPORT_ONLY_TEXT_MODELS = ["mllama", "mistral3_2"]
 # Used when config.model_type doesn't uniquely identify the model (e.g. MiMo-Audio).
 from auto_round.utils.model import ARCHITECTURE_MODEL_TYPE_MAP, resolve_model_type  # noqa: E402
 
-
 SPECIAL_SHARED_CACHE_KEYS = {
     "Gemma3ForConditionalGeneration": ("position_embeddings_global", "position_embeddings_local")
 }
@@ -402,14 +401,10 @@ def _get_qwen3_tts_multimodal_block(model, quant_vision=False):
     block_names = []
     # Try tts_model.model.layers
     if hasattr(model, "tts_model") and hasattr(getattr(model.tts_model, "model", None), "layers"):
-        block_names.append(
-            [f"tts_model.model.layers.{i}" for i in range(len(model.tts_model.model.layers))]
-        )
+        block_names.append([f"tts_model.model.layers.{i}" for i in range(len(model.tts_model.model.layers))])
     # Try talker.model.layers (alternative attr name from talker_config)
     if not block_names and hasattr(model, "talker") and hasattr(getattr(model.talker, "model", None), "layers"):
-        block_names.append(
-            [f"talker.model.layers.{i}" for i in range(len(model.talker.model.layers))]
-        )
+        block_names.append([f"talker.model.layers.{i}" for i in range(len(model.talker.model.layers))])
     # Fallback: model.model.layers (standard structure)
     if not block_names and hasattr(model, "model") and hasattr(model.model, "layers"):
         block_names.append([f"model.layers.{i}" for i in range(len(model.model.layers))])
