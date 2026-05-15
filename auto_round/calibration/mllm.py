@@ -121,6 +121,7 @@ class MLLMCalibrator(LLMCalibrator):
                 bs=bs,
                 seed=c.seed,
                 nsamples=nsamples,
+                gradient_accumulate_steps=c.gradient_accumulate_steps,
                 quant_nontext_module=c.quant_nontext_module,
             )
         else:

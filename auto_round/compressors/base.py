@@ -156,6 +156,7 @@ class BaseCompressor(object):
             nsamples=nsamples if nsamples is not None else 128,
             seqlen=seqlen if seqlen is not None else 2048,
             batch_size=kwargs.pop("batch_size", 8),
+            gradient_accumulate_steps=kwargs.pop("gradient_accumulate_steps", 1),
         )
 
         # ``dataset`` is not a named __init__ parameter – it arrives via
@@ -198,7 +199,6 @@ class BaseCompressor(object):
         # Extra/legacy kwargs for backward compatibility
         # Major version releases may pack them with extra configuration options
         kwargs.pop("iters", None)
-        kwargs.pop("gradient_accumulate_steps", None)
         kwargs.pop("enable_alg_ext", None)
         kwargs.pop("vlm", None)
         amp = kwargs.pop("amp", True)
@@ -1121,6 +1121,15 @@ class BaseCompressor(object):
     @batch_size.setter
     def batch_size(self, value: int) -> None:
         self._calibration_state.batch_size = value
+
+    @property
+    def gradient_accumulate_steps(self) -> int:
+        return self._calibration_state.gradient_accumulate_steps
+
+    @gradient_accumulate_steps.setter
+    def gradient_accumulate_steps(self, value: int) -> None:
+        if value is not None:
+            self._calibration_state.gradient_accumulate_steps = value
 
     @property
     def nsamples(self) -> int:

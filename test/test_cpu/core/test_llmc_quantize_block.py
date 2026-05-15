@@ -11,7 +11,7 @@ class _QuantizerStub:
     enable_quanted_input = False
     act_data_type = ""
 
-    def _register_act_max_hook(self, block):
+    def register_calibration_hooks(self, block, *, act_max=True, imatrix=True):
         return []
 
     def _get_block_outputs(self, block, input_ids, input_others, bs, save_output=True):
