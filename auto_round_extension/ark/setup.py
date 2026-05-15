@@ -13,7 +13,6 @@ from setuptools.command.build_ext import build_ext
 from setuptools.command.build_py import build_py
 
 build_mode = os.environ.get("BUILD_MODE", "dev").lower()
-build_target = os.environ.get("ARK_BUILD_TARGET", "all").lower()
 try:
     file_path = "./auto_round_kernel/version.py"
     with open(file_path) as version_file:
@@ -53,24 +52,6 @@ def fetch_requirements(path):
     return requirements
 
 
-def validate_build_target(target):
-    supported_targets = {"all", "cpu", "xpu"}
-    if target not in supported_targets:
-        raise ValueError(f"Unsupported ARK_BUILD_TARGET={target!r}. Expected one of {sorted(supported_targets)}.")
-    return target
-
-
-def resolve_install_requires(target):
-    requirements = []
-    for requirement in fetch_requirements("requirements.txt"):
-        if requirement.startswith("onednn"):
-            continue
-        if target == "cpu" and requirement.startswith("dpcpp-cpp-rt"):
-            continue
-        requirements.append(requirement)
-    return requirements
-
-
 def parse_major_minor(version_str):
     major, minor = version_str.split(".")[:2]
     return int(major), int(minor)
@@ -98,21 +79,18 @@ def detect_oneapi_version():
     return None
 
 
-build_target = validate_build_target(build_target)
-print(f"ARK build target: {build_target}")
-needs_oneapi = build_target in {"all", "xpu"}
-oneapi_version = detect_oneapi_version() if needs_oneapi else None
+oneapi_version = detect_oneapi_version()
 print(f"oneapi_version detected: {oneapi_version}")
 
-if needs_oneapi and not oneapi_version:
+if not oneapi_version:
     raise RuntimeError(
         "Failed to auto-detect oneAPI version. "
         "Please ensure you have sourced the oneAPI environment (e.g., source /opt/intel/oneapi/setvars.sh) "
         "and that the 'icx' compiler is in your PATH."
     )
 
-requirements = resolve_install_requires(build_target)
-enable_sycl_tla = needs_oneapi and parse_major_minor(oneapi_version) >= (2025, 3)
+requirements = fetch_requirements("requirements.txt")
+enable_sycl_tla = parse_major_minor(oneapi_version) >= (2025, 3)
 
 
 def get_system_memory_gb():
@@ -167,58 +145,56 @@ XBUILD_DIR = ROOT / "xbuild"
 
 class CMakeBuild(build_ext):
     def run(self):
+        cmake_cmd = [
+            "cmake",
+            "-S",
+            str(SRC_DIR),
+            "-B",
+            str(BUILD_DIR),
+            "-DCMAKE_BUILD_TYPE=Release",
+        ]
+        if sys.platform == "win32":
+            cmake_cmd.append("-GNinja")
+        subprocess.check_call(cmake_cmd)
+
         n_job = os.cpu_count() or 2
         n_job = n_job // 2
+        subprocess.check_call(["cmake", "--build", str(BUILD_DIR), "-j", str(n_job)])
+
         ext = "pyd" if sys.platform == "win32" else "so"
+
+        so_files = list(BUILD_DIR.rglob(f"auto_round_kernel*.{ext}"))
+        if not so_files:
+            raise RuntimeError(f"Can't find auto_round_kernel*.{ext} in '{BUILD_DIR}'")
 
         target = Path(self.build_lib) / "auto_round_kernel"
         target.mkdir(parents=True, exist_ok=True)
-        should_build_cpu = build_target in {"all", "cpu"}
-        should_build_xpu = build_target in {"all", "xpu"}
+        for so in so_files:
+            self.copy_file(str(so), str(target / so.name))
 
-        if should_build_cpu:
-            cmake_cmd = [
-                "cmake",
-                "-S",
-                str(SRC_DIR),
-                "-B",
-                str(BUILD_DIR),
-                "-DCMAKE_BUILD_TYPE=Release",
-            ]
-            if sys.platform == "win32":
-                cmake_cmd.append("-GNinja")
-            subprocess.check_call(cmake_cmd)
-            subprocess.check_call(["cmake", "--build", str(BUILD_DIR), "-j", str(n_job)])
+        cmake_cmd = [
+            "cmake",
+            "-S",
+            str(SRC_DIR),
+            "-B",
+            str(XBUILD_DIR),
+            "-DCMAKE_BUILD_TYPE=Release",
+            "-DCMAKE_CXX_COMPILER=icx",
+            "-DARK_XPU=ON",
+            f"-DARK_SYCL_TLA={'ON' if enable_sycl_tla else 'OFF'}",
+        ]
+        if sys.platform == "win32":
+            cmake_cmd.append("-GNinja")
+        xpu_n_job = get_sycl_tla_job_count(n_job) if enable_sycl_tla else n_job
+        subprocess.check_call(cmake_cmd)
+        subprocess.check_call(["cmake", "--build", str(XBUILD_DIR), "-j", str(xpu_n_job)])
 
-            so_files = list(BUILD_DIR.rglob(f"auto_round_kernel*.{ext}"))
-            if not so_files:
-                raise RuntimeError(f"Can't find auto_round_kernel*.{ext} in '{BUILD_DIR}'")
-            for so in so_files:
-                self.copy_file(str(so), str(target / so.name))
+        so_files = list(XBUILD_DIR.rglob(f"auto_round_kernel*.{ext}"))
+        if not so_files:
+            raise RuntimeError(f"Can't find auto_round_kernel*.{ext} in '{XBUILD_DIR}'")
 
-        if should_build_xpu:
-            cmake_cmd = [
-                "cmake",
-                "-S",
-                str(SRC_DIR),
-                "-B",
-                str(XBUILD_DIR),
-                "-DCMAKE_BUILD_TYPE=Release",
-                "-DCMAKE_CXX_COMPILER=icx",
-                "-DARK_XPU=ON",
-                f"-DARK_SYCL_TLA={'ON' if enable_sycl_tla else 'OFF'}",
-            ]
-            if sys.platform == "win32":
-                cmake_cmd.append("-GNinja")
-            xpu_n_job = get_sycl_tla_job_count(n_job) if enable_sycl_tla else n_job
-            subprocess.check_call(cmake_cmd)
-            subprocess.check_call(["cmake", "--build", str(XBUILD_DIR), "-j", str(xpu_n_job)])
-
-            so_files = list(XBUILD_DIR.rglob(f"auto_round_kernel*.{ext}"))
-            if not so_files:
-                raise RuntimeError(f"Can't find auto_round_kernel*.{ext} in '{XBUILD_DIR}'")
-            for so in so_files:
-                self.copy_file(str(so), str(target / so.name))
+        for so in so_files:
+            self.copy_file(str(so), str(target / so.name))
 
 
 class BuildPyThenCMake(build_py):
