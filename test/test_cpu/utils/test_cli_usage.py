@@ -148,7 +148,7 @@ def test_run_rtn_uses_zero_shot_recipe(monkeypatch):
     assert args.iters == 0
     assert args.disable_opt_rtn is True
     assert args.batch_size == 8
-    assert args.nsamples == 512
+    assert args.nsamples == 1
 
 
 def test_run_rtn_preserves_eval_args(monkeypatch, tmp_path):
@@ -215,4 +215,4 @@ def test_run_opt_rtn_uses_recipe(monkeypatch):
     assert args.iters == 0
     assert args.disable_opt_rtn is False
     assert args.batch_size == 8
-    assert args.nsamples == 512
+    assert args.nsamples == 128
