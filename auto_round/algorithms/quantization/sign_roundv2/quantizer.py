@@ -22,6 +22,7 @@ from torch import autocast
 
 from auto_round.algorithms.quantization.sign_round.config import SignRoundConfig
 from auto_round.algorithms.quantization.sign_round.quantizer import SignRoundQuantizer
+from auto_round.algorithms.quantization.utils import register_imatrix_hooks
 from auto_round.data_type.gguf import quant_tensor_gguf_asym_dq, quant_tensor_gguf_sym_dq
 from auto_round.data_type.int import quant_tensor_asym, quant_tensor_sym, search_scales
 from auto_round.data_type.mxfp import quant_mx, search_mx_scale
@@ -199,26 +200,15 @@ class SignRoundV2Quantizer(SignRoundQuantizer):
                 )
         return super()._get_loss(output_q, current_output, indices, mse_loss, device)
 
-    def _register_act_max_hook(self, model):
-        hook_handles = super()._register_act_max_hook(model)
+    def register_calibration_hooks(self, model, *, act_max: bool = True, imatrix: bool = True):
+        hook_handles = super().register_calibration_hooks(model, act_max=act_max, imatrix=imatrix)
+        if not imatrix:
+            return hook_handles
 
         is_wint4aint4 = ("int4" in self.act_data_type or ("int" in self.act_data_type and self.act_bits == 4)) and (
             "int4" in self.data_type or ("int" in self.data_type and self.bits == 4)
         )
         if is_wint4aint4:
             return hook_handles
-
-        def get_imatrix_hook(module, input, output):
-            input = input[0] if isinstance(input, (tuple, list)) else input
-            flattened = input.reshape(-1, input.shape[-1]).to(torch.float32)
-            squared = torch.sum(torch.pow(flattened, 2), dim=0).to(torch.float32)
-
-            if not hasattr(module, "imatrix"):
-                module.imatrix = squared
-            else:
-                module.imatrix += squared.to(module.imatrix.device)
-
-        for _, module in model.named_modules():
-            if isinstance(module, self.supported_types) and check_to_quantized(module):
-                hook_handles.append(module.register_forward_hook(get_imatrix_hook))
+        hook_handles.extend(register_imatrix_hooks(self, model))
         return hook_handles

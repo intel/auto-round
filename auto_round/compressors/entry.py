@@ -311,6 +311,7 @@ class AutoRound(object):
             from auto_round.auto_scheme.gen_auto_scheme import AutoScheme as _AutoScheme
 
             is_auto_scheme = isinstance(scheme, _AutoScheme)
+            quant_config.enable_imatrix = enable_imatrix
 
             if enable_imatrix or needs_act_calib or is_auto_scheme:
                 quant_config._alg_cls = "OptimizedRTNQuantizer"

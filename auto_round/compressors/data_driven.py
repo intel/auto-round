@@ -363,13 +363,13 @@ class DataDrivenCompressor(BaseCompressor):
             # ── Infrastructure: collect reference output and act_max ──────────────
             bs = self.quantizer.batch_size * self.quantizer.infer_bs_coeff
             if q_input is None:
-                hook_handles = self.quantizer._register_act_max_hook(block)
+                hook_handles = self.quantizer.register_calibration_hooks(block)
                 reference_output = self.quantizer._get_block_outputs(block, input_ids, input_others, bs)
                 for h in hook_handles:
                     h.remove()
             else:
                 reference_output = self.quantizer._get_block_outputs(block, input_ids, input_others, bs)
-                hook_handles = self.quantizer._register_act_max_hook(block)
+                hook_handles = self.quantizer.register_calibration_hooks(block)
                 if hook_handles:
                     self.quantizer._get_block_outputs(block, q_input, input_others, bs, save_output=False)
                 for h in hook_handles:
@@ -499,13 +499,13 @@ class DataDrivenCompressor(BaseCompressor):
             # ── Infrastructure: collect reference output and act_max ──────────
             bs = self.quantizer.batch_size * self.quantizer.infer_bs_coeff
             if q_input is None:
-                hook_handles = self.quantizer._register_act_max_hook(m)
+                hook_handles = self.quantizer.register_calibration_hooks(m)
                 reference_output = self.quantizer._get_block_outputs(m, input_ids, input_others, bs)
                 for h in hook_handles:
                     h.remove()
             else:
                 reference_output = self.quantizer._get_block_outputs(m, input_ids, input_others, bs)
-                hook_handles = self.quantizer._register_act_max_hook(m)
+                hook_handles = self.quantizer.register_calibration_hooks(m)
                 if hook_handles:
                     self.quantizer._get_block_outputs(m, q_input, input_others, bs, save_output=False)
                 for h in hook_handles:
@@ -975,7 +975,7 @@ class CalibratedRTNCompressor(DataDrivenCompressor):
                     block = block.to(self.compress_context.device)
 
                 # ── Infrastructure: register act_max hook and run forward pass ──
-                hook_handles = self.quantizer._register_act_max_hook(block)
+                hook_handles = self.quantizer.register_calibration_hooks(block, imatrix=False)
                 input_ids = self.quantizer._get_block_outputs(
                     block,
                     input_ids,
@@ -1032,14 +1032,14 @@ class CalibratedRTNCompressor(DataDrivenCompressor):
     def _quant_rtn_with_imatrix(self) -> None:
         """Performs RTN quantization using input activation statistics (imatrix).
 
-        This method accumulates per-channel second-moment activation statistics (imatrix)
-        via forward hooks and uses them to perform RTN quantization. If CUDA memory runs out,
-        it falls back to CPU-based blockwise quantization.
+        OptimizedRTNQuantizer owns imatrix hook registration. This method only
+        enables the quantizer-side collection path and keeps the OOM fallback.
 
         Returns:
             None
         """
         logger.info("start to compute imatrix")
+        self.quantizer.enable_imatrix = True
 
         # Dataloader resolution is owned by ``CalibrationState``.
         self._calibration_state.ensure_dataloader(self.model_context, self.seed)
@@ -1050,30 +1050,7 @@ class CalibratedRTNCompressor(DataDrivenCompressor):
         if hasattr(model, "hf_device_map") and len(model.hf_device_map) > 1:
             dispatch_model(model, model.hf_device_map)
 
-        def register_act_hook(model):
-            """Registers hooks to accumulate activation squared norms into `imatrix`."""
-
-            def get_imatrix_hook(module, input, output):
-                input = input[0] if isinstance(input, (tuple, list)) else input
-                flattened = input.reshape(-1, input.shape[-1]).to(torch.float32)
-                squared = torch.sum(torch.pow(flattened, 2), dim=0).to(torch.float32)
-
-                if not hasattr(module, "imatrix"):
-                    module.imatrix = squared
-                    module.imatrix_cnt = input.shape[0]
-                else:
-                    module.imatrix += squared.to(module.imatrix.device)
-                    module.imatrix_cnt += input.shape[0]
-
-            hook_handles = []
-            for name, module in model.named_modules():
-                if type(module) in SUPPORTED_LAYER_TYPES and check_to_quantized(module):
-                    hook = module.register_forward_hook(get_imatrix_hook)
-                    hook_handles.append(hook)
-            return hook_handles
-
-        hooks = register_act_hook(model)
-
+        hooks = self.quantizer.register_calibration_hooks(model, act_max=False)
         try:
             if hasattr(model, "hf_device_map") and len(model.hf_device_map) > 1:
                 import accelerate
@@ -1105,9 +1082,9 @@ class CalibratedRTNCompressor(DataDrivenCompressor):
             except Exception as e:
                 raise
         finally:
-            # Always remove hooks
             for hook in hooks:
                 hook.remove()
+            self.quantizer.enable_imatrix = False
 
     def quantize(self):
         """Quantize all modules in the model using RTN (Round-To-Nearest) strategy.
