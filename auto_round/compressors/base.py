@@ -309,7 +309,7 @@ class BaseCompressor(object):
 
         # Apply torch compile adjustments eagerly so that ar.enable_torch_compile
         # reflects the correct value immediately after construction (not only after post_init).
-        self._adjust_torch_compile(enable_torch_compile)
+        self._precheck_torch_compile(enable_torch_compile)
         self.compress_context.enable_torch_compile = self.enable_torch_compile
 
         # ``self._calibration_state`` was created at the top of __init__ so
@@ -602,10 +602,8 @@ class BaseCompressor(object):
     def diffusion(self):
         return self.model_context.is_diffusion
 
-    def _adjust_torch_compile(self, enable_torch_compile: bool) -> None:
-        """Sets the torch compile configuration for the tuning."""
-        self.enable_torch_compile = enable_torch_compile
-
+    def _get_torch_compile_guard_state(self) -> tuple[bool, bool, int]:
+        """Return raw dtype state used by torch.compile guard rules."""
         # Determine fp8 / nvfp4 intent from raw config before scheme resolution.
         cfg = self.quantize_config
         raw_scheme = self.scheme if isinstance(self.scheme, str) else ""
@@ -623,6 +621,11 @@ class BaseCompressor(object):
         )
 
         act_bits = getattr(cfg, "act_bits", 16) or 16
+        return is_raw_fp8, is_raw_nv_fp, act_bits
+
+    def _maybe_log_torch_compile_default_hint(self) -> None:
+        """Log the default torch.compile hint once final config state is available."""
+        is_raw_fp8, _, act_bits = self._get_torch_compile_guard_state()
         if (
             not self.enable_torch_compile
             and TORCH_VERSION_AT_LEAST_2_6
@@ -636,6 +639,13 @@ class BaseCompressor(object):
                 "'enable_torch_compile' is set to `False` by default. "
                 "Enabling it can reduce tuning cost by 20%, but it might throw an exception.",
             )
+
+    def _apply_torch_compile_constraints(self, enable_torch_compile: bool) -> None:
+        """Apply torch.compile disabling rules for the current compressor state."""
+        self.enable_torch_compile = enable_torch_compile
+        cfg = self.quantize_config
+        is_raw_fp8, is_raw_nv_fp, _ = self._get_torch_compile_guard_state()
+
         # On HPU, we rely on torch.compile to speed up the model execution.
         if self.enable_torch_compile and is_raw_fp8 and not is_hpex_available():
             self.enable_torch_compile = False
@@ -651,6 +661,22 @@ class BaseCompressor(object):
             logger.warning_once(
                 "reset enable_torch_compile to `False` as super_group_size is set for algorithm extension"
             )
+
+    def _precheck_torch_compile(self, enable_torch_compile: bool) -> None:
+        """Apply early torch.compile adjustments before scheme resolution.
+
+        This runs during ``__init__`` so the compressor exposes a sensible
+        ``enable_torch_compile`` value immediately after construction, even
+        though scheme resolution has not completed yet.
+        """
+        self._apply_torch_compile_constraints(enable_torch_compile)
+
+    def _finalize_torch_compile(self) -> None:
+        """Re-evaluate torch.compile after scheme resolution with final attrs."""
+        requested_enable_torch_compile = self.enable_torch_compile
+        self._apply_torch_compile_constraints(requested_enable_torch_compile)
+        if not requested_enable_torch_compile:
+            self._maybe_log_torch_compile_default_hint()
 
     def _get_calibration_dataset(self) -> str:
         """Resolve calibration dataset: self.dataset > AutoScheme.dataset > default."""
@@ -982,8 +1008,8 @@ class BaseCompressor(object):
         Preconditions:
           - Phase 4 complete: ``layer_config`` is built and
             ``has_qlayer_outside_block`` is known.
-          - ``self.quantize_config.data_type`` is the final resolved value
-            (needed by :meth:`_adjust_torch_compile`).
+                    - ``self.quantize_config.data_type`` is the final resolved value
+                        (needed by :meth:`_finalize_torch_compile`).
 
         Work performed:
           - Applies the device map via :func:`~auto_round.utils.device.set_non_auto_device_map`.
@@ -1002,7 +1028,7 @@ class BaseCompressor(object):
         """
         set_non_auto_device_map(self.model_context.model, self.compress_context.device_map)
         # Re-evaluate torch.compile eligibility now that data_type is resolved.
-        self._adjust_torch_compile(self.enable_torch_compile)
+        self._finalize_torch_compile()
         self.compress_context.enable_torch_compile = self.enable_torch_compile
         if self.compress_context.low_cpu_mem_usage:
             self._offloader.reset()

@@ -99,7 +99,8 @@ class MLLMCalibrator(LLMCalibrator):
                 dataset = "liuhaotian/llava_conv_58k"
             elif dataset in CALIB_DATASETS and c.template_obj.model_type in NOT_SUPPORT_ONLY_TEXT_MODELS:
                 logger.warning(
-                    f"{getattr(mc.model.config, 'model_type', c.template_obj.model_type)} does not support for {dataset},"
+                    f"{getattr(mc.model.config, 'model_type', c.template_obj.model_type)}"
+                    f" does not support for {dataset},"
                     " will use liuhaotian/llava_conv_58k with default config as an alternative."
                 )
                 dataset = "liuhaotian/llava_conv_58k"
