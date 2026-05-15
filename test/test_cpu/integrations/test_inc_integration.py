@@ -18,13 +18,6 @@ from transformers import AutoModelForCausalLM, AutoTokenizer
 torch.backends.__allow_nonbracketed_mutation_flag = True
 
 try:
-    import auto_round
-
-    auto_round_installed = True
-except ImportError:
-    auto_round_installed = False
-
-try:
     import compressed_tensors
 
     ct_installed = True
@@ -46,7 +39,6 @@ def run_fn(model, dataloader):
             model(data)
 
 
-@pytest.mark.skipif(not auto_round_installed, reason="auto_round module is not installed")
 class TestAutoRoundCPU:
     @pytest.fixture(autouse=True, scope="class")
     def setup_class_fixture(self, tiny_opt_model_path, request):
@@ -202,7 +194,6 @@ class TestAutoRoundCPU:
             tiny_opt_model_path,
             device_map="cpu",
         )
-        inp = torch.ones([1, 10], dtype=torch.long, device="cpu")
         output_dir = tmp_path
         tokenizer = AutoTokenizer.from_pretrained(tiny_opt_model_path, trust_remote_code=True)
         quant_config = AutoRoundConfig(
@@ -260,8 +251,6 @@ class TestAutoRoundCPU:
         inc_model = convert(model)
         # Autoround applied subfolder for formats during saving, such as, './saved_inc/opt-125m-w4g128'.
         output_dir = inc_model.name_or_path
-        if scheme in ["FPW8A16"]:  # FP8_STATIC loading not supported yet
-            return
         inc_model = AutoModelForCausalLM.from_pretrained(
             output_dir,
             torch_dtype="auto",
