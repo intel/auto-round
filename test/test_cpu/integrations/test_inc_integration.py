@@ -5,9 +5,6 @@ import shutil
 import pytest
 import torch
 import transformers
-from packaging.version import Version
-from transformers import AutoModelForCausalLM, AutoTokenizer
-
 from neural_compressor.torch.quantization import (
     AutoRoundConfig,
     convert,
@@ -15,6 +12,8 @@ from neural_compressor.torch.quantization import (
     quantize,
 )
 from neural_compressor.torch.utils import logger
+from packaging.version import Version
+from transformers import AutoModelForCausalLM, AutoTokenizer
 
 torch.backends.__allow_nonbracketed_mutation_flag = True
 
@@ -33,7 +32,7 @@ except ImportError:
     ct_installed = False
 
 
-tagert_modules = ["QuantLinear", "QuantLinearGPTQ", "QuantLinearAWQ", "WQLinear_GEMM", 'AwqTorchQuantLinear']
+target_modules = ["QuantLinear", "QuantLinearGPTQ", "QuantLinearAWQ", "WQLinear_GEMM", "AwqTorchQuantLinear"]
 
 
 @torch.no_grad()
@@ -89,7 +88,7 @@ class TestAutoRoundCPU:
         )
         model = prepare(model=model, quant_config=quant_config)
         q_model = convert(model)
-        assert q_model.lm_head.__class__.__name__ in tagert_modules, "packing model failed."
+        assert q_model.lm_head.__class__.__name__ in target_modules, "packing model failed."
 
     def test_int4_dtype(self):
         fp32_model = copy.deepcopy(self.opt_model)
@@ -103,7 +102,7 @@ class TestAutoRoundCPU:
         q_model = convert(model)
         _ = q_model(self.inp)  # inference
         assert (
-            q_model.model.decoder.layers[0].self_attn.k_proj.__class__.__name__ in tagert_modules
+            q_model.model.decoder.layers[0].self_attn.k_proj.__class__.__name__ in target_modules
         ), "packing model failed."
 
     def test_autoround_with_quantize_API(self):
@@ -122,7 +121,7 @@ class TestAutoRoundCPU:
             run_args=(self.dataloader,),
         )
         assert (
-            q_model.model.decoder.layers[0].self_attn.k_proj.__class__.__name__ in tagert_modules
+            q_model.model.decoder.layers[0].self_attn.k_proj.__class__.__name__ in target_modules
         ), "packing model failed."
 
     def test_conv1d(self, tiny_lamini_model_path):
@@ -151,9 +150,8 @@ class TestAutoRoundCPU:
     @pytest.mark.skipif(Version(auto_round.__version__) <= Version("0.5.1"), reason="visual layer_name not processed.")
     def test_mllm(self, tiny_qwen_vl_model_path):
         input = torch.randn(1, 32)
-        from transformers import AutoProcessor, AutoTokenizer, Qwen2VLForConditionalGeneration
-
         from neural_compressor.torch.algorithms.autoround import get_mllm_dataloader
+        from transformers import AutoProcessor, AutoTokenizer, Qwen2VLForConditionalGeneration
 
         model_name = tiny_qwen_vl_model_path
         tokenizer = AutoTokenizer.from_pretrained(model_name)
@@ -196,7 +194,7 @@ class TestAutoRoundCPU:
         run_fn(model, dataloader)
         q_model = convert(model)
         assert (
-            q_model.model.language_model.layers[0].mlp.up_proj.__class__.__name__ in tagert_modules
+            q_model.model.language_model.layers[0].mlp.up_proj.__class__.__name__ in target_modules
         ), "model quantization failed."
 
     def test_set_local(self, tiny_opt_model_path, tmp_path):
@@ -236,9 +234,7 @@ class TestAutoRoundCPU:
         assert isinstance(q_model.model.decoder.layers[0].self_attn.v_proj, torch.nn.Linear), "set_local failed."
 
     @pytest.mark.skipif(not ct_installed, reason="The compressed-tensors module is not installed.")
-    @pytest.mark.parametrize(
-        "scheme", ["W3A16", "W8A16", "MXFP4", "NVFP4", "FP8_STATIC"]
-    )
+    @pytest.mark.parametrize("scheme", ["W3A16", "W8A16", "MXFP4", "NVFP4", "FP8_STATIC"])
     def test_scheme(self, scheme, tiny_opt_model_path, tmp_path):
         # INC API
         fp32_model = copy.deepcopy(self.opt_model)
