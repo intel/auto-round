@@ -92,7 +92,7 @@ function run_unit_test() {
     rm -rf .coverage* *.xml *.html
 
     uv pip install torch==2.12.0 torchvision --index-url https://download.pytorch.org/whl/cu126
-    uv pip install https://github.com/XuehaoSun/llama-cpp-python/releases/download/v0.3.16/llama_cpp_python-0.3.16-cp312-cp312-linux_x86_64.whl
+    uv pip install https://github.com/XuehaoSun/llama-cpp-python/releases/download/v0.3.23/llama_cpp_python-0.3.23-py3-none-linux_x86_64.whl
     uv pip install 'git+https://github.com/ggml-org/llama.cpp.git#subdirectory=gguf-py'
     uv pip install -r test_cuda/requirements.txt
     uv pip install -r test_cuda/requirements_diffusion.txt
