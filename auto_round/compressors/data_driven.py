@@ -647,7 +647,7 @@ class DataDrivenCompressor(BaseCompressor):
             to_cache_block_names = flatten_list(all_blocks)
         to_cache_layer_names = layer_names
         if self.super_group_size is not None:
-            to_cache_layer_names=[]
+            to_cache_layer_names = []
         if len(layer_names) > 0:
             logger.info(
                 "Starting to cache block inputs. This may be slow due to external block layers: %s", layer_names
