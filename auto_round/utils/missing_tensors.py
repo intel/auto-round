@@ -48,6 +48,8 @@ from auto_round.utils.common import compress_layer_names
 from auto_round.utils.weight_handler import _dequant_fp8_linear_weight
 
 
+KNOWN_FUSED_EXPERT_ATTRS = frozenset(["gate_up_proj", "down_proj"])
+
 def copy_missing_tensors_from_source(
     source_dir: str,
     target_dir: str,
@@ -208,13 +210,34 @@ def copy_missing_tensors_from_source(
         if name == "lm_head.weight":
             return False
         aliases = _name_aliases(name)
-        if aliases & saved_tensor_names:
+        # Strip .weight suffix before comparing — safetensors keys do not have .weight
+        aliases_no_suffix = {a if not a.endswith(".weight") else a[: -len(".weight")] for a in aliases}
+        if aliases_no_suffix & saved_tensor_names:
             return False
         # Qwen-Omni talker weights must be preserved exactly as BF16 source tensors.
-        # If an individual talker tensor is absent from the export, copy that exact key
-        # regardless of whether sibling tensors from the same expert/block were saved.
         if any(alias.startswith("talker.") for alias in aliases):
-            return True
+            # Strip numeric suffixes (e.g. experts.0 → experts, layers.0 → layers)
+            # so that individual expert tensors map to the stacked parent key.
+            def _strip_numeric_suffix(name: str) -> str:
+                parts = name.rsplit(".", 1)
+                if parts[-1].isdigit():
+                    return parts[0]
+                return name
+
+            # Use aliases_no_suffix for stacked key computation (matches saved_tensor_names format)
+            stacked_parents = {_strip_numeric_suffix(a.rsplit(".", 1)[0]) for a in aliases_no_suffix}
+            stacked_keys = {p + "." + a.rsplit(".", 1)[-1] for p in stacked_parents for a in aliases_no_suffix}
+            if stacked_keys & saved_tensor_names:
+                return False  # stacked version already present; skip individual copies
+            talker_blocks = {_first_numeric_prefix(a) for a in aliases} - {None}
+            # Guard: only for tensors inside the experts submodule (e.g. experts.gate_up_proj,
+            # experts.0.gate_proj).
+            is_expert_tensors = any("experts" in a for a in aliases)
+            if is_expert_tensors:
+                stacked_attrs = {k.rsplit(".", 1)[-1] for k in stacked_keys}
+                if stacked_attrs & KNOWN_FUSED_EXPERT_ATTRS and talker_blocks & saved_block_prefix:
+                    return False
+            return True  # truly missing (no stacked counterpart in saved output)
         parents = {a.rsplit(".", 1)[0] for a in aliases}
         if parents & saved_parent_layers:
             return False
