@@ -21,6 +21,9 @@ Current algorithms
 ------------------
 * **hadamard** – Block-diagonal Hadamard rotations (QuaRot / SpinQuant style).
   See :mod:`auto_round.algorithms.transforms.rotation`.
+* **spinquant** – SpinQuant/QuaRot multi-level rotation (R1–R4) with optional
+  online hooks, trainable rotations, and known Hadamard matrices for non-pow2.
+  See :mod:`auto_round.algorithms.transforms.spinquant`.
 
 Adding a new algorithm
 -----------------------
@@ -44,8 +47,10 @@ import torch
 from auto_round.algorithms.transforms.base import (
     BaseRotation,
     BaseRotationConfig,
+    RotationSerializer,
     ROTATION_SUPPORTED_SCHEMES,
     check_supported_schemes,
+    _ensure_registry_populated,
 )
 from auto_round.algorithms.transforms.rotation import (
     HadamardRotation,
@@ -58,15 +63,22 @@ __all__ = [
     # Base interfaces
     "BaseRotation",
     "BaseRotationConfig",
+    "RotationSerializer",
     "ROTATION_SUPPORTED_SCHEMES",
     "check_supported_schemes",
     # Config
     "RotationConfig",
     "HadamardRotation",
     "apply_rotation_transform",
-    # Unified entry
+    # Unified entry — preprocessing
     "apply_rotation",
     "normalize_rotation_config",
+    # Unified entry — serialization (generic dispatch)
+    "inject_rotation_buffers_on_layer",
+    "inject_rotation_buffers_bulk",
+    "save_rotation_config",
+    "preregister_rotation_buffers",
+    "rebuild_rotation_if_needed",
 ]
 
 
@@ -80,7 +92,8 @@ def normalize_rotation_config(
 
     Args:
         config: One of: ``None``, :class:`RotationConfig`, a ``dict`` with
-                an ``"algorithm"`` key, or a plain Hadamard shorthand string.
+                an ``"algorithm"`` key, or a plain Hadamard shorthand string
+                (including ``"quarot"`` / ``"spinquant"``).
 
     Returns:
         The appropriate :class:`BaseRotationConfig` subclass, or ``None``
@@ -96,12 +109,29 @@ def normalize_rotation_config(
         alg = config.get("algorithm", "hadamard")
         if alg == "hadamard":
             return RotationConfig.model_validate(config)
+        if alg == "spinquant":
+            from auto_round.algorithms.transforms.spinquant.preprocessor import SpinQuantConfig
+
+            # Filter to only valid SpinQuantConfig fields
+            import dataclasses
+
+            valid_fields = {f.name for f in dataclasses.fields(SpinQuantConfig)}
+            filtered = {k: v for k, v in config.items() if k != "algorithm" and k in valid_fields}
+            return SpinQuantConfig(**filtered)
         raise ValueError(
             f"Unknown rotation algorithm: {alg!r}. " f"Registered algorithms: {sorted(BaseRotation._REGISTRY)}"
         )
 
     if isinstance(config, str):
-        # String shorthand → treat as Hadamard config.
+        key = config.strip().lower()
+        if key in ("spinquant", "quarot"):
+            from auto_round.algorithms.transforms.spinquant.preprocessor import SpinQuantConfig
+
+            # "quarot" → QuaRot defaults (no training)
+            if key == "quarot":
+                return SpinQuantConfig(trainable_rotation=False, trainable_smooth=False)
+            return SpinQuantConfig()
+        # Otherwise treat as Hadamard config.
         return RotationConfig.model_validate(_normalize_hadamard_config(config))
 
     raise TypeError(
@@ -144,3 +174,202 @@ def apply_rotation(
 
     rotation = BaseRotation.from_config(normalised)
     return rotation.apply_to_model(model, data_type=data_type, **kwargs)
+
+
+# ---------------------------------------------------------------------------
+# Serialization dispatch — generic, algorithm-agnostic entry points
+# ---------------------------------------------------------------------------
+
+import logging as _logging
+
+_dispatch_logger = _logging.getLogger("autoround.transforms.dispatch")
+
+
+def _get_serializer(model: torch.nn.Module) -> RotationSerializer | None:
+    """Get the :class:`RotationSerializer` for the model's rotation config.
+
+    Returns ``None`` if no rotation was applied or the rotation algorithm
+    does not support serialization.
+    """
+    config = getattr(model, "_rotation_config", None)
+    if config is None:
+        config = getattr(model, "_spinquant_config", None)  # legacy
+    if config is None:
+        return None
+    try:
+        rotation = BaseRotation.from_config(config)
+    except (ValueError, KeyError):
+        return None
+    if not isinstance(rotation, RotationSerializer):
+        return None
+    return rotation
+
+
+def _get_serializer_for_config(
+    config_dict: dict,
+) -> RotationSerializer | None:
+    """Get :class:`RotationSerializer` from a JSON config dict (load side).
+
+    The dict should have an ``"algorithm"`` field; defaults to
+    ``"spinquant"`` for backward compatibility.
+    """
+    algorithm = config_dict.get("algorithm", "spinquant")
+    _ensure_registry_populated()
+    rotation_cls = BaseRotation._REGISTRY.get(algorithm)
+    if rotation_cls is None:
+        return None
+    # Construct a minimal config for dispatch only.
+    config = BaseRotationConfig(algorithm=algorithm)
+    try:
+        rotation = rotation_cls(config)
+    except Exception:
+        return None
+    if not isinstance(rotation, RotationSerializer):
+        return None
+    return rotation
+
+
+# ── Save side (called by export files) ────────────────────────────────
+
+
+def inject_rotation_buffers_on_layer(
+    layer_name: str,
+    qlayer: torch.nn.Module,
+    model: torch.nn.Module,
+) -> None:
+    """Per-layer rotation buffer injection (ShardWriter path).
+
+    Dispatches to the correct :class:`RotationSerializer` based on
+    ``model._rotation_config``.  No-op if no rotation config is present.
+
+    Called from ``pack_layer()`` in all export files.
+    """
+    serializer = _get_serializer(model)
+    if serializer is not None:
+        serializer.inject_buffers_on_layer(layer_name, qlayer, model)
+
+
+def inject_rotation_buffers_bulk(
+    model: torch.nn.Module,
+    quantization_config: dict,
+) -> None:
+    """Bulk rotation buffer injection (non-ShardWriter path).
+
+    Dispatches to the correct :class:`RotationSerializer` based on
+    ``model._rotation_config``.  No-op if no rotation config is present.
+
+    Called from ``save_quantized_as_*()`` in all export files.
+    """
+    serializer = _get_serializer(model)
+    if serializer is not None:
+        serializer.inject_buffers_bulk(model, quantization_config)
+
+
+def save_rotation_config(
+    model: torch.nn.Module,
+    save_dir: str,
+) -> None:
+    """Persist rotation config to ``config.json``.
+
+    Dispatches to the correct :class:`RotationSerializer` based on
+    ``model._rotation_config``.  No-op if no rotation config is present.
+
+    Called from ``save_quantized_as_*()`` in all export files, after
+    ``model.save_pretrained()``.
+    """
+    serializer = _get_serializer(model)
+    if serializer is not None:
+        serializer.save_config(model, save_dir)
+
+
+# ── Load side (called by convert_model.py) ────────────────────────────
+
+
+def preregister_rotation_buffers(
+    model: torch.nn.Module,
+    quantization_config,
+) -> int:
+    """Pre-register empty rotation buffers before state_dict loading.
+
+    Extracts the rotation config dict from *quantization_config* by
+    checking each registered :class:`RotationSerializer`'s
+    :meth:`config_key` (e.g. ``"spinquant_config"``).
+
+    Note: does NOT use ``"rotation_config"`` — that key is reserved for
+    the existing Hadamard rotation system with a different schema.
+
+    Returns the number of modules that received buffers, or 0 if
+    no rotation config was found.
+    """
+    # Extract rotation config dict by checking registered serializer keys
+    rotation_cfg = None
+    _ensure_registry_populated()
+
+    if isinstance(quantization_config, dict):
+        for _name, _cls in BaseRotation._REGISTRY.items():
+            if not (isinstance(_cls, type) and issubclass(_cls, RotationSerializer)):
+                continue
+            try:
+                legacy_key = _cls.config_key()
+            except Exception:
+                continue
+            rotation_cfg = quantization_config.get(legacy_key)
+            if rotation_cfg is not None:
+                rotation_cfg = dict(rotation_cfg)
+                rotation_cfg.setdefault("algorithm", _name)
+                break
+    else:
+        # Object-style quantization_config (e.g. QuantizationConfig)
+        # Check each registered serializer's config_key as attribute
+        for _name, _cls in BaseRotation._REGISTRY.items():
+            if not (isinstance(_cls, type) and issubclass(_cls, RotationSerializer)):
+                continue
+            try:
+                legacy_key = _cls.config_key()
+            except Exception:
+                continue
+            rotation_cfg = getattr(quantization_config, legacy_key, None)
+            if rotation_cfg is not None:
+                if isinstance(rotation_cfg, dict):
+                    rotation_cfg = dict(rotation_cfg)
+                    rotation_cfg.setdefault("algorithm", _name)
+                break
+
+    if not rotation_cfg:
+        return 0
+
+    serializer = _get_serializer_for_config(rotation_cfg)
+    if serializer is None:
+        return 0
+    return serializer.preregister_buffers(model, rotation_cfg)
+
+
+def rebuild_rotation_if_needed(model: torch.nn.Module) -> None:
+    """Rebuild online rotation hooks after weights are loaded.
+
+    Scans all registered :class:`RotationSerializer` implementations to
+    find one whose buffers are present on the model, then calls its
+    :meth:`rebuild_online`.
+    """
+    _ensure_registry_populated()
+
+    for name, rotation_cls in BaseRotation._REGISTRY.items():
+        try:
+            temp = rotation_cls(BaseRotationConfig(algorithm=name))
+        except Exception:
+            continue
+        if not isinstance(temp, RotationSerializer):
+            continue
+
+        # Quick scan: does any module have this method's buffers?
+        found = False
+        for _, module in model.named_modules():
+            if temp.has_rotation_buffers(module):
+                found = True
+                break
+        if found:
+            try:
+                temp.rebuild_online(model)
+            except Exception as e:
+                _dispatch_logger.warning(f"Failed to rebuild {name} rotations: {e}")
+            return  # Only one rotation method expected per model

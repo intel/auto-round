@@ -22,9 +22,10 @@ from __future__ import annotations
 
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, Optional
 
 import torch
+import torch.nn as nn
 
 # ---------------------------------------------------------------------------
 # Config base
@@ -158,9 +159,141 @@ def _ensure_registry_populated() -> None:
     # Import each sub-package here.  Add new entries as more algorithms land.
     import importlib
 
-    for sub in ("hadamard",):
+    for sub in ("rotation", "spinquant"):
         try:
             importlib.import_module(f"auto_round.algorithms.transforms.{sub}")
         except ImportError:
             pass
     _registry_populated = True
+
+
+# ---------------------------------------------------------------------------
+# Rotation serialization mixin
+# ---------------------------------------------------------------------------
+
+
+class RotationSerializer(ABC):
+    """Mixin interface for rotation method serialization.
+
+    Any :class:`BaseRotation` subclass that needs save/load support should
+    also inherit from this mixin and implement all abstract methods.
+
+    Separating from ``BaseRotation`` keeps preprocessing and serialization
+    concerns decoupled — a rotation method CAN exist without save/load
+    (e.g. in-memory-only evaluation).
+
+    Usage::
+
+        @BaseRotation.register("my_rotation")
+        class MyRotation(BaseRotation, RotationSerializer):
+            def apply_to_model(self, ...): ...
+            def inject_buffers_on_layer(self, ...): ...
+            ...
+    """
+
+    # ── Save side ──────────────────────────────────────────────────────
+
+    @abstractmethod
+    def inject_buffers_on_layer(
+        self,
+        layer_name: str,
+        qlayer: nn.Module,
+        model: nn.Module,
+    ) -> None:
+        """Inject rotation buffers onto a single QuantLinear after packing.
+
+        Called inside ``pack_layer()`` for the ShardWriter path — buffers
+        must be on the module BEFORE ``shard_writer.write()`` and
+        ``offload_to_meta()``.
+
+        Args:
+            layer_name: Full qualified name (e.g.
+                ``"model.layers.0.self_attn.q_proj"``).
+            qlayer: The packed QuantLinear module.
+            model: The full model (for reading rotation matrices / config).
+        """
+
+    @abstractmethod
+    def inject_buffers_bulk(
+        self,
+        model: nn.Module,
+        quantization_config: dict,
+    ) -> None:
+        """Inject rotation buffers on ALL QuantLinear modules and embed config.
+
+        Called in ``save_quantized_as_*()`` for the non-ShardWriter path.
+        Implementations should write the rotation config into
+        *quantization_config* under their own :meth:`config_key`
+        (e.g. ``"spinquant_config"``).
+
+        Note: do NOT use ``"rotation_config"`` as the key — it is reserved
+        for the existing Hadamard rotation system.
+
+        Args:
+            model: Full quantized model with QuantLinear modules.
+            quantization_config: Mutable dict persisted to JSON.
+        """
+
+    @abstractmethod
+    def save_config(self, model: nn.Module, save_dir: str) -> None:
+        """Persist rotation config to ``config.json``.
+
+        Called after ``model.save_pretrained()``.
+
+        Args:
+            model: Full model (for architecture info).
+            save_dir: Directory where ``config.json`` lives.
+        """
+
+    # ── Load side ──────────────────────────────────────────────────────
+
+    @abstractmethod
+    def preregister_buffers(
+        self,
+        model: nn.Module,
+        config_dict: dict,
+    ) -> int:
+        """Pre-register empty rotation buffers on QuantLinear modules.
+
+        Called AFTER ``convert_hf_model()`` replaces ``Linear`` →
+        ``QuantLinear``, BEFORE HuggingFace loads the state_dict from
+        safetensors.
+
+        Args:
+            model: Model with QuantLinear modules.
+            config_dict: Rotation config dict from quantization_config JSON.
+
+        Returns:
+            Number of modules that received pre-registered buffers.
+        """
+
+    @abstractmethod
+    def rebuild_online(self, model: nn.Module) -> nn.Module:
+        """Rebuild online rotation hooks after state_dict is loaded.
+
+        Handles forward patching (R1/R4 buffers), hook re-registration
+        (R3), etc.
+
+        Args:
+            model: Loaded quantized model with populated rotation buffers.
+
+        Returns:
+            The model with online rotations active.
+        """
+
+    @abstractmethod
+    def has_rotation_buffers(self, module: nn.Module) -> bool:
+        """Check if a single module has this rotation method's buffers.
+
+        Used for quick detection on load side.
+        """
+
+    @classmethod
+    @abstractmethod
+    def config_key(cls) -> str:
+        """Legacy JSON key used in ``quantization_config`` for this method.
+
+        e.g. ``"spinquant_config"``.  The unified key is always
+        ``"rotation_config"``; this is used for backward-compatible
+        fallback detection.
+        """
