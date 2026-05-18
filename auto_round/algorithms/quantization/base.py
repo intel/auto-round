@@ -289,14 +289,9 @@ class BaseQuantizers:
         raise NotImplementedError("quantize_block must be implemented in subclasses of BaseQuantizers")
 
     @torch.no_grad()
-    def quantize_layer_via_rtn(
-        self, layer_name: str, dtype: torch.dtype = None, disable_opt_rtn: bool | None = None
-    ) -> None:
+    def quantize_layer_via_rtn(self, layer_name: str, disable_opt_rtn: bool | None = None) -> None:
         """Quantize one layer with RTN and handle optional immediate pack/save."""
         layer = get_module(self.model, layer_name)
-        if dtype is not None:
-            layer = layer.to(dtype)
-
         layer = convert_module_to_hp_if_necessary(layer, self.model_context.amp_dtype, self.compress_context.device)
         set_module(self.model, layer_name, layer)
         tuning_device = layer.tuning_device if hasattr(layer, "tuning_device") else self.compress_context.device
@@ -398,6 +393,10 @@ class BaseQuantizers:
                 retrieved internally via get_module(model, layer_name).
             input_ids: Optional calibration inputs for data-driven outside-layer quantization.
         """
+        dtype = kwargs.pop("dtype", None)
+        if dtype is not None:
+            layer = get_module(self.model, layer_name)
+            set_module(self.model, layer_name, layer.to(dtype))
         self.quantize_layer_via_rtn(layer_name, **kwargs)
 
     @torch.no_grad()
@@ -575,9 +574,18 @@ class BaseQuantizers:
                 # Shared keys are stored once (not per-sample), often wrapped in a
                 # 1-element list by the caching hook.  Unwrap so the model receives
                 # the raw value (e.g. (cos, sin) tuple, not [(cos, sin)]).
+                # Exception: if the hook detected that the "shared" key actually varies
+                # per sample (e.g. position_embeddings in a VLM visual encoder), it
+                # upgrades the storage to a per-sample list with >1 elements.
                 val = input_others[key]
                 if isinstance(val, list) and len(val) == 1:
                     current_input_others[key] = val[0]
+                elif isinstance(val, list) and len(val) > 1:
+                    # Per-sample storage for a nominally-shared key that varies across
+                    # calibration samples (e.g. position_embeddings in Qwen2-VL visual
+                    # encoder blocks where each image has a different patch count).
+                    idx = int(indices[0]) if len(indices) == 1 else 0
+                    current_input_others[key] = val[idx] if idx < len(val) else val[0]
                 else:
                     current_input_others[key] = val
             elif not isinstance(input_others[key], (str, bool, type(None))):

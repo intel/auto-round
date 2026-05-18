@@ -43,6 +43,7 @@ from auto_round.utils import (
     memory_monitor,
     mv_module_from_gpu,
     set_amax_for_all_moe_layers,
+    set_module,
     to_device,
 )
 from auto_round.utils.device import (
@@ -343,15 +344,19 @@ class SignRoundQuantizer(BaseQuantizers):
         """
         if input_ids is None:
             logger.info(f"using rtn to quantize {layer_name}")
+            if dtype is not None:
+                layer = get_module(self.model, layer_name)
+                set_module(self.model, layer_name, layer.to(dtype))
             self.quantize_layer_via_rtn(
                 layer_name,
-                dtype=dtype,
                 disable_opt_rtn=getattr(self.config, "disable_opt_rtn", True),
             )
             return
 
         logger.info(f"quantizing layer {layer_name}")
         layer = get_module(self.model, layer_name)
+        if dtype is not None:
+            layer = layer.to(dtype)
         if hasattr(layer, "tuning_device"):
             device = layer.tuning_device
 

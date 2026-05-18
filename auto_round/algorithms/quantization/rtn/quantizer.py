@@ -38,11 +38,13 @@ from auto_round.logger import logger
 from auto_round.utils import (
     check_to_quantized,
     get_lm_head_name,
+    get_module,
     htcore,
     is_auto_device_mapping,
     is_hpex_available,
     memory_monitor,
     set_amax_for_all_moe_layers,
+    set_module,
 )
 from auto_round.utils.device import (
     clear_memory_if_reached_threshold,
@@ -95,7 +97,10 @@ class RTNQuantizer(BaseQuantizers):
 
     @torch.no_grad()
     def quantize_layer(self, name: str, dtype: torch.dtype = None) -> None:
-        self.quantize_layer_via_rtn(name, dtype=dtype)
+        if dtype is not None:
+            layer = get_module(self.model, name)
+            set_module(self.model, name, layer.to(dtype))
+        self.quantize_layer_via_rtn(name)
 
 
 class OptimizedRTNQuantizer(RTNQuantizer):
