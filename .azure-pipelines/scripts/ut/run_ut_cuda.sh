@@ -31,7 +31,7 @@ function create_conda_env() {
         export PATH=/usr/local/cuda/bin${PATH:+:${PATH}}
         export LD_LIBRARY_PATH=$(python -c "import site; print(site.getsitepackages()[0])")/nvidia/nvjitlink/lib:$LD_LIBRARY_PATH
     fi
-    uv pip install pytest-cov pytest-html cmake
+    uv pip install pytest-cov pytest-html cmake requests
 }
 
 function print_test_results_table() {
