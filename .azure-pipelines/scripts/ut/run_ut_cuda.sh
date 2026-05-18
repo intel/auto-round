@@ -91,14 +91,14 @@ function run_unit_test() {
     cd ${REPO_PATH}/test
     rm -rf .coverage* *.xml *.html
 
-    uv pip install torch==2.12.0 torchvision --index-url https://download.pytorch.org/whl/cu126
+    uv pip install torch==2.12.0 torchvision torchao --index-url https://download.pytorch.org/whl/cu126
     uv pip install https://github.com/XuehaoSun/llama-cpp-python/releases/download/v0.3.23/llama_cpp_python-0.3.23-py3-none-linux_x86_64.whl
     uv pip install 'git+https://github.com/ggml-org/llama.cpp.git#subdirectory=gguf-py'
     uv pip install -r test_cuda/requirements.txt
     uv pip install -r test_cuda/requirements_diffusion.txt
     uv pip install -U transformers
     uv pip uninstall torch torchvision
-    uv pip install torch==2.12.0 torchvision --index-url https://download.pytorch.org/whl/cu126
+    uv pip install torch==2.12.0 torchvision torchao --index-url https://download.pytorch.org/whl/cu126
     cd ${REPO_PATH} && uv pip install . && cd ${REPO_PATH}/test
 
     pip list > ${LOG_DIR}/ut_pip_list.txt
@@ -202,7 +202,7 @@ function run_unit_test_sglang() {
 
     cd ${REPO_PATH}/test
     rm -rf .coverage* *.xml *.html
-    uv pip install sglang<0.5.11 --prerelease=allow
+    uv pip install "sglang<0.5.11" --prerelease=allow
     cd ${REPO_PATH} && uv pip install . && cd ${REPO_PATH}/test
 
     pip list > ${LOG_DIR}/sglang_ut_pip_list.txt
