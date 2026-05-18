@@ -58,6 +58,7 @@ SPECIAL_SHARED_CACHE_KEYS = {
     "Gemma3ForConditionalGeneration": ("position_embeddings_global", "position_embeddings_local")
 }
 SPECIAL_SHARED_CACHE_KEYS["MiniMaxText01ForCausalLM"] = ("slope_rate",)
+SPECIAL_SHARED_CACHE_KEYS["WanTransformer3DModel"] = ("rotary_emb",)
 MISTRAL_3_2_MODELS = ["Mistral-Small-3.2", "Magistral-Small", "Devstral-Small"]
 
 
