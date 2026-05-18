@@ -38,9 +38,7 @@ from auto_round.special_model_handler import (
     SPECIAL_SHARED_CACHE_KEYS,
     SUPPORT_ONLY_TEXT_MODELS,
     _get_mimo_audio_multimodal_block,
-    _get_qwen3_tts_multimodal_block,
     _handle_special_model,
-    _qwen3_tts_forward,
     check_mllm_model_batch,
     mllms_with_limited_bs,
     resolve_model_type,
@@ -73,28 +71,6 @@ def _make_mimo_audio_mock(n_main_layers=2, n_input_local_layers=1, n_local_layer
     local_xfm = MagicMock()
     local_xfm.layers = torch.nn.ModuleList([torch.nn.Linear(8, 8) for _ in range(n_local_layers)])
     model.local_transformer = local_xfm
-
-    return model
-
-
-def _make_qwen3_tts_mock(n_layers=2, use_tts_model=True):
-    model = MagicMock()
-    model.config = _make_mock_config("qwen3_tts", architectures=["Qwen3TTSForConditionalGeneration"])
-
-    layers = torch.nn.ModuleList([torch.nn.Linear(8, 8) for _ in range(n_layers)])
-    inner = MagicMock()
-    inner.layers = layers
-
-    if use_tts_model:
-        tts = MagicMock()
-        tts.model = inner
-        model.tts_model = tts
-        del model.talker
-    else:
-        talker = MagicMock()
-        talker.model = inner
-        model.talker = talker
-        del model.tts_model
 
     return model
 
@@ -227,37 +203,6 @@ class TestStableAudioRegistration:
 
         assert "StableAudioDiTModel" in SPECIAL_SHARED_CACHE_KEYS
         assert "encoder_hidden_states" in SPECIAL_SHARED_CACHE_KEYS["StableAudioDiTModel"]
-
-
-class TestQwen3TTSDummyUnitTests:
-    def test_special_map(self):
-        assert "qwen3_tts" in SPECIAL_MULTIMODAL_BLOCK
-        assert "qwen3_tts" in SUPPORT_ONLY_TEXT_MODELS
-        assert "qwen3_tts" in mllms_with_limited_bs
-
-    def test_tts_and_talker_layout_fallback(self):
-        model = _make_qwen3_tts_mock(n_layers=3, use_tts_model=True)
-        blocks = _get_qwen3_tts_multimodal_block(model)
-        assert blocks[0] == [f"tts_model.model.layers.{i}" for i in range(3)]
-
-        model = _make_qwen3_tts_mock(n_layers=4, use_tts_model=False)
-        blocks = _get_qwen3_tts_multimodal_block(model)
-        assert blocks[0] == [f"talker.model.layers.{i}" for i in range(4)]
-
-    def test_forward_chooses_backbone_with_text_pathway(self):
-        model = MagicMock()
-        model.tts_model = MagicMock()
-        model.tts_model.model = MagicMock()  # no text_embedding on tts_model
-        model.talker = MagicMock()
-        model.talker.model = MagicMock()
-        model.talker.model.text_embedding = MagicMock(return_value=torch.randn(1, 4, 8))
-        model.talker.text_projection = MagicMock(return_value=torch.randn(1, 4, 8))
-
-        dummy_ids = torch.randint(0, 10, (1, 4))
-        _qwen3_tts_forward(model, input_ids=dummy_ids)
-
-        model.talker.assert_called_once()
-        model.tts_model.assert_not_called()
 
 
 class TestStableAudioPipelineFunction:
