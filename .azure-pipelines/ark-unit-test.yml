@@ -114,6 +114,7 @@ stages:
             inputs:
               targetType: inline
               script: |
+                set -euxo pipefail
                 rm -rf "$(Pipeline.Workspace)/wheels"
                 mkdir -p "$(Pipeline.Workspace)/wheels"
 
