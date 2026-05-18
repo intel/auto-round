@@ -49,8 +49,7 @@ DATA_CENTER_BAN_LIST = ["EUR-IS-1", "EUR-IS-2", "US-IL-1", "EUR-NO-1", "EU-CZ-1"
 DATA_CENTER_SELECT_LIST = [dc for dc in DATA_CENTER_IDS if dc not in DATA_CENTER_BAN_LIST]
 REQUIRED_COUNT = 1
 CU130_IMAGES_NAME = "ghcr.io/xuehaosun/azure-agent:13.0"
-CU128_IMAGES_NAME = "ghcr.io/xuehaosun/azure-agent:12.8"
-CUDA_VERSIONS = ["13.0", "12.9", "12.8"]
+CUDA_VERSIONS = ["13.0"]
 
 
 def run_create_pod(api_key, payload):
@@ -107,14 +106,14 @@ def create_pod(args):
         "gpuTypePriority": "custom",
         "name": args.name,
         "volumeInGb": 0,
-        "imageName": CU130_IMAGES_NAME if args.cuda_version == "13.0" else CU128_IMAGES_NAME,
+        "imageName": CU130_IMAGES_NAME,
     }
 
     print(f"🚀 Creating pod: {args.name}...")
     data = run_create_pod(args.api_key, payload)
     if data:
         pod_id = data.get("id")
-        location = data.get("location", "unknown")
+        location = data.get("machine", {}).get("location", "unknown")
         if pod_id:
             print(f"✅ Pod created successfully! Pod ID: {pod_id}, Location: {location}")
             print(f"    Status is: {data.get('desiredStatus')}")
