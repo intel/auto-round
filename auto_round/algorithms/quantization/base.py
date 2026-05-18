@@ -53,6 +53,7 @@ class BaseQuantizers:
         "FluxSingleTransformerBlock": ["encoder_hidden_states", "hidden_states"],
         "OvisImageTransformerBlock": ["encoder_hidden_states", "hidden_states"],
         "OvisImageSingleTransformerBlock": ["encoder_hidden_states", "hidden_states"],
+        "WanTransformerBlock": ["hidden_states"],
     }
 
     def __init__(self, config: QuantizationConfig):
@@ -368,21 +369,28 @@ class BaseQuantizers:
         input_others,
         bs: int,
         save_output: bool = True,
+        device_override: Union[torch.device, str, None] = None,
     ):
         """Compute the output of a block for calibration inputs.
 
         Shared by SignRoundQuantizer and OptimizedRTNQuantizer.  Algorithm-specific
         block-forward selection (compile vs. plain) is handled here based on
         ``enable_alg_ext`` and act-quantization flags.
+
+        Args:
+            device_override: Override the target device.  Used by diffusion with
+                multi-device dispatch to pass None so block_forward uses the block's
+                current device instead of forcing a specific device.
         """
         diffusion_fn = getattr(self, "_get_diffusion_block_outputs", None)
         if getattr(self.model_context, "is_diffusion", False):
+            device = device_override if device_override is not None else self.compress_context.device
             return self._get_diffusion_block_outputs(
                 block,
                 input_ids,
                 input_others,
                 bs,
-                self.compress_context.device,
+                device,
                 self.compress_context.cache_device,
             )
 
