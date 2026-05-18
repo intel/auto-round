@@ -210,6 +210,9 @@ def _remap_paths_for_text_model(model, quant_block_list, extra_config):
         if text_model_type:
             mapping = get_checkpoint_conversion_mapping(text_model_type)
 
+    if not mapping:
+        return quant_block_list, extra_config
+
     # Accept any mapping type that has source_patterns and target_patterns
     renamings = [r for r in mapping if hasattr(r, "source_patterns") and hasattr(r, "target_patterns")]
     if not renamings:
