@@ -3,12 +3,8 @@ project(ark LANGUAGES CXX)
 
 option(ARK_XPU "Build XPU kernels" OFF)
 option(ARK_UT "Build XPU kernels UT" OFF)
-option(ARK_RESCALE "Exoerimental" OFF)
-option(ARK_DNNL_BUILD_SOURCE "Exoerimental" OFF)
-
-if(NOT ARK_XPU OR WIN32)
-    set(ARK_DNNL_BUILD_SOURCE ON)
-endif()
+option(ARK_RESCALE "Experimental" OFF)
+set(ARK_DNNL_BUILD_SOURCE ON CACHE BOOL "Build oneDNN from source" FORCE)
 
 # ARK_SYCL_TLA defaults to ON when ARK_XPU is enabled
 if(ARK_XPU AND NOT DEFINED ARK_SYCL_TLA)
@@ -29,43 +25,40 @@ include(FindOpenMP)
 
 set(BTLA_ENABLE_OPENMP ON CACHE BOOL "BesTLA enable compiling OpenMP threading")
 
-if(ARK_DNNL_BUILD_SOURCE)
-    FetchContent_Declare(
-        dnnl
-        GIT_REPOSITORY https://github.com/uxlfoundation/oneDNN.git
-        GIT_TAG v3.10.2
-    )
-    set(libs dnnl)
-    set(DNNL_LIBRARY_TYPE "STATIC" CACHE INTERNAL "")
-    set(DNNL_CPU_RUNTIME "OMP" CACHE INTERNAL "")
-    set(DNNL_CPU_THREADING_RUNTIME "OMP")
+FetchContent_Declare(
+    dnnl
+    GIT_REPOSITORY https://github.com/uxlfoundation/oneDNN.git
+    GIT_TAG v3.10.2
+)
+set(libs dnnl)
+set(DNNL_LIBRARY_TYPE "STATIC" CACHE INTERNAL "")
+set(
+    DNNL_ENABLE_PRIMITIVE
+    "MATMUL;ELTWISE;REDUCTION;REORDER"
+    CACHE STRING "oneDNN primitives used by ARK production code"
+)
 
-    set(DNNL_BUILD_EXAMPLES OFF CACHE INTERNAL "")
-    set(DNNL_BUILD_TESTS OFF CACHE INTERNAL "")
-    set(DNNL_BUILD_DOC OFF CACHE INTERNAL "")
-    set(ONEDNN_BUILD_GRAPH OFF CACHE INTERNAL "")
-    set(ONEDNN_ENABLE_WORKLOAD "INFERENCE" CACHE INTERNAL "")
-else()
-    find_package(DNNL REQUIRED)
-    set(libs DNNL::dnnl)
-endif()
+set(DNNL_BUILD_EXAMPLES OFF CACHE INTERNAL "")
+set(DNNL_BUILD_TESTS OFF CACHE INTERNAL "")
+set(DNNL_BUILD_DOC OFF CACHE INTERNAL "")
+set(ONEDNN_BUILD_GRAPH OFF CACHE INTERNAL "")
+set(ONEDNN_ENABLE_WORKLOAD "INFERENCE" CACHE INTERNAL "")
 
 if(ARK_XPU)
-    if(ARK_DNNL_BUILD_SOURCE)
-        set(ONEDNN_ENABLE_PRIMITIVE_CPU_ISA "AVX2" CACHE INTERNAL "")
-        set(DNNL_GPU_RUNTIME "SYCL" CACHE INTERNAL "")
-        FetchContent_MakeAvailable(dnnl)
-    endif()
+    # Skip oneDNN CPU engine compilation for the XPU module build.
+    set(DNNL_CPU_RUNTIME "NONE" CACHE INTERNAL "")
+    set(DNNL_GPU_RUNTIME "SYCL" CACHE INTERNAL "")
+    FetchContent_MakeAvailable(dnnl)
     set(BTLA_SYCL ON CACHE BOOL "BesTLA with SYCL")
     set(PY_NAME auto_round_kernel_xpu)
     set(ARK_TYPE ARK_XPU)
     find_package(IntelSYCL REQUIRED)
     list(APPEND libs IntelSYCL::SYCL_CXX)
 else()
-    if(ARK_DNNL_BUILD_SOURCE)
-        set(DNNL_GPU_RUNTIME "NONE" CACHE INTERNAL "")
-        FetchContent_MakeAvailable(dnnl)
-    endif()
+    set(DNNL_CPU_RUNTIME "OMP" CACHE INTERNAL "")
+    set(DNNL_CPU_THREADING_RUNTIME "OMP")
+    set(DNNL_GPU_RUNTIME "NONE" CACHE INTERNAL "")
+    FetchContent_MakeAvailable(dnnl)
     set(BTLA_SYCL OFF CACHE BOOL "BesTLA without SYCL")
     set(PY_NAME auto_round_kernel_cpu)
     set(ARK_TYPE ARK_CPU)
@@ -162,8 +155,25 @@ target_link_libraries(${PY_NAME} PRIVATE ${libs})
 
 if(ARK_UT)
     set(TEST_NAME test_${ARK_TYPE})
-    add_executable(${TEST_NAME} wrapper/test/test_main.cpp)
+    set(TEST_SRCS wrapper/test/test_main.cpp)
+    if(ARK_XPU AND ARK_SYCL_TLA)
+      list(APPEND TEST_SRCS sdpa.cpp)
+      list(APPEND TEST_SRCS ${SDPA_GENERATED_SRCS})
+    endif()
+    add_executable(${TEST_NAME} ${TEST_SRCS})
     target_compile_features(${TEST_NAME} PRIVATE cxx_std_17)
     target_compile_definitions(${TEST_NAME} PRIVATE ${ARK_TYPE}=1)
+    target_include_directories(${TEST_NAME} PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/wrapper/include)
+    if(ARK_XPU AND ARK_SYCL_TLA)
+      target_compile_definitions(${TEST_NAME} PRIVATE ARK_SYCL_TLA=1 CUTLASS_ENABLE_SYCL=1 SYCL_INTEL_TARGET=1)
+      target_include_directories(${TEST_NAME} PRIVATE ${CMAKE_CURRENT_BINARY_DIR}/generated/sdpa)
+      foreach(_inc_dir IN LISTS _sycl_tla_include_dirs)
+        if(EXISTS "${_inc_dir}")
+          target_include_directories(${TEST_NAME} SYSTEM PRIVATE "${_inc_dir}")
+        endif()
+      endforeach()
+      target_compile_options(${TEST_NAME} PRIVATE -fsycl -fno-sycl-instrument-device-code)
+      target_link_options(${TEST_NAME} PRIVATE ${SYCL_TLA_LINK_FLAGS})
+    endif()
     target_link_libraries(${TEST_NAME} PRIVATE ${libs})
 endif()

@@ -32,6 +32,8 @@ namespace ark {
 struct env_params {
   int verbose = 2;  // trace 0/ debug 1/ info 2/ warn 3/ error 4/ critical 5/ off 6
   int auto_s8 = 0;
+  int sage_use_mean_bias = 1;
+  int sage_print_kbias = 0;
   static env_params* Instance() {
     static env_params instance;
     return &instance;
@@ -39,6 +41,8 @@ struct env_params {
   env_params() {
     env_i("ARK_VERBOSE", verbose);
     env_i("ARK_AUTO_S8", auto_s8);
+    env_i("ARK_SAGE_USE_MEAN_BIAS", sage_use_mean_bias);
+    env_i("ARK_SAGE_PRINT_KBIAS", sage_print_kbias);
   }
   static inline void env_i(const char* envstr, int& default_) {
     const char* log_level_env = getenv(envstr);

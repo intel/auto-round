@@ -82,3 +82,24 @@ y = qlinear(x)
 
 #### A Weight-Only Example
   A runnable end-to-end example is available in [test_weightonly.py](test/test_weightonly.py). It demonstrates how to prepare quantized weights and scales, call repack_quantized_weight to build ARK-packed weights, verify correctness with unpack_weight, and run woqgemm on CPU and XPU.
+
+#### Replace torch SDPA and run lm-eval
+  ARK also exposes an XPU SDPA kernel through `ARK.sdpa(...)`. If you want to replace `torch.nn.functional.scaled_dot_product_attention` globally for evaluation without editing model code, use the helper launcher in [tools/lm_eval_with_ark_sdpa.py](tools/lm_eval_with_ark_sdpa.py).
+
+  Example:
+```bash
+cd /path/to/auto_round_extension/ark
+PYTHONPATH=$PWD python tools/lm_eval_with_ark_sdpa.py \
+  --model hf \
+  --model_args pretrained=/path/to/model,trust_remote_code=True,dtype=bfloat16 \
+  --tasks hellaswag,piqa,winogrande \
+  --device xpu:0 \
+  --batch_size 1
+```
+
+  Notes:
+  * The patch only routes calls to ARK on XPU when the inputs match ARK kernel constraints; otherwise it falls back to the original torch SDPA.
+  * Supported Q/K/V dtypes are FP16 and BF16.
+  * Supported head dimensions are 64, 96, 128, and 192.
+  * `dropout_p` must be 0.0 for the ARK path.
+  * Additive masks are supported when they can be normalized to `[B, 1, Sq, Skv]`; boolean masks fall back to torch.

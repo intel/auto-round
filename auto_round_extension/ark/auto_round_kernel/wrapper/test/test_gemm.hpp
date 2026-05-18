@@ -63,5 +63,3 @@ struct TestGemm {
     ctx->deallocate(scaleB);
   }
 };
-
-static TestGemm sTestGemm;
