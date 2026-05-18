@@ -336,6 +336,26 @@ def llm_load_model(
             load_kwargs["quantization_config"] = Mxfp4Config(dequantized=True)
             logger.info("Detected MXFP4 quantized model, using Mxfp4Config(dequantized=True) for loading.")
 
+    # BAGEL requires a custom loader (Qwen2 + not extensions, not in transformers)
+    _config_path = (
+        os.path.join(pretrained_model_name_or_path, "config.json")
+        if os.path.isdir(pretrained_model_name_or_path)
+        else None
+    )
+    if _config_path and os.path.exists(_config_path):
+        with open(_config_path) as _f:
+            _mt = json.load(_f).get("model_type")
+        if _mt == "bagel":
+            from auto_round.utils.bagel_loader import load_bagel_model
+
+            model, tokenizer = load_bagel_model(
+                pretrained_model_name_or_path,
+                torch_dtype=torch_dtype,
+            )
+            model = _to_model_dtype(model, model_dtype)
+            model._autoround_to_quant_block_names = "language_model.model.layers"
+            return model, tokenizer
+
     is_glm = bool(re.search("chatglm", pretrained_model_name_or_path.lower()))
 
     tokenizer = AutoTokenizer.from_pretrained(pretrained_model_name_or_path, trust_remote_code=trust_remote_code)
@@ -543,6 +563,15 @@ def mllm_load_model(
             torch_dtype=torch_dtype,
             device_map="auto" if use_auto_mapping else None,
         )
+    elif "bagel" == model_type:
+        from auto_round.utils.bagel_loader import load_bagel_model
+
+        model, tokenizer = load_bagel_model(
+            pretrained_model_name_or_path,
+            torch_dtype=torch_dtype,
+        )
+        processor = None
+        image_processor = None
     else:
         architectures = config["architectures"][0]
         if architectures == "LlavaLlamaForCausalLM":
@@ -703,7 +732,7 @@ def diffusion_load_model(
                         component_config = json.load(file)
                     torch_dtype[k] = component_config.get("torch_dtype", "auto")
 
-        pipe = pipelines.auto_pipeline.AutoPipelineForText2Image.from_pretrained(
+        pipe = pipelines.pipeline_utils.DiffusionPipeline.from_pretrained(
             pretrained_model_name_or_path, torch_dtype=torch_dtype
         )
         pipe_config = pipe.load_config(pretrained_model_name_or_path)
@@ -738,6 +767,20 @@ def diffusion_load_model(
 
     # non-meta model uses model.save_pretrained for model and config saving
     setattr(model, "save_pretrained", partial(model_save_pretrained, model))
+
+    for comp_name in pipe.components:
+        comp = getattr(pipe, comp_name, None)
+        if (
+            comp_name.startswith("transformer")
+            and comp_name != "transformer"
+            and comp is not None
+            and isinstance(comp, torch.nn.Module)
+        ):
+            setattr(
+                comp.config, "save_pretrained", partial(config_save_pretrained, comp.config, "config.json", model=comp)
+            )
+            setattr(comp, "save_pretrained", partial(model_save_pretrained, comp))
+
     return pipe, model.to(device)
 
 
@@ -760,6 +803,9 @@ def is_pure_text_model(model):
 
 
 _is_mllm_model_cache: dict = {}
+# Model types that have multimodal components but should use LLM compressor
+# (text-only calibration, non-text modules excluded from quantization).
+_LLM_ONLY_MODEL_TYPES = {"bagel"}
 
 
 def is_mllm_model(model_or_path: Union[str, torch.nn.Module], platform: str = None):
@@ -770,6 +816,19 @@ def is_mllm_model(model_or_path: Union[str, torch.nn.Module], platform: str = No
     # Fast path: return cached result for already-seen paths
     if model_path in _is_mllm_model_cache:
         return _is_mllm_model_cache[model_path]
+
+    # Check model_type exclusion: some models have multimodal components
+    # but should be quantized as LLM (e.g., BAGEL MoT).
+    _model_type = None
+    if isinstance(model_or_path, torch.nn.Module) and hasattr(model_or_path, "config"):
+        _model_type = getattr(model_or_path.config, "model_type", None)
+    elif isinstance(model_path, str) and os.path.isdir(model_path):
+        _cfg_path = os.path.join(model_path, "config.json")
+        if os.path.exists(_cfg_path):
+            with open(_cfg_path) as _f:
+                _model_type = json.load(_f).get("model_type")
+    if _model_type in _LLM_ONLY_MODEL_TYPES:
+        return False
 
     # For dummy model, model_path could be "".
     # Only try to download if the path looks like a HF repo id (not a local filesystem path).
@@ -1720,6 +1779,9 @@ def _get_reference_amax_from_experts(moe_module: torch.nn.Module, attr_name: str
 # the quantized output directory so that from_pretrained() works out of the box.
 _EXTRA_MODEL_FILES = {
     "spk_dict.pt",  # Qwen2.5-Omni speaker dictionary for audio output
+    "llm_config.json",  # BAGEL sub-model config
+    "vit_config.json",  # BAGEL vision transformer config
+    "preprocessor_config.json",  # BAGEL image preprocessor config
 }
 
 
@@ -1952,14 +2014,18 @@ def wrap_block_forward_positional_to_kwargs(base_hook):
     positional args to keyword args, all inputs are properly accumulated
     across calibration samples.
     """
-    _param_names = None
+    _param_names_cache: dict = {}
 
     def forward(m, hidden_states=None, *positional_inputs, **kwargs):
-        nonlocal _param_names
         if positional_inputs:
-            if _param_names is None:
-                sig = inspect.signature(m.orig_forward)
-                _param_names = [p for p in sig.parameters.keys() if p != "self"]
+            m_id = id(m)
+            if m_id not in _param_names_cache:
+                # Prefer _true_orig_forward (set by new-arch CalibCompressor._replace_forward)
+                # over orig_forward (which points to the wrapped forward after wrapping).
+                sig_target = getattr(m, "_true_orig_forward", None) or m.orig_forward
+                sig = inspect.signature(sig_target)
+                _param_names_cache[m_id] = [p for p in sig.parameters.keys() if p != "self"]
+            _param_names = _param_names_cache[m_id]
             for i, val in enumerate(positional_inputs):
                 param_idx = i + 1  # hidden_states is params[0]
                 if param_idx < len(_param_names):

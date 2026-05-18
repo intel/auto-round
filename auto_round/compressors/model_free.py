@@ -1329,17 +1329,19 @@ class _ModelFreeCompressorCore:
             return
 
         if self.is_diffusion_model:
-            # For diffusion models, copy only root-level non-weight metadata files
-            # (model_index.json, tokenizer files, etc.) to output_dir.
-            # Sub-components other than transformer (vae, scheduler, …) are skipped
-            # per the "only quantize transformer" policy; the quantized transformer
-            # component is already written to output_dir/transformer/ by the pipeline.
+            # For diffusion models, copy root-level metadata files and
+            # sub-component directories (vae, scheduler, tokenizer, …) to
+            # output_dir.  The quantized transformer component is already
+            # written to output_dir/transformer/ by the pipeline, so
+            # copytree's ``not os.path.exists(dst)`` guard prevents
+            # overwriting it.
             for fname in os.listdir(self.diffusion_root_dir):
                 src = os.path.join(self.diffusion_root_dir, fname)
                 dst = os.path.join(self.output_dir, fname)
                 if os.path.isdir(src):
-                    continue
-                if os.path.isfile(src) and not os.path.exists(dst):
+                    if not os.path.exists(dst):
+                        shutil.copytree(src, dst)
+                elif os.path.isfile(src) and not os.path.exists(dst):
                     shutil.copy2(src, dst)
             return
 

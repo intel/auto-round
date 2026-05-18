@@ -19,7 +19,7 @@ from dataclasses import asdict, dataclass, fields
 from typing import Any, Optional, Union
 
 import torch
-from transformers import set_seed
+from transformers import AutoConfig, set_seed
 
 from auto_round.algorithms.alg_config import AlgConfig
 from auto_round.algorithms.quantization import BaseQuantizers, QuantizationConfig
@@ -126,6 +126,22 @@ class BaseCompressor(object):
     quant_lm_head: bool = False
     _scheme_resolved: bool = False
     scheme_generator = None
+
+    @staticmethod
+    def _preload_model_config(model: Union[torch.nn.Module, str], trust_remote_code: bool) -> Optional[AutoConfig]:
+        if not isinstance(model, str):
+            return None
+
+        try:
+            return AutoConfig.from_pretrained(model, trust_remote_code=trust_remote_code)
+        except (OSError, EnvironmentError, ValueError) as e:
+            logger.debug(
+                "Failed to load config via AutoConfig.from_pretrained for %s: %s. "
+                "Proceeding without config-based checks.",
+                model,
+                e,
+            )
+            return None
 
     def __init__(
         self,
@@ -273,6 +289,7 @@ class BaseCompressor(object):
         # allocation early in the heap, matching the OLD arch allocation order
         # and reducing C-heap fragmentation (which is amplified on HPU).
         _device = get_major_device(device_map if device_map is not None else 0)
+        model_config = self._preload_model_config(model, trust_remote_code)
 
         self.model_context = ModelContext(
             model,
@@ -280,6 +297,7 @@ class BaseCompressor(object):
             platform=platform,
             model_dtype=model_dtype,
             trust_remote_code=trust_remote_code,
+            config=model_config,
             amp=amp,
             need_calib=self.need_calib,
             device=_device,
@@ -644,13 +662,13 @@ class BaseCompressor(object):
         if self.enable_torch_compile and is_raw_nv_fp:
             self.enable_torch_compile = False
             logger.warning_once("reset enable_torch_compile to `False` as nvfp4 is enabled")
-        super_group_size = getattr(cfg, "super_group_size", None)
-        enable_alg_ext = getattr(cfg, "enable_alg_ext", False)
-        if self.enable_torch_compile and super_group_size is not None and enable_alg_ext:
-            self.enable_torch_compile = False
-            logger.warning_once(
-                "reset enable_torch_compile to `False` as super_group_size is set for algorithm extension"
-            )
+        # super_group_size = getattr(cfg, "super_group_size", None)
+        # enable_alg_ext = getattr(cfg, "enable_alg_ext", False)
+        # if self.enable_torch_compile and super_group_size is not None and enable_alg_ext:
+        #     self.enable_torch_compile = False
+        #     logger.warning_once(
+        #         "reset enable_torch_compile to `False` as super_group_size is set for algorithm extension"
+        #     )
 
     def _get_calibration_dataset(self) -> str:
         """Resolve calibration dataset: self.dataset > AutoScheme.dataset > default."""
@@ -739,6 +757,10 @@ class BaseCompressor(object):
         self.ignore_layers = cfg.ignore_layers
         self.quant_lm_head = cfg.quant_lm_head
         self.to_quant_block_names = cfg.to_quant_block_names
+        if self.to_quant_block_names is None:
+            self.to_quant_block_names = getattr(self.model_context.model, "_autoround_to_quant_block_names", None)
+            if self.to_quant_block_names is not None:
+                self.quantize_config.to_quant_block_names = self.to_quant_block_names
 
         # Resolve the scheme (pure config work: sets data_type / bits / sym /
         # scale_dtype etc. on both self and self.quantize_config).

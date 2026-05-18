@@ -62,6 +62,7 @@ class ModelContext(BaseContext):
         platform="hf",
         model_dtype=None,
         trust_remote_code=True,
+        config: Optional[AutoConfig] = None,
         amp=True,
         need_calib=True,
         device="cpu",
@@ -75,6 +76,9 @@ class ModelContext(BaseContext):
         self.is_diffusion = False
         self.is_model_patched = False
         self.is_moe_model = False
+        # Set by CalibCompressor._replace_forward; used by recover_forward to detect
+        # new-arch diffusion mode where positional wrapper must be stripped after caching.
+        self._has_true_orig_forward_set = False
 
         assert model is not None, "model must be provided for ModelContext"
         self.model = model
@@ -92,6 +96,7 @@ class ModelContext(BaseContext):
         self.platform = platform
         self.model_dtype = model_dtype
         self.trust_remote_code = trust_remote_code
+        self.config = config
         self.amp = amp
         self.need_calib = need_calib
         self.quant_nontext_module = quant_nontext_module
@@ -139,11 +144,12 @@ class ModelContext(BaseContext):
                 self.model, platform=self.platform, device="cpu", model_dtype=self.model_dtype
             )
         elif isinstance(self.model, str):
-            config: Optional[AutoConfig] = None
+            config = self.config
             try:
-                config = AutoConfig.from_pretrained(self.model, trust_remote_code=self.trust_remote_code)
+                if config is None:
+                    config = AutoConfig.from_pretrained(self.model, trust_remote_code=self.trust_remote_code)
                 self._import_custom_moe_replacements(config)
-            except (OSError, EnvironmentError) as e:
+            except (OSError, EnvironmentError, ValueError) as e:
                 logger.debug(
                     "Failed to load config via AutoConfig.from_pretrained for %s: %s. "
                     "Proceeding without config-based checks.",
@@ -279,14 +285,44 @@ class ModelContext(BaseContext):
 
         self.hook_handles = hook_handles
 
-    def recover_forward(self):
-        """Recovers the forward function."""
+    def recover_forward(self, restore_positional_wrapper=None):
+        """Recovers the forward function.
+
+        Args:
+            restore_positional_wrapper: If True, restores forward to the wrapped version
+                (needed for LLM calibration where positional wrapper is used during quantization).
+                If False, restores to the true original forward (needed for diffusion).
+                If None (default), auto-detects: uses False for diffusion models.
+        """
         assert self._init_model, "should load and initialize model first"
+
+        # Auto-detect for diffusion: when _true_orig_forward is present (set by
+        # CalibCompressor._replace_forward), we are in new-arch diffusion mode where
+        # the positional wrapper must be fully removed after caching.
+        if restore_positional_wrapper is None:
+            restore_positional_wrapper = not getattr(self, "_has_true_orig_forward_set", False)
+            if not restore_positional_wrapper:
+                logger.debug("recover_forward: auto-detected diffusion mode, stripping positional wrapper")
 
         for n, m in self.model.named_modules():
             if hasattr(m, "orig_forward"):
-                m.forward = m.orig_forward
-                delattr(m, "orig_forward")
+                true_orig = getattr(m, "_true_orig_forward", m.orig_forward)
+                if restore_positional_wrapper:
+                    # Restore orig_forward so that any wrapper (e.g. from
+                    # wrap_block_forward_positional_to_kwargs) can still access it.
+                    # The wrapper holds a closure reference to orig_forward.
+                    m.forward = getattr(m, "_wrapped_forward_before_replace", m.orig_forward)
+                    m.orig_forward = true_orig
+                else:
+                    # Full recovery: restore the true original forward.  Used for diffusion
+                    # where the positional wrapper must be fully removed after caching.
+                    m.forward = true_orig
+                    # Keep _true_orig_forward so the wrapped forward's base_hook can
+                    # still call it during quantization tuning.
+                    m._true_orig_forward = true_orig
+                    delattr(m, "orig_forward")
+                    if hasattr(m, "_wrapped_forward_before_replace"):
+                        delattr(m, "_wrapped_forward_before_replace")
         for hook_handle in self.hook_handles:
             hook_handle.remove()
         self.hook_handles = []
