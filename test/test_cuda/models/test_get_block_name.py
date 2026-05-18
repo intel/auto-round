@@ -165,15 +165,15 @@ class TestAutoRound:
         model_name = get_model_path("google/gemma-3-12b-it")
         tmp_path = "./tmp/tiny_gemma3"  # fixture:clean_tmp_model_folder will clean it
         save_tiny_model(
-            model_name, tmp_path, from_config=True
+            model_name, tmp_path, from_config=True, num_layers=2
         )  # make sure the model is downloaded before the test, to avoid timeout in the test
         model = Gemma3ForConditionalGeneration.from_pretrained(tmp_path, torch_dtype="auto", trust_remote_code=True)
         block_names = get_block_names(model)
-        self.check_block_names(block_names, ["model.language_model.layers"], [48])
+        self.check_block_names(block_names, ["model.language_model.layers"], [2])
 
         block_names = get_block_names(model, quant_vision=True)
         self.check_block_names(
-            block_names, ["model.vision_tower.encoder.layers", "model.language_model.layers"], [27, 48]
+            block_names, ["model.vision_tower.encoder.layers", "model.language_model.layers"], [2, 2]
         )
         assert not is_pure_text_model(model)
 
