@@ -19,6 +19,7 @@ pr:
     exclude:
       - auto_round/export/export_to_autogptq
       - auto_round/export/export_to_awq
+      - auto_round_extension/ark
       - "*.md"
       - "**/*.md"
 

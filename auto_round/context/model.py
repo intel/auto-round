@@ -62,6 +62,7 @@ class ModelContext(BaseContext):
         platform="hf",
         model_dtype=None,
         trust_remote_code=True,
+        config: Optional[AutoConfig] = None,
         amp=True,
         need_calib=True,
         device="cpu",
@@ -92,6 +93,7 @@ class ModelContext(BaseContext):
         self.platform = platform
         self.model_dtype = model_dtype
         self.trust_remote_code = trust_remote_code
+        self.config = config
         self.amp = amp
         self.need_calib = need_calib
         self.quant_nontext_module = quant_nontext_module
@@ -139,11 +141,12 @@ class ModelContext(BaseContext):
                 self.model, platform=self.platform, device="cpu", model_dtype=self.model_dtype
             )
         elif isinstance(self.model, str):
-            config: Optional[AutoConfig] = None
+            config = self.config
             try:
-                config = AutoConfig.from_pretrained(self.model, trust_remote_code=self.trust_remote_code)
+                if config is None:
+                    config = AutoConfig.from_pretrained(self.model, trust_remote_code=self.trust_remote_code)
                 self._import_custom_moe_replacements(config)
-            except (OSError, EnvironmentError) as e:
+            except (OSError, EnvironmentError, ValueError) as e:
                 logger.debug(
                     "Failed to load config via AutoConfig.from_pretrained for %s: %s. "
                     "Proceeding without config-based checks.",
