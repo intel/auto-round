@@ -99,6 +99,8 @@ class DiffusionCalibrator(LLMCalibrator):
         if pipe.device != torch.device(target_device):
             pipe.to(target_device)
         pipeline_fn = getattr(pipe, "_autoround_pipeline_fn", None)
+        # Check if this is an I2V pipeline (needs calibration image)
+        requires_image = hasattr(c, "_requires_calibration_image") and c._requires_calibration_image()
         with tqdm(range(1, total + 1), desc="cache block inputs") as pbar:
             for ids, prompts in c.dataloader:
                 if isinstance(prompts, tuple):
@@ -109,7 +111,16 @@ class DiffusionCalibrator(LLMCalibrator):
                         if c.generator_seed is None
                         else torch.Generator(device=pipe.device).manual_seed(c.generator_seed)
                     )
-                    if pipeline_fn is not None:
+                    if requires_image:
+                        image = c._get_calibration_image(len(prompts) if isinstance(prompts, list) else 1)
+                        pipe(
+                            image,
+                            prompt=prompts,
+                            guidance_scale=c.guidance_scale,
+                            num_inference_steps=c.num_inference_steps,
+                            generator=generator,
+                        )
+                    elif pipeline_fn is not None:
                         pipeline_fn(
                             pipe,
                             prompts,

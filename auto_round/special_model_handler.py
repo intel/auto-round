@@ -66,6 +66,7 @@ SPECIAL_SHARED_CACHE_KEYS = {
 }
 SPECIAL_SHARED_CACHE_KEYS["MiniMaxText01ForCausalLM"] = ("slope_rate",)
 SPECIAL_SHARED_CACHE_KEYS["StableAudioDiTModel"] = ("encoder_hidden_states",)
+SPECIAL_SHARED_CACHE_KEYS["WanTransformer3DModel"] = ("rotary_emb",)
 MISTRAL_3_2_MODELS = ["Mistral-Small-3.2", "Magistral-Small", "Devstral-Small"]
 
 

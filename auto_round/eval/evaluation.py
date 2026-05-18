@@ -410,8 +410,15 @@ def run_model_evaluation(model, tokenizer, autoround, folders, formats, device_s
     """
     from auto_round.utils import get_library_version, get_model_dtype, logger
 
+    if model is not None:
+        model.eval()
+
     # Handle diffusion models separately
     if getattr(autoround, "diffusion", False):
+        prompt = getattr(args, "prompt", None)
+        prompt_file = getattr(args, "prompt_file", None)
+        if prompt is None and prompt_file is None:
+            return
         evaluate_diffusion_model(args, autoround=autoround, model=model)
         return
 
