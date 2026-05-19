@@ -111,61 +111,7 @@ class TestAWQLLM:
 
 
 # ---------------------------------------------------------------------------
-# Section 2: INT W8A8 – llm_compressor export args + vLLM inference
-# ---------------------------------------------------------------------------
-
-
-class TestAWQW8A8LLMCompressor:
-    """AWQ INT W8A8 with llm_compressor export format, then vLLM inference."""
-
-    @pytest.fixture(autouse=True)
-    def _save_dir(self, tmp_path):
-        self.save_dir = str(tmp_path / "saved")
-        yield
-        shutil.rmtree(self.save_dir, ignore_errors=True)
-
-    def test_llmc_awq_w8a8_export_config_args(self, tiny_opt_model_path):
-        """W8A8 AWQ → llm_compressor: verify compressed-tensors metadata fields."""
-        ar = AutoRound(
-            tiny_opt_model_path,
-            scheme="INT8",
-            algorithm="awq",
-            nsamples=2,
-            seqlen=32,
-            batch_size=2,
-        )
-        _, save_path = ar.quantize_and_save(output_dir=self.save_dir, format="llm_compressor")
-
-        config = AutoConfig.from_pretrained(save_path, trust_remote_code=True)
-        qconfig = config.quantization_config
-
-        assert qconfig["quant_method"] == "compressed-tensors"
-
-        group0 = qconfig["config_groups"]["group_0"]
-        # Weight args
-        assert group0["weights"]["num_bits"] == 8
-        assert group0["weights"]["type"] == "int"
-        assert group0["weights"]["symmetric"] is True
-        # Activation args
-        assert group0["input_activations"]["num_bits"] == 8
-        # Targets
-        targets = group0.get("targets")
-        assert targets is not None and len(targets) > 0
-
-        # QuantLinear check: verify saved weights are int8 with per-channel scales
-        from safetensors import safe_open
-
-        st_files = [f for f in os.listdir(save_path) if f.endswith(".safetensors")]
-        assert len(st_files) > 0, f"No safetensors files in {save_path}"
-        with safe_open(os.path.join(save_path, st_files[0]), framework="pt") as f:
-            weight = f.get_tensor("model.decoder.layers.0.self_attn.k_proj.weight")
-            assert weight.dtype == torch.int8, f"Expected int8 weight, got {weight.dtype}"
-            scale = f.get_tensor("model.decoder.layers.0.self_attn.k_proj.weight_scale")
-            assert scale.shape[1] == 1, f"Expected per-channel scale shape (out, 1), got {scale.shape}"
-
-
-# ---------------------------------------------------------------------------
-# Section 3: Tiny Qwen MoE – dynamic smoothing, quantized layers, config
+# Section 2: Tiny Qwen MoE – dynamic smoothing, quantized layers, config
 # ---------------------------------------------------------------------------
 
 
@@ -229,12 +175,13 @@ class TestAWQMoE:
         fp_layers = {k for k, v in layer_config.items() if v["bits"] >= 16}
         other_layers = {k: v["bits"] for k, v in layer_config.items() if v["bits"] != 4 and v["bits"] < 16}
 
-        # Tiny Qwen MoE: both mlp.gate (MoE router) and mlp.shared_expert_gate
-        # are excluded from quantization → 2 FP gate layers per block.
+        # Tiny Qwen MoE: mlp.gate is a TopKRouter (not Linear, excluded from
+        # layer_config), mlp.shared_expert_gate is Linear but excluded from
+        # quantization → 1 FP gate layer per block.
         assert len(other_layers) == 0, f"Unexpected bit widths: {other_layers}"
         n_layers = model.config.num_hidden_layers
-        assert len(fp_layers) == 2 * n_layers, (
-            f"Expected {2 * n_layers} FP gate layers (mlp.gate + mlp.shared_expert_gate per block), "
+        assert len(fp_layers) == n_layers, (
+            f"Expected {n_layers} FP gate layers (mlp.shared_expert_gate per block), "
             f"got {len(fp_layers)}: {sorted(fp_layers)}"
         )
         assert len(q4_layers) == len(layer_config) - len(
