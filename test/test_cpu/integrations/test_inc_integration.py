@@ -139,7 +139,6 @@ class TestAutoRoundCPU:
             q_model.transformer.h[0].attn.c_attn, transformers.pytorch_utils.Conv1D
         ), "loading compressed model failed."
 
-    @pytest.mark.skipif(Version(auto_round.__version__) <= Version("0.5.1"), reason="visual layer_name not processed.")
     def test_mllm(self, tiny_qwen_vl_model_path):
         input = torch.randn(1, 32)
         from neural_compressor.torch.algorithms.autoround import get_mllm_dataloader
@@ -259,7 +258,6 @@ class TestAutoRoundCPU:
         out = inc_model(inp)[0]
 
     @pytest.mark.skipif(not ct_installed, reason="The compressed-tensors module is not installed.")
-    @pytest.mark.skipif(Version(auto_round.__version__) < Version("0.9.0"), reason="target bits is not supported.")
     def test_target_bits(self, tiny_opt_model_path, tmp_path):
         fp32_model = AutoModelForCausalLM.from_pretrained(
             tiny_opt_model_path,

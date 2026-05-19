@@ -96,7 +96,9 @@ function run_unit_test() {
 }
 
 function run_inc_unit_test() {
+    echo "##[group]set up INC UT env..."
     INC_PT_ONLY=1 uv pip install -r /auto-round/test/test_cpu/requirements_inc.txt
+    echo "##[endgroup]"
 
     cd /auto-round/test || exit 1
     auto_round_path=$(python -c 'import auto_round; print(auto_round.__path__[0])')
@@ -115,9 +117,11 @@ function run_inc_unit_test() {
 }
 
 function run_llmc_unit_test() {
+    echo "##[group]set up LLMC UT env..."
     BUILD_TYPE="nightly" uv pip install -r /auto-round/test/test_cpu/requirements_llmc.txt
     uv pip uninstall auto-round
     cd /auto-round && uv pip install .
+    echo "##[endgroup]"
 
     cd /auto-round/test || exit 1
     auto_round_path=$(python -c 'import auto_round; print(auto_round.__path__[0])')
