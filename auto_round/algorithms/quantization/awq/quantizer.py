@@ -96,7 +96,6 @@ class AWQQuantizer(BaseQuantizers):
         if name == "compress_context" and value is not None:
             self._prepare_model()
 
-
     # ── Public API ────────────────────────────────────────────────────────────
 
     def resolve_all_mappings(self, model: torch.nn.Module) -> dict[str, list[ResolvedMapping]]:
@@ -402,9 +401,7 @@ class AWQQuantizer(BaseQuantizers):
         if block_name is None:
             # Infer block_name from resolved mappings by matching the block's modules
             for prefix, mappings in self._block_groups.items():
-                if any(m.smooth_layer is mod or m.parent is mod
-                       for m in mappings
-                       for mod in block.modules()):
+                if any(m.smooth_layer is mod or m.parent is mod for m in mappings for mod in block.modules()):
                     block_name = prefix
                     break
             if block_name is None:

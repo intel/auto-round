@@ -265,9 +265,9 @@ class TestAWQMoE:
             f"Expected {2 * n_layers} FP gate layers (mlp.gate + mlp.shared_expert_gate per block), "
             f"got {len(fp_layers)}: {sorted(fp_layers)}"
         )
-        assert len(q4_layers) == len(layer_config) - len(fp_layers), (
-            f"Expected {len(layer_config) - len(fp_layers)} W4 layers, got {len(q4_layers)}"
-        )
+        assert len(q4_layers) == len(layer_config) - len(
+            fp_layers
+        ), f"Expected {len(layer_config) - len(fp_layers)} W4 layers, got {len(q4_layers)}"
 
         for name in fp_layers:
             assert name.endswith("gate"), f"Unexpected FP layer: {name}"

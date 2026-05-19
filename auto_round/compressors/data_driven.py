@@ -1039,9 +1039,7 @@ class CalibratedRTNCompressor(DataDrivenCompressor):
                     self.compress_context.clear_memory()
 
                 # ── Pure algorithm ────────────────────────────────────────────
-                self.quantizer.quantize_block(
-                    block, block_input_ids, input_others, block_name=block_name
-                )
+                self.quantizer.quantize_block(block, block_input_ids, input_others, block_name=block_name)
 
                 # ── Infrastructure: cleanup ───────────────────────────────────
                 mv_module_from_gpu(block)
