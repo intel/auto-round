@@ -54,6 +54,7 @@ class AWQMapping:
 
     smooth_layer: str
     balance_layers: list[str]
+    activation_hook_target: str | None = None
 
 
 @dataclass
@@ -66,6 +67,7 @@ class ResolvedMapping:
     balance_layers: list[torch.nn.Module]
     parent_name: str
     parent: torch.nn.Module
+    activation_hook_target: str | None = None
 
 
 # ── Mapping definitions ─────────────────────────
@@ -140,6 +142,17 @@ _moe_default_mappings = [
     AWQMapping(r"up_proj$", [r"down_proj$"]),
 ]
 
+# Llama4: uses feed_forward instead of mlp, and includes router.
+_llama4_default_mappings = [
+    AWQMapping(r"input_layernorm$", [r"q_proj$", r"k_proj$", r"v_proj$"]),
+    AWQMapping(r"v_proj$", [r"o_proj$"]),
+    AWQMapping(
+        r"post_attention_layernorm$",
+        [r"feed_forward\.router$", r"feed_forward\..*gate_proj$", r"feed_forward\..*up_proj$"],
+    ),
+    AWQMapping(r"up_proj$", [r"down_proj$"]),
+]
+
 # Exaone4 / Olmo3: only v_proj→o_proj and up_proj→down_proj smoothing.
 _exaone4_mappings = [
     AWQMapping(r"v_proj$", [r"o_proj$"]),
@@ -185,7 +198,7 @@ AWQ_MAPPING_REGISTRY: dict[str, list[AWQMapping]] = {
     "Gemma3ForConditionalGeneration": _gemma_mappings,
     # Llama
     "LlamaForCausalLM": default_mappings,
-    "Llama4ForConditionalGeneration": default_mappings,
+    "Llama4ForConditionalGeneration": _llama4_default_mappings,
     # Mistral
     "MistralForCausalLM": default_mappings,
     "Mistral3ForConditionalGeneration": default_mappings,
@@ -201,8 +214,10 @@ AWQ_MAPPING_REGISTRY: dict[str, list[AWQMapping]] = {
     # Qwen MoE
     "Qwen2MoeForCausalLM": _moe_default_mappings,
     "Qwen3MoeForCausalLM": _moe_default_mappings,
+    # GLM
+    "Glm4MoeForCausalLM": _moe_default_mappings,
+    "GlmMoeDsaForCausalLM": _deepseek_mappings,
     # Other models using default mappings
-    "Glm4MoeForCausalLM": default_mappings,
     "SeedOssForCausalLM": default_mappings,
     "Ernie4_5_MoeForCausalLM": default_mappings,
 }
@@ -527,6 +542,7 @@ def _resolve_mapping_defs(
                         balance_layers=balance_layers,
                         parent_name=parent_name,
                         parent=parent,
+                        activation_hook_target=mapping_def.activation_hook_target,
                     )
                 )
                 matched_count += 1

@@ -1493,6 +1493,7 @@ class CalibratedRTNCompressor(CalibCompressor):
 
                 # ── Infrastructure: register act_max hook and run forward pass ──
                 hook_handles = self.quantizer._register_act_max_hook(block)
+                block_input_ids = input_ids  # keep reference for quantize_block
                 input_ids = self.quantizer._get_block_outputs(
                     block,
                     input_ids,
@@ -1510,7 +1511,9 @@ class CalibratedRTNCompressor(CalibCompressor):
                     self.compress_context.clear_memory()
 
                 # ── Pure algorithm ────────────────────────────────────────────
-                self.quantizer.quantize_block(block)
+                self.quantizer.quantize_block(
+                    block, block_input_ids, input_others, block_name=block_name
+                )
 
                 # ── Infrastructure: cleanup ───────────────────────────────────
                 mv_module_from_gpu(block)

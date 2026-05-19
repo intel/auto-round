@@ -33,6 +33,9 @@ class AWQConfig(QuantizationConfig):
             linearly with nsamples (each batch triggers one parent forward
             per grid point).
         batch_size: Batch size for calibration forward passes.
+        apply_smooth: Whether to apply AWQ smoothing (channel scaling).
+            True: run both smoothing and quantization (default AWQ behavior).
+            False: skip smoothing, only run RTN quantization.
         mappings: Explicit AWQ mappings.  Each mapping is a dict with keys
             ``smooth_layer`` (str) and ``balance_layers`` (list[str]).
             If None, mappings are inferred automatically from the model structure.
@@ -49,6 +52,7 @@ class AWQConfig(QuantizationConfig):
         seqlen: int = 2048,
         nsamples: int = 128,
         batch_size: int = 8,
+        apply_smooth: bool = True,
         mappings: list[dict] = None,
         **kwargs,
     ):
@@ -61,6 +65,7 @@ class AWQConfig(QuantizationConfig):
         self.seqlen = seqlen
         self.nsamples = nsamples
         self.batch_size = batch_size
+        self.apply_smooth = apply_smooth
         self.mappings = mappings
 
         # TODO: These infrastructure attrs are expected by BaseQuantizer / RTNQuantizer.

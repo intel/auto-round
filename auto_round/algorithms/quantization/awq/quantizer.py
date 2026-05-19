@@ -20,7 +20,7 @@ The algorithm:
    to find the one that minimizes quantization error (output-based loss).
 3. Applies the best channel-wise scaling: balance_layer.weight *= scales,
    smooth_layer.weight /= scales (or smooth_layer.bias /= scales if 1-D).
-4. Delegates to RTN quantization for the actual weight quantization.
+
 
 Reference implementations:
   - AutoAWQ: https://github.com/casper-hansen/AutoAWQ
@@ -32,6 +32,7 @@ from __future__ import annotations
 import contextlib
 import gc
 import inspect
+import traceback
 
 import torch
 from tqdm import tqdm
@@ -42,35 +43,59 @@ from auto_round.algorithms.quantization.awq.mappings import (
     _extract_block_prefix,
     resolve_mappings,
 )
-from auto_round.algorithms.quantization.rtn.quantizer import RTNQuantizer
+from auto_round.algorithms.quantization.base import BaseQuantizers
+from auto_round.compressors_new.shard_writer import ShardWriter
+from auto_round.compressors_new.utils import immediate_pack
 from auto_round.data_type.utils import (
     get_quant_func,
     reshape_pad_tensor_by_group_size,
     revert_tensor_by_pad,
+    update_block_global_scale_if_needed,
 )
 from auto_round.logger import logger
+from auto_round.utils import (
+    check_to_quantized,
+    convert_module_to_hp_if_necessary,
+    get_module,
+    set_amax_for_all_moe_layers,
+    set_module,
+)
+from auto_round.wrapper import WrapperLinear
 
 
-class AWQQuantizer(RTNQuantizer):
-    """AWQ quantizer that applies activation-aware channel scaling before RTN.
+class AWQQuantizer(BaseQuantizers):
+    """AWQ quantizer: activation-aware channel scaling + delegated quantization.
 
-    The AWQ algorithm pre-processes weights via channel-wise scaling derived from
-    activation statistics, then delegates final quantization to RTN.
+    AWQ is a pre-quantization transform that applies channel-wise scaling to reduce
+    quantization error. The actual quantization is delegated to an inner
+    quantizer (currently RTN by default).
     """
 
     def __init__(self, config: AWQConfig):
         super().__init__(config)
         self.duo_scaling = config.duo_scaling
         self.n_grid = config.n_grid
+        self.apply_smooth = config.apply_smooth
 
         # Populated during calibration
         self._user_mappings = config.mappings
         self._resolved_mappings: list[ResolvedMapping] = []
+        self._block_groups: dict[str, list[ResolvedMapping]] = {}
         self._activation_stats: dict[str, list[torch.Tensor]] = {}
         # Parent module kwargs cache: parent_module → list of kwargs dicts
         self._parent_args_cache: dict[torch.nn.Module, list[dict]] = {}
         self._parent_signatures: dict[int, inspect.BoundArguments] = {}
         self._smoothing_applied: bool = False
+
+        # Fail fast: validate scheme at construction time
+        self._check_scheme_compatibility()
+
+    def __setattr__(self, name, value):
+        """Trigger model-level AWQ setup when compress_context is assigned."""
+        super().__setattr__(name, value)
+        if name == "compress_context" and value is not None:
+            self._prepare_model()
+
 
     # ── Public API ────────────────────────────────────────────────────────────
 
@@ -90,6 +115,7 @@ class AWQQuantizer(RTNQuantizer):
         for m in self._resolved_mappings:
             prefix = _extract_block_prefix(m.smooth_name)
             block_groups.setdefault(prefix, []).append(m)
+        self._block_groups = block_groups
         return block_groups
 
     def apply_smoothing(
@@ -199,6 +225,235 @@ class AWQQuantizer(RTNQuantizer):
             if pid not in seen_parents:
                 seen_parents.add(pid)
                 self._parent_args_cache.pop(mapping.parent, None)
+
+    # ── Model-level initialization ─────────────────────────────────────────────
+
+    def _prepare_model(self) -> None:
+        """One-time model-level AWQ setup: check compatibility and resolve mappings.
+
+        Triggered automatically when model_context is assigned (via __setattr__).
+        """
+        from auto_round.algorithms.quantization.awq.mappings import check_model_compatibility
+
+        model = self.model_context.model
+        report = check_model_compatibility(model, self._user_mappings)
+        for w in report["warnings"]:
+            logger.warning(w)
+        if not report["compatible"]:
+            model_class = report.get("model_class", "unknown")
+            raise ValueError(
+                f"AWQ: no smooth-balance mappings could be resolved for "
+                f"'{model_class}'. Either the model architecture is not "
+                f"supported for automatic AWQ mapping detection, or the model "
+                f"has no repeating transformer block structure. "
+                f"You can provide explicit mappings via "
+                f"AWQConfig(mappings=[{{'smooth_layer': '<regex>', "
+                f"'balance_layers': ['<regex>', ...]}}])."
+            )
+
+        self.resolve_all_mappings(model)
+
+        # AWQ caches block I/O on CPU — only one block lives on GPU at a time.
+        self.compress_context.cache_device = torch.device("cpu")
+
+    def _check_scheme_compatibility(self) -> None:
+        """Validate the quantization scheme against AWQ inference backends."""
+        bits = self.bits
+        act_bits = self.act_bits or 16
+        data_type = self.data_type or "int"
+
+        if "int" not in data_type:
+            raise ValueError(
+                f"AWQ requires integer data_type, got '{data_type}'. "
+                f"AWQ channel scaling is designed for integer quantization "
+                f"grids. Use algorithm='autoround' for FP8/MXFP quantization."
+            )
+
+        if act_bits is not None and act_bits < 16 and act_bits != 8:
+            raise ValueError(
+                f"AWQ with act_bits={act_bits} is not supported. "
+                f"No inference kernel exists for W{bits}A{act_bits} in vllm "
+                f"or sglang. Supported schemes: W4A16 (canonical AWQ) or "
+                f"W8A8 (compressed_tensors INT8 backend)."
+            )
+
+        if bits == 4 and act_bits >= 16:
+            pass
+        elif bits == 8 and act_bits == 8:
+            logger.info(
+                "AWQ with W8A8: AWQ smoothing will be applied, followed by "
+                "INT8 quantization. This is served by vllm's "
+                "compressed_tensors backend (cutlass INT8 GEMM), not AWQ "
+                "kernels."
+            )
+        elif bits not in (4, 8):
+            logger.warning(
+                f"AWQ with bits={bits}: vllm AWQ kernels only support "
+                f"bits=4 (AWQ/Marlin) natively. bits=8 is supported via "
+                f"compressed_tensors. Other bit widths may not have "
+                f"optimized inference kernels."
+            )
+
+    # ── Weight quantization (delegated RTN) ─────────────────────────────────────
+
+    def quantize_layer(self, name: str, dtype: torch.dtype = None) -> None:
+        """Quantize a single layer using RTN after AWQ smoothing has been applied.
+
+        AWQ's quantize_layer is simpler than RTN's because:
+        - AWQ always uses plain RTN (disable_opt_rtn=True, no imatrix)
+        - No MoE-specific RTN disabling (AWQ handles MoE via mappings)
+        - No GGUF special path (AWQ targets AWQ/Marlin inference kernels)
+
+        Args:
+            name: Fully-qualified module name (e.g. "model.layers.0.self_attn.q_proj").
+            dtype: Optional dtype to cast the layer to before quantization.
+        """
+        m = get_module(self.model, name)
+        if dtype is not None:
+            m = m.to(dtype)
+
+        m = convert_module_to_hp_if_necessary(m, self.model_context.amp_dtype, self.compress_context.device)
+        set_module(self.model, name, m)
+        tuning_device = m.tuning_device if hasattr(m, "tuning_device") else self.compress_context.device
+
+        try:
+            m = m.to(tuning_device)
+            m = WrapperLinear(
+                m,
+                device=tuning_device,
+                enable_minmax_tuning=False,
+                enable_norm_bias_tuning=False,
+                enable_round_tuning=False,
+                enable_torch_compile=self.compress_context.enable_torch_compile,
+                disable_opt_rtn=True,  # AWQ always uses plain RTN
+                iters=0,
+            )
+            m = m.unwrapper({})
+        except torch.OutOfMemoryError:
+            cuda_error_msg = traceback.format_exc()
+            m = m.orig_layer if hasattr(m, "orig_layer") else m
+            try:
+                logger.error(cuda_error_msg)
+                logger.warning("AWQ quantize_layer: falling back to CPU.")
+                m.to("cpu")
+                m = WrapperLinear(
+                    m,
+                    enable_minmax_tuning=False,
+                    enable_norm_bias_tuning=False,
+                    enable_round_tuning=False,
+                    enable_torch_compile=self.compress_context.enable_torch_compile,
+                    disable_opt_rtn=True,
+                    iters=0,
+                )
+                m = m.unwrapper({})
+            except Exception:
+                raise
+
+        set_module(self.model, name, m)
+        self._immediate_pack_and_save_module(name)
+
+    def quantize_layer_outside_block(self, *args, **kwargs):
+        """Quantize layers outside blocks (e.g. lm_head). Delegates to quantize_layer."""
+        return self.quantize_layer(*args, **kwargs)
+
+    def _immediate_pack_and_save_module(self, module_name: str) -> None:
+        """Pack and/or save a quantized module if immediate mode is enabled."""
+        shard_writer = ShardWriter.get_shard_writer()
+        to_cpu = self.compress_context.low_gpu_mem_usage
+        module = get_module(self.model, module_name)
+        if self.compress_context.is_immediate_packing:
+            immediate_pack(module_name, self.layer_config)
+            if to_cpu:
+                module = module.to("cpu")
+                packed_module = get_module(self.model, module_name)
+                set_module(self.model, module_name, packed_module.to("cpu"))
+        else:
+            if to_cpu:
+                module = module.to("cpu")
+            set_module(self.model, module_name, module)
+        if self.compress_context.is_immediate_saving:
+            module = get_module(self.model, module_name)
+            module.to("cpu")
+            shard_writer.write(module, module_name, False)
+            module.to("meta")
+
+    # ── Block-level quantization ──────────────────────────────────────────────
+
+    def quantize_block(
+        self, block: torch.nn.Module, input_ids=None, input_others=None, reference_output=None, **kwargs
+    ) -> dict:
+        """AWQ block quantization: collect stats → smooth → quantize.
+
+        The full per-block AWQ pipeline:
+          1. Register activation hooks for this block's mappings
+          2. Run block forward to collect activation stats + parent kwargs
+          3. Apply AWQ smoothing (grid search + scale application)
+          4. Collect act_max AFTER smoothing (for activation quantization)
+          5. Quantize the smoothed block via RTN
+
+        Args:
+            block: Module already on the compute device.
+            input_ids: Calibration inputs for this block.
+            input_others: Additional kwargs for block forward.
+            reference_output: FP16 block output (kept for interface consistency).
+            **kwargs: Must include 'block_name' for mapping lookup.
+        """
+        block_name = kwargs.get("block_name")
+        if block_name is None:
+            # Infer block_name from resolved mappings by matching the block's modules
+            for prefix, mappings in self._block_groups.items():
+                if any(m.smooth_layer is mod or m.parent is mod
+                       for m in mappings
+                       for mod in block.modules()):
+                    block_name = prefix
+                    break
+            if block_name is None:
+                raise ValueError(
+                    "AWQQuantizer.quantize_block() could not determine block_name. "
+                    "Pass block_name explicitly or ensure resolved mappings cover this block."
+                )
+
+        model = self.model
+        bs = self.batch_size * self.infer_bs_coeff
+
+        # Step 1 & 2: AWQ smoothing (optional)
+        if self.apply_smooth:
+            awq_hooks = self.register_activation_hooks(model, block_prefix=block_name)
+            self._get_block_outputs(block, input_ids, input_others, bs, save_output=False)
+            for h in awq_hooks:
+                h.remove()
+
+            self.smooth_block(block_name)
+
+        # Step 3: Collect act_max AFTER smoothing
+        # AWQ smoothing changes internal activations (LayerNorm output /= scales),
+        # so act_max must be collected post-smoothing. Reset any pre-smoothing
+        # act_max values first to avoid stale data persisting via max().
+        act_max_hooks = self._register_act_max_hook(block)
+        if act_max_hooks:
+            for _name, m in block.named_modules():
+                if hasattr(m, "act_max"):
+                    del m.act_max
+            self._get_block_outputs(block, input_ids, input_others, bs, save_output=False)
+            for h in act_max_hooks:
+                h.remove()
+
+        # Step 4: Quantize the smoothed block (delegated RTN)
+        # This is equivalent to RTNQuantizer.quantize_block but inlined here
+        # to avoid inheritance coupling.
+        update_block_global_scale_if_needed(block, self.data_type, self.group_size)
+        if (
+            self.config.is_act_nv_fp
+            or self.config.is_static_afp8
+            or (self.config.is_wfp8afp8 and not self.config.act_dynamic)
+        ):
+            set_amax_for_all_moe_layers(block, attr_name="act_max")
+
+        for _name, m in block.named_modules():
+            if hasattr(m, "global_name") and check_to_quantized(m):
+                self.quantize_layer(m.global_name)
+
+        return {}
 
     # ── Module alignment (device onload/offload) ─────────────────────────────
 

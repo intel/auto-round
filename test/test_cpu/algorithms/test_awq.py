@@ -227,12 +227,12 @@ class TestAWQMoE:
         fp_layers = {k for k, v in layer_config.items() if v["bits"] >= 16}
         other_layers = {k: v["bits"] for k, v in layer_config.items() if v["bits"] != 4 and v["bits"] < 16}
 
-        # Tiny Qwen MoE: both mlp.gate (MoE router) and mlp.shared_expert_gate
-        # are excluded from quantization → 2 FP gate layers per block.
+        # Tiny Qwen MoE: mlp.gate is a TopKRouter (not Linear) so it's not in layer_config.
+        # Only mlp.shared_expert_gate (a Linear) stays FP → 1 FP gate layer per block.
         assert len(other_layers) == 0, f"Unexpected bit widths: {other_layers}"
         n_layers = model.config.num_hidden_layers
-        assert len(fp_layers) == 2 * n_layers, (
-            f"Expected {2 * n_layers} FP gate layers (mlp.gate + mlp.shared_expert_gate per block), "
+        assert len(fp_layers) == n_layers, (
+            f"Expected {n_layers} FP gate layers (mlp.shared_expert_gate per block), "
             f"got {len(fp_layers)}: {sorted(fp_layers)}"
         )
         assert len(q4_layers) == len(layer_config) - len(fp_layers), (
