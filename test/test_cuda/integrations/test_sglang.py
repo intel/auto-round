@@ -24,6 +24,7 @@ def _patched_stop(self, *args, _orig=_original_stop, **kwargs):
         except ChildProcessError:
             pass
 
+
 multiprocessing.resource_tracker.ResourceTracker._stop = _patched_stop
 
 
