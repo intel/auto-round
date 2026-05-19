@@ -1977,9 +1977,7 @@ def dispatch_model_by_all_available_devices(
 
         # Install manual pre/post hooks to move tensors.
         # dispatch_model attaches hf_device_map; dispatch_model_block_wise uses device_map.
-        _dispatch_device_map = getattr(dispatched, "hf_device_map", None) or getattr(
-            dispatched, "device_map", {}
-        )
+        _dispatch_device_map = getattr(dispatched, "hf_device_map", None) or getattr(dispatched, "device_map", {})
         unique_devices = set()
         if _dispatch_device_map:
             unique_devices = {v for v in _dispatch_device_map.values() if v not in ("cpu", "disk")}
