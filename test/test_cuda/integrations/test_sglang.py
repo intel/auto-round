@@ -2,6 +2,7 @@ import gc
 import json
 import shutil
 import sys
+import time
 from pathlib import Path
 
 import pytest
@@ -59,6 +60,8 @@ class TestAutoRound:
             return outputs[0]["text"]
         finally:
             llm.shutdown()
+            time.sleep(5)
+
             del llm
             gc.collect()
             torch.cuda.empty_cache()
