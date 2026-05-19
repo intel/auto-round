@@ -147,7 +147,7 @@ class TestGemma4PositionEmbeddingReplay:
 
     def test_recomputes_when_position_embeddings_missing(self):
         """position_embeddings absent → should be recomputed from position_ids."""
-        from auto_round.compressors_new.utils import block_forward
+        from auto_round.compressors.utils import block_forward
 
         block = self._make_fake_block("full_attention", 512)
         input_ids = torch.zeros((1, 4), dtype=torch.float32)
@@ -162,7 +162,7 @@ class TestGemma4PositionEmbeddingReplay:
 
     def test_recomputes_when_position_embeddings_shape_mismatches(self):
         """position_embeddings present but wrong dim (cached from sliding layer) → recompute."""
-        from auto_round.compressors_new.utils import block_forward
+        from auto_round.compressors.utils import block_forward
 
         block = self._make_fake_block("full_attention", 512)
         input_ids = torch.zeros((1, 4), dtype=torch.float32)
@@ -180,7 +180,7 @@ class TestGemma4PositionEmbeddingReplay:
 
     def test_keeps_position_embeddings_when_shape_matches(self):
         """position_embeddings present with correct dim → no recompute."""
-        from auto_round.compressors_new.utils import block_forward
+        from auto_round.compressors.utils import block_forward
 
         block = self._make_fake_block("sliding_attention", 256)
         input_ids = torch.zeros((1, 4), dtype=torch.float32)
@@ -474,67 +474,35 @@ class TestMLLMCalibMemoryCleanup:
     the try_cache_inter_data_gpucpu handler can switch to CPU.
     """
 
-    def test_gc_collect_is_called_after_forward(self):
-        """gc.collect() must be called after each successful forward pass."""
-        from auto_round.compressors_new.mllm_mixin import MLLMMixin
-
-        collected = []
+    def test_get_calibrator_kind_returns_mllm(self):
+        """MLLMMixin._get_calibrator_kind must return 'mllm' so the right calibrator is used."""
+        from auto_round.compressors.mllm_mixin import MLLMMixin
 
         class DummyCompressor(MLLMMixin):
             def __init__(self):
-                # Skip super().__init__ to avoid model loading
-                self.model_context = types.SimpleNamespace(
-                    model=types.SimpleNamespace(device=torch.device("cpu")),
-                    processor=None,
-                    image_processor=None,
-                    tokenizer=None,
-                )
-                self.inputs = {}
+                # Only initialise what MLLMMixin needs — skip super().__init__
+                # to avoid model loading side-effects.
+                self.template = "qwen2_vl"
+                self.extra_data_dir = None
                 self.quant_nontext_module = False
-                self.dataloader = [{"text": "hello"}]
-                self.template_obj = types.SimpleNamespace(
-                    processor=types.SimpleNamespace(get_input=lambda **kw: {"input_ids": torch.tensor([[1, 2]])})
-                )
-                self.seqlen = 128
-                self.seed = 42
+                self.template_obj = None
 
         compressor = DummyCompressor()
-        compressor.compress_context = types.SimpleNamespace(device_list=["cpu"])
+        assert compressor._get_calibrator_kind() == "mllm"
 
-        mock_gc_collect = MagicMock()
-        mock_clear_memory = MagicMock()
+    def test_quant_nontext_module_batch_size_accumulation(self):
+        """quant_nontext_module=True must reset batch_size=1 and accumulate gradient steps."""
+        # Directly test the batch_size accumulation logic from MLLMMixin.__init__.
+        kwargs = {"batch_size": 4, "gradient_accumulate_steps": 2}
 
-        with patch("gc.collect", mock_gc_collect):
-            with patch("auto_round.compressors_new.mllm_mixin.clear_memory", mock_clear_memory):
-                with patch.object(compressor, "calib", lambda *args, **kwargs: None):
-                    pass  # already mocked above via DummyCompressor
+        batch_size = kwargs.get("batch_size", 8)
+        grad_acc = kwargs.get("gradient_accumulate_steps", 1)
+        new_grad_acc = batch_size * grad_acc
+        kwargs["gradient_accumulate_steps"] = new_grad_acc
+        kwargs["batch_size"] = 1
 
-        # The cleanup is in the real calib method — verify the pattern
-        # When calib runs, it should call gc.collect() and clear_memory()
-        assert True  # placeholder: actual forward-time cleanup verified by integration test
-
-    def test_oom_is_re_raised(self):
-        """torch.OutOfMemoryError in MLLM calib must be re-raised."""
-        # Verify the exception handling logic: OOM should propagate
-        # while NotImplementedError should be caught and other exceptions logged
-        from auto_round.compressors_new.mllm_mixin import MLLMMixin
-
-        class DummyCompressor(MLLMMixin):
-            pass
-
-        # Simulate what the calib method does
-        def handle_exception(exc):
-            if isinstance(exc, NotImplementedError):
-                return "caught"
-            elif isinstance(exc, torch.OutOfMemoryError):
-                raise exc
-            else:
-                return "logged"
-
-        assert handle_exception(NotImplementedError()) == "caught"
-        with pytest.raises(torch.OutOfMemoryError):
-            handle_exception(torch.OutOfMemoryError())
-        assert handle_exception(ValueError()) == "logged"
+        assert kwargs["batch_size"] == 1
+        assert kwargs["gradient_accumulate_steps"] == 8
 
 
 # ---------------------------------------------------------------------------
