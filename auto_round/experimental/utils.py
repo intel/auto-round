@@ -16,9 +16,9 @@ from typing import Any
 
 import torch
 
+from auto_round.algorithms.transforms.rotation.config import RotationConfig
+from auto_round.algorithms.transforms.rotation.transforms import HADAMARDS
 from auto_round.compressors.utils import is_mx_fp, is_nv_fp
-from auto_round.experimental.transform.hadamards import HADAMARDS
-from auto_round.experimental.transform.rotation_config import RotationConfig
 from auto_round.utils import logger
 
 SUPPORTED_QUANTIZATION_SCHEMES = ["MXFP8", "MXFP4", "NVFP4"]
@@ -130,7 +130,9 @@ def is_triton_kernel_available(data_type: str) -> bool:
         return False
 
     try:
-        from auto_round.experimental.transform.triton.mxfp4 import mxfp4_forward_kernel_wrapper  # pylint: disable=E0401
+        from auto_round.algorithms.transforms.rotation.utils.triton.mxfp4 import (  # pylint: disable=E0401
+            mxfp4_forward_kernel_wrapper,
+        )
     except Exception:
         return False
 

@@ -44,8 +44,8 @@ from auto_round.algorithms.quantization.awq.mappings import (
     resolve_mappings,
 )
 from auto_round.algorithms.quantization.base import BaseQuantizers
-from auto_round.compressors_new.shard_writer import ShardWriter
-from auto_round.compressors_new.utils import immediate_pack
+from auto_round.compressors.shard_writer import ShardWriter
+from auto_round.compressors.utils import immediate_pack
 from auto_round.data_type.utils import (
     get_quant_func,
     reshape_pad_tensor_by_group_size,
