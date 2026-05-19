@@ -1,8 +1,8 @@
 import gc
 import json
+import multiprocessing.resource_tracker
 import shutil
 import sys
-import time
 from pathlib import Path
 
 import pytest
@@ -12,6 +12,19 @@ import torch
 from auto_round import AutoRound
 
 from ...helpers import get_model_path, qwen_name_or_path
+
+# A patch to fix the Python `multiprocessing.ResourceTracker` [Errno 10] error.
+_original_stop = multiprocessing.resource_tracker._stop
+
+
+def _patched_stop(*args, **kwargs):
+    try:
+        _original_stop(*args, **kwargs)
+    except ChildProcessError:
+        pass
+
+
+multiprocessing.resource_tracker._stop = _patched_stop
 
 
 class TestAutoRound:
@@ -60,8 +73,6 @@ class TestAutoRound:
             return outputs[0]["text"]
         finally:
             llm.shutdown()
-            time.sleep(5)
-
             del llm
             gc.collect()
             torch.cuda.empty_cache()
