@@ -645,6 +645,9 @@ class DataDrivenCompressor(BaseCompressor):
             to_cache_block_names = [block[0] for block in all_blocks]
         else:
             to_cache_block_names = flatten_list(all_blocks)
+        to_cache_layer_names = layer_names
+        if self.super_group_size is not None:
+            to_cache_layer_names = []
         if len(layer_names) > 0:
             logger.info(
                 "Starting to cache block inputs. This may be slow due to external block layers: %s", layer_names
@@ -654,7 +657,7 @@ class DataDrivenCompressor(BaseCompressor):
         all_inputs = self.try_cache_inter_data_gpucpu(
             to_cache_block_names,
             self.nsamples,
-            layer_names,
+            to_cache_layer_names,
         )
         self.inputs = all_inputs
         is_quantized_embedding = self._quantize_embedding_layer()
@@ -663,7 +666,7 @@ class DataDrivenCompressor(BaseCompressor):
         if is_quantized_embedding:
             all_inputs = copy.deepcopy(self.inputs)
             clear_memory(self.inputs, device_list=self.compress_context.device_list)
-            all_q_inputs = self.try_cache_inter_data_gpucpu(to_cache_block_names, self.nsamples, layer_names)
+            all_q_inputs = self.try_cache_inter_data_gpucpu(to_cache_block_names, self.nsamples, to_cache_layer_names)
         # Remove accelerate dispatch hooks before moving parameters.
         # hf_device_map is kept for reference but hooks are no longer needed.
         if hasattr(self.model_context.model, "hf_device_map") and len(self.model_context.model.hf_device_map) > 1:
@@ -771,7 +774,6 @@ class DataDrivenCompressor(BaseCompressor):
         """
         # TODO currently we take all the layers outside blocks as post block layers which is not optimal
         # if there is no input for layer, we use rtn
-
         for layer_name in copy.deepcopy(layer_names):
             if layer_name not in layer_inputs:
                 if self.act_bits < 16 and not self.act_dynamic:
@@ -799,6 +801,7 @@ class DataDrivenCompressor(BaseCompressor):
                     layer_name,
                     input_ids=None,
                     device=self.compress_context.device,
+                    disable_opt_rtn=getattr(self, "disable_opt_rtn", False),
                 )
                 layer_names.remove(layer_name)
         if len(layer_names) == 0:
