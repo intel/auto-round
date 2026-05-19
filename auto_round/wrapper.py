@@ -73,6 +73,8 @@ class WrapperLinear(torch.nn.Module):
         device (str): Device on which to run computations (e.g., 'cpu' or 'cuda').
     """
 
+    minmax_scale_bound = (0.0, 1.0)
+
     def __init__(
         self,
         orig_layer,
@@ -236,8 +238,9 @@ class WrapperLinear(torch.nn.Module):
         """
         if self.orig_layer.bits >= 16:
             return self.orig_layer.weight, None, None
-        min_scale.data.clamp_(0.0, 1.0)
-        max_scale.data.clamp_(0.0, 1.0)
+        min_bound, max_bound = self.minmax_scale_bound
+        min_scale.data.clamp_(min_bound, max_bound)
+        max_scale.data.clamp_(min_bound, max_bound)
         weight = self.orig_layer.weight
         if weight.device.type == "meta":
             weight = self.orig_layer.get_weight().to(self.device)
@@ -248,6 +251,8 @@ class WrapperLinear(torch.nn.Module):
         if hasattr(self.orig_layer, "super_bits"):
             quant_kwargs["super_bits"] = self.orig_layer.super_bits
             quant_kwargs["super_group_size"] = self.orig_layer.super_group_size
+        if hasattr(self, "_extra_quant_kwargs"):
+            quant_kwargs.update(self._extra_quant_kwargs())
 
         weight_q, scale, zp = self.weight_quant_func(
             weight.to(self.device),
@@ -263,6 +268,7 @@ class WrapperLinear(torch.nn.Module):
             q_scale_thresh=self.q_scale_thresh,
             imatrix=self.orig_layer.imatrix.to(weight.device) if hasattr(self.orig_layer, "imatrix") else None,
             global_scale=getattr(self, "weight_global_scale", None),
+            init_scale=getattr(self, "init_scale", None),
             **quant_kwargs,
         )
         weight_q = weight_q.to(weight.dtype)
@@ -749,6 +755,7 @@ def wrapper_block(
     enable_norm_bias_tuning,
     enable_torch_compile=False,
     device="cpu",
+    wrapper_cls=WrapperLinear,
     **kwargs,
 ):
     """Wraps the layers in the given block with a custom Wrapper module.
@@ -770,7 +777,7 @@ def wrapper_block(
             if not check_to_quantized(m):
                 unquantized_layers.append(n)
                 continue
-            new_m = WrapperLinear(
+            new_m = wrapper_cls(
                 m,
                 enable_minmax_tuning=enable_minmax_tuning,
                 enable_norm_bias_tuning=enable_norm_bias_tuning,

@@ -19,7 +19,7 @@ from typing import Union
 import torch
 
 from auto_round.algorithms.quantization.config import QuantizationConfig
-from auto_round.compressors_new.utils import (
+from auto_round.compressors.utils import (
     block_forward,
     check_need_act_calibration,
 )
@@ -53,6 +53,7 @@ class BaseQuantizers:
         "FluxSingleTransformerBlock": ["encoder_hidden_states", "hidden_states"],
         "OvisImageTransformerBlock": ["encoder_hidden_states", "hidden_states"],
         "OvisImageSingleTransformerBlock": ["encoder_hidden_states", "hidden_states"],
+        "WanTransformerBlock": ["hidden_states"],
     }
 
     def __init__(self, config: QuantizationConfig):
@@ -73,17 +74,62 @@ class BaseQuantizers:
         self.ignore_layers = config.ignore_layers
         self.quant_lm_head = config.quant_lm_head
         self.to_quant_block_names = config.to_quant_block_names
-        # Calibration / sampling attrs – synced from compressor in post_init.
-        self.seqlen = 2048
-        self.nsamples = 128
-        self.batch_size = getattr(config, "batch_size", 8)
-        self.batch_dim = getattr(config, "batch_dim", None)
+        # Calibration-time state lives on a shared
+        # :class:`~auto_round.calibration.state.CalibrationState` instance.
+        # The compressor wires its own instance here in ``_resolve_scheme``;
+        # until then we own a private placeholder so property-based reads /
+        # writes during construction don't blow up.
+        from auto_round.calibration.state import CalibrationState
+
+        self._calibration_state = CalibrationState()
         self.infer_bs_coeff = getattr(config, "infer_bs_coeff", 1)
         # Whether to feed quantized-block outputs as inputs to the next block.
         # Subclasses that support cascaded quantized-input (e.g. SignRoundQuantizer)
         # override this from their config.  Defaults to False for zero-shot algorithms
         # (RTN) where activations are not used during weight optimization.
         self.enable_quanted_input = getattr(config, "enable_quanted_input", False)
+
+    # ── Shared CalibrationState forwarders ───────────────────────────────────────
+    @property
+    def calibration_state(self):
+        return self._calibration_state
+
+    @calibration_state.setter
+    def calibration_state(self, new_state) -> None:
+        # Compressor-supplied shared instance; just rebind.
+        self._calibration_state = new_state
+
+    @property
+    def attention_mask(self) -> list:
+        return self._calibration_state.attention_mask
+
+    @attention_mask.setter
+    def attention_mask(self, value) -> None:
+        self._calibration_state.attention_mask = value if value is not None else []
+
+    @property
+    def batch_dim(self):
+        return self._calibration_state.batch_dim
+
+    @batch_dim.setter
+    def batch_dim(self, value) -> None:
+        self._calibration_state.batch_dim = value
+
+    @property
+    def batch_size(self) -> int:
+        return self._calibration_state.batch_size
+
+    @batch_size.setter
+    def batch_size(self, value) -> None:
+        self._calibration_state.batch_size = value
+
+    @property
+    def nsamples(self) -> int:
+        return self._calibration_state.nsamples
+
+    @property
+    def seqlen(self) -> int:
+        return self._calibration_state.seqlen
 
     @classmethod
     def from_config(cls, config: QuantizationConfig):
@@ -93,6 +139,24 @@ class BaseQuantizers:
             module = importlib.import_module("auto_round.algorithms.quantization")
             alg_cls = getattr(module, config._alg_cls)
             return alg_cls(config)
+
+    def bind(self, compressor) -> None:
+        """Wire shared state from the owning compressor.
+
+        The compressor owns the authoritative ``model_context`` /
+        ``compress_context`` / ``CalibrationState`` and resolves
+        ``scale_dtype`` (string → torch dtype).  All quantizer fields that
+        merely mirror the compressor are pulled from here in one place.
+        """
+        self.model_context = compressor.model_context
+        self.compress_context = compressor.compress_context
+        self.scale_dtype = compressor.scale_dtype
+        # Share the compressor's CalibrationState instance.
+        self._calibration_state = compressor._calibration_state
+
+    @property
+    def model(self):
+        return self.model_context.model if self.model_context is not None else None
 
     @property
     def formats(self):
@@ -305,21 +369,28 @@ class BaseQuantizers:
         input_others,
         bs: int,
         save_output: bool = True,
+        device_override: Union[torch.device, str, None] = None,
     ):
         """Compute the output of a block for calibration inputs.
 
         Shared by SignRoundQuantizer and OptimizedRTNQuantizer.  Algorithm-specific
         block-forward selection (compile vs. plain) is handled here based on
         ``enable_alg_ext`` and act-quantization flags.
+
+        Args:
+            device_override: Override the target device.  Used by diffusion with
+                multi-device dispatch to pass None so block_forward uses the block's
+                current device instead of forcing a specific device.
         """
         diffusion_fn = getattr(self, "_get_diffusion_block_outputs", None)
         if getattr(self.model_context, "is_diffusion", False):
+            device = device_override if device_override is not None else self.compress_context.device
             return self._get_diffusion_block_outputs(
                 block,
                 input_ids,
                 input_others,
                 bs,
-                self.compress_context.device,
+                device,
                 self.compress_context.cache_device,
             )
 
@@ -361,21 +432,17 @@ class BaseQuantizers:
         This avoids repeated attribute checks in the hot training loop
         (called thousands of times per block).
 
-        For activation-quantization schemes (e.g. FP8_STATIC) or when
-        algorithm extensions are enabled, forward hooks are attached to layers
-        inside the block.  ``torch.compile`` is incompatible with these hooks,
-        so we must fall back to the plain ``block_forward``.  This mirrors the
-        old-arch behaviour where ``self.block_forward`` was set in ``__init__``
-        to the uncompiled function for these cases.
+        Mirrors old-arch behaviour: act-quant hooks, alg-ext, and optimized RTN
+        use the plain ``block_forward`` instead of ``torch.compile``.
         """
         cached = self.__dict__.get("_resolved_block_forward")
         if cached is not None:
             return cached
-        # Act-quantization hooks / alg-extension hooks are incompatible with
-        # torch.compile → always use the plain (uncompiled) block_forward.
         if (
-            self.config.is_act_quantize and (not self.config.act_dynamic or self.config.is_act_nv_fp)
-        ) or self.enable_alg_ext:
+            (self.config.is_act_quantize and (not self.config.act_dynamic or self.config.is_act_nv_fp))
+            or self.enable_alg_ext
+            or not getattr(self.config, "disable_opt_rtn", True)
+        ):
             self._resolved_block_forward = block_forward
         elif self.compress_context.enable_torch_compile:
             compiled = self.__dict__.get("_compiled_block_forward")
@@ -405,7 +472,7 @@ class BaseQuantizers:
 
         Handles both LLM and diffusion model block formats.  Uses the compiled
         block_forward when enable_torch_compile is True (same as _get_block_outputs),
-        matching old-arch behaviour where self.block_forward was compiled at init.
+        matching old-arch behavior where self.block_forward was compiled at init.
         """
         current_input_ids, current_input_others = self._sampling_inputs(
             input_ids,

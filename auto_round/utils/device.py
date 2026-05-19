@@ -87,13 +87,44 @@ def _use_hpu_compile_mode():
     return TORCH_VERSION_AT_LEAST_2_4 and not is_hpu_lazy_mode()
 
 
+def _bump_dynamo_cache_limit(min_size: Optional[int] = None):
+    """Raise torch._dynamo cache/recompile limits.
+
+    The same quant function (e.g. ``quant_tensor_sym``) is reused across
+    every linear layer in a transformer block (q/k/v/o_proj, gate/up/
+    down_proj, ...), each with a different weight shape. Because dynamo's
+    compile cache is keyed by the function's code object (shared across
+    all WrapperLinear instances), per-layer static recompiles quickly
+    exceed the default ``recompile_limit`` (8) and trigger a fallback to
+    eager with a noisy warning. We keep static-shape compilation (best
+    perf) and just allow more cache entries.
+
+    The threshold can be overridden via the ``AR_DYNAMO_CACHE_SIZE_LIMIT``
+    environment variable (default: 16).
+    """
+    try:
+        if min_size is None:
+            from auto_round import envs
+
+            min_size = envs.AR_DYNAMO_CACHE_SIZE_LIMIT
+        from torch._dynamo import config as _dynamo_config
+
+        for attr in ("cache_size_limit", "accumulated_cache_size_limit", "recompile_limit"):
+            if hasattr(_dynamo_config, attr) and getattr(_dynamo_config, attr) < min_size:
+                setattr(_dynamo_config, attr, min_size)
+    except Exception:  # pragma: no cover - best effort
+        pass
+
+
 def compile_func_on_hpu(func):
     if _use_hpu_compile_mode():
+        _bump_dynamo_cache_limit()
         return torch.compile(func, backend="hpu_backend")
     return func
 
 
 def compile_func_on_cuda_or_cpu(func):
+    _bump_dynamo_cache_limit()
     return torch.compile(func)
 
 
@@ -1458,7 +1489,8 @@ def dispatch_model_block_wise(model: torch.nn.Module, device_map: str, max_mem_r
         max_memory=new_max_memory,
         no_split_module_classes=no_split_modules,
     )
-    model.tie_weights()
+    if hasattr(model, "tie_weights"):
+        model.tie_weights()
     device_map = infer_auto_device_map(model, max_memory=new_max_memory, no_split_module_classes=no_split_modules)
     if len(devices) > 1 and "cpu" in device_map.values():
         logger.warning(
@@ -1709,11 +1741,17 @@ class MemoryMonitor:
             if str(device) == "cpu":
                 continue
             if torch.cuda.is_available():
-                current_vram = torch.cuda.memory_reserved(device) / 1024**3  # GB
+                try:
+                    current_vram = torch.cuda.memory_reserved(device) / 1024**3  # GB
+                except (RuntimeError, Exception):
+                    continue  # Skip devices that are not initialized or out of range
                 if device == "cuda":
                     device = "0"
             elif torch.xpu.is_available():
-                current_vram = torch.xpu.memory_reserved(device) / 1024**3  # GB
+                try:
+                    current_vram = torch.xpu.memory_reserved(device) / 1024**3  # GB
+                except (RuntimeError, Exception):
+                    continue  # Skip devices that are not initialized or out of range
                 if device == "xpu":
                     device = "0"
             elif is_hpex_available():
@@ -1886,7 +1924,6 @@ def dispatch_model_by_all_available_devices(
         # (text encoder, VAE, etc.) to avoid OOM.
         main_model = getattr(pipe, main_attr)
         primary_device = devices[0]
-
         # Calculate memory needed for non-target pipeline components
         non_main_bytes = 0
         for attr, component in pipe.components.items():
@@ -1938,14 +1975,73 @@ def dispatch_model_by_all_available_devices(
         dispatched = dispatch_model(main_model, device_map=main_device_map)
         setattr(pipe, main_attr, dispatched)
 
-        for attr, component in pipe.components.items():
-            if attr == main_attr:
-                continue
-            if isinstance(component, torch.nn.Module):
+        # Install manual pre/post hooks to move tensors.
+        # dispatch_model attaches hf_device_map; dispatch_model_block_wise uses device_map.
+        _dispatch_device_map = getattr(dispatched, "hf_device_map", None) or getattr(
+            dispatched, "device_map", {}
+        )
+        unique_devices = set()
+        if _dispatch_device_map:
+            unique_devices = {v for v in _dispatch_device_map.values() if v not in ("cpu", "disk")}
+
+        if len(unique_devices) <= 1:
+            execution_device = primary_device
+            try:
+                execution_device = next(dispatched.parameters()).device
+            except StopIteration:
+                execution_device = torch.device(primary_device)
+
+            if hasattr(dispatched, "_hf_hook") and hasattr(dispatched._hf_hook, "execution_device"):
+                dispatched._hf_hook.execution_device = execution_device
+
+            # Place non-main components on the device that has the most headroom after dispatch.
+            # Prefer the last device (usually CPU) to avoid occupying GPU memory.
+            comp_device = devices[-1]
+            for attr, component in pipe.components.items():
+                if attr == main_attr:
+                    continue
+                if not isinstance(component, torch.nn.Module):
+                    continue
+                if hasattr(component, "dtype") and component.dtype != main_model.dtype:
+                    try:
+                        component.to(dtype=main_model.dtype)
+                    except Exception:
+                        pass
                 try:
-                    component.to(primary_device)
-                except Exception:
+                    component.to(comp_device)
+                except (NotImplementedError, RuntimeError):
                     pass
+
+            if not getattr(dispatched, "_autoround_align_inputs_hook_installed", False):
+                _first_param_device = execution_device
+                _pipeline_device = torch.device(comp_device)
+
+                def _align_all_inputs_pre_hook(module, args, kwargs):
+                    try:
+                        target = next(module.parameters()).device
+                    except StopIteration:
+                        target = _first_param_device
+                    new_args = tuple(a.to(target) if isinstance(a, torch.Tensor) else a for a in args)
+                    new_kwargs = {k: v.to(target) if isinstance(v, torch.Tensor) else v for k, v in kwargs.items()}
+                    return new_args, new_kwargs
+
+                def _move_outputs_back_hook(module, input, output):
+                    def _to_device(obj, device):
+                        if isinstance(obj, torch.Tensor):
+                            return obj.to(device) if obj.device != device else obj
+                        if isinstance(obj, (tuple, list)):
+                            converted = [_to_device(o, device) for o in obj]
+                            return type(obj)(converted)
+                        if isinstance(obj, dict):
+                            return {k: _to_device(v, device) for k, v in obj.items()}
+                        return obj
+
+                    return _to_device(output, _pipeline_device)
+
+                dispatched.register_forward_pre_hook(_align_all_inputs_pre_hook, with_kwargs=True)
+                dispatched.register_forward_hook(_move_outputs_back_hook)
+                dispatched._autoround_align_inputs_hook_installed = True
+
         return pipe
 
     if device_map is None:

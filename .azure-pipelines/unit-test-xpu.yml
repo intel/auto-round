@@ -17,6 +17,8 @@ pr:
       - .azure-pipelines/unit-test-xpu.yml
       - .azure-pipelines/scripts/ut/run_ut_xpu.sh
       - .azure-pipelines/docker/Dockerfile_xpu.devel
+      - .azure-pipelines/build-auto-round-lib.yml
+      - .azure-pipelines/template/lib-build-template.yml
     exclude:
       - "*.md"
       - "**/*.md"
@@ -34,9 +36,17 @@ variables:
   REPO: $(Build.Repository.Uri)
 
 stages:
+  - template: template/lib-build-template.yml
+    parameters:
+      enableChangeDetection: true
+      publishToTestPyPI: false
+
   - stage: Unit_test
     displayName: Unit Test
-    dependsOn: []
+    dependsOn: [DetectArkChanges, BuildArkWheel]
+    condition: and(succeeded('DetectArkChanges'), in(dependencies.BuildArkWheel.result, 'Succeeded', 'Skipped'))
+    variables:
+      BUILD_ARK_WHEEL: $[ stageDependencies.DetectArkChanges.Detect.outputs['SetArkWheelFlag.BUILD_ARK_WHEEL'] ]
     jobs:
       - job:
         displayName: Unit Test
@@ -50,6 +60,7 @@ stages:
               imageTag: $(IMAGE_TAG)
               dockerFileName: $(DOCKERFILE_NAME)
               utContainerName: "AutoRoundUnitTest$(NODE_LABEL)"
+              buildARKWheel: $(BUILD_ARK_WHEEL)
 
           - task: UseDotNet@2
             displayName: 'Use .NET Core sdk 7.0.x'
