@@ -67,11 +67,10 @@ class AWQConfig(QuantizationConfig):
         self.batch_size = batch_size
         self.apply_smooth = apply_smooth
         self.mappings = mappings
-
-        # TODO: These infrastructure attrs are expected by BaseQuantizer / RTNQuantizer.
-        # They should be derived from the algorithm config rather than set here directly.
         self.infer_bs_coeff = 1
         self.batch_dim = None
+
+        # TODO adjust those args defaults after architecture refactoring:
         self.enable_quanted_input = False  # AWQ doesn't cascade quantized block outputs
         # AWQ uses plain RTN (no iterative optimization) for the quantization step.
         self.disable_opt_rtn = True

@@ -30,7 +30,6 @@ Reference implementations:
 from __future__ import annotations
 
 import contextlib
-import gc
 import inspect
 import traceback
 
@@ -55,6 +54,7 @@ from auto_round.data_type.utils import (
 from auto_round.logger import logger
 from auto_round.utils import (
     check_to_quantized,
+    clear_memory,
     convert_module_to_hp_if_necessary,
     get_module,
     set_amax_for_all_moe_layers,
@@ -324,7 +324,7 @@ class AWQQuantizer(BaseQuantizers):
                 enable_norm_bias_tuning=False,
                 enable_round_tuning=False,
                 enable_torch_compile=self.compress_context.enable_torch_compile,
-                disable_opt_rtn=True,  # AWQ always uses plain RTN
+                disable_opt_rtn=self.config.disable_opt_rtn,
                 iters=0,
             )
             m = m.unwrapper({})
@@ -341,7 +341,7 @@ class AWQQuantizer(BaseQuantizers):
                     enable_norm_bias_tuning=False,
                     enable_round_tuning=False,
                     enable_torch_compile=self.compress_context.enable_torch_compile,
-                    disable_opt_rtn=True,
+                    disable_opt_rtn=self.config.disable_opt_rtn,
                     iters=0,
                 )
                 m = m.unwrapper({})
@@ -412,6 +412,9 @@ class AWQQuantizer(BaseQuantizers):
 
         model = self.model
         bs = self.batch_size * self.infer_bs_coeff
+        if self.compress_context.low_gpu_mem_usage:
+            bs = 1
+            logger.info("AWQ: low_gpu_mem_usage enabled, setting inference batch size to 1.")
 
         # Step 1 & 2: AWQ smoothing (optional)
         if self.apply_smooth:
@@ -488,8 +491,7 @@ class AWQQuantizer(BaseQuantizers):
             # Offload back to CPU
             for m in unique:
                 m.to("cpu")
-            gc.collect()
-            torch.cuda.empty_cache()
+            clear_memory()
 
     # ── Activation statistics collection ──────────────────────────────────────
 
