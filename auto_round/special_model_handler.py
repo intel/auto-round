@@ -934,6 +934,7 @@ def get_predefined_ignore_layers(model: torch.nn.Module) -> list[str]:
 
     return list(dict.fromkeys(layers))
 
+
 def _attach_gemma4_rotary_emb(model):
     """Attach ``_rotary_emb`` to each Gemma4 decoder layer.
 
