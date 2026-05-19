@@ -1489,7 +1489,8 @@ def dispatch_model_block_wise(model: torch.nn.Module, device_map: str, max_mem_r
         max_memory=new_max_memory,
         no_split_module_classes=no_split_modules,
     )
-    model.tie_weights()
+    if hasattr(model, "tie_weights"):
+        model.tie_weights()
     device_map = infer_auto_device_map(model, max_memory=new_max_memory, no_split_module_classes=no_split_modules)
     if len(devices) > 1 and "cpu" in device_map.values():
         logger.warning(
@@ -1918,20 +1919,83 @@ def dispatch_model_by_all_available_devices(
             # move the entire pipeline to the (first) device.
             pipe.to(devices[0] if devices else "cuda:0")
             return pipe
-        # Multi-device path: recursively dispatch the main sub-model,
-        # then move all remaining pipeline components to the primary device.
+        # Multi-device path: dispatch the main sub-model across devices,
+        # reserving memory on the primary device for non-target components
+        # (text encoder, VAE, etc.) to avoid OOM.
         main_model = getattr(pipe, main_attr)
-        dispatched = dispatch_model_by_all_available_devices(main_model, _device_map)
-        setattr(pipe, main_attr, dispatched)
         primary_device = devices[0]
+        # Place non-main components on the last device
+        comp_device = devices[-1]
         for attr, component in pipe.components.items():
             if attr == main_attr:
                 continue
-            if isinstance(component, torch.nn.Module):
+            if not isinstance(component, torch.nn.Module):
+                continue
+            # Align dtype on CPU first to avoid wasting GPU memory
+            if hasattr(component, "dtype") and component.dtype != main_model.dtype:
                 try:
-                    component.to(primary_device)
+                    component.to(dtype=main_model.dtype)
                 except Exception:
                     pass
+            try:
+                component.to(comp_device)
+            except (NotImplementedError, RuntimeError):
+                pass
+
+        from auto_round.utils.common import normalize_no_split_modules
+
+        no_split_modules = normalize_no_split_modules(getattr(main_model, "_no_split_modules", []))
+
+        # dispatch_model_block_wise queries free memory after non-main
+        # components are already placed, so the budget naturally accounts for
+        # them.  Use the same approach here.
+        dispatched = dispatch_model_block_wise(main_model, device_map)
+        setattr(pipe, main_attr, dispatched)
+
+        # Install manual pre/post hooks to move tensors.
+        unique_devices = set()
+        if hasattr(dispatched, "hf_device_map"):
+            unique_devices = {v for v in dispatched.hf_device_map.values() if v not in ("cpu", "disk")}
+        if len(unique_devices) <= 1:
+            execution_device = primary_device
+            try:
+                execution_device = next(dispatched.parameters()).device
+            except StopIteration:
+                execution_device = torch.device(primary_device)
+
+            if hasattr(dispatched, "_hf_hook") and hasattr(dispatched._hf_hook, "execution_device"):
+                dispatched._hf_hook.execution_device = execution_device
+
+            if not getattr(dispatched, "_autoround_align_inputs_hook_installed", False):
+                _first_param_device = execution_device
+                _pipeline_device = torch.device(comp_device)
+
+                def _align_all_inputs_pre_hook(module, args, kwargs):
+                    try:
+                        target = next(module.parameters()).device
+                    except StopIteration:
+                        target = _first_param_device
+                    new_args = tuple(a.to(target) if isinstance(a, torch.Tensor) else a for a in args)
+                    new_kwargs = {k: v.to(target) if isinstance(v, torch.Tensor) else v for k, v in kwargs.items()}
+                    return new_args, new_kwargs
+
+                def _move_outputs_back_hook(module, input, output):
+                    def _to_device(obj, device):
+                        if isinstance(obj, torch.Tensor):
+                            return obj.to(device) if obj.device != device else obj
+                        if isinstance(obj, (tuple, list)):
+                            converted = [_to_device(o, device) for o in obj]
+                            return type(obj)(converted)
+                        if isinstance(obj, dict):
+                            return {k: _to_device(v, device) for k, v in obj.items()}
+                        return obj
+
+                    return _to_device(output, _pipeline_device)
+
+                dispatched.register_forward_pre_hook(_align_all_inputs_pre_hook, with_kwargs=True)
+                dispatched.register_forward_hook(_move_outputs_back_hook)
+                dispatched._autoround_align_inputs_hook_installed = True
+
         return pipe
 
     if device_map is None:

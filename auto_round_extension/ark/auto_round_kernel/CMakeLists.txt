@@ -3,12 +3,8 @@ project(ark LANGUAGES CXX)
 
 option(ARK_XPU "Build XPU kernels" OFF)
 option(ARK_UT "Build XPU kernels UT" OFF)
-option(ARK_RESCALE "Exoerimental" OFF)
-option(ARK_DNNL_BUILD_SOURCE "Exoerimental" OFF)
-
-if(NOT ARK_XPU OR WIN32)
-    set(ARK_DNNL_BUILD_SOURCE ON)
-endif()
+option(ARK_RESCALE "Experimental" OFF)
+set(ARK_DNNL_BUILD_SOURCE ON CACHE BOOL "Build oneDNN from source" FORCE)
 
 # ARK_SYCL_TLA defaults to ON when ARK_XPU is enabled
 if(ARK_XPU AND NOT DEFINED ARK_SYCL_TLA)
@@ -29,43 +25,40 @@ include(FindOpenMP)
 
 set(BTLA_ENABLE_OPENMP ON CACHE BOOL "BesTLA enable compiling OpenMP threading")
 
-if(ARK_DNNL_BUILD_SOURCE)
-    FetchContent_Declare(
-        dnnl
-        GIT_REPOSITORY https://github.com/uxlfoundation/oneDNN.git
-        GIT_TAG v3.10.2
-    )
-    set(libs dnnl)
-    set(DNNL_LIBRARY_TYPE "STATIC" CACHE INTERNAL "")
-    set(DNNL_CPU_RUNTIME "OMP" CACHE INTERNAL "")
-    set(DNNL_CPU_THREADING_RUNTIME "OMP")
+FetchContent_Declare(
+    dnnl
+    GIT_REPOSITORY https://github.com/uxlfoundation/oneDNN.git
+    GIT_TAG v3.10.2
+)
+set(libs dnnl)
+set(DNNL_LIBRARY_TYPE "STATIC" CACHE INTERNAL "")
+set(
+    DNNL_ENABLE_PRIMITIVE
+    "MATMUL;ELTWISE;REDUCTION;REORDER"
+    CACHE STRING "oneDNN primitives used by ARK production code"
+)
 
-    set(DNNL_BUILD_EXAMPLES OFF CACHE INTERNAL "")
-    set(DNNL_BUILD_TESTS OFF CACHE INTERNAL "")
-    set(DNNL_BUILD_DOC OFF CACHE INTERNAL "")
-    set(ONEDNN_BUILD_GRAPH OFF CACHE INTERNAL "")
-    set(ONEDNN_ENABLE_WORKLOAD "INFERENCE" CACHE INTERNAL "")
-else()
-    find_package(DNNL REQUIRED)
-    set(libs DNNL::dnnl)
-endif()
+set(DNNL_BUILD_EXAMPLES OFF CACHE INTERNAL "")
+set(DNNL_BUILD_TESTS OFF CACHE INTERNAL "")
+set(DNNL_BUILD_DOC OFF CACHE INTERNAL "")
+set(ONEDNN_BUILD_GRAPH OFF CACHE INTERNAL "")
+set(ONEDNN_ENABLE_WORKLOAD "INFERENCE" CACHE INTERNAL "")
 
 if(ARK_XPU)
-    if(ARK_DNNL_BUILD_SOURCE)
-        set(ONEDNN_ENABLE_PRIMITIVE_CPU_ISA "AVX2" CACHE INTERNAL "")
-        set(DNNL_GPU_RUNTIME "SYCL" CACHE INTERNAL "")
-        FetchContent_MakeAvailable(dnnl)
-    endif()
+    # Skip oneDNN CPU engine compilation for the XPU module build.
+    set(DNNL_CPU_RUNTIME "NONE" CACHE INTERNAL "")
+    set(DNNL_GPU_RUNTIME "SYCL" CACHE INTERNAL "")
+    FetchContent_MakeAvailable(dnnl)
     set(BTLA_SYCL ON CACHE BOOL "BesTLA with SYCL")
     set(PY_NAME auto_round_kernel_xpu)
     set(ARK_TYPE ARK_XPU)
     find_package(IntelSYCL REQUIRED)
     list(APPEND libs IntelSYCL::SYCL_CXX)
 else()
-    if(ARK_DNNL_BUILD_SOURCE)
-        set(DNNL_GPU_RUNTIME "NONE" CACHE INTERNAL "")
-        FetchContent_MakeAvailable(dnnl)
-    endif()
+    set(DNNL_CPU_RUNTIME "OMP" CACHE INTERNAL "")
+    set(DNNL_CPU_THREADING_RUNTIME "OMP")
+    set(DNNL_GPU_RUNTIME "NONE" CACHE INTERNAL "")
+    FetchContent_MakeAvailable(dnnl)
     set(BTLA_SYCL OFF CACHE BOOL "BesTLA without SYCL")
     set(PY_NAME auto_round_kernel_cpu)
     set(ARK_TYPE ARK_CPU)
