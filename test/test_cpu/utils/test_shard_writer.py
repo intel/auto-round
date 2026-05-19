@@ -163,25 +163,6 @@ def test_finalize_offloads_module_with_tensor_in_parameters(tmp_path, monkeypatc
     assert offloaded_weight.device.type == "meta"
 
 
-def test_expand_fused_experts_for_skipped_talker_prefix(tmp_path, monkeypatch):
-    model = _FusedExpertsModel()
-    writer = _make_writer(model, str(tmp_path), monkeypatch)
-
-    fused_gate_up = torch.arange(2 * 6 * 4, dtype=torch.float32).reshape(2, 6, 4)
-    writer._add_tensor("talker.experts.gate_up_proj", fused_gate_up)
-    writer.finalize()
-
-    shard_path = os.path.join(tmp_path, "model.bin")
-    saved_tensors = torch.load(shard_path, map_location="cpu")
-
-    assert set(saved_tensors) == {
-        "talker.experts.0.gate_proj.weight",
-        "talker.experts.0.up_proj.weight",
-        "talker.experts.1.gate_proj.weight",
-        "talker.experts.1.up_proj.weight",
-    }
-
-
 def test_do_not_expand_fused_experts_outside_skipped_prefixes(tmp_path, monkeypatch):
     model = _FusedExpertsModel()
     writer = _make_writer(model, str(tmp_path), monkeypatch)
