@@ -646,6 +646,9 @@ class DataDrivenCompressor(BaseCompressor):
         else:
             to_cache_block_names = flatten_list(all_blocks)
         _last_cache_name = to_cache_block_names[-1] if len(to_cache_block_names) > 1 else None
+        to_cache_layer_names = layer_names
+        if self.super_group_size is not None:
+            to_cache_layer_names = []
         if len(layer_names) > 0:
             logger.info(
                 "Starting to cache block inputs. This may be slow due to external block layers: %s", layer_names
@@ -655,7 +658,7 @@ class DataDrivenCompressor(BaseCompressor):
         all_inputs = self.try_cache_inter_data_gpucpu(
             to_cache_block_names,
             self.nsamples,
-            layer_names,
+            to_cache_layer_names,
             last_cache_name=_last_cache_name,
         )
         self.inputs = all_inputs
@@ -666,7 +669,7 @@ class DataDrivenCompressor(BaseCompressor):
             all_inputs = copy.deepcopy(self.inputs)
             clear_memory(self.inputs, device_list=self.compress_context.device_list)
             all_q_inputs = self.try_cache_inter_data_gpucpu(
-                to_cache_block_names, self.nsamples, layer_names, last_cache_name=_last_cache_name
+                to_cache_block_names, self.nsamples, to_cache_layer_names, last_cache_name=_last_cache_name
             )
         # Remove accelerate dispatch hooks before moving parameters.
         # hf_device_map is kept for reference but hooks are no longer needed.
@@ -775,7 +778,6 @@ class DataDrivenCompressor(BaseCompressor):
         """
         # TODO currently we take all the layers outside blocks as post block layers which is not optimal
         # if there is no input for layer, we use rtn
-
         for layer_name in copy.deepcopy(layer_names):
             if layer_name not in layer_inputs:
                 if self.act_bits < 16 and not self.act_dynamic:
@@ -816,7 +818,7 @@ class DataDrivenCompressor(BaseCompressor):
                     enable_norm_bias_tuning=False,
                     enable_torch_compile=self.enable_torch_compile,
                     device=self.compress_context.device,
-                    disable_opt_rtn=self.disable_opt_rtn,
+                    disable_opt_rtn=getattr(self, "disable_opt_rtn", False),
                 )
                 new_layer = wrapper_layer.unwrapper({})
                 set_module(self.model, layer_name, new_layer)
