@@ -152,7 +152,13 @@ class AutoRound:
 
         local_args = {k: v for k, v in locals().items() if k not in cls.SKIP_ARGS}
         if extra_config is not None:
-            local_args.update({k: v for k, v in extra_config.to_dict().items() if k in local_args and v is not None})
+            for key, value in extra_config.to_dict().items():
+                if value is None:
+                    continue
+                if key in local_args:
+                    local_args[key] = value
+                else:
+                    kwargs[key] = value
 
         from auto_round.compressors.entry import AutoRoundCompatible
 
