@@ -153,8 +153,7 @@ class TestAutoRound:
             eval_generated_prompt(quantized_model_path, device="cuda:0")
 
     def test_fp8_block_autoround_format(self):
-        # model_name = "Qwen/Qwen3-0.6B"
-        model_name = "/models/Qwen3-0.6B"
+        model_name = "Qwen/Qwen3-0.6B"
 
         autoround = AutoRound(
             model_name,
