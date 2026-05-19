@@ -8,10 +8,10 @@ import requests
 from packaging import version
 from PIL import Image
 
-from auto_round import AutoRoundDiffusion
+from auto_round import AutoRound
 
 from ...envs import multi_card, require_gptqmodel, require_optimum, require_vlm_env
-from ...helpers import get_captions_dataset_path, get_model_path, transformers_version
+from ...helpers import get_model_path, transformers_version
 
 
 class TestAutoRound:
@@ -37,17 +37,28 @@ class TestAutoRound:
         pipe.transformer.single_transformer_blocks = pipe.transformer.single_transformer_blocks[:2]
 
         ## quantize the model
-        autoround = AutoRoundDiffusion(
+        autoround = AutoRound(
             pipe,
             tokenizer=None,
             scheme="MXFP4",
             iters=0,
             disable_opt_rtn=True,
             num_inference_steps=2,
-            dataset=get_captions_dataset_path(),
+            dataset="coco2014",
         )
         # skip model saving since it takes much time
         autoround.quantize()
+
+    def test_z_image_tune(self, tiny_z_image_model_path, tmp_path):
+        autoround = AutoRound(
+            tiny_z_image_model_path,
+            iters=1,
+            nsamples=1,
+            num_inference_steps=2,
+            dataset="coco2014",
+        )
+        # skip model saving since it takes much time
+        autoround.quantize_and_save(tmp_path)
 
     @require_optimum
     def test_diffusion_tune(self, tiny_flux_model_path, tmp_path):
@@ -71,7 +82,7 @@ class TestAutoRound:
 
         ## quantize the model
         # https://raw.githubusercontent.com/mlcommons/inference/refs/heads/master/text_to_image/coco2014/captions/captions_source.tsv
-        autoround = AutoRoundDiffusion(
+        autoround = AutoRound(
             pipe,
             tokenizer=None,
             scheme="MXFP4",
@@ -79,7 +90,7 @@ class TestAutoRound:
             nsamples=1,
             num_inference_steps=2,
             layer_config=layer_config,
-            dataset=get_captions_dataset_path(),
+            dataset="coco2014",
         )
         # skip model saving since it takes much time
         autoround.quantize_and_save(tmp_path)
@@ -116,7 +127,7 @@ class TestAutoRound:
 
         ## quantize the model
         # https://raw.githubusercontent.com/mlcommons/inference/refs/heads/master/text_to_image/coco2014/captions/captions_source.tsv
-        autoround = AutoRoundDiffusion(
+        autoround = AutoRound(
             pipe,
             tokenizer=None,
             scheme="MXFP4",
@@ -124,7 +135,7 @@ class TestAutoRound:
             nsamples=1,
             num_inference_steps=2,
             layer_config=layer_config,
-            dataset=get_captions_dataset_path(),
+            dataset="coco2014",
             device_map="0,1",
         )
         # skip model saving since it takes much time

@@ -395,6 +395,13 @@ def _special_name_handle(cls, name):
         visual_keys = ["multi_modal_projector", "vision_tower", "multimodal_projector"]
         name = remove_prefix(name, visual_keys)
 
+        # AutoRound exports tensors from a live transformers model, while gguf tensor_mapping
+        # expects checkpoint-style names. Normalize known Gemma3 vision/projector variants.
+        if name.startswith("vision_tower.") and not name.startswith("vision_tower.vision_model."):
+            name = name.replace("vision_tower.", "vision_tower.vision_model.", 1)
+        if name.startswith("multi_modal_projector.mm_input_projection_weight"):
+            name = name.replace("mm_input_projection_weight", "mm_input_projection.weight", 1)
+
     # for LlavaForConditionalGeneration
     if cls.model_arch == gguf.MODEL_ARCH.LLAMA:
         name = name.replace("language_model.", "")

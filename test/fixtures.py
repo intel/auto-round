@@ -133,6 +133,37 @@ def tiny_flux_model_path():
 
 
 @pytest.fixture(scope="session")
+def tiny_z_image_model_path():
+    model_name_or_path = "Tongyi-MAI/Z-Image"
+    tiny_model_path = "./tmp/tiny_z_image_model_path"
+    tiny_model_path = save_tiny_model(
+        model_name_or_path,
+        tiny_model_path,
+        num_layers=1,
+        is_diffusion=True,
+        from_config=True,
+        config_overrides={
+            "dim": 256,
+            "n_heads": 2,
+            "n_kv_heads": 2,
+            "n_layers": 1,
+            "n_refiner_layers": 1,
+            "cap_feat_dim": 512,
+            "in_channels": 16,
+            "num_attention_heads": 2,
+            "num_key_value_heads": 2,
+            "attention_head_dim": 128,
+            "joint_attention_dim": 256,
+            "pooled_projection_dim": 256,
+            "hidden_size": 512,
+            "intermediate_size": 256,
+        },
+    )
+    yield tiny_model_path
+    shutil.rmtree(tiny_model_path, ignore_errors=True)
+
+
+@pytest.fixture(scope="session")
 def tiny_untied_qwen_model_path():
     model_name_or_path = qwen_name_or_path
     tiny_model_path = "./tmp/tiny_untied_qwen_model_path"

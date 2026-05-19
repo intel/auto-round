@@ -1,4 +1,4 @@
-# Copyright (c) 2024 Intel Corporation
+# Copyright (c) 2026 Intel Corporation
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -12,7 +12,17 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from auto_round.compressors.mllm.dataset import get_mllm_dataloader
-from auto_round.compressors.mllm.template import Template, get_template, TEMPLATES
-from auto_round.compressors.mllm.compressor import MLLMCompressor
-from auto_round.compressors.mllm.eval import mllm_eval, lmms_eval
+from auto_round.compressors.mllm.dataset import MLLM_DATASET, get_mllm_dataloader
+from auto_round.compressors.mllm.processor import PROCESSORS, BasicProcessor, register_processor
+from auto_round.compressors.mllm.template import TEMPLATES, Template, get_template
+
+__all__ = [
+    "BasicProcessor",
+    "MLLM_DATASET",
+    "PROCESSORS",
+    "TEMPLATES",
+    "Template",
+    "get_mllm_dataloader",
+    "get_template",
+    "register_processor",
+]

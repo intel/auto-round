@@ -200,6 +200,91 @@ def _patch_tensor_get_dtype_for_prequantized_loading():
     torch.Tensor.get_dtype = _tensor_get_dtype
 
 
+def _patch_default_rope_init():
+    """Restore legacy ``rope_type='default'`` support for older remote-code models.
+
+    Some third-party model implementations still look up ``ROPE_INIT_FUNCTIONS["default"]``
+    directly when no explicit rope scaling is configured. Newer transformers releases no
+    longer register that key, even though the standard RoPE parameterization is still valid.
+    Register a small compatibility shim that computes the original default inverse frequencies.
+    """
+    try:
+        from transformers.modeling_rope_utils import ROPE_INIT_FUNCTIONS
+    except ImportError:
+        return
+
+    if "default" in ROPE_INIT_FUNCTIONS:
+        return
+
+    def _compute_default_rope_parameters(config=None, device=None, seq_len=None, layer_type=None):
+        del seq_len  # Unused for the default RoPE type.
+
+        if config is None:
+            raise ValueError("config must be provided to compute default RoPE parameters")
+
+        rope_parameters = {}
+        if hasattr(config, "standardize_rope_params") and hasattr(config, "rope_parameters"):
+            config.standardize_rope_params()
+            rope_parameters = config.rope_parameters[layer_type] if layer_type is not None else config.rope_parameters
+        elif hasattr(config, "rope_scaling") and isinstance(config.rope_scaling, dict):
+            rope_parameters = config.rope_scaling
+
+        base = rope_parameters.get("rope_theta", getattr(config, "rope_theta", 10000.0))
+        partial_rotary_factor = rope_parameters.get(
+            "partial_rotary_factor", getattr(config, "partial_rotary_factor", 1.0)
+        )
+        head_dim = getattr(config, "head_dim", None) or config.hidden_size // config.num_attention_heads
+        dim = int(head_dim * partial_rotary_factor)
+        if dim <= 0:
+            raise ValueError(f"Invalid RoPE dimension {dim} for config {config.__class__.__name__}")
+
+        inv_freq = 1.0 / (
+            base ** (torch.arange(0, dim, 2, dtype=torch.int64).to(device=device, dtype=torch.float) / dim)
+        )
+        return inv_freq, 1.0
+
+    ROPE_INIT_FUNCTIONS["default"] = _compute_default_rope_parameters
+
+
+def _patch_rotary_embedding_init_for_legacy_remote_code():
+    """Patch transformers weight init to support legacy remote-code RotaryEmbedding modules.
+
+    transformers 5.5+ expects RotaryEmbedding modules using ``rope_type='default'``
+    to expose ``compute_default_rope_parameters``. Older remote-code models often do
+    not define that helper and instead looked up the default entry in
+    ``ROPE_INIT_FUNCTIONS`` directly.
+    """
+    pre_trained_model = transformers.modeling_utils.PreTrainedModel
+    original_init_weights = pre_trained_model._init_weights
+
+    if getattr(original_init_weights, "_auto_round_rotary_default_patch", False):
+        return
+
+    @wraps(original_init_weights)
+    def _patched_init_weights(self, module):
+        try:
+            return original_init_weights(self, module)
+        except AttributeError as exc:
+            if (
+                "compute_default_rope_parameters" not in str(exc)
+                or "RotaryEmbedding" not in module.__class__.__name__
+                or not hasattr(module, "original_inv_freq")
+                or not hasattr(module, "inv_freq")
+                or getattr(module, "rope_type", None) != "default"
+            ):
+                raise
+
+            from transformers.modeling_rope_utils import ROPE_INIT_FUNCTIONS
+
+            buffer_value, _ = ROPE_INIT_FUNCTIONS["default"](module.config)
+            with torch.no_grad():
+                module.inv_freq.copy_(buffer_value)
+                module.original_inv_freq.copy_(buffer_value)
+
+    _patched_init_weights._auto_round_rotary_default_patch = True
+    pre_trained_model._init_weights = _patched_init_weights
+
+
 # TODO: only AutoModelForCausalLM is patched; other Auto* classes are not covered yet
 def monkey_patch_transformers():
     transformers_version = getattr(transformers, "__version__", None)
@@ -228,6 +313,8 @@ def monkey_patch_transformers():
         # transformers 5.3.0 calls tensor.get_dtype() on plain torch.Tensor objects
         # while loading pre-quantized checkpoints.
         _patch_tensor_get_dtype_for_prequantized_loading()
+    _patch_default_rope_init()
+    _patch_rotary_embedding_init_for_legacy_remote_code()
     if parsed_version >= version.parse("4.56.0"):
         _patch_classmethod_kwargs(transformers.AutoModelForCausalLM, "from_pretrained", torch_dtype="dtype")
     else:
@@ -246,6 +333,7 @@ def monkey_patch_model(model) -> None:
     class-level patches in ``monkey_patch_transformers``).
     """
     _patch_prepare_inputs_for_generation(model)
+    _patch_mimo_attention_forward(model)
 
 
 def _patch_prepare_inputs_for_generation(model) -> None:
@@ -267,6 +355,54 @@ def _patch_prepare_inputs_for_generation(model) -> None:
         _patch_qwen25_omni_talker(model)
     elif model_type == "qwen3_omni_moe":
         _patch_qwen3_omni_moe_talker(model)
+
+
+def _patch_mimo_attention_forward(model) -> None:
+    """Patch MiMo remote-code attention helpers for newer transformers call sites."""
+    # Check if this is a MiMo model by class name (remote code models may not have model_type)
+    model_class_name = model.__class__.__name__
+    logger.debug(f"_patch_mimo_attention_forward called for {model_class_name}")
+
+    if "MiMo" not in model_class_name and "mimo" not in model_class_name.lower():
+        logger.debug(f"Skipping patch: not a MiMo model (class name: {model_class_name})")
+        return
+
+    try:
+        module = importlib.import_module(model.__class__.__module__)
+        logger.debug(f"Imported module: {model.__class__.__module__}")
+    except ImportError as e:
+        logger.warning(f"Could not import module {model.__class__.__module__}: {e}")
+        return
+
+    eager_attention_forward = getattr(module, "eager_attention_forward", None)
+    logger.debug(f"eager_attention_forward found: {eager_attention_forward is not None}")
+
+    if eager_attention_forward is None:
+        logger.debug("Skipping patch: eager_attention_forward not found in module")
+        return
+
+    if getattr(eager_attention_forward, "_auto_round_mimo_patch", False):
+        logger.debug("Skipping patch: already patched")
+        return
+
+    @wraps(eager_attention_forward)
+    def _patched_eager_attention_forward(
+        module_obj,
+        query,
+        key,
+        value,
+        attention_mask,
+        scaling,
+        dropout=0.0,
+        sinks=None,
+        **kwargs,
+    ):
+        del kwargs
+        return eager_attention_forward(module_obj, query, key, value, attention_mask, scaling, dropout, sinks)
+
+    _patched_eager_attention_forward._auto_round_mimo_patch = True
+    module.eager_attention_forward = _patched_eager_attention_forward
+    logger.debug(f"Successfully patched eager_attention_forward in {model.__class__.__module__}")
 
 
 def _patch_qwen25_omni_talker(model) -> None:
@@ -443,6 +579,8 @@ class SupportedFormats:
             "llm_compressor",
             "fp8",
             "auto_round:fp8",
+            "mlx",
+            "auto_round:mlx",
         )
         self._gguf_format = tuple(sorted(GGUF_CONFIG.keys()))
         self._support_list = self._support_format + self._gguf_format
@@ -717,99 +855,206 @@ def is_transformers_version_greater_or_equal_4():
     return version.parse(transformers.__version__) >= version.parse("4.0.0")
 
 
+import json
+
+
 def parse_layer_config_arg(s: str) -> dict:
-    """Parse --layer_config with unquoted keys/values.
+    def strip_matching_quotes(token: str) -> str:
+        token = token.strip().replace("“", '"').replace("”", '"')
+        if len(token) >= 2 and token[0] == token[-1] and token[0] in ("'", '"'):
+            return token[1:-1]
+        return token
 
-    Delimiters are ``{``, ``}``, ``,``, ``:``.  Each non-delimiter token is
-    auto-typed: numeric strings become ``int``, everything else stays ``str``.
+    def normalize_scalar(value):
+        if not isinstance(value, str):
+            return value
 
-    Example::
-
-        {mtp:{bits:8},mtp.fc:{bits:16,data_type:fp}}
-    """
-    tokens = re.findall(r"[{}:,]|[^\s{}:,]+", s)
-    pos = [0]
-
-    def _val():
-        tok = tokens[pos[0]]
-        if tok == "{":
-            return _dict()
-        pos[0] += 1
+        value = strip_matching_quotes(value)
+        if value.lstrip("-").isdigit():
+            return int(value)
         try:
-            return int(tok)
+            return float(value)
         except ValueError:
-            return tok
+            pass
 
-    def _dict():
-        pos[0] += 1  # consume '{'
+        lower_value = value.lower()
+        if lower_value == "true":
+            return True
+        if lower_value == "false":
+            return False
+        if lower_value in ("null", "none"):
+            return None
+        return value
+
+    def normalize_tree(value):
+        if isinstance(value, dict):
+            return {normalize_scalar(k): normalize_tree(v) for k, v in value.items()}
+        if isinstance(value, list):
+            return [normalize_tree(item) for item in value]
+        return normalize_scalar(value)
+
+    def escape_invalid_json_backslashes(text: str) -> str:
+        escaped = []
+        in_string = False
+        index = 0
+
+        while index < len(text):
+            ch = text[index]
+            if not in_string:
+                if ch == '"':
+                    in_string = True
+                escaped.append(ch)
+                index += 1
+                continue
+
+            if ch == "\\":
+                next_ch = text[index + 1] if index + 1 < len(text) else ""
+                if next_ch not in {'"', "\\", "/", "b", "f", "n", "r", "t", "u"}:
+                    escaped.append("\\\\")
+                    index += 1
+                    continue
+
+            if ch == '"':
+                in_string = False
+            escaped.append(ch)
+            index += 1
+
+    s = strip_matching_quotes(s)
+
+    # 1. Prefer strict JSON.
+    try:
+        return normalize_tree(json.loads(s))
+    except Exception:
+        pass
+
+    # 2. Repair shell-friendly regex strings like "\d" into valid JSON escapes.
+    try:
+        return normalize_tree(json.loads(escape_invalid_json_backslashes(s)))
+    except Exception:
+        pass
+
+    # 3. Fallback parser for CLI-friendly dict syntax.
+    tokens = re.findall(r"[{}:,]|[^\s{}:,]+", s)
+    pos = 0
+
+    def peek():
+        return tokens[pos] if pos < len(tokens) else None
+
+    def consume(expected=None):
+        nonlocal pos
+        tok = peek()
+        if tok is None:
+            raise ValueError("Unexpected end of input")
+        if expected and tok != expected:
+            raise ValueError(f"Expected '{expected}', got '{tok}'")
+        pos += 1
+        return tok
+
+    def parse_value():
+        tok = peek()
+        if tok == "{":
+            return parse_dict()
+
+        consume()
+        return normalize_scalar(tok)
+
+    def parse_dict():
+        consume("{")
         result = {}
-        while tokens[pos[0]] != "}":
-            key = tokens[pos[0]]
-            pos[0] += 1  # key
-            pos[0] += 1  # consume ':'
-            result[key] = _val()
-            if tokens[pos[0]] == ",":
-                pos[0] += 1  # consume ','
-        pos[0] += 1  # consume '}'
+
+        while True:
+            tok = peek()
+            if tok == "}":
+                consume("}")
+                break
+
+            key = normalize_scalar(consume())
+            consume(":")
+            value = parse_value()
+            result[key] = value
+
+            if peek() == ",":
+                consume(",")
+
         return result
 
-    return _dict()
+    result = parse_dict()
+    if not isinstance(result, dict):
+        raise ValueError("--layer_config must parse to a dictionary")
+    return result
 
 
 def compress_layer_names(names: list) -> str:
-    """Compress numbered layer names, e.g. layer.0, layer.1, layer.2 → layer.[0-2]."""
-    import re as _re
+    """Compress numbered layer names, e.g. layer.0, layer.1, layer.2 → layer.[0-2].
 
-    # group by (prefix, suffix) where the number varies
+    Runs the compression pass repeatedly until stable so that multi-level
+    numbering is fully reduced.  For example::
+
+        layers.0.experts.[0-255].down_proj
+        layers.10.experts.[0-255].down_proj
+        →  layers.[0,10].experts.[0-255].down_proj
+    """
+    import re as _re
     from collections import defaultdict
 
-    groups: dict = defaultdict(list)
-    singles: list = []
-    for name in names:
-        m = _re.match(r"^(.*\.)?(\d+)(\..+)?$", name)
-        if m:
-            prefix = m.group(1) or ""
-            num = int(m.group(2))
-            suffix = m.group(3) or ""
-            groups[(prefix, suffix)].append(num)
-        else:
-            singles.append(name)
-    parts: list = []
-    for (prefix, suffix), nums in groups.items():
-        nums_sorted = sorted(set(nums))
-        if len(nums_sorted) == 1:
-            parts.append(f"{prefix}{nums_sorted[0]}{suffix}")
-        else:
-            # Build comma-separated contiguous ranges, e.g. [0,2-3,5]
-            ranges = []
-            start = prev = nums_sorted[0]
-            for n in nums_sorted[1:]:
-                if n == prev + 1:
-                    prev = n
-                    continue
-                # Close the current range
+    def _compress_once(name_list: list) -> list:
+        groups: dict = defaultdict(list)
+        singles: list = []
+        for name in name_list:
+            m = _re.match(r"^(.*\.)?(\d+)(\..+)?$", name)
+            if m:
+                prefix = m.group(1) or ""
+                num = int(m.group(2))
+                suffix = m.group(3) or ""
+                groups[(prefix, suffix)].append(num)
+            else:
+                singles.append(name)
+        parts: list = []
+        for (prefix, suffix), nums in groups.items():
+            nums_sorted = sorted(set(nums))
+            if len(nums_sorted) == 1:
+                parts.append(f"{prefix}{nums_sorted[0]}{suffix}")
+            else:
+                # Build comma-separated contiguous ranges, e.g. [0,2-3,5]
+                ranges = []
+                start = prev = nums_sorted[0]
+                for n in nums_sorted[1:]:
+                    if n == prev + 1:
+                        prev = n
+                        continue
+                    # Close the current range
+                    if start == prev:
+                        ranges.append(str(start))
+                    else:
+                        ranges.append(f"{start}-{prev}")
+                    start = prev = n
+                # Close the final range
                 if start == prev:
                     ranges.append(str(start))
                 else:
                     ranges.append(f"{start}-{prev}")
-                start = prev = n
-            # Close the final range
-            if start == prev:
-                ranges.append(str(start))
-            else:
-                ranges.append(f"{start}-{prev}")
-            range_str = ",".join(ranges)
-            parts.append(f"{prefix}[{range_str}]{suffix}")
-    parts.extend(singles)
-    parts.sort()
-    return ", ".join(parts)
+                range_str = ",".join(ranges)
+                parts.append(f"{prefix}[{range_str}]{suffix}")
+        parts.extend(singles)
+        return parts
+
+    current = list(names)
+    while True:
+        compressed = _compress_once(current)
+        # Stop when no further merging occurred
+        if len(compressed) >= len(current):
+            break
+        current = compressed
+
+    current.sort()
+    return ", ".join(current)
 
 
 def collapse_ignore_layers(names: list[str]) -> list[str]:
     """Collapse numbered layer names into regex patterns.
 
     Groups names that differ only by a numeric index and replaces
-    the index with ``\\d+``.  Single-element groups are kept as-is.
+    the index with ``\\d+``. Single-element groups are kept as-is.
 
     Example::
 
@@ -832,3 +1077,92 @@ def collapse_ignore_layers(names: list[str]) -> list[str]:
         else:
             result.append(members[0])
     return result
+
+
+def infer_bits_by_data_type(data_type: str):
+    """Infer bits by data_type
+
+    Args:
+        data_type (str): data_type
+
+    Returns:
+        int: bits inferred by data_type, None means cannot infer correct bits by data_type
+    """
+    from auto_round.utils import SUPPORTED_DTYPES
+
+    if data_type is None:
+        return 16
+    for supported_dtype in SUPPORTED_DTYPES:
+        if data_type.startswith(supported_dtype) and len(data_type) > len(supported_dtype):
+            ##first check the following two bits
+            suc_2str = data_type[len(supported_dtype) : len(supported_dtype) + 2]
+            if str.isdigit(suc_2str):
+                return int(suc_2str)
+            if str.isdigit(data_type[len(supported_dtype)]):
+                return int(data_type[len(supported_dtype)])
+    return None
+
+
+def get_checkpoint_conversion_mapping(model):
+    """Get the checkpoint conversion mapping for a given model, if it exists."""
+    checkpoint_conversion_mapping = {}
+
+    # transformers <= 5.3.0 use _checkpoint_conversion_mapping
+    checkpoint_conversion_mapping.update(getattr(model, "_checkpoint_conversion_mapping", {}))
+
+    # transformers > 5.3.0 use get_checkpoint_conversion_mapping
+    if hasattr(transformers, "conversion_mapping") and (
+        hasattr(model, "config") and hasattr(model.config, "model_type")
+    ):
+        from transformers.conversion_mapping import (
+            get_checkpoint_conversion_mapping as transformers_get_checkpoint_conversion_mapping,
+        )
+
+        conversion_mappings = transformers_get_checkpoint_conversion_mapping(model.config.model_type)
+        if conversion_mappings is not None:
+            for conversion_mapping in conversion_mappings:
+                for source_pattern in conversion_mapping.source_patterns:
+                    checkpoint_conversion_mapping[source_pattern] = conversion_mapping.target_patterns
+    return checkpoint_conversion_mapping
+
+
+def get_reverse_checkpoint_conversion_mapping(model):
+    """Get the reverse checkpoint conversion mapping for a given model, if it exists."""
+    reverse_checkpoint_conversion_mapping = {
+        v: k for k, v in getattr(model, "_checkpoint_conversion_mapping", {}).items()
+    }
+
+    if hasattr(model, "_weight_conversions"):
+        weight_conversions = model._weight_conversions
+        for weight_conversion in weight_conversions:
+            reverse_conversion_mapping = weight_conversion.reverse_transform()
+            for source_pattern in reverse_conversion_mapping.source_patterns:
+                reverse_checkpoint_conversion_mapping[source_pattern] = reverse_conversion_mapping.target_patterns
+
+    return reverse_checkpoint_conversion_mapping
+
+
+def revert_checkpoint_conversion_mapping(name: str, key_mapping: dict[str, str]) -> str:
+    for source_pattern, target_patterns in key_mapping.items():
+        if isinstance(target_patterns, str):
+            target_patterns = [target_patterns]
+        for target_pattern in target_patterns:
+            source_pattern = source_pattern.lstrip("^")  # strip off un-needed chars and patterns
+            source_pattern = re.sub(r"\(.*\)", "", source_pattern)
+            name, n_replace = re.subn(source_pattern, target_pattern, name)
+            # Early exit of the loop
+            if n_replace > 0:
+                return name
+    return name
+
+
+def apply_checkpoint_conversion_mapping(name: str, key_mapping: dict[str, str]) -> str:
+    for source_pattern, target_patterns in key_mapping.items():
+        if isinstance(target_patterns, str):
+            target_patterns = [target_patterns]
+        for target_pattern in target_patterns:
+            name, n_replace = re.subn(source_pattern, target_pattern, name)
+            # Early exit of the loop
+            if n_replace > 0:
+                return name
+    return name

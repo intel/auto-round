@@ -183,7 +183,7 @@ def get_template(
             template = TEMPLATES[template_or_path]
         else:
             if not quiet:
-                logger.warning(f"Unable to recognize {template_or_path}, using default template instead.")
+                logger.warning_once(f"Unable to recognize {template_or_path}, using default template instead.")
             template = TEMPLATES["default"]
             template.model_type = template_or_path
 

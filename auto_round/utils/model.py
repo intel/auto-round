@@ -18,7 +18,7 @@ import os
 import re
 from collections import UserDict
 from pathlib import Path
-from typing import Union
+from typing import TYPE_CHECKING, Union
 
 import psutil
 import torch
@@ -28,7 +28,7 @@ from packaging import version
 from auto_round import envs
 from auto_round.export.export_to_gguf.config import ModelType
 from auto_round.logger import logger
-from auto_round.schemes import QuantizationScheme
+from auto_round.utils.common import monkey_patch_model
 from auto_round.utils.weight_handler import (
     _dequant_fp8_linear_weight,
     check_and_mark_quantized_module,
@@ -37,6 +37,9 @@ from auto_round.utils.weight_handler import (
 )
 
 FIX_MISTRAL_REGEX_MODEL_TYPE_LIST = ["longcat_next"]
+
+if TYPE_CHECKING:
+    from auto_round.schemes import QuantizationScheme
 
 
 def clean_module_parameter(submodule: torch.nn.Module, param_name: str) -> None:
@@ -333,6 +336,26 @@ def llm_load_model(
             load_kwargs["quantization_config"] = Mxfp4Config(dequantized=True)
             logger.info("Detected MXFP4 quantized model, using Mxfp4Config(dequantized=True) for loading.")
 
+    # BAGEL requires a custom loader (Qwen2 + not extensions, not in transformers)
+    _config_path = (
+        os.path.join(pretrained_model_name_or_path, "config.json")
+        if os.path.isdir(pretrained_model_name_or_path)
+        else None
+    )
+    if _config_path and os.path.exists(_config_path):
+        with open(_config_path) as _f:
+            _mt = json.load(_f).get("model_type")
+        if _mt == "bagel":
+            from auto_round.utils.bagel_loader import load_bagel_model
+
+            model, tokenizer = load_bagel_model(
+                pretrained_model_name_or_path,
+                torch_dtype=torch_dtype,
+            )
+            model = _to_model_dtype(model, model_dtype)
+            model._autoround_to_quant_block_names = "language_model.model.layers"
+            return model, tokenizer
+
     is_glm = bool(re.search("chatglm", pretrained_model_name_or_path.lower()))
 
     tokenizer = AutoTokenizer.from_pretrained(pretrained_model_name_or_path, trust_remote_code=trust_remote_code)
@@ -363,6 +386,7 @@ def llm_load_model(
             )
 
     model = model.eval()
+    monkey_patch_model(model)
     check_and_mark_quantized_module(model)
     handle_generation_config(model)
     model = _to_model_dtype(model, model_dtype)
@@ -539,6 +563,15 @@ def mllm_load_model(
             torch_dtype=torch_dtype,
             device_map="auto" if use_auto_mapping else None,
         )
+    elif "bagel" == model_type:
+        from auto_round.utils.bagel_loader import load_bagel_model
+
+        model, tokenizer = load_bagel_model(
+            pretrained_model_name_or_path,
+            torch_dtype=torch_dtype,
+        )
+        processor = None
+        image_processor = None
     else:
         architectures = config["architectures"][0]
         if architectures == "LlavaLlamaForCausalLM":
@@ -755,32 +788,65 @@ def is_pure_text_model(model):
     return True
 
 
+_is_mllm_model_cache: dict = {}
+# Model types that have multimodal components but should use LLM compressor
+# (text-only calibration, non-text modules excluded from quantization).
+_LLM_ONLY_MODEL_TYPES = {"bagel"}
+
+
 def is_mllm_model(model_or_path: Union[str, torch.nn.Module], platform: str = None):
     from auto_round.utils.common import MM_KEYS
 
     model_path = model_or_path if isinstance(model_or_path, str) else model_or_path.name_or_path
+
+    # Fast path: return cached result for already-seen paths
+    if model_path in _is_mllm_model_cache:
+        return _is_mllm_model_cache[model_path]
+
+    # Check model_type exclusion: some models have multimodal components
+    # but should be quantized as LLM (e.g., BAGEL MoT).
+    _model_type = None
+    if isinstance(model_or_path, torch.nn.Module) and hasattr(model_or_path, "config"):
+        _model_type = getattr(model_or_path.config, "model_type", None)
+    elif isinstance(model_path, str) and os.path.isdir(model_path):
+        _cfg_path = os.path.join(model_path, "config.json")
+        if os.path.exists(_cfg_path):
+            with open(_cfg_path) as _f:
+                _model_type = json.load(_f).get("model_type")
+    if _model_type in _LLM_ONLY_MODEL_TYPES:
+        return False
+
     # For dummy model, model_path could be "".
-    if model_path and not os.path.isdir(model_path):
+    # Only try to download if the path looks like a HF repo id (not a local filesystem path).
+    # Skip download for absolute paths or relative paths that contain current/parent dir markers.
+    _is_local_path = os.path.isabs(model_path) or model_path.startswith("./") or model_path.startswith("../")
+    if model_path and not os.path.isdir(model_path) and not _is_local_path:
         model_path = download_or_get_path(model_path, platform=platform)
 
+    result = False
     if isinstance(model_path, str):
         if os.path.exists(os.path.join(model_path, "preprocessor_config.json")):
-            return True
-        if os.path.exists(os.path.join(model_path, "processor_config.json")):
-            return True
-        if os.path.exists(os.path.join(model_path, "config.json")):
+            result = True
+        elif os.path.exists(os.path.join(model_path, "processor_config.json")):
+            result = True
+        elif os.path.exists(os.path.join(model_path, "config.json")):
             with open(os.path.join(model_path, "config.json")) as f:
                 config = json.load(f)
             for key in config.keys():
                 if any([k in key for k in MM_KEYS]):
-                    return True
+                    result = True
+                    break
 
-    if isinstance(model_or_path, torch.nn.Module):
+    if not result and isinstance(model_or_path, torch.nn.Module):
         for name, module in model_or_path.named_modules():
             if any([k in name for k in MM_KEYS]):
-                return True
+                result = True
+                break
 
-    return False
+    # Cache by the original path key (model_path may have been resolved above)
+    original_key = model_or_path if isinstance(model_or_path, str) else model_or_path.name_or_path
+    _is_mllm_model_cache[original_key] = result
+    return result
 
 
 def is_gguf_model(model_path: Union[str, torch.nn.Module]) -> bool:
@@ -796,27 +862,26 @@ def is_gguf_model(model_path: Union[str, torch.nn.Module]) -> bool:
     return is_gguf_file
 
 
-def is_diffusion_model(model_or_path: Union[str, object]) -> bool:
+def is_diffusion_model(model_or_path: Union[str, object], trust_remote_code: bool = True) -> bool:
     from auto_round.utils.common import LazyImport
-
-    # First check if it's a known diffusion pipeline by config/model_type
-    # to avoid unnecessary imports and file checks for non-diffusion models, which can be time-consuming.
-    try:
-        from transformers import AutoConfig
-
-        config = AutoConfig.from_pretrained(model_or_path, trust_remote_code=True)
-        model_type = getattr(config, "model_type", "")
-        # A special case for NextStep
-        if model_type == "nextstep":
-            return True
-    except:
-        logger.warning(
-            f"Failed to load config for {model_or_path}, trying to check model_index.json for diffusion pipeline."
-        )
 
     # Then check if model_index.json exists for diffusion pipeline,
     # which is a strong signal of being a diffusion pipeline.
     if isinstance(model_or_path, str):
+        # First check if it's a known diffusion pipeline by config/model_type
+        # to avoid unnecessary imports and file checks for non-diffusion models, which can be time-consuming.
+        try:
+            from transformers import AutoConfig
+
+            config = AutoConfig.from_pretrained(model_or_path, trust_remote_code=trust_remote_code)
+            model_type = getattr(config, "model_type", "")
+            # A special case for NextStep
+            if model_type == "nextstep":
+                return True
+        except:
+            logger.warning(
+                f"Failed to load config for {model_or_path}, trying to check model_index.json for diffusion pipeline."
+            )
         index_file = None
         if not os.path.isdir(model_or_path):
             try:
@@ -1128,6 +1193,7 @@ def check_to_quantized(config):
         bool: True if the configuration is valid for quantization (bits <= 8),
             False otherwise.
     """
+    from auto_round.schemes import QuantizationScheme
 
     if isinstance(config, (dict, QuantizationScheme)):
         bits = config.get("bits", None)
@@ -1346,7 +1412,7 @@ def mv_module_from_gpu(module):
         for attr_name in list(module._parameters.keys()):
             p = module._parameters[attr_name]
             if p is not None and p.device.type != "meta" and p.device.type != "cpu":
-                module._parameters[attr_name] = p.to("cpu")
+                module._parameters[attr_name] = torch.nn.Parameter(p.to("cpu"), requires_grad=p.requires_grad)
         for attr_name in list(module._buffers.keys()):
             b = module._buffers[attr_name]
             if b is not None and b.device.type != "meta" and b.device.type != "cpu":
@@ -1699,6 +1765,9 @@ def _get_reference_amax_from_experts(moe_module: torch.nn.Module, attr_name: str
 # the quantized output directory so that from_pretrained() works out of the box.
 _EXTRA_MODEL_FILES = {
     "spk_dict.pt",  # Qwen2.5-Omni speaker dictionary for audio output
+    "llm_config.json",  # BAGEL sub-model config
+    "vit_config.json",  # BAGEL vision transformer config
+    "preprocessor_config.json",  # BAGEL image preprocessor config
 }
 
 
@@ -1975,6 +2044,10 @@ def rename_weights_files(path: str, prefix="diffusion_pytorch_model"):
     # rename safetensors
     files = sorted(glob.glob(f"{path}/*.safetensors"))
     total = len(files)
+    if total == 1:
+        new = f"{prefix}.safetensors"
+        os.rename(files[0], os.path.join(path, new))
+        return
 
     for i, f in enumerate(files, 1):
         new = f"{prefix}-{i:05d}-of-{total:05d}.safetensors"
@@ -2007,3 +2080,121 @@ def hook_ngram_embeddings_on_cpu(model):
 
         hook_input_output_device_for_cpu_module(raw_ngram_embeddings)
     return has_ngram_embeddings, raw_ngram_embeddings if has_ngram_embeddings else None
+
+
+def is_model_free_route(
+    model,
+    scheme,
+    iters: int,
+    disable_opt_rtn,
+    kwargs: dict,
+) -> bool:
+    """Return True when the model-free fast-path should be taken.
+
+    Mirrors the ``is_diffusion_model`` / ``is_mllm_model`` helpers used in
+    ``AutoRound.__new__`` to select the right compressor class.
+
+    Model-free mode is activated when **either** of the following holds:
+
+    * ``model_free=True`` is explicitly set in *kwargs*.
+    * All of the following are true:
+
+      - ``disable_model_free`` is not set (or False) in *kwargs*
+      - *model* is a string (HF hub ID or local path)
+      - *iters* == 0
+      - *disable_opt_rtn* is exactly ``True``
+      - *scheme* is a supported model-free preset
+
+    Note: this function only *reads* kwargs; it does **not** pop any keys.
+    """
+    from auto_round.compressors.model_free import is_model_free_supported_scheme
+
+    explicit = bool(kwargs.pop("model_free", False))
+    disabled = bool(kwargs.pop("disable_model_free", False))
+    if explicit:
+        return True
+    # Only auto-route when format is auto_round (or not specified).
+    fmt = kwargs.get("format", "auto_round")
+    if fmt is None:
+        fmt = "auto_round"
+    fmt_first = str(fmt).lower().replace(" ", "").split(",")[0]
+    if fmt_first != "auto_round":
+        return False
+    return (
+        not disabled
+        and isinstance(model, str)
+        and iters == 0
+        and disable_opt_rtn is True
+        and is_model_free_supported_scheme(scheme, kwargs)
+    )
+
+
+def find_layers_from_config(model_dir: str, class_names: list[str] | None = None) -> dict[str, str]:
+    """Detect layers of given class names by loading the model on ``device='meta'``.
+
+    Only ``config.json`` is required — no weights are read.
+
+    For regular models the root directory is checked.  For diffusion-style
+    repos (no root ``config.json`` but a ``transformer/`` subfolder), only the
+    ``transformer/`` subfolder is checked — other sub-components (``vae/``,
+    ``scheduler/``, …) are intentionally skipped because only the transformer
+    is quantized in model-free mode.
+
+    Args:
+        model_dir: Local directory containing ``config.json``, or a diffusion
+            repo root whose ``transformer/`` subfolder contains ``config.json``.
+        class_names: Class names to look for, matched against
+            ``type(module).__name__``.  Defaults to
+            ``["Embedding", "Conv1d", "Conv1D"]`` — the types incompatible
+            with model-free RTN packing.
+
+    Returns:
+        ``{class_name: [layer_name, ...]}`` for every matched module.
+        Returns an empty dict on any failure.
+    """
+    from huggingface_hub import snapshot_download
+    from transformers import AutoConfig, AutoModel
+
+    if class_names is None:
+        class_names = ["Embedding", "Conv1d", "Conv1D"]
+    if isinstance(class_names, str):
+        class_names = [class_names]
+    target = set(class_names)
+
+    # download if not local, but only the config files (fast)
+    if not os.path.exists(model_dir):
+        model_dir = snapshot_download(
+            repo_id=model_dir,
+            allow_patterns=["**/config.json"],
+        )
+
+    # Build the list of (prefix, config_dir) pairs to inspect.
+    # For diffusion repos (no root config.json) only check transformer/.
+    # For regular repos only check the root directory.
+    dirs: list[tuple[str, str]] = []
+    if os.path.exists(os.path.join(model_dir, "config.json")):
+        dirs.append(("", model_dir))
+    else:
+        transformer_dir = os.path.join(model_dir, "transformer")
+        if os.path.isdir(transformer_dir) and os.path.exists(os.path.join(transformer_dir, "config.json")):
+            dirs.append(("", transformer_dir))
+
+    result: dict[str, str] = {}
+    for prefix, config_dir in dirs:
+        try:
+            with torch.device("meta"):
+                config = AutoConfig.from_pretrained(config_dir, trust_remote_code=True)
+                model = AutoModel.from_config(config, trust_remote_code=True)
+        except Exception as e:
+            logger.warning(f"Failed to load model from {config_dir} for layer detection. Skipping. Error: {e}")
+            continue  # skip silently
+        for name, module in model.named_modules():
+            cls_name = type(module).__name__
+            if any(t.lower() in cls_name.lower() for t in target):
+                full_name = f"{prefix}.{name}" if prefix else name
+                if cls_name not in result:
+                    result[cls_name] = [full_name]
+                else:
+                    result[cls_name].append(full_name)
+        del model
+    return result

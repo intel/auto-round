@@ -1,5 +1,6 @@
 import os
 import shutil
+from unittest.mock import patch
 
 import pytest
 import torch
@@ -15,6 +16,8 @@ from auto_round.utils.weight_handler import (
 )
 
 from ...helpers import evaluate_accuracy, generate_prompt, get_model_path, get_tiny_model, transformers_version
+
+DEVICE_CAPABILITY = torch.cuda.get_device_capability()
 
 
 class TestAutoRound:
@@ -32,14 +35,14 @@ class TestAutoRound:
 
     def test_small_model_rtn_generation(self, mock_fp8_capable_device, tiny_fp8_qwen_model_path):
         ar = AutoRound(tiny_fp8_qwen_model_path, iters=0, disable_opt_rtn=True)
-        ar.quantize_and_save(output_dir=self.save_dir)
-        model = AutoModelForCausalLM.from_pretrained(self.save_dir, torch_dtype="auto", trust_remote_code=True)
-        tokenizer = AutoTokenizer.from_pretrained(self.save_dir)
+        _, quantized_model_path = ar.quantize_and_save(output_dir=self.save_dir)
+        model = AutoModelForCausalLM.from_pretrained(quantized_model_path, torch_dtype="auto", trust_remote_code=True)
+        tokenizer = AutoTokenizer.from_pretrained(quantized_model_path)
         generate_prompt(model, tokenizer)
 
     def test_gguf_imatrix(self, mock_fp8_capable_device, tiny_fp8_qwen_model_path):
         ar = AutoRound(tiny_fp8_qwen_model_path, iters=0)
-        ar.quantize_and_save(format="gguf:q2_k_s", output_dir=self.save_dir)
+        _, quantized_model_path = ar.quantize_and_save(format="gguf:q2_k_s", output_dir=self.save_dir)
         # from llama_cpp import Llama
         #
         # gguf_file = os.listdir("saved/Qwen3-0.6B-FP8/-gguf")[0]
@@ -47,8 +50,8 @@ class TestAutoRound:
         # output = llm("There is a girl who likes adventure,", max_tokens=32)
         # print(output)
         # shutil.rmtree("./saved", ignore_errors=True)
-        # model = AutoModelForCausalLM.from_pretrained(self.save_dir, torch_dtype="auto", trust_remote_code=True)
-        # tokenizer = AutoTokenizer.from_pretrained(self.save_dir)
+        # model = AutoModelForCausalLM.from_pretrained(quantized_model_path, torch_dtype="auto", trust_remote_code=True)
+        # tokenizer = AutoTokenizer.from_pretrained(quantized_model_path    )
         # text = "There is a girl who likes adventure,"
         # inputs = tokenizer(text, return_tensors="pt").to(model.device)
         # print(tokenizer.decode(model.generate(**inputs, max_new_tokens=50)[0]))
@@ -56,41 +59,44 @@ class TestAutoRound:
     @pytest.mark.skip_ci(reason="Triton issue; time-consuming")
     def test_small_model_rtn(self, mock_fp8_capable_device):
         model_name = get_model_path("Qwen/Qwen3-0.6B-FP8")
-        ar = AutoRound(model=model_name, iters=0)
+        ar = AutoRound(model=model_name, iters=0, disable_opt_rtn=True)
         _, folder = ar.quantize_and_save(output_dir=self.save_dir)
-        evaluate_accuracy(self.save_dir, threshold=0.25)
+        with patch("torch.cuda.get_device_capability", return_value=DEVICE_CAPABILITY):  # revert DEVICE_CAPABILITY
+            evaluate_accuracy(folder, threshold=0.25)
 
     @pytest.mark.skip_ci(reason="Triton issue; time-consuming")
     def test_small_model_iters1(self, mock_fp8_capable_device):
         model_name = get_model_path("Qwen/Qwen3-0.6B-FP8")
         ar = AutoRound(model=model_name, iters=1)
         _, folder = ar.quantize_and_save(output_dir=self.save_dir)
-        evaluate_accuracy(self.save_dir, threshold=0.25)
+        with patch("torch.cuda.get_device_capability", return_value=DEVICE_CAPABILITY):  # revert DEVICE_CAPABILITY
+            evaluate_accuracy(folder, threshold=0.25)
 
-    @pytest.mark.skip_ci(reason="Triton issue; time-consuming")
-    def test_medium_model_rtn(self, mock_fp8_capable_device):
+    def test_small_model_opt_rtn(self, mock_fp8_capable_device):
         model_name = get_model_path("Qwen/Qwen3-0.6B-FP8")
         ar = AutoRound(model=model_name, iters=0)
         _, folder = ar.quantize_and_save(output_dir=self.save_dir)
-        evaluate_accuracy(self.save_dir, threshold=0.33)
+        with patch("torch.cuda.get_device_capability", return_value=DEVICE_CAPABILITY):  # revert DEVICE_CAPABILITY
+            evaluate_accuracy(folder, threshold=0.33)
 
     @pytest.mark.skip_ci(reason="Triton issue; time-consuming")
-    def test_medium_model_rtn_with_lm_head(self, mock_fp8_capable_device):
+    def test_small_model_rtn_with_lm_head(self, mock_fp8_capable_device):
         model_name = get_model_path("Qwen/Qwen3-0.6B-FP8")
         layer_config = {"lm_head": {"bits": 4}}
         ar = AutoRound(model=model_name, iters=0, layer_config=layer_config)
         _, folder = ar.quantize_and_save(output_dir=self.save_dir)
-        evaluate_accuracy(self.save_dir, threshold=0.33)
+        with patch("torch.cuda.get_device_capability", return_value=DEVICE_CAPABILITY):  # revert DEVICE_CAPABILITY
+            evaluate_accuracy(folder, threshold=0.33)
 
     def test_fp8_model_gguf_q4(self, mock_fp8_capable_device, tiny_fp8_qwen_model_path):
         from llama_cpp import Llama
 
         ar = AutoRound(tiny_fp8_qwen_model_path, iters=0, disable_opt_rtn=True)
-        ar.quantize_and_save(output_dir=self.save_dir, format="gguf:q4_0")
-        for file in os.listdir(self.save_dir):
+        _, quantized_model_path = ar.quantize_and_save(output_dir=self.save_dir, format="gguf:q4_0")
+        for file in os.listdir(quantized_model_path):
             if file.endswith(".gguf"):
                 gguf_file = file
-        llm = Llama(f"{self.save_dir}/{gguf_file}", n_gpu_layers=-1)
+        llm = Llama(f"{quantized_model_path}/{gguf_file}", n_gpu_layers=-1)
         output = llm("There is a girl who likes adventure,", max_tokens=32)
         print(output)
 
@@ -99,11 +105,11 @@ class TestAutoRound:
         from llama_cpp import Llama
 
         ar = AutoRound(tiny_fp8_qwen_model_path, iters=1)
-        ar.quantize_and_save(output_dir=self.save_dir, format="gguf:q3_k_s")
-        for file in os.listdir(self.save_dir):
+        _, quantized_model_path = ar.quantize_and_save(output_dir=self.save_dir, format="gguf:q3_k_s")
+        for file in os.listdir(quantized_model_path):
             if file.endswith(".gguf"):
                 gguf_file = file
-        llm = Llama(f"{self.save_dir}/{gguf_file}", n_gpu_layers=-1)
+        llm = Llama(f"{quantized_model_path}/{gguf_file}", n_gpu_layers=-1)
         output = llm("There is a girl who likes adventure,", max_tokens=32)
         print(output)
 
@@ -113,8 +119,8 @@ class TestAutoRound:
         model_name = tiny_fp8_qwen_model_path
         print(f"Testing scheme: {scheme}")
         ar = AutoRound(model_name, iters=0, scheme=scheme, disable_opt_rtn=True, nsamples=2)
-        ar.quantize_and_save(output_dir=self.save_dir)
-        model = AutoModelForCausalLM.from_pretrained(self.save_dir, torch_dtype="auto", trust_remote_code=True)
+        _, quantized_model_path = ar.quantize_and_save(output_dir=self.save_dir)
+        model = AutoModelForCausalLM.from_pretrained(quantized_model_path, torch_dtype="auto", trust_remote_code=True)
         assert model is not None, f"Failed to load model for scheme {scheme}"
 
 
@@ -128,9 +134,9 @@ def test_qwen3_fp8_moe_mxfp(tiny_fp8_qwen_moe_model_path, mock_fp8_capable_devic
         iters=0,
         low_cpu_mem_usage=False,
     )
-    quantized_model, _ = autoround.quantize_and_save(format="auto_round", output_dir=output_dir)
+    quantized_model, quantized_model_path = autoround.quantize_and_save(format="auto_round", output_dir=output_dir)
     assert quantized_model is not None, "Quantized model should not be None."
-    loaded_model = AutoModelForCausalLM.from_pretrained(output_dir)
+    loaded_model = AutoModelForCausalLM.from_pretrained(quantized_model_path)
     for n, m in quantized_model.named_modules():
         if m.__class__.__name__ == "QuantLinear":
             loaded_m = loaded_model.get_submodule(n)

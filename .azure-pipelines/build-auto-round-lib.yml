@@ -1,0 +1,17 @@
+trigger:
+  branches:
+    include:
+      - main
+  paths:
+    include:
+      - auto_round_extension/ark/**
+    exclude:
+      - "*.md"
+      - "**/*.md"
+
+pr: none
+
+stages:
+  - template: template/lib-build-template.yml
+    parameters:
+      publishToTestPyPI: true

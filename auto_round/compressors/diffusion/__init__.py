@@ -1,4 +1,4 @@
-# Copyright (c) 2025 Intel Corporation
+# Copyright (c) 2026 Intel Corporation
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -12,6 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from auto_round.compressors.diffusion.dataset import get_diffusion_dataloader
-from auto_round.compressors.diffusion.compressor import DiffusionCompressor
+from auto_round.compressors.diffusion.dataset import DIFFUSION_DATASET, get_diffusion_dataloader
 from auto_round.compressors.diffusion.eval import diffusion_eval
+
+__all__ = ["DIFFUSION_DATASET", "diffusion_eval", "get_diffusion_dataloader"]

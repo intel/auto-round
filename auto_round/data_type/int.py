@@ -15,15 +15,15 @@ from typing import Union
 
 import torch
 
+from auto_round import envs
 from auto_round.data_type.register import register_dtype
 from auto_round.data_type.utils import reshape_pad_tensor_by_group_size, revert_tensor_by_pad, round_ste
-from auto_round.logger import logger
 from auto_round.utils import get_reciprocal
 
 
 def search_scales(data: torch.Tensor, bits: int, qw: Union[None, torch.Tensor, float] = None) -> torch.Tensor:
     # Maximum absolute value for symmetric quantization
-    nmax = 1 << (bits - 1)  # equivalent to pow(2, bits-1)
+    nmax = int(2.0 ** (bits - 1))
 
     # Find per-group max along the last dimension
     imax = torch.abs(data).argmax(dim=-1, keepdim=True)
@@ -41,20 +41,27 @@ def search_scales(data: torch.Tensor, bits: int, qw: Union[None, torch.Tensor, f
     # Set default weight if None
     if qw is None:
         qw = 1.0
-
     # Compute initial best loss
     best_loss = ((scales * L - data).to(torch.float32)) ** 2
     if isinstance(qw, torch.Tensor):
         best_loss.mul_(qw)  # inplace multiply by weight
     best_loss = torch.sum(best_loss, dim=-1)
-
+    if bits == 2:
+        search_min = 18 * 5
+        step = 0.01
+    else:
+        grid = 200
+        search_ratio = envs.AR_SEARCH_SCALE_RATIO or 0.75  # default 0.5 -> nmax/2
+        search_min = nmax * search_ratio
+        step = search_min / grid * 2  # 0.08
+        search_min = int(search_min / step)
     # Iterative search over small adjustments
-    for _is in range(-18 * 5, 18 * 5 + 1):
+    for _is in range(-search_min, search_min + 1):
         if _is == 0:
             continue
 
         # Update iscales in-place
-        iscales_tmp = -(nmax - 0.01 * _is) * get_reciprocal(group_max)
+        iscales_tmp = -(nmax - step * _is) * get_reciprocal(group_max)
 
         # Compute temporary quantized values (in-place round + clamp)
         tmp_L = torch.empty_like(data)
@@ -79,9 +86,9 @@ def search_scales(data: torch.Tensor, bits: int, qw: Union[None, torch.Tensor, f
     return scales
 
 
-@register_dtype("rtn_int_sym")
-def quant_tensor_rtn_sym(tensor, bits=4, group_size=-1, v=0, q_scale_thresh=1e-5, imatrix=None, **kwargs):
-    """Quantize and de-quantize tensor asymmetrically. full range, credict goes to llamacpp community
+@register_dtype("opt_rtn_int_sym")
+def quant_tensor_opt_rtn_sym(tensor, bits=4, group_size=-1, v=0, q_scale_thresh=1e-5, imatrix=None, **kwargs):
+    """Quantize and de-quantize tensor asymmetrically. full range, credit goes to llamacpp community
 
     Args:
         tensor: Tensor containing the tensor to be quantized
@@ -96,7 +103,7 @@ def quant_tensor_rtn_sym(tensor, bits=4, group_size=-1, v=0, q_scale_thresh=1e-5
     from auto_round.data_type.gguf import _imatrix_handle_zero
 
     tensor, orig_shape, pad_len = reshape_pad_tensor_by_group_size(tensor, group_size)
-    maxq = 2 ** (bits - 1)
+    maxq = int(2.0 ** (bits - 1))
     if imatrix is None:
         imatrix = 1.0
     else:
@@ -115,6 +122,46 @@ def quant_tensor_rtn_sym(tensor, bits=4, group_size=-1, v=0, q_scale_thresh=1e-5
     return qdq_result, scale, maxq
 
 
+@register_dtype("rtn_int_sym")
+def quant_tensor_rtn_sym(
+    tensor,
+    bits=4,
+    group_size=-1,
+    q_scale_thresh=1e-5,
+    min_scale=1.0,
+    max_scale=1.0,
+    scale_dtype=torch.float16,
+    **kwargs
+):
+    """Quantize and de-quantize tensor asymmetrically. full range, credit goes to llamacpp community
+
+    Args:
+        tensor: Tensor containing the tensor to be quantized
+        bits: Number of bits for quantization (e.g., 2, 3, 4, 8)
+        group_size: Number of elements to share scale for quantization
+        v: Rounding value perturbation
+        q_scale_thresh: clip the quantized scale's magnitude to this value to improve the numerical stability
+
+    Returns:
+        Quantized and de-quantized tensor, scale, zero-point
+    """
+    tensor, orig_shape, pad_len = reshape_pad_tensor_by_group_size(tensor, group_size)
+    maxq = int(2.0 ** (bits - 1))
+
+    wmin_tmp = torch.clamp(tensor.min(-1)[0], max=0)
+    wmax_tmp = torch.clamp(tensor.max(-1)[0], min=0)
+    wmin_abs = -(wmin_tmp * min_scale)  # pylint: disable=E1130
+    wmax_abs = wmax_tmp * max_scale
+    max_v = (2 * (wmax_abs < wmin_abs).int() - 1) * torch.max(wmax_abs, wmin_abs)
+    scale = (max_v / maxq).to(scale_dtype)
+    scale = torch.where(scale < 0, torch.clamp(scale, max=-q_scale_thresh), torch.clamp(scale, min=q_scale_thresh))
+    scale = scale.unsqueeze(dim=-1)
+    int_w = tensor.div(scale).round_().clamp_(-maxq, maxq - 1)
+    qdq_result = (int_w.mul_(scale)).to(tensor.dtype)
+    qdq_result = revert_tensor_by_pad(qdq_result, orig_shape=orig_shape, pad_len=pad_len)
+    return qdq_result, scale, maxq
+
+
 @register_dtype("int_sym")
 def quant_tensor_sym(
     tensor,
@@ -127,9 +174,10 @@ def quant_tensor_sym(
     tensor_min=None,
     tensor_max=None,
     q_scale_thresh=1e-5,
+    init_scale=None,
     **kwargs
 ):
-    """Quantize and de-quantize tensor asymmetrically. full range, credict goes to llamacpp community
+    """Quantize and de-quantize tensor asymmetrically. full range, credit goes to llamacpp community
 
     Args:
         tensor: Tensor containing the tensor to be quantized
@@ -148,7 +196,18 @@ def quant_tensor_sym(
     """
 
     tensor, orig_shape, pad_len = reshape_pad_tensor_by_group_size(tensor, group_size)
-    maxq = 2 ** (bits - 1)
+    maxq = int(2.0 ** (bits - 1))
+
+    if init_scale is not None:
+        scale = init_scale * max_scale.unsqueeze(dim=-1)
+        scale = scale.to(scale_dtype)
+        scale = torch.where(scale < 0, torch.clamp(scale, max=-q_scale_thresh), torch.clamp(scale, min=q_scale_thresh))
+        int_w = round_ste(tensor / scale + v)
+        q = torch.clamp(int_w, -maxq, maxq - 1)
+        qdq_result = (scale * q).to(tensor.dtype)
+        qdq_result = revert_tensor_by_pad(qdq_result, orig_shape=orig_shape, pad_len=pad_len)
+        return qdq_result, scale, maxq
+
     if tensor_min is None or tensor_max is None:
         wmin_tmp = torch.clamp(tensor.min(-1)[0], max=0)
         wmax_tmp = torch.clamp(tensor.max(-1)[0], min=0)
@@ -201,7 +260,7 @@ def quant_tensor_asym(
         Quantized and de-quantized tensor, scale, zero-point
     """
     tensor, orig_shape, pad_len = reshape_pad_tensor_by_group_size(tensor, group_size)
-    maxq = 2**bits - 1
+    maxq = int(2.0**bits) - 1
     if tensor_min is None or tensor_max is None:
         wmin_tmp = torch.clamp(tensor.min(-1)[0], max=0)
         wmax_tmp = torch.clamp(tensor.max(-1)[0], min=0)
@@ -258,7 +317,7 @@ def quant_tensor_sym_gptq(
         Quantized and de-quantized tensor, scale, zero-point
     """
     tensor, orig_shape, pad_len = reshape_pad_tensor_by_group_size(tensor, group_size)
-    maxq = 2**bits - 1
+    maxq = int(2.0**bits) - 1
     if tensor_min is None or tensor_max is None:
         wmin_tmp = torch.clamp(tensor.min(-1)[0], max=0)
         wmax_tmp = torch.clamp(tensor.max(-1)[0], min=0)
@@ -321,7 +380,7 @@ def quant_tensor_asym_wo_round(
         Quantized and de-quantize tensor, scale, zero-point
     """
     tensor, orig_shape, pad_len = reshape_pad_tensor_by_group_size(tensor, group_size)
-    maxq = 2**bits - 1
+    maxq = int(2.0**bits) - 1
     if tensor_min is None or tensor_max is None:
         wmin_tmp = torch.clamp(tensor.min(-1)[0], max=0)
         wmax_tmp = torch.clamp(tensor.max(-1)[0], min=0)
