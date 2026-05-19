@@ -188,7 +188,7 @@ def get_available_devices():
 def _remap_paths_for_text_model(model, quant_block_list, extra_config):
     """Remap quantization paths when a composite model checkpoint is loaded as its text sub-model.
 
-    Uses Transformers' conversion_mapping WeightRenaming rules (e.g. "model.language_model" -> "model")
+    Uses Transformers' conversion_mapping rules (WeightRenaming, PrefixChange, etc.)
     to fix path mismatches. Returns (remapped_block_list, remapped_extra_config).
     """
     try:
@@ -201,7 +201,20 @@ def _remap_paths_for_text_model(model, quant_block_list, extra_config):
         return quant_block_list, extra_config
 
     mapping = get_checkpoint_conversion_mapping(model_type)
-    renamings = [r for r in mapping if type(r).__name__ == "WeightRenaming"]
+
+    # For composite models (e.g. VLMs), the composite model_type may not have a mapping,
+    # but the text sub-model type does.
+    if not mapping:
+        text_config = getattr(getattr(model, "config", None), "text_config", None)
+        text_model_type = getattr(text_config, "model_type", None)
+        if text_model_type:
+            mapping = get_checkpoint_conversion_mapping(text_model_type)
+
+    if not mapping:
+        return quant_block_list, extra_config
+
+    # Accept any mapping type that has source_patterns and target_patterns
+    renamings = [r for r in mapping if hasattr(r, "source_patterns") and hasattr(r, "target_patterns")]
     if not renamings:
         return quant_block_list, extra_config
 
@@ -313,6 +326,14 @@ def get_layer_config(model, quantization_config):
 
     # Load extra configuration if available
     extra_config = getattr(quantization_config, "extra_config", {})
+
+    # Remap extra_config keys using conversion mapping (e.g. composite VLM paths to text sub-model paths)
+    if checkpoint_conversion_mapping and extra_config:
+        remapped_extra_config = {}
+        for key, value in extra_config.items():
+            new_key = apply_checkpoint_conversion_mapping(key, checkpoint_conversion_mapping)
+            remapped_extra_config[new_key] = value
+        extra_config = remapped_extra_config
 
     # When a composite model (e.g. VLM) is loaded as its text sub-model via AutoModelForCausalLM,
     # block_name_to_quantize may still reference composite-level paths (e.g. "model.language_model.layers")
