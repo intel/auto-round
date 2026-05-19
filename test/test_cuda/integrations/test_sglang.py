@@ -14,17 +14,17 @@ from auto_round import AutoRound
 from ...helpers import get_model_path, qwen_name_or_path
 
 # A patch to fix the Python `multiprocessing.ResourceTracker` [Errno 10] error.
-_original_stop = multiprocessing.resource_tracker._stop
+_original_stop = multiprocessing.resource_tracker.ResourceTracker._stop
 
 
-def _patched_stop(*args, **kwargs):
+def _patched_stop(self, *args, **kwargs):
     try:
-        _original_stop(*args, **kwargs)
+        _original_stop(self, *args, **kwargs)
     except ChildProcessError:
         pass
 
 
-multiprocessing.resource_tracker._stop = _patched_stop
+multiprocessing.resource_tracker.ResourceTracker._stop = _patched_stop
 
 
 class TestAutoRound:
