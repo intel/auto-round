@@ -196,8 +196,8 @@ function main() {
         run_unit_test_vlm
     elif [ "${test_case}" == "specific" ]; then
         run_unit_test_sglang
-        # run_unit_test_llmc
-        # run_unit_test_vllm
+        run_unit_test_llmc
+        run_unit_test_vllm
     elif [ "${test_case}" == "all" ]; then
         run_unit_test
     else
