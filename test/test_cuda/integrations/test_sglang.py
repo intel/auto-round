@@ -17,12 +17,12 @@ from ...helpers import get_model_path, qwen_name_or_path
 _original_stop = multiprocessing.resource_tracker.ResourceTracker._stop
 
 
-def _patched_stop(self, *args, **kwargs):
-    try:
-        _original_stop(self, *args, **kwargs)
-    except ChildProcessError:
-        pass
-
+def _patched_stop(self, *args, _orig=_original_stop, **kwargs):
+    if _orig is not None:
+        try:
+            _orig(self, *args, **kwargs)
+        except ChildProcessError:
+            pass
 
 multiprocessing.resource_tracker.ResourceTracker._stop = _patched_stop
 
