@@ -19,12 +19,12 @@ from typing import Union
 import torch
 
 from auto_round.algorithms.quantization.config import QuantizationConfig
+from auto_round.algorithms.quantization.utils import register_act_max_hooks
 from auto_round.compressors.utils import (
     block_forward,
-    check_need_act_calibration,
+    immediate_pack,
 )
 from auto_round.data_type import QUANT_FUNC_WITH_DTYPE
-from auto_round.data_type.utils import reshape_pad_tensor_by_group_size
 from auto_round.logger import logger
 from auto_round.utils import (
     INNER_SUPPORTED_LAYER_TYPES,
@@ -32,7 +32,11 @@ from auto_round.utils import (
     check_to_quantized,
     clear_memory,
     compile_func,
+    convert_module_to_hp_if_necessary,
+    get_module,
+    set_module,
 )
+from auto_round.wrapper import WrapperLinear
 
 
 class BaseQuantizers:
@@ -172,66 +176,8 @@ class BaseQuantizers:
 
         return getattr(self.model_context, "amp_dtype", torch.float32)
 
-    def _register_act_max_hook(self, model):
-
-        def get_act_max_hook(module, input, output):
-            if isinstance(input, (tuple, list)):
-                input = input[0]
-            if input.numel() == 0:
-                return  # as no needs for act_max update
-            input, _, _ = reshape_pad_tensor_by_group_size(input, self.act_group_size)
-            act_max = torch.max(torch.abs(input), dim=-1).values
-            if not hasattr(module, "act_max") or module.act_max.numel() == 0:
-                module.act_max = act_max
-                if self.config.is_act_nv_fp:  ## for nvfp per-tensor input_global_scale calculation usage
-                    max_val = act_max.max()
-                    module.act_max = max_val.unsqueeze(0) if max_val.dim() == 0 else max_val
-            else:
-                act_max = act_max.to(module.act_max.device)
-                if self.config.is_act_nv_fp:  ## for nvfp per-tensor input_global_scale calculation usage
-                    max_val = torch.max(act_max.max(), module.act_max.max())
-                    module.act_max = max_val.unsqueeze(0) if max_val.dim() == 0 else max_val
-                else:
-                    module.act_max = torch.max(act_max, module.act_max)
-
-        hook_handles = []
-        # for single layers out of blocks, like lm_head
-        if isinstance(model, SUPPORTED_LAYER_TYPES):
-            m = model
-            if (
-                hasattr(m, "act_dynamic")
-                and check_need_act_calibration(m.act_dynamic, m.act_data_type, m.act_bits)
-                and check_to_quantized(m)
-            ):
-                hook = m.register_forward_hook(get_act_max_hook)
-                hook_handles.append(hook)
-            return hook_handles
-
-        for n, m in model.named_modules():
-            if (
-                hasattr(m, "act_dynamic")
-                and check_need_act_calibration(m.act_dynamic, m.act_data_type, m.act_bits)
-                and check_to_quantized(m)
-            ):
-                hook = m.register_forward_hook(get_act_max_hook)
-                hook_handles.append(hook)
-                continue
-
-            # for whole model, RTN
-            if n in self.layer_config:
-                config = self.layer_config[n]
-                act_dynamic = config.get("act_dynamic", True)
-                act_data_type = config.get("act_data_type", None)
-                act_bits = config.get("act_bits", 16)
-                if (
-                    config["bits"] <= 8
-                    and check_need_act_calibration(act_dynamic, act_data_type, act_bits)
-                    and check_to_quantized(config)
-                ):
-                    hook = m.register_forward_hook(get_act_max_hook)
-                    hook_handles.append(hook)
-                    continue
-        return hook_handles
+    def register_calibration_hooks(self, model, *, act_max: bool = True, imatrix: bool = True):
+        return register_act_max_hooks(self, model) if act_max else []
 
     @torch.inference_mode()
     def _quantize_embedding_layer(self):
@@ -343,6 +289,94 @@ class BaseQuantizers:
         """
         raise NotImplementedError("quantize_block must be implemented in subclasses of BaseQuantizers")
 
+    @torch.no_grad()
+    def quantize_layer_via_rtn(self, layer_name: str, disable_opt_rtn: bool | None = None) -> None:
+        """Quantize one layer with RTN and handle optional immediate pack/save."""
+        layer = get_module(self.model, layer_name)
+        layer = convert_module_to_hp_if_necessary(layer, self.model_context.amp_dtype, self.compress_context.device)
+        set_module(self.model, layer_name, layer)
+        tuning_device = layer.tuning_device if hasattr(layer, "tuning_device") else self.compress_context.device
+        if (
+            self.compress_context.is_immediate_packing
+            and self.compress_context.formats[0].is_gguf()
+            and not getattr(self.config, "disable_opt_rtn", False)
+        ):
+            layer = layer.to(tuning_device)
+            layer.scale = None
+            layer.zp = None
+        else:
+            try:
+                if disable_opt_rtn is None:
+                    disable_opt_rtn = bool(getattr(self.config, "disable_opt_rtn", False))
+                if (
+                    not disable_opt_rtn
+                    and getattr(self.config, "orig_disable_opt_rtn", None) is None
+                    and self.model_context.is_moe_model
+                    and "expert" in layer.global_name
+                    and "shared_expert" not in layer.global_name
+                    and self.config.super_bits is None
+                ):
+                    disable_opt_rtn = True
+                    logger.warning_once(
+                        "MoE layer detected: optimized RTN is disabled for efficiency. "
+                        "Use `--enable_opt_rtn` to force-enable it for MoE layers."
+                    )
+                layer = layer.to(tuning_device)
+                layer = WrapperLinear(
+                    layer,
+                    device=tuning_device,
+                    enable_minmax_tuning=False,
+                    enable_norm_bias_tuning=False,
+                    enable_round_tuning=False,
+                    enable_torch_compile=self.compress_context.enable_torch_compile,
+                    disable_opt_rtn=disable_opt_rtn,
+                    iters=0,
+                )
+                layer = layer.unwrapper({})
+            except torch.OutOfMemoryError:
+                cuda_error_msg = traceback.format_exc()
+                layer = layer.orig_layer if hasattr(layer, "orig_layer") else layer
+                try:
+                    logger.error(cuda_error_msg)
+                    logger.warning("falling back to CPU.")
+                    layer.to("cpu")
+                    layer = WrapperLinear(
+                        layer,
+                        enable_minmax_tuning=False,
+                        enable_norm_bias_tuning=False,
+                        enable_round_tuning=False,
+                        enable_torch_compile=self.compress_context.enable_torch_compile,
+                        iters=0,
+                    )
+                    layer = layer.unwrapper({})
+                except Exception:
+                    raise
+
+        set_module(self.model, layer_name, layer)
+        self._immediate_pack_and_save_module(layer_name)
+
+    def _immediate_pack_and_save_module(self, module_name):
+        from auto_round.compressors.shard_writer import ShardWriter
+
+        shard_writer = ShardWriter.get_shard_writer()
+        to_cpu = self.compress_context.low_gpu_mem_usage
+        module = get_module(self.model, module_name)
+        if self.compress_context.is_immediate_packing:
+            immediate_pack(module_name, self.layer_config)
+            if to_cpu:
+                module = module.to("cpu")
+                packed_module = get_module(self.model, module_name)
+                set_module(self.model, module_name, packed_module.to("cpu"))
+        else:
+            if to_cpu:
+                module = module.to("cpu")
+            set_module(self.model, module_name, module)
+        if self.compress_context.is_immediate_saving:
+            module = get_module(self.model, module_name)
+            module.to("cpu")
+            shard_writer.write(module, module_name, False)
+            module.to("meta")
+
     def quantize_layer(self, layer_name: str, **kwargs):
         """Quantizes a single layer of the model.
 
@@ -352,14 +386,19 @@ class BaseQuantizers:
         """
         raise NotImplementedError("quantize_layer must be implemented in subclasses of BaseQuantizers")
 
-    def quantize_layer_outside_block(self, layer_name: str, **kwargs):
+    def quantize_layer_outside_block(self, layer_name: str, input_ids=None, **kwargs):
         """Quantizes a single layer of the model outside of a block.
 
         Args:
             layer_name (str): The name of the layer to quantize. The layer module is
                 retrieved internally via get_module(model, layer_name).
+            input_ids: Optional calibration inputs for data-driven outside-layer quantization.
         """
-        raise NotImplementedError("quantize_layer_outside_block must be implemented in subclasses of BaseQuantizers")
+        dtype = kwargs.pop("dtype", None)
+        if dtype is not None:
+            layer = get_module(self.model, layer_name)
+            set_module(self.model, layer_name, layer.to(dtype))
+        self.quantize_layer_via_rtn(layer_name, **kwargs)
 
     @torch.no_grad()
     def _get_block_outputs(
@@ -543,9 +582,18 @@ class BaseQuantizers:
                 # Shared keys are stored once (not per-sample), often wrapped in a
                 # 1-element list by the caching hook.  Unwrap so the model receives
                 # the raw value (e.g. (cos, sin) tuple, not [(cos, sin)]).
+                # Exception: if the hook detected that the "shared" key actually varies
+                # per sample (e.g. position_embeddings in a VLM visual encoder), it
+                # upgrades the storage to a per-sample list with >1 elements.
                 val = input_others[key]
                 if isinstance(val, list) and len(val) == 1:
                     current_input_others[key] = val[0]
+                elif isinstance(val, list) and len(val) > 1:
+                    # Per-sample storage for a nominally-shared key that varies across
+                    # calibration samples (e.g. position_embeddings in Qwen2-VL visual
+                    # encoder blocks where each image has a different patch count).
+                    idx = int(indices[0]) if len(indices) == 1 else 0
+                    current_input_others[key] = val[idx] if idx < len(val) else val[0]
                 else:
                     current_input_others[key] = val
             elif not isinstance(input_others[key], (str, bool, type(None))):
