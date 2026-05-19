@@ -1924,64 +1924,38 @@ def dispatch_model_by_all_available_devices(
         # (text encoder, VAE, etc.) to avoid OOM.
         main_model = getattr(pipe, main_attr)
         primary_device = devices[0]
-        # Calculate memory needed for non-target pipeline components
-        non_main_bytes = 0
+        # Place non-main components on the last device
+        comp_device = devices[-1]
         for attr, component in pipe.components.items():
             if attr == main_attr:
                 continue
-            if isinstance(component, torch.nn.Module):
-                non_main_bytes += sum(p.numel() * p.element_size() for p in component.parameters())
-        # Buffer for activations and runtime overhead (beyond weights).
-        # This ratio compounds with get_balanced_memory's internal 0.9 ratio,
-        # so the net reservation for non-main components is non_main_bytes * (1.2 * 0.9) ≈ non_main_bytes * 1.08.
-        NON_MAIN_WEIGHT_BUFFER_RATIO = 1.2
-        non_main_reserved = int(non_main_bytes * NON_MAIN_WEIGHT_BUFFER_RATIO) if non_main_bytes > 0 else 0
+            if not isinstance(component, torch.nn.Module):
+                continue
+            # Align dtype on CPU first to avoid wasting GPU memory
+            if hasattr(component, "dtype") and component.dtype != main_model.dtype:
+                try:
+                    component.to(dtype=main_model.dtype)
+                except Exception:
+                    pass
+            try:
+                component.to(comp_device)
+            except (NotImplementedError, RuntimeError):
+                pass
 
         from auto_round.utils.common import normalize_no_split_modules
 
         no_split_modules = normalize_no_split_modules(getattr(main_model, "_no_split_modules", []))
-        # get_balanced_memory applies a 0.9 ratio internally to leave headroom.
-        max_memory = get_balanced_memory(main_model, max_memory=None, no_split_module_classes=no_split_modules)
 
-        # Reserve space on primary device for non-target components
-        primary_idx = int(primary_device.split(":")[-1]) if ":" in primary_device else 0
-        if primary_idx in max_memory and non_main_reserved > 0:
-            original = max_memory[primary_idx]
-            reserved = max(original - non_main_reserved, 0)
-            max_memory[primary_idx] = reserved
-            logger.info(
-                f"Diffusion dispatch: reserving {non_main_reserved / 1e9:.1f}GB on device {primary_idx} "
-                f"for non-target components ({original / 1e9:.1f}GB -> {reserved / 1e9:.1f}GB)"
-            )
-
-        new_max_memory = {}
-        for device in devices:
-            if ":" in device:
-                d = int(device.split(":")[-1])
-            elif device == "cpu":
-                d = "cpu"
-            elif isinstance(device, str):
-                d = 0
-            else:
-                raise ValueError(f"Unsupported device {device} in device_map: {device_map}")
-            if d in max_memory:
-                new_max_memory[d] = max_memory[d]
-
-        if hasattr(main_model, "tie_weights") and callable(main_model.tie_weights):
-            main_model.tie_weights()
-        main_device_map = infer_auto_device_map(
-            main_model, max_memory=new_max_memory, no_split_module_classes=no_split_modules
-        )
-        dispatched = dispatch_model(main_model, device_map=main_device_map)
+        # dispatch_model_block_wise queries free memory after non-main
+        # components are already placed, so the budget naturally accounts for
+        # them.  Use the same approach here.
+        dispatched = dispatch_model_block_wise(main_model, device_map)
         setattr(pipe, main_attr, dispatched)
 
         # Install manual pre/post hooks to move tensors.
-        # dispatch_model attaches hf_device_map; dispatch_model_block_wise uses device_map.
-        _dispatch_device_map = getattr(dispatched, "hf_device_map", None) or getattr(dispatched, "device_map", {})
         unique_devices = set()
-        if _dispatch_device_map:
-            unique_devices = {v for v in _dispatch_device_map.values() if v not in ("cpu", "disk")}
-
+        if hasattr(dispatched, "hf_device_map"):
+            unique_devices = {v for v in dispatched.hf_device_map.values() if v not in ("cpu", "disk")}
         if len(unique_devices) <= 1:
             execution_device = primary_device
             try:
@@ -1991,24 +1965,6 @@ def dispatch_model_by_all_available_devices(
 
             if hasattr(dispatched, "_hf_hook") and hasattr(dispatched._hf_hook, "execution_device"):
                 dispatched._hf_hook.execution_device = execution_device
-
-            # Place non-main components on the device that has the most headroom after dispatch.
-            # Prefer the last device (usually CPU) to avoid occupying GPU memory.
-            comp_device = devices[-1]
-            for attr, component in pipe.components.items():
-                if attr == main_attr:
-                    continue
-                if not isinstance(component, torch.nn.Module):
-                    continue
-                if hasattr(component, "dtype") and component.dtype != main_model.dtype:
-                    try:
-                        component.to(dtype=main_model.dtype)
-                    except Exception:
-                        pass
-                try:
-                    component.to(comp_device)
-                except (NotImplementedError, RuntimeError):
-                    pass
 
             if not getattr(dispatched, "_autoround_align_inputs_hook_installed", False):
                 _first_param_device = execution_device
