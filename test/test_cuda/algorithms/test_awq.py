@@ -28,8 +28,6 @@ import shutil
 import pytest
 import torch
 from transformers import AutoConfig, AutoModelForCausalLM, AutoTokenizer
-from vllm import LLM, SamplingParams
-from vllm.platforms import current_platform
 
 from auto_round import AutoRound
 
@@ -164,32 +162,6 @@ class TestAWQW8A8LLMCompressor:
             assert weight.dtype == torch.int8, f"Expected int8 weight, got {weight.dtype}"
             scale = f.get_tensor("model.decoder.layers.0.self_attn.k_proj.weight_scale")
             assert scale.shape[1] == 1, f"Expected per-channel scale shape (out, 1), got {scale.shape}"
-
-    @pytest.mark.skip_ci(reason="due to vllm and CT Dependency conflict.")
-    def test_vllm_awq_w8a8_llmc_inference(self, tiny_opt_model_path, monkeypatch):
-        """W8A8 AWQ → llm_compressor → vLLM: end-to-end inference test."""
-        monkeypatch.setenv("VLLM_WORKER_MULTIPROC_METHOD", "spawn")
-
-        ar = AutoRound(
-            tiny_opt_model_path,
-            scheme="INT8",
-            algorithm="awq",
-            nsamples=2,
-            seqlen=32,
-            batch_size=2,
-        )
-        _, save_path = ar.quantize_and_save(output_dir=self.save_dir, format="llm_compressor")
-
-        sampling_params = SamplingParams(temperature=0.8, top_p=0.95, max_tokens=50)
-        llm = LLM(
-            model=save_path,
-            trust_remote_code=True,
-            tensor_parallel_size=1,
-            gpu_memory_utilization=0.8,
-        )
-        outputs = llm.generate(["Hello, my name is"], sampling_params)
-        generated_text = outputs[0].outputs[0].text
-        assert len(generated_text.strip()) > 0 and "!!!" not in generated_text, "vLLM produced empty/meaningless output"
 
 
 # ---------------------------------------------------------------------------
