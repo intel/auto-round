@@ -28,6 +28,7 @@ from auto_round import envs
 from auto_round.algorithms.alg_config import AlgConfig
 from auto_round.calibration.utils import (
     _infer_last_cache_name,
+    _split_inputs_diffusion,
     _update_inputs,
 )
 from auto_round.compressors.base import BaseCompressor
@@ -245,6 +246,7 @@ class DataDrivenCompressor(BaseCompressor):
 
         fake_layer = _FakeDecodingLayer()
         fake_layer.orig_forward = fake_layer.forward
+        fake_layer._true_orig_forward = lambda *a, **kw: (a, kw)
         fake_layer.forward = partial(self._get_block_forward_func(first_block_name), fake_layer)
 
         self.inputs = {}
@@ -437,6 +439,19 @@ class DataDrivenCompressor(BaseCompressor):
 
         input_ids, input_others = self._preprocess_block_inputs(inputs)
 
+        # For diffusion models, the heuristic split ("hidden_state" in key) may
+        # place keys like encoder_hidden_states in input_ids even though they are
+        # not block outputs.  Move those to input_others so they persist across
+        # blocks (only output keys get refreshed via reference_output each iteration).
+        if self.model_context.is_diffusion and isinstance(input_ids, dict):
+            first_block = get_module(model, block_names[0])
+            output_config = self.quantizer.DIFFUSION_OUTPUT_CONFIGS.get(
+                first_block.__class__.__name__, ["hidden_states"]
+            )
+            extra_keys = [k for k in list(input_ids.keys()) if k not in output_config]
+            for k in extra_keys:
+                input_others[k] = input_ids.pop(k)
+
         if pbar is None:
             pbar = tqdm(range(0, len(block_names), nblocks))
 
@@ -488,7 +503,7 @@ class DataDrivenCompressor(BaseCompressor):
                 m = m.to(self.compress_context.device)
                 card_0_in_high_risk, loss_device = False, self.compress_context.device
 
-            if len(self.compress_context.device_list) > 1:
+            if len(self.compress_context.device_list) > 1 and not self.model_context.is_diffusion:
                 from accelerate.hooks import AlignDevicesHook, add_hook_to_module
 
                 for _n, _mod in m.named_modules():
@@ -500,14 +515,20 @@ class DataDrivenCompressor(BaseCompressor):
             bs = self.quantizer.batch_size * self.quantizer.infer_bs_coeff
             if q_input is None:
                 hook_handles = self.quantizer._register_act_max_hook(m)
-                reference_output = self.quantizer._get_block_outputs(m, input_ids, input_others, bs)
+                reference_output = self.quantizer._get_block_outputs(
+                    m, input_ids, input_others, bs, device_override=loss_device
+                )
                 for h in hook_handles:
                     h.remove()
             else:
-                reference_output = self.quantizer._get_block_outputs(m, input_ids, input_others, bs)
+                reference_output = self.quantizer._get_block_outputs(
+                    m, input_ids, input_others, bs, device_override=loss_device
+                )
                 hook_handles = self.quantizer._register_act_max_hook(m)
                 if hook_handles:
-                    self.quantizer._get_block_outputs(m, q_input, input_others, bs, save_output=False)
+                    self.quantizer._get_block_outputs(
+                        m, q_input, input_others, bs, save_output=False, device_override=loss_device
+                    )
                 for h in hook_handles:
                     h.remove()
 
@@ -541,7 +562,7 @@ class DataDrivenCompressor(BaseCompressor):
                 q_input = None
 
             # ── Infrastructure: hook removal, device cleanup, logging ─────────
-            if len(self.compress_context.device_list) > 1:
+            if len(self.compress_context.device_list) > 1 and not self.model_context.is_diffusion:
                 accelerate.hooks.remove_hook_from_submodules(m)
             mv_module_from_gpu(m)
             if self.enable_torch_compile:
@@ -624,6 +645,9 @@ class DataDrivenCompressor(BaseCompressor):
             to_cache_block_names = [block[0] for block in all_blocks]
         else:
             to_cache_block_names = flatten_list(all_blocks)
+        to_cache_layer_names = layer_names
+        if self.super_group_size is not None:
+            to_cache_layer_names = []
         if len(layer_names) > 0:
             logger.info(
                 "Starting to cache block inputs. This may be slow due to external block layers: %s", layer_names
@@ -633,7 +657,7 @@ class DataDrivenCompressor(BaseCompressor):
         all_inputs = self.try_cache_inter_data_gpucpu(
             to_cache_block_names,
             self.nsamples,
-            layer_names,
+            to_cache_layer_names,
         )
         self.inputs = all_inputs
         is_quantized_embedding = self._quantize_embedding_layer()
@@ -642,7 +666,7 @@ class DataDrivenCompressor(BaseCompressor):
         if is_quantized_embedding:
             all_inputs = copy.deepcopy(self.inputs)
             clear_memory(self.inputs, device_list=self.compress_context.device_list)
-            all_q_inputs = self.try_cache_inter_data_gpucpu(to_cache_block_names, self.nsamples, layer_names)
+            all_q_inputs = self.try_cache_inter_data_gpucpu(to_cache_block_names, self.nsamples, to_cache_layer_names)
         # Remove accelerate dispatch hooks before moving parameters.
         # hf_device_map is kept for reference but hooks are no longer needed.
         if hasattr(self.model_context.model, "hf_device_map") and len(self.model_context.model.hf_device_map) > 1:
@@ -652,7 +676,12 @@ class DataDrivenCompressor(BaseCompressor):
         logger.info("caching done")
         if self.compress_context.low_cpu_mem_usage:
             if self.model_context.is_model_patched and not self.compress_context.is_immediate_saving:
-                self._offloader(self.model_context.model, all_blocks, clear_memory=True, device_list=self.device_list)
+                self._offloader(
+                    self.model_context.model,
+                    all_blocks,
+                    clear_memory=True,
+                    device_list=self.compress_context.device_list,
+                )
                 if not self._offloader.enabled:
                     self.compress_context.low_cpu_mem_usage = False
             else:
@@ -745,7 +774,6 @@ class DataDrivenCompressor(BaseCompressor):
         """
         # TODO currently we take all the layers outside blocks as post block layers which is not optimal
         # if there is no input for layer, we use rtn
-
         for layer_name in copy.deepcopy(layer_names):
             if layer_name not in layer_inputs:
                 if self.act_bits < 16 and not self.act_dynamic:
@@ -786,7 +814,7 @@ class DataDrivenCompressor(BaseCompressor):
                     enable_norm_bias_tuning=False,
                     enable_torch_compile=self.enable_torch_compile,
                     device=self.compress_context.device,
-                    disable_opt_rtn=self.disable_opt_rtn,
+                    disable_opt_rtn=getattr(self, "disable_opt_rtn", False),
                 )
                 new_layer = wrapper_layer.unwrapper({})
                 set_module(self.model, layer_name, new_layer)
@@ -981,7 +1009,7 @@ class CalibratedRTNCompressor(DataDrivenCompressor):
                         self.quantizer.batch_size,
                         self.compress_context.device,
                     )
-                    if len(self.compress_context.device_list) > 1:
+                    if len(self.compress_context.device_list) > 1 and not self.model_context.is_diffusion:
                         from accelerate.hooks import AlignDevicesHook, add_hook_to_module
 
                         for _, _mod in block.named_modules():

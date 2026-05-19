@@ -1119,6 +1119,15 @@ def get_checkpoint_conversion_mapping(model):
         )
 
         conversion_mappings = transformers_get_checkpoint_conversion_mapping(model.config.model_type)
+
+        # For composite models (e.g. VLMs) loaded as text sub-models via AutoModelForCausalLM,
+        # the composite model_type may not have a mapping, but the text sub-model type does.
+        if conversion_mappings is None:
+            text_config = getattr(getattr(model, "config", None), "text_config", None)
+            text_model_type = getattr(text_config, "model_type", None)
+            if text_model_type:
+                conversion_mappings = transformers_get_checkpoint_conversion_mapping(text_model_type)
+
         if conversion_mappings is not None:
             for conversion_mapping in conversion_mappings:
                 for source_pattern in conversion_mapping.source_patterns:

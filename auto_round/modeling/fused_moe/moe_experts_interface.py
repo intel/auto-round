@@ -321,10 +321,15 @@ def _detect_expert_projections(module: nn.Module) -> dict[str, dict]:
         if param is not None and isinstance(param, nn.Parameter) and param.dim() == 3:
             detected[proj_name] = config
 
-    # If no known patterns found, scan for any 3D Parameter (future-proofing)
+    # If no known patterns found, scan for any 3D Parameter (future-proofing),
+    # but exclude known non-expert 3D parameters that exist on some transformer
+    # architectures (e.g. scale_shift_table on WanTransformer3DModel).
+    _NON_EXPERT_3D_PARAMS = frozenset(["scale_shift_table"])
     if not detected:
         for attr_name in dir(module):
             if attr_name.startswith("_"):
+                continue
+            if attr_name in _NON_EXPERT_3D_PARAMS:
                 continue
             param = getattr(module, attr_name, None)
             if param is not None and isinstance(param, nn.Parameter) and param.dim() == 3:
