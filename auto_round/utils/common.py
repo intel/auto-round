@@ -1054,7 +1054,7 @@ def collapse_ignore_layers(names: list[str]) -> list[str]:
     """Collapse numbered layer names into regex patterns.
 
     Groups names that differ only by a numeric index and replaces
-    the index with ``\\d+``. Single-element groups are kept as-is.
+    the index with ``\\d+``.  Single-element groups are kept as-is.
 
     Example::
 
