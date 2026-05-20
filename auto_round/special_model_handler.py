@@ -58,8 +58,136 @@ SPECIAL_SHARED_CACHE_KEYS = {
     "Gemma3ForConditionalGeneration": ("position_embeddings_global", "position_embeddings_local")
 }
 SPECIAL_SHARED_CACHE_KEYS["MiniMaxText01ForCausalLM"] = ("slope_rate",)
+SPECIAL_SHARED_CACHE_KEYS["Gemma4ForConditionalGeneration"] = ("position_ids",)
 SPECIAL_SHARED_CACHE_KEYS["WanTransformer3DModel"] = ("rotary_emb",)
 MISTRAL_3_2_MODELS = ["Mistral-Small-3.2", "Magistral-Small", "Devstral-Small"]
+
+
+def _normalize_gemma4_per_layer_input(positional_inputs, hidden_states):
+    if positional_inputs is None or len(positional_inputs) == 0:
+        return positional_inputs
+
+    per_layer_input = positional_inputs[0]
+    if not isinstance(per_layer_input, torch.Tensor) or per_layer_input.shape[1] == hidden_states.shape[1]:
+        return positional_inputs
+
+    hs_seq = hidden_states.shape[1]
+    pl_seq = per_layer_input.shape[1]
+    if hs_seq <= pl_seq:
+        per_layer_input = per_layer_input[:, :hs_seq, :]
+    else:
+        pad = per_layer_input[:, -1:, :].expand(-1, hs_seq - pl_seq, -1)
+        per_layer_input = torch.cat([per_layer_input, pad], dim=1)
+
+    normalized_inputs = list(positional_inputs)
+    normalized_inputs[0] = per_layer_input
+    return type(positional_inputs)(normalized_inputs) if isinstance(positional_inputs, tuple) else normalized_inputs
+
+
+def prepare_special_model_block_inputs(block, rotary_input, input_others, positional_inputs=None):
+    """Rewrite replay inputs for blocks that need model-specific handling."""
+
+    special_replay_type = getattr(block, "_autoround_special_replay", None)
+    if special_replay_type == "gemma4":
+        prepared_inputs = _prepare_gemma4_replay_inputs(
+            block,
+            rotary_input,
+            position_ids=input_others.get("position_ids"),
+            position_embeddings=input_others.get("position_embeddings"),
+            attention_mask=input_others.get("attention_mask"),
+            shared_kv_states=input_others.get("shared_kv_states"),
+            past_key_values=input_others.get("past_key_values"),
+            config=getattr(block, "_gemma4_config_ref", None),
+        )
+        for key, value in prepared_inputs.items():
+            if value is not None or key in input_others or key == "shared_kv_states":
+                input_others[key] = value
+        positional_inputs = _normalize_gemma4_per_layer_input(positional_inputs, rotary_input)
+    return input_others, positional_inputs
+
+
+def _get_gemma4_rotary_emb(block, default_rotary_emb=None):
+    rotary_emb_ref = getattr(block, "_rotary_emb_ref", None)
+    if rotary_emb_ref:
+        return rotary_emb_ref[0]
+    return getattr(block, "_rotary_emb", default_rotary_emb)
+
+
+def _rebuild_gemma4_attention_mask(config, hidden_states, position_ids, layer_type, past_key_values=None):
+    from transformers.masking_utils import create_causal_mask, create_sliding_window_causal_mask
+
+    mask_builder = create_causal_mask if layer_type == "full_attention" else create_sliding_window_causal_mask
+    return mask_builder(
+        config=config,
+        inputs_embeds=hidden_states,
+        attention_mask=None,
+        past_key_values=past_key_values,
+        position_ids=position_ids,
+    )
+
+
+def _prepare_gemma4_replay_inputs(
+    block,
+    rotary_input,
+    *,
+    position_ids=None,
+    position_embeddings=None,
+    attention_mask=None,
+    shared_kv_states=None,
+    past_key_values=None,
+    config=None,
+    default_rotary_emb=None,
+    default_shared_kv_states=None,
+):
+    attn = getattr(block, "self_attn", None)
+    layer_type = getattr(attn, "layer_type", None)
+    head_dim = getattr(attn, "head_dim", None)
+
+    if attn is not None and hasattr(attn, "store_full_length_kv") and shared_kv_states is None:
+        shared_kv_states = default_shared_kv_states if default_shared_kv_states is not None else {}
+
+    need_position_embeddings = position_embeddings is None
+    if isinstance(position_embeddings, dict):
+        cached_position_embeddings = position_embeddings.get(layer_type) if layer_type is not None else None
+        need_position_embeddings = cached_position_embeddings is None
+    else:
+        cached_position_embeddings = position_embeddings
+
+    if (
+        not need_position_embeddings
+        and head_dim is not None
+        and isinstance(cached_position_embeddings, (tuple, list))
+        and cached_position_embeddings
+    ):
+        need_position_embeddings = cached_position_embeddings[0].shape[-1] != head_dim
+
+    if need_position_embeddings and layer_type is not None and position_ids is not None:
+        rotary_emb = _get_gemma4_rotary_emb(block, default_rotary_emb)
+        if rotary_emb is not None:
+            rebuilt_position_embeddings = rotary_emb(rotary_input, position_ids, layer_type)
+            if isinstance(position_embeddings, dict):
+                position_embeddings = dict(position_embeddings)
+                position_embeddings[layer_type] = rebuilt_position_embeddings
+            else:
+                position_embeddings = rebuilt_position_embeddings
+
+    if config is not None and layer_type is not None and position_ids is not None:
+        try:
+            attention_mask = _rebuild_gemma4_attention_mask(
+                config,
+                hidden_states=rotary_input,
+                position_ids=position_ids,
+                layer_type=layer_type,
+                past_key_values=past_key_values,
+            )
+        except Exception:
+            pass
+
+    return {
+        "position_embeddings": position_embeddings,
+        "attention_mask": attention_mask,
+        "shared_kv_states": shared_kv_states,
+    }
 
 
 def _patch_gemma4_model(model):
@@ -75,7 +203,6 @@ def _patch_gemma4_model(model):
     import types as _types
 
     try:
-        from transformers.masking_utils import create_causal_mask, create_sliding_window_causal_mask
         from transformers.models.gemma4.modeling_gemma4 import Gemma4TextModel
     except ImportError:
         return model
@@ -96,6 +223,8 @@ def _patch_gemma4_model(model):
     shared_kv_states_global = {}
 
     for layer in text_model.layers:
+        object.__setattr__(layer, "_autoround_special_replay", "gemma4")
+        object.__setattr__(layer, "_gemma4_config_ref", text_model.config)
         original_forward = layer.forward
         layer_type = getattr(getattr(layer, "self_attn", None), "layer_type", None)
         if layer_type is None:
@@ -119,20 +248,25 @@ def _patch_gemma4_model(model):
                 position_ids=None,
                 **kwargs,
             ):
-                # Ensure shared_kv_states is always a dict (newer transformers
-                # versions pass it as positional arg 3; None causes item assignment crash)
-                if shared_kv_states is None:
-                    shared_kv_states = skv_global
-                # Recompute position_embeddings when cached dim doesn't match
-                if (
-                    hd is not None
-                    and position_embeddings is not None
-                    and isinstance(position_embeddings, (tuple, list))
-                    and len(position_embeddings) == 2
-                ):
-                    cos, _ = position_embeddings
-                    if cos.shape[-1] != hd and position_ids is not None:
-                        position_embeddings = re(hidden_states, position_ids, lt)
+                # Rebuild Gemma4 layer-specific replay inputs from the minimal
+                # shared cache so later layers do not need variable block inputs.
+                if shared_kv_states is None and getattr(self, "layer_idx", None) == 0:
+                    skv_global.clear()
+                prepared_inputs = _prepare_gemma4_replay_inputs(
+                    self,
+                    hidden_states,
+                    position_ids=position_ids,
+                    position_embeddings=position_embeddings,
+                    attention_mask=attention_mask,
+                    shared_kv_states=shared_kv_states,
+                    past_key_values=kwargs.get("past_key_values"),
+                    config=cfg,
+                    default_rotary_emb=re,
+                    default_shared_kv_states=skv_global,
+                )
+                position_embeddings = prepared_inputs["position_embeddings"]
+                attention_mask = prepared_inputs["attention_mask"]
+                shared_kv_states = prepared_inputs["shared_kv_states"]
 
                 # per_layer_input is token-specific but is cached as shared positional
                 # input (only 1st batch stored). Truncate/pad to match hidden_states seq_len.
@@ -144,22 +278,6 @@ def _patch_gemma4_model(model):
                     else:
                         pad = per_layer_input[:, -1:, :].expand(-1, hs_seq - pl_seq, -1)
                         per_layer_input = torch.cat([per_layer_input, pad], dim=1)
-
-                # Recompute attention_mask for full-attention layers when a
-                # sliding-window mask was cached (it would be too restrictive)
-                if is_full_attn and attention_mask is not None and position_ids is not None:
-                    # Only rebuild if the mask was created for a shorter context
-                    # (sliding window masks have finite bandwidth)
-                    try:
-                        attention_mask = create_causal_mask(
-                            config=cfg,
-                            inputs_embeds=hidden_states,
-                            attention_mask=None,
-                            past_key_values=kwargs.get("past_key_values"),
-                            position_ids=position_ids,
-                        )
-                    except Exception:
-                        pass  # fall back to whatever was cached
 
                 if orig_has_shared_kv:
                     return orig_fwd(
@@ -212,6 +330,13 @@ def _handle_special_model(model):
 
         if version.parse(transformers.__version__) < version.parse("5.6"):
             _patch_gemma4_model(model)
+        else:
+            _attach_gemma4_rotary_emb(model)
+        logger.warning(
+            "Applying a monkey patch to Gemma4 to reduce RAM usage. "
+            "This patch has only been validated with limited Transformers versions. "
+            "Proceed with caution."
+        )
     return model
 
 
@@ -810,32 +935,34 @@ def get_predefined_ignore_layers(model: torch.nn.Module) -> list[str]:
     return list(dict.fromkeys(layers))
 
 
-# Maps model_type -> fixed attributes to set on the BaseCompressor instance.
-# Only used when transformers >= 5.6, which natively supports per-block
-# position_embedding recomputation (has_variable_block_shape).
-_PRE_DEFINED_FIXED_ATTR = {"gemma4": {"has_variable_block_shape": True}}
+def _attach_gemma4_rotary_emb(model):
+    """Attach ``_rotary_emb`` to each Gemma4 decoder layer.
 
-
-def get_predefined_fixed_attr(model: torch.nn.Module) -> dict | None:
-    """Return fixed compressor attributes for models that need special caching.
-
-    For Gemma4 with transformers >= 5.6, each decoder block must cache its own
-    inputs because sliding vs full-attention layers require different
-    position_embeddings. Returns ``None`` for older transformers, which instead
-    rely on the per-layer forward patch applied in ``_handle_special_model``.
+    For transformers >= 5.6 the per-layer forward patch is unnecessary, but
+    ``block_forward`` still needs access to ``rotary_emb`` (which lives on the
+    parent ``Gemma4TextModel``) to recompute ``position_embeddings`` when the
+    cached version from block 0 has the wrong dimension.
     """
-    import transformers
-    from packaging import version
+    try:
+        from transformers.models.gemma4.modeling_gemma4 import Gemma4TextModel
+    except ImportError:
+        return
 
-    config = getattr(model, "config", None)
-    if config is None or not hasattr(config, "model_type"):
-        return None
-    attrs = _PRE_DEFINED_FIXED_ATTR.get(config.model_type)
-    if attrs is None:
-        return None
-    if version.parse(transformers.__version__) >= version.parse("5.6"):
-        return attrs
-    return None
+    text_model = None
+    for _, submodule in model.named_modules():
+        if isinstance(submodule, Gemma4TextModel):
+            text_model = submodule
+            break
+
+    if text_model is None:
+        return
+
+    for layer in text_model.layers:
+        # Store in a plain list to prevent nn.Module from registering rotary_emb
+        # as a child submodule (which would cause meta-tensor errors during .to(device)).
+        object.__setattr__(layer, "_rotary_emb_ref", [text_model.rotary_emb])
+        object.__setattr__(layer, "_autoround_special_replay", "gemma4")
+        object.__setattr__(layer, "_gemma4_config_ref", text_model.config)
 
 
 def load_next_step_diffusion(pretrained_model_name_or_path, device_str):
