@@ -409,6 +409,7 @@ def _get_qwen3_tts_multimodal_block(model, quant_vision=False):
     # Fallback: model.model.layers (standard structure)
     if not block_names and hasattr(model, "model") and hasattr(model.model, "layers"):
         block_names.append([f"model.layers.{i}" for i in range(len(model.model.layers))])
+    return block_names
 
 
 def _get_bagel_multimodal_block(model, quant_vision=False):
