@@ -213,6 +213,14 @@ def pack_layer(layer_name, model, backend, device=None):
     else:
         qlayer.pack(layer, scale, zp, None, device=device)
     qlayer.to(orig_device)
+
+    # Inject rotation buffers right after packing so that
+    # ShardWriter.save_module() captures them before offloading to meta.
+    if hasattr(model, "_rotation_config"):
+        from auto_round.algorithms.transforms import inject_rotation_buffers_on_layer
+
+        inject_rotation_buffers_on_layer(layer_name, qlayer, model)
+
     # Note: release weight and bias explicitly, in case they are referenced elsewhere
     release_layer_safely(layer)
 
@@ -310,6 +318,16 @@ def save_quantized_as_autoround(
         for name in tqdm(names, desc="packing", leave=True):
             pack_layer(name, model, backend, device)
     filter_quantization_config(quantization_config)
+
+    # Inject rotation buffers into QuantLinear modules (if applicable).
+    # For shard-based saving the buffers are already injected per-layer in
+    # pack_layer(); this call handles the non-shard path where modules are
+    # still alive on a real device.
+    if hasattr(model, "_rotation_config"):
+        from auto_round.algorithms.transforms import inject_rotation_buffers_bulk
+
+        inject_rotation_buffers_bulk(model, quantization_config)
+
     if hasattr(model, "config"):
         model.config.quantization_config = quantization_config
     if output_dir is None:
@@ -339,5 +357,11 @@ def save_quantized_as_autoround(
     else:
         dtype = None
     save_model(model, model_output_dir, safe_serialization=safe_serialization, dtype=dtype)
+
+    # Save rotation config to config.json for load-time reconstruction
+    if hasattr(model, "_rotation_config"):
+        from auto_round.algorithms.transforms import save_rotation_config
+
+        save_rotation_config(model, model_output_dir)
 
     return model

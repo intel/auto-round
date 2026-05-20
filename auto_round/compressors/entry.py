@@ -10,6 +10,8 @@ from auto_round.algorithms.alg_config import AlgConfig
 from auto_round.algorithms.quantization.awq.config import AWQConfig
 from auto_round.algorithms.quantization.rtn.config import RTNConfig
 from auto_round.algorithms.quantization.sign_round.config import SignRoundConfig
+from auto_round.algorithms.transforms import normalize_rotation_config as _normalize_any_rotation_config
+from auto_round.algorithms.transforms.base import BaseRotationConfig as _BaseRotationConfig
 from auto_round.algorithms.transforms.rotation.config import RotationConfig as _NewArchRotationConfig
 from auto_round.auto_scheme.gen_auto_scheme import AutoScheme
 from auto_round.compressors.data_driven import CalibratedRTNCompressor, DataDrivenCompressor
@@ -173,6 +175,9 @@ class AutoRound(object):
         """Convert string alias(es) to the corresponding config instance(s) with default parameters."""
         if isinstance(config, str):
             key = config.strip().lower()
+            # Handle spinquant/quarot via unified normalizer
+            if key in ("spinquant", "quarot"):
+                return _normalize_any_rotation_config(key)
             if key not in cls._CONFIG_ALIASES:
                 raise ValueError(f"Unknown config alias '{config}'. " f"Supported: {list(cls._CONFIG_ALIASES.keys())}")
             return cls._CONFIG_ALIASES[key]()
@@ -567,16 +572,23 @@ class AutoRoundCompatible:
         # In old arch this was a standalone keyword arg; the new arch passes rotation
         # transforms as part of the alg_configs list.  All backends (auto / inplace /
         # transform) are dispatched inside ``HadamardRotation.apply_to_model``.
+        # Also supports SpinQuantConfig and string shorthands ("quarot", "spinquant").
         _rotation_config_raw = kwargs.pop("rotation_config", None)
         if _rotation_config_raw is not None:
-            if isinstance(_rotation_config_raw, _NewArchRotationConfig):
+            if isinstance(_rotation_config_raw, _BaseRotationConfig):
+                # Already a valid config (RotationConfig, SpinQuantConfig, etc.)
                 _rc = _rotation_config_raw
             elif isinstance(_rotation_config_raw, dict):
-                _rc = _NewArchRotationConfig.model_validate(_rotation_config_raw)
+                # Use unified normalizer which dispatches by "algorithm" key
+                _rc = _normalize_any_rotation_config(_rotation_config_raw)
+            elif isinstance(_rotation_config_raw, str):
+                # String shorthands: "quarot", "spinquant", "hadamard",
+                # "random_hadamard", "default", etc.
+                _rc = _normalize_any_rotation_config(_rotation_config_raw)
             else:
-                # str alias ("default", "random_hadamard", …) -> default config
                 _rc = _NewArchRotationConfig()
-            config = [config, _rc]
+            if _rc is not None:
+                config = [config, _rc]
 
         # Extract MLLM-specific parameters
         processor = kwargs.pop("processor", None)
