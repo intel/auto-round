@@ -367,6 +367,47 @@ class Qwen3OmniProcessor(HFProcessor):
         return ret
 
 
+@register_processor("mimo_audio")
+@register_processor("qwen3_tts")
+class AudioTextProcessor(BasicProcessor):
+    """Processor for audio/TTS models that use text-only calibration.
+
+    Supports MiMo-Audio (MiMoAudioForCausalLM) and Qwen3-TTS
+    (Qwen3TTSForConditionalGeneration). Both models use text data for
+    quantization calibration since audio calibration is not yet supported.
+    """
+
+    def post_init(self, model, tokenizer, processor=None, image_processor=None, use_rtn=False, **kwargs):
+        assert tokenizer is not None, "tokenizer should not be None"
+        self.model = model
+        self.tokenizer = tokenizer
+        self.processor = processor
+        self.image_processor = None  # Audio/TTS model, no image processor needed
+        self.use_rtn = use_rtn
+
+    def check_image_processor(self):
+        pass
+
+    def get_input(self, text, images, squeeze=True, max_length=None, truncation=False, **kwargs):
+        if isinstance(text, list):
+            if hasattr(self.tokenizer, "chat_template") and self.tokenizer.chat_template:
+                text = self.tokenizer.apply_chat_template(text, tokenize=False, add_generation_prompt=True)
+            else:
+                text = (
+                    " ".join(msg["content"] for msg in text if isinstance(msg, dict) and "content" in msg)
+                    if all(isinstance(msg, dict) for msg in text)
+                    else " ".join(str(t) for t in text)
+                )
+
+        if max_length is not None:
+            ret = self.tokenizer(text, return_tensors="pt", truncation=True, max_length=max_length)
+        else:
+            ret = self.tokenizer(text, return_tensors="pt")
+        if squeeze:
+            ret = self.squeeze_result(ret)
+        return ret
+
+
 @register_processor("cogvlm2")
 class CogVLM2Processor(BasicProcessor):
     def get_input(self, text, images, truncation=False, squeeze=True, max_length=None, **kwargs):

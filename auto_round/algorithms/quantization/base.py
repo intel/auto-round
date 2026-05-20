@@ -57,6 +57,7 @@ class BaseQuantizers:
         "FluxSingleTransformerBlock": ["encoder_hidden_states", "hidden_states"],
         "OvisImageTransformerBlock": ["encoder_hidden_states", "hidden_states"],
         "OvisImageSingleTransformerBlock": ["encoder_hidden_states", "hidden_states"],
+        "StableAudioDiTBlock": ["hidden_states"],
         "WanTransformerBlock": ["hidden_states"],
     }
 

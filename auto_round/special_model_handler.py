@@ -29,6 +29,8 @@ mllms_with_limited_bs = (
     "qwen2_5_omni",
     "qwen3_omni_moe",
     "glm_image",
+    "mimo_audio",
+    "qwen3_tts",
 )  # Limitations on batch_size
 
 SUPPORT_ONLY_TEXT_MODELS = [
@@ -48,16 +50,22 @@ SUPPORT_ONLY_TEXT_MODELS = [
     "qwen2_5_omni",
     "qwen3_omni_moe",
     "gemma3",
-    "gemma4",
     "bagel",
+    "mimo_audio",
+    "qwen3_tts",
 ]
 
 NOT_SUPPORT_ONLY_TEXT_MODELS = ["mllama", "mistral3_2"]
+
+# Maps architecture class names to virtual model_type keys.
+# Used when config.model_type doesn't uniquely identify the model (e.g. MiMo-Audio).
+from auto_round.utils.model import ARCHITECTURE_MODEL_TYPE_MAP, resolve_model_type  # noqa: E402
 
 SPECIAL_SHARED_CACHE_KEYS = {
     "Gemma3ForConditionalGeneration": ("position_embeddings_global", "position_embeddings_local")
 }
 SPECIAL_SHARED_CACHE_KEYS["MiniMaxText01ForCausalLM"] = ("slope_rate",)
+SPECIAL_SHARED_CACHE_KEYS["StableAudioDiTModel"] = ("encoder_hidden_states",)
 SPECIAL_SHARED_CACHE_KEYS["Gemma4ForConditionalGeneration"] = ("position_ids",)
 SPECIAL_SHARED_CACHE_KEYS["WanTransformer3DModel"] = ("rotary_emb",)
 MISTRAL_3_2_MODELS = ["Mistral-Small-3.2", "Magistral-Small", "Devstral-Small"]
@@ -311,7 +319,7 @@ def _patch_gemma4_model(model):
 
 
 def _handle_special_model(model):
-    model_type = getattr(getattr(model, "config", None), "model_type", None)
+    model_type = resolve_model_type(model)
     if model_type == "deepseek_vl_v2":
         from functools import partial
 
@@ -324,6 +332,14 @@ def _handle_special_model(model):
         from functools import partial
 
         model.forward = partial(_qwen3_omni_moe_forward, model)
+    if model_type == "qwen3_tts":
+        from functools import partial
+
+        model.forward = partial(_qwen3_tts_forward, model)
+    if model_type == "mimo_audio":
+        from functools import partial
+
+        model.forward = partial(_mimo_audio_forward, model)
     if hasattr(model, "config") and model_type == "gemma4":
         import transformers
         from packaging import version
@@ -463,6 +479,64 @@ def _get_glm_image_multimodal_block(model, quant_vision=False):
     return block_names
 
 
+def _get_mimo_audio_multimodal_block(model, quant_vision=False):
+    """Get block names for MiMo-Audio model.
+
+    MiMo-Audio (MiMoAudioForCausalLM) has the following structure:
+    - model.model.layers: Main Qwen2-based LLM decoder (28 layers)
+    - input_local_transformer.layers: Input audio encoder (6 layers)
+    - local_transformer.layers: Audio decoder / patch decoder (16 layers)
+
+    Currently only the main LLM backbone is quantized because:
+    - Audio encoder/decoder require audio calibration data (not yet supported)
+    - Audio modules use smaller hidden dim (1024 vs 4096) with limited quantization benefit
+
+    Args:
+        model: The MiMoAudioForCausalLM or MiMoAudioModel instance.
+    """
+    block_names = []
+
+    # Main LLM decoder layers (backbone - always quantized)
+    if hasattr(model, "model") and hasattr(model.model, "layers"):
+        # MiMoAudioForCausalLM: layers at model.model.layers
+        block_names.append([f"model.layers.{i}" for i in range(len(model.model.layers))])
+    elif hasattr(model, "layers"):
+        # MiMoAudioModel (base): layers at model.layers directly
+        block_names.append([f"layers.{i}" for i in range(len(model.layers))])
+
+    return block_names
+
+
+def _get_qwen3_tts_multimodal_block(model, quant_vision=False):
+    """Get block names for Qwen3-TTS model.
+
+    Qwen3-TTS (Qwen3TTSForConditionalGeneration) has a talker backbone with the
+    following possible module layouts depending on the modeling code version:
+    - tts_model.model.layers: Main TTS transformer decoder layers
+    - talker.model.layers: Alternative attribute name (matches talker_config)
+    - model.model.layers: Standard fallback
+
+    Only the talker backbone is quantized. Audio codec layers are not quantized
+    because audio calibration data is not yet supported.
+
+    Args:
+        model: The Qwen3TTSForConditionalGeneration model instance.
+        quant_vision: Unused. Accepted for interface compatibility with
+            SPECIAL_MULTIMODAL_BLOCK registry.
+    """
+    block_names = []
+    # Try tts_model.model.layers
+    if hasattr(model, "tts_model") and hasattr(getattr(model.tts_model, "model", None), "layers"):
+        block_names.append([f"tts_model.model.layers.{i}" for i in range(len(model.tts_model.model.layers))])
+    # Try talker.model.layers (alternative attr name from talker_config)
+    if not block_names and hasattr(model, "talker") and hasattr(getattr(model.talker, "model", None), "layers"):
+        block_names.append([f"talker.model.layers.{i}" for i in range(len(model.talker.model.layers))])
+    # Fallback: model.model.layers (standard structure)
+    if not block_names and hasattr(model, "model") and hasattr(model.model, "layers"):
+        block_names.append([f"model.layers.{i}" for i in range(len(model.model.layers))])
+    return block_names
+
+
 def _get_bagel_multimodal_block(model, quant_vision=False):
     """Get block names for BAGEL MoT (Mixture of Transformers) model.
 
@@ -491,6 +565,8 @@ SPECIAL_MULTIMODAL_BLOCK = {
     "qwen2_5_omni": _get_qwen2_5_omni_multimodal_block,
     "qwen3_omni_moe": _get_qwen3_omni_moe_multimodal_block,
     "glm_image": _get_glm_image_multimodal_block,
+    "mimo_audio": _get_mimo_audio_multimodal_block,
+    "qwen3_tts": _get_qwen3_tts_multimodal_block,
     "bagel": _get_bagel_multimodal_block,
 }
 
@@ -715,12 +791,133 @@ def _qwen3_omni_moe_forward(
     return thinker_output
 
 
+def _mimo_audio_forward(
+    model,
+    input_ids=None,
+    attention_mask=None,
+    position_ids=None,
+    past_key_values=None,
+    inputs_embeds=None,
+    labels=None,
+    use_cache=None,
+    output_attentions=None,
+    output_hidden_states=None,
+    return_dict=None,
+    cache_position=None,
+    **kwargs,
+):
+    """Forward function for MiMo-Audio model during calibration.
+
+    MiMo-Audio's native forward expects 3D input_ids [B, audio_channels+1, T] with
+    interleaved text and audio tokens. During calibration with text-only data, we
+    route through the Qwen2Model backbone directly to calibrate the main decoder layers.
+    """
+    backbone = model.model
+
+    if input_ids is not None and inputs_embeds is None:
+        inputs_embeds = backbone.embed_tokens(input_ids)
+        input_ids = None
+
+    return backbone(
+        input_ids=input_ids,
+        attention_mask=attention_mask,
+        position_ids=position_ids,
+        past_key_values=past_key_values,
+        inputs_embeds=inputs_embeds,
+        use_cache=use_cache,
+        output_attentions=output_attentions,
+        output_hidden_states=output_hidden_states,
+        return_dict=return_dict,
+        cache_position=cache_position,
+    )
+
+
+def _qwen3_tts_forward(
+    model,
+    input_ids=None,
+    attention_mask=None,
+    position_ids=None,
+    past_key_values=None,
+    inputs_embeds=None,
+    labels=None,
+    use_cache=None,
+    output_attentions=None,
+    output_hidden_states=None,
+    return_dict=None,
+    cache_position=None,
+    **kwargs,
+):
+    """Forward function for Qwen3-TTS model.
+
+    Qwen3-TTS uses a discrete multi-codebook LM architecture. During calibration
+    we route the forward through the talker, converting text input_ids to
+    inputs_embeds via text_embedding + text_projection.
+    """
+    tts_backbone = None
+    for candidate in [getattr(model, "tts_model", None), getattr(model, "talker", None)]:
+        if candidate is None:
+            continue
+        has_text_embed = hasattr(getattr(candidate, "model", None), "text_embedding")
+        has_text_proj = hasattr(candidate, "text_projection")
+        if has_text_embed and has_text_proj:
+            tts_backbone = candidate
+            break
+    # Fallback: use whichever backbone exists even without text pathway
+    if tts_backbone is None:
+        tts_backbone = getattr(model, "tts_model", None) or getattr(model, "talker", None)
+
+    if tts_backbone is not None:
+        # Convert text input_ids to inputs_embeds through text pathway
+        if input_ids is not None and inputs_embeds is None:
+            text_embedding = getattr(tts_backbone.model, "text_embedding", None)
+            text_projection = getattr(tts_backbone, "text_projection", None)
+            if text_embedding is None or text_projection is None:
+                raise RuntimeError(
+                    "Qwen3-TTS backbone is missing text_embedding or text_projection. "
+                    "Cannot convert text input_ids to inputs_embeds for calibration."
+                )
+            inputs_embeds = text_projection(text_embedding(input_ids))
+            input_ids = None
+
+        return tts_backbone(
+            input_ids=input_ids,
+            attention_mask=attention_mask,
+            position_ids=position_ids,
+            past_key_values=past_key_values,
+            inputs_embeds=inputs_embeds,
+            labels=labels,
+            use_cache=use_cache,
+            output_attentions=output_attentions,
+            output_hidden_states=output_hidden_states,
+            return_dict=return_dict,
+            cache_position=cache_position,
+            **kwargs,
+        )
+    # Fallback: model has standard forward
+    return model.__class__.forward(
+        model,
+        input_ids=input_ids,
+        attention_mask=attention_mask,
+        position_ids=position_ids,
+        past_key_values=past_key_values,
+        inputs_embeds=inputs_embeds,
+        labels=labels,
+        use_cache=use_cache,
+        output_attentions=output_attentions,
+        output_hidden_states=output_hidden_states,
+        return_dict=return_dict,
+        cache_position=cache_position,
+        **kwargs,
+    )
+
+
 def check_mllm_model_batch(model, batch_size, gradient_accumulate_steps=1):
     """
     Checks model configuration to determine if it's necessary to limit bs to avoid potential input shape mismatches.
     """
+    effective_type = resolve_model_type(model) or ""
     for key in mllms_with_limited_bs:
-        if hasattr(model, "config") and key in model.config.model_type and batch_size != 1:
+        if key in effective_type and batch_size != 1:
             accumulate_steps = batch_size * gradient_accumulate_steps
             logger.warning(
                 "To avoid the tensor concat mismatch problem, modified parameters to "

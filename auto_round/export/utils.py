@@ -29,7 +29,16 @@ from auto_round.utils import (
 
 def _save_model_configs(model: nn.Module, save_dir: str) -> None:
     if hasattr(model, "config") and model.config is not None:
-        model.config.save_pretrained(save_dir)
+        try:
+            model.config.save_pretrained(save_dir)
+        except (KeyError, TypeError):
+            # Some third-party configs (e.g. qwen-tts) fail with use_diff=True
+            # due to missing keys in recursive_diff_dict. Fall back to full config.
+            import json
+
+            config_path = os.path.join(save_dir, "config.json")
+            with open(config_path, "w", encoding="utf-8") as f:
+                f.write(model.config.to_json_string(use_diff=False))
 
     if hasattr(model, "generation_config") and model.generation_config is not None:
         model.generation_config.save_pretrained(save_dir)
@@ -222,7 +231,17 @@ def save_model(
             )
             _save_model_configs(model, save_dir)
         else:
-            model.save_pretrained(save_dir, max_shard_size=max_shard_size, safe_serialization=safe_serialization)
+            try:
+                model.save_pretrained(save_dir, max_shard_size=max_shard_size, safe_serialization=safe_serialization)
+            except (KeyError, TypeError) as e:
+                # Some third-party configs fail during config serialization in save_pretrained.
+                # Fall back to saving weights separately + config without diff.
+                logger.warning("model.save_pretrained failed (%s), falling back to manual save.", e)
+                from safetensors.torch import save_file
+
+                state_dict = model.state_dict()
+                save_file(state_dict, os.path.join(save_dir, "model.safetensors"))
+                _save_model_configs(model, save_dir)
 
     source_dir = _resolve_model_source_dir(model)
 
