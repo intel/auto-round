@@ -11,7 +11,6 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-import traceback
 from collections import defaultdict
 from typing import Any, Callable, Optional, Union
 
@@ -21,7 +20,7 @@ import torch
 from auto_round.algorithms.quantization.base import BaseQuantizers
 from auto_round.algorithms.quantization.rtn.config import RTNConfig
 from auto_round.algorithms.quantization.sign_round.quantizer import SignRoundQuantizer
-from auto_round.compressors.shard_writer import ShardWriter
+from auto_round.algorithms.quantization.utils import register_imatrix_hooks
 from auto_round.compressors.utils import (
     IndexSampler,
     block_forward,
@@ -29,7 +28,6 @@ from auto_round.compressors.utils import (
     check_skippable_keywords,
     collect_best_params,
     get_shared_keys,
-    immediate_pack,
     infer_bits_by_data_type,
     init_cache,
     reset_params,
@@ -39,7 +37,6 @@ from auto_round.data_type.utils import update_block_global_scale_if_needed
 from auto_round.logger import logger
 from auto_round.utils import (
     check_to_quantized,
-    convert_module_to_hp_if_necessary,
     get_lm_head_name,
     get_module,
     htcore,
@@ -56,7 +53,7 @@ from auto_round.utils.device import (
     set_auto_device_map_for_block_with_tuning,
     set_non_auto_device_map,
 )
-from auto_round.wrapper import WrapperLinear, WrapperMultiblock, unwrapper_block, unwrapper_layer, wrapper_block
+from auto_round.wrapper import WrapperMultiblock, unwrapper_block, unwrapper_layer, wrapper_block
 
 
 class RTNQuantizer(BaseQuantizers):
@@ -100,110 +97,10 @@ class RTNQuantizer(BaseQuantizers):
 
     @torch.no_grad()
     def quantize_layer(self, name: str, dtype: torch.dtype = None) -> None:
-        """Quantizes a layer using RTN (Round-To-Nearest) if available.
-
-        This function attempts to quantize a layer by switching its data type to a
-        `rtn_*` version if supported, then wraps and unwraps the module to apply
-        quantization. If GPU memory is insufficient, it falls back to CPU.
-
-        If packing is enabled (`immediate_packing`), the function will also export
-        the quantized layer to the appropriate backend format.
-
-        Args:
-            name (str): Name of the layer to quantize.
-
-        Raises:
-            RuntimeError: If quantization fails for reasons unrelated to memory.
-        """
-
-        m = get_module(self.model, name)
         if dtype is not None:
-            m = m.to(dtype)
-
-        m = convert_module_to_hp_if_necessary(m, self.model_context.amp_dtype, self.compress_context.device)
-        set_module(self.model, name, m)
-        tuning_device = m.tuning_device if hasattr(m, "tuning_device") else self.compress_context.device
-        # Step 1: let gguf merge layers or rename module first and we will handle the RTN is gguf specific logic
-        if (
-            self.compress_context.is_immediate_packing
-            and self.compress_context.formats[0].is_gguf()
-            and not getattr(self.config, "disable_opt_rtn", False)
-        ):
-            m = m.to(tuning_device)
-            m.scale = None
-            m.zp = None
-        else:
-            try:
-                disable_opt_rtn = bool(getattr(self.config, "disable_opt_rtn", False))
-                if (
-                    not disable_opt_rtn
-                    and self.config.orig_disable_opt_rtn is None
-                    and self.model_context.is_moe_model
-                    and "expert" in m.global_name
-                    and "shared_expert" not in m.global_name
-                    and self.config.super_bits is None  # GGUF still uses the optimized RTN for MoE layers
-                ):
-                    disable_opt_rtn = True
-                    logger.warning_once(
-                        "MoE layer detected: optimized RTN is disabled for efficiency. "
-                        "Use `--enable_opt_rtn` to force-enable it for MoE layers."
-                    )
-                m = m.to(tuning_device)
-                m = WrapperLinear(
-                    m,
-                    device=tuning_device,
-                    enable_minmax_tuning=False,
-                    enable_norm_bias_tuning=False,
-                    enable_round_tuning=False,
-                    enable_torch_compile=self.compress_context.enable_torch_compile,
-                    disable_opt_rtn=disable_opt_rtn,
-                    iters=0,
-                )
-                m = m.unwrapper({})
-            except torch.OutOfMemoryError:
-                cuda_error_msg = traceback.format_exc()
-                m = m.orig_layer if hasattr(m, "orig_layer") else m
-                try:
-                    logger.error(cuda_error_msg)
-                    logger.warning("falling back to CPU.")
-                    m.to("cpu")
-                    m = WrapperLinear(
-                        m,
-                        enable_minmax_tuning=False,
-                        enable_norm_bias_tuning=False,
-                        enable_round_tuning=False,
-                        enable_torch_compile=self.compress_context.enable_torch_compile,
-                        iters=0,
-                    )
-                    m = m.unwrapper({})
-                except Exception as e:
-                    raise
-
-        set_module(self.model, name, m)
-        self._immediate_pack_and_save_module(name)
-
-    def _immediate_pack_and_save_module(self, module_name):
-        shard_writer = ShardWriter.get_shard_writer()
-        to_cpu = self.compress_context.low_gpu_mem_usage
-        module = get_module(self.model, module_name)
-        if self.compress_context.is_immediate_packing:  # For gguf, packing conducts on block level
-            immediate_pack(module_name, self.layer_config)
-            if to_cpu:
-                module = module.to("cpu")
-                packed_module = get_module(self.model, module_name)
-                set_module(self.model, module_name, packed_module.to("cpu"))
-        else:
-            if to_cpu:
-                module = module.to("cpu")
-            set_module(self.model, module_name, module)
-        if self.compress_context.is_immediate_saving:
-            module = get_module(self.model, module_name)
-            module.to("cpu")
-            shard_writer.write(module, module_name, False)
-            # Free RAM immediately: the data is now in the shard-writer buffer
-            # (and will be flushed to disk).  Keeping it also in the model tree
-            # causes linear RAM growth for large models.
-            module.to("meta")
+            layer = get_module(self.model, name)
+            set_module(self.model, name, layer.to(dtype))
+        self.quantize_layer_via_rtn(name)
 
 
 class OptimizedRTNQuantizer(RTNQuantizer):
@@ -213,11 +110,15 @@ class OptimizedRTNQuantizer(RTNQuantizer):
         self.data_type = config.data_type
         self.group_size = config.group_size
         self.infer_bs_coeff = config.infer_bs_coeff
+        self.enable_imatrix = getattr(config, "enable_imatrix", False)
 
         self.enable_alg_ext = True
 
-    def quantize_layer_outside_block(self, *args, **kwargs):
-        return self.quantize_layer(*args, **kwargs)
+    def register_calibration_hooks(self, model, *, act_max: bool = True, imatrix: bool = True):
+        hook_handles = super().register_calibration_hooks(model, act_max=act_max, imatrix=imatrix)
+        if imatrix and self.enable_imatrix:
+            hook_handles.extend(register_imatrix_hooks(self, model, with_count=True))
+        return hook_handles
 
     @torch.no_grad()
     def quantize_block(
@@ -225,9 +126,9 @@ class OptimizedRTNQuantizer(RTNQuantizer):
     ):
         """Apply imatrix-informed RTN quantization to a block.
 
-        Pure-algorithm entry point.  All infrastructure (device placement,
-        act-max hook registration, imatrix collection, cleanup) is handled
-        by the Compressor before calling this method.
+        Pure-algorithm entry point.  Device placement and cleanup are handled
+        by the Compressor; act-max and imatrix hook registration are owned by
+        the quantizer hook helpers before this method is called.
 
         Args:
             block: Module already placed on the correct device(s) with act_max

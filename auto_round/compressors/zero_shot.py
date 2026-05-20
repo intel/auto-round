@@ -65,7 +65,6 @@ class ZeroShotCompressor(BaseCompressor):
             device_map=device_map,
             low_gpu_mem_usage=low_gpu_mem_usage,
             enable_torch_compile=enable_torch_compile,
-            enable_alg_ext=enable_alg_ext,
             seed=seed,
             low_cpu_mem_usage=low_cpu_mem_usage,
             **kwargs,

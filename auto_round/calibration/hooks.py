@@ -105,6 +105,18 @@ def make_block_forward_func(state, name: str) -> Callable:
                 else:  # append cache inputs
                     new_data = post_process_cache_data(state.quantizer.batch_size, kwargs[key], key)
                     if new_data is None:  # shareable args or NoneType
+                        if key in state.model_context.shared_cache_keys:
+                            # Shared keys are normally the same across samples.  However
+                            # in VLM visual encoders (e.g. Qwen2-VL) ``position_embeddings``
+                            # varies per image because each image has a different patch count.
+                            # Upgrade from shared (raw value) to per-sample list storage so
+                            # each sample gets its own positional embeddings.
+                            raw_new = to_device(kwargs[key], device=torch.device("cpu"))
+                            stored = state.inputs[name].get(key)
+                            if isinstance(stored, list):
+                                stored.append(raw_new)
+                            elif stored is not None:
+                                state.inputs[name][key] = [stored, raw_new]
                         continue
                     new_data = to_device(new_data, device=torch.device("cpu"))
                     if state.quantizer.batch_size <= 1:

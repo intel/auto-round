@@ -13,6 +13,7 @@ AUTO_ROUND_PATH = "/".join(AUTO_ROUND_PATH[: AUTO_ROUND_PATH.index("test")])
 
 
 class TestAutoRoundCmd:
+
     @pytest.fixture(autouse=True)
     def setup_save_dir(self, tmp_path):
         self.save_dir = str(tmp_path / "saved")
@@ -119,3 +120,99 @@ def test_parse_layer_config_with_single_escaped_regex_keys():
         r"model.language_model.layers.\d+.self_attn..": {"bits": 8},
         r"model.language_model.layers.\d+.mlp..": {"bits": 8},
     }
+
+
+def test_run_rtn_uses_zero_shot_recipe(monkeypatch):
+    from auto_round import __main__ as cli_main
+
+    captured = {}
+
+    def fake_tune(args):
+        captured["args"] = args
+
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "auto_round_rtn",
+            "--model",
+            "dummy-model",
+        ],
+    )
+    monkeypatch.setattr(cli_main, "tune", fake_tune)
+
+    cli_main.run_rtn()
+
+    args = captured["args"]
+    assert args.model_name == "dummy-model"
+    assert args.iters == 0
+    assert args.disable_opt_rtn is True
+    assert args.batch_size == 8
+    assert args.nsamples == 1
+
+
+def test_run_rtn_preserves_eval_args(monkeypatch, tmp_path):
+    from auto_round import __main__ as cli_main
+
+    captured = {}
+
+    def fake_tune(args):
+        captured["args"] = args
+
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "auto_round_rtn",
+            "--model",
+            "dummy-model",
+            "--tasks",
+            "mmlu",
+            "--format",
+            "fake",
+            "--output_dir",
+            str(tmp_path / "out"),
+            "--eval_model_dtype",
+            "bf16",
+        ],
+    )
+    monkeypatch.setattr(cli_main, "tune", fake_tune)
+
+    cli_main.run_rtn()
+
+    args = captured["args"]
+    assert args.tasks == "mmlu"
+    assert args.format == "fake"
+    assert args.eval_model_dtype == "bf16"
+    assert args.output_dir == str(tmp_path / "out")
+    assert args.iters == 0
+    assert args.disable_opt_rtn is True
+
+
+def test_run_opt_rtn_uses_recipe(monkeypatch):
+    from auto_round import __main__ as cli_main
+
+    captured = {}
+
+    def fake_tune(args):
+        captured["args"] = args
+
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "auto_round_opt_rtn",
+            "--model",
+            "dummy-model",
+        ],
+    )
+    monkeypatch.setattr(cli_main, "tune", fake_tune)
+
+    cli_main.run_opt_rtn()
+
+    args = captured["args"]
+    assert args.model_name == "dummy-model"
+    assert args.iters == 0
+    assert args.disable_opt_rtn is False
+    assert args.batch_size == 8
+    assert args.nsamples == 128
