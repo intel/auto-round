@@ -40,7 +40,7 @@ from auto_round.schemes import (
     get_gguf_scheme,
     preset_name_to_scheme,
 )
-from auto_round.special_model_handler import get_predefined_fixed_attr, get_predefined_ignore_layers
+from auto_round.special_model_handler import get_predefined_ignore_layers, update_module
 from auto_round.utils import (
     INNER_SUPPORTED_LAYER_TYPES,
     SUPPORTED_LAYER_TYPES,
@@ -338,9 +338,6 @@ class BaseCompressor(object):
         # batch_size from kwargs) have already routed through it.
 
         self.has_variable_block_shape = False
-        fixed_attr = get_predefined_fixed_attr(self.model_context.model) or {}
-        for key, value in fixed_attr.items():
-            setattr(self, key, value)
 
     # ── Scheme resolution ─────────────────────────────────────────────────────
 

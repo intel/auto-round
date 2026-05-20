@@ -645,6 +645,7 @@ class DataDrivenCompressor(BaseCompressor):
             to_cache_block_names = [block[0] for block in all_blocks]
         else:
             to_cache_block_names = flatten_list(all_blocks)
+        _last_cache_name = to_cache_block_names[-1] if len(to_cache_block_names) > 1 else None
         to_cache_layer_names = layer_names
         if self.super_group_size is not None:
             to_cache_layer_names = []
@@ -658,6 +659,7 @@ class DataDrivenCompressor(BaseCompressor):
             to_cache_block_names,
             self.nsamples,
             to_cache_layer_names,
+            last_cache_name=_last_cache_name,
         )
         self.inputs = all_inputs
         is_quantized_embedding = self._quantize_embedding_layer()
@@ -666,7 +668,9 @@ class DataDrivenCompressor(BaseCompressor):
         if is_quantized_embedding:
             all_inputs = copy.deepcopy(self.inputs)
             clear_memory(self.inputs, device_list=self.compress_context.device_list)
-            all_q_inputs = self.try_cache_inter_data_gpucpu(to_cache_block_names, self.nsamples, to_cache_layer_names)
+            all_q_inputs = self.try_cache_inter_data_gpucpu(
+                to_cache_block_names, self.nsamples, to_cache_layer_names, last_cache_name=_last_cache_name
+            )
         # Remove accelerate dispatch hooks before moving parameters.
         # hf_device_map is kept for reference but hooks are no longer needed.
         if hasattr(self.model_context.model, "hf_device_map") and len(self.model_context.model.hf_device_map) > 1:
