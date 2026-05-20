@@ -35,7 +35,8 @@ RECIPES = {
     "default": {"batch_size": 8, "iters": 200, "seqlen": 2048, "nsamples": 128, "lr": None},
     "best": {"batch_size": 8, "iters": 1000, "seqlen": 2048, "nsamples": 512, "lr": None},
     "light": {"batch_size": 8, "iters": 50, "seqlen": 2048, "nsamples": 128, "lr": 5e-3},
-    "fast": {"batch_size": 4, "iters": 200, "seqlen": 512, "nsamples": 128, "lr": None},
+    "rtn": {"batch_size": 8, "iters": 0, "seqlen": 2048, "nsamples": 1, "lr": None, "disable_opt_rtn": True},
+    "opt_rtn": {"batch_size": 8, "iters": 0, "seqlen": 2048, "nsamples": 128, "lr": None, "disable_opt_rtn": False},
 }
 
 
@@ -73,8 +74,18 @@ class BasicArgumentParser(argparse.ArgumentParser):
             # choices=["W4A16", "W2A16", "W3A16", "W8A16", "MXFP4", "MXFP8", "NVFP4", "FPW8A16", "FP8_STATIC"],
             help="Quantization scheme to use. "
             "W4A16: 4-bit weights with 16-bit activations (default). "
-            "Other options include W2A16, W3A16, W8A16 for different bit widths, "
+            "Other options include W2A16, W3A16, W8A16, W8A8 for different bit widths, "
             "and MXFP4/MXFP8/NVFP4 for different data type.",
+        )
+        basic.add_argument(
+            "--algorithm",
+            default=None,
+            type=str.lower,
+            choices=["auto_round", "rtn", "awq"],
+            help="Quantization algorithm to use. "
+            "auto_round: SignSGD-based optimization (default when iters > 0). "
+            "rtn: Round-to-nearest (default when iters == 0). "
+            "awq: Activation-Aware Weight Quantization (AWQ smoothing + RTN).",
         )
         basic.add_argument(
             "--batch_size",
@@ -310,6 +321,22 @@ class BasicArgumentParser(argparse.ArgumentParser):
             help="Disable the automatic model-free routing that activates when "
             "--iters 0 --disable_opt_rtn is combined with a supported INT WOQ scheme. "
             "Use this to force the regular AutoRound flow.",
+        )
+
+        awq_group = self.add_argument_group("AWQ Arguments")
+        awq_group.add_argument(
+            "--duo_scaling",
+            default=True,
+            type=lambda s: "both" if s.lower() == "both" else s.lower() in ("true", "1", "yes"),
+            help="Whether to use both activations and weights for AWQ scaling. "
+            "Options: true/false/'both'. 'both' searches both modes and picks the best. "
+            "(default: True).",
+        )
+        awq_group.add_argument(
+            "--n_grid",
+            default=20,
+            type=int,
+            help="Number of grid points for AWQ scaling ratio search (default: 20).",
         )
 
         scheme = self.add_argument_group("Scheme Arguments")
@@ -611,69 +638,6 @@ def tune(args):
     if "marlin" in args.format and args.asym is True:
         raise RuntimeError("marlin backend only supports sym quantization, please remove --asym")
 
-    # ======================= Model-Free Mode =======================
-    # The model-free path is now integrated into AutoRound itself.  We only
-    # need to forward the relevant flags; AutoRound handles auto-routing
-    # (when iters=0 + disable_opt_rtn + supported scheme) and explicit
-    # ``--model_free``.  Layer config / ignore-layers / output-dir handling
-    # for model-free still needs special treatment because the model is
-    # never loaded here.
-    explicit_model_free = bool(getattr(args, "model_free", False))
-    from auto_round.compressors.model_free import is_model_free_supported_scheme
-
-    auto_model_free = (
-        not explicit_model_free
-        and not getattr(args, "disable_model_free", False)
-        and getattr(args, "iters", None) == 0
-        and getattr(args, "disable_opt_rtn", None) is True
-        and is_model_free_supported_scheme(args.scheme, vars(args))
-        and (
-            str(getattr(args, "format", "auto_round") or "auto_round").lower().replace(" ", "").split(",")[0]
-            == "auto_round"
-            or format.startswith("auto_round")
-        )
-    )
-
-    if explicit_model_free or auto_model_free:
-        scheme = args.scheme.upper()
-        if scheme not in PRESET_SCHEMES:
-            raise ValueError(f"{scheme} is not supported. Only {list(PRESET_SCHEMES.keys())} are supported")
-        if not is_model_free_supported_scheme(scheme, vars(args)) and not explicit_model_free:
-            logger.info(
-                f"Auto-routing to model-free is skipped: scheme '{scheme}' is not in "
-                f"the model-free allowlist. Falling back to the regular AutoRound flow."
-            )
-        else:
-            layer_config = {}
-            if args.layer_config:
-                layer_config = parse_layer_config_arg(args.layer_config)
-
-            model_name = args.model.rstrip("/")
-            output_dir = args.output_dir
-            if output_dir == "./tmp_autoround" and model_name.split("/")[-1].strip(".") != "":
-                s = preset_name_to_scheme(scheme)
-                suffix = f"g{s.group_size}" if s.group_size > 0 else f"a{s.act_bits}"
-                output_dir = os.path.join(args.output_dir, model_name.split("/")[-1] + f"-w{s.bits}{suffix}")
-
-            from auto_round import AutoRound
-
-            ar = AutoRound(
-                model_name,
-                scheme=scheme,
-                sym=getattr(args, "sym", None),
-                group_size=getattr(args, "group_size", None),
-                iters=0,
-                disable_opt_rtn=True,
-                model_free=True,
-                layer_config=layer_config,
-                ignore_layers=args.ignore_layers,
-                quant_lm_head=getattr(args, "quant_lm_head", False),
-                quant_nontext_module=getattr(args, "quant_nontext_module", False),
-                device_map=args.device_map,
-            )
-            ar.quantize_and_save(output_dir=output_dir, format=args.format)  # pylint: disable=E1101
-            return
-
     device_str, use_auto_mapping = get_device_and_parallelism(args.device_map)
 
     if args.enable_torch_compile:
@@ -827,6 +791,14 @@ def tune(args):
         momentum=args.momentum,
         trust_remote_code=not args.disable_trust_remote_code,
         rotation_config=rot_config,
+        model_free=args.model_free,
+        disable_model_free=args.disable_model_free,
+        algorithm=getattr(args, "algorithm", None),
+        **(
+            {"duo_scaling": args.duo_scaling, "n_grid": args.n_grid}
+            if getattr(args, "algorithm", None) == "awq"
+            else {}
+        ),
     )
 
     # ======================= Quantize and save model =======================
@@ -834,8 +806,6 @@ def tune(args):
     # BaseCompressor._get_export_dir(), so we only need to pass the base output_dir.
     model, folders = autoround.quantize_and_save(args.output_dir, format=args.format)  # pylint: disable=E1101
     tokenizer = autoround.tokenizer  # pylint: disable=E1101
-
-    model.eval()
     clear_memory()
 
     # ======================= Model evaluation =======================
@@ -904,8 +874,12 @@ def run_light():
     start("light")
 
 
-def run_fast():
-    start("fast")
+def run_rtn():
+    start("rtn")
+
+
+def run_opt_rtn():
+    start("opt_rtn")
 
 
 def run_mllm():

@@ -179,6 +179,36 @@ class TestVllmEvaluation:
     not current_platform.is_cuda(),
     reason="only supports CUDA backend.",
 )
+@pytest.mark.skip_ci(reason="due to vllm and CT Dependency conflict.")
+def test_vllm_awq_w8a8_llmc_inference(tiny_opt_model_path, tmp_path):
+    """W8A8 AWQ → llm_compressor → vLLM: end-to-end inference test."""
+    save_dir = str(tmp_path / "saved")
+    ar = AutoRound(
+        tiny_opt_model_path,
+        scheme="INT8",
+        algorithm="awq",
+        nsamples=2,
+        seqlen=32,
+        batch_size=2,
+    )
+    _, save_path = ar.quantize_and_save(output_dir=save_dir, format="llm_compressor")
+
+    sampling_params = SamplingParams(temperature=0.8, top_p=0.95, max_tokens=50)
+    llm = LLM(
+        model=save_path,
+        trust_remote_code=True,
+        tensor_parallel_size=1,
+        gpu_memory_utilization=0.8,
+    )
+    outputs = llm.generate(["Hello, my name is"], sampling_params)
+    generated_text = outputs[0].outputs[0].text
+    assert len(generated_text.strip()) > 0 and "!!!" not in generated_text, "vLLM produced empty/meaningless output"
+
+
+@pytest.mark.skipif(
+    not current_platform.is_cuda(),
+    reason="only supports CUDA backend.",
+)
 def test_auto_round_awq_format_vllm():
     # quantization and inference test
     model_path = get_model_path("facebook/opt-125m")

@@ -19,7 +19,7 @@ from dataclasses import asdict, dataclass, fields
 from typing import Any, Optional, Union
 
 import torch
-from transformers import set_seed
+from transformers import AutoConfig, set_seed
 
 from auto_round.algorithms.alg_config import AlgConfig
 from auto_round.algorithms.quantization import BaseQuantizers, QuantizationConfig
@@ -40,7 +40,7 @@ from auto_round.schemes import (
     get_gguf_scheme,
     preset_name_to_scheme,
 )
-from auto_round.special_model_handler import get_predefined_fixed_attr, get_predefined_ignore_layers
+from auto_round.special_model_handler import get_predefined_ignore_layers, update_module
 from auto_round.utils import (
     INNER_SUPPORTED_LAYER_TYPES,
     SUPPORTED_LAYER_TYPES,
@@ -127,6 +127,22 @@ class BaseCompressor(object):
     _scheme_resolved: bool = False
     scheme_generator = None
 
+    @staticmethod
+    def _preload_model_config(model: Union[torch.nn.Module, str], trust_remote_code: bool) -> Optional[AutoConfig]:
+        if not isinstance(model, str):
+            return None
+
+        try:
+            return AutoConfig.from_pretrained(model, trust_remote_code=trust_remote_code)
+        except (OSError, EnvironmentError, ValueError) as e:
+            logger.debug(
+                "Failed to load config via AutoConfig.from_pretrained for %s: %s. "
+                "Proceeding without config-based checks.",
+                model,
+                e,
+            )
+            return None
+
     def __init__(
         self,
         config: Union[AlgConfig, list[AlgConfig]],
@@ -156,6 +172,7 @@ class BaseCompressor(object):
             nsamples=nsamples if nsamples is not None else 128,
             seqlen=seqlen if seqlen is not None else 2048,
             batch_size=kwargs.pop("batch_size", 8),
+            gradient_accumulate_steps=kwargs.pop("gradient_accumulate_steps", 1),
         )
 
         # ``dataset`` is not a named __init__ parameter – it arrives via
@@ -197,6 +214,9 @@ class BaseCompressor(object):
 
         # Extra/legacy kwargs for backward compatibility
         # Major version releases may pack them with extra configuration options
+        kwargs.pop("iters", None)
+        kwargs.pop("enable_alg_ext", None)
+        kwargs.pop("vlm", None)
         amp = kwargs.pop("amp", True)
         nblocks = kwargs.pop("nblocks", 1)
         disable_deterministic_algorithms = kwargs.pop("disable_deterministic_algorithms", True)
@@ -208,6 +228,9 @@ class BaseCompressor(object):
         model_dtype = kwargs.pop("model_dtype", None)
         trust_remote_code = kwargs.pop("trust_remote_code") if "trust_remote_code" in kwargs else True
         quant_nontext_module = kwargs.pop("quant_nontext_module", False)
+        device = kwargs.pop("device", None)
+        if device is not None:
+            logger.warning("`device` is deprecated, please use `device_map` instead")
 
         self.static_attention_dtype = kwargs.pop("static_attention_dtype", None)
         # Attention static dtype
@@ -242,10 +265,6 @@ class BaseCompressor(object):
         # instead of MATH (avoids ~10x peak-VRAM blow-up during block tuning).
         patch_xpu_sdpa_drop_causal_mask()
 
-        device = kwargs.pop("device", None)
-        if device is not None:
-            logger.warning("`device` is deprecated, please use `device_map` instead")
-
         # Tuning hyperparameters
         self.seed = seed
         set_seed(self.seed)
@@ -273,6 +292,7 @@ class BaseCompressor(object):
         # allocation early in the heap, matching the OLD arch allocation order
         # and reducing C-heap fragmentation (which is amplified on HPU).
         _device = get_major_device(device_map if device_map is not None else 0)
+        model_config = self._preload_model_config(model, trust_remote_code)
 
         self.model_context = ModelContext(
             model,
@@ -280,6 +300,7 @@ class BaseCompressor(object):
             platform=platform,
             model_dtype=model_dtype,
             trust_remote_code=trust_remote_code,
+            config=model_config,
             amp=amp,
             need_calib=self.need_calib,
             device=_device,
@@ -309,7 +330,7 @@ class BaseCompressor(object):
 
         # Apply torch compile adjustments eagerly so that ar.enable_torch_compile
         # reflects the correct value immediately after construction (not only after post_init).
-        self._adjust_torch_compile(enable_torch_compile)
+        self._precheck_torch_compile(enable_torch_compile)
         self.compress_context.enable_torch_compile = self.enable_torch_compile
 
         # ``self._calibration_state`` was created at the top of __init__ so
@@ -317,9 +338,6 @@ class BaseCompressor(object):
         # batch_size from kwargs) have already routed through it.
 
         self.has_variable_block_shape = False
-        fixed_attr = get_predefined_fixed_attr(self.model_context.model) or {}
-        for key, value in fixed_attr.items():
-            setattr(self, key, value)
 
     # ── Scheme resolution ─────────────────────────────────────────────────────
 
@@ -602,10 +620,8 @@ class BaseCompressor(object):
     def diffusion(self):
         return self.model_context.is_diffusion
 
-    def _adjust_torch_compile(self, enable_torch_compile: bool) -> None:
-        """Sets the torch compile configuration for the tuning."""
-        self.enable_torch_compile = enable_torch_compile
-
+    def _get_torch_compile_guard_state(self) -> tuple[bool, bool, int]:
+        """Return raw dtype state used by torch.compile guard rules."""
         # Determine fp8 / nvfp4 intent from raw config before scheme resolution.
         cfg = self.quantize_config
         raw_scheme = self.scheme if isinstance(self.scheme, str) else ""
@@ -623,6 +639,11 @@ class BaseCompressor(object):
         )
 
         act_bits = getattr(cfg, "act_bits", 16) or 16
+        return is_raw_fp8, is_raw_nv_fp, act_bits
+
+    def _maybe_log_torch_compile_default_hint(self) -> None:
+        """Log the default torch.compile hint once final config state is available."""
+        is_raw_fp8, _, act_bits = self._get_torch_compile_guard_state()
         if (
             not self.enable_torch_compile
             and TORCH_VERSION_AT_LEAST_2_6
@@ -636,6 +657,13 @@ class BaseCompressor(object):
                 "'enable_torch_compile' is set to `False` by default. "
                 "Enabling it can reduce tuning cost by 20%, but it might throw an exception.",
             )
+
+    def _apply_torch_compile_constraints(self, enable_torch_compile: bool) -> None:
+        """Apply torch.compile disabling rules for the current compressor state."""
+        self.enable_torch_compile = enable_torch_compile
+        cfg = self.quantize_config
+        is_raw_fp8, is_raw_nv_fp, _ = self._get_torch_compile_guard_state()
+
         # On HPU, we rely on torch.compile to speed up the model execution.
         if self.enable_torch_compile and is_raw_fp8 and not is_hpex_available():
             self.enable_torch_compile = False
@@ -644,13 +672,29 @@ class BaseCompressor(object):
         if self.enable_torch_compile and is_raw_nv_fp:
             self.enable_torch_compile = False
             logger.warning_once("reset enable_torch_compile to `False` as nvfp4 is enabled")
-        super_group_size = getattr(cfg, "super_group_size", None)
-        enable_alg_ext = getattr(cfg, "enable_alg_ext", False)
-        if self.enable_torch_compile and super_group_size is not None and enable_alg_ext:
-            self.enable_torch_compile = False
-            logger.warning_once(
-                "reset enable_torch_compile to `False` as super_group_size is set for algorithm extension"
-            )
+        # super_group_size = getattr(cfg, "super_group_size", None)
+        # enable_alg_ext = getattr(cfg, "enable_alg_ext", False)
+        # if self.enable_torch_compile and super_group_size is not None and enable_alg_ext:
+        #     self.enable_torch_compile = False
+        #     logger.warning_once(
+        #         "reset enable_torch_compile to `False` as super_group_size is set for algorithm extension"
+        #     )
+
+    def _precheck_torch_compile(self, enable_torch_compile: bool) -> None:
+        """Apply early torch.compile adjustments before scheme resolution.
+
+        This runs during ``__init__`` so the compressor exposes a sensible
+        ``enable_torch_compile`` value immediately after construction, even
+        though scheme resolution has not completed yet.
+        """
+        self._apply_torch_compile_constraints(enable_torch_compile)
+
+    def _finalize_torch_compile(self) -> None:
+        """Re-evaluate torch.compile after scheme resolution with final attrs."""
+        requested_enable_torch_compile = self.enable_torch_compile
+        self._apply_torch_compile_constraints(requested_enable_torch_compile)
+        if not requested_enable_torch_compile:
+            self._maybe_log_torch_compile_default_hint()
 
     def _get_calibration_dataset(self) -> str:
         """Resolve calibration dataset: self.dataset > AutoScheme.dataset > default."""
@@ -739,6 +783,10 @@ class BaseCompressor(object):
         self.ignore_layers = cfg.ignore_layers
         self.quant_lm_head = cfg.quant_lm_head
         self.to_quant_block_names = cfg.to_quant_block_names
+        if self.to_quant_block_names is None:
+            self.to_quant_block_names = getattr(self.model_context.model, "_autoround_to_quant_block_names", None)
+            if self.to_quant_block_names is not None:
+                self.quantize_config.to_quant_block_names = self.to_quant_block_names
 
         # Resolve the scheme (pure config work: sets data_type / bits / sym /
         # scale_dtype etc. on both self and self.quantize_config).
@@ -982,8 +1030,8 @@ class BaseCompressor(object):
         Preconditions:
           - Phase 4 complete: ``layer_config`` is built and
             ``has_qlayer_outside_block`` is known.
-          - ``self.quantize_config.data_type`` is the final resolved value
-            (needed by :meth:`_adjust_torch_compile`).
+                    - ``self.quantize_config.data_type`` is the final resolved value
+                        (needed by :meth:`_finalize_torch_compile`).
 
         Work performed:
           - Applies the device map via :func:`~auto_round.utils.device.set_non_auto_device_map`.
@@ -1002,7 +1050,7 @@ class BaseCompressor(object):
         """
         set_non_auto_device_map(self.model_context.model, self.compress_context.device_map)
         # Re-evaluate torch.compile eligibility now that data_type is resolved.
-        self._adjust_torch_compile(self.enable_torch_compile)
+        self._finalize_torch_compile()
         self.compress_context.enable_torch_compile = self.enable_torch_compile
         if self.compress_context.low_cpu_mem_usage:
             self._offloader.reset()
@@ -1092,6 +1140,15 @@ class BaseCompressor(object):
     @batch_size.setter
     def batch_size(self, value: int) -> None:
         self._calibration_state.batch_size = value
+
+    @property
+    def gradient_accumulate_steps(self) -> int:
+        return self._calibration_state.gradient_accumulate_steps
+
+    @gradient_accumulate_steps.setter
+    def gradient_accumulate_steps(self, value: int) -> None:
+        if value is not None:
+            self._calibration_state.gradient_accumulate_steps = value
 
     @property
     def nsamples(self) -> int:

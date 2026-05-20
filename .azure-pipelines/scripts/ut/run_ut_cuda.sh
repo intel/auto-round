@@ -31,7 +31,7 @@ function create_conda_env() {
         export PATH=/usr/local/cuda/bin${PATH:+:${PATH}}
         export LD_LIBRARY_PATH=$(python -c "import site; print(site.getsitepackages()[0])")/nvidia/nvjitlink/lib:$LD_LIBRARY_PATH
     fi
-    uv pip install pytest-cov pytest-html cmake
+    uv pip install pytest-cov pytest-html cmake requests
 }
 
 function print_test_results_table() {
@@ -91,14 +91,14 @@ function run_unit_test() {
     cd ${REPO_PATH}/test
     rm -rf .coverage* *.xml *.html
 
-    uv pip install torch==2.11.0 torchvision --index-url https://download.pytorch.org/whl/cu128
-    uv pip install https://github.com/XuehaoSun/llama-cpp-python/releases/download/v0.3.16/llama_cpp_python-0.3.16-cp312-cp312-linux_x86_64.whl
+    uv pip install torch==2.12.0 torchvision torchao --index-url https://download.pytorch.org/whl/cu126
+    uv pip install https://github.com/XuehaoSun/llama-cpp-python/releases/download/v0.3.23/llama_cpp_python-0.3.23+cu128-py3-none-linux_x86_64.whl
     uv pip install 'git+https://github.com/ggml-org/llama.cpp.git#subdirectory=gguf-py'
     uv pip install -r test_cuda/requirements.txt
     uv pip install -r test_cuda/requirements_diffusion.txt
     uv pip install -U transformers
     uv pip uninstall torch torchvision
-    uv pip install torch==2.11.0 torchvision --index-url https://download.pytorch.org/whl/cu128
+    uv pip install torch==2.12.0 torchvision torchao --index-url https://download.pytorch.org/whl/cu126
     cd ${REPO_PATH} && uv pip install . && cd ${REPO_PATH}/test
 
     pip list > ${LOG_DIR}/ut_pip_list.txt
@@ -131,11 +131,13 @@ function run_unit_test_vlm() {
     cd ${REPO_PATH}/test
     rm -rf .coverage* *.xml *.html
 
-    uv pip install torch==2.11.0 torchvision --index-url https://download.pytorch.org/whl/cu128
+    uv pip install torch==2.12.0 torchvision --index-url https://download.pytorch.org/whl/cu126
     uv pip install git+https://github.com/haotian-liu/LLaVA.git@v1.2.2 --no-deps
     uv pip install -v git+https://github.com/casper-hansen/AutoAWQ.git@v0.2.0 --no-build-isolation
     uv pip install flash-attn==2.8.3 --no-build-isolation
-    uv pip install -r test_cuda/requirements_vlm.txt --extra-index-url https://download.pytorch.org/whl/cu128
+    uv pip install -r test_cuda/requirements_vlm.txt \
+        --extra-index-url https://download.pytorch.org/whl/cu126 \
+        --index-strategy unsafe-best-match
     cd ${REPO_PATH} && uv pip install . && cd ${REPO_PATH}/test
 
     pip list > ${LOG_DIR}/vlm_ut_pip_list.txt
@@ -168,7 +170,7 @@ function run_unit_test_llmc() {
 
     cd ${REPO_PATH}/test
     rm -rf .coverage* *.xml *.html
-    BUILD_TYPE="nightly" uv pip install -r test_cuda/requirements_llmc.txt --extra-index-url https://download.pytorch.org/whl/cu128 --index-strategy unsafe-best-match
+    BUILD_TYPE="nightly" uv pip install -r test_cuda/requirements_llmc.txt --extra-index-url https://download.pytorch.org/whl/cu126 --index-strategy unsafe-best-match
     cd ${REPO_PATH} && uv pip install . && cd ${REPO_PATH}/test
 
     pip list > ${LOG_DIR}/llmc_ut_pip_list.txt
@@ -200,7 +202,7 @@ function run_unit_test_sglang() {
 
     cd ${REPO_PATH}/test
     rm -rf .coverage* *.xml *.html
-    uv pip install -r test_cuda/requirements_sglang.txt --prerelease=allow
+    uv pip install "sglang<0.5.11" --prerelease=allow
     cd ${REPO_PATH} && uv pip install . && cd ${REPO_PATH}/test
 
     pip list > ${LOG_DIR}/sglang_ut_pip_list.txt
@@ -236,7 +238,7 @@ function run_unit_test_vllm() {
     vllm_version=$(curl -s https://api.github.com/repos/vllm-project/vllm/releases/latest | jq -r .tag_name | sed 's/^v//')
     uv pip install -r test_cuda/requirements_vllm.txt \
         --extra-index-url https://wheels.vllm.ai/${vllm_version}/cu129 \
-        --extra-index-url https://download.pytorch.org/whl/cu128 \
+        --extra-index-url https://download.pytorch.org/whl/cu126 \
         --index-strategy unsafe-best-match
     cd ${REPO_PATH} && uv pip install . && cd ${REPO_PATH}/test
 
