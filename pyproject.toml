@@ -23,6 +23,7 @@ extend-exclude = [
     "auto_round_extension/ark"
 ]
 [tool.typos.default.extend-words]
+ba = "ba"
 ue = "ue"
 endianess = "endianess"
 thw = "thw"

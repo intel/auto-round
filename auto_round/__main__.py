@@ -74,8 +74,18 @@ class BasicArgumentParser(argparse.ArgumentParser):
             # choices=["W4A16", "W2A16", "W3A16", "W8A16", "MXFP4", "MXFP8", "NVFP4", "FPW8A16", "FP8_STATIC"],
             help="Quantization scheme to use. "
             "W4A16: 4-bit weights with 16-bit activations (default). "
-            "Other options include W2A16, W3A16, W8A16 for different bit widths, "
+            "Other options include W2A16, W3A16, W8A16, W8A8 for different bit widths, "
             "and MXFP4/MXFP8/NVFP4 for different data type.",
+        )
+        basic.add_argument(
+            "--algorithm",
+            default=None,
+            type=str.lower,
+            choices=["auto_round", "rtn", "awq"],
+            help="Quantization algorithm to use. "
+            "auto_round: SignSGD-based optimization (default when iters > 0). "
+            "rtn: Round-to-nearest (default when iters == 0). "
+            "awq: Activation-Aware Weight Quantization (AWQ smoothing + RTN).",
         )
         basic.add_argument(
             "--batch_size",
@@ -311,6 +321,22 @@ class BasicArgumentParser(argparse.ArgumentParser):
             help="Disable the automatic model-free routing that activates when "
             "--iters 0 --disable_opt_rtn is combined with a supported INT WOQ scheme. "
             "Use this to force the regular AutoRound flow.",
+        )
+
+        awq_group = self.add_argument_group("AWQ Arguments")
+        awq_group.add_argument(
+            "--duo_scaling",
+            default=True,
+            type=lambda s: "both" if s.lower() == "both" else s.lower() in ("true", "1", "yes"),
+            help="Whether to use both activations and weights for AWQ scaling. "
+            "Options: true/false/'both'. 'both' searches both modes and picks the best. "
+            "(default: True).",
+        )
+        awq_group.add_argument(
+            "--n_grid",
+            default=20,
+            type=int,
+            help="Number of grid points for AWQ scaling ratio search (default: 20).",
         )
 
         scheme = self.add_argument_group("Scheme Arguments")
@@ -767,6 +793,12 @@ def tune(args):
         rotation_config=rot_config,
         model_free=args.model_free,
         disable_model_free=args.disable_model_free,
+        algorithm=getattr(args, "algorithm", None),
+        **(
+            {"duo_scaling": args.duo_scaling, "n_grid": args.n_grid}
+            if getattr(args, "algorithm", None) == "awq"
+            else {}
+        ),
     )
 
     # ======================= Quantize and save model =======================
