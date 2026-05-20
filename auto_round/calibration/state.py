@@ -19,7 +19,7 @@ This dataclass owns every per-run calibration field shared between
 
 - Cache state ``(inputs, to_cached_layers, last_cache_name, blocks_requiring_input_ids)``
 - Per-batch shape state ``(attention_mask, batch_dim)``
-- Calibration parameters ``(batch_size, nsamples, seqlen, dataset, dataloader)``
+- Calibration parameters ``(batch_size, gradient_accumulate_steps, nsamples, seqlen, dataset, dataloader)``
 
 Both the compressor and the quantizer hold a reference to the same
 ``CalibrationState`` instance (wired in ``BaseCompressor._resolve_scheme``).
@@ -61,6 +61,7 @@ class CalibrationState:
 
     # ── Calibration parameters ─────────────────────────────────────────────
     batch_size: int = 8
+    gradient_accumulate_steps: int = 1
     nsamples: int = 128
     seqlen: int = 2048
     dataset: Any = None
@@ -87,6 +88,7 @@ class CalibrationState:
             last_cache_name=getattr(compressor, "last_cache_name", None),
             blocks_requiring_input_ids=getattr(compressor, "blocks_requiring_input_ids", []) or [],
             batch_size=getattr(compressor, "batch_size", 8) or 8,
+            gradient_accumulate_steps=getattr(compressor, "gradient_accumulate_steps", 1) or 1,
             nsamples=getattr(compressor, "nsamples", 128) or 128,
             seqlen=getattr(compressor, "seqlen", 2048) or 2048,
             dataset=getattr(compressor, "dataset", None),

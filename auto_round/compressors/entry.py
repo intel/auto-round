@@ -190,6 +190,8 @@ class AutoRound(object):
         scheme="W4A16",
         low_gpu_mem_usage: bool = False,
         device_map: Union[str, torch.device, int, dict] = 0,
+        iters: int = None,
+        gradient_accumulate_steps: int = 1,
         enable_torch_compile: bool = False,
         seed: int = 42,
         low_cpu_mem_usage: bool = True,
@@ -233,6 +235,8 @@ class AutoRound(object):
             scheme=scheme,
             low_gpu_mem_usage=low_gpu_mem_usage,
             device_map=device_map,
+            iters=iters,
+            gradient_accumulate_steps=gradient_accumulate_steps,
             enable_torch_compile=enable_torch_compile,
             seed=seed,
             low_cpu_mem_usage=low_cpu_mem_usage,
@@ -317,6 +321,7 @@ class AutoRound(object):
             from auto_round.auto_scheme.gen_auto_scheme import AutoScheme as _AutoScheme
 
             is_auto_scheme = isinstance(scheme, _AutoScheme)
+            quant_config.enable_imatrix = enable_imatrix
 
             if enable_imatrix or needs_act_calib or is_auto_scheme:
                 quant_config._alg_cls = "OptimizedRTNQuantizer"
@@ -442,6 +447,12 @@ class AutoRoundCompatible:
         from auto_round.utils import is_diffusion_model, is_mllm_model
         from auto_round.utils.model import is_model_free_route
 
+        device = kwargs.pop("device", None)
+        if device is not None:
+            logger.warning_once("`device` is deprecated, please use `device_map` instead")
+            if device_map in (None, 0):
+                device_map = device
+
         # ---- Model-free fast-path detection --------------------------------
         if is_model_free_route(model, scheme, iters, kwargs.get("disable_opt_rtn"), kwargs):
             from auto_round.compressors.model_free import ModelFreeCompressor
@@ -476,6 +487,12 @@ class AutoRoundCompatible:
         act_sym = kwargs.pop("act_sym", None)
         act_data_type = kwargs.pop("act_data_type", None)
         act_dynamic = kwargs.pop("act_dynamic", None)
+        enable_opt_rtn = kwargs.pop("enable_opt_rtn", None)
+        lr = kwargs.pop("lr", None)
+        minmax_lr = kwargs.pop("minmax_lr", None)
+        enable_minmax_tuning = kwargs.pop("enable_minmax_tuning", True)
+        enable_norm_bias_tuning = kwargs.pop("enable_norm_bias_tuning", False)
+        enable_quanted_input = kwargs.pop("enable_quanted_input", True)
 
         # Pop AWQ-only kwargs early so they don't leak into non-AWQ constructors
         duo_scaling = kwargs.pop("duo_scaling", True)
@@ -517,16 +534,11 @@ class AutoRoundCompatible:
                 act_data_type=act_data_type,
                 act_dynamic=act_dynamic,
                 disable_opt_rtn=disable_opt_rtn,
+                enable_opt_rtn=enable_opt_rtn,
                 **common_config_kwargs,
             )
         else:
             # AutoRoundCompatible mode
-            lr = kwargs.pop("lr", None)
-            minmax_lr = kwargs.pop("minmax_lr", None)
-            enable_minmax_tuning = kwargs.pop("enable_minmax_tuning", True)
-            enable_norm_bias_tuning = kwargs.pop("enable_norm_bias_tuning", False)
-            enable_quanted_input = kwargs.pop("enable_quanted_input", True)
-
             config = SignRoundConfig(
                 iters=iters,
                 gradient_accumulate_steps=gradient_accumulate_steps,
@@ -597,6 +609,7 @@ class AutoRoundCompatible:
             scheme=scheme,
             dataset=dataset,
             iters=iters,
+            gradient_accumulate_steps=gradient_accumulate_steps,
             low_gpu_mem_usage=low_gpu_mem_usage,
             device_map=device_map,
             enable_torch_compile=enable_torch_compile,

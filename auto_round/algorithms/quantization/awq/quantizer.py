@@ -429,7 +429,7 @@ class AWQQuantizer(BaseQuantizers):
         # AWQ smoothing changes internal activations (LayerNorm output /= scales),
         # so act_max must be collected post-smoothing. Reset any pre-smoothing
         # act_max values first to avoid stale data persisting via max().
-        act_max_hooks = self._register_act_max_hook(block)
+        act_max_hooks = self.register_calibration_hooks(block, imatrix=False)
         if act_max_hooks:
             for _name, m in block.named_modules():
                 if hasattr(m, "act_max"):
@@ -723,9 +723,6 @@ class AWQQuantizer(BaseQuantizers):
             if not fp16_outputs or all(f.numel() == 0 for f in fp16_outputs):
                 use_parent_forward = False
 
-        if not use_parent_forward:
-            orig_weights = {bl: bl.weight.data.clone() for bl in mapping.balance_layers}
-
         # Save original weights for restoration during grid search
         orig_state = {bl: bl.weight.data.clone() for bl in mapping.balance_layers}
 
@@ -788,7 +785,7 @@ class AWQQuantizer(BaseQuantizers):
                 # Weight-only fallback: || W - Q(W*s)/s ||^2
                 total_loss = 0.0
                 for bl in mapping.balance_layers:
-                    w_orig = orig_weights[bl].to(device)
+                    w_orig = orig_state[bl].to(device)
                     w_scaled = w_orig * scales_view
                     w_qdq = self._quantize_dequantize_weight(
                         bl,

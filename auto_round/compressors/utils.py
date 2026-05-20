@@ -172,6 +172,11 @@ def block_forward(
     if "alibi" in input_others.keys() and input_others["alibi"] is not None:
         alibi = input_others["alibi"]
         input_others["alibi"] = alibi.reshape(-1, alibi.shape[2], alibi.shape[3])
+
+    from auto_round.special_model_handler import prepare_special_model_block_inputs
+
+    input_others, input_tuple = prepare_special_model_block_inputs(block, input_ids, input_others, input_tuple)
+
     if amp:
         with autocast(device_type=str(device).split(":")[0], dtype=amp_dtype):  # pragma: no cover
             output = block(input_ids, *input_tuple, **input_others)
