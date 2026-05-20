@@ -67,7 +67,7 @@ function run_unit_test() {
     auto_round_path=$(python -c 'import auto_round; print(auto_round.__path__[0])')
 
     # Split test files into 5 parts
-    find ./test_cpu -name "test*.py" | grep -Ev "integrations" | sort > all_tests.txt
+    find ./test_cpu -name "test*.py" | grep -Ev "test_llmc|test_inc" | sort > all_tests.txt
     total_lines=$(wc -l < all_tests.txt)
     NUM_CHUNKS=5
     q=$(( total_lines / NUM_CHUNKS ))
