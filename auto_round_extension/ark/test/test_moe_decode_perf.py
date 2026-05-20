@@ -52,11 +52,67 @@ from test_moe import (  # noqa: E402
     _pack_int4_sym,
     _pack_int8_asym,
     _pack_int8_sym,
-    has_moe_gemm_decode,
-    is_xpu_available,
 )
 
 ark = auto_round_kernel.ARK()
+
+
+# ---------------------------------------------------------------------------
+# Skip reasons.
+#
+# The original test_moe.py collapses several different failure modes into one
+# generic "kernel not built" message which makes it impossible to tell whether
+# the build is missing the kernel or whether XPU itself didn't come up. The
+# helpers below distinguish those cases so a skipped run is actually
+# actionable.
+# ---------------------------------------------------------------------------
+
+
+def _xpu_available() -> bool:
+    return hasattr(torch, "xpu") and torch.xpu.is_available()
+
+
+def _xpu_skip_reason() -> str:
+    if not hasattr(torch, "xpu"):
+        return "torch has no xpu submodule (need an Intel XPU build of torch)"
+    if not torch.xpu.is_available():
+        return "torch.xpu.is_available() == False (no XPU device or driver visible)"
+    return ""
+
+
+def _decode_skip_reason() -> str:
+    """Return non-empty string if the decode kernel can't be exercised."""
+    reason = _xpu_skip_reason()
+    if reason:
+        return reason
+    if ark.xpu_lib is None:
+        return (
+            "ark.xpu_lib is None -- the XPU extension module "
+            "(auto_round_kernel_xpu) failed to import; check that auto_round_kernel "
+            "was installed for THIS Python env with XPU support enabled"
+        )
+    if not hasattr(ark.xpu_lib, "moe_gemm_decode"):
+        return (
+            "ark.xpu_lib loaded but has no moe_gemm_decode symbol -- "
+            "rebuild with ARK_SYCL_TLA=ON to compile the MoE decode GEMV kernel"
+        )
+    return ""
+
+
+_DECODE_SKIP = _decode_skip_reason()
+
+# Surface diagnostics on collection so the user always sees why the suite
+# would skip, without having to add extra flags.
+print(
+    "[moe-decode-perf] xpu_available=%s  xpu_lib=%s  has_moe_gemm_decode=%s"
+    % (
+        _xpu_available(),
+        "loaded" if ark.xpu_lib is not None else "None",
+        hasattr(ark.xpu_lib, "moe_gemm_decode") if ark.xpu_lib is not None else False,
+    )
+)
+if _DECODE_SKIP:
+    print("[moe-decode-perf] suite will SKIP. reason: %s" % _DECODE_SKIP)
 
 
 # ---------------------------------------------------------------------------
@@ -153,8 +209,7 @@ def _print_row(label, N, K, total_tokens, base_ms, ark_ms):
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.skipif(not is_xpu_available(), reason="XPU not available")
-@pytest.mark.skipif(not has_moe_gemm_decode(), reason="MoE decode GEMV kernel not built (need ARK_SYCL_TLA=ON)")
+@pytest.mark.skipif(bool(_DECODE_SKIP), reason=_DECODE_SKIP or "ok")
 class TestMoEGemmDecodePerf:
     """Median XPU-event timings of ``moe_gemm_decode`` vs per-expert ``A @ W.T``.
 
