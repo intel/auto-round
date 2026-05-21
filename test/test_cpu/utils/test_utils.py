@@ -40,8 +40,11 @@ def test_preserve_original_visual_block_name():
     # Single visual block name
     assert preserve_original_visual_block_name("model.visual.blocks", "visual.blocks") == "model.visual.blocks"
     # Comma-separated: visual restored, text left as-is
-    assert preserve_original_visual_block_name(
-        "model.visual.blocks,model.language_model.layers", "visual.blocks,model.layers"
-    ) == "model.visual.blocks,model.layers"
+    assert (
+        preserve_original_visual_block_name(
+            "model.visual.blocks,model.language_model.layers", "visual.blocks,model.layers"
+        )
+        == "model.visual.blocks,model.layers"
+    )
     # Non-visual block names are never overridden
     assert preserve_original_visual_block_name("model.language_model.layers", "model.layers") == "model.layers"
