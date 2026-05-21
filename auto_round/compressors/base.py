@@ -561,6 +561,14 @@ class BaseCompressor(object):
         compressed_predefined_ignore_layers = compress_layer_names(predefined_ignore_layers)
         if not is_gguf_format:
             predefined_ignore_layers = get_predefined_ignore_layers(self.model_context.model)
+            if predefined_ignore_layers and self.quant_block_list:
+                block_prefixes = [block for group in self.quant_block_list for block in group]
+                predefined_ignore_layers = [
+                    name
+                    for name in predefined_ignore_layers
+                    if any(name.startswith(prefix) for prefix in block_prefixes)
+                ]
+            predefined_ignore_layers = compress_layer_names(predefined_ignore_layers)
             if predefined_ignore_layers:
                 logger.info(f"Using predefined ignore_layers: {compressed_predefined_ignore_layers}")
                 tmp_str = ",".join(predefined_ignore_layers)

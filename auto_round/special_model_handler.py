@@ -390,8 +390,10 @@ def _get_qwen2_5_omni_multimodal_block(model, quant_vision=False):
 
     For quantization, we focus on:
     - thinker.model.layers (text decoder layers) - main LLM layers
-    - talker.model.layers (talker decoder layers)
     - Optionally: visual encoder blocks, audio encoder layers
+
+    talker is excluded by default because quantizing it has been observed to
+    degrade audio quality in long-form generation.
     """
     block_names = []
 
@@ -409,10 +411,6 @@ def _get_qwen2_5_omni_multimodal_block(model, quant_vision=False):
     if hasattr(model, "thinker") and hasattr(model.thinker, "model") and hasattr(model.thinker.model, "layers"):
         block_names.append([f"thinker.model.layers.{i}" for i in range(len(model.thinker.model.layers))])
 
-    # Talker model layers (if available)
-    if hasattr(model, "talker") and hasattr(model.talker, "model") and hasattr(model.talker.model, "layers"):
-        block_names.append([f"talker.model.layers.{i}" for i in range(len(model.talker.model.layers))])
-
     return block_names
 
 
@@ -426,8 +424,10 @@ def _get_qwen3_omni_moe_multimodal_block(model, quant_vision=False):
 
     For quantization, we focus on:
     - thinker.model.layers (text decoder layers) - main LLM layers
-    - talker.model.layers (talker decoder layers)
     - Optionally: visual encoder blocks, audio encoder layers
+
+    talker is excluded by default because quantizing it has been observed to
+    degrade audio quality in long-form generation .
     """
     block_names = []
 
@@ -446,10 +446,6 @@ def _get_qwen3_omni_moe_multimodal_block(model, quant_vision=False):
     # Thinker text model layers (main LLM decoder)
     if hasattr(model, "thinker") and hasattr(model.thinker, "model") and hasattr(model.thinker.model, "layers"):
         block_names.append([f"thinker.model.layers.{i}" for i in range(len(model.thinker.model.layers))])
-
-    # Talker model layers (if available)
-    if hasattr(model, "talker") and hasattr(model.talker, "model") and hasattr(model.talker.model, "layers"):
-        block_names.append([f"talker.model.layers.{i}" for i in range(len(model.talker.model.layers))])
 
     return block_names
 
