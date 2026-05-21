@@ -312,11 +312,6 @@ def copy_missing_tensors_from_source(
         aliases = _name_aliases(name)
         if aliases & saved_tensor_names:
             return False
-        # Qwen-Omni talker weights must be preserved exactly as BF16 source tensors.
-        # If an individual talker tensor is absent from the export, copy that exact key
-        # regardless of whether sibling tensors from the same expert/block were saved.
-        if any(alias.startswith("talker.") for alias in aliases):
-            return True
         parents = {a.rsplit(".", 1)[0] for a in aliases}
         if parents & saved_parent_layers:
             return False
@@ -330,8 +325,6 @@ def copy_missing_tensors_from_source(
 
     if not missing_tensor_names:
         return
-
-    logger.debug(f"Missing tensors detected: {missing_tensor_names}")
 
     try:
         from tqdm import tqdm as _tqdm

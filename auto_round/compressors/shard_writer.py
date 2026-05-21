@@ -162,15 +162,20 @@ class ShardWriter:
     def _expand_fused_experts(self, name: str, tensor: torch.Tensor) -> list[tuple[str, torch.Tensor]] | None:
         """Expand a fused 3D expert parameter into per-expert 2D weight tensors.
 
-        Non-quantized MoE modules (e.g. talker in Qwen3-Omni) are kept fused
+        Non-quantized MoE modules (e.g. thinker in Qwen3-Omni) are kept fused
         during quantization to prevent memory eviction under disk offloading.
         This method converts them to the per-expert checkpoint format at save time.
+
+        Talker MoE modules stay fused during quantization, but save_pretrained
+        still needs concrete per-expert 2D checkpoint keys. Saving the original
+        fused tensor under a reverse-mapped wildcard key (for example
+        ``experts.*.gate_proj.weight``) breaks reload.
 
         Returns:
             List of (key, 2D tensor) pairs, or None if not a fused expert param.
         """
-        from auto_round.modeling.fused_moe.moe_experts_interface import KNOWN_PROJECTION_PATTERNS
         from auto_round.modeling.fused_moe.replace_modules import MOE_SKIP_PREFIXES
+        from auto_round.utils.missing_tensors import split_fused_expert_tensors
 
         parts = name.rsplit(".", 1)
         if len(parts) != 2:
@@ -184,35 +189,12 @@ class ShardWriter:
         ):
             return None
 
-        config = KNOWN_PROJECTION_PATTERNS.get(attr_name)
-        if config is None:
+        expanded = split_fused_expert_tensors({name: tensor})
+        if set(expanded) == {name}:
             return None
-
-        module = get_module(self.model, prefix)
-        is_transposed = getattr(module, "is_transposed", False) if module else False
-        if is_transposed:
-            tensor = tensor.transpose(1, 2).contiguous()
-
-        num_experts = tensor.shape[0]
-        result = []
-
-        split_into = config.get("split_into")
-        if split_into:
-            chunks = tensor.chunk(len(split_into), dim=1)
-            for split_name, chunk in zip(split_into, chunks):
-                for i in range(num_experts):
-                    result.append((f"{prefix}.{i}.{split_name}.weight", chunk[i].clone()))
-        else:
-            for i in range(num_experts):
-                result.append((f"{prefix}.{i}.{attr_name}.weight", tensor[i].clone()))
-
-        return result
+        return list(expanded.items())
 
     def _add_tensor(self, name: str, tensor: torch.Tensor):
-
-        # transformers will handle _checkpoint_conversion_mapping automatically if is_immediate_saving=False
-        name = revert_checkpoint_conversion_mapping(name, self.reverse_checkpoint_conversion_mapping)
-
         if isinstance(tensor, torch.Tensor) and tensor.device.type == "meta":
             self.skipped_meta_tensors.append(name)
             return
@@ -229,6 +211,9 @@ class ShardWriter:
                 for sub_name, sub_tensor in expanded:
                     self._add_tensor(sub_name, sub_tensor)
                 return
+
+        # transformers will handle _checkpoint_conversion_mapping automatically if is_immediate_saving=False
+        name = revert_checkpoint_conversion_mapping(name, self.reverse_checkpoint_conversion_mapping)
 
         t_size = tensor.nbytes
         self.total_param_elems += tensor.numel()

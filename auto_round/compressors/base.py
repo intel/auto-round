@@ -45,7 +45,6 @@ from auto_round.utils import (
     INNER_SUPPORTED_LAYER_TYPES,
     SUPPORTED_LAYER_TYPES,
     TORCH_VERSION_AT_LEAST_2_6,
-    collapse_ignore_layers,
     compress_layer_names,
     convert_dtype_str2torch,
     extract_block_names_to_str,
@@ -569,8 +568,7 @@ class BaseCompressor(object):
                     for name in predefined_ignore_layers
                     if any(name.startswith(prefix) for prefix in block_prefixes)
                 ]
-            predefined_ignore_layers = collapse_ignore_layers(predefined_ignore_layers)
-            compressed_predefined_ignore_layers = compress_layer_names(predefined_ignore_layers)
+            predefined_ignore_layers = compress_layer_names(predefined_ignore_layers)
             if predefined_ignore_layers:
                 logger.info(f"Using predefined ignore_layers: {compressed_predefined_ignore_layers}")
                 tmp_str = ",".join(predefined_ignore_layers)
