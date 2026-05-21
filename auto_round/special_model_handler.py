@@ -160,7 +160,11 @@ def _prepare_gemma4_replay_inputs(
     head_dim = getattr(attn, "head_dim", None)
 
     if attn is not None and hasattr(attn, "store_full_length_kv") and shared_kv_states is None:
-        shared_kv_states = default_shared_kv_states if default_shared_kv_states is not None else _get_gemma4_shared_kv_states_global(block)
+        shared_kv_states = (
+            default_shared_kv_states
+            if default_shared_kv_states is not None
+            else _get_gemma4_shared_kv_states_global(block)
+        )
 
     need_position_embeddings = position_embeddings is None
     if isinstance(position_embeddings, dict):
