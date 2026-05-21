@@ -146,7 +146,7 @@ def get_tensors(cls) -> Iterator[tuple[str, Tensor]]:
     if not hasattr(cls.model, "tensor_name_list"):
         cls.model.tensor_name_list = []
 
-    reverse_key_mapping = {v: k for k, v in getattr(cls.model, '_checkpoint_conversion_mapping', {}).items()}
+    reverse_key_mapping = {v: k for k, v in getattr(cls.model, "_checkpoint_conversion_mapping", {}).items()}
     for name, tensor in cls.model.named_parameters():
         if name not in cls.model.tensor_name_list:
             cls.model.tensor_name_list.append(name)
