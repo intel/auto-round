@@ -652,7 +652,9 @@ class TestCopyMissingTensorsFromSource:
                     "talker.model.layers.0.mlp.experts.0.down_proj.weight": torch.randn(32, 8),
                     "talker.model.layers.0.mlp.experts.1.down_proj.weight": torch.randn(32, 8),
                     # Also have some thinker quantized weights
-                    "thinker.model.layers.0.mlp.experts.0.gate_proj.qweight": torch.randint(0, 16, (8, 32), dtype=torch.int32),
+                    "thinker.model.layers.0.mlp.experts.0.gate_proj.qweight": torch.randint(
+                        0, 16, (8, 32), dtype=torch.int32
+                    ),
                 },
                 os.path.join(target_dir, "model.safetensors"),
             )
