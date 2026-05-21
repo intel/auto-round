@@ -1,9 +1,10 @@
-import copy
+import json
+import os
 import shutil
 
 import pytest
 import torch
-import transformers
+from safetensors import safe_open
 from transformers import AutoModelForCausalLM, AutoRoundConfig, AutoTokenizer
 
 from auto_round import AutoRound
@@ -150,3 +151,45 @@ class TestAutoRound:
         assert compressed_model.config.quantization_config["weight_block_size"] == (128, 128)
         if is_cuda_support_fp8():
             eval_generated_prompt(quantized_model_path, device="cuda:0")
+
+    def test_fp8_block_autoround_format(self):
+        model_name = "Qwen/Qwen3-0.6B"
+
+        autoround = AutoRound(
+            model_name,
+            scheme="FP8_BLOCK",
+            iters=0,
+            disable_opt_rtn=True,
+            seqlen=2,
+        )
+        quantized_model_path = self.save_dir
+        compressed_model, quantized_model_path = autoround.quantize_and_save(
+            output_dir=quantized_model_path,
+            format="auto_round",
+        )
+
+        tmp_layer = compressed_model.model.layers[1].self_attn.q_proj
+        assert hasattr(tmp_layer, "weight_scale_inv")
+        assert tmp_layer.weight.dtype is torch.float8_e4m3fn
+        assert list(tmp_layer.weight_scale_inv.shape) == [16, 8]
+
+        in_memory_qconfig = compressed_model.config.quantization_config
+        assert in_memory_qconfig["quant_method"] == "auto_round:fp8"
+        assert in_memory_qconfig["weight_block_size"] == (128, 128)
+        assert in_memory_qconfig["activation_scheme"] == "dynamic"
+        assert in_memory_qconfig["fmt"] == "e4m3"
+
+        with open(os.path.join(quantized_model_path, "quantization_config.json"), "r", encoding="utf-8") as f:
+            quantization_config = json.load(f)
+
+        assert quantization_config["quant_method"] == "auto_round:fp8"
+        assert quantization_config["weight_block_size"] == [128, 128]
+        assert quantization_config["activation_scheme"] == "dynamic"
+        assert quantization_config["fmt"] == "e4m3"
+
+        weight_key = "model.layers.1.self_attn.q_proj.weight"
+        scale_key = "model.layers.1.self_attn.q_proj.weight_scale_inv"
+        with safe_open(os.path.join(quantized_model_path, "model.safetensors"), framework="pt") as f:
+            assert scale_key in f.keys()
+            assert f.get_tensor(weight_key).dtype == torch.float8_e4m3fn
+            assert list(f.get_tensor(scale_key).shape) == [16, 8]

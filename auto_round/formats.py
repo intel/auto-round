@@ -101,11 +101,13 @@ def _check_compatibility(formats: list[str], ar: BaseCompressor):
                 f"since scheme {gguf_format_name} can only be exported to format {gguf_format_name.lower()} or fake"
             )
             formats = tmp_format_name.split(",")
+
     if isinstance(ar.group_size, tuple) and any(["auto_round" in f.lower() for f in formats]):
         logger.warning(
-            "`auto_round` format can't be used for deploying block-wise fp8 quantization now, use `fp8` instead."
+            "auto_round:fp8 format only supports vLLM inference for now. "
+            "We recommend using the FP8 format via `--format fp8` instead."
         )
-        formats = ["fp8" if "auto_round" in f.lower() else f for f in formats]
+
     return formats
 
 
@@ -1063,8 +1065,7 @@ class FP8Format(OutputFormat):
 
         backend = self.get_backend_name()
 
-        # weight_block_size & ignored_layers are required by fp8 format, skip them in auto_round:fp8 format
-        if isinstance(serialization_dict["group_size"], tuple) and "auto_round" not in backend:
+        if isinstance(serialization_dict["group_size"], tuple):
             serialization_dict["weight_block_size"] = serialization_dict["group_size"]
 
             ignored_layers = []
