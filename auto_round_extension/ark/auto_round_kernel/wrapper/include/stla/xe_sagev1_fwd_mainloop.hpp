@@ -241,6 +241,47 @@ struct SAGEV1FwdMainloop<sage::XeDefault<Stages>, CausalMask_, FullMask_, Cached
 #endif
   }
 
+  CUTLASS_DEVICE static void max_rescale_pair_simd32_asm(ElementP old0, ElementP old1, ElementP block0,
+                                                         ElementP block1, ElementP& new0, ElementP& new1,
+                                                         ElementP& rescale0, ElementP& rescale1) {
+#if defined(__SYCL_DEVICE_ONLY__) && defined(SYCL_INTEL_TARGET)
+    asm(
+        "{\n"
+        ".decl NEW0 v_type=G type=F num_elts=16 alias=<%0,0>\n"
+        ".decl NEW1 v_type=G type=F num_elts=16 alias=<%1,0>\n"
+        ".decl RES0 v_type=G type=F num_elts=16 alias=<%2,0>\n"
+        ".decl RES1 v_type=G type=F num_elts=16 alias=<%3,0>\n"
+        ".decl OLD0 v_type=G type=F num_elts=16 alias=<%4,0>\n"
+        ".decl OLD1 v_type=G type=F num_elts=16 alias=<%5,0>\n"
+        ".decl BLK0 v_type=G type=F num_elts=16 alias=<%6,0>\n"
+        ".decl BLK1 v_type=G type=F num_elts=16 alias=<%7,0>\n"
+        ".decl TMP_OLD v_type=G type=F num_elts=32 align=64\n"
+        ".decl TMP_BLK v_type=G type=F num_elts=32 align=64\n"
+        ".decl TMP_NEW v_type=G type=F num_elts=32 align=64\n"
+        ".decl TMP_DIF v_type=G type=F num_elts=32 align=64\n"
+        ".decl TMP_RES v_type=G type=F num_elts=32 align=64\n"
+        "mov (M1_NM, 16) TMP_OLD(0,0)<1> OLD0(0,0)<1;1,0>\n"
+        "mov (M1_NM, 16) TMP_OLD(1,0)<1> OLD1(0,0)<1;1,0>\n"
+        "mov (M1_NM, 16) TMP_BLK(0,0)<1> BLK0(0,0)<1;1,0>\n"
+        "mov (M1_NM, 16) TMP_BLK(1,0)<1> BLK1(0,0)<1;1,0>\n"
+        "max (M1_NM, 32) TMP_NEW(0,0)<1> TMP_OLD(0,0)<1;1,0> TMP_BLK(0,0)<1;1,0>\n"
+        "add (M1_NM, 32) TMP_DIF(0,0)<1> TMP_OLD(0,0)<1;1,0> (-)TMP_NEW(0,0)<1;1,0>\n"
+        "exp (M1_NM, 32) TMP_RES(0,0)<1> TMP_DIF(0,0)<1;1,0>\n"
+        "mov (M1_NM, 16) NEW0(0,0)<1> TMP_NEW(0,0)<1;1,0>\n"
+        "mov (M1_NM, 16) NEW1(0,0)<1> TMP_NEW(1,0)<1;1,0>\n"
+        "mov (M1_NM, 16) RES0(0,0)<1> TMP_RES(0,0)<1;1,0>\n"
+        "mov (M1_NM, 16) RES1(0,0)<1> TMP_RES(1,0)<1;1,0>\n"
+        "}\n"
+        : "=rw"(new0), "=rw"(new1), "=rw"(rescale0), "=rw"(rescale1)
+        : "rw"(old0), "rw"(old1), "rw"(block0), "rw"(block1));
+#else
+    new0 = sycl::max(old0, block0);
+    new1 = sycl::max(old1, block1);
+    rescale0 = sycl::native::exp2(old0 - new0);
+    rescale1 = sycl::native::exp2(old1 - new1);
+#endif
+  }
+
   CUTLASS_DEVICE static void mul_pair_simd32_asm(ElementP a0, ElementP a1, ElementP b0, ElementP b1, ElementP& y0,
                                                  ElementP& y1) {
 #if defined(__SYCL_DEVICE_ONLY__) && defined(SYCL_INTEL_TARGET)
@@ -763,8 +804,8 @@ struct SAGEV1FwdMainloop<sage::XeDefault<Stages>, CausalMask_, FullMask_, Cached
   FragARow softmax(bool first_block,    // First softmax block?
                    FragP& tS,           // Softmax src/dst block
                    FragARow& tS_max,    // Softmax row-wise max accumulator
-                   FragARow& tS_sum) {  // Softmax row-wise sum accumulator
-                                        /* Compute row-wise maxima for this block */
+                   FragARow& tS_sum) {   // Softmax row-wise sum accumulator
+                                         /* Compute row-wise maxima for this block */
 
     auto tS_bmax = reduce<1>(tS, sycl::maximum{});
 
@@ -772,27 +813,25 @@ struct SAGEV1FwdMainloop<sage::XeDefault<Stages>, CausalMask_, FullMask_, Cached
     if constexpr (FragARow{}.size() % 2 == 0) {
       CUTLASS_PRAGMA_UNROLL
       for (int i = 0; i < tS_max.size(); i += 2) {
-        ElementA new_max0 = sycl::max(tS_max(i), ElementA(tS_bmax(i)));
-        ElementA new_max1 = sycl::max(tS_max(i + 1), ElementA(tS_bmax(i + 1)));
-        exp2_pair_simd32_asm(tS_max(i) - new_max0, tS_max(i + 1) - new_max1, rescale(i), rescale(i + 1));
+        ElementA new_max0, new_max1;
+        max_rescale_pair_simd32_asm(tS_max(i), tS_max(i + 1), ElementA(tS_bmax(i)), ElementA(tS_bmax(i + 1)),
+                                    new_max0, new_max1, rescale(i), rescale(i + 1));
         tS_max(i) = new_max0;
         tS_max(i + 1) = new_max1;
       }
     } else {
       CUTLASS_PRAGMA_UNROLL
-      for (int i = 0; i < tS_max.size(); i += 2) {
-        if (i + 1 < tS_max.size()) {
-          ElementA new_max0 = sycl::max(tS_max(i), ElementA(tS_bmax(i)));
-          ElementA new_max1 = sycl::max(tS_max(i + 1), ElementA(tS_bmax(i + 1)));
-          exp2_pair_simd32_asm(tS_max(i) - new_max0, tS_max(i + 1) - new_max1, rescale(i), rescale(i + 1));
-          tS_max(i) = new_max0;
-          tS_max(i + 1) = new_max1;
-        } else {
-          ElementA new_max0 = sycl::max(tS_max(i), ElementA(tS_bmax(i)));
-          rescale(i) = sycl::native::exp2(tS_max(i) - new_max0);
-          tS_max(i) = new_max0;
-        }
+      for (int i = 0; i + 1 < tS_max.size(); i += 2) {
+        ElementA new_max0, new_max1;
+        max_rescale_pair_simd32_asm(tS_max(i), tS_max(i + 1), ElementA(tS_bmax(i)), ElementA(tS_bmax(i + 1)),
+                                    new_max0, new_max1, rescale(i), rescale(i + 1));
+        tS_max(i) = new_max0;
+        tS_max(i + 1) = new_max1;
       }
+      constexpr int i = FragARow{}.size() - 1;
+      ElementA new_max = sycl::max(tS_max(i), ElementA(tS_bmax(i)));
+      rescale(i) = sycl::native::exp2(tS_max(i) - new_max);
+      tS_max(i) = new_max;
     }
 
     /* Scale S and subtract maxima, then exponentiate */
