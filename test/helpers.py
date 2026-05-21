@@ -153,6 +153,8 @@ def _reduce_config_layers(config, num_layers, num_experts=None):
         "encoder_layers",
         "num_single_layers",
         "num_decoder_layers",
+        "input_local_layers",
+        "local_layers",
     ]
     n_expert_keys = ["num_experts", "num_local_experts"]
 
@@ -185,6 +187,7 @@ def _reduce_config_layers(config, num_layers, num_experts=None):
         "audio_config",
         "thinker_config",
         "talker_config",
+        "code_predictor_config",
     ]:
         sub_cfg = getattr(config, sub_name, None)
         if sub_cfg is not None:

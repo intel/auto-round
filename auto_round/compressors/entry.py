@@ -7,8 +7,11 @@ from typing import Any, Callable, Optional, Union
 import torch
 
 from auto_round.algorithms.alg_config import AlgConfig
+from auto_round.algorithms.quantization.awq.config import AWQConfig
 from auto_round.algorithms.quantization.rtn.config import RTNConfig
 from auto_round.algorithms.quantization.sign_round.config import SignRoundConfig
+from auto_round.algorithms.transforms import normalize_rotation_config as _normalize_any_rotation_config
+from auto_round.algorithms.transforms.base import BaseRotationConfig as _BaseRotationConfig
 from auto_round.algorithms.transforms.rotation.config import RotationConfig as _NewArchRotationConfig
 from auto_round.auto_scheme.gen_auto_scheme import AutoScheme
 from auto_round.compressors.data_driven import CalibratedRTNCompressor, DataDrivenCompressor
@@ -172,6 +175,9 @@ class AutoRound(object):
         """Convert string alias(es) to the corresponding config instance(s) with default parameters."""
         if isinstance(config, str):
             key = config.strip().lower()
+            # Handle spinquant/quarot via unified normalizer
+            if key in ("spinquant", "quarot"):
+                return _normalize_any_rotation_config(key)
             if key not in cls._CONFIG_ALIASES:
                 raise ValueError(f"Unknown config alias '{config}'. " f"Supported: {list(cls._CONFIG_ALIASES.keys())}")
             return cls._CONFIG_ALIASES[key]()
@@ -189,6 +195,8 @@ class AutoRound(object):
         scheme="W4A16",
         low_gpu_mem_usage: bool = False,
         device_map: Union[str, torch.device, int, dict] = 0,
+        iters: int = None,
+        gradient_accumulate_steps: int = 1,
         enable_torch_compile: bool = False,
         seed: int = 42,
         low_cpu_mem_usage: bool = True,
@@ -232,6 +240,8 @@ class AutoRound(object):
             scheme=scheme,
             low_gpu_mem_usage=low_gpu_mem_usage,
             device_map=device_map,
+            iters=iters,
+            gradient_accumulate_steps=gradient_accumulate_steps,
             enable_torch_compile=enable_torch_compile,
             seed=seed,
             low_cpu_mem_usage=low_cpu_mem_usage,
@@ -261,6 +271,11 @@ class AutoRound(object):
 
         if isinstance(quant_config, SignRoundConfig):
             return _get_compressor_class(model_type, DataDrivenCompressor)(alg_configs, **local_args, **kwargs)
+
+        elif isinstance(quant_config, AWQConfig):
+            # AWQ requires calibration for activation collection + smoothing
+            quant_config._alg_cls = "AWQQuantizer"
+            return _get_compressor_class(model_type, CalibratedRTNCompressor)(alg_configs, **local_args, **kwargs)
 
         elif isinstance(quant_config, RTNConfig):
             enable_imatrix = False
@@ -311,6 +326,7 @@ class AutoRound(object):
             from auto_round.auto_scheme.gen_auto_scheme import AutoScheme as _AutoScheme
 
             is_auto_scheme = isinstance(scheme, _AutoScheme)
+            quant_config.enable_imatrix = enable_imatrix
 
             if enable_imatrix or needs_act_calib or is_auto_scheme:
                 quant_config._alg_cls = "OptimizedRTNQuantizer"
@@ -420,14 +436,27 @@ class AutoRoundCompatible:
         enable_torch_compile: bool = False,
         seed: int = 42,
         low_cpu_mem_usage: bool = True,
+        algorithm: str = None,
         **kwargs,
     ):
         """Create AutoRoundCompatible instance using new AutoRound architecture.
 
         This method translates old AutoRoundCompatible API to new AutoRound API.
+
+        Args:
+            algorithm: Quantization algorithm to use. Options:
+                - None or "auto_round": SignSGD-based optimization (default when iters > 0)
+                - "rtn": Round-to-nearest (default when iters == 0)
+                - "awq": Activation-Aware Weight Quantization (AWQ smoothing + RTN)
         """
         from auto_round.utils import is_diffusion_model, is_mllm_model
         from auto_round.utils.model import is_model_free_route
+
+        device = kwargs.pop("device", None)
+        if device is not None:
+            logger.warning_once("`device` is deprecated, please use `device_map` instead")
+            if device_map in (None, 0):
+                device_map = device
 
         # ---- Model-free fast-path detection --------------------------------
         if is_model_free_route(model, scheme, iters, kwargs.get("disable_opt_rtn"), kwargs):
@@ -463,9 +492,40 @@ class AutoRoundCompatible:
         act_sym = kwargs.pop("act_sym", None)
         act_data_type = kwargs.pop("act_data_type", None)
         act_dynamic = kwargs.pop("act_dynamic", None)
+        enable_opt_rtn = kwargs.pop("enable_opt_rtn", None)
+        lr = kwargs.pop("lr", None)
+        minmax_lr = kwargs.pop("minmax_lr", None)
+        enable_minmax_tuning = kwargs.pop("enable_minmax_tuning", True)
+        enable_norm_bias_tuning = kwargs.pop("enable_norm_bias_tuning", False)
+        enable_quanted_input = kwargs.pop("enable_quanted_input", True)
+
+        # Pop AWQ-only kwargs early so they don't leak into non-AWQ constructors
+        duo_scaling = kwargs.pop("duo_scaling", True)
+        n_grid = kwargs.pop("n_grid", 20)
+        awq_mappings = kwargs.pop("mappings", None)
 
         # Decide which algorithm to use
-        if iters == 0:
+        if algorithm and algorithm.lower() == "awq":
+            # AWQ mode: activation-aware weight quantization
+            config = AWQConfig(
+                bits=bits,
+                group_size=group_size,
+                sym=sym,
+                data_type=data_type,
+                act_bits=act_bits,
+                act_group_size=act_group_size,
+                act_sym=act_sym,
+                act_data_type=act_data_type,
+                act_dynamic=act_dynamic,
+                duo_scaling=duo_scaling,
+                n_grid=n_grid,
+                seqlen=seqlen,
+                nsamples=nsamples,
+                batch_size=batch_size,
+                mappings=awq_mappings,
+                **common_config_kwargs,
+            )
+        elif (algorithm and algorithm.lower() == "rtn") or iters == 0:
             # RTN mode
             disable_opt_rtn = kwargs.pop("disable_opt_rtn", None)
             config = RTNConfig(
@@ -479,16 +539,11 @@ class AutoRoundCompatible:
                 act_data_type=act_data_type,
                 act_dynamic=act_dynamic,
                 disable_opt_rtn=disable_opt_rtn,
+                enable_opt_rtn=enable_opt_rtn,
                 **common_config_kwargs,
             )
         else:
             # AutoRoundCompatible mode
-            lr = kwargs.pop("lr", None)
-            minmax_lr = kwargs.pop("minmax_lr", None)
-            enable_minmax_tuning = kwargs.pop("enable_minmax_tuning", True)
-            enable_norm_bias_tuning = kwargs.pop("enable_norm_bias_tuning", False)
-            enable_quanted_input = kwargs.pop("enable_quanted_input", True)
-
             config = SignRoundConfig(
                 iters=iters,
                 gradient_accumulate_steps=gradient_accumulate_steps,
@@ -517,16 +572,23 @@ class AutoRoundCompatible:
         # In old arch this was a standalone keyword arg; the new arch passes rotation
         # transforms as part of the alg_configs list.  All backends (auto / inplace /
         # transform) are dispatched inside ``HadamardRotation.apply_to_model``.
+        # Also supports SpinQuantConfig and string shorthands ("quarot", "spinquant").
         _rotation_config_raw = kwargs.pop("rotation_config", None)
         if _rotation_config_raw is not None:
-            if isinstance(_rotation_config_raw, _NewArchRotationConfig):
+            if isinstance(_rotation_config_raw, _BaseRotationConfig):
+                # Already a valid config (RotationConfig, SpinQuantConfig, etc.)
                 _rc = _rotation_config_raw
             elif isinstance(_rotation_config_raw, dict):
-                _rc = _NewArchRotationConfig.model_validate(_rotation_config_raw)
+                # Use unified normalizer which dispatches by "algorithm" key
+                _rc = _normalize_any_rotation_config(_rotation_config_raw)
+            elif isinstance(_rotation_config_raw, str):
+                # String shorthands: "quarot", "spinquant", "hadamard",
+                # "random_hadamard", "default", etc.
+                _rc = _normalize_any_rotation_config(_rotation_config_raw)
             else:
-                # str alias ("default", "random_hadamard", …) -> default config
                 _rc = _NewArchRotationConfig()
-            config = [config, _rc]
+            if _rc is not None:
+                config = [config, _rc]
 
         # Extract MLLM-specific parameters
         processor = kwargs.pop("processor", None)
@@ -559,6 +621,7 @@ class AutoRoundCompatible:
             scheme=scheme,
             dataset=dataset,
             iters=iters,
+            gradient_accumulate_steps=gradient_accumulate_steps,
             low_gpu_mem_usage=low_gpu_mem_usage,
             device_map=device_map,
             enable_torch_compile=enable_torch_compile,

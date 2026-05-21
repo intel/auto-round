@@ -18,7 +18,7 @@ Tests are organized by hardware backend (`test_cpu/`, `test_cuda/`) and function
 - **quantization/** - Quantization techniques (mixed-bit, MXFP, NVFP4, activation quant)
 - **export/** - Model serialization (GGUF, AutoGPTQ, AutoRound format)
 - **backends/** - Inference backends (Torch, Marlin, Triton, ExLlamaV2)
-- **models/** - Architecture-specific tests (MLLMs, VLMs, MoE, Diffusion)
+- **models/** - Architecture-specific tests (MLLMs, VLMs, MoE, Diffusion, Omni)
 - **integrations/** - Third-party frameworks (vLLM, SGLang, LLMC, Transformers)
 - **schemes/** - Quantization scheme selection and configuration
 - **utils/** - Calibration datasets, logging, CLI, model loading

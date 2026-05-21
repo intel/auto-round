@@ -1,10 +1,13 @@
+import os
+
 import pytest
 import torch
 from compressed_tensors.quantization import QuantizationArgs, QuantizationScheme
 from llmcompressor import oneshot
 from llmcompressor.modifiers.autoround import AutoRoundModifier
-from transformers import AutoModelForCausalLM, AutoTokenizer
+from transformers import AutoConfig, AutoModelForCausalLM, AutoTokenizer
 
+from auto_round import AutoRound
 from auto_round.calib_dataset import get_dataset
 
 from ...envs import multi_card
@@ -239,3 +242,47 @@ def test_rtn_oneshot(recipe, tmp_path, tiny_tiny_llama_model_path):
     # Check lm-head is not quantized
     not_targeted = model_loaded.lm_head
     assert not hasattr(not_targeted, "quantization_scheme")
+
+
+# ---------------------------------------------------------------------------
+# AWQ W8A8 llm_compressor export config args
+# ---------------------------------------------------------------------------
+def test_llmc_awq_w8a8_export_config_args(tiny_opt_model_path, tmp_path):
+    """W8A8 AWQ → llm_compressor: verify compressed-tensors metadata fields."""
+    save_dir = str(tmp_path / "saved")
+    ar = AutoRound(
+        tiny_opt_model_path,
+        scheme="INT8",
+        algorithm="awq",
+        nsamples=2,
+        seqlen=32,
+        batch_size=2,
+    )
+    _, save_path = ar.quantize_and_save(output_dir=save_dir, format="llm_compressor")
+
+    config = AutoConfig.from_pretrained(save_path, trust_remote_code=True)
+    qconfig = config.quantization_config
+
+    assert qconfig["quant_method"] == "compressed-tensors"
+
+    group0 = qconfig["config_groups"]["group_0"]
+    # Weight args
+    assert group0["weights"]["num_bits"] == 8
+    assert group0["weights"]["type"] == "int"
+    assert group0["weights"]["symmetric"] is True
+    # Activation args
+    assert group0["input_activations"]["num_bits"] == 8
+    # Targets
+    targets = group0.get("targets")
+    assert targets is not None and len(targets) > 0
+
+    # QuantLinear check: verify saved weights are int8 with per-channel scales
+    from safetensors import safe_open
+
+    st_files = [f for f in os.listdir(save_path) if f.endswith(".safetensors")]
+    assert len(st_files) > 0, f"No safetensors files in {save_path}"
+    with safe_open(os.path.join(save_path, st_files[0]), framework="pt") as f:
+        weight = f.get_tensor("model.decoder.layers.0.self_attn.k_proj.weight")
+        assert weight.dtype == torch.int8, f"Expected int8 weight, got {weight.dtype}"
+        scale = f.get_tensor("model.decoder.layers.0.self_attn.k_proj.weight_scale")
+        assert scale.shape[1] == 1, f"Expected per-channel scale shape (out, 1), got {scale.shape}"

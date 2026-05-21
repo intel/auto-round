@@ -442,3 +442,84 @@ def tokenizer():
 @pytest.fixture(scope="session")
 def dataloader():
     return DataLoader()
+
+
+@pytest.fixture(scope="session")
+def tiny_stable_audio_pipe():
+    """Build a tiny StableAudioPipeline from scratch (random weights, no download).
+
+    StableAudioPipeline is a text-to-audio pipeline not supported by AutoPipelineForText2Image,
+    so we construct it manually from individual components rather than using save_tiny_model.
+    Saves to a temp directory and reloads via from_pretrained so that
+    ``name_or_path`` and ``model_index.json`` are set correctly.
+    """
+    from diffusers import AutoencoderOobleck, StableAudioDiTModel, StableAudioPipeline
+    from diffusers.pipelines.stable_audio.modeling_stable_audio import StableAudioProjectionModel
+    from diffusers.schedulers import EDMDPMSolverMultistepScheduler
+    from transformers import AutoTokenizer, T5Config, T5EncoderModel
+
+    tiny_model_path = "./tmp/tiny_stable_audio_pipe"
+
+    transformer = StableAudioDiTModel(
+        sample_size=64,
+        in_channels=8,
+        num_layers=1,
+        attention_head_dim=32,
+        num_attention_heads=2,
+        num_key_value_attention_heads=2,
+        out_channels=8,
+        cross_attention_dim=64,
+        time_proj_dim=32,
+        global_states_input_dim=64,
+        cross_attention_input_dim=64,
+    )
+    t5_config = T5Config(vocab_size=100, d_model=64, d_ff=128, num_heads=2, num_layers=1, d_kv=32)
+    text_encoder = T5EncoderModel(t5_config)
+    projection = StableAudioProjectionModel(text_encoder_dim=64, conditioning_dim=64, min_value=0.0, max_value=47.0)
+    vae = AutoencoderOobleck(
+        encoder_hidden_size=32,
+        downsampling_ratios=[2, 4],
+        channel_multiples=[1, 2],
+        decoder_channels=16,
+        decoder_input_channels=8,
+        audio_channels=1,
+        sampling_rate=16000,
+    )
+    scheduler = EDMDPMSolverMultistepScheduler()
+    tokenizer = AutoTokenizer.from_pretrained(get_model_path("google-t5/t5-small"))
+    pipe = StableAudioPipeline(
+        vae=vae,
+        text_encoder=text_encoder,
+        projection_model=projection,
+        tokenizer=tokenizer,
+        transformer=transformer,
+        scheduler=scheduler,
+    )
+    pipe.save_pretrained(tiny_model_path, is_diffusers=True)
+    yield tiny_model_path
+    shutil.rmtree(tiny_model_path, ignore_errors=True)
+
+
+@pytest.fixture(scope="session")
+def tiny_mimo_audio_model_path():
+    """Build a tiny MiMo-Audio model by patching a Qwen backbone with MiMo-Audio config.
+
+    Follows the pattern of omni models (is_mllm=True, from_config=True) but uses Qwen
+    as the base since MiMo-Audio requires custom code not available in standard transformers.
+    Patches config.architectures to ["MiMoAudioModel"] so that resolve_model_type returns 'mimo_audio'.
+    """
+    model_name_or_path = qwen_name_or_path
+    tiny_model_path = "./tmp/tiny_mimo_audio_model_path"
+    tiny_model_path = save_tiny_model(
+        model_name_or_path,
+        tiny_model_path,
+        num_layers=2,
+        is_mllm=True,
+        from_config=True,
+    )
+    # Patch the config to simulate MiMo-Audio architecture
+    config = transformers.AutoConfig.from_pretrained(tiny_model_path)
+    config.architectures = ["MiMoAudioModel"]
+    config.save_pretrained(tiny_model_path)
+    yield tiny_model_path
+    shutil.rmtree(tiny_model_path, ignore_errors=True)
