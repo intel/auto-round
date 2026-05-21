@@ -218,7 +218,7 @@ class TestGGUF:
         assert ar.layer_config["model.embed_tokens"]["bits"] == 8
         assert "lm_head" not in ar.layer_config
 
-        model_name = "Qwen/Qwen3-0.6B"
+        model_name = get_model_path("Qwen/Qwen3-0.6B")
         ar = AutoRound(model=model_name, scheme="gguf:q4_0", iters=0)
         ar.formats = ["gguf:q4_0"]
         ar.layer_config, _, _ = set_layer_config(

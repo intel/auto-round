@@ -556,14 +556,25 @@ class BaseCompressor(object):
 
     def configure_layer_config(self, enable_gguf_official_mixed: bool | None = True) -> None:
         """Build ``self.layer_config`` from the resolved scheme on the patched model."""
-        is_gguf_format = (f := getattr(self.compress_context, "formats", None)) is not None and "gguf" in f
+        _formats = getattr(self.compress_context, "formats", None)
+        is_gguf_format = _formats is not None and any(
+            "gguf" in str(getattr(fmt, "output_format", "")) for fmt in _formats
+        )
         predefined_ignore_layers = get_predefined_ignore_layers(self.model_context.model)
         compressed_predefined_ignore_layers = compress_layer_names(predefined_ignore_layers)
         if not is_gguf_format:
             predefined_ignore_layers = get_predefined_ignore_layers(self.model_context.model)
+            if predefined_ignore_layers and self.quant_block_list:
+                block_prefixes = [block for group in self.quant_block_list for block in group]
+                predefined_ignore_layers = [
+                    name
+                    for name in predefined_ignore_layers
+                    if any(name.startswith(prefix) for prefix in block_prefixes)
+                ]
+            predefined_ignore_layers = compress_layer_names(predefined_ignore_layers)
             if predefined_ignore_layers:
                 logger.info(f"Using predefined ignore_layers: {compressed_predefined_ignore_layers}")
-                tmp_str = ",".join(predefined_ignore_layers)
+                tmp_str = predefined_ignore_layers.replace(" ", "")
                 if self.ignore_layers == "":
                     self.ignore_layers = tmp_str
                 else:
