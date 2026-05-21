@@ -63,7 +63,14 @@ def eval_generated_prompt(
 
 
 def evaluate_accuracy(
-    model_or_save_dir, tokenizer=None, task="lambada_openai", threshold=0.25, batch_size="auto", limit=None, device=None
+    model_or_save_dir,
+    tokenizer=None,
+    task="lambada_openai",
+    threshold=0.25,
+    batch_size="auto",
+    limit=None,
+    device=None,
+    model_type="hf",
 ):
     """Helper function to evaluate model accuracy on a given task.
 
@@ -86,7 +93,9 @@ def evaluate_accuracy(
     if isinstance(model_or_save_dir, str):
         # save_dir mode
         model_args = f"pretrained={model_or_save_dir}"
-        result = simple_evaluate(model="hf", model_args=model_args, tasks=task, batch_size=batch_size, device=device)
+        result = simple_evaluate(
+            model=model_type, model_args=model_args, tasks=task, batch_size=batch_size, limit=limit, device=device
+        )
     else:
         # model object mode
         if tokenizer is None:
