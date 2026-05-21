@@ -211,7 +211,7 @@ def run_one(batch, q_seq, k_seq, q_head, kv_head, head_dim, block_size, dt=torch
 def main():
     dev = "xpu"
     dt = torch.float16
-    is_causal = True
+    is_causal = False
 
     print("=" * 160)
     print("BMG Benchmark: Our FP16 SDPA vs Our INT8 sage_dynquant vs Reference sage_attention_page")
