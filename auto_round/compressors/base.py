@@ -55,6 +55,7 @@ from auto_round.utils import (
     is_hpex_available,
     is_quantized_input_module,
     memory_monitor,
+    preserve_original_visual_block_name,
     revert_checkpoint_conversion_mapping,
 )
 from auto_round.utils.device import (
@@ -1366,18 +1367,31 @@ class BaseCompressor(object):
             if "scale_dtype" in serialization_dict.keys():
                 serialization_dict["scale_dtype"] = str(serialization_dict["scale_dtype"])
 
+            original_to_quant_block_names = serialization_dict.get("to_quant_block_names")
+            if isinstance(original_to_quant_block_names, list):
+                original_to_quant_block_names = original_to_quant_block_names[:]
+
             # to match the original name
             reverse_checkpoint_conversion_mapping = get_reverse_checkpoint_conversion_mapping(self.model)
 
             if isinstance(serialization_dict["to_quant_block_names"], str):
-                serialization_dict["to_quant_block_names"] = revert_checkpoint_conversion_mapping(
+                reverted_block_name = revert_checkpoint_conversion_mapping(
                     serialization_dict["to_quant_block_names"], reverse_checkpoint_conversion_mapping
+                )
+                serialization_dict["to_quant_block_names"] = preserve_original_visual_block_name(
+                    original_to_quant_block_names, reverted_block_name
                 )
 
             elif isinstance(serialization_dict["to_quant_block_names"], list):
                 for idx in range(len(serialization_dict["to_quant_block_names"])):
-                    serialization_dict["to_quant_block_names"][idx] = revert_checkpoint_conversion_mapping(
+                    reverted_block_name = revert_checkpoint_conversion_mapping(
                         serialization_dict["to_quant_block_names"][idx], reverse_checkpoint_conversion_mapping
+                    )
+                    original_block_name = None
+                    if isinstance(original_to_quant_block_names, list) and idx < len(original_to_quant_block_names):
+                        original_block_name = original_to_quant_block_names[idx]
+                    serialization_dict["to_quant_block_names"][idx] = preserve_original_visual_block_name(
+                        original_block_name, reverted_block_name
                     )
 
             compressed_model = format.save_quantized(
