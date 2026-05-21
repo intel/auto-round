@@ -299,7 +299,7 @@ class TestOffloadManagerWithModel:
         """Test clearing and reloading an actual model block from checkpoint files."""
         from transformers import AutoModelForCausalLM
 
-        from auto_round.utils.offload import load_block_from_model_files
+        from auto_round.utils.offload import _load_block_from_model_files
 
         model = AutoModelForCausalLM.from_pretrained(tiny_opt_model_path, torch_dtype=torch.float32)
         block_names = get_block_names(model)[0]
@@ -322,7 +322,7 @@ class TestOffloadManagerWithModel:
         assert current_params < original_params
 
         # Load back from model files
-        load_block_from_model_files(tiny_opt_model_path, block_name, block)
+        _load_block_from_model_files(tiny_opt_model_path, block_name, block)
         restored_params = sum(p.numel() for p in block.parameters())
         assert restored_params == original_params
 
