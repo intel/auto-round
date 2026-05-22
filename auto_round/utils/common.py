@@ -1178,12 +1178,14 @@ def revert_checkpoint_conversion_mapping(name: str, key_mapping: dict[str, str])
 
 
 def preserve_original_visual_block_name(original_name: str | None, reverted_name: str) -> str:
-    """Keep composite visual block prefixes stable in serialized quant configs.
+    """Keep composite multimodal block prefixes stable in serialized quant configs.
 
-    Some multimodal models expose visual block names as ``model.visual.*`` during
+    Some multimodal models expose block names under the composite model path
+    (for example ``model.visual.*`` or ``model.language_model.*``) during
     quantization, but checkpoint conversion rules can rewrite those config-only
-    block prefixes down to ``visual.*``. The quantized loaders and tests expect
-    the composite path to remain intact in ``block_name_to_quantize``.
+    block prefixes to text-submodel paths such as ``visual.*`` or
+    ``model.layers``. The direct multimodal loaders expect the composite path to
+    remain intact in ``block_name_to_quantize``.
     """
     if not (isinstance(original_name, str) and isinstance(reverted_name, str)):
         return reverted_name
@@ -1196,6 +1198,8 @@ def preserve_original_visual_block_name(original_name: str | None, reverted_name
     preserved_parts = []
     for original_part, reverted_part in zip(original_parts, reverted_parts):
         if original_part.startswith("model.visual.") and reverted_part == original_part[len("model.") :]:
+            preserved_parts.append(original_part)
+        elif original_part.startswith("model.language_model.") and reverted_part.startswith("model.layers"):
             preserved_parts.append(original_part)
         else:
             preserved_parts.append(reverted_part)
