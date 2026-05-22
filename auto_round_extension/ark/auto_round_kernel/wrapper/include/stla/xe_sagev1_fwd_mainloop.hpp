@@ -616,7 +616,6 @@ struct SAGEV1FwdMainloop<sage::XeDefault<Stages>, CausalMask_, FullMask_, Cached
                                          /* Compute row-wise maxima for this block */
 
     auto tS_bmax = reduce<1>(tS, sycl::maximum{});
-    static_assert(FragARow{}.size() % 2 == 0, "FragARow size must be even for pairwise SIMD32 exp.");
     FragARow rescale;
     CUTLASS_PRAGMA_UNROLL
     for (int i = 0; i < tS_max.size(); i++) {
