@@ -319,7 +319,11 @@ def save_quantized_as_autogptq(
 
     dtype = torch.float16  ##force dtype to fp16
     save_model(
-        model, model_output_dir, safe_serialization=safe_serialization, dtype=dtype,
-        config_file="quantize_config.json", immediate_saving=immediate_saving
+        model,
+        model_output_dir,
+        safe_serialization=safe_serialization,
+        dtype=dtype,
+        config_file="quantize_config.json",
+        immediate_saving=immediate_saving,
     )
     return model

@@ -358,8 +358,9 @@ def save_quantized_as_autoround(
         dtype = torch.float16  ## awq vllm kernel only supports float16 on cuda
     else:
         dtype = None
-    save_model(model, model_output_dir, safe_serialization=safe_serialization, dtype=dtype,
-               immediate_saving=immediate_saving)
+    save_model(
+        model, model_output_dir, safe_serialization=safe_serialization, dtype=dtype, immediate_saving=immediate_saving
+    )
 
     # Save rotation config to config.json for load-time reconstruction
     if hasattr(model, "_rotation_config"):

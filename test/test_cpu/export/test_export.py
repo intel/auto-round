@@ -638,18 +638,16 @@ def test_immediate_saving_mode(tiny_opt_model_path, tmp_path, low_cpu_mem_usage,
 
     # All essential files must exist regardless of immediate_saving mode
     assert os.path.exists(os.path.join(quantized_model_path, "config.json")), "config.json missing"
-    assert os.path.exists(os.path.join(quantized_model_path, "quantization_config.json")), (
-        "quantization_config.json missing"
-    )
+    assert os.path.exists(
+        os.path.join(quantized_model_path, "quantization_config.json")
+    ), "quantization_config.json missing"
 
     # Exactly 1 safetensors shard for this tiny model
     safetensor_files = [f for f in os.listdir(quantized_model_path) if f.endswith(".safetensors")]
     assert len(safetensor_files) == 1, f"Expected 1 safetensors file, got {len(safetensor_files)}: {safetensor_files}"
 
     # Tokenizer files must be present
-    assert os.path.exists(os.path.join(quantized_model_path, "tokenizer_config.json")), (
-        "tokenizer_config.json missing"
-    )
+    assert os.path.exists(os.path.join(quantized_model_path, "tokenizer_config.json")), "tokenizer_config.json missing"
 
     # Total file count: config.json, quantization_config.json, model.safetensors,
     # generation_config.json, tokenizer.json, tokenizer_config.json = 6
