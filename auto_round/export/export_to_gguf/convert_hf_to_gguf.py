@@ -125,6 +125,11 @@ class ModelBase:
     disable_mistral_community_chat_template: bool = False
     sentence_transformers_dense_modules: bool = False
 
+    # MTP (multi-token prediction) export modes; set by main() before instantiation.
+    # Architectures opt in by overriding the handling (see _Qwen35MtpMixin).
+    mtp_only: bool = False
+    no_mtp: bool = False
+
     def __init__(
         self,
         dir_model: Path,
@@ -144,6 +149,7 @@ class ModelBase:
         remote_hf_model_id: str | None = None,
         disable_mistral_community_chat_template: bool = False,
         sentence_transformers_dense_modules: bool = False,
+        fuse_gate_up_exps: bool = False,
     ):
         if type(self) is ModelBase or type(self) is TextModel or type(self) is MmprojModel:
             raise TypeError(f"{type(self).__name__!r} should not be directly instantiated")
@@ -161,11 +167,16 @@ class ModelBase:
         self.dry_run = dry_run
         self.remote_hf_model_id = remote_hf_model_id
         self.sentence_transformers_dense_modules = sentence_transformers_dense_modules
+        self.fuse_gate_up_exps = fuse_gate_up_exps
+        self._gate_exp_buffer: dict[int, Tensor] = {}
+        self._up_exp_buffer: dict[int, Tensor] = {}
         self.hparams = ModelBase.load_hparams(self.dir_model, self.is_mistral_format) if hparams is None else hparams
         self.model_tensors = self.index_tensors(remote_hf_model_id=remote_hf_model_id)
         self.metadata_override = metadata_override
         self.model_name = model_name
         self.dir_model_card = dir_model  # overridden in convert_lora_to_gguf.py
+        self._is_nvfp4 = False
+        self._is_mxfp4 = False
 
         # Apply heuristics to figure out typical tensor encoding based on first tensor's dtype
         # NOTE: can't use field "torch_dtype" in config.json, because some finetunes lie.
@@ -307,7 +318,27 @@ class ModelBase:
 
         return tensors
 
+    @staticmethod
+    def _scale_is_trivial(scale: Tensor) -> bool:
+        return scale.numel() <= 1 and abs(float(scale.float().sum()) - 1.0) < 1e-6
+
+    def _write_scale_tensor(self, scale_name: str, scale: Tensor):
+        if not self._scale_is_trivial(scale):
+            scale_f32 = scale.float().numpy().flatten()
+            logger.info(f"  + {scale_name} (per-tensor scale, shape [{scale_f32.size}])")
+            self.gguf_writer.add_tensor(scale_name, scale_f32)
+
+    def _write_scales_tensor(self, scale_name: str, scales: list[float]):
+        if not np.allclose(scales, 1.0, atol=1e-6):
+            scale_vals = np.array(scales, dtype=np.float32)
+            logger.info(f"  + {scale_name} (per-expert scale, shape [{len(scales)}])")
+            self.gguf_writer.add_tensor(scale_name, scale_vals)
+
     def dequant_model(self):
+        # If all quantized tensors were already handled (e.g. pure NVFP4), skip
+        if self._is_nvfp4 and not any(k.endswith((".weight_scale", ".weight_scale_inv")) for k in self.model_tensors):
+            return
+
         tensors_to_remove: list[str] = []
         new_tensors: dict[str, Callable[[], Tensor]] = {}
 
@@ -330,10 +361,15 @@ class ModelBase:
                 scale = scale.float()
 
                 if block_size is not None:
+                    dim_offset = scale.ndim - len(block_size)
                     for i, size in enumerate(block_size):
-                        scale = scale.repeat_interleave(size, i)
+                        scale = scale.repeat_interleave(size, dim_offset + i)
                     # unpad the scale (e.g. when the tensor size isn't a multiple of the block size)
                     scale = scale[tuple(slice(0, size) for size in weight.shape)]
+
+                # align scale dims to weight for correct broadcasting (e.g. [128] -> [128, 1, 1])
+                while scale.ndim < weight.ndim:
+                    scale = scale.unsqueeze(-1)
 
                 return weight.float() * scale
 
@@ -437,6 +473,8 @@ class ModelBase:
                         tensors_to_remove.append(name)
                     if name.endswith(".activation_scale"):  # unused
                         tensors_to_remove.append(name)
+                    if name.endswith("_activation_scale"):  # Mistral-Small-4-119B-2602, unused
+                        tensors_to_remove.append(name)
                     # mistral format
                     if name.endswith(".qscale_weight"):
                         weight_name = name.removesuffix("qscale_weight") + "weight"
@@ -520,7 +558,20 @@ class ModelBase:
                     raise NotImplementedError(
                         f"Quant format {quant_format!r} for method {quant_method!r} is not yet supported"
                     )
-            else:
+            elif quant_method == "modelopt":
+                # Mixed-precision ModelOpt models: NVFP4 tensors are handled by
+                # _generate_nvfp4_tensors; FP8 tensors have 1D weight_scale and
+                # are dequantized here. k/v scale tensors are unused.
+                for name in self.model_tensors.keys():
+                    if name.endswith(".weight_scale"):
+                        weight_name = name.removesuffix("_scale")
+                        w = self.model_tensors[weight_name]
+                        s = self.model_tensors[name]
+                        self.model_tensors[weight_name] = lambda w=w, s=s: dequant_simple(w(), s(), None)
+                        tensors_to_remove.append(name)
+                    if name.endswith((".input_scale", ".k_scale", ".v_scale")):
+                        tensors_to_remove.append(name)
+            elif quant_method is not None:
                 raise NotImplementedError(f"Quant method is not yet supported: {quant_method!r}")
 
         for name in tensors_to_remove:
@@ -568,8 +619,32 @@ class ModelBase:
         raise NotImplementedError("set_gguf_parameters() must be implemented in subclasses")
 
     def modify_tensors(self, data_torch: Tensor, name: str, bid: int | None) -> Iterable[tuple[str, Tensor]]:
-        del bid  # unused
-        return [(self.map_tensor_name(name), data_torch)]
+        new_name = self.map_tensor_name(name)
+
+        # Handle gate/up expert tensor fusion if enabled
+        if self.fuse_gate_up_exps and bid is not None:
+            if self.match_model_tensor_name(new_name, gguf.MODEL_TENSOR.FFN_GATE_EXP, bid):
+                self._gate_exp_buffer[bid] = data_torch
+            elif self.match_model_tensor_name(new_name, gguf.MODEL_TENSOR.FFN_UP_EXP, bid):
+                self._up_exp_buffer[bid] = data_torch
+
+            # Check if both gate and up are buffered for this layer
+            if bid in self._gate_exp_buffer and bid in self._up_exp_buffer:
+                gate_data = self._gate_exp_buffer.pop(bid)
+                up_data = self._up_exp_buffer.pop(bid)
+                # gate/up shape: (n_expert, n_ff, n_embd), concatenate to (n_expert, n_ff*2, n_embd)
+                fused_data = torch.cat([gate_data, up_data], dim=1)
+                fused_name = self.format_tensor_name(gguf.MODEL_TENSOR.FFN_GATE_UP_EXP, bid)
+                logger.info(f"Fused gate_exps and up_exps for layer {bid}")
+                return [(fused_name, fused_data)]
+
+            # If we buffered a gate/up tensor, wait for the other
+            if self.match_model_tensor_name(
+                new_name, gguf.MODEL_TENSOR.FFN_GATE_EXP, bid
+            ) or self.match_model_tensor_name(new_name, gguf.MODEL_TENSOR.FFN_UP_EXP, bid):
+                return []
+
+        return [(new_name, data_torch)]
 
     def tensor_force_quant(
         self, name: str, new_name: str, bid: int | None, n_dims: int
@@ -582,7 +657,170 @@ class ModelBase:
     def generate_extra_tensors(self) -> Iterable[tuple[str, Tensor]]:
         return ()
 
+    @staticmethod
+    def _nvfp4_pack(weight: Tensor, scale: Tensor) -> tuple[np.ndarray, list[int]]:
+        """Repack NVFP4 ModelOpt tensors into ggml super-block layout.
+        Preserves original E4M3 scale bits as UE4M3 (strip sign bit).
+        The per-tensor scale2 factor is stored as a separate tensor and applied at inference time via ggml_mul().
+        Returns (raw_data, logical_shape)."""
+
+        out_features = weight.shape[0]
+        n_blocks = scale.shape[1]
+
+        # Unpack ModelOpt nibble-packed weights
+        w = weight.reshape(out_features, n_blocks, 8)
+        vals = torch.stack([w & 0x0F, w >> 4], dim=-1).reshape(out_features, n_blocks, 16)
+
+        # Preserve original E4M3 scale bits as UE4M3 (strip sign bit)
+        d_ue = scale.view(torch.uint8).numpy().reshape(out_features, n_blocks) & 0x7F
+        qs = (vals[:, :, :8] | (vals[:, :, 8:] << 4)).to(torch.uint8).numpy()
+
+        # Pack into super-blocks: [4 UE4M3 scales, 32 qs bytes] = 36 bytes per 64 elements
+        n_super = n_blocks // 4
+        d_grouped = d_ue.reshape(out_features, n_super, 4)
+        qs_grouped = qs.reshape(out_features, n_super, 4, 8).reshape(out_features, n_super, 32)
+        raw = np.concatenate([d_grouped, qs_grouped], axis=-1).reshape(out_features, n_super * 36)
+        return raw, [out_features, n_super * 64]
+
+    def _repack_nvfp4(self, name: str, weight: Tensor, scale: Tensor, scale2: Tensor, input_scale: Tensor):
+        new_name = self.map_tensor_name(name)
+
+        raw, shape = self._nvfp4_pack(weight, scale)
+        logger.info(f"Repacked {new_name} with shape {shape} and quantization NVFP4")
+        self.gguf_writer.add_tensor(new_name, raw, raw_dtype=gguf.GGMLQuantizationType.NVFP4)
+
+        self._write_scale_tensor(new_name.replace(".weight", ".scale"), scale2)
+        self._write_scale_tensor(new_name.replace(".weight", ".input_scale"), input_scale)
+
+    def _generate_nvfp4_tensors(self):
+        # Per-layer expert merging to avoid holding all experts in memory
+        expert_blocks: dict[tuple[int, str], list[tuple[int, np.ndarray]]] = {}
+        expert_scales: dict[tuple[int, str], list[tuple[int, float]]] = {}
+        expert_input_scales: dict[tuple[int, str], list[tuple[int, float]]] = {}
+        expert_shapes: dict[tuple[int, str], list[int]] = {}
+        n_experts = self.find_hparam(["num_local_experts", "num_experts"], optional=True) or 0
+        consumed: list[str] = []
+
+        for name in self.model_tensors.keys():
+            if not name.endswith(".weight"):
+                continue
+            scale_name = name.replace(".weight", ".weight_scale")
+            scale2_name = name.replace(".weight", ".weight_scale_2")
+            input_scale_name = name.replace(".weight", ".input_scale")
+            if scale_name not in self.model_tensors:
+                continue
+            # Force eager materialization of lazy tensors
+            weight = LazyTorchTensor.to_eager(self.model_tensors[name]())
+            scale = LazyTorchTensor.to_eager(self.model_tensors[scale_name]())
+
+            # Skip non-NVFP4 tensors (e.g. FP8 with per-channel 1D scales)
+            if scale.ndim < 2:
+                continue
+
+            scale2 = LazyTorchTensor.to_eager(self.model_tensors.get(scale2_name, lambda: torch.tensor(1.0))())
+            input_scale = LazyTorchTensor.to_eager(
+                self.model_tensors.get(input_scale_name, lambda: torch.tensor(1.0))()
+            )
+
+            # Mark tensors for removal from model_tensors (already written to gguf)
+            consumed.extend([name, scale_name])
+            if scale2_name in self.model_tensors:
+                consumed.append(scale2_name)
+            if input_scale_name in self.model_tensors:
+                consumed.append(input_scale_name)
+
+            # Check if this is a per-expert tensor
+            m = re.search(r"\.experts\.(\d+)\.(gate_proj|up_proj|down_proj)\.weight$", name)
+            if m:
+                expert_id = int(m.group(1))
+                proj_type = m.group(2)
+                bid_m = re.search(r"\.layers\.(\d+)\.", name)
+                bid = int(bid_m.group(1)) if bid_m else 0
+                key = (bid, proj_type)
+
+                raw, shape = self._nvfp4_pack(weight, scale)
+
+                if key not in expert_blocks:
+                    expert_blocks[key] = []
+                    expert_scales[key] = []
+                    expert_input_scales[key] = []
+                    expert_shapes[key] = shape
+                expert_blocks[key].append((expert_id, raw.copy()))
+                # Collect per-expert scale2 (scalar per expert)
+                expert_scales[key].append((expert_id, float(scale2.float().sum())))
+                # Collect per-expert input_scale (scalar per expert)
+                expert_input_scales[key].append((expert_id, float(input_scale.float().sum())))
+
+                # Flush when all experts for this (layer, proj) are collected
+                if n_experts > 0 and len(expert_blocks[key]) >= n_experts:
+                    self._flush_nvfp4_experts(
+                        key, expert_blocks, expert_scales, expert_input_scales, expert_shapes, bid, proj_type
+                    )
+            else:
+                self._repack_nvfp4(name, weight, scale, scale2, input_scale)
+
+        # Flush any remaining experts (fallback if n_experts was unknown)
+        for bid, proj_type in list(expert_blocks.keys()):
+            self._flush_nvfp4_experts(
+                (bid, proj_type), expert_blocks, expert_scales, expert_input_scales, expert_shapes, bid, proj_type
+            )
+
+        # Remove consumed tensors so get_tensors/modify_tensors won't see them
+        for name in consumed:
+            self.model_tensors.pop(name, None)
+
+        # Remove any remaining unused auxiliary tensors
+        for name in list(self.model_tensors.keys()):
+            if name.endswith((".k_scale", ".v_scale")):
+                del self.model_tensors[name]
+
+    def _flush_nvfp4_experts(
+        self, key, expert_blocks, expert_scales, expert_input_scales, expert_shapes, bid, proj_type
+    ):
+        experts = expert_blocks.pop(key)
+        scales = expert_scales.pop(key)
+        input_scales = expert_input_scales.pop(key)
+        shape = expert_shapes.pop(key)
+
+        experts.sort(key=lambda x: x[0])
+        merged = np.stack([e[1] for e in experts], axis=0)
+        merged_name = f"model.layers.{bid}.mlp.experts.{proj_type}.weight"
+        new_name = self.map_tensor_name(merged_name)
+        logger.info(f"Repacked {new_name} with shape [{len(experts)}, {shape[0]}, {shape[1]}] and quantization NVFP4")
+        self.gguf_writer.add_tensor(new_name, merged, raw_dtype=gguf.GGMLQuantizationType.NVFP4)
+
+        scales.sort(key=lambda x: x[0])
+        self._write_scales_tensor(new_name.replace(".weight", ".scale"), [s[1] for s in scales])
+
+        input_scales.sort(key=lambda x: x[0])
+        self._write_scales_tensor(new_name.replace(".weight", ".input_scale"), [s[1] for s in input_scales])
+
+        del experts, merged
+
     def prepare_tensors(self):
+        # Detect NVFP4 / MXFP4 from quantization config
+        hf_quant_config_path = self.dir_model / "hf_quant_config.json"
+        quantization_config = self.hparams.get("quantization_config") or {}
+        if hf_quant_config_path.exists():
+            with open(hf_quant_config_path) as f:
+                hf_quant_config = json.load(f)
+            quant_cfg = hf_quant_config.get("quantization", {})
+            quant_type = quant_cfg.get("quant_type", "")
+            if quant_type == "nvfp4":
+                self._is_nvfp4 = True
+            elif quant_type == "mxfp4":
+                self._is_mxfp4 = True
+        elif quantization_config.get("quant_method") == "modelopt":
+            # ModelOpt NVFP4 models don't always have hf_quant_config.json
+            # Check by presence of *.weight_scale_2 tensors in any shard
+            for name in self.model_tensors.keys():
+                if name.endswith(".weight_scale_2"):
+                    self._is_nvfp4 = True
+                    break
+
+        if self._is_nvfp4:
+            self._generate_nvfp4_tensors()
+
         self.dequant_model()
 
         # Handle empty tensor_map for models with block_count=0 (like MobileNetV5)
@@ -728,6 +966,12 @@ class ModelBase:
         if self.metadata.name is None:
             self.metadata.name = self.dir_model.name
 
+        if self.ftype in (gguf.LlamaFileType.ALL_F32, gguf.LlamaFileType.MOSTLY_F16, gguf.LlamaFileType.MOSTLY_BF16):
+            if self._is_nvfp4:
+                self.ftype = gguf.LlamaFileType.MOSTLY_NVFP4
+            elif self._is_mxfp4:
+                self.ftype = gguf.LlamaFileType.MOSTLY_MXFP4_MOE
+
         # Generate parameter weight class (useful for leader boards) if not yet determined
         if self.metadata.size_label is None and total_params > 0:
             self.metadata.size_label = gguf.size_label(total_params, shared_params, expert_params, expert_count)
@@ -790,6 +1034,9 @@ class ModelBase:
         if "thinker_config" in config:
             # rename for Qwen2.5-Omni
             config["text_config"] = config["thinker_config"]["text_config"]
+        if "language_config" in config:
+            # rename for DeepSeekOCR
+            config["text_config"] = config["language_config"]
         if "lfm" in config:
             # rename for LFM2-Audio
             config["text_config"] = config["lfm"]
@@ -948,6 +1195,10 @@ class TextModel(ModelBase):
         if (n_head_kv := self.find_hparam(["num_key_value_heads", "n_kv_heads"], optional=True)) is not None:
             self.gguf_writer.add_head_count_kv(n_head_kv)
             logger.info(f"gguf: key-value head count = {n_head_kv}")
+
+        if self.hparams.get("is_causal") is False:
+            self.gguf_writer.add_causal_attention(False)
+            logger.info("gguf: causal attention = False")
 
         # TODO: Handle "sliding_attention" similarly when models start implementing it
         rope_params = self.rope_parameters.get("full_attention", self.rope_parameters)
@@ -1391,12 +1642,39 @@ class TextModel(ModelBase):
         if chkhsh == "d30d75d9059f1aa2c19359de71047b3ae408c70875e8a3ccf8c5fba56c9d8af4":
             # ref: https://huggingface.co/Qwen/Qwen3.5-9B-Instruct
             res = "qwen35"
+        if chkhsh == "29f3cefa2c16eacb80686a3286fd9ab13ccc0f7b87a88427143e31db3fb08ca3":
+            # ref: https://huggingface.co/Qwen/Qwen3.5-0.8B
+            res = "qwen35"
         if chkhsh == "b4b8ca1f9769494fbd956ebc4c249de6131fb277a4a3345a7a92c7dd7a55808d":
             # ref: https://huggingface.co/jdopensource/JoyAI-LLM-Flash
             res = "joyai-llm"
         if chkhsh == "e4d54df1ebc1f2b91acd986c5b51aa50837d5faf7c7398e73c1f9e9ee5d19869":
             # ref: https://huggingface.co/kakaocorp/kanana-2-30b-a3b-instruct-2601
             res = "kanana2"
+        if chkhsh == "81212dc7cdb7e0c1074ca62c5aeab0d43c9f52b8a737be7b12a777c953027890":
+            # ref: https://huggingface.co/moonshotai/Kimi-K2-Base
+            res = "kimi-k2"
+        if chkhsh == "d4540891389ea895b53b399da6ac824becc30f2fba0e9ddbb98f92e55ca0e97c":
+            # ref: https://huggingface.co/Qwen/Qwen3-Embedding-0.6B
+            res = "qwen2"
+        if chkhsh == "1444df51289cfa8063b96f0e62b1125440111bc79a52003ea14b6eac7016fd5f":
+            # ref: https://huggingface.co/openbmb/MiniCPM-V-4_6
+            res = "qwen35"
+        if chkhsh == "66b8d4e19ab16c3bfd89bce5d785fb7e0155e8648708a1f42077cb9fe002c273":
+            # ref: https://huggingface.co/alvarobartt/grok-2-tokenizer
+            res = "grok-2"
+        if chkhsh == "b3d1dd861f1d4c5c0d2569ce36baf3f90fe8a102db3de50dd71ff860d91be3df":
+            # ref: https://huggingface.co/aari1995/German_Semantic_V3
+            res = "jina-v2-de"
+        if chkhsh == "0fe1cf6eda062318a1af7270f3331a85c539a01778ff948e24388e949c5282f4":
+            # ref: https://huggingface.co/evilfreelancer/ruGPT3XL
+            res = "gpt-2"
+        if chkhsh == "862f827721df956049dff5ca81a57f29e575280bc622e290d3bf4e35eca29015":
+            # ref: https://huggingface.co/codefuse-ai/F2LLM-v2-4B
+            res = "f2llmv2"
+        if chkhsh == "62f6fb0a6fd5098caeabb19b07a5c1099cafc8b9c40eab6ea89ece4ec02fbc57":
+            # ref: https://huggingface.co/sarvamai/sarvam-30b
+            res = "sarvam-moe"
 
         if res is None:
             logger.warning("\n")
@@ -4165,6 +4443,7 @@ class Qwen2VLModel(TextModel):
             or name.startswith("audio")
             or name.startswith("talker")
             or name.startswith("token2wav")
+            or name.startswith("code2wav")
         ):
             # skip multimodal tensors
             return
@@ -12316,6 +12595,12 @@ def get_model_architecture(hparams: dict[str, Any], model_type: ModelType) -> st
     elif "ssm_cfg" in hparams:
         # For non-hf Mamba and Mamba2 models
         arch = hparams["ssm_cfg"].get("layer", "Mamba") + "ForCausalLM"
+
+    # Step3-VL keeps text config under text_config but uses a custom top-level architecture.
+    # For text conversion we route to a dedicated text-only class.
+    # TODO: refactor this later to avoid adding exception here
+    if model_type == ModelType.TEXT and arch in ("StepVLForConditionalGeneration", "Sarashina2VisionForCausalLM"):
+        return arch
 
     # if "architectures" is found in the sub-config, use that instead
     if model_type == ModelType.TEXT and text_config.get("architectures") is not None:
