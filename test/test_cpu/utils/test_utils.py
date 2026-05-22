@@ -39,17 +39,19 @@ def test_revert_checkpoint_conversion_mapping_handles_comma_separated_block_name
 def test_preserve_original_visual_block_name():
     # Single visual block name
     assert preserve_original_visual_block_name("model.visual.blocks", "visual.blocks") == "model.visual.blocks"
-    # Comma-separated: both multimodal block prefixes are preserved.
+    # Comma-separated: visual prefix is preserved and language-model keeps an
+    # extra model.layers alias for runtimes that do not use the composite path.
     assert (
         preserve_original_visual_block_name(
             "model.visual.blocks,model.language_model.layers", "visual.blocks,model.layers"
         )
-        == "model.visual.blocks,model.language_model.layers"
+        == "model.visual.blocks,model.language_model.layers,model.layers"
     )
-    # Direct language-model composite paths are also preserved.
+    # Direct language-model composite paths are preserved and also expose the
+    # runtime alias used by sglang's text submodel.
     assert (
         preserve_original_visual_block_name("model.language_model.layers", "model.layers")
-        == "model.language_model.layers"
+        == "model.language_model.layers,model.layers"
     )
 
 
@@ -59,5 +61,5 @@ def test_preserve_original_mllm_language_block_name():
             "model.visual.blocks,model.language_model.layers",
             "model.visual.blocks,model.layers",
         )
-        == "model.visual.blocks,model.language_model.layers"
+        == "model.visual.blocks,model.language_model.layers,model.layers"
     )

@@ -1201,10 +1201,16 @@ def preserve_original_visual_block_name(original_name: str | None, reverted_name
             preserved_parts.append(original_part)
         elif original_part.startswith("model.language_model.") and reverted_part.startswith("model.layers"):
             preserved_parts.append(original_part)
+            preserved_parts.append(reverted_part)
         else:
             preserved_parts.append(reverted_part)
 
-    return ",".join(preserved_parts)
+    deduped_parts = []
+    for preserved_part in preserved_parts:
+        if preserved_part not in deduped_parts:
+            deduped_parts.append(preserved_part)
+
+    return ",".join(deduped_parts)
 
 
 def apply_checkpoint_conversion_mapping(name: str, key_mapping: dict[str, str]) -> str:
