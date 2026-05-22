@@ -447,7 +447,7 @@ class ARK:
         - value: [B, Hkv, Skv, D]
 
         Args:
-        - scale: Attention scale. Uses 1.0 when None.
+        - scale: Attention scale. Uses 1 / sqrt(D) when None.
         - quant_block_size: Block size for qscale and kscale.
 
         Returns:
@@ -502,7 +502,7 @@ class ARK:
             Sq,
             Skv,
             D,
-            float(scale) if scale is not None else 1.0,
+            float(scale) if scale is not None else 1.0 / (D**0.5),
             bool(is_causal),
         )
         return O
@@ -586,7 +586,7 @@ class ARK:
             Sq,
             Skv,
             D,
-            float(scale) if scale is not None else 1.0,
+            float(scale) if scale is not None else 1.0 / (D**0.5),
             bool(is_causal),
         )
         return O
@@ -611,7 +611,7 @@ class ARK:
         - value: [B, Hkv, Skv, D]
 
         Args:
-        - scale: Attention scale. Uses 1.0 when None.
+        - scale: Attention scale. Uses 1 / sqrt(D) when None.
         - quant_block_size: Quantization block size used by the kernel.
 
         Returns:
@@ -674,7 +674,7 @@ class ARK:
             Sq,
             Skv,
             D,
-            float(scale) if scale is not None else 1.0,
+            float(scale) if scale is not None else 1.0 / (D**0.5),
             bool(is_causal),
         )
         return O
@@ -753,7 +753,7 @@ class ARK:
             Sq,
             Skv,
             D,
-            float(scale) if scale is not None else 1.0,
+            float(scale) if scale is not None else 1.0 / (D**0.5),
             bool(is_causal),
         )
         return O
