@@ -195,6 +195,7 @@ struct TestSDPA {
     size_t o_count = size_t(batch) * num_heads_q * seq_len_q * head_dim;
     size_t q_scale_count = size_t(batch) * num_heads_q * ((seq_len_q + scale_block_size - 1) / scale_block_size);
     size_t k_scale_count = size_t(batch) * num_heads_kv * ((seq_len_kv + scale_block_size - 1) / scale_block_size);
+    size_t v_scale_count = k_scale_count;
     float softmax_scale = 1.0f / std::sqrt(float(head_dim));
 
     auto host_q = to_fp16_vector(make_random_vector(q_count, -1.0f, 1.0f, 901u + uint32_t(seq_len_q)));
@@ -206,10 +207,13 @@ struct TestSDPA {
     auto* dev_v = reinterpret_cast<sycl::half*>(ctx->allocate(k_count * sizeof(sycl::half)));
     auto* dev_out = reinterpret_cast<sycl::half*>(ctx->allocate(o_count * sizeof(sycl::half)));
     auto* dev_kernel_out = reinterpret_cast<sycl::half*>(ctx->allocate(o_count * sizeof(sycl::half)));
+    auto* dev_pvi8_out = reinterpret_cast<sycl::half*>(ctx->allocate(o_count * sizeof(sycl::half)));
     auto* dev_qi8 = reinterpret_cast<int8_t*>(ctx->allocate(q_count * sizeof(int8_t)));
     auto* dev_ki8 = reinterpret_cast<int8_t*>(ctx->allocate(k_count * sizeof(int8_t)));
+    auto* dev_vi8 = reinterpret_cast<int8_t*>(ctx->allocate(k_count * sizeof(int8_t)));
     auto* dev_qscale = reinterpret_cast<float*>(ctx->allocate(q_scale_count * sizeof(float)));
     auto* dev_kscale = reinterpret_cast<float*>(ctx->allocate(k_scale_count * sizeof(float)));
+    auto* dev_vscale = reinterpret_cast<float*>(ctx->allocate(v_scale_count * sizeof(float)));
     q->memcpy(dev_q, host_q.data(), q_count * sizeof(sycl::half)).wait();
     q->memcpy(dev_k, host_k.data(), k_count * sizeof(sycl::half)).wait();
     q->memcpy(dev_v, host_v.data(), k_count * sizeof(sycl::half)).wait();
@@ -220,6 +224,9 @@ struct TestSDPA {
     ark::XpuWrapper::sage_dynamic_quant<sycl::half>(q, dev_k, dev_ki8, dev_kscale, batch * num_heads_kv, seq_len_kv,
                                                     (seq_len_kv + scale_block_size - 1) / scale_block_size, head_dim,
                                                     scale_block_size);
+    ark::XpuWrapper::sage_dynamic_quant<sycl::half>(q, dev_v, dev_vi8, dev_vscale, batch * num_heads_kv, seq_len_kv,
+                            (seq_len_kv + scale_block_size - 1) / scale_block_size, head_dim,
+                            scale_block_size);
 
     double sage_ms = run_bench(
         [&]() {
@@ -236,28 +243,44 @@ struct TestSDPA {
         },
         q, warmup, iters);
 
+    double kernel_pvi8_ms = run_bench(
+        [&]() {
+          ark::sdpa_impl_qks8_pvi8(q, dev_qi8, dev_ki8, dev_vi8, dev_pvi8_out, nullptr, scale_block_size, dev_qscale,
+                                   dev_kscale, dev_vscale, batch, num_heads_q, num_heads_kv, seq_len_q, seq_len_kv,
+                                   head_dim, softmax_scale, is_causal);
+        },
+        q, warmup, iters);
+
     double flops = compute_sdpa_flops(batch, num_heads_q, num_heads_kv, seq_len_q, seq_len_kv, head_dim);
     double io_bytes = compute_sdpa_io_bytes(batch, num_heads_q, num_heads_kv, seq_len_q, seq_len_kv, head_dim);
     double sage_tflops = flops / (sage_ms * 1e-3) / 1e12;
     double sage_gbps = io_bytes / (sage_ms * 1e-3) / 1e9;
     double kernel_pvhalf_tflops = flops / (kernel_pvhalf_ms * 1e-3) / 1e12;
     double kernel_pvhalf_gbps = io_bytes / (kernel_pvhalf_ms * 1e-3) / 1e9;
+    double kernel_pvi8_tflops = flops / (kernel_pvi8_ms * 1e-3) / 1e12;
+    double kernel_pvi8_gbps = io_bytes / (kernel_pvi8_ms * 1e-3) / 1e9;
 
     std::cout << std::fixed << std::setprecision(3) << "[sagev1][bench] " << name << " sage_ms=" << sage_ms
               << " sage_TFLOPS=" << sage_tflops << " sage_GBps=" << sage_gbps << "\n";
     std::cout << std::fixed << std::setprecision(3) << "[sagev1][kernel_bench] " << name
               << " pvhalf_ms=" << kernel_pvhalf_ms << " pvhalf_TFLOPS=" << kernel_pvhalf_tflops
               << " pvhalf_GBps=" << kernel_pvhalf_gbps << "\n";
+    std::cout << std::fixed << std::setprecision(3) << "[sagev1][kernel_bench] " << name
+          << " pvi8_ms=" << kernel_pvi8_ms << " pvi8_TFLOPS=" << kernel_pvi8_tflops
+          << " pvi8_GBps=" << kernel_pvi8_gbps << "\n";
 
     ctx->deallocate(dev_q);
     ctx->deallocate(dev_k);
     ctx->deallocate(dev_v);
     ctx->deallocate(dev_out);
     ctx->deallocate(dev_kernel_out);
+    ctx->deallocate(dev_pvi8_out);
     ctx->deallocate(dev_qi8);
     ctx->deallocate(dev_ki8);
+    ctx->deallocate(dev_vi8);
     ctx->deallocate(dev_qscale);
     ctx->deallocate(dev_kscale);
+    ctx->deallocate(dev_vscale);
   }
 #endif
 };

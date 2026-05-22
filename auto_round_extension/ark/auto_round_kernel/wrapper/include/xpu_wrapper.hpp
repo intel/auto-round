@@ -1041,9 +1041,9 @@ class XpuWrapper {
     }
   }
 
-  static void sagev1(sycl::queue* q, void* Q_ptr, void* K_ptr, void* V_ptr, void* O_ptr, void* mask,
-                     int scale_block_size, int batch, int num_heads_q, int num_heads_kv, int seq_len_q, int seq_len_kv,
-                     int head_dim, float softmax_scale, bool is_causal) {
+  static void sagev1_impl(sycl::queue* q, void* Q_ptr, void* K_ptr, void* V_ptr, void* O_ptr, void* mask,
+                          int scale_block_size, int batch, int num_heads_q, int num_heads_kv, int seq_len_q,
+                          int seq_len_kv, int head_dim, float softmax_scale, bool is_causal, bool use_int8_pv) {
     bool use_mean_bias = env_params::Instance()->sage_use_mean_bias != 0;
     size_t seq_q_blk = (seq_len_q + scale_block_size - 1) / scale_block_size;
     size_t seq_kv_blk = (seq_len_kv + scale_block_size - 1) / scale_block_size;
@@ -1051,16 +1051,25 @@ class XpuWrapper {
     size_t q_scale_size = num_heads_q * seq_q_blk * batch;
     size_t k_size = num_heads_kv * seq_len_kv * head_dim * batch;
     size_t k_scale_size = num_heads_kv * seq_kv_blk * batch;
+    size_t v_tmp_size = use_int8_pv ? k_size : 0;
+    size_t v_scale_size = use_int8_pv ? k_scale_size * sizeof(float) : 0;
     size_t k_bias_size = use_mean_bias ? num_heads_kv * head_dim * batch * sizeof(sycl::half) : 0;
-    size_t total_size = k_size + q_size + k_scale_size * sizeof(float) + q_scale_size * sizeof(float) + k_bias_size;
+    size_t total_size = k_size + q_size + k_scale_size * sizeof(float) + q_scale_size * sizeof(float) + v_tmp_size +
+                        v_scale_size + k_bias_size;
     auto ptr = DnnlContext::Instance()->get_scratch_mem(total_size, 1, q);
     auto q_out_ptr = (int8_t*)ptr;
     auto k_out_ptr = (int8_t*)ptr + q_size;
     auto qscale = (float*)((int8_t*)ptr + q_size + k_size);
     auto kscale = (float*)((int8_t*)ptr + q_size + k_size + q_scale_size * sizeof(float));
+    auto v_out_ptr = use_int8_pv ? (int8_t*)((int8_t*)ptr + q_size + k_size + q_scale_size * sizeof(float) +
+                                             k_scale_size * sizeof(float))
+                                  : nullptr;
+    auto vscale = use_int8_pv ? (float*)((int8_t*)ptr + q_size + k_size + q_scale_size * sizeof(float) +
+                                         k_scale_size * sizeof(float) + k_size)
+                              : nullptr;
     auto kbias = use_mean_bias
                      ? (sycl::half*)((int8_t*)ptr + q_size + k_size + q_scale_size * sizeof(float) +
-                                     k_scale_size * sizeof(float))
+                                     k_scale_size * sizeof(float) + v_tmp_size + v_scale_size)
                      : nullptr;
     sage_dynamic_quant<sycl::half>(q, (sycl::half*)Q_ptr, (int8_t*)q_out_ptr, (float*)qscale, batch * num_heads_q,
                      seq_len_q, seq_q_blk, head_dim, scale_block_size);
@@ -1072,8 +1081,31 @@ class XpuWrapper {
     }
     sage_dynamic_quant<sycl::half>(q, (sycl::half*)K_ptr, (int8_t*)k_out_ptr, (float*)kscale, batch * num_heads_kv,
                      seq_len_kv, seq_kv_blk, head_dim, scale_block_size, kbias);
-    ark::sdpa_impl_qks8_pvhalf(q, q_out_ptr, k_out_ptr, V_ptr, O_ptr, mask, scale_block_size, qscale, kscale, batch,
-                               num_heads_q, num_heads_kv, seq_len_q, seq_len_kv, head_dim, softmax_scale, is_causal);
+    if (use_int8_pv) {
+      sage_dynamic_quant<sycl::half>(q, (sycl::half*)V_ptr, (int8_t*)v_out_ptr, (float*)vscale, batch * num_heads_kv,
+                                     seq_len_kv, seq_kv_blk, head_dim, scale_block_size);
+      ark::sdpa_impl_qks8_pvi8(q, q_out_ptr, k_out_ptr, v_out_ptr, O_ptr, mask, scale_block_size, qscale, kscale,
+                               vscale, batch, num_heads_q, num_heads_kv, seq_len_q, seq_len_kv, head_dim,
+                               softmax_scale, is_causal);
+    } else {
+      ark::sdpa_impl_qks8_pvhalf(q, q_out_ptr, k_out_ptr, V_ptr, O_ptr, mask, scale_block_size, qscale, kscale,
+                                 batch, num_heads_q, num_heads_kv, seq_len_q, seq_len_kv, head_dim, softmax_scale,
+                                 is_causal);
+    }
+  }
+
+  static void sagev1(sycl::queue* q, void* Q_ptr, void* K_ptr, void* V_ptr, void* O_ptr, void* mask,
+                     int scale_block_size, int batch, int num_heads_q, int num_heads_kv, int seq_len_q, int seq_len_kv,
+                     int head_dim, float softmax_scale, bool is_causal) {
+    sagev1_impl(q, Q_ptr, K_ptr, V_ptr, O_ptr, mask, scale_block_size, batch, num_heads_q, num_heads_kv, seq_len_q,
+                seq_len_kv, head_dim, softmax_scale, is_causal, false);
+  }
+
+  static void sagev1_pvi8(sycl::queue* q, void* Q_ptr, void* K_ptr, void* V_ptr, void* O_ptr, void* mask,
+                          int scale_block_size, int batch, int num_heads_q, int num_heads_kv, int seq_len_q,
+                          int seq_len_kv, int head_dim, float softmax_scale, bool is_causal) {
+    sagev1_impl(q, Q_ptr, K_ptr, V_ptr, O_ptr, mask, scale_block_size, batch, num_heads_q, num_heads_kv, seq_len_q,
+                seq_len_kv, head_dim, softmax_scale, is_causal, true);
   }
 };
 
