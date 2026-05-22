@@ -18,16 +18,7 @@ from auto_round.logger import logger
 
 
 class SignRoundConfig(QuantizationConfig):
-    """
-
-    Args:
-    iters (int): Number of iterations (default is 200).
-        lr (float): The learning rate (default is 0.005).
-        minmax_lr (float): The learning rate for min-max tuning (default is None).
-        lr_scheduler: The learning rate scheduler to be used.
-        enable_minmax_tuning (bool): Whether to enable min-max tuning (default is True).
-        enable_norm_bias_tuning (bool): Whether to enable fast norm/layer_bias tuning
-    """
+    """Configuration for SignRound-style block quantization."""
 
     _alg_cls = "SignRoundQuantizer"
 
@@ -51,6 +42,38 @@ class SignRoundConfig(QuantizationConfig):
         enable_adam: bool = False,
         **kwargs,
     ):
+        """Initialize a SignRound configuration.
+
+        Args:
+            iters: Number of optimization iterations for each quantized
+                block.
+            lr: Learning rate used by the main rounding optimization.
+                If None, a heuristic based on ``iters`` is used.
+            minmax_lr: Learning rate used by min-max tuning. If None, it
+                falls back to ``lr``.
+            lr_scheduler: Optional learning-rate scheduler name or
+                scheduler object used by the optimizer.
+            momentum: Momentum factor used by the optimizer.
+            nblocks: Number of blocks to optimize together.
+            enable_minmax_tuning: Whether to tune weight min/max ranges.
+            enable_norm_bias_tuning: Whether to tune normalization and
+                bias terms.
+            gradient_accumulate_steps: Number of gradient accumulation
+                steps used per optimization update.
+            enable_alg_ext: Whether to enable the experimental SignRound
+                extension implementation.
+            not_use_best_mse: Whether to skip restoring the best-MSE
+                checkpoint during tuning.
+            dynamic_max_gap: Maximum dynamic gap used by adaptive tuning
+                logic.
+            enable_quanted_input: Whether each block should consume the
+                quantized output of previous blocks during calibration.
+            optimizer: Optional optimizer name override.
+            enable_adam: Whether to use the Adam-based SignRound variant.
+            **kwargs: Common quantization arguments forwarded to
+                QuantizationConfig, such as bits, group_size, sym,
+                data_type, and activation quantization fields.
+        """
         super().__init__(**kwargs)
         self.gradient_accumulate_steps = gradient_accumulate_steps
         self.iters = iters

@@ -10,8 +10,8 @@ from auto_round.algorithms.alg_config import AlgConfig
 from auto_round.algorithms.quantization.awq.config import AWQConfig
 from auto_round.algorithms.quantization.rtn.config import RTNConfig
 from auto_round.algorithms.quantization.sign_round.config import SignRoundConfig
-from auto_round.algorithms.transforms import normalize_rotation_config as _normalize_any_rotation_config
-from auto_round.algorithms.transforms.base import BaseRotationConfig as _BaseRotationConfig
+from auto_round.algorithms.quantization.pipeline import split_quantization_configs
+from auto_round.algorithms.quantization.registry import resolve_alg_config
 from auto_round.algorithms.transforms.rotation.config import RotationConfig as _NewArchRotationConfig
 from auto_round.auto_scheme.gen_auto_scheme import AutoScheme
 from auto_round.compressors.data_driven import CalibratedRTNCompressor, DataDrivenCompressor
@@ -162,25 +162,12 @@ def detect_model_type(model):
 
 
 class AutoRound(object):
-    # Mapping from string alias to config class (and optional defaults override).
-    _CONFIG_ALIASES: dict[str, type] = {
-        "sign_round": SignRoundConfig,
-        "signround": SignRoundConfig,
-        "rtn": RTNConfig,
-        "hadamard": _NewArchRotationConfig,
-    }
 
     @classmethod
     def _resolve_config(cls, config: Union[str, AlgConfig, list]) -> Union[AlgConfig, list[AlgConfig]]:
         """Convert string alias(es) to the corresponding config instance(s) with default parameters."""
         if isinstance(config, str):
-            key = config.strip().lower()
-            # Handle spinquant/quarot via unified normalizer
-            if key in ("spinquant", "quarot"):
-                return _normalize_any_rotation_config(key)
-            if key not in cls._CONFIG_ALIASES:
-                raise ValueError(f"Unknown config alias '{config}'. " f"Supported: {list(cls._CONFIG_ALIASES.keys())}")
-            return cls._CONFIG_ALIASES[key]()
+            return resolve_alg_config(config)
         if isinstance(config, list):
             return [cls._resolve_config(c) for c in config]
         return config
@@ -206,23 +193,51 @@ class AutoRound(object):
         **kwargs,
     ):
         from auto_round.algorithms.quantization.config import QuantizationConfig
+        from auto_round.utils.model import is_model_free_route
 
         # Resolve string alias(es) to config instance(s) before routing.
         alg_configs = cls._resolve_config(alg_configs)
 
-        # Extract the single QuantizationConfig from a list; validate at most one exists.
-        if isinstance(alg_configs, list):
-            quant_configs = [c for c in alg_configs if isinstance(c, QuantizationConfig)]
-            if len(quant_configs) == 0:
-                raise ValueError("At least one QuantizationConfig (SignRoundConfig / RTNConfig) is required.")
-            if len(quant_configs) > 1:
-                raise ValueError(
-                    f"Only one QuantizationConfig is allowed, but got {len(quant_configs)}: "
-                    f"{[type(c).__name__ for c in quant_configs]}"
-                )
-            quant_config = quant_configs[0]
+        # Extract the single block-quantization config from a list.
+        # Preprocessor configs are excluded from this count.
+        configs_for_routing = alg_configs if isinstance(alg_configs, list) else [alg_configs]
+        preprocessor_configs, block_quant_configs = split_quantization_configs(configs_for_routing)
+        if len(block_quant_configs) == 0 and preprocessor_configs:
+            # Preprocessor-only input: pipeline will auto-append RTN as block_quantizer.
+            # Use a placeholder RTNConfig for scheme validation only.
+            from auto_round.algorithms.quantization.rtn.config import RTNConfig as _RTNConfig
+            quant_config = _RTNConfig()
+        elif len(block_quant_configs) > 1:
+            raise ValueError(
+                f"Only one block-quantization config is allowed, but got {len(block_quant_configs)}: "
+                f"{[type(c).__name__ for c in block_quant_configs]}")
+        elif len(block_quant_configs) == 1:
+            quant_config = block_quant_configs[0]
         else:
             quant_config = alg_configs
+
+        # Model-free routing is now supported directly by the new entry path.
+        route_kwargs = dict(kwargs)
+        model_free_iters = 0 if isinstance(quant_config, RTNConfig) else getattr(quant_config, "iters", None)
+        model_free_disable_opt_rtn = getattr(quant_config, "disable_opt_rtn", None)
+        if is_model_free_route(model, scheme, model_free_iters, model_free_disable_opt_rtn, route_kwargs):
+            from auto_round.compressors.model_free import ModelFreeCompressor
+
+            if not isinstance(model, str):
+                raise ValueError("model_free=True requires `model` to be a HuggingFace ID or local path string.")
+            if not bool(route_kwargs.get("model_free", False)):
+                logger.info(
+                    "Auto-routing to model-free quantization "
+                    "(iters=0, disable_opt_rtn=True, supported scheme). "
+                    "Pass disable_model_free=True to use the regular flow.")
+            return ModelFreeCompressor(
+                model_name_or_path=model,
+                scheme=scheme,
+                layer_config=layer_config,
+                tokenizer=tokenizer,
+                device_map=device_map,
+                **route_kwargs,
+            )
 
         # Eagerly validate scheme constraints that do not require model info.
         # This mirrors old-arch _check_configs() called at __init__ time so that
@@ -269,13 +284,17 @@ class AutoRound(object):
                 kwargs.pop(_k, None)
         kwargs.pop("disable_opt_rtn", None)  # consumed by RTN routing above, not a compressor param
 
-        if isinstance(quant_config, SignRoundConfig):
+        # Preprocessor algorithms (AWQ, …) require a data-driven host so that
+        # the per-block preprocessor lifecycle (prepare_block_group ->
+        # block_forward_hooks -> pre_quantize_block -> pre_quantize_block ->
+        # post_quantize_block) actually runs.  CalibratedRTNCompressor's
+        # Preprocessor algorithms require DataDrivenCompressor for per-block lifecycle hooks.
+        # The pipeline auto-appends RTN when no block_quantizer is supplied.
+        if preprocessor_configs:
             return _get_compressor_class(model_type, DataDrivenCompressor)(alg_configs, **local_args, **kwargs)
 
-        elif isinstance(quant_config, AWQConfig):
-            # AWQ requires calibration for activation collection + smoothing
-            quant_config._alg_cls = "AWQQuantizer"
-            return _get_compressor_class(model_type, CalibratedRTNCompressor)(alg_configs, **local_args, **kwargs)
+        if isinstance(quant_config, SignRoundConfig):
+            return _get_compressor_class(model_type, DataDrivenCompressor)(alg_configs, **local_args, **kwargs)
 
         elif isinstance(quant_config, RTNConfig):
             enable_imatrix = False
@@ -442,12 +461,6 @@ class AutoRoundCompatible:
         """Create AutoRoundCompatible instance using new AutoRound architecture.
 
         This method translates old AutoRoundCompatible API to new AutoRound API.
-
-        Args:
-            algorithm: Quantization algorithm to use. Options:
-                - None or "auto_round": SignSGD-based optimization (default when iters > 0)
-                - "rtn": Round-to-nearest (default when iters == 0)
-                - "awq": Activation-Aware Weight Quantization (AWQ smoothing + RTN)
         """
         from auto_round.utils import is_diffusion_model, is_mllm_model
         from auto_round.utils.model import is_model_free_route
@@ -468,8 +481,7 @@ class AutoRoundCompatible:
                 logger.info(
                     "Auto-routing to model-free quantization "
                     "(iters=0, disable_opt_rtn=True, supported scheme). "
-                    "Pass disable_model_free=True to use the regular flow."
-                )
+                    "Pass disable_model_free=True to use the regular flow.")
             return ModelFreeCompressor(
                 model_name_or_path=model,
                 scheme=scheme,
@@ -499,14 +511,12 @@ class AutoRoundCompatible:
         enable_norm_bias_tuning = kwargs.pop("enable_norm_bias_tuning", False)
         enable_quanted_input = kwargs.pop("enable_quanted_input", True)
 
-        # Pop AWQ-only kwargs early so they don't leak into non-AWQ constructors
         duo_scaling = kwargs.pop("duo_scaling", True)
         n_grid = kwargs.pop("n_grid", 20)
         awq_mappings = kwargs.pop("mappings", None)
 
         # Decide which algorithm to use
         if algorithm and algorithm.lower() == "awq":
-            # AWQ mode: activation-aware weight quantization
             config = AWQConfig(
                 bits=bits,
                 group_size=group_size,
@@ -572,23 +582,16 @@ class AutoRoundCompatible:
         # In old arch this was a standalone keyword arg; the new arch passes rotation
         # transforms as part of the alg_configs list.  All backends (auto / inplace /
         # transform) are dispatched inside ``HadamardRotation.apply_to_model``.
-        # Also supports SpinQuantConfig and string shorthands ("quarot", "spinquant").
         _rotation_config_raw = kwargs.pop("rotation_config", None)
         if _rotation_config_raw is not None:
-            if isinstance(_rotation_config_raw, _BaseRotationConfig):
-                # Already a valid config (RotationConfig, SpinQuantConfig, etc.)
+            if isinstance(_rotation_config_raw, _NewArchRotationConfig):
                 _rc = _rotation_config_raw
             elif isinstance(_rotation_config_raw, dict):
-                # Use unified normalizer which dispatches by "algorithm" key
-                _rc = _normalize_any_rotation_config(_rotation_config_raw)
-            elif isinstance(_rotation_config_raw, str):
-                # String shorthands: "quarot", "spinquant", "hadamard",
-                # "random_hadamard", "default", etc.
-                _rc = _normalize_any_rotation_config(_rotation_config_raw)
+                _rc = _NewArchRotationConfig.model_validate(_rotation_config_raw)
             else:
+                # str alias ("default", "random_hadamard", …) -> default config
                 _rc = _NewArchRotationConfig()
-            if _rc is not None:
-                config = [config, _rc]
+            config = [config, _rc]
 
         # Extract MLLM-specific parameters
         processor = kwargs.pop("processor", None)

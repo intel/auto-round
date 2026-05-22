@@ -18,6 +18,7 @@ import torch
 from tqdm import tqdm
 
 from auto_round.algorithms.alg_config import AlgConfig
+from auto_round.algorithms.quantization.pipeline import BlockContext
 from auto_round.compressors.base import BaseCompressor
 from auto_round.compressors.utils import is_nv_fp, is_static_wfp8afp8
 from auto_round.logger import logger
@@ -82,9 +83,9 @@ class ZeroShotCompressor(BaseCompressor):
         """Quantize a single block via RTN (public API for LLM-Compressor).
 
         ZeroShotCompressor does not need calibration data, so ``inputs`` and
-        ``q_input`` are accepted for interface compatibility but not used for
-        algorithm purposes.  The block is materialized, converted to the target
-        dtype, moved to ``device``, and quantized in-place via RTN.
+        ``q_input`` are accepted for interface compatibility
+        but not used for algorithm purposes.  The block is materialized, converted
+        to the target dtype, moved to ``device``, and quantized in-place via RTN.
 
         Returns:
             tuple: ``(None, None)`` — RTN does not produce reference outputs.
@@ -100,7 +101,16 @@ class ZeroShotCompressor(BaseCompressor):
         convert_module_to_hp_if_necessary(block, self.model_context.amp_dtype, device)
         block = block.to(device)
 
-        self.quantizer.quantize_block(block)
+        ctx = BlockContext(
+            model=self.model_context.model,
+            block=block,
+            block_names=[getattr(block, "global_name", "")],
+            block_name=getattr(block, "global_name", ""),
+            block_index=0,
+            io=self.quantizer.create_block_io(None, {}, None, block),
+            device=device,
+        )
+        self.quantizer.quantize_block(ctx)
 
         # ── MoE scale alignment for FP8 dispatch efficiency ────────────────
         if is_nv_fp(self.quantizer.act_data_type) or is_static_wfp8afp8(self.quantizer):
@@ -164,7 +174,16 @@ class ZeroShotCompressor(BaseCompressor):
                     materialize_model_(block)
 
                     # ── Pure algorithm ────────────────────────────────────────
-                    self.quantizer.quantize_block(block)
+                    ctx = BlockContext(
+                        model=self.model_context.model,
+                        block=block,
+                        block_names=[block_name],
+                        block_name=block_name,
+                        block_index=0,
+                        io=self.quantizer.create_block_io(None, {}, None, block),
+                        device=self.compress_context.device,
+                    )
+                    self.quantizer.quantize_block(ctx)
 
                     # ── MoE scale alignment for FP8 dispatch efficiency ────────────────
                     if is_nv_fp(self.quantizer.act_data_type) or is_static_wfp8afp8(self.quantizer):

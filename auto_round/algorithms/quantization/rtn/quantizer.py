@@ -12,15 +12,15 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 from collections import defaultdict
+from contextlib import contextmanager
 from typing import Any, Callable, Optional, Union
 
 import accelerate
 import torch
 
-from auto_round.algorithms.quantization.base import BaseQuantizers
+from auto_round.algorithms.quantization.base import BaseQuantizer, RTNLayerFallbackMixin
 from auto_round.algorithms.quantization.rtn.config import RTNConfig
 from auto_round.algorithms.quantization.sign_round.quantizer import SignRoundQuantizer
-from auto_round.algorithms.quantization.utils import register_imatrix_hooks
 from auto_round.compressors.utils import (
     IndexSampler,
     block_forward,
@@ -56,15 +56,13 @@ from auto_round.utils.device import (
 from auto_round.wrapper import WrapperMultiblock, unwrapper_block, unwrapper_layer, wrapper_block
 
 
-class RTNQuantizer(BaseQuantizers):
+class RTNQuantizer(RTNLayerFallbackMixin, BaseQuantizer):
 
     def __init__(self, config: RTNConfig):
-        BaseQuantizers.__init__(self, config)
+        BaseQuantizer.__init__(self, config)
 
     @torch.no_grad()
-    def quantize_block(
-        self, block: torch.nn.Module, input_ids=None, input_others=None, reference_output=None, **kwargs
-    ) -> dict:
+    def quantize_block(self, ctx) -> dict:
         """Apply zero-shot RTN quantization to a block.
 
         Pure-algorithm entry point.  Infrastructure (materialize, shard writing,
@@ -79,11 +77,9 @@ class RTNQuantizer(BaseQuantizers):
         Returns:
             dict: Empty dict (zero-shot RTN has no tunable parameters to return).
         """
-        if (
-            self.config.is_act_nv_fp
-            or self.config.is_static_afp8
-            or (self.config.is_wfp8afp8 and not self.config.act_dynamic)
-        ):
+        block = ctx.block
+        if (self.config.is_act_nv_fp or self.config.is_static_afp8 or
+            (self.config.is_wfp8afp8 and not self.config.act_dynamic)):
             # For FP8 static / NVFP paths, expert input scales are derived during
             # layer quantization from the current act_max. Unify MoE input-proj
             # act_max values before quantizing each expert so exported input_scale
@@ -106,7 +102,7 @@ class RTNQuantizer(BaseQuantizers):
 class OptimizedRTNQuantizer(RTNQuantizer):
 
     def __init__(self, config: RTNConfig):
-        BaseQuantizers.__init__(self, config)
+        BaseQuantizer.__init__(self, config)
         self.data_type = config.data_type
         self.group_size = config.group_size
         self.infer_bs_coeff = config.infer_bs_coeff
@@ -114,16 +110,36 @@ class OptimizedRTNQuantizer(RTNQuantizer):
 
         self.enable_alg_ext = True
 
-    def register_calibration_hooks(self, model, *, act_max: bool = True, imatrix: bool = True):
-        hook_handles = super().register_calibration_hooks(model, act_max=act_max, imatrix=imatrix)
-        if imatrix and self.enable_imatrix:
-            hook_handles.extend(register_imatrix_hooks(self, model, with_count=True))
-        return hook_handles
+    @contextmanager
+    def block_forward_hooks(self, ctx):
+        with super().block_forward_hooks(ctx) as hook_handles:
+            if self.enable_imatrix:
+                hook_handles.extend(self._register_imatrix_hooks(ctx.block, with_count=True))
+            yield hook_handles
+
+    def _register_imatrix_hooks(self, model, *, with_count: bool = False):
+        def collect_imatrix(module, input, output):
+            input = input[0] if isinstance(input, (tuple, list)) else input
+            flattened = input.reshape(-1, input.shape[-1]).to(torch.float32)
+            squared = torch.sum(torch.pow(flattened, 2), dim=0).to(torch.float32)
+
+            if not hasattr(module, "imatrix"):
+                module.imatrix = squared
+                if with_count:
+                    module.imatrix_cnt = input.shape[0]
+                return
+            module.imatrix += squared.to(module.imatrix.device)
+            if with_count:
+                module.imatrix_cnt += input.shape[0]
+
+        handles = []
+        for _, module in model.named_modules():
+            if isinstance(module, self.supported_types) and check_to_quantized(module):
+                handles.append(module.register_forward_hook(collect_imatrix))
+        return handles
 
     @torch.no_grad()
-    def quantize_block(
-        self, block: torch.nn.Module, input_ids=None, input_others=None, reference_output=None, **kwargs
-    ):
+    def quantize_block(self, ctx):
         """Apply imatrix-informed RTN quantization to a block.
 
         Pure-algorithm entry point.  Device placement and cleanup are handled
@@ -137,12 +153,10 @@ class OptimizedRTNQuantizer(RTNQuantizer):
             input_others: Unused for optimized RTN.
             reference_output: Unused for optimized RTN.
         """
+        block = ctx.block
         update_block_global_scale_if_needed(block, self.data_type, self.group_size)
-        if (
-            self.config.is_act_nv_fp
-            or self.config.is_static_afp8
-            or (self.config.is_wfp8afp8 and not self.config.act_dynamic)
-        ):
+        if (self.config.is_act_nv_fp or self.config.is_static_afp8 or
+            (self.config.is_wfp8afp8 and not self.config.act_dynamic)):
             # enable moe experts act_max automatic generation for Linear
             set_amax_for_all_moe_layers(block, attr_name="act_max")
         # Normalize imatrix and quantize layers

@@ -31,6 +31,29 @@ class BackendDataType(str, Enum):
 
 @dataclass(kw_only=True)
 class QuantizationConfig:
+    """Common quantization configuration shared by block quantizers.
+
+    Args:
+        bits: Weight quantization bit width.
+        group_size: Weight quantization group size. Use -1 for per-channel,
+            0 for per-tensor, or a positive integer for grouped quantization.
+        sym: Whether to use symmetric weight quantization.
+        data_type: Weight quantization data type, such as int, mx_fp,
+            nv_fp, or fp8 variants.
+        act_bits: Activation quantization bit width.
+        act_group_size: Activation quantization group size.
+        act_sym: Whether to use symmetric activation quantization.
+        act_data_type: Activation quantization data type.
+        act_dynamic: Whether activation quantization should be dynamic.
+        super_bits: Bit width used for double quantization metadata.
+        super_group_size: Group size used for double quantization metadata.
+        scale_dtype: Data type used to store quantization scales.
+        ignore_layers: Comma-separated layer names to keep in higher precision.
+        quant_lm_head: Whether to quantize the lm_head module.
+        to_quant_block_names: Optional comma-separated subset of block names
+            to quantize.
+    """
+
     _alg_cls: ClassVar[str] = None
 
     # quantization args

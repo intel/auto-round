@@ -460,6 +460,44 @@ We will try to optimize the RAM usage in the future. The RAM usage is about 1.1-
 Embedding layer is not supported in AutoScheme, it will use the best scheme in options.
 
 
+### AWQ Quantization Algorithm
+
+AWQ (`algorithm="awq"`) is a pre-processing quantization algorithm that analyzes activation patterns and applies channel-wise scaling to protect salient weights. It runs BEFORE the actual quantization (RTN by default, or auto_round/SignRound).
+
+#### CLI Usage
+```bash
+# AWQ + default RTN (iters=0 auto-selected)
+auto-round --model Qwen/Qwen3-0.6B --algorithm awq --scheme W4A16
+
+# AWQ + AutoRound optimization
+auto-round --model Qwen/Qwen3-0.6B --algorithm awq,auto_round --scheme W4A16
+
+# AWQ flags
+--awq-duo-scaling true|false|both  (default: true)
+--awq-n-grid 20                     (default: 20)
+```
+
+#### API Usage
+```python
+from auto_round import AutoRound
+from auto_round.algorithms.quantization.awq.config import AWQConfig
+from auto_round.algorithms.quantization.sign_round.config import SignRoundConfig
+
+# AWQ + default RTN (simplest)
+ar = AutoRound(model, tokenizer, algorithm="awq", scheme="W4A16")
+
+# AWQ + AutoRound via alg_configs (explicit pipeline)
+ar = AutoRound(model, tokenizer,
+               alg_configs=[AWQConfig(), SignRoundConfig(iters=200)],
+               scheme="W4A16")
+ar.quantize_and_save(output_dir="./qmodel")
+```
+
+**Important Note**: `algorithm="awq"` (quantization algorithm) and `format="auto_awq"` (export format) are independent. You can use:
+- `algorithm="awq"` + `format="auto_round"`: AWQ smoothing + AutoRound packing
+- `algorithm="auto_round"` + `format="auto_awq"`: No AWQ smoothing + AutoAWQ packing
+
+
 ### OPT RTN Mode
 AutoRound also supports Optimized RTN (Round-To-Nearest) mode for fast, calibration-free baseline quantization. Setting `iters=0` tp enable it and we recommend using `group_size=32` for better results. Check [accuracy comparison](./opt_rtn.md) between RTN and OPT RTN mode
 

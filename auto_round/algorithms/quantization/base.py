@@ -13,18 +13,18 @@
 # limitations under the License.
 import importlib
 import traceback
-from collections import defaultdict
-from typing import Union
+from contextlib import contextmanager
 
 import torch
 
 from auto_round.algorithms.quantization.config import QuantizationConfig
-from auto_round.algorithms.quantization.utils import register_act_max_hooks
 from auto_round.compressors.utils import (
     block_forward,
+    check_need_act_calibration,
     immediate_pack,
 )
 from auto_round.data_type import QUANT_FUNC_WITH_DTYPE
+from auto_round.data_type.utils import reshape_pad_tensor_by_group_size
 from auto_round.logger import logger
 from auto_round.utils import (
     INNER_SUPPORTED_LAYER_TYPES,
@@ -39,256 +39,127 @@ from auto_round.utils import (
 from auto_round.wrapper import WrapperLinear
 
 
-class BaseQuantizers:
-    # Class-level attribute declarations for convenient access in quantization methods.
-    # Scheme-related attrs (layer_config, scale_dtype, has_qlayer_outside_block, etc.)
-    # are resolved by SchemeMixin in BaseCompressor and synced here after post_init().
+class BasePipelineMember:
+    """Shared interface for all members of a :class:`QuantizationPipeline`.
+
+    Both :class:`BaseWeightTransformer` (pre-processing algorithms that modify
+    FP weights in-place) and :class:`BaseQuantizer` (terminal compression
+    algorithms) inherit from this class.
+
+    This base class owns the lifecycle hooks and binding logic that are common
+    to every pipeline member, so that :class:`QuantizationPipeline` can iterate
+    over ``self.all()`` with a single uniform interface.
+
+    Common lifecycle (called by the Compressor / Pipeline in order):
+        1. :meth:`bind`               – wire shared compressor state (once at init)
+        2. :meth:`prepare_run`        – model-level setup (once before block loop)
+        3. :meth:`block_forward_hooks`– register forward hooks (context manager, per block)
+        4. :meth:`finalize_run`       – model-level teardown (once after block loop)
+    """
+
     model_context = None
     compress_context = None
-    dataset = None
-    supported_types = SUPPORTED_LAYER_TYPES
-    inner_supported_types = INNER_SUPPORTED_LAYER_TYPES
-    enable_alg_ext = False
-    # Subclasses that support diffusion models should override this with the
-    # appropriate output key mapping, e.g.:
-    #   DIFFUSION_OUTPUT_CONFIGS = {"FluxTransformerBlock": ["encoder_hidden_states", "hidden_states"]}
-    DIFFUSION_OUTPUT_CONFIGS: dict = {
-        "FluxTransformerBlock": ["encoder_hidden_states", "hidden_states"],
-        "FluxSingleTransformerBlock": ["encoder_hidden_states", "hidden_states"],
-        "OvisImageTransformerBlock": ["encoder_hidden_states", "hidden_states"],
-        "OvisImageSingleTransformerBlock": ["encoder_hidden_states", "hidden_states"],
-        "StableAudioDiTBlock": ["hidden_states"],
-        "WanTransformerBlock": ["hidden_states"],
-    }
 
-    def __init__(self, config: QuantizationConfig):
+    def __init__(self, config=None):
         self.config = config
-        self.layer_config = None
-        self.bits = config.bits
-        self.group_size = config.group_size
-        self.sym = config.sym
-        self.data_type = config.data_type
-        self.act_bits = config.act_bits
-        self.act_group_size = config.act_group_size
-        self.act_sym = config.act_sym
-        self.act_data_type = config.act_data_type
-        self.act_dynamic = config.act_dynamic
-        self.super_bits = config.super_bits
-        self.super_group_size = config.super_group_size
-        self.scale_dtype = config.scale_dtype
-        self.ignore_layers = config.ignore_layers
-        self.quant_lm_head = config.quant_lm_head
-        self.to_quant_block_names = config.to_quant_block_names
-        # Calibration-time state lives on a shared
-        # :class:`~auto_round.calibration.state.CalibrationState` instance.
-        # The compressor wires its own instance here in ``_resolve_scheme``;
-        # until then we own a private placeholder so property-based reads /
-        # writes during construction don't blow up.
-        from auto_round.calibration.state import CalibrationState
-
-        self._calibration_state = CalibrationState()
-        self.infer_bs_coeff = getattr(config, "infer_bs_coeff", 1)
-        # Whether to feed quantized-block outputs as inputs to the next block.
-        # Subclasses that support cascaded quantized-input (e.g. SignRoundQuantizer)
-        # override this from their config.  Defaults to False for zero-shot algorithms
-        # (RTN) where activations are not used during weight optimization.
-        self.enable_quanted_input = getattr(config, "enable_quanted_input", False)
-
-    # ── Shared CalibrationState forwarders ───────────────────────────────────────
-    @property
-    def calibration_state(self):
-        return self._calibration_state
-
-    @calibration_state.setter
-    def calibration_state(self, new_state) -> None:
-        # Compressor-supplied shared instance; just rebind.
-        self._calibration_state = new_state
-
-    @property
-    def attention_mask(self) -> list:
-        return self._calibration_state.attention_mask
-
-    @attention_mask.setter
-    def attention_mask(self, value) -> None:
-        self._calibration_state.attention_mask = value if value is not None else []
-
-    @property
-    def batch_dim(self):
-        return self._calibration_state.batch_dim
-
-    @batch_dim.setter
-    def batch_dim(self, value) -> None:
-        self._calibration_state.batch_dim = value
-
-    @property
-    def batch_size(self) -> int:
-        return self._calibration_state.batch_size
-
-    @batch_size.setter
-    def batch_size(self, value) -> None:
-        self._calibration_state.batch_size = value
-
-    @property
-    def nsamples(self) -> int:
-        return self._calibration_state.nsamples
-
-    @property
-    def seqlen(self) -> int:
-        return self._calibration_state.seqlen
 
     @classmethod
-    def from_config(cls, config: QuantizationConfig):
-        if cls.__name__ == config._alg_cls:
+    def from_config(cls, config):
+        """Instantiate the correct subclass from a config object.
+
+        Fast path: if this class IS the target declared by ``config._alg_cls``,
+        construct directly without a registry round-trip.  This handles the common
+        case where ``from_config`` is called on the concrete class itself.
+        """
+        module = importlib.import_module("auto_round.algorithms.quantization")
+        alg_cls = getattr(module, config._alg_cls)
+        if cls is alg_cls:
             return cls(config)
-        else:
-            module = importlib.import_module("auto_round.algorithms.quantization")
-            alg_cls = getattr(module, config._alg_cls)
-            return alg_cls(config)
+        return alg_cls(config)
 
     def bind(self, compressor) -> None:
-        """Wire shared state from the owning compressor.
-
-        The compressor owns the authoritative ``model_context`` /
-        ``compress_context`` / ``CalibrationState`` and resolves
-        ``scale_dtype`` (string → torch dtype).  All quantizer fields that
-        merely mirror the compressor are pulled from here in one place.
-        """
+        """Wire shared context from the owning compressor."""
         self.model_context = compressor.model_context
         self.compress_context = compressor.compress_context
-        self.scale_dtype = compressor.scale_dtype
-        # Share the compressor's CalibrationState instance.
-        self._calibration_state = compressor._calibration_state
 
-    @property
-    def model(self):
-        return self.model_context.model if self.model_context is not None else None
+    def prepare_run(self, run_ctx) -> None:
+        """Model-level preparation (called once before block iteration starts).
 
-    @property
-    def formats(self):
-        return getattr(self.compress_context, "formats", None)
-
-    @property
-    def amp(self):
-        return getattr(self.model_context, "amp", False)
-
-    @property
-    def amp_dtype(self):
-        import torch
-
-        return getattr(self.model_context, "amp_dtype", torch.float32)
-
-    def register_calibration_hooks(self, model, *, act_max: bool = True, imatrix: bool = True):
-        return register_act_max_hooks(self, model) if act_max else []
-
-    @torch.inference_mode()
-    def _quantize_embedding_layer(self):
-        """Quantizes embedding layers in the model according to the configuration.
-
-        This method iterates through all modules in the model, identifies embedding
-        layers specified in `self.quantizer.layer_config`, and applies the appropriate quantization
-        function based on bit precision, grouping strategy, and dtype.
-
-        Returns:
-            bool: True if the quantization process completes without critical errors.
+        Override to validate compatibility and resolve model-wide data structures.
         """
-        is_quantized = False
-        for name, module in self.model_context.model.named_modules():
-            # Skip non-Embedding modules or layers not in config
-            if not isinstance(module, torch.nn.Embedding) or name not in self.layer_config:
-                continue
+        return
 
-            config = self.layer_config[name]
+    def get_act_calib_policy(self, ctx):
+        """Return the activation calibration policy for this block.
 
-            # Skip layers that are not marked for quantization
-            if not check_to_quantized(config):
-                continue
-            is_quantized = True
-            config["scale_dtype"] = self.scale_dtype
-            dtype = config["data_type"]
-
-            # Determine quantization function key with symmetry/asymmetry
-            if dtype not in QUANT_FUNC_WITH_DTYPE:
-                dtype = f"{dtype}_{'sym' if config['sym'] else 'asym'}"
-
-            quant_func = QUANT_FUNC_WITH_DTYPE[dtype]
-            dtype = module.weight.dtype
-            # As typically float32 are used in RTN to search scale zp,
-            # to avoid cache a bf16 copy we'd better use float32
-            if config.get("super_group_size", None) is not None:
-                dtype = torch.float32
-
-            # Attempt quantization on GPU, fall back to CPU if OOM
-            try:
-                weight, scale, zp = quant_func(
-                    module.weight.to(dtype=dtype, device=self.compress_context.device),
-                    **{
-                        k: config.get(k, None)
-                        for k in ["bits", "group_size", "super_bits", "super_group_size", "scale_dtype"]
-                    },
-                )
-            except torch.OutOfMemoryError:
-                cuda_error_msg = traceback.format_exc()
-                try:
-                    logger.error(cuda_error_msg)
-                    logger.warning("falling back to CPU")
-                    weight, scale, zp = quant_func(
-                        module.weight.to("cpu"),
-                        **{
-                            k: config.get(k, None)
-                            for k in ["bits", "group_size", "super_bits", "super_group_size", "scale_dtype"]
-                        },
-                    )
-                except Exception as e:
-                    raise
-
-            # Overwrite the module's weights with the quantized version
-            module.weight.data.copy_(weight.cpu())
-
-            # Attach scale and zero point (zp) to the module
-            for param_name, value in zip(["scale", "zp"], [scale, zp]):
-                if isinstance(value, dict):
-                    for k, v in value.items():
-                        setattr(module, k if k == "scale" else f"w_{k}", v.cpu())
-                elif isinstance(value, torch.Tensor):
-                    setattr(module, param_name, value.cpu())
-                else:
-                    setattr(module, param_name, value)
-
-            # Update config
-            self.layer_config.setdefault(name, {}).update(config)
-            del weight
-            del scale
-            del zp
-            clear_memory(device_list=self.compress_context.device_list)
-
-        return is_quantized
-
-    def quantize_block(
-        self, block: torch.nn.Module, input_ids=None, input_others=None, reference_output=None, **kwargs
-    ) -> dict:
-        """Apply the quantization algorithm to a prepared block.
-
-        This is the **pure-algorithm** entry point called by the Compressor after
-        all infrastructure work (device placement, data collection, act-max hook
-        registration, DDP setup) has been completed.
-
-        Implementations should:
-        - Perform the algorithm-specific weight/activation quantization on ``block``.
-        - Return a dict of best parameters (may be empty for zero-shot algorithms).
-
-        Args:
-            block: Module already placed on the correct device(s).
-            input_ids: Calibration inputs on cache_device (None for zero-shot RTN).
-            input_others: Additional inputs (None for zero-shot RTN).
-            reference_output: FP reference outputs collected by Compressor
-                (None for algorithms that don't need a reconstruction loss).
-            **kwargs: Algorithm-specific keyword arguments (e.g. ``loss_device``,
-                ``card_0_in_high_risk`` for SignRoundQuantizer).
-
-        Returns:
-            dict: Best quantization parameters found, or ``{}`` if not applicable.
+        Default: ``ActCalibPolicy(when=SKIP)``.  Subclasses that need activation
+        calibration should override and return an appropriate policy.
         """
-        raise NotImplementedError("quantize_block must be implemented in subclasses of BaseQuantizers")
+        from auto_round.algorithms.quantization.pipeline import ActCalibPolicy, CalibTiming, InputSource
+
+        return ActCalibPolicy(when=CalibTiming.SKIP, source=InputSource.FP_CACHE)
+
+    @contextmanager
+    def block_forward_hooks(self, ctx):
+        """Register algorithm-specific forward hooks for the reference forward.
+
+        Hook handles *must* be removed before this context manager exits.
+        Yields a list of hook handles (empty list by default = no hooks registered).
+
+        Both :class:`BaseWeightTransformer` subclasses (e.g. AWQ stats collection)
+        and :class:`BaseQuantizer` subclasses (act-calib hooks) implement this
+        interface, allowing :class:`QuantizationPipeline` to manage all hooks
+        through a single uniform call.
+        """
+        yield []
+
+    def finalize_run(self, run_ctx) -> None:
+        """Model-level teardown (called once after all blocks are processed).
+
+        Must be idempotent – the Compressor calls this inside a ``try/finally``.
+        """
+        return
+
+
+class BaseWeightTransformer(BasePipelineMember):
+    """Base class for weight-transformation algorithms in a QuantizationPipeline.
+
+    Weight transformers modify FP weights in-place (smooth, scale, rotate) *before*
+    the quantizer compresses them.  They do NOT compress weights to low-bit.
+
+    Developers adding a new pre-processing algorithm should inherit from this
+    class and override only the lifecycle hooks that are relevant.
+
+    Lifecycle hooks (in call order per block):
+        1. :meth:`prepare_run`          – model-level setup (once before all blocks)
+        2. :meth:`block_forward_hooks`  – register forward stats hooks (context manager)
+        3. :meth:`pre_quantize_block`   – consolidate stats + apply in-place weight transforms
+        4. :meth:`post_quantize_block`  – release per-block caches
+        5. :meth:`finalize_run`         – model-level teardown (once after all blocks)
+    """
+
+    def pre_quantize_block(self, ctx) -> None:
+        """Called after the reference forward, before block quantization.
+
+        Override to consolidate stats collected during the reference forward
+        and apply in-place weight transforms (e.g. AWQ smoothing).
+        """
+        return
+
+    def post_quantize_block(self, ctx) -> None:
+        """Called after the block quantizer completes.
+
+        Override to release per-block caches (activation stats, etc.).
+        """
+        return
+
+
+class RTNLayerFallbackMixin:
+    """Default outside-block/layer quantization via RTN.
+
+    Algorithms that want RTN fallback for embeddings, lm_head, or layers outside
+    transformer blocks should inherit this mixin explicitly.
+    """
 
     @torch.no_grad()
     def quantize_layer_via_rtn(self, layer_name: str, disable_opt_rtn: bool | None = None) -> None:
@@ -378,6 +249,410 @@ class BaseQuantizers:
             shard_writer.write(module, module_name, False)
             module.to("meta")
 
+    def quantize_layer_outside_block(self, layer_name: str, input_ids=None, **kwargs):
+        dtype = kwargs.pop("dtype", None)
+        if dtype is not None:
+            layer = get_module(self.model, layer_name)
+            set_module(self.model, layer_name, layer.to(dtype))
+        self.quantize_layer_via_rtn(layer_name, **kwargs)
+
+
+class DiffusionMixin:
+    """Mixin that adds diffusion-model support to a :class:`BaseQuantizer` subclass.
+
+    Attach to any :class:`BaseQuantizer` subclass that needs to quantize
+    diffusion models (e.g. Flux, StableAudio, Wan):
+
+        class SignRoundQuantizer(DiffusionMixin, BaseQuantizer): ...
+
+    The mixin overrides :meth:`create_block_io` so diffusion-specific input
+    slicing, output mapping, and hidden_states extraction live in
+    :class:`DiffusionBlockIO` rather than individual quantizers.
+
+    ``DIFFUSION_OUTPUT_CONFIGS`` maps block class name → ordered list of output
+    tensor keys.  Extend in subclasses to register new diffusion architectures
+    without overriding any method.
+    """
+
+    # Map block class name → list of output tensor keys returned by that block.
+    # The order of keys must match the order of tensors in the block's return tuple.
+    # Subclasses can extend this dict to register new architectures without
+    # overriding any method.
+    DIFFUSION_OUTPUT_CONFIGS: dict = {
+        "FluxTransformerBlock": ["encoder_hidden_states", "hidden_states"],
+        "FluxSingleTransformerBlock": ["encoder_hidden_states", "hidden_states"],
+        "OvisImageTransformerBlock": ["encoder_hidden_states", "hidden_states"],
+        "OvisImageSingleTransformerBlock": ["encoder_hidden_states", "hidden_states"],
+        "StableAudioDiTBlock": ["hidden_states"],
+        "WanTransformerBlock": ["hidden_states"],
+    }
+
+    def _get_output_config(self, block: torch.nn.Module) -> list:
+        """Return the output key list for *block* from ``DIFFUSION_OUTPUT_CONFIGS``."""
+        return self.DIFFUSION_OUTPUT_CONFIGS.get(block.__class__.__name__, ["hidden_states"])
+
+    def create_block_io(self, input_ids, input_others, quantized_input=None, block=None):
+        from auto_round.algorithms.quantization.pipeline import DiffusionBlockIO, InputSource
+
+        active_source = InputSource.QUANTIZED_INPUT if quantized_input is not None and self.enable_quanted_input else InputSource.FP_CACHE
+        io = DiffusionBlockIO(
+            fp_inputs=input_ids,
+            input_others=input_others,
+            quantized_inputs=quantized_input,
+            active_source=active_source,
+            batch_dim=self.batch_dim,
+            seqlen=self.seqlen,
+            shared_cache_keys=self.model_context.shared_cache_keys,
+            output_config=self._get_output_config(block),
+        )
+        io.fp_inputs, io.input_others = io.preprocess_block_inputs(io.fp_inputs, io.input_others, block)
+        return io
+
+
+class BaseQuantizer(BasePipelineMember):
+    """Base class for terminal weight-compression algorithms in a QuantizationPipeline.
+
+    Developers adding a new quantization algorithm should inherit from this
+    class and override at minimum :meth:`quantize_block`.
+
+    For diffusion model support, also inherit :class:`DiffusionMixin`:
+        ``class MyQuantizer(DiffusionMixin, BaseQuantizer): ...``
+
+    Lifecycle hooks to override as needed:
+        - :meth:`prepare_run`                – model-level setup (once before all blocks)
+        - :meth:`get_act_calib_policy`       – activation calibration policy
+        - :meth:`block_forward_hooks`        – register act-calib hooks (context manager)
+        - :meth:`quantize_block`             – **must override**: quantize a single block
+        - :meth:`quantize_layer_outside_block` – quantize layers outside blocks
+        - :meth:`finalize_run`               – model-level teardown (once after all blocks)
+    """
+
+    # Class-level attribute declarations for convenient access in quantization methods.
+    # Scheme-related attrs (layer_config, scale_dtype, has_qlayer_outside_block, etc.)
+    # are resolved by SchemeMixin in BaseCompressor and synced here after post_init().
+    dataset = None
+    supported_types = SUPPORTED_LAYER_TYPES
+    inner_supported_types = INNER_SUPPORTED_LAYER_TYPES
+    enable_alg_ext = False
+
+    def __init__(self, config: QuantizationConfig):
+        super().__init__(config)
+        self.layer_config = None
+        self.bits = config.bits
+        self.group_size = config.group_size
+        self.sym = config.sym
+        self.data_type = config.data_type
+        self.act_bits = config.act_bits
+        self.act_group_size = config.act_group_size
+        self.act_sym = config.act_sym
+        self.act_data_type = config.act_data_type
+        self.act_dynamic = config.act_dynamic
+        self.super_bits = config.super_bits
+        self.super_group_size = config.super_group_size
+        self.scale_dtype = config.scale_dtype
+        self.ignore_layers = config.ignore_layers
+        self.quant_lm_head = config.quant_lm_head
+        self.to_quant_block_names = config.to_quant_block_names
+        # Calibration-time state lives on a shared
+        # :class:`~auto_round.calibration.state.CalibrationState` instance.
+        # The compressor wires its own instance here in ``_resolve_scheme``;
+        # until then we own a private placeholder so property-based reads /
+        # writes during construction don't blow up.
+        from auto_round.calibration.state import CalibrationState
+
+        self._calibration_state = CalibrationState()
+        self.infer_bs_coeff = getattr(config, "infer_bs_coeff", 1)
+        # Whether to feed quantized-block outputs as inputs to the next block.
+        # Subclasses that support cascaded quantized-input (e.g. SignRoundQuantizer)
+        # override this from their config.  Defaults to False for zero-shot algorithms
+        # (RTN) where activations are not used during weight optimization.
+        self.enable_quanted_input = getattr(config, "enable_quanted_input", False)
+
+    # ── Shared CalibrationState forwarders ───────────────────────────────────────
+    @property
+    def calibration_state(self):
+        return self._calibration_state
+
+    @calibration_state.setter
+    def calibration_state(self, new_state) -> None:
+        # Compressor-supplied shared instance; just rebind.
+        self._calibration_state = new_state
+
+    @property
+    def attention_mask(self) -> list:
+        return self._calibration_state.attention_mask
+
+    @attention_mask.setter
+    def attention_mask(self, value) -> None:
+        self._calibration_state.attention_mask = value if value is not None else []
+
+    @property
+    def batch_dim(self):
+        return self._calibration_state.batch_dim
+
+    @batch_dim.setter
+    def batch_dim(self, value) -> None:
+        self._calibration_state.batch_dim = value
+
+    @property
+    def batch_size(self) -> int:
+        return self._calibration_state.batch_size
+
+    @batch_size.setter
+    def batch_size(self, value) -> None:
+        self._calibration_state.batch_size = value
+
+    @property
+    def nsamples(self) -> int:
+        return self._calibration_state.nsamples
+
+    @property
+    def seqlen(self) -> int:
+        return self._calibration_state.seqlen
+
+    def bind(self, compressor) -> None:
+        """Wire shared state from the owning compressor.
+
+        The compressor owns the authoritative ``model_context`` /
+        ``compress_context`` / ``CalibrationState`` and resolves
+        ``scale_dtype`` (string → torch dtype).  All quantizer fields that
+        merely mirror the compressor are pulled from here in one place.
+        """
+        self.model_context = compressor.model_context
+        self.compress_context = compressor.compress_context
+        self.scale_dtype = compressor.scale_dtype
+        # Share the compressor's CalibrationState instance.
+        self._calibration_state = compressor._calibration_state
+
+    @property
+    def model(self):
+        return self.model_context.model if self.model_context is not None else None
+
+    @property
+    def formats(self):
+        return getattr(self.compress_context, "formats", None)
+
+    @property
+    def amp(self):
+        return getattr(self.model_context, "amp", False)
+
+    @property
+    def amp_dtype(self):
+        return getattr(self.model_context, "amp_dtype", torch.float32)
+
+    # ── Activation-calibration hook infrastructure ───────────────────────────────
+
+    def _register_act_max_hooks(self, model):
+        """Register per-module act_max tracking hooks for static activation quantization.
+
+        Internal implementation called by :meth:`block_forward_hooks`.
+        Returns a list of hook handles that the caller must remove when done.
+        """
+
+        def collect_act_max(module, input, output):
+            input = input[0] if isinstance(input, (tuple, list)) else input
+            if input.numel() == 0:
+                return
+            input, _, _ = reshape_pad_tensor_by_group_size(input, self.act_group_size)
+            act_max = torch.max(torch.abs(input), dim=-1).values
+            if not hasattr(module, "act_max") or module.act_max.numel() == 0:
+                module.act_max = act_max
+                if self.config.is_act_nv_fp:
+                    max_val = act_max.max()
+                    module.act_max = max_val.unsqueeze(0) if max_val.dim() == 0 else max_val
+                return
+
+            act_max = act_max.to(module.act_max.device)
+            if self.config.is_act_nv_fp:
+                max_val = torch.max(act_max.max(), module.act_max.max())
+                module.act_max = max_val.unsqueeze(0) if max_val.dim() == 0 else max_val
+            else:
+                module.act_max = torch.max(act_max, module.act_max)
+
+        def should_collect(name, module):
+            if isinstance(module, SUPPORTED_LAYER_TYPES):
+                return (
+                    hasattr(module, "act_dynamic")
+                    and check_need_act_calibration(module.act_dynamic, module.act_data_type, module.act_bits)
+                    and check_to_quantized(module)
+                )
+            if name in self.layer_config:
+                config = self.layer_config[name]
+                act_dynamic = config.get("act_dynamic", True)
+                act_data_type = config.get("act_data_type", None)
+                act_bits = config.get("act_bits", 16)
+                return (
+                    config["bits"] <= 8
+                    and check_need_act_calibration(act_dynamic, act_data_type, act_bits)
+                    and check_to_quantized(config)
+                )
+            return False
+
+        handles = []
+        if should_collect("", model):
+            handles.append(model.register_forward_hook(collect_act_max))
+            return handles
+        for name, module in model.named_modules():
+            if name and should_collect(name, module):
+                handles.append(module.register_forward_hook(collect_act_max))
+        return handles
+
+    @contextmanager
+    def block_forward_hooks(self, ctx):
+        """Register act-calib forward hooks for the reference forward.
+
+        Implements the :meth:`BasePipelineMember.block_forward_hooks` interface for
+        terminal quantizers.  Yields the list of hook handles so the caller can
+        determine whether any act-calib hooks were registered (used to decide
+        whether a second forward with quantized inputs is needed).
+        """
+        from auto_round.algorithms.quantization.pipeline import CalibTiming
+
+        policy = self.get_act_calib_policy(ctx)
+        if policy.when == CalibTiming.SKIP:
+            yield []
+            return
+        handles = self._register_act_max_hooks(ctx.block)
+        try:
+            yield handles
+        finally:
+            for h in handles:
+                h.remove()
+
+    def get_act_calib_policy(self, ctx):
+        """Return the activation calibration policy for this block.
+
+        Default: ``WITH_REFERENCE + FP_CACHE``, or ``QUANTIZED_INPUT`` when
+        ``enable_quanted_input=True`` and a quantized previous-block output is available.
+        """
+        from auto_round.algorithms.quantization.pipeline import ActCalibPolicy, CalibTiming, InputSource
+
+        quantized_input = getattr(ctx, "quantized_input", None)
+        if quantized_input is not None and self.enable_quanted_input:
+            return ActCalibPolicy(when=CalibTiming.WITH_REFERENCE, source=InputSource.QUANTIZED_INPUT)
+        return ActCalibPolicy(when=CalibTiming.WITH_REFERENCE, source=InputSource.FP_CACHE)
+
+    def create_block_io(self, input_ids, input_others, quantized_input=None, block=None):
+        from auto_round.algorithms.quantization.pipeline import BlockIO, InputSource
+
+        active_source = InputSource.QUANTIZED_INPUT if quantized_input is not None and self.enable_quanted_input else InputSource.FP_CACHE
+        return BlockIO(
+            fp_inputs=input_ids,
+            input_others=input_others,
+            quantized_inputs=quantized_input,
+            active_source=active_source,
+            batch_dim=self.batch_dim,
+            seqlen=self.seqlen,
+            shared_cache_keys=self.model_context.shared_cache_keys,
+        )
+
+    # ── Embedding quantization ────────────────────────────────────────────────────
+
+    @torch.inference_mode()
+    def _quantize_embedding_layer(self):
+        """Quantizes embedding layers in the model according to the configuration.
+
+        This method iterates through all modules in the model, identifies embedding
+        layers specified in `self.layer_config`, and applies the appropriate quantization
+        function based on bit precision, grouping strategy, and dtype.
+
+        Returns:
+            bool: True if any embedding layer was quantized.
+        """
+        is_quantized = False
+        for name, module in self.model_context.model.named_modules():
+            # Skip non-Embedding modules or layers not in config
+            if not isinstance(module, torch.nn.Embedding) or name not in self.layer_config:
+                continue
+
+            config = self.layer_config[name]
+
+            # Skip layers that are not marked for quantization
+            if not check_to_quantized(config):
+                continue
+            is_quantized = True
+            config["scale_dtype"] = self.scale_dtype
+            dtype = config["data_type"]
+
+            # Determine quantization function key with symmetry/asymmetry
+            if dtype not in QUANT_FUNC_WITH_DTYPE:
+                dtype = f"{dtype}_{'sym' if config['sym'] else 'asym'}"
+
+            quant_func = QUANT_FUNC_WITH_DTYPE[dtype]
+            dtype = module.weight.dtype
+            # As typically float32 are used in RTN to search scale zp,
+            # to avoid cache a bf16 copy we'd better use float32
+            if config.get("super_group_size", None) is not None:
+                dtype = torch.float32
+
+            # Attempt quantization on GPU, fall back to CPU if OOM
+            try:
+                weight, scale, zp = quant_func(
+                    module.weight.to(dtype=dtype, device=self.compress_context.device),
+                    **{
+                        k: config.get(k, None)
+                        for k in ["bits", "group_size", "super_bits", "super_group_size", "scale_dtype"]
+                    },
+                )
+            except torch.OutOfMemoryError:
+                cuda_error_msg = traceback.format_exc()
+                try:
+                    logger.error(cuda_error_msg)
+                    logger.warning("falling back to CPU")
+                    weight, scale, zp = quant_func(
+                        module.weight.to("cpu"),
+                        **{
+                            k: config.get(k, None)
+                            for k in ["bits", "group_size", "super_bits", "super_group_size", "scale_dtype"]
+                        },
+                    )
+                except Exception as e:
+                    raise
+
+            # Overwrite the module's weights with the quantized version
+            module.weight.data.copy_(weight.cpu())
+
+            # Attach scale and zero point (zp) to the module
+            for param_name, value in zip(["scale", "zp"], [scale, zp]):
+                if isinstance(value, dict):
+                    for k, v in value.items():
+                        setattr(module, k if k == "scale" else f"w_{k}", v.cpu())
+                elif isinstance(value, torch.Tensor):
+                    setattr(module, param_name, value.cpu())
+                else:
+                    setattr(module, param_name, value)
+
+            # Update config
+            self.layer_config.setdefault(name, {}).update(config)
+            del weight
+            del scale
+            del zp
+            clear_memory(device_list=self.compress_context.device_list)
+
+        return is_quantized
+
+    # ── Abstract quantization interface ──────────────────────────────────────────
+
+    def quantize_block(self, ctx) -> dict:
+        """Apply the quantization algorithm to a prepared block.
+
+        This is the **pure-algorithm** entry point called by the Compressor after
+        all infrastructure work (device placement, data collection, act-max hook
+        registration, DDP setup) has been completed.
+
+        Implementations should:
+        - Perform the algorithm-specific weight/activation quantization on ``ctx.block``.
+        - Return a dict of best parameters (may be empty for zero-shot algorithms).
+
+        Args:
+            ctx: Per-block pipeline context. ``ctx.io`` owns calibration inputs,
+                quantized inputs, and reference outputs.
+
+        Returns:
+            dict: Best quantization parameters found, or ``{}`` if not applicable.
+        """
+        raise NotImplementedError("quantize_block must be implemented in subclasses of BaseQuantizer")
+
     def quantize_layer(self, layer_name: str, **kwargs):
         """Quantizes a single layer of the model.
 
@@ -385,7 +660,7 @@ class BaseQuantizers:
             layer_name (str): The name of the layer to quantize. The layer module is
                 retrieved internally via get_module(model, layer_name).
         """
-        raise NotImplementedError("quantize_layer must be implemented in subclasses of BaseQuantizers")
+        raise NotImplementedError("quantize_layer must be implemented in subclasses of BaseQuantizer")
 
     def quantize_layer_outside_block(self, layer_name: str, input_ids=None, **kwargs):
         """Quantizes a single layer of the model outside of a block.
@@ -395,76 +670,7 @@ class BaseQuantizers:
                 retrieved internally via get_module(model, layer_name).
             input_ids: Optional calibration inputs for data-driven outside-layer quantization.
         """
-        dtype = kwargs.pop("dtype", None)
-        if dtype is not None:
-            layer = get_module(self.model, layer_name)
-            set_module(self.model, layer_name, layer.to(dtype))
-        self.quantize_layer_via_rtn(layer_name, **kwargs)
-
-    @torch.no_grad()
-    def _get_block_outputs(
-        self,
-        block: torch.nn.Module,
-        input_ids,
-        input_others,
-        bs: int,
-        save_output: bool = True,
-        device_override: Union[torch.device, str, None] = None,
-    ):
-        """Compute the output of a block for calibration inputs.
-
-        Shared by SignRoundQuantizer and OptimizedRTNQuantizer.  Algorithm-specific
-        block-forward selection (compile vs. plain) is handled here based on
-        ``enable_alg_ext`` and act-quantization flags.
-
-        Args:
-            device_override: Override the target device.  Used by diffusion with
-                multi-device dispatch to pass None so block_forward uses the block's
-                current device instead of forcing a specific device.
-        """
-        diffusion_fn = getattr(self, "_get_diffusion_block_outputs", None)
-        if getattr(self.model_context, "is_diffusion", False):
-            device = device_override if device_override is not None else self.compress_context.device
-            return self._get_diffusion_block_outputs(
-                block,
-                input_ids,
-                input_others,
-                bs,
-                device,
-                self.compress_context.cache_device,
-            )
-
-        _bf = self._resolve_block_forward()
-
-        output = []
-        nsamples = len(input_ids)
-        for i in range(0, nsamples, bs):
-            end_index = min(nsamples, i + bs)
-            indices = torch.arange(i, end_index).to(torch.long)
-            tmp_input_ids, tmp_input_others = self._sampling_inputs(
-                input_ids,
-                input_others,
-                indices,
-                self.seqlen,
-                self.batch_dim,
-                share_cache_keys=self.model_context.shared_cache_keys,
-            )
-            tmp_output = _bf(
-                block,
-                tmp_input_ids,
-                tmp_input_others,
-                self.model_context.amp,
-                self.model_context.amp_dtype,
-                self.compress_context.device,
-            ).to(self.compress_context.cache_device)
-            if save_output:
-                if self.batch_size == 1:
-                    output.append(tmp_output)
-                else:
-                    output.extend(list(torch.split(tmp_output, 1, dim=self.batch_dim)))
-        self.compress_context.clear_memory()
-
-        return output
+        raise NotImplementedError("quantize_layer_outside_block must be implemented in subclasses or mixins")
 
     def _resolve_block_forward(self):
         """Resolve and cache the block forward function once.
@@ -478,11 +684,8 @@ class BaseQuantizers:
         cached = self.__dict__.get("_resolved_block_forward")
         if cached is not None:
             return cached
-        if (
-            (self.config.is_act_quantize and (not self.config.act_dynamic or self.config.is_act_nv_fp))
-            or self.enable_alg_ext
-            or not getattr(self.config, "disable_opt_rtn", True)
-        ):
+        if ((self.config.is_act_quantize and (not self.config.act_dynamic or self.config.is_act_nv_fp)) or
+                self.enable_alg_ext or not getattr(self.config, "disable_opt_rtn", True)):
             self._resolved_block_forward = block_forward
         elif self.compress_context.enable_torch_compile:
             compiled = self.__dict__.get("_compiled_block_forward")
@@ -499,180 +702,13 @@ class BaseQuantizers:
         self.__dict__.pop("_resolved_block_forward", None)
         self.__dict__.pop("_compiled_block_forward", None)
 
-    def _get_current_q_output(
-        self,
-        block: torch.nn.Module,
-        input_ids,
-        input_others: dict,
-        indices,
-        device,
-        cache_device: str = "cpu",
-    ) -> torch.Tensor:
-        """Compute block output for a mini-batch selected by *indices* (used during training).
+    def prepare_run(self, run_ctx) -> None:
+        """Model-level preparation (called once before block iteration starts)."""
+        return
 
-        Handles both LLM and diffusion model block formats.  Uses the compiled
-        block_forward when enable_torch_compile is True (same as _get_block_outputs),
-        matching old-arch behavior where self.block_forward was compiled at init.
+    def finalize_run(self, run_ctx) -> None:
+        """Model-level teardown (called once after all blocks are processed).
+
+        Must be idempotent – the Compressor calls this inside a ``try/finally``.
         """
-        current_input_ids, current_input_others = self._sampling_inputs(
-            input_ids,
-            input_others,
-            indices,
-            seqlen=self.seqlen,
-            batch_dim=self.batch_dim,
-            share_cache_keys=self.model_context.shared_cache_keys,
-        )
-        _bf = self._resolve_block_forward()
-
-        if getattr(self.model_context, "is_diffusion", False):
-            output_config = self.DIFFUSION_OUTPUT_CONFIGS.get(block.__class__.__name__, ["hidden_states"])
-            idx = None if "hidden_states" not in output_config else output_config.index("hidden_states")
-            if isinstance(current_input_ids, dict):
-                hidden_states = current_input_ids.pop("hidden_states")
-                current_input_others.update(current_input_ids)
-                current_input_ids = hidden_states
-            output_q = _bf(
-                block,
-                current_input_ids,
-                current_input_others,
-                self.model_context.amp,
-                self.model_context.amp_dtype,
-                device,
-                idx,
-            )
-        else:
-            output_q = _bf(
-                block,
-                current_input_ids,
-                current_input_others,
-                self.model_context.amp,
-                self.model_context.amp_dtype,
-                device,
-            )
-        return output_q.to(cache_device)
-
-    @classmethod
-    @torch.no_grad()
-    def _sampling_inputs(
-        cls,
-        input_ids: Union[list[torch.Tensor], dict],
-        input_others: dict,
-        indices,
-        seqlen: int,
-        batch_dim: int = 0,
-        share_cache_keys: tuple = (),
-    ):
-        """Sample a mini-batch of calibration inputs by indices.
-
-        Shared by SignRoundQuantizer and OptimizedRTNQuantizer.
-        """
-        if isinstance(input_ids, list):
-            current_input_ids = [input_ids[i] for i in indices]
-            current_input_ids = torch.cat(current_input_ids, dim=batch_dim)
-        elif isinstance(input_ids, dict):
-            current_input_ids = defaultdict(list)
-            for k in input_ids.keys():
-                current_input_ids[k].extend([input_ids[k][i] for i in indices])
-                current_input_ids[k] = torch.cat(current_input_ids[k], dim=batch_dim)
-
-        current_input_others = {"positional_inputs": input_others["positional_inputs"]}
-        for key in input_others.keys():
-            if "positional_inputs" in key:
-                continue
-            if key in share_cache_keys:
-                # Shared keys are stored once (not per-sample), often wrapped in a
-                # 1-element list by the caching hook.  Unwrap so the model receives
-                # the raw value (e.g. (cos, sin) tuple, not [(cos, sin)]).
-                # Exception: if the hook detected that the "shared" key actually varies
-                # per sample (e.g. position_embeddings in a VLM visual encoder), it
-                # upgrades the storage to a per-sample list with >1 elements.
-                val = input_others[key]
-                if isinstance(val, list) and len(val) == 1:
-                    current_input_others[key] = val[0]
-                elif isinstance(val, list) and len(val) > 1:
-                    # Per-sample storage for a nominally-shared key that varies across
-                    # calibration samples (e.g. position_embeddings in Qwen2-VL visual
-                    # encoder blocks where each image has a different patch count).
-                    idx = int(indices[0]) if len(indices) == 1 else 0
-                    current_input_others[key] = val[idx] if idx < len(val) else val[0]
-                else:
-                    current_input_others[key] = val
-            elif not isinstance(input_others[key], (str, bool, type(None))):
-                current_input_others[key] = None
-                if input_others[key] is not None:
-                    current_input_others[key] = [input_others[key][i] for i in indices]
-                    if len(indices) == 1:
-                        current_input_others[key] = current_input_others[key][0]
-                    else:
-                        try:
-                            current_input_others[key] = torch.cat(current_input_others[key], dim=0)
-                        except TypeError as err:
-                            logger.warning_once("Please check the model cache inputs or try setting batch_size to 1.")
-            else:
-                current_input_others[key] = input_others[key]
-
-        return current_input_ids, current_input_others
-
-    @torch.no_grad()
-    def _get_diffusion_block_outputs(
-        self,
-        block: torch.nn.Module,
-        input_ids: Union[torch.Tensor, dict],
-        input_others,
-        bs: int,
-        device: Union[str, torch.device],
-        cache_device: Union[str, torch.device],
-        save_output: bool = True,
-    ):
-        """Compute block outputs for diffusion models.
-
-        Uses ``self.DIFFUSION_OUTPUT_CONFIGS`` to map block class names to their
-        output keys.  Subclasses override ``DIFFUSION_OUTPUT_CONFIGS`` to add
-        support for new diffusion architectures.
-        """
-        output = defaultdict(list)
-        output_config = self.DIFFUSION_OUTPUT_CONFIGS.get(block.__class__.__name__, ["hidden_states"])
-        if isinstance(input_ids, dict):
-            nsamples = len(input_ids["hidden_states"])
-        else:
-            nsamples = len(input_ids)
-
-        for i in range(0, nsamples, bs):
-            end_index = min(nsamples, i + bs)
-            indices = torch.arange(i, end_index).to(torch.long)
-            tmp_input_ids, tmp_input_others = self._sampling_inputs(
-                input_ids,
-                input_others,
-                indices,
-                self.seqlen,
-                self.batch_dim,
-                share_cache_keys=self.model_context.shared_cache_keys,
-            )
-            if isinstance(tmp_input_ids, dict):
-                hidden_states = tmp_input_ids.pop("hidden_states")
-                tmp_input_others.update(tmp_input_ids)
-                tmp_input_ids = hidden_states
-
-            tmp_output = block_forward(
-                block,
-                tmp_input_ids,
-                tmp_input_others,
-                self.model_context.amp,
-                self.model_context.amp_dtype,
-                device,
-                None,
-            )
-            if isinstance(tmp_output, torch.Tensor):
-                tmp_output = [tmp_output]
-            assert len(output_config) == len(tmp_output)
-            tmp_output = dict(zip(output_config, tmp_output))
-
-            if save_output:
-                for name, out in tmp_output.items():
-                    if self.batch_size == 1:
-                        output[name].append(out.to(cache_device))
-                    else:
-                        output[name].extend(list(torch.split(out.to(cache_device), 1, dim=self.batch_dim)))
-        self.compress_context.clear_memory()
-
-        return output
+        return

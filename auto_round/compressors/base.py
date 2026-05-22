@@ -22,7 +22,7 @@ import torch
 from transformers import AutoConfig, set_seed
 
 from auto_round.algorithms.alg_config import AlgConfig
-from auto_round.algorithms.quantization import BaseQuantizers, QuantizationConfig
+from auto_round.algorithms.quantization import BaseQuantizer, QuantizationConfig
 from auto_round.algorithms.transforms import (
     BaseRotationConfig,
     apply_rotation,
@@ -185,10 +185,24 @@ class BaseCompressor(object):
         self.quantize_config = None
         self.rotation_configs: list[BaseRotationConfig] = []
         _config_list = config if isinstance(config, list) else [config]
-        for _cfg in _config_list:
-            if isinstance(_cfg, QuantizationConfig):
-                self.quantize_config = _cfg
-            elif isinstance(_cfg, BaseRotationConfig):
+        # Keep full list for pipeline construction (includes preprocessor configs).
+        self._alg_configs: list = list(_config_list)
+        from auto_round.algorithms.quantization.pipeline import split_quantization_configs
+
+        _preprocessor_configs, _block_quantizer_configs = split_quantization_configs(self._alg_configs)
+        if len(_block_quantizer_configs) > 1:
+            raise ValueError(
+                f"Only one block-quantization config is allowed, but got {len(_block_quantizer_configs)}: "
+                f"{[type(c).__name__ for c in _block_quantizer_configs]}")
+        if _block_quantizer_configs:
+            self.quantize_config = _block_quantizer_configs[0]
+        elif _preprocessor_configs:
+            from auto_round.algorithms.quantization.rtn.config import RTNConfig as _RTNConfig
+
+            self.quantize_config = _RTNConfig()
+            self._alg_configs.append(self.quantize_config)
+        for _cfg in self._alg_configs:
+            if isinstance(_cfg, BaseRotationConfig):
                 self.rotation_configs.append(_cfg)
         assert self.quantize_config is not None, "QuantizationConfig is required for Compressor"
 
@@ -244,8 +258,7 @@ class BaseCompressor(object):
         if kwargs:
             logger.warning_once(
                 f"unrecognized keys {list(kwargs.keys())} were passed. "
-                "Please check them. If you use old api, just ignore this warning."
-            )
+                "Please check them. If you use old api, just ignore this warning.")
         if "CUBLAS_WORKSPACE_CONFIG" not in os.environ:
             os.environ["CUBLAS_WORKSPACE_CONFIG"] = ":4096:8"
         # Deprecated, default not to use torch.use_deterministic_algorithms
@@ -253,8 +266,7 @@ class BaseCompressor(object):
             if not disable_deterministic_algorithms:
                 logger.warning(
                     "default not use deterministic_algorithms. disable_deterministic_algorithms is deprecated,"
-                    " please use enable_deterministic_algorithms instead. "
-                )
+                    " please use enable_deterministic_algorithms instead. ")
 
             torch.use_deterministic_algorithms(True, warn_only=False)
         else:
@@ -389,8 +401,7 @@ class BaseCompressor(object):
         """
         assert self._scheme_resolved, (
             "resolve_scheme() must be called before _scheme_post_init(). "
-            "BaseCompressor.post_init() does this automatically."
-        )
+            "BaseCompressor.post_init() does this automatically.")
 
         enable_gguf_official_mixed = not self.is_auto_scheme
 
@@ -398,8 +409,7 @@ class BaseCompressor(object):
             quant_nontext_module = getattr(self.model_context, "quant_nontext_module", False)
             all_blocks = get_block_names(self.model_context.model, quant_vision=quant_nontext_module)
             self.quant_block_list = find_matching_blocks(
-                self.model_context.model, all_blocks, self.to_quant_block_names
-            )
+                self.model_context.model, all_blocks, self.to_quant_block_names)
             if self.to_quant_block_names is None and self.quant_block_list:
                 self.to_quant_block_names = extract_block_names_to_str(self.quant_block_list)
                 self.quantize_config.to_quant_block_names = self.to_quant_block_names
@@ -416,8 +426,7 @@ class BaseCompressor(object):
             logger.info(
                 "AutoScheme on multimodal LLM: scoring the language tower only "
                 "with text-only calibration (multimodal dataloader will be used "
-                "as a fallback if needed)."
-            )
+                "as a fallback if needed).")
 
         if is_quantized_input_module(self.model_context.model):
             raise NotImplementedError("AutoScheme does not currently support quantized input models (e.g., FP8).")
@@ -445,8 +454,7 @@ class BaseCompressor(object):
             logger.warning(
                 "Models with mixed data_types "
                 "cannot yet be exported to real formats except GGUF. "
-                "Please save the model using the `fake` format for now."
-            )
+                "Please save the model using the `fake` format for now.")
 
         layer_config, self.has_qlayer_outside_block, self.regex_config = set_layer_config(
             self.model_context.model,
@@ -516,18 +524,15 @@ class BaseCompressor(object):
 
         scheme_keys = {f.name for f in fields(QuantizationScheme)}
         fixed_layer_scheme_new = {
-            k: {key: v[key] for key in scheme_keys & v.keys()}
-            for k, v in layer_config.items()
-            if v.get("fixed_by_user", False)
+            k: {
+                key: v[key] for key in scheme_keys & v.keys()
+            } for k, v in layer_config.items() if v.get("fixed_by_user", False)
         }
 
         from auto_round.auto_scheme.gen_auto_scheme import GenScheme
 
-        if (
-            not self.compress_context.enable_torch_compile
-            and self.quantize_config.super_bits is None
-            and not self.orig_scheme.low_gpu_mem_usage
-        ):
+        if (not self.compress_context.enable_torch_compile and self.quantize_config.super_bits is None and
+                not self.orig_scheme.low_gpu_mem_usage):
             logger.warning("we strongly recommend to set `enable_torch_compile` to True for AutoScheme to save VRAM")
         self.scheme_generator = GenScheme(
             self.orig_scheme,
@@ -631,12 +636,9 @@ class BaseCompressor(object):
 
         is_raw_nv_fp = "nv_fp" in raw_dt or "nv_fp" in raw_adt or "NVFP" in raw_scheme_upper
         is_raw_fp8 = (
-            "fp8" in raw_dt
-            or "fp8" in raw_adt
-            or "FP8" in raw_scheme_upper
-            or ("fp" in raw_dt and getattr(cfg, "bits", 16) == 8)
-            or ("fp" in raw_adt and getattr(cfg, "act_bits", 16) == 8)
-        )
+            "fp8" in raw_dt or "fp8" in raw_adt or "FP8" in raw_scheme_upper or
+            ("fp" in raw_dt and getattr(cfg, "bits", 16) == 8) or
+            ("fp" in raw_adt and getattr(cfg, "act_bits", 16) == 8))
 
         act_bits = getattr(cfg, "act_bits", 16) or 16
         return is_raw_fp8, is_raw_nv_fp, act_bits
@@ -806,18 +808,40 @@ class BaseCompressor(object):
                         been synced back to ``self.quantize_config``.
 
         Work performed:
-          - Constructs ``self.quantizer`` from the resolved config.
+          - Constructs the block_quantizer from the resolved config.
+          - Wraps it in a :class:`~auto_round.algorithms.quantization.pipeline.QuantizationPipeline`
+            so that the entire compressor operates through the pipeline abstraction.
           - Calls ``quantizer.bind(self)`` so the quantizer pulls
             ``model_context`` / ``compress_context`` / ``scale_dtype`` /
             ``CalibrationState`` from this compressor.  ``quantizer.model``
             is a property that reads ``model_context.model``.
+          - Exposes ``self.quantizer`` as a ``@property`` (see below) that
+            transparently delegates to ``self.pipeline.block_quantizer`` so all
+            existing call-sites continue to work without modification.
 
         Postconditions:
-          - ``self.quantizer`` is ready and shares ``CalibrationState`` with
-            the compressor.
+          - ``self.pipeline`` is a ``QuantizationPipeline`` wrapping the block quantizer.
+          - ``self.quantizer`` (via property) is ready and shares ``CalibrationState``
+            with the compressor.
         """
-        self.quantizer = BaseQuantizers.from_config(self.quantize_config)
-        self.quantizer.bind(self)
+        from auto_round.algorithms.quantization.pipeline import QuantizationPipeline
+
+        self._pipeline = QuantizationPipeline.from_configs(self._alg_configs, compressor=self)
+
+    @property
+    def quantizer(self) -> BaseQuantizer:
+        """Transparent forwarder to ``self.pipeline.block_quantizer``.
+
+        All existing ``self.quantizer.xxx`` call-sites continue to work
+        unchanged.  New code should prefer ``self.pipeline`` for pipeline-aware
+        operations.
+        """
+        return self._pipeline.block_quantizer
+
+    @property
+    def pipeline(self):
+        """The active :class:`~auto_round.algorithms.quantization.pipeline.QuantizationPipeline`."""
+        return self._pipeline
 
     def _resolve_formats(self) -> None:
         """Phase 2 – Format resolution and config attr sync.
@@ -1024,14 +1048,21 @@ class BaseCompressor(object):
         self.quantizer.scale_dtype = self.scale_dtype
         self.quantizer.ignore_layers = self.ignore_layers
 
+        # Also sync layer_config and scale_dtype to all preprocessors in the pipeline
+        # so they have access to per-layer quant config during pre-processing (e.g.
+        # AWQ grid search uses layer_config to look up bits/group_size for each layer).
+        for pre in self._pipeline.preprocessors:
+            pre.layer_config = self.layer_config
+            pre.scale_dtype = self.scale_dtype
+
     def _hardware_setup(self) -> None:
         """Phase 5 – Hardware and compile configuration.
 
         Preconditions:
           - Phase 4 complete: ``layer_config`` is built and
             ``has_qlayer_outside_block`` is known.
-                    - ``self.quantize_config.data_type`` is the final resolved value
-                        (needed by :meth:`_finalize_torch_compile`).
+          - ``self.quantize_config.data_type`` is the final resolved value
+            (needed by :meth:`_finalize_torch_compile`).
 
         Work performed:
           - Applies the device map via :func:`~auto_round.utils.device.set_non_auto_device_map`.
@@ -1069,10 +1100,25 @@ class BaseCompressor(object):
         if name in self.__dict__:
             return self.__dict__[name]
 
-        for obj in ["quantizer", "quantize_config", "model_context", "compress_context"]:
-            if obj not in self.__dict__:
+        # Delegate to block_quantizer: access _pipeline directly from __dict__ to
+        # avoid recursion (quantizer is now a @property backed by _pipeline; going
+        # through the property inside __getattr__ would re-trigger __getattr__
+        # if _pipeline itself isn't ready yet).
+        _pipeline = self.__dict__.get("_pipeline")
+        if _pipeline is not None:
+            try:
+                return object.__getattribute__(_pipeline.block_quantizer, name)
+            except AttributeError:
+                pass
+
+        for attr in ["quantize_config", "model_context", "compress_context"]:
+            # These are regular instance attributes; use object.__getattribute__
+            # so Python's normal descriptor protocol is used without re-entering
+            # __getattr__ on self.
+            try:
+                obj = object.__getattribute__(self, attr)
+            except AttributeError:
                 continue
-            obj = object.__getattribute__(self, obj)
             try:
                 return object.__getattribute__(obj, name)
             except AttributeError:
@@ -1089,9 +1135,11 @@ class BaseCompressor(object):
     def calibration_state(self, value) -> None:
         self._calibration_state = value
         # Re-wire quantizer if it already exists so they keep sharing.
-        q = self.__dict__.get("quantizer")
-        if q is not None:
-            q.calibration_state = value
+        # quantizer is now a @property forwarding to _pipeline.block_quantizer;
+        # use _pipeline directly to avoid triggering __getattr__ loops.
+        _pipeline = self.__dict__.get("_pipeline")
+        if _pipeline is not None:
+            _pipeline.block_quantizer.calibration_state = value
 
     @property
     def inputs(self) -> dict:
@@ -1244,33 +1292,24 @@ class BaseCompressor(object):
             if formats[0].is_gguf():
                 logger.warning(
                     "`low_cpu_mem_usage` is not fully supported for gguf format. "
-                    "Setting `low_cpu_mem_usage` to False."
-                )
+                    "Setting `low_cpu_mem_usage` to False.")
                 self.compress_context.low_cpu_mem_usage = False
                 self.compress_context.is_immediate_saving = False
-            elif (
-                self.has_qlayer_outside_block
-                and getattr(self, "disable_opt_rtn", None)
-                and isinstance(self.quantize_config, RTNConfig)
-            ):
+            elif (self.has_qlayer_outside_block and getattr(self, "disable_opt_rtn", None) and
+                  isinstance(self.quantize_config, RTNConfig)):
                 logger.info(
                     "Keeping `low_cpu_mem_usage` enabled in RTN mode (iters=0): "
-                    "RTN path uses blockwise quantization and supports per-block offloading."
-                )
+                    "RTN path uses blockwise quantization and supports per-block offloading.")
             elif self.has_qlayer_outside_block and not isinstance(self.quantize_config, RTNConfig):
                 logger.warning(
                     "`low_cpu_mem_usage` is not fully supported "
                     "when there are quantized layers outside blocks and optimized RTN is disabled. "
-                    "Setting low_cpu_mem_usage to False."
-                )
+                    "Setting low_cpu_mem_usage to False.")
                 self.compress_context.low_cpu_mem_usage = False
                 self.compress_context.is_immediate_saving = False
 
-        if self.compress_context.is_immediate_saving and not (
-            "int" in self.quantize_config.data_type
-            or is_nv_fp(self.quantize_config.data_type)
-            or is_mx_fp(self.quantize_config.data_type)
-        ):
+        if self.compress_context.is_immediate_saving and not ("int" in self.quantize_config.data_type or is_nv_fp(
+                self.quantize_config.data_type) or is_mx_fp(self.quantize_config.data_type)):
             logger.warning("immediate_saving is only supported for int/nv_fp/mx_fp quantization, set to False")
             self.compress_context.is_immediate_saving = False
 
@@ -1321,8 +1360,7 @@ class BaseCompressor(object):
             if isinstance(format, str) and getattr(self, "formats", None) is None:
                 logger.warning(
                     f"save_quantized with format is deprecated and will be deleted in auto_round version 1.0."
-                    f" Please use AutoRound(format='{format}' instead)."
-                )
+                    f" Please use AutoRound(format='{format}' instead).")
                 self.formats = get_formats(format, self)
                 self.compress_context.formats = self.formats
 
@@ -1341,8 +1379,7 @@ class BaseCompressor(object):
             if self.act_bits <= 8 and format.is_fake():
                 logger.warning(
                     "Support for exporting activation quantization is limited. "
-                    "Please ensure that your configuration is supported."
-                )
+                    "Please ensure that your configuration is supported.")
 
             serialization_dict = asdict(SerializedCompressorConfig())
             for key in serialization_dict:
@@ -1360,14 +1397,12 @@ class BaseCompressor(object):
 
             if isinstance(serialization_dict["to_quant_block_names"], str):
                 serialization_dict["to_quant_block_names"] = revert_checkpoint_conversion_mapping(
-                    serialization_dict["to_quant_block_names"], reverse_checkpoint_conversion_mapping
-                )
+                    serialization_dict["to_quant_block_names"], reverse_checkpoint_conversion_mapping)
 
             elif isinstance(serialization_dict["to_quant_block_names"], list):
                 for idx in range(len(serialization_dict["to_quant_block_names"])):
                     serialization_dict["to_quant_block_names"][idx] = revert_checkpoint_conversion_mapping(
-                        serialization_dict["to_quant_block_names"][idx], reverse_checkpoint_conversion_mapping
-                    )
+                        serialization_dict["to_quant_block_names"][idx], reverse_checkpoint_conversion_mapping)
 
             compressed_model = format.save_quantized(
                 save_folder,
@@ -1443,9 +1478,11 @@ class BaseCompressor(object):
             model_name.split("/")[-1] + (f"-{prefix}" if prefix else "") + f"-w{bits}{suffix}",
         )
 
-    def quantize_and_save(
-        self, output_dir: str = "tmp_autoround", format: str = None, inplace: bool = True, **kwargs
-    ) -> tuple[torch.nn.Module, dict[str, Any]]:
+    def quantize_and_save(self,
+                          output_dir: str = "tmp_autoround",
+                          format: str = None,
+                          inplace: bool = True,
+                          **kwargs) -> tuple[torch.nn.Module, dict[str, Any]]:
         """Quantizes the model and saves it in the specified format(s).
 
         This function checks the validity of the requested format(s), quantizes
@@ -1476,8 +1513,7 @@ class BaseCompressor(object):
         if format and self.formats is None:
             logger.warning(
                 f"quantize_and_save with format is deprecated and will be deleted in auto_round version 1.0."
-                f" Please use AutoRound(format='{format}' instead)."
-            )
+                f" Please use AutoRound(format='{format}' instead).")
             self.formats = format
         if self.formats is None:
             logger.info("format is not set, using default auto_round format.")

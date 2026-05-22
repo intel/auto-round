@@ -18,31 +18,20 @@ from auto_round.algorithms.quantization.config import QuantizationConfig
 class AWQConfig(QuantizationConfig):
     """Configuration for AWQ (Activation-Aware Weight Quantization).
 
-    AWQ protects salient weight channels by analyzing activation patterns and
-    applying channel-wise scaling to reduce quantization error.  The scaling
-    factors are computed offline via a grid search over calibration data.
-    After smoothing, standard RTN quantization is applied to the adjusted weights.
+    AWQ is a **pre-processing** algorithm (``role="preprocess"``).  It
+    protects salient weight channels by analyzing activation patterns and
+    applying channel-wise scaling to reduce quantization error.  After
+    smoothing, a separate ``block_quantizer`` (RTN, SignRound, …) performs
+    the actual weight compression.
 
-    Args:
-        duo_scaling: Use both activations and weights for the scaling factor.
-            True: always use duo scaling. False: only activation scaling.
-            "both": search both modes and pick the best.
-        n_grid: Number of grid points for the scaling-ratio search.
-        seqlen: Calibration sequence length.
-        nsamples: Number of calibration samples.  Grid search time scales
-            linearly with nsamples (each batch triggers one parent forward
-            per grid point).
-        batch_size: Batch size for calibration forward passes.
-        apply_smooth: Whether to apply AWQ smoothing (channel scaling).
-            True: run both smoothing and quantization (default AWQ behavior).
-            False: skip smoothing, only run RTN quantization.
-        mappings: Explicit AWQ mappings.  Each mapping is a dict with keys
-            ``smooth_layer`` (str) and ``balance_layers`` (list[str]).
-            If None, mappings are inferred automatically from the model structure.
-        **kwargs: Forwarded to ``QuantizationConfig`` (bits, group_size, sym, …).
+    The quantization parameters (``bits``, ``group_size``, ``sym``,
+    ``data_type``, …) on this config are used *only* for the internal grid
+    search loss calculation (quantize-dequantize during scale selection).
+    The definitive quantization parameters for the final weight compression
+    step come from the pipeline's ``block_quantizer`` config.
     """
 
-    _alg_cls = "AWQQuantizer"
+    _alg_cls: str = "AWQQuantizer"
 
     def __init__(
         self,
@@ -53,13 +42,38 @@ class AWQConfig(QuantizationConfig):
         nsamples: int = 128,
         batch_size: int = 8,
         apply_smooth: bool = True,
-        mappings: list[dict] = None,
+        mappings: list[dict] | None = None,
         **kwargs,
     ):
+        """Initialize an AWQ configuration.
+
+        Args:
+            duo_scaling: Whether AWQ should use activation-aware and
+                weight-aware scaling together. Use True to always enable
+                duo scaling, False to use activation-only scaling, or
+                "both" to search both modes and keep the better result.
+            n_grid: Number of grid-search points used when searching the
+                AWQ scaling ratio.
+            seqlen: Calibration sequence length retained for compatibility
+                with standalone AWQ entry points.
+            nsamples: Number of calibration samples retained for compatibility
+                with standalone AWQ entry points.
+            batch_size: Batch size retained for compatibility with standalone
+                AWQ entry points.
+            apply_smooth: Whether to apply AWQ smoothing before the downstream
+                block quantizer.
+            mappings: Optional explicit AWQ smooth/balance mappings. Each
+                item should contain ``smooth_layer`` and
+                ``balance_layers`` entries. If None, mappings are inferred
+                automatically from the model structure.
+            **kwargs: Common quantization arguments forwarded to
+                QuantizationConfig, such as bits, group_size, sym,
+                data_type, and activation quantization fields.
+        """
         super().__init__(**kwargs)
 
         if isinstance(duo_scaling, str) and duo_scaling != "both":
-            raise ValueError(f"duo_scaling must be True, False, or 'both', got '{duo_scaling}'")
+            raise ValueError(f"duo_scaling must be True, False, or 'both', got '{duo_scaling!r}'")
         self.duo_scaling = duo_scaling
         self.n_grid = n_grid
         self.seqlen = seqlen
@@ -69,9 +83,11 @@ class AWQConfig(QuantizationConfig):
         self.mappings = mappings
         self.infer_bs_coeff = 1
         self.batch_dim = None
+        # NOTE: enable_quanted_input is NOT set here.  It belongs to the
+        # block_quantizer (RTN/AutoRound), not to AWQ.  See §3.7.1.
 
-        # TODO adjust those args defaults after architecture refactoring:
-        self.enable_quanted_input = False  # AWQ doesn't cascade quantized block outputs
-        # AWQ uses plain RTN (no iterative optimization) for the quantization step.
-        self.disable_opt_rtn = True
-        self.orig_disable_opt_rtn = True
+    def __repr__(self) -> str:
+        return (
+            f"AWQConfig(duo_scaling={self.duo_scaling!r}, n_grid={self.n_grid}, "
+            f"bits={self.bits}, group_size={self.group_size}, sym={self.sym}, "
+            f"mappings={'<explicit>' if self.mappings else 'auto'})")

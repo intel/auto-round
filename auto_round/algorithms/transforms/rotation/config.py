@@ -83,6 +83,27 @@ class RotationConfig(BaseModel, BaseRotationConfig):
 
     model_config = {"arbitrary_types_allowed": True}
 
+    def __init__(self, **data):
+        """Initialize a Hadamard rotation configuration.
+
+        Args:
+            algorithm: Canonical algorithm name used for registry lookup.
+            backend: Rotation backend to use. ``auto`` lets AutoRound pick
+                an implementation, ``inplace`` uses QuaRot-style online
+                rotation, and ``transform`` uses the transform backend.
+            block_size: Grouped Hadamard block size. None keeps the backend
+                default behavior.
+            hadamard_type: Hadamard transform variant, such as
+                ``hadamard``, ``random_hadamard``, or ``quarot_hadamard``.
+            fuse_online_to_weight: Whether online Hadamard rotation should
+                be fused into the weights when supported.
+            allow_online_rotation: Whether online activation rotation is
+                allowed.
+            random_seed: Internal flag used by random Hadamard paths.
+            **data: Additional Pydantic field values forwarded to BaseModel.
+        """
+        super().__init__(**data)
+
     @field_validator("backend")
     @classmethod
     def _validate_backend(cls, v: str) -> str:
@@ -164,8 +185,7 @@ def normalize_rotation_config(
             else:
                 logger.warning(
                     f"block_size is not set and cannot be inferred for data_type {data_type!r}; "
-                    "please set block_size explicitly in rotation_config if needed."
-                )
+                    "please set block_size explicitly in rotation_config if needed.")
         else:
             if is_mx_fp(data_type) and block_size != 32:
                 logger.warning(f"data_type is 'mx_fp' but block_size={block_size}; recommended value is 32.")

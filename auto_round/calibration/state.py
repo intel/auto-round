@@ -15,7 +15,7 @@
 
 This dataclass owns every per-run calibration field shared between
 :class:`~auto_round.compressors.base.BaseCompressor` and
-:class:`~auto_round.algorithms.quantization.base.BaseQuantizers`:
+:class:`~auto_round.algorithms.quantization.base.BaseQuantizer`:
 
 - Cache state ``(inputs, to_cached_layers, last_cache_name, blocks_requiring_input_ids)``
 - Per-batch shape state ``(attention_mask, batch_dim)``
@@ -116,8 +116,7 @@ class CalibrationState:
         if tok_max is not None and tok_max < self.seqlen:
             logger.warning(
                 f"Change sequence length to {tok_max} due to the limitation of model_max_length. "
-                "You can also try to increase the model_max_length to avoid this issue."
-            )
+                "You can also try to increase the model_max_length to avoid this issue.")
             self.seqlen = min(self.seqlen, tok_max)
 
     def ensure_dataloader(self, model_context: Any, seed: int) -> Any:

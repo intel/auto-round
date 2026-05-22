@@ -23,7 +23,6 @@ from auto_round.schemes import QuantizationScheme
 if TYPE_CHECKING:
     from auto_round.auto_scheme.gen_auto_scheme import AutoScheme
     from auto_round.compressors.base import BaseCompressor
-    from auto_round.compressors.config import ExtraConfig
 
 
 class AutoRound:
@@ -45,7 +44,7 @@ class AutoRound:
         enable_torch_compile (bool): Whether to enable torch.compile for quant blocks/layers.
     """
 
-    SKIP_ARGS = ("local_args", "kwargs", "cls", "model_cls", "dynamic_compressor", "extra_config")
+    SKIP_ARGS = ("local_args", "kwargs", "cls", "model_cls", "dynamic_compressor", "alg_configs")
 
     bits: int | None
     group_size: int | tuple | None
@@ -65,7 +64,7 @@ class AutoRound:
         model: Union[torch.nn.Module, str],
         tokenizer=None,
         platform: str = "hf",
-        scheme: Union[str, dict, QuantizationScheme, AutoScheme] = "W4A16",
+        scheme: Union[str, dict, QuantizationScheme, "AutoScheme"] = "W4A16",
         layer_config: dict[str, Union[str, dict, QuantizationScheme]] = None,
         dataset: Union[str, list, tuple, torch.utils.data.DataLoader] = "NeelNanda/pile-10k",
         iters: int = 200,
@@ -78,10 +77,11 @@ class AutoRound:
         enable_torch_compile: bool = False,
         seed: int = 42,
         enable_adam: bool = False,
-        extra_config: "ExtraConfig" = None,
         enable_alg_ext: bool = False,
         disable_opt_rtn: bool | None = None,
         low_cpu_mem_usage: bool = True,
+        extra_config=None,
+        alg_configs=None,
         **kwargs,
     ) -> "BaseCompressor":
         """Initialize AutoRound with quantization and tuning configuration.
@@ -103,7 +103,6 @@ class AutoRound:
             enable_torch_compile (bool, optional): Enable torch.compile for low cost in quantization. Defaults to False.
             seed (int, optional): Random seed. Defaults to 42.
             enable_adam (bool, optional): Enable Adam-based optimizer. Defaults to False.
-            extra_config(ExtraConfig, optional): Extra configuration for lots of configurations. Defaults to None.
             enable_alg_ext (bool, optional): Enable algorithm extension (primarily for INT2)
                                              for better accuracy. Defaults to False.
             disable_opt_rtn (bool, optional): Disable RTN-mode optimization (iters=0) for fast quatnziation
@@ -149,6 +148,30 @@ class AutoRound:
             ...     # ...
             ... }
         """
+
+        # Short-circuit: if alg_configs is provided, bypass AutoRoundCompatible and go directly
+        # to the new-arch entry point to avoid duplicate keyword argument errors.
+        if alg_configs is not None:
+            from auto_round.compressors.entry import AutoRound as _NewAutoRound
+            return _NewAutoRound(
+                alg_configs=alg_configs,
+                model=model,
+                tokenizer=tokenizer,
+                platform=platform,
+                format=kwargs.pop("format", None),
+                scheme=scheme,
+                low_gpu_mem_usage=low_gpu_mem_usage,
+                device_map=device_map,
+                iters=iters,
+                gradient_accumulate_steps=gradient_accumulate_steps,
+                enable_torch_compile=enable_torch_compile,
+                seed=seed,
+                low_cpu_mem_usage=low_cpu_mem_usage,
+                layer_config=layer_config,
+                nsamples=nsamples,
+                seqlen=seqlen,
+                **kwargs,
+            )
 
         local_args = {k: v for k, v in locals().items() if k not in cls.SKIP_ARGS}
         if extra_config is not None:
