@@ -197,7 +197,9 @@ class ARK:
 
     # A: mxk:DT,  B: nxk:s8, scaleB: n:DT
     # return: mxn:DT
-    def woqgemm_s8(self, A: torch.Tensor, B: torch.Tensor, scaleB: torch.Tensor, bias: torch.Tensor):
+    def woqgemm_s8(
+        self, A: torch.Tensor, B: torch.Tensor, scaleB: torch.Tensor, bias: torch.Tensor
+    ):
         m = A.shape[0]
         n = B.shape[0]
         k = B.shape[1]
@@ -366,12 +368,18 @@ class ARK:
         if query.dtype not in (torch.float16, torch.bfloat16):
             raise ValueError(f"Q must be float16 or bfloat16, got {query.dtype}")
         if key.dtype != query.dtype or value.dtype != query.dtype:
-            raise ValueError(f"K/V dtype must match Q dtype, got K={key.dtype}, V={value.dtype}, Q={query.dtype}")
+            raise ValueError(
+                f"K/V dtype must match Q dtype, got K={key.dtype}, V={value.dtype}, Q={query.dtype}"
+            )
 
         if query.ndim != 4 or key.ndim != 4 or value.ndim != 4:
             raise ValueError("Q/K/V must be 4D tensors")
 
-        if not query.is_contiguous() or not key.is_contiguous() or not value.is_contiguous():
+        if (
+            not query.is_contiguous()
+            or not key.is_contiguous()
+            or not value.is_contiguous()
+        ):
             raise ValueError("Q/K/V must be contiguous")
 
         B, Hq, Sq, D = query.shape
@@ -388,7 +396,9 @@ class ARK:
             raise ValueError(f"Unsupported head_dim={D}; supported: 64, 128, 96, 192")
 
         if dropout_p != 0.0:
-            raise NotImplementedError(f"dropout_p must be 0.0 (got {dropout_p}); dropout is not supported")
+            raise NotImplementedError(
+                f"dropout_p must be 0.0 (got {dropout_p}); dropout is not supported"
+            )
 
         if attn_mask is not None:
             if attn_mask.device.type != "xpu":
@@ -396,10 +406,14 @@ class ARK:
             if not attn_mask.is_contiguous():
                 raise ValueError("attn_mask must be contiguous")
             if attn_mask.dtype != torch.float32:
-                raise ValueError(f"attn_mask must be float32 (additive bias), got {attn_mask.dtype}")
+                raise ValueError(
+                    f"attn_mask must be float32 (additive bias), got {attn_mask.dtype}"
+                )
             expected_mask_shape = (B, 1, Sq, Skv)
             if attn_mask.shape != expected_mask_shape:
-                raise ValueError(f"attn_mask shape must be {expected_mask_shape}, got {tuple(attn_mask.shape)}")
+                raise ValueError(
+                    f"attn_mask shape must be {expected_mask_shape}, got {tuple(attn_mask.shape)}"
+                )
 
         lib = self.get_lib(query)
         stream = get_stream(query)
@@ -448,7 +462,7 @@ class ARK:
 
         Args:
         - scale: Attention scale. Uses 1.0 when None.
-        - scale_block_size: Block size for qscale and kscale.
+        - quant_block_size: Block size for qscale and kscale.
 
         Returns:
         - O: [B, Hq, Sq, D] (same dtype as value)
@@ -464,7 +478,11 @@ class ARK:
         if query.ndim != 4 or key.ndim != 4 or value.ndim != 4:
             raise ValueError("Q/K/V must be 4D tensors")
 
-        if not query.is_contiguous() or not key.is_contiguous() or not value.is_contiguous():
+        if (
+            not query.is_contiguous()
+            or not key.is_contiguous()
+            or not value.is_contiguous()
+        ):
             raise ValueError("Q/K/V must be contiguous")
 
         B, Hq, Sq, D = query.shape
@@ -493,6 +511,100 @@ class ARK:
             quant_block_size,
             qscale.data_ptr() if qscale is not None else 0,
             kscale.data_ptr() if kscale is not None else 0,
+            cvt_dtype(query.dtype),
+            cvt_dtype(key.dtype),
+            cvt_dtype(O.dtype),
+            B,
+            Hq,
+            Hkv,
+            Sq,
+            Skv,
+            D,
+            float(scale) if scale is not None else 1.0,
+            bool(is_causal),
+        )
+        return O
+
+    def sage_pvi8(
+        self,
+        query: torch.Tensor,
+        key: torch.Tensor,
+        value: torch.Tensor,
+        attn_mask: torch.Tensor | None = None,
+        dropout_p: float = 0.0,
+        is_causal: bool = False,
+        scale: float | None = None,
+        enable_gqa: bool = False,
+        quant_block_size: int = 64,
+        qscale: torch.Tensor = None,
+        kscale: torch.Tensor = None,
+        vscale: torch.Tensor = None,
+        out_dtype: torch.dtype = torch.float16,
+    ) -> torch.Tensor:
+        """Low-level SAGE attention with pre-quantized INT8 Q/K/V and PV int8.
+
+        Expects contiguous layouts:
+        - query: [B, Hq, Sq, D] int8
+        - key: [B, Hkv, Skv, D] int8
+        - value: [B, Hkv, Skv, D] int8
+        - qscale: [B, Hq, ceil(Sq / quant_block_size), 1] float32
+        - kscale/vscale: [B, Hkv, ceil(Skv / quant_block_size), 1] float32
+
+        Returns:
+        - O: [B, Hq, Sq, D] float16
+        """
+        if query.device.type != "xpu":
+            raise NotImplementedError("sage_pvi8 is only supported on XPU")
+        if (
+            query.dtype != torch.int8
+            or key.dtype != torch.int8
+            or value.dtype != torch.int8
+        ):
+            raise ValueError(
+                f"Q/K/V must be int8, got Q={query.dtype}, K={key.dtype}, V={value.dtype}"
+            )
+        if out_dtype != torch.float16:
+            raise ValueError(f"sage_pvi8 output must be float16, got {out_dtype}")
+        if qscale is None or kscale is None or vscale is None:
+            raise ValueError("qscale, kscale and vscale must be provided for sage_pvi8")
+
+        if query.ndim != 4 or key.ndim != 4 or value.ndim != 4:
+            raise ValueError("Q/K/V must be 4D tensors")
+
+        if (
+            not query.is_contiguous()
+            or not key.is_contiguous()
+            or not value.is_contiguous()
+        ):
+            raise ValueError("Q/K/V must be contiguous")
+
+        B, Hq, Sq, D = query.shape
+        Bk, Hkv, Skv, Dk = key.shape
+        Bv, Hkv2, Skv2, Dv = value.shape
+
+        if Bk != B or Bv != B:
+            raise ValueError("Batch size mismatch between Q/K/V")
+        if Hkv2 != Hkv or Skv2 != Skv or Dv != Dk:
+            raise ValueError("K/V shape mismatch")
+        if Dk != D:
+            raise ValueError("Head dim mismatch between Q and K/V")
+        if D not in (64, 128):
+            raise ValueError(f"Unsupported head_dim={D}; supported: 64, 128")
+
+        lib = self.get_lib(query)
+        stream = get_stream(query)
+        O = torch.empty((B, Hq, Sq, D), device=query.device, dtype=out_dtype)
+        lib.sage_pvi8(
+            stream,
+            query.data_ptr(),
+            key.data_ptr(),
+            value.data_ptr(),
+            O.data_ptr(),
+            attn_mask.data_ptr() if attn_mask is not None else 0,
+            quant_block_size,
+            qscale.data_ptr(),
+            kscale.data_ptr(),
+            vscale.data_ptr(),
             cvt_dtype(query.dtype),
             cvt_dtype(key.dtype),
             cvt_dtype(O.dtype),
@@ -548,12 +660,18 @@ class ARK:
         if query.dtype not in (torch.float16,):
             raise ValueError(f"Q must be float16, got {query.dtype}")
         if key.dtype != query.dtype or value.dtype != query.dtype:
-            raise ValueError(f"K/V dtype must match Q dtype, got K={key.dtype}, V={value.dtype}, Q={query.dtype}")
+            raise ValueError(
+                f"K/V dtype must match Q dtype, got K={key.dtype}, V={value.dtype}, Q={query.dtype}"
+            )
 
         if query.ndim != 4 or key.ndim != 4 or value.ndim != 4:
             raise ValueError("Q/K/V must be 4D tensors")
 
-        if not query.is_contiguous() or not key.is_contiguous() or not value.is_contiguous():
+        if (
+            not query.is_contiguous()
+            or not key.is_contiguous()
+            or not value.is_contiguous()
+        ):
             raise ValueError("Q/K/V must be contiguous")
 
         B, Hq, Sq, D = query.shape
@@ -627,12 +745,18 @@ class ARK:
         if query.dtype not in (torch.float16,):
             raise ValueError(f"Q must be float16, got {query.dtype}")
         if key.dtype != query.dtype or value.dtype != query.dtype:
-            raise ValueError(f"K/V dtype must match Q dtype, got K={key.dtype}, V={value.dtype}, Q={query.dtype}")
+            raise ValueError(
+                f"K/V dtype must match Q dtype, got K={key.dtype}, V={value.dtype}, Q={query.dtype}"
+            )
 
         if query.ndim != 4 or key.ndim != 4 or value.ndim != 4:
             raise ValueError("Q/K/V must be 4D tensors")
 
-        if not query.is_contiguous() or not key.is_contiguous() or not value.is_contiguous():
+        if (
+            not query.is_contiguous()
+            or not key.is_contiguous()
+            or not value.is_contiguous()
+        ):
             raise ValueError("Q/K/V must be contiguous")
 
         B, Hq, Sq, D = query.shape
@@ -715,7 +839,7 @@ class ARK:
         # block_size=0 means per-token
         block_size = quant_block_size if quant_block_size > 0 else 1
 
-        # SAGE V1 kernel uses K-tile size=32; scale_block_size must be 1 or >=32
+        # SAGE V1 kernel uses K-tile size=32; quant_block_size must be 1 or >=32
         if block_size != 1 and block_size < 32:
             raise ValueError(
                 f"quant_block_size={block_size} is not supported. "
@@ -737,7 +861,9 @@ class ARK:
 
         if need_pad_q:
             pad_q = Sq_pad - Sq
-            query = torch.nn.functional.pad(query, (0, 0, 0, pad_q))  # pad S dim with zeros
+            query = torch.nn.functional.pad(
+                query, (0, 0, 0, pad_q)
+            )  # pad S dim with zeros
         if need_pad_kv:
             pad_kv = Skv_pad - Skv
             key = torch.nn.functional.pad(key, (0, 0, 0, pad_kv))
@@ -779,7 +905,7 @@ class ARK:
         )
         k_scale = k_scale.reshape(B, Hkv, Skv_pad // block_size, 1)
 
-        # Call SAGE v1 with matching scale_block_size
+        # Call SAGE v1 with matching quant_block_size
         out = self.sage(
             q_i8,
             k_i8,
@@ -788,7 +914,7 @@ class ARK:
             is_causal=is_causal,
             scale=scale,
             enable_gqa=enable_gqa,
-            scale_block_size=block_size,
+            quant_block_size=block_size,
             qscale=q_scale,
             kscale=k_scale,
         )
@@ -829,7 +955,9 @@ class ARK:
             raise ValueError("weights dtype must match activations dtype")
 
         if activations.ndim != 2 or weights.ndim != 3:
-            raise ValueError("activations must be 2D [total_tokens, K], weights must be 3D [num_experts, K, N]")
+            raise ValueError(
+                "activations must be 2D [total_tokens, K], weights must be 3D [num_experts, K, N]"
+            )
 
         if not activations.is_contiguous() or not weights.is_contiguous():
             raise ValueError("activations and weights must be contiguous")
@@ -844,7 +972,9 @@ class ARK:
         num_experts, K_w, N = weights.shape  # weights are [num_experts, K, N]
 
         if K != K_w:
-            raise ValueError(f"K dimension mismatch: activations K={K}, weights K={K_w}")
+            raise ValueError(
+                f"K dimension mismatch: activations K={K}, weights K={K_w}"
+            )
 
         if num_tokens_per_expert.shape[0] != num_experts:
             raise ValueError(
@@ -854,11 +984,15 @@ class ARK:
         # Validate total tokens
         expected_total = int(num_tokens_per_expert.sum().item())
         if expected_total != total_tokens:
-            raise ValueError(f"Sum of num_tokens_per_expert ({expected_total}) != total_tokens ({total_tokens})")
+            raise ValueError(
+                f"Sum of num_tokens_per_expert ({expected_total}) != total_tokens ({total_tokens})"
+            )
 
         lib = self.get_lib(activations)
         stream = get_stream(activations)
-        outputs = torch.empty((total_tokens, N), device=activations.device, dtype=activations.dtype)
+        outputs = torch.empty(
+            (total_tokens, N), device=activations.device, dtype=activations.dtype
+        )
 
         scales_ptr = scales.data_ptr() if scales is not None else 0
 
@@ -894,7 +1028,11 @@ if __name__ == "__main__":
         else:
             A = torch.rand(m, k, dtype=dt, device=device) - 0.5
             B = torch.rand(k, n, dtype=dt, device=device) - 0.5
-            bias = torch.rand(1, n, dtype=dt, device=device) if has_bias else torch.empty(0)
+            bias = (
+                torch.rand(1, n, dtype=dt, device=device)
+                if has_bias
+                else torch.empty(0)
+            )
             C = ark.matmul(A, B, bias)
         ref = torch.matmul(A, B.T)
         if has_bias:
@@ -928,7 +1066,9 @@ if __name__ == "__main__":
         B = torch.randint(-8, 7, (k, n), dtype=torch.int8, device=device)
         zp = torch.randint(-8, 7, (k // groupsize, n), dtype=torch.int8, device=device)
         scaleB = torch.rand(k // groupsize, n, dtype=dt, device=device) / 100
-        blob = ark.repack_quantized_weight(B, scaleB, zp, groupsize, "fp32", "int4", "fp32", False)
+        blob = ark.repack_quantized_weight(
+            B, scaleB, zp, groupsize, "fp32", "int4", "fp32", False
+        )
         dq = ark.unpack_weight(blob, dt, n, k, groupsize, "fp32", "int4", "fp32", False)
         print(blob, dq)
         scale_re = scaleB.repeat_interleave(repeats=groupsize, dim=0).to(dt)
@@ -1006,14 +1146,19 @@ def repack_quantized_weight(*args, **kwargs):
         else:
             weight_type, compute_type = a4, a5
     else:
-        raise TypeError("repack_quantized_weight() expects 8 or 9 positional arguments; " f"got {len(args)}")
+        raise TypeError(
+            "repack_quantized_weight() expects 8 or 9 positional arguments; "
+            f"got {len(args)}"
+        )
 
     # Some native paths may still expect a valid zp pointer even when asym=False.
     if (zp is None) or (isinstance(zp, torch.Tensor) and zp.numel() == 0):
         if not bool(asym):
             k = QB.shape[0]
             n = QB.shape[1]
-            zp = torch.zeros((k // int(groupsize), n), dtype=torch.int8, device=QB.device)
+            zp = torch.zeros(
+                (k // int(groupsize), n), dtype=torch.int8, device=QB.device
+            )
         else:
             zp = torch.empty(0, dtype=torch.int8, device=QB.device)
 
@@ -1040,10 +1185,14 @@ def unpack_weight(
     scale_type,
     asym,
 ):
-    return _ark_instance().unpack_weight(blob, out_dtype, n, k, groupsize, compute_type, weight_type, scale_type, asym)
+    return _ark_instance().unpack_weight(
+        blob, out_dtype, n, k, groupsize, compute_type, weight_type, scale_type, asym
+    )
 
 
-def packed_weight_size(A: torch.Tensor, n, k, groupsize, compute_type, weight_type, scale_type, asym):
+def packed_weight_size(
+    A: torch.Tensor, n, k, groupsize, compute_type, weight_type, scale_type, asym
+):
     # Keep signature convenient for Python callers; native library needs a stream.
     lib = _ark_instance().get_lib(A)
     stream = get_stream(A)
