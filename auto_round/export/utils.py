@@ -51,6 +51,21 @@ def _state_dict_has_meta_tensor(model: nn.Module) -> bool:
     return False
 
 
+def is_immediate_saving_mode(model: nn.Module, serialization_dict: dict = None) -> bool:
+    """Determine if the model was saved via ShardWriter (immediate saving mode).
+
+    Checks the explicit flag first; falls back to detecting meta tensors
+    which indicate ShardWriter already offloaded the weights.
+    """
+    if serialization_dict and serialization_dict.get("is_immediate_saving", False):
+        return True
+    if unsupported_meta_device(model):
+        return True
+    if _state_dict_has_meta_tensor(model):
+        return True
+    return False
+
+
 def is_local_pipeline_model_dir(model_dir: str) -> bool:
     if not model_dir or not os.path.isdir(model_dir):
         return False
@@ -198,6 +213,7 @@ def save_model(
     safe_serialization: bool = True,
     dtype=None,
     config_file="quantization_config.json",
+    immediate_saving: bool = False,
 ):
     """Save model state dict and configs.
 
@@ -217,31 +233,27 @@ def save_model(
             </Tip>
         safe_serialization (`bool`, defaults to `True`):
             Whether to save the model using `safetensors` or the traditional PyTorch way (that uses `pickle`).
+        immediate_saving (`bool`, defaults to `False`):
+            When True, weights were already saved by ShardWriter during quantization.
+            Only configs and metadata will be saved; weight saving is skipped.
     """
     os.makedirs(save_dir, exist_ok=True)
 
-    if unsupported_meta_device(model):
+    if immediate_saving:
+        logger.info("Immediate saving mode: weights already saved by ShardWriter, saving configs only.")
         _save_model_configs(model, save_dir)
     else:
-        has_meta_tensor = _state_dict_has_meta_tensor(model)
-        if has_meta_tensor:
-            logger.info(
-                "Detected meta tensors in state_dict after shard-based saving; skipping model.save_pretrained and "
-                "saving configs only."
-            )
-            _save_model_configs(model, save_dir)
-        else:
-            try:
-                model.save_pretrained(save_dir, max_shard_size=max_shard_size, safe_serialization=safe_serialization)
-            except (KeyError, TypeError) as e:
-                # Some third-party configs fail during config serialization in save_pretrained.
-                # Fall back to saving weights separately + config without diff.
-                logger.warning("model.save_pretrained failed (%s), falling back to manual save.", e)
-                from safetensors.torch import save_file
+        try:
+            model.save_pretrained(save_dir, max_shard_size=max_shard_size, safe_serialization=safe_serialization)
+        except (KeyError, TypeError) as e:
+            # Some third-party configs fail during config serialization in save_pretrained.
+            # Fall back to saving weights separately + config without diff.
+            logger.warning("model.save_pretrained failed (%s), falling back to manual save.", e)
+            from safetensors.torch import save_file
 
-                state_dict = model.state_dict()
-                save_file(state_dict, os.path.join(save_dir, "model.safetensors"))
-                _save_model_configs(model, save_dir)
+            state_dict = model.state_dict()
+            save_file(state_dict, os.path.join(save_dir, "model.safetensors"))
+            _save_model_configs(model, save_dir)
 
     source_dir = _resolve_model_source_dir(model)
 

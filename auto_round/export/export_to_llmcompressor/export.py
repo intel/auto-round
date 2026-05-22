@@ -18,7 +18,7 @@ from typing import Callable, Union
 
 import torch
 
-from auto_round.export.utils import save_model
+from auto_round.export.utils import is_immediate_saving_mode, save_model
 from auto_round.logger import logger
 from auto_round.utils import (
     SUPPORTED_LAYER_TYPES,
@@ -226,10 +226,11 @@ def save_quantized_as_llmcompressor(
     if output_dir is None:
         return model
 
+    immediate_saving = is_immediate_saving_mode(model, serialization_dict)
     # save model.config, model.state_dict()
     model.config.save_pretrained(output_dir)
 
-    save_model(model, output_dir, safe_serialization=safe_serialization)
+    save_model(model, output_dir, safe_serialization=safe_serialization, immediate_saving=immediate_saving)
 
     try:
         copy_python_files_from_model_cache(model, output_dir)

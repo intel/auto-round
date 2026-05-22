@@ -24,7 +24,7 @@ from tqdm import tqdm
 
 from auto_round.data_type.utils import reshape_pad_tensor_by_group_size, revert_tensor_by_pad
 from auto_round.export.export_to_autoround.utils import check_neq_config
-from auto_round.export.utils import filter_quantization_config, release_layer_safely, save_model
+from auto_round.export.utils import filter_quantization_config, is_immediate_saving_mode, release_layer_safely, save_model
 from auto_round.logger import logger
 from auto_round.schemes import QuantizationScheme
 from auto_round.utils import (
@@ -274,6 +274,7 @@ def save_quantized_as_autoround(
         return model
     # if os.path.exists(output_dir):
     #     logger.warning(f"{output_dir} already exists, this may cause model conflict")
+    immediate_saving = is_immediate_saving_mode(model, serialization_dict)
     if tokenizer is not None:
         tokenizer.save_pretrained(output_dir)
 
@@ -287,7 +288,8 @@ def save_quantized_as_autoround(
         dtype = torch.float16  ## awq kernel only supports float16 on cuda
     else:
         dtype = None
-    save_model(model, output_dir, safe_serialization=safe_serialization, dtype=dtype)
+    save_model(model, output_dir, safe_serialization=safe_serialization, dtype=dtype,
+               immediate_saving=immediate_saving)
 
     # Save rotation config to config.json for load-time reconstruction
     if hasattr(model, "_rotation_config"):
