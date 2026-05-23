@@ -964,11 +964,19 @@ class CalibratedRTNCompressor(DataDrivenCompressor):
 
             def process_input_others(input_others):
                 input_others = to_device(input_others, self.compress_context.cache_device)
+                # Unwrap single-element list/tuple so they are passed as bare values.
+                for key in list(input_others.keys()):
+                    val = input_others[key]
+                    if isinstance(val, (list, tuple)) and len(val) == 1:
+                        input_others[key] = val[0]
                 for key, val in input_others.items():
                     if isinstance(val, torch.Tensor) and val.dtype in (torch.float16, torch.bfloat16):
                         input_others[key] = val.to(tmp_dtype)
                     elif isinstance(val, list):
-                        input_others[key] = [to_dtype(v, tmp_dtype) for v in val]
+                        input_others[key] = [
+                            to_dtype(v, tmp_dtype) for v in val
+                            if not (isinstance(v, torch.Tensor) and v.dtype in (torch.int32, torch.int64))
+                        ]
                 return input_others
 
             input_others = inputs

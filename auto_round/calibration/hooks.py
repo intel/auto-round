@@ -59,7 +59,7 @@ def make_block_forward_func(state, name: str) -> Callable:
                 new_data = alibi
         return new_data
 
-    def forward(m, hidden_states=None, *positional_inputs, **kwargs):
+    def forward_capture(m, hidden_states=None, *positional_inputs, **kwargs):
         if name not in state.inputs:
             state.inputs[name] = {}
             init_cache(positional_inputs, state.inputs[name])
@@ -143,13 +143,16 @@ def make_block_forward_func(state, name: str) -> Callable:
             raise NotImplementedError
         else:
             if hidden_states is not None:
-                kwargs.pop("hidden_states")
-                return m.orig_forward(hidden_states, *positional_inputs, **kwargs)
+                kwargs.pop("hidden_states", None)
+                return m.orig_forward(hidden_states=hidden_states, *positional_inputs, **kwargs)
             else:
                 # Currently only for Llama-3.2-Vision-Instruct Series
                 return m.orig_forward(*positional_inputs, **kwargs)
 
-    return forward
+    # Apply positional-to-kwargs conversion so positional_inputs get their proper parameter names.
+    from auto_round.utils.model import wrap_block_forward_positional_to_kwargs
+
+    return wrap_block_forward_positional_to_kwargs(forward_capture)
 
 
 def make_layer_cache_hook(state, name: str) -> Callable:
