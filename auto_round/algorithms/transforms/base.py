@@ -297,4 +297,3 @@ class SerializerMixin(ABC):
         ``"rotation_config"``; this is used for backward-compatible
         fallback detection.
         """
-
