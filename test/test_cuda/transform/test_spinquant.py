@@ -9,7 +9,6 @@ Tests cover:
   - Rotation correctness: R1, R1+R2, R1+R2+R3+R4 produce valid logits
 """
 
-import copy
 import shutil
 
 import pytest
@@ -245,34 +244,22 @@ class TestHookLifecycle:
 class TestRotationCorrectness:
     """Test that rotation produces valid (non-NaN, non-zero) logits."""
 
-    @pytest.fixture(scope="class")
-    def model_and_tokenizer(self):
-        model_name = get_model_path("Qwen/Qwen3-0.6B")
-        tokenizer = AutoTokenizer.from_pretrained(model_name, trust_remote_code=True)
-        model = AutoModelForCausalLM.from_pretrained(
-            model_name, torch_dtype=torch.float16, trust_remote_code=True
-        ).cuda()
-        model.eval()
-        yield model, tokenizer
-        del model
-        torch.cuda.empty_cache()
-
-    @pytest.fixture
-    def baseline_logits(self, model_and_tokenizer):
-        """Get FP16 baseline logits for comparison."""
-        model, tokenizer = model_and_tokenizer
-        inputs = tokenizer("The capital of France is", return_tensors="pt").to(model.device)
-        with torch.no_grad():
-            logits = model(**inputs).logits
-        return logits.clone()
-
-    def _get_logits(self, model, tokenizer, text="The capital of France is"):
+    @staticmethod
+    def _get_logits(model, tokenizer, text="The capital of France is"):
         inputs = tokenizer(text, return_tensors="pt").to(model.device)
         with torch.no_grad():
             return model(**inputs).logits
 
-    def test_r1_only(self, model_and_tokenizer):
-        """R1-only rotation should produce valid logits."""
+    @pytest.mark.parametrize(
+        "r1,r2,r3,r4,label",
+        [
+            (True, False, False, False, "R1"),
+            (True, True, False, False, "R1+R2"),
+            (True, True, True, True, "R1+R2+R3+R4"),
+        ],
+    )
+    def test_rotation_produces_valid_logits(self, r1, r2, r3, r4, label):
+        """Rotation ({label}) should produce valid (non-NaN, non-Inf) logits."""
         model_name = get_model_path("Qwen/Qwen3-0.6B")
         model = (
             AutoModelForCausalLM.from_pretrained(model_name, torch_dtype=torch.float16, trust_remote_code=True)
@@ -281,10 +268,10 @@ class TestRotationCorrectness:
         )
 
         cfg = SpinQuantConfig(
-            r1=True,
-            r2=False,
-            r3=False,
-            r4=False,
+            r1=r1,
+            r2=r2,
+            r3=r3,
+            r4=r4,
             online_r1_rotation=True,
             trainable_rotation=False,
             trainable_smooth=False,
@@ -293,63 +280,9 @@ class TestRotationCorrectness:
         tokenizer = AutoTokenizer.from_pretrained(model_name, trust_remote_code=True)
         logits = self._get_logits(model, tokenizer)
 
-        assert not torch.isnan(logits).any(), "R1 rotation produced NaN logits"
-        assert not torch.isinf(logits).any(), "R1 rotation produced Inf logits"
-        assert logits.abs().sum() > 0, "R1 rotation produced all-zero logits"
-        del model
-        torch.cuda.empty_cache()
-
-    def test_r1_r2(self, model_and_tokenizer):
-        """R1+R2 rotation should produce valid logits."""
-        model_name = get_model_path("Qwen/Qwen3-0.6B")
-        model = (
-            AutoModelForCausalLM.from_pretrained(model_name, torch_dtype=torch.float16, trust_remote_code=True)
-            .cuda()
-            .eval()
-        )
-
-        cfg = SpinQuantConfig(
-            r1=True,
-            r2=True,
-            r3=False,
-            r4=False,
-            online_r1_rotation=True,
-            trainable_rotation=False,
-            trainable_smooth=False,
-        )
-        model = apply_rotation(model, cfg)
-        tokenizer = AutoTokenizer.from_pretrained(model_name, trust_remote_code=True)
-        logits = self._get_logits(model, tokenizer)
-
-        assert not torch.isnan(logits).any(), "R1+R2 rotation produced NaN logits"
-        assert not torch.isinf(logits).any(), "R1+R2 rotation produced Inf logits"
-        del model
-        torch.cuda.empty_cache()
-
-    def test_r1_r2_r3_r4(self, model_and_tokenizer):
-        """Full R1+R2+R3+R4 rotation should produce valid logits."""
-        model_name = get_model_path("Qwen/Qwen3-0.6B")
-        model = (
-            AutoModelForCausalLM.from_pretrained(model_name, torch_dtype=torch.float16, trust_remote_code=True)
-            .cuda()
-            .eval()
-        )
-
-        cfg = SpinQuantConfig(
-            r1=True,
-            r2=True,
-            r3=True,
-            r4=True,
-            online_r1_rotation=True,
-            trainable_rotation=False,
-            trainable_smooth=False,
-        )
-        model = apply_rotation(model, cfg)
-        tokenizer = AutoTokenizer.from_pretrained(model_name, trust_remote_code=True)
-        logits = self._get_logits(model, tokenizer)
-
-        assert not torch.isnan(logits).any(), "Full rotation produced NaN logits"
-        assert not torch.isinf(logits).any(), "Full rotation produced Inf logits"
+        assert not torch.isnan(logits).any(), f"{label} rotation produced NaN logits"
+        assert not torch.isinf(logits).any(), f"{label} rotation produced Inf logits"
+        assert logits.abs().sum() > 0, f"{label} rotation produced all-zero logits"
         del model
         torch.cuda.empty_cache()
 

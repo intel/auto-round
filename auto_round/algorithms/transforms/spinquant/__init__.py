@@ -70,7 +70,7 @@ Example (SpinQuant — trainable, ⚠️ experimental)::
     autoround.quantize()
 """
 
-from auto_round.algorithms.transforms.spinquant.algorithm import (
+from auto_round.algorithms.transforms.spinquant.apply import (
     SpinQuantRotation,
 )
 from auto_round.algorithms.transforms.spinquant.cayley_optimizer import (
@@ -87,12 +87,16 @@ from auto_round.algorithms.transforms.spinquant.preprocessor import (
     SpinQuantPreprocessor,
     TrainableRMSNorm,
 )
-from auto_round.algorithms.transforms.spinquant.trainer import (
+from auto_round.algorithms.transforms.spinquant.training import (
     LossLogger,
     OrthogonalityMonitor,
     RotationTrainer,
     RotationTrainerCallback,
     RotationTrainerConfig,
+    SpinQuantState,
+    SpinQuantTrainingHook,
+    create_spinquant_optimizer,
+    spinquant_loss_fn,
 )
 from auto_round.algorithms.transforms.spinquant.rotation_utils import (
     InputRotationWrapperHadamard,
@@ -101,12 +105,6 @@ from auto_round.algorithms.transforms.spinquant.serialize import (
     inject_spinquant_buffers,
     rebuild_spinquant_online,
     save_spinquant_config,
-)
-from auto_round.algorithms.transforms.spinquant.training import (
-    SpinQuantState,
-    SpinQuantTrainingHook,
-    create_spinquant_optimizer,
-    spinquant_loss_fn,
 )
 
 __all__ = [
