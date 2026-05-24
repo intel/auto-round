@@ -259,7 +259,7 @@ class TestRotationCorrectness:
         ],
     )
     def test_rotation_produces_valid_logits(self, r1, r2, r3, r4, label):
-        """Rotation ({label}) should produce valid (non-NaN, non-Inf) logits."""
+        """Rotation configurations should produce valid (non-NaN, non-Inf) logits."""
         model_name = get_model_path("Qwen/Qwen3-0.6B")
         model = (
             AutoModelForCausalLM.from_pretrained(model_name, torch_dtype=torch.float16, trust_remote_code=True)

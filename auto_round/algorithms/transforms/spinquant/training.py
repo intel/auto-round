@@ -47,7 +47,7 @@ from __future__ import annotations
 import copy
 import logging
 import time
-from dataclasses import dataclass, field
+from dataclasses import asdict, dataclass, field
 from typing import Any, Callable, Optional
 
 import torch
@@ -393,10 +393,10 @@ class OrthogonalTrainingCallback:
         self.max_deviation_history.append(max_dev)
 
         if max_dev > 1e-4:
-            print(f"[SpinQuant] Step {self.step}: max orthogonality deviation = {max_dev:.2e}")
+            logger.info(f"[SpinQuant] Step {self.step}: max orthogonality deviation = {max_dev:.2e}")
 
         if max_dev > 1e-2:
-            print("  🔴 WARNING: Orthogonality significantly violated! Consider reducing lr.")
+            logger.warning("[SpinQuant] Orthogonality significantly violated! Consider reducing lr.")
 
 
 class SpinQuantState:
@@ -739,6 +739,8 @@ class RotationTrainer:
                 max_diffs.append((logits_rot - logits_ori).abs().max().item())
 
         self.model.train()
+        if not losses:
+            return {"eval_loss": 0.0, "eval_max_diff": 0.0}
         return {
             "eval_loss": sum(losses) / len(losses),
             "eval_max_diff": sum(max_diffs) / len(max_diffs),
@@ -760,7 +762,7 @@ class RotationTrainer:
             path = f"{self.config.checkpoint_dir or '.'}/spinquant_ckpt_step{self.state['step']}.pt"
         ckpt = {
             "step": self.state["step"],
-            "config": self.config,
+            "config": asdict(self.config),
             "rotation_params": {
                 n: p.data.cpu() for n, p in self.model.named_parameters() if p.requires_grad and "spinquant_R" in n
             },
@@ -769,19 +771,22 @@ class RotationTrainer:
             },
         }
         torch.save(ckpt, path)
-        print(f"[RotationTrainer] Checkpoint saved: {path}")
+        logger.info(f"[RotationTrainer] Checkpoint saved: {path}")
         return path
 
     def load_checkpoint(self, path: str) -> None:
         """Restore rotation + smooth params from disk."""
-        ckpt = torch.load(path, map_location="cpu", weights_only=True)
+        try:
+            ckpt = torch.load(path, map_location="cpu", weights_only=True)
+        except TypeError:
+            ckpt = torch.load(path, map_location="cpu")
         for n, p in self.model.named_parameters():
             if n in ckpt["rotation_params"]:
                 p.data.copy_(ckpt["rotation_params"][n].to(p.device))
             if n in ckpt["smooth_params"]:
                 p.data.copy_(ckpt["smooth_params"][n].to(p.device))
         self.state["step"] = ckpt["step"]
-        print(f"[RotationTrainer] Checkpoint loaded: {path}")
+        logger.info(f"[RotationTrainer] Checkpoint loaded: {path}")
 
     # ------------------------------------------------------------------
     # Internal helpers
@@ -826,6 +831,12 @@ class RotationTrainer:
             lr=cfg.lr,
             smooth_lr=cfg.smooth_lr,
         )
+        if self.optimizer is None:
+            raise ValueError(
+                "SpinQuant training requires at least one trainable parameter group, "
+                "but create_dual_optimizer() returned None. Ensure that training is "
+                "configured with trainable rotation and/or smooth parameters enabled."
+            )
 
         # 6. Clone original model for KL reference
         self._original_model = clone_model_for_reference(self.model)
