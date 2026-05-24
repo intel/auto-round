@@ -91,7 +91,6 @@ def test_preprocess_block_inputs_keeps_list_dtype():
         compress_context=compress_context,
     )
 
-    # The extracted helper intentionally preserves the legacy implementation,
-    # which iterates list entries through to_dtype() without writing the result
-    # back.  Lock this down so the refactor does not change runtime behaviour.
-    assert input_others["past_key_values"][0].dtype == torch.float16
+    # After Fix gpt-j-6b runtime error, list items are properly converted
+    # to the AMP dtype. Previously the result of to_dtype() was not written back.
+    assert input_others["past_key_values"][0].dtype == torch.bfloat16
