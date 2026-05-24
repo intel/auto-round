@@ -1161,6 +1161,9 @@ def get_reverse_checkpoint_conversion_mapping(model):
 
 
 def revert_checkpoint_conversion_mapping(name: str, key_mapping: dict[str, str]) -> str:
+    if "," in name:
+        return ",".join(revert_checkpoint_conversion_mapping(part, key_mapping) for part in name.split(","))
+
     for source_pattern, target_patterns in key_mapping.items():
         if isinstance(target_patterns, str):
             target_patterns = [target_patterns]
@@ -1172,6 +1175,42 @@ def revert_checkpoint_conversion_mapping(name: str, key_mapping: dict[str, str])
             if n_replace > 0:
                 return name
     return name
+
+
+def preserve_original_visual_block_name(original_name: str | None, reverted_name: str) -> str:
+    """Keep composite multimodal block prefixes stable in serialized quant configs.
+
+    Some multimodal models expose block names under the composite model path
+    (for example ``model.visual.*`` or ``model.language_model.*``) during
+    quantization, but checkpoint conversion rules can rewrite those config-only
+    block prefixes to text-submodel paths such as ``visual.*`` or
+    ``model.layers``. The direct multimodal loaders expect the composite path to
+    remain intact in ``block_name_to_quantize``.
+    """
+    if not (isinstance(original_name, str) and isinstance(reverted_name, str)):
+        return reverted_name
+
+    original_parts = [part.strip() for part in original_name.split(",")]
+    reverted_parts = [part.strip() for part in reverted_name.split(",")]
+    if len(original_parts) != len(reverted_parts):
+        return reverted_name
+
+    preserved_parts = []
+    for original_part, reverted_part in zip(original_parts, reverted_parts):
+        if original_part.startswith("model.visual.") and reverted_part == original_part[len("model.") :]:
+            preserved_parts.append(original_part)
+        elif original_part.startswith("model.language_model.") and reverted_part.startswith("model.layers"):
+            preserved_parts.append(original_part)
+            preserved_parts.append(reverted_part)
+        else:
+            preserved_parts.append(reverted_part)
+
+    deduped_parts = []
+    for preserved_part in preserved_parts:
+        if preserved_part not in deduped_parts:
+            deduped_parts.append(preserved_part)
+
+    return ",".join(deduped_parts)
 
 
 def apply_checkpoint_conversion_mapping(name: str, key_mapping: dict[str, str]) -> str:

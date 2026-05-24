@@ -236,7 +236,14 @@ class TestAutoRound:
         model = Qwen2_5_VLForConditionalGeneration.from_pretrained(
             quantized_model_path, torch_dtype="auto", device_map="auto"
         )
-        assert model.config.quantization_config.block_name_to_quantize == "model.visual.blocks,model.layers"
+        block_name_to_quantize = model.config.quantization_config.block_name_to_quantize
+        if isinstance(block_name_to_quantize, str):
+            block_name_to_quantize = block_name_to_quantize.split(",")
+        assert block_name_to_quantize == [
+            "model.visual.blocks",
+            "model.language_model.layers",
+            "model.layers",
+        ]
         image_url = "https://qianwen-res.oss-cn-beijing.aliyuncs.com/Qwen-VL/assets/demo.jpeg"
         processor = AutoProcessor.from_pretrained(quantized_model_path)
         messages = [
