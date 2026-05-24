@@ -281,10 +281,12 @@ def save_quantized_as_autoround(
     extra_config = {}
     block_name_to_quantize = quantization_config["block_name_to_quantize"]
     if isinstance(block_name_to_quantize, str):
-        block_name_to_quantize = block_name_to_quantize.split(",")
+        block_name_to_quantize = [name.strip() for name in block_name_to_quantize.split(",")]
     elif isinstance(block_name_to_quantize, list):
-        for i in range(len(block_name_to_quantize)):
-            block_name_to_quantize[i] = os.path.commonprefix(block_name_to_quantize[i]).rstrip(".")
+        block_name_to_quantize = [
+            os.path.commonprefix(item).rstrip(".") if isinstance(item, list) else item
+            for item in block_name_to_quantize
+        ]
 
     scheme_keys = [f.name for f in fields(QuantizationScheme)]
     for layer_name, cfg in layer_config.items():
