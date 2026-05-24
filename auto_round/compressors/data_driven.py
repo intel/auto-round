@@ -974,7 +974,8 @@ class CalibratedRTNCompressor(DataDrivenCompressor):
                         input_others[key] = val.to(tmp_dtype)
                     elif isinstance(val, list):
                         input_others[key] = [
-                            to_dtype(v, tmp_dtype) for v in val
+                            to_dtype(v, tmp_dtype)
+                            for v in val
                             if not (isinstance(v, torch.Tensor) and v.dtype in (torch.int32, torch.int64))
                         ]
                 return input_others

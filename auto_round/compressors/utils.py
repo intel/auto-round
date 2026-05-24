@@ -186,7 +186,7 @@ def block_forward(
         input_others[block_input_kwarg] = input_ids
 
     # Convert positional inputs to keyword args for any remaining positional parameters.
-    positional_inputs = input_tuple if input_tuple else ()
+    positional_inputs = input_tuple or ()
     if positional_inputs:
         for i, val in enumerate(positional_inputs):
             param_idx = i + 1  # hidden_states is params[0]
@@ -204,14 +204,18 @@ def block_forward(
                 input_others["position_ids"] = pid[0]
             elif len(pid) == 0:
                 # Generate position_ids from hidden_states shape when it's empty.
-                input_others["position_ids"] = torch.arange(
-                    input_ids.shape[1], device=input_ids.device, dtype=torch.long
-                ).unsqueeze(0).expand(input_ids.shape[0], -1)
+                input_others["position_ids"] = (
+                    torch.arange(input_ids.shape[1], device=input_ids.device, dtype=torch.long)
+                    .unsqueeze(0)
+                    .expand(input_ids.shape[0], -1)
+                )
         elif pid is None:
             # Generate position_ids from hidden_states shape when it's None.
-            input_others["position_ids"] = torch.arange(
-                input_ids.shape[1], device=input_ids.device, dtype=torch.long
-            ).unsqueeze(0).expand(input_ids.shape[0], -1)
+            input_others["position_ids"] = (
+                torch.arange(input_ids.shape[1], device=input_ids.device, dtype=torch.long)
+                .unsqueeze(0)
+                .expand(input_ids.shape[0], -1)
+            )
 
     if amp:
         with autocast(device_type=str(device).split(":")[0], dtype=amp_dtype):  # pragma: no cover

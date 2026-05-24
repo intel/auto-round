@@ -55,8 +55,7 @@ def split_inputs(
 
 
 def _unwrap_single_element(input_others):
-    """Unwrap single-element list/tuple values from kwargs dict.
-    """
+    """Unwrap single-element list/tuple values from kwargs dict."""
     for key in list(input_others.keys()):
         if key == "positional_inputs":
             continue
