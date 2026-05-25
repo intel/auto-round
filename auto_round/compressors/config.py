@@ -42,6 +42,7 @@ class ExtraConfig:
         lr_scheduler: Callable = None,
         minmax_lr: float = None,
         nblocks: int = 1,
+        nblocks_overlap: int = 0,
         to_quant_block_names: Union[str, list, None] = None,
         scale_dtype: str = "fp16",
         # scheme
@@ -122,6 +123,7 @@ class ExtraConfig:
             lr_scheduler=lr_scheduler,
             minmax_lr=minmax_lr,
             nblocks=nblocks,
+            nblocks_overlap=nblocks_overlap,
             to_quant_block_names=to_quant_block_names,
             scale_dtype=scale_dtype,
         )
@@ -257,6 +259,7 @@ class TuningExtraConfig(BaseExtraConfig):
     lr_scheduler: Callable = None
     minmax_lr: float = None
     nblocks: int = 1
+    nblocks_overlap: int = 0
     to_quant_block_names: Union[str, list, None] = None
     scale_dtype: str = "fp16"
 
