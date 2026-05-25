@@ -54,11 +54,15 @@ def _state_dict_has_meta_tensor(model: nn.Module) -> bool:
 def is_immediate_saving_mode(model: nn.Module, serialization_dict: dict = None) -> bool:
     """Determine if the model was saved via ShardWriter (immediate saving mode).
 
-    Checks the explicit flag first; falls back to detecting meta tensors
-    which indicate ShardWriter already offloaded the weights.
+    Resolution order:
+      1. CompressContext singleton (authoritative at export time).
+      2. Meta-tensor heuristics (ShardWriter offloads weights to meta device).
     """
-    if serialization_dict and serialization_dict.get("is_immediate_saving", False):
-        return True
+    from auto_round.context.compress import CompressContext
+
+    if CompressContext in CompressContext._instances:
+        if CompressContext._instances[CompressContext].is_immediate_saving:
+            return True
     if unsupported_meta_device(model):
         return True
     if _state_dict_has_meta_tensor(model):
