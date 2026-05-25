@@ -22,7 +22,7 @@ import requests
 import torch
 
 from auto_round.export.export_to_gguf.config import ModelType
-from auto_round.export.export_to_gguf.convert import wrapper_model_instance
+from auto_round.export.export_to_gguf.convert import is_mmproj_tensor_name, wrapper_model_instance
 from auto_round.export.export_to_gguf.llama_cpp_conversion import get_conversion
 from auto_round.export.export_to_gguf.special_handle import handle_special_model
 from auto_round.logger import logger
@@ -195,6 +195,9 @@ def pack_gguf_layer(
         # Packing block
         block = get_module(model, model.last_layer_name_to_block_name[name])
         for gguf_model in gguf_model_instance_global:
+            is_mmproj_model = gguf_model.model_arch == gguf.MODEL_ARCH.MMPROJ
+            if is_mmproj_model != is_mmproj_tensor_name(model.last_layer_name_to_block_name[name]):
+                continue
             gguf_model.current_packing_block = model.last_layer_name_to_block_name[name]
             gguf_model.prepare_tensors()
 

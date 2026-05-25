@@ -122,6 +122,24 @@ def get_moe_name(cls, name, new_name):
     return name
 
 
+def is_mmproj_tensor_name(name):
+    return any(
+        key in name.lower()
+        for key in (
+            "vision",
+            "visual",
+            "image",
+            "img",
+            "audio",
+            "speech",
+            "wav",
+            "waveform",
+            "multi_modal_projector",
+            "multimodal_projector",
+        )
+    )
+
+
 def get_tensors(cls) -> Iterator[tuple[str, Tensor]]:
     if not hasattr(cls.model, "tensor_name_list"):
         cls.model.tensor_name_list = []
@@ -409,6 +427,13 @@ def prepare_tensors(cls):
         max_name_len = len("vision_encoder.weight,")  # Default reasonable length
 
     for name, data_torch in chain(cls.generate_extra_tensors(), cls.get_tensors()):
+        filtered = cls.filter_tensors((name, lambda data_torch=data_torch: data_torch))
+        if filtered is None:
+            continue
+        name = filtered[0]
+        is_mmproj_model = cls.model_arch == gguf.MODEL_ARCH.MMPROJ
+        if is_mmproj_model != is_mmproj_tensor_name(name):
+            continue
         if name in getattr(cls.model, "_tied_weights_keys", []) and not is_separate_tensor(cls.model, name):
             continue
         if data_torch is None or data_torch.numel() == 0:
