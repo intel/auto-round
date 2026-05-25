@@ -114,9 +114,10 @@ static void sdpa(torch_ptr stream, torch_ptr Q, torch_ptr K, torch_ptr V, torch_
                  batch, num_heads_q, num_heads_kv, seq_len_q, seq_len_kv, head_dim, softmax_scale, is_causal);
 }
 
-static void sagev1(torch_ptr stream, torch_ptr Q, torch_ptr K, torch_ptr V, torch_ptr O, torch_ptr mask,
-                   int scale_block_size, int q_dtype, int k_dtype, int v_dtype, int o_dtype, int batch, int num_heads_q,
-                   int num_heads_kv, int seq_len_q, int seq_len_kv, int head_dim, float softmax_scale, bool is_causal) {
+static void sagev1_impl(torch_ptr stream, torch_ptr Q, torch_ptr K, torch_ptr V, torch_ptr O, torch_ptr mask,
+                        int scale_block_size, int q_dtype, int k_dtype, int v_dtype, int o_dtype, int batch,
+                        int num_heads_q, int num_heads_kv, int seq_len_q, int seq_len_kv, int head_dim,
+                        float softmax_scale, bool is_causal, bool use_int8_pv) {
   if (mask && is_causal) {
     throw std::invalid_argument("ark::sagev1: mask and is_causal cannot both be set");
   }
@@ -127,11 +128,32 @@ static void sagev1(torch_ptr stream, torch_ptr Q, torch_ptr K, torch_ptr V, torc
     throw std::invalid_argument("ark::sagev1: only F16 is supported for q_dtype");
   }
 #ifdef ARK_XPU
-  XpuWrapper::sagev1((sycl::queue*)stream, (void*)Q, (void*)K, (void*)V, (void*)O, (void*)mask, scale_block_size, batch,
-                     num_heads_q, num_heads_kv, seq_len_q, seq_len_kv, head_dim, softmax_scale, is_causal);
+  if (use_int8_pv) {
+    XpuWrapper::sagev1_pvi8((sycl::queue*)stream, (void*)Q, (void*)K, (void*)V, (void*)O, (void*)mask,
+                            scale_block_size, batch, num_heads_q, num_heads_kv, seq_len_q, seq_len_kv, head_dim,
+                            softmax_scale, is_causal);
+  } else {
+    XpuWrapper::sagev1((sycl::queue*)stream, (void*)Q, (void*)K, (void*)V, (void*)O, (void*)mask, scale_block_size,
+                       batch, num_heads_q, num_heads_kv, seq_len_q, seq_len_kv, head_dim, softmax_scale, is_causal);
+  }
 #else
   throw std::runtime_error("ark::sagev1 is only supported on XPU");
 #endif
+}
+
+static void sagev1(torch_ptr stream, torch_ptr Q, torch_ptr K, torch_ptr V, torch_ptr O, torch_ptr mask,
+                   int scale_block_size, int q_dtype, int k_dtype, int v_dtype, int o_dtype, int batch, int num_heads_q,
+                   int num_heads_kv, int seq_len_q, int seq_len_kv, int head_dim, float softmax_scale, bool is_causal) {
+  sagev1_impl(stream, Q, K, V, O, mask, scale_block_size, q_dtype, k_dtype, v_dtype, o_dtype, batch, num_heads_q,
+              num_heads_kv, seq_len_q, seq_len_kv, head_dim, softmax_scale, is_causal, false);
+}
+
+static void sagev1_pvi8(torch_ptr stream, torch_ptr Q, torch_ptr K, torch_ptr V, torch_ptr O, torch_ptr mask,
+                        int scale_block_size, int q_dtype, int k_dtype, int v_dtype, int o_dtype, int batch,
+                        int num_heads_q, int num_heads_kv, int seq_len_q, int seq_len_kv, int head_dim,
+                        float softmax_scale, bool is_causal) {
+  sagev1_impl(stream, Q, K, V, O, mask, scale_block_size, q_dtype, k_dtype, v_dtype, o_dtype, batch, num_heads_q,
+              num_heads_kv, seq_len_q, seq_len_kv, head_dim, softmax_scale, is_causal, true);
 }
 
 static void sage(torch_ptr stream, torch_ptr Q, torch_ptr K, torch_ptr V, torch_ptr O, torch_ptr mask,
@@ -144,6 +166,18 @@ static void sage(torch_ptr stream, torch_ptr Q, torch_ptr K, torch_ptr V, torch_
   ark::sdpa_impl_qks8_pvhalf((sycl::queue*)stream, (void*)Q, (void*)K, (void*)V, (void*)O, (void*)mask,
                              scale_block_size, (void*)qscale, (void*)kscale, batch, num_heads_q, num_heads_kv,
                              seq_len_q, seq_len_kv, head_dim, softmax_scale, is_causal);
+}
+
+static void sage_pvi8(torch_ptr stream, torch_ptr Q, torch_ptr K, torch_ptr V, torch_ptr O, torch_ptr mask,
+                      int scale_block_size, torch_ptr qscale, torch_ptr kscale, torch_ptr vscale, int q_dtype,
+                      int k_dtype, int o_dtype, int batch, int num_heads_q, int num_heads_kv, int seq_len_q,
+                      int seq_len_kv, int head_dim, float softmax_scale, bool is_causal) {
+  if (mask && is_causal) {
+    throw std::invalid_argument("ark::sage_pvi8: mask and is_causal cannot both be set");
+  }
+  ark::sdpa_impl_qks8_pvi8((sycl::queue*)stream, (void*)Q, (void*)K, (void*)V, (void*)O, (void*)mask,
+                           scale_block_size, (void*)qscale, (void*)kscale, (void*)vscale, batch, num_heads_q,
+                           num_heads_kv, seq_len_q, seq_len_kv, head_dim, softmax_scale, is_causal);
 }
 
 static void moe_gemm_wrapper(torch_ptr stream, torch_ptr activations, torch_ptr weights, torch_ptr scales,
@@ -289,7 +323,11 @@ PYBIND11_MODULE(PY_NAME, m) {
 #if defined(ARK_XPU) && defined(ARK_SYCL_TLA)
   m.def("sdpa", &ark::sdpa);
   m.def("sagev1", &ark::sagev1);
+  // High-level SAGEV1 PVi8 API: input Q/K/V are FP16 and quantized internally.
+  m.def("sagev1_pvi8", &ark::sagev1_pvi8);
   m.def("sage", &ark::sage);
+  // Low-level SAGE PVi8 API: input Q/K/V are pre-quantized int8 with qscale/kscale/vscale.
+  m.def("sage_pvi8", &ark::sage_pvi8);
   m.def("sage_dynamic_quant", &ark::sage_dynamic_quant);
   m.def("moe_gemm", &ark::moe_gemm_wrapper);
 #endif

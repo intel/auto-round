@@ -269,6 +269,9 @@ class XeSageFwdKernel {
       auto scaleK = params.mainloop.scale_block_size
                         ? (float*)params.mainloop.kscale + (idx_b * s.num_heads_kv * seq_kv_pad + head * seq_kv_pad)
                         : nullptr;  // per head kscale
+      auto scaleV = params.mainloop.scale_block_size && params.mainloop.vscale
+            ? (float*)params.mainloop.vscale + (idx_b * s.num_heads_kv * seq_kv_pad + head * seq_kv_pad)
+            : nullptr;  // per head vscale
       auto ptrO = p.O + offset_o;
 
       auto stride_q = is_var_len ? cutlass::make_cute_packed_stride(StrideQ{}, shape_Q) : p.dQ;
@@ -293,7 +296,8 @@ class XeSageFwdKernel {
       int l_coord = is_var_len ? 0 : idx_b;
       CollectiveMainloop mainloop(params.mainloop, shared_storage.mainloop);
       mainloop(Q(_, _, head_q, l_coord), K(_, _, head, l_coord), V(_, _, head, l_coord), tArA, tA_max, tA_sum, blk_qv,
-               0, k_blocks, k_blocks, thr_id, seq_len, seq_len_kv_cache, idx_b, scaleQ, scaleK, full_tile_offset,
+               0, k_blocks, k_blocks, thr_id, seq_len, seq_len_kv_cache, idx_b, scaleQ, scaleK, scaleV,
+               full_tile_offset,
                discard_seq_coord, K_cache(_, _, head, l_coord), V_cache(_, _, head, l_coord));
 
       if constexpr (!is_empty_v<MainloopSharedStorage> && !is_empty_v<EpilogueSharedStorage>) {
