@@ -144,7 +144,10 @@ def make_block_forward_func(state, name: str) -> Callable:
         else:
             if hidden_states is not None:
                 kwargs.pop("hidden_states", None)
-                return m.orig_forward(hidden_states=hidden_states, *positional_inputs, **kwargs)
+                if positional_inputs:
+                    return m.orig_forward(hidden_states=hidden_states, *positional_inputs, **kwargs)
+                else:
+                    return m.orig_forward(hidden_states, **kwargs)
             else:
                 # Currently only for Llama-3.2-Vision-Instruct Series
                 return m.orig_forward(*positional_inputs, **kwargs)
