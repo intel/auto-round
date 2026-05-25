@@ -427,10 +427,6 @@ def prepare_tensors(cls):
         max_name_len = len("vision_encoder.weight,")  # Default reasonable length
 
     for name, data_torch in chain(cls.generate_extra_tensors(), cls.get_tensors()):
-        filtered = cls.filter_tensors((name, lambda data_torch=data_torch: data_torch))
-        if filtered is None:
-            continue
-        name = filtered[0]
         is_mmproj_model = cls.model_arch == gguf.MODEL_ARCH.MMPROJ
         if is_mmproj_model != is_mmproj_tensor_name(name):
             continue
@@ -449,6 +445,11 @@ def prepare_tensors(cls):
                 or name_split[: len(current_packing_block_split)] != current_packing_block_split
             ):
                 continue
+
+        filtered = cls.filter_tensors((name, lambda data_torch=data_torch: data_torch))
+        if filtered is None:
+            continue
+        name = filtered[0]
 
         old_dtype = data_torch.dtype
 

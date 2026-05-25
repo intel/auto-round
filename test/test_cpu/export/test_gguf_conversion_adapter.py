@@ -159,20 +159,22 @@ def test_auto_update_downloads_minimal_conversion(tmp_path, monkeypatch):
     _reset_adapter(adapter)
 
 
-def test_live_model_tensor_names_use_conversion_filter_tensors():
+def test_live_model_tensor_names_use_checkpoint_conversion_mapping():
     import gguf
 
-    from auto_round.export.export_to_gguf.conversion.gemma import Gemma4Model
     from auto_round.export.export_to_gguf.convert import _special_name_handle
+    from auto_round.utils.common import revert_checkpoint_conversion_mapping
 
     class WrappedGemma4Model:
         model_arch = gguf.MODEL_ARCH.GEMMA4
 
-    filtered = Gemma4Model.filter_tensors(("model.language_model.layers.0.self_attn.q_proj.weight", lambda: None))
+    mapping = {r"^model\.language_model\.layers": "model.layers"}
+    checkpoint_name = revert_checkpoint_conversion_mapping(
+        "model.language_model.layers.0.self_attn.q_proj.weight", mapping
+    )
 
-    assert filtered is not None
-    assert filtered[0] == "model.layers.0.self_attn.q_proj.weight"
-    assert _special_name_handle(WrappedGemma4Model(), filtered[0]) == "model.layers.0.self_attn.q_proj.weight"
+    assert checkpoint_name == "model.layers.0.self_attn.q_proj.weight"
+    assert _special_name_handle(WrappedGemma4Model(), checkpoint_name) == "model.layers.0.self_attn.q_proj.weight"
 
 
 def test_gguf_tensor_names_are_split_between_text_and_mmproj():
