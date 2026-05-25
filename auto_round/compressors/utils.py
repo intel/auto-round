@@ -681,16 +681,16 @@ def get_layer_config_by_gguf_format(layer_config, target_gguf_format: str, model
 
     import gguf  # pylint: disable=E0401
 
+    from auto_round.export.export_to_gguf.llama_cpp_conversion import get_conversion
     from auto_round.schemes import QuantizationScheme, get_gguf_scheme
-    from auto_round.utils.common import MM_KEYS, LazyImport
+    from auto_round.utils.common import MM_KEYS
     from auto_round.utils.model import get_lm_head_name, get_module
 
-    # from auto_round.export.export_to_gguf.convert import ModelBase, get_model_architecture
-    convert_hf_to_gguf = LazyImport("auto_round.export.export_to_gguf.convert_hf_to_gguf")
-
     try:
-        model_architecture = convert_hf_to_gguf.get_model_architecture(
-            hparams=model.config.to_dict(), model_type=model_type
+        hparams = model.config.to_dict()
+        conversion = get_conversion(hparams=hparams, model_type=model_type)
+        model_architecture = conversion.get_model_architecture(
+            hparams=hparams, model_type=conversion.model_type(model_type)
         )
     except AttributeError as e:
         raise ImportError(
@@ -700,12 +700,8 @@ def get_layer_config_by_gguf_format(layer_config, target_gguf_format: str, model
         )
     try:
         if model_type != ModelType.TEXT:
-            model_class_vision = convert_hf_to_gguf.ModelBase.from_model_architecture(
-                model_architecture, model_type=model_type
-            )
-        model_class = convert_hf_to_gguf.ModelBase.from_model_architecture(
-            model_architecture, model_type=ModelType.TEXT
-        )
+            model_class_vision = conversion.get_model_class(model_architecture, model_type=model_type)
+        model_class = conversion.get_model_class(model_architecture, model_type=ModelType.TEXT)
 
     except NotImplementedError:
         return layer_config, {}

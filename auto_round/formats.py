@@ -875,7 +875,7 @@ class GGUFFormat(OutputFormat):
         import argparse
 
         from auto_round.export.export_to_gguf.config import GGUF_CONFIG
-        from auto_round.export.export_to_gguf.convert import download_convert_file
+        from auto_round.export.export_to_gguf.llama_cpp_conversion import get_conversion
         from auto_round.logger import logger
         from auto_round.utils.model import download_or_get_path, get_gguf_architecture
 
@@ -889,59 +889,16 @@ class GGUFFormat(OutputFormat):
             if f.startswith("gguf") and f not in GGUF_CONFIG:
                 logger.error(f"{f} is not supported, please check.")
 
-        redownload = False
         if export_gguf:
-            try:
-                from auto_round.export.export_to_gguf.convert_hf_to_gguf import (  # pylint: disable=E0401
-                    ModelBase,
-                    ModelType,
-                    get_model_architecture,
-                )
-
-                if isinstance(args_or_ar.model, str):
-                    model_path = args_or_ar.model
-                else:
-                    model_path = args_or_ar.model.name_or_path
-                if not os.path.isdir(model_path):
-                    model_path = download_or_get_path(model_path, args_or_ar.platform)
-                model_architecture = get_gguf_architecture(model_path, model_type=ModelType.TEXT)
-                if model_architecture not in ModelBase._model_classes[ModelType.TEXT]:
-                    logger.warning(
-                        f"Current version of gguf export does not support for {model_architecture},"
-                        " will re-download dependency file. Please restart the task."
-                    )
-                    redownload = True
-            except ModuleNotFoundError as e:
-                if "convert_hf_to_gguf" in str(e):
-                    logger.warning("GGUF export dependency file is not found, download from github.")
-                    redownload = True
-            except AttributeError as e:
-                raise ImportError(
-                    "Please use the latest gguf-py, you can use the following command to install it:\n"
-                    "git clone https://github.com/ggml-org/llama.cpp.git && cd llama.cpp/gguf-py"
-                    " && pip install . sentencepiece"
-                )
-            download_convert_file(redownload)
-
-            try:
-                from auto_round.export.export_to_gguf.convert_hf_to_gguf import (  # pylint: disable=E0401
-                    ModelBase,
-                    ModelType,
-                )
-            except ImportError as e:
-                raise ImportError(
-                    "Please use the latest gguf-py, you can use the following command to install it:\n"
-                    "git clone https://github.com/ggml-org/llama.cpp.git && cd llama.cpp/gguf-py"
-                    " && pip install . sentencepiece"
-                )
             if isinstance(args_or_ar.model, str):
                 model_path = args_or_ar.model
             else:
                 model_path = args_or_ar.model.name_or_path
             if not os.path.isdir(model_path):
                 model_path = download_or_get_path(model_path, args_or_ar.platform)
+            conversion = get_conversion(model_path, model_type=ModelType.TEXT)
             model_architecture = get_gguf_architecture(model_path, model_type=ModelType.TEXT)
-            if model_architecture not in ModelBase._model_classes[ModelType.TEXT]:
+            if not conversion.is_supported(model_architecture, ModelType.TEXT):
                 logger.error(f"Model {model_architecture} is not supported to export gguf format.")
                 sys.exit(1)
 

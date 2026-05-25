@@ -37,14 +37,12 @@ from __future__ import annotations
 import json
 import os
 import re
-import sys
 from functools import partial
 from itertools import chain
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Iterator
 
 import numpy as np
-import requests
 import torch
 from transformers import AutoConfig
 
@@ -66,24 +64,6 @@ gguf = LazyImport("gguf")
 
 if TYPE_CHECKING:
     from torch import Tensor
-
-
-def download_convert_file(redownload=False):
-    CONVERT_URL = "https://raw.githubusercontent.com/ggml-org/llama.cpp/refs/heads/master/convert_hf_to_gguf.py"
-    FILE_NAME = "convert_hf_to_gguf.py"
-    gguf_export_dir = os.path.dirname(__file__)
-    if redownload is False and FILE_NAME in os.listdir(gguf_export_dir):
-        return
-    try:
-        response = requests.get(CONVERT_URL)
-    except:
-        logger.error(
-            f"Fail to download the dependency file, please try downloading the convert_hf_to_gguf.py"
-            f" from https://github.com/ggml-org/llama.cpp manually and move it to {gguf_export_dir}."
-        )
-        sys.exit(-1)
-    with open(os.path.join(gguf_export_dir, FILE_NAME), "w", encoding="utf-8") as f:
-        f.write(response.text)
 
 
 def wrapper_model_instance(

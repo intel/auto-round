@@ -1267,16 +1267,14 @@ def get_nested_attr(module, attr_name: str):
 
 
 def get_gguf_architecture(dir_model, model_type=ModelType.TEXT):
-    from auto_round.export.export_to_gguf.convert_hf_to_gguf import (
-        ModelBase,
-        get_model_architecture,
-    )
+    from auto_round.export.export_to_gguf.llama_cpp_conversion import get_conversion
 
     is_mistral_format = False
     if isinstance(dir_model, str):
         dir_model = Path(dir_model)
 
-    hparams = ModelBase.load_hparams(dir_model, is_mistral_format)
+    conversion = get_conversion(dir_model, model_type=model_type)
+    hparams = conversion.ModelBase.load_hparams(dir_model, is_mistral_format)
     if isinstance(hparams, dict):
         tmp_model_type = hparams["model_type"]
     else:
@@ -1284,11 +1282,11 @@ def get_gguf_architecture(dir_model, model_type=ModelType.TEXT):
     if "mistral" == tmp_model_type:
         is_mistral_format = True
         try:
-            hparams = ModelBase.load_hparams(dir_model, is_mistral_format)
+            hparams = conversion.ModelBase.load_hparams(dir_model, is_mistral_format)
         except Exception:
             is_mistral_format = False
     if not is_mistral_format:
-        model_class = get_model_architecture(hparams, model_type)
+        model_class = conversion.get_model_architecture(hparams, conversion.model_type(model_type))
     elif model_type == ModelType.MMPROJ:
         assert hparams.get("vision_encoder") is not None, "This model does not support multimodal"
         model_class = "PixtralModel"
