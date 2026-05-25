@@ -634,7 +634,7 @@ class SupportedFormats:
         return self._support_list[key]
 
 
-SHARED_CACHE_KEYS = ("position_ids", "cache_position", "position_embeddings")
+SHARED_CACHE_KEYS = ("position_ids", "cache_position", "position_embeddings", "cu_seqlens")
 
 deepspeed_exists = False
 if importlib.util.find_spec("deepspeed"):  # check if deepspeed is installed
