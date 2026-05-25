@@ -202,8 +202,9 @@ def save_quantized_as_llmcompressor(
 
     safe_serialization = kwargs.get("safe_serialization", True)
     processor = kwargs.get("processor", None)
-    # if output_dir is not None and os.path.exists(output_dir):
-    #     logger.warning(f"{output_dir} already exists, this may cause model conflict")
+    immediate_saving = is_immediate_saving_mode(model, serialization_dict)
+    if output_dir is not None and os.path.exists(output_dir) and not immediate_saving:
+        logger.warning(f"{output_dir} already exists, this may cause model conflict")
     if not inplace:
         model = copy.deepcopy(model.to("cpu"))
 
@@ -226,7 +227,6 @@ def save_quantized_as_llmcompressor(
     if output_dir is None:
         return model
 
-    immediate_saving = is_immediate_saving_mode(model, serialization_dict)
     # save model.config, model.state_dict()
     model.config.save_pretrained(output_dir)
 

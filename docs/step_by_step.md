@@ -356,12 +356,14 @@ ar.quantize_and_save(output_dir, format="auto_round:llm_compressor")
 
 ### AutoScheme
 
-AutoScheme provides an automatic algorithm to generate adaptive mixed bits/data-type quantization recipes.  For some accuracy result, please refer this doc [here](./auto_scheme_acc.md)
+AutoScheme automatically generates adaptive mixed-bit and mixed-data-type quantization recipes. For accuracy results, see [AutoScheme Accuracy Report](./auto_scheme_acc.md).
 
-**Please note that mixed data types are supported during tuning, but cannot be exported to real models at this time..**
+**Note:** Mixed data-type recipes (e.g., MXFP4/MXFP8, W2/W4/W8) are supported for both tuning and export.
 
 #### CLI Usage
-use `iters=200`for tuning.
+
+Use `--iters 0` for RTN-based scheme search (fastest). Add `--iters 200` if you want tuning-aware scheme selection.
+
 ~~~bash
 auto_round \
   --model_name  $model_name \

@@ -353,12 +353,15 @@ ar.quantize_and_save(output_dir, format="auto_round:llm_compressor")
 
 
 ### AutoScheme 自动混合精度量化方案
-AutoScheme 采用自动化算法，可生成 **自适应的混合精度与数据类型** 的量化方案（mixed bits/data type quantization recipes）。相关测试结果请参考[《AutoScheme精度报告》](./auto_scheme_acc.md)。
 
-**注意**：混合数据类型方案在训练阶段可用，但当前版本还不支持导出至实际模型。
+AutoScheme 自动生成自适应的混合比特/混合数据类型量化方案。精度测试结果请参考 [AutoScheme 精度报告](./auto_scheme_acc.md)。
+
+**说明：** 混合比特方案（如 W2/W4/W8，MXFP4/MXFP8）支持调优和导出。
 
 #### 命令行用法
-如需启动训练建议设置 `iters=200`
+
+使用 `--iters 0` 进行基于 RTN 的方案搜索（最快）。如需调优感知的方案选择，可设置 `--iters 200`。
+
 ~~~bash
 auto_round \
   --model_name  $model_name \
