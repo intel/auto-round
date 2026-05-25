@@ -42,9 +42,11 @@ from auto_round.schemes import (
 )
 from auto_round.special_model_handler import get_predefined_ignore_layers, update_module
 from auto_round.utils import (
+    AUDIO_MM_KEYS,
     INNER_SUPPORTED_LAYER_TYPES,
     SUPPORTED_LAYER_TYPES,
     TORCH_VERSION_AT_LEAST_2_6,
+    VISION_MM_KEYS,
     compress_layer_names,
     convert_dtype_str2torch,
     extract_block_names_to_str,
@@ -473,20 +475,11 @@ class BaseCompressor(object):
             scoreable_blocks = get_block_names(self.model_context.model, quant_vision=quant_nontext)
             scoreable_block_prefixes = tuple(blk for group in scoreable_blocks for blk in group)
             if quant_nontext:
-                peel_markers = ("audio", "speech", "wav", "waveform")
+                peel_markers = AUDIO_MM_KEYS
                 tower_label = "language+vision"
                 peel_label = "audio/speech"
             else:
-                peel_markers = (
-                    "vision",
-                    "visual",
-                    "image",
-                    "img",
-                    "audio",
-                    "speech",
-                    "wav",
-                    "waveform",
-                )
+                peel_markers = VISION_MM_KEYS + AUDIO_MM_KEYS
                 tower_label = "language"
                 peel_label = "vision/audio"
 

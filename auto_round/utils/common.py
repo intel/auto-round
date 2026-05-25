@@ -651,13 +651,23 @@ if deepspeed_exists:
 
     SUPPORTED_LAYER_TYPES = SUPPORTED_LAYER_TYPES + (LinearLayer, LinearAllreduce)
 
+VISION_MM_KEYS = (
+    "vision",
+    "visual",
+    "image",
+    "img",
+)
+AUDIO_MM_KEYS = (
+    "audio",
+    "speech",
+    "wav",
+    "waveform",
+)
 MM_KEYS = [
     "multi_modal_projector",
     "vision_tower",
     "multimodal_projector",
     "thinker",
-    "visual",
-    "audio",
     "talker",
     "token2wav",
     "code2wav",
@@ -665,11 +675,15 @@ MM_KEYS = [
     "vqmodel",
     "vision_model",
     "audio_tower",
+    "audio_model",
     "vision_encoder",
     "vision_language_adapter",
     "patch_merger",
     "pre_mm_projector_norm",
-    "vision",
+    "image_newline",
+    "model.connector",
+    *VISION_MM_KEYS,
+    *AUDIO_MM_KEYS,
 ]
 
 

@@ -123,21 +123,10 @@ def get_moe_name(cls, name, new_name):
 
 
 def is_mmproj_tensor_name(name):
-    return any(
-        key in name.lower()
-        for key in (
-            "vision",
-            "visual",
-            "image",
-            "img",
-            "audio",
-            "speech",
-            "wav",
-            "waveform",
-            "multi_modal_projector",
-            "multimodal_projector",
-        )
-    )
+    from auto_round.utils.common import MM_KEYS
+
+    name = name.lower()
+    return any(key in name for key in MM_KEYS)
 
 
 def get_tensors(cls) -> Iterator[tuple[str, Tensor]]:

@@ -17,26 +17,12 @@ import os
 import requests
 
 from auto_round.utils import LazyImport
+from auto_round.utils.common import MM_KEYS
 
 PIL = LazyImport("PIL")
 Image = LazyImport("PIL.Image")
 
-VISUAL_KEYS = [
-    "thinker",
-    "visual",
-    "audio",
-    "talker",
-    "token2wav",
-    "code2wav",
-    "audio_tower",
-    "code_predictor",
-    "multi_modal_projector",
-    "vqmodel",
-    "vision_tower",
-    "multimodal_projector",
-    "vision_model",
-    "model.connector",
-]
+VISUAL_KEYS = MM_KEYS
 
 
 def _extract_data_dir(dir_path: str):
