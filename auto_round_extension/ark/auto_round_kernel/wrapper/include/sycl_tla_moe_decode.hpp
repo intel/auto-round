@@ -128,20 +128,25 @@ inline float decode_fp8_e5m2(uint8_t byte) {
 inline void fill_expert_id_per_token(sycl::queue* q, int* expert_id_per_token,
                                      const int* num_tokens_per_expert, int num_experts,
                                      int total_tokens) {
-  // Sequential prefix-scan on a single thread; cheap because num_experts is
-  // small (typ. <= 256) and we avoid host-device sync entirely.
-  q->single_task([=]() {
-     int offset = 0;
-     for (int e = 0; e < num_experts; ++e) {
-       int n = num_tokens_per_expert[e];
-       for (int i = 0; i < n; ++i) {
-         if (offset + i < total_tokens) {
-           expert_id_per_token[offset + i] = e;
-         }
-       }
-       offset += n;
-     }
-   }).wait();
+  // Parallel fill: each work-item independently scans the small
+  // num_tokens_per_expert array (typ. <= 256) to find its expert id. This
+  // removes the single-task serialization point and avoids an explicit
+  // host-device sync; the in-order queue chains this with the GEMV launch.
+  if (total_tokens == 0) return;
+  q->parallel_for(sycl::range<1>(static_cast<size_t>(total_tokens)), [=](sycl::id<1> idx) {
+    const int i = static_cast<int>(idx[0]);
+    int offset = 0;
+    int expert = num_experts - 1;
+    for (int e = 0; e < num_experts; ++e) {
+      const int n = num_tokens_per_expert[e];
+      if (i < offset + n) {
+        expert = e;
+        break;
+      }
+      offset += n;
+    }
+    expert_id_per_token[i] = expert;
+  });
 }
 
 // ----------------------------------------------------------------------------
@@ -173,13 +178,25 @@ void launch_fp(sycl::queue* q, const ScalarT* activations, const ScalarT* weight
              weights + (static_cast<size_t>(expert) * N + static_cast<size_t>(n_global)) * K;
 
          float acc = 0.0f;
-         // Unroll by 8 to hide latency; arbitrary K (any multiple of 8).
+         // Unroll by 8 with a 16-byte vector load for both activations and
+         // weights. Activations are sub-group-uniform so they coalesce via
+         // L1; each lane's weight load is an independent 16-byte transaction.
+         // We load through a uint16_t vector to stay portable across SYCL
+         // implementations that may not provide sycl::vec<bfloat16, N>.
          int k = 0;
-         constexpr int UNROLL = 8;
-         for (; k + UNROLL <= K; k += UNROLL) {
+         constexpr int VEC = 8;
+         using LoadVec = sycl::vec<uint16_t, VEC>;
+         static_assert(sizeof(ScalarT) == sizeof(uint16_t),
+                       "ScalarT must be a 16-bit floating type");
+         const int k_vec_end = (K / VEC) * VEC;
+         for (; k < k_vec_end; k += VEC) {
+           const LoadVec av = *reinterpret_cast<const LoadVec*>(act_row + k);
+           const LoadVec wv = *reinterpret_cast<const LoadVec*>(w_row + k);
 #pragma unroll
-           for (int u = 0; u < UNROLL; ++u) {
-             acc += static_cast<float>(act_row[k + u]) * static_cast<float>(w_row[k + u]);
+           for (int u = 0; u < VEC; ++u) {
+             const ScalarT a = sycl::bit_cast<ScalarT>(static_cast<uint16_t>(av[u]));
+             const ScalarT w = sycl::bit_cast<ScalarT>(static_cast<uint16_t>(wv[u]));
+             acc += static_cast<float>(a) * static_cast<float>(w);
            }
          }
          for (; k < K; ++k) {
@@ -187,8 +204,7 @@ void launch_fp(sycl::queue* q, const ScalarT* activations, const ScalarT* weight
          }
 
          outputs[static_cast<size_t>(token) * N + n_global] = static_cast<ScalarT>(acc);
-       })
-      .wait();
+       });
 }
 
 // ----------------------------------------------------------------------------
@@ -250,8 +266,43 @@ void launch_int4(sycl::queue* q, const ScalarT* activations, const uint8_t* weig
              zero = static_cast<float>(z_row[g]);
            }
            const int k_base = g * group_size;
-           // Two nibbles per byte; iterate in pairs.
-           for (int kk = 0; kk < group_size; kk += 2) {
+           // Vectorized path: process 16 K-elements at a time, which is
+           // 8 packed weight bytes and a vec<ScalarT,16> activation block.
+           // group_size is a multiple of 16 in every supported config
+           // (group_size >= 32, even); a scalar tail loop covers leftovers.
+           constexpr int CHUNK = 16;
+           using ActVec = sycl::vec<uint16_t, CHUNK>;
+           using PackVec = sycl::vec<uint8_t, CHUNK / 2>;
+           static_assert(sizeof(ScalarT) == sizeof(uint16_t),
+                         "ScalarT must be a 16-bit floating type");
+           const int chunk_end = (group_size / CHUNK) * CHUNK;
+           int kk = 0;
+           for (; kk < chunk_end; kk += CHUNK) {
+             const ActVec av = *reinterpret_cast<const ActVec*>(act_row + k_base + kk);
+             const PackVec pv = *reinterpret_cast<const PackVec*>(w_row + (k_base + kk) / 2);
+#pragma unroll
+             for (int b = 0; b < CHUNK / 2; ++b) {
+               const uint8_t packed = pv[b];
+               float w0, w1;
+               if constexpr (Asym) {
+                 const int q0 = static_cast<int>(packed & 0x0F);
+                 const int q1 = static_cast<int>((packed >> 4) & 0x0F);
+                 w0 = (static_cast<float>(q0) - zero) * scale;
+                 w1 = (static_cast<float>(q1) - zero) * scale;
+               } else {
+                 const int q0 = static_cast<int>(static_cast<int8_t>(packed << 4) >> 4);
+                 const int q1 = static_cast<int>(static_cast<int8_t>(packed & 0xF0) >> 4);
+                 w0 = static_cast<float>(q0) * scale;
+                 w1 = static_cast<float>(q1) * scale;
+               }
+               const ScalarT a0 = sycl::bit_cast<ScalarT>(static_cast<uint16_t>(av[2 * b]));
+               const ScalarT a1 = sycl::bit_cast<ScalarT>(static_cast<uint16_t>(av[2 * b + 1]));
+               acc += static_cast<float>(a0) * w0;
+               acc += static_cast<float>(a1) * w1;
+             }
+           }
+           // Scalar tail for group_size not divisible by CHUNK.
+           for (; kk < group_size; kk += 2) {
              const uint8_t packed = w_row[(k_base + kk) / 2];
              float w0, w1;
              if constexpr (Asym) {
@@ -260,10 +311,6 @@ void launch_int4(sycl::queue* q, const ScalarT* activations, const uint8_t* weig
                w0 = (static_cast<float>(q0) - zero) * scale;
                w1 = (static_cast<float>(q1) - zero) * scale;
              } else {
-               // Sign-extend each 4-bit signed nibble to 8-bit signed:
-               //   low nibble: shift left by 4 to move bit[3] into bit[7],
-               //               then arithmetic right-shift by 4 replicates the sign bit.
-               //   high nibble: same trick after masking off the low nibble.
                const int q0 = static_cast<int>(static_cast<int8_t>(packed << 4) >> 4);
                const int q1 = static_cast<int>(static_cast<int8_t>(packed & 0xF0) >> 4);
                w0 = static_cast<float>(q0) * scale;
@@ -275,8 +322,7 @@ void launch_int4(sycl::queue* q, const ScalarT* activations, const uint8_t* weig
          }
 
          outputs[static_cast<size_t>(token) * N + n_global] = static_cast<ScalarT>(acc);
-       })
-      .wait();
+       });
 }
 
 // ----------------------------------------------------------------------------
@@ -337,13 +383,38 @@ void launch_int8(sycl::queue* q, const ScalarT* activations, const uint8_t* weig
              zero = static_cast<float>(z_row[g]);
            }
            const int k_base = g * group_size;
-           for (int kk = 0; kk < group_size; ++kk) {
+           // Vectorized path: 16 weights (16 bytes) + 16 activations per load.
+           // group_size is typically 128 (mult of 16); scalar tail handles
+           // anything that doesn't divide evenly.
+           constexpr int CHUNK = 16;
+           using ActVec = sycl::vec<uint16_t, CHUNK>;
+           using ByteVec = sycl::vec<uint8_t, CHUNK>;
+           static_assert(sizeof(ScalarT) == sizeof(uint16_t),
+                         "ScalarT must be a 16-bit floating type");
+           const int chunk_end = (group_size / CHUNK) * CHUNK;
+           int kk = 0;
+           for (; kk < chunk_end; kk += CHUNK) {
+             const ActVec av = *reinterpret_cast<const ActVec*>(act_row + k_base + kk);
+             const ByteVec wv = *reinterpret_cast<const ByteVec*>(w_row + k_base + kk);
+#pragma unroll
+             for (int u = 0; u < CHUNK; ++u) {
+               const uint8_t raw = wv[u];
+               float w;
+               if constexpr (Asym) {
+                 w = (static_cast<float>(raw) - zero) * scale;
+               } else {
+                 w = static_cast<float>(static_cast<int8_t>(raw)) * scale;
+               }
+               const ScalarT a = sycl::bit_cast<ScalarT>(static_cast<uint16_t>(av[u]));
+               acc += static_cast<float>(a) * w;
+             }
+           }
+           for (; kk < group_size; ++kk) {
              const uint8_t raw = w_row[k_base + kk];
              float w;
              if constexpr (Asym) {
                w = (static_cast<float>(raw) - zero) * scale;
              } else {
-               // Reinterpret as signed int8.
                w = static_cast<float>(static_cast<int8_t>(raw)) * scale;
              }
              acc += static_cast<float>(act_row[k_base + kk]) * w;
@@ -351,8 +422,7 @@ void launch_int8(sycl::queue* q, const ScalarT* activations, const uint8_t* weig
          }
 
          outputs[static_cast<size_t>(token) * N + n_global] = static_cast<ScalarT>(acc);
-       })
-      .wait();
+       });
 }
 
 // ----------------------------------------------------------------------------
@@ -417,8 +487,57 @@ void launch_int2(sycl::queue* q, const ScalarT* activations, const uint8_t* weig
              zero = static_cast<float>(z_row[g]);
            }
            const int k_base = g * group_size;
-           // 4 values per byte; iterate in quads.
-           for (int kk = 0; kk < group_size; kk += 4) {
+           // Vectorized: 16 K-elements per chunk = 4 packed bytes (4 values
+           // each) plus a vec<uint16_t,16> activation block. group_size is a
+           // multiple of 4 and typically 128 (mult of 16); scalar tail covers
+           // any leftover. We load activations via uint16_t to stay portable
+           // across SYCL implementations that may not provide
+           // sycl::vec<bfloat16, N>.
+           constexpr int CHUNK = 16;
+           using ActVec = sycl::vec<uint16_t, CHUNK>;
+           using PackVec = sycl::vec<uint8_t, CHUNK / 4>;
+           static_assert(sizeof(ScalarT) == sizeof(uint16_t),
+                         "ScalarT must be a 16-bit floating type");
+           const int chunk_end = (group_size / CHUNK) * CHUNK;
+           int kk = 0;
+           for (; kk < chunk_end; kk += CHUNK) {
+             const ActVec av = *reinterpret_cast<const ActVec*>(act_row + k_base + kk);
+             const PackVec pv = *reinterpret_cast<const PackVec*>(w_row + (k_base + kk) / 4);
+#pragma unroll
+             for (int b = 0; b < CHUNK / 4; ++b) {
+               const uint8_t packed = pv[b];
+               float w0, w1, w2, w3;
+               if constexpr (Asym) {
+                 const int q0 = static_cast<int>(packed & 0x3);
+                 const int q1 = static_cast<int>((packed >> 2) & 0x3);
+                 const int q2 = static_cast<int>((packed >> 4) & 0x3);
+                 const int q3 = static_cast<int>((packed >> 6) & 0x3);
+                 w0 = (static_cast<float>(q0) - zero) * scale;
+                 w1 = (static_cast<float>(q1) - zero) * scale;
+                 w2 = (static_cast<float>(q2) - zero) * scale;
+                 w3 = (static_cast<float>(q3) - zero) * scale;
+               } else {
+                 const int q0 = static_cast<int>(static_cast<int8_t>(packed << 6) >> 6);
+                 const int q1 = static_cast<int>(static_cast<int8_t>((packed << 4) & 0xC0) >> 6);
+                 const int q2 = static_cast<int>(static_cast<int8_t>((packed << 2) & 0xC0) >> 6);
+                 const int q3 = static_cast<int>(static_cast<int8_t>(packed & 0xC0) >> 6);
+                 w0 = static_cast<float>(q0) * scale;
+                 w1 = static_cast<float>(q1) * scale;
+                 w2 = static_cast<float>(q2) * scale;
+                 w3 = static_cast<float>(q3) * scale;
+               }
+               const ScalarT a0 = sycl::bit_cast<ScalarT>(static_cast<uint16_t>(av[4 * b + 0]));
+               const ScalarT a1 = sycl::bit_cast<ScalarT>(static_cast<uint16_t>(av[4 * b + 1]));
+               const ScalarT a2 = sycl::bit_cast<ScalarT>(static_cast<uint16_t>(av[4 * b + 2]));
+               const ScalarT a3 = sycl::bit_cast<ScalarT>(static_cast<uint16_t>(av[4 * b + 3]));
+               acc += static_cast<float>(a0) * w0;
+               acc += static_cast<float>(a1) * w1;
+               acc += static_cast<float>(a2) * w2;
+               acc += static_cast<float>(a3) * w3;
+             }
+           }
+           // Scalar tail (4 values per byte).
+           for (; kk < group_size; kk += 4) {
              const uint8_t packed = w_row[(k_base + kk) / 4];
              float w[4];
              if constexpr (Asym) {
@@ -431,8 +550,6 @@ void launch_int2(sycl::queue* q, const ScalarT* activations, const uint8_t* weig
                w[2] = (static_cast<float>(q2) - zero) * scale;
                w[3] = (static_cast<float>(q3) - zero) * scale;
              } else {
-               // Sign-extend each 2-bit signed value via shift-left-then-arith-shift-right.
-               // After placing the 2 bits in the high 2 of an int8, >>6 replicates the sign.
                const int q0 = static_cast<int>(static_cast<int8_t>(packed << 6) >> 6);
                const int q1 = static_cast<int>(static_cast<int8_t>((packed << 4) & 0xC0) >> 6);
                const int q2 = static_cast<int>(static_cast<int8_t>((packed << 2) & 0xC0) >> 6);
@@ -450,8 +567,7 @@ void launch_int2(sycl::queue* q, const ScalarT* activations, const uint8_t* weig
          }
 
          outputs[static_cast<size_t>(token) * N + n_global] = static_cast<ScalarT>(acc);
-       })
-      .wait();
+       });
 }
 
 // ----------------------------------------------------------------------------
@@ -498,7 +614,34 @@ void launch_fp8(sycl::queue* q, const ScalarT* activations, const uint8_t* weigh
          for (int g = 0; g < num_groups_k; ++g) {
            const float scale = static_cast<float>(s_row[g]);
            const int k_base = g * group_size;
-           for (int kk = 0; kk < group_size; ++kk) {
+           // Vectorized: 16 weights (16 bytes) + 16 activations per load.
+           // Decode each FP8 byte to float inline, then apply the per-group
+           // scale. group_size is typically 128 (mult of 16); scalar tail
+           // covers anything that doesn't divide evenly.
+           constexpr int CHUNK = 16;
+           using ActVec = sycl::vec<uint16_t, CHUNK>;
+           using ByteVec = sycl::vec<uint8_t, CHUNK>;
+           static_assert(sizeof(ScalarT) == sizeof(uint16_t),
+                         "ScalarT must be a 16-bit floating type");
+           const int chunk_end = (group_size / CHUNK) * CHUNK;
+           int kk = 0;
+           for (; kk < chunk_end; kk += CHUNK) {
+             const ActVec av = *reinterpret_cast<const ActVec*>(act_row + k_base + kk);
+             const ByteVec wv = *reinterpret_cast<const ByteVec*>(w_row + k_base + kk);
+#pragma unroll
+             for (int u = 0; u < CHUNK; ++u) {
+               const uint8_t raw = wv[u];
+               float w;
+               if constexpr (IsE4M3) {
+                 w = decode_fp8_e4m3(raw) * scale;
+               } else {
+                 w = decode_fp8_e5m2(raw) * scale;
+               }
+               const ScalarT a = sycl::bit_cast<ScalarT>(static_cast<uint16_t>(av[u]));
+               acc += static_cast<float>(a) * w;
+             }
+           }
+           for (; kk < group_size; ++kk) {
              const uint8_t raw = w_row[k_base + kk];
              float w;
              if constexpr (IsE4M3) {
@@ -511,8 +654,7 @@ void launch_fp8(sycl::queue* q, const ScalarT* activations, const uint8_t* weigh
          }
 
          outputs[static_cast<size_t>(token) * N + n_global] = static_cast<ScalarT>(acc);
-       })
-      .wait();
+       });
 }
 
 }  // namespace moe_decode_detail
