@@ -28,7 +28,12 @@ from auto_round.compressors.utils import is_mx_fp, is_nv_fp
 from auto_round.export.export_to_autoround.qlinear_fp import QuantLinear
 from auto_round.export.export_to_llmcompressor.config import initialize_quantization
 from auto_round.export.export_to_llmcompressor.utils import generate_ignore_regex_list
-from auto_round.export.utils import filter_quantization_config, release_layer_safely, save_model
+from auto_round.export.utils import (
+    filter_quantization_config,
+    is_immediate_saving_mode,
+    release_layer_safely,
+    save_model,
+)
 from auto_round.logger import logger
 from auto_round.utils import (
     SUPPORTED_LAYER_TYPES,
@@ -307,7 +312,8 @@ def save_quantized_as_fp(
     if output_dir is None:
         model.tokenizer = tokenizer
         return model
-    if os.path.exists(output_dir):
+    immediate_saving = is_immediate_saving_mode(model, serialization_dict)
+    if os.path.exists(output_dir) and not immediate_saving:
         logger.warning(f"{output_dir} already exists, this may cause model conflict")
     if tokenizer is not None:
         tokenizer.save_pretrained(output_dir)
@@ -316,6 +322,6 @@ def save_quantized_as_fp(
         processor.save_pretrained(output_dir)
 
     dtype = None
-    save_model(model, output_dir, safe_serialization=safe_serialization, dtype=dtype)
+    save_model(model, output_dir, safe_serialization=safe_serialization, dtype=dtype, immediate_saving=immediate_saving)
 
     return model

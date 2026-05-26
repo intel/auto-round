@@ -287,13 +287,28 @@ def get_layer_config(model, quantization_config):
 
     # Determine the quantization block list
     checkpoint_conversion_mapping = get_checkpoint_conversion_mapping(model)
+
+    # Determine whether to apply the conversion mapping.
+    # If the model's module paths match the source patterns of the mapping, the model is
+    # a composite model (e.g., VLM loaded via AutoModelForImageTextToText) whose paths are
+    # already in checkpoint namespace — remapping would incorrectly alter them.
+    # Only when the model is loaded as a text sub-model (e.g., via AutoModelForCausalLM)
+    # do its paths differ from checkpoint namespace and require remapping.
+    _should_remap = bool(checkpoint_conversion_mapping) and not any(
+        re.match(src, name) for name, _ in model.named_modules() for src in checkpoint_conversion_mapping
+    )
+
     quant_block_list = getattr(quantization_config, "quant_block_list", None)
     if quant_block_list is not None:
         # Handle nested list format: [[block1, block2, ...], ...] -> [prefix1, ...]
         if quant_block_list and isinstance(quant_block_list[0], (list, tuple)):
             for i in range(len(quant_block_list)):
-                quant_block_list[i] = apply_checkpoint_conversion_mapping(
-                    os.path.commonprefix(quant_block_list[i]).rstrip("."), checkpoint_conversion_mapping
+                quant_block_list[i] = (
+                    apply_checkpoint_conversion_mapping(
+                        os.path.commonprefix(quant_block_list[i]).rstrip("."), checkpoint_conversion_mapping
+                    )
+                    if _should_remap
+                    else os.path.commonprefix(quant_block_list[i]).rstrip(".")
                 )
     elif quant_block_list is None:
         to_quant_block_names = getattr(quantization_config, "block_name_to_quantize", None)  # Prioritize this parameter
@@ -311,10 +326,11 @@ def get_layer_config(model, quantization_config):
             # Speed up the matching
             for i in range(len(quant_block_list)):
                 quant_block_list[i] = os.path.commonprefix(quant_block_list[i]).rstrip(".")
-        for i in range(len(quant_block_list)):
-            quant_block_list[i] = apply_checkpoint_conversion_mapping(
-                quant_block_list[i], checkpoint_conversion_mapping
-            )
+        if _should_remap:
+            for i in range(len(quant_block_list)):
+                quant_block_list[i] = apply_checkpoint_conversion_mapping(
+                    quant_block_list[i], checkpoint_conversion_mapping
+                )
 
     # Get layer names that will be quantized
     layer_names = []
@@ -328,7 +344,7 @@ def get_layer_config(model, quantization_config):
     extra_config = getattr(quantization_config, "extra_config", {})
 
     # Remap extra_config keys using conversion mapping (e.g. composite VLM paths to text sub-model paths)
-    if checkpoint_conversion_mapping and extra_config:
+    if _should_remap and extra_config:
         remapped_extra_config = {}
         for key, value in extra_config.items():
             new_key = apply_checkpoint_conversion_mapping(key, checkpoint_conversion_mapping)
