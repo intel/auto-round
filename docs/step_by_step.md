@@ -211,6 +211,22 @@ Before starting quantization, you may want to configure AutoRound's environment 
     auto-round-light --model Qwen/Qwen3-0.6B  --scheme "W4A16"  --format "auto_gptq,auto_awq,auto_round"
     ```
 
+- **AutoRoundOptRTN recipe  (optimized RTN, without gradient computation):**
+
+    This setting runs the optimized RTN (Round-To-Nearest) path (`iters=0` with `disable_opt_rtn=False`). It is calibration-free and several times faster than the default AutoRound recipe, while still applying AutoRound's RTN-side optimizations (e.g. improved scale/zero-point search and llamacpp-style refinements for GGUF). Recommended as a fast baseline when calibration data or tuning time is limited. See the [OPT RTN Mode](#opt-rtn-mode) section for details.
+
+    ```bash
+    auto-round-opt-rtn --model Qwen/Qwen3-0.6B  --scheme "W4A16"  --format "auto_round"
+    ```
+
+- **AutoRoundRTN recipe (pure RTN, calibration-free, no optimization):**
+
+    This setting runs pure RTN (`iters=0` with `disable_opt_rtn=True`), without any AutoRound optimization. It is the fastest path and uses the least memory, but typically yields lower accuracy than `auto-round-opt-rtn`. When combined with a supported INT WOQ scheme, it is automatically routed through [Model-Free Mode](#model-free-mode) for minimal memory usage. Use this as a quick sanity-check or when you want a calibration-free baseline equivalent to traditional RTN.
+
+    ```bash
+    auto-round-rtn --model Qwen/Qwen3-0.6B  --scheme "W4A16"  --format "auto_round"
+    ```
+
 ### API usage
 #### AutoRound API Usage
 This setting offers a better trade-off between accuracy and tuning cost, and is recommended in all scenarios.
@@ -292,11 +308,13 @@ configuration to suit your specific requirements and available resources.
 <details>
   <summary>Recipe Configuration Details</summary>
 
-| Recipe  | batch_size | iters | seqlen | nsamples | lr    |
-|---------|------------|-------|--------|----------|-------|
-| default | 8          | 200   | 2048   | 128      | None  |
-| best    | 8          | 1000  | 2048   | 512      | None  |
-| light   | 8          | 50    | 2048   | 128      | 5e-3  |
+| Recipe  | batch_size | iters | seqlen | nsamples | lr    | disable_opt_rtn |
+|---------|------------|-------|--------|----------|-------|-----------------|
+| default | 8          | 200   | 2048   | 128      | None  | False           |
+| best    | 8          | 1000  | 2048   | 512      | None  | False           |
+| light   | 8          | 50    | 2048   | 128      | 5e-3  | False           |
+| opt_rtn | 8          | 0     | 2048   | 128      | None  | False           |
+| rtn     | 8          | 0     | 2048   | 1        | None  | True            |
 
 </details>
 
@@ -466,6 +484,24 @@ Embedding layer is not supported in AutoScheme, it will use the best scheme in o
 AutoRound also supports Optimized RTN (Round-To-Nearest) mode for fast, calibration-free baseline quantization. Setting `iters=0` tp enable it and we recommend using `group_size=32` for better results. Check [accuracy comparison](./opt_rtn.md) between RTN and OPT RTN mode
 
 For the GGUF format, we have optimized the RTN algorithm inspired by llamacpp. To use the original (pure) RTN algorithm instead, enable the `--disable_opt_rtn` option.
+
+#### CLI Usage
+
+Two dedicated CLI entry points are provided as shortcuts:
+
+- `auto-round-opt-rtn` — equivalent to `auto-round --iters 0 --enable_opt_rtn` (optimized RTN, recommended).
+- `auto-round-rtn` — equivalent to `auto-round --iters 0 --disable_opt_rtn` (pure RTN, no optimization; auto-routes to [Model-Free Mode](#model-free-mode) for supported INT WOQ schemes).
+
+```bash
+# Optimized RTN (recommended fast baseline)
+auto-round-opt-rtn --model Qwen/Qwen3-0.6B --scheme "W4A16" --format "auto_round"
+
+# Pure RTN (fastest, lowest memory; baseline quality)
+auto-round-rtn --model Qwen/Qwen3-0.6B --scheme "W4A16" --format "auto_round"
+```
+
+#### API Usage
+
 ```python
 from auto_round import AutoRound
 
