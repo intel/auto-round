@@ -45,7 +45,6 @@ import torch.nn as nn
 import transformers
 from tqdm import tqdm
 
-import auto_round.export.export_to_autogptq.qlinear_triton
 from auto_round.export.utils import (
     filter_quantization_config,
     get_autogptq_packing_qlinear,
@@ -66,10 +65,8 @@ from auto_round.utils import (
     SUPPORTED_LAYER_TYPES,
     check_start_with_block_name,
     check_to_quantized,
-    copy_python_files_from_model_cache,
     get_block_names,
     get_module,
-    json_serialize,
     matches_any_regex,
     set_module,
     to_standard_regex,
@@ -160,9 +157,7 @@ def pack_layer(name, model, backend, device=None):
 
     bias = layer.bias is not None
     ##bias = True  ## if using the above, llama3 lambada RTN will be NAN , TODO why?
-    qlayer = QuantLinear(  ##pylint: disable=E1123
-        bits, group_size, in_features, out_features, bias, weight_dtype=layer.weight.dtype
-    )
+    qlayer = QuantLinear(bits, group_size, in_features, out_features, bias, g_idx=True)  ##pylint: disable=E1123
 
     qlayer.device = orig_device
     scale = layer.scale
@@ -172,8 +167,7 @@ def pack_layer(name, model, backend, device=None):
     ##force to float32 to be compatible with torch 2.0
     if sym and isinstance(zero, torch.Tensor):
         layer, scale, zero = layer.to("cpu"), scale.to("cpu"), zero.to("cpu")
-        if isinstance(qlayer, auto_round.export.export_to_autogptq.qlinear_triton.QuantLinear):
-            zero = int(zero.flatten()[0])
+        zero = int(zero.flatten()[0])
     else:
         layer, scale, zero = layer.to("cpu"), scale.to("cpu"), zero
     if isinstance(zero, torch.Tensor) and zero.dtype == torch.bfloat16:
