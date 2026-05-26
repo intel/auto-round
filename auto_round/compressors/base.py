@@ -336,6 +336,11 @@ class BaseCompressor(object):
         )
         self.shard_writer = None
 
+    @property
+    def tokenizer(self):
+        """Convenience accessor for the tokenizer stored in ``model_context``."""
+        return self.model_context.tokenizer
+
         # scale_dtype is resolved in quantizer.resolve_scheme() after scheme resolution,
         # so it is not initialized here to avoid premature evaluation with an unresolved scheme.
 

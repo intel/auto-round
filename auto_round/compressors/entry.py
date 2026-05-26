@@ -216,7 +216,11 @@ class AutoRound(object):
         elif len(block_quant_configs) == 1:
             quant_config = block_quant_configs[0]
         else:
-            quant_config = alg_configs
+            raise ValueError(
+                "At least one quantization algorithm config is required. "
+                "Pass a block quantizer such as RTNConfig or SignRoundConfig, "
+                "or a quantization preprocessor such as AWQConfig."
+            )
 
         # Model-free routing is now supported directly by the new entry path.
         route_kwargs = dict(kwargs)
