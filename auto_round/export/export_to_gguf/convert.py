@@ -37,14 +37,12 @@ from __future__ import annotations
 import json
 import os
 import re
-import sys
 from functools import partial
 from itertools import chain
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Iterator
 
 import numpy as np
-import requests
 import torch
 from transformers import AutoConfig
 
@@ -66,24 +64,6 @@ gguf = LazyImport("gguf")
 
 if TYPE_CHECKING:
     from torch import Tensor
-
-
-def download_convert_file(redownload=False):
-    CONVERT_URL = "https://raw.githubusercontent.com/ggml-org/llama.cpp/refs/heads/master/convert_hf_to_gguf.py"
-    FILE_NAME = "convert_hf_to_gguf.py"
-    gguf_export_dir = os.path.dirname(__file__)
-    if redownload is False and FILE_NAME in os.listdir(gguf_export_dir):
-        return
-    try:
-        response = requests.get(CONVERT_URL)
-    except:
-        logger.error(
-            f"Fail to download the dependency file, please try downloading the convert_hf_to_gguf.py"
-            f" from https://github.com/ggml-org/llama.cpp manually and move it to {gguf_export_dir}."
-        )
-        sys.exit(-1)
-    with open(os.path.join(gguf_export_dir, FILE_NAME), "w", encoding="utf-8") as f:
-        f.write(response.text)
 
 
 def wrapper_model_instance(
@@ -142,11 +122,19 @@ def get_moe_name(cls, name, new_name):
     return name
 
 
+def is_mmproj_tensor_name(name):
+    from auto_round.utils.common import MM_KEYS
+
+    name = name.lower()
+    return any(key in name for key in MM_KEYS)
+
+
 def get_tensors(cls) -> Iterator[tuple[str, Tensor]]:
     if not hasattr(cls.model, "tensor_name_list"):
         cls.model.tensor_name_list = []
 
-    reverse_key_mapping = {v: k for k, v in getattr(cls.model, "_checkpoint_conversion_mapping", {}).items()}
+    checkpoint_conversion_mapping = getattr(cls.model, "_checkpoint_conversion_mapping", {}) or {}
+    reverse_key_mapping = {v: k for k, v in checkpoint_conversion_mapping.items()}
     for name, tensor in cls.model.named_parameters():
         if name not in cls.model.tensor_name_list:
             cls.model.tensor_name_list.append(name)
@@ -298,7 +286,6 @@ def _quant_data(cls, data_torch, data_qtype, name, modify_name, new_name, bid, d
             kwargs_key = attr.replace("w_", "") if attr.startswith("w_") else attr
             kwargs[kwargs_key] = attr_tensor.to(torch.float32)
     data_torch = data_torch.to(torch.float32)
-
     data = ggml_quant(data_torch, data_qtype.name.lower(), device=device, **kwargs)
     # else:
     #     # if data_torch.dtype ==torch.float32:
@@ -312,6 +299,14 @@ def _quant_data(cls, data_torch, data_qtype, name, modify_name, new_name, bid, d
 
 def get_qtype_by_layer_config(layer_config, name, data_qtype):
     name = name[: -len(".weight")]
+    if name not in layer_config and name.endswith("embed_tokens"):
+        embedding_names = [key for key in layer_config if key.endswith("embed_tokens")]
+        if len(embedding_names) == 1:
+            name = embedding_names[0]
+    elif name == "token_embd":
+        embedding_names = [key for key in layer_config if key.endswith("embed_tokens")]
+        if len(embedding_names) == 1:
+            name = embedding_names[0]
     if name not in layer_config or layer_config[name]["bits"] >= 16:
         return data_qtype
     bits = layer_config[name].get("bits")
@@ -428,6 +423,9 @@ def prepare_tensors(cls):
         max_name_len = len("vision_encoder.weight,")  # Default reasonable length
 
     for name, data_torch in chain(cls.generate_extra_tensors(), cls.get_tensors()):
+        is_mmproj_model = cls.model_arch == gguf.MODEL_ARCH.MMPROJ
+        if is_mmproj_model != is_mmproj_tensor_name(name):
+            continue
         if name in getattr(cls.model, "_tied_weights_keys", []) and not is_separate_tensor(cls.model, name):
             continue
         if data_torch is None or data_torch.numel() == 0:
@@ -443,6 +441,11 @@ def prepare_tensors(cls):
                 or name_split[: len(current_packing_block_split)] != current_packing_block_split
             ):
                 continue
+
+        filtered = cls.filter_tensors((name, lambda data_torch=data_torch: data_torch))
+        if filtered is None:
+            continue
+        name = filtered[0]
 
         old_dtype = data_torch.dtype
 
@@ -536,9 +539,7 @@ def prepare_tensors(cls):
             name = get_moe_name(cls, name, new_name)
             clean_weight_list.append(name)
             # get data_qtype by layer_config
-            if isinstance(data_qtype, bool):
-                data_qtype = get_qtype_by_layer_config(cls.layer_config, name, data_qtype)
-
+            data_qtype = get_qtype_by_layer_config(cls.layer_config, name, data_qtype)
             # # No override (data_qtype is False), or wants to be quantized (data_qtype is True)
             if isinstance(data_qtype, bool):
                 if cls.ftype == gguf.LlamaFileType.ALL_F32:
@@ -619,7 +620,7 @@ def prepare_tensors(cls):
                     data = gguf.quants.quantize(data, data_qtype)
             else:
                 # for deepseek v2
-                if name.endswith("kv_b_proj.weight") and cls.model_arch.name == "DEEPSEEK2":
+                if name.endswith("kv_b_proj.weight") and cls.model_arch.name in ("DEEPSEEK2", "GLM_DSA"):
                     layer_name = name[: -len(".weight")]
                     module = get_module(cls.model, layer_name)
                     n_head_kv = cls.hparams["num_key_value_heads"]

@@ -21,6 +21,7 @@ repos:
             auto_round/.*(py|yaml|yml|sh)|
             auto_round_extension/.*(py|yaml|yml|sh)
           )$
+        exclude: ^auto_round/export/export_to_gguf/conversion/.*\.py$
         args:
           [
             --license-filepath=.azure-pipelines/license_template.txt,
@@ -36,7 +37,8 @@ repos:
         files: (.*\.py)$
         exclude: |
           (?x)^(
-              .azure-pipelines/scripts/cuda_unit_test/.+
+              .azure-pipelines/scripts/cuda_unit_test/.+|
+              auto_round/export/export_to_gguf/conversion/.+
           )$
 
 
@@ -53,6 +55,7 @@ repos:
     hooks:
       - id: codespell
         args: [-w]
+        exclude: ^auto_round/export/export_to_gguf/conversion/.*\.py$
         additional_dependencies:
           - tomli
 
@@ -60,17 +63,20 @@ repos:
     rev: v1.45.0
     hooks:
       - id: typos
+        exclude: ^auto_round/export/export_to_gguf/conversion/.*\.py$
 
   - repo: https://github.com/pycqa/isort
     rev: 8.0.1
     hooks:
       - id: isort
+        exclude: ^auto_round/export/export_to_gguf/conversion/.*\.py$
 
   - repo: https://github.com/astral-sh/ruff-pre-commit
     rev: v0.15.9
     hooks:
       - id: ruff
         args: [--fix, --exit-non-zero-on-fix, --no-cache]
+        exclude: ^auto_round/export/export_to_gguf/conversion/.*\.py$
 
   - repo: https://github.com/tcort/markdown-link-check
     rev: v3.14.2
@@ -87,4 +93,5 @@ repos:
             auto_round/.*\.py|
             auto_round_extension/.*\.py
           )$
+        exclude: ^auto_round/export/export_to_gguf/conversion/.*\.py$
         args: [-r, -lll, -iii, auto_round/, auto_round_extension/]

@@ -28,7 +28,7 @@ from packaging import version
 from auto_round import envs
 from auto_round.export.export_to_gguf.config import ModelType
 from auto_round.logger import logger
-from auto_round.utils.common import monkey_patch_model
+from auto_round.utils.common import AUDIO_MM_KEYS, VISION_MM_KEYS, monkey_patch_model
 from auto_round.utils.weight_handler import (
     _dequant_fp8_linear_weight,
     check_and_mark_quantized_module,
@@ -1122,13 +1122,11 @@ def get_block_names(model, quant_vision=False):
             return SPECIAL_MULTIMODAL_BLOCK[effective_type](model, quant_vision=quant_vision)
         block_names = []
         target_modules = []
-        vision_blocks_tuple = ("vision", "visual", "image", "img")
-        audio_blocks_tuple = ("audio", "speech", "wav", "waveform")
         target_modules = _search_block("", model)
 
         for i, target_m in enumerate(target_modules):
-            if quant_vision or all(key not in target_m[0].lower() for key in (vision_blocks_tuple)):
-                if ignore_audio and any(key in target_m[0].lower() for key in audio_blocks_tuple):
+            if quant_vision or all(key not in target_m[0].lower() for key in VISION_MM_KEYS):
+                if ignore_audio and any(key in target_m[0].lower() for key in AUDIO_MM_KEYS):
                     continue
                 block_names.append([])
                 for n, m in target_m[1].named_children():
@@ -1267,16 +1265,14 @@ def get_nested_attr(module, attr_name: str):
 
 
 def get_gguf_architecture(dir_model, model_type=ModelType.TEXT):
-    from auto_round.export.export_to_gguf.convert_hf_to_gguf import (
-        ModelBase,
-        get_model_architecture,
-    )
+    from auto_round.export.export_to_gguf.llama_cpp_conversion import get_conversion
 
     is_mistral_format = False
     if isinstance(dir_model, str):
         dir_model = Path(dir_model)
 
-    hparams = ModelBase.load_hparams(dir_model, is_mistral_format)
+    conversion = get_conversion(dir_model, model_type=model_type)
+    hparams = conversion.ModelBase.load_hparams(dir_model, is_mistral_format)
     if isinstance(hparams, dict):
         tmp_model_type = hparams["model_type"]
     else:
@@ -1284,11 +1280,11 @@ def get_gguf_architecture(dir_model, model_type=ModelType.TEXT):
     if "mistral" == tmp_model_type:
         is_mistral_format = True
         try:
-            hparams = ModelBase.load_hparams(dir_model, is_mistral_format)
+            hparams = conversion.ModelBase.load_hparams(dir_model, is_mistral_format)
         except Exception:
             is_mistral_format = False
     if not is_mistral_format:
-        model_class = get_model_architecture(hparams, model_type)
+        model_class = conversion.get_model_architecture(hparams, conversion.model_type(model_type))
     elif model_type == ModelType.MMPROJ:
         assert hparams.get("vision_encoder") is not None, "This model does not support multimodal"
         model_class = "PixtralModel"
