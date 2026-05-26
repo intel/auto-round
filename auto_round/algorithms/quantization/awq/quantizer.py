@@ -61,6 +61,7 @@ from auto_round.utils import (
     set_module,
 )
 from auto_round.wrapper import WrapperLinear
+from auto_round.wrapper import WrapperMultiblock as _WrapperMultiblock
 
 
 class AWQQuantizer(BaseQuantizers):
@@ -89,6 +90,19 @@ class AWQQuantizer(BaseQuantizers):
 
         # Fail fast: validate scheme at construction time
         self._check_scheme_compatibility()
+
+    def bind(self, compressor) -> None:
+        """Wire shared state and validate compressor settings for AWQ compatibility."""
+        super().bind(compressor)
+        # Check for unsupported compressor-level args
+        nblocks = getattr(compressor, "nblocks", 1)
+        if nblocks > 1:
+            logger.warning(
+                f"AWQ does not support nblocks > 1 (got nblocks={nblocks}). "
+                f"AWQ smoothing resolves activation hooks and mappings per single block prefix. "
+                f"Falling back to nblocks=1."
+            )
+            compressor.nblocks = 1
 
     def __setattr__(self, name, value):
         """Trigger model-level AWQ setup when compress_context is assigned."""
@@ -397,6 +411,13 @@ class AWQQuantizer(BaseQuantizers):
             reference_output: FP16 block output (kept for interface consistency).
             **kwargs: Must include 'block_name' for mapping lookup.
         """
+        if isinstance(block, _WrapperMultiblock):
+            raise ValueError(
+                "AWQ does not support nblocks > 1 (multi-block quantization). "
+                "Each block must be quantized individually. "
+                "Please set nblocks=1 when using algorithm='awq'."
+            )
+
         block_name = kwargs.get("block_name")
         if block_name is None:
             # Infer block_name from resolved mappings by matching the block's modules
