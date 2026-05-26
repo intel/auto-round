@@ -18,7 +18,7 @@ from typing import Callable, Union
 
 import torch
 
-from auto_round.export.utils import save_model
+from auto_round.export.utils import is_immediate_saving_mode, save_model
 from auto_round.logger import logger
 from auto_round.utils import (
     SUPPORTED_LAYER_TYPES,
@@ -202,8 +202,9 @@ def save_quantized_as_llmcompressor(
 
     safe_serialization = kwargs.get("safe_serialization", True)
     processor = kwargs.get("processor", None)
-    # if output_dir is not None and os.path.exists(output_dir):
-    #     logger.warning(f"{output_dir} already exists, this may cause model conflict")
+    immediate_saving = is_immediate_saving_mode(model, serialization_dict)
+    if output_dir is not None and os.path.exists(output_dir) and not immediate_saving:
+        logger.warning(f"{output_dir} already exists, this may cause model conflict")
     if not inplace:
         model = copy.deepcopy(model.to("cpu"))
 
@@ -229,7 +230,7 @@ def save_quantized_as_llmcompressor(
     # save model.config, model.state_dict()
     model.config.save_pretrained(output_dir)
 
-    save_model(model, output_dir, safe_serialization=safe_serialization)
+    save_model(model, output_dir, safe_serialization=safe_serialization, immediate_saving=immediate_saving)
 
     try:
         copy_python_files_from_model_cache(model, output_dir)

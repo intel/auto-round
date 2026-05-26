@@ -48,6 +48,7 @@ from tqdm import tqdm
 from auto_round.export.utils import (
     filter_quantization_config,
     get_autogptq_packing_qlinear,
+    is_immediate_saving_mode,
     release_layer_safely,
     resolve_pipeline_export_layout,
     save_model,
@@ -205,14 +206,15 @@ def save_quantized_as_autogptq(
     safe_serialization = kwargs.get("safe_serialization", True)
 
     # --- Save metadata (tokenizer, processor, etc.) ---
+    immediate_saving = is_immediate_saving_mode(model, serialization_dict)
     processor_output_dir = output_dir
     model_output_dir = output_dir
     if output_dir:
         model_output_dir, processor_output_dir, _ = resolve_pipeline_export_layout(model, output_dir)
 
     if output_dir:
-        # if os.path.exists(output_dir):
-        #     logger.info(f"{output_dir} already exists, may cause overwrite conflicts.")
+        if os.path.exists(output_dir) and not immediate_saving:
+            logger.warning(f"{output_dir} already exists, this may cause model conflict")
         for comp in (tokenizer, processor, image_processor):
             if comp is not None and hasattr(comp, "save_pretrained"):
                 comp.save_pretrained(processor_output_dir)
@@ -311,6 +313,11 @@ def save_quantized_as_autogptq(
 
     dtype = torch.float16  ##force dtype to fp16
     save_model(
-        model, model_output_dir, safe_serialization=safe_serialization, dtype=dtype, config_file="quantize_config.json"
+        model,
+        model_output_dir,
+        safe_serialization=safe_serialization,
+        dtype=dtype,
+        config_file="quantize_config.json",
+        immediate_saving=immediate_saving,
     )
     return model
