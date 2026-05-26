@@ -37,5 +37,3 @@ from auto_round.algorithms.quantization.awq.config import AWQConfig
 from auto_round.algorithms.quantization.awq.quantizer import AWQQuantizer
 from auto_round.algorithms.quantization.rtn.config import RTNConfig
 from auto_round.algorithms.quantization.rtn.quantizer import RTNQuantizer, OptimizedRTNQuantizer
-from auto_round.algorithms.quantization.awq.config import AWQConfig
-from auto_round.algorithms.quantization.awq.quantizer import AWQQuantizer

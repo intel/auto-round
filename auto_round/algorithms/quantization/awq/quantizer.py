@@ -111,7 +111,8 @@ class AWQQuantizer(BaseWeightTransformer):
                 "AWQ: no layer mappings were resolved for this model. "
                 f"Model class: {type(run_ctx.model).__name__}. "
                 "To add support, provide explicit 'mappings' in AWQConfig, or "
-                "add an entry to auto_round/algorithms/quantization/awq/mappings.py.")
+                "add an entry to auto_round/algorithms/quantization/awq/mappings.py."
+            )
 
         # Group mappings by block prefix for O(1) lookup during block iteration.
         self._block_mappings = {}
@@ -162,8 +163,7 @@ class AWQQuantizer(BaseWeightTransformer):
         before the block quantizer runs.
         """
         if len(ctx.block_names) != 1:
-            raise ValueError(
-                f"AWQ requires nblocks=1, got {len(ctx.block_names)} blocks: {ctx.block_names}.")
+            raise ValueError(f"AWQ requires nblocks=1, got {len(ctx.block_names)} blocks: {ctx.block_names}.")
         block_name = ctx.block_names[0]
         block_mappings = self._block_mappings.get(block_name, [])
         if not block_mappings:
@@ -290,10 +290,14 @@ class AWQQuantizer(BaseWeightTransformer):
                                 v = v.to(w_dtype)
                             stored[k] = v
                         elif isinstance(v, tuple) and any(isinstance(t, torch.Tensor) for t in v):
-                            stored[k] = tuple((
-                                t.detach().to(w_dtype) if (
-                                    w_dtype and isinstance(t, torch.Tensor) and t.is_floating_point()) else (
-                                        t.detach() if isinstance(t, torch.Tensor) else t)) for t in v)
+                            stored[k] = tuple(
+                                (
+                                    t.detach().to(w_dtype)
+                                    if (w_dtype and isinstance(t, torch.Tensor) and t.is_floating_point())
+                                    else (t.detach() if isinstance(t, torch.Tensor) else t)
+                                )
+                                for t in v
+                            )
                         elif hasattr(v, "key_cache"):
                             stored[k] = None  # Null out KV cache objects
                         else:
@@ -350,13 +354,13 @@ class AWQQuantizer(BaseWeightTransformer):
         match self.duo_scaling:
             case "both":
                 n = max(int(self.n_grid / 2), 2)
-                return [(idx / (n-1), duo) for idx in range(n) for duo in [False, True]]
+                return [(idx / (n - 1), duo) for idx in range(n) for duo in [False, True]]
             case False:
                 n = max(self.n_grid, 2)
-                return [(idx / (n-1), False) for idx in range(n)]
+                return [(idx / (n - 1), False) for idx in range(n)]
             case True:
                 n = max(self.n_grid, 3)
-                return [(0.0, False)] + [(idx / (n-2), True) for idx in range(n - 1)]
+                return [(0.0, False)] + [(idx / (n - 2), True) for idx in range(n - 1)]
             case _:
                 raise ValueError(f"Unexpected duo_scaling value: {self.duo_scaling!r}")
 
@@ -450,7 +454,7 @@ class AWQQuantizer(BaseWeightTransformer):
                     if w_qdq is None:
                         total_loss = float("inf")
                         break
-                    total_loss += (w_orig - w_qdq/scales_view).pow(2).sum().item()
+                    total_loss += (w_orig - w_qdq / scales_view).pow(2).sum().item()
 
             if total_loss < best_error:
                 best_error = total_loss
@@ -552,7 +556,7 @@ class AWQQuantizer(BaseWeightTransformer):
         if smooth.weight.ndim == 1:
             smooth.weight.data.div_(s)
         else:
-            smooth.weight.data[-s.size(0):].div_(s.view(-1, 1))
+            smooth.weight.data[-s.size(0) :].div_(s.view(-1, 1))
 
         if hasattr(smooth, "bias") and smooth.bias is not None:
             smooth.bias.data.div_(s)

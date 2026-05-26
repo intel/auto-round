@@ -42,6 +42,7 @@ from auto_round.compressors.utils import block_forward
 
 if TYPE_CHECKING:  # avoid circular imports at runtime
     import torch
+
     from auto_round.algorithms.quantization.base import (
         BasePipelineMember,
         BaseQuantizer,
@@ -187,7 +188,8 @@ def merge_policies(policies: list["ActCalibPolicy"]) -> "ActCalibPolicy":
             f"Incompatible act-calib policies: multiple algorithms request "
             f"when={merged_when.name!r} but with different input sources: "
             f"{[s.name for s in sources]}. "
-            "Use a compatible combination of algorithms or file an issue.")
+            "Use a compatible combination of algorithms or file an issue."
+        )
 
     return ActCalibPolicy(when=merged_when, source=contributing[0].source)
 
@@ -357,8 +359,9 @@ class DiffusionBlockIO(BlockIO):
                     if quantizer.batch_size == 1:
                         outputs[name].append(out.to(quantizer.compress_context.cache_device))
                     else:
-                        outputs[name].extend(list(torch.split(out.to(quantizer.compress_context.cache_device), 1,
-                                                              dim=self.batch_dim)))
+                        outputs[name].extend(
+                            list(torch.split(out.to(quantizer.compress_context.cache_device), 1, dim=self.batch_dim))
+                        )
         quantizer.compress_context.clear_memory()
         return outputs
 
@@ -517,12 +520,13 @@ class QuantizationPipeline:
         for q in self.preprocessors:
             if not isinstance(q, BaseWeightTransformer):
                 raise TypeError(
-                    f"{type(q).__name__} is listed as a preprocessor but does not "
-                    f"inherit BaseWeightTransformer.")
+                    f"{type(q).__name__} is listed as a preprocessor but does not " f"inherit BaseWeightTransformer."
+                )
         if not isinstance(self.block_quantizer, BaseQuantizer):
             raise TypeError(
                 f"{type(self.block_quantizer).__name__} is used as block_quantizer but does not "
-                f"inherit BaseQuantizer.")
+                f"inherit BaseQuantizer."
+            )
 
     def all(self) -> "list[BasePipelineMember]":
         """Return all members in pipeline order: preprocessors then block_quantizer."""
@@ -546,20 +550,20 @@ class QuantizationPipeline:
         import importlib
 
         from auto_round.algorithms.quantization.base import (
-            BaseQuantizer, BaseWeightTransformer, DiffusionMixin,
+            BaseQuantizer,
+            BaseWeightTransformer,
+            DiffusionMixin,
         )
         from auto_round.algorithms.quantization.config import QuantizationConfig
 
-        is_diffusion = (
-            compressor is not None
-            and getattr(compressor.model_context, "is_diffusion", False)
-        )
+        is_diffusion = compressor is not None and getattr(compressor.model_context, "is_diffusion", False)
 
         # Ensure at least one terminal block quantizer is present; fall back to RTN.
         _, block_quantizer_configs = split_quantization_configs(configs)
         has_quantizer = bool(block_quantizer_configs)
         if not has_quantizer:
             from auto_round.algorithms.quantization.rtn.config import RTNConfig
+
             configs = list(configs) + [RTNConfig()]
 
         def _resolve_cls(cfg):
@@ -585,15 +589,16 @@ class QuantizationPipeline:
                 block_quantizers.append(q)
             else:
                 raise TypeError(
-                    f"Algorithm class {type(q).__name__} must inherit either "
-                    "BaseWeightTransformer or BaseQuantizer.")
+                    f"Algorithm class {type(q).__name__} must inherit either " "BaseWeightTransformer or BaseQuantizer."
+                )
 
         if len(block_quantizers) > 1:
             raise ValueError(
                 f"QuantizationPipeline allows exactly one block-quantization config, "
                 f"but got {len(block_quantizers)}: "
                 f"{[type(q).__name__ for q in block_quantizers]}. "
-                "Ensure only one of RTNConfig / SignRoundConfig / etc. is in the pipeline.")
+                "Ensure only one of RTNConfig / SignRoundConfig / etc. is in the pipeline."
+            )
 
         seen_preprocessors = set()
         for preprocessor in preprocessors:
@@ -601,7 +606,8 @@ class QuantizationPipeline:
             if name in seen_preprocessors:
                 raise ValueError(
                     f"Duplicate preprocessor {name} in QuantizationPipeline. "
-                    "Repeated instances of the same preprocessor are not supported yet.")
+                    "Repeated instances of the same preprocessor are not supported yet."
+                )
             seen_preprocessors.add(name)
 
         return cls(preprocessors=preprocessors, block_quantizer=block_quantizers[0])

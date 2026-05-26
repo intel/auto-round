@@ -53,7 +53,8 @@ class RTNConfig(QuantizationConfig):
                 disable_opt_rtn = True
         if disable_opt_rtn is None:
             logger.info(
-                "`enable_opt_rtn` is turned on, set `--disable_opt_rtn` for higher speed at the cost of accuracy.")
+                "`enable_opt_rtn` is turned on, set `--disable_opt_rtn` for higher speed at the cost of accuracy."
+            )
             disable_opt_rtn = False
         self.disable_opt_rtn = disable_opt_rtn
         if not self.disable_opt_rtn:

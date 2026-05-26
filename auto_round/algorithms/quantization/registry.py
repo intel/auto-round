@@ -24,9 +24,10 @@ Design invariant (AWQ_REFACTOR_PLAN.md §0.0 Rule 1):
     argument definitions.  ``compressors/`` code may not contain ``algorithm ==
     "awq"``-style branches.
 """
+
 from __future__ import annotations
 
-from typing import Callable, TYPE_CHECKING
+from typing import TYPE_CHECKING, Callable
 
 if TYPE_CHECKING:
     from auto_round.algorithms.alg_config import AlgConfig
@@ -70,7 +71,8 @@ def resolve_alg_config(alias: str) -> "AlgConfig":
             f"Unknown algorithm alias '{alias}'. "
             f"Supported aliases: {sorted(_REGISTRY.keys())}. "
             "If you are adding a new algorithm, register it via "
-            "auto_round.algorithms.quantization.registry.register_alg().")
+            "auto_round.algorithms.quantization.registry.register_alg()."
+        )
     return _REGISTRY[key]()
 
 
@@ -88,10 +90,10 @@ def list_registered_algorithms() -> list[str]:
 
 
 def _register_builtins() -> None:
+    from auto_round.algorithms.quantization.awq.config import AWQConfig
     from auto_round.algorithms.quantization.rtn.config import RTNConfig
     from auto_round.algorithms.quantization.sign_round.config import SignRoundConfig
     from auto_round.algorithms.transforms.rotation.config import RotationConfig
-    from auto_round.algorithms.quantization.awq.config import AWQConfig
 
     register_alg("rtn", RTNConfig)
     register_alg("sign_round", SignRoundConfig)

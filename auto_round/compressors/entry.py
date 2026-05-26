@@ -8,10 +8,10 @@ import torch
 
 from auto_round.algorithms.alg_config import AlgConfig
 from auto_round.algorithms.quantization.awq.config import AWQConfig
-from auto_round.algorithms.quantization.rtn.config import RTNConfig
-from auto_round.algorithms.quantization.sign_round.config import SignRoundConfig
 from auto_round.algorithms.quantization.pipeline import split_quantization_configs
 from auto_round.algorithms.quantization.registry import resolve_alg_config
+from auto_round.algorithms.quantization.rtn.config import RTNConfig
+from auto_round.algorithms.quantization.sign_round.config import SignRoundConfig
 from auto_round.algorithms.transforms.rotation.config import RotationConfig as _NewArchRotationConfig
 from auto_round.auto_scheme.gen_auto_scheme import AutoScheme
 from auto_round.compressors.data_driven import CalibratedRTNCompressor, DataDrivenCompressor
@@ -206,11 +206,13 @@ class AutoRound(object):
             # Preprocessor-only input: pipeline will auto-append RTN as block_quantizer.
             # Use a placeholder RTNConfig for scheme validation only.
             from auto_round.algorithms.quantization.rtn.config import RTNConfig as _RTNConfig
+
             quant_config = _RTNConfig()
         elif len(block_quant_configs) > 1:
             raise ValueError(
                 f"Only one block-quantization config is allowed, but got {len(block_quant_configs)}: "
-                f"{[type(c).__name__ for c in block_quant_configs]}")
+                f"{[type(c).__name__ for c in block_quant_configs]}"
+            )
         elif len(block_quant_configs) == 1:
             quant_config = block_quant_configs[0]
         else:
@@ -229,7 +231,8 @@ class AutoRound(object):
                 logger.info(
                     "Auto-routing to model-free quantization "
                     "(iters=0, disable_opt_rtn=True, supported scheme). "
-                    "Pass disable_model_free=True to use the regular flow.")
+                    "Pass disable_model_free=True to use the regular flow."
+                )
             return ModelFreeCompressor(
                 model_name_or_path=model,
                 scheme=scheme,
@@ -481,7 +484,8 @@ class AutoRoundCompatible:
                 logger.info(
                     "Auto-routing to model-free quantization "
                     "(iters=0, disable_opt_rtn=True, supported scheme). "
-                    "Pass disable_model_free=True to use the regular flow.")
+                    "Pass disable_model_free=True to use the regular flow."
+                )
             return ModelFreeCompressor(
                 model_name_or_path=model,
                 scheme=scheme,

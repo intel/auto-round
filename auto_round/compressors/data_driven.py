@@ -154,7 +154,8 @@ class DataDrivenCompressor(BaseCompressor):
         if self.calibration is None:
             self.post_init()
         return self.calibration.cache_inter_data(
-            block_names, nsamples, layer_names=layer_names, last_cache_name=last_cache_name)
+            block_names, nsamples, layer_names=layer_names, last_cache_name=last_cache_name
+        )
 
     @torch.no_grad()
     def calib(self, nsamples, bs):
@@ -338,8 +339,11 @@ class DataDrivenCompressor(BaseCompressor):
             convert_module_to_hp_if_necessary(block, self.model_context.amp_dtype, device)
 
             if auto_offload:
-                if (is_auto_device_mapping(self.compress_context.device_map) and
-                        len(self.compress_context.device_list) > 1 and not self.model_context.is_diffusion):
+                if (
+                    is_auto_device_mapping(self.compress_context.device_map)
+                    and len(self.compress_context.device_list) > 1
+                    and not self.model_context.is_diffusion
+                ):
                     from auto_round.utils.device import set_auto_device_map_for_block_with_tuning
 
                     card_0_in_high_risk, loss_device = set_auto_device_map_for_block_with_tuning(
@@ -390,16 +394,19 @@ class DataDrivenCompressor(BaseCompressor):
                 with ExitStack() as fwd_stack:
                     self.pipeline.enter_preprocessor_hooks(ctx, fwd_stack)
                     reference_output = ctx.io.collect_outputs(
-                        block, self.quantizer, source=InputSource.FP_CACHE, batch_size=bs)
+                        block, self.quantizer, source=InputSource.FP_CACHE, batch_size=bs
+                    )
                 with ExitStack() as fwd_stack:
                     self.pipeline.enter_quantizer_hooks(ctx, fwd_stack)
                     ctx.io.collect_outputs(
-                        block, self.quantizer, source=InputSource.QUANTIZED_INPUT, batch_size=bs, save=False)
+                        block, self.quantizer, source=InputSource.QUANTIZED_INPUT, batch_size=bs, save=False
+                    )
             else:
                 with ExitStack() as fwd_stack:
                     self.pipeline.enter_block_forward_hooks(ctx, fwd_stack)
                     reference_output = ctx.io.collect_outputs(
-                        block, self.quantizer, source=InputSource.FP_CACHE, batch_size=bs)
+                        block, self.quantizer, source=InputSource.FP_CACHE, batch_size=bs
+                    )
 
             if q_input is not None:
                 if input_ids is not q_input:
@@ -482,7 +489,7 @@ class DataDrivenCompressor(BaseCompressor):
                 pbar.set_description(f"Quantizing {n}")
                 m = get_module(model, n)
             else:
-                names = block_names[i:min(i + nblocks, len(block_names))]
+                names = block_names[i : min(i + nblocks, len(block_names))]
                 pbar.set_description(f"Quantizing [{i + 1}-{min(i + nblocks, len(block_names))}]/{len(block_names)}")
                 modules = [get_module(model, n) for n in names]
                 m = WrapperMultiblock(modules)
@@ -499,8 +506,11 @@ class DataDrivenCompressor(BaseCompressor):
             materialize_model_(m)
             convert_module_to_hp_if_necessary(m, self.model_context.amp_dtype, self.compress_context.device)
 
-            if (is_auto_device_mapping(self.compress_context.device_map) and
-                    len(self.compress_context.device_list) > 1 and not self.model_context.is_diffusion):
+            if (
+                is_auto_device_mapping(self.compress_context.device_map)
+                and len(self.compress_context.device_list) > 1
+                and not self.model_context.is_diffusion
+            ):
                 from auto_round.utils.device import set_auto_device_map_for_block_with_tuning
 
                 card_0_in_high_risk, loss_device = set_auto_device_map_for_block_with_tuning(
@@ -525,8 +535,10 @@ class DataDrivenCompressor(BaseCompressor):
 
             # ── Pipeline lifecycle: per-block setup ───────────────────────────
             from auto_round.algorithms.quantization.pipeline import BlockContext, InputSource
+
             current_block_names = (
-                block_name_or_names if isinstance(block_name_or_names, list) else [block_name_or_names])
+                block_name_or_names if isinstance(block_name_or_names, list) else [block_name_or_names]
+            )
             current_block_name = current_block_names[0] if len(current_block_names) == 1 else str(block_name_or_names)
             bs = self.quantizer.batch_size * self.quantizer.infer_bs_coeff
             mid_iter_mem_check = self.compress_context.low_gpu_mem_usage and card_0_in_high_risk
@@ -556,19 +568,22 @@ class DataDrivenCompressor(BaseCompressor):
                 # First: reference forward with FP inputs and preprocessor hooks only.
                 with ExitStack() as fwd_stack:
                     self.pipeline.enter_preprocessor_hooks(ctx, fwd_stack)
-                    reference_output = ctx.io.collect_outputs(m, self.quantizer, source=InputSource.FP_CACHE,
-                                                              batch_size=bs)
+                    reference_output = ctx.io.collect_outputs(
+                        m, self.quantizer, source=InputSource.FP_CACHE, batch_size=bs
+                    )
                 # Second: quantizer stats forward with q_input.
                 with ExitStack() as fwd_stack:
                     self.pipeline.enter_quantizer_hooks(ctx, fwd_stack)
-                    ctx.io.collect_outputs(m, self.quantizer, source=InputSource.QUANTIZED_INPUT, batch_size=bs,
-                                           save=False)
+                    ctx.io.collect_outputs(
+                        m, self.quantizer, source=InputSource.QUANTIZED_INPUT, batch_size=bs, save=False
+                    )
             else:
                 # Unified: reference forward with all hooks active (or no hooks).
                 with ExitStack() as fwd_stack:
                     self.pipeline.enter_block_forward_hooks(ctx, fwd_stack)
-                    reference_output = ctx.io.collect_outputs(m, self.quantizer, source=InputSource.FP_CACHE,
-                                                              batch_size=bs)
+                    reference_output = ctx.io.collect_outputs(
+                        m, self.quantizer, source=InputSource.FP_CACHE, batch_size=bs
+                    )
 
             ctx.reference_output = reference_output
 
@@ -614,7 +629,8 @@ class DataDrivenCompressor(BaseCompressor):
             # next block.
             next_input_ids = reference_output
             clear_memory(
-                input_ids if input_ids is not next_input_ids else None, device_list=self.compress_context.device_list)
+                input_ids if input_ids is not next_input_ids else None, device_list=self.compress_context.device_list
+            )
             memory_monitor.log_summary()
 
             # ── Infrastructure: immediate_pack / shard write ──────────────────
@@ -690,7 +706,8 @@ class DataDrivenCompressor(BaseCompressor):
             to_cache_layer_names = []
         if len(layer_names) > 0:
             logger.info(
-                "Starting to cache block inputs. This may be slow due to external block layers: %s", layer_names)
+                "Starting to cache block inputs. This may be slow due to external block layers: %s", layer_names
+            )
         else:
             logger.info("start to cache block inputs")
         all_inputs = self.try_cache_inter_data_gpucpu(
@@ -782,7 +799,8 @@ class DataDrivenCompressor(BaseCompressor):
                 if self.compress_context.is_immediate_packing and len(self.formats) != 1:
                     raise ValueError(
                         f"Expected exactly one packing format when 'immediate_packing' is True, "
-                        f"but got {len(self.formats)} formats.")
+                        f"but got {len(self.formats)} formats."
+                    )
         finally:
             # ── Pipeline lifecycle: finalize_quantization (model-level teardown) ─
             for alg in self.pipeline.all():
@@ -798,7 +816,8 @@ class DataDrivenCompressor(BaseCompressor):
         self._quantize_layers(layer_names, all_inputs)
 
         convert_module_to_hp_if_necessary(
-            self.model_context.model, self.model_context.amp_dtype, self.compress_context.device, to_cpu=True)
+            self.model_context.model, self.model_context.amp_dtype, self.compress_context.device, to_cpu=True
+        )
         if self.compress_context.is_immediate_saving:
             self.shard_writer.write(is_finalize=True)
 
@@ -848,17 +867,20 @@ class DataDrivenCompressor(BaseCompressor):
                         logger.warning_once(
                             "Static activation quantization for lm_head is not fully supported yet. "
                             "If lm_head calibration inputs are missing, activation scale may fall back to unit scale "
-                            "or quantization may be skipped.")
+                            "or quantization may be skipped."
+                        )
                     # Activation quantization requires collected inputs
                     msg_prefix = (
                         f"Activation max hook for layer '{layer_name}' is unavailable due to "
-                        f"insufficient collected inputs. ")
+                        f"insufficient collected inputs. "
+                    )
                     if "fp8_e5m2" in self.act_data_type:
                         logger.warning(msg_prefix + "Please notes that unit scale is used for this layer.")
                     else:
                         logger.warning(
                             msg_prefix + "Static activation quantization is not supported or ineffective, "
-                            "Skipping quantization for this layer.")
+                            "Skipping quantization for this layer."
+                        )
                         layer_names.remove(layer_name)
                         continue
                 self.quantizer.quantize_layer_outside_block(
@@ -889,7 +911,8 @@ class DataDrivenCompressor(BaseCompressor):
             q_layer_inputs = self.try_cache_inter_data_gpucpu([], self.nsamples, layer_names=layer_names)
             if hasattr(self.model, "hf_device_map") and len(self.model.hf_device_map) > 1:
                 accelerate.hooks.remove_hook_from_submodules(
-                    self.model)  # self.model.hf_device_map has not been changed
+                    self.model
+                )  # self.model.hf_device_map has not been changed
         if not self.compress_context.is_immediate_saving:
             self.model = mv_module_from_gpu(self.model)
         clear_memory(device_list=self.compress_context.device_list)
@@ -918,11 +941,14 @@ class DataDrivenCompressor(BaseCompressor):
         if self.group_size == 0 and "fp8" not in self.data_type:
             logger.warning("`group_size==0` is not supported for data_type other than fp8 ")
 
-        if (self.bits <= 2 and (self.iters < 1000 or not getattr(self.quantize_config, "enable_alg_ext", False)) and
-                self.super_group_size is None):
+        if (
+            self.bits <= 2
+            and (self.iters < 1000 or not getattr(self.quantize_config, "enable_alg_ext", False))
+            and self.super_group_size is None
+        ):
             logger.warning(
-                "for bits <= 2, it is recommended to enable `auto-round-best` "
-                "and turn on `--enable_alg_ext` ")
+                "for bits <= 2, it is recommended to enable `auto-round-best` " "and turn on `--enable_alg_ext` "
+            )
 
 
 class CalibratedRTNCompressor(DataDrivenCompressor):
@@ -971,12 +997,16 @@ class CalibratedRTNCompressor(DataDrivenCompressor):
             supported_types=SUPPORTED_LAYER_TYPES,
             quant_block_list=self.quantizer.quant_block_list,
         )
-        if (self.quantize_config.is_act_quantize and (not self.quantize_config.act_dynamic or len(layer_names) > 0) or
-                self.has_variable_block_shape):
+        if (
+            self.quantize_config.is_act_quantize
+            and (not self.quantize_config.act_dynamic or len(layer_names) > 0)
+            or self.has_variable_block_shape
+        ):
             if len(layer_names) > 0:
                 logger.warning(
                     "quantize layers outside blocks for static activation quantizaiton"
-                    " will significantly increase calibration time")
+                    " will significantly increase calibration time"
+                )
             all_inputs = self.try_cache_inter_data_gpucpu(to_cache_block_names, self.nsamples, layer_names)
         else:
             all_inputs = self.cache_inter_data(to_cache_block_names, self.nsamples)
@@ -993,7 +1023,8 @@ class CalibratedRTNCompressor(DataDrivenCompressor):
             input_keys = [k for k in inputs if k.startswith("hidden_state")]
             if len(input_keys) != 1:
                 raise RuntimeError(
-                    "hidden_states arg mismatch. Please file an issue at https://github.com/intel/auto-round/issues")
+                    "hidden_states arg mismatch. Please file an issue at https://github.com/intel/auto-round/issues"
+                )
             inputs["input_ids"] = inputs.pop(input_keys[0])
 
             clear_memory(self.inputs, device_list=self.compress_context.device_list)
@@ -1040,9 +1071,13 @@ class CalibratedRTNCompressor(DataDrivenCompressor):
                 materialize_model_(block)
                 block.to("cpu")
                 block = convert_module_to_hp_if_necessary(
-                    block, dtype=self.model_context.amp_dtype, device=self.compress_context.device)
-                if (is_auto_device_mapping(self.compress_context.device_map) and
-                        len(self.compress_context.device_list) > 1 and not self.model_context.is_diffusion):
+                    block, dtype=self.model_context.amp_dtype, device=self.compress_context.device
+                )
+                if (
+                    is_auto_device_mapping(self.compress_context.device_map)
+                    and len(self.compress_context.device_list) > 1
+                    and not self.model_context.is_diffusion
+                ):
                     from auto_round.utils.device import set_auto_device_map_for_block_with_tuning
 
                     set_auto_device_map_for_block_with_tuning(
@@ -1082,8 +1117,9 @@ class CalibratedRTNCompressor(DataDrivenCompressor):
                 )
                 with ExitStack() as fwd_stack:
                     self.pipeline.enter_block_forward_hooks(ctx, fwd_stack)
-                    input_ids = ctx.io.collect_outputs(block, self.quantizer, source=InputSource.FP_CACHE,
-                                                        batch_size=bs)
+                    input_ids = ctx.io.collect_outputs(
+                        block, self.quantizer, source=InputSource.FP_CACHE, batch_size=bs
+                    )
 
                 if len(self.compress_context.device_list) > 1:
                     accelerate.hooks.remove_hook_from_submodules(block)
@@ -1158,7 +1194,8 @@ class CalibratedRTNCompressor(DataDrivenCompressor):
                 logger.error(cuda_error_msg)
                 logger.warning(
                     "Fallback to CPU. "
-                    "Consider enabling `low_gpu_mem_usage` or using more GPUs via `--device 0,1,2,3`.")
+                    "Consider enabling `low_gpu_mem_usage` or using more GPUs via `--device 0,1,2,3`."
+                )
                 safe_to_cpu_(model)
                 clear_memory(device_list=self.compress_context.device_list)
                 if hasattr(model, "hf_device_map") and len(model.hf_device_map) > 1:
@@ -1205,7 +1242,8 @@ class CalibratedRTNCompressor(DataDrivenCompressor):
         if not getattr(self, "disable_opt_rtn", True):
             formats = getattr(self, "formats", None) or []
             has_gguf_k = (
-                any(fmt.is_gguf() and "k" in fmt.output_format for fmt in formats) or self.super_bits is not None)
+                any(fmt.is_gguf() and "k" in fmt.output_format for fmt in formats) or self.super_bits is not None
+            )
             if has_gguf_k:
                 enable_imatrix = True
             elif self.data_type == "int" and self.sym and self.bits < 8:

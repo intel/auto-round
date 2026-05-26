@@ -116,7 +116,8 @@ class CalibrationState:
         if tok_max is not None and tok_max < self.seqlen:
             logger.warning(
                 f"Change sequence length to {tok_max} due to the limitation of model_max_length. "
-                "You can also try to increase the model_max_length to avoid this issue.")
+                "You can also try to increase the model_max_length to avoid this issue."
+            )
             self.seqlen = min(self.seqlen, tok_max)
 
     def ensure_dataloader(self, model_context: Any, seed: int) -> Any:

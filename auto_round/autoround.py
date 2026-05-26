@@ -153,6 +153,7 @@ class AutoRound:
         # to the new-arch entry point to avoid duplicate keyword argument errors.
         if alg_configs is not None:
             from auto_round.compressors.entry import AutoRound as _NewAutoRound
+
             return _NewAutoRound(
                 alg_configs=alg_configs,
                 model=model,

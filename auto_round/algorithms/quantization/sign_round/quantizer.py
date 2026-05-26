@@ -225,7 +225,8 @@ class SignRoundQuantizer(RTNLayerFallbackMixin, BaseQuantizer):
                 indices = global_indices[batch_start : batch_start + batch_size]
                 current_output = ctx.io.select_reference_outputs(indices, device=loss_device)
                 output_q = ctx.io.forward_batch(
-                    block, self, indices, source=ctx.io.active_source, device=device, cache_device=loss_device)
+                    block, self, indices, source=ctx.io.active_source, device=device, cache_device=loss_device
+                )
                 loss = self._get_loss(output_q, current_output, indices, mse_loss, device)
                 num_elm = 1 if num_elm <= 0 else num_elm
                 total_loss += loss.item() / num_elm

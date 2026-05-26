@@ -1,3 +1,6 @@
+# # Copyright (C) 2026 Intel Corporation
+# # SPDX-License-Identifier: Apache-2.0
+
 """CLI entry points: command routing, RECIPES, tune, eval, list.
 
 This module is the single place that wires together:
@@ -6,6 +9,7 @@ This module is the single place that wires together:
 
 All console_scripts (auto_round, auto-round-best, etc.) point here.
 """
+
 from __future__ import annotations
 
 import argparse
@@ -114,6 +118,7 @@ def list_item(argv=None):
     args = build_list_parser().parse_args(argv)
     if args.item in {"format", "formats"}:
         from auto_round.formats import OutputFormat
+
         print("AutoRound supported output formats and quantization scheme:")
         print(OutputFormat.get_support_matrix())
     elif args.item in {"alg", "algs", "algorithm", "algorithms"}:
@@ -138,7 +143,7 @@ def _print_algorithm_help(argv: list[str]) -> bool:
         return False
 
     # Pre-parse just --algorithm
-    import argparse
+
     pre = argparse.ArgumentParser(add_help=False)
     pre.add_argument("--algorithm", default=None)
     known, _ = pre.parse_known_args(argv)
@@ -208,7 +213,8 @@ def tune(args):
     if args.low_cpu_mem_usage:
         logger.warning(
             "`low_cpu_mem_usage` is deprecated and is now enabled by default. "
-            "To disable it, use `--disable_low_cpu_mem_usage`.")
+            "To disable it, use `--disable_low_cpu_mem_usage`."
+        )
 
     if args.format is None:
         args.format = "auto_round"
@@ -223,26 +229,29 @@ def tune(args):
     if "auto_gptq" in args.format and args.asym is True:
         logger.warning(
             "the auto_gptq kernel has issues with asymmetric quantization. "
-            "It is recommended to use sym quantization or --format='auto_round'")
+            "It is recommended to use sym quantization or --format='auto_round'"
+        )
 
     if "marlin" in args.format and args.asym is True:
         raise RuntimeError("marlin backend only supports sym quantization, please remove --asym")
 
     from auto_round.utils import get_device_and_parallelism
+
     device_str, use_auto_mapping = get_device_and_parallelism(args.device_map)
 
     if args.enable_torch_compile:
         logger.info(
             "`torch.compile` is enabled to reduce tuning costs. "
-            "If it causes issues, you can disable it by removing `--enable_torch_compile` argument.")
+            "If it causes issues, you can disable it by removing `--enable_torch_compile` argument."
+        )
 
     model_name = args.model
     if model_name[-1] == "/":
         model_name = model_name[:-1]
     logger.info(f"start to quantize {model_name}")
 
-    from auto_round.compressors.entry import AutoRound as PipelineAutoRound
     from auto_round.compressors.base import BaseCompressor
+    from auto_round.compressors.entry import AutoRound as PipelineAutoRound
 
     if "bloom" in model_name:
         args.low_gpu_mem_usage = False
@@ -252,21 +261,25 @@ def tune(args):
             if "auto_round" not in fmt and "fake" not in fmt and "mlx" not in fmt:
                 auto_round_formats = [s for s in SUPPORTED_FORMATS if s.startswith("auto_round") or s == "mlx"]
                 raise ValueError(
-                    f"{fmt} is not supported for lm-head quantization, please change to {auto_round_formats}")
+                    f"{fmt} is not supported for lm-head quantization, please change to {auto_round_formats}"
+                )
 
     enable_torch_compile = True if "--enable_torch_compile" in sys.argv else False
     scheme = args.scheme.upper()
 
     from auto_round.schemes import PRESET_SCHEMES
+
     if scheme not in PRESET_SCHEMES:
         raise ValueError(f"{scheme} is not supported. only {PRESET_SCHEMES.keys()} are supported ")
 
     if args.disable_deterministic_algorithms:
         logger.warning(
             "default not use deterministic_algorithms. disable_deterministic_algorithms is deprecated,"
-            " please use enable_deterministic_algorithms instead. ")
+            " please use enable_deterministic_algorithms instead. "
+        )
 
     from auto_round.utils import parse_layer_config_arg
+
     layer_config = {}
     if args.layer_config:
         layer_config = parse_layer_config_arg(args.layer_config)
@@ -277,13 +290,15 @@ def tune(args):
         low_cpu_mem_usage = False
 
     from auto_round.auto_scheme import AutoScheme
+
     if args.avg_bits is not None:
         if args.options is None:
             raise ValueError("please set --options for auto scheme")
         if enable_torch_compile:
             logger.warning(
                 "`enable_torch_compile=True` with AutoScheme may cause compile errors "
-                "on some models. If so, try removing `--enable_torch_compile`.")
+                "on some models. If so, try removing `--enable_torch_compile`."
+            )
         scheme = AutoScheme(
             options=args.options,
             avg_bits=args.avg_bits,
@@ -297,6 +312,7 @@ def tune(args):
     alg_configs = AlgorithmHandler.build_configs(args, common_kwargs)
 
     from auto_round.utils import clear_memory
+
     autoround: BaseCompressor = PipelineAutoRound(
         alg_configs=alg_configs if len(alg_configs) > 1 else alg_configs[0],
         **_to_autoround_kwargs(
@@ -314,6 +330,7 @@ def tune(args):
     clear_memory()
 
     from auto_round.eval.evaluation import run_model_evaluation
+
     run_model_evaluation(model, tokenizer, autoround, folders, formats, device_str, args)
 
 
@@ -328,9 +345,9 @@ def setup_eval_parser(argv=None):
 
 
 def run_eval(argv=None):
+    from auto_round.eval.eval_cli import eval, eval_task_by_task
     from auto_round.logger import logger
     from auto_round.utils import is_gguf_model, is_mllm_model
-    from auto_round.eval.eval_cli import eval, eval_task_by_task
 
     args = setup_eval_parser(argv)
     assert args.model or args.model_name, "[model] or --model MODEL_NAME should be set."

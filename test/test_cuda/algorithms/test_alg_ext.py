@@ -10,7 +10,7 @@ from auto_round import AutoRound
 from ...helpers import evaluate_accuracy, get_model_path
 
 AUTO_ROUND_PATH = __file__.split("/")
-AUTO_ROUND_PATH = "/".join(AUTO_ROUND_PATH[:AUTO_ROUND_PATH.index("test")])
+AUTO_ROUND_PATH = "/".join(AUTO_ROUND_PATH[: AUTO_ROUND_PATH.index("test")])
 
 
 class TestAlgExt:
@@ -54,7 +54,8 @@ class TestAlgExt:
             f"Expected wrapper_block to use '{SignRoundDQWrapperLinear.__name__}', "
             f"got '{ar.quantizer.wrapper_block.__name__}'. "
             "This likely means the quantizer was created before GGUF format "
-            "overrides were applied (data_type was not yet 'int_asym_dq').")
+            "overrides were applied (data_type was not yet 'int_asym_dq')."
+        )
 
     def test_int2_g64_asym_enable_alg_ext_keeps_config(self, tiny_qwen_model_path):
         """Regression test: asym int2/g64 keeps the requested tuning config."""

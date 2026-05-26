@@ -108,7 +108,8 @@ class ModelContext(BaseContext):
         if unsupported_meta_device(self.model):
             raise RuntimeError(
                 "AutoRound does not support parameters on meta device. "
-                "Please use more GPUs by setting `--device 0,1,2,3` or just place the model on CPU.")
+                "Please use more GPUs by setting `--device 0,1,2,3` or just place the model on CPU."
+            )
         check_and_mark_quantized_module(self.model)
         self.model = self.model.eval()
         self.shared_cache_keys = get_shared_keys(self.model)
@@ -135,11 +136,13 @@ class ModelContext(BaseContext):
             self.is_mllm = True
             if isinstance(self.model, str):
                 self.model, self.processor, self.tokenizer, self.image_processor = mllm_load_model(
-                    self.model, platform=self.platform, device="cpu", model_dtype=self.model_dtype)
+                    self.model, platform=self.platform, device="cpu", model_dtype=self.model_dtype
+                )
         elif is_diffusion_model(self.model):
             self.is_diffusion = True
             self.pipe, self.model = diffusion_load_model(
-                self.model, platform=self.platform, device="cpu", model_dtype=self.model_dtype)
+                self.model, platform=self.platform, device="cpu", model_dtype=self.model_dtype
+            )
         elif isinstance(self.model, str):
             config = self.config
             try:
@@ -155,18 +158,24 @@ class ModelContext(BaseContext):
                 )
 
             self.is_model_patched = apply_model_monkey_patches(
-                model_name=self.model, trust_remote_code=self.trust_remote_code)
+                model_name=self.model, trust_remote_code=self.trust_remote_code
+            )
             import transformers
 
-            if (not self.is_model_patched and config is not None and is_moe_model_via_config(config) and
-                    version.parse(transformers.__version__) >= version.parse("5.0.0")):
+            if (
+                not self.is_model_patched
+                and config is not None
+                and is_moe_model_via_config(config)
+                and version.parse(transformers.__version__) >= version.parse("5.0.0")
+            ):
                 from auto_round.modeling.fused_moe.replace_modules import BUILTIN_MODULES
 
                 model_type = getattr(config, "model_type", None)
                 if model_type is not None and model_type not in BUILTIN_MODULES:
                     logger.warning(
                         "This MoE model has not been optimized by AutoRound yet, which may result in high RAM usage, "
-                        "Please consider submitting an issue to https://github.com/intel/auto-round/issues")
+                        "Please consider submitting an issue to https://github.com/intel/auto-round/issues"
+                    )
 
             # Reclaim temporary HTTP/config objects from model type detection
             # and AutoConfig loading before the large model allocation.  This
@@ -228,7 +237,8 @@ class ModelContext(BaseContext):
                 self.amp_dtype = torch.float32
                 self.model = self.model.to(torch.float32)
                 logger.warning(
-                    f"amp is set to FALSE as the current {self.device} device does not support the 'bf16' data type.")
+                    f"amp is set to FALSE as the current {self.device} device does not support the 'bf16' data type."
+                )
             else:
                 if self.model.dtype != self.amp_dtype:
                     self.model = self.model.to(self.amp_dtype)
@@ -248,7 +258,8 @@ class ModelContext(BaseContext):
         # because it may cause the gguf format to not be exported normally.
         self._patch_custom_moe_modules()
         self.model = update_module(
-            self.model, formats=formats, trust_remote_code=self.trust_remote_code, cleanup_original=False)
+            self.model, formats=formats, trust_remote_code=self.trust_remote_code, cleanup_original=False
+        )
         self.model = _handle_special_model(self.model)
 
         # Temporary names must be assigned after handle_moe_model;

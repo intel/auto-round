@@ -185,7 +185,8 @@ def normalize_rotation_config(
             else:
                 logger.warning(
                     f"block_size is not set and cannot be inferred for data_type {data_type!r}; "
-                    "please set block_size explicitly in rotation_config if needed.")
+                    "please set block_size explicitly in rotation_config if needed."
+                )
         else:
             if is_mx_fp(data_type) and block_size != 32:
                 logger.warning(f"data_type is 'mx_fp' but block_size={block_size}; recommended value is 32.")

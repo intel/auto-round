@@ -90,4 +90,5 @@ class AWQConfig(QuantizationConfig):
         return (
             f"AWQConfig(duo_scaling={self.duo_scaling!r}, n_grid={self.n_grid}, "
             f"bits={self.bits}, group_size={self.group_size}, sym={self.sym}, "
-            f"mappings={'<explicit>' if self.mappings else 'auto'})")
+            f"mappings={'<explicit>' if self.mappings else 'auto'})"
+        )

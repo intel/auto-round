@@ -78,8 +78,11 @@ class RTNQuantizer(RTNLayerFallbackMixin, BaseQuantizer):
             dict: Empty dict (zero-shot RTN has no tunable parameters to return).
         """
         block = ctx.block
-        if (self.config.is_act_nv_fp or self.config.is_static_afp8 or
-            (self.config.is_wfp8afp8 and not self.config.act_dynamic)):
+        if (
+            self.config.is_act_nv_fp
+            or self.config.is_static_afp8
+            or (self.config.is_wfp8afp8 and not self.config.act_dynamic)
+        ):
             # For FP8 static / NVFP paths, expert input scales are derived during
             # layer quantization from the current act_max. Unify MoE input-proj
             # act_max values before quantizing each expert so exported input_scale
@@ -155,8 +158,11 @@ class OptimizedRTNQuantizer(RTNQuantizer):
         """
         block = ctx.block
         update_block_global_scale_if_needed(block, self.data_type, self.group_size)
-        if (self.config.is_act_nv_fp or self.config.is_static_afp8 or
-            (self.config.is_wfp8afp8 and not self.config.act_dynamic)):
+        if (
+            self.config.is_act_nv_fp
+            or self.config.is_static_afp8
+            or (self.config.is_wfp8afp8 and not self.config.act_dynamic)
+        ):
             # enable moe experts act_max automatic generation for Linear
             set_amax_for_all_moe_layers(block, attr_name="act_max")
         # Normalize imatrix and quantize layers

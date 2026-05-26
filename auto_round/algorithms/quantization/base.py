@@ -294,7 +294,11 @@ class DiffusionMixin:
     def create_block_io(self, input_ids, input_others, quantized_input=None, block=None):
         from auto_round.algorithms.quantization.pipeline import DiffusionBlockIO, InputSource
 
-        active_source = InputSource.QUANTIZED_INPUT if quantized_input is not None and self.enable_quanted_input else InputSource.FP_CACHE
+        active_source = (
+            InputSource.QUANTIZED_INPUT
+            if quantized_input is not None and self.enable_quanted_input
+            else InputSource.FP_CACHE
+        )
         io = DiffusionBlockIO(
             fp_inputs=input_ids,
             input_others=input_others,
@@ -535,7 +539,11 @@ class BaseQuantizer(BasePipelineMember):
     def create_block_io(self, input_ids, input_others, quantized_input=None, block=None):
         from auto_round.algorithms.quantization.pipeline import BlockIO, InputSource
 
-        active_source = InputSource.QUANTIZED_INPUT if quantized_input is not None and self.enable_quanted_input else InputSource.FP_CACHE
+        active_source = (
+            InputSource.QUANTIZED_INPUT
+            if quantized_input is not None and self.enable_quanted_input
+            else InputSource.FP_CACHE
+        )
         return BlockIO(
             fp_inputs=input_ids,
             input_others=input_others,
@@ -684,8 +692,11 @@ class BaseQuantizer(BasePipelineMember):
         cached = self.__dict__.get("_resolved_block_forward")
         if cached is not None:
             return cached
-        if ((self.config.is_act_quantize and (not self.config.act_dynamic or self.config.is_act_nv_fp)) or
-                self.enable_alg_ext or not getattr(self.config, "disable_opt_rtn", True)):
+        if (
+            (self.config.is_act_quantize and (not self.config.act_dynamic or self.config.is_act_nv_fp))
+            or self.enable_alg_ext
+            or not getattr(self.config, "disable_opt_rtn", True)
+        ):
             self._resolved_block_forward = block_forward
         elif self.compress_context.enable_torch_compile:
             compiled = self.__dict__.get("_compiled_block_forward")

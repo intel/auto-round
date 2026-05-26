@@ -1,3 +1,6 @@
+# # Copyright (C) 2026 Intel Corporation
+# # SPDX-License-Identifier: Apache-2.0
+
 """Algorithm discovery, registration, listing, and config building for the CLI.
 
 To add a new algorithm:
@@ -7,6 +10,7 @@ To add a new algorithm:
 
 No manual registry update needed — subclasses are auto-registered on definition.
 """
+
 from __future__ import annotations
 
 import argparse
@@ -37,12 +41,9 @@ class AlgorithmHandler(ABC):
         super().__init_subclass__(**kwargs)
         # A class that overrides both register and build is considered a concrete
         # algorithm implementation and must also declare a `name` class attribute.
-        if 'register' in cls.__dict__ and 'build' in cls.__dict__:
-            if 'name' not in cls.__dict__:
-                raise TypeError(
-                    f"{cls.__name__} must define a 'name' class attribute "
-                    f"(e.g. name = 'my_algo')."
-                )
+        if "register" in cls.__dict__ and "build" in cls.__dict__:
+            if "name" not in cls.__dict__:
+                raise TypeError(f"{cls.__name__} must define a 'name' class attribute " f"(e.g. name = 'my_algo').")
             instance = cls()
             AlgorithmHandler._registry.append(instance)
             AlgorithmHandler._registry_map[instance.name] = instance
@@ -130,8 +131,7 @@ class AlgorithmHandler(ABC):
         """Render detailed help text for one algorithm."""
         canon = cls.resolve_alias(name)
         if canon is None:
-            raise ValueError(f"Unknown algorithm '{name}'. "
-                             f"Supported: {', '.join(cls._registry_map.keys())}.")
+            raise ValueError(f"Unknown algorithm '{name}'. " f"Supported: {', '.join(cls._registry_map.keys())}.")
         handler = cls.get(canon)
         lines = [f"{handler.name}: {handler.summary}"]
         other = [a for a in handler.aliases if a != handler.name]
@@ -181,16 +181,19 @@ class AWQ(AlgorithmHandler):
             default=True,
             type=_parse_bool_or_mode,
             metavar="{true,false,both}",
-            help="Use activation+weight duo scaling (true/false/both).")
+            help="Use activation+weight duo scaling (true/false/both).",
+        )
         group.add_argument(
             "--awq-n-grid",
             dest="awq_n_grid",
             default=20,
             type=int,
-            help="Number of grid-search points for AWQ scaling ratio.")
+            help="Number of grid-search points for AWQ scaling ratio.",
+        )
 
     def build(self, args, common_kwargs: dict[str, Any]):
         from auto_round.algorithms.quantization.awq.config import AWQConfig
+
         return AWQConfig(
             duo_scaling=getattr(args, "awq_duo_scaling", True),
             n_grid=getattr(args, "awq_n_grid", 20),
@@ -211,16 +214,19 @@ class RTN(AlgorithmHandler):
             default=None,
             action="store_const",
             const=True,
-            help="Force plain RTN (disable optimized path).")
+            help="Force plain RTN (disable optimized path).",
+        )
         mutex.add_argument(
             "--enable_opt_rtn",
             dest="disable_opt_rtn",
             action="store_const",
             const=False,
-            help="Force optimized RTN path.")
+            help="Force optimized RTN path.",
+        )
 
     def build(self, args, common_kwargs: dict[str, Any]):
         from auto_round.algorithms.quantization.rtn.config import RTNConfig
+
         return RTNConfig(
             disable_opt_rtn=getattr(args, "disable_opt_rtn", None),
             **common_kwargs,
@@ -242,37 +248,45 @@ class AutoRound(AlgorithmHandler):
             "--enable_minmax_tuning",
             default=True,
             action=argparse.BooleanOptionalAction,
-            help="Tune weight min/max ranges.")
+            help="Tune weight min/max ranges.",
+        )
         group.add_argument(
             "--enable_norm_bias_tuning",
             default=False,
             action=argparse.BooleanOptionalAction,
-            help="Tune normalization and bias terms.")
+            help="Tune normalization and bias terms.",
+        )
         group.add_argument(
-            "--gradient_accumulate_steps", default=1, type=int, help="Gradient accumulation steps per update.")
+            "--gradient_accumulate_steps", default=1, type=int, help="Gradient accumulation steps per update."
+        )
         group.add_argument(
             "--enable_alg_ext",
             default=False,
             action=argparse.BooleanOptionalAction,
-            help="Enable experimental SignRound extension.")
+            help="Enable experimental SignRound extension.",
+        )
         group.add_argument(
             "--not_use_best_mse",
             default=False,
             action=argparse.BooleanOptionalAction,
-            help="Skip restoring best-MSE checkpoint.")
+            help="Skip restoring best-MSE checkpoint.",
+        )
         group.add_argument(
             "--enable_quanted_input",
             default=True,
             action=argparse.BooleanOptionalAction,
-            help="Consume quantized output of previous blocks.")
+            help="Consume quantized output of previous blocks.",
+        )
         group.add_argument(
             "--enable_adam",
             default=False,
             action=argparse.BooleanOptionalAction,
-            help="Use the Adam-based SignRound variant.")
+            help="Use the Adam-based SignRound variant.",
+        )
 
     def build(self, args, common_kwargs: dict[str, Any]):
         from auto_round.algorithms.quantization.sign_round.config import SignRoundConfig
+
         return SignRoundConfig(
             iters=getattr(args, "iters", 200),
             lr=getattr(args, "lr", None),
@@ -302,32 +316,38 @@ class Hadamard(AlgorithmHandler):
             dest="rotation_hadamard_type",
             default=None,
             choices=["hadamard", "random_hadamard", "quarot_hadamard"],
-            help="Hadamard transform variant.")
+            help="Hadamard transform variant.",
+        )
         group.add_argument(
             "--rotation_backend",
             dest="rotation_backend",
             default="auto",
             choices=["auto", "inplace", "transform"],
-            help="Rotation backend to use.")
+            help="Rotation backend to use.",
+        )
         group.add_argument(
             "--rotation_block_size",
             dest="rotation_block_size",
             default=None,
             type=int,
-            help="Grouped Hadamard block size.")
+            help="Grouped Hadamard block size.",
+        )
         group.add_argument(
             "--fuse_online_to_weight",
             default=None,
             action=argparse.BooleanOptionalAction,
-            help="Fuse online Hadamard rotation into weights.")
+            help="Fuse online Hadamard rotation into weights.",
+        )
         group.add_argument(
             "--allow_online_rotation",
             default=True,
             action=argparse.BooleanOptionalAction,
-            help="Allow online activation rotation.")
+            help="Allow online activation rotation.",
+        )
 
     def build(self, args, common_kwargs: dict[str, Any]):
         from auto_round.algorithms.transforms.rotation.config import RotationConfig
+
         hadamard_type = getattr(args, "rotation_hadamard_type", None) or "hadamard"
         return RotationConfig(
             hadamard_type=hadamard_type,

@@ -487,9 +487,7 @@ from auto_round.algorithms.quantization.sign_round.config import SignRoundConfig
 ar = AutoRound(model, tokenizer, algorithm="awq", scheme="W4A16")
 
 # AWQ + AutoRound via alg_configs (explicit pipeline)
-ar = AutoRound(model, tokenizer,
-               alg_configs=[AWQConfig(), SignRoundConfig(iters=200)],
-               scheme="W4A16")
+ar = AutoRound(model, tokenizer, alg_configs=[AWQConfig(), SignRoundConfig(iters=200)], scheme="W4A16")
 ar.quantize_and_save(output_dir="./qmodel")
 ```
 
