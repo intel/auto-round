@@ -358,7 +358,7 @@ ar.quantize_and_save(output_dir, format="auto_round:llm_compressor")
 
 AutoScheme automatically generates adaptive mixed-bit and mixed-data-type quantization recipes. For accuracy results, see [AutoScheme Accuracy Report](./auto_scheme_acc.md).
 
-**Note:** Mixed-data-types are supported during tuning, but cannot be exported to real models at this time..**
+**Note:** Mixed-data-types are supported during tuning, but cannot be exported to real models at this time.
 
 #### CLI Usage
 
