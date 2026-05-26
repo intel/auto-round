@@ -43,7 +43,6 @@ from auto_round.algorithms.quantization.awq.mappings import (
     resolve_mappings,
 )
 from auto_round.algorithms.quantization.base import BaseQuantizers
-from auto_round.wrapper import WrapperMultiblock as _WrapperMultiblock
 from auto_round.compressors.shard_writer import ShardWriter
 from auto_round.compressors.utils import immediate_pack
 from auto_round.data_type.utils import (
@@ -62,6 +61,7 @@ from auto_round.utils import (
     set_module,
 )
 from auto_round.wrapper import WrapperLinear
+from auto_round.wrapper import WrapperMultiblock as _WrapperMultiblock
 
 
 class AWQQuantizer(BaseQuantizers):
@@ -414,7 +414,7 @@ class AWQQuantizer(BaseQuantizers):
         if isinstance(block, _WrapperMultiblock):
             raise ValueError(
                 "AWQ does not support nblocks > 1 (multi-block quantization). "
-                "Each block must be quantized individually. " \
+                "Each block must be quantized individually. "
                 "Please set nblocks=1 when using algorithm='awq'."
             )
 
