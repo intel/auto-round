@@ -47,15 +47,15 @@ class ConversionContext:
 
     @property
     def ModelBase(self):
-        return self.module.ModelBase
+        return getattr(self.module, "ModelBase")
 
     @property
     def ModelType(self):
-        return self.module.ModelType
+        return getattr(self.module, "ModelType")
 
     @property
     def get_model_architecture(self):
-        return self.module.get_model_architecture
+        return getattr(self.module, "get_model_architecture")
 
     def model_type(self, model_type: AutoRoundModelType | Any):
         if int(model_type) == int(AutoRoundModelType.MMPROJ):

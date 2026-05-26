@@ -663,7 +663,7 @@ AUDIO_MM_KEYS = (
     "wav",
     "waveform",
 )
-MM_KEYS = [
+MM_MODULE_KEYS = [
     "multi_modal_projector",
     "vision_tower",
     "multimodal_projector",
@@ -682,9 +682,10 @@ MM_KEYS = [
     "pre_mm_projector_norm",
     "image_newline",
     "model.connector",
+    "audio",
     *VISION_MM_KEYS,
-    *AUDIO_MM_KEYS,
 ]
+MM_KEYS = [*MM_MODULE_KEYS, "speech", "wav", "waveform"]
 
 
 def is_debug_mode():

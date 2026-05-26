@@ -179,7 +179,10 @@ def test_live_model_tensor_names_use_checkpoint_conversion_mapping():
 
 def test_gguf_tensor_names_are_split_between_text_and_mmproj():
     from auto_round.export.export_to_gguf.convert import is_mmproj_tensor_name
+    from auto_round.utils.common import MM_MODULE_KEYS
 
     assert not is_mmproj_tensor_name("model.language_model.layers.0.self_attn.q_proj.weight")
     assert is_mmproj_tensor_name("model.vision_tower.patch_embedder.position_embedding_table")
     assert is_mmproj_tensor_name("model.audio_tower.layers.0.self_attn.q_proj.weight")
+    assert is_mmproj_tensor_name("model.waveform_encoder.layers.0.weight")
+    assert not any(key in "model.language_model.layers.0.self_attn.q_proj" for key in MM_MODULE_KEYS)

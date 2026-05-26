@@ -683,7 +683,7 @@ def get_layer_config_by_gguf_format(layer_config, target_gguf_format: str, model
 
     from auto_round.export.export_to_gguf.llama_cpp_conversion import get_conversion
     from auto_round.schemes import QuantizationScheme, get_gguf_scheme
-    from auto_round.utils.common import MM_KEYS
+    from auto_round.utils.common import MM_MODULE_KEYS
     from auto_round.utils.model import get_lm_head_name, get_module
 
     try:
@@ -788,10 +788,10 @@ def get_layer_config_by_gguf_format(layer_config, target_gguf_format: str, model
                 re.search("gguf:q([0-9]{1,})_[01k]", GGUF_CONFIG[target_gguf_format]["embedding"]).group(1)
             )
 
-        if model_type != ModelType.TEXT and any([key in layer_name for key in MM_KEYS]):
+        if model_type != ModelType.TEXT and any([key in layer_name for key in MM_MODULE_KEYS]):
             gguf_name = tensor_map_vision.get_name(layer_name)
             if gguf_name is None:
-                for key in MM_KEYS:
+                for key in MM_MODULE_KEYS:
                     gguf_name = tensor_map_vision.get_name(layer_name.replace(f".{key}", ""))
                     if gguf_name is not None:
                         break
