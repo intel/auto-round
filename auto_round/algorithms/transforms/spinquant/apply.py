@@ -11,13 +11,13 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-"""SpinQuant / QuaRot rotation — ``BaseRotation`` + ``RotationSerializer``.
+"""SpinQuant / QuaRot rotation — ``BaseRotation`` + ``SerializerMixin``.
 
 Registers ``"spinquant"`` in the :class:`BaseRotation` registry so that
 the unified ``apply_rotation(model, config)`` entry point can dispatch to
 the SpinQuant preprocessing pipeline automatically.
 
-Also implements :class:`RotationSerializer` so that the generic dispatch
+Also implements :class:`SerializerMixin` so that the generic dispatch
 functions (``inject_rotation_buffers_on_layer``, etc.) route to SpinQuant
 serialization logic without export files ever naming "spinquant".
 
@@ -50,13 +50,13 @@ from typing import Any
 import torch
 import torch.nn as nn
 
-from auto_round.algorithms.transforms.base import BaseRotation, RotationSerializer
+from auto_round.algorithms.transforms.base import BaseRotation, SerializerMixin
 
 logger = logging.getLogger("autoround")
 
 
 @BaseRotation.register("spinquant")
-class SpinQuantRotation(BaseRotation, RotationSerializer):
+class SpinQuantRotation(BaseRotation, SerializerMixin):
     """QuaRot / SpinQuant rotation registered as ``"spinquant"`` in
     :class:`BaseRotation`.
 
@@ -64,7 +64,7 @@ class SpinQuantRotation(BaseRotation, RotationSerializer):
     pipeline (RMSNorm fusion → rotation matrix init → optional training →
     weight fusion → online hook registration).
 
-    Implements :class:`RotationSerializer` for save/load support — all
+    Implements :class:`SerializerMixin` for save/load support — all
     serialization calls are delegated to the existing ``serialize.py``
     functions.
 
@@ -107,7 +107,7 @@ class SpinQuantRotation(BaseRotation, RotationSerializer):
         return preprocessor.preprocess(dataloader)
 
     # ------------------------------------------------------------------
-    # RotationSerializer — Save side
+    # SerializerMixin — Save side
     # ------------------------------------------------------------------
 
     def inject_buffers_on_layer(
@@ -203,7 +203,7 @@ class SpinQuantRotation(BaseRotation, RotationSerializer):
             logger.warning(f"Failed to save SpinQuant config: {e}")
 
     # ------------------------------------------------------------------
-    # RotationSerializer — Load side
+    # SerializerMixin — Load side
     # ------------------------------------------------------------------
 
     def preregister_buffers(
