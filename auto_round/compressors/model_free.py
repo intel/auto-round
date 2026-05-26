@@ -734,7 +734,7 @@ def _build_quantization_config(
 
     qconfig = {
         "quant_method": "auto-round",
-        "packing_format": "auto_round:auto_gptq",
+        "packing_format": "auto_round",
         "bits": default_scheme["bits"],
         "group_size": default_scheme["group_size"],
         "sym": default_scheme.get("sym", True),
