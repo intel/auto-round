@@ -33,10 +33,10 @@ def _log_fallback_warning_once(backend: str, error: Exception) -> None:
 
 def _validate_backend(backend: str, quant_block_size: int) -> str:
     backend = backend.lower()
-    if backend not in {"sdpa", "sagev1"}:
+    if backend not in {"sdpa", "sagev1", "sagev1_pvi8"}:
         raise ValueError(f"Unsupported ARK attention backend: {backend}")
-    if backend == "sagev1" and quant_block_size <= 0:
-        raise ValueError("quant_block_size must be > 0 when backend='sagev1'")
+    if backend in {"sagev1", "sagev1_pvi8"} and quant_block_size <= 0:
+        raise ValueError(f"quant_block_size must be > 0 when backend='{backend}'")
     return backend
 
 
@@ -113,7 +113,7 @@ def _can_use_ark_attention(
             128,
             192,
         )
-    if backend == "sagev1":
+    if backend in {"sagev1", "sagev1_pvi8"}:
         return query.dtype == torch.float16 and query.shape[-1] in (64, 128)
     return True
 
@@ -195,7 +195,18 @@ def patch_torch_sdpa_with_ark(*, strict: bool = False, backend: str = "sdpa", qu
                     is_causal=is_causal,
                     scale=scale,
                 )
-            return ark.sagev1(
+            if backend == "sagev1":
+                return ark.sagev1(
+                    query.contiguous(),
+                    key.contiguous(),
+                    value.contiguous(),
+                    attn_mask=normalized_mask,
+                    dropout_p=dropout_p,
+                    is_causal=is_causal,
+                    scale=scale,
+                    quant_block_size=quant_block_size,
+                )
+            return ark.sagev1_pvi8(
                 query.contiguous(),
                 key.contiguous(),
                 value.contiguous(),

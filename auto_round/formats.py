@@ -128,6 +128,10 @@ def get_formats(
 
     formats = remove_duplicates(formats)
 
+    for fmt in formats:
+        if fmt not in SUPPORTED_FORMATS:
+            raise ValueError(f"{fmt} is not supported, we only support {SUPPORTED_FORMATS}")
+
     for i in range(len(formats)):
         if formats[i].startswith("gguf:"):
             formats[i] = GGUFFormat(formats[i], ar)

@@ -177,11 +177,51 @@ def block_forward(
 
     input_others, input_tuple = prepare_special_model_block_inputs(block, input_ids, input_others, input_tuple)
 
+    # Use the block's actual parameter name for the first positional argument.
+    import inspect as _inspect
+
+    param_names = [p for p in _inspect.signature(block.forward).parameters.keys() if p != "self"]
+    block_input_kwarg = param_names[0] if param_names else "hidden_states"
+    if block_input_kwarg not in input_others:
+        input_others[block_input_kwarg] = input_ids
+
+    # Convert positional inputs to keyword args for any remaining positional parameters.
+    positional_inputs = input_tuple or ()
+    if positional_inputs:
+        for i, val in enumerate(positional_inputs):
+            param_idx = i + 1  # hidden_states is params[0]
+            if param_idx < len(param_names):
+                param_name = param_names[param_idx]
+                if param_name not in input_others:
+                    input_others[param_name] = val
+        positional_inputs = ()
+
+    # Guard: ensure position_ids is a tensor, not a list or None.
+    if "position_ids" in input_others:
+        pid = input_others["position_ids"]
+        if isinstance(pid, list):
+            if len(pid) == 1:
+                input_others["position_ids"] = pid[0]
+            elif len(pid) == 0:
+                # Generate position_ids from hidden_states shape when it's empty.
+                input_others["position_ids"] = (
+                    torch.arange(input_ids.shape[1], device=input_ids.device, dtype=torch.long)
+                    .unsqueeze(0)
+                    .expand(input_ids.shape[0], -1)
+                )
+        elif pid is None:
+            # Generate position_ids from hidden_states shape when it's None.
+            input_others["position_ids"] = (
+                torch.arange(input_ids.shape[1], device=input_ids.device, dtype=torch.long)
+                .unsqueeze(0)
+                .expand(input_ids.shape[0], -1)
+            )
+
     if amp:
         with autocast(device_type=str(device).split(":")[0], dtype=amp_dtype):  # pragma: no cover
-            output = block(input_ids, *input_tuple, **input_others)
+            output = block(**input_others)
     else:
-        output = block(input_ids, *input_tuple, **input_others)
+        output = block(**input_others)
     if isinstance(output_return_id, int) and (isinstance(output, list) or isinstance(output, tuple)):
         output = output[output_return_id]
     return output

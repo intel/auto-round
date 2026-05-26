@@ -68,7 +68,7 @@ struct Options {
    void* mask = nullptr;
    void* o = nullptr;
   int scale_block_size = 0;
-  const void *qscale = nullptr, *kscale = nullptr;
+  const void *qscale = nullptr, *kscale = nullptr, *vscale = nullptr;
   const void *block_K = nullptr, *block_V = nullptr;
   const int *page_table = nullptr, *num_pages_per_seq = nullptr;
   bool is_causal = false;
@@ -609,6 +609,7 @@ struct SageKernelRunner {
         },
         {options.softmax_scale, static_cast<float*>(options.mask), options.scale_block_size,
          static_cast<const float*>(options.qscale), static_cast<const float*>(options.kscale),
+         static_cast<const float*>(options.vscale),
          options.use_paged_kv ? options.page_table : nullptr, options.use_paged_kv ? options.page_size : 0,
          options.use_paged_kv ? options.num_pages_per_seq : nullptr},
         {},
@@ -635,7 +636,8 @@ struct SageKernelRunner {
   }
 };
 
-template <bool Causal, typename TileShapeQK, typename TileShapePV, typename TileShapeOutput, typename SubgroupLayoutQK,
+template <bool Causal, bool UseInt8PV, bool WriteBackInt8PV, bool ExecuteInt8PV, typename TileShapeQK,
+          typename TileShapePV, typename TileShapeOutput, typename SubgroupLayoutQK,
           typename SubgroupLayoutPV_, /* void -> default */
           int PipelineStages, bool persistent, typename ElementQ = bfloat16_t, typename ElementK = bfloat16_t,
           typename ElementV = bfloat16_t, typename ElementO = ElementQ,
@@ -693,7 +695,8 @@ struct SageConfig {
     if constexpr (Causal) {
       using CollectiveMainloop =
           cutlass::fmha::collective::SAGEV1FwdMainloop<MainloopDispatchPolicy, Causal, false, CachedKV, PagedKV,
-                                                       TiledMMAQK, TiledMMAPV, VTiles, TensorQ, TensorK, TensorV,
+                                 UseInt8PV, WriteBackInt8PV, ExecuteInt8PV, TiledMMAQK,
+                                 TiledMMAPV, VTiles, TensorQ, TensorK, TensorV,
                                                        TensorK_cache, TensorV_cache, GmemTiledCopyQ, GmemTiledCopyK,
                                                        GmemTiledCopyV, GmemTiledCopyK_cache, GmemTiledCopyV_cache>;
 
@@ -712,7 +715,8 @@ struct SageConfig {
       if (options.mask) {
         using CollectiveMainloop =
             cutlass::fmha::collective::SAGEV1FwdMainloop<MainloopDispatchPolicy, Causal, true, CachedKV, PagedKV,
-                                                         TiledMMAQK, TiledMMAPV, VTiles, TensorQ, TensorK, TensorV,
+                                 UseInt8PV, WriteBackInt8PV, ExecuteInt8PV, TiledMMAQK,
+                                 TiledMMAPV, VTiles, TensorQ, TensorK, TensorV,
                                                          TensorK_cache, TensorV_cache, GmemTiledCopyQ, GmemTiledCopyK,
                                                          GmemTiledCopyV, GmemTiledCopyK_cache, GmemTiledCopyV_cache>;
 
@@ -730,7 +734,8 @@ struct SageConfig {
       } else {
         using CollectiveMainloop =
             cutlass::fmha::collective::SAGEV1FwdMainloop<MainloopDispatchPolicy, Causal, false, CachedKV, PagedKV,
-                                                         TiledMMAQK, TiledMMAPV, VTiles, TensorQ, TensorK, TensorV,
+                                 UseInt8PV, WriteBackInt8PV, ExecuteInt8PV, TiledMMAQK,
+                                 TiledMMAPV, VTiles, TensorQ, TensorK, TensorV,
                                                          TensorK_cache, TensorV_cache, GmemTiledCopyQ, GmemTiledCopyK,
                                                          GmemTiledCopyV, GmemTiledCopyK_cache, GmemTiledCopyV_cache>;
 
@@ -803,7 +808,8 @@ inline int launch_prefill_kernel_128(Options const& options) {
                                         /*persistent=*/persistent, ElementQ, ElementK, ElementV>::run(options);
 }
 
-template <typename ElementQ, typename ElementK, typename ElementV>
+template <typename ElementQ, typename ElementK, typename ElementV, typename ElementO = ElementV, bool UseInt8PV = false,
+          bool WriteBackInt8PV = true, bool ExecuteInt8PV = true>
 inline int launch_sage_prefill_kernel_128(Options const& options) {
   constexpr int PipelineStages = 1;
   constexpr int PipelineStages1 = 1;
@@ -815,13 +821,16 @@ inline int launch_sage_prefill_kernel_128(Options const& options) {
   using ShapePV1 = Shape<_256, _32, _64>;
   using ShapeOut1 = Shape<_256, _128>;
   using SubgroupLayoutQK1 = Layout<Shape<_16, _1, _1>>;
-  return options.is_causal ? SageConfig<true, ShapeQK, ShapePV, ShapeOut, SubgroupLayoutQK, void, PipelineStages,
-                                        /*persistent=*/false, ElementQ, ElementK, ElementV, ElementV>::run(options)
-                           : SageConfig<false, ShapeQK1, ShapePV1, ShapeOut1, SubgroupLayoutQK1, void, PipelineStages1,
-                                        /*persistent=*/false, ElementQ, ElementK, ElementV, ElementV>::run(options);
+  return options.is_causal ? SageConfig<true, UseInt8PV, WriteBackInt8PV, ExecuteInt8PV, ShapeQK, ShapePV, ShapeOut,
+                                        SubgroupLayoutQK, void, PipelineStages,
+                                        /*persistent=*/false, ElementQ, ElementK, ElementV, ElementO>::run(options)
+                           : SageConfig<false, UseInt8PV, WriteBackInt8PV, ExecuteInt8PV, ShapeQK1, ShapePV1,
+                                        ShapeOut1, SubgroupLayoutQK1, void, PipelineStages1,
+                                        /*persistent=*/false, ElementQ, ElementK, ElementV, ElementO>::run(options);
 }
 
-template <typename ElementQ, typename ElementK, typename ElementV>
+template <typename ElementQ, typename ElementK, typename ElementV, typename ElementO = ElementV, bool UseInt8PV = false,
+          bool WriteBackInt8PV = true, bool ExecuteInt8PV = true>
 inline int launch_sage_prefill_kernel_64(Options const& options) {
   constexpr int PipelineStages = 2;
   constexpr int PipelineStages1 = 2;
@@ -831,10 +840,12 @@ inline int launch_sage_prefill_kernel_64(Options const& options) {
   using SubgroupLayoutQK = Layout<Shape<_8, _1, _1>>;
   using SubgroupLayoutPV = void;
   return options.is_causal
-             ? SageConfig<true, ShapeQK, ShapePV, ShapeOut, SubgroupLayoutQK, SubgroupLayoutPV, PipelineStages,
-                          /*persistent=*/false, ElementQ, ElementK, ElementV, ElementV>::run(options)
-             : SageConfig<false, ShapeQK, ShapePV, ShapeOut, SubgroupLayoutQK, SubgroupLayoutPV, PipelineStages1,
-                          /*persistent=*/false, ElementQ, ElementK, ElementV, ElementV>::run(options);
+             ? SageConfig<true, UseInt8PV, WriteBackInt8PV, ExecuteInt8PV, ShapeQK, ShapePV, ShapeOut,
+                          SubgroupLayoutQK, SubgroupLayoutPV, PipelineStages,
+                          /*persistent=*/false, ElementQ, ElementK, ElementV, ElementO>::run(options)
+             : SageConfig<false, UseInt8PV, WriteBackInt8PV, ExecuteInt8PV, ShapeQK, ShapePV, ShapeOut,
+                          SubgroupLayoutQK, SubgroupLayoutPV, PipelineStages1,
+                          /*persistent=*/false, ElementQ, ElementK, ElementV, ElementO>::run(options);
 }
 
 template <typename ElementQ, typename ElementK, typename ElementV, bool persistent = false>

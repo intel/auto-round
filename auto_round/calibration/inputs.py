@@ -54,6 +54,16 @@ def split_inputs(
     return input_ids, input_others
 
 
+def _unwrap_single_element(input_others):
+    """Unwrap single-element list/tuple values from kwargs dict."""
+    for key in list(input_others.keys()):
+        if key == "positional_inputs":
+            continue
+        val = input_others[key]
+        if isinstance(val, (list, tuple)) and len(val) == 1:
+            input_others[key] = val[0]
+
+
 def preprocess_block_inputs(
     inputs: dict,
     *,
@@ -81,6 +91,8 @@ def preprocess_block_inputs(
         input_ids = to_dtype(input_ids, tmp_dtype)
     input_others = to_device(input_others, compress_context.cache_device)
 
+    _unwrap_single_element(input_others)
+
     for key in input_others.keys():
         if isinstance(input_others[key], torch.Tensor) and (
             input_others[key].dtype == torch.float16 or input_others[key].dtype == torch.bfloat16
@@ -88,5 +100,8 @@ def preprocess_block_inputs(
             input_others[key] = input_others[key].to(tmp_dtype)
         elif isinstance(input_others[key], list):
             for i in range(len(input_others[key])):
-                to_dtype(input_others[key][i], tmp_dtype)
+                v = input_others[key][i]
+                if isinstance(v, torch.Tensor) and v.dtype in (torch.int32, torch.int64):
+                    continue
+                input_others[key][i] = to_dtype(v, tmp_dtype)
     return input_ids, input_others

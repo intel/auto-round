@@ -30,7 +30,12 @@ import torch.nn as nn
 from tqdm import tqdm
 
 from auto_round.export.export_to_awq.utils import WQLinear_GEMM
-from auto_round.export.utils import filter_quantization_config, release_layer_safely, save_model
+from auto_round.export.utils import (
+    filter_quantization_config,
+    is_immediate_saving_mode,
+    release_layer_safely,
+    save_model,
+)
 from auto_round.logger import logger
 from auto_round.utils import (
     INNER_SUPPORTED_LAYER_TYPES,
@@ -154,7 +159,8 @@ def save_quantized_as_autoawq(
     processor = kwargs.get("processor", None)
     image_processor = kwargs.get("image_processor", None)
 
-    if output_dir is not None and os.path.exists(output_dir):
+    immediate_saving = is_immediate_saving_mode(model, serialization_dict)
+    if output_dir is not None and os.path.exists(output_dir) and not immediate_saving:
         logger.warning(f"{output_dir} already exists, this may cause model conflict")
 
     logger.info("Saving quantized model to auto_awq format")
@@ -210,6 +216,12 @@ def save_quantized_as_autoawq(
     # Force torch_dtype in the saved config to fp16 for vLLM CUDA kernel compatibility;
     # this does not change in-memory model weights.
     dtype = torch.float16
-    save_model(compressed_model, output_dir, safe_serialization=safe_serialization, dtype=dtype)
+    save_model(
+        compressed_model,
+        output_dir,
+        safe_serialization=safe_serialization,
+        dtype=dtype,
+        immediate_saving=immediate_saving,
+    )
 
     return compressed_model
