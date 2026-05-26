@@ -227,7 +227,6 @@ def _quant_data(cls, data_torch, data_qtype, name, modify_name, new_name, bid, d
         device: device to perform quantization. Defaults to None.
 
     """
-    data_qtype = get_qtype_by_layer_config(cls.layer_config, name, data_qtype)
     suffix = ".weight"
     device = data_torch.device if device is None else device
 
@@ -287,7 +286,6 @@ def _quant_data(cls, data_torch, data_qtype, name, modify_name, new_name, bid, d
             kwargs_key = attr.replace("w_", "") if attr.startswith("w_") else attr
             kwargs[kwargs_key] = attr_tensor.to(torch.float32)
     data_torch = data_torch.to(torch.float32)
-
     data = ggml_quant(data_torch, data_qtype.name.lower(), device=device, **kwargs)
     # else:
     #     # if data_torch.dtype ==torch.float32:
@@ -622,7 +620,7 @@ def prepare_tensors(cls):
                     data = gguf.quants.quantize(data, data_qtype)
             else:
                 # for deepseek v2
-                if name.endswith("kv_b_proj.weight") and cls.model_arch.name == "DEEPSEEK2":
+                if name.endswith("kv_b_proj.weight") and cls.model_arch.name in ("DEEPSEEK2", "GLM_DSA"):
                     layer_name = name[: -len(".weight")]
                     module = get_module(cls.model, layer_name)
                     n_head_kv = cls.hparams["num_key_value_heads"]
