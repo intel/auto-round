@@ -27,14 +27,14 @@ This document presents step-by-step instructions for auto-round llm quantization
     - [API Usage](#api-usage-1)
     - [Hyperparameters in AutoScheme](#hyperparameters-in-autoscheme)
   + [OPT RTN mode](#opt-rtn-mode)
-  + [AWQ Algorithm](#awq-algorithm)
+  + [AWQ Algorithm-Experimental](#awq-algorithm)
   + [Model-Free Mode](#model-free-mode)
   + [GGUF format](#gguf-format)
   + [Quantization Costs](#quantization-costs)
   + [Device/Multi-GPU setting in Quantization](#devicemulti-gpu-setting-in-quantization)
     - [Enable multiple gpus calibration in lm_head quantization](#enable-multiple-gpus-calibration-in-lm_head-quantization)
   + [Adjust Hyperparameters](#adjust-hyperparameters)
-  + [Hadamard Transform](#hadamard-transform)
+  + [Hadamard Transform-Research Feature](#hadamard-transform)
 * [4 Inference](#4-inference)
   + [CPU](#cpu)
   + [Intel GPU](#intel-gpu)
@@ -156,7 +156,7 @@ adopted within the community, **only 4-bits quantization is supported**. Please 
 
 **LLM-Compressor Format**: **NVFP4, MXFP4(kernel in WIP), MXFP8 are supported**. Please set `--format llm_compressor`
 
-**MLX Format**: This format targets Apple Silicon (M1/M2/M3/...) and is loaded directly by [`mlx-lm`](https://github.com/ml-explore/mlx-lm) (text-only LLM) or [`mlx-vlm`](https://github.com/Blaizzy/mlx-vlm) (vision/audio + language).
+**MLX Format**[Experimental Feature]: This format targets Apple Silicon (M1/M2/M3/...) and is loaded directly by [`mlx-lm`](https://github.com/ml-explore/mlx-lm) (text-only LLM) or [`mlx-vlm`](https://github.com/Blaizzy/mlx-vlm) (vision/audio + language).
 - Supports **2, 3, 4, 5, 6, 8 bits** (5/6 bits are MLX-exclusive — GPTQ/AWQ have no standard packing for them).
 - Native **mixed-bit / mixed-group_size** via `layer_config` or AutoScheme (`--target_bits 3.5 --options "..."`); 
 - Use `--format mlx` for a native MLX checkpoint; use `--format auto_round:mlx` if you want HuggingFace `transformers` + AutoRound to load it (post-init repacks each layer into MLX `QuantLinear` on Darwin).
@@ -165,16 +165,16 @@ adopted within the community, **only 4-bits quantization is supported**. Please 
 > Gray indicates the absence of a kernel or the presence of only an inefficient/reference kernel. BF16 is mainly for AutoScheme
 
 
-| Format | Supported Schemes                                                                                                                                                       |
-|:---|:------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
-| **auto_round** | W4A16, W2A16, W3A16, W8A16, W2A16G64, W2A16G32, `MXFP4`, `MXFP8`, `MXFP4_RCEIL`, `MXFP8_RCEIL`, `NVFP4`, `FPW8A16`, `FP8_STATIC`, `FP8_BLOCK`, `BF16`, `MXINT4`      |
-| **auto_awq** | W4A16, BF16                                                                                                                                                             |
-| **auto_gptq** | W4A16, W2A16, W3A16, W8A16,W2A16G64, W2A16G32, BF16                                                                                                                     |
-| **llm_compressor** | NVFP4, `MXFP4`, `MXFP8`, `FPW8A16`, `FP8_STATIC`, FP8_BLOCK                                                                                                   |
+| Format                       | Supported Schemes                                                                                                                                                       |
+|:-----------------------------|:------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
+| **auto_round**               | W4A16, W2A16, W3A16, W8A16, W2A16G64, W2A16G32, `MXFP4`, `MXFP8`, `MXFP4_RCEIL`, `MXFP8_RCEIL`, `NVFP4`, `FPW8A16`, `FP8_STATIC`, `FP8_BLOCK`, `BF16`, `MXINT4`      |
+| **auto_awq**                 | W4A16, BF16                                                                                                                                                             |
+| **auto_gptq**                | W4A16, W2A16, W3A16, W8A16,W2A16G64, W2A16G32, BF16                                                                                                                     |
+| **llm_compressor**           | NVFP4, `MXFP4`, `MXFP8`, `FPW8A16`, `FP8_STATIC`, FP8_BLOCK                                                                                                   |
 | **mlx** / **auto_round:mlx** | W2A16, W3A16, W4A16, W5A16, W6A16, W8A16, BF16, mixed-bit / mixed-group_size (Apple Silicon only)                                                  |
-| **gguf** | GGUF:Q4_K_M, GGUF:Q2_K_S, GGUF:Q3_K_S, GGUF:Q3_K_M, GGUF:Q3_K_L, GGUF:Q4_K_S, GGUF:Q5_K_S, GGUF:Q5_K_M, GGUF:Q6_K, GGUF:Q4_0, GGUF:Q4_1, GGUF:Q5_0, GGUF:Q5_1,GGUF:Q8_0 |
-| **fp8**  | FP8_BLOCK                                                                                                                                                               |
-| **fake** | `all schemes (only for research)`                                                                                                                                       |
+| **gguf**                     | GGUF:Q4_K_M, GGUF:Q2_K_S, GGUF:Q3_K_S, GGUF:Q3_K_M, GGUF:Q3_K_L, GGUF:Q4_K_S, GGUF:Q5_K_S, GGUF:Q5_K_M, GGUF:Q6_K, GGUF:Q4_0, GGUF:Q4_1, GGUF:Q5_0, GGUF:Q5_1,GGUF:Q8_0 |
+| **fp8**                      | FP8_BLOCK                                                                                                                                                               |
+| **fake**                     | `all schemes (only for research)`                                                                                                                                       |
 
 ### Hardware Compatibility
 
@@ -324,6 +324,8 @@ W2G64 Average Accuracy of 13 tasks and Time Cost Results(Testing was conducted o
 </details>
 
 ### AWQ Algorithm
+
+**Experimental feature, there is no weight clip logic used in our implementation for now, so it may have some accuracy drop compared with origin AWQ algorithm**
 
 AWQ (Activation-Aware Weight Quantization) is available as an alternative quantization algorithm. AWQ protects salient weight channels by analyzing activation patterns and applying channel-wise scaling before standard RTN quantization.
 
@@ -760,6 +762,8 @@ autoround.save_quantized(format="auto_awq", output_dir="tmp_autoround")
 
 
 ### Hadamard Transform
+
+**Research feature with no effective kernels currently available and typically low community adoption.**
 
 AutoRound supports Hadamard transform as an optional weight/activation transformation technique, which can improve quantization accuracy by rotating the weight/activation matrix. This is particularly useful for certain quantization scenarios.
 

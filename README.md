@@ -36,6 +36,8 @@ See our papers [SignRoundV1](https://arxiv.org/pdf/2309.05516) and [SignRoundV2]
 
 
 ## 🆕 What's New
+* [2026/05] We provide **free** device to quantize the model via pure RTN model, please visit [Intel Low Bit Open LLM Leaderboard](https://huggingface.co/spaces/Intel/low_bit_open_llm_leaderboard) for more details.
+
 * [2026/05] **Model free** quantization is available, `auto-round-rtn` will now default to using the model-free approach: [Doc](https://github.com/intel/auto-round/blob/main/docs/step_by_step.md#model-free-mode).
 
 * [2026/03] **Block-wise FP8** quantization is available via `auto-round-rtn --scheme FP8_BLOCK`.
