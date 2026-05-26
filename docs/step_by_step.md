@@ -343,7 +343,7 @@ W2G64 Average Accuracy of 13 tasks and Time Cost Results(Testing was conducted o
 
 ### AWQ Algorithm
 
-**Experimental feature, there is no weight clip logic used in our implementation for now, so it may have some accuracy drop compared with origin AWQ algorithm**
+**Experimental feature: our current implementation does not apply weight clipping yet, so accuracy may drop compared to the original AWQ algorithm.**
 
 AWQ (Activation-Aware Weight Quantization) is available as an alternative quantization algorithm. AWQ protects salient weight channels by analyzing activation patterns and applying channel-wise scaling before standard RTN quantization.
 
