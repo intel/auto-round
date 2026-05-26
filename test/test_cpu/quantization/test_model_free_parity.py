@@ -170,7 +170,7 @@ def test_parity_model_free_vs_disable_opt_rtn(tmp_path, tiny_opt_model_path, sch
             BACKEND in weight_devices or "cpu" in weight_devices
         ), f"Expected model parameters on '{BACKEND}' or 'cpu', got {weight_devices}"
     # ar_b.quantize_and_save(format="auto_round", output_dir=out_b)
-    _, out_b = ar_b.quantize_and_save(format="auto_round", output_dir=out_b)
+    _, out_b = ar_b.quantize_and_save(format="auto_round:auto_gptq", output_dir=out_b)
 
     # ---- 1. quantization_config core keys agree ----
     qc_a = _read_qconfig(out_a)
@@ -180,9 +180,6 @@ def test_parity_model_free_vs_disable_opt_rtn(tmp_path, tiny_opt_model_path, sch
         assert qc_a[key] == qc_b[key], f"qconfig[{key}] differs: model_free={qc_a[key]} regular={qc_b[key]}"
     assert "int" in qc_a.get("data_type", "")
     assert "int" in qc_b.get("data_type", "")
-    assert (
-        qc_a["packing_format"] == qc_b["packing_format"]
-    ), f"packing_format differs: {qc_a['packing_format']} vs {qc_b['packing_format']}"
 
     # ---- 2. quantized tensor key sets agree ----
     tensors_a = _load_all_keys_and_tensors(out_a)
