@@ -157,9 +157,7 @@ def pack_layer(name, model, backend, device=None):
 
     bias = layer.bias is not None
     ##bias = True  ## if using the above, llama3 lambada RTN will be NAN , TODO why?
-    qlayer = QuantLinear(  ##pylint: disable=E1123
-        bits, group_size, in_features, out_features, bias,g_idx=True
-    )
+    qlayer = QuantLinear(bits, group_size, in_features, out_features, bias, g_idx=True)  ##pylint: disable=E1123
 
     qlayer.device = orig_device
     scale = layer.scale
