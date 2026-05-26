@@ -150,11 +150,14 @@ stages:
                 repo_path="${BUILD_REPOSITORY_URI#https://github.com/}"
                 repo_path="${repo_path%.git}"
 
-                curl -fsS -X POST \
+                if ! curl -fsS -X POST \
                   -H "Authorization: Bearer ${GITHUB_TOKEN}" \
                   -H "Accept: application/vnd.github+json" \
                   -H "Content-Type: application/json" \
                   -d '{"body":"/azp run Unit-Test-CUDA-AutoRound"}' \
-                  "https://api.github.com/repos/${repo_path}/issues/${pr_number}/comments"
+                  "https://api.github.com/repos/${repo_path}/issues/${pr_number}/comments"; then
+                  echo "Failed to post CUDA trigger comment (non-blocking)."
+                  exit 0
+                fi
 
                 echo "CUDA trigger comment posted to PR #${pr_number}."
