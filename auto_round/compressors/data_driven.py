@@ -315,6 +315,20 @@ class DataDrivenCompressor(BaseCompressor):
         if not self._post_init_done:
             self.post_init()
 
+        if len(self.quant_block_list) != 1 or len(self.quant_block_list[0]) != 1:
+            raise ValueError(
+                f"{self.__class__.__name__}.quantize_block supports exactly one target block, "
+                f"but quant_block_list is {self.quant_block_list!r}. "
+                "Use to_quant_block_names to select a single block."
+            )
+        expected_block_name = self.quant_block_list[0][0]
+        actual_block_name = getattr(block, "global_name", None)
+        if actual_block_name is not None and actual_block_name != expected_block_name:
+            raise ValueError(
+                f"quantize_block received block {actual_block_name!r}, but cached inputs are for "
+                f"{expected_block_name!r}. Pass the matching block or update to_quant_block_names."
+            )
+
         # When called from LLM-Compressor, `wrapped_model` is a single decoder layer
         # (not the full VL model), so it must not be treated as an MLLM regardless of
         # whether the original model had multimodal assets.  Force is_mllm=False for
@@ -639,7 +653,7 @@ class DataDrivenCompressor(BaseCompressor):
                     if hasattr(_mod, "bits") and check_to_quantized(_mod):
                         from auto_round.compressors.utils import immediate_pack as _immediate_pack
 
-                        _immediate_pack(_mod.global_name, self.quantizer.layer_config)
+                        _immediate_pack(_n, self.quantizer.layer_config)
 
             input_ids = next_input_ids
 

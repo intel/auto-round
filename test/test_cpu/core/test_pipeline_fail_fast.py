@@ -8,6 +8,8 @@ from auto_round.algorithms.quantization.pipeline import QuantizationPipeline, sp
 from auto_round.algorithms.quantization.rtn.config import RTNConfig
 from auto_round.algorithms.quantization.rtn.quantizer import RTNQuantizer
 from auto_round.algorithms.quantization.sign_round.config import SignRoundConfig
+from auto_round.algorithms.transforms.rotation.config import RotationConfig
+from auto_round.compressors.entry import AutoRound as NewAutoRound
 
 
 def test_split_awq_plus_rtn():
@@ -38,3 +40,8 @@ def test_registry_builtin_aliases_and_unknown():
     assert isinstance(_r.resolve_alg_config("autoround"), SignRoundConfig)
     with pytest.raises(ValueError, match="Unknown algorithm alias"):
         _r.resolve_alg_config("definitely_not_registered_abc123")
+
+
+def test_entry_rejects_configs_without_quantization_members():
+    with pytest.raises(ValueError, match="At least one quantization algorithm config"):
+        NewAutoRound(alg_configs=[RotationConfig()], model="dummy-model")

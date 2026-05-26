@@ -52,15 +52,12 @@ def is_diffusion_model(model_or_path):
 ```
 
 If your model doesn't have `model_index.json`, either create one in the model
-directory or pass diffusion-specific options through new-architecture
-`ExtraConfig` / `AutoRound` kwargs:
+directory or pass diffusion-specific options through `AutoRound` kwargs:
 
 ```python
-from auto_round.compressors.config import ExtraConfig
-
 ar = AutoRound(
     model,
-    extra_config=ExtraConfig(num_inference_steps=5),
+    num_inference_steps=5,
 )
 ```
 

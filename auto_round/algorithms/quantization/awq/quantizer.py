@@ -87,6 +87,9 @@ class AWQQuantizer(BaseWeightTransformer):
 
         self._user_mappings: list[dict] | None = config.mappings
 
+        # Set at runtime by the compressor's post_init() via ``pre.layer_config = self.layer_config``.
+        self.layer_config: dict | None = None
+
         self._resolved_mappings: list[ResolvedMapping] = []
         self._block_mappings: dict[str, list[ResolvedMapping]] = {}
 

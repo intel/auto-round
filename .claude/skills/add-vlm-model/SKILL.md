@@ -104,7 +104,7 @@ The new architecture routes multimodal calibration through:
 
 If your model works with an existing template/processor, prefer passing
 `template=...`, `processor=...`, or `image_processor=...` through `AutoRound` /
-`ExtraConfig` instead of adding compressor code.
+kwargs instead of adding compressor code.
 
 ## Step 3: Add Calibration Template
 
