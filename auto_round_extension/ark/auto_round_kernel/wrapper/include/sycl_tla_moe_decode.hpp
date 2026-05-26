@@ -39,10 +39,24 @@
 #include <stdexcept>
 
 #include "bestla/bestla.h"
+#include "bestla/sycl/fp8_lut.h"
 
 #ifdef ARK_XPU
 #include <sycl/sycl.hpp>
 #endif
+
+// ----------------------------------------------------------------------------
+// FP8 decode implementation switch
+//
+// Define `ARK_FP8_DECODE_USE_LUT` (e.g. -DARK_FP8_DECODE_USE_LUT) to dequantize
+// each FP8 byte via the 128-entry magnitude LUT in `bestla/sycl/fp8_lut.h`
+// (sign applied separately). Leave it undefined to keep the inline bit-manip
+// decode below, which is the default and matches the previous behavior.
+//
+// Both paths are mathematically equivalent for finite values; pick whichever
+// is faster on the target hardware. The LUT trades a handful of bit/branch
+// ops for a single constant-memory load per weight byte.
+// ----------------------------------------------------------------------------
 
 #if defined(ARK_XPU) && defined(ARK_SYCL_TLA)
 
@@ -71,14 +85,35 @@ template <typename ScalarT, bool IsE4M3>
 class MoEDecodeKernelFP8;
 
 // ----------------------------------------------------------------------------
-// FP8 byte -> float decode (device-side, no LUT / SLM required).
+// FP8 byte -> float decode.
 // Matches IEEE-style layout used by torch.float8_e4m3fn / torch.float8_e5m2:
 //   E4M3 (finite-only): 1 sign, 4 exp (bias 7), 3 mantissa; 0x7F/0xFF = NaN.
 //   E5M2 (IEEE-like):   1 sign, 5 exp (bias 15), 2 mantissa; exp==31 -> Inf/NaN.
-// We keep these inline rather than using a SLM LUT because the decode kernel
-// runs only one sub-group per workgroup and per-lane bit ops are cheap relative
-// to the global memory loads.
+//
+// Two implementations are provided and selected at compile time via
+// `ARK_FP8_DECODE_USE_LUT` (see the comment near the top of this file):
+//   - default (macro undefined): inline bit-manipulation, fully self-contained,
+//     no LUT / SLM required. Per-lane bit ops are cheap relative to the global
+//     memory loads in this kernel, so this is a reasonable default.
+//   - macro defined: read the magnitude from the 128-entry constexpr LUT in
+//     `bestla/sycl/fp8_lut.h` and apply the sign bit separately.
 // ----------------------------------------------------------------------------
+#if defined(ARK_FP8_DECODE_USE_LUT)
+
+inline float decode_fp8_e4m3(uint8_t byte) {
+  const uint32_t mag = byte & 0x7Fu;
+  const float v = bestla::sycl_prologue_b::fp8_lut::lut_e4m3_128[mag];
+  return (byte & 0x80u) ? -v : v;
+}
+
+inline float decode_fp8_e5m2(uint8_t byte) {
+  const uint32_t mag = byte & 0x7Fu;
+  const float v = bestla::sycl_prologue_b::fp8_lut::lut_e5m2_128[mag];
+  return (byte & 0x80u) ? -v : v;
+}
+
+#else  // !ARK_FP8_DECODE_USE_LUT
+
 inline float decode_fp8_e4m3(uint8_t byte) {
   const uint32_t mag = byte & 0x7Fu;
   const uint32_t sign = byte >> 7;
@@ -118,6 +153,8 @@ inline float decode_fp8_e5m2(uint8_t byte) {
   }
   return sign ? -v : v;
 }
+
+#endif  // ARK_FP8_DECODE_USE_LUT
 
 // ----------------------------------------------------------------------------
 // Build a [total_tokens] -> expert_id mapping from num_tokens_per_expert.
@@ -573,9 +610,10 @@ void launch_int2(sycl::queue* q, const ScalarT* activations, const uint8_t* weig
 // ----------------------------------------------------------------------------
 // FP8 (E4M3 / E5M2) GEMV with group-wise scale (no zero-point).
 //
-// Weights are 1 FP8 byte per element [E, N, K]. The byte is decoded inline by
-// bit manipulation; the LUT in fp8_lut.h would also work but inline decode
-// keeps this kernel self-contained and avoids touching SLM.
+// Weights are 1 FP8 byte per element [E, N, K]. The byte is decoded via the
+// `decode_fp8_e4m3` / `decode_fp8_e5m2` helpers above, which can be compiled
+// either as inline bit manipulation (default) or as a LUT lookup by defining
+// `ARK_FP8_DECODE_USE_LUT`.
 // ----------------------------------------------------------------------------
 template <typename ScalarT, bool IsE4M3>
 void launch_fp8(sycl::queue* q, const ScalarT* activations, const uint8_t* weights, const ScalarT* scales,
