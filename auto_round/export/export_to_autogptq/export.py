@@ -65,10 +65,8 @@ from auto_round.utils import (
     SUPPORTED_LAYER_TYPES,
     check_start_with_block_name,
     check_to_quantized,
-    copy_python_files_from_model_cache,
     get_block_names,
     get_module,
-    json_serialize,
     matches_any_regex,
     set_module,
     to_standard_regex,
@@ -160,7 +158,7 @@ def pack_layer(name, model, backend, device=None):
     bias = layer.bias is not None
     ##bias = True  ## if using the above, llama3 lambada RTN will be NAN , TODO why?
     qlayer = QuantLinear(  ##pylint: disable=E1123
-        bits, group_size, in_features, out_features, bias, weight_dtype=layer.weight.dtype
+        bits, group_size, in_features, out_features, bias,g_idx=True
     )
 
     qlayer.device = orig_device
