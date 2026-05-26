@@ -12,13 +12,13 @@ from auto_round.algorithms.quantization.pipeline import split_quantization_confi
 from auto_round.algorithms.quantization.registry import resolve_alg_config
 from auto_round.algorithms.quantization.rtn.config import RTNConfig
 from auto_round.algorithms.quantization.sign_round.config import SignRoundConfig
-from auto_round.algorithms.transforms.rotation.config import RotationConfig as _NewArchRotationConfig
+from auto_round.algorithms.transforms.quarot.config import RotationConfig as _NewArchRotationConfig
 from auto_round.auto_scheme.gen_auto_scheme import AutoScheme
+from auto_round.compressors.base import BaseCompressor
 from auto_round.compressors.data_driven import CalibratedRTNCompressor, DataDrivenCompressor
 from auto_round.compressors.utils import check_need_act_calibration
 from auto_round.compressors.zero_shot import ZeroShotCompressor
 from auto_round.logger import logger
-from auto_round.compressors.base import BaseCompressor
 from auto_round.schemes import QuantizationScheme, _parse_scheme
 
 

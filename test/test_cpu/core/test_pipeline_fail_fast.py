@@ -14,7 +14,7 @@ from auto_round.algorithms.quantization.pipeline import (
 from auto_round.algorithms.quantization.rtn.config import RTNConfig
 from auto_round.algorithms.quantization.rtn.quantizer import RTNQuantizer
 from auto_round.algorithms.quantization.sign_round.config import SignRoundConfig
-from auto_round.algorithms.transforms.rotation.config import RotationConfig
+from auto_round.algorithms.transforms.quarot.config import RotationConfig
 from auto_round.compressors.entry import AutoRound as NewAutoRound
 
 

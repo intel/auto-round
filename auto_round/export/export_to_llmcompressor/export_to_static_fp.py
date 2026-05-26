@@ -25,7 +25,7 @@ from tqdm import tqdm
 from auto_round.data_type.utils import reshape_pad_tensor_by_group_size, revert_tensor_by_pad
 from auto_round.export.export_to_autoround.export_to_fp8 import FP8QLinear
 from auto_round.export.export_to_llmcompressor.config import check_compressed_tensors_supported
-from auto_round.export.utils import save_model
+from auto_round.export.utils import is_immediate_saving_mode, save_model
 from auto_round.utils import (
     SUPPORTED_LAYER_TYPES,
     check_start_with_block_name,
@@ -261,7 +261,8 @@ def save_quantized_as_static_fp(
     if output_dir is None:
         return model
 
-    if os.path.exists(output_dir):
+    immediate_saving = is_immediate_saving_mode(model, serialization_dict)
+    if os.path.exists(output_dir) and not immediate_saving:
         logger.warning(f"{output_dir} already exists, this may cause model conflict")
 
     if tokenizer is not None:
@@ -274,6 +275,6 @@ def save_quantized_as_static_fp(
         image_processor.save_pretrained(output_dir)
 
     dtype = None
-    save_model(model, output_dir, safe_serialization=safe_serialization, dtype=dtype)
+    save_model(model, output_dir, safe_serialization=safe_serialization, dtype=dtype, immediate_saving=immediate_saving)
 
     return model

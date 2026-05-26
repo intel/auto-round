@@ -93,7 +93,7 @@ def _register_builtins() -> None:
     from auto_round.algorithms.quantization.awq.config import AWQConfig
     from auto_round.algorithms.quantization.rtn.config import RTNConfig
     from auto_round.algorithms.quantization.sign_round.config import SignRoundConfig
-    from auto_round.algorithms.transforms.rotation.config import RotationConfig
+    from auto_round.algorithms.transforms.quarot.config import RotationConfig
 
     register_alg("rtn", RTNConfig)
     register_alg("sign_round", SignRoundConfig)
