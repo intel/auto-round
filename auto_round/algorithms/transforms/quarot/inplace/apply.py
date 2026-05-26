@@ -14,7 +14,7 @@ from typing import Dict, Union
 import torch
 import tqdm
 
-from auto_round.algorithms.transforms.rotation.inplace.hooks import (
+from auto_round.algorithms.transforms.quarot.inplace.hooks import (
     CrossHeadOnlineHadamardHook,
     FullOnlineHadamardHook,
     GroupOnlineHadamardHook,
@@ -29,7 +29,7 @@ from auto_round.algorithms.transforms.rotation.inplace.hooks import (
     get_hadK,
     get_or_create_random_hadamard,
 )
-from auto_round.algorithms.transforms.rotation.inplace.model_config import (
+from auto_round.algorithms.transforms.quarot.inplace.model_config import (
     MAPPING_REGISTRY,
     RotationMapping,
     _resolve,

@@ -154,7 +154,7 @@ def matmul_hadU(X: torch.Tensor, hadamard_K: Optional[torch.Tensor] = None, K: O
 # the fallback implementations below are used.
 # ---------------------------------------------------------------------------
 try:
-    from auto_round.algorithms.transforms.rotation.utils.matrix import apply_transform_weight
+    from auto_round.algorithms.transforms.quarot.utils.matrix import apply_transform_weight
 except ImportError:
     # Fallback for standalone usage.
     def apply_transform_weight(
@@ -462,7 +462,7 @@ def fuse_rmsnorm_in_model(model: nn.Module) -> None:
     """
     # Attempt to use AutoRound's model_config layer discovery if available.
     try:
-        from auto_round.algorithms.transforms.rotation.inplace.model_config import get_scaling_layers
+        from auto_round.algorithms.transforms.quarot.inplace.model_config import get_scaling_layers
 
         layer_paths = get_scaling_layers(model.config.model_type if hasattr(model, "config") else "")
         if layer_paths:
@@ -756,7 +756,7 @@ def get_model_arch_info(model: nn.Module) -> dict:
 def get_attention_layers(model: nn.Module):
     """Yield attention modules using model_config if available, else fall back."""
     try:
-        from auto_round.algorithms.transforms.rotation.inplace.model_config import get_attention_layers as _get
+        from auto_round.algorithms.transforms.quarot.inplace.model_config import get_attention_layers as _get
 
         return _get(model)
     except ImportError:

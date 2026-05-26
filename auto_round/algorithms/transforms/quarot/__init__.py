@@ -13,15 +13,15 @@
 # limitations under the License.
 """Hadamard rotation sub-package for ``algorithms/transforms``."""
 
-from auto_round.algorithms.transforms.rotation.apply import (
+from auto_round.algorithms.transforms.quarot.apply import (
     HadamardRotation,
     apply_rotation_transform,
 )
-from auto_round.algorithms.transforms.rotation.config import (
+from auto_round.algorithms.transforms.quarot.config import (
     RotationConfig,
     normalize_rotation_config,
 )
-from auto_round.algorithms.transforms.rotation.transforms import (
+from auto_round.algorithms.transforms.quarot.transforms import (
     HADAMARDS,
     HadamardTransform,
     RandomHadamardTransform,

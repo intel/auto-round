@@ -9,11 +9,11 @@
 
 Two backend implementations exist:
 
-* ``inplace``  – :mod:`auto_round.algorithms.transforms.rotation.inplace`
+* ``inplace``  – :mod:`auto_round.algorithms.transforms.quarot.inplace`
     QuaRot-style residual-stream rotation. Works for any weight/activation
     dtype. Optionally fuses the online Hadamard into weights
     (``fuse_online_to_weight=True``).
-* ``transform`` – :mod:`auto_round.algorithms.transforms.rotation`
+* ``transform`` – :mod:`auto_round.algorithms.transforms.quarot`
     Per-Linear weight + activation Hadamard with a fused triton kernel.
     Only supports MXFP4 / NVFP4 and **cannot** fuse online to weight.
 
@@ -33,7 +33,7 @@ from typing import Any, Union
 import torch
 
 import auto_round.envs as envs
-from auto_round.algorithms.transforms.rotation.config import RotationConfig, normalize_rotation_config
+from auto_round.algorithms.transforms.quarot.config import RotationConfig, normalize_rotation_config
 from auto_round.compressors.utils import is_mx_fp, is_nv_fp
 from auto_round.utils import logger
 
@@ -122,7 +122,7 @@ def apply_hadamard_rotation(
 
     if backend == "inplace":
         logger.warning("this backend does not support real exporting, please export the model to fake format")
-        from auto_round.algorithms.transforms.rotation.inplace import apply_rotation_transform
+        from auto_round.algorithms.transforms.quarot.inplace import apply_rotation_transform
 
         # block_size -> group_size (None / -1 / 0 means full-dimension)
         bs = config.block_size
@@ -145,7 +145,7 @@ def apply_hadamard_rotation(
         supported_hadamard_types = ("hadamard", "random_hadamard")
         if config.hadamard_type not in supported_hadamard_types:
             raise ValueError("this backend only supports hadamard or random_hadamard")
-        from auto_round.algorithms.transforms.rotation.apply import apply_rotation_transform
+        from auto_round.algorithms.transforms.quarot.apply import apply_rotation_transform
 
         return apply_rotation_transform(model, config, data_type=data_type)
     else:

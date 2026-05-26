@@ -101,6 +101,17 @@ class AWQQuantizer(BaseWeightTransformer):
 
     # ── Algorithm Fusion: lifecycle hook implementations ──────────────────────
 
+    def bind(self, compressor) -> None:
+        """Wire shared state and force AWQ onto single-block scheduling."""
+        super().bind(compressor)
+        nblocks = getattr(compressor, "nblocks", 1)
+        if nblocks > 1:
+            logger.warning(
+                "AWQ does not support nblocks > 1 (got nblocks=%s). " "Falling back to nblocks=1.",
+                nblocks,
+            )
+            compressor.nblocks = 1
+
     def prepare_run(self, run_ctx: "RunContext") -> None:
         """Validate compatibility, resolve model-wide mappings, and group by block prefix."""
         report = check_model_compatibility(run_ctx.model, self._user_mappings)

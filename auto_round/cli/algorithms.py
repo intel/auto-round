@@ -346,7 +346,7 @@ class Hadamard(AlgorithmHandler):
         )
 
     def build(self, args, common_kwargs: dict[str, Any]):
-        from auto_round.algorithms.transforms.rotation.config import RotationConfig
+        from auto_round.algorithms.transforms.quarot.config import RotationConfig
 
         hadamard_type = getattr(args, "rotation_hadamard_type", None) or "hadamard"
         return RotationConfig(

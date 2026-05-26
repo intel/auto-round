@@ -19,13 +19,13 @@ schema.
 Two implementation backends share this one schema (method B):
 
 * ``backend="inplace"``  – QuaRot-style residual-stream rotation, implemented
-    under :mod:`auto_round.algorithms.transforms.rotation.inplace`.  Works for any
+    under :mod:`auto_round.algorithms.transforms.quarot.inplace`.  Works for any
   weight/activation dtype and can optionally fuse the online Hadamard into
   weights (``fuse_online_to_weight=True``).
 
 * ``backend="transform"`` – Per-Linear weight + activation Hadamard with a
   fused triton kernel, implemented under
-  :mod:`auto_round.algorithms.transforms.rotation.apply`.  Supports only
+  :mod:`auto_round.algorithms.transforms.quarot.apply`.  Supports only
   MXFP4 / NVFP4 and cannot fuse online to weight.
 
 * ``backend="auto"`` – dispatcher picks inplace when a fused online rotation

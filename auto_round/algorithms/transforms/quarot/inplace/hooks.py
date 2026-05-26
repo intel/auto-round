@@ -295,7 +295,7 @@ def register_online_had_hooks(model, mapping=None, fp32_had=False, use_fast_had=
         list of hook handles (call ``handle.remove()`` to detach).
     """
     if mapping is None:
-        from auto_round.algorithms.transforms.rotation.inplace.model_config import infer_mapping_from_model
+        from auto_round.algorithms.transforms.quarot.inplace.model_config import infer_mapping_from_model
 
         mapping = infer_mapping_from_model(model)
 
@@ -352,7 +352,7 @@ def get_hadK(n: int, transpose=False) -> (torch.Tensor, int):
         K = 1
         return hadK, K
     else:
-        from auto_round.algorithms.transforms.rotation.utils.math import _fetch_hadamard_divisor
+        from auto_round.algorithms.transforms.quarot.utils.math import _fetch_hadamard_divisor
 
         hadK = _fetch_hadamard_divisor(n, torch.float, torch.device("cpu"))
         if transpose:
