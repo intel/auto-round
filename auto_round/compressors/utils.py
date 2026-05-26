@@ -721,16 +721,16 @@ def get_layer_config_by_gguf_format(layer_config, target_gguf_format: str, model
 
     import gguf  # pylint: disable=E0401
 
+    from auto_round.export.export_to_gguf.llama_cpp_conversion import get_conversion
     from auto_round.schemes import QuantizationScheme, get_gguf_scheme
-    from auto_round.utils.common import MM_KEYS, LazyImport
-    from auto_round.utils.model import get_lm_head_name, get_module
-
-    # from auto_round.export.export_to_gguf.convert import ModelBase, get_model_architecture
-    convert_hf_to_gguf = LazyImport("auto_round.export.export_to_gguf.convert_hf_to_gguf")
+    from auto_round.utils.common import MM_MODULE_KEYS
+    from auto_round.utils.model import get_lm_head_name, get_module, is_separate_lm_head
 
     try:
-        model_architecture = convert_hf_to_gguf.get_model_architecture(
-            hparams=model.config.to_dict(), model_type=model_type
+        hparams = model.config.to_dict()
+        conversion = get_conversion(hparams=hparams, model_type=model_type)
+        model_architecture = conversion.get_model_architecture(
+            hparams=hparams, model_type=conversion.model_type(model_type)
         )
     except AttributeError as e:
         raise ImportError(
@@ -740,12 +740,8 @@ def get_layer_config_by_gguf_format(layer_config, target_gguf_format: str, model
         )
     try:
         if model_type != ModelType.TEXT:
-            model_class_vision = convert_hf_to_gguf.ModelBase.from_model_architecture(
-                model_architecture, model_type=model_type
-            )
-        model_class = convert_hf_to_gguf.ModelBase.from_model_architecture(
-            model_architecture, model_type=ModelType.TEXT
-        )
+            model_class_vision = conversion.get_model_class(model_architecture, model_type=model_type)
+        model_class = conversion.get_model_class(model_architecture, model_type=ModelType.TEXT)
 
     except NotImplementedError:
         return layer_config, {}
@@ -791,6 +787,7 @@ def get_layer_config_by_gguf_format(layer_config, target_gguf_format: str, model
     tie_word_embeddings = True
     if hasattr(model, "config") and hasattr(model.config, "tie_word_embeddings"):
         tie_word_embeddings = model.config.tie_word_embeddings
+    tie_word_embeddings &= not is_separate_lm_head(model)
 
     n_gqa = 1
     if (
@@ -828,14 +825,15 @@ def get_layer_config_by_gguf_format(layer_config, target_gguf_format: str, model
         if lm_head_name is not None and layer_name == lm_head_name:
             target_bits = int(re.search("gguf:q([0-9]{1,})_[01k]", GGUF_CONFIG[target_gguf_format]["lm_head"]).group(1))
         if isinstance(layer, torch.nn.Embedding):
+            embedding_format_key = "lm_head" if tie_word_embeddings else "embedding"
             target_bits = int(
-                re.search("gguf:q([0-9]{1,})_[01k]", GGUF_CONFIG[target_gguf_format]["embedding"]).group(1)
+                re.search("gguf:q([0-9]{1,})_[01k]", GGUF_CONFIG[target_gguf_format][embedding_format_key]).group(1)
             )
 
-        if model_type != ModelType.TEXT and any([key in layer_name for key in MM_KEYS]):
+        if model_type != ModelType.TEXT and any([key in layer_name for key in MM_MODULE_KEYS]):
             gguf_name = tensor_map_vision.get_name(layer_name)
             if gguf_name is None:
-                for key in MM_KEYS:
+                for key in MM_MODULE_KEYS:
                     gguf_name = tensor_map_vision.get_name(layer_name.replace(f".{key}", ""))
                     if gguf_name is not None:
                         break
@@ -850,7 +848,7 @@ def get_layer_config_by_gguf_format(layer_config, target_gguf_format: str, model
                     f"Setting layer_config requires providing bits, {layer_name} has not bits,"
                     f" using bits={target_bits} instead."
                 )
-                new_type = new_type[:bits_index] + target_bits + new_type[bits_index + 1 :]
+                new_type = new_type[:bits_index] + str(target_bits) + new_type[bits_index + 1 :]
             else:
                 config_tmp = config.copy()
                 scheme_keys = [f.name for f in fields(QuantizationScheme)]
@@ -876,11 +874,6 @@ def get_layer_config_by_gguf_format(layer_config, target_gguf_format: str, model
             new_type = _search_gguf_type(new_type)
             if new_type is None:
                 raise ValueError(f"invalid bit setting for {layer_name}")
-        elif target_bits is not None and "bits" in config and config["bits"] != target_bits:
-            new_type = new_type[:bits_index] + str(config["bits"]) + new_type[bits_index + 1 :]
-            new_type = _search_gguf_type(new_type)
-            if new_type is None:
-                raise ValueError(f"invalid bit setting for {layer_name}")
         elif lm_head_name is not None and layer_name == lm_head_name and not tie_word_embeddings:
             if gguf.MODEL_ARCH.FALCON == model_class.model_arch or input_features % block_size != 0:
                 new_type = "gguf:q8_0"
@@ -889,11 +882,16 @@ def get_layer_config_by_gguf_format(layer_config, target_gguf_format: str, model
             elif new_type != "gguf:q8_0":
                 new_type = "gguf:q6_k"
         elif lm_head_name is not None and layer_name == lm_head_name and tie_word_embeddings:
-            # new_type = GGUF_CONFIG[target_gguf_format]["lm_head"]
             continue
         elif isinstance(layer, torch.nn.Embedding):
-            if "embedding" in GGUF_CONFIG[target_gguf_format]:
-                new_type = GGUF_CONFIG[target_gguf_format]["embedding"]
+            embedding_format_key = "lm_head" if tie_word_embeddings else "embedding"
+            if embedding_format_key in GGUF_CONFIG[target_gguf_format]:
+                new_type = GGUF_CONFIG[target_gguf_format][embedding_format_key]
+        elif target_bits is not None and "bits" in config and config["bits"] != target_bits:
+            new_type = new_type[:bits_index] + str(config["bits"]) + new_type[bits_index + 1 :]
+            new_type = _search_gguf_type(new_type)
+            if new_type is None:
+                raise ValueError(f"invalid bit setting for {layer_name}")
         elif gguf_name is None:
             pass
         # attn_v
