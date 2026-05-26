@@ -551,13 +551,13 @@ class SpinQuantPreprocessor:
     def _train_rotations(self, dataloader: Any) -> None:
         """Train rotation matrices using the shared training loop.
 
-        Delegates to :func:`training_core.run_training_loop` which is the
+        Delegates to :func:`training.run_training_loop` which is the
         single implementation shared with :class:`RotationTrainer`.
 
         For advanced training features (callbacks, evaluation, checkpointing,
-        custom loss), use ``RotationTrainer`` from ``trainer.py`` directly.
+        custom loss), use ``RotationTrainer`` from ``training.py`` directly.
         """
-        from auto_round.algorithms.transforms.spinquant.training_core import (
+        from auto_round.algorithms.transforms.spinquant.training import (
             clone_model_for_reference,
             create_dual_optimizer,
             run_training_loop,
