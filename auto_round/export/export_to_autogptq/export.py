@@ -45,7 +45,6 @@ import torch.nn as nn
 import transformers
 from tqdm import tqdm
 
-import auto_round.export.export_to_autogptq.qlinear_triton
 from auto_round.export.utils import (
     filter_quantization_config,
     get_autogptq_packing_qlinear,
@@ -172,8 +171,7 @@ def pack_layer(name, model, backend, device=None):
     ##force to float32 to be compatible with torch 2.0
     if sym and isinstance(zero, torch.Tensor):
         layer, scale, zero = layer.to("cpu"), scale.to("cpu"), zero.to("cpu")
-        if isinstance(qlayer, auto_round.export.export_to_autogptq.qlinear_triton.QuantLinear):
-            zero = int(zero.flatten()[0])
+        zero = int(zero.flatten()[0])
     else:
         layer, scale, zero = layer.to("cpu"), scale.to("cpu"), zero
     if isinstance(zero, torch.Tensor) and zero.dtype == torch.bfloat16:
