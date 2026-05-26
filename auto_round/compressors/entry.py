@@ -18,6 +18,7 @@ from auto_round.compressors.data_driven import CalibratedRTNCompressor, DataDriv
 from auto_round.compressors.utils import check_need_act_calibration
 from auto_round.compressors.zero_shot import ZeroShotCompressor
 from auto_round.logger import logger
+from auto_round.compressors.base import BaseCompressor
 from auto_round.schemes import QuantizationScheme, _parse_scheme
 
 
@@ -191,7 +192,7 @@ class AutoRound(object):
         nsamples: int = None,
         seqlen: int = None,
         **kwargs,
-    ):
+    ) -> "BaseCompressor":
         from auto_round.algorithms.quantization.config import QuantizationConfig
         from auto_round.utils.model import is_model_free_route
 
@@ -464,7 +465,7 @@ class AutoRoundCompatible:
         low_cpu_mem_usage: bool = True,
         algorithm: str = None,
         **kwargs,
-    ):
+    ) -> "BaseCompressor":
         """Create AutoRoundCompatible instance using new AutoRound architecture.
 
         This method translates old AutoRoundCompatible API to new AutoRound API.

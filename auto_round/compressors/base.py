@@ -336,11 +336,6 @@ class BaseCompressor(object):
         )
         self.shard_writer = None
 
-    @property
-    def tokenizer(self):
-        """Convenience accessor for the tokenizer stored in ``model_context``."""
-        return self.model_context.tokenizer
-
         # scale_dtype is resolved in quantizer.resolve_scheme() after scheme resolution,
         # so it is not initialized here to avoid premature evaluation with an unresolved scheme.
 
@@ -359,6 +354,13 @@ class BaseCompressor(object):
         # batch_size from kwargs) have already routed through it.
 
         self.has_variable_block_shape = False
+
+    # ── Convenience properties ────────────────────────────────────────────────
+
+    @property
+    def tokenizer(self):
+        """Convenience accessor for the tokenizer stored in ``model_context``."""
+        return self.model_context.tokenizer
 
     # ── Scheme resolution ─────────────────────────────────────────────────────
 
@@ -1078,8 +1080,12 @@ class BaseCompressor(object):
         self.quantizer.scale_dtype = self.scale_dtype
         self.quantizer.ignore_layers = self.ignore_layers
 
-        # Also sync layer_config and scale_dtype to all preprocessors in the pipeline
-        # so they have access to per-layer quant config during pre-processing (e.g.
+        from auto_round.algorithms.quantization.pipeline import sync_shared_config_from
+
+        sync_shared_config_from(self.quantizer.config, [pre.config for pre in self._pipeline.preprocessors])
+
+        # Also sync runtime-only state to all preprocessors in the pipeline so
+        # they have access to per-layer quant config during pre-processing (e.g.
         # AWQ grid search uses layer_config to look up bits/group_size for each layer).
         for pre in self._pipeline.preprocessors:
             pre.layer_config = self.layer_config
@@ -1129,6 +1135,12 @@ class BaseCompressor(object):
     def __getattr__(self, name: str) -> Any:
         if name in self.__dict__:
             return self.__dict__[name]
+
+        # Never proxy private/dunder attributes — they should be set explicitly
+        # in __init__.  Proxying them hides bugs (e.g. missing _post_init_done)
+        # and can cause infinite recursion.
+        if name.startswith("_"):
+            raise AttributeError(f"'{type(self).__name__}' object has no attribute '{name}'")
 
         # Delegate to block_quantizer: access _pipeline directly from __dict__ to
         # avoid recursion (quantizer is now a @property backed by _pipeline; going
