@@ -296,7 +296,8 @@ def get_autogptq_packing_qlinear(backend, bits=4, group_size=128, sym=False):
     """
 
     from auto_round_extension.torch.qlinear_torch_zp import QuantLinear
-    return  QuantLinear
+
+    return QuantLinear
 
     # use_triton = True
     # if bits not in [2, 4, 8]:
