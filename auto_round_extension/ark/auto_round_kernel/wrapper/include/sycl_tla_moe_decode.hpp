@@ -38,7 +38,7 @@
 #include <limits>
 #include <stdexcept>
 
-#include "bestla/bestla/bestla.h"
+#include "bestla/bestla.h"
 
 #ifdef ARK_XPU
 #include <sycl/sycl.hpp>
