@@ -129,6 +129,78 @@ def split_quantization_configs(configs: list[Any]) -> tuple[list[Any], list[Any]
     return preprocessors, block_quantizers
 
 
+def _quantization_configs(configs: list[Any]) -> list[Any]:
+    """Return configs that participate in quantization shared-field resolution."""
+    from auto_round.algorithms.quantization.config import QuantizationConfig
+
+    return [config for config in configs if isinstance(config, QuantizationConfig)]
+
+
+def _public_config_attrs(config: Any) -> dict[str, Any]:
+    """Public, data-like attrs used for structural shared config resolution."""
+    return {key: value for key, value in vars(config).items() if not key.startswith("_") and not callable(value)}
+
+
+def _format_shared_config_values(field: str, values: list[tuple[Any, Any]]) -> str:
+    parts = [f"{type(config).__name__}.{field}={value!r}" for config, value in values]
+    return ", ".join(parts)
+
+
+def resolve_shared_config_values(configs: list[Any]) -> list[Any]:
+    """Merge shared public attrs across quantization configs without naming fields.
+
+    A field is shared when at least two quantization configs define the same
+    public attribute. ``None`` means "not set" and inherits from the single
+    non-None value, while conflicting non-None values fail fast. Configs that do
+    not define a field do not participate in that field.
+    """
+    quant_configs = _quantization_configs(configs)
+    attrs_by_config = [(config, _public_config_attrs(config)) for config in quant_configs]
+    field_to_configs: dict[str, list[Any]] = defaultdict(list)
+    for config, attrs in attrs_by_config:
+        for field in attrs:
+            field_to_configs[field].append(config)
+
+    for field, field_configs in field_to_configs.items():
+        if len(field_configs) < 2:
+            continue
+
+        field_attrs = [
+            (config, attrs[field])
+            for config, attrs in attrs_by_config
+            if any(config is field_config for field_config in field_configs)
+        ]
+        non_none_values = [(config, value) for config, value in field_attrs if value is not None]
+        unique_values = []
+        for _, value in non_none_values:
+            if not any(value == existing for existing in unique_values):
+                unique_values.append(value)
+        if len(unique_values) > 1:
+            raise ValueError(
+                f"Conflicting shared config field {field!r}: "
+                f"{_format_shared_config_values(field, non_none_values)}. "
+                "Use the same value for shared fields or leave it unset on secondary algorithms."
+            )
+        if len(unique_values) == 1:
+            shared_value = unique_values[0]
+            for config in field_configs:
+                if getattr(config, field) is None:
+                    setattr(config, field, shared_value)
+    return configs
+
+
+def sync_shared_config_from(source_config: Any, target_configs: list[Any]) -> None:
+    """Propagate resolved source values to targets that already define matching attrs."""
+    source_attrs = _public_config_attrs(source_config)
+    for target in _quantization_configs(target_configs):
+        if target is source_config:
+            continue
+        target_attrs = _public_config_attrs(target)
+        for field, source_value in source_attrs.items():
+            if field in target_attrs and source_value is not None:
+                setattr(target, field, source_value)
+
+
 @dataclass
 class ActCalibPolicy:
     """Activation calibration policy: when and from what inputs to collect act stats.
@@ -557,6 +629,7 @@ class QuantizationPipeline:
         from auto_round.algorithms.quantization.config import QuantizationConfig
 
         is_diffusion = compressor is not None and getattr(compressor.model_context, "is_diffusion", False)
+        configs = list(configs)
 
         # Ensure at least one terminal block quantizer is present; fall back to RTN.
         _, block_quantizer_configs = split_quantization_configs(configs)
@@ -565,6 +638,8 @@ class QuantizationPipeline:
             from auto_round.algorithms.quantization.rtn.config import RTNConfig
 
             configs = list(configs) + [RTNConfig()]
+
+        configs = resolve_shared_config_values(configs)
 
         def _resolve_cls(cfg):
             module = importlib.import_module("auto_round.algorithms.quantization")
