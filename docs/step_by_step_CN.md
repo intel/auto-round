@@ -307,7 +307,7 @@ ar.quantize_and_save(output_dir, format="auto_round")
 | 高精度版（best）    | 8        | 1000     | 2048     | 512   | 自动适配 | False           |
 | 高速版（light）     | 8        | 50       | 2048     | 128   | 5e-3   | False           |
 | 优化 RTN（opt_rtn） | 8        | 0        | 2048     | 128   | 自动适配 | False           |
-| 原始 RTN（rtn）     | 8        | 0        | 2048     | 1     | 自动适配 | True            |
+| 原始 RTN（rtn）     | 8        | 0        | 2048     | 0     | 自动适配 | True            |
 
 </details>
 

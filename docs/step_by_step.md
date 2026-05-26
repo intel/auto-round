@@ -314,7 +314,7 @@ configuration to suit your specific requirements and available resources.
 | best    | 8          | 1000  | 2048   | 512      | None  | False           |
 | light   | 8          | 50    | 2048   | 128      | 5e-3  | False           |
 | opt_rtn | 8          | 0     | 2048   | 128      | None  | False           |
-| rtn     | 8          | 0     | 2048   | 1        | None  | True            |
+| rtn     | 8          | 0     | 2048   | 0        | None  | True            |
 
 </details>
 
