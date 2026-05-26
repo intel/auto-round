@@ -1324,10 +1324,6 @@ class BaseCompressor(object):
             self.compress_context.output_dir = output_dir
         if format is not None:
             if isinstance(format, str) and getattr(self, "formats", None) is None:
-                logger.warning(
-                    f"save_quantized with format is deprecated and will be deleted in auto_round version 1.0."
-                    f" Please use AutoRound(format='{format}' instead)."
-                )
                 self.formats = get_formats(format, self)
                 self.compress_context.formats = self.formats
 
@@ -1492,10 +1488,6 @@ class BaseCompressor(object):
 
         # check and update the format based on the current configuration
         if format and self.formats is None:
-            logger.warning(
-                f"quantize_and_save with format is deprecated and will be deleted in auto_round version 1.0."
-                f" Please use AutoRound(format='{format}' instead)."
-            )
             self.formats = format
         if self.formats is None:
             logger.info("format is not set, using default auto_round format.")

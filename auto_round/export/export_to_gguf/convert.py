@@ -227,6 +227,7 @@ def _quant_data(cls, data_torch, data_qtype, name, modify_name, new_name, bid, d
         device: device to perform quantization. Defaults to None.
 
     """
+    data_qtype = get_qtype_by_layer_config(cls.layer_config, name, data_qtype)
     suffix = ".weight"
     device = data_torch.device if device is None else device
 
@@ -300,6 +301,14 @@ def _quant_data(cls, data_torch, data_qtype, name, modify_name, new_name, bid, d
 
 def get_qtype_by_layer_config(layer_config, name, data_qtype):
     name = name[: -len(".weight")]
+    if name not in layer_config and name.endswith("embed_tokens"):
+        embedding_names = [key for key in layer_config if key.endswith("embed_tokens")]
+        if len(embedding_names) == 1:
+            name = embedding_names[0]
+    elif name == "token_embd":
+        embedding_names = [key for key in layer_config if key.endswith("embed_tokens")]
+        if len(embedding_names) == 1:
+            name = embedding_names[0]
     if name not in layer_config or layer_config[name]["bits"] >= 16:
         return data_qtype
     bits = layer_config[name].get("bits")
@@ -532,9 +541,7 @@ def prepare_tensors(cls):
             name = get_moe_name(cls, name, new_name)
             clean_weight_list.append(name)
             # get data_qtype by layer_config
-            if isinstance(data_qtype, bool):
-                data_qtype = get_qtype_by_layer_config(cls.layer_config, name, data_qtype)
-
+            data_qtype = get_qtype_by_layer_config(cls.layer_config, name, data_qtype)
             # # No override (data_qtype is False), or wants to be quantized (data_qtype is True)
             if isinstance(data_qtype, bool):
                 if cls.ftype == gguf.LlamaFileType.ALL_F32:
