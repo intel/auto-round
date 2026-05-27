@@ -128,6 +128,79 @@ class TestLLMC:
             and quantization_config["ignore"] == ["lm_head"]
         ), f"Invalid MXFP8 quantization configuration: {quantization_config}"
 
+    def test_mxfp8_llmcompressor_kv_config(self, tiny_opt_model_path, tmp_path):
+        ar = AutoRound(
+            model=tiny_opt_model_path,
+            iters=0,
+            disable_opt_rtn=True,
+            scheme="mxfp8",
+            static_kv_dtype="fp8",
+        )
+        _, quantized_model_path = ar.quantize_and_save(output_dir=tmp_path, format="llm_compressor")
+
+        with open(os.path.join(quantized_model_path, "config.json")) as f:
+            config = json.load(f)
+
+        kv_cache_scheme = config["quantization_config"]["kv_cache_scheme"]
+        assert kv_cache_scheme is not None
+        assert kv_cache_scheme["num_bits"] == 8
+        assert kv_cache_scheme["type"] == "float"
+        assert kv_cache_scheme["strategy"] == "tensor"
+        assert kv_cache_scheme["dynamic"] is False
+        assert kv_cache_scheme["symmetric"] is True
+
+    def test_mxfp8_llmcompressor_attention_config(self, tiny_opt_model_path, tmp_path):
+        ar = AutoRound(
+            model=tiny_opt_model_path,
+            iters=0,
+            disable_opt_rtn=True,
+            scheme="mxfp8",
+            static_attention_dtype="fp8",
+        )
+        compressed_model, quantized_model_path = ar.quantize_and_save(output_dir=tmp_path, format="llm_compressor")
+
+        with open(os.path.join(quantized_model_path, "config.json")) as f:
+            saved_config = json.load(f)
+
+        saved_groups = saved_config["quantization_config"]["config_groups"]
+        attention_group = None
+        for group in saved_groups.values():
+            if "Linear" not in group["targets"]:
+                attention_group = group
+                break
+
+        assert attention_group is not None
+        assert attention_group["targets"] == [compressed_model.model.decoder.layers[0].self_attn.__class__.__name__]
+        assert attention_group["weights"] is None
+        assert attention_group["input_activations"]["num_bits"] == 8
+        assert attention_group["input_activations"]["type"] == "float"
+        assert attention_group["input_activations"]["strategy"] == "tensor"
+        assert attention_group["input_activations"]["dynamic"] is False
+        assert attention_group["input_activations"]["symmetric"] is True
+        assert saved_config["quantization_config"]["kv_cache_scheme"] is not None
+
+        quantization_config = transformers.AutoConfig.from_pretrained(
+            quantized_model_path, trust_remote_code=True
+        ).quantization_config
+        config_groups = quantization_config["config_groups"]
+        attention_group = None
+        for group in config_groups.values():
+            targets = group["targets"]
+            if "Linear" not in targets:
+                attention_group = group
+                break
+
+        assert attention_group is not None
+        assert attention_group["targets"] == [compressed_model.model.decoder.layers[0].self_attn.__class__.__name__]
+        assert attention_group["weights"] is None
+        assert attention_group["input_activations"]["num_bits"] == 8
+        assert attention_group["input_activations"]["type"] == "float"
+        assert attention_group["input_activations"]["strategy"] == "tensor"
+        assert attention_group["input_activations"]["dynamic"] is False
+        assert attention_group["input_activations"]["symmetric"] is True
+        assert quantization_config["kv_cache_scheme"] is not None
+        assert getattr(compressed_model.model.decoder.layers[0].self_attn, "q_scale", None) is not None
+
     def test_mixed_precision_llmcompressor_format(self, tiny_opt_model_path, tmp_path):
         scheme = AutoScheme(
             avg_bits=7,
