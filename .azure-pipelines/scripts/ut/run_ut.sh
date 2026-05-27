@@ -55,10 +55,10 @@ function print_summary() {
 function check_storage_usage() {
     echo "##[group]check storage usage..."
     df -h
-    du -sh /auto-round
-    du -sh /home/hostuser/.cache/huggingface
-    du -sh /home/hostuser/.cache/huggingface/hub/*
-    du -sh /home/hostuser/.venv
+    du -sh /auto-round || true
+    du -sh /home/hostuser/.cache/huggingface || true
+    du -sh /home/hostuser/.cache/huggingface/hub/* || true
+    du -sh /home/hostuser/.venv || true
     echo "##[endgroup]"
 }
 
