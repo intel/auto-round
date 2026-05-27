@@ -36,19 +36,19 @@ from typing import TYPE_CHECKING, Any
 
 import torch
 
-from auto_round.algorithms.quantization.awq.config import AWQConfig
-from auto_round.algorithms.quantization.awq.mappings import (
-    ResolvedMapping,
-    _extract_block_prefix,
-    check_model_compatibility,
-    resolve_mappings,
-)
-from auto_round.algorithms.quantization.base import BaseWeightTransformer
 from auto_round.algorithms.quantization.pipeline import (
     ActCalibPolicy,
     CalibTiming,
     InputSource,
 )
+from auto_round.algorithms.transforms.awq.config import AWQConfig
+from auto_round.algorithms.transforms.awq.mappings import (
+    ResolvedMapping,
+    _extract_block_prefix,
+    check_model_compatibility,
+    resolve_mappings,
+)
+from auto_round.algorithms.transforms.base import BaseWeightTransformer
 from auto_round.data_type.utils import (
     get_quant_func,
     reshape_pad_tensor_by_group_size,
@@ -63,7 +63,7 @@ if TYPE_CHECKING:
 class AWQQuantizer(BaseWeightTransformer):
     """AWQ quantizer: activation-aware weight smoothing pre-processor.
 
-    Inherits :class:`~auto_round.algorithms.quantization.base.BaseWeightTransformer`.
+    Inherits :class:`~auto_round.algorithms.transforms.base.BaseWeightTransformer`.
     It smooths block weights in-place; actual weight compression (RTN /
     SignRound) is performed by the pipeline's ``block_quantizer``.
     """
@@ -125,7 +125,7 @@ class AWQQuantizer(BaseWeightTransformer):
                 "AWQ: no layer mappings were resolved for this model. "
                 f"Model class: {type(run_ctx.model).__name__}. "
                 "To add support, provide explicit 'mappings' in AWQConfig, or "
-                "add an entry to auto_round/algorithms/quantization/awq/mappings.py."
+                "add an entry to auto_round/algorithms/transforms/awq/mappings.py."
             )
 
         # Group mappings by block prefix for O(1) lookup during block iteration.

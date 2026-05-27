@@ -7,11 +7,11 @@ from typing import Any, Callable, Optional, Union
 import torch
 
 from auto_round.algorithms.alg_config import AlgConfig
-from auto_round.algorithms.quantization.awq.config import AWQConfig
 from auto_round.algorithms.quantization.pipeline import split_quantization_configs
 from auto_round.algorithms.quantization.registry import resolve_alg_config
 from auto_round.algorithms.quantization.rtn.config import RTNConfig
 from auto_round.algorithms.quantization.sign_round.config import SignRoundConfig
+from auto_round.algorithms.transforms.awq.config import AWQConfig
 from auto_round.algorithms.transforms.quarot.config import RotationConfig as _NewArchRotationConfig
 from auto_round.auto_scheme.gen_auto_scheme import AutoScheme
 from auto_round.compressors.base import BaseCompressor

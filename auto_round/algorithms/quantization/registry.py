@@ -90,9 +90,9 @@ def list_registered_algorithms() -> list[str]:
 
 
 def _register_builtins() -> None:
-    from auto_round.algorithms.quantization.awq.config import AWQConfig
     from auto_round.algorithms.quantization.rtn.config import RTNConfig
     from auto_round.algorithms.quantization.sign_round.config import SignRoundConfig
+    from auto_round.algorithms.transforms.awq.config import AWQConfig
     from auto_round.algorithms.transforms.quarot.config import RotationConfig
 
     register_alg("rtn", RTNConfig)

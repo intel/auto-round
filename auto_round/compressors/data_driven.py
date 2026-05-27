@@ -731,7 +731,7 @@ class DataDrivenCompressor(BaseCompressor):
             last_cache_name=_last_cache_name,
         )
         self.inputs = all_inputs
-        is_quantized_embedding = self._quantize_embedding_layer()
+        is_quantized_embedding = self.quantizer.quantize_embedding_layer()
         clear_memory(device_list=self.compress_context.device_list)
         all_q_inputs = None
         if is_quantized_embedding:
@@ -1247,7 +1247,7 @@ class CalibratedRTNCompressor(DataDrivenCompressor):
 
         formats = getattr(self, "formats", None) or []
         if not (any(fmt.is_gguf() for fmt in formats) or self.super_bits is not None):
-            self._quantize_embedding_layer()  # leave to gguf itself to handle
+            self.quantizer.quantize_embedding_layer()  # leave to gguf itself to handle
 
         # Release memory
         clear_memory(device_list=self.compress_context.device_list)
