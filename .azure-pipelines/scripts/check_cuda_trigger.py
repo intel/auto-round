@@ -1,7 +1,8 @@
+import json
 import os
 import sys
-import json
 from urllib.request import Request, urlopen
+
 
 def main():
     repo_path = os.environ.get("REPO_PATH", "")
@@ -41,7 +42,7 @@ def main():
     req = Request(
         "https://api.github.com/graphql",
         data=json.dumps({"query": query, "variables": {"owner": owner, "name": name, "pr": pr}}).encode("utf-8"),
-        headers={"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
+        headers={"Authorization": f"Bearer {token}", "Content-Type": "application/json"},
     )
 
     try:
@@ -53,7 +54,7 @@ def main():
         sys.exit(1)
 
     target = "/azp run Unit-Test-CUDA-AutoRound"
-    
+
     # Traverse nodes in reverse (from newest to oldest)
     for node in reversed(nodes):
         if node.get("__typename") == "IssueComment":
@@ -70,6 +71,7 @@ def main():
     # Exit 1 means we break the loop (commit reached) without calling sys.exit(0)
     # The bash script catching exit 1 means "proceed to post the comment".
     sys.exit(1)
+
 
 if __name__ == "__main__":
     main()
