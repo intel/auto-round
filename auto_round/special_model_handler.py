@@ -95,6 +95,25 @@ def _normalize_gemma4_per_layer_input(positional_inputs, hidden_states):
 def prepare_special_model_block_inputs(block, rotary_input, input_others, positional_inputs=None):
     """Rewrite replay inputs for blocks that need model-specific handling."""
 
+    # Guard: ensure position_ids is a tensor, not a list or None.
+    if "position_ids" in input_others:
+        pid = input_others["position_ids"]
+        if isinstance(pid, list):
+            if len(pid) == 1:
+                input_others["position_ids"] = pid[0]
+            elif len(pid) == 0:
+                input_others["position_ids"] = (
+                    torch.arange(rotary_input.shape[1], device=rotary_input.device, dtype=torch.long)
+                    .unsqueeze(0)
+                    .expand(rotary_input.shape[0], -1)
+                )
+        elif pid is None:
+            input_others["position_ids"] = (
+                torch.arange(rotary_input.shape[1], device=rotary_input.device, dtype=torch.long)
+                .unsqueeze(0)
+                .expand(rotary_input.shape[0], -1)
+            )
+
     special_replay_type = getattr(block, "_autoround_special_replay", None)
     if special_replay_type == "gemma4":
         prepared_inputs = _prepare_gemma4_replay_inputs(
@@ -403,8 +422,10 @@ def _get_qwen2_5_omni_multimodal_block(model, quant_vision=False):
 
     For quantization, we focus on:
     - thinker.model.layers (text decoder layers) - main LLM layers
-    - talker.model.layers (talker decoder layers)
     - Optionally: visual encoder blocks, audio encoder layers
+
+    talker is excluded by default because quantizing it has been observed to
+    degrade audio quality in long-form generation.
     """
     block_names = []
 
@@ -422,10 +443,6 @@ def _get_qwen2_5_omni_multimodal_block(model, quant_vision=False):
     if hasattr(model, "thinker") and hasattr(model.thinker, "model") and hasattr(model.thinker.model, "layers"):
         block_names.append([f"thinker.model.layers.{i}" for i in range(len(model.thinker.model.layers))])
 
-    # Talker model layers (if available)
-    if hasattr(model, "talker") and hasattr(model.talker, "model") and hasattr(model.talker.model, "layers"):
-        block_names.append([f"talker.model.layers.{i}" for i in range(len(model.talker.model.layers))])
-
     return block_names
 
 
@@ -439,8 +456,10 @@ def _get_qwen3_omni_moe_multimodal_block(model, quant_vision=False):
 
     For quantization, we focus on:
     - thinker.model.layers (text decoder layers) - main LLM layers
-    - talker.model.layers (talker decoder layers)
     - Optionally: visual encoder blocks, audio encoder layers
+
+    talker is excluded by default because quantizing it has been observed to
+    degrade audio quality in long-form generation .
     """
     block_names = []
 
@@ -459,10 +478,6 @@ def _get_qwen3_omni_moe_multimodal_block(model, quant_vision=False):
     # Thinker text model layers (main LLM decoder)
     if hasattr(model, "thinker") and hasattr(model.thinker, "model") and hasattr(model.thinker.model, "layers"):
         block_names.append([f"thinker.model.layers.{i}" for i in range(len(model.thinker.model.layers))])
-
-    # Talker model layers (if available)
-    if hasattr(model, "talker") and hasattr(model.talker, "model") and hasattr(model.talker.model, "layers"):
-        block_names.append([f"talker.model.layers.{i}" for i in range(len(model.talker.model.layers))])
 
     return block_names
 

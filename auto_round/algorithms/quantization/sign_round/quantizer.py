@@ -330,6 +330,7 @@ class SignRoundQuantizer(BaseQuantizers):
         q_inputs: Optional[list[torch.Tensor]] = None,
         device: str = "cpu",
         dtype: Optional[torch.dtype] = None,
+        **kwargs,
     ):
         """Quantize a specific layer of the model using the provided inputs.
 
@@ -349,7 +350,7 @@ class SignRoundQuantizer(BaseQuantizers):
                 set_module(self.model, layer_name, layer.to(dtype))
             self.quantize_layer_via_rtn(
                 layer_name,
-                disable_opt_rtn=getattr(self.config, "disable_opt_rtn", True),
+                disable_opt_rtn=kwargs.get("disable_opt_rtn", getattr(self.config, "disable_opt_rtn", True)),
             )
             return
 

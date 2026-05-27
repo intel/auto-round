@@ -159,11 +159,42 @@ class ShardWriter:
             param_name = f"{prefix}.{k}"
             self._add_tensor(param_name, v)
 
+    def _expand_fused_experts(self, name: str, tensor: torch.Tensor) -> list[tuple[str, torch.Tensor]] | None:
+        """Expand a fused 3D expert parameter into per-expert 2D weight tensors.
+
+        Non-quantized MoE modules (e.g. thinker in Qwen3-Omni) are kept fused
+        during quantization to prevent memory eviction under disk offloading.
+        This method converts them to the per-expert checkpoint format at save time.
+
+        Talker MoE modules stay fused during quantization, but save_pretrained
+        still needs concrete per-expert 2D checkpoint keys. Saving the original
+        fused tensor under a reverse-mapped wildcard key (for example
+        ``experts.*.gate_proj.weight``) breaks reload.
+
+        Returns:
+            List of (key, 2D tensor) pairs, or None if not a fused expert param.
+        """
+        from auto_round.modeling.fused_moe.replace_modules import MOE_SKIP_PREFIXES
+        from auto_round.utils.missing_tensors import split_fused_expert_tensors
+
+        parts = name.rsplit(".", 1)
+        if len(parts) != 2:
+            return None
+        prefix, attr_name = parts
+
+        model_type = getattr(getattr(self.model, "config", None), "model_type", None)
+        skip_prefixes = MOE_SKIP_PREFIXES.get(model_type, []) if model_type is not None else []
+        if not any(
+            prefix == skip_prefix.rstrip(".") or prefix.startswith(skip_prefix) for skip_prefix in skip_prefixes
+        ):
+            return None
+
+        expanded = split_fused_expert_tensors({name: tensor})
+        if set(expanded) == {name}:
+            return None
+        return list(expanded.items())
+
     def _add_tensor(self, name: str, tensor: torch.Tensor):
-
-        # transformers will handle _checkpoint_conversion_mapping automatically if is_immediate_saving=False
-        name = revert_checkpoint_conversion_mapping(name, self.reverse_checkpoint_conversion_mapping)
-
         if isinstance(tensor, torch.Tensor) and tensor.device.type == "meta":
             self.skipped_meta_tensors.append(name)
             return
@@ -171,6 +202,18 @@ class ShardWriter:
         # Guard against duplicate saving of the same parameter
         if name in self._all_saved or name in self.current_shard_tensors:
             return
+
+        # Expand fused 3D expert parameters into per-expert 2D tensors if necessary
+        if tensor.dim() == 3:
+            expanded = self._expand_fused_experts(name, tensor)
+            if expanded is not None:
+                self._all_saved.add(name)
+                for sub_name, sub_tensor in expanded:
+                    self._add_tensor(sub_name, sub_tensor)
+                return
+
+        # transformers will handle _checkpoint_conversion_mapping automatically if is_immediate_saving=False
+        name = revert_checkpoint_conversion_mapping(name, self.reverse_checkpoint_conversion_mapping)
 
         t_size = tensor.nbytes
         self.total_param_elems += tensor.numel()

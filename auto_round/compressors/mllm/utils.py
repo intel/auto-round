@@ -17,26 +17,12 @@ import os
 import requests
 
 from auto_round.utils import LazyImport
+from auto_round.utils.common import MM_KEYS
 
 PIL = LazyImport("PIL")
 Image = LazyImport("PIL.Image")
 
-VISUAL_KEYS = [
-    "thinker",
-    "visual",
-    "audio",
-    "talker",
-    "token2wav",
-    "code2wav",
-    "audio_tower",
-    "code_predictor",
-    "multi_modal_projector",
-    "vqmodel",
-    "vision_tower",
-    "multimodal_projector",
-    "vision_model",
-    "model.connector",
-]
+VISUAL_KEYS = MM_KEYS
 
 
 def _extract_data_dir(dir_path: str):
@@ -58,7 +44,13 @@ def fetch_image(path_or_url):
     if os.path.isfile(path_or_url):
         image_obj = Image.open(path_or_url)
     elif path_or_url.startswith("http://") or path_or_url.startswith("https://"):
-        image_obj = Image.open(requests.get(path_or_url, stream=True).raw)
+        try:
+            response = requests.get(path_or_url, stream=True, timeout=(3, 10))
+            response.raise_for_status()
+            response.raw.decode_content = True
+            image_obj = Image.open(response.raw)
+        except (requests.exceptions.RequestException, OSError) as e:
+            raise RuntimeError(f"Failed to fetch image from url: {path_or_url}") from e
     else:
         raise TypeError(f"{path_or_url} neither a path or url.")
 

@@ -81,6 +81,22 @@ class _LMStyleModel(torch.nn.Module):
         self.config = SimpleNamespace(model_type="toy-lm", tie_word_embeddings=True)
 
 
+class _ToyExperts(torch.nn.Module):
+    def __init__(self):
+        super().__init__()
+        self.is_transposed = False
+
+
+class _FusedExpertsModel(torch.nn.Module):
+    def __init__(self):
+        super().__init__()
+        self.block = torch.nn.Module()
+        self.block.experts = _ToyExperts()
+        self.talker = torch.nn.Module()
+        self.talker.experts = _ToyExperts()
+        self.config = SimpleNamespace(model_type="qwen3_omni_moe")
+
+
 def test_finalize_skips_lm_head_when_tie_word_embeddings_true(tmp_path, monkeypatch):
     """Complementary test: when tie_word_embeddings=True the lm_head should be
     skipped (not written to disk) and offloaded to meta."""
@@ -98,6 +114,51 @@ def test_finalize_skips_lm_head_when_tie_word_embeddings_true(tmp_path, monkeypa
     assert "transformer_blocks.0.linear.weight" in saved_tensors
     assert "lm_head.weight" not in saved_tensors, "lm_head must be skipped when tied"
     assert model.lm_head.weight.device.type == "meta"
+
+
+def test_expand_fused_experts_for_skipped_talker_prefix(tmp_path, monkeypatch):
+    """Talker fused 3D weights must be expanded to exact per-expert 2D keys.
+
+    Real Qwen3-Omni-MoE exports attach reverse checkpoint conversion mappings for
+    MoE projections. If we apply that mapping to the fused talker tensor before
+    expanding it, the fused tensor is saved under a wildcard key such as
+    ``talker.experts.*.gate_proj.weight``. That breaks reload because
+    transformers expects concrete per-expert 2D keys after save_pretrained.
+    """
+    model = _FusedExpertsModel()
+    writer = _make_writer(model, str(tmp_path), monkeypatch)
+    writer.reverse_checkpoint_conversion_mapping = {
+        r"experts\.gate_up_proj$": ["experts.*.gate_proj.weight", "experts.*.up_proj.weight"]
+    }
+
+    fused_gate_up = torch.arange(2 * 6 * 4, dtype=torch.float32).reshape(2, 6, 4)
+    writer._add_tensor("talker.experts.gate_up_proj", fused_gate_up)
+    writer.finalize()
+
+    shard_path = os.path.join(tmp_path, "model.bin")
+    saved_tensors = torch.load(shard_path, map_location="cpu")
+
+    assert "talker.experts.gate_up_proj" not in saved_tensors
+    assert "talker.experts.*.gate_proj.weight" not in saved_tensors
+    assert "talker.experts.0.gate_proj.weight" in saved_tensors
+    assert "talker.experts.0.up_proj.weight" in saved_tensors
+    assert torch.equal(saved_tensors["talker.experts.0.gate_proj.weight"], fused_gate_up[0, :3, :])
+    assert torch.equal(saved_tensors["talker.experts.0.up_proj.weight"], fused_gate_up[0, 3:, :])
+
+
+def test_do_not_expand_fused_experts_outside_skipped_prefixes(tmp_path, monkeypatch):
+    model = _FusedExpertsModel()
+    writer = _make_writer(model, str(tmp_path), monkeypatch)
+
+    fused_gate_up = torch.arange(2 * 6 * 4, dtype=torch.float32).reshape(2, 6, 4)
+    writer._add_tensor("block.experts.gate_up_proj", fused_gate_up)
+    writer.finalize()
+
+    shard_path = os.path.join(tmp_path, "model.bin")
+    saved_tensors = torch.load(shard_path, map_location="cpu")
+
+    assert "block.experts.gate_up_proj" in saved_tensors
+    assert "block.experts.0.gate_proj.weight" not in saved_tensors
 
 
 def test_finalize_offloads_module_with_tensor_in_parameters(tmp_path, monkeypatch):
