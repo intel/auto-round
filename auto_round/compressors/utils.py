@@ -196,27 +196,6 @@ def block_forward(
                     input_others[param_name] = val
         positional_inputs = ()
 
-    # Guard: ensure position_ids is a tensor, not a list or None.
-    if "position_ids" in input_others:
-        pid = input_others["position_ids"]
-        if isinstance(pid, list):
-            if len(pid) == 1:
-                input_others["position_ids"] = pid[0]
-            elif len(pid) == 0:
-                # Generate position_ids from hidden_states shape when it's empty.
-                input_others["position_ids"] = (
-                    torch.arange(input_ids.shape[1], device=input_ids.device, dtype=torch.long)
-                    .unsqueeze(0)
-                    .expand(input_ids.shape[0], -1)
-                )
-        elif pid is None:
-            # Generate position_ids from hidden_states shape when it's None.
-            input_others["position_ids"] = (
-                torch.arange(input_ids.shape[1], device=input_ids.device, dtype=torch.long)
-                .unsqueeze(0)
-                .expand(input_ids.shape[0], -1)
-            )
-
     if amp:
         with autocast(device_type=str(device).split(":")[0], dtype=amp_dtype):  # pragma: no cover
             output = block(**input_others)

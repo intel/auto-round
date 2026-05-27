@@ -95,6 +95,25 @@ def _normalize_gemma4_per_layer_input(positional_inputs, hidden_states):
 def prepare_special_model_block_inputs(block, rotary_input, input_others, positional_inputs=None):
     """Rewrite replay inputs for blocks that need model-specific handling."""
 
+    # Guard: ensure position_ids is a tensor, not a list or None.
+    if "position_ids" in input_others:
+        pid = input_others["position_ids"]
+        if isinstance(pid, list):
+            if len(pid) == 1:
+                input_others["position_ids"] = pid[0]
+            elif len(pid) == 0:
+                input_others["position_ids"] = (
+                    torch.arange(rotary_input.shape[1], device=rotary_input.device, dtype=torch.long)
+                    .unsqueeze(0)
+                    .expand(rotary_input.shape[0], -1)
+                )
+        elif pid is None:
+            input_others["position_ids"] = (
+                torch.arange(rotary_input.shape[1], device=rotary_input.device, dtype=torch.long)
+                .unsqueeze(0)
+                .expand(rotary_input.shape[0], -1)
+            )
+
     special_replay_type = getattr(block, "_autoround_special_replay", None)
     if special_replay_type == "gemma4":
         prepared_inputs = _prepare_gemma4_replay_inputs(
