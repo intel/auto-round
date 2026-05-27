@@ -207,9 +207,7 @@ def _build_mixed_fp_quantization_config(
     quantization_config = initialize_quantization(
         scheme=None,
         config_groups=config_groups,
-        kv_cache_scheme=_construct_kv_scheme()
-        if (_use_fp8_kv(static_kv_dtype) or use_fp8_attention)
-        else None,
+        kv_cache_scheme=_construct_kv_scheme() if (_use_fp8_kv(static_kv_dtype) or use_fp8_attention) else None,
         ignore=ignore,
     )
     quantization_config = quantization_config.to_dict()
