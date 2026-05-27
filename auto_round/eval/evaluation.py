@@ -416,7 +416,13 @@ def run_model_evaluation(model, tokenizer, autoround, folders, formats, device_s
     # Detect model type for compatibility with evaluation code
     from auto_round.utils.model import detect_model_type
 
-    model_type = detect_model_type(folders)
+    # Check if evaluation Compressoris needed for language models
+    if isinstance(folders, list):
+        eval_folder = folders[-1] if folders else None
+    else:
+        eval_folder = folders
+    # set model_type for ModelFreeCompressor.
+    model_type = detect_model_type(eval_folder)
     setattr(autoround, model_type, True)
 
     # Handle diffusion models separately
@@ -428,11 +434,6 @@ def run_model_evaluation(model, tokenizer, autoround, folders, formats, device_s
         evaluate_diffusion_model(args, autoround=autoround, model=model)
         return
 
-    # Check if evaluation Compressoris needed for language models
-    if isinstance(folders, list):
-        eval_folder = folders[-1] if folders else None
-    else:
-        eval_folder = folders
     if args.tasks is None or args.tasks == "" or eval_folder is None:
         return
 
