@@ -1,6 +1,6 @@
 einops
 gptqmodel
-# pip install git+https://github.com/ggml-org/llama.cpp.git#subdirectory=gguf-py
+# pip install gguf
 lm_eval >= 0.4.10  # for transformers >= 5.0.0
 optimum
 pandas

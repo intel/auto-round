@@ -76,7 +76,7 @@ import torch
 from auto_round import envs
 from auto_round.logger import logger
 from auto_round.schemes import PRESET_SCHEMES, QuantizationScheme, preset_name_to_scheme
-from auto_round.utils.common import compress_layer_names, to_standard_regex
+from auto_round.utils.common import AUDIO_MM_KEYS, VISION_MM_KEYS, compress_layer_names, to_standard_regex
 from auto_round.utils.device import clear_memory, memory_monitor
 from auto_round.utils.missing_tensors import quantize_weight_rtn, split_fused_expert_tensors
 
@@ -108,16 +108,7 @@ SUPPORTED_PRESET_SCHEMES: tuple[str, ...] = (
 _SUPPORTED_INT_BITS: tuple[int, ...] = (2, 4, 8)
 
 # Multimodal keywords kept in full precision by default.
-_NONTEXT_KEYWORDS: tuple[str, ...] = (
-    "vision",
-    "visual",
-    "image",
-    "img",
-    "audio",
-    "speech",
-    "wav",
-    "waveform",
-)
+_NONTEXT_KEYWORDS: tuple[str, ...] = VISION_MM_KEYS + AUDIO_MM_KEYS
 
 
 # ---------------------------------------------------------------------------

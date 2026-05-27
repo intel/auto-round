@@ -39,8 +39,15 @@ BUILTIN_MODULES = {
     "qwen3_5_moe_text": LazyImport("auto_round.modeling.fused_moe.qwen3_5_moe"),
     # Step 3.5 MoE: splits fused MoELinear into per-expert nn.Linear
     "step3p5": LazyImport("auto_round.modeling.fused_moe.step3_5_moe"),
-    # Qwen3-Omni MoE: thinker (no shared expert) + talker (with shared expert)
+    # Qwen3-Omni MoE: thinker (no shared expert)
     "qwen3_omni_moe": LazyImport("auto_round.modeling.fused_moe.qwen3_omni"),
+}
+
+# Module name prefixes to exclude from MoE unfusing, keyed by model_type.
+# Modules under these prefixes stay in their original fused 3D format during
+# quantization. ShardWriter expands them to per-expert 2D tensors at save time.
+MOE_SKIP_PREFIXES: dict[str, list[str]] = {
+    "qwen3_omni_moe": ["talker."],
 }
 
 
@@ -54,6 +61,9 @@ if not is_transformers_version_greater_or_equal_5():
 
 def _handle_moe_modules(model: torch.nn.Module) -> list[str]:
     """Handle fused MOE modules using transformers' linear_loop backend.
+
+    Modules under prefixes listed in MOE_SKIP_PREFIXES for the model's
+    model_type are left in their original fused format.
 
     Args:
         model: The model to process
@@ -74,8 +84,11 @@ def _handle_moe_modules(model: torch.nn.Module) -> list[str]:
         )
         return []
 
+    model_type = getattr(getattr(model, "config", None), "model_type", None)
+    skip_prefixes = MOE_SKIP_PREFIXES.get(model_type, [])
+
     # Use transformers' experts interface
-    unfused = prepare_model_for_moe_quantization(model)
+    unfused = prepare_model_for_moe_quantization(model, skip_prefixes=skip_prefixes)
     if unfused:
         logger.info(f"Prepared {len(unfused)} MOE modules for quantization")
     return unfused
@@ -337,10 +350,10 @@ def _apply_custom_replacements(model: torch.nn.Module) -> list:
         if isinstance(module, ReplacementModuleBase):
             continue
         class_name = module.__class__.__name__
-        if ReplacementModuleBase.is_registered(class_name) and ReplacementModuleBase.get_replacement_class(
-            class_name
-        ).is_to_be_replaced(module):
-            modules_to_replace.append((name, module, class_name))
+        if ReplacementModuleBase.is_registered(class_name):
+            replacement_cls = ReplacementModuleBase.get_replacement_class(class_name)
+            if replacement_cls.is_to_be_replaced(module):
+                modules_to_replace.append((name, module, class_name))
 
     # Step 2: Replace modules
     if modules_to_replace:

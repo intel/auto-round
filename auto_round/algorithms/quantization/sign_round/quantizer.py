@@ -44,6 +44,7 @@ from auto_round.utils import (
     memory_monitor,
     mv_module_from_gpu,
     set_amax_for_all_moe_layers,
+    set_module,
     to_device,
 )
 from auto_round.utils.device import (
@@ -287,7 +288,13 @@ class SignRoundQuantizer(RTNLayerFallbackMixin, BaseQuantizer):
         return best_params
 
     def quantize_layer_outside_block(
-        self, layer_name: str, input_ids: torch.Tensor, q_inputs: torch.Tensor = None, device: str = "cpu", **kwargs
+        self,
+        layer_name: str,
+        input_ids: Optional[list[torch.Tensor]] = None,
+        q_inputs: Optional[list[torch.Tensor]] = None,
+        device: str = "cpu",
+        dtype: Optional[torch.dtype] = None,
+        **kwargs,
     ):
         """Quantize a specific layer of the model using the provided inputs.
 
@@ -300,8 +307,21 @@ class SignRoundQuantizer(RTNLayerFallbackMixin, BaseQuantizer):
         Returns:
             None
         """
+        if input_ids is None:
+            logger.info(f"using rtn to quantize {layer_name}")
+            if dtype is not None:
+                layer = get_module(self.model, layer_name)
+                set_module(self.model, layer_name, layer.to(dtype))
+            self.quantize_layer_via_rtn(
+                layer_name,
+                disable_opt_rtn=kwargs.get("disable_opt_rtn", getattr(self.config, "disable_opt_rtn", True)),
+            )
+            return
+
         logger.info(f"quantizing layer {layer_name}")
         layer = get_module(self.model, layer_name)
+        if dtype is not None:
+            layer = layer.to(dtype)
         if hasattr(layer, "tuning_device"):
             device = layer.tuning_device
 
