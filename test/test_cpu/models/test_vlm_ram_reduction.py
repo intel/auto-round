@@ -115,6 +115,7 @@ class TestBlockForwardTensorSkipping:
         )
         assert not should_skip, "hidden_states must never be skipped"
 
+
 class TestSpecialModelReplayDispatch:
     def test_non_special_block_is_untouched(self):
         from auto_round.special_model_handler import prepare_special_model_block_inputs
@@ -129,7 +130,6 @@ class TestSpecialModelReplayDispatch:
         assert output is input_others
         assert positional_inputs == []
         assert torch.equal(output["attention_mask"], torch.ones(1, 1, 4, 4))
-
 
 
 # ---------------------------------------------------------------------------
@@ -335,4 +335,3 @@ class TestLastCacheNameRAMReduction:
         assert len(single_cache) == 1
         _last_cache_name_single = single_cache[0] if len(single_cache) > 1 else None
         assert _last_cache_name_single is None
-

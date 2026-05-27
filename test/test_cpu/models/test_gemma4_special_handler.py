@@ -34,15 +34,13 @@ import pytest
 import torch
 import torch.nn as nn
 
-
 # ---------------------------------------------------------------------------
 # 1. Tests for _get_gemma4_shared_kv_states_global
 # ---------------------------------------------------------------------------
 
 
 class TestGemma4SharedKvStatesGlobal:
-    """Unit tests for _get_gemma4_shared_kv_states_global.
-    """
+    """Unit tests for _get_gemma4_shared_kv_states_global."""
 
     def test_returns_shared_ref_when_attached(self):
         """Returns the attached _shared_kv_states_global_ref."""
