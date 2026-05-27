@@ -149,7 +149,16 @@ stages:
 
                 repo_path="${BUILD_REPOSITORY_URI#https://github.com/}"
                 repo_path="${repo_path%.git}"
+                export REPO_PATH="${repo_path}"
+                export PR_NUMBER="${pr_number}"
+                export CURRENT_SHA="${SYSTEM_PULLREQUEST_SOURCECOMMITID:-${BUILD_SOURCEVERSION:-unknown}}"
 
+                if python "$(Build.SourcesDirectory)/.azure-pipelines/scripts/check_cuda_trigger.py"; then
+                  echo "CUDA CI already triggered after commit ${CURRENT_SHA}. Skipping."
+                  exit 0
+                fi
+
+                echo "Triggering CUDA CI for commit ${CURRENT_SHA}..."
                 if ! curl -fsS -X POST \
                   -H "Authorization: Bearer ${GITHUB_TOKEN}" \
                   -H "Accept: application/vnd.github+json" \
