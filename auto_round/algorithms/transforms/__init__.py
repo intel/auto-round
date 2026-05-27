@@ -45,6 +45,7 @@ from typing import Any
 import torch
 
 from auto_round.algorithms.transforms.base import (
+    BaseWeightTransformer,
     BaseRotation,
     BaseRotationConfig,
     RotationSerializer,
@@ -61,6 +62,7 @@ from auto_round.algorithms.transforms.quarot import (
 
 __all__ = [
     # Base interfaces
+    "BaseWeightTransformer",
     "BaseRotation",
     "BaseRotationConfig",
     "RotationSerializer",
@@ -69,6 +71,8 @@ __all__ = [
     # Config
     "RotationConfig",
     "HadamardRotation",
+    "AWQConfig",
+    "AWQQuantizer",
     "apply_rotation_transform",
     # Unified entry — preprocessing
     "apply_rotation",
@@ -80,6 +84,18 @@ __all__ = [
     "preregister_rotation_buffers",
     "rebuild_rotation_if_needed",
 ]
+
+
+def __getattr__(name):
+    if name == "AWQConfig":
+        from auto_round.algorithms.transforms.awq.config import AWQConfig
+
+        return AWQConfig
+    if name == "AWQQuantizer":
+        from auto_round.algorithms.transforms.awq.quantizer import AWQQuantizer
+
+        return AWQQuantizer
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
 
 
 def normalize_rotation_config(

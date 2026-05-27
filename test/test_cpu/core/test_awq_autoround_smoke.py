@@ -1,7 +1,7 @@
 """Minimal runtime smoke for AWQ + AutoRound fusion."""
 
-from auto_round.algorithms.quantization.awq.config import AWQConfig
 from auto_round.algorithms.quantization.sign_round.config import SignRoundConfig
+from auto_round.algorithms.transforms.awq.config import AWQConfig
 from auto_round.compressors.entry import AutoRound
 
 

@@ -192,7 +192,7 @@ class AWQ(AlgorithmHandler):
         )
 
     def build(self, args, common_kwargs: dict[str, Any]):
-        from auto_round.algorithms.quantization.awq.config import AWQConfig
+        from auto_round.algorithms.transforms.awq.config import AWQConfig
 
         return AWQConfig(
             duo_scaling=getattr(args, "awq_duo_scaling", True),

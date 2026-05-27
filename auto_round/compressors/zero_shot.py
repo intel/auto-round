@@ -132,7 +132,7 @@ class ZeroShotCompressor(BaseCompressor):
 
         formats = self.formats if isinstance(self.formats, list) else []
         if not (any(fmt.is_gguf() for fmt in formats) or self.super_bits is not None):
-            self._quantize_embedding_layer()  # leave to gguf itself to handle
+            self.quantizer.quantize_embedding_layer()  # leave to gguf itself to handle
 
         # Release memory
         clear_memory(device_list=self.device_list)

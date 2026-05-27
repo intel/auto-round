@@ -27,6 +27,21 @@ from typing import Any, Optional
 import torch
 import torch.nn as nn
 
+from auto_round.algorithms.base import BasePipelineMember
+
+
+class BaseWeightTransformer(BasePipelineMember):
+    """Base class for weight-transformation algorithms in a QuantizationPipeline."""
+
+    def pre_quantize_block(self, ctx) -> None:
+        """Called after the reference forward, before block quantization."""
+        return
+
+    def post_quantize_block(self, ctx) -> None:
+        """Called after the block quantizer completes."""
+        return
+
+
 # ---------------------------------------------------------------------------
 # Config base
 # ---------------------------------------------------------------------------
@@ -159,7 +174,7 @@ def _ensure_registry_populated() -> None:
     # Import each sub-package here.  Add new entries as more algorithms land.
     import importlib
 
-    for sub in ("rotation", "spinquant"):
+    for sub in ("quarot", "spinquant"):
         try:
             importlib.import_module(f"auto_round.algorithms.transforms.{sub}")
         except ImportError:

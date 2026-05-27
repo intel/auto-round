@@ -11,13 +11,14 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-import importlib
 import traceback
 from contextlib import contextmanager
 
 import torch
 
+from auto_round.algorithms.base import BasePipelineMember
 from auto_round.algorithms.quantization.config import QuantizationConfig
+from auto_round.algorithms.transforms.base import BaseWeightTransformer
 from auto_round.compressors.utils import (
     block_forward,
     check_need_act_calibration,
@@ -37,121 +38,6 @@ from auto_round.utils import (
     set_module,
 )
 from auto_round.wrapper import WrapperLinear
-
-
-class BasePipelineMember:
-    """Shared interface for all members of a :class:`QuantizationPipeline`.
-
-    Both :class:`BaseWeightTransformer` (pre-processing algorithms that modify
-    FP weights in-place) and :class:`BaseQuantizer` (terminal compression
-    algorithms) inherit from this class.
-
-    This base class owns the lifecycle hooks and binding logic that are common
-    to every pipeline member, so that :class:`QuantizationPipeline` can iterate
-    over ``self.all()`` with a single uniform interface.
-
-    Common lifecycle (called by the Compressor / Pipeline in order):
-        1. :meth:`bind`               – wire shared compressor state (once at init)
-        2. :meth:`prepare_run`        – model-level setup (once before block loop)
-        3. :meth:`block_forward_hooks`– register forward hooks (context manager, per block)
-        4. :meth:`finalize_run`       – model-level teardown (once after block loop)
-    """
-
-    model_context = None
-    compress_context = None
-
-    def __init__(self, config=None):
-        self.config = config
-
-    @classmethod
-    def from_config(cls, config):
-        """Instantiate the correct subclass from a config object.
-
-        Fast path: if this class IS the target declared by ``config._alg_cls``,
-        construct directly without a registry round-trip.  This handles the common
-        case where ``from_config`` is called on the concrete class itself.
-        """
-        module = importlib.import_module("auto_round.algorithms.quantization")
-        alg_cls = getattr(module, config._alg_cls)
-        if cls is alg_cls:
-            return cls(config)
-        return alg_cls(config)
-
-    def bind(self, compressor) -> None:
-        """Wire shared context from the owning compressor."""
-        self.model_context = compressor.model_context
-        self.compress_context = compressor.compress_context
-
-    def prepare_run(self, run_ctx) -> None:
-        """Model-level preparation (called once before block iteration starts).
-
-        Override to validate compatibility and resolve model-wide data structures.
-        """
-        return
-
-    def get_act_calib_policy(self, ctx):
-        """Return the activation calibration policy for this block.
-
-        Default: ``ActCalibPolicy(when=SKIP)``.  Subclasses that need activation
-        calibration should override and return an appropriate policy.
-        """
-        from auto_round.algorithms.quantization.pipeline import ActCalibPolicy, CalibTiming, InputSource
-
-        return ActCalibPolicy(when=CalibTiming.SKIP, source=InputSource.FP_CACHE)
-
-    @contextmanager
-    def block_forward_hooks(self, ctx):
-        """Register algorithm-specific forward hooks for the reference forward.
-
-        Hook handles *must* be removed before this context manager exits.
-        Yields a list of hook handles (empty list by default = no hooks registered).
-
-        Both :class:`BaseWeightTransformer` subclasses (e.g. AWQ stats collection)
-        and :class:`BaseQuantizer` subclasses (act-calib hooks) implement this
-        interface, allowing :class:`QuantizationPipeline` to manage all hooks
-        through a single uniform call.
-        """
-        yield []
-
-    def finalize_run(self, run_ctx) -> None:
-        """Model-level teardown (called once after all blocks are processed).
-
-        Must be idempotent – the Compressor calls this inside a ``try/finally``.
-        """
-        return
-
-
-class BaseWeightTransformer(BasePipelineMember):
-    """Base class for weight-transformation algorithms in a QuantizationPipeline.
-
-    Weight transformers modify FP weights in-place (smooth, scale, rotate) *before*
-    the quantizer compresses them.  They do NOT compress weights to low-bit.
-
-    Developers adding a new pre-processing algorithm should inherit from this
-    class and override only the lifecycle hooks that are relevant.
-
-    Lifecycle hooks (in call order per block):
-        1. :meth:`prepare_run`          – model-level setup (once before all blocks)
-        2. :meth:`block_forward_hooks`  – register forward stats hooks (context manager)
-        3. :meth:`pre_quantize_block`   – consolidate stats + apply in-place weight transforms
-        4. :meth:`post_quantize_block`  – release per-block caches
-        5. :meth:`finalize_run`         – model-level teardown (once after all blocks)
-    """
-
-    def pre_quantize_block(self, ctx) -> None:
-        """Called after the reference forward, before block quantization.
-
-        Override to consolidate stats collected during the reference forward
-        and apply in-place weight transforms (e.g. AWQ smoothing).
-        """
-        return
-
-    def post_quantize_block(self, ctx) -> None:
-        """Called after the block quantizer completes.
-
-        Override to release per-block caches (activation stats, etc.).
-        """
-        return
 
 
 class RTNLayerFallbackMixin:
@@ -557,7 +443,7 @@ class BaseQuantizer(BasePipelineMember):
     # ── Embedding quantization ────────────────────────────────────────────────────
 
     @torch.inference_mode()
-    def _quantize_embedding_layer(self):
+    def quantize_embedding_layer(self):
         """Quantizes embedding layers in the model according to the configuration.
 
         This method iterates through all modules in the model, identifies embedding

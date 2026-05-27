@@ -43,12 +43,10 @@ from auto_round.compressors.utils import block_forward
 if TYPE_CHECKING:  # avoid circular imports at runtime
     import torch
 
-    from auto_round.algorithms.quantization.base import (
-        BasePipelineMember,
-        BaseQuantizer,
-        BaseWeightTransformer,
-    )
+    from auto_round.algorithms.base import BasePipelineMember
+    from auto_round.algorithms.quantization.base import BaseQuantizer
     from auto_round.algorithms.quantization.config import QuantizationConfig
+    from auto_round.algorithms.transforms.base import BaseWeightTransformer
 
 # ---------------------------------------------------------------------------
 # Policy
@@ -97,13 +95,17 @@ def get_algorithm_class(config: Any):
         return None
     import importlib
 
-    module = importlib.import_module("auto_round.algorithms.quantization")
-    return getattr(module, config._alg_cls)
+    for module_name in ("auto_round.algorithms.quantization", "auto_round.algorithms.transforms.awq"):
+        module = importlib.import_module(module_name)
+        alg_cls = getattr(module, config._alg_cls, None)
+        if alg_cls is not None:
+            return alg_cls
+    return None
 
 
 def is_preprocessor_config(config: Any) -> bool:
     """Whether *config* resolves to a BaseWeightTransformer implementation."""
-    from auto_round.algorithms.quantization.base import BaseWeightTransformer
+    from auto_round.algorithms.transforms.base import BaseWeightTransformer
 
     alg_cls = get_algorithm_class(config)
     return alg_cls is not None and issubclass(alg_cls, BaseWeightTransformer)
@@ -158,15 +160,15 @@ def resolve_shared_config_values(configs: list[Any]) -> list[Any]:
     attrs_by_config = [(config, _public_config_attrs(config)) for config in quant_configs]
     field_to_configs: dict[str, list[Any]] = defaultdict(list)
     for config, attrs in attrs_by_config:
-        for field in attrs:
-            field_to_configs[field].append(config)
+        for attr_name in attrs:
+            field_to_configs[attr_name].append(config)
 
-    for field, field_configs in field_to_configs.items():
+    for attr_name, field_configs in field_to_configs.items():
         if len(field_configs) < 2:
             continue
 
         field_attrs = [
-            (config, attrs[field])
+            (config, attrs[attr_name])
             for config, attrs in attrs_by_config
             if any(config is field_config for field_config in field_configs)
         ]
@@ -177,15 +179,15 @@ def resolve_shared_config_values(configs: list[Any]) -> list[Any]:
                 unique_values.append(value)
         if len(unique_values) > 1:
             raise ValueError(
-                f"Conflicting shared config field {field!r}: "
-                f"{_format_shared_config_values(field, non_none_values)}. "
+                f"Conflicting shared config field {attr_name!r}: "
+                f"{_format_shared_config_values(attr_name, non_none_values)}. "
                 "Use the same value for shared fields or leave it unset on secondary algorithms."
             )
         if len(unique_values) == 1:
             shared_value = unique_values[0]
             for config in field_configs:
-                if getattr(config, field) is None:
-                    setattr(config, field, shared_value)
+                if getattr(config, attr_name) is None:
+                    setattr(config, attr_name, shared_value)
     return configs
 
 
@@ -196,9 +198,9 @@ def sync_shared_config_from(source_config: Any, target_configs: list[Any]) -> No
         if target is source_config:
             continue
         target_attrs = _public_config_attrs(target)
-        for field, source_value in source_attrs.items():
-            if field in target_attrs and source_value is not None:
-                setattr(target, field, source_value)
+        for attr_name, source_value in source_attrs.items():
+            if attr_name in target_attrs and source_value is not None:
+                setattr(target, attr_name, source_value)
 
 
 @dataclass
@@ -587,7 +589,8 @@ class QuantizationPipeline:
     def __post_init__(self) -> None:
         if self.block_quantizer is None:
             raise ValueError("QuantizationPipeline requires a non-None block_quantizer.")
-        from auto_round.algorithms.quantization.base import BaseQuantizer, BaseWeightTransformer
+        from auto_round.algorithms.quantization.base import BaseQuantizer
+        from auto_round.algorithms.transforms.base import BaseWeightTransformer
 
         for q in self.preprocessors:
             if not isinstance(q, BaseWeightTransformer):
@@ -619,14 +622,9 @@ class QuantizationPipeline:
         5. Multiple block-quantization configs raise ``ValueError``.
         6. If ``compressor`` is provided, every member is bound to it.
         """
-        import importlib
-
-        from auto_round.algorithms.quantization.base import (
-            BaseQuantizer,
-            BaseWeightTransformer,
-            DiffusionMixin,
-        )
+        from auto_round.algorithms.quantization.base import BaseQuantizer, DiffusionMixin
         from auto_round.algorithms.quantization.config import QuantizationConfig
+        from auto_round.algorithms.transforms.base import BaseWeightTransformer
 
         is_diffusion = compressor is not None and getattr(compressor.model_context, "is_diffusion", False)
         configs = list(configs)
@@ -642,8 +640,9 @@ class QuantizationPipeline:
         configs = resolve_shared_config_values(configs)
 
         def _resolve_cls(cfg):
-            module = importlib.import_module("auto_round.algorithms.quantization")
-            alg_cls = getattr(module, cfg._alg_cls)
+            alg_cls = get_algorithm_class(cfg)
+            if alg_cls is None:
+                raise ValueError(f"Unknown algorithm class {cfg._alg_cls!r}.")
             if is_diffusion and not issubclass(alg_cls, DiffusionMixin):
                 alg_cls = type(alg_cls.__name__, (DiffusionMixin, alg_cls), {})
             return alg_cls
