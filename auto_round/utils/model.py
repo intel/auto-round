@@ -1059,6 +1059,27 @@ def is_diffusion_model(model_or_path: Union[str, object], trust_remote_code: boo
         return False
 
 
+def detect_model_type(model):
+    """Detect the type of model (LLM, MLLM, or Diffusion).
+
+    Args:
+        model: Model instance or model path string
+
+    Returns:
+        str: "mllm", "diffusion", or "llm"
+    """
+    # Check if it's a diffusion model first (more specific)
+    if is_diffusion_model(model):
+        return "diffusion"
+
+    # Check if it's an MLLM
+    if is_mllm_model(model):
+        return "mllm"
+
+    # Default to standard LLM
+    return "llm"
+
+
 def is_moe_layer(module: torch.nn.Module) -> bool:
     """Returns whether the module is an MOE layer."""
     return "moe" in type(module).__name__.lower() or any(

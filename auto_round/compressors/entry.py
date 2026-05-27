@@ -138,29 +138,6 @@ def is_gguf_k_target(value) -> bool:
     return False
 
 
-def detect_model_type(model):
-    """Detect the type of model (LLM, MLLM, or Diffusion).
-
-    Args:
-        model: Model instance or model path string
-
-    Returns:
-        str: "mllm", "diffusion", or "llm"
-    """
-    from auto_round.utils import is_diffusion_model, is_mllm_model
-
-    # Check if it's a diffusion model first (more specific)
-    if is_diffusion_model(model):
-        return "diffusion"
-
-    # Check if it's an MLLM
-    if is_mllm_model(model):
-        return "mllm"
-
-    # Default to standard LLM
-    return "llm"
-
-
 class AutoRound(object):
     # Mapping from string alias to config class (and optional defaults override).
     _CONFIG_ALIASES: dict[str, type] = {
@@ -251,6 +228,8 @@ class AutoRound(object):
         )
 
         # Detect model type to determine if we need special compressor
+        from auto_round.utils.model import detect_model_type
+
         model_type = detect_model_type(model)
 
         # If the user explicitly passes processor/image_processor, treat as MLLM even if
