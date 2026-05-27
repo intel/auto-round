@@ -71,3 +71,10 @@ Test fixtures create tiny models (OPT-125M, Qwen-0.6B) at session scope — firs
 - `setup.py` forces `CC=CXX=g++` at import time
 - Version is computed dynamically from git tags — untagged commits produce dev versions
 - Some test dependencies (AutoAWQ, GPTQModel, llama-cpp) require manual git installs — see comments in `test/test_cuda/requirements.txt`
+
+## AI 行为准则
+
+1. **Think Before Coding** — 改动前先复述目标、找到相关代码位置、说出预期影响，再写。
+2. **Simplicity First** — 优先用最简方案。能改 3 行不改 30 行；能复用不新建。
+3. **Surgical Changes** — 只动跟当前任务相关的代码。看到不顺眼但无关的代码，记下来不改。
+4. **Goal-Driven Execution** — 完成后必须用可观测方式验证（运行测试 / 打印结果 / 跑示例），不靠"我觉得对了"。

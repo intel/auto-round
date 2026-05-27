@@ -187,7 +187,7 @@ def _ensure_registry_populated() -> None:
 # ---------------------------------------------------------------------------
 
 
-class RotationSerializer(ABC):
+class SerializerMixin(ABC):
     """Mixin interface for rotation method serialization.
 
     Any :class:`BaseRotation` subclass that needs save/load support should
@@ -200,7 +200,7 @@ class RotationSerializer(ABC):
     Usage::
 
         @BaseRotation.register("my_rotation")
-        class MyRotation(BaseRotation, RotationSerializer):
+        class MyRotation(BaseRotation, SerializerMixin):
             def apply_to_model(self, ...): ...
             def inject_buffers_on_layer(self, ...): ...
             ...

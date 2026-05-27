@@ -45,6 +45,7 @@ from auto_round.utils import (
     get_packing_device,
     set_module,
 )
+from auto_round.utils.common import MM_KEYS
 
 SUPPORTED_LAYER_TYPES = [nn.Linear, nn.Conv2d, transformers.pytorch_utils.Conv1D]
 
@@ -70,15 +71,7 @@ def _is_mlx_quantizable(module: nn.Module, group_size: int) -> bool:
 # Vision / audio towers in VLMs are conventionally kept in fp16 by mlx-vlm,
 # so emitting per-layer ``false`` for hundreds of vision linears just bloats
 # the config. We simply skip these subtrees.
-_DEFAULT_SKIP_PREFIXES = (
-    "vision_tower",
-    "vision_model",
-    "visual",
-    "audio_tower",
-    "audio_model",
-    "image_newline",
-    "multi_modal_projector",
-)
+_DEFAULT_SKIP_PREFIXES = tuple(MM_KEYS)
 
 
 def _build_mlx_quantization_config(

@@ -617,11 +617,11 @@ class AutoRoundCompatible:
         # Check model type for logging (use warning_once to avoid repeating for every block
         # when called from LLM-Compressor which instantiates AutoRound per block)
         if is_mllm_model(model, platform=platform):
-            logger.warning_once("Using MLLM mode for multimodal model (new architecture).")
+            logger.warning_once("Using MLLM mode for multimodal model.")
         elif is_diffusion_model(model):
-            logger.warning_once("Using Diffusion mode for diffusion model (new architecture).")
+            logger.warning_once("Using Diffusion mode for diffusion model.")
         else:
-            logger.warning_once("Using LLM mode (new architecture).")
+            logger.warning_once("Using LLM mode.")
 
         # Create AutoRound instance using new architecture
         compressor = AutoRound(

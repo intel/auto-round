@@ -48,7 +48,7 @@ from auto_round.algorithms.transforms.base import (
     BaseWeightTransformer,
     BaseRotation,
     BaseRotationConfig,
-    RotationSerializer,
+    SerializerMixin,
     ROTATION_SUPPORTED_SCHEMES,
     check_supported_schemes,
     _ensure_registry_populated,
@@ -65,7 +65,7 @@ __all__ = [
     "BaseWeightTransformer",
     "BaseRotation",
     "BaseRotationConfig",
-    "RotationSerializer",
+    "SerializerMixin",
     "ROTATION_SUPPORTED_SCHEMES",
     "check_supported_schemes",
     # Config
@@ -201,8 +201,8 @@ import logging as _logging
 _dispatch_logger = _logging.getLogger("autoround.transforms.dispatch")
 
 
-def _get_serializer(model: torch.nn.Module) -> RotationSerializer | None:
-    """Get the :class:`RotationSerializer` for the model's rotation config.
+def _get_serializer(model: torch.nn.Module) -> SerializerMixin | None:
+    """Get the :class:`SerializerMixin` for the model's rotation config.
 
     Returns ``None`` if no rotation was applied or the rotation algorithm
     does not support serialization.
@@ -216,15 +216,15 @@ def _get_serializer(model: torch.nn.Module) -> RotationSerializer | None:
         rotation = BaseRotation.from_config(config)
     except (ValueError, KeyError):
         return None
-    if not isinstance(rotation, RotationSerializer):
+    if not isinstance(rotation, SerializerMixin):
         return None
     return rotation
 
 
 def _get_serializer_for_config(
     config_dict: dict,
-) -> RotationSerializer | None:
-    """Get :class:`RotationSerializer` from a JSON config dict (load side).
+) -> SerializerMixin | None:
+    """Get :class:`SerializerMixin` from a JSON config dict (load side).
 
     The dict should have an ``"algorithm"`` field; defaults to
     ``"spinquant"`` for backward compatibility.
@@ -240,7 +240,7 @@ def _get_serializer_for_config(
         rotation = rotation_cls(config)
     except Exception:
         return None
-    if not isinstance(rotation, RotationSerializer):
+    if not isinstance(rotation, SerializerMixin):
         return None
     return rotation
 
@@ -255,7 +255,7 @@ def inject_rotation_buffers_on_layer(
 ) -> None:
     """Per-layer rotation buffer injection (ShardWriter path).
 
-    Dispatches to the correct :class:`RotationSerializer` based on
+    Dispatches to the correct :class:`SerializerMixin` based on
     ``model._rotation_config``.  No-op if no rotation config is present.
 
     Called from ``pack_layer()`` in all export files.
@@ -271,7 +271,7 @@ def inject_rotation_buffers_bulk(
 ) -> None:
     """Bulk rotation buffer injection (non-ShardWriter path).
 
-    Dispatches to the correct :class:`RotationSerializer` based on
+    Dispatches to the correct :class:`SerializerMixin` based on
     ``model._rotation_config``.  No-op if no rotation config is present.
 
     Called from ``save_quantized_as_*()`` in all export files.
@@ -287,7 +287,7 @@ def save_rotation_config(
 ) -> None:
     """Persist rotation config to ``config.json``.
 
-    Dispatches to the correct :class:`RotationSerializer` based on
+    Dispatches to the correct :class:`SerializerMixin` based on
     ``model._rotation_config``.  No-op if no rotation config is present.
 
     Called from ``save_quantized_as_*()`` in all export files, after
@@ -308,7 +308,7 @@ def preregister_rotation_buffers(
     """Pre-register empty rotation buffers before state_dict loading.
 
     Extracts the rotation config dict from *quantization_config* by
-    checking each registered :class:`RotationSerializer`'s
+    checking each registered :class:`SerializerMixin`'s
     :meth:`config_key` (e.g. ``"spinquant_config"``).
 
     Note: does NOT use ``"rotation_config"`` — that key is reserved for
@@ -323,7 +323,7 @@ def preregister_rotation_buffers(
 
     if isinstance(quantization_config, dict):
         for _name, _cls in BaseRotation._REGISTRY.items():
-            if not (isinstance(_cls, type) and issubclass(_cls, RotationSerializer)):
+            if not (isinstance(_cls, type) and issubclass(_cls, SerializerMixin)):
                 continue
             try:
                 legacy_key = _cls.config_key()
@@ -338,7 +338,7 @@ def preregister_rotation_buffers(
         # Object-style quantization_config (e.g. QuantizationConfig)
         # Check each registered serializer's config_key as attribute
         for _name, _cls in BaseRotation._REGISTRY.items():
-            if not (isinstance(_cls, type) and issubclass(_cls, RotationSerializer)):
+            if not (isinstance(_cls, type) and issubclass(_cls, SerializerMixin)):
                 continue
             try:
                 legacy_key = _cls.config_key()
@@ -363,7 +363,7 @@ def preregister_rotation_buffers(
 def rebuild_rotation_if_needed(model: torch.nn.Module) -> None:
     """Rebuild online rotation hooks after weights are loaded.
 
-    Scans all registered :class:`RotationSerializer` implementations to
+    Scans all registered :class:`SerializerMixin` implementations to
     find one whose buffers are present on the model, then calls its
     :meth:`rebuild_online`.
     """
@@ -374,7 +374,7 @@ def rebuild_rotation_if_needed(model: torch.nn.Module) -> None:
             temp = rotation_cls(BaseRotationConfig(algorithm=name))
         except Exception:
             continue
-        if not isinstance(temp, RotationSerializer):
+        if not isinstance(temp, SerializerMixin):
             continue
 
         # Quick scan: does any module have this method's buffers?

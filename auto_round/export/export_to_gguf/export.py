@@ -21,9 +21,11 @@ from pathlib import Path
 import requests
 import torch
 
+from auto_round.export.export_to_gguf.config import ModelType
+from auto_round.export.export_to_gguf.convert import is_mmproj_tensor_name, wrapper_model_instance
+from auto_round.export.export_to_gguf.llama_cpp_conversion import get_conversion
+from auto_round.export.export_to_gguf.special_handle import handle_special_model
 from auto_round.logger import logger
-
-# from auto_round.export.export_to_gguf.convert_hf_to_gguf import ModelBase, ModelType, get_model_architecture
 from auto_round.utils import (
     LazyImport,
     check_to_quantized,
@@ -34,10 +36,6 @@ from auto_round.utils import (
     get_gguf_architecture,
     get_module,
 )
-
-convert_hf_to_gguf = LazyImport("auto_round.export.export_to_gguf.convert_hf_to_gguf")
-from auto_round.export.export_to_gguf.convert import wrapper_model_instance
-from auto_round.export.export_to_gguf.special_handle import handle_special_model
 
 TMP_DIR_NAME = "tmp_dir"
 
@@ -72,7 +70,7 @@ def create_model_class(
     layer_config,
     backend="gguf:q4_0",
     low_cpu_mem_usage=False,
-    model_type=convert_hf_to_gguf.ModelType.TEXT,
+    model_type=ModelType.TEXT,
     device="cpu",
     quant_nontext_module: bool = False,
 ):
@@ -81,11 +79,12 @@ def create_model_class(
     if not os.path.isdir(tmp_work_dir):
         tmp_work_dir = download_or_get_path(tmp_work_dir)
     with torch.inference_mode():
-        model_architecture = get_gguf_architecture(tmp_work_dir, model_type=model_type)
+        conversion = get_conversion(tmp_work_dir, model_type=model_type)
+        is_mistral_format = "mistral" in model.config.model_type and "params.json" in os.listdir(tmp_work_dir)
+        hparams = conversion.ModelBase.load_hparams(Path(tmp_work_dir), is_mistral_format)
+        model_architecture = conversion.get_model_architecture(hparams, conversion.model_type(model_type))
         try:
-            model_class = convert_hf_to_gguf.ModelBase.from_model_architecture(
-                model_architecture, model_type=model_type
-            )
+            model_class = conversion.get_model_class(model_architecture, model_type=model_type)
         except NotImplementedError:
             logger.error(f"Model {model_architecture} is not supported to export gguf format.")
             sys.exit(1)
@@ -100,18 +99,13 @@ def create_model_class(
             raise TypeError(f"{output_type} type is not supported")
         output_type = FTYPE_MAP.get(output_type.lower())
 
-        if "mistral" in model.config.model_type and "params.json" in os.listdir(tmp_work_dir):
-            is_mistral_format = True
-        else:
-            is_mistral_format = False
-        hparams = convert_hf_to_gguf.ModelBase.load_hparams(Path(tmp_work_dir), is_mistral_format)
         hparams.pop("quantization_config", None)
         model_instance = model_class(
             dir_model=Path(tmp_work_dir),
             ftype=output_type,
-            hparams=hparams,
             fname_out=Path(output_dir),
             is_big_endian=False,
+            hparams=hparams,
             model_name=model_name,
             split_max_tensors=False,
             split_max_size=0,
@@ -140,7 +134,7 @@ def pack_gguf_layer(
     tokenizer,
     processor=None,
     image_processor=None,
-    model_type=convert_hf_to_gguf.ModelType.TEXT,
+    model_type=ModelType.TEXT,
     device="cpu",
     quant_nontext_module=False,
 ):
@@ -154,12 +148,12 @@ def pack_gguf_layer(
                 layer_config,
                 backend,
                 low_cpu_mem_usage=True,
-                model_type=convert_hf_to_gguf.ModelType.TEXT,
+                model_type=ModelType.TEXT,
                 device=device,
                 quant_nontext_module=quant_nontext_module,
             )
         ]
-        if model_type == convert_hf_to_gguf.ModelType.MMPROJ:
+        if model_type == ModelType.MMPROJ:
             gguf_model_instance_global.append(
                 create_model_class(
                     output_dir,
@@ -167,7 +161,7 @@ def pack_gguf_layer(
                     layer_config,
                     backend,
                     low_cpu_mem_usage=True,
-                    model_type=convert_hf_to_gguf.ModelType.MMPROJ,
+                    model_type=ModelType.MMPROJ,
                     device=device,
                     quant_nontext_module=quant_nontext_module,
                 )
@@ -201,6 +195,9 @@ def pack_gguf_layer(
         # Packing block
         block = get_module(model, model.last_layer_name_to_block_name[name])
         for gguf_model in gguf_model_instance_global:
+            is_mmproj_model = gguf_model.model_arch == gguf.MODEL_ARCH.MMPROJ
+            if is_mmproj_model != is_mmproj_tensor_name(model.last_layer_name_to_block_name[name]):
+                continue
             gguf_model.current_packing_block = model.last_layer_name_to_block_name[name]
             gguf_model.prepare_tensors()
 
@@ -237,7 +234,7 @@ def save_quantized_as_gguf(
                 model,
                 layer_config,
                 backend,
-                model_type=convert_hf_to_gguf.ModelType.TEXT,
+                model_type=ModelType.TEXT,
                 device=device,
                 quant_nontext_module=quant_nontext_module,
             )
@@ -249,7 +246,7 @@ def save_quantized_as_gguf(
                     model,
                     layer_config,
                     backend,
-                    model_type=convert_hf_to_gguf.ModelType.MMPROJ,
+                    model_type=ModelType.MMPROJ,
                     device=device,
                     quant_nontext_module=quant_nontext_module,
                 )
