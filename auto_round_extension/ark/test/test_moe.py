@@ -679,9 +679,7 @@ class TestMoEGemmDecode:
         torch.testing.assert_close(out, ref, rtol=1e-1, atol=1e-1)
 
     @pytest.mark.parametrize("dtype", [torch.float16, torch.bfloat16])
-    @pytest.mark.parametrize(
-        "fp8_dtype", [torch.float8_e4m3fn, torch.float8_e5m2]
-    )
+    @pytest.mark.parametrize("fp8_dtype", [torch.float8_e4m3fn, torch.float8_e5m2])
     @pytest.mark.parametrize("group_size", [32, 128])
     def test_decode_fp8(self, dtype, fp8_dtype, group_size):
         num_experts = 4

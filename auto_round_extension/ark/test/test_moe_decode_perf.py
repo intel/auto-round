@@ -189,19 +189,13 @@ def _print_header(title: str) -> None:
     print()
     print("=" * 96)
     print(title)
-    print(
-        f"{'shape':<14}{'N':>7}{'K':>7}{'tokens':>8}"
-        f"{'baseline(ms)':>16}{'ark(ms)':>14}{'speedup':>12}"
-    )
+    print(f"{'shape':<14}{'N':>7}{'K':>7}{'tokens':>8}" f"{'baseline(ms)':>16}{'ark(ms)':>14}{'speedup':>12}")
     print("-" * 96)
 
 
 def _print_row(label, N, K, total_tokens, base_ms, ark_ms):
     speedup = base_ms / ark_ms if ark_ms > 0 else float("nan")
-    print(
-        f"{label:<14}{N:>7}{K:>7}{total_tokens:>8}"
-        f"{base_ms:>16.4f}{ark_ms:>14.4f}{speedup:>11.2f}x"
-    )
+    print(f"{label:<14}{N:>7}{K:>7}{total_tokens:>8}" f"{base_ms:>16.4f}{ark_ms:>14.4f}{speedup:>11.2f}x")
 
 
 # ---------------------------------------------------------------------------
@@ -229,9 +223,7 @@ class TestMoEGemmDecodePerf:
             ntpe = torch.tensor(tpe, dtype=torch.int32, device="xpu")
 
             base_ms = _xpu_time_ms(lambda: _default_moe_decode(activations, weights, ntpe))
-            ark_ms = _xpu_time_ms(
-                lambda: ark.moe_gemm_decode(activations, weights, ntpe, weight_bits=16)
-            )
+            ark_ms = _xpu_time_ms(lambda: ark.moe_gemm_decode(activations, weights, ntpe, weight_bits=16))
             _print_row(label, N, K, total_tokens, base_ms, ark_ms)
 
     @pytest.mark.parametrize("dtype", [torch.float16, torch.bfloat16])
@@ -263,9 +255,14 @@ class TestMoEGemmDecodePerf:
             base_ms = _xpu_time_ms(lambda: _default_moe_decode(activations, dequant, ntpe))
             ark_ms = _xpu_time_ms(
                 lambda: ark.moe_gemm_decode(
-                    activations, packed, ntpe,
-                    scales=scales, zeros=zeros,
-                    weight_bits=4, group_size=group_size, asym=asym,
+                    activations,
+                    packed,
+                    ntpe,
+                    scales=scales,
+                    zeros=zeros,
+                    weight_bits=4,
+                    group_size=group_size,
+                    asym=asym,
                 )
             )
             _print_row(label, N, K, total_tokens, base_ms, ark_ms)
@@ -299,9 +296,14 @@ class TestMoEGemmDecodePerf:
             base_ms = _xpu_time_ms(lambda: _default_moe_decode(activations, dequant, ntpe))
             ark_ms = _xpu_time_ms(
                 lambda: ark.moe_gemm_decode(
-                    activations, packed, ntpe,
-                    scales=scales, zeros=zeros,
-                    weight_bits=8, group_size=group_size, asym=asym,
+                    activations,
+                    packed,
+                    ntpe,
+                    scales=scales,
+                    zeros=zeros,
+                    weight_bits=8,
+                    group_size=group_size,
+                    asym=asym,
                 )
             )
             _print_row(label, N, K, total_tokens, base_ms, ark_ms)
@@ -335,9 +337,14 @@ class TestMoEGemmDecodePerf:
             base_ms = _xpu_time_ms(lambda: _default_moe_decode(activations, dequant, ntpe))
             ark_ms = _xpu_time_ms(
                 lambda: ark.moe_gemm_decode(
-                    activations, packed, ntpe,
-                    scales=scales, zeros=zeros,
-                    weight_bits=2, group_size=group_size, asym=asym,
+                    activations,
+                    packed,
+                    ntpe,
+                    scales=scales,
+                    zeros=zeros,
+                    weight_bits=2,
+                    group_size=group_size,
+                    asym=asym,
                 )
             )
             _print_row(label, N, K, total_tokens, base_ms, ark_ms)
@@ -364,9 +371,12 @@ class TestMoEGemmDecodePerf:
             base_ms = _xpu_time_ms(lambda: _default_moe_decode(activations, dequant, ntpe))
             ark_ms = _xpu_time_ms(
                 lambda: ark.moe_gemm_decode(
-                    activations, packed, ntpe,
+                    activations,
+                    packed,
+                    ntpe,
                     scales=scales,
-                    group_size=group_size, asym=False,
+                    group_size=group_size,
+                    asym=False,
                 )
             )
             _print_row(label, N, K, total_tokens, base_ms, ark_ms)

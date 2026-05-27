@@ -900,9 +900,7 @@ class ARK:
                 raise ValueError(f"scales shape {tuple(scales.shape)} != expected {expected_scale_shape}")
             if zeros is not None:
                 raise ValueError("zeros must be None for FP8 weights")
-            weight_dtype = (
-                ARK_DT.float8_e4m3 if weights.dtype == torch.float8_e4m3fn else ARK_DT.float8_e5m2
-            )
+            weight_dtype = ARK_DT.float8_e4m3 if weights.dtype == torch.float8_e4m3fn else ARK_DT.float8_e5m2
             if not scales.is_contiguous():
                 scales = scales.contiguous()
         elif weight_bits == 16:
