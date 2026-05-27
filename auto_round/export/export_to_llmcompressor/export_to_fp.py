@@ -50,6 +50,13 @@ from auto_round.utils import (
 from auto_round.wrapper import WrapperWALayer
 
 from .config import check_compressed_tensors_supported
+from .export_to_static_fp import (
+    _append_attention_group,
+    _configure_gaudi2_fp8_dtype,
+    _construct_kv_scheme,
+    _use_fp8_attention,
+    _use_fp8_kv,
+)
 
 __all__ = [
     "pack_layer",
@@ -144,7 +151,16 @@ def _get_group_format(bits, data_type):
     return "float-quantized"
 
 
-def _build_mixed_fp_quantization_config(scheme_groups, layer_config, ignore, global_bits, global_data_type):
+def _build_mixed_fp_quantization_config(
+    scheme_groups,
+    layer_config,
+    ignore,
+    global_bits,
+    global_data_type,
+    model,
+    static_kv_dtype=None,
+    static_attention_dtype=None,
+):
     """Build a quantization config dict for mixed-precision scenarios.
 
     Creates multiple config groups with per-group format strings using compressed_tensors
@@ -185,7 +201,17 @@ def _build_mixed_fp_quantization_config(scheme_groups, layer_config, ignore, glo
         config_groups[group_name] = tmp_quantization_config
         group_formats[group_name] = _get_group_format(lbits, ldata_type)
 
-    quantization_config = initialize_quantization(scheme=None, config_groups=config_groups, ignore=ignore)
+    use_fp8_attention = _use_fp8_attention(static_attention_dtype)
+    if use_fp8_attention:
+        _append_attention_group(config_groups, model)
+    quantization_config = initialize_quantization(
+        scheme=None,
+        config_groups=config_groups,
+        kv_cache_scheme=_construct_kv_scheme()
+        if (_use_fp8_kv(static_kv_dtype) or use_fp8_attention)
+        else None,
+        ignore=ignore,
+    )
     quantization_config = quantization_config.to_dict()
 
     # Set per-group format and top-level mixed-precision format
@@ -193,6 +219,7 @@ def _build_mixed_fp_quantization_config(scheme_groups, layer_config, ignore, glo
     for group_name, fmt in group_formats.items():
         quantization_config["config_groups"][group_name]["format"] = fmt
     quantization_config["provider"] = "auto-round"
+    _configure_gaudi2_fp8_dtype(quantization_config)
 
     return quantization_config
 
@@ -291,19 +318,41 @@ def save_quantized_as_fp(
 
     is_mixed = len(scheme_groups) > 1
 
+    use_fp8_attention = _use_fp8_attention(serialization_dict.get("static_attention_dtype", None))
+    kv_cache_scheme = (
+        _construct_kv_scheme()
+        if (_use_fp8_kv(serialization_dict.get("static_kv_dtype", None)) or use_fp8_attention)
+        else None
+    )
+
     if is_mixed:
-        quantization_config = _build_mixed_fp_quantization_config(scheme_groups, layer_config, ignore, bits, data_type)
+        quantization_config = _build_mixed_fp_quantization_config(
+            scheme_groups,
+            layer_config,
+            ignore,
+            bits,
+            data_type,
+            model,
+            static_kv_dtype=serialization_dict.get("static_kv_dtype", None),
+            static_attention_dtype=serialization_dict.get("static_attention_dtype", None),
+        )
     else:
         scheme = _get_scheme(bits, data_type)
         if scheme is None:
             raise ValueError(f"Unsupported combination of data_type={data_type} and bits={bits}.")
 
         format = _get_group_format(bits, data_type)
-        quantization_config = initialize_quantization(scheme=scheme)
+        quantization_config = initialize_quantization(
+            scheme=scheme,
+            kv_cache_scheme=kv_cache_scheme,
+            ignore=ignore,
+        )
+        if use_fp8_attention:
+            _append_attention_group(quantization_config.config_groups, model)
         setattr(quantization_config, "format", format)
-        setattr(quantization_config, "ignore", ignore)
         quantization_config = quantization_config.to_dict()
         quantization_config["provider"] = "auto-round"
+        _configure_gaudi2_fp8_dtype(quantization_config)
     if hasattr(model, "config"):
         model.config.quantization_config = quantization_config
     if output_dir is None:
