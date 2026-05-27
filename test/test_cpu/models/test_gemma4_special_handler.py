@@ -14,8 +14,8 @@
 """Unit tests for Gemma4 special model handler changes.
 
 Covers:
-1. _get_gemma4_shared_kv_states_global (PR #1839 core fix)
-2. position_ids guard in prepare_special_model_block_inputs (local fix)
+1. _get_gemma4_shared_kv_states_global
+2. position_ids guard in prepare_special_model_block_inputs
 3. _attach_gemma4_rotary_emb (transformers >= 5.6 path)
 4. _patch_gemma4_model (transformers < 5.6 path)
 5. Gemma4 position embedding replay (block_forward level)
@@ -36,16 +36,12 @@ import torch.nn as nn
 
 
 # ---------------------------------------------------------------------------
-# 1. Tests for _get_gemma4_shared_kv_states_global (PR #1839 core fix)
+# 1. Tests for _get_gemma4_shared_kv_states_global
 # ---------------------------------------------------------------------------
 
 
 class TestGemma4SharedKvStatesGlobal:
     """Unit tests for _get_gemma4_shared_kv_states_global.
-
-    PR #1839 fixed a bug where each Gemma4 layer got its own empty {}
-    instead of sharing one dict. This caused KeyError: 'sliding_attention'
-    because KV written by layer 0 was invisible to later layers.
     """
 
     def test_returns_shared_ref_when_attached(self):
