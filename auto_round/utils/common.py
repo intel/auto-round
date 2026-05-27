@@ -29,6 +29,44 @@ from auto_round.export.export_to_gguf.config import GGUF_CONFIG
 from auto_round.logger import logger
 
 
+def download_audiocaps_csv():
+    """Download AudioCaps train.csv and return the local cache path.
+
+    Downloads from GitHub on first use and caches in a temporary directory.
+
+    Returns:
+        str: Path to the cached CSV file.
+    """
+    import tempfile
+
+    import requests
+
+    url = "https://raw.githubusercontent.com/cdjkim/audiocaps/master/dataset2.0/train.csv"
+    cache_dir = os.path.join(tempfile.gettempdir(), "audiocaps_cache")
+    os.makedirs(cache_dir, exist_ok=True)
+    cache_file = os.path.join(cache_dir, "train.csv")
+
+    if os.path.exists(cache_file) and os.path.getsize(cache_file) > 0:
+        logger.debug(f"Using cached AudioCaps dataset: {cache_file}")
+        return cache_file
+
+    logger.info("Downloading AudioCaps dataset from GitHub...")
+    try:
+        resp = requests.get(url, timeout=60)
+        resp.raise_for_status()
+        if not resp.text or len(resp.text.strip()) == 0:
+            raise RuntimeError("Downloaded AudioCaps dataset is empty")
+        with open(cache_file, "w", encoding="utf-8") as f:
+            f.write(resp.text)
+        logger.info(f"AudioCaps dataset cached at: {cache_file}")
+    except requests.RequestException as e:
+        raise RuntimeError(f"Failed to download AudioCaps from {url}: {e}") from e
+    except IOError as e:
+        raise RuntimeError(f"Failed to write AudioCaps cache to {cache_file}: {e}") from e
+
+    return cache_file
+
+
 def compare_versions(v1, v2):
     return version.parse(v1) >= version.parse(v2)
 
@@ -596,7 +634,7 @@ class SupportedFormats:
         return self._support_list[key]
 
 
-SHARED_CACHE_KEYS = ("position_ids", "cache_position", "position_embeddings")
+SHARED_CACHE_KEYS = ("position_ids", "cache_position", "position_embeddings", "cu_seqlens")
 
 deepspeed_exists = False
 if importlib.util.find_spec("deepspeed"):  # check if deepspeed is installed
@@ -613,13 +651,23 @@ if deepspeed_exists:
 
     SUPPORTED_LAYER_TYPES = SUPPORTED_LAYER_TYPES + (LinearLayer, LinearAllreduce)
 
-MM_KEYS = [
+VISION_MM_KEYS = (
+    "vision",
+    "visual",
+    "image",
+    "img",
+)
+AUDIO_MM_KEYS = (
+    "audio",
+    "speech",
+    "wav",
+    "waveform",
+)
+MM_MODULE_KEYS = [
     "multi_modal_projector",
     "vision_tower",
     "multimodal_projector",
     "thinker",
-    "visual",
-    "audio",
     "talker",
     "token2wav",
     "code2wav",
@@ -627,12 +675,17 @@ MM_KEYS = [
     "vqmodel",
     "vision_model",
     "audio_tower",
+    "audio_model",
     "vision_encoder",
     "vision_language_adapter",
     "patch_merger",
     "pre_mm_projector_norm",
-    "vision",
+    "image_newline",
+    "model.connector",
+    "audio",
+    *VISION_MM_KEYS,
 ]
+MM_KEYS = [*MM_MODULE_KEYS, "speech", "wav", "waveform"]
 
 
 def is_debug_mode():
@@ -1090,6 +1143,15 @@ def get_checkpoint_conversion_mapping(model):
         )
 
         conversion_mappings = transformers_get_checkpoint_conversion_mapping(model.config.model_type)
+
+        # For composite models (e.g. VLMs) loaded as text sub-models via AutoModelForCausalLM,
+        # the composite model_type may not have a mapping, but the text sub-model type does.
+        if conversion_mappings is None:
+            text_config = getattr(getattr(model, "config", None), "text_config", None)
+            text_model_type = getattr(text_config, "model_type", None)
+            if text_model_type:
+                conversion_mappings = transformers_get_checkpoint_conversion_mapping(text_model_type)
+
         if conversion_mappings is not None:
             for conversion_mapping in conversion_mappings:
                 for source_pattern in conversion_mapping.source_patterns:
@@ -1114,6 +1176,9 @@ def get_reverse_checkpoint_conversion_mapping(model):
 
 
 def revert_checkpoint_conversion_mapping(name: str, key_mapping: dict[str, str]) -> str:
+    if "," in name:
+        return ",".join(revert_checkpoint_conversion_mapping(part, key_mapping) for part in name.split(","))
+
     for source_pattern, target_patterns in key_mapping.items():
         if isinstance(target_patterns, str):
             target_patterns = [target_patterns]
@@ -1125,6 +1190,42 @@ def revert_checkpoint_conversion_mapping(name: str, key_mapping: dict[str, str])
             if n_replace > 0:
                 return name
     return name
+
+
+def preserve_original_visual_block_name(original_name: str | None, reverted_name: str) -> str:
+    """Keep composite multimodal block prefixes stable in serialized quant configs.
+
+    Some multimodal models expose block names under the composite model path
+    (for example ``model.visual.*`` or ``model.language_model.*``) during
+    quantization, but checkpoint conversion rules can rewrite those config-only
+    block prefixes to text-submodel paths such as ``visual.*`` or
+    ``model.layers``. The direct multimodal loaders expect the composite path to
+    remain intact in ``block_name_to_quantize``.
+    """
+    if not (isinstance(original_name, str) and isinstance(reverted_name, str)):
+        return reverted_name
+
+    original_parts = [part.strip() for part in original_name.split(",")]
+    reverted_parts = [part.strip() for part in reverted_name.split(",")]
+    if len(original_parts) != len(reverted_parts):
+        return reverted_name
+
+    preserved_parts = []
+    for original_part, reverted_part in zip(original_parts, reverted_parts):
+        if original_part.startswith("model.visual.") and reverted_part == original_part[len("model.") :]:
+            preserved_parts.append(original_part)
+        elif original_part.startswith("model.language_model.") and reverted_part.startswith("model.layers"):
+            preserved_parts.append(original_part)
+            preserved_parts.append(reverted_part)
+        else:
+            preserved_parts.append(reverted_part)
+
+    deduped_parts = []
+    for preserved_part in preserved_parts:
+        if preserved_part not in deduped_parts:
+            deduped_parts.append(preserved_part)
+
+    return ",".join(deduped_parts)
 
 
 def apply_checkpoint_conversion_mapping(name: str, key_mapping: dict[str, str]) -> str:

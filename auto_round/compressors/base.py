@@ -40,11 +40,13 @@ from auto_round.schemes import (
     get_gguf_scheme,
     preset_name_to_scheme,
 )
-from auto_round.special_model_handler import get_predefined_fixed_attr, get_predefined_ignore_layers
+from auto_round.special_model_handler import get_predefined_ignore_layers, update_module
 from auto_round.utils import (
+    AUDIO_MM_KEYS,
     INNER_SUPPORTED_LAYER_TYPES,
     SUPPORTED_LAYER_TYPES,
     TORCH_VERSION_AT_LEAST_2_6,
+    VISION_MM_KEYS,
     compress_layer_names,
     convert_dtype_str2torch,
     extract_block_names_to_str,
@@ -55,6 +57,7 @@ from auto_round.utils import (
     is_hpex_available,
     is_quantized_input_module,
     memory_monitor,
+    preserve_original_visual_block_name,
     revert_checkpoint_conversion_mapping,
 )
 from auto_round.utils.device import (
@@ -172,6 +175,7 @@ class BaseCompressor(object):
             nsamples=nsamples if nsamples is not None else 128,
             seqlen=seqlen if seqlen is not None else 2048,
             batch_size=kwargs.pop("batch_size", 8),
+            gradient_accumulate_steps=kwargs.pop("gradient_accumulate_steps", 1),
         )
 
         # ``dataset`` is not a named __init__ parameter – it arrives via
@@ -213,6 +217,9 @@ class BaseCompressor(object):
 
         # Extra/legacy kwargs for backward compatibility
         # Major version releases may pack them with extra configuration options
+        kwargs.pop("iters", None)
+        kwargs.pop("enable_alg_ext", None)
+        kwargs.pop("vlm", None)
         amp = kwargs.pop("amp", True)
         nblocks = kwargs.pop("nblocks", 1)
         disable_deterministic_algorithms = kwargs.pop("disable_deterministic_algorithms", True)
@@ -224,6 +231,9 @@ class BaseCompressor(object):
         model_dtype = kwargs.pop("model_dtype", None)
         trust_remote_code = kwargs.pop("trust_remote_code") if "trust_remote_code" in kwargs else True
         quant_nontext_module = kwargs.pop("quant_nontext_module", False)
+        device = kwargs.pop("device", None)
+        if device is not None:
+            logger.warning("`device` is deprecated, please use `device_map` instead")
 
         self.static_attention_dtype = kwargs.pop("static_attention_dtype", None)
         # Attention static dtype
@@ -257,10 +267,6 @@ class BaseCompressor(object):
         # and set torch.use_deterministic_algorithms(False)
         # instead of MATH (avoids ~10x peak-VRAM blow-up during block tuning).
         patch_xpu_sdpa_drop_causal_mask()
-
-        device = kwargs.pop("device", None)
-        if device is not None:
-            logger.warning("`device` is deprecated, please use `device_map` instead")
 
         # Tuning hyperparameters
         self.seed = seed
@@ -327,7 +333,7 @@ class BaseCompressor(object):
 
         # Apply torch compile adjustments eagerly so that ar.enable_torch_compile
         # reflects the correct value immediately after construction (not only after post_init).
-        self._adjust_torch_compile(enable_torch_compile)
+        self._precheck_torch_compile(enable_torch_compile)
         self.compress_context.enable_torch_compile = self.enable_torch_compile
 
         # ``self._calibration_state`` was created at the top of __init__ so
@@ -335,9 +341,6 @@ class BaseCompressor(object):
         # batch_size from kwargs) have already routed through it.
 
         self.has_variable_block_shape = False
-        fixed_attr = get_predefined_fixed_attr(self.model_context.model) or {}
-        for key, value in fixed_attr.items():
-            setattr(self, key, value)
 
     # ── Scheme resolution ─────────────────────────────────────────────────────
 
@@ -472,20 +475,11 @@ class BaseCompressor(object):
             scoreable_blocks = get_block_names(self.model_context.model, quant_vision=quant_nontext)
             scoreable_block_prefixes = tuple(blk for group in scoreable_blocks for blk in group)
             if quant_nontext:
-                peel_markers = ("audio", "speech", "wav", "waveform")
+                peel_markers = AUDIO_MM_KEYS
                 tower_label = "language+vision"
                 peel_label = "audio/speech"
             else:
-                peel_markers = (
-                    "vision",
-                    "visual",
-                    "image",
-                    "img",
-                    "audio",
-                    "speech",
-                    "wav",
-                    "waveform",
-                )
+                peel_markers = VISION_MM_KEYS + AUDIO_MM_KEYS
                 tower_label = "language"
                 peel_label = "vision/audio"
 
@@ -556,14 +550,25 @@ class BaseCompressor(object):
 
     def configure_layer_config(self, enable_gguf_official_mixed: bool | None = True) -> None:
         """Build ``self.layer_config`` from the resolved scheme on the patched model."""
-        is_gguf_format = (f := getattr(self.compress_context, "formats", None)) is not None and "gguf" in f
+        _formats = getattr(self.compress_context, "formats", None)
+        is_gguf_format = _formats is not None and any(
+            "gguf" in str(getattr(fmt, "output_format", "")) for fmt in _formats
+        )
         predefined_ignore_layers = get_predefined_ignore_layers(self.model_context.model)
         compressed_predefined_ignore_layers = compress_layer_names(predefined_ignore_layers)
         if not is_gguf_format:
             predefined_ignore_layers = get_predefined_ignore_layers(self.model_context.model)
+            if predefined_ignore_layers and self.quant_block_list:
+                block_prefixes = [block for group in self.quant_block_list for block in group]
+                predefined_ignore_layers = [
+                    name
+                    for name in predefined_ignore_layers
+                    if any(name.startswith(prefix) for prefix in block_prefixes)
+                ]
+            predefined_ignore_layers = compress_layer_names(predefined_ignore_layers)
             if predefined_ignore_layers:
                 logger.info(f"Using predefined ignore_layers: {compressed_predefined_ignore_layers}")
-                tmp_str = ",".join(predefined_ignore_layers)
+                tmp_str = predefined_ignore_layers.replace(" ", "")
                 if self.ignore_layers == "":
                     self.ignore_layers = tmp_str
                 else:
@@ -620,10 +625,8 @@ class BaseCompressor(object):
     def diffusion(self):
         return self.model_context.is_diffusion
 
-    def _adjust_torch_compile(self, enable_torch_compile: bool) -> None:
-        """Sets the torch compile configuration for the tuning."""
-        self.enable_torch_compile = enable_torch_compile
-
+    def _get_torch_compile_guard_state(self) -> tuple[bool, bool, int]:
+        """Return raw dtype state used by torch.compile guard rules."""
         # Determine fp8 / nvfp4 intent from raw config before scheme resolution.
         cfg = self.quantize_config
         raw_scheme = self.scheme if isinstance(self.scheme, str) else ""
@@ -641,6 +644,11 @@ class BaseCompressor(object):
         )
 
         act_bits = getattr(cfg, "act_bits", 16) or 16
+        return is_raw_fp8, is_raw_nv_fp, act_bits
+
+    def _maybe_log_torch_compile_default_hint(self) -> None:
+        """Log the default torch.compile hint once final config state is available."""
+        is_raw_fp8, _, act_bits = self._get_torch_compile_guard_state()
         if (
             not self.enable_torch_compile
             and TORCH_VERSION_AT_LEAST_2_6
@@ -654,6 +662,13 @@ class BaseCompressor(object):
                 "'enable_torch_compile' is set to `False` by default. "
                 "Enabling it can reduce tuning cost by 20%, but it might throw an exception.",
             )
+
+    def _apply_torch_compile_constraints(self, enable_torch_compile: bool) -> None:
+        """Apply torch.compile disabling rules for the current compressor state."""
+        self.enable_torch_compile = enable_torch_compile
+        cfg = self.quantize_config
+        is_raw_fp8, is_raw_nv_fp, _ = self._get_torch_compile_guard_state()
+
         # On HPU, we rely on torch.compile to speed up the model execution.
         if self.enable_torch_compile and is_raw_fp8 and not is_hpex_available():
             self.enable_torch_compile = False
@@ -669,6 +684,22 @@ class BaseCompressor(object):
         #     logger.warning_once(
         #         "reset enable_torch_compile to `False` as super_group_size is set for algorithm extension"
         #     )
+
+    def _precheck_torch_compile(self, enable_torch_compile: bool) -> None:
+        """Apply early torch.compile adjustments before scheme resolution.
+
+        This runs during ``__init__`` so the compressor exposes a sensible
+        ``enable_torch_compile`` value immediately after construction, even
+        though scheme resolution has not completed yet.
+        """
+        self._apply_torch_compile_constraints(enable_torch_compile)
+
+    def _finalize_torch_compile(self) -> None:
+        """Re-evaluate torch.compile after scheme resolution with final attrs."""
+        requested_enable_torch_compile = self.enable_torch_compile
+        self._apply_torch_compile_constraints(requested_enable_torch_compile)
+        if not requested_enable_torch_compile:
+            self._maybe_log_torch_compile_default_hint()
 
     def _get_calibration_dataset(self) -> str:
         """Resolve calibration dataset: self.dataset > AutoScheme.dataset > default."""
@@ -1004,8 +1035,8 @@ class BaseCompressor(object):
         Preconditions:
           - Phase 4 complete: ``layer_config`` is built and
             ``has_qlayer_outside_block`` is known.
-          - ``self.quantize_config.data_type`` is the final resolved value
-            (needed by :meth:`_adjust_torch_compile`).
+                    - ``self.quantize_config.data_type`` is the final resolved value
+                        (needed by :meth:`_finalize_torch_compile`).
 
         Work performed:
           - Applies the device map via :func:`~auto_round.utils.device.set_non_auto_device_map`.
@@ -1024,7 +1055,7 @@ class BaseCompressor(object):
         """
         set_non_auto_device_map(self.model_context.model, self.compress_context.device_map)
         # Re-evaluate torch.compile eligibility now that data_type is resolved.
-        self._adjust_torch_compile(self.enable_torch_compile)
+        self._finalize_torch_compile()
         self.compress_context.enable_torch_compile = self.enable_torch_compile
         if self.compress_context.low_cpu_mem_usage:
             self._offloader.reset()
@@ -1114,6 +1145,15 @@ class BaseCompressor(object):
     @batch_size.setter
     def batch_size(self, value: int) -> None:
         self._calibration_state.batch_size = value
+
+    @property
+    def gradient_accumulate_steps(self) -> int:
+        return self._calibration_state.gradient_accumulate_steps
+
+    @gradient_accumulate_steps.setter
+    def gradient_accumulate_steps(self, value: int) -> None:
+        if value is not None:
+            self._calibration_state.gradient_accumulate_steps = value
 
     @property
     def nsamples(self) -> int:
@@ -1284,10 +1324,6 @@ class BaseCompressor(object):
             self.compress_context.output_dir = output_dir
         if format is not None:
             if isinstance(format, str) and getattr(self, "formats", None) is None:
-                logger.warning(
-                    f"save_quantized with format is deprecated and will be deleted in auto_round version 1.0."
-                    f" Please use AutoRound(format='{format}' instead)."
-                )
                 self.formats = get_formats(format, self)
                 self.compress_context.formats = self.formats
 
@@ -1320,18 +1356,31 @@ class BaseCompressor(object):
             if "scale_dtype" in serialization_dict.keys():
                 serialization_dict["scale_dtype"] = str(serialization_dict["scale_dtype"])
 
+            original_to_quant_block_names = serialization_dict.get("to_quant_block_names")
+            if isinstance(original_to_quant_block_names, list):
+                original_to_quant_block_names = original_to_quant_block_names[:]
+
             # to match the original name
             reverse_checkpoint_conversion_mapping = get_reverse_checkpoint_conversion_mapping(self.model)
 
             if isinstance(serialization_dict["to_quant_block_names"], str):
-                serialization_dict["to_quant_block_names"] = revert_checkpoint_conversion_mapping(
+                reverted_block_name = revert_checkpoint_conversion_mapping(
                     serialization_dict["to_quant_block_names"], reverse_checkpoint_conversion_mapping
+                )
+                serialization_dict["to_quant_block_names"] = preserve_original_visual_block_name(
+                    original_to_quant_block_names, reverted_block_name
                 )
 
             elif isinstance(serialization_dict["to_quant_block_names"], list):
                 for idx in range(len(serialization_dict["to_quant_block_names"])):
-                    serialization_dict["to_quant_block_names"][idx] = revert_checkpoint_conversion_mapping(
+                    reverted_block_name = revert_checkpoint_conversion_mapping(
                         serialization_dict["to_quant_block_names"][idx], reverse_checkpoint_conversion_mapping
+                    )
+                    original_block_name = None
+                    if isinstance(original_to_quant_block_names, list) and idx < len(original_to_quant_block_names):
+                        original_block_name = original_to_quant_block_names[idx]
+                    serialization_dict["to_quant_block_names"][idx] = preserve_original_visual_block_name(
+                        original_block_name, reverted_block_name
                     )
 
             compressed_model = format.save_quantized(
@@ -1439,10 +1488,6 @@ class BaseCompressor(object):
 
         # check and update the format based on the current configuration
         if format and self.formats is None:
-            logger.warning(
-                f"quantize_and_save with format is deprecated and will be deleted in auto_round version 1.0."
-                f" Please use AutoRound(format='{format}' instead)."
-            )
             self.formats = format
         if self.formats is None:
             logger.info("format is not set, using default auto_round format.")

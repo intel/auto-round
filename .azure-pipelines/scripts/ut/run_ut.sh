@@ -55,10 +55,10 @@ function print_summary() {
 function check_storage_usage() {
     echo "##[group]check storage usage..."
     df -h
-    du -sh /auto-round
-    du -sh /home/hostuser/.cache/huggingface
-    du -sh /home/hostuser/.cache/huggingface/hub/*
-    du -sh /home/hostuser/.venv
+    du -sh /auto-round || true
+    du -sh /home/hostuser/.cache/huggingface || true
+    du -sh /home/hostuser/.cache/huggingface/hub/* || true
+    du -sh /home/hostuser/.venv || true
     echo "##[endgroup]"
 }
 
@@ -67,7 +67,7 @@ function run_unit_test() {
     auto_round_path=$(python -c 'import auto_round; print(auto_round.__path__[0])')
 
     # Split test files into 5 parts
-    find ./test_cpu -name "test*.py" | grep -Ev "llmc" | sort > all_tests.txt
+    find ./test_cpu -name "test*.py" | grep -Ev "test_llmc|test_inc" | sort > all_tests.txt
     total_lines=$(wc -l < all_tests.txt)
     NUM_CHUNKS=5
     q=$(( total_lines / NUM_CHUNKS ))
@@ -95,10 +95,33 @@ function run_unit_test() {
     done
 }
 
+function run_inc_unit_test() {
+    echo "##[group]set up INC UT env..."
+    INC_PT_ONLY=1 uv pip install -r /auto-round/test/test_cpu/requirements_inc.txt
+    echo "##[endgroup]"
+
+    cd /auto-round/test || exit 1
+    auto_round_path=$(python -c 'import auto_round; print(auto_round.__path__[0])')
+
+    for test_file in $(find ./test_cpu -name "test_inc*.py" | sort); do
+        echo "##[group]Running ${test_file}..."
+        local test_basename=$(basename ${test_file} .py)
+        local ut_log_name=${LOG_DIR}/unittest_${test_basename}.log
+
+        numactl --physcpubind="${NUMA_CPUSET:-0-15}" --membind="${NUMA_NODE:-0}" \
+            python -m pytest --cov="${auto_round_path}" --cov-report term --html=report.html --self-contained-html \
+                --cov-report xml:coverage.xml --cov-append \
+                -vs --disable-warnings ${test_file} 2>&1 | tee ${ut_log_name}
+        echo "##[endgroup]"
+    done
+}
+
 function run_llmc_unit_test() {
+    echo "##[group]set up LLMC UT env..."
     BUILD_TYPE="nightly" uv pip install -r /auto-round/test/test_cpu/requirements_llmc.txt
     uv pip uninstall auto-round
     cd /auto-round && uv pip install .
+    echo "##[endgroup]"
 
     cd /auto-round/test || exit 1
     auto_round_path=$(python -c 'import auto_round; print(auto_round.__path__[0])')
@@ -127,6 +150,7 @@ function main() {
     setup_environment
     run_unit_test
     if [ "$test_part" -eq 5 ]; then
+        run_inc_unit_test
         run_llmc_unit_test
     fi
     collect_log

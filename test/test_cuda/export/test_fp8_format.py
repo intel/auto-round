@@ -34,12 +34,16 @@ class TestAutoRoundBlockFP:
             seqlen=2,
         )
         quantized_model_path = self.save_dir
-        compressed_model, _ = autoround.quantize_and_save(output_dir=quantized_model_path, format="fp8")
+        compressed_model, quantized_model_path = autoround.quantize_and_save(
+            output_dir=quantized_model_path, format="fp8"
+        )
         tmp_layer = compressed_model.model.layers[1].self_attn.q_proj
         assert hasattr(tmp_layer, "weight_scale_inv")
         assert tmp_layer.weight.dtype is torch.float8_e4m3fn
         assert list(tmp_layer.weight_scale_inv.shape) == [16, 8]
         assert compressed_model.config.quantization_config["quant_method"] == "fp8"
         assert compressed_model.config.quantization_config["weight_block_size"] == (128, 128)
-        if is_cuda_support_fp8():
-            eval_generated_prompt(quantized_model_path, device="cuda")
+        # TODO: open below test after this issue is fixed.
+        # https://github.com/huggingface/transformers/issues/46209
+        # if is_cuda_support_fp8():
+        #     eval_generated_prompt(quantized_model_path, device="cuda")

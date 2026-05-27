@@ -613,3 +613,50 @@ def test_fp8_autoround_export_packs_serially(tiny_opt_model_path, tmp_path, monk
     autoround.save_quantized(output_dir=tmp_path, format="auto_round")
     with safe_open(os.path.join(tmp_path, "model.safetensors"), framework="pt") as f:
         assert "model.decoder.layers.0.self_attn.k_proj.weight_scale" in f.keys()
+
+
+@pytest.mark.parametrize("low_cpu_mem_usage", [True, False])
+def test_immediate_saving_mode(tiny_opt_model_path, tmp_path, low_cpu_mem_usage, caplog):
+    """Verify that immediate_saving (triggered by low_cpu_mem_usage) produces a complete model output."""
+    import logging
+
+    output_dir = str(tmp_path / "output")
+    with caplog.at_level(logging.DEBUG, logger="auto_round"):
+        autoround = AutoRound(
+            tiny_opt_model_path,
+            scheme="MXFP4",
+            iters=2,
+            seqlen=2,
+            nsamples=2,
+            low_cpu_mem_usage=low_cpu_mem_usage,
+        )
+        _, quantized_model_path = autoround.quantize_and_save(output_dir=output_dir, format="llm_compressor")
+
+    # No spurious "already exists" warning should be emitted
+    conflict_messages = [r.message for r in caplog.records if "already exists" in r.message]
+    assert len(conflict_messages) == 0, f"Unexpected conflict warnings: {conflict_messages}"
+
+    # All essential files must exist regardless of immediate_saving mode
+    assert os.path.exists(os.path.join(quantized_model_path, "config.json")), "config.json missing"
+    assert os.path.exists(
+        os.path.join(quantized_model_path, "quantization_config.json")
+    ), "quantization_config.json missing"
+
+    # Exactly 1 safetensors shard for this tiny model
+    safetensor_files = [f for f in os.listdir(quantized_model_path) if f.endswith(".safetensors")]
+    assert len(safetensor_files) == 1, f"Expected 1 safetensors file, got {len(safetensor_files)}: {safetensor_files}"
+
+    # Tokenizer files must be present
+    assert os.path.exists(os.path.join(quantized_model_path, "tokenizer_config.json")), "tokenizer_config.json missing"
+
+    # Total file count: config.json, quantization_config.json, model.safetensors,
+    # generation_config.json, tokenizer.json, tokenizer_config.json = 6
+    all_files = os.listdir(quantized_model_path)
+    assert len(all_files) == 6, f"Expected 6 files, got {len(all_files)}: {sorted(all_files)}"
+
+    # Verify weights are loadable and non-empty
+    from safetensors import safe_open
+
+    with safe_open(os.path.join(quantized_model_path, safetensor_files[0]), framework="pt") as f:
+        keys = f.keys()
+        assert len(keys) > 0, "Safetensors file has no tensors"

@@ -584,3 +584,88 @@ class TestCopyMissingTensorsFromSource:
         _write_config(tgt)
         copy_missing_tensors_from_source(src, tgt)
         assert not os.path.exists(os.path.join(tgt, "model_extra_tensors.safetensors"))
+
+    def test_talker_missing_weight_is_never_woq_quantized(self):
+        """Talker weights must stay BF16/full precision even in WOQ exports."""
+        with tempfile.TemporaryDirectory() as source_dir, tempfile.TemporaryDirectory() as target_dir:
+            talker_weight = torch.randn(32, 64, dtype=torch.bfloat16)
+            _save_safetensors(
+                {"talker.model.layers.0.mlp.experts.0.up_proj.weight": talker_weight},
+                os.path.join(source_dir, "model.safetensors"),
+            )
+            _save_safetensors(
+                {
+                    "thinker.model.layers.0.mlp.experts.0.up_proj.qweight": torch.randint(
+                        0, 16, (8, 32), dtype=torch.int32
+                    )
+                },
+                os.path.join(target_dir, "model.safetensors"),
+            )
+            with open(os.path.join(target_dir, "config.json"), "w") as f:
+                json.dump(
+                    _make_auto_round_config(bits=4, group_size=64, sym=True)
+                    | {
+                        "quantization_config": _make_auto_round_config(bits=4, group_size=64, sym=True)[
+                            "quantization_config"
+                        ]
+                        | {"block_name_to_quantize": "thinker.model.layers"}
+                    },
+                    f,
+                )
+
+            copy_missing_tensors_from_source(source_dir, target_dir)
+
+            result = _load_safetensors(os.path.join(target_dir, "model_extra_tensors.safetensors"))
+            assert "talker.model.layers.0.mlp.experts.0.up_proj.weight" in result
+            assert "talker.model.layers.0.mlp.experts.0.up_proj.qweight" not in result
+
+    def test_talker_fused_projection_not_treated_as_missing_when_expanded_components_exist(self):
+        """Talker fused projection keys must not be marked missing if their per-expert 2D
+        components are already saved (via _expand_fused_experts during export).
+
+        This is the inverse of the previous test: the target already has the per-expert
+        2D weights that _expand_fused_experts produced from the fused 3D source key.
+        copy_missing_tensors_from_source should NOT re-split the source fused 3D key
+        and add duplicate per-expert weights.
+        """
+        with tempfile.TemporaryDirectory() as source_dir, tempfile.TemporaryDirectory() as target_dir:
+            # Source has fused 3D expert params (what the original checkpoint looks like)
+            _save_safetensors(
+                {
+                    # These are the original fused 3D keys that appear in the source checkpoint.
+                    # In practice num_experts=4 in the tiny test config.
+                    "talker.model.layers.0.mlp.experts.gate_up_proj": torch.randn(4, 16, 32),
+                    "talker.model.layers.0.mlp.experts.down_proj": torch.randn(4, 32, 16),
+                },
+                os.path.join(source_dir, "model.safetensors"),
+            )
+            # Target already has the per-expert 2D weights that _expand_fused_experts
+            # produced during export. These are the correct shape expected by transformers.
+            _save_safetensors(
+                {
+                    # gate_up_proj split into gate_proj + up_proj
+                    "talker.model.layers.0.mlp.experts.0.gate_proj.weight": torch.randn(8, 32),
+                    "talker.model.layers.0.mlp.experts.0.up_proj.weight": torch.randn(8, 32),
+                    "talker.model.layers.0.mlp.experts.1.gate_proj.weight": torch.randn(8, 32),
+                    "talker.model.layers.0.mlp.experts.1.up_proj.weight": torch.randn(8, 32),
+                    # down_proj as per-expert 2D
+                    "talker.model.layers.0.mlp.experts.0.down_proj.weight": torch.randn(32, 8),
+                    "talker.model.layers.0.mlp.experts.1.down_proj.weight": torch.randn(32, 8),
+                    # Also have some thinker quantized weights
+                    "thinker.model.layers.0.mlp.experts.0.gate_proj.qweight": torch.randint(
+                        0, 16, (8, 32), dtype=torch.int32
+                    ),
+                },
+                os.path.join(target_dir, "model.safetensors"),
+            )
+            _write_config(target_dir)
+
+            copy_missing_tensors_from_source(source_dir, target_dir)
+
+            # The fused keys must NOT be treated as missing — their expanded
+            # per-expert 2D components are already in the target.
+            extra_shard = os.path.join(target_dir, "model_extra_tensors.safetensors")
+            assert not os.path.exists(extra_shard), (
+                "Fused talker expert keys should not be treated as missing when "
+                "their per-expert 2D components are already saved"
+            )

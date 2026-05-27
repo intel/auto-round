@@ -44,7 +44,8 @@ class MLLMCalibrator(LLMCalibrator):
 
         from auto_round.compressors.mllm.dataset import get_mllm_dataloader
         from auto_round.compressors.mllm.template import get_template
-        from auto_round.special_model_handler import MISTRAL_3_2_MODELS
+        from auto_round.special_model_handler import MISTRAL_3_2_MODELS, NOT_SUPPORT_ONLY_TEXT_MODELS
+        from auto_round.utils.model import resolve_model_type
 
         c = self.compressor
         mc = c.model_context
@@ -64,8 +65,8 @@ class MLLMCalibrator(LLMCalibrator):
                 c.template = "mistral3_2"
 
         template_name = c.template
-        if template_name is None and hasattr(mc.model.config, "model_type"):
-            template_name = mc.model.config.model_type
+        if template_name is None:
+            template_name = resolve_model_type(mc.model) or getattr(mc.model.config, "model_type", None)
         if template_name is None:
             template_name = "default"
 
@@ -97,6 +98,13 @@ class MLLMCalibrator(LLMCalibrator):
                     " switching to liuhaotian/llava_conv_58k"
                 )
                 dataset = "liuhaotian/llava_conv_58k"
+            elif dataset in CALIB_DATASETS and c.template_obj.model_type in NOT_SUPPORT_ONLY_TEXT_MODELS:
+                logger.warning(
+                    f"{getattr(mc.model.config, 'model_type', c.template_obj.model_type)}"
+                    f" does not support for {dataset},"
+                    " will use liuhaotian/llava_conv_58k with default config as an alternative."
+                )
+                dataset = "liuhaotian/llava_conv_58k"
             (
                 c.dataloader,
                 c.batch_size,
@@ -114,6 +122,7 @@ class MLLMCalibrator(LLMCalibrator):
                 bs=bs,
                 seed=c.seed,
                 nsamples=nsamples,
+                gradient_accumulate_steps=c.gradient_accumulate_steps,
                 quant_nontext_module=c.quant_nontext_module,
             )
         else:

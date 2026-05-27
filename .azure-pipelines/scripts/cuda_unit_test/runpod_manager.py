@@ -12,6 +12,10 @@ TARGET_GPUS = [
     "NVIDIA L40S",
     "NVIDIA RTX PRO 6000 Blackwell Server Edition",
     "NVIDIA RTX PRO 6000 Blackwell Workstation Edition",
+    "NVIDIA L40",
+    "NVIDIA A100-SXM4-80GB",
+    "NVIDIA H100 80GB HBM3",
+    "NVIDIA H200",
 ]
 DATA_CENTER_IDS = [
     "AP-JP-1",
@@ -41,11 +45,11 @@ DATA_CENTER_IDS = [
     "US-TX-4",
     "US-WA-1",
 ]
-DATA_CENTER_BAN_LIST = ["EUR-IS-1", "EUR-IS-2", "US-IL-1"]
+DATA_CENTER_BAN_LIST = ["EUR-IS-1", "EUR-IS-2", "US-IL-1", "EU-CZ-1"]
 DATA_CENTER_SELECT_LIST = [dc for dc in DATA_CENTER_IDS if dc not in DATA_CENTER_BAN_LIST]
 REQUIRED_COUNT = 1
-IMAGES_NAME = "xuehaosu/azure-agent:v0.1"
-CUDA_VERSIONS = ["13.0", "12.9", "12.8", "12.7", "12.6", "12.5", "12.4", "12.3", "12.2", "12.1", "12.0", "11.8"]
+CU130_IMAGES_NAME = "ghcr.io/xuehaosun/azure-agent:13.0"
+CUDA_VERSIONS = ["13.0"]
 
 
 def run_create_pod(api_key, payload):
@@ -102,15 +106,16 @@ def create_pod(args):
         "gpuTypePriority": "custom",
         "name": args.name,
         "volumeInGb": 0,
-        "imageName": IMAGES_NAME,
+        "imageName": CU130_IMAGES_NAME,
     }
 
     print(f"🚀 Creating pod: {args.name}...")
     data = run_create_pod(args.api_key, payload)
     if data:
         pod_id = data.get("id")
+        location = data.get("machine", {}).get("location", "unknown")
         if pod_id:
-            print(f"✅ Pod created successfully! Pod ID: {pod_id}")
+            print(f"✅ Pod created successfully! Pod ID: {pod_id}, Location: {location}")
             print(f"    Status is: {data.get('desiredStatus')}")
     else:
         print("❌ Failed to create pod (no data returned).")

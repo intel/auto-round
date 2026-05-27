@@ -27,6 +27,7 @@ def split_inputs(
     first_input_name: str,
     *,
     is_diffusion: bool,
+    shared_cache_keys: tuple = (),
 ) -> Tuple[object, dict]:
     """Split a captured ``inputs`` dict into ``(input_ids, input_others)``.
 
@@ -34,7 +35,8 @@ def split_inputs(
 
     - For diffusion models, every key containing ``"hidden_state"`` is pulled
       out into a dict and returned as ``input_ids``; the remaining kwargs are
-      returned as ``input_others``.
+      returned as ``input_others``.  Keys in *shared_cache_keys* are kept in
+      ``input_others`` even if they match ``"hidden_state"``.
     - Otherwise, ``inputs[first_input_name]`` is popped and returned as
       ``input_ids`` (may be ``None``); the remainder is ``input_others``.
 
@@ -42,7 +44,7 @@ def split_inputs(
     behaviour that downstream code relies on.
     """
     if is_diffusion:
-        input_id_str = [key for key in inputs.keys() if "hidden_state" in key]
+        input_id_str = [key for key in inputs.keys() if "hidden_state" in key and key not in shared_cache_keys]
         input_ids = {k: inputs.pop(k, None) for k in input_id_str}
         input_others = inputs
         return input_ids, input_others
@@ -50,6 +52,16 @@ def split_inputs(
     inputs.pop(first_input_name, None)
     input_others = inputs
     return input_ids, input_others
+
+
+def _unwrap_single_element(input_others):
+    """Unwrap single-element list/tuple values from kwargs dict."""
+    for key in list(input_others.keys()):
+        if key == "positional_inputs":
+            continue
+        val = input_others[key]
+        if isinstance(val, (list, tuple)) and len(val) == 1:
+            input_others[key] = val[0]
 
 
 def preprocess_block_inputs(
@@ -66,13 +78,20 @@ def preprocess_block_inputs(
     ``is_diffusion``) and ``compress_context`` (for ``cache_device`` /
     ``device_list``) so it does not require a Compressor ``self``.
     """
-    input_ids, input_others = split_inputs(inputs, first_input_name, is_diffusion=model_context.is_diffusion)
+    input_ids, input_others = split_inputs(
+        inputs,
+        first_input_name,
+        is_diffusion=model_context.is_diffusion,
+        shared_cache_keys=getattr(model_context, "shared_cache_keys", ()),
+    )
     clear_memory(device_list=compress_context.device_list)
     tmp_dtype = model_context.amp_dtype if model_context.amp else torch.float32
     if input_ids is not None:
         input_ids = to_device(input_ids, compress_context.cache_device)
         input_ids = to_dtype(input_ids, tmp_dtype)
     input_others = to_device(input_others, compress_context.cache_device)
+
+    _unwrap_single_element(input_others)
 
     for key in input_others.keys():
         if isinstance(input_others[key], torch.Tensor) and (
@@ -81,5 +100,8 @@ def preprocess_block_inputs(
             input_others[key] = input_others[key].to(tmp_dtype)
         elif isinstance(input_others[key], list):
             for i in range(len(input_others[key])):
-                to_dtype(input_others[key][i], tmp_dtype)
+                v = input_others[key][i]
+                if isinstance(v, torch.Tensor) and v.dtype in (torch.int32, torch.int64):
+                    continue
+                input_others[key][i] = to_dtype(v, tmp_dtype)
     return input_ids, input_others

@@ -447,8 +447,8 @@ class ARK:
         - value: [B, Hkv, Skv, D]
 
         Args:
-        - scale: Attention scale. Uses 1.0 when None.
-        - scale_block_size: Block size for qscale and kscale.
+        - scale: Attention scale. Uses 1 / sqrt(D) when None.
+        - quant_block_size: Block size for qscale and kscale.
 
         Returns:
         - O: [B, Hq, Sq, D] (same dtype as value)
@@ -502,7 +502,91 @@ class ARK:
             Sq,
             Skv,
             D,
-            float(scale) if scale is not None else 1.0,
+            float(scale) if scale is not None else 1.0 / (D**0.5),
+            bool(is_causal),
+        )
+        return O
+
+    def sage_pvi8(
+        self,
+        query: torch.Tensor,
+        key: torch.Tensor,
+        value: torch.Tensor,
+        attn_mask: torch.Tensor | None = None,
+        dropout_p: float = 0.0,
+        is_causal: bool = False,
+        scale: float | None = None,
+        enable_gqa: bool = False,
+        quant_block_size: int = 64,
+        qscale: torch.Tensor = None,
+        kscale: torch.Tensor = None,
+        vscale: torch.Tensor = None,
+        out_dtype: torch.dtype = torch.float16,
+    ) -> torch.Tensor:
+        """Low-level SAGE attention with pre-quantized INT8 Q/K/V and PV int8.
+
+        Expects contiguous layouts:
+        - query: [B, Hq, Sq, D] int8
+        - key: [B, Hkv, Skv, D] int8
+        - value: [B, Hkv, Skv, D] int8
+        - qscale: [B, Hq, ceil(Sq / quant_block_size), 1] float32
+        - kscale/vscale: [B, Hkv, ceil(Skv / quant_block_size), 1] float32
+
+        Returns:
+        - O: [B, Hq, Sq, D] float16
+        """
+        if query.device.type != "xpu":
+            raise NotImplementedError("sage_pvi8 is only supported on XPU")
+        if query.dtype != torch.int8 or key.dtype != torch.int8 or value.dtype != torch.int8:
+            raise ValueError(f"Q/K/V must be int8, got Q={query.dtype}, K={key.dtype}, V={value.dtype}")
+        if out_dtype != torch.float16:
+            raise ValueError(f"sage_pvi8 output must be float16, got {out_dtype}")
+        if qscale is None or kscale is None or vscale is None:
+            raise ValueError("qscale, kscale and vscale must be provided for sage_pvi8")
+
+        if query.ndim != 4 or key.ndim != 4 or value.ndim != 4:
+            raise ValueError("Q/K/V must be 4D tensors")
+
+        if not query.is_contiguous() or not key.is_contiguous() or not value.is_contiguous():
+            raise ValueError("Q/K/V must be contiguous")
+
+        B, Hq, Sq, D = query.shape
+        Bk, Hkv, Skv, Dk = key.shape
+        Bv, Hkv2, Skv2, Dv = value.shape
+
+        if Bk != B or Bv != B:
+            raise ValueError("Batch size mismatch between Q/K/V")
+        if Hkv2 != Hkv or Skv2 != Skv or Dv != Dk:
+            raise ValueError("K/V shape mismatch")
+        if Dk != D:
+            raise ValueError("Head dim mismatch between Q and K/V")
+        if D not in (64, 128):
+            raise ValueError(f"Unsupported head_dim={D}; supported: 64, 128")
+
+        lib = self.get_lib(query)
+        stream = get_stream(query)
+        O = torch.empty((B, Hq, Sq, D), device=query.device, dtype=out_dtype)
+        lib.sage_pvi8(
+            stream,
+            query.data_ptr(),
+            key.data_ptr(),
+            value.data_ptr(),
+            O.data_ptr(),
+            attn_mask.data_ptr() if attn_mask is not None else 0,
+            quant_block_size,
+            qscale.data_ptr(),
+            kscale.data_ptr(),
+            vscale.data_ptr(),
+            cvt_dtype(query.dtype),
+            cvt_dtype(key.dtype),
+            cvt_dtype(O.dtype),
+            B,
+            Hq,
+            Hkv,
+            Sq,
+            Skv,
+            D,
+            float(scale) if scale is not None else 1.0 / (D**0.5),
             bool(is_causal),
         )
         return O
@@ -527,7 +611,7 @@ class ARK:
         - value: [B, Hkv, Skv, D]
 
         Args:
-        - scale: Attention scale. Uses 1.0 when None.
+        - scale: Attention scale. Uses 1 / sqrt(D) when None.
         - quant_block_size: Quantization block size used by the kernel.
 
         Returns:
@@ -590,7 +674,86 @@ class ARK:
             Sq,
             Skv,
             D,
-            float(scale) if scale is not None else 1.0,
+            float(scale) if scale is not None else 1.0 / (D**0.5),
+            bool(is_causal),
+        )
+        return O
+
+    def sagev1_pvi8(
+        self,
+        query: torch.Tensor,
+        key: torch.Tensor,
+        value: torch.Tensor,
+        attn_mask: torch.Tensor | None = None,
+        dropout_p: float = 0.0,
+        is_causal: bool = False,
+        scale: float | None = None,
+        enable_gqa: bool = False,
+        quant_block_size: int = 64,
+    ) -> torch.Tensor:
+        """SAGE v1 attention with PV int8 path.
+
+        Expects FP16 Q/K/V input and quantizes Q/K/V internally before calling
+        the PV int8 kernel.
+        """
+        if quant_block_size <= 0:
+            return self.sdpa(
+                query=query,
+                key=key,
+                value=value,
+                attn_mask=attn_mask,
+                dropout_p=dropout_p,
+                is_causal=is_causal,
+                scale=scale,
+            )
+        if query.device.type != "xpu":
+            raise NotImplementedError("sagev1_pvi8 is only supported on XPU")
+        if query.dtype not in (torch.float16,):
+            raise ValueError(f"Q must be float16, got {query.dtype}")
+        if key.dtype != query.dtype or value.dtype != query.dtype:
+            raise ValueError(f"K/V dtype must match Q dtype, got K={key.dtype}, V={value.dtype}, Q={query.dtype}")
+
+        if query.ndim != 4 or key.ndim != 4 or value.ndim != 4:
+            raise ValueError("Q/K/V must be 4D tensors")
+
+        if not query.is_contiguous() or not key.is_contiguous() or not value.is_contiguous():
+            raise ValueError("Q/K/V must be contiguous")
+
+        B, Hq, Sq, D = query.shape
+        Bk, Hkv, Skv, Dk = key.shape
+        Bv, Hkv2, Skv2, Dv = value.shape
+
+        if Bk != B or Bv != B:
+            raise ValueError("Batch size mismatch between Q/K/V")
+        if Hkv2 != Hkv or Skv2 != Skv or Dv != Dk:
+            raise ValueError("K/V shape mismatch")
+        if Dk != D:
+            raise ValueError("Head dim mismatch between Q and K/V")
+        if D not in (64, 128):
+            raise ValueError(f"Unsupported head_dim={D}; supported: 64, 128")
+
+        lib = self.get_lib(query)
+        stream = get_stream(query)
+        O = torch.empty((B, Hq, Sq, D), device=query.device, dtype=value.dtype)
+        lib.sagev1_pvi8(
+            stream,
+            query.data_ptr(),
+            key.data_ptr(),
+            value.data_ptr(),
+            O.data_ptr(),
+            attn_mask.data_ptr() if attn_mask is not None else 0,
+            quant_block_size,
+            cvt_dtype(query.dtype),
+            cvt_dtype(key.dtype),
+            cvt_dtype(value.dtype),
+            cvt_dtype(O.dtype),
+            B,
+            Hq,
+            Hkv,
+            Sq,
+            Skv,
+            D,
+            float(scale) if scale is not None else 1.0 / (D**0.5),
             bool(is_causal),
         )
         return O
@@ -636,7 +799,7 @@ class ARK:
         # block_size=0 means per-token
         block_size = quant_block_size if quant_block_size > 0 else 1
 
-        # SAGE V1 kernel uses K-tile size=32; scale_block_size must be 1 or >=32
+        # SAGE V1 kernel uses K-tile size=32; quant_block_size must be 1 or >=32
         if block_size != 1 and block_size < 32:
             raise ValueError(
                 f"quant_block_size={block_size} is not supported. "
@@ -700,7 +863,7 @@ class ARK:
         )
         k_scale = k_scale.reshape(B, Hkv, Skv_pad // block_size, 1)
 
-        # Call SAGE v1 with matching scale_block_size
+        # Call SAGE v1 with matching quant_block_size
         out = self.sage(
             q_i8,
             k_i8,
@@ -709,7 +872,7 @@ class ARK:
             is_causal=is_causal,
             scale=scale,
             enable_gqa=enable_gqa,
-            scale_block_size=block_size,
+            quant_block_size=block_size,
             qscale=q_scale,
             kscale=k_scale,
         )

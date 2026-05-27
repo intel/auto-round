@@ -24,9 +24,6 @@
 ---
 <div align="left">
 
-## Notes
-If you are using the main branch, please run `export AR_DISABLE_NEW_ARCH=1` to disable the new architecture, as it is currently not stable.
-
 ## 🚀 What is AutoRound?
 
 AutoRound is an advanced quantization toolkit designed for Large Language Models (LLMs) and Vision-Language Models (VLMs). 
@@ -39,9 +36,11 @@ See our papers [SignRoundV1](https://arxiv.org/pdf/2309.05516) and [SignRoundV2]
 
 
 ## 🆕 What's New
-* [2026/05] **Model free** quantization is available, `--iters 0 --disable_opt_rtn` will now default to using the model-free approach: [Doc](https://github.com/intel/auto-round/blob/main/docs/step_by_step.md#model-free-mode).
+* [2026/05] We provide **free** devices for calibration-free quantization via pure RTN mode; please visit [Intel Low Bit Open LLM Leaderboard](https://huggingface.co/spaces/Intel/low_bit_open_llm_leaderboard) for more details.
 
-* [2026/03] **Block-wise FP8** quantization is available via `--scheme FP8_BLOCK --iters 0 --disable_opt_rtn`.
+* [2026/05] **Model free** quantization is available, `auto-round-rtn` will now default to using the model-free approach: [Doc](https://github.com/intel/auto-round/blob/main/docs/step_by_step.md#model-free-mode).
+
+* [2026/03] **Block-wise FP8** quantization is available and rtn mode is recommended. `auto-round-rtn --scheme FP8_BLOCK`.
 
 * [2026/03]  **MTP layer quantization** has been supported in this [PR](https://github.com/intel/auto-round/pull/1526)
 
@@ -93,7 +92,7 @@ Quantize 7B models in about 10 minutes on a single GPU. Details are shown in [qu
 Out-of-the-box quantization for 10+ vision-language models [example models](https://huggingface.co/collections/OPEA/vlms-autoround-675bc712fdd6a55ebaf11bfa), [support matrix](https://github.com/intel/auto-round/tree/main/auto_round/compressors/mllm#vlm-support-matrix)
 
 ✅ **Multiple Recipes**
-Choose from `auto-round-best`, `auto-round`, and `auto-round-light` to suit your needs. Details are shown in [quantization recipes](https://github.com/intel/auto-round/blob/main/docs/step_by_step.md#recipe-recommendation)
+Choose from `auto-round-best`, `auto-round`, `auto-round-light`, `auto-round-opt-rtn` (optimized RTN) and `auto-round-rtn` (pure RTN, fastest baseline) to suit your needs. Details are shown in [quantization recipes](https://github.com/intel/auto-round/blob/main/docs/step_by_step.md#recipe-recommendation)
 
 ✅ Advanced Utilities
 Includes [multiple gpus quantization](https://github.com/intel/auto-round/blob/main/docs/step_by_step.md#devicemulti-gpu-setting-in-quantization), [multiple calibration datasets](https://github.com/intel/auto-round/blob/main/docs/step_by_step.md#default-dataset) and support for [10+ runtime backends](https://github.com/intel/auto-round/blob/main/docs/step_by_step.md#specify-inference-backend).
@@ -175,6 +174,21 @@ auto-round-light \
     --model Qwen/Qwen3-0.6B \
     --scheme "W4A16" 
 
+  ```
+
+  ```bash
+# Optimized RTN (iters=0, opt_rtn enabled); fast baseline
+auto-round-opt-rtn \
+    --model Qwen/Qwen3-0.6B \
+    --scheme "W4A16"
+  ```
+
+  ```bash
+# Pure RTN (iters=0, no AutoRound optimization); fastest, lowest memory
+# auto-routes to model-free mode for supported INT WOQ schemes
+auto-round-rtn \
+    --model Qwen/Qwen3-0.6B \
+    --scheme "W4A16"
   ```
 
   <!-- ```bash

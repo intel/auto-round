@@ -59,7 +59,7 @@ def make_block_forward_func(state, name: str) -> Callable:
                 new_data = alibi
         return new_data
 
-    def forward(m, hidden_states=None, *positional_inputs, **kwargs):
+    def forward_capture(m, hidden_states=None, *positional_inputs, **kwargs):
         if name not in state.inputs:
             state.inputs[name] = {}
             init_cache(positional_inputs, state.inputs[name])
@@ -105,6 +105,18 @@ def make_block_forward_func(state, name: str) -> Callable:
                 else:  # append cache inputs
                     new_data = post_process_cache_data(state.quantizer.batch_size, kwargs[key], key)
                     if new_data is None:  # shareable args or NoneType
+                        if key in state.model_context.shared_cache_keys:
+                            # Shared keys are normally the same across samples.  However
+                            # in VLM visual encoders (e.g. Qwen2-VL) ``position_embeddings``
+                            # varies per image because each image has a different patch count.
+                            # Upgrade from shared (raw value) to per-sample list storage so
+                            # each sample gets its own positional embeddings.
+                            raw_new = to_device(kwargs[key], device=torch.device("cpu"))
+                            stored = state.inputs[name].get(key)
+                            if isinstance(stored, list):
+                                stored.append(raw_new)
+                            elif stored is not None:
+                                state.inputs[name][key] = [stored, raw_new]
                         continue
                     new_data = to_device(new_data, device=torch.device("cpu"))
                     if state.quantizer.batch_size <= 1:
@@ -131,13 +143,19 @@ def make_block_forward_func(state, name: str) -> Callable:
             raise NotImplementedError
         else:
             if hidden_states is not None:
-                kwargs.pop("hidden_states")
-                return m.orig_forward(hidden_states, *positional_inputs, **kwargs)
+                kwargs.pop("hidden_states", None)
+                if positional_inputs:
+                    return m.orig_forward(hidden_states=hidden_states, *positional_inputs, **kwargs)
+                else:
+                    return m.orig_forward(hidden_states, **kwargs)
             else:
                 # Currently only for Llama-3.2-Vision-Instruct Series
                 return m.orig_forward(*positional_inputs, **kwargs)
 
-    return forward
+    # Apply positional-to-kwargs conversion so positional_inputs get their proper parameter names.
+    from auto_round.utils.model import wrap_block_forward_positional_to_kwargs
+
+    return wrap_block_forward_positional_to_kwargs(forward_capture)
 
 
 def make_layer_cache_hook(state, name: str) -> Callable:

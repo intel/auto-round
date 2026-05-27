@@ -24,7 +24,12 @@ from tqdm import tqdm
 
 from auto_round.data_type.utils import reshape_pad_tensor_by_group_size, revert_tensor_by_pad
 from auto_round.export.export_to_autoround.utils import check_neq_config
-from auto_round.export.utils import filter_quantization_config, release_layer_safely, save_model
+from auto_round.export.utils import (
+    filter_quantization_config,
+    is_immediate_saving_mode,
+    release_layer_safely,
+    save_model,
+)
 from auto_round.logger import logger
 from auto_round.schemes import QuantizationScheme
 from auto_round.utils import (
@@ -181,6 +186,14 @@ def pack_layer(layer_name, model, data_type, device=None, unsqueeze=False):
 
     my_linear.to(orig_device)
     set_module(model, layer_name, my_linear)
+
+    # Inject rotation buffers right after packing so that
+    # ShardWriter.save_module() captures them before offloading to meta.
+    if hasattr(model, "_rotation_config"):
+        from auto_round.algorithms.transforms import inject_rotation_buffers_on_layer
+
+        inject_rotation_buffers_on_layer(layer_name, my_linear, model)
+
     # Note: release weight and bias explicitly, in case they are referenced elsewhere
     release_layer_safely(layer)
 
@@ -249,6 +262,13 @@ def save_quantized_as_autoround(
     if len(extra_config) > 0:
         quantization_config["extra_config"] = extra_config
     filter_quantization_config(quantization_config)
+
+    # Inject rotation buffers for non-shard path and persist config
+    if hasattr(model, "_rotation_config"):
+        from auto_round.algorithms.transforms import inject_rotation_buffers_bulk
+
+        inject_rotation_buffers_bulk(model, quantization_config)
+
     if hasattr(model, "config"):
         model.config.quantization_config = quantization_config
     if output_dir is None:
@@ -257,8 +277,9 @@ def save_quantized_as_autoround(
     if output_dir is None:
         model.tokenizer = tokenizer
         return model
-    # if os.path.exists(output_dir):
-    #     logger.warning(f"{output_dir} already exists, this may cause model conflict")
+    immediate_saving = is_immediate_saving_mode(model, serialization_dict)
+    if os.path.exists(output_dir) and not immediate_saving:
+        logger.warning(f"{output_dir} already exists, this may cause model conflict")
     if tokenizer is not None:
         tokenizer.save_pretrained(output_dir)
 
@@ -272,6 +293,12 @@ def save_quantized_as_autoround(
         dtype = torch.float16  ## awq kernel only supports float16 on cuda
     else:
         dtype = None
-    save_model(model, output_dir, safe_serialization=safe_serialization, dtype=dtype)
+    save_model(model, output_dir, safe_serialization=safe_serialization, dtype=dtype, immediate_saving=immediate_saving)
+
+    # Save rotation config to config.json for load-time reconstruction
+    if hasattr(model, "_rotation_config"):
+        from auto_round.algorithms.transforms import save_rotation_config
+
+        save_rotation_config(model, output_dir)
 
     return model

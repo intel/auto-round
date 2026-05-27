@@ -121,3 +121,52 @@ stages:
           - task: PublishCodeCoverageResults@2
             inputs:
               summaryFileLocation: $(Build.SourcesDirectory)/log_dir/coverage_PR/coverage.xml
+
+  - stage: Trigger_CUDA_CI
+    displayName: "Trigger CUDA CI"
+    pool:
+      vmImage: "ubuntu-latest"
+    dependsOn: [Coverage]
+    condition: and(succeeded('Coverage'), eq(variables['Build.Reason'], 'PullRequest'))
+    jobs:
+      - job: CommentCudaTrigger
+        displayName: "Comment to trigger CUDA CI"
+        steps:
+          - task: Bash@3
+            displayName: "Post /azp run comment to PR"
+            env:
+              GITHUB_TOKEN: $(GITHUB_TOKEN)
+            inputs:
+              targetType: "inline"
+              script: |
+                set -euo pipefail
+
+                pr_number="${SYSTEM_PULLREQUEST_PULLREQUESTNUMBER:-}"
+                if [ -z "${pr_number}" ]; then
+                  echo "PR number not found."
+                  exit 0
+                fi
+
+                repo_path="${BUILD_REPOSITORY_URI#https://github.com/}"
+                repo_path="${repo_path%.git}"
+                export REPO_PATH="${repo_path}"
+                export PR_NUMBER="${pr_number}"
+                export CURRENT_SHA="${SYSTEM_PULLREQUEST_SOURCECOMMITID:-${BUILD_SOURCEVERSION:-unknown}}"
+
+                if python "$(Build.SourcesDirectory)/.azure-pipelines/scripts/check_cuda_trigger.py"; then
+                  echo "CUDA CI already triggered after commit ${CURRENT_SHA}. Skipping."
+                  exit 0
+                fi
+
+                echo "Triggering CUDA CI for commit ${CURRENT_SHA}..."
+                if ! curl -fsS -X POST \
+                  -H "Authorization: Bearer ${GITHUB_TOKEN}" \
+                  -H "Accept: application/vnd.github+json" \
+                  -H "Content-Type: application/json" \
+                  -d '{"body":"/azp run Unit-Test-CUDA-AutoRound"}' \
+                  "https://api.github.com/repos/${repo_path}/issues/${pr_number}/comments"; then
+                  echo "Failed to post CUDA trigger comment (non-blocking)."
+                  exit 0
+                fi
+
+                echo "CUDA trigger comment posted to PR #${pr_number}."

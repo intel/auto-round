@@ -23,6 +23,7 @@ extend-exclude = [
     "auto_round_extension/ark"
 ]
 [tool.typos.default.extend-words]
+ba = "ba"
 ue = "ue"
 endianess = "endianess"
 thw = "thw"
@@ -56,6 +57,7 @@ exclude = [
     "node_modules",
     "site-packages",
     "venv",
+    "auto_round/export/export_to_gguf/conversion",
 ]
 
 # Same as Black.

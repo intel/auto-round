@@ -26,7 +26,12 @@ from tqdm import tqdm
 
 from auto_round.compressors.utils import is_mx_fp, is_nv_fp
 from auto_round.export.export_to_autoround.utils import check_neq_config
-from auto_round.export.utils import filter_quantization_config, release_layer_safely, save_model
+from auto_round.export.utils import (
+    filter_quantization_config,
+    is_immediate_saving_mode,
+    release_layer_safely,
+    save_model,
+)
 from auto_round.logger import logger
 from auto_round.schemes import QuantizationScheme
 from auto_round.utils import (
@@ -116,6 +121,14 @@ def pack_layer(name, model, backend, device=None):
     qlayer.pack(layer, scale, global_scale=global_scale, input_global_scale=input_global_scale, device=device)
     qlayer.to(orig_device)
     set_module(model, name, qlayer)
+
+    # Inject rotation buffers right after packing so that
+    # ShardWriter.save_module() captures them before offloading to meta.
+    if hasattr(model, "_rotation_config"):
+        from auto_round.algorithms.transforms import inject_rotation_buffers_on_layer
+
+        inject_rotation_buffers_on_layer(name, qlayer, model)
+
     # Note: release weight and bias explicitly, in case they are referenced elsewhere
     release_layer_safely(layer)
 
@@ -239,6 +252,12 @@ def save_quantized_as_fp(
         pack_layer(name, model, backend, device)
     filter_quantization_config(quantization_config)
 
+    # Inject rotation buffers for non-shard path and persist config
+    if hasattr(model, "_rotation_config"):
+        from auto_round.algorithms.transforms import inject_rotation_buffers_bulk
+
+        inject_rotation_buffers_bulk(model, quantization_config)
+
     if hasattr(model, "config"):
         model.config.quantization_config = quantization_config
     if output_dir is None:
@@ -247,7 +266,8 @@ def save_quantized_as_fp(
     if output_dir is None:
         model.tokenizer = tokenizer
         return model
-    if os.path.exists(output_dir):
+    immediate_saving = is_immediate_saving_mode(model, serialization_dict)
+    if os.path.exists(output_dir) and not immediate_saving:
         logger.warning(f"{output_dir} already exists, this may cause model conflict")
     if tokenizer is not None:
         tokenizer.save_pretrained(output_dir)
@@ -258,6 +278,12 @@ def save_quantized_as_fp(
         image_processor.save_pretrained(output_dir)
 
     dtype = None
-    save_model(model, output_dir, safe_serialization=safe_serialization, dtype=dtype)
+    save_model(model, output_dir, safe_serialization=safe_serialization, dtype=dtype, immediate_saving=immediate_saving)
+
+    # Save rotation config to config.json for load-time reconstruction
+    if hasattr(model, "_rotation_config"):
+        from auto_round.algorithms.transforms import save_rotation_config
+
+        save_rotation_config(model, output_dir)
 
     return model

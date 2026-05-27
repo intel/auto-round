@@ -128,6 +128,8 @@ _register_template("mistral3", default_dataset="NeelNanda/pile-10k", processor=P
 _register_template("mistral3_2", default_dataset="liuhaotian/llava", processor=PROCESSORS["mistral3_2"])
 _register_template("gemma3", default_dataset="NeelNanda/pile-10k", processor=PROCESSORS["hf"])
 _register_template("longcat_next", default_dataset="liuhaotian/llava", processor=PROCESSORS["longcat_next"])
+_register_template("mimo_audio", default_dataset="NeelNanda/pile-10k", processor=PROCESSORS["mimo_audio"])
+_register_template("qwen3_tts", default_dataset="NeelNanda/pile-10k", processor=PROCESSORS["qwen3_tts"])
 
 
 def load_template(path: str):

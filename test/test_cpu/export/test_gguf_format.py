@@ -191,7 +191,7 @@ class TestGGUF:
             else:
                 assert abs(file_size - 264) < 5.0
 
-    def test_qtype_setting(self):
+    def test_qtype_setting(self, tiny_qwen_vl_model_path):
         # Qwen2.5-0.5B-Instruct no output, token_embed q6_k fallbakc to q8_0 336M
         # Qwen3-0.6B output q6_k, token_embed q4_0  448M
         # Qwen3-8B output q6_k, token_embed q4_0 4.5G
@@ -218,7 +218,7 @@ class TestGGUF:
         assert ar.layer_config["model.embed_tokens"]["bits"] == 8
         assert "lm_head" not in ar.layer_config
 
-        model_name = "Qwen/Qwen3-0.6B"
+        model_name = get_model_path("Qwen/Qwen3-0.6B")
         ar = AutoRound(model=model_name, scheme="gguf:q4_0", iters=0)
         ar.formats = ["gguf:q4_0"]
         ar.layer_config, _, _ = set_layer_config(
@@ -261,6 +261,36 @@ class TestGGUF:
             and ar.layer_config["model.embed_tokens"]["bits"] == 6
             and ar.layer_config["model.embed_tokens"]["super_bits"] == 8
         )
+
+        ar = AutoRound(model=tiny_qwen_vl_model_path, scheme="gguf:q4_0", iters=0)
+        ar.formats = ["gguf:q4_0"]
+        ar.layer_config, _, _ = set_layer_config(
+            ar.model,
+            ar.layer_config,
+            ar.scheme,
+            ar.scale_dtype,
+            ar.supported_types,
+            ar.inner_supported_types,
+            ar.quant_block_list,
+            ar.ignore_layers,
+            ar.quant_lm_head,
+            enable_gguf_official_mixed=True,
+            is_mllm=ar.mllm,
+        )
+        assert ar.layer_config["model.language_model.embed_tokens"]["bits"] == 6
+        assert ar.layer_config["model.language_model.embed_tokens"]["super_bits"] == 8
+
+        ar = AutoRound(
+            model=tiny_qwen_vl_model_path,
+            format="gguf:q4_0",
+            iters=0,
+            disable_opt_rtn=True,
+            disable_model_free=True,
+            quant_nontext_module=False,
+        )
+        ar.post_init()
+        assert ar.quantizer.layer_config["model.language_model.embed_tokens"]["bits"] == 6
+        assert ar.quantizer.layer_config["model.language_model.embed_tokens"]["super_bits"] == 8
 
     def test_q2k_mixed(self, tiny_qwen_moe_model_path):
         model_name = tiny_qwen_moe_model_path

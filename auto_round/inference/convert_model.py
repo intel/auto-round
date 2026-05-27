@@ -188,7 +188,7 @@ def get_available_devices():
 def _remap_paths_for_text_model(model, quant_block_list, extra_config):
     """Remap quantization paths when a composite model checkpoint is loaded as its text sub-model.
 
-    Uses Transformers' conversion_mapping WeightRenaming rules (e.g. "model.language_model" -> "model")
+    Uses Transformers' conversion_mapping rules (WeightRenaming, PrefixChange, etc.)
     to fix path mismatches. Returns (remapped_block_list, remapped_extra_config).
     """
     try:
@@ -201,7 +201,20 @@ def _remap_paths_for_text_model(model, quant_block_list, extra_config):
         return quant_block_list, extra_config
 
     mapping = get_checkpoint_conversion_mapping(model_type)
-    renamings = [r for r in mapping if type(r).__name__ == "WeightRenaming"]
+
+    # For composite models (e.g. VLMs), the composite model_type may not have a mapping,
+    # but the text sub-model type does.
+    if not mapping:
+        text_config = getattr(getattr(model, "config", None), "text_config", None)
+        text_model_type = getattr(text_config, "model_type", None)
+        if text_model_type:
+            mapping = get_checkpoint_conversion_mapping(text_model_type)
+
+    if not mapping:
+        return quant_block_list, extra_config
+
+    # Accept any mapping type that has source_patterns and target_patterns
+    renamings = [r for r in mapping if hasattr(r, "source_patterns") and hasattr(r, "target_patterns")]
     if not renamings:
         return quant_block_list, extra_config
 
@@ -274,13 +287,28 @@ def get_layer_config(model, quantization_config):
 
     # Determine the quantization block list
     checkpoint_conversion_mapping = get_checkpoint_conversion_mapping(model)
+
+    # Determine whether to apply the conversion mapping.
+    # If the model's module paths match the source patterns of the mapping, the model is
+    # a composite model (e.g., VLM loaded via AutoModelForImageTextToText) whose paths are
+    # already in checkpoint namespace — remapping would incorrectly alter them.
+    # Only when the model is loaded as a text sub-model (e.g., via AutoModelForCausalLM)
+    # do its paths differ from checkpoint namespace and require remapping.
+    _should_remap = bool(checkpoint_conversion_mapping) and not any(
+        re.match(src, name) for name, _ in model.named_modules() for src in checkpoint_conversion_mapping
+    )
+
     quant_block_list = getattr(quantization_config, "quant_block_list", None)
     if quant_block_list is not None:
         # Handle nested list format: [[block1, block2, ...], ...] -> [prefix1, ...]
         if quant_block_list and isinstance(quant_block_list[0], (list, tuple)):
             for i in range(len(quant_block_list)):
-                quant_block_list[i] = apply_checkpoint_conversion_mapping(
-                    os.path.commonprefix(quant_block_list[i]).rstrip("."), checkpoint_conversion_mapping
+                quant_block_list[i] = (
+                    apply_checkpoint_conversion_mapping(
+                        os.path.commonprefix(quant_block_list[i]).rstrip("."), checkpoint_conversion_mapping
+                    )
+                    if _should_remap
+                    else os.path.commonprefix(quant_block_list[i]).rstrip(".")
                 )
     elif quant_block_list is None:
         to_quant_block_names = getattr(quantization_config, "block_name_to_quantize", None)  # Prioritize this parameter
@@ -298,10 +326,11 @@ def get_layer_config(model, quantization_config):
             # Speed up the matching
             for i in range(len(quant_block_list)):
                 quant_block_list[i] = os.path.commonprefix(quant_block_list[i]).rstrip(".")
-        for i in range(len(quant_block_list)):
-            quant_block_list[i] = apply_checkpoint_conversion_mapping(
-                quant_block_list[i], checkpoint_conversion_mapping
-            )
+        if _should_remap:
+            for i in range(len(quant_block_list)):
+                quant_block_list[i] = apply_checkpoint_conversion_mapping(
+                    quant_block_list[i], checkpoint_conversion_mapping
+                )
 
     # Get layer names that will be quantized
     layer_names = []
@@ -313,6 +342,14 @@ def get_layer_config(model, quantization_config):
 
     # Load extra configuration if available
     extra_config = getattr(quantization_config, "extra_config", {})
+
+    # Remap extra_config keys using conversion mapping (e.g. composite VLM paths to text sub-model paths)
+    if _should_remap and extra_config:
+        remapped_extra_config = {}
+        for key, value in extra_config.items():
+            new_key = apply_checkpoint_conversion_mapping(key, checkpoint_conversion_mapping)
+            remapped_extra_config[new_key] = value
+        extra_config = remapped_extra_config
 
     # When a composite model (e.g. VLM) is loaded as its text sub-model via AutoModelForCausalLM,
     # block_name_to_quantize may still reference composite-level paths (e.g. "model.language_model.layers")
@@ -746,6 +783,14 @@ def post_init(model: torch.nn.Module, used_backends: list[str]) -> None:
             model = model.to(target_dtype)
             logger.warning(f"Forced model to {target_dtype}")
 
+    # Rebuild SpinQuant online rotations after weights are loaded.
+    # Buffers were pre-registered in convert_hf_model() and populated by
+    # HuggingFace's state_dict loader. Now rebuild online rotations
+    # (forward patching + R3 monkeypatch) via the generic dispatch.
+    from auto_round.algorithms.transforms import rebuild_rotation_if_needed
+
+    rebuild_rotation_if_needed(model)
+
 
 def disable_moe_conversion_mapping(model):
     """Disables MoE-specific checkpoint conversion mappings to prevent unintended weight merging."""
@@ -845,6 +890,16 @@ def convert_hf_model(model: nn.Module, target_device: str = "cpu") -> tuple[nn.M
             desc="Register pre forward hook for hadamard transform",
             data_type=quantization_config.data_type,
         )
+
+    # Pre-register rotation buffers on QuantLinear modules so HuggingFace's
+    # state_dict loader can populate them from safetensors.
+    # Uses generic dispatch — supports SpinQuant and future rotation methods.
+    try:
+        from auto_round.algorithms.transforms import preregister_rotation_buffers
+
+        preregister_rotation_buffers(model, quantization_config)
+    except Exception as e:
+        logger.warning(f"Failed to pre-register rotation buffers: {e}")
 
     # Suggest a better backend if available
     if backend == "auto":

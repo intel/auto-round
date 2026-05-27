@@ -29,7 +29,16 @@ from auto_round.utils import (
 
 def _save_model_configs(model: nn.Module, save_dir: str) -> None:
     if hasattr(model, "config") and model.config is not None:
-        model.config.save_pretrained(save_dir)
+        try:
+            model.config.save_pretrained(save_dir)
+        except (KeyError, TypeError):
+            # Some third-party configs (e.g. qwen-tts) fail with use_diff=True
+            # due to missing keys in recursive_diff_dict. Fall back to full config.
+            import json
+
+            config_path = os.path.join(save_dir, "config.json")
+            with open(config_path, "w", encoding="utf-8") as f:
+                f.write(model.config.to_json_string(use_diff=False))
 
     if hasattr(model, "generation_config") and model.generation_config is not None:
         model.generation_config.save_pretrained(save_dir)
@@ -39,6 +48,25 @@ def _state_dict_has_meta_tensor(model: nn.Module) -> bool:
     for tensor in model.state_dict().values():
         if isinstance(tensor, torch.Tensor) and tensor.device.type == "meta":
             return True
+    return False
+
+
+def is_immediate_saving_mode(model: nn.Module, serialization_dict: dict = None) -> bool:
+    """Determine if the model was saved via ShardWriter (immediate saving mode).
+
+    Resolution order:
+      1. CompressContext singleton (authoritative at export time).
+      2. Meta-tensor heuristics (ShardWriter offloads weights to meta device).
+    """
+    from auto_round.context.compress import CompressContext
+
+    if CompressContext in CompressContext._instances:
+        if CompressContext._instances[CompressContext].is_immediate_saving:
+            return True
+    if unsupported_meta_device(model):
+        return True
+    if _state_dict_has_meta_tensor(model):
+        return True
     return False
 
 
@@ -189,6 +217,7 @@ def save_model(
     safe_serialization: bool = True,
     dtype=None,
     config_file="quantization_config.json",
+    immediate_saving: bool = False,
 ):
     """Save model state dict and configs.
 
@@ -208,21 +237,27 @@ def save_model(
             </Tip>
         safe_serialization (`bool`, defaults to `True`):
             Whether to save the model using `safetensors` or the traditional PyTorch way (that uses `pickle`).
+        immediate_saving (`bool`, defaults to `False`):
+            When True, weights were already saved by ShardWriter during quantization.
+            Only configs and metadata will be saved; weight saving is skipped.
     """
     os.makedirs(save_dir, exist_ok=True)
 
-    if unsupported_meta_device(model):
+    if immediate_saving:
+        logger.info("Immediate saving mode: weights already saved by ShardWriter, saving configs only.")
         _save_model_configs(model, save_dir)
     else:
-        has_meta_tensor = _state_dict_has_meta_tensor(model)
-        if has_meta_tensor:
-            logger.info(
-                "Detected meta tensors in state_dict after shard-based saving; skipping model.save_pretrained and "
-                "saving configs only."
-            )
-            _save_model_configs(model, save_dir)
-        else:
+        try:
             model.save_pretrained(save_dir, max_shard_size=max_shard_size, safe_serialization=safe_serialization)
+        except (KeyError, TypeError) as e:
+            # Some third-party configs fail during config serialization in save_pretrained.
+            # Fall back to saving weights separately + config without diff.
+            logger.warning("model.save_pretrained failed (%s), falling back to manual save.", e)
+            from safetensors.torch import save_file
+
+            state_dict = model.state_dict()
+            save_file(state_dict, os.path.join(save_dir, "model.safetensors"))
+            _save_model_configs(model, save_dir)
 
     source_dir = _resolve_model_source_dir(model)
 
@@ -275,68 +310,9 @@ def get_autogptq_packing_qlinear(backend, bits=4, group_size=128, sym=False):
     Returns:
         class: The dynamically imported QuantLinear class configured according to the specified parameters.
     """
-    use_triton = True
-    if bits not in [2, 4, 8]:
-        use_triton = False
-    disable_exllamav2 = True
-    disable_exllamav1 = False
-    disable_marlin = True
-    use_qigen = False
-    if "qigen" in backend:
-        use_triton = False
-        use_qigen = True
-    elif "triton" in backend:
-        use_triton = True
-    elif "marlin" in backend and sym:
-        use_triton = False
-        disable_marlin = False
-    elif "exllama" in backend:  ##need v1 code to export
-        use_triton = True  ##same with triton
-        disable_marlin = True
-    elif "cuda" in backend:
-        use_triton = False
-        disable_marlin = True
-        disable_exllamav2 = True
-        disable_exllamav1 = True
-    if use_triton:
-        from auto_round.export.export_to_autogptq.qlinear_triton import QuantLinear
 
-        return QuantLinear
-    try:
-        import auto_gptq  # pylint: disable=E0401
-    except:
-        logger.error(f"please install auto_gptq via 'pip install auto-gptq' to support exporting to {backend}")
-        exit()
+    from auto_round_extension.torch.qlinear_torch_zp import QuantLinear
 
-    from auto_gptq.utils.import_utils import dynamically_import_QuantLinear  # pylint: disable=E0401
-
-    from auto_round.utils.common import get_library_version
-
-    version = get_library_version("auto_gptq")
-    from packaging.version import Version
-
-    if Version(version) < Version("0.7.2"):
-        QuantLinear = dynamically_import_QuantLinear(
-            use_triton=use_triton,
-            desc_act=False,
-            group_size=group_size,
-            bits=bits,
-            disable_exllama=disable_exllamav1,
-            disable_exllamav2=disable_exllamav2,
-            use_qigen=use_qigen,
-            disable_marlin=disable_marlin,
-        )
-    else:
-        QuantLinear = dynamically_import_QuantLinear(  # pylint: disable=E1123
-            use_triton=use_triton,
-            desc_act=False,
-            group_size=group_size,
-            bits=bits,
-            disable_exllama=disable_exllamav1,
-            disable_exllamav2=disable_exllamav2,
-            use_qigen=use_qigen,
-            use_marlin=not disable_marlin,
-        )
     return QuantLinear
 
 

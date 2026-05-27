@@ -28,13 +28,47 @@ from packaging import version
 from auto_round import envs
 from auto_round.export.export_to_gguf.config import ModelType
 from auto_round.logger import logger
-from auto_round.utils.common import monkey_patch_model
+from auto_round.utils.common import AUDIO_MM_KEYS, VISION_MM_KEYS, monkey_patch_model
 from auto_round.utils.weight_handler import (
     _dequant_fp8_linear_weight,
     check_and_mark_quantized_module,
     convert_module_to_hp_if_necessary,
     is_quantized_input_module,
 )
+
+# Maps architecture class names to virtual model_type keys.
+# Used when config.model_type doesn't uniquely identify the model (e.g. MiMo-Audio
+# has model_type="qwen2" but needs audio-specific handling).
+ARCHITECTURE_MODEL_TYPE_MAP = {
+    "MiMoAudioModel": "mimo_audio",
+    "MiMoAudioForCausalLM": "mimo_audio",
+}
+
+
+def resolve_model_type(model):
+    """Resolve the effective model type using architecture class name as primary source.
+
+    This function prioritizes the model's architecture class name (from config.architectures)
+    over config.model_type to handle models where the two diverge (e.g., MiMo-Audio has
+    architecture="MiMoAudioModel" but model_type="qwen2" on HuggingFace).
+
+    Args:
+        model: A model instance with optional config attribute.
+
+    Returns:
+        str or None: The resolved model type identifier, or None if config is missing.
+    """
+    config = getattr(model, "config", None)
+    if config is None:
+        return None
+    # Check architecture-based override first
+    archs = getattr(config, "architectures", None)
+    if archs:
+        for arch in archs:
+            if arch in ARCHITECTURE_MODEL_TYPE_MAP:
+                return ARCHITECTURE_MODEL_TYPE_MAP[arch]
+    return getattr(config, "model_type", None)
+
 
 FIX_MISTRAL_REGEX_MODEL_TYPE_LIST = ["longcat_next"]
 
@@ -486,12 +520,18 @@ def mllm_load_model(
 
     if platform == "model_scope":
         import modelscope  # pylint: disable=E0401
-        from modelscope import AutoModel, AutoModelForCausalLM, AutoProcessor, AutoTokenizer  # pylint: disable=E0401
+        from modelscope import (  # pylint: disable=E0401
+            AutoConfig,
+            AutoModel,
+            AutoModelForCausalLM,
+            AutoProcessor,
+            AutoTokenizer,
+        )
 
         base_lib = modelscope
     else:
         import transformers
-        from transformers import AutoModel, AutoModelForCausalLM, AutoProcessor, AutoTokenizer
+        from transformers import AutoConfig, AutoModel, AutoModelForCausalLM, AutoProcessor, AutoTokenizer
 
         base_lib = transformers
 
@@ -552,7 +592,84 @@ def mllm_load_model(
             )
 
     processor, image_processor = None, None
-    if "deepseek_vl_v2" == model_type:
+    if "qwen3_tts" == model_type:
+        try:
+            from qwen_tts.core.models import Qwen3TTSConfig, Qwen3TTSForConditionalGeneration
+            from qwen_tts.core.models.processing_qwen3_tts import Qwen3TTSProcessor
+
+            AutoConfig.register("qwen3_tts", Qwen3TTSConfig)
+            AutoModel.register(Qwen3TTSConfig, Qwen3TTSForConditionalGeneration)
+            AutoModelForCausalLM.register(Qwen3TTSConfig, Qwen3TTSForConditionalGeneration)
+            AutoProcessor.register(Qwen3TTSConfig, Qwen3TTSProcessor)
+        except ImportError:
+            raise ImportError("Qwen3-TTS requires the 'qwen-tts' package. " "Please install it: pip install qwen-tts")
+        except TypeError as e:
+            if "check_model_inputs" in str(e):
+                raise ImportError(
+                    f"Qwen3-TTS 'qwen-tts' package is incompatible with transformers {transformers.__version__}. "
+                    "Please upgrade qwen-tts: pip install -U qwen-tts"
+                ) from e
+            raise
+
+    # MiMo-Audio: architectures=["MiMoAudioModel"] but model_type="qwen2".
+    # Requires MiMo-Audio SDK from https://github.com/XiaomiMiMo/MiMo-Audio
+    # Set MIMO_AUDIO_PATH env var to the cloned repo root (containing src/mimo_audio/).
+    architectures = config.get("architectures", [])
+    _is_mimo_audio = any(a in ("MiMoAudioModel", "MiMoAudioForCausalLM") for a in architectures)
+
+    if _is_mimo_audio:
+        try:
+            from mimo_audio.modeling_mimo_audio import MiMoAudioArguments, MiMoAudioForCausalLM
+        except ImportError:
+            # Try adding MIMO_AUDIO_PATH/src to sys.path
+            mimo_path = os.environ.get("MIMO_AUDIO_PATH")
+            if mimo_path:
+                import sys
+
+                src_path = os.path.join(mimo_path, "src")
+                if src_path not in sys.path:
+                    sys.path.insert(0, src_path)
+                try:
+                    from mimo_audio.modeling_mimo_audio import MiMoAudioArguments, MiMoAudioForCausalLM
+                except ImportError:
+                    raise ImportError(
+                        "MiMo-Audio requires the MiMo-Audio SDK. "
+                        "Please clone it: git clone https://github.com/XiaomiMiMo/MiMo-Audio.git "
+                        "and set MIMO_AUDIO_PATH to the repo root."
+                    )
+            else:
+                raise ImportError(
+                    "MiMo-Audio requires the MiMo-Audio SDK. "
+                    "Please clone https://github.com/XiaomiMiMo/MiMo-Audio and set env var "
+                    "MIMO_AUDIO_PATH to the repo root (e.g. export MIMO_AUDIO_PATH=/path/to/MiMo-Audio)."
+                )
+
+        tokenizer = AutoTokenizer.from_pretrained(pretrained_model_name_or_path, trust_remote_code=trust_remote_code)
+        # Ensure special tokens are registered
+        special_tokens = ["<|sosp|>", "<|eosp|>", "<|empty|>", "<|sostm|>", "<|eostm|>", "<|eot|>"]
+        for token in special_tokens:
+            if token not in tokenizer.get_vocab():
+                tokenizer.add_tokens([token], special_tokens=True)
+
+        model_args = MiMoAudioArguments(
+            model_name_or_path=pretrained_model_name_or_path,
+            sosp_idx=tokenizer.convert_tokens_to_ids("<|sosp|>"),
+            eosp_idx=tokenizer.convert_tokens_to_ids("<|eosp|>"),
+            sostm_idx=tokenizer.convert_tokens_to_ids("<|sostm|>"),
+            eostm_idx=tokenizer.convert_tokens_to_ids("<|eostm|>"),
+            eot_idx=tokenizer.convert_tokens_to_ids("<|eot|>"),
+            empty_idx=tokenizer.convert_tokens_to_ids("<|empty|>"),
+        )
+
+        model = MiMoAudioForCausalLM.from_pretrained(
+            pretrained_model_name_or_path,
+            args=model_args,
+            torch_dtype=torch_dtype,
+            device_map="auto" if use_auto_mapping else None,
+        )
+        processor = None
+
+    elif "deepseek_vl_v2" == model_type:
         from deepseek_vl2.models import DeepseekVLV2ForCausalLM, DeepseekVLV2Processor  # pylint: disable=E0401
 
         processor = DeepseekVLV2Processor.from_pretrained(pretrained_model_name_or_path)
@@ -675,6 +792,26 @@ def mllm_load_model(
     return model, processor, tokenizer, image_processor
 
 
+def _attach_diffusion_pipeline_fn(pipe):
+    """Attach a custom pipeline function for diffusion models that need special API calls."""
+    pipe_class_name = type(pipe).__name__
+    if pipe_class_name == "StableAudioPipeline":
+
+        def _stable_audio_pipeline_fn(
+            pipe, prompts, guidance_scale=7.0, num_inference_steps=100, generator=None, **kwargs
+        ):
+            audio_end_in_s = kwargs.pop("audio_end_in_s", 10.0)
+            return pipe(
+                prompts,
+                guidance_scale=guidance_scale,
+                num_inference_steps=num_inference_steps,
+                audio_end_in_s=audio_end_in_s,
+                generator=generator,
+            )
+
+        pipe._autoround_pipeline_fn = _stable_audio_pipeline_fn
+
+
 def diffusion_load_model(
     pretrained_model_name_or_path: str,
     platform: str = "hf",
@@ -719,15 +856,15 @@ def diffusion_load_model(
 
     pipelines = LazyImport("diffusers.pipelines")
     if isinstance(pretrained_model_name_or_path, str):
+        model_index = os.path.join(pretrained_model_name_or_path, "model_index.json")
+        with open(model_index, "r", encoding="utf-8") as file:
+            config = json.load(file)
+
         if torch_dtype == "auto":
             torch_dtype = {}
-            model_index = os.path.join(pretrained_model_name_or_path, "model_index.json")
-            with open(model_index, "r", encoding="utf-8") as file:
-                config = json.load(file)
             for k, v in config.items():
                 component_folder = os.path.join(pretrained_model_name_or_path, k)
                 if isinstance(v, list) and os.path.exists(os.path.join(component_folder, "config.json")):
-                    component_folder = os.path.join(pretrained_model_name_or_path, k)
                     with open(os.path.join(component_folder, "config.json"), "r", encoding="utf-8") as file:
                         component_config = json.load(file)
                     torch_dtype[k] = component_config.get("torch_dtype", "auto")
@@ -753,6 +890,9 @@ def diffusion_load_model(
 
     pipe = _to_model_dtype(pipe, model_dtype)
     model = pipe.transformer
+
+    # Attach custom pipeline function for models that need special API calls
+    _attach_diffusion_pipeline_fn(pipe)
 
     # meta model uses model.config.save_pretrained for config saving
     setattr(model.config, "save_pretrained", partial(config_save_pretrained, model.config, "config.json", model=model))
@@ -977,26 +1117,27 @@ def get_block_names(model, quant_vision=False):
 
     def _get_vlm_block_names(model, quant_vision=False, ignore_audio=True):
         # Since calibration dataset doesn't contain audio data, audio-related blocks will be ignored by default.
-        if (
-            hasattr(model, "config")
-            and hasattr(model.config, "model_type")
-            and model.config.model_type in SPECIAL_MULTIMODAL_BLOCK.keys()
-        ):
-            return SPECIAL_MULTIMODAL_BLOCK.get(model.config.model_type)(model, quant_vision=quant_vision)
+        effective_type = resolve_model_type(model)
+        if effective_type and effective_type in SPECIAL_MULTIMODAL_BLOCK:
+            return SPECIAL_MULTIMODAL_BLOCK[effective_type](model, quant_vision=quant_vision)
         block_names = []
         target_modules = []
-        vision_blocks_tuple = ("vision", "visual", "image", "img")
-        audio_blocks_tuple = ("audio", "speech", "wav", "waveform")
         target_modules = _search_block("", model)
 
         for i, target_m in enumerate(target_modules):
-            if quant_vision or all(key not in target_m[0].lower() for key in (vision_blocks_tuple)):
-                if ignore_audio and any(key in target_m[0].lower() for key in audio_blocks_tuple):
+            if quant_vision or all(key not in target_m[0].lower() for key in VISION_MM_KEYS):
+                if ignore_audio and any(key in target_m[0].lower() for key in AUDIO_MM_KEYS):
                     continue
                 block_names.append([])
                 for n, m in target_m[1].named_children():
                     block_names[-1].append(target_m[0] + "." + n)
         return block_names
+
+    # Check architecture-based special handlers first (e.g. MiMo-Audio has model_type="qwen2"
+    # but is_pure_text_model returns True since it has no vision modules — only audio ones).
+    effective_type = resolve_model_type(model)
+    if effective_type and effective_type in SPECIAL_MULTIMODAL_BLOCK:
+        return SPECIAL_MULTIMODAL_BLOCK[effective_type](model, quant_vision=quant_vision)
 
     if quant_vision or not is_pure_text_model(model):
         return _get_vlm_block_names(model, quant_vision=quant_vision)
@@ -1124,16 +1265,14 @@ def get_nested_attr(module, attr_name: str):
 
 
 def get_gguf_architecture(dir_model, model_type=ModelType.TEXT):
-    from auto_round.export.export_to_gguf.convert_hf_to_gguf import (
-        ModelBase,
-        get_model_architecture,
-    )
+    from auto_round.export.export_to_gguf.llama_cpp_conversion import get_conversion
 
     is_mistral_format = False
     if isinstance(dir_model, str):
         dir_model = Path(dir_model)
 
-    hparams = ModelBase.load_hparams(dir_model, is_mistral_format)
+    conversion = get_conversion(dir_model, model_type=model_type)
+    hparams = conversion.ModelBase.load_hparams(dir_model, is_mistral_format)
     if isinstance(hparams, dict):
         tmp_model_type = hparams["model_type"]
     else:
@@ -1141,11 +1280,11 @@ def get_gguf_architecture(dir_model, model_type=ModelType.TEXT):
     if "mistral" == tmp_model_type:
         is_mistral_format = True
         try:
-            hparams = ModelBase.load_hparams(dir_model, is_mistral_format)
+            hparams = conversion.ModelBase.load_hparams(dir_model, is_mistral_format)
         except Exception:
             is_mistral_format = False
     if not is_mistral_format:
-        model_class = get_model_architecture(hparams, model_type)
+        model_class = conversion.get_model_architecture(hparams, conversion.model_type(model_type))
     elif model_type == ModelType.MMPROJ:
         assert hparams.get("vision_encoder") is not None, "This model does not support multimodal"
         model_class = "PixtralModel"
@@ -1492,7 +1631,10 @@ def is_moe_model(model: torch.nn.Module) -> bool:
 
 
 def is_moe_model_via_config(config) -> bool:
-    config_str = str(config).lower()
+    try:
+        config_str = str(config).lower()
+    except Exception:
+        config_str = str(config.to_dict()).lower() if hasattr(config, "to_dict") else ""
     if "moe" in config_str or "expert" in config_str:
         return True
     return False
