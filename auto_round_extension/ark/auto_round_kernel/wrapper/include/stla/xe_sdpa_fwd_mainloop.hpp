@@ -130,6 +130,7 @@ struct SDPAFwdMainloop<sdpa::XeDefault<Stages>, CausalMask_, FullMask_, CachedKV
 
   using FragS = FragC<TiledMMAQK>;
   using FragSRow = decltype(reduce<1>(FragS{}, sycl::plus<void>{}));
+  using FragSCol = decltype(reduce<0>(FragS{}, sycl::plus<void>{}));
   using ElementS = typename TiledMMAQK::ValTypeD;
   using ElementM = typename TiledMMAQK::ValTypeA;
 
@@ -400,7 +401,7 @@ struct SDPAFwdMainloop<sdpa::XeDefault<Stages>, CausalMask_, FullMask_, CachedKV
       /* k masking for remainder tiles */
       if constexpr (!is_cache) {
         if (check_remainder_k && K == total_blk - 1) {
-          FragSRow k_rem_mask;
+          FragSCol k_rem_mask;
           int k_val = get<0>(tKgK_cur(0, 0, 0, k_idx, 0)) + kblocks_cache * get<1>(TileShapeQK{});
           int k = k_val + get_sub_group().get_local_id()[0];
           CUTLASS_PRAGMA_UNROLL
