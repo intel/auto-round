@@ -731,10 +731,13 @@ def _build_quantization_config(
     from auto_round.version import __version__
 
     scheme_keys = [f.name for f in fields(QuantizationScheme)]
+    # vllm only support auto_round:auto_gptq, but transformers cannot load it correctly when sym=False.
+    # So we keep auto_round for asymmetric quantization to maintain compatibility with both.
+    packing_format = "auto_round:auto_gptq" if default_scheme.get("sym", True) else "auto_round"
 
     qconfig = {
         "quant_method": "auto-round",
-        "packing_format": "auto_round",
+        "packing_format": packing_format,
         "bits": default_scheme["bits"],
         "group_size": default_scheme["group_size"],
         "sym": default_scheme.get("sym", True),
