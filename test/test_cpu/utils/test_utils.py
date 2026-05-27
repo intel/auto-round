@@ -69,8 +69,7 @@ def test_preserve_original_mllm_language_block_name():
 
 
 class TestPredefinedIgnoreLayersBlockFilter:
-    """Test the block-prefix filter in configure_layer_config.
-    """
+    """Test the block-prefix filter in configure_layer_config."""
 
     @staticmethod
     def _make_compressor_stub(predefined_ignore_layers, quant_block_list):
@@ -112,12 +111,12 @@ class TestPredefinedIgnoreLayersBlockFilter:
         )
         stub.configure_layer_config()
 
-        assert "vision_tower" in stub.ignore_layers, (
-            f"vision_tower should be in ignore_layers, got: '{stub.ignore_layers}'"
-        )
-        assert "mm_projector" in stub.ignore_layers, (
-            f"mm_projector should be in ignore_layers, got: '{stub.ignore_layers}'"
-        )
+        assert (
+            "vision_tower" in stub.ignore_layers
+        ), f"vision_tower should be in ignore_layers, got: '{stub.ignore_layers}'"
+        assert (
+            "mm_projector" in stub.ignore_layers
+        ), f"mm_projector should be in ignore_layers, got: '{stub.ignore_layers}'"
 
     @patch("auto_round.compressors.base.get_predefined_ignore_layers")
     @patch("auto_round.compressors.base.set_layer_config")
@@ -135,9 +134,7 @@ class TestPredefinedIgnoreLayersBlockFilter:
         stub.configure_layer_config()
 
         for name in predefined:
-            assert name in stub.ignore_layers, (
-                f"'{name}' should be in ignore_layers, got: '{stub.ignore_layers}'"
-            )
+            assert name in stub.ignore_layers, f"'{name}' should be in ignore_layers, got: '{stub.ignore_layers}'"
 
     @patch("auto_round.compressors.base.get_predefined_ignore_layers")
     @patch("auto_round.compressors.base.set_layer_config")
@@ -153,9 +150,7 @@ class TestPredefinedIgnoreLayersBlockFilter:
         )
         stub.configure_layer_config()
 
-        assert "classifier" in stub.ignore_layers, (
-            f"classifier should be in ignore_layers, got: '{stub.ignore_layers}'"
-        )
+        assert "classifier" in stub.ignore_layers, f"classifier should be in ignore_layers, got: '{stub.ignore_layers}'"
 
     @patch("auto_round.compressors.base.get_predefined_ignore_layers")
     @patch("auto_round.compressors.base.set_layer_config")
@@ -171,9 +166,9 @@ class TestPredefinedIgnoreLayersBlockFilter:
         )
         stub.configure_layer_config()
 
-        assert "model.layers.0.mlp" in stub.ignore_layers, (
-            f"model.layers.0.mlp should be in ignore_layers, got: '{stub.ignore_layers}'"
-        )
+        assert (
+            "model.layers.0.mlp" in stub.ignore_layers
+        ), f"model.layers.0.mlp should be in ignore_layers, got: '{stub.ignore_layers}'"
 
     @patch("auto_round.compressors.base.get_predefined_ignore_layers")
     @patch("auto_round.compressors.base.set_layer_config")
