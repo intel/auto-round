@@ -3,10 +3,9 @@
 
 import math
 
+import auto_round_kernel
 import pytest
 import torch
-
-import auto_round_kernel
 
 pytestmark = pytest.mark.skipif(
     not (hasattr(torch, "xpu") and torch.xpu.is_available()),
