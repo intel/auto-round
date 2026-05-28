@@ -423,7 +423,10 @@ def run_model_evaluation(model, tokenizer, autoround, folders, formats, device_s
         eval_folder = folders
     # set model_type for ModelFreeCompressor.
     model_type = detect_model_type(eval_folder)
-    setattr(autoround, model_type, True)
+    if hasattr(autoround, "model_context") and model_type in ("mllm", "diffusion"):
+        setattr(autoround.model_context, f"is_{model_type}", True)
+    else:
+        setattr(autoround, model_type, True)
 
     # Handle diffusion models separately
     if getattr(autoround, "diffusion", False):

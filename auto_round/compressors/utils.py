@@ -27,7 +27,13 @@ from torch.amp import autocast
 
 from auto_round.export.export_to_gguf.config import GGML_QUANT_SIZES, GGUF_CONFIG, GGUF_INNER_CONFIG, QK_K, ModelType
 from auto_round.logger import logger
-from auto_round.utils import check_to_quantized, get_layer_names_in_block, get_module, to_standard_regex
+from auto_round.utils import (
+    check_to_quantized,
+    compress_layer_names,
+    get_layer_names_in_block,
+    get_module,
+    to_standard_regex,
+)
 
 if TYPE_CHECKING:
     from auto_round.schemes import QuantizationScheme
@@ -1082,7 +1088,8 @@ def get_fp_layer_names(model: torch.nn.Module, ignore_layers: str):
             if fp_layer in name:
                 not_to_quantized_layers.append(name)
     not_to_quantized_layers.extend(ignore_layers)  # keep regex name for later use
-    logger.trace(f"not_to_quantized_layers: {not_to_quantized_layers}")
+    if not_to_quantized_layers:
+        logger.info(f"Ignored layers: {compress_layer_names(not_to_quantized_layers)}")
     return not_to_quantized_layers
 
 
