@@ -530,7 +530,8 @@ class ARK:
         - key: [B, Hkv, Skv, D] int8
         - value: [B, Hkv, Skv, D] int8
         - qscale: [B, Hq, ceil(Sq / quant_block_size), 1] float32
-        - kscale/vscale: [B, Hkv, ceil(Skv / quant_block_size), 1] float32
+        - kscale: [B, Hkv, ceil(Skv / quant_block_size), 1] float32
+        - vscale: [B, Hkv, ceil(Skv / quant_block_size), D] float32
 
         Returns:
         - O: [B, Hq, Sq, D] float16
@@ -562,6 +563,21 @@ class ARK:
             raise ValueError("Head dim mismatch between Q and K/V")
         if D not in (64, 128):
             raise ValueError(f"Unsupported head_dim={D}; supported: 64, 128")
+
+        q_blocks = (Sq + quant_block_size - 1) // quant_block_size
+        kv_blocks = (Skv + quant_block_size - 1) // quant_block_size
+        if qscale.numel() != B * Hq * q_blocks:
+            raise ValueError(
+                f"qscale must have {B * Hq * q_blocks} elements for shape [B, Hq, ceil(Sq/block), 1], got {qscale.numel()}"
+            )
+        if kscale.numel() != B * Hkv * kv_blocks:
+            raise ValueError(
+                f"kscale must have {B * Hkv * kv_blocks} elements for shape [B, Hkv, ceil(Skv/block), 1], got {kscale.numel()}"
+            )
+        if vscale.numel() != B * Hkv * kv_blocks * D:
+            raise ValueError(
+                f"vscale must have {B * Hkv * kv_blocks * D} elements for shape [B, Hkv, ceil(Skv/block), D], got {vscale.numel()}"
+            )
 
         lib = self.get_lib(query)
         stream = get_stream(query)

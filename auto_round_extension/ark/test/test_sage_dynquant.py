@@ -35,7 +35,7 @@ def bench(fn, n_warmup=50, n_runs=100):
     return (time.time() - st) / n_runs * 1e3
 
 
-def run_benchmark(batch=2, seq=17776, h_q=30, h_kv=30, H=128, H_v=128, dt=torch.float16, is_causal=False, dev="xpu"):
+def run_benchmark(batch=1, seq=4096, h_q=30, h_kv=30, H=128, H_v=128, dt=torch.float16, is_causal=False, dev="xpu"):
     # Align seq to largest block_size for divisibility
     block_sizes = [1, 32, 64, 128, 256]
     max_bs = max(block_sizes)

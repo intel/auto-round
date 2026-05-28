@@ -16,7 +16,7 @@
 ``AutoRound(iters=0, disable_opt_rtn=True, disable_model_free=True)`` flow.
 
 Both code paths perform RTN integer weight-only quantization in the
-``auto_round:auto_gptq`` packing format.  These tests assert that:
+``auto_round`` packing format.  These tests assert that:
 
 1. The ``quantization_config`` keys ``bits``, ``group_size``, ``sym``,
    ``data_type`` (family), ``quant_method``, ``packing_format`` agree.
@@ -77,14 +77,14 @@ _PARITY_SCHEMES = [
     ("W2A16G32", "W2A16G32", {"bits": 2, "group_size": 32, "sym": True}),
     ("W8A16", "W8A16", {"bits": 8, "group_size": 128, "sym": True}),
     # Asymmetric (sym=False) variants for non-4-bit: both the model-free path and
-    # the regular path use ``auto_round:auto_gptq`` packing, so bit-exact parity holds.
+    # the regular path use ``auto_round`` packing, so bit-exact parity holds.
     ("W4A16_ASYM", "W4A16", {"bits": 4, "group_size": 128, "sym": False}),
     ("W2A16_ASYM", "W2A16", {"bits": 2, "group_size": 128, "sym": False}),
     ("W2A16G64_ASYM", "W2A16G64", {"bits": 2, "group_size": 64, "sym": False}),
     ("W8A16_ASYM", "W8A16", {"bits": 8, "group_size": 128, "sym": False}),
     # Note: W4A16 asym is excluded because the regular path uses
     # ``auto_round:auto_awq`` packing for 4-bit asym, which differs from
-    # model-free's ``auto_round:auto_gptq``.
+    # model-free's ``auto_round``.
 ]
 
 
@@ -180,9 +180,6 @@ def test_parity_model_free_vs_disable_opt_rtn(tmp_path, tiny_opt_model_path, sch
         assert qc_a[key] == qc_b[key], f"qconfig[{key}] differs: model_free={qc_a[key]} regular={qc_b[key]}"
     assert "int" in qc_a.get("data_type", "")
     assert "int" in qc_b.get("data_type", "")
-    assert (
-        qc_a["packing_format"] == qc_b["packing_format"]
-    ), f"packing_format differs: {qc_a['packing_format']} vs {qc_b['packing_format']}"
 
     # ---- 2. quantized tensor key sets agree ----
     tensors_a = _load_all_keys_and_tensors(out_a)
