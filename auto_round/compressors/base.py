@@ -560,10 +560,12 @@ class BaseCompressor(object):
             predefined_ignore_layers = get_predefined_ignore_layers(self.model_context.model)
             if predefined_ignore_layers and self.quant_block_list:
                 block_prefixes = [block for group in self.quant_block_list for block in group]
+                # Only filter layers that are full paths clearly inside a block.
                 predefined_ignore_layers = [
                     name
                     for name in predefined_ignore_layers
                     if any(name.startswith(prefix) for prefix in block_prefixes)
+                    or not any(prefix.startswith(name.split(".")[0]) for prefix in block_prefixes)
                 ]
             predefined_ignore_layers = compress_layer_names(predefined_ignore_layers)
             if predefined_ignore_layers:
