@@ -270,8 +270,9 @@ class XeSageFwdKernel {
                         ? (float*)params.mainloop.kscale + (idx_b * s.num_heads_kv * seq_kv_pad + head * seq_kv_pad)
                         : nullptr;  // per head kscale
       auto scaleV = params.mainloop.scale_block_size && params.mainloop.vscale
-            ? (float*)params.mainloop.vscale + (idx_b * s.num_heads_kv * seq_kv_pad + head * seq_kv_pad)
-            : nullptr;  // per head vscale
+        ? (float*)params.mainloop.vscale +
+          ((idx_b * s.num_heads_kv * seq_kv_pad + head * seq_kv_pad) * s.head_size_vo)
+        : nullptr;  // per head vscale, laid out as [seq_block, d]
       auto ptrO = p.O + offset_o;
 
       auto stride_q = is_var_len ? cutlass::make_cute_packed_stride(StrideQ{}, shape_Q) : p.dQ;
