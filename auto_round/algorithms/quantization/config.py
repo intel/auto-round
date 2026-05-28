@@ -14,7 +14,6 @@
 from enum import Enum
 from typing import ClassVar, Union
 
-from auto_round.algorithms.alg_config import AlgConfig
 from auto_round.context.scheme import QuantizationScheme
 from auto_round.export.export_to_gguf.config import GGUF_INNER_CONFIG
 from auto_round.logger import logger
@@ -47,7 +46,6 @@ class QuantizationConfig:
         super_group_size: Group size used for double quantization metadata.
     """
 
-    _alg_cls: ClassVar[str] = None
     _scheme_fields: ClassVar[set[str]] = set(QuantizationScheme.get_attributes())
 
     def __init__(self, *, scheme: QuantizationScheme = None, **kwargs):

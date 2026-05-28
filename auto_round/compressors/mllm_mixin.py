@@ -68,8 +68,8 @@ class MLLMMixin:
                 new_grad_acc = batch_size * grad_acc
                 kwargs["gradient_accumulate_steps"] = new_grad_acc
                 kwargs["batch_size"] = 1
-                # Also patch ``gradient_accumulate_steps`` on AlgConfig (still
-                # owned there) so behaviour matches the old arch.
+                # Also patch ``gradient_accumulate_steps`` on algorithm configs so
+                # behaviour matches the old arch.
                 _alg_cfg = args[0] if args else None
                 if _alg_cfg is not None:
                     cfgs = _alg_cfg if isinstance(_alg_cfg, list) else [_alg_cfg]

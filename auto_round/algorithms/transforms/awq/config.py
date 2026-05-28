@@ -31,8 +31,6 @@ class AWQConfig(QuantizationConfig):
     step come from the pipeline's ``block_quantizer`` config.
     """
 
-    _alg_cls: str = "AWQQuantizer"
-
     def __init__(
         self,
         *,

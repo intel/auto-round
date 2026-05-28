@@ -109,7 +109,6 @@ class RTNLayerFallbackMixin:
                     layer = layer.unwrapper({})
                 except Exception:
                     raise
-
         set_module(self.model, layer_name, layer)
         self._immediate_pack_and_save_module(layer_name)
 

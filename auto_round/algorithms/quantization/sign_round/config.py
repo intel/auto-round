@@ -20,8 +20,6 @@ from auto_round.logger import logger
 class SignRoundConfig(QuantizationConfig):
     """Configuration for SignRound-style block quantization."""
 
-    _alg_cls = "SignRoundQuantizer"
-
     def __init__(
         self,
         *,
@@ -110,11 +108,6 @@ class SignRoundConfig(QuantizationConfig):
         self.optimizer = optimizer
         self.enable_adam = enable_adam
 
-        if self.enable_adam:
-            self._alg_cls = "AdamRoundQuantizer"
-        elif self.enable_alg_ext:
-            self._alg_cls = "SignRoundV2Quantizer"
-
     def check_configs(self) -> None:
         """Checks if the configurations are valid.
 
@@ -129,3 +122,11 @@ class SignRoundConfig(QuantizationConfig):
             raise ValueError("`nblocks` must be positive")
         if self.gradient_accumulate_steps <= 0:
             raise ValueError("`gradient_accumulate_steps` must be positive")
+
+
+class AdamRoundConfig(SignRoundConfig):
+    pass
+
+
+class SignRoundV2Config(SignRoundConfig):
+    pass

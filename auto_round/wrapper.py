@@ -335,6 +335,12 @@ class WrapperLinear(torch.nn.Module):
         Returns:
             torch.nn.Module: The unwrapped and restored original layer.
         """
+
+        def _preserve_global_name(layer):
+            if hasattr(self.orig_layer, "global_name") and not hasattr(layer, "global_name"):
+                layer.global_name = self.orig_layer.global_name
+            return layer
+
         best_params = best_params or {}
         v = best_params.get("value", torch.tensor(0.0)).to(self.device)
         min_scale = best_params.get("min_scale", torch.tensor(1.0)).to(self.device)
@@ -441,9 +447,9 @@ class WrapperLinear(torch.nn.Module):
                 enable_torch_compile=self.enable_torch_compile,
                 device=self.device,
             )
-            return wrapper_layer
+            return _preserve_global_name(wrapper_layer)
 
-        return self.orig_layer
+        return _preserve_global_name(self.orig_layer)
 
     def linear_forward(self, x, weight, bias):
         """Performs the forward pass for a linear layer.

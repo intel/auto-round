@@ -6,11 +6,12 @@ from auto_round.algorithms.quantization import registry as _r
 from auto_round.algorithms.quantization.config import QuantizationConfig
 from auto_round.algorithms.quantization.pipeline import (
     QuantizationPipeline,
+    get_algorithm_class,
     resolve_shared_config_values,
     split_quantization_configs,
     sync_shared_config_from,
 )
-from auto_round.algorithms.quantization.rtn.config import RTNConfig
+from auto_round.algorithms.quantization.rtn.config import OptimizedRTNConfig, RTNConfig
 from auto_round.algorithms.quantization.rtn.quantizer import RTNQuantizer
 from auto_round.algorithms.quantization.sign_round.config import SignRoundConfig
 from auto_round.algorithms.transforms.awq.config import AWQConfig
@@ -20,16 +21,14 @@ from auto_round.compressors.entry import AutoRound as NewAutoRound
 from auto_round.logger import logger
 
 
-class PartialSharedConfig(QuantizationConfig):
-    _alg_cls = "RTNQuantizer"
-
+class PartialSharedConfig(RTNConfig):
     def __init__(self, *, weight_clip_ratio=None, **kwargs):
         super().__init__(**kwargs)
         self.weight_clip_ratio = weight_clip_ratio
 
 
-class NoWeightClipConfig(QuantizationConfig):
-    _alg_cls = "RTNQuantizer"
+class NoWeightClipConfig(RTNConfig):
+    pass
 
 
 def test_split_awq_plus_rtn():
@@ -60,6 +59,11 @@ def test_registry_builtin_aliases_and_unknown():
     assert isinstance(_r.resolve_alg_config("autoround"), SignRoundConfig)
     with pytest.raises(ValueError, match="Unknown algorithm alias"):
         _r.resolve_alg_config("definitely_not_registered_abc123")
+
+
+def test_registry_resolves_variant_configs_to_registered_members():
+    assert get_algorithm_class(OptimizedRTNConfig()) is not None
+    assert get_algorithm_class(SignRoundConfig(enable_adam=True)).__name__ == "AdamRoundQuantizer"
 
 
 def test_entry_rejects_configs_without_quantization_members():

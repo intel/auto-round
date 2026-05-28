@@ -26,7 +26,6 @@ from accelerate.utils import get_balanced_memory, get_max_memory
 from tqdm import tqdm
 
 from auto_round import envs
-from auto_round.algorithms.alg_config import AlgConfig
 from auto_round.calibration.utils import (
     _infer_last_cache_name,
     _split_inputs_diffusion,
@@ -76,7 +75,7 @@ class DataDrivenCompressor(BaseCompressor):
 
     def __init__(
         self,
-        config: Union[AlgConfig, list[AlgConfig]],
+        config: Union[object, list[object]],
         model: Union[torch.nn.Module, str],
         tokenizer=None,
         platform="hf",
@@ -653,7 +652,12 @@ class DataDrivenCompressor(BaseCompressor):
                     if hasattr(_mod, "bits") and check_to_quantized(_mod):
                         from auto_round.compressors.utils import immediate_pack as _immediate_pack
 
-                        _immediate_pack(_mod.global_name, self.quantizer.layer_config)
+                        module_name = getattr(_mod, "global_name", None)
+                        if module_name is None and nblocks == 1 and _n:
+                            module_name = f"{n}.{_n}"
+                        if module_name is None:
+                            continue
+                        _immediate_pack(module_name, self.quantizer.layer_config)
 
             input_ids = next_input_ids
 
@@ -983,7 +987,7 @@ class CalibratedRTNCompressor(DataDrivenCompressor):
 
     def __init__(
         self,
-        config: AlgConfig,
+        config: object,
         model: torch.nn.Module,
         **kwargs,
     ):

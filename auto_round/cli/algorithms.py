@@ -17,6 +17,13 @@ import argparse
 from abc import ABC, abstractmethod
 from typing import Any, ClassVar
 
+from auto_round.algorithms.registry import (
+    get_algorithm_entry,
+    iter_algorithm_entries,
+    register_algorithm,
+    resolve_algorithm_alias,
+)
+
 # ============================================================================
 # Base class + registry
 # ============================================================================
@@ -29,13 +36,10 @@ class AlgorithmHandler(ABC):
     the moment their class body is processed.
     """
 
-    # Auto-populated by __init_subclass__
-    _registry: ClassVar[list[AlgorithmHandler]] = []
-    _registry_map: ClassVar[dict[str, AlgorithmHandler]] = {}
-
     name: str  # canonical name used in --algorithm
     aliases: tuple[str, ...] = ()  # all accepted names, including canonical
     summary: str = ""  # one-liner shown by `auto_round list alg`
+    config_factory: ClassVar[type | None] = None
 
     def __init_subclass__(cls, **kwargs) -> None:
         super().__init_subclass__(**kwargs)
@@ -44,9 +48,13 @@ class AlgorithmHandler(ABC):
         if "register" in cls.__dict__ and "build" in cls.__dict__:
             if "name" not in cls.__dict__:
                 raise TypeError(f"{cls.__name__} must define a 'name' class attribute " f"(e.g. name = 'my_algo').")
-            instance = cls()
-            AlgorithmHandler._registry.append(instance)
-            AlgorithmHandler._registry_map[instance.name] = instance
+            register_algorithm(
+                cls.name,
+                aliases=cls.aliases,
+                config_factory=cls.config_factory,
+                cli_handler=cls,
+                summary=cls.summary,
+            )
 
     # ------------------------------------------------------------------
     # Abstract interface — implement in each subclass
@@ -67,10 +75,10 @@ class AlgorithmHandler(ABC):
     @classmethod
     def get(cls, name: str) -> AlgorithmHandler:
         """Return the handler for a canonical algorithm name. Raises KeyError if unknown."""
-        handler = cls._registry_map.get(name)
-        if handler is None:
+        entry = get_algorithm_entry(name)
+        if entry.cli_handler is None:
             raise KeyError(f"No handler registered for algorithm '{name}'.")
-        return handler
+        return entry.cli_handler()
 
     @classmethod
     def resolve_alias(cls, user_name: str) -> str | None:
@@ -78,16 +86,15 @@ class AlgorithmHandler(ABC):
 
         Returns None instead of raising so callers can silently skip unknowns.
         """
-        key = user_name.strip().lower()
-        for handler in cls._registry:
-            if key == handler.name or key in handler.aliases:
-                return handler.name
-        return None
+        return resolve_algorithm_alias(user_name)
 
     @classmethod
     def add_groups(cls, parser) -> None:
         """Add an argparse argument group for every registered algorithm."""
-        for handler in cls._registry:
+        for entry in iter_algorithm_entries():
+            if entry.cli_handler is None:
+                continue
+            handler = entry.cli_handler()
             group = parser.add_argument_group(f"Algorithm: {handler.name}")
             handler.register(group)
 
@@ -120,7 +127,10 @@ class AlgorithmHandler(ABC):
     def format_listing(cls) -> str:
         """Render the short `list alg` output."""
         lines = []
-        for handler in cls._registry:
+        for entry in iter_algorithm_entries():
+            if entry.cli_handler is None:
+                continue
+            handler = entry.cli_handler()
             other = [a for a in handler.aliases if a != handler.name]
             alias_str = f" (aliases: {', '.join(other)})" if other else ""
             lines.append(f"- {handler.name}{alias_str}: {handler.summary}")
@@ -131,7 +141,8 @@ class AlgorithmHandler(ABC):
         """Render detailed help text for one algorithm."""
         canon = cls.resolve_alias(name)
         if canon is None:
-            raise ValueError(f"Unknown algorithm '{name}'. " f"Supported: {', '.join(cls._registry_map.keys())}.")
+            supported = [entry.name for entry in iter_algorithm_entries() if entry.cli_handler is not None]
+            raise ValueError(f"Unknown algorithm '{name}'. " f"Supported: {', '.join(supported)}.")
         handler = cls.get(canon)
         lines = [f"{handler.name}: {handler.summary}"]
         other = [a for a in handler.aliases if a != handler.name]
@@ -173,6 +184,7 @@ class AWQ(AlgorithmHandler):
     name = "awq"
     aliases = ("awq",)
     summary = "Activation-Aware Weight Quantization (pre-processing)."
+    config_factory = None
 
     def register(self, group) -> None:
         group.add_argument(
@@ -205,6 +217,7 @@ class RTN(AlgorithmHandler):
     name = "rtn"
     aliases = ("rtn",)
     summary = "Round-To-Nearest quantization."
+    config_factory = None
 
     def register(self, group) -> None:
         mutex = group.add_mutually_exclusive_group()
@@ -237,6 +250,7 @@ class AutoRound(AlgorithmHandler):
     name = "auto_round"
     aliases = ("auto_round", "autoround", "sign_round", "signround")
     summary = "SignRound-style iterative block quantization."
+    config_factory = None
 
     def register(self, group) -> None:
         group.add_argument("--iters", default=200, type=int, help="Number of optimization iterations per block.")
@@ -308,6 +322,7 @@ class Hadamard(AlgorithmHandler):
     name = "hadamard"
     aliases = ("hadamard", "random_hadamard", "quarot_hadamard")
     summary = "Hadamard rotation/transform applied before quantization."
+    config_factory = None
 
     def register(self, group) -> None:
         group.add_argument(
@@ -356,3 +371,34 @@ class Hadamard(AlgorithmHandler):
             fuse_online_to_weight=getattr(args, "fuse_online_to_weight", None),
             allow_online_rotation=getattr(args, "allow_online_rotation", True),
         )
+
+
+def _register_builtin_algorithm_factories() -> None:
+    from auto_round.algorithms.quantization.rtn.config import RTNConfig
+    from auto_round.algorithms.quantization.sign_round.config import SignRoundConfig
+    from auto_round.algorithms.transforms.awq.config import AWQConfig
+    from auto_round.algorithms.transforms.quarot.config import RotationConfig
+
+    register_algorithm("rtn", aliases=("rtn",), config_factory=RTNConfig, cli_handler=RTN, summary=RTN.summary)
+    register_algorithm(
+        "auto_round",
+        aliases=("auto_round", "autoround", "sign_round", "signround"),
+        config_factory=SignRoundConfig,
+        cli_handler=AutoRound,
+        summary=AutoRound.summary,
+    )
+    register_algorithm("awq", aliases=("awq",), config_factory=AWQConfig, cli_handler=AWQ, summary=AWQ.summary)
+    register_algorithm(
+        "hadamard",
+        aliases=("hadamard", "random_hadamard", "quarot_hadamard"),
+        config_factory=RotationConfig,
+        cli_handler=Hadamard,
+        summary=Hadamard.summary,
+        alias_factories={
+            "random_hadamard": lambda: RotationConfig(hadamard_type="random_hadamard"),
+            "quarot_hadamard": lambda: RotationConfig(hadamard_type="quarot_hadamard"),
+        },
+    )
+
+
+_register_builtin_algorithm_factories()

@@ -41,6 +41,7 @@ from auto_round.algorithms.quantization.pipeline import (
     CalibTiming,
     InputSource,
 )
+from auto_round.algorithms.registry import register_pipeline_member
 from auto_round.algorithms.transforms.awq.config import AWQConfig
 from auto_round.algorithms.transforms.awq.mappings import (
     ResolvedMapping,
@@ -60,6 +61,7 @@ if TYPE_CHECKING:
     from auto_round.algorithms.quantization.pipeline import BlockContext, RunContext
 
 
+@register_pipeline_member(AWQConfig)
 class AWQQuantizer(BaseWeightTransformer):
     """AWQ quantizer: activation-aware weight smoothing pre-processor.
 

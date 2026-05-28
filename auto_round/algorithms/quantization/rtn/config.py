@@ -18,8 +18,6 @@ from auto_round.logger import logger
 
 
 class RTNConfig(QuantizationConfig):
-    _alg_cls = "RTNQuantizer"
-
     def __init__(
         self,
         *,
@@ -57,5 +55,7 @@ class RTNConfig(QuantizationConfig):
             )
             disable_opt_rtn = False
         self.disable_opt_rtn = disable_opt_rtn
-        if not self.disable_opt_rtn:
-            self._alg_cls = "OptimizedRTNQuantizer"
+
+
+class OptimizedRTNConfig(RTNConfig):
+    pass

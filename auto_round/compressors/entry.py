@@ -6,12 +6,11 @@ from typing import Any, Callable, Optional, Union
 
 import torch
 
-from auto_round.algorithms.alg_config import AlgConfig
 from auto_round.algorithms.quantization.config import QuantizationConfig
 from auto_round.algorithms.quantization.pipeline import split_quantization_configs
-from auto_round.algorithms.quantization.registry import resolve_alg_config
-from auto_round.algorithms.quantization.rtn.config import RTNConfig
+from auto_round.algorithms.quantization.rtn.config import OptimizedRTNConfig, RTNConfig
 from auto_round.algorithms.quantization.sign_round.config import SignRoundConfig
+from auto_round.algorithms.registry import normalize_algorithm_config, resolve_alg_config
 from auto_round.algorithms.transforms.awq.config import AWQConfig
 from auto_round.algorithms.transforms.quarot.config import RotationConfig as _NewArchRotationConfig
 from auto_round.auto_scheme.gen_auto_scheme import AutoScheme
@@ -317,17 +316,19 @@ def _select_rtn_compressor_base_cls(quant_config: RTNConfig, scheme, format, bas
     # selection, regardless of whether imatrix is needed.
     quant_config.enable_imatrix = enable_imatrix
     if enable_imatrix or needs_act_calib or isinstance(scheme, AutoScheme):
-        quant_config._alg_cls = "OptimizedRTNQuantizer"
+        if not isinstance(quant_config, OptimizedRTNConfig):
+            quant_config.__class__ = OptimizedRTNConfig
         return CalibratedRTNCompressor
 
-    quant_config._alg_cls = "RTNQuantizer"
+    if isinstance(quant_config, OptimizedRTNConfig):
+        quant_config.__class__ = RTNConfig
     return ZeroShotCompressor
 
 
 class AutoRound(object):
 
     @classmethod
-    def _resolve_config(cls, config: Union[str, AlgConfig, list]) -> Union[AlgConfig, list[AlgConfig]]:
+    def _resolve_config(cls, config: Union[str, object, list]) -> Union[object, list[object]]:
         """Convert string alias(es) to the corresponding config instance(s) with default parameters."""
         if isinstance(config, str):
             return resolve_alg_config(config)
@@ -337,7 +338,7 @@ class AutoRound(object):
 
     def __new__(
         cls,
-        alg_configs: Union[str, AlgConfig, list[Union[str, AlgConfig]]],
+        alg_configs: Union[str, object, list[Union[str, object]]],
         model: Union[torch.nn.Module, str],
         tokenizer=None,
         platform="hf",
@@ -366,6 +367,10 @@ class AutoRound(object):
 
         # Resolve string alias(es) to config instance(s) before routing.
         alg_configs = cls._resolve_config(alg_configs)
+        if isinstance(alg_configs, list):
+            alg_configs = [normalize_algorithm_config(cfg) for cfg in alg_configs]
+        else:
+            alg_configs = normalize_algorithm_config(alg_configs)
         configs_for_routing = alg_configs if isinstance(alg_configs, list) else [alg_configs]
         preprocessor_configs, _, quant_config = _resolve_quant_config_for_routing(configs_for_routing)
 
@@ -567,12 +572,13 @@ class AutoRoundCompatible:
 
     @staticmethod
     def _build_rtn_config(shared_quant_kwargs: dict[str, Any], *, kwargs, common_config_kwargs):
-        return RTNConfig(
+        cfg = RTNConfig(
             **shared_quant_kwargs,
             disable_opt_rtn=kwargs.pop("disable_opt_rtn", None),
             enable_opt_rtn=kwargs.pop("enable_opt_rtn", None),
             **common_config_kwargs,
         )
+        return normalize_algorithm_config(cfg)
 
     @staticmethod
     def _build_signround_config(
@@ -584,7 +590,7 @@ class AutoRoundCompatible:
         common_config_kwargs,
         auto_round_config_kwargs,
     ):
-        return SignRoundConfig(
+        cfg = SignRoundConfig(
             **shared_quant_kwargs,
             iters=iters,
             gradient_accumulate_steps=gradient_accumulate_steps,
@@ -596,6 +602,7 @@ class AutoRoundCompatible:
             **common_config_kwargs,
             **auto_round_config_kwargs,
         )
+        return normalize_algorithm_config(cfg)
 
     @classmethod
     def _build_alg_config(
