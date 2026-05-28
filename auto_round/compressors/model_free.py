@@ -24,27 +24,47 @@ The main entry point is the :class:`ModelFreeCompressor` class.
 
 Supported schemes
 -----------------
-Model-free mode currently supports **integer weight-only** quantization
-schemes packed in the ``auto_round:auto_gptq`` format only.  Specifically:
+Model-free mode supports the following quantization families:
 
-* Preset names: ``W2A16``, ``W2A16G32``, ``W2A16G64``, ``W3A16``, ``W4A16``,
-  ``W8A16``.
+**Integer weight-only** (packed in ``auto_round:auto_gptq`` format):
+
+* Preset names: ``W2A16``, ``W2A16G32``, ``W2A16G64``, ``W4A16``,
+  ``W4A16_MIXED``, ``W8A16``.
 * Custom :class:`~auto_round.schemes.QuantizationScheme` instances with
-  ``data_type="int"``, ``bits in {2, 3, 4, 8}``, ``act_bits >= 16``, and any
+  ``data_type="int"``, ``bits in {2, 4, 8}``, ``act_bits >= 16``, and any
   symmetric / asymmetric configuration.
 
-Schemes that require special packing (FP8, MXFP4, NVFP4, GGUF, INT8_W8A8,
+**MXFP (Microscaling Floating Point)** (packed in ``mxfp4-pack-quantized`` or
+``mxfp8-quantized`` format, compatible with llm-compressor / compressed-tensors):
+
+* Preset names: ``MXFP4``, ``MXFP8``.
+* ``data_type="mx_fp"``, ``group_size=32``, ``bits in {4, 8}``.
+
+Schemes that require special packing (FP8, NVFP4, GGUF, INT8_W8A8,
 BF16, FPW8A16, ...) are **not** supported in model-free mode and will raise
 ``ValueError``.  Use the standard AutoRound flow for those.
+
+Output formats
+--------------
+* **INT schemes** → ``auto_round:auto_gptq`` packing format, ``quant_method="auto-round"``.
+* **MXFP schemes** → ``mxfp4-pack-quantized`` or ``mxfp8-quantized`` format,
+  ``quant_method="compressed-tensors"``, compatible with vLLM / llm-compressor.
 
 Usage (CLI)
 -----------
 ::
 
+    # Integer WOQ
     auto_round facebook/opt-125m \\
         --model_free \\
         --scheme W4A16 \\
         --output_dir int4-125m
+
+    # MXFP4
+    auto_round facebook/opt-125m \\
+        --model_free \\
+        --scheme MXFP4 \\
+        --output_dir mxfp4-125m
 
 Usage (API)
 -----------
@@ -52,11 +72,19 @@ Usage (API)
 
     from auto_round import AutoRound
 
+    # Integer WOQ
     AutoRound(
         model="facebook/opt-125m",
         scheme="W4A16",
         model_free=True,
     ).quantize_and_save("./int4-125m")
+
+    # MXFP4
+    AutoRound(
+        model="facebook/opt-125m",
+        scheme="MXFP4",
+        model_free=True,
+    ).quantize_and_save("./mxfp4-125m")
 """
 
 from __future__ import annotations
@@ -88,9 +116,9 @@ from auto_round.utils.missing_tensors import quantize_weight_rtn, split_fused_ex
 # add "embed", "conv" in case of auto detection failure in _check_conv1d_and_embedding
 _BLOCK_NAME_TO_IGNORE = ["shared_expert_gate.", ".gate.", "embed", "conv"]
 
-# Integer WOQ preset schemes that model-free mode can produce.
-# Other presets (FP8/MX/NV/GGUF/BF16/INT8_W8A8/FPW8A16) require different
-# packing kernels not implemented by ``quantize_weight_rtn``.
+# Preset schemes that model-free mode can produce.
+# INT presets use ``auto_round:auto_gptq`` packing; MXFP presets use
+# ``mxfp4-pack-quantized`` or ``mxfp8-quantized`` (compressed-tensors) packing.
 #
 # Note: ``W3A16`` (3-bit) is intentionally excluded.  3-bit packing requires
 # in_features to be padded to a multiple of pack_factor=10, which the current
@@ -1040,8 +1068,13 @@ def _validate_supported_scheme(
 ) -> None:
     """Raise ``ValueError`` if *scheme_obj* is not supported by model-free.
 
-    Model-free only supports integer weight-only quantization (sym/asym),
-    packed in the ``auto_round:auto_gptq`` format.
+    Model-free supports:
+
+    * Integer weight-only quantization (sym/asym), ``bits ∈ {2, 4, 8}``,
+      packed in the ``auto_round:auto_gptq`` format.
+    * MXFP weight quantization (``data_type='mx_fp'``), ``bits ∈ {4, 8}``,
+      ``group_size=32``, packed in ``mxfp4-pack-quantized`` / ``mxfp8-quantized``
+      format (compressed-tensors compatible).
     """
     data_type = (scheme_obj.data_type or "int").lower()
     bits = scheme_obj.bits
@@ -1124,14 +1157,19 @@ class _ModelFreeCompressorCore:
     Args:
         model_name_or_path: HuggingFace model ID or local directory path.
         output_dir: Directory to save the quantized model.
-        scheme: Quantization scheme name (e.g. ``"W4A16"``) or a
-            :class:`QuantizationScheme` instance.
+        scheme: Quantization scheme name (e.g. ``"W4A16"``, ``"MXFP4"``,
+            ``"MXFP8"``) or a :class:`QuantizationScheme` instance.
         layer_config: Per-layer quantization overrides.  Keys are layer
             names or regex patterns; values are dicts with ``bits``,
             ``group_size``, ``sym`` etc.
         ignore_layers: Comma-separated list of layer name patterns to keep
-            in full precision.
-        format: Output format (only ``"auto_round"`` is supported).
+            in full precision.  Ignored layers that are already quantized
+            (e.g. FP8) are preserved in their original format.
+        format: Output format.  Supported: ``"auto_round"``,
+            ``"auto_round:auto_gptq"``, ``"llm_compressor"``,
+            ``"auto_round:llm_compressor"``.  The packing format is
+            auto-selected based on the scheme (INT→auto_gptq,
+            MXFP→compressed-tensors).
         device: Device for quantization computation (``"cpu"`` or
             ``"cuda"``).
         quant_lm_head: If True, quantize ``lm_head`` as well.  By default
@@ -1572,9 +1610,18 @@ class _ModelFreeCompressorCore:
         self._detect_fp8_source()
         self._discover_shards()
 
+        # Determine the output packing format based on scheme data type
+        data_type = (self.default_scheme.get("data_type") or "int").lower()
+        if is_mx_fp(data_type):
+            bits = self.default_scheme.get("bits", 4)
+            packing_format = "mxfp4-pack-quantized" if bits == 4 else "mxfp8-quantized"
+        else:
+            packing_format = "auto_round:auto_gptq"
+
         logger.info(
             f"Model-free quantization: {self.model_name_or_path}\n"
             f"  Scheme: {self.scheme_obj}\n"
+            f"  Packing format: {packing_format}\n"
             f"  Output: {self.output_dir}\n"
             f"  Shards: {len(self.shard_names)}\n"
             f"  Streaming download: {self.is_streaming}\n"

@@ -523,7 +523,7 @@ ar.quantize_and_save(output_dir, format="auto_round")
 
 Model-free mode performs RTN WOQ quantization **without loading the full model into memory**. It downloads safetensors files directly, quantizes each Linear weight tensor shard-by-shard, and saves the packed result. This is useful when you want fast, no-calibration quantization with minimal resource requirements.
 
-> **Auto-enabled by default.** As of v0.13, when you pass `--iters 0 --disable_opt_rtn` together with a supported INT WOQ scheme, the CLI automatically takes the model-free path.  This is **bit-exactly equivalent** to the regular `--iters 0 --disable_opt_rtn` flow but uses far less memory.  Use `--disable_model_free` to opt out and force the original flow.
+> **Auto-enabled by default.** As of v0.13, when you pass `--iters 0 --disable_opt_rtn` together with a supported INT WOQ or MXFP scheme, the CLI automatically takes the model-free path.  This is **bit-exactly equivalent** to the regular `--iters 0 --disable_opt_rtn` flow but uses far less memory.  Use `--disable_model_free` to opt out and force the original flow.
 
 **Key features:**
 - **No model object required** – only `config.json` and safetensors files are needed
@@ -537,7 +537,9 @@ Model-free mode performs RTN WOQ quantization **without loading the full model i
 
 **Supported schemes**
 
-Model-free mode currently supports the following **integer weight-only** preset schemes (packed in the `auto_round:auto_gptq` format):
+Model-free mode supports the following preset schemes:
+
+**Integer weight-only** (packed in `auto_round:auto_gptq` format):
 
 | Preset | Bits | Group size | Sym |
 | --- | --- | --- | --- |
@@ -552,7 +554,14 @@ All of the above presets also support **asymmetric quantization** (`sym=False`) 
 
 You can also pass a custom `QuantizationScheme(bits=N, group_size=G, sym=True/False, data_type="int", act_bits=16)` with `bits ∈ {2, 4, 8}` and any group_size / sym configuration.
 
-Schemes that require special packing kernels (`W3A16`, `FPW8A16`, `BF16`, `MXFP4`, `MXFP8`, `MXINT4`, `NVFP4`, `FP8_BLOCK`, `FP8_STATIC`, `INT8_W8A8`, `GGUF:*`, ...) are **not** supported in model-free mode and will raise `ValueError`.  Use the regular AutoRound flow for those.
+**MXFP (Microscaling Floating Point)** (packed in `mxfp4-pack-quantized` / `mxfp8-quantized` format, compatible with compressed-tensors / vLLM):
+
+| Preset | Bits | Group size | Format |
+| --- | --- | --- | --- |
+| `MXFP4` | 4 | 32 | mxfp4-pack-quantized |
+| `MXFP8` | 8 | 32 | mxfp8-quantized |
+
+Schemes that require special packing kernels (`W3A16`, `FPW8A16`, `BF16`, `MXINT4`, `NVFP4`, `FP8_BLOCK`, `FP8_STATIC`, `INT8_W8A8`, `GGUF:*`, ...) are **not** supported in model-free mode and will raise `ValueError`.  Use the regular AutoRound flow for those.
 
 #### CLI Usage
 
@@ -584,6 +593,18 @@ auto_round meta-llama/Llama-3.2-1B-Instruct \
   --layer_config "{k_proj:{bits:8},v_proj:{bits:8}}" \
   --ignore_layers "mlp" \
   --output_dir ./int4-llama
+
+# MXFP4 quantization
+auto_round meta-llama/Llama-3.2-1B-Instruct \
+  --model_free \
+  --scheme MXFP4 \
+  --output_dir ./mxfp4-llama
+
+# MXFP8 quantization
+auto_round meta-llama/Llama-3.2-1B-Instruct \
+  --model_free \
+  --scheme MXFP8 \
+  --output_dir ./mxfp8-llama
 ```
 
 #### API Usage
@@ -603,7 +624,7 @@ AutoRound(
 ).quantize_and_save("./int4-llama")
 ```
 
-> **Note:** Model-free mode only supports the `auto_round` output format and uses RTN (no calibration data, no iterative tuning).  For higher-quality quantization or schemes outside the supported list, use the standard AutoRound flow.
+> **Note:** Model-free mode uses RTN (no calibration data, no iterative tuning).  INT schemes output in `auto_round:auto_gptq` format; MXFP schemes output in compressed-tensors format (`mxfp4-pack-quantized` / `mxfp8-quantized`).  For higher-quality quantization or schemes outside the supported list, use the standard AutoRound flow.
 
 </details>
 
