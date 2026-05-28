@@ -47,6 +47,7 @@ import torch
 from transformers import AutoConfig
 
 from auto_round.export.export_to_gguf.config import ModelType
+from auto_round.export.export_to_gguf.gguf_dtype import GGUFDTypeSelector
 from auto_round.export.export_to_gguf.packing import ggml_quant
 from auto_round.utils import (
     LazyImport,
@@ -297,7 +298,7 @@ def _quant_data(cls, data_torch, data_qtype, name, modify_name, new_name, bid, d
     return data, data_qtype
 
 
-def get_qtype_by_layer_config(layer_config, name, data_qtype):
+def get_qtype_by_layer_config(layer_config, name, data_qtype, *, explicit_only=False):
     name = name[: -len(".weight")]
     if name not in layer_config and name.endswith("embed_tokens"):
         embedding_names = [key for key in layer_config if key.endswith("embed_tokens")]
@@ -307,7 +308,9 @@ def get_qtype_by_layer_config(layer_config, name, data_qtype):
         embedding_names = [key for key in layer_config if key.endswith("embed_tokens")]
         if len(embedding_names) == 1:
             name = embedding_names[0]
-    if name not in layer_config or layer_config[name]["bits"] >= 16:
+    if name not in layer_config:
+        return None if explicit_only else data_qtype
+    if layer_config[name]["bits"] >= 16:
         return data_qtype
     bits = layer_config[name].get("bits")
     super_bits = layer_config[name].get("super_bits")
@@ -415,6 +418,8 @@ def _special_name_handle(cls, name):
 
 def prepare_tensors(cls):
     device = get_packing_device(cls.device)
+    if not hasattr(cls, "_gguf_dtype_selector"):
+        cls._gguf_dtype_selector = GGUFDTypeSelector(cls.hparams, cls.ftype, cls.model_arch)
 
     # Handle empty tensor_map for models with block_count=0 (like MobileNetV5)
     if cls.tensor_map.mapping:
@@ -539,8 +544,13 @@ def prepare_tensors(cls):
             name = get_moe_name(cls, name, new_name)
             clean_weight_list.append(name)
             # get data_qtype by layer_config
-            data_qtype = get_qtype_by_layer_config(cls.layer_config, name, data_qtype)
+            layer_config_qtype = get_qtype_by_layer_config(cls.layer_config, name, data_qtype, explicit_only=True)
             # # No override (data_qtype is False), or wants to be quantized (data_qtype is True)
+            if layer_config_qtype is not None:
+                data_qtype = layer_config_qtype
+            elif isinstance(data_qtype, bool):
+                data_qtype = cls._gguf_dtype_selector.select_qtype(new_name, n_dims)
+
             if isinstance(data_qtype, bool):
                 if cls.ftype == gguf.LlamaFileType.ALL_F32:
                     data_qtype = gguf.GGMLQuantizationType.F32
