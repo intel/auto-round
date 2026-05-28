@@ -653,7 +653,7 @@ class DataDrivenCompressor(BaseCompressor):
                     if hasattr(_mod, "bits") and check_to_quantized(_mod):
                         from auto_round.compressors.utils import immediate_pack as _immediate_pack
 
-                        _immediate_pack(_n, self.quantizer.layer_config)
+                        _immediate_pack(_mod.global_name, self.quantizer.layer_config)
 
             input_ids = next_input_ids
 

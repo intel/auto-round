@@ -73,18 +73,6 @@ class AWQQuantizer(BaseWeightTransformer):
         self.duo_scaling: bool | str = config.duo_scaling
         self.n_grid: int = config.n_grid
 
-        # Quantization params used only by AWQ's internal grid-search loss
-        # (quantize-dequantize during scale selection). The definitive params
-        # for the final block-quantization step live on the block_quantizer.
-        # See class docstring and AWQConfig docstring.
-        self.bits = config.bits
-        self.group_size = config.group_size
-        self.sym = config.sym
-        self.data_type = config.data_type
-        self.scale_dtype = config.scale_dtype
-        self.super_bits = config.super_bits
-        self.super_group_size = config.super_group_size
-
         self._user_mappings: list[dict] | None = config.mappings
 
         # Set at runtime by the compressor's post_init() via ``pre.layer_config = self.layer_config``.

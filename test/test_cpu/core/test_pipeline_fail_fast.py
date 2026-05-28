@@ -15,7 +15,9 @@ from auto_round.algorithms.quantization.rtn.quantizer import RTNQuantizer
 from auto_round.algorithms.quantization.sign_round.config import SignRoundConfig
 from auto_round.algorithms.transforms.awq.config import AWQConfig
 from auto_round.algorithms.transforms.quarot.config import RotationConfig
+from auto_round.compressors.base import collect_user_scheme_overrides
 from auto_round.compressors.entry import AutoRound as NewAutoRound
+from auto_round.logger import logger
 
 
 class PartialSharedConfig(QuantizationConfig):
@@ -65,15 +67,34 @@ def test_entry_rejects_configs_without_quantization_members():
         NewAutoRound(alg_configs=[RotationConfig()], model="dummy-model")
 
 
+def test_entry_warns_and_drops_unsupported_kwargs(monkeypatch, tiny_opt_model_path):
+    calls = []
+
+    def _record_warning(message, *args):
+        calls.append(message % args)
+
+    monkeypatch.setattr(logger, "warning_once", _record_warning)
+
+    NewAutoRound(
+        alg_configs=RTNConfig(disable_opt_rtn=True),
+        model=tiny_opt_model_path,
+        scheme="W4A16",
+        nsamples=1,
+        seqlen=8,
+        low_cpu_mem_usage=False,
+        nonsense_kwarg=123,
+    )
+
+    assert any("unsupported kwargs nonsense_kwarg" in msg for msg in calls)
+
+
 def test_shared_config_values_inherit_across_matching_attrs_only():
-    awq = PartialSharedConfig(bits=4, weight_clip_ratio=0.9)
+    awq = PartialSharedConfig(weight_clip_ratio=0.9)
     smoothquant_like = NoWeightClipConfig()
     signround = PartialSharedConfig(weight_clip_ratio=None)
 
     resolve_shared_config_values([awq, smoothquant_like, signround])
 
-    assert signround.bits == 4
-    assert smoothquant_like.bits == 4
     assert signround.weight_clip_ratio == 0.9
     assert not hasattr(smoothquant_like, "weight_clip_ratio")
 
@@ -86,13 +107,28 @@ def test_shared_config_values_reject_conflicts():
 
 
 def test_shared_config_sync_from_source_skips_missing_attrs():
-    source = PartialSharedConfig(bits=4, weight_clip_ratio=0.75)
+    source = PartialSharedConfig(weight_clip_ratio=0.75)
     target = PartialSharedConfig()
     no_clip_target = NoWeightClipConfig()
 
     sync_shared_config_from(source, [target, no_clip_target, RotationConfig()])
 
-    assert target.bits == 4
     assert target.weight_clip_ratio == 0.75
-    assert no_clip_target.bits == 4
     assert not hasattr(no_clip_target, "weight_clip_ratio")
+
+
+def test_user_scheme_overrides_merge_across_all_configs():
+    awq = AWQConfig(bits=8)
+    rtn = RTNConfig()
+    assert collect_user_scheme_overrides([awq, rtn])["bits"] == 8
+
+    resolve_shared_config_values([awq, rtn])
+
+    assert rtn.bits == 8
+
+
+def test_user_scheme_overrides_reject_explicit_conflicts():
+    with pytest.raises(ValueError, match="Conflicting shared scheme field 'bits'"):
+        collect_user_scheme_overrides([AWQConfig(bits=8), RTNConfig(bits=4)])
+    with pytest.raises(ValueError, match="Conflicting shared scheme field 'bits'"):
+        resolve_shared_config_values([AWQConfig(bits=8), RTNConfig(bits=4)])

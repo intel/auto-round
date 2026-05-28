@@ -73,7 +73,7 @@ def resolve_model_type(model):
 FIX_MISTRAL_REGEX_MODEL_TYPE_LIST = ["longcat_next"]
 
 if TYPE_CHECKING:
-    from auto_round.schemes import QuantizationScheme
+    from auto_round.context.scheme import QuantizationScheme
 
 
 def clean_module_parameter(submodule: torch.nn.Module, param_name: str) -> None:
@@ -1346,7 +1346,7 @@ def check_to_quantized(config):
         bool: True if the configuration is valid for quantization (bits <= 8),
             False otherwise.
     """
-    from auto_round.schemes import QuantizationScheme
+    from auto_round.context.scheme import QuantizationScheme
 
     if isinstance(config, (dict, QuantizationScheme)):
         bits = config.get("bits", None)
@@ -2269,8 +2269,8 @@ def is_model_free_route(
     """
     from auto_round.compressors.model_free import is_model_free_supported_scheme
 
-    explicit = bool(kwargs.pop("model_free", False))
-    disabled = bool(kwargs.pop("disable_model_free", False))
+    explicit = bool(kwargs.get("model_free", False))
+    disabled = bool(kwargs.get("disable_model_free", False))
     if explicit:
         return True
     # Only auto-route when format is auto_round (or not specified).

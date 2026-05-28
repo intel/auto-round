@@ -15,7 +15,7 @@
 from dataclasses import fields
 from typing import List
 
-from auto_round.schemes import QuantizationScheme
+from auto_round.context.scheme import QuantizationScheme
 
 
 def check_neq_config(config: dict, **expected) -> List[str]:

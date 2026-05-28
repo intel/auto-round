@@ -44,15 +44,12 @@ def _extract_common_quantization_kwargs(args) -> dict:
         "act_dynamic": None if not args.disable_act_dynamic else False,
         "super_bits": args.super_bits,
         "super_group_size": args.super_group_size,
-        "scale_dtype": args.scale_dtype,
-        "ignore_layers": args.ignore_layers,
-        "quant_lm_head": args.quant_lm_head,
-        "to_quant_block_names": args.to_quant_block_names,
     }
 
 
-def _to_autoround_kwargs(args, *, model_name, scheme, low_cpu_mem_usage, enable_torch_compile, layer_config) -> dict:
-    """Collect non-algorithm CLI values passed into the AutoRound pipeline."""
+def _build_entry_base_kwargs(
+    args, *, model_name, scheme, low_cpu_mem_usage, enable_torch_compile, layer_config
+) -> dict:
     return {
         "model": model_name,
         "platform": args.platform,
@@ -70,10 +67,27 @@ def _to_autoround_kwargs(args, *, model_name, scheme, low_cpu_mem_usage, enable_
         "layer_config": layer_config,
         "model_dtype": args.model_dtype,
         "trust_remote_code": not args.disable_trust_remote_code,
+    }
+
+
+def _build_entry_route_kwargs(args) -> dict:
+    return {
         "model_free": args.model_free,
         "disable_model_free": args.disable_model_free,
+    }
+
+
+def _build_entry_compressor_kwargs(args) -> dict:
+    return {
+        "scale_dtype": args.scale_dtype,
         "ignore_layers": args.ignore_layers,
         "quant_lm_head": args.quant_lm_head,
+        "to_quant_block_names": args.to_quant_block_names,
+    }
+
+
+def _build_entry_model_type_kwargs(args) -> dict:
+    return {
         "quant_nontext_module": args.quant_nontext_module,
         "extra_data_dir": args.extra_data_dir,
         "template": args.template,
@@ -81,6 +95,22 @@ def _to_autoround_kwargs(args, *, model_name, scheme, low_cpu_mem_usage, enable_
         "num_inference_steps": args.num_inference_steps,
         "generator_seed": args.generator_seed,
     }
+
+
+def _to_autoround_kwargs(args, *, model_name, scheme, low_cpu_mem_usage, enable_torch_compile, layer_config) -> dict:
+    """Collect only the kwargs accepted by the new AutoRound entry API."""
+    kwargs = _build_entry_base_kwargs(
+        args,
+        model_name=model_name,
+        scheme=scheme,
+        low_cpu_mem_usage=low_cpu_mem_usage,
+        enable_torch_compile=enable_torch_compile,
+        layer_config=layer_config,
+    )
+    kwargs.update(_build_entry_route_kwargs(args))
+    kwargs.update(_build_entry_compressor_kwargs(args))
+    kwargs.update(_build_entry_model_type_kwargs(args))
+    return kwargs
 
 
 RECIPES = {
@@ -267,7 +297,7 @@ def tune(args):
     enable_torch_compile = True if "--enable_torch_compile" in sys.argv else False
     scheme = args.scheme.upper()
 
-    from auto_round.schemes import PRESET_SCHEMES
+    from auto_round.context.scheme import PRESET_SCHEMES
 
     if scheme not in PRESET_SCHEMES:
         raise ValueError(f"{scheme} is not supported. only {PRESET_SCHEMES.keys()} are supported ")

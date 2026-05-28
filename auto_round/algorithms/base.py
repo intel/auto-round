@@ -16,6 +16,8 @@
 import importlib
 from contextlib import contextmanager
 
+from auto_round.context.scheme import QuantizationScheme
+
 
 class BaseAlgorithm:
     pass
@@ -26,9 +28,11 @@ class BasePipelineMember:
 
     model_context = None
     compress_context = None
+    _scheme_context_fields = set(QuantizationScheme.get_attributes())
 
     def __init__(self, config=None):
         self.config = config
+        self.scheme = getattr(config, "scheme", None)
 
     @classmethod
     def from_config(cls, config):
@@ -46,6 +50,7 @@ class BasePipelineMember:
         """Wire shared context from the owning compressor."""
         self.model_context = compressor.model_context
         self.compress_context = compressor.compress_context
+        self.scheme = getattr(compressor, "scheme_context", None)
 
     def prepare_run(self, run_ctx) -> None:
         """Model-level preparation called once before block iteration starts."""
@@ -65,3 +70,21 @@ class BasePipelineMember:
     def finalize_run(self, run_ctx) -> None:
         """Model-level teardown called once after all blocks are processed."""
         return
+
+
+def _make_scheme_property(name):
+    def getter(self):
+        scheme = getattr(self, "scheme", None)
+        return getattr(scheme, name, None) if scheme is not None else None
+
+    def setter(self, value):
+        scheme = getattr(self, "scheme", None)
+        if scheme is None:
+            raise AttributeError(f"{type(self).__name__} has no bound scheme")
+        setattr(scheme, name, value)
+
+    return property(getter, setter)
+
+
+for _scheme_field in QuantizationScheme.get_attributes():
+    setattr(BasePipelineMember, _scheme_field, _make_scheme_property(_scheme_field))

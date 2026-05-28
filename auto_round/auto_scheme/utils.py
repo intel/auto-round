@@ -19,7 +19,7 @@ import torch
 from accelerate import dispatch_model, infer_auto_device_map
 from accelerate.utils import get_balanced_memory
 
-from auto_round.schemes import QuantizationScheme, preset_name_to_scheme
+from auto_round.context.scheme import QuantizationScheme, preset_name_to_scheme
 from auto_round.utils import (
     DEVICE_ENVIRON_VARIABLE_MAPPING,
     SUPPORTED_LAYER_TYPES,

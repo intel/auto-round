@@ -32,7 +32,7 @@ from __future__ import annotations
 
 from collections import defaultdict
 from contextlib import ExitStack
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, fields
 from enum import IntEnum
 from typing import TYPE_CHECKING, Any, Optional, Union
 
@@ -140,12 +140,46 @@ def _quantization_configs(configs: list[Any]) -> list[Any]:
 
 def _public_config_attrs(config: Any) -> dict[str, Any]:
     """Public, data-like attrs used for structural shared config resolution."""
-    return {key: value for key, value in vars(config).items() if not key.startswith("_") and not callable(value)}
+    return {
+        key: value
+        for key, value in vars(config).items()
+        if key != "scheme" and not key.startswith("_") and not callable(value)
+    }
 
 
 def _format_shared_config_values(field: str, values: list[tuple[Any, Any]]) -> str:
     parts = [f"{type(config).__name__}.{field}={value!r}" for config, value in values]
     return ", ".join(parts)
+
+
+def _resolve_shared_scheme_values(configs: list[Any]) -> None:
+    from auto_round.context.scheme import QuantizationScheme
+
+    scheme_fields = {field.name for field in fields(QuantizationScheme)}
+    field_values: dict[str, list[tuple[Any, Any]]] = defaultdict(list)
+    for config in configs:
+        for attr_name in getattr(config, "_user_set_scheme_fields", set()):
+            if attr_name not in scheme_fields:
+                continue
+            value = getattr(config, attr_name, None)
+            if value is not None:
+                field_values[attr_name].append((config, value))
+
+    for attr_name, values in field_values.items():
+        unique_values = []
+        for _, value in values:
+            if not any(value == existing for existing in unique_values):
+                unique_values.append(value)
+        if len(unique_values) > 1:
+            raise ValueError(
+                f"Conflicting shared scheme field {attr_name!r}: "
+                f"{_format_shared_config_values(attr_name, values)}. "
+                "Use the same value for shared fields or pass scheme arguments through Compressor."
+            )
+        shared_value = unique_values[0]
+        for config in configs:
+            if hasattr(config, "scheme") and attr_name not in getattr(config, "_user_set_scheme_fields", set()):
+                setattr(config.scheme, attr_name, shared_value)
 
 
 def resolve_shared_config_values(configs: list[Any]) -> list[Any]:
@@ -157,6 +191,7 @@ def resolve_shared_config_values(configs: list[Any]) -> list[Any]:
     not define a field do not participate in that field.
     """
     quant_configs = _quantization_configs(configs)
+    _resolve_shared_scheme_values(quant_configs)
     attrs_by_config = [(config, _public_config_attrs(config)) for config in quant_configs]
     field_to_configs: dict[str, list[Any]] = defaultdict(list)
     for config, attrs in attrs_by_config:

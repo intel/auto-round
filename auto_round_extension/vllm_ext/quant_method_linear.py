@@ -19,7 +19,7 @@ from vllm.logger import init_logger
 from vllm.model_executor.layers.linear import LinearBase, LinearMethodBase, UnquantizedLinearMethod
 from vllm.model_executor.layers.quantization.auto_round import AutoRoundConfig
 
-from auto_round.schemes import QuantizationScheme
+from auto_round.context.scheme import QuantizationScheme
 from auto_round_extension.vllm_ext.utils import _is_mxfp4_w4a4, _is_mxfp8_w8a8, get_scheme, need_quantize
 
 logger = init_logger(__name__)
