@@ -146,6 +146,7 @@ struct SAGEV1FwdMainloop<sage::XeDefault<Stages>, CausalMask_, FullMask_, Cached
                                               decltype(FragS{}.tv_layout()){}));
 
   using FragPRow = decltype(reduce<1>(FragP{}, sycl::plus<void>{}));
+  using FragPCol = decltype(reduce<0>(FragP{}, sycl::plus<void>{}));
     using SingleFragPV = FragC<TiledMMAPV>;                      // (atom val,q',v')
     using SingleFragAFloat = std::remove_reference_t<decltype(make_subgroup_tensor(
       make_fragment_like<float>(typename SingleFragPV::Base{}), decltype(SingleFragPV{}.tv_layout()){}))>;
@@ -279,6 +280,7 @@ struct SAGEV1FwdMainloop<sage::XeDefault<Stages>, CausalMask_, FullMask_, Cached
     Tensor cK_cache = make_identity_tensor(K_cache_2D.shape());   // (k,d)
     Tensor cV_cache = make_identity_tensor(V_cache_2D.shape());   // (v,k)
     Tensor cP = make_identity_tensor(take<0, 2>(TileShapeQK{}));  // (q,k)
+    Tensor cPV = make_identity_tensor(select<0, 1>(TileShapePV{}));
 
     /* Partition global tensors into workgroup tiles */
     Tensor gQ = local_tile(cQ, TileShapeQK{}, append(blk_qv, _), Step<_1, X, _1>{});          // (q,d,D)
@@ -335,6 +337,7 @@ struct SAGEV1FwdMainloop<sage::XeDefault<Stages>, CausalMask_, FullMask_, Cached
 
     auto tVrV = thr_copy_v.partition_sg_fragment_D(gV_split(_, _, 0, 0));
     auto tArV = thr_mma_pv.partition_sg_fragment_B(gV_split(_, _, 0, 0));
+    auto tCrA = thr_mma_pv_i8.partition_C(cPV);
 
     /* Create TiledCopy objects for prefetches */
     auto prefetch_q = make_block_2d_prefetch(copy_q);
@@ -501,7 +504,7 @@ struct SAGEV1FwdMainloop<sage::XeDefault<Stages>, CausalMask_, FullMask_, Cached
       /* k masking for remainder tiles */
       if constexpr (!is_cache) {
         if (check_remainder_k && K == total_blk - 1) {
-          FragPRow k_rem_mask;
+          FragPCol k_rem_mask;
           int k_val = get<0>(tKgK_cur(0, 0, 0, k_idx, 0)) + kblocks_cache * get<1>(TileShapeQK{});
           int k = k_val + get_sub_group().get_local_id()[0];
           CUTLASS_PRAGMA_UNROLL
@@ -538,10 +541,10 @@ struct SAGEV1FwdMainloop<sage::XeDefault<Stages>, CausalMask_, FullMask_, Cached
           cute::gemm(mma_pv, tArP, tArV, tArA(_, _, _, VV));
         }
       } else {
-        ElementA pv_dequant_scale = ElementA(0.0f);
-        if constexpr (WriteBackInt8PV) {
-          pv_dequant_scale = ElementA(scaleV[scalek_idx]) * (ElementA(1.0f) / ElementA(127.0f));
-        }
+        constexpr ElementA kInvVQuantScale = ElementA(1.0f / 127.0f);
+        int scalev_head_dim = int(size<0>(V_2D));
+        int v_block_base = int(get<1>(blk_qv)) * int(get<1>(TileShapePV{})) * VTiles;
+        int scalev_block_base = scalek_idx * scalev_head_dim;
         CUTLASS_PRAGMA_UNROLL
         for (int VV = 0; VV < VTiles; VV++) {
           auto tArA_v = tArA(_, _, _, VV);
@@ -550,7 +553,7 @@ struct SAGEV1FwdMainloop<sage::XeDefault<Stages>, CausalMask_, FullMask_, Cached
             for (int i = 0; i < tArA.size() / VTiles; i++) tArA_v(i) *= broadcast<0>(rescale, tArA, i);
           }
 
-          auto tArAcc = thr_mma_pv_i8.partition_sg_fragment_C(make_identity_tensor(select<0, 1>(TileShapePV{})));
+          auto tArAcc = thr_mma_pv_i8.partition_sg_fragment_C(cPV);
           auto tVrV_i8 = thr_copy_v.partition_sg_fragment_D(gV_split(_, _, 0, 0));
           auto tArV_i8 = thr_mma_pv_i8.partition_sg_fragment_B(gV_split(_, _, 0, 0));
           copy(copy_v_cur, tVgV_cur(_, _, _, VV, k_idx), tVrV_i8);
@@ -564,7 +567,9 @@ struct SAGEV1FwdMainloop<sage::XeDefault<Stages>, CausalMask_, FullMask_, Cached
           if constexpr (WriteBackInt8PV) {
             CUTLASS_PRAGMA_UNROLL
             for (int i = 0; i < tArAcc.size(); ++i) {
-              tArA_v(i) += ElementA(tArAcc(i)) * pv_dequant_scale;
+              int local_v = int(get<1>(tCrA(i)));
+              int scalev_idx = scalev_block_base + v_block_base + VV * int(get<1>(TileShapePV{})) + local_v;
+              tArA_v(i) += ElementA(tArAcc(i)) * ElementA(scaleV[scalev_idx]) * kInvVQuantScale;
             }
           }
         }
