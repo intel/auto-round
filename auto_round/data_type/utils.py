@@ -170,6 +170,7 @@ def get_quant_func(
 
         if data_type in QUANT_FUNC_WITH_DTYPE:
             return QUANT_FUNC_WITH_DTYPE[data_type], data_type
+    raise ValueError(f"No quantization function found for dtype={dtype}, bits={bits}, sym={sym}, group_size={group_size}")
 
 
 def round_ste(x: torch.Tensor):
