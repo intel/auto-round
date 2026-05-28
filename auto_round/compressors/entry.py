@@ -211,29 +211,6 @@ def is_gguf_k_target(value) -> bool:
     return False
 
 
-def detect_model_type(model):
-    """Detect the type of model (LLM, MLLM, or Diffusion).
-
-    Args:
-        model: Model instance or model path string
-
-    Returns:
-        str: "mllm", "diffusion", or "llm"
-    """
-    from auto_round.utils import is_diffusion_model, is_mllm_model
-
-    # Check if it's a diffusion model first (more specific)
-    if is_diffusion_model(model):
-        return "diffusion"
-
-    # Check if it's an MLLM
-    if is_mllm_model(model):
-        return "mllm"
-
-    # Default to standard LLM
-    return "llm"
-
-
 def _resolve_quant_config_for_routing(alg_configs) -> tuple[list, list, QuantizationConfig]:
     preprocessor_configs, block_quant_configs = split_quantization_configs(alg_configs)
     if len(block_quant_configs) == 0 and preprocessor_configs:
@@ -255,6 +232,8 @@ def _resolve_quant_config_for_routing(alg_configs) -> tuple[list, list, Quantiza
 
 
 def _build_model_type_ctor_kwargs(model, base_kwargs, mllm_kwargs, diffusion_kwargs) -> tuple[str, dict[str, Any]]:
+    from auto_round.utils.model import detect_model_type
+
     model_type = detect_model_type(model)
     has_multimodal_assets = mllm_kwargs.get("processor") is not None or mllm_kwargs.get("image_processor") is not None
     if has_multimodal_assets and model_type != "mllm":

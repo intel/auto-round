@@ -1041,6 +1041,40 @@ class XpuWrapper {
     }
   }
 
+  template <typename T>
+  static void sage_dynamic_quant_v(sycl::queue* q, const T* in_ptr, int8_t* out_ptr, float* scale_ptr, int num_rows,
+                                   int seq, int n_seq_blk, int head_dim, int block_size) {
+    size_t num_scales = size_t(num_rows) * size_t(n_seq_blk) * size_t(head_dim);
+    q->parallel_for(sycl::range<1>(num_scales), [=](sycl::id<1> item) {
+      size_t linear_idx = item[0];
+      int dim = int(linear_idx % size_t(head_dim));
+      size_t block_idx = linear_idx / size_t(head_dim);
+      int seq_id = int(block_idx % size_t(n_seq_blk));
+      int row_id = int(block_idx / size_t(n_seq_blk));
+      int seq_begin = seq_id * block_size;
+      int seq_end = std::min(seq_begin + block_size, seq);
+
+      float absmax = 0.0f;
+      for (int token = seq_begin; token < seq_end; ++token) {
+        size_t offset = (size_t(row_id) * size_t(seq) + size_t(token)) * size_t(head_dim) + size_t(dim);
+        float value = static_cast<float>(in_ptr[offset]);
+        absmax = sycl::fmax(absmax, sycl::fabs(value));
+      }
+
+      float scale = absmax > 0.0f ? absmax / 127.0f : 0.0f;
+      float inv_scale = absmax > 0.0f ? 127.0f / absmax : 0.0f;
+      scale_ptr[linear_idx] = scale;
+
+      for (int token = seq_begin; token < seq_end; ++token) {
+        size_t offset = (size_t(row_id) * size_t(seq) + size_t(token)) * size_t(head_dim) + size_t(dim);
+        float value = static_cast<float>(in_ptr[offset]) * inv_scale;
+        value = sycl::round(value);
+        value = sycl::clamp(value, -127.0f, 127.0f);
+        out_ptr[offset] = static_cast<int8_t>(value);
+      }
+    });
+  }
+
   static void sagev1_impl(sycl::queue* q, void* Q_ptr, void* K_ptr, void* V_ptr, void* O_ptr, void* mask,
                           int scale_block_size, int batch, int num_heads_q, int num_heads_kv, int seq_len_q,
                           int seq_len_kv, int head_dim, float softmax_scale, bool is_causal, bool use_int8_pv) {
@@ -1052,7 +1086,7 @@ class XpuWrapper {
     size_t k_size = num_heads_kv * seq_len_kv * head_dim * batch;
     size_t k_scale_size = num_heads_kv * seq_kv_blk * batch;
     size_t v_tmp_size = use_int8_pv ? k_size : 0;
-    size_t v_scale_size = use_int8_pv ? k_scale_size * sizeof(float) : 0;
+    size_t v_scale_size = use_int8_pv ? k_scale_size * head_dim * sizeof(float) : 0;
     size_t k_bias_size = use_mean_bias ? num_heads_kv * head_dim * batch * sizeof(sycl::half) : 0;
     size_t total_size = k_size + q_size + k_scale_size * sizeof(float) + q_scale_size * sizeof(float) + v_tmp_size +
                         v_scale_size + k_bias_size;
@@ -1082,8 +1116,8 @@ class XpuWrapper {
     sage_dynamic_quant<sycl::half>(q, (sycl::half*)K_ptr, (int8_t*)k_out_ptr, (float*)kscale, batch * num_heads_kv,
                      seq_len_kv, seq_kv_blk, head_dim, scale_block_size, kbias);
     if (use_int8_pv) {
-      sage_dynamic_quant<sycl::half>(q, (sycl::half*)V_ptr, (int8_t*)v_out_ptr, (float*)vscale, batch * num_heads_kv,
-                                     seq_len_kv, seq_kv_blk, head_dim, scale_block_size);
+      sage_dynamic_quant_v<sycl::half>(q, (sycl::half*)V_ptr, (int8_t*)v_out_ptr, (float*)vscale,
+                                       batch * num_heads_kv, seq_len_kv, seq_kv_blk, head_dim, scale_block_size);
       ark::sdpa_impl_qks8_pvi8(q, q_out_ptr, k_out_ptr, v_out_ptr, O_ptr, mask, scale_block_size, qscale, kscale,
                                vscale, batch, num_heads_q, num_heads_kv, seq_len_q, seq_len_kv, head_dim,
                                softmax_scale, is_causal);

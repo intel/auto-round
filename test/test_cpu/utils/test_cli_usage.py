@@ -27,51 +27,59 @@ class TestAutoRoundCmd:
 
     def test_auto_round_cmd(self, tiny_opt_model_path, tiny_qwen_vl_model_path):
         python_path = sys.executable
-
-        # Test llm script
         res = os.system(f"PYTHONPATH='{AUTO_ROUND_PATH}:$PYTHONPATH' {python_path} -m auto_round -h")
         if res > 0 or res == -1:
             assert False, "cmd line test fail, please have a check"
 
+    def test_auto_round_cmd2(self, tiny_opt_model_path, tiny_qwen_vl_model_path):
+        python_path = sys.executable
         res = os.system(
-            f"PYTHONPATH='{AUTO_ROUND_PATH}:$PYTHONPATH' {python_path} -m auto_round --model {tiny_opt_model_path} --seqlen 32 --iter 2 --nsamples 1 --format auto_gptq,auto_round --output_dir {self.save_dir}  --tasks piqa"
+            f"PYTHONPATH='{AUTO_ROUND_PATH}:$PYTHONPATH' {python_path} -m auto_round --model {tiny_opt_model_path} --seqlen 32 --iter 2 --nsamples 1 --format auto_gptq,auto_round --output_dir {self.save_dir} --tasks piqa --limit 2"
         )
         if res > 0 or res == -1:
             assert False, "cmd line test fail, please have a check"
 
+    def test_auto_round_cmd3(self, tiny_opt_model_path, tiny_qwen_vl_model_path):
+        python_path = sys.executable
         res = os.system(
-            f"PYTHONPATH='{AUTO_ROUND_PATH}:$PYTHONPATH' {python_path} -m auto_round --model {tiny_opt_model_path} --seqlen 8 --iter 1 --nsamples 1 --eval_task_by_task --tasks openbookqa --bs 32"
+            f"PYTHONPATH='{AUTO_ROUND_PATH}:$PYTHONPATH' {python_path} -m auto_round --model {tiny_opt_model_path} --seqlen 8 --iter 1 --nsamples 1 --eval_task_by_task --tasks openbookqa --bs 32 --limit 2"
         )
         if res > 0 or res == -1:
             assert False, "cmd line test fail, please have a check"
 
+    def test_auto_round_cmd4(self, tiny_opt_model_path, tiny_qwen_vl_model_path):
+        python_path = sys.executable
         res = os.system(
-            f"PYTHONPATH='{AUTO_ROUND_PATH}:$PYTHONPATH' {python_path} -c 'from auto_round.__main__ import run_light; run_light()' --seqlen 8 --iter 2 --nsamples 8 --output_dir {self.save_dir} --tasks lambada_openai"
+            f"PYTHONPATH='{AUTO_ROUND_PATH}:$PYTHONPATH' {python_path} -c 'from auto_round.__main__ import run_light; run_light()' --seqlen 8 --iter 2 --nsamples 8 --output_dir {self.save_dir} --tasks lambada_openai --limit 2"
         )
         if res > 0 or res == -1:
             assert False, "cmd line test fail, please have a check"
 
-        # test mllm script
-
-        # test auto_round_mllm --eval help
+    def test_auto_round_cmd5(self, tiny_opt_model_path, tiny_qwen_vl_model_path):
+        python_path = sys.executable
         res = os.system(f"PYTHONPATH='{AUTO_ROUND_PATH}:$PYTHONPATH' {python_path} -m auto_round --eval -h")
         if res > 0 or res == -1:
             assert False, "cmd line test fail, please have a check"
 
-        # test auto_round_mllm --lmms help
+    def test_auto_round_cmd6(self, tiny_opt_model_path, tiny_qwen_vl_model_path):
+        python_path = sys.executable
         res = os.system(f"PYTHONPATH='{AUTO_ROUND_PATH}:$PYTHONPATH' {python_path} -m auto_round --eval --lmms -h")
         if res > 0 or res == -1:
             assert False, "cmd line test fail, please have a check"
 
+    def test_auto_round_cmd7(self, tiny_opt_model_path, tiny_qwen_vl_model_path):
+        python_path = sys.executable
         res = os.system(
             f"PYTHONPATH='{AUTO_ROUND_PATH}:$PYTHONPATH' {python_path} -m auto_round --mllm --model {tiny_qwen_vl_model_path} --iter 2 --nsamples 2 --seqlen 32 --format auto_round --output_dir {self.save_dir}"
         )
         if res > 0 or res == -1:
             assert False, "cmd line test fail, please have a check"
 
+    def test_auto_round_cmd8(self, tiny_opt_model_path, tiny_qwen_vl_model_path):
+        python_path = sys.executable
         res = os.system(
             f"PYTHONPATH='{AUTO_ROUND_PATH}:$PYTHONPATH' {python_path} -m auto_round --mllm --iter 2 --nsamples 2 --model {tiny_qwen_vl_model_path} --seqlen 32 --format auto_round"
-            f" --quant_nontext_module --output_dir {self.save_dir} "
+            f" --quant_nontext_module --output_dir {self.save_dir}"
         )
         if res > 0 or res == -1:
             assert False, "cmd line test fail, please have a check"

@@ -195,7 +195,7 @@ struct TestSDPA {
     size_t o_count = size_t(batch) * num_heads_q * seq_len_q * head_dim;
     size_t q_scale_count = size_t(batch) * num_heads_q * ((seq_len_q + scale_block_size - 1) / scale_block_size);
     size_t k_scale_count = size_t(batch) * num_heads_kv * ((seq_len_kv + scale_block_size - 1) / scale_block_size);
-    size_t v_scale_count = k_scale_count;
+    size_t v_scale_count = k_scale_count * head_dim;
     float softmax_scale = 1.0f / std::sqrt(float(head_dim));
 
     auto host_q = to_fp16_vector(make_random_vector(q_count, -1.0f, 1.0f, 901u + uint32_t(seq_len_q)));
@@ -224,9 +224,10 @@ struct TestSDPA {
     ark::XpuWrapper::sage_dynamic_quant<sycl::half>(q, dev_k, dev_ki8, dev_kscale, batch * num_heads_kv, seq_len_kv,
                                                     (seq_len_kv + scale_block_size - 1) / scale_block_size, head_dim,
                                                     scale_block_size);
-    ark::XpuWrapper::sage_dynamic_quant<sycl::half>(q, dev_v, dev_vi8, dev_vscale, batch * num_heads_kv, seq_len_kv,
-                            (seq_len_kv + scale_block_size - 1) / scale_block_size, head_dim,
-                            scale_block_size);
+    ark::XpuWrapper::sage_dynamic_quant_v<sycl::half>(q, dev_v, dev_vi8, dev_vscale, batch * num_heads_kv,
+                              seq_len_kv,
+                              (seq_len_kv + scale_block_size - 1) / scale_block_size,
+                              head_dim, scale_block_size);
 
     double sage_ms = run_bench(
         [&]() {
