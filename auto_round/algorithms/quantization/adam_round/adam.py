@@ -15,11 +15,14 @@ from typing import Union
 
 import torch
 
+from auto_round.algorithms.quantization.sign_round.config import AdamRoundConfig
 from auto_round.algorithms.quantization.sign_round.quantizer import SignRoundQuantizer
+from auto_round.algorithms.registry import register_pipeline_member
 from auto_round.context.scheme import QuantizationScheme
 from auto_round.utils import check_is_cpu, htcore, is_hpex_available
 
 
+@register_pipeline_member(AdamRoundConfig)
 class AdamRoundQuantizer(SignRoundQuantizer):
 
     def __init__(self, config):

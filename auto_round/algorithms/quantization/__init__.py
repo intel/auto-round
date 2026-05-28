@@ -24,11 +24,11 @@ from auto_round.algorithms.quantization.pipeline import (
     RunContext,
     merge_policies,
 )
-from auto_round.algorithms.quantization.sign_round.config import SignRoundConfig
+from auto_round.algorithms.quantization.sign_round.config import AdamRoundConfig, SignRoundConfig, SignRoundV2Config
 from auto_round.algorithms.quantization.sign_round.quantizer import SignRoundQuantizer
 from auto_round.algorithms.quantization.sign_roundv2 import SignRoundV2Quantizer
 from auto_round.algorithms.quantization.adam_round.adam import AdamRoundQuantizer
-from auto_round.algorithms.quantization.rtn.config import RTNConfig
+from auto_round.algorithms.quantization.rtn.config import OptimizedRTNConfig, RTNConfig
 from auto_round.algorithms.quantization.rtn.quantizer import RTNQuantizer, OptimizedRTNQuantizer
 from auto_round.algorithms.transforms.base import BaseWeightTransformer
 

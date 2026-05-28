@@ -21,7 +21,6 @@ from typing import Any, Optional, Union
 import torch
 from transformers import AutoConfig, set_seed
 
-from auto_round.algorithms.alg_config import AlgConfig
 from auto_round.algorithms.quantization import BaseQuantizer, QuantizationConfig
 from auto_round.algorithms.transforms import (
     BaseRotationConfig,
@@ -192,7 +191,7 @@ class BaseCompressor(object):
 
     def __init__(
         self,
-        config: Union[AlgConfig, list[AlgConfig]],
+        config: Union[object, list[object]],
         model: Union[torch.nn.Module, str],
         tokenizer=None,
         platform="hf",

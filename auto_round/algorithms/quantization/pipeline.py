@@ -90,17 +90,13 @@ class InputSource(IntEnum):
 
 
 def get_algorithm_class(config: Any):
-    """Return the algorithm implementation class declared by a quantization config."""
-    if not hasattr(config, "_alg_cls"):
-        return None
-    import importlib
+    """Return the registered implementation class for a quantization config."""
+    from auto_round.algorithms.registry import normalize_algorithm_config, resolve_pipeline_member
 
-    for module_name in ("auto_round.algorithms.quantization", "auto_round.algorithms.transforms.awq"):
-        module = importlib.import_module(module_name)
-        alg_cls = getattr(module, config._alg_cls, None)
-        if alg_cls is not None:
-            return alg_cls
-    return None
+    try:
+        return resolve_pipeline_member(normalize_algorithm_config(config))
+    except ValueError:
+        return None
 
 
 def is_preprocessor_config(config: Any) -> bool:
@@ -527,7 +523,7 @@ class RunContext:
     layer_names: list[str]  # quantizable layer names *outside* all blocks
     formats: Optional[list]  # resolved OutputFormat list (or None)
     scheme: Any  # str | QuantizationScheme | AutoScheme
-    alg_configs: list  # list[AlgConfig]  – all configs in the pipeline
+    alg_configs: list  # all algorithm configs in the pipeline
     model_context: Any  # ModelContext
     compress_context: Any  # CompressContext
 
@@ -644,7 +640,7 @@ class QuantizationPipeline:
 
     @classmethod
     def from_configs(cls, configs: list, compressor: Any = None) -> "QuantizationPipeline":
-        """Construct a ``QuantizationPipeline`` from a list of ``AlgConfig`` instances.
+        """Construct a ``QuantizationPipeline`` from a list of algorithm config instances.
 
         Resolution rules:
         1. If no ``QuantizationConfig`` with a ``BaseQuantizer`` is found in *configs*,
@@ -677,7 +673,7 @@ class QuantizationPipeline:
         def _resolve_cls(cfg):
             alg_cls = get_algorithm_class(cfg)
             if alg_cls is None:
-                raise ValueError(f"Unknown algorithm class {cfg._alg_cls!r}.")
+                raise ValueError(f"Unknown algorithm config type {type(cfg).__name__!r}.")
             if is_diffusion and not issubclass(alg_cls, DiffusionMixin):
                 alg_cls = type(alg_cls.__name__, (DiffusionMixin, alg_cls), {})
             return alg_cls
@@ -688,6 +684,9 @@ class QuantizationPipeline:
         for cfg in configs:
             if not isinstance(cfg, QuantizationConfig):
                 continue
+            from auto_round.algorithms.registry import normalize_algorithm_config
+
+            cfg = normalize_algorithm_config(cfg)
             alg_cls = _resolve_cls(cfg)
             q = alg_cls(cfg)
             if compressor is not None:

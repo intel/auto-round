@@ -13,9 +13,9 @@
 # limitations under the License.
 
 
-import importlib
 from contextlib import contextmanager
 
+from auto_round.algorithms.registry import resolve_pipeline_member
 from auto_round.context.scheme import QuantizationScheme
 
 
@@ -36,15 +36,11 @@ class BasePipelineMember:
 
     @classmethod
     def from_config(cls, config):
-        """Instantiate the implementation class declared by ``config._alg_cls``."""
-        for module_name in ("auto_round.algorithms.quantization", "auto_round.algorithms.transforms.awq"):
-            module = importlib.import_module(module_name)
-            alg_cls = getattr(module, config._alg_cls, None)
-            if alg_cls is not None:
-                if cls is alg_cls:
-                    return cls(config)
-                return alg_cls(config)
-        raise ValueError(f"Unknown algorithm class {config._alg_cls!r}.")
+        """Instantiate the registered implementation class for ``config``."""
+        alg_cls = resolve_pipeline_member(config)
+        if cls is alg_cls:
+            return cls(config)
+        return alg_cls(config)
 
     def bind(self, compressor) -> None:
         """Wire shared context from the owning compressor."""

@@ -70,6 +70,7 @@ _COMPAT_KWARGS = {
     "duo_scaling",
     "n_grid",
     "mappings",
+    "algorithm",
     "optimizer",
     "lr_scheduler",
     "not_use_best_mse",

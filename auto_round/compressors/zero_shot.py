@@ -17,7 +17,6 @@ from typing import Any, Union
 import torch
 from tqdm import tqdm
 
-from auto_round.algorithms.alg_config import AlgConfig
 from auto_round.algorithms.quantization.pipeline import BlockContext
 from auto_round.compressors.base import BaseCompressor
 from auto_round.compressors.utils import is_nv_fp, is_static_wfp8afp8
@@ -44,7 +43,7 @@ class ZeroShotCompressor(BaseCompressor):
 
     def __init__(
         self,
-        config: Union[AlgConfig, list[AlgConfig]],
+        config: Union[object, list[object]],
         model: Union[torch.nn.Module, str],
         tokenizer=None,
         platform="hf",
