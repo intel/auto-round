@@ -589,7 +589,7 @@ class FP8Handler(WeightTypeHandler):
             decompress_module(layer)
             return layer
 
-        from auto_round.schemes import QuantizationScheme
+        from auto_round.context.scheme import QuantizationScheme
         from auto_round.utils.device import is_gaudi2
 
         new_layer = torch.nn.Linear(layer.in_features, layer.out_features, bias=layer.bias is not None, dtype=dtype)
@@ -673,7 +673,7 @@ class MXFP4Handler(WeightTypeHandler):
         to_cpu: bool = False,
     ) -> torch.nn.Module:
         """Convert an MXFP4 CompressedLinear layer to a standard Linear layer."""
-        from auto_round.schemes import QuantizationScheme
+        from auto_round.context.scheme import QuantizationScheme
         from auto_round.utils.device import is_gaudi2
 
         new_layer = torch.nn.Linear(layer.in_features, layer.out_features, bias=layer.bias is not None, dtype=dtype)
@@ -762,7 +762,7 @@ class MXFP8Handler(WeightTypeHandler):
         to_cpu: bool = False,
     ) -> torch.nn.Module:
         """Convert an MXFP8 CompressedLinear layer to a standard Linear layer."""
-        from auto_round.schemes import QuantizationScheme
+        from auto_round.context.scheme import QuantizationScheme
         from auto_round.utils.device import is_gaudi2
 
         new_layer = torch.nn.Linear(layer.in_features, layer.out_features, bias=layer.bias is not None, dtype=dtype)
@@ -853,7 +853,7 @@ class NVFP4Handler(WeightTypeHandler):
             decompress_module(layer)
             return layer
 
-        from auto_round.schemes import QuantizationScheme
+        from auto_round.context.scheme import QuantizationScheme
         from auto_round.utils.device import is_gaudi2
 
         new_layer = torch.nn.Linear(layer.in_features, layer.out_features, bias=layer.bias is not None, dtype=dtype)

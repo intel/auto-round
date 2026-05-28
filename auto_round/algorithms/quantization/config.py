@@ -11,14 +11,13 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-from dataclasses import dataclass
 from enum import Enum
 from typing import ClassVar, Union
 
 from auto_round.algorithms.alg_config import AlgConfig
+from auto_round.context.scheme import QuantizationScheme
 from auto_round.export.export_to_gguf.config import GGUF_INNER_CONFIG
 from auto_round.logger import logger
-from auto_round.schemes import QuantizationScheme
 
 
 class BackendDataType(str, Enum):
@@ -29,7 +28,6 @@ class BackendDataType(str, Enum):
     FP8 = "fp8"
 
 
-@dataclass(kw_only=True)
 class QuantizationConfig:
     """Common quantization configuration shared by block quantizers.
 
@@ -47,33 +45,41 @@ class QuantizationConfig:
         act_dynamic: Whether activation quantization should be dynamic.
         super_bits: Bit width used for double quantization metadata.
         super_group_size: Group size used for double quantization metadata.
-        scale_dtype: Data type used to store quantization scales.
-        ignore_layers: Comma-separated layer names to keep in higher precision.
-        quant_lm_head: Whether to quantize the lm_head module.
-        to_quant_block_names: Optional comma-separated subset of block names
-            to quantize.
     """
 
     _alg_cls: ClassVar[str] = None
+    _scheme_fields: ClassVar[set[str]] = set(QuantizationScheme.get_attributes())
 
-    # quantization args
-    bits: int = None
-    group_size: int = None
-    sym: bool = None
-    data_type: str = None
-    act_bits: int = None
-    act_group_size: int = None
-    act_sym: bool = None
-    act_data_type: str = None
-    act_dynamic: bool = None
-    super_bits: int = None
-    super_group_size: int = None
-    scale_dtype: str = None
-    ignore_layers: str = ""
-    quant_lm_head: bool = False
-    to_quant_block_names: Union[str, list, None] = None
+    def __init__(self, *, scheme: QuantizationScheme = None, **kwargs):
+        object.__setattr__(self, "scheme", scheme if scheme is not None else QuantizationScheme.empty())
+        object.__setattr__(self, "_user_set_scheme_fields", set())
 
-    def __post_init__(self):
+        unknown = []
+        for key, value in kwargs.items():
+            if key in self._scheme_fields:
+                setattr(self.scheme, key, value)
+                self._user_set_scheme_fields.add(key)
+            else:
+                unknown.append(key)
+        if unknown:
+            unknown_args = ", ".join(repr(arg) for arg in unknown)
+            raise TypeError(f"Unexpected quantization config argument(s): {unknown_args}")
+
+        self._check_partial_config()
+
+    def __getattr__(self, name):
+        if name in self._scheme_fields:
+            return getattr(self.scheme, name, None)
+        raise AttributeError(f"{type(self).__name__!s} object has no attribute {name!r}")
+
+    def __setattr__(self, name, value):
+        if name in self._scheme_fields and "scheme" in self.__dict__:
+            setattr(self.scheme, name, value)
+            self._user_set_scheme_fields.add(name)
+            return
+        object.__setattr__(self, name, value)
+
+    def _check_partial_config(self):
         # Run block-wise validation early (at construction time, before model loading).
         # Scheme resolution is deferred to BaseCompressor.post_init() via SchemeMixin.
         # Guard with None checks in case the user hasn't explicitly set data_type/bits

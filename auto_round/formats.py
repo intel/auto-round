@@ -38,12 +38,12 @@ from auto_round.compressors.utils import (
     is_wfp8afp8,
     is_wint_woq,
 )
-from auto_round.export.export_to_gguf.config import ModelType
-from auto_round.schemes import (
+from auto_round.context.scheme import (
     PRESET_SCHEMES,
     QuantizationScheme,
     get_gguf_scheme,
 )
+from auto_round.export.export_to_gguf.config import ModelType
 from auto_round.utils import (
     INNER_SUPPORTED_LAYER_TYPES,
     SUPPORTED_FORMATS,
@@ -157,7 +157,7 @@ def get_formats(
 
 
 def _check_divisible_by_32(ar):
-    from auto_round.schemes import preset_name_to_scheme
+    from auto_round.context.scheme import preset_name_to_scheme
 
     if isinstance(ar.scheme, str):
         default_dict = asdict(preset_name_to_scheme(ar.scheme.upper()))
@@ -779,7 +779,7 @@ class GGUFFormat(OutputFormat):
             scheme = ar.scheme
             gguf_format = f"gguf:{format.lower()}"
             if format.lower().endswith("_mixed"):
-                from auto_round.schemes import _handle_special_schemes
+                from auto_round.context.scheme import _handle_special_schemes
 
                 ar.layer_config = _handle_special_schemes(gguf_format, ar.layer_config, ar.model)
                 gguf_format = gguf_format.lower().replace("_mixed", "_s")

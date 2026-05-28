@@ -228,21 +228,6 @@ class BaseQuantizer(BasePipelineMember):
     def __init__(self, config: QuantizationConfig):
         super().__init__(config)
         self.layer_config = None
-        self.bits = config.bits
-        self.group_size = config.group_size
-        self.sym = config.sym
-        self.data_type = config.data_type
-        self.act_bits = config.act_bits
-        self.act_group_size = config.act_group_size
-        self.act_sym = config.act_sym
-        self.act_data_type = config.act_data_type
-        self.act_dynamic = config.act_dynamic
-        self.super_bits = config.super_bits
-        self.super_group_size = config.super_group_size
-        self.scale_dtype = config.scale_dtype
-        self.ignore_layers = config.ignore_layers
-        self.quant_lm_head = config.quant_lm_head
-        self.to_quant_block_names = config.to_quant_block_names
         # Calibration-time state lives on a shared
         # :class:`~auto_round.calibration.state.CalibrationState` instance.
         # The compressor wires its own instance here in ``_resolve_scheme``;
@@ -310,6 +295,7 @@ class BaseQuantizer(BasePipelineMember):
         """
         self.model_context = compressor.model_context
         self.compress_context = compressor.compress_context
+        self.scheme = compressor.scheme_context
         self.scale_dtype = compressor.scale_dtype
         # Share the compressor's CalibrationState instance.
         self._calibration_state = compressor._calibration_state

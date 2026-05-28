@@ -45,6 +45,7 @@ import torch.nn as nn
 import transformers
 from tqdm import tqdm
 
+from auto_round.context.scheme import QuantizationScheme
 from auto_round.export.utils import (
     filter_quantization_config,
     get_autogptq_packing_qlinear,
@@ -53,7 +54,6 @@ from auto_round.export.utils import (
     resolve_pipeline_export_layout,
     save_model,
 )
-from auto_round.schemes import QuantizationScheme
 
 GPTQ_REQUIRED_CONFIG_KEYS = (
     "bits",

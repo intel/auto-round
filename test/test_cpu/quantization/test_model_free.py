@@ -31,7 +31,7 @@ from auto_round.compressors.model_free import (
     get_predefined_ignore_layers_from_config,
     is_model_free_supported_scheme,
 )
-from auto_round.schemes import QuantizationScheme
+from auto_round.context.scheme import QuantizationScheme
 
 # ---------------------------------------------------------------------------
 #  Helpers

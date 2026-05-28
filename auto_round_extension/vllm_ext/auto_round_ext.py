@@ -21,7 +21,7 @@ from vllm.model_executor.layers.fused_moe import FusedMoE
 from vllm.model_executor.layers.linear import LinearBase, UnquantizedLinearMethod
 from vllm.model_executor.layers.quantization.auto_round import AutoRoundConfig as _BaseAutoRoundConfig
 
-from auto_round.schemes import QuantizationScheme
+from auto_round.context.scheme import QuantizationScheme
 from auto_round_extension.vllm_ext.quant_method_linear import AutoRoundQuantLinearMethod
 from auto_round_extension.vllm_ext.quant_method_moe import AutoRoundMoEMethod
 

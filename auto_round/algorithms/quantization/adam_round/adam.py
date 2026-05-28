@@ -16,7 +16,7 @@ from typing import Union
 import torch
 
 from auto_round.algorithms.quantization.sign_round.quantizer import SignRoundQuantizer
-from auto_round.schemes import QuantizationScheme
+from auto_round.context.scheme import QuantizationScheme
 from auto_round.utils import check_is_cpu, htcore, is_hpex_available
 
 

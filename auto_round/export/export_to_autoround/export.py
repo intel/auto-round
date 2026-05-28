@@ -27,6 +27,7 @@ import transformers
 from tqdm import tqdm
 
 from auto_round.compressors.utils import is_mx_fp, is_nv_fp, is_standard_fp
+from auto_round.context.scheme import QuantizationScheme
 from auto_round.export.export_to_autoround.utils import check_neq_config
 from auto_round.export.utils import (
     filter_quantization_config,
@@ -38,7 +39,6 @@ from auto_round.export.utils import (
 )
 from auto_round.formats import AutoRoundExportFormat
 from auto_round.logger import logger
-from auto_round.schemes import QuantizationScheme
 from auto_round.utils import (
     SUPPORTED_FORMATS,
     SUPPORTED_LAYER_TYPES,
