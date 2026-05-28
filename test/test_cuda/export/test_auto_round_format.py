@@ -142,7 +142,9 @@ class TestAutoRound:
             seqlen=2,
         )
         quantized_model_path = self.save_dir
-        compressed_model, _ = autoround.quantize_and_save(output_dir=quantized_model_path, format="fp8")
+        compressed_model, quantized_model_path = autoround.quantize_and_save(
+            output_dir=quantized_model_path, format="fp8"
+        )
         tmp_layer = compressed_model.model.layers[1].self_attn.q_proj
         assert hasattr(tmp_layer, "weight_scale_inv")
         assert tmp_layer.weight.dtype is torch.float8_e4m3fn
