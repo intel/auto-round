@@ -2,15 +2,74 @@
 # SPDX-License-Identifier: Apache-2.0
 
 import math
+import sys
+from pathlib import Path
 
-import auto_round_kernel
 import pytest
 import torch
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+
+import auto_round_kernel
 
 pytestmark = pytest.mark.skipif(
     not (hasattr(torch, "xpu") and torch.xpu.is_available()),
     reason="XPU not available",
 )
+
+
+def _make_noncontiguous_attention_inputs(layout: str):
+    torch.manual_seed(3030)
+    batch, heads, seq, head_dim = 1, 2, 64, 64
+    q_hnd = torch.randn(batch, heads, seq * 2, head_dim, device="xpu", dtype=torch.float16)[:, :, ::2, :]
+    k_hnd = torch.randn(batch, heads, seq * 2, head_dim, device="xpu", dtype=torch.float16)[:, :, ::2, :]
+    v_hnd = torch.randn(batch, heads, seq * 2, head_dim, device="xpu", dtype=torch.float16)[:, :, ::2, :]
+
+    if layout == "HND":
+        return q_hnd, k_hnd, v_hnd
+    if layout == "NHD":
+        return q_hnd.transpose(1, 2), k_hnd.transpose(1, 2), v_hnd.transpose(1, 2)
+    raise ValueError(f"Unsupported layout: {layout}")
+
+
+@pytest.mark.parametrize(
+    ("api_name", "atol", "rtol"),
+    [("sdpa", 1e-2, 1e-2), ("sagev1", 2e-2, 2e-2)],
+)
+@pytest.mark.parametrize("layout", ["HND", "NHD"])
+def test_ark_attention_supports_noncontiguous_inputs_for_layouts(api_name, atol, rtol, layout):
+    q, k, v = _make_noncontiguous_attention_inputs(layout)
+    scale = 1 / math.sqrt(q.shape[-1])
+
+    expected = torch.nn.functional.scaled_dot_product_attention(
+        q if layout == "HND" else q.transpose(1, 2),
+        k if layout == "HND" else k.transpose(1, 2),
+        v if layout == "HND" else v.transpose(1, 2),
+        scale=scale,
+        is_causal=False,
+    )
+    if layout == "NHD":
+        expected = expected.transpose(1, 2)
+
+    ark = auto_round_kernel.ARK()
+    if api_name == "sdpa":
+        actual = ark.sdpa(q, k, v, scale=scale, is_causal=False, tensor_layout=layout)
+    else:
+        actual = ark.sagev1(
+            q,
+            k,
+            v,
+            scale=scale,
+            is_causal=False,
+            quant_block_size=64,
+            tensor_layout=layout,
+        )
+    torch.xpu.synchronize()
+
+    assert not q.is_contiguous()
+    assert not k.is_contiguous()
+    assert not v.is_contiguous()
+    torch.testing.assert_close(actual, expected, atol=atol, rtol=rtol)
 
 
 @pytest.mark.parametrize("seq_q,seq_kv", [(64, 64), (80, 64), (64, 80), (226, 226)])

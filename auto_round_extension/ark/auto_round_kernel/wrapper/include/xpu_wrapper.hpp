@@ -665,6 +665,18 @@ class XpuWrapper {
 #endif
   }
 
+  static inline size_t logical_hnd_offset(int batch_id, int head_id, int seq_id, int dim_id, int stride_seq,
+                                          int stride_dim, int stride_head, int stride_batch) {
+    return size_t(batch_id) * size_t(stride_batch) + size_t(head_id) * size_t(stride_head) +
+           size_t(seq_id) * size_t(stride_seq) + size_t(dim_id) * size_t(stride_dim);
+  }
+
+  static inline bool is_packed_hnd(int stride_seq, int stride_dim, int stride_head, int stride_batch, int num_heads,
+                                   int seq_len, int head_dim) {
+    return stride_dim == 1 && stride_seq == head_dim && stride_head == seq_len * head_dim &&
+           stride_batch == num_heads * seq_len * head_dim;
+  }
+
   static void woq_gemm(int m, const void* a, const void* b, void* c, const void* bias, BTLA_DTYPE acdt, QuantParam* p,
                        sycl::queue* q) {
     auto ret = woq_gemv(q, m, p, a, b, c, bias, acdt);
@@ -737,6 +749,28 @@ class XpuWrapper {
                         bias_ptr[index] = static_cast<T>(sum / static_cast<float>(seq));
                       }
                     });
+  }
+
+  template <typename T>
+  static void compute_seq_mean_bias_strided(sycl::queue* q, const T* in_ptr, T* bias_ptr, int batch, int num_heads,
+                                            int seq, int head_dim, int stride_seq, int stride_dim, int stride_head,
+                                            int stride_batch) {
+    size_t total = size_t(batch) * size_t(num_heads) * size_t(head_dim);
+    q->parallel_for(sycl::range<1>(total), [=](sycl::id<1> item) {
+      size_t index = item[0];
+      int row_id = int(index / size_t(head_dim));
+      int dim_id = int(index % size_t(head_dim));
+      int batch_id = row_id / num_heads;
+      int head_id = row_id % num_heads;
+
+      float sum = 0.0f;
+      for (int token = 0; token < seq; ++token) {
+        size_t offset = logical_hnd_offset(batch_id, head_id, token, dim_id, stride_seq, stride_dim, stride_head,
+                                           stride_batch);
+        sum += static_cast<float>(in_ptr[offset]);
+      }
+      bias_ptr[index] = static_cast<T>(sum / static_cast<float>(seq));
+    });
   }
 
   template <typename T>
@@ -1075,10 +1109,110 @@ class XpuWrapper {
     });
   }
 
+  template <typename T>
+  static void sage_dynamic_quant_strided(sycl::queue* q, const T* in_ptr, int8_t* out_ptr, float* scale_ptr,
+                                         int batch, int num_heads, int seq, int n_seq_blk, int head_dim,
+                                         int block_size, int stride_seq, int stride_dim, int stride_head,
+                                         int stride_batch, const T* bias_ptr = nullptr) {
+    int num_blocks = batch * num_heads * n_seq_blk;
+    q->parallel_for(sycl::range<1>(num_blocks), [=](sycl::id<1> item) {
+      int block_id = int(item[0]);
+      int row_id = block_id / n_seq_blk;
+      int seq_block_id = block_id % n_seq_blk;
+      int batch_id = row_id / num_heads;
+      int head_id = row_id % num_heads;
+      int seq_begin = seq_block_id * block_size;
+      int seq_end = std::min(seq_begin + block_size, seq);
+
+      float absmax = 0.0f;
+      for (int token = seq_begin; token < seq_end; ++token) {
+        for (int dim = 0; dim < head_dim; ++dim) {
+          size_t src_offset =
+              logical_hnd_offset(batch_id, head_id, token, dim, stride_seq, stride_dim, stride_head, stride_batch);
+          float value = static_cast<float>(in_ptr[src_offset]);
+          if (bias_ptr) {
+            value -= static_cast<float>(bias_ptr[size_t(row_id) * size_t(head_dim) + size_t(dim)]);
+          }
+          absmax = sycl::fmax(absmax, sycl::fabs(value));
+        }
+      }
+
+      float scale = absmax > 0.0f ? absmax / 127.0f : 0.0f;
+      float inv_scale = absmax > 0.0f ? 127.0f / absmax : 0.0f;
+      scale_ptr[block_id] = scale;
+
+      for (int token = seq_begin; token < seq_end; ++token) {
+        for (int dim = 0; dim < head_dim; ++dim) {
+          size_t src_offset =
+              logical_hnd_offset(batch_id, head_id, token, dim, stride_seq, stride_dim, stride_head, stride_batch);
+          float value = static_cast<float>(in_ptr[src_offset]);
+          if (bias_ptr) {
+            value -= static_cast<float>(bias_ptr[size_t(row_id) * size_t(head_dim) + size_t(dim)]);
+          }
+          value *= inv_scale;
+          value = sycl::round(value);
+          value = sycl::clamp(value, -127.0f, 127.0f);
+          size_t dst_offset = (size_t(row_id) * size_t(seq) + size_t(token)) * size_t(head_dim) + size_t(dim);
+          out_ptr[dst_offset] = static_cast<int8_t>(value);
+        }
+      }
+    });
+  }
+
+  template <typename T>
+  static void sage_dynamic_quant_v_strided(sycl::queue* q, const T* in_ptr, int8_t* out_ptr, float* scale_ptr,
+                                           int batch, int num_heads, int seq, int n_seq_blk, int head_dim,
+                                           int block_size, int stride_dim, int stride_seq, int stride_head,
+                                           int stride_batch) {
+    size_t num_scales = size_t(batch) * size_t(num_heads) * size_t(n_seq_blk) * size_t(head_dim);
+    q->parallel_for(sycl::range<1>(num_scales), [=](sycl::id<1> item) {
+      size_t linear_idx = item[0];
+      int dim = int(linear_idx % size_t(head_dim));
+      size_t block_idx = linear_idx / size_t(head_dim);
+      int seq_id = int(block_idx % size_t(n_seq_blk));
+      int row_id = int(block_idx / size_t(n_seq_blk));
+      int batch_id = row_id / num_heads;
+      int head_id = row_id % num_heads;
+      int seq_begin = seq_id * block_size;
+      int seq_end = std::min(seq_begin + block_size, seq);
+
+      float absmax = 0.0f;
+      for (int token = seq_begin; token < seq_end; ++token) {
+        size_t src_offset =
+            logical_hnd_offset(batch_id, head_id, token, dim, stride_seq, stride_dim, stride_head, stride_batch);
+        float value = static_cast<float>(in_ptr[src_offset]);
+        absmax = sycl::fmax(absmax, sycl::fabs(value));
+      }
+
+      float scale = absmax > 0.0f ? absmax / 127.0f : 0.0f;
+      float inv_scale = absmax > 0.0f ? 127.0f / absmax : 0.0f;
+      scale_ptr[linear_idx] = scale;
+
+      for (int token = seq_begin; token < seq_end; ++token) {
+        size_t src_offset =
+            logical_hnd_offset(batch_id, head_id, token, dim, stride_seq, stride_dim, stride_head, stride_batch);
+        float value = static_cast<float>(in_ptr[src_offset]) * inv_scale;
+        value = sycl::round(value);
+        value = sycl::clamp(value, -127.0f, 127.0f);
+        size_t dst_offset = (size_t(row_id) * size_t(seq) + size_t(token)) * size_t(head_dim) + size_t(dim);
+        out_ptr[dst_offset] = static_cast<int8_t>(value);
+      }
+    });
+  }
+
   static void sagev1_impl(sycl::queue* q, void* Q_ptr, void* K_ptr, void* V_ptr, void* O_ptr, void* mask,
-                          int scale_block_size, int batch, int num_heads_q, int num_heads_kv, int seq_len_q,
-                          int seq_len_kv, int head_dim, float softmax_scale, bool is_causal, bool use_int8_pv) {
+                          int scale_block_size, int q_stride_s, int q_stride_d, int q_stride_h, int q_stride_b,
+                          int k_stride_s, int k_stride_d, int k_stride_h, int k_stride_b, int v_stride_d,
+                          int v_stride_s, int v_stride_h, int v_stride_b, int o_stride_s, int o_stride_d,
+                          int o_stride_h, int o_stride_b, int batch, int num_heads_q, int num_heads_kv,
+                          int seq_len_q, int seq_len_kv, int head_dim, float softmax_scale, bool is_causal,
+                          bool use_int8_pv) {
     bool use_mean_bias = env_params::Instance()->sage_use_mean_bias != 0;
+    bool q_packed = is_packed_hnd(q_stride_s, q_stride_d, q_stride_h, q_stride_b, num_heads_q, seq_len_q, head_dim);
+    bool k_packed =
+        is_packed_hnd(k_stride_s, k_stride_d, k_stride_h, k_stride_b, num_heads_kv, seq_len_kv, head_dim);
+    bool v_packed =
+        is_packed_hnd(v_stride_s, v_stride_d, v_stride_h, v_stride_b, num_heads_kv, seq_len_kv, head_dim);
     size_t seq_q_blk = (seq_len_q + scale_block_size - 1) / scale_block_size;
     size_t seq_kv_blk = (seq_len_kv + scale_block_size - 1) / scale_block_size;
     size_t q_size = num_heads_q * seq_len_q * head_dim * batch;
@@ -1105,41 +1239,91 @@ class XpuWrapper {
                      ? (sycl::half*)((int8_t*)ptr + q_size + k_size + q_scale_size * sizeof(float) +
                                      k_scale_size * sizeof(float) + v_tmp_size + v_scale_size)
                      : nullptr;
-    sage_dynamic_quant<sycl::half>(q, (sycl::half*)Q_ptr, (int8_t*)q_out_ptr, (float*)qscale, batch * num_heads_q,
-                     seq_len_q, seq_q_blk, head_dim, scale_block_size);
+    if (q_packed) {
+      sage_dynamic_quant<sycl::half>(q, (sycl::half*)Q_ptr, (int8_t*)q_out_ptr, (float*)qscale, batch * num_heads_q,
+                                     seq_len_q, seq_q_blk, head_dim, scale_block_size);
+    } else {
+      sage_dynamic_quant_strided<sycl::half>(q, (sycl::half*)Q_ptr, (int8_t*)q_out_ptr, (float*)qscale, batch,
+                                             num_heads_q, seq_len_q, seq_q_blk, head_dim, scale_block_size,
+                                             q_stride_s, q_stride_d, q_stride_h, q_stride_b);
+    }
     if (use_mean_bias) {
-      compute_seq_mean_bias<sycl::half>(q, (sycl::half*)K_ptr, kbias, batch * num_heads_kv, seq_len_kv, head_dim);
+      if (k_packed) {
+        compute_seq_mean_bias<sycl::half>(q, (sycl::half*)K_ptr, kbias, batch * num_heads_kv, seq_len_kv, head_dim);
+      } else {
+        compute_seq_mean_bias_strided<sycl::half>(q, (sycl::half*)K_ptr, kbias, batch, num_heads_kv, seq_len_kv,
+                                                  head_dim, k_stride_s, k_stride_d, k_stride_h, k_stride_b);
+      }
       if (env_params::Instance()->sage_print_kbias != 0) {
         print_value_distribution(q, kbias, size_t(batch) * num_heads_kv * head_dim, "kbias");
       }
     }
-    sage_dynamic_quant<sycl::half>(q, (sycl::half*)K_ptr, (int8_t*)k_out_ptr, (float*)kscale, batch * num_heads_kv,
-                     seq_len_kv, seq_kv_blk, head_dim, scale_block_size, kbias);
+    if (k_packed) {
+      sage_dynamic_quant<sycl::half>(q, (sycl::half*)K_ptr, (int8_t*)k_out_ptr, (float*)kscale, batch * num_heads_kv,
+                                     seq_len_kv, seq_kv_blk, head_dim, scale_block_size, kbias);
+    } else {
+      sage_dynamic_quant_strided<sycl::half>(q, (sycl::half*)K_ptr, (int8_t*)k_out_ptr, (float*)kscale, batch,
+                                             num_heads_kv, seq_len_kv, seq_kv_blk, head_dim, scale_block_size,
+                                             k_stride_s, k_stride_d, k_stride_h, k_stride_b, kbias);
+    }
+    int q_out_stride_s = head_dim;
+    int q_out_stride_d = 1;
+    int q_out_stride_h = seq_len_q * head_dim;
+    int q_out_stride_b = num_heads_q * seq_len_q * head_dim;
+    int k_out_stride_s = head_dim;
+    int k_out_stride_d = 1;
+    int k_out_stride_h = seq_len_kv * head_dim;
+    int k_out_stride_b = num_heads_kv * seq_len_kv * head_dim;
+    int v_out_stride_d = 1;
+    int v_out_stride_s = head_dim;
+    int v_out_stride_h = seq_len_kv * head_dim;
+    int v_out_stride_b = num_heads_kv * seq_len_kv * head_dim;
     if (use_int8_pv) {
-      sage_dynamic_quant_v<sycl::half>(q, (sycl::half*)V_ptr, (int8_t*)v_out_ptr, (float*)vscale,
-                                       batch * num_heads_kv, seq_len_kv, seq_kv_blk, head_dim, scale_block_size);
+      if (v_packed) {
+        sage_dynamic_quant_v<sycl::half>(q, (sycl::half*)V_ptr, (int8_t*)v_out_ptr, (float*)vscale,
+                                         batch * num_heads_kv, seq_len_kv, seq_kv_blk, head_dim, scale_block_size);
+      } else {
+        sage_dynamic_quant_v_strided<sycl::half>(q, (sycl::half*)V_ptr, (int8_t*)v_out_ptr, (float*)vscale, batch,
+                                                 num_heads_kv, seq_len_kv, seq_kv_blk, head_dim, scale_block_size,
+                                                 v_stride_d, v_stride_s, v_stride_h, v_stride_b);
+      }
       ark::sdpa_impl_qks8_pvi8(q, q_out_ptr, k_out_ptr, v_out_ptr, O_ptr, mask, scale_block_size, qscale, kscale,
-                               vscale, batch, num_heads_q, num_heads_kv, seq_len_q, seq_len_kv, head_dim,
+                               vscale, q_out_stride_s, q_out_stride_d, q_out_stride_h, q_out_stride_b,
+                               k_out_stride_s, k_out_stride_d, k_out_stride_h, k_out_stride_b, v_out_stride_d,
+                               v_out_stride_s, v_out_stride_h, v_out_stride_b, o_stride_s, o_stride_d, o_stride_h,
+                               o_stride_b, batch, num_heads_q, num_heads_kv, seq_len_q, seq_len_kv, head_dim,
                                softmax_scale, is_causal);
     } else {
       ark::sdpa_impl_qks8_pvhalf(q, q_out_ptr, k_out_ptr, V_ptr, O_ptr, mask, scale_block_size, qscale, kscale,
-                                 batch, num_heads_q, num_heads_kv, seq_len_q, seq_len_kv, head_dim, softmax_scale,
-                                 is_causal);
+                                 q_out_stride_s, q_out_stride_d, q_out_stride_h, q_out_stride_b, k_out_stride_s,
+                                 k_out_stride_d, k_out_stride_h, k_out_stride_b, v_stride_d, v_stride_s, v_stride_h,
+                                 v_stride_b, o_stride_s, o_stride_d, o_stride_h, o_stride_b, batch, num_heads_q,
+                                 num_heads_kv, seq_len_q, seq_len_kv, head_dim, softmax_scale, is_causal);
     }
   }
 
   static void sagev1(sycl::queue* q, void* Q_ptr, void* K_ptr, void* V_ptr, void* O_ptr, void* mask,
-                     int scale_block_size, int batch, int num_heads_q, int num_heads_kv, int seq_len_q, int seq_len_kv,
-                     int head_dim, float softmax_scale, bool is_causal) {
-    sagev1_impl(q, Q_ptr, K_ptr, V_ptr, O_ptr, mask, scale_block_size, batch, num_heads_q, num_heads_kv, seq_len_q,
-                seq_len_kv, head_dim, softmax_scale, is_causal, false);
+                     int scale_block_size, int q_stride_s, int q_stride_d, int q_stride_h, int q_stride_b,
+                     int k_stride_s, int k_stride_d, int k_stride_h, int k_stride_b, int v_stride_d,
+                     int v_stride_s, int v_stride_h, int v_stride_b, int o_stride_s, int o_stride_d,
+                     int o_stride_h, int o_stride_b, int batch, int num_heads_q, int num_heads_kv, int seq_len_q,
+                     int seq_len_kv, int head_dim, float softmax_scale, bool is_causal) {
+    sagev1_impl(q, Q_ptr, K_ptr, V_ptr, O_ptr, mask, scale_block_size, q_stride_s, q_stride_d, q_stride_h,
+                q_stride_b, k_stride_s, k_stride_d, k_stride_h, k_stride_b, v_stride_d, v_stride_s, v_stride_h,
+                v_stride_b, o_stride_s, o_stride_d, o_stride_h, o_stride_b, batch, num_heads_q, num_heads_kv,
+                seq_len_q, seq_len_kv, head_dim, softmax_scale, is_causal, false);
   }
 
   static void sagev1_pvi8(sycl::queue* q, void* Q_ptr, void* K_ptr, void* V_ptr, void* O_ptr, void* mask,
-                          int scale_block_size, int batch, int num_heads_q, int num_heads_kv, int seq_len_q,
-                          int seq_len_kv, int head_dim, float softmax_scale, bool is_causal) {
-    sagev1_impl(q, Q_ptr, K_ptr, V_ptr, O_ptr, mask, scale_block_size, batch, num_heads_q, num_heads_kv, seq_len_q,
-                seq_len_kv, head_dim, softmax_scale, is_causal, true);
+                          int scale_block_size, int q_stride_s, int q_stride_d, int q_stride_h, int q_stride_b,
+                          int k_stride_s, int k_stride_d, int k_stride_h, int k_stride_b, int v_stride_d,
+                          int v_stride_s, int v_stride_h, int v_stride_b, int o_stride_s, int o_stride_d,
+                          int o_stride_h, int o_stride_b, int batch, int num_heads_q, int num_heads_kv,
+                          int seq_len_q, int seq_len_kv, int head_dim, float softmax_scale, bool is_causal) {
+    sagev1_impl(q, Q_ptr, K_ptr, V_ptr, O_ptr, mask, scale_block_size, q_stride_s, q_stride_d, q_stride_h,
+                q_stride_b, k_stride_s, k_stride_d, k_stride_h, k_stride_b, v_stride_d, v_stride_s, v_stride_h,
+                v_stride_b, o_stride_s, o_stride_d, o_stride_h, o_stride_b, batch, num_heads_q, num_heads_kv,
+                seq_len_q, seq_len_kv, head_dim, softmax_scale, is_causal, true);
   }
 };
 
