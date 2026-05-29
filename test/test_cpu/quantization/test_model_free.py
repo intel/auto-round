@@ -34,6 +34,8 @@ from auto_round.compressors.model_free import (
 )
 from auto_round.schemes import QuantizationScheme
 
+from ...envs import require_compressed_tensors
+
 # ---------------------------------------------------------------------------
 #  Helpers
 # ---------------------------------------------------------------------------
@@ -349,6 +351,7 @@ class TestModelFreeMXFP:
         assert out["layer.weight_scale"].shape == (64, 4)
         assert out["layer.weight_scale"].dtype == torch.uint8
 
+    @require_compressed_tensors
     @pytest.mark.parametrize("scheme,fmt", [("MXFP4", "mxfp4-pack-quantized"), ("MXFP8", "mxfp8-quantized")])
     def test_e2e_mxfp(self, tmp_path, scheme, fmt):
         tensors = {
@@ -374,6 +377,7 @@ class TestModelFreeMXFP:
         assert "lm_head.weight" in keys
         assert "lm_head.weight_packed" not in keys
 
+    @require_compressed_tensors
     def test_mxfp4_via_autoround_api(self, tmp_path):
         tensors = {"model.layers.0.fc1.weight": torch.randn(128, 128)}
         model_dir = _make_model_dir(tmp_path, _LLAMA_CFG, tensors)
@@ -382,6 +386,7 @@ class TestModelFreeMXFP:
         qc = _read_qconfig(output_dir)
         assert qc["format"] == "mxfp4-pack-quantized"
 
+    @require_compressed_tensors
     def test_process_shard_mxfp(self, tmp_path):
         shard_path = str(tmp_path / "shard.safetensors")
         save_file({"layer.fc1.weight": torch.randn(64, 128)}, shard_path)
@@ -398,12 +403,25 @@ class TestModelFreeMXFP:
 
 
 _SUPPORTED = ["W2A16", "W2A16G32", "W2A16G64", "W4A16", "W4A16_MIXED", "W8A16", "MXFP4", "MXFP8"]
-_UNSUPPORTED = ["W3A16", "FPW8A16", "BF16", "MXINT4", "NVFP4", "FP8_BLOCK", "FP8_STATIC", "INT8_W8A8"]
+_UNSUPPORTED = [
+    "W3A16",
+    "FPW8A16",
+    "BF16",
+    "MXINT4",
+    "NVFP4",
+    "FP8_BLOCK",
+    "FP8_STATIC",
+    "INT8_W8A8",
+    "MXFP4_RCEIL",
+    "MXFP8_RCEIL",
+]
 
 
 class TestSchemeValidation:
     @pytest.mark.parametrize("name", _SUPPORTED)
     def test_supported(self, tmp_path, name):
+        if name.startswith("MXFP"):
+            pytest.importorskip("compressed_tensors", reason="test requires compressed-tensors")
         model_dir = _make_model_dir(tmp_path, _LLAMA_CFG, {"model.layers.0.mlp.fc1.weight": torch.randn(64, 128)})
         out = str(tmp_path / f"out_{name}")
         AutoRound(model=model_dir, scheme=name, model_free=True).quantize_and_save(out)

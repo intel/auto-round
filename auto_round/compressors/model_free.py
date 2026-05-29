@@ -813,9 +813,14 @@ def _process_shard(
 
     # Preserve original tensors for ignored/skipped layers so that already-
     # quantized weights (FP8, FP4-packed, etc.) are NOT dequantized.
+    # Check both ".weight" and ".weight_packed" so that layers whose primary
+    # tensor uses non-standard naming (e.g. already-quantized FP4-packed layers
+    # stored as ".weight_packed") are correctly captured.
     preserved_prefixes: set[str] = set()
     for tname in raw_tensors:
-        if tname.endswith(".weight") and (matcher.should_ignore(tname) or matcher.should_skip(tname)):
+        if (tname.endswith(".weight") or tname.endswith(".weight_packed") or tname.endswith(".qweight")) and (
+            matcher.should_ignore(tname) or matcher.should_skip(tname)
+        ):
             preserved_prefixes.add(tname.rsplit(".", 1)[0])
 
     preserved_tensors: dict[str, torch.Tensor] = {}
@@ -1082,6 +1087,16 @@ def _validate_supported_scheme(
     # Activation quantization for MXFP is dynamic at inference time, so the
     # weight-only RTN path here is independent of act_bits.
     if is_mx_fp(data_type):
+        # Restrict to the two explicitly supported MXFP presets when a string
+        # name is provided.  Variants such as MXFP4_RCEIL / MXFP8_RCEIL use a
+        # different activation format; silently mapping them to "MXFP4" /
+        # "MXFP8" in the output config would misrepresent the requested scheme.
+        if isinstance(scheme_input, str) and scheme_input not in ("MXFP4", "MXFP8"):
+            raise ValueError(
+                f"Model-free mode only supports MXFP preset names 'MXFP4' and 'MXFP8', "
+                f"but got '{scheme_input}'. "
+                f"Supported preset schemes: {list(SUPPORTED_PRESET_SCHEMES)}."
+            )
         if bits is None or bits not in _SUPPORTED_MXFP_BITS:
             raise ValueError(
                 f"Model-free mode supports MXFP bits in {_SUPPORTED_MXFP_BITS}, "
@@ -1130,7 +1145,7 @@ def is_model_free_supported_scheme(
     """
     try:
         scheme_obj = _apply_scheme_overrides(scheme, scheme_overrides)
-        _validate_supported_scheme(scheme_obj, scheme_obj)
+        _validate_supported_scheme(scheme_obj, scheme)
         return True
     except (ValueError, TypeError):
         return False
