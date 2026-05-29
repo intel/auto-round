@@ -253,7 +253,9 @@ class AutoRound(AlgorithmHandler):
     config_factory = None
 
     def register(self, group) -> None:
-        group.add_argument("--iters", default=200, type=int, help="Number of optimization iterations per block.")
+        group.add_argument(
+            "--iters", "--iter", default=None, type=int, help="Number of optimization iterations per block."
+        )
         group.add_argument("--lr", default=None, type=float, help="Learning rate for rounding optimization.")
         group.add_argument("--minmax_lr", default=None, type=float, help="Learning rate for min-max tuning.")
         group.add_argument("--momentum", default=0.0, type=float, help="Momentum factor for the optimizer.")

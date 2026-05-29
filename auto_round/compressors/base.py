@@ -30,15 +30,15 @@ from auto_round.compressors.shard_writer import ShardWriter
 from auto_round.compressors.utils import _get_save_folder_name, is_mx_fp, is_nv_fp, set_layer_config
 from auto_round.context.compress import CompressContext
 from auto_round.context.model import ModelContext
-from auto_round.context.scheme import (
+from auto_round.formats import OutputFormat, get_formats
+from auto_round.logger import logger
+from auto_round.schemes import (
     QuantizationScheme,
     _handle_special_schemes,
     _parse_scheme,
     get_gguf_scheme,
     preset_name_to_scheme,
 )
-from auto_round.formats import OutputFormat, get_formats
-from auto_round.logger import logger
 from auto_round.special_model_handler import get_predefined_ignore_layers, update_module
 from auto_round.utils import (
     AUDIO_MM_KEYS,
@@ -969,8 +969,8 @@ class BaseCompressor(object):
         # If format resolution changed scheme attrs, rebuild self.scheme so that
         # configure_layer_config() / set_layer_config() see the correct values.
         if _any_gguf_attr_changed:
-            from auto_round.context.scheme import PRESET_SCHEMES
-            from auto_round.context.scheme import QuantizationScheme as _QS
+            from auto_round.schemes import PRESET_SCHEMES
+            from auto_round.schemes import QuantizationScheme as _QS
 
             # Prefer to derive the scheme directly from the gguf format name to
             # avoid ambiguity (e.g. Q4_K_S and Q4_K_M share identical weight attrs).

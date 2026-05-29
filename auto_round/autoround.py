@@ -17,8 +17,8 @@ from typing import TYPE_CHECKING, Optional, Union
 
 import torch
 
-from auto_round.context.scheme import QuantizationScheme
 from auto_round.logger import deprecated, logger
+from auto_round.schemes import QuantizationScheme
 
 if TYPE_CHECKING:
     from auto_round.auto_scheme.gen_auto_scheme import AutoScheme

@@ -29,7 +29,7 @@ schemes packed in the ``auto_round:auto_gptq`` format only.  Specifically:
 
 * Preset names: ``W2A16``, ``W2A16G32``, ``W2A16G64``, ``W3A16``, ``W4A16``,
   ``W8A16``.
-* Custom :class:`~auto_round.context.scheme.QuantizationScheme` instances with
+* Custom :class:`~auto_round.schemes.QuantizationScheme` instances with
   ``data_type="int"``, ``bits in {2, 3, 4, 8}``, ``act_bits >= 16``, and any
   symmetric / asymmetric configuration.
 
@@ -74,8 +74,8 @@ from typing import Optional, Union
 import torch
 
 from auto_round import envs
-from auto_round.context.scheme import PRESET_SCHEMES, QuantizationScheme, preset_name_to_scheme
 from auto_round.logger import logger
+from auto_round.schemes import PRESET_SCHEMES, QuantizationScheme, preset_name_to_scheme
 from auto_round.utils.common import AUDIO_MM_KEYS, VISION_MM_KEYS, compress_layer_names, to_standard_regex
 from auto_round.utils.device import clear_memory, memory_monitor
 from auto_round.utils.missing_tensors import quantize_weight_rtn, split_fused_expert_tensors

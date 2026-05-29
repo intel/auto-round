@@ -5,7 +5,7 @@ import pytest
 import transformers
 
 from auto_round import AutoRound
-from auto_round.context.scheme import QuantizationScheme
+from auto_round.schemes import QuantizationScheme
 
 from ...helpers import get_model_path, get_tiny_model, opt_name_or_path, qwen_name_or_path, save_tiny_model
 
@@ -189,7 +189,7 @@ class TestAutoRound:
         )
         ar.quantize_and_save(self.save_folder)
 
-        from auto_round.context.scheme import QuantizationScheme
+        from auto_round.schemes import QuantizationScheme
 
         qs = QuantizationScheme.from_dict({"bits": 4, "group_size": 64})
         ar = AutoRound(

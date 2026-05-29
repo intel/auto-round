@@ -16,7 +16,7 @@ from typing import Union
 
 import torch
 
-from auto_round.context.scheme import QuantizationScheme
+from auto_round.schemes import QuantizationScheme
 
 E8M0_EXPONENT_BIAS = 127
 E8M0_EXPONENT_NAN_VAL = 255

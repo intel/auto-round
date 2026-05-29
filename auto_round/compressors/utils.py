@@ -36,7 +36,7 @@ from auto_round.utils import (
 )
 
 if TYPE_CHECKING:
-    from auto_round.context.scheme import QuantizationScheme
+    from auto_round.schemes import QuantizationScheme
 
 
 class BackendDataType(str, Enum):
@@ -358,7 +358,7 @@ def set_layer_config(
     Returns (final_layer_config, has_quant_layer_outside_block)
     """
 
-    from auto_round.context.scheme import QuantizationScheme, get_gguf_scheme, preset_name_to_scheme
+    from auto_round.schemes import QuantizationScheme, get_gguf_scheme, preset_name_to_scheme
     from auto_round.utils.model import get_layer_names_in_block, get_lm_head_name, get_module, is_separate_lm_head
 
     # ---- helpers -------------------------------------------------
@@ -706,8 +706,8 @@ def get_layer_config_by_gguf_format(layer_config, target_gguf_format: str, model
 
     import gguf  # pylint: disable=E0401
 
-    from auto_round.context.scheme import QuantizationScheme, get_gguf_scheme
     from auto_round.export.export_to_gguf.llama_cpp_conversion import get_conversion
+    from auto_round.schemes import QuantizationScheme, get_gguf_scheme
     from auto_round.utils.common import MM_MODULE_KEYS
     from auto_round.utils.model import get_lm_head_name, get_module, is_separate_lm_head
 

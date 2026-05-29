@@ -297,7 +297,7 @@ def tune(args):
     enable_torch_compile = True if "--enable_torch_compile" in sys.argv else False
     scheme = args.scheme.upper()
 
-    from auto_round.context.scheme import PRESET_SCHEMES
+    from auto_round.schemes import PRESET_SCHEMES
 
     if scheme not in PRESET_SCHEMES:
         raise ValueError(f"{scheme} is not supported. only {PRESET_SCHEMES.keys()} are supported ")
@@ -355,8 +355,8 @@ def tune(args):
         ),
     )
 
-    model, folders = autoround.quantize_and_save(args.output_dir, format=args.format)
-    tokenizer = autoround.tokenizer
+    model, folders = autoround.quantize_and_save(args.output_dir, format=args.format)  # pylint: disable=no-member
+    tokenizer = autoround.tokenizer  # pylint: disable=no-member
     clear_memory()
 
     from auto_round.eval.evaluation import run_model_evaluation
