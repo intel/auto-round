@@ -73,7 +73,7 @@ def resolve_model_type(model):
 FIX_MISTRAL_REGEX_MODEL_TYPE_LIST = ["longcat_next"]
 
 if TYPE_CHECKING:
-    from auto_round.context.scheme import QuantizationScheme
+    from auto_round.schemes import QuantizationScheme
 
 
 def clean_module_parameter(submodule: torch.nn.Module, param_name: str) -> None:
@@ -1367,7 +1367,7 @@ def check_to_quantized(config):
         bool: True if the configuration is valid for quantization (bits <= 8),
             False otherwise.
     """
-    from auto_round.context.scheme import QuantizationScheme
+    from auto_round.schemes import QuantizationScheme
 
     if isinstance(config, (dict, QuantizationScheme)):
         bits = config.get("bits", None)

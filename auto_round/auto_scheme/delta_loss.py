@@ -31,7 +31,6 @@ from auto_round.auto_scheme.utils import (
     remove_quant_scheme,
 )
 from auto_round.calib_dataset import get_dataloader
-from auto_round.context.scheme import QuantizationScheme, preset_name_to_scheme
 from auto_round.data_type.gguf import (
     quant_tensor_gguf_asym_dq,
     quant_tensor_gguf_sym_dq,
@@ -40,6 +39,7 @@ from auto_round.data_type.gguf import (
 )
 from auto_round.data_type.utils import reshape_pad_tensor_by_group_size, revert_tensor_by_pad
 from auto_round.logger import logger
+from auto_round.schemes import QuantizationScheme, preset_name_to_scheme
 from auto_round.utils import (
     SUPPORTED_LAYER_TYPES,
     check_to_quantized,

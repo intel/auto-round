@@ -12,6 +12,6 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from auto_round.context.scheme import QuantizationScheme
+from auto_round.schemes import QuantizationScheme
 
 __all__ = ["QuantizationScheme"]

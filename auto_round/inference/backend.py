@@ -22,9 +22,9 @@ from packaging.version import Version
 from transformers.utils.versions import require_version
 
 import auto_round_extension.cuda.gptqmodel_marlin
-from auto_round.context.scheme import QuantizationScheme
 from auto_round.experimental import qmodules as ar_qmodules
 from auto_round.logger import logger
+from auto_round.schemes import QuantizationScheme
 from auto_round.utils import get_library_version
 
 BackendInfos = {}
@@ -189,7 +189,7 @@ def fp8_static_scheme_checker(
     in_feature_multiplier: Optional[int] = None,
     out_feature_multiplier: Optional[int] = None,
 ):
-    from auto_round.context.scheme import FP8_STATIC
+    from auto_round.schemes import FP8_STATIC
 
     return config == FP8_STATIC
 

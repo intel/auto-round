@@ -22,7 +22,6 @@ import torch
 import transformers
 from tqdm import tqdm
 
-from auto_round.context.scheme import QuantizationScheme
 from auto_round.data_type.utils import reshape_pad_tensor_by_group_size, revert_tensor_by_pad
 from auto_round.export.export_to_autoround.utils import check_neq_config
 from auto_round.export.utils import (
@@ -32,6 +31,7 @@ from auto_round.export.utils import (
     save_model,
 )
 from auto_round.logger import logger
+from auto_round.schemes import QuantizationScheme
 from auto_round.utils import (
     SUPPORTED_LAYER_TYPES,
     check_start_with_block_name,

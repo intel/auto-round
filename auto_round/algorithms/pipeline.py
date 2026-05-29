@@ -149,7 +149,7 @@ def _format_shared_config_values(field: str, values: list[tuple[Any, Any]]) -> s
 
 
 def _resolve_shared_scheme_values(configs: list[Any]) -> None:
-    from auto_round.context.scheme import QuantizationScheme
+    from auto_round.schemes import QuantizationScheme
 
     scheme_fields = {field.name for field in fields(QuantizationScheme)}
     field_values: dict[str, list[tuple[Any, Any]]] = defaultdict(list)

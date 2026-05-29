@@ -16,7 +16,7 @@
 from contextlib import contextmanager
 
 from auto_round.algorithms.registry import resolve_pipeline_member
-from auto_round.context.scheme import QuantizationScheme
+from auto_round.schemes import QuantizationScheme
 
 
 class BaseAlgorithm:
@@ -29,6 +29,19 @@ class BasePipelineMember:
     model_context = None
     compress_context = None
     _scheme_context_fields = set(QuantizationScheme.get_attributes())
+    bits: int | None
+    group_size: int | tuple | None
+    sym: bool | None
+    data_type: str | None
+    act_bits: int | None
+    act_group_size: int | None
+    act_sym: bool | None
+    act_data_type: str | None
+    act_dynamic: bool | None
+    super_bits: int | None
+    super_group_size: int | None
+    super_sym: bool | None
+    scale_dtype: str | None
 
     def __init__(self, config=None):
         self.config = config

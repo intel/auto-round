@@ -14,9 +14,9 @@
 from enum import Enum
 from typing import ClassVar, Union
 
-from auto_round.context.scheme import QuantizationScheme
 from auto_round.export.export_to_gguf.config import GGUF_INNER_CONFIG
 from auto_round.logger import logger
+from auto_round.schemes import QuantizationScheme
 
 
 class BackendDataType(str, Enum):
