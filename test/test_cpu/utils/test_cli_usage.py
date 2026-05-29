@@ -131,7 +131,7 @@ def test_parse_layer_config_with_single_escaped_regex_keys():
 
 
 def test_run_rtn_uses_zero_shot_recipe(monkeypatch):
-    from auto_round import __main__ as cli_main
+    from auto_round.cli import main as cli_main
 
     captured = {}
 
@@ -160,7 +160,7 @@ def test_run_rtn_uses_zero_shot_recipe(monkeypatch):
 
 
 def test_run_rtn_preserves_eval_args(monkeypatch, tmp_path):
-    from auto_round import __main__ as cli_main
+    from auto_round.cli import main as cli_main
 
     captured = {}
 
@@ -198,7 +198,7 @@ def test_run_rtn_preserves_eval_args(monkeypatch, tmp_path):
 
 
 def test_run_opt_rtn_uses_recipe(monkeypatch):
-    from auto_round import __main__ as cli_main
+    from auto_round.cli import main as cli_main
 
     captured = {}
 

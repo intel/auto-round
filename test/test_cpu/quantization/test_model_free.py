@@ -345,9 +345,10 @@ class TestCliAutoRouting:
     def test_auto_routes(self, tmp_path):
         model_dir = _make_model_dir(tmp_path, _LLAMA_CFG, {"layer.weight": torch.randn(64, 128)})
         out_dir = str(tmp_path / "out")
-        from auto_round.__main__ import BasicArgumentParser, tune
+        from auto_round.cli.main import tune
+        from auto_round.cli.parser import build_quantize_parser
 
-        args = BasicArgumentParser().parse_args(
+        args = build_quantize_parser().parse_args(
             [
                 "--model",
                 model_dir,
@@ -366,9 +367,9 @@ class TestCliAutoRouting:
         assert _read_qconfig(out_dir).get("model_free") is True
 
     def test_disable_model_free_flag(self):
-        from auto_round.__main__ import BasicArgumentParser
+        from auto_round.cli.parser import build_quantize_parser
 
-        args = BasicArgumentParser().parse_args(
+        args = build_quantize_parser().parse_args(
             [
                 "--model",
                 "dummy",

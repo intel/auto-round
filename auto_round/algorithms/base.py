@@ -54,7 +54,7 @@ class BasePipelineMember:
 
     def get_act_calib_policy(self, ctx):
         """Return the activation calibration policy for this block."""
-        from auto_round.algorithms.quantization.pipeline import ActCalibPolicy, CalibTiming, InputSource
+        from auto_round.algorithms.pipeline import ActCalibPolicy, CalibTiming, InputSource
 
         return ActCalibPolicy(when=CalibTiming.SKIP, source=InputSource.FP_CACHE)
 

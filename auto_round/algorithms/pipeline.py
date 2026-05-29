@@ -351,6 +351,7 @@ class BlockIO:
         )
         return output.to(cache_device)
 
+    @torch.no_grad()
     def collect_outputs(self, block, quantizer, *, source: InputSource, batch_size: int, save: bool = True):
         input_ids = self.get_inputs(source)
         if input_ids is None:
@@ -432,6 +433,7 @@ class DiffusionBlockIO(BlockIO):
         super().__init__(*args, **kwargs)
         self.output_config = output_config or ["hidden_states"]
 
+    @torch.no_grad()
     def collect_outputs(self, block, quantizer, *, source: InputSource, batch_size: int, save: bool = True):
         input_ids = self.get_inputs(source)
         if input_ids is None:

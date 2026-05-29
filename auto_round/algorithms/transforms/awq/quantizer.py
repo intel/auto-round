@@ -36,7 +36,7 @@ from typing import TYPE_CHECKING, Any
 
 import torch
 
-from auto_round.algorithms.quantization.pipeline import (
+from auto_round.algorithms.pipeline import (
     ActCalibPolicy,
     CalibTiming,
     InputSource,
@@ -58,7 +58,7 @@ from auto_round.data_type.utils import (
 from auto_round.logger import logger
 
 if TYPE_CHECKING:
-    from auto_round.algorithms.quantization.pipeline import BlockContext, RunContext
+    from auto_round.algorithms.pipeline import BlockContext, RunContext
 
 
 @register_pipeline_member(AWQConfig)

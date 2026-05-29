@@ -2,15 +2,15 @@
 
 import pytest
 
-from auto_round.algorithms.quantization import registry as _r
-from auto_round.algorithms.quantization.config import QuantizationConfig
-from auto_round.algorithms.quantization.pipeline import (
+from auto_round.algorithms.pipeline import (
     QuantizationPipeline,
     get_algorithm_class,
     resolve_shared_config_values,
     split_quantization_configs,
     sync_shared_config_from,
 )
+from auto_round.algorithms.quantization import registry as _r
+from auto_round.algorithms.quantization.config import QuantizationConfig
 from auto_round.algorithms.quantization.rtn.config import OptimizedRTNConfig, RTNConfig
 from auto_round.algorithms.quantization.rtn.quantizer import RTNQuantizer
 from auto_round.algorithms.quantization.sign_round.config import SignRoundConfig
