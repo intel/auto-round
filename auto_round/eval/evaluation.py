@@ -355,7 +355,7 @@ def evaluate_with_model_path(eval_folder, device_str, autoround, args):
             batch_size=args.eval_bs,
             limit=args.limit,
             eval_model_dtype=get_model_dtype(args.eval_model_dtype, "auto"),
-            mllm=autoround.mllm,
+            mllm=getattr(autoround, "mllm", False),
             add_bos_token=args.add_bos_token,
         )
     else:
@@ -372,7 +372,7 @@ def evaluate_with_model_path(eval_folder, device_str, autoround, args):
         model_args += f",add_bos_token={args.add_bos_token}"
 
         # Choose evaluation method based on model type
-        if autoround.mllm:
+        if getattr(autoround, "mllm", False):
             model_type = "hf-multimodal"
             eval_bs = args.eval_bs
             if eval_bs is None or eval_bs == "auto":
@@ -413,6 +413,21 @@ def run_model_evaluation(model, tokenizer, autoround, folders, formats, device_s
     if model is not None:
         model.eval()
 
+    # Detect model type for compatibility with evaluation code
+    from auto_round.utils.model import detect_model_type
+
+    # Check if evaluation Compressoris needed for language models
+    if isinstance(folders, list):
+        eval_folder = folders[-1] if folders else None
+    else:
+        eval_folder = folders
+    # set model_type for ModelFreeCompressor.
+    model_type = detect_model_type(eval_folder)
+    if hasattr(autoround, "model_context") and model_type in ("mllm", "diffusion"):
+        setattr(autoround.model_context, f"is_{model_type}", True)
+    else:
+        setattr(autoround, model_type, True)
+
     # Handle diffusion models separately
     if getattr(autoround, "diffusion", False):
         prompt = getattr(args, "prompt", None)
@@ -422,11 +437,6 @@ def run_model_evaluation(model, tokenizer, autoround, folders, formats, device_s
         evaluate_diffusion_model(args, autoround=autoround, model=model)
         return
 
-    # Check if evaluation Compressoris needed for language models
-    if isinstance(folders, list):
-        eval_folder = folders[-1] if folders else None
-    else:
-        eval_folder = folders
     if args.tasks is None or args.tasks == "" or eval_folder is None:
         return
 
