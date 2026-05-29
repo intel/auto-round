@@ -775,7 +775,9 @@ def get_layer_config_by_gguf_format(layer_config, target_gguf_format: str, model
         tie_word_embeddings = model.config.tie_word_embeddings
     tie_word_embeddings &= not is_separate_lm_head(model)
 
-    dtype_selector = GGUFDTypeSelector(hparams, gguf_format_to_ftype(target_gguf_format), model_class.model_arch)
+    dtype_selector = GGUFDTypeSelector(
+        hparams, gguf_format_to_ftype(target_gguf_format), model_class.model_arch, n_layer
+    )
     layer_config_copy = copy.deepcopy(layer_config)
     base_target_bits = None
     if inner_gguf_format.startswith("gguf:q") and len(inner_gguf_format) >= 7 and (inner_gguf_format[6]).isdigit():

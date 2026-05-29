@@ -81,3 +81,20 @@ def test_selector_returns_gguf_type_string_for_compressor_config():
     selector = GGUFDTypeSelector(hparams, gguf_format_to_ftype("gguf:q2_k_s"))
 
     assert selector.select_gguf_type("blk.28.attn_v.weight", n_dims=2) == "gguf:q4_k"
+
+
+def test_attn_qkv_uses_dedicated_rule_not_attn_v_counter():
+    hparams = {"num_hidden_layers": 28, "num_attention_heads": 16, "num_key_value_heads": 4}
+    selector = GGUFDTypeSelector(hparams, gguf_format_to_ftype("gguf:q3_k_m"))
+
+    qtype = selector.select_qtype("blk.0.attn_qkv.weight", n_dims=2)
+
+    assert qtype == gguf.GGMLQuantizationType.Q4_K
+    assert selector.i_attention_wv == 0
+
+
+def test_selector_accepts_explicit_layer_count_from_compressor():
+    hparams = {"num_hidden_layers": 2, "num_attention_heads": 16, "num_key_value_heads": 4}
+    selector = GGUFDTypeSelector(hparams, gguf_format_to_ftype("gguf:q4_k_m"), n_layer=28)
+
+    assert selector.select_gguf_type("blk.1.attn_v.weight", n_dims=2) == "gguf:q6_k"

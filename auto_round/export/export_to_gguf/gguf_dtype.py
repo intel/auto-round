@@ -85,7 +85,7 @@ def _tensor_category(name: str) -> TensorCategory:
 
 
 def _is_attn_v_like(category: TensorCategory) -> bool:
-    return category in (TensorCategory.ATTENTION_V, TensorCategory.ATTENTION_QKV, TensorCategory.ATTENTION_KV_B)
+    return category in (TensorCategory.ATTENTION_V, TensorCategory.ATTENTION_KV_B)
 
 
 def _use_more_bits(i_layer: int, n_layer: int) -> bool:
@@ -169,10 +169,11 @@ def qtype_to_gguf_type(qtype) -> str:
 
 
 class GGUFDTypeSelector:
-    def __init__(self, hparams: dict, ftype, model_arch=None):
+    def __init__(self, hparams: dict, ftype, model_arch=None, n_layer: int | None = None):
         self.hparams = hparams
         self.ftype = ftype
         self.model_arch = model_arch
+        self.n_layer = n_layer
         self.i_attention_wv = 0
         self.i_ffn_down = 0
 
@@ -189,10 +190,15 @@ class GGUFDTypeSelector:
         qtype = _default_qtype(self.ftype)
         category = _tensor_category(name)
         i_layer = _get_layer_id(name, fallback_index)
-        n_layer = int(
-            self.hparams.get("num_hidden_layers", self.hparams.get("n_layer", self.hparams.get("num_layers", 1)))
-        )
-        n_layer += int(self.hparams.get("mtp_num_hidden_layers", self.hparams.get("num_nextn_predict_layers", 0)) or 0)
+        if self.n_layer is None:
+            n_layer = int(
+                self.hparams.get("num_hidden_layers", self.hparams.get("n_layer", self.hparams.get("num_layers", 1)))
+            )
+            n_layer += int(
+                self.hparams.get("mtp_num_hidden_layers", self.hparams.get("num_nextn_predict_layers", 0)) or 0
+            )
+        else:
+            n_layer = self.n_layer
         n_layer = max(n_layer, i_layer + 1)
         n_gqa = 1
         n_head = self.hparams.get("num_attention_heads", self.hparams.get("n_head"))
