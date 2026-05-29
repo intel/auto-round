@@ -896,7 +896,18 @@ class BaseCompressor(object):
         unchanged.  New code should prefer ``self.pipeline`` for pipeline-aware
         operations.
         """
-        return self._pipeline.block_quantizer
+        _pipeline = self.__dict__.get("_pipeline")
+        if _pipeline is not None:
+            return _pipeline.block_quantizer
+        return self.__dict__["_quantizer"]
+
+    @quantizer.setter
+    def quantizer(self, value) -> None:
+        _pipeline = self.__dict__.get("_pipeline")
+        if _pipeline is not None:
+            _pipeline.block_quantizer = value
+        else:
+            self.__dict__["_quantizer"] = value
 
     @property
     def pipeline(self):
