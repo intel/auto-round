@@ -876,12 +876,10 @@ def _build_mxfp_quantization_config(
     fmt = "mxfp4-pack-quantized" if bits == 4 else "mxfp8-quantized"
 
     # Default ignore list: any layer present in ignored_layers (deduped) that
-    # was NOT quantized.  Always include 'lm_head' if it appears in ignore set.
+    # was NOT quantized.
     ignore = list(dict.fromkeys(ignored_layers))
     quant_set = set(quantized_layers)
     ignore = [n for n in ignore if n not in quant_set]
-    if "lm_head" not in ignore:
-        ignore.append("lm_head")
 
     qconfig = initialize_quantization(scheme=scheme_name, ignore=ignore)
     qconfig = qconfig.to_dict()
