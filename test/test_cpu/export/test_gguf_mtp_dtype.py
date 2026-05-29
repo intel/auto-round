@@ -104,7 +104,7 @@ def test_selector_uses_cpp_integer_layer_division():
     hparams = {"num_hidden_layers": 2, "num_attention_heads": 16, "num_key_value_heads": 4}
     selector = GGUFDTypeSelector(hparams, gguf_format_to_ftype("gguf:q4_k_m"), n_layer=2)
 
-    assert selector.select_gguf_type("blk.1.attn_v.weight", n_dims=2) == "gguf:q6_k"
+    assert selector.select_gguf_type("blk.1.ffn_down.weight", n_dims=2) == "gguf:q6_k"
 
 
 def test_attn_v_more_bits_uses_attention_counter_not_layer_id():
