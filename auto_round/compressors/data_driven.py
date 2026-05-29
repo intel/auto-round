@@ -385,6 +385,47 @@ class DataDrivenCompressor(BaseCompressor):
             bs = self.quantizer.batch_size * self.quantizer.infer_bs_coeff
             mid_iter_mem_check = self.compress_context.low_gpu_mem_usage and card_0_in_high_risk
 
+            if not hasattr(self.quantizer, "create_block_io"):
+                if q_input is None:
+                    hook_handles = self.quantizer.register_calibration_hooks(block)
+                    reference_output = self.quantizer._get_block_outputs(block, input_ids, input_others, bs)
+                    for h in hook_handles:
+                        h.remove()
+                else:
+                    reference_output = self.quantizer._get_block_outputs(block, input_ids, input_others, bs)
+                    hook_handles = self.quantizer.register_calibration_hooks(block)
+                    if hook_handles:
+                        self.quantizer._get_block_outputs(block, q_input, input_others, bs, save_output=False)
+                    for h in hook_handles:
+                        h.remove()
+                    if input_ids is not q_input:
+                        clear_memory(input_ids, device_list=self.compress_context.device_list)
+                    else:
+                        clear_memory(device_list=self.compress_context.device_list)
+                    input_ids = q_input
+
+                self.quantizer.quantize_block(
+                    block,
+                    input_ids,
+                    input_others,
+                    reference_output,
+                    loss_device=loss_device,
+                    mid_iter_mem_check=mid_iter_mem_check,
+                )
+
+                if is_nv_fp(self.quantizer.act_data_type) or is_static_wfp8afp8(self.quantizer):
+                    set_amax_for_all_moe_layers(block, attr_name="act_max")
+
+                if self.quantizer.enable_quanted_input:
+                    q_outputs = self.quantizer._get_block_outputs(block, input_ids, input_others, bs)
+                else:
+                    q_outputs = None
+
+                if len(self.compress_context.device_list) > 1:
+                    accelerate.hooks.remove_hook_from_submodules(block)
+                mv_module_from_gpu(block)
+                return q_outputs, reference_output
+
             from auto_round.algorithms.pipeline import BlockContext, InputSource
 
             ctx = BlockContext(
