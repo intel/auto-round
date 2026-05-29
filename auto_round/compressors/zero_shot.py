@@ -17,7 +17,7 @@ from typing import Any, Union
 import torch
 from tqdm import tqdm
 
-from auto_round.algorithms.quantization.pipeline import BlockContext
+from auto_round.algorithms.pipeline import BlockContext
 from auto_round.compressors.base import BaseCompressor
 from auto_round.compressors.utils import is_nv_fp, is_static_wfp8afp8
 from auto_round.logger import logger

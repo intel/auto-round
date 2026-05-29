@@ -237,7 +237,7 @@ class BaseCompressor(object):
         _config_list = config if isinstance(config, list) else [config]
         # Keep full list for pipeline construction (includes preprocessor configs).
         self._alg_configs: list = list(_config_list)
-        from auto_round.algorithms.quantization.pipeline import split_quantization_configs
+        from auto_round.algorithms.pipeline import split_quantization_configs
 
         _preprocessor_configs, _block_quantizer_configs = split_quantization_configs(self._alg_configs)
         if len(_block_quantizer_configs) > 1:
@@ -869,7 +869,7 @@ class BaseCompressor(object):
 
         Work performed:
           - Constructs the block_quantizer from the resolved config.
-          - Wraps it in a :class:`~auto_round.algorithms.quantization.pipeline.QuantizationPipeline`
+          - Wraps it in a :class:`~auto_round.algorithms.pipeline.QuantizationPipeline`
             so that the entire compressor operates through the pipeline abstraction.
           - Calls ``quantizer.bind(self)`` so the quantizer pulls
             ``model_context`` / ``compress_context`` / ``scale_dtype`` /
@@ -884,7 +884,7 @@ class BaseCompressor(object):
           - ``self.quantizer`` (via property) is ready and shares ``CalibrationState``
             with the compressor.
         """
-        from auto_round.algorithms.quantization.pipeline import QuantizationPipeline
+        from auto_round.algorithms.pipeline import QuantizationPipeline
 
         self._pipeline = QuantizationPipeline.from_configs(self._alg_configs, compressor=self)
 
@@ -900,7 +900,7 @@ class BaseCompressor(object):
 
     @property
     def pipeline(self):
-        """The active :class:`~auto_round.algorithms.quantization.pipeline.QuantizationPipeline`."""
+        """The active :class:`~auto_round.algorithms.pipeline.QuantizationPipeline`."""
         return self._pipeline
 
     def _resolve_formats(self) -> None:
@@ -1108,7 +1108,7 @@ class BaseCompressor(object):
         self.quantizer.scale_dtype = self.scale_dtype
         self.quantizer.ignore_layers = self.ignore_layers
 
-        from auto_round.algorithms.quantization.pipeline import sync_shared_config_from
+        from auto_round.algorithms.pipeline import sync_shared_config_from
 
         sync_shared_config_from(self.quantizer.config, [pre.config for pre in self._pipeline.preprocessors])
 

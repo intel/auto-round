@@ -385,7 +385,7 @@ class DataDrivenCompressor(BaseCompressor):
             bs = self.quantizer.batch_size * self.quantizer.infer_bs_coeff
             mid_iter_mem_check = self.compress_context.low_gpu_mem_usage and card_0_in_high_risk
 
-            from auto_round.algorithms.quantization.pipeline import BlockContext, InputSource
+            from auto_round.algorithms.pipeline import BlockContext, InputSource
 
             ctx = BlockContext(
                 model=self.model_context.model,
@@ -547,7 +547,7 @@ class DataDrivenCompressor(BaseCompressor):
                     add_hook_to_module(_mod, AlignDevicesHook(_mod.tuning_device, io_same_device=True), True)
 
             # ── Pipeline lifecycle: per-block setup ───────────────────────────
-            from auto_round.algorithms.quantization.pipeline import BlockContext, InputSource
+            from auto_round.algorithms.pipeline import BlockContext, InputSource
 
             current_block_names = (
                 block_name_or_names if isinstance(block_name_or_names, list) else [block_name_or_names]
@@ -771,7 +771,7 @@ class DataDrivenCompressor(BaseCompressor):
         start_time = time.time()
 
         # ── Pipeline lifecycle: prepare_quantization (model-level setup) ──────
-        from auto_round.algorithms.quantization.pipeline import RunContext
+        from auto_round.algorithms.pipeline import RunContext
 
         run_ctx = RunContext(
             model=self.model_context.model,
@@ -1117,7 +1117,7 @@ class CalibratedRTNCompressor(DataDrivenCompressor):
                     block = block.to(self.compress_context.device)
 
                 # ── Infrastructure: collect block outputs and hook stats ──
-                from auto_round.algorithms.quantization.pipeline import BlockContext, InputSource
+                from auto_round.algorithms.pipeline import BlockContext, InputSource
 
                 block_input_ids = input_ids
                 bs = self.quantizer.batch_size * self.quantizer.infer_bs_coeff

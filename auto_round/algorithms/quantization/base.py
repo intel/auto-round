@@ -177,7 +177,7 @@ class DiffusionMixin:
         return self.DIFFUSION_OUTPUT_CONFIGS.get(block.__class__.__name__, ["hidden_states"])
 
     def create_block_io(self, input_ids, input_others, quantized_input=None, block=None):
-        from auto_round.algorithms.quantization.pipeline import DiffusionBlockIO, InputSource
+        from auto_round.algorithms.pipeline import DiffusionBlockIO, InputSource
 
         active_source = (
             InputSource.QUANTIZED_INPUT
@@ -381,7 +381,7 @@ class BaseQuantizer(BasePipelineMember):
         determine whether any act-calib hooks were registered (used to decide
         whether a second forward with quantized inputs is needed).
         """
-        from auto_round.algorithms.quantization.pipeline import CalibTiming
+        from auto_round.algorithms.pipeline import CalibTiming
 
         policy = self.get_act_calib_policy(ctx)
         if policy.when == CalibTiming.SKIP:
@@ -400,7 +400,7 @@ class BaseQuantizer(BasePipelineMember):
         Default: ``WITH_REFERENCE + FP_CACHE``, or ``QUANTIZED_INPUT`` when
         ``enable_quanted_input=True`` and a quantized previous-block output is available.
         """
-        from auto_round.algorithms.quantization.pipeline import ActCalibPolicy, CalibTiming, InputSource
+        from auto_round.algorithms.pipeline import ActCalibPolicy, CalibTiming, InputSource
 
         quantized_input = getattr(ctx, "quantized_input", None)
         if quantized_input is not None and self.enable_quanted_input:
@@ -408,7 +408,7 @@ class BaseQuantizer(BasePipelineMember):
         return ActCalibPolicy(when=CalibTiming.WITH_REFERENCE, source=InputSource.FP_CACHE)
 
     def create_block_io(self, input_ids, input_others, quantized_input=None, block=None):
-        from auto_round.algorithms.quantization.pipeline import BlockIO, InputSource
+        from auto_round.algorithms.pipeline import BlockIO, InputSource
 
         active_source = (
             InputSource.QUANTIZED_INPUT
