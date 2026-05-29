@@ -783,6 +783,28 @@ def get_layer_config_by_gguf_format(layer_config, target_gguf_format: str, model
     if inner_gguf_format.startswith("gguf:q") and len(inner_gguf_format) >= 7 and (inner_gguf_format[6]).isdigit():
         base_target_bits = int(inner_gguf_format[6])
 
+    def _resolve_gguf_name(layer_name):
+        if model_type != ModelType.TEXT and any([key in layer_name for key in MM_MODULE_KEYS]):
+            gguf_layer_name = tensor_map_vision.get_name(layer_name)
+            if gguf_layer_name is None:
+                for key in MM_MODULE_KEYS:
+                    gguf_layer_name = tensor_map_vision.get_name(layer_name.replace(f".{key}", ""))
+                    if gguf_layer_name is not None:
+                        break
+        else:
+            gguf_layer_name = tensor_map.get_name(layer_name)
+            if gguf_layer_name is None:
+                gguf_layer_name = tensor_map.get_name(layer_name.replace(".language_model", ""))
+        return gguf_layer_name
+
+    dtype_selector.n_attention_wv = sum(
+        1
+        for layer_name, config in layer_config_copy.items()
+        if check_to_quantized(config)
+        and (gguf_name := _resolve_gguf_name(layer_name))
+        and any(key in gguf_name for key in ("attn_v", "attn_qkv", "attn_kv_b"))
+    )
+
     for layer_name, config in layer_config_copy.items():
         if not check_to_quantized(config):
             continue
@@ -805,17 +827,7 @@ def get_layer_config_by_gguf_format(layer_config, target_gguf_format: str, model
                 re.search("gguf:q([0-9]{1,})_[01k]", GGUF_CONFIG[target_gguf_format][embedding_format_key]).group(1)
             )
 
-        if model_type != ModelType.TEXT and any([key in layer_name for key in MM_MODULE_KEYS]):
-            gguf_name = tensor_map_vision.get_name(layer_name)
-            if gguf_name is None:
-                for key in MM_MODULE_KEYS:
-                    gguf_name = tensor_map_vision.get_name(layer_name.replace(f".{key}", ""))
-                    if gguf_name is not None:
-                        break
-        else:
-            gguf_name = tensor_map.get_name(layer_name)
-            if gguf_name is None:
-                gguf_name = tensor_map.get_name(layer_name.replace(".language_model", ""))
+        gguf_name = _resolve_gguf_name(layer_name)
         bits_index = 6
         if config.get("fixed_by_user", False):
             if "bits" not in config:

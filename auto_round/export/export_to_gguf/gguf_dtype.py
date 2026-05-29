@@ -85,11 +85,11 @@ def _tensor_category(name: str) -> TensorCategory:
 
 
 def _is_attn_v_like(category: TensorCategory) -> bool:
-    return category in (TensorCategory.ATTENTION_V, TensorCategory.ATTENTION_KV_B)
+    return category in (TensorCategory.ATTENTION_V, TensorCategory.ATTENTION_QKV, TensorCategory.ATTENTION_KV_B)
 
 
 def _use_more_bits(i_layer: int, n_layer: int) -> bool:
-    return i_layer < n_layer / 8 or i_layer >= 7 * n_layer / 8 or (i_layer - n_layer / 8) % 3 == 2
+    return i_layer < n_layer // 8 or i_layer >= 7 * n_layer // 8 or (i_layer - n_layer // 8) % 3 == 2
 
 
 def _get_layer_id(name: str, fallback: int) -> int:
@@ -169,11 +169,21 @@ def qtype_to_gguf_type(qtype) -> str:
 
 
 class GGUFDTypeSelector:
-    def __init__(self, hparams: dict, ftype, model_arch=None, n_layer: int | None = None):
+    def __init__(
+        self,
+        hparams: dict,
+        ftype,
+        model_arch=None,
+        n_layer: int | None = None,
+        n_attention_wv: int | None = None,
+        has_imatrix: bool = False,
+    ):
         self.hparams = hparams
         self.ftype = ftype
         self.model_arch = model_arch
         self.n_layer = n_layer
+        self.n_attention_wv = n_attention_wv
+        self.has_imatrix = has_imatrix
         self.i_attention_wv = 0
         self.i_ffn_down = 0
 
@@ -222,7 +232,7 @@ class GGUFDTypeSelector:
             elif self.ftype == gguf.LlamaFileType.MOSTLY_Q3_K_L:
                 qtype = gguf.GGMLQuantizationType.Q5_K
             elif self.ftype in (gguf.LlamaFileType.MOSTLY_Q4_K_M, gguf.LlamaFileType.MOSTLY_Q5_K_M) and _use_more_bits(
-                i_layer, n_layer
+                self.i_attention_wv, self.n_attention_wv or n_layer
             ):
                 qtype = gguf.GGMLQuantizationType.Q6_K
             elif self.ftype == gguf.LlamaFileType.MOSTLY_Q4_K_S and self.i_attention_wv < 4:
@@ -235,10 +245,10 @@ class GGUFDTypeSelector:
         elif category == TensorCategory.FFN_DOWN:
             if self.ftype == gguf.LlamaFileType.MOSTLY_Q2_K:
                 qtype = gguf.GGMLQuantizationType.Q3_K
-            elif self.ftype == gguf.LlamaFileType.MOSTLY_Q2_K_S and i_layer < n_layer / 8:
+            elif self.ftype == gguf.LlamaFileType.MOSTLY_Q2_K_S and i_layer < n_layer // 8:
                 qtype = gguf.GGMLQuantizationType.Q4_K
             elif self.ftype == gguf.LlamaFileType.MOSTLY_Q3_K_M:
-                if i_layer < n_layer / 16:
+                if i_layer < n_layer // 16:
                     qtype = gguf.GGMLQuantizationType.Q5_K
                 elif self.model_arch == gguf.MODEL_ARCH.FALCON or _use_more_bits(i_layer, n_layer):
                     qtype = gguf.GGMLQuantizationType.Q4_K
@@ -263,12 +273,12 @@ class GGUFDTypeSelector:
             elif (
                 self.ftype == gguf.LlamaFileType.MOSTLY_Q4_K_S
                 and self.model_arch != gguf.MODEL_ARCH.FALCON
-                and i_layer < n_layer / 8
+                and i_layer < n_layer // 8
             ):
                 qtype = gguf.GGMLQuantizationType.Q5_K
-            elif self.ftype == gguf.LlamaFileType.MOSTLY_Q4_0 and i_layer < n_layer / 8:
+            elif self.ftype == gguf.LlamaFileType.MOSTLY_Q4_0 and self.has_imatrix and i_layer < n_layer // 8:
                 qtype = gguf.GGMLQuantizationType.Q4_1
-            elif self.ftype == gguf.LlamaFileType.MOSTLY_Q5_0 and i_layer < n_layer / 8:
+            elif self.ftype == gguf.LlamaFileType.MOSTLY_Q5_0 and self.has_imatrix and i_layer < n_layer // 8:
                 qtype = gguf.GGMLQuantizationType.Q5_1
             self.i_ffn_down += 1
         elif category == TensorCategory.ATTENTION_OUTPUT:

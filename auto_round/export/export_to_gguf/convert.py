@@ -416,10 +416,28 @@ def _special_name_handle(cls, name):
     return name
 
 
+def _count_attention_wv_tensors(cls):
+    count = 0
+    for name, data_torch in chain(cls.generate_extra_tensors(), cls.get_tensors()):
+        if data_torch is None or data_torch.numel() == 0:
+            continue
+        filtered = cls.filter_tensors((name, lambda data_torch=data_torch: data_torch))
+        if filtered is None:
+            continue
+        modify_name = _special_name_handle(cls, filtered[0])
+        try:
+            new_name = cls.map_tensor_name(modify_name)
+        except Exception:
+            continue
+        count += any(key in new_name for key in ("attn_v.weight", "attn_qkv.weight", "attn_kv_b.weight"))
+    return count or None
+
+
 def prepare_tensors(cls):
     device = get_packing_device(cls.device)
     if not hasattr(cls, "_gguf_dtype_selector"):
         cls._gguf_dtype_selector = GGUFDTypeSelector(cls.hparams, cls.ftype, cls.model_arch)
+        cls._gguf_dtype_selector.n_attention_wv = _count_attention_wv_tensors(cls)
 
     # Handle empty tensor_map for models with block_count=0 (like MobileNetV5)
     if cls.tensor_map.mapping:

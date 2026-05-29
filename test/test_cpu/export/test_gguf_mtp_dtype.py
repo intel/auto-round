@@ -83,14 +83,14 @@ def test_selector_returns_gguf_type_string_for_compressor_config():
     assert selector.select_gguf_type("blk.28.attn_v.weight", n_dims=2) == "gguf:q4_k"
 
 
-def test_attn_qkv_uses_dedicated_rule_not_attn_v_counter():
+def test_attn_qkv_matches_llama_cpp_attn_v_like_rule():
     hparams = {"num_hidden_layers": 28, "num_attention_heads": 16, "num_key_value_heads": 4}
     selector = GGUFDTypeSelector(hparams, gguf_format_to_ftype("gguf:q3_k_m"))
 
     qtype = selector.select_qtype("blk.0.attn_qkv.weight", n_dims=2)
 
-    assert qtype == gguf.GGMLQuantizationType.Q4_K
-    assert selector.i_attention_wv == 0
+    assert qtype == gguf.GGMLQuantizationType.Q5_K
+    assert selector.i_attention_wv == 1
 
 
 def test_selector_accepts_explicit_layer_count_from_compressor():
@@ -98,3 +98,25 @@ def test_selector_accepts_explicit_layer_count_from_compressor():
     selector = GGUFDTypeSelector(hparams, gguf_format_to_ftype("gguf:q4_k_m"), n_layer=28)
 
     assert selector.select_gguf_type("blk.1.attn_v.weight", n_dims=2) == "gguf:q6_k"
+
+
+def test_selector_uses_cpp_integer_layer_division():
+    hparams = {"num_hidden_layers": 2, "num_attention_heads": 16, "num_key_value_heads": 4}
+    selector = GGUFDTypeSelector(hparams, gguf_format_to_ftype("gguf:q4_k_m"), n_layer=2)
+
+    assert selector.select_gguf_type("blk.1.attn_v.weight", n_dims=2) == "gguf:q6_k"
+
+
+def test_attn_v_more_bits_uses_attention_counter_not_layer_id():
+    hparams = {"num_hidden_layers": 28, "num_attention_heads": 16, "num_key_value_heads": 4}
+    selector = GGUFDTypeSelector(hparams, gguf_format_to_ftype("gguf:q4_k_m"), n_attention_wv=2)
+
+    assert selector.select_gguf_type("blk.0.attn_v.weight", n_dims=2) == "gguf:q4_k"
+    assert selector.select_gguf_type("blk.1.attn_v.weight", n_dims=2) == "gguf:q6_k"
+
+
+def test_q4_0_ffn_down_upgrade_requires_imatrix_like_llama_cpp():
+    hparams = {"num_hidden_layers": 28, "num_attention_heads": 16, "num_key_value_heads": 4}
+    selector = GGUFDTypeSelector(hparams, gguf_format_to_ftype("gguf:q4_0"), has_imatrix=False)
+
+    assert selector.select_gguf_type("blk.0.ffn_down.weight", n_dims=2) == "gguf:q4_0"
