@@ -32,6 +32,15 @@ parameters:
   - name: buildARKWheel
     type: string
     default: "false"
+  - name: failureLogContext
+    type: string
+    default: ""
+  - name: failedTestCases
+    type: string
+    default: ""
+  - name: failureLogArtifactPrefix
+    type: string
+    default: "ut-failure-log"
 
 
 steps:
@@ -100,9 +109,18 @@ steps:
   - script: |
       set -eo pipefail
 
+      EXTRA_ARGS=""
+      if [ -n "${{ parameters.failureLogContext }}" ]; then
+        EXTRA_ARGS="--failure-context ${{ parameters.failureLogContext }}"
+      fi
+
+      if [ -n "${{ parameters.failedTestCases }}" ]; then
+        EXTRA_ARGS="${EXTRA_ARGS} --failed-test-cases ${{ parameters.failedTestCases }}"
+      fi
+
       docker exec -e NUMA_NODE=${NUMA_NODE} -e NUMA_CPUSET=${NUMA_CPUSET} -e ZE_AFFINITY_MASK=${ZE_AFFINITY_MASK} ${{ parameters.utContainerName }} \
       bash -c "cd /auto-round/.azure-pipelines/scripts \
-        && bash ut/${{ parameters.utScriptFileName }}.sh ${{ parameters.utTestMode }}"
+        && bash ut/${{ parameters.utScriptFileName }}.sh --test-part ${{ parameters.utTestMode }} ${EXTRA_ARGS}"
     displayName: "Run UT"
 
   - task: PublishPipelineArtifact@1
@@ -110,6 +128,13 @@ steps:
     inputs:
       targetPath: ${{ parameters.uploadPath }}
       artifact: ${{ parameters.utArtifact }}_coverage
+      publishLocation: "pipeline"
+
+  - task: PublishPipelineArtifact@1
+    condition: failed()
+    inputs:
+      targetPath: ${{ parameters.uploadPath }}/failure_logs
+      artifact: "${{ parameters.failureLogArtifactPrefix }}-${{ parameters.utTestMode }}-$(System.JobAttempt)"
       publishLocation: "pipeline"
 
   - task: Bash@3

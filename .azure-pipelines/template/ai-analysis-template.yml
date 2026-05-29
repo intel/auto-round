@@ -1,0 +1,107 @@
+parameters:
+  - name: dockerConfigName
+    type: string
+    default: "commonDockerConfig"
+  - name: utContainerName
+    type: string
+    default: "AutoRoundUnitTestAI"
+  - name: imageName
+    type: string
+    default: "auto-round"
+  - name: imageTag
+    type: string
+    default: "py312"
+  - name: uploadPath
+    type: string
+    default: "$(Build.SourcesDirectory)/log_dir"
+  - name: failureLogArtifactPrefix
+    type: string
+    default: "ut-failure-log"
+  - name: failureLogDownloadPath
+    type: string
+    default: "$(Pipeline.Workspace)/failure_logs"
+  - name: analysisArtifactName
+    type: string
+    default: "UT_AI_Analysis"
+
+steps:
+  - checkout: self
+
+  - task: DownloadPipelineArtifact@2
+    inputs:
+      patterns: '${{ parameters.failureLogArtifactPrefix }}-*/*'
+      path: ${{ parameters.failureLogDownloadPath }}
+
+  - task: UsePythonVersion@0
+    inputs:
+      versionSpec: '3.12'
+    displayName: 'Use Python 3.12'
+
+  - script: |
+      cd ${BUILD_SOURCESDIRECTORY}
+      python .azure-pipelines/scripts/ai_failure_analysis/merge_failure_context.py \
+        --input-root "${{ parameters.failureLogDownloadPath }}" \
+        --output "${{ parameters.uploadPath }}/merged_failure_context.json" \
+        --failed-test-cases "${{ parameters.uploadPath }}/failed_tests_to_rerun.txt"
+    displayName: "Merge Failure Context"
+
+  - script: |
+      set -euo pipefail
+      cd ${BUILD_SOURCESDIRECTORY}
+
+      if ! command -v copilot >/dev/null 2>&1; then
+        if ! command -v npm >/dev/null 2>&1; then
+          echo "npm is required to install Copilot CLI"
+          exit 1
+        fi
+        npm install -g @github/copilot
+      fi
+
+      copilot --version
+
+      python .azure-pipelines/scripts/ai_failure_analysis/analyze_and_suggest.py \
+        --failure-context "${{ parameters.uploadPath }}/merged_failure_context.json" \
+        --output-dir "${{ parameters.uploadPath }}/ai_analysis" \
+        --failed-test-cases "${{ parameters.uploadPath }}/failed_tests_to_rerun.txt" \
+        --project-root "${BUILD_SOURCESDIRECTORY}" \
+        --failed-logs-root "${{ parameters.failureLogDownloadPath }}"
+
+      patch_file="${{ parameters.uploadPath }}/ai_analysis/suggested_fix.patch"
+      if [ -s "${patch_file}" ]; then
+        git apply --check "${patch_file}"
+        git apply "${patch_file}"
+      fi
+    env:
+      COPILOT_GITHUB_TOKEN: $(GITHUB_TOKEN)
+      GITHUB_TOKEN: $(GITHUB_TOKEN)
+      GH_TOKEN: $(GITHUB_TOKEN)
+    displayName: "Copilot Analyze And Apply Patch"
+
+  - template: ut-template.yml
+    parameters:
+      dockerConfigName: ${{ parameters.dockerConfigName }}
+      utScriptFileName: "run_ut"
+      uploadPath: ${{ parameters.uploadPath }}
+      utArtifact: "ut-ai-rerun"
+      utTestMode: "0"
+      utContainerName: ${{ parameters.utContainerName }}
+      imageName: ${{ parameters.imageName }}
+      imageTag: ${{ parameters.imageTag }}
+      failureLogContext: "${{ parameters.uploadPath }}/ai_rerun_failure_context.json"
+      failedTestCases: "${{ parameters.uploadPath }}/failed_tests_to_rerun.txt"
+
+  - script: |
+      cd ${BUILD_SOURCESDIRECTORY}
+      python .azure-pipelines/scripts/ai_failure_analysis/post_pr_comment.py \
+        --analysis-result "${{ parameters.uploadPath }}/ai_analysis/analysis_result.json" \
+        --report "${{ parameters.uploadPath }}/ai_analysis/ai_failure_report.md"
+    env:
+      GITHUB_TOKEN: $(GITHUB_TOKEN)
+    displayName: "Post Copilot Analysis Comment"
+
+  - task: PublishPipelineArtifact@1
+    condition: succeededOrFailed()
+    inputs:
+      targetPath: ${{ parameters.uploadPath }}
+      artifact: ${{ parameters.analysisArtifactName }}
+      publishLocation: "pipeline"

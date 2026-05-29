@@ -16,9 +16,11 @@ pr:
       - requirements-cpu.txt
       - .azure-pipelines/build-auto-round-lib.yml
       - .azure-pipelines/scripts/ut
+      - .azure-pipelines/scripts/ai_failure_analysis
       - .azure-pipelines/unit-test.yml
       - .azure-pipelines/template/lib-build-template.yml
       - .azure-pipelines/template/ut-template.yml
+      - .azure-pipelines/template/ai-analysis-template.yml
       - .azure-pipelines/template/docker-template.yml
     exclude:
       - test/test_hpu
@@ -40,6 +42,9 @@ variables:
   DOWNLOAD_PATH: $(Build.SourcesDirectory)/log_dir
   ARTIFACT_NAME: "UT_coverage_report"
   REPO: $(Build.Repository.Uri)
+  FAILURE_LOG_ARTIFACT_PREFIX: "ut-failure-log"
+  FAILURE_LOG_DOWNLOAD_PATH: $(Pipeline.Workspace)/failure_logs
+  COPILOT_ANALYSIS_ENABLED: "true"
 
 stages:
   - template: template/lib-build-template.yml
@@ -77,6 +82,24 @@ stages:
               utTestMode: $(PART)
               utContainerName: "AutoRoundUnitTest$(NODE_LABEL)"
               buildARKWheel: $(BUILD_ARK_WHEEL)
+              failureLogContext: $(UPLOAD_PATH)/failure_context_part$(PART).json
+
+  - stage: AI_Analysis
+    displayName: "AI Analyze And Rerun"
+    dependsOn: [Unit_test]
+    condition: and(failed('Unit_test'), eq(variables['Build.Reason'], 'PullRequest'), eq(variables['COPILOT_ANALYSIS_ENABLED'], 'true'))
+    pool: ICX-16C
+    jobs:
+      - job: AnalyzeAndRerun
+        timeoutInMinutes: 60
+        steps:
+          - template: template/ai-analysis-template.yml
+            parameters:
+              dockerConfigName: "commonDockerConfig"
+              utContainerName: "AutoRoundUnitTestAI$(NODE_LABEL)"
+              imageName: $(IMAGE_NAME)
+              imageTag: $(IMAGE_TAG)
+              uploadPath: $(UPLOAD_PATH)
 
   - stage: Coverage
     displayName: "Collect Coverage"

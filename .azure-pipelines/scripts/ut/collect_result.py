@@ -1,7 +1,10 @@
 """Log analyzer for test results with summary generation."""
 
 import argparse
+import json
+import os
 import re
+import shutil
 import sys
 from collections import deque
 from dataclasses import dataclass
@@ -199,12 +202,132 @@ class ReportGenerator:
         )
 
 
+class FailureContextWriter:
+    """Extract compact failure context for downstream AI analysis."""
+
+    TRACEBACK_MARKERS = ("Traceback", "== FAILURES ==", "== ERRORS ==")
+
+    def __init__(self, log_dir: Path, max_lines: int = 200):
+        self.log_dir = Path(log_dir)
+        self.max_lines = max_lines
+
+    def write(
+        self,
+        output_path: Path,
+        results: list[TestResult],
+        test_type: str,
+        ci_part: str = "",
+        summary_log: Path | None = None,
+        failure_log_dir: Path | None = None,
+    ) -> None:
+        output_path = Path(output_path)
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+
+        failed_results = [r for r in results if r.status == TestStatus.FAILED]
+        failures = [self._to_failure_entry(result) for result in failed_results]
+
+        payload = {
+            "schema_version": "1.0",
+            "test_type": test_type,
+            "ci_part": ci_part,
+            "build": {
+                "build_id": os.environ.get("BUILD_BUILDID", ""),
+                "build_number": os.environ.get("BUILD_BUILDNUMBER", ""),
+                "source_commit": os.environ.get("SYSTEM_PULLREQUEST_SOURCECOMMITID", os.environ.get("BUILD_SOURCEVERSION", "")),
+                "pr_number": os.environ.get("SYSTEM_PULLREQUEST_PULLREQUESTNUMBER", ""),
+            },
+            "stats": {
+                "total": len(results),
+                "failed": len(failed_results),
+            },
+            "failures": failures,
+        }
+
+        with open(output_path, "w", encoding="utf-8") as f:
+            json.dump(payload, f, indent=2)
+
+        print(f"Failure context written to: {output_path.absolute()}", file=sys.stderr)
+
+        target_log_dir = Path(failure_log_dir) if failure_log_dir else output_path.parent / "failure_logs"
+        self._collect_failure_logs(target_log_dir, failed_results, output_path, summary_log)
+
+    def _to_failure_entry(self, result: TestResult) -> dict:
+        log_path = self.log_dir / result.filename
+        content = self._read_file(log_path)
+        lines = content.splitlines()
+        excerpt = self._extract_excerpt(lines)
+        tail = "\n".join(lines[-self.max_lines :]) if lines else ""
+
+        return {
+            "test_name": result.name,
+            "status": result.status.name,
+            "log_file": result.filename,
+            "duration": result.duration,
+            "excerpt": excerpt,
+            "tail": tail,
+        }
+
+    def _read_file(self, path: Path) -> str:
+        try:
+            with open(path, "r", encoding="utf-8", errors="ignore") as f:
+                return f.read()
+        except OSError:
+            return ""
+
+    def _extract_excerpt(self, lines: list[str]) -> str:
+        if not lines:
+            return ""
+
+        selected = []
+        for marker in self.TRACEBACK_MARKERS:
+            for idx, line in enumerate(lines):
+                if marker in line:
+                    start = max(0, idx - 10)
+                    end = min(len(lines), idx + 80)
+                    selected = lines[start:end]
+                    break
+            if selected:
+                break
+
+        if not selected:
+            selected = lines[-self.max_lines :]
+
+        return "\n".join(selected[: self.max_lines])
+
+    def _collect_failure_logs(
+        self,
+        target_dir: Path,
+        failed_results: list[TestResult],
+        context_path: Path,
+        summary_log: Path | None,
+    ) -> None:
+        if not failed_results:
+            return
+
+        target_dir.mkdir(parents=True, exist_ok=True)
+
+        if summary_log and Path(summary_log).exists():
+            shutil.copy2(summary_log, target_dir / Path(summary_log).name)
+
+        for result in failed_results:
+            src_log = self.log_dir / result.filename
+            if src_log.exists():
+                shutil.copy2(src_log, target_dir / result.filename)
+
+        if context_path.exists():
+            shutil.copy2(context_path, target_dir / context_path.name)
+
+
 def main():
     parser = argparse.ArgumentParser(description="Analyze test logs and generate summary")
     parser.add_argument("--test-type", required=True, help="Type of tests")
     parser.add_argument("--log-dir", required=True, type=Path, help="Directory with logs")
     parser.add_argument("--summary-log", required=True, type=Path, help="Output file")
     parser.add_argument("--log-pattern", default="*.log", help="Glob pattern")
+    parser.add_argument("--failure-context", type=Path, help="Optional output file for failure context JSON")
+    parser.add_argument("--failure-context-max-lines", type=int, default=200, help="Max lines per failed case")
+    parser.add_argument("--ci-part", default="", help="Optional CI matrix part label")
+    parser.add_argument("--failure-log-dir", type=Path, help="Optional output folder for failed logs package")
 
     args = parser.parse_args()
 
@@ -224,6 +347,18 @@ def main():
             "passed": sum(1 for r in results if r.status == TestStatus.PASSED),
             "failed": sum(1 for r in results if r.status == TestStatus.FAILED),
         }
+
+        if args.failure_context:
+            context_writer = FailureContextWriter(args.log_dir, max_lines=args.failure_context_max_lines)
+            context_writer.write(
+                args.failure_context,
+                results,
+                test_type=args.test_type,
+                ci_part=args.ci_part,
+                summary_log=args.summary_log,
+                failure_log_dir=args.failure_log_dir,
+            )
+
         print(f"Done: {stats['total']} tests, {stats['passed']} passed, {stats['failed']} failed")
 
     except Exception as e:
