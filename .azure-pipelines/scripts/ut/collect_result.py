@@ -48,6 +48,7 @@ class LogAnalyzer:
         "AssertionError",
         "Error:",
         "core dumped",
+        "Segmentation fault",
     )
 
     ERROR_MARKERS = (
