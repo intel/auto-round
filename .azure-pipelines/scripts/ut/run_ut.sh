@@ -192,7 +192,7 @@ function run_unit_test() {
     cd /auto-round || exit 1
 
     # Split test files into 5 parts
-    find ./test/test_cpu -name "test*.py" | grep -Ev "test_llmc|test_inc" | sort > all_tests.txt
+    find ./test/test_cpu/core -name "test*.py" | grep -Ev "test_llmc|test_inc" | sort > all_tests.txt
     total_lines=$(wc -l < all_tests.txt)
     NUM_CHUNKS=5
     q=$(( total_lines / NUM_CHUNKS ))

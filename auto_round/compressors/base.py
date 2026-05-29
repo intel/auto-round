@@ -668,11 +668,15 @@ class BaseCompressor(object):
     def _apply_torch_compile_constraints(self, enable_torch_compile: bool) -> None:
         """Apply torch.compile disabling rules for the current compressor state."""
         self.enable_torch_compile = enable_torch_compile
-        cfg = self.quantize_config
+
+        # Optimization: skip guard checks when torch.compile is not requested.
+        if not self.enable_torch_compile:
+            return
+
         is_raw_fp8, is_raw_nv_fp, _ = self._get_torch_compile_guard_state()
 
         # On HPU, we rely on torch.compile to speed up the model execution.
-        if self.enable_torch_compile and is_raw_fp8 and not is_hpex_available():
+        if self.enable_torch_compile and is_raw_fp8 and is_hpex_available():
             self.enable_torch_compile = False
             logger.warning_once("reset enable_torch_compile to `False` as fp8 is enabled")
         # TODO: fix https://github.com/intel/auto-round/issues/1109
