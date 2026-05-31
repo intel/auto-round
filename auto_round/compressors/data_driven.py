@@ -59,6 +59,7 @@ from auto_round.utils import (
     memory_monitor,
     mv_module_from_gpu,
     set_amax_for_all_moe_layers,
+    set_module,
     to_device,
     to_dtype,
     wrap_block_forward_positional_to_kwargs,
@@ -417,63 +418,93 @@ class DataDrivenCompressor(BaseCompressor):
             self.model_context.is_mllm = orig_is_mllm
 
     @staticmethod
-    def _clone_overlap_tail_value(value):
-        if torch.is_tensor(value):
-            return value.detach().cpu().clone()
-        return copy.deepcopy(value)
+    def _clone_fp_overlap_module(module: torch.nn.Module) -> torch.nn.Module:
+        fp_module = copy.deepcopy(module)
+        fp_module.requires_grad_(False)
+        return mv_module_from_gpu(fp_module)
 
-    def _snapshot_overlap_tail_state(self, block: torch.nn.Module, advance_blocks: int):
-        if advance_blocks <= 0 or not isinstance(block, WrapperMultiblock):
-            return None
-        tail_modules = list(block.layers[advance_blocks:])
-        if len(tail_modules) == 0:
-            return None
+    def _cache_fp_overlap_modules(
+        self,
+        model: torch.nn.Module,
+        block_names: list[str],
+        fp_overlap_modules: dict[str, torch.nn.Module],
+    ) -> None:
+        for block_name in block_names:
+            if block_name in fp_overlap_modules:
+                continue
+            fp_overlap_modules[block_name] = self._clone_fp_overlap_module(get_module(model, block_name))
 
-        tracked_attrs = (
-            "imatrix",
-            "imatrix_cnt",
-            "scale",
-            "zp",
-            "w_scale",
-            "w_zp",
-            "w_wmin",
-            "w_d_scale",
-            "w_d_wmin",
-            "weight_global_scale",
-        )
-        snapshots = []
-        for module in tail_modules:
-            state = {key: value.detach().cpu().clone() for key, value in module.state_dict().items()}
-            attrs = {}
-            for sub_name, sub_module in module.named_modules():
-                sub_attrs = {}
-                for attr_name in tracked_attrs:
-                    if hasattr(sub_module, attr_name):
-                        sub_attrs[attr_name] = (
-                            True,
-                            self._clone_overlap_tail_value(getattr(sub_module, attr_name)),
-                        )
-                    else:
-                        sub_attrs[attr_name] = (False, None)
-                attrs[sub_name] = sub_attrs
-            snapshots.append((module, state, attrs))
-        return snapshots
+    def _swap_in_fp_overlap_modules(
+        self,
+        model: torch.nn.Module,
+        block_names: list[str],
+        fp_overlap_modules: dict[str, torch.nn.Module],
+    ) -> list[tuple[str, torch.nn.Module, torch.nn.Module]]:
+        swapped_modules = []
+        for block_name in block_names:
+            fp_module = fp_overlap_modules.get(block_name)
+            if fp_module is None:
+                continue
+            current_module = get_module(model, block_name)
+            replacement = copy.deepcopy(fp_module)
+            set_module(model, block_name, replacement)
+            swapped_modules.append((block_name, current_module, replacement))
+        return swapped_modules
 
-    def _restore_overlap_tail_state(self, snapshots):
-        if snapshots is None:
-            return
-        for module, state, attrs in snapshots:
-            module.load_state_dict(state, strict=False)
-            named_modules = dict(module.named_modules())
-            for sub_name, sub_attrs in attrs.items():
-                sub_module = named_modules.get(sub_name)
-                if sub_module is None:
-                    continue
-                for attr_name, (existed, value) in sub_attrs.items():
-                    if existed:
-                        setattr(sub_module, attr_name, self._clone_overlap_tail_value(value))
-                    elif hasattr(sub_module, attr_name):
-                        delattr(sub_module, attr_name)
+    @staticmethod
+    def _restore_swapped_modules(
+        model: torch.nn.Module,
+        swapped_modules: list[tuple[str, torch.nn.Module, torch.nn.Module]],
+    ) -> None:
+        for block_name, current_module, _ in reversed(swapped_modules):
+            set_module(model, block_name, current_module)
+
+    @staticmethod
+    def _build_window_block(modules: list[torch.nn.Module]) -> torch.nn.Module:
+        if len(modules) == 1:
+            return modules[0]
+        return WrapperMultiblock(modules)
+
+    def _get_fp_window_outputs(
+        self,
+        model: torch.nn.Module,
+        window_names: list[str],
+        fp_overlap_modules: dict[str, torch.nn.Module],
+        input_ids,
+        input_others,
+        bs: int,
+        loss_device,
+        overlap_advance: int,
+    ):
+        swapped_modules = self._swap_in_fp_overlap_modules(model, window_names, fp_overlap_modules)
+        try:
+            modules = [get_module(model, block_name) for block_name in window_names]
+            fp_block = self._build_window_block(modules)
+            materialize_model_(fp_block)
+            convert_module_to_hp_if_necessary(fp_block, self.model_context.amp_dtype, self.compress_context.device)
+            fp_block = fp_block.to(self.compress_context.device)
+            reference_output = self.quantizer._get_block_outputs(
+                fp_block,
+                input_ids,
+                input_others,
+                bs,
+                device_override=loss_device,
+            )
+            overlap_input = None
+            overlap_block = self._get_overlap_advance_block(fp_block, overlap_advance)
+            if overlap_block is not None:
+                overlap_input = self.quantizer._get_block_outputs(
+                    overlap_block,
+                    input_ids,
+                    input_others,
+                    bs,
+                    device_override=loss_device,
+                )
+            return reference_output, overlap_input
+        finally:
+            self._restore_swapped_modules(model, swapped_modules)
+            for _, _, replacement in swapped_modules:
+                mv_module_from_gpu(replacement)
 
     def _get_overlap_advance_block(self, block: torch.nn.Module, advance_blocks: int) -> Optional[torch.nn.Module]:
         if advance_blocks <= 0:
@@ -486,6 +517,17 @@ class DataDrivenCompressor(BaseCompressor):
         if advance_blocks == 1:
             return block
         return None
+
+    @staticmethod
+    def _get_future_window_names(block_names: list[str], block_starts: list[int], step_idx: int, nblocks: int) -> set:
+        future_names = set()
+        for future_start in block_starts[step_idx + 1 :]:
+            future_names.update(block_names[future_start : min(future_start + nblocks, len(block_names))])
+        return future_names
+
+    @staticmethod
+    def _is_module_in_blocks(module_name: str, block_names: list[str]) -> bool:
+        return any(module_name == block_name or module_name.startswith(f"{block_name}.") for block_name in block_names)
 
     def _quantize_blocks(
         self,
@@ -533,6 +575,7 @@ class DataDrivenCompressor(BaseCompressor):
         block_starts = self._get_block_window_starts(block_names, nblocks)
         if pbar is None:
             pbar = tqdm(block_starts)
+        fp_overlap_modules = {}
 
         for step_idx, i in enumerate(block_starts):
             if input_others_extra_blocks and block_names[i] in input_others_extra_blocks:
@@ -550,7 +593,10 @@ class DataDrivenCompressor(BaseCompressor):
                 pbar.set_description(f"Quantizing [{i + 1}-{min(i + nblocks, len(block_names))}]/{len(block_names)}")
                 modules = [get_module(model, n) for n in names]
                 m = WrapperMultiblock(modules)
+            window_names = [n] if nblocks == 1 else names
             overlap_advance = stride if overlap > 0 and step_idx + 1 < len(block_starts) else 0
+            future_window_names = self._get_future_window_names(block_names, block_starts, step_idx, nblocks)
+            final_window_names = [name for name in window_names if name not in future_window_names]
 
             if self.compress_context.low_cpu_mem_usage:
                 if nblocks == 1:
@@ -583,6 +629,12 @@ class DataDrivenCompressor(BaseCompressor):
                 m = m.to(self.compress_context.device)
                 card_0_in_high_risk, loss_device = False, self.compress_context.device
 
+            self._cache_fp_overlap_modules(
+                model,
+                [name for name in window_names if name in future_window_names],
+                fp_overlap_modules,
+            )
+
             if len(self.compress_context.device_list) > 1 and not self.model_context.is_diffusion:
                 from accelerate.hooks import AlignDevicesHook, add_hook_to_module
 
@@ -593,37 +645,29 @@ class DataDrivenCompressor(BaseCompressor):
 
             # ── Infrastructure: collect reference output and act_max ──────────
             bs = self.quantizer.batch_size * self.quantizer.infer_bs_coeff
-            if q_input is None:
-                hook_handles = self.quantizer.register_calibration_hooks(m)
-                reference_output = self.quantizer._get_block_outputs(
-                    m, input_ids, input_others, bs, device_override=loss_device
-                )
-                for h in hook_handles:
-                    h.remove()
-            else:
-                reference_output = self.quantizer._get_block_outputs(
-                    m, input_ids, input_others, bs, device_override=loss_device
-                )
-                hook_handles = self.quantizer.register_calibration_hooks(m)
-                if hook_handles:
-                    self.quantizer._get_block_outputs(
-                        m, q_input, input_others, bs, save_output=False, device_override=loss_device
-                    )
-                for h in hook_handles:
-                    h.remove()
-
-            overlap_input = None
-            overlap_block = self._get_overlap_advance_block(m, overlap_advance)
-            if overlap_block is not None:
-                overlap_input = self.quantizer._get_block_outputs(
-                    overlap_block,
-                    input_ids,
+            reference_output, overlap_input = self._get_fp_window_outputs(
+                model,
+                window_names,
+                fp_overlap_modules,
+                input_ids,
+                input_others,
+                bs,
+                loss_device,
+                overlap_advance,
+            )
+            hook_handles = self.quantizer.register_calibration_hooks(m)
+            if hook_handles:
+                calib_input = q_input if q_input is not None else input_ids
+                self.quantizer._get_block_outputs(
+                    m,
+                    calib_input,
                     input_others,
                     bs,
+                    save_output=False,
                     device_override=loss_device,
                 )
-
-            overlap_tail_state = self._snapshot_overlap_tail_state(m, overlap_advance)
+            for h in hook_handles:
+                h.remove()
 
             # ── Infrastructure: swap q_input ──────────────────────────────────
             if q_input is not None:
@@ -642,8 +686,8 @@ class DataDrivenCompressor(BaseCompressor):
                 reference_output,
                 loss_device=loss_device,
                 mid_iter_mem_check=mid_iter_mem_check,
+                finalize_module_names=final_window_names,
             )
-            self._restore_overlap_tail_state(overlap_tail_state)
 
             # ── MoE scale alignment for FP8 dispatch efficiency ────────────────
             if is_nv_fp(self.quantizer.act_data_type) or is_static_wfp8afp8(self.quantizer):
@@ -676,15 +720,22 @@ class DataDrivenCompressor(BaseCompressor):
             # ── Infrastructure: immediate_pack / shard write ──────────────────
             if self.compress_context.is_immediate_packing:
                 for _n, _mod in m.named_modules():
-                    if hasattr(_mod, "bits") and check_to_quantized(_mod):
+                    global_name = getattr(_mod, "global_name", None)
+                    if (
+                        global_name is not None
+                        and self._is_module_in_blocks(global_name, final_window_names)
+                        and hasattr(_mod, "bits")
+                        and check_to_quantized(_mod)
+                    ):
                         from auto_round.compressors.utils import immediate_pack as _immediate_pack
 
-                        _immediate_pack(_mod.global_name, self.quantizer.layer_config)
+                        _immediate_pack(global_name, self.quantizer.layer_config)
 
             input_ids = next_input_ids
 
             if self.compress_context.is_immediate_saving:
-                self.shard_writer.write(m, is_finalize=False)
+                for name in final_window_names:
+                    self.shard_writer.write(name=name, is_finalize=False)
 
             if self.compress_context.low_cpu_mem_usage and not self.compress_context.is_immediate_saving:
                 if nblocks == 1:
@@ -692,6 +743,9 @@ class DataDrivenCompressor(BaseCompressor):
                 else:
                     for name in names:
                         self._offloader(model, name, overwrite=True)
+            for name in list(fp_overlap_modules):
+                if name not in future_window_names:
+                    del fp_overlap_modules[name]
         if pbar is not None:
             pbar.update(1)
 

@@ -144,6 +144,7 @@ class SignRoundQuantizer(BaseQuantizers):
         *,
         loss_device: Union[str, torch.device],
         mid_iter_mem_check: bool = False,
+        finalize_module_names: Optional[list[str]] = None,
         **kwargs,
     ) -> dict:
         """Apply the AutoRound optimization algorithm to a block.
@@ -216,7 +217,7 @@ class SignRoundQuantizer(BaseQuantizers):
                 f"layers in the block"
             )
             logger.info(dump_info)
-            unwrapper_block(block, {})
+            unwrapper_block(block, {}, unwrap_filter=self._get_unwrap_filter(finalize_module_names))
             return {}
 
         if self.lr_scheduler is None:
@@ -314,7 +315,7 @@ class SignRoundQuantizer(BaseQuantizers):
         if len(unquantized_layer_names) != 0:
             logger.info(f"Unquantized layers: {unquantized_layer_names}")
         with torch.no_grad():
-            unwrapper_block(block, best_params)
+            unwrapper_block(block, best_params, unwrap_filter=self._get_unwrap_filter(finalize_module_names))
 
         if self.config.is_act_nv_fp:
             # enable moe experts act_max automatic generation for WrapperWALayer
@@ -322,6 +323,22 @@ class SignRoundQuantizer(BaseQuantizers):
 
         logger.infoclean(dump_info)
         return best_params
+
+    @staticmethod
+    def _get_unwrap_filter(finalize_module_names: Optional[list[str]] = None):
+        if finalize_module_names is None:
+            return None
+
+        def _should_unwrap(_name, module):
+            global_name = getattr(getattr(module, "orig_layer", None), "global_name", None)
+            if global_name is None:
+                return True
+            return any(
+                global_name == block_name or global_name.startswith(f"{block_name}.")
+                for block_name in finalize_module_names
+            )
+
+        return _should_unwrap
 
     def quantize_layer_outside_block(
         self,
