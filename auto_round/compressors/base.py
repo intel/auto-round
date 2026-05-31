@@ -218,8 +218,8 @@ class BaseCompressor(object):
         kwargs.pop("enable_alg_ext", None)
         kwargs.pop("vlm", None)
         amp = kwargs.pop("amp", True)
-        nblocks = kwargs.pop("nblocks", 1)
-        nblocks_overlap = kwargs.pop("nblocks_overlap", 0)
+        nblocks = kwargs.pop("nblocks", getattr(self.quantize_config, "nblocks", 1))
+        nblocks_overlap = kwargs.pop("nblocks_overlap", getattr(self.quantize_config, "nblocks_overlap", 0))
         disable_deterministic_algorithms = kwargs.pop("disable_deterministic_algorithms", True)
         enable_deterministic_algorithms = kwargs.pop("enable_deterministic_algorithms", False)
 
