@@ -554,8 +554,9 @@ class BaseCompressor(object):
         is_gguf_format = _formats is not None and any(
             "gguf" in str(getattr(fmt, "output_format", "")) for fmt in _formats
         )
-        predefined_ignore_layers = get_predefined_ignore_layers(self.model_context.model)
+        predefined_ignore_layers = get_predefined_ignore_layers(self.model_context.model) if not is_gguf_format else []
         compressed_predefined_ignore_layers = compress_layer_names(predefined_ignore_layers)
+
         if not is_gguf_format:
             predefined_ignore_layers = get_predefined_ignore_layers(self.model_context.model)
             if predefined_ignore_layers and self.quant_block_list:
@@ -1063,7 +1064,8 @@ class BaseCompressor(object):
             self._offloader.reset()
 
         # Disable inplace when quantized layers live outside transformer blocks.
-        if self.has_qlayer_outside_block and self.need_calib:
+        # gguf lm-head used rtn in version>=0.13
+        if self.has_qlayer_outside_block and self.need_calib and not "gguf" in self.compress_context.formats[0].__class__.__name__.lower():
             self.inplace = False
 
         if not hasattr(self, "formats"):
@@ -1224,9 +1226,6 @@ class BaseCompressor(object):
         formats = getattr(self, "formats", [])
         if len(formats) == 1 and not formats[0].is_fake() and self.inplace:
             self.compress_context.is_immediate_packing = True
-
-        if self.has_qlayer_outside_block and self.need_calib:
-            self.compress_context.is_immediate_packing = False
 
         if not ("causallm" in self.model_context.model.__class__.__name__.lower() and not self.model_context.is_mllm):
             # TODO For tied keys, there may some issues, we haven't not verified this

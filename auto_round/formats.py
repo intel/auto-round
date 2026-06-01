@@ -781,7 +781,7 @@ class GGUFFormat(OutputFormat):
             if format.lower().endswith("_mixed"):
                 from auto_round.schemes import _handle_special_schemes
 
-                ar.layer_config = _handle_special_schemes(gguf_format, ar.layer_config, ar.model)
+                ar.layer_config = _handle_special_schemes(gguf_format, ar.layer_config, ar.model, quant_nontext_module=ar.quant_nontext_module)
                 gguf_format = gguf_format.lower().replace("_mixed", "_s")
             if isinstance(scheme, str) and scheme.lower() != gguf_format:
                 logger.warning(f"reset scheme {scheme.lower()} to {gguf_format} for gguf format export")

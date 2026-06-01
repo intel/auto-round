@@ -19,7 +19,7 @@ from typing import TYPE_CHECKING, Any, Optional, Union
 import torch
 
 from auto_round.logger import logger
-from auto_round.utils import SUPPORTED_DTYPES, infer_bits_by_data_type
+from auto_round.utils import SUPPORTED_DTYPES, infer_bits_by_data_type, contain_any_mm_keys
 
 __all__ = ["QuantizationScheme", "get_gguf_scheme", "preset_name_to_scheme"]
 
@@ -576,6 +576,7 @@ def _handle_special_schemes(
     inner_supported_types=None,
     quant_lm_head=False,
     mllm=False,
+    quant_nontext_module=False,
 ) -> dict:
     """handle special schemes, like GGUF:Q2_K_MIXED.
     Provide some special auto_round recipes.
@@ -589,9 +590,12 @@ def _handle_special_schemes(
         for n, m in model.named_modules():
             if n in layer_config:
                 continue
+            if isinstance(m, torch.nn.Linear) and contain_any_mm_keys(n) and not quant_nontext_module:
+                layer_config[n] = "BF16"
+                continue
             if n == "lm_head" or isinstance(m, torch.nn.Embedding):
                 layer_config[n] = "GGUF:Q8_0"
-            elif isinstance(m, torch.nn.Linear) and ("expert" not in n or "shared_experts" in n) and n != "lm_head":
+            elif isinstance(m, torch.nn.Linear) and ("expert" not in n or "shared_expert" in n) and n != "lm_head":
                 layer_config[n] = "GGUF:Q4_K_S"
     if scheme_name.lower() == "w4a16_mixed":
         logger.warning("W4A16_MIXED is experimental and the recipe may change in the future.")
@@ -608,6 +612,9 @@ def _handle_special_schemes(
             inner_supported_types = INNER_SUPPORTED_LAYER_TYPES
         for n, m in model.named_modules():
             if n in layer_config:
+                continue
+            if  type(m) in supported_types or type(m) in inner_supported_types and contain_any_mm_keys(n) and  quant_nontext_module:
+                layer_config[n] =  {"bits": 16}
                 continue
             if type(m) in supported_types or type(m) in inner_supported_types:
                 if "expert" in n and "shared" not in n:

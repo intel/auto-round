@@ -688,6 +688,12 @@ MM_MODULE_KEYS = [
 MM_KEYS = [*MM_MODULE_KEYS, "speech", "wav", "waveform"]
 
 
+def contain_any_mm_keys(name:str)->bool:
+    for key in MM_MODULE_KEYS:
+        if key in name:
+            return True
+    return False
+
 def is_debug_mode():
     """Checks if the Python interpreter is running in debug mode.
 
