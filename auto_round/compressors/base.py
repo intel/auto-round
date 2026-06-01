@@ -1065,7 +1065,11 @@ class BaseCompressor(object):
 
         # Disable inplace when quantized layers live outside transformer blocks.
         # gguf lm-head used rtn in version>=0.13
-        if self.has_qlayer_outside_block and self.need_calib and not "gguf" in self.compress_context.formats[0].__class__.__name__.lower():
+        if (
+            self.has_qlayer_outside_block
+            and self.need_calib
+            and "gguf" not in self.compress_context.formats[0].__class__.__name__.lower()
+        ):
             self.inplace = False
 
         if not hasattr(self, "formats"):
