@@ -32,6 +32,12 @@ from accelerate import dispatch_model, infer_auto_device_map
 from accelerate.utils import get_balanced_memory, get_max_memory
 
 from auto_round.logger import logger
+from auto_round.utils.device_manager import (
+    get_available_device_types,
+    get_current_device_manager,
+    get_current_device_type,
+    get_device_manager,
+)
 from auto_round.utils.model import check_to_quantized, get_block_names, get_layer_features, get_module
 
 DEVICE_ENVIRON_VARIABLE_MAPPING = {
@@ -62,19 +68,6 @@ def is_package_available(package_name: str) -> bool:
     return package_spec is not None
 
 
-def is_autoround_exllamav2_available():
-    """Checks if the AutoRound ExLlamaV2 kernels are available.
-
-    Returns:
-        bool:
-            True if the AutoRound ExLlamaV2 kernels are available, False otherwise.
-    """
-    res = True
-    try:
-        from autoround_exllamav2_kernels import gemm_half_q_half, make_q_matrix
-    except ImportError as e:
-        res = False
-    return res
 
 
 def is_hpu_lazy_mode():
@@ -312,19 +305,9 @@ def detect_device_count():
     fails or no devices are found, it returns 0.
 
     Returns:
-        int: The number of available devices (CUDA or Habana).
+        int: The number of available devices on the active device.
     """
-    if torch.cuda.is_available():
-        return torch.cuda.device_count()
-    elif hasattr(torch, "xpu") and torch.xpu.is_available():
-        return torch.xpu.device_count()
-    else:
-        try:
-            import habana_frameworks.torch.hpu as hthpu  # pylint: disable=E0401
-
-            return hthpu.device_count()
-        except ImportError:
-            return 0
+    return get_current_device_manager().device_count()
 
 
 def detect_device(device: Union[None, str, int, torch.device] = None) -> str:
@@ -359,18 +342,8 @@ def detect_device(device: Union[None, str, int, torch.device] = None) -> str:
         dev_idx = device_list[0] if device_list else None
         device = "auto"
     if device is None or device == "auto":
-        if torch.cuda.is_available():
-            device = torch.device("cuda")
-            # logger.info("Using GPU device")
-        elif is_hpex_available():  # pragma: no cover
-            device = torch.device("hpu")
-            # logger.info("Using HPU device")
-        elif torch.xpu.is_available():  # pragma: no cover
-            device = torch.device("xpu")
-        # Use CPU as a fallback
-        else:
-            device = torch.device("cpu")
-            # logger.info("Using CPU device")
+        device_type = get_current_device_type()
+        device = torch.device(device_type) if device_type is not None else torch.device("cpu")
         if dev_idx is not None and str(device) != "cpu":
             device = str(device) + f":{dev_idx}"
         return str(device)
@@ -379,12 +352,7 @@ def detect_device(device: Union[None, str, int, torch.device] = None) -> str:
     elif isinstance(device, str):  ## for cuda:0
         if device == "tp":  # pragma: no cover
             # should not specify card, e.g., cuda:0
-            if torch.cuda.is_available():
-                device = "cuda"
-            elif is_hpex_available():
-                device = "hpu"
-            else:
-                device = "cpu"
+            device = get_current_device_type() or "cpu"
         else:
             device = device
     return device
@@ -400,25 +368,28 @@ def get_device_and_parallelism(device: Union[str, torch.device, int, dict]) -> t
             device = next(iter(unique_devices))
         else:
             device = "auto"
+    if isinstance(device, torch.device):
+        device = str(device)
     if isinstance(device, str):
-        if device in ["cuda", "xpu", "hpu"]:
-            device = detect_device(device)
-            parallelism = False
-            return device, parallelism
-        else:
-            device = re.sub("xpu:|hpu:|cuda:", "", device)
-            devices = device.replace(" ", "").split(",")
+        device_type = device.split(":")[0]
+        # A bare backend type (e.g. "cuda", "xpu", "hpu", "cpu", "mps") with no index
+        if device not in ("auto", "tp") and ":" not in device and "," not in device and not device.isdigit():
+            return detect_device(device), False
+        # Strip any "<type>:" prefixes (e.g. "cuda:0,1" -> "0,1") to obtain bare indices.
+        device = re.sub(r"[a-zA-Z_]+:", "", device)
+        devices = device.replace(" ", "").split(",")
     elif isinstance(device, int):
         devices = [str(device)]
     else:
         devices = [device]
-    if all(s.isdigit() for s in devices) and len(devices) > 1 and torch.cuda.is_available():
-        device = "cuda"
-        parallelism = True
-    elif all(s.isdigit() for s in devices) and len(devices) > 1 and torch.xpu.is_available():
-        device = "xpu"
-        parallelism = False
-    # pragma: no cover
+
+    is_multi_card = all(s.isdigit() for s in devices) and len(devices) > 1
+    if is_multi_card:
+        # Pick the active backend generically rather than probing each one by hand.
+        device_type = get_current_device_type() or "cpu"
+        # Multi-card (naive pipeline) parallel tuning is currently only enabled on CUDA.
+        parallelism = device_type == "cuda"
+        return device_type, parallelism
     elif device == "auto":
         device = detect_device(device)
         parallelism = True
@@ -560,10 +531,9 @@ def get_packing_device(device: str | torch.device | None = "auto") -> torch.devi
         torch.device: The resolved device.
     """
     if device is None or (isinstance(device, str) and device.lower() == "auto"):
-        if torch.cuda.is_available():
-            return torch.device("cuda:0")
-        if hasattr(torch, "xpu") and torch.xpu.is_available():
-            return torch.device("xpu:0")
+        device_type = get_current_device_type()
+        if device_type is not None and device_type != "cpu":
+            return torch.device(f"{device_type}:0")
         return torch.device("cpu")
 
     if isinstance(device, torch.device):
@@ -648,39 +618,39 @@ def _clear_memory_for_cpu_and_cuda(
         device_list = [device_list]
 
     # -----------------------------------
-    # CUDA-specific clearing
+    # Device-specific clearing
     # -----------------------------------
-    if torch.cuda.is_available():
-        # No device_list → clear all GPUs
-        if not device_list:
-            # Fix https://github.com/intel/auto-round/issues/1004
-            torch.cuda.synchronize()
-            torch.cuda.empty_cache()
-        else:
-            # Parse valid CUDA device IDs
-            devices = []
-            for dev in device_list:
-                dev = str(dev)
-                if not dev.startswith("cuda"):
-                    continue
-                # cuda / cuda:0 / cuda:1
-                if ":" in dev:
-                    devid = int(dev.split(":")[-1])
-                else:
-                    devid = 0
-                devices.append(devid)
+    # Group requested devices by backend type so we synchronize the exact
+    # indices the caller asked for, then fall back to clearing the active
+    # accelerator entirely when no list is provided.
+    current_dev_type = get_current_device_type()
+    if current_dev_type is None or current_dev_type == "cpu":
+        return
 
-            for d in devices:
-                torch.cuda.synchronize(d)
+    if not device_list:
+        dev_mgr = get_current_device_manager()
+        dev_mgr.synchronize()
+        dev_mgr.empty_cache()
+        return
 
-            torch.cuda.empty_cache()
+    # Parse "<type>:<idx>" entries, grouping indices per backend.
+    per_backend: dict[str, list[int]] = {}
+    for dev in device_list:
+        dev = str(dev)
+        dev_type = dev.split(":")[0]
+        if not dev_type or dev_type == "cpu" or dev_type.isdigit():
+            # Bare indices (e.g. "0") are interpreted against the active device.
+            dev_type = current_dev_type if dev_type.isdigit() else dev_type
+            if not dev_type or dev_type == "cpu":
+                continue
+        devid = int(dev.split(":")[-1]) if ":" in dev else (int(dev) if dev.isdigit() else 0)
+        per_backend.setdefault(dev_type, []).append(devid)
 
-    # -----------------------------------
-    # XPU-specific clearing
-    # -----------------------------------
-    if hasattr(torch, "xpu") and torch.xpu.is_available():
-        torch.xpu.synchronize()
-        torch.xpu.empty_cache()
+    for dev_type, ids in per_backend.items():
+        dev_mgr = get_device_manager(dev_type)
+        for devid in ids:
+            dev_mgr.synchronize(devid)
+        dev_mgr.empty_cache()
 
 
 _malloc_trim_counter = 0
@@ -779,19 +749,17 @@ def clear_memory_if_reached_threshold(threshold=0.85, device_list=None):
     Returns:
         bool: True if memory was cleared, False otherwise.
     """
-    # Detect CUDA/XPU devices
-    if torch.cuda.is_available():
-        name, device_api = "cuda", torch.cuda
-    elif hasattr(torch, "xpu") and torch.xpu.is_available():
-        name, device_api = "xpu", torch.xpu
-    else:
+    # Detect the active device (CUDA/XPU/HPU/...)
+    dev_mgr = get_current_device_manager()
+    if not dev_mgr.is_available() or dev_mgr.type == "cpu":
         return False
+    name = dev_mgr.type
 
-    num_devices = device_api.device_count()
+    num_devices = dev_mgr.device_count()
     for i in range(num_devices):
         try:
-            total_memory = device_api.get_device_properties(i).total_memory
-            reserved_memory = device_api.memory_reserved(i)
+            total_memory = dev_mgr.total_memory(i)
+            reserved_memory = dev_mgr.memory_reserved(i)
             memory_usage_ratio = reserved_memory / total_memory
 
             if memory_usage_ratio >= threshold:
@@ -826,18 +794,12 @@ def check_memory_availability(device, inputs, weight, org_seqlen, org_bs):
                 and modified batch size (int).
     """
     weight_memory = weight.numel() * weight.element_size()
-    if "cuda" in device:
-        current_gpu_index = torch.cuda.current_device()
-        total_memory = torch.cuda.get_device_properties(current_gpu_index).total_memory
-        used_memory = torch.cuda.memory_allocated(current_gpu_index)
-        free_space = total_memory - used_memory
-    elif "hpu" in device:  # pragma: no cover
-        current_hpu_index = torch.hpu.current_device()
-        total_memory = torch.hpu.memory_cached(current_hpu_index)
-        used_memory = torch.hpu.memory_allocated(current_hpu_index)
-        free_space = total_memory - used_memory
-    else:
+    device_type = str(device).split(":")[0]
+    if device_type in ("cpu", "") or not get_device_manager(device_type).is_available():
         return True, org_seqlen, org_bs
+    dev_mgr = get_device_manager(device_type)
+    current_index = dev_mgr.current_device()
+    free_space, _ = dev_mgr.mem_get_info(current_index)
 
     free_space = free_space - weight_memory * 10  # for min_max_scale & grad usage
     seqlen = org_seqlen
@@ -875,21 +837,13 @@ def out_of_vram(error_msg):
 
 def get_max_vram(ratio: float = 0.9) -> dict:
     max_memory = {}
-    if torch.cuda.is_available():  # NVIDIA CUDA
-        num_devices = torch.cuda.device_count()
-        for i in range(num_devices):
-            total_mem = torch.cuda.get_device_properties(i).total_memory
-            max_mem_gb = int(total_mem / 1024**3 * ratio)
-            max_memory[i] = f"{max_mem_gb}GiB"
-    elif torch.xpu.is_available():  # TODO need verification
-        num_devices = torch.xpu.device_count()
-        for i in range(num_devices):
-            total_mem = torch.xpu.get_device_properties(i).total_memory
-            max_mem_gb = int(total_mem / 1024**3 * ratio)
-            max_memory[i] = f"{max_mem_gb}GiB"
-
-    else:
-        raise RuntimeError("No CUDA or XPU devices found.")
+    dev_mgr = get_current_device_manager()
+    if not dev_mgr.is_available() or dev_mgr.type == "cpu":
+        raise RuntimeError("No device (CUDA/XPU/HPU/...) found.")
+    for i in range(dev_mgr.device_count()):
+        total_mem = dev_mgr.total_memory(i)
+        max_mem_gb = int(total_mem / 1024**3 * ratio)
+        max_memory[i] = f"{max_mem_gb}GiB"
     return max_memory
 
 
@@ -903,13 +857,10 @@ def get_device_memory(i: int = 0) -> int:
     Returns:
         int: Available memory in gigabytes.
     """
-    if torch.cuda.is_available():
-        total_memory = bytes_to_gigabytes(torch.cuda.get_device_properties(i).total_memory)
-    elif torch.xpu.is_available():
-        total_memory = bytes_to_gigabytes(torch.xpu.get_device_properties(i).total_memory)
-    else:
-        raise RuntimeError("No supported device found (CUDA or XPU).")
-    return total_memory
+    dev_mgr = get_current_device_manager()
+    if not dev_mgr.is_available() or dev_mgr.type == "cpu":
+        raise RuntimeError("No supported device found (CUDA/XPU/HPU/...).")
+    return bytes_to_gigabytes(dev_mgr.total_memory(i))
 
 
 def get_major_device(device_map: Union[None, str, torch.device, int, dict]) -> str:
@@ -1303,12 +1254,10 @@ def set_auto_device_map_for_block_with_tuning(
         This function is intended for internal use in device memory management and tuning.
     """
     card_0_in_high_risk, loss_device = False, output_device
-    if torch.cuda.is_available():
-        num_devices = torch.cuda.device_count()
-        device_name = "cuda"
-    elif torch.xpu.is_available():
-        num_devices = torch.xpu.device_count()
-        device_name = "xpu"
+    dev_mgr = get_current_device_manager()
+    if dev_mgr.is_available() and dev_mgr.type != "cpu":
+        num_devices = dev_mgr.device_count()
+        device_name = dev_mgr.type
     else:
         return card_0_in_high_risk, loss_device
 
@@ -1579,13 +1528,7 @@ def parse_available_devices(device_map: Union[str, torch.device, int, dict, None
     """
 
     # === Step 1. Detect available device types ===
-    device_types = []
-    if torch.cuda.is_available():
-        device_types.append("cuda")
-    if hasattr(torch, "xpu") and torch.xpu.is_available():
-        device_types.append("xpu")
-    if hasattr(torch, "hpu") and is_hpex_available():
-        device_types.append("hpu")
+    device_types = get_available_device_types()
 
     # Always include CPU as a fallback
     if not device_types:
@@ -1725,42 +1668,27 @@ class MemoryMonitor:
             if not isinstance(device_list, (list, tuple)):
                 device_list = [device_list]
         else:
-            if torch.cuda.is_available():
-                device_list = list(range(torch.cuda.device_count()))
-            elif torch.xpu.is_available():
-                device_list = list(range(torch.xpu.device_count()))
-            elif is_hpex_available():
-                try:
-                    import habana_frameworks.torch.hpu as hthpu  # pylint: disable=E0401
+            dev_mgr = get_current_device_manager()
+            if dev_mgr.is_available() and dev_mgr.type != "cpu":
+                device_list = list(range(dev_mgr.device_count()))
+            else:
+                device_list = [0]
 
-                    device_list = list(range(hthpu.device_count()))
-                except Exception:
-                    device_list = [0]
-
+        dev_mgr = get_current_device_manager()
         for device in device_list:
             if str(device) == "cpu":
                 continue
-            if torch.cuda.is_available():
-                try:
-                    current_vram = torch.cuda.memory_reserved(device) / 1024**3  # GB
-                except (RuntimeError, Exception):
-                    continue  # Skip devices that are not initialized or out of range
-                if device == "cuda":
+            if dev_mgr.is_available() and dev_mgr.type != "cpu":
+                if str(device) == dev_mgr.type:
                     device = "0"
-            elif torch.xpu.is_available():
                 try:
-                    current_vram = torch.xpu.memory_reserved(device) / 1024**3  # GB
-                except (RuntimeError, Exception):
-                    continue  # Skip devices that are not initialized or out of range
-                if device == "xpu":
-                    device = "0"
-            elif is_hpex_available():
+                    index = int(str(device).split(":")[-1])
+                except ValueError:
+                    index = 0
                 try:
-                    current_vram = torch.hpu.memory_allocated(device) / 1024**3  # GB
+                    current_vram = dev_mgr.memory_reserved(index) / 1024**3  # GB
                 except Exception:
-                    current_vram = 0.0
-                if device == "hpu":
-                    device = "0"
+                    continue  # Skip devices that are not initialized or out of range
             else:
                 return
 
@@ -1787,20 +1715,18 @@ class MemoryMonitor:
         # Track HPU VRAM
         if not is_hpex_available():
             return
+        hpu = get_device_manager("hpu")
         if device_list is None:
-            try:
-                import habana_frameworks.torch.hpu as hthpu  # pylint: disable=E0401
-
-                device_list = list(range(hthpu.device_count()))
-            except Exception:
-                device_list = [0]
+            count = hpu.device_count()
+            device_list = list(range(count)) if count > 0 else [0]
         elif not isinstance(device_list, (list, tuple)):
             device_list = [device_list]
         for device in device_list:
             if str(device) == "cpu":
                 continue
             try:
-                current_vram = torch.hpu.memory_allocated(device) / 1024**3  # GB
+                index = int(str(device).split(":")[-1]) if str(device) != "hpu" else 0
+                current_vram = hpu.memory_allocated(index) / 1024**3  # GB
             except Exception:
                 continue
             dev_key = str(device)
