@@ -121,9 +121,6 @@ def _accel_call(api, names, *args):
     return False, None
 
 
-
-
-
 @functools.lru_cache(None)
 def _hpu_available() -> bool:
     """Whether the Intel Gaudi (hpu) backend is usable."""
@@ -503,4 +500,3 @@ def get_current_device_manager() -> DeviceManager:
     if device_type is None:
         return _CPU_DEVICE_MANAGER
     return get_device_manager(device_type)
-
