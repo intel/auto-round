@@ -376,6 +376,119 @@ class WeightS2T {
 };
 
 template <typename ScaleT>
+class WeightS3T {
+ public:
+  using Param = ParamWeightS4Ext<ScaleT>;
+
+  // Dense, straddle-aware 3-bit layout (mirrors humming common_pack/unpack_weight<3>):
+  // 32 consecutive K-elements occupy 3 contiguous uint32 words; a value whose 3-bit field
+  // crosses a 32-bit word boundary is split across two words. Stored unsigned as (q + 4),
+  // decoded back to symmetric signed range [-4, 3] by subtracting 4.
+  static __attribute__((always_inline)) inline void unpack32(const uint32_t* w, int8_t* out) {
+#pragma unroll
+    for (int i = 0; i < 32; i++) {
+      int index = i * 3;
+      int word_idx = index >> 5;    // / 32
+      int bit_offset = index & 31;  // % 32
+      int part1_bits = (32 - bit_offset) < 3 ? (32 - bit_offset) : 3;
+      int part2_bits = 3 - part1_bits;
+      uint32_t val = (w[word_idx] >> bit_offset) & ((1u << part1_bits) - 1u);
+      if (part2_bits > 0) {
+        val |= (w[word_idx + 1] & ((1u << part2_bits) - 1u)) << part1_bits;
+      }
+      out[i] = static_cast<int8_t>(val) - 4;
+    }
+  }
+
+  struct CfgDequantF32 {
+    static int constexpr SgSize = 32;
+  };
+
+  struct CfgDequantF16 {
+    static int constexpr SgSize = 32;
+  };
+
+  // Reference dequant to fp output: B[n][k] = (q - 4) * scale. Used by the correctness path.
+  template <typename Cfg, typename BType>
+  static inline sycl::event dequant(int n, int k, int blocksize, const Param& in, BType* outptr, sycl::queue* q) {
+    int kgroups = k / 32;  // requires k % 32 == 0
+    auto B_d = reinterpret_cast<const uint32_t*>(in.B);
+    auto S_d = in.scale;
+    int blks = in.ldb;
+    auto deq_kernel = [&](sycl::handler& cgh) {
+      cgh.parallel_for(sycl::range<2>(static_cast<size_t>(n), static_cast<size_t>(kgroups)), [=](sycl::id<2> idx) {
+        int gn = idx[0];
+        int gk = idx[1];
+        const uint32_t* w = B_d + static_cast<size_t>(gn) * kgroups * 3 + static_cast<size_t>(gk) * 3;
+        int8_t vals[32];
+        unpack32(w, vals);
+        int kbase = gk * 32;
+        BType* dst = outptr + static_cast<size_t>(gn) * k + kbase;
+        BType scale = static_cast<BType>(S_d[static_cast<size_t>(gn) * blks + kbase / blocksize]);
+#pragma unroll
+        for (int i = 0; i < 32; i++) {
+          dst[i] = static_cast<BType>(vals[i]) * scale;
+        }
+      });
+    };
+    return q->submit(deq_kernel);
+  }
+
+  struct CfgGemvF32 {
+    static int constexpr SgSize = 32;
+  };
+
+  struct CfgGemvF16 {
+    static int constexpr SgSize = 32;
+  };
+
+  // m == 1 GEMV: C[n] = sum_k A[k] * (q[n,k] - 4) * scale[n, k/blocksize] (+ bias).
+  // Each sub-group lane processes strided 32-element groups; assumes blocksize % 32 == 0 so a
+  // group shares one scale.
+  template <typename Cfg, typename T>
+  static sycl::event gemv(const T* A, const Param& paramB, T* C, int n, int k, int blocksize, sycl::queue* q) {
+    auto B = reinterpret_cast<const uint32_t*>(paramB.B);
+    auto B_scale = paramB.scale;
+    auto bias = reinterpret_cast<const T*>(paramB.bias);
+    int blks = paramB.ldb;
+    int constexpr SgSize = Cfg::SgSize;
+    int kgroups = k / 32;  // requires k % 32 == 0
+    sycl::range<1> group{SgSize};
+    sycl::range<1> problem{static_cast<size_t>(n) * SgSize};
+    auto ev = q->submit([&](sycl::handler& cgh) {
+      cgh.parallel_for(
+          sycl::nd_range<1>(problem, group), [=](sycl::nd_item<1> it) [[sycl::reqd_sub_group_size(SgSize)]] {
+            int g_n = it.get_group(0);
+            auto sg = it.get_sub_group();
+            int sg_id = sg.get_local_id()[0];
+            auto sptr = B_scale + static_cast<size_t>(g_n) * blks;
+            const uint32_t* bptr = B + static_cast<size_t>(g_n) * kgroups * 3;
+            T tmpAcc = 0.f;
+            for (int gk = sg_id; gk < kgroups; gk += SgSize) {
+              int8_t vals[32];
+              unpack32(bptr + static_cast<size_t>(gk) * 3, vals);
+              int kbase = gk * 32;
+              T scale = static_cast<T>(sptr[kbase / blocksize]);
+              T gacc = 0.f;
+#pragma unroll
+              for (int i = 0; i < 32; i++) {
+                gacc += A[kbase + i] * static_cast<T>(vals[i]);
+              }
+              tmpAcc += gacc * scale;
+            }
+            sycl::group_barrier(sg);
+            auto sum = sycl::reduce_over_group(sg, tmpAcc, std::plus<>());
+            if (bias) sum += bias[g_n];
+            if (sg_id == 0) {
+              C[g_n] = sum;
+            }
+          });
+    });
+    return ev;
+  }
+};
+
+template <typename ScaleT>
 class WeightS4T {
  public:
   using Param = ParamWeightS4Ext<ScaleT>;

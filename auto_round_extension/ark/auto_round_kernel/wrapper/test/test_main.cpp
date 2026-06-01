@@ -5,7 +5,7 @@
 
 int main() {
   printf("Welcome to ARK TEST\n");
-  // TestGemm test_gemm;
+  TestGemm test_gemm;
   // TestQuant test_quant;
   TestSDPA test_sdpa;
   return 0;

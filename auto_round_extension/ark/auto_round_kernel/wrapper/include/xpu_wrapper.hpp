@@ -14,6 +14,7 @@
 #include <algorithm>
 #include <cmath>
 #include <cstdio>
+#include <cstdlib>
 #include <limits>
 #include <vector>
 #include "utils.hpp"
@@ -32,7 +33,7 @@ class XpuWrapper {
 
   static inline size_t get_packw_qsize(QuantParam* p) {
     size_t size = 0;
-    if (p->weight_type == BTLA_DTYPE::S2 || p->weight_type == BTLA_DTYPE::S4) {
+    if (p->weight_type == BTLA_DTYPE::S2 || p->weight_type == BTLA_DTYPE::S3 || p->weight_type == BTLA_DTYPE::S4) {
       size += get_weight_qbytes(p);
     }
     if (p->weight_type == BTLA_DTYPE::S8) {
@@ -183,6 +184,43 @@ class XpuWrapper {
     q->submit(ker);
   }
 
+  // Dense, straddle-aware 3-bit packing (mirrors humming common_pack_weight<3> and the SYCL
+  // WeightS3T::unpack32 decoder). One work-item packs a 32-element K-group of a column into 3
+  // contiguous uint32 words. Requires k % 32 == 0. Raw signed weights are offset by +4.
+  static void packq_int3(int8_t* raws8, int8_t* blob, QuantParam* p, sycl::queue* q) {
+    size_t k = p->k;
+    size_t n = p->n;
+    auto psrc = raws8;
+    auto pdst = reinterpret_cast<uint32_t*>(blob);
+    size_t kgroups = k / 32;
+    constexpr int SG_SIZE = 16;
+    auto ker = [&](sycl::handler& cgh) {
+      cgh.parallel_for(sycl::nd_range<2>({kgroups, n}, {1, SG_SIZE}),
+                       [=](sycl::nd_item<2> it) [[sycl::reqd_sub_group_size(SG_SIZE)]] {
+                         auto gk = it.get_global_id()[0];
+                         auto gn = it.get_global_id()[1];
+                         uint32_t words[3] = {0u, 0u, 0u};
+                         size_t kbase = gk * 32;
+#pragma unroll
+                         for (int i = 0; i < 32; i++) {
+                           uint32_t val = static_cast<uint32_t>(psrc[(kbase + i) * n + gn] + 4) & 0x7u;
+                           int index = i * 3;
+                           int word_idx = index >> 5;
+                           int bit_offset = index & 31;
+                           words[word_idx] |= (val << bit_offset);
+                           if (bit_offset + 3 > 32) {
+                             words[word_idx + 1] |= (val >> (32 - bit_offset));
+                           }
+                         }
+                         uint32_t* dst = pdst + (gn * kgroups + gk) * 3;
+                         dst[0] = words[0];
+                         dst[1] = words[1];
+                         dst[2] = words[2];
+                       });
+    };
+    q->submit(ker);
+  }
+
   static void packscale(void* scaleptr, int8_t* blobptr, QuantParam* p, sycl::queue* q) {
     size_t k = p->k;
     size_t n = p->n;
@@ -328,6 +366,9 @@ class XpuWrapper {
       if (p->weight_type == BTLA_DTYPE::S2) {
         packq_int2(raws8, blob, p, q);
       }
+      if (p->weight_type == BTLA_DTYPE::S3) {
+        packq_int3(raws8, blob, p, q);
+      }
       if (p->weight_type == BTLA_DTYPE::S4) {
         packq_int4(raws8, blob, p, q);
       }
@@ -385,6 +426,20 @@ class XpuWrapper {
       }
       if (p->scale_type == BTLA_DTYPE::F16) {
         using ProB = WeightS2T<sycl::half>;
+        ProB::template dequant<typename ProB::CfgDequantF16>(
+            p->n, p->k, p->blocksize, {qptr, (sycl::half*)scale_ptr, blks, nullptr, zp_ptr}, (sycl::half*)optr, q);
+      }
+      return;
+    }
+    if (p->weight_type == BTLA_DTYPE::S3) {
+      // m>1 (S8 compute) path not implemented for int3 yet; fp dequant only.
+      if (p->scale_type == BTLA_DTYPE::F32) {
+        using ProB = WeightS3T<float>;
+        ProB::template dequant<typename ProB::CfgDequantF32>(
+            p->n, p->k, p->blocksize, {qptr, (float*)scale_ptr, blks, nullptr, zp_ptr}, (float*)optr, q);
+      }
+      if (p->scale_type == BTLA_DTYPE::F16) {
+        using ProB = WeightS3T<sycl::half>;
         ProB::template dequant<typename ProB::CfgDequantF16>(
             p->n, p->k, p->blocksize, {qptr, (sycl::half*)scale_ptr, blks, nullptr, zp_ptr}, (sycl::half*)optr, q);
       }
@@ -536,6 +591,28 @@ class XpuWrapper {
       }
       return 0;
     }
+    if (p->weight_type == BTLA_DTYPE::S3) {
+      if (p->scale_type == BTLA_DTYPE::F32) {
+        using ST = float;
+        using T = float;
+        using ProB = WeightS3T<ST>;
+        ProB::gemv<ProB::CfgGemvF32>((const T*)matA,
+                                     {(const uint8_t*)qptr, (ST*)scale_ptr, blks, (const T*)bias, zp_ptr}, (T*)matC,
+                                     p->n, p->k, p->blocksize, q);
+      }
+      if (p->scale_type == BTLA_DTYPE::F16) {
+        using ST = sycl::half;
+        using ProB = WeightS3T<ST>;
+        using T = sycl::half;
+        ProB::gemv<ProB::CfgGemvF16>((const T*)matA,
+                                     {(const uint8_t*)qptr, (ST*)scale_ptr, blks, (const T*)bias, zp_ptr}, (T*)matC,
+                                     p->n, p->k, p->blocksize, q);
+      }
+      if (p->scale_type == BTLA_DTYPE::BF16) {
+        return -1;
+      }
+      return 0;
+    }
     if (p->weight_type == BTLA_DTYPE::S4) {
       if (p->scale_type == BTLA_DTYPE::F32) {
         using ST = float;
@@ -669,6 +746,14 @@ class XpuWrapper {
                        sycl::queue* q) {
     auto ret = woq_gemv(q, m, p, a, b, c, bias, acdt);
     if (ret) {
+      // int3 currently supports only the m==1 GEMV path; the S8-compute (DNNL) path is not
+      // implemented. Fail loud rather than read the blob with an incompatible layout.
+      if (p->weight_type == BTLA_DTYPE::S3) {
+        std::fprintf(stderr,
+                     "[ark] int3 (S3) WOQ on XPU only supports m==1 GEMV; batched GEMM (m=%d) is not implemented.\n",
+                     m);
+        std::abort();
+      }
       auto dnnl_dt = to_dt(acdt);
       check_compute_type(p);
       if (p->compute_type != BTLA_DTYPE::S8) {

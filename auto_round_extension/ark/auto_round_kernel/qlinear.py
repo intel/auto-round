@@ -27,6 +27,7 @@ except:
 
 BITS_DTYPE_MAPPING = {
     2: "int2",
+    3: "int3",
     4: "int4",
     8: "int8",
 }
@@ -108,8 +109,8 @@ class QuantLinear(nn.Module):
         **kwargs,
     ):
         super().__init__()
-        if bits not in [2, 4, 8]:
-            raise NotImplementedError("Only 2, 4, 8 bits are supported for ARK.")
+        if bits not in [2, 3, 4, 8]:
+            raise NotImplementedError("Only 2, 3, 4, 8 bits are supported for ARK.")
         if not ARK_INSTALLED:
             raise ModuleNotFoundError(
                 "The 'auto_round_kernel' module is required but not installed. "
@@ -128,6 +129,8 @@ class QuantLinear(nn.Module):
         self.asym = not sym
         if not self.infeatures % self.group_size == 0:
             raise NotImplementedError("in_features must be divisible by group_size")
+        if self.bits == 3 and self.infeatures % 32 != 0:
+            raise NotImplementedError("int3 ARK kernel requires in_features divisible by 32")
         if "awq" in self.QUANT_TYPE:
             self.register_buffer(
                 "qweight", torch.zeros((in_features, out_features // self.pack_num), dtype=torch.int32)
@@ -264,7 +267,43 @@ class QuantLinearAWQ(QuantLinear):
 
 
 @torch.no_grad()
+def unpack_3bit_signed(qweight):
+    """Unpack GPTQ-style 3-bit packed weights to per-element uint8 (range 0..7).
+
+    The packed layout (see auto_round_extension/torch/qlinear_torch.py:pack_3bits) is a dense,
+    little-endian 3-bit bitstream: 32 consecutive K-elements occupy 3 contiguous int32 words and
+    element ``i`` sits at global bit ``3*i`` of the concatenated word triple, straddling 32-bit
+    boundaries when needed. ``qweight`` has shape ``(k // 32 * 3, n)``; returns ``(k, n)`` int8.
+    """
+    device = qweight.device
+    rows, n = qweight.shape
+    assert rows % 3 == 0, "3-bit qweight rows must be a multiple of 3"
+    groups = rows // 3
+    words = qweight.view(groups, 3, n).to(torch.int64) & 0xFFFFFFFF  # treat as unsigned uint32
+    out = torch.empty((groups, 32, n), dtype=torch.int8, device=device)
+    for i in range(32):
+        index = i * 3
+        word_idx = index >> 5
+        bit_offset = index & 31
+        part1_bits = min(32 - bit_offset, 3)
+        part2_bits = 3 - part1_bits
+        val = (words[:, word_idx, :] >> bit_offset) & ((1 << part1_bits) - 1)
+        if part2_bits > 0:
+            val = val | ((words[:, word_idx + 1, :] & ((1 << part2_bits) - 1)) << part1_bits)
+        out[:, i, :] = val.to(torch.int8)
+    return out.view(groups * 32, n)
+
+
+@torch.no_grad()
 def unpack_to_8bit_signed(qweight, qzeros, bits, gptq_bias, asym):
+    if bits == 3:
+        # 3 does not divide 32; use the dedicated dense-bitstream unpack. XPU is symmetric-only,
+        # so the zero-point path is not exercised here.
+        weight = unpack_3bit_signed(qweight)
+        zeros = None
+        if asym:
+            raise NotImplementedError("Asymmetric int3 unpack is not supported for ARK.")
+        return weight, zeros
     wf = torch.tensor(list(range(0, 32, bits)), dtype=torch.int32, device=qweight.device).unsqueeze(0)
     zeros = None
     if asym:
