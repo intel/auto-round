@@ -65,10 +65,9 @@ class ModelContext(BaseContext):
         config: Optional[AutoConfig] = None,
         amp=True,
         need_calib=True,
-        device=None,
-        formats=None,
         is_act_quantize=False,
         quant_nontext_module=False,
+        **kwargs,
     ):
         super().__init__()
         self.quantized = False
@@ -83,11 +82,6 @@ class ModelContext(BaseContext):
         assert model is not None, "model must be provided for ModelContext"
         self.model = model
         self.tokenizer = tokenizer
-        # Device is single-sourced from the process-wide DeviceManager singleton so
-        # ModelContext, CompressContext and any OOM fallback always agree.  Only
-        # override the major device when a caller passes one explicitly.
-        if device is not None:
-            device_manager.device = device
 
         # MLLM / diffusion artifacts – always present so callers need no getattr guards.
         # _load_model() will populate the ones that are relevant to the model type.
