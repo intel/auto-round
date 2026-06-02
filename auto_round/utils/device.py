@@ -33,10 +33,21 @@ from accelerate.utils import get_balanced_memory, get_max_memory
 
 from auto_round.logger import logger
 from auto_round.utils.device_manager import (
+    ClearMemory,
+    clear_memory,
+    detect_device,
+    detect_device_count,
     get_available_device_types,
     get_current_device_manager,
     get_current_device_type,
+    get_device_and_parallelism,
     get_device_manager,
+    get_device_memory,
+    get_major_device,
+    get_max_vram,
+    get_packing_device,
+    is_auto_device_mapping,
+    out_of_vram,
 )
 from auto_round.utils.model import check_to_quantized, get_block_names, get_layer_features, get_module
 
@@ -109,26 +120,17 @@ def _bump_dynamo_cache_limit(min_size: Optional[int] = None):
         pass
 
 
-def compile_func_on_hpu(func):
-    if _use_hpu_compile_mode():
-        _bump_dynamo_cache_limit()
-        return torch.compile(func, backend="hpu_backend")
-    return func
-
-
-def compile_func_on_cuda_or_cpu(func):
-    _bump_dynamo_cache_limit()
-    return torch.compile(func)
-
-
 def compile_func(
     fun: Union[torch.nn.Module, Callable], device: Union[str, torch.device, int]
 ) -> Union[torch.nn.Module, Callable]:
-    """Compile function on the specified device."""
-    if "hpu" in str(device):
-        return compile_func_on_hpu(fun)  ## use auto by default
-    else:
-        return compile_func_on_cuda_or_cpu(fun)
+    """Compile a function on the specified device.
+
+    The shared dynamo cache-limit bump lives in :func:`_bump_dynamo_cache_limit`;
+    the per-device ``torch.compile`` customization (whether to compile and which
+    backend to use) is delegated to the corresponding :class:`Device`, keeping
+    this entry point device-agnostic.
+    """
+    return get_device_manager(device).compile_func(fun)
 
 
 def is_numba_available():  # pragma: no cover
@@ -296,107 +298,14 @@ def check_is_cpu(device):
     return device == torch.device("cpu") or device == "cpu"
 
 
-def detect_device_count():
-    """Detects the number of available computation devices.
+def is_pipeline_parallel_supported(device_type: str) -> bool:
+    """Whether multi-card (naive pipeline) parallel tuning is enabled.
 
-    This function checks if CUDA is available. If it is, it returns the count
-    of available CUDA devices. If not, it attempts to import the Habana
-    device framework to return the count of Habana devices. If the import
-    fails or no devices are found, it returns 0.
-
-    Returns:
-        int: The number of available devices on the active device.
+    Split out of ``get_device_and_parallelism`` so the parallelism policy stays a
+    standalone concern instead of living on the device manager.  Currently only
+    CUDA supports multi-card pipeline parallel tuning.
     """
-    return get_current_device_manager().device_count()
-
-
-def detect_device(device: Union[None, str, int, torch.device] = None) -> str:
-    """Detects the appropriate computation device.
-
-    This function determines the device to use for computations. It can take
-    a specific device index or default to 'auto'. The function checks for
-    available devices in the following order: CUDA, Habana, and finally CPU.
-
-    Args:
-        device (str, int, or torch.device, optional): The desired device.
-            If 'auto' or None, the function will determine the best device
-            automatically.
-
-    Returns:
-        str: The device to use for computations, formatted as a string.
-    """
-
-    def is_valid_digit(s):
-        try:
-            num = int(s)
-            return 0 <= num
-        except:
-            return False
-
-    dev_idx = None
-    if is_valid_digit(device):
-        dev_idx = int(device)
-        device = "auto"
-    if isinstance(device, str) and "," in device:  # device is "0,1,2"
-        device_list = [int(dev) for dev in device.split(",") if dev.isdigit()]
-        dev_idx = device_list[0] if device_list else None
-        device = "auto"
-    if device is None or device == "auto":
-        device_type = get_current_device_type()
-        device = torch.device(device_type) if device_type is not None else torch.device("cpu")
-        if dev_idx is not None and str(device) != "cpu":
-            device = str(device) + f":{dev_idx}"
-        return str(device)
-    elif isinstance(device, torch.device):
-        device = str(device)
-    elif isinstance(device, str):  ## for cuda:0
-        if device == "tp":  # pragma: no cover
-            # should not specify card, e.g., cuda:0
-            device = get_current_device_type() or "cpu"
-        else:
-            device = device
-    return device
-
-
-def get_device_and_parallelism(device: Union[str, torch.device, int, dict]) -> tuple[str, bool]:
-    if device is None:
-        device = detect_device(device)
-        return device, False
-    if isinstance(device, dict):
-        unique_devices = set(device.values())
-        if len(unique_devices) == 1:
-            device = next(iter(unique_devices))
-        else:
-            device = "auto"
-    if isinstance(device, torch.device):
-        device = str(device)
-    if isinstance(device, str):
-        device_type = device.split(":")[0]
-        # A bare backend type (e.g. "cuda", "xpu", "hpu", "cpu", "mps") with no index
-        if device not in ("auto", "tp") and ":" not in device and "," not in device and not device.isdigit():
-            return detect_device(device), False
-        # Strip any "<type>:" prefixes (e.g. "cuda:0,1" -> "0,1") to obtain bare indices.
-        device = re.sub(r"[a-zA-Z_]+:", "", device)
-        devices = device.replace(" ", "").split(",")
-    elif isinstance(device, int):
-        devices = [str(device)]
-    else:
-        devices = [device]
-
-    is_multi_card = all(s.isdigit() for s in devices) and len(devices) > 1
-    if is_multi_card:
-        # Pick the active backend generically rather than probing each one by hand.
-        device_type = get_current_device_type() or "cpu"
-        # Multi-card (naive pipeline) parallel tuning is currently only enabled on CUDA.
-        parallelism = device_type == "cuda"
-        return device_type, parallelism
-    elif device == "auto":
-        device = detect_device(device)
-        parallelism = True
-    else:
-        device = detect_device(device)
-        parallelism = False
-    return device, parallelism
+    return device_type == "cuda"
 
 
 def set_cuda_visible_devices(device: str):
@@ -516,50 +425,6 @@ class fake_triton_for_hpu(ContextDecorator):
         return False
 
 
-def get_packing_device(device: str | torch.device | None = "auto") -> torch.device:
-    """
-    Selects the packing device.
-    - "auto": choose best available (CUDA > XPU > CPU).
-    - str: parsed by torch.device (e.g., "cuda:2", "cpu").
-    - torch.device: returned as-is.
-    - None: treated as "auto".
-
-    Args:
-        device: Target device spec ("auto", "cuda:0", "xpu:0", "cpu", or torch.device).
-
-    Returns:
-        torch.device: The resolved device.
-    """
-    if device is None or (isinstance(device, str) and device.lower() == "auto"):
-        device_type = get_current_device_type()
-        if device_type is not None and device_type != "cpu":
-            return torch.device(f"{device_type}:0")
-        return torch.device("cpu")
-
-    if isinstance(device, torch.device):
-        return device
-
-    if isinstance(device, str):
-        try:
-            return torch.device(device)
-        except Exception as e:
-            raise ValueError(f"Invalid device string: {device}") from e
-
-    raise TypeError(f"Unsupported device type: {type(device)} ({device})")
-
-
-def is_auto_device_mapping(device_map: str | int | dict | None):
-    if device_map is None or isinstance(device_map, int):
-        return False
-    elif device_map == "auto":
-        return True
-    elif isinstance(device_map, str) and "," in device_map:
-        return True
-    elif isinstance(device_map, dict):
-        return False
-    else:
-        return False
-
 
 class CpuInfo(object):
     """Get CPU Info."""
@@ -596,61 +461,6 @@ def bytes_to_gigabytes(bytes) -> int:
     """
     return bytes / 1024 / 1024 / 1024
 
-
-def _clear_memory_for_cpu_and_cuda(
-    tensor: torch.Tensor | list[torch.Tensor] | None = None,
-    device_list: tuple | list | str | torch.device | None = None,
-):
-    # ------------------------
-    # Clear CPU-side references
-    # ------------------------
-    if isinstance(tensor, list):
-        for i in range(len(tensor)):
-            tensor[i] = None
-    tensor = None
-    gc.collect()
-    _maybe_trim_malloc()
-
-    # ------------------------
-    # Normalize device_list
-    # ------------------------
-    if isinstance(device_list, (str, torch.device)):
-        device_list = [device_list]
-
-    # -----------------------------------
-    # Device-specific clearing
-    # -----------------------------------
-    # Group requested devices by backend type so we synchronize the exact
-    # indices the caller asked for, then fall back to clearing the active
-    # accelerator entirely when no list is provided.
-    current_dev_type = get_current_device_type()
-    if current_dev_type is None or current_dev_type == "cpu":
-        return
-
-    if not device_list:
-        dev_mgr = get_current_device_manager()
-        dev_mgr.synchronize()
-        dev_mgr.empty_cache()
-        return
-
-    # Parse "<type>:<idx>" entries, grouping indices per backend.
-    per_backend: dict[str, list[int]] = {}
-    for dev in device_list:
-        dev = str(dev)
-        dev_type = dev.split(":")[0]
-        if not dev_type or dev_type == "cpu" or dev_type.isdigit():
-            # Bare indices (e.g. "0") are interpreted against the active device.
-            dev_type = current_dev_type if dev_type.isdigit() else dev_type
-            if not dev_type or dev_type == "cpu":
-                continue
-        devid = int(dev.split(":")[-1]) if ":" in dev else (int(dev) if dev.isdigit() else 0)
-        per_backend.setdefault(dev_type, []).append(devid)
-
-    for dev_type, ids in per_backend.items():
-        dev_mgr = get_device_manager(dev_type)
-        for devid in ids:
-            dev_mgr.synchronize(devid)
-        dev_mgr.empty_cache()
 
 
 _malloc_trim_counter = 0
@@ -705,38 +515,6 @@ def _maybe_trim_malloc() -> None:
     except Exception:
         pass
 
-
-class ClearMemory:
-
-    def __init__(self, device_list: list | tuple | None = None):
-        self.device_list = device_list
-
-    def __call__(
-        self,
-        tensor: torch.Tensor | None | list[torch.Tensor | dict] = None,
-        device_list: list | tuple | None = None,
-    ):
-        from auto_round.utils.device import is_hpex_available
-
-        if is_hpex_available():
-            # Clear CPU-side references so Python can reclaim them.
-            if isinstance(tensor, list):
-                for i in range(len(tensor)):
-                    tensor[i] = None
-            tensor = None
-            gc.collect()
-            _force_trim_malloc()
-            memory_monitor.update_hpu(device_list)
-            return
-        else:
-            if device_list is not None:
-                self.device_list = device_list
-            final_device_list = self.device_list
-            memory_monitor.update(final_device_list)
-            _clear_memory_for_cpu_and_cuda(tensor, final_device_list)
-
-
-clear_memory = torch._dynamo.disable()(ClearMemory(device_list=[0]))
 
 
 def clear_memory_if_reached_threshold(threshold=0.85, device_list=None):
@@ -817,81 +595,6 @@ def check_memory_availability(device, inputs, weight, org_seqlen, org_bs):
 
     return False, seqlen, bs
 
-
-def out_of_vram(error_msg):
-    error_msg = str(error_msg)
-    # CUDA
-    if "CUDA out of memory" in error_msg:
-        return True
-    # gaudi
-    if "MODULE:PT_DEVMEM" in error_msg:
-        return True
-    # XPU
-    if "UR_RESULT_ERROR_OUT_OF_DEVICE_MEMORY" in error_msg:
-        return True
-    # ROCM
-    if "HIP out of memory. Tried to allocate" in error_msg:
-        return True
-    return False
-
-
-def get_max_vram(ratio: float = 0.9) -> dict:
-    max_memory = {}
-    dev_mgr = get_current_device_manager()
-    if not dev_mgr.is_available() or dev_mgr.type == "cpu":
-        raise RuntimeError("No device (CUDA/XPU/HPU/...) found.")
-    for i in range(dev_mgr.device_count()):
-        total_mem = dev_mgr.total_memory(i)
-        max_mem_gb = int(total_mem / 1024**3 * ratio)
-        max_memory[i] = f"{max_mem_gb}GiB"
-    return max_memory
-
-
-def get_device_memory(i: int = 0) -> int:
-    """
-    Gets the available memory on the specified device.
-
-    Args:
-        i (int, optional): Device index. Defaults to 0.
-
-    Returns:
-        int: Available memory in gigabytes.
-    """
-    dev_mgr = get_current_device_manager()
-    if not dev_mgr.is_available() or dev_mgr.type == "cpu":
-        raise RuntimeError("No supported device found (CUDA/XPU/HPU/...).")
-    return bytes_to_gigabytes(dev_mgr.total_memory(i))
-
-
-def get_major_device(device_map: Union[None, str, torch.device, int, dict]) -> str:
-    if device_map is None or isinstance(device_map, (str, torch.device, int)):
-        device = detect_device(device_map)
-        return device
-
-    if isinstance(device_map, dict) and device_map:
-        tmp_devices = []
-        for val in device_map.values():
-            if isinstance(val, (str, torch.device, int)):  # could optimize
-                tmp_device = detect_device(val)
-                tmp_device = tmp_device.split(":")[0]
-                tmp_devices.append(tmp_device)
-        tmp_devices = list(set(tmp_devices))
-        device = None
-        for tmp_device in tmp_devices:
-            if tmp_device != "cpu":
-                device = tmp_device
-                break
-        if device is None:
-            device = tmp_devices[0]
-        if len(tmp_devices) > 1:
-            logger.warning_once(
-                f"there are multiple device types in the device_map, "
-                f"please make sure they are correct,use the first none-cpu device {device} as the core device "
-            )
-
-        return device
-    logger.warning_once(f"device_map should be [str, torch.device, int, dict], but got {type(device_map)}")
-    return "cpu"
 
 
 def set_tuning_device_for_layer(model, name: str, device: str) -> None:

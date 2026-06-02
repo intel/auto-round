@@ -18,6 +18,7 @@ from typing import Union
 
 import torch
 
+from auto_round.utils.device_manager import device_manager
 from auto_round.algorithms.quantization.config import QuantizationConfig
 from auto_round.algorithms.quantization.utils import register_act_max_hooks
 from auto_round.compressors.utils import (
@@ -220,7 +221,7 @@ class BaseQuantizers:
             # Attempt quantization on GPU, fall back to CPU if OOM
             try:
                 weight, scale, zp = quant_func(
-                    module.weight.to(dtype=dtype, device=self.compress_context.device),
+                    module.weight.to(dtype=dtype, device=device_manager.device),
                     **{
                         k: config.get(k, None)
                         for k in ["bits", "group_size", "super_bits", "super_group_size", "scale_dtype"]
@@ -259,7 +260,7 @@ class BaseQuantizers:
             del weight
             del scale
             del zp
-            clear_memory(device_list=self.compress_context.device_list)
+            clear_memory(device_list=device_manager.device_list)
 
         return is_quantized
 
@@ -294,9 +295,9 @@ class BaseQuantizers:
     def quantize_layer_via_rtn(self, layer_name: str, disable_opt_rtn: bool | None = None) -> None:
         """Quantize one layer with RTN and handle optional immediate pack/save."""
         layer = get_module(self.model, layer_name)
-        layer = convert_module_to_hp_if_necessary(layer, self.model_context.amp_dtype, self.compress_context.device)
+        layer = convert_module_to_hp_if_necessary(layer, self.model_context.amp_dtype, device_manager.device)
         set_module(self.model, layer_name, layer)
-        tuning_device = layer.tuning_device if hasattr(layer, "tuning_device") else self.compress_context.device
+        tuning_device = layer.tuning_device if hasattr(layer, "tuning_device") else device_manager.device
         if (
             self.compress_context.is_immediate_packing
             and self.compress_context.formats[0].is_gguf()
@@ -424,7 +425,7 @@ class BaseQuantizers:
         """
         diffusion_fn = getattr(self, "_get_diffusion_block_outputs", None)
         if getattr(self.model_context, "is_diffusion", False):
-            device = device_override if device_override is not None else self.compress_context.device
+            device = device_override if device_override is not None else device_manager.device
             return self._get_diffusion_block_outputs(
                 block,
                 input_ids,
@@ -455,7 +456,7 @@ class BaseQuantizers:
                 tmp_input_others,
                 self.model_context.amp,
                 self.model_context.amp_dtype,
-                self.compress_context.device,
+                device_manager.device,
             ).to(self.compress_context.cache_device)
             if save_output:
                 if self.batch_size == 1:
@@ -487,7 +488,7 @@ class BaseQuantizers:
         elif self.compress_context.enable_torch_compile:
             compiled = self.__dict__.get("_compiled_block_forward")
             if compiled is None:
-                compiled = compile_func(block_forward, self.compress_context.device)
+                compiled = compile_func(block_forward, device_manager.device)
                 self._compiled_block_forward = compiled
             self._resolved_block_forward = compiled
         else:

@@ -44,20 +44,36 @@ Typical usage::
 
 from __future__ import annotations
 
+import contextlib
 import functools
+import gc
+import re
 from typing import Optional, Union
 
 import torch
 
+from auto_round.logger import logger
+
 __all__ = [
+    "Device",
     "DeviceManager",
-    "get_device_module",
+    "device_manager",
     "get_device_manager",
     "get_current_device_manager",
     "get_current_device_type",
     "is_device_available",
     "get_available_device_types",
-    "is_supported_device",
+    "detect_device",
+    "detect_device_count",
+    "get_device_and_parallelism",
+    "get_packing_device",
+    "is_auto_device_mapping",
+    "get_major_device",
+    "out_of_vram",
+    "get_max_vram",
+    "get_device_memory",
+    "ClearMemory",
+    "clear_memory",
 ]
 
 
@@ -70,7 +86,7 @@ __all__ = [
 # ``torch.accelerator``.  Any backend that IS registered with
 # ``torch.accelerator`` (cuda/xpu/mps/npu/...) is discovered automatically and
 # does NOT need to appear in this list.
-_PREFERRED_ORDER = ("cuda", "hpu", "xpu", "mps")
+_PREFERRED_ORDER = ("cuda",  "xpu", "hpu") # add mps later
 
 
 def _torch_accelerator_type() -> Optional[str]:
@@ -107,7 +123,7 @@ def _accelerator_api():
         return None
 
 
-def _accel_call(api, names, *args):
+def _module_call(api, names, *args):
     """Call the first existing attribute in ``names`` on ``api`` with ``args``.
 
     Tolerates PyTorch renames across versions (e.g. ``current_device_index`` in
@@ -119,9 +135,6 @@ def _accel_call(api, names, *args):
         if callable(fn):
             return True, fn(*args)
     return False, None
-
-
-
 
 
 @functools.lru_cache(None)
@@ -150,42 +163,6 @@ def _backend_is_available(name: str) -> bool:
     return backend is not None and bool(getattr(backend, "is_available", lambda: False)())
 
 
-def get_device_module(device: Union[None, str, int, torch.device] = None):
-    """Return the backend runtime module for ``device`` (e.g. ``torch.cuda``).
-
-    This is a thin, version-tolerant wrapper around ``torch.get_device_module``
-    that also understands ``hpu`` and plain device strings/indices.
-
-    Args:
-        device: ``"cuda"``, ``"xpu:0"``, ``torch.device(...)``, an int index
-            (interpreted against the current device) or ``None`` (current
-            device).
-
-    Returns:
-        The module exposing the device runtime API, or ``None`` for CPU / when
-        no device is available.
-    """
-    device_type = _normalize_device_type(device)
-    if device_type is None or device_type == "cpu":
-        return None
-    if device_type == "hpu":
-        if hasattr(torch, "hpu"):
-            return torch.hpu
-        try:  # pragma: no cover - depends on Gaudi runtime
-            import habana_frameworks.torch.hpu as hthpu  # pylint: disable=E0401
-
-            return hthpu
-        except Exception:  # pragma: no cover
-            return None
-    # Prefer the official unified accessor when present.
-    if hasattr(torch, "get_device_module"):
-        try:
-            return torch.get_device_module(device_type)
-        except Exception:
-            pass
-    return getattr(torch, device_type, None)
-
-
 def _normalize_device_type(device: Union[None, str, int, torch.device]) -> Optional[str]:
     """Reduce any device spec to a bare backend type string (``"cuda"`` ...)."""
     if device is None:
@@ -198,19 +175,19 @@ def _normalize_device_type(device: Union[None, str, int, torch.device]) -> Optio
         if device in ("auto", "tp"):
             return get_current_device_type()
         return device.split(":")[0]
-    return None
+    raise ValueError("Device type not recognized")
 
 
 @functools.lru_cache(None)
-def get_current_device_type() -> Optional[str]:
-    """Return the active device backend type, or ``None`` if CPU-only.
+def get_current_device_type() -> str:
+    """Return the active device backend type, or "cpu" if CPU-only.
 
     Discovery order:
-      1. Intel Gaudi (``hpu``) -- out-of-tree, may not register with torch.accelerator.
-      2. ``torch.accelerator`` -- the canonical API, covers cuda/xpu/mps/npu/...
+      1. Intel Gaudi ("hpu") -- out-of-tree, may not register with torch.accelerator.
+      2. "torch.accelerator" -- the canonical API, covers cuda/xpu/mps/npu/...
       3. Manual probing of :data:`_PREFERRED_ORDER` for older PyTorch releases.
     """
-    # ``hpu`` first: it may not be registered with torch.accelerator.
+    # "hpu" first: it may not be registered with torch.accelerator.
     if _hpu_available():
         return "hpu"
     accel_type = _torch_accelerator_type()
@@ -219,7 +196,7 @@ def get_current_device_type() -> Optional[str]:
     for name in _PREFERRED_ORDER:
         if _backend_is_available(name):
             return name
-    return None
+    return "cpu"
 
 
 def is_device_available() -> bool:
@@ -249,71 +226,104 @@ def get_available_device_types() -> list[str]:
     return available
 
 
-def is_supported_device(device: Union[None, str, int, torch.device]) -> bool:
-    """Whether ``device`` refers to CPU or a usable accelerator backend.
-
-    Accepts any device spec the user might pass (``"cuda"``, ``"npu:0"``,
-    ``torch.device(...)``, an int index, ``"auto"`` ...).  A non-CPU backend is
-    considered supported when PyTorch exposes a runtime module for it (e.g.
-    ``torch.npu`` provided by ``torch_npu``) or it is otherwise available -- so
-    new accelerators work without editing a hardcoded allow-list.
-    """
-    if device is None or isinstance(device, int):
-        return True
-    if isinstance(device, torch.device):
-        device_type = device.type
-    else:
-        device_type = str(device).split(":")[0]
-    if device_type in ("cpu", "meta", "disk", "auto", "tp", ""):
-        return True
-    if _backend_is_available(device_type):
-        return True
-    # A backend torch can build a runtime module for (e.g. torch_npu's "npu").
-    return get_device_module(device_type) is not None
-
-
 # ---------------------------------------------------------------------------
-# Device wrapper
+# Device handles -- a small inheritance hierarchy
 # ---------------------------------------------------------------------------
 class _DeviceIndexContext:
     """Fallback for ``torch.accelerator.device_index`` on older PyTorch/backends."""
 
-    def __init__(self, manager: "DeviceManager", index: int):
-        self._manager = manager
+    def __init__(self, device: "Device", index: int):
+        self._device = device
         self._index = index
         self._prev = None
 
     def __enter__(self):
         try:
-            self._prev = self._manager.current_device()
+            self._prev = self._device.current_device()
         except Exception:
             self._prev = None
-        self._manager.set_device(self._index)
+        self._device.set_device(self._index)
         return self
 
     def __exit__(self, *exc):
         if self._prev is not None:
-            self._manager.set_device(self._prev)
+            self._device.set_device(self._prev)
         return False
 
 
-class DeviceManager:
-    """Unified, backend-agnostic handle to a PyTorch device.
+class Device:
+    """Base, backend-agnostic handle to a single PyTorch device *backend*.
 
-    All methods delegate to the underlying device runtime module obtained from
-    :func:`get_device_module`, so the same code path works for CUDA, XPU, HPU,
-    MPS and any future in-tree backend.  Methods degrade gracefully (no-op /
-    sensible default) when the operation is unsupported by a given backend.
+    A :class:`Device` represents a backend *type* (``cuda``/``xpu``/...), not a
+    single card -- every per-card operation takes an ``index`` so the same
+    handle drives all cards of that backend (multi-card aware).
+
+    The base implementation delegates to the backend runtime module obtained
+    from :func:`get_device_module` and, when this is the build's active
+    accelerator, to the unified ``torch.accelerator`` API.  Specialised
+    backends subclass this and override only the methods that differ (e.g.
+    :meth:`set_device` / :meth:`device_count`); subclasses self-register via the
+    ``device_type`` class attribute so :class:`DeviceManager` can instantiate
+    them by name.
     """
 
-    def __init__(self, device_type: str):
-        self.type = device_type
-        self._module = get_device_module(device_type)
+    #: Canonical backend type a subclass handles (e.g. ``"cuda"``).  Empty on
+    #: the base class, which stays usable as a *generic* fallback for any
+    #: PyTorch backend that lacks a dedicated subclass (e.g. a fresh ``npu``).
+    device_type: str = ""
+
+
+    _registry: dict[str, type["Device"]] = {}
+
+    def __init_subclass__(cls, **kwargs):
+        super().__init_subclass__(**kwargs)
+        dtype = cls.__dict__.get("device_type", "")
+        if dtype:
+            Device._registry[dtype] = cls
+
+    @classmethod
+    def create(cls, device_type: str) -> "Device":
+        """Instantiate the most specific :class:`Device` for ``device_type``."""
+        subclass = cls._registry.get(device_type)
+        if subclass is not None:
+            return subclass()
+        return Device(device_type)
+
+    @staticmethod
+    def get_device_module(device: Union[None, str, int, torch.device] = None):
+        """Return the backend runtime module for ``device`` (e.g. ``torch.cuda``).
+
+        This is a thin, version-tolerant wrapper around ``torch.get_device_module``
+        that also understands ``hpu`` and plain device strings/indices.
+
+        Args:
+            device: ``"cuda"``, ``"xpu:0"``, ``torch.device(...)``, an int index
+                (interpreted against the current device) or ``None`` (current
+                device).
+
+        Returns:
+            The module exposing the device runtime API, or ``None`` for CPU / when
+            no device is available.
+        """
+        device_type = _normalize_device_type(device)
+        if hasattr(torch, "get_device_module"):
+            try:
+                return torch.get_device_module(device_type)
+            except Exception:
+                pass
+        return getattr(torch, device_type, None)
+
+    def __init__(self, device_type: Optional[str] = None):
+        self.type = device_type or self.device_type
+
         # Prefer the unified ``torch.accelerator`` API for runtime ops when this
-        # manager represents the build's current accelerator (cuda/xpu/mps/npu/
+        # handle represents the build's current accelerator (cuda/xpu/mps/npu/
         # ...).  Out-of-tree backends such as ``hpu`` are not exposed by
         # ``torch.accelerator`` and transparently fall back to ``self._module``.
-        self._accel = _accelerator_api() if device_type == _torch_accelerator_type() else None
+        self._module = _accelerator_api() if self.type == _torch_accelerator_type() else None
+
+        if self._module is None:
+            self._module = self.get_device_module(self.type)
 
     # -- discovery ----------------------------------------------------------
     @property
@@ -322,59 +332,32 @@ class DeviceManager:
         return self._module
 
     def is_available(self) -> bool:
-        if self._accel is not None:
-            try:
-                return bool(self._accel.is_available())
-            except Exception:
-                pass
-        if self._module is None:
-            return self.type == "cpu"
-        fn = getattr(self._module, "is_available", None)
-        return bool(fn()) if callable(fn) else True
+        """Whether this backend type is usable in the current build."""
+        return _backend_is_available(self.type)
 
     def device_count(self) -> int:
-        if self._accel is not None:
-            try:
-                return int(self._accel.device_count())
-            except Exception:
-                pass
-        if self._module is None:
-            return 0
         fn = getattr(self._module, "device_count", None)
-        try:
-            return int(fn()) if callable(fn) else 0
-        except Exception:
-            return 0
+        return int(fn()) if callable(fn) else 0
 
     def current_device(self) -> int:
-        if self._accel is not None:
-            ok, idx = _accel_call(self._accel, ("current_device_index", "current_device_idx"))
-            if ok:
-                try:
-                    return int(idx)
-                except Exception:
-                    pass
-        if self._module is None:
-            return 0
-        fn = getattr(self._module, "current_device", None)
-        try:
-            return int(fn()) if callable(fn) else 0
-        except Exception:
-            return 0
+        ok, idx = _module_call(self._module, ("current_device_index", "current_device_idx", "current_device"))
+        if ok:
+            try:
+                return int(idx)
+            except Exception:
+                pass
+        return 0
+
 
     def set_device(self, index: Union[int, str, torch.device]) -> None:
-        if self._accel is not None:
-            ok, _ = _accel_call(self._accel, ("set_device_index", "set_device_idx"), index)
-            if ok:
-                return
         if self._module is None:
             return
-        fn = getattr(self._module, "set_device", None)
-        if callable(fn):
-            fn(index)
+        ok, _ = _module_call(self._module, ("set_device_index", "set_device_idx", "set_device"), index)
+        if ok:
+            return
 
     def device(self, index: Union[int, str, torch.device, None] = None) -> torch.device:
-        """Build a ``torch.device`` for this backend."""
+        """Build a ``torch.device`` for this backend / card ``index``."""
         if index is None:
             return torch.device(self.type)
         if isinstance(index, torch.device):
@@ -383,14 +366,12 @@ class DeviceManager:
             return torch.device(index if ":" in index else f"{self.type}:{index}")
         return torch.device(f"{self.type}:{int(index)}")
 
+    def devices(self) -> list[torch.device]:
+        """Enumerate ``torch.device`` for every card of this backend."""
+        return [self.device(i) for i in range(self.device_count())]
+
     # -- runtime ------------------------------------------------------------
     def synchronize(self, index: Union[int, None] = None) -> None:
-        if self._accel is not None:
-            try:
-                self._accel.synchronize(index) if index is not None else self._accel.synchronize()
-                return
-            except Exception:
-                pass
         if self._module is None:
             return
         fn = getattr(self._module, "synchronize", None)
@@ -411,10 +392,6 @@ class DeviceManager:
 
     def get_device_capability(self, index: Union[int, None] = None):
         """Return the compute capability of the selected device, if exposed."""
-        if self._accel is not None:
-            ok, cap = _accel_call(self._accel, ("get_device_capability",), index)
-            if ok:
-                return cap
         if self._module is None:
             return None
         fn = getattr(self._module, "get_device_capability", None)
@@ -431,22 +408,17 @@ class DeviceManager:
         Uses ``torch.accelerator.device_index`` when available; otherwise falls
         back to a tiny save/restore around :meth:`set_device`.
         """
-        if self._accel is not None:
-            ctx = getattr(self._accel, "device_index", None)
+        if self._module is not None:
+            ctx = getattr(self._module, "device_index", None)
             if callable(ctx):
                 return ctx(index)
         return _DeviceIndexContext(self, index)
 
-    # -- memory introspection ----------------------------------------------
-    def device_properties(self, index: int = 0):
-        if self._module is None:
-            return None
-        fn = getattr(self._module, "get_device_properties", None)
-        return fn(index) if callable(fn) else None
 
     def total_memory(self, index: int = 0) -> int:
-        props = self.device_properties(index)
-        return int(getattr(props, "total_memory", 0)) if props is not None else 0
+        fn = getattr(self._module, "get_memory_info", None)
+
+        return fn(index)[1] if callable(fn) else None
 
     def memory_reserved(self, index: int = 0) -> int:
         if self._module is None:
@@ -472,35 +444,665 @@ class DeviceManager:
         Falls back to ``total - reserved`` when the backend lacks a native
         ``mem_get_info`` implementation.
         """
-        if self._module is None:
-            return 0, 0
-        fn = getattr(self._module, "mem_get_info", None)
-        if callable(fn):
-            try:
-                free, total = fn(index)
-                return int(free), int(total)
-            except Exception:
-                pass
-        total = self.total_memory(index)
-        return max(total - self.memory_reserved(index), 0), total
+        fn = getattr(self._module, "get_memory_info", None)
+        torch.accelerator.get_memory_info()
+
+        return fn(index) if callable(fn) else (0,0)
+
+    # -- numeric format / mixed-precision policy ---------------------------
+    def supports_bf16(self) -> bool:
+        """Whether this backend can execute the ``bfloat16`` data type."""
+        return True
+
+    def prefers_bf16(self) -> bool:
+        """Whether this backend prefers bf16 as the mixed-precision compute dtype.
+
+        Defaults to ``True`` (bf16 is the preferred tuning dtype); backends that
+        would rather honour the model's own non-fp32 dtype can override this.
+        """
+        return True
+
+    def is_torch_compile_supported(self) -> bool:
+        return True
+
+    def compile_func(self, func):
+        """Compile ``func`` using this backend's ``torch.compile`` customization.
+
+        Generic compile machinery (the shared dynamo cache-limit bump) lives in
+        :func:`auto_round.utils.device._bump_dynamo_cache_limit`; only the
+        per-device knobs (whether to compile at all and which backend to use) are
+        expressed here, so :func:`auto_round.utils.device.compile_func` stays
+        device-agnostic.
+        """
+        # Lazy import: the helper lives in utils/device.py which imports this module.
+        if not self.is_torch_compile_supported():
+            return func
+        from auto_round.utils.device import _bump_dynamo_cache_limit
+
+        _bump_dynamo_cache_limit()
+
+        return torch.compile(func)
+
 
     def __repr__(self) -> str:  # pragma: no cover - debug aid
-        return f"DeviceManager(type={self.type!r}, available={self.is_available()})"
+        return f"{type(self).__name__}(type={self.type!r}"
 
 
-_CPU_DEVICE_MANAGER = DeviceManager("cpu")
+
+class HpuDevice(Device):
+    """Intel Gaudi (HPU) -- an out-of-tree backend.
+
+    ``hpu`` is not exposed through ``torch.accelerator``, so it always drives
+    ``torch.hpu`` directly.  ``set_device`` is overridden to guard against
+    builds where the runtime omits it.
+    """
+
+    device_type = "hpu"
+
+    @staticmethod
+    def get_device_module(device: Union[None, str, int, torch.device] = None):
+        """Return the backend runtime module for ``device`` (e.g. ``torch.cuda``).
+
+        This is a thin, version-tolerant wrapper around ``torch.get_device_module``
+        that also understands ``hpu`` and plain device strings/indices.
+
+        Args:
+            device: ``"cuda"``, ``"xpu:0"``, ``torch.device(...)``, an int index
+                (interpreted against the current device) or ``None`` (current
+                device).
+
+        Returns:
+            The module exposing the device runtime API, or ``None`` for CPU / when
+            no device is available.
+        """
+
+        if hasattr(torch, "hpu"):
+            return torch.hpu
+        try:  # pragma: no cover - depends on Gaudi runtime
+            import habana_frameworks.torch.hpu as hthpu  # pylint: disable=E0401
+
+            return hthpu
+        except Exception:# pragma: no cover
+            return None
 
 
-@functools.lru_cache(None)
-def get_device_manager(device_type: str) -> DeviceManager:
-    """Return a cached :class:`DeviceManager` for a specific backend type."""
-    return DeviceManager(_normalize_device_type(device_type) or "cpu")
+    def set_device(self, index: Union[int, str, torch.device]) -> None:
+        if self._module is None:
+            return
+        fn = getattr(self._module, "set_device", None)
+        if callable(fn):
+            try:
+                fn(index)
+            except Exception:
+                pass
+
+    def is_available(self) -> bool:
+        return _hpu_available()
+
+    def is_torch_compile_supported(self) -> bool:
+        # HPU only compiles in compile mode (lazy mode keeps the eager function).
+        from auto_round.utils.device import _use_hpu_compile_mode
+
+        return _use_hpu_compile_mode()
+
+    def compile_func(self, func):
+        if self.is_torch_compile_supported():
+            return torch.compile(func,backend="hpu_backend")
+        return func
 
 
-def get_current_device_manager() -> DeviceManager:
-    """Return the :class:`DeviceManager` for the active backend (or CPU)."""
-    device_type = get_current_device_type()
-    if device_type is None:
-        return _CPU_DEVICE_MANAGER
-    return get_device_manager(device_type)
+
+
+# class MpsDevice(Device):
+#     """Apple Metal (MPS) -- a single, non-indexable device."""
+#
+#     device_type = "mps"
+#
+#     def is_available(self) -> bool:
+#         return _backend_is_available("mps")
+#
+#     def device_count(self) -> int:  # MPS exposes exactly one device.
+#         return 1 if self.is_available() else 0
+#
+#     def current_device(self) -> int:
+#         return 0
+#
+#     def set_device(self, index: Union[int, str, torch.device]) -> None:  # no-op
+#         return None
+#
+#     def device(self, index: Union[int, str, torch.device, None] = None) -> torch.device:
+#         return torch.device("mps")
+
+
+class CpuDevice(Device):
+    """First-class handle for the host CPU.
+
+    CPU has no backend runtime module, so instead of letting every method fall
+    through ``None`` checks we give it explicit, correct semantics:
+
+    * :meth:`synchronize` / :meth:`empty_cache` are genuine no-ops (there is no
+      async stream or caching allocator to flush on CPU).
+    * memory introspection reports host RAM via ``psutil`` when available.
+    """
+
+    device_type = "cpu"
+
+    @staticmethod
+    def get_device_module(device: Union[None, str, int, torch.device] = None):
+        return None
+
+    # -- discovery ----------------------------------------------------------
+    def is_available(self) -> bool:  # CPU is always present.
+        return True
+
+    def device_count(self) -> int:  # A single logical device from torch's view.
+        return 1
+
+    def current_device(self) -> int:
+        return 0
+
+    def set_device(self, index: Union[int, str, torch.device]) -> None:  # no-op
+        return None
+
+    def device(self, index: Union[int, str, torch.device, None] = None) -> torch.device:
+        return torch.device("cpu")
+
+    # -- runtime ------------------------------------------------------------
+    def synchronize(self, index: Union[int, None] = None) -> None:  # no-op
+        return None
+
+    def empty_cache(self) -> None:  # no-op: CPU has no caching allocator.
+        return gc.collect()
+
+    def get_device_capability(self, index: Union[int, None] = None):
+        return None
+
+    def device_index(self, index: int):  # nothing to switch on CPU.
+        return contextlib.nullcontext()
+
+    # -- numeric format / mixed-precision policy ---------------------------
+    def supports_bf16(self) -> bool:
+        cached = getattr(self, "_bf16_supported", None)
+        if cached is None:
+            # Local import avoids a circular dependency (device.py imports this module).
+            from auto_round.utils.device import CpuInfo
+
+            cached = bool(CpuInfo().bf16)
+            self._bf16_supported = cached
+        return cached
+
+    # -- memory introspection (host RAM) -----------------------------------
+    def _virtual_memory(self):
+        try:
+            import psutil  # pylint: disable=C0415
+
+            return psutil.virtual_memory()
+        except Exception:
+            return None
+
+    def device_properties(self, index: int = 0):
+        return None
+
+    def total_memory(self, index: int = 0) -> int:
+        vm = self._virtual_memory()
+        return int(vm.total) if vm is not None else 0
+
+    def memory_reserved(self, index: int = 0) -> int:
+        return 0
+
+    def memory_allocated(self, index: int = 0) -> int:
+        return 0
+
+    def mem_get_info(self, index: int = 0) -> tuple[int, int]:
+        vm = self._virtual_memory()
+        if vm is None:
+            return 0, 0
+        return int(vm.available), int(vm.total)
+    
+    def is_torch_compile_supported(self) -> bool:
+        return True
+
+
+
+# ---------------------------------------------------------------------------
+# Device manager -- creates, caches and orchestrates Device handles
+# ---------------------------------------------------------------------------
+class DeviceManager:
+    """Registry and orchestrator for :class:`Device` handles.
+
+    Owns the mapping from backend type to a (cached) :class:`Device` instance,
+    exposes the *current* device for the active backend, and enumerates every
+    card across all available backends for multi-card scenarios.  Custom
+    backends can be plugged in at runtime via :meth:`register` without touching
+    this module.
+
+    A manager can additionally be *configured* with a ``device_map`` so callers
+    (e.g. the compressors) no longer keep their own ``device`` / ``device_list``
+    state -- they ask the manager instead.
+
+    The manager is a process-wide **singleton**: every ``DeviceManager(...)`` call
+    returns the same instance.  Passing a ``device_map`` simply (re)configures that
+    shared instance, so the active device / device_list is always single-sourced.
+    """
+
+    _instance: Optional["DeviceManager"] = None
+
+    def __new__(cls, *args, **kwargs):
+        if cls._instance is None:
+            cls._instance = super().__new__(cls)
+        return cls._instance
+
+    def __init__(self, device_map: Union[None, str, torch.device, int, dict] = None):
+        # Initialise backing state once; later constructions reuse the singleton.
+        if not getattr(self, "_initialized", False):
+            self._cache: dict[str, Device] = {}
+            self._device_map = None
+            self._device_list: Optional[list] = None
+            self._major_device: Optional[str] = None
+            self._initialized = True
+        if device_map is not None:
+            self.configure(device_map)
+
+    # -- device_map configuration ------------------------------------------
+    def configure(self, device_map: Union[None, str, torch.device, int, dict] = 0) -> "DeviceManager":
+        """Resolve a ``device_map`` into a concrete device list and major device.
+
+        Centralises the device-map parsing the compressors used to perform by
+        hand, so they can rely on :attr:`device` / :attr:`device_list` instead of
+        maintaining duplicate state.
+        """
+        if device_map is None:
+            device_map = 0
+        if isinstance(device_map, str):
+            device_map = device_map.replace(" ", "")
+        self._device_map = device_map
+        # Lazy import: device.py imports this module, so a top-level import would
+        # create a circular dependency.
+        from auto_round.utils.device import parse_available_devices
+
+        self._device_list = parse_available_devices(device_map)
+        self._major_device = get_major_device(device_map)
+        return self
+
+    @property
+    def device_map(self):
+        """The raw ``device_map`` this manager was configured with."""
+        return self._device_map
+
+    @property
+    def device_list(self) -> list:
+        """All concrete devices selected by the configured ``device_map``."""
+        if self._device_list is None:
+            self.configure(self._device_map)
+        return self._device_list
+
+    @property
+    def device(self) -> str:
+        """The major (primary, non-CPU when possible) device string."""
+        if self._major_device is None:
+            self.configure(self._device_map)
+        return self._major_device
+
+    @device.setter
+    def device(self, value: Union[str, torch.device]) -> None:
+        """Override the major device (e.g. an OOM fallback to ``"cpu"``)."""
+        self._major_device = str(value) if isinstance(value, torch.device) else value
+
+    def is_multi_device(self) -> bool:
+        """Whether more than one concrete device is selected."""
+        return len(self.device_list) > 1
+
+    # -- registration -------------------------------------------------------
+    def register(self, device_cls: type[Device]) -> None:
+        """Register a custom :class:`Device` subclass and drop any stale cache."""
+        dtype = device_cls.device_type
+        if not dtype:
+            raise ValueError("Device subclass must define a non-empty 'device_type'")
+        Device._registry[dtype] = device_cls
+        self._cache.pop(dtype, None)
+
+    # -- lookup -------------------------------------------------------------
+    def get(self, device_type: Union[None, str, int, torch.device] = None) -> Device:
+        """Return the cached :class:`Device` for ``device_type`` (default: current)."""
+        normalized = _normalize_device_type(device_type) or "cpu"
+        device = self._cache.get(normalized)
+        if device is None:
+            device = Device.create(normalized)
+            self._cache[normalized] = device
+        return device
+
+    def current(self) -> Device:
+        """Return the :class:`Device` for the active backend (or CPU)."""
+        return self.get(get_current_device_type())
+
+    def current_type(self) -> str:
+        return get_current_device_type()
+
+    # -- multi-card / multi-backend ----------------------------------------
+    def available_types(self) -> list[str]:
+        """All available (non-CPU) backend types, in preferred order."""
+        return get_available_device_types()
+
+    def available_devices(self) -> list[Device]:
+        """One :class:`Device` per available (non-CPU) backend type."""
+        return [self.get(dtype) for dtype in self.available_types()]
+
+    def all_devices(self) -> list[torch.device]:
+        """Enumerate every card across all available backends (multi-card)."""
+        devices: list[torch.device] = []
+        for device in self.available_devices():
+            devices.extend(device.devices())
+        return devices
+
+
+# Process-wide singleton manager.
+device_manager = DeviceManager()
+
+
+def get_device_manager(device_type: Union[None, str, int, torch.device] = None) -> Device:
+    """Return the cached :class:`Device` handle for a specific backend type."""
+    return device_manager.get(device_type)
+
+
+def get_current_device_manager() -> Device:
+    """Return the :class:`Device` handle for the active backend (or CPU)."""
+    return device_manager.current()
+
+
+# ---------------------------------------------------------------------------
+# Device resolution / parsing helpers (moved from utils/device.py)
+# ---------------------------------------------------------------------------
+def detect_device_count() -> int:
+    """Detects the number of available computation devices."""
+    return get_current_device_manager().device_count()
+
+
+def detect_device(device: Union[None, str, int, torch.device] = None) -> str:
+    """Detects the appropriate computation device.
+
+    Takes a specific device index/string or ``"auto"``/``None`` (auto-detect the
+    active backend), and returns the resolved device as a string.
+    """
+
+    def is_valid_digit(s):
+        try:
+            num = int(s)
+            return 0 <= num
+        except Exception:
+            return False
+
+    dev_idx = None
+    if is_valid_digit(device):
+        dev_idx = int(device)
+        device = "auto"
+    if isinstance(device, str) and "," in device:  # device is "0,1,2"
+        device_list = [int(dev) for dev in device.split(",") if dev.isdigit()]
+        dev_idx = device_list[0] if device_list else None
+        device = "auto"
+    if device is None or device == "auto":
+        device_type = get_current_device_type()
+        device = torch.device(device_type) if device_type is not None else torch.device("cpu")
+        if dev_idx is not None and str(device) != "cpu":
+            device = str(device) + f":{dev_idx}"
+        return str(device)
+    elif isinstance(device, torch.device):
+        device = str(device)
+    elif isinstance(device, str):  ## for cuda:0
+        if device == "tp":  # pragma: no cover
+            # should not specify card, e.g., cuda:0
+            device = get_current_device_type() or "cpu"
+        else:
+            device = device
+    return device
+
+
+def get_device_and_parallelism(device: Union[str, torch.device, int, dict]) -> tuple[str, bool]:
+    """Resolve a device spec into ``(device, parallelism)``.
+
+    The multi-card *parallelism* policy itself is kept as a standalone function
+    (:func:`auto_round.utils.device.is_pipeline_parallel_supported`) rather than
+    living on the device manager.
+    """
+    if device is None:
+        device = detect_device(device)
+        return device, False
+    if isinstance(device, dict):
+        unique_devices = set(device.values())
+        if len(unique_devices) == 1:
+            device = next(iter(unique_devices))
+        else:
+            device = "auto"
+    if isinstance(device, torch.device):
+        device = str(device)
+    if isinstance(device, str):
+        # A bare backend type (e.g. "cuda", "xpu", "hpu", "cpu", "mps") with no index
+        if device not in ("auto", "tp") and ":" not in device and "," not in device and not device.isdigit():
+            return detect_device(device), False
+        # Strip any "<type>:" prefixes (e.g. "cuda:0,1" -> "0,1") to obtain bare indices.
+        device = re.sub(r"[a-zA-Z_]+:", "", device)
+        devices = device.replace(" ", "").split(",")
+    elif isinstance(device, int):
+        devices = [str(device)]
+    else:
+        devices = [device]
+
+    is_multi_card = all(s.isdigit() for s in devices) and len(devices) > 1
+    if is_multi_card:
+        # Pick the active backend generically rather than probing each one by hand.
+        device_type = get_current_device_type() or "cpu"
+        # Parallelism policy is intentionally not part of the device manager.
+        from auto_round.utils.device import is_pipeline_parallel_supported
+
+        return device_type, is_pipeline_parallel_supported(device_type)
+    elif device == "auto":
+        device = detect_device(device)
+        parallelism = True
+    else:
+        device = detect_device(device)
+        parallelism = False
+    return device, parallelism
+
+
+def get_packing_device(device: Union[str, torch.device, None] = "auto") -> torch.device:
+    """Selects the packing device.
+
+    - ``"auto"``: choose best available (active accelerator > CPU).
+    - ``str``: parsed by ``torch.device`` (e.g., ``"cuda:2"``, ``"cpu"``).
+    - ``torch.device``: returned as-is.
+    - ``None``: treated as ``"auto"``.
+    """
+    if device is None or (isinstance(device, str) and device.lower() == "auto"):
+        device_type = get_current_device_type()
+        if device_type is not None and device_type != "cpu":
+            return torch.device(f"{device_type}:0")
+        return torch.device("cpu")
+
+    if isinstance(device, torch.device):
+        return device
+
+    if isinstance(device, str):
+        try:
+            return torch.device(device)
+        except Exception as e:
+            raise ValueError(f"Invalid device string: {device}") from e
+
+    raise TypeError(f"Unsupported device type: {type(device)} ({device})")
+
+
+def is_auto_device_mapping(device_map: Union[str, int, dict, None]) -> bool:
+    if device_map is None or isinstance(device_map, int):
+        return False
+    elif device_map == "auto":
+        return True
+    elif isinstance(device_map, str) and "," in device_map:
+        return True
+    elif isinstance(device_map, dict):
+        return False
+    else:
+        return False
+
+
+def get_major_device(device_map: Union[None, str, torch.device, int, dict]) -> str:
+    if device_map is None or isinstance(device_map, (str, torch.device, int)):
+        device = detect_device(device_map)
+        return device
+
+    if isinstance(device_map, dict) and device_map:
+        tmp_devices = []
+        for val in device_map.values():
+            if isinstance(val, (str, torch.device, int)):  # could optimize
+                tmp_device = detect_device(val)
+                tmp_device = tmp_device.split(":")[0]
+                tmp_devices.append(tmp_device)
+        tmp_devices = list(set(tmp_devices))
+        device = None
+        for tmp_device in tmp_devices:
+            if tmp_device != "cpu":
+                device = tmp_device
+                break
+        if device is None:
+            device = tmp_devices[0]
+        if len(tmp_devices) > 1:
+            logger.warning_once(
+                f"there are multiple device types in the device_map, "
+                f"please make sure they are correct,use the first none-cpu device {device} as the core device "
+            )
+
+        return device
+    logger.warning_once(f"device_map should be [str, torch.device, int, dict], but got {type(device_map)}")
+    return "cpu"
+
+
+# ---------------------------------------------------------------------------
+# VRAM / memory helpers (moved from utils/device.py)
+# ---------------------------------------------------------------------------
+def out_of_vram(error_msg) -> bool:
+    error_msg = str(error_msg)
+    # CUDA
+    if "CUDA out of memory" in error_msg:
+        return True
+    # gaudi
+    if "MODULE:PT_DEVMEM" in error_msg:
+        return True
+    # XPU
+    if "UR_RESULT_ERROR_OUT_OF_DEVICE_MEMORY" in error_msg:
+        return True
+    # ROCM
+    if "HIP out of memory. Tried to allocate" in error_msg:
+        return True
+    return False
+
+
+def get_max_vram(ratio: float = 0.9) -> dict:
+    max_memory = {}
+    dev_mgr = get_current_device_manager()
+    if not dev_mgr.is_available() or dev_mgr.type == "cpu":
+        raise RuntimeError("No device (CUDA/XPU/HPU/...) found.")
+    for i in range(dev_mgr.device_count()):
+        total_mem = dev_mgr.total_memory(i)
+        max_mem_gb = int(total_mem / 1024**3 * ratio)
+        max_memory[i] = f"{max_mem_gb}GiB"
+    return max_memory
+
+
+def get_device_memory(i: int = 0) -> int:
+    """Gets the total memory on the specified device, in gigabytes."""
+    dev_mgr = get_current_device_manager()
+    if not dev_mgr.is_available() or dev_mgr.type == "cpu":
+        raise RuntimeError("No supported device found (CUDA/XPU/HPU/...).")
+    return dev_mgr.total_memory(i) / 1024 / 1024 / 1024
+
+
+def _clear_memory_for_cpu_and_cuda(
+    tensor: Union[torch.Tensor, list, None] = None,
+    device_list: Union[tuple, list, str, torch.device, None] = None,
+):
+    # ------------------------
+    # Clear CPU-side references
+    # ------------------------
+    if isinstance(tensor, list):
+        for i in range(len(tensor)):
+            tensor[i] = None
+    tensor = None
+    gc.collect()
+    # Lazy import: malloc-trim helpers live in utils/device.py.
+    from auto_round.utils.device import _maybe_trim_malloc
+
+    _maybe_trim_malloc()
+
+    # ------------------------
+    # Normalize device_list
+    # ------------------------
+    if isinstance(device_list, (str, torch.device)):
+        device_list = [device_list]
+
+    # -----------------------------------
+    # Device-specific clearing
+    # -----------------------------------
+    # Group requested devices by backend type so we synchronize the exact
+    # indices the caller asked for, then fall back to clearing the active
+    # accelerator entirely when no list is provided.
+    current_dev_type = get_current_device_type()
+    if current_dev_type is None or current_dev_type == "cpu":
+        return
+
+    if not device_list:
+        dev_mgr = get_current_device_manager()
+        dev_mgr.synchronize()
+        dev_mgr.empty_cache()
+        return
+
+    # Parse "<type>:<idx>" entries, grouping indices per backend.
+    per_backend: dict[str, list[int]] = {}
+    for dev in device_list:
+        dev = str(dev)
+        dev_type = dev.split(":")[0]
+        if not dev_type or dev_type == "cpu" or dev_type.isdigit():
+            # Bare indices (e.g. "0") are interpreted against the active device.
+            dev_type = current_dev_type if dev_type.isdigit() else dev_type
+            if not dev_type or dev_type == "cpu":
+                continue
+        devid = int(dev.split(":")[-1]) if ":" in dev else (int(dev) if dev.isdigit() else 0)
+        per_backend.setdefault(dev_type, []).append(devid)
+
+    for dev_type, ids in per_backend.items():
+        dev_mgr = get_device_manager(dev_type)
+        for devid in ids:
+            dev_mgr.synchronize(devid)
+        dev_mgr.empty_cache()
+
+
+class ClearMemory:
+
+    def __init__(self, device_list: Union[list, tuple, None] = None):
+        self.device_list = device_list
+
+    def __call__(
+        self,
+        tensor: Union[torch.Tensor, None, list] = None,
+        device_list: Union[list, tuple, None] = None,
+    ):
+        # Lazy imports: these symbols live in utils/device.py.
+        from auto_round.utils.device import _force_trim_malloc, is_hpex_available, memory_monitor
+
+        if is_hpex_available():
+            # Clear CPU-side references so Python can reclaim them.
+            if isinstance(tensor, list):
+                for i in range(len(tensor)):
+                    tensor[i] = None
+            tensor = None
+            gc.collect()
+            _force_trim_malloc()
+            memory_monitor.update_hpu(device_list)
+            return
+        else:
+            if device_list is not None:
+                self.device_list = device_list
+            final_device_list = self.device_list
+            memory_monitor.update(final_device_list)
+            _clear_memory_for_cpu_and_cuda(tensor, final_device_list)
+
+
+clear_memory = torch._dynamo.disable()(ClearMemory(device_list=[0]))
+
 

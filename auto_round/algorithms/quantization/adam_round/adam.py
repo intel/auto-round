@@ -15,6 +15,7 @@ from typing import Union
 
 import torch
 
+from auto_round.utils.device_manager import device_manager
 from auto_round.algorithms.quantization.sign_round.quantizer import SignRoundQuantizer
 from auto_round.schemes import QuantizationScheme
 from auto_round.utils import check_is_cpu, htcore, is_hpex_available
@@ -37,7 +38,7 @@ class AdamRoundQuantizer(SignRoundQuantizer):
 
     def _get_scaler(self):
         scaler = None
-        if self.model_context.amp and not check_is_cpu(self.compress_context.device):
+        if self.model_context.amp and not check_is_cpu(device_manager.device):
             from torch.cuda.amp import GradScaler
 
             scaler = GradScaler(init_scale=1024, growth_interval=100000)

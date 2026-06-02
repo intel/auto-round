@@ -25,6 +25,7 @@ import torch
 import transformers
 from torch.amp import autocast
 
+from auto_round.utils.device_manager import device_manager
 from auto_round.export.export_to_gguf.config import GGML_QUANT_SIZES, GGUF_CONFIG, GGUF_INNER_CONFIG, QK_K, ModelType
 from auto_round.logger import logger
 from auto_round.utils import (
@@ -1280,7 +1281,7 @@ def immediate_pack(name: str, layer_config: dict):
     compress_context.formats[0].immediate_pack(
         name=name,
         model=model_context.model,
-        device=compress_context.device,
+        device=device_manager.device,
         output_dir=_get_save_folder_name(compress_context.formats[0]),
         layer_config=layer_config,
         tokenizer=model_context.tokenizer,

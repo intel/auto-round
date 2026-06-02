@@ -25,6 +25,7 @@ import torch
 from accelerate.big_modeling import dispatch_model, infer_auto_device_map
 from accelerate.utils import get_balanced_memory, get_max_memory
 
+from auto_round.utils.device_manager import device_manager
 from auto_round import envs
 from auto_round.calibration.base import Calibrator
 from auto_round.calibration.register import register_calibrator
@@ -96,9 +97,9 @@ class LLMCalibrator(Calibrator):
                         c.model_context.model, device_map=c.model_context.model.hf_device_map
                     )
                 else:
-                    if str(c.model_context.model.device) == "cpu" and (not c.compress_context.device.startswith("hpu")):
+                    if str(c.model_context.model.device) == "cpu" and (not device_manager.device.startswith("hpu")):
                         no_split_modules = list(getattr(c.model_context.model, "_no_split_modules", []))
-                        devices = parse_available_devices(c.compress_context.device_map)
+                        devices = parse_available_devices(device_manager.device_map)
 
                         max_memory = get_max_memory()
                         new_max_memory = {}
@@ -113,7 +114,7 @@ class LLMCalibrator(Calibrator):
                                 device = 0
                             else:
                                 raise ValueError(
-                                    f"Unsupported device {device} in device_map: {c.compress_context.device_map}"
+                                    f"Unsupported device {device} in device_map: {device_manager.device_map}"
                                 )
                             if device not in max_memory:
                                 continue
@@ -164,7 +165,7 @@ class LLMCalibrator(Calibrator):
                             else:
                                 raise
                     else:
-                        c.model_context.model = c.model_context.model.to(c.compress_context.device)
+                        c.model_context.model = c.model_context.model.to(device_manager.device)
 
                 all_inputs = self.cache_inter_data(
                     block_names, nsamples, layer_names=layer_names, last_cache_name=last_cache_name
@@ -186,7 +187,7 @@ class LLMCalibrator(Calibrator):
                         )
                     accelerate.hooks.remove_hook_from_submodules(c.model_context.model)
                     c.model_context.model = mv_module_from_gpu(c.model_context.model)
-                    clear_memory(device_list=c.compress_context.device_list)
+                    clear_memory(device_list=device_manager.device_list)
                     # On cpu, we use rtn mode for layers in layer_names (post v0.51).
                     all_inputs = self.cache_inter_data(
                         block_names, nsamples, layer_names=[], last_cache_name=last_cache_name

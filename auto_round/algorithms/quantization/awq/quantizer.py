@@ -36,6 +36,7 @@ import traceback
 import torch
 from tqdm import tqdm
 
+from auto_round.utils.device_manager import device_manager
 from auto_round.algorithms.quantization.awq.config import AWQConfig
 from auto_round.algorithms.quantization.awq.mappings import (
     ResolvedMapping,
@@ -325,9 +326,9 @@ class AWQQuantizer(BaseQuantizers):
         if dtype is not None:
             m = m.to(dtype)
 
-        m = convert_module_to_hp_if_necessary(m, self.model_context.amp_dtype, self.compress_context.device)
+        m = convert_module_to_hp_if_necessary(m, self.model_context.amp_dtype, device_manager.device)
         set_module(self.model, name, m)
-        tuning_device = m.tuning_device if hasattr(m, "tuning_device") else self.compress_context.device
+        tuning_device = m.tuning_device if hasattr(m, "tuning_device") else device_manager.device
 
         try:
             m = m.to(tuning_device)
