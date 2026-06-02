@@ -19,7 +19,7 @@ from typing import TYPE_CHECKING, Any, Optional, Union
 import torch
 
 from auto_round.logger import logger
-from auto_round.utils import SUPPORTED_DTYPES, infer_bits_by_data_type
+from auto_round.utils import SUPPORTED_DTYPES, contain_any_mm_keys, infer_bits_by_data_type
 
 __all__ = ["QuantizationScheme", "get_gguf_scheme", "preset_name_to_scheme"]
 
@@ -576,6 +576,7 @@ def _handle_special_schemes(
     inner_supported_types=None,
     quant_lm_head=False,
     mllm=False,
+    quant_nontext_module=False,
 ) -> dict:
     """handle special schemes, like GGUF:Q2_K_MIXED.
     Provide some special auto_round recipes.
@@ -588,6 +589,9 @@ def _handle_special_schemes(
     if scheme_name.lower() == "gguf:q2_k_mixed":
         for n, m in model.named_modules():
             if n in layer_config:
+                continue
+            if isinstance(m, torch.nn.Linear) and contain_any_mm_keys(n) and not quant_nontext_module:
+                layer_config[n] = "BF16"
                 continue
             if n == "lm_head" or isinstance(m, torch.nn.Embedding):
                 layer_config[n] = "GGUF:Q8_0"
@@ -608,6 +612,14 @@ def _handle_special_schemes(
             inner_supported_types = INNER_SUPPORTED_LAYER_TYPES
         for n, m in model.named_modules():
             if n in layer_config:
+                continue
+            if (
+                type(m) in supported_types
+                or type(m) in inner_supported_types
+                and contain_any_mm_keys(n)
+                and quant_nontext_module
+            ):
+                layer_config[n] = {"bits": 16}
                 continue
             if type(m) in supported_types or type(m) in inner_supported_types:
                 if "expert" in n and "shared" not in n:
