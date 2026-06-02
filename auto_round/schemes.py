@@ -591,7 +591,7 @@ def _handle_special_schemes(
                 continue
             if n == "lm_head" or isinstance(m, torch.nn.Embedding):
                 layer_config[n] = "GGUF:Q8_0"
-            elif isinstance(m, torch.nn.Linear) and ("expert" not in n or "shared_experts" in n) and n != "lm_head":
+            elif isinstance(m, torch.nn.Linear) and ("expert" not in n or "shared_expert" in n) and n != "lm_head":
                 layer_config[n] = "GGUF:Q4_K_S"
     if scheme_name.lower() == "w4a16_mixed":
         logger.warning("W4A16_MIXED is experimental and the recipe may change in the future.")

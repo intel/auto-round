@@ -486,7 +486,6 @@ def prepare_tensors(cls):
         clean_weight_list = []
 
         modify_name = _special_name_handle(cls, name)
-        data_torch = data_torch.to("cpu")
         for new_name, data_torch in cls.modify_tensors(data_torch, modify_name, bid):
             skip = False
             for tensor_info in cls.gguf_writer.tensors:
@@ -639,7 +638,7 @@ def prepare_tensors(cls):
 
                 # if data ends up empty, it means data_torch was a scalar tensor -> restore
                 if len(data_torch.shape) == 0:
-                    data = data_torch.numpy()
+                    data = data_torch.cpu().numpy()
                 try:
                     data = gguf.quants.quantize(data, data_qtype)
                 except gguf.QuantError as e:
