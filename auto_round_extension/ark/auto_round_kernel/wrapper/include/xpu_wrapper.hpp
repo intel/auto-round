@@ -977,11 +977,18 @@ class XpuWrapper {
       use_cache && bias_ptr == nullptr && stride_dim == 1 && stride_head == head_dim &&
       stride_seq == num_heads * head_dim &&
       stride_batch == seq * stride_seq && head_dim <= WG_SIZE * Unroll && (head_dim % Unroll) == 0;
-    // HND-packed-within-head fast path: tokens are contiguous in memory for each (batch,head)
-    // pair, i.e. stride_dim==1 and stride_seq==head_dim. The batch/head strides may still be
-    // non-canonical (e.g. padded heads). This avoids div/mod and per-element stride MADs in
-    // the inner loop, matching the perf of the non-strided sage_dynamic_quant kernel.
-    bool use_packed_hnd_path = stride_dim == 1 && stride_seq == head_dim && (head_dim % Unroll) == 0;
+    // HND-packed fast path: the whole tensor is canonically packed HND, i.e. dims are contiguous
+    // (stride_dim==1), tokens are contiguous within a head (stride_seq==head_dim), heads are
+    // contiguous within a batch (stride_head==seq*head_dim), and batches are contiguous
+    // (stride_batch==num_heads*seq*head_dim). The kernel addresses memory as
+    // in_ptr + row_id*seq*head_dim (row_id = batch_id*num_heads + head_id), which is only valid
+    // under these canonical strides; non-canonical head/batch strides (e.g. head slicing or
+    // padding) would read the wrong data, so they fall through to the generic strided kernel.
+    // This avoids div/mod and per-element stride MADs in the inner loop, matching the perf of
+    // the non-strided sage_dynamic_quant kernel.
+    bool use_packed_hnd_path = stride_dim == 1 && stride_seq == head_dim &&
+                               stride_head == seq * head_dim &&
+                               stride_batch == num_heads * seq * head_dim && (head_dim % Unroll) == 0;
     if (use_multihead_nhd_q_path) {
       int num_head_tiles = (num_heads + HEADS_PER_WG - 1) / HEADS_PER_WG;
       int total_blocks = batch * num_head_tiles * n_seq_blk;
@@ -1189,7 +1196,7 @@ class XpuWrapper {
                       int elems_this_wg = (seq_end - seq_begin) * head_dim;
                       const T* row_bias = bias_ptr ? bias_ptr + size_t(row_id) * size_t(head_dim) : nullptr;
 
-                      if (use_vector_path) {
+                      if (use_vector_path && use_cache) {
                         float local_max = 0.0f;
                         sycl::vec<T, Unroll> local_data[MAX_Reg / Unroll];
                         sycl::vec<float, Unroll> local_max_vec(0.0f);
@@ -1226,15 +1233,62 @@ class XpuWrapper {
                              linear_idx += WG_SIZE * Unroll, local_i++) {
                           int token_rel = linear_idx / head_dim;
                           int dim = linear_idx % head_dim;
-                          sycl::vec<T, Unroll> quant_input;
-                          if (use_cache) {
-                            quant_input = local_data[local_i];
-                          } else {
-                            size_t src_offset = logical_hnd_offset(batch_id, head_id, seq_begin + token_rel, dim,
-                                                                   stride_seq, stride_dim, stride_head,
-                                                                   stride_batch);
-                            quant_input = *(sycl::vec<T, Unroll>*)(&in_ptr[src_offset]);
+                          sycl::vec<T, Unroll> quant_input = local_data[local_i];
+                          sycl::vec<float, Unroll> val =
+                              quant_input.template convert<float, sycl::rounding_mode::automatic>();
+                          if (row_bias) {
+                            sycl::vec<T, Unroll> bias_vec = *(sycl::vec<T, Unroll>*)(&row_bias[dim]);
+                            val = val - bias_vec.template convert<float, sycl::rounding_mode::automatic>();
                           }
+                          val = val * inv_scale;
+                          val = sycl::round(val);
+                          val = sycl::clamp(val, -127, 127);
+                          sycl::vec<int8_t, Unroll> qv =
+                              val.template convert<int8_t, sycl::rounding_mode::automatic>();
+                          size_t dst_offset = (size_t(row_id) * size_t(seq) + size_t(seq_begin + token_rel)) *
+                                                  size_t(head_dim) +
+                                              size_t(dim);
+                          *(sycl::vec<int8_t, Unroll>*)(&out_ptr[dst_offset]) = qv;
+                        }
+                      } else if (use_vector_path) {
+                        // use_cache == false: block too large to cache in registers; recompute
+                        // from memory in the second pass instead of storing into local_data.
+                        float local_max = 0.0f;
+                        sycl::vec<float, Unroll> local_max_vec(0.0f);
+                        for (int linear_idx = tid * Unroll; linear_idx < elems_this_wg;
+                             linear_idx += WG_SIZE * Unroll) {
+                          int token_rel = linear_idx / head_dim;
+                          int dim = linear_idx % head_dim;
+                          size_t src_offset = logical_hnd_offset(batch_id, head_id, seq_begin + token_rel, dim,
+                                                                 stride_seq, stride_dim, stride_head, stride_batch);
+                          sycl::vec<T, Unroll> input_vec = *(sycl::vec<T, Unroll>*)(&in_ptr[src_offset]);
+                          sycl::vec<float, Unroll> data_f =
+                              input_vec.template convert<float, sycl::rounding_mode::automatic>();
+                          if (row_bias) {
+                            sycl::vec<T, Unroll> bias_vec = *(sycl::vec<T, Unroll>*)(&row_bias[dim]);
+                            data_f = data_f - bias_vec.template convert<float, sycl::rounding_mode::automatic>();
+                          }
+                          local_max_vec = sycl::fmax(local_max_vec, sycl::fabs(data_f));
+                        }
+#pragma unroll
+                        for (int i = 0; i < Unroll; ++i) {
+                          local_max = sycl::fmax(local_max, local_max_vec[i]);
+                        }
+
+                        float absmax = sycl::reduce_over_group(wg, local_max, sycl::maximum<float>{});
+                        float scale = absmax > 0.0f ? absmax / 127.0f : 0.0f;
+                        float inv_scale = absmax > 0.0f ? 127.0f / absmax : 0.0f;
+                        if (tid == 0) {
+                          scale_ptr[block_id] = scale;
+                        }
+
+                        for (int linear_idx = tid * Unroll; linear_idx < elems_this_wg;
+                             linear_idx += WG_SIZE * Unroll) {
+                          int token_rel = linear_idx / head_dim;
+                          int dim = linear_idx % head_dim;
+                          size_t src_offset = logical_hnd_offset(batch_id, head_id, seq_begin + token_rel, dim,
+                                                                 stride_seq, stride_dim, stride_head, stride_batch);
+                          sycl::vec<T, Unroll> quant_input = *(sycl::vec<T, Unroll>*)(&in_ptr[src_offset]);
                           sycl::vec<float, Unroll> val =
                               quant_input.template convert<float, sycl::rounding_mode::automatic>();
                           if (row_bias) {

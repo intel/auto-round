@@ -756,7 +756,6 @@ def run_dynquant_layout_dtype_table(
             f"{r['time_ms']:.3f} | {r['tflops']:.2f} | {r['max_diff']:.4g} | {r['mean_diff']:.4g} |"
         )
     return rows
-    return out, ref
 
 
 if __name__ == "__main__":
