@@ -79,8 +79,6 @@ def is_package_available(package_name: str) -> bool:
     return package_spec is not None
 
 
-
-
 def is_hpu_lazy_mode():
     return os.getenv("PT_HPU_LAZY_MODE") != "0"
 
