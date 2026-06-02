@@ -50,16 +50,42 @@ int launch_prefill_kernel_f16_64_sage_i8pv(detail::Options const& options) {
       options);
 }
 
-KernelLauncher select_sage_prefill_launcher(BTLA_DTYPE dtype, int head_dim, bool use_int8_pv) {
+int launch_prefill_kernel_bf16_128_sage(detail::Options const& options) {
+  return launch_sage_prefill_kernel_128<cute::int8_t, cute::int8_t, cute::bfloat16_t>(options);
+}
+
+int launch_prefill_kernel_bf16_128_sage_i8pv(detail::Options const& options) {
+  return launch_sage_prefill_kernel_128<cute::int8_t, cute::int8_t, cute::int8_t, cute::bfloat16_t, true, true,
+                                        true>(options);
+}
+
+int launch_prefill_kernel_bf16_64_sage(detail::Options const& options) {
+  return launch_sage_prefill_kernel_64<cute::int8_t, cute::int8_t, cute::bfloat16_t>(options);
+}
+
+int launch_prefill_kernel_bf16_64_sage_i8pv(detail::Options const& options) {
+  return launch_sage_prefill_kernel_64<cute::int8_t, cute::int8_t, cute::int8_t, cute::bfloat16_t, true, true,
+                                        true>(options);
+}
+
+KernelLauncher select_sage_prefill_launcher(BTLA_DTYPE dtype, BTLA_DTYPE pv_dtype, int head_dim, bool use_int8_pv) {
   switch (dtype) {
     case BTLA_DTYPE::S8:
       switch (head_dim) {
         case 128:
-          if (!use_int8_pv) return launch_prefill_kernel_f16_128_sage;
-          return launch_prefill_kernel_f16_128_sage_i8pv;
+          if (use_int8_pv) {
+            if (pv_dtype == BTLA_DTYPE::BF16) return launch_prefill_kernel_bf16_128_sage_i8pv;
+            return launch_prefill_kernel_f16_128_sage_i8pv;
+          }
+          if (pv_dtype == BTLA_DTYPE::BF16) return launch_prefill_kernel_bf16_128_sage;
+          return launch_prefill_kernel_f16_128_sage;
         case 64:
-          if (!use_int8_pv) return launch_prefill_kernel_f16_64_sage;
-          return launch_prefill_kernel_f16_64_sage_i8pv;
+          if (use_int8_pv) {
+            if (pv_dtype == BTLA_DTYPE::BF16) return launch_prefill_kernel_bf16_64_sage_i8pv;
+            return launch_prefill_kernel_f16_64_sage_i8pv;
+          }
+          if (pv_dtype == BTLA_DTYPE::BF16) return launch_prefill_kernel_bf16_64_sage;
+          return launch_prefill_kernel_f16_64_sage;
         default:
           return nullptr;
       }
@@ -201,7 +227,7 @@ detail::Options make_common_options(void* Q_ptr, void* K_ptr, void* V_ptr, void*
 
 void sage_prefill(sycl::queue* q, void* Q_ptr, void* K_ptr, void* V_ptr, void* O_ptr, void* mask,
           int scale_block_size, void* qscale, void* kscale, void* vscale, bool use_int8_pv,
-          BTLA_DTYPE q_dtype, int q_stride_s, int q_stride_d, int q_stride_h, int q_stride_b,
+          BTLA_DTYPE q_dtype, BTLA_DTYPE pv_dtype, int q_stride_s, int q_stride_d, int q_stride_h, int q_stride_b,
           int k_stride_s, int k_stride_d, int k_stride_h, int k_stride_b, int v_stride_d, int v_stride_s,
           int v_stride_h, int v_stride_b, int o_stride_s, int o_stride_d, int o_stride_h, int o_stride_b,
           int batch, int num_heads_q, int num_heads_kv, int seq_len_q, int seq_len_kv, int head_dim,
@@ -217,10 +243,10 @@ void sage_prefill(sycl::queue* q, void* Q_ptr, void* K_ptr, void* V_ptr, void* O
   options.vscale = vscale;
   compat::set_default_queue(*q);
 
-  KernelLauncher launcher = select_sage_prefill_launcher(q_dtype, head_dim, use_int8_pv);
+  KernelLauncher launcher = select_sage_prefill_launcher(q_dtype, pv_dtype, head_dim, use_int8_pv);
   if (launcher == nullptr) {
     throw std::runtime_error(
-        "Unsupported dtype or head dimension for sage_prefill / SAGE (only F16/BF16 and 64/96/128/192 are supported)");
+        "Unsupported dtype or head dimension for sage_prefill / SAGE (only F16/BF16 PV and 64/128 are supported)");
   }
 
   launcher(options);
@@ -305,7 +331,7 @@ void sdpa_impl_qks8_pvhalf(sycl::queue* q, void* Q_ptr, void* K_ptr, void* V_ptr
                int q_stride_b, int k_stride_s, int k_stride_d, int k_stride_h, int k_stride_b, int v_stride_d,
                int v_stride_s, int v_stride_h, int v_stride_b, int o_stride_s, int o_stride_d, int o_stride_h,
                int o_stride_b, int batch, int num_heads_q, int num_heads_kv, int seq_len_q,
-               int seq_len_kv, int head_dim, float softmax_scale, bool is_causal) {
+               int seq_len_kv, int head_dim, float softmax_scale, bool is_causal, BTLA_DTYPE pv_dtype) {
   if (mask && is_causal) {
     throw std::invalid_argument("sdpa_impl: mask and is_causal cannot both be set");
   }
@@ -313,8 +339,11 @@ void sdpa_impl_qks8_pvhalf(sycl::queue* q, void* Q_ptr, void* K_ptr, void* V_ptr
   if (seq_len_q <= 0 || seq_len_kv <= 0) {
     throw std::invalid_argument("sdpa_impl: seq_len_q and seq_len_kv must be greater than 0");
   }
+  if (pv_dtype != BTLA_DTYPE::F16 && pv_dtype != BTLA_DTYPE::BF16) {
+    throw std::invalid_argument("sdpa_impl_qks8_pvhalf: only F16 and BF16 are supported for V/O dtype");
+  }
   if (seq_len_q == 1) {
-    flash_attn_decode(q, Q_ptr, K_ptr, V_ptr, O_ptr, mask, BTLA_DTYPE::F16, q_stride_s, q_stride_d, q_stride_h,
+    flash_attn_decode(q, Q_ptr, K_ptr, V_ptr, O_ptr, mask, pv_dtype, q_stride_s, q_stride_d, q_stride_h,
                       q_stride_b, k_stride_s, k_stride_d, k_stride_h, k_stride_b, v_stride_d, v_stride_s,
                       v_stride_h, v_stride_b, o_stride_s, o_stride_d, o_stride_h, o_stride_b, batch, num_heads_q,
                       num_heads_kv, seq_len_kv, head_dim, softmax_scale, is_causal);
@@ -322,7 +351,7 @@ void sdpa_impl_qks8_pvhalf(sycl::queue* q, void* Q_ptr, void* K_ptr, void* V_ptr
   }
 
   sage_prefill(q, Q_ptr, K_ptr, V_ptr, O_ptr, mask, scale_block_size, qscale, kscale, nullptr, false,
-                     BTLA_DTYPE::S8, q_stride_s, q_stride_d, q_stride_h, q_stride_b, k_stride_s, k_stride_d,
+                     BTLA_DTYPE::S8, pv_dtype, q_stride_s, q_stride_d, q_stride_h, q_stride_b, k_stride_s, k_stride_d,
                      k_stride_h, k_stride_b, v_stride_d, v_stride_s, v_stride_h, v_stride_b, o_stride_s,
                      o_stride_d, o_stride_h, o_stride_b, batch, num_heads_q, num_heads_kv, seq_len_q,
                      seq_len_kv, head_dim, softmax_scale, is_causal);
@@ -334,7 +363,7 @@ void sdpa_impl_qks8_pvi8(sycl::queue* q, void* Q_ptr, void* K_ptr, void* V_ptr, 
                          int k_stride_h, int k_stride_b, int v_stride_d, int v_stride_s, int v_stride_h,
                          int v_stride_b, int o_stride_s, int o_stride_d, int o_stride_h, int o_stride_b,
                          int batch, int num_heads_q, int num_heads_kv, int seq_len_q, int seq_len_kv,
-                         int head_dim, float softmax_scale, bool is_causal) {
+                         int head_dim, float softmax_scale, bool is_causal, BTLA_DTYPE o_dtype) {
   if (mask && is_causal) {
     throw std::invalid_argument("sdpa_impl: mask and is_causal cannot both be set");
   }
@@ -345,8 +374,11 @@ void sdpa_impl_qks8_pvi8(sycl::queue* q, void* Q_ptr, void* K_ptr, void* V_ptr, 
   if (vscale == nullptr) {
     throw std::invalid_argument("sdpa_impl_qks8_pvi8: vscale must be provided for int8 PV");
   }
+  if (o_dtype != BTLA_DTYPE::F16 && o_dtype != BTLA_DTYPE::BF16) {
+    throw std::invalid_argument("sdpa_impl_qks8_pvi8: only F16 and BF16 are supported for output dtype");
+  }
   if (seq_len_q == 1) {
-    flash_attn_decode(q, Q_ptr, K_ptr, V_ptr, O_ptr, mask, BTLA_DTYPE::F16, q_stride_s, q_stride_d, q_stride_h,
+    flash_attn_decode(q, Q_ptr, K_ptr, V_ptr, O_ptr, mask, o_dtype, q_stride_s, q_stride_d, q_stride_h,
                       q_stride_b, k_stride_s, k_stride_d, k_stride_h, k_stride_b, v_stride_d, v_stride_s,
                       v_stride_h, v_stride_b, o_stride_s, o_stride_d, o_stride_h, o_stride_b, batch, num_heads_q,
                       num_heads_kv, seq_len_kv, head_dim, softmax_scale, is_causal);
@@ -354,7 +386,7 @@ void sdpa_impl_qks8_pvi8(sycl::queue* q, void* Q_ptr, void* K_ptr, void* V_ptr, 
   }
 
   sage_prefill(q, Q_ptr, K_ptr, V_ptr, O_ptr, mask, scale_block_size, qscale, kscale, vscale, true,
-               BTLA_DTYPE::S8, q_stride_s, q_stride_d, q_stride_h, q_stride_b, k_stride_s, k_stride_d,
+               BTLA_DTYPE::S8, o_dtype, q_stride_s, q_stride_d, q_stride_h, q_stride_b, k_stride_s, k_stride_d,
                k_stride_h, k_stride_b, v_stride_d, v_stride_s, v_stride_h, v_stride_b, o_stride_s, o_stride_d,
                o_stride_h, o_stride_b, batch, num_heads_q, num_heads_kv, seq_len_q, seq_len_kv, head_dim,
                softmax_scale, is_causal);

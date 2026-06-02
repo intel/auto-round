@@ -786,8 +786,8 @@ class ARK:
             )
         if query.device.type != "xpu":
             raise NotImplementedError("sdpa is only supported on XPU")
-        if query.dtype not in (torch.float16,):
-            raise ValueError(f"Q must be float16, got {query.dtype}")
+        if query.dtype not in (torch.float16, torch.bfloat16):
+            raise ValueError(f"Q must be float16 or bfloat16, got {query.dtype}")
         if key.dtype != query.dtype or value.dtype != query.dtype:
             raise ValueError(
                 f"K/V dtype must match Q dtype, got K={key.dtype}, V={value.dtype}, Q={query.dtype}"
@@ -883,8 +883,8 @@ class ARK:
             )
         if query.device.type != "xpu":
             raise NotImplementedError("sagev1_pvi8 is only supported on XPU")
-        if query.dtype not in (torch.float16,):
-            raise ValueError(f"Q must be float16, got {query.dtype}")
+        if query.dtype not in (torch.float16, torch.bfloat16):
+            raise ValueError(f"Q must be float16 or bfloat16, got {query.dtype}")
         if key.dtype != query.dtype or value.dtype != query.dtype:
             raise ValueError(
                 f"K/V dtype must match Q dtype, got K={key.dtype}, V={value.dtype}, Q={query.dtype}"
@@ -981,8 +981,8 @@ class ARK:
         if query.device.type != "xpu":
             raise NotImplementedError("sage_dynquant is only supported on XPU")
 
-        if query.dtype not in (torch.float16,):
-            raise ValueError(f"Q must be float16, got {query.dtype}")
+        if query.dtype not in (torch.float16, torch.bfloat16):
+            raise ValueError(f"Q must be float16 or bfloat16, got {query.dtype}")
 
         B, Hq, Sq, D = query.shape
         _, Hkv, Skv, _ = key.shape

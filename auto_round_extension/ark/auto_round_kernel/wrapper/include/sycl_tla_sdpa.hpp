@@ -691,8 +691,12 @@ struct SageConfig {
   static constexpr int SGTileQ = get<0>(shape_div(TileShapeQK{}, shape(SubgroupLayoutQK{})))();
   using MMAOperation =
       cute::conditional_t<is_void_v<MMAOperation_>, XE_DPAS_TT<cute::gcd(SGTileQ, 8), int32_t, int8_t>, MMAOperation_>;
+  // The PV "float" tiled MMA operates on the output element type. For UseInt8PV the kernel also
+  // constructs a separate int8 quantized PV MMA internally, while this float MMA only needs to
+  // describe the tile shape used for the accumulator and dequantized path. For the non-int8-PV
+  // path, V is consumed directly so we use ElementO (== ElementV) which supports half_t / bfloat16_t.
   using MMAOperationPV = cute::conditional_t<is_void_v<MMAOperation_>,
-                                             XE_DPAS_TT<cute::gcd(SGTileQ, 8), float, cute::half_t>, MMAOperation_>;
+                                             XE_DPAS_TT<cute::gcd(SGTileQ, 8), float, ElementO>, MMAOperation_>;
   using SubgroupLayoutPV =
       cute::conditional_t<is_void_v<SubgroupLayoutPV_>,
                           decltype(cutlass::fmha::collective::get_sg_layout_pv(SubgroupLayoutQK{})), SubgroupLayoutPV_>;
@@ -852,8 +856,8 @@ inline int launch_prefill_kernel_128(Options const& options) {
 template <typename ElementQ, typename ElementK, typename ElementV, typename ElementO = ElementV, bool UseInt8PV = false,
           bool WriteBackInt8PV = true, bool ExecuteInt8PV = true>
 inline int launch_sage_prefill_kernel_128(Options const& options) {
-  constexpr int PipelineStages = 1;
-  constexpr int PipelineStages1 = 1;
+  constexpr int PipelineStages = 2;
+  constexpr int PipelineStages1 = 2;
   using ShapeQK = Shape<_256, _64, _32>;
   using ShapePV = Shape<_256, _32, _64>;
   using ShapeOut = Shape<_256, _128>;
