@@ -545,7 +545,6 @@ class HpuARDevice(ARDevice):
         return func
 
 
-
 class CpuARDevice(ARDevice):
     """First-class handle for the host CPU.
 
