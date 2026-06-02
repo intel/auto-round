@@ -21,7 +21,6 @@ import accelerate
 import torch
 from torch import autocast
 
-from auto_round.utils.device_manager import device_manager
 from auto_round.algorithms.quantization.base import BaseQuantizers
 from auto_round.algorithms.quantization.sign_round.config import SignRoundConfig
 from auto_round.algorithms.quantization.sign_round.sign_sgd import SignSGD
@@ -43,9 +42,8 @@ from auto_round.utils import (
     set_module,
     to_device,
 )
-from auto_round.utils.device import (
-    clear_memory_if_reached_threshold
-)
+from auto_round.utils.device import clear_memory_if_reached_threshold
+from auto_round.utils.device_manager import device_manager
 from auto_round.utils.distributed import setup_ddp_if_needed_
 from auto_round.wrapper import WrapperLinear, unwrapper_block, unwrapper_layer, wrapper_block
 

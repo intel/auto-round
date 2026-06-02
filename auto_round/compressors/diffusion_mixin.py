@@ -18,7 +18,6 @@ from typing import Union
 import torch
 from tqdm import tqdm
 
-from auto_round.utils.device_manager import device_manager
 from auto_round.logger import logger
 from auto_round.utils import clear_memory
 from auto_round.utils.device import (
@@ -27,6 +26,7 @@ from auto_round.utils.device import (
     get_major_device,
     is_auto_device_mapping,
 )
+from auto_round.utils.device_manager import device_manager
 from auto_round.utils.model import rename_weights_files
 
 

@@ -17,8 +17,8 @@ from typing import Tuple
 
 import torch
 
-from auto_round.utils.device_manager import device_manager
 from auto_round.utils import clear_memory, to_device, to_dtype
+from auto_round.utils.device_manager import device_manager
 
 __all__ = ["split_inputs", "preprocess_block_inputs"]
 

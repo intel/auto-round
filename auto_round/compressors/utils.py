@@ -25,7 +25,6 @@ import torch
 import transformers
 from torch.amp import autocast
 
-from auto_round.utils.device_manager import device_manager
 from auto_round.export.export_to_gguf.config import GGML_QUANT_SIZES, GGUF_CONFIG, GGUF_INNER_CONFIG, QK_K, ModelType
 from auto_round.logger import logger
 from auto_round.utils import (
@@ -35,6 +34,7 @@ from auto_round.utils import (
     get_module,
     to_standard_regex,
 )
+from auto_round.utils.device_manager import device_manager
 
 if TYPE_CHECKING:
     from auto_round.schemes import QuantizationScheme

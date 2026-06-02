@@ -25,7 +25,6 @@ import torch
 from accelerate.big_modeling import dispatch_model, infer_auto_device_map
 from accelerate.utils import get_balanced_memory, get_max_memory
 
-from auto_round.utils.device_manager import device_manager
 from auto_round import envs
 from auto_round.calibration.base import Calibrator
 from auto_round.calibration.register import register_calibrator
@@ -43,6 +42,7 @@ from auto_round.utils import (
     to_dtype,
 )
 from auto_round.utils.device import parse_available_devices
+from auto_round.utils.device_manager import device_manager
 
 
 @register_calibrator("llm")

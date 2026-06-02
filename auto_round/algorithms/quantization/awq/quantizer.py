@@ -36,7 +36,6 @@ import traceback
 import torch
 from tqdm import tqdm
 
-from auto_round.utils.device_manager import device_manager
 from auto_round.algorithms.quantization.awq.config import AWQConfig
 from auto_round.algorithms.quantization.awq.mappings import (
     ResolvedMapping,
@@ -61,6 +60,7 @@ from auto_round.utils import (
     set_amax_for_all_moe_layers,
     set_module,
 )
+from auto_round.utils.device_manager import device_manager
 from auto_round.wrapper import WrapperLinear
 from auto_round.wrapper import WrapperMultiblock as _WrapperMultiblock
 

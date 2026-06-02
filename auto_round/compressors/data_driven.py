@@ -24,7 +24,6 @@ from accelerate.big_modeling import dispatch_model, infer_auto_device_map
 from accelerate.utils import get_balanced_memory, get_max_memory
 from tqdm import tqdm
 
-from auto_round.utils.device_manager import device_manager
 from auto_round import envs
 from auto_round.algorithms.alg_config import AlgConfig
 from auto_round.calibration.utils import (
@@ -68,6 +67,7 @@ from auto_round.utils.device import (
     _force_trim_malloc,
     parse_available_devices,
 )
+from auto_round.utils.device_manager import device_manager
 from auto_round.wrapper import WrapperMultiblock
 
 
@@ -579,9 +579,7 @@ class DataDrivenCompressor(BaseCompressor):
             # enabled) is only used as the quantized-input companion for the
             # next block.
             next_input_ids = reference_output
-            clear_memory(
-                input_ids if input_ids is not next_input_ids else None, device_list=device_manager.device_list
-            )
+            clear_memory(input_ids if input_ids is not next_input_ids else None, device_list=device_manager.device_list)
             memory_monitor.log_summary()
 
             # ── Infrastructure: immediate_pack / shard write ──────────────────

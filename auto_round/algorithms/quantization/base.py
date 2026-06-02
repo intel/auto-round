@@ -18,7 +18,6 @@ from typing import Union
 
 import torch
 
-from auto_round.utils.device_manager import device_manager
 from auto_round.algorithms.quantization.config import QuantizationConfig
 from auto_round.algorithms.quantization.utils import register_act_max_hooks
 from auto_round.compressors.utils import (
@@ -37,6 +36,7 @@ from auto_round.utils import (
     get_module,
     set_module,
 )
+from auto_round.utils.device_manager import device_manager
 from auto_round.wrapper import WrapperLinear
 
 

@@ -86,7 +86,7 @@ __all__ = [
 # ``torch.accelerator``.  Any backend that IS registered with
 # ``torch.accelerator`` (cuda/xpu/mps/npu/...) is discovered automatically and
 # does NOT need to appear in this list.
-_PREFERRED_ORDER = ("cuda",  "xpu", "hpu") # add mps later
+_PREFERRED_ORDER = ("cuda", "xpu", "hpu")  # add mps later
 
 
 def _torch_accelerator_type() -> Optional[str]:
@@ -272,7 +272,6 @@ class Device:
     #: PyTorch backend that lacks a dedicated subclass (e.g. a fresh ``npu``).
     device_type: str = ""
 
-
     _registry: dict[str, type["Device"]] = {}
 
     def __init_subclass__(cls, **kwargs):
@@ -348,7 +347,6 @@ class Device:
                 pass
         return 0
 
-
     def set_device(self, index: Union[int, str, torch.device]) -> None:
         if self._module is None:
             return
@@ -414,7 +412,6 @@ class Device:
                 return ctx(index)
         return _DeviceIndexContext(self, index)
 
-
     def total_memory(self, index: int = 0) -> int:
         fn = getattr(self._module, "get_memory_info", None)
 
@@ -447,7 +444,7 @@ class Device:
         fn = getattr(self._module, "get_memory_info", None)
         torch.accelerator.get_memory_info()
 
-        return fn(index) if callable(fn) else (0,0)
+        return fn(index) if callable(fn) else (0, 0)
 
     # -- numeric format / mixed-precision policy ---------------------------
     def supports_bf16(self) -> bool:
@@ -483,10 +480,8 @@ class Device:
 
         return torch.compile(func)
 
-
     def __repr__(self) -> str:  # pragma: no cover - debug aid
         return f"{type(self).__name__}(type={self.type!r}"
-
 
 
 class HpuDevice(Device):
@@ -522,9 +517,8 @@ class HpuDevice(Device):
             import habana_frameworks.torch.hpu as hthpu  # pylint: disable=E0401
 
             return hthpu
-        except Exception:# pragma: no cover
+        except Exception:  # pragma: no cover
             return None
-
 
     def set_device(self, index: Union[int, str, torch.device]) -> None:
         if self._module is None:
@@ -547,10 +541,8 @@ class HpuDevice(Device):
 
     def compile_func(self, func):
         if self.is_torch_compile_supported():
-            return torch.compile(func,backend="hpu_backend")
+            return torch.compile(func, backend="hpu_backend")
         return func
-
-
 
 
 # class MpsDevice(Device):
@@ -658,10 +650,9 @@ class CpuDevice(Device):
         if vm is None:
             return 0, 0
         return int(vm.available), int(vm.total)
-    
+
     def is_torch_compile_supported(self) -> bool:
         return True
-
 
 
 # ---------------------------------------------------------------------------
@@ -1104,5 +1095,3 @@ class ClearMemory:
 
 
 clear_memory = torch._dynamo.disable()(ClearMemory(device_list=[0]))
-
-

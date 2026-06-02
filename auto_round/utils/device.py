@@ -423,7 +423,6 @@ class fake_triton_for_hpu(ContextDecorator):
         return False
 
 
-
 class CpuInfo(object):
     """Get CPU Info."""
 
@@ -458,7 +457,6 @@ def bytes_to_gigabytes(bytes) -> int:
         int: The equivalent number of gigabytes.
     """
     return bytes / 1024 / 1024 / 1024
-
 
 
 _malloc_trim_counter = 0
@@ -512,7 +510,6 @@ def _maybe_trim_malloc() -> None:
         libc.malloc_trim(0)
     except Exception:
         pass
-
 
 
 def clear_memory_if_reached_threshold(threshold=0.85, device_list=None):
@@ -592,7 +589,6 @@ def check_memory_availability(device, inputs, weight, org_seqlen, org_bs):
         bs = 1
 
     return False, seqlen, bs
-
 
 
 def set_tuning_device_for_layer(model, name: str, device: str) -> None:
