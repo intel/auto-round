@@ -41,7 +41,7 @@ from auto_round.utils.device_manager import (
     get_current_device_manager,
     get_current_device_type,
     get_device_and_parallelism,
-    get_device_manager,
+    get_ar_device,
     get_device_memory,
     get_major_device,
     get_max_vram,
@@ -128,7 +128,7 @@ def compile_func(
     backend to use) is delegated to the corresponding :class:`Device`, keeping
     this entry point device-agnostic.
     """
-    return get_device_manager(device).compile_func(fun)
+    return get_ar_device(device).compile_func(fun)
 
 
 def is_numba_available():  # pragma: no cover
@@ -568,9 +568,9 @@ def check_memory_availability(device, inputs, weight, org_seqlen, org_bs):
     """
     weight_memory = weight.numel() * weight.element_size()
     device_type = str(device).split(":")[0]
-    if device_type in ("cpu", "") or not get_device_manager(device_type).is_available():
+    if device_type in ("cpu", "") or not get_ar_device(device_type).is_available():
         return True, org_seqlen, org_bs
-    dev_mgr = get_device_manager(device_type)
+    dev_mgr = get_ar_device(device_type)
     current_index = dev_mgr.current_device()
     free_space, _ = dev_mgr.mem_get_info(current_index)
 
@@ -1412,7 +1412,7 @@ class MemoryMonitor:
         # Track HPU VRAM
         if not is_hpex_available():
             return
-        hpu = get_device_manager("hpu")
+        hpu = get_ar_device("hpu")
         if device_list is None:
             count = hpu.device_count()
             device_list = list(range(count)) if count > 0 else [0]

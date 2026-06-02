@@ -38,7 +38,7 @@ from auto_round.utils import (
     unsupported_meta_device,
 )
 from auto_round.utils.device import _force_trim_malloc
-from auto_round.utils.device_manager import device_manager, get_device_manager
+from auto_round.utils.device_manager import device_manager, get_ar_device
 
 __all__ = ["ModelContext"]
 
@@ -238,7 +238,7 @@ class ModelContext(BaseContext):
         (``supports_bf16`` / ``prefers_bf16``); this method composes them into
         the final ``amp`` / ``amp_dtype`` decision.
         """
-        device = get_device_manager(self.device)
+        device = get_ar_device(self.device)
         if not self.amp:
             self.amp_dtype = torch.float32
         else:

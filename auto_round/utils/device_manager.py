@@ -55,10 +55,10 @@ import torch
 from auto_round.logger import logger
 
 __all__ = [
-    "Device",
+    "ARDevice",
     "DeviceManager",
     "device_manager",
-    "get_device_manager",
+    "get_ar_device",
     "get_current_device_manager",
     "get_current_device_type",
     "is_device_available",
@@ -232,7 +232,7 @@ def get_available_device_types() -> list[str]:
 class _DeviceIndexContext:
     """Fallback for ``torch.accelerator.device_index`` on older PyTorch/backends."""
 
-    def __init__(self, device: "Device", index: int):
+    def __init__(self, device: "ARDevice", index: int):
         self._device = device
         self._index = index
         self._prev = None
@@ -251,7 +251,7 @@ class _DeviceIndexContext:
         return False
 
 
-class Device:
+class ARDevice:
     """Base, backend-agnostic handle to a single PyTorch device *backend*.
 
     A :class:`Device` represents a backend *type* (``cuda``/``xpu``/...), not a
@@ -272,21 +272,21 @@ class Device:
     #: PyTorch backend that lacks a dedicated subclass (e.g. a fresh ``npu``).
     device_type: str = ""
 
-    _registry: dict[str, type["Device"]] = {}
+    _registry: dict[str, type["ARDevice"]] = {}
 
     def __init_subclass__(cls, **kwargs):
         super().__init_subclass__(**kwargs)
         dtype = cls.__dict__.get("device_type", "")
         if dtype:
-            Device._registry[dtype] = cls
+            ARDevice._registry[dtype] = cls
 
     @classmethod
-    def create(cls, device_type: str) -> "Device":
+    def create(cls, device_type: str) -> "ARDevice":
         """Instantiate the most specific :class:`Device` for ``device_type``."""
         subclass = cls._registry.get(device_type)
         if subclass is not None:
             return subclass()
-        return Device(device_type)
+        return ARDevice(device_type)
 
     @staticmethod
     def get_device_module(device: Union[None, str, int, torch.device] = None):
@@ -484,7 +484,7 @@ class Device:
         return f"{type(self).__name__}(type={self.type!r}"
 
 
-class HpuDevice(Device):
+class HpuARDevice(ARDevice):
     """Intel Gaudi (HPU) -- an out-of-tree backend.
 
     ``hpu`` is not exposed through ``torch.accelerator``, so it always drives
@@ -545,28 +545,8 @@ class HpuDevice(Device):
         return func
 
 
-# class MpsDevice(Device):
-#     """Apple Metal (MPS) -- a single, non-indexable device."""
-#
-#     device_type = "mps"
-#
-#     def is_available(self) -> bool:
-#         return _backend_is_available("mps")
-#
-#     def device_count(self) -> int:  # MPS exposes exactly one device.
-#         return 1 if self.is_available() else 0
-#
-#     def current_device(self) -> int:
-#         return 0
-#
-#     def set_device(self, index: Union[int, str, torch.device]) -> None:  # no-op
-#         return None
-#
-#     def device(self, index: Union[int, str, torch.device, None] = None) -> torch.device:
-#         return torch.device("mps")
 
-
-class CpuDevice(Device):
+class CpuARDevice(ARDevice):
     """First-class handle for the host CPU.
 
     CPU has no backend runtime module, so instead of letting every method fall
@@ -686,7 +666,7 @@ class DeviceManager:
     def __init__(self, device_map: Union[None, str, torch.device, int, dict] = None):
         # Initialise backing state once; later constructions reuse the singleton.
         if not getattr(self, "_initialized", False):
-            self._cache: dict[str, Device] = {}
+            self._cache: dict[str, ARDevice] = {}
             self._device_map = None
             self._device_list: Optional[list] = None
             self._major_device: Optional[str] = None
@@ -744,27 +724,27 @@ class DeviceManager:
         return len(self.device_list) > 1
 
     # -- registration -------------------------------------------------------
-    def register(self, device_cls: type[Device]) -> None:
+    def register(self, device_cls: type[ARDevice]) -> None:
         """Register a custom :class:`Device` subclass and drop any stale cache."""
         dtype = device_cls.device_type
         if not dtype:
             raise ValueError("Device subclass must define a non-empty 'device_type'")
-        Device._registry[dtype] = device_cls
+        ARDevice._registry[dtype] = device_cls
         self._cache.pop(dtype, None)
 
     # -- lookup -------------------------------------------------------------
-    def get(self, device_type: Union[None, str, int, torch.device] = None) -> Device:
+    def get_ar_device(self, device_type: Union[None, str, int, torch.device] = None) -> ARDevice:
         """Return the cached :class:`Device` for ``device_type`` (default: current)."""
         normalized = _normalize_device_type(device_type) or "cpu"
         device = self._cache.get(normalized)
         if device is None:
-            device = Device.create(normalized)
+            device = ARDevice.create(normalized)
             self._cache[normalized] = device
         return device
 
-    def current(self) -> Device:
+    def current(self) -> ARDevice:
         """Return the :class:`Device` for the active backend (or CPU)."""
-        return self.get(get_current_device_type())
+        return self.get_ar_device(get_current_device_type())
 
     def current_type(self) -> str:
         return get_current_device_type()
@@ -774,9 +754,9 @@ class DeviceManager:
         """All available (non-CPU) backend types, in preferred order."""
         return get_available_device_types()
 
-    def available_devices(self) -> list[Device]:
+    def available_devices(self) -> list[ARDevice]:
         """One :class:`Device` per available (non-CPU) backend type."""
-        return [self.get(dtype) for dtype in self.available_types()]
+        return [self.get_ar_device(dtype) for dtype in self.available_types()]
 
     def all_devices(self) -> list[torch.device]:
         """Enumerate every card across all available backends (multi-card)."""
@@ -790,12 +770,12 @@ class DeviceManager:
 device_manager = DeviceManager()
 
 
-def get_device_manager(device_type: Union[None, str, int, torch.device] = None) -> Device:
+def get_ar_device(device_type: Union[None, str, int, torch.device] = None) -> ARDevice:
     """Return the cached :class:`Device` handle for a specific backend type."""
-    return device_manager.get(device_type)
+    return device_manager.get_ar_device(device_type)
 
 
-def get_current_device_manager() -> Device:
+def get_current_device_manager() -> ARDevice:
     """Return the :class:`Device` handle for the active backend (or CPU)."""
     return device_manager.current()
 
@@ -1057,7 +1037,7 @@ def _clear_memory_for_cpu_and_cuda(
         per_backend.setdefault(dev_type, []).append(devid)
 
     for dev_type, ids in per_backend.items():
-        dev_mgr = get_device_manager(dev_type)
+        dev_mgr = get_ar_device(dev_type)
         for devid in ids:
             dev_mgr.synchronize(devid)
         dev_mgr.empty_cache()
