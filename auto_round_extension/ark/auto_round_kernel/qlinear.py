@@ -21,7 +21,7 @@ try:
     import auto_round_kernel
 
     ARK_INSTALLED = True
-    ark = auto_round_kernel.ARK()
+    ark = auto_round_kernel
 except:
     ARK_INSTALLED = False
 
@@ -50,7 +50,9 @@ def unpack_awq(qweight: torch.Tensor, qzeros: torch.Tensor, bits: int):
 
     # unpacking columnwise
     if qzeros is not None:
-        izeros = torch.bitwise_right_shift(qzeros[:, :, None], shifts[None, None, :]).to(
+        izeros = torch.bitwise_right_shift(
+            qzeros[:, :, None], shifts[None, None, :]
+        ).to(
             torch.int8  # smallest dtype available
         )
         izeros = izeros.view(izeros.shape[0], -1)
@@ -130,12 +132,18 @@ class QuantLinear(nn.Module):
             raise NotImplementedError("in_features must be divisible by group_size")
         if "awq" in self.QUANT_TYPE:
             self.register_buffer(
-                "qweight", torch.zeros((in_features, out_features // self.pack_num), dtype=torch.int32)
+                "qweight",
+                torch.zeros(
+                    (in_features, out_features // self.pack_num), dtype=torch.int32
+                ),
             )
         else:
             self.register_buffer(
                 "qweight",
-                torch.zeros((self.infeatures // 32 * self.bits, self.outfeatures), dtype=torch.int32),
+                torch.zeros(
+                    (self.infeatures // 32 * self.bits, self.outfeatures),
+                    dtype=torch.int32,
+                ),
             )
         self.register_buffer(
             "qzeros",
@@ -155,17 +163,21 @@ class QuantLinear(nn.Module):
             ),
         )
         if bias:
-            self.register_buffer("bias", torch.zeros((self.outfeatures), dtype=torch.float))
+            self.register_buffer(
+                "bias", torch.zeros((self.outfeatures), dtype=torch.float)
+            )
         else:
             self.bias = None
 
     def extra_repr(self) -> str:
-        return "in_features={}, out_features={}, bias={}, w_bit={}, group_size={}".format(
-            self.infeatures,
-            self.outfeatures,
-            self.bias is not None,
-            self.bits,
-            self.group_size,
+        return (
+            "in_features={}, out_features={}, bias={}, w_bit={}, group_size={}".format(
+                self.infeatures,
+                self.outfeatures,
+                self.bias is not None,
+                self.bits,
+                self.group_size,
+            )
         )
 
     def post_init(self):
@@ -174,12 +186,16 @@ class QuantLinear(nn.Module):
                 f"Device type {self.qweight.device.type} is not supported. Only CPU and XPU devices are supported."
             )
         if self.qweight.device.type != "cpu" and self.asym:
-            raise NotImplementedError("Asymmetric quantization is only supported on CPU devices")
+            raise NotImplementedError(
+                "Asymmetric quantization is only supported on CPU devices"
+            )
         if "awq" in self.QUANT_TYPE:
             intweight, zeros = unpack_awq(
                 self.qweight, self.qzeros, self.bits
             )  # weight: k x n zeros: k / group_size x n
-            intweight, zeros = reverse_awq_order(intweight, zeros, self.bits)  # weight: k x n zeros: k / group_size x n
+            intweight, zeros = reverse_awq_order(
+                intweight, zeros, self.bits
+            )  # weight: k x n zeros: k / group_size x n
             intweight = torch.bitwise_and(intweight, self.maxq)
             zeros = torch.bitwise_and(zeros, self.maxq)
 
@@ -187,7 +203,9 @@ class QuantLinear(nn.Module):
             zeros = zeros - self.qbias  # from uint8_t to int8_t
         else:
             # intweight: k x n, zeros: k / group_size x n
-            intweight, zeros = unpack_to_8bit_signed(self.qweight, self.qzeros, self.bits, self.ZP_BIAS, self.asym)
+            intweight, zeros = unpack_to_8bit_signed(
+                self.qweight, self.qzeros, self.bits, self.ZP_BIAS, self.asym
+            )
             if zeros is None:
                 zeros = torch.empty(0, dtype=torch.int8)
             else:
@@ -265,15 +283,17 @@ class QuantLinearAWQ(QuantLinear):
 
 @torch.no_grad()
 def unpack_to_8bit_signed(qweight, qzeros, bits, gptq_bias, asym):
-    wf = torch.tensor(list(range(0, 32, bits)), dtype=torch.int32, device=qweight.device).unsqueeze(0)
+    wf = torch.tensor(
+        list(range(0, 32, bits)), dtype=torch.int32, device=qweight.device
+    ).unsqueeze(0)
     zeros = None
     if asym:
         zp_shape = list(qzeros.shape)
         zp_shape[1] = zp_shape[1] * (32 // bits)
 
-        zeros = torch.bitwise_right_shift(torch.unsqueeze(qzeros, 2).expand(-1, -1, 32 // bits), wf.unsqueeze(0)).to(
-            torch.int16 if bits == 8 else torch.int8
-        )
+        zeros = torch.bitwise_right_shift(
+            torch.unsqueeze(qzeros, 2).expand(-1, -1, 32 // bits), wf.unsqueeze(0)
+        ).to(torch.int16 if bits == 8 else torch.int8)
         torch.bitwise_and(zeros, (2**bits) - 1, out=zeros)
         if bits == 8:
             zeros = zeros.to(torch.uint8)
@@ -285,9 +305,9 @@ def unpack_to_8bit_signed(qweight, qzeros, bits, gptq_bias, asym):
             # remove 1 (due to 0 + 1 in line 252)
             zeros = zeros[zeros != 1]
             zeros = zeros.reshape(zp_shape)
-    weight = torch.bitwise_right_shift(torch.unsqueeze(qweight, 1).expand(-1, 32 // bits, -1), wf.unsqueeze(-1)).to(
-        torch.int16 if bits == 8 else torch.int8
-    )
+    weight = torch.bitwise_right_shift(
+        torch.unsqueeze(qweight, 1).expand(-1, 32 // bits, -1), wf.unsqueeze(-1)
+    ).to(torch.int16 if bits == 8 else torch.int8)
     weight.bitwise_and_((2**bits) - 1)
     weight = weight.view(-1, weight.shape[-1])
 
@@ -303,7 +323,9 @@ def dequantize_weight(qweight, qzeros, scales, bits):
     if unpacked_qzeros is not None:
         unpacked_qzeros = unpacked_qzeros.repeat_interleave(group_size, dim=0)
     else:
-        unpacked_qzeros = torch.full_like(scales, 8 if bits == 4 else 128, dtype=torch.int32, device=qweight.device)
+        unpacked_qzeros = torch.full_like(
+            scales, 8 if bits == 4 else 128, dtype=torch.int32, device=qweight.device
+        )
     unpacked_qweight = (unpacked_qweight - unpacked_qzeros) * scales
 
     return unpacked_qweight, unpacked_qzeros
@@ -368,7 +390,9 @@ class QuantLinearFP8(nn.Module):
         # FP8 weights - load from safetensors with correct FP8 dtype
         # Shape is [outfeatures, infeatures] to match standard Linear layer
         # IMPORTANT: Must use float8 dtype to match safetensors, not uint8
-        fp8_dtype = torch.float8_e5m2 if data_type == "fp8_e5m2" else torch.float8_e4m3fn
+        fp8_dtype = (
+            torch.float8_e5m2 if data_type == "fp8_e5m2" else torch.float8_e4m3fn
+        )
         self.register_buffer(
             "weight",
             torch.zeros((outfeatures, infeatures), dtype=fp8_dtype),
@@ -394,7 +418,14 @@ class QuantLinearFP8(nn.Module):
         self.trainable = trainable
 
     def _load_from_state_dict(
-        self, state_dict, prefix, local_metadata, strict, missing_keys, unexpected_keys, error_msgs
+        self,
+        state_dict,
+        prefix,
+        local_metadata,
+        strict,
+        missing_keys,
+        unexpected_keys,
+        error_msgs,
     ):
         """Override to handle weight_scale shape mismatch between checkpoint and model."""
         weight_scale_key = prefix + "weight_scale"
@@ -404,7 +435,10 @@ class QuantLinearFP8(nn.Module):
             out_features, num_groups = expected_shape
             expected_numel = out_features * num_groups
 
-            if loaded_scale.ndim == 2 and loaded_scale.shape == (num_groups, out_features):
+            if loaded_scale.ndim == 2 and loaded_scale.shape == (
+                num_groups,
+                out_features,
+            ):
                 state_dict[weight_scale_key] = loaded_scale.t().contiguous()
                 loaded_scale = state_dict[weight_scale_key]
 
@@ -424,7 +458,9 @@ class QuantLinearFP8(nn.Module):
                     inferred_shape = (out_features, inferred_num_groups)
                     state_dict[weight_scale_key] = loaded_scale.view(inferred_shape)
                     self.weight_scale = torch.zeros(
-                        inferred_shape, dtype=self.weight_scale.dtype, device=self.weight_scale.device
+                        inferred_shape,
+                        dtype=self.weight_scale.dtype,
+                        device=self.weight_scale.device,
                     )
 
                 else:
@@ -432,11 +468,19 @@ class QuantLinearFP8(nn.Module):
                         f"Cannot reshape scale! loaded_scale.numel()={numel}, expected={expected_numel}, out_features={out_features}"
                     )
         super()._load_from_state_dict(
-            state_dict, prefix, local_metadata, strict, missing_keys, unexpected_keys, error_msgs
+            state_dict,
+            prefix,
+            local_metadata,
+            strict,
+            missing_keys,
+            unexpected_keys,
+            error_msgs,
         )
 
     def post_init(self):
-        target_fp8_dtype = torch.float8_e5m2 if self.data_type == "fp8_e5m2" else torch.float8_e4m3fn
+        target_fp8_dtype = (
+            torch.float8_e5m2 if self.data_type == "fp8_e5m2" else torch.float8_e4m3fn
+        )
         weight_tensor = self.weight
         converted_via_cpu = False
         if weight_tensor.dtype != target_fp8_dtype:
@@ -456,7 +500,9 @@ class QuantLinearFP8(nn.Module):
         else:
             fp8_uint8 = fp8_uint8_cpu
         fp8_weight = fp8_uint8.view(self.outfeatures, self.infeatures).t().contiguous()
-        zeros = torch.empty(0, dtype=torch.uint8, device=fp8_weight.device)  # No zero points for FP8
+        zeros = torch.empty(
+            0, dtype=torch.uint8, device=fp8_weight.device
+        )  # No zero points for FP8
 
         # Compute type selection (independent of how scales are stored).
         if self.weight.device.type == "xpu":
@@ -479,7 +525,9 @@ class QuantLinearFP8(nn.Module):
         else:
             if self.weight.device.type == "xpu":
                 self.sdt = "fp16"
-                scales = self.weight_scale.t().to(torch.float16).contiguous()  # [num_groups,out]
+                scales = (
+                    self.weight_scale.t().to(torch.float16).contiguous()
+                )  # [num_groups,out]
             else:
                 self.sdt = "fp32"
                 scales = self.weight_scale.t().float().contiguous()  # [num_groups,out]
@@ -541,13 +589,16 @@ class QuantLinearFP8(nn.Module):
         return outputs.to(raw_input_dtype).view(out_shape)
 
     def extra_repr(self) -> str:
-        return "in_features={}, out_features={}, bias={}, bits={}, " "group_size={}, data_type={}".format(
-            self.infeatures,
-            self.outfeatures,
-            self.bias is not None,
-            self.bits,
-            self.group_size,
-            self.data_type,
+        return (
+            "in_features={}, out_features={}, bias={}, bits={}, "
+            "group_size={}, data_type={}".format(
+                self.infeatures,
+                self.outfeatures,
+                self.bias is not None,
+                self.bits,
+                self.group_size,
+                self.data_type,
+            )
         )
 
 

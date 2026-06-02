@@ -251,8 +251,8 @@ def get_ark():
     global ark
     if ark is None:
         if not is_xpu_available():
-            raise RuntimeError("XPU is not available; cannot initialize auto_round_kernel.ARK()")
-        ark = auto_round_kernel.ARK()
+            raise RuntimeError("XPU is not available; cannot initialize auto_round_kernel")
+        ark = auto_round_kernel
     return ark
 
 

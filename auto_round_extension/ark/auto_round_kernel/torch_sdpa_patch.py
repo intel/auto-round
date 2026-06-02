@@ -7,7 +7,7 @@ import logging
 
 import torch
 
-from . import ARK
+from . import sagev1, sagev1_pvi8, sdpa as ark_sdpa, xpu_lib
 
 logger = logging.getLogger(__name__)
 
@@ -40,9 +40,13 @@ def _validate_backend(backend: str, quant_block_size: int) -> str:
     return backend
 
 
-def _normalize_attn_mask(attn_mask: torch.Tensor, batch: int, seq_q: int, seq_kv: int) -> torch.Tensor:
+def _normalize_attn_mask(
+    attn_mask: torch.Tensor, batch: int, seq_q: int, seq_kv: int
+) -> torch.Tensor:
     if attn_mask.dtype == torch.bool:
-        raise ValueError("Boolean attention masks are not supported by the ARK SDPA patch")
+        raise ValueError(
+            "Boolean attention masks are not supported by the ARK SDPA patch"
+        )
 
     if attn_mask.ndim == 2:
         if attn_mask.shape != (seq_q, seq_kv):
@@ -74,8 +78,12 @@ def _is_pure_causal_mask(attn_mask: torch.Tensor) -> bool:
         return False
 
     mask_2d = attn_mask.reshape(-1, seq_q, seq_kv)[0]
-    tri_up = torch.triu(torch.ones(seq_q, seq_kv, dtype=torch.bool, device=attn_mask.device), 1)
-    return bool(torch.isinf(mask_2d[tri_up]).all().item()) and bool((mask_2d[~tri_up] == 0).all().item())
+    tri_up = torch.triu(
+        torch.ones(seq_q, seq_kv, dtype=torch.bool, device=attn_mask.device), 1
+    )
+    return bool(torch.isinf(mask_2d[tri_up]).all().item()) and bool(
+        (mask_2d[~tri_up] == 0).all().item()
+    )
 
 
 def _can_use_ark_attention(
@@ -118,7 +126,9 @@ def _can_use_ark_attention(
     return True
 
 
-def patch_torch_sdpa_with_ark(*, strict: bool = False, backend: str = "sdpa", quant_block_size: int = 64) -> bool:
+def patch_torch_sdpa_with_ark(
+    *, strict: bool = False, backend: str = "sdpa", quant_block_size: int = 64
+) -> bool:
     global _ARK_SDPA_PATCHED, _ORIG_SDPA, _PATCH_CONFIG
 
     backend = _validate_backend(backend, quant_block_size)
@@ -134,8 +144,7 @@ def patch_torch_sdpa_with_ark(*, strict: bool = False, backend: str = "sdpa", qu
             raise RuntimeError("XPU is not available")
         return False
 
-    ark = ARK()
-    if ark.xpu_lib is None or not hasattr(ark.xpu_lib, backend):
+    if xpu_lib is None or not hasattr(xpu_lib, backend):
         if strict:
             raise RuntimeError(f"ARK XPU {backend} kernel is not available")
         return False
@@ -168,7 +177,9 @@ def patch_torch_sdpa_with_ark(*, strict: bool = False, backend: str = "sdpa", qu
         normalized_mask = None
         if attn_mask is not None:
             try:
-                normalized_mask = _normalize_attn_mask(attn_mask, query.shape[0], query.shape[-2], key.shape[-2])
+                normalized_mask = _normalize_attn_mask(
+                    attn_mask, query.shape[0], query.shape[-2], key.shape[-2]
+                )
             except ValueError:
                 return orig_sdpa(
                     query,
@@ -186,7 +197,7 @@ def patch_torch_sdpa_with_ark(*, strict: bool = False, backend: str = "sdpa", qu
 
         try:
             if backend == "sdpa":
-                return ark.sdpa(
+                return ark_sdpa(
                     query,
                     key,
                     value,
@@ -196,7 +207,7 @@ def patch_torch_sdpa_with_ark(*, strict: bool = False, backend: str = "sdpa", qu
                     scale=scale,
                 )
             if backend == "sagev1":
-                return ark.sagev1(
+                return sagev1(
                     query,
                     key,
                     value,
@@ -206,7 +217,7 @@ def patch_torch_sdpa_with_ark(*, strict: bool = False, backend: str = "sdpa", qu
                     scale=scale,
                     quant_block_size=quant_block_size,
                 )
-            return ark.sagev1_pvi8(
+            return sagev1_pvi8(
                 query,
                 key,
                 value,

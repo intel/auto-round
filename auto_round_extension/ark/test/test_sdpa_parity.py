@@ -51,7 +51,7 @@ def test_ark_attention_supports_noncontiguous_inputs_for_layouts(api_name, atol,
     if layout == "NHD":
         expected = expected.transpose(1, 2)
 
-    ark = auto_round_kernel.ARK()
+    ark = auto_round_kernel
     if api_name == "sdpa":
         actual = ark.sdpa(q, k, v, scale=scale, is_causal=False, tensor_layout=layout)
     else:
@@ -88,7 +88,7 @@ def test_ark_sdpa_matches_torch_for_kv_remainders(seq_q, seq_kv):
         scale=scale,
         is_causal=False,
     )
-    actual = auto_round_kernel.ARK().sdpa(q, k, v, scale=scale, is_causal=False)
+    actual = auto_round_kernel.sdpa(q, k, v, scale=scale, is_causal=False)
     torch.xpu.synchronize()
 
     torch.testing.assert_close(actual, expected, atol=1e-2, rtol=1e-2)
@@ -116,7 +116,7 @@ def test_ark_sagev1_matches_torch_for_kv_remainder_tile():
         scale=scale,
         is_causal=False,
     )
-    actual = auto_round_kernel.ARK().sagev1(
+    actual = auto_round_kernel.sagev1(
         q,
         k,
         v,

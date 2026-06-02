@@ -25,7 +25,7 @@ import auto_round_kernel
 import pytest
 import torch
 
-ark = auto_round_kernel.ARK()
+ark = auto_round_kernel
 
 
 def is_xpu_available():
