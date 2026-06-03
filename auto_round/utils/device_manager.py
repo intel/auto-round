@@ -334,7 +334,7 @@ class ARDevice:
 
     def device_count(self) -> int:
         fn = getattr(self._module, "device_count", None)
-        return int(fn()) if callable(fn) else 0 # noqa: E1102
+        return int(fn()) if callable(fn) else 0 # pylint: disable=E1102
 
     def current_device(self) -> int:
         ok, idx = _module_call(self._module, ("current_device_index", "current_device_idx", "current_device"))
@@ -374,17 +374,20 @@ class ARDevice:
         if not callable(fn):
             return
         try:
-            fn(index) if index is not None else fn() # noqa: E1102
+            fn(index) if index is not None else fn() # pylint: disable=E1102
         except Exception:
-            fn() # noqa: E1102
+            fn() # pylint: disable=E1102
 
     def empty_cache(self) -> None:
-        # ``torch.accelerator`` has no cache API; this is always module-level.
-        if self._module is None:
-            return
-        fn = getattr(self._module, "empty_cache", None)
+        # ``torch.accelerator.empty_cache`` is broken on some backends (e.g. MPS
+        # triggers a caching-allocator assertion).  Always use the per-device
+        # runtime module (``torch.cuda`` / ``torch.mps`` / ...) instead.
+        fn = getattr(self.module, "empty_cache", None)
         if callable(fn):
-            fn() # noqa: E1102
+            try:
+                fn() # pylint: disable=E1102 # mps has issues
+            except:
+                pass
 
     def get_device_capability(self, index: Union[int, None] = None):
         """Return the compute capability of the selected device, if exposed."""
@@ -394,7 +397,7 @@ class ARDevice:
         if not callable(fn):
             return None
         try:
-            return fn(index) if index is not None else fn() # noqa: E1102
+            return fn(index) if index is not None else fn() # pylint: disable=E1102
         except Exception:
             return None
 
@@ -413,14 +416,14 @@ class ARDevice:
     def total_memory(self, index: int = 0) -> int:
         fn = getattr(self._module, "get_memory_info", None)
 
-        return fn(index)[1] if callable(fn) else None # noqa: E1102
+        return fn(index)[1] if callable(fn) else None # pylint: disable=E1102
 
     def memory_reserved(self, index: int = 0) -> int:
         if self._module is None:
             return 0
         fn = getattr(self._module, "memory_reserved", None) or getattr(self._module, "memory_cached", None)
         try:
-            return int(fn(index)) if callable(fn) else 0 # noqa: E1102
+            return int(fn(index)) if callable(fn) else 0 # pylint: disable=E1102
         except Exception:
             return 0
 
@@ -429,7 +432,7 @@ class ARDevice:
             return 0
         fn = getattr(self._module, "memory_allocated", None)
         try:
-            return int(fn(index)) if callable(fn) else 0 # noqa: E1102
+            return int(fn(index)) if callable(fn) else 0 # pylint: disable=E1102
         except Exception:
             return 0
 
@@ -439,10 +442,10 @@ class ARDevice:
         Falls back to ``total - reserved`` when the backend lacks a native
         ``mem_get_info`` implementation.
         """
-        fn = getattr(self._module, "get_memory_info", None)
-        torch.accelerator.get_memory_info()
+        module = self.get_device_module(self.type) if self._module is _accelerator_api() else self._module
+        fn = getattr(module, "get_memory_info", None)
 
-        return fn(index) if callable(fn) else (0, 0) # noqa: E1102
+        return fn(index) if callable(fn) else (0, 0) # pylint: disable=E1102
 
     # -- numeric format / mixed-precision policy ---------------------------
     def supports_bf16(self) -> bool:
@@ -524,7 +527,7 @@ class HpuARDevice(ARDevice):
         fn = getattr(self._module, "set_device", None)
         if callable(fn):
             try:
-                fn(index) # noqa: E1102
+                fn(index) # pylint: disable=E1102
             except Exception:
                 pass
 
@@ -541,6 +544,38 @@ class HpuARDevice(ARDevice):
         if self.is_torch_compile_supported():
             return torch.compile(func, backend="hpu_backend")
         return func
+
+
+class MpsARDevice(ARDevice):
+    """Apple Silicon (MPS) backend.
+
+    MPS's caching allocator is not yet compatible with ``torch.accelerator``'s
+    generic ``empty_cache`` path (PyTorch asserts internally), so we bypass it
+    and call ``torch.mps`` methods directly.
+    """
+
+    device_type = "mps"
+
+    def __init__(self, device_type: Optional[str] = None):
+        # Always use torch.mps directly, never torch.accelerator.
+        self.type = "mps"
+        self._module = getattr(torch, "mps", None)
+
+    # def is_available(self) -> bool:
+    #     backends_mps = getattr(getattr(torch, "backends", None), "mps", None)
+    #     if backends_mps is not None:
+    #         return getattr(backends_mps, "is_available", lambda: False)()
+    #     return False
+    #
+    #
+    # def synchronize(self, index: Union[int, None] = None) -> None:
+    #     if self._module is not None:
+    #         fn = getattr(self._module, "synchronize", None)
+    #         if callable(fn):
+    #             fn()
+
+    def empty_cache(self) -> None:
+        torch.mps.empty_cache()
 
 
 class CpuARDevice(ARDevice):
