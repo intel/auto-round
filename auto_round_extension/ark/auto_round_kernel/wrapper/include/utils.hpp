@@ -34,6 +34,7 @@ struct env_params {
   int auto_s8 = 0;
   int sage_use_mean_bias = 1;
   int sage_print_kbias = 0;
+  int sage_disable_packed_hnd_fast = 0;
   static env_params* Instance() {
     static env_params instance;
     return &instance;
@@ -43,6 +44,7 @@ struct env_params {
     env_i("ARK_AUTO_S8", auto_s8);
     env_i("ARK_SAGE_USE_MEAN_BIAS", sage_use_mean_bias);
     env_i("ARK_SAGE_PRINT_KBIAS", sage_print_kbias);
+    env_i("ARK_SAGE_DISABLE_PACKED_HND_FAST", sage_disable_packed_hnd_fast);
   }
   static inline void env_i(const char* envstr, int& default_) {
     const char* log_level_env = getenv(envstr);

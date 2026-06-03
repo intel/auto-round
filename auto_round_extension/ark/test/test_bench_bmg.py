@@ -23,7 +23,7 @@ ark = None
 def get_ark():
     global ark
     if ark is None:
-        ark = auto_round_kernel.ARK()
+        ark = auto_round_kernel
     return ark
 
 
