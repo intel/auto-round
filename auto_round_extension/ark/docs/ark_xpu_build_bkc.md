@@ -136,6 +136,62 @@ Expected int3 (S3) WOQ GEMV accuracy output (max_diff at machine epsilon, ~1e-7)
 The `[woq_s3][gemm]` lines exercise the m>1 (batched) int3 path: they drive `woq_gemm` with
 `compute_type=S8` (matching the Python `cdt="int8"`) so the S3 fp-compute fallback is taken.
 
+The run also prints int3 throughput benchmarks (warmup + timed iters, weight-bound GB/s for the
+GEMV, FLOPs/s for both), with **int4 (S4) at the same shapes as a reference**: S4's GEMV uses the
+dedicated S4 kernel and its m>1 GEMM takes the native int8-XMX path (`woq_s8`), whereas S3 m>1 falls
+back to fp-dequant + fp GEMM — so the S4 numbers are the speed-of-light reference S3 is measured
+against. Absolute numbers vary by node; on Battlemage G21 they look like:
+
+```
+[woq_s3][gemv_bench] bench_s3_gemv_n4096_k4096  n=4096 k=4096  blk=128 ms=0.0787 TFLOPS=0.43 GBps=86.6
+[woq_s3][gemv_bench] bench_s3_gemv_n4096_k11008 n=4096 k=11008 blk=128 ms=0.1172 TFLOPS=0.77 GBps=156.3
+[woq_s4][gemv_bench] bench_s4_gemv_n4096_k4096  n=4096 k=4096  blk=128 ms=0.0185 TFLOPS=1.81 GBps=481.8
+[woq_s4][gemv_bench] bench_s4_gemv_n4096_k11008 n=4096 k=11008 blk=128 ms=0.0503 TFLOPS=1.79 GBps=476.1
+[woq_s3][gemm_bench] bench_s3_gemm_m32_n4096_k4096   m=32  n=4096 k=4096  blk=128 ms=0.3546 TFLOPS=3.03
+[woq_s3][gemm_bench] bench_s3_gemm_m128_n4096_k4096  m=128 n=4096 k=4096  blk=128 ms=0.5638 TFLOPS=7.62
+[woq_s3][gemm_bench] bench_s3_gemm_m512_n4096_k11008 m=512 n=4096 k=11008 blk=128 ms=4.3748 TFLOPS=10.55
+[woq_s4][gemm_bench] bench_s4_gemm_m32_n4096_k4096   m=32  n=4096 k=4096  blk=128 ms=0.1820 TFLOPS=5.90
+[woq_s4][gemm_bench] bench_s4_gemm_m128_n4096_k4096  m=128 n=4096 k=4096  blk=128 ms=0.1768 TFLOPS=24.30
+[woq_s4][gemm_bench] bench_s4_gemm_m512_n4096_k11008 m=512 n=4096 k=11008 blk=128 ms=0.7095 TFLOPS=65.07
+```
+
+GEMV is weight-bandwidth bound (the packed low-bit blob dominates I/O); the GEMM path's TFLOPS rises
+with `m` as the dequant cost amortizes over more output rows. The large S3-vs-S4 GEMM gap at high
+`m` is the cost of S3's fp fallback vs S4's int8-XMX path — the headroom a future int8-XMX S3 path
+would recover.
+
+The S3 GEMV reads the dense 3-bit blob (lane `L`'s three straddle words `3L,3L+1,3L+2`) through a
+**coalesced staging load into SLM** before the per-lane straddle decode in `WeightS3T::gemv`
+(`bestla/bestla/sycl/sycl_prologue_b.h`); decoding the strided words straight from global memory
+compiles to a gather and is ~2x slower. S3 GEMV still trails the S4 reference because the 3-bit
+straddle layout can't use S4's branchless nibble unpack and pays per-work-group SLM-barrier overhead
+that only amortizes at large `k` (hence k=11008 lands far closer to S4 than k=4096).
+
+
+To run **only** these benchmarks (skip every functional case and the multi-minute SDPA suite),
+set `ARK_S3_BENCH=1` — it finishes in a few seconds. The benchmark lives in a header
+(`wrapper/test/test_gemm.hpp`), so after editing shapes you must re-link the binary. Full
+rebuild + bench cycle from the `auto_round_kernel` dir:
+
+```bash
+cd /home/yiliu7/workspace/auto-round/auto_round_extension/ark/auto_round_kernel
+source /opt/intel/oneapi/setvars.sh                       # SYCL runtime (needed to build AND run)
+export PATH="/home/yiliu7/workspace/venvs/ark/bin:$PATH"  # cmake / ninja toolchain
+
+# 1. Incremental rebuild (only test_main.cpp recompiles + link; ~seconds, no FetchContent).
+cmake --build xbuild_ut --target test_ARK_XPU -j 4
+
+# 2. Run the int3 (S3) + int4 (S4 reference) benchmarks only.
+ONEAPI_DEVICE_SELECTOR=level_zero:gpu ARK_S3_BENCH=1 ./xbuild_ut/test_ARK_XPU
+
+# (optional) keep just the throughput lines:
+ONEAPI_DEVICE_SELECTOR=level_zero:gpu ARK_S3_BENCH=1 ./xbuild_ut/test_ARK_XPU 2>&1 | grep _bench
+```
+
+Edit the shapes (and weight types) in `TestGemm::run_s3_benchmarks()` (`wrapper/test/test_gemm.hpp`)
+then repeat step 1+2 to sweep other `m`/`n`/`k`. Without `ARK_S3_BENCH`, a plain
+`./xbuild_ut/test_ARK_XPU` runs the full suite (functional cases + these benchmarks + SDPA).
+
 The binary exits 0 when all GEMM / WOQ / SDPA cases pass. The SDPA benchmarks at the end
 (`bench_*` with 4096/8192 seq len) run for a few minutes — this is expected.
 

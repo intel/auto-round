@@ -384,7 +384,12 @@ class WeightS3T {
   // 32 consecutive K-elements occupy 3 contiguous uint32 words; a value whose 3-bit field
   // crosses a 32-bit word boundary is split across two words. Stored unsigned as (q + 4),
   // decoded back to symmetric signed range [-4, 3] by subtracting 4.
-  static __attribute__((always_inline)) inline void unpack32(const uint32_t* w, int8_t* out) {
+  // Decode 32 packed 3-bit weights from three uint32 words already resident in registers. This is
+  // the hot-path entry for GEMV (the words are hoisted out of global memory first, then decoded);
+  // unpack32 below delegates here so the pointer and register paths share one bit-exact decode.
+  static __attribute__((always_inline)) inline void unpack32_words(uint32_t w0, uint32_t w1, uint32_t w2,
+                                                                   int8_t* out) {
+    const uint32_t w[3] = {w0, w1, w2};
 #pragma unroll
     for (int i = 0; i < 32; i++) {
       int index = i * 3;
@@ -398,6 +403,10 @@ class WeightS3T {
       }
       out[i] = static_cast<int8_t>(val) - 4;
     }
+  }
+
+  static __attribute__((always_inline)) inline void unpack32(const uint32_t* w, int8_t* out) {
+    unpack32_words(w[0], w[1], w[2], out);
   }
 
   struct CfgDequantF32 {
@@ -436,15 +445,21 @@ class WeightS3T {
 
   struct CfgGemvF32 {
     static int constexpr SgSize = 32;
+    static int constexpr Unroll = 2;
   };
 
   struct CfgGemvF16 {
     static int constexpr SgSize = 32;
+    static int constexpr Unroll = 2;
   };
 
   // m == 1 GEMV: C[n] = sum_k A[k] * (q[n,k] - 4) * scale[n, k/blocksize] (+ bias).
-  // Each sub-group lane processes strided 32-element groups; assumes blocksize % 32 == 0 so a
-  // group shares one scale.
+  // One sub-group (== one work-group) per output column. The packed 3-bit weight is read with a
+  // COALESCED block load (lane L reads word L of the column's contiguous word stream) into SLM, then
+  // each lane decodes its own 32-element groups from SLM. The naive layout (lane L reads its 3
+  // straddle words 3L,3L+1,3L+2 directly from global) compiles to a strided gather and is ~4x
+  // slower; staging through SLM turns it into one coalesced transaction. Assumes blocksize % 32 == 0
+  // so a 32-element group shares one scale.
   template <typename Cfg, typename T>
   static sycl::event gemv(const T* A, const Param& paramB, T* C, int n, int k, int blocksize, sycl::queue* q) {
     auto B = reinterpret_cast<const uint32_t*>(paramB.B);
@@ -452,10 +467,15 @@ class WeightS3T {
     auto bias = reinterpret_cast<const T*>(paramB.bias);
     int blks = paramB.ldb;
     int constexpr SgSize = Cfg::SgSize;
-    int kgroups = k / 32;  // requires k % 32 == 0
+    int constexpr Unroll = Cfg::Unroll;
+    int kgroups = k / 32;                // requires k % 32 == 0; each group = 3 contiguous uint32 words
+    int constexpr OB = SgSize * Unroll;  // groups the sub-group consumes per unrolled outer step
+    int constexpr WPB = OB * 3;          // packed words per unrolled block (== OB groups * 3 words)
+    int g_main = (kgroups / OB) * OB;    // groups covered by the coalesced/unrolled main loop
     sycl::range<1> group{SgSize};
     sycl::range<1> problem{static_cast<size_t>(n) * SgSize};
     auto ev = q->submit([&](sycl::handler& cgh) {
+      sycl::local_accessor<uint32_t, 1> slm(sycl::range<1>(WPB), cgh);
       cgh.parallel_for(
           sycl::nd_range<1>(problem, group), [=](sycl::nd_item<1> it) [[sycl::reqd_sub_group_size(SgSize)]] {
             int g_n = it.get_group(0);
@@ -464,9 +484,44 @@ class WeightS3T {
             auto sptr = B_scale + static_cast<size_t>(g_n) * blks;
             const uint32_t* bptr = B + static_cast<size_t>(g_n) * kgroups * 3;
             T tmpAcc = 0.f;
-            for (int gk = sg_id; gk < kgroups; gk += SgSize) {
+
+            for (int gbase = 0; gbase < g_main; gbase += OB) {
+              const uint32_t* blockbase = bptr + static_cast<size_t>(gbase) * 3;
+              // Coalesced block load: lane L pulls words L, L+SgSize, ... into SLM.
+#pragma unroll
+              for (int p = 0; p < WPB / SgSize; p++) {
+                slm[p * SgSize + sg_id] = blockbase[p * SgSize + sg_id];
+              }
+              sycl::group_barrier(sg);
+
+#pragma unroll
+              for (int u = 0; u < Unroll; u++) {
+                int lg = u * SgSize + sg_id;  // this lane's group within the block
+                uint32_t w0 = slm[lg * 3], w1 = slm[lg * 3 + 1], w2 = slm[lg * 3 + 2];
+                int8_t vals[32];
+                unpack32_words(w0, w1, w2, vals);
+                int kbase = (gbase + lg) * 32;
+                T tmpA[32];
+#pragma unroll
+                for (int c = 0; c < 32; c += 8) {
+                  *(sycl::vec<T, 8>*)&tmpA[c] = *(sycl::vec<T, 8>*)&A[kbase + c];
+                }
+                T scale = static_cast<T>(sptr[kbase / blocksize]);
+                T gacc = 0.f;
+#pragma unroll
+                for (int i = 0; i < 32; i++) {
+                  gacc += tmpA[i] * static_cast<T>(vals[i]);
+                }
+                tmpAcc += gacc * scale;
+              }
+              sycl::group_barrier(sg);  // SLM reuse next iteration
+            }
+
+            // Remainder groups (kgroups % OB): direct per-lane decode (small tail).
+            for (int gk = g_main + sg_id; gk < kgroups; gk += SgSize) {
+              const uint32_t* wp = bptr + static_cast<size_t>(gk) * 3;
               int8_t vals[32];
-              unpack32(bptr + static_cast<size_t>(gk) * 3, vals);
+              unpack32_words(wp[0], wp[1], wp[2], vals);
               int kbase = gk * 32;
               T scale = static_cast<T>(sptr[kbase / blocksize]);
               T gacc = 0.f;
@@ -476,6 +531,7 @@ class WeightS3T {
               }
               tmpAcc += gacc * scale;
             }
+
             sycl::group_barrier(sg);
             auto sum = sycl::reduce_over_group(sg, tmpAcc, std::plus<>());
             if (bias) sum += bias[g_n];
