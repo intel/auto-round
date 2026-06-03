@@ -457,6 +457,101 @@ sycl::event gemv_nested_vec(const T* A, const uint32_t* Bwords, const T* scale, 
   });
 }
 
+// ------------------------------------------------------------------------------------------------
+// Transposed (lane-interleaved) layout — the structural fix. Both prior coalescing attempts failed
+// for the same reason: lane L read block L, so across the 32-lane sub-group the word addresses were
+// strided (by WPB / by VPB*4 bytes), non-contiguous, and IGC kept a per-lane gather. S4 gets its
+// d32xNt transpose block loads because consecutive lanes read consecutive contiguous words.
+//
+// Fix the LAYOUT so that holds here too. Process blocks in tiles of SgSize (=32). Within a tile, the
+// words are stored word-major then lane-minor: for word index wb in [0,WPB) and lane L in [0,32),
+// tile word (wb, L) lives at tilebase + wb*32 + L. So when all 32 lanes read their own block's word
+// wb via `tilebase + wb*32 + sg_id`, the 32 addresses are CONTIGUOUS -> coalesced sub-group load ->
+// block load. Lane L still owns block (tile*32 + L); the decode is the same compile-time unroll.
+// ------------------------------------------------------------------------------------------------
+
+// Host packer: per column, blocks grouped into tiles of 32; within a tile, word-major/lane-minor.
+// Tail blocks (blks % 32) are stored in a final partial tile the same way (lanes >= rem unused).
+inline std::vector<uint32_t> pack_transposed(const std::vector<int8_t>& raw, int n, int k, int blocksize) {
+  int blks = k / blocksize;
+  int wpb = words_per_block(blocksize);
+  int tiles = (blks + 31) / 32;
+  size_t wpc = size_t(tiles) * 32 * wpb;  // words per column (padded up to whole tiles)
+  std::vector<uint32_t> out(wpc * n, 0u);
+  for (int col = 0; col < n; ++col) {
+    for (int b = 0; b < blks; ++b) {
+      int tile = b / 32, lane = b % 32;
+      for (int wb = 0; wb < wpb; ++wb) {
+        uint32_t word = 0u;
+        for (int i = 0; i < 10; ++i) {
+          int local = wb * 10 + i;
+          uint32_t v = (local < blocksize) ? (uint32_t(raw[size_t(b * blocksize + local) * n + col] + 4) & 0x7u) : 4u;
+          word |= (v << (3 * i));
+        }
+        // tile base for this column, then word-major/lane-minor within the tile.
+        out[size_t(col) * wpc + (size_t(tile) * 32 + 0) * wpb + size_t(wb) * 32 + lane] = word;
+      }
+    }
+  }
+  return out;
+}
+
+template <int BLK, int NACC, typename T>
+sycl::event gemv_nested_trans(const T* A, const uint32_t* Bwords, const T* scale, T* C, int n, int k,
+                              sycl::queue* q) {
+  constexpr int WPB = (BLK + 9) / 10;
+  constexpr int SgSize = 32;
+  int blks = k / BLK;
+  int tiles = (blks + 31) / 32;
+  int wpc = tiles * 32 * WPB;
+  sycl::range<1> group{SgSize};
+  sycl::range<1> problem{size_t(n) * SgSize};
+  return q->submit([&](sycl::handler& cgh) {
+    cgh.parallel_for(sycl::nd_range<1>(problem, group), [=](sycl::nd_item<1> it) [[sycl::reqd_sub_group_size(SgSize)]] {
+      int g_n = it.get_group(0);
+      auto sg = it.get_sub_group();
+      int sg_id = sg.get_local_id()[0];
+      const uint32_t* bptr = Bwords + size_t(g_n) * wpc;
+      const T* sptr = scale + size_t(g_n) * blks;
+      T tmpAcc = 0.f;
+      for (int tile = 0; tile < tiles; ++tile) {
+        int block = tile * 32 + sg_id;
+        const uint32_t* tilebase = bptr + size_t(tile) * 32 * WPB;
+        // Read this lane's WPB words; lane stride is 1 within each word slab -> contiguous sub-group
+        // span -> block load. wb slabs are 32 apart.
+        uint32_t wv[WPB];
+#pragma unroll
+        for (int wb = 0; wb < WPB; ++wb) wv[wb] = tilebase[wb * 32 + sg_id];
+        if (block >= blks) continue;  // partial tail tile: unused lanes contribute nothing
+        T scl = sptr[block];
+        int kbase0 = block * BLK;
+        T acc[NACC];
+#pragma unroll
+        for (int a = 0; a < NACC; ++a) acc[a] = 0.f;
+        [&]<int... WB>(std::integer_sequence<int, WB...>) {
+          (
+              [&] {
+                constexpr int valid = (BLK - WB * 10) < 10 ? (BLK - WB * 10) : 10;
+                uint32_t word = wv[WB];
+                int kb = kbase0 + WB * 10;
+#pragma unroll
+                for (int i = 0; i < valid; ++i)
+                  acc[(WB * 10 + i) % NACC] += A[kb + i] * static_cast<T>(int8_t((word >> (3 * i)) & 0x7u) - 4);
+              }(),
+              ...);
+        }(std::make_integer_sequence<int, WPB>{});
+        T bacc = 0.f;
+#pragma unroll
+        for (int a = 0; a < NACC; ++a) bacc += acc[a];
+        tmpAcc += bacc * scl;
+      }
+      sycl::group_barrier(sg);
+      T sum = sycl::reduce_over_group(sg, tmpAcc, std::plus<>());
+      if (sg_id == 0) C[g_n] = sum;
+    });
+  });
+}
+
 }  // namespace w10_spike
 
 // ---------------------------------------------------------------------------------------------
@@ -692,6 +787,12 @@ struct TestGemm {
     bench_woq_w10_nested_vec<128, 2, float>("bench_w10nestvec2_gemv_n4096_k4096", 4096, 4096, 10, 50);
     bench_woq_w10_nested_vec<128, 1, float>("bench_w10nestvec1_gemv_n4096_k11008", 4096, 11008, 10, 50);
     bench_woq_w10_nested_vec<128, 2, float>("bench_w10nestvec2_gemv_n4096_k11008", 4096, 11008, 10, 50);
+    // W10 nested + TRANSPOSED lane-interleaved layout (structural fix): contiguous sub-group span ->
+    // block load. nacc=1 isolates the layout win; nacc=2 stacks ILP.
+    bench_woq_w10_nested_trans<128, 1, float>("bench_w10nesttrans1_gemv_n4096_k4096", 4096, 4096, 10, 50);
+    bench_woq_w10_nested_trans<128, 2, float>("bench_w10nesttrans2_gemv_n4096_k4096", 4096, 4096, 10, 50);
+    bench_woq_w10_nested_trans<128, 1, float>("bench_w10nesttrans1_gemv_n4096_k11008", 4096, 11008, 10, 50);
+    bench_woq_w10_nested_trans<128, 2, float>("bench_w10nesttrans2_gemv_n4096_k11008", 4096, 11008, 10, 50);
     // S3 dense direct-from-global + prefetch, no SLM — does dropping SLM beat the committed kernel?
     bench_s3_direct_spike<float>("bench_s3_direct_gemv_n4096_k4096", 4096, 4096, 128, 10, 50);
     bench_s3_direct_spike<float>("bench_s3_direct_gemv_n4096_k11008", 4096, 11008, 128, 10, 50);
@@ -1341,6 +1442,79 @@ struct TestGemm {
     std::cout << std::fixed << std::setprecision(4) << "[woq_w10_nested_vec][gemv_bench] " << name << " n=" << n
               << " k=" << k << " blk=" << BLK << " nacc=" << NACC << " vpb=" << vpb << " ms=" << ms
               << " TFLOPS=" << tflops << " GBps=" << gbps << " max_diff=" << max_diff << "\n";
+
+    ctx->deallocate(dBlob);
+    ctx->deallocate(dScale);
+    ctx->deallocate(dA);
+    ctx->deallocate(dC);
+  }
+
+  // W10 nested + TRANSPOSED lane-interleaved layout (the structural fix). GBps over the transposed
+  // blob bytes (tiles*32*WPB*4*n); the only padding is the final partial tile, so for k a multiple of
+  // 32*BLK this equals the true blob bytes and GBps is directly comparable to bench_woq_w10_nested.
+  template <int BLK, int NACC, typename T>
+  void bench_woq_w10_nested_trans(const std::string& name, size_t n, size_t k, int warmup, int iters) {
+    GETQ();
+    LOG_LINE();
+    if (k % 32 != 0 || k % BLK != 0) {
+      throw std::runtime_error("bench_woq_w10_nested_trans requires k % 32 == 0 and k % BLK == 0");
+    }
+    int blks = int(k) / BLK;
+    int wpb = w10_spike::words_per_block(BLK);
+    int tiles = (blks + 31) / 32;
+    size_t wpc = size_t(tiles) * 32 * wpb;
+    size_t blob_bytes = wpc * n * sizeof(uint32_t);
+
+    std::mt19937 rng(29u + uint32_t(n) + uint32_t(k) + uint32_t(BLK));
+    std::uniform_int_distribution<int> wdist(-4, 3);
+    std::uniform_real_distribution<float> adist(-1.0f, 1.0f);
+    std::uniform_real_distribution<float> sdist(0.01f, 0.05f);
+
+    std::vector<int8_t> raw(k * n);
+    for (auto& w : raw) w = int8_t(wdist(rng));
+    std::vector<float> hostA(k);
+    for (auto& a : hostA) a = adist(rng);
+    std::vector<float> hostScale(size_t(blks) * n);  // [blks, n]
+    for (auto& s : hostScale) s = sdist(rng);
+
+    std::vector<float> refC(n, 0.0f);
+    for (size_t j = 0; j < n; ++j) {
+      float acc = 0.0f;
+      for (size_t kk = 0; kk < k; ++kk) acc += hostA[kk] * float(raw[kk * n + j]) * hostScale[(kk / BLK) * n + j];
+      refC[j] = acc;
+    }
+
+    std::vector<uint32_t> blob = w10_spike::pack_transposed(raw, int(n), int(k), BLK);
+    std::vector<T> scaleNK(size_t(blks) * n);  // kernel wants [n, blks]
+    for (int b = 0; b < blks; ++b)
+      for (size_t j = 0; j < n; ++j) scaleNK[j * blks + b] = T(hostScale[size_t(b) * n + j]);
+    std::vector<T> hostAt(k);
+    for (size_t i = 0; i < k; ++i) hostAt[i] = T(hostA[i]);
+
+    auto* dBlob = reinterpret_cast<uint32_t*>(ctx->allocate(blob_bytes));
+    auto* dScale = reinterpret_cast<T*>(ctx->allocate(scaleNK.size() * sizeof(T)));
+    auto* dA = reinterpret_cast<T*>(ctx->allocate(k * sizeof(T)));
+    auto* dC = reinterpret_cast<T*>(ctx->allocate(n * sizeof(T)));
+    q->memcpy(dBlob, blob.data(), blob_bytes).wait();
+    q->memcpy(dScale, scaleNK.data(), scaleNK.size() * sizeof(T)).wait();
+    q->memcpy(dA, hostAt.data(), k * sizeof(T)).wait();
+
+    w10_spike::gemv_nested_trans<BLK, NACC, T>(dA, dBlob, dScale, dC, int(n), int(k), q);
+    q->wait();
+    std::vector<T> hostC(n);
+    q->memcpy(hostC.data(), dC, n * sizeof(T)).wait();
+    float max_diff = 0.0f;
+    for (size_t j = 0; j < n; ++j) max_diff = std::max(max_diff, std::fabs(float(hostC[j]) - refC[j]));
+
+    double ms = run_bench(
+        [&]() { w10_spike::gemv_nested_trans<BLK, NACC, T>(dA, dBlob, dScale, dC, int(n), int(k), q); }, q, warmup,
+        iters);
+    double flops = 2.0 * double(n) * double(k);
+    double tflops = flops / (ms * 1e-3) / 1e12;
+    double gbps = double(blob_bytes) / (ms * 1e-3) / 1e9;
+    std::cout << std::fixed << std::setprecision(4) << "[woq_w10_nested_trans][gemv_bench] " << name << " n=" << n
+              << " k=" << k << " blk=" << BLK << " nacc=" << NACC << " ms=" << ms << " TFLOPS=" << tflops
+              << " GBps=" << gbps << " max_diff=" << max_diff << "\n";
 
     ctx->deallocate(dBlob);
     ctx->deallocate(dScale);
