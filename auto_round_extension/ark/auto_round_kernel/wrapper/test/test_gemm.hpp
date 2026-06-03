@@ -275,6 +275,97 @@ sycl::event gemv_nested_ilp(const T* A, const uint32_t* Bwords, const T* scale, 
   });
 }
 
+// Coalesced-load nested GEMV. The ISA dump proved gemv_nested's plateau is a memory-feed stall, not
+// FMA latency: lane L owns whole blocks, so its WPB words are strided by WPB across the sub-group and
+// IGC emits ~40 per-lane gathers (load.ugm.a64 (32|M0)) per step instead of block loads. This variant
+// keeps the compile-time-position decode but fixes the load: the sub-group cooperatively stages
+// SgSize whole blocks (SgSize*WPB contiguous words of the column's stream) into SLM with a COALESCED
+// block load (lane L reads words L, L+SgSize, ...), barriers, then each lane decodes its own block
+// from SLM. Same per-lane-owns-a-block decode as gemv_nested, but the global traffic is now coalesced
+// like S4's. NACC independent accumulators are retained as a free orthogonal knob (ISA showed no
+// spill through nacc=8); NACC=1 reproduces the serial chain.
+template <int BLK, int NACC, typename T>
+sycl::event gemv_nested_coal(const T* A, const uint32_t* Bwords, const T* scale, T* C, int n, int k,
+                             sycl::queue* q) {
+  constexpr int WPB = (BLK + 9) / 10;
+  constexpr int SgSize = 32;
+  constexpr int WPSTEP = SgSize * WPB;  // contiguous words staged per barrier round (SgSize blocks)
+  int blks = k / BLK;
+  int wpc = blks * WPB;
+  int blk_main = (blks / SgSize) * SgSize;  // blocks covered by the coalesced/staged main loop
+  sycl::range<1> group{SgSize};
+  sycl::range<1> problem{size_t(n) * SgSize};
+  return q->submit([&](sycl::handler& cgh) {
+    sycl::local_accessor<uint32_t, 1> slm(sycl::range<1>(WPSTEP), cgh);
+    cgh.parallel_for(sycl::nd_range<1>(problem, group), [=](sycl::nd_item<1> it) [[sycl::reqd_sub_group_size(SgSize)]] {
+      int g_n = it.get_group(0);
+      auto sg = it.get_sub_group();
+      int sg_id = sg.get_local_id()[0];
+      const uint32_t* bptr = Bwords + size_t(g_n) * wpc;
+      const T* sptr = scale + size_t(g_n) * blks;
+      T tmpAcc = 0.f;
+
+      for (int bbase = 0; bbase < blk_main; bbase += SgSize) {
+        const uint32_t* base = bptr + size_t(bbase) * WPB;
+        // Coalesced staging: the WPSTEP contiguous words for these SgSize blocks, lane L reads L,L+32,...
+#pragma unroll
+        for (int p = 0; p < WPB; p++) slm[p * SgSize + sg_id] = base[p * SgSize + sg_id];
+        sycl::group_barrier(sg);
+
+        int block = bbase + sg_id;  // this lane's block
+        const uint32_t* wblock = &slm[sg_id * WPB];
+        T scl = sptr[block];
+        int kbase0 = block * BLK;
+        T acc[NACC];
+#pragma unroll
+        for (int a = 0; a < NACC; ++a) acc[a] = 0.f;
+        [&]<int... WB>(std::integer_sequence<int, WB...>) {
+          (
+              [&] {
+                constexpr int valid = (BLK - WB * 10) < 10 ? (BLK - WB * 10) : 10;
+                uint32_t word = wblock[WB];
+                int kb = kbase0 + WB * 10;
+#pragma unroll
+                for (int i = 0; i < valid; ++i)
+                  acc[(WB * 10 + i) % NACC] += A[kb + i] * static_cast<T>(int8_t((word >> (3 * i)) & 0x7u) - 4);
+              }(),
+              ...);
+        }(std::make_integer_sequence<int, WPB>{});
+        T bacc = 0.f;
+#pragma unroll
+        for (int a = 0; a < NACC; ++a) bacc += acc[a];
+        tmpAcc += bacc * scl;
+        sycl::group_barrier(sg);  // SLM reuse next round
+      }
+
+      // Tail: blocks beyond blk_main, one per lane, decoded direct from global (small remainder).
+      for (int block = blk_main + sg_id; block < blks; block += SgSize) {
+        const uint32_t* wblock = bptr + size_t(block) * WPB;
+        T scl = sptr[block];
+        int kbase0 = block * BLK;
+        T bacc = 0.f;
+        [&]<int... WB>(std::integer_sequence<int, WB...>) {
+          (
+              [&] {
+                constexpr int valid = (BLK - WB * 10) < 10 ? (BLK - WB * 10) : 10;
+                uint32_t word = wblock[WB];
+                int kb = kbase0 + WB * 10;
+#pragma unroll
+                for (int i = 0; i < valid; ++i)
+                  bacc += A[kb + i] * static_cast<T>(int8_t((word >> (3 * i)) & 0x7u) - 4);
+              }(),
+              ...);
+        }(std::make_integer_sequence<int, WPB>{});
+        tmpAcc += bacc * scl;
+      }
+
+      sycl::group_barrier(sg);
+      T sum = sycl::reduce_over_group(sg, tmpAcc, std::plus<>());
+      if (sg_id == 0) C[g_n] = sum;
+    });
+  });
+}
+
 }  // namespace w10_spike
 
 // ---------------------------------------------------------------------------------------------
@@ -498,6 +589,12 @@ struct TestGemm {
     bench_woq_w10_nested_ilp<128, 2, float>("bench_w10nestilp2_gemv_n4096_k11008", 4096, 11008, 10, 50);
     bench_woq_w10_nested_ilp<128, 4, float>("bench_w10nestilp4_gemv_n4096_k11008", 4096, 11008, 10, 50);
     bench_woq_w10_nested_ilp<128, 8, float>("bench_w10nestilp8_gemv_n4096_k11008", 4096, 11008, 10, 50);
+    // W10 nested + COALESCED SLM staging: turns the nested variant's per-lane gathers into block loads.
+    // nacc=1 isolates the pure coalescing win vs serial nested; nacc=2 stacks ILP on top.
+    bench_woq_w10_nested_coal<128, 1, float>("bench_w10nestcoal1_gemv_n4096_k4096", 4096, 4096, 10, 50);
+    bench_woq_w10_nested_coal<128, 2, float>("bench_w10nestcoal2_gemv_n4096_k4096", 4096, 4096, 10, 50);
+    bench_woq_w10_nested_coal<128, 1, float>("bench_w10nestcoal1_gemv_n4096_k11008", 4096, 11008, 10, 50);
+    bench_woq_w10_nested_coal<128, 2, float>("bench_w10nestcoal2_gemv_n4096_k11008", 4096, 11008, 10, 50);
     // S3 dense direct-from-global + prefetch, no SLM — does dropping SLM beat the committed kernel?
     bench_s3_direct_spike<float>("bench_s3_direct_gemv_n4096_k4096", 4096, 4096, 128, 10, 50);
     bench_s3_direct_spike<float>("bench_s3_direct_gemv_n4096_k11008", 4096, 11008, 128, 10, 50);
@@ -1003,6 +1100,77 @@ struct TestGemm {
     double tflops = flops / (ms * 1e-3) / 1e12;
     double gbps = double(blob_bytes) / (ms * 1e-3) / 1e9;
     std::cout << std::fixed << std::setprecision(4) << "[woq_w10_nested_ilp][gemv_bench] " << name << " n=" << n
+              << " k=" << k << " blk=" << BLK << " nacc=" << NACC << " ms=" << ms << " TFLOPS=" << tflops
+              << " GBps=" << gbps << " max_diff=" << max_diff << "\n";
+
+    ctx->deallocate(dBlob);
+    ctx->deallocate(dScale);
+    ctx->deallocate(dA);
+    ctx->deallocate(dC);
+  }
+
+  // W10 nested + COALESCED SLM staging (+ optional NACC ILP). Same blob/layout as bench_woq_w10_nested;
+  // measures whether converting the nested variant's per-lane gathers into a coalesced block load lifts
+  // it off the ~150 GBps plateau toward the S4 reference.
+  template <int BLK, int NACC, typename T>
+  void bench_woq_w10_nested_coal(const std::string& name, size_t n, size_t k, int warmup, int iters) {
+    GETQ();
+    LOG_LINE();
+    if (k % 32 != 0 || k % BLK != 0) {
+      throw std::runtime_error("bench_woq_w10_nested_coal requires k % 32 == 0 and k % BLK == 0");
+    }
+    int blks = int(k) / BLK;
+    int wpb = w10_spike::words_per_block(BLK);
+    size_t wpc = size_t(blks) * wpb;
+    size_t blob_bytes = wpc * n * sizeof(uint32_t);
+
+    std::mt19937 rng(29u + uint32_t(n) + uint32_t(k) + uint32_t(BLK));
+    std::uniform_int_distribution<int> wdist(-4, 3);
+    std::uniform_real_distribution<float> adist(-1.0f, 1.0f);
+    std::uniform_real_distribution<float> sdist(0.01f, 0.05f);
+
+    std::vector<int8_t> raw(k * n);
+    for (auto& w : raw) w = int8_t(wdist(rng));
+    std::vector<float> hostA(k);
+    for (auto& a : hostA) a = adist(rng);
+    std::vector<float> hostScale(size_t(blks) * n);  // [blks, n]
+    for (auto& s : hostScale) s = sdist(rng);
+
+    std::vector<float> refC(n, 0.0f);
+    for (size_t j = 0; j < n; ++j) {
+      float acc = 0.0f;
+      for (size_t kk = 0; kk < k; ++kk) acc += hostA[kk] * float(raw[kk * n + j]) * hostScale[(kk / BLK) * n + j];
+      refC[j] = acc;
+    }
+
+    std::vector<uint32_t> blob = w10_spike::pack(raw, int(n), int(k), BLK);
+    std::vector<T> scaleNK(size_t(blks) * n);  // kernel wants [n, blks]
+    for (int b = 0; b < blks; ++b)
+      for (size_t j = 0; j < n; ++j) scaleNK[j * blks + b] = T(hostScale[size_t(b) * n + j]);
+    std::vector<T> hostAt(k);
+    for (size_t i = 0; i < k; ++i) hostAt[i] = T(hostA[i]);
+
+    auto* dBlob = reinterpret_cast<uint32_t*>(ctx->allocate(blob_bytes));
+    auto* dScale = reinterpret_cast<T*>(ctx->allocate(scaleNK.size() * sizeof(T)));
+    auto* dA = reinterpret_cast<T*>(ctx->allocate(k * sizeof(T)));
+    auto* dC = reinterpret_cast<T*>(ctx->allocate(n * sizeof(T)));
+    q->memcpy(dBlob, blob.data(), blob_bytes).wait();
+    q->memcpy(dScale, scaleNK.data(), scaleNK.size() * sizeof(T)).wait();
+    q->memcpy(dA, hostAt.data(), k * sizeof(T)).wait();
+
+    w10_spike::gemv_nested_coal<BLK, NACC, T>(dA, dBlob, dScale, dC, int(n), int(k), q);
+    q->wait();
+    std::vector<T> hostC(n);
+    q->memcpy(hostC.data(), dC, n * sizeof(T)).wait();
+    float max_diff = 0.0f;
+    for (size_t j = 0; j < n; ++j) max_diff = std::max(max_diff, std::fabs(float(hostC[j]) - refC[j]));
+
+    double ms = run_bench(
+        [&]() { w10_spike::gemv_nested_coal<BLK, NACC, T>(dA, dBlob, dScale, dC, int(n), int(k), q); }, q, warmup, iters);
+    double flops = 2.0 * double(n) * double(k);
+    double tflops = flops / (ms * 1e-3) / 1e12;
+    double gbps = double(blob_bytes) / (ms * 1e-3) / 1e9;
+    std::cout << std::fixed << std::setprecision(4) << "[woq_w10_nested_coal][gemv_bench] " << name << " n=" << n
               << " k=" << k << " blk=" << BLK << " nacc=" << NACC << " ms=" << ms << " TFLOPS=" << tflops
               << " GBps=" << gbps << " max_diff=" << max_diff << "\n";
 
