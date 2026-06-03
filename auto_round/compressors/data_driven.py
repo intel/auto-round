@@ -348,7 +348,7 @@ class DataDrivenCompressor(BaseCompressor):
 
                     card_0_in_high_risk, loss_device = set_auto_device_map_for_block_with_tuning(
                         block,
-                        device_manager.device_map,
+                        device_manager.device_list,
                         input_ids,
                         self.compress_context.low_gpu_mem_usage,
                         self.quantizer.batch_size,
@@ -499,7 +499,7 @@ class DataDrivenCompressor(BaseCompressor):
 
                 card_0_in_high_risk, loss_device = set_auto_device_map_for_block_with_tuning(
                     m,
-                    device_manager.device_map,
+                    device_manager.device_list,
                     input_ids,
                     self.compress_context.low_gpu_mem_usage,
                     self.quantizer.batch_size,
@@ -1004,7 +1004,7 @@ class CalibratedRTNCompressor(DataDrivenCompressor):
 
                     set_auto_device_map_for_block_with_tuning(
                         block,
-                        device_manager.device_map,
+                        device_manager.device_list,
                         input_ids,
                         self.compress_context.low_gpu_mem_usage,
                         self.quantizer.batch_size,

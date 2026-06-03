@@ -34,7 +34,7 @@ from accelerate.utils import get_balanced_memory, get_max_memory
 from auto_round.logger import logger
 from auto_round.utils.device_manager import (
     clear_memory,
-    detect_device,
+    get_major_device,
     detect_device_count,
     get_ar_device,
     get_available_device_types,
@@ -622,7 +622,7 @@ def set_non_auto_device_map(
     for key, device in device_map.items():
         if isinstance(device, str) and device.isdigit():
             device = int(device)
-        device = detect_device(device)
+        device = get_major_device(device)
         if key in names:
             module = get_module(model, key)
             module.tuning_device = device
@@ -910,7 +910,7 @@ def estimate_tuning_block_mem(
 
 def set_auto_device_map_for_block_with_tuning(
     block: torch.nn.Module,
-    device_map,
+    device_list,
     input_ids: list[torch.Tensor],
     low_gpu_mem_usage: bool = False,
     batch_size: int = 8,
@@ -922,7 +922,7 @@ def set_auto_device_map_for_block_with_tuning(
 
     Args:
         block (torch.nn.Module): The model block whose device map is to be set.
-        device_map (str | int | dict): Specifies the device mapping.
+        device_list (str | int | dict): Specifies the device mapping.
         input_ids (list[torch.Tensor]): List of input tensors used for estimating memory requirements.
         low_gpu_mem_usage (bool, optional): If True, ignoring input/output memory. Defaults to False.
         batch_size (int, optional): Number of samples to consider for memory estimation. Defaults to 8.
@@ -950,18 +950,12 @@ def set_auto_device_map_for_block_with_tuning(
     else:
         return card_0_in_high_risk, loss_device
 
-    if not (
-        device_map == "auto" or ((isinstance(device_map, str) and "," in device_map)) or num_devices > 1
-    ):  # Only 1 card is available or non-auto device map
+    if len(device_list)<=1:  # Only 1 card is available or non-auto device map
         block = block.to(output_device)
         return card_0_in_high_risk, loss_device
 
-    device_list = None
-    if isinstance(device_map, str) and "," in device_map:
-        device_list = [int(dev) for dev in device_map.split(",") if dev.isdigit()]
-
     if device_list:
-        gpu_devices = [f"{device_name}:{i}" for i in device_list]
+        gpu_devices = device_list
         device_0 = gpu_devices[0]
         device_1 = gpu_devices[1]
     else:
@@ -1500,7 +1494,7 @@ def dispatch_model_by_all_available_devices(
     model: torch.nn.Module, device_map: Union[str, int, dict, None]
 ) -> torch.nn.Module:
     # Important Notice: This dispatch does not follow dict device_map, just extract all available devices and use them
-    device_type = detect_device()
+    device_type = get_major_device()
     if device_type in DEVICE_ENVIRON_VARIABLE_MAPPING:
         existing_env = os.environ.get(DEVICE_ENVIRON_VARIABLE_MAPPING[device_type])
         if existing_env is None:

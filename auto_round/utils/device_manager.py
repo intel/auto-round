@@ -63,7 +63,7 @@ __all__ = [
     "get_current_device_type",
     "is_device_available",
     "get_available_device_types",
-    "detect_device",
+    "get_major_device",
     "detect_device_count",
     "get_device_and_parallelism",
     "get_packing_device",
@@ -688,8 +688,8 @@ class DeviceManager:
         # create a circular dependency.
         from auto_round.utils.device import parse_available_devices
 
-        self._device_list = parse_available_devices(device_map)
-        self._major_device = get_major_device(device_map)
+        self._device_list = parse_available_devices(device_map) # cuda:6
+        self._major_device = get_major_device(device_map) #cuda:4
         return self
 
     @property
@@ -785,45 +785,6 @@ def detect_device_count() -> int:
     return get_current_device_manager().device_count()
 
 
-def detect_device(device: Union[None, str, int, torch.device] = None) -> str:
-    """Detects the appropriate computation device.
-
-    Takes a specific device index/string or ``"auto"``/``None`` (auto-detect the
-    active backend), and returns the resolved device as a string.
-    """
-
-    def is_valid_digit(s):
-        try:
-            num = int(s)
-            return 0 <= num
-        except Exception:
-            return False
-
-    dev_idx = None
-    if is_valid_digit(device):
-        dev_idx = int(device)
-        device = "auto"
-    if isinstance(device, str) and "," in device:  # device is "0,1,2"
-        device_list = [int(dev) for dev in device.split(",") if dev.isdigit()]
-        dev_idx = device_list[0] if device_list else None
-        device = "auto"
-    if device is None or device == "auto":
-        device_type = get_current_device_type()
-        device = torch.device(device_type) if device_type is not None else torch.device("cpu")
-        if dev_idx is not None and str(device) != "cpu":
-            device = str(device) + f":{dev_idx}"
-        return str(device)
-    elif isinstance(device, torch.device):
-        device = str(device)
-    elif isinstance(device, str):  ## for cuda:0
-        if device == "tp":  # pragma: no cover
-            # should not specify card, e.g., cuda:0
-            device = get_current_device_type() or "cpu"
-        else:
-            device = device
-    return device
-
-
 def get_device_and_parallelism(device: Union[str, torch.device, int, dict]) -> tuple[str, bool]:
     """Resolve a device spec into ``(device, parallelism)``.
 
@@ -832,7 +793,7 @@ def get_device_and_parallelism(device: Union[str, torch.device, int, dict]) -> t
     living on the device manager.
     """
     if device is None:
-        device = detect_device(device)
+        device = get_major_device(device)
         return device, False
     if isinstance(device, dict):
         unique_devices = set(device.values())
@@ -845,7 +806,7 @@ def get_device_and_parallelism(device: Union[str, torch.device, int, dict]) -> t
     if isinstance(device, str):
         # A bare backend type (e.g. "cuda", "xpu", "hpu", "cpu", "mps") with no index
         if device not in ("auto", "tp") and ":" not in device and "," not in device and not device.isdigit():
-            return detect_device(device), False
+            return get_major_device(device), False
         # Strip any "<type>:" prefixes (e.g. "cuda:0,1" -> "0,1") to obtain bare indices.
         device = re.sub(r"[a-zA-Z_]+:", "", device)
         devices = device.replace(" ", "").split(",")
@@ -863,10 +824,10 @@ def get_device_and_parallelism(device: Union[str, torch.device, int, dict]) -> t
 
         return device_type, is_pipeline_parallel_supported(device_type)
     elif device == "auto":
-        device = detect_device(device)
+        device = get_major_device(device)
         parallelism = True
     else:
-        device = detect_device(device)
+        device = get_major_device(device)
         parallelism = False
     return device, parallelism
 
@@ -912,14 +873,57 @@ def is_auto_device_mapping(device_map: Union[str, int, dict, None]) -> bool:
 
 def get_major_device(device_map: Union[None, str, torch.device, int, dict]) -> str:
     if device_map is None or isinstance(device_map, (str, torch.device, int)):
-        device = detect_device(device_map)
+        """Detects the appropriate computation device.
+
+        Takes a specific device index/string or ``"auto"``/``None`` (auto-detect the
+        active backend), and returns the resolved device as a string.
+        "4,6"->cuda:4
+        """
+
+        def is_valid_digit(s):
+            try:
+                num = int(s)
+                return 0 <= num
+            except Exception:
+                return False
+
+        dev_idx = None
+        device=device_map
+        if is_valid_digit(device):
+            dev_idx = int(device)
+            device = "auto"
+        if isinstance(device, str) and "," in device:  # device is "0,1,2"
+            device_list = []
+            for dev in device.split(","):
+                if dev.isdigit():
+                    device_list.append(int(dev))
+                elif dev.split(":")[-1].isdigit():
+                    device_list.append(int(dev.split(":")[-1]))
+                elif 0 not in device_list:
+                    device_list.append(0)
+            dev_idx = device_list[0] if device_list else None
+            device = "auto"
+        if device is None or device == "auto":
+            device_type = get_current_device_type()
+            device = torch.device(device_type) if device_type is not None else torch.device("cpu")
+            if dev_idx is not None and str(device) != "cpu":
+                device = str(device) + f":{dev_idx}"
+            return str(device)
+        elif isinstance(device, torch.device):
+            device = str(device)
+        elif isinstance(device, str):  ## for cuda:0
+            if device == "tp":  # pragma: no cover
+                # should not specify card, e.g., cuda:0
+                device = get_current_device_type() or "cpu"
+            else:
+                device = device
         return device
 
     if isinstance(device_map, dict) and device_map:
         tmp_devices = []
         for val in device_map.values():
             if isinstance(val, (str, torch.device, int)):  # could optimize
-                tmp_device = detect_device(val)
+                tmp_device = get_major_device(val)
                 tmp_device = tmp_device.split(":")[0]
                 tmp_devices.append(tmp_device)
         tmp_devices = list(set(tmp_devices))

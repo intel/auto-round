@@ -21,7 +21,7 @@ from transformers.utils.versions import require_version
 
 from auto_round.utils import (
     DEVICE_ENVIRON_VARIABLE_MAPPING,
-    detect_device,
+    get_major_device,
     dispatch_model_block_wise,
     get_device_and_parallelism,
     get_model_dtype,
@@ -286,7 +286,7 @@ def eval_with_vllm(args):
         logger.info(f"Overriding VLLM parameters with custom args: {custom_vllm_kwargs}")
         vllm_kwargs.update(custom_vllm_kwargs)
 
-    device = detect_device()
+    device = get_major_device()
     if "tensor_parallel_size" not in vllm_kwargs:
         # Parse device_map to determine tensor_parallel_size and set the relevant env var
         # Only accept formats like "0" or "0,1,2". If the environment variable is
