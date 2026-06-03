@@ -688,8 +688,8 @@ class DeviceManager:
         # create a circular dependency.
         from auto_round.utils.device import parse_available_devices
 
-        self._device_list = parse_available_devices(device_map) # cuda:6
-        self._major_device = get_major_device(device_map) #cuda:4
+        self._device_list = parse_available_devices(device_map)  # cuda:6
+        self._major_device = get_major_device(device_map)  # cuda:4
         return self
 
     @property
@@ -888,7 +888,7 @@ def get_major_device(device_map: Union[None, str, torch.device, int, dict]) -> s
                 return False
 
         dev_idx = None
-        device=device_map
+        device = device_map
         if is_valid_digit(device):
             dev_idx = int(device)
             device = "auto"
