@@ -11,49 +11,19 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-from collections import defaultdict
-from typing import Any, Callable, Optional, Union
-
-import accelerate
 import torch
 
 from auto_round.algorithms.quantization.base import BaseQuantizers
 from auto_round.algorithms.quantization.rtn.config import RTNConfig
-from auto_round.algorithms.quantization.sign_round.quantizer import SignRoundQuantizer
 from auto_round.algorithms.quantization.utils import register_imatrix_hooks
-from auto_round.compressors.utils import (
-    IndexSampler,
-    block_forward,
-    check_need_act_calibration,
-    check_skippable_keywords,
-    collect_best_params,
-    get_shared_keys,
-    infer_bits_by_data_type,
-    init_cache,
-    reset_params,
-    set_layer_config,
-)
 from auto_round.data_type.utils import update_block_global_scale_if_needed
-from auto_round.logger import logger
 from auto_round.utils import (
     check_to_quantized,
-    get_lm_head_name,
     get_module,
-    htcore,
-    is_auto_device_mapping,
-    is_hpex_available,
-    memory_monitor,
     set_amax_for_all_moe_layers,
     set_module,
 )
-from auto_round.utils.device import (
-    clear_memory_if_reached_threshold,
-    get_major_device,
-    parse_available_devices,
-    set_auto_device_map_for_block_with_tuning,
-    set_non_auto_device_map,
-)
-from auto_round.wrapper import WrapperMultiblock, unwrapper_block, unwrapper_layer, wrapper_block
+
 
 
 class RTNQuantizer(BaseQuantizers):

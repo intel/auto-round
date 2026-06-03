@@ -33,21 +33,13 @@ from accelerate.utils import get_balanced_memory, get_max_memory
 
 from auto_round.logger import logger
 from auto_round.utils.device_manager import (
-    ClearMemory,
     clear_memory,
     detect_device,
     detect_device_count,
     get_ar_device,
     get_available_device_types,
     get_current_device_manager,
-    get_current_device_type,
-    get_device_and_parallelism,
     get_device_memory,
-    get_major_device,
-    get_max_vram,
-    get_packing_device,
-    is_auto_device_mapping,
-    out_of_vram,
 )
 from auto_round.utils.model import check_to_quantized, get_block_names, get_layer_features, get_module
 

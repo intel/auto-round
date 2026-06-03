@@ -69,8 +69,6 @@ __all__ = [
     "get_packing_device",
     "is_auto_device_mapping",
     "get_major_device",
-    "out_of_vram",
-    "get_max_vram",
     "get_device_memory",
     "ClearMemory",
     "clear_memory",
@@ -941,38 +939,6 @@ def get_major_device(device_map: Union[None, str, torch.device, int, dict]) -> s
         return device
     logger.warning_once(f"device_map should be [str, torch.device, int, dict], but got {type(device_map)}")
     return "cpu"
-
-
-# ---------------------------------------------------------------------------
-# VRAM / memory helpers (moved from utils/device.py)
-# ---------------------------------------------------------------------------
-def out_of_vram(error_msg) -> bool:
-    error_msg = str(error_msg)
-    # CUDA
-    if "CUDA out of memory" in error_msg:
-        return True
-    # gaudi
-    if "MODULE:PT_DEVMEM" in error_msg:
-        return True
-    # XPU
-    if "UR_RESULT_ERROR_OUT_OF_DEVICE_MEMORY" in error_msg:
-        return True
-    # ROCM
-    if "HIP out of memory. Tried to allocate" in error_msg:
-        return True
-    return False
-
-
-def get_max_vram(ratio: float = 0.9) -> dict:
-    max_memory = {}
-    dev_mgr = get_current_device_manager()
-    if not dev_mgr.is_available() or dev_mgr.type == "cpu":
-        raise RuntimeError("No device (CUDA/XPU/HPU/...) found.")
-    for i in range(dev_mgr.device_count()):
-        total_mem = dev_mgr.total_memory(i)
-        max_mem_gb = int(total_mem / 1024**3 * ratio)
-        max_memory[i] = f"{max_mem_gb}GiB"
-    return max_memory
 
 
 def get_device_memory(i: int = 0) -> int:
