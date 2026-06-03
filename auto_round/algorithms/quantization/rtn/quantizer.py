@@ -25,7 +25,6 @@ from auto_round.utils import (
 )
 
 
-
 class RTNQuantizer(BaseQuantizers):
 
     def __init__(self, config: RTNConfig):
