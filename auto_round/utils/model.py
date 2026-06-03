@@ -826,7 +826,7 @@ def diffusion_load_model(
     from functools import partial
 
     from auto_round.utils.common import LazyImport
-    from auto_round.utils.device import get_device_and_parallelism
+    from auto_round.utils.device_manager import get_device_and_parallelism
 
     _check_accelerate_version()
 

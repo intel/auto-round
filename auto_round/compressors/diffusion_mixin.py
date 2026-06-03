@@ -24,8 +24,8 @@ from auto_round.utils.device import (
     dispatch_model_block_wise,
     dispatch_model_by_all_available_devices,
     get_major_device,
-    is_auto_device_mapping,
 )
+from auto_round.utils.device_manager import is_auto_device_mapping
 from auto_round.utils.device_manager import device_manager
 from auto_round.utils.model import rename_weights_files
 
