@@ -39,10 +39,32 @@ class TestAutoRound:
         shutil.rmtree(self.save_dir, ignore_errors=True)
 
     @require_greater_than_050
-    @pytest.mark.parametrize("bits", [2, 3, 4, 8])
+    @pytest.mark.parametrize("bits", [2, 4, 8])
     @pytest.mark.parametrize("group_size", [32, 128])
     @pytest.mark.parametrize("is_sym", [True, False])
     def test_autoround_format(self, tiny_opt_model_path, bits, group_size, is_sym):
+        autoround = AutoRound(
+            tiny_opt_model_path,
+            bits=bits,
+            group_size=group_size,
+            sym=is_sym,
+            iters=0,
+            disable_opt_rtn=True,
+        )
+        quantized_model_path = self.save_dir
+
+        _, quantized_model_path = autoround.quantize_and_save(output_dir=quantized_model_path, format="auto_round")
+
+        # Verify loading
+        model = AutoModelForCausalLM.from_pretrained(quantized_model_path, device_map="cuda:0", trust_remote_code=True)
+        assert isinstance(model, torch.nn.Module), "Loaded model is not an instance of torch.nn.Module"
+
+    # Split 3 bits test with [2,4,8] bits to avoid segmentation fault
+    @require_greater_than_050
+    @pytest.mark.parametrize("bits", [3])
+    @pytest.mark.parametrize("group_size", [32, 128])
+    @pytest.mark.parametrize("is_sym", [True, False])
+    def test_autoround_format_3bit(self, tiny_opt_model_path, bits, group_size, is_sym):
         autoround = AutoRound(
             tiny_opt_model_path,
             bits=bits,
