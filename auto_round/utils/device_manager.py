@@ -871,7 +871,7 @@ def is_auto_device_mapping(device_map: Union[str, int, dict, None]) -> bool:
         return False
 
 
-def get_major_device(device_map: Union[None, str, torch.device, int, dict]=None) -> str:
+def get_major_device(device_map: Union[None, str, torch.device, int, dict] = None) -> str:
     if device_map is None or isinstance(device_map, (str, torch.device, int)):
         """Detects the appropriate computation device.
 
