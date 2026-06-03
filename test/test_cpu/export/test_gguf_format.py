@@ -142,10 +142,19 @@ class TestGGUF:
                 assert False, "cmd line test fail, please have a check"
             shutil.rmtree("../../tmp_autoround", ignore_errors=True)
 
-        # test mixed q2_k_s
+        # test q2_k_mixed with iters=0 (RTN) on non-MoE model — should still work
         res = os.system(
             f"PYTHONPATH='{AUTO_ROUND_PATH}:$PYTHONPATH' {python_path} -m auto_round --model {model_name}"
             f" --bs 16 --iters 0 --disable_opt_rtn --nsamples 1 --seqlen 16 --scheme GGUF:Q2_K_MIXED"
+        )
+        if res > 0 or res == -1:
+            assert False, "cmd line test fail, please have a check"
+        shutil.rmtree("../../tmp_autoround", ignore_errors=True)
+
+        # test q2_k_mixed with iters=1 on non-MoE model — should fallback to q4_k_m
+        res = os.system(
+            f"PYTHONPATH='{AUTO_ROUND_PATH}:$PYTHONPATH' {python_path} -m auto_round --model {model_name}"
+            f" --bs 16 --iters 1 --nsamples 1 --seqlen 16 --format gguf:q2_k_mixed"
         )
         if res > 0 or res == -1:
             assert False, "cmd line test fail, please have a check"
@@ -313,3 +322,25 @@ class TestGGUF:
         assert gguf_model.get_tensor(2).tensor_type.name == "Q4_K"
         assert gguf_model.get_tensor(9).name == "blk.0.ffn_up_exps.weight"
         assert gguf_model.get_tensor(9).tensor_type.name == "Q2_K"
+
+    def test_q2k_mixed_keeps_only_three_dim_expert_weights_at_q2k(self, tiny_qwen_moe_model_path):
+        model_name = tiny_qwen_moe_model_path
+        autoround = AutoRound(
+            model_name,
+            iters=0,
+            nsamples=1,
+            seqlen=16,
+            disable_opt_rtn=True,
+        )
+        _, quantized_model_path = autoround.quantize_and_save(output_dir=self.save_dir, format="gguf:q2_k_mixed")
+        gguf_file = os.listdir(quantized_model_path)[0]
+        from gguf.gguf_reader import GGUFReader
+
+        gguf_model = GGUFReader(os.path.join(quantized_model_path, gguf_file))
+        tensor_types = {tensor.name: tensor.tensor_type.name for tensor in gguf_model.tensors}
+
+        assert tensor_types["token_embd.weight"] == "Q8_0"
+        assert tensor_types["output.weight"] == "Q8_0"
+        assert tensor_types["blk.0.attn_k.weight"] == "Q4_K"
+        assert tensor_types["blk.0.ffn_down_exps.weight"] == "Q5_0"
+        assert tensor_types["blk.0.ffn_up_exps.weight"] == "Q2_K"

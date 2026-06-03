@@ -780,9 +780,19 @@ class GGUFFormat(OutputFormat):
             gguf_format = f"gguf:{format.lower()}"
             if format.lower().endswith("_mixed"):
                 from auto_round.schemes import _handle_special_schemes
+                from auto_round.utils.model import is_moe_model
 
-                ar.layer_config = _handle_special_schemes(gguf_format, ar.layer_config, ar.model)
-                gguf_format = gguf_format.lower().replace("_mixed", "_s")
+                if format.lower() == "q2_k_mixed" and getattr(ar, "iters", 0) > 0 and not is_moe_model(ar.model):
+                    logger.warning(
+                        "gguf:q2_k_mixed only supports MoE models with iters>0. "
+                        "It is not an MoE model, falling back to gguf:q4_k_m."
+                    )
+                    gguf_format = "gguf:q4_k_m"
+                else:
+                    ar.layer_config = _handle_special_schemes(
+                        gguf_format, ar.layer_config, ar.model, quant_nontext_module=ar.quant_nontext_module
+                    )
+                    gguf_format = gguf_format.lower().replace("_mixed", "_s")
             if isinstance(scheme, str) and scheme.lower() != gguf_format:
                 logger.warning(f"reset scheme {scheme.lower()} to {gguf_format} for gguf format export")
                 ar.scheme = gguf_format
