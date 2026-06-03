@@ -23,16 +23,16 @@ Pipeline:
        - ARK model: each quantized nn.Linear swapped for an ARK int3 QuantLinear (the kernel).
        - Dequant reference: each quantized nn.Linear's weight replaced by the plain-PyTorch
          dequantization (q - 4) * scale of the same int3 tensors.
-  3. Run a SINGLE-TOKEN forward through both (so every projection sees m==1 -> the S3 GEMV
-     path) and check that the ARK kernel matches the dequant reference.
+  3. Run a MULTI-TOKEN forward through both (every projection sees m>1 -> the S3 GEMM /
+     prefill path) and check that the ARK kernel matches the dequant reference.
 
 The kernel-correctness check is ARK-int3 vs dequant-of-the-same-int3-weights: it isolates the
-GEMV kernel from quantization loss. Comparing against the fp16 model instead would measure how
+GEMV/GEMM kernel from quantization loss. Comparing against the fp16 model instead would measure how
 lossy 3-bit quantization is (large, and unrelated to whether the kernel is correct), so the fp16
 next-token is printed for context only, not asserted.
 
-int3 on XPU is GEMV-only (m==1). A normal multi-token prefill would hit the kernel's
-m>1 guard (std::abort), so this script deliberately drives the model one token at a time.
+int3 on XPU supports both m==1 (GEMV) and m>1 (GEMM, via an fp-dequant + DNNL fp GEMM fallback),
+so a normal multi-token prefill runs without aborting.
 
 Run (from a venv with torch-xpu + auto_round + transformers + the compiled
 auto_round_kernel_xpu module on PYTHONPATH):
@@ -158,8 +158,10 @@ def main():
     ckpt_dir = ensure_quantized()
     tok = AutoTokenizer.from_pretrained(MODEL_ID, trust_remote_code=True)
 
-    # Single-token input -> every linear sees m==1 (the S3 GEMV path). Use the last prompt token.
-    ids = tok("The capital of France is", return_tensors="pt").input_ids[:, -1:].to(device)
+    # Multi-token input -> every linear sees m>1 (the S3 GEMM / prefill path). int3 m>1 used to
+    # abort; it now runs via the fp-dequant + DNNL fp GEMM fallback. Use the whole prompt.
+    ids = tok("The capital of France is", return_tensors="pt").input_ids.to(device)
+    print(f"[int3-e2e] prefill tokens (m): {ids.shape[1]}")
 
     packed = load_packed_tensors(ckpt_dir)
     print(f"[int3-e2e] found {len(packed)} quantized linears in checkpoint")

@@ -432,7 +432,8 @@ class XpuWrapper {
       return;
     }
     if (p->weight_type == BTLA_DTYPE::S3) {
-      // m>1 (S8 compute) path not implemented for int3 yet; fp dequant only.
+      // Production m>1 route for int3: fp dequant only (no S8-compute unpack for the dense 3-bit
+      // blob). woq_gemm forces compute_type to fp for S3, so outt is F32/F16 here.
       if (p->scale_type == BTLA_DTYPE::F32) {
         using ProB = WeightS3T<float>;
         ProB::template dequant<typename ProB::CfgDequantF32>(
@@ -746,16 +747,13 @@ class XpuWrapper {
                        sycl::queue* q) {
     auto ret = woq_gemv(q, m, p, a, b, c, bias, acdt);
     if (ret) {
-      // int3 currently supports only the m==1 GEMV path; the S8-compute (DNNL) path is not
-      // implemented. Fail loud rather than read the blob with an incompatible layout.
-      if (p->weight_type == BTLA_DTYPE::S3) {
-        std::fprintf(stderr,
-                     "[ark] int3 (S3) WOQ on XPU only supports m==1 GEMV; batched GEMM (m=%d) is not implemented.\n",
-                     m);
-        std::abort();
-      }
       auto dnnl_dt = to_dt(acdt);
       check_compute_type(p);
+      // int3 (S3) m>1: there is no S8-compute unpack for the dense 3-bit blob, so always take the
+      // fp-dequant + DNNL fp GEMM path. unpackq decodes the blob via WeightS3T::dequant into an fp
+      // scratch buffer (the same unpack32 decode the m==1 GEMV uses). The int8-XMX path is a future
+      // optimization. Force the fp branch here since blocksize%64==0 keeps compute_type at S8.
+      if (p->weight_type == BTLA_DTYPE::S3) p->compute_type = BTLA_DTYPE::F16;
       if (p->compute_type != BTLA_DTYPE::S8) {
         size_t elesize = bestla::utils::bestla_dtype_bytes(acdt);
         size_t total_size = elesize * p->k * p->n;

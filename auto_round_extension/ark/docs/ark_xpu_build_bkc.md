@@ -128,7 +128,13 @@ Expected int3 (S3) WOQ GEMV accuracy output (max_diff at machine epsilon, ~1e-7)
 [woq_s3][accuracy] n=128 k=128 blk=128 max_diff=5.96046e-07
 [woq_s3][accuracy] n=256 k=96  blk=32  max_diff=2.98023e-07
 [woq_s3][accuracy] n=64  k=256 blk=64  max_diff=4.76837e-07
+[woq_s3][gemm] m=4  n=128 k=128 blk=128 max_diff=3.57628e-07
+[woq_s3][gemm] m=8  n=256 k=128 blk=128 max_diff=3.57628e-07
+[woq_s3][gemm] m=16 n=64  k=256 blk=64  max_diff=1.07288e-06
 ```
+
+The `[woq_s3][gemm]` lines exercise the m>1 (batched) int3 path: they drive `woq_gemm` with
+`compute_type=S8` (matching the Python `cdt="int8"`) so the S3 fp-compute fallback is taken.
 
 The binary exits 0 when all GEMM / WOQ / SDPA cases pass. The SDPA benchmarks at the end
 (`bench_*` with 4096/8192 seq len) run for a few minutes — this is expected.
@@ -142,5 +148,8 @@ The binary exits 0 when all GEMM / WOQ / SDPA cases pass. The SDPA benchmarks at
 - Build tip: stdout from a long `cmake --build`/test run is line-buffered through pipes; if you
   pipe through `grep`/`tail` you may see nothing until exit. Redirect to a file with
   `stdbuf -oL -eL ... > run.log 2>&1` to watch progress live.
-- int3 status: **m=1 GEMV only**. Batched `m>1` int3 GEMM is not implemented and aborts loudly
-  in `woq_gemm`; asymmetric int3 is unsupported (XPU is symmetric-only).
+- int3 status: **m=1 GEMV + m>1 GEMM** both supported. m=1 uses the dedicated S3 GEMV kernel; m>1
+  (batched / multi-token prefill) runs through an fp-dequant + DNNL fp GEMM fallback in `woq_gemm`
+  (the dense 3-bit blob is decoded by `WeightS3T::dequant`, the same `unpack32` decode as GEMV, so
+  it is numerically exact). The int8-XMX m>1 path (mirroring S4's `dequantS8`) is a future
+  optimization. Asymmetric int3 is unsupported (XPU is symmetric-only).

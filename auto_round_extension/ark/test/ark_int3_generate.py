@@ -15,11 +15,11 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Token-by-token greedy generation through the ARK XPU int3 (S3) GEMV kernel.
+"""Greedy generation through the ARK XPU int3 (S3) kernel with a normal multi-token prefill.
 
-int3 on XPU is GEMV-only (m==1). A normal ``model.generate()`` does a multi-token prefill
-(m>1) that would hit the kernel's abort guard, so this script drives the model ONE token at a
-time (token-by-token prefill + greedy decode via KV cache) so every linear sees m==1.
+int3 on XPU supports both m==1 (GEMV/decode) and m>1 (GEMM/prefill, via an fp-dequant + DNNL fp
+GEMM fallback), so the prompt is fed in a single multi-token forward and decoding proceeds via the
+KV cache.
 
 It builds the int3 model from an exported W3G128-sym checkpoint (see test_int3_e2e.py for how to
 produce one), generates N tokens for a prompt, and cross-checks the ARK kernel against a plain
@@ -106,14 +106,15 @@ def build_dequant(packed, device):
 
 
 @torch.no_grad()
-def greedy_m1(model, ids, device, n_new):
-    """Greedy decode feeding ONE token per forward (m==1) via KV cache."""
+def greedy_prefill(model, ids, device, n_new):
+    """Greedy decode with a normal multi-token prefill (m>1) then single-token decode via KV cache.
+
+    int3 m>1 now runs through the S3 GEMM fp-compute path, so the whole prompt is fed in one
+    forward instead of token-by-token.
+    """
     out = ids[0].tolist()
-    past = None
-    res = None
-    for i in range(ids.shape[1]):
-        res = model(ids[:, i : i + 1], past_key_values=past, use_cache=True)
-        past = res.past_key_values
+    res = model(ids, use_cache=True)  # multi-token prefill, m == prompt_len
+    past = res.past_key_values
     nxt = int(res.logits[:, -1, :].argmax(-1))
     out.append(nxt)
     for _ in range(n_new - 1):
@@ -126,12 +127,8 @@ def greedy_m1(model, ids, device, n_new):
 
 @torch.no_grad()
 def teacher_forced_logits(model, seq, device):
-    past, logits = None, []
-    for i in range(seq.shape[1]):
-        res = model(seq[:, i : i + 1], past_key_values=past, use_cache=True)
-        past = res.past_key_values
-        logits.append(res.logits[:, -1, :].float())
-    return torch.cat(logits, 0)
+    """Per-position next-token logits from a single multi-token forward (m>1)."""
+    return model(seq, use_cache=False).logits[0].float()
 
 
 @torch.no_grad()
@@ -162,7 +159,7 @@ def main():
     prompt_len = ids.shape[1]
 
     ark = build_ark(packed, device)
-    traj = greedy_m1(ark, ids, device, NEW_TOKENS)
+    traj = greedy_prefill(ark, ids, device, NEW_TOKENS)
     gen_text = tok.decode(traj[prompt_len:], skip_special_tokens=True)
     print(f"[gen] prompt: {PROMPT!r}  ({prompt_len} tokens)")
     print("[gen] ARK int3 generation:")
