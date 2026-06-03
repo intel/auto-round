@@ -349,7 +349,6 @@ def llm_load_model(
         is_hpex_available,
         override_cuda_device_capability,
     )
-
     from auto_round.utils.device_manager import get_device_and_parallelism
 
     device_str, use_auto_mapping = get_device_and_parallelism(device)
