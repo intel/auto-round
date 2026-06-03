@@ -34,12 +34,12 @@ from accelerate.utils import get_balanced_memory, get_max_memory
 from auto_round.logger import logger
 from auto_round.utils.device_manager import (
     clear_memory,
-    get_major_device,
     detect_device_count,
     get_ar_device,
     get_available_device_types,
     get_current_device_manager,
     get_device_memory,
+    get_major_device,
 )
 from auto_round.utils.model import check_to_quantized, get_block_names, get_layer_features, get_module
 
@@ -950,7 +950,7 @@ def set_auto_device_map_for_block_with_tuning(
     else:
         return card_0_in_high_risk, loss_device
 
-    if len(device_list)<=1:  # Only 1 card is available or non-auto device map
+    if len(device_list) <= 1:  # Only 1 card is available or non-auto device map
         block = block.to(output_device)
         return card_0_in_high_risk, loss_device
 

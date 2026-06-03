@@ -611,7 +611,7 @@ def tune(args):
             "lm-eval is required for evaluation, please install it with `pip install 'lm-eval>=0.4.2'`",
         )
 
-    from auto_round.utils import get_major_device, get_library_version, logger
+    from auto_round.utils import get_library_version, get_major_device, logger
 
     if args.low_cpu_mem_usage:
         logger.warning(
@@ -637,8 +637,6 @@ def tune(args):
 
     if "marlin" in args.format and args.asym is True:
         raise RuntimeError("marlin backend only supports sym quantization, please remove --asym")
-
-
 
     if args.enable_torch_compile:
         logger.info(
