@@ -535,7 +535,8 @@ def mllm_load_model(
 
         base_lib = transformers
 
-    from auto_round.utils.device import get_device_and_parallelism, override_cuda_device_capability
+    from auto_round.utils.device_manager import get_device_and_parallelism
+    from auto_round.utils.device import override_cuda_device_capability
 
     device_str, use_auto_mapping = get_device_and_parallelism(device)
     torch_dtype = "auto"
