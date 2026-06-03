@@ -334,7 +334,7 @@ class ARDevice:
 
     def device_count(self) -> int:
         fn = getattr(self._module, "device_count", None)
-        return int(fn()) if callable(fn) else 0 # noqa: E1102
+        return int(fn()) if callable(fn) else 0  # noqa: E1102
 
     def current_device(self) -> int:
         ok, idx = _module_call(self._module, ("current_device_index", "current_device_idx", "current_device"))
@@ -374,9 +374,9 @@ class ARDevice:
         if not callable(fn):
             return
         try:
-            fn(index) if index is not None else fn() # noqa: E1102
+            fn(index) if index is not None else fn()  # noqa: E1102
         except Exception:
-            fn() # noqa: E1102
+            fn()  # noqa: E1102
 
     def empty_cache(self) -> None:
         # ``torch.accelerator`` has no cache API; this is always module-level.
@@ -384,7 +384,7 @@ class ARDevice:
             return
         fn = getattr(self._module, "empty_cache", None)
         if callable(fn):
-            fn() # noqa: E1102
+            fn()  # noqa: E1102
 
     def get_device_capability(self, index: Union[int, None] = None):
         """Return the compute capability of the selected device, if exposed."""
@@ -394,7 +394,7 @@ class ARDevice:
         if not callable(fn):
             return None
         try:
-            return fn(index) if index is not None else fn() # noqa: E1102
+            return fn(index) if index is not None else fn()  # noqa: E1102
         except Exception:
             return None
 
@@ -413,14 +413,14 @@ class ARDevice:
     def total_memory(self, index: int = 0) -> int:
         fn = getattr(self._module, "get_memory_info", None)
 
-        return fn(index)[1] if callable(fn) else None # noqa: E1102
+        return fn(index)[1] if callable(fn) else None  # noqa: E1102
 
     def memory_reserved(self, index: int = 0) -> int:
         if self._module is None:
             return 0
         fn = getattr(self._module, "memory_reserved", None) or getattr(self._module, "memory_cached", None)
         try:
-            return int(fn(index)) if callable(fn) else 0 # noqa: E1102
+            return int(fn(index)) if callable(fn) else 0  # noqa: E1102
         except Exception:
             return 0
 
@@ -429,7 +429,7 @@ class ARDevice:
             return 0
         fn = getattr(self._module, "memory_allocated", None)
         try:
-            return int(fn(index)) if callable(fn) else 0 # noqa: E1102
+            return int(fn(index)) if callable(fn) else 0  # noqa: E1102
         except Exception:
             return 0
 
@@ -442,7 +442,7 @@ class ARDevice:
         fn = getattr(self._module, "get_memory_info", None)
         torch.accelerator.get_memory_info()
 
-        return fn(index) if callable(fn) else (0, 0) # noqa: E1102
+        return fn(index) if callable(fn) else (0, 0)  # noqa: E1102
 
     # -- numeric format / mixed-precision policy ---------------------------
     def supports_bf16(self) -> bool:
@@ -524,7 +524,7 @@ class HpuARDevice(ARDevice):
         fn = getattr(self._module, "set_device", None)
         if callable(fn):
             try:
-                fn(index) # noqa: E1102
+                fn(index)  # noqa: E1102
             except Exception:
                 pass
 
