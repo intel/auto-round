@@ -296,11 +296,11 @@ class TestQ2KMixedRecipe:
             assert key in self.cfg, f"{key} missing from layer_config"
             assert self.cfg[key] == "GGUF:Q4_K_S", f"{key} expected Q4_K_S, got {self.cfg[key]}"
 
-    def test_routed_experts_linears_get_q4ks(self):
-        """2D routed expert linears should use Q4_K_S under the new rule."""
+    def test_routed_experts_linears_not_in_recipe(self):
+        """Routed expert linears are excluded from the recipe — falls through to dtype selector."""
         for i in range(2):
             key = f"layer0.mlp.experts.{i}"
-            assert self.cfg.get(key) == "GGUF:Q4_K_S"
+            assert key not in self.cfg, f"{key} should not be in the recipe"
 
     def test_fused_three_dim_expert_weights_start_as_q2ks_recipe(self):
         """_handle_special_schemes sets 3D expert weights directly to Q2_K_S."""

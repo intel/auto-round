@@ -617,8 +617,7 @@ def _handle_special_schemes(
             if n in layer_config:
                 continue
             if (
-                type(m) in supported_types
-                or type(m) in inner_supported_types
+                (type(m) in supported_types or type(m) in inner_supported_types)
                 and contain_any_mm_keys(n)
                 and quant_nontext_module
             ):

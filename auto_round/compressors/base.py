@@ -1068,7 +1068,10 @@ class BaseCompressor(object):
         if (
             self.has_qlayer_outside_block
             and self.need_calib
-            and "gguf" not in self.compress_context.formats[0].__class__.__name__.lower()
+            and (
+                self.compress_context.formats is None
+                or "gguf" not in self.compress_context.formats[0].__class__.__name__.lower()
+            )
         ):
             self.inplace = False
 
