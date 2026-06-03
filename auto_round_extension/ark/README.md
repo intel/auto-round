@@ -44,6 +44,8 @@ pip install auto-round-lib
 
 ### 2. Install from Source
 ```bash
+pip install . --no-build-isolation
+# or
 python setup.py bdist_wheel;pip install dist/*
 ```
 
