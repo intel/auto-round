@@ -32,14 +32,14 @@ out-of-tree backends that are not yet integrated into ``torch.accelerator``
 
 Typical usage::
 
-    from auto_round.utils.device_manager import get_current_device_manager, get_device_manager
+    from auto_round.utils.device_manager import get_current_device_manager, get_ar_device
 
     dev = get_current_device_manager()   # active device (cuda/xpu/hpu/...)
     if dev.is_available():
         dev.empty_cache()
         free, total = dev.mem_get_info(0)
 
-    cuda = get_device_manager("cuda")    # a specific backend
+    cuda = get_ar_device("cuda")    # a specific backend
 """
 
 from __future__ import annotations
