@@ -21,7 +21,7 @@ try:
     import auto_round_kernel
 
     ARK_INSTALLED = True
-    ark = auto_round_kernel.ARK()
+    ark = auto_round_kernel
 except:
     ARK_INSTALLED = False
 
@@ -130,12 +130,16 @@ class QuantLinear(nn.Module):
             raise NotImplementedError("in_features must be divisible by group_size")
         if "awq" in self.QUANT_TYPE:
             self.register_buffer(
-                "qweight", torch.zeros((in_features, out_features // self.pack_num), dtype=torch.int32)
+                "qweight",
+                torch.zeros((in_features, out_features // self.pack_num), dtype=torch.int32),
             )
         else:
             self.register_buffer(
                 "qweight",
-                torch.zeros((self.infeatures // 32 * self.bits, self.outfeatures), dtype=torch.int32),
+                torch.zeros(
+                    (self.infeatures // 32 * self.bits, self.outfeatures),
+                    dtype=torch.int32,
+                ),
             )
         self.register_buffer(
             "qzeros",
@@ -394,7 +398,14 @@ class QuantLinearFP8(nn.Module):
         self.trainable = trainable
 
     def _load_from_state_dict(
-        self, state_dict, prefix, local_metadata, strict, missing_keys, unexpected_keys, error_msgs
+        self,
+        state_dict,
+        prefix,
+        local_metadata,
+        strict,
+        missing_keys,
+        unexpected_keys,
+        error_msgs,
     ):
         """Override to handle weight_scale shape mismatch between checkpoint and model."""
         weight_scale_key = prefix + "weight_scale"
@@ -404,7 +415,10 @@ class QuantLinearFP8(nn.Module):
             out_features, num_groups = expected_shape
             expected_numel = out_features * num_groups
 
-            if loaded_scale.ndim == 2 and loaded_scale.shape == (num_groups, out_features):
+            if loaded_scale.ndim == 2 and loaded_scale.shape == (
+                num_groups,
+                out_features,
+            ):
                 state_dict[weight_scale_key] = loaded_scale.t().contiguous()
                 loaded_scale = state_dict[weight_scale_key]
 
@@ -424,7 +438,9 @@ class QuantLinearFP8(nn.Module):
                     inferred_shape = (out_features, inferred_num_groups)
                     state_dict[weight_scale_key] = loaded_scale.view(inferred_shape)
                     self.weight_scale = torch.zeros(
-                        inferred_shape, dtype=self.weight_scale.dtype, device=self.weight_scale.device
+                        inferred_shape,
+                        dtype=self.weight_scale.dtype,
+                        device=self.weight_scale.device,
                     )
 
                 else:
@@ -432,7 +448,13 @@ class QuantLinearFP8(nn.Module):
                         f"Cannot reshape scale! loaded_scale.numel()={numel}, expected={expected_numel}, out_features={out_features}"
                     )
         super()._load_from_state_dict(
-            state_dict, prefix, local_metadata, strict, missing_keys, unexpected_keys, error_msgs
+            state_dict,
+            prefix,
+            local_metadata,
+            strict,
+            missing_keys,
+            unexpected_keys,
+            error_msgs,
         )
 
     def post_init(self):
