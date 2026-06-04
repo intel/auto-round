@@ -462,8 +462,8 @@ class ARDevice:
 
         return torch.compile(func)
 
-    def __repr__(self) -> str:  # pragma: no cover - debug aid
-        return f"{type(self).__name__}(type={self.type!r}"
+def __repr__(self) -> str:  # pragma: no cover - debug aid
+    return f"{type(self).__name__}(type={self.type!r})"
 
 
 class HpuARDevice(ARDevice):
