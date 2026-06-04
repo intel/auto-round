@@ -1231,3 +1231,22 @@ def load_next_step_diffusion(pretrained_model_name_or_path, device_str):
 
     pipe._autoround_pipeline_fn = _nextstep_pipeline_fn
     return pipe, model
+
+_PRE_DEFINED_FIXED_ATTR = {"gemma4_unified": {"has_variable_block_shape": True}}
+
+def get_predefined_fixed_attr(model: torch.nn.Module) -> dict | None:
+    """Return fixed compressor attributes for models that need special caching.
+
+    For Gemma4 with transformers >= 5.6, each decoder block must cache its own
+    inputs because sliding vs full-attention layers require different
+    position_embeddings. Returns ``None`` for older transformers, which instead
+    rely on the per-layer forward patch applied in ``_handle_special_model``.
+    """
+    import transformers
+    from packaging import version
+
+    config = getattr(model, "config", None)
+    if config is None or not hasattr(config, "model_type"):
+        return None
+    attrs = _PRE_DEFINED_FIXED_ATTR.get(config.model_type)
+    return attrs
