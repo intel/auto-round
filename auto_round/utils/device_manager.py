@@ -310,7 +310,7 @@ class ARDevice:
 
     def is_available(self) -> bool:
         """Whether this backend type is usable in the current build."""
-        return  True
+        return True
 
     def device_count(self) -> int:
         fn = getattr(self._module, "device_count", None)
@@ -368,6 +368,7 @@ class ARDevice:
                 fn()  # pylint: disable=E1102 # mps has issues
             except:
                 pass
+
     #
     # def get_device_capability(self, index: Union[int, None] = None):
     #     """Return the compute capability of the selected device, if exposed."""
@@ -552,7 +553,6 @@ class MpsARDevice(ARDevice):
         self.type = "mps"
         self._module = getattr(torch, "mps", None)
 
-
     @staticmethod
     def get_device_module(device: Union[None, str, int, torch.device] = None):
         """Return the backend runtime module for ``device`` (e.g. ``torch.cuda``).
@@ -569,13 +569,11 @@ class MpsARDevice(ARDevice):
             The module exposing the device runtime API, or ``None`` for CPU / when
             no device is available.
         """
-        return  torch.mps
-
+        return torch.mps
 
     def is_available(self) -> bool:
         """Whether this backend type is usable in the current build."""
-        return  self._module.is_available()
-
+        return self._module.is_available()
 
     def current_device(self) -> int:
         return 0
@@ -583,11 +581,9 @@ class MpsARDevice(ARDevice):
     def set_device(self, index: Union[int, str, torch.device]) -> None:
         return None
 
-
     def device(self, index: Union[int, str, torch.device, None] = None) -> torch.device:
         """Build a ``torch.device`` for this backend / card ``index``."""
-        return torch.device(f"mps")
-
+        return torch.device("mps")
 
     def device_index(self, index: int):
         """Context manager that sets the current device index for this backend.
@@ -605,7 +601,7 @@ class MpsARDevice(ARDevice):
         return torch.mps.recommended_max_memory()
 
     def memory_reserved(self, index: int = 0) -> int:
-       return torch.mps.driver_allocated_memory()
+        return torch.mps.driver_allocated_memory()
 
     def memory_allocated(self, index: int = 0) -> int:
         return torch.mps.current_allocated_memory()
@@ -633,7 +629,6 @@ class MpsARDevice(ARDevice):
         would rather honour the model's own non-fp32 dtype can override this.
         """
         return True
-
 
 
 class CpuARDevice(ARDevice):
