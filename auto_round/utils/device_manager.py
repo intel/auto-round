@@ -545,6 +545,17 @@ class HpuARDevice(ARDevice):
             return torch.compile(func, backend="hpu_backend")
         return func
 
+    def memory_allocated(self, index: int = 0) -> int:
+        return torch.hpu.memory_allocated(index)
+
+    def memory_reserved(self, index: int = 0) -> int: #TODO have a check
+        return torch.hpu.memory_allocated(index)
+
+
+    def device_count(self) -> int:
+        import habana_frameworks.torch.hpu as hthpu  # pylint: disable=E0401
+        return hthpu.device_count()
+
 
 class MpsARDevice(ARDevice):
     """Apple Silicon (MPS) backend.
@@ -644,18 +655,18 @@ class CpuARDevice(ARDevice):
         except Exception:
             return None
 
-    def device_properties(self, index: int = 0):
-        return None
-
     def total_memory(self, index: int = 0) -> int:
         vm = self._virtual_memory()
         return int(vm.total) if vm is not None else 0
 
     def memory_reserved(self, index: int = 0) -> int:
-        return 0
+        import psutil
+        process = psutil.Process()
+        current_ram = process.memory_info().rss / 1024**3  # GB
+        return current_ram
 
     def memory_allocated(self, index: int = 0) -> int:
-        return 0
+        return self.memory_reserved(index)
 
     def mem_get_info(self, index: int = 0) -> tuple[int, int]:
         vm = self._virtual_memory()
