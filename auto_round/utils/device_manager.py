@@ -175,9 +175,20 @@ def get_current_device_type() -> str:
     # "hpu" first: it may not be registered with torch.accelerator.
     if _hpu_available():
         return "hpu"
+
     accel_type = _torch_accelerator_type()
     if accel_type is not None:
         return accel_type
+
+    # PyTorch < 2.6: torch.accelerator may not exist; probe common backends.
+    for dtype in _PREFERRED_ORDER:
+        if dtype == "hpu":
+            continue
+        mod = getattr(torch, dtype, None)
+        is_avail = getattr(mod, "is_available", None)
+        if callable(is_avail) and is_avail():
+            return dtype
+
     return "cpu"
 
 
