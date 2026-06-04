@@ -772,7 +772,7 @@ class GGUFFormat(OutputFormat):
             self.backend_cls = GGUFFormat
             self.backend = GGUFFormat(format.split(":")[-1], ar)
 
-            resolved_format = f"gguf:{self.backend.output_format}"
+            resolved_format = self.backend.output_format
             self.gguf_args_check(ar, resolved_format, model_type=ModelType.TEXT)
             if ar.mllm:
                 self.gguf_args_check(ar, resolved_format, model_type=ModelType.MMPROJ)
@@ -783,7 +783,7 @@ class GGUFFormat(OutputFormat):
                 from auto_round.schemes import _handle_special_schemes
                 from auto_round.utils.model import is_moe_model
 
-                if format.lower() == "q2_k_mixed" and getattr(ar, "iters", 0) > 0 and not is_moe_model(ar.model):
+                if format.lower() == "q2_k_mixed" and (getattr(ar, "iters", 0) or 0) > 0 and not is_moe_model(ar.model):
                     logger.warning(
                         "gguf:q2_k_mixed only supports MoE models with iters>0. "
                         "It is not an MoE model, falling back to gguf:q2_k_s."
