@@ -89,6 +89,8 @@ class DataDrivenCompressor(BaseCompressor):
         low_cpu_mem_usage: bool = True,
         **kwargs,
     ):
+        if iters is None:
+            iters = 200
         self.iters = iters
         super().__init__(
             config=config,

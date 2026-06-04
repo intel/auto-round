@@ -71,8 +71,6 @@ __all__ = [
     # Config
     "RotationConfig",
     "HadamardRotation",
-    "AWQConfig",
-    "AWQQuantizer",
     "apply_rotation_transform",
     # Unified entry — preprocessing
     "apply_rotation",
