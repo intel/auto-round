@@ -32,14 +32,14 @@ out-of-tree backends that are not yet integrated into ``torch.accelerator``
 
 Typical usage::
 
-    from auto_round.utils.device_manager import get_current_device_manager, get_device_manager
+    from auto_round.utils.device_manager import get_current_device_manager, get_ar_device
 
     dev = get_current_device_manager()   # active device (cuda/xpu/hpu/...)
     if dev.is_available():
         dev.empty_cache()
         free, total = dev.mem_get_info(0)
 
-    cuda = get_device_manager("cuda")    # a specific backend
+    cuda = get_ar_device("cuda")    # a specific backend
 """
 
 from __future__ import annotations
@@ -175,9 +175,20 @@ def get_current_device_type() -> str:
     # "hpu" first: it may not be registered with torch.accelerator.
     if _hpu_available():
         return "hpu"
+
     accel_type = _torch_accelerator_type()
     if accel_type is not None:
         return accel_type
+
+    # PyTorch < 2.6: torch.accelerator may not exist; probe common backends.
+    for dtype in _PREFERRED_ORDER:
+        if dtype == "hpu":
+            continue
+        mod = getattr(torch, dtype, None)
+        is_avail = getattr(mod, "is_available", None)
+        if callable(is_avail) and is_avail():
+            return dtype
+
     return "cpu"
 
 
@@ -462,8 +473,9 @@ class ARDevice:
 
         return torch.compile(func)
 
-    def __repr__(self) -> str:  # pragma: no cover - debug aid
-        return f"{type(self).__name__}(type={self.type!r}"
+
+def __repr__(self) -> str:  # pragma: no cover - debug aid
+    return f"{type(self).__name__}(type={self.type!r})"
 
 
 class HpuARDevice(ARDevice):

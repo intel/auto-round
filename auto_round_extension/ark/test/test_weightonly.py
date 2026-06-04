@@ -23,7 +23,7 @@ import pytest
 import torch
 from ut_utils import decode_fp8_to_float, gen_weis8, get_torch_dt, sample_valid_fp8, sample_valid_fp8_e8m0_xpu_safe
 
-ark = auto_round_kernel.ARK()
+ark = auto_round_kernel
 
 
 def main_op(m, n, k, blocksize, compute_type, weight_type, scale_type, asym, device, is_ci=False):

@@ -571,9 +571,9 @@ class DataDrivenCompressor(BaseCompressor):
             if len(device_manager.device_list) > 1 and not self.model_context.is_diffusion:
                 accelerate.hooks.remove_hook_from_submodules(m)
             mv_module_from_gpu(m)
-            if self.enable_torch_compile:
-                torch._dynamo.reset()
-                self.quantizer._invalidate_block_forward_cache()
+            # if self.enable_torch_compile:
+            #     torch._dynamo.reset()
+            #     self.quantizer._invalidate_block_forward_cache()
             # Keep old-arch semantics: the next block's FP reference input comes
             # from the current block's reference output, while q_input (when
             # enabled) is only used as the quantized-input companion for the
