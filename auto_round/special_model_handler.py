@@ -115,7 +115,7 @@ def prepare_special_model_block_inputs(block, rotary_input, input_others, positi
             )
 
     special_replay_type = getattr(block, "_autoround_special_replay", None)
-    if special_replay_type == "gemma4":
+    if special_replay_type == "gemma4" or special_replay_type =="gemma4_unified":
         prepared_inputs = _prepare_gemma4_replay_inputs(
             block,
             rotary_input,
@@ -372,7 +372,7 @@ def _handle_special_model(model):
         from functools import partial
 
         model.forward = partial(_mimo_audio_forward, model)
-    if hasattr(model, "config") and model_type == "gemma4":
+    if hasattr(model, "config") and (model_type == "gemma4"):
         import transformers
         from packaging import version
 
@@ -385,6 +385,8 @@ def _handle_special_model(model):
             "This patch has only been validated with limited Transformers versions. "
             "Proceed with caution."
         )
+    if hasattr(model, "config") and model_type == "gemma4_unified":
+        _attach_gemma4_unified_rotary_emb(model)
     return model
 
 
@@ -1195,6 +1197,41 @@ def _attach_gemma4_rotary_emb(model):
         object.__setattr__(layer, "_gemma4_config_ref", text_model.config)
 
 
+
+def _attach_gemma4_unified_rotary_emb(model):
+    """Attach ``_rotary_emb`` to each Gemma4 decoder layer.
+
+    For transformers >= 5.6 the per-layer forward patch is unnecessary, but
+    ``block_forward`` still needs access to ``rotary_emb`` (which lives on the
+    parent ``Gemma4TextModel``) to recompute ``position_embeddings`` when the
+    cached version from block 0 has the wrong dimension.
+    """
+    try:
+        from transformers.models.gemma4_unified import Gemma4UnifiedTextModel
+    except ImportError:
+        return
+
+    text_model = None
+    for _, submodule in model.named_modules():
+        if isinstance(submodule, Gemma4UnifiedTextModel):
+            text_model = submodule
+            break
+
+    if text_model is None:
+        return
+
+    # Create a single shared dict to propagate KV state between anchor/sharer layers.
+    # Gemma4TextModel.forward in newer transformers uses the same pattern.
+    shared_kv_states_global = {}
+
+    for layer in text_model.layers:
+        # Store in a plain list to prevent nn.Module from registering these
+        # as child submodules (which would cause meta-tensor errors during .to(device)).
+        object.__setattr__(layer, "_rotary_emb_ref", [text_model.rotary_emb])
+        object.__setattr__(layer, "_shared_kv_states_global_ref", shared_kv_states_global)
+        object.__setattr__(layer, "_autoround_special_replay", "gemma4")
+        object.__setattr__(layer, "_gemma4_config_ref", text_model.config)
+
 def load_next_step_diffusion(pretrained_model_name_or_path, device_str):
     try:
         from models.gen_pipeline import NextStepPipeline  # pylint: disable=E0401
@@ -1232,7 +1269,9 @@ def load_next_step_diffusion(pretrained_model_name_or_path, device_str):
     pipe._autoround_pipeline_fn = _nextstep_pipeline_fn
     return pipe, model
 
-_PRE_DEFINED_FIXED_ATTR = {"gemma4_unified": {"has_variable_block_shape": True}}
+_PRE_DEFINED_FIXED_ATTR = {
+    "gemma4_unified": {"has_variable_block_shape": True}
+}
 
 def get_predefined_fixed_attr(model: torch.nn.Module) -> dict | None:
     """Return fixed compressor attributes for models that need special caching.
