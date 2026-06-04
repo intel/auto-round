@@ -601,7 +601,8 @@ class MpsARDevice(ARDevice):
         return torch.mps.recommended_max_memory()
 
     def memory_reserved(self, index: int = 0) -> int:
-        return torch.mps.driver_allocated_memory()
+        return torch.mps.current_allocated_memory()
+        # return torch.mps.driver_allocated_memory()
 
     def memory_allocated(self, index: int = 0) -> int:
         return torch.mps.current_allocated_memory()
