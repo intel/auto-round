@@ -115,7 +115,7 @@ def prepare_special_model_block_inputs(block, rotary_input, input_others, positi
             )
 
     special_replay_type = getattr(block, "_autoround_special_replay", None)
-    if special_replay_type == "gemma4" or special_replay_type =="gemma4_unified":
+    if special_replay_type == "gemma4" or special_replay_type == "gemma4_unified":
         prepared_inputs = _prepare_gemma4_replay_inputs(
             block,
             rotary_input,
@@ -1197,7 +1197,6 @@ def _attach_gemma4_rotary_emb(model):
         object.__setattr__(layer, "_gemma4_config_ref", text_model.config)
 
 
-
 def _attach_gemma4_unified_rotary_emb(model):
     """Attach ``_rotary_emb`` to each Gemma4 decoder layer.
 
@@ -1231,6 +1230,7 @@ def _attach_gemma4_unified_rotary_emb(model):
         object.__setattr__(layer, "_shared_kv_states_global_ref", shared_kv_states_global)
         object.__setattr__(layer, "_autoround_special_replay", "gemma4")
         object.__setattr__(layer, "_gemma4_config_ref", text_model.config)
+
 
 def load_next_step_diffusion(pretrained_model_name_or_path, device_str):
     try:
@@ -1269,9 +1269,9 @@ def load_next_step_diffusion(pretrained_model_name_or_path, device_str):
     pipe._autoround_pipeline_fn = _nextstep_pipeline_fn
     return pipe, model
 
-_PRE_DEFINED_FIXED_ATTR = {
-    "gemma4_unified": {"has_variable_block_shape": True}
-}
+
+_PRE_DEFINED_FIXED_ATTR = {"gemma4_unified": {"has_variable_block_shape": True}}
+
 
 def get_predefined_fixed_attr(model: torch.nn.Module) -> dict | None:
     """Return fixed compressor attributes for models that need special caching.
