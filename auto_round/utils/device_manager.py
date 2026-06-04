@@ -148,19 +148,6 @@ def _hpu_available() -> bool:
         return False
 
 
-def _backend_is_available(name: str) -> bool:
-    """Whether a given in-tree backend type (``"cuda"``/``"xpu"``/``"mps"`` ...) is usable."""
-    if name == "hpu":
-        return _hpu_available()
-    # MPS exposes availability under ``torch.backends.mps`` rather than ``torch.mps``.
-    if name == "mps":
-        backends_mps = getattr(getattr(torch, "backends", None), "mps", None)
-        if backends_mps is not None and getattr(backends_mps, "is_available", lambda: False)():
-            return True
-    backend = getattr(torch, name, None)
-    return backend is not None and bool(getattr(backend, "is_available", lambda: False)())
-
-
 def _normalize_device_type(device: Union[None, str, int, torch.device]) -> Optional[str]:
     """Reduce any device spec to a bare backend type string (``"cuda"`` ...)."""
     if device is None:
@@ -191,9 +178,6 @@ def get_current_device_type() -> str:
     accel_type = _torch_accelerator_type()
     if accel_type is not None:
         return accel_type
-    for name in _PREFERRED_ORDER:
-        if _backend_is_available(name):
-            return name
     return "cpu"
 
 
@@ -217,10 +201,6 @@ def get_available_device_types() -> list[str]:
     accel_type = _torch_accelerator_type()
     if accel_type is not None and accel_type not in available:
         available.append(accel_type)
-    # Fallback probing for older PyTorch without torch.accelerator.
-    for name in _PREFERRED_ORDER:
-        if name not in available and _backend_is_available(name):
-            available.append(name)
     return available
 
 
@@ -330,7 +310,7 @@ class ARDevice:
 
     def is_available(self) -> bool:
         """Whether this backend type is usable in the current build."""
-        return _backend_is_available(self.type)
+        return  True
 
     def device_count(self) -> int:
         fn = getattr(self._module, "device_count", None)
@@ -362,9 +342,9 @@ class ARDevice:
             return torch.device(index if ":" in index else f"{self.type}:{index}")
         return torch.device(f"{self.type}:{int(index)}")
 
-    def devices(self) -> list[torch.device]:
-        """Enumerate ``torch.device`` for every card of this backend."""
-        return [self.device(i) for i in range(self.device_count())]
+    # def devices(self) -> list[torch.device]:
+    #     """Enumerate ``torch.device`` for every card of this backend."""
+    #     return [self.device(i) for i in range(self.device_count())]
 
     # -- runtime ------------------------------------------------------------
     def synchronize(self, index: Union[int, None] = None) -> None:
@@ -388,18 +368,18 @@ class ARDevice:
                 fn()  # pylint: disable=E1102 # mps has issues
             except:
                 pass
-
-    def get_device_capability(self, index: Union[int, None] = None):
-        """Return the compute capability of the selected device, if exposed."""
-        if self._module is None:
-            return None
-        fn = getattr(self._module, "get_device_capability", None)
-        if not callable(fn):
-            return None
-        try:
-            return fn(index) if index is not None else fn()  # pylint: disable=E1102
-        except Exception:
-            return None
+    #
+    # def get_device_capability(self, index: Union[int, None] = None):
+    #     """Return the compute capability of the selected device, if exposed."""
+    #     if self._module is None:
+    #         return None
+    #     fn = getattr(self._module, "get_device_capability", None)
+    #     if not callable(fn):
+    #         return None
+    #     try:
+    #         return fn(index) if index is not None else fn()  # pylint: disable=E1102
+    #     except Exception:
+    #         return None
 
     def device_index(self, index: int):
         """Context manager that sets the current device index for this backend.
@@ -436,16 +416,16 @@ class ARDevice:
         except Exception:
             return 0
 
-    def mem_get_info(self, index: int = 0) -> tuple[int, int]:
-        """Return ``(free_bytes, total_bytes)`` for ``index``.
-
-        Falls back to ``total - reserved`` when the backend lacks a native
-        ``mem_get_info`` implementation.
-        """
-        module = self.get_device_module(self.type) if self._module is _accelerator_api() else self._module
-        fn = getattr(module, "get_memory_info", None)
-
-        return fn(index) if callable(fn) else (0, 0)  # pylint: disable=E1102
+    # def mem_get_info(self, index: int = 0) -> tuple[int, int]:
+    #     """Return ``(free_bytes, total_bytes)`` for ``index``.
+    #
+    #     Falls back to ``total - reserved`` when the backend lacks a native
+    #     ``mem_get_info`` implementation.
+    #     """
+    #     module = self.get_device_module(self.type) if self._module is _accelerator_api() else self._module
+    #     fn = getattr(module, "get_memory_info", None)
+    #
+    #     return fn(index) if callable(fn) else (0, 0)  # pylint: disable=E1102
 
     # -- numeric format / mixed-precision policy ---------------------------
     def supports_bf16(self) -> bool:
@@ -572,21 +552,88 @@ class MpsARDevice(ARDevice):
         self.type = "mps"
         self._module = getattr(torch, "mps", None)
 
-    # def is_available(self) -> bool:
-    #     backends_mps = getattr(getattr(torch, "backends", None), "mps", None)
-    #     if backends_mps is not None:
-    #         return getattr(backends_mps, "is_available", lambda: False)()
-    #     return False
-    #
-    #
-    # def synchronize(self, index: Union[int, None] = None) -> None:
-    #     if self._module is not None:
-    #         fn = getattr(self._module, "synchronize", None)
-    #         if callable(fn):
-    #             fn()
 
-    def empty_cache(self) -> None:
-        torch.mps.empty_cache()
+    @staticmethod
+    def get_device_module(device: Union[None, str, int, torch.device] = None):
+        """Return the backend runtime module for ``device`` (e.g. ``torch.cuda``).
+
+        This is a thin, version-tolerant wrapper around ``torch.get_device_module``
+        that also understands ``hpu`` and plain device strings/indices.
+
+        Args:
+            device: ``"cuda"``, ``"xpu:0"``, ``torch.device(...)``, an int index
+                (interpreted against the current device) or ``None`` (current
+                device).
+
+        Returns:
+            The module exposing the device runtime API, or ``None`` for CPU / when
+            no device is available.
+        """
+        return  torch.mps
+
+
+    def is_available(self) -> bool:
+        """Whether this backend type is usable in the current build."""
+        return  self._module.is_available()
+
+
+    def current_device(self) -> int:
+        return 0
+
+    def set_device(self, index: Union[int, str, torch.device]) -> None:
+        return None
+
+
+    def device(self, index: Union[int, str, torch.device, None] = None) -> torch.device:
+        """Build a ``torch.device`` for this backend / card ``index``."""
+        return torch.device(f"mps")
+
+
+    def device_index(self, index: int):
+        """Context manager that sets the current device index for this backend.
+
+        Uses ``torch.accelerator.device_index`` when available; otherwise falls
+        back to a tiny save/restore around :meth:`set_device`.
+        """
+        if self._module is not None:
+            ctx = getattr(self._module, "device_index", None)
+            if callable(ctx):
+                return ctx(index)
+        return _DeviceIndexContext(self, index)
+
+    def total_memory(self, index: int = 0) -> int:
+        return torch.mps.recommended_max_memory()
+
+    def memory_reserved(self, index: int = 0) -> int:
+       return torch.mps.driver_allocated_memory()
+
+    def memory_allocated(self, index: int = 0) -> int:
+        return torch.mps.current_allocated_memory()
+
+    # def mem_get_info(self, index: int = 0) -> tuple[int, int]:
+    #     """Return ``(free_bytes, total_bytes)`` for ``index``.
+    #
+    #     Falls back to ``total - reserved`` when the backend lacks a native
+    #     ``mem_get_info`` implementation.
+    #     """
+    #     module = self.get_device_module(self.type) if self._module is _accelerator_api() else self._module
+    #     fn = getattr(module, "get_memory_info", None)
+    #
+    #     return fn(index) if callable(fn) else (0, 0)  # pylint: disable=E1102
+
+    # -- numeric format / mixed-precision policy ---------------------------
+    def supports_bf16(self) -> bool:
+        """Whether this backend can execute the ``bfloat16`` data type."""
+        return True
+
+    def prefers_bf16(self) -> bool:
+        """Whether this backend prefers bf16 as the mixed-precision compute dtype.
+
+        Defaults to ``True`` (bf16 is the preferred tuning dtype); backends that
+        would rather honour the model's own non-fp32 dtype can override this.
+        """
+        return True
+
 
 
 class CpuARDevice(ARDevice):
@@ -663,17 +710,17 @@ class CpuARDevice(ARDevice):
         import psutil
 
         process = psutil.Process()
-        current_ram = process.memory_info().rss / 1024**3  # GB
+        current_ram = process.memory_info().rss
         return current_ram
 
     def memory_allocated(self, index: int = 0) -> int:
         return self.memory_reserved(index)
 
-    def mem_get_info(self, index: int = 0) -> tuple[int, int]:
-        vm = self._virtual_memory()
-        if vm is None:
-            return 0, 0
-        return int(vm.available), int(vm.total)
+    # def mem_get_info(self, index: int = 0) -> tuple[int, int]:
+    #     vm = self._virtual_memory()
+    #     if vm is None:
+    #         return 0, 0
+    #     return int(vm.available), int(vm.total)
 
     def is_torch_compile_supported(self) -> bool:
         return True
