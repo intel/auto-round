@@ -20,9 +20,11 @@ struct TestSDPA {
 #if defined(ARK_XPU) && defined(ARK_SYCL_TLA) && ARK_XPU && ARK_SYCL_TLA
     // test_sagev1_accuracy("prefill_gqa_128_bias", 1, 32, 8, 256, 512, 128, 128, false, true);
     // test_sagev1_accuracy("prefill_gqa_128_no_bias", 1, 32, 8, 256, 512, 128, 128, false, false);
-    test_sagev1_accuracy("prefill_gqa_128_causal_no_bias", 1, 32, 8, 256, 512, 128, 128, true, false);
-    benchmark_sagev1("bench_prefill_gqa_128_s4096", 1, 32, 8, 4096, 4096, 128, 128, false, 5, 20);
-    benchmark_sagev1("bench_bmg_hq96_d128_k8192", 1, 96, 8, 4096, 8192, 128, 128, false, 5, 20);
+    // test_sagev1_accuracy(\"prefill_gqa_128_causal_no_bias\", 1, 32, 8, 256, 512, 128, 128, true, false);
+    benchmark_dynamic_quant("dq_b1_h32_s4096_d128", 1, 32, 4096, 128, 128, 5, 50);
+    benchmark_dynamic_quant("dq_b1_h96_s8192_d128", 1, 96, 8192, 128, 128, 5, 50);
+    // benchmark_sagev1("bench_prefill_gqa_128_s4096", 1, 32, 8, 4096, 4096, 128, 128, false, 5, 20);
+    // benchmark_sagev1("bench_bmg_hq96_d128_k8192", 1, 96, 8, 4096, 8192, 128, 128, false, 5, 20);
 #else
     std::cout << "[sagev1] skipped: requires ARK_XPU and ARK_SYCL_TLA\n";
 #endif
@@ -79,6 +81,7 @@ struct TestSDPA {
     return std::chrono::duration<double, std::milli>(end - start).count() / double(iters);
   }
 
+#if 0  // legacy benchmarks rely on outdated sdpa_impl_qks8_* signatures
   void test_sagev1_accuracy(const std::string& name, int batch, int num_heads_q, int num_heads_kv, int seq_len_q,
                             int seq_len_kv, int head_dim, int scale_block_size, bool is_causal,
                             bool use_mean_bias) {
@@ -282,6 +285,56 @@ struct TestSDPA {
     ctx->deallocate(dev_qscale);
     ctx->deallocate(dev_kscale);
     ctx->deallocate(dev_vscale);
+  }
+#endif  // legacy benchmarks
+
+  template <typename T>
+  void run_dynamic_quant_bench(const char* tag, sycl::queue* q, int num_rows, int seq, int n_seq_blk,
+                               int head_dim, int block_size, int warmup, int iters) {
+    auto ctx = Context::Instance();
+    size_t in_count = size_t(num_rows) * size_t(seq) * size_t(head_dim);
+    size_t scale_count = size_t(num_rows) * size_t(n_seq_blk);
+    auto* dev_in = reinterpret_cast<T*>(ctx->allocate(in_count * sizeof(T)));
+    auto* dev_out = reinterpret_cast<int8_t*>(ctx->allocate(in_count * sizeof(int8_t)));
+    auto* dev_scale = reinterpret_cast<float*>(ctx->allocate(scale_count * sizeof(float)));
+
+    // initialize input with random fp values cast to T
+    auto host_f = make_random_vector(in_count, -1.0f, 1.0f, 1234u + uint32_t(num_rows + seq));
+    std::vector<T> host_t(in_count);
+    for (size_t i = 0; i < in_count; ++i) host_t[i] = T(host_f[i]);
+    q->memcpy(dev_in, host_t.data(), in_count * sizeof(T)).wait();
+
+    double ms = run_bench(
+        [&]() {
+          ark::XpuWrapper::sage_dynamic_quant<T>(q, dev_in, dev_out, dev_scale, num_rows, seq, n_seq_blk,
+                                                  head_dim, block_size);
+        },
+        q, warmup, iters);
+
+    double bytes = double(in_count) * double(sizeof(T)) + double(in_count) * 1.0 +
+                   double(scale_count) * double(sizeof(float));
+    double gbps = bytes / (ms * 1e-3) / 1e9;
+    std::cout << std::fixed << std::setprecision(4) << "[dq][" << tag << "] ms=" << ms
+              << " bytes=" << bytes / 1e6 << "MB GBps=" << gbps << "\n";
+
+    ctx->deallocate(dev_in);
+    ctx->deallocate(dev_out);
+    ctx->deallocate(dev_scale);
+  }
+
+  void benchmark_dynamic_quant(const std::string& name, int batch, int num_heads, int seq,
+                               int head_dim, int block_size, int warmup, int iters) {
+    GETQ();
+    LOG_LINE();
+    int num_rows = batch * num_heads;
+    int n_seq_blk = (seq + block_size - 1) / block_size;
+    std::cout << "[dq][cfg] " << name << " rows=" << num_rows << " seq=" << seq
+              << " head_dim=" << head_dim << " block=" << block_size
+              << " n_seq_blk=" << n_seq_blk << "\n";
+    run_dynamic_quant_bench<sycl::half>("f16", q, num_rows, seq, n_seq_blk, head_dim, block_size, warmup,
+                                         iters);
+    run_dynamic_quant_bench<sycl::ext::oneapi::bfloat16>("bf16", q, num_rows, seq, n_seq_blk, head_dim,
+                                                          block_size, warmup, iters);
   }
 #endif
 };
