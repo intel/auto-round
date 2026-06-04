@@ -334,7 +334,7 @@ class ARDevice:
 
     def device_count(self) -> int:
         fn = getattr(self._module, "device_count", None)
-        return int(fn()) if callable(fn) else 0 # pylint: disable=E1102
+        return int(fn()) if callable(fn) else 0  # pylint: disable=E1102
 
     def current_device(self) -> int:
         ok, idx = _module_call(self._module, ("current_device_index", "current_device_idx", "current_device"))
@@ -374,9 +374,9 @@ class ARDevice:
         if not callable(fn):
             return
         try:
-            fn(index) if index is not None else fn() # pylint: disable=E1102
+            fn(index) if index is not None else fn()  # pylint: disable=E1102
         except Exception:
-            fn() # pylint: disable=E1102
+            fn()  # pylint: disable=E1102
 
     def empty_cache(self) -> None:
         # ``torch.accelerator.empty_cache`` is broken on some backends (e.g. MPS
@@ -385,7 +385,7 @@ class ARDevice:
         fn = getattr(self.module, "empty_cache", None)
         if callable(fn):
             try:
-                fn() # pylint: disable=E1102 # mps has issues
+                fn()  # pylint: disable=E1102 # mps has issues
             except:
                 pass
 
@@ -397,7 +397,7 @@ class ARDevice:
         if not callable(fn):
             return None
         try:
-            return fn(index) if index is not None else fn() # pylint: disable=E1102
+            return fn(index) if index is not None else fn()  # pylint: disable=E1102
         except Exception:
             return None
 
@@ -416,14 +416,14 @@ class ARDevice:
     def total_memory(self, index: int = 0) -> int:
         fn = getattr(self._module, "get_memory_info", None)
 
-        return fn(index)[1] if callable(fn) else None # pylint: disable=E1102
+        return fn(index)[1] if callable(fn) else None  # pylint: disable=E1102
 
     def memory_reserved(self, index: int = 0) -> int:
         if self._module is None:
             return 0
         fn = getattr(self._module, "memory_reserved", None) or getattr(self._module, "memory_cached", None)
         try:
-            return int(fn(index)) if callable(fn) else 0 # pylint: disable=E1102
+            return int(fn(index)) if callable(fn) else 0  # pylint: disable=E1102
         except Exception:
             return 0
 
@@ -432,7 +432,7 @@ class ARDevice:
             return 0
         fn = getattr(self._module, "memory_allocated", None)
         try:
-            return int(fn(index)) if callable(fn) else 0 # pylint: disable=E1102
+            return int(fn(index)) if callable(fn) else 0  # pylint: disable=E1102
         except Exception:
             return 0
 
@@ -445,7 +445,7 @@ class ARDevice:
         module = self.get_device_module(self.type) if self._module is _accelerator_api() else self._module
         fn = getattr(module, "get_memory_info", None)
 
-        return fn(index) if callable(fn) else (0, 0) # pylint: disable=E1102
+        return fn(index) if callable(fn) else (0, 0)  # pylint: disable=E1102
 
     # -- numeric format / mixed-precision policy ---------------------------
     def supports_bf16(self) -> bool:
@@ -527,7 +527,7 @@ class HpuARDevice(ARDevice):
         fn = getattr(self._module, "set_device", None)
         if callable(fn):
             try:
-                fn(index) # pylint: disable=E1102
+                fn(index)  # pylint: disable=E1102
             except Exception:
                 pass
 
