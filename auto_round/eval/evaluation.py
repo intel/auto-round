@@ -440,7 +440,7 @@ def run_model_evaluation(model, tokenizer, autoround, folders, formats, args):
         return
     from auto_round.utils.device_manager import device_manager, get_device_and_parallelism
 
-    device_str,_ = get_device_and_parallelism(device_manager.device_map)
+    device_str, _ = get_device_and_parallelism(device_manager.device_map)
     # Handle vllm backend evaluation
     if hasattr(args, "eval_backend") and args.eval_backend == "vllm":
         from auto_round.eval.eval_cli import eval_with_vllm

@@ -548,12 +548,12 @@ class HpuARDevice(ARDevice):
     def memory_allocated(self, index: int = 0) -> int:
         return torch.hpu.memory_allocated(index)
 
-    def memory_reserved(self, index: int = 0) -> int: #TODO have a check
+    def memory_reserved(self, index: int = 0) -> int:  # TODO have a check
         return torch.hpu.memory_allocated(index)
-
 
     def device_count(self) -> int:
         import habana_frameworks.torch.hpu as hthpu  # pylint: disable=E0401
+
         return hthpu.device_count()
 
 
@@ -661,6 +661,7 @@ class CpuARDevice(ARDevice):
 
     def memory_reserved(self, index: int = 0) -> int:
         import psutil
+
         process = psutil.Process()
         current_ram = process.memory_info().rss / 1024**3  # GB
         return current_ram
