@@ -68,6 +68,9 @@ class AWQConfig(QuantizationConfig):
                 QuantizationConfig, such as bits, group_size, sym,
                 data_type, and activation quantization fields.
         """
+        enable_opt_rtn = kwargs.pop("enable_opt_rtn", None)
+        disable_opt_rtn = kwargs.pop("disable_opt_rtn", None)
+
         super().__init__(**kwargs)
 
         if isinstance(duo_scaling, str) and duo_scaling != "both":
@@ -81,6 +84,26 @@ class AWQConfig(QuantizationConfig):
         self.mappings = mappings
         self.infer_bs_coeff = 1
         self.batch_dim = None
+        if enable_opt_rtn is not None:
+            disable_opt_rtn = not bool(enable_opt_rtn)
+        if disable_opt_rtn is None:
+            disable_opt_rtn = True
+
+        # if disable_opt_rtn is None:
+        #     if self.bits and self.bits >= 8 and self.act_bits and self.act_bits >= 8 and self.data_type == "int":
+        #         logger.warning("`disable_opt_rtn` is turned on for W8A16/W8A8 quantization to improve efficiency.")
+        #         disable_opt_rtn = True
+        # if disable_opt_rtn is None:
+        #     logger.info(
+        #         "`enable_opt_rtn` is turned on, set `--disable_opt_rtn` for higher speed at the cost of accuracy."
+        #     )
+        #     disable_opt_rtn = False
+        
+        self.disable_opt_rtn = disable_opt_rtn
+        # NOTE: AWQ must remain a preprocessor; do not mutate _alg_cls here.
+        # if not self.disable_opt_rtn: ### revert this change, as this may break the pipeline structure
+        #     self._alg_cls = "OptimizedRTNQuantizer"
+        
         # NOTE: enable_quanted_input is NOT set here.  It belongs to the
         # block_quantizer (RTN/AutoRound), not to AWQ.  See §3.7.1.
 

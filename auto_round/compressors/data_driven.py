@@ -822,7 +822,7 @@ class DataDrivenCompressor(BaseCompressor):
             layer_names=layer_names,
             formats=getattr(self, "formats", None),
             scheme=getattr(self.quantize_config, "scheme", None),
-            alg_configs=getattr(self, "alg_configs", []),
+            alg_configs=getattr(self, "_alg_configs", []),
             model_context=self.model_context,
             compress_context=self.compress_context,
         )

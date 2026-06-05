@@ -66,7 +66,12 @@ def simple_evaluate_user_model(
     **kwargs,
 ):
     import lm_eval  # pylint: disable=E0401
+    import torch
     from lm_eval.models.huggingface import HFLM  # pylint: disable=E0401
+
+    device = kwargs.get("device", None)
+    if isinstance(user_model, torch.nn.Module) and device is not None:
+        user_model = prepare_model_for_eval(user_model, device, eval_model_dtype)
 
     if mllm:
         from lm_eval.models.hf_vlms import HFMultimodalLM  # pylint: disable=E0401
@@ -77,6 +82,7 @@ def simple_evaluate_user_model(
         hflm = HFMultimodalLM(
             pretrained=user_model,
             tokenizer=tokenizer,
+            device=device,
             batch_size=batch_size,
             max_batch_size=max_batch_size,
             dtype=eval_model_dtype,
@@ -86,6 +92,7 @@ def simple_evaluate_user_model(
         hflm = HFLM(
             pretrained=user_model,
             tokenizer=tokenizer,
+            device=device,
             batch_size=batch_size,
             max_batch_size=max_batch_size,
             dtype=eval_model_dtype,

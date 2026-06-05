@@ -413,6 +413,11 @@ class BaseCompressor(object):
         """Convenience accessor for the tokenizer stored in ``model_context``."""
         return self.model_context.tokenizer
 
+    @property
+    def alg_configs(self) -> list:
+        """The list of active algorithm config objects (includes preprocessors)."""
+        return self._alg_configs
+
     # ── Scheme resolution ─────────────────────────────────────────────────────
 
     def resolve_scheme(self, model_context=None, compress_context=None, dataset: str = None) -> None:

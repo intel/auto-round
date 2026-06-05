@@ -50,6 +50,7 @@ from auto_round.algorithms.transforms.awq.mappings import (
     resolve_mappings,
 )
 from auto_round.algorithms.transforms.base import BaseWeightTransformer
+from auto_round.data_type.mxfp import search_mx_scale
 from auto_round.data_type.utils import (
     get_quant_func,
     reshape_pad_tensor_by_group_size,
@@ -86,6 +87,7 @@ class AWQQuantizer(BaseWeightTransformer):
         self._activation_stats: dict[str, list] = {}
         self._parent_args_cache: dict[torch.nn.Module, list[dict]] = {}
         self._parent_signatures: dict[int, inspect.Signature] = {}
+        self._use_v2_mx_scale_search: bool = False
 
         self._finalized: bool = False
 
@@ -123,6 +125,12 @@ class AWQQuantizer(BaseWeightTransformer):
         for m in self._resolved_mappings:
             prefix = _extract_block_prefix(m.smooth_name)
             self._block_mappings.setdefault(prefix, []).append(m)
+
+        self._use_v2_mx_scale_search = any(
+            getattr(config, "_alg_cls", None) == "SignRoundV2Quantizer" for config in run_ctx.alg_configs
+        ) and str(self.data_type).startswith("mx_fp")
+        logger.info(f"AWQ: use_v2_mx_scale_search={self._use_v2_mx_scale_search}")
+        # self._use_v2_mx_scale_search = False
 
         if run_ctx.compress_context is not None:
             run_ctx.compress_context.cache_device = torch.device("cpu")
@@ -414,7 +422,7 @@ class AWQQuantizer(BaseWeightTransformer):
                 ref_cfg.get("data_type", self.data_type),
                 ref_cfg.get("bits", self.bits),
                 ref_cfg.get("sym", self.sym),
-                disable_opt_rtn=True,
+                disable_opt_rtn=ref_cfg.get("disable_opt_rtn", True),
                 group_size=ref_cfg.get("group_size", self.group_size),
                 iters=0,
             )
@@ -523,6 +531,7 @@ class AWQQuantizer(BaseWeightTransformer):
         group_size = config.get("group_size", self.group_size)
         sym = config.get("sym", self.sym)
         data_type = config.get("data_type", self.data_type)
+        disable_opt_rtn = config.get("disable_opt_rtn", True)
 
         if quant_func is None:
             try:
@@ -530,7 +539,7 @@ class AWQQuantizer(BaseWeightTransformer):
                     data_type,
                     bits,
                     sym,
-                    disable_opt_rtn=True,
+                    disable_opt_rtn=disable_opt_rtn,
                     group_size=group_size,
                     iters=0,
                 )
@@ -542,11 +551,36 @@ class AWQQuantizer(BaseWeightTransformer):
             return None
 
         try:
-            qdq_weight, _, _ = quant_func(weight, bits=bits, group_size=group_size)
+            quant_kwargs = {
+                "bits": bits,
+                "group_size": group_size,
+                "data_type": data_type,
+                "sym": sym,
+            }
+            if self._use_v2_mx_scale_search and str(data_type).startswith("mx_fp"):
+                weight_reshape, _, _ = reshape_pad_tensor_by_group_size(weight, group_size)
+                imatrix = self._reshape_imatrix_for_weight(layer, weight_reshape, group_size)
+                quant_kwargs["init_scale"] = search_mx_scale(weight_reshape, bits, imatrix)
+            qdq_weight, _, _ = quant_func(weight, **quant_kwargs)
             return qdq_weight
         except Exception as exc:
             logger.debug("AWQ: quantize-dequantize failed for '%s': %s", layer_name, exc)
             return None
+
+    @staticmethod
+    def _reshape_imatrix_for_weight(
+        layer: torch.nn.Module,
+        weight_reshape: torch.Tensor,
+        group_size,
+    ) -> torch.Tensor | float:
+        """Match SignRoundV2's imatrix layout before MXFP scale search."""
+        imatrix = getattr(layer, "imatrix", None)
+        if imatrix is None:
+            return 1.0
+        imatrix = imatrix.reshape(1, -1)
+        imatrix = reshape_pad_tensor_by_group_size(imatrix, group_size, val=1e-5)[0].view(1, -1)
+        imatrix = imatrix.expand(weight_reshape.numel() // imatrix.numel(), -1)
+        return imatrix.reshape(weight_reshape.shape).to(weight_reshape.device)
 
     @torch.no_grad()
     def _apply_scales(self, mapping: ResolvedMapping, scales: torch.Tensor) -> None:
