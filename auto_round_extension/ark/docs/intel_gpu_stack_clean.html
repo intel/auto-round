@@ -1,0 +1,286 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Intel GPU Software Stack — Hardware → PyTorch (with NVIDIA counterparts)</title>
+<style>
+  :root{
+    --bg:#0d1117; --panel:#161b22; --border:#30363d; --txt:#e6edf3;
+    --muted:#8b949e; --accent:#58a6ff; --hw:#f78166; --kern:#d2a8ff;
+    --umd:#7ee787; --rt:#79c0ff; --app:#ffa657; --spv:#f0b72f;
+    --wire:#484f58; --nv:#76b900;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--txt);
+    font-family:'SF Mono',ui-monospace,'Cascadia Code',Menlo,Consolas,monospace;
+    line-height:1.45;padding:24px}
+  h1{font-size:18px;margin:0 0 4px;font-weight:600}
+  .sub{color:var(--muted);font-size:12px;margin-bottom:20px}
+  .sub b{color:var(--txt)}
+  .legend{display:flex;flex-wrap:wrap;gap:14px;margin:14px 0 22px;font-size:11px}
+  .legend span{display:flex;align-items:center;gap:6px;color:var(--muted)}
+  .dot{width:11px;height:11px;border-radius:2px;display:inline-block}
+  .stack{max-width:1120px;margin:0 auto}
+  .layer{border:1px solid var(--border);border-radius:8px;margin:0 0 6px;
+    background:var(--panel);overflow:hidden}
+  .layer-head{display:flex;align-items:stretch}
+  .tag{writing-mode:vertical-rl;transform:rotate(180deg);text-align:center;
+    padding:8px 6px;font-size:10px;letter-spacing:1px;font-weight:700;
+    color:#0d1117;display:flex;align-items:center;justify-content:center;min-width:26px}
+  .tag.hw{background:var(--hw)} .tag.kern{background:var(--kern)}
+  .tag.umd{background:var(--umd)} .tag.rt{background:var(--rt)}
+  .tag.app{background:var(--app)} .tag.spv{background:var(--spv)}
+  .body{flex:1;padding:10px 14px}
+  .ltitle{font-size:13px;font-weight:600;margin:0 0 2px}
+  .ldesc{font-size:11px;color:var(--muted);margin:0 0 10px}
+  .libs{display:flex;flex-direction:column;gap:7px}
+  .lib{display:grid;grid-template-columns:170px 1fr 200px;gap:12px;align-items:start;
+    padding:6px 8px;background:#0d1117;border:1px solid var(--border);border-radius:5px}
+  .lib .name{font-size:11px;font-weight:600;color:var(--accent);word-break:break-word}
+  .lib .name .pkg{display:block;color:var(--muted);font-size:9.5px;font-weight:400;margin-top:1px}
+  .lib .intro{font-size:10.5px;color:var(--txt)}
+  .lib .nv{font-size:10px;color:var(--muted);border-left:2px solid var(--nv);padding-left:8px}
+  .lib .nv b{color:var(--nv);font-weight:600;display:block;font-size:9px;letter-spacing:.5px;margin-bottom:1px}
+  .colhdr{display:grid;grid-template-columns:170px 1fr 200px;gap:12px;
+    font-size:9px;letter-spacing:.5px;color:var(--muted);text-transform:uppercase;
+    padding:0 8px 4px}
+  .colhdr .nvh{color:var(--nv)}
+  .arrow{text-align:center;color:var(--wire);font-size:14px;margin:-1px 0;height:16px;
+    line-height:16px}
+  .arrow b{color:var(--muted);font-size:10px;font-weight:400}
+  .spvbox{border:1px solid var(--spv);border-radius:8px;background:rgba(240,183,47,.06);
+    padding:12px 14px;margin:6px 0}
+  .spvbox .ltitle{color:#f0b72f}
+  .footer{max-width:1120px;margin:18px auto 0;font-size:10.5px;color:var(--muted)}
+  code{background:#0d1117;border:1px solid var(--border);border-radius:3px;padding:0 4px;color:#79c0ff}
+</style>
+</head>
+<body>
+<div class="stack">
+  <h1>Intel GPU Software Stack — Hardware → PyTorch</h1>
+  <div class="sub">The path a compute call takes from a framework down to the silicon on an Intel discrete GPU, with the
+    <b style="color:var(--nv)">NVIDIA/CUDA counterpart</b> for each component. Reference device: <b>Battlemage G21 (BMG, Xe2)</b> ·
+    oneAPI DPC++ <b>2025.3</b> · torch <b>+xpu</b>.</div>
+
+  <div class="legend">
+    <span><i class="dot" style="background:var(--app)"></i>Framework / app</span>
+    <span><i class="dot" style="background:var(--rt)"></i>Runtime / libraries</span>
+    <span><i class="dot" style="background:var(--spv)"></i>SPIR-V → ISA (JIT)</span>
+    <span><i class="dot" style="background:var(--umd)"></i>User-mode driver (UMD)</span>
+    <span><i class="dot" style="background:var(--kern)"></i>Kernel-mode driver (KMD)</span>
+    <span><i class="dot" style="background:var(--hw)"></i>Silicon / firmware</span>
+    <span><i class="dot" style="background:var(--nv)"></i>NVIDIA counterpart</span>
+  </div>
+
+  <!-- ============ APP ============ -->
+  <div class="layer">
+    <div class="layer-head">
+      <div class="tag app">APP</div>
+      <div class="body">
+        <div class="ltitle">Application / framework</div>
+        <div class="ldesc">PyTorch + domain code; issues tensor ops on a GPU device</div>
+        <div class="colhdr"><span>Component</span><span>What it is</span><span class="nvh">NVIDIA counterpart</span></div>
+        <div class="libs">
+          <div class="lib">
+            <div class="name">torch (+xpu)</div>
+            <div class="intro">PyTorch built against the Intel XPU backend; tensors/ops dispatch to SYCL.</div>
+            <div class="nv"><b>NVIDIA</b>torch (+cu12) — CUDA build</div>
+          </div>
+          <div class="lib">
+            <div class="name">torch.xpu</div>
+            <div class="intro">Device API for stream/event/memory management on the GPU.</div>
+            <div class="nv"><b>NVIDIA</b>torch.cuda</div>
+          </div>
+          <div class="lib">
+            <div class="name">c10 / aten XPU</div>
+            <div class="intro">PyTorch's tensor backend impl: USM allocations, kernels, streams.</div>
+            <div class="nv"><b>NVIDIA</b>c10 / aten CUDA</div>
+          </div>
+          <div class="lib">
+            <div class="name">custom kernels</div>
+            <div class="intro">Hand-written device kernels, e.g. the ARK WOQ GEMM, written in SYCL.</div>
+            <div class="nv"><b>NVIDIA</b>CUDA C++ / CUTLASS kernels</div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+  <div class="arrow">▼ <b>SYCL host API  ·  (NVIDIA: CUDA Runtime API)</b></div>
+
+  <!-- ============ RUNTIME ============ -->
+  <div class="layer">
+    <div class="layer-head">
+      <div class="tag rt">RT</div>
+      <div class="body">
+        <div class="ltitle">oneAPI DPC++ / SYCL runtime + math libraries</div>
+        <div class="ldesc">selects the device, manages USM/queues, exposes device-side templates, hands device images to the driver</div>
+        <div class="colhdr"><span>Library</span><span>What it is</span><span class="nvh">NVIDIA counterpart</span></div>
+        <div class="libs">
+          <div class="lib">
+            <div class="name">libsycl.so<span class="pkg">DPC++ SYCL runtime</span></div>
+            <div class="intro">The SYCL runtime: device discovery, queues, USM, kernel launch, and host-side template glue. Owns most runtime error messages.</div>
+            <div class="nv"><b>NVIDIA</b>libcudart.so (CUDA Runtime) + libnvrtc</div>
+          </div>
+          <div class="lib">
+            <div class="name">ext::oneapi::matrix<span class="pkg">joint_matrix&lt;…&gt;</span></div>
+            <div class="intro">Header-only SYCL templates for warp/sub-group matrix-multiply on the XMX engines; lowered to DPAS by IGC.</div>
+            <div class="nv"><b>NVIDIA</b>nvcuda::wmma / mma.sync (Tensor Core intrinsics)</div>
+          </div>
+          <div class="lib">
+            <div class="name">oneDNN<span class="pkg">libdnnl</span></div>
+            <div class="intro">Deep-learning primitive library: matmul, convolution, attention, with its own tuned GPU codegen.</div>
+            <div class="nv"><b>NVIDIA</b>cuDNN</div>
+          </div>
+          <div class="lib">
+            <div class="name">oneMKL<span class="pkg">libmkl_sycl</span></div>
+            <div class="intro">Math kernel library: dense/sparse BLAS, LAPACK, FFT, RNG for the GPU.</div>
+            <div class="nv"><b>NVIDIA</b>cuBLAS / cuSOLVER / cuFFT / cuRAND</div>
+          </div>
+          <div class="lib">
+            <div class="name">libimf / SVML<span class="pkg">device math</span></div>
+            <div class="intro">Intel math functions (sin, exp, …) linked into device code for accurate/vectorized transcendentals.</div>
+            <div class="nv"><b>NVIDIA</b>libdevice (NVVM math bitcode)</div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+  <div class="arrow">▼ <b>device image (SPIR-V or AOT ISA) via Level-Zero  ·  (NVIDIA: PTX/cubin via CUDA driver)</b></div>
+
+  <!-- ============ SPIR-V boundary ============ -->
+  <div class="spvbox">
+    <div class="ltitle">⚡ SPIR-V → GPU ISA — JIT compilation (IGC)</div>
+    <div class="ldesc">Generic device code ships as portable <b>SPIR-V</b> (<code>spir64</code>) and is JIT-compiled to real GPU ISA at runtime by IGC
+      inside the compute-runtime. AOT builds (<code>spir64_gen -device bmg</code>) skip this by baking ISA at build time.
+      The exact CUDA analogue: <b>PTX</b> is the portable IR, <b>SASS</b> is the final ISA, and <b>ptxas</b> (in the driver) is the JIT.</div>
+    <div class="colhdr"><span>Component</span><span>What it is</span><span class="nvh">NVIDIA counterpart</span></div>
+    <div class="libs">
+      <div class="lib">
+        <div class="name">IGC<span class="pkg">libigc2 (intel-graphics-compiler)</span></div>
+        <div class="intro">The Intel Graphics Compiler: JIT-compiles SPIR-V into Xe machine ISA at kernel-load time. Decides whether high-level ops (e.g. joint_matrix) lower to DPAS.</div>
+        <div class="nv"><b>NVIDIA</b>ptxas + NVVM (JIT PTX → SASS, inside libcuda)</div>
+      </div>
+      <div class="lib">
+        <div class="name">intel-ocloc<span class="pkg">offline compiler</span></div>
+        <div class="intro">Ahead-of-time (AOT) compiler: pre-bakes SPIR-V into device ISA at build time so no runtime JIT is needed.</div>
+        <div class="nv"><b>NVIDIA</b>nvcc / ptxas (AOT to cubin / fatbin)</div>
+      </div>
+      <div class="lib">
+        <div class="name">spir64 image<span class="pkg">device binary</span></div>
+        <div class="intro">The portable intermediate device binary embedded in the host executable; vendor-neutral until JIT'd.</div>
+        <div class="nv"><b>NVIDIA</b>PTX (portable) / cubin (AOT, arch-specific)</div>
+      </div>
+    </div>
+  </div>
+  <div class="arrow">▼ <b>Level-Zero / OpenCL dispatch  ·  (NVIDIA: CUDA Driver API)</b></div>
+
+  <!-- ============ UMD ============ -->
+  <div class="layer">
+    <div class="layer-head">
+      <div class="tag umd">UMD</div>
+      <div class="body">
+        <div class="ltitle">User-Mode Driver — Intel compute-runtime (NEO)</div>
+        <div class="ldesc">implements Level-Zero &amp; OpenCL; embeds IGC; builds and submits GPU command buffers</div>
+        <div class="colhdr"><span>Library</span><span>What it is</span><span class="nvh">NVIDIA counterpart</span></div>
+        <div class="libs">
+          <div class="lib">
+            <div class="name">libze_loader.so<span class="pkg">level-zero (libze1)</span></div>
+            <div class="intro">The vendor-neutral Level-Zero <b>loader</b>: implements the L0 API spec and dispatches calls to whichever backend driver is installed. Apps link this, not the vendor driver.</div>
+            <div class="nv"><b>NVIDIA</b>(no split — CUDA is single-vendor; closest is the libcuda dispatch itself)</div>
+          </div>
+          <div class="lib">
+            <div class="name">libze_intel_gpu.so<span class="pkg">libze-intel-gpu1 (compute-runtime)</span></div>
+            <div class="intro">Intel's L0 <b>backend driver</b> — the actual GPU implementation the loader routes to. Embeds IGC, builds command buffers, manages submission. The version that gates JIT-lowering.</div>
+            <div class="nv"><b>NVIDIA</b>libcuda.so (CUDA driver / user-mode)</div>
+          </div>
+          <div class="lib">
+            <div class="name">intel-opencl-icd<span class="pkg">OpenCL UMD</span></div>
+            <div class="intro">The OpenCL implementation for the GPU; oneDNN's GPU backend needs it for device discovery even when compute runs on L0.</div>
+            <div class="nv"><b>NVIDIA</b>libnvidia-opencl.so (NVIDIA's OpenCL ICD)</div>
+          </div>
+          <div class="lib">
+            <div class="name">libigdgmm12<span class="pkg">Intel GMM</span></div>
+            <div class="intro">Graphics Memory Management library: tiling/layout and allocation bookkeeping shared by the UMDs.</div>
+            <div class="nv"><b>NVIDIA</b>(internal to libcuda — no separate library)</div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+  <div class="arrow">▼ <b>ioctl (DRM) → kernel  ·  (NVIDIA: ioctl → nvidia.ko)</b></div>
+
+  <!-- ============ KERNEL ============ -->
+  <div class="layer">
+    <div class="layer-head">
+      <div class="tag kern">KMD</div>
+      <div class="body">
+        <div class="ltitle">Kernel-Mode Driver (Linux DRM)</div>
+        <div class="ldesc">GPU scheduling, VRAM/GTT memory, context &amp; command-buffer submission</div>
+        <div class="colhdr"><span>Component</span><span>What it is</span><span class="nvh">NVIDIA counterpart</span></div>
+        <div class="libs">
+          <div class="lib">
+            <div class="name">xe / i915<span class="pkg">DRM driver</span></div>
+            <div class="intro">In-tree Linux kernel driver for Intel GPUs (Battlemage uses the newer <code>xe</code>); handles scheduling, memory, contexts via the DRM subsystem.</div>
+            <div class="nv"><b>NVIDIA</b>nvidia.ko (out-of-tree kernel module)</div>
+          </div>
+          <div class="lib">
+            <div class="name">GuC / HuC<span class="pkg">firmware</span></div>
+            <div class="intro">On-GPU firmware microcontrollers for command submission (GuC) and media (HuC).</div>
+            <div class="nv"><b>NVIDIA</b>GSP firmware (RM offload)</div>
+          </div>
+          <div class="lib">
+            <div class="name">/dev/dri/renderD*<span class="pkg">device node</span></div>
+            <div class="intro">The userspace ABI: the render node file that UMDs open and issue ioctls against.</div>
+            <div class="nv"><b>NVIDIA</b>/dev/nvidia* + /dev/nvidiactl</div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+  <div class="arrow">▼ <b>MMIO / doorbell</b></div>
+
+  <!-- ============ HARDWARE ============ -->
+  <div class="layer">
+    <div class="layer-head">
+      <div class="tag hw">HW</div>
+      <div class="body">
+        <div class="ltitle">Silicon — Battlemage G21 (Xe2)</div>
+        <div class="ldesc">the execution units and matrix engines that device kernels ultimately target</div>
+        <div class="colhdr"><span>Unit</span><span>What it is</span><span class="nvh">NVIDIA counterpart</span></div>
+        <div class="libs">
+          <div class="lib">
+            <div class="name">Xe2 Xe-cores<span class="pkg">256 EU (0xe223)</span></div>
+            <div class="intro">The programmable compute cores; each Xe-core groups several vector EUs plus matrix engines.</div>
+            <div class="nv"><b>NVIDIA</b>SMs (Streaming Multiprocessors)</div>
+          </div>
+          <div class="lib">
+            <div class="name">XMX / DPAS<span class="pkg">systolic matrix array</span></div>
+            <div class="intro">The matrix-multiply accelerators (int8→int32, bf16/f16) that <code>joint_matrix</code> / <code>dpas</code> target.</div>
+            <div class="nv"><b>NVIDIA</b>Tensor Cores</div>
+          </div>
+          <div class="lib">
+            <div class="name">SIMD16 EUs<span class="pkg">sub_group = 16</span></div>
+            <div class="intro">Vector execution lanes; a SYCL sub-group maps to a hardware SIMD width.</div>
+            <div class="nv"><b>NVIDIA</b>warp (32 threads / SIMT)</div>
+          </div>
+          <div class="lib">
+            <div class="name">VRAM<span class="pkg">device + shared USM</span></div>
+            <div class="intro">On-board GPU memory plus shared/unified allocations addressable from host and device.</div>
+            <div class="nv"><b>NVIDIA</b>VRAM + Unified Memory</div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div class="footer">
+    <b>How to read this:</b> a call descends from the framework through the SYCL runtime, crosses the SPIR-V→ISA boundary (JIT-compiled by
+    IGC unless built AOT), is dispatched by the compute-runtime UMD through the DRM kernel driver, and finally executes on the Xe-cores / XMX
+    array. The <b style="color:var(--nv)">green</b> column gives the closest CUDA equivalent at each layer — the biggest structural difference is
+    that Intel's stack is <b>vendor-neutral and split</b> (a loader + a backend driver, portable SPIR-V JIT'd on the target) whereas NVIDIA's is
+    <b>single-vendor and monolithic</b> (one <code>libcuda.so</code> with PTX→SASS JIT built in).
+  </div>
+</div>
+</body>
+</html>

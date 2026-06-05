@@ -1,0 +1,311 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>The sycl-tla ↔ ARK gap, illustrated</title>
+<style>
+  :root {
+    --bg: #0d1117;
+    --panel: #161b22;
+    --panel2: #1c2330;
+    --ink: #e6edf3;
+    --muted: #8b949e;
+    --line: #30363d;
+    --cost: #f0883e;      /* conversion cost — the villain */
+    --cost-bg: #2a1a0e;
+    --fast: #3fb950;      /* pure DPAS — fast */
+    --fast-bg: #0e2417;
+    --scale: #58a6ff;     /* groupwise scale — the innocent party */
+    --scale-bg: #0d2137;
+    --bad: #f85149;
+    --good: #3fb950;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; padding: 0 0 80px;
+    background: var(--bg); color: var(--ink);
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif;
+    line-height: 1.55;
+  }
+  .wrap { max-width: 1080px; margin: 0 auto; padding: 0 24px; }
+  header {
+    border-bottom: 1px solid var(--line);
+    padding: 40px 0 28px; margin-bottom: 36px;
+    background: linear-gradient(180deg, #11161f 0%, var(--bg) 100%);
+  }
+  h1 { font-size: 30px; margin: 0 0 10px; letter-spacing: -0.4px; }
+  h1 .q { color: var(--scale); }
+  .sub { color: var(--muted); font-size: 16px; max-width: 760px; }
+  h2 {
+    font-size: 13px; text-transform: uppercase; letter-spacing: 1.4px;
+    color: var(--muted); margin: 48px 0 18px; font-weight: 600;
+    border-left: 3px solid var(--scale); padding-left: 12px;
+  }
+  code, .mono { font-family: "SF Mono", "JetBrains Mono", Menlo, Consolas, monospace; }
+
+  /* verdict row */
+  .verdict { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
+  .vcard { border-radius: 10px; padding: 18px 20px; border: 1px solid var(--line); }
+  .vcard.wrong { background: #1d1416; border-color: #5c2b2b; }
+  .vcard.right { background: #0f1f15; border-color: #2d5a39; }
+  .vtag { font-size: 11px; font-weight: 700; letter-spacing: 1px; text-transform: uppercase; }
+  .wrong .vtag { color: var(--bad); }
+  .right .vtag { color: var(--good); }
+  .vcard p { margin: 8px 0 0; font-size: 15px; }
+  .strike { text-decoration: line-through; color: var(--muted); }
+  .proof { margin-top: 12px; font-size: 13px; color: var(--muted); }
+  .proof code { color: var(--scale); background: #0d2137; padding: 1px 6px; border-radius: 4px; }
+
+  /* capability matrix */
+  table.cap { width: 100%; border-collapse: collapse; margin-top: 6px; font-size: 14.5px; }
+  table.cap th, table.cap td { padding: 13px 14px; text-align: center; border: 1px solid var(--line); }
+  table.cap thead th { background: var(--panel2); font-size: 12.5px; color: var(--ink); font-weight: 600; }
+  table.cap tbody th { text-align: left; background: var(--panel); font-weight: 600; white-space: nowrap; }
+  .yes { color: var(--good); font-weight: 700; }
+  .no  { color: var(--bad);  font-weight: 700; }
+  .cell-note { display: block; font-size: 11px; color: var(--muted); font-weight: 400; margin-top: 2px; }
+  tr.ark td, tr.ark th { background: #0f1f15 !important; }
+  tr.ark th { border-left: 3px solid var(--good); }
+
+  /* loop anatomy */
+  .anatomy { display: grid; grid-template-columns: 1fr 1fr; gap: 20px; align-items: start; }
+  .loopcard { background: var(--panel); border: 1px solid var(--line); border-radius: 10px; overflow: hidden; }
+  .loophdr { padding: 14px 18px; border-bottom: 1px solid var(--line); }
+  .loophdr.tla { background: #2a1a0e; }
+  .loophdr.ark { background: #0e2417; }
+  .loophdr h3 { margin: 0; font-size: 16px; }
+  .loophdr .meta { font-size: 12.5px; color: var(--muted); margin-top: 3px; }
+  pre.loop {
+    margin: 0; padding: 18px; font-size: 12.5px; line-height: 1.75;
+    font-family: "SF Mono", "JetBrains Mono", Menlo, Consolas, monospace;
+    overflow-x: auto; color: #cdd9e5;
+  }
+  .ln-cost  { background: var(--cost-bg);  border-left: 3px solid var(--cost);  display: block; padding-left: 9px; margin-left: -12px; }
+  .ln-fast  { background: var(--fast-bg);  border-left: 3px solid var(--fast);  display: block; padding-left: 9px; margin-left: -12px; }
+  .ln-scale { background: var(--scale-bg); border-left: 3px solid var(--scale); display: block; padding-left: 9px; margin-left: -12px; }
+  .t-cost  { color: var(--cost);  font-weight: 700; }
+  .t-fast  { color: var(--fast);  font-weight: 700; }
+  .t-scale { color: var(--scale); font-weight: 700; }
+  .t-cmt   { color: #6e7681; }
+  .t-key   { color: #ff7b72; }
+  .t-loop  { color: #d2a8ff; }
+  .hot { display:inline-block; font-size:10px; font-weight:700; letter-spacing:.5px; color:var(--cost);
+         border:1px solid var(--cost); border-radius:4px; padding:0 5px; margin-left:6px; vertical-align:middle;}
+  .once { display:inline-block; font-size:10px; font-weight:700; letter-spacing:.5px; color:var(--fast);
+         border:1px solid var(--fast); border-radius:4px; padding:0 5px; margin-left:6px; vertical-align:middle;}
+
+  .legend { display:flex; gap:22px; flex-wrap:wrap; margin: 16px 2px 0; font-size:12.5px; color:var(--muted); }
+  .legend span { display:inline-flex; align-items:center; gap:7px; }
+  .sw { width:13px; height:13px; border-radius:3px; display:inline-block; }
+
+  /* takeaway under anatomy */
+  .pivot { margin-top: 20px; background: var(--panel2); border:1px solid var(--line); border-radius:10px; padding: 18px 22px; }
+  .pivot b { color: var(--cost); }
+  .pivot .arrow { color: var(--fast); }
+
+  /* paradox */
+  .paradox { background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 6px 24px 22px; }
+  table.par { width:100%; border-collapse: collapse; margin-top: 18px; font-size: 14.5px; }
+  table.par th, table.par td { padding: 12px 14px; border-bottom: 1px solid var(--line); text-align: left; }
+  table.par thead th { color: var(--muted); font-size: 12px; text-transform: uppercase; letter-spacing: .6px; }
+  table.par .tflops { font-weight: 700; font-family: "SF Mono", monospace; text-align: right; }
+  .slow { color: var(--bad); }
+  .less-slow { color: var(--cost); }
+  .punch { margin-top: 18px; font-size: 15px; padding: 14px 18px; border-radius: 8px;
+           background: #1d1416; border:1px solid #5c2b2b; }
+  .punch b { color: var(--bad); }
+
+  /* final gap statement */
+  .gapbox { margin-top: 8px; border-radius: 12px; padding: 28px 30px;
+            background: linear-gradient(135deg, #0d2137 0%, #0f1f15 100%);
+            border: 1px solid #2d5a39; }
+  .gapbox .not { color: var(--bad); }
+  .gapbox .is  { color: var(--good); }
+  .gapbox h3 { margin: 0 0 14px; font-size: 13px; letter-spacing: 1.2px; text-transform: uppercase; color: var(--muted); }
+  .gapbox .big { font-size: 21px; line-height: 1.5; letter-spacing: -0.2px; }
+  .gapbox .small { margin-top: 16px; color: var(--muted); font-size: 14.5px; }
+  .gapbox code { color: var(--fast); background: #0e2417; padding: 1px 6px; border-radius: 4px; }
+
+  @media (max-width: 820px) {
+    .verdict, .anatomy { grid-template-columns: 1fr; }
+  }
+</style>
+</head>
+<body>
+
+<header>
+  <div class="wrap">
+    <h1>Is the gap that sycl-tla <span class="q">can't do group-wise scale?</span></h1>
+    <p class="sub">Short answer: <strong>no.</strong> It does group-wise scale fine. The gap is one level
+    deeper, and it's structural — about <em>where the u4→s8 conversion runs</em>, not whether the scale
+    can be expressed. Here it is in pictures.</p>
+  </div>
+</header>
+
+<div class="wrap">
+
+  <!-- 1. fix the mental model -->
+  <h2>Fix the mental model first</h2>
+  <div class="verdict">
+    <div class="vcard wrong">
+      <span class="vtag">✗ the wrong model</span>
+      <p><span class="strike">"sycl-tla's mixed collective can't apply a group-wise weight scale,
+      so it can't match ARK."</span></p>
+      <p class="proof">This is what the confusion comes from — and it's false.</p>
+    </div>
+    <div class="vcard right">
+      <span class="vtag">✓ what's actually true</span>
+      <p>sycl-tla's mixed collective <strong>has</strong> a full group-wise path. I ran it at
+      <code>--g=128</code> and it passed verification.</p>
+      <p class="proof">Evidence: <code>is_groupwise</code> (xe_mma_mixed_input.hpp:175),
+      runtime <code>group_size</code> (:273), <code>scale_k = ceil_div(K, g)</code> (:320),
+      and the <code>--g</code> knob in the example (:123).</p>
+    </div>
+  </div>
+
+  <!-- 2. the three capabilities -->
+  <h2>Three capabilities — and nobody but ARK has all three</h2>
+  <p class="sub" style="margin-bottom:16px">Group-wise scale is just <em>one</em> column. Notice sycl-tla
+  ticks it in the mixed row. The column it <em>can't</em> tick in that same row is the rightmost one.</p>
+  <table class="cap">
+    <thead>
+      <tr>
+        <th style="text-align:left">path</th>
+        <th>group-wise scale<span class="cell-note">per-k-block weight scale</span></th>
+        <th>pure s8 DPAS inner loop<span class="cell-note">no convert in the hot loop</span></th>
+        <th>conversion decoupled<span class="cell-note">u4→s8 hoisted out of the loop</span></th>
+      </tr>
+    </thead>
+    <tbody>
+      <tr>
+        <th>sycl-tla plain s8 GEMM</th>
+        <td><span class="no">✗</span><span class="cell-note">epilogue = tensor-wise only</span></td>
+        <td><span class="yes">✓</span></td>
+        <td><span class="muted">— n/a (no u4)</span></td>
+      </tr>
+      <tr>
+        <th>sycl-tla <em>mixed</em> collective</th>
+        <td><span class="yes">✓</span><span class="cell-note">is_groupwise / --g</span></td>
+        <td><span class="no">✗</span><span class="cell-note">re-converts weight every k-tile</span></td>
+        <td><span class="no">✗</span><span class="cell-note">conversion welded into mainloop</span></td>
+      </tr>
+      <tr class="ark">
+        <th>ARK <code>IKblockGemmDQCore</code></th>
+        <td><span class="yes">✓</span><span class="cell-note">scale at block boundary</span></td>
+        <td><span class="yes">✓</span><span class="cell-note">load-s8 → MAD, nothing else</span></td>
+        <td><span class="yes">✓</span><span class="cell-note">unpackq → DRAM, once</span></td>
+      </tr>
+    </tbody>
+  </table>
+
+  <!-- 3. loop anatomy — the heart -->
+  <h2>The heart of it: where does the u4→s8 conversion live?</h2>
+  <p class="sub" style="margin-bottom:18px">Same conversion, same arithmetic. The <em>only</em> difference is
+  position. In sycl-tla it rides <strong>inside the hot loop</strong> and re-runs every k-tile. In ARK it's
+  lifted into a <strong>one-time DRAM pass</strong>, leaving the hot loop pure.</p>
+
+  <div class="anatomy">
+    <!-- sycl-tla -->
+    <div class="loopcard">
+      <div class="loophdr tla">
+        <h3>sycl-tla — mixed mainloop</h3>
+        <div class="meta">one kernel · conversion welded in</div>
+      </div>
+<pre class="loop"><span class="t-cmt">// the ONLY group-wise-capable mainloop</span>
+<span class="t-loop">for</span> blk <span class="t-key">in</span> groups:           <span class="t-cmt">// group-wise ✓</span>
+  <span class="t-loop">for</span> ktile <span class="t-key">in</span> blk:        <span class="hot">HOT LOOP · ×K/32</span>
+<span class="ln-cost">    load B_u4[ktile]      <span class="t-cmt">// narrow</span></span>
+<span class="ln-cost">    <span class="t-cost">CONVERT u4 → s8</span>       <span class="t-cmt">// ✗ EVERY ktile</span></span>
+    load A[ktile]
+<span class="ln-fast">    MMA  acc_s32 += A·B   <span class="t-cmt">// DPAS</span></span>
+<span class="ln-scale">  acc ×= scale[blk]       <span class="t-cmt">// group-wise ✓ (cheap)</span></span>
+</pre>
+    </div>
+
+    <!-- ARK -->
+    <div class="loopcard">
+      <div class="loophdr ark">
+        <h3>ARK — two-pass</h3>
+        <div class="meta">conversion hoisted · hot loop stays pure</div>
+      </div>
+<pre class="loop"><span class="t-cmt">// PASS 1 — unpackq kernel</span>
+<span class="ln-cost">B_u4 ─<span class="t-cost">CONVERT u4→s8</span>─▶ B_s8 (DRAM) <span class="once">ONCE</span></span>
+<span class="t-cmt">// PASS 2 — IKblockGemmDQCore</span>
+<span class="t-loop">for</span> blk <span class="t-key">in</span> groups:           <span class="t-cmt">// group-wise ✓</span>
+  <span class="t-loop">for</span> ktile <span class="t-key">in</span> blk:        <span class="hot" style="color:var(--fast);border-color:var(--fast)">HOT LOOP · pure</span>
+<span class="ln-fast">    load B_s8[ktile]      <span class="t-cmt">// already wide ✓</span></span>
+<span class="ln-fast">    load A_s8[ktile]</span>
+<span class="ln-fast">    MMA  acc_s32 += A·B   <span class="t-cmt">// PURE DPAS</span></span>
+<span class="ln-scale">  acc_f32 += acc_s32 × scale[blk] <span class="t-cmt">// ✓</span></span>
+</pre>
+    </div>
+  </div>
+
+  <div class="legend">
+    <span><span class="sw" style="background:var(--cost)"></span> u4→s8 conversion (the cost)</span>
+    <span><span class="sw" style="background:var(--fast)"></span> pure int8 DPAS (the fast part)</span>
+    <span><span class="sw" style="background:var(--scale)"></span> group-wise scale (cheap, both have it)</span>
+  </div>
+
+  <div class="pivot">
+    Look at the <b>orange</b> in each diagram. It's the <b>same operation</b> in both. On the left it sits
+    <b>inside the hot loop</b> → it runs <code>K/32</code> times and never amortizes. On the right it's been
+    <span class="arrow">pulled out into Pass 1</span> → paid once, then the hot loop is wall-to-wall green.
+    <strong>That hoist is the entire difference.</strong> Group-wise scale (blue) is identical on both sides.
+  </div>
+
+  <!-- 4. the paradox -->
+  <h2>Proof it isn't the scale — and isn't even the conversion <em>math</em></h2>
+  <div class="paradox">
+    <p class="sub">If the bottleneck were the scale, both fused variants would be slow. If it were the
+    <em>cost of the conversion arithmetic</em>, the <strong>cheaper</strong> conversion would be faster.
+    Neither holds. Watch what happens when we only change the conversion target:</p>
+    <table class="par">
+      <thead>
+        <tr><th>sycl-tla fused variant</th><th>in-loop conversion</th><th>relative cost of that convert</th><th class="tflops">m512 TFLOP/s</th></tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td><code>FP16U4FP16<b>S8</b></code></td>
+          <td>u4 → <strong>s8</strong></td>
+          <td class="good">cheap (bit unpack)</td>
+          <td class="tflops slow">3.5</td>
+        </tr>
+        <tr>
+          <td><code>FP16U4FP16<b>F16</b></code></td>
+          <td>u4 → <strong>fp16</strong></td>
+          <td class="bad">expensive (int→float)</td>
+          <td class="tflops less-slow">14.2</td>
+        </tr>
+      </tbody>
+    </table>
+    <div class="punch">
+      The path with the <b>cheaper</b> conversion is <b>4× slower.</b> So the cost isn't the scale, and it
+      isn't the conversion's arithmetic either — it's <b>structural</b>: the mixed mainloop's int8 staging is
+      untuned / poorly pipelined on BMG, and the per-k-tile reload never amortizes. Even the <em>faster</em>
+      fused number (14.2) still loses <b>4.6×</b> to ARK's 65.1 — because fp16 DPAS is only ½ the int8 peak.
+    </div>
+  </div>
+
+  <!-- 5. final statement -->
+  <h2>So, precisely, the gap is…</h2>
+  <div class="gapbox">
+    <h3>the one-liner</h3>
+    <p class="big">
+      <span class="not">NOT</span> "sycl-tla can't do group-wise scale."<br>
+      <span class="is">IT'S</span> "sycl-tla has no <em>performant</em> mainloop that pairs group-wise-scaled
+      int32 accumulation with a <strong>pure s8-DPAS inner loop</strong>."
+    </p>
+    <p class="small">
+      It has group-wise scale. It has fast s8 DPAS. It just never has <strong>both in one tuned loop</strong> —
+      its only group-wise path welds the u4→s8 conversion into the hot loop. ARK gets all three by
+      <strong>decoupling</strong>: widen once into DRAM (<code>unpackq</code>), then run a tight
+      group-wise-scaled s8 loop (<code>IKblockGemmDQCore</code>). That hoist — not group-wise support — is
+      the thing sycl-tla is missing.
+    </p>
+  </div>
+
+</div>
+</body>
+</html>

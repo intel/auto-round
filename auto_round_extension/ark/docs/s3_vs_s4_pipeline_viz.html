@@ -1,0 +1,195 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>S4 vs S3 GEMV compute pipeline — ARK XPU</title>
+<style>
+  :root{
+    --bg:#0f1115;--panel:#181b22;--ink:#e6e6e6;--muted:#9aa3b2;--edge:#232833;
+    --s4:#2ea043;--s3:#f0883e;--bad:#f85149;--warn:#d29922;--accent:#58a6ff;
+    --load:#1f6feb;--decode:#a371f7;--mac:#2ea043;--barrier:#f85149;--slm:#bb8009;
+  }
+  *{box-sizing:border-box;}
+  body{margin:0;padding:32px;background:var(--bg);color:var(--ink);
+    font:14px/1.55 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;}
+  h1{font-size:22px;margin:0 0 4px;}
+  h2{font-size:17px;margin:26px 0 10px;}
+  .sub{color:var(--muted);margin:0 0 18px;}
+  .panel{background:var(--panel);border:1px solid var(--edge);border-radius:10px;padding:16px 20px;margin-bottom:20px;}
+  .mono{font-family:"SF Mono",Menlo,Consolas,monospace;}
+  code{background:#11141a;padding:1px 5px;border-radius:4px;font-size:12px;}
+  .cols{display:grid;grid-template-columns:1fr 1fr;gap:18px;}
+  @media(max-width:1000px){.cols{grid-template-columns:1fr;}}
+  .kcard{border:1px solid var(--edge);border-radius:10px;padding:14px 16px;background:#13161c;}
+  .kcard.s4{border-top:4px solid var(--s4);}
+  .kcard.s3{border-top:4px solid var(--s3);}
+  .ktitle{font-size:15px;font-weight:700;margin:0 0 2px;}
+  .kspeed{font-size:12px;color:var(--muted);margin:0 0 12px;}
+  .badge{display:inline-block;padding:1px 8px;border-radius:10px;font-size:11px;font-weight:700;margin-left:6px;}
+  .badge.fast{background:#10331c;color:#3fb950;}
+  .badge.slow{background:#3a2410;color:#e3873e;}
+
+  /* pipeline stage stack */
+  .stage{display:flex;align-items:center;gap:10px;margin:5px 0;padding:8px 10px;border-radius:7px;
+    border:1px solid #2a2f3a;background:#0f1218;position:relative;}
+  .stage .ic{width:26px;height:26px;border-radius:6px;flex:0 0 26px;display:flex;align-items:center;justify-content:center;
+    font-size:13px;font-weight:700;color:#0b0d11;}
+  .stage .tx{flex:1;font-size:12.5px;}
+  .stage .tx b{font-size:12.5px;}
+  .stage .meta{font-size:10.5px;color:var(--muted);}
+  .ic.load{background:#5a9bf6;} .ic.aload{background:#79c0ff;} .ic.decode{background:#b894f6;}
+  .ic.mac{background:#56d364;} .ic.barrier{background:#f85149;color:#fff;} .ic.slm{background:#d4a017;}
+  .stage.barrier{border-color:#5c1f22;background:#1a1012;}
+  .stage.slm{border-color:#4a3a0c;background:#1a160c;}
+  .arrow{ text-align:center;color:#3a4150;font-size:13px;line-height:0.7;margin:-1px 0;}
+
+  /* per-lane granularity strip */
+  .lane-demo{display:flex;flex-wrap:wrap;gap:2px;margin:8px 0 2px;}
+  .we{width:13px;height:18px;border-radius:2px;display:inline-block;border:1px solid #0007;}
+  .we.s4a{background:#2ea043;} .we.s4b{background:#1a6e2e;}
+  .we.s3a{background:#f0883e;}
+  .cap{font-size:11px;color:var(--muted);margin:2px 0 8px;}
+
+  /* timeline */
+  .tl{position:relative;margin:6px 0 2px;}
+  .tlrow{display:flex;align-items:center;gap:8px;margin:6px 0;}
+  .tllabel{width:42px;font-size:11px;color:var(--muted);text-align:right;flex:0 0 42px;}
+  .tlbar{display:flex;height:24px;border-radius:4px;overflow:hidden;flex:1;border:1px solid #2a2f3a;}
+  .seg{display:flex;align-items:center;justify-content:center;font-size:9px;color:#0b0d11;font-weight:700;border-right:1px solid #0b0d11;}
+  .seg:last-child{border-right:none;}
+  .seg.load{background:#5a9bf6;} .seg.decode{background:#b894f6;} .seg.mac{background:#56d364;}
+  .seg.barrier{background:#f85149;color:#fff;} .seg.slm{background:#d4a017;} .seg.stall{background:#3a2f12;color:#e3b341;}
+  .seg.prefetch{background:#234;color:#9bf;}
+
+  table{border-collapse:collapse;width:100%;margin:8px 0;font-size:13px;}
+  th,td{border:1px solid #2a2f3a;padding:7px 10px;text-align:left;}
+  th{background:#11141a;color:var(--accent);}
+  td.good{color:var(--s4);font-weight:600;} td.bad{color:var(--bad);font-weight:600;} td.warn{color:var(--warn);font-weight:600;}
+  .legend{display:flex;flex-wrap:wrap;gap:14px;font-size:12px;margin:4px 0 0;}
+  .legend span{display:inline-flex;align-items:center;gap:5px;}
+  .sw{width:13px;height:13px;border-radius:3px;border:1px solid #0006;}
+  .note{font-size:12.5px;color:var(--muted);border-left:3px solid var(--accent);padding:4px 0 4px 12px;margin:10px 0;}
+  .keyfind{background:#10331c22;border:1px solid #2ea04355;border-radius:8px;padding:12px 16px;margin:14px 0;font-size:13px;}
+</style>
+</head>
+<body>
+
+<h1>S4 vs S3 WOQ GEMV — the compute pipeline (ARK XPU, Battlemage)</h1>
+<p class="sub">Both assign <b>one sub-group (32 lanes) per output column</b> and split the K dimension across lanes. Same shape ⇒ same useful work. Yet S4 runs at ~453 GB/s (DRAM peak) and S3 at ~137 GB/s. The difference is entirely <b>what each lane does per step</b> — visualized below.</p>
+
+<div class="keyfind">
+<b>The calibration that proves it's compute, not memory:</b> at n=k=4096, S2 (2-bit, reads 4.2 MB) takes <b>0.041 ms</b> while S4 (4-bit, reads <i>more</i> data: 8.4 MB) takes <b>0.0185 ms</b>. The kernel that moves the <i>least</i> data is <i>slower</i> → none of the sub-4-bit kernels are bandwidth-bound. They stall on per-weight decode/accumulate overhead before reaching the memory ceiling. S4 is the only one that drove overhead low enough to saturate DRAM.
+</div>
+
+<div class="legend panel">
+  <strong style="margin-right:6px">Stage legend:</strong>
+  <span><i class="sw" style="background:#5a9bf6"></i> global weight load</span>
+  <span><i class="sw" style="background:#79c0ff"></i> activation load</span>
+  <span><i class="sw" style="background:#b894f6"></i> decode (unpack)</span>
+  <span><i class="sw" style="background:#56d364"></i> MAC (multiply-add)</span>
+  <span><i class="sw" style="background:#d4a017"></i> SLM stage</span>
+  <span><i class="sw" style="background:#f85149"></i> sub-group barrier</span>
+  <span><i class="sw" style="background:#234"></i> prefetch (async)</span>
+</div>
+
+<div class="cols">
+  <!-- ===================== S4 ===================== -->
+  <div class="kcard s4">
+    <p class="ktitle">S4 — WeightS4T::gemv <span class="badge fast">453 GB/s · peak</span></p>
+    <p class="kspeed">TileK0=8, Unroll=2, PrefetchDis=2. Each lane owns <b>8 contiguous K-weights</b> per inner step.</p>
+
+    <div class="lane-demo" id="s4lanes"></div>
+    <p class="cap">One lane's slice = 8 weights packed in <b>4 bytes</b> (2 nibbles/byte). 32 lanes × 8 = 256 K-weights per unrolled slice, read as one coalesced 128-byte transaction.</p>
+
+    <div class="stage"><div class="ic load">L</div><div class="tx"><b>Vectorized weight load</b> — <span class="mono">vec&lt;uint8_t,4&gt;</span> from <span class="mono">bptr + sg_id*4</span><div class="meta">1 instruction → 8 weights. Coalesced across the sub-group.</div></div></div>
+    <div class="arrow">▼</div>
+    <div class="stage"><div class="ic aload">A</div><div class="tx"><b>Vectorized activation load</b> — <span class="mono">vec&lt;T,8&gt;</span> into registers<div class="meta">8 A-values in one load.</div></div></div>
+    <div class="arrow">▼</div>
+    <div class="stage"><div class="ic decode">D</div><div class="tx"><b>Branchless decode</b> — <span class="mono">INT4x2_TO_LO/HI(byte) - 8</span><div class="meta">Fixed shift+mask. No loop body branch, no straddle. 4 bytes → 8 values.</div></div></div>
+    <div class="arrow">▼</div>
+    <div class="stage"><div class="ic mac">×</div><div class="tx"><b>8 MACs</b> over the tile, ×Unroll=2<div class="meta">Tight register FMA chain, high ILP.</div></div></div>
+    <div class="arrow">▼</div>
+    <div class="stage"><div class="ic load" style="background:#234;color:#9bf">P</div><div class="tx"><b>joint_prefetch</b> next slice (async)<div class="meta">Overlaps the next weight fetch with this slice's compute.</div></div></div>
+    <div class="note" style="margin-top:12px"><b>No SLM. No barriers in the hot loop.</b> Load → decode → MAC → advance, with prefetch hiding latency. The pipeline never stalls; memory is the only ceiling left → it hits DRAM peak.</div>
+  </div>
+
+  <!-- ===================== S3 ===================== -->
+  <div class="kcard s3">
+    <p class="ktitle">S3 — WeightS3T::gemv (SLM-coalesced) <span class="badge slow">137 GB/s · ~3× off</span></p>
+    <p class="kspeed">SgSize=32, Unroll=2. Each lane owns a <b>32-weight group</b> = 3 straddled words per step.</p>
+
+    <div class="lane-demo" id="s3lanes"></div>
+    <p class="cap">One lane's slice = 32 weights packed in <b>3 words (12 bytes)</b>, fields cross word boundaries. 4× more weights per lane per step than S4 → heavier, lumpier iterations.</p>
+
+    <div class="stage slm"><div class="ic slm">S</div><div class="tx"><b>SLM staging</b> — sub-group cooperatively copies the block's words to shared memory<div class="meta">Extra round-trip global→SLM→register that S4 doesn't pay.</div></div></div>
+    <div class="arrow">▼</div>
+    <div class="stage barrier"><div class="ic barrier">‖</div><div class="tx"><b>Barrier #1</b> — wait for all lanes' SLM writes<div class="meta">Serialization point.</div></div></div>
+    <div class="arrow">▼</div>
+    <div class="stage"><div class="ic load">L</div><div class="tx">Read 3 words from SLM<div class="meta">w0,w1,w2 per group.</div></div></div>
+    <div class="arrow">▼</div>
+    <div class="stage"><div class="ic decode">D</div><div class="tx"><b>Straddle decode</b> — <span class="mono">unpack32_words</span>: 32-iter loop with per-element <span class="mono">if(part2_bits&gt;0)</span><div class="meta">Data-dependent branch on every value that crosses a word boundary. Far heavier than a nibble extract.</div></div></div>
+    <div class="arrow">▼</div>
+    <div class="stage"><div class="ic aload">A</div><div class="tx">Vectorized activation load — <span class="mono">vec&lt;T,8&gt;</span> ×4<div class="meta">(this part already matches S4)</div></div></div>
+    <div class="arrow">▼</div>
+    <div class="stage"><div class="ic mac">×</div><div class="tx"><b>32 MACs</b> over the group, ×Unroll=2</div></div>
+    <div class="arrow">▼</div>
+    <div class="stage barrier"><div class="ic barrier">‖</div><div class="tx"><b>Barrier #2</b> — before reusing SLM next block<div class="meta">Second serialization per block.</div></div></div>
+    <div class="note" style="margin-top:12px"><b>Two barriers + SLM round-trip + branchy 32-wide decode per block.</b> The lane is busy with decode/branch overhead and stalls at barriers, so it never gets near the memory ceiling.</div>
+  </div>
+</div>
+
+<!-- ===================== timeline ===================== -->
+<h2>One inner step, side by side (schematic lane timeline)</h2>
+<div class="panel">
+  <div class="tl">
+    <div class="tlrow"><div class="tllabel" style="color:var(--s4)">S4</div>
+      <div class="tlbar" id="tlS4"></div></div>
+    <div class="tlrow"><div class="tllabel" style="color:var(--s3)">S3</div>
+      <div class="tlbar" id="tlS3"></div></div>
+  </div>
+  <p class="cap">Schematic, not to scale — illustrates <i>structure</i>. S4: continuous load→decode→MAC with prefetch overlapped underneath. S3: SLM + two barrier stalls (red) bracket a fat branchy decode (purple), so useful MAC time is a smaller fraction of the step.</p>
+</div>
+
+<!-- ===================== diff table ===================== -->
+<h2>What differs, line by line</h2>
+<div class="panel">
+  <table>
+    <thead><tr><th>Aspect</th><th>S4 (fast)</th><th>S3 (slow)</th><th>Fix for S3?</th></tr></thead>
+    <tbody>
+      <tr><td>Weight load</td><td class="good">vec&lt;uint8_t,4&gt; direct from global</td><td class="warn">global→SLM→register (staged)</td><td>drop SLM, read words direct + prefetch</td></tr>
+      <tr><td>Barriers / hot loop</td><td class="good">none</td><td class="bad">2 per block</td><td>remove with SLM</td></tr>
+      <tr><td>Decode</td><td class="good">branchless nibble (shift+mask)</td><td class="bad">32-iter straddle loop, per-elem branch</td><td>decode 3 words → 32 vals branchless once, hoist branch out</td></tr>
+      <tr><td>Activation load</td><td class="good">vec&lt;T,8&gt;</td><td class="good">vec&lt;T,8&gt; ×4 (already matches)</td><td>— already done</td></tr>
+      <tr><td>Weights / lane / step</td><td class="good">8 (tight tile, high ILP)</td><td class="warn">32 (lumpy, 4× heavier step)</td><td>consider 8-wide tiling</td></tr>
+      <tr><td>Latency hiding</td><td class="good">joint_prefetch ×2</td><td class="bad">none (prefetch hurt — overhead-bound)</td><td>secondary; fix compute first</td></tr>
+      <tr><td>Memory footprint</td><td>4 bits/wt</td><td class="good">3 bits/wt (keep this!)</td><td>unchanged — the win needs no extra bytes</td></tr>
+    </tbody>
+  </table>
+  <div class="note"><b>Takeaway:</b> S3's deficit is the red/orange column — SLM+barriers and the branchy 32-wide straddle decode — <i>not</i> its 3-bit size. Porting S4's barrier-free, branchless, tightly-tiled compute structure onto the existing dense 3-bit blob keeps 3-bit memory while removing the overhead that caps it at 137 GB/s.</div>
+</div>
+
+<script>
+// S4 lane slice: 8 weights, two shades to show the 2-nibbles-per-byte packing
+(function(){const h=document.getElementById('s4lanes');
+  for(let i=0;i<8;i++){const d=document.createElement('i');d.className='we '+(i%2?'s4b':'s4a');h.appendChild(d);} })();
+// S3 lane slice: 32 weights
+(function(){const h=document.getElementById('s3lanes');
+  for(let i=0;i<32;i++){const d=document.createElement('i');d.className='we s3a';h.appendChild(d);} })();
+
+// timeline builder
+function build(el, segs){segs.forEach(s=>{const d=document.createElement('div');
+  d.className='seg '+s.c;d.style.flex=s.w;d.textContent=s.t||'';el.appendChild(d);});}
+build(document.getElementById('tlS4'),[
+  {c:'load',w:2,t:'load'},{c:'decode',w:1,t:'dec'},{c:'mac',w:4,t:'MAC×8'},
+  {c:'load',w:2,t:'load'},{c:'decode',w:1,t:'dec'},{c:'mac',w:4,t:'MAC×8'},
+  {c:'prefetch',w:1.5,t:'pf↺'},
+]);
+build(document.getElementById('tlS3'),[
+  {c:'slm',w:2,t:'SLM'},{c:'barrier',w:1,t:'‖'},{c:'decode',w:5,t:'straddle decode ×32 (branchy)'},
+  {c:'mac',w:3,t:'MAC×32'},{c:'barrier',w:1,t:'‖'},{c:'stall',w:1.5,t:'idle'},
+]);
+</script>
+
+</body>
+</html>

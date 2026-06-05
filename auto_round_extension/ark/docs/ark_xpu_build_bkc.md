@@ -18,6 +18,23 @@ validated on an Intel Battlemage G21 (`0xe211`) node (`inc101`).
 The cmake/ninja/torch toolchain lives in the `ark` venv at
 `/home/yiliu7/workspace/venvs/ark`. The oneAPI compiler is at `/opt/intel/oneapi`.
 
+> **Per-node SYCL target (`bmg_g21` vs `bmg_g31`).** This BKC is the B60 / Battlemage
+> G21 node (`inc101`, `0xe211`), hence `DPCPP_SYCL_TARGET=intel_gpu_bmg_g21`. The B70 /
+> Battlemage G31 node (`0xe223`) is a different silicon (`bmg_g31`). **`DPCPP_SYCL_TARGET`
+> only feeds the `-Xs -device` JIT tuning hint (`CMakeLists.txt:94-109`) — it does NOT
+> gate the m>1 `joint_matrix` capability.** That gate is the `libsycl` runtime version
+> (2025.3's `.so.8` matrix table predates `bmg_g31`; a `.so.9`/2026 runtime carries it).
+> So on b70 the m>1 int8-XMX path needs a 2026 DPC++ runtime, not a target change — see
+> `ark_xpu_joint_matrix_finding.md` (CORRECTION #3 + the `DPCPP_SYCL_TARGET` verdict).
+> For a copy-paste verification of the released-2026 fix on b70, see
+> `ark_xpu_verify_2026_kernel.md` (gate-check + real-kernel harness, with expected output).
+
+> **Bringing up a fresh node?** This BKC assumes Python dev headers and a complete oneAPI MKL are
+> already present. On a clean machine they are often missing and `setup.py build_ext` fails at the
+> pybind11 configure (`Development.Module`) or the SYCL-TLA SDPA compile
+> (`oneapi/mkl/rng/device.hpp` not found). See `ark_xpu_fresh_node_bkc.md` for those two blockers
+> and their fixes.
+
 ## Prerequisites
 
 1. **Source the oneAPI environment** (provides `icx`/`icpx`, SYCL runtime, headers):
@@ -191,6 +208,52 @@ ONEAPI_DEVICE_SELECTOR=level_zero:gpu ARK_S3_BENCH=1 ./xbuild_ut/test_ARK_XPU 2>
 Edit the shapes (and weight types) in `TestGemm::run_s3_benchmarks()` (`wrapper/test/test_gemm.hpp`)
 then repeat step 1+2 to sweep other `m`/`n`/`k`. Without `ARK_S3_BENCH`, a plain
 `./xbuild_ut/test_ARK_XPU` runs the full suite (functional cases + these benchmarks + SDPA).
+
+## Benchmark S2 vs S4 (GEMV decode + GEMM prefill)
+
+The same `ARK_S3_BENCH=1` run also benches **int2 (S2)** against the **int4 (S4)** reference at both
+m=1 (GEMV / decode) and m>1 (GEMM / prefill). Filter by regime:
+
+```bash
+cd /home/yiliu7/workspace/auto-round/auto_round_extension/ark/auto_round_kernel
+source /opt/intel/oneapi/setvars.sh
+export PATH="/home/yiliu7/workspace/venvs/ark/bin:$PATH"
+cmake --build xbuild_ut --target test_ARK_XPU -j 4          # only if shapes/types were edited
+
+# m=1 decode (S2/S3/S4):
+ONEAPI_DEVICE_SELECTOR=level_zero:gpu ARK_S3_BENCH=1 ./xbuild_ut/test_ARK_XPU 2>&1 | grep gemv_bench
+# m>1 prefill (S2/S4):
+ONEAPI_DEVICE_SELECTOR=level_zero:gpu ARK_S3_BENCH=1 ./xbuild_ut/test_ARK_XPU 2>&1 | grep gemm_bench
+```
+
+Knobs (all in `run_s3_benchmarks()`, `wrapper/test/test_gemm.hpp`):
+
+- **dtypes** — GEMM loop uses `gemm_wtypes[] = {S2, S4}`; add `{S3,"s3"}` for the fp-fallback comparison.
+- **shapes** — `gemm_shapes[]` (m32/m128 @ k4096, m512 @ k11008); add e.g.
+  `{"m1024_n4096_k11008",1024,4096,11008,128}` to probe past the S2/S4 crossover.
+- **warmup/iters** — trailing `5, 20` on each `bench_woq_gemm` call; raise iters to cut noise.
+
+Any shape/type edit needs the rebuild (step above) before re-running. Measured on Battlemage G21:
+
+```
+[woq_s2][gemv_bench] n4096_k4096   ms=0.0440 TFLOPS=0.76 GBps=107    [woq_s4] ms=0.0185 TFLOPS=1.81 GBps=481
+[woq_s2][gemm_bench] m32 TFLOPS=4.95 GBps=21.7   m128 20.3/22.3   m512 70.8/19.5
+[woq_s4][gemm_bench] m32 TFLOPS=7.97 GBps=66.2   m128 32.8/68.1   m512 65.0/33.7
+```
+
+Reading (TFLOPS is the cross-dtype metric; GBps over the blob is NOT comparable across bit-widths —
+a fatter blob shows higher GBps at equal speed):
+
+- **Decode (GEMV, m=1)** is bandwidth/latency-bound: S4 reaches 481 GBps (66% of the 725 GB/s bus)
+  and wins 2.4x; S2/S3 sit at ~15% of the bus (occupancy-bound, the gap the optimization journey chased).
+- **Prefill (GEMM, m>1)** is **compute-bound**, not bandwidth-bound: every line is at 3-9% of the bus,
+  so XMX throughput gates it. S4 wins small/medium m (m32/m128, ~1.6x); **S2 edges S4 at large m**
+  (m512: 70.8 vs 65.0 TFLOPS, ~9%, reproducible). The GBps rules out bus saturation as the cause; the
+  most likely mechanism is S2's cheaper dequant (half the weight bytes to unpack), but this is not yet
+  profiled. Crossover is ~m=256-512.
+- S2 is NOT in S3's fp-dequant fallback — it is 2.7-6.7x faster than S3 at GEMM.
+
+
 
 The binary exits 0 when all GEMM / WOQ / SDPA cases pass. The SDPA benchmarks at the end
 (`bench_*` with 4096/8192 seq len) run for a few minutes — this is expected.

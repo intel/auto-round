@@ -1,0 +1,450 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Intel GPU Stack — Dockerfile.xpu Package Map</title>
+<style>
+  :root{
+    --bg:#0d1117; --panel:#161b22; --border:#30363d; --txt:#e6edf3;
+    --muted:#8b949e; --accent:#58a6ff; --hw:#f78166; --kern:#d2a8ff;
+    --umd:#7ee787; --rt:#79c0ff; --app:#ffa657; --net:#f0c070; --fail:#f85149;
+    --ok:#3fb950; --wire:#484f58; --warn:#d29922;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--txt);
+    font-family:'SF Mono',ui-monospace,'Cascadia Code',Menlo,Consolas,monospace;
+    line-height:1.45;padding:24px}
+  h1{font-size:18px;margin:0 0 4px;font-weight:600}
+  .sub{color:var(--muted);font-size:12px;margin-bottom:20px}
+  .sub b{color:var(--txt)}
+  .legend{display:flex;flex-wrap:wrap;gap:14px;margin:14px 0 22px;font-size:11px}
+  .legend span{display:flex;align-items:center;gap:6px;color:var(--muted)}
+  .dot{width:11px;height:11px;border-radius:2px;display:inline-block}
+  .stack{max-width:1080px;margin:0 auto}
+  .layer{border:1px solid var(--border);border-radius:8px;margin:0 0 6px;
+    background:var(--panel);overflow:hidden}
+  .layer-head{display:flex;align-items:stretch}
+  .tag{writing-mode:vertical-rl;transform:rotate(180deg);text-align:center;
+    padding:8px 6px;font-size:10px;letter-spacing:1px;font-weight:700;
+    color:#0d1117;display:flex;align-items:center;justify-content:center;min-width:26px}
+  .tag.hw{background:var(--hw)} .tag.kern{background:var(--kern)}
+  .tag.umd{background:var(--umd)} .tag.rt{background:var(--rt)}
+  .tag.app{background:var(--app)} .tag.net{background:var(--net)}
+  .body{flex:1;padding:10px 14px}
+  .ltitle{font-size:13px;font-weight:600;margin:0 0 2px}
+  .ldesc{font-size:11px;color:var(--muted);margin:0 0 8px}
+  .comp{display:flex;flex-wrap:wrap;gap:6px}
+  .chip{background:#0d1117;border:1px solid var(--border);border-radius:5px;
+    padding:4px 9px;font-size:11px;display:flex;flex-direction:column;gap:1px}
+  .chip .k{color:var(--txt);font-weight:600}
+  .chip .v{color:var(--accent);font-size:10px}
+  .chip .f{color:var(--muted);font-size:9.5px}
+  .chip.src{border-color:var(--warn)} .chip.src .v{color:var(--warn)}
+  .chip.pkg{border-color:var(--ok)} .chip.pkg .v{color:var(--ok)}
+  .chip.pip{border-color:var(--rt)} .chip.pip .v{color:var(--rt)}
+  .arrow{text-align:center;color:var(--wire);font-size:14px;margin:-1px 0;height:16px;
+    line-height:16px}
+  .arrow b{color:var(--muted);font-size:10px;font-weight:400}
+  .note{font-size:10.5px;color:var(--muted);margin-top:7px;padding-top:7px;
+    border-top:1px dashed var(--border)}
+  .note .hot{color:var(--fail);font-weight:600}
+  .note .cool{color:var(--ok);font-weight:600}
+  .note .warnc{color:var(--warn);font-weight:600}
+  .spv{border:1px solid var(--accent);border-radius:8px;background:rgba(88,166,255,.05);
+    padding:12px 14px;margin:6px 0}
+  .spv .ltitle{color:var(--accent)}
+  .verdict{max-width:1080px;margin:22px auto 0}
+  .vcard{border:1px solid var(--border);border-radius:8px;padding:12px 14px;
+    background:var(--panel);margin-bottom:12px}
+  .vcard h3{margin:0 0 8px;font-size:12px;color:var(--accent)}
+  .vcard table{width:100%;border-collapse:collapse;font-size:11px}
+  .vcard td{padding:2px 6px;color:var(--muted)} .vcard td:last-child{text-align:right;color:var(--txt)}
+  .vcard td:first-child{white-space:nowrap;font-weight:600;color:var(--txt);text-align:left}
+  .footer{max-width:1080px;margin:18px auto 0;font-size:10.5px;color:var(--muted)}
+  code{background:#0d1117;border:1px solid var(--border);border-radius:3px;padding:0 4px;color:#79c0ff}
+  .split{display:grid;grid-template-columns:1fr 1fr;gap:12px}
+  .dl{border-top:1px dashed var(--border);margin-top:10px;padding-top:8px}
+  .dl dt{font-size:10px;color:var(--muted);text-transform:uppercase;letter-spacing:0.6px}
+  .dl dd{font-size:11px;color:var(--txt);margin:0 0 6px;font-weight:500}
+</style>
+</head>
+<body>
+<div class="stack">
+  <h1>Intel GPU Software Stack — Dockerfile.xpu Package Map</h1>
+  <div class="sub">Every GPU-related package installed in <b>vllm/docker/Dockerfile.xpu</b>.
+    Base image: <b>intel/deep-learning-essentials:2025.3.2-0-devel-ubuntu24.04</b> ·
+    oneAPI <b>2025.3</b> · compute-runtime <b>25.48.36300.8</b> · IGC <b>2.24.8</b> ·
+    PyTorch <b>XPU</b>.</div>
+
+  <div class="legend">
+    <span><i class="dot" style="background:var(--hw)"></i>Silicon / firmware</span>
+    <span><i class="dot" style="background:var(--kern)"></i>Kernel-mode (DRM)</span>
+    <span><i class="dot" style="background:var(--umd)"></i>User-mode driver stack</span>
+    <span><i class="dot" style="background:var(--rt)"></i>oneAPI runtime &amp; math libs</span>
+    <span><i class="dot" style="background:var(--app)"></i>Framework / app</span>
+    <span><i class="dot" style="background:var(--net)"></i>Interconnect (NIXL/UCX)</span>
+    <span><i class="dot" style="border:1px dashed var(--warn);background:transparent;width:9px;height:9px"></i>Apt repo / wheel URL</span>
+  </div>
+
+  <!-- ============ BASE IMAGE ============ -->
+  <div class="layer">
+    <div class="layer-head">
+      <div class="tag" style="background:var(--accent)">BASE</div>
+      <div class="body">
+        <div class="ltitle">Base Image — intel/deep-learning-essentials:2025.3.2-0-devel-ubuntu24.04</div>
+        <div class="ldesc">Pre-ships PyTorch XPU, SYCL runtime <code>libsycl.so</code>, oneDNN, and L0 loader.
+          The single version pin that anchors the whole stack.</div>
+        <div class="comp">
+          <div class="chip pkg"><span class="k">torch xpu</span><span class="v">pre-installed in /opt</span></div>
+          <div class="chip pkg"><span class="k">libsycl.so</span><span class="v">DPC++ SYCL runtime</span></div>
+          <div class="chip pkg"><span class="k">libonednn</span><span class="v">oneDNN (Intel DNNL)</span></div>
+          <div class="chip pkg"><span class="k">libze_loader.so</span><span class="v">Level-Zero loader (base)</span></div>
+          <div class="chip pkg"><span class="k">pip / venv</span><span class="v">Python 3.12 toolchain</span></div>
+        </div>
+      </div>
+    </div>
+  </div>
+  <div class="arrow">▼ <b>FROM intel/deep-learning-essentials:2025.3.2-0-devel-ubuntu24.04 AS vllm-base</b></div>
+
+  <!-- ============ oneAPI REPO ============ -->
+  <div class="spv">
+    <div class="ltitle">◆ oneAPI Repository Pin — APT source + preferences</div>
+    <div class="ldesc"><code>https://apt.repos.intel.com/oneapi all main</code> ·
+      GPG key: <code>GPG-PUB-KEY-INTEL-SW-PRODUCTS.PUB</code>.
+      All <code>intel-oneapi-* intel-deep-learning-essentials* intel-pti*</code>
+      pinned to <b>version 2025.3*</b> with priority <b>1001</b> — prevents accidental
+      upgrades across the oneAPI boundary.</div>
+    <div class="comp">
+      <div class="chip src"><span class="k">apt.repos.intel.com</span><span class="v">oneAPI apt repo</span></div>
+      <div class="chip"><span class="k">Pin: 2025.3*</span><span class="v">Priority 1001</span><span class="f">locks oneAPI version</span></div>
+      <div class="chip"><span class="k">/etc/apt/preferences.d</span><span class="v">oneapi-2025.3.pref</span></div>
+    </div>
+  </div>
+
+  <!-- ============ oneAPI RUNTIME ============ -->
+  <div class="layer">
+    <div class="layer-head">
+      <div class="tag rt">API</div>
+      <div class="body">
+        <div class="ltitle">oneAPI Compiler &amp; Math Libraries — installed via apt from Intel repo</div>
+        <div class="ldesc">SYCL device compiler + MKL (BLAS/SYCL math) + oneDNN (deep-learning primitives).
+          These are the <b>host-side</b> dev packages; the runtime <code>.so</code>s ship with the base image.</div>
+        <div class="comp">
+          <div class="chip pkg"><span class="k">intel-oneapi-compiler-dpcpp-cpp-2025.3</span><span class="v">icx/icpx → SPIR-V</span><span class="f">SYCL device compiler + headers</span></div>
+          <div class="chip pkg"><span class="k">intel-oneapi-mkl-devel-2025.3</span><span class="v">libmkl_sycl.so</span><span class="f">BLAS, LAPACK, RNG on GPU</span></div>
+          <div class="chip pkg"><span class="k">intel-oneapi-dnnl-devel-2025.3</span><span class="v">libdnnl.so.3</span><span class="f">conv, matmul, RNN primitives</span></div>
+        </div>
+        <div class="note"><span class="cool">dpcpp → SYCL host code</span> compiles to x86; device code → SPIR-V.
+          At runtime <code>libsycl.so</code> hands SPIR-V to the L0 driver (IGC JIT-lowers to GPU ISA).
+          oneDNN is the backend for PyTorch XPU operators (matmul, conv, etc.).</div>
+      </div>
+    </div>
+  </div>
+  <div class="arrow">▼ <b>oneCCL: parallel comms library for multi-GPU / scale-out</b></div>
+
+  <!-- ============ oneCCL ============ -->
+  <div class="layer">
+    <div class="layer-head">
+      <div class="tag net">CCL</div>
+      <div class="body">
+        <div class="ltitle">oneCCL — Collective Communications Library (from uxlfoundation)</div>
+        <div class="ldesc">Pinned to <b>2021.15.9.14</b> via offline installer (newer than the default
+          oneAPI 2025.3 CCL — adds <b>Battlemage G21 support</b>).
+          Installed to <code>/opt/intel/oneapi/ccl/2021.15/</code>, symlinked as <code>latest</code>.</div>
+        <div class="comp">
+          <div class="chip src"><span class="k">github.com/uxlfoundation/oneCCL</span><span class="v">release 2021.15.9</span></div>
+          <div class="chip pkg"><span class="k">oneccl-2021.15.9.14</span><span class="v">libccl.so + env/vars.sh</span><span class="f">allreduce, allgather, broadcast</span></div>
+          <div class="chip"><span class="k">ccl/latest →</span><span class="v">ccl/2021.15 symlink</span></div>
+        </div>
+        <div class="note"><span class="warnc">oneCCL is sourced separately</span> from the oneAPI repo:
+          <code>source /opt/intel/oneapi/setvars.sh --force</code> then
+          <code>source /opt/intel/oneapi/ccl/2021.15/env/vars.sh --force</code>.
+          Added to <code>/root/.bashrc</code> so every shell inherits it.
+          Torch-bundled <code>oneccl / oneccl-devel</code> pip packages are
+          <span class="hot">removed in vllm-openai</span> to avoid conflicts.</div>
+      </div>
+    </div>
+  </div>
+  <div class="arrow">▼ <b>UMD stack — downloaded as .deb from GitHub releases</b></div>
+
+  <!-- ============ IGC ============ -->
+  <div class="layer">
+    <div class="layer-head">
+      <div class="tag umd">IGC</div>
+      <div class="body">
+        <div class="ltitle">Intel Graphics Compiler (IGC) — SPIR-V → GPU ISA JIT</div>
+        <div class="ldesc">The heart of the shader compilation chain. Takes generic SPIR-V from the SYCL
+          device compiler and lowers it to native GPU instructions (Xe2 ISA on Battlemage).
+          Ships as two debs from the IGC GitHub releases.</div>
+        <div class="comp">
+          <div class="chip src"><span class="k">github.com/intel/intel-graphics-compiler</span><span class="v">release v2.24.8</span></div>
+          <div class="chip pkg"><span class="k">intel-igc-core-2</span><span class="v">2.24.8+20344</span><span class="f">core compiler: spir-v → vISA → GPU binary</span></div>
+          <div class="chip pkg"><span class="k">intel-igc-opencl-2</span><span class="v">2.24.8+20344</span><span class="f">OpenCL built-ins + SPIR-V extensions</span></div>
+        </div>
+        <div class="note">IGC is <b>embedded inside the compute-runtime</b> — it runs as a library
+          (<code>libigc.so</code>), not a standalone binary. Every time the L0 driver loads a
+          SPIR-V module, IGC JIT-compiles it. This is why driver version =
+          IGC capability = which SPIR-V ops work on a given node.</div>
+      </div>
+    </div>
+  </div>
+  <div class="arrow">▼ <b>compute-runtime UMD: L0 driver + OpenCL + ocloc + GMM</b></div>
+
+  <!-- ============ COMPUTE RUNTIME ============ -->
+  <div class="layer">
+    <div class="layer-head">
+      <div class="tag umd">UMD</div>
+      <div class="body">
+        <div class="ltitle">Intel Compute-Runtime — User-Mode Driver Stack</div>
+        <div class="ldesc">Monolithic UMD release at <b>25.48.36300.8</b> (WW48 2025). Implements both
+          the Level-Zero API and the OpenCL ICD. The <code>libze-intel-gpu1</code> is the critical
+          piece — it owns GPU command-buffer submission through L0.</div>
+        <div class="comp">
+          <div class="chip src"><span class="k">github.com/intel/compute-runtime</span><span class="v">release 25.48.36300.8</span></div>
+          <div class="chip pkg"><span class="k">libze-intel-gpu1</span><span class="v">25.48.36300.8-0</span><span class="f">Level-Zero UMD (zeCommandQueue, contexts)</span></div>
+          <div class="chip pkg"><span class="k">intel-opencl-icd</span><span class="v">25.48.36300.8-0</span><span class="f">OpenCL ICD (/etc/OpenCL/vendors)</span></div>
+          <div class="chip pkg"><span class="k">intel-ocloc</span><span class="v">25.48.36300.8-0</span><span class="f">offline compiler (AOT SPIR-V → binary)</span></div>
+          <div class="chip pkg"><span class="k">libigdgmm12</span><span class="v">22.8.2</span><span class="f">GPU memory manager (GMM, USM backing)</span></div>
+        </div>
+        <div class="comp" style="margin-top:8px">
+          <div class="chip src"><span class="k">github.com/oneapi-src/level-zero</span><span class="v">release v1.26.0</span></div>
+          <div class="chip pkg"><span class="k">level-zero</span><span class="v">1.26.0+u24.04</span><span class="f">loader + dev headers (libze_loader.so)</span></div>
+        </div>
+        <div class="note"><span class="cool">All debs installed in one batch</span> via
+          <code>dpkg -i *.deb</code> inside a <code>neo/</code> directory that is cleaned up
+          afterwards. The Level-Zero loader comes from a <b>separate repo</b>
+          (oneapi-src/level-zero) — it is the vendor-neutral dispatch layer that routes
+          L0 calls to the Intel-specific <code>libze-intel-gpu.so</code> backend.</div>
+      </div>
+    </div>
+  </div>
+  <div class="arrow">▼ <b>LD_LIBRARY_PATH ← /usr/local/lib</b></div>
+
+  <!-- ============ PIP PACKAGES ============ -->
+  <div class="layer">
+    <div class="layer-head">
+      <div class="tag app">PIP</div>
+      <div class="body">
+        <div class="ltitle">Python Packages — XPU wheels via PyTorch XPU index</div>
+        <div class="ldesc"><code>--extra-index-url https://download.pytorch.org/whl/xpu</code>.
+          Installed in two layers: <code>requirements/xpu.txt</code> (runtime deps) then
+          <code>requirements/test/xpu.txt</code> (test deps, with oneAPI env sourced).</div>
+        <div class="comp">
+          <div class="chip src"><span class="k">download.pytorch.org/whl/xpu</span><span class="v">PIP_EXTRA_INDEX_URL</span></div>
+          <div class="chip pip"><span class="k">torch</span><span class="v">2.x+xpu</span><span class="f">PyTorch with XPU backend</span></div>
+          <div class="chip pip"><span class="k">torchvision / torchaudio</span><span class="v">XPU variants</span></div>
+          <div class="chip pip"><span class="k">intel-extension-for-pytorch</span><span class="v">ipex (XPU ops)</span></div>
+          <div class="chip pip"><span class="k">oneccl_bind_pt</span><span class="v">torch→oneCCL bridge</span></div>
+        </div>
+        <div class="note"><code>requirements/xpu.txt</code> brings in PyTorch XPU + IPEX.
+          <code>requirements/test/xpu.txt</code> is installed with
+          <code>CMAKE_PREFIX_PATH</code> pointing at the venv site-packages so that
+          <b>compiled extensions</b> (e.g. custom ops) can find SYCL headers.
+          <code>grpcio-tools protobuf nanobind</code> are pinned separately for the
+          vLLM Rust frontend build.</div>
+      </div>
+    </div>
+  </div>
+  <div class="arrow">▼ <b>vllm pip install --no-build-isolation . (VLLM_TARGET_DEVICE=xpu)</b></div>
+
+  <!-- ============ vLLM ============ -->
+  <div class="layer">
+    <div class="layer-head">
+      <div class="tag app">APP</div>
+      <div class="body">
+        <div class="ltitle">vLLM — compiled for XPU</div>
+        <div class="ldesc">Built with <code>VLLM_TARGET_DEVICE=xpu</code>.
+          The build links oneDNN + SYCL + oneCCL for XPU operators. Rust frontend
+          (<code>vllm-rs</code>) pre-built in a separate stage and copied in.</div>
+        <div class="comp">
+          <div class="chip"><span class="k">vllm</span><span class="v">VLLM_TARGET_DEVICE=xpu</span><span class="f">XPU kernels + ops</span></div>
+          <div class="chip"><span class="k">vllm-rs</span><span class="v">Rust frontend binary</span><span class="f">pre-built (rust-build stage)</span></div>
+          <div class="chip"><span class="k">VLLM_WORKER_MULTIPROC_METHOD</span><span class="v">spawn</span><span class="f">needed for XPU (not fork)</span></div>
+        </div>
+        <div class="note">The Rust frontend is built in a <b>separate stage</b> (FROM ubuntu:22.04)
+          with a pinned rust toolchain, then <code>COPY --from=rust-build</code> into the final
+          image. This keeps the vLLM image free of the Rust toolchain.</div>
+      </div>
+    </div>
+  </div>
+  <div class="arrow">▼ <b>vllm-openai stage: networking + triton fix</b></div>
+
+  <!-- ============ NIXL / UCX ============ -->
+  <div class="layer">
+    <div class="layer-head">
+      <div class="tag net">NET</div>
+      <div class="body">
+        <div class="ltitle">NIXL + UCX — multi-node GPU interconnect</div>
+        <div class="ldesc">Built from source. UCX at commit <code>e5d9887</code> (with
+          <code>--with-ze=yes</code> — Level-Zero transport for GPU RDMA).
+          NIXL <b>0.7.0</b> wraps UCX for disaggregated inference (KV cache transfer).</div>
+        <div class="comp">
+          <div class="chip src"><span class="k">github.com/openucx/ucx</span><span class="v">commit e5d9887</span><span class="f">--with-ze=yes (GPU direct)</span></div>
+          <div class="chip src"><span class="k">github.com/ai-dynamo/nixl</span><span class="v">v0.7.0</span><span class="f">disaggregated inference transport</span></div>
+          <div class="chip pkg"><span class="k">libucp / libuct / libucs</span><span class="v">/tmp/ucx_install</span><span class="f">PKG_CONFIG_PATH hooks</span></div>
+          <div class="chip pkg"><span class="k">rdma-core / libibverbs</span><span class="v">InfiniBand + RoCE</span><span class="f">apt packages</span></div>
+        </div>
+        <div class="note">UCX is configured <code>--with-ze=yes</code> for <b>Level-Zero GPU direct RDMA</b>
+          (data moves GPU↔NIC without staging through CPU memory). NIXL layers on top for
+          disaggregated prefill/decode — it can transfer KV cache across nodes.
+          Both are built + installed then <b>source trees removed</b> to keep the image lean.</div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ============ TRITON ============ -->
+  <div class="layer">
+    <div class="layer-head">
+      <div class="tag app">FIX</div>
+      <div class="body">
+        <div class="ltitle">Triton XPU Pin — replaces upstream triton</div>
+        <div class="ldesc">Uninstalls any existing <code>triton</code> / <code>triton-xpu</code>,
+          then installs a <b>specific XPU fork at 3.7.0</b>.
+          This is the last step in the vllm-openai stage.</div>
+        <div class="comp">
+          <div class="chip pip"><span class="k">triton-xpu</span><span class="v">3.7.0</span><span class="f">Intel fork of Triton for XPU</span></div>
+          <div class="chip" style="border-color:var(--fail)"><span class="k" style="color:var(--fail)">triton (removed)</span><span class="v">uninstalled first</span><span class="f">avoids conflicts</span></div>
+          <div class="chip" style="border-color:var(--fail)"><span class="k" style="color:var(--fail)">oneccl pip (removed)</span><span class="v">uninstalled first</span><span class="f">use apt oneCCL instead</span></div>
+        </div>
+        <div class="note"><span class="warnc">Explicit uninstall-then-install</span> order:
+          Triton XPU replaces upstream Triton; oneCCL bundled inside PyTorch wheels
+          is removed to avoid shadowing the <b>apt-installed oneCCL 2021.15.9</b>
+          (which has BMG support).</div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ============ FULL DEPENDENCY TABLE ============ -->
+  <div class="verdict">
+    <div class="vcard">
+      <h3>📦 Complete GPU Package Inventory — Dockerfile.xpu</h3>
+      <table>
+        <tr><td>Base image</td><td>intel/deep-learning-essentials:2025.3.2-0-devel-ubuntu24.04</td></tr>
+        <tr style="background:rgba(120,120,120,.06)"><td colspan="2"><b>oneAPI (apt, pinned to 2025.3*)</b></td></tr>
+        <tr><td>intel-oneapi-compiler-dpcpp-cpp</td><td>2025.3</td></tr>
+        <tr><td>intel-oneapi-mkl-devel</td><td>2025.3</td></tr>
+        <tr><td>intel-oneapi-dnnl-devel</td><td>2025.3</td></tr>
+        <tr style="background:rgba(120,120,120,.06)"><td colspan="2"><b>Compute-Runtime UMD (GitHub releases, downloaded as .deb)</b></td></tr>
+        <tr><td>intel-igc-core-2</td><td>2.24.8+20344 (v2.24.8)</td></tr>
+        <tr><td>intel-igc-opencl-2</td><td>2.24.8+20344 (v2.24.8)</td></tr>
+        <tr><td>intel-ocloc</td><td>25.48.36300.8-0</td></tr>
+        <tr><td>intel-opencl-icd</td><td>25.48.36300.8-0</td></tr>
+        <tr><td>libigdgmm12</td><td>22.8.2</td></tr>
+        <tr><td>libze-intel-gpu1</td><td>25.48.36300.8-0</td></tr>
+        <tr><td>level-zero (loader)</td><td>1.26.0+u24.04 (separate repo)</td></tr>
+        <tr style="background:rgba(120,120,120,.06)"><td colspan="2"><b>oneCCL (offline installer, BMG support)</b></td></tr>
+        <tr><td>oneccl</td><td>2021.15.9.14 (uxlfoundation/oneCCL)</td></tr>
+        <tr style="background:rgba(120,120,120,.06)"><td colspan="2"><b>Python wheels (PyTorch XPU index)</b></td></tr>
+        <tr><td>torch</td><td>XPU build (from requirements/xpu.txt)</td></tr>
+        <tr><td>intel-extension-for-pytorch</td><td>ipex (XPU ops backend)</td></tr>
+        <tr><td>triton-xpu</td><td>3.7.0 (replaces upstream triton)</td></tr>
+        <tr style="background:rgba(120,120,120,.06)"><td colspan="2"><b>Interconnect (built from source)</b></td></tr>
+        <tr><td>ucx</td><td>commit e5d9887 (--with-ze=yes)</td></tr>
+        <tr><td>nixl</td><td>0.7.0 (ai-dynamo/nixl)</td></tr>
+      </table>
+    </div>
+
+    <!-- ============ DATA FLOW ============ -->
+    <div class="vcard" style="border-color:var(--accent)">
+      <h3>🔗 Runtime Data Flow — how a vLLM XPU forward pass traverses this stack</h3>
+      <div style="font-size:11px;color:var(--muted);line-height:1.8">
+        <b style="color:var(--txt)">1.</b> vLLM Python calls <code>torch.xpu</code> matmul /
+        attention op<br>
+        <b style="color:var(--txt)">2.</b> PyTorch dispatches to <b>IPEX</b> or
+        <b>oneDNN</b> (libdnnl.so) → SYCL queue<br>
+        <b style="color:var(--txt)">3.</b> <b>libsycl.so</b> selects the Level-Zero backend,
+        hands SPIR-V kernel + args to the <b>L0 loader</b><br>
+        <b style="color:var(--txt)">4.</b> L0 loader routes to <b>libze-intel-gpu.so</b>
+        (compute-runtime UMD)<br>
+        <b style="color:var(--txt)">5.</b> UMD calls <b>IGC</b> (libigc.so) to
+        JIT-compile SPIR-V → Xe2 ISA<br>
+        <b style="color:var(--txt)">6.</b> UMD builds a command buffer, submits it via
+        <b>DRM ioctl</b> to the kernel driver<br>
+        <b style="color:var(--txt)">7.</b> <b>xe/i915 KMD</b> schedules on GPU →
+        GuC firmware loads context → Xe-cores execute<br>
+        <b style="color:var(--txt)">8.</b> (multi-node) KV cache transfer goes through
+        <b>NIXL → UCX → libze-intel-gpu</b> GPU-direct RDMA<br>
+        <b style="color:var(--txt)">9.</b> (multi-GPU) allreduce / allgather goes through
+        <b>oneccl_bind_pt → oneCCL → L0</b>
+      </div>
+    </div>
+
+    <!-- ============ DOWNLOAD SOURCES ============ -->
+    <div class="vcard">
+      <h3>🌐 Download Sources — where each package comes from</h3>
+      <div class="split">
+        <div>
+          <dl class="dl">
+            <dt>Apt — Intel oneAPI repo</dt>
+            <dd>https://apt.repos.intel.com/oneapi</dd>
+            <dt>GitHub — Intel Graphics Compiler</dt>
+            <dd>github.com/intel/intel-graphics-compiler</dd>
+            <dt>GitHub — Compute-Runtime</dt>
+            <dd>github.com/intel/compute-runtime</dd>
+            <dt>GitHub — Level-Zero</dt>
+            <dd>github.com/oneapi-src/level-zero</dd>
+          </dl>
+        </div>
+        <div>
+          <dl class="dl">
+            <dt>GitHub — oneCCL (BMG)</dt>
+            <dd>github.com/uxlfoundation/oneCCL</dd>
+            <dt>PyTorch XPU wheel index</dt>
+            <dd>https://download.pytorch.org/whl/xpu</dd>
+            <dt>GitHub — UCX</dt>
+            <dd>github.com/openucx/ucx</dd>
+            <dt>GitHub — NIXL</dt>
+            <dd>github.com/ai-dynamo/nixl</dd>
+          </dl>
+        </div>
+      </div>
+    </div>
+
+    <!-- ============ VERSION COMPAT ============ -->
+    <div class="vcard" style="border-color:var(--warn)">
+      <h3 style="color:var(--warn)">⚠ Version Compatibility Notes</h3>
+      <div class="split">
+        <div>
+          <dl class="dl">
+            <dt>oneAPI 2025.3 lock</dt>
+            <dd>DPC++ compiler, MKL, and DNNL must stay on 2025.3. The base image
+              (2025.3.2) and apt pin (version 2025.3*) enforce this. Bumping the
+              base image requires updating both the pin and the UMD to match.</dd>
+            <dt>oneCCL decoupled from oneAPI</dt>
+            <dd>The default oneAPI 2025.3 CCL does <b>not</b> support Battlemage.
+              The 2021.15.9.14 release from uxlfoundation does — so it is
+              installed separately and the pip-bundled oneccl is removed.</dd>
+          </dl>
+        </div>
+        <div>
+          <dl class="dl">
+            <dt>UMD version lock</dt>
+            <dd>IGC 2.24.8 + compute-runtime 25.48.36300.8 + L0 1.26.0 are a
+              <b>matched set</b>. The IGC and ocloc versions must be compatible
+              with the libze-intel-gpu build. Mismatched debs cause
+              zeInit failures or SPIR-V lowering errors.</dd>
+            <dt>Triton XPU replaces triton</dt>
+            <dd>Upstream triton does not target Intel GPUs. triton-xpu==3.7.0
+              is the Intel fork. Both must be uninstalled before installing the
+              pinned version to avoid import path conflicts.</dd>
+          </dl>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div class="footer">
+    <b>How to read this:</b> each colored block is a distinct package group from
+    <code>docker/Dockerfile.xpu</code>. The stack builds bottom-up: base image →
+    oneAPI apt → UMD debs → oneCCL → pip wheels → vLLM build → NIXL/UCX → triton.
+    <br><br>
+    <b>Key insight:</b> the UMD stack (<code>neo/*.deb</code>) is the most
+    version-sensitive layer. IGC version determines which SPIR-V ops lower
+    correctly to GPU ISA; the compute-runtime version determines which IGC is
+    embedded. These three repos (IGC, compute-runtime, level-zero) must be
+    bumped together when upgrading.
+  </div>
+</div>
+</body>
+</html>

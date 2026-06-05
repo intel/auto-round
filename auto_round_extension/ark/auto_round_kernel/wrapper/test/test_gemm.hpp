@@ -874,12 +874,16 @@ struct TestGemm {
     // S3 dense direct-from-global + prefetch, no SLM — does dropping SLM beat the committed kernel?
     bench_s3_direct_spike<float>("bench_s3_direct_gemv_n4096_k4096", 4096, 4096, 128, 10, 50);
     bench_s3_direct_spike<float>("bench_s3_direct_gemv_n4096_k11008", 4096, 11008, 128, 10, 50);
-    // for (auto& w : wtypes) {
-    //   for (auto& s : gemm_shapes) {
-    //     bench_woq_gemm<float>(w.first, w.second, std::string("bench_") + w.second + "_gemm_" + s.tag, s.m, s.n, s.k,
-    //                           s.blk, 5, 20);
-    //   }
-    // }
+    // m>1 GEMM bench: S2 + S4 only (S3 uses the slow fp-dequant fallback). Measured: S4 wins at small
+    // m (m32/m128 ~1.6x) but S2 overtakes at large m (m512: 71 vs 65 TFLOPS) as the path turns
+    // weight-bandwidth-bound and S2's 0.5x bytes pay off. Crossover ~m=256-512.
+    const std::pair<BTLA_DTYPE, const char*> gemm_wtypes[] = {{BTLA_DTYPE::S2, "s2"}, {BTLA_DTYPE::S4, "s4"}};
+    for (auto& w : gemm_wtypes) {
+      for (auto& s : gemm_shapes) {
+        bench_woq_gemm<float>(w.first, w.second, std::string("bench_") + w.second + "_gemm_" + s.tag, s.m, s.n, s.k,
+                              s.blk, 5, 20);
+      }
+    }
   }
 
   // m==1 int3 (S3) symmetric WOQ GEMV accuracy check: pack random 3-bit weights via the kernel
@@ -1151,8 +1155,13 @@ struct TestGemm {
 
     double flops = 2.0 * double(m) * double(n) * double(k);
     double tflops = flops / (ms * 1e-3) / 1e12;
+    // GBps over the packed weight blob (same basis as the GEMV bench, so the two are comparable).
+    // At m>1 the weight is read once and reused across all m rows, so this is a diagnostic rate, not
+    // a bus-saturation figure — a compute-bound GEMM sits far below the DRAM ceiling here.
+    double gbps = double(blob_size) / (ms * 1e-3) / 1e9;
     std::cout << std::fixed << std::setprecision(4) << "[woq_" << tag << "][gemm_bench] " << name << " m=" << m
-              << " n=" << n << " k=" << k << " blk=" << blocksize << " ms=" << ms << " TFLOPS=" << tflops << "\n";
+              << " n=" << n << " k=" << k << " blk=" << blocksize << " ms=" << ms << " TFLOPS=" << tflops
+              << " GBps=" << gbps << "\n";
 
     ctx->deallocate(dRaw);
     ctx->deallocate(dScale);

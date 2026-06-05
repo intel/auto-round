@@ -1,0 +1,268 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>int3 WOQ packing layouts — scale-block alignment</title>
+<style>
+  :root {
+    --bg:#0f1115; --panel:#181b22; --ink:#e6e6e6; --muted:#9aa3b2;
+    --word:#2a2f3a; --wordedge:#3a4150;
+    --blkA:#1f6feb; --blkB:#d2691e; --pad:#444b58;
+    --good:#2ea043; --bad:#f85149; --warn:#d29922;
+    --accent:#58a6ff;
+  } is not supported is not supported
+  * { box-sizing:border-box; }
+  body {
+    margin:0; padding:32px; background:var(--bg); color:var(--ink);
+    font:14px/1.55 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;
+  }
+  h1 { font-size:22px; margin:0 0 4px; }
+  h2 { font-size:17px; margin:28px 0 10px; color:var(--accent); }
+  .sub { color:var(--muted); margin:0 0 20px; }
+  .panel {
+    background:var(--panel); border:1px solid #232833; border-radius:10px;
+    padding:18px 20px; margin-bottom:22px;
+  }
+  .legend { display:flex; flex-wrap:wrap; gap:16px; margin:10px 0 4px; font-size:13px; }
+  .legend span { display:inline-flex; align-items:center; gap:6px; }
+  .sw { width:14px; height:14px; border-radius:3px; display:inline-block; border:1px solid #0006; }
+  .mono { font-family:"SF Mono",Menlo,Consolas,monospace; }
+  .row { display:flex; flex-wrap:wrap; gap:3px; align-items:flex-end; margin:6px 0; }
+
+  /* a 32-bit word = strip of bit cells */
+  .word { display:inline-flex; border:2px solid var(--wordedge); border-radius:5px;
+          overflow:hidden; margin:3px 6px 3px 0; position:relative; }
+  .word .wlabel { position:absolute; top:-17px; left:0; font-size:10px; color:var(--muted); }
+  .cell { width:11px; height:26px; border-right:1px solid #0b0d11;
+          display:flex; align-items:center; justify-content:center; font-size:8px; color:#0008; }
+  .cell:last-child { border-right:none; }
+  .v0{background:#6ea8fe;} .v1{background:#79c0ff;} .v2{background:#a5d6ff;}
+  .pad{background:repeating-linear-gradient(45deg,#3a4150,#3a4150 4px,#2a2f3a 4px,#2a2f3a 8px);}
+
+  /* value-oriented strips */
+  .vals { display:flex; flex-wrap:wrap; gap:0; margin:4px 0; }
+  .val { width:30px; height:30px; display:flex; align-items:center; justify-content:center;
+         font-size:11px; border:1px solid #0008; position:relative; }
+  .val small { position:absolute; bottom:1px; right:2px; font-size:7px; color:#0007; }
+  .a { background:var(--blkA); color:#fff; }
+  .b { background:var(--blkB); color:#fff; }
+  . pad{}
+  .vpad { background:var(--pad); color:#aaa; }
+  .brace { font-size:11px; color:var(--muted); margin:2px 0 14px; }
+
+  table { border-collapse:collapse; width:100%; margin:6px 0; font-size:13px; }
+  th,td { border:1px solid #2a2f3a; padding:7px 10px; text-align:left; }
+  th { background:#11141a; color:var(--accent); }
+  td.good{color:var(--good);font-weight:600;} td.bad{color:var(--bad);font-weight:600;}
+  td.warn{color:var(--warn);font-weight:600;}
+  .tag { display:inline-block; padding:1px 7px; border-radius:10px; font-size:11px; font-weight:600; }
+  .tag.good{background:#10331c;color:#3fb950;} .tag.bad{background:#3a1417;color:#f85149;}
+  .tag.warn{background:#3a2e10;color:#e3b341;}
+  .note { font-size:12.5px; color:var(--muted); border-left:3px solid var(--accent);
+          padding:4px 0 4px 12px; margin:10px 0; }
+  .lane { font-size:11px; color:var(--muted); }
+  .arrow { color:var(--good); font-weight:700; }
+  code { background:#11141a; padding:1px 5px; border-radius:4px; font-size:12px; }
+  .cols { display:grid; grid-template-columns:1fr 1fr; gap:18px; }
+  @media(max-width:900px){ .cols{grid-template-columns:1fr;} }
+</style>
+</head>
+<body>
+
+<h1>int3 WOQ packing layouts &amp; the scale-block alignment problem</h1>
+<p class="sub">ARK XPU GEMV — why the dense 3-bit blob is GPU-load-hostile, and how "10 values per 32-bit word" fixes it. Block size = 128 (one scale per 128 K-elements).</p>
+
+<div class="legend panel">
+  <strong style="margin-right:8px">Legend:</strong>
+  <span><i class="sw" style="background:var(--blkA)"></i> value in scale-block A</span>
+  <span><i class="sw" style="background:var(--blkB)"></i> value in scale-block B</span>
+  <span><i class="sw pad" style="display:inline-block;width:14px;height:14px"></i> wasted / padding bits</span>
+  <span><i class="sw" style="background:var(--bad)"></i> word that needs <b>2 scales</b> (bad)</span>
+  <span><i class="sw" style="background:var(--good)"></i> word needs <b>1 scale</b> (good)</span>
+</div>
+
+<!-- ============================================================= -->
+<h2>1 &nbsp;Today: dense 3-bit straddle layout</h2>
+<div class="panel">
+  <p>32 values are packed into <b>exactly 3 words</b> (96 bits = 32×3, zero waste). But a 3-bit field can <b>cross a word boundary</b>: value #10 occupies bits 30–32, i.e. 2 bits in word 0 and 1 bit in word 1.</p>
+
+  <div class="row" id="straddle"></div>
+
+  <p class="brace">↑ Each cell = 1 bit. Notice values <b>#10</b> and <b>#21</b> are split across two words (the straddle). Decoding them needs an <code>if (crosses boundary)</code> branch and reads from <i>two</i> words.</p>
+
+  <div class="note">
+    <b>GPU problem — uncoalesced load.</b> The natural mapping is "lane L decodes 32-value group L", so lane L must read words <code>3L, 3L+1, 3L+2</code>. Across 32 lanes the first-word addresses are <code>0, 12, 24, 36 …</code> bytes — a <b>stride-12 gather</b>, not a contiguous block. The hardware can't fuse it into one transaction → ~86 GB/s vs S4's ~480 GB/s.
+  </div>
+  <div class="lane mono">lane0→bytes[0..11]&nbsp;&nbsp;lane1→bytes[12..23]&nbsp;&nbsp;lane2→bytes[24..35] &nbsp; <span style="color:var(--bad)">✗ stride-12, scattered</span></div>
+</div>
+
+<!-- ============================================================= -->
+<h2>2 &nbsp;Proposed: 10 values per 32-bit word (drop top 2 bits)</h2>
+<div class="panel">
+  <p>Pack <b>10 × 3-bit = 30 bits</b> into one word; waste the top 2 bits. Now <b>no value ever crosses a word boundary</b> → decode is a pure <code>(w &gt;&gt; 3*i) &amp; 0x7</code>, no branch. And lane L reads <b>word L</b> → 32 lanes read 32 contiguous words = one coalesced 128-byte load, exactly like the fast S4 path.</p>
+
+  <div class="row" id="ten"></div>
+  <p class="brace">↑ 10 clean 3-bit slots + 2 wasted bits per word. Cost: 3.2 bits/value (+6.7%) instead of 3.0.</p>
+
+  <div class="lane mono">lane0→word0[bytes 0..3]&nbsp;&nbsp;lane1→word1[bytes 4..7]&nbsp;&nbsp;lane2→word2[bytes 8..11] &nbsp; <span style="color:var(--good)">✓ contiguous, coalesced</span></div>
+</div>
+
+<!-- ============================================================= -->
+<h2>3 &nbsp;The catch: scale-block alignment (128 ÷ 10 = 12.8)</h2>
+<div class="panel">
+  <p>A new scale starts every <b>128</b> values. But each word now holds <b>10</b> values, and <b>128 is not a multiple of 10</b>. So the word that contains value #128 holds values <b>120–129</b> — values 120–127 belong to block&nbsp;A, values 128–129 belong to block&nbsp;B. <b>That one word needs two different scales.</b></p>
+
+  <p class="lane">Words 0–11 (values 0–119): all block A. <b>Word 12 (values 120–129): mixed ✗.</b> Words 13+: block B…</p>
+  <div class="vals" id="mix"></div>
+  <p class="brace">↑ value-level view around the block boundary. The red-bordered word #12 straddles the A/B scale boundary — the bit-straddle is gone, but a <i>scale-straddle</i> took its place.</p>
+
+  <div class="cols">
+    <div>
+      <h3 style="color:var(--blkA);font-size:14px;margin:6px 0">Scheme A — pad each block to whole words <span class="tag good">recommended</span></h3>
+      <p>Round each 128-block up to <code>ceil(128/10)=13</code> words (130 slots; pad the last 2). Every word now belongs to exactly one block → <code>scale = sptr[word / 13]</code>. Fully word-aligned, trivial kernel.</p>
+      <div class="vals" id="schemeA"></div>
+      <p class="brace">13 words/block, last word = 8 valid + 2 pad. 3.25 bits/val (+8.3%).</p>
+    </div>
+    <div>
+      <h3 style="color:var(--blkB);font-size:14px;margin:6px 0">Scheme B — dense, split the boundary word</h3>
+      <p>Keep the packed stream fully dense (no per-block padding). Only the ~1 boundary-crossing word per block decodes its two halves with two scale indices.</p>
+      <div class="vals" id="schemeB"></div>
+      <p class="brace">~1 mixed word per 128 block. 3.2 bits/val (+6.7%), slightly more decode logic.</p>
+    </div>
+  </div>
+</div>
+
+<!-- ============================================================= -->
+<h2>4 &nbsp;Side-by-side</h2>
+<div class="panel">
+  <table>
+    <thead><tr><th>Layout</th><th>bits / value</th><th>vs 3-bit ideal</th><th>GPU load</th><th>decode</th><th>scale lookup</th></tr></thead>
+    <tbody>
+      <tr>
+        <td>dense 3-bit straddle <i>(today)</i></td>
+        <td>3.00</td><td>1.000×</td>
+        <td class="bad">stride-12 gather ✗</td>
+        <td class="bad">branchy, 2-word</td>
+        <td class="good">simple</td>
+      </tr>
+      <tr>
+        <td><b>10-per-word, Scheme A</b></td>
+        <td class="good">3.25</td><td>1.083×</td>
+        <td class="good">coalesced ✓</td>
+        <td class="good">branchless</td>
+        <td class="good"><code>word/13</code></td>
+      </tr>
+      <tr>
+        <td>10-per-word, Scheme B</td>
+        <td class="good">3.20</td><td>1.067×</td>
+        <td class="good">coalesced ✓</td>
+        <td class="warn">branchless + 1 split word</td>
+        <td class="warn">mostly simple</td>
+      </tr>
+      <tr>
+        <td>nibble repack → 4-bit</td>
+        <td class="bad">4.00</td><td>1.333×</td>
+        <td class="good">coalesced ✓</td>
+        <td class="good">branchless (=S4)</td>
+        <td class="good">simple</td>
+      </tr>
+    </tbody>
+  </table>
+  <div class="note">
+    <b>Why 10-per-word wins:</b> it gets the coalesced, branchless access of the 4-bit repack while keeping almost all of int3's memory advantage (+6.7% vs +33%). The only new complexity is the scale-block alignment handled above. Speedup is expected to land near the S4 reference but must be measured.
+  </div>
+</div>
+
+<script>
+// ---- 1. dense 3-bit straddle: 3 words, 32 values, bit-level ----
+(function(){
+  const host = document.getElementById('straddle');
+  // build 3 words of 32 bits; color each bit by which value owns it
+  // value v owns bits [3v, 3v+3). value index alternates color just for visibility,
+  // but we mark straddle values (#10, #21) specially.
+  for (let w=0; w<3; w++){
+    const word = document.createElement('div');
+    word.className='word';
+    const lab=document.createElement('div'); lab.className='wlabel'; lab.textContent='word '+w+' (bits '+(w*32)+'–'+(w*32+31)+')';
+    word.appendChild(lab);
+    for (let b=0; b<32; b++){
+      const globalBit = w*32 + b;
+      const v = Math.floor(globalBit/3);
+      const cell=document.createElement('div');
+      const straddleVals = [10,21]; // these cross a boundary
+      let cls = 'v'+(v%3);
+      cell.className='cell '+cls;
+      // highlight straddle owners with a marker
+      if (straddleVals.includes(v)) { cell.style.outline='2px solid #f85149'; cell.style.outlineOffset='-2px'; cell.style.zIndex=1; }
+      if (b===0) cell.textContent='v'+v;
+      word.appendChild(cell);
+    }
+    host.appendChild(word);
+  }
+})();
+
+// ---- 2. ten-per-word: one word, 10 slots + 2 pad ----
+(function(){
+  const host=document.getElementById('ten');
+  for (let w=0; w<3; w++){
+    const word=document.createElement('div'); word.className='word';
+    const lab=document.createElement('div'); lab.className='wlabel'; lab.textContent='word '+w;
+    word.appendChild(lab);
+    for (let b=0;b<32;b++){
+      const cell=document.createElement('div');
+      if (b>=30){ cell.className='cell pad'; if(b===30)cell.textContent='✗'; }
+      else { const slot=Math.floor(b/3); cell.className='cell v'+(slot%3); if(b%3===0)cell.textContent=(w*10+slot); }
+      word.appendChild(cell);
+    }
+    host.appendChild(word);
+  }
+})();
+
+// ---- 3. mixed boundary (dense scheme), values 110..139 ----
+(function(){
+  const host=document.getElementById('mix');
+  for (let v=110; v<=139; v++){
+    const d=document.createElement('div');
+    const block = v<128 ? 'a':'b';
+    d.className='val '+block;
+    d.textContent=v;
+    // mark word membership: dense word index = floor(v/10)
+    const word=Math.floor(v/10);
+    const s=document.createElement('small'); s.textContent='w'+word; d.appendChild(s);
+    // outline the mixed word (word 12 = values 120..129)
+    if (word===12){ d.style.boxShadow='0 0 0 2px #f85149'; }
+    host.appendChild(d);
+  }
+})();
+
+// ---- 3A. scheme A: block padded to 13 words = 130 slots ----
+(function(){
+  const host=document.getElementById('schemeA');
+  // show last 3 words of block A (words 10,11,12) then first word of block B
+  // word w holds values [10w .. 10w+9]; block A padded: values 120..127 real, 128,129 = pad
+  for (let v=120; v<=129; v++){
+    const d=document.createElement('div'); d.className='val a'; d.textContent=v;
+    const s=document.createElement('small'); s.textContent='w12'; d.appendChild(s);
+    host.appendChild(d);
+  }
+  for (let p=0;p<2;p++){ const d=document.createElement('div'); d.className='val vpad'; d.textContent='·'; const s=document.createElement('small'); s.textContent='pad'; d.appendChild(s); host.appendChild(d); }
+  // block B starts fresh at its own word 13
+  for (let i=0;i<6;i++){ const d=document.createElement('div'); d.className='val b'; d.textContent=(128+i); const s=document.createElement('small'); s.textContent='w13'; d.appendChild(s); host.appendChild(d); }
+})();
+
+// ---- 3B. scheme B: dense, word12 split ----
+(function(){
+  const host=document.getElementById('schemeB');
+  for (let v=120; v<=129; v++){
+    const d=document.createElement('div'); d.className='val '+(v<128?'a':'b'); d.textContent=v;
+    const s=document.createElement('small'); s.textContent='w12'; d.appendChild(s);
+    if (v===127||v===128) d.style.boxShadow='0 0 0 2px #f85149';
+    host.appendChild(d);
+  }
+  for (let i=0;i<4;i++){ const d=document.createElement('div'); d.className='val b'; d.textContent=(130+i); const s=document.createElement('small'); s.textContent='w13'; d.appendChild(s); host.appendChild(d); }
+})();
+</script>
+
+</body>
+</html>

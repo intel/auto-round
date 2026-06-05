@@ -1,0 +1,273 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>ARK XPU int3 (S3) GEMV Optimization Journey</title>
+<style>
+  :root{
+    --bg:#0d1117; --panel:#161b22; --panel2:#1c2330; --bd:#30363d;
+    --tx:#c9d1d9; --mut:#8b949e; --acc:#58a6ff; --grn:#3fb950; --red:#f85149;
+    --yel:#d29922; --pur:#bc8cff; --mono:'SFMono-Regular',Consolas,'Liberation Mono',Menlo,monospace;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--tx);
+    font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Helvetica,Arial,sans-serif;
+    line-height:1.6;font-size:15px}
+  .wrap{max-width:1040px;margin:0 auto;padding:32px 24px 80px}
+  h1{font-size:28px;margin:0 0 4px;color:#fff}
+  h2{font-size:21px;margin:40px 0 12px;padding-bottom:6px;border-bottom:1px solid var(--bd);color:#fff}
+  h3{font-size:16px;margin:22px 0 8px;color:var(--acc)}
+  .sub{color:var(--mut);font-size:14px;margin-bottom:24px}
+  code{font-family:var(--mono);background:#22272e;padding:1px 6px;border-radius:5px;font-size:.88em}
+  pre{background:#010409;border:1px solid var(--bd);border-radius:8px;padding:14px 16px;
+    overflow-x:auto;font-family:var(--mono);font-size:13px;line-height:1.5}
+  .panel{background:var(--panel);border:1px solid var(--bd);border-radius:10px;padding:18px 20px;margin:14px 0}
+  table{border-collapse:collapse;width:100%;margin:12px 0;font-size:13.5px}
+  th,td{border:1px solid var(--bd);padding:7px 11px;text-align:left}
+  th{background:var(--panel2);color:#fff;font-weight:600}
+  td.num{font-family:var(--mono);text-align:right}
+  tr:nth-child(even) td{background:#11161d}
+  .best{color:var(--grn);font-weight:700}
+  .bad{color:var(--red);font-weight:700}
+  .flat{color:var(--yel)}
+  .tag{display:inline-block;font-size:11px;font-weight:700;padding:2px 8px;border-radius:20px;
+    vertical-align:middle;margin-left:8px}
+  .t-win{background:rgba(63,185,80,.15);color:var(--grn);border:1px solid rgba(63,185,80,.4)}
+  .t-flat{background:rgba(210,153,34,.15);color:var(--yel);border:1px solid rgba(210,153,34,.4)}
+  .t-bad{background:rgba(248,81,73,.15);color:var(--red);border:1px solid rgba(248,81,73,.4)}
+  .kv{display:grid;grid-template-columns:max-content 1fr;gap:4px 16px;font-size:14px}
+  .kv dt{color:var(--mut)}
+  .kv dd{margin:0;font-family:var(--mono)}
+  .callout{border-left:3px solid var(--acc);background:var(--panel2);padding:12px 16px;border-radius:0 8px 8px 0;margin:14px 0}
+  .callout.warn{border-color:var(--yel)}
+  .callout.crit{border-color:var(--red)}
+  .callout.ok{border-color:var(--grn)}
+  .callout b{color:#fff}
+  ul{margin:8px 0;padding-left:22px}
+  li{margin:4px 0}
+  .step{display:flex;gap:14px;margin:0}
+  .step .dot{flex:0 0 auto;width:26px;height:26px;border-radius:50%;display:flex;align-items:center;
+    justify-content:center;font-weight:700;font-size:13px;color:#fff;margin-top:2px}
+  .timeline{position:relative;margin:18px 0 0;padding-left:6px}
+  .bar{height:22px;border-radius:4px;background:linear-gradient(90deg,var(--acc),var(--pur));
+    display:flex;align-items:center;padding-left:8px;color:#fff;font-size:12px;font-weight:600;min-width:40px}
+  .barrow{display:grid;grid-template-columns:170px 1fr 70px;gap:10px;align-items:center;margin:5px 0;font-size:13px}
+  .barrow .lab{color:var(--mut);font-family:var(--mono);font-size:12px}
+  .footer{margin-top:50px;color:var(--mut);font-size:12.5px;border-top:1px solid var(--bd);padding-top:14px}
+  .smut{color:var(--mut);font-size:12.5px}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<h1>ARK XPU int3 (S3) WOQ GEMV — Optimization Journey</h1>
+<div class="sub">
+  Battlemage / Intel Arc Pro B60 Graphics &nbsp;·&nbsp; SYCL, m=1 weight-only-quant GEMV &nbsp;·&nbsp;
+  branch <code>feat/ark-xpu-int3-woq-gemm</code> &nbsp;·&nbsp; all variants bit-exact (max_diff = 0)
+</div>
+
+<div class="panel">
+  <h3 style="margin-top:0">TL;DR</h3>
+  <ul>
+    <li><b>Goal:</b> close the ~2.5&times; gap between int3 (S3) GEMV and the int4 (S4) reference kernel.</li>
+    <li><b>Best result:</b> a <b>transposed (lane-interleaved) weight layout</b> — <span class="best">+16% / +15%</span>
+        over the plain nested kernel (0.899 / 0.843 TFLOPS). Still ~2&times; short of S4.</li>
+    <li><b>Decisive finding (low-level profiling):</b> int3 GEMV achieves only <b>~180 GB/s = 25% of the
+        725 GB/s DRAM ceiling</b>. It is <b>latency/occupancy-bound, NOT bandwidth-bound</b> — it moves
+        <i>fewer</i> bytes than S4 yet runs 2.5&times; slower.</li>
+    <li><b>Two premises were disproven mid-investigation by reading the GPU ISA</b> (see callouts).
+        Every "obvious" lever was tested and ISA-verified rather than assumed.</li>
+  </ul>
+</div>
+
+<h2>1. The reference frame</h2>
+<div class="kv panel">
+  <dt>Workload</dt><dd>C[n] = &Sigma;<sub>k</sub> A[k] &middot; (q[n,k]&minus;4) &middot; scale[n, k/blk] &nbsp; (m=1, blk=128)</dd>
+  <dt>Shapes</dt><dd>n=4096, k&isin;{4096, 11008}</dd>
+  <dt>Metric</dt><dd>TFLOPS = 2&middot;n&middot;k / time &nbsp;(padding-independent; GBps over the packed blob can mislead)</dd>
+  <dt>S4 reference</dt><dd>1.81 / 1.79 TFLOPS &nbsp;(~450 GB/s on the weight blob)</dd>
+  <dt>DRAM ceiling</dt><dd>725 GB/s &nbsp;(measured: 1 GB pure-read reduction kernel)</dd>
+  <dt>Tooling</dt><dd>No VTune/unitrace on node &rarr; used <b>IGC shader dumps</b> (<code>IGC_ShaderDumpEnable=1</code>) to read the generated Xe ISA</dd>
+</div>
+
+<h2>2. Results at a glance</h2>
+<table>
+  <thead><tr>
+    <th>#</th><th>Variant</th><th>Idea</th>
+    <th class="num">k=4096<br>TFLOPS</th><th class="num">k=11008<br>TFLOPS</th>
+    <th>Verdict</th><th>Commit</th>
+  </tr></thead>
+  <tbody>
+    <tr><td>0</td><td>nested (serial)</td><td>compile-time bit positions, 1 block/lane, serial <code>bacc</code></td>
+        <td class="num">0.774</td><td class="num">0.733</td><td>baseline</td><td><code>970bcc8e</code></td></tr>
+    <tr><td>1</td><td>+ ILP (nacc 2/4/8)</td><td>independent accumulators to break the FMA dep-chain</td>
+        <td class="num flat">0.777</td><td class="num flat">0.733</td>
+        <td><span class="tag t-flat">FLAT</span></td><td><code>79489f9a</code></td></tr>
+    <tr><td>2</td><td>+ SLM staging</td><td>hand-rolled SLM copy to "coalesce" the load</td>
+        <td class="num bad">0.700</td><td class="num bad">0.625</td>
+        <td><span class="tag t-bad">REGRESSION</span></td><td><code>6b4e32f6</code></td></tr>
+    <tr><td>3</td><td>+ padded vector load</td><td>pad WPB 13&rarr;16, one <code>vec&lt;u32,16&gt;</code> per lane</td>
+        <td class="num">0.805</td><td class="num">0.740</td>
+        <td><span class="tag t-win">+5% / +1%*</span></td><td><code>5357d2cf</code></td></tr>
+    <tr><td>4</td><td><b>transposed layout</b></td><td>lane-interleaved words &rarr; contiguous per-word lane addresses</td>
+        <td class="num best">0.899</td><td class="num best">0.843</td>
+        <td><span class="tag t-win">+16% / +15% — BEST</span></td><td><code>4a9044e6</code></td></tr>
+    <tr><td>5</td><td>+ software prefetch</td><td><code>joint_prefetch</code> tiles ahead (S4's prefetch idiom)</td>
+        <td class="num flat">0.899</td><td class="num flat">0.845</td>
+        <td><span class="tag t-flat">FLAT</span></td><td><code>ea2f808e</code></td></tr>
+    <tr style="border-top:2px solid var(--bd)"><td>—</td><td><b>S4 reference</b></td><td>int4, tight register tile + prefetch</td>
+        <td class="num">1.81</td><td class="num">1.79</td><td>target</td><td>—</td></tr>
+  </tbody>
+</table>
+<div class="smut">* Variant 3's headline GBps (156&rarr;201) was inflated: the padded blob moves 1.23&times; more bytes.
+  On the byte-independent TFLOPS metric the true gain is only +5% / +1%.</div>
+
+<div class="timeline">
+  <div class="barrow"><span class="lab">nested (base)</span><div class="bar" style="width:43%">0.774</div><span></span></div>
+  <div class="barrow"><span class="lab">+ ILP</span><div class="bar" style="width:43%">0.777</div><span class="smut">flat</span></div>
+  <div class="barrow"><span class="lab">+ SLM staging</span><div class="bar" style="width:39%;background:linear-gradient(90deg,var(--red),#b62324)">0.700</div><span class="smut">regress</span></div>
+  <div class="barrow"><span class="lab">+ padded vec</span><div class="bar" style="width:45%">0.805</div><span></span></div>
+  <div class="barrow"><span class="lab">transposed (best)</span><div class="bar" style="width:50%;background:linear-gradient(90deg,var(--grn),#2ea043)">0.899</div><span></span></div>
+  <div class="barrow"><span class="lab">+ prefetch</span><div class="bar" style="width:50%;background:linear-gradient(90deg,var(--grn),#2ea043)">0.899</div><span class="smut">flat</span></div>
+  <div class="barrow"><span class="lab">S4 reference</span><div class="bar" style="width:100%;background:linear-gradient(90deg,#8957e5,var(--pur))">1.81</div><span></span></div>
+  <div class="smut" style="margin-top:6px">bar width &prop; TFLOPS @ k=4096, S4 = 100%</div>
+</div>
+
+<h2>3. Step-by-step</h2>
+
+<div class="panel">
+<h3>Step 0 — Nested baseline <span class="smut">(0.774 / 0.733)</span></h3>
+<p>Each lane owns whole blocks; the inner word loop is unrolled via <code>integer_sequence</code> so every
+bit offset, valid-count, and activation base is a compile-time constant — no div/mod, no straddle branch,
+scale loaded once per block. This alone was the prior big win (+45–95% over the dynamic-index version).
+It plateaued at ~150 GB/s. The question: <i>why?</i></p>
+</div>
+
+<div class="panel">
+<h3>Step 1 — ILP sweep <span class="tag t-flat">FLAT</span></h3>
+<p><b>Hypothesis:</b> the single serial <code>bacc += a*v</code> chain caps IPC at ~1/latency; S4 uses 2
+accumulators. Split per-block FMAs across NACC=2/4/8 independent accumulators.</p>
+<p><b>Result:</b> dead flat (&lt;1%). ISA confirmed FMA count unchanged (128/127/121 <code>mad</code>) and
+<b>no register spills</b> through nacc=8. <b>Conclusion: the plateau is NOT an FMA-latency stall.</b>
+ILP ruled out as the bottleneck.</p>
+</div>
+
+<div class="callout crit">
+<b>ISA correction #1 — the plateau is a memory-feed stall, not compute.</b><br>
+Dumping the nested kernel's load instructions showed <b>~40 per-lane gathers</b>
+(<code>load.ugm.d32x4.a64&nbsp;(32|M0)</code>) per step vs S4's far fewer. The
+<code>(32|M0)</code> + per-lane address register = a SIMD32 scatter/gather. The lane-owns-whole-blocks
+scheme reads block L strided by WPB across the sub-group &rarr; non-contiguous &rarr; gather. This redirected
+all subsequent work toward the <i>load pattern</i>.
+</div>
+
+<div class="panel">
+<h3>Step 2 — Hand-rolled SLM staging <span class="tag t-bad">REGRESSION</span></h3>
+<p><b>Idea:</b> stage block words into SLM with <code>slm[p*32+sg_id]=base[p*32+sg_id]</code> (consecutive
+lanes &rarr; consecutive words) to coalesce.</p>
+<p><b>Result:</b> <span class="bad">slower</span> (0.700 / 0.625). ISA verdict: the staging <i>still</i>
+compiled to <b>86 gathers</b> (up from 40) + 21 SLM ops + 13 barriers, <b>zero block loads</b>. Paid the
+SLM+barrier tax without earning coalescing. Manual scalar SLM copies don't lower to a block load.</p>
+</div>
+
+<div class="panel">
+<h3>Step 3 — Padded vector load <span class="tag t-win">+5% / +1%</span></h3>
+<p><b>Idea:</b> pad each block's 13 words to 16 (pow2) so each lane issues one
+<code>vec&lt;uint32_t,16&gt;</code> load — mirroring S4's per-lane vector-load structure.</p>
+<p><b>Result:</b> small real win, <b>but goal not met.</b> ISA: weight load stayed
+<code>load.ugm.d32x4.a64&nbsp;(32|M0)</code> gather (37, was 40). The vector only <i>widened</i> the
+per-lane message (d32x1&rarr;d32x4); it did not coalesce across lanes. Root cause: lane L reads block L at
+64-byte stride &rarr; across-lane span still non-contiguous.</p>
+</div>
+
+<div class="panel">
+<h3>Step 4 — Transposed lane-interleaved layout <span class="tag t-win">BEST: +16% / +15%</span></h3>
+<p><b>The structural fix.</b> Group blocks into tiles of 32; within a tile store words
+<b>word-major, lane-minor</b>: word (wb, lane L) lives at <code>tilebase + wb*32 + L</code>. Now when all
+32 lanes read their block's word <code>wb</code> via <code>tilebase + wb*32 + sg_id</code>, the 32
+addresses are <b>contiguous</b>.</p>
+<pre>plain nested:   lane L reads block L  -> addresses stride by WPB  -> gather scattered across DRAM
+transposed:     lane L, word wb       -> tilebase + wb*32 + L      -> 32 contiguous words per wb</pre>
+<p><b>Result:</b> <span class="best">best variant, 0.899 / 0.843 TFLOPS</span>, exact. (k=4096 = exactly one
+32-block tile &rarr; zero padding &rarr; its 182.7 GB/s is honest.)</p>
+</div>
+
+<div class="callout warn">
+<b>ISA correction #2 — the win is real but NOT via a block-load instruction.</b><br>
+The transposed kernel <i>still</i> emits <code>load.ugm.d32x4.a64&nbsp;(32|M0)</code> gathers (46), not
+S4's <code>d32xNt</code> transpose loads. The speedup comes from a different effect: contiguous per-word
+lane addresses let the <b>hardware coalesce the gather into fewer cache-line transactions at runtime</b>.
+Coalesced <i>traffic</i>, gather <i>instruction</i>. The instruction form was never the lever.
+<div class="smut" style="margin-top:6px">(Caught mid-analysis: IGC entry-numbers reshuffle every rebuild — re-mapped S4/S3 by mangled name to avoid misreporting.)</div>
+</div>
+
+<div class="panel">
+<h3>Step 5 — Software prefetch <span class="tag t-flat">FLAT</span></h3>
+<p><b>Motivated by ISA correction #3 (below).</b> Add <code>joint_prefetch</code> of whole tiles
+PrefetchDis=3 ahead, on top of the transposed layout.</p>
+<p><b>Result:</b> flat (0.899 vs 0.890 — noise). <b>ISA verified the prefetch DID emit</b>
+(8&times; <code>load.ugm.d32x4t.a64.uc.ca&nbsp;(32|M0)... null:0</code> — S4's exact null-dest, cache-hinted
+prefetch form), so this is a true negative, not a missed intent.</p>
+</div>
+
+<div class="callout crit">
+<b>ISA correction #3 — I had misread S4 the whole time.</b><br>
+S4's <code>d32x16t</code>/<code>d32x4t</code> "block loads" I'd been chasing for three steps have
+<b><code>null:0</code> destinations</b> = they write no register. They are <b>software prefetches</b>
+(emitted by S4's 4 <code>joint_prefetch</code> calls), NOT its weight loads. <b>S4 demand-loads its
+weights with the same <code>d32x4.a64&nbsp;(32|M0)</code> gather family as our int3 kernels.</b> The
+"block-load vs gather" gap I'd hunted for three variants never existed.
+</div>
+
+<h2>4. The bandwidth verdict</h2>
+<p>With prefetch flat, I measured what actually limits the kernel — achieved DRAM bandwidth vs the bus ceiling.</p>
+<table>
+  <thead><tr><th>Path</th><th class="num">Achieved read BW</th><th class="num">% of peak</th><th>Reading</th></tr></thead>
+  <tbody>
+    <tr><td>DRAM ceiling (pure-read probe)</td><td class="num">725 GB/s</td><td class="num">100%</td><td>the bus</td></tr>
+    <tr><td>S4 GEMV (weight blob)</td><td class="num">~450 GB/s</td><td class="num">62%</td><td>healthy occupancy</td></tr>
+    <tr><td><b>int3 transposed (best)</b></td><td class="num bad">~180 GB/s</td><td class="num bad">25%</td><td>leaving 3/4 on the floor</td></tr>
+  </tbody>
+</table>
+
+<div class="callout ok">
+<b>This refutes the "int3 is bandwidth-bound" hypothesis.</b><br>
+int3 moves <b>fewer</b> bytes than S4 (0.81&times; — the 3-bit blob is genuinely smaller) yet runs
+<b>2.5&times; slower</b>, at only <b>25% of the 725 GB/s bus</b>. If it were bus-bound, less data would mean
+<i>faster</i>. It is <b>latency / occupancy-bound</b>: not enough memory requests in flight to saturate the
+bus. This also explains why prefetch was flat — the bus isn't the constraint; <i>request concurrency</i> is.
+</div>
+
+<h2>5. Where the residual ~2&times; lives — and what to try next</h2>
+<p>Every instruction-level difference between int3 and S4 was tested and ISA-verified. The remaining gap is
+<b>occupancy / load-parallelism</b>: one sub-group per output column with a load-then-immediately-consume
+structure issues ~1 outstanding load per lane — too few to hide DRAM latency. Ranked next levers:</p>
+<ol>
+  <li><b>Multiple output columns per sub-group</b> — issue NCols weight reads, <i>then</i> decode/FMA &rarr;
+      NCols&times; independent loads in flight, no extra barriers. Most direct attack on the 25% ceiling.</li>
+  <li><b>Deeper register prefetch</b> — load several tiles into registers ahead of the consuming FMAs to
+      decouple issue from consume.</li>
+  <li><b>More sub-groups per work-group</b> (4–8) — more resident threads to hide latency. Pure occupancy knob.</li>
+  <li><b>Denser pack</b> (drop W10's 2 wasted bits/word) — ~6% fewer bytes; orthogonal, small, only stack on (1).</li>
+</ol>
+<p class="smut"><b>Do NOT retry</b> (ISA-disproven this session): more accumulators alone, SLM staging,
+chasing the block-load instruction, software prefetch.</p>
+
+<h2>6. Method note</h2>
+<p>The throughline: <b>every hypothesis was checked against the generated ISA or a direct measurement, not
+assumed.</b> Three times the ISA overturned a plausible premise (compute-bound &rarr; memory-feed; block-load
+gap that didn't exist; S4's "block loads" were prefetches). Two "obvious" wins (ILP, prefetch) were flat and
+one (SLM) regressed — only the layout change, targeting the <i>proven</i> mechanism, actually moved the needle.
+All variants kept in the harness (<code>test_gemm.hpp</code>, namespace <code>w10_spike</code>) as reproducible evidence.</p>
+
+<div class="footer">
+  Generated for the ARK XPU int3 WOQ GEMV effort &middot; Battlemage / Arc Pro B60 &middot;
+  branch <code>feat/ark-xpu-int3-woq-gemm</code> &middot; commits <code>970bcc8e</code>&hellip;<code>ea2f808e</code>.
+  Numbers are best-of-50 timed iterations; all variants bit-exact (max_diff = 0). Run with
+  <code>ARK_S3_BENCH=1 ./xbuild_ut/test_ARK_XPU</code>.
+</div>
+
+</div>
+</body>
+</html>

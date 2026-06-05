@@ -1,0 +1,529 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>ARK XPU joint_matrix — The Debug Journey</title>
+<style>
+  :root{
+    --bg:#0d1117; --panel:#0e1217; --panel2:#1c2330; --border:#30363d;
+    --text:#c9d1d9; --muted:#8b949e; --head:#e6edf3;
+    --accent:#58a6ff; --green:#3fb950; --red:#f85149; --amber:#d29922;
+    --purple:#bc8cff; --mono:"SF Mono",SFMono-Regular,Consolas,"Liberation Mono",Menlo,monospace;
+  }
+  *{box-sizing:border-box}
+  html{scroll-behavior:smooth}
+  body{margin:0;background:var(--bg);color:var(--text);
+    font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Helvetica,Arial,sans-serif;
+    line-height:1.6;font-size:16px}
+  .wrap{max-width:980px;margin:0 auto;padding:0 24px 120px}
+  header.hero{padding:64px 0 40px;border-bottom:1px solid var(--border);margin-bottom:8px}
+  header.hero h1{font-size:2.3rem;margin:0 0 12px;color:var(--head);letter-spacing:-.5px}
+  header.hero .sub{color:var(--muted);font-size:1.12rem;max-width:740px}
+  .meta-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(190px,1fr));gap:10px;margin-top:28px}
+  .meta-grid div{background:var(--panel);border:1px solid var(--border);border-radius:8px;padding:10px 14px;font-size:.86rem}
+  .meta-grid b{color:var(--head);display:block;font-size:.72rem;text-transform:uppercase;letter-spacing:.06em;color:var(--muted);margin-bottom:3px}
+  .meta-grid code{font-family:var(--mono);color:var(--accent);font-size:.82rem}
+
+  /* TL;DR */
+  .tldr{background:linear-gradient(135deg,#132a1c,#0d1117);border:1px solid #2ea04366;
+    border-radius:12px;padding:24px 28px;margin:36px 0}
+  .tldr h2{margin:0 0 10px;color:var(--green);font-size:1.2rem;display:flex;align-items:center;gap:10px}
+  .tldr p{margin:8px 0;color:var(--text)}
+  .tldr code{font-family:var(--mono);background:#0d1117;border:1px solid var(--border);
+    padding:1px 6px;border-radius:4px;color:var(--purple);font-size:.86em}
+
+  /* timeline */
+  .timeline{position:relative;margin:48px 0 0;padding-left:0}
+  .phase{position:relative;margin:0 0 12px;padding:0 0 0 0}
+  .phase-head{display:flex;align-items:flex-start;gap:16px;cursor:pointer;
+    background:var(--panel);border:1px solid var(--border);border-radius:10px;
+    padding:18px 20px;transition:border-color .15s,background .15s}
+  .phase-head:hover{border-color:var(--accent);background:var(--panel2)}
+  .phase.wrong .phase-head{border-left:4px solid var(--red)}
+  .phase.partial .phase-head{border-left:4px solid var(--amber)}
+  .phase.right .phase-head{border-left:4px solid var(--green)}
+  .badge{flex:0 0 auto;width:46px;height:46px;border-radius:50%;display:flex;
+    align-items:center;justify-content:center;font-weight:700;font-size:1.05rem;
+    font-family:var(--mono);color:#0d1117}
+  .wrong .badge{background:var(--red)}
+  .partial .badge{background:var(--amber)}
+  .right .badge{background:var(--green)}
+  .phase-title{flex:1}
+  .phase-title h3{margin:0;font-size:1.16rem;color:var(--head)}
+  .phase-title .when{color:var(--muted);font-size:.82rem;margin-top:3px}
+  .phase-title .verdict{display:inline-block;margin-top:8px;font-size:.78rem;
+    padding:2px 10px;border-radius:20px;font-weight:600}
+  .wrong .verdict{background:#f8514922;color:var(--red);border:1px solid #f8514955}
+  .partial .verdict{background:#d2992222;color:var(--amber);border:1px solid #d2992255}
+  .right .verdict{background:#3fb95022;color:var(--green);border:1px solid #3fb95055}
+  .chev{flex:0 0 auto;color:var(--muted);transition:transform .2s;font-size:1.1rem;margin-top:4px}
+  .phase.open .chev{transform:rotate(90deg)}
+  .phase-body{max-height:0;overflow:hidden;transition:max-height .35s ease;
+    background:var(--panel2);border:1px solid var(--border);border-top:none;
+    border-radius:0 0 10px 10px;margin-top:-6px}
+  .phase.open .phase-body{max-height:4000px}
+  .phase-body-inner{padding:22px 24px 26px}
+  .phase-body h4{color:var(--accent);margin:20px 0 8px;font-size:.95rem;
+    text-transform:uppercase;letter-spacing:.05em}
+  .phase-body h4:first-child{margin-top:0}
+  .phase-body p{margin:8px 0}
+  .claim{border-left:3px solid var(--border);padding:4px 0 4px 16px;margin:14px 0;color:var(--muted)}
+  .claim b{color:var(--text)}
+
+  code{font-family:var(--mono);font-size:.88em}
+  p code,li code,td code{background:#0d1117;border:1px solid var(--border);
+    padding:1px 5px;border-radius:4px;color:var(--purple)}
+  pre{background:#0d1117;border:1px solid var(--border);border-radius:8px;
+    padding:14px 16px;overflow-x:auto;font-family:var(--mono);font-size:.82rem;
+    line-height:1.5;margin:14px 0}
+  pre code{background:none;border:none;padding:0;color:var(--text)}
+  .cmt{color:var(--muted)}
+  .kw{color:var(--purple)}
+  .str{color:#a5d6ff}
+
+  table{width:100%;border-collapse:collapse;margin:16px 0;font-size:.86rem}
+  th,td{text-align:left;padding:9px 12px;border:1px solid var(--border)}
+  th{background:var(--panel);color:var(--head);font-weight:600}
+  tr:nth-child(even) td{background:#0d111766}
+  .ok{color:var(--green);font-weight:600}
+  .no{color:var(--red);font-weight:600}
+  .same{color:var(--amber)}
+
+  .insight{background:#1f2436;border:1px solid #bc8cff44;border-radius:10px;
+    padding:18px 22px;margin:20px 0}
+  .insight h4{color:var(--purple);margin:0 0 8px}
+
+  h2.section{font-size:1.5rem;color:var(--head);margin:60px 0 6px;
+    padding-top:20px;border-top:1px solid var(--border)}
+  h2.section .lead{display:block;font-size:.9rem;color:var(--muted);font-weight:400;margin-top:4px}
+
+  .diagram{background:#0d1117;border:1px solid var(--border);border-radius:10px;
+    padding:20px;margin:20px 0;display:grid;grid-template-columns:1fr 1fr;gap:18px}
+  .lane{border-radius:8px;padding:16px;font-size:.84rem}
+  .lane.fail{background:#1a0f0f;border:1px solid #f8514944}
+  .lane.pass{background:#0f1a12;border:1px solid #3fb95044}
+  .lane h5{margin:0 0 12px;font-size:.92rem}
+  .lane.fail h5{color:var(--red)}
+  .lane.pass h5{color:var(--green)}
+  .step{font-family:var(--mono);font-size:.76rem;padding:7px 10px;margin:6px 0;
+    background:#00000044;border-radius:5px;border-left:2px solid var(--border)}
+  .step.boom{border-left-color:var(--red);color:#ffb4ae}
+  .step.win{border-left-color:var(--green);color:#9ae6b4}
+  .arrow{text-align:center;color:var(--muted);font-size:.9rem;margin:2px 0}
+
+  .fixbox{display:grid;grid-template-columns:repeat(auto-fit,minmax(240px,1fr));gap:14px;margin:20px 0}
+  .fixcard{background:var(--panel);border:1px solid var(--border);border-radius:10px;padding:16px 18px}
+  .fixcard h4{margin:0 0 8px;color:var(--accent);font-size:1rem}
+  .fixcard .tag{font-size:.72rem;padding:2px 8px;border-radius:12px;font-weight:600;
+    background:#3fb95022;color:var(--green);border:1px solid #3fb95044}
+  .fixcard.alt .tag{background:#58a6ff22;color:var(--accent);border-color:#58a6ff44}
+
+  footer{margin-top:70px;padding-top:24px;border-top:1px solid var(--border);
+    color:var(--muted);font-size:.84rem}
+  a{color:var(--accent);text-decoration:none}
+  a:hover{text-decoration:underline}
+  .pill{display:inline-block;font-family:var(--mono);font-size:.74rem;padding:1px 7px;
+    border-radius:4px;background:var(--panel);border:1px solid var(--border);color:var(--muted)}
+  .toc{background:var(--panel);border:1px solid var(--border);border-radius:10px;padding:16px 22px;margin:30px 0}
+  .toc b{color:var(--head);font-size:.8rem;text-transform:uppercase;letter-spacing:.05em;color:var(--muted)}
+  .toc ol{margin:8px 0 0;padding-left:20px}
+  .toc li{margin:3px 0}
+  .expand-all{float:right;font-size:.8rem;cursor:pointer;color:var(--accent);
+    background:none;border:1px solid var(--border);border-radius:6px;padding:4px 10px}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<header class="hero">
+  <h1>ARK XPU <code style="font-size:1.6rem;color:var(--accent);background:none;border:none;padding:0">joint_matrix</code> — The Debug Journey</h1>
+  <p class="sub">How an ARK m&gt;1 WOQ GEMM "no matrix hardware on the target device" crash on a
+  Battlemage B70 was chased through three wrong turns to a single-variable root cause — and then
+  proven on the real production kernel, torch-free.</p>
+  <div class="meta-grid">
+    <div><b>Node</b> root@10.239.98.43 <span class="cmt">(b70-pc6)</span></div>
+    <div><b>Device</b> <code>Intel Graphics 0xe223</code> bmg_g31</div>
+    <div><b>L0 driver</b> <code>1.15.37833</code> (fixed throughout)</div>
+    <div><b>Symptom</b> m&gt;1 WOQ GEMM throws at inference</div>
+    <div><b>Root cause</b> <code>libsycl</code> matrix arch table</div>
+    <div><b>Span</b> 2026-06-03 → 06-05</div>
+  </div>
+</header>
+
+<div class="tldr">
+  <h2>✓ TL;DR</h2>
+  <p>The crash <code>joint_matrix is not supported</code> is decided by <b>one variable only: the
+  <code>libsycl</code> (DPC++ runtime) version</b>. Holding the GPU, kernel driver, and IGC all
+  <i>byte-identical</i>, swapping <code>libsycl</code> from oneAPI 2025.3.2 (<code>.so.8</code>)
+  to a 2026 build (<code>.so.9</code>) flips the result <span class="no">FAIL</span> → <span class="ok">PASS</span>.</p>
+  <p>The 2025.3 runtime's compiled matrix <code>supported_archs[]</code> table <b>pre-dates the
+  <code>bmg_g31</code> entry</b>, so it refuses to advertise <code>ext_intel_matrix</code> on this device
+  even though the silicon, driver, and IGC are all capable.</p>
+  <p>Verified on ARK's <b>actual production kernel</b> (<code>IGemmDQCore</code> via a torch-free
+  harness), not just a probe. The fix: ship/link a DPC++ runtime whose table includes
+  <code>bmg_g31</code>.</p>
+</div>
+
+<div class="toc">
+  <b>The journey</b>
+  <button class="expand-all" onclick="toggleAll()">expand all</button>
+  <ol>
+    <li><a href="#sym">The symptom &amp; what worked</a></li>
+    <li><a href="#t1">Theory 1 — "missing SPIR-V extension / TLA-off build bug"</a> <span class="pill">wrong</span></li>
+    <li><a href="#t2">Theory 2 — "IGC is too old"</a> <span class="pill">partial</span></li>
+    <li><a href="#t3">Theory 3 — "the GPU lacks matrix hardware"</a> <span class="pill">wrong</span></li>
+    <li><a href="#t4">Root cause — "it's libsycl"</a> <span class="pill">correct</span></li>
+    <li><a href="#routeb">Route B — proving it on the real kernel</a> <span class="pill">verified</span></li>
+    <li><a href="#mechanism">Why vllm-xpu-kernels never hits this</a></li>
+    <li><a href="#fix">The fix &amp; escape hatches</a></li>
+  </ol>
+</div>
+
+<h2 class="section" id="sym">The symptom
+  <span class="lead">w4g128 quantize + repack succeed; the crash is at inference, m&gt;1 only.</span></h2>
+
+<p>The ARK backend UT quantizes <code>facebook/opt-125m</code> to w4g128, writes shards, and repacks
+to XPU — all fine. It dies inside <code>model.generate()</code>:</p>
+<pre><code>auto_round_kernel/qlinear.py:242  -&gt; ark.woqgemm(...)
+auto_round_kernel/__init__.py:246 -&gt; lib.woqgemm(...)
+<span class="kw">RuntimeError</span>: no matrix hardware on the target device, joint_matrix is not supported</code></pre>
+
+<p>Two early facts shaped everything after:</p>
+<div class="claim"><b>The hardware is fine.</b> PyTorch's own XMX matmul (<code>bf16</code>/<code>f16</code>,
+which routes through oneDNN) works on this exact device. So the silicon and L0 driver expose DPAS.</p></div>
+<div class="claim"><b>Only m&gt;1 fails.</b> The m==1 decode/GEMV path works — BesTLA's GEMV does <i>not</i>
+use <code>joint_matrix</code>. The crash is specifically ARK's hand-written
+<code>IGemmDQCore</code> int8 tile (M8×N16×K32, sub_group=16), reached via
+<code>woq_s8 → sycl_igemm_s8s8</code> for m&gt;1 / prefill.</p></div>
+
+<div class="timeline">
+
+<!-- THEORY 1 -->
+<div class="phase wrong" id="t1">
+  <div class="phase-head" onclick="tog(this)">
+    <div class="badge">1</div>
+    <div class="phase-title">
+      <h3>"The <code>.so</code> was built without the matrix-MMA SPIR-V extension"</h3>
+      <div class="when">2026-06-03 · initial analysis</div>
+      <div class="verdict">✗ DISPROVEN — byte-identical binaries</div>
+    </div>
+    <div class="chev">▶</div>
+  </div>
+  <div class="phase-body"><div class="phase-body-inner">
+    <h4>The reasoning</h4>
+    <p>Inspecting the shipped <code>auto_round_lib 0.13.1</code> wheel, the device image contained
+    <code>SPV_INTEL_split_barrier</code> but was <i>missing</i>
+    <code>SPV_INTEL_subgroup_matrix_multiply_accumulate</code> and <code>SPV_INTEL_2d_block_io</code> —
+    symptoms of an <code>ARK_SYCL_TLA=OFF</code> build. In <code>CMakeLists.txt</code> the matrix-MMA
+    extension is declared <i>only</i> inside <code>SYCL_TLA_LINK_FLAGS</code> (gated on
+    <code>ARK_XPU AND ARK_SYCL_TLA</code>), yet <code>IGemmDQCore</code> uses <code>joint_matrix</code>
+    unconditionally. Conclusion at the time: a TLA-off build emits <code>joint_matrix</code> ops without
+    declaring the capability → runtime can't lower them → throw.</p>
+
+    <h4>Why it's wrong</h4>
+    <p>The C++ <code>joint_matrix</code> API <b>already emits <code>+SPV_INTEL_joint_matrix</code> by
+    default</b>. A <code>jm_probe</code> built <i>with</i> the explicit
+    <code>+SPV_INTEL_subgroup_matrix_multiply_accumulate</code> flag is <b>byte-identical</b> to one built
+    without it — the extra flag adds a different, unused extension. Both fail identically. No build flag,
+    and no <code>ARK_SYCL_TLA=ON</code> rebuild, changes the outcome.</p>
+    <div class="insight"><h4>Lesson</h4>The string <code>"no matrix hardware…"</code> lives in
+    <code>libsycl.so.8</code> (the DPC++ runtime) — not in ARK and not in the driver. That was the first
+    clue the real determinant was the runtime, not the build. It took two more turns to act on it.</div>
+  </div></div>
+</div>
+
+<!-- THEORY 2 -->
+<div class="phase partial" id="t2">
+  <div class="phase-head" onclick="tog(this)">
+    <div class="badge">2</div>
+    <div class="phase-title">
+      <h3>"The Intel Graphics Compiler (IGC) is too old"</h3>
+      <div class="when">2026-06-03 · first correction</div>
+      <div class="verdict">◐ A REAL CORRELATION — but a co-varying proxy</div>
+    </div>
+    <div class="chev">▶</div>
+  </div>
+  <div class="phase-body"><div class="phase-body-inner">
+    <h4>The reasoning</h4>
+    <p>The same wheel binary <span class="ok">PASSES</span> on one node and <span class="no">FAILS</span>
+    on another. The visible difference was IGC — the JIT compiler that lowers <code>joint_matrix</code>
+    SPIR-V into Battlemage DPAS:</p>
+    <table>
+      <tr><th></th><th>PASS node</th><th>FAIL node</th></tr>
+      <tr><td>Wheel md5</td><td><code>88c363a4…</code></td><td><code>88c363a4…</code> <span class="same">(identical)</span></td></tr>
+      <tr><td>libsycl</td><td><code>2025.3.2.20260112</code></td><td><code>2025.3.2.20260112</code> <span class="same">(identical)</span></td></tr>
+      <tr><td><b>IGC</b></td><td class="ok">2.34.4</td><td class="no">2.32.7</td></tr>
+      <tr><td>Device</td><td>Arc Pro B60</td><td>Graphics 0xe223 (B70)</td></tr>
+      <tr><td>Result</td><td class="ok">PASSED</td><td class="no">FAILED</td></tr>
+    </table>
+    <p>The conclusion — "upgrade <code>libigc2</code> to ≥ 2.34" — was acted on as <i>THE FIX</i>.</p>
+
+    <h4>Why it's only partial</h4>
+    <p>This compared <b>two different physical machines</b>. Hardware (B60 vs B70) <i>and</i> the rest of
+    the software stack co-varied with IGC. The correlation was real but not isolated — the B60 node also
+    had a newer everything. IGC turned out to be a passenger, not the driver. (Theory 4 later holds IGC
+    fixed at 2.32.7 and still flips the result.)</p>
+    <div class="insight"><h4>Lesson</h4>A version table across two machines proves correlation, not
+    causation. The only way to assign cause is to change <b>one variable on one machine</b>. That
+    discipline is what finally cracked it.</div>
+  </div></div>
+</div>
+
+<!-- THEORY 3 -->
+<div class="phase wrong" id="t3">
+  <div class="phase-head" onclick="tog(this)">
+    <div class="badge">3</div>
+    <div class="phase-title">
+      <h3>"This GPU silicon doesn't advertise the matrix aspect"</h3>
+      <div class="when">2026-06-05 · second correction</div>
+      <div class="verdict">✗ DISPROVEN — same driver + newer libsycl makes the aspect appear</div>
+    </div>
+    <div class="chev">▶</div>
+  </div>
+  <div class="phase-body"><div class="phase-body-inner">
+    <h4>The reasoning</h4>
+    <p>To isolate IGC, a single-machine container experiment held the GPU fixed and upgraded <i>only</i>
+    the user-space IGC/runtime (via <code>--device /dev/dri</code> passthrough):</p>
+    <table>
+      <tr><th>Environment</th><th>IGC</th><th>runtime / L0</th><th><code>ext_oneapi_matrix</code></th><th>jm_probe</th></tr>
+      <tr><td>Host (bare metal)</td><td>2.32.7</td><td>26.14 / 1.15.37833</td><td class="no">NO</td><td class="no">FAIL</td></tr>
+      <tr><td>Container <code>igc-newer</code></td><td class="ok">2.34.4</td><td>26.18 / 1.15.38308</td><td class="no">NO</td><td class="no">FAIL</td></tr>
+    </table>
+    <p>IGC 2.34.4 — the supposed "PASS" version from Theory 2 — <b>still failed here</b>. Since the device
+    reported <code>ext_oneapi_matrix = NO</code> in <code>sycl-ls --verbose</code>, the new conclusion was:
+    the B70 (<code>bmg_g31</code>) silicon/driver simply does not advertise the aspect, full stop.</p>
+
+    <h4>Why it's wrong</h4>
+    <p>This correctly killed Theory 2 (IGC isn't sufficient) but drew the wrong new conclusion. The
+    container only swaps <b>user-space IGC + compute-runtime</b> — it does <i>not</i> swap
+    <code>libsycl</code>. The <code>ext_oneapi_matrix</code> query is answered by <code>libsycl</code>,
+    which was 2025.3 in <i>both</i> rows. So this table actually proves "IGC doesn't matter" and
+    accidentally held the true culprit fixed. The "missing aspect" was real — but it was
+    <code>libsycl</code> refusing to report it, not the hardware lacking it.</p>
+    <div class="insight"><h4>Lesson</h4>When you isolate variable A and the bug persists, make sure
+    variable B (here <code>libsycl</code>) didn't silently stay fixed too. "The aspect is NO" is an
+    <i>observation</i>; "the hardware can't" is an <i>inference</i> — and the inference was unsupported.</div>
+  </div></div>
+</div>
+
+<!-- THEORY 4 -->
+<div class="phase right" id="t4">
+  <div class="phase-head" onclick="tog(this)">
+    <div class="badge">4</div>
+    <div class="phase-title">
+      <h3>Root cause: it's <code>libsycl</code> — its matrix arch table is stale</h3>
+      <div class="when">2026-06-05 · definitive (CORRECTION #3)</div>
+      <div class="verdict">✓ PROVEN — one machine, only libsycl changed</div>
+    </div>
+    <div class="chev">▶</div>
+  </div>
+  <div class="phase-body"><div class="phase-body-inner">
+    <h4>The single-variable experiment</h4>
+    <p>Same physical GPU, same kernel driver (<code>1.15.37833</code>), same <b>IGC (2.32.7)</b>. The
+    <i>only</i> thing swapped is <code>libsycl</code>, by rebuilding the same <code>arch_resolve</code> /
+    <code>jm_probe</code> sources against each runtime:</p>
+    <table>
+      <tr><th>libsycl runtime</th><th>GPU / driver</th><th>IGC</th><th><code>arch_is(bmg_g31)</code></th><th><code>has(ext_intel_matrix)</code></th><th>jm_probe</th></tr>
+      <tr><td>oneAPI 2025.3.2 <span class="pill">.so.8</span></td><td>0xe223 / 1.15.37833</td><td>2.32.7</td><td class="ok">YES</td><td class="no">NO</td><td class="no">FAIL</td></tr>
+      <tr><td>nightly 2026-06-04 <span class="pill">.so.9</span></td><td>0xe223 / 1.15.37833</td><td>2.32.7</td><td class="ok">YES</td><td class="ok">YES</td><td class="ok">OK</td></tr>
+    </table>
+    <p>Driver and IGC are byte-identical across rows. Only <code>libsycl</code> differs → the result flips.</p>
+
+    <h4>The smoking gun — a self-contradiction inside 2025.3</h4>
+    <p>On 2025.3 the runtime simultaneously reports:</p>
+    <pre><code>ext_oneapi_architecture_is(intel_gpu_bmg_g31)  -&gt; <span class="kw">YES</span>
+has(aspect::ext_intel_matrix)                  -&gt; <span class="str">NO</span>   <span class="cmt">// contradiction!</span></code></pre>
+    <p>But upstream <code>device_impl.hpp</code> defines:</p>
+    <pre><code><span class="cmt">// CASE(ext_intel_matrix):</span>
+<span class="kw">return</span> any_of(supported_archs, architecture_is);  <span class="cmt">// supported_archs[] INCLUDES bmg_g31</span></code></pre>
+    <p>If <code>arch_is(bmg_g31)</code> is YES, then matrix <i>must</i> be YES — <b>unless the compiled
+    <code>supported_archs[]</code> table in that <code>.so</code> predates the <code>bmg_g31</code>
+    entry.</b> The 2025.3 table does; the nightly's includes it.</p>
+    <div class="insight"><h4>Why <code>strings | grep</code> can't see it</h4>The <code>bmg_g31</code>
+    <i>string</i> is present in <b>both</b> <code>.so</code> files — it backs <code>architecture_is</code>.
+    Only the runtime <code>has()</code> query, which walks the compiled matrix table, distinguishes them.
+    You cannot grep your way to this; you have to run the query.</div>
+
+    <h4>Why the earlier theories were all passengers</h4>
+    <ul>
+      <li><b>Theory 3 (silicon):</b> same driver + newer libsycl → the aspect appears and the DPAS tile
+      runs. The hardware was always capable.</li>
+      <li><b>Theory 2 (IGC):</b> IGC stayed 2.32.7 across the PASS row. IGC 2.34 "fixing" it elsewhere was
+      a co-varying proxy — those machines also had newer libsycl. Once libsycl advertises the aspect, IGC
+      2.32.7 lowers the tile fine.</li>
+      <li><b>Theory 1 (build flags):</b> byte-identical device images; the gate is entirely runtime-side.</li>
+    </ul>
+  </div></div>
+</div>
+
+<!-- ROUTE B -->
+<div class="phase right" id="routeb">
+  <div class="phase-head" onclick="tog(this)">
+    <div class="badge">✓</div>
+    <div class="phase-title">
+      <h3>Route B — proving it on ARK's <i>real</i> kernel, torch-free</h3>
+      <div class="when">2026-06-05 · end-to-end verification</div>
+      <div class="verdict">✓ VERIFIED — production IGemmDQCore, not a probe</div>
+    </div>
+    <div class="chev">▶</div>
+  </div>
+  <div class="phase-body"><div class="phase-body-inner">
+    <h4>Why a torch-free harness was needed</h4>
+    <p>The full ARK UT links <code>torch 2.11.0+xpu</code>, which hard-pins
+    <code>intel-sycl-rt==2025.3.2</code> and links <code>libsycl.so.8</code>. torch and ARK share one
+    process, so the 2026 runtime (<code>.so.9</code>) can't be swapped under the torch UT without also
+    rebuilding torch. The probe proved the mechanism, but skeptics could ask: <i>is ARK's actual kernel
+    really the same path?</i></p>
+
+    <h4>The harness</h4>
+    <p><code>bestla/bestla/sycl/sycl_gemm.h</code> — where <code>IGemmDQCore</code> lives — is
+    <b>header-only SYCL, no oneDNN, no torch</b>. A ~70-line <code>main()</code> calls the <i>exact</i>
+    launch that <code>DnnlWrapper::sycl_igemm_s8s8</code> instantiates:</p>
+    <pre><code><span class="kw">using</span> T = <span class="kw">float</span>;
+xmx::IGemmDQParam param;
+param.A_d=A; param.B_d=B; param.C_d=C;
+param.m=m; param.n=n; param.k=k;
+param.lda=k; param.ldb=k; param.ldc=n;        <span class="cmt">// same layout as sycl_igemm_s8s8</span>
+param.Bias=<span class="kw">nullptr</span>; param.scaleA=sA; param.scaleB=sB;
+
+<span class="cmt">// the real production joint_matrix kernel:</span>
+Launcher&lt;xmx::IGemmDQCfg&lt;T&gt;, xmx::IGemmDQCore&gt;::run(&amp;q, param);</code></pre>
+
+    <h4>Same source, same GPU/driver/IGC — only libsycl differs</h4>
+    <table>
+      <tr><th>Harness build</th><th>libsycl runtime</th><th>Result</th></tr>
+      <tr><td><code>icpx 2025.3.3</code>, <code>spir64</code> → links <code>.so.8</code></td><td>2025.3.2 venv <span class="pill">.so.8</span></td><td class="no">FAIL — "no matrix hardware … joint_matrix is not supported"</td></tr>
+      <tr><td>nightly <code>clang++</code> 2026-06-04 → links <code>.so.9</code></td><td>2026.0.0 <span class="pill">.so.9</span></td><td class="ok">PASS — kernel launched &amp; completed</td></tr>
+    </table>
+    <p>Device <code>0xe223</code> (bmg_g31) and L0 driver <code>1.15.37833</code> identical across both
+    rows. This is the production <code>IGemmDQCore</code> joint_matrix kernel, not a proxy.</p>
+
+    <h4>Build flags that matter (learned the hard way)</h4>
+    <ul>
+      <li><code>-std=c++20</code> — the header uses C++20 dependent-type syntax (<code>using Param = CFG::Param;</code>).</li>
+      <li><code>-DBTLA_SYCL</code> — gates the entire <code>sycl_gemm.h</code> body (it's <code>#ifdef</code>'d out otherwise).</li>
+      <li><code>-I&lt;kernel&gt;/bestla</code>, include <code>bestla/sycl/sycl_wrapper.h</code> — pulls
+      <code>sycl_utils.h</code> for <code>nd_item_helper</code> (including <code>sycl_gemm.h</code> alone misses it).</li>
+    </ul>
+    <div class="insight"><h4>The one remaining blocker</h4>True in-process e2e (Route A) needs a
+    2026-based torch + ARK rebuilt against <code>.so.9</code>, because the SONAME bump
+    (<code>.so.8</code>→<code>.so.9</code>) means no <code>LD_LIBRARY_PATH</code> drop-in works. The kernel
+    itself is proven fixed; only the torch packaging pin stands between here and a green UT.</div>
+  </div></div>
+</div>
+
+</div><!-- /timeline -->
+
+<h2 class="section" id="mechanism">Why vllm-xpu-kernels never hits this
+  <span class="lead">Same DPAS hardware, two different compiler paths — only one goes through the broken stage.</span></h2>
+
+<p>A recurring confusion: "vllm also uses XMX/DPAS on the same hardware — why does it work?" There are
+two ways to reach the same Battlemage DPAS unit, through different compiler stages:</p>
+
+<div class="diagram">
+  <div class="lane fail">
+    <h5>✗ ARK IGemmDQCore — the failing path</h5>
+    <div class="step">C++ <code>joint_matrix</code> + <code>joint_matrix_mad</code><br><span class="cmt">high-level matrix abstraction</span></div>
+    <div class="arrow">↓</div>
+    <div class="step">libsycl emits SPIR-V <code>OpJointMatrixMad</code></div>
+    <div class="arrow">↓</div>
+    <div class="step boom">*** runtime libsycl gate ***<br>2025.3 table lacks bmg_g31 →<br>refuses to advertise matrix →<br><b>THROWS before any IGC lowering</b></div>
+    <div class="arrow">↓</div>
+    <div class="step">dpas on XMX <span class="cmt">(only on a runtime whose table has bmg_g31)</span></div>
+  </div>
+  <div class="lane pass">
+    <h5>✓ vllm sycl-tla XE_DPAS_TT — immune</h5>
+    <div class="step">C++ <code>XE_DPAS_TT&lt;M,s8,s8,d&gt;::fma()</code></div>
+    <div class="arrow">↓</div>
+    <div class="step win">lowers to <b>INLINE ASSEMBLY</b>:<br><code>asm("dpas.s8.s8.8 …")</code><br>the dpas is hand-written in the header</div>
+    <div class="arrow">↓</div>
+    <div class="step">no joint_matrix op, no capability,<br>nothing for the runtime to gate</div>
+    <div class="arrow">↓</div>
+    <div class="step win">IGC just assembles the given dpas<br><b>(any runtime / any IGC works)</b></div>
+  </div>
+</div>
+
+<p>Two independent reasons vllm-xpu-kernels is unaffected — either alone is sufficient, and it has both:</p>
+<ol>
+  <li><b>No <code>joint_matrix</code> anywhere.</b> <code>grep -rI joint_matrix</code> over the whole tree
+  returns zero hits. Its matrix math is CuTe <code>XE_DPAS_TT</code> (inline <code>dpas</code> asm) or
+  oneDNN <code>dnnl::matmul</code> — neither emits the gated op. (Same reason torch bf16/f16 matmul, which
+  is oneDNN, already passes on the FAIL node.)</li>
+  <li><b>AOT compilation.</b> vllm builds with <code>-fsycl-targets=spir64_gen -device bmg</code> — device
+  code is lowered to real Battlemage ISA <i>at build time</i>. ARK ships generic SPIR-V
+  (<code>spir64</code>) and JIT-lowers on the deploy node — which is exactly why the deploy node's runtime
+  became the deciding factor.</li>
+</ol>
+
+<h2 class="section" id="fix">The fix &amp; escape hatches</h2>
+
+<div class="fixbox">
+  <div class="fixcard">
+    <span class="tag">PRIMARY</span>
+    <h4>Upgrade the runtime</h4>
+    <p>Ship/link a DPC++ <code>libsycl</code> whose matrix <code>supported_archs[]</code> includes
+    <code>bmg_g31</code> (intel/llvm ≥ 2026-06-04, or a oneAPI release carrying that entry). No driver,
+    IGC, or hardware change needed.</p>
+    <p class="cmt">Caveat: SONAME bumps <code>.so.8</code>→<code>.so.9</code>; the consumer (torch-xpu / ARK
+    <code>.so</code>) must be built against it — no <code>LD_LIBRARY_PATH</code> drop-in.</p>
+  </div>
+  <div class="fixcard alt">
+    <span class="tag">ESCAPE</span>
+    <h4>Route m&gt;1 through oneDNN</h4>
+    <p>Send w4 m&gt;1 through the oneDNN fp GEMM instead of the fused int8 <code>joint_matrix</code> kernel.
+    oneDNN does its own DPAS codegen and never touches the gated op.</p>
+  </div>
+  <div class="fixcard alt">
+    <span class="tag">ESCAPE</span>
+    <h4>Inline-dpas kernel</h4>
+    <p>Replace ARK's <code>joint_matrix</code> int8 kernel with hand-written <code>dpas</code> asm (à la
+    <code>XE_DPAS_TT</code>), or switch ARK to AOT (<code>spir64_gen -device bmg</code>). Keeps fused int8
+    perf, removes all runtime sensitivity.</p>
+  </div>
+</div>
+
+<h2 class="section">Reproduce</h2>
+<pre><code><span class="cmt"># Root-cause probe (single machine, only libsycl changes):</span>
+<span class="cmt"># 1) baseline 2025.3 (FAIL): matrix aspect NO</span>
+LD_LIBRARY_PATH=/root/torch-xpu-setup/.venv/lib ONEAPI_DEVICE_SELECTOR=level_zero:gpu /root/arch_resolve
+<span class="cmt"># 2) rebuild against 2026 nightly, re-run (PASS): matrix aspect YES</span>
+N=/root/sycl_nightly
+$N/bin/clang++ -fsycl -O2 /root/arch_resolve.cpp -o /root/arch_resolve_nightly
+ONEAPI_DEVICE_SELECTOR=level_zero:gpu /root/arch_resolve_nightly   <span class="cmt"># -&gt; has(ext_intel_matrix)=YES</span>
+
+<span class="cmt"># Route B — the real ARK kernel, torch-free:</span>
+bash /root/build_harness_so8.sh &amp;&amp; bash /root/run_harness_default.sh   <span class="cmt"># .so.8 on 2025.3.2 -&gt; FAIL</span>
+bash /root/build_harness_so9.sh &amp;&amp; bash /root/run_harness_2026.sh      <span class="cmt"># .so.9 on 2026.0.0 -&gt; PASS</span></code></pre>
+
+<footer>
+  <p><b>Artifacts.</b> Finding doc:
+  <code>auto_round_extension/ark/docs/ark_xpu_joint_matrix_finding.md</code> ·
+  Harness source: <code>auto_round_extension/ark/docs/ark_jm_harness.cpp</code> ·
+  Build/run scripts on node under <code>/root/</code>.</p>
+  <p><b>Environment.</b> root@10.239.98.43 (b70-pc6) · Intel Graphics 0xe223 (Battlemage, bmg_g31, 256 EU) ·
+  L0 <code>1.15.37833</code> · <code>/root/torch-xpu-setup/.venv</code> (Python 3.13, torch 2.11.0+xpu).</p>
+  <p>Refs:
+  <a href="https://github.com/intel/intel-graphics-compiler/releases">intel-graphics-compiler releases</a> ·
+  <a href="https://github.com/intel/compute-runtime/releases">compute-runtime releases</a>.
+  Generated 2026-06-05 from the debug session.</p>
+</footer>
+
+</div>
+
+<script>
+function tog(el){el.parentElement.classList.toggle('open');}
+function toggleAll(){
+  const phases=document.querySelectorAll('.phase');
+  const anyClosed=[...phases].some(p=>!p.classList.contains('open'));
+  phases.forEach(p=>p.classList.toggle('open',anyClosed));
+  document.querySelector('.expand-all').textContent=anyClosed?'collapse all':'expand all';
+}
+// open the root-cause + route B by default
+document.addEventListener('DOMContentLoaded',()=>{
+  document.getElementById('t4').classList.add('open');
+  document.getElementById('routeb').classList.add('open');
+});
+</script>
+</body>
+</html>
