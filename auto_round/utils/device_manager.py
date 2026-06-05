@@ -68,7 +68,6 @@ __all__ = [
     "get_device_and_parallelism",
     "get_packing_device",
     "is_auto_device_mapping",
-    "get_major_device",
     "get_device_memory",
     "ClearMemory",
     "clear_memory",
@@ -379,19 +378,6 @@ class ARDevice:
                 fn()  # pylint: disable=E1102 # mps has issues
             except:
                 pass
-
-    #
-    # def get_device_capability(self, index: Union[int, None] = None):
-    #     """Return the compute capability of the selected device, if exposed."""
-    #     if self._module is None:
-    #         return None
-    #     fn = getattr(self._module, "get_device_capability", None)
-    #     if not callable(fn):
-    #         return None
-    #     try:
-    #         return fn(index) if index is not None else fn()  # pylint: disable=E1102
-    #     except Exception:
-    #         return None
 
     def device_index(self, index: int):
         """Context manager that sets the current device index for this backend.
