@@ -1,9 +1,11 @@
 [run]
 branch = True
+disable_warnings =
+    no-data-collected
 
 [paths]
 source =
-    */site-packages/auto-round/
+    */site-packages/auto_round/
 
 [report]
 include =
