@@ -98,12 +98,12 @@ class AWQConfig(QuantizationConfig):
         #         "`enable_opt_rtn` is turned on, set `--disable_opt_rtn` for higher speed at the cost of accuracy."
         #     )
         #     disable_opt_rtn = False
-        
+
         self.disable_opt_rtn = disable_opt_rtn
         # NOTE: AWQ must remain a preprocessor; do not mutate _alg_cls here.
         # if not self.disable_opt_rtn: ### revert this change, as this may break the pipeline structure
         #     self._alg_cls = "OptimizedRTNQuantizer"
-        
+
         # NOTE: enable_quanted_input is NOT set here.  It belongs to the
         # block_quantizer (RTN/AutoRound), not to AWQ.  See §3.7.1.
 
