@@ -59,7 +59,7 @@ def select_latest_context_files(context_files: list[Path], input_root: Path) -> 
     return sorted(selected)
 
 
-def merge_contexts(input_root: Path) -> tuple[list[dict], list[str]]:
+def merge_contexts(input_root: Path) -> list[dict]:
     all_context_files = sorted(input_root.rglob("failure_context*.json"))
     context_files = select_latest_context_files(all_context_files, input_root)
     merged_failures: list[dict] = []
@@ -76,30 +76,18 @@ def merge_contexts(input_root: Path) -> tuple[list[dict], list[str]]:
             seen.add(key)
             merged_failures.append(normalized)
 
-    rerun_targets: list[str] = []
-    for item in merged_failures:
-        test_name = item.get("test_name", "")
-        if not test_name:
-            continue
-        if not test_name.startswith("test_"):
-            continue
-        rerun_targets.append(f"test/test_cpu/{test_name}.py")
-
-    rerun_targets = sorted(set(rerun_targets))
-    return merged_failures, rerun_targets
+    return merged_failures
 
 
 def main():
     parser = argparse.ArgumentParser(description="Merge failure context files from all test parts")
     parser.add_argument("--input-root", required=True, type=Path, help="Root folder containing downloaded failure artifacts")
     parser.add_argument("--output", required=True, type=Path, help="Merged failure context JSON path")
-    parser.add_argument("--failed-test-cases", required=True, type=Path, help="Output failed test cases list")
     args = parser.parse_args()
 
     args.output.parent.mkdir(parents=True, exist_ok=True)
-    args.failed_test_cases.parent.mkdir(parents=True, exist_ok=True)
 
-    failures, rerun_targets = merge_contexts(args.input_root)
+    failures = merge_contexts(args.input_root)
 
     payload = {
         "schema_version": "1.0",
@@ -110,24 +98,15 @@ def main():
         },
         "stats": {
             "failed_cases": len(failures),
-            "rerun_targets": len(rerun_targets),
         },
         "failures": failures,
-        "rerun": {
-            "test_files": rerun_targets,
-        },
     }
 
     with open(args.output, "w", encoding="utf-8") as f:
         json.dump(payload, f, indent=2)
 
-    with open(args.failed_test_cases, "w", encoding="utf-8") as f:
-        if rerun_targets:
-            f.write("\n".join(rerun_targets) + "\n")
-
     print(f"Merged {len(failures)} failures from {args.input_root}")
     print(f"Merged context: {args.output}")
-    print(f"Rerun targets: {args.failed_test_cases}")
 
 
 if __name__ == "__main__":

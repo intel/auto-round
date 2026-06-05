@@ -45,6 +45,7 @@ variables:
   FAILURE_LOG_ARTIFACT_PREFIX: "ut-failure-log"
   FAILURE_LOG_DOWNLOAD_PATH: $(Pipeline.Workspace)/failure_logs
   COPILOT_ANALYSIS_ENABLED: "true"
+  CI_ADMIN_HANDLE: "chensuyue"
 
 stages:
   - template: template/lib-build-template.yml
@@ -85,21 +86,18 @@ stages:
               failureLogContext: $(UPLOAD_PATH)/failure_context_part$(PART).json
 
   - stage: AI_Analysis
-    displayName: "AI Analyze And Rerun"
+    displayName: "AI Analyze"
     dependsOn: [Unit_test]
     condition: and(failed('Unit_test'), eq(variables['Build.Reason'], 'PullRequest'), eq(variables['COPILOT_ANALYSIS_ENABLED'], 'true'))
     pool: ICX-16C
     jobs:
-      - job: AnalyzeAndRerun
-        timeoutInMinutes: 60
-        steps:
-          - template: template/ai-analysis-template.yml
-            parameters:
-              dockerConfigName: "commonDockerConfig"
-              utContainerName: "AutoRoundUnitTestAI$(NODE_LABEL)"
-              imageName: $(IMAGE_NAME)
-              imageTag: $(IMAGE_TAG)
-              uploadPath: $(UPLOAD_PATH)
+      - template: template/ai-analysis-template.yml
+        parameters:
+          dockerConfigName: "commonDockerConfig"
+          utContainerName: "AutoRoundUnitTestAI$(NODE_LABEL)"
+          imageName: $(IMAGE_NAME)
+          imageTag: $(IMAGE_TAG)
+          uploadPath: $(UPLOAD_PATH)
 
   - stage: Coverage
     displayName: "Collect Coverage"

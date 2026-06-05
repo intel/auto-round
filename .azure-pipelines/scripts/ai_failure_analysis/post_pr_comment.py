@@ -55,35 +55,128 @@ def find_existing_comment(comments: list[dict], marker: str) -> dict | None:
     return None
 
 
-def build_comment_body(analysis: dict, report_text: str, marker: str) -> str:
-    root_cause = analysis.get("root_cause", "N/A")
-    confidence = analysis.get("confidence", "unknown")
-    patch_path = analysis.get("patch_path", "")
-    external_ok = analysis.get("external_copilot_ok", False)
+def _admin_mention(classification: dict) -> str:
+    handle = (classification.get("ci_admin_handle") or "").strip().lstrip("@")
+    if classification.get("notify_admin") and handle:
+        return f"@{handle} please take a look."
+    return ""
 
-    patch_hint = "Patch is empty in this run."
-    if patch_path and Path(patch_path).exists() and Path(patch_path).stat().st_size > 0:
-        patch_hint = f"Patch generated at `{patch_path}` and published as pipeline artifact."
 
+def _known_issue_lines(classification: dict) -> list[str]:
+    matches = classification.get("known_issue_matches", []) or []
+    if not matches:
+        return ["No matching known issue was found."]
+    lines = ["Matched known issue(s):"]
+    for match in matches[:5]:
+        number = match.get("number", "?")
+        title = match.get("title", "")
+        url = match.get("url", "")
+        conf = match.get("confidence", 0)
+        lines.append(f"- [#{number}]({url}) {title} (confidence {conf})")
+    return lines
+
+
+def _evidence_lines(classification: dict) -> list[str]:
+    evidence = classification.get("evidence", []) or []
+    if not evidence:
+        return []
+    lines = ["", "### Evidence"]
+    lines.extend(f"- {item}" for item in evidence[:8])
+    return lines
+
+
+def build_category_section(classification: dict, analysis: dict) -> list[str]:
+    """Build the category-specific body section of the comment."""
+    category = classification.get("classification", "Other")
+    confidence = classification.get("confidence", "unknown")
+    reasoning = classification.get("reasoning", "")
+    admin = _admin_mention(classification)
+
+    header = [
+        f"- Classification: **{category}**",
+        f"- Confidence: {confidence}",
+    ]
+    if reasoning:
+        header.append(f"- Reasoning: {reasoning}")
+
+    body: list[str] = []
+    if category == "Known Issue":
+        body.append("This failure matches a tracked known issue and can likely be skipped.")
+        body.extend(_known_issue_lines(classification))
+        if admin:
+            body.append(f"A CI admin can help merge this PR manually. {admin}")
+    elif category == "Environment":
+        body.append(
+            "This looks like an environment/infrastructure issue and is likely "
+            "not caused by the PR code changes."
+        )
+    elif category == "Dependency":
+        body.append(
+            "This may be caused by a dependency version change. "
+            "Dependency baseline diffing is not fully enabled yet (Phase 2); "
+            "please review recent dependency updates."
+        )
+        if admin:
+            body.append(admin)
+    elif category == "Flaky Test":
+        body.append(
+            "This test appears unstable (flaky). Consider checking the test for "
+            "non-determinism or ordering assumptions."
+        )
+        if admin:
+            body.append(admin)
+    elif category == "Code Regression":
+        root_cause = analysis.get("root_cause", "N/A")
+        suggestion = analysis.get("suggestion", "")
+        patch_path = analysis.get("patch_path", "")
+        body.append("This failure is likely caused by the PR code changes.")
+        body.append(f"- Root cause: {root_cause}")
+        if suggestion:
+            body.append(f"- Suggested fix: {suggestion}")
+        if patch_path and Path(patch_path).exists() and Path(patch_path).stat().st_size > 0:
+            body.append(
+                f"- A suggested patch was generated (`{patch_path}`) and published "
+                "as a pipeline artifact. Review before applying; it is NOT auto-applied."
+            )
+        else:
+            body.append("- No patch was generated in this run.")
+    else:  # Other
+        body.append(
+            "This failure could not be confidently classified and needs manual review."
+        )
+        if admin:
+            body.append(admin)
+
+    return header + [""] + body
+
+
+def build_comment_body(classification: dict, analysis: dict, report_text: str, marker: str) -> str:
     lines = [
         marker,
         "## Copilot CI Failure Analysis",
         "",
-        f"- Root cause: {root_cause}",
-        f"- Confidence: {confidence}",
-        f"- Copilot command executed successfully: {external_ok}",
-        f"- {patch_hint}",
-        "",
-        "### Report",
-        report_text[:12000] if report_text else "No detailed report generated.",
     ]
+    lines.extend(build_category_section(classification, analysis))
+    lines.extend(_evidence_lines(classification))
+    if report_text:
+        lines.extend(
+            [
+                "",
+                "<details><summary>Detailed report</summary>",
+                "",
+                report_text[:12000],
+                "",
+                "</details>",
+            ]
+        )
     return "\n".join(lines)
 
 
 def main():
     parser = argparse.ArgumentParser(description="Post or update PR comment for AI analysis")
-    parser.add_argument("--analysis-result", required=True, type=Path)
-    parser.add_argument("--report", required=True, type=Path)
+    parser.add_argument("--classification-result", required=True, type=Path)
+    parser.add_argument("--analysis-result", type=Path, default=None)
+    parser.add_argument("--report", type=Path, default=None)
     args = parser.parse_args()
 
     token = os.environ.get("GITHUB_TOKEN", "")
@@ -97,9 +190,10 @@ def main():
         print("PR context missing. Skip posting comment.")
         return
 
-    analysis = load_json(args.analysis_result)
-    report_text = load_text(args.report)
-    source_commit = analysis.get("source_commit", "unknown")
+    classification = load_json(args.classification_result)
+    analysis = load_json(args.analysis_result) if args.analysis_result and args.analysis_result.exists() else {}
+    report_text = load_text(args.report) if args.report else ""
+    source_commit = classification.get("source_commit") or analysis.get("source_commit", "unknown")
     marker = f"<!-- auto-round-ci-copilot-analysis:{source_commit} -->"
 
     comments_url = f"https://api.github.com/repos/{repo_path}/issues/{pr_number}/comments"
@@ -107,7 +201,7 @@ def main():
     try:
         comments = github_request("GET", comments_url, token)
         existing = find_existing_comment(comments if isinstance(comments, list) else [], marker)
-        body = build_comment_body(analysis, report_text, marker)
+        body = build_comment_body(classification, analysis, report_text, marker)
 
         if existing:
             update_url = f"https://api.github.com/repos/{repo_path}/issues/comments/{existing['id']}"

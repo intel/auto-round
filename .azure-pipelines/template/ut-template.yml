@@ -35,9 +35,6 @@ parameters:
   - name: failureLogContext
     type: string
     default: ""
-  - name: failedTestCases
-    type: string
-    default: ""
   - name: failureLogArtifactPrefix
     type: string
     default: "ut-failure-log"
@@ -112,10 +109,6 @@ steps:
       EXTRA_ARGS=""
       if [ -n "${{ parameters.failureLogContext }}" ]; then
         EXTRA_ARGS="--failure-context ${{ parameters.failureLogContext }}"
-      fi
-
-      if [ -n "${{ parameters.failedTestCases }}" ]; then
-        EXTRA_ARGS="${EXTRA_ARGS} --failed-test-cases ${{ parameters.failedTestCases }}"
       fi
 
       docker exec -e NUMA_NODE=${NUMA_NODE} -e NUMA_CPUSET=${NUMA_CPUSET} -e ZE_AFFINITY_MASK=${ZE_AFFINITY_MASK} ${{ parameters.utContainerName }} \

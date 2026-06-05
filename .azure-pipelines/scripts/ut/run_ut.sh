@@ -3,7 +3,6 @@ set -e
 
 test_part=""
 failure_log_context=""
-failed_test_cases=""
 declare -a FAILED_BASE_CASES=()
 declare -a FAILED_INC_CASES=()
 declare -a FAILED_LLMC_CASES=()
@@ -18,10 +17,6 @@ function parse_arguments() {
                 ;;
             --test-part)
                 test_part="$2"
-                shift 2
-                ;;
-            --failed-test-cases)
-                failed_test_cases="$2"
                 shift 2
                 ;;
             *)
@@ -111,50 +106,6 @@ function check_storage_usage() {
     du -sh /home/hostuser/.cache/huggingface/hub/* || true
     du -sh /home/hostuser/.venv || true
     echo "##[endgroup]"
-}
-
-function run_failed_test_cases() {
-    if [[ -z "${failed_test_cases}" ]]; then
-        return
-    fi
-
-    if [[ ! -f "${failed_test_cases}" ]]; then
-        echo "Error: failed test cases file not found: ${failed_test_cases}"
-        exit 1
-    fi
-
-    if [[ ! -s "${failed_test_cases}" ]]; then
-        echo "Failed test cases list is empty, skipping rerun."
-        return
-    fi
-
-    FAILED_BASE_CASES=()
-    FAILED_INC_CASES=()
-    FAILED_LLMC_CASES=()
-
-    while IFS= read -r test_case; do
-        if [[ -z "${test_case}" ]]; then
-            continue
-        fi
-
-        if [[ "${test_case}" == *test_inc* ]]; then
-            FAILED_INC_CASES+=("${test_case}")
-        elif [[ "${test_case}" == *test_llmc* ]]; then
-            FAILED_LLMC_CASES+=("${test_case}")
-        else
-            FAILED_BASE_CASES+=("${test_case}")
-        fi
-    done < "${failed_test_cases}"
-
-    if [[ ${#FAILED_BASE_CASES[@]} -gt 0 ]]; then
-        run_test_cases "${FAILED_BASE_CASES[@]}"
-    fi
-    if [[ ${#FAILED_INC_CASES[@]} -gt 0 ]]; then
-        run_inc_unit_test "${FAILED_INC_CASES[@]}"
-    fi
-    if [[ ${#FAILED_LLMC_CASES[@]} -gt 0 ]]; then
-        run_llmc_unit_test "${FAILED_LLMC_CASES[@]}"
-    fi
 }
 
 function run_test_cases() {
@@ -252,14 +203,10 @@ function collect_log() {
 
 function main() {
     setup_environment
-    if [[ -n "${failed_test_cases}" ]]; then
-        run_failed_test_cases
-    else
-        run_unit_test
-        if [ "$test_part" -eq 5 ]; then
-            run_inc_unit_test
-            run_llmc_unit_test
-        fi
+    run_unit_test
+    if [ "$test_part" -eq 5 ]; then
+        run_inc_unit_test
+        run_llmc_unit_test
     fi
     collect_log
     check_storage_usage

@@ -235,7 +235,7 @@ def fallback_analysis(payload: dict) -> dict:
         ],
         "root_cause": "Likely regression in the changed code path exercised by failed unit tests. Inspect the first traceback for precise failure location.",
         "confidence": "medium",
-        "suggestion": "Review traceback, apply minimal fix, and rerun only failed test files.",
+        "suggestion": "Review traceback, apply a minimal fix, and validate with targeted tests.",
         "patch": "",
         "static_checks": [
             {
@@ -277,20 +277,92 @@ def run_local_static_checks(project_root: Path, pr_patch_path: Path) -> list[dic
     return checks
 
 
+def write_skipped_result(
+    output_dir: Path,
+    classification: str,
+    confidence,
+    reason: str,
+    project_root: Path,
+) -> None:
+    """Emit a minimal result when deep regression analysis is not applicable.
+
+    Non-regression categories (Known Issue / Environment / Dependency / Flaky /
+    Other) are handled by classification + comment routing, so the expensive
+    Copilot patch flow is skipped here.
+    """
+    result_path = output_dir / "analysis_result.json"
+    report_path = output_dir / "ai_failure_report.md"
+    patch_path = output_dir / "suggested_fix.patch"
+
+    write_text(patch_path, "")
+    write_text(
+        report_path,
+        "\n".join(
+            [
+                "# Copilot Failure Analysis",
+                "",
+                f"- Classification: {classification}",
+                f"- Confidence: {confidence}",
+                "- Deep regression analysis: skipped",
+                f"- Reason: {reason}",
+            ]
+        ),
+    )
+    with open(result_path, "w", encoding="utf-8") as f:
+        json.dump(
+            {
+                "success": True,
+                "skipped": True,
+                "classification": classification,
+                "confidence": confidence,
+                "reason": reason,
+                "patch_path": str(patch_path),
+                "report_path": str(report_path),
+                "project_root": str(project_root),
+                "source_commit": os.environ.get(
+                    "SYSTEM_PULLREQUEST_SOURCECOMMITID", os.environ.get("BUILD_SOURCEVERSION", "")
+                ),
+                "pr_number": os.environ.get("SYSTEM_PULLREQUEST_PULLREQUESTNUMBER", ""),
+            },
+            f,
+            indent=2,
+        )
+    print(f"analyze_and_suggest: classification={classification}; skipped deep analysis ({reason}).")
+
+
 def main():
     parser = argparse.ArgumentParser(description="Analyze merged failure context and generate fix artifacts")
     parser.add_argument("--failure-context", required=True, type=Path)
     parser.add_argument("--output-dir", required=True, type=Path)
-    parser.add_argument("--failed-test-cases", required=True, type=Path)
     parser.add_argument("--project-root", type=Path, default=Path.cwd())
     parser.add_argument("--failed-logs-root", type=Path, default=None)
     parser.add_argument("--base-ref", default="main")
+    parser.add_argument(
+        "--classification-result",
+        type=Path,
+        default=None,
+        help="Optional classification_result.json; deep analysis runs only for Code Regression.",
+    )
     args = parser.parse_args()
 
     args.output_dir.mkdir(parents=True, exist_ok=True)
     payload = load_json(args.failure_context)
     project_root = args.project_root.resolve()
     token = get_token_from_env()
+
+    classification_info = {}
+    if args.classification_result and args.classification_result.exists():
+        classification_info = load_json(args.classification_result)
+        classification = classification_info.get("classification", "")
+        if classification and classification != "Code Regression":
+            write_skipped_result(
+                args.output_dir,
+                classification,
+                classification_info.get("confidence", ""),
+                "non-regression category handled by comment routing",
+                project_root,
+            )
+            return
 
     failed_log_paths = collect_failed_log_paths(payload, args.failed_logs_root, project_root)
     failed_log_paths_file = args.output_dir / "failed_log_paths.txt"
@@ -399,6 +471,9 @@ def main():
 
     result_payload = {
         "success": cli_ok,
+        "skipped": False,
+        "classification": classification_info.get("classification", "Code Regression"),
+        "classification_confidence": classification_info.get("confidence", ""),
         "copilot_cli_ok": cli_ok,
         "copilot_cli_message": cli_message,
         "external_copilot_ok": False,
@@ -416,7 +491,6 @@ def main():
         "pr_patch_reference": str(pr_patch_path),
         "report_path": str(report_path),
         "patch_path": str(patch_path),
-        "failed_test_cases": str(args.failed_test_cases),
         "project_root": str(project_root),
         "generated_at": datetime.now(timezone.utc).isoformat(),
         "source_commit": os.environ.get("SYSTEM_PULLREQUEST_SOURCECOMMITID", os.environ.get("BUILD_SOURCEVERSION", "")),
