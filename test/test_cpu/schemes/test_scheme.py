@@ -2,10 +2,12 @@ import os
 import shutil
 
 import pytest
+import torch
+import torch.nn as nn
 import transformers
 
 from auto_round import AutoRound
-from auto_round.schemes import QuantizationScheme
+from auto_round.schemes import QuantizationScheme, _handle_special_schemes
 
 from ...helpers import get_model_path, get_tiny_model, opt_name_or_path, qwen_name_or_path, save_tiny_model
 
@@ -229,3 +231,86 @@ class TestAutoRound:
         _, quantized_model_path = ar.quantize_and_save(self.save_folder)
         model = transformers.AutoModelForCausalLM.from_pretrained(quantized_model_path, trust_remote_code=True)
         assert model is not None, "Model loading failed after quantization with FP8_STATIC scheme"
+
+
+class TestQ2KMixedRecipe:
+    """Unit tests for the gguf:q2_k_mixed _handle_special_schemes recipe.
+
+    Uses a small dummy model so no real checkpoint is required.
+    """
+
+    class _DummyMLP(nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.up_proj = nn.Linear(8, 8)
+            self.down_proj = nn.Linear(8, 8)
+            self.gate_proj = nn.Linear(8, 8)
+
+    class _DummyMoE(nn.Module):
+        def __init__(self):
+            super().__init__()
+            # singular form used by Qwen2MoE / Qwen3.6 / Qwen3_5MoE
+            self.shared_expert = TestQ2KMixedRecipe._DummyMLP()
+            self.shared_expert_gate = nn.Linear(8, 1)
+            # plural form used by DeepSeek / Mistral-Large
+            self.shared_experts = TestQ2KMixedRecipe._DummyMLP()
+            # regular routed experts (should NOT be promoted)
+            self.experts = nn.ModuleList([nn.Linear(8, 8) for _ in range(2)])
+            # fused expert weights stay 3D and should remain q2k in GGUF mapping
+            self.gate_up_proj = nn.Linear(8, 16, bias=False)
+            self.gate_up_proj.weight = nn.Parameter(torch.zeros(2, 16, 8))
+            self.down_proj = nn.Linear(8, 8, bias=False)
+            self.down_proj.weight = nn.Parameter(torch.zeros(2, 8, 8))
+
+    class _DummyModel(nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.layer0 = nn.Module()
+            self.layer0.mlp = TestQ2KMixedRecipe._DummyMoE()
+            # lm_head is Linear but should get Q8_0, not Q4_K_S
+            self.lm_head = nn.Linear(8, 8)
+            # embedding should get Q8_0
+            self.embed_tokens = nn.Embedding(16, 8)
+
+    def setup_method(self):
+        self.model = self._DummyModel()
+        self.cfg = _handle_special_schemes("gguf:q2_k_mixed", {}, self.model)
+
+    def test_singular_shared_expert_linear_gets_q4ks(self):
+        """2D shared expert linears should use Q4_K_S."""
+        for sub in ("up_proj", "down_proj", "gate_proj"):
+            key = f"layer0.mlp.shared_expert.{sub}"
+            assert key in self.cfg, f"{key} missing from layer_config"
+            assert self.cfg[key] == "GGUF:Q4_K_S", f"{key} expected Q4_K_S, got {self.cfg[key]}"
+
+    def test_shared_expert_gate_gets_q4ks(self):
+        """2D shared expert gate should use Q4_K_S."""
+        key = "layer0.mlp.shared_expert_gate"
+        assert key in self.cfg, f"{key} missing from layer_config"
+        assert self.cfg[key] == "GGUF:Q4_K_S", f"{key} expected Q4_K_S, got {self.cfg[key]}"
+
+    def test_plural_shared_experts_linear_gets_q4ks(self):
+        """2D plural shared experts should also use Q4_K_S."""
+        for sub in ("up_proj", "down_proj", "gate_proj"):
+            key = f"layer0.mlp.shared_experts.{sub}"
+            assert key in self.cfg, f"{key} missing from layer_config"
+            assert self.cfg[key] == "GGUF:Q4_K_S", f"{key} expected Q4_K_S, got {self.cfg[key]}"
+
+    def test_routed_experts_linears_not_in_recipe(self):
+        """Routed expert linears are excluded from the recipe — falls through to dtype selector."""
+        for i in range(2):
+            key = f"layer0.mlp.experts.{i}"
+            assert key not in self.cfg, f"{key} should not be in the recipe"
+
+    def test_fused_three_dim_expert_weights_start_as_q2ks_recipe(self):
+        """_handle_special_schemes sets 3D expert weights directly to Q2_K_S."""
+        assert self.cfg.get("layer0.mlp.gate_up_proj") == "GGUF:Q2_K_S"
+        assert self.cfg.get("layer0.mlp.down_proj") == "GGUF:Q2_K_S"
+
+    def test_lm_head_gets_q8_0(self):
+        """lm_head should be Q8_0."""
+        assert self.cfg.get("lm_head") == "GGUF:Q8_0"
+
+    def test_embedding_gets_q8_0(self):
+        """embed_tokens embedding should be Q8_0."""
+        assert self.cfg.get("embed_tokens") == "GGUF:Q8_0"

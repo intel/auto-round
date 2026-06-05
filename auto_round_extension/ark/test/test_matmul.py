@@ -22,7 +22,7 @@ import auto_round_kernel
 import pytest
 import torch
 
-ark = auto_round_kernel.ARK()
+ark = auto_round_kernel
 
 
 def main_op(m, k, n, dt, batch_size, runs, has_bias, record_property, device):
