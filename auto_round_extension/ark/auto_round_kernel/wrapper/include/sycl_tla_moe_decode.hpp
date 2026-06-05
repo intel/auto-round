@@ -35,15 +35,10 @@
 
 #include <cstddef>
 #include <cstdint>
-#include <limits>
 #include <stdexcept>
 
-#include <cctype>
-#include <cstdlib>
-#include <string>
-
 #include "bestla/bestla.h"
-#include "bestla/sycl/fp8_lut.h"
+#include "sycl_tla_moe_dequant.hpp"
 
 #ifdef ARK_XPU
 #include <sycl/sycl.hpp>
@@ -64,6 +59,8 @@
 //
 // The env var is read once on the host (cached) and passed as a template
 // parameter into the SYCL kernel, so there is no per-element runtime branch.
+// The actual primitives live in `sycl_tla_moe_dequant.hpp` (shared with the
+// mixed-input prefill path); this file just re-exports them via `using`.
 // ----------------------------------------------------------------------------
 
 #if defined(ARK_XPU) && defined(ARK_SYCL_TLA)
@@ -93,104 +90,18 @@ template <typename ScalarT, bool IsE4M3, bool UseLut>
 class MoEDecodeKernelFP8;
 
 // ----------------------------------------------------------------------------
-// FP8 byte -> float decode.
-// Matches IEEE-style layout used by torch.float8_e4m3fn / torch.float8_e5m2:
-//   E4M3 (finite-only): 1 sign, 4 exp (bias 7), 3 mantissa; 0x7F/0xFF = NaN.
-//   E5M2 (IEEE-like):   1 sign, 5 exp (bias 15), 2 mantissa; exp==31 -> Inf/NaN.
-//
-// Two implementations are provided. Selection happens at kernel launch time
-// via a bool template parameter (`UseLut`) sourced from the env var
-// `ARK_FP8_DECODE_USE_LUT` (see `fp8_decode_use_lut()` below).
+// FP8 weight dequantization primitives + host-side env-var reader live in
+// `sycl_tla_moe_dequant.hpp` so the prefill (mixed-input Grouped GEMM) and
+// decode (GEMV) paths share one definition. The `using` declarations below
+// keep the in-kernel call sites (`decode_fp8<...>(byte)`) and the host-side
+// `fp8_decode_use_lut()` lookup inside `moe_decode_detail` working unchanged.
 // ----------------------------------------------------------------------------
-
-// LUT path: read magnitude from the 128-entry constexpr table, apply sign.
-inline float decode_fp8_e4m3_lut(uint8_t byte) {
-  const uint32_t mag = byte & 0x7Fu;
-  const float v = bestla::sycl_prologue_b::fp8_lut::lut_e4m3_128[mag];
-  return (byte & 0x80u) ? -v : v;
-}
-
-inline float decode_fp8_e5m2_lut(uint8_t byte) {
-  const uint32_t mag = byte & 0x7Fu;
-  const float v = bestla::sycl_prologue_b::fp8_lut::lut_e5m2_128[mag];
-  return (byte & 0x80u) ? -v : v;
-}
-
-// Inline bit-manipulation path: fully self-contained, no LUT / SLM required.
-inline float decode_fp8_e4m3_bits(uint8_t byte) {
-  const uint32_t mag = byte & 0x7Fu;
-  const uint32_t sign = byte >> 7;
-  float v;
-  if (mag == 0u) {
-    v = 0.0f;
-  } else if (mag == 0x7Fu) {
-    v = sycl::nan(0u);
-  } else {
-    const int exp = static_cast<int>((mag >> 3) & 0xFu);
-    const int man = static_cast<int>(mag & 0x7u);
-    if (exp == 0) {
-      // subnormal: value = man * 2^(1 - bias - mbits) = man / 512
-      v = static_cast<float>(man) * (1.0f / 512.0f);
-    } else {
-      // normal: (1 + man/8) * 2^(exp - bias), bias = 7
-      v = (1.0f + static_cast<float>(man) * 0.125f) * sycl::ldexp(1.0f, exp - 7);
-    }
-  }
-  return sign ? -v : v;
-}
-
-inline float decode_fp8_e5m2_bits(uint8_t byte) {
-  const uint32_t mag = byte & 0x7Fu;
-  const uint32_t sign = byte >> 7;
-  const int exp = static_cast<int>((mag >> 2) & 0x1Fu);
-  const int man = static_cast<int>(mag & 0x3u);
-  float v;
-  if (exp == 0) {
-    // subnormal (incl. zero): value = man * 2^(1 - bias - mbits) = man / 65536
-    v = static_cast<float>(man) * (1.0f / 65536.0f);
-  } else if (exp == 31) {
-    v = (man == 0) ? std::numeric_limits<float>::infinity() : sycl::nan(0u);
-  } else {
-    // normal: (1 + man/4) * 2^(exp - bias), bias = 15
-    v = (1.0f + static_cast<float>(man) * 0.25f) * sycl::ldexp(1.0f, exp - 15);
-  }
-  return sign ? -v : v;
-}
-
-// Dispatch helpers used inside the kernel (both branches resolved at compile
-// time via `if constexpr`, so there is no per-element runtime cost).
-template <bool IsE4M3, bool UseLut>
-inline float decode_fp8(uint8_t byte) {
-  if constexpr (UseLut) {
-    if constexpr (IsE4M3) {
-      return decode_fp8_e4m3_lut(byte);
-    } else {
-      return decode_fp8_e5m2_lut(byte);
-    }
-  } else {
-    if constexpr (IsE4M3) {
-      return decode_fp8_e4m3_bits(byte);
-    } else {
-      return decode_fp8_e5m2_bits(byte);
-    }
-  }
-}
-
-// ----------------------------------------------------------------------------
-// Host-side env-var reader: cached, defaults to LUT enabled.
-// Accepts (case-insensitive) "0"/"false"/"off"/"no" as the OFF spelling.
-// ----------------------------------------------------------------------------
-inline bool fp8_decode_use_lut() {
-  static const bool value = []() {
-    const char* env = std::getenv("ARK_FP8_DECODE_USE_LUT");
-    if (env == nullptr) return true;  // default: LUT on
-    std::string s(env);
-    for (char& c : s) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
-    if (s == "0" || s == "false" || s == "off" || s == "no") return false;
-    return true;
-  }();
-  return value;
-}
+using moe_dequant::decode_fp8;
+using moe_dequant::decode_fp8_e4m3_bits;
+using moe_dequant::decode_fp8_e4m3_lut;
+using moe_dequant::decode_fp8_e5m2_bits;
+using moe_dequant::decode_fp8_e5m2_lut;
+using moe_dequant::fp8_decode_use_lut;
 
 // ----------------------------------------------------------------------------
 // Build a [total_tokens] -> expert_id mapping from num_tokens_per_expert.
