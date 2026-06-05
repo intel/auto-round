@@ -907,9 +907,9 @@ from transformers import AutoModelForCausalLM
 model = AutoModelForCausalLM.from_pretrained("./my_model", device_map="auto")
 ```
 
-- **Deterministic rotations** (R1–R4): Only metadata (type + seed) is stored — matrices are regenerated on load
-- **Random rotations**: The random sign vector is stored as a compact int8 buffer (~hidden_size bytes)
-- **Online hooks** (R3/R4): Automatically re-registered during model loading
+- **Deterministic rotations**: Only metadata (type + rotation_size) is stored — matrices are reconstructed on load
+- **Random rotations**: An `int8` (±1) rotation matrix is stored (size ~rotation_size^2 bytes)
+- **Online rotations**: Rebuilt during model loading (R1/R4 via QuantLinear forward patching; R3 via monkeypatch from config)
 
 #### Per-Linear Block Rotation (Experimental)
 
