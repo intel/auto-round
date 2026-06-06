@@ -205,7 +205,7 @@ class ReportGenerator:
 class FailureContextWriter:
     """Extract compact failure context for downstream AI analysis."""
 
-    TRACEBACK_MARKERS = ("Traceback", "== FAILURES ==", "== ERRORS ==")
+    TRACEBACK_MARKERS = ("Traceback", "== FAILURES ==", "== ERRORS ==", "core dumped", "Killed")
 
     def __init__(self, log_dir: Path, max_lines: int = 200):
         self.log_dir = Path(log_dir)
@@ -282,8 +282,18 @@ class FailureContextWriter:
         for marker in self.TRACEBACK_MARKERS:
             for idx, line in enumerate(lines):
                 if marker in line:
-                    start = max(0, idx - 10)
-                    end = min(len(lines), idx + 80)
+                    if marker == "Traceback":
+                        start = max(0, idx - 10)
+                        max_end = min(len(lines), idx + 80)
+                        failed_end = None
+                        for j in range(idx, max_end):
+                            if "FAILED" in lines[j]:
+                                failed_end = j + 1
+                                break
+                        end = min(max_end, failed_end) if failed_end is not None else max_end
+                    else:
+                        start = max(0, idx - 10)
+                        end = min(len(lines), idx + 80)
                     selected = lines[start:end]
                     break
             if selected:

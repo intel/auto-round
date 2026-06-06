@@ -45,10 +45,21 @@ def truncate_text(value: str, limit: int = 6000) -> str:
     return value[: limit - 3] + "..."
 
 
+def all_failures_from_payload(payload: dict) -> list[dict]:
+    """Return flattened failure cases from either failures[] or groups[]."""
+    if payload.get("failures"):
+        return payload.get("failures", [])
+    flattened = []
+    for group in payload.get("groups", []):
+        flattened.extend(group.get("cases", []))
+    return flattened
+
+
 def collect_failed_log_paths(payload: dict, failed_logs_root: Path | None, project_root: Path) -> list[str]:
+    failures = all_failures_from_payload(payload)
     requested = [
         (entry.get("log_file") or "").strip()
-        for entry in payload.get("failures", [])
+        for entry in failures
         if (entry.get("log_file") or "").strip()
     ]
 
@@ -148,6 +159,7 @@ def build_agent_prompt(
             "Tooling policy:",
             "- Non-interactive only; do not request user input.",
             "- Prefer read-only inspection of files and git history.",
+            "- Prioritize merged failure context first; only scan full failed logs when evidence is insufficient.",
             "- Keep suggestions minimal and low risk.",
             "",
             "Output STRICT JSON only with this schema:",
@@ -206,7 +218,7 @@ def run_copilot_cli(prompt: str, project_root: Path, github_token: str) -> tuple
 
 
 def fallback_analysis(payload: dict) -> dict:
-    failures = payload.get("failures", [])
+    failures = all_failures_from_payload(payload)
     if not failures:
         return {
             "error_classification": [],
@@ -340,8 +352,8 @@ def main():
     parser.add_argument(
         "--classification-result",
         type=Path,
-        default=None,
-        help="Optional classification_result.json; deep analysis runs only for Code Regression.",
+        required=True,
+        help="classification_result.json from classify.py; required for regression-group-only analysis.",
     )
     args = parser.parse_args()
 
@@ -350,21 +362,53 @@ def main():
     project_root = args.project_root.resolve()
     token = get_token_from_env()
 
-    classification_info = {}
-    if args.classification_result and args.classification_result.exists():
-        classification_info = load_json(args.classification_result)
-        classification = classification_info.get("classification", "")
-        if classification and classification != "Code Regression":
-            write_skipped_result(
-                args.output_dir,
-                classification,
-                classification_info.get("confidence", ""),
-                "non-regression category handled by comment routing",
-                project_root,
-            )
-            return
+    classification_info = load_json(args.classification_result)
+    regression_group_ids: list[str] = []
+    per_group = classification_info.get("per_group_results", [])
+    regression_group_ids = [
+        item.get("group_id", "")
+        for item in per_group
+        if item.get("classification") == "Code Regression"
+    ]
 
-    failed_log_paths = collect_failed_log_paths(payload, args.failed_logs_root, project_root)
+    summary = classification_info.get("summary", {})
+    has_regression_group = bool(summary.get("has_code_regression_group", False)) or bool(regression_group_ids)
+    if not has_regression_group:
+        write_skipped_result(
+            args.output_dir,
+            "Non-Regression",
+            "",
+            "no regression groups found in grouped classification result",
+            project_root,
+        )
+        return
+
+    analysis_payload = payload
+    groups = payload.get("groups", [])
+    selected_groups = [g for g in groups if g.get("group_id", "") in set(regression_group_ids)]
+    if not selected_groups:
+        write_skipped_result(
+            args.output_dir,
+            "Non-Regression",
+            "",
+            "classification lists regression groups, but none were found in failure context",
+            project_root,
+        )
+        return
+
+    analysis_payload = {
+        "groups": selected_groups,
+        "build": payload.get("build", {}),
+        "stats": {
+            "group_count": len(selected_groups),
+            "failed_cases": sum(len(g.get("cases", [])) for g in selected_groups),
+        },
+    }
+    context_for_prompt = args.output_dir / "regression_groups_context.json"
+    with open(context_for_prompt, "w", encoding="utf-8") as f:
+        json.dump(analysis_payload, f, indent=2)
+
+    failed_log_paths = collect_failed_log_paths(analysis_payload, args.failed_logs_root, project_root)
     failed_log_paths_file = args.output_dir / "failed_log_paths.txt"
     write_text(failed_log_paths_file, "\n".join(failed_log_paths) + ("\n" if failed_log_paths else ""))
 
@@ -372,7 +416,7 @@ def main():
     patch_ok, patch_message = generate_pr_patch(project_root, pr_patch_path, base_ref=args.base_ref)
 
     prompt = build_agent_prompt(
-        merged_failure_context=args.failure_context,
+        merged_failure_context=context_for_prompt,
         failed_log_paths_file=failed_log_paths_file,
         pr_patch_file=pr_patch_path,
         project_root=project_root,
@@ -382,7 +426,7 @@ def main():
 
     cli_ok, cli_message, cli_result, cli_raw = run_copilot_cli(prompt, project_root, token)
 
-    fallback = fallback_analysis(payload)
+    fallback = fallback_analysis(analysis_payload)
     analysis = fallback.copy()
     if cli_ok and cli_result:
         analysis.update(
@@ -473,7 +517,9 @@ def main():
         "success": cli_ok,
         "skipped": False,
         "classification": classification_info.get("classification", "Code Regression"),
-        "classification_confidence": classification_info.get("confidence", ""),
+        "summary": classification_info.get("summary", {}),
+        "regression_group_ids": regression_group_ids,
+        "analyzed_group_count": len(regression_group_ids),
         "copilot_cli_ok": cli_ok,
         "copilot_cli_message": cli_message,
         "external_copilot_ok": False,

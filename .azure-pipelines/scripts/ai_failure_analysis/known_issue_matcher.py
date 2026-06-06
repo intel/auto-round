@@ -92,6 +92,17 @@ def _failure_text(failures: list[dict]) -> str:
     return "\n".join(p for p in parts if p)
 
 
+def _group_text(group: dict) -> str:
+    parts = []
+    parts.extend(group.get("test_names", []))
+    parts.extend(group.get("evidence", []))
+    for case in group.get("cases", []):
+        parts.append(case.get("test_name", ""))
+        parts.append(case.get("excerpt", ""))
+        parts.append(case.get("tail", ""))
+    return "\n".join(p for p in parts if p)
+
+
 def score_issue(issue: dict, failure_tokens: set[str], failure_excs: set[str]) -> dict:
     """Score one issue against the aggregated failure fingerprint."""
     issue_text = f"{issue['title']}\n{issue['body']}"
@@ -117,28 +128,33 @@ def score_issue(issue: dict, failure_tokens: set[str], failure_excs: set[str]) -
 
 
 def match_known_issues(
-    failures: list[dict],
+    groups: list[dict],
     repo_path: str,
     token: str,
     label: str = DEFAULT_LABEL,
     min_confidence: float = 0.3,
 ) -> dict:
-    """Return ranked known-issue matches for the given failures."""
+    """Return ranked known-issue matches for each group."""
     issues = fetch_known_issues(repo_path, token, label)
     if not issues:
-        return {"label": label, "checked": 0, "matches": []}
+        return {"label": label, "checked": 0, "per_group_matches": []}
 
-    failure_text = _failure_text(failures)
-    failure_tokens = _tokenize(failure_text)
-    failure_excs = _exceptions(failure_text)
+    per_group_matches = []
+    for group in groups:
+        group_id = group.get("group_id", "")
+        group_text = _group_text(group)
+        failure_tokens = _tokenize(group_text)
+        failure_excs = _exceptions(group_text)
 
-    scored = [score_issue(issue, failure_tokens, failure_excs) for issue in issues]
-    matches = sorted(
-        (s for s in scored if s["confidence"] >= min_confidence),
-        key=lambda s: s["confidence"],
-        reverse=True,
-    )
-    return {"label": label, "checked": len(issues), "matches": matches}
+        scored = [score_issue(issue, failure_tokens, failure_excs) for issue in issues]
+        matches = sorted(
+            (s for s in scored if s["confidence"] >= min_confidence),
+            key=lambda s: s["confidence"],
+            reverse=True,
+        )
+        per_group_matches.append({"group_id": group_id, "matches": matches})
+
+    return {"label": label, "checked": len(issues), "per_group_matches": per_group_matches}
 
 
 def _repo_path_from_env() -> str:
@@ -160,7 +176,7 @@ def main():
 
     with open(args.failure_context, "r", encoding="utf-8") as f:
         payload = json.load(f)
-    failures = payload.get("failures", [])
+    groups = payload.get("groups", [])
 
     token = (
         os.environ.get("GITHUB_TOKEN", "")
@@ -170,15 +186,16 @@ def main():
     repo_path = _repo_path_from_env()
 
     result = match_known_issues(
-        failures, repo_path, token, label=args.label, min_confidence=args.min_confidence
+        groups, repo_path, token, label=args.label, min_confidence=args.min_confidence
     )
 
     args.output.parent.mkdir(parents=True, exist_ok=True)
     with open(args.output, "w", encoding="utf-8") as f:
         json.dump(result, f, indent=2)
 
-    print(f"known_issue_matcher: checked {result['checked']} issues, "
-          f"{len(result['matches'])} matches >= {args.min_confidence}")
+        matched_groups = sum(1 for item in result.get("per_group_matches", []) if item.get("matches"))
+        print(f"known_issue_matcher: checked {result['checked']} issues, "
+            f"{matched_groups} groups with matches >= {args.min_confidence}")
 
 
 if __name__ == "__main__":

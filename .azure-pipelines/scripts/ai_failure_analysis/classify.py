@@ -67,40 +67,44 @@ def emit_pipeline_variable(name: str, value: str):
     print(f"##vso[task.setvariable variable={name}]{safe}")
 
 
-def heuristic_classification(evidence: dict, known_issues: dict) -> dict:
-    """Deterministic fallback when Copilot is unavailable.
+def _group_pr_relevance(evidence: dict, group_id: str) -> dict:
+    for item in evidence.get("pr_relevance", {}).get("per_group", []):
+        if item.get("group_id") == group_id:
+            return item
+    return {}
 
-    Mirrors the priority order so behaviour is predictable without the agent.
-    """
-    matches = known_issues.get("matches", [])
-    if matches and matches[0].get("confidence", 0.0) >= KNOWN_ISSUE_AUTO_THRESHOLD:
+
+def heuristic_classification(group: dict, evidence: dict, known_matches: list[dict]) -> dict:
+    """Deterministic group-level classification."""
+    if known_matches and known_matches[0].get("confidence", 0.0) >= KNOWN_ISSUE_AUTO_THRESHOLD:
         return {
             "classification": KNOWN_ISSUE,
-            "confidence": matches[0]["confidence"],
-            "evidence": [f"matches known issue #{matches[0].get('number')}"],
+            "confidence": known_matches[0]["confidence"],
+            "evidence": [f"matches known issue #{known_matches[0].get('number')}"],
             "reasoning": "Known-issue matcher returned a high-confidence ticket.",
         }
 
-    env = evidence.get("environment", {})
-    if env.get("has_environment_signal"):
-        signals = list(env.get("signals", {}).keys())
+    if group.get("signature_type") == "env_signal":
+        signature = group.get("signature", "")
+        signal = signature.split(":", 1)[1] if ":" in signature else signature
         return {
             "classification": ENVIRONMENT,
             "confidence": 0.7,
-            "evidence": [f"environment signal: {s}" for s in signals][:5],
-            "reasoning": "Deterministic environment signals were detected in logs.",
+            "evidence": [f"environment signal: {signal}"],
+            "reasoning": "Group signature indicates infrastructure/environment symptoms.",
         }
 
-    pr = evidence.get("pr_relevance", {})
-    if pr.get("relevance_score", 0.0) >= 0.5 and pr.get("touches_source"):
+    pr_group = _group_pr_relevance(evidence, group.get("group_id", ""))
+    pr_global = evidence.get("pr_relevance", {})
+    if pr_group.get("relevance_score", 0.0) >= 0.5 and pr_global.get("touches_source"):
         return {
             "classification": CODE_REGRESSION,
-            "confidence": round(min(0.9, 0.5 + pr["relevance_score"] / 2), 3),
+            "confidence": round(min(0.9, 0.5 + pr_group["relevance_score"] / 2), 3),
             "evidence": [
-                f"relevance_score={pr.get('relevance_score')}",
-                f"directly_changed_tests={pr.get('directly_changed_tests', [])[:5]}",
+                f"group_relevance_score={pr_group.get('relevance_score')}",
+                f"directly_changed_tests={pr_group.get('directly_changed_tests', [])[:5]}",
             ],
-            "reasoning": "Failed tests correlate with PR-changed source files.",
+            "reasoning": "This group correlates with PR-changed source or tests.",
         }
 
     return {
@@ -111,7 +115,7 @@ def heuristic_classification(evidence: dict, known_issues: dict) -> dict:
     }
 
 
-def finalize_classification(raw_result: dict, known_issues: dict, admin_handle: str) -> dict:
+def finalize_classification(raw_result: dict, known_matches: list[dict], admin_handle: str) -> dict:
     """Apply guard rails: known-issue short-circuit and confidence threshold."""
     classification = str(raw_result.get("classification", "")).strip()
     if classification not in VALID_CATEGORIES:
@@ -127,7 +131,7 @@ def finalize_classification(raw_result: dict, known_issues: dict, admin_handle: 
     reasoning = raw_result.get("reasoning", "")
 
     notify_admin = False
-    matches = known_issues.get("matches", [])
+    matches = known_matches
 
     # Guard 1: strong known-issue match always wins.
     if matches and matches[0].get("confidence", 0.0) >= KNOWN_ISSUE_AUTO_THRESHOLD:
@@ -172,37 +176,65 @@ def main():
 
     project_root = args.project_root.resolve()
     payload = load_json(args.failure_context)
-    failures = payload.get("failures", [])
+    groups = payload.get("groups", [])
 
-    evidence = evidence_collectors.collect_all_evidence(failures, project_root, args.base_ref)
+    evidence = evidence_collectors.collect_all_evidence(groups, project_root, args.base_ref)
 
     repo_path = known_issue_matcher._repo_path_from_env()
     token = os.environ.get("GITHUB_TOKEN", "")
     known_issues = known_issue_matcher.match_known_issues(
-        failures, repo_path, token, label=args.known_issue_label
+        groups, repo_path, token, label=args.known_issue_label
     )
 
-    raw_result = heuristic_classification(evidence, known_issues)
+    known_map = {
+        item.get("group_id", ""): item.get("matches", [])
+        for item in known_issues.get("per_group_matches", [])
+    }
 
-    final = finalize_classification(raw_result, known_issues, args.admin_handle)
-    final.update(
-        {
-            "used_copilot": False,
-            "evidence_bundle": evidence,
-            "source_commit": payload.get("build", {}).get("source_commit", ""),
-            "pr_number": payload.get("build", {}).get("pr_number", ""),
-            "failure_count": len(failures),
-        }
-    )
+    per_group_results = []
+    category_counts = {key: 0 for key in VALID_CATEGORIES}
+
+    for group in groups:
+        group_id = group.get("group_id", "")
+        matches = known_map.get(group_id, [])
+        raw_result = heuristic_classification(group, evidence, matches)
+        final_group = finalize_classification(raw_result, matches, args.admin_handle)
+        final_group.update(
+            {
+                "group_id": group_id,
+                "group_signature": group.get("signature", ""),
+                "group_size": len(group.get("cases", [])),
+            }
+        )
+        per_group_results.append(final_group)
+        category_counts[final_group["classification"]] = category_counts.get(final_group["classification"], 0) + 1
+
+    has_regression = any(item.get("classification") == CODE_REGRESSION for item in per_group_results)
+    summary = {
+        "group_count": len(groups),
+        "category_counts": {k: v for k, v in category_counts.items() if v > 0},
+        "has_code_regression_group": has_regression,
+    }
+
+    failure_count = sum(len(group.get("cases", [])) for group in groups)
+    final = {
+        "per_group_results": per_group_results,
+        "summary": summary,
+        "evidence_bundle": evidence,
+        "source_commit": payload.get("build", {}).get("source_commit", ""),
+        "pr_number": payload.get("build", {}).get("pr_number", ""),
+        "group_count": len(groups),
+        "failure_count": failure_count,
+        "ci_admin_handle": args.admin_handle,
+    }
 
     write_json(args.output, final)
 
-    emit_pipeline_variable("CLASSIFICATION", final["classification"])
-    emit_pipeline_variable("HANDLING_ACTION", final["handling_action"])
+    emit_pipeline_variable("CLASSIFICATION", CODE_REGRESSION if has_regression else "Non-Regression")
+    emit_pipeline_variable("HANDLING_ACTION", "grouped_routing")
 
-    print(f"classify: classification={final['classification']} "
-          f"confidence={final['confidence']} action={final['handling_action']} "
-            f"notify_admin={final['notify_admin']}")
+    print(f"classify: groups={len(groups)} failures={failure_count} "
+          f"regression_groups={summary['category_counts'].get(CODE_REGRESSION, 0)}")
     print(f"classify: result written to {args.output}")
 
 

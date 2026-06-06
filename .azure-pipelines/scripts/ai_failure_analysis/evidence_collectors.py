@@ -92,6 +92,12 @@ def _failure_text(entry: dict) -> str:
     )
 
 
+def _iter_cases(groups: list[dict]):
+    for group in groups:
+        for case in group.get("cases", []):
+            yield group, case
+
+
 def _snippet_around(text: str, match: re.Match, radius: int = 120) -> str:
     start = max(0, match.start() - radius)
     end = min(len(text), match.end() + radius)
@@ -99,7 +105,7 @@ def _snippet_around(text: str, match: re.Match, radius: int = 120) -> str:
     return re.sub(r"\s+", " ", snippet)
 
 
-def collect_environment_signals(failures: list[dict]) -> dict:
+def collect_environment_signals(groups: list[dict]) -> dict:
     """Scan failures for environment-related signals.
 
     Returns a dict with matched signal keys, supporting evidence snippets, and
@@ -107,7 +113,25 @@ def collect_environment_signals(failures: list[dict]) -> dict:
     """
     matched: dict[str, dict] = {}
 
-    for entry in failures:
+    signal_labels = {key: label for key, label, _ in ENVIRONMENT_PATTERNS}
+
+    for group in groups:
+        signature_type = group.get("signature_type", "")
+        signature = group.get("signature", "")
+        if signature_type == "env_signal" and signature.startswith("env:"):
+            signal_key = signature.split(":", 1)[1]
+            record = matched.setdefault(
+                signal_key,
+                {"label": signal_labels.get(signal_key, signal_key), "evidence": [], "tests": []},
+            )
+            for ev in group.get("evidence", [])[:3]:
+                if ev and ev not in record["evidence"]:
+                    record["evidence"].append(ev)
+            for test_name in group.get("test_names", []):
+                if test_name and test_name not in record["tests"]:
+                    record["tests"].append(test_name)
+
+    for _group, entry in _iter_cases(groups):
         text = _failure_text(entry)
         if not text:
             continue
@@ -170,7 +194,7 @@ def _candidate_test_file(test_name: str) -> str:
 
 
 def collect_pr_relevance(
-    failures: list[dict], project_root: Path, base_ref: str = "main"
+    groups: list[dict], project_root: Path, base_ref: str = "main"
 ) -> dict:
     """Correlate failed tests with PR-changed files.
 
@@ -181,39 +205,53 @@ def collect_pr_relevance(
     changed_set = set(changed_files)
     changed_stems = {Path(f).stem for f in changed_files if f.endswith(".py")}
 
-    # Tests whose own test file was modified by the PR.
     directly_changed_tests: list[str] = []
-    # Tests whose corresponding source module (by stem) was modified.
     source_related_tests: list[dict] = []
+    per_group: list[dict] = []
 
-    for entry in failures:
-        test_name = entry.get("test_name", "")
-        test_file = _candidate_test_file(test_name)
-        test_stem = Path(test_file).stem if test_file else ""
+    for group in groups:
+        group_id = group.get("group_id", "")
+        group_tests = group.get("test_names", []) or [
+            c.get("test_name", "") for c in group.get("cases", []) if c.get("test_name", "")
+        ]
+        group_direct: list[str] = []
+        group_related: list[dict] = []
 
-        # Direct: the failing test file itself is in the PR diff.
-        for changed in changed_set:
-            if test_file and changed.endswith(test_file):
-                if test_name not in directly_changed_tests:
-                    directly_changed_tests.append(test_name)
-                break
+        for test_name in group_tests:
+            test_file = _candidate_test_file(test_name)
+            test_stem = Path(test_file).stem if test_file else ""
 
-        # Indirect: a changed source module matches the test's subject.
-        # ``test_quantize`` -> subject stem ``quantize``.
-        subject_stem = test_stem[len("test_"):] if test_stem.startswith("test_") else test_stem
-        related_modules = sorted(
-            f for f in changed_files
-            if f.endswith(".py") and subject_stem and Path(f).stem == subject_stem
-        )
-        if related_modules:
-            source_related_tests.append(
-                {"test": test_name, "modules": related_modules}
+            for changed in changed_set:
+                if test_file and changed.endswith(test_file):
+                    if test_name not in group_direct:
+                        group_direct.append(test_name)
+                    if test_name not in directly_changed_tests:
+                        directly_changed_tests.append(test_name)
+                    break
+
+            subject_stem = test_stem[len("test_"):] if test_stem.startswith("test_") else test_stem
+            related_modules = sorted(
+                f for f in changed_files
+                if f.endswith(".py") and subject_stem and Path(f).stem == subject_stem
             )
+            if related_modules:
+                group_related.append({"test": test_name, "modules": related_modules})
+                source_related_tests.append({"test": test_name, "modules": related_modules})
 
-    relevance_score = 0.0
-    if failures:
-        related_count = len(directly_changed_tests) + len(source_related_tests)
-        relevance_score = round(min(1.0, related_count / max(1, len(failures))), 3)
+        score = 0.0
+        if group_tests:
+            score = round(min(1.0, (len(group_direct) + len(group_related)) / max(1, len(group_tests))), 3)
+
+        per_group.append(
+            {
+                "group_id": group_id,
+                "directly_changed_tests": group_direct,
+                "source_related_tests": group_related,
+                "relevance_score": score,
+            }
+        )
+
+    relevance_score = max((item["relevance_score"] for item in per_group), default=0.0)
 
     # Heuristic: PR only touches code under auto_round/ vs only tests/ vs docs.
     touches_source = any(
@@ -229,6 +267,7 @@ def collect_pr_relevance(
         "directly_changed_tests": directly_changed_tests,
         "source_related_tests": source_related_tests,
         "relevance_score": relevance_score,
+        "per_group": per_group,
         "touches_source": touches_source,
         "touches_tests": touches_tests,
     }
@@ -249,7 +288,7 @@ def collect_dependency_changes(project_root: Path) -> dict:
     }
 
 
-def collect_flaky_signals(failures: list[dict]) -> dict:
+def collect_flaky_signals(groups: list[dict]) -> dict:
     """Phase 2 stub: detect flaky tests via history / rerun comparison.
 
     A full implementation will consult historical pass/fail rates and the
@@ -264,13 +303,15 @@ def collect_flaky_signals(failures: list[dict]) -> dict:
 
 
 def collect_all_evidence(
-    failures: list[dict], project_root: Path, base_ref: str = "main"
+    groups: list[dict], project_root: Path, base_ref: str = "main"
 ) -> dict:
     """Aggregate every collector into a single evidence bundle."""
+    failure_count = sum(len(group.get("cases", [])) for group in groups)
     return {
-        "failure_count": len(failures),
-        "environment": collect_environment_signals(failures),
-        "pr_relevance": collect_pr_relevance(failures, project_root, base_ref),
+        "failure_count": failure_count,
+        "group_count": len(groups),
+        "environment": collect_environment_signals(groups),
+        "pr_relevance": collect_pr_relevance(groups, project_root, base_ref),
         "dependency": collect_dependency_changes(project_root),
-        "flaky": collect_flaky_signals(failures),
+        "flaky": collect_flaky_signals(groups),
     }

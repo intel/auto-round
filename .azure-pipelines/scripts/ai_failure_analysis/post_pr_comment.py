@@ -150,14 +150,41 @@ def build_category_section(classification: dict, analysis: dict) -> list[str]:
     return header + [""] + body
 
 
+def build_group_section(group_result: dict, analysis: dict, index: int) -> list[str]:
+    group_id = group_result.get("group_id", f"g{index:03d}")
+    lines = [
+        f"### Group {index}: {group_id}",
+        f"- Signature: {group_result.get('group_signature', '')}",
+        f"- Cases: {group_result.get('group_size', 0)}",
+    ]
+    lines.extend(build_category_section(group_result, analysis))
+    lines.extend(_evidence_lines(group_result))
+    lines.append("")
+    return lines
+
+
 def build_comment_body(classification: dict, analysis: dict, report_text: str, marker: str) -> str:
     lines = [
         marker,
         "## Copilot CI Failure Analysis",
         "",
     ]
-    lines.extend(build_category_section(classification, analysis))
-    lines.extend(_evidence_lines(classification))
+
+    per_group = classification.get("per_group_results", [])
+    if per_group:
+        summary = classification.get("summary", {})
+        lines.append(f"- Group count: {summary.get('group_count', len(per_group))}")
+        counts = summary.get("category_counts", {})
+        if counts:
+            compact = ", ".join(f"{k}={v}" for k, v in counts.items())
+            lines.append(f"- Category counts: {compact}")
+        lines.append("")
+        for idx, group_result in enumerate(per_group, start=1):
+            lines.extend(build_group_section(group_result, analysis, idx))
+    else:
+        lines.extend(build_category_section(classification, analysis))
+        lines.extend(_evidence_lines(classification))
+
     if report_text:
         lines.extend(
             [
