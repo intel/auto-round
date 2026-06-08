@@ -26,6 +26,7 @@ import transformers
 from torch.amp import autocast
 
 from auto_round.export.export_to_gguf.config import GGML_QUANT_SIZES, GGUF_CONFIG, GGUF_INNER_CONFIG, QK_K, ModelType
+from auto_round.export.export_to_gguf.gguf_dtype import GGUFDTypeSelector, gguf_format_to_ftype
 from auto_round.logger import logger
 from auto_round.utils import (
     check_to_quantized,
@@ -774,24 +775,35 @@ def get_layer_config_by_gguf_format(layer_config, target_gguf_format: str, model
         tie_word_embeddings = model.config.tie_word_embeddings
     tie_word_embeddings &= not is_separate_lm_head(model)
 
-    n_gqa = 1
-    if (
-        hasattr(model, "config")
-        and hasattr(model.config, "num_attention_heads")
-        and hasattr(model.config, "num_key_value_heads")
-    ):
-        n_gqa = model.config.num_attention_heads // model.config.num_key_value_heads
-    n_expert = 0
-    for name in ["num_experts", "num_local_experts", "n_routed_experts"]:
-        if hasattr(model.config, name):
-            n_expert = getattr(model.config, name)
-
-    i_attention_wv = 0
-    i_ffn_down = 0
+    dtype_selector = GGUFDTypeSelector(
+        hparams, gguf_format_to_ftype(target_gguf_format), model_class.model_arch, n_layer
+    )
     layer_config_copy = copy.deepcopy(layer_config)
     base_target_bits = None
     if inner_gguf_format.startswith("gguf:q") and len(inner_gguf_format) >= 7 and (inner_gguf_format[6]).isdigit():
         base_target_bits = int(inner_gguf_format[6])
+
+    def _resolve_gguf_name(layer_name):
+        if model_type != ModelType.TEXT and any([key in layer_name for key in MM_MODULE_KEYS]):
+            gguf_layer_name = tensor_map_vision.get_name(layer_name)
+            if gguf_layer_name is None:
+                for key in MM_MODULE_KEYS:
+                    gguf_layer_name = tensor_map_vision.get_name(layer_name.replace(f".{key}", ""))
+                    if gguf_layer_name is not None:
+                        break
+        else:
+            gguf_layer_name = tensor_map.get_name(layer_name)
+            if gguf_layer_name is None:
+                gguf_layer_name = tensor_map.get_name(layer_name.replace(".language_model", ""))
+        return gguf_layer_name
+
+    dtype_selector.n_attention_wv = sum(
+        1
+        for layer_name, config in layer_config_copy.items()
+        if check_to_quantized(config)
+        and (gguf_name := _resolve_gguf_name(layer_name))
+        and any(key in gguf_name for key in ("attn_v", "attn_qkv", "attn_kv_b"))
+    )
 
     for layer_name, config in layer_config_copy.items():
         if not check_to_quantized(config):
@@ -815,17 +827,7 @@ def get_layer_config_by_gguf_format(layer_config, target_gguf_format: str, model
                 re.search("gguf:q([0-9]{1,})_[01k]", GGUF_CONFIG[target_gguf_format][embedding_format_key]).group(1)
             )
 
-        if model_type != ModelType.TEXT and any([key in layer_name for key in MM_MODULE_KEYS]):
-            gguf_name = tensor_map_vision.get_name(layer_name)
-            if gguf_name is None:
-                for key in MM_MODULE_KEYS:
-                    gguf_name = tensor_map_vision.get_name(layer_name.replace(f".{key}", ""))
-                    if gguf_name is not None:
-                        break
-        else:
-            gguf_name = tensor_map.get_name(layer_name)
-            if gguf_name is None:
-                gguf_name = tensor_map.get_name(layer_name.replace(".language_model", ""))
+        gguf_name = _resolve_gguf_name(layer_name)
         bits_index = 6
         if config.get("fixed_by_user", False):
             if "bits" not in config:
@@ -877,116 +879,9 @@ def get_layer_config_by_gguf_format(layer_config, target_gguf_format: str, model
             new_type = _search_gguf_type(new_type)
             if new_type is None:
                 raise ValueError(f"invalid bit setting for {layer_name}")
-        elif gguf_name is None:
-            pass
-        # attn_v
-        elif "attn_v" in gguf_name:
-            if target_gguf_format == "gguf:q2_k":
-                new_type = "gguf:q4_k" if n_gqa >= 4 else "gguf:q3_k"
-            elif target_gguf_format == "gguf:q2_k_s" and n_gqa >= 4:
-                new_type = "gguf:q4_k"
-            elif target_gguf_format == "gguf:q3_k_m":
-                new_type = "gguf:q5_k" if i_attention_wv < 2 else "gguf:q4_k"
-            elif target_gguf_format == "gguf:q3_k_l":
-                new_type = "gguf:q5_k"
-            elif (target_gguf_format == "gguf:q4_k_m" or target_gguf_format == "gguf:q5_k_m") and _use_more_bits(
-                i_layer, n_layer
-            ):
-                new_type = "gguf:q6_k"
-            elif target_gguf_format == "gguf:q4_k_s" and i_attention_wv < 4:
-                new_type = "gguf:q5_k"
-            ##TODO check which models are be grouped into to LLM_TYPE_70B
-            # if (qs.model.type == LLM_TYPE_70B) {
-            # // In the 70B model we have 8 heads sharing the same attn_v weights.
-            # As a result, the attn_v.weight tensor is
-            # // 8x smaller compared to attn_q.weight.Hence, we can get a nice boost in quantization accuracy with
-            # // nearly negligible increase in model size by quantizing this tensor with more bits:
-            #     if
-            # (new_type == GGML_TYPE_Q3_K | | new_type == GGML_TYPE_Q4_K)
-            # new_type = GGML_TYPE_Q5_K;
-            # }
-            if n_expert == 8:
-                new_type = "gguf:q8_k"
-            i_attention_wv += 1
-
-        elif "attn_k" in gguf_name:
-            if n_expert == 8:
-                new_type = "gguf:q8_0"
-        # ffn_down
-        elif "ffn_down" in gguf_name:
-            if target_gguf_format == "gguf:q2_k":
-                new_type = "gguf:q3_k"
-            elif target_gguf_format == "gguf:q2_k_s":
-                if i_layer < n_layer / 8:
-                    new_type = "gguf:q4_k"
-            elif target_gguf_format == "gguf:q3_k_m":
-                if i_layer < n_layer / 16:
-                    new_type = "gguf:q5_k"
-                elif gguf.MODEL_ARCH.FALCON == model_class.model_arch or _use_more_bits(i_layer, n_layer):
-                    new_type = "gguf:q4_k"
-                else:
-                    new_type = "gguf:q3_k"
-            elif target_gguf_format == "gguf:q3_k_l":
-                if gguf.MODEL_ARCH.FALCON == model_class.model_arch:
-                    new_type = "gguf:q4_k"
-                else:
-                    new_type = "gguf:q5_k"
-            elif target_gguf_format == "gguf:q4_k_m":
-                if gguf.MODEL_ARCH.FALCON == model_class.model_arch:
-                    if i_layer < n_layer // 16:
-                        new_type = "gguf:q6_k"
-                    elif _use_more_bits(i_layer, n_layer):
-                        new_type = "gguf:q5_k"
-                    else:
-                        new_type = "gguf:q4_k"
-                else:
-                    if _use_more_bits(i_layer, n_layer):
-                        new_type = "gguf:q6_k"
-            elif target_gguf_format == "gguf:q5_k_m" and _use_more_bits(i_layer, n_layer):
-                new_type = "gguf:q6_k"
-            elif (
-                target_gguf_format == "gguf:q4_k_s"
-                and model_class.model_arch != gguf.MODEL_ARCH.FALCON
-                and i_layer < n_layer / 8
-            ):
-                new_type = "gguf:q5_k"
-            elif (target_gguf_format == "gguf:q4_0" or target_gguf_format == "gguf:q5_0") and i_layer < n_layer / 8:
-                if target_gguf_format == "gguf:q4_0":
-                    new_type = "gguf:q4_1"
-                else:
-                    new_type = "gguf:q5_1"
-            i_ffn_down += 1
-
-        # attn_output
-        elif "attn_output" in gguf_name:
-            if gguf.MODEL_ARCH.FALCON != model_class.model_arch:
-                if n_expert == 8:
-                    if target_gguf_format in (
-                        "gguf:q2_k",
-                        "gguf:q3_k_s",
-                        "gguf:q3_k_m",
-                        "gguf:q4_k_s",
-                        "gguf:q4_k_m",
-                        "gguf:q5_k",
-                    ):
-                        new_type = "gguf:q5_k"
-                    elif target_gguf_format == "gguf:q2_k":
-                        new_type = "gguf:q3_k"
-                    elif target_gguf_format == "gguf:q3_k_m":
-                        new_type = "gguf:q4_k"
-                    elif target_gguf_format == "gguf:q3_k_l":
-                        new_type = "gguf:q5_k"
-            else:
-                if target_gguf_format == "gguf:q3_k_l":
-                    new_type = "gguf:q4_k"
-        # attn_qkv
-        elif "attn_qkv" in gguf_name:
-            if target_gguf_format in ("gguf:q3_k_m", "gguf:q3_k_l"):
-                new_type = "gguf:q4_k"
-            elif target_gguf_format == "gguf:q4_k_m":
-                new_type = "gguf:q5_k"
-            elif target_gguf_format == "gguf:q5_k_m":
-                new_type = "gguf:q5_k"
+        elif gguf_name is not None:
+            gguf_weight_name = gguf_name if gguf_name.endswith(".weight") else f"{gguf_name}.weight"
+            new_type = dtype_selector.select_gguf_type(gguf_weight_name, len(layer.weight.shape), i_layer or 0)
         new_block_size = GGML_QUANT_SIZES[new_type.split(":")[-1].lower()][0]
         if input_features % new_block_size != 0:
             new_type = _gguf_type_fallback(new_type)
