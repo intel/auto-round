@@ -157,5 +157,4 @@ stages:
                   twine upload --repository-url https://test.pypi.org/legacy/ $(Pipeline.Workspace)/dist/*
                 else
                   twine upload $(Pipeline.Workspace)/dist/*
-                  
                 fi
