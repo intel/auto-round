@@ -49,7 +49,6 @@ stages:
                 && export UV_NO_PROGRESS=1 \
                 && export UV_SYSTEM_PYTHON=1 \
                 && pip install uv \
-                && uv pip install -r test/test_hpu/requirements.txt \
                 && uv pip install huggingface_hub \
                 && uv pip list"
             displayName: "HPU Env Setup"
