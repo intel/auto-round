@@ -113,7 +113,7 @@ stages:
                 publishLocation: pipeline
             
             - task: PublishPipelineArtifact@1
-              condition: and(succeeded(), eq('${{ parameters.buildMode }}', 'release'), eq('${{ replace(trim(pythonVersion), ".", "") }}', '312'))
+              condition: and(succeeded(), eq('${{ parameters.buildMode }}', 'release'), eq('${{ replace(trim(pythonVersion), '.', '') }}', '312'))
               displayName: Publish dist artifact
               inputs:
                 targetPath: $(Build.SourcesDirectory)/auto_round_extension/ark/dist
