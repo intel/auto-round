@@ -816,21 +816,21 @@ from auto_round import AutoRound
 from auto_round.algorithms.transforms.spinquant import SpinQuantConfig
 
 # 仅 R1（速度快，良好的基准提升）
-ar = AutoRound(model, scheme="MXFP4", rotation_config=SpinQuantConfig(r1=True))
+ar = AutoRound(model_name, scheme="MXFP4", rotation_config=SpinQuantConfig(r1=True))
 
 # R1 + R2（更好，融合后无运行时开销）
-ar = AutoRound(model, scheme="MXFP4", rotation_config=SpinQuantConfig(r1=True, r2=True))
+ar = AutoRound(model_name, scheme="MXFP4", rotation_config=SpinQuantConfig(r1=True, r2=True))
 
 # R1 + R2 + R3 + R4（最佳精度，hook 带来少许运行时开销）
-ar = AutoRound(model, scheme="MXFP4", rotation_config=SpinQuantConfig(r1=True, r2=True, r3=True, r4=True))
+ar = AutoRound(model_name, scheme="MXFP4", rotation_config=SpinQuantConfig(r1=True, r2=True, r3=True, r4=True))
 ```
 
 ##### 字符串快捷方式
 
 | 值 | 等价配置 |
 |----|---------|
-| `"quarot"` | `SpinQuantConfig(r1=True, r2=True, r3=True, r4=True)` — 确定性 Hadamard，无需训练 |
-| `"spinquant"` | `SpinQuantConfig(r1=True, r2=True, r3=True, r4=True, trainable_rotation=True)` — **实验性**，见下方说明 |
+| `"quarot"` | `SpinQuantConfig(r1=True, r2=True, trainable_rotation=False, trainable_smooth=False)` — 确定性 Hadamard，无需训练 |
+| `"spinquant"` | `SpinQuantConfig(r1=True, r2=True, trainable_rotation=True, trainable_smooth=True)` — **实验性**（需要提供 dataloader） |
 
 > ⚠️ **SpinQuant 可训练旋转**（`trainable_rotation=True`）启用通过 Cayley SGD 优化的可学习旋转矩阵。此功能为**实验性**，尚未完全验证。生产环境建议使用 `"quarot"`（固定 Hadamard）。
 
@@ -838,11 +838,11 @@ ar = AutoRound(model, scheme="MXFP4", rotation_config=SpinQuantConfig(r1=True, r
 
 ```python
 # 确定性（默认）：固定 Hadamard 矩阵，无需额外存储
-ar = AutoRound(model, scheme="MXFP4", rotation_config=SpinQuantConfig(r1=True, r2=True, r3=True, r4=True))
+ar = AutoRound(model_name, scheme="MXFP4", rotation_config=SpinQuantConfig(r1=True, r2=True, r3=True, r4=True))
 
-# 随机：H × diag(±1)，离群点抑制效果略好，需保存随机符号向量
+# 随机：H × diag(±1)，离群点抑制效果略好，需保存旋转矩阵
 ar = AutoRound(
-    model,
+    model_name,
     scheme="MXFP4",
     rotation_config=SpinQuantConfig(
         r1=True, r2=True, r3=True, r4=True, random_r1=True, random_r2=True, random_r3=True, random_r4=True
@@ -854,11 +854,12 @@ ar = AutoRound(
 
 | 参数 | 默认值 | 描述 |
 |------|--------|------|
-| `r1` / `r2` / `r3` / `r4` | `False` | 启用各位置的旋转 |
+| `r1` / `r2` / `r3` / `r4` | `True / True / False / False` | 启用各位置的旋转 |
 | `online_r1_rotation` | `True` | R1 通过 hook 应用（`True`）或融合到权重中（`False`） |
-| `random_r1` / `r2` / `r3` / `r4` | `False` | 使用随机 Hadamard（H×diag(±1)）而非确定性 |
+| `random_r1` / `random_r2` / `random_r3` / `random_r4` | `False` | 使用随机 Hadamard（H×diag(±1)）而非确定性 |
 | `rotation_size` | `None`（自动） | 块旋转维度；从模型维度自动检测 |
-| `trainable_rotation` | `False` | 启用 SpinQuant 可学习旋转（**实验性**） |
+| `trainable_rotation` | `False` | 启用 SpinQuant 可学习旋转（**实验性**，需要 dataloader） |
+| `trainable_smooth` | `False` | 启用可学习 smooth 值（**实验性**，需要 dataloader） |
 
 ##### 保存与加载
 
@@ -874,9 +875,9 @@ from transformers import AutoModelForCausalLM
 model = AutoModelForCausalLM.from_pretrained("./my_model", device_map="auto")
 ```
 
-- **确定性旋转**（R1–R4）：仅存储元数据（类型 + 种子）——矩阵在加载时重新生成
-- **随机旋转**：随机符号向量以紧凑的 int8 buffer 存储（约 hidden_size 字节）
-- **在线 hook**（R3/R4）：在模型加载时自动重新注册
+- **确定性旋转**：仅存储元数据（类型 + rotation_size）——矩阵在加载时重建
+- **随机旋转**：以 `int8`（±1）旋转矩阵形式存储（大小约为 rotation_size² 字节）
+- **在线旋转**：在模型加载时重建（R1/R4 通过 QuantLinear forward patch；R3 通过配置触发的 monkeypatch）
 
 #### 逐线性层块旋转（实验性）
 

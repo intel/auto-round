@@ -849,21 +849,21 @@ from auto_round import AutoRound
 from auto_round.algorithms.transforms.spinquant import SpinQuantConfig
 
 # R1 only (fast, good baseline improvement)
-ar = AutoRound(model, scheme="MXFP4", rotation_config=SpinQuantConfig(r1=True))
+ar = AutoRound(model_name, scheme="MXFP4", rotation_config=SpinQuantConfig(r1=True))
 
 # R1 + R2 (better, no runtime overhead after fuse)
-ar = AutoRound(model, scheme="MXFP4", rotation_config=SpinQuantConfig(r1=True, r2=True))
+ar = AutoRound(model_name, scheme="MXFP4", rotation_config=SpinQuantConfig(r1=True, r2=True))
 
 # R1 + R2 + R3 + R4 (best accuracy, slight runtime overhead from hooks)
-ar = AutoRound(model, scheme="MXFP4", rotation_config=SpinQuantConfig(r1=True, r2=True, r3=True, r4=True))
+ar = AutoRound(model_name, scheme="MXFP4", rotation_config=SpinQuantConfig(r1=True, r2=True, r3=True, r4=True))
 ```
 
 ##### String Shortcuts
 
 | Value | Equivalent |
 |-------|-----------|
-| `"quarot"` | `SpinQuantConfig(r1=True, r2=True, r3=True, r4=True)` — deterministic Hadamard, no training |
-| `"spinquant"` | `SpinQuantConfig(r1=True, r2=True, r3=True, r4=True, trainable_rotation=True)` — **experimental**, see note below |
+| `"quarot"` | `SpinQuantConfig(r1=True, r2=True, trainable_rotation=False, trainable_smooth=False)` — deterministic Hadamard, no training |
+| `"spinquant"` | `SpinQuantConfig(r1=True, r2=True, trainable_rotation=True, trainable_smooth=True)` — **experimental** (requires a dataloader) |
 
 > ⚠️ **SpinQuant trainable rotation** (`trainable_rotation=True`) enables learnable rotation matrices optimized via Cayley SGD. This feature is **experimental** and not fully validated. Use `"quarot"` (fixed Hadamard) for production workloads.
 
@@ -871,11 +871,11 @@ ar = AutoRound(model, scheme="MXFP4", rotation_config=SpinQuantConfig(r1=True, r
 
 ```python
 # Deterministic (default): fixed Hadamard matrix, no extra storage needed
-ar = AutoRound(model, scheme="MXFP4", rotation_config=SpinQuantConfig(r1=True, r2=True, r3=True, r4=True))
+ar = AutoRound(model_name, scheme="MXFP4", rotation_config=SpinQuantConfig(r1=True, r2=True, r3=True, r4=True))
 
-# Random: H × diag(±1), slightly better outlier suppression, requires saving the random sign vector
+# Random: H × diag(±1), slightly better outlier suppression, requires saving the rotation matrix
 ar = AutoRound(
-    model,
+    model_name,
     scheme="MXFP4",
     rotation_config=SpinQuantConfig(
         r1=True, r2=True, r3=True, r4=True, random_r1=True, random_r2=True, random_r3=True, random_r4=True
@@ -887,11 +887,12 @@ ar = AutoRound(
 
 | Parameter | Default | Description |
 |-----------|---------|-------------|
-| `r1` / `r2` / `r3` / `r4` | `False` | Enable rotation at each position |
+| `r1` / `r2` / `r3` / `r4` | `True / True / False / False` | Enable rotation at each position |
 | `online_r1_rotation` | `True` | R1 via hook (`True`) or fused into weights (`False`) |
-| `random_r1` / `r2` / `r3` / `r4` | `False` | Use random Hadamard (H×diag(±1)) instead of deterministic |
+| `random_r1` / `random_r2` / `random_r3` / `random_r4` | `False` | Use random Hadamard (H×diag(±1)) instead of deterministic |
 | `rotation_size` | `None` (auto) | Block rotation dimension; auto-detected from model dimensions |
-| `trainable_rotation` | `False` | Enable SpinQuant learnable rotation (**experimental**) |
+| `trainable_rotation` | `False` | Enable SpinQuant learnable rotation (**experimental**, requires dataloader) |
+| `trainable_smooth` | `False` | Enable learnable smooth values (**experimental**, requires dataloader) |
 
 ##### Save & Load
 
@@ -908,7 +909,7 @@ model = AutoModelForCausalLM.from_pretrained("./my_model", device_map="auto")
 ```
 
 - **Deterministic rotations**: Only metadata (type + rotation_size) is stored — matrices are reconstructed on load
-- **Random rotations**: An `int8` (±1) rotation matrix is stored (size ~rotation_size^2 bytes)
+- **Random rotations**: An `int8` (±1) rotation matrix is stored (size ~rotation_size² bytes)
 - **Online rotations**: Rebuilt during model loading (R1/R4 via QuantLinear forward patching; R3 via monkeypatch from config)
 
 #### Per-Linear Block Rotation (Experimental)
