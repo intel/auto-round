@@ -1854,14 +1854,15 @@ class ModelFreeCompressor(_ModelFreeCompressorCore):
         **kwargs,
     ):
         """Quantize and save — AutoRound compressor entry point."""
-        # Accept the standard auto_round formats plus llm_compressor variants
-        # (the latter are the natural output for MXFP4 / MXFP8 schemes).
+        # Accept the standard auto_round formats.
         _accepted_formats = {
             "auto_round",
             "auto_round:auto_gptq",
-            "llm_compressor",
-            "auto_round:llm_compressor",
         }
+        print(self.scheme_input)
+        # MXFP only supports the llm_compressor format.
+        if self.scheme_input in ["MXFP4", "MXFP8"]:
+            _accepted_formats = ["llm_compressor"]
         if format not in _accepted_formats:
             return self._fallback_to_quantize_and_save(output_dir=output_dir, format=format, inplace=inplace, **kwargs)
 
