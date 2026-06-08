@@ -13,6 +13,7 @@ All console_scripts (auto_round, auto-round-best, etc.) point here.
 from __future__ import annotations
 
 import argparse
+import difflib
 import sys
 
 from auto_round.cli.algorithms import AlgorithmHandler
@@ -183,10 +184,26 @@ def _print_algorithm_help(argv: list[str]) -> bool:
 
     # Resolve aliases to canonical names, silently ignore unknowns
     canonical_names: list[str] = []
+    unknown_names: list[str] = []
     for name in names:
         canon = AlgorithmHandler.resolve_alias(name)
         if canon and canon not in canonical_names:
             canonical_names.append(canon)
+            continue
+        if canon is None:
+            unknown_names.append(name)
+    if unknown_names:
+        from auto_round.algorithms.registry import list_registered_algorithms
+
+        suggestions = []
+        supported = list_registered_algorithms()
+        for name in unknown_names:
+            match = difflib.get_close_matches(name, supported, n=1)
+            if match:
+                suggestions.append(f"Unknown algorithm '{name}'. Did you mean '{match[0]}'?")
+            else:
+                suggestions.append(f"Unknown algorithm '{name}'.")
+        raise SystemExit(" ".join(suggestions) + " Use `auto_round list alg` to see supported algorithms.")
     if not canonical_names:
         return False
 

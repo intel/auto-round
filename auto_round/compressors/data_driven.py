@@ -449,20 +449,14 @@ class DataDrivenCompressor(BaseCompressor):
             if policy.source == InputSource.QUANTIZED_INPUT and q_input is not None:
                 with ExitStack() as fwd_stack:
                     self.pipeline.enter_preprocessor_hooks(ctx, fwd_stack)
-                    reference_output = ctx.io.collect_outputs(
-                        block, self.quantizer, source=InputSource.FP_CACHE, batch_size=bs
-                    )
+                    reference_output = ctx.collect_reference(fwd_stack)
                 with ExitStack() as fwd_stack:
                     self.pipeline.enter_quantizer_hooks(ctx, fwd_stack)
-                    ctx.io.collect_outputs(
-                        block, self.quantizer, source=InputSource.QUANTIZED_INPUT, batch_size=bs, save=False
-                    )
+                    ctx.collect_quantized_stats(fwd_stack)
             else:
                 with ExitStack() as fwd_stack:
                     self.pipeline.enter_block_forward_hooks(ctx, fwd_stack)
-                    reference_output = ctx.io.collect_outputs(
-                        block, self.quantizer, source=InputSource.FP_CACHE, batch_size=bs
-                    )
+                    reference_output = ctx.collect_reference(fwd_stack)
 
             if q_input is not None:
                 if input_ids is not q_input:
@@ -470,8 +464,6 @@ class DataDrivenCompressor(BaseCompressor):
                 else:
                     clear_memory(device_list=self.compress_context.device_list)
                 input_ids = q_input
-
-            ctx.io.reference_outputs = reference_output
 
             # pre_quantize_block: consolidate stats and apply weight transforms.
             for pre in self.pipeline.preprocessors:
@@ -490,14 +482,14 @@ class DataDrivenCompressor(BaseCompressor):
 
             # ── Collect quantized-block outputs ───────────────────────────────────
             if self.pipeline.block_quantizer.enable_quanted_input:
-                q_outputs = ctx.io.collect_outputs(block, self.quantizer, source=ctx.io.active_source, batch_size=bs)
+                q_outputs = ctx.collect_next_inputs()
             else:
                 q_outputs = None
 
             # ── Cleanup ───────────────────────────────────────────────────────────
             if len(self.compress_context.device_list) > 1:
                 accelerate.hooks.remove_hook_from_submodules(block)
-            ctx.release_io_references()
+            ctx.finish()
             mv_module_from_gpu(block)
             return q_outputs, reference_output
         finally:
@@ -625,24 +617,16 @@ class DataDrivenCompressor(BaseCompressor):
                 # First: reference forward with FP inputs and preprocessor hooks only.
                 with ExitStack() as fwd_stack:
                     self.pipeline.enter_preprocessor_hooks(ctx, fwd_stack)
-                    reference_output = ctx.io.collect_outputs(
-                        m, self.quantizer, source=InputSource.FP_CACHE, batch_size=bs
-                    )
+                    reference_output = ctx.collect_reference(fwd_stack)
                 # Second: quantizer stats forward with q_input.
                 with ExitStack() as fwd_stack:
                     self.pipeline.enter_quantizer_hooks(ctx, fwd_stack)
-                    ctx.io.collect_outputs(
-                        m, self.quantizer, source=InputSource.QUANTIZED_INPUT, batch_size=bs, save=False
-                    )
+                    ctx.collect_quantized_stats(fwd_stack)
             else:
                 # Unified: reference forward with all hooks active (or no hooks).
                 with ExitStack() as fwd_stack:
                     self.pipeline.enter_block_forward_hooks(ctx, fwd_stack)
-                    reference_output = ctx.io.collect_outputs(
-                        m, self.quantizer, source=InputSource.FP_CACHE, batch_size=bs
-                    )
-
-            ctx.io.reference_outputs = reference_output
+                    reference_output = ctx.collect_reference(fwd_stack)
 
             # ── Infrastructure: swap q_input ──────────────────────────────────
             if q_input is not None:
@@ -669,7 +653,7 @@ class DataDrivenCompressor(BaseCompressor):
 
             # ── Infrastructure: collect q_outputs if needed ───────────────────
             if self.pipeline.block_quantizer.enable_quanted_input:
-                q_input = ctx.io.collect_outputs(m, self.quantizer, source=ctx.io.active_source, batch_size=bs)
+                q_input = ctx.collect_next_inputs()
             else:
                 q_input = None
 
@@ -688,7 +672,7 @@ class DataDrivenCompressor(BaseCompressor):
             # BlockContext/BlockIO keep extra references to large cached tensors.
             # Release them once the next block input has been decided so host RAM
             # matches the old path more closely.
-            ctx.release_io_references()
+            ctx.finish()
             clear_memory(
                 input_ids if input_ids is not next_input_ids else None, device_list=self.compress_context.device_list
             )
@@ -818,21 +802,8 @@ class DataDrivenCompressor(BaseCompressor):
 
         start_time = time.time()
 
-        # ── Pipeline lifecycle: prepare_quantization (model-level setup) ──────
-        from auto_round.algorithms.pipeline import RunContext
-
-        run_ctx = RunContext(
-            model=self.model_context.model,
-            all_blocks=all_blocks,
-            layer_names=layer_names,
-            formats=getattr(self, "formats", None),
-            scheme=getattr(self.quantize_config, "scheme", None),
-            alg_configs=getattr(self, "alg_configs", []),
-            model_context=self.model_context,
-            compress_context=self.compress_context,
-        )
         for alg in self.pipeline.all():
-            alg.prepare_run(run_ctx)
+            alg.prepare_run(self)
 
         try:
             for block_names in all_blocks:
@@ -871,7 +842,7 @@ class DataDrivenCompressor(BaseCompressor):
             # ── Pipeline lifecycle: finalize_quantization (model-level teardown) ─
             for alg in self.pipeline.all():
                 try:
-                    alg.finalize_run(run_ctx)
+                    alg.finalize_run(self)
                 except Exception as _fe:
                     logger.warning("finalize_run error in %s: %s", type(alg).__name__, _fe)
 
@@ -1165,7 +1136,7 @@ class CalibratedRTNCompressor(DataDrivenCompressor):
                     block = block.to(self.compress_context.device)
 
                 # ── Infrastructure: collect block outputs and hook stats ──
-                from auto_round.algorithms.pipeline import BlockContext, InputSource
+                from auto_round.algorithms.pipeline import BlockContext
 
                 block_input_ids = input_ids
                 bs = self.quantizer.batch_size * self.quantizer.infer_bs_coeff
@@ -1183,9 +1154,7 @@ class CalibratedRTNCompressor(DataDrivenCompressor):
                 )
                 with ExitStack() as fwd_stack:
                     self.pipeline.enter_block_forward_hooks(ctx, fwd_stack)
-                    input_ids = ctx.io.collect_outputs(
-                        block, self.quantizer, source=InputSource.FP_CACHE, batch_size=bs
-                    )
+                    input_ids = ctx.collect_reference(fwd_stack)
 
                 if len(self.compress_context.device_list) > 1:
                     accelerate.hooks.remove_hook_from_submodules(block)
@@ -1195,10 +1164,9 @@ class CalibratedRTNCompressor(DataDrivenCompressor):
                     self.compress_context.clear_memory()
 
                 # ── Pure algorithm ────────────────────────────────────────────
-                ctx.io.fp_inputs = block_input_ids
-                ctx.io.reference_outputs = input_ids
+                ctx.io.seed_reference(fp_inputs=block_input_ids, reference_outputs=input_ids)
                 self.quantizer.quantize_block(ctx)
-                ctx.release_io_references()
+                ctx.finish()
 
                 # ── Infrastructure: cleanup ───────────────────────────────────
                 mv_module_from_gpu(block)

@@ -494,8 +494,8 @@ auto-round --model Qwen/Qwen3-0.6B --algorithm awq --scheme W4A16
 auto-round --model Qwen/Qwen3-0.6B --algorithm awq,auto_round --scheme W4A16
 
 # AWQ 相关参数
---awq-duo-scaling true|false|both  (默认: true)
---awq-n-grid 20                     (默认: 20)
+--duo-scaling true|false|both  (默认: true)
+--n-grid 20                    (默认: 20)
 ```
 
 #### API 用法

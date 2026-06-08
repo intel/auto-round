@@ -61,7 +61,7 @@ class BasePipelineMember:
         self.compress_context = compressor.compress_context
         self.scheme = getattr(compressor, "scheme_context", None)
 
-    def prepare_run(self, run_ctx) -> None:
+    def prepare_run(self, compressor) -> None:
         """Model-level preparation called once before block iteration starts."""
         return
 
@@ -76,7 +76,7 @@ class BasePipelineMember:
         """Register algorithm-specific forward hooks for the reference forward."""
         yield []
 
-    def finalize_run(self, run_ctx) -> None:
+    def finalize_run(self, compressor) -> None:
         """Model-level teardown called once after all blocks are processed."""
         return
 

@@ -496,8 +496,8 @@ auto-round --model Qwen/Qwen3-0.6B --algorithm awq --scheme W4A16
 auto-round --model Qwen/Qwen3-0.6B --algorithm awq,auto_round --scheme W4A16
 
 # AWQ flags
---awq-duo-scaling true|false|both  (default: true)
---awq-n-grid 20                     (default: 20)
+--duo-scaling true|false|both  (default: true)
+--n-grid 20                    (default: 20)
 ```
 
 #### API Usage

@@ -185,16 +185,18 @@ class DiffusionMixin:
             else InputSource.FP_CACHE
         )
         io = DiffusionBlockIO(
-            fp_inputs=input_ids,
-            input_others=input_others,
-            quantized_inputs=quantized_input,
-            active_source=active_source,
+            _fp_inputs=input_ids,
+            _input_others=input_others,
+            _quantized_inputs=quantized_input,
+            _active_source=active_source,
             batch_dim=self.batch_dim,
             seqlen=self.seqlen,
             shared_cache_keys=self.model_context.shared_cache_keys,
+            _quantizer=self,
+            _block=block,
             output_config=self._get_output_config(block),
         )
-        io.fp_inputs, io.input_others = io.preprocess_block_inputs(io.fp_inputs, io.input_others, block)
+        io._fp_inputs, io._input_others = io._preprocess_block_inputs(io._fp_inputs, io._input_others, block)
         return io
 
 
@@ -402,8 +404,7 @@ class BaseQuantizer(BasePipelineMember):
         """
         from auto_round.algorithms.pipeline import ActCalibPolicy, CalibTiming, InputSource
 
-        quantized_input = ctx.io.quantized_inputs
-        if quantized_input is not None and self.enable_quanted_input:
+        if ctx.has_quantized_inputs() and self.enable_quanted_input:
             return ActCalibPolicy(when=CalibTiming.WITH_REFERENCE, source=InputSource.QUANTIZED_INPUT)
         return ActCalibPolicy(when=CalibTiming.WITH_REFERENCE, source=InputSource.FP_CACHE)
 
@@ -415,15 +416,19 @@ class BaseQuantizer(BasePipelineMember):
             if quantized_input is not None and self.enable_quanted_input
             else InputSource.FP_CACHE
         )
-        return BlockIO(
-            fp_inputs=input_ids,
-            input_others=input_others,
-            quantized_inputs=quantized_input,
-            active_source=active_source,
+        io = BlockIO(
+            _fp_inputs=input_ids,
+            _input_others=input_others,
+            _quantized_inputs=quantized_input,
+            _active_source=active_source,
             batch_dim=self.batch_dim,
             seqlen=self.seqlen,
             shared_cache_keys=self.model_context.shared_cache_keys,
+            _quantizer=self,
+            _block=block,
         )
+        io._fp_inputs, io._input_others = io._preprocess_block_inputs(io._fp_inputs, io._input_others, block)
+        return io
 
     # ── Embedding quantization ────────────────────────────────────────────────────
 
@@ -584,11 +589,11 @@ class BaseQuantizer(BasePipelineMember):
         self.__dict__.pop("_resolved_block_forward", None)
         self.__dict__.pop("_compiled_block_forward", None)
 
-    def prepare_run(self, run_ctx) -> None:
+    def prepare_run(self, compressor) -> None:
         """Model-level preparation (called once before block iteration starts)."""
         return
 
-    def finalize_run(self, run_ctx) -> None:
+    def finalize_run(self, compressor) -> None:
         """Model-level teardown (called once after all blocks are processed).
 
         Must be idempotent – the Compressor calls this inside a ``try/finally``.

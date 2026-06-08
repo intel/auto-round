@@ -58,7 +58,7 @@ from auto_round.data_type.utils import (
 from auto_round.logger import logger
 
 if TYPE_CHECKING:
-    from auto_round.algorithms.pipeline import BlockContext, RunContext
+    from auto_round.algorithms.pipeline import BlockContext
 
 
 @register_pipeline_member(AWQConfig)
@@ -102,18 +102,19 @@ class AWQQuantizer(BaseWeightTransformer):
             )
             compressor.nblocks = 1
 
-    def prepare_run(self, run_ctx: "RunContext") -> None:
+    def prepare_run(self, compressor) -> None:
         """Validate compatibility, resolve model-wide mappings, and group by block prefix."""
-        report = check_model_compatibility(run_ctx.model, self._user_mappings)
+        model = compressor.model_context.model
+        report = check_model_compatibility(model, self._user_mappings)
         for warning in report["warnings"]:
             logger.warning(warning)
 
         # ── Resolve all model-level mappings (name-only, no module caching) ──
-        self._resolved_mappings = resolve_mappings(run_ctx.model, self._user_mappings)
+        self._resolved_mappings = resolve_mappings(model, self._user_mappings)
         if not self._resolved_mappings:
             raise ValueError(
                 "AWQ: no layer mappings were resolved for this model. "
-                f"Model class: {type(run_ctx.model).__name__}. "
+                f"Model class: {type(model).__name__}. "
                 "To add support, provide explicit 'mappings' in AWQConfig, or "
                 "add an entry to auto_round/algorithms/transforms/awq/mappings.py."
             )
@@ -124,8 +125,8 @@ class AWQQuantizer(BaseWeightTransformer):
             prefix = _extract_block_prefix(m.smooth_name)
             self._block_mappings.setdefault(prefix, []).append(m)
 
-        if run_ctx.compress_context is not None:
-            run_ctx.compress_context.cache_device = torch.device("cpu")
+        if compressor.compress_context is not None:
+            compressor.compress_context.cache_device = torch.device("cpu")
 
         logger.info(
             "AWQ: resolved %d mappings across %d blocks.",
@@ -194,7 +195,7 @@ class AWQQuantizer(BaseWeightTransformer):
                 seen_parents.add(pid)
                 self._parent_args_cache.pop(m.parent, None)
 
-    def finalize_run(self, run_ctx: "RunContext") -> None:
+    def finalize_run(self, compressor) -> None:
         """Idempotent global teardown.  Safe to call inside try/finally."""
         if self._finalized:
             return

@@ -193,8 +193,7 @@ class SignRoundQuantizer(RTNLayerFallbackMixin, BaseQuantizer):
         else:
             lr_schedule = copy.deepcopy(self.lr_scheduler)
 
-        active_inputs = ctx.io.inputs_for(ctx.io.active_source)
-        nsamples = len(active_inputs["hidden_states"]) if isinstance(active_inputs, dict) else len(active_inputs)
+        nsamples = ctx.num_samples()
         last_best_iter = 0
         best_loss = torch.finfo(torch.float).max
         num_elm = 1
@@ -211,7 +210,7 @@ class SignRoundQuantizer(RTNLayerFallbackMixin, BaseQuantizer):
         # We assume the block input and output shape is same
         if self.gradient_accumulate_steps != 1 and not self.attention_mask:
             whole_indices = torch.arange(global_batch_size)
-            num_elm = ctx.io.count_input_elements(whole_indices)
+            num_elm = ctx.count_active_elements(whole_indices)
         setup_ddp_if_needed_(self, block, self.compress_context.device_list)
         index_sampler = IndexSampler(nsamples, global_batch_size)
         batch_size = self.batch_size
@@ -226,10 +225,8 @@ class SignRoundQuantizer(RTNLayerFallbackMixin, BaseQuantizer):
 
             for batch_start in range(0, len(global_indices), batch_size):
                 indices = global_indices[batch_start : batch_start + batch_size]
-                current_output = ctx.io.select_reference_outputs(indices, device=loss_device)
-                output_q = ctx.io.forward_batch(
-                    block, self, indices, source=ctx.io.active_source, device=device, cache_device=loss_device
-                )
+                current_output = ctx.reference_batch(indices, device=loss_device)
+                output_q = ctx.forward_batch(indices, device=device, cache_device=loss_device)
                 loss = self._get_loss(output_q, current_output, indices, mse_loss, device)
                 num_elm = 1 if num_elm <= 0 else num_elm
                 total_loss += loss.item() / num_elm
