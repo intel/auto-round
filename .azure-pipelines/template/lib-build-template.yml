@@ -100,13 +100,24 @@ stages:
                     && export BUILD_MODE=${{ parameters.buildMode }} \
                     && python -m build --wheel --no-isolation \
                     && auditwheel repair dist/*.whl --exclude lib* -w wheelhouse/ \
-                    && ls -lah wheelhouse"
-
+                    && ls -lah wheelhouse" \
+                    && if [[ "$python_version_fix" == "312" ]] && [[ "${{ parameters.buildMode }}" == "release" ]]; then \
+                      rm -rf dist/* && python -m build --sdist --no-isolation && ls -lah dist; \
+                    fi
+            
             - task: PublishPipelineArtifact@1
               displayName: Publish wheel artifact
               inputs:
                 targetPath: $(Build.SourcesDirectory)/auto_round_extension/ark/wheelhouse
                 artifact: auto-round-lib-wheel-cp${{ replace(trim(pythonVersion), '.', '') }}
+                publishLocation: pipeline
+            
+            - task: PublishPipelineArtifact@1
+              condition: and(succeeded(), eq('${{ parameters.buildMode }}', 'release'), eq('${{ replace(trim(pythonVersion), ".", "") }}', '312'))
+              displayName: Publish dist artifact
+              inputs:
+                targetPath: $(Build.SourcesDirectory)/auto_round_extension/ark/dist
+                artifact: auto-round-lib-dist
                 publishLocation: pipeline
 
             - ${{ if eq(parameters.publishToTestPyPI, true) }}:
@@ -134,43 +145,3 @@ stages:
                       bash -c "source venv/bin/activate \
                       && python -m pip install --upgrade twine \
                       && twine upload --repository-url https://test.pypi.org/legacy/ wheelhouse/*.whl"
-
-  - stage: BuildArkDist
-    displayName: Build ark dist
-    ${{ if eq(parameters.buildMode, 'release') }}:
-    jobs:
-      - job: BuildDist
-        displayName: Build ark source distribution
-        pool: GAUDI
-        timeoutInMinutes: 30
-        steps:  
-          - checkout: self
-            clean: true
-
-          - task: Bash@3
-            displayName: Build source distribution in manylinux container
-            inputs:
-              targetType: inline
-              script: |
-                set -euxo pipefail
-                docker run --rm \
-                  --user "$(id -u):$(id -g)" \
-                  -e HOME=/tmp \
-                  -v $(Build.SourcesDirectory):/auto-round \
-                  -v /opt/intel/oneapi:/opt/intel/oneapi \
-                  -w /auto-round/auto_round_extension/ark \
-                  quay.io/pypa/manylinux_2_28_x86_64 \
-                  bash -c "/opt/python/cp312-cp312/bin/python -m venv venv \
-                  && source venv/bin/activate \
-                  && source /opt/intel/oneapi/setvars.sh \
-                  && pip install -U pip build cmake setuptools \
-                  && export BUILD_MODE=release \
-                  && python -m build --sdist --no-isolation \
-                  && ls -lah dist"
-
-          - task: PublishPipelineArtifact@1
-            displayName: Publish dist artifact
-            inputs:
-              targetPath: $(Build.SourcesDirectory)/auto_round_extension/ark/dist
-              artifact: auto-round-lib-dist
-              publishLocation: pipeline

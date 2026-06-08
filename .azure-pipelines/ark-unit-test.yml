@@ -117,7 +117,7 @@ stages:
               targetType: inline
               script: |
                 set -euxo pipefail
-                rm -rf "$(Pipeline.Workspace)/dist"
+                rm -rf "$(Pipeline.Workspace)/dist" "$(Pipeline.Workspace)/wheelhouse" || true
                 mkdir -p "$(Pipeline.Workspace)/dist"
 
           - ${{ each pythonVersion in split(parameters.pythonVersions, ',') }}:
