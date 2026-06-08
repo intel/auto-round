@@ -60,7 +60,6 @@ class LogAnalyzer:
 
     PASS_MARKER = " passed"
 
-
     SKIP_MARKER = " deselected"
 
     def __init__(self, log_dir: Path, log_pattern: str = "*.log"):
