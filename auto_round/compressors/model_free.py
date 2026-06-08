@@ -1859,11 +1859,14 @@ class ModelFreeCompressor(_ModelFreeCompressorCore):
             "auto_round",
             "auto_round:auto_gptq",
         }
-        print(self.scheme_input)
         # MXFP only supports the llm_compressor format.
         if self.scheme_input in ["MXFP4", "MXFP8"]:
             _accepted_formats = ["llm_compressor"]
         if format not in _accepted_formats:
+            logger.warning(
+                f"Format '{format}' is not supported by model-free mode for scheme '{self.scheme_input}'; "
+                f"falling back to the regular AutoRound flow."
+            )
             return self._fallback_to_quantize_and_save(output_dir=output_dir, format=format, inplace=inplace, **kwargs)
 
         # Apply user scheme overrides before running

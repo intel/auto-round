@@ -382,7 +382,9 @@ class TestModelFreeMXFP:
         tensors = {"model.layers.0.fc1.weight": torch.randn(128, 128)}
         model_dir = _make_model_dir(tmp_path, _LLAMA_CFG, tensors)
         output_dir = str(tmp_path / "output")
-        AutoRound(model=model_dir, scheme="MXFP4", model_free=True).quantize_and_save(output_dir)
+        AutoRound(model=model_dir, scheme="MXFP4", model_free=True).quantize_and_save(
+            output_dir, format="llm_compressor"
+        )
         qc = _read_qconfig(output_dir)
         assert qc["format"] == "mxfp4-pack-quantized"
 
@@ -422,9 +424,12 @@ class TestSchemeValidation:
     def test_supported(self, tmp_path, name):
         if name.startswith("MXFP"):
             pytest.importorskip("compressed_tensors", reason="test requires compressed-tensors")
+            format = "llm_compressor"
+        else:
+            format = "auto_round"
         model_dir = _make_model_dir(tmp_path, _LLAMA_CFG, {"model.layers.0.mlp.fc1.weight": torch.randn(64, 128)})
         out = str(tmp_path / f"out_{name}")
-        AutoRound(model=model_dir, scheme=name, model_free=True).quantize_and_save(out)
+        AutoRound(model=model_dir, scheme=name, model_free=True).quantize_and_save(out, format=format)
         keys = _read_output_keys(out)
         if name.startswith("MXFP"):
             assert "model.layers.0.mlp.fc1.weight_scale" in keys
