@@ -2,13 +2,13 @@
 
 import pytest
 
-from auto_round.algorithms.pipeline import (
-    QuantizationPipeline,
+from auto_round.algorithms.config_resolver import (
     get_algorithm_class,
     resolve_shared_config_values,
     split_quantization_configs,
     sync_shared_config_from,
 )
+from auto_round.algorithms.pipeline import QuantizationPipeline
 from auto_round.algorithms.quantization import registry as _r
 from auto_round.algorithms.quantization.config import QuantizationConfig
 from auto_round.algorithms.quantization.rtn.config import OptimizedRTNConfig, RTNConfig

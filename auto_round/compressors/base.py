@@ -237,7 +237,7 @@ class BaseCompressor(object):
         _config_list = config if isinstance(config, list) else [config]
         # Keep full list for pipeline construction (includes preprocessor configs).
         self._alg_configs: list = list(_config_list)
-        from auto_round.algorithms.pipeline import split_quantization_configs
+        from auto_round.algorithms.config_resolver import split_quantization_configs
 
         _preprocessor_configs, _block_quantizer_configs = split_quantization_configs(self._alg_configs)
         if len(_block_quantizer_configs) > 1:
@@ -1120,7 +1120,7 @@ class BaseCompressor(object):
         self.quantizer.scale_dtype = self.scale_dtype
         self.quantizer.ignore_layers = self.ignore_layers
 
-        from auto_round.algorithms.pipeline import sync_shared_config_from
+        from auto_round.algorithms.config_resolver import sync_shared_config_from
 
         sync_shared_config_from(self.quantizer.config, [pre.config for pre in self._pipeline.preprocessors])
 

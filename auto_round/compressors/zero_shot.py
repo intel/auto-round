@@ -115,6 +115,7 @@ class ZeroShotCompressor(BaseCompressor):
         if is_nv_fp(self.quantizer.act_data_type) or is_static_wfp8afp8(self.quantizer):
             set_amax_for_all_moe_layers(block, attr_name="act_max")
 
+        ctx.release_io_references()
         mv_module_from_gpu(block)
         return None, None
 
@@ -183,6 +184,7 @@ class ZeroShotCompressor(BaseCompressor):
                         device=self.compress_context.device,
                     )
                     self.quantizer.quantize_block(ctx)
+                    ctx.release_io_references()
 
                     # ── MoE scale alignment for FP8 dispatch efficiency ────────────────
                     if is_nv_fp(self.quantizer.act_data_type) or is_static_wfp8afp8(self.quantizer):

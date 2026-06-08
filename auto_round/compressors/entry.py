@@ -6,7 +6,7 @@ from typing import Any, Callable, Optional, Union
 
 import torch
 
-from auto_round.algorithms.pipeline import split_quantization_configs
+from auto_round.algorithms.config_resolver import split_quantization_configs
 from auto_round.algorithms.quantization.config import QuantizationConfig
 from auto_round.algorithms.quantization.rtn.config import OptimizedRTNConfig, RTNConfig
 from auto_round.algorithms.quantization.sign_round.config import SignRoundConfig

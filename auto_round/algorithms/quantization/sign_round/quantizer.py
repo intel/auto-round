@@ -193,7 +193,7 @@ class SignRoundQuantizer(RTNLayerFallbackMixin, BaseQuantizer):
         else:
             lr_schedule = copy.deepcopy(self.lr_scheduler)
 
-        active_inputs = ctx.io.get_inputs(ctx.io.active_source)
+        active_inputs = ctx.io.inputs_for(ctx.io.active_source)
         nsamples = len(active_inputs["hidden_states"]) if isinstance(active_inputs, dict) else len(active_inputs)
         last_best_iter = 0
         best_loss = torch.finfo(torch.float).max

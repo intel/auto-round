@@ -402,7 +402,7 @@ class BaseQuantizer(BasePipelineMember):
         """
         from auto_round.algorithms.pipeline import ActCalibPolicy, CalibTiming, InputSource
 
-        quantized_input = getattr(ctx, "quantized_input", None)
+        quantized_input = ctx.io.quantized_inputs
         if quantized_input is not None and self.enable_quanted_input:
             return ActCalibPolicy(when=CalibTiming.WITH_REFERENCE, source=InputSource.QUANTIZED_INPUT)
         return ActCalibPolicy(when=CalibTiming.WITH_REFERENCE, source=InputSource.FP_CACHE)

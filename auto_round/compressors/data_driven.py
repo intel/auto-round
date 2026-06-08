@@ -471,7 +471,7 @@ class DataDrivenCompressor(BaseCompressor):
                     clear_memory(device_list=self.compress_context.device_list)
                 input_ids = q_input
 
-            ctx.reference_output = reference_output
+            ctx.io.reference_outputs = reference_output
 
             # pre_quantize_block: consolidate stats and apply weight transforms.
             for pre in self.pipeline.preprocessors:
@@ -497,6 +497,7 @@ class DataDrivenCompressor(BaseCompressor):
             # ── Cleanup ───────────────────────────────────────────────────────────
             if len(self.compress_context.device_list) > 1:
                 accelerate.hooks.remove_hook_from_submodules(block)
+            ctx.release_io_references()
             mv_module_from_gpu(block)
             return q_outputs, reference_output
         finally:
@@ -641,7 +642,7 @@ class DataDrivenCompressor(BaseCompressor):
                         m, self.quantizer, source=InputSource.FP_CACHE, batch_size=bs
                     )
 
-            ctx.reference_output = reference_output
+            ctx.io.reference_outputs = reference_output
 
             # ── Infrastructure: swap q_input ──────────────────────────────────
             if q_input is not None:
@@ -684,6 +685,10 @@ class DataDrivenCompressor(BaseCompressor):
             # enabled) is only used as the quantized-input companion for the
             # next block.
             next_input_ids = reference_output
+            # BlockContext/BlockIO keep extra references to large cached tensors.
+            # Release them once the next block input has been decided so host RAM
+            # matches the old path more closely.
+            ctx.release_io_references()
             clear_memory(
                 input_ids if input_ids is not next_input_ids else None, device_list=self.compress_context.device_list
             )
@@ -1191,8 +1196,9 @@ class CalibratedRTNCompressor(DataDrivenCompressor):
 
                 # ── Pure algorithm ────────────────────────────────────────────
                 ctx.io.fp_inputs = block_input_ids
-                ctx.reference_output = input_ids
+                ctx.io.reference_outputs = input_ids
                 self.quantizer.quantize_block(ctx)
+                ctx.release_io_references()
 
                 # ── Infrastructure: cleanup ───────────────────────────────────
                 mv_module_from_gpu(block)
