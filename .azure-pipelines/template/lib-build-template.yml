@@ -100,10 +100,10 @@ stages:
                     && export BUILD_MODE=${{ parameters.buildMode }} \
                     && python -m build --wheel --no-isolation \
                     && auditwheel repair dist/*.whl --exclude lib* -w wheelhouse/ \
-                    && ls -lah wheelhouse" \
-                    && if [[ "$python_version_fix" == "312" ]] && [[ "${{ parameters.buildMode }}" == "release" ]]; then \
+                    && ls -lah wheelhouse \
+                    && if [[ "$python_version_fix" == "312" ]] && [[ "$BUILD_MODE" == "release" ]]; then \
                       rm -rf dist/* && python -m build --sdist --no-isolation && ls -lah dist; \
-                    fi
+                    fi"
             
             - task: PublishPipelineArtifact@1
               displayName: Publish wheel artifact
