@@ -519,6 +519,5 @@ class TestRotationEquivalence:
         ).item()
         max_diff = (self.BASELINE_LOGITS - logits).abs().max().item()
         assert cos_sim > 0.9999, (
-            f"{label} rotation broke model equivalence: "
-            f"cos_sim = {cos_sim:.6f}, max_diff = {max_diff:.4f}"
+            f"{label} rotation broke model equivalence: " f"cos_sim = {cos_sim:.6f}, max_diff = {max_diff:.4f}"
         )
