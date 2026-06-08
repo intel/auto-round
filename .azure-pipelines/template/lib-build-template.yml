@@ -143,13 +143,12 @@ stages:
     ${{ if eq(parameters.enableChangeDetection, true) }}:
       variables:
         BUILD_ARK_WHEEL: $[ stageDependencies.DetectArkChanges.Detect.outputs['SetArkWheelFlag.BUILD_ARK_WHEEL'] ]
-    dependsOn: BuildArkWheel
     jobs:
       - job: BuildDist
         displayName: Build ARK source distribution
         pool: GAUDI
         timeoutInMinutes: 30
-        steps:
+        steps:  
           - checkout: self
             clean: true
 
