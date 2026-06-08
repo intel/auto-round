@@ -1480,7 +1480,7 @@ def moe_gemm_prefill(
     return outputs
 
 
-
+def patch_torch_sdpa(*args, **kwargs):
     from .torch_sdpa_patch import patch_torch_sdpa_with_ark
 
     return patch_torch_sdpa_with_ark(*args, **kwargs)

@@ -544,6 +544,177 @@ class TestMoEGemmDecode:
             )
 
 
+        # FP8 + asym is rejected
+        fp8_w = torch.zeros(num_experts, 64, 128, dtype=torch.float8_e4m3fn, device="xpu")
+        zeros = torch.empty(num_experts, 64, 1, dtype=torch.float16, device="xpu")
+        with pytest.raises(ValueError):
+            ark.moe_gemm_decode(
+                activations,
+                fp8_w,
+                num_tokens_per_expert,
+                scales=scales,
+                zeros=zeros,
+                group_size=128,
+                asym=True,
+            )
+
+    @pytest.mark.parametrize("dtype", [torch.float16, torch.bfloat16])
+    @pytest.mark.parametrize("group_size", [32, 128])
+    def test_decode_int8_sym(self, dtype, group_size):
+        num_experts = 4
+        tokens_per_expert = [1, 1, 0, 2]
+        total_tokens = sum(tokens_per_expert)
+        N, K = 256, 256
+
+        activations = torch.randn(total_tokens, K, dtype=dtype, device="xpu")
+        w_float = (torch.randn(num_experts, N, K, dtype=torch.float32, device="xpu") * 0.1).to(dtype)
+        scales = torch.empty(num_experts, N, K // group_size, dtype=dtype, device="xpu")
+        packed = _pack_int8_sym(w_float, scales, group_size)
+        num_tokens_per_expert = torch.tensor(tokens_per_expert, dtype=torch.int32, device="xpu")
+
+        out = ark.moe_gemm_decode(
+            activations,
+            packed,
+            num_tokens_per_expert,
+            scales=scales,
+            weight_bits=8,
+            group_size=group_size,
+            asym=False,
+        )
+
+        dequant = _dequant_int8_sym(packed, scales, group_size).to(dtype)
+        ref = _moe_decode_reference(activations, dequant, num_tokens_per_expert)
+        assert out.shape == (total_tokens, N)
+        torch.testing.assert_close(out, ref, rtol=5e-2, atol=5e-2)
+
+    @pytest.mark.parametrize("dtype", [torch.float16, torch.bfloat16])
+    def test_decode_int8_asym(self, dtype):
+        num_experts = 4
+        group_size = 128
+        tokens_per_expert = [0, 1, 2, 1]
+        total_tokens = sum(tokens_per_expert)
+        N, K = 256, 256
+
+        activations = torch.randn(total_tokens, K, dtype=dtype, device="xpu")
+        w_float = (torch.randn(num_experts, N, K, dtype=torch.float32, device="xpu") * 0.1).to(dtype)
+        scales = torch.empty(num_experts, N, K // group_size, dtype=dtype, device="xpu")
+        zeros = torch.empty(num_experts, N, K // group_size, dtype=dtype, device="xpu")
+        packed = _pack_int8_asym(w_float, scales, zeros, group_size)
+        num_tokens_per_expert = torch.tensor(tokens_per_expert, dtype=torch.int32, device="xpu")
+
+        out = ark.moe_gemm_decode(
+            activations,
+            packed,
+            num_tokens_per_expert,
+            scales=scales,
+            zeros=zeros,
+            weight_bits=8,
+            group_size=group_size,
+            asym=True,
+        )
+
+        dequant = _dequant_int8_asym(packed, scales, zeros, group_size).to(dtype)
+        ref = _moe_decode_reference(activations, dequant, num_tokens_per_expert)
+        assert out.shape == (total_tokens, N)
+        torch.testing.assert_close(out, ref, rtol=5e-2, atol=5e-2)
+
+    @pytest.mark.parametrize("dtype", [torch.float16, torch.bfloat16])
+    @pytest.mark.parametrize("group_size", [32, 128])
+    def test_decode_int2_sym(self, dtype, group_size):
+        num_experts = 4
+        tokens_per_expert = [1, 1, 0, 2]
+        total_tokens = sum(tokens_per_expert)
+        N, K = 256, 256
+
+        activations = torch.randn(total_tokens, K, dtype=dtype, device="xpu")
+        w_float = (torch.randn(num_experts, N, K, dtype=torch.float32, device="xpu") * 0.1).to(dtype)
+        scales = torch.empty(num_experts, N, K // group_size, dtype=dtype, device="xpu")
+        packed = _pack_int2_sym(w_float, scales, group_size)
+        num_tokens_per_expert = torch.tensor(tokens_per_expert, dtype=torch.int32, device="xpu")
+
+        out = ark.moe_gemm_decode(
+            activations,
+            packed,
+            num_tokens_per_expert,
+            scales=scales,
+            weight_bits=2,
+            group_size=group_size,
+            asym=False,
+        )
+
+        dequant = _dequant_int2_sym(packed, scales, group_size).to(dtype)
+        ref = _moe_decode_reference(activations, dequant, num_tokens_per_expert)
+        assert out.shape == (total_tokens, N)
+        # Int2 has much higher quant error; relax tolerance vs int4.
+        torch.testing.assert_close(out, ref, rtol=1e-1, atol=1e-1)
+
+    @pytest.mark.parametrize("dtype", [torch.float16, torch.bfloat16])
+    def test_decode_int2_asym(self, dtype):
+        num_experts = 4
+        group_size = 128
+        tokens_per_expert = [0, 1, 2, 1]
+        total_tokens = sum(tokens_per_expert)
+        N, K = 256, 256
+
+        activations = torch.randn(total_tokens, K, dtype=dtype, device="xpu")
+        w_float = (torch.randn(num_experts, N, K, dtype=torch.float32, device="xpu") * 0.1).to(dtype)
+        scales = torch.empty(num_experts, N, K // group_size, dtype=dtype, device="xpu")
+        zeros = torch.empty(num_experts, N, K // group_size, dtype=dtype, device="xpu")
+        packed = _pack_int2_asym(w_float, scales, zeros, group_size)
+        num_tokens_per_expert = torch.tensor(tokens_per_expert, dtype=torch.int32, device="xpu")
+
+        out = ark.moe_gemm_decode(
+            activations,
+            packed,
+            num_tokens_per_expert,
+            scales=scales,
+            zeros=zeros,
+            weight_bits=2,
+            group_size=group_size,
+            asym=True,
+        )
+
+        dequant = _dequant_int2_asym(packed, scales, zeros, group_size).to(dtype)
+        ref = _moe_decode_reference(activations, dequant, num_tokens_per_expert)
+        assert out.shape == (total_tokens, N)
+        torch.testing.assert_close(out, ref, rtol=1e-1, atol=1e-1)
+
+    @pytest.mark.parametrize("dtype", [torch.float16, torch.bfloat16])
+    @pytest.mark.parametrize("fp8_dtype", [torch.float8_e4m3fn, torch.float8_e5m2])
+    @pytest.mark.parametrize("group_size", [32, 128])
+    def test_decode_fp8(self, dtype, fp8_dtype, group_size):
+        num_experts = 4
+        tokens_per_expert = [1, 0, 2, 1]
+        total_tokens = sum(tokens_per_expert)
+        N, K = 256, 256
+
+        activations = torch.randn(total_tokens, K, dtype=dtype, device="xpu")
+        w_float = (torch.randn(num_experts, N, K, dtype=torch.float32, device="xpu") * 0.1).to(dtype)
+        scales = torch.empty(num_experts, N, K // group_size, dtype=dtype, device="xpu")
+        packed = _pack_fp8(w_float, scales, group_size, fp8_dtype)
+        num_tokens_per_expert = torch.tensor(tokens_per_expert, dtype=torch.int32, device="xpu")
+
+        out = ark.moe_gemm_decode(
+            activations,
+            packed,
+            num_tokens_per_expert,
+            scales=scales,
+            group_size=group_size,
+            asym=False,
+        )
+
+        dequant = _dequant_fp8(packed, scales, group_size, dtype)
+        ref = _moe_decode_reference(activations, dequant, num_tokens_per_expert)
+        assert out.shape == (total_tokens, N)
+        # E5M2 has only 2 mantissa bits -> coarser; relax tolerance for both.
+        rtol = 1e-1 if fp8_dtype == torch.float8_e5m2 else 5e-2
+        atol = 1e-1 if fp8_dtype == torch.float8_e5m2 else 5e-2
+        torch.testing.assert_close(out, ref, rtol=rtol, atol=atol)
+
+
+if __name__ == "__main__":
+    pytest.main([__file__, "-v"])
+
 def has_moe_gemm_prefill():
     """Check if the quantized MoE prefill GEMM kernel is available."""
     if ark.xpu_lib is None:
@@ -734,175 +905,3 @@ class TestMoEGemmPrefill:
         ref = self._run_prefill_reference(activations, dequant, num_tokens_per_expert)
         assert out.shape == (total_tokens, N)
         torch.testing.assert_close(out, ref, rtol=5e-2, atol=5e-2)
-
-
-        # FP8 + asym is rejected
-        fp8_w = torch.zeros(num_experts, 64, 128, dtype=torch.float8_e4m3fn, device="xpu")
-        zeros = torch.empty(num_experts, 64, 1, dtype=torch.float16, device="xpu")
-        with pytest.raises(ValueError):
-            ark.moe_gemm_decode(
-                activations,
-                fp8_w,
-                num_tokens_per_expert,
-                scales=scales,
-                zeros=zeros,
-                group_size=128,
-                asym=True,
-            )
-
-    @pytest.mark.parametrize("dtype", [torch.float16, torch.bfloat16])
-    @pytest.mark.parametrize("group_size", [32, 128])
-    def test_decode_int8_sym(self, dtype, group_size):
-        num_experts = 4
-        tokens_per_expert = [1, 1, 0, 2]
-        total_tokens = sum(tokens_per_expert)
-        N, K = 256, 256
-
-        activations = torch.randn(total_tokens, K, dtype=dtype, device="xpu")
-        w_float = (torch.randn(num_experts, N, K, dtype=torch.float32, device="xpu") * 0.1).to(dtype)
-        scales = torch.empty(num_experts, N, K // group_size, dtype=dtype, device="xpu")
-        packed = _pack_int8_sym(w_float, scales, group_size)
-        num_tokens_per_expert = torch.tensor(tokens_per_expert, dtype=torch.int32, device="xpu")
-
-        out = ark.moe_gemm_decode(
-            activations,
-            packed,
-            num_tokens_per_expert,
-            scales=scales,
-            weight_bits=8,
-            group_size=group_size,
-            asym=False,
-        )
-
-        dequant = _dequant_int8_sym(packed, scales, group_size).to(dtype)
-        ref = _moe_decode_reference(activations, dequant, num_tokens_per_expert)
-        assert out.shape == (total_tokens, N)
-        torch.testing.assert_close(out, ref, rtol=5e-2, atol=5e-2)
-
-    @pytest.mark.parametrize("dtype", [torch.float16, torch.bfloat16])
-    def test_decode_int8_asym(self, dtype):
-        num_experts = 4
-        group_size = 128
-        tokens_per_expert = [0, 1, 2, 1]
-        total_tokens = sum(tokens_per_expert)
-        N, K = 256, 256
-
-        activations = torch.randn(total_tokens, K, dtype=dtype, device="xpu")
-        w_float = (torch.randn(num_experts, N, K, dtype=torch.float32, device="xpu") * 0.1).to(dtype)
-        scales = torch.empty(num_experts, N, K // group_size, dtype=dtype, device="xpu")
-        zeros = torch.empty(num_experts, N, K // group_size, dtype=dtype, device="xpu")
-        packed = _pack_int8_asym(w_float, scales, zeros, group_size)
-        num_tokens_per_expert = torch.tensor(tokens_per_expert, dtype=torch.int32, device="xpu")
-
-        out = ark.moe_gemm_decode(
-            activations,
-            packed,
-            num_tokens_per_expert,
-            scales=scales,
-            zeros=zeros,
-            weight_bits=8,
-            group_size=group_size,
-            asym=True,
-        )
-
-        dequant = _dequant_int8_asym(packed, scales, zeros, group_size).to(dtype)
-        ref = _moe_decode_reference(activations, dequant, num_tokens_per_expert)
-        assert out.shape == (total_tokens, N)
-        torch.testing.assert_close(out, ref, rtol=5e-2, atol=5e-2)
-
-    @pytest.mark.parametrize("dtype", [torch.float16, torch.bfloat16])
-    @pytest.mark.parametrize("group_size", [32, 128])
-    def test_decode_int2_sym(self, dtype, group_size):
-        num_experts = 4
-        tokens_per_expert = [1, 1, 0, 2]
-        total_tokens = sum(tokens_per_expert)
-        N, K = 256, 256
-
-        activations = torch.randn(total_tokens, K, dtype=dtype, device="xpu")
-        w_float = (torch.randn(num_experts, N, K, dtype=torch.float32, device="xpu") * 0.1).to(dtype)
-        scales = torch.empty(num_experts, N, K // group_size, dtype=dtype, device="xpu")
-        packed = _pack_int2_sym(w_float, scales, group_size)
-        num_tokens_per_expert = torch.tensor(tokens_per_expert, dtype=torch.int32, device="xpu")
-
-        out = ark.moe_gemm_decode(
-            activations,
-            packed,
-            num_tokens_per_expert,
-            scales=scales,
-            weight_bits=2,
-            group_size=group_size,
-            asym=False,
-        )
-
-        dequant = _dequant_int2_sym(packed, scales, group_size).to(dtype)
-        ref = _moe_decode_reference(activations, dequant, num_tokens_per_expert)
-        assert out.shape == (total_tokens, N)
-        # Int2 has much higher quant error; relax tolerance vs int4.
-        torch.testing.assert_close(out, ref, rtol=1e-1, atol=1e-1)
-
-    @pytest.mark.parametrize("dtype", [torch.float16, torch.bfloat16])
-    def test_decode_int2_asym(self, dtype):
-        num_experts = 4
-        group_size = 128
-        tokens_per_expert = [0, 1, 2, 1]
-        total_tokens = sum(tokens_per_expert)
-        N, K = 256, 256
-
-        activations = torch.randn(total_tokens, K, dtype=dtype, device="xpu")
-        w_float = (torch.randn(num_experts, N, K, dtype=torch.float32, device="xpu") * 0.1).to(dtype)
-        scales = torch.empty(num_experts, N, K // group_size, dtype=dtype, device="xpu")
-        zeros = torch.empty(num_experts, N, K // group_size, dtype=dtype, device="xpu")
-        packed = _pack_int2_asym(w_float, scales, zeros, group_size)
-        num_tokens_per_expert = torch.tensor(tokens_per_expert, dtype=torch.int32, device="xpu")
-
-        out = ark.moe_gemm_decode(
-            activations,
-            packed,
-            num_tokens_per_expert,
-            scales=scales,
-            zeros=zeros,
-            weight_bits=2,
-            group_size=group_size,
-            asym=True,
-        )
-
-        dequant = _dequant_int2_asym(packed, scales, zeros, group_size).to(dtype)
-        ref = _moe_decode_reference(activations, dequant, num_tokens_per_expert)
-        assert out.shape == (total_tokens, N)
-        torch.testing.assert_close(out, ref, rtol=1e-1, atol=1e-1)
-
-    @pytest.mark.parametrize("dtype", [torch.float16, torch.bfloat16])
-    @pytest.mark.parametrize("fp8_dtype", [torch.float8_e4m3fn, torch.float8_e5m2])
-    @pytest.mark.parametrize("group_size", [32, 128])
-    def test_decode_fp8(self, dtype, fp8_dtype, group_size):
-        num_experts = 4
-        tokens_per_expert = [1, 0, 2, 1]
-        total_tokens = sum(tokens_per_expert)
-        N, K = 256, 256
-
-        activations = torch.randn(total_tokens, K, dtype=dtype, device="xpu")
-        w_float = (torch.randn(num_experts, N, K, dtype=torch.float32, device="xpu") * 0.1).to(dtype)
-        scales = torch.empty(num_experts, N, K // group_size, dtype=dtype, device="xpu")
-        packed = _pack_fp8(w_float, scales, group_size, fp8_dtype)
-        num_tokens_per_expert = torch.tensor(tokens_per_expert, dtype=torch.int32, device="xpu")
-
-        out = ark.moe_gemm_decode(
-            activations,
-            packed,
-            num_tokens_per_expert,
-            scales=scales,
-            group_size=group_size,
-            asym=False,
-        )
-
-        dequant = _dequant_fp8(packed, scales, group_size, dtype)
-        ref = _moe_decode_reference(activations, dequant, num_tokens_per_expert)
-        assert out.shape == (total_tokens, N)
-        # E5M2 has only 2 mantissa bits -> coarser; relax tolerance for both.
-        rtol = 1e-1 if fp8_dtype == torch.float8_e5m2 else 5e-2
-        atol = 1e-1 if fp8_dtype == torch.float8_e5m2 else 5e-2
-        torch.testing.assert_close(out, ref, rtol=rtol, atol=atol)
-
-
-if __name__ == "__main__":
-    pytest.main([__file__, "-v"])
