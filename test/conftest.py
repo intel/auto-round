@@ -7,7 +7,7 @@ import pytest
 from .fixtures import *
 
 # Easy debugging without installing auto-round.
-sys.path.insert(0, "..")
+# sys.path.insert(0, "..")
 
 # Workaround: some gguf builds report version 'N/A' which is not PEP 440
 # compliant and causes packaging.version.InvalidVersion inside transformers.
