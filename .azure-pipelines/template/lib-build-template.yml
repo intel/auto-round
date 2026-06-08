@@ -134,3 +134,45 @@ stages:
                       bash -c "source venv/bin/activate \
                       && python -m pip install --upgrade twine \
                       && twine upload --repository-url https://test.pypi.org/legacy/ wheelhouse/*.whl"
+
+  - stage: BuildARKDist
+    displayName: Build ARK dist
+    dependsOn:
+      - ${{ if eq(parameters.enableChangeDetection, true) }}:
+        - DetectArkChanges
+    ${{ if eq(parameters.enableChangeDetection, true) }}:
+      variables:
+        BUILD_ARK_WHEEL: $[ stageDependencies.DetectArkChanges.Detect.outputs['SetArkWheelFlag.BUILD_ARK_WHEEL'] ]
+    dependsOn: BuildArkWheel
+    jobs:
+      - job: BuildDist
+        displayName: Build ARK source distribution
+        pool: GAUDI
+        timeoutInMinutes: 30
+        steps:
+          - checkout: self
+            clean: true
+
+          - task: Bash@3
+            displayName: Build source distribution in manylinux container
+            inputs:
+              targetType: inline
+              script: |
+                set -euxo pipefail
+                docker run --rm \
+                  --user "$(id -u):$(id -g)" \
+                  -e HOME=/tmp \
+                  -v $(Build.SourcesDirectory):/auto-round \
+                  -w /auto-round/auto_round_extension/ark \
+                  quay.io/pypa/manylinux_2_28_x86_64 \
+                  bash -c "pip install -U pip build cmake setuptools \
+                  && export BUILD_MODE=release \
+                  && python -m build --sdist --no-isolation \
+                  && ls -lah dist"
+
+          - task: PublishPipelineArtifact@1
+            displayName: Publish dist artifact
+            inputs:
+              targetPath: $(Build.SourcesDirectory)/auto_round_extension/ark/dist
+              artifact: auto-round-lib-dist
+              publishLocation: pipeline
