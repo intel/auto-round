@@ -61,7 +61,6 @@ function check_storage_usage() {
 
 function run_unit_test() {
     cd /auto-round/test || exit 1
-    auto_round_path=$(python -c 'import auto_round; print(auto_round.__path__[0])')
 
     # Split test files into 5 parts
     find ./test_cpu -name "test*.py" | grep -Ev "test_llmc|test_inc" | sort > all_tests.txt
@@ -85,7 +84,7 @@ function run_unit_test() {
         local ut_log_name=${LOG_DIR}/unittest_${test_basename}.log
 
         numactl --physcpubind="${NUMA_CPUSET:-0-15}" --membind="${NUMA_NODE:-0}" \
-            python -m pytest --cov="${auto_round_path}" --cov-report term --html=report.html --self-contained-html \
+            python -m pytest --cov=auto_round --cov-report term --html=report.html --self-contained-html \
                 --cov-report xml:coverage.xml --cov-append \
                 -vs --disable-warnings ${test_file} 2>&1 | tee ${ut_log_name}
         echo "##[endgroup]"
@@ -98,7 +97,6 @@ function run_inc_unit_test() {
     echo "##[endgroup]"
 
     cd /auto-round/test || exit 1
-    auto_round_path=$(python -c 'import auto_round; print(auto_round.__path__[0])')
 
     for test_file in $(find ./test_cpu -name "test_inc*.py" | sort); do
         echo "##[group]Running ${test_file}..."
@@ -106,7 +104,7 @@ function run_inc_unit_test() {
         local ut_log_name=${LOG_DIR}/unittest_${test_basename}.log
 
         numactl --physcpubind="${NUMA_CPUSET:-0-15}" --membind="${NUMA_NODE:-0}" \
-            python -m pytest --cov="${auto_round_path}" --cov-report= --html=report.html --self-contained-html \
+            python -m pytest --cov=auto_round --cov-report= --html=report.html --self-contained-html \
                 --cov-report xml:coverage.xml --cov-append \
                 -vs --disable-warnings ${test_file} 2>&1 | tee ${ut_log_name}
         echo "##[endgroup]"
@@ -121,7 +119,6 @@ function run_llmc_unit_test() {
     echo "##[endgroup]"
 
     cd /auto-round/test || exit 1
-    auto_round_path=$(python -c 'import auto_round; print(auto_round.__path__[0])')
 
     for test_file in $(find ./test_cpu -name "test_llmc*.py" | sort); do
         echo "##[group]Running ${test_file}..."
@@ -129,7 +126,7 @@ function run_llmc_unit_test() {
         local ut_log_name=${LOG_DIR}/unittest_${test_basename}.log
 
         numactl --physcpubind="${NUMA_CPUSET:-0-15}" --membind="${NUMA_NODE:-0}" \
-            python -m pytest --cov="${auto_round_path}" --cov-report= --html=report.html --self-contained-html \
+            python -m pytest --cov=auto_round --cov-report= --html=report.html --self-contained-html \
                 --cov-report xml:coverage.xml --cov-append \
                 -vs --disable-warnings ${test_file} 2>&1 | tee ${ut_log_name}
         echo "##[endgroup]"
