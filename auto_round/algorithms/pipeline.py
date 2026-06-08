@@ -187,6 +187,7 @@ class BlockIO:
     def has_quantized_inputs(self) -> bool:
         return self._quantized_inputs is not None
 
+    @property
     def num_samples(self) -> int:
         input_ids = self._inputs_for(self._active_source)
         if input_ids is None:
@@ -494,8 +495,9 @@ class BlockContext:
     def has_quantized_inputs(self) -> bool:
         return self.io.has_quantized_inputs()
 
+    @property
     def num_samples(self) -> int:
-        return self.io.num_samples()
+        return self.io.num_samples
 
     def count_active_elements(self, indices) -> int:
         return self.io.count_active_elements(indices)

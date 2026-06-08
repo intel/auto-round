@@ -193,7 +193,7 @@ class SignRoundQuantizer(RTNLayerFallbackMixin, BaseQuantizer):
         else:
             lr_schedule = copy.deepcopy(self.lr_scheduler)
 
-        nsamples = ctx.num_samples()
+        nsamples = ctx.num_samples
         last_best_iter = 0
         best_loss = torch.finfo(torch.float).max
         num_elm = 1
