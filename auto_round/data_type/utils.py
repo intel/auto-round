@@ -184,7 +184,7 @@ def round_ste(x: torch.Tensor):
     Returns:
         torch.Tensor
     """
-    return (x.round() - x).detach() + x
+    return _RoundSTE.apply(x)
 
 
 def floor_ste(x: torch.Tensor):
@@ -196,7 +196,7 @@ def floor_ste(x: torch.Tensor):
     Returns:
         torch.Tensor
     """
-    return (x.floor() - x).detach() + x
+    return _FloorSTE.apply(x)
 
 
 def ceil_ste(x: torch.Tensor):
@@ -208,7 +208,57 @@ def ceil_ste(x: torch.Tensor):
     Returns:
         torch.Tensor
     """
-    return (x.ceil() - x).detach() + x
+    return _CeilSTE.apply(x)
+
+
+class _RoundSTE(torch.autograd.Function):
+    @staticmethod
+    def forward(ctx, x: torch.Tensor):
+        return torch.round(x)
+
+    @staticmethod
+    def backward(ctx, grad_output: torch.Tensor):
+        return grad_output
+
+
+class _FloorSTE(torch.autograd.Function):
+    @staticmethod
+    def forward(ctx, x: torch.Tensor):
+        return torch.floor(x)
+
+    @staticmethod
+    def backward(ctx, grad_output: torch.Tensor):
+        return grad_output
+
+
+class _CeilSTE(torch.autograd.Function):
+    @staticmethod
+    def forward(ctx, x: torch.Tensor):
+        return torch.ceil(x)
+
+    @staticmethod
+    def backward(ctx, grad_output: torch.Tensor):
+        return grad_output
+
+
+class _Float8CastSTE(torch.autograd.Function):
+    @staticmethod
+    def forward(ctx, x: torch.Tensor, fp8_dtype):
+        return x.to(fp8_dtype).to(x.dtype)
+
+    @staticmethod
+    def backward(ctx, grad_output: torch.Tensor):
+        return grad_output, None
+
+
+class _HpuFloat8CastSTE(torch.autograd.Function):
+    @staticmethod
+    def forward(ctx, x: torch.Tensor, fp8_dtype):
+        return torch.ops.hpu.cast_to_fp8_v2(x, 1.0, False, False, fp8_dtype)[0].to(x.dtype)
+
+    @staticmethod
+    def backward(ctx, grad_output: torch.Tensor):
+        return grad_output, None
 
 
 @torch._dynamo.disable()
@@ -224,9 +274,7 @@ def float8_e4m3fn_ste(x: torch.Tensor):
     Returns:
         torch.Tensor: Quantized and dequantized tensor using float8 format.
     """
-    fp8 = (x.to(torch.float8_e4m3fn).to(x.dtype) - x).detach() + x
-
-    return fp8
+    return _Float8CastSTE.apply(x, torch.float8_e4m3fn)
 
 
 def float8_e5m2_ste(x: torch.Tensor):
@@ -241,9 +289,7 @@ def float8_e5m2_ste(x: torch.Tensor):
     Returns:
         torch.Tensor: Quantized and dequantized tensor using float8 format.
     """
-    fp8 = (x.to(torch.float8_e5m2).to(x.dtype) - x).detach() + x
-
-    return fp8
+    return _Float8CastSTE.apply(x, torch.float8_e5m2)
 
 
 def float8_e4m3fn_hpu_ste(x: torch.Tensor):
@@ -258,9 +304,7 @@ def float8_e4m3fn_hpu_ste(x: torch.Tensor):
     Returns:
         torch.Tensor: Quantized and dequantized tensor using float8 format.
     """
-    fp8 = ((torch.ops.hpu.cast_to_fp8_v2(x, 1.0, False, False, torch.float8_e4m3fn)[0]).to(x.dtype) - x).detach() + x
-
-    return fp8
+    return _HpuFloat8CastSTE.apply(x, torch.float8_e4m3fn)
 
 
 def float8_e4m3fnuz_hpu_ste(x: torch.Tensor):
@@ -275,8 +319,7 @@ def float8_e4m3fnuz_hpu_ste(x: torch.Tensor):
     Returns:
         torch.Tensor: Quantized and dequantized tensor using float8 format.
     """
-    fp8 = ((torch.ops.hpu.cast_to_fp8_v2(x, 1.0, False, False, torch.float8_e4m3fn)[0]).to(x.dtype) - x).detach() + x
-    return fp8
+    return _HpuFloat8CastSTE.apply(x, torch.float8_e4m3fn)
 
 
 @lru_cache(None)
