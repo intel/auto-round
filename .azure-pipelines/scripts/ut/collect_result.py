@@ -60,7 +60,10 @@ class LogAnalyzer:
 
     PASS_MARKER = " passed"
 
-    SKIP_MARKER = " deselected"
+    SKIP_MARKERS = (
+        " deselected",
+        " skipped",
+    )
 
     def __init__(self, log_dir: Path, log_pattern: str = "*.log"):
         self.log_dir = Path(log_dir)
@@ -113,7 +116,7 @@ class LogAnalyzer:
             return TestStatus.FAILED
         if self.PASS_MARKER in content:
             return TestStatus.PASSED
-        if self.SKIP_MARKER in content:
+        if any(marker in content for marker in self.SKIP_MARKERS):
             return TestStatus.NO_TESTS
         return TestStatus.FAILED
 
