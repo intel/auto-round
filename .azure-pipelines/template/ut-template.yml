@@ -111,6 +111,7 @@ steps:
       targetPath: ${{ parameters.uploadPath }}
       artifact: ${{ parameters.utArtifact }}_coverage
       publishLocation: "pipeline"
+    displayName: "Publish UT coverage artifact"
 
   - task: PublishPipelineArtifact@1
     condition: failed()
@@ -118,6 +119,7 @@ steps:
       targetPath: ${{ parameters.uploadPath }}
       artifact: "${{ parameters.utArtifact }}-$(System.JobAttempt)"
       publishLocation: "pipeline"
+    displayName: "Publish UT logs for debugging"
 
   - task: Bash@3
     condition: always()
