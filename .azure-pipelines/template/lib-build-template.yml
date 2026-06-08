@@ -137,7 +137,7 @@ stages:
 
   - stage: BuildArkDist
     displayName: Build ark dist
-    # TODO depend-on
+    ${{ if eq(parameters.buildMode, 'release') }}:
     jobs:
       - job: BuildDist
         displayName: Build ark source distribution
