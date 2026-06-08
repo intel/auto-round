@@ -88,7 +88,7 @@ function run_unit_test() {
         local ut_log_name=${LOG_DIR}/unittest_${test_basename}.log
 
         numactl --physcpubind="${NUMA_CPUSET:-0-15}" --membind="${NUMA_NODE:-0}" \
-            python -m pytest --cov="${auto_round_path}" --cov-report= --html=report.html --self-contained-html \
+            python -m pytest --cov="${auto_round_path}" --cov-report term --html=report.html --self-contained-html \
                 --cov-report xml:coverage.xml --cov-append \
                 -vs --disable-warnings ${test_file} 2>&1 | tee ${ut_log_name}
         echo "##[endgroup]"

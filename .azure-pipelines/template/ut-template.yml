@@ -112,6 +112,13 @@ steps:
       artifact: ${{ parameters.utArtifact }}_coverage
       publishLocation: "pipeline"
 
+  - task: PublishPipelineArtifact@1
+    condition: failed()
+    inputs:
+      targetPath: ${{ parameters.uploadPath }}
+      artifact: "${{ parameters.failureLogArtifactPrefix }}-${{ parameters.utTestMode }}-$(System.JobAttempt)"
+      publishLocation: "pipeline"
+
   - task: Bash@3
     condition: always()
     inputs:
