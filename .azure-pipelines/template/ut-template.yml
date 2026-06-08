@@ -116,7 +116,7 @@ steps:
     condition: failed()
     inputs:
       targetPath: ${{ parameters.uploadPath }}
-      artifact: "${{ parameters.failureLogArtifactPrefix }}-${{ parameters.utTestMode }}-$(System.JobAttempt)"
+      artifact: "${{ parameters.utArtifact }}-$(System.JobAttempt)"
       publishLocation: "pipeline"
 
   - task: Bash@3
