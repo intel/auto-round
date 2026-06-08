@@ -164,7 +164,9 @@ stages:
                   -v $(Build.SourcesDirectory):/auto-round \
                   -w /auto-round/auto_round_extension/ark \
                   quay.io/pypa/manylinux_2_28_x86_64 \
-                  bash -c "pip install -U pip build cmake setuptools \
+                  bash -c "/opt/python/cp312-cp312/bin/python -m venv venv \
+                  && source venv/bin/activate \
+                  && pip install -U pip build setuptools \
                   && export BUILD_MODE=release \
                   && python -m build --sdist --no-isolation \
                   && ls -lah dist"
