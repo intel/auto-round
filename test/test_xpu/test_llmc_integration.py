@@ -126,6 +126,7 @@ def test_oneshot_application(recipe, tmp_path, tiny_tiny_llama_model_path):
     not_targeted = model_loaded.lm_head
     assert not hasattr(not_targeted, "quantization_scheme")
 
+
 #
 # @pytest.mark.skipif(torch.xpu.device_count() < 2, reason="test requires at least 2 XPUs")
 # def test_oneshot_with_device_ids(tmp_path, tiny_tiny_llama_model_path):
