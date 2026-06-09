@@ -2372,7 +2372,7 @@ def find_layers_from_config(model_dir: str, class_names: list[str] | None = None
                 config = AutoConfig.from_pretrained(config_dir, trust_remote_code=True)
                 model = AutoModel.from_config(config, trust_remote_code=True)
         except Exception as e:
-            logger.warning(f"Failed to load model from {config_dir} for layer detection. Skipping. Error: {e}")
+            logger.warning(f"Failed to load model from {config_dir} for layer detection. Skipping. Warning: {e}")
             continue  # skip silently
         for name, module in model.named_modules():
             cls_name = type(module).__name__
