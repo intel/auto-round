@@ -62,9 +62,7 @@ def setup_ddp_if_needed_(ar, block: torch.nn.Module, device_list: list[int]):
     if num_devices == 1:
         from torch.nn.parallel import DistributedDataParallel as DDP
 
-        logger.warning_once(
-            "AutoRound DDP is an experimental feature, please use with caution."
-        )
+        logger.warning_once("AutoRound DDP is an experimental feature, please use with caution.")
         logger.trace(
             "[Rank: %d] Wrapping block with DDP on device_list=%s",
             dist.get_rank(),
@@ -77,10 +75,7 @@ def setup_ddp_if_needed_(ar, block: torch.nn.Module, device_list: list[int]):
 
     # Multi-GPU per rank: block is sharded, can't DDP-wrap.
     # Use manual all_reduce on gradients before optimizer step.
-    logger.warning_once(
-        "AutoRound multi-GPU DDP is an experimental feature, "
-        "please use with caution."
-    )
+    logger.warning_once("AutoRound multi-GPU DDP is an experimental feature, " "please use with caution.")
     logger.trace(
         "[Rank: %d] Multi-GPU per rank (%d GPUs), using manual all_reduce sync",
         dist.get_rank(),
@@ -110,11 +105,7 @@ def _all_reduce_model_grads(module: torch.nn.Module):
     for param in module.parameters():
         if param.grad is not None:
             grad = param.grad
-            if (
-                comm_device is not None
-                and grad.is_cuda
-                and grad.device != comm_device
-            ):
+            if comm_device is not None and grad.is_cuda and grad.device != comm_device:
                 synced = grad.to(comm_device)
                 dist.all_reduce(synced, op=dist.ReduceOp.AVG)
                 grad.copy_(synced.to(grad.device))
