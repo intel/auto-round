@@ -226,29 +226,27 @@ class BlockIO:
         return self._select_inputs(input_ids, self._input_others, indices)
 
     def forward_batch(self, indices, *, device, cache_device=None):
-        return self._forward_batch(
-            self._block,
-            self._quantizer,
-            indices,
-            source=self._active_source,
-            device=device,
-            cache_device=cache_device,
-        )
-
-    def _forward_batch(self, block, quantizer, indices, *, source: InputSource, device, cache_device=None):
+        quantizer = self._quantizer
+        block = self._block
         if quantizer is None or block is None:
             raise ValueError("BlockIO forward_batch requires bound quantizer and block.")
 
-        input_ids, input_others = self._select_inputs_for_source(source, indices)
-        output = quantizer._resolve_block_forward()(
+        input_ids, input_others = self._select_inputs_for_source(self._active_source, indices)
+        output = self._run_block(block, quantizer, input_ids, input_others, device)
+        if cache_device is not None and isinstance(output, torch.Tensor):
+            output = output.to(cache_device)
+        return output
+
+    def _run_block(self, block, quantizer, input_ids, input_others, device):
+        return quantizer._resolve_block_forward()(
             block,
-            *self._prepare_forward_args(input_ids, input_others),
+            input_ids,
+            input_others,
             quantizer.model_context.amp,
             quantizer.model_context.amp_dtype,
             device,
-            self._forward_output_index(),
+            0,
         )
-        return output.to(cache_device) if cache_device is not None else output
 
     @torch.no_grad()
     def _collect_outputs(self, block, quantizer, *, source: InputSource, batch_size: int, save: bool = True):
@@ -258,14 +256,14 @@ class BlockIO:
         outputs = self._init_output_buffer()
         for start, end in self._iter_batch_ranges(input_ids, batch_size):
             indices = torch.arange(start, end).to(torch.long)
-            output = self._forward_batch(
-                block,
-                quantizer,
-                indices,
-                source=source,
-                device=device_manager.device,
-                cache_device=quantizer.compress_context.cache_device,
-            )
+            previous_source = self._active_source
+            self._active_source = source
+            try:
+                output = self.forward_batch(
+                    indices, device=device_manager.device, cache_device=quantizer.compress_context.cache_device
+                )
+            finally:
+                self._active_source = previous_source
             if save:
                 self._append_output(outputs, output, quantizer)
         quantizer.compress_context.clear_memory()
@@ -318,9 +316,7 @@ class BlockIO:
     def reference_batch(self, indices, *, device=None):
         if self._reference_outputs is None:
             raise ValueError("Reference outputs have not been collected for this block.")
-        output = torch.cat(
-            [self._select_reference_tensor(self._reference_outputs, i) for i in indices], dim=self.batch_dim
-        )
+        output = torch.cat([self._reference_outputs[i] for i in indices], dim=self.batch_dim)
         return output.to(device) if device is not None else output
 
     def _count_input_elements(self, indices, *, source: InputSource | None = None) -> int:
@@ -338,12 +334,6 @@ class BlockIO:
     def _preprocess_block_inputs(self, input_ids, input_others: dict, block):
         return input_ids, input_others
 
-    def _prepare_forward_args(self, input_ids, input_others):
-        return input_ids, input_others
-
-    def _forward_output_index(self):
-        return 0
-
     def _iter_batch_ranges(self, input_ids, batch_size: int):
         for start in range(0, self._num_samples(input_ids), batch_size):
             end = min(self._num_samples(input_ids), start + batch_size)
@@ -360,9 +350,6 @@ class BlockIO:
             outputs.append(output)
         else:
             outputs.extend(list(torch.split(output, 1, dim=self.batch_dim)))
-
-    def _select_reference_tensor(self, reference_outputs, index):
-        return reference_outputs[index]
 
     def _select_inputs(self, input_ids, input_others: dict, indices):
         if isinstance(input_ids, list):
@@ -414,17 +401,22 @@ class DiffusionBlockIO(BlockIO):
             input_others[key] = input_ids.pop(key)
         return input_ids, input_others
 
-    def _prepare_forward_args(self, input_ids, input_others):
+    def _run_block(self, block, quantizer, input_ids, input_others, device):
         if not isinstance(input_ids, dict):
-            return input_ids, input_others
+            return super()._run_block(block, quantizer, input_ids, input_others, device)
         input_ids = dict(input_ids)
         input_others = dict(input_others)
         hidden_states = input_ids.pop("hidden_states")
         input_others.update(input_ids)
-        return hidden_states, input_others
-
-    def _forward_output_index(self):
-        return None
+        return quantizer._resolve_block_forward()(
+            block,
+            hidden_states,
+            input_others,
+            quantizer.model_context.amp,
+            quantizer.model_context.amp_dtype,
+            device,
+            None,
+        )
 
     def _num_samples(self, input_ids) -> int:
         return len(input_ids["hidden_states"]) if isinstance(input_ids, dict) else len(input_ids)
@@ -443,8 +435,11 @@ class DiffusionBlockIO(BlockIO):
             else:
                 outputs[name].extend(list(torch.split(out, 1, dim=self.batch_dim)))
 
-    def _select_reference_tensor(self, reference_outputs, index):
-        return reference_outputs["hidden_states"][index]
+    def reference_batch(self, indices, *, device=None):
+        if self._reference_outputs is None:
+            raise ValueError("Reference outputs have not been collected for this block.")
+        output = torch.cat([self._reference_outputs["hidden_states"][i] for i in indices], dim=self.batch_dim)
+        return output.to(device) if device is not None else output
 
 
 @dataclass

@@ -378,7 +378,7 @@ def tune(args):
 
     from auto_round.eval.evaluation import run_model_evaluation
 
-    run_model_evaluation(model, tokenizer, autoround, folders, formats, device_str, args)
+    run_model_evaluation(model, tokenizer, autoround, folders, formats, args)
 
 
 # ============================================================================

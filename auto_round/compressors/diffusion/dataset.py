@@ -13,6 +13,7 @@
 # limitations under the License.
 
 import os
+from io import StringIO
 from typing import Dict
 
 import pandas as pd
@@ -60,18 +61,28 @@ class Text2ImgDataset(Dataset):
         self,
         dataset_path,
         nsamples=128,
+        dataframe=None,
     ) -> None:
         super().__init__()
         self.captions = []
         self.caption_ids = []
 
-        logger.info(f"use dataset {dataset_path}, loading from disk...")
-        df = pd.read_csv(dataset_path, sep="\t")
+        if dataframe is not None:
+            df = dataframe
+        else:
+            logger.info(f"use dataset {dataset_path}, loading from disk...")
+            df = pd.read_csv(dataset_path, sep="\t")
+
+        required_cols = {"id", "caption"}
+        if not required_cols.issubset(df.columns):
+            raise ValueError(
+                f"Invalid diffusion caption data from {dataset_path!r}: "
+                f"expected columns {sorted(required_cols)}, got {list(df.columns)}"
+            )
 
         for index, row in df.iterrows():
             if nsamples > 0 and index + 1 > nsamples:
                 break
-            assert "id" in row and "caption" in row
             caption_id = row["id"]
             caption_text = row["caption"]
             self.caption_ids.append(caption_id)
@@ -140,15 +151,17 @@ def get_diffusion_dataloader(
         import requests
 
         logger.info(f"use dataset {dataset}, downloading ...")
-        text_data = requests.get(COCO_URL[dataset]).text
-        with open("captions_source.tsv", "w") as f:
-            f.write(text_data)
-        dataset = "captions_source.tsv"
+        response = requests.get(COCO_URL[dataset], timeout=30)
+        response.raise_for_status()
+        dataframe = pd.read_csv(StringIO(response.text), sep="\t")
+        dataset = DIFFUSION_DATASET["local"](dataset, nsamples, dataframe=dataframe)
 
     if dataset in ("audiocaps",):
         dataset = download_audiocaps_csv()
 
-    if isinstance(dataset, str) and os.path.exists(dataset):
+    if isinstance(dataset, Dataset):
+        pass
+    elif isinstance(dataset, str) and os.path.exists(dataset):
         if dataset.endswith(".csv"):
             dataset = DIFFUSION_DATASET["audiocaps"](dataset, nsamples)
         else:

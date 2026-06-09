@@ -674,9 +674,7 @@ class DataDrivenCompressor(BaseCompressor):
             # Release them once the next block input has been decided so host RAM
             # matches the old path more closely.
             ctx.finish()
-            clear_memory(
-                input_ids if input_ids is not next_input_ids else None, device_list=device_manager.device_list
-            )
+            clear_memory(input_ids if input_ids is not next_input_ids else None, device_list=device_manager.device_list)
             memory_monitor.log_summary()
 
             # ── Infrastructure: immediate_pack / shard write ──────────────────
