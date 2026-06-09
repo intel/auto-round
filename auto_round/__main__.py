@@ -611,7 +611,7 @@ def tune(args):
             "lm-eval is required for evaluation, please install it with `pip install 'lm-eval>=0.4.2'`",
         )
 
-    from auto_round.utils import detect_device, get_library_version, logger
+    from auto_round.utils import get_library_version, get_major_device, logger
 
     if args.low_cpu_mem_usage:
         logger.warning(
@@ -637,8 +637,6 @@ def tune(args):
 
     if "marlin" in args.format and args.asym is True:
         raise RuntimeError("marlin backend only supports sym quantization, please remove --asym")
-
-    device_str, use_auto_mapping = get_device_and_parallelism(args.device_map)
 
     if args.enable_torch_compile:
         logger.info(
@@ -809,7 +807,7 @@ def tune(args):
     clear_memory()
 
     # ======================= Model evaluation =======================
-    run_model_evaluation(model, tokenizer, autoround, folders, formats, device_str, args)
+    run_model_evaluation(model, tokenizer, autoround, folders, formats, args)
 
 
 def setup_eval_parser():

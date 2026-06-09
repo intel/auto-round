@@ -346,10 +346,10 @@ def llm_load_model(
         _use_hpu_compile_mode,
         fake_cuda_for_hpu,
         fake_triton_for_hpu,
-        get_device_and_parallelism,
         is_hpex_available,
         override_cuda_device_capability,
     )
+    from auto_round.utils.device_manager import get_device_and_parallelism
 
     device_str, use_auto_mapping = get_device_and_parallelism(device)
     torch_dtype = "auto"
@@ -535,7 +535,8 @@ def mllm_load_model(
 
         base_lib = transformers
 
-    from auto_round.utils.device import get_device_and_parallelism, override_cuda_device_capability
+    from auto_round.utils.device import override_cuda_device_capability
+    from auto_round.utils.device_manager import get_device_and_parallelism
 
     device_str, use_auto_mapping = get_device_and_parallelism(device)
     torch_dtype = "auto"
@@ -825,7 +826,7 @@ def diffusion_load_model(
     from functools import partial
 
     from auto_round.utils.common import LazyImport
-    from auto_round.utils.device import get_device_and_parallelism
+    from auto_round.utils.device_manager import get_device_and_parallelism
 
     _check_accelerate_version()
 
