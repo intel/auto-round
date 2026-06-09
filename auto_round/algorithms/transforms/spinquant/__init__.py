@@ -43,8 +43,7 @@ Example (QuaRot — fixed Hadamard, recommended)::
 
     config = SpinQuantConfig(
         r1=True, r2=True, r3=False, r4=False,
-        trainable_rotation=False,   # QuaRot: fixed Hadamard, no training needed
-        trainable_smooth=False,
+        # Default: trainable_rotation=False, trainable_smooth=False (QuaRot mode)
         online_r1_rotation=True,
     )
     SpinQuantPreprocessor(model, config).preprocess()  # no dataloader needed

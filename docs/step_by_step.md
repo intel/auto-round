@@ -34,7 +34,9 @@ This document presents step-by-step instructions for auto-round llm quantization
   + [Device/Multi-GPU setting in Quantization](#devicemulti-gpu-setting-in-quantization)
     - [Enable multiple gpus calibration in lm_head quantization](#enable-multiple-gpus-calibration-in-lm_head-quantization)
   + [Adjust Hyperparameters](#adjust-hyperparameters)
-  + [Hadamard Transform-Research Feature](#hadamard-transform)
+  + [Rotation](#rotation)
+    - [QuaRot / SpinQuant](#quarot--spinquant)
+    - [Per-Linear Block Rotation (Experimental)](#per-linear-block-rotation-experimental)
 * [4 Inference](#4-inference)
   + [CPU](#cpu)
   + [Intel GPU](#intel-gpu)
@@ -800,31 +802,131 @@ autoround.save_quantized(format="auto_awq", output_dir="tmp_autoround")
   Include the flag `--adam`. Note that AdamW is less effective than sign gradient descent in many scenarios we tested.
 
 
-### Hadamard Transform
+### Rotation
 
-**Research feature with no effective kernels currently available and typically low community adoption.**
+AutoRound supports rotation-based transforms to improve quantization accuracy. Rotation redistributes outliers in weights and activations before quantization, making the distribution more uniform and quantization-friendly.
 
-AutoRound supports Hadamard transform as an optional weight/activation transformation technique, which can improve quantization accuracy by rotating the weight/activation matrix. This is particularly useful for certain quantization scenarios.
+Two rotation approaches are available:
 
-#### Overview
+- **QuaRot / SpinQuant** — full-model rotation across multiple positions (R1–R4), providing comprehensive outlier suppression for aggressive quantization (e.g., MXFP4, NVFP4, W4A4). **Recommended for most use cases.**
+- **Per-Linear Block Rotation** — block-diagonal rotation applied uniformly to every linear layer. An earlier experimental implementation; the QuaRot/SpinQuant approach above is generally preferred.
 
-The Hadamard transform is particularly useful in scenarios where activation outliers hurt quantization accuracy. In practice, it helps suppress such outliers, making it especially effective when `act_bits < 8`. Users can enable this feature when they need more stable activation distributions and better accuracy in low‑bit quantization settings.
+#### QuaRot / SpinQuant
 
-#### Implementation
+QuaRot applies deterministic Hadamard rotations at up to 4 positions in the transformer architecture. Unlike the per-linear block rotation, it operates at the model architecture level — rotating the residual stream, attention heads, and MLP activations at specific positions for targeted outlier suppression.
 
-AutoRound provides two types of Hadamard transforms:
+##### Rotation Positions
 
-1. **Deterministic Hadamard Transform** (`hadamard`): Uses Sylvester's construction to create a deterministic Hadamard matrix. The size must be a power of 2.
+| Position | Target | Mode | Effect |
+|----------|--------|------|--------|
+| **R1** | Residual stream (hidden_size) | Online or Offline | Smooths weight outliers across all linear layers |
+| **R2** | V/O projections (head_dim) | Offline (fused) | Balances per-head value distributions |
+| **R3** | Q/K after RoPE (head_dim) | Online (hook) | Improves KV-cache quantization friendliness |
+| **R4** | MLP up/down (intermediate_size) | Online (hook) | Suppresses activation outliers in FFN |
 
-2. **Random Hadamard Transform** (`random_hadamard`): Uses known Hadamard matrices from N. J. A. Sloane's Library of Hadamard Matrices. Supports non-power-of-2 sizes and deterministic seeding.
+- **Online**: Applied at runtime via forward hooks (no weight modification, zero-cost at save time)
+- **Offline (fused)**: Absorbed into adjacent weight matrices (no runtime overhead)
 
-
-#### Quantization with Hadamard Transform
+##### Quick Start
 
 ```python
 from auto_round import AutoRound
 
-# Load a model (supports FP8/BF16/FP16/FP32)
+model_name = "Qwen/Qwen3-0.6B"
+output_dir = "./Qwen3-0.6B-mxfp4-quarot"
+
+# QuaRot preset: R1+R2+R3+R4 with deterministic Hadamard
+ar = AutoRound(model_name, scheme="MXFP4", rotation_config="quarot")
+ar.quantize_and_save(output_dir=output_dir, format="auto_round")
+```
+
+##### Rotation Levels
+
+Choose how many positions to rotate based on your accuracy needs:
+
+```python
+from auto_round import AutoRound
+from auto_round.algorithms.transforms.spinquant import SpinQuantConfig
+
+# R1 only (fast, good baseline improvement)
+ar = AutoRound(model_name, scheme="MXFP4", rotation_config=SpinQuantConfig(r1=True))
+
+# R1 + R2 (better, no runtime overhead after fuse)
+ar = AutoRound(model_name, scheme="MXFP4", rotation_config=SpinQuantConfig(r1=True, r2=True))
+
+# R1 + R2 + R3 + R4 (best accuracy, slight runtime overhead from hooks)
+ar = AutoRound(model_name, scheme="MXFP4", rotation_config=SpinQuantConfig(r1=True, r2=True, r3=True, r4=True))
+```
+
+##### String Shortcuts
+
+| Value | Equivalent |
+|-------|-----------|
+| `"quarot"` | `SpinQuantConfig(r1=True, r2=True, trainable_rotation=False, trainable_smooth=False)` — deterministic Hadamard, no training |
+| `"spinquant"` | `SpinQuantConfig(r1=True, r2=True, trainable_rotation=True, trainable_smooth=True)` — **experimental** (requires a dataloader) |
+
+> ⚠️ **SpinQuant trainable rotation** (`trainable_rotation=True`) enables learnable rotation matrices optimized via Cayley SGD. This feature is **experimental** and not fully validated. Use `"quarot"` (fixed Hadamard) for production workloads.
+
+##### Deterministic vs Random Hadamard
+
+```python
+# Deterministic (default): fixed Hadamard matrix, no extra storage needed
+ar = AutoRound(model_name, scheme="MXFP4", rotation_config=SpinQuantConfig(r1=True, r2=True, r3=True, r4=True))
+
+# Random: H × diag(±1), slightly better outlier suppression, requires saving the rotation matrix
+ar = AutoRound(
+    model_name,
+    scheme="MXFP4",
+    rotation_config=SpinQuantConfig(
+        r1=True, r2=True, r3=True, r4=True, random_r1=True, random_r2=True, random_r3=True, random_r4=True
+    ),
+)
+```
+
+##### Key Parameters
+
+| Parameter | Default | Description |
+|-----------|---------|-------------|
+| `r1` / `r2` / `r3` / `r4` | `True / True / False / False` | Enable rotation at each position |
+| `online_r1_rotation` | `True` | R1 via hook (`True`) or fused into weights (`False`) |
+| `random_r1` / `random_r2` / `random_r3` / `random_r4` | `False` | Use random Hadamard (H×diag(±1)) instead of deterministic |
+| `rotation_size` | `None` (auto) | Block rotation dimension; auto-detected from model dimensions |
+| `trainable_rotation` | `False` | Enable SpinQuant learnable rotation (**experimental**, requires dataloader) |
+| `trainable_smooth` | `False` | Enable learnable smooth values (**experimental**, requires dataloader) |
+
+##### Save & Load
+
+Quantized models with rotation are saved and loaded transparently:
+
+```python
+# Save (rotation matrices stored automatically if needed)
+ar.quantize_and_save(output_dir="./my_model", format="auto_round")
+
+# Load (rotation hooks restored automatically)
+from transformers import AutoModelForCausalLM
+
+model = AutoModelForCausalLM.from_pretrained("./my_model", device_map="auto")
+```
+
+- **Deterministic rotations**: Only metadata (type + rotation_size) is stored — matrices are reconstructed on load
+- **Random rotations**: An `int8` (±1) rotation matrix is stored (size ~rotation_size² bytes)
+- **Online rotations**: Rebuilt during model loading (R1/R4 via QuantLinear forward patching; R3 via monkeypatch from config)
+
+#### Per-Linear Block Rotation (Experimental)
+
+> ⚠️ This is an earlier experimental implementation that applies block-diagonal Hadamard rotation **per linear layer** by patching every `nn.Linear` module in the model. For most use cases, the [QuaRot / SpinQuant](#quarot--spinquant) approach above is preferred — it provides architecture-aware rotation at specific positions (R1–R4) with better accuracy and lower overhead.
+
+The per-linear block rotation works by iterating over all linear layers and either:
+- **Weight mode**: Fusing the Hadamard matrix directly into the weight tensor (offline)
+- **Input mode**: Registering a forward pre-hook that rotates the input activation before each linear layer (online)
+
+This approach uses a configurable `block_size` (default 32) applied uniformly to every linear layer. It is simpler than QuaRot but less targeted — it does not distinguish between residual stream, attention, and MLP layers, nor does it handle RoPE or activation-side rotation. Use `rotation_config="default"` to enable it.
+
+##### Usage
+
+```python
+from auto_round import AutoRound
+
 model_name_or_path = "meta-llama/Llama-3.1-8B-Instruct"
 output_dir = "./Llama-3.1-8B-Instruct-mxfp4-ht"
 
@@ -834,19 +936,20 @@ ar = AutoRound(model_name_or_path, scheme="MXFP4", rotation_config="default")
 ar.quantize_and_save(output_dir=output_dir, format="auto_round")
 ```
 
-#### Transform Classes
+##### Types
 
-| Class | Description |
-|-------|-------------|
-| `HadamardTransform` | Applies deterministic Hadamard transform |
-| `RandomHadamardTransform` | Applies random Hadamard transform with optional seeding |
+| Type | Description |
+|------|-------------|
+| `hadamard` (default) | Deterministic Hadamard matrix (Sylvester construction, block_size must be power of 2) |
+| `random_hadamard` | Randomly signed Hadamard from known matrix library; supports non-power-of-2 sizes |
 
-#### Parameters
+##### Parameters
 
-| Parameter | Description |
-|-----------|-------------|
-| `block_size` | Size of the transformation block (default: 32) |
-| `seed` | Random seed (for RandomHadamardTransform) |
+| Parameter | Default | Description |
+|-----------|---------|-------------|
+| `block_size` | `32` | Size of the Hadamard block applied to each linear layer |
+| `hadamard_type` | `"hadamard"` | `"hadamard"` or `"random_hadamard"` |
+| `seed` | `None` | Random seed (for `random_hadamard` only) |
 
 
 ## 4 Inference
