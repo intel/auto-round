@@ -24,8 +24,8 @@ from auto_round.utils.device import (
     dispatch_model_block_wise,
     dispatch_model_by_all_available_devices,
     get_major_device,
-    is_auto_device_mapping,
 )
+from auto_round.utils.device_manager import device_manager, is_auto_device_mapping
 from auto_round.utils.model import rename_weights_files
 
 
@@ -414,7 +414,7 @@ class DiffusionMixin:
                 layer_names=[],
             )
             self.inputs = all_inputs
-            clear_memory(device_list=self.compress_context.device_list)
+            clear_memory(device_list=device_manager.device_list)
             self._inputs_cached = True
             return super().quantize()
 
@@ -454,7 +454,7 @@ class DiffusionMixin:
             layer_names=[],
         )
         self.inputs = all_inputs
-        clear_memory(device_list=self.compress_context.device_list)
+        clear_memory(device_list=device_manager.device_list)
         self._inputs_cached = True
         super().quantize()
 
@@ -503,7 +503,7 @@ class DiffusionMixin:
                 layer_names=[],
             )
             self.inputs = all_inputs
-            clear_memory(device_list=self.compress_context.device_list)
+            clear_memory(device_list=device_manager.device_list)
             self._inputs_cached = True
             super().quantize()
 

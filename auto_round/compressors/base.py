@@ -39,7 +39,7 @@ from auto_round.schemes import (
     get_gguf_scheme,
     preset_name_to_scheme,
 )
-from auto_round.special_model_handler import get_predefined_ignore_layers, update_module
+from auto_round.special_model_handler import get_predefined_fixed_attr, get_predefined_ignore_layers, update_module
 from auto_round.utils import (
     AUDIO_MM_KEYS,
     INNER_SUPPORTED_LAYER_TYPES,
@@ -61,10 +61,10 @@ from auto_round.utils import (
 )
 from auto_round.utils.device import (
     _force_trim_malloc,
-    get_major_device,
     patch_xpu_sdpa_drop_causal_mask,
     set_non_auto_device_map,
 )
+from auto_round.utils.device_manager import device_manager
 from auto_round.utils.offload import OffloadManager
 
 
@@ -361,7 +361,12 @@ class BaseCompressor(object):
         # CompressContext.  Creating ModelContext first places the large model
         # allocation early in the heap, matching the OLD arch allocation order
         # and reducing C-heap fragmentation (which is amplified on HPU).
-        _device = get_major_device(device_map if device_map is not None else 0)
+        #
+        # The process-wide DeviceManager singleton is the single source of truth
+        # for the active device / device_list: configure it from ``device_map``
+        # up front so both ModelContext and CompressContext (and any OOM fallback)
+        # read the same value instead of keeping private copies.
+        device_manager.configure(device_map if device_map is not None else 0)
         model_config = self._preload_model_config(model, trust_remote_code)
 
         self.model_context = ModelContext(
@@ -373,7 +378,6 @@ class BaseCompressor(object):
             config=model_config,
             amp=amp,
             need_calib=self.need_calib,
-            device=_device,
             formats=self.formats,
             is_act_quantize=self.quantize_config.is_act_quantize,
             quant_nontext_module=quant_nontext_module,
@@ -382,7 +386,6 @@ class BaseCompressor(object):
         self.compress_context = CompressContext(
             low_cpu_mem_usage,
             low_gpu_mem_usage,
-            device_map,
             enable_torch_compile,
             formats=self.formats,
             static_kv_dtype=self.static_kv_dtype,
@@ -405,6 +408,9 @@ class BaseCompressor(object):
         # batch_size from kwargs) have already routed through it.
 
         self.has_variable_block_shape = False
+        fixed_attr = get_predefined_fixed_attr(self.model) or {}
+        for key, value in fixed_attr.items():
+            setattr(self, key, value)
 
     # ── Convenience properties ────────────────────────────────────────────────
 
@@ -594,7 +600,7 @@ class BaseCompressor(object):
             quant_layer_names,
             fixed_layer_scheme_new,
             self.dataset,
-            device_map=self.compress_context.device_map,
+            device_map=device_manager.device_map,
             tokenizer=self.model_context.tokenizer,
             enable_torch_compile=self.compress_context.enable_torch_compile,
             processor=self.model_context.processor,
@@ -1155,7 +1161,7 @@ class BaseCompressor(object):
           - ``self.inplace`` and ``compress_context.is_immediate_packing`` /
             ``compress_context.is_immediate_saving`` are set to their definitive values.
         """
-        set_non_auto_device_map(self.model_context.model, self.compress_context.device_map)
+        set_non_auto_device_map(self.model_context.model, device_manager.device_map)
         # Re-evaluate torch.compile eligibility now that data_type is resolved.
         self._finalize_torch_compile()
         self.compress_context.enable_torch_compile = self.enable_torch_compile
@@ -1215,6 +1221,23 @@ class BaseCompressor(object):
                 continue
 
         raise AttributeError(f"'{type(self).__name__}' object has no attribute '{name}'")
+
+    # ── Device state forwarded to the process-wide DeviceManager singleton ────
+    @property
+    def device(self) -> str:
+        return device_manager.device
+
+    @device.setter
+    def device(self, value) -> None:
+        device_manager.device = value
+
+    @property
+    def device_list(self) -> list:
+        return device_manager.device_list
+
+    @property
+    def device_map(self):
+        return device_manager.device_map
 
     # ── Forwarding properties to ``self._calibration_state`` ──────────────────
     @property
@@ -1524,7 +1547,7 @@ class BaseCompressor(object):
                 layer_config=self.quantizer.layer_config,
                 inplace=inplace,
                 tokenizer=self.model_context.tokenizer,
-                device=self.compress_context.device,
+                device=device_manager.device,
                 serialization_dict=serialization_dict,
                 **kwargs,
             )

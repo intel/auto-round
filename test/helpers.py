@@ -10,7 +10,7 @@ import transformers
 from packaging import version
 
 from auto_round.eval.evaluation import simple_evaluate, simple_evaluate_user_model
-from auto_round.utils import detect_device, diffusion_load_model, get_attr, llm_load_model, mllm_load_model, set_attr
+from auto_round.utils import diffusion_load_model, get_attr, get_major_device, llm_load_model, mllm_load_model, set_attr
 
 transformers_version = version.parse(transformers.__version__)
 
@@ -40,7 +40,7 @@ def generate_prompt(model_obj_or_str, tokenizer=None, text="The capital of Franc
         str: The generated text.
     """
     if device is None:
-        device = detect_device()
+        device = get_major_device()
     if isinstance(model_obj_or_str, str):
         model, tokenizer = llm_load_model(model_obj_or_str, trust_remote_code=True)
     else:

@@ -36,6 +36,7 @@ from auto_round.utils import (
     set_amax_for_all_moe_layers,
     set_module,
 )
+from auto_round.utils.device_manager import device_manager
 
 
 class ZeroShotCompressor(BaseCompressor):
@@ -181,7 +182,7 @@ class ZeroShotCompressor(BaseCompressor):
                         block_name=block_name,
                         block_index=0,
                         io=self.quantizer.create_block_io(None, {}, None, block),
-                        device=self.compress_context.device,
+                        device=device_manager.device,
                     )
                     self.quantizer.quantize_block(ctx)
                     ctx.finish()

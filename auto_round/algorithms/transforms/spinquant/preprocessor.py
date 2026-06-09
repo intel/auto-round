@@ -109,8 +109,8 @@ class SpinQuantConfig(BaseRotationConfig):
     # ⚠️ trainable_rotation=True (SpinQuant mode) is experimental — training
     #    loop exists but not validated end-to-end. Use trainable_rotation=False
     #    (QuaRot mode) for production use.
-    trainable_rotation: bool = True  # Learn R via Cayley SGD (False = QuaRot fixed Hadamard)
-    trainable_smooth: bool = True  # Learn smooth_values via Adam (joint SmoothQuant)
+    trainable_rotation: bool = False  # Learn R via Cayley SGD (True = SpinQuant experimental)
+    trainable_smooth: bool = False  # Learn smooth_values via Adam (joint SmoothQuant)
     online_r1_rotation: bool = True  # Online R1: rotate target weights + hook (Quark default)
 
     # Training hyperparameters
@@ -730,7 +730,12 @@ class SpinQuantPreprocessor:
                         W = module.weight.data.to(torch.float64)
                         module.weight.data = (W @ R).to(dtype)
                     elif in_features % r1_size == 0:
-                        rotate_in_channels_(module, R_in=R)
+                        # Block rotation must use W @ R (not W @ R.T) to stay
+                        # consistent with the online hook (x @ R). The random
+                        # Hadamard matrix is orthonormal but NOT symmetric, so
+                        # rotate_in_channels_ (which applies R.T) would break
+                        # equivalence. Pass R.T so it computes W @ (R.T).T = W @ R.
+                        rotate_in_channels_(module, R_in=R.T)
                     else:
                         raise ValueError(
                             f"Online R1: in_features={in_features} not compatible " f"with r1_rotation_size={r1_size}"

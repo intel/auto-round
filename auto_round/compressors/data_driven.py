@@ -67,6 +67,7 @@ from auto_round.utils.device import (
     _force_trim_malloc,
     parse_available_devices,
 )
+from auto_round.utils.device_manager import device_manager
 from auto_round.wrapper import WrapperMultiblock
 
 
@@ -355,15 +356,15 @@ class DataDrivenCompressor(BaseCompressor):
 
             if auto_offload:
                 if (
-                    is_auto_device_mapping(self.compress_context.device_map)
-                    and len(self.compress_context.device_list) > 1
+                    is_auto_device_mapping(device_manager.device_map)
+                    and len(device_manager.device_list) > 1
                     and not self.model_context.is_diffusion
                 ):
                     from auto_round.utils.device import set_auto_device_map_for_block_with_tuning
 
                     card_0_in_high_risk, loss_device = set_auto_device_map_for_block_with_tuning(
                         block,
-                        self.compress_context.device_map,
+                        device_manager.device_list,
                         input_ids,
                         self.compress_context.low_gpu_mem_usage,
                         self.quantizer.batch_size,
@@ -375,7 +376,7 @@ class DataDrivenCompressor(BaseCompressor):
             else:
                 card_0_in_high_risk, loss_device = False, device
 
-            if len(self.compress_context.device_list) > 1 and auto_offload:
+            if len(device_manager.device_list) > 1 and auto_offload:
                 from accelerate.hooks import AlignDevicesHook, add_hook_to_module
 
                 for n, m in block.named_modules():
@@ -401,9 +402,9 @@ class DataDrivenCompressor(BaseCompressor):
                     for h in hook_handles:
                         h.remove()
                     if input_ids is not q_input:
-                        clear_memory(input_ids, device_list=self.compress_context.device_list)
+                        clear_memory(input_ids, device_list=device_manager.device_list)
                     else:
-                        clear_memory(device_list=self.compress_context.device_list)
+                        clear_memory(device_list=device_manager.device_list)
                     input_ids = q_input
 
                 self.quantizer.quantize_block(
@@ -423,7 +424,7 @@ class DataDrivenCompressor(BaseCompressor):
                 else:
                     q_outputs = None
 
-                if len(self.compress_context.device_list) > 1:
+                if len(device_manager.device_list) > 1:
                     accelerate.hooks.remove_hook_from_submodules(block)
                 mv_module_from_gpu(block)
                 return q_outputs, reference_output
@@ -460,9 +461,9 @@ class DataDrivenCompressor(BaseCompressor):
 
             if q_input is not None:
                 if input_ids is not q_input:
-                    clear_memory(input_ids, device_list=self.compress_context.device_list)
+                    clear_memory(input_ids, device_list=device_manager.device_list)
                 else:
-                    clear_memory(device_list=self.compress_context.device_list)
+                    clear_memory(device_list=device_manager.device_list)
                 input_ids = q_input
 
             # pre_quantize_block: consolidate stats and apply weight transforms.
@@ -487,7 +488,7 @@ class DataDrivenCompressor(BaseCompressor):
                 q_outputs = None
 
             # ── Cleanup ───────────────────────────────────────────────────────────
-            if len(self.compress_context.device_list) > 1:
+            if len(device_manager.device_list) > 1:
                 accelerate.hooks.remove_hook_from_submodules(block)
             ctx.finish()
             mv_module_from_gpu(block)
@@ -517,7 +518,7 @@ class DataDrivenCompressor(BaseCompressor):
         Returns:
         None
         """
-        clear_memory(device_list=self.compress_context.device_list)
+        clear_memory(device_list=device_manager.device_list)
         for n, m in model.named_parameters():
             m.requires_grad_(False)
 
@@ -553,28 +554,28 @@ class DataDrivenCompressor(BaseCompressor):
 
             # ── Infrastructure: materialize, dtype convert, device placement ──
             materialize_model_(m)
-            convert_module_to_hp_if_necessary(m, self.model_context.amp_dtype, self.compress_context.device)
+            convert_module_to_hp_if_necessary(m, self.model_context.amp_dtype, device_manager.device)
 
             if (
-                is_auto_device_mapping(self.compress_context.device_map)
-                and len(self.compress_context.device_list) > 1
+                is_auto_device_mapping(device_manager.device_map)
+                and len(device_manager.device_list) > 1
                 and not self.model_context.is_diffusion
             ):
                 from auto_round.utils.device import set_auto_device_map_for_block_with_tuning
 
                 card_0_in_high_risk, loss_device = set_auto_device_map_for_block_with_tuning(
                     m,
-                    self.compress_context.device_map,
+                    device_manager.device_list,
                     input_ids,
                     self.compress_context.low_gpu_mem_usage,
                     self.quantizer.batch_size,
-                    self.compress_context.device,
+                    device_manager.device,
                 )
             else:
-                m = m.to(self.compress_context.device)
-                card_0_in_high_risk, loss_device = False, self.compress_context.device
+                m = m.to(device_manager.device)
+                card_0_in_high_risk, loss_device = False, device_manager.device
 
-            if len(self.compress_context.device_list) > 1 and not self.model_context.is_diffusion:
+            if len(device_manager.device_list) > 1 and not self.model_context.is_diffusion:
                 from accelerate.hooks import AlignDevicesHook, add_hook_to_module
 
                 for _n, _mod in m.named_modules():
@@ -601,7 +602,7 @@ class DataDrivenCompressor(BaseCompressor):
                 io=self.quantizer.create_block_io(input_ids, input_others, q_input, m),
                 bs=bs,
                 loss_device=loss_device,
-                device=self.compress_context.device,
+                device=device_manager.device,
                 mid_iter_mem_check=mid_iter_mem_check,
                 is_mllm=self.model_context.is_mllm,
                 is_diffusion=self.model_context.is_diffusion,
@@ -631,9 +632,9 @@ class DataDrivenCompressor(BaseCompressor):
             # ── Infrastructure: swap q_input ──────────────────────────────────
             if q_input is not None:
                 if input_ids is not q_input:
-                    clear_memory(input_ids, device_list=self.compress_context.device_list)
+                    clear_memory(input_ids, device_list=device_manager.device_list)
                 else:
-                    clear_memory(device_list=self.compress_context.device_list)
+                    clear_memory(device_list=device_manager.device_list)
                 input_ids = q_input
 
             # ── Pipeline lifecycle: pre_quantize_block (stats consolidation + weight transforms) ──
@@ -658,7 +659,7 @@ class DataDrivenCompressor(BaseCompressor):
                 q_input = None
 
             # ── Infrastructure: hook removal, device cleanup, logging ─────────
-            if len(self.compress_context.device_list) > 1 and not self.model_context.is_diffusion:
+            if len(device_manager.device_list) > 1 and not self.model_context.is_diffusion:
                 accelerate.hooks.remove_hook_from_submodules(m)
             mv_module_from_gpu(m)
             # if self.enable_torch_compile:
@@ -674,7 +675,7 @@ class DataDrivenCompressor(BaseCompressor):
             # matches the old path more closely.
             ctx.finish()
             clear_memory(
-                input_ids if input_ids is not next_input_ids else None, device_list=self.compress_context.device_list
+                input_ids if input_ids is not next_input_ids else None, device_list=device_manager.device_list
             )
             memory_monitor.log_summary()
 
@@ -716,7 +717,7 @@ class DataDrivenCompressor(BaseCompressor):
         del input_others
         del inputs
 
-        clear_memory(device_list=self.compress_context.device_list)
+        clear_memory(device_list=device_manager.device_list)
 
     def quantize(self) -> tuple[torch.nn.Module, dict[str, Any]]:
         """Quantize the model and return the quantized model along with layer configurations.The entry of AutoRound.
@@ -768,11 +769,11 @@ class DataDrivenCompressor(BaseCompressor):
         )
         self.inputs = all_inputs
         is_quantized_embedding = self.quantizer.quantize_embedding_layer()
-        clear_memory(device_list=self.compress_context.device_list)
+        clear_memory(device_list=device_manager.device_list)
         all_q_inputs = None
         if is_quantized_embedding:
             all_inputs = copy.deepcopy(self.inputs)
-            clear_memory(self.inputs, device_list=self.compress_context.device_list)
+            clear_memory(self.inputs, device_list=device_manager.device_list)
             all_q_inputs = self.try_cache_inter_data_gpucpu(
                 to_cache_block_names, self.nsamples, to_cache_layer_names, last_cache_name=_last_cache_name
             )
@@ -781,7 +782,7 @@ class DataDrivenCompressor(BaseCompressor):
         if hasattr(self.model_context.model, "hf_device_map") and len(self.model_context.model.hf_device_map) > 1:
             accelerate.hooks.remove_hook_from_submodules(self.model_context.model)
         self.model_context.model = mv_module_from_gpu(self.model_context.model)
-        clear_memory(device_list=self.compress_context.device_list)
+        clear_memory(device_list=device_manager.device_list)
         logger.info("caching done")
         if self.compress_context.low_cpu_mem_usage:
             if self.model_context.is_model_patched and not self.compress_context.is_immediate_saving:
@@ -789,7 +790,7 @@ class DataDrivenCompressor(BaseCompressor):
                     self.model_context.model,
                     all_blocks,
                     clear_memory=True,
-                    device_list=self.compress_context.device_list,
+                    device_list=device_manager.device_list,
                 )
                 if not self._offloader.enabled:
                     self.compress_context.low_cpu_mem_usage = False
@@ -816,7 +817,7 @@ class DataDrivenCompressor(BaseCompressor):
 
                 inputs, q_inputs = _update_inputs(inputs, q_inputs)
 
-                clear_memory(self.inputs, device_list=self.compress_context.device_list)
+                clear_memory(self.inputs, device_list=device_manager.device_list)
 
                 if "input_ids" in inputs.keys():
                     total_samples = len(inputs["input_ids"])
@@ -853,7 +854,7 @@ class DataDrivenCompressor(BaseCompressor):
         self._quantize_layers(layer_names, all_inputs)
 
         convert_module_to_hp_if_necessary(
-            self.model_context.model, self.model_context.amp_dtype, self.compress_context.device, to_cpu=True
+            self.model_context.model, self.model_context.amp_dtype, device_manager.device, to_cpu=True
         )
         if self.compress_context.is_immediate_saving:
             self.shard_writer.write(is_finalize=True)
@@ -923,7 +924,7 @@ class DataDrivenCompressor(BaseCompressor):
                 self.quantizer.quantize_layer_outside_block(
                     layer_name,
                     input_ids=None,
-                    device=self.compress_context.device,
+                    device=device_manager.device,
                     disable_opt_rtn=getattr(self, "disable_opt_rtn", False),
                 )
                 layer_names.remove(layer_name)
@@ -952,14 +953,14 @@ class DataDrivenCompressor(BaseCompressor):
                 )  # self.model.hf_device_map has not been changed
         if not self.compress_context.is_immediate_saving:
             self.model = mv_module_from_gpu(self.model)
-        clear_memory(device_list=self.compress_context.device_list)
+        clear_memory(device_list=device_manager.device_list)
         quant_layer = self.quantizer.quantize_layer_outside_block
         for layer_name in layer_names:
             layer_input = layer_inputs[layer_name]
             layer_input = to_device(layer_input, self.compress_context.cache_device)
             q_layer_input = q_layer_inputs.get(layer_name, None) if q_layer_inputs is not None else None
             q_layer_input = to_device(q_layer_input, self.compress_context.cache_device)
-            quant_layer(layer_name, layer_input, q_layer_input, device=self.compress_context.device)
+            quant_layer(layer_name, layer_input, q_layer_input, device=device_manager.device)
             if self.compress_context.is_immediate_packing:
                 immediate_pack(layer_name, self.quantizer.layer_config)
 
@@ -967,7 +968,7 @@ class DataDrivenCompressor(BaseCompressor):
                 m = get_module(self.model, layer_name)
                 self.shard_writer.write(m, name=layer_name, is_finalize=False)
             del layer_input
-            clear_memory(q_layer_input, device_list=self.compress_context.device_list)
+            clear_memory(q_layer_input, device_list=device_manager.device_list)
             memory_monitor.log_summary()
 
     def _check_compatibility(self) -> None:
@@ -1064,7 +1065,7 @@ class CalibratedRTNCompressor(DataDrivenCompressor):
                 )
             inputs["input_ids"] = inputs.pop(input_keys[0])
 
-            clear_memory(self.inputs, device_list=self.compress_context.device_list)
+            clear_memory(self.inputs, device_list=device_manager.device_list)
 
             total_samples = len(inputs["input_ids"])
             if total_samples < self.batch_size:
@@ -1108,24 +1109,24 @@ class CalibratedRTNCompressor(DataDrivenCompressor):
                 materialize_model_(block)
                 block.to("cpu")
                 block = convert_module_to_hp_if_necessary(
-                    block, dtype=self.model_context.amp_dtype, device=self.compress_context.device
+                    block, dtype=self.model_context.amp_dtype, device=device_manager.device
                 )
                 if (
-                    is_auto_device_mapping(self.compress_context.device_map)
-                    and len(self.compress_context.device_list) > 1
+                    is_auto_device_mapping(device_manager.device_map)
+                    and len(device_manager.device_list) > 1
                     and not self.model_context.is_diffusion
                 ):
                     from auto_round.utils.device import set_auto_device_map_for_block_with_tuning
 
                     set_auto_device_map_for_block_with_tuning(
                         block,
-                        self.compress_context.device_map,
+                        device_manager.device_list,
                         input_ids,
                         self.compress_context.low_gpu_mem_usage,
                         self.quantizer.batch_size,
-                        self.compress_context.device,
+                        device_manager.device,
                     )
-                    if len(self.compress_context.device_list) > 1:
+                    if len(device_manager.device_list) > 1:
                         from accelerate.hooks import AlignDevicesHook, add_hook_to_module
 
                         for _, _mod in block.named_modules():
@@ -1133,7 +1134,7 @@ class CalibratedRTNCompressor(DataDrivenCompressor):
                                 continue
                             add_hook_to_module(_mod, AlignDevicesHook(_mod.tuning_device, io_same_device=True), True)
                 else:
-                    block = block.to(self.compress_context.device)
+                    block = block.to(device_manager.device)
 
                 # ── Infrastructure: collect block outputs and hook stats ──
                 from auto_round.algorithms.pipeline import BlockContext
@@ -1148,7 +1149,7 @@ class CalibratedRTNCompressor(DataDrivenCompressor):
                     block_index=0,
                     io=self.quantizer.create_block_io(input_ids, input_others, None, block),
                     bs=bs,
-                    device=self.compress_context.device,
+                    device=device_manager.device,
                     is_mllm=self.model_context.is_mllm,
                     is_diffusion=self.model_context.is_diffusion,
                 )
@@ -1156,7 +1157,7 @@ class CalibratedRTNCompressor(DataDrivenCompressor):
                     self.pipeline.enter_block_forward_hooks(ctx, fwd_stack)
                     input_ids = ctx.collect_reference(fwd_stack)
 
-                if len(self.compress_context.device_list) > 1:
+                if len(device_manager.device_list) > 1:
                     accelerate.hooks.remove_hook_from_submodules(block)
 
                 if self.compress_context.low_gpu_mem_usage:
@@ -1174,9 +1175,9 @@ class CalibratedRTNCompressor(DataDrivenCompressor):
                 if self.compress_context.low_cpu_mem_usage and not self.compress_context.is_immediate_saving:
                     self._offloader(self.model_context.model, block_name)
                 if block_name == block_names[-1]:
-                    clear_memory(input_ids, device_list=self.compress_context.device_list)
+                    clear_memory(input_ids, device_list=device_manager.device_list)
                 else:
-                    clear_memory(device_list=self.compress_context.device_list)
+                    clear_memory(device_list=device_manager.device_list)
 
                 memory_monitor.log_summary()
                 pbar.update(1)
@@ -1198,7 +1199,7 @@ class CalibratedRTNCompressor(DataDrivenCompressor):
             if self.super_group_size is not None:
                 dtype = torch.float32
             self.quantizer.quantize_layer_outside_block(name, dtype=dtype)
-            # clear_memory(device_list=self.compress_context.device_list)
+            # clear_memory(device_list=device_manager.device_list)
         # if self.compress_context.is_immediate_saving:
         #     shard_writer(self, is_finalize=True)
 
@@ -1221,7 +1222,7 @@ class CalibratedRTNCompressor(DataDrivenCompressor):
 
                 accelerate.hooks.remove_hook_from_submodules(model)
             safe_to_cpu_(model)
-            clear_memory(device_list=self.compress_context.device_list)
+            clear_memory(device_list=device_manager.device_list)
             self._quantize_via_rtn_blockwise()
         except torch.OutOfMemoryError:
             cuda_error_msg = traceback.format_exc()
@@ -1232,16 +1233,22 @@ class CalibratedRTNCompressor(DataDrivenCompressor):
                     "Consider enabling `low_gpu_mem_usage` or using more GPUs via `--device 0,1,2,3`."
                 )
                 safe_to_cpu_(model)
-                clear_memory(device_list=self.compress_context.device_list)
+                clear_memory(device_list=device_manager.device_list)
                 if hasattr(model, "hf_device_map") and len(model.hf_device_map) > 1:
                     import accelerate
 
                     accelerate.hooks.remove_hook_from_submodules(model)
 
-                orig_device = self.compress_context.device
-                self.compress_context.device = "cpu"
+                # Fully fall back to CPU: both the compute device (single-sourced
+                # from the DeviceManager) and the input cache device are switched,
+                # then restored once the CPU pass completes.
+                orig_device = device_manager.device
+                orig_cache_device = self.compress_context.cache_device
+                device_manager.device = "cpu"
+                self.compress_context.cache_device = torch.device("cpu")
                 self._quantize_via_rtn_blockwise()
-                self.compress_context.device = orig_device
+                device_manager.device = orig_device
+                self.compress_context.cache_device = orig_cache_device
             except Exception as e:
                 raise
         finally:
@@ -1271,7 +1278,7 @@ class CalibratedRTNCompressor(DataDrivenCompressor):
             self.quantizer.quantize_embedding_layer()  # leave to gguf itself to handle
 
         # Release memory
-        clear_memory(device_list=self.compress_context.device_list)
+        clear_memory(device_list=device_manager.device_list)
 
         enable_imatrix = False
         if not getattr(self, "disable_opt_rtn", True):
@@ -1292,7 +1299,7 @@ class CalibratedRTNCompressor(DataDrivenCompressor):
         convert_module_to_hp_if_necessary(
             self.model_context.model,
             self.model_context.amp_dtype,
-            self.compress_context.device,
+            device_manager.device,
         )
         if self.compress_context.low_cpu_mem_usage:
             self._offloader.reload(self.model_context.model)

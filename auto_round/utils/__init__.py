@@ -13,6 +13,7 @@
 # limitations under the License.
 
 from auto_round.utils.device import *
+from auto_round.utils.device_manager import *
 from auto_round.utils.common import *
 from auto_round.utils.model import *
 from auto_round.utils.weight_handler import (

@@ -43,6 +43,7 @@ from auto_round.algorithms.config_resolver import (
     resolve_shared_config_values,
     split_quantization_configs,
 )
+from auto_round.utils.device_manager import device_manager
 
 if TYPE_CHECKING:  # avoid circular imports at runtime
     import torch
@@ -262,7 +263,7 @@ class BlockIO:
                 quantizer,
                 indices,
                 source=source,
-                device=quantizer.compress_context.device,
+                device=device_manager.device,
                 cache_device=quantizer.compress_context.cache_device,
             )
             if save:

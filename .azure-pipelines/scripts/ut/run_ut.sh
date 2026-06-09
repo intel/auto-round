@@ -17,14 +17,11 @@ function setup_environment() {
 
     uv pip install pytest-cov pytest-html
     uv pip list
-    # workaround for ark test, remove auto_round_kernel_xpu
-    package_path=$(uv pip show auto-round-lib | grep Location:|cut -d: -f2)
-    rm -rf $package_path/auto_round_kernel/auto_round_kernel_xpu*
 
     # install latest gguf for ut test
     cd ~ || exit 1
-    git clone -b master --quiet --single-branch https://github.com/ggml-org/llama.cpp.git && cd llama.cpp/gguf-py && uv pip install . sentencepiece
-
+    git clone -b master --quiet --single-branch https://github.com/ggml-org/llama.cpp.git && cd llama.cpp/gguf-py && uv pip install .
+    
     cd /auto-round && uv pip install .
 
     export LD_LIBRARY_PATH=${HOME}/.venv/lib/:$LD_LIBRARY_PATH
@@ -64,7 +61,6 @@ function check_storage_usage() {
 
 function run_unit_test() {
     cd /auto-round/test || exit 1
-    auto_round_path=$(python -c 'import auto_round; print(auto_round.__path__[0])')
 
     # Split test files into 5 parts
     find ./test_cpu -name "test*.py" | grep -Ev "test_llmc|test_inc" | sort > all_tests.txt
@@ -88,7 +84,7 @@ function run_unit_test() {
         local ut_log_name=${LOG_DIR}/unittest_${test_basename}.log
 
         numactl --physcpubind="${NUMA_CPUSET:-0-15}" --membind="${NUMA_NODE:-0}" \
-            python -m pytest --cov="${auto_round_path}" --cov-report term --html=report.html --self-contained-html \
+            python -m pytest --cov=auto_round --cov-report= --html=report.html --self-contained-html \
                 --cov-report xml:coverage.xml --cov-append \
                 -vs --disable-warnings ${test_file} 2>&1 | tee ${ut_log_name}
         echo "##[endgroup]"
@@ -97,11 +93,10 @@ function run_unit_test() {
 
 function run_inc_unit_test() {
     echo "##[group]set up INC UT env..."
-    INC_PT_ONLY=1 uv pip install -r /auto-round/test/test_cpu/requirements_inc.txt
+    INC_PT_ONLY=1 uv pip install -r /auto-round/test/test_cpu/requirements_inc.txt --extra-index-url https://download.pytorch.org/whl/cpu
     echo "##[endgroup]"
 
     cd /auto-round/test || exit 1
-    auto_round_path=$(python -c 'import auto_round; print(auto_round.__path__[0])')
 
     for test_file in $(find ./test_cpu -name "test_inc*.py" | sort); do
         echo "##[group]Running ${test_file}..."
@@ -109,7 +104,7 @@ function run_inc_unit_test() {
         local ut_log_name=${LOG_DIR}/unittest_${test_basename}.log
 
         numactl --physcpubind="${NUMA_CPUSET:-0-15}" --membind="${NUMA_NODE:-0}" \
-            python -m pytest --cov="${auto_round_path}" --cov-report term --html=report.html --self-contained-html \
+            python -m pytest --cov=auto_round --cov-report= --html=report.html --self-contained-html \
                 --cov-report xml:coverage.xml --cov-append \
                 -vs --disable-warnings ${test_file} 2>&1 | tee ${ut_log_name}
         echo "##[endgroup]"
@@ -118,13 +113,12 @@ function run_inc_unit_test() {
 
 function run_llmc_unit_test() {
     echo "##[group]set up LLMC UT env..."
-    BUILD_TYPE="nightly" uv pip install -r /auto-round/test/test_cpu/requirements_llmc.txt
+    BUILD_TYPE="nightly" uv pip install -r /auto-round/test/test_cpu/requirements_llmc.txt --extra-index-url https://download.pytorch.org/whl/cpu
     uv pip uninstall auto-round
     cd /auto-round && uv pip install .
     echo "##[endgroup]"
 
     cd /auto-round/test || exit 1
-    auto_round_path=$(python -c 'import auto_round; print(auto_round.__path__[0])')
 
     for test_file in $(find ./test_cpu -name "test_llmc*.py" | sort); do
         echo "##[group]Running ${test_file}..."
@@ -132,7 +126,7 @@ function run_llmc_unit_test() {
         local ut_log_name=${LOG_DIR}/unittest_${test_basename}.log
 
         numactl --physcpubind="${NUMA_CPUSET:-0-15}" --membind="${NUMA_NODE:-0}" \
-            python -m pytest --cov="${auto_round_path}" --cov-report term --html=report.html --self-contained-html \
+            python -m pytest --cov=auto_round --cov-report= --html=report.html --self-contained-html \
                 --cov-report xml:coverage.xml --cov-append \
                 -vs --disable-warnings ${test_file} 2>&1 | tee ${ut_log_name}
         echo "##[endgroup]"

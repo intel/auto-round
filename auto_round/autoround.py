@@ -218,6 +218,14 @@ class AutoRound:
             ...     # ...
             ... }
         """
+        if torch.mps.is_available() and (
+            device_map == 0 or device_map == "0" or device_map is None or device_map == "auto"
+        ):
+            logger.warning(
+                "MPS detected. Using CPU by default to avoid potential memory issues. "
+                "Set --device_map=mps to force MPS usage."
+            )
+            device_map = "cpu"
 
         # Short-circuit: if alg_configs is provided, bypass AutoRoundCompatible and go directly
         # to the new-arch entry point to avoid duplicate keyword argument errors.
