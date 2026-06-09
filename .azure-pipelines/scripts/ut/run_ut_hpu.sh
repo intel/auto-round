@@ -34,7 +34,7 @@ function run_unit_test() {
         echo "##[group]Running ${test_file} in HPU lazy mode..."
         local ut_log_name="${LOG_DIR}/unittest_lazy_${test_basename}.log"
         PT_HPU_LAZY_MODE=1 pytest --cov="${auto_round_path}" \
-            --cov-report term --html=report.html --self-contained-html \
+            --cov-report= --html=report.html --self-contained-html \
             --cov-report xml:coverage.xml --cov-append -vs --disable-warnings \
             ${test_file} 2>&1 | tee ${ut_log_name}
         echo "##[endgroup]"
@@ -42,7 +42,7 @@ function run_unit_test() {
         echo "##[group]Running ${test_file} in HPU compile mode..."
         local ut_log_name="${LOG_DIR}/unittest_compile_${test_basename}.log"
         PT_HPU_LAZY_MODE=0 pytest --mode compile --cov="${auto_round_path}" \
-            --cov-report term --html=report.html --self-contained-html \
+            --cov-report= --html=report.html --self-contained-html \
             --cov-report xml:coverage.xml --cov-append -vs --disable-warnings \
             ${test_file} 2>&1 | tee ${ut_log_name}
         echo "##[endgroup]"
@@ -74,10 +74,17 @@ function collect_log() {
     cp .coverage "${LOG_DIR}/.coverage"
 }
 
+function print_coverage() {
+    echo "##[group]overall code coverage..."
+    python -m coverage report
+    echo "##[endgroup]"
+}
+
 function main() {
     setup_environment
     run_unit_test
     collect_log
+    print_coverage
     print_summary
 }
 
