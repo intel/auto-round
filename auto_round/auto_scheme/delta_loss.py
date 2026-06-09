@@ -59,6 +59,7 @@ from auto_round.utils import (
     to_dtype,
 )
 from auto_round.utils.device import MemoryMonitor
+from auto_round.utils.device_manager import get_current_device_manager
 from auto_round.utils.offload import OffloadManager
 from auto_round.wrapper import WrapperLinear
 
@@ -441,8 +442,7 @@ def model_forward_low_gpu(model, dataloader, major_device="cuda", pbar=None):
         """Hook executed before backward propagation."""
         global last_grad_input
         last_grad_input = grad_input
-        if torch.cuda.is_available():
-            torch.cuda.synchronize()
+        get_current_device_manager().synchronize()
         raise MyCustomError("Interrupt backward pass")
 
     for data in dataloader:
@@ -599,7 +599,8 @@ def get_score_for_scheme(
         with torch.no_grad():
             if low_gpu_mem_usage:
                 device = m.tuning_device if hasattr(m, "tuning_device") else major_device
-                if "cuda" in device or "xpu" in device:
+                # Any non-CPU device (cuda/xpu/hpu/...) is consolidated to the major device.
+                if str(device).split(":")[0] not in ("cpu", "meta", "disk"):
                     device = major_device
             else:
                 device = m.weight.device

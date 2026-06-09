@@ -1484,9 +1484,9 @@ class ModelFreeCompressor(_ModelFreeCompressorCore):
 
         # Resolve device: AutoRound passes device_map; the core API uses device.
         if device_map is not None:
-            from auto_round.utils import detect_device
+            from auto_round.utils import get_major_device
 
-            device = detect_device(device_map)
+            device = get_major_device(device_map)
 
         # Initialise the core quantizer
         super().__init__(
