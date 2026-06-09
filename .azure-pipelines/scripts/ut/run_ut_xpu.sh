@@ -33,7 +33,7 @@ function setup_environment() {
 function run_unit_test() {
     auto_round_path=$(python -c 'import auto_round; print(auto_round.__path__[0])')
 
-    for test_file in $(find ./test_ark -name "test*.py" | sort); do
+    for test_file in $(find ./unit/test_ark -name "test*.py" | sort); do
         local test_basename=$(basename ${test_file} .py)
 
         echo "##[group]Running ark ${test_file}..."
@@ -45,7 +45,7 @@ function run_unit_test() {
         echo "##[endgroup]"
     done
 
-    for test_file in $(find ./test_xpu -name "test*.py" ! -name "test_llmc_integration.py" | sort); do
+    for test_file in $(find ./unit/test_xpu -name "test*.py" | sort); do
         local test_basename=$(basename ${test_file} .py)
 
         echo "##[group]Running xpu ${test_file}..."
@@ -60,13 +60,13 @@ function run_unit_test() {
 
 function run_unit_test_vllm() {
     echo "##[group]set up vllm UT env..."
-    BUILD_TYPE="nightly" uv pip install -r ./test_xpu/requirements_llmc.txt
+    BUILD_TYPE="nightly" uv pip install -r ./unit/test_xpu/requirements_llmc.txt
     uv pip list
     echo "##[endgroup]" 
 
     auto_round_path=$(python -c 'import auto_round; print(auto_round.__path__[0])')
 
-    for test_file in $(find ./test_xpu -name "test_llmc_integration.py" | sort); do
+    for test_file in $(find ./integration/test_xpu -name "test_llmc_integration.py" | sort); do
         local test_basename=$(basename ${test_file} .py)
 
         echo "##[group]Running xpu vLLM ${test_file}..."
@@ -113,10 +113,14 @@ function print_coverage() {
 function main() {
     setup_environment
     run_unit_test
-    run_unit_test_vllm
+    # The XPU LLMC integration test only runs in the nightly pipeline to keep
+    # PR CI fast. Pass "integration" as the first argument to enable it.
+    if [ "${1:-}" == "integration" ]; then
+        run_unit_test_vllm
+    fi
     collect_log
     print_coverage
     print_summary
 }
 
-main
+main "$@"

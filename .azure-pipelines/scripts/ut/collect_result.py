@@ -37,6 +37,8 @@ class LogAnalyzer:
         "unittest_cuda_llmc_",
         "unittest_cuda_",
         "unittest_",
+        "integration_",
+        "e2e_",
     )
 
     FAILURE_MARKERS = (

@@ -214,6 +214,9 @@ def quant_tensor_sym(
     else:
         wmin_tmp = tensor_min
         wmax_tmp = tensor_max
+        if isinstance(wmin_tmp, torch.Tensor):
+            wmin_tmp = wmin_tmp.to(tensor.device)
+            wmax_tmp = wmax_tmp.to(tensor.device)
 
     wmin_abs = -(wmin_tmp * min_scale)  # pylint: disable=E1130
     wmax_abs = wmax_tmp * max_scale
@@ -267,6 +270,9 @@ def quant_tensor_asym(
     else:
         wmin_tmp = tensor_min
         wmax_tmp = tensor_max
+        if isinstance(wmin_tmp, torch.Tensor):
+            wmin_tmp = wmin_tmp.to(tensor.device)
+            wmax_tmp = wmax_tmp.to(tensor.device)
     if isinstance(min_scale, torch.Tensor):
         wmin = wmin_tmp * min_scale
         wmax = wmax_tmp * max_scale
@@ -324,6 +330,9 @@ def quant_tensor_sym_gptq(
     else:
         wmin_tmp = tensor_min
         wmax_tmp = tensor_max
+        if isinstance(wmin_tmp, torch.Tensor):
+            wmin_tmp = wmin_tmp.to(tensor.device)
+            wmax_tmp = wmax_tmp.to(tensor.device)
     if isinstance(min_scale, torch.Tensor):
         wmin = wmin_tmp * min_scale
         wmax = wmax_tmp * max_scale
@@ -387,6 +396,9 @@ def quant_tensor_asym_wo_round(
     else:
         wmin_tmp = tensor_min
         wmax_tmp = tensor_max
+        if isinstance(wmin_tmp, torch.Tensor):
+            wmin_tmp = wmin_tmp.to(tensor.device)
+            wmax_tmp = wmax_tmp.to(tensor.device)
     if isinstance(min_scale, torch.Tensor):
         wmin = wmin_tmp * min_scale
         wmax = wmax_tmp * max_scale

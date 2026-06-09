@@ -10,7 +10,7 @@ pr:
     include:
       - auto_round
       - auto_round_extension
-      - test/test_cuda
+      - test/unit/test_cuda
       - setup.py
       - requirements.txt
       - .azure-pipelines/scripts/cuda_unit_test
@@ -31,8 +31,6 @@ parameters:
   - name: matrix
     type: object
     default:
-      part0:
-        PART: 0
       part1:
         PART: 1
       part2:

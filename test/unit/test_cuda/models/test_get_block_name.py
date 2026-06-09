@@ -1,0 +1,220 @@
+import copy
+import shutil
+
+import pytest
+import torch
+import transformers
+from packaging import version
+from transformers import (
+    AutoModelForCausalLM,
+    AutoModelForImageTextToText,
+    AutoTokenizer,
+    Gemma3ForConditionalGeneration,
+    Mistral3ForConditionalGeneration,
+    Qwen2VLForConditionalGeneration,
+)
+
+from auto_round import AutoRound
+from auto_round.utils import get_block_names, is_pure_text_model
+
+from test.helpers import get_model_path, save_tiny_model, transformers_version
+
+
+@pytest.mark.skip_ci(reason="Only tiny model is suggested")
+class TestAutoRound:
+    @classmethod
+    def setup_class(self):
+        pass
+
+    @classmethod
+    def teardown_class(self):
+        shutil.rmtree("runs", ignore_errors=True)
+
+    def check_block_names(self, block_names, prefixs=[], n_layers=[]):
+        assert len(block_names) == len(prefixs) == len(n_layers)
+        for i, block_name in enumerate(block_names):
+            prefix = prefixs[i]
+            n_layer = n_layers[i]
+            expected_block_names = [prefix + "." + str(i) for i in range(n_layer)]
+            assert block_name == expected_block_names
+
+    def test_glm4(self):
+        model_name = get_model_path("THUDM/glm-4-9b-chat-hf")
+        model = AutoModelForCausalLM.from_pretrained(model_name, torch_dtype="auto", trust_remote_code=True)
+        block_names = get_block_names(model)
+
+        if transformers_version >= version.parse("5.0.0"):
+            self.check_block_names(block_names, ["model.layers"], [40])
+        else:
+            self.check_block_names(block_names, ["transformer.encoder.layers"], [40])
+        assert is_pure_text_model(model), "Expected model to be pure text model"
+
+    def test_opt_125m(self):
+        model_name = get_model_path("facebook/opt-125m")
+        model = AutoModelForCausalLM.from_pretrained(model_name, torch_dtype="auto", trust_remote_code=True)
+        block_names = get_block_names(model)
+        self.check_block_names(block_names, ["model.decoder.layers"], [12])
+
+        assert is_pure_text_model(model)
+
+    def test_Qwen(self):
+        model_name = get_model_path("Qwen/Qwen2.5-7B-Instruct")
+        model = AutoModelForCausalLM.from_pretrained(model_name, torch_dtype="auto", trust_remote_code=True)
+        block_names = get_block_names(model)
+        self.check_block_names(block_names, ["model.layers"], [28])
+        assert is_pure_text_model(model)
+
+    def test_phi4(self):
+        model_name = get_model_path("microsoft/phi-4")
+        model = AutoModelForCausalLM.from_pretrained(model_name, torch_dtype="auto", trust_remote_code=True)
+        block_names = get_block_names(model)
+        self.check_block_names(block_names, ["model.layers"], [40])
+        assert is_pure_text_model(model)
+
+    def test_llama3(self):
+        model_name = get_model_path("meta-llama/Meta-Llama-3.1-8B-Instruct")
+        model = AutoModelForCausalLM.from_pretrained(model_name, torch_dtype="auto", trust_remote_code=True)
+        block_names = get_block_names(model)
+        self.check_block_names(block_names, ["model.layers"], [32])
+        assert is_pure_text_model(model)
+
+    # def test_mixtral(self):
+    #     model_name = get_model_path("mistralai/Mixtral-8x7B-Instruct-v0.1")
+    #     model = AutoModelForCausalLM.from_pretrained(model_name, torch_dtype="auto", trust_remote_code=True)
+    #     block_names = get_block_names(model)
+    #     self.check_block_names(block_names, ["model.layers"], [32])
+    #     assert is_pure_text_model(model)
+
+    def test_falcon(self):
+        model_name = get_model_path("tiiuae/Falcon3-7B-Instruct")
+        model = AutoModelForCausalLM.from_pretrained(model_name, torch_dtype="auto", trust_remote_code=True)
+        block_names = get_block_names(model)
+        self.check_block_names(block_names, ["model.layers"], [28])
+        assert is_pure_text_model(model)
+
+    def test_orca(self):
+        model_name = get_model_path("microsoft/Orca-2-7b")
+        model = AutoModelForCausalLM.from_pretrained(model_name, torch_dtype="auto", trust_remote_code=True)
+        block_names = get_block_names(model)
+        self.check_block_names(block_names, ["model.layers"], [32])
+        assert is_pure_text_model(model)
+
+    def test_OLMo(self):
+        model_name = get_model_path("allenai/OLMo-2-1124-7B-Instruct")
+        model = AutoModelForCausalLM.from_pretrained(model_name, torch_dtype="auto", trust_remote_code=True)
+        block_names = get_block_names(model)
+        self.check_block_names(block_names, ["model.layers"], [32])
+        assert is_pure_text_model(model)
+
+    def test_Qwen2VL(self):
+        model_name = get_model_path("Qwen/Qwen2-VL-2B-Instruct")
+        model = Qwen2VLForConditionalGeneration.from_pretrained(model_name, torch_dtype="auto", trust_remote_code=True)
+        block_names = get_block_names(model)
+        self.check_block_names(block_names, ["model.language_model.layers"], [28])
+
+        block_names = get_block_names(model, quant_vision=True)
+        self.check_block_names(block_names, ["model.visual.blocks", "model.language_model.layers"], [32, 28])
+        assert not is_pure_text_model(model)
+
+    def test_Llama32(self):
+        model_name = get_model_path("meta-llama/Llama-3.2-11B-Vision-Instruct")
+        model = AutoModelForImageTextToText.from_pretrained(model_name, torch_dtype="auto", trust_remote_code=True)
+        block_names = get_block_names(model)
+        self.check_block_names(block_names, ["model.language_model.layers"], [40])
+
+        block_names = get_block_names(model, quant_vision=True)
+        self.check_block_names(
+            block_names,
+            [
+                "model.vision_model.transformer.layers",
+                "model.vision_model.global_transformer.layers",
+                "model.language_model.layers",
+            ],
+            [32, 8, 40],
+        )
+
+        assert not is_pure_text_model(model)
+
+    def test_SmolVLM(self):
+        model_name = get_model_path("HuggingFaceTB/SmolVLM-Instruct")
+        model = AutoModelForImageTextToText.from_pretrained(model_name, torch_dtype="auto", trust_remote_code=True)
+        block_names = get_block_names(model)
+        self.check_block_names(block_names, ["model.text_model.layers"], [24])
+
+        block_names = get_block_names(model, quant_vision=True)
+        self.check_block_names(block_names, ["model.vision_model.encoder.layers", "model.text_model.layers"], [27, 24])
+        assert not is_pure_text_model(model)
+
+    @pytest.mark.skipif(
+        transformers_version >= version.parse("5.0.0"),
+        reason="https://huggingface.co/zai-org/glm-4v-9b/discussions/46",
+    )
+    def test_glm_4v(self):
+        model_name = get_model_path("zai-org/glm-4v-9b")
+        model = AutoModelForCausalLM.from_pretrained(model_name, torch_dtype="auto", trust_remote_code=True)
+        block_names = get_block_names(model)
+        self.check_block_names(block_names, ["transformer.encoder.layers"], [40])
+
+        block_names = get_block_names(model, quant_vision=True)
+        self.check_block_names(
+            block_names, ["transformer.encoder.layers", "transformer.vision.transformer.layers"], [40, 63]
+        )
+        assert not is_pure_text_model(model)
+
+    def test_gemma3(self):
+        model_name = get_model_path("google/gemma-3-12b-it")
+        tmp_path = "./tmp/tiny_gemma3"  # fixture:clean_tmp_model_folder will clean it
+        save_tiny_model(
+            model_name, tmp_path, from_config=True, num_layers=2
+        )  # make sure the model is downloaded before the test, to avoid timeout in the test
+        model = Gemma3ForConditionalGeneration.from_pretrained(tmp_path, torch_dtype="auto", trust_remote_code=True)
+        block_names = get_block_names(model)
+        self.check_block_names(block_names, ["model.language_model.layers"], [2])
+
+        block_names = get_block_names(model, quant_vision=True)
+        self.check_block_names(
+            block_names, ["model.vision_tower.encoder.layers", "model.language_model.layers"], [2, 2]
+        )
+        assert not is_pure_text_model(model)
+
+    def test_Mistral3(self):
+        model_name = get_model_path("mistralai/Mistral-Small-3.2-24B-Instruct-2506")
+        model = Mistral3ForConditionalGeneration.from_pretrained(model_name, torch_dtype="auto", trust_remote_code=True)
+        block_names = get_block_names(model)
+        self.check_block_names(block_names, ["model.language_model.layers"], [40])
+
+        block_names = get_block_names(model, quant_vision=True)
+        self.check_block_names(
+            block_names, ["model.vision_tower.transformer.layers", "model.language_model.layers"], [24, 40]
+        )
+        assert not is_pure_text_model(model)
+
+    @pytest.mark.skipif(
+        transformers_version >= version.parse("5.0.0"),
+        reason="https://huggingface.co/allenai/Molmo-7B-D-0924/discussions/51",
+    )
+    def test_Molmo(self):
+        model_name = get_model_path("allenai/Molmo-7B-D-0924")
+        model = AutoModelForCausalLM.from_pretrained(model_name, torch_dtype="auto", trust_remote_code=True)
+        block_names = get_block_names(model)
+        self.check_block_names(block_names, ["model.transformer.blocks"], [28])
+
+        block_names = get_block_names(model, quant_vision=True)
+        self.check_block_names(
+            block_names, ["model.transformer.blocks", "model.vision_backbone.image_vit.transformer.resblocks"], [28, 23]
+        )
+        assert not is_pure_text_model(model)
+
+    def test_flux(self):
+        from diffusers import AutoPipelineForText2Image
+
+        model_name = "black-forest-labs/FLUX.1-dev"
+        pipe = AutoPipelineForText2Image.from_pretrained(model_name)
+        model = pipe.transformer
+
+        block_names = get_block_names(model)
+        self.check_block_names(block_names, ["transformer_blocks", "single_transformer_blocks"], [19, 38])
+        assert any(["context_embedder" not in n for n in block_names])
+
+        block_names = get_block_names(model, quant_vision=True)
+        self.check_block_names(block_names, ["transformer_blocks", "single_transformer_blocks"], [19, 38])

@@ -65,8 +65,8 @@ function run_unit_test() {
     uv pip install torch==2.12.0 torchvision torchao --index-url https://download.pytorch.org/whl/cu130
     uv pip install https://github.com/XuehaoSun/llama-cpp-python/releases/download/v0.3.23/llama_cpp_python-0.3.23-py3-none-linux_x86_64.whl
     uv pip install 'git+https://github.com/ggml-org/llama.cpp.git#subdirectory=gguf-py'
-    uv pip install -r test/test_cuda/requirements.txt
-    uv pip install -r test/test_cuda/requirements_diffusion.txt
+    uv pip install -r test/unit/test_cuda/requirements.txt
+    uv pip install -r test/unit/test_cuda/requirements_diffusion.txt
     uv pip install -U transformers
     uv pip uninstall torch torchvision
     uv pip install torch==2.12.0 torchvision torchao --index-url https://download.pytorch.org/whl/cu130
@@ -78,7 +78,7 @@ function run_unit_test() {
 
     cd "${BUILD_SOURCESDIRECTORY}/test" || exit 1
 
-    find ./test_cuda -type f -name "test_*.py" | grep -Ev "vlms|llmc|sglang|vllm|multiple_card" | sort > all_tests.txt
+    find ./unit/test_cuda -type f -name "test_*.py" | grep -Ev "vlms|llmc|sglang|vllm|multiple_card" | sort > all_tests.txt
     total_lines=$(wc -l < all_tests.txt)
     NUM_CHUNKS=2
     q=$(( total_lines / NUM_CHUNKS ))
@@ -112,7 +112,7 @@ function run_unit_test_llmc() {
     uv venv --python=3.12 /root/.venv
     uv pip install -U pytest-cov pytest-html
     BUILD_TYPE="nightly" uv pip install \
-        -r test/test_cuda/requirements_llmc.txt \
+        -r test/unit/test_cuda/requirements_llmc.txt \
         --extra-index-url https://download.pytorch.org/whl/cu130 \
         --index-strategy unsafe-best-match
     uv pip install .
@@ -123,7 +123,7 @@ function run_unit_test_llmc() {
 
     export COVERAGE_RCFILE="${BUILD_SOURCESDIRECTORY}/.azure-pipelines/scripts/ut/.coverage"
 
-    for test_file in $(find ./test_cuda -name "test_llmc*.py" | sort); do
+    for test_file in $(find ./integration/test_cuda -name "test_llmc*.py" | sort); do
         echo "##[group]Running ${test_file}..."
         local test_basename=$(basename ${test_file} .py)
         local ut_log_name=${LOG_DIR}/unittest_cuda_llmc_${test_basename}.log
@@ -140,7 +140,7 @@ function run_unit_test_sglang() {
     rm -rf /root/.venv
     uv venv --python=3.12 /root/.venv
     uv pip install -U pytest-cov pytest-html
-    uv pip install -r test/test_cuda/requirements_sglang.txt \
+    uv pip install -r test/unit/test_cuda/requirements_sglang.txt \
         --prerelease=allow \
         --extra-index-url https://download.pytorch.org/whl/cu130 \
         --index-strategy unsafe-best-match
@@ -151,7 +151,7 @@ function run_unit_test_sglang() {
     cd "${BUILD_SOURCESDIRECTORY}/test" || exit 1
     export COVERAGE_RCFILE="${BUILD_SOURCESDIRECTORY}/.azure-pipelines/scripts/ut/.coverage"
 
-    for test_file in $(find ./test_cuda -name "test_sglang*.py" | sort); do
+    for test_file in $(find ./integration/test_cuda ./e2e/test_cuda -name "test_sglang*.py" | sort); do
         echo "##[group]Running ${test_file}..."
         local test_basename=$(basename ${test_file} .py)
         local ut_log_name=${LOG_DIR}/unittest_cuda_sglang_${test_basename}.log
@@ -169,7 +169,7 @@ function run_unit_test_vllm() {
     uv venv --python=3.12 /root/.venv
     uv pip install -U pytest-cov pytest-html
     vllm_version=$(curl -s https://api.github.com/repos/vllm-project/vllm/releases/latest | jq -r .tag_name | sed 's/^v//')
-    uv pip install -r test/test_cuda/requirements_vllm.txt \
+    uv pip install -r test/unit/test_cuda/requirements_vllm.txt \
         --extra-index-url https://download.pytorch.org/whl/cu130 \
         --index-strategy unsafe-best-match
     uv pip install .
@@ -179,7 +179,7 @@ function run_unit_test_vllm() {
     cd "${BUILD_SOURCESDIRECTORY}/test" || exit 1
     export COVERAGE_RCFILE="${BUILD_SOURCESDIRECTORY}/.azure-pipelines/scripts/ut/.coverage"
 
-    for test_file in $(find ./test_cuda -name "test_vllm*.py" | sort); do
+    for test_file in $(find ./integration/test_cuda ./e2e/test_cuda -name "test_vllm*.py" | sort); do
         echo "##[group]Running ${test_file}..."
         local test_basename=$(basename ${test_file} .py)
         local ut_log_name=${LOG_DIR}/unittest_cuda_vllm_${test_basename}.log

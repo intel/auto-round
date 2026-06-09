@@ -1,0 +1,51 @@
+# Nightly pipeline: runs the slower CPU integration + e2e suites that are
+# excluded from the fast PR unit-test pipeline. Scheduled daily; can also be
+# triggered manually from the Azure DevOps UI.
+
+trigger: none
+pr: none
+
+schedules:
+  - cron: "0 18 * * *"   # 02:00 Asia/Shanghai every day
+    displayName: Daily nightly run
+    branches:
+      include:
+        - main
+    always: true
+
+pool: ICX-16C
+
+variables:
+  IMAGE_NAME: "auto-round"
+  IMAGE_TAG: "py312"
+  UPLOAD_PATH: $(Build.SourcesDirectory)/log_dir
+  DOWNLOAD_PATH: $(Build.SourcesDirectory)/log_dir
+  ARTIFACT_NAME: "Nightly_coverage_report"
+  REPO: $(Build.Repository.Uri)
+
+stages:
+  - template: template/lib-build-template.yml
+    parameters:
+      enableChangeDetection: false
+
+  - stage: Nightly_test
+    displayName: Nightly Integration + E2E Test
+    dependsOn: [BuildArkWheel]
+    condition: in(dependencies.BuildArkWheel.result, 'Succeeded', 'Skipped')
+    jobs:
+      - job:
+        timeoutInMinutes: 180
+        steps:
+          - template: template/ut-template.yml
+            parameters:
+              dockerConfigName: "commonDockerConfig"
+              utScriptFileName: "run_nightly"
+              uploadPath: $(UPLOAD_PATH)
+              utArtifact: "nightly"
+              utContainerName: "AutoRoundNightly$(NODE_LABEL)"
+              buildARKWheel: "false"
+
+          - task: PublishCodeCoverageResults@2
+            condition: succeededOrFailed()
+            inputs:
+              summaryFileLocation: $(UPLOAD_PATH)/coverage.xml

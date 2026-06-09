@@ -489,6 +489,7 @@ def _evaluate_tasks_with_retry(tasks, hflm, device_str, batch_size, limit, retry
 
     for task in tasks:
         current_retry_times = retry_times
+        res = None
         while current_retry_times:
             try:
                 res = lm_eval.simple_evaluate(
@@ -511,13 +512,15 @@ def _evaluate_tasks_with_retry(tasks, hflm, device_str, batch_size, limit, retry
                         hflm.batch_sizes = ori_batch_sizes
                     except Exception as e:
                         traceback.print_exc()
-                        pass
+                        res = None
                 except Exception as e:
                     logger.error(cuda_error_msg)
                     traceback.print_exc()
-                    break
+                    res = None
             current_retry_times -= 1
 
+        if res is None:
+            raise RuntimeError(f"Failed to evaluate task '{task}' after {retry_times} attempts")
         if not res_all:
             res_all = res
         else:

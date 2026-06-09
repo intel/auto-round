@@ -12,14 +12,22 @@ This project uses `pytest` for unit testing. All test cases are under the `test/
 
 ## 2. Test Directory Structure
 
-Tests are organized by hardware backend (`test_cpu/`, `test_cuda/`) and functionality:
+Tests are split into three **tiers**, then by hardware backend
+(`test_cpu/`, `test_cuda/`, `test_hpu/`, `test_xpu/`, `test_ark/`, `test_mlx/`):
+
+- **`unit/`** — fast, self-contained tests. Run on **every PR** (`unit-test*.yml`).
+- **`integration/`** — tests against third-party frameworks (vLLM, SGLang,
+  LLMCompressor, INC, HuggingFace). Run **nightly** (`nightly-test*.yml`).
+- **`e2e/`** — full-model / real inference-engine tests. Run **weekly**
+  (`weekly-test*.yml`).
+
+Within `unit/test_cpu/` and `unit/test_cuda/`, tests are grouped by functionality:
 
 - **core/** - Core AutoRound API and quantization workflows
 - **quantization/** - Quantization techniques (mixed-bit, MXFP, NVFP4, activation quant)
 - **export/** - Model serialization (GGUF, AutoGPTQ, AutoRound format)
 - **backends/** - Inference backends (Torch, Marlin, Triton, ExLlamaV2)
 - **models/** - Architecture-specific tests (MLLMs, VLMs, MoE, Diffusion, Omni)
-- **integrations/** - Third-party frameworks (vLLM, SGLang, LLMC, Transformers)
 - **schemes/** - Quantization scheme selection and configuration
 - **utils/** - Calibration datasets, logging, CLI, model loading
 - **advanced/** - Multi-GPU, FP8 input, custom pipelines
@@ -91,10 +99,10 @@ DataLoader()  # Simple dataloader for calibration datasets
 
 ### Basic Example
 ```python
-# test_cpu/quantization/test_new_method.py
+# unit/test_cpu/quantization/test_new_method.py
 import pytest
 from auto_round import AutoRound
-from ...helpers import opt_name_or_path
+from test.helpers import opt_name_or_path
 
 
 class TestNewQuantMethod:
@@ -107,7 +115,7 @@ class TestNewQuantMethod:
 
 ### Using Helpers and Fixtures
 ```python
-from ...helpers import model_infer, opt_name_or_path, get_model_path
+from test.helpers import model_infer, opt_name_or_path, get_model_path
 
 
 def test_model_inference(tiny_opt_model_path):
@@ -126,22 +134,28 @@ def test_model_inference(tiny_opt_model_path):
 ```
 
 ### Placement Guidelines
-- **CPU-specific** → `test_cpu/<category>/`
-- **CUDA-specific** → `test_cuda/<category>/`
-- **Cross-platform** → Choose most relevant directory
-- Import from parent: `from ...helpers import ...`
+- **Fast & self-contained** → `unit/test_<hw>/<category>/`
+- **Needs a third-party framework** (vLLM, SGLang, LLMC, INC) → `integration/test_<hw>/`
+- **Full model / real inference engine** → `e2e/test_<hw>/`
+- **CPU-specific** → `*/test_cpu/`, **CUDA-specific** → `*/test_cuda/`
+- Import from parent: `from test.helpers import ...`
 
 ## 5. Running Tests
 
 ```sh
-# Run all tests
+# Run all fast unit tests (the default `testpaths` in pytest.ini)
 pytest
 
-# Run specific directory
-pytest test_cpu/quantization/
+# Run a specific tier / hardware
+pytest unit/test_cpu/
+pytest integration/test_cpu/
+pytest e2e/test_cpu/
+
+# Run specific category
+pytest unit/test_cpu/quantization/
 
 # Run specific file
-pytest test_cpu/core/test_autoround.py
+pytest unit/test_cpu/core/test_autoround.py
 
 # Run specific test
 pytest -k "test_layer_config"
@@ -151,12 +165,12 @@ pytest -v -s
 ```
 
 ## 6. Hardware-Specific Requirements
-- **test_cpu/**: Install `pip install -r test_cpu/requirements.txt`
-- **test_cuda/**: Install `pip install -r test_cuda/requirements.txt`
-  - VLM: `pip install -r test_cuda/requirements_vlm.txt`
-  - Diffusion: `pip install -r test_cuda/requirements_diffusion.txt`
-  - LLMC: `pip install -r test_cuda/requirements_llmc.txt`
-  - SGLang: `pip install -r test_cuda/requirements_sglang.txt`
+- **unit/test_cpu/**: Install `pip install -r unit/test_cpu/requirements.txt`
+- **unit/test_cuda/**: Install `pip install -r unit/test_cuda/requirements.txt`
+  - VLM: `pip install -r unit/test_cuda/requirements_vlm.txt`
+  - Diffusion: `pip install -r unit/test_cuda/requirements_diffusion.txt`
+  - LLMC: `pip install -r unit/test_cuda/requirements_llmc.txt`
+  - SGLang: `pip install -r unit/test_cuda/requirements_sglang.txt`
 
 ## 7. Contributing
 When adding new tests:

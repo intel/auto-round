@@ -94,9 +94,9 @@ function run_unit_test() {
     uv pip install torch==2.12.0 torchvision torchao --index-url https://download.pytorch.org/whl/cu126
     uv pip install https://github.com/XuehaoSun/llama-cpp-python/releases/download/v0.3.23/llama_cpp_python-0.3.23+cu128-py3-none-linux_x86_64.whl
     uv pip install 'git+https://github.com/ggml-org/llama.cpp.git#subdirectory=gguf-py'
-    uv pip install -r test_cuda/requirements.txt
-    uv pip install -r test_cuda/requirements_diffusion.txt
-    uv pip install -U transformers
+    uv pip install -r test/unit/test_cuda/requirements.txt
+    uv pip install -r test/unit/test_cuda/requirements_diffusion.txt
+    uv pip install -U transformers chardet
     uv pip uninstall torch torchvision
     uv pip install torch==2.12.0 torchvision torchao --index-url https://download.pytorch.org/whl/cu126
     cd ${REPO_PATH} && uv pip install . && cd ${REPO_PATH}/test
@@ -106,7 +106,7 @@ function run_unit_test() {
     local auto_round_path=$(python -c 'import auto_round; print(auto_round.__path__[0])')
 
     # run unit tests individually with separate logs
-    for test_file in $(find ./test_cuda -type f -name "test_*.py" | grep -Ev "vlms|llmc|sglang|vllm|multiple_card" | sort); do
+    for test_file in $(find ./unit/test_cuda -type f -name "test_*.py" | grep -Ev "vlms|llmc|sglang|vllm|multiple_card" | sort); do
         local test_basename=$(basename ${test_file} .py)
         local ut_log_name=${LOG_DIR}/unittest_cuda_${test_basename}.log
         echo "Running ${test_file}..."
@@ -135,9 +135,10 @@ function run_unit_test_vlm() {
     uv pip install git+https://github.com/haotian-liu/LLaVA.git@v1.2.2 --no-deps
     uv pip install -v git+https://github.com/casper-hansen/AutoAWQ.git@v0.2.0 --no-build-isolation
     uv pip install flash-attn==2.8.3 --no-build-isolation
-    uv pip install -r test_cuda/requirements_vlm.txt \
+    uv pip install -r test/unit/test_cuda/requirements_vlm.txt \
         --extra-index-url https://download.pytorch.org/whl/cu126 \
         --index-strategy unsafe-best-match
+    uv pip install -U chardet
     cd ${REPO_PATH} && uv pip install . && cd ${REPO_PATH}/test
 
     pip list > ${LOG_DIR}/vlm_ut_pip_list.txt
@@ -145,7 +146,7 @@ function run_unit_test_vlm() {
     local auto_round_path=$(python -c 'import auto_round; print(auto_round.__path__[0])')
 
     # run VLM unit tests individually with separate logs
-    for test_file in $(find ./test_cuda -name "test*vlms.py"); do
+    for test_file in $(find ./unit/test_cuda -name "test*vlms.py"); do
         local test_basename=$(basename ${test_file} .py)
         local ut_log_name=${LOG_DIR}/unittest_cuda_vlm_${test_basename}.log
         echo "Running ${test_file}..."
@@ -170,7 +171,8 @@ function run_unit_test_llmc() {
 
     cd ${REPO_PATH}/test
     rm -rf .coverage* *.xml *.html
-    BUILD_TYPE="nightly" uv pip install -r test_cuda/requirements_llmc.txt --extra-index-url https://download.pytorch.org/whl/cu126 --index-strategy unsafe-best-match
+    BUILD_TYPE="nightly" uv pip install -r test/unit/test_cuda/requirements_llmc.txt --extra-index-url https://download.pytorch.org/whl/cu126 --index-strategy unsafe-best-match
+    uv pip install -U chardet
     cd ${REPO_PATH} && uv pip install . && cd ${REPO_PATH}/test
 
     pip list > ${LOG_DIR}/llmc_ut_pip_list.txt
@@ -178,7 +180,7 @@ function run_unit_test_llmc() {
     local auto_round_path=$(python -c 'import auto_round; print(auto_round.__path__[0])')
 
     # run unit tests individually with separate logs
-    for test_file in $(find ./test_cuda -name "test_llmc*.py" | sort); do
+    for test_file in $(find ./integration/test_cuda -name "test_llmc*.py" | sort); do
         local test_basename=$(basename ${test_file} .py)
         local ut_log_name=${LOG_DIR}/unittest_cuda_llmc_${test_basename}.log
         echo "Running ${test_file}..."
@@ -210,7 +212,7 @@ function run_unit_test_sglang() {
     local auto_round_path=$(python -c 'import auto_round; print(auto_round.__path__[0])')
 
     # run unit tests individually with separate logs
-    for test_file in $(find ./test_cuda -name "test_sglang*.py" | sort); do
+    for test_file in $(find ./integration/test_cuda ./e2e/test_cuda -name "test_sglang*.py" | sort); do
         local test_basename=$(basename ${test_file} .py)
         local ut_log_name=${LOG_DIR}/unittest_cuda_sglang_${test_basename}.log
         echo "Running ${test_file}..."
@@ -236,10 +238,11 @@ function run_unit_test_vllm() {
     cd ${REPO_PATH}/test
     rm -rf .coverage* *.xml *.html
     vllm_version=$(curl -s https://api.github.com/repos/vllm-project/vllm/releases/latest | jq -r .tag_name | sed 's/^v//')
-    uv pip install -r test_cuda/requirements_vllm.txt \
+    uv pip install -r test/unit/test_cuda/requirements_vllm.txt \
         --extra-index-url https://wheels.vllm.ai/${vllm_version}/cu129 \
         --extra-index-url https://download.pytorch.org/whl/cu126 \
         --index-strategy unsafe-best-match
+    uv pip install -U chardet
     cd ${REPO_PATH} && uv pip install . && cd ${REPO_PATH}/test
 
     pip list > ${LOG_DIR}/vllm_ut_pip_list.txt
@@ -247,7 +250,7 @@ function run_unit_test_vllm() {
     local auto_round_path=$(python -c 'import auto_round; print(auto_round.__path__[0])')
 
     # run unit tests individually with separate logs
-    for test_file in $(find ./test_cuda -name "test_vllm*.py" | sort); do
+    for test_file in $(find ./integration/test_cuda ./e2e/test_cuda -name "test_vllm*.py" | sort); do
         local test_basename=$(basename ${test_file} .py)
         local ut_log_name=${LOG_DIR}/unittest_cuda_vllm_${test_basename}.log
         echo "Running ${test_file}..."
