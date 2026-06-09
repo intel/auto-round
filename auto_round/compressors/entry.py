@@ -379,6 +379,7 @@ class AutoRoundCompatible:
         )
         auto_round_only_keys = (
             "nblocks",
+            "nblocks_overlap",
             "enable_alg_ext",
             "lr_scheduler",
             "not_use_best_mse",

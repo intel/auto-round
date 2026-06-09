@@ -772,7 +772,14 @@ def wrapper_block(
     """
     quantized_layers = []
     unquantized_layers = []
+    wrapped_prefixes = []
     for n, m in block.named_modules():
+        if any(prefix == "" or n == prefix or n.startswith(f"{prefix}.") for prefix in wrapped_prefixes):
+            continue
+        if hasattr(m, "orig_layer"):
+            quantized_layers.append(n)
+            wrapped_prefixes.append(n)
+            continue
         if type(m) in SUPPORTED_LAYER_TYPES:
             if not check_to_quantized(m):
                 unquantized_layers.append(n)
@@ -787,6 +794,7 @@ def wrapper_block(
             )
             set_module(block, n, new_m)
             quantized_layers.append(n)
+            wrapped_prefixes.append(n)
 
         elif enable_norm_bias_tuning:
             if "norm" in m.__class__.__name__.lower():
@@ -794,6 +802,7 @@ def wrapper_block(
                     wrapper_layer_class = NORM_MAPPING[m.__class__.__name__]
                     new_m = wrapper_layer_class(m, device=device)
                     set_module(block, n, new_m)
+                    wrapped_prefixes.append(n)
                 elif "RMSNorm" in m.__class__.__name__:
                     logger.warning_once(
                         f"use LlamaRMSNorm to wrap {m.__class__.__name__}, please check the correctness yourself"
@@ -801,6 +810,7 @@ def wrapper_block(
                     wrapper_layer_class = NORM_MAPPING["LlamaRMSNorm"]
                     new_m = wrapper_layer_class(m, device=device)
                     set_module(block, n, new_m)
+                    wrapped_prefixes.append(n)
                 else:
                     logger.warning_once(f"{m.__class__.__name__} is not supported")
     return quantized_layers, unquantized_layers
@@ -837,7 +847,7 @@ def unwrapper_layer(model, layer, layer_name, best_params):
 
 
 @torch.no_grad()
-def unwrapper_block(block, best_params):
+def unwrapper_block(block, best_params, unwrap_filter=None):
     """Unwraps the WrapperLinear and WrapperTransformerConv1d modules in the given block.
 
     Args:
@@ -852,5 +862,10 @@ def unwrapper_block(block, best_params):
                 best_param = best_params[n]
             else:
                 best_param = None
-            orig_layer = m.unwrapper(best_param)
-            set_module(block, n, orig_layer)
+            if unwrap_filter is None or unwrap_filter(n, m):
+                orig_layer = m.unwrapper(best_param)
+                set_module(block, n, orig_layer)
+            elif best_param is not None:
+                for key, value in best_param.items():
+                    if key in m.params:
+                        m.params[key].data.copy_(value.to(m.params[key].device))

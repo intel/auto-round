@@ -221,7 +221,8 @@ class BaseCompressor(object):
         kwargs.pop("enable_alg_ext", None)
         kwargs.pop("vlm", None)
         amp = kwargs.pop("amp", True)
-        nblocks = kwargs.pop("nblocks", 1)
+        nblocks = kwargs.pop("nblocks", getattr(self.quantize_config, "nblocks", 1))
+        nblocks_overlap = kwargs.pop("nblocks_overlap", getattr(self.quantize_config, "nblocks_overlap", 0))
         disable_deterministic_algorithms = kwargs.pop("disable_deterministic_algorithms", True)
         enable_deterministic_algorithms = kwargs.pop("enable_deterministic_algorithms", False)
 
@@ -273,6 +274,15 @@ class BaseCompressor(object):
         set_seed(self.seed)
 
         self.nblocks = nblocks
+        self.nblocks_overlap = nblocks_overlap
+        if self.nblocks <= 0:
+            raise ValueError("`nblocks` must be positive")
+        if self.nblocks == 1:
+            self.nblocks_overlap = 0
+        if self.nblocks_overlap < 0:
+            raise ValueError("`nblocks_overlap` must be non-negative")
+        if self.nblocks_overlap >= self.nblocks:
+            raise ValueError("`nblocks_overlap` must be smaller than `nblocks`")
 
         self.enable_torch_compile = enable_torch_compile
 

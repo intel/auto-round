@@ -237,6 +237,13 @@ class BasicArgumentParser(argparse.ArgumentParser):
             "Recommended to keep at 1 for stability with large models.",
         )
         tuning.add_argument(
+            "--nblocks_overlap",
+            default=0,
+            type=int,
+            help="Number of overlapping blocks between adjacent nblocks windows. "
+            "For CBQ-style CBD, use --nblocks 2 --nblocks_overlap 1.",
+        )
+        tuning.add_argument(
             "--scale_dtype",
             default=None,
             choices=["fp16", "float16", "bf16", "bfloat16", "fp32", "float32"],
@@ -703,6 +710,7 @@ def tune(args):
         lr=args.lr,
         minmax_lr=args.minmax_lr,
         nblocks=args.nblocks,
+        nblocks_overlap=args.nblocks_overlap,
         to_quant_block_names=args.to_quant_block_names,
         scale_dtype=args.scale_dtype,
     )
