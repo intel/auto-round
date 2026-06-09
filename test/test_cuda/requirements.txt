@@ -8,5 +8,3 @@ pillow
 torchvision
 numba
 sentencepiece
-# Remove after new GPTQModel release, https://github.com/intel/auto-round/issues/1891
-transformers <= 5.9.0
