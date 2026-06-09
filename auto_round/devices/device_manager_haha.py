@@ -32,7 +32,7 @@ out-of-tree backends that are not yet integrated into ``torch.accelerator``
 
 Typical usage::
 
-    from auto_round.utils.device_manager import get_current_device_manager, get_ar_device
+    from auto_round.utils.device_manager import  get_ar_device
 
     dev = get_current_device_manager()   # active device (cuda/xpu/hpu/...)
     if dev.is_available():
@@ -58,10 +58,9 @@ __all__ = [
     "ARDevice",
     "DeviceManager",
     "device_manager",
-    "get_ar_device",
-    "get_current_device_manager",
+    "get_current_ar_device",
     "get_current_device_type",
-    "is_device_available",
+    # "is_device_available",
     "get_available_device_types",
     "get_major_device",
     "detect_device_count",
@@ -191,9 +190,9 @@ def get_current_device_type() -> str:
     return "cpu"
 
 
-def is_device_available() -> bool:
-    """Whether any (non-CPU) device is available."""
-    return get_current_device_type() is not None
+# def is_device_available() -> bool:
+#     """Whether any (non-CPU) device is available."""
+#     return get_current_device_type() is not None
 
 
 def get_available_device_types() -> list[str]:
@@ -453,7 +452,7 @@ class ARDevice:
         # Lazy import: the helper lives in utils/device.py which imports this module.
         if not self.is_torch_compile_supported():
             return func
-        from auto_round.utils.device import _bump_dynamo_cache_limit
+        from auto_round.devices.utils import _bump_dynamo_cache_limit
 
         _bump_dynamo_cache_limit()
 
@@ -515,7 +514,7 @@ class HpuARDevice(ARDevice):
 
     def is_torch_compile_supported(self) -> bool:
         # HPU only compiles in compile mode (lazy mode keeps the eager function).
-        from auto_round.utils.device import _use_hpu_compile_mode
+        from auto_round.devices.utils import _use_hpu_compile_mode
 
         return _use_hpu_compile_mode()
 
@@ -680,7 +679,7 @@ class CpuARDevice(ARDevice):
         cached = getattr(self, "_bf16_supported", None)
         if cached is None:
             # Local import avoids a circular dependency (device.py imports this module).
-            from auto_round.utils.device import CpuInfo
+            from auto_round.devices.utils import CpuInfo
 
             cached = bool(CpuInfo().bf16)
             self._bf16_supported = cached
@@ -721,6 +720,7 @@ class CpuARDevice(ARDevice):
 
 # ---------------------------------------------------------------------------
 # Device manager -- creates, caches and orchestrates Device handles
+# We assume only one accelerator
 # ---------------------------------------------------------------------------
 class DeviceManager:
     """Registry and orchestrator for :class:`Device` handles.
@@ -773,7 +773,7 @@ class DeviceManager:
         self._device_map = device_map
         # Lazy import: device.py imports this module, so a top-level import would
         # create a circular dependency.
-        from auto_round.utils.device import parse_available_devices
+        from auto_round.devices.utils import parse_available_devices
 
         self._device_list = parse_available_devices(device_map)  # cuda:6
         self._major_device = get_major_device(device_map)  # cuda:4
@@ -786,17 +786,24 @@ class DeviceManager:
 
     @property
     def device_list(self) -> list:
-        """All concrete devices selected by the configured ``device_map``."""
+        """All concrete devices selected by the configured ``device_map``,[cdua:0,cuda:1]."""
         if self._device_list is None:
             self.configure(self._device_map)
         return self._device_list
 
     @property
     def device(self) -> str:
-        """The major (primary, non-CPU when possible) device string."""
+        """The major (primary, non-CPU when possible) device string. cuda:0"""
         if self._major_device is None:
             self.configure(self._device_map)
         return self._major_device
+
+    @property
+    def device_type(self):
+        return self.device.split(":")[0]
+
+    def device_count(self):
+        return len(self.device_list)
 
     @device.setter
     def device(self, value: Union[str, torch.device]) -> None:
@@ -828,38 +835,17 @@ class DeviceManager:
 
     def current(self) -> ARDevice:
         """Return the :class:`Device` for the active backend (or CPU)."""
-        return self.get_ar_device(get_current_device_type())
+        return self.get_ar_device(self.device_type)
 
-    def current_type(self) -> str:
-        return get_current_device_type()
-
-    # -- multi-card / multi-backend ----------------------------------------
-    def available_types(self) -> list[str]:
-        """All available (non-CPU) backend types, in preferred order."""
-        return get_available_device_types()
-
-    def available_devices(self) -> list[ARDevice]:
-        """One :class:`Device` per available (non-CPU) backend type."""
-        return [self.get_ar_device(dtype) for dtype in self.available_types()]
-
-    def all_devices(self) -> list[torch.device]:
-        """Enumerate every card across all available backends (multi-card)."""
-        devices: list[torch.device] = []
-        for device in self.available_devices():
-            devices.extend(device.devices())
-        return devices
+    #TODO clear memory, all via device manager
 
 
 # Process-wide singleton manager.
 device_manager = DeviceManager()
 
 
-def get_ar_device(device_type: Union[None, str, int, torch.device] = None) -> ARDevice:
-    """Return the cached :class:`Device` handle for a specific backend type."""
-    return device_manager.get_ar_device(device_type)
 
-
-def get_current_device_manager() -> ARDevice:
+def get_current_ar_device() -> ARDevice:
     """Return the :class:`Device` handle for the active backend (or CPU)."""
     return device_manager.current()
 
@@ -869,7 +855,7 @@ def get_current_device_manager() -> ARDevice:
 # ---------------------------------------------------------------------------
 def detect_device_count() -> int:
     """Detects the number of available computation devices."""
-    return get_current_device_manager().device_count()
+    return get_current_ar_device().device_count()
 
 
 def get_device_and_parallelism(device: Union[str, torch.device, int, dict]) -> tuple[str, bool]:
@@ -907,7 +893,7 @@ def get_device_and_parallelism(device: Union[str, torch.device, int, dict]) -> t
         # Pick the active backend generically rather than probing each one by hand.
         device_type = get_current_device_type() or "cpu"
         # Parallelism policy is intentionally not part of the device manager.
-        from auto_round.utils.device import is_pipeline_parallel_supported
+        from auto_round.devices.utils import is_pipeline_parallel_supported
 
         return device_type, is_pipeline_parallel_supported(device_type)
     elif device == "auto":
@@ -950,7 +936,7 @@ def is_auto_device_mapping(device_map: Union[str, int, dict, None]) -> bool:
         return False
     elif device_map == "auto":
         return True
-    elif isinstance(device_map, str) and "," in device_map:
+    elif isinstance(device_map, str) and "," in device_map: # TODO Only support CUDA visible device set
         return True
     elif isinstance(device_map, dict):
         return False
@@ -976,7 +962,7 @@ def get_major_device(device_map: Union[None, str, torch.device, int, dict] = Non
 
         dev_idx = None
         device = device_map
-        if is_valid_digit(device):
+        if device is not None and is_valid_digit(device):
             dev_idx = int(device)
             device = "auto"
         if isinstance(device, str) and "," in device:  # device is "0,1,2"
@@ -1034,7 +1020,7 @@ def get_major_device(device_map: Union[None, str, torch.device, int, dict] = Non
 
 def get_device_memory(i: int = 0) -> int:
     """Gets the total memory on the specified device, in gigabytes."""
-    dev_mgr = get_current_device_manager()
+    dev_mgr = get_current_ar_device()
     if not dev_mgr.is_available() or dev_mgr.type == "cpu":
         raise RuntimeError("No supported device found (CUDA/XPU/HPU/...).")
     return dev_mgr.total_memory(i) / 1024 / 1024 / 1024
@@ -1053,7 +1039,7 @@ def _clear_memory_for_cpu_and_cuda(
     tensor = None
     gc.collect()
     # Lazy import: malloc-trim helpers live in utils/device.py.
-    from auto_round.utils.device import _maybe_trim_malloc
+    from auto_round.devices.utils import _maybe_trim_malloc
 
     _maybe_trim_malloc()
 
@@ -1074,9 +1060,9 @@ def _clear_memory_for_cpu_and_cuda(
         return
 
     if not device_list:
-        dev_mgr = get_current_device_manager()
-        dev_mgr.synchronize()
-        dev_mgr.empty_cache()
+        dev_mgr = get_current_ar_device()
+        dev_mgr.synchronize() #TODO call device_mgr
+        dev_mgr.empty_cache() #TODO call device_mgr
         return
 
     # Parse "<type>:<idx>" entries, grouping indices per backend.
@@ -1093,7 +1079,7 @@ def _clear_memory_for_cpu_and_cuda(
         per_backend.setdefault(dev_type, []).append(devid)
 
     for dev_type, ids in per_backend.items():
-        dev_mgr = get_ar_device(dev_type)
+        dev_mgr = device_manager.get_ar_device(dev_type)
         for devid in ids:
             dev_mgr.synchronize(devid)
         dev_mgr.empty_cache()
@@ -1110,7 +1096,7 @@ class ClearMemory:
         device_list: Union[list, tuple, None] = None,
     ):
         # Lazy imports: these symbols live in utils/device.py.
-        from auto_round.utils.device import _force_trim_malloc, is_hpex_available, memory_monitor
+        from auto_round.devices.utils import _force_trim_malloc, is_hpex_available, memory_monitor
 
         if is_hpex_available():
             # Clear CPU-side references so Python can reclaim them.

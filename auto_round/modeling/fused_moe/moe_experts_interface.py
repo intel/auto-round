@@ -35,7 +35,7 @@ import torch
 from torch import nn
 
 from auto_round.utils import clear_memory, logger
-from auto_round.utils.device import memory_monitor
+from auto_round.devices.utils import memory_monitor
 
 try:
     from transformers.integrations.moe import ALL_EXPERTS_FUNCTIONS

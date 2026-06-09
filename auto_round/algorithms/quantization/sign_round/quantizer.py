@@ -12,12 +12,9 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 import copy
-from collections import defaultdict
 from contextlib import nullcontext
-from functools import partial
 from typing import Any, Callable, Optional, Union
 
-import accelerate
 import torch
 from torch import autocast
 
@@ -26,12 +23,10 @@ from auto_round.algorithms.quantization.sign_round.config import SignRoundConfig
 from auto_round.algorithms.quantization.sign_round.sign_sgd import SignSGD
 from auto_round.compressors.utils import (
     IndexSampler,
-    block_forward,
     check_need_act_calibration,
     collect_best_params,
-    immediate_pack,
 )
-from auto_round.data_type.utils import reshape_pad_tensor_by_group_size, update_fused_layer_global_scales
+from auto_round.data_type.utils import update_fused_layer_global_scales
 from auto_round.logger import logger
 from auto_round.utils import (
     get_module,
@@ -42,8 +37,8 @@ from auto_round.utils import (
     set_module,
     to_device,
 )
-from auto_round.utils.device import clear_memory_if_reached_threshold
-from auto_round.utils.device_manager import device_manager
+from auto_round.devices.utils import clear_memory_if_reached_threshold
+from auto_round.devices.device_manager_haha import device_manager
 from auto_round.utils.distributed import setup_ddp_if_needed_
 from auto_round.wrapper import WrapperLinear, unwrapper_block, unwrapper_layer, wrapper_block
 

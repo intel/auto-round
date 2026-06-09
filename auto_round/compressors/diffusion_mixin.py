@@ -13,19 +13,18 @@
 # limitations under the License.
 import inspect
 import os
-from typing import Union
 
 import torch
 from tqdm import tqdm
 
 from auto_round.logger import logger
 from auto_round.utils import clear_memory
-from auto_round.utils.device import (
+from auto_round.devices.utils import (
     dispatch_model_block_wise,
     dispatch_model_by_all_available_devices,
     get_major_device,
 )
-from auto_round.utils.device_manager import device_manager, is_auto_device_mapping
+from auto_round.devices.device_manager_haha import device_manager, is_auto_device_mapping
 from auto_round.utils.model import rename_weights_files
 
 

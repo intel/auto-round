@@ -1,6 +1,4 @@
-import copy
 import os
-import re
 import shutil
 
 import pytest
@@ -160,7 +158,7 @@ class TestAutoRound:
         ],
     )
     def test_mllm_detect(self, model_name):
-        from auto_round.utils import is_mllm_model, llm_load_model, mllm_load_model
+        from auto_round.utils import is_mllm_model, llm_load_model
 
         if model_name == "Qwen/Qwen2.5-1.5B-Instruct":
             model_name = get_model_path(model_name)
@@ -241,7 +239,7 @@ class TestAutoRound:
 
     def test_mllm_text_dataset_low_vram(self):
         """Test that MLLM with string/text dataset uses CPU caching to reduce peak VRAM."""
-        from auto_round.utils.device import memory_monitor
+        from auto_round.devices.utils import memory_monitor
 
         model_name = get_model_path("Qwen/Qwen2-VL-2B-Instruct")
         dataset = ["a small test sentence", "another test input"]

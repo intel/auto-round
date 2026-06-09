@@ -41,8 +41,8 @@ from auto_round.utils import (
     to_device,
     to_dtype,
 )
-from auto_round.utils.device import parse_available_devices
-from auto_round.utils.device_manager import device_manager
+from auto_round.devices.utils import parse_available_devices
+from auto_round.devices.device_manager_haha import device_manager
 
 
 @register_calibrator("llm")

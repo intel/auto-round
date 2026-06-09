@@ -58,8 +58,8 @@ from auto_round.utils import (
     to_device,
     to_dtype,
 )
-from auto_round.utils.device import MemoryMonitor
-from auto_round.utils.device_manager import get_current_device_manager
+from auto_round.devices.utils import MemoryMonitor
+from auto_round.devices.device_manager_haha import get_current_ar_device
 from auto_round.utils.offload import OffloadManager
 from auto_round.wrapper import WrapperLinear
 
@@ -442,7 +442,7 @@ def model_forward_low_gpu(model, dataloader, major_device="cuda", pbar=None):
         """Hook executed before backward propagation."""
         global last_grad_input
         last_grad_input = grad_input
-        get_current_device_manager().synchronize()
+        get_current_ar_device().synchronize()
         raise MyCustomError("Interrupt backward pass")
 
     for data in dataloader:

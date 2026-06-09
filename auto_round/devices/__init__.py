@@ -1,0 +1,1 @@
+from auto_round.devices.device_manager_haha import device_manager

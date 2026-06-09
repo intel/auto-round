@@ -23,11 +23,9 @@ from auto_round.auto_scheme import AutoScheme
 from auto_round.compressors.base import BaseCompressor
 from auto_round.eval.eval_cli import EvalArgumentParser, eval, eval_task_by_task
 from auto_round.eval.evaluation import run_model_evaluation
-from auto_round.schemes import PRESET_SCHEMES, preset_name_to_scheme
+from auto_round.schemes import PRESET_SCHEMES
 from auto_round.utils import (
     clear_memory,
-    get_device_and_parallelism,
-    get_model_dtype,
     parse_layer_config_arg,
 )
 

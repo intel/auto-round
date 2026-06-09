@@ -1,10 +1,7 @@
 from unittest.mock import MagicMock, patch
 
-import pytest
-
-import auto_round.utils.device as auto_round_utils
+import auto_round.devices.utils as auto_round_utils
 from auto_round.utils.common import (
-    compress_layer_names,
     preserve_original_visual_block_name,
     revert_checkpoint_conversion_mapping,
 )

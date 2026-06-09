@@ -19,7 +19,7 @@ from transformers.quantizers.quantizer_finegrained_fp8 import (
 
 from auto_round.utils import is_transformers_version_greater_or_equal_5, is_transformers_version_greater_or_equal_5_4_0
 from auto_round.utils import logger as auto_round_logger
-from auto_round.utils.device import override_cuda_device_capability
+from auto_round.devices.utils import override_cuda_device_capability
 
 
 # Patching replace_with_fp8_linear to disable expert replacement

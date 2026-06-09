@@ -14,7 +14,6 @@
 import copy
 import gc
 import os
-import sys
 from dataclasses import asdict, dataclass, fields
 from typing import Any, Optional, Union
 
@@ -40,7 +39,7 @@ from auto_round.schemes import (
     get_gguf_scheme,
     preset_name_to_scheme,
 )
-from auto_round.special_model_handler import get_predefined_fixed_attr, get_predefined_ignore_layers, update_module
+from auto_round.special_model_handler import get_predefined_fixed_attr, get_predefined_ignore_layers
 from auto_round.utils import (
     AUDIO_MM_KEYS,
     INNER_SUPPORTED_LAYER_TYPES,
@@ -60,12 +59,12 @@ from auto_round.utils import (
     preserve_original_visual_block_name,
     revert_checkpoint_conversion_mapping,
 )
-from auto_round.utils.device import (
+from auto_round.devices.utils import (
     _force_trim_malloc,
     patch_xpu_sdpa_drop_causal_mask,
     set_non_auto_device_map,
 )
-from auto_round.utils.device_manager import device_manager
+from auto_round.devices.device_manager_haha import device_manager
 from auto_round.utils.offload import OffloadManager
 
 
@@ -283,7 +282,6 @@ class BaseCompressor(object):
 
         if is_hpex_available():
             logger.info("habana_frameworks is available, import htcore explicitly.")
-            import habana_frameworks.torch.core as htcore  # pylint: disable=E0401
 
         # Reset both context singletons before creating fresh instances so that
         # consecutive AutoRound creations don't inherit stale config from earlier ones.

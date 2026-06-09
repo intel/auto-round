@@ -14,7 +14,7 @@
 
 import gc
 import importlib
-from typing import Any, Callable, Optional, Union
+from typing import Optional
 
 import torch
 from packaging import version
@@ -37,8 +37,8 @@ from auto_round.utils import (
     mllm_load_model,
     unsupported_meta_device,
 )
-from auto_round.utils.device import _force_trim_malloc
-from auto_round.utils.device_manager import device_manager, get_ar_device
+from auto_round.devices.utils import _force_trim_malloc
+from auto_round.devices.device_manager_haha import device_manager, get_ar_device
 
 __all__ = ["ModelContext"]
 

@@ -1,4 +1,3 @@
-import os
 import shutil
 
 import pytest
@@ -9,7 +8,7 @@ import transformers
 from auto_round import AutoRound
 from auto_round.schemes import QuantizationScheme, _handle_special_schemes
 
-from ...helpers import get_model_path, get_tiny_model, opt_name_or_path, qwen_name_or_path, save_tiny_model
+from ...helpers import get_tiny_model, opt_name_or_path
 
 
 class TestAutoRound:
@@ -169,7 +168,7 @@ class TestAutoRound:
                 assert m.group_size == 64
 
     def test_parse_available_devices(self):
-        from auto_round.utils.device import parse_available_devices
+        from auto_round.devices.utils import parse_available_devices
 
         device_list = parse_available_devices("auto")
         assert len(device_list) == 1 and "cpu" in device_list

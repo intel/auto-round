@@ -16,36 +16,28 @@ import gc
 import time
 import traceback
 from functools import partial
-from typing import Any, Callable, Optional, Union
+from typing import Any, Callable, Union
 
 import accelerate
 import torch
-from accelerate.big_modeling import dispatch_model, infer_auto_device_map
-from accelerate.utils import get_balanced_memory, get_max_memory
+from accelerate.big_modeling import dispatch_model
 from tqdm import tqdm
 
-from auto_round import envs
 from auto_round.algorithms.alg_config import AlgConfig
 from auto_round.calibration.utils import (
-    _infer_last_cache_name,
-    _split_inputs_diffusion,
     _update_inputs,
 )
 from auto_round.compressors.base import BaseCompressor
 from auto_round.compressors.utils import (
     _get_quantized_layer_names_outside_blocks,
-    check_skippable_keywords,
     immediate_pack,
-    init_cache,
     is_nv_fp,
     is_static_wfp8afp8,
-    reset_params,
 )
 from auto_round.logger import logger
 from auto_round.modeling.fused_moe.replace_modules import materialize_model_, safe_to_cpu_
 from auto_round.utils import (
     SUPPORTED_LAYER_TYPES,
-    check_seqlen_compatible,
     check_to_quantized,
     clear_memory,
     compress_layer_names,
@@ -53,21 +45,17 @@ from auto_round.utils import (
     flatten_list,
     get_block_names,
     get_module,
-    hook_ngram_embeddings_on_cpu,
     is_auto_device_mapping,
-    is_quantized_input_module,
     memory_monitor,
     mv_module_from_gpu,
     set_amax_for_all_moe_layers,
     to_device,
     to_dtype,
-    wrap_block_forward_positional_to_kwargs,
 )
-from auto_round.utils.device import (
+from auto_round.devices.utils import (
     _force_trim_malloc,
-    parse_available_devices,
 )
-from auto_round.utils.device_manager import device_manager
+from auto_round.devices.device_manager_haha import device_manager
 from auto_round.wrapper import WrapperMultiblock
 
 
@@ -344,7 +332,7 @@ class DataDrivenCompressor(BaseCompressor):
                     and len(device_manager.device_list) > 1
                     and not self.model_context.is_diffusion
                 ):
-                    from auto_round.utils.device import set_auto_device_map_for_block_with_tuning
+                    from auto_round.devices.utils import set_auto_device_map_for_block_with_tuning
 
                     card_0_in_high_risk, loss_device = set_auto_device_map_for_block_with_tuning(
                         block,
@@ -495,7 +483,7 @@ class DataDrivenCompressor(BaseCompressor):
                 and len(device_manager.device_list) > 1
                 and not self.model_context.is_diffusion
             ):
-                from auto_round.utils.device import set_auto_device_map_for_block_with_tuning
+                from auto_round.devices.utils import set_auto_device_map_for_block_with_tuning
 
                 card_0_in_high_risk, loss_device = set_auto_device_map_for_block_with_tuning(
                     m,
@@ -1000,7 +988,7 @@ class CalibratedRTNCompressor(DataDrivenCompressor):
                     and len(device_manager.device_list) > 1
                     and not self.model_context.is_diffusion
                 ):
-                    from auto_round.utils.device import set_auto_device_map_for_block_with_tuning
+                    from auto_round.devices.utils import set_auto_device_map_for_block_with_tuning
 
                     set_auto_device_map_for_block_with_tuning(
                         block,

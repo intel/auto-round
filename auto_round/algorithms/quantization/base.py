@@ -36,7 +36,7 @@ from auto_round.utils import (
     get_module,
     set_module,
 )
-from auto_round.utils.device_manager import device_manager
+from auto_round.devices.device_manager_haha import device_manager
 from auto_round.wrapper import WrapperLinear
 
 

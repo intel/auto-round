@@ -62,13 +62,13 @@ from abc import ABC, abstractmethod
 from contextlib import ContextDecorator
 from dataclasses import fields
 from enum import Enum, auto
-from typing import Callable, Dict, Optional, Set, Type
+from typing import Dict, Optional, Set, Type
 
 import psutil
 import torch
 
 from auto_round import envs
-from auto_round.logger import logger
+
 
 # ============================================================================
 # Section 0: UTILITY HELPERS
@@ -397,7 +397,7 @@ def convert_module_to_hp_if_necessary(
         If input is a model containing quantized layers: The model with layers converted.
         If input has no quantized layers: Returns the input unchanged.
     """
-    from auto_round.utils.device import clear_memory
+    from auto_round.devices.utils import clear_memory
     from auto_round.utils.model import set_module
 
     def _sync_serialization_attrs(src_module: torch.nn.Module, dst_module: torch.nn.Module) -> None:
@@ -590,7 +590,7 @@ class FP8Handler(WeightTypeHandler):
             return layer
 
         from auto_round.schemes import QuantizationScheme
-        from auto_round.utils.device import is_gaudi2
+        from auto_round.devices.utils import is_gaudi2
 
         new_layer = torch.nn.Linear(layer.in_features, layer.out_features, bias=layer.bias is not None, dtype=dtype)
         if layer.bias is not None:
@@ -674,7 +674,7 @@ class MXFP4Handler(WeightTypeHandler):
     ) -> torch.nn.Module:
         """Convert an MXFP4 CompressedLinear layer to a standard Linear layer."""
         from auto_round.schemes import QuantizationScheme
-        from auto_round.utils.device import is_gaudi2
+        from auto_round.devices.utils import is_gaudi2
 
         new_layer = torch.nn.Linear(layer.in_features, layer.out_features, bias=layer.bias is not None, dtype=dtype)
         if layer.bias is not None:
@@ -763,7 +763,7 @@ class MXFP8Handler(WeightTypeHandler):
     ) -> torch.nn.Module:
         """Convert an MXFP8 CompressedLinear layer to a standard Linear layer."""
         from auto_round.schemes import QuantizationScheme
-        from auto_round.utils.device import is_gaudi2
+        from auto_round.devices.utils import is_gaudi2
 
         new_layer = torch.nn.Linear(layer.in_features, layer.out_features, bias=layer.bias is not None, dtype=dtype)
         if layer.bias is not None:
@@ -854,7 +854,7 @@ class NVFP4Handler(WeightTypeHandler):
             return layer
 
         from auto_round.schemes import QuantizationScheme
-        from auto_round.utils.device import is_gaudi2
+        from auto_round.devices.utils import is_gaudi2
 
         new_layer = torch.nn.Linear(layer.in_features, layer.out_features, bias=layer.bias is not None, dtype=dtype)
         if layer.bias is not None:

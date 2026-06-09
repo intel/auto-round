@@ -11,18 +11,15 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-from typing import Any, Callable, Optional, Union
+from typing import Optional, Union
 
 import torch
 
 from auto_round.context.base import BaseContext
-from auto_round.utils.device import (
+from auto_round.devices.utils import (
     clear_memory,
-    clear_memory_if_reached_threshold,
-    set_auto_device_map_for_block_with_tuning,
-    set_non_auto_device_map,
 )
-from auto_round.utils.device_manager import device_manager
+from auto_round.devices.device_manager_haha import device_manager
 
 __all__ = ["CompressContext"]
 

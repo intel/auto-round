@@ -2,7 +2,7 @@ import pytest
 import torch
 import torch.nn.functional as F
 
-from auto_round.utils.device import patch_xpu_sdpa_drop_causal_mask
+from auto_round.devices.utils import patch_xpu_sdpa_drop_causal_mask
 
 
 @pytest.mark.skipif(not (hasattr(torch, "xpu") and torch.xpu.is_available()), reason="XPU not available")

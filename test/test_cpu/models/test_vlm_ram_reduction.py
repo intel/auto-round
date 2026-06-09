@@ -23,14 +23,11 @@ All tests use fake model hierarchies and mocks — no real model weights
 are loaded or downloaded.
 """
 
-import types
 from unittest.mock import patch
 
-import pytest
 import torch
 import torch.nn as nn
 
-from auto_round.utils.common import flatten_list
 
 # ---------------------------------------------------------------------------
 # 1. Tests for per-sample-constant tensor skipping in _get_block_forward_func
@@ -147,7 +144,7 @@ class TestDiffusionMultiDeviceDispatch:
 
     def test_reserve_memory_on_primary_device(self):
         """Non-target components must reserve memory on the primary device."""
-        from auto_round.utils.device import dispatch_model_by_all_available_devices
+        from auto_round.devices.utils import dispatch_model_by_all_available_devices
 
         # Build a fake pipeline with two components: main + auxiliary
         class FakeComponent(nn.Module):
@@ -175,7 +172,6 @@ class TestDiffusionMultiDeviceDispatch:
 
     def test_multi_device_respects_non_main_memory(self):
         """With multiple devices, memory reservation must be computed for non-main components."""
-        from auto_round.utils.device import dispatch_model_by_all_available_devices
 
         class FakeComponent(nn.Module):
             def __init__(self, param_count):

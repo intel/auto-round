@@ -11,17 +11,17 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-from typing import Any, Callable, Union
+from typing import Union
 
 import torch
 
 from auto_round.data_type.register import register_dtype
 from auto_round.data_type.utils import reshape_pad_tensor_by_group_size, revert_tensor_by_pad, round_ste
 from auto_round.export.export_to_gguf.config import GGML_QUANT_SIZES
-from auto_round.export.export_to_gguf.packing import make_q3_quants, make_qx_quants, make_qx_quants_chunk
+from auto_round.export.export_to_gguf.packing import make_q3_quants, make_qx_quants_chunk
 from auto_round.logger import logger
 from auto_round.utils import get_reciprocal
-from auto_round.utils.device import clear_memory
+from auto_round.devices.utils import clear_memory
 
 
 @register_dtype("int_sym_dq")
@@ -789,7 +789,7 @@ def quant_tensor_gguf_sym_dq(
         Quantized and de-quantized tensor, scale, zero-point
     """
 
-    from auto_round.export.export_to_gguf.config import K_SCALE_SIZE, QK_K
+    from auto_round.export.export_to_gguf.config import QK_K
 
     if bits not in [3, 6]:
         raise KeyError(f"bits={bits} is not supported by gguf_int_sym_dq, please check.")

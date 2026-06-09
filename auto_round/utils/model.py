@@ -20,7 +20,6 @@ from collections import UserDict
 from pathlib import Path
 from typing import TYPE_CHECKING, Union
 
-import psutil
 import torch
 import transformers
 from packaging import version
@@ -30,10 +29,7 @@ from auto_round.export.export_to_gguf.config import ModelType
 from auto_round.logger import logger
 from auto_round.utils.common import AUDIO_MM_KEYS, VISION_MM_KEYS, monkey_patch_model
 from auto_round.utils.weight_handler import (
-    _dequant_fp8_linear_weight,
     check_and_mark_quantized_module,
-    convert_module_to_hp_if_necessary,
-    is_quantized_input_module,
 )
 
 # Maps architecture class names to virtual model_type keys.
@@ -342,14 +338,13 @@ def llm_load_model(
         from modelscope import AutoModel, AutoModelForCausalLM, AutoTokenizer  # pylint: disable=E0401
     else:
         from transformers import AutoModel, AutoModelForCausalLM, AutoTokenizer
-    from auto_round.utils.device import (
-        _use_hpu_compile_mode,
+    from auto_round.devices.utils import (
         fake_cuda_for_hpu,
         fake_triton_for_hpu,
         is_hpex_available,
         override_cuda_device_capability,
     )
-    from auto_round.utils.device_manager import get_device_and_parallelism
+    from auto_round.devices.device_manager_haha import get_device_and_parallelism
 
     device_str, use_auto_mapping = get_device_and_parallelism(device)
     torch_dtype = "auto"
@@ -535,8 +530,8 @@ def mllm_load_model(
 
         base_lib = transformers
 
-    from auto_round.utils.device import override_cuda_device_capability
-    from auto_round.utils.device_manager import get_device_and_parallelism
+    from auto_round.devices.utils import override_cuda_device_capability
+    from auto_round.devices.device_manager_haha import get_device_and_parallelism
 
     device_str, use_auto_mapping = get_device_and_parallelism(device)
     torch_dtype = "auto"
@@ -826,7 +821,7 @@ def diffusion_load_model(
     from functools import partial
 
     from auto_round.utils.common import LazyImport
-    from auto_round.utils.device_manager import get_device_and_parallelism
+    from auto_round.devices.device_manager_haha import get_device_and_parallelism
 
     _check_accelerate_version()
 

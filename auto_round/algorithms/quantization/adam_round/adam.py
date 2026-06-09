@@ -11,14 +11,12 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-from typing import Union
 
 import torch
 
 from auto_round.algorithms.quantization.sign_round.quantizer import SignRoundQuantizer
-from auto_round.schemes import QuantizationScheme
 from auto_round.utils import check_is_cpu, htcore, is_hpex_available
-from auto_round.utils.device_manager import device_manager
+from auto_round.devices.device_manager_haha import device_manager
 
 
 class AdamRoundQuantizer(SignRoundQuantizer):

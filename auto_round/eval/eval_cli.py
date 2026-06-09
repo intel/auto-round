@@ -22,7 +22,6 @@ from transformers.utils.versions import require_version
 from auto_round.utils import (
     DEVICE_ENVIRON_VARIABLE_MAPPING,
     dispatch_model_block_wise,
-    get_device_and_parallelism,
     get_major_device,
     get_model_dtype,
     is_diffusion_model,

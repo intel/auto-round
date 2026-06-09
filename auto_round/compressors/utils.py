@@ -35,7 +35,7 @@ from auto_round.utils import (
     get_module,
     to_standard_regex,
 )
-from auto_round.utils.device_manager import device_manager
+from auto_round.devices.device_manager_haha import device_manager
 
 if TYPE_CHECKING:
     from auto_round.schemes import QuantizationScheme
