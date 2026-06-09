@@ -522,7 +522,7 @@ ar.quantize_and_save(output_dir, format="auto_round")
 
 免模型架构量化模式（Model-Free Mode）可以**无需将完整模型加载到内存中**即可执行 RTN WOQ 量化。它直接下载 safetensors 文件，逐分片地对每个 Linear 权重张量进行量化并保存打包结果。当您需要快速、无标定数据的量化且资源有限时，该模式非常实用。
 
-> **默认自动启用。** 自 v0.13 起，当您同时传入 `--iters 0 --disable_opt_rtn` 与一个受支持的 INT WOQ scheme 时，CLI 会自动走免模型路径。该路径与原始 `--iters 0 --disable_opt_rtn` 流程**位级（bit-exact）等价**，但内存占用大幅降低。如需关闭自动路由、强制使用原始流程，可加 `--disable_model_free`。
+> **默认自动启用。** 自 v0.13 起，当您同时传入 `--iters 0 --disable_opt_rtn` 与一个受支持的 INT WOQ 或 MXFP scheme 时，CLI 会自动走免模型路径。该路径与原始 `--iters 0 --disable_opt_rtn` 流程**位级（bit-exact）等价**，但内存占用大幅降低。如需关闭自动路由、强制使用原始流程，可加 `--disable_model_free`。
 
 **主要特性：**
 - **无需模型对象** — 仅需 `config.json` 和 safetensors 文件
@@ -536,7 +536,9 @@ ar.quantize_and_save(output_dir, format="auto_round")
 
 **支持的 Scheme**
 
-免模型模式当前支持以下整数权重量化预设（均使用 `auto_round:auto_gptq` 打包格式）：
+免模型模式支持以下量化预设：
+
+**整数权重量化**（使用 `auto_round:auto_gptq` 打包格式）：
 
 | Preset | Bits | Group size | Sym |
 | --- | --- | --- | --- |
@@ -551,7 +553,14 @@ ar.quantize_and_save(output_dir, format="auto_round")
 
 也可以传入自定义的 `QuantizationScheme(bits=N, group_size=G, sym=True/False, data_type="int", act_bits=16)`，其中 `bits ∈ {2, 4, 8}`，group_size / sym 可任意设置。
 
-需要特殊打包内核的 scheme（`W3A16`、`FPW8A16`、`BF16`、`MXFP4`、`MXFP8`、`MXINT4`、`NVFP4`、`FP8_BLOCK`、`FP8_STATIC`、`INT8_W8A8`、`GGUF:*` 等）**不被支持**，传入会抛 `ValueError`。这些请使用标准 AutoRound 流程。
+**MXFP（微缩放浮点）**（使用 `mxfp4-pack-quantized` / `mxfp8-quantized` 格式，兼容 compressed-tensors / vLLM）：
+
+| Preset | Bits | Group size | 格式 |
+| --- | --- | --- | --- |
+| `MXFP4` | 4 | 32 | mxfp4-pack-quantized |
+| `MXFP8` | 8 | 32 | mxfp8-quantized |
+
+需要特殊打包内核的 scheme（`W3A16`、`FPW8A16`、`BF16`、`MXINT4`、`NVFP4`、`FP8_BLOCK`、`FP8_STATIC`、`INT8_W8A8`、`GGUF:*` 等）**不被支持**，传入会抛 `ValueError`。这些请使用标准 AutoRound 流程。
 
 #### 命令行用法
 
@@ -583,6 +592,18 @@ auto_round meta-llama/Llama-3.2-1B-Instruct \
   --layer_config "{k_proj:{bits:8},v_proj:{bits:8}}" \
   --ignore_layers "mlp" \
   --output_dir ./int4-llama
+
+# MXFP4 量化
+auto_round meta-llama/Llama-3.2-1B-Instruct \
+  --model_free \
+  --scheme MXFP4 \
+  --output_dir ./mxfp4-llama
+
+# MXFP8 量化
+auto_round meta-llama/Llama-3.2-1B-Instruct \
+  --model_free \
+  --scheme MXFP8 \
+  --output_dir ./mxfp8-llama
 ```
 
 #### API 用法
@@ -602,7 +623,7 @@ AutoRound(
 ).quantize_and_save("./int4-llama")
 ```
 
-> **注意：** 免模型量化模式仅支持 `auto_round` 输出格式，并使用 RTN（无标定数据、无迭代调优）。如需更高质量的量化结果或使用受支持列表外的 scheme，请使用标准 AutoRound 流程。
+> **注意：** 免模型量化模式使用 RTN（无标定数据、无迭代调优）。INT scheme 输出为 `auto_round:auto_gptq` 格式；MXFP scheme 输出为 compressed-tensors 格式（`mxfp4-pack-quantized` / `mxfp8-quantized`）。如需更高质量的量化结果或使用受支持列表外的 scheme，请使用标准 AutoRound 流程。
 
 </details>
 
