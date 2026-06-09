@@ -20,8 +20,8 @@ function setup_environment() {
 
     # install latest gguf for ut test
     cd ~ || exit 1
-    git clone -b master --quiet --single-branch https://github.com/ggml-org/llama.cpp.git && cd llama.cpp/gguf-py && uv pip install . sentencepiece
-
+    git clone -b master --quiet --single-branch https://github.com/ggml-org/llama.cpp.git && cd llama.cpp/gguf-py && uv pip install .
+    
     cd /auto-round && uv pip install .
 
     export LD_LIBRARY_PATH=${HOME}/.venv/lib/:$LD_LIBRARY_PATH
@@ -93,7 +93,7 @@ function run_unit_test() {
 
 function run_inc_unit_test() {
     echo "##[group]set up INC UT env..."
-    INC_PT_ONLY=1 uv pip install -r /auto-round/test/test_cpu/requirements_inc.txt
+    INC_PT_ONLY=1 uv pip install -r /auto-round/test/test_cpu/requirements_inc.txt --extra-index-url https://download.pytorch.org/whl/cpu
     echo "##[endgroup]"
 
     cd /auto-round/test || exit 1
@@ -113,7 +113,7 @@ function run_inc_unit_test() {
 
 function run_llmc_unit_test() {
     echo "##[group]set up LLMC UT env..."
-    BUILD_TYPE="nightly" uv pip install -r /auto-round/test/test_cpu/requirements_llmc.txt
+    BUILD_TYPE="nightly" uv pip install -r /auto-round/test/test_cpu/requirements_llmc.txt --extra-index-url https://download.pytorch.org/whl/cpu
     uv pip uninstall auto-round
     cd /auto-round && uv pip install .
     echo "##[endgroup]"
