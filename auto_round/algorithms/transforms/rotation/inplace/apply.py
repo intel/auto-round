@@ -41,7 +41,6 @@ from auto_round.algorithms.transforms.rotation.inplace.model_config import (
 # ---------------------------------------------------------------------------
 
 
-
 def _resolve_head_dim(mapping, config, hidden_size, num_heads):
     """Resolve the per-head attention dimension.
 
@@ -911,6 +910,7 @@ def apply_rotation_transform(
         )
 
     return model, handles
+
 
 # ---------------------------------------------------------------------------
 # Quick smoke test
