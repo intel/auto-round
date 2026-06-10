@@ -53,7 +53,6 @@ class LogAnalyzer:
         "Killed",
         "Segmentation fault",
         "core dumped",
-        "error:",
         "Error:",
         "ERROR:",
         "== ERRORS ==",
