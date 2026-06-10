@@ -237,7 +237,7 @@ def _override_scheme_with_user_specify(
     return QuantizationScheme.from_dict(scheme_dict)
 
 
-def _parse_scheme(
+def parse_scheme(
     scheme: Union[str, dict, QuantizationScheme, "AutoScheme"], user_scheme_overrides: dict[str, Any]
 ) -> tuple[Union[str, QuantizationScheme], bool]:
     """

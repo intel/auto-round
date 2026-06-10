@@ -36,7 +36,7 @@ from auto_round.logger import logger
 from auto_round.schemes import (
     QuantizationScheme,
     _handle_special_schemes,
-    _parse_scheme,
+    parse_scheme,
     get_gguf_scheme,
     preset_name_to_scheme,
 )
@@ -192,6 +192,12 @@ class BaseCompressor(object):
             if isinstance(_cfg, QuantizationConfig):
                 self.quantize_config = _cfg
             elif isinstance(_cfg, BaseRotationConfig):
+                if hasattr(_cfg, "block_size") and _cfg.block_size is None:
+                    if "group_size" in kwargs:
+                        block_size = kwargs["group_size"]
+                    else:
+                        block_size = parse_scheme(scheme,{})[2]["group_size"]
+                    _cfg.block_size = block_size #TODO not robust
                 self.rotation_configs.append(_cfg)
         assert self.quantize_config is not None, "QuantizationConfig is required for Compressor"
 
@@ -372,7 +378,7 @@ class BaseCompressor(object):
             for k in scheme_fields
             if getattr(self.quantize_config, k, None) is not None
         }
-        default_scheme, self.is_auto_scheme, final_attrs = _parse_scheme(self.scheme, user_scheme_overrides)
+        default_scheme, self.is_auto_scheme, final_attrs = parse_scheme(self.scheme, user_scheme_overrides)
 
         for key, value in final_attrs.items():
             setattr(self.quantize_config, key, value)

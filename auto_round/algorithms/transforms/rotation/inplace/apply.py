@@ -843,7 +843,7 @@ def apply_rotation_transform(
             fuse_online_to_weight = True
         else:
             fuse_online_to_weight = False
-
+    fuse_online_to_weight = False #TODO remove
     had_dict, use_fast_had, preset = _normalize_rotation_matrix(rotation_matrix, group_size)
     compute_device = _resolve_compute_device(compute_device)
 
