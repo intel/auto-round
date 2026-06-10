@@ -125,7 +125,9 @@ y = qlinear(x)
 import auto_round_kernel as ark
 
 output = ark.sdpa(
-    query, key, value,
+    query,
+    key,
+    value,
     attn_mask=None,
     dropout_p=0.0,
     is_causal=False,
@@ -142,7 +144,9 @@ output = ark.sdpa(
 
 ```python
 output = ark.sagev1(
-    query, key, value,
+    query,
+    key,
+    value,
     attn_mask=None,
     dropout_p=0.0,
     is_causal=False,
@@ -166,7 +170,9 @@ Same interface as `sagev1` but also quantizes V to INT8 internally for higher th
 
 ```python
 output = ark.sage_dynquant(
-    query, key, value,
+    query,
+    key,
+    value,
     attn_mask=None,
     dropout_p=0.0,
     is_causal=False,
@@ -189,7 +195,9 @@ import auto_round_kernel as ark
 
 # Drop-in replacement for sageattention.sageattn
 output = ark.sageattn(
-    q, k, v,
+    q,
+    k,
+    v,
     tensor_layout="HND",
     is_causal=False,
     sm_scale=None,
@@ -205,10 +213,10 @@ This mirrors the [SageAttention](https://github.com/thu-ml/SageAttention) interf
 
 ```python
 output = ark.moe_gemm(
-    activations,       # [total_tokens, K] FP16/BF16
-    weights,           # [num_experts, K, N] FP16/BF16
+    activations,  # [total_tokens, K] FP16/BF16
+    weights,  # [num_experts, K, N] FP16/BF16
     num_tokens_per_expert,  # [num_experts] int32
-    scales=None,       # optional [num_experts, N] FP16/BF16
+    scales=None,  # optional [num_experts, N] FP16/BF16
 )
 ```
 
