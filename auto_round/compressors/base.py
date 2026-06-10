@@ -36,8 +36,8 @@ from auto_round.logger import logger
 from auto_round.schemes import (
     QuantizationScheme,
     _handle_special_schemes,
-    parse_scheme,
     get_gguf_scheme,
+    parse_scheme,
     preset_name_to_scheme,
 )
 from auto_round.special_model_handler import get_predefined_fixed_attr, get_predefined_ignore_layers, update_module
@@ -196,8 +196,8 @@ class BaseCompressor(object):
                     if "group_size" in kwargs:
                         block_size = kwargs["group_size"]
                     else:
-                        block_size = parse_scheme(scheme,{})[2]["group_size"]
-                    _cfg.block_size = block_size #TODO not robust
+                        block_size = parse_scheme(scheme, {})[2]["group_size"]
+                    _cfg.block_size = block_size  # TODO not robust
                 self.rotation_configs.append(_cfg)
         assert self.quantize_config is not None, "QuantizationConfig is required for Compressor"
 

@@ -769,7 +769,7 @@ def tune(args):
     if args.rotation_type:
         from auto_round.algorithms.transforms.rotation.config import RotationConfig
 
-        rot_config = RotationConfig(hadamard_type=args.rotation_type,block_size=args.rotation_block_size)
+        rot_config = RotationConfig(hadamard_type=args.rotation_type, block_size=args.rotation_block_size)
 
     autoround: BaseCompressor = AutoRound(
         model=model_name,
