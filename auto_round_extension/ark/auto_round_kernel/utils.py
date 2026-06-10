@@ -48,7 +48,7 @@ def is_b70(device: int = 0) -> bool:
 
     return B70_DEVICE_ID in name.lower()
 
-
+@lru_cache(maxsize=None)
 def fallback_compute_type_if_needed(compute_dtype: str, device: int = 0) -> str:
     if compute_dtype.lower() == "int8" and is_b70(device) and not is_oneapi_ge_2026():
         logger.warning("XMX int8 is not supported on B70 with oneAPI < 2026. Falling back to fp16.")
