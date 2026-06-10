@@ -242,7 +242,7 @@ def _quant_data(cls, data_torch, data_qtype, name, modify_name, new_name, bid, d
         "d_scale": None,
         "d_wmin": None,
         "wmin": None,
-        "imatrix": None,
+        "imatrix": module.imatrix if hasattr(module,"imatrix") else None,
     }
     # patch for Qwen3_5, Qwen3_5 handles some weights specially,
     # but the scale doesn't match; these weights are handled by gguf itself.
