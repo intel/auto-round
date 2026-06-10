@@ -57,7 +57,8 @@ def resolve_hadamard_backend(config: RotationConfig, data_type: str) -> str:
     fuse_requested = bool(config.fuse_online_to_weight)
     allow_online_rotation: bool = config.allow_online_rotation
 
-    if requested == "inplace":
+    if requested == "inplace" or "inplace" in config.hadamard_type:
+        config.hadamard_type=config.hadamard_type[len("inplace_"):]
         return "inplace"
 
     transform_backend_name = "transform"
