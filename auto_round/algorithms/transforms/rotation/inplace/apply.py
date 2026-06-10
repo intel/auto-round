@@ -842,7 +842,6 @@ def apply_rotation_transform(
             fuse_online_to_weight = True
         else:
             fuse_online_to_weight = False
-    fuse_online_to_weight = False #TODO remove
     had_dict, use_fast_had, preset = _normalize_rotation_matrix(rotation_matrix, group_size)
     compute_device = _resolve_compute_device(compute_device)
 
@@ -919,13 +918,60 @@ def apply_rotation_transform(
 if __name__ == "__main__":
     from transformers import AutoModelForCausalLM, AutoTokenizer
 
-    model_name = "/models/opt-125m"
+    # model_name = "/models/opt-125m"
+    # tokenizer = AutoTokenizer.from_pretrained(model_name)
+    # model = AutoModelForCausalLM.from_pretrained(model_name, torch_dtype=torch.float16, device_map="auto")
+    # model.to("cuda")
+    # text = "There is a girl who likes adventure,"
+    # inputs = tokenizer(text, return_tensors="pt").to(model.device)
+    # print(tokenizer.decode(model.generate(**inputs, max_new_tokens=50)[0]))
+    #
+    # model_name = "/models/Qwen3-14B"
+    # tokenizer = AutoTokenizer.from_pretrained(model_name)
+    # model = AutoModelForCausalLM.from_pretrained(model_name, torch_dtype="auto", device_map="auto")
+    # apply_rotation_transform(model, group_size=-1, allow_online_rotation=True, fuse_online_to_weight=True)
+    # model.to("cuda")
+    # text = "There is a girl who likes adventure,"
+    # inputs = tokenizer(text, return_tensors="pt").to(model.device)
+    # print(tokenizer.decode(model.generate(**inputs, max_new_tokens=50)[0]))
+    #
+    # model_name = "/models/Qwen3-14B"
+    # tokenizer = AutoTokenizer.from_pretrained(model_name)
+    # model = AutoModelForCausalLM.from_pretrained(model_name, torch_dtype="auto", device_map="auto")
+    # apply_rotation_transform(model, group_size=32, allow_online_rotation=True, fuse_online_to_weight=True)
+    # model.to("cuda")
+    # text = "There is a girl who likes adventure,"
+    # inputs = tokenizer(text, return_tensors="pt").to(model.device)
+    # print(tokenizer.decode(model.generate(**inputs, max_new_tokens=50)[0]))
+    #
+    # model_name = "/models/Qwen3-14B"
+    # tokenizer = AutoTokenizer.from_pretrained(model_name)
+    # model = AutoModelForCausalLM.from_pretrained(model_name, torch_dtype="auto", device_map="auto")
+    # apply_rotation_transform(model, group_size=32, allow_online_rotation=True, fuse_online_to_weight=False)
+    # model.to("cuda")
+    # text = "There is a girl who likes adventure,"
+    # inputs = tokenizer(text, return_tensors="pt").to(model.device)
+    # print(tokenizer.decode(model.generate(**inputs, max_new_tokens=50)[0]))
+
+    model_name = "/models/Qwen3-32B"
     tokenizer = AutoTokenizer.from_pretrained(model_name)
-    model = AutoModelForCausalLM.from_pretrained(model_name, torch_dtype=torch.float16, device_map="auto")
+    model = AutoModelForCausalLM.from_pretrained(model_name, torch_dtype="auto", device_map="auto")
+    apply_rotation_transform(model, group_size=32, allow_online_rotation=True, fuse_online_to_weight=True)
     model.to("cuda")
     text = "There is a girl who likes adventure,"
     inputs = tokenizer(text, return_tensors="pt").to(model.device)
     print(tokenizer.decode(model.generate(**inputs, max_new_tokens=50)[0]))
+
+
+    model_name = "/models/Qwen3-32B"
+    tokenizer = AutoTokenizer.from_pretrained(model_name)
+    model = AutoModelForCausalLM.from_pretrained(model_name, torch_dtype="auto", device_map="auto")
+    apply_rotation_transform(model, group_size=32, allow_online_rotation=True, fuse_online_to_weight=False)
+    model.to("cuda")
+    text = "There is a girl who likes adventure,"
+    inputs = tokenizer(text, return_tensors="pt").to(model.device)
+    print(tokenizer.decode(model.generate(**inputs, max_new_tokens=50)[0]))
+
 
     apply_rotation_transform(
         model, group_size=-1, allow_online_rotation=True, rotation_matrix="random_hadamard", fuse_online_to_weight=False
@@ -937,7 +983,7 @@ if __name__ == "__main__":
 
     model_name = "/models/Qwen3-8B"
     tokenizer = AutoTokenizer.from_pretrained(model_name)
-    model = AutoModelForCausalLM.from_pretrained(model_name, torch_dtype=torch.float16, device_map="auto")
+    model = AutoModelForCausalLM.from_pretrained(model_name, device_map="auto")
     apply_rotation_transform(model, group_size=-1, allow_online_rotation=True, fuse_online_to_weight=True)
     model.to("cuda")
     text = "There is a girl who likes adventure,"

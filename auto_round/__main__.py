@@ -428,6 +428,12 @@ class BasicArgumentParser(argparse.ArgumentParser):
             choices=["hadamard", "random_hadamard", "inplace_quarot_hadamard", "inplace_hadamard", "inplace_random"],
             help="Research feature: applies a rotation (e.g., Hadamard) to reduce activation/weight outliers",
         )
+        scheme.add_argument(
+            "--rotation_block_size",
+            default=None,
+            type=int,
+            help="Research feature rotation_block_size",
+        )
         gguf = self.add_argument_group("Double Quant Arguments")
         gguf.add_argument(
             "--super_group_size", default=None, type=int, help="Super group size for double quantization."
@@ -763,7 +769,7 @@ def tune(args):
     if args.rotation_type:
         from auto_round.algorithms.transforms.rotation.config import RotationConfig
 
-        rot_config = RotationConfig(hadamard_type=args.rotation_type)
+        rot_config = RotationConfig(hadamard_type=args.rotation_type,block_size=args.rotation_block_size)
 
     autoround: BaseCompressor = AutoRound(
         model=model_name,

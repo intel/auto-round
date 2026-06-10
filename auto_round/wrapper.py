@@ -561,8 +561,6 @@ class WrapperWALayer(torch.nn.Module):
         # and remove them from orig_layer so they won't fire again inside orig_layer.forward().
         # We will run them explicitly in our forward() BEFORE activation quantization.
         self._stolen_pre_hooks = list(orig_layer._forward_pre_hooks.values())
-        if len(self._stolen_pre_hooks):
-            logger.info(f"{self.orig_layer.global_name} has hooks")
         orig_layer._forward_pre_hooks.clear()
 
     @property
