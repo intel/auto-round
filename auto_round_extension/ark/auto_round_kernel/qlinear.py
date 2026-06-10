@@ -207,7 +207,7 @@ class QuantLinear(nn.Module):
             self.sdt = "fp16"
             self.cdt = "int8"
             self.torch_dt = torch.float16
-            self.cdt = fallback_compute_type_if_needed(self.cdt = "int8", self.qweight.device.index)
+            self.cdt = fallback_compute_type_if_needed(self.cdt, self.qweight.device.index)
         else:
             self.sdt = "fp32"
             self.cdt = "auto"
