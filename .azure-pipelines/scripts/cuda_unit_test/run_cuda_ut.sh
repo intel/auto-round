@@ -63,7 +63,7 @@ function run_unit_test() {
     echo "##[group]set up UT env..."
     cd "${BUILD_SOURCESDIRECTORY}" || exit 1
     uv pip install torch==2.12.0 torchvision torchao --index-url https://download.pytorch.org/whl/cu130
-    uv pip install https://github.com/XuehaoSun/llama-cpp-python/releases/download/v0.3.23/llama_cpp_python-0.3.23-py3-none-linux_x86_64.whl
+    uv pip install llama-cpp-python --extra-index-url https://abetlen.github.io/llama-cpp-python/whl/cu130
     uv pip install 'git+https://github.com/ggml-org/llama.cpp.git#subdirectory=gguf-py'
     uv pip install -r test/test_cuda/requirements.txt
     uv pip install -r test/test_cuda/requirements_diffusion.txt
@@ -168,7 +168,6 @@ function run_unit_test_vllm() {
     rm -rf /root/.venv
     uv venv --python=3.12 /root/.venv
     uv pip install -U pytest-cov pytest-html
-    vllm_version=$(curl -s https://api.github.com/repos/vllm-project/vllm/releases/latest | jq -r .tag_name | sed 's/^v//')
     uv pip install -r test/test_cuda/requirements_vllm.txt \
         --extra-index-url https://download.pytorch.org/whl/cu130 \
         --index-strategy unsafe-best-match
