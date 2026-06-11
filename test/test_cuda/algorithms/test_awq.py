@@ -64,9 +64,8 @@ class TestAWQLLM:
         for name, cfg in layer_config.items():
             assert cfg["bits"] == 4, f"Layer {name} expected bits=4, got {cfg['bits']}"
 
-        # CUDA inference
         tokenizer = AutoTokenizer.from_pretrained(tiny_opt_model_path)
-        output = generate_prompt(model, tokenizer, device="cuda")
+        output = generate_prompt(model, tokenizer)
         assert len(output) > 0 and "!!!" not in output, f"Unexpected generation output: {output}"
 
     def test_awq_w4a16_export_auto_round_args(self, tiny_opt_model_path):
@@ -106,7 +105,7 @@ class TestAWQLLM:
 
         loaded_model = AutoModelForCausalLM.from_pretrained(save_path, device_map="auto")
         tokenizer = AutoTokenizer.from_pretrained(save_path)
-        output = generate_prompt(loaded_model, tokenizer, device="cuda")
+        output = generate_prompt(loaded_model, tokenizer)
         assert len(output) > 0 and "!!!" not in output, f"Unexpected generation output: {output}"
 
 
@@ -126,7 +125,7 @@ class TestAWQMoE:
 
     def test_awq_moe_dynamic_smoothing(self, tiny_qwen_moe_model_path):
         """AWQ mapping resolution works on MoE model."""
-        from auto_round.algorithms.quantization.awq.mappings import resolve_mappings
+        from auto_round.algorithms.transforms.awq.mappings import resolve_mappings
 
         model = AutoModelForCausalLM.from_pretrained(
             tiny_qwen_moe_model_path,
@@ -253,5 +252,4 @@ class TestAWQEval:
             threshold=0.3,
             batch_size="auto:8",
             limit=50,
-            device="cuda",
         )
