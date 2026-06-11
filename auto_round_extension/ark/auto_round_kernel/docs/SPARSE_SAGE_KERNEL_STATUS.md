@@ -8,7 +8,7 @@ Current status:
 
 - sparse prefill and cached-decode kernel paths exist and are callable through `sage_sparse(...)` and `sage_sparse_decode(...)`
 - kernel contract is `lut + valid_block_num + qscale + kscale + int8 Q/K + fp16/bf16 V`
-- sparse traversal is implemented through the sparse Sage mainloop type used by the sparse launch path
+- sparse traversal is now implemented through a dedicated sparse Sage mainloop in `xe_sparse_sagev1_fwd_mainloop.hpp`
 - causal masking is handled in-kernel
 - Sparge-style preprocess exists on XPU through `sparge_preprocess_topk(...)` / `sparge_sage2_attn_meansim_topk_xpu(...)`
 - the preprocess backend now uses Triton-XPU for:
@@ -16,8 +16,24 @@ Current status:
   - `fill_block_map`
   - `block_map_to_lut`
 - remaining preprocess routing/math still uses torch tensor ops
+- a dedicated C++ kernel-only benchmark executable now exists as `bench_ARK_XPU` for Wan- and Flux-shaped sparse-kernel tuning
 
 This means the kernel is already usable as the ARK/XPU counterpart of the attention-execution stage of `spas_sage2_attn_meansim_topk_cuda`.
+
+## Dedicated Sparse Mainloop Status
+
+The sparse mainloop split is now partially implemented:
+
+- `xe_sparse_sagev1_fwd_mainloop.hpp` is now a copy-paste baseline from `xe_sagev1_fwd_mainloop.hpp`, not the earlier inheritance-based sparse-native refactor
+- this was done because the earlier sparse-native refactor regressed kernel performance by drifting too far from the dense hot path
+- the current sparse file is intentionally dense-structured first, so later sparse optimization can start from a performance-stable baseline
+- dense-style K prefetch is still guarded by `if (lut_row == nullptr)`, so true LUT-driven sparse rows still do **not** have a real sparse-aware K prefetch path yet
+
+This means:
+
+- performance came back after restoring the dense mainloop structure
+- sparse-aware K prefetch is still a separate future optimization
+- the current copy-paste sparse mainloop is the baseline that later sparse-prefetch work should optimize from
 
 ## What Is Verified
 
@@ -49,6 +65,19 @@ Current caveat for preprocess integration:
 - preprocess-generated partial sparsity is still an approximation path, so model-level `sparse_preprocess` output can diverge from dense full attention by design
 - low-level and tensor-level preprocess replay against the same sparse metadata are validated
 - Triton-XPU preprocess metadata matches the torch reference on discrete outputs; small scale-tensor differences remain at floating-point noise level only
+
+Current caveat for the dedicated sparse-mainloop validation:
+
+- the extension build is green
+- Python/runtime sparse regressions are green
+- the heavyweight `xbuild_ut_icpx --target test_ARK_XPU` rebuild can still stall or get resource-killed on the giant `sdpa.cpp` TU in this shell, so that unit binary is not the primary verification signal for this specific refactor pass
+- the previous inheritance-based sparse-native refactor was intentionally replaced by the copy-paste baseline because its hot path underperformed on kernel benchmarks
+
+Current caveat for the new C++ benchmark harness:
+
+- the benchmark target reuses the generated SYCL-TLA SDPA sources, which still include a CUTLASS utility header that expects `oneapi/mkl/rng/device.hpp`
+- this node currently does not have a full oneMKL install, so the repo now carries a small local compatibility shim at `compat/include/oneapi/mkl/rng/device.hpp`
+- that shim is only present to satisfy the unused CUTLASS utility include during compile; the benchmarked ARK sparse kernel path does not depend on oneMKL RNG behavior
 
 ## What The Kernel Already Covers
 
@@ -83,6 +112,7 @@ So the preprocess is no longer “torch-only”, but it is not yet fully Tritoni
 The following are not complete yet:
 
 - fully Tritonized preprocess routing
+- sparse-aware K prefetch for true LUT-driven sparse rows
 - `seq_len_q != seq_len_kv` prefill
 - fp8-V sparse path
 - sparse int8 `PV`
@@ -110,6 +140,66 @@ So at this shape:
 
 After porting Triton-XPU `fill_block_map` and `block_map_to_lut`, the dominant preprocess stage is now query-tile routing pooling rather than block-map construction.
 
+## C++ Kernel Benchmark Harness
+
+The repo now also has a dedicated C++ kernel-only benchmark executable:
+
+- target: `bench_ARK_XPU`
+- source: `wrapper/test/bench_sparse_kernel.cpp`
+
+Current benchmark presets are shaped around the active diffusion integrations:
+
+- `wan_self`
+- `flux_joint`
+- `flux_single`
+
+This harness is intentionally:
+
+- prefill-only
+- kernel-only
+- dense baseline = `sagev1`
+- sparse mode = `sdpa_impl_qks8_sparse_pvhalf(...)` with metadata built outside the timed region
+
+It supports both:
+
+- top-k style block-count sweeps
+- explicit sparse row patterns such as:
+  - `all_selected`
+  - `prefix`
+  - `stride2`
+  - `custom_02`
+  - `custom_035`
+  - `custom_135`
+
+Smoke validation completed on the built executable:
+
+- `wan_self` + `all_selected`
+- `flux_single` + `prefix` + `topk=1.0,0.5`
+- `flux_joint` + `custom_035`
+
+Observed smoke outputs:
+
+- `wan_self`, dense `sagev1`: `14723.477 ms`
+- `wan_self`, sparse `all_selected`: `157.020 ms`
+- `flux_single`, dense `sagev1`: `32.653 ms`
+- `flux_single`, sparse `prefix`, `topk=1.0`: `76.785 ms`
+- `flux_single`, sparse `prefix`, `topk=0.5`: `37.250 ms`
+- `flux_joint`, sparse `custom_035`: `1.329 ms`
+
+Current usage contract:
+
+- `--preset` selects `wan_self`, `flux_joint`, or `flux_single`
+- `--pattern` selects `all_selected`, `prefix`, `stride2`, `custom_02`, `custom_035`, or `custom_135`
+- `--topk` accepts a comma-separated list such as `1.0,0.75,0.5`
+- `--warmup` and `--iters` control measurement repeat count
+- `--csv` writes machine-readable output
+- raw overrides exist for `--batch`, `--heads-q`, `--heads-kv`, `--seq-q`, `--seq-kv`, `--head-dim`, and `--block-size`
+
+Practical caveat from the current smoke runs:
+
+- `wan_self` dense timing is suspiciously slow in the current single-shot smoke run and should be rechecked before using it as a tuning baseline
+- the harness itself is working, and the sparse rows execute correctly on all three preset families
+
 ## Change Inventory
 
 The sparse-attention bring-up touched these areas:
@@ -131,7 +221,7 @@ The sparse-attention bring-up touched these areas:
 - kernel implementation
   - sparse row mapping and scale indexing in `wrapper/include/stla/xe_sage_fwd_kernel.hpp`
   - sparse traversal support in `wrapper/include/stla/xe_sagev1_fwd_mainloop.hpp`
-  - dedicated sparse mainloop type in `wrapper/include/stla/xe_sparse_sagev1_fwd_mainloop.hpp`
+  - dedicated sparse-native mainloop implementation in `wrapper/include/stla/xe_sparse_sagev1_fwd_mainloop.hpp`
 - preprocess implementation
   - torch reference preprocess in `__init__.py`
   - Triton-XPU preprocess backend in `sparge_preprocess_triton.py`
@@ -147,6 +237,7 @@ The sparse-attention bring-up touched these areas:
   - decode preprocess smoke in `wrapper/test/test_sparge_decode_topk_e2e.py`
   - model-level Qwen tests in `../test/test_qwen_sparse_prefill_e2e.py` and `../test/test_qwen_sparse_decode_e2e.py`
   - top-k benchmark harness in `../test/bench_sparse_topk.py`
+  - C++ kernel-only benchmark harness in `wrapper/test/bench_sparse_kernel.cpp`
 - docs
   - implementation plans, benchmark runbook, Wan note, and this status note under `docs/`
 
@@ -161,3 +252,69 @@ The preprocess side is now good enough for meaningful end-to-end benchmarking, a
 - any remaining torch-side routing glue that prevents preprocess cost from scaling down with sparsity
 
 Those outputs already feed the current `sage_sparse(...)` path directly without changing the sparse kernel contract.
+
+## Build And Test Commands
+
+Commands used for the latest dedicated sparse-mainloop validation:
+
+Build:
+
+```bash
+source /opt/intel/oneapi/setvars.sh
+/home/yiliu7/workspace/venvs/ark/bin/cmake --build xbuild -j 4
+```
+
+Optional heavier unit-target rebuild:
+
+```bash
+source /opt/intel/oneapi/setvars.sh
+/home/yiliu7/workspace/venvs/ark/bin/cmake --build xbuild_ut_icpx --target test_ARK_XPU -j 1
+```
+
+Build the dedicated C++ kernel benchmark:
+
+```bash
+source /opt/intel/oneapi/setvars.sh
+/home/yiliu7/workspace/venvs/ark/bin/cmake -B xbuild -DARK_BENCH=ON
+/home/yiliu7/workspace/venvs/ark/bin/cmake --build xbuild --target bench_ARK_XPU -j 4
+```
+
+Sparse runtime regression checks:
+
+```bash
+source /opt/intel/oneapi/setvars.sh
+/home/yiliu7/workspace/venvs/ark/bin/python wrapper/test/test_sparge_preprocess_topk_e2e.py
+```
+
+```bash
+source /opt/intel/oneapi/setvars.sh
+/home/yiliu7/workspace/venvs/ark/bin/python wrapper/test/test_sage_sparse_prefill_e2e.py
+```
+
+```bash
+source /opt/intel/oneapi/setvars.sh
+/home/yiliu7/workspace/venvs/ark/bin/python -m pytest -q ../test/test_qwen_sparse_prefill_e2e.py -s
+```
+
+C++ kernel-benchmark smoke checks:
+
+```bash
+source /opt/intel/oneapi/setvars.sh
+./xbuild/bench_ARK_XPU --preset flux_single --pattern prefix --topk 1.0,0.5 --warmup 1 --iters 1
+```
+
+```bash
+source /opt/intel/oneapi/setvars.sh
+./xbuild/bench_ARK_XPU --preset flux_joint --pattern custom_035 --warmup 1 --iters 1
+```
+
+```bash
+source /opt/intel/oneapi/setvars.sh
+./xbuild/bench_ARK_XPU --preset wan_self --pattern all_selected --warmup 0 --iters 1
+```
+
+Interpretation:
+
+- `xbuild` shared-module build is the primary compile check for this refactor
+- the Python sparse replay and Qwen prefill tests are the primary runtime checks
+- `test_ARK_XPU` remains useful, but its rebuild path may be limited by local compile-resource pressure on `sdpa.cpp`

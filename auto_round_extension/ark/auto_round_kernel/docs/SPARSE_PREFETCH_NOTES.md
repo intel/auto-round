@@ -142,3 +142,29 @@ That means sparse prefetch needs its own scheduler instead of reusing:
 - Dense prefetch works because traversal is regular and affine.
 - Sparse traversal is harder because the next block is LUT-driven, row-dependent, and potentially discontinuous.
 - A future sparse mainloop should add sparse-aware K prefetch instead of trying to reuse the dense prefetch rule unchanged.
+
+## Copy-Paste Baseline Finding
+
+During the dedicated sparse-mainloop refactor, a sparse-native version that diverged too far from the dense hot path caused a clear performance drop on model-shaped kernel benchmarks.
+
+What restored performance:
+
+- replacing that sparse-native refactor with a copy-paste baseline from `xe_sagev1_fwd_mainloop.hpp`
+- keeping the dense loop/body structure intact inside `xe_sparse_sagev1_fwd_mainloop.hpp`
+
+What this means:
+
+- the earlier slowdown was not caused only by missing sparse-aware K prefetch
+- it also came from drifting away from the dense mainloop’s hot-path structure
+
+Important nuance:
+
+- for true sparse rows, dense K prefetch is still guarded by `if (lut_row == nullptr)`
+- so there is still **no real sparse-aware K prefetch path**
+- the recovered performance came from restoring the dense mainloop structure first, not from enabling K prefetch on LUT-driven sparse rows
+
+Practical takeaway:
+
+- the current copy-paste sparse mainloop is the right baseline for future tuning
+- next sparse-prefetch work should start from this baseline
+- any sparse-only refactor should preserve dense-like hot-path behavior for `all_selected` and prefix-style sparse rows
