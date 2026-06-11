@@ -874,12 +874,15 @@ def get_score_for_scheme(
     return scores_dict
 
 
-def choose_bits_per_layer_with_path(layers: dict, P: int):
+def choose_bits_per_layer_with_path(layers: dict, P: int, max_states: int = None):
     """
     Args:
         layers: A dict mapping each layer name to a list of candidate options.
                 Each option is a tuple of (scheme, bits_cost, loss_cost, layer_names).
         P: Upper bound on the total parameter (bit) budget.
+        max_states: Maximum number of DP states to retain after each layer
+                    (beam width). Limits memory usage for models with many
+                    layers and incommensurate layer sizes.
 
     Returns:
         (min_loss, best_path), where best_path is a list of
@@ -889,7 +892,7 @@ def choose_bits_per_layer_with_path(layers: dict, P: int):
     # dp: total_params -> (accumulated_loss, chosen_path)
     # The path explicitly stores the selected options.
     dp: dict[int, tuple[float, list]] = {0: (0.0, [])}
-
+    max_item_cnt = 0
     for layer_name, opts in layers.items():
         new_dp: dict[int, tuple[float, list]] = {}
         for cur_params, (cur_loss, cur_path) in dp.items():
@@ -908,7 +911,7 @@ def choose_bits_per_layer_with_path(layers: dict, P: int):
 
         if not new_dp:
             return None, None
-
+        max_item_cnt = max(max_item_cnt, len(new_dp))
         # Pareto pruning: remove dominated (params, loss) states
         items = sorted(new_dp.items(), key=lambda x: x[0])  # (params, (loss, path))
         pruned: dict[int, tuple[float, list]] = {}
@@ -918,11 +921,29 @@ def choose_bits_per_layer_with_path(layers: dict, P: int):
                 pruned[params_val] = (loss_val, path_val)
                 best_loss_so_far = loss_val
 
+        # Beam width limit: if too many states survive Pareto pruning,
+        # uniformly subsample to bound memory usage.  For models with many
+        # layers whose sizes are incommensurate, the number of distinct
+        # cumulative-bit sums can grow to millions, each storing a full
+        # path copy — easily exceeding 70 GB of RAM.
+        if max_states is not None and len(pruned) > max_states:
+            sorted_keys = sorted(pruned.keys())
+            n = len(sorted_keys)
+            # Uniformly pick max_states indices (always include first and last)
+            step = (n - 1) / (max_states - 1)
+            selected: dict[int, tuple[float, list]] = {}
+            for i in range(max_states):
+                idx = int(round(i * step))
+                k = sorted_keys[idx]
+                selected[k] = pruned[k]
+            pruned = selected
+
         dp = pruned
 
     # Select the solution with the minimum loss
     best_params = min(dp.keys(), key=lambda k: dp[k][0])
     best_loss, best_path = dp[best_params]
+    logger.info(f"max item{max_item_cnt}")
     return best_loss, best_path
 
 
@@ -1178,7 +1199,8 @@ def _gen_layer_config(
                 model_name=model_name,
             )
         # Track peak RAM after each scheme scoring
-        memory_monitor.update_cpu()
+        memory_monitor.update()
+        memory_monitor.log_summary()
 
         new_scores = {}
         for share_layer in shared_layers:
@@ -1232,6 +1254,45 @@ def _gen_layer_config(
             scheme = asdict(scheme)
         return scheme.get("bits", 16)
 
+    def _to_scheme_dict(scheme):
+        """Normalize a scheme (str/QuantizationScheme/dict) to a plain dict."""
+        if isinstance(scheme, str):
+            return asdict(preset_name_to_scheme(scheme))
+        elif isinstance(scheme, QuantizationScheme):
+            return asdict(scheme)
+        return scheme
+
+    def _compute_embedding_bits(scheme_dict):
+        """Compute total bits consumed by non-fixed embedding layers under scheme_dict."""
+        total = 0
+        for emb_name in not_fixed_embedding_layers_names:
+            emb_layer = get_module(model, emb_name)
+            n_param = emb_layer.weight.numel()
+            if n_param == 0 and hasattr(emb_layer, "_cached_weight_numel"):
+                n_param = emb_layer._cached_weight_numel
+            # With ignore_scale_zp_bits, bits_cost = n_param * bits
+            emb_bits = scheme_dict.get("bits", 16)
+            total += n_param * emb_bits
+        return total
+
+    # Compute bits already consumed by user-fixed layers (excluding embeddings we'll set)
+    already_fixed_bits = 0
+    for name in fixed_layer_scheme.keys():
+        m = get_module(model, name)
+        layer_bits, _ = compute_layer_bits(m, auto_scheme.ignore_scale_zp_bits)
+        already_fixed_bits += layer_bits
+
+    # Compute minimum bits needed for DP layers (non-fixed, non-embedding)
+    min_dp_bits = 0
+    for layer_name, opts in total_scores.items():
+        min_dp_bits += min(opt[1] for opt in opts)
+
+    def _fits_budget(scheme_dict):
+        """Check if applying scheme_dict to embeddings leaves enough budget for DP layers."""
+        emb_bits = _compute_embedding_bits(scheme_dict)
+        remaining = target_params_cnt - already_fixed_bits - emb_bits
+        return remaining >= min_dp_bits
+
     def _select_embedding_scheme_index():
         """Select the best scheme index for embedding layers based on model type and target_bits.
 
@@ -1240,43 +1301,52 @@ def _gen_layer_config(
           - target_bits <= 6: use the lowest-loss option among those with bits <= 6
         For models without shared lm_head:
           - use the lowest-loss option among those with bits >= ceil(target_bits)
+
+        In all cases, the selected scheme must not exceed the total bit budget
+        (i.e., embedding bits + fixed bits + min DP bits <= target_params_cnt).
         """
         import math
 
         if has_tied_lm_head:
             if target_bits > 6:
-                # Use lowest loss option (first in sorted_indices)
-                return sorted_indices[0] if sorted_indices else 0
+                candidates = list(sorted_indices)
             else:
-                # Use lowest loss option among schemes with bits <= 6
-                for idx in sorted_indices:
-                    scheme_bits = _get_scheme_bits(schemes[idx])
-                    if scheme_bits <= 6:
-                        return idx
-                # Fallback: if none found, use lowest loss
-                return sorted_indices[0] if sorted_indices else 0
+                # Prefer options with bits <= 6, sorted by loss
+                candidates = [idx for idx in sorted_indices if _get_scheme_bits(schemes[idx]) <= 6]
+                if not candidates:
+                    candidates = list(sorted_indices)
         else:
-            # Not shared lm_head: use lowest loss option among schemes with bits >= ceil(target_bits)
+            # Not shared lm_head: prefer options with bits >= ceil(target_bits)
             ceil_bits = math.ceil(target_bits)
-            for idx in sorted_indices:
-                scheme_bits = _get_scheme_bits(schemes[idx])
-                if scheme_bits >= ceil_bits:
-                    return idx
-            # Fallback: if none found, use lowest loss
-            return sorted_indices[0] if sorted_indices else 0
+            candidates = [idx for idx in sorted_indices if _get_scheme_bits(schemes[idx]) >= ceil_bits]
+            if not candidates:
+                candidates = list(sorted_indices)
 
-    selected_index = _select_embedding_scheme_index()
-    tmp_scheme = schemes[selected_index]
-    if isinstance(tmp_scheme, str):
-        tmp_scheme = asdict(preset_name_to_scheme(tmp_scheme))
-    elif isinstance(tmp_scheme, QuantizationScheme):
-        tmp_scheme = asdict(tmp_scheme)
+        # Among candidates (ordered by loss), pick the first that fits the budget
+        for idx in candidates:
+            scheme_dict = _to_scheme_dict(schemes[idx])
+            if _fits_budget(scheme_dict):
+                return idx
 
-    for embedding_layer_name in not_fixed_embedding_layers_names:
-        fixed_layer_scheme[embedding_layer_name] = tmp_scheme
-        embedding_layer = get_module(model, embedding_layer_name)
-        for key, item in tmp_scheme.items():
-            setattr(embedding_layer, key, item)
+        # Fallback: try ALL options sorted by bits ascending (cheapest first)
+        all_by_bits = sorted(range(len(schemes)), key=lambda i: _get_scheme_bits(schemes[i]))
+        for idx in all_by_bits:
+            scheme_dict = _to_scheme_dict(schemes[idx])
+            if _fits_budget(scheme_dict):
+                return idx
+
+        # Last resort: use the cheapest option regardless
+        return all_by_bits[0] if all_by_bits else 0
+
+    if not_fixed_embedding_layers_names:
+        selected_index = _select_embedding_scheme_index()
+        tmp_scheme = _to_scheme_dict(schemes[selected_index])
+
+        for embedding_layer_name in not_fixed_embedding_layers_names:
+            fixed_layer_scheme[embedding_layer_name] = tmp_scheme
+            embedding_layer = get_module(model, embedding_layer_name)
+            for key, item in tmp_scheme.items():
+                setattr(embedding_layer, key, item)
 
     # Minus fixed_layer
     for name in fixed_layer_scheme.keys():  # The Scheme should have been applied
@@ -1287,6 +1357,8 @@ def _gen_layer_config(
         raise ValueError("Avg bits is too small")
 
     remove_quant_scheme(model)  # Must place after minus fixed_layer
+    memory_monitor.update()
+    memory_monitor.log_summary()
 
     best_loss, best_path = choose_bits_per_layer_with_path(total_scores, target_params_cnt)
     # print(best_loss, best_path)  # TODO better log
