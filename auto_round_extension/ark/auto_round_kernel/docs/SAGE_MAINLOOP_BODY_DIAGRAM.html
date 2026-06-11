@@ -1,0 +1,426 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>SAGE mainloop_body Diagram</title>
+  <style>
+    :root {
+      --bg: #f4f0e8;
+      --panel: #fffaf1;
+      --ink: #1f1a17;
+      --muted: #6c6258;
+      --line: #cdbda8;
+      --q: #d96c3f;
+      --k: #3d7ea6;
+      --v: #4b9b6e;
+      --s: #f1bf4a;
+      --o: #8f5bd6;
+      --soft: #f8ead6;
+    }
+
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      font-family: "IBM Plex Sans", "Segoe UI", sans-serif;
+      color: var(--ink);
+      background:
+        radial-gradient(circle at top left, #fff7e2 0, transparent 32rem),
+        linear-gradient(180deg, #f6f1e7 0%, #efe5d7 100%);
+    }
+
+    .wrap {
+      max-width: 1180px;
+      margin: 0 auto;
+      padding: 32px 24px 56px;
+    }
+
+    h1, h2 { margin: 0 0 12px; line-height: 1.1; }
+    h1 { font-size: 34px; letter-spacing: -0.03em; }
+    h2 { font-size: 22px; margin-top: 28px; }
+    p, li { color: var(--muted); font-size: 15px; line-height: 1.55; }
+    code { background: #f1e6d8; padding: 1px 6px; border-radius: 6px; color: var(--ink); }
+
+    .card {
+      background: var(--panel);
+      border: 1px solid var(--line);
+      border-radius: 18px;
+      padding: 22px;
+      box-shadow: 0 14px 30px rgba(83, 57, 35, 0.07);
+    }
+
+    .grid {
+      display: grid;
+      gap: 18px;
+    }
+
+    .grid-2 { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+    .grid-3 { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+
+    .chip {
+      display: inline-block;
+      padding: 5px 10px;
+      border-radius: 999px;
+      font-size: 12px;
+      font-weight: 600;
+      color: var(--ink);
+      background: var(--soft);
+      border: 1px solid var(--line);
+      margin: 0 8px 8px 0;
+    }
+
+    .matrix {
+      position: relative;
+      min-height: 220px;
+      border: 1px solid var(--line);
+      border-radius: 16px;
+      background:
+        linear-gradient(90deg, rgba(0,0,0,0.03) 1px, transparent 1px) 0 0 / 32px 32px,
+        linear-gradient(rgba(0,0,0,0.03) 1px, transparent 1px) 0 0 / 32px 32px,
+        #fffdf8;
+      overflow: hidden;
+    }
+
+    .matrix-title {
+      position: absolute;
+      top: 10px;
+      left: 12px;
+      font-size: 13px;
+      color: var(--ink);
+      font-weight: 700;
+      letter-spacing: 0.02em;
+      background: rgba(255, 253, 248, 0.92);
+      padding: 2px 8px;
+      border-radius: 999px;
+    }
+
+    .tile {
+      position: absolute;
+      border-radius: 12px;
+      border: 2px solid rgba(0,0,0,0.15);
+      color: #111;
+      font-size: 13px;
+      font-weight: 700;
+      padding: 10px;
+      box-shadow: inset 0 0 0 1px rgba(255,255,255,0.25);
+    }
+
+    .tile small {
+      display: block;
+      font-size: 11px;
+      font-weight: 500;
+      color: rgba(0,0,0,0.68);
+      margin-top: 4px;
+      line-height: 1.35;
+    }
+
+    .q { background: rgba(217,108,63,0.26); border-color: rgba(217,108,63,0.65); }
+    .k { background: rgba(61,126,166,0.24); border-color: rgba(61,126,166,0.65); }
+    .v { background: rgba(75,155,110,0.22); border-color: rgba(75,155,110,0.65); }
+    .s { background: rgba(241,191,74,0.28); border-color: rgba(203,149,22,0.7); }
+    .o { background: rgba(143,91,214,0.2); border-color: rgba(143,91,214,0.6); }
+
+    .arrow {
+      text-align: center;
+      font-size: 28px;
+      color: var(--muted);
+      align-self: center;
+    }
+
+    .math {
+      font-family: "IBM Plex Mono", "SFMono-Regular", monospace;
+      color: var(--ink);
+      font-size: 14px;
+      background: #fbf4e6;
+      border: 1px solid var(--line);
+      border-radius: 14px;
+      padding: 14px 16px;
+      overflow-x: auto;
+    }
+
+    .flow {
+      display: grid;
+      gap: 12px;
+      margin-top: 12px;
+    }
+
+    .step {
+      background: #fffdf8;
+      border: 1px solid var(--line);
+      border-left: 6px solid var(--line);
+      border-radius: 12px;
+      padding: 12px 14px;
+    }
+
+    .step strong { color: var(--ink); }
+
+    .legend {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 10px;
+      margin-top: 14px;
+    }
+
+    .legend-item {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      font-size: 13px;
+      color: var(--muted);
+    }
+
+    .swatch {
+      width: 18px;
+      height: 18px;
+      border-radius: 6px;
+      border: 1px solid rgba(0,0,0,0.15);
+    }
+
+    .note {
+      font-size: 14px;
+      color: var(--ink);
+      padding: 14px 16px;
+      border-radius: 14px;
+      background: #fff3d7;
+      border: 1px solid #e5c58e;
+    }
+
+    @media (max-width: 900px) {
+      .grid-2, .grid-3 { grid-template-columns: 1fr; }
+    }
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <h1>SAGE <code>mainloop_body(...)</code> Diagram</h1>
+    <p>
+      This note explains what one call to <code>mainloop_body</code> does inside
+      <code>wrapper/include/stla/xe_sagev1_fwd_mainloop.hpp</code>.
+      The key point is that one workgroup already owns a fixed Q tile and output V tile;
+      <code>mainloop_body</code> processes one selected K tile for that workgroup.
+    </p>
+
+    <div class="card">
+      <div class="chip">Workgroup owns one Q tile</div>
+      <div class="chip">Workgroup owns one output V tile</div>
+      <div class="chip">One call handles one K tile</div>
+      <div class="chip">Dense and sparse differ only in K traversal order</div>
+    </div>
+
+    <h2>Concrete Wan Example</h2>
+    <div class="card">
+      <p>
+        To reduce ambiguity, use the current Wan sparse path as the concrete example:
+      </p>
+      <div class="chip">Model: Wan2.1-T2V-1.3B-Diffusers</div>
+      <div class="chip">Heads: 12</div>
+      <div class="chip">Head dim: 128</div>
+      <div class="chip">Public Q/K/V layout: NHD = [B, N, H, D]</div>
+      <div class="chip">Internal kernel layout: HND = [B, H, N, D]</div>
+      <div class="chip">Sparse prefill kernel family for D=128</div>
+      <div class="math" style="margin-top:12px;">
+        Q per head: [tokens, 128]<br />
+        K per head: [tokens, 128]<br />
+        V per head: [tokens, 128]<br /><br />
+        TileShapeQK = (256, 64, 32)<br />
+        TileShapePV = (256, 32, 64)<br />
+        TileShapeOutput = (256, 128)
+      </div>
+      <p>
+        In this file, the words <strong>tile</strong> and <strong>block</strong> are often used for the same
+        kernel-level unit. For the Wan D=128 path, one QK step is a score tile of
+        <code>256 query rows × 32 key rows</code>, computed through a head-dimension K-slice of size <code>64</code>.
+      </p>
+    </div>
+
+    <h2>1. Workgroup Assignment</h2>
+    <div class="grid grid-2">
+      <div class="card">
+        <div class="matrix">
+          <div class="matrix-title">Q tensor tile view</div>
+          <div class="tile q" style="left: 26px; top: 58px; width: 170px; height: 96px;">
+            Q tile
+            <small>
+              shape: <code>block_m × head_dim</code><br />
+              Wan D=128 example: <code>256 × 128</code><br />
+              from <code>gQ</code>
+            </small>
+          </div>
+        </div>
+        <p>
+          The workgroup is fixed on one Q tile indexed by <code>blk_qv.q</code>.
+          This tile spans a block of query rows and the full head dimension.
+        </p>
+      </div>
+
+      <div class="card">
+        <div class="matrix">
+          <div class="matrix-title">Output tile view</div>
+          <div class="tile o" style="left: 28px; top: 58px; width: 210px; height: 96px;">
+            Output accumulator tile
+            <small>
+              shape: <code>block_m × d_v_subtile</code><br />
+              Wan D=128 example: <code>256 × 128</code> total output tile<br />
+              accumulated in <code>tArA</code>
+            </small>
+          </div>
+        </div>
+        <p>
+          The same workgroup also owns one output V subtile indexed by <code>blk_qv.v</code>.
+          Repeated K tiles update this same output accumulator.
+        </p>
+      </div>
+    </div>
+
+    <h2>2. One <code>mainloop_body</code> Call</h2>
+    <div class="grid grid-3">
+      <div class="card">
+        <div class="matrix">
+          <div class="matrix-title">Inputs for GEMM 1</div>
+          <div class="tile q" style="left: 20px; top: 56px; width: 138px; height: 94px;">
+            Q
+            <small><code>block_m × head_dim</code><br />Wan: <code>256 × 128</code></small>
+          </div>
+          <div class="tile k" style="left: 176px; top: 56px; width: 138px; height: 94px;">
+            K tile
+            <small><code>block_n × head_dim</code><br />Wan step tile: <code>32 × 128</code></small>
+          </div>
+        </div>
+        <div class="math">S = Q · Kᵀ = (256 × 128) · (128 × 32) → (256 × 32)</div>
+      </div>
+
+      <div class="card">
+        <div class="matrix">
+          <div class="matrix-title">Score tile</div>
+          <div class="tile s" style="left: 58px; top: 56px; width: 190px; height: 96px;">
+            Score / prob tile
+            <small>
+              <code>block_m × block_n</code><br />
+              Wan: <code>256 × 32</code><br />
+              <code>tSrS → tPrS</code>
+            </small>
+          </div>
+        </div>
+        <div class="math">
+          scale → mask → online softmax
+        </div>
+      </div>
+
+      <div class="card">
+        <div class="matrix">
+          <div class="matrix-title">GEMM 2</div>
+          <div class="tile s" style="left: 18px; top: 56px; width: 138px; height: 94px;">
+            P
+            <small><code>block_m × block_n</code><br />Wan: <code>256 × 32</code></small>
+          </div>
+          <div class="tile v" style="left: 174px; top: 56px; width: 138px; height: 94px;">
+            V tile
+            <small><code>block_n × d_v_subtile</code><br />Wan subtile: <code>32 × 64</code></small>
+          </div>
+        </div>
+        <div class="math">A += P · V = (256 × 32) · (32 × 64) → (256 × 64)</div>
+      </div>
+    </div>
+
+    <div class="card" style="margin-top: 18px;">
+      <div class="math">
+        GEMM 1: (block_m × head_dim) · (head_dim × block_n) → (block_m × block_n)<br />
+        GEMM 2: (block_m × block_n) · (block_n × d_v_subtile) → (block_m × d_v_subtile)<br /><br />
+        Wan D=128 kernel family:<br />
+        QK tile: (256 × 128) · (128 × 32) → (256 × 32)<br />
+        PV subtile: (256 × 32) · (32 × 64) → (256 × 64)<br />
+        Two PV subtiles cover the full output width: 64 + 64 = 128
+      </div>
+    </div>
+
+    <h2>3. How This Maps to Code</h2>
+    <div class="flow">
+      <div class="step">
+        <strong>Step 1. Resolve which K tile to load.</strong>
+        Dense mode passes contiguous <code>K</code> values. Sparse mode passes only selected
+        <code>K</code> blocks from <code>lut_row</code>. Cached mode first maps to cache/current
+        physical tile indices through <code>k_idx</code>.
+      </div>
+      <div class="step">
+        <strong>Step 2. Compute one QK score tile.</strong>
+        The body copies one Q fragment and one K fragment, reorders them for subgroup MMA,
+        then runs <code>cute::gemm(mma_qk, tSrQ, tSrK, tSrS)</code>.
+      </div>
+      <div class="step">
+        <strong>Step 3. Transform scores into probabilities.</strong>
+        The score tile is scaled with <code>qscale</code>/<code>kscale</code>, then causal/full/tail
+        masks are applied, then online softmax updates the row max/sum state.
+      </div>
+      <div class="step">
+        <strong>Step 4. Multiply by the matching V tile.</strong>
+        The body prefetches V, then runs <code>P × V</code> for each output V subtile and accumulates into
+        <code>tArA</code>. This is repeated over many K tiles. In the Wan D=128 launch family,
+        one PV subtile covers <code>64</code> output channels, so two subtiles fill the full
+        <code>128</code>-wide head output.
+      </div>
+    </div>
+
+    <h2>4. Dense vs Sparse Traversal</h2>
+    <div class="grid grid-2">
+      <div class="card">
+        <h3 style="margin-top:0;">Dense path</h3>
+        <div class="math">
+          for K = blk_k0 .. blk_k1-1:<br />
+          &nbsp;&nbsp;mainloop_body(K)
+        </div>
+        <p>
+          The workgroup visits every K tile in a contiguous range. This is why dense K prefetch can use
+          <code>K + Stages</code>.
+        </p>
+      </div>
+      <div class="card">
+        <h3 style="margin-top:0;">Sparse path</h3>
+        <div class="math">
+          cur_block = 0<br />
+          for i in selected_blocks:<br />
+          &nbsp;&nbsp;cur_block += lut_row[i]<br />
+          &nbsp;&nbsp;mainloop_body(cur_block)
+        </div>
+        <p>
+          The workgroup only visits LUT-selected K tiles. That sequence may be non-contiguous, so the dense
+          prefetch rule is not valid here.
+        </p>
+      </div>
+    </div>
+
+    <h2>5. What “block” Means Here</h2>
+    <div class="card">
+      <p>
+        In this file, “block” means a <strong>tile of the attention matrices</strong>, not a full attention head
+        and not a whole tensor.
+      </p>
+      <ul>
+        <li><code>Q block</code>: a tile of query rows by full head dimension</li>
+        <li><code>K block</code>: a tile of key rows by full head dimension</li>
+        <li><code>S block</code>: the score tile generated from one Q block and one K block</li>
+        <li><code>V block</code>: the matching value rows used by that same K tile</li>
+      </ul>
+      <div class="math">
+        Wan D=128 translation:<br />
+        Q block = 256 query tokens × 128 head channels<br />
+        K block = 32 key tokens × 128 head channels<br />
+        S block = 256 query tokens × 32 key tokens<br />
+        V block per PV step = 32 key tokens × 64 output channels
+      </div>
+      <div class="note">
+        One call to <code>mainloop_body</code> does not finish the full attention result.
+        It updates the output accumulator with the contribution from one selected K block.
+        Repeating it over all dense or sparse K blocks finishes the output tile.
+      </div>
+    </div>
+
+    <div class="legend">
+      <div class="legend-item"><span class="swatch" style="background: rgba(217,108,63,0.26)"></span>Q tile</div>
+      <div class="legend-item"><span class="swatch" style="background: rgba(61,126,166,0.24)"></span>K tile</div>
+      <div class="legend-item"><span class="swatch" style="background: rgba(75,155,110,0.22)"></span>V tile</div>
+      <div class="legend-item"><span class="swatch" style="background: rgba(241,191,74,0.28)"></span>Score / prob tile</div>
+      <div class="legend-item"><span class="swatch" style="background: rgba(143,91,214,0.2)"></span>Output accumulator tile</div>
+    </div>
+  </div>
+</body>
+</html>
