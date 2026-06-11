@@ -46,8 +46,11 @@
 #include <cute/util/xe_split_barrier.hpp>
 namespace cutlass::sage {
 
+#ifndef ARK_CUTLASS_SAGE_XEDEFAULT_DEFINED
+#define ARK_CUTLASS_SAGE_XEDEFAULT_DEFINED
 template <int Stages>
 class XeDefault {};  // Default FMHA mainloop, P in registers.
+#endif
 
 };  // namespace cutlass::sage
 
