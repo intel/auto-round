@@ -262,7 +262,8 @@ class XeSageFwdKernel {
       auto dcK_cache = const_cast<ElementK*>(p.K_cache + offset_k_cache);
       auto dcV_cache = const_cast<ElementV*>(p.V_cache + offset_v_cache);
       int seq_q_pad = (seq_len_qo + params.mainloop.scale_block_size - 1) / params.mainloop.scale_block_size;
-      int seq_kv_pad = (seq_len_kv + params.mainloop.scale_block_size - 1) / params.mainloop.scale_block_size;
+      int seq_kv_total = seq_len_kv + seq_len_kv_cache;
+      int seq_kv_pad = (seq_kv_total + params.mainloop.scale_block_size - 1) / params.mainloop.scale_block_size;
       auto scaleQ = params.mainloop.scale_block_size
                         ? (float*)params.mainloop.qscale + (idx_b * s.num_heads_q * seq_q_pad + head_q * seq_q_pad)
                         : nullptr;  // per head qscale
@@ -273,6 +274,29 @@ class XeSageFwdKernel {
         ? (float*)params.mainloop.vscale +
           ((idx_b * s.num_heads_kv * seq_kv_pad + head * seq_kv_pad) * s.head_size_vo)
         : nullptr;  // per head vscale, laid out as [seq_block, d]
+      // Sparse metadata is indexed in quant-scale blocks, while the kernel scheduler walks Q tiles.
+      // Map the current tile index back to the first quant block covered by this tile so both prefill
+      // and decode consume the correct LUT row / valid_block_num entry.
+      int sparse_q_block = blk_q;
+      if (params.mainloop.scale_block_size > 0) {
+        int q_blocks_per_tile = cute::max(1, int(get<0>(TileShapeQK{})) / params.mainloop.scale_block_size);
+        sparse_q_block = blk_q * q_blocks_per_tile;
+        if (params.mainloop.num_q_blocks > 0) {
+          sparse_q_block = cute::min(sparse_q_block, params.mainloop.num_q_blocks - 1);
+        }
+      }
+      // Sparse routing remains per-Q-head even for GQA: the kernel keeps the Q-head row selection and
+      // separately maps K/V access through the grouped KV head index (`head` above).
+      auto valid_blocks = params.mainloop.valid_block_num
+                              ? params.mainloop.valid_block_num[(idx_b * s.num_heads_q + head_q) *
+                                                                    params.mainloop.num_q_blocks +
+                                                                sparse_q_block]
+                              : -1;
+      auto lut_row = params.mainloop.lut
+                         ? params.mainloop.lut +
+                               (((idx_b * s.num_heads_q + head_q) * params.mainloop.num_q_blocks + sparse_q_block) *
+                                params.mainloop.num_k_blocks)
+                         : nullptr;
       auto ptrO = p.O + offset_o;
 
       auto stride_q = is_var_len ? cutlass::make_cute_packed_stride(StrideQ{}, shape_Q) : p.dQ;
@@ -298,8 +322,8 @@ class XeSageFwdKernel {
       CollectiveMainloop mainloop(params.mainloop, shared_storage.mainloop);
       mainloop(Q(_, _, head_q, l_coord), K(_, _, head, l_coord), V(_, _, head, l_coord), tArA, tA_max, tA_sum, blk_qv,
                0, k_blocks, k_blocks, thr_id, seq_len, seq_len_kv_cache, idx_b, scaleQ, scaleK, scaleV,
-               full_tile_offset,
-               discard_seq_coord, K_cache(_, _, head, l_coord), V_cache(_, _, head, l_coord));
+               full_tile_offset, discard_seq_coord, lut_row, valid_blocks, K_cache(_, _, head, l_coord),
+               V_cache(_, _, head, l_coord));
 
       if constexpr (!is_empty_v<MainloopSharedStorage> && !is_empty_v<EpilogueSharedStorage>) {
         sycl::group_barrier(get_work_group<3>());

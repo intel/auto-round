@@ -179,6 +179,10 @@ struct SAGEV1FwdMainloop<sage::XeDefault<Stages>, CausalMask_, FullMask_, Cached
     float const* qscale = nullptr;
     float const* kscale = nullptr;
     float const* vscale = nullptr;
+    int const* lut = nullptr;
+    int const* valid_block_num = nullptr;
+    int num_q_blocks = 0;
+    int num_k_blocks = 0;
     int const* ptr_page_table = nullptr;
     int page_size = 0;
     int const* num_pages_per_seq = nullptr;
@@ -202,6 +206,7 @@ struct SAGEV1FwdMainloop<sage::XeDefault<Stages>, CausalMask_, FullMask_, Cached
     constexpr double kLog2e = 1.4426950408889634074;  // log_2(e)
     float val = args.scale * static_cast<float>(kLog2e);
     return Params{val, args.mask, args.scale_block_size, args.qscale, args.kscale, args.vscale,
+            args.lut, args.valid_block_num, args.num_q_blocks, args.num_k_blocks,
             args.ptr_page_table, args.page_size, args.num_pages_per_seq};
   }
 
@@ -258,6 +263,7 @@ struct SAGEV1FwdMainloop<sage::XeDefault<Stages>, CausalMask_, FullMask_, Cached
                                  int total_blk,  // Total # of K blocks
                                  int thr_id, int seq_len, int seq_len_kv_cache, int l_coord, float* scaleQ,
                                  float* scaleK, float* scaleV, int full_tile_offset, int discard_seq_coord,
+                                 int const* lut_row = nullptr, int valid_blocks = -1,
                                  TensorK_cache2D const& K_cache_2D = TensorK_cache2D{},
                                  TensorV_cache2D const& V_cache_2D = TensorV_cache2D{}) {
     using namespace sycl::ext::oneapi::this_work_item;
@@ -363,18 +369,20 @@ struct SAGEV1FwdMainloop<sage::XeDefault<Stages>, CausalMask_, FullMask_, Cached
     for (int D = 0; D < size<3>(pQgQ); D++) {
       prefetch(prefetch_q, pQgQ(_, _, _, D));
     }
-    for (int D = 0; D < size<4>(pKgK); D++) {
-      CUTLASS_PRAGMA_UNROLL
-      for (int K = 0; K < Stages; K++) {
-        if (K < kblocks_cache) {
-          if constexpr (PagedKV) {
-            int physical_K_tile = get_physical_k_tile(K, l_coord, seq_len_kv_cache);
-            prefetch(prefetch_k_cache, pKgK_cache(_, _, _, physical_K_tile, D));
+    if (lut_row == nullptr) {
+      for (int D = 0; D < size<4>(pKgK); D++) {
+        CUTLASS_PRAGMA_UNROLL
+        for (int K = 0; K < Stages; K++) {
+          if (K < kblocks_cache) {
+            if constexpr (PagedKV) {
+              int physical_K_tile = get_physical_k_tile(K, l_coord, seq_len_kv_cache);
+              prefetch(prefetch_k_cache, pKgK_cache(_, _, _, physical_K_tile, D));
+            } else {
+              prefetch(prefetch_k_cache, pKgK_cache(_, _, _, K, D));
+            }
           } else {
-            prefetch(prefetch_k_cache, pKgK_cache(_, _, _, K, D));
+            prefetch(prefetch_k, pKgK(_, _, _, K - kblocks_cache, D));
           }
-        } else {
-          prefetch(prefetch_k, pKgK(_, _, _, K - kblocks_cache, D));
         }
       }
     }
@@ -394,8 +402,8 @@ struct SAGEV1FwdMainloop<sage::XeDefault<Stages>, CausalMask_, FullMask_, Cached
                                params.scale
                          : 1.f;
     /* Main loop body */
-    auto mainloop_body = [&](auto cached_k, int K, auto& copy_k_cur, auto& copy_v_cur, auto& prefetch_v_cur,
-                             auto& tKgK_cur, auto& tVgV_cur, auto& pVgV_cur) {
+    auto mainloop_body = [&](auto cached_k, int K, bool first_block, auto& copy_k_cur, auto& copy_v_cur,
+                             auto& prefetch_v_cur, auto& tKgK_cur, auto& tVgV_cur, auto& pVgV_cur) {
       /* Split barrier to keep threads together */
       barrier_arrive(ScopeWorkgroup);
       constexpr bool is_cache = decltype(cached_k)::value;
@@ -519,7 +527,7 @@ struct SAGEV1FwdMainloop<sage::XeDefault<Stages>, CausalMask_, FullMask_, Cached
       }
 
       /* Apply softmax and scaling (tA rescaling fused into GEMM2 VTile loop) */
-      auto rescale = softmax(K == blk_k0, tPrS, tA_max, tA_sum);
+      auto rescale = softmax(first_block, tPrS, tA_max, tA_sum);
       if constexpr (!UseInt8PV) {
         reorder(tPrS, tArP);
       } else {
@@ -533,7 +541,7 @@ struct SAGEV1FwdMainloop<sage::XeDefault<Stages>, CausalMask_, FullMask_, Cached
         for (int VV = 0; VV < VTiles; VV++) {
           copy(copy_v_cur, tVgV_cur(_, _, _, VV, k_idx), tVrV);
           reorder(tVrV, tArV);
-          if (K != blk_k0) {
+          if (!first_block) {
             CUTLASS_PRAGMA_UNROLL
             for (int i = 0; i < tArA.size() / VTiles; i++) tArA(_, _, _, VV)(i) *= broadcast<0>(rescale, tArA, i);
           }
@@ -548,7 +556,7 @@ struct SAGEV1FwdMainloop<sage::XeDefault<Stages>, CausalMask_, FullMask_, Cached
         CUTLASS_PRAGMA_UNROLL
         for (int VV = 0; VV < VTiles; VV++) {
           auto tArA_v = tArA(_, _, _, VV);
-          if (K != blk_k0) {
+          if (!first_block) {
             CUTLASS_PRAGMA_UNROLL
             for (int i = 0; i < tArA.size() / VTiles; i++) tArA_v(i) *= broadcast<0>(rescale, tArA, i);
           }
@@ -576,23 +584,25 @@ struct SAGEV1FwdMainloop<sage::XeDefault<Stages>, CausalMask_, FullMask_, Cached
       }
 
       /* K prefetch */
-      int K_next = K + Stages;
-      for (int D = 0; D < size<4>(pKgK); D++) {
-        if constexpr (is_cache) {
-          bool is_cache_next = K_next < kblocks_cache;
-          int physical_K_next = K_next;
-          if constexpr (PagedKV) {
-            if (is_cache_next) {
-              physical_K_next = get_physical_k_tile(K_next, l_coord, seq_len_kv_cache);
+      if (lut_row == nullptr) {
+        int K_next = K + Stages;
+        for (int D = 0; D < size<4>(pKgK); D++) {
+          if constexpr (is_cache) {
+            bool is_cache_next = K_next < kblocks_cache;
+            int physical_K_next = K_next;
+            if constexpr (PagedKV) {
+              if (is_cache_next) {
+                physical_K_next = get_physical_k_tile(K_next, l_coord, seq_len_kv_cache);
+              }
             }
-          }
-          if (is_cache_next) {
-            prefetch(prefetch_k_cache, pKgK_cache(_, _, _, physical_K_next, D));
+            if (is_cache_next) {
+              prefetch(prefetch_k_cache, pKgK_cache(_, _, _, physical_K_next, D));
+            } else {
+              prefetch(prefetch_k, pKgK(_, _, _, K_next - kblocks_cache, D));
+            }
           } else {
             prefetch(prefetch_k, pKgK(_, _, _, K_next - kblocks_cache, D));
           }
-        } else {
-          prefetch(prefetch_k, pKgK(_, _, _, K_next - kblocks_cache, D));
         }
       }
 
@@ -600,15 +610,38 @@ struct SAGEV1FwdMainloop<sage::XeDefault<Stages>, CausalMask_, FullMask_, Cached
     };
 
     /* Main loop, blocked in k. */
-    if constexpr (CachedKV) {
-      for (int K = blk_k0; K < kblocks_cache; K++) {
-        mainloop_body(std::bool_constant<true>{}, K, copy_k_cache, copy_v_cache, prefetch_v_cache, tKgK_cache,
-                      tVgV_cache, pVgV_cache);
+    if (lut_row != nullptr && valid_blocks >= 0) {
+      int cur_block = 0;
+      bool first_sparse_block = true;
+      for (int i = 0; i < valid_blocks; ++i) {
+        cur_block += lut_row[i];
+        int K = cur_block;
+        if constexpr (CachedKV) {
+          if (K < kblocks_cache) {
+            if (K < blk_k0 || K >= blk_k1) continue;
+            mainloop_body(std::bool_constant<true>{}, K, first_sparse_block, copy_k_cache, copy_v_cache,
+                          prefetch_v_cache, tKgK_cache, tVgV_cache, pVgV_cache);
+            first_sparse_block = false;
+            continue;
+          }
+        }
+        K += kblocks_cache;
+        if (K < (blk_k0 > kblocks_cache ? blk_k0 : kblocks_cache) || K >= blk_k1) continue;
+        mainloop_body(std::bool_constant<false>{}, K, first_sparse_block, copy_k, copy_v, prefetch_v, tKgK, tVgV,
+                      pVgV);
+        first_sparse_block = false;
       }
-    }
-
-    for (int K = (blk_k0 > kblocks_cache ? blk_k0 : kblocks_cache); K < blk_k1; K++) {
-      mainloop_body(std::bool_constant<false>{}, K, copy_k, copy_v, prefetch_v, tKgK, tVgV, pVgV);
+    } else {
+      if constexpr (CachedKV) {
+        for (int K = blk_k0; K < kblocks_cache; K++) {
+          mainloop_body(std::bool_constant<true>{}, K, K == blk_k0, copy_k_cache, copy_v_cache, prefetch_v_cache,
+                        tKgK_cache, tVgV_cache, pVgV_cache);
+        }
+      }
+      for (int K = (blk_k0 > kblocks_cache ? blk_k0 : kblocks_cache); K < blk_k1; K++) {
+        mainloop_body(std::bool_constant<false>{}, K, K == (blk_k0 > kblocks_cache ? blk_k0 : kblocks_cache), copy_k,
+                      copy_v, prefetch_v, tKgK, tVgV, pVgV);
+      }
     }
   }
 

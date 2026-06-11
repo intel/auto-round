@@ -215,6 +215,56 @@ static void sage_pvi8(torch_ptr stream, torch_ptr Q, torch_ptr K, torch_ptr V, t
                            is_causal, (BTLA_DTYPE)o_dtype);
 }
 
+static void sage_sparse(torch_ptr stream, torch_ptr Q, torch_ptr K, torch_ptr V, torch_ptr O, torch_ptr mask,
+                        int scale_block_size, torch_ptr qscale, torch_ptr kscale, torch_ptr lut,
+                        torch_ptr valid_block_num, int num_q_blocks, int num_k_blocks, int q_stride_s, int q_stride_d,
+                        int q_stride_h, int q_stride_b, int k_stride_s, int k_stride_d, int k_stride_h, int k_stride_b,
+                        int v_stride_d, int v_stride_s, int v_stride_h, int v_stride_b, int o_stride_s,
+                        int o_stride_d, int o_stride_h, int o_stride_b, int q_dtype, int k_dtype, int o_dtype,
+                        int batch, int num_heads_q, int num_heads_kv, int seq_len_q, int seq_len_kv, int head_dim,
+                        float softmax_scale, bool is_causal) {
+  if (mask && is_causal) {
+    throw std::invalid_argument("ark::sage_sparse: mask and is_causal cannot both be set");
+  }
+  if (!lut || !valid_block_num) {
+    throw std::invalid_argument("ark::sage_sparse: lut and valid_block_num must be provided");
+  }
+  ark::sdpa_impl_qks8_sparse_pvhalf((sycl::queue*)stream, (void*)Q, (void*)K, (void*)V, (void*)O, (void*)mask,
+                                    scale_block_size, (void*)qscale, (void*)kscale, (void*)lut,
+                                    (void*)valid_block_num, num_q_blocks, num_k_blocks, q_stride_s, q_stride_d,
+                                    q_stride_h, q_stride_b, k_stride_s, k_stride_d, k_stride_h, k_stride_b, v_stride_d,
+                                    v_stride_s, v_stride_h, v_stride_b, o_stride_s, o_stride_d, o_stride_h, o_stride_b,
+                                    batch, num_heads_q, num_heads_kv, seq_len_q, seq_len_kv, head_dim, softmax_scale,
+                                    is_causal, (BTLA_DTYPE)o_dtype);
+}
+
+static void sage_sparse_decode(torch_ptr stream, torch_ptr Q, torch_ptr K, torch_ptr V, torch_ptr K_cache,
+                               torch_ptr V_cache, torch_ptr O, torch_ptr mask, int scale_block_size, torch_ptr qscale,
+                               torch_ptr kscale, torch_ptr lut, torch_ptr valid_block_num, int num_q_blocks,
+                               int num_k_blocks, int q_stride_s, int q_stride_d, int q_stride_h, int q_stride_b,
+                               int k_stride_s, int k_stride_d, int k_stride_h, int k_stride_b, int v_stride_d,
+                               int v_stride_s, int v_stride_h, int v_stride_b, int o_stride_s, int o_stride_d,
+                               int o_stride_h, int o_stride_b, int q_dtype, int k_dtype, int o_dtype, int batch,
+                               int num_heads_q, int num_heads_kv, int seq_len_q, int seq_len_kv, int seq_len_kv_cache,
+                               int head_dim, float softmax_scale, bool is_causal) {
+  if (mask && is_causal) {
+    throw std::invalid_argument("ark::sage_sparse_decode: mask and is_causal cannot both be set");
+  }
+  if (!lut || !valid_block_num) {
+    throw std::invalid_argument("ark::sage_sparse_decode: lut and valid_block_num must be provided");
+  }
+  if (!K_cache || !V_cache) {
+    throw std::invalid_argument("ark::sage_sparse_decode: K_cache and V_cache must be provided");
+  }
+  ark::sdpa_impl_qks8_sparse_decode_pvhalf(
+      (sycl::queue*)stream, (void*)Q, (void*)K, (void*)V, (void*)K_cache, (void*)V_cache, (void*)O, (void*)mask,
+      scale_block_size, (void*)qscale, (void*)kscale, (void*)lut, (void*)valid_block_num, num_q_blocks, num_k_blocks,
+      q_stride_s, q_stride_d, q_stride_h, q_stride_b, k_stride_s, k_stride_d, k_stride_h, k_stride_b, v_stride_d,
+      v_stride_s, v_stride_h, v_stride_b, o_stride_s, o_stride_d, o_stride_h, o_stride_b, batch, num_heads_q,
+      num_heads_kv, seq_len_q, seq_len_kv, seq_len_kv_cache, head_dim, softmax_scale, is_causal,
+      (BTLA_DTYPE)o_dtype);
+}
+
 static void moe_gemm_wrapper(torch_ptr stream, torch_ptr activations, torch_ptr weights, torch_ptr scales,
                              torch_ptr outputs, int dtype, int N, int K, torch_ptr num_tokens_per_expert,
                              int num_experts) {
@@ -432,6 +482,8 @@ PYBIND11_MODULE(PY_NAME, m) {
   // High-level SAGEV1 PVi8 API: input Q/K/V are FP16 and quantized internally.
   m.def("sagev1_pvi8", &ark::sagev1_pvi8);
   m.def("sage", &ark::sage);
+  m.def("sage_sparse", &ark::sage_sparse);
+  m.def("sage_sparse_decode", &ark::sage_sparse_decode);
   // Low-level SAGE PVi8 API: input Q/K/V are pre-quantized int8 with qscale/kscale/vscale.
   m.def("sage_pvi8", &ark::sage_pvi8);
   m.def("sage_dynamic_quant", &ark::sage_dynamic_quant);
