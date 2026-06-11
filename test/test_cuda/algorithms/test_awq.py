@@ -31,7 +31,7 @@ from transformers import AutoConfig, AutoModelForCausalLM, AutoTokenizer
 
 from auto_round import AutoRound
 
-from ...helpers import evaluate_accuracy, generate_prompt, get_model_path, opt_name_or_path, save_tiny_model
+from ...helpers import evaluate_accuracy, generate_prompt, get_model_path, opt_name_or_path, eval_generated_prompt
 
 # ---------------------------------------------------------------------------
 # Section 1: Normal LLM (OPT-125m) – W4A16 quantize, inference, export args
@@ -91,22 +91,18 @@ class TestAWQLLM:
         assert qconfig["sym"] == sym
         assert "auto-round" in qconfig["quant_method"]
 
-    def test_awq_w4a16_load_and_generate(self, tiny_opt_model_path):
+    def test_awq_w4a16_load_and_generate(self):
         """Quantize, save, reload, and generate on CUDA to verify round-trip."""
+        model_name = get_model_path("facebook/opt-125m")
         ar = AutoRound(
-            tiny_opt_model_path,
+            model_name,
             scheme="W4A16",
             algorithm="awq",
             nsamples=2,
             seqlen=32,
-            batch_size=2,
         )
-        _, save_path = ar.quantize_and_save(output_dir=self.save_dir, format="auto_round")
-
-        loaded_model = AutoModelForCausalLM.from_pretrained(save_path, device_map="auto")
-        tokenizer = AutoTokenizer.from_pretrained(save_path)
-        output = generate_prompt(loaded_model, tokenizer)
-        assert len(output) > 0 and "!!!" not in output, f"Unexpected generation output: {output}"
+        _, quantized_model_path = ar.quantize_and_save(output_dir=self.save_dir, format="auto_round")
+        eval_generated_prompt(quantized_model_path)
 
 
 # ---------------------------------------------------------------------------
@@ -253,3 +249,4 @@ class TestAWQEval:
             batch_size="auto:8",
             limit=50,
         )
+
