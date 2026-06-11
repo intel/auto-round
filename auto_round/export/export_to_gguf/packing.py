@@ -194,7 +194,9 @@ def make_qx_quants_chunk(data, bits, rmse_type=0, qw=None, split_num=1, v=0):
         # Compute sumlx and suml2 using the pre-allocated L buffer
         sumlx = (w * chunk * L).sum(dim=-1)
         suml2 = (w * L * L).sum(dim=-1)
-        scales = sumlx / suml2
+        # Guard the all-zero group case (suml2 == 0): 0/0 would produce a NaN
+        # scale that ends up as a NaN fp16 `d` in the exported GGUF block.
+        scales = sumlx * get_reciprocal(suml2)
 
         if return_early:
             iscales_inv = (1 / iscales).reshape(iscales.shape[:2])
@@ -488,7 +490,7 @@ def make_qp_quants(nmax, data, quant_weights):
         if n_changed == 0:
             break
 
-    return sumlx / suml2, L
+    return sumlx * get_reciprocal(suml2), L
 
 
 @register_qtype("bf16")
