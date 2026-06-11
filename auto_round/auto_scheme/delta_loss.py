@@ -870,7 +870,30 @@ def get_score_for_scheme(
             scores_dict[n] = [layer_bits, m.mix_score]
     for n, m in model.named_modules():
         if hasattr(m, "orig_layer"):
+            # Explicitly break reference cycles to ensure GC can free the wrapper.
+            # Hook closures capture `self` (wrapper), creating cycles:
+            #   wrapper → qdq_w → _backward_hooks → closure → wrapper
+            # PyTorch's C-level tensor storage prevents Python's cyclic GC from
+            # collecting these without explicitly breaking the cycle first.
+            if hasattr(m, "qdq_w") and m.qdq_w is not None:
+                if hasattr(m.qdq_w, "_backward_hooks") and m.qdq_w._backward_hooks:
+                    m.qdq_w._backward_hooks.clear()
+                # Use detach_() rather than requires_grad_(False) because
+                # block_module.to("cpu") may have turned qdq_w into a non-leaf
+                # (ToCopyBackward grad_fn from .to()), and requires_grad_ only
+                # works on leaf tensors.
+                m.qdq_w.detach_()
+                m.qdq_w = None
+            if hasattr(m, "x_diff"):
+                m.x_diff = None
+            if hasattr(m, "super_qdq_func"):
+                m.super_qdq_func = None
+            if hasattr(m, "act_qdq_func"):
+                m.act_qdq_func = None
             set_module(model, n, m.orig_layer)
+    import gc
+
+    gc.collect()
     return scores_dict
 
 
