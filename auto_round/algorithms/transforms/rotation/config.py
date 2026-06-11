@@ -50,7 +50,9 @@ __all__ = [
 ]
 
 # Supported Hadamard transform types (also used by HadamardTransform registry).
-HADAMARD_TYPES: frozenset[str] = frozenset({"hadamard", "random_hadamard", "quarot_hadamard"})
+HADAMARD_TYPES: frozenset[str] = frozenset(
+    {"hadamard", "random_hadamard", "inplace_quarot_hadamard", "inplace_hadamard", "inplace_random"}
+)
 _SUPPORTED_BACKENDS: frozenset[str] = frozenset({"auto", "inplace", "transform"})
 
 
