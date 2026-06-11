@@ -27,6 +27,7 @@ from tqdm import tqdm
 from auto_round.calibration.llm import LLMCalibrator
 from auto_round.calibration.register import register_calibrator
 from auto_round.logger import logger
+from auto_round.utils.device_manager import device_manager
 from auto_round.utils.model import wrap_block_forward_positional_to_kwargs
 
 
@@ -95,7 +96,7 @@ class DiffusionCalibrator(LLMCalibrator):
             )
             exit(-1)
 
-        target_device = c.compress_context.device
+        target_device = device_manager.device
         if pipe.device != torch.device(target_device):
             pipe.to(target_device)
         pipeline_fn = getattr(pipe, "_autoround_pipeline_fn", None)

@@ -133,7 +133,7 @@ def evaluate_diffusion_model(args, autoround=None, model=None, pipe=None):
 
     import torch
 
-    from auto_round.utils import detect_device, get_model_dtype, logger, unsupported_meta_device
+    from auto_round.utils import get_major_device, get_model_dtype, logger, unsupported_meta_device
 
     # Prepare inference pipeline
     if pipe is None:
@@ -145,7 +145,7 @@ def evaluate_diffusion_model(args, autoround=None, model=None, pipe=None):
         pipe = autoround.pipe
         pipe.to(model.dtype)
         pipe.transformer = model
-    device_str = detect_device(args.device_map if hasattr(args, "device_map") else "0")
+    device_str = get_major_device(args.device_map if hasattr(args, "device_map") else "0")
     pipe = pipe.to(device_str)
 
     # Set evaluation dtype
@@ -342,9 +342,9 @@ def evaluate_with_model_path(eval_folder, device_str, autoround, args):
     from auto_round.eval.eval_cli import _eval_init, eval_task_by_task
     from auto_round.utils import get_model_dtype, logger
 
-    tasks = args.tasks
-    if isinstance(tasks, str):
-        tasks = tasks.split(",")
+    # tasks = args.tasks
+    # if isinstance(tasks, str):
+    #     tasks = tasks.split(",")
 
     # Task-by-task evaluation
     if args.eval_task_by_task:
@@ -394,7 +394,7 @@ def evaluate_with_model_path(eval_folder, device_str, autoround, args):
         print("evaluation running time=%ds" % (time.time() - st))
 
 
-def run_model_evaluation(model, tokenizer, autoround, folders, formats, device_str, args):
+def run_model_evaluation(model, tokenizer, autoround, folders, formats, args):
     """
     Run model evaluation.
     Unified evaluation entry point that dispatches to different evaluation logic based on model type.
@@ -405,7 +405,6 @@ def run_model_evaluation(model, tokenizer, autoround, folders, formats, device_s
         autoround: AutoRound instance
         folders: List of export folders
         formats: List of export formats
-        device_str: Device string
         args: Command line arguments
     """
     from auto_round.utils import get_library_version, get_model_dtype, logger
@@ -439,7 +438,9 @@ def run_model_evaluation(model, tokenizer, autoround, folders, formats, device_s
 
     if args.tasks is None or args.tasks == "" or eval_folder is None:
         return
+    from auto_round.utils.device_manager import device_manager, get_device_and_parallelism
 
+    device_str, _ = get_device_and_parallelism(device_manager.device_map)
     # Handle vllm backend evaluation
     if hasattr(args, "eval_backend") and args.eval_backend == "vllm":
         from auto_round.eval.eval_cli import eval_with_vllm

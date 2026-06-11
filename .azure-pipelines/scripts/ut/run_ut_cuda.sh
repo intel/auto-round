@@ -92,11 +92,11 @@ function run_unit_test() {
     rm -rf .coverage* *.xml *.html
 
     uv pip install torch==2.12.0 torchvision torchao --index-url https://download.pytorch.org/whl/cu126
-    uv pip install https://github.com/XuehaoSun/llama-cpp-python/releases/download/v0.3.23/llama_cpp_python-0.3.23+cu128-py3-none-linux_x86_64.whl
+    uv pip install llama-cpp-python --extra-index-url https://abetlen.github.io/llama-cpp-python/whl/cu125
     uv pip install 'git+https://github.com/ggml-org/llama.cpp.git#subdirectory=gguf-py'
     uv pip install -r test_cuda/requirements.txt
     uv pip install -r test_cuda/requirements_diffusion.txt
-    uv pip install -U transformers
+    uv pip install -U transformers chardet
     uv pip uninstall torch torchvision
     uv pip install torch==2.12.0 torchvision torchao --index-url https://download.pytorch.org/whl/cu126
     cd ${REPO_PATH} && uv pip install . && cd ${REPO_PATH}/test
@@ -138,6 +138,7 @@ function run_unit_test_vlm() {
     uv pip install -r test_cuda/requirements_vlm.txt \
         --extra-index-url https://download.pytorch.org/whl/cu126 \
         --index-strategy unsafe-best-match
+    uv pip install -U chardet
     cd ${REPO_PATH} && uv pip install . && cd ${REPO_PATH}/test
 
     pip list > ${LOG_DIR}/vlm_ut_pip_list.txt
@@ -171,6 +172,7 @@ function run_unit_test_llmc() {
     cd ${REPO_PATH}/test
     rm -rf .coverage* *.xml *.html
     BUILD_TYPE="nightly" uv pip install -r test_cuda/requirements_llmc.txt --extra-index-url https://download.pytorch.org/whl/cu126 --index-strategy unsafe-best-match
+    uv pip install -U chardet
     cd ${REPO_PATH} && uv pip install . && cd ${REPO_PATH}/test
 
     pip list > ${LOG_DIR}/llmc_ut_pip_list.txt
@@ -240,6 +242,7 @@ function run_unit_test_vllm() {
         --extra-index-url https://wheels.vllm.ai/${vllm_version}/cu129 \
         --extra-index-url https://download.pytorch.org/whl/cu126 \
         --index-strategy unsafe-best-match
+    uv pip install -U chardet
     cd ${REPO_PATH} && uv pip install . && cd ${REPO_PATH}/test
 
     pip list > ${LOG_DIR}/vllm_ut_pip_list.txt
