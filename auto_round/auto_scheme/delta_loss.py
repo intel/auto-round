@@ -25,7 +25,6 @@ from auto_round.auto_scheme.gen_auto_scheme import AutoScheme
 from auto_round.auto_scheme.register import register_scheme_methods
 from auto_round.auto_scheme.utils import (
     apply_quant_scheme,
-    compute_avg_bits_for_scheme,
     compute_layer_bits,
     parse_shared_layers,
     remove_quant_scheme,
@@ -1221,34 +1220,63 @@ def _gen_layer_config(
     sorted_indices = sorted(range(len(options_scores)), key=lambda i: options_scores[i])
     # Layers that are not fixed in fixed_layer_scheme
     not_fixed_embedding_layers_names = [name for name in embedding_layers_names if name not in fixed_layer_scheme]
-    for sorted_index in sorted_indices:
-        tmp_scheme = schemes[sorted_index]
-        if isinstance(tmp_scheme, str):
-            tmp_scheme = asdict(preset_name_to_scheme(tmp_scheme))
 
-        for embedding_layer_name in not_fixed_embedding_layers_names:
+    # Determine if model has shared lm_head (tie_word_embeddings)
+    has_tied_lm_head = getattr(getattr(model, "config", None), "tie_word_embeddings", False)
 
-            fixed_layer_scheme[embedding_layer_name] = tmp_scheme
-            embedding_layer = get_module(model, embedding_layer_name)
-            for key, item in tmp_scheme.items():
-                setattr(embedding_layer, key, item)
-        current_avg_bits, _ = compute_avg_bits_for_scheme(
-            model,
-            quant_layer_names + embedding_layers_names,
-            fixed_layer_scheme,
-            min_avg_bit_scheme,
-            ignore_scale_zp_bits=auto_scheme.ignore_scale_zp_bits,
-            clean_scheme=False,
-        )
+    def _get_scheme_bits(scheme):
+        """Extract the weight bits from a scheme (str or dict)."""
+        if isinstance(scheme, str):
+            scheme = asdict(preset_name_to_scheme(scheme))
+        elif isinstance(scheme, QuantizationScheme):
+            scheme = asdict(scheme)
+        return scheme.get("bits", 16)
 
-        if current_avg_bits <= target_bits:  # compute_avg_bit remove setting
-            for embedding_layer_name in not_fixed_embedding_layers_names:
+    def _select_embedding_scheme_index():
+        """Select the best scheme index for embedding layers based on model type and target_bits.
 
-                fixed_layer_scheme[embedding_layer_name] = tmp_scheme
-                embedding_layer = get_module(model, embedding_layer_name)
-                for key, item in tmp_scheme.items():
-                    setattr(embedding_layer, key, item)
-            break
+        For models with shared lm_head (tie_word_embeddings=True):
+          - target_bits > 6: use the lowest-loss option (same as before)
+          - target_bits <= 6: use the lowest-loss option among those with bits <= 6
+        For models without shared lm_head:
+          - use the lowest-loss option among those with bits >= ceil(target_bits)
+        """
+        import math
+
+        if has_tied_lm_head:
+            if target_bits > 6:
+                # Use lowest loss option (first in sorted_indices)
+                return sorted_indices[0] if sorted_indices else 0
+            else:
+                # Use lowest loss option among schemes with bits <= 6
+                for idx in sorted_indices:
+                    scheme_bits = _get_scheme_bits(schemes[idx])
+                    if scheme_bits <= 6:
+                        return idx
+                # Fallback: if none found, use lowest loss
+                return sorted_indices[0] if sorted_indices else 0
+        else:
+            # Not shared lm_head: use lowest loss option among schemes with bits >= ceil(target_bits)
+            ceil_bits = math.ceil(target_bits)
+            for idx in sorted_indices:
+                scheme_bits = _get_scheme_bits(schemes[idx])
+                if scheme_bits >= ceil_bits:
+                    return idx
+            # Fallback: if none found, use lowest loss
+            return sorted_indices[0] if sorted_indices else 0
+
+    selected_index = _select_embedding_scheme_index()
+    tmp_scheme = schemes[selected_index]
+    if isinstance(tmp_scheme, str):
+        tmp_scheme = asdict(preset_name_to_scheme(tmp_scheme))
+    elif isinstance(tmp_scheme, QuantizationScheme):
+        tmp_scheme = asdict(tmp_scheme)
+
+    for embedding_layer_name in not_fixed_embedding_layers_names:
+        fixed_layer_scheme[embedding_layer_name] = tmp_scheme
+        embedding_layer = get_module(model, embedding_layer_name)
+        for key, item in tmp_scheme.items():
+            setattr(embedding_layer, key, item)
 
     # Minus fixed_layer
     for name in fixed_layer_scheme.keys():  # The Scheme should have been applied
