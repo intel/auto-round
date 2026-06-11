@@ -31,7 +31,7 @@ from transformers import AutoConfig, AutoModelForCausalLM, AutoTokenizer
 
 from auto_round import AutoRound
 
-from ...helpers import evaluate_accuracy, generate_prompt, get_model_path, opt_name_or_path, eval_generated_prompt
+from ...helpers import eval_generated_prompt, evaluate_accuracy, generate_prompt, get_model_path, opt_name_or_path
 
 # ---------------------------------------------------------------------------
 # Section 1: Normal LLM (OPT-125m) – W4A16 quantize, inference, export args
@@ -249,4 +249,3 @@ class TestAWQEval:
             batch_size="auto:8",
             limit=50,
         )
-
