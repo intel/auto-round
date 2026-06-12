@@ -26,6 +26,7 @@ from auto_round.algorithms.transforms import (
     BaseRotationConfig,
     apply_rotation,
 )
+from auto_round.auto_scheme.gen_auto_scheme import AutoScheme
 from auto_round.compressors.shard_writer import ShardWriter
 from auto_round.compressors.utils import _get_save_folder_name, is_mx_fp, is_nv_fp, set_layer_config
 from auto_round.context.compress import CompressContext
@@ -193,24 +194,24 @@ class BaseCompressor(object):
         self,
         config: Union[object, list[object]],
         model: Union[torch.nn.Module, str],
-        tokenizer=None,
-        platform="hf",
-        format=None,
-        scheme="W4A16",
+        tokenizer: Any = None,
+        platform: str = "hf",
+        format: Union[str, list, None] = None,
+        scheme: Union[str, dict, QuantizationScheme, AutoScheme] = "W4A16",
         low_gpu_mem_usage: bool = False,
         device_map: Union[str, torch.device, int, dict] = 0,
         enable_torch_compile: bool = False,
         seed: int = 42,
         low_cpu_mem_usage: bool = True,
-        layer_config=None,
+        layer_config: Optional[dict] = None,
         nsamples: int = None,
         seqlen: int = None,
-        scale_dtype=None,
+        scale_dtype: Optional[Union[str, torch.dtype]] = None,
         ignore_layers: str = "",
         quant_lm_head: bool = False,
-        to_quant_block_names=None,
+        to_quant_block_names: Optional[Union[str, list[str]]] = None,
         **kwargs,
-    ):
+    ) -> None:
         # ``CalibrationState`` is the single source of truth for calibration
         # runtime state.  Seed every calibration field here in one block so
         # the rest of ``__init__`` only ever interacts with the state object
@@ -421,13 +422,18 @@ class BaseCompressor(object):
     # ── Convenience properties ────────────────────────────────────────────────
 
     @property
-    def tokenizer(self):
+    def tokenizer(self) -> Any:
         """Convenience accessor for the tokenizer stored in ``model_context``."""
         return self.model_context.tokenizer
 
     # ── Scheme resolution ─────────────────────────────────────────────────────
 
-    def resolve_scheme(self, model_context=None, compress_context=None, dataset: str = None) -> None:
+    def resolve_scheme(
+        self,
+        model_context: Optional[ModelContext] = None,
+        compress_context: Optional[CompressContext] = None,
+        dataset: Optional[str] = None,
+    ) -> None:
         """Phase-1 init: resolve scheme and bind config attrs (no model structure needed).
 
         Must be called BEFORE ``get_formats()`` and BEFORE ``_scheme_post_init()``.
@@ -698,11 +704,11 @@ class BaseCompressor(object):
     # ─────────────────────────────────────────────────────────────────────────
 
     @property
-    def mllm(self):
+    def mllm(self) -> bool:
         return self.model_context.is_mllm
 
     @property
-    def diffusion(self):
+    def diffusion(self) -> bool:
         return self.model_context.is_diffusion
 
     def _get_torch_compile_guard_state(self) -> tuple[bool, bool, int]:
@@ -915,7 +921,7 @@ class BaseCompressor(object):
         return self.__dict__["_quantizer"]
 
     @quantizer.setter
-    def quantizer(self, value) -> None:
+    def quantizer(self, value: BaseQuantizer) -> None:
         _pipeline = self.__dict__.get("_pipeline")
         if _pipeline is not None:
             _pipeline.block_quantizer = value
@@ -923,7 +929,7 @@ class BaseCompressor(object):
             self.__dict__["_quantizer"] = value
 
     @property
-    def pipeline(self):
+    def pipeline(self) -> Any:
         """The active :class:`~auto_round.algorithms.pipeline.QuantizationPipeline`."""
         return self._pipeline
 
@@ -1234,7 +1240,7 @@ class BaseCompressor(object):
         return device_manager.device
 
     @device.setter
-    def device(self, value) -> None:
+    def device(self, value: Union[str, torch.device]) -> None:
         device_manager.device = value
 
     @property
@@ -1242,16 +1248,16 @@ class BaseCompressor(object):
         return device_manager.device_list
 
     @property
-    def device_map(self):
+    def device_map(self) -> Any:
         return device_manager.device_map
 
     # ── Forwarding properties to ``self._calibration_state`` ──────────────────
     @property
-    def calibration_state(self):
+    def calibration_state(self) -> Any:
         return self._calibration_state
 
     @calibration_state.setter
-    def calibration_state(self, value) -> None:
+    def calibration_state(self, value: Any) -> None:
         self._calibration_state = value
         # Re-wire quantizer if it already exists so they keep sharing.
         # quantizer is now a @property forwarding to _pipeline.block_quantizer;
@@ -1281,11 +1287,11 @@ class BaseCompressor(object):
         self._calibration_state.to_cached_layers = []
 
     @property
-    def last_cache_name(self):
+    def last_cache_name(self) -> Optional[str]:
         return self._calibration_state.last_cache_name
 
     @last_cache_name.setter
-    def last_cache_name(self, value) -> None:
+    def last_cache_name(self, value: Optional[str]) -> None:
         self._calibration_state.last_cache_name = value
 
     @last_cache_name.deleter
@@ -1336,19 +1342,19 @@ class BaseCompressor(object):
             self._calibration_state.seqlen = value
 
     @property
-    def dataset(self):
+    def dataset(self) -> Any:
         return self._calibration_state.dataset
 
     @dataset.setter
-    def dataset(self, value) -> None:
+    def dataset(self, value: Any) -> None:
         self._calibration_state.dataset = value
 
     @property
-    def dataloader(self):
+    def dataloader(self) -> Any:
         return self._calibration_state.dataloader
 
     @dataloader.setter
-    def dataloader(self, value) -> None:
+    def dataloader(self, value: Any) -> None:
         self._calibration_state.dataloader = value
 
     @dataloader.deleter
@@ -1356,7 +1362,7 @@ class BaseCompressor(object):
         self._calibration_state.dataloader = None
 
     @property
-    def optimizer(self):
+    def optimizer(self) -> Any:
         """Return the actual optimizer class, converting string to class for backward compat.
 
         Old API stored ``self.optimizer = torch.optim.AdamW`` (the class itself).
@@ -1469,7 +1475,7 @@ class BaseCompressor(object):
         output_dir: str = None,
         format: Union[str, list[OutputFormat]] = None,
         inplace: bool = True,
-        return_folders=False,
+        return_folders: bool = False,
         **kwargs,
     ) -> torch.nn.Module:
         """Save the quantized model to the specified output directory in the specified format.

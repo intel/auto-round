@@ -14,7 +14,7 @@
 
 import os
 from io import StringIO
-from typing import Dict
+from typing import Dict, Optional
 
 import pandas as pd
 import torch
@@ -59,9 +59,9 @@ class Text2ImgDataset(Dataset):
 
     def __init__(
         self,
-        dataset_path,
-        nsamples=128,
-        dataframe=None,
+        dataset_path: str,
+        nsamples: int = 128,
+        dataframe: Optional[pd.DataFrame] = None,
     ) -> None:
         super().__init__()
         self.captions = []
@@ -104,7 +104,7 @@ class AudioCapsDataset(Dataset):
     ``audiocap_id`` as the sample id and ``caption`` as the text prompt.
     """
 
-    def __init__(self, dataset_path, nsamples=128) -> None:
+    def __init__(self, dataset_path: str, nsamples: int = 128) -> None:
         super().__init__()
         self.captions = []
         self.caption_ids = []

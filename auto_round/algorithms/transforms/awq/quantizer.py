@@ -70,7 +70,7 @@ class AWQQuantizer(BaseWeightTransformer):
     SignRound) is performed by the pipeline's ``block_quantizer``.
     """
 
-    def __init__(self, config: AWQConfig):
+    def __init__(self, config: AWQConfig) -> None:
         super().__init__(config)
         self.duo_scaling: bool | str = config.duo_scaling
         self.n_grid: int = config.n_grid

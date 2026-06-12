@@ -26,7 +26,7 @@ from auto_round.utils.device_manager import device_manager
 @register_pipeline_member(AdamRoundConfig)
 class AdamRoundQuantizer(SignRoundQuantizer):
 
-    def __init__(self, config):
+    def __init__(self, config: AdamRoundConfig) -> None:
         super().__init__(config)
         self.momentum = None  # AdamW handles momentum internally
 

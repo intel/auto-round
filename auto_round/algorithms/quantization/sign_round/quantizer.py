@@ -55,7 +55,7 @@ from auto_round.wrapper import WrapperLinear, unwrapper_block, unwrapper_layer, 
 @register_pipeline_member(SignRoundConfig)
 class SignRoundQuantizer(RTNLayerFallbackMixin, BaseQuantizer):
 
-    def __init__(self, config: SignRoundConfig):
+    def __init__(self, config: SignRoundConfig) -> None:
         super().__init__(config)
         self.iters = config.iters
         self.lr = config.lr

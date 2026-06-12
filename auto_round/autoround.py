@@ -236,12 +236,12 @@ class AutoRound:
             entry_kwargs = filter_supported_entry_kwargs(kwargs, context="AutoRound")
 
             return _NewAutoRound(
-                alg_configs=alg_configs,
-                model=model,
+                model,
+                scheme,
+                alg_configs,
                 tokenizer=tokenizer,
                 platform=platform,
                 format=entry_kwargs.pop("format", None),
-                scheme=scheme,
                 low_gpu_mem_usage=low_gpu_mem_usage,
                 device_map=device_map,
                 iters=iters,

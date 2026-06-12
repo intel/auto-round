@@ -23,7 +23,7 @@ class RTNConfig(QuantizationConfig):
         *,
         disable_opt_rtn: bool = None,
         **kwargs,
-    ):
+    ) -> None:
         """Initialize an RTN configuration.
 
         Args:

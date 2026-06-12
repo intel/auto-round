@@ -42,7 +42,7 @@ class AWQConfig(QuantizationConfig):
         apply_smooth: bool = True,
         mappings: list[dict] | None = None,
         **kwargs,
-    ):
+    ) -> None:
         """Initialize an AWQ configuration.
 
         Args:

@@ -225,7 +225,13 @@ class BlockIO:
             raise ValueError(f"Input source {source.name} is unavailable for this block.")
         return self._select_inputs(input_ids, self._input_others, indices)
 
-    def forward_batch(self, indices, *, device, cache_device=None):
+    def forward_batch(
+        self,
+        indices: torch.Tensor,
+        *,
+        device: Union[str, torch.device],
+        cache_device: Union[str, torch.device, None] = None,
+    ) -> Any:
         quantizer = self._quantizer
         block = self._block
         if quantizer is None or block is None:
@@ -270,7 +276,7 @@ class BlockIO:
         return outputs
 
     @torch.no_grad()
-    def collect_reference(self, hooks=None):
+    def collect_reference(self, hooks=None) -> Any:
         _ = hooks
         outputs = self._collect_outputs(
             self._block,
@@ -284,7 +290,7 @@ class BlockIO:
         return outputs
 
     @torch.no_grad()
-    def collect_quantized_stats(self, hooks=None):
+    def collect_quantized_stats(self, hooks=None) -> Any:
         _ = hooks
         if not self.has_quantized_inputs():
             return None
@@ -297,7 +303,7 @@ class BlockIO:
         )
 
     @torch.no_grad()
-    def collect_next_inputs(self):
+    def collect_next_inputs(self) -> Any:
         if self._quantizer is None or not self._quantizer.enable_quanted_input:
             return None
         outputs = self._collect_outputs(
@@ -309,11 +315,11 @@ class BlockIO:
         self._quantized_outputs = outputs
         return outputs
 
-    def seed_reference(self, fp_inputs, reference_outputs) -> None:
+    def seed_reference(self, fp_inputs: Any, reference_outputs: Any) -> None:
         self._fp_inputs = fp_inputs
         self._reference_outputs = reference_outputs
 
-    def reference_batch(self, indices, *, device=None):
+    def reference_batch(self, indices: torch.Tensor, *, device=None) -> torch.Tensor:
         if self._reference_outputs is None:
             raise ValueError("Reference outputs have not been collected for this block.")
         output = torch.cat([self._reference_outputs[i] for i in indices], dim=self.batch_dim)
@@ -328,7 +334,7 @@ class BlockIO:
             current_input_ids = [input_ids[i] for i in indices]
         return sum(t.numel() for t in current_input_ids)
 
-    def count_active_elements(self, indices) -> int:
+    def count_active_elements(self, indices: torch.Tensor) -> int:
         return self._count_input_elements(indices, source=self._active_source)
 
     def _preprocess_block_inputs(self, input_ids, input_others: dict, block):
@@ -389,7 +395,7 @@ class BlockIO:
 class DiffusionBlockIO(BlockIO):
     """BlockIO variant for diffusion blocks with dict inputs and tuple outputs."""
 
-    def __init__(self, *args, output_config=None, **kwargs):
+    def __init__(self, *args, output_config: list[str] | None = None, **kwargs) -> None:
         super().__init__(*args, **kwargs)
         self.output_config = output_config or ["hidden_states"]
 
@@ -435,7 +441,7 @@ class DiffusionBlockIO(BlockIO):
             else:
                 outputs[name].extend(list(torch.split(out, 1, dim=self.batch_dim)))
 
-    def reference_batch(self, indices, *, device=None):
+    def reference_batch(self, indices: torch.Tensor, *, device=None) -> torch.Tensor:
         if self._reference_outputs is None:
             raise ValueError("Reference outputs have not been collected for this block.")
         output = torch.cat([self._reference_outputs["hidden_states"][i] for i in indices], dim=self.batch_dim)
@@ -479,13 +485,13 @@ class BlockContext:
         """Called by preprocessors to declare which FP params were modified in-place."""
         self.modified_fp_params.extend(param_names)
 
-    def collect_reference(self, hooks=None):
+    def collect_reference(self, hooks=None) -> Any:
         return self.io.collect_reference(hooks)
 
-    def collect_quantized_stats(self, hooks=None):
+    def collect_quantized_stats(self, hooks=None) -> Any:
         return self.io.collect_quantized_stats(hooks)
 
-    def collect_next_inputs(self):
+    def collect_next_inputs(self) -> Any:
         return self.io.collect_next_inputs()
 
     def has_quantized_inputs(self) -> bool:
@@ -495,13 +501,19 @@ class BlockContext:
     def num_samples(self) -> int:
         return self.io.num_samples
 
-    def count_active_elements(self, indices) -> int:
+    def count_active_elements(self, indices: torch.Tensor) -> int:
         return self.io.count_active_elements(indices)
 
-    def reference_batch(self, indices, *, device=None):
+    def reference_batch(self, indices: torch.Tensor, *, device=None) -> torch.Tensor:
         return self.io.reference_batch(indices, device=device)
 
-    def forward_batch(self, indices, *, device, cache_device=None):
+    def forward_batch(
+        self,
+        indices: torch.Tensor,
+        *,
+        device: Union[str, torch.device],
+        cache_device: Union[str, torch.device, None] = None,
+    ) -> Any:
         return self.io.forward_batch(indices, device=device, cache_device=cache_device)
 
     def finish(self) -> None:

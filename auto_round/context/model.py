@@ -57,18 +57,18 @@ class ModelContext(BaseContext):
 
     def __init__(
         self,
-        model=None,
-        tokenizer=None,
-        platform="hf",
-        model_dtype=None,
-        trust_remote_code=True,
+        model: Union[torch.nn.Module, str, None] = None,
+        tokenizer: Any = None,
+        platform: str = "hf",
+        model_dtype: Optional[Union[str, torch.dtype]] = None,
+        trust_remote_code: bool = True,
         config: Optional[AutoConfig] = None,
-        amp=True,
-        need_calib=True,
-        is_act_quantize=False,
-        quant_nontext_module=False,
+        amp: bool = True,
+        need_calib: bool = True,
+        is_act_quantize: bool = False,
+        quant_nontext_module: bool = False,
         **kwargs,
-    ):
+    ) -> None:
         super().__init__()
         self.quantized = False
         self.is_mllm = False

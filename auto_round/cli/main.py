@@ -48,14 +48,10 @@ def _extract_common_quantization_kwargs(args) -> dict:
     }
 
 
-def _build_entry_base_kwargs(
-    args, *, model_name, scheme, low_cpu_mem_usage, enable_torch_compile, layer_config
-) -> dict:
+def _build_entry_base_kwargs(args, *, low_cpu_mem_usage, enable_torch_compile, layer_config) -> dict:
     return {
-        "model": model_name,
         "platform": args.platform,
         "format": args.format,
-        "scheme": scheme,
         "dataset": args.dataset,
         "seqlen": args.seqlen,
         "nsamples": args.nsamples,
@@ -98,12 +94,10 @@ def _build_entry_model_type_kwargs(args) -> dict:
     }
 
 
-def _to_autoround_kwargs(args, *, model_name, scheme, low_cpu_mem_usage, enable_torch_compile, layer_config) -> dict:
+def _to_autoround_kwargs(args, *, low_cpu_mem_usage, enable_torch_compile, layer_config) -> dict:
     """Collect only the kwargs accepted by the new AutoRound entry API."""
     kwargs = _build_entry_base_kwargs(
         args,
-        model_name=model_name,
-        scheme=scheme,
         low_cpu_mem_usage=low_cpu_mem_usage,
         enable_torch_compile=enable_torch_compile,
         layer_config=layer_config,
@@ -361,11 +355,11 @@ def tune(args):
     from auto_round.utils import clear_memory
 
     autoround: BaseCompressor = PipelineAutoRound(
-        alg_configs=alg_configs if len(alg_configs) > 1 else alg_configs[0],
+        model_name,
+        scheme,
+        alg_configs if len(alg_configs) > 1 else alg_configs[0],
         **_to_autoround_kwargs(
             args,
-            model_name=model_name,
-            scheme=scheme,
             low_cpu_mem_usage=low_cpu_mem_usage,
             enable_torch_compile=enable_torch_compile,
             layer_config=layer_config,

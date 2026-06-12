@@ -12,6 +12,8 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+from typing import Any, Optional, Union
+
 from auto_round.logger import logger
 
 
@@ -46,13 +48,13 @@ class MLLMMixin:
     def __init__(
         self,
         *args,
-        processor=None,
-        image_processor=None,
-        template=None,
-        extra_data_dir=None,
-        quant_nontext_module=False,
+        processor: Any = None,
+        image_processor: Any = None,
+        template: Optional[str] = None,
+        extra_data_dir: Optional[str] = None,
+        quant_nontext_module: bool = False,
         **kwargs,
-    ):
+    ) -> None:
         self.template = template
         self.extra_data_dir = extra_data_dir
         self.quant_nontext_module = quant_nontext_module
@@ -100,7 +102,13 @@ class MLLMMixin:
         """
         return "mllm"
 
-    def save_quantized(self, output_dir=None, format="auto_round", inplace=True, **kwargs):
+    def save_quantized(
+        self,
+        output_dir: Optional[str] = None,
+        format: Union[str, list] = "auto_round",
+        inplace: bool = True,
+        **kwargs,
+    ) -> Any:
         """Save the quantized model to the specified output directory in the specified format.
 
         Args:

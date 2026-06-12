@@ -184,7 +184,7 @@ def _get_compressor_class(model_type: str, base_cls: type) -> type:
     return combined
 
 
-def is_weight_scheme(scheme):
+def is_weight_scheme(scheme: Union[str, dict, AutoScheme, object]) -> bool:
     if isinstance(scheme, str):
         return scheme.upper().startswith("W")
     if isinstance(scheme, dict):
@@ -198,7 +198,7 @@ def is_weight_scheme(scheme):
     return False
 
 
-def is_gguf_k_target(value) -> bool:
+def is_gguf_k_target(value: Union[str, AutoScheme, object]) -> bool:
     if isinstance(value, str):
         normalized = value.strip().lower()
         return normalized.startswith("gguf:") and "_k" in normalized
@@ -317,12 +317,12 @@ class AutoRound(object):
 
     def __new__(
         cls,
-        alg_configs: Union[str, object, list[Union[str, object]]],
         model: Union[torch.nn.Module, str],
+        scheme="W4A16",
+        alg_configs: Union[str, object, list[Union[str, object]]] = None,
         tokenizer=None,
         platform="hf",
         format=None,
-        scheme="W4A16",
         low_gpu_mem_usage: bool = False,
         device_map: Union[str, torch.device, int, dict] = 0,
         iters: int = None,
@@ -343,6 +343,9 @@ class AutoRound(object):
         base_kwargs = dict(split_kwargs["base"])
         mllm_kwargs = dict(split_kwargs["mllm"])
         diffusion_kwargs = dict(split_kwargs["diffusion"])
+
+        if alg_configs is None:
+            raise ValueError("alg_configs is required for the new AutoRound entry API.")
 
         # Resolve string alias(es) to config instance(s) before routing.
         alg_configs = cls._resolve_config(alg_configs)
@@ -746,12 +749,12 @@ class AutoRoundCompatible:
 
         # Create AutoRound instance using new architecture
         compressor = AutoRound(
-            alg_configs=config,
-            model=model,
+            model,
+            scheme,
+            config,
             tokenizer=tokenizer,
             platform=platform,
             format=format_name,
-            scheme=scheme,
             dataset=dataset,
             iters=iters,
             gradient_accumulate_steps=gradient_accumulate_steps,

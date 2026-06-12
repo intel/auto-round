@@ -210,7 +210,7 @@ def _subtract_embedding_mean(model, mapping: RotationMapping) -> None:
 class _RMSNorm(torch.nn.Module):
     """RMS Normalization (no mean subtraction)."""
 
-    def __init__(self, dim: int, eps: float = 1e-5):
+    def __init__(self, dim: int, eps: float = 1e-5) -> None:
         super().__init__()
         self.eps = eps
         self.register_buffer("weight", torch.ones(dim))

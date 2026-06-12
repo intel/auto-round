@@ -46,7 +46,7 @@ from auto_round.utils import (
 @register_pipeline_member(RTNConfig)
 class RTNQuantizer(RTNLayerFallbackMixin, BaseQuantizer):
 
-    def __init__(self, config: RTNConfig):
+    def __init__(self, config: RTNConfig) -> None:
         BaseQuantizer.__init__(self, config)
 
     @torch.no_grad()
@@ -93,7 +93,7 @@ class RTNQuantizer(RTNLayerFallbackMixin, BaseQuantizer):
 @register_pipeline_member(OptimizedRTNConfig)
 class OptimizedRTNQuantizer(RTNQuantizer):
 
-    def __init__(self, config: RTNConfig):
+    def __init__(self, config: RTNConfig) -> None:
         BaseQuantizer.__init__(self, config)
         self.data_type = config.data_type
         self.group_size = config.group_size

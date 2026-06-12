@@ -78,9 +78,9 @@ class DataDrivenCompressor(BaseCompressor):
         self,
         config: Union[object, list[object]],
         model: Union[torch.nn.Module, str],
-        tokenizer=None,
-        platform="hf",
-        format=None,
+        tokenizer: Any = None,
+        platform: str = "hf",
+        format: Union[str, list, None] = None,
         dataset: Union[str, list, tuple, torch.utils.data.DataLoader] = "NeelNanda/pile-10k",
         iters: int = 200,
         low_gpu_mem_usage: bool = False,
@@ -89,7 +89,7 @@ class DataDrivenCompressor(BaseCompressor):
         seed: int = 42,
         low_cpu_mem_usage: bool = True,
         **kwargs,
-    ):
+    ) -> None:
         if iters is None:
             iters = 200
         self.iters = iters
@@ -137,7 +137,13 @@ class DataDrivenCompressor(BaseCompressor):
         return "llm"
 
     @torch.no_grad()
-    def try_cache_inter_data_gpucpu(self, block_names, nsamples, layer_names=None, last_cache_name=None):
+    def try_cache_inter_data_gpucpu(
+        self,
+        block_names: list,
+        nsamples: int,
+        layer_names: Optional[list] = None,
+        last_cache_name: Optional[str] = None,
+    ) -> Any:
         """Thin wrapper around ``self.calibration.collect``.
 
         Public API kept for backward compatibility (entry.py and
@@ -148,7 +154,13 @@ class DataDrivenCompressor(BaseCompressor):
         return self.calibration.collect(block_names, nsamples, layer_names=layer_names, last_cache_name=last_cache_name)
 
     @torch.no_grad()
-    def cache_inter_data(self, block_names, nsamples, layer_names=None, last_cache_name=None):
+    def cache_inter_data(
+        self,
+        block_names: list,
+        nsamples: int,
+        layer_names: Optional[list] = None,
+        last_cache_name: Optional[str] = None,
+    ) -> Any:
         """Thin wrapper around ``self.calibration.cache_inter_data``.
 
         Public API kept for backward compatibility.
@@ -160,7 +172,7 @@ class DataDrivenCompressor(BaseCompressor):
         )
 
     @torch.no_grad()
-    def calib(self, nsamples, bs):
+    def calib(self, nsamples: int, bs: int) -> Any:
         """Thin wrapper around ``self.calibration.calib``.
 
         ``MLLMMixin`` and ``DiffusionMixin`` override this method directly via
@@ -265,11 +277,11 @@ class DataDrivenCompressor(BaseCompressor):
     def quantize_block(
         self,
         block: torch.nn.Module,
-        inputs,
+        inputs: Any,
         q_input: Union[torch.Tensor, dict, None] = None,
         device: Union[str, torch.device] = "cpu",
         auto_offload: bool = True,
-    ):
+    ) -> Any:
         """Quantize a single decoded block of the model (public API for LLM-Compressor).
 
         This method is the new-arch equivalent of the old ``BaseCompressor.quantize_block``
@@ -1008,7 +1020,7 @@ class CalibratedRTNCompressor(DataDrivenCompressor):
         config: object,
         model: torch.nn.Module,
         **kwargs,
-    ):
+    ) -> None:
         kwargs["iters"] = 0
         super().__init__(
             config,

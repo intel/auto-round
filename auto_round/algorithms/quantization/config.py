@@ -48,7 +48,7 @@ class QuantizationConfig:
 
     _scheme_fields: ClassVar[set[str]] = set(QuantizationScheme.get_attributes())
 
-    def __init__(self, *, scheme: QuantizationScheme = None, **kwargs):
+    def __init__(self, *, scheme: QuantizationScheme = None, **kwargs) -> None:
         object.__setattr__(self, "scheme", scheme if scheme is not None else QuantizationScheme.empty())
         object.__setattr__(self, "_user_set_scheme_fields", set())
 
@@ -183,27 +183,27 @@ class QuantizationConfig:
             logger.warning("dtype nv_fp should only support group_size of 16 in real deployment")
 
     @property
-    def is_act_quantize(self):
+    def is_act_quantize(self) -> bool:
         return self.act_bits is not None and self.act_bits <= 8
 
     @property
-    def is_nv_fp(self):
+    def is_nv_fp(self) -> bool:
         return self.data_type is not None and BackendDataType.NV_FP in self.data_type
 
     @property
-    def is_act_nv_fp(self):
+    def is_act_nv_fp(self) -> bool:
         return self.act_data_type is not None and BackendDataType.NV_FP in self.act_data_type
 
     @property
-    def is_mx_fp(self):
+    def is_mx_fp(self) -> bool:
         return self.data_type is not None and BackendDataType.MX_FP in self.data_type
 
     @property
-    def is_act_mx_fp(self):
+    def is_act_mx_fp(self) -> bool:
         return self.act_data_type is not None and BackendDataType.MX_FP in self.act_data_type
 
     @property
-    def is_dynamic_wint8aint8(self):
+    def is_dynamic_wint8aint8(self) -> bool:
         if self.act_dynamic:
             return True
         if self.act_data_type is not None and self.data_type is not None:
@@ -214,7 +214,7 @@ class QuantizationConfig:
         return False
 
     @property
-    def is_standard_fp(self):
+    def is_standard_fp(self) -> bool:
         return (
             self.data_type is not None
             and BackendDataType.STANDARD_FP in self.data_type
@@ -223,7 +223,7 @@ class QuantizationConfig:
         )
 
     @property
-    def is_act_standard_fp(self):
+    def is_act_standard_fp(self) -> bool:
         return (
             self.act_data_type is not None
             and BackendDataType.STANDARD_FP in self.act_data_type
@@ -232,15 +232,15 @@ class QuantizationConfig:
         )
 
     @property
-    def is_static_afp8(self):
+    def is_static_afp8(self) -> bool:
         return self.act_data_type is not None and BackendDataType.FP8_STATIC in self.act_data_type
 
     @property
-    def is_static_wfp8afp8(self):
+    def is_static_wfp8afp8(self) -> bool:
         return self.data_type is not None and BackendDataType.FP8_STATIC in self.data_type and self.is_static_afp8
 
     @property
-    def is_wfp8afp8(self):
+    def is_wfp8afp8(self) -> bool:
         if self.act_data_type is None or self.data_type is None:
             return False
         if (

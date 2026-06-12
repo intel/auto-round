@@ -50,7 +50,7 @@ def register_processor(name):
 
 @register_processor("basic")
 class BasicProcessor:
-    def __init__(self):
+    def __init__(self) -> None:
         pass
 
     def post_init(self, model, tokenizer, processor=None, image_processor=None, use_rtn=False, **kwargs):
@@ -91,7 +91,7 @@ class HFProcessor(BasicProcessor):
     # evaluation on: Qwen2-VL, mllama, Mistral-Small
     IMAGE_TOKEN = "<image>"
 
-    def __init__(self):
+    def __init__(self) -> None:
         self.process_func = self._process_v1
 
     def post_init(self, model, tokenizer, processor=None, image_processor=None, use_rtn=False, **kwargs):

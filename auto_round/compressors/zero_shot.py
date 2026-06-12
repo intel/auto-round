@@ -46,9 +46,9 @@ class ZeroShotCompressor(BaseCompressor):
         self,
         config: Union[object, list[object]],
         model: Union[torch.nn.Module, str],
-        tokenizer=None,
-        platform="hf",
-        format=None,
+        tokenizer: Any = None,
+        platform: str = "hf",
+        format: Union[str, list, None] = None,
         low_gpu_mem_usage: bool = False,
         device_map: Union[str, torch.device, int, dict] = 0,
         enable_torch_compile: bool = False,
@@ -56,7 +56,7 @@ class ZeroShotCompressor(BaseCompressor):
         seed: int = 42,
         low_cpu_mem_usage: bool = True,
         **kwargs,
-    ):
+    ) -> None:
         super().__init__(
             config=config,
             model=model,
@@ -79,7 +79,7 @@ class ZeroShotCompressor(BaseCompressor):
         q_input: Union[torch.Tensor, dict, None] = None,
         device: Union[str, torch.device] = "cpu",
         auto_offload: bool = True,
-    ):
+    ) -> Any:
         """Quantize a single block via RTN (public API for LLM-Compressor).
 
         ZeroShotCompressor does not need calibration data, so ``inputs`` and

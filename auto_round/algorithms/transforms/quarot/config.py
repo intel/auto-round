@@ -85,7 +85,7 @@ class RotationConfig(BaseModel, BaseRotationConfig):
 
     model_config = {"arbitrary_types_allowed": True}
 
-    def __init__(self, **data):
+    def __init__(self, **data: Any) -> None:
         """Initialize a Hadamard rotation configuration.
 
         Args:
