@@ -35,6 +35,67 @@ namespace ark {
 void moe_gemm(sycl::queue* q, void* activations, void* weights, void* scales, void* outputs, BTLA_DTYPE dtype, int N,
               int K, int* num_tokens_per_expert, int num_experts);
 
+/**
+ * @brief MoE GEMV optimized for the decode phase (M per expert is typically
+ * 1-2 tokens). Supports unquantized FP16/BF16 weights and int4 (S4_CLIP)
+ * weights with group-wise scales and optional zero-points.
+ *
+ * Implementation is header-only in `sycl_tla_moe_decode.hpp`.
+ *
+ * @param q                       SYCL queue
+ * @param activations             [total_tokens, K] in `act_dtype`
+ * @param weights                 Unquantized: [num_experts, N, K] in act_dtype
+ *                                Int4: packed [num_experts, N, K/2] uint8
+ * @param scales                  [num_experts, N, K/group_size] (act_dtype),
+ *                                ignored when weight_dtype is FP16/BF16
+ * @param zeros                   [num_experts, N, K/group_size] (act_dtype) or
+ *                                nullptr; required when asym==true
+ * @param outputs                 [total_tokens, N] in act_dtype
+ * @param expert_id_per_token_buf [total_tokens] int32 scratch buffer (device)
+ * @param act_dtype               BTLA_DTYPE::F16 or BTLA_DTYPE::BF16
+ * @param weight_dtype            BTLA_DTYPE::F16/BF16/S4_CLIP
+ * @param N                       Output feature dim (must be multiple of 16)
+ * @param K                       Input feature dim
+ * @param group_size              Quantization group along K (int4 only); must
+ *                                divide K and be even. Default 128.
+ * @param num_tokens_per_expert   [num_experts] int32
+ * @param num_experts             Number of experts
+ * @param total_tokens            Sum of num_tokens_per_expert (== rows of
+ *                                activations / outputs)
+ * @param asym                    Whether int4 weights are asymmetric
+ *                                (zeros required when true).
+ */
+void moe_gemm_decode(sycl::queue* q, void* activations, void* weights, void* scales, void* zeros, void* outputs,
+                     int* expert_id_per_token_buf, BTLA_DTYPE act_dtype, BTLA_DTYPE weight_dtype, int N, int K,
+                     int group_size, int* num_tokens_per_expert, int num_experts, int total_tokens, bool asym);
+
+/**
+ * @brief MoE Grouped GEMM optimized for the prefill phase, supporting the
+ * same set of weight encodings as `moe_gemm_decode` (FP16/BF16, INT8 sym/asym,
+ * INT4 sym/asym, INT2 sym/asym, FP8 E4M3/E5M2).
+ *
+ * Stage-1 implementation: dequantizes weights into a `[num_experts, K, N]`
+ * temporary buffer (must be supplied by the caller via `dequant_workspace`,
+ * sized `num_experts * K * N * sizeof(act_dtype)`) and then dispatches to the
+ * existing `moe_gemm` baseline. This guarantees numerical parity with the
+ * decode path. Mainloop fusion is the follow-up perf-tuning step.
+ *
+ * Implementation is header-only in `sycl_tla_moe_mixed.hpp`.
+ *
+ * Layout convention (matches `moe_gemm_decode`):
+ *   - activations:           [total_tokens, K]      in act_dtype
+ *   - weights (quantized):   [num_experts, N, K_p]  uint8 (decode-style packed)
+ *   - weights (FP16/BF16):   [num_experts, K, N]    in act_dtype (matches `moe_gemm`)
+ *   - scales:                [num_experts, N, K/group_size] in act_dtype
+ *   - zeros (asym only):     [num_experts, N, K/group_size] in act_dtype
+ *   - dequant_workspace:     [num_experts, K, N]    in act_dtype, may be null
+ *                            for the unquantized fast path
+ *   - outputs:               [total_tokens, N]      in act_dtype
+ */
+void moe_gemm_prefill(sycl::queue* q, void* activations, void* weights, void* scales, void* zeros, void* outputs,
+                      void* dequant_workspace, BTLA_DTYPE act_dtype, BTLA_DTYPE weight_dtype, int N, int K,
+                      int group_size, int* num_tokens_per_expert, int num_experts, int total_tokens, bool asym);
+
 // ========================================================================
 // Public API
 // ========================================================================

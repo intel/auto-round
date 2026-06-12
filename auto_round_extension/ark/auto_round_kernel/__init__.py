@@ -1066,6 +1066,238 @@ def sage_dynquant(
     return out
 
 
+def moe_gemm_decode(
+    activations: torch.Tensor,
+    weights: torch.Tensor,
+    num_tokens_per_expert: torch.Tensor,
+    *,
+    scales: Optional[torch.Tensor] = None,
+    zeros: Optional[torch.Tensor] = None,
+    weight_bits: int = 4,
+    group_size: int = 128,
+    asym: bool = False,
+) -> torch.Tensor:
+    """MoE GEMV optimized for the decode phase.
+
+    Each expert typically processes only 1-2 tokens (top-k routing with
+    small batch). Activations must already be gathered/sorted by expert
+    (same convention as ``moe_gemm``).
+
+    Args:
+        activations: ``[total_tokens, K]`` in fp16 or bf16.
+        weights: 3-D tensor ``[E, N, K_packed]``. The accepted layouts are:
+
+            * Unquantized (``weight_bits=16``): ``torch.float16`` / ``torch.bfloat16``
+              matching the activations dtype, ``K_packed == K``.
+            * Int8 (``weight_bits=8``): ``torch.uint8``, ``K_packed == K``.
+              Sym (``asym=False``) reinterprets each byte as signed int8;
+              asym (``asym=True``) treats each byte as ``uint8`` with a
+              per-group zero-point.
+            * Int4 (``weight_bits=4``): ``torch.uint8`` packed,
+              ``K_packed == K // 2`` (two 4-bit values per byte; low nibble
+              at the lower K index).
+            * Int2 (``weight_bits=2``): ``torch.uint8`` packed,
+              ``K_packed == K // 4`` (four 2-bit values per byte; field j at
+              K index ``4*i + j`` occupies bits 2j and 2j+1 of byte i).
+            * FP8 (``torch.float8_e4m3fn`` / ``torch.float8_e5m2``):
+              ``K_packed == K``. ``weight_bits`` is ignored; ``asym`` must
+              be ``False`` (no zero-points for FP8).
+        num_tokens_per_expert: ``[E]`` int32. Sum must equal
+            ``activations.shape[0]``.
+        scales: ``[E, N, K // group_size]`` in activations dtype. Required
+            for all quantized paths (int8/int4/int2/fp8); must be ``None``
+            for unquantized weights.
+        zeros: ``[E, N, K // group_size]`` in activations dtype. Required
+            when ``asym=True`` (int8/int4/int2 only); otherwise ``None``.
+        weight_bits: 2, 4, 8, or 16. Ignored when ``weights`` is an FP8
+            tensor (the FP8 sub-format is taken from ``weights.dtype``).
+        group_size: group along K for quantized weights (default 128).
+        asym: if ``True``, weights use unsigned encoding and ``zeros`` must
+            be provided. Not supported for FP8.
+
+    Returns:
+        outputs: ``[total_tokens, N]`` in the same dtype as activations.
+    """
+    activations, weights, scales, zeros, num_tokens_per_expert, weight_dtype, total_tokens, N, K, num_experts = (
+        _validate_moe_quant_args(
+            activations, weights, num_tokens_per_expert,
+            scales=scales, zeros=zeros, weight_bits=weight_bits, group_size=group_size, asym=asym,
+            api_name="moe_gemm_decode",
+        )
+    )
+
+    lib = get_lib(activations)
+    stream = get_stream(activations)
+    outputs = torch.empty((total_tokens, N), device=activations.device, dtype=activations.dtype)
+    # Scratch buffer mapping each token to its expert id; filled on-device
+    # inside the kernel wrapper so we avoid host-device sync.
+    expert_id_per_token = torch.empty((total_tokens,), device=activations.device, dtype=torch.int32)
+
+    scales_ptr = scales.data_ptr() if scales is not None else 0
+    zeros_ptr = zeros.data_ptr() if zeros is not None else 0
+
+    lib.moe_gemm_decode(
+        stream,
+        activations.data_ptr(),
+        weights.data_ptr(),
+        scales_ptr,
+        zeros_ptr,
+        outputs.data_ptr(),
+        expert_id_per_token.data_ptr(),
+        cvt_dtype(activations.dtype),
+        weight_dtype,
+        N,
+        K,
+        group_size,
+        num_tokens_per_expert.data_ptr(),
+        num_experts,
+        total_tokens,
+        bool(asym),
+    )
+    return outputs
+
+
+def _validate_moe_quant_args(
+    activations: torch.Tensor,
+    weights: torch.Tensor,
+    num_tokens_per_expert: torch.Tensor,
+    *,
+    scales: Optional[torch.Tensor],
+    zeros: Optional[torch.Tensor],
+    weight_bits: int,
+    group_size: int,
+    asym: bool,
+    api_name: str,
+):
+    """Shared validation/normalisation for quantized MoE entry points.
+
+    Returns a tuple of normalised tensors and dtype/shape metadata used by the
+    kernel-call site:
+        ``(activations, weights, scales, zeros, num_tokens_per_expert,
+           weight_dtype, total_tokens, N, K, num_experts)``.
+    """
+    if activations.device.type != "xpu":
+        raise NotImplementedError(f"{api_name} is only supported on XPU")
+
+    if activations.dtype not in (torch.float16, torch.bfloat16):
+        raise ValueError(f"activations must be fp16/bf16, got {activations.dtype}")
+
+    if activations.ndim != 2:
+        raise ValueError("activations must be 2D [total_tokens, K]")
+    if weights.ndim != 3:
+        raise ValueError("weights must be 3D [E, N, K_packed]")
+
+    if not activations.is_contiguous():
+        activations = activations.contiguous()
+    if not weights.is_contiguous():
+        weights = weights.contiguous()
+
+    if num_tokens_per_expert.dtype != torch.int32:
+        num_tokens_per_expert = num_tokens_per_expert.to(torch.int32)
+    if not num_tokens_per_expert.is_contiguous():
+        num_tokens_per_expert = num_tokens_per_expert.contiguous()
+
+    total_tokens, K = activations.shape
+    num_experts = weights.shape[0]
+    N = weights.shape[1]
+
+    if num_tokens_per_expert.shape[0] != num_experts:
+        raise ValueError(
+            f"num_tokens_per_expert length {num_tokens_per_expert.shape[0]} != num_experts {num_experts}"
+        )
+
+    # Detect FP8 weight dtype first (overrides weight_bits).
+    is_fp8 = weights.dtype in (torch.float8_e4m3fn, torch.float8_e5m2)
+
+    if is_fp8:
+        if asym:
+            raise ValueError("FP8 weights do not support asym=True")
+        if weights.shape[2] != K:
+            raise ValueError(f"FP8 weights K dim {weights.shape[2]} != activations K {K}")
+        if scales is None:
+            raise ValueError("scales is required for FP8 weights")
+        if scales.dtype != activations.dtype:
+            raise ValueError("scales dtype must match activations dtype")
+        if K % group_size != 0:
+            raise ValueError("K must be a multiple of group_size")
+        expected_scale_shape = (num_experts, N, K // group_size)
+        if tuple(scales.shape) != expected_scale_shape:
+            raise ValueError(f"scales shape {tuple(scales.shape)} != expected {expected_scale_shape}")
+        if zeros is not None:
+            raise ValueError("zeros must be None for FP8 weights")
+        weight_dtype = ARK_DT.float8_e4m3 if weights.dtype == torch.float8_e4m3fn else ARK_DT.float8_e5m2
+        if not scales.is_contiguous():
+            scales = scales.contiguous()
+    elif weight_bits == 16:
+        if weights.dtype != activations.dtype:
+            raise ValueError("Unquantized weights must match activations dtype")
+        if weights.shape[2] != K:
+            raise ValueError(f"Unquantized weights K dim {weights.shape[2]} != activations K {K}")
+        weight_dtype = cvt_dtype(activations.dtype)
+        if scales is not None or zeros is not None:
+            raise ValueError("scales/zeros must be None when weight_bits=16")
+    elif weight_bits in (8, 4, 2):
+        if weights.dtype != torch.uint8:
+            raise ValueError(f"Int{weight_bits} packed weights must be torch.uint8")
+        if weight_bits == 8:
+            k_packed_expected = K
+            k_div = 1
+        elif weight_bits == 4:
+            k_packed_expected = K // 2
+            k_div = 2
+        else:  # weight_bits == 2
+            k_packed_expected = K // 4
+            k_div = 4
+        if K % k_div != 0:
+            raise ValueError(f"K must be a multiple of {k_div} for weight_bits={weight_bits}")
+        if weights.shape[2] != k_packed_expected:
+            raise ValueError(
+                f"Int{weight_bits} packed weights last dim {weights.shape[2]} must equal K/{k_div} "
+                f"({k_packed_expected})"
+            )
+        if scales is None:
+            raise ValueError(f"scales is required for int{weight_bits} weights")
+        if scales.dtype != activations.dtype:
+            raise ValueError("scales dtype must match activations dtype")
+        if K % group_size != 0:
+            raise ValueError("K must be a multiple of group_size")
+        # Group_size constraints per dtype.
+        if weight_bits == 4 and (group_size & 1) != 0:
+            raise ValueError("group_size must be even for int4 weights")
+        if weight_bits == 2 and (group_size & 3) != 0:
+            raise ValueError("group_size must be a multiple of 4 for int2 weights")
+        expected_scale_shape = (num_experts, N, K // group_size)
+        if tuple(scales.shape) != expected_scale_shape:
+            raise ValueError(f"scales shape {tuple(scales.shape)} != expected {expected_scale_shape}")
+        if asym:
+            if zeros is None:
+                raise ValueError("zeros is required when asym=True")
+            if zeros.dtype != activations.dtype:
+                raise ValueError("zeros dtype must match activations dtype")
+            if tuple(zeros.shape) != expected_scale_shape:
+                raise ValueError(f"zeros shape {tuple(zeros.shape)} != expected {expected_scale_shape}")
+        else:
+            if zeros is not None:
+                raise ValueError("zeros must be None when asym=False")
+        weight_dtype = {8: ARK_DT.int8, 4: ARK_DT.int4, 2: ARK_DT.int2}[weight_bits]
+        if not scales.is_contiguous():
+            scales = scales.contiguous()
+        if asym and not zeros.is_contiguous():
+            zeros = zeros.contiguous()
+    else:
+        raise ValueError(f"Unsupported weight_bits={weight_bits} (supported: 2, 4, 8, 16)")
+
+    if N % 16 != 0:
+        raise ValueError(f"N must be a multiple of 16 (got {N})")
+
+    expected_total = int(num_tokens_per_expert.sum().item())
+    if expected_total != total_tokens:
+        raise ValueError(f"Sum of num_tokens_per_expert ({expected_total}) != total_tokens ({total_tokens})")
+
+    return (activations, weights, scales, zeros, num_tokens_per_expert,
+            weight_dtype, total_tokens, N, K, num_experts)
+
+
 def moe_gemm(
     activations: torch.Tensor,
     weights: torch.Tensor,
@@ -1139,6 +1371,112 @@ def moe_gemm(
         num_tokens_per_expert.data_ptr(),
         num_experts,
     )
+    return outputs
+
+
+def moe_gemm_prefill(
+    activations: torch.Tensor,
+    weights: torch.Tensor,
+    num_tokens_per_expert: torch.Tensor,
+    *,
+    scales: Optional[torch.Tensor] = None,
+    zeros: Optional[torch.Tensor] = None,
+    weight_bits: int = 4,
+    group_size: int = 128,
+    asym: bool = False,
+) -> torch.Tensor:
+    """MoE Grouped GEMM optimized for the prefill phase, supporting all weight
+    encodings of ``moe_gemm_decode`` (FP16/BF16, INT8 sym/asym, INT4 sym/asym,
+    INT2 sym/asym, FP8 E4M3/E5M2).
+
+    The argument shapes/dtypes match :func:`moe_gemm_decode` exactly so the same
+    quantized weights/scales/zeros tensors can be re-used between prefill and
+    decode without reshaping. Internally, for the quantized paths the kernel
+    materialises a ``[E, K, N]`` ``act_dtype`` temporary via an on-device
+    dequantization kernel and then dispatches to the existing CUTLASS-SYCL
+    Grouped GEMM (``moe_gemm``). Numerical results are bit-identical to
+    ``moe_gemm`` applied to the same dequantized weights.
+
+    Args:
+        activations: ``[total_tokens, K]`` in fp16 or bf16.
+        weights: 3-D tensor; same layout/dtype contract as
+            :func:`moe_gemm_decode`. Quantized layouts are ``[E, N, K_packed]``;
+            the unquantized fast path (``weight_bits=16``) accepts
+            ``[E, N, K]`` -- callers providing already-``[E, K, N]`` weights
+            (as ``moe_gemm`` requires) should call ``moe_gemm`` directly.
+        num_tokens_per_expert: ``[E]`` int32. Sum must equal
+            ``activations.shape[0]``.
+        scales: ``[E, N, K // group_size]`` in activations dtype. Required for
+            quantized paths; ignored (must be ``None``) for unquantized.
+        zeros: ``[E, N, K // group_size]`` in activations dtype, required when
+            ``asym=True`` (int8/int4/int2 only).
+        weight_bits: 2, 4, 8, or 16. Ignored for FP8 weights.
+        group_size: group along K for quantized weights (default 128).
+        asym: if ``True``, weights use unsigned encoding; ``zeros`` required.
+
+    Returns:
+        outputs: ``[total_tokens, N]`` in the same dtype as activations.
+    """
+    activations, weights, scales, zeros, num_tokens_per_expert, weight_dtype, total_tokens, N, K, num_experts = (
+        _validate_moe_quant_args(
+            activations, weights, num_tokens_per_expert,
+            scales=scales, zeros=zeros, weight_bits=weight_bits, group_size=group_size, asym=asym,
+            api_name="moe_gemm_prefill",
+        )
+    )
+
+    lib = get_lib(activations)
+    stream = get_stream(activations)
+    outputs = torch.empty((total_tokens, N), device=activations.device, dtype=activations.dtype)
+
+    # Quantized paths need an [E, K, N] act-dtype scratch buffer that the
+    # on-device dequant kernel fills before the inner Grouped GEMM consumes
+    # it. The unquantized fast path forwards directly through `moe_gemm` and
+    # doesn't need scratch (passing 0 is safe -- the C++ wrapper short-circuits
+    # before touching the workspace pointer in that case). We allocate the
+    # workspace from PyTorch's caching allocator so repeated calls reuse the
+    # same memory.
+    is_unquantized = (weight_bits == 16) and (weights.dtype == activations.dtype)
+    if is_unquantized:
+        # `moe_gemm` requires `[E, K, N]` row-major weights; the decode-style
+        # `[E, N, K]` weight shape coming through this validator can be
+        # transposed into a temporary contiguous `[E, K, N]` view. The
+        # workspace serves the same role as the dequant scratch so the
+        # on-device path stays uniform.
+        dequant_workspace = weights.transpose(1, 2).contiguous()
+        weights_ptr = dequant_workspace.data_ptr()
+    else:
+        dequant_workspace = torch.empty(
+            (num_experts, K, N), device=activations.device, dtype=activations.dtype
+        )
+        weights_ptr = weights.data_ptr()
+
+    scales_ptr = scales.data_ptr() if scales is not None else 0
+    zeros_ptr = zeros.data_ptr() if zeros is not None else 0
+
+    lib.moe_gemm_prefill(
+        stream,
+        activations.data_ptr(),
+        weights_ptr,
+        scales_ptr,
+        zeros_ptr,
+        outputs.data_ptr(),
+        dequant_workspace.data_ptr(),
+        cvt_dtype(activations.dtype),
+        weight_dtype,
+        N,
+        K,
+        group_size,
+        num_tokens_per_expert.data_ptr(),
+        num_experts,
+        total_tokens,
+        bool(asym),
+    )
+    # The inner CUTLASS-SYCL `moe_gemm` calls `event.wait()` before returning
+    # (see `moe_detail::moe_gemm_launcher` in `sycl_tla_moe.hpp`), so by the
+    # time `lib.moe_gemm_prefill` returns the device has already consumed the
+    # workspace and it is safe to drop our reference here.
+    del dequant_workspace
     return outputs
 
 
