@@ -895,7 +895,6 @@ def get_score_for_scheme(
             if hasattr(m, "act_qdq_func"):
                 m.act_qdq_func = None
             set_module(model, n, m.orig_layer)
-    import gc
 
     gc.collect()
     return scores_dict
