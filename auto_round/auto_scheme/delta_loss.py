@@ -46,6 +46,7 @@ from auto_round.utils import (
     clear_memory,
     dispatch_model_by_all_available_devices,
     get_block_names,
+    get_lm_head_name,
     get_major_device,
     get_module,
     is_mllm_model,
@@ -56,7 +57,7 @@ from auto_round.utils import (
     set_module,
     set_non_auto_device_map,
     to_device,
-    to_dtype, get_lm_head_name,
+    to_dtype,
 )
 from auto_round.utils.device import MemoryMonitor, memory_monitor
 from auto_round.utils.device_manager import get_current_device_manager
@@ -200,7 +201,7 @@ class AutoSchemeWrapperLinearForGGUFK(AutoSchemeWrapperLinear):
             def save_grad(grad):
                 w_diff = self.orig_layer.weight - self.qdq_w.to(self.orig_layer.weight.device)
                 # TODO strange, grad could be in CPU
-                #self.weight_score += torch.abs((grad.to(w_diff.device).to(torch.float32) * w_diff.to(torch.float32)).sum()).item()  # TODO add 2nd order
+                # self.weight_score += torch.abs((grad.to(w_diff.device).to(torch.float32) * w_diff.to(torch.float32)).sum()).item()  # TODO add 2nd order
                 self.weight_score += torch.abs((grad.to(w_diff.device) * w_diff)).sum().item()
                 act_score = 0.0 if self.act_cnt <= 0 else self.total_act_score / self.act_cnt
                 self.mix_score = self.weight_score + act_score
@@ -1008,6 +1009,7 @@ def move_module_to_tuning_device(module, major_device="cpu"):
         else:
             _move_own_tensors(m, major_device)
 
+
 def _get_scheme_bits(scheme):
     """Extract the weight bits from a scheme (str or dict)."""
     if isinstance(scheme, str):
@@ -1016,8 +1018,9 @@ def _get_scheme_bits(scheme):
         scheme = asdict(scheme)
     return scheme.get("bits", 16)
 
+
 # Delta loss does not handle lm-head well, it is prone to assign low bit to lm-head which is not optimal
-def _apply_head_trick(head_name, schemes,sorted_indices,target_bits,target_params_cnt,total_scores):
+def _apply_head_trick(head_name, schemes, sorted_indices, target_bits, target_params_cnt, total_scores):
 
     # ------------------------------------------------------------------ #
     # lm_head option restriction for DP                                   #
@@ -1064,7 +1067,7 @@ def _apply_head_trick(head_name, schemes,sorted_indices,target_bits,target_param
         # Compute min bits for non-lm_head DP layers
         _min_other_bits = 0
         for key, opts in total_scores.items():
-            if key !=head_name:
+            if key != head_name:
                 _min_other_bits += min(opt[1] for opt in opts)
 
         # Compute min bits for lm_head under allowed_indices
@@ -1363,8 +1366,6 @@ def _gen_layer_config(
     # Determine if model has shared lm_head (tie_word_embeddings)
     has_tied_lm_head = getattr(getattr(model, "config", None), "tie_word_embeddings", False)
 
-
-
     def _to_scheme_dict(scheme):
         """Normalize a scheme (str/QuantizationScheme/dict) to a plain dict."""
         if isinstance(scheme, str):
@@ -1433,11 +1434,11 @@ def _gen_layer_config(
             if not candidates:
                 # find the first bits that greater than floor bits
                 embedding_bits = [bits for idx in sorted_indices if _get_scheme_bits(schemes[idx]) > floor_bits]
-                if len(embedding_bits)>0:
+                if len(embedding_bits) > 0:
                     sorted(embedding_bits)
                     embedding_bits = embedding_bits[0]
                     candidates = [idx for idx in sorted_indices if _get_scheme_bits(schemes[idx]) == embedding_bits]
-            candidates.extend(sorted_indices)# to make sure if the above candidate exceed the budget
+            candidates.extend(sorted_indices)  # to make sure if the above candidate exceed the budget
 
         # Among candidates (ordered by loss), pick the first that fits the budget
         for idx in candidates:
@@ -1455,13 +1456,11 @@ def _gen_layer_config(
         # Last resort: use the cheapest option regardless
         return all_by_bits[0] if all_by_bits else 0
 
-
     # Minus fixed_layer
     for name in fixed_layer_scheme.keys():  # The Scheme should have been applied
         m = get_module(model, name)
         layer_bits, _ = compute_layer_bits(m, auto_scheme.ignore_scale_zp_bits)
         target_params_cnt -= layer_bits
-
 
     head_name = get_lm_head_name(model)
     if head_name is not None:
@@ -1481,8 +1480,6 @@ def _gen_layer_config(
 
     if target_params_cnt <= 0:
         raise ValueError("Avg bits is too small")
-
-
 
     remove_quant_scheme(model)  # Must place after minus fixed_layer
     memory_monitor.update()
