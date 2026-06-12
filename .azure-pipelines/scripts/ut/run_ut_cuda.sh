@@ -31,7 +31,7 @@ function create_conda_env() {
         export PATH=/usr/local/cuda/bin${PATH:+:${PATH}}
         export LD_LIBRARY_PATH=$(python -c "import site; print(site.getsitepackages()[0])")/nvidia/nvjitlink/lib:$LD_LIBRARY_PATH
     fi
-    uv pip install pytest-cov pytest-html cmake requests
+    uv pip install pytest-cov cmake requests
 }
 
 function print_test_results_table() {
@@ -92,7 +92,7 @@ function run_unit_test() {
     rm -rf .coverage* *.xml *.html
 
     uv pip install torch==2.12.0 torchvision torchao --index-url https://download.pytorch.org/whl/cu126
-    uv pip install llama-cpp-python --extra-index-url https://abetlen.github.io/llama-cpp-python/whl/cu125
+    CMAKE_ARGS="-DGGML_CUDA=on -DLLAVA_BUILD=off" uv pip install llama-cpp-python
     uv pip install 'git+https://github.com/ggml-org/llama.cpp.git#subdirectory=gguf-py'
     uv pip install -r test_cuda/requirements.txt
     uv pip install -r test_cuda/requirements_diffusion.txt
@@ -111,13 +111,9 @@ function run_unit_test() {
         local ut_log_name=${LOG_DIR}/unittest_cuda_${test_basename}.log
         echo "Running ${test_file}..."
 
-        python -m pytest --cov="${auto_round_path}" --cov-report term --html=report.html --self-contained-html --cov-report xml:coverage.xml --cov-append -vs --disable-warnings ${test_file} 2>&1 | tee ${ut_log_name}
+        python -m pytest --cov="${auto_round_path}" --cov-append -vs --disable-warnings ${test_file} 2>&1 | tee ${ut_log_name}
     done
-
-    if [ -f "report.html" ] && [ -f "coverage.xml" ]; then
-        mv report.html ${LOG_DIR}/
-        mv coverage.xml ${LOG_DIR}/
-    fi
+    [ -f .coverage ] && cp .coverage ${LOG_DIR}/.coverage.unit
 
     # Print test results table and check for failures
     if ! print_test_results_table "unittest_cuda_test_*.log" "CUDA Unit Tests"; then
@@ -151,13 +147,9 @@ function run_unit_test_vlm() {
         local ut_log_name=${LOG_DIR}/unittest_cuda_vlm_${test_basename}.log
         echo "Running ${test_file}..."
 
-        python -m pytest --cov="${auto_round_path}" --cov-report term --html=report_vlms.html --self-contained-html --cov-report xml:coverage_vlms.xml --cov-append -vs --disable-warnings ${test_file} 2>&1 | tee ${ut_log_name}
+        python -m pytest --cov="${auto_round_path}" --cov-append -vs --disable-warnings ${test_file} 2>&1 | tee ${ut_log_name}
     done
-
-    if [ -f "report_vlms.html" ] && [ -f "coverage_vlms.xml" ]; then
-        mv report_vlms.html ${LOG_DIR}/
-        mv coverage_vlms.xml ${LOG_DIR}/
-    fi
+    [ -f .coverage ] && cp .coverage ${LOG_DIR}/.coverage.vlm
 
     # Print test results table and check for failures
     if ! print_test_results_table "unittest_cuda_vlm_test*.log" "CUDA VLM Tests"; then
@@ -185,13 +177,10 @@ function run_unit_test_llmc() {
         local ut_log_name=${LOG_DIR}/unittest_cuda_llmc_${test_basename}.log
         echo "Running ${test_file}..."
 
-        python -m pytest --cov="${auto_round_path}" --cov-report term --html=report_llmc.html --self-contained-html --cov-report xml:coverage_llmc.xml --cov-append -vs --disable-warnings ${test_file} 2>&1 | tee ${ut_log_name}
+        python -m pytest --cov="${auto_round_path}" --cov-append -vs --disable-warnings ${test_file} 2>&1 | tee ${ut_log_name}
     done
+    [ -f .coverage ] && cp .coverage ${LOG_DIR}/.coverage.llmc
 
-    if [ -f "report_llmc.html" ] && [ -f "coverage_llmc.xml" ]; then
-        mv report_llmc.html ${LOG_DIR}/
-        mv coverage_llmc.xml ${LOG_DIR}/
-    fi
     # Print test results table and check for failures
     if ! print_test_results_table "unittest_cuda_llmc_test_*.log" "CUDA LLMC Tests"; then
         echo "Some CUDA LLMC tests failed. Please check the individual log files for details."
@@ -217,13 +206,10 @@ function run_unit_test_sglang() {
         local ut_log_name=${LOG_DIR}/unittest_cuda_sglang_${test_basename}.log
         echo "Running ${test_file}..."
 
-        python -m pytest --cov="${auto_round_path}" --cov-report term --html=report_sglang.html --self-contained-html --cov-report xml:coverage_sglang.xml --cov-append -vs --disable-warnings ${test_file} 2>&1 | tee ${ut_log_name}
+        python -m pytest --cov="${auto_round_path}" --cov-append -vs --disable-warnings ${test_file} 2>&1 | tee ${ut_log_name}
     done
+    [ -f .coverage ] && cp .coverage ${LOG_DIR}/.coverage.sglang
 
-    if [ -f "report_sglang.html" ] && [ -f "coverage_sglang.xml" ]; then
-        mv report_sglang.html ${LOG_DIR}/
-        mv coverage_sglang.xml ${LOG_DIR}/
-    fi
     # Print test results table and check for failures
     if ! print_test_results_table "unittest_cuda_sglang_test*.log" "CUDA SGLang Unit Tests"; then
         echo "Some CUDA SGLang unit tests failed. Please check the individual log files for details."
@@ -255,17 +241,32 @@ function run_unit_test_vllm() {
         local ut_log_name=${LOG_DIR}/unittest_cuda_vllm_${test_basename}.log
         echo "Running ${test_file}..."
 
-        python -m pytest --cov="${auto_round_path}" --cov-report term --html=report_vllm.html --self-contained-html --cov-report xml:coverage_vllm.xml --cov-append -vs --disable-warnings ${test_file} 2>&1 | tee ${ut_log_name}
+        python -m pytest --cov="${auto_round_path}" --cov-append -vs --disable-warnings ${test_file} 2>&1 | tee ${ut_log_name}
     done
+    [ -f .coverage ] && cp .coverage ${LOG_DIR}/.coverage.vllm
 
-    if [ -f "report_vllm.html" ] && [ -f "coverage_vllm.xml" ]; then
-        mv report_vllm.html ${LOG_DIR}/
-        mv coverage_vllm.xml ${LOG_DIR}/
-    fi
     # Print test results table and check for failures
     if ! print_test_results_table "unittest_cuda_vllm_test*.log" "CUDA VLLM Unit Tests"; then
         echo "Some CUDA VLLM unit tests failed. Please check the individual log files for details."
     fi
+}
+
+function merge_coverage() {
+    echo "-----[VAL INFO] merging coverage data -----"
+    cd ${REPO_PATH}/test
+
+    local coverage_files=$(find ${LOG_DIR} -maxdepth 1 -name ".coverage.*" 2>/dev/null)
+    if [ -z "${coverage_files}" ]; then
+        echo "No coverage data files found in ${LOG_DIR}, skipping merge."
+        return
+    fi
+
+    export COVERAGE_RCFILE=${REPO_PATH}/.azure-pipelines/scripts/ut/.coverage
+    coverage combine ${coverage_files}
+    coverage xml -o ${LOG_DIR}/coverage_merged.xml
+    coverage html -d ${LOG_DIR}/htmlcov
+    coverage report | tee ${LOG_DIR}/coverage_summary.log
+    echo "Merged coverage report saved to ${LOG_DIR}/coverage_merged.xml and ${LOG_DIR}/htmlcov/index.html"
 }
 
 function main() {
@@ -274,6 +275,7 @@ function main() {
     run_unit_test_llmc
     run_unit_test_sglang
     run_unit_test
+    merge_coverage
     cat ${SUMMARY_LOG}
 }
 
