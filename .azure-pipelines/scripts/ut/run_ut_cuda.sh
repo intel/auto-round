@@ -103,7 +103,6 @@ function run_unit_test() {
 
     pip list > ${LOG_DIR}/ut_pip_list.txt
     export COVERAGE_RCFILE=${REPO_PATH}/.azure-pipelines/scripts/ut/.coverage
-    local auto_round_path=$(python -c 'import auto_round; print(auto_round.__path__[0])')
 
     # run unit tests individually with separate logs
     for test_file in $(find ./test_cuda -type f -name "test_*.py" | grep -Ev "vlms|llmc|sglang|vllm|multiple_card" | sort); do
@@ -111,7 +110,7 @@ function run_unit_test() {
         local ut_log_name=${LOG_DIR}/unittest_cuda_${test_basename}.log
         echo "Running ${test_file}..."
 
-        python -m pytest --cov="${auto_round_path}" --cov-append -vs --disable-warnings ${test_file} 2>&1 | tee ${ut_log_name}
+        python -m pytest --cov=auto_round --cov-append -vs --disable-warnings ${test_file} 2>&1 | tee ${ut_log_name}
     done
     [ -f .coverage ] && cp .coverage ${LOG_DIR}/.coverage.unit
 
@@ -139,7 +138,6 @@ function run_unit_test_vlm() {
 
     pip list > ${LOG_DIR}/vlm_ut_pip_list.txt
     export COVERAGE_RCFILE=${REPO_PATH}/.azure-pipelines/scripts/ut/.coverage
-    local auto_round_path=$(python -c 'import auto_round; print(auto_round.__path__[0])')
 
     # run VLM unit tests individually with separate logs
     for test_file in $(find ./test_cuda -name "test*vlms.py"); do
@@ -147,7 +145,7 @@ function run_unit_test_vlm() {
         local ut_log_name=${LOG_DIR}/unittest_cuda_vlm_${test_basename}.log
         echo "Running ${test_file}..."
 
-        python -m pytest --cov="${auto_round_path}" --cov-append -vs --disable-warnings ${test_file} 2>&1 | tee ${ut_log_name}
+        python -m pytest --cov=auto_round --cov-append -vs --disable-warnings ${test_file} 2>&1 | tee ${ut_log_name}
     done
     [ -f .coverage ] && cp .coverage ${LOG_DIR}/.coverage.vlm
 
@@ -169,7 +167,6 @@ function run_unit_test_llmc() {
 
     pip list > ${LOG_DIR}/llmc_ut_pip_list.txt
     export COVERAGE_RCFILE=${REPO_PATH}/.azure-pipelines/scripts/ut/.coverage
-    local auto_round_path=$(python -c 'import auto_round; print(auto_round.__path__[0])')
 
     # run unit tests individually with separate logs
     for test_file in $(find ./test_cuda -name "test_llmc*.py" | sort); do
@@ -177,7 +174,7 @@ function run_unit_test_llmc() {
         local ut_log_name=${LOG_DIR}/unittest_cuda_llmc_${test_basename}.log
         echo "Running ${test_file}..."
 
-        python -m pytest --cov="${auto_round_path}" --cov-append -vs --disable-warnings ${test_file} 2>&1 | tee ${ut_log_name}
+        python -m pytest --cov=auto_round --cov-append -vs --disable-warnings ${test_file} 2>&1 | tee ${ut_log_name}
     done
     [ -f .coverage ] && cp .coverage ${LOG_DIR}/.coverage.llmc
 
@@ -198,7 +195,6 @@ function run_unit_test_sglang() {
 
     pip list > ${LOG_DIR}/sglang_ut_pip_list.txt
     export COVERAGE_RCFILE=${REPO_PATH}/.azure-pipelines/scripts/ut/.coverage
-    local auto_round_path=$(python -c 'import auto_round; print(auto_round.__path__[0])')
 
     # run unit tests individually with separate logs
     for test_file in $(find ./test_cuda -name "test_sglang*.py" | sort); do
@@ -206,7 +202,7 @@ function run_unit_test_sglang() {
         local ut_log_name=${LOG_DIR}/unittest_cuda_sglang_${test_basename}.log
         echo "Running ${test_file}..."
 
-        python -m pytest --cov="${auto_round_path}" --cov-append -vs --disable-warnings ${test_file} 2>&1 | tee ${ut_log_name}
+        python -m pytest --cov=auto_round --cov-append -vs --disable-warnings ${test_file} 2>&1 | tee ${ut_log_name}
     done
     [ -f .coverage ] && cp .coverage ${LOG_DIR}/.coverage.sglang
 
@@ -233,7 +229,6 @@ function run_unit_test_vllm() {
 
     pip list > ${LOG_DIR}/vllm_ut_pip_list.txt
     export COVERAGE_RCFILE=${REPO_PATH}/.azure-pipelines/scripts/ut/.coverage
-    local auto_round_path=$(python -c 'import auto_round; print(auto_round.__path__[0])')
 
     # run unit tests individually with separate logs
     for test_file in $(find ./test_cuda -name "test_vllm*.py" | sort); do
@@ -241,7 +236,7 @@ function run_unit_test_vllm() {
         local ut_log_name=${LOG_DIR}/unittest_cuda_vllm_${test_basename}.log
         echo "Running ${test_file}..."
 
-        python -m pytest --cov="${auto_round_path}" --cov-append -vs --disable-warnings ${test_file} 2>&1 | tee ${ut_log_name}
+        python -m pytest --cov=auto_round --cov-append -vs --disable-warnings ${test_file} 2>&1 | tee ${ut_log_name}
     done
     [ -f .coverage ] && cp .coverage ${LOG_DIR}/.coverage.vllm
 
