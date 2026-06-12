@@ -19,7 +19,7 @@ from auto_round.compressors.data_driven import CalibratedRTNCompressor, DataDriv
 from auto_round.compressors.utils import check_need_act_calibration
 from auto_round.compressors.zero_shot import ZeroShotCompressor
 from auto_round.logger import logger
-from auto_round.schemes import QuantizationScheme, _parse_scheme
+from auto_round.schemes import QuantizationScheme, parse_scheme
 
 _ENTRY_ROUTE_KWARGS = {"model_free", "disable_model_free", "disable_opt_rtn"}
 _ENTRY_COMPRESSOR_KWARGS = {"scale_dtype", "ignore_layers", "quant_lm_head", "to_quant_block_names"}
@@ -109,7 +109,7 @@ def _preview_resolved_attrs(config, scheme=None) -> dict:
     scheme_attr_names = tuple(config._scheme_fields)
     user_overrides = {k: getattr(config, k) for k in scheme_attr_names if getattr(config, k, None) is not None}
     try:
-        _, _, final_attrs = _parse_scheme(scheme, user_overrides)
+        _, _, final_attrs = parse_scheme(scheme, user_overrides)
         return final_attrs
     except Exception:
         return {}
@@ -132,7 +132,7 @@ def _eager_validate_scheme(config, scheme=None) -> None:
     scheme_attr_names = tuple(config._scheme_fields)
     user_overrides = {k: getattr(config, k) for k in scheme_attr_names if getattr(config, k, None) is not None}
     try:
-        _, _, final_attrs = _parse_scheme(scheme, user_overrides)
+        _, _, final_attrs = parse_scheme(scheme, user_overrides)
     except (ValueError, NotImplementedError):
         raise
     except Exception:

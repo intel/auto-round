@@ -16,6 +16,7 @@ function setup_environment() {
     export HF_HUB_DISABLE_PROGRESS_BARS=1
 
     uv pip install pytest-cov pytest-html
+    uv pip install -U chardet
     uv pip list
 
     # install latest gguf for ut test
