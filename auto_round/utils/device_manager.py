@@ -1052,6 +1052,7 @@ def _clear_memory_for_cpu_and_cuda(
             tensor[i] = None
     tensor = None
     gc.collect()
+
     # Lazy import: malloc-trim helpers live in utils/device.py.
     from auto_round.utils.device import _maybe_trim_malloc
 

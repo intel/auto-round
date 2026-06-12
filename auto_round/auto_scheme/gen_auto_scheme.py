@@ -64,6 +64,9 @@ class GenScheme:
         processor=None,
     ):
         self.auto_scheme = auto_scheme
+        if self.auto_scheme.low_cpu_mem_usage:
+            logger.info("force not using `low_cpu_mem_usage` in AutoScheme")
+            self.auto_scheme.low_cpu_mem_usage = False
         self.model = model
         self.tokenizer = tokenizer
         self.processor = processor

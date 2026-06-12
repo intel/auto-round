@@ -13,6 +13,7 @@
 # limitations under the License.
 
 import copy
+import gc
 from dataclasses import asdict
 from functools import wraps
 from typing import Iterable, Optional, Union
@@ -25,7 +26,6 @@ from auto_round.auto_scheme.gen_auto_scheme import AutoScheme
 from auto_round.auto_scheme.register import register_scheme_methods
 from auto_round.auto_scheme.utils import (
     apply_quant_scheme,
-    compute_avg_bits_for_scheme,
     compute_layer_bits,
     parse_shared_layers,
     remove_quant_scheme,
@@ -46,6 +46,7 @@ from auto_round.utils import (
     clear_memory,
     dispatch_model_by_all_available_devices,
     get_block_names,
+    get_lm_head_name,
     get_major_device,
     get_module,
     is_mllm_model,
@@ -58,7 +59,7 @@ from auto_round.utils import (
     to_device,
     to_dtype,
 )
-from auto_round.utils.device import MemoryMonitor
+from auto_round.utils.device import MemoryMonitor, memory_monitor
 from auto_round.utils.device_manager import get_current_device_manager
 from auto_round.utils.offload import OffloadManager
 from auto_round.wrapper import WrapperLinear
@@ -200,7 +201,8 @@ class AutoSchemeWrapperLinearForGGUFK(AutoSchemeWrapperLinear):
             def save_grad(grad):
                 w_diff = self.orig_layer.weight - self.qdq_w.to(self.orig_layer.weight.device)
                 # TODO strange, grad could be in CPU
-                self.weight_score += torch.abs((grad.to(w_diff.device) * w_diff)).sum().item()  # TODO add 2nd order
+                # self.weight_score += torch.abs((grad.to(w_diff.device).to(torch.float32) * w_diff.to(torch.float32)).sum()).item()  # TODO add 2nd order
+                self.weight_score += torch.abs((grad.to(w_diff.device) * w_diff)).sum().item()
                 act_score = 0.0 if self.act_cnt <= 0 else self.total_act_score / self.act_cnt
                 self.mix_score = self.weight_score + act_score
                 return None
@@ -361,7 +363,8 @@ def prepare_model_low_gpu(model, block_inputs: dict = None, pbar=None, major_dev
             block_inputs[module_name] = input_info
 
             module.to("cpu")
-            clear_memory()
+            # clear_memory() #slow
+            memory_monitor.update()
 
             # Enable gradients for the output of the last block
             if module.tmp_name == block_names[-1]:
@@ -467,13 +470,14 @@ def model_forward_low_gpu(model, dataloader, major_device="cuda", pbar=None):
 
         try:
             # Backward pass (will be interrupted by the hook)
-            output.loss.backward()
+            output.loss.to(torch.float32).backward()
         except MyCustomError:
             pass
 
         current_grad = last_grad_input
         del output, data
-        clear_memory()
+        # clear_memory()
+        memory_monitor.update()
 
         # Manually compute gradients block by block
         last_block_backward_hook.remove()
@@ -524,12 +528,13 @@ def model_forward_low_gpu(model, dataloader, major_device="cuda", pbar=None):
             if block_input_args and isinstance(block_input_args[0], torch.Tensor):
                 current_grad = block_input_args[0].grad.detach().clone()
             else:
-                print(f"Warning: No suitable input gradient found for {block_name}")
+                logger.warning(f"No suitable input gradient found for {block_name}")
                 break
 
             del block_output, main_output, block_input_args, block_input_kwargs
             block_module.to("cpu")
-            clear_memory()
+            # clear_memory(device_list=[0]) # this one is very slow and seems does not affect max ram usage
+            memory_monitor.update()
             pbar.update(1)
 
 
@@ -871,16 +876,41 @@ def get_score_for_scheme(
             scores_dict[n] = [layer_bits, m.mix_score]
     for n, m in model.named_modules():
         if hasattr(m, "orig_layer"):
+            # Explicitly break reference cycles to ensure GC can free the wrapper.
+            # Hook closures capture `self` (wrapper), creating cycles:
+            #   wrapper → qdq_w → _backward_hooks → closure → wrapper
+            # PyTorch's C-level tensor storage prevents Python's cyclic GC from
+            # collecting these without explicitly breaking the cycle first.
+            if hasattr(m, "qdq_w") and m.qdq_w is not None:
+                if hasattr(m.qdq_w, "_backward_hooks") and m.qdq_w._backward_hooks:
+                    m.qdq_w._backward_hooks.clear()
+                # Use detach_() rather than requires_grad_(False) because
+                # block_module.to("cpu") may have turned qdq_w into a non-leaf
+                # (ToCopyBackward grad_fn from .to()), and requires_grad_ only
+                # works on leaf tensors.
+                m.qdq_w.detach_()
+                m.qdq_w = None
+            if hasattr(m, "x_diff"):
+                m.x_diff = None
+            if hasattr(m, "super_qdq_func"):
+                m.super_qdq_func = None
+            if hasattr(m, "act_qdq_func"):
+                m.act_qdq_func = None
             set_module(model, n, m.orig_layer)
+
+    gc.collect()
     return scores_dict
 
 
-def choose_bits_per_layer_with_path(layers: dict, P: int):
+def choose_bits_per_layer_with_path(layers: dict, P: int, max_states: int = None):
     """
     Args:
         layers: A dict mapping each layer name to a list of candidate options.
                 Each option is a tuple of (scheme, bits_cost, loss_cost, layer_names).
         P: Upper bound on the total parameter (bit) budget.
+        max_states: Maximum number of DP states to retain after each layer
+                    (beam width). Limits memory usage for models with many
+                    layers and incommensurate layer sizes.
 
     Returns:
         (min_loss, best_path), where best_path is a list of
@@ -890,7 +920,6 @@ def choose_bits_per_layer_with_path(layers: dict, P: int):
     # dp: total_params -> (accumulated_loss, chosen_path)
     # The path explicitly stores the selected options.
     dp: dict[int, tuple[float, list]] = {0: (0.0, [])}
-
     for layer_name, opts in layers.items():
         new_dp: dict[int, tuple[float, list]] = {}
         for cur_params, (cur_loss, cur_path) in dp.items():
@@ -909,7 +938,6 @@ def choose_bits_per_layer_with_path(layers: dict, P: int):
 
         if not new_dp:
             return None, None
-
         # Pareto pruning: remove dominated (params, loss) states
         items = sorted(new_dp.items(), key=lambda x: x[0])  # (params, (loss, path))
         pruned: dict[int, tuple[float, list]] = {}
@@ -918,6 +946,23 @@ def choose_bits_per_layer_with_path(layers: dict, P: int):
             if loss_val < best_loss_so_far:
                 pruned[params_val] = (loss_val, path_val)
                 best_loss_so_far = loss_val
+
+        # Beam width limit: if too many states survive Pareto pruning,
+        # uniformly subsample to bound memory usage.  For models with many
+        # layers whose sizes are incommensurate, the number of distinct
+        # cumulative-bit sums can grow to millions, each storing a full
+        # path copy — easily exceeding 70 GB of RAM.
+        if max_states is not None and len(pruned) > max_states:
+            sorted_keys = sorted(pruned.keys())
+            n = len(sorted_keys)
+            # Uniformly pick max_states indices (always include first and last)
+            step = (n - 1) / (max_states - 1)
+            selected: dict[int, tuple[float, list]] = {}
+            for i in range(max_states):
+                idx = int(round(i * step))
+                k = sorted_keys[idx]
+                selected[k] = pruned[k]
+            pruned = selected
 
         dp = pruned
 
@@ -965,6 +1010,102 @@ def move_module_to_tuning_device(module, major_device="cpu"):
             _move_own_tensors(m, major_device)
 
 
+def _get_scheme_bits(scheme):
+    """Extract the weight bits from a scheme (str or dict)."""
+    if isinstance(scheme, str):
+        scheme = asdict(preset_name_to_scheme(scheme))
+    elif isinstance(scheme, QuantizationScheme):
+        scheme = asdict(scheme)
+    return scheme.get("bits", 16)
+
+
+# Delta loss does not handle lm-head well, it is prone to assign low bit to lm-head which is not optimal
+def _apply_head_trick(head_name, schemes, sorted_indices, target_bits, target_params_cnt, total_scores):
+
+    # ------------------------------------------------------------------ #
+    # lm_head option restriction for DP                                   #
+    # lm_head is critical — its quantization error goes directly into     #
+    # logits with no subsequent LayerNorm dampening. Instead of removing  #
+    # it from DP, we restrict its candidate options so the DP can only    #
+    # assign it >= 6 bit schemes, then let DP globally optimize.          #
+    #                                                                      #
+    # Rules (only if user hasn't already fixed it):                        #
+    #   1. No option has bits >= 6      → keep all options (DP picks best)#
+    #   2. Exactly one option bits >= 6 → restrict to only that option    #
+    #   3. Multiple options bits >= 6:                                      #
+    #      - target_bits > 6  → restrict to only the highest-bit option   #
+    #      - target_bits <= 6 → keep all >=6 options, let DP decide       #
+    # ------------------------------------------------------------------ #
+
+    high_bit_indices = [i for i in range(len(schemes)) if _get_scheme_bits(schemes[i]) >= 6]
+
+    if len(high_bit_indices) == 0:
+        # Rule 1: no option >= 6 bit → restrict to the lowest-loss scheme
+        allowed_indices = {sorted_indices[0]} if sorted_indices else None
+    elif len(high_bit_indices) == 1:
+        # Rule 2: exactly one >= 6 bit option → restrict to it
+        allowed_indices = set(high_bit_indices)
+    else:
+        # Rule 3: multiple >= 6 bit options
+        if target_bits > 6:
+            # Restrict to only the highest-bit option
+            highest_idx = max(high_bit_indices, key=lambda i: _get_scheme_bits(schemes[i]))
+            allowed_indices = {highest_idx}
+        else:
+            # Keep all >= 6 bit options, let DP decide among them
+            allowed_indices = set(high_bit_indices)
+
+    # Feasibility check: ensure the restricted lm_head options + min bits
+    # for all other layers don't exceed the budget. If infeasible, relax
+    # by adding options from sorted_indices (lowest loss first) until
+    # a feasible combination exists.
+    if allowed_indices is not None:
+        # Compute budget remaining after fixed layers
+
+        _remaining_budget = target_params_cnt
+
+        # Compute min bits for non-lm_head DP layers
+        _min_other_bits = 0
+        for key, opts in total_scores.items():
+            if key != head_name:
+                _min_other_bits += min(opt[1] for opt in opts)
+
+        # Compute min bits for lm_head under allowed_indices
+        _min_head_bits = 0
+
+        if head_name in total_scores:
+            head_opts = [opt for opt in total_scores[head_name] if opt[0] in allowed_indices]
+            if head_opts:
+                _min_head_bits += min(opt[1] for opt in head_opts)
+            else:
+                _min_head_bits += min(opt[1] for opt in total_scores[head_name])
+
+        # If infeasible, relax by adding cheaper options from sorted_indices
+        if _min_head_bits + _min_other_bits > _remaining_budget:
+            for fallback_idx in sorted_indices:
+                if fallback_idx in allowed_indices:
+                    continue
+                allowed_indices.add(fallback_idx)
+                # Recompute min head bits with expanded options
+                _min_head_bits = 0
+
+                if head_name in total_scores:
+                    head_opts = [opt for opt in total_scores[head_name] if opt[0] in allowed_indices]
+                    if head_opts:
+                        _min_head_bits += min(opt[1] for opt in head_opts)
+                    else:
+                        _min_head_bits += min(opt[1] for opt in total_scores[head_name])
+                if _min_head_bits + _min_other_bits <= _remaining_budget:
+                    break
+
+    # Filter lm_head's entries in total_scores to only allowed options
+    if allowed_indices is not None:
+        if head_name in total_scores:
+            filtered = [opt for opt in total_scores[head_name] if opt[0] in allowed_indices]
+            if filtered:
+                total_scores[head_name] = filtered
+
+
 def _gen_layer_config(
     auto_scheme: AutoScheme,
     model: Union[str, torch.nn.Module],
@@ -982,6 +1123,7 @@ def _gen_layer_config(
     processor=None,
     is_vlm: bool = False,
 ):
+
     # Initialize memory tracking for AutoScheme
     memory_monitor = MemoryMonitor()
     memory_monitor.reset()
@@ -1179,7 +1321,7 @@ def _gen_layer_config(
                 model_name=model_name,
             )
         # Track peak RAM after each scheme scoring
-        memory_monitor.update_cpu()
+        memory_monitor.update()
 
         new_scores = {}
         for share_layer in shared_layers:
@@ -1220,47 +1362,134 @@ def _gen_layer_config(
     target_params_cnt = int(total_params * target_bits)
     sorted_indices = sorted(range(len(options_scores)), key=lambda i: options_scores[i])
     # Layers that are not fixed in fixed_layer_scheme
-    not_fixed_embedding_layers_names = [name for name in embedding_layers_names if name not in fixed_layer_scheme]
-    for sorted_index in sorted_indices:
-        tmp_scheme = schemes[sorted_index]
-        if isinstance(tmp_scheme, str):
-            tmp_scheme = asdict(preset_name_to_scheme(tmp_scheme))
+    not_fixed_embedding_layers_names = [
+        name for name in embedding_layers_names if (name not in fixed_layer_scheme and name in quant_layer_names)
+    ]
 
-        for embedding_layer_name in not_fixed_embedding_layers_names:
+    # Determine if model has shared lm_head (tie_word_embeddings)
+    has_tied_lm_head = getattr(getattr(model, "config", None), "tie_word_embeddings", False)
 
-            fixed_layer_scheme[embedding_layer_name] = tmp_scheme
-            embedding_layer = get_module(model, embedding_layer_name)
-            for key, item in tmp_scheme.items():
-                setattr(embedding_layer, key, item)
-        current_avg_bits, _ = compute_avg_bits_for_scheme(
-            model,
-            quant_layer_names + embedding_layers_names,
-            fixed_layer_scheme,
-            min_avg_bit_scheme,
-            ignore_scale_zp_bits=auto_scheme.ignore_scale_zp_bits,
-            clean_scheme=False,
-        )
+    def _to_scheme_dict(scheme):
+        """Normalize a scheme (str/QuantizationScheme/dict) to a plain dict."""
+        if isinstance(scheme, str):
+            return asdict(preset_name_to_scheme(scheme))
+        elif isinstance(scheme, QuantizationScheme):
+            return asdict(scheme)
+        return scheme
 
-        if current_avg_bits <= target_bits:  # compute_avg_bit remove setting
-            for embedding_layer_name in not_fixed_embedding_layers_names:
+    def _compute_embedding_bits(scheme_dict):
+        """Compute total bits consumed by non-fixed embedding layers under scheme_dict."""
+        total = 0
+        for emb_name in not_fixed_embedding_layers_names:
+            emb_layer = get_module(model, emb_name)
+            n_param = emb_layer.weight.numel()
+            if n_param == 0 and hasattr(emb_layer, "_cached_weight_numel"):
+                n_param = emb_layer._cached_weight_numel
+            # With ignore_scale_zp_bits, bits_cost = n_param * bits
+            emb_bits = scheme_dict.get("bits", 16)
+            total += n_param * emb_bits
+        return total
 
-                fixed_layer_scheme[embedding_layer_name] = tmp_scheme
-                embedding_layer = get_module(model, embedding_layer_name)
-                for key, item in tmp_scheme.items():
-                    setattr(embedding_layer, key, item)
-            break
+    # Compute bits already consumed by user-fixed layers (excluding embeddings we'll set)
+    already_fixed_bits = 0
+    for name in fixed_layer_scheme.keys():
+        m = get_module(model, name)
+        layer_bits, _ = compute_layer_bits(m, auto_scheme.ignore_scale_zp_bits)
+        already_fixed_bits += layer_bits
+
+    # Compute minimum bits needed for DP layers (non-fixed, non-embedding)
+    min_dp_bits = 0
+    for layer_name, opts in total_scores.items():
+        min_dp_bits += min(opt[1] for opt in opts)
+
+    def _fits_budget(scheme_dict):
+        """Check if applying scheme_dict to embeddings leaves enough budget for DP layers."""
+        emb_bits = _compute_embedding_bits(scheme_dict)
+        remaining = target_params_cnt - already_fixed_bits - emb_bits
+        return remaining >= min_dp_bits
+
+    def _select_embedding_scheme_index():
+        """Select the best scheme index for embedding layers based on model type and target_bits.
+
+        For models with shared lm_head (tie_word_embeddings=True):
+          - target_bits > 6: use the lowest-loss option (same as before)
+          - target_bits <= 6: use the lowest-loss option among those with bits <= 6
+        For models without shared lm_head:
+          - use the lowest-loss option among those with bits >= ceil(target_bits)
+
+        In all cases, the selected scheme must not exceed the total bit budget
+        (i.e., embedding bits + fixed bits + min DP bits <= target_params_cnt).
+        """
+        import math
+
+        if has_tied_lm_head:
+            if target_bits > 6:
+                candidates = list(sorted_indices)
+            else:
+                # Prefer options with bits <= 6, sorted by loss
+                candidates = [idx for idx in sorted_indices if _get_scheme_bits(schemes[idx]) <= 6]
+                if not candidates:
+                    candidates = list(sorted_indices)
+        else:
+            # Not shared lm_head: prefer options with bits < floor(target_bits)
+            floor_bits = math.floor(target_bits)
+            candidates = [idx for idx in sorted_indices if _get_scheme_bits(schemes[idx]) == floor_bits]
+            if not candidates:
+                # find the first bits that greater than floor bits
+                embedding_bits = [bits for idx in sorted_indices if _get_scheme_bits(schemes[idx]) > floor_bits]
+                if len(embedding_bits) > 0:
+                    sorted(embedding_bits)
+                    embedding_bits = embedding_bits[0]
+                    candidates = [idx for idx in sorted_indices if _get_scheme_bits(schemes[idx]) == embedding_bits]
+            candidates.extend(sorted_indices)  # to make sure if the above candidate exceed the budget
+
+        # Among candidates (ordered by loss), pick the first that fits the budget
+        for idx in candidates:
+            scheme_dict = _to_scheme_dict(schemes[idx])
+            if _fits_budget(scheme_dict):
+                return idx
+
+        # Fallback: try ALL options sorted by bits ascending (cheapest first)
+        all_by_bits = sorted(range(len(schemes)), key=lambda i: _get_scheme_bits(schemes[i]))
+        for idx in all_by_bits:
+            scheme_dict = _to_scheme_dict(schemes[idx])
+            if _fits_budget(scheme_dict):
+                return idx
+
+        # Last resort: use the cheapest option regardless
+        return all_by_bits[0] if all_by_bits else 0
 
     # Minus fixed_layer
     for name in fixed_layer_scheme.keys():  # The Scheme should have been applied
         m = get_module(model, name)
         layer_bits, _ = compute_layer_bits(m, auto_scheme.ignore_scale_zp_bits)
         target_params_cnt -= layer_bits
+
+    head_name = get_lm_head_name(model)
+    if head_name is not None and (head_name not in fixed_layer_scheme and head_name in quant_layer_names):
+        _apply_head_trick(head_name, schemes, sorted_indices, target_bits, target_params_cnt, total_scores)
+    # As a little fo calibration data is used and embedding is a sparse op, we could not get reliable score
+    if not_fixed_embedding_layers_names:
+        selected_index = _select_embedding_scheme_index()
+        tmp_scheme = _to_scheme_dict(schemes[selected_index])
+
+        for embedding_layer_name in not_fixed_embedding_layers_names:
+            fixed_layer_scheme[embedding_layer_name] = tmp_scheme
+            embedding_layer = get_module(model, embedding_layer_name)
+            for key, item in tmp_scheme.items():
+                setattr(embedding_layer, key, item)
+            layer_bits, _ = compute_layer_bits(embedding_layer, auto_scheme.ignore_scale_zp_bits)
+            target_params_cnt -= layer_bits
+
     if target_params_cnt <= 0:
         raise ValueError("Avg bits is too small")
 
     remove_quant_scheme(model)  # Must place after minus fixed_layer
+    memory_monitor.update()
+    memory_monitor.log_summary()
 
     best_loss, best_path = choose_bits_per_layer_with_path(total_scores, target_params_cnt)
+
     # print(best_loss, best_path)  # TODO better log
     layer_config = copy.deepcopy(fixed_layer_scheme)
     options = list(copy.deepcopy(auto_scheme.options))
@@ -1273,7 +1502,6 @@ def _gen_layer_config(
         layer_scheme = options[item[1]]
         for layer_name in layer_names:
             layer_config[layer_name] = asdict(layer_scheme)
-
     if model_name is not None:
         model = None
         del model
@@ -1298,8 +1526,8 @@ def _gen_layer_config(
     last_grad_input = None
     clear_memory(device_list=device_list)
 
-    # Log AutoScheme memory usage
-    memory_monitor.update_cpu()
+    # # Log AutoScheme memory usage
+    # memory_monitor.update_cpu()
     low_cpu_str = "enabled" if auto_scheme.low_cpu_mem_usage else "disabled"
     memory_monitor.log_summary(f"AutoScheme complete (low_cpu_mem_usage={low_cpu_str})")
 
