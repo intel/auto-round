@@ -24,9 +24,14 @@ from safetensors.torch import save_file
 
 from auto_round import AutoRound
 from auto_round.compressors.model_free import (
+    _build_mxfp_quantization_config,
     _dequant_fp8_tensors,
+    _dequant_mxfp_tensors,
+    _expand_e8m0_block_scale,
+    _handle_mxfp_source_tensors,
     _ModelFreeCompressorCore,
     _PatternMatcher,
+    _preprocess_model_type_source_tensors,
     _process_shard,
     _quantize_weight_mxfp,
     get_predefined_ignore_layers_from_config,
@@ -414,6 +419,398 @@ class TestModelFreeMXFP:
         assert "layer.fc1" in quantized
         assert "layer.fc1.weight_packed" in output
         assert "layer.fc1.weight_scale" in output
+
+    @require_compressed_tensors
+    def test_build_mxfp_mixed_config_uniform(self):
+        """Single-scheme path: no layer_config overrides → uniform format."""
+        default = {"bits": 4, "group_size": 32, "sym": True, "data_type": "mx_fp"}
+        quantized = ["model.layers.0.fc1", "model.layers.0.fc2"]
+        ignored = ["lm_head"]
+        cfg = _build_mxfp_quantization_config(default, quantized, ignored, layer_config={})
+        assert cfg["format"] == "mxfp4-pack-quantized"
+        assert "lm_head" in cfg["ignore"]
+        assert len(cfg["config_groups"]) == 1
+
+    @require_compressed_tensors
+    def test_build_mxfp_mixed_config_two_groups(self):
+        """Mixed MXFP4+MXFP8: override layers get explicit targets; default gets ["Linear"]."""
+        default = {"bits": 4, "group_size": 32, "sym": True, "data_type": "mx_fp"}
+        layer_config = {
+            "model.layers.0.self_attn.q_proj": {"bits": 8, "group_size": 32, "data_type": "mx_fp"},
+            "model.layers.0.self_attn.k_proj": {"bits": 8, "group_size": 32, "data_type": "mx_fp"},
+        }
+        quantized = [
+            "model.layers.0.self_attn.q_proj",
+            "model.layers.0.self_attn.k_proj",
+            "model.layers.0.mlp.fc1",
+            "model.layers.0.mlp.fc2",
+        ]
+        ignored = ["lm_head"]
+        cfg = _build_mxfp_quantization_config(default, quantized, ignored, layer_config=layer_config)
+
+        assert cfg["format"] == "mixed-precision"
+        assert len(cfg["config_groups"]) == 2
+
+        # MXFP8 group (override, should come first) — explicit targets
+        mxfp8_group = next(g for g in cfg["config_groups"].values() if g["format"] == "mxfp8-quantized")
+        assert set(mxfp8_group["targets"]) == {
+            "model.layers.0.self_attn.q_proj",
+            "model.layers.0.self_attn.k_proj",
+        }
+
+        # MXFP4 group (default) — catch-all
+        mxfp4_group = next(g for g in cfg["config_groups"].values() if g["format"] == "mxfp4-pack-quantized")
+        assert mxfp4_group["targets"] == ["Linear"]
+
+    @require_compressed_tensors
+    def test_e2e_mxfp_mixed(self, tmp_path):
+        """End-to-end: default MXFP4 with some layers overridden to MXFP8."""
+        tensors = {
+            "model.layers.0.self_attn.q_proj.weight": torch.randn(128, 128),
+            "model.layers.0.self_attn.k_proj.weight": torch.randn(128, 128),
+            "model.layers.0.mlp.fc1.weight": torch.randn(512, 128),
+            "lm_head.weight": torch.randn(1000, 128),
+        }
+        model_dir = _make_model_dir(tmp_path, _LLAMA_CFG, tensors)
+        output_dir = str(tmp_path / "output")
+        layer_config = {
+            "model.layers.0.self_attn.q_proj": {"bits": 8, "group_size": 32, "data_type": "mx_fp"},
+            "model.layers.0.self_attn.k_proj": {"bits": 8, "group_size": 32, "data_type": "mx_fp"},
+        }
+        _ModelFreeCompressorCore(
+            model_name_or_path=model_dir,
+            output_dir=output_dir,
+            scheme="MXFP4",
+            layer_config=layer_config,
+        ).run()
+
+        qc = _read_qconfig(output_dir)
+        assert qc["format"] == "mixed-precision"
+        assert qc["quant_method"] == "compressed-tensors"
+        assert len(qc["config_groups"]) == 2
+        assert "lm_head" in qc["ignore"]
+
+        keys = _read_output_keys(output_dir)
+        # MXFP8-overridden layers → .weight (float8_e4m3fn) + .weight_scale
+        assert "model.layers.0.self_attn.q_proj.weight" in keys
+        assert "model.layers.0.self_attn.q_proj.weight_scale" in keys
+        # MXFP4-default layers → .weight_packed + .weight_scale
+        assert "model.layers.0.mlp.fc1.weight_packed" in keys
+        assert "model.layers.0.mlp.fc1.weight_scale" in keys
+        # lm_head stays full precision
+        assert "lm_head.weight" in keys
+        assert "lm_head.weight_packed" not in keys
+
+
+# ===========================================================================
+#  deepseek_v4 MXFP-quantized source models
+# ===========================================================================
+
+_DEEPSEEK_V4_CFG = {"architectures": ["DeepseekV4ForCausalLM"], "model_type": "deepseek_v4"}
+
+
+def _make_deepseek_v4_mxfp8(out_f, in_f, block_h, block_w):
+    """Build deepseek_v4-style MXFP8 source tensors.
+
+    Returns ``(weight_fp8, scale_e8m0_coarse)``:
+
+    * ``weight_fp8``         — ``float8_e4m3fn``, shape ``[out_f, in_f]``.
+    * ``scale_e8m0_coarse``  — ``uint8`` E8M0, *coarse* 2D shape
+      ``[out_f // block_h, in_f // block_w]`` (all exponents = bias 127, i.e.
+      scale 1.0, to keep the round-trip deterministic).
+    """
+    weight_fp8 = torch.randn(out_f, in_f, dtype=torch.bfloat16).to(torch.float8_e4m3fn)
+    scale = torch.full((out_f // block_h, in_f // block_w), 127, dtype=torch.uint8)
+    return weight_fp8, scale
+
+
+class TestExpandE8M0BlockScale:
+    """The coarse-block → per-group E8M0 scale expansion helper."""
+
+    def test_expand_repeat_interleave(self):
+        # Coarse [2, 2] block scale for a [64, 128] weight, group_size=32.
+        scale = torch.tensor([[100, 101], [102, 103]], dtype=torch.uint8)
+        out = _expand_e8m0_block_scale(scale, out_features=64, in_features=128, group_size=32)
+        assert out.shape == (64, 4)  # 128 // 32 == 4 groups
+        assert out.dtype == torch.uint8
+        # Row 0 (first 32 rows) maps to coarse row 0; cols 0..1 → coarse col 0, 2..3 → col 1.
+        assert out[0].tolist() == [100, 100, 101, 101]
+        assert out[63].tolist() == [102, 102, 103, 103]
+
+    def test_expand_noop_when_already_fine(self):
+        scale = torch.full((64, 4), 127, dtype=torch.uint8)
+        out = _expand_e8m0_block_scale(scale, out_features=64, in_features=128, group_size=32)
+        assert out.shape == (64, 4) and torch.equal(out, scale)
+
+    def test_expand_invalid_shape_raises(self):
+        scale = torch.full((3, 4), 127, dtype=torch.uint8)
+        with pytest.raises(ValueError):
+            _expand_e8m0_block_scale(scale, out_features=64, in_features=128, group_size=32)
+
+
+class TestDeepseekV4MXFP8Source:
+    """deepseek_v4 source models stored as float8 weights + coarse E8M0 scales."""
+
+    def test_resolve_model_type(self):
+        core = _ModelFreeCompressorCore(model_name_or_path="x", output_dir="o", scheme="MXFP8")
+        core.config = _DEEPSEEK_V4_CFG
+        core._resolve_model_type()
+        assert core.model_type == "deepseek_v4"
+
+    def test_resolve_model_type_negative(self):
+        core = _ModelFreeCompressorCore(model_name_or_path="x", output_dir="o", scheme="MXFP8")
+        core.config = _LLAMA_CFG
+        core._resolve_model_type()
+        assert core.model_type == "llama"
+
+
+# ===========================================================================
+#  llm-compressor MXFP source models (generic, e.g. Qwen3-MXFP4-MXFP8)
+# ===========================================================================
+
+_LLMCOMPRESSOR_MXFP_CFG_FP8 = {
+    "architectures": ["Qwen3ForCausalLM"],
+    "model_type": "qwen3",
+    "quantization_config": {"quant_method": "compressed-tensors", "format": "mxfp8-quantized"},
+}
+_LLMCOMPRESSOR_MIXED_CFG = {
+    "architectures": ["Qwen3ForCausalLM"],
+    "model_type": "qwen3",
+    "quantization_config": {"quant_method": "compressed-tensors", "format": "mixed-precision"},
+}
+
+
+class TestLLMCompressorMXFPSource:
+    """llm-compressor MXFP8/MXFP4 source models (generic non-deepseek_v4 path)."""
+
+    def test_resolve_model_type_qwen3(self):
+        core = _ModelFreeCompressorCore(model_name_or_path="x", output_dir="o", scheme="MXFP8")
+        core.config = _LLMCOMPRESSOR_MXFP_CFG_FP8
+        core._resolve_model_type()
+        assert core.model_type == "qwen3"
+
+    def test_resolve_model_type_mixed(self):
+        core = _ModelFreeCompressorCore(model_name_or_path="x", output_dir="o", scheme="MXFP8")
+        core.config = _LLMCOMPRESSOR_MIXED_CFG
+        core._resolve_model_type()
+        assert core.model_type == "qwen3"
+
+    def test_resolve_model_type_negative_not_compressed_tensors(self):
+        core = _ModelFreeCompressorCore(model_name_or_path="x", output_dir="o", scheme="MXFP8")
+        core.config = _LLAMA_CFG
+        core._resolve_model_type()
+        assert core.model_type == "llama"
+
+    def test_passthrough_mxfp8_same_target(self):
+        """MXFP8 source + MXFP8 target → passthrough (bytes preserved)."""
+        weight_fp8 = torch.randn(64, 128, dtype=torch.bfloat16).to(torch.float8_e4m3fn)
+        weight_scale = torch.full((64, 4), 127, dtype=torch.uint8)
+        raw = {
+            "layer.weight": weight_fp8.clone(),
+            "layer.weight_scale": weight_scale.clone(),
+        }
+        matcher = _matcher(default={"bits": 8, "group_size": 32, "sym": True, "data_type": "mx_fp"})
+        raw_out, passthrough, layers = _handle_mxfp_source_tensors(raw, matcher)
+
+        assert layers == ["layer"]
+        assert passthrough["layer.weight"].dtype == torch.float8_e4m3fn
+        assert torch.equal(passthrough["layer.weight"].view(torch.uint8), weight_fp8.view(torch.uint8))
+        assert passthrough["layer.weight_scale"].dtype == torch.uint8
+        assert "layer.weight" not in raw_out
+        assert "layer.weight_scale" not in raw_out
+
+    def test_passthrough_mxfp4_same_target(self):
+        """MXFP4 source + MXFP4 target → passthrough."""
+        weight_packed = torch.randint(0, 255, (64, 64), dtype=torch.uint8)
+        weight_scale = torch.full((64, 4), 127, dtype=torch.uint8)
+        raw = {
+            "layer.weight_packed": weight_packed.clone(),
+            "layer.weight_scale": weight_scale.clone(),
+        }
+        matcher = _matcher(default={"bits": 4, "group_size": 32, "sym": True, "data_type": "mx_fp"})
+        raw_out, passthrough, layers = _handle_mxfp_source_tensors(raw, matcher)
+
+        assert layers == ["layer"]
+        assert torch.equal(passthrough["layer.weight_packed"], weight_packed)
+        assert passthrough["layer.weight_scale"].dtype == torch.uint8
+        assert "layer.weight_packed" not in raw_out
+
+    def test_mxfp8_dequant_when_int_target(self):
+        """MXFP8 source + int target → dequantized to bf16 .weight."""
+        weight_fp8 = torch.randn(64, 128, dtype=torch.bfloat16).to(torch.float8_e4m3fn)
+        weight_scale = torch.full((64, 4), 127, dtype=torch.uint8)  # scale 1.0
+        raw = {
+            "layer.weight": weight_fp8.clone(),
+            "layer.weight_scale": weight_scale.clone(),
+        }
+        matcher = _matcher(default={"bits": 4, "group_size": 128, "sym": True, "data_type": "int"})
+        raw_out, passthrough, layers = _handle_mxfp_source_tensors(raw, matcher)
+
+        assert layers == [] and passthrough == {}
+        assert raw_out["layer.weight"].dtype == torch.bfloat16
+        assert torch.allclose(raw_out["layer.weight"], weight_fp8.to(torch.bfloat16))
+        assert "layer.weight_scale" not in raw_out
+
+    def test_mixed_passthrough_and_dequant(self):
+        """Mixed: MXFP8 layer passthrough + MXFP4 layer dequanted (target MXFP8)."""
+        weight_fp8 = torch.randn(64, 128, dtype=torch.bfloat16).to(torch.float8_e4m3fn)
+        scale_fp8 = torch.full((64, 4), 127, dtype=torch.uint8)
+        weight_packed = torch.randint(0, 255, (64, 64), dtype=torch.uint8)
+        scale_packed = torch.full((64, 4), 127, dtype=torch.uint8)
+        raw = {
+            "attn.weight": weight_fp8.clone(),
+            "attn.weight_scale": scale_fp8.clone(),
+            "mlp.weight_packed": weight_packed.clone(),
+            "mlp.weight_scale": scale_packed.clone(),
+        }
+        matcher = _matcher(default={"bits": 8, "group_size": 32, "sym": True, "data_type": "mx_fp"})
+        raw_out, passthrough, layers = _handle_mxfp_source_tensors(raw, matcher)
+
+        assert "attn" in layers  # fp8 layer passthrough
+        assert passthrough["attn.weight"].dtype == torch.float8_e4m3fn
+        # mlp fp4 layer dequantized because target is MXFP8 (bits=8 != 4)
+        assert "mlp" not in layers
+        assert raw_out["mlp.weight"].dtype == torch.bfloat16
+        assert raw_out["mlp.weight"].shape == (64, 128)
+
+    def test_noop_without_mxfp_tensors(self):
+        """No MXFP tensors → input returned unchanged."""
+        raw = {"layer.weight": torch.randn(64, 128, dtype=torch.bfloat16)}
+        matcher = _matcher(default={"bits": 8, "group_size": 32, "data_type": "mx_fp"})
+        raw_out, passthrough, layers = _handle_mxfp_source_tensors(raw, matcher)
+        assert raw_out is raw and passthrough == {} and layers == []
+
+    @require_compressed_tensors
+    def test_e2e_mxfp8_passthrough(self, tmp_path):
+        """End-to-end: MXFP8 source + MXFP8 target → passthrough, weight bytes unchanged."""
+        weight_fp8 = torch.randn(128, 128, dtype=torch.bfloat16).to(torch.float8_e4m3fn)
+        weight_scale = torch.full((128, 4), 127, dtype=torch.uint8)
+        tensors = {
+            "model.layers.0.mlp.fc1.weight": weight_fp8,
+            "model.layers.0.mlp.fc1.weight_scale": weight_scale,
+            "lm_head.weight": torch.randn(1000, 128),
+        }
+        model_dir = _make_model_dir(tmp_path, _LLMCOMPRESSOR_MXFP_CFG_FP8, tensors)
+        output_dir = str(tmp_path / "output")
+        _ModelFreeCompressorCore(model_name_or_path=model_dir, output_dir=output_dir, scheme="MXFP8").run()
+
+        qc = _read_qconfig(output_dir)
+        assert qc["format"] == "mxfp8-quantized"
+        assert qc["quant_method"] == "compressed-tensors"
+        assert "lm_head" in qc["ignore"]
+
+        wp = ws = None
+        for f in os.listdir(output_dir):
+            if f.endswith(".safetensors"):
+                with safe_open(os.path.join(output_dir, f), framework="pt") as sf:
+                    if "model.layers.0.mlp.fc1.weight" in sf.keys():
+                        wp = sf.get_tensor("model.layers.0.mlp.fc1.weight")
+                        ws = sf.get_tensor("model.layers.0.mlp.fc1.weight_scale")
+        assert wp.dtype == torch.float8_e4m3fn
+        assert torch.equal(wp.view(torch.uint8), weight_fp8.view(torch.uint8))
+        assert ws.dtype == torch.uint8
+
+    def test_convert_passthrough_when_target_mxfp8(self):
+        """Target MXFP8 → converted tensors emitted directly (weight bytes preserved)."""
+        weight_fp8, scale = _make_deepseek_v4_mxfp8(64, 128, block_h=32, block_w=64)
+        raw = {"layer.weight": weight_fp8.clone(), "layer.scale": scale.clone()}
+        matcher = _matcher(default={"bits": 8, "group_size": 32, "sym": True, "data_type": "mx_fp"})
+        raw_out, state = _preprocess_model_type_source_tensors(raw, model_type="deepseek_v4")
+        raw_out, passthrough, layers = _handle_mxfp_source_tensors(raw_out, matcher, source_state=state)
+
+        assert layers == ["layer"]
+        # weight kept as float8 under .weight; scale expanded to per-group uint8.
+        assert passthrough["layer.weight"].dtype == torch.float8_e4m3fn
+        assert torch.equal(passthrough["layer.weight"].view(torch.uint8), weight_fp8.view(torch.uint8))
+        assert passthrough["layer.weight_scale"].dtype == torch.uint8
+        assert passthrough["layer.weight_scale"].shape == (64, 4)
+        # source tensors consumed, nothing left in raw.
+        assert "layer.weight" not in raw_out
+        assert "layer.scale" not in raw_out
+
+    def test_convert_dequant_when_target_int(self):
+        """Non-MXFP8 target → tensors dequantized to bfloat16 .weight."""
+        weight_fp8, scale = _make_deepseek_v4_mxfp8(64, 128, block_h=32, block_w=64)
+        raw = {"layer.weight": weight_fp8.clone(), "layer.scale": scale.clone()}
+        matcher = _matcher(default={"bits": 4, "group_size": 128, "sym": True, "data_type": "int"})
+        raw_out, state = _preprocess_model_type_source_tensors(raw, model_type="deepseek_v4")
+        raw_out, passthrough, layers = _handle_mxfp_source_tensors(raw_out, matcher, source_state=state)
+
+        assert layers == [] and passthrough == {}
+        assert raw_out["layer.weight"].dtype == torch.bfloat16
+        assert raw_out["layer.weight"].shape == (64, 128)
+        # scale 1.0 → dequant weight equals fp8 cast to bf16.
+        assert torch.allclose(raw_out["layer.weight"], weight_fp8.to(torch.bfloat16))
+        assert "layer.scale" not in raw_out and "layer.weight_scale" not in raw_out
+
+    def test_convert_noop_without_quantized(self):
+        """No float8/packed weights → input returned unchanged."""
+        raw = {"layer.weight": torch.randn(64, 128, dtype=torch.bfloat16)}
+        matcher = _matcher(default={"bits": 8, "group_size": 32, "data_type": "mx_fp"})
+        raw_out, state = _preprocess_model_type_source_tensors(raw, model_type="deepseek_v4")
+        assert state == {}
+        raw_out, passthrough, layers = _handle_mxfp_source_tensors(raw_out, matcher, source_state=state)
+        assert raw_out is raw and passthrough == {} and layers == []
+
+    def test_dequant_mxfp_tensors_mxfp8(self):
+        """Generic MXFP dequant: float8 .weight + .weight_scale → bf16."""
+        weight_fp8 = torch.randn(64, 128, dtype=torch.bfloat16).to(torch.float8_e4m3fn)
+        weight_scale = torch.full((64, 4), 127, dtype=torch.uint8)  # scale 1.0
+        raw = {"layer.weight": weight_fp8.clone(), "layer.weight_scale": weight_scale.clone()}
+        out = _dequant_mxfp_tensors(raw)
+        assert out["layer.weight"].dtype == torch.bfloat16
+        assert torch.allclose(out["layer.weight"], weight_fp8.to(torch.bfloat16))
+        assert "layer.weight_scale" not in out
+
+    @require_compressed_tensors
+    def test_e2e_passthrough_mxfp8_target(self, tmp_path):
+        """deepseek_v4 source + MXFP8 target → passthrough preserves weight bytes."""
+        weight_fp8, scale = _make_deepseek_v4_mxfp8(128, 128, block_h=32, block_w=64)
+        tensors = {
+            "model.layers.0.mlp.fc1.weight": weight_fp8,
+            "model.layers.0.mlp.fc1.scale": scale,
+            "lm_head.weight": torch.randn(1000, 128),
+        }
+        model_dir = _make_model_dir(tmp_path, _DEEPSEEK_V4_CFG, tensors)
+        output_dir = str(tmp_path / "output")
+        _ModelFreeCompressorCore(model_name_or_path=model_dir, output_dir=output_dir, scheme="MXFP8").run()
+
+        qc = _read_qconfig(output_dir)
+        assert qc["format"] == "mxfp8-quantized"
+        assert qc["quant_method"] == "compressed-tensors"
+        assert "lm_head" in qc["ignore"]
+
+        # Read back the converted tensors and verify the weight bytes are unchanged.
+        wp = ws = None
+        for f in os.listdir(output_dir):
+            if f.endswith(".safetensors"):
+                with safe_open(os.path.join(output_dir, f), framework="pt") as sf:
+                    if "model.layers.0.mlp.fc1.weight" in sf.keys():
+                        wp = sf.get_tensor("model.layers.0.mlp.fc1.weight")
+                        ws = sf.get_tensor("model.layers.0.mlp.fc1.weight_scale")
+        assert wp.dtype == torch.float8_e4m3fn
+        assert torch.equal(wp.view(torch.uint8), weight_fp8.view(torch.uint8))
+        assert ws.dtype == torch.uint8 and ws.shape == (128, 4)
+
+    def test_e2e_dequant_int_target(self, tmp_path):
+        """deepseek_v4 source + W4A16 target → dequant then RTN requantize (qweight)."""
+        weight_fp8, scale = _make_deepseek_v4_mxfp8(128, 128, block_h=32, block_w=64)
+        tensors = {
+            "model.layers.0.mlp.fc1.weight": weight_fp8,
+            "model.layers.0.mlp.fc1.scale": scale,
+            "lm_head.weight": torch.randn(1000, 128),
+        }
+        model_dir = _make_model_dir(tmp_path, _DEEPSEEK_V4_CFG, tensors)
+        output_dir = str(tmp_path / "output")
+        AutoRound(model=model_dir, scheme="W4A16", model_free=True).quantize_and_save(output_dir)
+
+        qc = _read_qconfig(output_dir)
+        assert qc["quant_method"] == "auto-round" and qc["bits"] == 4
+        keys = _read_output_keys(output_dir)
+        assert "model.layers.0.mlp.fc1.qweight" in keys
+        # the raw source tensors must not leak into the output
+        assert "model.layers.0.mlp.fc1.scale" not in keys
+        assert "model.layers.0.mlp.fc1.weight" not in keys
 
 
 # ===========================================================================
