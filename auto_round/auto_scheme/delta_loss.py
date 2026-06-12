@@ -13,6 +13,7 @@
 # limitations under the License.
 
 import copy
+import gc
 from dataclasses import asdict
 from functools import wraps
 from typing import Iterable, Optional, Union
@@ -57,7 +58,7 @@ from auto_round.utils import (
     to_device,
     to_dtype,
 )
-from auto_round.utils.device import MemoryMonitor
+from auto_round.utils.device import MemoryMonitor, memory_monitor
 from auto_round.utils.device_manager import get_current_device_manager
 from auto_round.utils.offload import OffloadManager
 from auto_round.wrapper import WrapperLinear
@@ -360,7 +361,8 @@ def prepare_model_low_gpu(model, block_inputs: dict = None, pbar=None, major_dev
             block_inputs[module_name] = input_info
 
             module.to("cpu")
-            clear_memory()
+            # clear_memory() #slow
+            memory_monitor.update()
 
             # Enable gradients for the output of the last block
             if module.tmp_name == block_names[-1]:
@@ -472,7 +474,8 @@ def model_forward_low_gpu(model, dataloader, major_device="cuda", pbar=None):
 
         current_grad = last_grad_input
         del output, data
-        clear_memory()
+        # clear_memory()
+        memory_monitor.update()
 
         # Manually compute gradients block by block
         last_block_backward_hook.remove()
@@ -528,7 +531,8 @@ def model_forward_low_gpu(model, dataloader, major_device="cuda", pbar=None):
 
             del block_output, main_output, block_input_args, block_input_kwargs
             block_module.to("cpu")
-            clear_memory()
+            # clear_memory(device_list=[0]) # this one is very slow and seems does not affect max ram usage
+            memory_monitor.update()
             pbar.update(1)
 
 
