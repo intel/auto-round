@@ -528,7 +528,7 @@ def model_forward_low_gpu(model, dataloader, major_device="cuda", pbar=None):
             if block_input_args and isinstance(block_input_args[0], torch.Tensor):
                 current_grad = block_input_args[0].grad.detach().clone()
             else:
-                print(f"Warning: No suitable input gradient found for {block_name}")
+                logger.warning(f"No suitable input gradient found for {block_name}")
                 break
 
             del block_output, main_output, block_input_args, block_input_kwargs
@@ -1123,6 +1123,7 @@ def _gen_layer_config(
     processor=None,
     is_vlm: bool = False,
 ):
+
     # Initialize memory tracking for AutoScheme
     memory_monitor = MemoryMonitor()
     memory_monitor.reset()
@@ -1361,7 +1362,7 @@ def _gen_layer_config(
     target_params_cnt = int(total_params * target_bits)
     sorted_indices = sorted(range(len(options_scores)), key=lambda i: options_scores[i])
     # Layers that are not fixed in fixed_layer_scheme
-    not_fixed_embedding_layers_names = [name for name in embedding_layers_names if name not in fixed_layer_scheme]
+    not_fixed_embedding_layers_names = [name for name in embedding_layers_names if (name not in fixed_layer_scheme and name in quant_layer_names)]
 
     # Determine if model has shared lm_head (tie_word_embeddings)
     has_tied_lm_head = getattr(getattr(model, "config", None), "tie_word_embeddings", False)
@@ -1463,9 +1464,9 @@ def _gen_layer_config(
         target_params_cnt -= layer_bits
 
     head_name = get_lm_head_name(model)
-    if head_name is not None:
+    if head_name is not None and (head_name not in fixed_layer_scheme and head_name in quant_layer_names):
         _apply_head_trick(head_name, schemes, sorted_indices, target_bits, target_params_cnt, total_scores)
-
+    # As a little fo calibration data is used and embedding is a sparse op, we could not get reliable score
     if not_fixed_embedding_layers_names:
         selected_index = _select_embedding_scheme_index()
         tmp_scheme = _to_scheme_dict(schemes[selected_index])
@@ -1486,6 +1487,7 @@ def _gen_layer_config(
     memory_monitor.log_summary()
 
     best_loss, best_path = choose_bits_per_layer_with_path(total_scores, target_params_cnt)
+
     # print(best_loss, best_path)  # TODO better log
     layer_config = copy.deepcopy(fixed_layer_scheme)
     options = list(copy.deepcopy(auto_scheme.options))
@@ -1498,7 +1500,6 @@ def _gen_layer_config(
         layer_scheme = options[item[1]]
         for layer_name in layer_names:
             layer_config[layer_name] = asdict(layer_scheme)
-
     if model_name is not None:
         model = None
         del model
