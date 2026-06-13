@@ -97,7 +97,7 @@ import shutil
 import time
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import asdict, fields
-from typing import Optional, Union
+from typing import Any, Optional, Union
 
 import torch
 
@@ -388,7 +388,7 @@ class _PatternMatcher:
         ignore_patterns: list[str],
         layer_config: dict[str, dict],
         default_scheme: dict,
-    ):
+    ) -> None:
         self._default_scheme = default_scheme
         self._layer_config = layer_config
 
@@ -520,7 +520,7 @@ def _quantize_weight_mxfp(
     # quant_mx returns (qdq_tensor, shared_exp, None).  We only need shared_exp
     # (the per-block log2 scale).  The element-wise rounding to the FP4/FP8 grid
     # is performed inside QuantLinear.pack via dtype casts / pack_fp4_to_uint8.
-    weight_dev, shared_exp, _ = quant_mx(weight_dev, bits=bits, group_size=group_size, data_type=data_type)
+    _, shared_exp, _ = quant_mx(weight_dev, bits=bits, group_size=group_size, data_type=data_type)
     # Reshape to (out_features, n_groups) so the on-disk weight_scale matches
     # the llm-compressor convention (and QuantLinear's registered buffer shape).
     shared_exp = shared_exp.reshape(out_features, in_features // group_size)
@@ -1211,7 +1211,7 @@ class _ModelFreeCompressorCore:
         device: str = "cpu",
         quant_lm_head: bool = False,
         quant_nontext_module: bool = False,
-    ):
+    ) -> None:
         # --- raw inputs ---
         self.model_name_or_path = model_name_or_path
         self.output_dir = output_dir
@@ -1708,10 +1708,10 @@ class ModelFreeCompressor(_ModelFreeCompressorCore):
         quant_lm_head: bool = False,
         quant_nontext_module: bool = False,
         # --- AutoRound compressor-role aliases ---
-        tokenizer=None,
-        device_map=None,
+        tokenizer: Any = None,
+        device_map: Any = None,
         **kwargs,
-    ):
+    ) -> None:
         import copy
         from dataclasses import fields as dc_fields
 
@@ -1805,7 +1805,7 @@ class ModelFreeCompressor(_ModelFreeCompressorCore):
 
     def quantize(
         self,
-    ):
+    ) -> Any:
         """fallback to base compressor's quantize."""
         self._fallback_to_base_compressor()
         return self._fallback_compressor.quantize()  # pylint: disable=E1101
@@ -1852,7 +1852,7 @@ class ModelFreeCompressor(_ModelFreeCompressorCore):
         format: str = "auto_round",
         inplace: bool = True,
         **kwargs,
-    ):
+    ) -> Any:
         """Quantize and save — AutoRound compressor entry point."""
         # Accept the standard auto_round formats.
         _accepted_formats = {

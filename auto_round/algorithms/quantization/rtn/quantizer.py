@@ -11,11 +11,29 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
+from collections import defaultdict
+from contextlib import contextmanager
+from typing import Any, Callable, Optional, Union
+
+import accelerate
 import torch
 
-from auto_round.algorithms.quantization.base import BaseQuantizers
-from auto_round.algorithms.quantization.rtn.config import RTNConfig
-from auto_round.algorithms.quantization.utils import register_imatrix_hooks
+from auto_round.algorithms.quantization.base import BaseQuantizer, RTNLayerFallbackMixin
+from auto_round.algorithms.quantization.rtn.config import OptimizedRTNConfig, RTNConfig
+from auto_round.algorithms.quantization.sign_round.quantizer import SignRoundQuantizer
+from auto_round.algorithms.registry import register_pipeline_member
+from auto_round.compressors.utils import (
+    IndexSampler,
+    block_forward,
+    check_need_act_calibration,
+    check_skippable_keywords,
+    collect_best_params,
+    get_shared_keys,
+    infer_bits_by_data_type,
+    init_cache,
+    reset_params,
+    set_layer_config,
+)
 from auto_round.data_type.utils import update_block_global_scale_if_needed
 from auto_round.utils import (
     check_to_quantized,
@@ -25,15 +43,14 @@ from auto_round.utils import (
 )
 
 
-class RTNQuantizer(BaseQuantizers):
+@register_pipeline_member(RTNConfig)
+class RTNQuantizer(RTNLayerFallbackMixin, BaseQuantizer):
 
-    def __init__(self, config: RTNConfig):
-        BaseQuantizers.__init__(self, config)
+    def __init__(self, config: RTNConfig) -> None:
+        BaseQuantizer.__init__(self, config)
 
     @torch.no_grad()
-    def quantize_block(
-        self, block: torch.nn.Module, input_ids=None, input_others=None, reference_output=None, **kwargs
-    ) -> dict:
+    def quantize_block(self, ctx) -> dict:
         """Apply zero-shot RTN quantization to a block.
 
         Pure-algorithm entry point.  Infrastructure (materialize, shard writing,
@@ -48,6 +65,7 @@ class RTNQuantizer(BaseQuantizers):
         Returns:
             dict: Empty dict (zero-shot RTN has no tunable parameters to return).
         """
+        block = ctx.block
         if (
             self.config.is_act_nv_fp
             or self.config.is_static_afp8
@@ -72,10 +90,11 @@ class RTNQuantizer(BaseQuantizers):
         self.quantize_layer_via_rtn(name)
 
 
+@register_pipeline_member(OptimizedRTNConfig)
 class OptimizedRTNQuantizer(RTNQuantizer):
 
-    def __init__(self, config: RTNConfig):
-        BaseQuantizers.__init__(self, config)
+    def __init__(self, config: RTNConfig) -> None:
+        BaseQuantizer.__init__(self, config)
         self.data_type = config.data_type
         self.group_size = config.group_size
         self.infer_bs_coeff = config.infer_bs_coeff
@@ -83,16 +102,36 @@ class OptimizedRTNQuantizer(RTNQuantizer):
 
         self.enable_alg_ext = True
 
-    def register_calibration_hooks(self, model, *, act_max: bool = True, imatrix: bool = True):
-        hook_handles = super().register_calibration_hooks(model, act_max=act_max, imatrix=imatrix)
-        if imatrix and self.enable_imatrix:
-            hook_handles.extend(register_imatrix_hooks(self, model, with_count=True))
-        return hook_handles
+    @contextmanager
+    def block_forward_hooks(self, ctx):
+        with super().block_forward_hooks(ctx) as hook_handles:
+            if self.enable_imatrix:
+                hook_handles.extend(self._register_imatrix_hooks(ctx.block, with_count=True))
+            yield hook_handles
+
+    def _register_imatrix_hooks(self, model, *, with_count: bool = False):
+        def collect_imatrix(module, input, output):
+            input = input[0] if isinstance(input, (tuple, list)) else input
+            flattened = input.reshape(-1, input.shape[-1]).to(torch.float32)
+            squared = torch.sum(torch.pow(flattened, 2), dim=0).to(torch.float32)
+
+            if not hasattr(module, "imatrix"):
+                module.imatrix = squared
+                if with_count:
+                    module.imatrix_cnt = input.shape[0]
+                return
+            module.imatrix += squared.to(module.imatrix.device)
+            if with_count:
+                module.imatrix_cnt += input.shape[0]
+
+        handles = []
+        for _, module in model.named_modules():
+            if isinstance(module, self.supported_types) and check_to_quantized(module):
+                handles.append(module.register_forward_hook(collect_imatrix))
+        return handles
 
     @torch.no_grad()
-    def quantize_block(
-        self, block: torch.nn.Module, input_ids=None, input_others=None, reference_output=None, **kwargs
-    ):
+    def quantize_block(self, ctx):
         """Apply imatrix-informed RTN quantization to a block.
 
         Pure-algorithm entry point.  Device placement and cleanup are handled
@@ -106,6 +145,7 @@ class OptimizedRTNQuantizer(RTNQuantizer):
             input_others: Unused for optimized RTN.
             reference_output: Unused for optimized RTN.
         """
+        block = ctx.block
         update_block_global_scale_if_needed(block, self.data_type, self.group_size)
         if (
             self.config.is_act_nv_fp
