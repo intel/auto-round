@@ -33,7 +33,18 @@ class QuantLinear(nn.Module):
 
     QUANT_TYPE = "torch"
 
-    def __init__(self, bits, group_size, infeatures, outfeatures, bias, trainable=False, g_idx=False, **kwargs):
+    def __init__(
+        self,
+        bits,
+        group_size,
+        infeatures,
+        outfeatures,
+        bias,
+        trainable=False,
+        g_idx=False,
+        scale_dtype=torch.float16,
+        **kwargs,
+    ):
         super().__init__()
         if bits not in [2, 3, 4, 8]:
             raise NotImplementedError("Only 2,3,4,8 bits are supported.")
@@ -42,6 +53,7 @@ class QuantLinear(nn.Module):
         self.bits = bits
         self.group_size = group_size if group_size != -1 else infeatures
         self.maxq = 2**self.bits - 1
+        self.scale_dtype = scale_dtype
 
         self.register_buffer(
             "qweight",
@@ -66,7 +78,7 @@ class QuantLinear(nn.Module):
             "scales",
             torch.zeros(
                 (math.ceil(infeatures / self.group_size), outfeatures),
-                dtype=torch.float16,
+                dtype=self.scale_dtype,
             ),
         )
         if bias:
@@ -95,7 +107,7 @@ class QuantLinear(nn.Module):
         scales_t = scales.t().contiguous()
         if linear.bias is not None:
             self.bias = linear.bias.clone().half()
-        self.scales = scales_t.clone().half()
+        self.scales = scales_t.clone().to(self.scales.dtype)
 
         W = linear.weight.data.to(device).clone()
         if type(linear) == nn.Conv2d:
@@ -153,7 +165,7 @@ class QuantLinear(nn.Module):
         scales_t = scales.t().contiguous()
         if linear.bias is not None:
             self.bias = linear.bias.clone().half()
-        self.scales = scales_t.clone().half()
+        self.scales = scales_t.clone().to(self.scales.dtype)
 
         W = linear.weight.data.to(device).clone()
         if type(linear) == nn.Conv2d:
