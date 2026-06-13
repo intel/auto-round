@@ -129,7 +129,7 @@ def is_triton_kernel_available(data_type: str) -> bool:
         return False
 
     try:
-        from auto_round.algorithms.transforms.rotation.utils.triton.mxfp4 import (  # pylint: disable=E0401
+        from auto_round.algorithms.transforms.quarot.utils.triton.mxfp4 import (  # pylint: disable=E0401
             mxfp4_forward_kernel_wrapper,
         )
     except Exception:
