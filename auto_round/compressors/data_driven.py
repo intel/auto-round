@@ -464,8 +464,9 @@ class DataDrivenCompressor(BaseCompressor):
                     self.pipeline.enter_preprocessor_hooks(ctx, fwd_stack)
                     reference_output = ctx.collect_reference(fwd_stack)
                 with ExitStack() as fwd_stack:
-                    self.pipeline.enter_quantizer_hooks(ctx, fwd_stack)
-                    ctx.collect_quantized_stats(fwd_stack)
+                    quantizer_hooks = self.pipeline.enter_quantizer_hooks(ctx, fwd_stack)
+                    if quantizer_hooks:
+                        ctx.collect_quantized_stats(fwd_stack)
             else:
                 with ExitStack() as fwd_stack:
                     self.pipeline.enter_block_forward_hooks(ctx, fwd_stack)
@@ -633,8 +634,9 @@ class DataDrivenCompressor(BaseCompressor):
                     reference_output = ctx.collect_reference(fwd_stack)
                 # Second: quantizer stats forward with q_input.
                 with ExitStack() as fwd_stack:
-                    self.pipeline.enter_quantizer_hooks(ctx, fwd_stack)
-                    ctx.collect_quantized_stats(fwd_stack)
+                    quantizer_hooks = self.pipeline.enter_quantizer_hooks(ctx, fwd_stack)
+                    if quantizer_hooks:
+                        ctx.collect_quantized_stats(fwd_stack)
             else:
                 # Unified: reference forward with all hooks active (or no hooks).
                 with ExitStack() as fwd_stack:
@@ -682,9 +684,6 @@ class DataDrivenCompressor(BaseCompressor):
             # enabled) is only used as the quantized-input companion for the
             # next block.
             next_input_ids = reference_output
-            # BlockContext/BlockIO keep extra references to large cached tensors.
-            # Release them once the next block input has been decided so host RAM
-            # matches the old path more closely.
             ctx.finish()
             clear_memory(input_ids if input_ids is not next_input_ids else None, device_list=device_manager.device_list)
             memory_monitor.log_summary()
