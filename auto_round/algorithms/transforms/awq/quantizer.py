@@ -426,7 +426,6 @@ class AWQQuantizer(BaseWeightTransformer):
                 h = target_layer.register_forward_pre_hook(_make_clip_hook(mapping.smooth_name))
                 handles.append(h)
 
-
         # One forward_pre_hook per unique parent module in the current block.
         parent_modules_hooked: set[int] = set()
         for mapping in mappings:
@@ -739,7 +738,7 @@ class AWQQuantizer(BaseWeightTransformer):
                 "bits": bits,
                 "group_size": group_size,
                 "data_type": data_type,
-                "sym": sym,                
+                "sym": sym,
             }
             if self._use_v2_mx_scale_search and str(data_type).startswith("mx_fp"):
                 weight_reshape, _, _ = reshape_pad_tensor_by_group_size(weight, group_size)
@@ -983,4 +982,3 @@ class AWQQuantizer(BaseWeightTransformer):
         w = layer.weight.data.reshape(*max_val.shape[:2], -1)
         w = torch.clamp(w, -max_val, max_val)
         layer.weight.data = w.reshape(org_shape).to(org_dtype)
-

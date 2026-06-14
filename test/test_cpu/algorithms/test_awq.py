@@ -470,5 +470,3 @@ class TestAWQUseV2MXScaleSearch:
         block.data_type = "mx_fp"
         compressor = self._make_compressor(block)
         assert q._compute_use_v2_mx_scale_search(compressor) is False
-
-
