@@ -463,6 +463,47 @@ class TestModelFreeMXFP:
         assert mxfp4_group["targets"] == ["Linear"]
 
     @require_compressed_tensors
+    def test_build_mxfp_mixed_config_adds_routedexperts_for_expert_group(self):
+        """Expert layers in a non-Linear group should get RoutedExperts prepended."""
+        default = {"bits": 4, "group_size": 32, "sym": True, "data_type": "mx_fp"}
+        layer_config = {
+            "model.layers.0.mlp.experts.0.down_proj": {"bits": 8, "group_size": 32, "data_type": "mx_fp"},
+            "model.layers.0.mlp.experts.1.down_proj": {"bits": 8, "group_size": 32, "data_type": "mx_fp"},
+        }
+        quantized = [
+            "model.layers.0.mlp.experts.0.down_proj",
+            "model.layers.0.mlp.experts.1.down_proj",
+            "model.layers.0.mlp.gate_proj",
+        ]
+        cfg = _build_mxfp_quantization_config(default, quantized, ignored_layers=[], layer_config=layer_config)
+
+        assert cfg["format"] == "mixed-precision"
+        mxfp8_group = next(g for g in cfg["config_groups"].values() if g["format"] == "mxfp8-quantized")
+        # RoutedExperts must be first
+        assert mxfp8_group["targets"][0] == "RoutedExperts"
+        assert "model.layers.0.mlp.experts.0.down_proj" in mxfp8_group["targets"]
+        assert "model.layers.0.mlp.experts.1.down_proj" in mxfp8_group["targets"]
+        # default MXFP4 group must NOT have RoutedExperts
+        mxfp4_group = next(g for g in cfg["config_groups"].values() if g["format"] == "mxfp4-pack-quantized")
+        assert "RoutedExperts" not in mxfp4_group["targets"]
+
+    @require_compressed_tensors
+    def test_build_mxfp_mixed_config_no_routedexperts_without_expert_layers(self):
+        """Non-expert explicit group must not get RoutedExperts."""
+        default = {"bits": 4, "group_size": 32, "sym": True, "data_type": "mx_fp"}
+        layer_config = {
+            "model.layers.0.self_attn.q_proj": {"bits": 8, "group_size": 32, "data_type": "mx_fp"},
+        }
+        quantized = [
+            "model.layers.0.self_attn.q_proj",
+            "model.layers.0.mlp.fc1",
+        ]
+        cfg = _build_mxfp_quantization_config(default, quantized, ignored_layers=[], layer_config=layer_config)
+
+        mxfp8_group = next(g for g in cfg["config_groups"].values() if g["format"] == "mxfp8-quantized")
+        assert "RoutedExperts" not in mxfp8_group["targets"]
+
+    @require_compressed_tensors
     def test_e2e_mxfp_mixed(self, tmp_path):
         """End-to-end: default MXFP4 with some layers overridden to MXFP8."""
         tensors = {

@@ -1012,6 +1012,10 @@ def _build_mxfp_quantization_config(
         fmt = "mxfp4-pack-quantized" if group_bits == 4 else "mxfp8-quantized"
         is_default_group = group_bits == bits
         targets = ["Linear"] if is_default_group else layer_names
+        # vLLM MoE: prepend RoutedExperts so vLLM's routed-expert matcher
+        # takes priority when this explicit group contains expert layers.
+        if not is_default_group and any(".experts." in n for n in layer_names):
+            targets = ["RoutedExperts"] + targets
         tmp_qconfig = initialize_quantization(scheme=scheme_name, ignore=ignore)
         group_scheme = tmp_qconfig.config_groups["group_0"]
         group_scheme.targets = targets
