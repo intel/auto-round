@@ -31,6 +31,7 @@ from __future__ import annotations
 
 import gc
 import inspect
+import re
 from contextlib import contextmanager
 from typing import TYPE_CHECKING, Any
 
@@ -62,6 +63,53 @@ if TYPE_CHECKING:
     from auto_round.algorithms.pipeline import BlockContext
 
 
+# Known normalization classes whose ``forward`` computes
+# ``output = (1 + weight) * x_norm`` (Gemma-style "unit-offset" RMSNorm) rather
+# than the standard ``output = weight * x_norm``. Folding an AWQ smoothing scale
+# ``s`` into such a layer requires ``weight <- (1 + weight) / s - 1`` instead of
+# ``weight <- weight / s``; using the wrong fold silently breaks AWQ's output
+# invariance and severely degrades accuracy (e.g. Qwen3.5, Gemma2/3, Qwen3-Next).
+_UNIT_OFFSET_RMSNORM_NAMES = frozenset(
+    {
+        "GemmaRMSNorm",
+        "Gemma2RMSNorm",
+        "Gemma3RMSNorm",
+        "Gemma3TextRMSNorm",
+        "Qwen3_5RMSNorm",
+        "Qwen3_5MoeRMSNorm",
+        "Qwen3NextRMSNorm",
+    }
+)
+
+# Detects ``1 + self.weight`` / ``self.weight + 1`` in a norm's forward source.
+_UNIT_OFFSET_SRC_RE = re.compile(r"1(\.0)?\s*\+\s*self\.weight|self\.weight(\.float\(\))?\s*\+\s*1")
+
+# Cache the unit-offset decision per norm class to avoid repeated source parsing.
+_unit_offset_cache: dict[type, bool] = {}
+
+
+def _rmsnorm_has_unit_offset(module: torch.nn.Module) -> bool:
+    """Return True if ``module`` applies a Gemma-style ``(1 + weight)`` gain.
+
+    Uses a fast class-name allowlist, falling back to source inspection of the
+    module's ``forward`` so newly-added Gemma-style norms are detected without a
+    code change. Result is cached per class.
+    """
+    cls = type(module)
+    cached = _unit_offset_cache.get(cls)
+    if cached is not None:
+        return cached
+    result = cls.__name__ in _UNIT_OFFSET_RMSNORM_NAMES
+    if not result:
+        try:
+            src = inspect.getsource(cls.forward)
+            result = bool(_UNIT_OFFSET_SRC_RE.search(src))
+        except (OSError, TypeError):
+            result = False
+    _unit_offset_cache[cls] = result
+    return result
+
+
 @register_pipeline_member(AWQConfig)
 class AWQQuantizer(BaseWeightTransformer):
     """AWQ quantizer: activation-aware weight smoothing pre-processor.
@@ -84,19 +132,24 @@ class AWQQuantizer(BaseWeightTransformer):
         self.clip_max_shrink: float = getattr(config, "clip_max_shrink", 0.5)
         self.clip_n_sample_token: int = getattr(config, "clip_n_sample_token", 512)
 
-        # Quantization params used only by AWQ's internal grid-search loss
-        # (quantize-dequantize during scale selection). The definitive params
-        # for the final block-quantization step live on the block_quantizer.
-        # See class docstring and AWQConfig docstring.
+        # Quantization params used only as *fallback* defaults for AWQ's
+        # internal grid-search loss (quantize-dequantize during scale
+        # selection) when a layer is absent from ``self.layer_config``. The
+        # definitive per-layer params (incl. super_bits/super_group_size for
+        # GGUF schemes) are read directly from ``self.layer_config`` via
+        # ``config.get(...)``. See class docstring and AWQConfig docstring.
         self.bits = config.bits
         self.group_size = config.group_size
         self.sym = config.sym
         self.data_type = config.data_type
-        self.super_bits = config.super_bits
-        self.super_group_size = config.super_group_size
         # ``scale_dtype`` is a compressor-level setting, not a scheme/config
         # field, so it is wired in ``bind()`` from the owning compressor.
         self.scale_dtype = None
+
+        # AWQ's internal QDQ ``disable_opt_rtn`` follows the resolved
+        # block-quantizer value (wired in ``prepare_run``). AWQ never owns this
+        # field itself (mirrors ``enable_quanted_input``).
+        self.disable_opt_rtn: bool = True
 
         self._user_mappings: list[dict] | None = config.mappings
 
@@ -153,10 +206,22 @@ class AWQQuantizer(BaseWeightTransformer):
             prefix = _extract_block_prefix(m.smooth_name)
             self._block_mappings.setdefault(prefix, []).append(m)
 
-        self._use_v2_mx_scale_search = any(
-            getattr(config, "_alg_cls", None) == "SignRoundV2Quantizer" for config in compressor.alg_configs
-        ) and str(self.data_type).startswith("mx_fp")
+        # Enable the SignRoundV2 MXFP scale-search path only when the terminal
+        # block quantizer is SignRoundV2 *and* the weight data type is MXFP.
+        # The block-quantizer config (SignRoundV2Config, or
+        # ``SignRoundConfig(enable_alg_ext=True)`` after normalization) does NOT
+        # carry an ``_alg_cls`` attribute (only AWQConfig does), so resolve the
+        # actual registered quantizer class via the pipeline registry instead of
+        # comparing ``_alg_cls`` strings.
+        self._use_v2_mx_scale_search = self._compute_use_v2_mx_scale_search(compressor)
         logger.info(f"AWQ: use_v2_mx_scale_search={self._use_v2_mx_scale_search}")
+
+        # Follow the resolved block-quantizer ``disable_opt_rtn`` for AWQ's
+        # internal QDQ so the smooth/clip grid search matches what the final
+        # block quantization will actually do. AWQ never owns this field; it is
+        # read directly from the block quantizer here.
+        self.disable_opt_rtn = bool(getattr(compressor.quantize_config, "disable_opt_rtn", False))
+        logger.info(f"AWQ: disable_opt_rtn={self.disable_opt_rtn} (inherited from block quantizer)")
 
         if compressor.compress_context is not None:
             compressor.compress_context.cache_device = torch.device("cpu")
@@ -167,6 +232,53 @@ class AWQQuantizer(BaseWeightTransformer):
             len(self._block_mappings),
         )
         self._finalized = False
+
+    def _resolved_data_type(self, compressor) -> str | None:
+        """Resolve the effective weight ``data_type`` for AWQ.
+
+        AWQConfig carries no scheme (``data_type`` is ``None`` at construction);
+        the resolved value lives on the block quantizer's scheme or in the
+        per-layer config. Prefer the block quantizer, then any layer_config
+        entry, then the captured ``self.data_type`` fallback.
+        """
+        block_dt = getattr(getattr(compressor, "quantize_config", None), "data_type", None)
+        if block_dt is not None:
+            return block_dt
+        for cfg in (self.layer_config or {}).values():
+            dt = cfg.get("data_type") if isinstance(cfg, dict) else None
+            if dt is not None:
+                return dt
+        return self.data_type
+
+    @staticmethod
+    def _block_quantizer_is_signroundv2(compressor) -> bool:
+        """Return True if the terminal block quantizer is SignRoundV2.
+
+        The block-quantizer config is ``compressor.quantize_config``. Its class
+        (``SignRoundV2Config``, or ``SignRoundConfig(enable_alg_ext=True)`` after
+        normalization) does not expose an ``_alg_cls`` attribute, so the
+        registered quantizer class is resolved through the pipeline registry.
+        """
+        block_config = getattr(compressor, "quantize_config", None)
+        if block_config is None:
+            return False
+        from auto_round.algorithms.registry import resolve_pipeline_member
+
+        try:
+            return resolve_pipeline_member(block_config).__name__ == "SignRoundV2Quantizer"
+        except Exception:
+            return False
+
+    def _compute_use_v2_mx_scale_search(self, compressor) -> bool:
+        """Decide whether to use the SignRoundV2 MXFP scale-search path.
+
+        Enabled only when both hold:
+        * the terminal block quantizer resolves to ``SignRoundV2Quantizer``, and
+        * the effective weight ``data_type`` is an MXFP variant (``mx_fp*``).
+        """
+        return self._block_quantizer_is_signroundv2(compressor) and str(
+            self._resolved_data_type(compressor)
+        ).startswith("mx_fp")
 
     def get_act_calib_policy(self, ctx: "BlockContext"):
         """AWQ W4A16 (weight-only): no activation calibration needed."""
@@ -501,7 +613,7 @@ class AWQQuantizer(BaseWeightTransformer):
                 ref_cfg.get("data_type", self.data_type),
                 ref_cfg.get("bits", self.bits),
                 ref_cfg.get("sym", self.sym),
-                disable_opt_rtn=ref_cfg.get("disable_opt_rtn", True),
+                disable_opt_rtn=ref_cfg.get("disable_opt_rtn", self.disable_opt_rtn),
                 group_size=ref_cfg.get("group_size", self.group_size),
                 iters=0,
             )
@@ -610,7 +722,7 @@ class AWQQuantizer(BaseWeightTransformer):
         group_size = config.get("group_size", self.group_size)
         sym = config.get("sym", self.sym)
         data_type = config.get("data_type", self.data_type)
-        disable_opt_rtn = config.get("disable_opt_rtn", True)
+        disable_opt_rtn = config.get("disable_opt_rtn", self.disable_opt_rtn)
 
         if quant_func is None:
             try:
@@ -671,7 +783,13 @@ class AWQQuantizer(BaseWeightTransformer):
         smooth = mapping.smooth_layer
         s = scales.to(smooth.weight.device)
         if smooth.weight.ndim == 1:
-            smooth.weight.data.div_(s)
+            # Normalization smooth layer. For Gemma-style norms whose effective
+            # gain is ``(1 + weight)`` (not ``weight``), the scale must be folded
+            # as ``weight <- (1 + weight) / s - 1`` to preserve output invariance.
+            if _rmsnorm_has_unit_offset(smooth):
+                smooth.weight.data.copy_((1.0 + smooth.weight.data) / s - 1.0)
+            else:
+                smooth.weight.data.div_(s)
         else:
             smooth.weight.data[-s.size(0) :].div_(s.view(-1, 1))
 
@@ -750,7 +868,7 @@ class AWQQuantizer(BaseWeightTransformer):
             "group_size": config.get("group_size", self.group_size),
             "sym": config.get("sym", self.sym),
             "data_type": config.get("data_type", self.data_type),
-            "disable_opt_rtn": config.get("disable_opt_rtn", True),
+            "disable_opt_rtn": config.get("disable_opt_rtn", self.disable_opt_rtn),
         }
 
     @torch.no_grad()

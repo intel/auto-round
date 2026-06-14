@@ -13,6 +13,7 @@
 # limitations under the License.
 
 from auto_round.algorithms.quantization.config import QuantizationConfig
+from auto_round.logger import logger
 
 
 class AWQConfig(QuantizationConfig):
@@ -50,7 +51,7 @@ class AWQConfig(QuantizationConfig):
         clip_n_sample_token: int = 512,
         mappings: list[dict] | None = None,
         **kwargs,
-    ) -> None:
+    ):
         """Initialize an AWQ configuration.
 
         Args:
@@ -143,18 +144,22 @@ class AWQConfig(QuantizationConfig):
         self.mappings = mappings
         self.infer_bs_coeff = 1
         self.batch_dim = None
-        if enable_opt_rtn is not None:
-            disable_opt_rtn = not bool(enable_opt_rtn)
-        if disable_opt_rtn is None:
-            disable_opt_rtn = True
-        # NOTE: stored as a private attribute so it does NOT participate in
-        # cross-algorithm shared-config resolution (see config_resolver
-        # `_public_config_attrs`, which skips keys starting with "_").  AWQ is a
-        # preprocessor; `disable_opt_rtn` controls only AWQ's internal clip QDQ
-        # search and must not conflict with the block quantizer's own value.
-        self._disable_opt_rtn = disable_opt_rtn
-        # NOTE: AWQ must remain a preprocessor; do not mutate _alg_cls here.
-        
+
+        # NOTE: ``disable_opt_rtn`` / ``enable_opt_rtn`` are intentionally NOT
+        # stored on AWQConfig (mirroring ``enable_quanted_input`` below). They
+        # belong to the block_quantizer (RTN / SignRound / AutoRound). AWQ's
+        # internal QDQ (used only during the smooth / clip grid search) follows
+        # the *resolved* block-quantizer value at runtime — see
+        # ``AWQQuantizer.prepare_run``. Keeping a copy here would make AWQ a
+        # second owner of a shared field and can trigger spurious "conflicting
+        # shared config field" errors during shared-config resolution. We still
+        # pop these (legacy) kwargs so the base config does not raise on them.
+        if disable_opt_rtn is not None or enable_opt_rtn is not None:
+            logger.warning_once(
+                "AWQConfig ignores `disable_opt_rtn` / `enable_opt_rtn`; AWQ inherits this "
+                "setting from the block quantizer (RTN / SignRound)."
+            )
+
         # NOTE: enable_quanted_input is NOT set here.  It belongs to the
         # block_quantizer (RTN/AutoRound), not to AWQ.  See §3.7.1.
 
