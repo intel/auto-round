@@ -121,7 +121,7 @@ class TestAWQMoE:
 
     def test_awq_moe_dynamic_smoothing(self, tiny_qwen_moe_model_path):
         """AWQ mapping resolution works on MoE model."""
-        from auto_round.algorithms.transforms.awq.mappings import resolve_mappings
+        from auto_round.algorithms.quantization.awq.mappings import resolve_mappings
 
         model = AutoModelForCausalLM.from_pretrained(
             tiny_qwen_moe_model_path,

@@ -99,6 +99,15 @@ class SignRoundOptimizedWrapperLinear(WrapperLinear):
         if type(self.orig_layer) == transformers.pytorch_utils.Conv1D:
             orig_weight = orig_weight.t()
         weight_reshape, _, _ = reshape_pad_tensor_by_group_size(orig_weight.data, self.orig_layer.group_size)
+        # AWQ clip-as-init: clamp the weight to the searched per-group clip
+        # magnitude before the scale search so the initial scale reflects the
+        # AWQ clip (the V2 optimized path drives its range via init_scale rather
+        # than weight_min/weight_max). max_scale then tunes a coefficient on top.
+        awq_clip_max = getattr(self.orig_layer, "awq_clip_max", None)
+        if awq_clip_max is not None:
+            cm = awq_clip_max.reshape(-1, 1).to(weight_reshape.device, weight_reshape.dtype)
+            if cm.shape[0] == weight_reshape.shape[0]:
+                weight_reshape = torch.clamp(weight_reshape, -cm, cm)
         if hasattr(self.orig_layer, "imatrix"):
             imatrix = self.orig_layer.imatrix.reshape(1, -1)
             imatrix = reshape_pad_tensor_by_group_size(imatrix, self.orig_layer.group_size, val=1e-5)[0].view(1, -1)

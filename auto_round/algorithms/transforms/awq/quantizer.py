@@ -75,6 +75,28 @@ class AWQQuantizer(BaseWeightTransformer):
         super().__init__(config)
         self.duo_scaling: bool | str = config.duo_scaling
         self.n_grid: int = config.n_grid
+        self.smooth_iters: int = getattr(config, "smooth_iters", 1)
+
+        # AWQ weight-clip options (search + hard-clamp after smoothing).
+        self.apply_clip: bool = getattr(config, "apply_clip", False)
+        self.clip_as_init: bool = getattr(config, "clip_as_init", False)
+        self.clip_n_grid: int = getattr(config, "clip_n_grid", 20)
+        self.clip_max_shrink: float = getattr(config, "clip_max_shrink", 0.5)
+        self.clip_n_sample_token: int = getattr(config, "clip_n_sample_token", 512)
+
+        # Quantization params used only by AWQ's internal grid-search loss
+        # (quantize-dequantize during scale selection). The definitive params
+        # for the final block-quantization step live on the block_quantizer.
+        # See class docstring and AWQConfig docstring.
+        self.bits = config.bits
+        self.group_size = config.group_size
+        self.sym = config.sym
+        self.data_type = config.data_type
+        self.super_bits = config.super_bits
+        self.super_group_size = config.super_group_size
+        # ``scale_dtype`` is a compressor-level setting, not a scheme/config
+        # field, so it is wired in ``bind()`` from the owning compressor.
+        self.scale_dtype = None
 
         self._user_mappings: list[dict] | None = config.mappings
 
@@ -87,6 +109,9 @@ class AWQQuantizer(BaseWeightTransformer):
         self._activation_stats: dict[str, list] = {}
         self._parent_args_cache: dict[torch.nn.Module, list[dict]] = {}
         self._parent_signatures: dict[int, inspect.Signature] = {}
+        # Per-mapping balance-layer input features captured for the clip search
+        # (keyed by smooth_name). Only populated when ``apply_clip`` is set.
+        self._clip_input_feat: dict[str, torch.Tensor] = {}
         self._use_v2_mx_scale_search: bool = False
 
         self._finalized: bool = False
@@ -96,6 +121,7 @@ class AWQQuantizer(BaseWeightTransformer):
     def bind(self, compressor) -> None:
         """Wire shared state and force AWQ onto single-block scheduling."""
         super().bind(compressor)
+        self.scale_dtype = getattr(compressor, "scale_dtype", None)
         nblocks = getattr(compressor, "nblocks", 1)
         if nblocks > 1:
             logger.warning(
@@ -182,6 +208,8 @@ class AWQQuantizer(BaseWeightTransformer):
             logger.debug("AWQ: no mappings for block '%s', skipping.", block_name)
             return
         self._smooth_block(block_name, block_mappings)
+        if self.apply_clip:
+            self._clip_block(block_name, block_mappings)
         modified = []
         for mapping in block_mappings:
             modified.extend(mapping.balance_names)
@@ -195,6 +223,12 @@ class AWQQuantizer(BaseWeightTransformer):
             return
         for m in block_mappings:
             self._activation_stats.pop(m.smooth_name, None)
+            self._clip_input_feat.pop(m.smooth_name, None)
+            # Drop the transient clip attribute once the block quantizer has
+            # consumed it (the persistent copy lives on the model context).
+            for bl in m.balance_layers:
+                if hasattr(bl, "awq_clip_max"):
+                    delattr(bl, "awq_clip_max")
         seen_parents: set[int] = set()
         for m in block_mappings:
             pid = id(m.parent)
@@ -209,6 +243,7 @@ class AWQQuantizer(BaseWeightTransformer):
         self._activation_stats.clear()
         self._parent_args_cache.clear()
         self._parent_signatures.clear()
+        self._clip_input_feat.clear()
         self._finalized = True
         logger.debug("AWQ: finalize_quantization complete.")
 
@@ -254,7 +289,39 @@ class AWQQuantizer(BaseWeightTransformer):
             h = module.register_forward_hook(_make_stats_hook(full_name))
             handles.append(h)
 
-        # ── Parent-kwargs hooks ───────────────────────────────────────────────
+        # ── Clip input-feature hooks (only when apply_clip is enabled) ────────
+        # The balance layers of a mapping share the same input; capture it once
+        # per mapping (keyed by smooth_name) for the post-smooth clip search.
+        if self.apply_clip:
+            for mapping in mappings:
+                if not mapping.balance_layers:
+                    continue
+                target_layer = mapping.balance_layers[0]
+
+                def _make_clip_hook(smooth_name: str):
+
+                    def hook_fn(mod, args):
+                        x = args[0] if isinstance(args, tuple) else args
+                        if x is None or not isinstance(x, torch.Tensor) or x.numel() == 0:
+                            return
+                        feat = x.detach().reshape(-1, x.shape[-1])
+                        # Subsample tokens to bound memory.
+                        if feat.shape[0] > self.clip_n_sample_token:
+                            step = max(1, feat.shape[0] // self.clip_n_sample_token)
+                            feat = feat[::step]
+                        feat = feat.float().cpu()
+                        prev = self._clip_input_feat.get(smooth_name)
+                        if prev is None:
+                            self._clip_input_feat[smooth_name] = feat
+                        else:
+                            self._clip_input_feat[smooth_name] = torch.cat([prev, feat], dim=0)
+
+                    return hook_fn
+
+                h = target_layer.register_forward_pre_hook(_make_clip_hook(mapping.smooth_name))
+                handles.append(h)
+
+
         # One forward_pre_hook per unique parent module in the current block.
         parent_modules_hooked: set[int] = set()
         for mapping in mappings:
@@ -327,33 +394,45 @@ class AWQQuantizer(BaseWeightTransformer):
     # ── Smoothing (grid search + scale apply) ─────────────────────────────────
 
     def _smooth_block(self, block_prefix: str, block_mappings: list) -> None:
-        """Run grid search and apply AWQ scales for one block."""
-        for mapping in block_mappings:
-            if mapping.smooth_name not in self._activation_stats:
-                logger.warning(
-                    "AWQ: no activation stats for '%s' in block '%s'; skipping.",
-                    mapping.smooth_name,
-                    block_prefix,
-                )
-                continue
+        """Run grid search and apply AWQ scales for one block.
 
-            act_sum, act_count = self._activation_stats[mapping.smooth_name]
-            if act_count == 0:
-                logger.warning(
-                    "AWQ: zero activation count for '%s' in block '%s'; skipping.",
-                    mapping.smooth_name,
-                    block_prefix,
-                )
-                continue
+        When ``smooth_iters > 1`` the grid search + scale apply is repeated.
+        Repeating refines the smoothing scale because the mx max_scale search
+        and the AWQ alpha (ratio) search influence each other: each extra pass
+        re-derives the max_scale from the freshly-smoothed weights and
+        re-searches the ratio, accumulating the resulting scales.
+        """
+        n_passes = max(1, int(self.smooth_iters))
+        for smooth_pass in range(n_passes):
+            for mapping in block_mappings:
+                if mapping.smooth_name not in self._activation_stats:
+                    logger.warning(
+                        "AWQ: no activation stats for '%s' in block '%s'; skipping.",
+                        mapping.smooth_name,
+                        block_prefix,
+                    )
+                    continue
 
-            x_mean = (act_sum / act_count).to(torch.float32)
-            del act_sum
+                act_sum, act_count = self._activation_stats[mapping.smooth_name]
+                if act_count == 0:
+                    logger.warning(
+                        "AWQ: zero activation count for '%s' in block '%s'; skipping.",
+                        mapping.smooth_name,
+                        block_prefix,
+                    )
+                    continue
 
-            best_scales = self._grid_search_scales(mapping, x_mean)
-            if best_scales is not None:
-                self._apply_scales(mapping, best_scales)
+                x_mean = (act_sum / act_count).to(torch.float32)
+                del act_sum
 
-        # Release parent kwargs after ALL mappings for this block are processed.
+                best_scales = self._grid_search_scales(mapping, x_mean)
+                if best_scales is not None:
+                    self._apply_scales(mapping, best_scales)
+
+            if n_passes > 1:
+                logger.debug("AWQ: completed smooth pass %d/%d for block '%s'", smooth_pass + 1, n_passes, block_prefix)
+
+        # Release parent kwargs after ALL passes/mappings for this block are processed.
         seen_parents: set[int] = set()
         for mapping in block_mappings:
             pid = id(mapping.parent)
@@ -555,7 +634,7 @@ class AWQQuantizer(BaseWeightTransformer):
                 "bits": bits,
                 "group_size": group_size,
                 "data_type": data_type,
-                "sym": sym,
+                "sym": sym,                
             }
             if self._use_v2_mx_scale_search and str(data_type).startswith("mx_fp"):
                 weight_reshape, _, _ = reshape_pad_tensor_by_group_size(weight, group_size)
@@ -598,3 +677,199 @@ class AWQQuantizer(BaseWeightTransformer):
 
         if hasattr(smooth, "bias") and smooth.bias is not None:
             smooth.bias.data.div_(s)
+
+        # Keep the captured clip input features consistent with the smoothing:
+        # the balance-layer input is divided by the smooth scales, so the stored
+        # features (used later by the clip search) must be divided too.
+        if self.apply_clip:
+            feat = self._clip_input_feat.get(mapping.smooth_name)
+            if feat is not None:
+                feat.div_(scales.detach().to(feat.device).view(1, -1))
+
+    # ── Weight clipping (search best per-group clip + hard-clamp) ─────────────
+
+    # Layers whose clipping is skipped: clipping q/k projections hurts the
+    # attention score (q·kᵀ) precision, mirroring AutoAWQ's ``avoid_clipping``.
+    _AVOID_CLIP_TOKENS = ("q_", "k_", "query", "key", "Wqkv", "wqkv")
+
+    def _should_skip_clip(self, balance_name: str) -> bool:
+        local = balance_name.rsplit(".", 1)[-1]
+        return any(token in local for token in self._AVOID_CLIP_TOKENS)
+
+    @torch.no_grad()
+    def _clip_block(self, block_prefix: str, block_mappings: list) -> None:
+        """Search per-group weight clip thresholds for one block.
+
+        Runs after smoothing. The searched per-group clip magnitude is always
+        recorded on the model context (and, in ``clip_as_init`` mode, on the
+        balance layer) so it is kept for downstream use. Two modes:
+
+        * ``clip_as_init=False`` (default): the clip is hard-clamped in place on
+          the (already smoothed) balance-layer weights, so any downstream block
+          quantizer (RTN / SignRound / SignRoundV2) re-derives its min/max
+          range from the clipped weights.
+        * ``clip_as_init=True``: the weights are left untouched and the clip is
+          stored on the layer (``awq_clip_max``); the downstream SignRound /
+          SignRoundV2 quantizer uses it to *initialize* its tunable weight range
+          (capping ``weight_min``/``weight_max`` or clamping before the scale
+          search) and then tunes ``min_scale``/``max_scale`` on top.
+        """
+        clip_store = getattr(self.model_context, "awq_clip_values", None)
+        for mapping in block_mappings:
+            feat = self._clip_input_feat.get(mapping.smooth_name)
+            if feat is None:
+                logger.warning(
+                    "AWQ: no clip input features for '%s' in block '%s'; skipping clip.",
+                    mapping.smooth_name,
+                    block_prefix,
+                )
+                continue
+            for bl, name in zip(mapping.balance_layers, mapping.balance_names):
+                if self._should_skip_clip(name):
+                    logger.debug("AWQ: skip clip for '%s' (avoid-clipping layer).", name)
+                    continue
+                max_val = self._compute_best_clip(bl, feat)
+                if max_val is None:
+                    continue
+                key = getattr(bl, "global_name", None) or name
+                if clip_store is not None:
+                    clip_store[key] = max_val.detach().to("cpu")
+                if self.clip_as_init:
+                    # Keep the weights intact; hand the clip to the block
+                    # quantizer as the initialization of its weight range.
+                    bl.awq_clip_max = max_val.detach()
+                else:
+                    self._apply_clip(bl, max_val)
+
+    def _resolve_layer_quant_params(self, layer: torch.nn.Module) -> dict:
+        """Resolve the per-layer quant params used by AWQ's internal QDQ loss."""
+        layer_name = getattr(layer, "global_name", None) or ""
+        config = (self.layer_config or {}).get(layer_name, {})
+        return {
+            "bits": config.get("bits", self.bits),
+            "group_size": config.get("group_size", self.group_size),
+            "sym": config.get("sym", self.sym),
+            "data_type": config.get("data_type", self.data_type),
+            "disable_opt_rtn": config.get("disable_opt_rtn", True),
+        }
+
+    @torch.no_grad()
+    def _compute_best_clip(
+        self,
+        layer: torch.nn.Module,
+        input_feat: torch.Tensor,
+    ) -> torch.Tensor | None:
+        """Search the per-group clip threshold that minimizes output MSE.
+
+        Returns a ``[out_channels, n_group]`` tensor of clip magnitudes, or
+        ``None`` if clipping is not applicable to this layer.
+        """
+        params = self._resolve_layer_quant_params(layer)
+        bits = params["bits"]
+        if bits is None or bits >= 16:
+            return None
+        group_size = params["group_size"]
+
+        device = layer.weight.device
+        weight = layer.weight.detach().float()
+        out_features, in_features = weight.shape
+        gs = group_size if (group_size is not None and group_size > 0) else in_features
+        if in_features % gs != 0:
+            logger.warning(
+                "AWQ: in_features=%d not divisible by group_size=%d for clip; skipping '%s'.",
+                in_features,
+                gs,
+                getattr(layer, "global_name", "") or "<layer>",
+            )
+            return None
+        n_group = in_features // gs
+
+        try:
+            quant_func, _ = get_quant_func(
+                params["data_type"],
+                bits,
+                params["sym"],
+                disable_opt_rtn=params["disable_opt_rtn"],
+                group_size=gs,
+                iters=0,
+            )
+        except Exception as exc:
+            logger.debug("AWQ: failed to resolve quant function for clip: %s", exc)
+            return None
+        if quant_func is None:
+            return None
+
+        feat = input_feat.to(device).reshape(-1, in_features)
+        if feat.shape[0] > self.clip_n_sample_token:
+            step = max(1, feat.shape[0] // self.clip_n_sample_token)
+            feat = feat[::step]
+        # [1, n_token, n_group, gs]
+        feat = feat.reshape(1, feat.shape[0], n_group, gs)
+
+        # [out_features, 1, n_group, gs]
+        w = weight.reshape(out_features, 1, n_group, gs)
+
+        # Batch output channels to bound peak memory.
+        oc_batch = 256 if out_features % 256 == 0 else (64 if out_features % 64 == 0 else out_features)
+        best_max_val_all = []
+        n_steps = max(1, int(self.clip_max_shrink * self.clip_n_grid))
+
+        for i_b in range(0, out_features, oc_batch):
+            w_b = w[i_b : i_b + oc_batch]
+            org_max_val = w_b.abs().amax(dim=-1, keepdim=True)  # [oc_b, 1, n_group, 1]
+            best_max_val = org_max_val.clone()
+            min_errs = torch.full_like(org_max_val, 1e9)
+            org_out = (feat * w_b).sum(dim=-1)  # [oc_b, n_token, n_group]
+
+            for i_s in range(n_steps):
+                max_val = org_max_val * (1 - i_s / self.clip_n_grid)
+                cur_w = torch.clamp(w_b, -max_val, max_val)
+                q_w = self._clip_qdq(cur_w, quant_func, params, gs)
+                if q_w is None:
+                    break
+                cur_out = (feat * q_w).sum(dim=-1)
+                err = (cur_out - org_out).pow(2).mean(dim=1).view(min_errs.shape)
+                improved = err < min_errs
+                min_errs[improved] = err[improved]
+                best_max_val[improved] = max_val[improved]
+                del cur_w, q_w, cur_out
+
+            best_max_val_all.append(best_max_val)
+
+        best_max_val = torch.cat(best_max_val_all, dim=0)
+        return best_max_val.squeeze(1)  # [out_features, n_group, 1]
+
+    @staticmethod
+    @torch.no_grad()
+    def _clip_qdq(
+        cur_w: torch.Tensor,
+        quant_func,
+        params: dict,
+        group_size: int,
+    ) -> torch.Tensor | None:
+        """Quantize-dequantize the clamped weight for the clip-search loss."""
+        oc_b, _, n_group, gs = cur_w.shape
+        flat = cur_w.reshape(oc_b, n_group * gs)
+        try:
+            qdq, _, _ = quant_func(
+                flat,
+                bits=params["bits"],
+                group_size=group_size,
+                data_type=params["data_type"],
+                sym=params["sym"],
+            )
+        except Exception as exc:
+            logger.debug("AWQ: clip QDQ failed: %s", exc)
+            return None
+        return qdq.reshape(oc_b, 1, n_group, gs)
+
+    @torch.no_grad()
+    def _apply_clip(self, layer: torch.nn.Module, max_val: torch.Tensor) -> None:
+        """Hard-clamp the layer weight to ``[-max_val, max_val]`` per group."""
+        org_dtype = layer.weight.dtype
+        max_val = max_val.to(device=layer.weight.device, dtype=org_dtype)
+        org_shape = layer.weight.shape
+        w = layer.weight.data.reshape(*max_val.shape[:2], -1)
+        w = torch.clamp(w, -max_val, max_val)
+        layer.weight.data = w.reshape(org_shape).to(org_dtype)
+

@@ -292,3 +292,102 @@ class TestAWQMoE:
             f"Compression ratio {ratio:.4f} outside expected range (0.35, 0.65): "
             f"original={original_size / (1024**2):.1f}MB, quantized={quantized_size / (1024**2):.1f}MB"
         )
+
+
+class TestAWQWeightClip:
+    """AWQ weight-clip option (issue #1854).
+
+    Validates the ``apply_clip`` AWQ preprocessing combined with downstream
+    block quantizers, covering the two extensibility scenarios:
+      - clip + RTN  (clip as the weight range, then round-to-nearest)
+      - clip + SignRound (clip as initialization, then SignRound tuning)
+    """
+
+    @pytest.fixture(autouse=True)
+    def _save_dir(self, tmp_path):
+        self.save_dir = str(tmp_path / "saved")
+        yield
+        shutil.rmtree(self.save_dir, ignore_errors=True)
+
+    def test_awq_clip_then_rtn(self, tiny_opt_model_path):
+        """AWQ smooth+clip → RTN: produces a valid W4 model that can generate."""
+        from auto_round.algorithms.quantization.rtn.config import RTNConfig
+        from auto_round.algorithms.transforms.awq.config import AWQConfig
+
+        ar = AutoRound(
+            tiny_opt_model_path,
+            alg_configs=[
+                AWQConfig(bits=4, group_size=128, sym=True, apply_clip=True, disable_opt_rtn=True),
+                RTNConfig(disable_opt_rtn=True),
+            ],
+            nsamples=2,
+            seqlen=32,
+            batch_size=2,
+        )
+        model, layer_config = ar.quantize()
+
+        assert model is not None
+        assert len(layer_config) > 0
+        for name, cfg in layer_config.items():
+            assert cfg["bits"] == 4, f"Layer {name} expected bits=4, got {cfg['bits']}"
+
+        tokenizer = AutoTokenizer.from_pretrained(tiny_opt_model_path)
+        output = generate_prompt(model, tokenizer, device="cpu")
+        assert len(output) > 0, "Clipped model should produce non-empty output"
+
+    def test_awq_clip_then_signround(self, tiny_opt_model_path):
+        """AWQ smooth+clip → SignRound (scenario 1): clip initializes the range, then tuned."""
+        from auto_round.algorithms.quantization.sign_round.config import SignRoundConfig
+        from auto_round.algorithms.transforms.awq.config import AWQConfig
+
+        ar = AutoRound(
+            tiny_opt_model_path,
+            alg_configs=[
+                AWQConfig(bits=4, group_size=128, sym=True, apply_clip=True),
+                SignRoundConfig(iters=2),
+            ],
+            nsamples=2,
+            seqlen=32,
+            batch_size=2,
+        )
+        model, layer_config = ar.quantize()
+
+        assert model is not None
+        assert len(layer_config) > 0
+        for name, cfg in layer_config.items():
+            assert cfg["bits"] == 4, f"Layer {name} expected bits=4, got {cfg['bits']}"
+
+        tokenizer = AutoTokenizer.from_pretrained(tiny_opt_model_path)
+        output = generate_prompt(model, tokenizer, device="cpu")
+        assert len(output) > 0, "Clipped+SignRound model should produce non-empty output"
+
+    def test_awq_clip_as_init_signround(self, tiny_opt_model_path):
+        """clip_as_init: clip is kept on the model context and initializes SignRound's range."""
+        from auto_round.algorithms.quantization.sign_round.config import SignRoundConfig
+        from auto_round.algorithms.transforms.awq.config import AWQConfig
+
+        ar = AutoRound(
+            tiny_opt_model_path,
+            alg_configs=[
+                AWQConfig(bits=4, group_size=128, sym=False, apply_clip=True, clip_as_init=True),
+                SignRoundConfig(iters=2),
+            ],
+            nsamples=2,
+            seqlen=32,
+            batch_size=2,
+        )
+        model, layer_config = ar.quantize()
+
+        assert model is not None
+        assert len(layer_config) > 0
+        for name, cfg in layer_config.items():
+            assert cfg["bits"] == 4, f"Layer {name} expected bits=4, got {cfg['bits']}"
+
+        # The searched clip magnitudes are kept on the model context.
+        clip_values = getattr(ar.model_context, "awq_clip_values", {})
+        assert len(clip_values) > 0, "clip_as_init should record per-group clip values on the model context"
+
+        tokenizer = AutoTokenizer.from_pretrained(tiny_opt_model_path)
+        output = generate_prompt(model, tokenizer, device="cpu")
+        assert len(output) > 0, "clip_as_init model should produce non-empty output"
+

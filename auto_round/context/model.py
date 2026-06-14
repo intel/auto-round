@@ -89,6 +89,12 @@ class ModelContext(BaseContext):
         self.image_processor = None
         self.pipe = None
 
+        # AWQ weight-clip thresholds kept for downstream block quantizers.
+        # Populated by AWQQuantizer when ``apply_clip`` is enabled; keyed by
+        # layer ``global_name`` -> per-group clip magnitude tensor. SignRound /
+        # SignRoundV2 use these to initialize their tunable weight range.
+        self.awq_clip_values: dict = {}
+
         if envs.AR_USE_MODELSCOPE:
             platform = "model_scope"
         self.platform = platform
