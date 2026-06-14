@@ -142,9 +142,6 @@ class AWQQuantizer(BaseWeightTransformer):
         self.group_size = config.group_size
         self.sym = config.sym
         self.data_type = config.data_type
-        # ``scale_dtype`` is a compressor-level setting, not a scheme/config
-        # field, so it is wired in ``bind()`` from the owning compressor.
-        self.scale_dtype = None
 
         # AWQ's internal QDQ ``disable_opt_rtn`` follows the resolved
         # block-quantizer value (wired in ``prepare_run``). AWQ never owns this
@@ -174,7 +171,6 @@ class AWQQuantizer(BaseWeightTransformer):
     def bind(self, compressor) -> None:
         """Wire shared state and force AWQ onto single-block scheduling."""
         super().bind(compressor)
-        self.scale_dtype = getattr(compressor, "scale_dtype", None)
         nblocks = getattr(compressor, "nblocks", 1)
         if nblocks > 1:
             logger.warning(
@@ -208,11 +204,8 @@ class AWQQuantizer(BaseWeightTransformer):
 
         # Enable the SignRoundV2 MXFP scale-search path only when the terminal
         # block quantizer is SignRoundV2 *and* the weight data type is MXFP.
-        # The block-quantizer config (SignRoundV2Config, or
-        # ``SignRoundConfig(enable_alg_ext=True)`` after normalization) does NOT
-        # carry an ``_alg_cls`` attribute (only AWQConfig does), so resolve the
-        # actual registered quantizer class via the pipeline registry instead of
-        # comparing ``_alg_cls`` strings.
+        # The registered quantizer class is resolved via the pipeline registry
+        # (see ``_block_quantizer_is_signroundv2``).
         self._use_v2_mx_scale_search = self._compute_use_v2_mx_scale_search(compressor)
         logger.info(f"AWQ: use_v2_mx_scale_search={self._use_v2_mx_scale_search}")
 
@@ -256,8 +249,8 @@ class AWQQuantizer(BaseWeightTransformer):
 
         The block-quantizer config is ``compressor.quantize_config``. Its class
         (``SignRoundV2Config``, or ``SignRoundConfig(enable_alg_ext=True)`` after
-        normalization) does not expose an ``_alg_cls`` attribute, so the
-        registered quantizer class is resolved through the pipeline registry.
+        normalization) is resolved to its registered quantizer class through the
+        pipeline registry.
         """
         block_config = getattr(compressor, "quantize_config", None)
         if block_config is None:

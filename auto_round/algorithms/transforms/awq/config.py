@@ -13,7 +13,6 @@
 # limitations under the License.
 
 from auto_round.algorithms.quantization.config import QuantizationConfig
-from auto_round.logger import logger
 
 
 class AWQConfig(QuantizationConfig):
@@ -30,9 +29,12 @@ class AWQConfig(QuantizationConfig):
     search loss calculation (quantize-dequantize during scale selection).
     The definitive quantization parameters for the final weight compression
     step come from the pipeline's ``block_quantizer`` config.
-    """
 
-    _alg_cls: str = "AWQQuantizer"
+    The pipeline implementation class (:class:`AWQQuantizer`) is bound to this
+    config via the ``@register_pipeline_member(AWQConfig)`` decorator and
+    resolved through the registry, so no explicit class reference is stored
+    here.
+    """
 
     def __init__(
         self,
@@ -114,9 +116,6 @@ class AWQConfig(QuantizationConfig):
                 QuantizationConfig, such as bits, group_size, sym,
                 data_type, and activation quantization fields.
         """
-        enable_opt_rtn = kwargs.pop("enable_opt_rtn", None)
-        disable_opt_rtn = kwargs.pop("disable_opt_rtn", None)
-
         super().__init__(**kwargs)
 
         if isinstance(duo_scaling, str) and duo_scaling != "both":
@@ -145,23 +144,12 @@ class AWQConfig(QuantizationConfig):
         self.infer_bs_coeff = 1
         self.batch_dim = None
 
-        # NOTE: ``disable_opt_rtn`` / ``enable_opt_rtn`` are intentionally NOT
-        # stored on AWQConfig (mirroring ``enable_quanted_input`` below). They
-        # belong to the block_quantizer (RTN / SignRound / AutoRound). AWQ's
-        # internal QDQ (used only during the smooth / clip grid search) follows
-        # the *resolved* block-quantizer value at runtime — see
-        # ``AWQQuantizer.prepare_run``. Keeping a copy here would make AWQ a
-        # second owner of a shared field and can trigger spurious "conflicting
-        # shared config field" errors during shared-config resolution. We still
-        # pop these (legacy) kwargs so the base config does not raise on them.
-        if disable_opt_rtn is not None or enable_opt_rtn is not None:
-            logger.warning_once(
-                "AWQConfig ignores `disable_opt_rtn` / `enable_opt_rtn`; AWQ inherits this "
-                "setting from the block quantizer (RTN / SignRound)."
-            )
-
-        # NOTE: enable_quanted_input is NOT set here.  It belongs to the
-        # block_quantizer (RTN/AutoRound), not to AWQ.  See §3.7.1.
+        # NOTE: shared block-quantizer fields such as ``disable_opt_rtn`` and
+        # ``enable_quanted_input`` are intentionally NOT accepted or stored on
+        # AWQConfig. They belong to the block_quantizer (RTN / SignRound /
+        # AutoRound). AWQ's internal QDQ (used only during the smooth / clip
+        # grid search) inherits the *resolved* block-quantizer value at runtime
+        # — see ``AWQQuantizer.prepare_run``.
 
     def __repr__(self) -> str:
         return (

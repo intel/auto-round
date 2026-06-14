@@ -317,7 +317,7 @@ class TestAWQWeightClip:
         ar = AutoRound(
             tiny_opt_model_path,
             alg_configs=[
-                AWQConfig(bits=4, group_size=128, sym=True, apply_clip=True, disable_opt_rtn=True),
+                AWQConfig(bits=4, group_size=128, sym=True, apply_clip=True),
                 RTNConfig(disable_opt_rtn=True),
             ],
             nsamples=2,
