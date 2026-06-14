@@ -141,10 +141,11 @@ def normalize_rotation_config(
         if key in ("spinquant", "quarot"):
             from auto_round.algorithms.transforms.spinquant.preprocessor import SpinQuantConfig
 
-            # "quarot" → QuaRot defaults (no training)
+            # "quarot" → QuaRot defaults (fixed Hadamard, no training)
             if key == "quarot":
                 return SpinQuantConfig(trainable_rotation=False, trainable_smooth=False)
-            return SpinQuantConfig()
+            # "spinquant" → experimental trainable mode
+            return SpinQuantConfig(trainable_rotation=True, trainable_smooth=True)
         # Otherwise treat as Hadamard config.
         return RotationConfig.model_validate(_normalize_hadamard_config(config))
 

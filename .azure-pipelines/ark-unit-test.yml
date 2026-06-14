@@ -19,12 +19,14 @@ parameters:
     displayName: "Python versions"
     type: string
     # Comma-separated list to avoid YAML float parsing in runtime inputs.
+    # For example, "3.10,3.11,3.12,3.13,3.14"
     default: "3.12"
   - name: torchVersions
     displayName: "Torch versions"
     type: string
     # Comma-separated list to align with pythonVersions runtime input style.
-    default: "2.11.0"
+    # For example, "2.11.0,2.12.0"
+    default: "2.12.0"
   - name: publishTarget
     displayName: "Publish wheels to"
     type: string
@@ -98,35 +100,41 @@ stages:
                         exit 1
                     fi
 
-  - stage: PublishWheels
-    displayName: Publish wheels (${{ parameters.publishTarget }})
+  - stage: PublishDist
+    displayName: Publish dist (${{ parameters.publishTarget }})
     dependsOn: TestArk
     condition: and(succeeded(), ne('${{ parameters.publishTarget }}', 'none'))
     jobs:
-      - job: PublishWheels
-        displayName: Publish all wheels to ${{ parameters.publishTarget }}
+      - job: PublishDist
+        displayName: Publish all dist to ${{ parameters.publishTarget }}
         pool: B60
         steps:
           - checkout: none
 
           - task: Bash@3
-            displayName: Clean wheel download directory
+            displayName: Clean dist download directory
             inputs:
               targetType: inline
               script: |
                 set -euxo pipefail
-                rm -rf "$(Pipeline.Workspace)/wheels"
-                mkdir -p "$(Pipeline.Workspace)/wheels"
+                rm -rf "$(Pipeline.Workspace)/dist" "$(Pipeline.Workspace)/wheelhouse" || true
+                mkdir -p "$(Pipeline.Workspace)/dist"
 
           - ${{ each pythonVersion in split(parameters.pythonVersions, ',') }}:
             - task: DownloadPipelineArtifact@2
               displayName: Download wheel (py${{ trim(pythonVersion) }})
               inputs:
                 artifact: auto-round-lib-wheel-cp${{ replace(trim(pythonVersion), '.', '') }}
-                path: $(Pipeline.Workspace)/wheels
+                path: $(Pipeline.Workspace)/dist
+          
+          - task: DownloadPipelineArtifact@2
+            displayName: Download source dist
+            inputs:
+              artifact: auto-round-lib-dist
+              path: $(Pipeline.Workspace)/dist
 
           - task: Bash@3
-            displayName: Upload wheels to ${{ parameters.publishTarget }}
+            displayName: Upload dist to ${{ parameters.publishTarget }}
             env:
               TWINE_USERNAME: "__token__"
               ${{ if eq(parameters.publishTarget, 'pypi') }}:
@@ -146,7 +154,7 @@ stages:
                 pip install --upgrade twine
                 PUBLISH_TARGET="${{ parameters.publishTarget }}"
                 if [ "${PUBLISH_TARGET}" == "testpypi" ]; then
-                  twine upload --repository-url https://test.pypi.org/legacy/ $(Pipeline.Workspace)/wheels/*.whl
+                  twine upload --repository-url https://test.pypi.org/legacy/ $(Pipeline.Workspace)/dist/*
                 else
-                  twine upload $(Pipeline.Workspace)/wheels/*.whl
+                  twine upload $(Pipeline.Workspace)/dist/*
                 fi

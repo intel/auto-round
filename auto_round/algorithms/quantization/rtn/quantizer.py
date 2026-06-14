@@ -35,32 +35,18 @@ from auto_round.compressors.utils import (
     set_layer_config,
 )
 from auto_round.data_type.utils import update_block_global_scale_if_needed
-from auto_round.logger import logger
 from auto_round.utils import (
     check_to_quantized,
-    get_lm_head_name,
     get_module,
-    htcore,
-    is_auto_device_mapping,
-    is_hpex_available,
-    memory_monitor,
     set_amax_for_all_moe_layers,
     set_module,
 )
-from auto_round.utils.device import (
-    clear_memory_if_reached_threshold,
-    get_major_device,
-    parse_available_devices,
-    set_auto_device_map_for_block_with_tuning,
-    set_non_auto_device_map,
-)
-from auto_round.wrapper import WrapperMultiblock, unwrapper_block, unwrapper_layer, wrapper_block
 
 
 @register_pipeline_member(RTNConfig)
 class RTNQuantizer(RTNLayerFallbackMixin, BaseQuantizer):
 
-    def __init__(self, config: RTNConfig):
+    def __init__(self, config: RTNConfig) -> None:
         BaseQuantizer.__init__(self, config)
 
     @torch.no_grad()
@@ -107,7 +93,7 @@ class RTNQuantizer(RTNLayerFallbackMixin, BaseQuantizer):
 @register_pipeline_member(OptimizedRTNConfig)
 class OptimizedRTNQuantizer(RTNQuantizer):
 
-    def __init__(self, config: RTNConfig):
+    def __init__(self, config: RTNConfig) -> None:
         BaseQuantizer.__init__(self, config)
         self.data_type = config.data_type
         self.group_size = config.group_size

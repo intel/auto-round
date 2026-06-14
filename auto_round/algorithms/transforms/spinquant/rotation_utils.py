@@ -237,7 +237,7 @@ class InputRotationWrapperHadamard(nn.Module):
         rotation_size: int,
         hadamard_K: Optional[torch.Tensor] = None,
         K: Optional[int] = None,
-    ):
+    ) -> None:
         super().__init__()
 
         if not isinstance(original_module, nn.Linear):

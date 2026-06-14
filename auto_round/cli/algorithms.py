@@ -188,16 +188,16 @@ class AWQ(AlgorithmHandler):
 
     def register(self, group) -> None:
         group.add_argument(
-            "--awq-duo-scaling",
-            dest="awq_duo_scaling",
+            "--duo-scaling",
+            dest="duo_scaling",
             default=True,
             type=_parse_bool_or_mode,
             metavar="{true,false,both}",
             help="Use activation+weight duo scaling (true/false/both).",
         )
         group.add_argument(
-            "--awq-n-grid",
-            dest="awq_n_grid",
+            "--n-grid",
+            dest="n_grid",
             default=20,
             type=int,
             help="Number of grid-search points for AWQ scaling ratio.",
@@ -207,8 +207,8 @@ class AWQ(AlgorithmHandler):
         from auto_round.algorithms.transforms.awq.config import AWQConfig
 
         return AWQConfig(
-            duo_scaling=getattr(args, "awq_duo_scaling", True),
-            n_grid=getattr(args, "awq_n_grid", 20),
+            duo_scaling=getattr(args, "duo_scaling", True),
+            n_grid=getattr(args, "n_grid", 20),
             **common_kwargs,
         )
 

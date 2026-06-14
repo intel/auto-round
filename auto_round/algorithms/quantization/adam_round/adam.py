@@ -20,12 +20,13 @@ from auto_round.algorithms.quantization.sign_round.quantizer import SignRoundQua
 from auto_round.algorithms.registry import register_pipeline_member
 from auto_round.schemes import QuantizationScheme
 from auto_round.utils import check_is_cpu, htcore, is_hpex_available
+from auto_round.utils.device_manager import device_manager
 
 
 @register_pipeline_member(AdamRoundConfig)
 class AdamRoundQuantizer(SignRoundQuantizer):
 
-    def __init__(self, config):
+    def __init__(self, config: AdamRoundConfig) -> None:
         super().__init__(config)
         self.momentum = None  # AdamW handles momentum internally
 
@@ -40,7 +41,7 @@ class AdamRoundQuantizer(SignRoundQuantizer):
 
     def _get_scaler(self):
         scaler = None
-        if self.model_context.amp and not check_is_cpu(self.compress_context.device):
+        if self.model_context.amp and not check_is_cpu(device_manager.device):
             from torch.cuda.amp import GradScaler
 
             scaler = GradScaler(init_scale=1024, growth_interval=100000)

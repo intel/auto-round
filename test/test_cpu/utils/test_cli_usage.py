@@ -224,3 +224,12 @@ def test_run_opt_rtn_uses_recipe(monkeypatch):
     assert args.disable_opt_rtn is False
     assert args.batch_size == 8
     assert args.nsamples == 128
+
+
+def test_unknown_algorithm_help_exits_with_suggestion(monkeypatch):
+    from auto_round.cli import main as cli_main
+
+    monkeypatch.setattr(sys, "argv", ["auto_round", "--algorithm", "hadarmard", "--help"])
+
+    with pytest.raises(SystemExit, match="Unknown algorithm 'hadarmard'. Did you mean 'hadamard'\\?"):
+        cli_main.run()

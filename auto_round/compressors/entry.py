@@ -6,7 +6,7 @@ from typing import Any, Callable, Optional, Union
 
 import torch
 
-from auto_round.algorithms.pipeline import split_quantization_configs
+from auto_round.algorithms.config_resolver import split_quantization_configs
 from auto_round.algorithms.quantization.config import QuantizationConfig
 from auto_round.algorithms.quantization.rtn.config import OptimizedRTNConfig, RTNConfig
 from auto_round.algorithms.quantization.sign_round.config import SignRoundConfig
@@ -19,7 +19,7 @@ from auto_round.compressors.data_driven import CalibratedRTNCompressor, DataDriv
 from auto_round.compressors.utils import check_need_act_calibration
 from auto_round.compressors.zero_shot import ZeroShotCompressor
 from auto_round.logger import logger
-from auto_round.schemes import QuantizationScheme, _parse_scheme
+from auto_round.schemes import QuantizationScheme, parse_scheme
 
 _ENTRY_ROUTE_KWARGS = {"model_free", "disable_model_free", "disable_opt_rtn"}
 _ENTRY_COMPRESSOR_KWARGS = {"scale_dtype", "ignore_layers", "quant_lm_head", "to_quant_block_names"}
@@ -109,7 +109,7 @@ def _preview_resolved_attrs(config, scheme=None) -> dict:
     scheme_attr_names = tuple(config._scheme_fields)
     user_overrides = {k: getattr(config, k) for k in scheme_attr_names if getattr(config, k, None) is not None}
     try:
-        _, _, final_attrs = _parse_scheme(scheme, user_overrides)
+        _, _, final_attrs = parse_scheme(scheme, user_overrides)
         return final_attrs
     except Exception:
         return {}
@@ -132,7 +132,7 @@ def _eager_validate_scheme(config, scheme=None) -> None:
     scheme_attr_names = tuple(config._scheme_fields)
     user_overrides = {k: getattr(config, k) for k in scheme_attr_names if getattr(config, k, None) is not None}
     try:
-        _, _, final_attrs = _parse_scheme(scheme, user_overrides)
+        _, _, final_attrs = parse_scheme(scheme, user_overrides)
     except (ValueError, NotImplementedError):
         raise
     except Exception:
@@ -184,7 +184,7 @@ def _get_compressor_class(model_type: str, base_cls: type) -> type:
     return combined
 
 
-def is_weight_scheme(scheme):
+def is_weight_scheme(scheme: Union[str, dict, AutoScheme, object]) -> bool:
     if isinstance(scheme, str):
         return scheme.upper().startswith("W")
     if isinstance(scheme, dict):
@@ -198,7 +198,7 @@ def is_weight_scheme(scheme):
     return False
 
 
-def is_gguf_k_target(value) -> bool:
+def is_gguf_k_target(value: Union[str, AutoScheme, object]) -> bool:
     if isinstance(value, str):
         normalized = value.strip().lower()
         return normalized.startswith("gguf:") and "_k" in normalized
@@ -317,12 +317,12 @@ class AutoRound(object):
 
     def __new__(
         cls,
-        alg_configs: Union[str, object, list[Union[str, object]]],
         model: Union[torch.nn.Module, str],
+        scheme="W4A16",
+        alg_configs: Union[str, object, list[Union[str, object]]] = None,
         tokenizer=None,
         platform="hf",
         format=None,
-        scheme="W4A16",
         low_gpu_mem_usage: bool = False,
         device_map: Union[str, torch.device, int, dict] = 0,
         iters: int = None,
@@ -343,6 +343,9 @@ class AutoRound(object):
         base_kwargs = dict(split_kwargs["base"])
         mllm_kwargs = dict(split_kwargs["mllm"])
         diffusion_kwargs = dict(split_kwargs["diffusion"])
+
+        if alg_configs is None:
+            raise ValueError("alg_configs is required for the new AutoRound entry API.")
 
         # Resolve string alias(es) to config instance(s) before routing.
         alg_configs = cls._resolve_config(alg_configs)
@@ -746,12 +749,12 @@ class AutoRoundCompatible:
 
         # Create AutoRound instance using new architecture
         compressor = AutoRound(
-            alg_configs=config,
-            model=model,
+            model,
+            scheme,
+            config,
             tokenizer=tokenizer,
             platform=platform,
             format=format_name,
-            scheme=scheme,
             dataset=dataset,
             iters=iters,
             gradient_accumulate_steps=gradient_accumulate_steps,

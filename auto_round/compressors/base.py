@@ -26,6 +26,7 @@ from auto_round.algorithms.transforms import (
     BaseRotationConfig,
     apply_rotation,
 )
+from auto_round.auto_scheme.gen_auto_scheme import AutoScheme
 from auto_round.compressors.shard_writer import ShardWriter
 from auto_round.compressors.utils import _get_save_folder_name, is_mx_fp, is_nv_fp, set_layer_config
 from auto_round.context.compress import CompressContext
@@ -35,11 +36,11 @@ from auto_round.logger import logger
 from auto_round.schemes import (
     QuantizationScheme,
     _handle_special_schemes,
-    _parse_scheme,
     get_gguf_scheme,
+    parse_scheme,
     preset_name_to_scheme,
 )
-from auto_round.special_model_handler import get_predefined_ignore_layers, update_module
+from auto_round.special_model_handler import get_predefined_fixed_attr, get_predefined_ignore_layers, update_module
 from auto_round.utils import (
     AUDIO_MM_KEYS,
     INNER_SUPPORTED_LAYER_TYPES,
@@ -61,10 +62,10 @@ from auto_round.utils import (
 )
 from auto_round.utils.device import (
     _force_trim_malloc,
-    get_major_device,
     patch_xpu_sdpa_drop_causal_mask,
     set_non_auto_device_map,
 )
+from auto_round.utils.device_manager import device_manager
 from auto_round.utils.offload import OffloadManager
 
 
@@ -193,24 +194,24 @@ class BaseCompressor(object):
         self,
         config: Union[object, list[object]],
         model: Union[torch.nn.Module, str],
-        tokenizer=None,
-        platform="hf",
-        format=None,
-        scheme="W4A16",
+        tokenizer: Any = None,
+        platform: str = "hf",
+        format: Union[str, list, None] = None,
+        scheme: Union[str, dict, QuantizationScheme, AutoScheme] = "W4A16",
         low_gpu_mem_usage: bool = False,
         device_map: Union[str, torch.device, int, dict] = 0,
         enable_torch_compile: bool = False,
         seed: int = 42,
         low_cpu_mem_usage: bool = True,
-        layer_config=None,
+        layer_config: Optional[dict] = None,
         nsamples: int = None,
         seqlen: int = None,
-        scale_dtype=None,
+        scale_dtype: Optional[Union[str, torch.dtype]] = None,
         ignore_layers: str = "",
         quant_lm_head: bool = False,
-        to_quant_block_names=None,
+        to_quant_block_names: Optional[Union[str, list[str]]] = None,
         **kwargs,
-    ):
+    ) -> None:
         # ``CalibrationState`` is the single source of truth for calibration
         # runtime state.  Seed every calibration field here in one block so
         # the rest of ``__init__`` only ever interacts with the state object
@@ -237,7 +238,7 @@ class BaseCompressor(object):
         _config_list = config if isinstance(config, list) else [config]
         # Keep full list for pipeline construction (includes preprocessor configs).
         self._alg_configs: list = list(_config_list)
-        from auto_round.algorithms.pipeline import split_quantization_configs
+        from auto_round.algorithms.config_resolver import split_quantization_configs
 
         _preprocessor_configs, _block_quantizer_configs = split_quantization_configs(self._alg_configs)
         if len(_block_quantizer_configs) > 1:
@@ -254,6 +255,12 @@ class BaseCompressor(object):
             self._alg_configs.append(self.quantize_config)
         for _cfg in self._alg_configs:
             if isinstance(_cfg, BaseRotationConfig):
+                if hasattr(_cfg, "block_size") and _cfg.block_size is None:
+                    if "group_size" in kwargs:
+                        block_size = kwargs["group_size"]
+                    else:
+                        block_size = parse_scheme(scheme, {})[2]["group_size"]
+                    _cfg.block_size = block_size  # TODO not robust
                 self.rotation_configs.append(_cfg)
         assert self.quantize_config is not None, "QuantizationConfig is required for Compressor"
 
@@ -361,7 +368,12 @@ class BaseCompressor(object):
         # CompressContext.  Creating ModelContext first places the large model
         # allocation early in the heap, matching the OLD arch allocation order
         # and reducing C-heap fragmentation (which is amplified on HPU).
-        _device = get_major_device(device_map if device_map is not None else 0)
+        #
+        # The process-wide DeviceManager singleton is the single source of truth
+        # for the active device / device_list: configure it from ``device_map``
+        # up front so both ModelContext and CompressContext (and any OOM fallback)
+        # read the same value instead of keeping private copies.
+        device_manager.configure(device_map if device_map is not None else 0)
         model_config = self._preload_model_config(model, trust_remote_code)
 
         self.model_context = ModelContext(
@@ -373,7 +385,6 @@ class BaseCompressor(object):
             config=model_config,
             amp=amp,
             need_calib=self.need_calib,
-            device=_device,
             formats=self.formats,
             is_act_quantize=self.quantize_config.is_act_quantize,
             quant_nontext_module=quant_nontext_module,
@@ -382,7 +393,6 @@ class BaseCompressor(object):
         self.compress_context = CompressContext(
             low_cpu_mem_usage,
             low_gpu_mem_usage,
-            device_map,
             enable_torch_compile,
             formats=self.formats,
             static_kv_dtype=self.static_kv_dtype,
@@ -405,6 +415,16 @@ class BaseCompressor(object):
         # batch_size from kwargs) have already routed through it.
 
         self.has_variable_block_shape = False
+        fixed_attr = get_predefined_fixed_attr(self.model) or {}
+        for key, value in fixed_attr.items():
+            setattr(self, key, value)
+
+    # ── Convenience properties ────────────────────────────────────────────────
+
+    @property
+    def tokenizer(self) -> Any:
+        """Convenience accessor for the tokenizer stored in ``model_context``."""
+        return self.model_context.tokenizer
 
     # ── Convenience properties ────────────────────────────────────────────────
 
@@ -420,7 +440,12 @@ class BaseCompressor(object):
 
     # ── Scheme resolution ─────────────────────────────────────────────────────
 
-    def resolve_scheme(self, model_context=None, compress_context=None, dataset: str = None) -> None:
+    def resolve_scheme(
+        self,
+        model_context: Optional[ModelContext] = None,
+        compress_context: Optional[CompressContext] = None,
+        dataset: Optional[str] = None,
+    ) -> None:
         """Phase-1 init: resolve scheme and bind config attrs (no model structure needed).
 
         Must be called BEFORE ``get_formats()`` and BEFORE ``_scheme_post_init()``.
@@ -437,7 +462,7 @@ class BaseCompressor(object):
             self.dataset = dataset
 
         user_scheme_overrides = collect_user_scheme_overrides(self._alg_configs)
-        default_scheme, self.is_auto_scheme, final_attrs = _parse_scheme(self.scheme, user_scheme_overrides)
+        default_scheme, self.is_auto_scheme, final_attrs = parse_scheme(self.scheme, user_scheme_overrides)
 
         self.scheme_context = QuantizationScheme.from_dict(final_attrs)
         for config in self._alg_configs:
@@ -599,7 +624,7 @@ class BaseCompressor(object):
             quant_layer_names,
             fixed_layer_scheme_new,
             self.dataset,
-            device_map=self.compress_context.device_map,
+            device_map=device_manager.device_map,
             tokenizer=self.model_context.tokenizer,
             enable_torch_compile=self.compress_context.enable_torch_compile,
             processor=self.model_context.processor,
@@ -691,11 +716,11 @@ class BaseCompressor(object):
     # ─────────────────────────────────────────────────────────────────────────
 
     @property
-    def mllm(self):
+    def mllm(self) -> bool:
         return self.model_context.is_mllm
 
     @property
-    def diffusion(self):
+    def diffusion(self) -> bool:
         return self.model_context.is_diffusion
 
     def _get_torch_compile_guard_state(self) -> tuple[bool, bool, int]:
@@ -908,7 +933,7 @@ class BaseCompressor(object):
         return self.__dict__["_quantizer"]
 
     @quantizer.setter
-    def quantizer(self, value) -> None:
+    def quantizer(self, value: BaseQuantizer) -> None:
         _pipeline = self.__dict__.get("_pipeline")
         if _pipeline is not None:
             _pipeline.block_quantizer = value
@@ -916,7 +941,7 @@ class BaseCompressor(object):
             self.__dict__["_quantizer"] = value
 
     @property
-    def pipeline(self):
+    def pipeline(self) -> Any:
         """The active :class:`~auto_round.algorithms.pipeline.QuantizationPipeline`."""
         return self._pipeline
 
@@ -1125,7 +1150,7 @@ class BaseCompressor(object):
         self.quantizer.scale_dtype = self.scale_dtype
         self.quantizer.ignore_layers = self.ignore_layers
 
-        from auto_round.algorithms.pipeline import sync_shared_config_from
+        from auto_round.algorithms.config_resolver import sync_shared_config_from
 
         sync_shared_config_from(self.quantizer.config, [pre.config for pre in self._pipeline.preprocessors])
 
@@ -1160,7 +1185,7 @@ class BaseCompressor(object):
           - ``self.inplace`` and ``compress_context.is_immediate_packing`` /
             ``compress_context.is_immediate_saving`` are set to their definitive values.
         """
-        set_non_auto_device_map(self.model_context.model, self.compress_context.device_map)
+        set_non_auto_device_map(self.model_context.model, device_manager.device_map)
         # Re-evaluate torch.compile eligibility now that data_type is resolved.
         self._finalize_torch_compile()
         self.compress_context.enable_torch_compile = self.enable_torch_compile
@@ -1221,13 +1246,30 @@ class BaseCompressor(object):
 
         raise AttributeError(f"'{type(self).__name__}' object has no attribute '{name}'")
 
+    # ── Device state forwarded to the process-wide DeviceManager singleton ────
+    @property
+    def device(self) -> str:
+        return device_manager.device
+
+    @device.setter
+    def device(self, value: Union[str, torch.device]) -> None:
+        device_manager.device = value
+
+    @property
+    def device_list(self) -> list:
+        return device_manager.device_list
+
+    @property
+    def device_map(self) -> Any:
+        return device_manager.device_map
+
     # ── Forwarding properties to ``self._calibration_state`` ──────────────────
     @property
-    def calibration_state(self):
+    def calibration_state(self) -> Any:
         return self._calibration_state
 
     @calibration_state.setter
-    def calibration_state(self, value) -> None:
+    def calibration_state(self, value: Any) -> None:
         self._calibration_state = value
         # Re-wire quantizer if it already exists so they keep sharing.
         # quantizer is now a @property forwarding to _pipeline.block_quantizer;
@@ -1257,11 +1299,11 @@ class BaseCompressor(object):
         self._calibration_state.to_cached_layers = []
 
     @property
-    def last_cache_name(self):
+    def last_cache_name(self) -> Optional[str]:
         return self._calibration_state.last_cache_name
 
     @last_cache_name.setter
-    def last_cache_name(self, value) -> None:
+    def last_cache_name(self, value: Optional[str]) -> None:
         self._calibration_state.last_cache_name = value
 
     @last_cache_name.deleter
@@ -1312,19 +1354,19 @@ class BaseCompressor(object):
             self._calibration_state.seqlen = value
 
     @property
-    def dataset(self):
+    def dataset(self) -> Any:
         return self._calibration_state.dataset
 
     @dataset.setter
-    def dataset(self, value) -> None:
+    def dataset(self, value: Any) -> None:
         self._calibration_state.dataset = value
 
     @property
-    def dataloader(self):
+    def dataloader(self) -> Any:
         return self._calibration_state.dataloader
 
     @dataloader.setter
-    def dataloader(self, value) -> None:
+    def dataloader(self, value: Any) -> None:
         self._calibration_state.dataloader = value
 
     @dataloader.deleter
@@ -1332,7 +1374,7 @@ class BaseCompressor(object):
         self._calibration_state.dataloader = None
 
     @property
-    def optimizer(self):
+    def optimizer(self) -> Any:
         """Return the actual optimizer class, converting string to class for backward compat.
 
         Old API stored ``self.optimizer = torch.optim.AdamW`` (the class itself).
@@ -1445,7 +1487,7 @@ class BaseCompressor(object):
         output_dir: str = None,
         format: Union[str, list[OutputFormat]] = None,
         inplace: bool = True,
-        return_folders=False,
+        return_folders: bool = False,
         **kwargs,
     ) -> torch.nn.Module:
         """Save the quantized model to the specified output directory in the specified format.
@@ -1529,7 +1571,7 @@ class BaseCompressor(object):
                 layer_config=self.quantizer.layer_config,
                 inplace=inplace,
                 tokenizer=self.model_context.tokenizer,
-                device=self.compress_context.device,
+                device=device_manager.device,
                 serialization_dict=serialization_dict,
                 **kwargs,
             )

@@ -14,6 +14,7 @@
 
 
 from contextlib import contextmanager
+from typing import Any
 
 from auto_round.algorithms.registry import resolve_pipeline_member
 from auto_round.schemes import QuantizationScheme
@@ -43,40 +44,40 @@ class BasePipelineMember:
     super_sym: bool | None
     scale_dtype: str | None
 
-    def __init__(self, config=None):
+    def __init__(self, config: Any = None) -> None:
         self.config = config
         self.scheme = getattr(config, "scheme", None)
 
     @classmethod
-    def from_config(cls, config):
+    def from_config(cls, config: Any) -> "BasePipelineMember":
         """Instantiate the registered implementation class for ``config``."""
         alg_cls = resolve_pipeline_member(config)
         if cls is alg_cls:
             return cls(config)
         return alg_cls(config)
 
-    def bind(self, compressor) -> None:
+    def bind(self, compressor: Any) -> None:
         """Wire shared context from the owning compressor."""
         self.model_context = compressor.model_context
         self.compress_context = compressor.compress_context
         self.scheme = getattr(compressor, "scheme_context", None)
 
-    def prepare_run(self, run_ctx) -> None:
+    def prepare_run(self, compressor: Any) -> None:
         """Model-level preparation called once before block iteration starts."""
         return
 
-    def get_act_calib_policy(self, ctx):
+    def get_act_calib_policy(self, ctx: Any) -> Any:
         """Return the activation calibration policy for this block."""
         from auto_round.algorithms.pipeline import ActCalibPolicy, CalibTiming, InputSource
 
         return ActCalibPolicy(when=CalibTiming.SKIP, source=InputSource.FP_CACHE)
 
     @contextmanager
-    def block_forward_hooks(self, ctx):
+    def block_forward_hooks(self, ctx: Any) -> Any:
         """Register algorithm-specific forward hooks for the reference forward."""
         yield []
 
-    def finalize_run(self, run_ctx) -> None:
+    def finalize_run(self, compressor: Any) -> None:
         """Model-level teardown called once after all blocks are processed."""
         return
 

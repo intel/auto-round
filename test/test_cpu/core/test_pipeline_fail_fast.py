@@ -2,13 +2,13 @@
 
 import pytest
 
-from auto_round.algorithms.pipeline import (
-    QuantizationPipeline,
+from auto_round.algorithms.config_resolver import (
     get_algorithm_class,
     resolve_shared_config_values,
     split_quantization_configs,
     sync_shared_config_from,
 )
+from auto_round.algorithms.pipeline import QuantizationPipeline
 from auto_round.algorithms.quantization import registry as _r
 from auto_round.algorithms.quantization.config import QuantizationConfig
 from auto_round.algorithms.quantization.rtn.config import OptimizedRTNConfig, RTNConfig
@@ -68,7 +68,7 @@ def test_registry_resolves_variant_configs_to_registered_members():
 
 def test_entry_rejects_configs_without_quantization_members():
     with pytest.raises(ValueError, match="At least one quantization algorithm config"):
-        NewAutoRound(alg_configs=[RotationConfig()], model="dummy-model")
+        NewAutoRound("dummy-model", "W4A16", [RotationConfig()])
 
 
 def test_entry_warns_and_drops_unsupported_kwargs(monkeypatch, tiny_opt_model_path):
@@ -80,9 +80,9 @@ def test_entry_warns_and_drops_unsupported_kwargs(monkeypatch, tiny_opt_model_pa
     monkeypatch.setattr(logger, "warning_once", _record_warning)
 
     NewAutoRound(
-        alg_configs=RTNConfig(disable_opt_rtn=True),
-        model=tiny_opt_model_path,
-        scheme="W4A16",
+        tiny_opt_model_path,
+        "W4A16",
+        RTNConfig(disable_opt_rtn=True),
         nsamples=1,
         seqlen=8,
         low_cpu_mem_usage=False,

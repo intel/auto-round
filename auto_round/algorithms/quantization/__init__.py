@@ -21,7 +21,6 @@ from auto_round.algorithms.pipeline import (
     InputSource,
     BlockContext,
     QuantizationPipeline,
-    RunContext,
     merge_policies,
 )
 from auto_round.algorithms.quantization.sign_round.config import AdamRoundConfig, SignRoundConfig, SignRoundV2Config

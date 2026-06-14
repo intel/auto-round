@@ -36,6 +36,7 @@ from auto_round.utils import (
     set_amax_for_all_moe_layers,
     set_module,
 )
+from auto_round.utils.device_manager import device_manager
 
 
 class ZeroShotCompressor(BaseCompressor):
@@ -45,9 +46,9 @@ class ZeroShotCompressor(BaseCompressor):
         self,
         config: Union[object, list[object]],
         model: Union[torch.nn.Module, str],
-        tokenizer=None,
-        platform="hf",
-        format=None,
+        tokenizer: Any = None,
+        platform: str = "hf",
+        format: Union[str, list, None] = None,
         low_gpu_mem_usage: bool = False,
         device_map: Union[str, torch.device, int, dict] = 0,
         enable_torch_compile: bool = False,
@@ -55,7 +56,7 @@ class ZeroShotCompressor(BaseCompressor):
         seed: int = 42,
         low_cpu_mem_usage: bool = True,
         **kwargs,
-    ):
+    ) -> None:
         super().__init__(
             config=config,
             model=model,
@@ -78,7 +79,7 @@ class ZeroShotCompressor(BaseCompressor):
         q_input: Union[torch.Tensor, dict, None] = None,
         device: Union[str, torch.device] = "cpu",
         auto_offload: bool = True,
-    ):
+    ) -> Any:
         """Quantize a single block via RTN (public API for LLM-Compressor).
 
         ZeroShotCompressor does not need calibration data, so ``inputs`` and
@@ -115,6 +116,7 @@ class ZeroShotCompressor(BaseCompressor):
         if is_nv_fp(self.quantizer.act_data_type) or is_static_wfp8afp8(self.quantizer):
             set_amax_for_all_moe_layers(block, attr_name="act_max")
 
+        ctx.finish()
         mv_module_from_gpu(block)
         return None, None
 
@@ -180,9 +182,10 @@ class ZeroShotCompressor(BaseCompressor):
                         block_name=block_name,
                         block_index=0,
                         io=self.quantizer.create_block_io(None, {}, None, block),
-                        device=self.compress_context.device,
+                        device=device_manager.device,
                     )
                     self.quantizer.quantize_block(ctx)
+                    ctx.finish()
 
                     # ── MoE scale alignment for FP8 dispatch efficiency ────────────────
                     if is_nv_fp(self.quantizer.act_data_type) or is_static_wfp8afp8(self.quantizer):

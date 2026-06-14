@@ -12,7 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-# Thin shim — all logic lives in auto_round.cli.main.
+# Thin shim - all logic lives in auto_round.cli.main.
 # This file exists solely to satisfy setup.cfg console_scripts entry points.
 from auto_round.cli.main import run, run_best, run_eval, run_light, run_mllm, run_opt_rtn, run_rtn  # noqa: F401
 

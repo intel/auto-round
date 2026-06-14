@@ -40,18 +40,14 @@ from auto_round.utils import (
     convert_module_to_hp_if_necessary,
     get_module,
     htcore,
-    is_auto_device_mapping,
     is_hpex_available,
-    memory_monitor,
     mv_module_from_gpu,
     set_amax_for_all_moe_layers,
     set_module,
     to_device,
 )
-from auto_round.utils.device import (
-    clear_memory_if_reached_threshold,
-    set_auto_device_map_for_block_with_tuning,
-)
+from auto_round.utils.device import clear_memory_if_reached_threshold
+from auto_round.utils.device_manager import device_manager
 from auto_round.utils.distributed import setup_ddp_if_needed_
 from auto_round.wrapper import WrapperLinear, unwrapper_block, unwrapper_layer, wrapper_block
 
@@ -59,7 +55,7 @@ from auto_round.wrapper import WrapperLinear, unwrapper_block, unwrapper_layer, 
 @register_pipeline_member(SignRoundConfig)
 class SignRoundQuantizer(RTNLayerFallbackMixin, BaseQuantizer):
 
-    def __init__(self, config: SignRoundConfig):
+    def __init__(self, config: SignRoundConfig) -> None:
         super().__init__(config)
         self.iters = config.iters
         self.lr = config.lr
@@ -133,7 +129,7 @@ class SignRoundQuantizer(RTNLayerFallbackMixin, BaseQuantizer):
                 Empty dict if no trainable parameters were found.
         """
         block = ctx.block
-        device = self.compress_context.device
+        device = device_manager.device
         loss_device = ctx.loss_device
         mid_iter_mem_check = ctx.mid_iter_mem_check
 
@@ -193,8 +189,7 @@ class SignRoundQuantizer(RTNLayerFallbackMixin, BaseQuantizer):
         else:
             lr_schedule = copy.deepcopy(self.lr_scheduler)
 
-        active_inputs = ctx.io.get_inputs(ctx.io.active_source)
-        nsamples = len(active_inputs["hidden_states"]) if isinstance(active_inputs, dict) else len(active_inputs)
+        nsamples = ctx.num_samples
         last_best_iter = 0
         best_loss = torch.finfo(torch.float).max
         num_elm = 1
@@ -211,8 +206,8 @@ class SignRoundQuantizer(RTNLayerFallbackMixin, BaseQuantizer):
         # We assume the block input and output shape is same
         if self.gradient_accumulate_steps != 1 and not self.attention_mask:
             whole_indices = torch.arange(global_batch_size)
-            num_elm = ctx.io.count_input_elements(whole_indices)
-        setup_ddp_if_needed_(self, block, self.compress_context.device_list)
+            num_elm = ctx.count_active_elements(whole_indices)
+        setup_ddp_if_needed_(self, block, device_manager.device_list)
         index_sampler = IndexSampler(nsamples, global_batch_size)
         batch_size = self.batch_size
         for i in range(self.iters):
@@ -226,23 +221,21 @@ class SignRoundQuantizer(RTNLayerFallbackMixin, BaseQuantizer):
 
             for batch_start in range(0, len(global_indices), batch_size):
                 indices = global_indices[batch_start : batch_start + batch_size]
-                current_output = ctx.io.select_reference_outputs(indices, device=loss_device)
-                output_q = ctx.io.forward_batch(
-                    block, self, indices, source=ctx.io.active_source, device=device, cache_device=loss_device
-                )
+                current_output = ctx.reference_batch(indices, device=loss_device)
+                output_q = ctx.forward_batch(indices, device=device, cache_device=loss_device)
                 loss = self._get_loss(output_q, current_output, indices, mse_loss, device)
                 num_elm = 1 if num_elm <= 0 else num_elm
                 total_loss += loss.item() / num_elm
 
                 if mid_iter_mem_check:
                     # clear memory to avoid OOM due to memory fragmentation
-                    clear_memory_if_reached_threshold(threshold=0.5, device_list=self.compress_context.device_list)
+                    clear_memory_if_reached_threshold(threshold=0.5, device_list=device_manager.device_list)
 
                 self._scale_loss_and_backward(scaler, loss)
 
                 if mid_iter_mem_check:
                     # clear memory to avoid OOM due to memory fragmentation
-                    clear_memory_if_reached_threshold(threshold=0.8, device_list=self.compress_context.device_list)
+                    clear_memory_if_reached_threshold(threshold=0.8, device_list=device_manager.device_list)
 
             if i == 0:
                 init_loss = total_loss

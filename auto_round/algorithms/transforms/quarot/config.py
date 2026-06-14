@@ -50,7 +50,9 @@ __all__ = [
 ]
 
 # Supported Hadamard transform types (also used by HadamardTransform registry).
-HADAMARD_TYPES: frozenset[str] = frozenset({"hadamard", "random_hadamard", "quarot_hadamard"})
+HADAMARD_TYPES: frozenset[str] = frozenset(
+    {"hadamard", "random_hadamard", "inplace_quarot_hadamard", "inplace_hadamard", "inplace_random"}
+)
 _SUPPORTED_BACKENDS: frozenset[str] = frozenset({"auto", "inplace", "transform"})
 
 
@@ -83,7 +85,7 @@ class RotationConfig(BaseModel, BaseRotationConfig):
 
     model_config = {"arbitrary_types_allowed": True}
 
-    def __init__(self, **data):
+    def __init__(self, **data: Any) -> None:
         """Initialize a Hadamard rotation configuration.
 
         Args:

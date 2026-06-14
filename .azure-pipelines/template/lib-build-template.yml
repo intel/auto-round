@@ -100,13 +100,24 @@ stages:
                     && export BUILD_MODE=${{ parameters.buildMode }} \
                     && python -m build --wheel --no-isolation \
                     && auditwheel repair dist/*.whl --exclude lib* -w wheelhouse/ \
-                    && ls -lah wheelhouse"
-
+                    && ls -lah wheelhouse \
+                    && if [[ "$python_version_fix" == "312" ]] && [[ "\$BUILD_MODE" == "release" ]]; then \
+                      rm -rf dist/* && python -m build --sdist --no-isolation && ls -lah dist; \
+                    fi"
+            
             - task: PublishPipelineArtifact@1
               displayName: Publish wheel artifact
               inputs:
                 targetPath: $(Build.SourcesDirectory)/auto_round_extension/ark/wheelhouse
                 artifact: auto-round-lib-wheel-cp${{ replace(trim(pythonVersion), '.', '') }}
+                publishLocation: pipeline
+            
+            - task: PublishPipelineArtifact@1
+              condition: and(succeeded(), eq('${{ parameters.buildMode }}', 'release'), eq('${{ replace(trim(pythonVersion), '.', '') }}', '312'))
+              displayName: Publish dist artifact
+              inputs:
+                targetPath: $(Build.SourcesDirectory)/auto_round_extension/ark/dist
+                artifact: auto-round-lib-dist
                 publishLocation: pipeline
 
             - ${{ if eq(parameters.publishToTestPyPI, true) }}:

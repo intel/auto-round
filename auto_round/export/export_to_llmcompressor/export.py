@@ -24,7 +24,7 @@ from auto_round.utils import (
     SUPPORTED_LAYER_TYPES,
     check_to_quantized,
     copy_python_files_from_model_cache,
-    detect_device,
+    get_major_device,
     get_module,
     set_module,
     unsupported_meta_device,
@@ -215,7 +215,7 @@ def save_quantized_as_llmcompressor(
         processor.save_pretrained(output_dir)
 
     # generate q_weight
-    device = detect_device(device)
+    device = get_major_device(device)
     if not unsupported_meta_device(model):
         for n, m in model.named_modules():
             pack_layer(n, model, device)

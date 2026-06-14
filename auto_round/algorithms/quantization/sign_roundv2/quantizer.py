@@ -134,7 +134,7 @@ class SignRoundOptimizedWrapperLinear(WrapperLinear):
 class SignRoundDQWrapperLinear(WrapperLinear):
     minmax_scale_bound = (0.5, 1.5)
 
-    def __init__(self, *args, **kwargs):
+    def __init__(self, *args, **kwargs) -> None:
         if "enable_minmax_tuning" in kwargs:
             logger.warning_once("disable minmax tuning for a little better accuracy and lower cost")
             kwargs["enable_minmax_tuning"] = False
@@ -292,7 +292,7 @@ class SignRoundDQWrapperLinear(WrapperLinear):
 class SignRoundV2Quantizer(SignRoundQuantizer):
     """SignRound variant using the open algorithm-extension path in the new architecture."""
 
-    def __init__(self, config: SignRoundConfig):
+    def __init__(self, config: SignRoundConfig) -> None:
         super().__init__(config)
         self._use_outlier_suppressed_loss = False
         logger.info("using algorithm extension for quantization.")

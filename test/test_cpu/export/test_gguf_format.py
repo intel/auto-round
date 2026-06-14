@@ -345,3 +345,33 @@ class TestGGUF:
         assert tensor_types["blk.0.attn_k.weight"] == "Q4_K"
         assert tensor_types["blk.0.ffn_down_exps.weight"] == "Q5_0"
         assert tensor_types["blk.0.ffn_up_exps.weight"] == "Q2_K"
+
+
+class TestGGUFZeroBlock:
+    """All-zero blocks (e.g. padded/unused vocab rows in an embedding tensor) must
+    quantize with scale d=0.0, not NaN. A single NaN fp16 `d` in an exported GGUF
+    makes llama.cpp return NaN logits for any batch touching those rows."""
+
+    def test_q6_k_all_zero_block_no_nan(self):
+        from auto_round.data_type.gguf import quant_tensor_gguf_sym_dq
+
+        tensor = torch.zeros(2, 256)
+        tensor[1] = torch.randn(256)
+        qdq, scales, _ = quant_tensor_gguf_sym_dq(tensor, bits=6, scale_dtype=torch.float32)
+        assert not torch.isnan(scales["scale"]).any(), "Q6_K sub-scales contain NaN for all-zero block"
+        assert not torch.isnan(scales["d_scale"]).any(), "Q6_K d_scale contains NaN for all-zero block"
+        assert not torch.isnan(qdq).any()
+        assert torch.equal(qdq[0], torch.zeros(256)), "all-zero block must reconstruct exactly to zeros"
+
+    def test_q6_k_all_zero_block_packs_zero_d(self):
+        import numpy as np
+
+        from auto_round.export.export_to_gguf.packing import ggml_quant
+
+        tensor = torch.zeros(2, 256)
+        tensor[1] = torch.randn(256)
+        packed = ggml_quant(tensor, "q6_k", device="cpu")
+        # Q6_K block layout: [ql(128), qh(64), scales(16), d(fp16)]
+        d = np.ascontiguousarray(packed.reshape(2, 210)[:, -2:]).view(np.float16)
+        assert not np.isnan(d).any(), f"packed Q6_K d scales contain NaN: {d}"
+        assert d[0] == 0.0

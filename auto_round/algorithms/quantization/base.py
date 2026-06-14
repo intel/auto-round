@@ -13,6 +13,7 @@
 # limitations under the License.
 import traceback
 from contextlib import contextmanager
+from typing import Any
 
 import torch
 
@@ -37,6 +38,7 @@ from auto_round.utils import (
     get_module,
     set_module,
 )
+from auto_round.utils.device_manager import device_manager
 from auto_round.wrapper import WrapperLinear
 
 
@@ -51,9 +53,9 @@ class RTNLayerFallbackMixin:
     def quantize_layer_via_rtn(self, layer_name: str, disable_opt_rtn: bool | None = None) -> None:
         """Quantize one layer with RTN and handle optional immediate pack/save."""
         layer = get_module(self.model, layer_name)
-        layer = convert_module_to_hp_if_necessary(layer, self.model_context.amp_dtype, self.compress_context.device)
+        layer = convert_module_to_hp_if_necessary(layer, self.model_context.amp_dtype, device_manager.device)
         set_module(self.model, layer_name, layer)
-        tuning_device = layer.tuning_device if hasattr(layer, "tuning_device") else self.compress_context.device
+        tuning_device = layer.tuning_device if hasattr(layer, "tuning_device") else device_manager.device
         if (
             self.compress_context.is_immediate_packing
             and self.compress_context.formats[0].is_gguf()
@@ -185,16 +187,18 @@ class DiffusionMixin:
             else InputSource.FP_CACHE
         )
         io = DiffusionBlockIO(
-            fp_inputs=input_ids,
-            input_others=input_others,
-            quantized_inputs=quantized_input,
-            active_source=active_source,
+            _fp_inputs=input_ids,
+            _input_others=input_others,
+            _quantized_inputs=quantized_input,
+            _active_source=active_source,
             batch_dim=self.batch_dim,
             seqlen=self.seqlen,
             shared_cache_keys=self.model_context.shared_cache_keys,
+            _quantizer=self,
+            _block=block,
             output_config=self._get_output_config(block),
         )
-        io.fp_inputs, io.input_others = io.preprocess_block_inputs(io.fp_inputs, io.input_others, block)
+        io._fp_inputs, io._input_others = io._preprocess_block_inputs(io._fp_inputs, io._input_others, block)
         return io
 
 
@@ -224,7 +228,7 @@ class BaseQuantizer(BasePipelineMember):
     inner_supported_types = INNER_SUPPORTED_LAYER_TYPES
     enable_alg_ext = False
 
-    def __init__(self, config: QuantizationConfig):
+    def __init__(self, config: QuantizationConfig) -> None:
         super().__init__(config)
         self.layer_config = None
         # Calibration-time state lives on a shared
@@ -244,11 +248,11 @@ class BaseQuantizer(BasePipelineMember):
 
     # ── Shared CalibrationState forwarders ───────────────────────────────────────
     @property
-    def calibration_state(self):
+    def calibration_state(self) -> Any:
         return self._calibration_state
 
     @calibration_state.setter
-    def calibration_state(self, new_state) -> None:
+    def calibration_state(self, new_state: Any) -> None:
         # Compressor-supplied shared instance; just rebind.
         self._calibration_state = new_state
 
@@ -257,15 +261,15 @@ class BaseQuantizer(BasePipelineMember):
         return self._calibration_state.attention_mask
 
     @attention_mask.setter
-    def attention_mask(self, value) -> None:
+    def attention_mask(self, value: list) -> None:
         self._calibration_state.attention_mask = value if value is not None else []
 
     @property
-    def batch_dim(self):
+    def batch_dim(self) -> int:
         return self._calibration_state.batch_dim
 
     @batch_dim.setter
-    def batch_dim(self, value) -> None:
+    def batch_dim(self, value: int) -> None:
         self._calibration_state.batch_dim = value
 
     @property
@@ -273,7 +277,7 @@ class BaseQuantizer(BasePipelineMember):
         return self._calibration_state.batch_size
 
     @batch_size.setter
-    def batch_size(self, value) -> None:
+    def batch_size(self, value: int) -> None:
         self._calibration_state.batch_size = value
 
     @property
@@ -284,7 +288,7 @@ class BaseQuantizer(BasePipelineMember):
     def seqlen(self) -> int:
         return self._calibration_state.seqlen
 
-    def bind(self, compressor) -> None:
+    def bind(self, compressor: Any) -> None:
         """Wire shared state from the owning compressor.
 
         The compressor owns the authoritative ``model_context`` /
@@ -300,19 +304,19 @@ class BaseQuantizer(BasePipelineMember):
         self._calibration_state = compressor._calibration_state
 
     @property
-    def model(self):
+    def model(self) -> torch.nn.Module | None:
         return self.model_context.model if self.model_context is not None else None
 
     @property
-    def formats(self):
+    def formats(self) -> Any:
         return getattr(self.compress_context, "formats", None)
 
     @property
-    def amp(self):
+    def amp(self) -> bool:
         return getattr(self.model_context, "amp", False)
 
     @property
-    def amp_dtype(self):
+    def amp_dtype(self) -> torch.dtype:
         return getattr(self.model_context, "amp_dtype", torch.float32)
 
     # ── Activation-calibration hook infrastructure ───────────────────────────────
@@ -373,7 +377,7 @@ class BaseQuantizer(BasePipelineMember):
         return handles
 
     @contextmanager
-    def block_forward_hooks(self, ctx):
+    def block_forward_hooks(self, ctx: Any) -> Any:
         """Register act-calib forward hooks for the reference forward.
 
         Implements the :meth:`BasePipelineMember.block_forward_hooks` interface for
@@ -394,7 +398,7 @@ class BaseQuantizer(BasePipelineMember):
             for h in handles:
                 h.remove()
 
-    def get_act_calib_policy(self, ctx):
+    def get_act_calib_policy(self, ctx: Any) -> Any:
         """Return the activation calibration policy for this block.
 
         Default: ``WITH_REFERENCE + FP_CACHE``, or ``QUANTIZED_INPUT`` when
@@ -402,12 +406,17 @@ class BaseQuantizer(BasePipelineMember):
         """
         from auto_round.algorithms.pipeline import ActCalibPolicy, CalibTiming, InputSource
 
-        quantized_input = getattr(ctx, "quantized_input", None)
-        if quantized_input is not None and self.enable_quanted_input:
+        if ctx.has_quantized_inputs() and self.enable_quanted_input:
             return ActCalibPolicy(when=CalibTiming.WITH_REFERENCE, source=InputSource.QUANTIZED_INPUT)
         return ActCalibPolicy(when=CalibTiming.WITH_REFERENCE, source=InputSource.FP_CACHE)
 
-    def create_block_io(self, input_ids, input_others, quantized_input=None, block=None):
+    def create_block_io(
+        self,
+        input_ids: Any,
+        input_others: dict,
+        quantized_input: Any = None,
+        block: torch.nn.Module | None = None,
+    ) -> Any:
         from auto_round.algorithms.pipeline import BlockIO, InputSource
 
         active_source = (
@@ -415,20 +424,24 @@ class BaseQuantizer(BasePipelineMember):
             if quantized_input is not None and self.enable_quanted_input
             else InputSource.FP_CACHE
         )
-        return BlockIO(
-            fp_inputs=input_ids,
-            input_others=input_others,
-            quantized_inputs=quantized_input,
-            active_source=active_source,
+        io = BlockIO(
+            _fp_inputs=input_ids,
+            _input_others=input_others,
+            _quantized_inputs=quantized_input,
+            _active_source=active_source,
             batch_dim=self.batch_dim,
             seqlen=self.seqlen,
             shared_cache_keys=self.model_context.shared_cache_keys,
+            _quantizer=self,
+            _block=block,
         )
+        io._fp_inputs, io._input_others = io._preprocess_block_inputs(io._fp_inputs, io._input_others, block)
+        return io
 
     # ── Embedding quantization ────────────────────────────────────────────────────
 
     @torch.inference_mode()
-    def quantize_embedding_layer(self):
+    def quantize_embedding_layer(self) -> bool:
         """Quantizes embedding layers in the model according to the configuration.
 
         This method iterates through all modules in the model, identifies embedding
@@ -467,7 +480,7 @@ class BaseQuantizer(BasePipelineMember):
             # Attempt quantization on GPU, fall back to CPU if OOM
             try:
                 weight, scale, zp = quant_func(
-                    module.weight.to(dtype=dtype, device=self.compress_context.device),
+                    module.weight.to(dtype=dtype, device=device_manager.device),
                     **{
                         k: config.get(k, None)
                         for k in ["bits", "group_size", "super_bits", "super_group_size", "scale_dtype"]
@@ -506,13 +519,13 @@ class BaseQuantizer(BasePipelineMember):
             del weight
             del scale
             del zp
-            clear_memory(device_list=self.compress_context.device_list)
+            clear_memory(device_list=device_manager.device_list)
 
         return is_quantized
 
     # ── Abstract quantization interface ──────────────────────────────────────────
 
-    def quantize_block(self, ctx) -> dict:
+    def quantize_block(self, ctx: Any) -> dict:
         """Apply the quantization algorithm to a prepared block.
 
         This is the **pure-algorithm** entry point called by the Compressor after
@@ -532,7 +545,7 @@ class BaseQuantizer(BasePipelineMember):
         """
         raise NotImplementedError("quantize_block must be implemented in subclasses of BaseQuantizer")
 
-    def quantize_layer(self, layer_name: str, **kwargs):
+    def quantize_layer(self, layer_name: str, **kwargs) -> None:
         """Quantizes a single layer of the model.
 
         Args:
@@ -541,7 +554,7 @@ class BaseQuantizer(BasePipelineMember):
         """
         raise NotImplementedError("quantize_layer must be implemented in subclasses of BaseQuantizer")
 
-    def quantize_layer_outside_block(self, layer_name: str, input_ids=None, **kwargs):
+    def quantize_layer_outside_block(self, layer_name: str, input_ids: Any = None, **kwargs) -> Any:
         """Quantizes a single layer of the model outside of a block.
 
         Args:
@@ -572,7 +585,7 @@ class BaseQuantizer(BasePipelineMember):
         elif self.compress_context.enable_torch_compile:
             compiled = self.__dict__.get("_compiled_block_forward")
             if compiled is None:
-                compiled = compile_func(block_forward, self.compress_context.device)
+                compiled = compile_func(block_forward, device_manager.device)
                 self._compiled_block_forward = compiled
             self._resolved_block_forward = compiled
         else:
@@ -584,11 +597,11 @@ class BaseQuantizer(BasePipelineMember):
         self.__dict__.pop("_resolved_block_forward", None)
         self.__dict__.pop("_compiled_block_forward", None)
 
-    def prepare_run(self, run_ctx) -> None:
+    def prepare_run(self, compressor: Any) -> None:
         """Model-level preparation (called once before block iteration starts)."""
         return
 
-    def finalize_run(self, run_ctx) -> None:
+    def finalize_run(self, compressor: Any) -> None:
         """Model-level teardown (called once after all blocks are processed).
 
         Must be idempotent – the Compressor calls this inside a ``try/finally``.

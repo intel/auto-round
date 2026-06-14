@@ -32,13 +32,18 @@ from __future__ import annotations
 
 from collections import defaultdict
 from contextlib import ExitStack
-from dataclasses import dataclass, field, fields
+from dataclasses import dataclass, field
 from enum import IntEnum
-from typing import TYPE_CHECKING, Any, Optional, Union
+from typing import TYPE_CHECKING, Any, Union
 
 import torch
 
-from auto_round.compressors.utils import block_forward
+from auto_round.algorithms.config_resolver import (
+    get_algorithm_class,
+    resolve_shared_config_values,
+    split_quantization_configs,
+)
+from auto_round.utils.device_manager import device_manager
 
 if TYPE_CHECKING:  # avoid circular imports at runtime
     import torch
@@ -89,151 +94,6 @@ class InputSource(IntEnum):
     QUANTIZED_INPUT = 1
 
 
-def get_algorithm_class(config: Any):
-    """Return the registered implementation class for a quantization config."""
-    from auto_round.algorithms.registry import normalize_algorithm_config, resolve_pipeline_member
-
-    try:
-        return resolve_pipeline_member(normalize_algorithm_config(config))
-    except ValueError:
-        return None
-
-
-def is_preprocessor_config(config: Any) -> bool:
-    """Whether *config* resolves to a BaseWeightTransformer implementation."""
-    from auto_round.algorithms.transforms.base import BaseWeightTransformer
-
-    alg_cls = get_algorithm_class(config)
-    return alg_cls is not None and issubclass(alg_cls, BaseWeightTransformer)
-
-
-def is_block_quantizer_config(config: Any) -> bool:
-    """Whether *config* resolves to a BaseQuantizer implementation."""
-    from auto_round.algorithms.quantization.base import BaseQuantizer
-
-    alg_cls = get_algorithm_class(config)
-    return alg_cls is not None and issubclass(alg_cls, BaseQuantizer)
-
-
-def split_quantization_configs(configs: list[Any]) -> tuple[list[Any], list[Any]]:
-    """Split configs into preprocessor and block-quantizer config lists."""
-    preprocessors = []
-    block_quantizers = []
-    for config in configs:
-        if is_preprocessor_config(config):
-            preprocessors.append(config)
-        elif is_block_quantizer_config(config):
-            block_quantizers.append(config)
-    return preprocessors, block_quantizers
-
-
-def _quantization_configs(configs: list[Any]) -> list[Any]:
-    """Return configs that participate in quantization shared-field resolution."""
-    from auto_round.algorithms.quantization.config import QuantizationConfig
-
-    return [config for config in configs if isinstance(config, QuantizationConfig)]
-
-
-def _public_config_attrs(config: Any) -> dict[str, Any]:
-    """Public, data-like attrs used for structural shared config resolution."""
-    return {
-        key: value
-        for key, value in vars(config).items()
-        if key != "scheme" and not key.startswith("_") and not callable(value)
-    }
-
-
-def _format_shared_config_values(field: str, values: list[tuple[Any, Any]]) -> str:
-    parts = [f"{type(config).__name__}.{field}={value!r}" for config, value in values]
-    return ", ".join(parts)
-
-
-def _resolve_shared_scheme_values(configs: list[Any]) -> None:
-    from auto_round.schemes import QuantizationScheme
-
-    scheme_fields = {field.name for field in fields(QuantizationScheme)}
-    field_values: dict[str, list[tuple[Any, Any]]] = defaultdict(list)
-    for config in configs:
-        for attr_name in getattr(config, "_user_set_scheme_fields", set()):
-            if attr_name not in scheme_fields:
-                continue
-            value = getattr(config, attr_name, None)
-            if value is not None:
-                field_values[attr_name].append((config, value))
-
-    for attr_name, values in field_values.items():
-        unique_values = []
-        for _, value in values:
-            if not any(value == existing for existing in unique_values):
-                unique_values.append(value)
-        if len(unique_values) > 1:
-            raise ValueError(
-                f"Conflicting shared scheme field {attr_name!r}: "
-                f"{_format_shared_config_values(attr_name, values)}. "
-                "Use the same value for shared fields or pass scheme arguments through Compressor."
-            )
-        shared_value = unique_values[0]
-        for config in configs:
-            if hasattr(config, "scheme") and attr_name not in getattr(config, "_user_set_scheme_fields", set()):
-                setattr(config.scheme, attr_name, shared_value)
-
-
-def resolve_shared_config_values(configs: list[Any]) -> list[Any]:
-    """Merge shared public attrs across quantization configs without naming fields.
-
-    A field is shared when at least two quantization configs define the same
-    public attribute. ``None`` means "not set" and inherits from the single
-    non-None value, while conflicting non-None values fail fast. Configs that do
-    not define a field do not participate in that field.
-    """
-    quant_configs = _quantization_configs(configs)
-    _resolve_shared_scheme_values(quant_configs)
-    attrs_by_config = [(config, _public_config_attrs(config)) for config in quant_configs]
-    field_to_configs: dict[str, list[Any]] = defaultdict(list)
-    for config, attrs in attrs_by_config:
-        for attr_name in attrs:
-            field_to_configs[attr_name].append(config)
-
-    for attr_name, field_configs in field_to_configs.items():
-        if len(field_configs) < 2:
-            continue
-
-        field_attrs = [
-            (config, attrs[attr_name])
-            for config, attrs in attrs_by_config
-            if any(config is field_config for field_config in field_configs)
-        ]
-        non_none_values = [(config, value) for config, value in field_attrs if value is not None]
-        unique_values = []
-        for _, value in non_none_values:
-            if not any(value == existing for existing in unique_values):
-                unique_values.append(value)
-        if len(unique_values) > 1:
-            raise ValueError(
-                f"Conflicting shared config field {attr_name!r}: "
-                f"{_format_shared_config_values(attr_name, non_none_values)}. "
-                "Use the same value for shared fields or leave it unset on secondary algorithms."
-            )
-        if len(unique_values) == 1:
-            shared_value = unique_values[0]
-            for config in field_configs:
-                if getattr(config, attr_name) is None:
-                    setattr(config, attr_name, shared_value)
-    return configs
-
-
-def sync_shared_config_from(source_config: Any, target_configs: list[Any]) -> None:
-    """Propagate resolved source values to targets that already define matching attrs."""
-    source_attrs = _public_config_attrs(source_config)
-    for target in _quantization_configs(target_configs):
-        if target is source_config:
-            continue
-        target_attrs = _public_config_attrs(target)
-        for attr_name, source_value in source_attrs.items():
-            if attr_name in target_attrs and source_value is not None:
-                setattr(target, attr_name, source_value)
-
-
 @dataclass
 class ActCalibPolicy:
     """Activation calibration policy: when and from what inputs to collect act stats.
@@ -251,13 +111,13 @@ class ActCalibPolicy:
         if not isinstance(self.when, CalibTiming):
             try:
                 self.when = CalibTiming(self.when)
-            except ValueError:
-                raise ValueError(f"ActCalibPolicy.when must be a CalibTiming, got {self.when!r}")
+            except ValueError as exc:
+                raise ValueError(f"ActCalibPolicy.when must be a CalibTiming, got {self.when!r}") from exc
         if not isinstance(self.source, InputSource):
             try:
                 self.source = InputSource(self.source)
-            except ValueError:
-                raise ValueError(f"ActCalibPolicy.source must be an InputSource, got {self.source!r}")
+            except ValueError as exc:
+                raise ValueError(f"ActCalibPolicy.source must be an InputSource, got {self.source!r}") from exc
 
     @classmethod
     def no_collection(cls) -> "ActCalibPolicy":
@@ -308,88 +168,194 @@ def merge_policies(policies: list["ActCalibPolicy"]) -> "ActCalibPolicy":
 class BlockIO:
     """Owns per-block calibration inputs, outputs, and batch forward mechanics."""
 
-    fp_inputs: Any
-    input_others: dict
-    quantized_inputs: Any = None
-    reference_outputs: Any = None
-    quantized_outputs: Any = None
-    active_source: InputSource = InputSource.FP_CACHE
+    _fp_inputs: Any
+    _input_others: dict
+    _quantized_inputs: Any = None
+    _reference_outputs: Any = None
+    _quantized_outputs: Any = None
+    _active_source: InputSource = InputSource.FP_CACHE
     batch_dim: int = 0
     seqlen: int = 2048
     shared_cache_keys: tuple = ()
+    _quantizer: Any = None
+    _block: Any = None
+
+    def _inputs_for(self, source: InputSource):
+        if source == InputSource.QUANTIZED_INPUT:
+            return self._quantized_inputs
+        return self._fp_inputs
+
+    def has_quantized_inputs(self) -> bool:
+        return self._quantized_inputs is not None
 
     @property
-    def has_quantized_inputs(self) -> bool:
-        return self.quantized_inputs is not None
+    def num_samples(self) -> int:
+        input_ids = self._inputs_for(self._active_source)
+        if input_ids is None:
+            return 0
+        return self._num_samples(input_ids)
 
-    def get_inputs(self, source: InputSource):
-        if source == InputSource.QUANTIZED_INPUT:
-            return self.quantized_inputs
-        return self.fp_inputs
+    def _release_references(
+        self,
+        *,
+        keep_fp_inputs: bool = False,
+        keep_quantized_inputs: bool = False,
+        keep_reference_outputs: bool = False,
+        keep_input_others: bool = False,
+    ) -> None:
+        """Drop large cached references once a block has finished using them."""
+        if not keep_fp_inputs:
+            self._fp_inputs = None
+        if not keep_quantized_inputs:
+            self._quantized_inputs = None
+            self._quantized_outputs = None
+        if not keep_reference_outputs:
+            self._reference_outputs = None
+        if not keep_input_others:
+            self._input_others = {}
 
-    def set_reference_outputs(self, outputs) -> None:
-        self.reference_outputs = outputs
+    def finish(self) -> None:
+        self._release_references()
+        self._quantizer = None
+        self._block = None
 
-    def set_quantized_inputs(self, inputs) -> None:
-        self.quantized_inputs = inputs
-
-    def select_inputs(self, source: InputSource, indices):
-        input_ids = self.get_inputs(source)
+    def _select_inputs_for_source(self, source: InputSource, indices):
+        input_ids = self._inputs_for(source)
         if input_ids is None:
             raise ValueError(f"Input source {source.name} is unavailable for this block.")
-        return self._select_inputs(input_ids, self.input_others, indices)
+        return self._select_inputs(input_ids, self._input_others, indices)
 
-    def forward_batch(self, block, quantizer, indices, *, source: InputSource, device, cache_device="cpu"):
-        input_ids, input_others = self.select_inputs(source, indices)
-        output = quantizer._resolve_block_forward()(
+    def forward_batch(
+        self,
+        indices: torch.Tensor,
+        *,
+        device: Union[str, torch.device],
+        cache_device: Union[str, torch.device, None] = None,
+    ) -> Any:
+        quantizer = self._quantizer
+        block = self._block
+        if quantizer is None or block is None:
+            raise ValueError("BlockIO forward_batch requires bound quantizer and block.")
+
+        input_ids, input_others = self._select_inputs_for_source(self._active_source, indices)
+        output = self._run_block(block, quantizer, input_ids, input_others, device)
+        if cache_device is not None and isinstance(output, torch.Tensor):
+            output = output.to(cache_device)
+        return output
+
+    def _run_block(self, block, quantizer, input_ids, input_others, device):
+        return quantizer._resolve_block_forward()(
             block,
             input_ids,
             input_others,
             quantizer.model_context.amp,
             quantizer.model_context.amp_dtype,
             device,
+            0,
         )
-        return output.to(cache_device)
 
     @torch.no_grad()
-    def collect_outputs(self, block, quantizer, *, source: InputSource, batch_size: int, save: bool = True):
-        input_ids = self.get_inputs(source)
+    def _collect_outputs(self, block, quantizer, *, source: InputSource, batch_size: int, save: bool = True):
+        input_ids = self._inputs_for(source)
         if input_ids is None:
             raise ValueError(f"Input source {source.name} is unavailable for this block.")
-        outputs = []
-        for start in range(0, len(input_ids), batch_size):
-            end = min(len(input_ids), start + batch_size)
+        outputs = self._init_output_buffer()
+        for start, end in self._iter_batch_ranges(input_ids, batch_size):
             indices = torch.arange(start, end).to(torch.long)
-            output = self.forward_batch(
-                block,
-                quantizer,
-                indices,
-                source=source,
-                device=quantizer.compress_context.device,
-                cache_device=quantizer.compress_context.cache_device,
-            )
+            previous_source = self._active_source
+            self._active_source = source
+            try:
+                output = self.forward_batch(
+                    indices, device=device_manager.device, cache_device=quantizer.compress_context.cache_device
+                )
+            finally:
+                self._active_source = previous_source
             if save:
-                if quantizer.batch_size == 1:
-                    outputs.append(output)
-                else:
-                    outputs.extend(list(torch.split(output, 1, dim=self.batch_dim)))
+                self._append_output(outputs, output, quantizer)
         quantizer.compress_context.clear_memory()
         return outputs
 
-    def select_reference_outputs(self, indices, *, device=None):
-        if self.reference_outputs is None:
+    @torch.no_grad()
+    def collect_reference(self, hooks=None) -> Any:
+        _ = hooks
+        outputs = self._collect_outputs(
+            self._block,
+            self._quantizer,
+            source=InputSource.FP_CACHE,
+            batch_size=self._quantizer.batch_size,
+        )
+        self._reference_outputs = outputs
+        if self._active_source == InputSource.QUANTIZED_INPUT:
+            self._fp_inputs = None
+        return outputs
+
+    @torch.no_grad()
+    def collect_quantized_stats(self, hooks=None) -> Any:
+        _ = hooks
+        if not self.has_quantized_inputs():
+            return None
+        return self._collect_outputs(
+            self._block,
+            self._quantizer,
+            source=InputSource.QUANTIZED_INPUT,
+            batch_size=self._quantizer.batch_size,
+            save=False,
+        )
+
+    @torch.no_grad()
+    def collect_next_inputs(self) -> Any:
+        if self._quantizer is None or not self._quantizer.enable_quanted_input:
+            return None
+        outputs = self._collect_outputs(
+            self._block,
+            self._quantizer,
+            source=self._active_source,
+            batch_size=self._quantizer.batch_size,
+        )
+        self._quantized_outputs = outputs
+        return outputs
+
+    def seed_reference(self, fp_inputs: Any, reference_outputs: Any) -> None:
+        self._fp_inputs = fp_inputs
+        self._reference_outputs = reference_outputs
+
+    def reference_batch(self, indices: torch.Tensor, *, device=None) -> torch.Tensor:
+        if self._reference_outputs is None:
             raise ValueError("Reference outputs have not been collected for this block.")
-        output = torch.cat([self.reference_outputs[i] for i in indices], dim=self.batch_dim)
+        output = torch.cat([self._reference_outputs[i] for i in indices], dim=self.batch_dim)
         return output.to(device) if device is not None else output
 
-    def count_input_elements(self, indices, *, source: InputSource | None = None) -> int:
-        source = self.active_source if source is None else source
-        input_ids = self.get_inputs(source)
-        current_input_ids = [input_ids[i] for i in indices]
+    def _count_input_elements(self, indices, *, source: InputSource | None = None) -> int:
+        source = self._active_source if source is None else source
+        input_ids = self._inputs_for(source)
+        if isinstance(input_ids, dict):
+            current_input_ids = [input_ids["hidden_states"][i] for i in indices]
+        else:
+            current_input_ids = [input_ids[i] for i in indices]
         return sum(t.numel() for t in current_input_ids)
 
-    def preprocess_block_inputs(self, input_ids, input_others: dict, block):
+    def count_active_elements(self, indices: torch.Tensor) -> int:
+        return self._count_input_elements(indices, source=self._active_source)
+
+    def _preprocess_block_inputs(self, input_ids, input_others: dict, block):
         return input_ids, input_others
+
+    def _iter_batch_ranges(self, input_ids, batch_size: int):
+        for start in range(0, self._num_samples(input_ids), batch_size):
+            end = min(self._num_samples(input_ids), start + batch_size)
+            yield start, end
+
+    def _num_samples(self, input_ids) -> int:
+        return len(input_ids)
+
+    def _init_output_buffer(self):
+        return []
+
+    def _append_output(self, outputs, output, quantizer) -> None:
+        if quantizer.batch_size == 1:
+            outputs.append(output)
+        else:
+            outputs.extend(list(torch.split(output, 1, dim=self.batch_dim)))
 
     def _select_inputs(self, input_ids, input_others: dict, indices):
         if isinstance(input_ids, list):
@@ -429,80 +395,11 @@ class BlockIO:
 class DiffusionBlockIO(BlockIO):
     """BlockIO variant for diffusion blocks with dict inputs and tuple outputs."""
 
-    def __init__(self, *args, output_config=None, **kwargs):
+    def __init__(self, *args, output_config: list[str] | None = None, **kwargs) -> None:
         super().__init__(*args, **kwargs)
         self.output_config = output_config or ["hidden_states"]
 
-    @torch.no_grad()
-    def collect_outputs(self, block, quantizer, *, source: InputSource, batch_size: int, save: bool = True):
-        input_ids = self.get_inputs(source)
-        if input_ids is None:
-            raise ValueError(f"Input source {source.name} is unavailable for this block.")
-        outputs = defaultdict(list)
-        nsamples = len(input_ids["hidden_states"]) if isinstance(input_ids, dict) else len(input_ids)
-        for start in range(0, nsamples, batch_size):
-            end = min(nsamples, start + batch_size)
-            indices = torch.arange(start, end).to(torch.long)
-            tmp_input_ids, tmp_input_others = self.select_inputs(source, indices)
-            if isinstance(tmp_input_ids, dict):
-                hidden_states = tmp_input_ids.pop("hidden_states")
-                tmp_input_others.update(tmp_input_ids)
-                tmp_input_ids = hidden_states
-            tmp_output = block_forward(
-                block,
-                tmp_input_ids,
-                tmp_input_others,
-                quantizer.model_context.amp,
-                quantizer.model_context.amp_dtype,
-                quantizer.compress_context.device,
-                None,
-            )
-            if isinstance(tmp_output, torch.Tensor):
-                tmp_output = [tmp_output]
-            assert len(self.output_config) == len(tmp_output)
-            tmp_output = dict(zip(self.output_config, tmp_output))
-            if save:
-                for name, out in tmp_output.items():
-                    if quantizer.batch_size == 1:
-                        outputs[name].append(out.to(quantizer.compress_context.cache_device))
-                    else:
-                        outputs[name].extend(
-                            list(torch.split(out.to(quantizer.compress_context.cache_device), 1, dim=self.batch_dim))
-                        )
-        quantizer.compress_context.clear_memory()
-        return outputs
-
-    def forward_batch(self, block, quantizer, indices, *, source: InputSource, device, cache_device="cpu"):
-        input_ids, input_others = self.select_inputs(source, indices)
-        idx = self.output_config.index("hidden_states") if "hidden_states" in self.output_config else None
-        if isinstance(input_ids, dict):
-            hidden_states = input_ids.pop("hidden_states")
-            input_others.update(input_ids)
-            input_ids = hidden_states
-        output = quantizer._resolve_block_forward()(
-            block,
-            input_ids,
-            input_others,
-            quantizer.model_context.amp,
-            quantizer.model_context.amp_dtype,
-            device,
-            idx,
-        )
-        return output.to(cache_device)
-
-    def select_reference_outputs(self, indices, *, device=None):
-        if self.reference_outputs is None or "hidden_states" not in self.reference_outputs:
-            raise ValueError("Diffusion reference hidden_states have not been collected for this block.")
-        output = torch.cat([self.reference_outputs["hidden_states"][i] for i in indices], dim=self.batch_dim)
-        return output.to(device) if device is not None else output
-
-    def count_input_elements(self, indices, *, source: InputSource | None = None) -> int:
-        source = self.active_source if source is None else source
-        input_ids = self.get_inputs(source)
-        current_input_ids = [input_ids["hidden_states"][i] for i in indices]
-        return sum(t.numel() for t in current_input_ids)
-
-    def preprocess_block_inputs(self, input_ids, input_others: dict, block):
+    def _preprocess_block_inputs(self, input_ids, input_others: dict, block):
         if not isinstance(input_ids, dict):
             return input_ids, input_others
         extra_keys = [key for key in list(input_ids.keys()) if key not in self.output_config]
@@ -510,24 +407,45 @@ class DiffusionBlockIO(BlockIO):
             input_others[key] = input_ids.pop(key)
         return input_ids, input_others
 
+    def _run_block(self, block, quantizer, input_ids, input_others, device):
+        if not isinstance(input_ids, dict):
+            return super()._run_block(block, quantizer, input_ids, input_others, device)
+        input_ids = dict(input_ids)
+        input_others = dict(input_others)
+        hidden_states = input_ids.pop("hidden_states")
+        input_others.update(input_ids)
+        return quantizer._resolve_block_forward()(
+            block,
+            hidden_states,
+            input_others,
+            quantizer.model_context.amp,
+            quantizer.model_context.amp_dtype,
+            device,
+            None,
+        )
 
-@dataclass
-class RunContext:
-    """Model-level context shared across the entire quantization run.
+    def _num_samples(self, input_ids) -> int:
+        return len(input_ids["hidden_states"]) if isinstance(input_ids, dict) else len(input_ids)
 
-    Passed to ``prepare_run()`` and ``finalize_run()`` so that algorithm-specific
-    preparation/teardown logic can access model topology without reading
-    private ``Compressor`` fields.
-    """
+    def _init_output_buffer(self):
+        return defaultdict(list)
 
-    model: "torch.nn.Module"
-    all_blocks: list  # list[list[str]] – block groups as returned by get_block_names
-    layer_names: list[str]  # quantizable layer names *outside* all blocks
-    formats: Optional[list]  # resolved OutputFormat list (or None)
-    scheme: Any  # str | QuantizationScheme | AutoScheme
-    alg_configs: list  # all algorithm configs in the pipeline
-    model_context: Any  # ModelContext
-    compress_context: Any  # CompressContext
+    def _append_output(self, outputs, output, quantizer) -> None:
+        if isinstance(output, torch.Tensor):
+            output = [output]
+        assert len(self.output_config) == len(output)
+        for name, out in zip(self.output_config, output):
+            out = out.to(quantizer.compress_context.cache_device)
+            if quantizer.batch_size == 1:
+                outputs[name].append(out)
+            else:
+                outputs[name].extend(list(torch.split(out, 1, dim=self.batch_dim)))
+
+    def reference_batch(self, indices: torch.Tensor, *, device=None) -> torch.Tensor:
+        if self._reference_outputs is None:
+            raise ValueError("Reference outputs have not been collected for this block.")
+        output = torch.cat([self._reference_outputs["hidden_states"][i] for i in indices], dim=self.batch_dim)
+        return output.to(device) if device is not None else output
 
 
 @dataclass
@@ -567,33 +485,39 @@ class BlockContext:
         """Called by preprocessors to declare which FP params were modified in-place."""
         self.modified_fp_params.extend(param_names)
 
-    @property
-    def input_ids(self):
-        return self.io.fp_inputs
+    def collect_reference(self, hooks=None) -> Any:
+        return self.io.collect_reference(hooks)
 
-    @input_ids.setter
-    def input_ids(self, value) -> None:
-        self.io.fp_inputs = value
+    def collect_quantized_stats(self, hooks=None) -> Any:
+        return self.io.collect_quantized_stats(hooks)
 
-    @property
-    def input_others(self):
-        return self.io.input_others
+    def collect_next_inputs(self) -> Any:
+        return self.io.collect_next_inputs()
 
-    @property
-    def reference_output(self):
-        return self.io.reference_outputs
-
-    @reference_output.setter
-    def reference_output(self, value) -> None:
-        self.io.reference_outputs = value
+    def has_quantized_inputs(self) -> bool:
+        return self.io.has_quantized_inputs()
 
     @property
-    def quantized_input(self):
-        return self.io.quantized_inputs
+    def num_samples(self) -> int:
+        return self.io.num_samples
 
-    @quantized_input.setter
-    def quantized_input(self, value) -> None:
-        self.io.quantized_inputs = value
+    def count_active_elements(self, indices: torch.Tensor) -> int:
+        return self.io.count_active_elements(indices)
+
+    def reference_batch(self, indices: torch.Tensor, *, device=None) -> torch.Tensor:
+        return self.io.reference_batch(indices, device=device)
+
+    def forward_batch(
+        self,
+        indices: torch.Tensor,
+        *,
+        device: Union[str, torch.device],
+        cache_device: Union[str, torch.device, None] = None,
+    ) -> Any:
+        return self.io.forward_batch(indices, device=device, cache_device=cache_device)
+
+    def finish(self) -> None:
+        self.io.finish()
 
 
 # ---------------------------------------------------------------------------
