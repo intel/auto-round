@@ -16,8 +16,7 @@ from typing import Any
 
 import torch
 
-from auto_round.algorithms.transforms.quarot.config import RotationConfig
-from auto_round.algorithms.transforms.quarot.transforms import HADAMARDS
+from auto_round.algorithms.transforms.quarot import HADAMARDS, RotationConfig
 from auto_round.compressors.utils import is_mx_fp, is_nv_fp
 from auto_round.utils import logger
 
