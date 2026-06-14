@@ -391,3 +391,84 @@ class TestAWQWeightClip:
         output = generate_prompt(model, tokenizer, device="cpu")
         assert len(output) > 0, "clip_as_init model should produce non-empty output"
 
+
+class TestAWQUseV2MXScaleSearch:
+    """Unit tests for AWQ's ``use_v2_mx_scale_search`` detection.
+
+    The flag must be True only when BOTH the terminal block quantizer resolves
+    to ``SignRoundV2Quantizer`` AND the weight ``data_type`` is an MXFP variant.
+    Regression guard: the block-quantizer config does not expose ``_alg_cls``,
+    so detection must go through the pipeline registry, not an ``_alg_cls``
+    string comparison (which always evaluated False before the fix).
+    """
+
+    @staticmethod
+    def _make_compressor(block_config):
+        import types
+
+        return types.SimpleNamespace(quantize_config=block_config, alg_configs=[block_config])
+
+    @staticmethod
+    def _awq_quantizer():
+        from auto_round.algorithms.transforms.awq.config import AWQConfig
+        from auto_round.algorithms.transforms.awq.quantizer import AWQQuantizer
+
+        return AWQQuantizer(AWQConfig())
+
+    @staticmethod
+    def _signroundv2_config(data_type=None):
+        from auto_round.algorithms.quantization.sign_round.config import SignRoundConfig
+        from auto_round.algorithms.registry import normalize_algorithm_config
+
+        cfg = normalize_algorithm_config(SignRoundConfig(iters=2, enable_alg_ext=True))
+        assert type(cfg).__name__ == "SignRoundV2Config"
+        if data_type is not None:
+            cfg.data_type = data_type
+        return cfg
+
+    def test_signroundv2_block_is_detected(self):
+        """A normalized ``SignRoundConfig(enable_alg_ext=True)`` resolves to V2."""
+        q = self._awq_quantizer()
+        compressor = self._make_compressor(self._signroundv2_config())
+        assert q._block_quantizer_is_signroundv2(compressor) is True
+
+    def test_signround_v1_block_is_not_v2(self):
+        """A plain SignRound block quantizer must NOT be detected as V2."""
+        from auto_round.algorithms.quantization.sign_round.config import SignRoundConfig
+
+        q = self._awq_quantizer()
+        compressor = self._make_compressor(SignRoundConfig(iters=2))
+        assert q._block_quantizer_is_signroundv2(compressor) is False
+
+    def test_rtn_block_is_not_v2(self):
+        """An RTN block quantizer must NOT be detected as V2."""
+        from auto_round.algorithms.quantization.rtn.config import RTNConfig
+
+        q = self._awq_quantizer()
+        compressor = self._make_compressor(RTNConfig(disable_opt_rtn=True))
+        assert q._block_quantizer_is_signroundv2(compressor) is False
+
+    def test_use_v2_true_for_v2_block_and_mxfp(self):
+        """Flag is True for SignRoundV2 + MXFP weight data type."""
+        q = self._awq_quantizer()
+        compressor = self._make_compressor(self._signroundv2_config(data_type="mx_fp"))
+        assert q._resolved_data_type(compressor).startswith("mx_fp")
+        assert q._compute_use_v2_mx_scale_search(compressor) is True
+
+    def test_use_v2_false_for_v2_block_but_non_mxfp(self):
+        """Flag is False when the block is V2 but the data type is not MXFP."""
+        q = self._awq_quantizer()
+        compressor = self._make_compressor(self._signroundv2_config(data_type="int"))
+        assert q._compute_use_v2_mx_scale_search(compressor) is False
+
+    def test_use_v2_false_for_non_v2_block_with_mxfp(self):
+        """Flag is False when the data type is MXFP but the block is not V2."""
+        from auto_round.algorithms.quantization.sign_round.config import SignRoundConfig
+
+        q = self._awq_quantizer()
+        block = SignRoundConfig(iters=2)
+        block.data_type = "mx_fp"
+        compressor = self._make_compressor(block)
+        assert q._compute_use_v2_mx_scale_search(compressor) is False
+
+
