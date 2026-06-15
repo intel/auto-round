@@ -30,6 +30,10 @@ Low-bit weight-only linear for LLM inference. Both CPU and XPU are supported.
 | `_repack_quantized_weight` | Repack raw qweight/qzero/scale → ARK format | CPU / XPU |
 | `_unpack_weight` | Unpack ARK-format weight back to full precision | CPU / XPU |
 
+### Key Features
+
+> **W4A8 / W2A8 Rescale (QQQ-style)** — On XPU, ARK supports \~[QQQ](https://github.com/HandH1998/QQQ)-style compute: low-bit weights (INT2/INT4) are re-scaled to INT8 and computed via INT8 GEMM, avoiding FP16 dequantization for better throughput. Enabled automatically via environment variable `ARK_AUTO_S8`; see [xpu_wrapper.hpp](auto_round_kernel/wrapper/include/xpu_wrapper.hpp).
+
 ### Supported Data Types
 
 #### CPU
