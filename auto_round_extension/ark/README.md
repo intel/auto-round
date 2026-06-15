@@ -11,6 +11,16 @@ AutoRound Kernel (ARK) is a low-bit acceleration library for Intel platform, pro
 **Validated CPU:** Intel Xeon Scalable (Sapphire Rapids / Emerald Rapids), Intel Xeon 6 (Sierra Forest / Granite Rapids)<br>
 **Validated GPU:** Intel Arc B-Series / Arc Pro B-Series (Battlemage)
 
+### Highlights — Ecosystem Integration
+
+ARK kernels are integrated into the following projects:
+
+| Project | Integration | Description |
+|---------|-------------|-------------|
+| [vllm](https://github.com/vllm-project/vllm) | [`inc.py`](https://github.com/vllm-project/vllm/blob/v0.21.0/vllm/model_executor/layers/quantization/inc.py#L617) | `INCXPUARKLinearMethod` — weight-only quantized linear on XPU via `auto_round_kernel.qlinear.QuantLinear`, supports GPTQ (no-zp / +zp) and AWQ formats |
+| [vllm-omni](https://github.com/vllm-project/vllm-omni) | [`sage_attn.py`](https://github.com/vllm-project/vllm-omni/blob/f8340d078e4e9c3b793bd92d55d891b29703f0a8/vllm_omni/diffusion/attention/backends/sage_attn.py#L27) | `SageAttentionBackend` — diffusion model attention on XPU via `ARK.sagev1` |
+| [auto-round](https://github.com/intel/auto-round) | [`backend.py`](https://github.com/intel/auto-round/blob/main/auto_round/inference/backend.py#L531) | 6 backends registered: `auto_round_kernel[_xpu]` (GPTQ no-zp, CPU/XPU), `auto_round_kernel_zp[_xpu]` (GPTQ +zp, CPU/XPU), `auto_round_kernel_awq[_xpu]` (AWQ, CPU/XPU) — provides INT2/INT4/INT8 quantized linear for all packing formats |
+
 ---
 
 ## 1. Linear (Weight-Only Quantized GEMM)
@@ -21,7 +31,7 @@ Low-bit weight-only linear for LLM inference. Both CPU and XPU are supported.
 
 | API | Description | Platform |
 |-----|-------------|----------|
-| `QuantLinear` | Unified PyTorch module (GPTQ/AWQ/raw quantized checkpoint) | CPU / XPU |
+| `QuantLinear` ([example ↓](#example)) | Unified PyTorch module (GPTQ/AWQ/raw quantized checkpoint) | CPU / XPU |
 | `QuantLinearGPTQ` | GPTQ-format checkpoint loader | CPU / XPU |
 | `QuantLinearAWQ` | AWQ-format checkpoint loader | CPU / XPU |
 | `QuantLinearFP8` | FP8 weight-only linear | CPU / XPU |
@@ -53,26 +63,44 @@ Low-bit weight-only linear for LLM inference. Both CPU and XPU are supported.
 
 <sup>[1]</sup> INT8 compute includes dynamic activation quantization; results are dequantized to floating-point.
 
-### Minimal Usage
+### Example
 
 ```python
-from auto_round_kernel.qlinear import QuantLinear
+import auto_round_kernel as ark
 
-qlinear = QuantLinear(
-    bits=4,
-    group_size=128,
-    sym=True,
-    in_features=in_features,
-    out_features=out_features,
-    bias=bias is not None,
-    weight_dtype=weight_dtype,
+# Prepare quantized weight: qweight [K, N] int4/int2, scale [K/G, N] fp16/fp32, zp [K/G, N] int4/int2
+packw = ark.repack_quantized_weight(
+    qweight, scale, zp,
+    blocksize=128,
+    compute_type="fp16",
+    weight_type="int4",
+    scale_type="fp16",
+    asym=False,
 )
-# Load qweight, qzeros, scales, and bias from checkpoint.
-qlinear.post_init()
-y = qlinear(x)
+
+# Run weight-only quantized GEMM: activation [M, K] → output [M, N]
+output = ark.woqgemm(
+    activation,        # [M, K] fp16/bf16
+    packw,             # packed weight blob (INT8)
+    bias,              # [1, N] optional bias
+    n,                 # output features
+    k,                 # input features
+    groupsize=128,
+    compute_type="fp16",
+    weight_type="int4",
+    scale_type="fp16",
+    asym=False,
+)
+
+# Decompose back to full precision for verification
+decompressed = ark.unpack_weight(
+    packw, dtype=torch.float16, n=n, k=k,
+    groupsize=128, compute_type="fp16",
+    weight_type="int4", scale_type="fp16", asym=False,
+)
 ```
 
-See [test_weightonly.py](test/test_weightonly.py) for an end-to-end example of weight repack, verification, and woqgemm execution.
+See [test_weightonly.py](test/test_weightonly.py) for an end-to-end example of weight repack, verification, and woqgemm execution on CPU and XPU.
 
 ---
 
@@ -84,7 +112,7 @@ Grouped GEMM for MoE layers where different experts process varying numbers of t
 
 | Function | Description | Platform | Activation Dtype | Weight Dtype |
 |----------|-------------|----------|:----------------:|:------------:|
-| `ark.moe_gemm(...)` | Grouped GEMM across experts | XPU | FP16 / BF16 | FP16 / BF16 |
+| `ark.moe_gemm(...)` ([example ↓](#example-1)) | Grouped GEMM across experts | XPU | FP16 / BF16 | FP16 / BF16 |
 | `ark.moe_gemm(...)` (WIP) | Grouped GEMM with INT4 weight | XPU | FP16 / BF16 | INT4 🚧 |
 | `ark.moe_gemm(...)` (WIP) | Grouped GEMM with INT2 weight | XPU | FP16 / BF16 | INT2 🚧 |
 | `ark.moe_gemm(...)` (WIP) | Grouped GEMM with INT8 weight | XPU | FP16 / BF16 | INT8 🚧 |
@@ -101,7 +129,7 @@ Grouped GEMM for MoE layers where different experts process varying numbers of t
 | scales (optional) | `[num_experts, N]` | FP16 / BF16 |
 | **output** | `[total_tokens, N]` | same as activations |
 
-### Minimal Usage
+### Example
 
 ```python
 # FP16/BF16 MoE
@@ -123,7 +151,7 @@ ARK provides a full family of scaled dot-product attention kernels on XPU, rangi
 
 | Function | Description | Q/K/V Input | PV Precision | Head Dim |
 |----------|-------------|-------------|:------------:|:--------:|
-| `ark.sdpa` | FP16/BF16 SDPA (flash attention) | FP16 / BF16 | FP16 | 64, 96, 128, 192 |
+| `ark.sdpa` ([example ↓](#drop-in-sdpa-replacement)) | FP16/BF16 SDPA (flash attention) | FP16 / BF16 | FP16 | 64, 96, 128, 192 |
 | `ark.sage` | Low-level INT8 SAGE (pre-quantized Q/K) | INT8 (Q/K), FP16 (V) | FP16 | 64, 128 |
 | `ark.sage_pvi8` | Low-level INT8 SAGE (pre-quantized Q/K/V) | INT8 | INT8 | 64, 128 |
 | `ark.sagev1` | High-level FP16 → internal Q/K quant → SAGE | FP16 / BF16 | FP16 | 64, 128 |
