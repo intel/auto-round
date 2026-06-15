@@ -39,6 +39,20 @@ def _ensure_triton_xpu_available(query: torch.Tensor, head_dim: int) -> None:
         raise ValueError(f"Unsupported head_dim={head_dim} for Triton-XPU preprocess")
 
 
+def _sequence_mean_native_layout(tensor: torch.Tensor, tensor_layout: str) -> torch.Tensor:
+    layout = tensor_layout.upper()
+    if layout == "HND":
+        return tensor.mean(dim=2).contiguous()
+    return tensor.mean(dim=1).contiguous()
+
+
+def _slice_sequence_native_layout(tensor: torch.Tensor, tensor_layout: str, start: int, end: int) -> torch.Tensor:
+    layout = tensor_layout.upper()
+    if layout == "HND":
+        return tensor[:, :, start:end, :]
+    return tensor[:, start:end, :, :]
+
+
 @triton.jit
 def _triton_bmm_pool_sim_simmean_fuse_quant_xpu(
     x_ptr,
@@ -49,6 +63,14 @@ def _triton_bmm_pool_sim_simmean_fuse_quant_xpu(
     scale_ptr,
     simthreshd1_ptr,
     N,
+    x_stride_b,
+    x_stride_s,
+    x_stride_h,
+    x_stride_d,
+    xq_stride_b,
+    xq_stride_s,
+    xq_stride_h,
+    xq_stride_d,
     D: tl.constexpr,
     BS: tl.constexpr,
     FUSE_MEAN: tl.constexpr,
@@ -58,10 +80,15 @@ def _triton_bmm_pool_sim_simmean_fuse_quant_xpu(
     nb = tl.program_id(2)
     H = tl.num_programs(1)
 
-    block_offset = (b * H * N * D) + (h * N * D) + (nb * BS * D)
     row_ids = nb * BS + tl.arange(0, BS)
     xmask = row_ids[:, None] < N
-    x_ptrs = x_ptr + block_offset + tl.arange(0, BS)[:, None] * D + tl.arange(0, D)[None, :]
+    x_ptrs = (
+        x_ptr
+        + b * x_stride_b
+        + row_ids[:, None] * x_stride_s
+        + h * x_stride_h
+        + tl.arange(0, D)[None, :] * x_stride_d
+    )
     x = tl.load(x_ptrs, mask=xmask, other=0.0)
     valid_rows = N - nb * BS
     bs_eff = tl.minimum(valid_rows, BS)
@@ -94,7 +121,13 @@ def _triton_bmm_pool_sim_simmean_fuse_quant_xpu(
     x_int8 = x_fp32 / scale
     x_int8 = x_int8 + 0.5 * tl.where(x_int8 >= 0, 1, -1)
     x_int8 = x_int8.to(tl.int8)
-    x_quant_ptrs = x_quant_ptr + block_offset + tl.arange(0, BS)[:, None] * D + tl.arange(0, D)[None, :]
+    x_quant_ptrs = (
+        x_quant_ptr
+        + b * xq_stride_b
+        + row_ids[:, None] * xq_stride_s
+        + h * xq_stride_h
+        + tl.arange(0, D)[None, :] * xq_stride_d
+    )
     scale_ptrs = scale_ptr + (b * H * num_blocks) + (h * num_blocks) + nb
     tl.store(x_quant_ptrs, x_int8, mask=xmask)
     tl.store(scale_ptrs, scale)
@@ -187,18 +220,29 @@ def _fill_block_map_torch(final_map: torch.Tensor, num_to_select: torch.Tensor, 
 
 
 def _get_pool_sim_triton_simmean_fuse_quant(
-    x_hnd: torch.Tensor,
+    x: torch.Tensor,
     x_mean: torch.Tensor | None,
     block_size: int,
     simthreshd1: torch.Tensor,
+    tensor_layout: str,
 ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
-    x = x_hnd.contiguous()
-    bsz, num_heads, seq_len, head_dim = x.shape
+    x = x.contiguous()
+    layout = tensor_layout.upper()
+    if layout == "HND":
+        bsz, num_heads, seq_len, head_dim = x.shape
+        x_stride_b, x_stride_h, x_stride_s, x_stride_d = x.stride()
+    else:
+        bsz, seq_len, num_heads, head_dim = x.shape
+        x_stride_b, x_stride_s, x_stride_h, x_stride_d = x.stride()
     num_blocks = (seq_len + block_size - 1) // block_size
     pool = torch.empty((bsz, num_heads, num_blocks, head_dim), device=x.device, dtype=x.dtype)
     sim_u8 = torch.empty((bsz, num_heads, num_blocks), device=x.device, dtype=torch.uint8)
     x_quant = torch.empty_like(x, dtype=torch.int8)
     x_scale = torch.empty((bsz, num_heads, num_blocks), device=x.device, dtype=torch.float32)
+    if layout == "HND":
+        xq_stride_b, xq_stride_h, xq_stride_s, xq_stride_d = x_quant.stride()
+    else:
+        xq_stride_b, xq_stride_s, xq_stride_h, xq_stride_d = x_quant.stride()
     mean = None if x_mean is None else x_mean.contiguous().squeeze(-2)
     grid = (bsz, num_heads, num_blocks)
     num_warps = 4 if block_size <= 64 else 8
@@ -211,6 +255,14 @@ def _get_pool_sim_triton_simmean_fuse_quant(
         x_scale,
         simthreshd1.contiguous(),
         seq_len,
+        x_stride_b,
+        x_stride_s,
+        x_stride_h,
+        x_stride_d,
+        xq_stride_b,
+        xq_stride_s,
+        xq_stride_h,
+        xq_stride_d,
         D=head_dim,
         BS=block_size,
         FUSE_MEAN=mean is not None,
@@ -220,24 +272,27 @@ def _get_pool_sim_triton_simmean_fuse_quant(
 
 
 def _run_triton_xpu_preprocess(ctx: Any) -> dict[str, Any]:
-    key_mean = ctx.key_hnd.mean(dim=-2, keepdim=True) if ctx.smooth_k else None
+    key_mean = _sequence_mean_native_layout(ctx.key, ctx.tensor_layout) if ctx.smooth_k else None
     pooled_q, _, q_int8_hnd, q_scale = _get_pool_sim_triton_simmean_fuse_quant(
-        ctx.query_hnd,
+        ctx.query,
         None,
         ctx.quant_block_size,
         ctx.simthreshd1,
+        ctx.tensor_layout,
     )
     pooled_k, sim_kblocks, k_int8_hnd, k_scale = _get_pool_sim_triton_simmean_fuse_quant(
-        ctx.key_hnd,
+        ctx.key,
         key_mean,
         ctx.quant_block_size,
         ctx.simthreshd1[: ctx.num_heads_kv],
+        ctx.tensor_layout,
     )
     pooled_q_for_routing, sim_q_for_routing, _, _ = _get_pool_sim_triton_simmean_fuse_quant(
-        ctx.query_hnd,
+        ctx.query,
         None,
         ctx.query_tile_tokens,
         ctx.simthreshd1,
+        ctx.tensor_layout,
     )
 
     kv_head_index = torch.arange(ctx.num_heads_q, device=ctx.query.device, dtype=torch.int64) // (
@@ -287,8 +342,8 @@ def _run_triton_xpu_preprocess(ctx: Any) -> dict[str, Any]:
     lut, valid_block_num = _block_map_lut_triton(raw_block_map)
 
     return {
-        "query_i8_hnd": q_int8_hnd,
-        "key_i8_hnd": k_int8_hnd,
+        "query_i8": q_int8_hnd,
+        "key_i8": k_int8_hnd,
         "qscale": q_scale,
         "kscale": k_scale,
         "lut": lut,

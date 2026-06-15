@@ -1244,6 +1244,19 @@ def _query_tile_tokens_for_head_dim(head_dim: int) -> int:
     raise ValueError(f"Unsupported head_dim={head_dim}; supported: 64, 128")
 
 
+def _sequence_mean_native_layout(tensor: torch.Tensor, tensor_layout: str) -> torch.Tensor:
+    layout = _normalize_tensor_layout(tensor_layout)
+    seq_dim = 2 if layout == "HND" else 1
+    return tensor.mean(dim=seq_dim).contiguous()
+
+
+def _slice_sequence_native_layout(tensor: torch.Tensor, tensor_layout: str, start: int, end: int) -> torch.Tensor:
+    layout = _normalize_tensor_layout(tensor_layout)
+    if layout == "HND":
+        return tensor[:, :, start:end, :]
+    return tensor[:, start:end, :, :]
+
+
 def _to_hnd(tensor: torch.Tensor, tensor_layout: str) -> torch.Tensor:
     layout = _normalize_tensor_layout(tensor_layout)
     if layout == "HND":
@@ -1299,25 +1312,39 @@ def _block_map_lut_torch(block_map: torch.Tensor) -> tuple[torch.Tensor, torch.T
 
 
 def _pool_sim_and_quant_torch(
-    x_hnd: torch.Tensor,
+    x: torch.Tensor,
     block_size: int,
     sim_threshold: torch.Tensor,
+    tensor_layout: str,
     mean_subtract: torch.Tensor | None = None,
 ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
-    bsz, num_heads, seq_len, head_dim = x_hnd.shape
+    layout = _normalize_tensor_layout(tensor_layout)
+    if layout == "HND":
+        bsz, num_heads, seq_len, head_dim = x.shape
+    else:
+        bsz, seq_len, num_heads, head_dim = x.shape
     num_blocks = (seq_len + block_size - 1) // block_size
     pad_tokens = num_blocks * block_size - seq_len
-    x_pad = torch.nn.functional.pad(x_hnd, (0, 0, 0, pad_tokens))
-    x_blocks = x_pad.view(bsz, num_heads, num_blocks, block_size, head_dim).to(torch.float32)
+    if layout == "HND":
+        x_pad = torch.nn.functional.pad(x, (0, 0, 0, pad_tokens))
+        x_blocks = x_pad.view(bsz, num_heads, num_blocks, block_size, head_dim).to(torch.float32)
+    else:
+        if pad_tokens:
+            pad = torch.zeros((bsz, pad_tokens, num_heads, head_dim), dtype=x.dtype, device=x.device)
+            x_pad = torch.cat([x, pad], dim=1)
+        else:
+            x_pad = x
+        x_blocks = x_pad.view(bsz, num_blocks, block_size, num_heads, head_dim).permute(0, 3, 1, 2, 4).to(torch.float32)
 
-    valid_tokens = torch.ones((seq_len,), device=x_hnd.device, dtype=torch.float32)
+    valid_tokens = torch.ones((seq_len,), device=x.device, dtype=torch.float32)
     if pad_tokens:
         valid_tokens = torch.nn.functional.pad(valid_tokens, (0, pad_tokens))
     valid_mask = valid_tokens.view(1, 1, num_blocks, block_size, 1)
     counts = valid_mask.sum(dim=-2).clamp_min_(1.0)
 
     if mean_subtract is not None:
-        x_blocks = x_blocks - mean_subtract.to(torch.float32).unsqueeze(-2)
+        mean_values = mean_subtract.squeeze(-2) if mean_subtract.ndim == 4 else mean_subtract
+        x_blocks = x_blocks - mean_values.to(torch.float32).unsqueeze(2).unsqueeze(2)
     x_blocks = x_blocks * valid_mask
 
     pooled = x_blocks.sum(dim=-2) / counts
@@ -1333,9 +1360,16 @@ def _pool_sim_and_quant_torch(
     q = x_blocks / scales.unsqueeze(-1).unsqueeze(-1)
     q = torch.where(q >= 0, torch.floor(q + 0.5), torch.ceil(q - 0.5))
     q = q.clamp_(-127, 127).to(torch.int8)
-    q = q.view(bsz, num_heads, num_blocks * block_size, head_dim)[:, :, :seq_len, :].contiguous()
+    if layout == "HND":
+        q_native = q.view(bsz, num_heads, num_blocks * block_size, head_dim)[:, :, :seq_len, :].contiguous()
+    else:
+        q_native = (
+            q.permute(0, 2, 3, 1, 4)
+            .reshape(bsz, num_blocks * block_size, num_heads, head_dim)[:, :seq_len, :, :]
+            .contiguous()
+        )
 
-    return pooled.to(x_hnd.dtype), sim_blocks.contiguous(), q, scales.unsqueeze(-1).to(torch.float32).contiguous()
+    return pooled.to(x.dtype), sim_blocks.contiguous(), q_native, scales.unsqueeze(-1).to(torch.float32).contiguous()
 
 
 def _get_sparse_block_sparsity_stats(
@@ -1358,8 +1392,6 @@ def _get_sparse_block_sparsity_stats(
 class _SpargePreprocessContext:
     query: torch.Tensor
     key: torch.Tensor
-    query_hnd: torch.Tensor
-    key_hnd: torch.Tensor
     batch: int
     num_heads_q: int
     num_heads_kv: int
@@ -1419,8 +1451,6 @@ def _build_sparge_preprocess_context(
     return _SpargePreprocessContext(
         query=query,
         key=key,
-        query_hnd=_to_hnd(query, tensor_layout),
-        key_hnd=_to_hnd(key, tensor_layout),
         batch=B,
         num_heads_q=Hq,
         num_heads_kv=Hkv,
@@ -1441,16 +1471,18 @@ def _build_sparge_preprocess_context(
 
 
 def _sparge_preprocess_topk_torch_impl(ctx: _SpargePreprocessContext) -> dict[str, Any]:
-    key_mean = ctx.key_hnd.mean(dim=-2, keepdim=True) if ctx.smooth_k else None
+    key_mean = _sequence_mean_native_layout(ctx.key, ctx.tensor_layout) if ctx.smooth_k else None
     pooled_q, sim_qblocks, q_int8_hnd, q_scale = _pool_sim_and_quant_torch(
-        ctx.query_hnd,
+        ctx.query,
         ctx.quant_block_size,
         ctx.simthreshd1,
+        ctx.tensor_layout,
     )
     pooled_k, sim_kblocks, k_int8_hnd, k_scale = _pool_sim_and_quant_torch(
-        ctx.key_hnd,
+        ctx.key,
         ctx.quant_block_size,
         ctx.simthreshd1[: ctx.num_heads_kv],
+        ctx.tensor_layout,
         key_mean,
     )
 
@@ -1460,16 +1492,17 @@ def _sparge_preprocess_topk_torch_impl(ctx: _SpargePreprocessContext) -> dict[st
         for qtile in range(ctx.num_q_tiles):
             qblk_start = qtile * ctx.blocks_per_qtile
             qblk_end = min(qblk_start + ctx.blocks_per_qtile, pooled_q.size(2))
-            tile_tokens = ctx.query_hnd[
-                :,
-                :,
-                qblk_start * ctx.quant_block_size : min((qblk_end * ctx.quant_block_size), ctx.seq_len_q),
-                :,
-            ]
+            tile_tokens = _slice_sequence_native_layout(
+                ctx.query,
+                ctx.tensor_layout,
+                qblk_start * ctx.quant_block_size,
+                min((qblk_end * ctx.quant_block_size), ctx.seq_len_q),
+            )
             pooled_tile, sim_tile, _, _ = _pool_sim_and_quant_torch(
                 tile_tokens,
                 ctx.query_tile_tokens,
                 ctx.simthreshd1,
+                ctx.tensor_layout,
             )
             tile_pooled_q.append(pooled_tile[:, :, 0, :])
             tile_sim_q.append(sim_tile[:, :, 0])
@@ -1522,8 +1555,8 @@ def _sparge_preprocess_topk_torch_impl(ctx: _SpargePreprocessContext) -> dict[st
     raw_block_map = final_tile_map.index_select(2, q_block_to_tile).contiguous()
 
     return {
-        "query_i8_hnd": q_int8_hnd,
-        "key_i8_hnd": k_int8_hnd,
+        "query_i8": q_int8_hnd,
+        "key_i8": k_int8_hnd,
         "qscale": q_scale,
         "kscale": k_scale,
         "raw_block_map": raw_block_map,
@@ -1551,8 +1584,8 @@ def _finalize_sparge_preprocess_outputs(
     )
 
     return {
-        "query_i8": _from_hnd(backend_result["query_i8_hnd"], ctx.tensor_layout),
-        "key_i8": _from_hnd(backend_result["key_i8_hnd"], ctx.tensor_layout),
+        "query_i8": backend_result["query_i8"].contiguous(),
+        "key_i8": backend_result["key_i8"].contiguous(),
         "qscale": backend_result["qscale"].contiguous(),
         "kscale": backend_result["kscale"].contiguous(),
         "lut": lut,
@@ -1717,17 +1750,19 @@ def sparge_preprocess_topk_decode(
     simthreshd1_tensor = _normalize_per_head_hparam(simthreshd1, Hq, query.device, "simthreshd1")
     topk_tensor = _normalize_per_head_hparam(topk, Hq, query.device, "topk").clamp_(0.0, 1.0)
 
-    _, _, q_int8_hnd, q_scale = _pool_sim_and_quant_torch(query_hnd, quant_block_size, simthreshd1_tensor)
+    _, _, q_int8_hnd, q_scale = _pool_sim_and_quant_torch(query_hnd, quant_block_size, simthreshd1_tensor, "HND")
     pooled_q_route, sim_q_route, _, _ = _pool_sim_and_quant_torch(
         query_hnd,
         _query_tile_tokens_for_head_dim(D),
         simthreshd1_tensor,
+        "HND",
     )
     key_mean = key_total_hnd.mean(dim=-2, keepdim=True) if smooth_k else None
     pooled_k, sim_kblocks, key_i8_total_hnd, k_scale_total = _pool_sim_and_quant_torch(
         key_total_hnd,
         quant_block_size,
         simthreshd1_tensor[:Hkv],
+        "HND",
         key_mean,
     )
 

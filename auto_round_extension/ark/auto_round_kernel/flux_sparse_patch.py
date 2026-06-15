@@ -1,5 +1,6 @@
 import contextlib
 import os
+import time
 import warnings
 from dataclasses import dataclass
 
@@ -50,12 +51,22 @@ class FluxSparseAttentionStats:
     unsupported_fallbacks: int = 0
     runtime_fallbacks: int = 0
     sparse_sparsity_sum: float = 0.0
+    timed_calls: int = 0
+    processor_time_ms_sum: float = 0.0
+    processor_time_ms_min: float = float("inf")
+    processor_time_ms_max: float = 0.0
 
     @property
     def avg_sparsity(self) -> float:
         if self.sparse_calls == 0:
             return 0.0
         return self.sparse_sparsity_sum / self.sparse_calls
+
+    @property
+    def avg_processor_time_ms(self) -> float:
+        if self.timed_calls == 0:
+            return 0.0
+        return self.processor_time_ms_sum / self.timed_calls
 
 
 class FluxSparseAttnProcessor:
@@ -67,13 +78,20 @@ class FluxSparseAttnProcessor:
         smooth_k: bool,
         topk: float,
         attention_sink: bool,
+        debug_timing: bool,
     ):
         self.original_processor = original_processor
         self.stats = stats
         self.smooth_k = smooth_k
         self.topk = topk
         self.attention_sink = attention_sink
+        self.debug_timing = debug_timing
         self._warned_runtime_fallback = False
+
+    @staticmethod
+    def _synchronize_for_timing(device: torch.device) -> None:
+        if device.type == "xpu" and hasattr(torch, "xpu") and hasattr(torch.xpu, "synchronize"):
+            torch.xpu.synchronize()
 
     def __call__(
         self,
@@ -90,29 +108,38 @@ class FluxSparseAttnProcessor:
         else:
             self.stats.joint_stream_calls += 1
 
-        if hidden_states.device.type != "xpu" or hidden_states.dtype not in (torch.float16, torch.bfloat16):
-            self.stats.unsupported_fallbacks += 1
-            return self.original_processor(
-                attn,
-                hidden_states,
-                encoder_hidden_states,
-                attention_mask,
-                image_rotary_emb,
-                **kwargs,
-            )
-
-        if encoder_hidden_states is not None and attn.added_kv_proj_dim is None:
-            self.stats.unsupported_fallbacks += 1
-            return self.original_processor(
-                attn,
-                hidden_states,
-                encoder_hidden_states,
-                attention_mask,
-                image_rotary_emb,
-                **kwargs,
-            )
+        call_kind = "single" if encoder_hidden_states is None else "joint"
+        call_status = "sparse"
+        start_time = None
+        if self.debug_timing:
+            self._synchronize_for_timing(hidden_states.device)
+            start_time = time.perf_counter()
 
         try:
+            if hidden_states.device.type != "xpu" or hidden_states.dtype not in (torch.float16, torch.bfloat16):
+                self.stats.unsupported_fallbacks += 1
+                call_status = "fallback_unsupported_device_or_dtype"
+                return self.original_processor(
+                    attn,
+                    hidden_states,
+                    encoder_hidden_states,
+                    attention_mask,
+                    image_rotary_emb,
+                    **kwargs,
+                )
+
+            if encoder_hidden_states is not None and attn.added_kv_proj_dim is None:
+                self.stats.unsupported_fallbacks += 1
+                call_status = "fallback_unsupported_joint_layout"
+                return self.original_processor(
+                    attn,
+                    hidden_states,
+                    encoder_hidden_states,
+                    attention_mask,
+                    image_rotary_emb,
+                    **kwargs,
+                )
+
             query, key, value, encoder_query, encoder_key, encoder_value = _get_qkv_projections(
                 attn,
                 hidden_states,
@@ -151,7 +178,6 @@ class FluxSparseAttnProcessor:
                 seq_kv=key.shape[1],
                 device=query.device,
             )
-
             hidden_states, sparsity = ark.sparge_sage2_attn_meansim_topk_xpu(
                 query,
                 key,
@@ -183,6 +209,7 @@ class FluxSparseAttnProcessor:
             return hidden_states
         except Exception as exc:  # noqa: BLE001
             self.stats.runtime_fallbacks += 1
+            call_status = "fallback_runtime"
             if not self._warned_runtime_fallback:
                 warnings.warn(
                     f"Flux sparse attention fell back to the original processor after a runtime error: {exc}",
@@ -197,6 +224,22 @@ class FluxSparseAttnProcessor:
                 image_rotary_emb,
                 **kwargs,
             )
+        finally:
+            if self.debug_timing and start_time is not None:
+                self._synchronize_for_timing(hidden_states.device)
+                elapsed_ms = (time.perf_counter() - start_time) * 1000.0
+                self.stats.timed_calls += 1
+                self.stats.processor_time_ms_sum += elapsed_ms
+                self.stats.processor_time_ms_min = min(self.stats.processor_time_ms_min, elapsed_ms)
+                self.stats.processor_time_ms_max = max(self.stats.processor_time_ms_max, elapsed_ms)
+                print(
+                    "[flux_sparse][timing]"
+                    f" call={self.stats.timed_calls}"
+                    f" kind={call_kind}"
+                    f" status={call_status}"
+                    f" hidden_shape={tuple(hidden_states.shape)}"
+                    f" elapsed_ms={elapsed_ms:.3f}"
+                )
 
 
 @contextlib.contextmanager
@@ -206,6 +249,7 @@ def patch_flux_sparse_attention(
     smooth_k: bool = True,
     topk: float = 0.75,
     attention_sink: bool = False,
+    debug_timing: bool = False,
 ):
     ensure_ark_sparse_binding()
     originals: list[tuple[FluxAttention, object]] = []
@@ -221,6 +265,7 @@ def patch_flux_sparse_attention(
                     smooth_k=smooth_k,
                     topk=topk,
                     attention_sink=attention_sink,
+                    debug_timing=debug_timing,
                 )
             )
             originals.append((module, original))
@@ -238,4 +283,5 @@ def patch_flux_sparse_attention_from_env(transformer):
         smooth_k=_parse_bool_env("FLUX_SPARSE_SMOOTH_K", True),
         topk=float(os.getenv("FLUX_SPARSE_TOPK", "0.75")),
         attention_sink=_parse_bool_env("FLUX_SPARSE_ATTENTION_SINK", False),
+        debug_timing=_parse_bool_env("FLUX_SPARSE_DEBUG_TIMING", False),
     )
