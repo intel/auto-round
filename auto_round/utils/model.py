@@ -1002,7 +1002,7 @@ def is_mllm_model(model_or_path: Union[str, torch.nn.Module], platform: str = No
                 break
 
     # Cache by the original path key (model_path may have been resolved above)
-    original_key = model_or_path if isinstance(model_or_path, str) else model_or_path.name_or_path
+    original_key = model_or_path if isinstance(model_or_path, str) else model_or_path._name_or_path
     _is_mllm_model_cache[original_key] = result
     return result
 
