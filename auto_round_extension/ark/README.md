@@ -33,8 +33,7 @@ AutoRound Kernel provides weight-only linear computational capabilities for LLM 
 | FP8 (E4M3, E5M2) |      FP16      | FP16 / FP8 (E8M0) |     NA     |
 
 <sup>[1]</sup>: Quantization algorithms for integer types: symmetric or asymmetric.  
-<sup>[2]</sup>: Includes dynamic activation quantization; results are dequantized to floating-point formats.  
-  
+<sup>[2]</sup>: Includes dynamic activation quantization; results are dequantized to floating-point formats.    
 
 ## Installation
 ### 1. Install via pip
