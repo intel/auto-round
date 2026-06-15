@@ -110,7 +110,7 @@ function run_unit_test_llmc() {
     cd "${BUILD_SOURCESDIRECTORY}" || exit 1
     rm -rf /root/.venv
     uv venv --python=3.12 /root/.venv
-    uv pip install -U pytest-cov pytest-html
+    uv pip install -U pytest-cov
     BUILD_TYPE="nightly" uv pip install \
         -r test/test_cuda/requirements_llmc.txt \
         --extra-index-url https://download.pytorch.org/whl/cu130 \
@@ -139,7 +139,7 @@ function run_unit_test_sglang() {
     cd "${BUILD_SOURCESDIRECTORY}" || exit 1
     rm -rf /root/.venv
     uv venv --python=3.12 /root/.venv
-    uv pip install -U pytest-cov pytest-html
+    uv pip install -U pytest-cov
     uv pip install -r test/test_cuda/requirements_sglang.txt \
         --prerelease=allow \
         --extra-index-url https://download.pytorch.org/whl/cu130 \
@@ -167,7 +167,7 @@ function run_unit_test_vllm() {
     cd "${BUILD_SOURCESDIRECTORY}" || exit 1
     rm -rf /root/.venv
     uv venv --python=3.12 /root/.venv
-    uv pip install -U pytest-cov pytest-html
+    uv pip install -U pytest-cov
     uv pip install -r test/test_cuda/requirements_vllm.txt \
         --extra-index-url https://download.pytorch.org/whl/cu130 \
         --index-strategy unsafe-best-match

@@ -8,7 +8,7 @@ function setup_environment() {
     export TZ='Asia/Shanghai'
     export TQDM_MININTERVAL=60
     export HF_HUB_DISABLE_PROGRESS_BARS=1
-    pip install pytest-cov pytest-html
+    pip install pytest-cov
     pip list
     echo "##[endgroup]"
 
@@ -34,16 +34,14 @@ function run_unit_test() {
         echo "##[group]Running ${test_file} in HPU lazy mode..."
         local ut_log_name="${LOG_DIR}/unittest_lazy_${test_basename}.log"
         PT_HPU_LAZY_MODE=1 pytest --cov="${auto_round_path}" \
-            --cov-report= --html=report.html --self-contained-html \
-            --cov-report xml:coverage.xml --cov-append -vs --disable-warnings \
+            --cov-report= --cov-report xml:coverage.xml --cov-append -vs --disable-warnings \
             ${test_file} 2>&1 | tee ${ut_log_name}
         echo "##[endgroup]"
 
         echo "##[group]Running ${test_file} in HPU compile mode..."
         local ut_log_name="${LOG_DIR}/unittest_compile_${test_basename}.log"
         PT_HPU_LAZY_MODE=0 pytest --mode compile --cov="${auto_round_path}" \
-            --cov-report= --html=report.html --self-contained-html \
-            --cov-report xml:coverage.xml --cov-append -vs --disable-warnings \
+            --cov-report= --cov-report xml:coverage.xml --cov-append -vs --disable-warnings \
             ${test_file} 2>&1 | tee ${ut_log_name}
         echo "##[endgroup]"
     done
@@ -69,9 +67,9 @@ function print_summary() {
 function collect_log() {
     python /auto-round/.azure-pipelines/scripts/ut/collect_result.py \
         --test-type "Unit Tests" --log-pattern "unittest_*.log" --log-dir ${LOG_DIR} --summary-log ${SUMMARY_LOG}
-    cp report.html ${LOG_DIR}/
     cp coverage.xml ${LOG_DIR}/
     cp .coverage "${LOG_DIR}/.coverage"
+    python -m coverage html -d "${LOG_DIR}/htmlcov"
 }
 
 function print_coverage() {
