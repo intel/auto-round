@@ -225,7 +225,7 @@ class BlockIO:
             raise ValueError(f"Input source {source.name} is unavailable for this block.")
         return self._select_inputs(input_ids, self._input_others, indices)
 
-    def forward_batch(
+    def forward_block_batch(
         self,
         indices: torch.Tensor,
         *,
@@ -265,7 +265,7 @@ class BlockIO:
             previous_source = self._active_source
             self._active_source = source
             try:
-                output = self.forward_batch(
+                output = self.forward_block_batch(
                     indices, device=device_manager.device, cache_device=quantizer.compress_context.cache_device
                 )
             finally:
@@ -319,7 +319,7 @@ class BlockIO:
         self._fp_inputs = fp_inputs
         self._reference_outputs = reference_outputs
 
-    def reference_batch(self, indices: torch.Tensor, *, device=None) -> torch.Tensor:
+    def get_reference_outputs(self, indices: torch.Tensor, *, device=None) -> torch.Tensor:
         if self._reference_outputs is None:
             raise ValueError("Reference outputs have not been collected for this block.")
         output = torch.cat([self._reference_outputs[i] for i in indices], dim=self.batch_dim)
@@ -334,7 +334,7 @@ class BlockIO:
             current_input_ids = [input_ids[i] for i in indices]
         return sum(t.numel() for t in current_input_ids)
 
-    def count_active_elements(self, indices: torch.Tensor) -> int:
+    def count_batch_elements(self, indices: torch.Tensor) -> int:
         return self._count_input_elements(indices, source=self._active_source)
 
     def _preprocess_block_inputs(self, input_ids, input_others: dict, block):
@@ -441,7 +441,7 @@ class DiffusionBlockIO(BlockIO):
             else:
                 outputs[name].extend(list(torch.split(out, 1, dim=self.batch_dim)))
 
-    def reference_batch(self, indices: torch.Tensor, *, device=None) -> torch.Tensor:
+    def get_reference_outputs(self, indices: torch.Tensor, *, device=None) -> torch.Tensor:
         if self._reference_outputs is None:
             raise ValueError("Reference outputs have not been collected for this block.")
         output = torch.cat([self._reference_outputs["hidden_states"][i] for i in indices], dim=self.batch_dim)
@@ -501,20 +501,20 @@ class BlockContext:
     def num_samples(self) -> int:
         return self.io.num_samples
 
-    def count_active_elements(self, indices: torch.Tensor) -> int:
-        return self.io.count_active_elements(indices)
+    def count_batch_elements(self, indices: torch.Tensor) -> int:
+        return self.io.count_batch_elements(indices)
 
-    def reference_batch(self, indices: torch.Tensor, *, device=None) -> torch.Tensor:
-        return self.io.reference_batch(indices, device=device)
+    def get_reference_outputs(self, indices: torch.Tensor, *, device=None) -> torch.Tensor:
+        return self.io.get_reference_outputs(indices, device=device)
 
-    def forward_batch(
+    def forward_block_batch(
         self,
         indices: torch.Tensor,
         *,
         device: Union[str, torch.device],
         cache_device: Union[str, torch.device, None] = None,
     ) -> Any:
-        return self.io.forward_batch(indices, device=device, cache_device=cache_device)
+        return self.io.forward_block_batch(indices, device=device, cache_device=cache_device)
 
     def finish(self) -> None:
         self.io.finish()
