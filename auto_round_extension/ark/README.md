@@ -55,9 +55,13 @@ Low-bit weight-only linear for LLM inference. Both CPU and XPU are supported.
 from auto_round_kernel.qlinear import QuantLinear
 
 qlinear = QuantLinear(
-    bits=4, group_size=128, sym=True,
-    in_features=in_features, out_features=out_features,
-    bias=bias is not None, weight_dtype=weight_dtype,
+    bits=4,
+    group_size=128,
+    sym=True,
+    in_features=in_features,
+    out_features=out_features,
+    bias=bias is not None,
+    weight_dtype=weight_dtype,
 )
 # Load qweight, qzeros, scales, and bias from checkpoint.
 qlinear.post_init()
