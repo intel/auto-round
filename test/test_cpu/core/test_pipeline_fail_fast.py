@@ -2,6 +2,7 @@
 
 import pytest
 
+from auto_round import AWQConfig, OptimizedRTNConfig, RotationConfig, RTNConfig, SignRoundConfig, SpinQuantConfig
 from auto_round.algorithms.config_resolver import (
     get_algorithm_class,
     resolve_shared_config_values,
@@ -10,12 +11,7 @@ from auto_round.algorithms.config_resolver import (
 )
 from auto_round.algorithms.pipeline import QuantizationPipeline
 from auto_round.algorithms.quantization import registry as _r
-from auto_round.algorithms.quantization.rtn.config import OptimizedRTNConfig, RTNConfig
 from auto_round.algorithms.quantization.rtn.quantizer import RTNQuantizer
-from auto_round.algorithms.quantization.sign_round.config import SignRoundConfig
-from auto_round.algorithms.transforms.awq.config import AWQConfig
-from auto_round.algorithms.transforms.quarot.config import RotationConfig
-from auto_round.algorithms.transforms.spinquant import SpinQuantConfig
 from auto_round.compressors.base import collect_user_scheme_overrides
 from auto_round.compressors.data_driven import DataDrivenCompressor
 from auto_round.compressors.entry import AutoRound as NewAutoRound
@@ -65,6 +61,36 @@ def test_registry_builtin_aliases_and_unknown():
 def test_registry_resolves_variant_configs_to_registered_members():
     assert get_algorithm_class(OptimizedRTNConfig()) is not None
     assert get_algorithm_class(SignRoundConfig(enable_adam=True)).__name__ == "AdamRoundQuantizer"
+
+
+def test_top_level_config_exports():
+    from auto_round import AWQConfig as TopAWQConfig
+    from auto_round import OptimizedRTNConfig as TopOptimizedRTNConfig
+    from auto_round import RotationConfig as TopRotationConfig
+    from auto_round import RTNConfig as TopRTNConfig
+    from auto_round import SignRoundConfig as TopSignRoundConfig
+    from auto_round import SpinQuantConfig as TopSpinQuantConfig
+
+    assert TopAWQConfig is AWQConfig
+    assert TopOptimizedRTNConfig is OptimizedRTNConfig
+    assert TopRTNConfig is RTNConfig
+    assert TopSignRoundConfig is SignRoundConfig
+    assert TopRotationConfig is RotationConfig
+    assert TopSpinQuantConfig is SpinQuantConfig
+
+
+def test_new_entry_defaults_to_autoround_config(monkeypatch):
+    captured = {}
+
+    def _fake_init(self, config, **kwargs):
+        captured["config"] = config
+
+    monkeypatch.setattr(DataDrivenCompressor, "__init__", _fake_init)
+    monkeypatch.setattr("auto_round.utils.model.detect_model_type", lambda *args, **kwargs: "llm")
+
+    NewAutoRound("dummy-model", "W4A16", iters=1, seqlen=8, nsamples=1)
+
+    assert isinstance(captured["config"], SignRoundConfig)
 
 
 def test_entry_rejects_configs_without_quantization_members():

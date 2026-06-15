@@ -346,7 +346,7 @@ class AutoRound(object):
         diffusion_kwargs = dict(split_kwargs["diffusion"])
 
         if alg_configs is None:
-            raise ValueError("alg_configs is required for the new AutoRound entry API.")
+            alg_configs = "auto_round"
 
         # Resolve string alias(es) to config instance(s) before routing.
         alg_configs = cls._resolve_config(alg_configs)
