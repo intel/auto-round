@@ -955,10 +955,7 @@ def is_mllm_model(model_or_path: Union[str, torch.nn.Module], platform: str = No
     if isinstance(model_or_path, str):
         model_path = model_or_path
     else:
-        model_path = (
-            getattr(model_or_path, "_name_or_path", None)
-            or getattr(model_or_path, "name_or_path", None)
-        )
+        model_path = getattr(model_or_path, "_name_or_path", None) or getattr(model_or_path, "name_or_path", None)
 
     # Fast path: return cached result for already-seen paths
     if model_path in _is_mllm_model_cache:
