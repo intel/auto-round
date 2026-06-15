@@ -543,7 +543,6 @@ class TestMoEGemmDecode:
                 asym=True,
             )
 
-
         # FP8 + asym is rejected
         fp8_w = torch.zeros(num_experts, 64, 128, dtype=torch.float8_e4m3fn, device="xpu")
         zeros = torch.empty(num_experts, 64, 1, dtype=torch.float16, device="xpu")
@@ -715,6 +714,7 @@ class TestMoEGemmDecode:
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])
 
+
 def has_moe_gemm_prefill():
     """Check if the quantized MoE prefill GEMM kernel is available."""
     if ark.xpu_lib is None:
@@ -745,8 +745,8 @@ class TestMoEGemmPrefill:
             n_tokens = int(num_tokens_per_expert[e].item())
             if n_tokens == 0:
                 continue
-            a = activations[offset:offset + n_tokens]  # [n_tokens, K]
-            out[offset:offset + n_tokens] = a @ weights_NK[e].T
+            a = activations[offset : offset + n_tokens]  # [n_tokens, K]
+            out[offset : offset + n_tokens] = a @ weights_NK[e].T
             offset += n_tokens
         return out
 
@@ -784,8 +784,13 @@ class TestMoEGemmPrefill:
         num_tokens_per_expert = torch.tensor(tokens_per_expert, dtype=torch.int32, device="xpu")
 
         out = ark.moe_gemm_prefill(
-            activations, packed, num_tokens_per_expert,
-            scales=scales, weight_bits=4, group_size=group_size, asym=False,
+            activations,
+            packed,
+            num_tokens_per_expert,
+            scales=scales,
+            weight_bits=4,
+            group_size=group_size,
+            asym=False,
         )
 
         dequant = _dequant_int4_sym(packed, scales, group_size).to(dtype)
@@ -809,8 +814,14 @@ class TestMoEGemmPrefill:
         num_tokens_per_expert = torch.tensor(tokens_per_expert, dtype=torch.int32, device="xpu")
 
         out = ark.moe_gemm_prefill(
-            activations, packed, num_tokens_per_expert,
-            scales=scales, zeros=zeros, weight_bits=4, group_size=group_size, asym=True,
+            activations,
+            packed,
+            num_tokens_per_expert,
+            scales=scales,
+            zeros=zeros,
+            weight_bits=4,
+            group_size=group_size,
+            asym=True,
         )
 
         dequant = _dequant_int4_asym(packed, scales, zeros, group_size).to(dtype)
@@ -841,8 +852,14 @@ class TestMoEGemmPrefill:
         num_tokens_per_expert = torch.tensor(tokens_per_expert, dtype=torch.int32, device="xpu")
 
         out = ark.moe_gemm_prefill(
-            activations, packed, num_tokens_per_expert,
-            scales=scales, zeros=zeros, weight_bits=8, group_size=group_size, asym=asym,
+            activations,
+            packed,
+            num_tokens_per_expert,
+            scales=scales,
+            zeros=zeros,
+            weight_bits=8,
+            group_size=group_size,
+            asym=asym,
         )
 
         ref = self._run_prefill_reference(activations, dequant, num_tokens_per_expert)
@@ -872,8 +889,14 @@ class TestMoEGemmPrefill:
         num_tokens_per_expert = torch.tensor(tokens_per_expert, dtype=torch.int32, device="xpu")
 
         out = ark.moe_gemm_prefill(
-            activations, packed, num_tokens_per_expert,
-            scales=scales, zeros=zeros, weight_bits=2, group_size=group_size, asym=asym,
+            activations,
+            packed,
+            num_tokens_per_expert,
+            scales=scales,
+            zeros=zeros,
+            weight_bits=2,
+            group_size=group_size,
+            asym=asym,
         )
 
         ref = self._run_prefill_reference(activations, dequant, num_tokens_per_expert)
@@ -897,8 +920,12 @@ class TestMoEGemmPrefill:
         num_tokens_per_expert = torch.tensor(tokens_per_expert, dtype=torch.int32, device="xpu")
 
         out = ark.moe_gemm_prefill(
-            activations, packed, num_tokens_per_expert,
-            scales=scales, group_size=group_size, asym=False,
+            activations,
+            packed,
+            num_tokens_per_expert,
+            scales=scales,
+            group_size=group_size,
+            asym=False,
         )
 
         dequant = _dequant_fp8(packed, scales, group_size, dtype)

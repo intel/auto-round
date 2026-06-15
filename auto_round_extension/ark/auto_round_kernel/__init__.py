@@ -1120,8 +1120,14 @@ def moe_gemm_decode(
     """
     activations, weights, scales, zeros, num_tokens_per_expert, weight_dtype, total_tokens, N, K, num_experts = (
         _validate_moe_quant_args(
-            activations, weights, num_tokens_per_expert,
-            scales=scales, zeros=zeros, weight_bits=weight_bits, group_size=group_size, asym=asym,
+            activations,
+            weights,
+            num_tokens_per_expert,
+            scales=scales,
+            zeros=zeros,
+            weight_bits=weight_bits,
+            group_size=group_size,
+            asym=asym,
             api_name="moe_gemm_decode",
         )
     )
@@ -1202,9 +1208,7 @@ def _validate_moe_quant_args(
     N = weights.shape[1]
 
     if num_tokens_per_expert.shape[0] != num_experts:
-        raise ValueError(
-            f"num_tokens_per_expert length {num_tokens_per_expert.shape[0]} != num_experts {num_experts}"
-        )
+        raise ValueError(f"num_tokens_per_expert length {num_tokens_per_expert.shape[0]} != num_experts {num_experts}")
 
     # Detect FP8 weight dtype first (overrides weight_bits).
     is_fp8 = weights.dtype in (torch.float8_e4m3fn, torch.float8_e5m2)
@@ -1294,8 +1298,7 @@ def _validate_moe_quant_args(
     if expected_total != total_tokens:
         raise ValueError(f"Sum of num_tokens_per_expert ({expected_total}) != total_tokens ({total_tokens})")
 
-    return (activations, weights, scales, zeros, num_tokens_per_expert,
-            weight_dtype, total_tokens, N, K, num_experts)
+    return (activations, weights, scales, zeros, num_tokens_per_expert, weight_dtype, total_tokens, N, K, num_experts)
 
 
 def moe_gemm(
@@ -1419,8 +1422,14 @@ def moe_gemm_prefill(
     """
     activations, weights, scales, zeros, num_tokens_per_expert, weight_dtype, total_tokens, N, K, num_experts = (
         _validate_moe_quant_args(
-            activations, weights, num_tokens_per_expert,
-            scales=scales, zeros=zeros, weight_bits=weight_bits, group_size=group_size, asym=asym,
+            activations,
+            weights,
+            num_tokens_per_expert,
+            scales=scales,
+            zeros=zeros,
+            weight_bits=weight_bits,
+            group_size=group_size,
+            asym=asym,
             api_name="moe_gemm_prefill",
         )
     )
@@ -1446,9 +1455,7 @@ def moe_gemm_prefill(
         dequant_workspace = weights.transpose(1, 2).contiguous()
         weights_ptr = dequant_workspace.data_ptr()
     else:
-        dequant_workspace = torch.empty(
-            (num_experts, K, N), device=activations.device, dtype=activations.dtype
-        )
+        dequant_workspace = torch.empty((num_experts, K, N), device=activations.device, dtype=activations.dtype)
         weights_ptr = weights.data_ptr()
 
     scales_ptr = scales.data_ptr() if scales is not None else 0
