@@ -202,6 +202,21 @@ class AWQ(AlgorithmHandler):
             type=int,
             help="Number of grid-search points for AWQ scaling ratio.",
         )
+        group.add_argument(
+            "--awq-apply-clip",
+            dest="awq_apply_clip",
+            action="store_true",
+            help="Search and hard-clamp per-group AWQ weight clipping after smoothing.",
+        )
+        group.add_argument(
+            "--awq-clip-as-init",
+            dest="awq_clip_as_init",
+            action="store_true",
+            help=(
+                "Use the searched AWQ clip to initialize the block quantizer's "
+                "weight range instead of hard-clamping (requires --awq-apply-clip)."
+            ),
+        )
 
     def build(self, args, common_kwargs: dict[str, Any]):
         from auto_round.algorithms.transforms.awq.config import AWQConfig
@@ -209,6 +224,8 @@ class AWQ(AlgorithmHandler):
         return AWQConfig(
             duo_scaling=getattr(args, "duo_scaling", True),
             n_grid=getattr(args, "n_grid", 20),
+            apply_clip=getattr(args, "awq_apply_clip", False),
+            clip_as_init=getattr(args, "awq_clip_as_init", False),
             **common_kwargs,
         )
 

@@ -31,6 +31,7 @@ from __future__ import annotations
 
 import gc
 import inspect
+import re
 from contextlib import contextmanager
 from typing import TYPE_CHECKING, Any
 
@@ -50,6 +51,7 @@ from auto_round.algorithms.transforms.awq.mappings import (
     resolve_mappings,
 )
 from auto_round.algorithms.transforms.base import BaseWeightTransformer
+from auto_round.data_type.mxfp import search_mx_scale
 from auto_round.data_type.utils import (
     get_quant_func,
     reshape_pad_tensor_by_group_size,
@@ -59,6 +61,53 @@ from auto_round.logger import logger
 
 if TYPE_CHECKING:
     from auto_round.algorithms.pipeline import BlockContext
+
+
+# Known normalization classes whose ``forward`` computes
+# ``output = (1 + weight) * x_norm`` (Gemma-style "unit-offset" RMSNorm) rather
+# than the standard ``output = weight * x_norm``. Folding an AWQ smoothing scale
+# ``s`` into such a layer requires ``weight <- (1 + weight) / s - 1`` instead of
+# ``weight <- weight / s``; using the wrong fold silently breaks AWQ's output
+# invariance and severely degrades accuracy (e.g. Qwen3.5, Gemma2/3, Qwen3-Next).
+_UNIT_OFFSET_RMSNORM_NAMES = frozenset(
+    {
+        "GemmaRMSNorm",
+        "Gemma2RMSNorm",
+        "Gemma3RMSNorm",
+        "Gemma3TextRMSNorm",
+        "Qwen3_5RMSNorm",
+        "Qwen3_5MoeRMSNorm",
+        "Qwen3NextRMSNorm",
+    }
+)
+
+# Detects ``1 + self.weight`` / ``self.weight + 1`` in a norm's forward source.
+_UNIT_OFFSET_SRC_RE = re.compile(r"1(\.0)?\s*\+\s*self\.weight|self\.weight(\.float\(\))?\s*\+\s*1")
+
+# Cache the unit-offset decision per norm class to avoid repeated source parsing.
+_unit_offset_cache: dict[type, bool] = {}
+
+
+def _rmsnorm_has_unit_offset(module: torch.nn.Module) -> bool:
+    """Return True if ``module`` applies a Gemma-style ``(1 + weight)`` gain.
+
+    Uses a fast class-name allowlist, falling back to source inspection of the
+    module's ``forward`` so newly-added Gemma-style norms are detected without a
+    code change. Result is cached per class.
+    """
+    cls = type(module)
+    cached = _unit_offset_cache.get(cls)
+    if cached is not None:
+        return cached
+    result = cls.__name__ in _UNIT_OFFSET_RMSNORM_NAMES
+    if not result:
+        try:
+            src = inspect.getsource(cls.forward)
+            result = bool(_UNIT_OFFSET_SRC_RE.search(src))
+        except (OSError, TypeError):
+            result = False
+    _unit_offset_cache[cls] = result
+    return result
 
 
 @register_pipeline_member(AWQConfig)
@@ -74,6 +123,30 @@ class AWQQuantizer(BaseWeightTransformer):
         super().__init__(config)
         self.duo_scaling: bool | str = config.duo_scaling
         self.n_grid: int = config.n_grid
+        self.smooth_iters: int = getattr(config, "smooth_iters", 1)
+
+        # AWQ weight-clip options (search + hard-clamp after smoothing).
+        self.apply_clip: bool = getattr(config, "apply_clip", False)
+        self.clip_as_init: bool = getattr(config, "clip_as_init", False)
+        self.clip_n_grid: int = getattr(config, "clip_n_grid", 20)
+        self.clip_max_shrink: float = getattr(config, "clip_max_shrink", 0.5)
+        self.clip_n_sample_token: int = getattr(config, "clip_n_sample_token", 512)
+
+        # Quantization params used only as *fallback* defaults for AWQ's
+        # internal grid-search loss (quantize-dequantize during scale
+        # selection) when a layer is absent from ``self.layer_config``. The
+        # definitive per-layer params (incl. super_bits/super_group_size for
+        # GGUF schemes) are read directly from ``self.layer_config`` via
+        # ``config.get(...)``. See class docstring and AWQConfig docstring.
+        self.bits = config.bits
+        self.group_size = config.group_size
+        self.sym = config.sym
+        self.data_type = config.data_type
+
+        # AWQ's internal QDQ ``disable_opt_rtn`` follows the resolved
+        # block-quantizer value (wired in ``prepare_run``). AWQ never owns this
+        # field itself (mirrors ``enable_quanted_input``).
+        self.disable_opt_rtn: bool = True
 
         self._user_mappings: list[dict] | None = config.mappings
 
@@ -86,6 +159,10 @@ class AWQQuantizer(BaseWeightTransformer):
         self._activation_stats: dict[str, list] = {}
         self._parent_args_cache: dict[torch.nn.Module, list[dict]] = {}
         self._parent_signatures: dict[int, inspect.Signature] = {}
+        # Per-mapping balance-layer input features captured for the clip search
+        # (keyed by smooth_name). Only populated when ``apply_clip`` is set.
+        self._clip_input_feat: dict[str, torch.Tensor] = {}
+        self._use_v2_mx_scale_search: bool = False
 
         self._finalized: bool = False
 
@@ -125,6 +202,20 @@ class AWQQuantizer(BaseWeightTransformer):
             prefix = _extract_block_prefix(m.smooth_name)
             self._block_mappings.setdefault(prefix, []).append(m)
 
+        # Enable the SignRoundV2 MXFP scale-search path only when the terminal
+        # block quantizer is SignRoundV2 *and* the weight data type is MXFP.
+        # The registered quantizer class is resolved via the pipeline registry
+        # (see ``_block_quantizer_is_signroundv2``).
+        self._use_v2_mx_scale_search = self._compute_use_v2_mx_scale_search(compressor)
+        logger.info(f"AWQ: use_v2_mx_scale_search={self._use_v2_mx_scale_search}")
+
+        # Follow the resolved block-quantizer ``disable_opt_rtn`` for AWQ's
+        # internal QDQ so the smooth/clip grid search matches what the final
+        # block quantization will actually do. AWQ never owns this field; it is
+        # read directly from the block quantizer here.
+        self.disable_opt_rtn = bool(getattr(compressor.quantize_config, "disable_opt_rtn", False))
+        logger.info(f"AWQ: disable_opt_rtn={self.disable_opt_rtn} (inherited from block quantizer)")
+
         if compressor.compress_context is not None:
             compressor.compress_context.cache_device = torch.device("cpu")
 
@@ -134,6 +225,53 @@ class AWQQuantizer(BaseWeightTransformer):
             len(self._block_mappings),
         )
         self._finalized = False
+
+    def _resolved_data_type(self, compressor) -> str | None:
+        """Resolve the effective weight ``data_type`` for AWQ.
+
+        AWQConfig carries no scheme (``data_type`` is ``None`` at construction);
+        the resolved value lives on the block quantizer's scheme or in the
+        per-layer config. Prefer the block quantizer, then any layer_config
+        entry, then the captured ``self.data_type`` fallback.
+        """
+        block_dt = getattr(getattr(compressor, "quantize_config", None), "data_type", None)
+        if block_dt is not None:
+            return block_dt
+        for cfg in (self.layer_config or {}).values():
+            dt = cfg.get("data_type") if isinstance(cfg, dict) else None
+            if dt is not None:
+                return dt
+        return self.data_type
+
+    @staticmethod
+    def _block_quantizer_is_signroundv2(compressor) -> bool:
+        """Return True if the terminal block quantizer is SignRoundV2.
+
+        The block-quantizer config is ``compressor.quantize_config``. Its class
+        (``SignRoundV2Config``, or ``SignRoundConfig(enable_alg_ext=True)`` after
+        normalization) is resolved to its registered quantizer class through the
+        pipeline registry.
+        """
+        block_config = getattr(compressor, "quantize_config", None)
+        if block_config is None:
+            return False
+        from auto_round.algorithms.registry import resolve_pipeline_member
+
+        try:
+            return resolve_pipeline_member(block_config).__name__ == "SignRoundV2Quantizer"
+        except Exception:
+            return False
+
+    def _compute_use_v2_mx_scale_search(self, compressor) -> bool:
+        """Decide whether to use the SignRoundV2 MXFP scale-search path.
+
+        Enabled only when both hold:
+        * the terminal block quantizer resolves to ``SignRoundV2Quantizer``, and
+        * the effective weight ``data_type`` is an MXFP variant (``mx_fp*``).
+        """
+        return self._block_quantizer_is_signroundv2(compressor) and str(
+            self._resolved_data_type(compressor)
+        ).startswith("mx_fp")
 
     def get_act_calib_policy(self, ctx: "BlockContext"):
         """AWQ W4A16 (weight-only): no activation calibration needed."""
@@ -175,6 +313,8 @@ class AWQQuantizer(BaseWeightTransformer):
             logger.debug("AWQ: no mappings for block '%s', skipping.", block_name)
             return
         self._smooth_block(block_name, block_mappings)
+        if self.apply_clip:
+            self._clip_block(block_name, block_mappings)
         modified = []
         for mapping in block_mappings:
             modified.extend(mapping.balance_names)
@@ -188,6 +328,12 @@ class AWQQuantizer(BaseWeightTransformer):
             return
         for m in block_mappings:
             self._activation_stats.pop(m.smooth_name, None)
+            self._clip_input_feat.pop(m.smooth_name, None)
+            # Drop the transient clip attribute once the block quantizer has
+            # consumed it (the persistent copy lives on the model context).
+            for bl in m.balance_layers:
+                if hasattr(bl, "awq_clip_max"):
+                    delattr(bl, "awq_clip_max")
         seen_parents: set[int] = set()
         for m in block_mappings:
             pid = id(m.parent)
@@ -202,6 +348,7 @@ class AWQQuantizer(BaseWeightTransformer):
         self._activation_stats.clear()
         self._parent_args_cache.clear()
         self._parent_signatures.clear()
+        self._clip_input_feat.clear()
         self._finalized = True
         logger.debug("AWQ: finalize_quantization complete.")
 
@@ -247,7 +394,38 @@ class AWQQuantizer(BaseWeightTransformer):
             h = module.register_forward_hook(_make_stats_hook(full_name))
             handles.append(h)
 
-        # ── Parent-kwargs hooks ───────────────────────────────────────────────
+        # ── Clip input-feature hooks (only when apply_clip is enabled) ────────
+        # The balance layers of a mapping share the same input; capture it once
+        # per mapping (keyed by smooth_name) for the post-smooth clip search.
+        if self.apply_clip:
+            for mapping in mappings:
+                if not mapping.balance_layers:
+                    continue
+                target_layer = mapping.balance_layers[0]
+
+                def _make_clip_hook(smooth_name: str):
+
+                    def hook_fn(mod, args):
+                        x = args[0] if isinstance(args, tuple) else args
+                        if x is None or not isinstance(x, torch.Tensor) or x.numel() == 0:
+                            return
+                        feat = x.detach().reshape(-1, x.shape[-1])
+                        # Subsample tokens to bound memory.
+                        if feat.shape[0] > self.clip_n_sample_token:
+                            step = max(1, feat.shape[0] // self.clip_n_sample_token)
+                            feat = feat[::step]
+                        feat = feat.float().cpu()
+                        prev = self._clip_input_feat.get(smooth_name)
+                        if prev is None:
+                            self._clip_input_feat[smooth_name] = feat
+                        else:
+                            self._clip_input_feat[smooth_name] = torch.cat([prev, feat], dim=0)
+
+                    return hook_fn
+
+                h = target_layer.register_forward_pre_hook(_make_clip_hook(mapping.smooth_name))
+                handles.append(h)
+
         # One forward_pre_hook per unique parent module in the current block.
         parent_modules_hooked: set[int] = set()
         for mapping in mappings:
@@ -320,33 +498,45 @@ class AWQQuantizer(BaseWeightTransformer):
     # ── Smoothing (grid search + scale apply) ─────────────────────────────────
 
     def _smooth_block(self, block_prefix: str, block_mappings: list) -> None:
-        """Run grid search and apply AWQ scales for one block."""
-        for mapping in block_mappings:
-            if mapping.smooth_name not in self._activation_stats:
-                logger.warning(
-                    "AWQ: no activation stats for '%s' in block '%s'; skipping.",
-                    mapping.smooth_name,
-                    block_prefix,
-                )
-                continue
+        """Run grid search and apply AWQ scales for one block.
 
-            act_sum, act_count = self._activation_stats[mapping.smooth_name]
-            if act_count == 0:
-                logger.warning(
-                    "AWQ: zero activation count for '%s' in block '%s'; skipping.",
-                    mapping.smooth_name,
-                    block_prefix,
-                )
-                continue
+        When ``smooth_iters > 1`` the grid search + scale apply is repeated.
+        Repeating refines the smoothing scale because the mx max_scale search
+        and the AWQ alpha (ratio) search influence each other: each extra pass
+        re-derives the max_scale from the freshly-smoothed weights and
+        re-searches the ratio, accumulating the resulting scales.
+        """
+        n_passes = max(1, int(self.smooth_iters))
+        for smooth_pass in range(n_passes):
+            for mapping in block_mappings:
+                if mapping.smooth_name not in self._activation_stats:
+                    logger.warning(
+                        "AWQ: no activation stats for '%s' in block '%s'; skipping.",
+                        mapping.smooth_name,
+                        block_prefix,
+                    )
+                    continue
 
-            x_mean = (act_sum / act_count).to(torch.float32)
-            del act_sum
+                act_sum, act_count = self._activation_stats[mapping.smooth_name]
+                if act_count == 0:
+                    logger.warning(
+                        "AWQ: zero activation count for '%s' in block '%s'; skipping.",
+                        mapping.smooth_name,
+                        block_prefix,
+                    )
+                    continue
 
-            best_scales = self._grid_search_scales(mapping, x_mean)
-            if best_scales is not None:
-                self._apply_scales(mapping, best_scales)
+                x_mean = (act_sum / act_count).to(torch.float32)
+                del act_sum
 
-        # Release parent kwargs after ALL mappings for this block are processed.
+                best_scales = self._grid_search_scales(mapping, x_mean)
+                if best_scales is not None:
+                    self._apply_scales(mapping, best_scales)
+
+            if n_passes > 1:
+                logger.debug("AWQ: completed smooth pass %d/%d for block '%s'", smooth_pass + 1, n_passes, block_prefix)
+
+        # Release parent kwargs after ALL passes/mappings for this block are processed.
         seen_parents: set[int] = set()
         for mapping in block_mappings:
             pid = id(mapping.parent)
@@ -415,7 +605,7 @@ class AWQQuantizer(BaseWeightTransformer):
                 ref_cfg.get("data_type", self.data_type),
                 ref_cfg.get("bits", self.bits),
                 ref_cfg.get("sym", self.sym),
-                disable_opt_rtn=True,
+                disable_opt_rtn=ref_cfg.get("disable_opt_rtn", self.disable_opt_rtn),
                 group_size=ref_cfg.get("group_size", self.group_size),
                 iters=0,
             )
@@ -524,6 +714,7 @@ class AWQQuantizer(BaseWeightTransformer):
         group_size = config.get("group_size", self.group_size)
         sym = config.get("sym", self.sym)
         data_type = config.get("data_type", self.data_type)
+        disable_opt_rtn = config.get("disable_opt_rtn", self.disable_opt_rtn)
 
         if quant_func is None:
             try:
@@ -531,7 +722,7 @@ class AWQQuantizer(BaseWeightTransformer):
                     data_type,
                     bits,
                     sym,
-                    disable_opt_rtn=True,
+                    disable_opt_rtn=disable_opt_rtn,
                     group_size=group_size,
                     iters=0,
                 )
@@ -543,11 +734,36 @@ class AWQQuantizer(BaseWeightTransformer):
             return None
 
         try:
-            qdq_weight, _, _ = quant_func(weight, bits=bits, group_size=group_size)
+            quant_kwargs = {
+                "bits": bits,
+                "group_size": group_size,
+                "data_type": data_type,
+                "sym": sym,
+            }
+            if self._use_v2_mx_scale_search and str(data_type).startswith("mx_fp"):
+                weight_reshape, _, _ = reshape_pad_tensor_by_group_size(weight, group_size)
+                imatrix = self._reshape_imatrix_for_weight(layer, weight_reshape, group_size)
+                quant_kwargs["init_scale"] = search_mx_scale(weight_reshape, bits, imatrix)
+            qdq_weight, _, _ = quant_func(weight, **quant_kwargs)
             return qdq_weight
         except Exception as exc:
             logger.debug("AWQ: quantize-dequantize failed for '%s': %s", layer_name, exc)
             return None
+
+    @staticmethod
+    def _reshape_imatrix_for_weight(
+        layer: torch.nn.Module,
+        weight_reshape: torch.Tensor,
+        group_size,
+    ) -> torch.Tensor | float:
+        """Match SignRoundV2's imatrix layout before MXFP scale search."""
+        imatrix = getattr(layer, "imatrix", None)
+        if imatrix is None:
+            return 1.0
+        imatrix = imatrix.reshape(1, -1)
+        imatrix = reshape_pad_tensor_by_group_size(imatrix, group_size, val=1e-5)[0].view(1, -1)
+        imatrix = imatrix.expand(weight_reshape.numel() // imatrix.numel(), -1)
+        return imatrix.reshape(weight_reshape.shape).to(weight_reshape.device)
 
     @torch.no_grad()
     def _apply_scales(self, mapping: ResolvedMapping, scales: torch.Tensor) -> None:
@@ -559,9 +775,210 @@ class AWQQuantizer(BaseWeightTransformer):
         smooth = mapping.smooth_layer
         s = scales.to(smooth.weight.device)
         if smooth.weight.ndim == 1:
-            smooth.weight.data.div_(s)
+            # Normalization smooth layer. For Gemma-style norms whose effective
+            # gain is ``(1 + weight)`` (not ``weight``), the scale must be folded
+            # as ``weight <- (1 + weight) / s - 1`` to preserve output invariance.
+            if _rmsnorm_has_unit_offset(smooth):
+                smooth.weight.data.copy_((1.0 + smooth.weight.data) / s - 1.0)
+            else:
+                smooth.weight.data.div_(s)
         else:
             smooth.weight.data[-s.size(0) :].div_(s.view(-1, 1))
 
         if hasattr(smooth, "bias") and smooth.bias is not None:
             smooth.bias.data.div_(s)
+
+        # Keep the captured clip input features consistent with the smoothing:
+        # the balance-layer input is divided by the smooth scales, so the stored
+        # features (used later by the clip search) must be divided too.
+        if self.apply_clip:
+            feat = self._clip_input_feat.get(mapping.smooth_name)
+            if feat is not None:
+                feat.div_(scales.detach().to(feat.device).view(1, -1))
+
+    # ── Weight clipping (search best per-group clip + hard-clamp) ─────────────
+
+    # Layers whose clipping is skipped: clipping q/k projections hurts the
+    # attention score (q·kᵀ) precision, mirroring AutoAWQ's ``avoid_clipping``.
+    _AVOID_CLIP_TOKENS = ("q_", "k_", "query", "key", "Wqkv", "wqkv")
+
+    def _should_skip_clip(self, balance_name: str) -> bool:
+        local = balance_name.rsplit(".", 1)[-1]
+        return any(token in local for token in self._AVOID_CLIP_TOKENS)
+
+    @torch.no_grad()
+    def _clip_block(self, block_prefix: str, block_mappings: list) -> None:
+        """Search per-group weight clip thresholds for one block.
+
+        Runs after smoothing. The searched per-group clip magnitude is always
+        recorded on the model context (and, in ``clip_as_init`` mode, on the
+        balance layer) so it is kept for downstream use. Two modes:
+
+        * ``clip_as_init=False`` (default): the clip is hard-clamped in place on
+          the (already smoothed) balance-layer weights, so any downstream block
+          quantizer (RTN / SignRound / SignRoundV2) re-derives its min/max
+          range from the clipped weights.
+        * ``clip_as_init=True``: the weights are left untouched and the clip is
+          stored on the layer (``awq_clip_max``); the downstream SignRound /
+          SignRoundV2 quantizer uses it to *initialize* its tunable weight range
+          (capping ``weight_min``/``weight_max`` or clamping before the scale
+          search) and then tunes ``min_scale``/``max_scale`` on top.
+        """
+        clip_store = getattr(self.model_context, "awq_clip_values", None)
+        for mapping in block_mappings:
+            feat = self._clip_input_feat.get(mapping.smooth_name)
+            if feat is None:
+                logger.warning(
+                    "AWQ: no clip input features for '%s' in block '%s'; skipping clip.",
+                    mapping.smooth_name,
+                    block_prefix,
+                )
+                continue
+            for bl, name in zip(mapping.balance_layers, mapping.balance_names):
+                if self._should_skip_clip(name):
+                    logger.debug("AWQ: skip clip for '%s' (avoid-clipping layer).", name)
+                    continue
+                max_val = self._compute_best_clip(bl, feat)
+                if max_val is None:
+                    continue
+                key = getattr(bl, "global_name", None) or name
+                if clip_store is not None:
+                    clip_store[key] = max_val.detach().to("cpu")
+                if self.clip_as_init:
+                    # Keep the weights intact; hand the clip to the block
+                    # quantizer as the initialization of its weight range.
+                    bl.awq_clip_max = max_val.detach()
+                else:
+                    self._apply_clip(bl, max_val)
+
+    def _resolve_layer_quant_params(self, layer: torch.nn.Module) -> dict:
+        """Resolve the per-layer quant params used by AWQ's internal QDQ loss."""
+        layer_name = getattr(layer, "global_name", None) or ""
+        config = (self.layer_config or {}).get(layer_name, {})
+        return {
+            "bits": config.get("bits", self.bits),
+            "group_size": config.get("group_size", self.group_size),
+            "sym": config.get("sym", self.sym),
+            "data_type": config.get("data_type", self.data_type),
+            "disable_opt_rtn": config.get("disable_opt_rtn", self.disable_opt_rtn),
+        }
+
+    @torch.no_grad()
+    def _compute_best_clip(
+        self,
+        layer: torch.nn.Module,
+        input_feat: torch.Tensor,
+    ) -> torch.Tensor | None:
+        """Search the per-group clip threshold that minimizes output MSE.
+
+        Returns a ``[out_channels, n_group]`` tensor of clip magnitudes, or
+        ``None`` if clipping is not applicable to this layer.
+        """
+        params = self._resolve_layer_quant_params(layer)
+        bits = params["bits"]
+        if bits is None or bits >= 16:
+            return None
+        group_size = params["group_size"]
+
+        device = layer.weight.device
+        weight = layer.weight.detach().float()
+        out_features, in_features = weight.shape
+        gs = group_size if (group_size is not None and group_size > 0) else in_features
+        if in_features % gs != 0:
+            logger.warning(
+                "AWQ: in_features=%d not divisible by group_size=%d for clip; skipping '%s'.",
+                in_features,
+                gs,
+                getattr(layer, "global_name", "") or "<layer>",
+            )
+            return None
+        n_group = in_features // gs
+
+        try:
+            quant_func, _ = get_quant_func(
+                params["data_type"],
+                bits,
+                params["sym"],
+                disable_opt_rtn=params["disable_opt_rtn"],
+                group_size=gs,
+                iters=0,
+            )
+        except Exception as exc:
+            logger.debug("AWQ: failed to resolve quant function for clip: %s", exc)
+            return None
+        if quant_func is None:
+            return None
+
+        feat = input_feat.to(device).reshape(-1, in_features)
+        if feat.shape[0] > self.clip_n_sample_token:
+            step = max(1, feat.shape[0] // self.clip_n_sample_token)
+            feat = feat[::step]
+        # [1, n_token, n_group, gs]
+        feat = feat.reshape(1, feat.shape[0], n_group, gs)
+
+        # [out_features, 1, n_group, gs]
+        w = weight.reshape(out_features, 1, n_group, gs)
+
+        # Batch output channels to bound peak memory.
+        oc_batch = 256 if out_features % 256 == 0 else (64 if out_features % 64 == 0 else out_features)
+        best_max_val_all = []
+        n_steps = max(1, int(self.clip_max_shrink * self.clip_n_grid))
+
+        for i_b in range(0, out_features, oc_batch):
+            w_b = w[i_b : i_b + oc_batch]
+            org_max_val = w_b.abs().amax(dim=-1, keepdim=True)  # [oc_b, 1, n_group, 1]
+            best_max_val = org_max_val.clone()
+            min_errs = torch.full_like(org_max_val, 1e9)
+            org_out = (feat * w_b).sum(dim=-1)  # [oc_b, n_token, n_group]
+
+            for i_s in range(n_steps):
+                max_val = org_max_val * (1 - i_s / self.clip_n_grid)
+                cur_w = torch.clamp(w_b, -max_val, max_val)
+                q_w = self._clip_qdq(cur_w, quant_func, params, gs)
+                if q_w is None:
+                    break
+                cur_out = (feat * q_w).sum(dim=-1)
+                err = (cur_out - org_out).pow(2).mean(dim=1).view(min_errs.shape)
+                improved = err < min_errs
+                min_errs[improved] = err[improved]
+                best_max_val[improved] = max_val[improved]
+                del cur_w, q_w, cur_out
+
+            best_max_val_all.append(best_max_val)
+
+        best_max_val = torch.cat(best_max_val_all, dim=0)
+        return best_max_val.squeeze(1)  # [out_features, n_group, 1]
+
+    @staticmethod
+    @torch.no_grad()
+    def _clip_qdq(
+        cur_w: torch.Tensor,
+        quant_func,
+        params: dict,
+        group_size: int,
+    ) -> torch.Tensor | None:
+        """Quantize-dequantize the clamped weight for the clip-search loss."""
+        oc_b, _, n_group, gs = cur_w.shape
+        flat = cur_w.reshape(oc_b, n_group * gs)
+        try:
+            qdq, _, _ = quant_func(
+                flat,
+                bits=params["bits"],
+                group_size=group_size,
+                data_type=params["data_type"],
+                sym=params["sym"],
+            )
+        except Exception as exc:
+            logger.debug("AWQ: clip QDQ failed: %s", exc)
+            return None
+        return qdq.reshape(oc_b, 1, n_group, gs)
+
+    @torch.no_grad()
+    def _apply_clip(self, layer: torch.nn.Module, max_val: torch.Tensor) -> None:
+        """Hard-clamp the layer weight to ``[-max_val, max_val]`` per group."""
+        org_dtype = layer.weight.dtype
+        max_val = max_val.to(device=layer.weight.device, dtype=org_dtype)
+        org_shape = layer.weight.shape
+        w = layer.weight.data.reshape(*max_val.shape[:2], -1)
+        w = torch.clamp(w, -max_val, max_val)
+        layer.weight.data = w.reshape(org_shape).to(org_dtype)
