@@ -231,21 +231,28 @@ def benchmark_preprocess_stages(
         stage_ms: dict[str, float] = {}
 
         key_mean, stage_ms["key_mean"] = bench_with_output(
-            lambda: ctx.key_hnd.mean(dim=-2, keepdim=True),
+            lambda: ark._sequence_mean_native_layout(ctx.key, ctx.tensor_layout),
             warmup=0,
             iters=1,
         )
         (pooled_q, sim_qblocks, q_int8_hnd, q_scale), stage_ms["pool_q_block64"] = bench_with_output(
-            lambda: _get_pool_sim_triton_simmean_fuse_quant(ctx.query_hnd, None, ctx.quant_block_size, ctx.simthreshd1),
+            lambda: _get_pool_sim_triton_simmean_fuse_quant(
+                ctx.query,
+                None,
+                ctx.quant_block_size,
+                ctx.simthreshd1,
+                ctx.tensor_layout,
+            ),
             warmup=0,
             iters=1,
         )
         (pooled_k, sim_kblocks, k_int8_hnd, k_scale), stage_ms["pool_k_block64"] = bench_with_output(
             lambda: _get_pool_sim_triton_simmean_fuse_quant(
-                ctx.key_hnd,
+                ctx.key,
                 key_mean,
                 ctx.quant_block_size,
                 ctx.simthreshd1[: ctx.num_heads_kv],
+                ctx.tensor_layout,
             ),
             warmup=0,
             iters=1,
@@ -259,13 +266,19 @@ def benchmark_preprocess_stages(
             for qtile in range(ctx.num_q_tiles):
                 qblk_start = qtile * ctx.blocks_per_qtile
                 qblk_end = min(qblk_start + ctx.blocks_per_qtile, pooled_q.size(2))
-                tile_tokens = ctx.query_hnd[
-                    :,
-                    :,
-                    qblk_start * ctx.quant_block_size : min((qblk_end * ctx.quant_block_size), ctx.seq_len_q),
-                    :,
-                ]
-                pooled_tile, sim_tile, _, _ = _get_pool_sim_triton_simmean_fuse_quant(tile_tokens, None, ctx.query_tile_tokens, ctx.simthreshd1)
+                tile_tokens = ark._slice_sequence_native_layout(
+                    ctx.query,
+                    ctx.tensor_layout,
+                    qblk_start * ctx.quant_block_size,
+                    min((qblk_end * ctx.quant_block_size), ctx.seq_len_q),
+                )
+                pooled_tile, sim_tile, _, _ = _get_pool_sim_triton_simmean_fuse_quant(
+                    tile_tokens,
+                    None,
+                    ctx.query_tile_tokens,
+                    ctx.simthreshd1,
+                    ctx.tensor_layout,
+                )
                 tile_pooled_q.append(pooled_tile[:, :, 0, :])
                 tile_sim_q.append(sim_tile[:, :, 0])
             return torch.stack(tile_pooled_q, dim=2), torch.stack(tile_sim_q, dim=2)
@@ -356,8 +369,8 @@ def benchmark_preprocess_stages(
         last_meta = ark._finalize_sparge_preprocess_outputs(
             ctx,
             {
-                "query_i8_hnd": q_int8_hnd,
-                "key_i8_hnd": k_int8_hnd,
+                "query_i8": q_int8_hnd,
+                "key_i8": k_int8_hnd,
                 "qscale": q_scale,
                 "kscale": k_scale,
                 "raw_block_map": raw_block_map,
@@ -459,13 +472,22 @@ def run_benchmark(args: argparse.Namespace) -> list[dict[str, object]]:
         dtype,
         device,
     )
+    if args.tensor_layout == "NHD":
+        q = q.permute(0, 2, 1, 3).contiguous()
+        k = k.permute(0, 2, 1, 3).contiguous()
+        v = v.permute(0, 2, 1, 3).contiguous()
+        q_hnd = q.permute(0, 2, 1, 3).contiguous()
+        k_hnd = k.permute(0, 2, 1, 3).contiguous()
+        v_hnd = v.permute(0, 2, 1, 3).contiguous()
+    else:
+        q_hnd, k_hnd, v_hnd = q, k, v
 
     rows: list[dict[str, object]] = []
     rows.append(
         try_benchmark(
             "dense_torch_sdpa",
             lambda: F.scaled_dot_product_attention(
-                q, k, v, dropout_p=0.0, is_causal=args.causal, scale=scale, enable_gqa=enable_gqa
+                q_hnd, k_hnd, v_hnd, dropout_p=0.0, is_causal=args.causal, scale=scale, enable_gqa=enable_gqa
             ),
             batch=args.batch,
             num_heads_q=args.num_heads_q,
@@ -488,7 +510,7 @@ def run_benchmark(args: argparse.Namespace) -> list[dict[str, object]]:
                 scale=scale,
                 is_causal=args.causal,
                 quant_block_size=args.quant_block_size,
-                tensor_layout="HND",
+                tensor_layout=args.tensor_layout,
             ),
             batch=args.batch,
             num_heads_q=args.num_heads_q,
@@ -517,7 +539,7 @@ def run_benchmark(args: argparse.Namespace) -> list[dict[str, object]]:
                 topk=topk,
                 attention_sink=False,
                 quant_block_size=args.quant_block_size,
-                tensor_layout="HND",
+                tensor_layout=args.tensor_layout,
             )
             stats = preprocess.get("stats", {})
             selected_ratio = float(stats.get("selected_ratio", 0.0))
@@ -574,7 +596,7 @@ def run_benchmark(args: argparse.Namespace) -> list[dict[str, object]]:
                 topk=topk,
                 is_causal=args.causal,
                 quant_block_size=args.quant_block_size,
-                tensor_layout="HND",
+                tensor_layout=args.tensor_layout,
                 warmup=args.warmup,
                 iters=args.iters,
             )
@@ -638,7 +660,7 @@ def run_benchmark(args: argparse.Namespace) -> list[dict[str, object]]:
                     quant_block_size=preprocess["quant_block_size"],
                     qscale=preprocess["qscale"],
                     kscale=preprocess["kscale"],
-                    tensor_layout="HND",
+                    tensor_layout=args.tensor_layout,
                 ),
                 batch=args.batch,
                 num_heads_q=args.num_heads_q,
@@ -667,7 +689,7 @@ def run_benchmark(args: argparse.Namespace) -> list[dict[str, object]]:
                     simthreshd1=-1.0,
                     topk=topk,
                     attention_sink=False,
-                    tensor_layout="HND",
+                    tensor_layout=args.tensor_layout,
                 ),
                 batch=args.batch,
                 num_heads_q=args.num_heads_q,
@@ -698,8 +720,9 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--head-dim", type=int, default=128)
     parser.add_argument("--topk", type=float, nargs="+", default=[1.0, 0.75, 0.5, 0.25, 0.125])
     parser.add_argument("--quant-block-size", type=int, default=64)
-    parser.add_argument("--warmup", type=int, default=5)
-    parser.add_argument("--iters", type=int, default=20)
+    parser.add_argument("--tensor-layout", choices=("HND", "NHD"), default="HND")
+    parser.add_argument("--warmup", type=int, default=2)
+    parser.add_argument("--iters", type=int, default=3)
     parser.add_argument("--causal", action="store_true", help="Run causal attention instead of the default non-causal mode.")
     parser.add_argument(
         "--output-csv",
