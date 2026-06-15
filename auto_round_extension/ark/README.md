@@ -70,7 +70,9 @@ import auto_round_kernel as ark
 
 # Prepare quantized weight: qweight [K, N] int4/int2, scale [K/G, N] fp16/fp32, zp [K/G, N] int4/int2
 packw = ark.repack_quantized_weight(
-    qweight, scale, zp,
+    qweight,
+    scale,
+    zp,
     blocksize=128,
     compute_type="fp16",
     weight_type="int4",
@@ -80,11 +82,11 @@ packw = ark.repack_quantized_weight(
 
 # Run weight-only quantized GEMM: activation [M, K] → output [M, N]
 output = ark.woqgemm(
-    activation,        # [M, K] fp16/bf16
-    packw,             # packed weight blob (INT8)
-    bias,              # [1, N] optional bias
-    n,                 # output features
-    k,                 # input features
+    activation,  # [M, K] fp16/bf16
+    packw,  # packed weight blob (INT8)
+    bias,  # [1, N] optional bias
+    n,  # output features
+    k,  # input features
     groupsize=128,
     compute_type="fp16",
     weight_type="int4",
@@ -94,9 +96,15 @@ output = ark.woqgemm(
 
 # Decompose back to full precision for verification
 decompressed = ark.unpack_weight(
-    packw, dtype=torch.float16, n=n, k=k,
-    groupsize=128, compute_type="fp16",
-    weight_type="int4", scale_type="fp16", asym=False,
+    packw,
+    dtype=torch.float16,
+    n=n,
+    k=k,
+    groupsize=128,
+    compute_type="fp16",
+    weight_type="int4",
+    scale_type="fp16",
+    asym=False,
 )
 ```
 
