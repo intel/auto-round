@@ -16,7 +16,9 @@ from auto_round.algorithms.quantization.rtn.quantizer import RTNQuantizer
 from auto_round.algorithms.quantization.sign_round.config import SignRoundConfig
 from auto_round.algorithms.transforms.awq.config import AWQConfig
 from auto_round.algorithms.transforms.quarot.config import RotationConfig
+from auto_round.algorithms.transforms.spinquant import SpinQuantConfig
 from auto_round.compressors.base import collect_user_scheme_overrides
+from auto_round.compressors.data_driven import DataDrivenCompressor
 from auto_round.compressors.entry import AutoRound as NewAutoRound
 from auto_round.logger import logger
 
@@ -69,6 +71,39 @@ def test_registry_resolves_variant_configs_to_registered_members():
 def test_entry_rejects_configs_without_quantization_members():
     with pytest.raises(ValueError, match="At least one quantization algorithm config"):
         NewAutoRound("dummy-model", "W4A16", [RotationConfig()])
+
+
+def test_compat_entry_preserves_spinquant_dict_config(monkeypatch):
+    captured = {}
+
+    def _fake_init(self, config, **kwargs):
+        captured["config"] = config
+
+    monkeypatch.setattr(DataDrivenCompressor, "__init__", _fake_init)
+
+    from auto_round.autoround import AutoRound as CompatAutoRound
+
+    CompatAutoRound(
+        "dummy-model",
+        scheme="W4A16",
+        iters=1,
+        seqlen=8,
+        nsamples=1,
+        rotation_config={
+            "algorithm": "spinquant",
+            "r1": True,
+            "r2": True,
+            "r3": False,
+            "r4": False,
+            "rotation_size": 128,
+            "trainable_rotation": False,
+            "trainable_smooth": False,
+        },
+    )
+
+    configs = captured["config"] if isinstance(captured["config"], list) else [captured["config"]]
+    spinquant_cfg = next(cfg for cfg in configs if isinstance(cfg, SpinQuantConfig))
+    assert spinquant_cfg.rotation_size == 128
 
 
 def test_entry_warns_and_drops_unsupported_kwargs(monkeypatch, tiny_opt_model_path):

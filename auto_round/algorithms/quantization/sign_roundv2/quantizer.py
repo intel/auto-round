@@ -324,6 +324,8 @@ class SignRoundV2Quantizer(SignRoundQuantizer):
         mse_loss: Callable,
         device: Union[str, torch.device] = "cpu",
     ):
+        output_q = self._normalize_block_output(output_q)
+        current_output = self._normalize_block_output(current_output)
         if self._use_outlier_suppressed_loss:
             loss_diff = torch.abs(output_q - current_output)
             flat_diff = loss_diff.view(-1)

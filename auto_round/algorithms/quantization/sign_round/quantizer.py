@@ -81,14 +81,26 @@ class SignRoundQuantizer(RTNLayerFallbackMixin, BaseQuantizer):
             non_zero_cnt += torch.count_nonzero(t).item()
         return non_zero_cnt
 
+    def _normalize_block_output(self, output: Any) -> torch.Tensor:
+        """Select the primary tensor from block outputs.
+
+        Diffusion blocks can return multiple tensors as a tuple/list.  The
+        quantization loss is defined against the primary activation tensor.
+        """
+        if isinstance(output, (tuple, list)):
+            return output[0]
+        return output
+
     def _get_loss(
         self,
-        output_q: torch.Tensor,
-        current_output: torch.Tensor,
+        output_q: Any,
+        current_output: Any,
         indices: torch.Tensor,
         mse_loss: Callable,
         device: Union[str, torch.device] = "cpu",
     ):
+        output_q = self._normalize_block_output(output_q)
+        current_output = self._normalize_block_output(current_output)
         autocast_ctx = (
             nullcontext()
             if self.model_context.amp

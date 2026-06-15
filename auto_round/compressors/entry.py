@@ -11,6 +11,7 @@ from auto_round.algorithms.quantization.config import QuantizationConfig
 from auto_round.algorithms.quantization.rtn.config import OptimizedRTNConfig, RTNConfig
 from auto_round.algorithms.quantization.sign_round.config import SignRoundConfig
 from auto_round.algorithms.registry import normalize_algorithm_config, resolve_alg_config
+from auto_round.algorithms.transforms import normalize_rotation_config as _normalize_rotation_alg_config
 from auto_round.algorithms.transforms.awq.config import AWQConfig
 from auto_round.algorithms.transforms.quarot.config import RotationConfig as _NewArchRotationConfig
 from auto_round.auto_scheme.gen_auto_scheme import AutoScheme
@@ -729,12 +730,8 @@ class AutoRoundCompatible:
         format_name = forward_kwargs.pop("format", None)
         _rotation_config_raw = forward_kwargs.pop("rotation_config", None)
         if _rotation_config_raw is not None:
-            if isinstance(_rotation_config_raw, _NewArchRotationConfig):
-                _rc = _rotation_config_raw
-            elif isinstance(_rotation_config_raw, dict):
-                _rc = _NewArchRotationConfig.model_validate(_rotation_config_raw)
-            else:
-                # str alias ("default", "random_hadamard", …) -> default config
+            _rc = _normalize_rotation_alg_config(_rotation_config_raw)
+            if _rc is None:
                 _rc = _NewArchRotationConfig()
             config = [config, _rc]
 
