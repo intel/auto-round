@@ -67,7 +67,7 @@ function run_unit_test() {
     uv pip install 'git+https://github.com/ggml-org/llama.cpp.git#subdirectory=gguf-py'
     uv pip install -r test/test_cuda/requirements.txt
     uv pip install -r test/test_cuda/requirements_diffusion.txt
-    uv pip install -U transformers
+    uv pip install -U transformers chardet
     uv pip uninstall torch torchvision
     uv pip install torch==2.12.0 torchvision torchao --index-url https://download.pytorch.org/whl/cu130
     uv pip install .
@@ -115,6 +115,7 @@ function run_unit_test_llmc() {
         -r test/test_cuda/requirements_llmc.txt \
         --extra-index-url https://download.pytorch.org/whl/cu130 \
         --index-strategy unsafe-best-match
+    uv pip install -U chardet
     uv pip install .
     uv pip list
     echo "##[endgroup]"
@@ -171,6 +172,7 @@ function run_unit_test_vllm() {
     uv pip install -r test/test_cuda/requirements_vllm.txt \
         --extra-index-url https://download.pytorch.org/whl/cu130 \
         --index-strategy unsafe-best-match
+    uv pip install -U chardet
     uv pip install .
     uv pip list
     echo "##[endgroup]"
