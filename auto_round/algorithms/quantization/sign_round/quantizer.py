@@ -84,26 +84,14 @@ class SignRoundQuantizer(RTNLayerFallbackMixin, BaseQuantizer):
             non_zero_cnt += torch.count_nonzero(t).item()
         return non_zero_cnt
 
-    def _normalize_block_output(self, output: Any) -> torch.Tensor:
-        """Select the primary tensor from block outputs.
-
-        Diffusion blocks can return multiple tensors as a tuple/list.  The
-        quantization loss is defined against the primary activation tensor.
-        """
-        if isinstance(output, (tuple, list)):
-            return output[0]
-        return output
-
     def _get_loss(
         self,
-        output_q: Any,
-        current_output: Any,
+        pred_output: torch.Tensor,
+        ref_output: torch.Tensor,
         indices: torch.Tensor,
         mse_loss: Callable,
         device: Union[str, torch.device] = "cpu",
     ):
-        output_q = self._normalize_block_output(output_q)
-        current_output = self._normalize_block_output(current_output)
         autocast_ctx = (
             nullcontext()
             if self.model_context.amp
@@ -116,13 +104,13 @@ class SignRoundQuantizer(RTNLayerFallbackMixin, BaseQuantizer):
 
             with autocast_ctx:
                 loss = mse_loss(  # pylint: disable=not-callable
-                    (output_q * tmp_attention_mask).to(torch.float32),
-                    (current_output * tmp_attention_mask).to(torch.float32),
+                    (pred_output * tmp_attention_mask).to(torch.float32),
+                    (ref_output * tmp_attention_mask).to(torch.float32),
                 )
         else:
             with autocast_ctx:
                 loss = mse_loss(  # pylint: disable=not-callable
-                    output_q.to(torch.float32), current_output.to(torch.float32)
+                    pred_output.to(torch.float32), ref_output.to(torch.float32)
                 )
 
         return loss
@@ -236,11 +224,11 @@ class SignRoundQuantizer(RTNLayerFallbackMixin, BaseQuantizer):
 
             for batch_start in range(0, len(global_indices), batch_size):
                 indices = global_indices[batch_start : batch_start + batch_size]
-                current_output = ctx.get_reference_outputs(indices, device=loss_device)
+                ref_output = ctx.get_reference_outputs(indices, device=loss_device)
                 # BlockIO centralizes batch input selection, reference caching,
                 # and forwarding for the currently scheduled block (ctx.block).
-                output_q = ctx.forward_block_batch(indices, device=device, cache_device=loss_device)
-                loss = self._get_loss(output_q, current_output, indices, mse_loss, device)
+                pred_output = ctx.forward_block_batch(indices, device=device, cache_device=loss_device)
+                loss = self._get_loss(pred_output, ref_output, indices, mse_loss, device)
                 num_elm = 1 if num_elm <= 0 else num_elm
                 total_loss += loss.item() / num_elm
 
