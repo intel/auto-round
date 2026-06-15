@@ -19,7 +19,7 @@ ARK kernels are integrated into the following projects:
 |---------|-------------|-------------|
 | [vllm](https://github.com/vllm-project/vllm) | [`inc.py`](https://github.com/vllm-project/vllm/blob/v0.21.0/vllm/model_executor/layers/quantization/inc.py#L617) | `INCXPUARKLinearMethod` — weight-only quantized linear on XPU via `auto_round_kernel.qlinear.QuantLinear`, supports GPTQ (no-zp / +zp) and AWQ formats |
 | [vllm-omni](https://github.com/vllm-project/vllm-omni) | [`sage_attn.py`](https://github.com/vllm-project/vllm-omni/blob/f8340d078e4e9c3b793bd92d55d891b29703f0a8/vllm_omni/diffusion/attention/backends/sage_attn.py#L27) | `SageAttentionBackend` — diffusion model attention on XPU via `ARK.sagev1` |
-| [auto-round](https://github.com/intel/auto-round) | [`backend.py`](https://github.com/intel/auto-round/blob/main/auto_round/inference/backend.py#L531) | 6 backends registered: `auto_round_kernel[_xpu]` (GPTQ no-zp, CPU/XPU), `auto_round_kernel_zp[_xpu]` (GPTQ +zp, CPU/XPU), `auto_round_kernel_awq[_xpu]` (AWQ, CPU/XPU) — provides INT2/INT4/INT8 quantized linear for all packing formats |
+| [Transformers](https://github.com/huggingface/transformers) (via [auto-round](https://github.com/intel/auto-round)) | [`backend.py`](https://github.com/intel/auto-round/blob/main/auto_round/inference/backend.py#L531) | All models quantized by AutoRound automatically use ARK on CPU/XPU by default; no additional configuration required. 6 backends registered: `auto_round_kernel[_xpu]` (GPTQ no-zp), `auto_round_kernel_zp[_xpu]` (GPTQ +zp), `auto_round_kernel_awq[_xpu]` (AWQ).<br>**CPU:** INT2/INT4/INT8; **XPU:** INT4/INT8 |
 
 ---
 
