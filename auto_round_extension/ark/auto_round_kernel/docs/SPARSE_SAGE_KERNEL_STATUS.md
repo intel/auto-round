@@ -1,5 +1,80 @@
 # Sparse Sage Kernel Status
 
+## Current Snapshot
+
+Kernel:
+
+- sparse prefill and cached decode paths exist:
+  - `sage_sparse(...)`
+  - `sage_sparse_decode(...)`
+- kernel contract is stable:
+  - `lut + valid_block_num + qscale + kscale + int8 Q/K + fp16/bf16 V`
+- `xe_sparse_sagev1_fwd_mainloop.hpp` is currently a copy-paste dense baseline
+- this restored performance versus the earlier sparse-native refactor
+- true sparse-aware K prefetch is still not implemented
+- dense-style K prefetch still only applies when `lut_row == nullptr`
+
+Correctness:
+
+- verified:
+  - all-selected sparse = dense parity
+  - partial sparse prefill = dense masked reference
+  - causal sparse prefill = dense causal+masked reference
+  - non-contiguous rows like `[0,3,5]`, `[0,2]`, `[1,3,5]`
+  - cached sparse decode smoke
+- model-level:
+  - Qwen sparse prefill smoke passes
+  - Qwen sparse decode smoke passes
+  - Wan sparse smoke passes
+  - Flux sparse integration exists
+
+Preprocess:
+
+- Triton-XPU is used for:
+  - fused `pool + sim + quant`
+  - `fill_block_map`
+  - `block_map_to_lut`
+- remaining routing/math is still partly torch-side
+- current main preprocess cost is still routing/pooling related, not LUT conversion
+
+Performance:
+
+- long synthetic benchmark (`B=1, H=40, S=75600, D=128, topk=0.5`):
+  - dense `sagev1`: `1172.91 ms`
+  - sparse kernel-only: `591.08 ms`
+  - sparse e2e: `787.31 ms`
+- so:
+  - sparse kernel-only: about `1.98x` faster than dense
+  - sparse e2e: about `1.49x` faster than dense
+
+Flux block `v2` profile summary:
+
+- dense block: `152.05 ms`
+- sparse `topk=0.5`: `122.33 ms`
+- sparse `topk=0.1`: `112.96 ms`
+- `_triton_bmm_pool_sim_simmean_fuse_quant_xpu`:
+  - about `21.3 ms` in both sparse traces
+  - largest named Triton preprocess kernel
+  - but not the only preprocess bottleneck
+
+Benchmark harness:
+
+- C++ kernel-only benchmark exists:
+  - `wrapper/test/bench_sparse_kernel.cpp`
+  - target: `bench_ARK_XPU`
+- model-shaped presets:
+  - `wan_self`
+  - `flux_joint`
+  - `flux_single`
+
+What is still missing:
+
+- sparse-aware K prefetch
+- more dense-vs-sparse hot-path alignment work
+- fully Tritonized preprocess routing
+- broader decode/GQA coverage
+- fp8-V / sparse int8-PV support
+
 ## Summary
 
 The ARK sparse Sage attention path is now in a good **prefill-ready** state for integrating Sparge-style preprocess output, and the preprocess side has partial Triton-XPU acceleration.
