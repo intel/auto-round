@@ -26,6 +26,7 @@
 #include "stla/xe_sagev1_fwd_mainloop.hpp"
 #include "stla/xe_sparse_sagev1_fwd_mainloop.hpp"
 #include "stla/xe_sage_fwd_kernel.hpp"
+#include "stla/xe_sparse_sage_fwd_kernel.hpp"
 #include "flash_attention_v2/collective/fmha_fusion.hpp"
 #include "flash_attention_v2/collective/xe_fmha_fwd_mainloop.hpp"
 #include "flash_attention_v2/kernel/xe_fmha_fwd_kernel.hpp"
@@ -763,8 +764,8 @@ struct SageConfig {
           cutlass::fmha::collective::FMHAFwdEpilogue<CollectiveMainloop, TileShapeOutput, TensorO, GmemTiledCopyO>;
 
       static_assert(!(persistent & Causal), "persistent SDPA kernel not support Causal yet");
-      using FMHAKernel =
-          cutlass::fmha::kernel::XeSageFwdKernel<ProblemShapeType, CollectiveMainloop, CollectiveEpilogue, Scheduler>;
+      using FMHAKernel = cutlass::fmha::kernel::XeSparseSageFwdKernel<ProblemShapeType, CollectiveMainloop,
+                                                                      CollectiveEpilogue, Scheduler>;
 
       SageKernelRunner<FMHAKernel, isVarLen> runner;
 
@@ -783,8 +784,8 @@ struct SageConfig {
             cutlass::fmha::collective::FMHAFwdEpilogue<CollectiveMainloop, TileShapeOutput, TensorO, GmemTiledCopyO>;
 
         static_assert(!(persistent & Causal), "persistent SDPA kernel not support Causal yet");
-        using FMHAKernel =
-            cutlass::fmha::kernel::XeSageFwdKernel<ProblemShapeType, CollectiveMainloop, CollectiveEpilogue, Scheduler>;
+        using FMHAKernel = cutlass::fmha::kernel::XeSparseSageFwdKernel<ProblemShapeType, CollectiveMainloop,
+                                                                        CollectiveEpilogue, Scheduler>;
 
         SageKernelRunner<FMHAKernel, isVarLen> runner;
 
@@ -802,8 +803,8 @@ struct SageConfig {
             cutlass::fmha::collective::FMHAFwdEpilogue<CollectiveMainloop, TileShapeOutput, TensorO, GmemTiledCopyO>;
 
         static_assert(!(persistent & Causal), "persistent SDPA kernel not support Causal yet");
-        using FMHAKernel =
-            cutlass::fmha::kernel::XeSageFwdKernel<ProblemShapeType, CollectiveMainloop, CollectiveEpilogue, Scheduler>;
+        using FMHAKernel = cutlass::fmha::kernel::XeSparseSageFwdKernel<ProblemShapeType, CollectiveMainloop,
+                                                                        CollectiveEpilogue, Scheduler>;
 
         SageKernelRunner<FMHAKernel, isVarLen> runner;
 
@@ -894,8 +895,8 @@ struct SparseSageConfig {
                                                              GmemTiledCopyV, GmemTiledCopyK_cache, GmemTiledCopyV_cache>;
       using CollectiveEpilogue =
           cutlass::fmha::collective::FMHAFwdEpilogue<CollectiveMainloop, TileShapeOutput, TensorO, GmemTiledCopyO>;
-      using FMHAKernel =
-          cutlass::fmha::kernel::XeSageFwdKernel<ProblemShapeType, CollectiveMainloop, CollectiveEpilogue, Scheduler>;
+      using FMHAKernel = cutlass::fmha::kernel::XeSparseSageFwdKernel<ProblemShapeType, CollectiveMainloop,
+                                                                      CollectiveEpilogue, Scheduler>;
       SageKernelRunner<FMHAKernel, isVarLen> runner;
       CUTLASS_CHECK(runner.run(options, hw_info));
     } else {
@@ -909,8 +910,8 @@ struct SparseSageConfig {
                                                                GmemTiledCopyV_cache>;
         using CollectiveEpilogue =
             cutlass::fmha::collective::FMHAFwdEpilogue<CollectiveMainloop, TileShapeOutput, TensorO, GmemTiledCopyO>;
-        using FMHAKernel =
-            cutlass::fmha::kernel::XeSageFwdKernel<ProblemShapeType, CollectiveMainloop, CollectiveEpilogue, Scheduler>;
+        using FMHAKernel = cutlass::fmha::kernel::XeSparseSageFwdKernel<ProblemShapeType, CollectiveMainloop,
+                                                                        CollectiveEpilogue, Scheduler>;
         SageKernelRunner<FMHAKernel, isVarLen> runner;
         CUTLASS_CHECK(runner.run(options, hw_info));
       } else {
@@ -923,8 +924,8 @@ struct SparseSageConfig {
                                                                GmemTiledCopyV_cache>;
         using CollectiveEpilogue =
             cutlass::fmha::collective::FMHAFwdEpilogue<CollectiveMainloop, TileShapeOutput, TensorO, GmemTiledCopyO>;
-        using FMHAKernel =
-            cutlass::fmha::kernel::XeSageFwdKernel<ProblemShapeType, CollectiveMainloop, CollectiveEpilogue, Scheduler>;
+        using FMHAKernel = cutlass::fmha::kernel::XeSparseSageFwdKernel<ProblemShapeType, CollectiveMainloop,
+                                                                        CollectiveEpilogue, Scheduler>;
         SageKernelRunner<FMHAKernel, isVarLen> runner;
         CUTLASS_CHECK(runner.run(options, hw_info));
       }
