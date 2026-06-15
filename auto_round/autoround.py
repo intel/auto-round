@@ -23,7 +23,77 @@ from auto_round.schemes import QuantizationScheme
 if TYPE_CHECKING:
     from auto_round.auto_scheme.gen_auto_scheme import AutoScheme
     from auto_round.compressors.base import BaseCompressor
-    from auto_round.compressors.config import ExtraConfig
+
+
+_COMPAT_KWARGS = {
+    "format",
+    "bits",
+    "group_size",
+    "sym",
+    "data_type",
+    "act_bits",
+    "act_group_size",
+    "act_sym",
+    "act_data_type",
+    "act_dynamic",
+    "super_bits",
+    "super_group_size",
+    "scale_dtype",
+    "ignore_layers",
+    "quant_lm_head",
+    "to_quant_block_names",
+    "model_free",
+    "disable_model_free",
+    "model_dtype",
+    "trust_remote_code",
+    "amp",
+    "nblocks",
+    "lr",
+    "minmax_lr",
+    "enable_minmax_tuning",
+    "enable_norm_bias_tuning",
+    "enable_quanted_input",
+    "enable_opt_rtn",
+    "disable_deterministic_algorithms",
+    "enable_deterministic_algorithms",
+    "static_kv_dtype",
+    "static_attention_dtype",
+    "rotation_config",
+    "processor",
+    "image_processor",
+    "template",
+    "extra_data_dir",
+    "quant_nontext_module",
+    "guidance_scale",
+    "num_inference_steps",
+    "generator_seed",
+    "duo_scaling",
+    "n_grid",
+    "mappings",
+    "algorithm",
+    "optimizer",
+    "lr_scheduler",
+    "not_use_best_mse",
+    "dynamic_max_gap",
+    "momentum",
+    "device",
+}
+
+
+def _filter_supported_compat_kwargs(kwargs: dict) -> dict:
+    supported = {}
+    unknown = []
+    for key, value in kwargs.items():
+        if key in _COMPAT_KWARGS:
+            supported[key] = value
+        else:
+            unknown.append(key)
+    if unknown:
+        logger.warning_once(
+            "AutoRound compatibility path received unsupported kwargs %s. They will be ignored.",
+            ", ".join(sorted(unknown)),
+        )
+    return supported
 
 
 class AutoRound:
@@ -45,7 +115,7 @@ class AutoRound:
         enable_torch_compile (bool): Whether to enable torch.compile for quant blocks/layers.
     """
 
-    SKIP_ARGS = ("local_args", "kwargs", "cls", "model_cls", "dynamic_compressor", "extra_config")
+    SKIP_ARGS = ("local_args", "kwargs", "cls", "model_cls", "dynamic_compressor", "alg_configs")
 
     bits: int | None
     group_size: int | tuple | None
@@ -65,7 +135,7 @@ class AutoRound:
         model: Union[torch.nn.Module, str],
         tokenizer=None,
         platform: str = "hf",
-        scheme: Union[str, dict, QuantizationScheme, AutoScheme] = "W4A16",
+        scheme: Union[str, dict, QuantizationScheme, "AutoScheme"] = "W4A16",
         layer_config: dict[str, Union[str, dict, QuantizationScheme]] = None,
         dataset: Union[str, list, tuple, torch.utils.data.DataLoader] = "NeelNanda/pile-10k",
         iters: int = 200,
@@ -78,10 +148,10 @@ class AutoRound:
         enable_torch_compile: bool = False,
         seed: int = 42,
         enable_adam: bool = False,
-        extra_config: "ExtraConfig" = None,
         enable_alg_ext: bool = False,
         disable_opt_rtn: bool | None = None,
         low_cpu_mem_usage: bool = True,
+        alg_configs=None,
         **kwargs,
     ) -> "BaseCompressor":
         """Initialize AutoRound with quantization and tuning configuration.
@@ -103,7 +173,6 @@ class AutoRound:
             enable_torch_compile (bool, optional): Enable torch.compile for low cost in quantization. Defaults to False.
             seed (int, optional): Random seed. Defaults to 42.
             enable_adam (bool, optional): Enable Adam-based optimizer. Defaults to False.
-            extra_config(ExtraConfig, optional): Extra configuration for lots of configurations. Defaults to None.
             enable_alg_ext (bool, optional): Enable algorithm extension (primarily for INT2)
                                              for better accuracy. Defaults to False.
             disable_opt_rtn (bool, optional): Disable RTN-mode optimization (iters=0) for fast quatnziation
@@ -158,19 +227,62 @@ class AutoRound:
             )
             device_map = "cpu"
 
-        local_args = {k: v for k, v in locals().items() if k not in cls.SKIP_ARGS}
-        if extra_config is not None:
-            for key, value in extra_config.to_dict().items():
-                if value is None:
-                    continue
-                if key in local_args:
-                    local_args[key] = value
-                else:
-                    kwargs[key] = value
+        # Short-circuit: if alg_configs is provided, bypass AutoRoundCompatible and go directly
+        # to the new-arch entry point to avoid duplicate keyword argument errors.
+        if alg_configs is not None:
+            from auto_round.compressors.entry import AutoRound as _NewAutoRound
+            from auto_round.compressors.entry import filter_supported_entry_kwargs
+
+            entry_kwargs = filter_supported_entry_kwargs(kwargs, context="AutoRound")
+
+            return _NewAutoRound(
+                model,
+                scheme,
+                alg_configs,
+                tokenizer=tokenizer,
+                platform=platform,
+                format=entry_kwargs.pop("format", None),
+                low_gpu_mem_usage=low_gpu_mem_usage,
+                device_map=device_map,
+                iters=iters,
+                gradient_accumulate_steps=gradient_accumulate_steps,
+                enable_torch_compile=enable_torch_compile,
+                seed=seed,
+                low_cpu_mem_usage=low_cpu_mem_usage,
+                layer_config=layer_config,
+                nsamples=nsamples,
+                seqlen=seqlen,
+                **entry_kwargs,
+            )
+
+        compat_kwargs = _filter_supported_compat_kwargs(kwargs)
+        compat_kwargs.update(
+            enable_adam=enable_adam,
+            enable_alg_ext=enable_alg_ext,
+            disable_opt_rtn=disable_opt_rtn,
+        )
 
         from auto_round.compressors.entry import AutoRoundCompatible
 
-        return AutoRoundCompatible(**local_args, **kwargs)
+        return AutoRoundCompatible(
+            model=model,
+            tokenizer=tokenizer,
+            platform=platform,
+            scheme=scheme,
+            layer_config=layer_config,
+            dataset=dataset,
+            iters=iters,
+            seqlen=seqlen,
+            nsamples=nsamples,
+            batch_size=batch_size,
+            gradient_accumulate_steps=gradient_accumulate_steps,
+            low_gpu_mem_usage=low_gpu_mem_usage,
+            device_map=device_map,
+            enable_torch_compile=enable_torch_compile,
+            seed=seed,
+            low_cpu_mem_usage=low_cpu_mem_usage,
+            **compat_kwargs,
+        )
 
     @classmethod
     @torch.no_grad()

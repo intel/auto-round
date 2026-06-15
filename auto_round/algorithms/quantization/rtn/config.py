@@ -18,14 +18,22 @@ from auto_round.logger import logger
 
 
 class RTNConfig(QuantizationConfig):
-    _alg_cls = "RTNQuantizer"
-
     def __init__(
         self,
         *,
         disable_opt_rtn: bool = None,
         **kwargs,
-    ):
+    ) -> None:
+        """Initialize an RTN configuration.
+
+        Args:
+            disable_opt_rtn: Whether to disable the optimized RTN path.
+                ``None`` keeps the default heuristic, True forces plain
+                RTN, and False forces the optimized implementation.
+            **kwargs: Common quantization arguments forwarded to
+                QuantizationConfig, such as bits, group_size, sym,
+                data_type, and activation quantization fields.
+        """
         # pop before super().__init__ so it doesn't leak into QuantizationConfig as an unknown kwarg
         enable_opt_rtn = kwargs.pop("enable_opt_rtn", None)
         super().__init__(**kwargs)
@@ -47,5 +55,7 @@ class RTNConfig(QuantizationConfig):
             )
             disable_opt_rtn = False
         self.disable_opt_rtn = disable_opt_rtn
-        if not self.disable_opt_rtn:
-            self._alg_cls = "OptimizedRTNQuantizer"
+
+
+class OptimizedRTNConfig(RTNConfig):
+    pass

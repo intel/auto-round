@@ -386,7 +386,7 @@ def _build_hybrid_attention_mappings(model: torch.nn.Module) -> list[AWQMapping]
 
     mappings.append(AWQMapping(r"up_proj$", [r"down_proj$"]))
 
-    logger.warning(
+    logger.info(
         f"Built dynamic hybrid-attention AWQ mappings: "
         f"{len(full_indices)} full-attention, {len(linear_indices)} linear-attention, "
         f"projections={linear_proj_names}, MoE={is_moe}"

@@ -11,7 +11,7 @@ Core algorithm: SGD with Cayley transform to maintain orthogonality constraints.
 
 from __future__ import annotations
 
-from typing import Any, Callable
+from typing import Any, Callable, Iterable
 
 import torch
 from torch.optim.optimizer import Optimizer
@@ -32,12 +32,12 @@ class SGDG(Optimizer):
 
     def __init__(
         self,
-        params,
+        params: Iterable[torch.Tensor],
         lr: float = 1e-4,
         stiefel: bool = True,
         momentum: float = 0.0,
         weight_decay: float = 0.0,
-    ):
+    ) -> None:
         defaults = dict(lr=lr, momentum=momentum, weight_decay=weight_decay, stiefel=stiefel)
         super().__init__(params, defaults)
         self.stiefel = stiefel
@@ -139,7 +139,7 @@ class AdamAndSGDG(torch.optim.Optimizer):
         smooth_learning_rate: float = 1e-3,
         adam_betas: tuple[float, float] = (0.9, 0.999),
         adam_eps: float = 1e-8,
-    ):
+    ) -> None:
         self._has_adam = len(adam_params) > 0
         self._has_sgdg = len(sgdg_params) > 0
 

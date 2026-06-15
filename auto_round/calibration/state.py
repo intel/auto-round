@@ -15,7 +15,7 @@
 
 This dataclass owns every per-run calibration field shared between
 :class:`~auto_round.compressors.base.BaseCompressor` and
-:class:`~auto_round.algorithms.quantization.base.BaseQuantizers`:
+:class:`~auto_round.algorithms.quantization.base.BaseQuantizer`:
 
 - Cache state ``(inputs, to_cached_layers, last_cache_name, blocks_requiring_input_ids)``
 - Per-batch shape state ``(attention_mask, batch_dim)``

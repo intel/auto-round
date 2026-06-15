@@ -14,7 +14,7 @@ from typing import Dict, Union
 import torch
 import tqdm
 
-from auto_round.algorithms.transforms.rotation.inplace.hooks import (
+from auto_round.algorithms.transforms.quarot.inplace.hooks import (
     CrossHeadOnlineHadamardHook,
     FullOnlineHadamardHook,
     GroupOnlineHadamardHook,
@@ -29,7 +29,7 @@ from auto_round.algorithms.transforms.rotation.inplace.hooks import (
     get_hadK,
     get_or_create_random_hadamard,
 )
-from auto_round.algorithms.transforms.rotation.inplace.model_config import (
+from auto_round.algorithms.transforms.quarot.inplace.model_config import (
     MAPPING_REGISTRY,
     RotationMapping,
     _resolve,
@@ -210,7 +210,7 @@ def _subtract_embedding_mean(model, mapping: RotationMapping) -> None:
 class _RMSNorm(torch.nn.Module):
     """RMS Normalization (no mean subtraction)."""
 
-    def __init__(self, dim: int, eps: float = 1e-5):
+    def __init__(self, dim: int, eps: float = 1e-5) -> None:
         super().__init__()
         self.eps = eps
         self.register_buffer("weight", torch.ones(dim))
