@@ -81,7 +81,10 @@ def setup_ddp_if_needed_(ar, block: torch.nn.Module, device_list: list[int]):
     # Use manual all_reduce on gradients before optimizer step.
     logger.warning_once("AutoRound multi-GPU DDP is an experimental feature, " "please use with caution.")
     logger.trace(
-        "[Rank: %d] Multi-GPU(device_list=%s, CUDA_VISIBLE_DEVICES=%s) per rank (%d GPUs), using manual all_reduce sync",
+        (
+            "[Rank: %d] Multi-GPU(device_list=%s, CUDA_VISIBLE_DEVICES=%s) per rank (%d GPUs),"
+            " using manual all_reduce sync"
+        ),
         dist.get_rank(),
         str(device_list),
         visible_devices,
