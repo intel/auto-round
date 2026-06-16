@@ -114,7 +114,13 @@ def test_ark_cpu_kv_update_append_matches_full_attention():
 
     pos = 0
     for chunk in chunks:
-        auto_round_kernel.ark_cpu_kv_update(k_cache, v_cache, k_full[:, :, pos : pos + chunk, :], v_full[:, :, pos : pos + chunk, :], pos)
+        auto_round_kernel.ark_cpu_kv_update(
+            k_cache,
+            v_cache,
+            k_full[:, :, pos : pos + chunk, :],
+            v_full[:, :, pos : pos + chunk, :],
+            pos,
+        )
         pos += chunk
 
     expected = torch.nn.functional.scaled_dot_product_attention(
