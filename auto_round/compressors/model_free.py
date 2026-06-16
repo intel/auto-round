@@ -1402,9 +1402,11 @@ class _ModelFreeCompressorCore:
     def _parse_layer_config(self) -> None:
         lc = copy.deepcopy(self.layer_config_input) if self.layer_config_input else {}
 
-        # Append '.' to keys ending with a digit to avoid partial numeric matches.
+        # Append '.' only for keys ending with ".<digits>" to avoid partial
+        # numeric matches (e.g. layer.1 should not match layer.10).
+        # Keep plain names like "fc2" untouched.
         for key in list(lc.keys()):
-            if key and key[-1].isdigit():
+            if re.search(r"\.\d+$", key):
                 lc[key + "."] = lc.pop(key)
 
         # Normalize values to dicts.
@@ -1437,7 +1439,7 @@ class _ModelFreeCompressorCore:
         ignore_patterns: list[str] = []
         if self.ignore_layers_input:
             ignore_patterns = [p.strip() for p in self.ignore_layers_input.replace(" ", "").split(",") if p.strip()]
-            ignore_patterns = [p + "." if p and p[-1].isdigit() else p for p in ignore_patterns]
+            ignore_patterns = [p + "." if re.search(r"\.\d+$", p) else p for p in ignore_patterns]
 
         if not self.quant_lm_head and "lm_head" not in ignore_patterns:
             ignore_patterns.append("lm_head")
