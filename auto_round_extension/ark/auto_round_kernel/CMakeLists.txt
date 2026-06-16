@@ -93,10 +93,17 @@ endif()
 list(APPEND libs bestla)
 
 file(GLOB SRCS ${CMAKE_CURRENT_SOURCE_DIR}/*.cpp)
+if(NOT ARK_XPU)
+    list(APPEND SRCS
+        ${CMAKE_CURRENT_SOURCE_DIR}/ark/cpu/mha_dense.cpp
+        ${CMAKE_CURRENT_SOURCE_DIR}/ark/cpu/sdpa.cpp
+    )
+endif()
 set(SDPA_GENERATED_SRCS)
 set(SDPA_KERNEL_DECLARATIONS)
 
 include_directories(wrapper/include)
+include_directories(${CMAKE_CURRENT_SOURCE_DIR})
 
 # Build flash_attn_wrapper as a separate static library with sycl-tla flags
 if(ARK_XPU AND ARK_SYCL_TLA)

@@ -585,11 +585,15 @@ def sdpa(
     - O: same layout as the input tensors.
     - (O, LSE): if return_lse is True.
     """
-    if query.device.type != "xpu":
-        raise NotImplementedError("sdpa is only supported on XPU")
+    if query.device.type not in ("cpu", "xpu"):
+        raise NotImplementedError(f"sdpa is not supported on {query.device.type}")
 
-    if query.dtype not in (torch.float16, torch.bfloat16):
-        raise ValueError(f"Q must be float16 or bfloat16, got {query.dtype}")
+    supported_dtypes = (torch.float32, torch.float16, torch.bfloat16) if query.device.type == "cpu" else (
+        torch.float16,
+        torch.bfloat16,
+    )
+    if query.dtype not in supported_dtypes:
+        raise ValueError(f"Q dtype {query.dtype} is unsupported on {query.device.type}")
     if key.dtype != query.dtype or value.dtype != query.dtype:
         raise ValueError(f"K/V dtype must match Q dtype, got K={key.dtype}, V={value.dtype}, Q={query.dtype}")
 
@@ -610,8 +614,8 @@ def sdpa(
         raise NotImplementedError(f"dropout_p must be 0.0 (got {dropout_p}); dropout is not supported")
 
     if attn_mask is not None:
-        if attn_mask.device.type != "xpu":
-            raise ValueError("attn_mask must be on XPU")
+        if attn_mask.device != query.device:
+            raise ValueError("attn_mask must be on the same device as Q")
         if not attn_mask.is_contiguous():
             raise ValueError("attn_mask must be contiguous")
         if attn_mask.dtype != torch.float32:
@@ -1229,6 +1233,81 @@ def sagev1_pvi8(
     if return_lse:
         return O, LSE
     return O
+
+
+def ark_cpu_kv_cache_alloc(
+    batch: int,
+    num_heads_kv: int,
+    capacity: int,
+    head_dim: int,
+    *,
+    dtype: torch.dtype = torch.float32,
+    device: torch.device | str = "cpu",
+) -> tuple[torch.Tensor, torch.Tensor]:
+    """Allocate an ARK CPU KV cache in internal HND layout: [B, Hkv, capacity, D]."""
+    device = torch.device(device)
+    if device.type != "cpu":
+        raise ValueError("ark_cpu_kv_cache_alloc only supports CPU tensors")
+    if dtype not in (torch.float32, torch.float16, torch.bfloat16):
+        raise ValueError(f"Unsupported KV cache dtype: {dtype}")
+    shape = (batch, num_heads_kv, capacity, head_dim)
+    return torch.empty(shape, device=device, dtype=dtype), torch.empty(shape, device=device, dtype=dtype)
+
+
+def ark_cpu_kv_update(
+    key_cache: torch.Tensor,
+    value_cache: torch.Tensor,
+    key: torch.Tensor,
+    value: torch.Tensor,
+    start_pos: int,
+    *,
+    tensor_layout: str = "HND",
+) -> tuple[torch.Tensor, torch.Tensor]:
+    """Append K/V tensors to an ARK CPU KV cache allocated by ``ark_cpu_kv_cache_alloc``."""
+    if (
+        key_cache.device.type != "cpu"
+        or value_cache.device.type != "cpu"
+        or key.device.type != "cpu"
+        or value.device.type != "cpu"
+    ):
+        raise ValueError("ark_cpu_kv_update only supports CPU tensors")
+    if key_cache.dtype != value_cache.dtype or key.dtype != key_cache.dtype or value.dtype != key_cache.dtype:
+        raise ValueError("K/V cache and source tensors must have the same dtype")
+    if key_cache.ndim != 4 or value_cache.shape != key_cache.shape:
+        raise ValueError("K/V caches must be 4D tensors with identical shape")
+    if not key_cache.is_contiguous() or not value_cache.is_contiguous():
+        raise ValueError("K/V caches must be contiguous")
+
+    batch, num_heads_kv, capacity, head_dim = key_cache.shape
+    Bk, Hkv, append_len, Dk = _validate_attention_tensor(key, "K", tensor_layout, expected_dtype=key_cache.dtype)
+    Bv, Hkv2, append_len_v, Dv = _validate_attention_tensor(value, "V", tensor_layout, expected_dtype=key_cache.dtype)
+    if (Bk, Bv) != (batch, batch) or Hkv != num_heads_kv or Hkv2 != num_heads_kv:
+        raise ValueError("K/V source batch or head count does not match cache")
+    if append_len_v != append_len or Dk != head_dim or Dv != head_dim:
+        raise ValueError("K/V source shape does not match cache")
+    if start_pos < 0 or start_pos + append_len > capacity:
+        raise ValueError("KV append range exceeds cache capacity")
+    if cpu_lib is None or not hasattr(cpu_lib, "ark_cpu_kv_update"):
+        raise NotImplementedError("ARK CPU KV cache update kernel is not available")
+
+    k_strides = _attention_strides_qko(key, tensor_layout)
+    v_strides = _attention_strides_v(value, tensor_layout)
+    cpu_lib.ark_cpu_kv_update(
+        key_cache.data_ptr(),
+        value_cache.data_ptr(),
+        key.data_ptr(),
+        value.data_ptr(),
+        *k_strides,
+        *v_strides,
+        cvt_dtype(key_cache.dtype),
+        batch,
+        num_heads_kv,
+        append_len,
+        head_dim,
+        capacity,
+        int(start_pos),
+    )
+    return key_cache, value_cache
 
 
 def sageattn(

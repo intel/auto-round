@@ -32,6 +32,7 @@ typedef uintptr_t torch_ptr;
 #include "sycl_tla_dense_gemm.hpp"
 #endif
 #else
+#include "ark/cpu/sdpa.h"
 #include "cpu_wrapper.hpp"
 #endif
 
@@ -724,6 +725,54 @@ static void sage_dynamic_quant_v_layout(torch_ptr stream, torch_ptr input, torch
                                                               stride_head, stride_batch);
   }
 }
+
+#elif !defined(ARK_XPU)
+
+static void sdpa(torch_ptr stream, torch_ptr Q, torch_ptr K, torch_ptr V, torch_ptr O, torch_ptr mask,
+                 int q_stride_s, int q_stride_d, int q_stride_h, int q_stride_b, int k_stride_s, int k_stride_d,
+                 int k_stride_h, int k_stride_b, int v_stride_d, int v_stride_s, int v_stride_h, int v_stride_b,
+                 int o_stride_s, int o_stride_d, int o_stride_h, int o_stride_b, int q_dtype, int k_dtype, int o_dtype,
+                 int batch, int num_heads_q, int num_heads_kv, int seq_len_q, int seq_len_kv, int head_dim,
+                 float softmax_scale, bool is_causal) {
+  (void)stream;
+  if (k_dtype != q_dtype || o_dtype != q_dtype) {
+    throw std::invalid_argument("ark::sdpa: k_dtype and o_dtype must match q_dtype");
+  }
+  if (mask && is_causal) {
+    throw std::invalid_argument("ark::sdpa: mask and is_causal cannot both be set");
+  }
+  ark::cpu::MhaDenseArgs args;
+  args.query = (const void*)Q;
+  args.key = (const void*)K;
+  args.value = (const void*)V;
+  args.output = (void*)O;
+  args.attn_mask = mask ? (const float*)mask : nullptr;
+  args.q_strides = {q_stride_s, q_stride_d, q_stride_h, q_stride_b};
+  args.k_strides = {k_stride_s, k_stride_d, k_stride_h, k_stride_b};
+  args.v_strides = {v_stride_d, v_stride_s, v_stride_h, v_stride_b};
+  args.o_strides = {o_stride_s, o_stride_d, o_stride_h, o_stride_b};
+  args.dtype = (BTLA_DTYPE)q_dtype;
+  args.batch = batch;
+  args.num_heads_q = num_heads_q;
+  args.num_heads_kv = num_heads_kv;
+  args.seq_len_q = seq_len_q;
+  args.seq_len_kv = seq_len_kv;
+  args.head_dim = head_dim;
+  args.softmax_scale = softmax_scale;
+  args.is_causal = is_causal;
+  ark::cpu::sdpa_forward(args);
+}
+
+static void ark_cpu_kv_update(torch_ptr KCache, torch_ptr VCache, torch_ptr K, torch_ptr V, int k_stride_s,
+                              int k_stride_d, int k_stride_h, int k_stride_b, int v_stride_d, int v_stride_s,
+                              int v_stride_h, int v_stride_b, int dtype, int batch, int num_heads_kv, int append_len,
+                              int head_dim, int capacity, int start_pos) {
+  ark::cpu::kv_cache_update((void*)KCache, (void*)VCache, (const void*)K, (const void*)V,
+                            {k_stride_s, k_stride_d, k_stride_h, k_stride_b},
+                            {v_stride_d, v_stride_s, v_stride_h, v_stride_b}, (BTLA_DTYPE)dtype, batch, num_heads_kv,
+                            append_len, head_dim, capacity, start_pos);
+}
+
 #endif  // ARK_XPU && ARK_SYCL_TLA
 
 }  // namespace ark
@@ -735,8 +784,10 @@ PYBIND11_MODULE(PY_NAME, m) {
   m.def("packed_weight_size", &ark::packed_weight_size);
   m.def("repack_quantized_weight", &ark::repack_quantized_weight);
   m.def("unpack_weight", &ark::unpack_weight);
-#if defined(ARK_XPU) && defined(ARK_SYCL_TLA)
+#if (defined(ARK_XPU) && defined(ARK_SYCL_TLA)) || !defined(ARK_XPU)
   m.def("sdpa", &ark::sdpa);
+#endif
+#if defined(ARK_XPU) && defined(ARK_SYCL_TLA)
   m.def("sdpa_varlen", &ark::sdpa_varlen, pybind11::arg("stream"), pybind11::arg("Q"), pybind11::arg("K"),
         pybind11::arg("V"), pybind11::arg("O"), pybind11::arg("mask"),
         pybind11::arg("q_dtype"), pybind11::arg("k_dtype"), pybind11::arg("o_dtype"),
@@ -805,4 +856,7 @@ PYBIND11_MODULE(PY_NAME, m) {
   m.def("moe_gemm_prefill_int_dpas", &ark::moe_gemm_prefill_int_dpas_wrapper);
   m.def("matmul_sycl_tla", &ark::matmul_sycl_tla);
 #endif  // ARK_SYCL_TLA
+#elif !defined(ARK_XPU)
+  m.def("ark_cpu_kv_update", &ark::ark_cpu_kv_update);
+#endif
 }
