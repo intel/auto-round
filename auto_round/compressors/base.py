@@ -107,7 +107,7 @@ class SerializedCompressorConfig:
 SERIALIZATION_KEYS = tuple(field.name for field in fields(SerializedCompressorConfig))
 
 
-def collect_user_scheme_overrides(configs: list) -> dict[str, Any]:
+def collect_user_scheme_overrides(configs: list[Any]) -> dict[str, Any]:
     scheme_fields = {f.name for f in fields(QuantizationScheme)}
     user_scheme_overrides = {}
     user_scheme_sources = {}

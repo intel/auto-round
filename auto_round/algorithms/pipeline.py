@@ -30,7 +30,6 @@ Design invariants (see AWQ_REFACTOR_PLAN.md §0.0 and §3.0):
 
 from __future__ import annotations
 
-from collections import defaultdict
 from contextlib import ExitStack
 from dataclasses import dataclass, field
 from enum import IntEnum
@@ -225,7 +224,7 @@ class BlockIO:
             raise ValueError(f"Input source {source.name} is unavailable for this block.")
         return self._select_inputs(input_ids, self._input_others, indices)
 
-    def forward_batch(
+    def forward_block_batch(
         self,
         indices: torch.Tensor,
         *,
@@ -239,7 +238,8 @@ class BlockIO:
 
         input_ids, input_others = self._select_inputs_for_source(self._active_source, indices)
         output = self._run_block(block, quantizer, input_ids, input_others, device)
-        if cache_device is not None and isinstance(output, torch.Tensor):
+        output = self._normalize_output_for_loss(output)
+        if cache_device is not None:
             output = output.to(cache_device)
         return output
 
@@ -265,7 +265,7 @@ class BlockIO:
             previous_source = self._active_source
             self._active_source = source
             try:
-                output = self.forward_batch(
+                output = self.forward_block_batch(
                     indices, device=device_manager.device, cache_device=quantizer.compress_context.cache_device
                 )
             finally:
@@ -319,11 +319,21 @@ class BlockIO:
         self._fp_inputs = fp_inputs
         self._reference_outputs = reference_outputs
 
-    def reference_batch(self, indices: torch.Tensor, *, device=None) -> torch.Tensor:
+    def get_reference_outputs(self, indices: torch.Tensor, *, device=None) -> torch.Tensor:
         if self._reference_outputs is None:
             raise ValueError("Reference outputs have not been collected for this block.")
         output = torch.cat([self._reference_outputs[i] for i in indices], dim=self.batch_dim)
         return output.to(device) if device is not None else output
+
+    def _normalize_output_for_loss(self, output: Any) -> torch.Tensor:
+        if isinstance(output, torch.Tensor):
+            return output
+        if isinstance(output, (tuple, list)) and len(output) == 1 and isinstance(output[0], torch.Tensor):
+            return output[0]
+        raise TypeError(
+            "BlockIO forward must return a tensor or a single-tensor tuple/list after normalization. "
+            f"Got {type(output).__name__}."
+        )
 
     def _count_input_elements(self, indices, *, source: InputSource | None = None) -> int:
         source = self._active_source if source is None else source
@@ -334,7 +344,7 @@ class BlockIO:
             current_input_ids = [input_ids[i] for i in indices]
         return sum(t.numel() for t in current_input_ids)
 
-    def count_active_elements(self, indices: torch.Tensor) -> int:
+    def count_batch_elements(self, indices: torch.Tensor) -> int:
         return self._count_input_elements(indices, source=self._active_source)
 
     def _preprocess_block_inputs(self, input_ids, input_others: dict, block):
@@ -427,25 +437,27 @@ class DiffusionBlockIO(BlockIO):
     def _num_samples(self, input_ids) -> int:
         return len(input_ids["hidden_states"]) if isinstance(input_ids, dict) else len(input_ids)
 
-    def _init_output_buffer(self):
-        return defaultdict(list)
-
-    def _append_output(self, outputs, output, quantizer) -> None:
+    def _normalize_output_for_loss(self, output: Any) -> torch.Tensor:
         if isinstance(output, torch.Tensor):
-            output = [output]
-        assert len(self.output_config) == len(output)
-        for name, out in zip(self.output_config, output):
-            out = out.to(quantizer.compress_context.cache_device)
-            if quantizer.batch_size == 1:
-                outputs[name].append(out)
-            else:
-                outputs[name].extend(list(torch.split(out, 1, dim=self.batch_dim)))
-
-    def reference_batch(self, indices: torch.Tensor, *, device=None) -> torch.Tensor:
-        if self._reference_outputs is None:
-            raise ValueError("Reference outputs have not been collected for this block.")
-        output = torch.cat([self._reference_outputs["hidden_states"][i] for i in indices], dim=self.batch_dim)
-        return output.to(device) if device is not None else output
+            return output
+        if not isinstance(output, (tuple, list)):
+            raise TypeError(
+                "DiffusionBlockIO forward must return a tensor or tuple/list of tensors. "
+                f"Got {type(output).__name__}."
+            )
+        if "hidden_states" not in self.output_config:
+            raise ValueError(
+                "DiffusionBlockIO requires 'hidden_states' in output_config to normalize outputs for loss."
+            )
+        hidden_state_index = self.output_config.index("hidden_states")
+        if hidden_state_index >= len(output):
+            raise ValueError(
+                f"Diffusion block output has {len(output)} tensors, but hidden_states index is {hidden_state_index}."
+            )
+        hidden_states = output[hidden_state_index]
+        if not isinstance(hidden_states, torch.Tensor):
+            raise TypeError("DiffusionBlockIO expected hidden_states to be a tensor after output normalization.")
+        return hidden_states
 
 
 @dataclass
@@ -501,20 +513,20 @@ class BlockContext:
     def num_samples(self) -> int:
         return self.io.num_samples
 
-    def count_active_elements(self, indices: torch.Tensor) -> int:
-        return self.io.count_active_elements(indices)
+    def count_batch_elements(self, indices: torch.Tensor) -> int:
+        return self.io.count_batch_elements(indices)
 
-    def reference_batch(self, indices: torch.Tensor, *, device=None) -> torch.Tensor:
-        return self.io.reference_batch(indices, device=device)
+    def get_reference_outputs(self, indices: torch.Tensor, *, device=None) -> torch.Tensor:
+        return self.io.get_reference_outputs(indices, device=device)
 
-    def forward_batch(
+    def forward_block_batch(
         self,
         indices: torch.Tensor,
         *,
         device: Union[str, torch.device],
         cache_device: Union[str, torch.device, None] = None,
     ) -> Any:
-        return self.io.forward_batch(indices, device=device, cache_device=cache_device)
+        return self.io.forward_block_batch(indices, device=device, cache_device=cache_device)
 
     def finish(self) -> None:
         self.io.finish()

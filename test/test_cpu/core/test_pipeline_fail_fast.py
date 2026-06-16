@@ -2,6 +2,7 @@
 
 import pytest
 
+from auto_round import AWQConfig, OptimizedRTNConfig, RotationConfig, RTNConfig, SignRoundConfig, SpinQuantConfig
 from auto_round.algorithms.config_resolver import (
     get_algorithm_class,
     resolve_shared_config_values,
@@ -10,13 +11,9 @@ from auto_round.algorithms.config_resolver import (
 )
 from auto_round.algorithms.pipeline import QuantizationPipeline
 from auto_round.algorithms.quantization import registry as _r
-from auto_round.algorithms.quantization.config import QuantizationConfig
-from auto_round.algorithms.quantization.rtn.config import OptimizedRTNConfig, RTNConfig
 from auto_round.algorithms.quantization.rtn.quantizer import RTNQuantizer
-from auto_round.algorithms.quantization.sign_round.config import SignRoundConfig
-from auto_round.algorithms.transforms.awq.config import AWQConfig
-from auto_round.algorithms.transforms.quarot.config import RotationConfig
 from auto_round.compressors.base import collect_user_scheme_overrides
+from auto_round.compressors.data_driven import DataDrivenCompressor
 from auto_round.compressors.entry import AutoRound as NewAutoRound
 from auto_round.logger import logger
 
@@ -66,9 +63,82 @@ def test_registry_resolves_variant_configs_to_registered_members():
     assert get_algorithm_class(SignRoundConfig(enable_adam=True)).__name__ == "AdamRoundQuantizer"
 
 
+def test_top_level_config_exports():
+    from auto_round import AWQConfig as TopAWQConfig
+    from auto_round import OptimizedRTNConfig as TopOptimizedRTNConfig
+    from auto_round import RotationConfig as TopRotationConfig
+    from auto_round import RTNConfig as TopRTNConfig
+    from auto_round import SignRoundConfig as TopSignRoundConfig
+    from auto_round import SpinQuantConfig as TopSpinQuantConfig
+
+    assert TopAWQConfig is AWQConfig
+    assert TopOptimizedRTNConfig is OptimizedRTNConfig
+    assert TopRTNConfig is RTNConfig
+    assert TopSignRoundConfig is SignRoundConfig
+    assert TopRotationConfig is RotationConfig
+    assert TopSpinQuantConfig is SpinQuantConfig
+
+
+def test_new_entry_defaults_to_autoround_config(monkeypatch):
+    captured = {}
+
+    def _fake_init(self, config, **kwargs):
+        captured["config"] = config
+
+    monkeypatch.setattr(DataDrivenCompressor, "__init__", _fake_init)
+    monkeypatch.setattr("auto_round.utils.model.detect_model_type", lambda *args, **kwargs: "llm")
+
+    NewAutoRound("dummy-model", "W4A16", iters=1, seqlen=8, nsamples=1)
+
+    assert isinstance(captured["config"], SignRoundConfig)
+
+
 def test_entry_rejects_configs_without_quantization_members():
     with pytest.raises(ValueError, match="At least one quantization algorithm config"):
         NewAutoRound("dummy-model", "W4A16", [RotationConfig()])
+
+
+def test_compat_entry_preserves_spinquant_dict_config(monkeypatch):
+    captured = {}
+    rotation_config = {
+        "algorithm": "spinquant",
+        "r1": True,
+        "r2": True,
+        "r3": False,
+        "r4": False,
+        "rotation_size": 128,
+        "trainable_rotation": False,
+        "trainable_smooth": False,
+    }
+
+    def _fake_init(self, config, **kwargs):
+        captured["config"] = config
+
+    monkeypatch.setattr(DataDrivenCompressor, "__init__", _fake_init)
+    monkeypatch.setattr("auto_round.utils.is_mllm_model", lambda *args, **kwargs: False)
+    monkeypatch.setattr("auto_round.utils.is_diffusion_model", lambda *args, **kwargs: False)
+    monkeypatch.setattr("auto_round.utils.model.detect_model_type", lambda *args, **kwargs: "llm")
+
+    from auto_round.autoround import AutoRound as CompatAutoRound
+
+    CompatAutoRound(
+        "dummy-model",
+        scheme="W4A16",
+        iters=1,
+        seqlen=8,
+        nsamples=1,
+        rotation_config=rotation_config,
+    )
+
+    configs = captured["config"] if isinstance(captured["config"], list) else [captured["config"]]
+    spinquant_cfg = next(cfg for cfg in configs if isinstance(cfg, SpinQuantConfig))
+    assert spinquant_cfg.rotation_size == rotation_config["rotation_size"]
+    assert spinquant_cfg.r1 is rotation_config["r1"]
+    assert spinquant_cfg.r2 is rotation_config["r2"]
+    assert spinquant_cfg.r3 is rotation_config["r3"]
+    assert spinquant_cfg.r4 is rotation_config["r4"]
+    assert spinquant_cfg.trainable_rotation is rotation_config["trainable_rotation"]
+    assert spinquant_cfg.trainable_smooth is rotation_config["trainable_smooth"]
 
 
 def test_entry_warns_and_drops_unsupported_kwargs(monkeypatch, tiny_opt_model_path):

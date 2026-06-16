@@ -103,8 +103,8 @@ The new architecture routes multimodal calibration through:
 - `auto_round/special_model_handler.py` for multimodal block discovery and special forwards
 
 If your model works with an existing template/processor, prefer passing
-`template=...`, `processor=...`, or `image_processor=...` through `AutoRound` /
-kwargs instead of adding compressor code.
+`template=...`, `processor=...`, or `image_processor=...` directly through
+`AutoRound` kwargs instead of adding compressor code.
 
 ## Step 3: Add Calibration Template
 

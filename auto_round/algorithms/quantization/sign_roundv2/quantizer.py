@@ -327,14 +327,14 @@ class SignRoundV2Quantizer(SignRoundQuantizer):
 
     def _get_loss(
         self,
-        output_q: torch.Tensor,
-        current_output: torch.Tensor,
+        pred_output: torch.Tensor,
+        ref_output: torch.Tensor,
         indices: torch.Tensor,
         mse_loss: Callable,
         device: Union[str, torch.device] = "cpu",
     ):
         if self._use_outlier_suppressed_loss:
-            loss_diff = torch.abs(output_q - current_output)
+            loss_diff = torch.abs(pred_output - ref_output)
             flat_diff = loss_diff.view(-1)
             topk = max(1, int(flat_diff.numel() / 1000))
             _, top_indices = torch.topk(torch.abs(flat_diff), topk)
@@ -352,7 +352,7 @@ class SignRoundV2Quantizer(SignRoundQuantizer):
                 with autocast_ctx:
                     return torch.mean(
                         (
-                            torch.abs(output_q.to(torch.float32) - current_output.to(torch.float32))
+                            torch.abs(pred_output.to(torch.float32) - ref_output.to(torch.float32))
                             * tmp_attention_mask
                             * mask
                         )
@@ -360,10 +360,8 @@ class SignRoundV2Quantizer(SignRoundQuantizer):
                     )
 
             with autocast_ctx:
-                return torch.mean(
-                    (torch.abs(output_q.to(torch.float32) - current_output.to(torch.float32)) * mask) ** 2
-                )
-        return super()._get_loss(output_q, current_output, indices, mse_loss, device)
+                return torch.mean((torch.abs(pred_output.to(torch.float32) - ref_output.to(torch.float32)) * mask) ** 2)
+        return super()._get_loss(pred_output, ref_output, indices, mse_loss, device)
 
     @contextmanager
     def block_forward_hooks(self, ctx):

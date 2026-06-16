@@ -15,7 +15,7 @@ import copy
 from collections import defaultdict
 from contextlib import nullcontext
 from functools import partial
-from typing import Any, Callable, Optional, Union
+from typing import TYPE_CHECKING, Any, Callable, Optional, Union
 
 import accelerate
 import torch
@@ -51,6 +51,9 @@ from auto_round.utils.device_manager import device_manager
 from auto_round.utils.distributed import setup_ddp_if_needed_
 from auto_round.wrapper import WrapperLinear, unwrapper_block, unwrapper_layer, wrapper_block
 
+if TYPE_CHECKING:
+    from auto_round.algorithms.pipeline import BlockContext
+
 
 @register_pipeline_member(SignRoundConfig)
 class SignRoundQuantizer(RTNLayerFallbackMixin, BaseQuantizer):
@@ -83,8 +86,8 @@ class SignRoundQuantizer(RTNLayerFallbackMixin, BaseQuantizer):
 
     def _get_loss(
         self,
-        output_q: torch.Tensor,
-        current_output: torch.Tensor,
+        pred_output: torch.Tensor,
+        ref_output: torch.Tensor,
         indices: torch.Tensor,
         mse_loss: Callable,
         device: Union[str, torch.device] = "cpu",
@@ -101,18 +104,18 @@ class SignRoundQuantizer(RTNLayerFallbackMixin, BaseQuantizer):
 
             with autocast_ctx:
                 loss = mse_loss(  # pylint: disable=not-callable
-                    (output_q * tmp_attention_mask).to(torch.float32),
-                    (current_output * tmp_attention_mask).to(torch.float32),
+                    (pred_output * tmp_attention_mask).to(torch.float32),
+                    (ref_output * tmp_attention_mask).to(torch.float32),
                 )
         else:
             with autocast_ctx:
                 loss = mse_loss(  # pylint: disable=not-callable
-                    output_q.to(torch.float32), current_output.to(torch.float32)
+                    pred_output.to(torch.float32), ref_output.to(torch.float32)
                 )
 
         return loss
 
-    def quantize_block(self, ctx) -> dict:
+    def quantize_block(self, ctx: "BlockContext") -> dict:
         """Apply the AutoRound optimization algorithm to a block.
 
         This is the pure-algorithm entry point.  All infrastructure concerns
@@ -206,7 +209,7 @@ class SignRoundQuantizer(RTNLayerFallbackMixin, BaseQuantizer):
         # We assume the block input and output shape is same
         if self.gradient_accumulate_steps != 1 and not self.attention_mask:
             whole_indices = torch.arange(global_batch_size)
-            num_elm = ctx.count_active_elements(whole_indices)
+            num_elm = ctx.count_batch_elements(whole_indices)
         setup_ddp_if_needed_(self, block, device_manager.device_list)
         index_sampler = IndexSampler(nsamples, global_batch_size)
         batch_size = self.batch_size
@@ -221,9 +224,11 @@ class SignRoundQuantizer(RTNLayerFallbackMixin, BaseQuantizer):
 
             for batch_start in range(0, len(global_indices), batch_size):
                 indices = global_indices[batch_start : batch_start + batch_size]
-                current_output = ctx.reference_batch(indices, device=loss_device)
-                output_q = ctx.forward_batch(indices, device=device, cache_device=loss_device)
-                loss = self._get_loss(output_q, current_output, indices, mse_loss, device)
+                ref_output = ctx.get_reference_outputs(indices, device=loss_device)
+                # BlockIO centralizes batch input selection, reference caching,
+                # and forwarding for the currently scheduled block (ctx.block).
+                pred_output = ctx.forward_block_batch(indices, device=device, cache_device=loss_device)
+                loss = self._get_loss(pred_output, ref_output, indices, mse_loss, device)
                 num_elm = 1 if num_elm <= 0 else num_elm
                 total_loss += loss.item() / num_elm
 
