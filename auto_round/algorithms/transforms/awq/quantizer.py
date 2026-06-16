@@ -146,7 +146,7 @@ class AWQQuantizer(BaseWeightTransformer):
         # AWQ's internal QDQ ``disable_opt_rtn`` follows the resolved
         # block-quantizer value (wired in ``prepare_run``). AWQ never owns this
         # field itself (mirrors ``enable_quanted_input``).
-        self.disable_opt_rtn: bool = True
+        self.disable_opt_rtn: bool = None
 
         self._user_mappings: list[dict] | None = config.mappings
 
