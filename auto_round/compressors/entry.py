@@ -21,6 +21,7 @@ from auto_round.compressors.utils import check_need_act_calibration
 from auto_round.compressors.zero_shot import ZeroShotCompressor
 from auto_round.logger import logger
 from auto_round.schemes import QuantizationScheme, parse_scheme
+from auto_round.utils.device_manager import normalize_default_device_map
 
 _ENTRY_ROUTE_KWARGS = {"model_free", "disable_model_free", "disable_opt_rtn"}
 _ENTRY_COMPRESSOR_KWARGS = {"scale_dtype", "ignore_layers", "quant_lm_head", "to_quant_block_names"}
@@ -338,6 +339,7 @@ class AutoRound(object):
     ) -> "BaseCompressor":
         from auto_round.utils.model import is_model_free_route
 
+        device_map = normalize_default_device_map(device_map)
         split_kwargs = _split_entry_kwargs(kwargs)
         route_kwargs = dict(split_kwargs["route"])
         compressor_kwargs = dict(split_kwargs["compressor"])

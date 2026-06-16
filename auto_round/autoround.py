@@ -19,6 +19,7 @@ import torch
 
 from auto_round.logger import deprecated, logger
 from auto_round.schemes import QuantizationScheme
+from auto_round.utils.device_manager import normalize_default_device_map
 
 if TYPE_CHECKING:
     from auto_round.auto_scheme.gen_auto_scheme import AutoScheme
@@ -218,14 +219,7 @@ class AutoRound:
             ...     # ...
             ... }
         """
-        if torch.mps.is_available() and (
-            device_map == 0 or device_map == "0" or device_map is None or device_map == "auto"
-        ):
-            logger.warning(
-                "MPS detected. Using CPU by default to avoid potential memory issues. "
-                "Set --device_map=mps to force MPS usage."
-            )
-            device_map = "cpu"
+        device_map = normalize_default_device_map(device_map)
 
         # Short-circuit: if alg_configs is provided, bypass AutoRoundCompatible and go directly
         # to the new-arch entry point to avoid duplicate keyword argument errors.
