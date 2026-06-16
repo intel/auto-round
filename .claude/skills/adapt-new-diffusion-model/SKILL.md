@@ -53,14 +53,12 @@ def is_diffusion_model(model_or_path):
 
 If your model doesn't have `model_index.json`, either create one in the model
 directory or pass diffusion-specific options through new-architecture
-`ExtraConfig` / `AutoRound` kwargs:
+`AutoRound` kwargs:
 
 ```python
-from auto_round.compressors.config import ExtraConfig
-
 ar = AutoRound(
     model,
-    extra_config=ExtraConfig(num_inference_steps=5),
+    num_inference_steps=5,
 )
 ```
 
@@ -300,7 +298,7 @@ ar = AutoRound(
 
 ## Checklist
 
-- [ ] `is_diffusion_model()` detects model (or forced via extra_config)
+- [ ] `is_diffusion_model()` detects model
 - [ ] Transformer block class name identified
 - [ ] `DIFFUSION_OUTPUT_CONFIGS` entry added with correct output tensor names and order
 - [ ] Pipeline runs without errors during calibration
