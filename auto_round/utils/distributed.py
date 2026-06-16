@@ -12,6 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import os
 from functools import lru_cache
 
 import torch
@@ -54,6 +55,8 @@ def setup_ddp_if_needed_(ar, block: torch.nn.Module, device_list: list[int]):
     """
     import torch.distributed as dist
 
+    visible_devices = os.environ.get("CUDA_VISIBLE_DEVICES", "unset")
+
     if not is_distributed():
         return block, _noop_sync
 
@@ -64,9 +67,10 @@ def setup_ddp_if_needed_(ar, block: torch.nn.Module, device_list: list[int]):
 
         logger.warning_once("AutoRound DDP is an experimental feature, please use with caution.")
         logger.trace(
-            "[Rank: %d] Wrapping block with DDP on device_list=%s",
+            "[Rank: %d] Wrapping block with DDP on device_list=%s, CUDA_VISIBLE_DEVICES=%s",
             dist.get_rank(),
             device_list,
+            visible_devices,
         )
         # Ensure all block parameters are on the DDP device before wrapping.
         _move_block_to_device(block, device_list[0])
@@ -77,8 +81,10 @@ def setup_ddp_if_needed_(ar, block: torch.nn.Module, device_list: list[int]):
     # Use manual all_reduce on gradients before optimizer step.
     logger.warning_once("AutoRound multi-GPU DDP is an experimental feature, " "please use with caution.")
     logger.trace(
-        "[Rank: %d] Multi-GPU per rank (%d GPUs), using manual all_reduce sync",
+        "[Rank: %d] Multi-GPU(device_list=%s, CUDA_VISIBLE_DEVICES=%s) per rank (%d GPUs), using manual all_reduce sync",
         dist.get_rank(),
+        str(device_list),
+        visible_devices,
         num_devices,
     )
 

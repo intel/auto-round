@@ -241,7 +241,7 @@ class SignRoundQuantizer(BaseQuantizers):
         if self.gradient_accumulate_steps != 1 and not self.attention_mask:
             whole_indices = torch.arange(global_batch_size)
             num_elm = self._get_current_num_elm(input_ids, whole_indices)
-        setup_ddp_if_needed_(self, block, self.compress_context.device_list)
+        block, sync_gradients = setup_ddp_if_needed_(self, block, device_manager.device_list)
         index_sampler = IndexSampler(nsamples, global_batch_size)
         batch_size = self.batch_size
         for i in range(self.iters):
