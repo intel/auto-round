@@ -520,7 +520,7 @@ def _quantize_weight_mxfp(
     # quant_mx returns (qdq_tensor, shared_exp, None).  We only need shared_exp
     # (the per-block log2 scale).  The element-wise rounding to the FP4/FP8 grid
     # is performed inside QuantLinear.pack via dtype casts / pack_fp4_to_uint8.
-    _, shared_exp, _ = quant_mx(weight_dev, bits=bits, group_size=group_size, data_type=data_type)
+    weight_dev, shared_exp, _ = quant_mx(weight_dev, bits=bits, group_size=group_size, data_type=data_type)
     # Reshape to (out_features, n_groups) so the on-disk weight_scale matches
     # the llm-compressor convention (and QuantLinear's registered buffer shape).
     shared_exp = shared_exp.reshape(out_features, in_features // group_size)
