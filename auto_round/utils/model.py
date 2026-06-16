@@ -949,14 +949,16 @@ _is_mllm_model_cache: dict = {}
 _LLM_ONLY_MODEL_TYPES = {"bagel"}
 
 
+def get_model_name_or_path(model_or_path: Union[str, torch.nn.Module]) -> Optional[str]:
+    if isinstance(model_or_path, str):
+        return model_or_path
+    return getattr(model_or_path, "_name_or_path", None) or getattr(model_or_path, "name_or_path", None)
+
+
 def is_mllm_model(model_or_path: Union[str, torch.nn.Module], platform: str = None):
     from auto_round.utils.common import MM_KEYS
 
-    model_path = (
-        model_or_path
-        if isinstance(model_or_path, str)
-        else (getattr(model_or_path, "_name_or_path", None) or getattr(model_or_path, "name_or_path", None))
-    )
+    model_path = get_model_name_or_path(model_or_path)
 
     # Fast path: return cached result for already-seen paths
     if model_path in _is_mllm_model_cache:
@@ -1003,11 +1005,7 @@ def is_mllm_model(model_or_path: Union[str, torch.nn.Module], platform: str = No
                 break
 
     # Cache by the original path key (model_path may have been resolved above)
-    original_key = (
-        model_or_path
-        if isinstance(model_or_path, str)
-        else (getattr(model_or_path, "_name_or_path", None) or getattr(model_or_path, "name_or_path", None))
-    )
+    original_key = get_model_name_or_path(model_or_path)
     _is_mllm_model_cache[original_key] = result
     return result
 
