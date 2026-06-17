@@ -1455,7 +1455,16 @@ def moe_gemm_prefill(
         dequant_workspace = weights.transpose(1, 2).contiguous()
         weights_ptr = dequant_workspace.data_ptr()
     else:
-        dequant_workspace = torch.empty((num_experts, K, N), device=activations.device, dtype=activations.dtype)
+        # Reuse a persistent `[E, K, N]` workspace across calls with the same
+        # (device, dtype, E, K, N). For real MoE prefill workloads the same
+        # shape is dispatched on every iteration; allocating a fresh
+        # `E*K*N*sizeof(act)` tensor each call adds non-trivial caching-
+        # allocator overhead (and, on the small shapes, dominates the
+        # quantized GEMM cost). The workspace is kept alive by the cache so
+        # we hand the data_ptr() to the kernel without taking a new ref.
+        dequant_workspace = _get_moe_prefill_workspace(
+            activations.device, activations.dtype, num_experts, K, N
+        )
         weights_ptr = weights.data_ptr()
 
     scales_ptr = scales.data_ptr() if scales is not None else 0
@@ -1482,9 +1491,58 @@ def moe_gemm_prefill(
     # The inner CUTLASS-SYCL `moe_gemm` calls `event.wait()` before returning
     # (see `moe_detail::moe_gemm_launcher` in `sycl_tla_moe.hpp`), so by the
     # time `lib.moe_gemm_prefill` returns the device has already consumed the
-    # workspace and it is safe to drop our reference here.
-    del dequant_workspace
+    # workspace. For the unquantized fast path the workspace is a per-call
+    # transposed copy of `weights` -- drop it now. For the quantized paths
+    # the workspace lives in the module-level cache (`_get_moe_prefill_workspace`)
+    # and is intentionally retained for reuse on the next call.
+    if is_unquantized:
+        del dequant_workspace
     return outputs
+
+
+# ---------------------------------------------------------------------------
+# `moe_gemm_prefill` dequant-workspace cache.
+#
+# The Stage-1 quantized prefill kernel dequantises weights into an
+# `[E, K, N]` act-dtype scratch buffer before dispatching to the existing
+# CUTLASS-SYCL grouped GEMM. In real model usage the same `(E, K, N, dtype)`
+# tuple is hit on every prefill step, so allocating a fresh
+# `E * K * N * sizeof(act_dtype)` tensor per call adds caching-allocator
+# overhead that is significant on the small/medium shapes.
+#
+# We cache one tensor per `(device, dtype, E, K, N)` key. The cache holds
+# references that keep the tensors alive across calls; callers can clear it
+# explicitly via `clear_moe_prefill_workspace_cache()` if they need to
+# release the memory (e.g., before allocating large buffers for a different
+# subsystem).
+# ---------------------------------------------------------------------------
+
+_MOE_PREFILL_WORKSPACE_CACHE: "dict[tuple, torch.Tensor]" = {}
+
+
+def _get_moe_prefill_workspace(device: torch.device, dtype: torch.dtype, E: int, K: int, N: int) -> torch.Tensor:
+    """Return a persistent `[E, K, N]` workspace tensor for the prefill kernel.
+
+    The tensor is allocated lazily on first use and retained in a module-level
+    cache so subsequent calls with the same `(device, dtype, E, K, N)` reuse
+    the same memory. Returned tensors are contiguous and uninitialised; the
+    kernel writes every element before reading.
+    """
+    # `device` may be a `torch.device` or a string; normalise so the cache key
+    # is hashable and identifies the exact device (including ordinal).
+    if not isinstance(device, torch.device):
+        device = torch.device(device)
+    key = (device.type, device.index, dtype, int(E), int(K), int(N))
+    ws = _MOE_PREFILL_WORKSPACE_CACHE.get(key)
+    if ws is None:
+        ws = torch.empty((E, K, N), device=device, dtype=dtype)
+        _MOE_PREFILL_WORKSPACE_CACHE[key] = ws
+    return ws
+
+
+def clear_moe_prefill_workspace_cache() -> None:
+    """Release all cached `moe_gemm_prefill` dequant-workspace tensors."""
+    _MOE_PREFILL_WORKSPACE_CACHE.clear()
 
 
 def patch_torch_sdpa(*args, **kwargs):
