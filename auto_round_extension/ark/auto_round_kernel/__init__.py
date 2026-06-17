@@ -1545,6 +1545,121 @@ def clear_moe_prefill_workspace_cache() -> None:
     _MOE_PREFILL_WORKSPACE_CACHE.clear()
 
 
+# ---------------------------------------------------------------------------
+# Unified MoE entry point
+#
+# `moe_gemm_decode` and `moe_gemm_prefill` accept identical argument shapes
+# and dtypes -- the only difference is which underlying SYCL kernel is
+# launched (a GEMV variant tuned for 1-2 tokens/expert vs. a Grouped GEMM
+# variant tuned for many tokens/expert). Model code that runs through both
+# regimes (prefill of a prompt, then autoregressive decode) traditionally
+# has to keep two call sites and branch on phase. `moe(...)` collapses that
+# into a single API and auto-selects the right kernel from the token
+# distribution.
+#
+# Callers that already know the phase (e.g., a model's generation loop knows
+# whether it's in prefill or decode) should pass it via the `phase` argument
+# to avoid the small host-device sync that `phase="auto"` needs to inspect
+# `num_tokens_per_expert.max()`.
+# ---------------------------------------------------------------------------
+
+# Default tokens-per-expert threshold used by `phase="auto"`. The decode
+# GEMV kernel is faster when every expert sees only a handful of tokens
+# (TopK >= 1 with batch size 1-4); above that the GEMM-tuned prefill kernel
+# wins. The crossover is hardware-dependent but `4` is a conservative default
+# that matches the regime `moe_gemm_decode`'s docstring describes
+# ("typically only 1-2 tokens", up to top-k * small batch).
+_MOE_AUTO_DECODE_MAX_TOKENS_PER_EXPERT = 4
+
+_MOE_VALID_PHASES = ("auto", "decode", "prefill")
+
+
+def moe(
+    activations: torch.Tensor,
+    weights: torch.Tensor,
+    num_tokens_per_expert: torch.Tensor,
+    *,
+    scales: Optional[torch.Tensor] = None,
+    zeros: Optional[torch.Tensor] = None,
+    weight_bits: int = 4,
+    group_size: int = 128,
+    asym: bool = False,
+    phase: str = "auto",
+    decode_threshold: int = _MOE_AUTO_DECODE_MAX_TOKENS_PER_EXPERT,
+) -> torch.Tensor:
+    """Unified MoE GEMM entry point that dispatches to decode or prefill.
+
+    This is a thin Python-side dispatcher over :func:`moe_gemm_decode` and
+    :func:`moe_gemm_prefill`. The two underlying kernels accept the same
+    argument shapes/dtypes (see :func:`moe_gemm_decode` for the full layout
+    contract); ``moe`` simply picks the one that is faster for the current
+    token distribution so model code can have a single call site for both
+    prefill and decode phases.
+
+    Args:
+        activations: ``[total_tokens, K]`` in fp16 or bf16.
+        weights: ``[E, N, K_packed]`` -- see :func:`moe_gemm_decode` for the
+            quant-specific layout/dtype contract.
+        num_tokens_per_expert: ``[E]`` int32. Sum must equal
+            ``activations.shape[0]``.
+        scales, zeros, weight_bits, group_size, asym: forwarded to the
+            underlying kernel; see :func:`moe_gemm_decode`.
+        phase: dispatch mode.
+
+            * ``"auto"`` (default): inspect ``num_tokens_per_expert.max()``
+              and pick decode if every expert sees ``<= decode_threshold``
+              tokens, otherwise prefill. This incurs one small host-device
+              sync per call.
+            * ``"decode"``: always dispatch to :func:`moe_gemm_decode`. Use
+              when the model's generation loop already knows it is in the
+              decode phase; avoids the sync.
+            * ``"prefill"``: always dispatch to :func:`moe_gemm_prefill`.
+              Use when the model knows it is in the prefill phase.
+        decode_threshold: ``"auto"`` mode dispatches to decode when
+            ``num_tokens_per_expert.max() <= decode_threshold``. Defaults to
+            4 (the regime the decode GEMV kernel is tuned for).
+
+    Returns:
+        ``[total_tokens, N]`` in the activations dtype. Bit-identical to the
+        underlying kernel that was dispatched.
+    """
+    if phase not in _MOE_VALID_PHASES:
+        raise ValueError(f"phase must be one of {_MOE_VALID_PHASES}, got {phase!r}")
+
+    if phase == "auto":
+        # `.max().item()` triggers a host-device sync; callers in tight
+        # decode loops should pass `phase="decode"` explicitly to skip this.
+        # We tolerate a non-int32 / non-contiguous tensor here because the
+        # downstream kernel wrappers will normalise it anyway.
+        if num_tokens_per_expert.numel() == 0:
+            raise ValueError("num_tokens_per_expert must be non-empty")
+        max_tpe = int(num_tokens_per_expert.max().item())
+        phase = "decode" if max_tpe <= int(decode_threshold) else "prefill"
+
+    if phase == "decode":
+        return moe_gemm_decode(
+            activations,
+            weights,
+            num_tokens_per_expert,
+            scales=scales,
+            zeros=zeros,
+            weight_bits=weight_bits,
+            group_size=group_size,
+            asym=asym,
+        )
+    # phase == "prefill"
+    return moe_gemm_prefill(
+        activations,
+        weights,
+        num_tokens_per_expert,
+        scales=scales,
+        zeros=zeros,
+        weight_bits=weight_bits,
+        group_size=group_size,
+        asym=asym,
+    )
+
+
 def patch_torch_sdpa(*args, **kwargs):
     from .torch_sdpa_patch import patch_torch_sdpa_with_ark
 
