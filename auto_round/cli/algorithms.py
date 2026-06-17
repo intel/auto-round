@@ -260,11 +260,20 @@ class AutoRound(AlgorithmHandler):
         group.add_argument("--minmax_lr", default=None, type=float, help="Learning rate for min-max tuning.")
         group.add_argument("--momentum", default=0.0, type=float, help="Momentum factor for the optimizer.")
         group.add_argument("--nblocks", default=1, type=int, help="Number of blocks to optimize together.")
-        group.add_argument(
+        minmax_mutex = group.add_mutually_exclusive_group()
+        minmax_mutex.add_argument(
             "--enable_minmax_tuning",
             default=True,
-            action=argparse.BooleanOptionalAction,
+            dest="enable_minmax_tuning",
+            action="store_true",
             help="Tune weight min/max ranges.",
+        )
+        minmax_mutex.add_argument(
+            "--no-enable_minmax_tuning",
+            "--disable_minmax_tuning",
+            dest="enable_minmax_tuning",
+            action="store_false",
+            help="Disable weight min/max tuning.",
         )
         group.add_argument(
             "--enable_norm_bias_tuning",
@@ -287,11 +296,20 @@ class AutoRound(AlgorithmHandler):
             action=argparse.BooleanOptionalAction,
             help="Skip restoring best-MSE checkpoint.",
         )
-        group.add_argument(
+        quanted_input_mutex = group.add_mutually_exclusive_group()
+        quanted_input_mutex.add_argument(
             "--enable_quanted_input",
             default=True,
-            action=argparse.BooleanOptionalAction,
+            dest="enable_quanted_input",
+            action="store_true",
             help="Consume quantized output of previous blocks.",
+        )
+        quanted_input_mutex.add_argument(
+            "--no-enable_quanted_input",
+            "--disable_quanted_input",
+            dest="enable_quanted_input",
+            action="store_false",
+            help="Disable quantized-input propagation across blocks.",
         )
         group.add_argument(
             "--enable_adam",
