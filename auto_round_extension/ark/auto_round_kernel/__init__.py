@@ -343,19 +343,13 @@ def _validate_packed_blob(
         raise TypeError(f"blob must be a torch.Tensor, got {type(blob).__name__}")
 
     if blob.device.type not in ("cpu", "xpu"):
-        raise ValueError(
-            f"blob must reside on cpu or xpu, got {blob.device.type}"
-        )
+        raise ValueError(f"blob must reside on cpu or xpu, got {blob.device.type}")
 
     if blob.dtype != torch.int8:
-        raise ValueError(
-            f"blob must have dtype torch.int8, got {blob.dtype}"
-        )
+        raise ValueError(f"blob must have dtype torch.int8, got {blob.dtype}")
 
     if blob.dim() != 1:
-        raise ValueError(
-            f"blob must be a 1-D tensor, got {blob.dim()}-D"
-        )
+        raise ValueError(f"blob must be a 1-D tensor, got {blob.dim()}-D")
 
     if not isinstance(n, (int,)) or n <= 0:
         raise ValueError(f"n must be a positive integer, got {n!r}")
@@ -366,8 +360,21 @@ def _validate_packed_blob(
     if not isinstance(asym, bool):
         raise TypeError(f"asym must be a bool, got {type(asym).__name__}")
 
-    valid_types = {"fp32", "fp16", "bf16", "int8", "int4", "int2", "int3",
-                   "int5", "int6", "int7", "fp8_e4m3", "fp8_e5m2", "fp8_e8m0"}
+    valid_types = {
+        "fp32",
+        "fp16",
+        "bf16",
+        "int8",
+        "int4",
+        "int2",
+        "int3",
+        "int5",
+        "int6",
+        "int7",
+        "fp8_e4m3",
+        "fp8_e5m2",
+        "fp8_e8m0",
+    }
     if compute_type not in valid_types:
         raise ValueError(f"compute_type must be one of {valid_types}, got {compute_type!r}")
     if weight_type not in valid_types:
