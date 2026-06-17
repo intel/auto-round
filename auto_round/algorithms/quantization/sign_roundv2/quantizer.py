@@ -12,7 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from contextlib import nullcontext
+from contextlib import contextmanager, nullcontext
 from functools import partial
 from typing import Callable, Union
 
@@ -20,9 +20,9 @@ import torch
 import transformers
 from torch import autocast
 
-from auto_round.algorithms.quantization.sign_round.config import SignRoundConfig
+from auto_round.algorithms.quantization.sign_round.config import SignRoundConfig, SignRoundV2Config
 from auto_round.algorithms.quantization.sign_round.quantizer import SignRoundQuantizer
-from auto_round.algorithms.quantization.utils import register_imatrix_hooks
+from auto_round.algorithms.registry import register_pipeline_member
 from auto_round.data_type.gguf import (
     double_quant_tensor_sym_rtn,
     quant_tensor_gguf_asym_dq,
@@ -134,10 +134,10 @@ class SignRoundOptimizedWrapperLinear(WrapperLinear):
 class SignRoundDQWrapperLinear(WrapperLinear):
     minmax_scale_bound = (0.5, 1.5)
 
-    def __init__(self, *args, **kwargs):
+    def __init__(self, *args, **kwargs) -> None:
         if "enable_minmax_tuning" in kwargs:
             logger.warning_once("disable minmax tuning for a little better accuracy and lower cost")
-            kwargs["enable_minmax_tuning"] = False  # a little faster and better
+            kwargs["enable_minmax_tuning"] = False
         super().__init__(*args, **kwargs)
         self.prev_scale = None
         self.prev_wmin = None
@@ -180,7 +180,6 @@ class SignRoundDQWrapperLinear(WrapperLinear):
 
     @torch.no_grad()
     def _run_search(self, weight, v):
-        """Per-format scale/wmin search separated from the (compilable) quant func."""
         from auto_round.export.export_to_gguf.config import GGML_QUANT_SIZES, QK_K
 
         bits = self.orig_layer.bits
@@ -201,8 +200,6 @@ class SignRoundDQWrapperLinear(WrapperLinear):
                 split_num=1,
                 v=v_r,
             )
-            # Search funcs use ``@torch.inference_mode()``; clone to detach so
-            # autograd may consume them.
             return {
                 "scale": scale.clone(),
                 "wmin": wmin.clone(),
@@ -210,7 +207,6 @@ class SignRoundDQWrapperLinear(WrapperLinear):
                 "d_wmin": d_wmin.clone(),
             }
 
-        # sym path
         group_size = 16
         super_group_size = 16
         t, _, _ = reshape_pad_tensor_by_group_size(weight.to(torch.float32), group_size)
@@ -232,13 +228,12 @@ class SignRoundDQWrapperLinear(WrapperLinear):
 
     def _qdq_weight(self, value, min_scale, max_scale):
         if not self._is_dq_path:
-            # Non-dq path keeps the original behavior (base class handles it).
             return super()._qdq_weight(value, min_scale, max_scale)
 
         if self.orig_layer.bits >= 16:
             return self.orig_layer.weight, None, None
         min_bound, max_bound = self.minmax_scale_bound
-        min_scale.data.clamp_(min_bound, max_bound)  #  TODO this one could be deleted
+        min_scale.data.clamp_(min_bound, max_bound)
         max_scale.data.clamp_(min_bound, max_bound)
         weight = self.orig_layer.weight
         if weight.device.type == "meta":
@@ -246,7 +241,6 @@ class SignRoundDQWrapperLinear(WrapperLinear):
         if isinstance(self.orig_layer, transformers.pytorch_utils.Conv1D):
             weight = weight.t()
 
-        # Re-search every 10 steps; otherwise reuse the cached search results.
         iter_v = getattr(self, "cur_iter", 0)
         need_search = (iter_v == 0) or (iter_v == -1) or (self.prev_scale is None)
         if need_search:
@@ -294,10 +288,11 @@ class SignRoundDQWrapperLinear(WrapperLinear):
         return weight_q, scale_out, zp_out
 
 
+@register_pipeline_member(SignRoundV2Config)
 class SignRoundV2Quantizer(SignRoundQuantizer):
     """SignRound variant using the open algorithm-extension path in the new architecture."""
 
-    def __init__(self, config: SignRoundConfig):
+    def __init__(self, config: SignRoundConfig) -> None:
         super().__init__(config)
         self._use_outlier_suppressed_loss = False
         logger.info("using algorithm extension for quantization.")
@@ -323,14 +318,14 @@ class SignRoundV2Quantizer(SignRoundQuantizer):
 
     def _get_loss(
         self,
-        output_q: torch.Tensor,
-        current_output: torch.Tensor,
+        pred_output: torch.Tensor,
+        ref_output: torch.Tensor,
         indices: torch.Tensor,
         mse_loss: Callable,
         device: Union[str, torch.device] = "cpu",
     ):
         if self._use_outlier_suppressed_loss:
-            loss_diff = torch.abs(output_q - current_output)
+            loss_diff = torch.abs(pred_output - ref_output)
             flat_diff = loss_diff.view(-1)
             topk = max(1, int(flat_diff.numel() / 1000))
             _, top_indices = torch.topk(torch.abs(flat_diff), topk)
@@ -348,7 +343,7 @@ class SignRoundV2Quantizer(SignRoundQuantizer):
                 with autocast_ctx:
                     return torch.mean(
                         (
-                            torch.abs(output_q.to(torch.float32) - current_output.to(torch.float32))
+                            torch.abs(pred_output.to(torch.float32) - ref_output.to(torch.float32))
                             * tmp_attention_mask
                             * mask
                         )
@@ -356,20 +351,34 @@ class SignRoundV2Quantizer(SignRoundQuantizer):
                     )
 
             with autocast_ctx:
-                return torch.mean(
-                    (torch.abs(output_q.to(torch.float32) - current_output.to(torch.float32)) * mask) ** 2
-                )
-        return super()._get_loss(output_q, current_output, indices, mse_loss, device)
+                return torch.mean((torch.abs(pred_output.to(torch.float32) - ref_output.to(torch.float32)) * mask) ** 2)
+        return super()._get_loss(pred_output, ref_output, indices, mse_loss, device)
 
-    def register_calibration_hooks(self, model, *, act_max: bool = True, imatrix: bool = True):
-        hook_handles = super().register_calibration_hooks(model, act_max=act_max, imatrix=imatrix)
-        if not imatrix:
-            return hook_handles
+    @contextmanager
+    def block_forward_hooks(self, ctx):
+        with super().block_forward_hooks(ctx) as hook_handles:
+            if not self._is_wint4aint4():
+                hook_handles.extend(self._register_imatrix_hooks(ctx.block))
+            yield hook_handles
 
-        is_wint4aint4 = ("int4" in self.act_data_type or ("int" in self.act_data_type and self.act_bits == 4)) and (
+    def _is_wint4aint4(self):
+        return ("int4" in self.act_data_type or ("int" in self.act_data_type and self.act_bits == 4)) and (
             "int4" in self.data_type or ("int" in self.data_type and self.bits == 4)
         )
-        if is_wint4aint4:
-            return hook_handles
-        hook_handles.extend(register_imatrix_hooks(self, model))
-        return hook_handles
+
+    def _register_imatrix_hooks(self, model):
+        def collect_imatrix(module, input, output):
+            input = input[0] if isinstance(input, (tuple, list)) else input
+            flattened = input.reshape(-1, input.shape[-1]).to(torch.float32)
+            squared = torch.sum(torch.pow(flattened, 2), dim=0).to(torch.float32)
+
+            if not hasattr(module, "imatrix"):
+                module.imatrix = squared
+                return
+            module.imatrix += squared.to(module.imatrix.device)
+
+        handles = []
+        for _, module in model.named_modules():
+            if isinstance(module, self.supported_types) and check_to_quantized(module):
+                handles.append(module.register_forward_hook(collect_imatrix))
+        return handles

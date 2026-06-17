@@ -5,7 +5,7 @@
 Canonical home of the residual-stream Hadamard rotation implementation.
 """
 
-from auto_round.algorithms.transforms.rotation.inplace.apply import apply_rotation_transform  # noqa: F401
-from auto_round.algorithms.transforms.rotation.inplace.hooks import clear_random_hadamard_cache  # noqa: F401
+from auto_round.algorithms.transforms.quarot.inplace.apply import apply_rotation_transform  # noqa: F401
+from auto_round.algorithms.transforms.quarot.inplace.hooks import clear_random_hadamard_cache  # noqa: F401
 
 __all__ = ["apply_rotation_transform", "clear_random_hadamard_cache"]
