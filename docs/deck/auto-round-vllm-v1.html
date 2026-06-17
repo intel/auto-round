@@ -1,0 +1,1334 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>AutoRound for the vLLM Community</title>
+<style>
+  @import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&family=JetBrains+Mono:wght@400;500&display=swap');
+
+  :root {
+    --vllm-blue: #30a2ff;
+    --vllm-blue-dark: #1a7fd4;
+    --vllm-blue-light: #e8f4ff;
+    --vllm-blue-10: rgba(48, 162, 255, 0.10);
+    --vllm-blue-20: rgba(48, 162, 255, 0.20);
+    --vllm-yellow: #fdb517;
+    --vllm-yellow-hover: #e5a315;
+    --vllm-yellow-light: #fef8e7;
+    --bg: #ffffff;
+    --bg-secondary: #f8f9fb;
+    --surface: #ffffff;
+    --surface-muted: #f3f5f8;
+    --text: #1a1f36;
+    --text-secondary: #6b7394;
+    --text-dim: #8f96b3;
+    --border: #e5e8f0;
+    --border-light: #eef1f6;
+    --green: #00c758;
+    --green-bg: #edfcf2;
+    --green-text: #0a7c3e;
+    --yellow-status: #f59e0b;
+    --yellow-bg: #fef9ec;
+    --yellow-text: #92600a;
+    --orange: #f97316;
+    --orange-bg: #fff4ec;
+    --orange-text: #9a3c12;
+    --red-bg: #fef2f2;
+    --red-text: #b91c1c;
+    --purple: #8b5cf6;
+    --purple-bg: #f5f3ff;
+    --purple-text: #6d28d9;
+    --gray-badge-bg: #f0f1f5;
+    --gray-badge-text: #6b7394;
+  }
+
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+
+  body {
+    font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
+    background: var(--bg);
+    color: var(--text);
+    overflow: hidden;
+    height: 100vh;
+    width: 100vw;
+    -webkit-font-smoothing: antialiased;
+  }
+
+  .deck { position: relative; width: 100vw; height: 100vh; }
+
+  .slide {
+    position: absolute;
+    inset: 0;
+    display: flex;
+    flex-direction: column;
+    padding: 56px 80px 64px;
+    opacity: 0;
+    pointer-events: none;
+    transition: opacity 0.35s ease;
+    background: var(--bg);
+  }
+  .slide.active { opacity: 1; pointer-events: auto; }
+
+  h1 { font-size: 2.8rem; font-weight: 800; letter-spacing: -0.03em; color: var(--text); margin-bottom: 8px; line-height: 1.15; }
+  h2 {
+    font-size: 1.75rem; font-weight: 700; letter-spacing: -0.02em;
+    margin-bottom: 28px; color: var(--text);
+    padding-bottom: 12px; border-bottom: 2px solid var(--vllm-blue);
+    display: inline-block;
+  }
+  h3 { font-size: 1.15rem; font-weight: 600; margin-bottom: 12px; color: var(--text); }
+  p, li { font-size: 1.05rem; line-height: 1.7; color: var(--text-secondary); }
+  li { margin-bottom: 5px; }
+  ul { padding-left: 22px; }
+  li::marker { color: var(--vllm-blue); }
+  strong { color: var(--text); font-weight: 600; }
+  a { color: var(--vllm-blue); text-decoration: none; }
+  a:hover { text-decoration: underline; }
+  code, .mono {
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 0.9em;
+    background: var(--surface-muted);
+    padding: 1px 6px;
+    border-radius: 4px;
+    color: var(--text);
+  }
+
+  table { width: 100%; border-collapse: collapse; font-size: 0.92rem; }
+  th {
+    text-align: left; padding: 10px 14px;
+    background: var(--text); color: #fff;
+    font-weight: 600; font-size: 0.8rem;
+    text-transform: uppercase; letter-spacing: 0.06em;
+  }
+  th:first-child { border-radius: 8px 0 0 0; }
+  th:last-child { border-radius: 0 8px 0 0; }
+  td {
+    padding: 9px 14px; border-bottom: 1px solid var(--border-light);
+    vertical-align: top; color: var(--text-secondary);
+  }
+  td.bold, td strong { color: var(--text); }
+  tr:nth-child(even) td { background: var(--bg-secondary); }
+  tr:last-child td { border-bottom: none; }
+  tr:last-child td:first-child { border-radius: 0 0 0 8px; }
+  tr:last-child td:last-child { border-radius: 0 0 8px 0; }
+  table { border: 1px solid var(--border); border-radius: 8px; overflow: hidden; }
+
+  .badge {
+    display: inline-block; padding: 3px 10px; border-radius: 20px;
+    font-size: 0.76rem; font-weight: 600; white-space: nowrap; letter-spacing: 0.01em;
+  }
+  .badge-green { background: var(--green-bg); color: var(--green-text); }
+  .badge-yellow { background: var(--yellow-bg); color: var(--yellow-text); }
+  .badge-orange { background: var(--orange-bg); color: var(--orange-text); }
+  .badge-blue { background: var(--vllm-blue-light); color: var(--vllm-blue-dark); }
+  .badge-dim { background: var(--gray-badge-bg); color: var(--gray-badge-text); }
+  .badge-purple { background: var(--purple-bg); color: var(--purple-text); }
+  .badge-red { background: var(--red-bg); color: var(--red-text); }
+
+  .card {
+    background: var(--bg); border: 1px solid var(--border);
+    border-radius: 12px; padding: 20px 24px; margin-bottom: 14px;
+    transition: box-shadow 0.2s;
+  }
+  .card:hover { box-shadow: 0 2px 12px rgba(0,0,0,0.06); }
+  .card-accent { border-left: 3px solid var(--vllm-blue); }
+  .card-filled { background: var(--bg-secondary); border: 1px solid var(--border-light); }
+
+  .grid-2 { display: grid; grid-template-columns: 1fr 1fr; gap: 24px; }
+  .grid-3 { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 20px; }
+  .flex-grow { flex: 1; overflow: auto; }
+  .mt-8 { margin-top: 8px; }
+  .mt-12 { margin-top: 12px; }
+  .mt-16 { margin-top: 16px; }
+  .mt-20 { margin-top: 20px; }
+  .mt-24 { margin-top: 24px; }
+  .mb-4 { margin-bottom: 4px; }
+  .mb-8 { margin-bottom: 8px; }
+  .mb-12 { margin-bottom: 12px; }
+  .mb-16 { margin-bottom: 16px; }
+  .text-sm { font-size: 0.88rem; }
+  .text-xs { font-size: 0.78rem; }
+  .text-dim { color: var(--text-dim); }
+  .text-secondary { color: var(--text-secondary); }
+  .text-blue { color: var(--vllm-blue); }
+  .text-center { text-align: center; }
+  .bold { font-weight: 600; color: var(--text); }
+
+  .stack-layer {
+    padding: 13px 24px; text-align: center; font-weight: 600;
+    font-size: 0.92rem; border-radius: 8px; margin-bottom: 6px;
+  }
+
+  .flow-step {
+    background: var(--bg); border: 1px solid var(--border);
+    border-radius: 10px; padding: 10px 18px; text-align: center;
+    font-weight: 500; font-size: 0.95rem; color: var(--text-secondary);
+  }
+  .flow-arrow {
+    display: flex; align-items: center; justify-content: center;
+    color: var(--vllm-blue); font-size: 1rem; padding: 1px 0; line-height: 1;
+  }
+
+  .kernel-chip {
+    background: var(--surface-muted); border: 1px solid var(--border);
+    border-radius: 6px; padding: 4px 10px; font-size: 0.78rem;
+    font-weight: 600; display: inline-block; margin: 2px; color: var(--text-secondary);
+  }
+  .kernel-chip-blue {
+    background: var(--vllm-blue-light); border-color: var(--vllm-blue-20);
+    color: var(--vllm-blue-dark);
+  }
+
+  .formula {
+    font-family: 'JetBrains Mono', monospace;
+    background: var(--bg-secondary); border: 1px solid var(--border-light);
+    border-radius: 10px; padding: 18px 24px; text-align: center;
+    font-size: 1.05rem; color: var(--text); margin: 12px 0;
+  }
+
+  .key-msg {
+    background: var(--vllm-blue-10); border: 1px solid var(--vllm-blue-20);
+    border-radius: 10px; padding: 14px 20px; font-size: 0.95rem;
+    color: var(--vllm-blue-dark); font-weight: 500; margin-top: 16px;
+  }
+  .key-msg::before { content: "🔑 "; }
+
+  .hl-row td { background: var(--vllm-blue-10) !important; }
+  .dense-table td, .dense-table th { padding: 7px 10px; font-size: 0.85rem; }
+
+  /* Title slide */
+  .title-slide {
+    justify-content: center; align-items: center; text-align: center;
+    background: linear-gradient(180deg, #f8f9fb 0%, #ffffff 50%);
+  }
+  .title-slide h1 { font-size: 3.4rem; font-weight: 800; color: var(--text); letter-spacing: -0.03em; }
+  .title-slide .blue-text { color: var(--vllm-blue); }
+  .title-slide .subtitle {
+    margin-top: 14px; font-size: 1.25rem; color: var(--text-secondary); font-weight: 400;
+  }
+  .title-slide .author {
+    margin-top: 48px; font-size: 1rem; color: var(--text-dim); font-weight: 500;
+  }
+  .title-slide .series-tag {
+    font-size: 0.82rem; color: var(--vllm-blue); letter-spacing: 0.12em;
+    text-transform: uppercase; font-weight: 600; margin-bottom: 16px;
+    padding: 6px 18px; background: var(--vllm-blue-10); border-radius: 20px;
+    display: inline-block;
+  }
+  .title-slide .yellow-bar {
+    width: 60px; height: 4px; background: var(--vllm-yellow);
+    border-radius: 2px; margin: 20px auto 0;
+  }
+
+  /* Section divider */
+  .section-slide {
+    justify-content: center; align-items: center; text-align: center;
+    background: linear-gradient(180deg, #f8f9fb 0%, #ffffff 50%);
+  }
+  .section-slide .section-num {
+    font-size: 5rem; font-weight: 800; color: var(--vllm-blue-20);
+    line-height: 1; margin-bottom: 8px;
+  }
+  .section-slide h2 { font-size: 2.2rem; border-bottom: none; margin-bottom: 16px; padding-bottom: 0; }
+  .section-slide p { font-size: 1.15rem; color: var(--text-dim); }
+
+  /* End slide */
+  .end-slide {
+    justify-content: center; align-items: center; text-align: center;
+    background: linear-gradient(180deg, #f8f9fb 0%, #ffffff 50%);
+  }
+  .end-slide h1 { font-size: 3rem; color: var(--text); margin-bottom: 12px; }
+  .end-slide p { font-size: 1.2rem; color: var(--text-dim); }
+  .end-slide .yellow-bar {
+    width: 60px; height: 4px; background: var(--vllm-yellow);
+    border-radius: 2px; margin: 24px auto 0;
+  }
+
+  /* Placeholder callout */
+  .placeholder-box {
+    border: 2px dashed var(--border); border-radius: 12px;
+    padding: 32px; text-align: center; color: var(--text-dim);
+    font-size: 1rem; background: var(--bg-secondary); margin: 16px 0;
+  }
+
+  /* Code block */
+  pre {
+    background: var(--surface-muted); border: 1px solid var(--border);
+    border-radius: 8px; padding: 14px 18px; overflow-x: auto;
+    font-family: 'JetBrains Mono', monospace; font-size: 0.78rem;
+    line-height: 1.6; color: var(--text); margin: 8px 0;
+  }
+
+  /* TIP / NOTE callouts */
+  .callout-tip {
+    background: var(--green-bg); border: 1px solid rgba(0,199,88,0.3);
+    border-radius: 8px; padding: 12px 18px; margin: 8px 0; font-size: 0.9rem;
+  }
+  .callout-tip::before { content: "💡 TIP: "; font-weight: 700; color: var(--green-text); }
+  .callout-note {
+    background: var(--vllm-blue-10); border: 1px solid var(--vllm-blue-20);
+    border-radius: 8px; padding: 12px 18px; margin: 8px 0; font-size: 0.9rem;
+  }
+  .callout-note::before { content: "📝 NOTE: "; font-weight: 700; color: var(--vllm-blue-dark); }
+
+  /* ASCII diagram */
+  .ascii-diagram {
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 0.7rem; line-height: 1.3; white-space: pre;
+    background: var(--bg-secondary); border: 1px solid var(--border-light);
+    border-radius: 8px; padding: 16px; overflow-x: auto;
+    color: var(--text-secondary);
+  }
+
+  /* Nav bar */
+  .nav-bar {
+    position: fixed; bottom: 0; left: 0; right: 0; height: 48px;
+    background: var(--bg); border-top: 1px solid var(--border);
+    display: flex; align-items: center; justify-content: space-between;
+    padding: 0 24px; z-index: 100; font-size: 0.85rem; color: var(--text-dim);
+  }
+  .nav-bar button {
+    background: var(--bg); border: 1px solid var(--border); color: var(--text);
+    padding: 6px 16px; border-radius: 6px; cursor: pointer;
+    font-size: 0.82rem; font-family: inherit; font-weight: 500; transition: all 0.15s;
+  }
+  .nav-bar button:hover {
+    background: var(--surface-muted); border-color: var(--vllm-blue); color: var(--vllm-blue);
+  }
+  .progress-track {
+    flex: 1; height: 3px; background: var(--border-light);
+    margin: 0 20px; border-radius: 2px; overflow: hidden;
+  }
+  .progress-fill {
+    height: 100%; background: var(--vllm-blue);
+    transition: width 0.3s ease; border-radius: 2px;
+  }
+
+  /* Sidebar */
+  .sidebar {
+    position: fixed; top: 0; left: 0; width: 260px;
+    height: calc(100vh - 48px); background: var(--bg);
+    border-right: 1px solid var(--border); z-index: 200;
+    padding: 16px 0; overflow-y: auto;
+    transform: translateX(-260px); transition: transform 0.25s ease;
+  }
+  .sidebar.open { transform: translateX(0); }
+  .sidebar-title {
+    font-size: 0.72rem; font-weight: 600; text-transform: uppercase;
+    letter-spacing: 0.08em; color: var(--text-dim);
+    padding: 0 20px; margin-bottom: 12px;
+  }
+  .sidebar-item {
+    display: flex; align-items: baseline; gap: 10px;
+    padding: 8px 20px; cursor: pointer; font-size: 0.82rem;
+    color: var(--text-secondary); transition: all 0.15s;
+    border-left: 3px solid transparent;
+  }
+  .sidebar-item:hover { background: var(--surface-muted); color: var(--text); }
+  .sidebar-item.active {
+    background: var(--vllm-blue-10); color: var(--vllm-blue-dark);
+    border-left-color: var(--vllm-blue); font-weight: 600;
+  }
+  .sidebar-item .num {
+    font-size: 0.72rem; font-weight: 600; color: var(--text-dim); min-width: 18px;
+  }
+  .sidebar-item.active .num { color: var(--vllm-blue); }
+  .sidebar-item.section-header {
+    font-weight: 700; font-size: 0.72rem; text-transform: uppercase;
+    letter-spacing: 0.06em; color: var(--text-dim);
+    padding: 12px 20px 4px; cursor: default; border-left: none;
+  }
+  .sidebar-item.section-header:hover { background: transparent; color: var(--text-dim); }
+  .sidebar-overlay {
+    position: fixed; inset: 0; background: rgba(0,0,0,0.15);
+    z-index: 190; display: none;
+  }
+  .sidebar-overlay.open { display: block; }
+
+  ::-webkit-scrollbar { width: 5px; }
+  ::-webkit-scrollbar-track { background: transparent; }
+  ::-webkit-scrollbar-thumb { background: var(--border); border-radius: 3px; }
+
+  @media print {
+    body { overflow: visible; height: auto; width: auto; }
+    .deck { position: static; width: auto; height: auto; }
+    .slide {
+      position: static !important; opacity: 1 !important;
+      pointer-events: auto !important; display: flex !important;
+      page-break-after: always; page-break-inside: avoid;
+      height: 100vh; width: 100vw; padding: 40px 60px 48px; border: none;
+    }
+    .slide:last-child { page-break-after: auto; }
+    .nav-bar, .sidebar, .sidebar-overlay { display: none !important; }
+    .badge { border: 1px solid currentColor; }
+    @page { size: landscape; margin: 0; }
+  }
+</style>
+</head>
+<body>
+
+<div class="deck" id="deck">
+
+  <!-- ============ SLIDE 1: Title ============ -->
+  <div class="slide title-slide active">
+    <div class="series-tag">vLLM Community Sharing</div>
+    <h1>Making Low-Bit LLM/VLM Quantization<br>Practical in <span class="blue-text">vLLM/vLLM-Omni</span></h1>
+    <div class="subtitle">From Quantization Fundamentals to Production-Ready Serving with AutoRound</div>
+    <div class="yellow-bar"></div>
+    <div class="author">Yi Liu &nbsp;&middot;&nbsp; Software Engineer @ Intel — AutoRound Team</div>
+  </div>
+
+  <!-- ============ SLIDE 2: Part 1 Section ============ -->
+  <div class="slide section-slide">
+    <div class="section-num">01</div>
+    <h2>Quantization Basics</h2>
+    <p>Building a shared mental model before introducing AutoRound · ~15 min</p>
+  </div>
+
+  <!-- ============ SLIDE 3: What Is Quantization? (1.1) ============ -->
+  <div class="slide">
+    <h2>What Is Quantization?</h2>
+    <div class="grid-2 flex-grow">
+      <div style="display:flex; flex-direction:column; justify-content:center;">
+        <p>Quantization maps continuous floating-point values to a discrete set of integer values, reducing the number of bits needed to represent each weight or activation.</p>
+        <pre>FP16 weight:  [0.234, -0.891, 1.203, -0.045, ...]   ← 16 bits
+      ↓  quantize
+INT4 weight:  [  3,    -7,     7,    -1,   ...]      ← 4 bits</pre>
+        <div class="placeholder-box mt-16">
+          <strong>[P] Figure — Visual showing continuous FP values being mapped to discrete INT buckets</strong>
+          <p class="text-sm mt-8">quant-element.png</p>
+        </div>
+      </div>
+      <div style="display:flex; flex-direction:column; justify-content:center;">
+        <img src="./images/quant-element.png" alt="Quantization Elements" style="max-width:100%; border-radius:8px;" onerror="this.style.display='none'; this.nextElementSibling.style.display='block';">
+        <div class="placeholder-box" style="display:none;">
+          <strong>[P]</strong> Image: ./images/quant-element.png
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ============ SLIDE 4: Core Quantization Concepts (1.2) ============ -->
+  <div class="slide">
+    <h2>Core Quantization Concepts</h2>
+    <div class="grid-2 flex-grow">
+      <div>
+        <h3>The Quantization Formula</h3>
+        <div class="formula">
+          scale = (x<sub>max</sub> − x<sub>min</sub>) / (2<sup>n</sup> − 1)<br>
+          x<sub>quant</sub> = round((x<sub>float</sub> − zero_point) / scale)<br>
+          x<sub>dequant</sub> = x<sub>quant</sub> × scale + zero_point
+        </div>
+        <div class="card card-accent mt-12">
+          <p><strong>1. Scale (Δ)</strong> — Step size between quantized values. Larger → wider range but coarser steps.</p>
+        </div>
+        <div class="card card-accent">
+          <p><strong>2. Zero Point (Z)</strong> — Integer that maps to float zero. Symmetric (Z=0) for weights; asymmetric for activations.</p>
+        </div>
+      </div>
+      <div>
+        <div class="card card-accent">
+          <p><strong>3. Rounding</strong> — Maps float → nearest integer. Standard: round-to-nearest (RTN). AutoRound's insight: <strong>learned rounding</strong> — sometimes rounding up preserves more information.</p>
+        </div>
+        <div class="card card-accent">
+          <p><strong>4. Quantization Error</strong> — <code>error = x<sub>float</sub> − x<sub>dequant</sub></code>. Measured as MSE, MAE, or task-specific accuracy drop. Not all errors are equal — some weights matter more.</p>
+        </div>
+        <div class="card card-filled mt-12">
+          <p><strong>5. A Real Example</strong></p>
+          <div class="placeholder-box" style="padding:16px; margin-top:8px;">
+            <strong>[P]</strong> Real example of quantization
+          </div>
+        </div>
+        <div class="placeholder-box mt-8" style="padding:12px;">
+          <strong>[P] Animation</strong> — Interactive demo of scale, zero_point, and rounding with a toy vector
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ============ SLIDE 5: Quantization Primitives (1.3) ============ -->
+  <div class="slide">
+    <h2>Quantization Primitives</h2>
+    <div class="grid-2 flex-grow">
+      <div>
+        <h3>Data Types</h3>
+        <p class="text-sm text-dim mb-8">Compare the Exponent, and Mantissa</p>
+        <table class="dense-table">
+          <thead><tr><th>Type</th><th>Bits</th><th>Exponent</th><th>Mantissa</th><th>Pattern</th></tr></thead>
+          <tbody>
+            <tr><td class="bold">INT8</td><td>8</td><td>—</td><td>—</td><td>Uniform</td></tr>
+            <tr><td class="bold">FP8 (E4M3)</td><td>8</td><td>4</td><td>3</td><td>Non-uniform</td></tr>
+            <tr><td class="bold">INT4</td><td>4</td><td>—</td><td>—</td><td>Uniform</td></tr>
+            <tr><td class="bold">FP4 / MXFP4</td><td>4</td><td>Block-shared</td><td>2–3</td><td>Block FP</td></tr>
+          </tbody>
+        </table>
+      </div>
+      <div>
+        <h3>Quantization Granularity</h3>
+        <table class="dense-table">
+          <thead><tr><th>Granularity</th><th>Scale Count</th></tr></thead>
+          <tbody>
+            <tr><td class="bold">Per-tensor</td><td>1 per tensor</td></tr>
+            <tr><td class="bold">Per-channel</td><td>1 per row</td></tr>
+            <tr class="hl-row"><td class="bold">Per-group</td><td>1 per 64–128 wts</td></tr>
+            <tr><td class="bold">Per-token</td><td>1 per token</td></tr>
+          </tbody>
+        </table>
+        <div class="placeholder-box mt-16" style="padding:16px;">
+          <strong>[P]</strong> Visualization of quantization granularity
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ============ SLIDE 6: PTQ vs QAT (1.7) ============ -->
+  <div class="slide">
+    <h2>PTQ vs. QAT</h2>
+    <div class="flex-grow" style="display:flex; align-items:center;">
+      <div style="width:100%;">
+        <table>
+          <thead>
+            <tr><th></th><th>PTQ (Post-Training Quantization)</th><th>QAT (Quantization-Aware Training)</th></tr>
+          </thead>
+          <tbody>
+            <tr><td class="bold">When</td><td>After training</td><td>During training</td></tr>
+            <tr><td class="bold">Data needed</td><td>Small calibration set (128–512 samples)</td><td>Large calibration set</td></tr>
+            <tr><td class="bold">Compute cost</td><td><span class="badge badge-green">Minutes to hours on 1 GPU</span></td><td><span class="badge badge-red">Hours to days on many GPUs</span></td></tr>
+            <tr><td class="bold">Access needed</td><td>Model weights only</td><td>Full training pipeline</td></tr>
+            <tr class="hl-row"><td class="bold">Accuracy</td><td>Good (with advanced PTQ)</td><td>Best possible</td></tr>
+          </tbody>
+        </table>
+        <div class="key-msg mt-16">AutoRound is PTQ with iterative optimization — it pushes PTQ accuracy close to QAT levels without needing the full training pipeline.</div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ============ SLIDE 7: Why Quantization Is Necessary (1.4) ============ -->
+  <div class="slide">
+    <h2>Why Quantization Is Necessary for LLM/VLM Serving</h2>
+    <p class="mb-8 text-sm text-dim">Compare the memory transformation and TFLOPs between BF16 GEMM and INT4 GEMM</p>
+    <div class="grid-2 flex-grow">
+      <div>
+        <h3>The Hardware Reality</h3>
+        <p class="text-sm mb-8">Modern GPU hardware has a fundamental asymmetry:</p>
+        <table class="dense-table">
+          <thead><tr><th>Operation</th><th>FP16</th><th>INT8</th><th>INT4</th><th>Ratio</th></tr></thead>
+          <tbody>
+            <tr><td class="bold">Compute (TFLOPS)</td><td>baseline</td><td>1.5–2×</td><td>2–4×</td><td>INT is faster</td></tr>
+            <tr><td class="bold">Memory BW (GB/s)</td><td>baseline</td><td>2×</td><td>4×</td><td>Fewer bits = less data</td></tr>
+            <tr><td class="bold">Memory Capacity (GB)</td><td>baseline</td><td>2×</td><td>4×</td><td>Smaller model footprint</td></tr>
+          </tbody>
+        </table>
+      </div>
+      <div>
+        <h3>Why This Matters for LLM Serving</h3>
+        <div class="placeholder-box">
+          <strong>[P]</strong> — Detailed explanation of memory-bound decode + compute-bound prefill, latency comparison numbers
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ============ SLIDE 8: Quantization in vLLM (1.8) ============ -->
+  <div class="slide">
+    <h2>Quantization in vLLM: Architecture View</h2>
+    <div class="grid-2 flex-grow">
+      <div style="display:flex; flex-direction:column; gap:5px;">
+        <div class="stack-layer" style="background:var(--surface-muted); color:var(--text-secondary); border:1px solid var(--border);">
+          API Server / OpenAI-compatible endpoint
+        </div>
+        <div class="stack-layer" style="background:var(--surface-muted); color:var(--text-secondary); border:1px solid var(--border);">
+          Scheduler &nbsp;<span class="text-xs text-dim">PagedAttention, prefix caching, chunked prefill</span>
+        </div>
+        <div class="stack-layer" style="background:var(--surface-muted); color:var(--text-secondary); border:1px solid var(--border);">
+          Model Runner &nbsp;<span class="text-xs text-dim">Model execution, KV cache management</span>
+        </div>
+        <div class="stack-layer" style="background:var(--surface-muted); color:var(--text); border:1px solid var(--border);">
+          Model Executor
+        </div>
+        <div class="stack-layer" style="background:var(--surface-muted); color:var(--text-dim); border:1px solid var(--border-light); margin-left:20px;">
+          Layer Dispatch
+        </div>
+        <div class="stack-layer" style="background:var(--vllm-blue-light); color:var(--vllm-blue-dark); border:2px solid var(--vllm-blue); margin-left:40px;">
+          <strong>Quantization Layer &nbsp;← AutoRound</strong><br>
+          <span class="text-xs">QuantMethod dispatch &nbsp;·&nbsp; Packed→unpacked &nbsp;·&nbsp; Kernel selection</span>
+        </div>
+        <div class="stack-layer" style="background:var(--text); color:#fff;">
+          Hardware &nbsp;<span style="font-weight:400; opacity:0.8;">CUDA &nbsp;·&nbsp; XPU &nbsp;·&nbsp; HPU &nbsp;·&nbsp; CPU &nbsp;·&nbsp; MPS</span>
+        </div>
+      </div>
+      <div>
+        <h3>The Quantization Callstack</h3>
+        <p class="text-sm text-dim mb-8">(Based on the trace results)</p>
+        <div class="placeholder-box" style="padding:40px;">
+          <strong>[P]</strong> — Quantization callstack diagram
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ============ SLIDE 9: Part 2 Section ============ -->
+  <div class="slide section-slide">
+    <div class="section-num">02</div>
+    <h2>AutoRound Introduction &amp; Practice</h2>
+    <p>Why AutoRound maintains accuracy at low bit-widths and why it's practical for deployment · ~20 min</p>
+  </div>
+
+  <!-- ============ SLIDE 10: The Core Problem (2.1) ============ -->
+  <div class="slide">
+    <h2>The Core Problem: Why Low-Bit Quantization Is Hard</h2>
+    <div class="flex-grow" style="display:flex; align-items:center;">
+      <svg viewBox="0 0 960 400" style="width:100%; max-height:400px;">
+
+        <!-- ① Rounding Error -->
+        <rect x="20" y="5" width="440" height="180" rx="10" fill="var(--bg-secondary)" stroke="var(--border)" stroke-width="1"/>
+        <text x="38" y="32" font-size="13" font-weight="700" fill="var(--text)">① Rounding Error — same delta, very different impact</text>
+
+        <rect x="38" y="48" width="16" height="38" rx="2" fill="var(--vllm-blue-20)" stroke="var(--vllm-blue)" stroke-width="1"/>
+        <text x="40" y="100" font-size="9" fill="var(--text-secondary)">0.1</text>
+        <rect x="58" y="48" width="16" height="22" rx="2" fill="var(--vllm-blue-20)" stroke="var(--vllm-blue)" stroke-width="1"/>
+        <rect x="78" y="48" width="16" height="52" rx="2" fill="var(--vllm-blue-20)" stroke="var(--vllm-blue)" stroke-width="1"/>
+        <rect x="98" y="48" width="16" height="28" rx="2" fill="var(--vllm-blue-20)" stroke="var(--vllm-blue)" stroke-width="1"/>
+        <rect x="118" y="30" width="16" height="56" rx="2" fill="var(--orange-bg)" stroke="var(--orange)" stroke-width="2"/>
+        <text x="119" y="24" font-size="9" font-weight="600" fill="var(--orange-text)">5.2</text>
+
+        <text x="165" y="62" font-size="14" fill="var(--text-dim)">→</text>
+        <text x="190" y="56" font-size="9" fill="var(--text-dim)">round to</text>
+        <text x="190" y="68" font-size="9" fill="var(--text-dim)">INT4</text>
+
+        <rect x="260" y="48" width="16" height="8" rx="2" fill="var(--vllm-blue-10)" stroke="var(--vllm-blue)" stroke-width="1"/>
+        <text x="262" y="70" font-size="9" fill="var(--text-secondary)">0</text>
+        <rect x="280" y="48" width="16" height="22" rx="2" fill="var(--vllm-blue-10)" stroke="var(--vllm-blue)" stroke-width="1"/>
+        <rect x="300" y="48" width="16" height="52" rx="2" fill="var(--vllm-blue-10)" stroke="var(--vllm-blue)" stroke-width="1"/>
+        <rect x="320" y="48" width="16" height="28" rx="2" fill="var(--vllm-blue-10)" stroke="var(--vllm-blue)" stroke-width="1"/>
+        <rect x="340" y="40" width="16" height="46" rx="2" fill="var(--red-bg)" stroke="var(--red-text)" stroke-width="2"/>
+        <text x="339" y="36" font-size="9" font-weight="600" fill="var(--red-text)">5.0</text>
+
+        <rect x="370" y="62" width="70" height="18" rx="4" fill="var(--red-bg)"/>
+        <text x="378" y="75" font-size="9" font-weight="600" fill="var(--red-text)">Δ=0.2 loss</text>
+
+        <text x="260" y="108" font-size="9" fill="var(--text-dim)">0.1→0 : Δ=0.1, lost 100% of value</text>
+        <text x="260" y="122" font-size="9" fill="var(--text-dim)">5.2→5.0: Δ=0.2, lost 4% — but distorts output far more</text>
+
+        <!-- ② Clipping Error -->
+        <rect x="490" y="5" width="450" height="180" rx="10" fill="var(--bg-secondary)" stroke="var(--border)" stroke-width="1"/>
+        <text x="508" y="32" font-size="13" font-weight="700" fill="var(--text)">② Clipping Error — range selection tradeoff</text>
+
+        <rect x="508" y="48" width="13" height="8" rx="1" fill="var(--border)"/>
+        <rect x="524" y="48" width="13" height="20" rx="1" fill="var(--border)"/>
+        <rect x="540" y="35" width="13" height="33" rx="1" fill="var(--vllm-blue-10)"/>
+        <rect x="556" y="22" width="13" height="46" rx="1" fill="var(--vllm-blue-10)"/>
+        <rect x="572" y="14" width="13" height="54" rx="1" fill="var(--vllm-blue-10)"/>
+        <rect x="588" y="22" width="13" height="46" rx="1" fill="var(--vllm-blue-10)"/>
+        <rect x="604" y="35" width="13" height="33" rx="1" fill="var(--vllm-blue-10)"/>
+        <rect x="620" y="48" width="13" height="20" rx="1" fill="var(--border)"/>
+        <rect x="636" y="48" width="13" height="8" rx="1" fill="var(--border)"/>
+
+        <line x1="508" y1="12" x2="508" y2="76" stroke="var(--vllm-blue)" stroke-width="2" stroke-dasharray="4,2"/>
+        <text x="486" y="12" font-size="9" fill="var(--vllm-blue-dark)" font-weight="600">min</text>
+        <line x1="645" y1="12" x2="645" y2="76" stroke="var(--red-text)" stroke-width="2" stroke-dasharray="4,2"/>
+        <text x="652" y="12" font-size="9" fill="var(--red-text)" font-weight="600">max</text>
+
+        <rect x="650" y="52" width="14" height="16" rx="2" fill="var(--orange-bg)" stroke="var(--orange)" stroke-width="1"/>
+        <text x="668" y="64" font-size="8" fill="var(--orange-text)">clipped</text>
+
+        <rect x="508" y="92" width="145" height="16" rx="4" fill="var(--red-bg)" opacity="0.7"/>
+        <text x="515" y="104" font-size="9" fill="var(--red-text)">wasted range [5.0, 6.0]</text>
+
+        <text x="508" y="138" font-size="9" fill="var(--text-dim)">Max too tight:</text>
+        <rect x="508" y="145" width="13" height="6" rx="1" fill="var(--border)"/>
+        <rect x="524" y="145" width="13" height="16" rx="1" fill="var(--border)"/>
+        <rect x="540" y="132" width="13" height="28" rx="1" fill="var(--vllm-blue-10)"/>
+        <rect x="556" y="122" width="13" height="38" rx="1" fill="var(--vllm-blue-10)"/>
+        <line x1="572" y1="145" x2="572" y2="122" stroke="var(--red-text)" stroke-width="2" stroke-dasharray="4,2"/>
+        <text x="578" y="140" font-size="9" fill="var(--red-text)">clips too much data</text>
+
+        <!-- ③ Outlier Amplification -->
+        <rect x="20" y="200" width="920" height="190" rx="10" fill="var(--bg-secondary)" stroke="var(--border)" stroke-width="1"/>
+        <text x="38" y="228" font-size="13" font-weight="700" fill="var(--text)">③ Outlier Amplification — one value stretches the entire grid</text>
+
+        <text x="38" y="258" font-size="11" fill="var(--text)">Normal weights (max=1.4) → fine grid, 16 levels:</text>
+        <g transform="translate(38,266)">
+          <line x1="0" y1="0" x2="300" y2="0" stroke="var(--vllm-blue-20)" stroke-width="2"/>
+          <line x1="0" y1="0" x2="0" y2="10" stroke="var(--vllm-blue)" stroke-width="1.5"/><text x="0" y="24" font-size="8" fill="var(--text-dim)" text-anchor="middle">0</text>
+          <line x1="19" y1="0" x2="19" y2="10" stroke="var(--vllm-blue)" stroke-width="1.5"/>
+          <line x1="38" y1="0" x2="38" y2="10" stroke="var(--vllm-blue)" stroke-width="1.5"/>
+          <line x1="57" y1="0" x2="57" y2="10" stroke="var(--vllm-blue)" stroke-width="1.5"/>
+          <line x1="76" y1="0" x2="76" y2="10" stroke="var(--vllm-blue)" stroke-width="1.5"/>
+          <line x1="95" y1="0" x2="95" y2="10" stroke="var(--vllm-blue)" stroke-width="1.5"/>
+          <line x1="114" y1="0" x2="114" y2="10" stroke="var(--vllm-blue)" stroke-width="1.5"/>
+          <line x1="133" y1="0" x2="133" y2="10" stroke="var(--vllm-blue)" stroke-width="1.5"/>
+          <line x1="152" y1="0" x2="152" y2="10" stroke="var(--vllm-blue)" stroke-width="1.5"/>
+          <line x1="171" y1="0" x2="171" y2="10" stroke="var(--vllm-blue)" stroke-width="1.5"/>
+          <line x1="190" y1="0" x2="190" y2="10" stroke="var(--vllm-blue)" stroke-width="1.5"/>
+          <line x1="209" y1="0" x2="209" y2="10" stroke="var(--vllm-blue)" stroke-width="1.5"/>
+          <line x1="228" y1="0" x2="228" y2="10" stroke="var(--vllm-blue)" stroke-width="1.5"/>
+          <line x1="247" y1="0" x2="247" y2="10" stroke="var(--vllm-blue)" stroke-width="1.5"/>
+          <line x1="266" y1="0" x2="266" y2="10" stroke="var(--vllm-blue)" stroke-width="1.5"/>
+          <line x1="285" y1="0" x2="285" y2="10" stroke="var(--vllm-blue)" stroke-width="1.5"/>
+          <text x="310" y="6" font-size="9" fill="var(--vllm-blue-dark)">1.4</text>
+        </g>
+
+        <text x="38" y="330" font-size="11" fill="var(--text)">With outlier (max=5.2) → 3× coarser grid, values collapse:</text>
+        <g transform="translate(38,338)">
+          <line x1="0" y1="0" x2="300" y2="0" stroke="var(--vllm-blue-20)" stroke-width="2"/>
+          <line x1="0" y1="0" x2="0" y2="10" stroke="var(--orange)" stroke-width="1.5"/><text x="0" y="24" font-size="8" fill="var(--text-dim)" text-anchor="middle">0</text>
+          <line x1="55" y1="0" x2="55" y2="10" stroke="var(--orange)" stroke-width="1.5"/>
+          <line x1="110" y1="0" x2="110" y2="10" stroke="var(--orange)" stroke-width="1.5"/>
+          <line x1="165" y1="0" x2="165" y2="10" stroke="var(--orange)" stroke-width="1.5"/>
+          <line x1="220" y1="0" x2="220" y2="10" stroke="var(--orange)" stroke-width="1.5"/>
+          <line x1="275" y1="0" x2="275" y2="10" stroke="var(--orange)" stroke-width="1.5"/>
+          <text x="310" y="6" font-size="9" fill="var(--orange-text)">5.2</text>
+          <rect x="2" y="4" width="50" height="10" rx="3" fill="var(--orange-bg)" opacity="0.8"/>
+          <text x="27" y="-4" font-size="9" font-weight="600" fill="var(--orange-text)">3 bins lost</text>
+        </g>
+
+        <rect x="560" y="280" width="360" height="90" rx="8" fill="var(--vllm-blue-10)" stroke="var(--vllm-blue-20)" stroke-width="1"/>
+        <text x="580" y="305" font-size="12" font-weight="700" fill="var(--vllm-blue-dark)">Key Insight</text>
+        <text x="580" y="326" font-size="11" fill="var(--text-secondary)">One outlier → large scale → normal values</text>
+        <text x="580" y="346" font-size="11" fill="var(--text-secondary)">collapse into fewer bins → most weights</text>
+        <text x="580" y="366" font-size="11" fill="var(--text-secondary)">get coarse quantization with high error</text>
+      </svg>
+    </div>
+  </div>
+
+  <!-- ============ SLIDE 11: AutoRound Algorithm (2.2) ============ -->
+  <div class="slide">
+    <h2>AutoRound Algorithm: The Big Picture</h2>
+    <p class="mb-8">Papers: <a href="https://arxiv.org/abs/2512.04746">arxiv.org/abs/2512.04746</a> · <a href="https://aclanthology.org/2024.findings-emnlp.662.pdf">EMNLP 2024</a></p>
+    <div class="key-msg" style="margin-top:0; margin-bottom:16px;">Quantization is a discrete optimization problem — we can use gradient-based optimization if we make the rounding decision differentiable.</div>
+    <div class="grid-2 flex-grow">
+      <div>
+        <h3>What AutoRound Optimizes</h3>
+        <table class="dense-table">
+          <thead><tr><th>Parameter</th><th>Shape</th><th>Controls</th><th>Initial</th></tr></thead>
+          <tbody>
+            <tr class="hl-row"><td class="bold">v (rounding)</td><td>same as W</td><td>Round up vs. down</td><td>0 (nearest)</td></tr>
+            <tr><td class="bold">min, max (clipping)</td><td>scalar / group</td><td>Quantization range</td><td>min(W), max(W)</td></tr>
+          </tbody>
+        </table>
+        <pre class="mt-8">W_quant = clamp(round(W/scale + v), min_int, max_int)
+W_dequant = W_quant * scale</pre>
+        <h3 class="mt-12">Why It Works</h3>
+        <ul class="text-sm">
+          <li><strong>Block-wise optimization</strong> — captures actual downstream impact</li>
+          <li><strong>SignSGD</strong> — robust to noisy STE gradients</li>
+          <li><strong>Joint optimization</strong> — rounding + clipping together</li>
+        </ul>
+      </div>
+      <div>
+        <h3>Algorithm Flow</h3>
+        <div style="display:flex; flex-direction:column; gap:3px;">
+          <div class="flow-step" style="border-color:var(--vllm-blue); border-width:2px;">
+            <strong style="color:var(--vllm-blue-dark);">Input</strong>
+            <span class="text-xs text-dim">FP16 model + calibration data</span>
+          </div>
+          <div class="flow-arrow">▼</div>
+          <div class="flow-step" style="background:var(--vllm-blue-10); border-color:var(--vllm-blue-20);">
+            <strong>For each transformer block:</strong>
+          </div>
+          <div class="flow-arrow">▼</div>
+          <div class="flow-step">① Wrap layers with QDQ<br><span class="text-xs text-dim">Insert trainable v (rounding) + [min, max] (clipping)</span></div>
+          <div class="flow-arrow">▼</div>
+          <div class="flow-step">② Forward: calib data → block<br><span class="text-xs text-dim">Compute quantized output · MSE loss vs FP16 reference</span></div>
+          <div class="flow-arrow">▼</div>
+          <div class="flow-step">③ Backward: gradient w.r.t. v<br><span class="text-xs text-dim">Straight-Through Estimator (STE)</span></div>
+          <div class="flow-arrow">▼</div>
+          <div class="flow-step">④ Update: SignSGD<br><span class="text-xs text-dim">v ← v − lr × sign(grad) · Update clipping similarly</span></div>
+          <div class="flow-arrow">▼</div>
+          <div class="flow-step">⑤ Repeat ×200 → pack weights</div>
+          <div class="flow-arrow">▼</div>
+          <div class="flow-step" style="border-color:var(--green); border-width:2px;">
+            <strong style="color:var(--green-text);">Output</strong>
+            <span class="text-xs text-dim">Quantized + packed checkpoint</span>
+          </div>
+        </div>
+        <div class="placeholder-box mt-8" style="padding:10px;">
+          <strong>[P] Figure</strong> — Detailed algorithm flowchart with data flow annotations
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ============ SLIDE 12: SignSGD (2.3) ============ -->
+  <div class="slide">
+    <h2>SignSGD: The Optimization Engine</h2>
+    <div class="grid-2 flex-grow">
+      <div>
+        <h3>Why SignSGD?</h3>
+        <div class="formula">
+          Standard SGD: w = w − lr × <strong>gradient</strong><br>
+          SignSGD: &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;w = w − lr × <strong>sign(gradient)</strong>
+        </div>
+        <ul class="mt-12">
+          <li>Rounding parameter <strong>v</strong> is inherently discrete (0 or 1)</li>
+          <li>STE gradient magnitude is noisy — the <strong>sign</strong> is more reliable</li>
+          <li>Fixed step size naturally handles the discrete problem</li>
+          <li>Converges faster and more stably than Adam on this task</li>
+        </ul>
+        <h3 class="mt-16">SignRound V1 → V2</h3>
+        <div class="card card-filled">
+          <p class="text-sm"><strong>V1 (EMNLP 2024):</strong> SignSGD on rounding only. Fixed quantization range.</p>
+        </div>
+        <div class="card card-accent">
+          <p class="text-sm"><strong>V2 (arXiv 2025):</strong> Adaptive mixed-precision via gradient-guided layer-wise bit allocation. Lightweight stabilization: loss filtering + pre-tuning scale search. Targets 2-bit and MXFP4. Closes the gap to full-precision.</p>
+        </div>
+      </div>
+      <div>
+        <p class="text-sm mb-8"><strong>[Left side]</strong> The first page of two papers</p>
+        <div class="placeholder-box" style="flex:1; display:flex; align-items:center; justify-content:center;">
+          [P] Paper figure — first page of EMNLP 2024 and arXiv 2025 papers
+        </div>
+        <div class="key-msg">AutoRound uses SignSGD because the sign of the gradient is more reliable than its magnitude when optimizing through a non-differentiable quantization operation.</div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ============ SLIDE 13: QDQ Design (2.4) ============ -->
+  <div class="slide">
+    <h2>QDQ Design: Why It Matters</h2>
+    <div class="grid-2 flex-grow">
+      <div>
+        <h3>What Is QDQ?</h3>
+        <div class="placeholder-box">
+          <strong>[P]</strong> Visualize the QDQ GEMM
+        </div>
+        <h3 class="mt-16">Why QDQ Matters for Engineering</h3>
+        <div class="card card-accent">
+          <p><strong>1. Format Agnostic</strong></p>
+          <pre>quant_func(weight, scale, zp, bits) → QDQ output</pre>
+          <p class="text-sm">Same optimization loop for INT4, INT8, FP8, MXFP4, NVFP4 — just swap <code>quant_func</code>. <a href="https://github.com/intel/auto-round/blob/main/auto_round/data_type/fp8.py">Example: fp8.py</a></p>
+        </div>
+        <div class="card card-accent">
+          <p><strong>2. Device Agnostic</strong></p>
+          <p class="text-sm">Works on any device that supports high-precision dtypes.</p>
+        </div>
+      </div>
+      <div>
+        <h3>The QDQ Wrapper in Code</h3>
+        <pre># Simplified: what happens during tuning
+class WrapperLinear(nn.Module):
+    def forward(self, x):
+        # Quantize-Dequantize
+        w_qdq = quant_dequant(self.weight)
+        # x = quant_dequant(x) # Optional
+        # Standard linear with fake-quantized weight
+        return F.linear(x, w_qdq, self.bias)</pre>
+        <div class="key-msg mt-16">The QDQ design separates the algorithm (what to optimize) from the format (how to store) and the kernel (how to run). This is what makes AutoRound support so many data types, formats, and backends.</div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ============ SLIDE 14: AutoRound vs AWQ vs GPTQ (2.5) ============ -->
+  <div class="slide">
+    <h2>AutoRound vs. AWQ vs. GPTQ: Comparison</h2>
+    <div class="grid-2 flex-grow">
+      <div>
+        <h3>How Different Methods Address These</h3>
+        <table class="dense-table">
+          <thead><tr><th>Method</th><th>Rounding</th><th>Clipping</th><th>Outliers</th></tr></thead>
+          <tbody>
+            <tr><td class="bold">RTN</td><td>Standard round</td><td>min/max</td><td><span class="badge badge-red">No handling</span></td></tr>
+            <tr><td class="bold">GPTQ</td><td>Hessian-based</td><td>None explicit</td><td><span class="badge badge-yellow">Partial</span></td></tr>
+            <tr><td class="bold">AWQ</td><td>Standard round</td><td>Channel-wise scaling</td><td><span class="badge badge-green">Scaling smooths outliers</span></td></tr>
+            <tr class="hl-row"><td class="bold">AutoRound</td><td><span class="badge badge-green">Learned via gradient</span></td><td><span class="badge badge-green">Learned via gradient</span></td><td><span class="badge badge-green">Optimized end-to-end</span></td></tr>
+          </tbody>
+        </table>
+      </div>
+      <div>
+        <h3>Accuracy Comparison</h3>
+        <p class="text-xs text-dim mb-8">Average accuracy of 10+ tasks at W2G128</p>
+        <img src="./algos-acc-compare.png" alt="Accuracy Comparison: AutoRound vs AWQ vs GPTQ"
+             style="width:100%; border-radius:8px; border:1px solid var(--border-light);">
+      </div>
+    </div>
+  </div>
+
+  <!-- ============ SLIDE 15: Support Matrix (2.6) ============ -->
+  <div class="slide">
+    <h2>AutoRound Support Matrix</h2>
+    <div class="flex-grow">
+      <table>
+        <thead>
+          <tr><th style="width:22%;"></th><th></th></tr>
+        </thead>
+        <tbody>
+          <tr><td class="bold">Models</td><td>LLMs, VLMs (LLaVA, Qwen-VL, +more), Diffusion (Stable Diffusion, FLUX), Audio/TTS (Mimo-Audio)</td></tr>
+          <tr><td class="bold">Quantization Schemes</td><td>INT (W2A16–W8A16), FP8 (E4M3/E5M2, block-wise), MXFP4/8, NVFP4, GGUF (Q2_K–Q8_0), Mixed (per-layer AutoScheme)</td></tr>
+          <tr><td class="bold">Hardware</td><td>XPU, CUDA, HPU (Gaudi), CPU, MPS Apple Silicon </td></tr>
+        </tbody>
+      </table>
+    </div>
+  </div>
+
+  <!-- ============ SLIDE 16: Kernel Library (2.7) ============ -->
+  <div class="slide">
+    <h2>AutoRound Kernel Library Support</h2>
+    <div class="grid-2 flex-grow">
+      <div>
+        <h3>Weight-Only Quantization (WOQ) GEMM</h3>
+        <p class="text-sm bold text-blue mb-4">CPU — Intel Xeon (SPR/EMR/GNR)</p>
+        <table class="dense-table mb-12">
+          <thead><tr><th>Weight dtype</th><th>Compute dtype</th><th>Scale dtype</th></tr></thead>
+          <tbody>
+            <tr><td class="bold">INT1–INT8</td><td>INT8 / BF16 / FP32</td><td>BF16 / FP32</td></tr>
+            <tr><td class="bold">FP8 (E4M3, E5M2)</td><td>BF16 / FP32</td><td>FP32 / FP8 (E8M0)</td></tr>
+            <tr><td class="bold">FP4 (E2M1)</td><td>BF16 / FP32</td><td>BF16 / FP32</td></tr>
+          </tbody>
+        </table>
+        <p class="text-sm bold text-blue mb-4">XPU — Intel Arc B-Series (Battlemage)</p>
+        <table class="dense-table mb-12">
+          <thead><tr><th>Weight dtype</th><th>Compute dtype</th><th>Scale dtype</th></tr></thead>
+          <tbody>
+            <tr><td class="bold">INT8</td><td>INT8 / FP16</td><td>FP16</td></tr>
+            <tr><td class="bold">INT4</td><td>INT8 / FP16</td><td>FP16</td></tr>
+            <tr><td class="bold">INT2</td><td>INT8 / FP16</td><td>FP16</td></tr>
+            <tr><td class="bold">FP8 (E4M3, E5M2)</td><td>FP16</td><td>FP16 / FP8 (E8M0)</td></tr>
+          </tbody>
+        </table>
+        <div class="grid-2 mt-12" style="gap:10px;">
+          <div class="card card-filled" style="padding:10px 14px; margin:0;">
+            <p class="text-sm"><strong>Attention (XPU)</strong><br>SageAttention v1 · INT8 Q/K/V · sdpa/sagev1/sage_dynquant</p>
+          </div>
+          <div class="card card-filled" style="padding:10px 14px; margin:0;">
+            <p class="text-sm"><strong>MoE GEMM (XPU)</strong> <span class="badge badge-yellow">WIP</span><br>Grouped GEMM for Mixture-of-Experts layers</p>
+          </div>
+        </div>
+      </div>
+      <div>
+        <h3>SageAttention Integration (vLLM-Omni Demo)</h3>
+        <ul class="text-sm">
+          <li>PR: <a href="https://github.com/vllm-project/vllm-omni/pull/3785">github.com/vllm-project/vllm-omni/pull/3785</a></li>
+          <li>Demonstrates AutoRound + SageAttention v1 for quantized attention in vLLM-Omni</li>
+        </ul>
+        <div style="margin-top:12px;">
+          <div style="display:flex; gap:10px;">
+            <video src="./images/wan-flash-attn.mp4" autoplay controls muted loop
+                   style="width:48%; border-radius:8px; border:1px solid var(--border-light);"></video>
+            <video src="./images/wan-sage-attn.mp4" autoplay controls muted loop
+                   style="width:48%; border-radius:8px; border:1px solid var(--border-light);"></video>
+          </div>
+          <p class="text-xs text-dim mt-4 text-center">Flash Attention (left) · SageAttention v1 (right)</p>
+        </div>
+        <div class="key-msg">AutoRound isn't just an algorithm — it comes with kernels that make the quantized models actually run fast. The kernel ecosystem covers the major hardware platforms and quantization schemes.</div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ============ SLIDE 17: Part 3 Section ============ -->
+  <div class="slide section-slide">
+    <div class="section-num">03</div>
+    <h2>AutoRound in the Community</h2>
+    <p>Not just a research algorithm — a usable ecosystem component · ~10 min</p>
+  </div>
+
+  <!-- ============ SLIDE 18: Community Tools (3.1) ============ -->
+  <div class="slide">
+    <h2>Integration with Community Tools</h2>
+    <div class="grid-2 flex-grow">
+      <div>
+        <h3>Upstream Integrations</h3>
+        <p class="text-sm mb-8">AutoRound is integrated into major ML frameworks and tools:</p>
+        <table class="dense-table">
+          <thead><tr><th>Tool</th><th>Type of Integration</th></tr></thead>
+          <tbody>
+            <tr><td class="bold">Transformers</td><td>Model loading (loads AutoRound quantized model)</td></tr>
+            <tr><td class="bold">LLM-Compressor</td><td>One of algorithms (<code>AutoRoundModifier</code>)</td></tr>
+            <tr><td class="bold">TorchAO</td><td>One of algorithms</td></tr>
+            <tr class="hl-row"><td class="bold">vLLM</td><td>Model loading (loads AutoRound quantized model)</td></tr>
+            <tr class="hl-row"><td class="bold">vLLM-Omni</td><td>Model loading (loads AutoRound quantized model)</td></tr>
+            <tr><td class="bold">SGLang</td><td>Loads AutoRound quantized model</td></tr>
+          </tbody>
+        </table>
+      </div>
+      <div>
+        <h3>What This Means for Users</h3>
+        <div class="placeholder-box">
+          <strong>[P]</strong> — Ecosystem diagram
+        </div>
+        <div class="key-msg">AutoRound is not a walled garden — it integrates with the tools the community already uses. One quantized model can run in most popular serving frameworks.</div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ============ SLIDE 19: Low-Bit Leaderboard (3.2) ============ -->
+  <div class="slide">
+    <h2>Low-Bit Leaderboard</h2>
+    <div class="grid-2 flex-grow">
+      <div>
+        <h3>Low-Bit Open LLM Leaderboard</h3>
+        <p class="text-sm mb-8"><a href="https://huggingface.co/spaces/Intel/low_bit_open_llm_leaderboard">huggingface.co/spaces/Intel/low_bit_open_llm_leaderboard</a></p>
+        <div class="card card-accent">
+          <ul class="text-sm">
+            <li><strong>Agent-driven</strong> — users can submit models for evaluation</li>
+            <li><strong>Low-bit focus</strong> — specifically tracks 2/3/4-bit quantization quality</li>
+            <li><strong>Multi-task evaluation</strong> — standard benchmarks (MMLU, HellaSwag, etc.)</li>
+            <li><strong>Free calibration devices</strong> — users can quantize and evaluate models without their own GPU</li>
+            <li><strong>Transparent</strong> — all results with methodology, calibration data, and parameters</li>
+          </ul>
+        </div>
+      </div>
+      <div>
+        <h3>Leaderboard Purpose</h3>
+        <ol class="text-sm">
+          <li><strong>Track progress</strong> — how close are we to lossless 2-bit quantization?</li>
+          <li><strong>Compare methods</strong> — AutoRound vs GPTQ vs AWQ at different bit-widths</li>
+          <li><strong>Guide practitioners</strong> — what scheme + method works best for a given model family?</li>
+          <li><strong>Community contribution</strong> — anyone can submit results</li>
+        </ol>
+      </div>
+    </div>
+  </div>
+
+  <!-- ============ SLIDE 20: Part 4 Section ============ -->
+  <div class="slide section-slide">
+    <div class="section-num">04</div>
+    <h2>AutoRound Deployment with vLLM/vLLM-Omni</h2>
+    <p>Making AutoRound actionable in real serving workflows · ~15 min</p>
+  </div>
+
+  <!-- ============ SLIDE 21: E2E Workflow (4.1) ============ -->
+  <div class="slide">
+    <h2>End-to-End Deployment Workflow in vLLM</h2>
+    <div class="flex-grow" style="display:flex; align-items:center; justify-content:center;">
+      <div class="placeholder-box" style="width:80%; padding:60px;">
+        <strong>[P]</strong> — End-to-end deployment workflow diagram
+      </div>
+    </div>
+  </div>
+
+  <!-- ============ SLIDE 22: LLM Serving Scenario (4.2) ============ -->
+  <div class="slide">
+    <h2>LLM Serving Scenario</h2>
+    <h3>Quick Start: Quantize + Deploy in Minutes</h3>
+    <div class="grid-2 flex-grow">
+      <div>
+        <div class="card card-filled">
+          <p class="text-sm bold text-blue mb-8">1. Install & Quantize</p>
+          <pre># Install
+pip install auto-round
+
+# Quantize Model
+auto-round \
+  --model Qwen/Qwen3-8B  \
+  --scheme W4A16 \
+  --format auto_round \
+  --output_dir Qwen3-8B-W4A16-G128-AutoRound</pre>
+        </div>
+      </div>
+      <div>
+        <div class="card card-accent">
+          <p class="text-sm bold text-blue mb-8">2. Deploy with vLLM</p>
+          <pre>vllm serve Qwen3-8B-W4A16-G128-AutoRound \
+    --dtype=bfloat16 \
+    --gpu-memory-utilization 0.8 \
+    --max-num-batched-tokens 8192</pre>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ============ SLIDE 23: VLM/Diffusion Example (4.3) ============ -->
+  <div class="slide">
+    <h2>Example: VLM/Diffusion Serving Scenario</h2>
+    <h3>Scenario: Deploy FLUX for vLLM-Omni</h3>
+    <div class="grid-2 flex-grow">
+      <div>
+        <div class="card card-filled">
+          <p class="text-sm bold text-blue mb-8">Quantize FLUX</p>
+          <pre>auto-round \
+    --model black-forest-labs/FLUX.1-dev \
+    --scheme W4A16 \
+    --batch_size 1 \
+    --iters 0 \
+    --dataset coco2014 \
+    --output_dir FLUX.1-dev-AutoRound-w4a16</pre>
+        </div>
+      </div>
+      <div>
+        <div class="card card-accent">
+          <p class="text-sm bold text-blue mb-8">Deploy in vLLM-Omni</p>
+          <pre>vllm serve FLUX.1-dev-AutoRound-w4a16 \
+    --omni --port 8091</pre>
+          <p class="text-sm mt-8">Then query with curl + base64 decode to get image output.</p>
+        </div>
+        <h3 class="mt-12">Performance and Accuracy</h3>
+        <div class="placeholder-box" style="padding:16px;">
+          <strong>[P]</strong> — Blog post in vLLM
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ============ SLIDE 25: Tunable Parameters (4.7) ============ -->
+  <div class="slide">
+    <h2>Important Tunable Parameters</h2>
+    <h3>Key Parameters for Deployment-Quality Quantization</h3>
+    <div class="flex-grow">
+      <table class="dense-table">
+        <thead>
+          <tr><th>Mode</th><th>Batch Size</th><th>Iterations</th><th>Seq Len</th><th>Calib Samples</th><th>LR</th><th>Speed</th><th>Memory</th><th>Accuracy</th></tr>
+        </thead>
+        <tbody>
+          <tr class="hl-row">
+            <td class="bold"><code>default</code></td><td>8</td><td>200</td><td>2048</td><td>128</td><td>Auto</td>
+            <td>🚀🚀</td><td>🟡 Medium</td><td>🎯🎯 Good</td>
+          </tr>
+          <tr>
+            <td class="bold"><code>best</code></td><td>8</td><td>1000</td><td>2048</td><td>512</td><td>Auto</td>
+            <td>🚀</td><td>🔴 High</td><td>🏆 Best</td>
+          </tr>
+          <tr>
+            <td class="bold"><code>light</code></td><td>8</td><td>50</td><td>2048</td><td>128</td><td>5e-3</td>
+            <td>🚀🚀🚀</td><td>🟡 Medium</td><td>🎯🎯 (slight drop)</td>
+          </tr>
+          <tr>
+            <td class="bold"><code>fast</code></td><td>4</td><td>200</td><td>512</td><td>128</td><td>Auto</td>
+            <td>🚀🚀🚀</td><td>🟢 Low</td><td>🎯</td>
+          </tr>
+        </tbody>
+      </table>
+      <div class="callout-tip mt-16">
+        <p class="text-sm">Use <code>best</code> for production models where accuracy is critical. Use <code>light</code> for rapid iteration during development (2–3× speedup). Use <code>fast</code> when GPU memory is limited or for quick evaluation. The <code>default</code> recipe provides a good balance for most use cases.</p>
+      </div>
+      <div class="callout-note">
+        <p class="text-sm">These configurations are based on our experiments and may vary depending on the model architecture.</p>
+      </div>
+    </div>
+  </div>
+
+  <!-- ============ SLIDE 26: Part 5 Section ============ -->
+  <div class="slide section-slide">
+    <div class="section-num">05</div>
+    <h2>Common Issues, Best Practices &amp; Q&amp;A</h2>
+    <p>Practical decision rules to take home · ~10 min</p>
+  </div>
+
+  <!-- ============ SLIDE 27: Part 5 Topics Overview ============ -->
+  <div class="slide">
+    <h2>Best Practices Overview</h2>
+    <div class="flex-grow" style="display:flex; align-items:center;">
+      <div style="width:100%;">
+        <div class="card card-accent" style="padding:32px;">
+          <h3>Choosing Quantization Schemes for Different Hardware</h3>
+          <ul class="text-sm">
+            <li>...[P]</li>
+
+          </ul>
+        </div>
+        <div class="card card-accent mt-12" style="padding:32px;">
+          <h3>Best Practices for LLMs, VLMs, and Multimodal Serving</h3>
+          <ul class="text-sm">
+            <li>...[P]</li>
+          </ul>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ============ SLIDE 28: Future Work (5.4) ============ -->
+  <div class="slide">
+    <h2>Future Work</h2>
+    <div class="grid-2 flex-grow">
+      <div>
+        <h3>Algorithm Improvements</h3>
+        <table class="dense-table">
+          <thead><tr><th>Area</th><th>Status</th><th>Description</th></tr></thead>
+          <tbody>
+            <tr><td class="bold">Rotation (Hadamard/QuaRot)</td><td><span class="badge badge-yellow">🔄 In development</span></td><td>Pre-transform weights to reduce outlier magnitude before quantization</td></tr>
+            <tr><td class="bold">Mixed algos (AWQ + AutoRound)</td><td><span class="badge badge-yellow">🔄 In development</span></td><td>Combine channel scaling with learned rounding</td></tr>
+            <tr><td class="bold">SVDQuant</td><td><span class="badge badge-dim">Exploring</span></td><td>Low-rank + quantization for extreme compression</td></tr>
+            <tr><td class="bold">Better INT2 support</td><td><span class="badge badge-green">✅ alg_ext available</span></td><td>Algorithm extensions for 2-bit quantization</td></tr>
+          </tbody>
+        </table>
+        <h3 class="mt-12">Kernel &amp; Integration</h3>
+        <table class="dense-table">
+          <thead><tr><th>Area</th><th>Status</th><th>Description</th></tr></thead>
+          <tbody>
+            <tr><td class="bold">Broader vLLM support</td><td><span class="badge badge-yellow">🔄 Ongoing</span></td><td>More quantization schemes, more targets</td></tr>
+            <tr><td class="bold">Broader vLLM-Omni support</td><td><span class="badge badge-yellow">🔄 Ongoing</span></td><td>More modalities, more quantization targets</td></tr>
+            <tr><td class="bold">MoE fused kernels</td><td><span class="badge badge-yellow">🔄 In development</span></td><td>Low-bits MoE with quantization</td></tr>
+            <tr><td class="bold">SageAttention v3</td><td><span class="badge badge-yellow">🔄 In development</span></td><td>MXFP8/MXFP4 attention with better accuracy</td></tr>
+          </tbody>
+        </table>
+      </div>
+      <div>
+        <h3>Call for Contribution</h3>
+        <p class="text-sm mb-8">Areas where community input is especially valuable:</p>
+        <div class="card card-accent">
+          <p><strong>1. New model support</strong><br><span class="text-sm">New LLM, VLMs, audio models, new architectures</span></p>
+        </div>
+        <div class="card card-accent">
+          <p><strong>2. New algo integration</strong></p>
+        </div>
+        <div class="key-msg">AutoRound is actively developed, and community feedback directly shapes priorities. The roadmap balances algorithm research, kernel engineering, and ecosystem integration.</div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ============ SLIDE 29: Key Resources + Closing ============ -->
+  <div class="slide end-slide">
+    <h1>Thank You</h1>
+    <div class="grid-2" style="max-width:900px; margin:16px auto 0; gap:40px; text-align:left;">
+      <div style="display:flex; flex-direction:column; gap:12px;">
+        <div class="card card-accent" style="text-align:left;">
+          <p style="font-size:1.05rem; color:var(--text); margin:0;">
+            <strong>Quantization is becoming shared serving infrastructure.</strong><br>
+            <span class="text-sm">AutoRound helps make low-bit LLM/VLM deployment more accurate, flexible, and easier for the vLLM community to use.</span>
+          </p>
+        </div>
+        <div style="display:flex; flex-wrap:wrap; gap:10px; font-size:0.82rem;">
+          <span style="white-space:nowrap;">🤗 <a href="https://huggingface.co/Intel/models">huggingface.co/Intel/models</a></span>
+          <span class="text-dim">·</span>
+          <span style="white-space:nowrap;">📊 <a href="https://huggingface.co/spaces/Intel/low_bit_open_llm_leaderboard">Low-Bit Leaderboard</a></span>
+          <span class="text-dim">·</span>
+          <span style="white-space:nowrap;">📄 <a href="https://arxiv.org/abs/2512.04746">SignRound v2</a></span>
+          <span class="text-dim">·</span>
+          <span style="white-space:nowrap;">📄 <a href="https://aclanthology.org/2024.findings-emnlp.662.pdf">SignRound</a></span>
+        </div>
+        <div class="text-xs text-dim" style="line-height:1.6;">
+          vLLM Roadmap: <a href="https://github.com/vllm-project/vllm/issues/37979">#37979</a> ·
+          vLLM Omni Roadmap: <a href="https://github.com/vllm-project/vllm-omni/issues/1325">#1325</a>
+        </div>
+      </div>
+      <div style="display:flex; justify-content:center; align-items:center; gap:32px;">
+        <div style="text-align:center;">
+          <img src="./images/ar-qr.png" alt="AutoRound QR Code" style="height:140px; width:140px; border-radius:10px; border:1px solid var(--border-light); display:block;">
+          <p class="text-xs text-dim mt-8">Scan to Star ⭐</p>
+        </div>
+        <div style="text-align:center;">
+          <img src="./images/ar-star-history-2026617.png" alt="AutoRound Star History" style="height:140px; border-radius:10px; border:1px solid var(--border-light); display:block;">
+          <p class="text-xs text-dim mt-8">Star History</p>
+        </div>
+      </div>
+    </div>
+    <div class="yellow-bar"></div>
+    <p class="mt-12" style="font-size:0.95rem; color:var(--text-dim);">
+      Questions? &nbsp;|&nbsp; ⭐ <a href="https://github.com/intel/auto-round"><strong>github.com/intel/auto-round</strong></a>
+    </p>
+  </div>
+
+</div>
+
+<!-- Sidebar Overlay -->
+<div class="sidebar-overlay" id="sidebarOverlay" onclick="toggleSidebar()"></div>
+
+<!-- Sidebar -->
+<div class="sidebar" id="sidebar">
+  <div class="sidebar-title">Slides</div>
+  <div id="sidebarItems"></div>
+</div>
+
+<!-- Navigation Bar -->
+<div class="nav-bar">
+  <button onclick="toggleSidebar()" id="menuBtn" title="Press M for menu">&#x2630;</button>
+  <button onclick="prevSlide()">&#x25C0; Prev</button>
+  <span id="slideNum" style="min-width:60px; text-align:center;">1 / 29</span>
+  <div class="progress-track">
+    <div class="progress-fill" id="progressFill"></div>
+  </div>
+  <button onclick="nextSlide()">Next &#x25B6;</button>
+</div>
+
+<script>
+  const slides = document.querySelectorAll('.slide');
+  let current = 0;
+  let sidebarOpen = false;
+
+  const slideTitles = [
+    'Title',
+    '— Part 1: Quantization Basics',
+    '1.1 — What Is Quantization?',
+    '1.2 — Core Quantization Concepts',
+    '1.3 — Quantization Primitives',
+    '1.7 — PTQ vs. QAT',
+    '1.4 — Why Quantization Is Necessary',
+    '1.8 — Quantization in vLLM',
+    '— Part 2: AutoRound Intro & Practice',
+    '2.1 — The Core Problem',
+    '2.2 — AutoRound Algorithm',
+    '2.3 — SignSGD: Optimization Engine',
+    '2.4 — QDQ Design',
+    '2.5 — AutoRound vs AWQ vs GPTQ',
+    '2.6 — AutoRound Support Matrix',
+    '2.7 — Kernel Library Support',
+    '— Part 3: AutoRound in the Community',
+    '3.1 — Community Tool Integration',
+    '3.2 — Low-Bit Leaderboard',
+    '— Part 4: Deployment with vLLM',
+    '4.1 — End-to-End Workflow',
+    '4.2 — LLM Serving Scenario',
+    '4.3 — VLM/Diffusion Example',
+    '4.7 — Important Tunable Parameters',
+    '— Part 5: Best Practices & Q&A',
+    'Best Practices Overview',
+    '5.4 — Future Work',
+    'Key Resources & Closing'
+  ];
+
+  const sidebarContainer = document.getElementById('sidebarItems');
+  slideTitles.forEach((title, i) => {
+    const item = document.createElement('div');
+    if (title.startsWith('—')) {
+      item.className = 'sidebar-item section-header';
+      item.innerHTML = `<span>${title.replace('— ', '')}</span>`;
+    } else {
+      item.className = 'sidebar-item' + (i === 0 ? ' active' : '');
+      item.innerHTML = `<span class="num">${String(i + 1).padStart(2, '0')}</span><span>${title}</span>`;
+      item.onclick = () => { showSlide(i); closeSidebar(); };
+    }
+    sidebarContainer.appendChild(item);
+  });
+
+  function showSlide(n) {
+    slides[current].classList.remove('active');
+    current = Math.max(0, Math.min(n, slides.length - 1));
+    slides[current].classList.add('active');
+    document.getElementById('slideNum').textContent = `${current + 1} / ${slides.length}`;
+    document.getElementById('progressFill').style.width = `${((current + 1) / slides.length) * 100}%`;
+    updateSidebar();
+  }
+
+  function nextSlide() { showSlide(current + 1); }
+  function prevSlide() { showSlide(current - 1); }
+
+  function updateSidebar() {
+    const items = document.querySelectorAll('.sidebar-item');
+    items.forEach((item, i) => { item.classList.toggle('active', i === current); });
+  }
+
+  function toggleSidebar() {
+    sidebarOpen = !sidebarOpen;
+    document.getElementById('sidebar').classList.toggle('open', sidebarOpen);
+    document.getElementById('sidebarOverlay').classList.toggle('open', sidebarOpen);
+  }
+
+  function closeSidebar() {
+    sidebarOpen = false;
+    document.getElementById('sidebar').classList.remove('open');
+    document.getElementById('sidebarOverlay').classList.remove('open');
+  }
+
+  document.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape' && sidebarOpen) { closeSidebar(); return; }
+    if (e.key === 'm' || e.key === 'M') { toggleSidebar(); return; }
+    if (sidebarOpen) return;
+    if (e.key === 'ArrowRight' || e.key === 'ArrowDown' || e.key === ' ') { e.preventDefault(); nextSlide(); }
+    if (e.key === 'ArrowLeft' || e.key === 'ArrowUp') { e.preventDefault(); prevSlide(); }
+    if (e.key === 'Home') { showSlide(0); }
+    if (e.key === 'End') { showSlide(slides.length - 1); }
+  });
+
+  let touchStartX = 0;
+  document.addEventListener('touchstart', (e) => { touchStartX = e.touches[0].clientX; });
+  document.addEventListener('touchend', (e) => {
+    const diff = e.changedTouches[0].clientX - touchStartX;
+    if (Math.abs(diff) > 50) { diff < 0 ? nextSlide() : prevSlide(); }
+  });
+
+  showSlide(0);
+</script>
+
+</body>
+</html>
