@@ -161,7 +161,7 @@ class TrainableRMSNorm(nn.Module):
     with rotation matrices to minimise quantisation error.
     """
 
-    def __init__(self, original_norm: nn.Module, trainable: bool = True):
+    def __init__(self, original_norm: nn.Module, trainable: bool = True) -> None:
         super().__init__()
         self.original_norm = original_norm
         self.trainable = trainable
@@ -190,7 +190,7 @@ class SpinQuantPreprocessor:
     original but with weight distributions better suited for quantisation.
     """
 
-    def __init__(self, model: nn.Module, config: Optional[SpinQuantConfig] = None):
+    def __init__(self, model: nn.Module, config: Optional[SpinQuantConfig] = None) -> None:
         self.model = model
         self.config = config or SpinQuantConfig()
 
