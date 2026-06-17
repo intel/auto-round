@@ -102,7 +102,7 @@ class HadamardRotation(BaseRotation):
             **kwargs:        Reserved for future use.
 
         Returns:
-            The mutated *model* with ``model.rotation_config`` set to the
+            The mutated *model* with ``model._rotation_config`` set to the
             normalised :class:`RotationConfig` dict.
         """
         cfg = self.config
@@ -136,7 +136,7 @@ class HadamardRotation(BaseRotation):
                 fuse_online_to_weight=fuse_online_to_weight,
                 compute_device=compute_device,
             )
-            setattr(model, "rotation_config", cfg.model_dump())
+            setattr(model, "_rotation_config", cfg.model_dump())
             return model
 
         # backend == "transform": original per-Linear triton-fused path.
@@ -152,7 +152,7 @@ class HadamardRotation(BaseRotation):
             _apply_to_module(model, module, cfg, location, data_type)
 
         # Store config on model for serialisation / downstream inspection.
-        setattr(model, "rotation_config", cfg.model_dump())
+        setattr(model, "_rotation_config", cfg.model_dump())
         return model
 
 

@@ -81,6 +81,7 @@ __all__ = [
     "save_rotation_config",
     "preregister_rotation_buffers",
     "rebuild_rotation_if_needed",
+    "apply_rotation_hooks_from_config",
 ]
 
 
@@ -388,3 +389,64 @@ def rebuild_rotation_if_needed(model: torch.nn.Module) -> None:
             except Exception as e:
                 _dispatch_logger.warning(f"Failed to rebuild {name} rotations: {e}")
             return  # Only one rotation method expected per model
+
+
+def apply_rotation_hooks_from_config(
+    model: torch.nn.Module,
+    quantization_config,
+) -> torch.nn.Module:
+    """Apply rotation forward hooks at inference time based on saved config.
+
+    Unified entry point that handles both Hadamard rotation (via
+    ``rotation_config`` key) and SerializerMixin-based methods like
+    SpinQuant (via ``preregister_rotation_buffers``).
+
+    Called from ``convert_hf_model()`` before weight loading.
+
+    Args:
+        model:                The model being loaded.
+        quantization_config:  The quantization config (dict or object) read
+                              from ``config.json``.
+
+    Returns:
+        The model with rotation hooks applied.
+    """
+    from auto_round.utils import logger
+
+    logger.warning_once(
+        "Rotation transform is still in experimental stage and uses forward hooks for inference, "
+        "the inference speed might be slow."
+    )
+
+    # --- Hadamard rotation (rotation_config key) ---
+    rotation_config = (
+        quantization_config.get("rotation_config", None)
+        if isinstance(quantization_config, dict)
+        else getattr(quantization_config, "rotation_config", None)
+    )
+    if rotation_config:
+        data_type = (
+            quantization_config.get("data_type", "mx_fp")
+            if isinstance(quantization_config, dict)
+            else getattr(quantization_config, "data_type", "mx_fp")
+        )
+        from auto_round.algorithms.transforms.quarot.apply import apply_rotation_transform
+        from auto_round.algorithms.transforms.quarot.config import RotationConfig as _RC
+
+        cfg = _RC(
+            block_size=rotation_config["block_size"],
+            hadamard_type=rotation_config["hadamard_type"],
+        )
+        model = apply_rotation_transform(
+            model, cfg, location="input",
+            desc="Register pre forward hook for hadamard transform",
+            data_type=data_type,
+        )
+
+    # --- SerializerMixin-based methods (SpinQuant / QuaRot / future) ---
+    try:
+        preregister_rotation_buffers(model, quantization_config)
+    except Exception as e:
+        _dispatch_logger.warning(f"Failed to pre-register rotation buffers: {e}")
+
+    return model
