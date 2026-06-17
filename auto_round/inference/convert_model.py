@@ -47,6 +47,7 @@ from auto_round.utils import (
     is_transformers_version_greater_or_equal_5,
     set_module,
 )
+from auto_round.utils.model import prune_stale_tied_weights_keys
 
 supported_devices = ("cpu", "hpu", "xpu", "cuda", "mps")
 
@@ -62,14 +63,24 @@ def flatten_list(nested_list):
 
 
 def skip_not_convert_modules(model, quantization_config, layer_names, layer_configs):
+    user_specified = bool(getattr(quantization_config, "modules_to_not_convert", None))
     modules_to_not_convert = getattr(quantization_config, "modules_to_not_convert", [])
     try:  # transformers new api
         modules_to_not_convert = get_modules_to_not_convert(model, modules_to_not_convert, add_default_skips=True)
     except:
         modules_to_not_convert = _get_modules_to_not_convert(model, modules_to_not_convert)
+
+    if modules_to_not_convert and not user_specified:
+        _DEFAULT_SKIP_KEYWORDS  = ("embed", "embed_tokens", "lm_head", "output_embed", "norm")
+        modules_to_not_convert = [
+            name for name in modules_to_not_convert if any(key in name for key in _DEFAULT_SKIP_KEYWORDS)
+        ]
+
     if modules_to_not_convert:
+        # Pre-compile patterns once instead of recompiling them for every layer name.
+        compiled_patterns = [re.compile(n) for n in modules_to_not_convert]
         for layer_name in layer_names:
-            if any([re.search(re.compile(n), layer_name) for n in modules_to_not_convert]):
+            if any(pattern.search(layer_name) for pattern in compiled_patterns):
                 layer_configs[layer_name] = {"bits": 16}
     return layer_configs
 
@@ -367,8 +378,10 @@ def get_layer_config(model, quantization_config):
         modules_in_block_to_quantize = flatten_list(
             quantization_config.modules_in_block_to_quantize
         )  # Flatten the list
+        # Pre-compile patterns once instead of recompiling them for every layer name.
+        compiled_modules_in_block = [re.compile(n) for n in modules_in_block_to_quantize]
         for layer_name in layer_names:
-            if not any([re.search(re.compile(n), layer_name) is not None for n in modules_in_block_to_quantize]):
+            if not any(pattern.search(layer_name) is not None for pattern in compiled_modules_in_block):
                 extra_config[layer_name] = {"bits": 16}  # Default to 16-bit for unquantized layers
 
     # Expand GPTQ 'dynamic' config (regex-based)
@@ -872,6 +885,8 @@ def convert_hf_model(model: nn.Module, target_device: str = "cpu") -> tuple[nn.M
     # Replace layers with quantized versions
     layer_configs = get_layer_config(model, quantization_config)
     used_backends = _replace_by_quant_layers(model, layer_configs, backend, target_device, packing_format)
+
+    prune_stale_tied_weights_keys(model)
 
     rotation_config = getattr(quantization_config, "rotation_config", None)
     if rotation_config is not None and rotation_config:

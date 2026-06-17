@@ -23,6 +23,7 @@ from typing import TYPE_CHECKING, Union
 import psutil
 import torch
 import transformers
+from transformers import PreTrainedModel
 from packaging import version
 
 from auto_round import envs
@@ -74,6 +75,100 @@ FIX_MISTRAL_REGEX_MODEL_TYPE_LIST = ["longcat_next"]
 
 if TYPE_CHECKING:
     from auto_round.schemes import QuantizationScheme
+
+
+def prune_stale_tied_weights_keys(model: torch.nn.Module) -> int:
+    """Drop ``_tied_weights_keys`` regex patterns that no longer match any parameter.
+
+    AutoRound unfuses MoE experts before calibration, splitting fused projections such as
+    ``gate_up_proj`` ``[num_experts, 2*inter, hidden]`` into per-expert ``gate_proj`` /
+    ``up_proj`` linear weights. The model's declared ``_tied_weights_keys`` still reference
+    the original fused name (e.g. DiffusionGemma ties ``encoder...gate_up_proj`` to
+    ``decoder...gate_up_proj``), which now matches zero parameters.
+
+    Removing only the now-empty patterns lets the remaining ties be established normally.
+    The split ``gate_proj`` / ``up_proj`` weights stay tied through the generic ``*.weight`` pattern
+    that already covers every ``.weight`` parameter under the layers. Already-expanded
+    plain parameter names are kept untouched.
+
+    Args:
+        model (torch.nn.Module): model whose stale tie patterns should be removed.
+
+    Returns:
+        int: number of stale tie entries removed across all submodels.
+    """
+    common_case = re.compile(r"^[A-Za-z0-9_\.]+(weight)|(bias)$")
+    removed = 0
+
+    for _, submodule in model.named_modules(remove_duplicate=False):
+        if not isinstance(submodule, PreTrainedModel):
+            continue
+        tied = getattr(submodule, "_tied_weights_keys", None)
+        if not isinstance(tied, dict) or not tied:
+            continue
+        if not getattr(submodule.config, "tie_word_embeddings", False):
+            continue
+        if all(common_case.match(target) and common_case.match(source) for target, source in tied.items()):
+            continue
+        names = {k for k, _ in submodule.named_parameters(remove_duplicate=False)} | {
+            k for k, _ in submodule.named_buffers(remove_duplicate=False)
+        }
+        pruned = {}
+        for target, source in tied.items():
+            if common_case.match(target) and common_case.match(source):
+                pruned[target] = source
+                continue
+            source_params = [n for n in names if re.search("^" + source, n)]
+            target_params = [n for n in names if re.search("^" + target, n)]
+            if len(source_params) > 0 and len(target_params) > 0 and len(target_params) % len(source_params) == 0:
+                pruned[target] = source
+            else:
+                removed += 1
+                logger.trace(
+                    f"Removing stale tie pattern '{target}' -> '{source}' from "
+                    f"{type(submodule).__name__}: it no longer matches any parameter."
+                )
+        if len(pruned) != len(tied):
+            submodule._tied_weights_keys = pruned
+
+    for _, submodule in model.named_modules(remove_duplicate=False):
+        if not isinstance(submodule, PreTrainedModel):
+            continue
+        cached = getattr(submodule, "all_tied_weights_keys", None)
+        if not isinstance(cached, dict) or not cached:
+            continue
+        existing = {n for n, _ in submodule.named_parameters(remove_duplicate=False)} | {
+            n for n, _ in submodule.named_buffers(remove_duplicate=False)
+        }
+        cached_pruned = {
+            target: source for target, source in cached.items() if target in existing and source in existing
+        }
+        if len(cached_pruned) != len(cached):
+            removed += len(cached) - len(cached_pruned)
+            logger.trace(
+                f"Pruned {len(cached) - len(cached_pruned)} stale entries from "
+                f"{type(submodule).__name__}.all_tied_weights_keys cache "
+                f"(targets/sources no longer resolve after unfuse/quantization)."
+            )
+            submodule.all_tied_weights_keys = cached_pruned
+
+    return removed
+
+
+def safe_tie_weights(model: torch.nn.Module) -> None:
+    """Call ``model.tie_weights()`` defensively.
+
+    Args:
+        model (torch.nn.Module): model whose weights should be tied if supported.
+    """
+    tie_fn = getattr(model, "tie_weights", None)
+    if not callable(tie_fn):
+        return
+    prune_stale_tied_weights_keys(model)
+    try:
+        tie_fn()
+    except ValueError as e:
+        logger.warning(f"model.tie_weights() raised ValueError, skipping weight tying: {e}")
 
 
 def clean_module_parameter(submodule: torch.nn.Module, param_name: str) -> None:

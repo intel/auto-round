@@ -20,6 +20,7 @@ import torch
 from auto_round.formats import OutputFormat
 from auto_round.modeling.fused_moe.replace_modules import apply_replacements, release_original_module_
 from auto_round.utils import is_moe_model_via_config, logger
+from auto_round.utils.model import prune_stale_tied_weights_keys
 
 mllms_with_limited_bs = (
     "llava",
@@ -401,6 +402,7 @@ def update_module(
     if cleanup_original:
         release_original_module_(model)
 
+    prune_stale_tied_weights_keys(model)
     return model
 
 
@@ -1270,7 +1272,10 @@ def load_next_step_diffusion(pretrained_model_name_or_path, device_str):
     return pipe, model
 
 
-_PRE_DEFINED_FIXED_ATTR = {"gemma4_unified": {"has_variable_block_shape": True}}
+_PRE_DEFINED_FIXED_ATTR = {
+    "gemma4_unified": {"has_variable_block_shape": True},
+    "diffusion_gemma": {"has_variable_block_shape": True},
+}
 
 
 def get_predefined_fixed_attr(model: torch.nn.Module) -> dict | None:
