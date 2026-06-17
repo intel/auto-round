@@ -70,11 +70,33 @@ class MoEDequantKernelInt2;
 template <typename ScalarT, bool IsE4M3, bool UseLut>
 class MoEDequantKernelFP8;
 
-// Tile sizes for the dequant kernel: each work-item dequantises one weight
-// element, with the work-group covering a 1xWG_N tile along (k, n). N is
-// chosen as the inner dimension to keep stores to the [E, K, N] output
-// coalesced across the sub-group.
-constexpr int WG_N = 16;
+// Tile sizes for the dequant kernels.
+//
+// Each work-group covers a (PACK_K x WG_N) tile in (k, n) and writes PACK_K
+// consecutive K rows for the same column band. N is the inner dimension so
+// stores to the `[E, K, N]` workspace stay coalesced across the sub-group.
+//
+// PACK_K is chosen per weight encoding so a single work-item dequantises an
+// entire packed byte (INT4: 2 outputs, INT2: 4 outputs) or a small run of
+// elements sharing one scale/zero load (INT8 / FP8 / FP transpose: 4
+// outputs). This removes the redundant packed-byte and scale loads that
+// the previous "one element per work-item" launch incurred:
+//   - INT4: every byte was read twice (one item per nibble) -> now once.
+//   - INT2: every byte was read four times -> now once.
+//   - All quantized paths: every scale (and zero) was reloaded by every K
+//     element in the group -> now once per PACK_K elements.
+// Group-wise scale sharing is safe because PACK_K <= group_size in every
+// supported configuration (group_size >= 32 in practice).
+//
+// WG_N is the sub-group store width along N. 32 yields a single 64-byte
+// coalesced burst per row for FP16/BF16 writes, which matches the L1
+// cache-line size on the target XPUs.
+constexpr int WG_N = 32;
+constexpr int PACK_K_FP = 4;
+constexpr int PACK_K_INT8 = 4;
+constexpr int PACK_K_INT4 = 2;
+constexpr int PACK_K_INT2 = 4;
+constexpr int PACK_K_FP8 = 4;
 
 // ----------------------------------------------------------------------------
 // FP16 / BF16 weight reshape: in-place transpose [E, N, K] -> [E, K, N].
@@ -87,7 +109,12 @@ void launch_dequant_fp(sycl::queue* q, const ScalarT* weights_NK, ScalarT* weigh
                        const int* num_tokens_per_expert = nullptr) {
   if (E == 0 || N == 0 || K == 0) return;
 
-  sycl::range<3> global{static_cast<size_t>(E), static_cast<size_t>(K),
+  // Each work-item copies PACK_K_FP consecutive K elements for a single
+  // (e, n). The launch grid covers ceil(K / PACK_K_FP) along the middle dim;
+  // an inner bounds check guards the K tail when K is not a multiple of
+  // PACK_K_FP (e.g. K < PACK_K_FP in tiny unit tests).
+  const int k_tiles = (K + PACK_K_FP - 1) / PACK_K_FP;
+  sycl::range<3> global{static_cast<size_t>(E), static_cast<size_t>(k_tiles),
                         static_cast<size_t>((N + WG_N - 1) / WG_N) * WG_N};
   sycl::range<3> local{1, 1, static_cast<size_t>(WG_N)};
 
@@ -97,12 +124,18 @@ void launch_dequant_fp(sycl::queue* q, const ScalarT* weights_NK, ScalarT* weigh
         // Skip experts that receive no tokens in this prefill batch; the
         // grouped GEMM will not read their rows of `weights_KN` either.
         if (num_tokens_per_expert != nullptr && num_tokens_per_expert[e] == 0) return;
-        const int k = static_cast<int>(it.get_global_id(1));
+        const int k_base = static_cast<int>(it.get_global_id(1)) * PACK_K_FP;
         const int n = static_cast<int>(it.get_global_id(2));
         if (n >= N) return;
-        const ScalarT v =
-            weights_NK[(static_cast<size_t>(e) * N + static_cast<size_t>(n)) * K + static_cast<size_t>(k)];
-        weights_KN[(static_cast<size_t>(e) * K + static_cast<size_t>(k)) * N + static_cast<size_t>(n)] = v;
+        const size_t w_row = (static_cast<size_t>(e) * N + static_cast<size_t>(n)) * K;
+        const size_t out_base = static_cast<size_t>(e) * K * N + static_cast<size_t>(n);
+#pragma unroll
+        for (int j = 0; j < PACK_K_FP; ++j) {
+          const int k = k_base + j;
+          if (k >= K) break;
+          const ScalarT v = weights_NK[w_row + static_cast<size_t>(k)];
+          weights_KN[out_base + static_cast<size_t>(k) * N] = v;
+        }
       });
 }
 
@@ -121,7 +154,12 @@ void launch_dequant_int8(sycl::queue* q, const uint8_t* weights_NK, const Scalar
   }
   const int num_groups_k = K / group_size;
 
-  sycl::range<3> global{static_cast<size_t>(E), static_cast<size_t>(K),
+  // Each work-item dequantises PACK_K_INT8 consecutive K outputs for a
+  // single (e, n), sharing one scale/zero load. PACK_K_INT8 (=4) is always
+  // <= group_size (>=32 in practice), so the cached scale/zero is valid
+  // for every element in the run.
+  const int k_tiles = (K + PACK_K_INT8 - 1) / PACK_K_INT8;
+  sycl::range<3> global{static_cast<size_t>(E), static_cast<size_t>(k_tiles),
                         static_cast<size_t>((N + WG_N - 1) / WG_N) * WG_N};
   sycl::range<3> local{1, 1, static_cast<size_t>(WG_N)};
 
@@ -129,24 +167,32 @@ void launch_dequant_int8(sycl::queue* q, const uint8_t* weights_NK, const Scalar
       sycl::nd_range<3>(global, local), [=](sycl::nd_item<3> it) {
         const int e = static_cast<int>(it.get_global_id(0));
         if (num_tokens_per_expert != nullptr && num_tokens_per_expert[e] == 0) return;
-        const int k = static_cast<int>(it.get_global_id(1));
+        const int k_base = static_cast<int>(it.get_global_id(1)) * PACK_K_INT8;
         const int n = static_cast<int>(it.get_global_id(2));
         if (n >= N) return;
-        const int g = k / group_size;
+        const size_t w_row = (static_cast<size_t>(e) * N + static_cast<size_t>(n)) * K;
+        const size_t out_base = static_cast<size_t>(e) * K * N + static_cast<size_t>(n);
+        // Hoist scale/zero loads: PACK_K_INT8 K values share the same group
+        // because PACK_K_INT8 <= group_size and groups are aligned at K
+        // multiples of group_size (PACK_K_INT8 divides group_size).
+        const int g = k_base / group_size;
         const size_t s_idx = (static_cast<size_t>(e) * N + static_cast<size_t>(n)) * num_groups_k +
                              static_cast<size_t>(g);
         const float scale = static_cast<float>(scales[s_idx]);
-        const uint8_t raw =
-            weights_NK[(static_cast<size_t>(e) * N + static_cast<size_t>(n)) * K + static_cast<size_t>(k)];
-        float w;
-        if constexpr (Asym) {
-          const float zero = static_cast<float>(zeros[s_idx]);
-          w = (static_cast<float>(raw) - zero) * scale;
-        } else {
-          w = static_cast<float>(static_cast<int8_t>(raw)) * scale;
+        const float zero = Asym ? static_cast<float>(zeros[s_idx]) : 0.0f;
+#pragma unroll
+        for (int j = 0; j < PACK_K_INT8; ++j) {
+          const int k = k_base + j;
+          if (k >= K) break;
+          const uint8_t raw = weights_NK[w_row + static_cast<size_t>(k)];
+          float w;
+          if constexpr (Asym) {
+            w = (static_cast<float>(raw) - zero) * scale;
+          } else {
+            w = static_cast<float>(static_cast<int8_t>(raw)) * scale;
+          }
+          weights_KN[out_base + static_cast<size_t>(k) * N] = static_cast<ScalarT>(w);
         }
-        weights_KN[(static_cast<size_t>(e) * K + static_cast<size_t>(k)) * N + static_cast<size_t>(n)] =
-            static_cast<ScalarT>(w);
       });
 }
 
@@ -170,7 +216,11 @@ void launch_dequant_int4(sycl::queue* q, const uint8_t* weights_NKp, const Scala
   const int num_groups_k = K / group_size;
   const int k_packed = K / 2;
 
-  sycl::range<3> global{static_cast<size_t>(E), static_cast<size_t>(K),
+  // Each work-item now dequantises one full packed byte = PACK_K_INT4 (=2)
+  // consecutive K outputs for a single (e, n). The middle launch dim is
+  // therefore k_packed instead of K, halving the work-item count and
+  // eliminating the previous "two items reading the same byte" pattern.
+  sycl::range<3> global{static_cast<size_t>(E), static_cast<size_t>(k_packed),
                         static_cast<size_t>((N + WG_N - 1) / WG_N) * WG_N};
   sycl::range<3> local{1, 1, static_cast<size_t>(WG_N)};
 
@@ -178,31 +228,34 @@ void launch_dequant_int4(sycl::queue* q, const uint8_t* weights_NKp, const Scala
       sycl::nd_range<3>(global, local), [=](sycl::nd_item<3> it) {
         const int e = static_cast<int>(it.get_global_id(0));
         if (num_tokens_per_expert != nullptr && num_tokens_per_expert[e] == 0) return;
-        const int k = static_cast<int>(it.get_global_id(1));
+        const int kp = static_cast<int>(it.get_global_id(1));
         const int n = static_cast<int>(it.get_global_id(2));
         if (n >= N) return;
-        const int g = k / group_size;
+        const int k_base = kp * PACK_K_INT4;
+        const int g = k_base / group_size;
         const size_t s_idx = (static_cast<size_t>(e) * N + static_cast<size_t>(n)) * num_groups_k +
                              static_cast<size_t>(g);
         const float scale = static_cast<float>(scales[s_idx]);
-        const uint8_t packed =
-            weights_NKp[(static_cast<size_t>(e) * N + static_cast<size_t>(n)) * k_packed +
-                        static_cast<size_t>(k / 2)];
-        const bool is_high = (k & 1) != 0;
-        float w;
+        const float zero = Asym ? static_cast<float>(zeros[s_idx]) : 0.0f;
+        const uint8_t packed = weights_NKp[(static_cast<size_t>(e) * N + static_cast<size_t>(n)) * k_packed +
+                                           static_cast<size_t>(kp)];
+        const size_t out_base = static_cast<size_t>(e) * K * N + static_cast<size_t>(n);
+        float w0, w1;
         if constexpr (Asym) {
-          const float zero = static_cast<float>(zeros[s_idx]);
-          const int q = static_cast<int>(is_high ? ((packed >> 4) & 0x0F) : (packed & 0x0F));
-          w = (static_cast<float>(q) - zero) * scale;
+          const int q_lo = static_cast<int>(packed & 0x0F);
+          const int q_hi = static_cast<int>((packed >> 4) & 0x0F);
+          w0 = (static_cast<float>(q_lo) - zero) * scale;
+          w1 = (static_cast<float>(q_hi) - zero) * scale;
         } else {
-          // Sign-extend 4-bit -> 8-bit by shifting into the top nibble.
-          const int q = is_high
-              ? static_cast<int>(static_cast<int8_t>(packed & 0xF0) >> 4)
-              : static_cast<int>(static_cast<int8_t>(packed << 4) >> 4);
-          w = static_cast<float>(q) * scale;
+          // Sign-extend each nibble: shift into the top of an int8 then
+          // arithmetic-shift right by 4 to fill the sign bits.
+          const int q_lo = static_cast<int>(static_cast<int8_t>(packed << 4) >> 4);
+          const int q_hi = static_cast<int>(static_cast<int8_t>(packed & 0xF0) >> 4);
+          w0 = static_cast<float>(q_lo) * scale;
+          w1 = static_cast<float>(q_hi) * scale;
         }
-        weights_KN[(static_cast<size_t>(e) * K + static_cast<size_t>(k)) * N + static_cast<size_t>(n)] =
-            static_cast<ScalarT>(w);
+        weights_KN[out_base + static_cast<size_t>(k_base) * N] = static_cast<ScalarT>(w0);
+        weights_KN[out_base + static_cast<size_t>(k_base + 1) * N] = static_cast<ScalarT>(w1);
       });
 }
 
@@ -226,7 +279,11 @@ void launch_dequant_int2(sycl::queue* q, const uint8_t* weights_NKp, const Scala
   const int num_groups_k = K / group_size;
   const int k_packed = K / 4;
 
-  sycl::range<3> global{static_cast<size_t>(E), static_cast<size_t>(K),
+  // One work-item handles one full packed byte = PACK_K_INT2 (=4)
+  // consecutive K outputs for a single (e, n). This removes the previous
+  // 4x duplicated byte loads (one item per 2-bit field) and 4x scale
+  // reloads.
+  sycl::range<3> global{static_cast<size_t>(E), static_cast<size_t>(k_packed),
                         static_cast<size_t>((N + WG_N - 1) / WG_N) * WG_N};
   sycl::range<3> local{1, 1, static_cast<size_t>(WG_N)};
 
@@ -234,31 +291,33 @@ void launch_dequant_int2(sycl::queue* q, const uint8_t* weights_NKp, const Scala
       sycl::nd_range<3>(global, local), [=](sycl::nd_item<3> it) {
         const int e = static_cast<int>(it.get_global_id(0));
         if (num_tokens_per_expert != nullptr && num_tokens_per_expert[e] == 0) return;
-        const int k = static_cast<int>(it.get_global_id(1));
+        const int kp = static_cast<int>(it.get_global_id(1));
         const int n = static_cast<int>(it.get_global_id(2));
         if (n >= N) return;
-        const int g = k / group_size;
+        const int k_base = kp * PACK_K_INT2;
+        const int g = k_base / group_size;
         const size_t s_idx = (static_cast<size_t>(e) * N + static_cast<size_t>(n)) * num_groups_k +
                              static_cast<size_t>(g);
         const float scale = static_cast<float>(scales[s_idx]);
-        const uint8_t packed =
-            weights_NKp[(static_cast<size_t>(e) * N + static_cast<size_t>(n)) * k_packed +
-                        static_cast<size_t>(k / 4)];
-        const int field = k & 3;
-        float w;
-        if constexpr (Asym) {
-          const float zero = static_cast<float>(zeros[s_idx]);
-          const int q = static_cast<int>((packed >> (2 * field)) & 0x3);
-          w = (static_cast<float>(q) - zero) * scale;
-        } else {
-          // Sign-extend 2-bit by shifting the field into the top bits of an int8.
-          const int shift = 6 - 2 * field;  // 6, 4, 2, 0 for fields 0..3
-          const int8_t s8 = static_cast<int8_t>((packed << shift) & 0xC0);
-          const int q = static_cast<int>(s8 >> 6);
-          w = static_cast<float>(q) * scale;
+        const float zero = Asym ? static_cast<float>(zeros[s_idx]) : 0.0f;
+        const uint8_t packed = weights_NKp[(static_cast<size_t>(e) * N + static_cast<size_t>(n)) * k_packed +
+                                           static_cast<size_t>(kp)];
+        const size_t out_base = static_cast<size_t>(e) * K * N + static_cast<size_t>(n);
+#pragma unroll
+        for (int j = 0; j < PACK_K_INT2; ++j) {
+          float w;
+          if constexpr (Asym) {
+            const int q = static_cast<int>((packed >> (2 * j)) & 0x3);
+            w = (static_cast<float>(q) - zero) * scale;
+          } else {
+            // Sign-extend 2-bit by shifting the field into the top bits of an int8.
+            const int shift = 6 - 2 * j;  // 6, 4, 2, 0 for fields 0..3
+            const int8_t s8 = static_cast<int8_t>((packed << shift) & 0xC0);
+            const int q = static_cast<int>(s8 >> 6);
+            w = static_cast<float>(q) * scale;
+          }
+          weights_KN[out_base + static_cast<size_t>(k_base + j) * N] = static_cast<ScalarT>(w);
         }
-        weights_KN[(static_cast<size_t>(e) * K + static_cast<size_t>(k)) * N + static_cast<size_t>(n)] =
-            static_cast<ScalarT>(w);
       });
 }
 
@@ -274,7 +333,10 @@ void launch_dequant_fp8(sycl::queue* q, const uint8_t* weights_NK, const ScalarT
   if (E == 0 || N == 0 || K == 0) return;
   const int num_groups_k = K / group_size;
 
-  sycl::range<3> global{static_cast<size_t>(E), static_cast<size_t>(K),
+  // PACK_K_FP8 (=4) consecutive K outputs per work-item, sharing one scale
+  // load. PACK_K_FP8 <= group_size in all supported configurations.
+  const int k_tiles = (K + PACK_K_FP8 - 1) / PACK_K_FP8;
+  sycl::range<3> global{static_cast<size_t>(E), static_cast<size_t>(k_tiles),
                         static_cast<size_t>((N + WG_N - 1) / WG_N) * WG_N};
   sycl::range<3> local{1, 1, static_cast<size_t>(WG_N)};
 
@@ -282,18 +344,23 @@ void launch_dequant_fp8(sycl::queue* q, const uint8_t* weights_NK, const ScalarT
       sycl::nd_range<3>(global, local), [=](sycl::nd_item<3> it) {
         const int e = static_cast<int>(it.get_global_id(0));
         if (num_tokens_per_expert != nullptr && num_tokens_per_expert[e] == 0) return;
-        const int k = static_cast<int>(it.get_global_id(1));
+        const int k_base = static_cast<int>(it.get_global_id(1)) * PACK_K_FP8;
         const int n = static_cast<int>(it.get_global_id(2));
         if (n >= N) return;
-        const int g = k / group_size;
+        const size_t w_row = (static_cast<size_t>(e) * N + static_cast<size_t>(n)) * K;
+        const size_t out_base = static_cast<size_t>(e) * K * N + static_cast<size_t>(n);
+        const int g = k_base / group_size;
         const size_t s_idx = (static_cast<size_t>(e) * N + static_cast<size_t>(n)) * num_groups_k +
                              static_cast<size_t>(g);
         const float scale = static_cast<float>(scales[s_idx]);
-        const uint8_t raw =
-            weights_NK[(static_cast<size_t>(e) * N + static_cast<size_t>(n)) * K + static_cast<size_t>(k)];
-        const float w = moe_dequant::decode_fp8<IsE4M3, UseLut>(raw) * scale;
-        weights_KN[(static_cast<size_t>(e) * K + static_cast<size_t>(k)) * N + static_cast<size_t>(n)] =
-            static_cast<ScalarT>(w);
+#pragma unroll
+        for (int j = 0; j < PACK_K_FP8; ++j) {
+          const int k = k_base + j;
+          if (k >= K) break;
+          const uint8_t raw = weights_NK[w_row + static_cast<size_t>(k)];
+          const float w = moe_dequant::decode_fp8<IsE4M3, UseLut>(raw) * scale;
+          weights_KN[out_base + static_cast<size_t>(k) * N] = static_cast<ScalarT>(w);
+        }
       });
 }
 
