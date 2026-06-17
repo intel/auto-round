@@ -95,7 +95,21 @@ def _prefill_skip_reason() -> str:
     return ""
 
 
+def _quantized_prefill_skip_reason() -> str:
+    """Return non-empty string if the quantized MoE prefill kernel can't be exercised."""
+    reason = _prefill_skip_reason()
+    if reason:
+        return reason
+    if not hasattr(ark.xpu_lib, "moe_gemm_prefill"):
+        return (
+            "ark.xpu_lib loaded but has no moe_gemm_prefill symbol -- "
+            "rebuild with ARK_SYCL_TLA=ON to compile the quantized MoE prefill kernel"
+        )
+    return ""
+
+
 _PREFILL_SKIP = _prefill_skip_reason()
+_QUANT_PREFILL_SKIP = _quantized_prefill_skip_reason()
 
 # Surface diagnostics on collection
 print(
@@ -255,6 +269,7 @@ class TestMoEGemmPrefillPerf:
 
             _print_row(label, E, N, K, total_tokens, base_ms, ark_ms, tflops)
 
+    @pytest.mark.skipif(bool(_QUANT_PREFILL_SKIP), reason=_QUANT_PREFILL_SKIP or "ok")
     @pytest.mark.parametrize("dtype", [torch.float16, torch.bfloat16])
     @pytest.mark.parametrize("asym", [False, True])
     def test_perf_int4(self, dtype, asym):
@@ -262,19 +277,18 @@ class TestMoEGemmPrefillPerf:
         kind = "asym" if asym else "sym"
         _print_header(
             f"INT4 {kind} (group_size={group_size}, act={str(dtype).split('.')[-1]}) "
-            f"-- ark.moe_gemm (prefill) vs dequant + per-expert A @ W.T"
+            f"-- ark.moe_gemm_prefill (prefill) vs dequant + per-expert A @ W.T"
         )
         for label, E, tpe, N, K in PREFILL_SHAPES:
             if K % group_size != 0:
                 continue
             total_tokens = sum(tpe)
             activations = torch.randn(total_tokens, K, dtype=dtype, device="xpu")
-            # Generate weights [E, K, N]
-            w_float = (torch.randn(E, K, N, dtype=torch.float32, device="xpu") * 0.1).to(dtype)
+            # Pack helpers expect weights in [E, N, K] layout.
+            w_float = (torch.randn(E, N, K, dtype=torch.float32, device="xpu") * 0.1).to(dtype)
             scales = torch.empty(E, N, K // group_size, dtype=dtype, device="xpu")
             if asym:
                 zeros = torch.empty(E, N, K // group_size, dtype=dtype, device="xpu")
-                # Pack with [E, K, N] layout
                 packed = _pack_int4_asym(w_float, scales, zeros, group_size)
                 dequant = _dequant_int4_asym(packed, scales, zeros, group_size).to(dtype)
             else:
@@ -283,12 +297,10 @@ class TestMoEGemmPrefillPerf:
                 dequant = _dequant_int4_sym(packed, scales, group_size).to(dtype)
             ntpe = torch.tensor(tpe, dtype=torch.int32, device="xpu")
 
-            # Baseline expects [E, N, K]
-            dequant_baseline = dequant.transpose(1, 2)
-
-            base_ms = _xpu_time_ms(lambda: _default_moe_prefill(activations, dequant_baseline, ntpe))
+            # ``dequant`` is already [E, N, K] -- matches the baseline contract.
+            base_ms = _xpu_time_ms(lambda: _default_moe_prefill(activations, dequant, ntpe))
             ark_ms = _xpu_time_ms(
-                lambda: ark.moe_gemm(
+                lambda: ark.moe_gemm_prefill(
                     activations,
                     packed,
                     ntpe,
@@ -305,6 +317,7 @@ class TestMoEGemmPrefillPerf:
 
             _print_row(label, E, N, K, total_tokens, base_ms, ark_ms, tflops)
 
+    @pytest.mark.skipif(bool(_QUANT_PREFILL_SKIP), reason=_QUANT_PREFILL_SKIP or "ok")
     @pytest.mark.parametrize("dtype", [torch.float16, torch.bfloat16])
     @pytest.mark.parametrize("asym", [False, True])
     def test_perf_int8(self, dtype, asym):
@@ -312,14 +325,14 @@ class TestMoEGemmPrefillPerf:
         kind = "asym" if asym else "sym"
         _print_header(
             f"INT8 {kind} (group_size={group_size}, act={str(dtype).split('.')[-1]}) "
-            f"-- ark.moe_gemm (prefill) vs dequant + per-expert A @ W.T"
+            f"-- ark.moe_gemm_prefill (prefill) vs dequant + per-expert A @ W.T"
         )
         for label, E, tpe, N, K in PREFILL_SHAPES:
             if K % group_size != 0:
                 continue
             total_tokens = sum(tpe)
             activations = torch.randn(total_tokens, K, dtype=dtype, device="xpu")
-            w_float = (torch.randn(E, K, N, dtype=torch.float32, device="xpu") * 0.1).to(dtype)
+            w_float = (torch.randn(E, N, K, dtype=torch.float32, device="xpu") * 0.1).to(dtype)
             scales = torch.empty(E, N, K // group_size, dtype=dtype, device="xpu")
             if asym:
                 zeros = torch.empty(E, N, K // group_size, dtype=dtype, device="xpu")
@@ -331,11 +344,9 @@ class TestMoEGemmPrefillPerf:
                 dequant = _dequant_int8_sym(packed, scales, group_size).to(dtype)
             ntpe = torch.tensor(tpe, dtype=torch.int32, device="xpu")
 
-            dequant_baseline = dequant.transpose(1, 2)
-
-            base_ms = _xpu_time_ms(lambda: _default_moe_prefill(activations, dequant_baseline, ntpe))
+            base_ms = _xpu_time_ms(lambda: _default_moe_prefill(activations, dequant, ntpe))
             ark_ms = _xpu_time_ms(
-                lambda: ark.moe_gemm(
+                lambda: ark.moe_gemm_prefill(
                     activations,
                     packed,
                     ntpe,
@@ -352,6 +363,7 @@ class TestMoEGemmPrefillPerf:
 
             _print_row(label, E, N, K, total_tokens, base_ms, ark_ms, tflops)
 
+    @pytest.mark.skipif(bool(_QUANT_PREFILL_SKIP), reason=_QUANT_PREFILL_SKIP or "ok")
     @pytest.mark.parametrize("dtype", [torch.float16, torch.bfloat16])
     @pytest.mark.parametrize("asym", [False, True])
     def test_perf_int2(self, dtype, asym):
@@ -359,14 +371,14 @@ class TestMoEGemmPrefillPerf:
         kind = "asym" if asym else "sym"
         _print_header(
             f"INT2 {kind} (group_size={group_size}, act={str(dtype).split('.')[-1]}) "
-            f"-- ark.moe_gemm (prefill) vs dequant + per-expert A @ W.T"
+            f"-- ark.moe_gemm_prefill (prefill) vs dequant + per-expert A @ W.T"
         )
         for label, E, tpe, N, K in PREFILL_SHAPES:
             if K % group_size != 0 or K % 4 != 0:
                 continue
             total_tokens = sum(tpe)
             activations = torch.randn(total_tokens, K, dtype=dtype, device="xpu")
-            w_float = (torch.randn(E, K, N, dtype=torch.float32, device="xpu") * 0.1).to(dtype)
+            w_float = (torch.randn(E, N, K, dtype=torch.float32, device="xpu") * 0.1).to(dtype)
             scales = torch.empty(E, N, K // group_size, dtype=dtype, device="xpu")
             if asym:
                 zeros = torch.empty(E, N, K // group_size, dtype=dtype, device="xpu")
@@ -378,11 +390,9 @@ class TestMoEGemmPrefillPerf:
                 dequant = _dequant_int2_sym(packed, scales, group_size).to(dtype)
             ntpe = torch.tensor(tpe, dtype=torch.int32, device="xpu")
 
-            dequant_baseline = dequant.transpose(1, 2)
-
-            base_ms = _xpu_time_ms(lambda: _default_moe_prefill(activations, dequant_baseline, ntpe))
+            base_ms = _xpu_time_ms(lambda: _default_moe_prefill(activations, dequant, ntpe))
             ark_ms = _xpu_time_ms(
-                lambda: ark.moe_gemm(
+                lambda: ark.moe_gemm_prefill(
                     activations,
                     packed,
                     ntpe,
@@ -399,30 +409,29 @@ class TestMoEGemmPrefillPerf:
 
             _print_row(label, E, N, K, total_tokens, base_ms, ark_ms, tflops)
 
+    @pytest.mark.skipif(bool(_QUANT_PREFILL_SKIP), reason=_QUANT_PREFILL_SKIP or "ok")
     @pytest.mark.parametrize("dtype", [torch.float16, torch.bfloat16])
     @pytest.mark.parametrize("fp8_dtype", [torch.float8_e4m3fn, torch.float8_e5m2])
     def test_perf_fp8(self, dtype, fp8_dtype):
         group_size = 128
         _print_header(
             f"FP8 {str(fp8_dtype).split('.')[-1]} (group_size={group_size}, "
-            f"act={str(dtype).split('.')[-1]}) -- ark.moe_gemm (prefill) vs dequant + per-expert A @ W.T"
+            f"act={str(dtype).split('.')[-1]}) -- ark.moe_gemm_prefill (prefill) vs dequant + per-expert A @ W.T"
         )
         for label, E, tpe, N, K in PREFILL_SHAPES:
             if K % group_size != 0:
                 continue
             total_tokens = sum(tpe)
             activations = torch.randn(total_tokens, K, dtype=dtype, device="xpu")
-            w_float = (torch.randn(E, K, N, dtype=torch.float32, device="xpu") * 0.1).to(dtype)
+            w_float = (torch.randn(E, N, K, dtype=torch.float32, device="xpu") * 0.1).to(dtype)
             scales = torch.empty(E, N, K // group_size, dtype=dtype, device="xpu")
             packed = _pack_fp8(w_float, scales, group_size, fp8_dtype)
             dequant = _dequant_fp8(packed, scales, group_size, dtype)
             ntpe = torch.tensor(tpe, dtype=torch.int32, device="xpu")
 
-            dequant_baseline = dequant.transpose(1, 2)
-
-            base_ms = _xpu_time_ms(lambda: _default_moe_prefill(activations, dequant_baseline, ntpe))
+            base_ms = _xpu_time_ms(lambda: _default_moe_prefill(activations, dequant, ntpe))
             ark_ms = _xpu_time_ms(
-                lambda: ark.moe_gemm(
+                lambda: ark.moe_gemm_prefill(
                     activations,
                     packed,
                     ntpe,
