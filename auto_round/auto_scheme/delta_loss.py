@@ -57,7 +57,7 @@ from auto_round.utils import (
     set_module,
     set_non_auto_device_map,
     to_device,
-    to_dtype,
+    to_dtype, flatten_list,
 )
 from auto_round.utils.device import MemoryMonitor, memory_monitor
 from auto_round.utils.device_manager import get_current_device_manager
@@ -65,7 +65,6 @@ from auto_round.utils.offload import OffloadManager
 from auto_round.wrapper import WrapperLinear
 
 __all__ = ["gen_layer_config"]
-
 
 class AutoSchemeWrapperLinear(WrapperLinear):
 
@@ -97,7 +96,6 @@ class AutoSchemeWrapperLinear(WrapperLinear):
         self.mix_score = 0.0
         self.super_qdq_func = super()._qdq_weight
         self.act_qdq_func = super()._qdq_act
-        # self.device = device
         self.max_act_value = 0
         self.need_weight_grad = need_weight_grad
         self.grad_mode = False
@@ -195,14 +193,16 @@ class AutoSchemeWrapperLinearForGGUFK(AutoSchemeWrapperLinear):
                 torch.tensor(0).to(device), torch.tensor(1.0).to(device), torch.tensor(1.0).to(device)
             )
         self.register_buffer("qdq_w", qdq_w.detach().clone().to(self.orig_layer.weight.device))
+        self.grad_mode = False
 
-        if self.need_weight_grad:
 
+    def _qdq_weight(self, value, min_scale, max_scale):
+        if self.grad_mode:
             def save_grad(grad):
                 w_diff = self.orig_layer.weight - self.qdq_w.to(self.orig_layer.weight.device)
                 # TODO strange, grad could be in CPU
                 # self.weight_score += torch.abs((grad.to(w_diff.device).to(torch.float32) * w_diff.to(torch.float32)).sum()).item()  # TODO add 2nd order
-                self.weight_score += torch.abs((grad.to(w_diff.device) * w_diff)).sum().item()
+                self.weight_score += torch.abs((grad.to(w_diff.device).to(torch.float32) * w_diff)).sum().item()
                 act_score = 0.0 if self.act_cnt <= 0 else self.total_act_score / self.act_cnt
                 self.mix_score = self.weight_score + act_score
                 return None
@@ -211,8 +211,10 @@ class AutoSchemeWrapperLinearForGGUFK(AutoSchemeWrapperLinear):
             self.orig_layer.weight.requires_grad_(False)
 
             self.qdq_w.register_hook(save_grad)
+        else:
+            self.qdq_w.requires_grad_(False)
+            self.orig_layer.weight.requires_grad_(False)
 
-    def _qdq_weight(self, value, min_scale, max_scale):
         return self.qdq_w, 1.0, None
 
 
@@ -239,29 +241,25 @@ class AutoSchemeWrapperLinearForGGUFKImatrix(AutoSchemeWrapperLinear):
             enable_torch_compile=enable_torch_compile,
             **kwargs,
         )
-        with torch.no_grad():
+        self.is_post_initialized = False
+        self.grad_mode = False
+        # self.post_init()
+
+    @torch.no_grad()
+    def post_init_qdqw(self):
+        if self.is_post_initialized:
+            return
+        else:
             qdq_w = self._init_scale().detach()
             self.register_buffer("qdq_w", qdq_w.detach().clone().to(self.orig_layer.weight.device))
-        if self.need_weight_grad:
-
-            def save_grad(grad):
-                w_diff = self.orig_layer.weight - self.qdq_w.to(self.orig_layer.weight.device)
-                self.weight_score += torch.abs((grad * w_diff.to(grad.device))).sum().item()
-                act_score = 0.0 if self.act_cnt <= 0 else self.total_act_score / self.act_cnt
-                self.mix_score = self.weight_score + act_score
-                return None
-
-            self.qdq_w.requires_grad_(True)
-            self.orig_layer.weight.requires_grad_(False)
-
-            self.qdq_w.register_hook(save_grad)
+            self.is_post_initialized=True
 
     @torch.no_grad()
     def _init_scale(self):
         tensor = self.orig_layer.weight.data
         bits = self.orig_layer.bits
         scale_dtype = self.orig_layer.scale_dtype
-        imatrix = self.orig_layer.imatrix
+        imatrix = self.orig_layer.imatrix.to(tensor.device)
         orig_dtype = tensor.dtype
         if self.orig_layer.bits in [2, 4, 5]:
             group_size = 16 if bits == 2 else 32
@@ -292,37 +290,100 @@ class AutoSchemeWrapperLinearForGGUFKImatrix(AutoSchemeWrapperLinear):
         return qdq_w.to(orig_dtype)
 
     def _qdq_weight(self, value, min_scale, max_scale):
+        self.post_init_qdqw()
+        if self.grad_mode:
+            def save_grad(grad):
+                w_diff = self.orig_layer.weight - self.qdq_w.to(self.orig_layer.weight.device)
+                self.weight_score += torch.abs((grad * w_diff.to(grad.device))).sum().item()
+                act_score = 0.0 if self.act_cnt <= 0 else self.total_act_score / self.act_cnt
+                self.mix_score = self.weight_score + act_score
+                return None
+
+            self.qdq_w.requires_grad_(True)
+            self.orig_layer.weight.requires_grad_(False)
+
+            self.qdq_w.register_hook(save_grad)
+        else:
+            pass
+            # self.qdq_w.requires_grad_(False)
+
         return self.qdq_w, 1.0, None
 
 
+
+def register_imatrix_hook(model):
+    """Registers hooks to accumulate activation squared norms into `imatrix`."""
+
+    def get_imatrix_hook(module, input, output):
+        input = input[0] if isinstance(input, (tuple, list)) else input
+        flattened = input.reshape(-1, input.shape[-1]).to(torch.float32)
+        squared = torch.sum(torch.pow(flattened, 2), dim=0).to(torch.float32)
+
+        if not hasattr(module, "imatrix"):
+            module.imatrix = squared.to("cpu")
+        else:
+            module.imatrix += squared.to(module.imatrix.device).to("cpu")
+
+    hook_handles = []
+    for name, module in model.named_modules():
+        if isinstance(module, SUPPORTED_LAYER_TYPES):
+            hook = module.register_forward_hook(get_imatrix_hook)
+            hook_handles.append(hook)
+    return hook_handles
+
 @torch.no_grad()
-def cal_imatrix(model, dataloader):
+def cal_imatrix(model, dataloader, major_device, low_gpu_mem_usage):
 
-    def register_act_hook(model):
-        """Registers hooks to accumulate activation squared norms into `imatrix`."""
+    if low_gpu_mem_usage:
+        cal_imatrix_low_gpu(model,dataloader, major_device)
+    else:
+        hooks = register_imatrix_hook(model)
+        model = model.to(model.device)
+        for data in dataloader:
+            model.forward(**to_device(data, model.device))
+        for hook in hooks:
+            hook.remove()
 
-        def get_imatrix_hook(module, input, output):
-            input = input[0] if isinstance(input, (tuple, list)) else input
-            flattened = input.reshape(-1, input.shape[-1]).to(torch.float32)
-            squared = torch.sum(torch.pow(flattened, 2), dim=0).to(torch.float32)
 
-            if not hasattr(module, "imatrix"):
-                module.imatrix = squared.to("cpu")
-            else:
-                module.imatrix += squared.to(module.imatrix.device).to("cpu")
 
-        hook_handles = []
-        for name, module in model.named_modules():
-            if isinstance(module, SUPPORTED_LAYER_TYPES):
-                hook = module.register_forward_hook(get_imatrix_hook)
-                hook_handles.append(hook)
-        return hook_handles
+def cal_imatrix_low_gpu(model, dataloader, major_device):
+    imatrix_hooks = register_imatrix_hook(model)
+    block_names = get_block_names(model,quant_vision=True)
+    block_names = flatten_list(block_names)
 
-    hooks = register_act_hook(model)
+    def move_to_gpu_hook(module, inputs):
+        module.to(major_device)
+        to_device(inputs,major_device)
+
+    def move_to_cpu(module,inputs,outputs):
+        module.to("cpu")
+
+    def move_to_cpu_clear_memory(module,inputs,outputs):
+        module.to("cpu")
+        clear_memory(device_list=major_device)
+
+
+    all_move_device_hooks = []
+    i = 0
+    for block_name in block_names:
+        i+=1
+        block_module = get_module(model,block_name)
+        hook_move_gpu = block_module.register_forward_pre_hook(move_to_gpu_hook)
+        if i%4==0:
+            hook_move_cpu = block_module.register_forward_hook(move_to_cpu)
+        else:
+            hook_move_cpu = block_module.register_forward_hook(move_to_cpu_clear_memory)
+        all_move_device_hooks.append(hook_move_gpu)
+        all_move_device_hooks.append(hook_move_cpu)
+
     for data in dataloader:
         model.forward(**to_device(data, model.device))
-    for hook in hooks:
+
+    for hook in imatrix_hooks:
         hook.remove()
+    for hook in all_move_device_hooks:
+        hook.remove()
+    clear_memory(device_list=major_device)
 
 
 class MyCustomError(Exception):
@@ -363,8 +424,8 @@ def prepare_model_low_gpu(model, block_inputs: dict = None, pbar=None, major_dev
             block_inputs[module_name] = input_info
 
             module.to("cpu")
-            # clear_memory() #slow
-            memory_monitor.update()
+            clear_memory(device_list=major_device) #slow
+            memory_monitor.log_summary()
 
             # Enable gradients for the output of the last block
             if module.tmp_name == block_names[-1]:
@@ -420,7 +481,7 @@ def _prepare_mllm_inputs(data, model):
     return new, "dict"
 
 
-def mllm_model_forward(model, data, **forward_kwargs):
+def model_forward(model, data, **forward_kwargs):
     """Single entry point for "run a (possibly multimodal) batch through the
     model". Used by both AutoScheme paths so that ``pixel_values`` / ``images``
     are cast to ``model.dtype`` (otherwise VLMs silently skip the vision tower
@@ -466,7 +527,9 @@ def model_forward_low_gpu(model, dataloader, major_device="cuda", pbar=None):
         # Route through the unified mllm forward so ``pixel_values`` /
         # ``images`` get cast to ``model.dtype`` (otherwise the vision tower
         # is silently bypassed on dtype mismatch and vision grad stays 0).
-        output, _prepared = mllm_model_forward(model, data_for_forward, labels=labels, use_cache=False)
+        output, _prepared = model_forward(model, data_for_forward, labels=labels, use_cache=False)
+        clear_memory(device_list=major_device)
+        memory_monitor.log_summary()
 
         try:
             # Backward pass (will be interrupted by the hook)
@@ -476,8 +539,8 @@ def model_forward_low_gpu(model, dataloader, major_device="cuda", pbar=None):
 
         current_grad = last_grad_input
         del output, data
-        # clear_memory()
-        memory_monitor.update()
+
+
 
         # Manually compute gradients block by block
         last_block_backward_hook.remove()
@@ -485,9 +548,9 @@ def model_forward_low_gpu(model, dataloader, major_device="cuda", pbar=None):
         for name in block_names:
             module = get_module(model, name)
             module.forward = module.orig_forward
-
+        index = 0
         for block_name in reversed(block_names):
-
+            index+=1
             # Retrieve stored inputs for the block
             block_input_info = block_inputs.get(block_name, {})
 
@@ -533,8 +596,10 @@ def model_forward_low_gpu(model, dataloader, major_device="cuda", pbar=None):
 
             del block_output, main_output, block_input_args, block_input_kwargs
             block_module.to("cpu")
-            # clear_memory(device_list=[0]) # this one is very slow and seems does not affect max ram usage
+            if index%4==0:
+                clear_memory(device_list=major_device) # this one is very slow and seems does not affect max ram usage
             memory_monitor.update()
+            memory_monitor.log_summary()
             pbar.update(1)
 
 
@@ -644,13 +709,13 @@ def get_score_for_scheme(
         if id(_p) not in wrapper_weight_ids and _p.requires_grad:
             _p.requires_grad_(False)
             _trimmed += 1
-    if _trimmed:
-        logger.info(
-            "AutoScheme: disabled requires_grad on %d non-wrapper parameters "
-            "(only wrapper.orig_layer.weight needs grad for scoring; saves "
-            "~one model-worth of grad buffer during backward).",
-            _trimmed,
-        )
+    # if _trimmed:
+    #     logger.info(
+    #         "AutoScheme: disabled requires_grad on %d non-wrapper parameters "
+    #         "(only wrapper.orig_layer.weight needs grad for scoring; saves "
+    #         "~one model-worth of grad buffer during backward).",
+    #         _trimmed,
+    #     )
 
     # When scoring vision-tower layers, keep the autograd chain alive end-to-end:
     #   (1) every wrapper's orig weight must require grad — otherwise the STE
@@ -815,7 +880,7 @@ def get_score_for_scheme(
                 # Unified mllm-aware forward (casts pixel_values/images to
                 # model.dtype, handles dict-with-text/str/tuple paths the same
                 # way AutoRoundMLLM.calib does).
-                output, _prepared = mllm_model_forward(model, data_for_forward, labels=labels, use_cache=False)
+                output, _prepared = model_forward(model, data_for_forward, labels=labels, use_cache=False)
                 output.loss.backward()
 
                 # One-shot sanity check: when scoring vision layers, the batch
@@ -1126,7 +1191,7 @@ def _gen_layer_config(
 
     # Initialize memory tracking for AutoScheme
     memory_monitor = MemoryMonitor()
-    memory_monitor.reset()
+    # memory_monitor.reset()
     memory_monitor.update_cpu()
 
     # Create offload context for CPU RAM optimization
@@ -1259,9 +1324,10 @@ def _gen_layer_config(
     shared_layers = parse_shared_layers(model, auto_scheme.shared_layers)
 
     options_scores = []
-    if auto_scheme.low_gpu_mem_usage and not disable_opt_rtn:
-        logger.warning("low_gpu_mem_usage is enabled, disable_opt_rtn will be set to True automatically")
-        disable_opt_rtn = True
+    # if auto_scheme.low_gpu_mem_usage and not disable_opt_rtn:
+    #     logger.warning("low_gpu_mem_usage is enabled, disable_opt_rtn will be set to True automatically")
+    #     disable_opt_rtn = True
+    disable_opt_rtn = False
     if not disable_opt_rtn:
         need_imatrix = False
         for scheme in schemes:
@@ -1273,10 +1339,13 @@ def _gen_layer_config(
             need_imatrix = scheme["super_bits"] is not None
             if need_imatrix:
                 break
-        if need_imatrix:  # TODO change to block way in low_gpu_mem_usage
-            dataloader = get_dataloader(tokenizer, seqlen=256, dataset_name=dataset, seed=42, bs=8, nsamples=nsamples)
-            logger.info("start to compute imatrix for GGUF-K quantization in AutoScheme")
-            cal_imatrix(model, dataloader)
+        if need_imatrix:
+            dataloader = get_dataloader(tokenizer, seqlen=max(seqlen*2,2048),
+                                        dataset_name=dataset, seed=42, bs=batch_size, nsamples=min(nsamples,128))
+            logger.info("start to compute imatrix in AutoScheme")
+            cal_imatrix(model, dataloader, major_device,low_gpu_mem_usage=auto_scheme.low_gpu_mem_usage)
+            memory_monitor.update()
+            memory_monitor.log_summary()
             logger.info("finish calculating imatrix")
 
     # Register hooks and clear all block weights before the scheme loop.
@@ -1322,6 +1391,7 @@ def _gen_layer_config(
             )
         # Track peak RAM after each scheme scoring
         memory_monitor.update()
+        memory_monitor.log_summary()
 
         new_scores = {}
         for share_layer in shared_layers:

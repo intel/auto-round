@@ -38,7 +38,7 @@ class AutoScheme:
     dataset: Optional[str] = None  # Import Notice no comma for each item
     device_map: Optional[Union[str, torch.device, int, dict]] = None
     enable_torch_compile: Optional[bool] = None
-    disable_opt_rtn: bool = True
+    disable_opt_rtn: bool = False
     low_gpu_mem_usage: bool = True
     low_cpu_mem_usage: bool = True
 
