@@ -214,23 +214,54 @@ PREFILL_SHAPES = [
 ]
 
 
-def _print_header(title: str) -> None:
+def _print_header(title: str, *, with_dequant_baseline: bool = False) -> None:
+    """Print a benchmark header.
+
+    When ``with_dequant_baseline`` is True, an extra ``base+deq(ms)`` column is
+    printed alongside the matmul-only baseline and ``speedup`` is reported
+    against the dequant-inclusive baseline (this is the apples-to-apples
+    comparison for the current Stage-1 ``moe_gemm_prefill`` which dequants
+    into a workspace before dispatching to the FP GEMM).
+    """
     print()
-    print("=" * 110)
+    width = 130 if with_dequant_baseline else 110
+    print("=" * width)
     print(title)
-    print(
-        f"{'shape':<14}{'E':>4}{'N':>7}{'K':>7}{'tokens':>8}"
-        f"{'baseline(ms)':>16}{'ark(ms)':>14}{'speedup':>12}{'TFLOPS':>10}"
-    )
-    print("-" * 110)
+    if with_dequant_baseline:
+        print(
+            f"{'shape':<14}{'E':>4}{'N':>7}{'K':>7}{'tokens':>8}"
+            f"{'base mm(ms)':>14}{'base+deq(ms)':>16}{'ark(ms)':>12}"
+            f"{'speedup':>12}{'TFLOPS':>10}"
+        )
+    else:
+        print(
+            f"{'shape':<14}{'E':>4}{'N':>7}{'K':>7}{'tokens':>8}"
+            f"{'baseline(ms)':>16}{'ark(ms)':>14}{'speedup':>12}{'TFLOPS':>10}"
+        )
+    print("-" * width)
 
 
-def _print_row(label, E, N, K, total_tokens, base_ms, ark_ms, tflops):
-    speedup = base_ms / ark_ms if ark_ms > 0 else float("nan")
-    print(
-        f"{label:<14}{E:>4}{N:>7}{K:>7}{total_tokens:>8}"
-        f"{base_ms:>16.4f}{ark_ms:>14.4f}{speedup:>11.2f}x{tflops:>9.1f}"
-    )
+def _print_row(label, E, N, K, total_tokens, base_ms, ark_ms, tflops, *, base_with_deq_ms=None):
+    """Print a benchmark row.
+
+    If ``base_with_deq_ms`` is provided, the dequant-inclusive baseline is
+    shown and ``speedup`` is computed against it (apples-to-apples with the
+    Stage-1 quantized path). Otherwise the row reverts to the original
+    matmul-only layout.
+    """
+    if base_with_deq_ms is None:
+        speedup = base_ms / ark_ms if ark_ms > 0 else float("nan")
+        print(
+            f"{label:<14}{E:>4}{N:>7}{K:>7}{total_tokens:>8}"
+            f"{base_ms:>16.4f}{ark_ms:>14.4f}{speedup:>11.2f}x{tflops:>9.1f}"
+        )
+    else:
+        speedup = base_with_deq_ms / ark_ms if ark_ms > 0 else float("nan")
+        print(
+            f"{label:<14}{E:>4}{N:>7}{K:>7}{total_tokens:>8}"
+            f"{base_ms:>14.4f}{base_with_deq_ms:>16.4f}{ark_ms:>12.4f}"
+            f"{speedup:>11.2f}x{tflops:>9.1f}"
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -277,7 +308,8 @@ class TestMoEGemmPrefillPerf:
         kind = "asym" if asym else "sym"
         _print_header(
             f"INT4 {kind} (group_size={group_size}, act={str(dtype).split('.')[-1]}) "
-            f"-- ark.moe_gemm_prefill (prefill) vs dequant + per-expert A @ W.T"
+            f"-- ark.moe_gemm_prefill (prefill) vs dequant + per-expert A @ W.T",
+            with_dequant_baseline=True,
         )
         for label, E, tpe, N, K in PREFILL_SHAPES:
             if K % group_size != 0:
@@ -291,14 +323,24 @@ class TestMoEGemmPrefillPerf:
                 zeros = torch.empty(E, N, K // group_size, dtype=dtype, device="xpu")
                 packed = _pack_int4_asym(w_float, scales, zeros, group_size)
                 dequant = _dequant_int4_asym(packed, scales, zeros, group_size).to(dtype)
+
+                def _baseline_with_dequant():
+                    d = _dequant_int4_asym(packed, scales, zeros, group_size).to(dtype)
+                    return _default_moe_prefill(activations, d, ntpe)
             else:
                 zeros = None
                 packed = _pack_int4_sym(w_float, scales, group_size)
                 dequant = _dequant_int4_sym(packed, scales, group_size).to(dtype)
+
+                def _baseline_with_dequant():
+                    d = _dequant_int4_sym(packed, scales, group_size).to(dtype)
+                    return _default_moe_prefill(activations, d, ntpe)
+
             ntpe = torch.tensor(tpe, dtype=torch.int32, device="xpu")
 
             # ``dequant`` is already [E, N, K] -- matches the baseline contract.
             base_ms = _xpu_time_ms(lambda: _default_moe_prefill(activations, dequant, ntpe))
+            base_deq_ms = _xpu_time_ms(_baseline_with_dequant)
             ark_ms = _xpu_time_ms(
                 lambda: ark.moe_gemm_prefill(
                     activations,
@@ -315,7 +357,7 @@ class TestMoEGemmPrefillPerf:
             flops = _compute_moe_flops(total_tokens, K, N, E)
             tflops = flops / (ark_ms * 1e-3) / 1e12
 
-            _print_row(label, E, N, K, total_tokens, base_ms, ark_ms, tflops)
+            _print_row(label, E, N, K, total_tokens, base_ms, ark_ms, tflops, base_with_deq_ms=base_deq_ms)
 
     @pytest.mark.skipif(bool(_QUANT_PREFILL_SKIP), reason=_QUANT_PREFILL_SKIP or "ok")
     @pytest.mark.parametrize("dtype", [torch.float16, torch.bfloat16])
@@ -325,7 +367,8 @@ class TestMoEGemmPrefillPerf:
         kind = "asym" if asym else "sym"
         _print_header(
             f"INT8 {kind} (group_size={group_size}, act={str(dtype).split('.')[-1]}) "
-            f"-- ark.moe_gemm_prefill (prefill) vs dequant + per-expert A @ W.T"
+            f"-- ark.moe_gemm_prefill (prefill) vs dequant + per-expert A @ W.T",
+            with_dequant_baseline=True,
         )
         for label, E, tpe, N, K in PREFILL_SHAPES:
             if K % group_size != 0:
@@ -338,13 +381,23 @@ class TestMoEGemmPrefillPerf:
                 zeros = torch.empty(E, N, K // group_size, dtype=dtype, device="xpu")
                 packed = _pack_int8_asym(w_float, scales, zeros, group_size)
                 dequant = _dequant_int8_asym(packed, scales, zeros, group_size).to(dtype)
+
+                def _baseline_with_dequant():
+                    d = _dequant_int8_asym(packed, scales, zeros, group_size).to(dtype)
+                    return _default_moe_prefill(activations, d, ntpe)
             else:
                 zeros = None
                 packed = _pack_int8_sym(w_float, scales, group_size)
                 dequant = _dequant_int8_sym(packed, scales, group_size).to(dtype)
+
+                def _baseline_with_dequant():
+                    d = _dequant_int8_sym(packed, scales, group_size).to(dtype)
+                    return _default_moe_prefill(activations, d, ntpe)
+
             ntpe = torch.tensor(tpe, dtype=torch.int32, device="xpu")
 
             base_ms = _xpu_time_ms(lambda: _default_moe_prefill(activations, dequant, ntpe))
+            base_deq_ms = _xpu_time_ms(_baseline_with_dequant)
             ark_ms = _xpu_time_ms(
                 lambda: ark.moe_gemm_prefill(
                     activations,
@@ -361,7 +414,7 @@ class TestMoEGemmPrefillPerf:
             flops = _compute_moe_flops(total_tokens, K, N, E)
             tflops = flops / (ark_ms * 1e-3) / 1e12
 
-            _print_row(label, E, N, K, total_tokens, base_ms, ark_ms, tflops)
+            _print_row(label, E, N, K, total_tokens, base_ms, ark_ms, tflops, base_with_deq_ms=base_deq_ms)
 
     @pytest.mark.skipif(bool(_QUANT_PREFILL_SKIP), reason=_QUANT_PREFILL_SKIP or "ok")
     @pytest.mark.parametrize("dtype", [torch.float16, torch.bfloat16])
@@ -371,7 +424,8 @@ class TestMoEGemmPrefillPerf:
         kind = "asym" if asym else "sym"
         _print_header(
             f"INT2 {kind} (group_size={group_size}, act={str(dtype).split('.')[-1]}) "
-            f"-- ark.moe_gemm_prefill (prefill) vs dequant + per-expert A @ W.T"
+            f"-- ark.moe_gemm_prefill (prefill) vs dequant + per-expert A @ W.T",
+            with_dequant_baseline=True,
         )
         for label, E, tpe, N, K in PREFILL_SHAPES:
             if K % group_size != 0 or K % 4 != 0:
@@ -384,13 +438,23 @@ class TestMoEGemmPrefillPerf:
                 zeros = torch.empty(E, N, K // group_size, dtype=dtype, device="xpu")
                 packed = _pack_int2_asym(w_float, scales, zeros, group_size)
                 dequant = _dequant_int2_asym(packed, scales, zeros, group_size).to(dtype)
+
+                def _baseline_with_dequant():
+                    d = _dequant_int2_asym(packed, scales, zeros, group_size).to(dtype)
+                    return _default_moe_prefill(activations, d, ntpe)
             else:
                 zeros = None
                 packed = _pack_int2_sym(w_float, scales, group_size)
                 dequant = _dequant_int2_sym(packed, scales, group_size).to(dtype)
+
+                def _baseline_with_dequant():
+                    d = _dequant_int2_sym(packed, scales, group_size).to(dtype)
+                    return _default_moe_prefill(activations, d, ntpe)
+
             ntpe = torch.tensor(tpe, dtype=torch.int32, device="xpu")
 
             base_ms = _xpu_time_ms(lambda: _default_moe_prefill(activations, dequant, ntpe))
+            base_deq_ms = _xpu_time_ms(_baseline_with_dequant)
             ark_ms = _xpu_time_ms(
                 lambda: ark.moe_gemm_prefill(
                     activations,
@@ -407,7 +471,7 @@ class TestMoEGemmPrefillPerf:
             flops = _compute_moe_flops(total_tokens, K, N, E)
             tflops = flops / (ark_ms * 1e-3) / 1e12
 
-            _print_row(label, E, N, K, total_tokens, base_ms, ark_ms, tflops)
+            _print_row(label, E, N, K, total_tokens, base_ms, ark_ms, tflops, base_with_deq_ms=base_deq_ms)
 
     @pytest.mark.skipif(bool(_QUANT_PREFILL_SKIP), reason=_QUANT_PREFILL_SKIP or "ok")
     @pytest.mark.parametrize("dtype", [torch.float16, torch.bfloat16])
@@ -416,7 +480,8 @@ class TestMoEGemmPrefillPerf:
         group_size = 128
         _print_header(
             f"FP8 {str(fp8_dtype).split('.')[-1]} (group_size={group_size}, "
-            f"act={str(dtype).split('.')[-1]}) -- ark.moe_gemm_prefill (prefill) vs dequant + per-expert A @ W.T"
+            f"act={str(dtype).split('.')[-1]}) -- ark.moe_gemm_prefill (prefill) vs dequant + per-expert A @ W.T",
+            with_dequant_baseline=True,
         )
         for label, E, tpe, N, K in PREFILL_SHAPES:
             if K % group_size != 0:
@@ -429,7 +494,12 @@ class TestMoEGemmPrefillPerf:
             dequant = _dequant_fp8(packed, scales, group_size, dtype)
             ntpe = torch.tensor(tpe, dtype=torch.int32, device="xpu")
 
+            def _baseline_with_dequant():
+                d = _dequant_fp8(packed, scales, group_size, dtype)
+                return _default_moe_prefill(activations, d, ntpe)
+
             base_ms = _xpu_time_ms(lambda: _default_moe_prefill(activations, dequant, ntpe))
+            base_deq_ms = _xpu_time_ms(_baseline_with_dequant)
             ark_ms = _xpu_time_ms(
                 lambda: ark.moe_gemm_prefill(
                     activations,
@@ -444,7 +514,7 @@ class TestMoEGemmPrefillPerf:
             flops = _compute_moe_flops(total_tokens, K, N, E)
             tflops = flops / (ark_ms * 1e-3) / 1e12
 
-            _print_row(label, E, N, K, total_tokens, base_ms, ark_ms, tflops)
+            _print_row(label, E, N, K, total_tokens, base_ms, ark_ms, tflops, base_with_deq_ms=base_deq_ms)
 
 
 if __name__ == "__main__":
