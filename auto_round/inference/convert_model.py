@@ -874,9 +874,8 @@ def convert_hf_model(model: nn.Module, target_device: str = "cpu") -> tuple[nn.M
     used_backends = _replace_by_quant_layers(model, layer_configs, backend, target_device, packing_format)
 
     # Apply rotation hooks (hadamard, spinquant, quarot, etc.) via unified dispatch.
-    _has_rotation = (
-        getattr(quantization_config, "rotation_config", None)
-        or getattr(quantization_config, "spinquant_config", None)
+    _has_rotation = getattr(quantization_config, "rotation_config", None) or getattr(
+        quantization_config, "spinquant_config", None
     )
     if _has_rotation:
         from auto_round.algorithms.transforms import apply_rotation_hooks_from_config

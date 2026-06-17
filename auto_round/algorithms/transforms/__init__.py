@@ -438,7 +438,9 @@ def apply_rotation_hooks_from_config(
             hadamard_type=rotation_config["hadamard_type"],
         )
         model = apply_rotation_transform(
-            model, cfg, location="input",
+            model,
+            cfg,
+            location="input",
             desc="Register pre forward hook for hadamard transform",
             data_type=data_type,
         )
