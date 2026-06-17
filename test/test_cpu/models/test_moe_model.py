@@ -90,8 +90,7 @@ def test_llama4(tiny_llama4_model_path):
     shutil.rmtree(output_dir, ignore_errors=True)
 
 
-def test_qwen3_vl_moe_mxfp(tiny_qwen3_vl_moe_model_path):
-    output_dir = "/tmp/test_quantized_qwen3_vl_moe"
+def test_qwen3_vl_moe_mxfp(tiny_qwen3_vl_moe_model_path, tmp_path):
     autoround = AutoRound(
         tiny_qwen3_vl_moe_model_path,
         scheme="MXFP4",
@@ -101,14 +100,13 @@ def test_qwen3_vl_moe_mxfp(tiny_qwen3_vl_moe_model_path):
         disable_opt_rtn=True,
         ignore_layers="self_attn,lm_head, mlp.gate",
     )
-    quantized_model, quantized_model_path = autoround.quantize_and_save(format="auto_round", output_dir=output_dir)
+    quantized_model, quantized_model_path = autoround.quantize_and_save(format="auto_round", output_dir=tmp_path)
     assert quantized_model is not None, "Quantized model should not be None."
     loaded_model = Qwen3VLMoeForConditionalGeneration.from_pretrained(quantized_model_path, device_map="cpu")
 
     inp = torch.randint(0, 100, (1, 32))
     with torch.inference_mode():
         loaded_out = loaded_model(inp)
-    shutil.rmtree(output_dir, ignore_errors=True)
 
 
 class _FakeMoELinear(nn.Module):

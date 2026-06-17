@@ -18,6 +18,7 @@ from typing import Tuple
 import torch
 
 from auto_round.utils import clear_memory, to_device, to_dtype
+from auto_round.utils.device_manager import device_manager
 
 __all__ = ["split_inputs", "preprocess_block_inputs"]
 
@@ -84,7 +85,7 @@ def preprocess_block_inputs(
         is_diffusion=model_context.is_diffusion,
         shared_cache_keys=getattr(model_context, "shared_cache_keys", ()),
     )
-    clear_memory(device_list=compress_context.device_list)
+    clear_memory(device_list=device_manager.device_list)
     tmp_dtype = model_context.amp_dtype if model_context.amp else torch.float32
     if input_ids is not None:
         input_ids = to_device(input_ids, compress_context.cache_device)

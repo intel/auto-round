@@ -13,6 +13,7 @@ import shutil
 
 import pytest
 import torch
+import torch.nn.functional as F
 from transformers import AutoModelForCausalLM, AutoTokenizer
 
 from auto_round import AutoRound
@@ -41,14 +42,14 @@ class TestSpinQuantConfig:
         assert cfg.r3 is False
         assert cfg.r4 is False
         assert cfg.online_r1_rotation is True
-        assert cfg.trainable_rotation is True
-        assert cfg.trainable_smooth is True
-
-    def test_quarot_config(self):
-        """QuaRot = fixed Hadamard, no training."""
-        cfg = SpinQuantConfig(trainable_rotation=False, trainable_smooth=False)
         assert cfg.trainable_rotation is False
         assert cfg.trainable_smooth is False
+
+    def test_trainable_config(self):
+        """SpinQuant mode = explicitly enable trainable."""
+        cfg = SpinQuantConfig(trainable_rotation=True, trainable_smooth=True)
+        assert cfg.trainable_rotation is True
+        assert cfg.trainable_smooth is True
 
     def test_selective_rotation_levels(self):
         cfg = SpinQuantConfig(r1=True, r2=True, r3=False, r4=False)
@@ -85,6 +86,7 @@ class TestNormalizeRotationConfig:
         cfg = normalize_rotation_config("spinquant")
         assert isinstance(cfg, SpinQuantConfig)
         assert cfg.trainable_rotation is True
+        assert cfg.trainable_smooth is True
 
     def test_string_hadamard(self):
         """'hadamard' should return the original RotationConfig, not SpinQuantConfig."""
@@ -364,3 +366,158 @@ class TestPipelineIntegration:
             output_dir=self.save_dir + "_dict", format="auto_round"
         )
         shutil.rmtree(self.save_dir + "_dict", ignore_errors=True)
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# Trainable Mode Validation Tests
+# ═══════════════════════════════════════════════════════════════════════════════
+
+
+class TestTrainableValidation:
+    """Test that trainable mode correctly requires a dataloader."""
+
+    def test_trainable_without_dataloader_raises(self):
+        """trainable_rotation=True without dataloader should raise ValueError."""
+        model_name = get_model_path("Qwen/Qwen3-0.6B")
+        model = (
+            AutoModelForCausalLM.from_pretrained(model_name, torch_dtype=torch.float16, trust_remote_code=True)
+            .cuda()
+            .eval()
+        )
+        cfg = SpinQuantConfig(
+            r1=True,
+            r2=True,
+            r3=False,
+            r4=False,
+            trainable_rotation=True,
+            trainable_smooth=True,
+        )
+        preprocessor = SpinQuantPreprocessor(model, cfg)
+        with pytest.raises(ValueError, match="dataloader required"):
+            preprocessor.preprocess(dataloader=None)
+        del model
+        torch.cuda.empty_cache()
+
+    def test_default_config_no_dataloader_ok(self):
+        """Default config (trainable=False) should work without dataloader."""
+        model_name = get_model_path("Qwen/Qwen3-0.6B")
+        model = (
+            AutoModelForCausalLM.from_pretrained(model_name, torch_dtype=torch.float16, trust_remote_code=True)
+            .cuda()
+            .eval()
+        )
+        cfg = SpinQuantConfig(r1=True, r2=True, r3=False, r4=False)
+        preprocessor = SpinQuantPreprocessor(model, cfg)
+        # Should not raise — no dataloader needed for fixed Hadamard
+        preprocessor.preprocess(dataloader=None)
+        del model
+        torch.cuda.empty_cache()
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# Rotation Equivalence Tests
+# ═══════════════════════════════════════════════════════════════════════════════
+
+
+class TestRotationEquivalence:
+    """Test that rotation is mathematically equivalent (preserves model output).
+
+    All rotation combinations (R1, R2, R3, R4 and their combinations) should
+    preserve functional equivalence:
+    - R1 (online): activation hook + weight compensation → x·R·(R^T·W)^T = x·W^T
+    - R2 (offline): head rotation fused into o_proj/next-layer weights
+    - R3 (online): same rotation on Q and K after RoPE → (Q@R)(K@R)^T = Q@K^T
+    - R4 (online + offline fuse): activation rotation + down_proj compensation
+    """
+
+    MODEL_NAME = None
+    TOKENIZER = None
+    BASELINE_LOGITS = None
+
+    @classmethod
+    def _ensure_baseline(cls):
+        """Compute baseline logits once, reuse across all parametrized tests."""
+        if cls.BASELINE_LOGITS is not None:
+            return
+        cls.MODEL_NAME = get_model_path("Qwen/Qwen3-0.6B")
+        cls.TOKENIZER = AutoTokenizer.from_pretrained(cls.MODEL_NAME, trust_remote_code=True)
+        model = (
+            AutoModelForCausalLM.from_pretrained(cls.MODEL_NAME, torch_dtype=torch.float32, trust_remote_code=True)
+            .cuda()
+            .eval()
+        )
+        inputs = cls.TOKENIZER("The capital of France is", return_tensors="pt").to(model.device)
+        with torch.no_grad():
+            cls.BASELINE_LOGITS = model(**inputs).logits.cpu()
+        del model
+        torch.cuda.empty_cache()
+
+    @staticmethod
+    def _get_logits(model, tokenizer, text="The capital of France is"):
+        inputs = tokenizer(text, return_tensors="pt").to(model.device)
+        with torch.no_grad():
+            return model(**inputs).logits.cpu()
+
+    @pytest.mark.parametrize(
+        "r1,r2,r3,r4,random_r1,random_r2,random_r3,random_r4,label",
+        [
+            # --- Single rotations (deterministic) ---
+            (True, False, False, False, False, False, False, False, "R1"),
+            (False, True, False, False, False, False, False, False, "R2"),
+            (False, False, True, False, False, False, False, False, "R3"),
+            (False, False, False, True, False, False, False, False, "R4"),
+            # --- Pairwise combinations (deterministic) ---
+            (True, True, False, False, False, False, False, False, "R1+R2"),
+            (True, False, True, False, False, False, False, False, "R1+R3"),
+            (True, False, False, True, False, False, False, False, "R1+R4"),
+            (False, False, True, True, False, False, False, False, "R3+R4"),
+            # --- Full combination (deterministic) ---
+            (True, True, True, True, False, False, False, False, "R1+R2+R3+R4"),
+            # --- Random Hadamard variants ---
+            (True, False, False, False, True, False, False, False, "R1-random"),
+            (False, True, False, False, False, True, False, False, "R2-random"),
+            (False, False, True, False, False, False, True, False, "R3-random"),
+            (False, False, False, True, False, False, False, True, "R4-random"),
+            (True, True, True, True, True, True, True, True, "R1+R2+R3+R4-all-random"),
+        ],
+    )
+    def test_rotation_equivalence(self, r1, r2, r3, r4, random_r1, random_r2, random_r3, random_r4, label):
+        """Rotation should preserve model output (functional equivalence)."""
+        self._ensure_baseline()
+
+        model = (
+            AutoModelForCausalLM.from_pretrained(self.MODEL_NAME, torch_dtype=torch.float32, trust_remote_code=True)
+            .cuda()
+            .eval()
+        )
+        cfg = SpinQuantConfig(
+            r1=r1,
+            r2=r2,
+            r3=r3,
+            r4=r4,
+            random_r1=random_r1,
+            random_r2=random_r2,
+            random_r3=random_r3,
+            random_r4=random_r4,
+            online_r1_rotation=True,
+            trainable_rotation=False,
+            trainable_smooth=False,
+        )
+        model = apply_rotation(model, cfg)
+        logits = self._get_logits(model, self.TOKENIZER)
+        del model
+        torch.cuda.empty_cache()
+
+        # Use cosine similarity — robust metric for rotation equivalence on real
+        # models.  Online rotation hooks introduce a different float32 computation
+        # path (butterfly ops vs direct matmul), causing expected numerical drift
+        # that accumulates across 28 layers.  Max absolute diffs of 0.01–0.15 are
+        # normal for float32; cosine similarity captures structural preservation.
+        cos_sim = F.cosine_similarity(
+            self.BASELINE_LOGITS.flatten().unsqueeze(0).float(),
+            logits.flatten().unsqueeze(0).float(),
+        ).item()
+        max_diff = (self.BASELINE_LOGITS - logits).abs().max().item()
+        assert cos_sim > 0.9999, (
+            f"{label} rotation broke model equivalence: " f"cos_sim = {cos_sim:.6f}, max_diff = {max_diff:.4f}"
+        )

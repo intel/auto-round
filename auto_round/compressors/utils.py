@@ -35,6 +35,7 @@ from auto_round.utils import (
     get_module,
     to_standard_regex,
 )
+from auto_round.utils.device_manager import device_manager
 
 if TYPE_CHECKING:
     from auto_round.schemes import QuantizationScheme
@@ -1175,7 +1176,7 @@ def immediate_pack(name: str, layer_config: dict):
     compress_context.formats[0].immediate_pack(
         name=name,
         model=model_context.model,
-        device=compress_context.device,
+        device=device_manager.device,
         output_dir=_get_save_folder_name(compress_context.formats[0]),
         layer_config=layer_config,
         tokenizer=model_context.tokenizer,

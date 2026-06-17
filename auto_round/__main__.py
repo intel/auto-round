@@ -425,8 +425,14 @@ class BasicArgumentParser(argparse.ArgumentParser):
             "--rotation_type",
             default=None,
             type=str,
-            choices=["hadamard", "random_hadamard"],
+            choices=["hadamard", "random_hadamard", "inplace_quarot_hadamard", "inplace_hadamard", "inplace_random"],
             help="Research feature: applies a rotation (e.g., Hadamard) to reduce activation/weight outliers",
+        )
+        scheme.add_argument(
+            "--rotation_block_size",
+            default=None,
+            type=int,
+            help="Research feature rotation_block_size",
         )
         gguf = self.add_argument_group("Double Quant Arguments")
         gguf.add_argument(
@@ -611,7 +617,7 @@ def tune(args):
             "lm-eval is required for evaluation, please install it with `pip install 'lm-eval>=0.4.2'`",
         )
 
-    from auto_round.utils import detect_device, get_library_version, logger
+    from auto_round.utils import get_library_version, get_major_device, logger
 
     if args.low_cpu_mem_usage:
         logger.warning(
@@ -637,8 +643,6 @@ def tune(args):
 
     if "marlin" in args.format and args.asym is True:
         raise RuntimeError("marlin backend only supports sym quantization, please remove --asym")
-
-    device_str, use_auto_mapping = get_device_and_parallelism(args.device_map)
 
     if args.enable_torch_compile:
         logger.info(
@@ -765,7 +769,7 @@ def tune(args):
     if args.rotation_type:
         from auto_round.algorithms.transforms.rotation.config import RotationConfig
 
-        rot_config = RotationConfig(hadamard_type=args.rotation_type)
+        rot_config = RotationConfig(hadamard_type=args.rotation_type, block_size=args.rotation_block_size)
 
     autoround: BaseCompressor = AutoRound(
         model=model_name,
@@ -809,7 +813,7 @@ def tune(args):
     clear_memory()
 
     # ======================= Model evaluation =======================
-    run_model_evaluation(model, tokenizer, autoround, folders, formats, device_str, args)
+    run_model_evaluation(model, tokenizer, autoround, folders, formats, args)
 
 
 def setup_eval_parser():

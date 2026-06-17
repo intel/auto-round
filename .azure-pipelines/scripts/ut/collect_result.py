@@ -3,7 +3,6 @@
 import argparse
 import re
 import sys
-from collections import deque
 from dataclasses import dataclass
 from enum import Enum, auto
 from pathlib import Path
@@ -40,26 +39,34 @@ class LogAnalyzer:
         "unittest_",
     )
 
+    # pytest test logic failures: test ran but assertion/expectation failed
     FAILURE_MARKERS = (
         "FAILED",
         "== FAILURES ==",
         " failures",
-        "Killed",
         "AssertionError",
-        "Error:",
-        "core dumped",
-        "Segmentation fault",
     )
 
+    # runtime/system errors: process crashed, setup/teardown failed, or unhandled exception
     ERROR_MARKERS = (
-        "ERROR",
+        "Aborted",
+        "Killed",
+        "Segmentation fault",
+        "core dumped",
+        "Error:",
+        "ERROR:",
         "== ERRORS ==",
-        " errors",
+        " errors:",
         "Exception",
         "Traceback",
     )
 
     PASS_MARKER = " passed"
+
+    SKIP_MARKERS = (
+        " deselected",
+        " skipped",
+    )
 
     def __init__(self, log_dir: Path, log_pattern: str = "*.log"):
         self.log_dir = Path(log_dir)
@@ -89,10 +96,10 @@ class LogAnalyzer:
             duration=self._extract_duration(content),
         )
 
-    def _read_log(self, path: Path, max_lines: int = 100) -> str:
+    def _read_log(self, path: Path) -> str:
         try:
             with open(path, "r", encoding="utf-8", errors="ignore") as f:
-                return "".join(deque(f, maxlen=max_lines))
+                return f.read()
         except OSError as e:
             print(f"Warning: Cannot read {path} - {e}", file=sys.stderr)
             return ""
@@ -112,7 +119,9 @@ class LogAnalyzer:
             return TestStatus.FAILED
         if self.PASS_MARKER in content:
             return TestStatus.PASSED
-        return TestStatus.NO_TESTS
+        if any(marker in content for marker in self.SKIP_MARKERS):
+            return TestStatus.NO_TESTS
+        return TestStatus.FAILED
 
     def _extract_duration(self, content: str) -> str:
         last_match = None

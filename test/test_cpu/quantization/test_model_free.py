@@ -28,10 +28,13 @@ from auto_round.compressors.model_free import (
     _ModelFreeCompressorCore,
     _PatternMatcher,
     _process_shard,
+    _quantize_weight_mxfp,
     get_predefined_ignore_layers_from_config,
     is_model_free_supported_scheme,
 )
 from auto_round.schemes import QuantizationScheme
+
+from ...envs import require_compressed_tensors
 
 # ---------------------------------------------------------------------------
 #  Helpers
@@ -254,6 +257,25 @@ class TestFP8Source:
         output, quantized, _ = _process_shard(shard_path, _DEFAULT_SCHEME, {}, [], device="cpu", fp8_block_size=None)
         assert "layer" in quantized and "layer.qweight" in output
 
+    def test_ignored_layer_preserves_original_fp8(self, tmp_path):
+        """Ignored layers keep their original quantized tensors (no dequant)."""
+        shard_path = str(tmp_path / "shard.safetensors")
+        w_fp8 = torch.randn(64, 128, dtype=torch.bfloat16).to(torch.float8_e4m3fn)
+        scale = torch.tensor(0.5)
+        save_file(
+            {"lm_head.weight": w_fp8, "lm_head.weight_scale_inv": scale, "layer.weight": torch.randn(64, 128)},
+            shard_path,
+        )
+        output, quantized, ignored = _process_shard(
+            shard_path, _DEFAULT_SCHEME, {}, ["lm_head"], device="cpu", fp8_block_size=None
+        )
+        # lm_head should be ignored and kept in original FP8 format
+        assert "lm_head" in ignored
+        assert output["lm_head.weight"].dtype == torch.float8_e4m3fn
+        assert "lm_head.weight_scale_inv" in output
+        # non-ignored layer should be quantized normally
+        assert "layer" in quantized
+
 
 # ===========================================================================
 #  End-to-end ModelFreeQuantize
@@ -306,21 +328,130 @@ class TestModelFreeQuantize:
 
 
 # ===========================================================================
+#  MXFP4 / MXFP8 model-free quantization
+# ===========================================================================
+
+
+class TestModelFreeMXFP:
+    """End-to-end tests for MXFP4/MXFP8 model-free quantization."""
+
+    def test_quantize_weight_mxfp4_shapes(self):
+        w = torch.randn(64, 128, dtype=torch.bfloat16)
+        out = _quantize_weight_mxfp(w, "layer", bits=4, group_size=32, data_type="mx_fp")
+        assert out["layer.weight_packed"].shape == (64, 64)  # in_features / 2
+        assert out["layer.weight_packed"].dtype == torch.uint8
+        assert out["layer.weight_scale"].shape == (64, 4)  # in_features / group_size
+        assert out["layer.weight_scale"].dtype == torch.uint8
+
+    def test_quantize_weight_mxfp8_shapes(self):
+        w = torch.randn(64, 128, dtype=torch.bfloat16)
+        out = _quantize_weight_mxfp(w, "layer", bits=8, group_size=32, data_type="mx_fp")
+        assert out["layer.weight"].shape == (64, 128)
+        assert out["layer.weight"].dtype == torch.float8_e4m3fn
+        assert out["layer.weight_scale"].shape == (64, 4)
+        assert out["layer.weight_scale"].dtype == torch.uint8
+
+    def test_mxfp8_max_value_scaling(self):
+        """Input bfloat16 weight with max value 240; after MXFP8 quantization
+        the stored FP8 values should be clamped to 448 (fp8_e4m3fn max) and
+        must NOT be NaN.
+
+        quant_mx computes shared_exp = floor(log2(240)) - emax = 7 - 8 = -1,
+        so scale = 2^-1 = 0.5.  The normalised value is 240/0.5 = 480 which
+        exceeds the FP8 max of 448 and must be clamped before the fp8 cast.
+        """
+        w_bf16 = torch.full((64, 128), 240, dtype=torch.bfloat16)
+        out = _quantize_weight_mxfp(w_bf16, "layer", bits=8, group_size=32, data_type="mx_fp")
+        assert out["layer.weight"].dtype == torch.float8_e4m3fn
+        weight_fp32 = out["layer.weight"].to(torch.float32)
+        assert not torch.isnan(weight_fp32).any(), "FP8 weight must not contain NaN"
+        max_val = torch.max(weight_fp32).item()
+        assert max_val == 448, f"Expected 448 (fp8_e4m3fn max after clamp), got {max_val}"
+
+    @require_compressed_tensors
+    @pytest.mark.parametrize("scheme,fmt", [("MXFP4", "mxfp4-pack-quantized"), ("MXFP8", "mxfp8-quantized")])
+    def test_e2e_mxfp(self, tmp_path, scheme, fmt):
+        tensors = {
+            "model.layers.0.self_attn.q_proj.weight": torch.randn(128, 128),
+            "model.layers.0.fc1.weight": torch.randn(512, 128),
+            "lm_head.weight": torch.randn(1000, 128),
+        }
+        model_dir = _make_model_dir(tmp_path, _LLAMA_CFG, tensors)
+        output_dir = str(tmp_path / "output")
+        _ModelFreeCompressorCore(model_name_or_path=model_dir, output_dir=output_dir, scheme=scheme).run()
+        qc = _read_qconfig(output_dir)
+        assert qc["format"] == fmt
+        assert qc["quant_method"] == "compressed-tensors"
+        assert "lm_head" in qc["ignore"]
+        keys = _read_output_keys(output_dir)
+        # MXFP4 produces weight_packed, MXFP8 produces weight
+        if scheme == "MXFP4":
+            assert "model.layers.0.fc1.weight_packed" in keys
+        else:
+            assert "model.layers.0.fc1.weight" in keys
+        assert "model.layers.0.fc1.weight_scale" in keys
+        # lm_head stays full precision
+        assert "lm_head.weight" in keys
+        assert "lm_head.weight_packed" not in keys
+
+    @require_compressed_tensors
+    def test_mxfp4_via_autoround_api(self, tmp_path):
+        tensors = {"model.layers.0.fc1.weight": torch.randn(128, 128)}
+        model_dir = _make_model_dir(tmp_path, _LLAMA_CFG, tensors)
+        output_dir = str(tmp_path / "output")
+        AutoRound(model=model_dir, scheme="MXFP4", model_free=True).quantize_and_save(
+            output_dir, format="llm_compressor"
+        )
+        qc = _read_qconfig(output_dir)
+        assert qc["format"] == "mxfp4-pack-quantized"
+
+    @require_compressed_tensors
+    def test_process_shard_mxfp(self, tmp_path):
+        shard_path = str(tmp_path / "shard.safetensors")
+        save_file({"layer.fc1.weight": torch.randn(64, 128)}, shard_path)
+        scheme = {"bits": 4, "group_size": 32, "sym": True, "data_type": "mx_fp"}
+        output, quantized, _ = _process_shard(shard_path, scheme, {}, [])
+        assert "layer.fc1" in quantized
+        assert "layer.fc1.weight_packed" in output
+        assert "layer.fc1.weight_scale" in output
+
+
+# ===========================================================================
 #  Scheme validation
 # ===========================================================================
 
 
-_SUPPORTED = ["W2A16", "W2A16G32", "W2A16G64", "W4A16", "W4A16_MIXED", "W8A16"]
-_UNSUPPORTED = ["W3A16", "FPW8A16", "BF16", "MXFP4", "MXFP8", "MXINT4", "NVFP4", "FP8_BLOCK", "FP8_STATIC", "INT8_W8A8"]
+_SUPPORTED = ["W2A16", "W2A16G32", "W2A16G64", "W4A16", "W4A16_MIXED", "W8A16", "MXFP4", "MXFP8"]
+_UNSUPPORTED = [
+    "W3A16",
+    "FPW8A16",
+    "BF16",
+    "MXINT4",
+    "NVFP4",
+    "FP8_BLOCK",
+    "FP8_STATIC",
+    "INT8_W8A8",
+    "MXFP4_RCEIL",
+    "MXFP8_RCEIL",
+]
 
 
 class TestSchemeValidation:
     @pytest.mark.parametrize("name", _SUPPORTED)
     def test_supported(self, tmp_path, name):
+        if name.startswith("MXFP"):
+            pytest.importorskip("compressed_tensors", reason="test requires compressed-tensors")
+            format = "llm_compressor"
+        else:
+            format = "auto_round"
         model_dir = _make_model_dir(tmp_path, _LLAMA_CFG, {"model.layers.0.mlp.fc1.weight": torch.randn(64, 128)})
         out = str(tmp_path / f"out_{name}")
-        AutoRound(model=model_dir, scheme=name, model_free=True).quantize_and_save(out)
-        assert "model.layers.0.mlp.fc1.qweight" in _read_output_keys(out)
+        AutoRound(model=model_dir, scheme=name, model_free=True).quantize_and_save(out, format=format)
+        keys = _read_output_keys(out)
+        if name.startswith("MXFP"):
+            assert "model.layers.0.mlp.fc1.weight_scale" in keys
+        else:
+            assert "model.layers.0.mlp.fc1.qweight" in keys
 
     @pytest.mark.parametrize("name", _UNSUPPORTED)
     def test_unsupported_raises(self, tmp_path, name):

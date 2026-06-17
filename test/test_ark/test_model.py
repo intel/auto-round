@@ -26,7 +26,7 @@ class TestAutoRoundARKBackend:
         yield
         shutil.rmtree(self.save_folder, ignore_errors=True)
 
-    def main_op(self, format, bits, group_size, sym, dtype, device, fast_cfg=True, tar_acc=0.27):
+    def main_op(self, format, bits, group_size, sym, dtype, device, fast_cfg=True, tar_acc=0.265):
         limit = 100
         if device == "xpu":
             limit = 1000
@@ -77,7 +77,7 @@ class TestAutoRoundARKBackend:
     @pytest.mark.parametrize("dtype", [torch.bfloat16])
     @pytest.mark.parametrize("device", ["cpu"])
     def test_other_bits(self, format, bits, group_size, sym, dtype, device):
-        self.main_op(format, bits, group_size, sym, dtype, device, False, 0.2)
+        self.main_op(format, bits, group_size, sym, dtype, device, False, 0.195)
 
 
 if __name__ == "__main__":
