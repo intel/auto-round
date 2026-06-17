@@ -45,6 +45,7 @@ from auto_round.utils import (
     check_to_quantized,
     clear_memory,
     dispatch_model_by_all_available_devices,
+    flatten_list,
     get_block_names,
     get_lm_head_name,
     get_major_device,
@@ -57,7 +58,7 @@ from auto_round.utils import (
     set_module,
     set_non_auto_device_map,
     to_device,
-    to_dtype, flatten_list,
+    to_dtype,
 )
 from auto_round.utils.device import MemoryMonitor, memory_monitor
 from auto_round.utils.device_manager import get_current_device_manager
@@ -65,6 +66,7 @@ from auto_round.utils.offload import OffloadManager
 from auto_round.wrapper import WrapperLinear
 
 __all__ = ["gen_layer_config"]
+
 
 class AutoSchemeWrapperLinear(WrapperLinear):
 
@@ -195,9 +197,9 @@ class AutoSchemeWrapperLinearForGGUFK(AutoSchemeWrapperLinear):
         self.register_buffer("qdq_w", qdq_w.detach().clone().to(self.orig_layer.weight.device))
         self.grad_mode = False
 
-
     def _qdq_weight(self, value, min_scale, max_scale):
         if self.grad_mode:
+
             def save_grad(grad):
                 w_diff = self.orig_layer.weight - self.qdq_w.to(self.orig_layer.weight.device)
                 # TODO strange, grad could be in CPU
@@ -252,7 +254,7 @@ class AutoSchemeWrapperLinearForGGUFKImatrix(AutoSchemeWrapperLinear):
         else:
             qdq_w = self._init_scale().detach()
             self.register_buffer("qdq_w", qdq_w.detach().clone().to(self.orig_layer.weight.device))
-            self.is_post_initialized=True
+            self.is_post_initialized = True
 
     @torch.no_grad()
     def _init_scale(self):
@@ -292,6 +294,7 @@ class AutoSchemeWrapperLinearForGGUFKImatrix(AutoSchemeWrapperLinear):
     def _qdq_weight(self, value, min_scale, max_scale):
         self.post_init_qdqw()
         if self.grad_mode:
+
             def save_grad(grad):
                 w_diff = self.orig_layer.weight - self.qdq_w.to(self.orig_layer.weight.device)
                 self.weight_score += torch.abs((grad * w_diff.to(grad.device))).sum().item()
@@ -308,7 +311,6 @@ class AutoSchemeWrapperLinearForGGUFKImatrix(AutoSchemeWrapperLinear):
             # self.qdq_w.requires_grad_(False)
 
         return self.qdq_w, 1.0, None
-
 
 
 def register_imatrix_hook(model):
@@ -331,11 +333,12 @@ def register_imatrix_hook(model):
             hook_handles.append(hook)
     return hook_handles
 
+
 @torch.no_grad()
 def cal_imatrix(model, dataloader, major_device, low_gpu_mem_usage):
 
     if low_gpu_mem_usage:
-        cal_imatrix_low_gpu(model,dataloader, major_device)
+        cal_imatrix_low_gpu(model, dataloader, major_device)
     else:
         hooks = register_imatrix_hook(model)
         model = model.to(model.device)
@@ -345,31 +348,29 @@ def cal_imatrix(model, dataloader, major_device, low_gpu_mem_usage):
             hook.remove()
 
 
-
 def cal_imatrix_low_gpu(model, dataloader, major_device):
     imatrix_hooks = register_imatrix_hook(model)
-    block_names = get_block_names(model,quant_vision=True)
+    block_names = get_block_names(model, quant_vision=True)
     block_names = flatten_list(block_names)
 
     def move_to_gpu_hook(module, inputs):
         module.to(major_device)
-        to_device(inputs,major_device)
+        to_device(inputs, major_device)
 
-    def move_to_cpu(module,inputs,outputs):
+    def move_to_cpu(module, inputs, outputs):
         module.to("cpu")
 
-    def move_to_cpu_clear_memory(module,inputs,outputs):
+    def move_to_cpu_clear_memory(module, inputs, outputs):
         module.to("cpu")
         clear_memory(device_list=major_device)
-
 
     all_move_device_hooks = []
     i = 0
     for block_name in block_names:
-        i+=1
-        block_module = get_module(model,block_name)
+        i += 1
+        block_module = get_module(model, block_name)
         hook_move_gpu = block_module.register_forward_pre_hook(move_to_gpu_hook)
-        if i%4==0:
+        if i % 4 == 0:
             hook_move_cpu = block_module.register_forward_hook(move_to_cpu)
         else:
             hook_move_cpu = block_module.register_forward_hook(move_to_cpu_clear_memory)
@@ -424,7 +425,7 @@ def prepare_model_low_gpu(model, block_inputs: dict = None, pbar=None, major_dev
             block_inputs[module_name] = input_info
 
             module.to("cpu")
-            clear_memory(device_list=major_device) #slow
+            clear_memory(device_list=major_device)  # slow
             memory_monitor.log_summary()
 
             # Enable gradients for the output of the last block
@@ -540,8 +541,6 @@ def model_forward_low_gpu(model, dataloader, major_device="cuda", pbar=None):
         current_grad = last_grad_input
         del output, data
 
-
-
         # Manually compute gradients block by block
         last_block_backward_hook.remove()
 
@@ -550,7 +549,7 @@ def model_forward_low_gpu(model, dataloader, major_device="cuda", pbar=None):
             module.forward = module.orig_forward
         index = 0
         for block_name in reversed(block_names):
-            index+=1
+            index += 1
             # Retrieve stored inputs for the block
             block_input_info = block_inputs.get(block_name, {})
 
@@ -596,8 +595,8 @@ def model_forward_low_gpu(model, dataloader, major_device="cuda", pbar=None):
 
             del block_output, main_output, block_input_args, block_input_kwargs
             block_module.to("cpu")
-            if index%4==0:
-                clear_memory(device_list=major_device) # this one is very slow and seems does not affect max ram usage
+            if index % 4 == 0:
+                clear_memory(device_list=major_device)  # this one is very slow and seems does not affect max ram usage
             memory_monitor.update()
             memory_monitor.log_summary()
             pbar.update(1)
@@ -1340,10 +1339,16 @@ def _gen_layer_config(
             if need_imatrix:
                 break
         if need_imatrix:
-            dataloader = get_dataloader(tokenizer, seqlen=max(seqlen*2,2048),
-                                        dataset_name=dataset, seed=42, bs=batch_size, nsamples=min(nsamples,128))
+            dataloader = get_dataloader(
+                tokenizer,
+                seqlen=max(seqlen * 2, 2048),
+                dataset_name=dataset,
+                seed=42,
+                bs=batch_size,
+                nsamples=min(nsamples, 128),
+            )
             logger.info("start to compute imatrix in AutoScheme")
-            cal_imatrix(model, dataloader, major_device,low_gpu_mem_usage=auto_scheme.low_gpu_mem_usage)
+            cal_imatrix(model, dataloader, major_device, low_gpu_mem_usage=auto_scheme.low_gpu_mem_usage)
             memory_monitor.update()
             memory_monitor.log_summary()
             logger.info("finish calculating imatrix")
