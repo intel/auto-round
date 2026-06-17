@@ -376,7 +376,7 @@
     <h1>Making Low-Bit LLM/VLM Quantization<br>Practical in <span class="blue-text">vLLM/vLLM-Omni</span></h1>
     <div class="subtitle">From Quantization Fundamentals to Production-Ready Serving with AutoRound</div>
     <div class="yellow-bar"></div>
-    <div class="author">Yi Liu &nbsp;&middot;&nbsp; Software Engineer @ Intel — AutoRound Team</div>
+    <div class="author">Yi Liu &nbsp;·&nbsp; on behalf of the Intel AutoRound Team</div>
   </div>
 
   <!-- ============ SLIDE 2: Part 1 Section ============ -->
@@ -402,6 +402,7 @@ INT4 weight:  [  3,    -7,     7,    -1,   ...]      ← 4 bits</pre>
       </div>
       <div style="display:flex; flex-direction:column; justify-content:center;">
         <img src="./images/quant-element.png" alt="Quantization Elements" style="max-width:100%; border-radius:8px;" onerror="this.style.display='none'; this.nextElementSibling.style.display='block';">
+        <p class="text-xs text-dim mt-4">Source: <a href="https://www.maartengrootendorst.com/blog/quantization/">maartengrootendorst.com/blog/quantization</a></p>
         <div class="placeholder-box" style="display:none;">
           <strong>[P]</strong> Image: ./images/quant-element.png
         </div>
@@ -555,7 +556,7 @@ INT4 weight:  [  3,    -7,     7,    -1,   ...]      ← 4 bits</pre>
           <span class="text-xs">QuantMethod dispatch &nbsp;·&nbsp; Packed→unpacked &nbsp;·&nbsp; Kernel selection</span>
         </div>
         <div class="stack-layer" style="background:var(--text); color:#fff;">
-          Hardware &nbsp;<span style="font-weight:400; opacity:0.8;">CUDA &nbsp;·&nbsp; XPU &nbsp;·&nbsp; HPU &nbsp;·&nbsp; CPU &nbsp;·&nbsp; MPS</span>
+          Hardware &nbsp;<span style="font-weight:400; opacity:0.8;">CUDA &nbsp;·&nbsp; XPU &nbsp;·&nbsp; HPU &nbsp;·&nbsp; CPU</span>
         </div>
       </div>
       <div>
@@ -578,118 +579,10 @@ INT4 weight:  [  3,    -7,     7,    -1,   ...]      ← 4 bits</pre>
   <!-- ============ SLIDE 10: The Core Problem (2.1) ============ -->
   <div class="slide">
     <h2>The Core Problem: Why Low-Bit Quantization Is Hard</h2>
-    <div class="flex-grow" style="display:flex; align-items:center;">
-      <svg viewBox="0 0 960 400" style="width:100%; max-height:400px;">
-
-        <!-- ① Rounding Error -->
-        <rect x="20" y="5" width="440" height="180" rx="10" fill="var(--bg-secondary)" stroke="var(--border)" stroke-width="1"/>
-        <text x="38" y="32" font-size="13" font-weight="700" fill="var(--text)">① Rounding Error — same delta, very different impact</text>
-
-        <rect x="38" y="48" width="16" height="38" rx="2" fill="var(--vllm-blue-20)" stroke="var(--vllm-blue)" stroke-width="1"/>
-        <text x="40" y="100" font-size="9" fill="var(--text-secondary)">0.1</text>
-        <rect x="58" y="48" width="16" height="22" rx="2" fill="var(--vllm-blue-20)" stroke="var(--vllm-blue)" stroke-width="1"/>
-        <rect x="78" y="48" width="16" height="52" rx="2" fill="var(--vllm-blue-20)" stroke="var(--vllm-blue)" stroke-width="1"/>
-        <rect x="98" y="48" width="16" height="28" rx="2" fill="var(--vllm-blue-20)" stroke="var(--vllm-blue)" stroke-width="1"/>
-        <rect x="118" y="30" width="16" height="56" rx="2" fill="var(--orange-bg)" stroke="var(--orange)" stroke-width="2"/>
-        <text x="119" y="24" font-size="9" font-weight="600" fill="var(--orange-text)">5.2</text>
-
-        <text x="165" y="62" font-size="14" fill="var(--text-dim)">→</text>
-        <text x="190" y="56" font-size="9" fill="var(--text-dim)">round to</text>
-        <text x="190" y="68" font-size="9" fill="var(--text-dim)">INT4</text>
-
-        <rect x="260" y="48" width="16" height="8" rx="2" fill="var(--vllm-blue-10)" stroke="var(--vllm-blue)" stroke-width="1"/>
-        <text x="262" y="70" font-size="9" fill="var(--text-secondary)">0</text>
-        <rect x="280" y="48" width="16" height="22" rx="2" fill="var(--vllm-blue-10)" stroke="var(--vllm-blue)" stroke-width="1"/>
-        <rect x="300" y="48" width="16" height="52" rx="2" fill="var(--vllm-blue-10)" stroke="var(--vllm-blue)" stroke-width="1"/>
-        <rect x="320" y="48" width="16" height="28" rx="2" fill="var(--vllm-blue-10)" stroke="var(--vllm-blue)" stroke-width="1"/>
-        <rect x="340" y="40" width="16" height="46" rx="2" fill="var(--red-bg)" stroke="var(--red-text)" stroke-width="2"/>
-        <text x="339" y="36" font-size="9" font-weight="600" fill="var(--red-text)">5.0</text>
-
-        <rect x="370" y="62" width="70" height="18" rx="4" fill="var(--red-bg)"/>
-        <text x="378" y="75" font-size="9" font-weight="600" fill="var(--red-text)">Δ=0.2 loss</text>
-
-        <text x="260" y="108" font-size="9" fill="var(--text-dim)">0.1→0 : Δ=0.1, lost 100% of value</text>
-        <text x="260" y="122" font-size="9" fill="var(--text-dim)">5.2→5.0: Δ=0.2, lost 4% — but distorts output far more</text>
-
-        <!-- ② Clipping Error -->
-        <rect x="490" y="5" width="450" height="180" rx="10" fill="var(--bg-secondary)" stroke="var(--border)" stroke-width="1"/>
-        <text x="508" y="32" font-size="13" font-weight="700" fill="var(--text)">② Clipping Error — range selection tradeoff</text>
-
-        <rect x="508" y="48" width="13" height="8" rx="1" fill="var(--border)"/>
-        <rect x="524" y="48" width="13" height="20" rx="1" fill="var(--border)"/>
-        <rect x="540" y="35" width="13" height="33" rx="1" fill="var(--vllm-blue-10)"/>
-        <rect x="556" y="22" width="13" height="46" rx="1" fill="var(--vllm-blue-10)"/>
-        <rect x="572" y="14" width="13" height="54" rx="1" fill="var(--vllm-blue-10)"/>
-        <rect x="588" y="22" width="13" height="46" rx="1" fill="var(--vllm-blue-10)"/>
-        <rect x="604" y="35" width="13" height="33" rx="1" fill="var(--vllm-blue-10)"/>
-        <rect x="620" y="48" width="13" height="20" rx="1" fill="var(--border)"/>
-        <rect x="636" y="48" width="13" height="8" rx="1" fill="var(--border)"/>
-
-        <line x1="508" y1="12" x2="508" y2="76" stroke="var(--vllm-blue)" stroke-width="2" stroke-dasharray="4,2"/>
-        <text x="486" y="12" font-size="9" fill="var(--vllm-blue-dark)" font-weight="600">min</text>
-        <line x1="645" y1="12" x2="645" y2="76" stroke="var(--red-text)" stroke-width="2" stroke-dasharray="4,2"/>
-        <text x="652" y="12" font-size="9" fill="var(--red-text)" font-weight="600">max</text>
-
-        <rect x="650" y="52" width="14" height="16" rx="2" fill="var(--orange-bg)" stroke="var(--orange)" stroke-width="1"/>
-        <text x="668" y="64" font-size="8" fill="var(--orange-text)">clipped</text>
-
-        <rect x="508" y="92" width="145" height="16" rx="4" fill="var(--red-bg)" opacity="0.7"/>
-        <text x="515" y="104" font-size="9" fill="var(--red-text)">wasted range [5.0, 6.0]</text>
-
-        <text x="508" y="138" font-size="9" fill="var(--text-dim)">Max too tight:</text>
-        <rect x="508" y="145" width="13" height="6" rx="1" fill="var(--border)"/>
-        <rect x="524" y="145" width="13" height="16" rx="1" fill="var(--border)"/>
-        <rect x="540" y="132" width="13" height="28" rx="1" fill="var(--vllm-blue-10)"/>
-        <rect x="556" y="122" width="13" height="38" rx="1" fill="var(--vllm-blue-10)"/>
-        <line x1="572" y1="145" x2="572" y2="122" stroke="var(--red-text)" stroke-width="2" stroke-dasharray="4,2"/>
-        <text x="578" y="140" font-size="9" fill="var(--red-text)">clips too much data</text>
-
-        <!-- ③ Outlier Amplification -->
-        <rect x="20" y="200" width="920" height="190" rx="10" fill="var(--bg-secondary)" stroke="var(--border)" stroke-width="1"/>
-        <text x="38" y="228" font-size="13" font-weight="700" fill="var(--text)">③ Outlier Amplification — one value stretches the entire grid</text>
-
-        <text x="38" y="258" font-size="11" fill="var(--text)">Normal weights (max=1.4) → fine grid, 16 levels:</text>
-        <g transform="translate(38,266)">
-          <line x1="0" y1="0" x2="300" y2="0" stroke="var(--vllm-blue-20)" stroke-width="2"/>
-          <line x1="0" y1="0" x2="0" y2="10" stroke="var(--vllm-blue)" stroke-width="1.5"/><text x="0" y="24" font-size="8" fill="var(--text-dim)" text-anchor="middle">0</text>
-          <line x1="19" y1="0" x2="19" y2="10" stroke="var(--vllm-blue)" stroke-width="1.5"/>
-          <line x1="38" y1="0" x2="38" y2="10" stroke="var(--vllm-blue)" stroke-width="1.5"/>
-          <line x1="57" y1="0" x2="57" y2="10" stroke="var(--vllm-blue)" stroke-width="1.5"/>
-          <line x1="76" y1="0" x2="76" y2="10" stroke="var(--vllm-blue)" stroke-width="1.5"/>
-          <line x1="95" y1="0" x2="95" y2="10" stroke="var(--vllm-blue)" stroke-width="1.5"/>
-          <line x1="114" y1="0" x2="114" y2="10" stroke="var(--vllm-blue)" stroke-width="1.5"/>
-          <line x1="133" y1="0" x2="133" y2="10" stroke="var(--vllm-blue)" stroke-width="1.5"/>
-          <line x1="152" y1="0" x2="152" y2="10" stroke="var(--vllm-blue)" stroke-width="1.5"/>
-          <line x1="171" y1="0" x2="171" y2="10" stroke="var(--vllm-blue)" stroke-width="1.5"/>
-          <line x1="190" y1="0" x2="190" y2="10" stroke="var(--vllm-blue)" stroke-width="1.5"/>
-          <line x1="209" y1="0" x2="209" y2="10" stroke="var(--vllm-blue)" stroke-width="1.5"/>
-          <line x1="228" y1="0" x2="228" y2="10" stroke="var(--vllm-blue)" stroke-width="1.5"/>
-          <line x1="247" y1="0" x2="247" y2="10" stroke="var(--vllm-blue)" stroke-width="1.5"/>
-          <line x1="266" y1="0" x2="266" y2="10" stroke="var(--vllm-blue)" stroke-width="1.5"/>
-          <line x1="285" y1="0" x2="285" y2="10" stroke="var(--vllm-blue)" stroke-width="1.5"/>
-          <text x="310" y="6" font-size="9" fill="var(--vllm-blue-dark)">1.4</text>
-        </g>
-
-        <text x="38" y="330" font-size="11" fill="var(--text)">With outlier (max=5.2) → 3× coarser grid, values collapse:</text>
-        <g transform="translate(38,338)">
-          <line x1="0" y1="0" x2="300" y2="0" stroke="var(--vllm-blue-20)" stroke-width="2"/>
-          <line x1="0" y1="0" x2="0" y2="10" stroke="var(--orange)" stroke-width="1.5"/><text x="0" y="24" font-size="8" fill="var(--text-dim)" text-anchor="middle">0</text>
-          <line x1="55" y1="0" x2="55" y2="10" stroke="var(--orange)" stroke-width="1.5"/>
-          <line x1="110" y1="0" x2="110" y2="10" stroke="var(--orange)" stroke-width="1.5"/>
-          <line x1="165" y1="0" x2="165" y2="10" stroke="var(--orange)" stroke-width="1.5"/>
-          <line x1="220" y1="0" x2="220" y2="10" stroke="var(--orange)" stroke-width="1.5"/>
-          <line x1="275" y1="0" x2="275" y2="10" stroke="var(--orange)" stroke-width="1.5"/>
-          <text x="310" y="6" font-size="9" fill="var(--orange-text)">5.2</text>
-          <rect x="2" y="4" width="50" height="10" rx="3" fill="var(--orange-bg)" opacity="0.8"/>
-          <text x="27" y="-4" font-size="9" font-weight="600" fill="var(--orange-text)">3 bins lost</text>
-        </g>
-
-        <rect x="560" y="280" width="360" height="90" rx="8" fill="var(--vllm-blue-10)" stroke="var(--vllm-blue-20)" stroke-width="1"/>
-        <text x="580" y="305" font-size="12" font-weight="700" fill="var(--vllm-blue-dark)">Key Insight</text>
-        <text x="580" y="326" font-size="11" fill="var(--text-secondary)">One outlier → large scale → normal values</text>
-        <text x="580" y="346" font-size="11" fill="var(--text-secondary)">collapse into fewer bins → most weights</text>
-        <text x="580" y="366" font-size="11" fill="var(--text-secondary)">get coarse quantization with high error</text>
-      </svg>
+    <div class="flex-grow" style="display:flex; align-items:center; justify-content:center;">
+      <div class="placeholder-box" style="width:80%; padding:60px;">
+        <strong>[P]</strong> — Visualize rounding error, clipping error, and outlier amplification
+      </div>
     </div>
   </div>
 
@@ -762,7 +655,6 @@ W_dequant = W_quant * scale</pre>
           SignSGD: &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;w = w − lr × <strong>sign(gradient)</strong>
         </div>
         <ul class="mt-12">
-          <li>Rounding parameter <strong>v</strong> is inherently discrete (0 or 1)</li>
           <li>STE gradient magnitude is noisy — the <strong>sign</strong> is more reliable</li>
           <li>Fixed step size naturally handles the discrete problem</li>
           <li>Converges faster and more stably than Adam on this task</li>
@@ -776,51 +668,24 @@ W_dequant = W_quant * scale</pre>
         </div>
       </div>
       <div>
-        <p class="text-sm mb-8"><strong>[Left side]</strong> The first page of two papers</p>
-        <div class="placeholder-box" style="flex:1; display:flex; align-items:center; justify-content:center;">
-          [P] Paper figure — first page of EMNLP 2024 and arXiv 2025 papers
+        <div style="display:flex; gap:12px;">
+          <div style="flex:1; text-align:center;">
+            <img src="./images/signr-v1.png" alt="SignRound V1 Paper"
+                 style="width:100%; border-radius:8px; border:1px solid var(--border-light);">
+            <p class="text-xs text-dim mt-4">SignRound V1 (EMNLP 2024)<br><a href="https://aclanthology.org/2024.findings-emnlp.662.pdf">aclanthology.org/2024.findings-emnlp.662</a></p>
+          </div>
+          <div style="flex:1; text-align:center;">
+            <img src="./images/signr-v2.png" alt="SignRound V2 Paper"
+                 style="width:100%; border-radius:8px; border:1px solid var(--border-light);">
+            <p class="text-xs text-dim mt-4">SignRound V2 (arXiv 2025)<br><a href="https://arxiv.org/abs/2512.04746">arxiv.org/abs/2512.04746</a></p>
+          </div>
         </div>
         <div class="key-msg">AutoRound uses SignSGD because the sign of the gradient is more reliable than its magnitude when optimizing through a non-differentiable quantization operation.</div>
       </div>
     </div>
   </div>
 
-  <!-- ============ SLIDE 13: QDQ Design (2.4) ============ -->
-  <div class="slide">
-    <h2>QDQ Design: Why It Matters</h2>
-    <div class="grid-2 flex-grow">
-      <div>
-        <h3>What Is QDQ?</h3>
-        <div class="placeholder-box">
-          <strong>[P]</strong> Visualize the QDQ GEMM
-        </div>
-        <h3 class="mt-16">Why QDQ Matters for Engineering</h3>
-        <div class="card card-accent">
-          <p><strong>1. Format Agnostic</strong></p>
-          <pre>quant_func(weight, scale, zp, bits) → QDQ output</pre>
-          <p class="text-sm">Same optimization loop for INT4, INT8, FP8, MXFP4, NVFP4 — just swap <code>quant_func</code>. <a href="https://github.com/intel/auto-round/blob/main/auto_round/data_type/fp8.py">Example: fp8.py</a></p>
-        </div>
-        <div class="card card-accent">
-          <p><strong>2. Device Agnostic</strong></p>
-          <p class="text-sm">Works on any device that supports high-precision dtypes.</p>
-        </div>
-      </div>
-      <div>
-        <h3>The QDQ Wrapper in Code</h3>
-        <pre># Simplified: what happens during tuning
-class WrapperLinear(nn.Module):
-    def forward(self, x):
-        # Quantize-Dequantize
-        w_qdq = quant_dequant(self.weight)
-        # x = quant_dequant(x) # Optional
-        # Standard linear with fake-quantized weight
-        return F.linear(x, w_qdq, self.bias)</pre>
-        <div class="key-msg mt-16">The QDQ design separates the algorithm (what to optimize) from the format (how to store) and the kernel (how to run). This is what makes AutoRound support so many data types, formats, and backends.</div>
-      </div>
-    </div>
-  </div>
-
-  <!-- ============ SLIDE 14: AutoRound vs AWQ vs GPTQ (2.5) ============ -->
+  <!-- ============ SLIDE 13: AutoRound vs AWQ vs GPTQ (2.5) ============ -->
   <div class="slide">
     <h2>AutoRound vs. AWQ vs. GPTQ: Comparison</h2>
     <div class="grid-2 flex-grow">
@@ -843,6 +708,55 @@ class WrapperLinear(nn.Module):
              style="width:100%; border-radius:8px; border:1px solid var(--border-light);">
       </div>
     </div>
+  </div>
+
+  <!-- ============ SLIDE 14: QDQ Design (2.4) ============ -->
+  <div class="slide">
+    <h2>QDQ Design: Why It Matters</h2>
+    <p class="text-sm text-dim mb-12">Same quantized tensors, different GEMM execution path</p>
+    <div class="grid-2 flex-grow" style="gap:20px;">
+      <div class="card" style="padding:16px 20px; margin-bottom:0;">
+        <h3 style="text-align:center; margin-bottom:8px;">QDQ / Fake Quantization (Tuning)</h3>
+        <pre style="font-size:0.62rem; line-height:1.35; padding:12px; text-align:center; background:var(--bg);">
+ Activation            Weight
+    X_fp                W_fp
+     │                   │
+     ▼                   ▼
+   Quant               Quant
+     │                   │
+     ▼                   ▼
+   X_int4             W_int4
+     │                   │
+     ▼                   ▼
+  DeQuant            DeQuant
+     │                   │
+     ▼                   ▼
+  X_dq_fp ──→ FP GEMM ←── W_dq_fp
+
+  Y = FP_GEMM(X_dq_fp, W_dq_fp)</pre>
+        <p class="text-xs text-dim">DeQuant <strong>before</strong> GEMM → GEMM runs on FP tensors → gradients flow through quant/dequant ops.</p>
+      </div>
+      <div class="card card-accent" style="padding:16px 20px; margin-bottom:0;">
+        <h3 style="text-align:center; margin-bottom:8px;">Real INT4 Kernel (Inference)</h3>
+        <pre style="font-size:0.62rem; line-height:1.35; padding:12px; text-align:center; background:var(--bg);">
+ Activation            Weight
+    X_fp                W_fp
+     │                   │
+     ▼                   ▼
+   Quant               Quant
+     │                   │
+     ├── scale_x         ├── scale_w
+     ▼                   ▼
+ X_int4 packed       W_int4 packed
+     │                   │
+     └──→ INT4 GEMM ←────┘
+
+ Y = INT4_GEMM(X_int4, W_int4,
+               scale_x, scale_w)</pre>
+        <p class="text-xs text-dim">GEMM consumes <strong>packed INT4</strong> directly → dequant/rescale fused inside kernel → no FP overhead.</p>
+      </div>
+    </div>
+    <div class="key-msg" style="margin-top:12px;">QDQ separates algorithm from format and kernel. Tuning: gradients flow through fake-quantized FP. Inference: packed INT4 + fused dequant. Same quantized tensors, swap <code>quant_func</code> for any dtype.</div>
   </div>
 
   <!-- ============ SLIDE 15: Support Matrix (2.6) ============ -->
@@ -889,7 +803,7 @@ class WrapperLinear(nn.Module):
         </table>
         <div class="grid-2 mt-12" style="gap:10px;">
           <div class="card card-filled" style="padding:10px 14px; margin:0;">
-            <p class="text-sm"><strong>Attention (XPU)</strong><br>SageAttention v1 · INT8 Q/K/V · sdpa/sagev1/sage_dynquant</p>
+            <p class="text-sm"><strong>Attention (XPU)</strong><br>sagev1 (INT8 Q/K), sagev1_pvi8 (INT8 Q/K/V)</p>
           </div>
           <div class="card card-filled" style="padding:10px 14px; margin:0;">
             <p class="text-sm"><strong>MoE GEMM (XPU)</strong> <span class="badge badge-yellow">WIP</span><br>Grouped GEMM for Mixture-of-Experts layers</p>
@@ -911,7 +825,7 @@ class WrapperLinear(nn.Module):
           </div>
           <p class="text-xs text-dim mt-4 text-center">Flash Attention (left) · SageAttention v1 (right)</p>
         </div>
-        <div class="key-msg">AutoRound isn't just an algorithm — it comes with kernels that make the quantized models actually run fast. The kernel ecosystem covers the major hardware platforms and quantization schemes.</div>
+        <div class="key-msg">AutoRound isn't just an algorithm — it comes with kernels that make the quantized models actually run fast.</div>
       </div>
     </div>
   </div>
@@ -947,7 +861,7 @@ class WrapperLinear(nn.Module):
         <div class="placeholder-box">
           <strong>[P]</strong> — Ecosystem diagram
         </div>
-        <div class="key-msg">AutoRound is not a walled garden — it integrates with the tools the community already uses. One quantized model can run in most popular serving frameworks.</div>
+        <div class="key-msg">AutoRound can export runtime-specific formats for the major serving stacks.</div>
       </div>
     </div>
   </div>
@@ -1049,16 +963,68 @@ auto-round \
       <div>
         <div class="card card-accent">
           <p class="text-sm bold text-blue mb-8">Deploy in vLLM-Omni</p>
-          <pre>vllm serve FLUX.1-dev-AutoRound-w4a16 \
-    --omni --port 8091</pre>
-          <p class="text-sm mt-8">Then query with curl + base64 decode to get image output.</p>
-        </div>
-        <h3 class="mt-12">Performance and Accuracy</h3>
-        <div class="placeholder-box" style="padding:16px;">
-          <strong>[P]</strong> — Blog post in vLLM
+          <pre>vllm serve FLUX.1-dev-AutoRound-w4a16 --omni --port 8091</pre>
+          <pre>curl -s http://localhost:8091/v1/chat/completions \
+  -H "Content-Type: application/json" \
+  -d '{
+    "messages": [
+      {"role": "user", "content": "a cup of coffee on the table"}
+    ],
+    "extra_body": {
+      "height": 1024,
+      "width": 1024,
+      "num_inference_steps": 50,
+      "guidance_scale": 4.0,
+      "seed": 42
+    }
+  }' | jq -r '.choices[0].message.content[0].image_url.url' | cut -d',' -f2 | base64 -d > coffee.png</pre>
         </div>
       </div>
     </div>
+  </div>
+
+  <!-- ============ SLIDE: Wan2.2 Video Generation ============ -->
+  <div class="slide">
+    <h2>Wan2.2 Video Generation — W4A16 AutoRound</h2>
+    <div class="grid-2 flex-grow">
+      <div>
+        <h3>Text-to-Video — Wan2.2 T2V-A14B</h3>
+        <img src="./images/fig3_wan22_t2v.png" alt="Wan2.2 T2V Evaluation"
+             style="width:100%; border-radius:8px; border:1px solid var(--border-light);">
+        <p class="text-xs text-dim mt-4">W4A16 shows marginal improvements in structural consistency — clipping optimization may provide regularization.</p>
+      </div>
+      <div>
+        <h3>Image-to-Video — Wan2.2 I2V-A14B</h3>
+        <img src="./images/fig4_wan22_i2v.png" alt="Wan2.2 I2V Evaluation"
+             style="width:100%; border-radius:8px; border:1px solid var(--border-light);">
+        <p class="text-xs text-dim mt-4">Temporal consistency preserved under W4A16; objective metrics remain close to BF16 baseline.</p>
+      </div>
+    </div>
+  </div>
+
+  <!-- ============ SLIDE: FLUX CFG Parallel Performance ============ -->
+  <div class="slide">
+    <h2>FLUX.1-dev — Memory Headroom → Throughput Gains</h2>
+    <p class="mb-8 text-sm">W4A16 shrinks FLUX transformer from 23 GB → 7 GB, unlocking architectural optimization on Intel XPU B60</p>
+    <div class="flex-grow" style="display:flex; gap:24px; align-items:stretch;">
+      <div style="flex:3; display:flex; flex-direction:column;">
+        <h3>VRAM Footprint: 4 GPUs → 1 GPU</h3>
+        <div style="flex:1; display:flex; align-items:center;">
+          <img src="./images/fig6_latency_memory_tradeoff.png" alt="Latency Memory Tradeoff"
+               style="width:100%; max-height:340px; object-fit:contain; border-radius:8px; border:1px solid var(--border-light);">
+        </div>
+        <p class="text-xs text-dim mt-4">BF16 FLUX transformer (23 GB) exceeds single B60 capacity → requires TP=4. W4A16 (7 GB) fits on 1 GPU with 19% headroom.</p>
+      </div>
+      <div style="flex:2; display:flex; flex-direction:column;">
+        <h3>CFG Parallel: 1.55–1.67× Faster</h3>
+        <div style="flex:1; display:flex; align-items:center;">
+          <img src="./images/fig7_cfg_parallel_latency.png" alt="CFG Parallel Latency"
+               style="width:100%; max-height:340px; object-fit:contain; border-radius:8px; border:1px solid var(--border-light);">
+        </div>
+        <p class="text-xs text-dim mt-4">Memory headroom frees 2 GPUs → runs both CFG branches simultaneously → 1.55–1.67× speedup vs sequential BF16.</p>
+      </div>
+    </div>
+    <div class="key-msg" style="margin-top:8px;">W4A16's value extends beyond memory savings — it enables parallel execution strategies that produce end-to-end speedups larger than raw dequantization overhead would predict.</div>
   </div>
 
   <!-- ============ SLIDE 25: Tunable Parameters (4.7) ============ -->
@@ -1149,7 +1115,7 @@ auto-round \
             <tr><td class="bold">Broader vLLM support</td><td><span class="badge badge-yellow">🔄 Ongoing</span></td><td>More quantization schemes, more targets</td></tr>
             <tr><td class="bold">Broader vLLM-Omni support</td><td><span class="badge badge-yellow">🔄 Ongoing</span></td><td>More modalities, more quantization targets</td></tr>
             <tr><td class="bold">MoE fused kernels</td><td><span class="badge badge-yellow">🔄 In development</span></td><td>Low-bits MoE with quantization</td></tr>
-            <tr><td class="bold">SageAttention v3</td><td><span class="badge badge-yellow">🔄 In development</span></td><td>MXFP8/MXFP4 attention with better accuracy</td></tr>
+            <tr><td class="bold">SageAttention v3</td><td><span class="badge badge-yellow">🔄 In development</span></td><td>Next-gen INT8 attention with better accuracy</td></tr>
           </tbody>
         </table>
       </div>
@@ -1224,7 +1190,7 @@ auto-round \
 <div class="nav-bar">
   <button onclick="toggleSidebar()" id="menuBtn" title="Press M for menu">&#x2630;</button>
   <button onclick="prevSlide()">&#x25C0; Prev</button>
-  <span id="slideNum" style="min-width:60px; text-align:center;">1 / 29</span>
+  <span id="slideNum" style="min-width:60px; text-align:center;">1 / 30</span>
   <div class="progress-track">
     <div class="progress-fill" id="progressFill"></div>
   </div>
@@ -1249,8 +1215,8 @@ auto-round \
     '2.1 — The Core Problem',
     '2.2 — AutoRound Algorithm',
     '2.3 — SignSGD: Optimization Engine',
-    '2.4 — QDQ Design',
     '2.5 — AutoRound vs AWQ vs GPTQ',
+    '2.4 — QDQ Design',
     '2.6 — AutoRound Support Matrix',
     '2.7 — Kernel Library Support',
     '— Part 3: AutoRound in the Community',
@@ -1260,6 +1226,8 @@ auto-round \
     '4.1 — End-to-End Workflow',
     '4.2 — LLM Serving Scenario',
     '4.3 — VLM/Diffusion Example',
+    'Wan2.2 — Video Generation (W4A16)',
+    'FLUX — CFG Parallel Performance',
     '4.7 — Important Tunable Parameters',
     '— Part 5: Best Practices & Q&A',
     'Best Practices Overview',

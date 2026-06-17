@@ -3,6 +3,7 @@
 > Based on outline: `auto-round-vllm-v1.md`
 > Figures and videos are placeholders — add them later.
 > [P] refer to the placeholders - add them later
+
 ---
 
 ## Title Slide
@@ -81,7 +82,7 @@ x_dequant = x_quant * scale + zero_point
 - Measured as MSE, MAE, or task-specific accuracy drop
 - Not all errors are equal — some weights matter more than others
 
-**5. An real Example**
+**5. A Real Example**
 [Place Holder]
 
 **[ PLACEHOLDER: Animation — Interactive demo of scale, zero_point, and rounding with a toy vector ]**
@@ -163,8 +164,6 @@ Modern GPU hardware has a fundamental asymmetry:
 │  │  │  └─────────────────────────────────────────────────┘ │ │ │
 │  │  └─────────────────────────────────────────────────────┘ │ │
 │  ├─────────────────────────────────────────────────────────┤ │
-│  │  Worker / Ray distributed execution                      │ │
-│  ├─────────────────────────────────────────────────────────┤ │
 │  │  Hardware (CUDA, XPU, HPU, CPU, MPS)                     │ │
 │  └─────────────────────────────────────────────────────────┘ │
 └─────────────────────────────────────────────────────────────┘
@@ -202,7 +201,6 @@ Modern GPU hardware has a fundamental asymmetry:
 - This is the core difficulty of low-bit (2-4 bit) quantization
 
 
-> **Key message:** The hardest part of low-bit quantization is deciding which weights to round up vs. down, and where to set the clipping range. AutoRound optimizes both simultaneously.
 
 **[ PLACEHOLDER: Figure — Visual showing quantization error from rounding vs. clipping on a weight distribution ]**
 
@@ -297,13 +295,15 @@ For quantization rounding, the rounding parameter `v` is inherently **discrete**
 - SignSGD on rounding parameters only
 - Fixed quantization range (min, max derived from weight statistics)
 
-**V2 (current, arXiv 2025):**
-- SignSGD on both rounding AND clipping parameters
-- Joint optimization: `v` (rounding) + `min, max` (clipping range)
-- Better handling of extreme outliers
-- `enable_minmax_tuning=True` (default)
+**V2 (arXiv 2025):**
+- Adaptive mixed-precision strategy — leverages gradient information and quantization-induced reconstruction errors to guide layer-wise bit allocation
+- Lightweight stabilization techniques:
+  - Loss filtering to improve tuning effectiveness in extremely low-bit regimes
+  - Pre-tuning scale search for better initialization
+- Targets aggressive compression: 2-bit and emerging formats like MXFP4
+- Closes the performance gap between quantized and full-precision models
 
-[Left side] The fist page of two papers
+[Left side] The first page of two papers
 
 > **Key message:** AutoRound uses SignSGD because the sign of the gradient is more reliable than its magnitude when optimizing through a non-differentiable quantization operation.
 
@@ -356,31 +356,45 @@ class WrapperLinear(nn.Module):
 | AWQ | Standard round | Channel-wise scaling | ✅ Scaling smooths outliers |
 | **AutoRound** | **Learned via gradient** | **Learned via gradient** | ✅ Optimized end-to-end |
 
-### Accuracy Comparison (From Paper, Llama Models)
-[P] result figure
+### Accuracy Comparison (Average acc of 10+ tasks at W2G128)
+![Accuracy Comparison](./algos-acc-compare.png)
 
 ---
 
 ## Slide 2.6 — AutoRound Support Matrix
-(One-page table)
-- Model: LLM, VLLM, Diffusion, Audio/TTS
-- Data Types: WnA16, MXFP4, MXFP8, NVFP4, GGUF and so on
-- Hardware: XPU, CUDA, HPU, CPU, MPS
+
+| | |
+|---|---|
+| **Models** | LLMs, VLMs (LLaVA, Qwen-VL, DeepSeek-VL2, InternVL, Phi-Vision, +more), Diffusion (Stable Diffusion, FLUX, NextStep), Audio/TTS (Qwen-Omni, Mimo-Audio) |
+| **Quantization Schemes** | INT (W2A16–W8A16), FP8 (E4M3/E5M2, block-wise), MXFP4/8, NVFP4, GGUF (Q2_K–Q8_0), Mixed (per-layer AutoScheme) |
+| **Hardware** | XPU (ARK, Triton), CUDA (Marlin, Triton, Torch), HPU Gaudi (HPU-native), CPU x86/ARM (ARK, Torch), MPS Apple Silicon (MLX) |
 
 ---
 
 ## Slide 2.7 — AutoRound Kernel Library Support
 
 ### The Kernel Landscape
-(one page table)
-- Weight-Only Quantization Kernels
-- Low bits Attention Kernels (SageAttention)
-- Low bits MoE Kernel (WIP)
+
+#### Weight-Only Quantization (WOQ) GEMM — CPU
+| Weight dtype | Compute dtype | Scale dtype |
+|---|---|---|
+| INT1–INT8 | INT8 / BF16 / FP32 | BF16 / FP32 |
+| FP8 (E4M3, E5M2) | BF16 / FP32 | FP32 / FP8 (E8M0) |
+| FP4 (E2M1) | BF16 / FP32 | BF16 / FP32 |
+
+#### Weight-Only Quantization (WOQ) GEMM — XPU
+| Weight dtype | Compute dtype | Scale dtype |
+|---|---|---|
+| INT8 | INT8 / FP16 | FP16 |
+| INT4 | INT8 / FP16 | FP16 |
+| INT2 | INT8 / FP16 | FP16 |
+| FP8 (E4M3, E5M2) | FP16 | FP16 / FP8 (E8M0) |
 ### SageAttention Integration (vLLM-Omni Demo)
 - PR: `https://github.com/vllm-project/vllm-omni/pull/3785`
 - Demonstrates AutoRound + SageAttention v1 for quantized attention in vLLM-Omni
 
-[P video1][P video 2]
+![Flash Attention](./images/wan-flash-attn.mp4)
+![SageAttention v1](./images/wan-sage-attn.mp4)
 
 
 > **Key message:** AutoRound isn't just an algorithm — it comes with kernels that make the quantized models actually run fast. The kernel ecosystem covers the major hardware platforms and quantization schemes.
@@ -404,7 +418,7 @@ AutoRound is integrated into major ML frameworks and tools:
 | Tool | Type of Integration |
 |------|-------------------|
 | **Transformers** | Model loading (loads AutoRound quantized model) |
-| **LLM-Compressor** | One of algorithms(`AutoRoundModifer`) |
+| **LLM-Compressor** | One of algorithms(`AutoRoundModifier`) |
 | **TorchAO** | One of algorithm |
 | **vLLM** | Model loading (loads AutoRound quantized model) |
 | **vLLM-Omni** | Model loading (loads AutoRound quantized model)  |
@@ -439,7 +453,7 @@ AutoRound is integrated into major ML frameworks and tools:
 > **Key message:** Day-0 model support means the community always has access to quantized versions of the latest models. The leaderboard provides transparent, reproducible quality comparisons.
 
 
-- Model Collections for Pre-quantized Model huggingface.co/Intel/models
+
 
 ---
 
@@ -600,7 +614,7 @@ For any deployment, you must balance five factors:
 Areas where community input is especially valuable:
 1. **New model support** — New LLM, VLMs, audio models, new architectures
 2. **New algo integration**
-2. **Kernel contributions** — especially for new hardware platforms
+3. **Kernel contributions** — especially for new hardware platforms
 
 > **Key message:** AutoRound is actively developed, and community feedback directly shapes priorities. The roadmap balances algorithm research, kernel engineering, and ecosystem integration.
 
@@ -618,9 +632,6 @@ Areas where community input is especially valuable:
 - vLLM Roadmap:   https://github.com/vllm-project/vllm/issues/37979
 - vLLM OmniRoadmap: https://github.com/vllm-project/vllm-omni/issues/1325
 ```
-
----
-
 
 ---
 ### Final Message
