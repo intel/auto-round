@@ -83,7 +83,8 @@ constexpr int WG_N = 16;
 // as the quantized variants.
 // ----------------------------------------------------------------------------
 template <typename ScalarT>
-void launch_dequant_fp(sycl::queue* q, const ScalarT* weights_NK, ScalarT* weights_KN, int E, int N, int K) {
+void launch_dequant_fp(sycl::queue* q, const ScalarT* weights_NK, ScalarT* weights_KN, int E, int N, int K,
+                       const int* num_tokens_per_expert = nullptr) {
   if (E == 0 || N == 0 || K == 0) return;
 
   sycl::range<3> global{static_cast<size_t>(E), static_cast<size_t>(K),
@@ -93,6 +94,9 @@ void launch_dequant_fp(sycl::queue* q, const ScalarT* weights_NK, ScalarT* weigh
   q->parallel_for<MoEDequantKernelFP<ScalarT>>(
       sycl::nd_range<3>(global, local), [=](sycl::nd_item<3> it) {
         const int e = static_cast<int>(it.get_global_id(0));
+        // Skip experts that receive no tokens in this prefill batch; the
+        // grouped GEMM will not read their rows of `weights_KN` either.
+        if (num_tokens_per_expert != nullptr && num_tokens_per_expert[e] == 0) return;
         const int k = static_cast<int>(it.get_global_id(1));
         const int n = static_cast<int>(it.get_global_id(2));
         if (n >= N) return;
@@ -109,7 +113,8 @@ void launch_dequant_fp(sycl::queue* q, const ScalarT* weights_NK, ScalarT* weigh
 // ----------------------------------------------------------------------------
 template <typename ScalarT, bool Asym>
 void launch_dequant_int8(sycl::queue* q, const uint8_t* weights_NK, const ScalarT* scales, const ScalarT* zeros,
-                         ScalarT* weights_KN, int E, int N, int K, int group_size) {
+                         ScalarT* weights_KN, int E, int N, int K, int group_size,
+                         const int* num_tokens_per_expert = nullptr) {
   if (E == 0 || N == 0 || K == 0) return;
   if (Asym && zeros == nullptr) {
     throw std::invalid_argument("moe_gemm_prefill(int8): zeros pointer required when asym=true");
@@ -123,6 +128,7 @@ void launch_dequant_int8(sycl::queue* q, const uint8_t* weights_NK, const Scalar
   q->parallel_for<MoEDequantKernelInt8<ScalarT, Asym>>(
       sycl::nd_range<3>(global, local), [=](sycl::nd_item<3> it) {
         const int e = static_cast<int>(it.get_global_id(0));
+        if (num_tokens_per_expert != nullptr && num_tokens_per_expert[e] == 0) return;
         const int k = static_cast<int>(it.get_global_id(1));
         const int n = static_cast<int>(it.get_global_id(2));
         if (n >= N) return;
@@ -152,7 +158,8 @@ void launch_dequant_int8(sycl::queue* q, const uint8_t* weights_NK, const Scalar
 // ----------------------------------------------------------------------------
 template <typename ScalarT, bool Asym>
 void launch_dequant_int4(sycl::queue* q, const uint8_t* weights_NKp, const ScalarT* scales, const ScalarT* zeros,
-                         ScalarT* weights_KN, int E, int N, int K, int group_size) {
+                         ScalarT* weights_KN, int E, int N, int K, int group_size,
+                         const int* num_tokens_per_expert = nullptr) {
   if (E == 0 || N == 0 || K == 0) return;
   if (Asym && zeros == nullptr) {
     throw std::invalid_argument("moe_gemm_prefill(int4): zeros pointer required when asym=true");
@@ -170,6 +177,7 @@ void launch_dequant_int4(sycl::queue* q, const uint8_t* weights_NKp, const Scala
   q->parallel_for<MoEDequantKernelInt4<ScalarT, Asym>>(
       sycl::nd_range<3>(global, local), [=](sycl::nd_item<3> it) {
         const int e = static_cast<int>(it.get_global_id(0));
+        if (num_tokens_per_expert != nullptr && num_tokens_per_expert[e] == 0) return;
         const int k = static_cast<int>(it.get_global_id(1));
         const int n = static_cast<int>(it.get_global_id(2));
         if (n >= N) return;
@@ -206,7 +214,8 @@ void launch_dequant_int4(sycl::queue* q, const uint8_t* weights_NKp, const Scala
 // ----------------------------------------------------------------------------
 template <typename ScalarT, bool Asym>
 void launch_dequant_int2(sycl::queue* q, const uint8_t* weights_NKp, const ScalarT* scales, const ScalarT* zeros,
-                         ScalarT* weights_KN, int E, int N, int K, int group_size) {
+                         ScalarT* weights_KN, int E, int N, int K, int group_size,
+                         const int* num_tokens_per_expert = nullptr) {
   if (E == 0 || N == 0 || K == 0) return;
   if (Asym && zeros == nullptr) {
     throw std::invalid_argument("moe_gemm_prefill(int2): zeros pointer required when asym=true");
@@ -224,6 +233,7 @@ void launch_dequant_int2(sycl::queue* q, const uint8_t* weights_NKp, const Scala
   q->parallel_for<MoEDequantKernelInt2<ScalarT, Asym>>(
       sycl::nd_range<3>(global, local), [=](sycl::nd_item<3> it) {
         const int e = static_cast<int>(it.get_global_id(0));
+        if (num_tokens_per_expert != nullptr && num_tokens_per_expert[e] == 0) return;
         const int k = static_cast<int>(it.get_global_id(1));
         const int n = static_cast<int>(it.get_global_id(2));
         if (n >= N) return;
@@ -260,7 +270,7 @@ void launch_dequant_int2(sycl::queue* q, const uint8_t* weights_NKp, const Scala
 // ----------------------------------------------------------------------------
 template <typename ScalarT, bool IsE4M3, bool UseLut>
 void launch_dequant_fp8(sycl::queue* q, const uint8_t* weights_NK, const ScalarT* scales, ScalarT* weights_KN, int E,
-                        int N, int K, int group_size) {
+                        int N, int K, int group_size, const int* num_tokens_per_expert = nullptr) {
   if (E == 0 || N == 0 || K == 0) return;
   const int num_groups_k = K / group_size;
 
@@ -271,6 +281,7 @@ void launch_dequant_fp8(sycl::queue* q, const uint8_t* weights_NK, const ScalarT
   q->parallel_for<MoEDequantKernelFP8<ScalarT, IsE4M3, UseLut>>(
       sycl::nd_range<3>(global, local), [=](sycl::nd_item<3> it) {
         const int e = static_cast<int>(it.get_global_id(0));
+        if (num_tokens_per_expert != nullptr && num_tokens_per_expert[e] == 0) return;
         const int k = static_cast<int>(it.get_global_id(1));
         const int n = static_cast<int>(it.get_global_id(2));
         if (n >= N) return;
@@ -292,38 +303,45 @@ void launch_dequant_fp8(sycl::queue* q, const uint8_t* weights_NK, const ScalarT
 // ----------------------------------------------------------------------------
 template <typename ScalarT>
 void dequant_to_KN(sycl::queue* q, const void* weights, const void* scales, const void* zeros, ScalarT* weights_KN,
-                   BTLA_DTYPE weight_dtype, int E, int N, int K, int group_size, bool asym) {
+                   BTLA_DTYPE weight_dtype, int E, int N, int K, int group_size, bool asym,
+                   const int* num_tokens_per_expert = nullptr) {
   if (weight_dtype == BTLA_DTYPE::F16 || weight_dtype == BTLA_DTYPE::BF16) {
-    launch_dequant_fp<ScalarT>(q, static_cast<const ScalarT*>(weights), weights_KN, E, N, K);
+    launch_dequant_fp<ScalarT>(q, static_cast<const ScalarT*>(weights), weights_KN, E, N, K, num_tokens_per_expert);
     return;
   }
   if (weight_dtype == BTLA_DTYPE::S8) {
     if (asym) {
       launch_dequant_int8<ScalarT, true>(q, static_cast<const uint8_t*>(weights), static_cast<const ScalarT*>(scales),
-                                         static_cast<const ScalarT*>(zeros), weights_KN, E, N, K, group_size);
+                                         static_cast<const ScalarT*>(zeros), weights_KN, E, N, K, group_size,
+                                         num_tokens_per_expert);
     } else {
       launch_dequant_int8<ScalarT, false>(q, static_cast<const uint8_t*>(weights), static_cast<const ScalarT*>(scales),
-                                          static_cast<const ScalarT*>(zeros), weights_KN, E, N, K, group_size);
+                                          static_cast<const ScalarT*>(zeros), weights_KN, E, N, K, group_size,
+                                          num_tokens_per_expert);
     }
     return;
   }
   if (weight_dtype == BTLA_DTYPE::S4_CLIP) {
     if (asym) {
       launch_dequant_int4<ScalarT, true>(q, static_cast<const uint8_t*>(weights), static_cast<const ScalarT*>(scales),
-                                         static_cast<const ScalarT*>(zeros), weights_KN, E, N, K, group_size);
+                                         static_cast<const ScalarT*>(zeros), weights_KN, E, N, K, group_size,
+                                         num_tokens_per_expert);
     } else {
       launch_dequant_int4<ScalarT, false>(q, static_cast<const uint8_t*>(weights), static_cast<const ScalarT*>(scales),
-                                          static_cast<const ScalarT*>(zeros), weights_KN, E, N, K, group_size);
+                                          static_cast<const ScalarT*>(zeros), weights_KN, E, N, K, group_size,
+                                          num_tokens_per_expert);
     }
     return;
   }
   if (weight_dtype == BTLA_DTYPE::S2_CLIP) {
     if (asym) {
       launch_dequant_int2<ScalarT, true>(q, static_cast<const uint8_t*>(weights), static_cast<const ScalarT*>(scales),
-                                         static_cast<const ScalarT*>(zeros), weights_KN, E, N, K, group_size);
+                                         static_cast<const ScalarT*>(zeros), weights_KN, E, N, K, group_size,
+                                         num_tokens_per_expert);
     } else {
       launch_dequant_int2<ScalarT, false>(q, static_cast<const uint8_t*>(weights), static_cast<const ScalarT*>(scales),
-                                          static_cast<const ScalarT*>(zeros), weights_KN, E, N, K, group_size);
+                                          static_cast<const ScalarT*>(zeros), weights_KN, E, N, K, group_size,
+                                          num_tokens_per_expert);
     }
     return;
   }
@@ -337,21 +355,21 @@ void dequant_to_KN(sycl::queue* q, const void* weights, const void* scales, cons
       if (use_lut) {
         launch_dequant_fp8<ScalarT, true, true>(q, static_cast<const uint8_t*>(weights),
                                                 static_cast<const ScalarT*>(scales), weights_KN, E, N, K,
-                                                group_size);
+                                                group_size, num_tokens_per_expert);
       } else {
         launch_dequant_fp8<ScalarT, true, false>(q, static_cast<const uint8_t*>(weights),
                                                  static_cast<const ScalarT*>(scales), weights_KN, E, N, K,
-                                                 group_size);
+                                                 group_size, num_tokens_per_expert);
       }
     } else {
       if (use_lut) {
         launch_dequant_fp8<ScalarT, false, true>(q, static_cast<const uint8_t*>(weights),
                                                  static_cast<const ScalarT*>(scales), weights_KN, E, N, K,
-                                                 group_size);
+                                                 group_size, num_tokens_per_expert);
       } else {
         launch_dequant_fp8<ScalarT, false, false>(q, static_cast<const uint8_t*>(weights),
                                                   static_cast<const ScalarT*>(scales), weights_KN, E, N, K,
-                                                  group_size);
+                                                  group_size, num_tokens_per_expert);
       }
     }
     return;
@@ -408,13 +426,13 @@ inline void moe_gemm_prefill(sycl::queue* q, void* activations, void* weights, v
   if (act_dtype == BTLA_DTYPE::F16) {
     auto* w_kn = static_cast<sycl::half*>(dequant_workspace);
     moe_mixed_detail::dequant_to_KN<sycl::half>(q, weights, scales, zeros, w_kn, weight_dtype, num_experts, N, K,
-                                                group_size, asym);
+                                                group_size, asym, num_tokens_per_expert);
     moe_gemm(q, activations, w_kn, /*scales=*/nullptr, outputs, act_dtype, N, K, num_tokens_per_expert, num_experts);
   } else if (act_dtype == BTLA_DTYPE::BF16) {
     using BF = sycl::ext::oneapi::bfloat16;
     auto* w_kn = static_cast<BF*>(dequant_workspace);
     moe_mixed_detail::dequant_to_KN<BF>(q, weights, scales, zeros, w_kn, weight_dtype, num_experts, N, K, group_size,
-                                        asym);
+                                        asym, num_tokens_per_expert);
     moe_gemm(q, activations, w_kn, /*scales=*/nullptr, outputs, act_dtype, N, K, num_tokens_per_expert, num_experts);
   } else {
     throw std::invalid_argument("moe_gemm_prefill: act_dtype must be F16 or BF16");
