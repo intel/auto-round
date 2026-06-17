@@ -15,6 +15,15 @@ from auto_round.autoround import AutoRound
 
 # support for old api
 from auto_round.autoround import AutoRoundLLM, AutoRoundMLLM, AutoRoundAdam, AutoRoundDiffusion
+from auto_round.algorithms.quantization.rtn.config import OptimizedRTNConfig, RTNConfig
+from auto_round.algorithms.quantization.sign_round.config import (
+    AdamRoundConfig,
+    SignRoundConfig,
+    SignRoundV2Config,
+)
+from auto_round.algorithms.transforms.awq.config import AWQConfig
+from auto_round.algorithms.transforms.quarot.config import RotationConfig
+from auto_round.algorithms.transforms.spinquant.preprocessor import SpinQuantConfig
 from auto_round.schemes import QuantizationScheme
 from auto_round.auto_scheme import AutoScheme
 from auto_round.utils import LazyImport
@@ -23,3 +32,22 @@ from auto_round.utils import monkey_patch
 monkey_patch()
 
 from .version import __version__
+
+__all__ = [
+    "__version__",
+    "AutoRound",
+    "AutoRoundLLM",
+    "AutoRoundMLLM",
+    "AutoRoundAdam",
+    "AutoRoundDiffusion",
+    "AutoScheme",
+    "QuantizationScheme",
+    "RTNConfig",
+    "OptimizedRTNConfig",
+    "SignRoundConfig",
+    "AdamRoundConfig",
+    "SignRoundV2Config",
+    "AWQConfig",
+    "RotationConfig",
+    "SpinQuantConfig",
+]

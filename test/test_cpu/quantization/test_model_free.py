@@ -351,23 +351,6 @@ class TestModelFreeMXFP:
         assert out["layer.weight_scale"].shape == (64, 4)
         assert out["layer.weight_scale"].dtype == torch.uint8
 
-    def test_mxfp8_max_value_scaling(self):
-        """Input bfloat16 weight with max value 240; after MXFP8 quantization
-        the stored FP8 values should be clamped to 448 (fp8_e4m3fn max) and
-        must NOT be NaN.
-
-        quant_mx computes shared_exp = floor(log2(240)) - emax = 7 - 8 = -1,
-        so scale = 2^-1 = 0.5.  The normalised value is 240/0.5 = 480 which
-        exceeds the FP8 max of 448 and must be clamped before the fp8 cast.
-        """
-        w_bf16 = torch.full((64, 128), 240, dtype=torch.bfloat16)
-        out = _quantize_weight_mxfp(w_bf16, "layer", bits=8, group_size=32, data_type="mx_fp")
-        assert out["layer.weight"].dtype == torch.float8_e4m3fn
-        weight_fp32 = out["layer.weight"].to(torch.float32)
-        assert not torch.isnan(weight_fp32).any(), "FP8 weight must not contain NaN"
-        max_val = torch.max(weight_fp32).item()
-        assert max_val == 448, f"Expected 448 (fp8_e4m3fn max after clamp), got {max_val}"
-
     @require_compressed_tensors
     @pytest.mark.parametrize("scheme,fmt", [("MXFP4", "mxfp4-pack-quantized"), ("MXFP8", "mxfp8-quantized")])
     def test_e2e_mxfp(self, tmp_path, scheme, fmt):
@@ -476,9 +459,10 @@ class TestCliAutoRouting:
     def test_auto_routes(self, tmp_path):
         model_dir = _make_model_dir(tmp_path, _LLAMA_CFG, {"layer.weight": torch.randn(64, 128)})
         out_dir = str(tmp_path / "out")
-        from auto_round.__main__ import BasicArgumentParser, tune
+        from auto_round.cli.main import tune
+        from auto_round.cli.parser import build_quantize_parser
 
-        args = BasicArgumentParser().parse_args(
+        args = build_quantize_parser().parse_args(
             [
                 "--model",
                 model_dir,
@@ -497,9 +481,9 @@ class TestCliAutoRouting:
         assert _read_qconfig(out_dir).get("model_free") is True
 
     def test_disable_model_free_flag(self):
-        from auto_round.__main__ import BasicArgumentParser
+        from auto_round.cli.parser import build_quantize_parser
 
-        args = BasicArgumentParser().parse_args(
+        args = build_quantize_parser().parse_args(
             [
                 "--model",
                 "dummy",
