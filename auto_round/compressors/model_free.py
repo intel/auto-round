@@ -253,9 +253,9 @@ def _list_weight_shards(source_dir: str) -> list[str]:
         if fname.endswith(".safetensors.index.json"):
             return _shards_from_index(os.path.join(source_dir, fname))
 
-    # --- safetensors: any single .safetensors file ---
+    # --- safetensors: single file or index-less multi-file shards ---
     st_files = sorted(f for f in os.listdir(source_dir) if f.endswith(".safetensors"))
-    if len(st_files) == 1:
+    if len(st_files) >= 1:
         return st_files
 
     # --- pytorch .bin: standard index ---
@@ -275,11 +275,8 @@ def _list_weight_shards(source_dir: str) -> list[str]:
 
     # --- pytorch .bin: any single .bin file ---
     bin_files = sorted(f for f in os.listdir(source_dir) if f.endswith(".bin"))
-    if len(bin_files) == 1:
+    if len(bin_files) >= 1:
         return bin_files
-
-    # --- safetensors: single file ---
-    return ["model.safetensors"]
 
 
 def _is_eligible_weight(tensor_name: str, tensor: torch.Tensor) -> bool:
@@ -574,6 +571,8 @@ def _quantize_single_tensor(
     layer_name = tensor_name.rsplit(".", 1)[0]
 
     if not _is_eligible_weight(tensor_name, tensor):
+        if tensor_name.endswith(".weight"):
+            return layer_name, {tensor_name: tensor}, None, layer_name
         return layer_name, {tensor_name: tensor}, None, None
 
     if matcher.should_ignore(tensor_name):
@@ -845,6 +844,13 @@ def _process_shard(
 
     Returns:
         (output_tensors, quantized_layer_names, ignored_layer_names)
+
+    ``ignored_layer_names`` is derived by comparing the set of input ``.weight``
+    layer names (collected after fused-expert splitting) with the final set of
+    quantized layer names.  Any layer that had a ``.weight`` tensor in the input
+    but was NOT quantized is reported as ignored — this correctly captures
+    user-ignored layers, predefined-skipped layers, non-eligible weights, and
+    any other pass-through case without separate per-tensor tracking.
     """
     if matcher is None:
         matcher = _PatternMatcher(
@@ -855,7 +861,6 @@ def _process_shard(
 
     output_tensors: dict[str, torch.Tensor] = {}
     quantized_layers: list[str] = []
-    ignored_layers: list[str] = []
 
     if shard_path.endswith(".bin"):
         # PyTorch pickle checkpoint — load with weights_only where supported.
@@ -874,6 +879,12 @@ def _process_shard(
             raw_tensors = {name: f.get_tensor(name) for name in f.keys()}
 
     raw_tensors = split_fused_expert_tensors(raw_tensors)
+
+    # Snapshot eligible weight layer names *before* any preprocessing so that
+    # the ignored-layer list can be derived by dict comparison at the end.
+    input_weight_layers: list[str] = list(
+        dict.fromkeys(k.rsplit(".", 1)[0] for k in raw_tensors if k.endswith(".weight"))
+    )
 
     # Preserve original tensors for ignored/skipped layers so that already-
     # quantized weights (FP8, FP4-packed, etc.) are NOT dequantized.
@@ -911,7 +922,7 @@ def _process_shard(
 
     for tensor_name in list(raw_tensors.keys()):
         tensor = raw_tensors.pop(tensor_name)
-        _layer_name, out_dict, q_layer, ig_layer = _quantize_single_tensor(
+        _layer_name, out_dict, q_layer, _ig_layer = _quantize_single_tensor(
             tensor_name,
             tensor,
             matcher,
@@ -920,8 +931,10 @@ def _process_shard(
         output_tensors.update(out_dict)
         if q_layer:
             quantized_layers.append(q_layer)
-        if ig_layer:
-            ignored_layers.append(ig_layer)
+
+    # Derive ignored layers by comparing input weight layers with quantized set.
+    quantized_set = set(quantized_layers)
+    ignored_layers: list[str] = [l for l in input_weight_layers if l not in quantized_set]
 
     return output_tensors, quantized_layers, ignored_layers
 
@@ -1394,13 +1407,29 @@ class _ModelFreeCompressorCore:
             )
 
     def _parse_scheme(self) -> None:
-        self.scheme_obj = _normalize_scheme(self.scheme_input)
+        scheme_in = self.scheme_input
+        if isinstance(scheme_in, str) and scheme_in.upper() == "W4A16_MIXED":
+            # Match regular-flow mixed recipe behavior in model-free mode:
+            # default non-expert linear layers use 8-bit; expert overrides are
+            # injected in _parse_layer_config.
+            self.scheme_obj = _normalize_scheme("W8A16")
+        else:
+            self.scheme_obj = _normalize_scheme(scheme_in)
         _validate_supported_scheme(self.scheme_obj, self.scheme_input)
         ds = asdict(self.scheme_obj)
         self.default_scheme = {k: v for k, v in ds.items() if v is not None}
 
     def _parse_layer_config(self) -> None:
         lc = copy.deepcopy(self.layer_config_input) if self.layer_config_input else {}
+
+        if isinstance(self.scheme_input, str) and self.scheme_input.upper() == "W4A16_MIXED":
+            # Keep shared experts at 8-bit while routing experts to 4-bit.
+            # User-provided layer_config entries (if any) still take priority.
+            if "shared_expert" not in lc:
+                lc[".shared_expert."] = {"bits": 8, "data_type": "int"}
+            if "expert" not in lc:
+                lc[".experts."] = {"bits": 4, "data_type": "int"}
+                lc[".moe."] = {"bits": 4, "data_type": "int"}
 
         # Append '.' only for keys ending with ".<digits>" to avoid partial
         # numeric matches (e.g. layer.1 should not match layer.10).
