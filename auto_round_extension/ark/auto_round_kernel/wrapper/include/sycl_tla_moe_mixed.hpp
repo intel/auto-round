@@ -85,8 +85,12 @@ class MoEDequantKernelFP8;
 //   - INT2: every byte was read four times -> now once.
 //   - All quantized paths: every scale (and zero) was reloaded by every K
 //     element in the group -> now once per PACK_K elements.
-// Group-wise scale sharing is safe because PACK_K <= group_size in every
-// supported configuration (group_size >= 32 in practice).
+// Group-wise scale sharing is safe because PACK_K *divides* group_size in
+// every supported configuration: PACK_K is 2 (INT4) or 4 (INT2/INT8/FP8),
+// and group_size is always a power of two >= 32 (typically 32, 64, or 128).
+// As a result `k_base / group_size` yields the same group index for every
+// K element in the PACK_K run, and each kernel can hoist a single scale
+// (and, for asym, a single zero) load to amortise across the run.
 //
 // WG_N is the sub-group store width along N. 32 yields a single 64-byte
 // coalesced burst per row for FP16/BF16 writes, which matches the L1
@@ -173,8 +177,8 @@ void launch_dequant_int8(sycl::queue* q, const uint8_t* weights_NK, const Scalar
         const size_t w_row = (static_cast<size_t>(e) * N + static_cast<size_t>(n)) * K;
         const size_t out_base = static_cast<size_t>(e) * K * N + static_cast<size_t>(n);
         // Hoist scale/zero loads: PACK_K_INT8 K values share the same group
-        // because PACK_K_INT8 <= group_size and groups are aligned at K
-        // multiples of group_size (PACK_K_INT8 divides group_size).
+        // because PACK_K_INT8 divides group_size (see PACK_K constants
+        // above), so `k_base / group_size` is constant across the run.
         const int g = k_base / group_size;
         const size_t s_idx = (static_cast<size_t>(e) * N + static_cast<size_t>(n)) * num_groups_k +
                              static_cast<size_t>(g);
@@ -232,6 +236,8 @@ void launch_dequant_int4(sycl::queue* q, const uint8_t* weights_NKp, const Scala
         const int n = static_cast<int>(it.get_global_id(2));
         if (n >= N) return;
         const int k_base = kp * PACK_K_INT4;
+        // PACK_K_INT4 (=2) divides group_size, so all PACK_K_INT4 K values
+        // in this run share the same scale/zero (one hoisted load each).
         const int g = k_base / group_size;
         const size_t s_idx = (static_cast<size_t>(e) * N + static_cast<size_t>(n)) * num_groups_k +
                              static_cast<size_t>(g);
@@ -295,6 +301,8 @@ void launch_dequant_int2(sycl::queue* q, const uint8_t* weights_NKp, const Scala
         const int n = static_cast<int>(it.get_global_id(2));
         if (n >= N) return;
         const int k_base = kp * PACK_K_INT2;
+        // PACK_K_INT2 (=4) divides group_size, so all PACK_K_INT2 K values
+        // in this run share the same scale/zero (one hoisted load each).
         const int g = k_base / group_size;
         const size_t s_idx = (static_cast<size_t>(e) * N + static_cast<size_t>(n)) * num_groups_k +
                              static_cast<size_t>(g);
