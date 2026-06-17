@@ -348,6 +348,9 @@ static inline void _validate_storage_weight(const storage::gemm::StorageWeightNI
   }
 }
 
+// Forward declaration for the 4-arg overload used by the 3-arg compatibility wrapper.
+static inline void BTLAGemmUnpack(void* B, float* DQB, void* ThreadPool, size_t blob_count);
+
 static inline void BTLAGemmUnpack(void* B, float* DQB, void* ThreadPool) {
   BTLAGemmUnpack(B, DQB, ThreadPool, 0);
 }
