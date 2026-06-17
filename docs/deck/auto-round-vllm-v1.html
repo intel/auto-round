@@ -379,7 +379,28 @@
     <div class="author">Yi Liu &nbsp;·&nbsp; on behalf of the Intel AutoRound Team</div>
   </div>
 
-  <!-- ============ SLIDE 2: Part 1 Section ============ -->
+  <!-- ============ SLIDE 2: Outline ============ -->
+  <div class="slide">
+    <h2>Outline</h2>
+    <div class="flex-grow" style="display:flex; align-items:center;">
+      <div style="display:grid; grid-template-columns:auto 1fr auto; gap:12px 24px; font-size:1.1rem; width:100%; max-width:850px;">
+        <span class="bold" style="font-size:1.6rem; color:var(--vllm-blue);">01</span>
+        <span class="bold">Quantization Basics</span>
+        <span class="badge badge-dim">~15 min</span>
+        <span class="bold" style="font-size:1.6rem; color:var(--vllm-blue);">02</span>
+        <span class="bold">AutoRound: How It Works &amp; Where It's Used</span>
+        <span class="badge badge-dim">~30 min</span>
+        <span class="bold" style="font-size:1.6rem; color:var(--vllm-blue);">03</span>
+        <span class="bold">Deployment with vLLM/vLLM-Omni</span>
+        <span class="badge badge-dim">~15 min</span>
+        <span class="bold" style="font-size:1.6rem; color:var(--vllm-blue);">04</span>
+        <span class="bold">Best Practices &amp; Q&amp;A</span>
+        <span class="badge badge-dim">~10 min</span>
+      </div>
+    </div>
+  </div>
+
+  <!-- ============ SLIDE 3: Part 1 Section ============ -->
   <div class="slide section-slide">
     <div class="section-num">01</div>
     <h2>Quantization Basics</h2>
@@ -461,7 +482,7 @@ INT4 weight:  [  3,    -7,     7,    -1,   ...]      ← 4 bits</pre>
             <tr><td class="bold">INT8</td><td>8</td><td>—</td><td>—</td><td>Uniform</td></tr>
             <tr><td class="bold">FP8 (E4M3)</td><td>8</td><td>4</td><td>3</td><td>Non-uniform</td></tr>
             <tr><td class="bold">INT4</td><td>4</td><td>—</td><td>—</td><td>Uniform</td></tr>
-            <tr><td class="bold">FP4 / MXFP4</td><td>4</td><td>Block-shared</td><td>2–3</td><td>Block FP</td></tr>
+            <tr><td class="bold">FP4 / MXFP4</td><td>4</td><td>1</td><td>2</td><td>Non-uniform</td></tr>
           </tbody>
         </table>
       </div>
@@ -553,17 +574,10 @@ INT4 weight:  [  3,    -7,     7,    -1,   ...]      ← 4 bits</pre>
         </div>
         <div class="stack-layer" style="background:var(--vllm-blue-light); color:var(--vllm-blue-dark); border:2px solid var(--vllm-blue); margin-left:40px;">
           <strong>Quantization Layer &nbsp;← AutoRound</strong><br>
-          <span class="text-xs">QuantMethod dispatch &nbsp;·&nbsp; Packed→unpacked &nbsp;·&nbsp; Kernel selection</span>
+          <span class="text-xs">QuantMethod dispatch &nbsp;·&nbsp; Repack &nbsp;·&nbsp; Kernel selection</span>
         </div>
         <div class="stack-layer" style="background:var(--text); color:#fff;">
           Hardware &nbsp;<span style="font-weight:400; opacity:0.8;">CUDA &nbsp;·&nbsp; XPU &nbsp;·&nbsp; HPU &nbsp;·&nbsp; CPU</span>
-        </div>
-      </div>
-      <div>
-        <h3>The Quantization Callstack</h3>
-        <p class="text-sm text-dim mb-8">(Based on the trace results)</p>
-        <div class="placeholder-box" style="padding:40px;">
-          <strong>[P]</strong> — Quantization callstack diagram
         </div>
       </div>
     </div>
@@ -572,8 +586,8 @@ INT4 weight:  [  3,    -7,     7,    -1,   ...]      ← 4 bits</pre>
   <!-- ============ SLIDE 9: Part 2 Section ============ -->
   <div class="slide section-slide">
     <div class="section-num">02</div>
-    <h2>AutoRound Introduction &amp; Practice</h2>
-    <p>Why AutoRound maintains accuracy at low bit-widths and why it's practical for deployment · ~20 min</p>
+    <h2>AutoRound: How It Works &amp; Where It's Used</h2>
+    <p>Algorithm, engineering, community adoption — and why it's practical for deployment · ~30 min</p>
   </div>
 
   <!-- ============ SLIDE 10: The Core Problem (2.1) ============ -->
@@ -770,7 +784,8 @@ W_dequant = W_quant * scale</pre>
         <tbody>
           <tr><td class="bold">Models</td><td>LLMs, VLMs (LLaVA, Qwen-VL, +more), Diffusion (Stable Diffusion, FLUX), Audio/TTS (Mimo-Audio)</td></tr>
           <tr><td class="bold">Quantization Schemes</td><td>INT (W2A16–W8A16), FP8 (E4M3/E5M2, block-wise), MXFP4/8, NVFP4, GGUF (Q2_K–Q8_0), Mixed (per-layer AutoScheme)</td></tr>
-          <tr><td class="bold">Hardware</td><td>XPU, CUDA, HPU (Gaudi), CPU, MPS Apple Silicon </td></tr>
+          <tr><td class="bold">Target Module Types</td><td>Linear, MoE, KV Cache, Attention</td></tr>
+          <tr><td class="bold">Hardware</td><td>XPU, CUDA, HPU (Gaudi), CPU</td></tr>
         </tbody>
       </table>
     </div>
@@ -830,13 +845,6 @@ W_dequant = W_quant * scale</pre>
     </div>
   </div>
 
-  <!-- ============ SLIDE 17: Part 3 Section ============ -->
-  <div class="slide section-slide">
-    <div class="section-num">03</div>
-    <h2>AutoRound in the Community</h2>
-    <p>Not just a research algorithm — a usable ecosystem component · ~10 min</p>
-  </div>
-
   <!-- ============ SLIDE 18: Community Tools (3.1) ============ -->
   <div class="slide">
     <h2>Integration with Community Tools</h2>
@@ -847,12 +855,12 @@ W_dequant = W_quant * scale</pre>
         <table class="dense-table">
           <thead><tr><th>Tool</th><th>Type of Integration</th></tr></thead>
           <tbody>
-            <tr><td class="bold">Transformers</td><td>Model loading (loads AutoRound quantized model)</td></tr>
-            <tr><td class="bold">LLM-Compressor</td><td>One of algorithms (<code>AutoRoundModifier</code>)</td></tr>
+            <tr><td class="bold">Transformers</td><td>Native quantized model loading via <code>quantization_config</code></td></tr>
+            <tr><td class="bold">LLM-Compressor</td><td>One of algorithms(<code>AutoRoundModifier</code>)</td></tr>
             <tr><td class="bold">TorchAO</td><td>One of algorithms</td></tr>
-            <tr class="hl-row"><td class="bold">vLLM</td><td>Model loading (loads AutoRound quantized model)</td></tr>
-            <tr class="hl-row"><td class="bold">vLLM-Omni</td><td>Model loading (loads AutoRound quantized model)</td></tr>
-            <tr><td class="bold">SGLang</td><td>Loads AutoRound quantized model</td></tr>
+            <tr class="hl-row"><td class="bold">vLLM</td><td>Native quantized model loading</td></tr>
+            <tr class="hl-row"><td class="bold">vLLM-Omni</td><td>Native quantized model loading</td></tr>
+            <tr><td class="bold">SGLang</td><td>Native quantized model loading</td></tr>
           </tbody>
         </table>
       </div>
@@ -873,6 +881,7 @@ W_dequant = W_quant * scale</pre>
       <div>
         <h3>Low-Bit Open LLM Leaderboard</h3>
         <p class="text-sm mb-8"><a href="https://huggingface.co/spaces/Intel/low_bit_open_llm_leaderboard">huggingface.co/spaces/Intel/low_bit_open_llm_leaderboard</a></p>
+        <img src="./images/ld.png" alt="Low-Bit Leaderboard" style="width:100%; border-radius:8px; border:1px solid var(--border-light); margin-bottom:12px;">
         <div class="card card-accent">
           <ul class="text-sm">
             <li><strong>Agent-driven</strong> — users can submit models for evaluation</li>
@@ -897,7 +906,7 @@ W_dequant = W_quant * scale</pre>
 
   <!-- ============ SLIDE 20: Part 4 Section ============ -->
   <div class="slide section-slide">
-    <div class="section-num">04</div>
+    <div class="section-num">03</div>
     <h2>AutoRound Deployment with vLLM/vLLM-Omni</h2>
     <p>Making AutoRound actionable in real serving workflows · ~15 min</p>
   </div>
@@ -940,6 +949,30 @@ auto-round \
     --max-num-batched-tokens 8192</pre>
         </div>
       </div>
+    </div>
+  </div>
+
+  <!-- ============ SLIDE: Quantization Callstack ============ -->
+  <div class="slide">
+    <h2>The Quantization Callstack</h2>
+    <p class="text-sm text-dim mb-12">(Based on the trace results)</p>
+    <div class="flex-grow" style="display:flex; flex-direction:column; gap:3px;">
+      <div class="flow-step">① vLLM loads config.json → detects <code>"quant_method": "auto-round"</code></div>
+      <div class="flow-arrow">▼</div>
+      <div class="flow-step">② QuantizationConfig → creates QuantMethod per layer type</div>
+      <div class="flow-arrow">▼</div>
+      <div class="flow-step">③ QuantMethod.apply(weights, layer) → wraps forward with quantized matmul</div>
+      <div class="flow-arrow">▼</div>
+      <div class="flow-step">④ Weights loaded from safetensors, packed format auto-detected</div>
+      <div class="flow-arrow">▼</div>
+      <div class="flow-step">⑤ Kernel dispatch: Marlin → Triton → Torch fallback</div>
+      <div class="flow-arrow">▼</div>
+      <div class="flow-step" style="border-color:var(--green); border-width:2px;">
+        ⑥ Forward: unpack weights → INT4 matmul → return output
+      </div>
+    </div>
+    <div class="placeholder-box mt-12" style="padding:12px;">
+      <strong>[P]</strong> — Trace-based callstack diagram
     </div>
   </div>
 
@@ -1066,7 +1099,7 @@ auto-round \
 
   <!-- ============ SLIDE 26: Part 5 Section ============ -->
   <div class="slide section-slide">
-    <div class="section-num">05</div>
+    <div class="section-num">04</div>
     <h2>Common Issues, Best Practices &amp; Q&amp;A</h2>
     <p>Practical decision rules to take home · ~10 min</p>
   </div>
@@ -1190,7 +1223,7 @@ auto-round \
 <div class="nav-bar">
   <button onclick="toggleSidebar()" id="menuBtn" title="Press M for menu">&#x2630;</button>
   <button onclick="prevSlide()">&#x25C0; Prev</button>
-  <span id="slideNum" style="min-width:60px; text-align:center;">1 / 30</span>
+  <span id="slideNum" style="min-width:60px; text-align:center;">1 / 31</span>
   <div class="progress-track">
     <div class="progress-fill" id="progressFill"></div>
   </div>
@@ -1204,6 +1237,7 @@ auto-round \
 
   const slideTitles = [
     'Title',
+    'Outline',
     '— Part 1: Quantization Basics',
     '1.1 — What Is Quantization?',
     '1.2 — Core Quantization Concepts',
@@ -1211,7 +1245,7 @@ auto-round \
     '1.7 — PTQ vs. QAT',
     '1.4 — Why Quantization Is Necessary',
     '1.8 — Quantization in vLLM',
-    '— Part 2: AutoRound Intro & Practice',
+    '— Part 2: How It Works & Where It\'s Used',
     '2.1 — The Core Problem',
     '2.2 — AutoRound Algorithm',
     '2.3 — SignSGD: Optimization Engine',
@@ -1219,17 +1253,17 @@ auto-round \
     '2.4 — QDQ Design',
     '2.6 — AutoRound Support Matrix',
     '2.7 — Kernel Library Support',
-    '— Part 3: AutoRound in the Community',
     '3.1 — Community Tool Integration',
     '3.2 — Low-Bit Leaderboard',
-    '— Part 4: Deployment with vLLM',
+    '— Part 3: Deployment with vLLM',
     '4.1 — End-to-End Workflow',
     '4.2 — LLM Serving Scenario',
+    'Quantization Callstack',
     '4.3 — VLM/Diffusion Example',
     'Wan2.2 — Video Generation (W4A16)',
     'FLUX — CFG Parallel Performance',
     '4.7 — Important Tunable Parameters',
-    '— Part 5: Best Practices & Q&A',
+    '— Part 4: Best Practices & Q&A',
     'Best Practices Overview',
     '5.4 — Future Work',
     'Key Resources & Closing'
