@@ -44,7 +44,7 @@ class AutoSkipInitMeta(type):
 class BaseContext(metaclass=AutoSkipInitMeta):
     _instances = {}
 
-    def __init__(self):
+    def __init__(self) -> None:
         logger.debug(f"{self.__class__.__name__} context initialized.")
 
     @classmethod
