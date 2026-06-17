@@ -54,7 +54,7 @@ from test_moe import (  # noqa: E402
     _pack_int8_sym,
 )
 
-ark = auto_round_kernel.ARK()
+ark = auto_round_kernel
 
 
 # ---------------------------------------------------------------------------
