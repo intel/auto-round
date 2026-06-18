@@ -1151,7 +1151,7 @@ def move_module_to_tuning_device(module, major_device="cpu"):
         # accumulation hits a cuda/cpu device mismatch.
         target = _normalize(device)
         for p in m.parameters(recurse=False):
-            if p.device != target:  # TODO have check
+            if p.device != target:
                 p.data = p.data.to(target)
             if p.grad is not None and p.grad.device != target:
                 p.grad.data = p.grad.data.to(target)
@@ -1162,16 +1162,6 @@ def move_module_to_tuning_device(module, major_device="cpu"):
                 m._buffers[b_name] = b.to(target)
 
     for n, m in module.named_modules():
-        # if "imatrix" in m.__class__.__name__.lower():
-        #     target = m.orig_layer.tuning_device
-        #     if hasattr(m, "qdq_w"):
-        #         m.qdq_w.to(target)
-        #         if m.orig_layer.bias is not None:
-        #             m.orig_layer.bias.to(major_device)
-        #     else:
-        #         m.to(major_device)
-        #     _move_own_tensors(m, target)
-
         if hasattr(m, "orig_layer"):
             target = m.orig_layer.tuning_device
             m.to(target)
