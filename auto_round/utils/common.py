@@ -24,7 +24,6 @@ from typing import Any
 import torch
 import transformers
 from packaging import version
-from transformers.models.diffusion_gemma.modeling_diffusion_gemma import DiffusionGemmaModel
 
 from auto_round.export.export_to_gguf.config import GGUF_CONFIG
 from auto_round.logger import logger
