@@ -113,7 +113,7 @@ class QKRotationWrapper(nn.Module):
     since R is orthogonal (R @ R.T = I).
     """
 
-    def __init__(self, original_func: Callable[..., Any]):
+    def __init__(self, original_func: Callable[..., Any]) -> None:
         super().__init__()
         self.original_func = original_func
         self._had_K: torch.Tensor | None = None
