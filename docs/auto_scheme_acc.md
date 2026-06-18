@@ -21,7 +21,7 @@ evalscope eval --model qwen --api-url http://127.0.0.1:8000/v1   --api-key EMPTY
 
 | evalscope, options q2ks,q4ks avgbits 3.5, ignore_scale_zp | math_500 | gpqa_diamond | mmlu_pro |
 |-----------------------------------------------------------|----------|--------------|----------|
-| qwen3.5-4b bf16 o                                         | 0.48     | 0.4192       | 0.5891   |
+| qwen3.5-4b bf16                                              | 0.48     | 0.4192       | 0.5891   |
 | qwen3.5-4b  (AR<=0.13.1) iters 0                          | 0.228    | 0.298        | 0.4583   |
 | pr branch  (AR>0.13.1)  iters 0                           | 0.432    | 0.4444       | 0.5922   |
 
