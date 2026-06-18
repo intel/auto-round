@@ -337,7 +337,7 @@ class AutoRound(object):
         seqlen: int = None,
         **kwargs,
     ) -> "BaseCompressor":
-
+        from auto_round.utils.model import is_model_free_route
         if alg_configs is None:
             alg_configs = "auto_round"
 
