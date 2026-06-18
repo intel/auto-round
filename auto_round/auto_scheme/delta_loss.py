@@ -1416,7 +1416,7 @@ def _gen_layer_config(
 
     pbar_cnt = 0
     need_weight_grad = False
-    need_imatrix = False # only trigger it for gguf q-k quant
+    need_imatrix = False  # only trigger it for gguf q-k quant
     for index, scheme in enumerate(schemes):
         if check_bf16_scheme(scheme):
             continue
