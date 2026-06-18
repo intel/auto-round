@@ -1117,9 +1117,9 @@ auto-round \
   <!-- ============ SLIDE 26: Best Practices Overview ============ -->
   <div class="slide">
     <h2>Best Practices Overview</h2>
-    <div class="flex-grow" style="display:flex; align-items:center;">
-      <div style="width:100%;">
-        <div class="card card-accent" style="padding:28px 32px;">
+    <div class="grid-2 flex-grow" style="gap:18px;">
+      <div style="display:flex; flex-direction:column; gap:14px;">
+        <div class="card card-accent" style="padding:24px 28px; margin-bottom:0;">
           <h3>Choosing Quantization Schemes</h3>
           <p class="text-sm mb-8"><strong>Core principle:</strong> choose the scheme that has a <strong>mature kernel</strong> on your target platform. No kernel → no speedup, regardless of bit-width.</p>
           <table class="dense-table" style="margin-bottom:0;">
@@ -1133,6 +1133,18 @@ auto-round \
             </tbody>
           </table>
         </div>
+      </div>
+      <div class="card card-filled" style="padding:24px 28px; margin-bottom:0;">
+        <h3>Intel Hardware — Native Low-Bit Support</h3>
+        <p class="text-sm mb-8 text-dim">Matching quantization schemes to Intel's inference accelerator roadmap.</p>
+        <table class="dense-table" style="margin-bottom:0;">
+          <thead><tr><th>Product</th><th>Launch</th><th>Native dtype</th></tr></thead>
+          <tbody>
+            <tr><td class="bold">Arc GPU B60 / B70</td><td>Launched</td><td>INT8</td></tr>
+            <tr class="hl-row"><td class="bold">CRI GPU (Crescent Island)</td><td>2026 H2</td><td>MXFP4 / MXFP8</td></tr>
+          </tbody>
+        </table>
+        <p class="text-xs text-dim mt-8">CRI: Intel's specialized, cost-optimized data center AI inference accelerator.</p>
       </div>
     </div>
   </div>
