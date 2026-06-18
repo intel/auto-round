@@ -758,8 +758,8 @@ def get_score_for_scheme(
             m.scale_dtype = torch.bfloat16
 
         WrapperLayer = AutoSchemeWrapperLinear
-        if has_imatrix:
-            WrapperLayer = AutoSchemeWrapperLinearIMatrix
+        # if has_imatrix: # no better result
+        #     WrapperLayer = AutoSchemeWrapperLinearIMatrix
         if hasattr(m, "super_group_size") and m.super_group_size is not None:
             if has_imatrix:
                 WrapperLayer = AutoSchemeWrapperLinearForGGUFKImatrix
@@ -1416,6 +1416,7 @@ def _gen_layer_config(
 
     pbar_cnt = 0
     need_weight_grad = False
+    need_imatrix = False # only trigger it for gguf q-k quant
     for index, scheme in enumerate(schemes):
         if check_bf16_scheme(scheme):
             continue
@@ -1425,6 +1426,8 @@ def _gen_layer_config(
             scheme = asdict(scheme)
         bits = scheme.get("bits", 16)
         act_bits = scheme.get("act_bits", 16)
+        if scheme.get("super_group_size"):
+            need_imatrix = True
         if bits <= 8 < act_bits:
             need_weight_grad = True
         if not auto_scheme.low_gpu_mem_usage:
@@ -1434,24 +1437,21 @@ def _gen_layer_config(
     shared_layers = parse_shared_layers(model, auto_scheme.shared_layers)
 
     options_scores = []
-    disable_opt_rtn = False
-    if not disable_opt_rtn:
-        need_imatrix = True
 
-        if need_imatrix:
-            dataloader = get_dataloader(
-                tokenizer,
-                seqlen=max(seqlen * 2, 2048),
-                dataset_name=dataset,
-                seed=42,
-                bs=batch_size,
-                nsamples=min(nsamples, 128),
-            )
-            logger.info("start to compute imatrix in AutoScheme")
-            cal_imatrix(model, dataloader, major_device, low_gpu_mem_usage=auto_scheme.low_gpu_mem_usage)
-            memory_monitor.update()
-            memory_monitor.log_summary()
-            logger.info("finish calculating imatrix")
+    if need_imatrix:
+        dataloader = get_dataloader(
+            tokenizer,
+            seqlen=max(seqlen * 2, 2048),
+            dataset_name=dataset,
+            seed=42,
+            bs=batch_size,
+            nsamples=min(nsamples, 128),
+        )
+        logger.info("start to compute imatrix in AutoScheme")
+        cal_imatrix(model, dataloader, major_device, low_gpu_mem_usage=auto_scheme.low_gpu_mem_usage)
+        memory_monitor.update()
+        memory_monitor.log_summary()
+        logger.info("finish calculating imatrix")
 
     # Register hooks and clear all block weights before the scheme loop.
     # Hooks will transparently reload weights on demand during forward passes.
