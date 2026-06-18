@@ -517,7 +517,6 @@ INT4 weight:  [  3,    -7,     7,    -1,   ...]      ← 4 bits</pre>
             <tr><td class="bold">When</td><td>After training</td><td>During training</td></tr>
             <tr><td class="bold">Data needed</td><td>Small calibration set (128–512 samples)</td><td>Large calibration set</td></tr>
             <tr><td class="bold">Compute cost</td><td><span class="badge badge-green">Minutes to hours on 1 GPU</span></td><td><span class="badge badge-red">Hours to days on many GPUs</span></td></tr>
-            <tr><td class="bold">Access needed</td><td>Model weights only</td><td>Full training pipeline</td></tr>
             <tr class="hl-row"><td class="bold">Accuracy</td><td>Good (with advanced PTQ)</td><td>Best possible</td></tr>
           </tbody>
         </table>
@@ -718,7 +717,7 @@ W_dequant = W_quant * scale</pre>
       <div>
         <h3>Accuracy Comparison</h3>
         <p class="text-xs text-dim mb-8">Average accuracy of 10+ tasks at W2G128</p>
-        <img src="./algos-acc-compare.png" alt="Accuracy Comparison: AutoRound vs AWQ vs GPTQ"
+        <img src="./images/algos-acc-compare.png" alt="Accuracy Comparison: AutoRound vs AWQ vs GPTQ"
              style="width:100%; border-radius:8px; border:1px solid var(--border-light);">
       </div>
     </div>
@@ -860,7 +859,7 @@ W_dequant = W_quant * scale</pre>
             <tr><td class="bold">TorchAO</td><td>One of algorithms</td></tr>
             <tr class="hl-row"><td class="bold">vLLM</td><td>Native quantized model loading</td></tr>
             <tr class="hl-row"><td class="bold">vLLM-Omni</td><td>Native quantized model loading</td></tr>
-            <tr><td class="bold">SGLang</td><td>Native quantized model loading</td></tr>
+            <tr><td class="bold">More community engagements</td><td> \ </td></tr>
           </tbody>
         </table>
       </div>
@@ -886,7 +885,6 @@ W_dequant = W_quant * scale</pre>
           <ul class="text-sm">
             <li><strong>Agent-driven</strong> — users can submit models for evaluation</li>
             <li><strong>Low-bit focus</strong> — specifically tracks 2/3/4-bit quantization quality</li>
-            <li><strong>Multi-task evaluation</strong> — standard benchmarks (MMLU, HellaSwag, etc.)</li>
             <li><strong>Free calibration devices</strong> — users can quantize and evaluate models without their own GPU</li>
             <li><strong>Transparent</strong> — all results with methodology, calibration data, and parameters</li>
           </ul>
@@ -955,24 +953,10 @@ auto-round \
   <!-- ============ SLIDE: Quantization Callstack ============ -->
   <div class="slide">
     <h2>The Quantization Callstack</h2>
-    <p class="text-sm text-dim mb-12">(Based on the trace results)</p>
-    <div class="flex-grow" style="display:flex; flex-direction:column; gap:3px;">
-      <div class="flow-step">① vLLM loads config.json → detects <code>"quant_method": "auto-round"</code></div>
-      <div class="flow-arrow">▼</div>
-      <div class="flow-step">② QuantizationConfig → creates QuantMethod per layer type</div>
-      <div class="flow-arrow">▼</div>
-      <div class="flow-step">③ QuantMethod.apply(weights, layer) → wraps forward with quantized matmul</div>
-      <div class="flow-arrow">▼</div>
-      <div class="flow-step">④ Weights loaded from safetensors, packed format auto-detected</div>
-      <div class="flow-arrow">▼</div>
-      <div class="flow-step">⑤ Kernel dispatch: Marlin → Triton → Torch fallback</div>
-      <div class="flow-arrow">▼</div>
-      <div class="flow-step" style="border-color:var(--green); border-width:2px;">
-        ⑥ Forward: unpack weights → INT4 matmul → return output
+    <div class="flex-grow" style="display:flex; align-items:center; justify-content:center;">
+      <div class="placeholder-box" style="width:80%; padding:60px;">
+        <strong>[P]</strong> — Quantization callstack diagram (based on trace results)
       </div>
-    </div>
-    <div class="placeholder-box mt-12" style="padding:12px;">
-      <strong>[P]</strong> — Trace-based callstack diagram
     </div>
   </div>
 
