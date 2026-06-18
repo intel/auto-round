@@ -37,7 +37,7 @@ from auto_round.data_type.gguf import (
     search_gguf_scale_min_asym,
     search_gguf_scale_min_sym,
 )
-from auto_round.data_type.utils import reshape_pad_tensor_by_group_size, revert_tensor_by_pad, get_quant_func
+from auto_round.data_type.utils import get_quant_func, reshape_pad_tensor_by_group_size, revert_tensor_by_pad
 from auto_round.logger import logger
 from auto_round.schemes import QuantizationScheme, preset_name_to_scheme
 from auto_round.utils import (
@@ -169,7 +169,6 @@ class AutoSchemeWrapperLinear(WrapperLinear):
         return qdq_w, 1.0, None
 
 
-
 class AutoSchemeWrapperLinearIMatrix(WrapperLinear):
 
     def __init__(
@@ -205,7 +204,7 @@ class AutoSchemeWrapperLinearIMatrix(WrapperLinear):
         self.grad_mode = False
         if self.need_weight_grad:
             self.orig_layer.weight.requires_grad = True
-        self.weight_search_quant_func,_= get_quant_func(
+        self.weight_search_quant_func, _ = get_quant_func(
             orig_layer.data_type,
             orig_layer.bits,
             orig_layer.sym,
@@ -224,8 +223,8 @@ class AutoSchemeWrapperLinearIMatrix(WrapperLinear):
             bits=self.orig_layer.bits,
             group_size=self.orig_layer.group_size,
             v=torch.tensor(0, device=device),
-            min_scale= torch.tensor(1.0, device=device),
-            max_scale= torch.tensor(1.0, device=device),
+            min_scale=torch.tensor(1.0, device=device),
+            max_scale=torch.tensor(1.0, device=device),
             scale_dtype=self.orig_layer.scale_dtype,
             data_type=self.data_type,
             q_scale_thresh=self.q_scale_thresh,
@@ -234,6 +233,7 @@ class AutoSchemeWrapperLinearIMatrix(WrapperLinear):
         )
 
         self.register_buffer("qdq_w", qdq_w.detach().clone().to(self.orig_layer.weight.device))
+
         def save_grad(grad):
             w_diff = self.orig_layer.weight - self.qdq_w.to(self.orig_layer.weight.device)
             self.weight_score += torch.abs((grad.to(torch.float32) * w_diff.to(grad.device))).sum().item()
@@ -245,7 +245,6 @@ class AutoSchemeWrapperLinearIMatrix(WrapperLinear):
         self.orig_layer.weight.requires_grad_(False)
 
         self.qdq_w.register_hook(save_grad)
-
 
     def _qdq_act(self, x, act_min_scale=1.0, act_max_scale=1.0, act_max=None):
         if hasattr(self.orig_layer, "act_bits") and self.orig_layer.act_bits > 8:
@@ -285,7 +284,6 @@ class AutoSchemeWrapperLinearIMatrix(WrapperLinear):
 
     def _qdq_weight(self, value, min_scale, max_scale):
         return self.qdq_w, 1.0, None
-
 
 
 class AutoSchemeWrapperLinearForGGUFK(AutoSchemeWrapperLinear):
