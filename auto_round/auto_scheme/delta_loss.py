@@ -1033,7 +1033,7 @@ def move_module_to_tuning_device(module, major_device="cpu"):
         # accumulation hits a cuda/cpu device mismatch.
         target = _normalize(device)
         for p in m.parameters(recurse=False):
-            if p.device != target: #TODO have check
+            if p.device != target:  # TODO have check
                 p.data = p.data.to(target)
             if p.grad is not None and p.grad.device != target:
                 p.grad.data = p.grad.data.to(target)
