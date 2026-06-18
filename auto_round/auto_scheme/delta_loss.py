@@ -193,28 +193,21 @@ class AutoSchemeWrapperLinearForGGUFK(AutoSchemeWrapperLinear):
                 torch.tensor(0).to(device), torch.tensor(1.0).to(device), torch.tensor(1.0).to(device)
             )
         self.register_buffer("qdq_w", qdq_w.detach().clone().to(self.orig_layer.weight.device))
-        self.grad_mode = False
+
+        def save_grad(grad):
+            w_diff = self.orig_layer.weight - self.qdq_w.to(self.orig_layer.weight.device)
+            # TODO strange, grad could be in CPU
+            self.weight_score += torch.abs((grad.to(w_diff.device).to(torch.float32) * w_diff)).sum().item()
+            act_score = 0.0 if self.act_cnt <= 0 else self.total_act_score / self.act_cnt
+            self.mix_score = self.weight_score + act_score
+            return None
+
+        self.qdq_w.requires_grad_(True)
+        self.orig_layer.weight.requires_grad_(False)
+        self.qdq_w.register_hook(save_grad)
 
 
     def _qdq_weight(self, value, min_scale, max_scale):
-        if self.grad_mode:
-            def save_grad(grad):
-                w_diff = self.orig_layer.weight - self.qdq_w.to(self.orig_layer.weight.device)
-                # TODO strange, grad could be in CPU
-                # self.weight_score += torch.abs((grad.to(w_diff.device).to(torch.float32) * w_diff.to(torch.float32)).sum()).item()  # TODO add 2nd order
-                self.weight_score += torch.abs((grad.to(w_diff.device).to(torch.float32) * w_diff)).sum().item()
-                act_score = 0.0 if self.act_cnt <= 0 else self.total_act_score / self.act_cnt
-                self.mix_score = self.weight_score + act_score
-                return None
-
-            self.qdq_w.requires_grad_(True)
-            self.orig_layer.weight.requires_grad_(False)
-
-            self.qdq_w.register_hook(save_grad)
-        else:
-            self.qdq_w.requires_grad_(False)
-            self.orig_layer.weight.requires_grad_(False)
-
         return self.qdq_w, 1.0, None
 
 
@@ -241,22 +234,28 @@ class AutoSchemeWrapperLinearForGGUFKImatrix(AutoSchemeWrapperLinear):
             enable_torch_compile=enable_torch_compile,
             **kwargs,
         )
-        self.is_post_initialized = False
-        self.grad_mode = False
-        # self.post_init()
+        self.post_init_qdqw(device)
 
     @torch.no_grad()
-    def post_init_qdqw(self):
-        if self.is_post_initialized:
-            return
-        else:
-            qdq_w = self._init_scale().detach()
-            self.register_buffer("qdq_w", qdq_w.detach().clone().to(self.orig_layer.weight.device))
-            self.is_post_initialized=True
+    def post_init_qdqw(self,device): # Could not place in qdq_w, otherwise vram is much higher
+        qdq_w = self._init_scale(device).detach()
+        self.register_buffer("qdq_w", qdq_w.detach().clone().to(self.orig_layer.weight.device))
+
+        def save_grad(grad):
+            w_diff = self.orig_layer.weight - self.qdq_w.to(self.orig_layer.weight.device)
+            self.weight_score += torch.abs((grad.to(torch.float32) * w_diff.to(grad.device))).sum().item()
+            act_score = 0.0 if self.act_cnt <= 0 else self.total_act_score / self.act_cnt
+            self.mix_score = self.weight_score + act_score
+            return None
+
+        self.qdq_w.requires_grad_(True)
+        self.orig_layer.weight.requires_grad_(False)
+
+        self.qdq_w.register_hook(save_grad)
 
     @torch.no_grad()
-    def _init_scale(self):
-        tensor = self.orig_layer.weight.data
+    def _init_scale(self, device):
+        tensor = self.orig_layer.weight.data.to(device)
         bits = self.orig_layer.bits
         scale_dtype = self.orig_layer.scale_dtype
         imatrix = self.orig_layer.imatrix.to(tensor.device)
@@ -290,23 +289,6 @@ class AutoSchemeWrapperLinearForGGUFKImatrix(AutoSchemeWrapperLinear):
         return qdq_w.to(orig_dtype)
 
     def _qdq_weight(self, value, min_scale, max_scale):
-        self.post_init_qdqw()
-        if self.grad_mode:
-            def save_grad(grad):
-                w_diff = self.orig_layer.weight - self.qdq_w.to(self.orig_layer.weight.device)
-                self.weight_score += torch.abs((grad * w_diff.to(grad.device))).sum().item()
-                act_score = 0.0 if self.act_cnt <= 0 else self.total_act_score / self.act_cnt
-                self.mix_score = self.weight_score + act_score
-                return None
-
-            self.qdq_w.requires_grad_(True)
-            self.orig_layer.weight.requires_grad_(False)
-
-            self.qdq_w.register_hook(save_grad)
-        else:
-            pass
-            # self.qdq_w.requires_grad_(False)
-
         return self.qdq_w, 1.0, None
 
 
@@ -369,10 +351,9 @@ def cal_imatrix_low_gpu(model, dataloader, major_device):
         i+=1
         block_module = get_module(model,block_name)
         hook_move_gpu = block_module.register_forward_pre_hook(move_to_gpu_hook)
-        if i%4==0:
-            hook_move_cpu = block_module.register_forward_hook(move_to_cpu)
-        else:
-            hook_move_cpu = block_module.register_forward_hook(move_to_cpu_clear_memory)
+
+        hook_move_cpu = block_module.register_forward_hook(move_to_cpu)
+
         all_move_device_hooks.append(hook_move_gpu)
         all_move_device_hooks.append(hook_move_cpu)
 
@@ -409,6 +390,9 @@ def prepare_model_low_gpu(model, block_inputs: dict = None, pbar=None, major_dev
         @wraps(original_forward)
         def new_forward(*args, **kwargs):
             move_module_to_tuning_device(module, major_device=major_device)
+            # for n,m in module.named_modules():
+            #     if hasattr(m, "post_init_qdqw"):
+            #         m.post_init_qdqw()
 
             # Call the original forward
             with torch.no_grad():
@@ -424,7 +408,7 @@ def prepare_model_low_gpu(model, block_inputs: dict = None, pbar=None, major_dev
             block_inputs[module_name] = input_info
 
             module.to("cpu")
-            clear_memory(device_list=major_device) #slow
+            # clear_memory(device_list=major_device) #slow
             memory_monitor.log_summary()
 
             # Enable gradients for the output of the last block
@@ -540,8 +524,6 @@ def model_forward_low_gpu(model, dataloader, major_device="cuda", pbar=None):
         current_grad = last_grad_input
         del output, data
 
-
-
         # Manually compute gradients block by block
         last_block_backward_hook.remove()
 
@@ -596,8 +578,8 @@ def model_forward_low_gpu(model, dataloader, major_device="cuda", pbar=None):
 
             del block_output, main_output, block_input_args, block_input_kwargs
             block_module.to("cpu")
-            if index%4==0:
-                clear_memory(device_list=major_device) # this one is very slow and seems does not affect max ram usage
+            # if index%4==0:
+            #     clear_memory(device_list=major_device) # this one is very slow and seems does not affect max ram usage
             memory_monitor.update()
             memory_monitor.log_summary()
             pbar.update(1)
@@ -679,7 +661,7 @@ def get_score_for_scheme(
             new_m = WrapperLayer(
                 m,
                 device=device,
-                enable_minmax_tuning=False,  # TODO this should be change
+                enable_minmax_tuning=False,
                 enable_norm_bias_tuning=False,
                 enable_round_tuning=False,
                 need_weight_grad=need_weight_grad,
@@ -852,6 +834,8 @@ def get_score_for_scheme(
         for n, m in model.named_modules():
             if hasattr(m, "grad_mode"):
                 m.grad_mode = True
+            # if hasattr(m, "post_init_qdqw"):
+            #     m.post_init_qdqw()
 
         def _run_forward_loop(loader):
             _checked_pixel = False
@@ -1049,8 +1033,8 @@ def move_module_to_tuning_device(module, major_device="cpu"):
         # accumulation hits a cuda/cpu device mismatch.
         target = _normalize(device)
         for p in m.parameters(recurse=False):
-            if p.device != target:
-                p.data = p.data.to(target)
+            # if p.device != target: #TODO have check
+            #     p.data = p.data.to(target)
             if p.grad is not None and p.grad.device != target:
                 p.grad.data = p.grad.data.to(target)
         for b_name, b in list(m.named_buffers(recurse=False)):
@@ -1060,7 +1044,17 @@ def move_module_to_tuning_device(module, major_device="cpu"):
                 m._buffers[b_name] = b.to(target)
 
     for n, m in module.named_modules():
-        if hasattr(m, "orig_layer"):
+        if "imatrix" in m.__class__.__name__.lower():
+            target = m.orig_layer.tuning_device
+            if hasattr(m, "qdq_w"):
+                m.qdq_w.to(target)
+                if m.orig_layer.bias is not None:
+                    m.orig_layer.bias.to(major_device)
+            else:
+                m.to(major_device)
+            _move_own_tensors(m, target)
+
+        elif hasattr(m, "orig_layer"):
             target = m.orig_layer.tuning_device
             m.to(target)
             _move_own_tensors(m, target)
