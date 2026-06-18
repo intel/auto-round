@@ -23,11 +23,16 @@ from typing import Any
 
 import torch
 import transformers
-from transformers.models.diffusion_gemma.modeling_diffusion_gemma import DiffusionGemmaModel
 from packaging import version
 
 from auto_round.export.export_to_gguf.config import GGUF_CONFIG
 from auto_round.logger import logger
+
+try:
+    from transformers.models.diffusion_gemma.modeling_diffusion_gemma import DiffusionGemmaModel
+except ImportError:
+    # diffusion_gemma is only available in transformers >= 5.11.0.
+    DiffusionGemmaModel = None  # type: ignore[assignment]
 
 
 def download_audiocaps_csv():
@@ -250,6 +255,9 @@ def _patch_diffusion_gemma_tied_weights():
     fused parameter names (``gate_up_proj``, ``down_proj``).
     The fix is to prune the stale patterns at the moment the model is constructed.
     """
+    if DiffusionGemmaModel is None:
+        # diffusion_gemma is unavailable (transformers < 5.11.0); nothing to patch.
+        return
     if getattr(DiffusionGemmaModel, "_ar_tied_prune_patched", False):
         return
     original_init = DiffusionGemmaModel.__init__
