@@ -4,7 +4,7 @@ We tested with a fake model because the main branch currently has layer name mis
 
 ~~~bash
 python3 -m auto_round Qwen/Qwen3-8B     --options "gguf:q2_k_s,gguf:q4_k_s"     --target_bits 3.5     --ignore_scale_zp_bits     --iters 0     --format fake     --output_dir "./test_gguf"     --tasks mmlu,lambada_openai
-~~~~
+~~~
 
 eval
 
