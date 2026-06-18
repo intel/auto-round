@@ -392,14 +392,15 @@ class TestAWQWeightClip:
         assert len(output) > 0, "clip_as_init model should produce non-empty output"
 
 
-class TestAWQUseV2MXScaleSearch:
-    """Unit tests for AWQ's ``use_v2_mx_scale_search`` detection.
+class TestAWQUseV2ScaleSearch:
+    """Unit tests for AWQ's ``use_v2_scale_search`` detection and dispatch.
 
-    The flag must be True only when BOTH the terminal block quantizer resolves
-    to ``SignRoundV2Quantizer`` AND the weight ``data_type`` is an MXFP variant.
-    Regression guard: the block-quantizer config does not expose ``_alg_cls``,
-    so detection must go through the pipeline registry, not an ``_alg_cls``
-    string comparison (which always evaluated False before the fix).
+    The flag is True whenever the terminal block quantizer resolves to
+    ``SignRoundV2Quantizer``. The per-data-type init_scale injection (int/mx/nv,
+    sym only) is then handled by ``search_optimized_init_scale`` inside the QDQ
+    path. Regression guard: the block-quantizer config does not expose
+    ``_alg_cls``, so detection must go through the pipeline registry, not an
+    ``_alg_cls`` string comparison (which always evaluated False before the fix).
     """
 
     @staticmethod
@@ -426,20 +427,6 @@ class TestAWQUseV2MXScaleSearch:
             cfg.data_type = data_type
         return cfg
 
-    def test_signroundv2_block_is_detected(self):
-        """A normalized ``SignRoundConfig(enable_alg_ext=True)`` resolves to V2."""
-        q = self._awq_quantizer()
-        compressor = self._make_compressor(self._signroundv2_config())
-        assert q._block_quantizer_is_signroundv2(compressor) is True
-
-    def test_signround_v1_block_is_not_v2(self):
-        """A plain SignRound block quantizer must NOT be detected as V2."""
-        from auto_round.algorithms.quantization.sign_round.config import SignRoundConfig
-
-        q = self._awq_quantizer()
-        compressor = self._make_compressor(SignRoundConfig(iters=2))
-        assert q._block_quantizer_is_signroundv2(compressor) is False
-
     def test_rtn_block_is_not_v2(self):
         """An RTN block quantizer must NOT be detected as V2."""
         from auto_round.algorithms.quantization.rtn.config import RTNConfig
@@ -448,25 +435,35 @@ class TestAWQUseV2MXScaleSearch:
         compressor = self._make_compressor(RTNConfig(disable_opt_rtn=True))
         assert q._block_quantizer_is_signroundv2(compressor) is False
 
-    def test_use_v2_true_for_v2_block_and_mxfp(self):
-        """Flag is True for SignRoundV2 + MXFP weight data type."""
+    def test_use_v2_true_for_v2_block(self):
+        """Gate is True for any SignRoundV2 block (data-type gating is per-layer)."""
         q = self._awq_quantizer()
         compressor = self._make_compressor(self._signroundv2_config(data_type="mx_fp"))
-        assert q._resolved_data_type(compressor).startswith("mx_fp")
-        assert q._compute_use_v2_mx_scale_search(compressor) is True
+        assert q._block_quantizer_is_signroundv2(compressor) is True
 
-    def test_use_v2_false_for_v2_block_but_non_mxfp(self):
-        """Flag is False when the block is V2 but the data type is not MXFP."""
-        q = self._awq_quantizer()
-        compressor = self._make_compressor(self._signroundv2_config(data_type="int"))
-        assert q._compute_use_v2_mx_scale_search(compressor) is False
-
-    def test_use_v2_false_for_non_v2_block_with_mxfp(self):
-        """Flag is False when the data type is MXFP but the block is not V2."""
+    def test_use_v2_false_for_non_v2_block(self):
+        """Gate is False when the block is not SignRoundV2, regardless of dtype."""
         from auto_round.algorithms.quantization.sign_round.config import SignRoundConfig
 
         q = self._awq_quantizer()
         block = SignRoundConfig(iters=2)
         block.data_type = "mx_fp"
         compressor = self._make_compressor(block)
-        assert q._compute_use_v2_mx_scale_search(compressor) is False
+        assert q._block_quantizer_is_signroundv2(compressor) is False
+
+    def test_init_scale_dispatch_by_data_type(self):
+        """``search_optimized_init_scale`` injects only for sym int/mx/nv."""
+        import torch
+
+        from auto_round.data_type.utils import reshape_pad_tensor_by_group_size, search_optimized_init_scale
+
+        for dt, gs in (("int_sym", 128), ("mx_fp4", 32), ("nv_fp4", 16)):
+            weight = torch.randn(64, 128)
+            weight_reshape, _, _ = reshape_pad_tensor_by_group_size(weight, gs)
+            init_scale = search_optimized_init_scale(weight_reshape, dt, 4, None)
+            assert init_scale is not None, dt
+            assert init_scale.shape[0] == weight_reshape.shape[0]
+
+        # asym int and *_dq are not part of the optimized init-scale path.
+        assert search_optimized_init_scale(torch.randn(4, 128), "int_asym", 4, None) is None
+        assert search_optimized_init_scale(torch.randn(4, 128), "int_sym_dq", 4, None) is None
