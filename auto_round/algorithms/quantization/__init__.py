@@ -12,13 +12,33 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from auto_round.algorithms.quantization.base import BaseQuantizers
+from auto_round.algorithms.base import BasePipelineMember
+from auto_round.algorithms.quantization.base import BaseQuantizer, DiffusionMixin, RTNLayerFallbackMixin
 from auto_round.algorithms.quantization.config import QuantizationConfig
-from auto_round.algorithms.quantization.sign_round.config import SignRoundConfig
+from auto_round.algorithms.pipeline import (
+    ActCalibPolicy,
+    CalibTiming,
+    InputSource,
+    BlockContext,
+    QuantizationPipeline,
+    merge_policies,
+)
+from auto_round.algorithms.quantization.sign_round.config import AdamRoundConfig, SignRoundConfig, SignRoundV2Config
 from auto_round.algorithms.quantization.sign_round.quantizer import SignRoundQuantizer
 from auto_round.algorithms.quantization.sign_roundv2 import SignRoundV2Quantizer
 from auto_round.algorithms.quantization.adam_round.adam import AdamRoundQuantizer
-from auto_round.algorithms.quantization.awq.config import AWQConfig
-from auto_round.algorithms.quantization.awq.quantizer import AWQQuantizer
-from auto_round.algorithms.quantization.rtn.config import RTNConfig
+from auto_round.algorithms.quantization.rtn.config import OptimizedRTNConfig, RTNConfig
 from auto_round.algorithms.quantization.rtn.quantizer import RTNQuantizer, OptimizedRTNQuantizer
+from auto_round.algorithms.transforms.base import BaseWeightTransformer
+
+
+def __getattr__(name):
+    if name == "AWQConfig":
+        from auto_round.algorithms.transforms.awq.config import AWQConfig
+
+        return AWQConfig
+    if name == "AWQQuantizer":
+        from auto_round.algorithms.transforms.awq.quantizer import AWQQuantizer
+
+        return AWQQuantizer
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")

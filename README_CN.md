@@ -10,7 +10,7 @@
 <h3> 面向 LLM 的先进量化算法</h3>
 
 [![python](https://img.shields.io/badge/python-3.10%2B-blue)](https://github.com/intel/auto-round)
-[![version](https://img.shields.io/badge/release-0.13.0-green)](https://github.com/intel/auto-round/releases)
+[![version](https://img.shields.io/badge/release-0.13.1-green)](https://github.com/intel/auto-round/releases)
 [![nightly](https://img.shields.io/badge/pypi-nightly-green)](https://pypi.org/project/auto-round-nightly)
 [![license](https://img.shields.io/badge/license-Apache%202-9C27B0)](https://github.com/intel/auto-round/blob/main/LICENSE)
 <a href="https://huggingface.co/Intel">
@@ -34,6 +34,8 @@ AutoRound 是专为大语言模型（LLMs）和视觉-语言模型（VLMs）设�
 
 
 ## 🆕 最新进展
+
+* [2026/06] **vLLM-Omni** 现已完全集成 AutoRound: [*vLLM 博客*](https://vllm.ai/blog/2026-06-02-vllm-omni-autoround)
 
 * [2026/05] 我们提供**免费**的硬件资源，用于通过纯 RTN 方法进行模型量化。更多详情请访问 [Intel Low Bit Open LLM Leaderboard](https://huggingface.co/spaces/Intel/low_bit_open_llm_leaderboard)。
 

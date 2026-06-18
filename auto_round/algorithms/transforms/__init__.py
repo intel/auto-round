@@ -20,7 +20,7 @@ quantisation step to improve numerical properties.
 Current algorithms
 ------------------
 * **hadamard** – Block-diagonal Hadamard rotations (QuaRot / SpinQuant style).
-  See :mod:`auto_round.algorithms.transforms.rotation`.
+  See :mod:`auto_round.algorithms.transforms.quarot`.
 * **spinquant** – SpinQuant/QuaRot multi-level rotation (R1–R4) with optional
   online hooks, trainable rotations, and known Hadamard matrices for non-pow2.
   See :mod:`auto_round.algorithms.transforms.spinquant`.
@@ -45,6 +45,7 @@ from typing import Any
 import torch
 
 from auto_round.algorithms.transforms.base import (
+    BaseWeightTransformer,
     BaseRotation,
     BaseRotationConfig,
     SerializerMixin,
@@ -52,7 +53,7 @@ from auto_round.algorithms.transforms.base import (
     check_supported_schemes,
     _ensure_registry_populated,
 )
-from auto_round.algorithms.transforms.rotation import (
+from auto_round.algorithms.transforms.quarot import (
     HadamardRotation,
     apply_rotation_transform,
     normalize_rotation_config as _normalize_hadamard_config,
@@ -61,6 +62,7 @@ from auto_round.algorithms.transforms.rotation import (
 
 __all__ = [
     # Base interfaces
+    "BaseWeightTransformer",
     "BaseRotation",
     "BaseRotationConfig",
     "SerializerMixin",
@@ -80,6 +82,18 @@ __all__ = [
     "preregister_rotation_buffers",
     "rebuild_rotation_if_needed",
 ]
+
+
+def __getattr__(name):
+    if name == "AWQConfig":
+        from auto_round.algorithms.transforms.awq.config import AWQConfig
+
+        return AWQConfig
+    if name == "AWQQuantizer":
+        from auto_round.algorithms.transforms.awq.quantizer import AWQQuantizer
+
+        return AWQQuantizer
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
 
 
 def normalize_rotation_config(

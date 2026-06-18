@@ -8,6 +8,7 @@ from packaging import version
 from transformers import AutoModelForCausalLM, AutoTokenizer
 
 from auto_round import AutoRound
+from auto_round.algorithms.quantization.rtn.config import OptimizedRTNConfig
 
 from ...helpers import eval_generated_prompt, get_model_path, get_tiny_model, save_tiny_model
 
@@ -63,7 +64,7 @@ class TestGGUF:
         )
 
         assert type(autoround).__name__ == "CalibratedRTNCompressor"
-        assert autoround.quantize_config._alg_cls == "OptimizedRTNQuantizer"
+        assert isinstance(autoround.quantize_config, OptimizedRTNConfig)
 
     def test_func(self):
         bits, group_size, sym = 4, 128, True

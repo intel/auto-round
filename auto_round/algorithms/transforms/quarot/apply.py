@@ -27,8 +27,8 @@ import torch
 import tqdm
 
 from auto_round.algorithms.transforms.base import BaseRotation
-from auto_round.algorithms.transforms.rotation.config import RotationConfig, normalize_rotation_config
-from auto_round.algorithms.transforms.rotation.transforms import build_hadamard_transform
+from auto_round.algorithms.transforms.quarot.config import RotationConfig, normalize_rotation_config
+from auto_round.algorithms.transforms.quarot.transforms import build_hadamard_transform
 from auto_round.compressors.utils import is_nv_fp
 from auto_round.experimental.qmodules.base import QModuleBase
 
@@ -44,7 +44,7 @@ def _triton_available(data_type: str = "mx_fp") -> bool:
 
         if not torch.cuda.is_available():
             return False
-        from auto_round.algorithms.transforms.rotation.utils.triton.mxfp4 import (  # noqa: F401
+        from auto_round.algorithms.transforms.quarot.utils.triton.mxfp4 import (  # noqa: F401
             mxfp4_forward_kernel_wrapper,
         )
 
@@ -67,7 +67,7 @@ class HadamardRotation(BaseRotation):
 
     Or directly::
 
-        from auto_round.algorithms.transforms.rotation import apply_rotation_transform
+        from auto_round.algorithms.transforms.quarot import apply_rotation_transform
         model = apply_rotation_transform(model, config=RotationConfig(), need_calibration=True)
     """
 
@@ -109,13 +109,13 @@ class HadamardRotation(BaseRotation):
 
         # Dispatch by backend.  The transform backend (triton-fused per-Linear)
         # is implemented below; the inplace (QuaRot) backend is delegated to
-        # :mod:`auto_round.algorithms.transforms.rotation.inplace`.
-        from auto_round.algorithms.transforms.rotation.dispatcher import resolve_hadamard_backend
+        # :mod:`auto_round.algorithms.transforms.quarot.inplace`.
+        from auto_round.algorithms.transforms.quarot.dispatcher import resolve_hadamard_backend
 
         backend = resolve_hadamard_backend(cfg, data_type)
         if backend == "inplace":
             import auto_round.envs as envs
-            from auto_round.algorithms.transforms.rotation.inplace import apply_rotation_transform as _inplace_apply
+            from auto_round.algorithms.transforms.quarot.inplace import apply_rotation_transform as _inplace_apply
 
             # Resolve fuse flag: explicit > env var > default(False).
             fuse_online_to_weight = cfg.fuse_online_to_weight
@@ -181,7 +181,7 @@ def _apply_to_module(
 
 def _apply_input_transform(module: torch.nn.Module, config: RotationConfig, data_type: str = "mx_fp") -> None:
     """Register a forward pre-hook that applies the Hadamard to the input activation."""
-    from auto_round.algorithms.transforms.rotation.utils.matrix import multihead_matmul
+    from auto_round.algorithms.transforms.quarot.utils.matrix import multihead_matmul
 
     inp_transform = build_hadamard_transform(
         **config.model_dump(),
@@ -197,7 +197,7 @@ def _apply_input_transform(module: torch.nn.Module, config: RotationConfig, data
         hadamard_weight = None
 
     if _triton_available(data_type):
-        from auto_round.algorithms.transforms.rotation.utils.triton.mxfp4 import mxfp4_forward_kernel_wrapper
+        from auto_round.algorithms.transforms.quarot.utils.triton.mxfp4 import mxfp4_forward_kernel_wrapper
 
         def _input_hook(self, args):
             x = args[0]
@@ -232,7 +232,7 @@ def _apply_weight_transform(
     config: RotationConfig,
 ) -> None:
     """Fuse or patch the Hadamard rotation into the weight of *module*."""
-    from auto_round.algorithms.transforms.rotation.patch import (
+    from auto_round.algorithms.transforms.quarot.patch import (
         patch_quantlinear,
         patch_wrapperlinear_to_apply_transform,
         patch_wrapperwalayer_forward_to_apply_transform,
@@ -248,7 +248,7 @@ def _apply_weight_transform(
 
     # For random Hadamard, save the matrix as a submodule for serialisation.
     if config.hadamard_type == "random_hadamard":
-        from auto_round.algorithms.transforms.rotation.patch import patch_quantlinear as _patch_ql
+        from auto_round.algorithms.transforms.quarot.patch import patch_quantlinear as _patch_ql
 
         _patch_ql(w_transform)
 
