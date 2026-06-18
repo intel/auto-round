@@ -528,24 +528,34 @@ INT4 weight:  [  3,    -7,     7,    -1,   ...]      ← 4 bits</pre>
   <!-- ============ SLIDE 7: Why Quantization Is Necessary (1.4) ============ -->
   <div class="slide">
     <h2>Why Quantization Is Necessary for LLM/VLM Serving</h2>
-    <p class="mb-8 text-sm text-dim">Compare the memory transformation and TFLOPs between BF16 GEMM and INT4 GEMM</p>
-    <div class="grid-2 flex-grow">
-      <div>
+    <div class="grid-2 flex-grow" style="gap:28px;">
+      <div style="display:flex; flex-direction:column; justify-content:center;">
         <h3>The Hardware Reality</h3>
-        <p class="text-sm mb-8">Modern GPU hardware has a fundamental asymmetry:</p>
-        <table class="dense-table">
-          <thead><tr><th>Operation</th><th>FP16</th><th>INT8</th><th>INT4</th><th>Ratio</th></tr></thead>
-          <tbody>
-            <tr><td class="bold">Compute (TFLOPS)</td><td>baseline</td><td>1.5–2×</td><td>2–4×</td><td>INT is faster</td></tr>
-            <tr><td class="bold">Memory BW (GB/s)</td><td>baseline</td><td>2×</td><td>4×</td><td>Fewer bits = less data</td></tr>
-            <tr><td class="bold">Memory Capacity (GB)</td><td>baseline</td><td>2×</td><td>4×</td><td>Smaller model footprint</td></tr>
-          </tbody>
-        </table>
+        <div style="display:flex; align-items:center; gap:24px; flex:1;">
+          <img src="./images/data-type-flops.png" alt="Data Type FLOPS Comparison"
+               style="width:55%; max-height:380px; object-fit:contain; border-radius:8px; border:1px solid var(--border-light);">
+          <div style="display:flex; flex-direction:column; gap:12px; font-size:0.88rem; color:var(--text-secondary);">
+            <div><strong style="color:var(--vllm-blue); font-size:1.4rem;">4×</strong><br>smaller model<br>footprint</div>
+            <div><strong style="color:var(--vllm-blue); font-size:1.4rem;">4×</strong><br>compute throughput<br>vs. FP16</div>
+            <div><strong style="color:var(--vllm-blue); font-size:1.4rem;">4×</strong><br>less memory<br>transfer</div>
+            <div class="badge badge-blue" style="font-size:0.7rem; align-self:flex-start;">for 4-bit model</div>
+          </div>
+        </div>
       </div>
-      <div>
-        <h3>Why This Matters for LLM Serving</h3>
-        <div class="placeholder-box">
-          <strong>[P]</strong> — Detailed explanation of memory-bound decode + compute-bound prefill, latency comparison numbers
+      <div style="display:flex; flex-direction:column; gap:16px; justify-content:center;">
+        <div class="card card-accent">
+          <h3>① Model Footprint</h3>
+          <ul class="text-sm" style="margin-bottom:0;">
+            <li><strong>Runnable vs. not runnable</strong> — weights too large → shard (adds cost) or can't serve</li>
+            <li><strong>Freed memory = KV cache headroom</strong> → larger batches, longer context, higher throughput</li>
+          </ul>
+        </div>
+        <div class="card card-accent">
+          <h3>② Computation Efficiency</h3>
+          <ul class="text-sm" style="margin-bottom:0;">
+            <li><strong>Prefill</strong> — <strong style="color:var(--orange-text);">compute-bound</strong>. Tensor Cores: 2–4× throughput at low bits</li>
+            <li><strong>Decode</strong> — <strong style="color:var(--orange-text);">memory-bound</strong>. HBM bandwidth is fixed, less data transfer, lower latency</li>
+          </ul>
         </div>
       </div>
     </div>
@@ -643,15 +653,12 @@ W_dequant = W_quant * scale</pre>
           <div class="flow-arrow">▼</div>
           <div class="flow-step">④ Update: SignSGD<br><span class="text-xs text-dim">v ← v − lr × sign(grad) · Update clipping similarly</span></div>
           <div class="flow-arrow">▼</div>
-          <div class="flow-step">⑤ Repeat 2~4 ×200</div>
+          <div class="flow-step">⑤ Repeat Step 2~4 ×200</div>
           <div class="flow-arrow">▼</div>
           <div class="flow-step" style="border-color:var(--green); border-width:2px;">
             <strong style="color:var(--green-text);">Output</strong>
             <span class="text-xs text-dim">Quantized + packed checkpoint</span>
           </div>
-        </div>
-        <div class="placeholder-box mt-8" style="padding:10px;">
-          <strong>[P] Figure</strong> — Detailed algorithm flowchart with data flow annotations
         </div>
       </div>
     </div>
@@ -705,8 +712,7 @@ W_dequant = W_quant * scale</pre>
   <!-- ============ SLIDE 13: AutoRound vs AWQ vs GPTQ (2.5) ============ -->
   <div class="slide">
     <h2>AutoRound vs. AWQ vs. GPTQ: Comparison</h2>
-    <p class="text-xs text-dim mb-8">Average accuracy of 10+ tasks at W2G128</p>
-    <div class="flex-grow" style="display:flex; flex-direction:column; gap:10px;">
+    <div class="flex-grow" style="display:flex; flex-direction:column; gap:8px;">
       <table class="dense-table" style="margin-bottom:0;">
         <thead><tr><th>Method</th><th>Rounding</th><th>Clipping</th><th>Outliers</th></tr></thead>
         <tbody>
@@ -716,9 +722,17 @@ W_dequant = W_quant * scale</pre>
           <tr class="hl-row"><td class="bold">AutoRound</td><td><span class="badge badge-green">Learned via gradient</span></td><td><span class="badge badge-green">Learned via gradient</span></td><td><span class="badge badge-green">Optimized end-to-end</span></td></tr>
         </tbody>
       </table>
-      <div style="flex:1; display:flex; align-items:center;">
-        <img src="./images/algos-acc-compare.png" alt="Accuracy Comparison"
-             style="width:100%; max-height:420px; object-fit:contain; border-radius:8px; border:1px solid var(--border-light);">
+      <div style="flex:1; display:flex; gap:12px; align-items:center;">
+        <div style="flex:1; display:flex; flex-direction:column; align-items:center;">
+          <p class="text-xs text-dim mb-4">Average acc of 10+ tasks · W2G128</p>
+          <img src="./images/algos-acc-compare.png" alt="W2G128 Accuracy"
+               style="width:100%; max-height:340px; object-fit:contain; border-radius:8px; border:1px solid var(--border-light);">
+        </div>
+        <div style="flex:1; display:flex; flex-direction:column; align-items:center;">
+          <p class="text-xs text-dim mb-4">Average acc of 10+ tasks · W4G128</p>
+          <img src="./images/algos-acc-compare-4bits.png" alt="W4G128 Accuracy"
+               style="width:100%; max-height:340px; object-fit:contain; border-radius:8px; border:1px solid var(--border-light);">
+        </div>
       </div>
     </div>
   </div>
@@ -766,7 +780,7 @@ W_dequant = W_quant * scale</pre>
         <p class="text-xs text-dim">Packed INT4 → fused dequant in kernel → no FP overhead.</p>
       </div>
     </div>
-    <div class="key-msg" style="margin-top:8px;">QDQ separates algorithm from format and kernel. Same quantized tensors, swap <code>quant_func</code> for any dtype.</div>
+    <div class="key-msg" style="margin-top:8px;">QDQ separates algorithm from format and kernel. Same quantized tensors, swap <code>quant_func</code> for any dtype. <a href="https://github.com/intel/auto-round/blob/main/auto_round/data_type/fp8.py#L29" style="font-size:0.78rem;">Example: adding FP8 support →</a></div>
   </div>
 
   <!-- ============ SLIDE 15: Support Matrix (2.6) ============ -->
@@ -782,6 +796,7 @@ W_dequant = W_quant * scale</pre>
           <tr><td class="bold">Quantization Schemes</td><td>INT (W2A16–W8A16), FP8 (E4M3/E5M2, block-wise), MXFP4/8, NVFP4, GGUF (Q2_K–Q8_0), Mixed (per-layer AutoScheme)</td></tr>
           <tr><td class="bold">Target Module Types</td><td>Linear, MoE, KV Cache, Attention</td></tr>
           <tr><td class="bold">Hardware</td><td>XPU, CUDA, HPU (Gaudi), CPU</td></tr>
+          <tr><td class="bold">Export Formats</td><td>auto_round, auto_gptq, auto_awq, compressed-tensor, GGUF, MLX (Apple Silicon)</td></tr>
         </tbody>
       </table>
     </div>
@@ -862,10 +877,18 @@ W_dequant = W_quant * scale</pre>
       </div>
       <div>
         <h3>What This Means for Users</h3>
-        <div class="placeholder-box">
-          <strong>[P]</strong> — Ecosystem diagram
+        <div style="display:flex; flex-direction:column; gap:12px;">
+          <div class="card card-accent" style="padding:14px 18px; margin-bottom:0;">
+            <p class="text-sm" style="margin:0;"><strong>Quantize once, deploy everywhere.</strong> Run the same quantized checkpoint in vLLM, MLX, or Transformers — export to the format your runtime expects.</p>
+          </div>
+          <div class="card card-accent" style="padding:14px 18px; margin-bottom:0;">
+            <p class="text-sm" style="margin:0;"><strong>No lock-in.</strong> AutoRound integrates as a quantization plugin into the tools you already use — no workflow changes needed.</p>
+          </div>
+          <div class="card card-accent" style="padding:14px 18px; margin-bottom:0;">
+            <p class="text-sm" style="margin:0;"><strong>Day-0 model support.</strong> New model families get quantized checkpoints on <a href="https://huggingface.co/Intel/models">Hugging Face</a>.</p>
+          </div>
         </div>
-        <div class="key-msg">AutoRound can export runtime-specific formats for the major serving stacks.</div>
+        <img src="./images/hf-model.png" alt="HuggingFace AutoRound Models" style="width:100%; border-radius:8px; border:1px solid var(--border-light); margin-top:12px;">
       </div>
     </div>
   </div>
@@ -909,36 +932,79 @@ W_dequant = W_quant * scale</pre>
   <!-- ============ SLIDE 21: E2E Workflow (4.1) ============ -->
   <div class="slide">
     <h2>End-to-End Deployment Workflow in vLLM</h2>
-    <div class="flex-grow" style="display:flex; align-items:center; justify-content:center;">
-      <div class="placeholder-box" style="width:80%; padding:60px;">
-        <strong>[P]</strong> — End-to-end deployment workflow diagram
+    <div class="flex-grow" style="display:flex; flex-direction:column; align-items:center; justify-content:center;">
+      <!-- Main linear flow -->
+      <div style="display:flex; align-items:center; gap:12px;">
+        <div class="card card-filled" style="text-align:center; padding:20px 22px; margin:0; min-width:140px;">
+          <div style="font-size:1.8rem; margin-bottom:4px;">🤗</div>
+          <p class="bold" style="font-size:0.95rem;">HuggingFace<br>Model</p>
+          <p class="text-xs text-dim mt-2">FP16/BF16 weights</p>
+        </div>
+        <div class="flow-arrow" style="font-size:1.3rem; padding:0;">→</div>
+        <div class="card" style="text-align:center; padding:20px 22px; margin:0; min-width:140px; border-color:var(--vllm-blue); border-width:2px;">
+          <div style="font-size:1.8rem; margin-bottom:4px;">⚙️</div>
+          <p class="bold" style="font-size:0.95rem;">AutoRound</p>
+          <p class="text-xs text-dim mt-2">Quantize offline<br>~15 min / 7B</p>
+        </div>
+        <div class="flow-arrow" style="font-size:1.3rem; padding:0;">→</div>
+        <div class="card card-filled" style="text-align:center; padding:20px 22px; margin:0; min-width:140px;">
+          <div style="font-size:1.8rem; margin-bottom:4px;">📦</div>
+          <p class="bold" style="font-size:0.95rem;">Checkpoint</p>
+          <p class="text-xs text-dim mt-2">Packed INT4<br>+ config.json</p>
+        </div>
+        <div class="flow-arrow" style="font-size:1.3rem; padding:0;">→</div>
+        <div class="card card-accent" style="text-align:center; padding:20px 22px; margin:0; min-width:140px;">
+          <div style="font-size:1.8rem; margin-bottom:4px;">🚀</div>
+          <p class="bold" style="font-size:0.95rem;">vLLM/<br>vLLM-Omni</p>
+          <p class="text-xs text-dim mt-2">vllm serve<br>./checkpoint</p>
+        </div>
+        <div class="flow-arrow" style="font-size:1.3rem; padding:0;">→</div>
+        <div class="card" style="text-align:center; padding:20px 22px; margin:0; min-width:140px;">
+          <div style="font-size:1.8rem; margin-bottom:4px;">📊</div>
+          <p class="bold" style="font-size:0.95rem;">Evaluate</p>
+          <p class="text-xs text-dim mt-2">Accuracy +<br>Performance</p>
+        </div>
+      </div>
+      <!-- Feedback loop: SVG curved arrow from Evaluate back to AutoRound -->
+      <div style="position:relative; width:100%; height:50px; margin-top:4px;">
+        <svg viewBox="0 0 900 50" style="position:absolute; inset:0; width:100%; height:100%;">
+          <defs>
+            <marker id="loopArrow" markerWidth="6" markerHeight="5" refX="6" refY="2.5" orient="auto">
+              <polygon points="0 0, 6 2.5, 0 5" fill="#f97316"/>
+            </marker>
+          </defs>
+          <!-- Curved arrow from Evaluate (right) back to AutoRound (left) -->
+          <path d="M 775 8 Q 775 40, 450 40 Q 228 40, 228 8"
+                stroke="#f97316" stroke-width="2" fill="none" stroke-dasharray="6,3"
+                marker-end="url(#loopArrow)"/>
+          <!-- Label on the arrow -->
+          <text x="480" y="32" text-anchor="middle" font-size="11" fill="#f97316" font-weight="600" font-family="Inter,sans-serif;">
+            If acc/perf not met → try other recipes → iterate
+          </text>
+        </svg>
       </div>
     </div>
+    <div class="key-msg" style="text-align:center; margin-top:8px;">Offline workflow with eval feedback loop. Quantize once, serve anywhere. vLLM auto-detects quantization config from checkpoint metadata.</div>
   </div>
 
   <!-- ============ SLIDE 22: LLM Serving Scenario (4.2) ============ -->
   <div class="slide">
     <h2>LLM Serving Scenario</h2>
-    <h3>Quick Start: Quantize + Deploy in Minutes</h3>
-    <div class="grid-2 flex-grow">
-      <div>
-        <div class="card card-filled">
-          <p class="text-sm bold text-blue mb-8">1. Install & Quantize</p>
-          <pre># Install
-pip install auto-round
-
-# Quantize Model
+    <h3 style="margin-bottom:6px;">Quick Start: Quantize → Deploy</h3>
+    <div class="flex-grow" style="display:flex; flex-direction:column; gap:10px;">
+      <div class="grid-2" style="gap:14px;">
+        <div class="card card-filled" style="padding:16px 18px; margin-bottom:0;">
+          <p class="text-sm bold text-blue mb-4">1. Install &amp; Quantize</p>
+          <pre style="font-size:0.72rem; line-height:1.3; margin:0;">pip install auto-round
 auto-round \
-  --model Qwen/Qwen3-8B  \
+  --model Qwen/Qwen3-8B \
   --scheme W4A16 \
   --format auto_round \
-  --output_dir Qwen3-8B-W4A16-G128-AutoRound</pre>
+  --output_dir ./Qwen3-8B-W4A16</pre>
         </div>
-      </div>
-      <div>
-        <div class="card card-accent">
-          <p class="text-sm bold text-blue mb-8">2. Deploy with vLLM</p>
-          <pre>vllm serve Qwen3-8B-W4A16-G128-AutoRound \
+        <div class="card card-accent" style="padding:16px 18px; margin-bottom:0;">
+          <p class="text-sm bold text-blue mb-4">2. Deploy with vLLM</p>
+          <pre style="font-size:0.72rem; line-height:1.3; margin:0;">vllm serve ./Qwen3-8B-W4A16 \
     --dtype=bfloat16 \
     --gpu-memory-utilization 0.8 \
     --max-num-batched-tokens 8192</pre>
@@ -1041,7 +1107,37 @@ auto-round \
     <div class="key-msg" style="margin-top:8px;">W4A16's value extends beyond memory savings — it enables parallel execution strategies that produce end-to-end speedups larger than raw dequantization overhead would predict.</div>
   </div>
 
-  <!-- ============ SLIDE 25: Tunable Parameters (4.7) ============ -->
+  <!-- ============ SLIDE 25: Part 4 Section ============ -->
+  <div class="slide section-slide">
+    <div class="section-num">04</div>
+    <h2>Common Issues, Best Practices &amp; Q&amp;A</h2>
+    <p>Practical decision rules to take home · ~10 min</p>
+  </div>
+
+  <!-- ============ SLIDE 26: Best Practices Overview ============ -->
+  <div class="slide">
+    <h2>Best Practices Overview</h2>
+    <div class="flex-grow" style="display:flex; align-items:center;">
+      <div style="width:100%;">
+        <div class="card card-accent" style="padding:28px 32px;">
+          <h3>Choosing Quantization Schemes</h3>
+          <p class="text-sm mb-8"><strong>Core principle:</strong> choose the scheme that has a <strong>mature kernel</strong> on your target platform. No kernel → no speedup, regardless of bit-width.</p>
+          <table class="dense-table" style="margin-bottom:0;">
+            <thead><tr><th style="width:35%;">If you care about...</th><th>Choose</th></tr></thead>
+            <tbody>
+              <tr class="hl-row"><td class="bold">⚠️ Check your device first</td><td>What <strong>data types</strong> does it natively support? What's the <strong>HBM bandwidth</strong> (decode bottleneck) and <strong>TFLOPS</strong> (prefill bottleneck)? Match the scheme to what your hardware actually accelerates.</td></tr>
+              <tr><td class="bold">Memory saving</td><td>Lower bits (W2A16/W3A16) → more KV cache headroom</td></tr>
+              <tr><td class="bold">Accuracy first</td><td>W4A16 g64, W8A8, or FP8 block-wise</td></tr>
+              <tr><td class="bold">Portability</td><td>W4A16 g128 — most universal, kernel support everywhere</td></tr>
+              <tr><td class="bold">Long context / VLMs</td><td>KV cache quantization (FP8/INT8) on top of weight quantization</td></tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ============ SLIDE 27: Tunable Parameters ============ -->
   <div class="slide">
     <h2>Important Tunable Parameters</h2>
     <h3>Key Parameters for Deployment-Quality Quantization</h3>
@@ -1074,35 +1170,6 @@ auto-round \
       </div>
       <div class="callout-note">
         <p class="text-sm">These configurations are based on our experiments and may vary depending on the model architecture.</p>
-      </div>
-    </div>
-  </div>
-
-  <!-- ============ SLIDE 26: Part 5 Section ============ -->
-  <div class="slide section-slide">
-    <div class="section-num">04</div>
-    <h2>Common Issues, Best Practices &amp; Q&amp;A</h2>
-    <p>Practical decision rules to take home · ~10 min</p>
-  </div>
-
-  <!-- ============ SLIDE 27: Part 5 Topics Overview ============ -->
-  <div class="slide">
-    <h2>Best Practices Overview</h2>
-    <div class="flex-grow" style="display:flex; align-items:center;">
-      <div style="width:100%;">
-        <div class="card card-accent" style="padding:32px;">
-          <h3>Choosing Quantization Schemes for Different Hardware</h3>
-          <ul class="text-sm">
-            <li>...[P]</li>
-
-          </ul>
-        </div>
-        <div class="card card-accent mt-12" style="padding:32px;">
-          <h3>Best Practices for LLMs, VLMs, and Multimodal Serving</h3>
-          <ul class="text-sm">
-            <li>...[P]</li>
-          </ul>
-        </div>
       </div>
     </div>
   </div>
@@ -1172,14 +1239,18 @@ auto-round \
           vLLM Omni Roadmap: <a href="https://github.com/vllm-project/vllm-omni/issues/1325">#1325</a>
         </div>
       </div>
-      <div style="display:flex; justify-content:center; align-items:center; gap:32px;">
+      <div style="display:flex; justify-content:center; align-items:center; gap:24px;">
         <div style="text-align:center;">
-          <img src="./images/ar-qr.png" alt="AutoRound QR Code" style="height:140px; width:140px; border-radius:10px; border:1px solid var(--border-light); display:block;">
-          <p class="text-xs text-dim mt-8">Scan to Star ⭐</p>
+          <img src="./images/ar-star-history-2026617.png" alt="AutoRound Star History" style="height:120px; border-radius:10px; border:1px solid var(--border-light); display:block;">
+          <p class="text-xs text-dim mt-6">Star History</p>
         </div>
         <div style="text-align:center;">
-          <img src="./images/ar-star-history-2026617.png" alt="AutoRound Star History" style="height:140px; border-radius:10px; border:1px solid var(--border-light); display:block;">
-          <p class="text-xs text-dim mt-8">Star History</p>
+          <img src="./images/ar-qr.png" alt="AutoRound QR Code" style="height:120px; width:120px; border-radius:10px; border:1px solid var(--border-light); display:block;">
+          <p class="text-xs text-dim mt-6">Scan to Star ⭐</p>
+        </div>
+        <div style="text-align:center;">
+          <img src="./images/qr-deck.png" alt="Deck QR Code" style="height:120px; width:120px; border-radius:10px; border:1px solid var(--border-light); display:block;">
+          <p class="text-xs text-dim mt-6">Scan for Slides 📄</p>
         </div>
       </div>
     </div>
@@ -1243,9 +1314,9 @@ auto-round \
     '4.3 — VLM/Diffusion Example',
     'Wan2.2 — Video Generation (W4A16)',
     'FLUX — CFG Parallel Performance',
-    '4.7 — Important Tunable Parameters',
     '— Part 4: Best Practices & Q&A',
     'Best Practices Overview',
+    'Important Tunable Parameters',
     '5.4 — Future Work',
     'Key Resources & Closing'
   ];
