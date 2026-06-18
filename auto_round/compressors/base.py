@@ -1526,19 +1526,6 @@ class BaseCompressor(object):
             if "scale_dtype" in serialization_dict.keys():
                 serialization_dict["scale_dtype"] = str(serialization_dict["scale_dtype"])
 
-            # Serialize hadamard rotation config so it ends up in config.json.
-            # rotation_configs (plural) holds BaseRotationConfig objects and is
-            # cleaned by filter_quantization_config.  The inference side reads
-            # the singular "rotation_config" key, so we extract the first
-            # hadamard config and write it here (mirrors old hadamard_config).
-            if self.rotation_configs:
-                from auto_round.algorithms.transforms.quarot.config import RotationConfig as _HadamardCfg
-
-                for _rc in self.rotation_configs:
-                    if isinstance(_rc, _HadamardCfg):
-                        serialization_dict["rotation_config"] = _rc.model_dump()
-                        break
-
             original_to_quant_block_names = serialization_dict.get("to_quant_block_names")
             if isinstance(original_to_quant_block_names, list):
                 original_to_quant_block_names = original_to_quant_block_names[:]
