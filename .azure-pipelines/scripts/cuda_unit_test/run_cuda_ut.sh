@@ -67,7 +67,8 @@ function run_unit_test() {
     uv pip install 'git+https://github.com/ggml-org/llama.cpp.git#subdirectory=gguf-py'
     uv pip install -r test/test_cuda/requirements.txt
     uv pip install -r test/test_cuda/requirements_diffusion.txt
-    uv pip install -U transformers
+    uv pip install -U transformers chardet
+    uv pip install kernels==0.12.3 # For sm120: https://github.com/huggingface/transformers/blob/v5.12.1/setup.py#L94
     uv pip uninstall torch torchvision
     uv pip install torch==2.12.0 torchvision torchao --index-url https://download.pytorch.org/whl/cu130
     uv pip install .
@@ -110,11 +111,12 @@ function run_unit_test_llmc() {
     cd "${BUILD_SOURCESDIRECTORY}" || exit 1
     rm -rf /root/.venv
     uv venv --python=3.12 /root/.venv
-    uv pip install -U pytest-cov pytest-html
+    uv pip install -U pytest-cov
     BUILD_TYPE="nightly" uv pip install \
         -r test/test_cuda/requirements_llmc.txt \
         --extra-index-url https://download.pytorch.org/whl/cu130 \
         --index-strategy unsafe-best-match
+    uv pip install -U chardet
     uv pip install .
     uv pip list
     echo "##[endgroup]"
@@ -139,7 +141,7 @@ function run_unit_test_sglang() {
     cd "${BUILD_SOURCESDIRECTORY}" || exit 1
     rm -rf /root/.venv
     uv venv --python=3.12 /root/.venv
-    uv pip install -U pytest-cov pytest-html
+    uv pip install -U pytest-cov
     uv pip install -r test/test_cuda/requirements_sglang.txt \
         --prerelease=allow \
         --extra-index-url https://download.pytorch.org/whl/cu130 \
@@ -167,10 +169,11 @@ function run_unit_test_vllm() {
     cd "${BUILD_SOURCESDIRECTORY}" || exit 1
     rm -rf /root/.venv
     uv venv --python=3.12 /root/.venv
-    uv pip install -U pytest-cov pytest-html
+    uv pip install -U pytest-cov
     uv pip install -r test/test_cuda/requirements_vllm.txt \
         --extra-index-url https://download.pytorch.org/whl/cu130 \
         --index-strategy unsafe-best-match
+    uv pip install -U chardet
     uv pip install .
     uv pip list
     echo "##[endgroup]"
