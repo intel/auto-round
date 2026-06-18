@@ -933,21 +933,21 @@ def get_score_for_scheme(
                 )
             model_forward_low_gpu(model, mllm_loader, major_device=major_device, pbar=pbar)
         else:
-            # try:
-            dataloader = _build_calib_dataloader()
-            model_forward_low_gpu(model, dataloader, major_device=major_device, pbar=pbar)
-            # except Exception as exc:  # noqa: BLE001
-            #     if not is_vlm:
-            #         raise
-            #     logger.warning(
-            #         f"Text-only calibration failed on VLM ({exc}); "
-            #         f"falling back to multimodal calibration dataloader."
-            #     )
-            #     mllm_loader = _build_mllm_calib_dataloader()
-            #     batch_size = 1
-            #     if mllm_loader is None:
-            #         raise
-            #     model_forward_low_gpu(model, mllm_loader, major_device=major_device, pbar=pbar)
+            try:
+                dataloader = _build_calib_dataloader()
+                model_forward_low_gpu(model, dataloader, major_device=major_device, pbar=pbar)
+            except Exception as exc:  # noqa: BLE001
+                if not is_vlm:
+                    raise
+                logger.warning(
+                    f"Text-only calibration failed on VLM ({exc}); "
+                    f"falling back to multimodal calibration dataloader."
+                )
+                mllm_loader = _build_mllm_calib_dataloader()
+                batch_size = 1
+                if mllm_loader is None:
+                    raise
+                model_forward_low_gpu(model, mllm_loader, major_device=major_device, pbar=pbar)
     else:
         for n, m in model.named_modules():
             if hasattr(m, "grad_mode"):
