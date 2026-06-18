@@ -524,6 +524,12 @@ def _quantize_weight_mxfp(
     # Reshape to (out_features, n_groups) so the on-disk weight_scale matches
     # the llm-compressor convention (and QuantLinear's registered buffer shape).
     shared_exp = shared_exp.reshape(out_features, in_features // group_size)
+    # Ensure shared_exp is a numeric float (not a storage-specific dtype like
+    # float8) — QuantLinear.pack performs `2 ** scales` which dispatches to
+    # torch.pow; some backends do not implement pow for float8 dtypes. Cast to
+    # float32 here to avoid runtime errors like "pow_cuda not implemented for
+    # 'Float8_e4m3fn'" while preserving numeric values.
+    shared_exp = shared_exp.to(torch.float32)
 
     # Build a lightweight nn.Linear holding the original weight so we can
     # delegate packing to the existing QuantLinear.pack implementation.
@@ -632,137 +638,194 @@ def _quantize_single_tensor(
         return layer_name, {tensor_name: tensor}, None, layer_name
 
 
+def _dequant_mxfp_tensors(
+    raw_tensors: dict[str, torch.Tensor],
+) -> dict[str, torch.Tensor]:
+    """Dequantize llm-compressor MXFP8 / MXFP4 weight tensors to bfloat16.
+
+    Detection is purely by *name* and *dtype*, reusing the dequant kernels in
+    :mod:`auto_round_extension.vllm_ext`:
+
+    * ``<layer>.weight`` (``float8_e4m3fn``) + ``<layer>.weight_scale`` → MXFP8,
+      dequantized via :func:`~auto_round_extension.vllm_ext.mxfp8_qdq_utils.dequant_mx_fp8`.
+    * ``<layer>.weight_packed`` (``uint8``) + ``<layer>.weight_scale`` → MXFP4,
+      dequantized via :func:`~auto_round_extension.vllm_ext.mxfp4_qdq_utils.to_dtype`.
+
+    The dequantized weight is written back under ``<layer>.weight`` and the
+    scale (and any ``weight_packed``) tensor is removed, so the downstream RTN
+    path can requantize the layer to the requested target scheme.
+    """
+    from auto_round_extension.vllm_ext.mxfp4_qdq_utils import to_dtype
+    from auto_round_extension.vllm_ext.mxfp8_qdq_utils import dequant_mx_fp8
+
+    # Tuple layout: (layer_name, weight_key, scale_key, is_fp8)
+    entries: list[tuple[str, str, str, bool]] = []
+    for name, tensor in raw_tensors.items():
+        if name.endswith(".weight") and tensor.dtype == torch.float8_e4m3fn:
+            layer_name = name[: -len(".weight")]
+            scale_key = f"{layer_name}.weight_scale"
+            if scale_key in raw_tensors:
+                entries.append((layer_name, name, scale_key, True))
+        elif name.endswith(".weight_packed") and tensor.dtype in (torch.int8, torch.uint8):
+            layer_name = name[: -len(".weight_packed")]
+            scale_key = f"{layer_name}.weight_scale"
+            if scale_key in raw_tensors:
+                entries.append((layer_name, name, scale_key, False))
+
+    if not entries:
+        return raw_tensors
+
+    n_mxfp8 = sum(1 for _layer_name, _weight_key, _scale_key, is_fp8 in entries if is_fp8)
+    n_mxfp4 = len(entries) - n_mxfp8
+    logger.info("Dequantizing MXFP tensor(s) to bfloat16: " f"MXFP8={n_mxfp8}, MXFP4={n_mxfp4}, total={len(entries)}.")
+
+    for layer_name, weight_key, scale_key, is_fp8 in entries:
+        weight = raw_tensors.pop(weight_key)
+        scale = raw_tensors.pop(scale_key).view(torch.uint8)
+        if is_fp8:
+            dq_weight = dequant_mx_fp8(
+                weight_fp8=weight,
+                scale_e8m0=scale,
+                block_size=32,
+                target_dtype=torch.bfloat16,
+            )
+        else:
+            dq_weight = to_dtype(
+                data_lp=weight.view(torch.uint8).contiguous(),
+                scale_e8m0=scale,
+                elem_dtype="fp4_e2m1",
+                block_size=32,
+                target_dtype=torch.bfloat16,
+            )
+        raw_tensors[f"{layer_name}.weight"] = dq_weight
+
+    return raw_tensors
+
+
+def _handle_mxfp_source_tensors(
+    raw_tensors: dict[str, torch.Tensor],
+    matcher: "_PatternMatcher",
+    source_state: dict[str, int] | None = None,
+) -> tuple[dict[str, torch.Tensor], dict[str, torch.Tensor], list[str]]:
+    """Handle llm-compressor-style MXFP8/MXFP4 source tensors.
+
+    Detects llm-compressor MXFP tensors purely by *name + dtype*:
+
+    * ``<layer>.weight`` (``float8_e4m3fn``) + ``<layer>.weight_scale`` → MXFP8.
+    * ``<layer>.weight_packed`` (``uint8``) + ``<layer>.weight_scale`` → MXFP4.
+
+    For each detected layer the effective target scheme is resolved via *matcher*:
+
+    * If the target is the **same MXFP format** (``data_type='mx_fp'``, matching
+      ``bits``), the tensors are emitted directly as a passthrough — no
+      dequantization is performed and the layer is recorded as already quantized.
+    * Otherwise the tensors are dequantized to ``bfloat16`` via
+      :func:`_dequant_mxfp_tensors` so the downstream RTN path can re-quantize
+      them to the requested target scheme.
+
+    Returns:
+        ``(raw_tensors, passthrough_tensors, passthrough_layers)``.
+    """
+    # --- collect MXFP8 and MXFP4 entries ---
+    entries_fp8: list[tuple[str, str, str]] = []  # (layer_name, weight_key, scale_key)
+    entries_fp4: list[tuple[str, str, str]] = []
+
+    for name, tensor in raw_tensors.items():
+        if name.endswith(".weight") and tensor.dtype == torch.float8_e4m3fn:
+            layer_name = name[: -len(".weight")]
+            scale_key = f"{layer_name}.weight_scale"
+            if scale_key in raw_tensors:
+                entries_fp8.append((layer_name, name, scale_key))
+        elif name.endswith(".weight_packed") and tensor.dtype in (torch.int8, torch.uint8):
+            layer_name = name[: -len(".weight_packed")]
+            scale_key = f"{layer_name}.weight_scale"
+            if scale_key in raw_tensors:
+                entries_fp4.append((layer_name, name, scale_key))
+
+    if not entries_fp8 and not entries_fp4:
+        return raw_tensors, {}, []
+
+    source_state = source_state or {}
+
+    passthrough_tensors: dict[str, torch.Tensor] = {}
+    passthrough_layers: list[str] = []
+    n_dequant = 0
+
+    for layer_name, weight_key, scale_key in entries_fp8:
+        scheme = matcher.resolve_scheme(f"{layer_name}.weight")
+        target_is_mxfp8 = (
+            scheme is not None and is_mx_fp((scheme.get("data_type") or "").lower()) and scheme.get("bits") == 8
+        )
+        if target_is_mxfp8:
+            passthrough_tensors[weight_key] = raw_tensors.pop(weight_key).to("cpu")
+            passthrough_tensors[scale_key] = raw_tensors.pop(scale_key).to("cpu")
+            passthrough_layers.append(layer_name)
+        else:
+            n_dequant += 1
+
+    for layer_name, weight_key, scale_key in entries_fp4:
+        scheme = matcher.resolve_scheme(f"{layer_name}.weight")
+        target_is_mxfp4 = (
+            scheme is not None and is_mx_fp((scheme.get("data_type") or "").lower()) and scheme.get("bits") == 4
+        )
+        if target_is_mxfp4:
+            passthrough_tensors[weight_key] = raw_tensors.pop(weight_key).to("cpu")
+            passthrough_tensors[scale_key] = raw_tensors.pop(scale_key).to("cpu")
+            passthrough_layers.append(layer_name)
+        else:
+            n_dequant += 1
+
+    if n_dequant:
+        raw_tensors = _dequant_mxfp_tensors(raw_tensors)
+
+    parts: list[str] = []
+    if passthrough_layers:
+        parts.append(f"{len(passthrough_layers)} passthrough")
+    if n_dequant:
+        parts.append(f"{n_dequant} dequantized to bfloat16")
+    if source_state:
+        parts.append(f"{len(source_state)} model_type-normalized")
+    logger.info(f"Handling MXFP source tensor(s): {', '.join(parts)}.")
+
+    return raw_tensors, passthrough_tensors, passthrough_layers
+
+
 def _dequant_fp8_tensors(
     raw_tensors: dict[str, torch.Tensor],
     block_size: list | None = None,
 ) -> dict[str, torch.Tensor]:
-    """Dequantize FP8 / FP4-packed weight tensors and remove their scale tensors.
+    """Dequantize DeepSeek-V3-style FP8 weight tensors to bfloat16.
 
-    Handles three storage conventions:
+    Handles the **DeepSeek-V3 FP8** convention: weight dtype ``float8_e4m3fn``
+    paired with a ``.weight_scale_inv`` tensor (per-block float32 scales, NOT
+    E8M0).  The weights are converted to ``bfloat16`` so downstream RTN
+    quantization can proceed normally.
 
-    1. **DeepSeek-V3 FP8** — weight dtype ``float8_e4m3fn`` + ``weight_scale_inv``
-       (per-block float32 scales, NOT E8M0).
-    2. **FP8 + UE8M0 scale** — weight dtype ``float8_e4m3fn`` + ``.scale``
-       (F8_E8M0 / ``ue8m0`` format, e.g. ``scale_fmt=ue8m0``).
-    3. **FP4-packed I8 + UE8M0 scale** — weight dtype ``torch.int8`` where each
-       byte stores two FP4 E2M1 nibbles, paired with a ``.scale`` tensor in
-       F8_E8M0 format.  Shape relationship: ``weight[rows, cols/2]`` and
-       ``scale[rows, (cols/2)*2/block_size]`` where ``block_size`` is inferred
-       from the ratio ``weight.shape[1] * 2 / scale.shape[1]``.
-
-    All cases are converted to ``bfloat16`` so downstream RTN quantization can
-    proceed normally.
+    MXFP sources are handled separately by
+    :func:`_preprocess_model_type_source_tensors` / :func:`_handle_mxfp_source_tensors`.
     """
     from auto_round.utils.weight_handler import _dequant_fp8_linear_weight
 
-    E8M0_EXPONENT_BIAS = 127
-
-    def _e8m0_to_float(scale_tensor: torch.Tensor) -> torch.Tensor:
-        """Convert E8M0 (power-of-2 exponent) scale tensor to float."""
-        raw = scale_tensor.view(torch.uint8).to(torch.int16) - E8M0_EXPONENT_BIAS
-        return torch.pow(2.0, raw.to(torch.float32)).to(torch.bfloat16)
-
-    def _dequant_fp4_packed_weight(
-        weight_i8: torch.Tensor,
-        scale_e8m0: torch.Tensor,
-    ) -> torch.Tensor:
-        """Dequantize FP4-packed int8 weight with E8M0 block scales to bfloat16.
-
-        Each ``int8`` byte stores two FP4 E2M1 values: the low nibble is the
-        first element and the high nibble is the second.  Block size is inferred
-        from the shape ratio ``weight.shape[1] * 2 / scale.shape[1]``.
-
-        Args:
-            weight_i8:   Packed weight tensor, shape ``[rows, cols_packed]``,
-                         dtype ``torch.int8``.  ``cols_packed = cols / 2``.
-            scale_e8m0:  Per-block scale tensor, shape ``[rows, n_blocks]``,
-                         stored as raw uint8 bytes in F8_E8M0 (ue8m0) format.
-
-        Returns:
-            Dequantized weight, shape ``[rows, cols]``, dtype ``bfloat16``.
-        """
-        # FP4 E2M1 lookup table — index is the 4-bit pattern (0..15)
-        # Layout: positive range at indices 0-7, negative at 8-15.
-        FP4_LUT = torch.tensor(
-            [0.0, 0.5, 1.0, 1.5, 2.0, 3.0, 4.0, 6.0, -0.0, -0.5, -1.0, -1.5, -2.0, -3.0, -4.0, -6.0],
-            dtype=torch.bfloat16,
-            device=weight_i8.device,
-        )
-        rows = weight_i8.shape[0]
-
-        # Re-interpret int8 storage as uint8 for bit operations.
-        weight_u8 = weight_i8.view(torch.uint8)
-        lo = (weight_u8 & 0x0F).to(torch.long)  # low  nibble → first  element
-        hi = ((weight_u8 >> 4) & 0x0F).to(torch.long)  # high nibble → second element
-        # Interleave lo/hi along the last dim: [rows, cols_packed, 2] → [rows, cols]
-        unpacked = torch.stack([lo, hi], dim=-1).reshape(rows, -1)
-        cols = unpacked.shape[1]
-
-        # Decode 4-bit patterns to bfloat16 float values via the lookup table.
-        decoded = FP4_LUT[unpacked]  # [rows, cols]
-
-        # Convert E8M0 per-block scales to float32 → bfloat16.
-        scale_f = _e8m0_to_float(scale_e8m0)  # [rows, n_blocks]
-        n_blocks = scale_f.shape[1]
-        block_size_inner = cols // n_blocks  # inferred block size (e.g. 32)
-
-        # Multiply each block of decoded values by its corresponding scale.
-        decoded = decoded.reshape(rows, n_blocks, block_size_inner)
-        return (decoded * scale_f.unsqueeze(-1)).reshape(rows, cols)
-
-    # ------------------------------------------------------------------
-    # Collect quantized weight entries.
-    # Tuple layout: (weight_name, scale_name, is_e8m0, is_fp4_packed)
-    #   is_e8m0      – scale tensor is in F8_E8M0 format (needs _e8m0_to_float)
-    #   is_fp4_packed – weight is int8-packed FP4; use _dequant_fp4_packed_weight
-    # ------------------------------------------------------------------
-    quant_entries: list[tuple[str, str, bool, bool]] = []
-
+    quant_entries: list[tuple[str, str]] = []
     for name, tensor in raw_tensors.items():
         if not name.endswith(".weight"):
             continue
-
-        is_fp4_packed = tensor.dtype == torch.int8
-        is_fp8 = tensor.dtype == torch.float8_e4m3fn
-        # Also catch other 1-byte dtypes (e.g. float8_e5m2) by element size.
-        if not is_fp4_packed and not is_fp8:
-            if tensor.element_size() != 1:
-                continue
-            is_fp8 = True  # treat remaining 1-byte dtypes as FP8
-
-        # Convention 1: .weight_scale_inv (DeepSeek-V3 style, FP8 only)
-        scale_inv_name = name.replace(".weight", ".weight_scale_inv")
-        if scale_inv_name in raw_tensors and not is_fp4_packed:
-            quant_entries.append((name, scale_inv_name, False, False))
+        if tensor.dtype != torch.float8_e4m3fn and tensor.element_size() != 1:
             continue
-
-        # Convention 2: .scale in F8_E8M0 / ue8m0 format
-        scale_name = name.replace(".weight", ".scale")
-        if scale_name in raw_tensors:
-            quant_entries.append((name, scale_name, True, is_fp4_packed))
+        # DeepSeek-V3 style: .weight_scale_inv (per-block float32 scales).
+        scale_inv_name = name.replace(".weight", ".weight_scale_inv")
+        if scale_inv_name in raw_tensors:
+            quant_entries.append((name, scale_inv_name))
 
     if not quant_entries:
         return raw_tensors
 
-    fp4_count = sum(1 for e in quant_entries if e[3])
-    fp8_count = len(quant_entries) - fp4_count
-    parts: list[str] = []
-    if fp8_count:
-        parts.append(f"{fp8_count} FP8")
-    if fp4_count:
-        parts.append(f"{fp4_count} FP4-packed (int8)")
-    logger.info(f"Dequantizing {' and '.join(parts)} weight tensor(s) to bfloat16.")
+    logger.info(f"Dequantizing {len(quant_entries)} FP8 weight tensor(s) to bfloat16.")
 
-    for weight_name, scale_name, is_e8m0, is_fp4_packed in quant_entries:
+    for weight_name, scale_name in quant_entries:
         weight = raw_tensors[weight_name]
         scale = raw_tensors.pop(scale_name)
-        if is_fp4_packed:
-            # FP4 E2M1 packed in int8 with UE8M0 per-block scale.
-            raw_tensors[weight_name] = _dequant_fp4_packed_weight(weight, scale)
-        else:
-            if is_e8m0:
-                scale = _e8m0_to_float(scale)
-            raw_tensors[weight_name] = _dequant_fp8_linear_weight(weight, scale, block_size=block_size)
+        raw_tensors[weight_name] = _dequant_fp8_linear_weight(weight, scale, block_size=block_size)
 
     return raw_tensors
 
@@ -776,6 +839,7 @@ def _process_shard(
     *,
     matcher: "_PatternMatcher | None" = None,
     fp8_block_size: list | None = None,
+    model_type: str | None = None,
 ) -> tuple[dict[str, torch.Tensor], list[str], list[str]]:
     """Quantize eligible weights in a single safetensors shard.
 
@@ -830,6 +894,18 @@ def _process_shard(
             if prefix in preserved_prefixes:
                 preserved_tensors[key] = raw_tensors.pop(key)
 
+    # 1) model-type-specific preprocessing (format conversion only)
+    raw_tensors, source_state = _preprocess_model_type_source_tensors(raw_tensors, model_type=model_type)
+
+    # 2) generic MXFP handling for both preprocessed and normal source models
+    raw_tensors, passthrough_tensors, passthrough_layers = _handle_mxfp_source_tensors(
+        raw_tensors,
+        matcher,
+        source_state=source_state,
+    )
+    output_tensors.update(passthrough_tensors)
+    quantized_layers.extend(passthrough_layers)
+
     raw_tensors = _dequant_fp8_tensors(raw_tensors, block_size=fp8_block_size)
     raw_tensors.update(preserved_tensors)
 
@@ -859,9 +935,17 @@ def _build_mxfp_quantization_config(
     default_scheme: dict,
     quantized_layers: list[str],
     ignored_layers: list[str],
+    layer_config: dict | None = None,
 ) -> dict:
     """Build a compressed-tensors / llm-compressor style quantization_config
-    dict for MXFP4 / MXFP8 model-free output.
+    dict for MXFP4 / MXFP8 model-free output, including mixed-precision cases.
+
+    When *layer_config* contains layers that override the default bits (e.g.
+    some layers are MXFP8 while the default is MXFP4), the function creates
+    one ``config_group`` per distinct bit-width.  Override groups list their
+    layers explicitly; the default-bits group uses ``targets=["Linear"]`` as a
+    catch-all.  The top-level ``"format"`` is set to ``"mixed-precision"``
+    when more than one group is produced.
 
     Mirrors the per-group format produced by
     :mod:`auto_round.export.export_to_llmcompressor.export_to_fp`.
@@ -877,20 +961,74 @@ def _build_mxfp_quantization_config(
     if bits not in _SUPPORTED_MXFP_BITS:
         raise ValueError(f"Unsupported MXFP bits={bits} for model-free output.")
 
-    scheme_name = "MXFP4" if bits == 4 else "MXFP8"
-    fmt = "mxfp4-pack-quantized" if bits == 4 else "mxfp8-quantized"
-
     # Default ignore list: any layer present in ignored_layers (deduped) that
     # was NOT quantized.
     ignore = list(dict.fromkeys(ignored_layers))
     quant_set = set(quantized_layers)
     ignore = [n for n in ignore if n not in quant_set]
 
-    qconfig = initialize_quantization(scheme=scheme_name, ignore=ignore)
-    qconfig = qconfig.to_dict()
-    qconfig["format"] = fmt
-    qconfig["provider"] = "auto-round"
-    return qconfig
+    # Resolve each quantized layer's effective bits using layer_config overrides.
+    scheme_groups: dict[int, list[str]] = {}  # bits -> [layer_names]
+    if layer_config:
+        temp_matcher = _PatternMatcher(
+            ignore_patterns=[],
+            layer_config=layer_config,
+            default_scheme=default_scheme,
+        )
+        for layer in quantized_layers:
+            scheme = temp_matcher.resolve_scheme(f"{layer}.weight")
+            layer_bits = scheme.get("bits", bits) if scheme is not None else bits
+            scheme_groups.setdefault(layer_bits, []).append(layer)
+    else:
+        scheme_groups[bits] = list(quantized_layers)
+
+    if len(scheme_groups) <= 1:
+        # Single scheme — existing behavior.
+        scheme_name = "MXFP4" if bits == 4 else "MXFP8"
+        fmt = "mxfp4-pack-quantized" if bits == 4 else "mxfp8-quantized"
+        qconfig = initialize_quantization(scheme=scheme_name, ignore=ignore)
+        qconfig = qconfig.to_dict()
+        qconfig["format"] = fmt
+        qconfig["provider"] = "auto-round"
+        return qconfig
+
+    # Mixed MXFP: build one config_group per distinct bit-width.
+    # Override groups (non-default bits) come first, default group last,
+    # ordered by descending bit-width within each partition so that the
+    # higher-precision group gets the lower group index.
+    override_items = sorted(
+        [(b, layers) for b, layers in scheme_groups.items() if b != bits],
+        key=lambda x: x[0],
+        reverse=True,
+    )
+    default_item = (bits, scheme_groups[bits]) if bits in scheme_groups else None
+    ordered = override_items + ([default_item] if default_item else [])
+
+    config_groups: dict = {}
+    group_formats: dict[str, str] = {}
+    for idx, (group_bits, layer_names) in enumerate(ordered):
+        group_name = f"group_{idx}"
+        scheme_name = "MXFP4" if group_bits == 4 else "MXFP8"
+        fmt = "mxfp4-pack-quantized" if group_bits == 4 else "mxfp8-quantized"
+        is_default_group = group_bits == bits
+        targets = ["Linear"] if is_default_group else layer_names
+        # vLLM MoE: prepend RoutedExperts so vLLM's routed-expert matcher
+        # takes priority when this explicit group contains expert layers.
+        if not is_default_group and any(".experts." in n for n in layer_names):
+            targets = ["RoutedExperts"] + targets
+        tmp_qconfig = initialize_quantization(scheme=scheme_name, ignore=ignore)
+        group_scheme = tmp_qconfig.config_groups["group_0"]
+        group_scheme.targets = targets
+        config_groups[group_name] = group_scheme
+        group_formats[group_name] = fmt
+
+    full_qconfig = initialize_quantization(scheme=None, config_groups=config_groups, ignore=ignore)
+    full_dict = full_qconfig.to_dict()
+    full_dict["format"] = "mixed-precision"
+    for group_name, fmt in group_formats.items():
+        full_dict["config_groups"][group_name]["format"] = fmt
+    full_dict["provider"] = "auto-round"
+    return full_dict
 
 
 def _build_quantization_config(
@@ -908,6 +1046,7 @@ def _build_quantization_config(
             default_scheme=default_scheme,
             quantized_layers=quantized_layers,
             ignored_layers=ignored_layers,
+            layer_config=layer_config,
         )
 
     from auto_round.version import __version__
@@ -1231,6 +1370,7 @@ class _ModelFreeCompressorCore:
         self.matcher: _PatternMatcher | None = None
         self.config: dict = {}
         self.fp8_block_size: list | None = None
+        self.model_type: str = ""
         self.is_streaming: bool = False
         self.is_diffusion_model: bool = False
         self.diffusion_root_dir: str = ""
@@ -1262,9 +1402,11 @@ class _ModelFreeCompressorCore:
     def _parse_layer_config(self) -> None:
         lc = copy.deepcopy(self.layer_config_input) if self.layer_config_input else {}
 
-        # Append '.' to keys ending with a digit to avoid partial numeric matches.
+        # Append '.' only for keys ending with ".<digits>" to avoid partial
+        # numeric matches (e.g. layer.1 should not match layer.10).
+        # Keep plain names like "fc2" untouched.
         for key in list(lc.keys()):
-            if key and key[-1].isdigit():
+            if re.search(r"\.\d+$", key):
                 lc[key + "."] = lc.pop(key)
 
         # Normalize values to dicts.
@@ -1297,7 +1439,7 @@ class _ModelFreeCompressorCore:
         ignore_patterns: list[str] = []
         if self.ignore_layers_input:
             ignore_patterns = [p.strip() for p in self.ignore_layers_input.replace(" ", "").split(",") if p.strip()]
-            ignore_patterns = [p + "." if p and p[-1].isdigit() else p for p in ignore_patterns]
+            ignore_patterns = [p + "." if re.search(r"\.\d+$", p) else p for p in ignore_patterns]
 
         if not self.quant_lm_head and "lm_head" not in ignore_patterns:
             ignore_patterns.append("lm_head")
@@ -1409,6 +1551,12 @@ class _ModelFreeCompressorCore:
                 f"FP8 weights will be dequantized before quantization."
             )
 
+    def _resolve_model_type(self) -> None:
+        """Resolve and log model_type for model-specific preprocessing hooks."""
+        self.model_type = str(self.config.get("model_type", "")).lower()
+        if self.model_type:
+            logger.info(f"Detected source model_type='{self.model_type}'.")
+
     def _discover_shards(self) -> None:
         search_dir = self.work_dir if self.is_streaming else self.source_dir
         self.shard_names = _list_weight_shards(search_dir)
@@ -1493,6 +1641,7 @@ class _ModelFreeCompressorCore:
                 device=self.device,
                 matcher=self.matcher,
                 fp8_block_size=self.fp8_block_size,
+                model_type=self.model_type,
             )
             memory_monitor.update()
             clear_memory()
@@ -1621,6 +1770,7 @@ class _ModelFreeCompressorCore:
         self._apply_predefined_ignore_layers()
         self._build_matcher()
         self._detect_fp8_source()
+        self._resolve_model_type()
         self._discover_shards()
 
         # Determine the output packing format based on scheme data type
@@ -1880,3 +2030,119 @@ class ModelFreeCompressor(_ModelFreeCompressorCore):
         self.output_dir = orig
         self.quantized = True
         return None, out_path
+
+
+# ---------------------------------------------------------------------------
+# Model-Type Specific Preprocessing Hooks (Extension Point)
+# ---------------------------------------------------------------------------
+#
+# Keep model-specific source-format adaptation functions at the end of this
+# file so the core quantization pipeline remains easy to read and maintain.
+# Add new model handlers here, keyed by `model_type`, and keep dequant/passthrough
+# decisions in the generic MXFP handlers above.
+
+
+def _expand_e8m0_block_scale(
+    scale: torch.Tensor,
+    out_features: int,
+    in_features: int,
+    group_size: int = 32,
+) -> torch.Tensor:
+    """Expand a coarse 2D E8M0 block scale to the llm-compressor per-group layout.
+
+    deepseek_v4 stores the per-block shared exponent in a *coarse* 2D shape
+    ``[out_features // block_h, in_features // block_w]`` (e.g. ``[12, 56]`` for
+    a ``[1536, 7168]`` weight, i.e. 128x128 blocks).  llm-compressor expects a
+    per-group scale of shape ``[out_features, in_features // group_size]``
+    (e.g. ``[1536, 224]`` for ``group_size=32``).
+
+    Because every fine MXFP group lies entirely inside a single coarse block,
+    the expansion is a pure ``repeat_interleave`` along both axes (no
+    interpolation).  The returned tensor is ``uint8`` (raw E8M0 bytes), matching
+    the ``U8`` dtype used by llm-compressor ``weight_scale`` tensors.
+    """
+    scale = scale.view(torch.uint8)
+    if scale.dim() != 2:
+        raise ValueError(f"Expected a 2D E8M0 block scale, got shape {tuple(scale.shape)}.")
+
+    target_rows = out_features
+    target_cols = in_features // group_size
+    rows, cols = scale.shape
+
+    if target_rows % rows != 0 or target_cols % cols != 0:
+        raise ValueError(
+            f"Cannot expand E8M0 block scale {tuple(scale.shape)} to "
+            f"({target_rows}, {target_cols}); shapes are not divisible."
+        )
+
+    if target_rows != rows:
+        scale = scale.repeat_interleave(target_rows // rows, dim=0)
+    if target_cols != cols:
+        scale = scale.repeat_interleave(target_cols // cols, dim=1)
+    return scale.contiguous()
+
+
+def _preprocess_model_type_source_tensors(
+    raw_tensors: dict[str, torch.Tensor],
+    model_type: str | None,
+    group_size: int = 32,
+) -> tuple[dict[str, torch.Tensor], dict[str, int]]:
+    """Apply model-type-specific source tensor normalization.
+
+    This step is intentionally limited to *format conversion* and does not do
+    passthrough / dequant decisions. It marks converted layers in the returned
+    ``source_state`` so downstream generic MXFP handling can treat them exactly
+    like normal llm-compressor MXFP sources.
+
+    Returns:
+        ``(raw_tensors, source_state)`` where ``source_state[layer]`` is the
+        source MXFP bits (4 or 8) for model-type preprocessed layers.
+    """
+    if (model_type or "").lower() != "deepseek_v4":
+        return raw_tensors, {}
+
+    entries: list[tuple[str, str, bool]] = []  # (weight_name, scale_name, is_fp8)
+    for name, tensor in raw_tensors.items():
+        if not name.endswith(".weight"):
+            continue
+        scale_name = name[: -len(".weight")] + ".scale"
+        if scale_name not in raw_tensors:
+            continue
+        if tensor.dtype == torch.float8_e4m3fn:
+            entries.append((name, scale_name, True))
+        elif tensor.dtype in (torch.int8, torch.uint8):
+            entries.append((name, scale_name, False))
+
+    if not entries:
+        return raw_tensors, {}
+
+    source_state: dict[str, int] = {}
+    n_fp8 = 0
+    n_fp4 = 0
+    for weight_name, scale_name, is_fp8 in entries:
+        layer_name = weight_name[: -len(".weight")]
+        weight = raw_tensors.pop(weight_name)
+        scale = raw_tensors.pop(scale_name)
+
+        if is_fp8:
+            out_features, in_features = weight.shape
+            weight_key = f"{layer_name}.weight"
+            source_state[layer_name] = 8
+            n_fp8 += 1
+        else:
+            out_features = weight.shape[0]
+            in_features = weight.shape[1] * 2
+            weight = weight.view(torch.uint8).contiguous()
+            weight_key = f"{layer_name}.weight_packed"
+            source_state[layer_name] = 4
+            n_fp4 += 1
+
+        weight_scale = _expand_e8m0_block_scale(scale, out_features, in_features, group_size=group_size)
+        raw_tensors[weight_key] = weight
+        raw_tensors[f"{layer_name}.weight_scale"] = weight_scale
+
+    logger.info(
+        "Applied model_type preprocessing for deepseek_v4: "
+        f"{n_fp8} MXFP8 layer(s), {n_fp4} MXFP4 layer(s) converted to llm-compressor naming."
+    )
+    return raw_tensors, source_state

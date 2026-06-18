@@ -233,3 +233,19 @@ def test_unknown_algorithm_help_exits_with_suggestion(monkeypatch):
 
     with pytest.raises(SystemExit, match="Unknown algorithm 'hadarmard'. Did you mean 'hadamard'\\?"):
         cli_main.run()
+
+
+def test_legacy_disable_flags_map_to_enable_bools():
+    from auto_round.cli.parser import build_quantize_parser
+
+    args = build_quantize_parser().parse_args(
+        [
+            "--model",
+            "dummy-model",
+            "--disable_minmax_tuning",
+            "--disable_quanted_input",
+        ]
+    )
+
+    assert args.enable_minmax_tuning is False
+    assert args.enable_quanted_input is False
