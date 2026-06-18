@@ -22,7 +22,6 @@ import torch
 logger = logging.getLogger(__name__)
 
 
-
 @lru_cache(maxsize=None)
 def is_oneapi_ge_2026() -> bool:
     try:
@@ -36,6 +35,7 @@ def is_oneapi_ge_2026() -> bool:
 
     match = re.search(r"Compiler\s+(\d{4})\.", output)
     return bool(match and int(match.group(1)) >= 2026)
+
 
 B70_DEVICE_ID = "0xe223"
 B70_IDENTIFIERS = (B70_DEVICE_ID, "b70")
