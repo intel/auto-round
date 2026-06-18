@@ -59,6 +59,7 @@ class LogAnalyzer:
         " errors:",
         "Exception",
         "Traceback",
+        "Illegal instruction",
     )
 
     PASS_MARKER = " passed"
