@@ -29,11 +29,6 @@ class AWQConfig(QuantizationConfig):
     search loss calculation (quantize-dequantize during scale selection).
     The definitive quantization parameters for the final weight compression
     step come from the pipeline's ``block_quantizer`` config.
-
-    The pipeline implementation class (:class:`AWQQuantizer`) is bound to this
-    config via the ``@register_pipeline_member(AWQConfig)`` decorator and
-    resolved through the registry, so no explicit class reference is stored
-    here.
     """
 
     def __init__(

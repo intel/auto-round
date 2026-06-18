@@ -202,19 +202,12 @@ class AWQQuantizer(BaseWeightTransformer):
             prefix = _extract_block_prefix(m.smooth_name)
             self._block_mappings.setdefault(prefix, []).append(m)
 
-        # Enable the SignRoundV2 optimized scale-search path whenever the terminal
-        # block quantizer is SignRoundV2. The actual init_scale injection is then
-        # gated per-layer on data_type/sym inside ``_quantize_dequantize_weight``
-        # (int/mx/nv sym only), mirroring ``SignRoundOptimizedWrapperLinear``.
-        # The registered quantizer class is resolved via the pipeline registry
-        # (see ``_block_quantizer_is_signroundv2``).
         self._use_v2_scale_search = self._block_quantizer_is_signroundv2(compressor)
         logger.info(f"AWQ: use_v2_scale_search={self._use_v2_scale_search}")
 
         # Follow the resolved block-quantizer ``disable_opt_rtn`` for AWQ's
         # internal QDQ so the smooth/clip grid search matches what the final
-        # block quantization will actually do. AWQ never owns this field; it is
-        # read directly from the block quantizer here.
+        # block quantization will actually do.
         self.disable_opt_rtn = bool(getattr(compressor.quantize_config, "disable_opt_rtn", False))
         logger.info(f"AWQ: disable_opt_rtn={self.disable_opt_rtn} (inherited from block quantizer)")
 
@@ -599,9 +592,7 @@ class AWQQuantizer(BaseWeightTransformer):
 
         # The SignRoundV2 optimized init-scale path is static for this mapping:
         # whether it applies, and which quant function to use, depend only on
-        # data_type/sym (not on the per-ratio smoothed weight). Resolve the paired
-        # quant function once here; a non-None result is the single signal that
-        # the hot loop should seed each QDQ with a freshly searched init_scale.
+        # data_type/sym (not on the per-ratio smoothed weight).
         opt_quant_func = None
         if self._use_v2_scale_search and ref_cfg.get("sym", self.sym):
             opt_quant_func = get_optimized_quant_func(ref_cfg.get("data_type", self.data_type))
