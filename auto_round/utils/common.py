@@ -24,6 +24,7 @@ from typing import Any
 import torch
 import transformers
 from packaging import version
+from transformers.models.diffusion_gemma.modeling_diffusion_gemma import DiffusionGemmaModel
 
 from auto_round.export.export_to_gguf.config import GGUF_CONFIG
 from auto_round.logger import logger
@@ -269,9 +270,7 @@ def _patch_diffusion_gemma_tied_weights():
         try:
             prune_stale_tied_weights_keys(self)
         except Exception as exc:  # noqa: BLE001
-            logger.warning(
-                f"[DiffusionGemma] prune_stale_tied_weights_keys during __init__ failed: {exc}"
-            )
+            logger.warning(f"[DiffusionGemma] prune_stale_tied_weights_keys during __init__ failed: {exc}")
 
     DiffusionGemmaModel.__init__ = _patched_init
     DiffusionGemmaModel._ar_tied_prune_patched = True

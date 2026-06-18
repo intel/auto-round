@@ -20,9 +20,7 @@ from unittest.mock import patch
 import pytest
 import torch
 import torch.nn as nn
-
 from transformers import PretrainedConfig, PreTrainedModel
-
 
 # ---------------------------------------------------------------------------
 # Test helpers
@@ -142,9 +140,7 @@ class TestPruneStaleTiedWeightsKeys:
         removed = prune_stale_tied_weights_keys(wrapper)
 
         assert removed == 0
-        assert wrapper.text._tied_weights_keys == {
-            "model.embed_tokens.weight": "lm_head.weight"
-        }
+        assert wrapper.text._tied_weights_keys == {"model.embed_tokens.weight": "lm_head.weight"}
 
     def test_keeps_pattern_when_target_source_count_is_multiple_of_source(self):
         """Pattern is kept when target param count is a non-zero multiple of source param count."""
@@ -421,6 +417,7 @@ class TestPatchDiffusionGemmaTiedWeights:
         import auto_round.utils.model as ar_model
 
         with patch.object(ar_model, "prune_stale_tied_weights_keys", _fake_prune):
+
             def _original_init(self, *args, **kwargs):
                 pass
 
@@ -439,8 +436,8 @@ class TestPatchDiffusionGemmaTiedWeights:
 
     def test_patched_init_logs_warning_on_prune_failure(self, caplog):
         """If ``prune_stale_tied_weights_keys`` raises, the patched init logs a warning."""
-        from auto_round.utils import common as ar_common
         from auto_round.logger import logger
+        from auto_round.utils import common as ar_common
 
         ar_common.DiffusionGemmaModel._ar_tied_prune_patched = False
         original = ar_common.DiffusionGemmaModel.__init__

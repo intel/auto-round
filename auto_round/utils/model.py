@@ -23,8 +23,8 @@ from typing import TYPE_CHECKING, Union
 import psutil
 import torch
 import transformers
-from transformers import PreTrainedModel
 from packaging import version
+from transformers import PreTrainedModel
 
 from auto_round import envs
 from auto_round.export.export_to_gguf.config import ModelType

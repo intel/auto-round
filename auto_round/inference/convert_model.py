@@ -71,7 +71,7 @@ def skip_not_convert_modules(model, quantization_config, layer_names, layer_conf
         modules_to_not_convert = _get_modules_to_not_convert(model, modules_to_not_convert)
 
     if modules_to_not_convert and not user_specified:
-        _DEFAULT_SKIP_KEYWORDS  = ("embed", "embed_tokens", "lm_head", "output_embed", "norm")
+        _DEFAULT_SKIP_KEYWORDS = ("embed", "embed_tokens", "lm_head", "output_embed", "norm")
         modules_to_not_convert = [
             name for name in modules_to_not_convert if any(key in name for key in _DEFAULT_SKIP_KEYWORDS)
         ]
