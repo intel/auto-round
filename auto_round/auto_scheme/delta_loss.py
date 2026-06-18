@@ -37,7 +37,7 @@ from auto_round.data_type.gguf import (
     search_gguf_scale_min_asym,
     search_gguf_scale_min_sym,
 )
-from auto_round.data_type.utils import reshape_pad_tensor_by_group_size, revert_tensor_by_pad
+from auto_round.data_type.utils import reshape_pad_tensor_by_group_size, revert_tensor_by_pad, get_quant_func
 from auto_round.logger import logger
 from auto_round.schemes import QuantizationScheme, preset_name_to_scheme
 from auto_round.utils import (
@@ -167,6 +167,125 @@ class AutoSchemeWrapperLinear(WrapperLinear):
 
             qdq_w.register_hook(save_grad)
         return qdq_w, 1.0, None
+
+
+
+class AutoSchemeWrapperLinearIMatrix(WrapperLinear):
+
+    def __init__(
+        self,
+        orig_layer,
+        enable_minmax_tuning=True,
+        enable_norm_bias_tuning=False,
+        device="cpu",
+        enable_round_tuning=True,
+        need_weight_grad=False,
+        enable_torch_compile=False,
+        **kwargs,
+    ):
+        super().__init__(
+            orig_layer,
+            enable_minmax_tuning,
+            enable_norm_bias_tuning,
+            device,
+            enable_round_tuning,
+            enable_torch_compile=enable_torch_compile,
+            **kwargs,
+        )
+        self.total_act_score = 0.0
+        self.act_score = 0.0
+        self.avg_act_score = 0.0
+        self.act_cnt = 0.0
+        self.weight_score = 0.0
+        self.mix_score = 0.0
+        self.super_qdq_func = super()._qdq_weight
+        self.act_qdq_func = super()._qdq_act
+        self.max_act_value = 0
+        self.need_weight_grad = need_weight_grad
+        self.grad_mode = False
+        if self.need_weight_grad:
+            self.orig_layer.weight.requires_grad = True
+        self.weight_search_quant_func,_= get_quant_func(
+            orig_layer.data_type,
+            orig_layer.bits,
+            orig_layer.sym,
+            disable_opt_rtn=False,
+            group_size=orig_layer.group_size,
+            iters=0,
+        )
+        self.post_init_qdqw(device)
+
+    @torch.no_grad()
+    def post_init_qdqw(self, device):
+        # Could not place in qdq_w, otherwise vram is much higher
+
+        qdq_w, _, _ = self.weight_search_quant_func(
+            self.orig_layer.weight.to(device),
+            bits=self.orig_layer.bits,
+            group_size=self.orig_layer.group_size,
+            v=torch.tensor(0, device=device),
+            min_scale= torch.tensor(1.0, device=device),
+            max_scale= torch.tensor(1.0, device=device),
+            scale_dtype=self.orig_layer.scale_dtype,
+            data_type=self.data_type,
+            q_scale_thresh=self.q_scale_thresh,
+            imatrix=self.orig_layer.imatrix.to(device) if hasattr(self.orig_layer, "imatrix") else None,
+            global_scale=getattr(self, "weight_global_scale", None),
+        )
+
+        self.register_buffer("qdq_w", qdq_w.detach().clone().to(self.orig_layer.weight.device))
+        def save_grad(grad):
+            w_diff = self.orig_layer.weight - self.qdq_w.to(self.orig_layer.weight.device)
+            self.weight_score += torch.abs((grad.to(torch.float32) * w_diff.to(grad.device))).sum().item()
+            act_score = 0.0 if self.act_cnt <= 0 else self.total_act_score / self.act_cnt
+            self.mix_score = self.weight_score + act_score
+            return None
+
+        self.qdq_w.requires_grad_(True)
+        self.orig_layer.weight.requires_grad_(False)
+
+        self.qdq_w.register_hook(save_grad)
+
+
+    def _qdq_act(self, x, act_min_scale=1.0, act_max_scale=1.0, act_max=None):
+        if hasattr(self.orig_layer, "act_bits") and self.orig_layer.act_bits > 8:
+            return x, 1.0, None
+
+        qdq_x, scale, zp = self.act_qdq_func(x, act_min_scale, act_max_scale, act_max)
+        if self.grad_mode:
+            with torch.no_grad():
+                self.max_act_value = torch.abs(x).max()
+                if torch.abs(x).max() != 0:
+                    self.act_cnt += 1
+                x_diff = x - qdq_x
+                self.x_diff = x_diff.to("cpu")
+
+            def save_grad(grad):
+                if self.max_act_value == 0:
+                    if torch.abs(grad).max() != 0:
+                        raise ValueError
+                """
+                this ut will cause NAN issue sometimes, need to investigate
+                    @multi_card
+                    def test_multi_card(self):
+                     model_name = "/models/Qwen3-8B"
+                """
+                if torch.isnan(grad).any() or torch.isnan(self.x_diff).any():
+                    self.act_cnt -= 1
+                    return None
+
+                self.total_act_score += torch.abs((grad * self.x_diff.to(grad.device))).sum().item()
+                self.act_score = 0.0 if self.act_cnt <= 0 else self.total_act_score / self.act_cnt
+                self.mix_score = self.weight_score + self.act_score
+                self.x_diff = None
+                return None
+
+            qdq_x.register_hook(save_grad)
+        return qdq_x, scale, zp
+
+    def _qdq_weight(self, value, min_scale, max_scale):
+        return self.qdq_w, 1.0, None
+
 
 
 class AutoSchemeWrapperLinearForGGUFK(AutoSchemeWrapperLinear):
@@ -407,8 +526,9 @@ def prepare_model_low_gpu(model, block_inputs: dict = None, pbar=None, major_dev
             block_inputs[module_name] = input_info
 
             module.to("cpu")
+            memory_monitor.update(device_list=major_device)
             # clear_memory(device_list=major_device) #slow
-            memory_monitor.log_summary()
+            # memory_monitor.log_summary()
 
             # Enable gradients for the output of the last block
             if module.tmp_name == block_names[-1]:
@@ -577,10 +697,10 @@ def model_forward_low_gpu(model, dataloader, major_device="cuda", pbar=None):
 
             del block_output, main_output, block_input_args, block_input_kwargs
             block_module.to("cpu")
-            # if index%4==0:
-            #     clear_memory(device_list=major_device) # this one is very slow and seems does not affect max ram usage
+
+            # clear_memory(device_list=major_device) # this one is very slow and seems does not affect max ram usage
             memory_monitor.update()
-            memory_monitor.log_summary()
+
             pbar.update(1)
 
 
@@ -641,6 +761,8 @@ def get_score_for_scheme(
             m.scale_dtype = torch.bfloat16
 
         WrapperLayer = AutoSchemeWrapperLinear
+        if has_imatrix:
+            WrapperLayer = AutoSchemeWrapperLinearIMatrix
         if hasattr(m, "super_group_size") and m.super_group_size is not None:
             if has_imatrix:
                 WrapperLayer = AutoSchemeWrapperLinearForGGUFKImatrix
@@ -1317,21 +1439,10 @@ def _gen_layer_config(
     shared_layers = parse_shared_layers(model, auto_scheme.shared_layers)
 
     options_scores = []
-    # if auto_scheme.low_gpu_mem_usage and not disable_opt_rtn:
-    #     logger.warning("low_gpu_mem_usage is enabled, disable_opt_rtn will be set to True automatically")
-    #     disable_opt_rtn = True
     disable_opt_rtn = False
     if not disable_opt_rtn:
-        need_imatrix = False
-        for scheme in schemes:
-            if isinstance(scheme, str):
-                scheme = asdict(preset_name_to_scheme(scheme))
-            elif isinstance(scheme, QuantizationScheme):
-                scheme = asdict(scheme)
+        need_imatrix = True
 
-            need_imatrix = scheme["super_bits"] is not None
-            if need_imatrix:
-                break
         if need_imatrix:
             dataloader = get_dataloader(
                 tokenizer,
