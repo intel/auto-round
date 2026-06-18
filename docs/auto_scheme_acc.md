@@ -37,7 +37,7 @@ evalscope eval --model qwen --api-url http://127.0.0.1:8000/v1   --api-key EMPTY
 
 [//]: # (| pr branch                                          | 0.72     | 0.2677       | -        |)
 
-[//]: # (| pr branch + imatrix aware seqlen512                | 0.742    | 0.3232       | -        |)
+[//]: # (| pr branch + iters 200 enable_alg_ext                 | 0.742    | 0.3232       | -        |)
 
 
 
