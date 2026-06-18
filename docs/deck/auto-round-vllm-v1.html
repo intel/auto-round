@@ -376,7 +376,7 @@
     <h1>Making Low-Bit LLM/VLM Quantization<br>Practical in <span class="blue-text">vLLM/vLLM-Omni</span></h1>
     <div class="subtitle">From Quantization Fundamentals to Production-Ready Serving with AutoRound</div>
     <div class="yellow-bar"></div>
-    <div class="author">Yi Liu &nbsp;·&nbsp; on behalf of the Intel AutoRound Team</div>
+    <div class="author">Yi Liu &nbsp;·&nbsp; on behalf of the Intel Neural Compressor Team &nbsp;·&nbsp; Jun 2026</div>
   </div>
 
   <!-- ============ SLIDE 2: Outline ============ -->
@@ -643,7 +643,7 @@ W_dequant = W_quant * scale</pre>
           <div class="flow-arrow">▼</div>
           <div class="flow-step">④ Update: SignSGD<br><span class="text-xs text-dim">v ← v − lr × sign(grad) · Update clipping similarly</span></div>
           <div class="flow-arrow">▼</div>
-          <div class="flow-step">⑤ Repeat ×200 → pack weights</div>
+          <div class="flow-step">⑤ Repeat 2~4 ×200</div>
           <div class="flow-arrow">▼</div>
           <div class="flow-step" style="border-color:var(--green); border-width:2px;">
             <strong style="color:var(--green-text);">Output</strong>
@@ -677,7 +677,11 @@ W_dequant = W_quant * scale</pre>
           <p class="text-sm"><strong>V1 (EMNLP 2024):</strong> SignSGD on rounding only. Fixed quantization range.</p>
         </div>
         <div class="card card-accent">
-          <p class="text-sm"><strong>V2 (arXiv 2025):</strong> Adaptive mixed-precision via gradient-guided layer-wise bit allocation. Lightweight stabilization: loss filtering + pre-tuning scale search. Targets 2-bit and MXFP4. Closes the gap to full-precision.</p>
+          <p class="text-sm"><strong>V2 (arXiv 2025):</strong></p>
+          <ul class="text-sm" style="margin-top:4px;">
+            <li><strong>① Adaptive mixed-precision</strong> — leverages gradient information and quantization-induced reconstruction errors to guide layer-wise bit allocation</li>
+            <li><strong>② Lightweight stabilization</strong> — loss filtering and pre-tuning scale search to improve tuning effectiveness in extremely low-bit regimes (2-bit, MXFP4)</li>
+          </ul>
         </div>
       </div>
       <div>
@@ -701,36 +705,31 @@ W_dequant = W_quant * scale</pre>
   <!-- ============ SLIDE 13: AutoRound vs AWQ vs GPTQ (2.5) ============ -->
   <div class="slide">
     <h2>AutoRound vs. AWQ vs. GPTQ: Comparison</h2>
-    <div class="grid-2 flex-grow">
-      <div>
-        <h3>How Different Methods Address These</h3>
-        <table class="dense-table">
-          <thead><tr><th>Method</th><th>Rounding</th><th>Clipping</th><th>Outliers</th></tr></thead>
-          <tbody>
-            <tr><td class="bold">RTN</td><td>Standard round</td><td>min/max</td><td><span class="badge badge-red">No handling</span></td></tr>
-            <tr><td class="bold">GPTQ</td><td>Hessian-based</td><td>None explicit</td><td><span class="badge badge-yellow">Partial</span></td></tr>
-            <tr><td class="bold">AWQ</td><td>Standard round</td><td>Channel-wise scaling</td><td><span class="badge badge-green">Scaling smooths outliers</span></td></tr>
-            <tr class="hl-row"><td class="bold">AutoRound</td><td><span class="badge badge-green">Learned via gradient</span></td><td><span class="badge badge-green">Learned via gradient</span></td><td><span class="badge badge-green">Optimized end-to-end</span></td></tr>
-          </tbody>
-        </table>
-      </div>
-      <div>
-        <h3>Accuracy Comparison</h3>
-        <p class="text-xs text-dim mb-8">Average accuracy of 10+ tasks at W2G128</p>
-        <img src="./images/algos-acc-compare.png" alt="Accuracy Comparison: AutoRound vs AWQ vs GPTQ"
-             style="width:100%; border-radius:8px; border:1px solid var(--border-light);">
+    <p class="text-xs text-dim mb-8">Average accuracy of 10+ tasks at W2G128</p>
+    <div class="flex-grow" style="display:flex; flex-direction:column; gap:10px;">
+      <table class="dense-table" style="margin-bottom:0;">
+        <thead><tr><th>Method</th><th>Rounding</th><th>Clipping</th><th>Outliers</th></tr></thead>
+        <tbody>
+          <tr><td class="bold">RTN</td><td>Standard round</td><td>min/max</td><td><span class="badge badge-red">No handling</span></td></tr>
+          <tr><td class="bold">GPTQ</td><td>Hessian-based</td><td>None explicit</td><td><span class="badge badge-yellow">Partial</span></td></tr>
+          <tr><td class="bold">AWQ</td><td>Standard round</td><td>Channel-wise scaling</td><td><span class="badge badge-green">Scaling smooths outliers</span></td></tr>
+          <tr class="hl-row"><td class="bold">AutoRound</td><td><span class="badge badge-green">Learned via gradient</span></td><td><span class="badge badge-green">Learned via gradient</span></td><td><span class="badge badge-green">Optimized end-to-end</span></td></tr>
+        </tbody>
+      </table>
+      <div style="flex:1; display:flex; align-items:center;">
+        <img src="./images/algos-acc-compare.png" alt="Accuracy Comparison"
+             style="width:100%; max-height:420px; object-fit:contain; border-radius:8px; border:1px solid var(--border-light);">
       </div>
     </div>
   </div>
 
   <!-- ============ SLIDE 14: QDQ Design (2.4) ============ -->
   <div class="slide">
-    <h2>QDQ Design: Why It Matters</h2>
-    <p class="text-sm text-dim mb-12">Same quantized tensors, different GEMM execution path</p>
-    <div class="grid-2 flex-grow" style="gap:20px;">
-      <div class="card" style="padding:16px 20px; margin-bottom:0;">
-        <h3 style="text-align:center; margin-bottom:8px;">QDQ / Fake Quantization (Tuning)</h3>
-        <pre style="font-size:0.62rem; line-height:1.35; padding:12px; text-align:center; background:var(--bg);">
+    <h2 style="margin-bottom:12px;">QDQ Design: Why It Matters</h2>
+    <div class="grid-2 flex-grow" style="gap:18px;">
+      <div class="card" style="padding:14px 18px; margin-bottom:0; display:flex; flex-direction:column;">
+        <h3 style="text-align:center; margin-bottom:6px;">QDQ / Fake Quantization (Tuning)</h3>
+        <pre style="font-size:0.78rem; line-height:1.3; padding:8px; text-align:center; background:var(--bg); flex:1; display:flex; align-items:center; justify-content:center;">
  Activation            Weight
     X_fp                W_fp
      │                   │
@@ -747,29 +746,27 @@ W_dequant = W_quant * scale</pre>
   X_dq_fp ──→ FP GEMM ←── W_dq_fp
 
   Y = FP_GEMM(X_dq_fp, W_dq_fp)</pre>
-        <p class="text-xs text-dim">DeQuant <strong>before</strong> GEMM → GEMM runs on FP tensors → gradients flow through quant/dequant ops.</p>
+        <p class="text-xs text-dim">DeQuant <strong>before</strong> GEMM → FP tensors → gradients flow through.</p>
       </div>
-      <div class="card card-accent" style="padding:16px 20px; margin-bottom:0;">
-        <h3 style="text-align:center; margin-bottom:8px;">Real INT4 Kernel (Inference)</h3>
-        <pre style="font-size:0.62rem; line-height:1.35; padding:12px; text-align:center; background:var(--bg);">
+      <div class="card card-accent" style="padding:14px 18px; margin-bottom:0; display:flex; flex-direction:column;">
+        <h3 style="text-align:center; margin-bottom:6px;">Real INT4 Kernel (Inference)</h3>
+        <pre style="font-size:0.78rem; line-height:1.3; padding:8px; text-align:center; background:var(--bg); flex:1; display:flex; align-items:center; justify-content:center;">
  Activation            Weight
     X_fp                W_fp
      │                   │
      ▼                   ▼
    Quant               Quant
      │                   │
-     ├── scale_x         ├── scale_w
      ▼                   ▼
- X_int4 packed       W_int4 packed
+ X_int4 scale_x     W_int4, scale_w
      │                   │
      └──→ INT4 GEMM ←────┘
 
- Y = INT4_GEMM(X_int4, W_int4,
-               scale_x, scale_w)</pre>
-        <p class="text-xs text-dim">GEMM consumes <strong>packed INT4</strong> directly → dequant/rescale fused inside kernel → no FP overhead.</p>
+ Y = INT4_GEMM(X_int4, W_int4, scale_x, scale_w)</pre>
+        <p class="text-xs text-dim">Packed INT4 → fused dequant in kernel → no FP overhead.</p>
       </div>
     </div>
-    <div class="key-msg" style="margin-top:12px;">QDQ separates algorithm from format and kernel. Tuning: gradients flow through fake-quantized FP. Inference: packed INT4 + fused dequant. Same quantized tensors, swap <code>quant_func</code> for any dtype.</div>
+    <div class="key-msg" style="margin-top:8px;">QDQ separates algorithm from format and kernel. Same quantized tensors, swap <code>quant_func</code> for any dtype.</div>
   </div>
 
   <!-- ============ SLIDE 15: Support Matrix (2.6) ============ -->
@@ -876,25 +873,25 @@ W_dequant = W_quant * scale</pre>
   <!-- ============ SLIDE 19: Low-Bit Leaderboard (3.2) ============ -->
   <div class="slide">
     <h2>Low-Bit Leaderboard</h2>
-    <div class="grid-2 flex-grow">
-      <div>
-        <h3>Low-Bit Open LLM Leaderboard</h3>
-        <p class="text-sm mb-8"><a href="https://huggingface.co/spaces/Intel/low_bit_open_llm_leaderboard">huggingface.co/spaces/Intel/low_bit_open_llm_leaderboard</a></p>
-        <img src="./images/ld.png" alt="Low-Bit Leaderboard" style="width:100%; border-radius:8px; border:1px solid var(--border-light); margin-bottom:12px;">
+    <div class="grid-2 flex-grow" style="gap:28px;">
+      <div style="display:flex; align-items:center;">
+        <img src="./images/ld.png" alt="Low-Bit Leaderboard" style="width:100%; border-radius:8px; border:1px solid var(--border-light);">
+      </div>
+      <div style="display:flex; flex-direction:column; gap:12px; justify-content:center;">
+        <div>
+          <h3>Low-Bit Open LLM Leaderboard</h3>
+          <p class="text-sm mb-8"><a href="https://huggingface.co/spaces/Intel/low_bit_open_llm_leaderboard">huggingface.co/spaces/Intel/low_bit_open_llm_leaderboard</a></p>
+        </div>
         <div class="card card-accent">
           <ul class="text-sm">
             <li><strong>Agent-driven</strong> — users can submit models for evaluation</li>
-            <li><strong>Low-bit focus</strong> — specifically tracks 2/3/4-bit quantization quality</li>
-            <li><strong>Free calibration devices</strong> — users can quantize and evaluate models without their own GPU</li>
+            <li><strong>Low-bit focus</strong> — specifically tracks sub-bit quantization quality</li>
+            <li><strong>Free calibration devices</strong> — users can quantize and evaluate without their own GPU</li>
             <li><strong>Transparent</strong> — all results with methodology, calibration data, and parameters</li>
           </ul>
         </div>
-      </div>
-      <div>
-        <h3>Leaderboard Purpose</h3>
         <ol class="text-sm">
-          <li><strong>Track progress</strong> — how close are we to lossless 2-bit quantization?</li>
-          <li><strong>Compare methods</strong> — AutoRound vs GPTQ vs AWQ at different bit-widths</li>
+          <li><strong>Track progress</strong> — how close are we to lossless sub-bit quantization?</li>
           <li><strong>Guide practitioners</strong> — what scheme + method works best for a given model family?</li>
           <li><strong>Community contribution</strong> — anyone can submit results</li>
         </ol>
