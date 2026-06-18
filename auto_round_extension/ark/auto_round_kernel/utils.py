@@ -21,7 +21,7 @@ import torch
 
 logger = logging.getLogger(__name__)
 
-B70_DEVICE_ID = "0xe223"
+B70_IDENTIFIERS = ("0xe223", "b70")
 
 
 @lru_cache(maxsize=None)
@@ -42,11 +42,11 @@ def is_oneapi_ge_2026() -> bool:
 @lru_cache(maxsize=None)
 def is_b70(device: int = 0) -> bool:
     try:
-        name = torch.xpu.get_device_properties(device).name
+        name = torch.xpu.get_device_properties(device).name.lower()
     except Exception:
         return False
 
-    return B70_DEVICE_ID in name.lower()
+    return any(identifier in name for identifier in B70_IDENTIFIERS)
 
 
 @lru_cache(maxsize=None)
