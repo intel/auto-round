@@ -337,7 +337,27 @@ class AutoRound(object):
         seqlen: int = None,
         **kwargs,
     ) -> "BaseCompressor":
-        from auto_round.utils.model import is_model_free_route
+
+        if alg_configs is None:
+            alg_configs = "auto_round"
+
+        if isinstance(scheme, AutoScheme):
+            tmp_alg_configs = alg_configs
+            if not isinstance(alg_configs,list):
+                tmp_alg_configs = [tmp_alg_configs]
+            for tmp_alg_config in tmp_alg_configs:
+                if ("rtn" in tmp_alg_config.__class__.__name__.lower().split(".")[-1]  and
+                        getattr(tmp_alg_config, "disable_opt_rtn", False)):
+                    logger.warning_once(
+                        "We strongly recommend setting disable_opt_rtn=False when using AutoScheme, "
+                        "as it generally provides better accuracy."
+                    )
+                elif ("signround" in tmp_alg_config.__class__.__name__.lower().split(".")[-1] and
+                      not getattr(tmp_alg_config, "enable_alg_ext", False)):
+                    logger.warning_once(
+                        "We recommend enabling `enable_alg_ext` when using AutoScheme, "
+                        "as it generally provides better accuracy."
+                    )
 
         device_map = normalize_default_device_map(device_map)
         split_kwargs = _split_entry_kwargs(kwargs)
@@ -347,8 +367,6 @@ class AutoRound(object):
         mllm_kwargs = dict(split_kwargs["mllm"])
         diffusion_kwargs = dict(split_kwargs["diffusion"])
 
-        if alg_configs is None:
-            alg_configs = "auto_round"
 
         # Resolve string alias(es) to config instance(s) before routing.
         alg_configs = cls._resolve_config(alg_configs)

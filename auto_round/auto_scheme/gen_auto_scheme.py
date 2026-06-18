@@ -38,7 +38,6 @@ class AutoScheme:
     dataset: Optional[str] = None  # Import Notice no comma for each item
     device_map: Optional[Union[str, torch.device, int, dict]] = None
     enable_torch_compile: Optional[bool] = None
-    disable_opt_rtn: bool = False
     low_gpu_mem_usage: bool = True
     low_cpu_mem_usage: bool = True
 
@@ -79,7 +78,6 @@ class GenScheme:
             if self.auto_scheme.enable_torch_compile is None
             else self.auto_scheme.enable_torch_compile
         )
-        self.disable_opt_rtn = self.auto_scheme.disable_opt_rtn
         self.min_avg_bit, self.max_avg_bit, self.min_avg_bit_scheme = self.compute_avg_bit_range()
         self._check_configs()
 
@@ -132,7 +130,6 @@ class GenScheme:
             self.tokenizer,
             device_map=self.device_map,
             enable_torch_compile=self.enable_torch_compile,
-            disable_opt_rtn=self.disable_opt_rtn,
             low_gpu_mem_usage=self.auto_scheme.low_gpu_mem_usage,
             min_avg_bit_scheme=self.min_avg_bit_scheme,
             processor=self.processor,

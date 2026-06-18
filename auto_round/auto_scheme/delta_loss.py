@@ -720,7 +720,6 @@ def get_score_for_scheme(
     low_gpu_mem_usage=True,
     major_device="cpu",
     batch_size=1,
-    disable_opt_rtn=True,
     offload_context: Optional[OffloadManager] = None,
     processor=None,
     is_vlm: bool = False,
@@ -787,7 +786,6 @@ def get_score_for_scheme(
                 enable_round_tuning=False,
                 need_weight_grad=need_weight_grad,
                 enable_torch_compile=enable_torch_compile,
-                disable_opt_rtn=disable_opt_rtn,
             )
             set_module(model, name, new_m)
     if offload_context is not None:
@@ -1297,7 +1295,6 @@ def _gen_layer_config(
     tokenizer=None,
     device_map=None,
     enable_torch_compile=False,
-    disable_opt_rtn=True,
     model_name=None,
     major_device="cpu",
     device_list=None,
@@ -1492,7 +1489,6 @@ def _gen_layer_config(
                 low_gpu_mem_usage=auto_scheme.low_gpu_mem_usage,
                 major_device=major_device,
                 batch_size=batch_size,
-                disable_opt_rtn=auto_scheme.disable_opt_rtn,
                 offload_context=offload_context,
                 processor=processor,
                 is_vlm=is_vlm,
@@ -1648,7 +1644,8 @@ def _gen_layer_config(
     head_name = get_lm_head_name(model)
     if head_name is not None and (head_name not in fixed_layer_scheme and head_name in quant_layer_names):
         _apply_head_trick(head_name, schemes, sorted_indices, target_bits, target_params_cnt, total_scores)
-    # As a little fo calibration data is used and embedding is a sparse op, we could not get reliable score
+    # As only a small amount of calibration data is used and embedding layers are inherently sparse,
+    # we cannot obtain a reliable score.
     if not_fixed_embedding_layers_names:
         selected_index = _select_embedding_scheme_index()
         tmp_scheme = _to_scheme_dict(schemes[selected_index])
@@ -1726,7 +1723,6 @@ def gen_layer_config(
     tokenizer=None,
     device_map=None,
     enable_torch_compile=False,
-    disable_opt_rtn=True,
     low_gpu_mem_usage=True,
     min_avg_bit_scheme=None,
     processor=None,
@@ -1841,7 +1837,6 @@ def gen_layer_config(
             tokenizer=tokenizer,
             model_name=model_name,
             enable_torch_compile=enable_torch_compile,
-            disable_opt_rtn=disable_opt_rtn,
             device_map=device_map,
             major_device=major_device,
             device_list=device_list,
@@ -1873,7 +1868,6 @@ def gen_layer_config(
             tokenizer=tokenizer,
             model_name=model_name,
             enable_torch_compile=enable_torch_compile,
-            disable_opt_rtn=disable_opt_rtn,
             device_map=device_map,
             major_device=major_device,
             device_list=device_list,
