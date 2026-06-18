@@ -138,7 +138,7 @@ stages:
 
               - script: |
                   echo "##[group]Installing Python dependencies..."
-                  uv pip install -U "pytest-cov" "pytest-html" "requests" "huggingface_hub"
+                  uv pip install -U "pytest-cov" "requests" "huggingface_hub"
                   hf auth login --token "$(HF_TOKEN)"
                   echo "##[endgroup]"
                 displayName: "Install Python Dependencies"
