@@ -1120,16 +1120,20 @@ def choose_bits_per_layer_with_path(layers: dict, P: int, max_states: int = None
         # cumulative-bit sums can grow to millions, each storing a full
         # path copy — easily exceeding 70 GB of RAM.
         if max_states is not None and len(pruned) > max_states:
-            sorted_keys = sorted(pruned.keys())
-            n = len(sorted_keys)
-            # Uniformly pick max_states indices (always include first and last)
-            step = (n - 1) / (max_states - 1)
-            selected: dict[int, tuple[float, list]] = {}
-            for i in range(max_states):
-                idx = int(round(i * step))
-                k = sorted_keys[idx]
-                selected[k] = pruned[k]
-            pruned = selected
+            if max_states <= 1:
+                best_k = min(pruned.keys(), key=lambda k: pruned[k][0])
+                pruned = {best_k: pruned[best_k]}
+            else:
+                sorted_keys = sorted(pruned.keys())
+                n = len(sorted_keys)
+                # Uniformly pick max_states indices (always include first and last)
+                step = (n - 1) / (max_states - 1)
+                selected: dict[int, tuple[float, list]] = {}
+                for i in range(max_states):
+                    idx = int(round(i * step))
+                    k = sorted_keys[idx]
+                    selected[k] = pruned[k]
+                pruned = selected
 
         dp = pruned
 
