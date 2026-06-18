@@ -48,6 +48,7 @@ from transformers import AutoConfig
 
 from auto_round.export.export_to_gguf.config import ModelType
 from auto_round.export.export_to_gguf.gguf_dtype import GGUFDTypeSelector
+from auto_round.export.export_to_gguf.hf_checkpoint_restorer import HFCheckpointRestorer, RestoredTensor
 from auto_round.export.export_to_gguf.packing import ggml_quant
 from auto_round.utils import (
     LazyImport,
@@ -76,7 +77,7 @@ def wrapper_model_instance(
     model_instance.layer_config = layer_config
     model_instance.low_cpu_mem_usage = _need_low_cpu_mem(low_cpu_mem_usage)
 
-    model_instance.get_tensors = partial(get_tensors, model_instance)
+    model_instance.get_tensors = partial(get_restored_tensors, model_instance)
     model_instance.prepare_tensors = partial(prepare_tensors, model_instance)
 
     model_instance.device = device
@@ -130,30 +131,11 @@ def is_mmproj_tensor_name(name):
     return any(key in name for key in MM_KEYS)
 
 
-def get_tensors(cls) -> Iterator[tuple[str, Tensor]]:
-    if not hasattr(cls.model, "tensor_name_list"):
-        cls.model.tensor_name_list = []
-
-    checkpoint_conversion_mapping = getattr(cls.model, "_checkpoint_conversion_mapping", {}) or {}
-    reverse_key_mapping = {v: k for k, v in checkpoint_conversion_mapping.items()}
-    for name, tensor in cls.model.named_parameters():
-        if name not in cls.model.tensor_name_list:
-            cls.model.tensor_name_list.append(name)
-            for pattern, replacement in reverse_key_mapping.items():
-                replacement = replacement.lstrip("^")  # strip off un-needed chars and patterns
-                replacement = re.sub(r"\(.*\)", "", replacement)
-                key, n_replace = re.subn(pattern, replacement, name)
-                cls.model.tensor_name_list.append(key)
-                if n_replace > 0:
-                    break
-        yield name, tensor
-
+def _iter_extra_tensors(cls):
     def is_extra_tensor(tensor_name):
         if getattr(cls.model, "_is_quantized_input_module", False) and "scale" in tensor_name.split(".")[-1]:
             return False
-        if tensor_name not in cls.model.tensor_name_list:
-            return True
-        return False
+        return tensor_name not in getattr(cls.model, "tensor_name_list", [])
 
     extra_tensor = {}
     if hasattr(cls.model, "name_or_path"):
@@ -173,13 +155,28 @@ def get_tensors(cls) -> Iterator[tuple[str, Tensor]]:
                 if is_extra_tensor(tensor_name):
                     extra_tensor[tensor_name] = get_tensor_from_file(dir_path, tensor_name)
         else:
-            f = safe_open(os.path.join(dir_path, "model.safetensors"), framework="pt")
-            for tensor_name in f.keys():
-                if is_extra_tensor(tensor_name):
-                    extra_tensor[tensor_name] = get_tensor_from_file(dir_path, tensor_name)
+            model_file = os.path.join(dir_path, "model.safetensors")
+            if os.path.exists(model_file):
+                f = safe_open(model_file, framework="pt")
+                for tensor_name in f.keys():
+                    if is_extra_tensor(tensor_name):
+                        extra_tensor[tensor_name] = get_tensor_from_file(dir_path, tensor_name)
 
-    for name, tensor in extra_tensor.items():
-        yield name, tensor
+    yield from extra_tensor.items()
+
+
+def get_restored_tensors(cls) -> Iterator[RestoredTensor]:
+    if not hasattr(cls.model, "tensor_name_list"):
+        cls.model.tensor_name_list = []
+
+    for restored in HFCheckpointRestorer(cls.model).iter_tensors():
+        for tensor_name in (restored.checkpoint_name, *restored.hf_names):
+            if tensor_name not in cls.model.tensor_name_list:
+                cls.model.tensor_name_list.append(tensor_name)
+        yield restored
+
+    for name, tensor in _iter_extra_tensors(cls):
+        yield RestoredTensor(name, lambda tensor=tensor: tensor, (name,), "extra")
 
 
 def _quant_data_with_args(
@@ -366,6 +363,57 @@ def get_qtype_by_layer_config(layer_config, name, data_qtype, *, explicit_only=F
     # return data_qtype
 
 
+def _qtype_name(qtype):
+    return qtype.name if hasattr(qtype, "name") else str(qtype)
+
+
+def resolve_restored_qtype(
+    layer_config,
+    hf_names,
+    checkpoint_name,
+    gguf_name,
+    fallback_qtype,
+    diagnostics,
+):
+    source_qtypes = [
+        get_qtype_by_layer_config(layer_config, hf_name, fallback_qtype, explicit_only=True) for hf_name in hf_names
+    ]
+    matched_qtypes = [qtype for qtype in source_qtypes if qtype is not None]
+
+    if len(matched_qtypes) == 1 and len(hf_names) == 1:
+        return matched_qtypes[0]
+    if len(matched_qtypes) > 0 and len(matched_qtypes) == len(source_qtypes):
+        unique_qtypes = set(matched_qtypes)
+        if len(unique_qtypes) == 1:
+            return matched_qtypes[0]
+
+    if len(hf_names) <= 1 and len(matched_qtypes) == 0:
+        reason = "layer_config_miss"
+    elif len(matched_qtypes) == 0:
+        reason = "multi_source_layer_config_miss"
+    elif len(matched_qtypes) != len(source_qtypes):
+        reason = "multi_source_partial_layer_config_miss"
+    else:
+        reason = "multi_source_dtype_conflict"
+
+    diagnostics.append(
+        {
+            "checkpoint_name": checkpoint_name,
+            "gguf_name": gguf_name,
+            "reason": reason,
+            "fallback_qtype": _qtype_name(fallback_qtype),
+            "hf_sources": [
+                {
+                    "name": hf_name,
+                    "layer_config_qtype": None if qtype is None else _qtype_name(qtype),
+                }
+                for hf_name, qtype in zip(hf_names, source_qtypes)
+            ],
+        }
+    )
+    return None
+
+
 def _special_name_handle(cls, name):
     # using transformers >= 5.4, model.language_model.embed_tokens.weight changed to
     # model.language_model.model.embed_tokens.weight after saved
@@ -416,15 +464,45 @@ def _special_name_handle(cls, name):
     return name
 
 
+def _to_restored_tensor(item):
+    if isinstance(item, RestoredTensor):
+        return item
+    name, data_torch = item
+    return RestoredTensor(name, lambda data_torch=data_torch: data_torch, (name,), "passthrough")
+
+
+def filter_restored_tensor(cls, restored):
+    filtered = cls.filter_tensors((restored.checkpoint_name, restored.tensor_fn))
+    if filtered is None:
+        return None
+    return RestoredTensor(filtered[0], filtered[1], restored.hf_names, restored.transform_kind)
+
+
+def _gguf_writer_has_tensor(gguf_writer, tensor_name):
+    for tensor_info in gguf_writer.tensors:
+        if isinstance(tensor_info, dict):
+            if tensor_name in tensor_info:
+                return True
+            continue
+        existing_name = getattr(tensor_info, "name", None)
+        if existing_name is None and isinstance(tensor_info, (list, tuple)) and len(tensor_info) > 0:
+            existing_name = tensor_info[0]
+        if tensor_name == existing_name:
+            return True
+    return False
+
+
 def _count_attention_wv_tensors(cls):
     count = 0
-    for name, data_torch in chain(cls.generate_extra_tensors(), cls.get_tensors()):
-        if data_torch is None or data_torch.numel() == 0:
-            continue
-        filtered = cls.filter_tensors((name, lambda data_torch=data_torch: data_torch))
+    for item in chain(cls.generate_extra_tensors(), cls.get_tensors()):
+        restored = _to_restored_tensor(item)
+        filtered = filter_restored_tensor(cls, restored)
         if filtered is None:
             continue
-        modify_name = _special_name_handle(cls, filtered[0])
+        data_torch = filtered.tensor_fn()
+        if data_torch is None or data_torch.numel() == 0:
+            continue
+        modify_name = _special_name_handle(cls, filtered.checkpoint_name)
         try:
             new_name = cls.map_tensor_name(modify_name)
         except Exception:
@@ -433,11 +511,30 @@ def _count_attention_wv_tensors(cls):
     return count or None
 
 
+def _flush_name_resolution_diagnostics(cls):
+    diagnostics = getattr(cls, "_gguf_name_resolution_diagnostics", None)
+    if diagnostics is None or len(diagnostics) == 0:
+        return
+    try:
+        output_path = Path(cls.fname_out)
+        output_dir = output_path if output_path.is_dir() else output_path.parent
+        output_dir.mkdir(parents=True, exist_ok=True)
+        diag_path = output_dir / "gguf_name_resolution.json"
+        with open(diag_path, "w", encoding="utf-8") as f:
+            json.dump(diagnostics, f, indent=2)
+        if diagnostics:
+            logger.warning("gguf: wrote %d name resolution fallback diagnostics to %s", len(diagnostics), diag_path)
+    except Exception as exc:
+        logger.warning("gguf: failed to write name resolution diagnostics: %s", exc)
+
+
 def prepare_tensors(cls):
     device = get_packing_device(cls.device)
     if not hasattr(cls, "_gguf_dtype_selector"):
         cls._gguf_dtype_selector = GGUFDTypeSelector(cls.hparams, cls.ftype, cls.model_arch)
         cls._gguf_dtype_selector.n_attention_wv = _count_attention_wv_tensors(cls)
+    if not hasattr(cls, "_gguf_name_resolution_diagnostics"):
+        cls._gguf_name_resolution_diagnostics = []
 
     # Handle empty tensor_map for models with block_count=0 (like MobileNetV5)
     if cls.tensor_map.mapping:
@@ -445,12 +542,18 @@ def prepare_tensors(cls):
     else:
         max_name_len = len("vision_encoder.weight,")  # Default reasonable length
 
-    for name, data_torch in chain(cls.generate_extra_tensors(), cls.get_tensors()):
+    for item in chain(cls.generate_extra_tensors(), cls.get_tensors()):
+        restored = _to_restored_tensor(item)
+        name = restored.checkpoint_name
         is_mmproj_model = cls.model_arch == gguf.MODEL_ARCH.MMPROJ
         if is_mmproj_model != is_mmproj_tensor_name(name):
             continue
-        if name in getattr(cls.model, "_tied_weights_keys", []) and not is_separate_tensor(cls.model, name):
+        if any(
+            hf_name in getattr(cls.model, "_tied_weights_keys", []) and not is_separate_tensor(cls.model, hf_name)
+            for hf_name in restored.hf_names
+        ):
             continue
+        data_torch = restored.tensor_fn()
         if data_torch is None or data_torch.numel() == 0:
             continue
         # we don't need these
@@ -465,10 +568,12 @@ def prepare_tensors(cls):
             ):
                 continue
 
-        filtered = cls.filter_tensors((name, lambda data_torch=data_torch: data_torch))
+        filtered = filter_restored_tensor(cls, restored)
         if filtered is None:
             continue
-        name = filtered[0]
+        checkpoint_name = filtered.checkpoint_name
+        hf_names = filtered.hf_names or (checkpoint_name,)
+        hf_name = hf_names[0]
 
         old_dtype = data_torch.dtype
 
@@ -485,20 +590,17 @@ def prepare_tensors(cls):
 
         clean_weight_list = []
 
-        modify_name = _special_name_handle(cls, name)
+        modify_name = _special_name_handle(cls, checkpoint_name)
         for new_name, data_torch in cls.modify_tensors(data_torch, modify_name, bid):
-            skip = False
-            for tensor_info in cls.gguf_writer.tensors:
-                if new_name in tensor_info:
-                    logger.info(f"{new_name} already add to gguf_writer, skip")
-                    skip = True
-                    break
-            if skip:
+            if _gguf_writer_has_tensor(cls.gguf_writer, new_name):
+                logger.debug("%s already added to gguf_writer, skip", new_name)
                 continue
             # squeeze is necessary for reloading in transformers.
             data = data_torch.squeeze()
             n_dims = len(data.shape)
-            data_qtype: gguf.GGMLQuantizationType | bool = cls.tensor_force_quant(name, new_name, bid, n_dims)
+            data_qtype: gguf.GGMLQuantizationType | bool = cls.tensor_force_quant(
+                checkpoint_name, new_name, bid, n_dims
+            )
 
             # Most of the codebase that takes in 1D tensors or norms only handles F32 tensors
             if n_dims <= 1 or new_name.endswith("_norm.weight"):
@@ -557,16 +659,36 @@ def prepare_tensors(cls):
                     data_qtype = gguf.GGMLQuantizationType.F16
                     # data_qtype = gguf.GGMLQuantizationType.Q8_0  # llama.cpp:llama_tensor_get_type
 
-            # get name by new_name (for experts),
-            name = get_moe_name(cls, name, new_name)
-            clean_weight_list.append(name)
-            # get data_qtype by layer_config
-            layer_config_qtype = get_qtype_by_layer_config(cls.layer_config, name, data_qtype, explicit_only=True)
-            # # No override (data_qtype is False), or wants to be quantized (data_qtype is True)
-            if layer_config_qtype is not None:
-                data_qtype = layer_config_qtype
-            elif isinstance(data_qtype, bool):
-                data_qtype = cls._gguf_dtype_selector.select_qtype(new_name, n_dims)
+            if cls.model_arch == gguf.MODEL_ARCH.MMPROJ and cls.quant_nontext_module is False:
+                data_qtype = gguf.GGMLQuantizationType.F32
+                layer_config_names = hf_names
+            else:
+                # get name by new_name (for experts),
+                layer_config_names = tuple(get_moe_name(cls, source_name, new_name) for source_name in hf_names)
+                # get data_qtype by layer_config
+                fallback_qtype = (
+                    cls._gguf_dtype_selector.select_qtype(new_name, n_dims)
+                    if isinstance(data_qtype, bool)
+                    else data_qtype
+                )
+                layer_config_qtype = resolve_restored_qtype(
+                    cls.layer_config,
+                    layer_config_names,
+                    checkpoint_name,
+                    new_name,
+                    fallback_qtype,
+                    (
+                        cls._gguf_name_resolution_diagnostics
+                        if restored.transform_kind != "extra" and new_name.endswith(".weight") and n_dims > 1
+                        else []
+                    ),
+                )
+                # # No override (data_qtype is False), or wants to be quantized (data_qtype is True)
+                if layer_config_qtype is not None:
+                    data_qtype = layer_config_qtype
+                elif isinstance(data_qtype, bool):
+                    data_qtype = fallback_qtype
+            clean_weight_list.extend(layer_config_names)
 
             if isinstance(data_qtype, bool):
                 if cls.ftype == gguf.LlamaFileType.ALL_F32:
@@ -614,9 +736,6 @@ def prepare_tensors(cls):
                 elif data_qtype == gguf.GGMLQuantizationType.Q6_K:
                     data_qtype = gguf.GGMLQuantizationType.Q8_0
 
-            if cls.model_arch == gguf.MODEL_ARCH.MMPROJ and cls.quant_nontext_module is False:
-                data_qtype = gguf.GGMLQuantizationType.F32
-
             from auto_round.export.export_to_gguf.config import GGML_QUANT_SIZES
 
             if data_qtype.name.lower() in GGML_QUANT_SIZES:
@@ -627,6 +746,16 @@ def prepare_tensors(cls):
                         " fallback to F16"
                     )
                     data_qtype = gguf.GGMLQuantizationType.F16
+
+            if n_dims > 1 and data_torch.numel() >= 100_000_000:
+                pre_quant_shape = f"{{{', '.join(str(n) for n in reversed(data_torch.shape))}}}"
+                logger.info(
+                    "Start quantizing large tensor %s: %s --> %s, shape = %s",
+                    new_name,
+                    old_dtype,
+                    data_qtype.name,
+                    pre_quant_shape,
+                )
 
             if isinstance(data_qtype, bool) or data_qtype in [
                 gguf.GGMLQuantizationType.F16,
@@ -647,8 +776,8 @@ def prepare_tensors(cls):
                     data = gguf.quants.quantize(data, data_qtype)
             else:
                 # for deepseek v2
-                if name.endswith("kv_b_proj.weight") and cls.model_arch.name in ("DEEPSEEK2", "GLM_DSA"):
-                    layer_name = name[: -len(".weight")]
+                if hf_name.endswith("kv_b_proj.weight") and cls.model_arch.name in ("DEEPSEEK2", "GLM_DSA"):
+                    layer_name = hf_name[: -len(".weight")]
                     module = get_module(cls.model, layer_name)
                     n_head_kv = cls.hparams["num_key_value_heads"]
                     v_head_dim = cls.hparams["v_head_dim"]
@@ -676,10 +805,10 @@ def prepare_tensors(cls):
                     data = _quant_data_with_args(data_torch, data_qtype, device=device, **attr_list)
 
                 # for MOE model
-                elif len(data_torch.shape) == 3 and len(re.findall(r"\d+", name)) == 2:
+                elif len(data_torch.shape) == 3 and len(re.findall(r"\d+", hf_name)) == 2:
                     new_data = []
                     for idx, arr in enumerate(data_torch):
-                        arr_name = name.split(".")
+                        arr_name = hf_name.split(".")
                         for i in range(len(arr_name) - 1, -1, -1):
                             if arr_name[i].isdecimal() and int(arr_name[i]) == (data_torch.shape[0] - 1):
                                 arr_name[i] = str(idx)
@@ -692,7 +821,7 @@ def prepare_tensors(cls):
                     del new_data
                 else:
                     data, data_qtype = _quant_data(
-                        cls, data_torch, data_qtype, name, modify_name, new_name, bid, device=device
+                        cls, data_torch, data_qtype, hf_name, modify_name, new_name, bid, device=device
                     )
 
             shape = gguf.quant_shape_from_byte_shape(data.shape, data_qtype) if data.dtype == np.uint8 else data.shape
@@ -723,3 +852,5 @@ def prepare_tensors(cls):
                 if cls.model_arch == gguf.MODEL_ARCH.LLAMA and "embed_tokens.weight" in weight_name:
                     continue
                 clean_module_parameter(module, weight_name.split(".")[-1])
+    if not (hasattr(cls, "current_packing_block") and cls.current_packing_block is not None):
+        _flush_name_resolution_diagnostics(cls)
