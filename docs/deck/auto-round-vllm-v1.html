@@ -570,13 +570,13 @@
             <tr><th>Scheme</th><th>Encoding</th><th>Bits</th><th>Granularity</th><th>W</th><th>A</th></tr>
           </thead>
           <tbody>
+            <tr><td class="bold">FP8 (E4M3/E5M2)</td><td>FP</td><td>8</td><td>/</td><td>/</td><td>/</td></tr>
+            <tr><td class="bold">MXFP4</td><td>FP E2M1 + block</td><td>4</td><td>Per-block (32)</td><td>/</td><td>/</td></tr>
+            <tr><td class="bold">MXFP8</td><td>FP E4M3 + block</td><td>8</td><td>Per-block (32)</td><td>/</td><td>/</td></tr>
             <tr class="hl-row"><td class="bold">W4A16 G128</td><td>INT</td><td>4</td><td>Per-group (128)</td><td>✅</td><td>—</td></tr>
             <tr><td class="bold">W4A16 G32</td><td>INT</td><td>4</td><td>Per-group (32)</td><td>✅</td><td>—</td></tr>
-            <tr><td class="bold">INT8</td><td>INT</td><td>8</td><td>Per-tensor / channel</td><td>✅</td><td>✅</td></tr>
-            <tr><td class="bold">INT4</td><td>INT</td><td>4</td><td>Per-group</td><td>✅</td><td>—</td></tr>
-            <tr><td class="bold">FP8 (E4M3/E5M2)</td><td>FP</td><td>8</td><td>Per-tensor / block-wise</td><td>✅</td><td>✅</td></tr>
-            <tr><td class="bold">MXFP4</td><td>FP E2M1 + block</td><td>4</td><td>Per-block (32)</td><td>✅</td><td>✅</td></tr>
-            <tr><td class="bold">MXFP8</td><td>FP E4M3 + block</td><td>8</td><td>Per-block (32)</td><td>✅</td><td>✅</td></tr>
+            <tr><td class="bold">W8A8 INT8</td><td>INT</td><td>8</td><td>/</td><td>✅</td><td>✅</td></tr>
+            <tr><td class="bold">W4A4 INT4</td><td>INT</td><td>4</td><td>/</td><td>✅</td><td>✅</td></tr>
             <tr><td class="bold">W4A4 MXFP4</td><td>FP E2M1 (W+A)</td><td>4</td><td>Per-block (32)</td><td>✅</td><td>✅</td></tr>
           </tbody>
         </table>
@@ -616,12 +616,6 @@
                style="width:55%; max-height:380px; object-fit:contain; border-radius:8px; border:1px solid var(--border-light);"
                onerror="this.style.display='none'; this.nextElementSibling.style.display='block';">
           <div style="display:none; padding:20px; text-align:center; color:var(--text-dim);">[Image: data-type-flops.png]</div>
-          <div style="display:flex; flex-direction:column; gap:12px; font-size:0.88rem; color:var(--text-secondary);">
-            <div><strong style="color:var(--vllm-blue); font-size:1.4rem;">4×</strong><br>smaller model<br>footprint</div>
-            <div><strong style="color:var(--vllm-blue); font-size:1.4rem;">4×</strong><br>less memory<br>transfer</div>
-            <div class="badge badge-blue" style="font-size:0.7rem; align-self:flex-start;">for 4-bit model</div>
-          </div>
-          <p class="text-xs text-dim mt-8">Footprint &amp; bandwidth gains apply to weight-only (W4A16). Compute speedup requires activation quantization (W4A4 / FP8).</p>
         </div>
       </div>
       <div style="display:flex; flex-direction:column; gap:16px; justify-content:center;">
@@ -629,7 +623,7 @@
           <h3>① Model Footprint</h3>
           <ul class="text-sm" style="margin-bottom:0;">
             <li><strong>Runnable vs. not runnable</strong> — weights too large → shard (adds cost) or can't serve</li>
-            <li><strong>Freed memory = KV cache headroom</strong> → larger batches, longer context, higher throughput</li>
+            <li><strong>Free memory = KV cache headroom</strong> → larger batches, longer context, higher throughput</li>
           </ul>
         </div>
         <div class="card card-accent">
@@ -666,7 +660,7 @@
         </div>
         <div class="stack-layer" style="background:var(--vllm-blue-light); color:var(--vllm-blue-dark); border:2px solid var(--vllm-blue); margin-left:40px;">
           <strong>Quantization Layer &nbsp;← AutoRound</strong><br>
-          <span class="text-xs">QuantMethod dispatch &nbsp;·&nbsp; Repack &nbsp;·&nbsp; Kernel selection</span>
+          <span class="text-xs">QuantMethod dispatch &nbsp;·&nbsp; Kernel selection</span>
         </div>
         <div class="stack-layer" style="background:var(--text); color:#fff;">
           Hardware &nbsp;<span style="font-weight:400; opacity:0.8;">CUDA &nbsp;·&nbsp; XPU &nbsp;·&nbsp; HPU &nbsp;·&nbsp; CPU</span>
@@ -692,7 +686,7 @@
         </div>
         <div class="flow-arrow" style="font-size:0.65rem;">▼</div>
         <div class="stack-layer" style="background:var(--vllm-blue-10); color:var(--vllm-blue-dark); border:1px solid var(--vllm-blue-20); font-size:0.72rem; padding:7px 12px; margin-left:48px;">
-          AWQMarlinLinearMethod → MarlinLinearKernel.apply_weights()
+          AutoGPTQLinearMethod → MarlinLinearKernel.apply_weights()
         </div>
         <div class="flow-arrow" style="font-size:0.65rem;">▼</div>
         <div class="stack-layer" style="background:var(--vllm-blue-light); color:var(--vllm-blue-dark); border:1px solid var(--vllm-blue-20); font-size:0.7rem; padding:7px 12px; margin-left:60px; font-family:'JetBrains Mono',mono;">
@@ -704,7 +698,7 @@
         </div>
         <div class="flow-arrow" style="font-size:0.65rem;">▼</div>
         <div class="stack-layer" style="background:var(--text); color:#fff; font-size:0.68rem; padding:7px 12px; margin-left:84px; font-family:'JetBrains Mono',mono;">
-          marlin::Marlin&lt;...&gt; </span>
+          marlin::Marlin&lt;...&gt;
         </div>
         <p class="text-xs text-dim mt-6"><code>linear.py</code> → <code>inc_linear.py</code> → <code>inc_wna16_linear.py</code> → <code>marlin.py</code> → <code>marlin_utils.py</code> → <code>_custom_ops.py</code></p>
       </div>
@@ -724,58 +718,9 @@
     <p class="mb-12" style="font-size:1.05rem;">It's hard not because errors <em>exist</em>, but because they <strong>fight each other</strong> — you can't minimize all three at once, and a fixed bit budget gives you nowhere to hide.</p>
     <div class="grid-3 flex-grow" style="gap:22px; align-items:stretch;">
 
-      <!-- ① Rounding error -->
-      <div class="card card-accent" style="margin-bottom:0; display:flex; flex-direction:column;">
-        <h3 style="font-size:1.05rem; margin-bottom:4px;">① Rounding Error</h3>
-        <p class="text-sm" style="margin-bottom:10px;">A value lands <em>between</em> two grid levels and snaps to the nearest one.</p>
-        <svg viewBox="0 0 300 90" style="width:100%;">
-          <line x1="20" y1="55" x2="290" y2="55" stroke="var(--border)" stroke-width="2"/>
-          <!-- ticks -->
-          <g font-family="JetBrains Mono, monospace" font-size="10" fill="var(--text-dim)" text-anchor="middle">
-            <line x1="30" y1="48" x2="30" y2="62" stroke="var(--text-dim)" stroke-width="2"/><text x="30" y="78">0.2</text>
-            <line x1="95" y1="48" x2="95" y2="62" stroke="var(--text-dim)" stroke-width="2"/><text x="95" y="78">0.4</text>
-            <line x1="160" y1="48" x2="160" y2="62" stroke="var(--text-dim)" stroke-width="2"/><text x="160" y="78">0.6</text>
-            <line x1="225" y1="48" x2="225" y2="62" stroke="var(--text-dim)" stroke-width="2"/><text x="225" y="78">0.8</text>
-            <line x1="290" y1="48" x2="290" y2="62" stroke="var(--text-dim)" stroke-width="2"/><text x="290" y="78">1.0</text>
-          </g>
-          <!-- original value 0.47 -> between 0.4(95) and 0.6(160), pos ~ 118 -->
-          <circle cx="118" cy="55" r="5" fill="#ef4444"/>
-          <text x="118" y="30" font-size="10" fill="#ef4444" text-anchor="middle" font-weight="700">0.47</text>
-          <!-- snap arrow to 0.4 (x95) nearest -->
-          <path d="M 116 42 Q 100 38, 97 50" stroke="var(--orange)" stroke-width="2" fill="none" marker-end="url(#ar1)"/>
-          <defs><marker id="ar1" markerWidth="6" markerHeight="6" refX="5" refY="3" orient="auto"><polygon points="0 0, 6 3, 0 6" fill="var(--orange)"/></marker></defs>
-        </svg>
-        <div class="formula" style="margin:6px 0 0; font-size:0.82rem; padding:8px 10px;">round(0.47)→<strong style="color:var(--vllm-blue);">0.4</strong><br><span style="color:var(--red-text);">error = 0.07</span></div>
-        <p class="text-xs mt-8" style="margin-top:auto; color:var(--red-text);"><strong>Why hard:</strong> <span class="text-dim">fixed bit budget — fewer bits force bigger steps. You can't make the grid finer without spending bits you don't have.</span></p>
-      </div>
-
-      <!-- ② Clipping error -->
-      <div class="card card-accent" style="margin-bottom:0; display:flex; flex-direction:column; border-left-color:var(--orange);">
-        <h3 style="font-size:1.05rem; margin-bottom:4px;">② Clipping Error</h3>
-        <p class="text-sm" style="margin-bottom:10px;">Shrink the range for finer steps, and large values fall outside → clamped.</p>
-        <svg viewBox="0 0 300 90" style="width:100%;">
-          <!-- representable region -->
-          <rect x="30" y="48" width="180" height="14" fill="var(--vllm-blue-10)" stroke="var(--vllm-blue-20)" stroke-width="1" rx="3"/>
-          <line x1="20" y1="55" x2="290" y2="55" stroke="var(--border)" stroke-width="2"/>
-          <g font-family="JetBrains Mono, monospace" font-size="10" fill="var(--text-dim)" text-anchor="middle">
-            <line x1="30" y1="46" x2="30" y2="64" stroke="var(--vllm-blue)" stroke-width="2"/><text x="30" y="80">−q<tspan font-size="8">max</tspan></text>
-            <line x1="210" y1="46" x2="210" y2="64" stroke="var(--vllm-blue)" stroke-width="2"/><text x="210" y="80">+q<tspan font-size="8">max</tspan></text>
-          </g>
-          <text x="120" y="42" font-size="9" fill="var(--vllm-blue-dark)" text-anchor="middle">representable range</text>
-          <!-- outlier value beyond range -->
-          <circle cx="272" cy="55" r="5" fill="#ef4444"/>
-          <text x="272" y="32" font-size="10" fill="#ef4444" text-anchor="middle" font-weight="700">0.95</text>
-          <!-- clamp arrow back to +qmax -->
-          <path d="M 268 48 Q 240 36, 213 49" stroke="var(--orange)" stroke-width="2" fill="none" marker-end="url(#ar2)"/>
-          <defs><marker id="ar2" markerWidth="6" markerHeight="6" refX="5" refY="3" orient="auto"><polygon points="0 0, 6 3, 0 6" fill="var(--orange)"/></marker></defs>
-        </svg>
-        <div class="formula" style="margin:6px 0 0; font-size:0.82rem; padding:8px 10px;">clip(0.95, q<sub>max</sub>=0.6)→<strong style="color:var(--vllm-blue);">0.6</strong><br><span style="color:var(--red-text);">error = 0.35</span></div>
-        <p class="text-xs mt-8" style="margin-top:auto; color:var(--orange-text);"><strong>Why hard:</strong> <span class="text-dim">no free lunch — widen the range to stop clipping and rounding gets coarser. Fixing one error <em>worsens</em> the other.</span></p>
-      </div>
-
-      <!-- ③ Outlier amplification -->
+      <!-- ① Outlier amplification -->
       <div class="card card-accent" style="margin-bottom:0; display:flex; flex-direction:column; border-left-color:#ef4444;">
-        <h3 style="font-size:1.05rem; margin-bottom:4px;">③ Outlier Amplification</h3>
+        <h3 style="font-size:1.05rem; margin-bottom:4px;">① Outlier Amplification</h3>
         <p class="text-sm" style="margin-bottom:10px;">One big outlier sets the scale, so small weights collapse toward 0.</p>
         <div style="display:flex; align-items:flex-end; gap:3px; height:64px; padding:0 4px;">
           <div style="flex:1; background:var(--vllm-blue); height:14%; border-radius:2px;"></div>
@@ -788,8 +733,51 @@
           <div style="flex:1; background:var(--vllm-blue); height:13%; border-radius:2px;"></div>
           <div style="flex:1; background:var(--vllm-blue); height:22%; border-radius:2px;"></div>
         </div>
-        <div class="formula" style="margin:8px 0 0; font-size:0.78rem; padding:8px 10px; text-align:left;">scale = max(|x|)/(2<sup>n−1</sup>−1)<br><span class="text-dim">[0.1, 0.2, <span style="color:#ef4444;">8.0</span>] → scale set by 8.0</span><br>0.1, 0.2 → both round to <strong style="color:var(--red-text);">0</strong></div>
+        <div class="formula" style="margin:8px 0 0; font-size:0.78rem; padding:8px 10px; text-align:left;">scale = max(|x|)/(2<sup>n−1</sup>−1)<br><span class="text-dim">[0.1, 0.2, <span style="color:#ef4444;">8.0</span>] → scale set by 8.0</span><br>0.1, 0.2 <span style="font-size:0.65rem; color:var(--text-dim);">(low-bit)</span> → both round to <strong style="color:var(--red-text);">0</strong></div>
         <p class="text-xs mt-8" style="margin-top:auto; color:#ef4444;"><strong>Why hard:</strong> <span class="text-dim">LLM weights/activations are <em>full</em> of outliers you can't drop — one bad value silently destroys many others.</span></p>
+      </div>
+
+      <!-- ② Rounding error -->
+      <div class="card card-accent" style="margin-bottom:0; display:flex; flex-direction:column;">
+        <h3 style="font-size:1.05rem; margin-bottom:4px;">② Rounding Error</h3>
+        <p class="text-sm" style="margin-bottom:10px;">A value lands <em>between</em> two grid levels and snaps to the nearest one.</p>
+        <svg viewBox="0 0 300 90" style="width:100%;">
+          <line x1="20" y1="55" x2="290" y2="55" stroke="var(--border)" stroke-width="2"/>
+          <g font-family="JetBrains Mono, monospace" font-size="10" fill="var(--text-dim)" text-anchor="middle">
+            <line x1="30" y1="48" x2="30" y2="62" stroke="var(--text-dim)" stroke-width="2"/><text x="30" y="78">0.2</text>
+            <line x1="95" y1="48" x2="95" y2="62" stroke="var(--text-dim)" stroke-width="2"/><text x="95" y="78">0.4</text>
+            <line x1="160" y1="48" x2="160" y2="62" stroke="var(--text-dim)" stroke-width="2"/><text x="160" y="78">0.6</text>
+            <line x1="225" y1="48" x2="225" y2="62" stroke="var(--text-dim)" stroke-width="2"/><text x="225" y="78">0.8</text>
+            <line x1="290" y1="48" x2="290" y2="62" stroke="var(--text-dim)" stroke-width="2"/><text x="290" y="78">1.0</text>
+          </g>
+          <circle cx="118" cy="55" r="5" fill="#ef4444"/>
+          <text x="118" y="30" font-size="10" fill="#ef4444" text-anchor="middle" font-weight="700">0.47</text>
+          <path d="M 116 42 Q 100 38, 97 50" stroke="var(--orange)" stroke-width="2" fill="none" marker-end="url(#ar1)"/>
+          <defs><marker id="ar1" markerWidth="6" markerHeight="6" refX="5" refY="3" orient="auto"><polygon points="0 0, 6 3, 0 6" fill="var(--orange)"/></marker></defs>
+        </svg>
+        <div class="formula" style="margin:6px 0 0; font-size:0.82rem; padding:8px 10px;">round(0.47)→<strong style="color:var(--vllm-blue);">0.4</strong><br><span style="color:var(--red-text);">error = 0.07</span></div>
+        <p class="text-xs mt-8" style="margin-top:auto; color:var(--red-text);"><strong>Why hard:</strong> <span class="text-dim">fixed bit budget — fewer bits force bigger steps. You can't make the grid finer without spending bits you don't have.</span></p>
+      </div>
+
+      <!-- ③ Clipping error -->
+      <div class="card card-accent" style="margin-bottom:0; display:flex; flex-direction:column; border-left-color:var(--orange);">
+        <h3 style="font-size:1.05rem; margin-bottom:4px;">③ Clipping Error</h3>
+        <p class="text-sm" style="margin-bottom:10px;">Shrink the range for finer steps, and large values fall outside → clamped.</p>
+        <svg viewBox="0 0 300 90" style="width:100%;">
+          <rect x="30" y="48" width="180" height="14" fill="var(--vllm-blue-10)" stroke="var(--vllm-blue-20)" stroke-width="1" rx="3"/>
+          <line x1="20" y1="55" x2="290" y2="55" stroke="var(--border)" stroke-width="2"/>
+          <g font-family="JetBrains Mono, monospace" font-size="10" fill="var(--text-dim)" text-anchor="middle">
+            <line x1="30" y1="46" x2="30" y2="64" stroke="var(--vllm-blue)" stroke-width="2"/><text x="30" y="80">−q<tspan font-size="8">max</tspan></text>
+            <line x1="210" y1="46" x2="210" y2="64" stroke="var(--vllm-blue)" stroke-width="2"/><text x="210" y="80">+q<tspan font-size="8">max</tspan></text>
+          </g>
+          <text x="120" y="42" font-size="9" fill="var(--vllm-blue-dark)" text-anchor="middle">representable range</text>
+          <circle cx="272" cy="55" r="5" fill="#ef4444"/>
+          <text x="272" y="32" font-size="10" fill="#ef4444" text-anchor="middle" font-weight="700">0.95</text>
+          <path d="M 268 48 Q 240 36, 213 49" stroke="var(--orange)" stroke-width="2" fill="none" marker-end="url(#ar2)"/>
+          <defs><marker id="ar2" markerWidth="6" markerHeight="6" refX="5" refY="3" orient="auto"><polygon points="0 0, 6 3, 0 6" fill="var(--orange)"/></marker></defs>
+        </svg>
+        <div class="formula" style="margin:6px 0 0; font-size:0.82rem; padding:8px 10px;">clip(0.95, q<sub>max</sub>=0.6)→<strong style="color:var(--vllm-blue);">0.6</strong><br><span style="color:var(--red-text);">error = 0.35</span></div>
+        <p class="text-xs mt-8" style="margin-top:auto; color:var(--orange-text);"><strong>Why hard:</strong> <span class="text-dim">no free lunch — widen the range to stop clipping and rounding gets coarser. Fixing one error <em>worsens</em> the other.</span></p>
       </div>
 
     </div>
@@ -821,7 +809,7 @@
       </svg>
     </div>
 
-    <div class="key-msg" style="margin-top:8px;">And it <strong>compounds</strong> across layers, while the rounding choices form a <strong>2<sup>N</sup> combinatorial space</strong> RTN can't search. <strong>AutoRound</strong> learns the <span style="color:var(--green-text); font-weight:700;">scale</span> (bottom of the U) <em>and</em> the rounding direction jointly.</div>
+    <div class="key-msg" style="margin-top:8px;">And it <strong>compounds</strong> across layers, while the rounding choices form a <strong>2<sup>N</sup> combinatorial space</strong> RTN can't search.</div>
   </div>
 
   <!-- ============ SLIDE 11: AutoRound Algorithm (2.2) ============ -->
@@ -841,7 +829,7 @@
         </table>
         <pre class="mt-8">W_quant = clamp(round(W/scale + v), min_int, max_int)
 W_dequant = W_quant * scale</pre>
-        <p class="text-xs text-dim mt-4"><code>v</code> is bounded to [0, 1] — it controls whether each weight rounds up or down at the quantization boundary.</p>
+        <p class="text-xs text-dim mt-4"><code>v</code> is bounded to [−0.5, 0.5] — it controls whether each weight rounds up or down at the quantization boundary.</p>
         <h3 class="mt-12">Why It Works</h3>
         <ul class="text-sm">
           <li><strong>Block-wise optimization</strong> — captures actual downstream impact</li>
@@ -869,7 +857,7 @@ W_dequant = W_quant * scale</pre>
           <div class="flow-arrow">▼</div>
           <div class="flow-step">④ Update: SignSGD<br><span class="text-xs text-dim">v ← v − lr × sign(grad) · Update clipping similarly</span></div>
           <div class="flow-arrow">▼</div>
-          <div class="flow-step">⑤ Repeat Step 2~4 ×200</div>
+          <div class="flow-step">⑤ Repeat Step 2~4 ×iters (default 200)</div>
           <div class="flow-arrow">▼</div>
           <div class="flow-step" style="border-color:var(--green); border-width:2px;">
             <strong style="color:var(--green-text);">Output</strong>
@@ -957,6 +945,23 @@ W_dequant = W_quant * scale</pre>
   <div class="slide">
     <h2 style="margin-bottom:12px;">QDQ Design: Why It Matters</h2>
     <div class="grid-2 flex-grow" style="gap:18px;">
+      <div class="card card-accent" style="padding:14px 18px; margin-bottom:0; display:flex; flex-direction:column;">
+        <h3 style="text-align:center; margin-bottom:6px;">Real INT4 Kernel (Inference)</h3>
+        <pre style="font-size:0.78rem; line-height:1.3; padding:8px; text-align:center; background:var(--bg); flex:1; display:flex; align-items:center; justify-content:center;">
+ Activation            Weight
+    X_fp                W_fp
+     │                   │
+     ▼                   ▼
+   Quant               Quant
+     │                   │
+     ▼                   ▼
+ X_int4 scale_x     W_int4, scale_w
+     │                   │
+     └──→ INT4 GEMM ←────┘
+
+ Y = INT4_GEMM(X_int4, W_int4, scale_x, scale_w)</pre>
+        <p class="text-xs text-dim">Packed INT4 → fused dequant in kernel → no FP overhead.</p>
+      </div>
       <div class="card" style="padding:14px 18px; margin-bottom:0; display:flex; flex-direction:column;">
         <h3 style="text-align:center; margin-bottom:6px;">QDQ / Fake Quantization (Tuning)</h3>
         <pre style="font-size:0.78rem; line-height:1.3; padding:8px; text-align:center; background:var(--bg); flex:1; display:flex; align-items:center; justify-content:center;">
@@ -977,23 +982,6 @@ W_dequant = W_quant * scale</pre>
 
   Y = FP_GEMM(X_dq_fp, W_dq_fp)</pre>
         <p class="text-xs text-dim">DeQuant <strong>before</strong> GEMM → FP tensors → gradients flow through.</p>
-      </div>
-      <div class="card card-accent" style="padding:14px 18px; margin-bottom:0; display:flex; flex-direction:column;">
-        <h3 style="text-align:center; margin-bottom:6px;">Real INT4 Kernel (Inference)</h3>
-        <pre style="font-size:0.78rem; line-height:1.3; padding:8px; text-align:center; background:var(--bg); flex:1; display:flex; align-items:center; justify-content:center;">
- Activation            Weight
-    X_fp                W_fp
-     │                   │
-     ▼                   ▼
-   Quant               Quant
-     │                   │
-     ▼                   ▼
- X_int4 scale_x     W_int4, scale_w
-     │                   │
-     └──→ INT4 GEMM ←────┘
-
- Y = INT4_GEMM(X_int4, W_int4, scale_x, scale_w)</pre>
-        <p class="text-xs text-dim">Packed INT4 → fused dequant in kernel → no FP overhead.</p>
       </div>
     </div>
     <div class="key-msg" style="margin-top:8px;">QDQ separates algorithm from format and kernel. Same quantized tensors, swap <code>quant_func</code> for any dtype. <a href="https://github.com/intel/auto-round/blob/main/auto_round/data_type/fp8.py#L29" style="font-size:0.78rem;">Example: adding FP8 support →</a></div>
@@ -1167,7 +1155,7 @@ W_dequant = W_quant * scale</pre>
         <div class="card card-filled" style="text-align:center; padding:20px 22px; margin:0; min-width:140px;">
           <div style="font-size:1.8rem; margin-bottom:4px;">📦</div>
           <p class="bold" style="font-size:0.95rem;">Checkpoint</p>
-          <p class="text-xs text-dim mt-2">Packed INT4<br>+ config.json</p>
+          <p class="text-xs text-dim mt-2">Quantized weights<br>+ config.json</p>
         </div>
         <div class="flow-arrow" style="font-size:1.3rem; padding:0;">→</div>
         <div class="card card-accent" style="text-align:center; padding:20px 22px; margin:0; min-width:140px;">
@@ -1330,7 +1318,7 @@ auto-round \
   <!-- ============ SLIDE 25: Part 4 Section ============ -->
   <div class="slide section-slide">
     <div class="section-num">04</div>
-    <h2>Common Issues, Best Practices &amp; Q&amp;A</h2>
+    <h2>Best Practices &amp; Q&amp;A</h2>
     <p>Practical decision rules to take home</p>
   </div>
 
@@ -1338,33 +1326,43 @@ auto-round \
   <div class="slide">
     <h2>Best Practices Overview</h2>
     <div class="grid-2 flex-grow" style="gap:18px;">
+      <!-- LEFT: Device checklist + Intel hardware -->
       <div style="display:flex; flex-direction:column; gap:14px;">
-        <div class="card card-accent" style="padding:24px 28px; margin-bottom:0;">
-          <h3>Choosing Quantization Schemes</h3>
-          <p class="text-sm mb-8"><strong>Core principle:</strong> choose the scheme that has a <strong>mature kernel</strong> on your target platform. No kernel → no speedup, regardless of bit-width.</p>
+        <!-- ① Check your device — checklist -->
+        <div class="card card-accent" style="padding:18px 24px; margin-bottom:0;">
+          <h3 style="margin-bottom:8px;">⚠️ Check Your Device First</h3>
+          <ul class="text-sm" style="margin-bottom:0;">
+            <li>What <strong>data types</strong> does it natively support?</li>
+            <li>What's the <strong>Memory Capacity</strong>?</li>
+            <li>What's the <strong>TFLOPS</strong> (prefill bottleneck)?</li>
+            <li>Match the scheme to what your hardware <strong>actually accelerates</strong></li>
+          </ul>
+          <p class="text-xs text-dim mt-8" style="margin-bottom:0;">No mature kernel → no speedup, regardless of bit-width.</p>
+        </div>
+        <!-- ② Intel hardware table -->
+        <div class="card card-filled" style="padding:18px 24px; margin-bottom:0;">
+          <h3 style="margin-bottom:8px;">Intel Hardware — Native Low-Bit Support</h3>
           <table class="dense-table" style="margin-bottom:0;">
-            <thead><tr><th style="width:35%;">If you care about...</th><th>Choose</th></tr></thead>
+            <thead><tr><th>Product</th><th>Launch</th><th>Native dtype</th></tr></thead>
             <tbody>
-              <tr class="hl-row"><td class="bold">⚠️ Check your device first</td><td>What <strong>data types</strong> does it natively support? What's the <strong>HBM bandwidth</strong> (decode bottleneck) and <strong>TFLOPS</strong> (prefill bottleneck)? Match the scheme to what your hardware actually accelerates.</td></tr>
-              <tr><td class="bold">Memory saving</td><td>Lower bits (W2A16) → more KV cache headroom</td></tr>
-              <tr><td class="bold">Accuracy first</td><td>W4A16 g64, W8A8, or FP8 block-wise</td></tr>
-              <tr><td class="bold">Portability</td><td>W4A16 g128 — most universal, kernel support everywhere</td></tr>
-              <tr><td class="bold">Long context / VLMs</td><td>KV cache quantization (FP8/INT8) on top of weight quantization</td></tr>
+              <tr class="hl-row"><td class="bold">Arc GPU B60 / B70</td><td>Launched</td><td>INT8</td></tr>
+              <tr><td class="bold">Gaudi (HPU)</td><td>Launched</td><td>FP8</td></tr>
+              <tr class="hl-row"><td class="bold">CRI GPU (Crescent Island)</td><td>2026 H2</td><td>MXFP4 / MXFP8</td></tr>
             </tbody>
           </table>
         </div>
       </div>
-      <div class="card card-filled" style="padding:24px 28px; margin-bottom:0;">
-        <h3>Intel Hardware — Native Low-Bit Support</h3>
-        <p class="text-sm mb-8 text-dim">Matching quantization schemes to Intel's inference accelerator roadmap.</p>
+      <!-- RIGHT: Choosing schemes -->
+      <div class="card card-accent" style="padding:18px 24px; margin-bottom:0; display:flex; flex-direction:column;">
+        <h3 style="margin-bottom:8px;">Choosing Quantization Schemes</h3>
         <table class="dense-table" style="margin-bottom:0;">
-          <thead><tr><th>Product</th><th>Launch</th><th>Native dtype</th></tr></thead>
+          <thead><tr><th style="width:35%;">If you care about...</th><th>Choose</th></tr></thead>
           <tbody>
-            <tr><td class="bold">Arc GPU B60 / B70</td><td>Launched</td><td>INT8</td></tr>
-            <tr class="hl-row"><td class="bold">CRI GPU (Crescent Island)</td><td>2026 H2</td><td>MXFP4 / MXFP8</td></tr>
+            <tr><td class="bold">Memory saving</td><td>Lower bits (W4A16, W4A4, W4A8) → more KV cache headroom</td></tr>
+            <tr><td class="bold">Accuracy first</td><td>W4A16 g64, W8A8, or FP8 block-wise</td></tr>
+            <tr><td class="bold">Long context / VLMs</td><td>KV cache quantization (FP8/INT8) on top of weight quantization</td></tr>
           </tbody>
         </table>
-        <p class="text-xs text-dim mt-8">CRI: Intel's specialized, cost-optimized data center AI inference accelerator.</p>
       </div>
     </div>
   </div>
@@ -1507,7 +1505,7 @@ auto-round \
 <div class="nav-bar">
   <button onclick="toggleSidebar()" id="menuBtn" title="Press M for menu">&#x2630;</button>
   <button onclick="prevSlide()">&#x25C0; Prev</button>
-  <span id="slideNum" style="min-width:60px; text-align:center;">1 / 31</span>
+  <span id="slideNum" style="min-width:60px; text-align:center;">1 / 30</span>
   <div class="progress-track">
     <div class="progress-fill" id="progressFill"></div>
   </div>
