@@ -628,11 +628,11 @@
         </div>
         <div class="card card-accent">
           <h3>② Computation Efficiency</h3>
+          <p class="text-xs text-dim mb-4"><strong>Compute-bound</strong> = GPU waits on math units. <strong>Memory-bound</strong> = GPU waits on data from HBM.</p>
           <ul class="text-sm" style="margin-bottom:0;">
-            <li><strong>Prefill</strong> — <strong style="color:var(--orange-text);">compute-bound</strong>. Tensor Cores: 2–4× throughput at low bits (needs activation quant)</li>
-            <li><strong>Decode</strong> — <strong style="color:var(--orange-text);">memory-bound</strong> at typical serving batch sizes. Memory bandwidth is fixed, less data transfer, lower latency.</li>
+            <li><strong>Compute-bound</strong> — e.g. <strong>prefill</strong>. Tensor Cores: 2–4× at low bits (needs activation quant)</li>
+            <li><strong>Memory-bound</strong> — e.g. <strong>decode</strong> (small batch size). Bandwidth is fixed, less data → lower latency. Qualifier: at high concurrency, decode shifts toward compute-bound.</li>
           </ul>
-          <div class="callout-note mt-8"><p class="text-xs">At high batch sizes or high request concurrency, decode shifts toward compute-bound, reducing the weight-only bandwidth advantage.</p></div>
         </div>
       </div>
     </div>
@@ -884,7 +884,7 @@ W_dequant = W_quant * scale</pre>
         </ul>
         <h3 class="mt-16">SignRound V1 → V2</h3>
         <div class="card card-filled">
-          <p class="text-sm"><strong>V1 (EMNLP 2024):</strong> SignSGD on rounding only. Fixed quantization range.</p>
+          <p class="text-sm"><strong>V1 (EMNLP 2024):</strong> SignSGD on rounding and clipping</p>
         </div>
         <div class="card card-accent">
           <p class="text-sm"><strong>V2 (arXiv 2025):</strong></p>
@@ -916,14 +916,13 @@ W_dequant = W_quant * scale</pre>
   <div class="slide">
     <h2>AutoRound vs. AWQ vs. GPTQ: Comparison</h2>
     <div class="flex-grow" style="display:flex; flex-direction:column; gap:8px;">
-      <p class="text-sm mb-8 text-dim"><strong>AWQ</strong>: activation-aware per-channel scaling to protect salient channels. <strong>GPTQ</strong>: Hessian-based error compensation — adjusts remaining weights to offset quantization error.</p>
-      <table class="dense-table" style="margin-bottom:0;">
-        <thead><tr><th>Method</th><th>Rounding</th><th>Clipping / Scaling</th><th>Outliers</th></tr></thead>
+      <table class="dense-table" style="margin-bottom:0; font-size:0.78rem;">
+        <thead><tr><th>Method</th><th>Core Idea</th><th>How</th><th>Optimization Scope</th></tr></thead>
         <tbody>
-          <tr><td class="bold">RTN</td><td>Standard round</td><td>min/max</td><td><span class="badge badge-red">No handling</span></td></tr>
-          <tr><td class="bold">GPTQ</td><td>Hessian error compensation</td><td>None explicit</td><td><span class="badge badge-yellow">Partial</span></td></tr>
-          <tr><td class="bold">AWQ</td><td>Standard round</td><td>Activation-aware scaling</td><td><span class="badge badge-green">Scaling smooths outliers</span></td></tr>
-          <tr class="hl-row"><td class="bold">AutoRound</td><td><span class="badge badge-green">Learned via gradient</span></td><td><span class="badge badge-green">Learned via gradient</span></td><td><span class="badge badge-green">Optimized end-to-end</span></td></tr>
+          <tr><td class="bold">RTN</td><td>Round-to-nearest is good enough</td><td>Direct rounding, no optimization</td><td><span class="badge badge-dim">Value / tensor</span></td></tr>
+          <tr><td class="bold">GPTQ</td><td>Quantize then compensate error</td><td>Compensate error on remaining weights</td><td><span class="badge badge-blue">Linear / weight matrix</span></td></tr>
+          <tr><td class="bold">AWQ</td><td>Protect important weights before quantization</td><td>Per-channel scaling based on activation</td><td><span class="badge badge-blue">Linear / channel-wise</span></td></tr>
+          <tr class="hl-row"><td class="bold">AutoRound</td><td><span class="badge badge-green">Learn the quantizer itself</span></td><td>Rounding direction + quantization range jointly</td><td><span class="badge badge-green">Block / decoder layer</span></td></tr>
         </tbody>
       </table>
       <div style="flex:1; display:flex; gap:12px; align-items:center;">
