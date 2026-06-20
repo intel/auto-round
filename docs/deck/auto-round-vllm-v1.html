@@ -1191,9 +1191,9 @@ W_dequant = W_quant * scale</pre>
     <div class="key-msg" style="text-align:center; margin-top:8px;">Offline workflow with eval feedback loop. Quantize once, serve anywhere. vLLM auto-detects quantization config from checkpoint metadata.</div>
   </div>
 
-  <!-- ============ SLIDE 22: LLM Serving Scenario (4.2) ============ -->
+  <!-- ============ SLIDE 22: Example: LLM Serving Scenario (4.2) ============ -->
   <div class="slide">
-    <h2>LLM Serving Scenario</h2>
+    <h2>Example: LLM Serving Scenario</h2>
     <h3 style="margin-bottom:6px;">Quick Start: Quantize → Deploy</h3>
     <div class="flex-grow" style="display:flex; flex-direction:column; gap:10px;">
       <div class="grid-2" style="gap:14px;">
@@ -1221,15 +1221,16 @@ auto-round \
   <div class="slide">
     <h2>The Quantization Callstack</h2>
     <div class="flex-grow" style="display:flex; align-items:center; justify-content:center;">
-      <div class="placeholder-box" style="width:80%; padding:60px;">
-        <strong>[P]</strong> — Quantization callstack diagram (based on trace results)
-      </div>
+      <img src="./images/ar-quant-profile.png" alt="AutoRound Quantization Profile"
+           style="max-width:95%; max-height:100%; object-fit:contain; border-radius:8px; border:1px solid var(--border-light);"
+           onerror="this.style.display='none'; this.nextElementSibling.style.display='block';">
+      <div style="display:none; padding:40px; text-align:center; color:var(--text-dim);">[Image: ar-quant-profile.png]</div>
     </div>
   </div>
 
-  <!-- ============ SLIDE 23: VLM/Diffusion Example (4.3) ============ -->
+  <!-- ============ SLIDE 23: Diffusion Example (4.3) ============ -->
   <div class="slide">
-    <h2>Example: VLM/Diffusion Serving Scenario</h2>
+    <h2>Example: Diffusion Serving Scenario</h2>
     <h3>Scenario: Deploy FLUX for vLLM-Omni</h3>
     <div class="grid-2 flex-grow">
       <div>

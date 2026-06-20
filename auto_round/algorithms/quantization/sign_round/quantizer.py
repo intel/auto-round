@@ -14,7 +14,7 @@
 import copy
 from collections import defaultdict
 from contextlib import nullcontext
-from functools import partial
+from functools import partial, wraps
 from typing import TYPE_CHECKING, Any, Callable, Optional, Union
 
 import accelerate
@@ -55,6 +55,18 @@ if TYPE_CHECKING:
     from auto_round.algorithms.pipeline import BlockContext
 
 
+def profile_record(name: str):
+    def decorator(func):
+        @wraps(func)
+        def wrapper(*args, **kwargs):
+            with torch.profiler.record_function(name):
+                return func(*args, **kwargs)
+
+        return wrapper
+
+    return decorator
+
+
 @register_pipeline_member(SignRoundConfig)
 class SignRoundQuantizer(RTNLayerFallbackMixin, BaseQuantizer):
 
@@ -84,6 +96,7 @@ class SignRoundQuantizer(RTNLayerFallbackMixin, BaseQuantizer):
             non_zero_cnt += torch.count_nonzero(t).item()
         return non_zero_cnt
 
+    @profile_record("ar:_get_loss")
     def _get_loss(
         self,
         pred_output: torch.Tensor,
@@ -115,6 +128,7 @@ class SignRoundQuantizer(RTNLayerFallbackMixin, BaseQuantizer):
 
         return loss
 
+    @profile_record("ar:quantize_block")
     def quantize_block(self, ctx: "BlockContext") -> dict:
         """Apply the AutoRound optimization algorithm to a block.
 
@@ -214,33 +228,35 @@ class SignRoundQuantizer(RTNLayerFallbackMixin, BaseQuantizer):
         index_sampler = IndexSampler(nsamples, global_batch_size)
         batch_size = self.batch_size
         for i in range(self.iters):
-            if self.enable_alg_ext and self.data_type.endswith("dq"):
-                for n, m in block.named_modules():
-                    m.cur_iter = i
-            total_loss = 0
-            global_indices = index_sampler.next_batch()
-            if self.attention_mask:
-                num_elm = self._get_non_zero_cnt(self.attention_mask, global_indices)
+            with torch.profiler.record_function(f"ar:quantize_block_iter:{i}"):
+                if self.enable_alg_ext and self.data_type.endswith("dq"):
+                    for n, m in block.named_modules():
+                        m.cur_iter = i
+                total_loss = 0
+                global_indices = index_sampler.next_batch()
+                if self.attention_mask:
+                    num_elm = self._get_non_zero_cnt(self.attention_mask, global_indices)
 
-            for batch_start in range(0, len(global_indices), batch_size):
-                indices = global_indices[batch_start : batch_start + batch_size]
-                ref_output = ctx.get_reference_outputs(indices, device=loss_device)
-                # BlockIO centralizes batch input selection, reference caching,
-                # and forwarding for the currently scheduled block (ctx.block).
-                pred_output = ctx.forward_block_batch(indices, device=device, cache_device=loss_device)
-                loss = self._get_loss(pred_output, ref_output, indices, mse_loss, device)
-                num_elm = 1 if num_elm <= 0 else num_elm
-                total_loss += loss.item() / num_elm
+                for batch_start in range(0, len(global_indices), batch_size):
+                    indices = global_indices[batch_start : batch_start + batch_size]
+                    ref_output = ctx.get_reference_outputs(indices, device=loss_device)
+                    # BlockIO centralizes batch input selection, reference caching,
+                    # and forwarding for the currently scheduled block (ctx.block).
+                    with torch.profiler.record_function("ar:forward_block_batch"):
+                        pred_output = ctx.forward_block_batch(indices, device=device, cache_device=loss_device)
+                    loss = self._get_loss(pred_output, ref_output, indices, mse_loss, device)
+                    num_elm = 1 if num_elm <= 0 else num_elm
+                    total_loss += loss.item() / num_elm
 
-                if mid_iter_mem_check:
-                    # clear memory to avoid OOM due to memory fragmentation
-                    clear_memory_if_reached_threshold(threshold=0.5, device_list=device_manager.device_list)
+                    if mid_iter_mem_check:
+                        # clear memory to avoid OOM due to memory fragmentation
+                        clear_memory_if_reached_threshold(threshold=0.5, device_list=device_manager.device_list)
 
-                self._scale_loss_and_backward(scaler, loss)
+                    self._scale_loss_and_backward(scaler, loss)
 
-                if mid_iter_mem_check:
-                    # clear memory to avoid OOM due to memory fragmentation
-                    clear_memory_if_reached_threshold(threshold=0.8, device_list=device_manager.device_list)
+                    if mid_iter_mem_check:
+                        # clear memory to avoid OOM due to memory fragmentation
+                        clear_memory_if_reached_threshold(threshold=0.8, device_list=device_manager.device_list)
 
             if i == 0:
                 init_loss = total_loss
@@ -506,6 +522,7 @@ class SignRoundQuantizer(RTNLayerFallbackMixin, BaseQuantizer):
         """Returns scaler, in SignRound, no need to use scaler."""
         return None
 
+    @profile_record("ar:scale_loss_and_backward")
     def _scale_loss_and_backward(self, scaler: Any, loss: torch.Tensor) -> torch.Tensor:
         """Scales the loss and performs backward pass.
 
