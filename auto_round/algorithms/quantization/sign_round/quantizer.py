@@ -210,7 +210,7 @@ class SignRoundQuantizer(RTNLayerFallbackMixin, BaseQuantizer):
         if self.gradient_accumulate_steps != 1 and not self.attention_mask:
             whole_indices = torch.arange(global_batch_size)
             num_elm = ctx.count_batch_elements(whole_indices)
-        setup_ddp_if_needed_(self, block, device_manager.device_list)
+        block, sync_gradients = setup_ddp_if_needed_(self, block, device_manager.device_list)
         index_sampler = IndexSampler(nsamples, global_batch_size)
         batch_size = self.batch_size
         for i in range(self.iters):
@@ -256,6 +256,7 @@ class SignRoundQuantizer(RTNLayerFallbackMixin, BaseQuantizer):
             if not self.not_use_best_mse:
                 if 0 < self.dynamic_max_gap <= i - last_best_iter:
                     break
+            sync_gradients()
             self._step(scaler, optimizer, lr_schedule)
 
         last_loss = total_loss
