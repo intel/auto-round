@@ -110,7 +110,9 @@ def _all_reduce_model_grads(module: torch.nn.Module):
     """All-reduce (AVG) gradients of all parameters in *module* across ranks."""
     import torch.distributed as dist
 
-    comm_device = torch.device("cuda:0") if torch.cuda.is_available() else None
+    comm_device = torch.cuda.current_device() if torch.cuda.is_available() else None
+    if comm_device is not None:
+        comm_device = torch.device("cuda", comm_device)
     for param in module.parameters():
         if param.grad is not None:
             grad = param.grad
