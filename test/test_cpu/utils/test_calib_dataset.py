@@ -119,12 +119,15 @@ class _FakeStreamingDataset:
         self.mapped_output = None
 
     def shuffle(self, seed=42):
+        _ = seed
         return self
 
     def take(self, count):
+        _ = count
         return self
 
     def map(self, fn, batched=True):
+        _ = batched
         self.mapped_output = fn({"messages": [[{"role": "user", "content": "hello"}]]})
         return self
 
