@@ -23,6 +23,10 @@
 #include <stdexcept>
 #include <vector>
 
+#ifdef _OPENMP
+#include <omp.h>
+#endif
+
 namespace ark::cpu {
 namespace {
 
@@ -110,7 +114,36 @@ void validate_args(const MhaDenseArgs& args) {
   (void)element_size(args.dtype);
 }
 
+int effective_kv_block(const MhaDenseArgs& args) {
+  const int block = args.kv_block_size > 0 ? args.kv_block_size : kDefaultKvBlock;
+  return std::min(block, args.seq_len_kv);
+}
+
+int max_threads() {
+#ifdef _OPENMP
+  return std::max(1, omp_get_max_threads());
+#else
+  return 1;
+#endif
+}
+
+int current_thread() {
+#ifdef _OPENMP
+  return omp_get_thread_num();
+#else
+  return 0;
+#endif
+}
+
 }  // namespace
+
+size_t mha_dense_workspace_size(const MhaDenseArgs& args) {
+  // Per thread we keep an output accumulator (head_dim) plus a score tile
+  // (kv_block_size) of FP32 scratch.
+  const size_t per_thread =
+      static_cast<size_t>(args.head_dim) + static_cast<size_t>(effective_kv_block(args));
+  return per_thread * static_cast<size_t>(max_threads());
+}
 
 size_t element_size(BTLA_DTYPE dtype) {
   switch (dtype) {
@@ -157,51 +190,92 @@ void mha_dense_forward(const MhaDenseArgs& args) {
   validate_args(args);
   const int group_size = args.num_heads_q / args.num_heads_kv;
   const int causal_shift = args.seq_len_kv - args.seq_len_q;
+  const int head_dim = args.head_dim;
+  const int kv_block = effective_kv_block(args);
+  const size_t per_thread = static_cast<size_t>(head_dim) + static_cast<size_t>(kv_block);
+
+  // Use the caller-provided workspace when available, otherwise fall back to a
+  // self-managed buffer so the kernel stays usable in isolation.
+  std::vector<float> local_workspace;
+  float* workspace = args.workspace;
+  if (workspace == nullptr) {
+    local_workspace.resize(per_thread * static_cast<size_t>(max_threads()));
+    workspace = local_workspace.data();
+  }
+  constexpr float kNegInf = -std::numeric_limits<float>::infinity();
 
 #pragma omp parallel for collapse(3) schedule(static)
   for (int b = 0; b < args.batch; ++b) {
     for (int hq = 0; hq < args.num_heads_q; ++hq) {
       for (int sq = 0; sq < args.seq_len_q; ++sq) {
         const int hkv = hq / group_size;
-        std::vector<float> scores(args.seq_len_kv);
-        float max_score = -std::numeric_limits<float>::infinity();
+        float* scratch = workspace + static_cast<size_t>(current_thread()) * per_thread;
+        float* acc = scratch;                 // [head_dim] output accumulator
+        float* tile_scores = scratch + head_dim;  // [kv_block] score tile
 
-        for (int sk = 0; sk < args.seq_len_kv; ++sk) {
-          float score = 0.0f;
-          for (int d = 0; d < args.head_dim; ++d) {
-            const float q = load_scalar(args.query, qko_offset(args.q_strides, b, hq, sq, d), args.dtype);
-            const float k = load_scalar(args.key, qko_offset(args.k_strides, b, hkv, sk, d), args.dtype);
-            score += q * k;
-          }
-          score *= args.softmax_scale;
-          if (args.attn_mask) {
-            score += args.attn_mask[(static_cast<size_t>(b) * args.seq_len_q + sq) * args.seq_len_kv + sk];
-          }
-          if (args.is_causal && sk > sq + causal_shift) {
-            score = -std::numeric_limits<float>::infinity();
-          }
-          scores[sk] = score;
-          max_score = std::max(max_score, score);
+        for (int d = 0; d < head_dim; ++d) {
+          acc[d] = 0.0f;
         }
+        float running_max = kNegInf;  // m_i
+        float running_sum = 0.0f;     // l_i
 
-        float denom = 0.0f;
-        if (std::isfinite(max_score)) {
-          for (float& score : scores) {
-            score = std::exp(score - max_score);
-            denom += score;
+        for (int kv_start = 0; kv_start < args.seq_len_kv; kv_start += kv_block) {
+          const int kv_end = std::min(kv_start + kv_block, args.seq_len_kv);
+          float tile_max = kNegInf;
+
+          // Stage 1: compute the raw scores for this K tile and its max.
+          for (int sk = kv_start; sk < kv_end; ++sk) {
+            float score = kNegInf;
+            if (!(args.is_causal && sk > sq + causal_shift)) {
+              score = 0.0f;
+              for (int d = 0; d < head_dim; ++d) {
+                const float q = load_scalar(args.query, qko_offset(args.q_strides, b, hq, sq, d), args.dtype);
+                const float k = load_scalar(args.key, qko_offset(args.k_strides, b, hkv, sk, d), args.dtype);
+                score += q * k;
+              }
+              score *= args.softmax_scale;
+              if (args.attn_mask) {
+                score += args.attn_mask[(static_cast<size_t>(b) * args.seq_len_q + sq) * args.seq_len_kv + sk];
+              }
+            }
+            tile_scores[sk - kv_start] = score;
+            tile_max = std::max(tile_max, score);
           }
-        }
 
-        for (int d = 0; d < args.head_dim; ++d) {
-          float out = 0.0f;
-          if (denom > 0.0f) {
-            for (int sk = 0; sk < args.seq_len_kv; ++sk) {
-              const float weight = scores[sk] / denom;
-              const float v = load_scalar(args.value, value_offset(args.v_strides, b, hkv, sk, d), args.dtype);
-              out += weight * v;
+          // Fully masked tile contributes nothing.
+          if (!std::isfinite(tile_max)) {
+            continue;
+          }
+
+          // Stage 2: online softmax rescaling against the new running max.
+          const float new_max = std::max(running_max, tile_max);
+          const float alpha = std::isfinite(running_max) ? std::exp(running_max - new_max) : 0.0f;
+          if (alpha != 1.0f) {
+            running_sum *= alpha;
+            for (int d = 0; d < head_dim; ++d) {
+              acc[d] *= alpha;
             }
           }
-          store_scalar(args.output, qko_offset(args.o_strides, b, hq, sq, d), args.dtype, out);
+
+          // Stage 3: accumulate the rescaled probabilities and weighted values.
+          for (int sk = kv_start; sk < kv_end; ++sk) {
+            const float score = tile_scores[sk - kv_start];
+            if (!std::isfinite(score)) {
+              continue;
+            }
+            const float p = std::exp(score - new_max);
+            running_sum += p;
+            for (int d = 0; d < head_dim; ++d) {
+              const float v = load_scalar(args.value, value_offset(args.v_strides, b, hkv, sk, d), args.dtype);
+              acc[d] += p * v;
+            }
+          }
+          running_max = new_max;
+        }
+
+        const float inv_sum = running_sum > 0.0f ? 1.0f / running_sum : 0.0f;
+        for (int d = 0; d < head_dim; ++d) {
+          store_scalar(args.output, qko_offset(args.o_strides, b, hq, sq, d), args.dtype, acc[d] * inv_sum);
         }
       }
     }

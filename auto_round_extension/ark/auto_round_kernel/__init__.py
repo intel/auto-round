@@ -607,7 +607,9 @@ def sdpa(
         raise ValueError("K/V shape mismatch")
     if Dk != D:
         raise ValueError("Head dim mismatch between Q and K/V")
-    if D not in (64, 128, 96, 192):
+    # The SYCL-TLA (XPU) flash-attention kernels are only compiled for a fixed
+    # set of head dimensions. The CPU kernel supports arbitrary head_dim.
+    if query.device.type == "xpu" and D not in (64, 128, 96, 192):
         raise ValueError(f"Unsupported head_dim={D}; supported: 64, 128, 96, 192")
 
     if dropout_p != 0.0:

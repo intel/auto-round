@@ -145,3 +145,84 @@ def test_ark_cpu_sdpa_rejects_mask_with_causal():
 
     with pytest.raises(ValueError, match="mask and is_causal"):
         auto_round_kernel.sdpa(q, k, v, attn_mask=mask, is_causal=True)
+
+
+@pytest.mark.parametrize("seq_kv", [257, 600])
+def test_ark_cpu_sdpa_decode_spans_multiple_kv_tiles(seq_kv):
+    # seq_kv larger than the default flash-attention K/V tile (256) exercises the
+    # online-softmax rescaling across multiple tiles.
+    torch.manual_seed(3001)
+    batch, heads_q, heads_kv, head_dim = 2, 8, 2, 16
+    scale = 1 / math.sqrt(head_dim)
+    q = torch.randn(batch, heads_q, 1, head_dim, dtype=torch.float32)
+    k = torch.randn(batch, heads_kv, seq_kv, head_dim, dtype=torch.float32)
+    v = torch.randn(batch, heads_kv, seq_kv, head_dim, dtype=torch.float32)
+
+    expected = torch.nn.functional.scaled_dot_product_attention(
+        q, k, v, scale=scale, enable_gqa=True, is_causal=False
+    )
+    actual = auto_round_kernel.sdpa(q, k, v, scale=scale)
+
+    torch.testing.assert_close(actual, expected, atol=1e-5, rtol=1e-5)
+
+
+@pytest.mark.parametrize("layout", ["HND", "NHD"])
+def test_ark_cpu_sdpa_prefill_causal_multi_tile(layout):
+    # seq longer than the default tile checks tiled online softmax under causal
+    # masking, including tiles that are fully masked for early query rows.
+    torch.manual_seed(3002)
+    batch, heads, head_dim, seq = 1, 4, 16, 300
+    scale = 1 / math.sqrt(head_dim)
+    q_hnd = torch.randn(batch, heads, seq, head_dim, dtype=torch.float32)
+    k_hnd = torch.randn(batch, heads, seq, head_dim, dtype=torch.float32)
+    v_hnd = torch.randn(batch, heads, seq, head_dim, dtype=torch.float32)
+
+    expected_hnd = torch.nn.functional.scaled_dot_product_attention(
+        q_hnd, k_hnd, v_hnd, scale=scale, is_causal=True
+    )
+    actual = auto_round_kernel.sdpa(
+        _to_layout(q_hnd, layout),
+        _to_layout(k_hnd, layout),
+        _to_layout(v_hnd, layout),
+        scale=scale,
+        is_causal=True,
+        tensor_layout=layout,
+    )
+
+    torch.testing.assert_close(_to_hnd(actual, layout), expected_hnd, atol=1e-5, rtol=1e-5)
+
+
+def test_ark_cpu_sdpa_additive_mask_multi_tile_matches_torch():
+    # Additive float mask combined with multi-tile K/V.
+    torch.manual_seed(3003)
+    batch, heads, head_dim, seq_q, seq_kv = 2, 3, 16, 4, 400
+    scale = 1 / math.sqrt(head_dim)
+    q = torch.randn(batch, heads, seq_q, head_dim, dtype=torch.float32)
+    k = torch.randn(batch, heads, seq_kv, head_dim, dtype=torch.float32)
+    v = torch.randn(batch, heads, seq_kv, head_dim, dtype=torch.float32)
+    mask = torch.randn(batch, 1, seq_q, seq_kv, dtype=torch.float32)
+
+    expected = torch.nn.functional.scaled_dot_product_attention(q, k, v, attn_mask=mask, scale=scale)
+    actual = auto_round_kernel.sdpa(q, k, v, attn_mask=mask, scale=scale)
+
+    torch.testing.assert_close(actual, expected, atol=1e-5, rtol=1e-5)
+
+
+@pytest.mark.parametrize("dtype", [torch.float16, torch.bfloat16])
+def test_ark_cpu_sdpa_decode_half_dtypes_match_torch(dtype):
+    torch.manual_seed(3004)
+    batch, heads_q, heads_kv, head_dim, seq_kv = 1, 8, 2, 16, 300
+    scale = 1 / math.sqrt(head_dim)
+    q = torch.randn(batch, heads_q, 1, head_dim, dtype=dtype)
+    k = torch.randn(batch, heads_kv, seq_kv, head_dim, dtype=dtype)
+    v = torch.randn(batch, heads_kv, seq_kv, head_dim, dtype=dtype)
+
+    # Reference uses the same (already quantized) inputs upcast to fp32 so the
+    # comparison isolates kernel error from input rounding.
+    expected = torch.nn.functional.scaled_dot_product_attention(
+        q.float(), k.float(), v.float(), scale=scale, enable_gqa=True
+    )
+    actual = auto_round_kernel.sdpa(q, k, v, scale=scale)
+
+    assert actual.dtype == dtype
+    torch.testing.assert_close(actual.float(), expected, atol=2e-2, rtol=2e-2)

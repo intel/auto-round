@@ -16,6 +16,7 @@
 #include "ark/cpu/mha_dense_wrapper.h"
 
 #include <stdexcept>
+#include <vector>
 
 namespace ark::cpu {
 namespace {
@@ -36,7 +37,17 @@ size_t value_offset(const ValueStrides& strides, int b, int h, int s, int d) {
 
 }  // namespace
 
-void sdpa_forward(const MhaDenseArgs& args) { mha_dense_forward(args); }
+void sdpa_forward(const MhaDenseArgs& args) {
+  // Pre-allocate the flash-attention scratch once so the inner kernel avoids
+  // per-row heap allocations.
+  MhaDenseArgs local = args;
+  std::vector<float> workspace;
+  if (local.workspace == nullptr) {
+    workspace.resize(mha_dense_workspace_size(local));
+    local.workspace = workspace.empty() ? nullptr : workspace.data();
+  }
+  mha_dense_forward(local);
+}
 
 void kv_cache_update(void* cache_k, void* cache_v, const void* key, const void* value, const AttentionStrides& k_strides,
                      const ValueStrides& v_strides, BTLA_DTYPE dtype, int batch, int num_heads_kv, int append_len,

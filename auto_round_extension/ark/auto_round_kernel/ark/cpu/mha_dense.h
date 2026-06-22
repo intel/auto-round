@@ -14,10 +14,16 @@
 
 #pragma once
 
+#include <cstddef>
 #include <cstdint>
 #include "bestla/bestla.h"
 
 namespace ark::cpu {
+
+// Default number of K/V positions processed per tile in the flash-attention
+// (tiled online softmax) inner loop. Mirrors the blocking used by Neural Speed's
+// CPU mha_dense kernel.
+constexpr int kDefaultKvBlock = 256;
 
 struct AttentionStrides {
   int seq = 0;
@@ -52,7 +58,17 @@ struct MhaDenseArgs {
   int head_dim = 0;
   float softmax_scale = 1.0f;
   bool is_causal = false;
+  // K/V tile size for the online-softmax inner loop. Values <= 0 fall back to
+  // kDefaultKvBlock.
+  int kv_block_size = 0;
+  // Optional pre-allocated scratch buffer (FP32). When non-null it must hold at
+  // least mha_dense_workspace_size(args) floats; otherwise the kernel allocates
+  // per-thread scratch internally.
+  float* workspace = nullptr;
 };
+
+// Number of FP32 elements required by the workspace buffer for the given args.
+size_t mha_dense_workspace_size(const MhaDenseArgs& args);
 
 void mha_dense_forward(const MhaDenseArgs& args);
 
