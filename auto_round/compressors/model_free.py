@@ -1910,6 +1910,11 @@ class ModelFreeCompressor(_ModelFreeCompressorCore):
         # Start from the remaining user kwargs and explicitly set/override
         # known compressor init parameters for clarity.
         fallback_init = dict(fallback_kwargs)
+        # Route-control kwargs are only meaningful for the initial entry
+        # selection. Strip them so fallback always re-enters the regular flow
+        # with a single explicit disable_model_free=True override.
+        fallback_init.pop("model_free", None)
+        fallback_init.pop("disable_model_free", None)
         fallback_init.update(
             model=model_name_or_path,
             iters=0,
