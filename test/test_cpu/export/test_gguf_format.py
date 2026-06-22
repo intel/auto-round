@@ -458,8 +458,8 @@ class TestGGUF:
         gguf_model = GGUFReader(os.path.join(quantized_model_path, gguf_file))
         assert gguf_model.get_tensor(2).name == "blk.0.attn_k.weight"
         assert gguf_model.get_tensor(2).tensor_type.name == "Q4_K"
-        assert gguf_model.get_tensor(9).name == "blk.0.ffn_up_exps.weight"
-        assert gguf_model.get_tensor(9).tensor_type.name == "Q2_K"
+        tensor_types = {tensor.name: tensor.tensor_type.name for tensor in gguf_model.tensors}
+        assert tensor_types["blk.0.ffn_up_exps.weight"] == "Q2_K"
 
     def test_q2k_mixed_keeps_only_three_dim_expert_weights_at_q2k(self, tiny_qwen_moe_model_path):
         model_name = tiny_qwen_moe_model_path

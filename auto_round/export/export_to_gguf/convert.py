@@ -39,7 +39,6 @@ import os
 import re
 from functools import partial
 from itertools import chain
-from pathlib import Path
 from typing import TYPE_CHECKING, Any, Iterator
 
 import numpy as np
@@ -76,6 +75,8 @@ def wrapper_model_instance(
     model_instance.model = model
     model_instance.layer_config = layer_config
     model_instance.low_cpu_mem_usage = _need_low_cpu_mem(low_cpu_mem_usage)
+    model_instance._gguf_written_hf_names = set()
+    model_instance._gguf_written_checkpoint_names = set()
 
     model_instance.get_tensors = partial(get_restored_tensors, model_instance)
     model_instance.prepare_tensors = partial(prepare_tensors, model_instance)
@@ -166,17 +167,32 @@ def _iter_extra_tensors(cls):
 
 
 def get_restored_tensors(cls) -> Iterator[RestoredTensor]:
-    if not hasattr(cls.model, "tensor_name_list"):
-        cls.model.tensor_name_list = []
+    written_hf_names = getattr(cls, "_gguf_written_hf_names", set())
+    written_checkpoint_names = getattr(cls, "_gguf_written_checkpoint_names", set())
+    cls.model.tensor_name_list = list(written_hf_names | written_checkpoint_names)
 
-    for restored in HFCheckpointRestorer(cls.model).iter_tensors():
+    pending_checkpoint_tensors = {}
+    for restored in HFCheckpointRestorer(cls.model, completed_hf_names=written_hf_names).iter_tensors():
+        tensor = restored.tensor_fn()
+        if tensor is None or tensor.numel() == 0:
+            pending_checkpoint_tensors[restored.checkpoint_name] = restored
+            continue
         for tensor_name in (restored.checkpoint_name, *restored.hf_names):
             if tensor_name not in cls.model.tensor_name_list:
                 cls.model.tensor_name_list.append(tensor_name)
-        yield restored
+        yield RestoredTensor(
+            restored.checkpoint_name,
+            lambda tensor=tensor: tensor,
+            restored.hf_names,
+            restored.transform_kind,
+        )
 
     for name, tensor in _iter_extra_tensors(cls):
-        yield RestoredTensor(name, lambda tensor=tensor: tensor, (name,), "extra")
+        pending = pending_checkpoint_tensors.pop(name, None)
+        if pending is None:
+            yield RestoredTensor(name, lambda tensor=tensor: tensor, (name,), "extra")
+        else:
+            yield RestoredTensor(name, lambda tensor=tensor: tensor, pending.hf_names, pending.transform_kind)
 
 
 def _quant_data_with_args(
@@ -515,17 +531,7 @@ def _flush_name_resolution_diagnostics(cls):
     diagnostics = getattr(cls, "_gguf_name_resolution_diagnostics", None)
     if diagnostics is None or len(diagnostics) == 0:
         return
-    try:
-        output_path = Path(cls.fname_out)
-        output_dir = output_path if output_path.is_dir() else output_path.parent
-        output_dir.mkdir(parents=True, exist_ok=True)
-        diag_path = output_dir / "gguf_name_resolution.json"
-        with open(diag_path, "w", encoding="utf-8") as f:
-            json.dump(diagnostics, f, indent=2)
-        if diagnostics:
-            logger.warning("gguf: wrote %d name resolution fallback diagnostics to %s", len(diagnostics), diag_path)
-    except Exception as exc:
-        logger.warning("gguf: failed to write name resolution diagnostics: %s", exc)
+    logger.debug("gguf: recorded %d in-memory name resolution fallback diagnostics", len(diagnostics))
 
 
 def prepare_tensors(cls):
@@ -591,7 +597,9 @@ def prepare_tensors(cls):
         clean_weight_list = []
 
         modify_name = _special_name_handle(cls, checkpoint_name)
+        restored_outputs_completed = False
         for new_name, data_torch in cls.modify_tensors(data_torch, modify_name, bid):
+            restored_outputs_completed = True
             if _gguf_writer_has_tensor(cls.gguf_writer, new_name):
                 logger.debug("%s already added to gguf_writer, skip", new_name)
                 continue
@@ -837,6 +845,10 @@ def prepare_tensors(cls):
                 clear_memory(device_list=[cls.device])
 
             cls.gguf_writer.add_tensor(new_name, data, raw_dtype=data_qtype)
+
+        if restored_outputs_completed:
+            cls._gguf_written_checkpoint_names.add(restored.checkpoint_name)
+            cls._gguf_written_hf_names.update(restored.hf_names)
 
         # # save cpu memory, but slow
         if cls.low_cpu_mem_usage:
