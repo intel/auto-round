@@ -138,10 +138,11 @@ int current_thread() {
 }  // namespace
 
 size_t mha_dense_workspace_size(const MhaDenseArgs& args) {
-  // Per thread we keep an output accumulator (head_dim) plus a score tile
-  // (kv_block_size) of FP32 scratch.
-  const size_t per_thread =
-      static_cast<size_t>(args.head_dim) + static_cast<size_t>(effective_kv_block(args));
+  // Per thread we keep an output accumulator (head_dim), an FP32 copy of the
+  // current query row (head_dim) and a score tile (kv_block_size) of FP32
+  // scratch.
+  const size_t per_thread = static_cast<size_t>(2) * static_cast<size_t>(args.head_dim) +
+                            static_cast<size_t>(effective_kv_block(args));
   return per_thread * static_cast<size_t>(max_threads());
 }
 
@@ -192,7 +193,8 @@ void mha_dense_forward(const MhaDenseArgs& args) {
   const int causal_shift = args.seq_len_kv - args.seq_len_q;
   const int head_dim = args.head_dim;
   const int kv_block = effective_kv_block(args);
-  const size_t per_thread = static_cast<size_t>(head_dim) + static_cast<size_t>(kv_block);
+  const size_t per_thread =
+      static_cast<size_t>(2) * static_cast<size_t>(head_dim) + static_cast<size_t>(kv_block);
 
   // Use the caller-provided workspace when available, otherwise fall back to a
   // self-managed buffer so the kernel stays usable in isolation.
@@ -210,11 +212,16 @@ void mha_dense_forward(const MhaDenseArgs& args) {
       for (int sq = 0; sq < args.seq_len_q; ++sq) {
         const int hkv = hq / group_size;
         float* scratch = workspace + static_cast<size_t>(current_thread()) * per_thread;
-        float* acc = scratch;                 // [head_dim] output accumulator
-        float* tile_scores = scratch + head_dim;  // [kv_block] score tile
+        float* acc = scratch;                          // [head_dim] output accumulator
+        float* q_row = scratch + head_dim;             // [head_dim] FP32 query row
+        float* tile_scores = scratch + 2 * head_dim;   // [kv_block] score tile
 
+        // Stage 0: hoist the query row into an FP32 scratch buffer once. The row
+        // is reused for every K position in this (b, hq, sq) slice, so this
+        // removes seq_len_kv-1 redundant gathers/dtype conversions per element.
         for (int d = 0; d < head_dim; ++d) {
           acc[d] = 0.0f;
+          q_row[d] = load_scalar(args.query, qko_offset(args.q_strides, b, hq, sq, d), args.dtype);
         }
         float running_max = kNegInf;  // m_i
         float running_sum = 0.0f;     // l_i
@@ -229,9 +236,8 @@ void mha_dense_forward(const MhaDenseArgs& args) {
             if (!(args.is_causal && sk > sq + causal_shift)) {
               score = 0.0f;
               for (int d = 0; d < head_dim; ++d) {
-                const float q = load_scalar(args.query, qko_offset(args.q_strides, b, hq, sq, d), args.dtype);
                 const float k = load_scalar(args.key, qko_offset(args.k_strides, b, hkv, sk, d), args.dtype);
-                score += q * k;
+                score += q_row[d] * k;
               }
               score *= args.softmax_scale;
               if (args.attn_mask) {
