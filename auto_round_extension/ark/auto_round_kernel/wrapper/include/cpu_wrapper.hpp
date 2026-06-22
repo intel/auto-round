@@ -291,7 +291,71 @@ static inline void BTLAGemmPackQB(void* PackedBuf, const int8_t* QB, const float
   }
 }
 
+/// Validate a deserialized StorageWeightNInt to guard against corrupted metadata.
+/// Throws std::runtime_error if any field is inconsistent or out of bounds.
+static inline void _validate_storage_weight(const storage::gemm::StorageWeightNInt& stor,
+                                            size_t blob_count) {
+  using namespace bestla;
+  // --- dimension sanity --------------------------------------------------
+  if (stor.info_.n_ <= 0) {
+    throw std::runtime_error("Corrupt packed weight: n must be positive");
+  }
+  if (stor.info_.k_ <= 0) {
+    throw std::runtime_error("Corrupt packed weight: k must be positive");
+  }
+  constexpr int MAX_DIM = 1 << 24;  // 16M — far beyond any realistic matrix
+  if (stor.info_.n_ > MAX_DIM || stor.info_.k_ > MAX_DIM) {
+    throw std::runtime_error("Corrupt packed weight: dimensions exceed sane maximum");
+  }
+  if (stor.info_.npad_ < stor.info_.n_) {
+    throw std::runtime_error("Corrupt packed weight: npad < n");
+  }
+  if (stor.info_.kpad_ < stor.info_.k_) {
+    throw std::runtime_error("Corrupt packed weight: kpad < k");
+  }
+  if (stor.info_.npad_ > MAX_DIM || stor.info_.kpad_ > MAX_DIM) {
+    throw std::runtime_error("Corrupt packed weight: padded dimensions exceed sane maximum");
+  }
+
+  // --- block size ---------------------------------------------------------
+  if (stor.block_ <= 0) {
+    throw std::runtime_error("Corrupt packed weight: block size must be positive");
+  }
+  if (stor.block_ > stor.info_.k_) {
+    throw std::runtime_error("Corrupt packed weight: block size > k");
+  }
+  int expected_nblk = (stor.info_.kpad_ + stor.block_ - 1) / stor.block_;
+  if (stor.n_block_ != expected_nblk) {
+    throw std::runtime_error("Corrupt packed weight: n_block inconsistent with kpad/block");
+  }
+
+  // --- layout -------------------------------------------------------------
+  if (stor.info_.layout_ != storage::gemm::Layout::NPack) {
+    throw std::runtime_error("Corrupt packed weight: expected NPack layout");
+  }
+
+  // --- buffer sizes against available data --------------------------------
+  if (blob_count > 0) {
+    // The serialised header sits at the start of the blob; data_ptr points
+    // right after the header (offset = misc_size_ bytes from start).
+    // After set_buffers the data occupies stor.buf_size_ bytes.
+    auto off = stor.misc_size_;
+    if (off + stor.buf_size_ > blob_count) {
+      throw std::runtime_error("Corrupt packed weight: declared data size exceeds blob size (" +
+                               std::to_string(off) + " + " + std::to_string(stor.buf_size_) + " > " +
+                               std::to_string(blob_count) + ")");
+    }
+  }
+}
+
+// Forward declaration for the 4-arg overload used by the 3-arg compatibility wrapper.
+static inline void BTLAGemmUnpack(void* B, float* DQB, void* ThreadPool, size_t blob_count);
+
 static inline void BTLAGemmUnpack(void* B, float* DQB, void* ThreadPool) {
+  BTLAGemmUnpack(B, DQB, ThreadPool, 0);
+}
+
+static inline void BTLAGemmUnpack(void* B, float* DQB, void* ThreadPool, size_t blob_count) {
   GetCPUDevice();
   using namespace bestla;
   auto prologue = storage::CollectionParser::parse_prologue_id(B);
@@ -300,6 +364,8 @@ static inline void BTLAGemmUnpack(void* B, float* DQB, void* ThreadPool) {
       auto stor_ptr = (int8_t*)(B);
       storage::gemm::StorageWeightNInt stor;
       auto data_ptr = stor.deserialize(stor_ptr);
+      // Validate deserialised metadata BEFORE calling set_buffers().
+      _validate_storage_weight(stor, blob_count);
       stor.set_buffers(data_ptr);
       auto& id = stor.info_.core_id_;
       if (id == tAVX512_VNNI::ID) {
@@ -436,7 +502,8 @@ static inline size_t BTLAGemmNPackBSize(int N, int K, BTLA_DTYPE dt) {
   return 0;
 }
 
-static inline size_t BTLAWOQGemmForwardWorkspace(void* B, int M, int N, int K, int lda, int ldc) {
+static inline size_t BTLAWOQGemmForwardWorkspace(void* B, int M, int N, int K, int lda, int ldc,
+                                                size_t blob_count = 0) {
   GetCPUDevice();
   using namespace bestla;
   auto prologue = storage::CollectionParser::parse_prologue_id(B);
@@ -445,6 +512,7 @@ static inline size_t BTLAWOQGemmForwardWorkspace(void* B, int M, int N, int K, i
       storage::gemm::StorageWeightNInt stor;
       auto stor_ptr = (int8_t*)(B);
       auto data_ptr = stor.deserialize(stor_ptr);
+      _validate_storage_weight(stor, blob_count);
       stor.set_buffers(data_ptr);
       auto& id = stor.info_.core_id_;
       if (id == tAVX512_VNNI_KBlock::ID) {
@@ -478,7 +546,8 @@ static inline size_t BTLAWOQGemmForwardWorkspace(void* B, int M, int N, int K, i
 }
 
 static inline void BTLAWOQGemmFp32Forward(void* B, const float* A, float* C, const float* bias, int M, int N, int K,
-                                          int lda, int ldc, void* ws_ptr, parallel::IThreading* ThreadPool) {
+                                          int lda, int ldc, void* ws_ptr, parallel::IThreading* ThreadPool,
+                                          size_t blob_count = 0) {
   GetCPUDevice();
   using namespace bestla;
   auto prologue = storage::CollectionParser::parse_prologue_id(B);
@@ -487,6 +556,7 @@ static inline void BTLAWOQGemmFp32Forward(void* B, const float* A, float* C, con
       auto stor_ptr = (int8_t*)(B);
       storage::gemm::StorageWeightNInt stor;
       auto data_ptr = stor.deserialize(stor_ptr);
+      _validate_storage_weight(stor, blob_count);
       stor.set_buffers(data_ptr);
       auto& id = stor.info_.core_id_;
       if (id == tAVX512_VNNI::ID) {
@@ -536,9 +606,9 @@ class CpuWrapper {
     bestla::BTLAGemmPackQB(blob, raws8, scaleptr, p->asym ? zp : nullptr, coreid, p, get_threading());
   }
 
-  static void unpackq(BTLA_DTYPE outt, int8_t* blob, void* optr, QuantParam* p) {
+  static void unpackq(BTLA_DTYPE outt, int8_t* blob, void* optr, QuantParam* p, size_t blob_count = 0) {
     assert(outt == BTLA_DTYPE::F32);
-    bestla::BTLAGemmUnpack(blob, (float*)optr, get_threading());
+    bestla::BTLAGemmUnpack(blob, (float*)optr, get_threading(), blob_count);
   }
 
   static void gemm(int m, int n, int k, const void* A, BTLA_DTYPE dt, const void* B, bool BT, float* C,
@@ -558,11 +628,12 @@ class CpuWrapper {
     bestla::BTLAGemmNPackBForward(dt, A, bptr, C, bias, m, n, k, k, n, packwptr, thd);
   }
 
-  static void woq_gemm(int m, const void* a, const void* b, void* c, const void* bias, BTLA_DTYPE acdt, QuantParam* p) {
-    auto wssize = bestla::BTLAWOQGemmForwardWorkspace((void*)b, m, p->n, p->k, p->k, p->n);
+  static void woq_gemm(int m, const void* a, const void* b, void* c, const void* bias, BTLA_DTYPE acdt, QuantParam* p,
+                       size_t blob_count = 0) {
+    auto wssize = bestla::BTLAWOQGemmForwardWorkspace((void*)b, m, p->n, p->k, p->k, p->n, blob_count);
     auto ptr = DnnlContext::Instance()->get_scratch_mem(wssize, 0, nullptr);
     bestla::BTLAWOQGemmFp32Forward((void*)b, (const float*)a, (float*)c, (const float*)bias, m, p->n, p->k, p->k, p->n,
-                                   ptr, get_threading());
+                                   ptr, get_threading(), blob_count);
   }
 };
 
