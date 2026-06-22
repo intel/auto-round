@@ -119,15 +119,12 @@ class _FakeStreamingDataset:
         self.mapped_output = None
 
     def shuffle(self, seed=42):
-        _ = seed
         return self
 
     def take(self, count):
-        _ = count
         return self
 
     def map(self, fn, batched=True):
-        _ = batched
         self.mapped_output = fn({"messages": [[{"role": "user", "content": "hello"}]]})
         return self
 
@@ -149,6 +146,11 @@ class _FakeV5ChatTokenizer:
         }
 
 
+class _FakePlainTokenizer(_FakeV5ChatTokenizer):
+    def apply_chat_template(self, messages, tokenize=True, add_generation_prompt=False, **kwargs):
+        raise ValueError("chat templates are not supported")
+
+
 def test_ultrachat_dataset_keeps_chat_template_for_v5_tokenizers(monkeypatch):
     tokenizer = _FakeV5ChatTokenizer()
     dataset = _FakeStreamingDataset()
@@ -159,3 +161,15 @@ def test_ultrachat_dataset_keeps_chat_template_for_v5_tokenizers(monkeypatch):
     assert result is dataset
     assert tokenizer.rendered_messages == ["templated::hello"]
     assert dataset.mapped_output["input_ids"] == [[16]]
+
+
+def test_ultrachat_dataset_disables_chat_template_for_plain_tokenizers(monkeypatch):
+    tokenizer = _FakePlainTokenizer()
+    dataset = _FakeStreamingDataset()
+    monkeypatch.setattr("auto_round.calib_dataset.load_dataset", lambda *args, **kwargs: dataset)
+
+    result = get_ultrachat_dataset(tokenizer=tokenizer, seqlen=128, apply_chat_template=True)
+
+    assert result is dataset
+    assert tokenizer.rendered_messages == ["hello"]
+    assert dataset.mapped_output["input_ids"] == [[5]]
