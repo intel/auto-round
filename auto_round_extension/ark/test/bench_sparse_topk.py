@@ -589,62 +589,62 @@ def run_benchmark(args: argparse.Namespace) -> list[dict[str, object]]:
             )
             continue
 
-        try:
-            preprocess_stage_ms, preprocess_profile_meta = benchmark_preprocess_stages(
-                q,
-                k,
-                topk=topk,
-                is_causal=args.causal,
-                quant_block_size=args.quant_block_size,
-                tensor_layout=args.tensor_layout,
-                warmup=args.warmup,
-                iters=args.iters,
-            )
-            stage_selected_ratio = float(preprocess_profile_meta["stats"].get("selected_ratio", 0.0))
-            stage_selected_blocks_per_row = float(preprocess_profile_meta["stats"].get("selected_blocks_per_row", 0.0))
-            for stage_name, latency_ms in preprocess_stage_ms.items():
-                mode = stage_name if stage_name == "preprocess_total" else f"preprocess_{stage_name}"
-                rows.append(
-                    make_row(
-                        mode=mode,
-                        batch=args.batch,
-                        num_heads_q=args.num_heads_q,
-                        num_heads_kv=args.num_heads_kv,
-                        seq_len=args.seq_len,
-                        head_dim=args.head_dim,
-                        dtype=dtype,
-                        is_causal=args.causal,
-                        warmup=args.warmup,
-                        iters=args.iters,
-                        requested_topk=topk,
-                        selected_ratio=stage_selected_ratio,
-                        selected_blocks_per_row=stage_selected_blocks_per_row,
-                        latency_ms=latency_ms,
-                        status="ok",
-                    )
-                )
-        except Exception as exc:
-            status, note = classify_exception(exc)
-            rows.append(
-                make_row(
-                    mode="preprocess_total",
-                    batch=args.batch,
-                    num_heads_q=args.num_heads_q,
-                    num_heads_kv=args.num_heads_kv,
-                    seq_len=args.seq_len,
-                    head_dim=args.head_dim,
-                    dtype=dtype,
-                    is_causal=args.causal,
-                    warmup=args.warmup,
-                    iters=args.iters,
-                    requested_topk=topk,
-                    selected_ratio=selected_ratio,
-                    selected_blocks_per_row=selected_blocks_per_row,
-                    latency_ms=None,
-                    status=status,
-                    note=f"preprocess stage profiling failed: {note}",
-                )
-            )
+        # try:
+        #     preprocess_stage_ms, preprocess_profile_meta = benchmark_preprocess_stages(
+        #         q,
+        #         k,
+        #         topk=topk,
+        #         is_causal=args.causal,
+        #         quant_block_size=args.quant_block_size,
+        #         tensor_layout=args.tensor_layout,
+        #         warmup=args.warmup,
+        #         iters=args.iters,
+        #     )
+        #     stage_selected_ratio = float(preprocess_profile_meta["stats"].get("selected_ratio", 0.0))
+        #     stage_selected_blocks_per_row = float(preprocess_profile_meta["stats"].get("selected_blocks_per_row", 0.0))
+        #     for stage_name, latency_ms in preprocess_stage_ms.items():
+        #         mode = stage_name if stage_name == "preprocess_total" else f"preprocess_{stage_name}"
+        #         rows.append(
+        #             make_row(
+        #                 mode=mode,
+        #                 batch=args.batch,
+        #                 num_heads_q=args.num_heads_q,
+        #                 num_heads_kv=args.num_heads_kv,
+        #                 seq_len=args.seq_len,
+        #                 head_dim=args.head_dim,
+        #                 dtype=dtype,
+        #                 is_causal=args.causal,
+        #                 warmup=args.warmup,
+        #                 iters=args.iters,
+        #                 requested_topk=topk,
+        #                 selected_ratio=stage_selected_ratio,
+        #                 selected_blocks_per_row=stage_selected_blocks_per_row,
+        #                 latency_ms=latency_ms,
+        #                 status="ok",
+        #             )
+        #         )
+        # except Exception as exc:
+        #     status, note = classify_exception(exc)
+        #     rows.append(
+        #         make_row(
+        #             mode="preprocess_total",
+        #             batch=args.batch,
+        #             num_heads_q=args.num_heads_q,
+        #             num_heads_kv=args.num_heads_kv,
+        #             seq_len=args.seq_len,
+        #             head_dim=args.head_dim,
+        #             dtype=dtype,
+        #             is_causal=args.causal,
+        #             warmup=args.warmup,
+        #             iters=args.iters,
+        #             requested_topk=topk,
+        #             selected_ratio=selected_ratio,
+        #             selected_blocks_per_row=selected_blocks_per_row,
+        #             latency_ms=None,
+        #             status=status,
+        #             note=f"preprocess stage profiling failed: {note}",
+        #         )
+        #     )
 
         rows.append(
             try_benchmark(

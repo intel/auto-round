@@ -50,7 +50,7 @@ num_inference_steps = int(os.getenv("FLUX_STEPS", "50"))
 guidance_scale = float(os.getenv("FLUX_GUIDANCE_SCALE", "3.5"))
 max_sequence_length = int(os.getenv("FLUX_MAX_SEQUENCE_LENGTH", "512"))
 seed = int(os.getenv("FLUX_SEED", "0"))
-use_sparse = os.getenv("FLUX_USE_SPARSE", "0").lower() not in {"0", "false", "no", "off"}
+use_sparse = os.getenv("FLUX_USE_SPARSE", "1").lower() not in {"0", "false", "no", "off"}
 
 output_file = (
     f"flux_output_{height}x{width}_{num_inference_steps}steps_"

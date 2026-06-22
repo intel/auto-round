@@ -67,6 +67,22 @@ Benchmark harness:
   - `flux_joint`
   - `flux_single`
 
+Sparse prefill vs decode:
+
+| Aspect | Sparse prefill | Sparse decode |
+| --- | --- | --- |
+| Public API | `sage_sparse(...)` | `sage_sparse_decode(...)` |
+| C++ entrypoint | `sdpa_impl_qks8_sparse_pvhalf(...)` | `sdpa_impl_qks8_sparse_decode_pvhalf(...)` |
+| Main kernel wrapper | `XeSparseSageFwdKernel` | `XeSparseSageFwdKernel` |
+| Mainloop family | `SPARSESAGEV1FwdMainloop` | `SPARSESAGEV1FwdMainloop` with cached-KV path |
+| Q shape contract | general prefill, typically `seq_len_q == seq_len_kv` | current v1 requires `seq_len_q == 1` |
+| KV source | current `K/V` only | current `K/V` plus `K_cache/V_cache` |
+| Sparse block-id meaning | `lut` rows index only the current KV sequence | `lut` rows index the logical concatenation `cache blocks + current blocks` |
+| Scale contract | `qscale` and `kscale` over current Q/K blocks | `qscale` plus `kscale` over total visible KV blocks, including cache |
+| Extra required inputs | `lut`, `valid_block_num` | `lut`, `valid_block_num`, `K_cache`, `V_cache`, `seq_len_kv_cache` |
+| Typical call path | sparse prefill kernel launch | cached sparse decode kernel launch |
+| Why separate from dense decode | sparse metadata must be consumed in-kernel | sparse metadata must also resolve cache-vs-current KV blocks |
+
 What is still missing:
 
 - sparse-aware K prefetch
