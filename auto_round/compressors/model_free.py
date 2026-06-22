@@ -1677,6 +1677,15 @@ class _ModelFreeCompressorCore:
             if len(self.shard_names) > 1:
                 logger.info(f"Memory usage: {memory_monitor.get_summary()}")
 
+            # Log per-shard summary
+            compressed_quantized = compress_layer_names(quantized)
+            compressed_ignored = compress_layer_names(ignored)
+            logger.info(
+                f"Shard {shard_idx + 1}/{len(self.shard_names)} ({shard_name}):\n"
+                f"  Quantized layers ({len(quantized)}): {compressed_quantized}\n"
+                f"  Ignored layers ({len(ignored)}): {compressed_ignored}"
+            )
+
             self.all_quantized_layers.extend(quantized)
             self.all_ignored_layers.extend(ignored)
 
