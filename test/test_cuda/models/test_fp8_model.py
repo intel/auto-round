@@ -33,6 +33,40 @@ class TestAutoRound:
         yield
         shutil.rmtree("runs", ignore_errors=True)
 
+    def test_qwen3_fp8_moe_mxfp(self, tiny_fp8_qwen_moe_model_path, mock_fp8_capable_device):
+        output_dir = "./tmp"
+        autoround = AutoRound(
+            tiny_fp8_qwen_moe_model_path,
+            scheme="MXFP4",
+            nsamples=2,
+            seqlen=32,
+            iters=0,
+            low_cpu_mem_usage=False,
+        )
+        quantized_model, quantized_model_path = autoround.quantize_and_save(format="auto_round", output_dir=output_dir)
+        assert quantized_model is not None, "Quantized model should not be None."
+        loaded_model = AutoModelForCausalLM.from_pretrained(quantized_model_path)
+        for n, m in quantized_model.named_modules():
+            if m.__class__.__name__ == "QuantLinear":
+                loaded_m = loaded_model.get_submodule(n)
+                assert (loaded_m.weight_packed == m.weight_packed).all()
+        # Expect all linear in experts are quantized
+        for n, m in quantized_model.named_modules():
+            if "experts" in m.__class__.__name__.lower():
+                for sub_n, sub_m in m.named_modules():
+                    assert sub_m.__class__.__name__ == "QuantLinear", f"Module {n}.{sub_n} is not quantized."
+        shutil.rmtree(output_dir, ignore_errors=True)
+
+    def test_fp8_input(self, mock_fp8_capable_device):
+        model = get_tiny_model(get_model_path("Qwen/Qwen3-0.6B-FP8"))
+        assert (
+            type(model.model.layers[0].mlp.up_proj).__name__ == "FP8Linear"
+        ), "Model does not contain FP8Linear layers"
+        detected_types = check_and_mark_quantized_module(model)
+        assert ModuleWeightType.FP8 in detected_types
+        model = convert_module_to_hp_if_necessary(model)
+        assert type(model.model.layers[0].mlp.up_proj) is torch.nn.Linear, "FP8Linear layer was not converted to Linear"
+
     def test_small_model_rtn_generation(self, mock_fp8_capable_device, tiny_fp8_qwen_model_path):
         ar = AutoRound(tiny_fp8_qwen_model_path, iters=0, disable_opt_rtn=True)
         _, quantized_model_path = ar.quantize_and_save(output_dir=self.save_dir)
@@ -122,41 +156,3 @@ class TestAutoRound:
         _, quantized_model_path = ar.quantize_and_save(output_dir=self.save_dir)
         model = AutoModelForCausalLM.from_pretrained(quantized_model_path, torch_dtype="auto", trust_remote_code=True)
         assert model is not None, f"Failed to load model for scheme {scheme}"
-
-
-def test_qwen3_fp8_moe_mxfp(tiny_fp8_qwen_moe_model_path, mock_fp8_capable_device):
-    output_dir = "./tmp"
-    autoround = AutoRound(
-        tiny_fp8_qwen_moe_model_path,
-        scheme="MXFP4",
-        nsamples=2,
-        seqlen=32,
-        iters=0,
-        low_cpu_mem_usage=False,
-    )
-    quantized_model, quantized_model_path = autoround.quantize_and_save(format="auto_round", output_dir=output_dir)
-    assert quantized_model is not None, "Quantized model should not be None."
-    loaded_model = AutoModelForCausalLM.from_pretrained(quantized_model_path)
-    for n, m in quantized_model.named_modules():
-        if m.__class__.__name__ == "QuantLinear":
-            loaded_m = loaded_model.get_submodule(n)
-            assert (loaded_m.weight_packed == m.weight_packed).all()
-    # Expect all linear in experts are quantized
-    for n, m in quantized_model.named_modules():
-        if "experts" in m.__class__.__name__.lower():
-            for sub_n, sub_m in m.named_modules():
-                assert sub_m.__class__.__name__ == "QuantLinear", f"Module {n}.{sub_n} is not quantized."
-    shutil.rmtree(output_dir, ignore_errors=True)
-
-
-# requires GPU to load FP8Linear
-class TestFP8Linear:
-    def test_fp8_input(self, mock_fp8_capable_device):
-        model = get_tiny_model(get_model_path("Qwen/Qwen3-0.6B-FP8"))
-        assert (
-            type(model.model.layers[0].mlp.up_proj).__name__ == "FP8Linear"
-        ), "Model does not contain FP8Linear layers"
-        detected_types = check_and_mark_quantized_module(model)
-        assert ModuleWeightType.FP8 in detected_types
-        model = convert_module_to_hp_if_necessary(model)
-        assert type(model.model.layers[0].mlp.up_proj) is torch.nn.Linear, "FP8Linear layer was not converted to Linear"
