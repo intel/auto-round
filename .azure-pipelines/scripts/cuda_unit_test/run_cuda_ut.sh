@@ -69,6 +69,7 @@ function run_unit_test() {
     uv pip install -r test/test_cuda/requirements_diffusion.txt
     uv pip install -U transformers chardet
     uv pip install kernels==0.12.3 # For sm120: https://github.com/huggingface/transformers/blob/v5.12.1/setup.py#L94
+    uv pip install flashinfer-jit-cache --index-url https://flashinfer.ai/whl/cu130
     uv pip uninstall torch torchvision
     uv pip install torch==2.12.1 torchvision torchao --index-url https://download.pytorch.org/whl/cu130
     uv pip install .
