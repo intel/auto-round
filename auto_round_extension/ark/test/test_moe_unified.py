@@ -174,13 +174,23 @@ class TestMoeUnifiedDispatch:
         ntpe = torch.tensor(shape["tokens_per_expert"], dtype=torch.int32, device="xpu")
 
         out_auto = ark.moe(
-            activations, packed, ntpe,
-            scales=scales, weight_bits=4, group_size=group_size, asym=False,
+            activations,
+            packed,
+            ntpe,
+            scales=scales,
+            weight_bits=4,
+            group_size=group_size,
+            asym=False,
             phase="auto",
         )
         out_decode = ark.moe_gemm_decode(
-            activations, packed, ntpe,
-            scales=scales, weight_bits=4, group_size=group_size, asym=False,
+            activations,
+            packed,
+            ntpe,
+            scales=scales,
+            weight_bits=4,
+            group_size=group_size,
+            asym=False,
         )
         # max tokens/expert = 2 (<= default threshold 4) -> dispatched to decode
         # -> output must be bit-identical to moe_gemm_decode.
@@ -197,13 +207,23 @@ class TestMoeUnifiedDispatch:
         ntpe = torch.tensor(shape["tokens_per_expert"], dtype=torch.int32, device="xpu")
 
         out_auto = ark.moe(
-            activations, packed, ntpe,
-            scales=scales, weight_bits=4, group_size=group_size, asym=False,
+            activations,
+            packed,
+            ntpe,
+            scales=scales,
+            weight_bits=4,
+            group_size=group_size,
+            asym=False,
             phase="auto",
         )
         out_prefill = ark.moe_gemm_prefill(
-            activations, packed, ntpe,
-            scales=scales, weight_bits=4, group_size=group_size, asym=False,
+            activations,
+            packed,
+            ntpe,
+            scales=scales,
+            weight_bits=4,
+            group_size=group_size,
+            asym=False,
         )
         torch.testing.assert_close(out_auto, out_prefill, rtol=0, atol=0)
 
@@ -221,13 +241,24 @@ class TestMoeUnifiedDispatch:
 
         max_tpe = max(shape["tokens_per_expert"])
         out_auto = ark.moe(
-            activations, packed, ntpe,
-            scales=scales, weight_bits=4, group_size=group_size, asym=False,
-            phase="auto", decode_threshold=max_tpe + 1,
+            activations,
+            packed,
+            ntpe,
+            scales=scales,
+            weight_bits=4,
+            group_size=group_size,
+            asym=False,
+            phase="auto",
+            decode_threshold=max_tpe + 1,
         )
         out_decode = ark.moe_gemm_decode(
-            activations, packed, ntpe,
-            scales=scales, weight_bits=4, group_size=group_size, asym=False,
+            activations,
+            packed,
+            ntpe,
+            scales=scales,
+            weight_bits=4,
+            group_size=group_size,
+            asym=False,
         )
         torch.testing.assert_close(out_auto, out_decode, rtol=0, atol=0)
 
@@ -243,8 +274,13 @@ class TestMoeUnifiedDispatch:
 
         with pytest.raises(ValueError, match="phase"):
             ark.moe(
-                activations, packed, ntpe,
-                scales=scales, weight_bits=4, group_size=group_size, asym=False,
+                activations,
+                packed,
+                ntpe,
+                scales=scales,
+                weight_bits=4,
+                group_size=group_size,
+                asym=False,
                 phase="not_a_phase",
             )
 
@@ -259,10 +295,13 @@ class TestMoeUnifiedBitParity:
     """
 
     @pytest.mark.parametrize("dtype", [torch.float16, torch.bfloat16])
-    @pytest.mark.parametrize("shape_name,shape", [
-        ("decode-shape", _DECODE_SHAPE),
-        ("prefill-shape", _PREFILL_SHAPE),
-    ])
+    @pytest.mark.parametrize(
+        "shape_name,shape",
+        [
+            ("decode-shape", _DECODE_SHAPE),
+            ("prefill-shape", _PREFILL_SHAPE),
+        ],
+    )
     def test_fp_unquantized(self, dtype, shape_name, shape):
         E, N, K = shape["num_experts"], shape["N"], shape["K"]
         total_tokens = sum(shape["tokens_per_expert"])
@@ -282,10 +321,13 @@ class TestMoeUnifiedBitParity:
 
     @pytest.mark.parametrize("dtype", [torch.float16, torch.bfloat16])
     @pytest.mark.parametrize("asym", [False, True])
-    @pytest.mark.parametrize("shape_name,shape", [
-        ("decode-shape", _DECODE_SHAPE),
-        ("prefill-shape", _PREFILL_SHAPE),
-    ])
+    @pytest.mark.parametrize(
+        "shape_name,shape",
+        [
+            ("decode-shape", _DECODE_SHAPE),
+            ("prefill-shape", _PREFILL_SHAPE),
+        ],
+    )
     def test_int4(self, dtype, asym, shape_name, shape):
         E, N, K = shape["num_experts"], shape["N"], shape["K"]
         total_tokens = sum(shape["tokens_per_expert"])

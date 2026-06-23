@@ -209,9 +209,7 @@ class TestMoEGemmPrefillAccuracy:
 
             assert out.shape == (total_tokens, N), f"{label}: bad shape {out.shape}"
             assert out.dtype == dtype, f"{label}: bad dtype {out.dtype}"
-            torch.testing.assert_close(
-                out, ref, msg=lambda m, lbl=label: f"[{lbl}] {m}", **_TOL_FP
-            )
+            torch.testing.assert_close(out, ref, msg=lambda m, lbl=label: f"[{lbl}] {m}", **_TOL_FP)
 
     @pytest.mark.skipif(bool(_QUANT_PREFILL_SKIP), reason=_QUANT_PREFILL_SKIP or "ok")
     @pytest.mark.parametrize("dtype", [torch.float16, torch.bfloat16])
@@ -248,9 +246,7 @@ class TestMoEGemmPrefillAccuracy:
 
             ref = _reference_moe_prefill(activations, dequant, ntpe)
             assert out.shape == (total_tokens, N), f"{label}: bad shape {out.shape}"
-            torch.testing.assert_close(
-                out, ref, msg=lambda m, lbl=label: f"[{lbl}] {m}", **_TOL_INT4
-            )
+            torch.testing.assert_close(out, ref, msg=lambda m, lbl=label: f"[{lbl}] {m}", **_TOL_INT4)
 
     @pytest.mark.skipif(bool(_QUANT_PREFILL_SKIP), reason=_QUANT_PREFILL_SKIP or "ok")
     @pytest.mark.parametrize("dtype", [torch.float16, torch.bfloat16])
@@ -287,9 +283,7 @@ class TestMoEGemmPrefillAccuracy:
 
             ref = _reference_moe_prefill(activations, dequant, ntpe)
             assert out.shape == (total_tokens, N), f"{label}: bad shape {out.shape}"
-            torch.testing.assert_close(
-                out, ref, msg=lambda m, lbl=label: f"[{lbl}] {m}", **_TOL_INT8
-            )
+            torch.testing.assert_close(out, ref, msg=lambda m, lbl=label: f"[{lbl}] {m}", **_TOL_INT8)
 
     @pytest.mark.skipif(bool(_QUANT_PREFILL_SKIP), reason=_QUANT_PREFILL_SKIP or "ok")
     @pytest.mark.parametrize("dtype", [torch.float16, torch.bfloat16])
@@ -326,9 +320,7 @@ class TestMoEGemmPrefillAccuracy:
 
             ref = _reference_moe_prefill(activations, dequant, ntpe)
             assert out.shape == (total_tokens, N), f"{label}: bad shape {out.shape}"
-            torch.testing.assert_close(
-                out, ref, msg=lambda m, lbl=label: f"[{lbl}] {m}", **_TOL_INT2
-            )
+            torch.testing.assert_close(out, ref, msg=lambda m, lbl=label: f"[{lbl}] {m}", **_TOL_INT2)
 
     @pytest.mark.skipif(bool(_QUANT_PREFILL_SKIP), reason=_QUANT_PREFILL_SKIP or "ok")
     @pytest.mark.parametrize("dtype", [torch.float16, torch.bfloat16])
@@ -357,9 +349,7 @@ class TestMoEGemmPrefillAccuracy:
 
             ref = _reference_moe_prefill(activations, dequant, ntpe)
             assert out.shape == (total_tokens, N), f"{label}: bad shape {out.shape}"
-            torch.testing.assert_close(
-                out, ref, msg=lambda m, lbl=label: f"[{lbl}] {m}", **_TOL_FP8
-            )
+            torch.testing.assert_close(out, ref, msg=lambda m, lbl=label: f"[{lbl}] {m}", **_TOL_FP8)
 
 
 if __name__ == "__main__":

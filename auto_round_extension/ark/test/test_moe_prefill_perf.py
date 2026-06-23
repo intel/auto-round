@@ -327,6 +327,7 @@ class TestMoEGemmPrefillPerf:
                 def _baseline_with_dequant():
                     d = _dequant_int4_asym(packed, scales, zeros, group_size).to(dtype)
                     return _default_moe_prefill(activations, d, ntpe)
+
             else:
                 zeros = None
                 packed = _pack_int4_sym(w_float, scales, group_size)
@@ -385,6 +386,7 @@ class TestMoEGemmPrefillPerf:
                 def _baseline_with_dequant():
                     d = _dequant_int8_asym(packed, scales, zeros, group_size).to(dtype)
                     return _default_moe_prefill(activations, d, ntpe)
+
             else:
                 zeros = None
                 packed = _pack_int8_sym(w_float, scales, group_size)
@@ -442,6 +444,7 @@ class TestMoEGemmPrefillPerf:
                 def _baseline_with_dequant():
                     d = _dequant_int2_asym(packed, scales, zeros, group_size).to(dtype)
                     return _default_moe_prefill(activations, d, ntpe)
+
             else:
                 zeros = None
                 packed = _pack_int2_sym(w_float, scales, group_size)

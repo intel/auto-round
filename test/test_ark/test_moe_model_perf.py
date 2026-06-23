@@ -70,7 +70,6 @@ from ..helpers import (
     qwen_moe_name_or_path,
 )
 
-
 # ---------------------------------------------------------------------------
 # Knobs
 # ---------------------------------------------------------------------------
@@ -235,8 +234,7 @@ def _format_row(model_label, backend, prefill_ms, decode_ms_per_tok, baseline_de
     else:
         speedup_str = f"{baseline_decode_ms / decode_ms_per_tok:6.2f}x"
     return (
-        f"{model_label:<22}{backend:<14}{prefill_ms:>12.3f}{decode_ms_per_tok:>16.3f}"
-        f"{tps:>14.2f}{speedup_str:>14}"
+        f"{model_label:<22}{backend:<14}{prefill_ms:>12.3f}{decode_ms_per_tok:>16.3f}" f"{tps:>14.2f}{speedup_str:>14}"
     )
 
 
@@ -245,10 +243,7 @@ def _print_header(dtype):
     print("=" * 96)
     print(f"Model-level MoE perf  --  dtype={dtype}  AR_MOE_PERF_FULL={_USE_FULL_MODEL}")
     print("-" * 96)
-    print(
-        f"{'model':<22}{'backend':<14}{'prefill(ms)':>12}{'decode(ms/tok)':>16}"
-        f"{'tokens/s':>14}{'vs FP':>14}"
-    )
+    print(f"{'model':<22}{'backend':<14}{'prefill(ms)':>12}{'decode(ms/tok)':>16}" f"{'tokens/s':>14}{'vs FP':>14}")
     print("-" * 96)
 
 
