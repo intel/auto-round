@@ -17,7 +17,7 @@ ARK kernels are integrated into the following projects:
 
 | Project | Integration | Description |
 |---------|-------------|-------------|
-| [vllm](https://github.com/vllm-project/vllm) | [`inc.py`](https://github.com/vllm-project/vllm/blob/v0.21.0/vllm/model_executor/layers/quantization/inc.py#L617) | `INCXPUARKLinearMethod` — weight-only quantized linear on XPU via `auto_round_kernel.qlinear.QuantLinear`, supports GPTQ (no-zp / +zp) and AWQ formats |
+| [vllm](https://github.com/vllm-project/vllm) | [`inc_wna16_linear.py`](https://github.com/vllm-project/vllm/blob/main/vllm/model_executor/layers/quantization/inc/schemes/inc_wna16_linear.py#L379-L470) | `INCXPUARKLinearMethod` — weight-only quantized linear on XPU via `auto_round_kernel.qlinear.QuantLinear`. The goal is to support all AutoRound-quantized models. The plan is tracked in [Intel Quantization Support Roadmap](https://github.com/vllm-project/vllm/issues/37979) |
 | [vllm-omni](https://github.com/vllm-project/vllm-omni) | [`sage_attn.py`](https://github.com/vllm-project/vllm-omni/blob/f8340d078e4e9c3b793bd92d55d891b29703f0a8/vllm_omni/diffusion/attention/backends/sage_attn.py#L27) | `SageAttentionBackend` — diffusion model attention on XPU via `ARK.sagev1` |
 | [Transformers](https://github.com/huggingface/transformers) (via [auto-round](https://github.com/intel/auto-round)) | [`backend.py`](https://github.com/intel/auto-round/blob/main/auto_round/inference/backend.py#L531) | All models quantized by AutoRound automatically use ARK on CPU/XPU by default; no additional configuration required. 6 backends registered: `auto_round_kernel[_xpu]` (GPTQ no-zp), `auto_round_kernel_zp[_xpu]` (GPTQ +zp), `auto_round_kernel_awq[_xpu]` (AWQ).<br>**CPU:** INT2/INT4/INT8; **XPU:** INT4/INT8 |
 
