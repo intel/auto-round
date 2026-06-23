@@ -339,6 +339,9 @@ class AutoRound(object):
     ) -> "BaseCompressor":
         from auto_round.utils.model import is_model_free_route
 
+        if alg_configs is None:
+            alg_configs = "auto_round"
+
         device_map = normalize_default_device_map(device_map)
         split_kwargs = _split_entry_kwargs(kwargs)
         route_kwargs = dict(split_kwargs["route"])
@@ -346,9 +349,6 @@ class AutoRound(object):
         base_kwargs = dict(split_kwargs["base"])
         mllm_kwargs = dict(split_kwargs["mllm"])
         diffusion_kwargs = dict(split_kwargs["diffusion"])
-
-        if alg_configs is None:
-            alg_configs = "auto_round"
 
         # Resolve string alias(es) to config instance(s) before routing.
         alg_configs = cls._resolve_config(alg_configs)
