@@ -91,11 +91,12 @@ from __future__ import annotations
 
 import copy
 import json
+import multiprocessing as mp
 import os
 import re
 import shutil
 import time
-from concurrent.futures import ThreadPoolExecutor, as_completed
+from concurrent.futures import ProcessPoolExecutor, as_completed
 from dataclasses import asdict, fields
 from typing import Optional, Union
 
@@ -1028,6 +1029,93 @@ def _prefetch_shard(
         return None
 
 
+def _process_single_shard_task(
+    shard_idx: int,
+    shard_name: str,
+    *,
+    model_name_or_path: str,
+    work_dir: str,
+    source_dir: str,
+    is_streaming: bool,
+    device: str,
+    default_scheme: dict,
+    layer_config: dict,
+    ignore_patterns: list[str],
+    fp8_block_size: list | None,
+    quant_output_dir: str,
+    total_shards: int,
+) -> tuple[int, str, str | None, str | None, list[str] | None, list[str] | None, list[str] | None]:
+    """Process one shard in an isolated subprocess task.
+
+    Each worker builds its own matcher/cache via ``_process_shard`` to avoid
+    cross-shard shared state.
+    """
+    shard_path = _prefetch_shard(
+        model_name_or_path,
+        shard_name,
+        work_dir,
+        source_dir,
+        is_streaming,
+    )
+    if shard_path is None or not os.path.exists(shard_path):
+        return shard_idx, shard_name, None, None, None, None, None
+
+    output_tensors, quantized, ignored = _process_shard(
+        shard_path=shard_path,
+        default_scheme=default_scheme,
+        layer_config=layer_config,
+        ignore_patterns=ignore_patterns,
+        device=device,
+        fp8_block_size=fp8_block_size,
+    )
+
+    out_shard_name = f"model-{shard_idx + 1:05d}-of-{total_shards:05d}.safetensors"
+    local_weight_map: dict[str, str] = {}
+    _write_output_shard(
+        quant_output_dir,
+        out_shard_name,
+        output_tensors,
+        local_weight_map,
+    )
+    tensor_names = list(local_weight_map.keys())
+
+    if is_streaming:
+        try:
+            os.remove(shard_path)
+        except OSError:
+            pass
+
+    # Return only lightweight metadata to avoid IPC transfer of tensor storages.
+    return shard_idx, shard_name, shard_path, out_shard_name, tensor_names, quantized, ignored
+
+
+def _force_cleanup_process_pool(pool: ProcessPoolExecutor | None) -> None:
+    """Best-effort cleanup for process-pool workers.
+
+    On interruption (Ctrl+C / SIGTERM) or executor failures, worker processes
+    may survive briefly. This helper force-terminates workers before shutting
+    the executor down.
+    """
+    if pool is None:
+        return
+
+    # Accessing _processes is intentionally best-effort for robust cleanup.
+    # pylint: disable=protected-access
+    processes = getattr(pool, "_processes", None)
+    if isinstance(processes, dict):
+        for proc in processes.values():
+            if proc is not None and proc.is_alive():
+                try:
+                    proc.terminate()
+                except Exception:
+                    pass
+
+    try:
+        pool.shutdown(wait=False, cancel_futures=True)
+    except Exception:
+        pass
+
+
 # ---------------------------------------------------------------------------
 # Scheme validation
 # ---------------------------------------------------------------------------
@@ -1228,7 +1316,6 @@ class _ModelFreeCompressorCore:
         self.default_scheme: dict = {}
         self.layer_config: dict = {}
         self.ignore_patterns: list[str] = []
-        self.matcher: _PatternMatcher | None = None
         self.config: dict = {}
         self.fp8_block_size: list | None = None
         self.is_streaming: bool = False
@@ -1436,13 +1523,6 @@ class _ModelFreeCompressorCore:
         effective = min(configured, shard_count or 1)
         return effective, f"env={configured}"
 
-    def _build_matcher(self) -> None:
-        self.matcher = _PatternMatcher(
-            self.ignore_patterns,
-            self.layer_config,
-            self.default_scheme,
-        )
-
     @property
     def _quant_output_dir(self) -> str:
         """Effective output directory for quantized weight shards and config.
@@ -1470,30 +1550,30 @@ class _ModelFreeCompressorCore:
 
         os.makedirs(self._quant_output_dir, exist_ok=True)
 
-        def _process_single_shard(shard_idx: int, shard_name: str):
-            shard_path = _prefetch_shard(
-                self.model_name_or_path,
-                shard_name,
-                self.work_dir,
-                self.source_dir,
-                self.is_streaming,
-            )
-            if shard_path is None or not os.path.exists(shard_path):
-                return shard_idx, shard_name, None, None, None, None
-
-            output_tensors, quantized, ignored = _process_shard(
-                shard_path=shard_path,
-                device=self.device,
-                matcher=self.matcher,
-                fp8_block_size=self.fp8_block_size,
-            )
-            return shard_idx, shard_name, shard_path, output_tensors, quantized, ignored
-
         worker_count = max(1, min(self.shard_parallelism, len(self.shard_names)))
         futures = []
-        with ThreadPoolExecutor(max_workers=worker_count) as pool:
+        pool: ProcessPoolExecutor | None = None
+        try:
+            pool = ProcessPoolExecutor(max_workers=worker_count, mp_context=mp.get_context("spawn"))
             for shard_idx, shard_name in enumerate(self.shard_names):
-                futures.append(pool.submit(_process_single_shard, shard_idx, shard_name))
+                futures.append(
+                    pool.submit(
+                        _process_single_shard_task,
+                        shard_idx,
+                        shard_name,
+                        model_name_or_path=self.model_name_or_path,
+                        work_dir=self.work_dir,
+                        source_dir=self.source_dir,
+                        is_streaming=self.is_streaming,
+                        device=self.device,
+                        default_scheme=self.default_scheme,
+                        layer_config=self.layer_config,
+                        ignore_patterns=self.ignore_patterns,
+                        fp8_block_size=self.fp8_block_size,
+                        quant_output_dir=self._quant_output_dir,
+                        total_shards=len(self.shard_names),
+                    )
+                )
 
             shard_iter = (
                 _tqdm(as_completed(futures), total=len(futures), desc="Processing shards", unit="shard")
@@ -1502,9 +1582,15 @@ class _ModelFreeCompressorCore:
             )
 
             for future in shard_iter:
-                shard_idx, shard_name, shard_path, output_tensors, quantized, ignored = future.result()
+                shard_idx, shard_name, shard_path, out_shard_name, tensor_names, quantized, ignored = future.result()
 
-                if shard_path is None or output_tensors is None or quantized is None or ignored is None:
+                if (
+                    shard_path is None
+                    or out_shard_name is None
+                    or tensor_names is None
+                    or quantized is None
+                    or ignored is None
+                ):
                     logger.warning(f"Shard not found: {shard_name}, skipping")
                     continue
 
@@ -1524,20 +1610,17 @@ class _ModelFreeCompressorCore:
                 self.all_quantized_layers.extend(quantized)
                 self.all_ignored_layers.extend(ignored)
 
-                out_shard_name = f"model-{shard_idx + 1:05d}-of-{len(self.shard_names):05d}.safetensors"
-                _write_output_shard(
-                    self._quant_output_dir,
-                    out_shard_name,
-                    output_tensors,
-                    self.output_weight_map,
-                )
-
-                if self.is_streaming:
-                    try:
-                        os.remove(shard_path)
-                        logger.debug(f"Deleted source shard: {shard_path}")
-                    except OSError as e:
-                        logger.warning(f"Could not delete source shard {shard_path}: {e}")
+                for tensor_name in tensor_names:
+                    self.output_weight_map[tensor_name] = out_shard_name
+        except KeyboardInterrupt:
+            logger.warning("Interrupted by user; terminating model-free shard worker processes.")
+            _force_cleanup_process_pool(pool)
+            raise
+        except Exception:
+            _force_cleanup_process_pool(pool)
+            raise
+        finally:
+            _force_cleanup_process_pool(pool)
 
     # -------------------------------------------------------------------
     # Output
@@ -1631,7 +1714,6 @@ class _ModelFreeCompressorCore:
         self._resolve_source()
         self._check_conv1d_and_embedding()
         self._apply_predefined_ignore_layers()
-        self._build_matcher()
         self._detect_fp8_source()
         self._discover_shards()
         self.shard_parallelism, shard_parallelism_source = self._resolve_shard_parallelism()
