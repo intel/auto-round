@@ -706,44 +706,47 @@ class AWQQuantizer(BaseWeightTransformer):
         sym = config.get("sym", self.sym)
         data_type = config.get("data_type", self.data_type)
         disable_opt_rtn = config.get("disable_opt_rtn", self.disable_opt_rtn)
+        # GGUF double-quant schemes need the per-layer super-block params to reproduce the block quantizer's QDQ.
+        # Non-GGUF quant funcs ignore them via ``**kwargs``.
+        super_bits = config.get("super_bits", None)
+        super_group_size = config.get("super_group_size", None)
 
         if quant_func is None:
-            try:
-                quant_func, _ = get_quant_func(
-                    data_type,
-                    bits,
-                    sym,
-                    disable_opt_rtn=disable_opt_rtn,
-                    group_size=group_size,
-                    iters=0,
-                )
-            except Exception as exc:
-                logger.debug("AWQ: failed to resolve quant function for '%s': %s", layer_name, exc)
-                return None
+            quant_func, _ = get_quant_func(
+                data_type,
+                bits,
+                sym,
+                disable_opt_rtn=disable_opt_rtn,
+                group_size=group_size,
+                iters=0,
+            )
 
         if quant_func is None:
-            return None
+            raise RuntimeError(
+                f"AWQ: no quantization function resolved for '{layer_name}' "
+                f"(data_type={data_type}, bits={bits}, sym={sym}, group_size={group_size})."
+            )
 
-        try:
-            quant_kwargs = {
-                "bits": bits,
-                "group_size": group_size,
-                "data_type": data_type,
-                "sym": sym,
-            }
-            active_quant_func = quant_func
-            if opt_quant_func is not None:
-                init_scale = compute_optimized_init_scale(
-                    weight, data_type, bits, group_size, imatrix=getattr(layer, "imatrix", None)
-                )
-                if init_scale is not None:
-                    quant_kwargs["init_scale"] = init_scale
-                    active_quant_func = opt_quant_func
-            qdq_weight, _, _ = active_quant_func(weight, **quant_kwargs)
-            return qdq_weight
-        except Exception as exc:
-            logger.debug("AWQ: quantize-dequantize failed for '%s': %s", layer_name, exc)
-            return None
+        quant_kwargs = {
+            "bits": bits,
+            "group_size": group_size,
+            "data_type": data_type,
+            "sym": sym,
+        }
+        if super_bits is not None:
+            quant_kwargs["super_bits"] = super_bits
+        if super_group_size is not None:
+            quant_kwargs["super_group_size"] = super_group_size
+        active_quant_func = quant_func
+        if opt_quant_func is not None:
+            init_scale = compute_optimized_init_scale(
+                weight, data_type, bits, group_size, imatrix=getattr(layer, "imatrix", None)
+            )
+            if init_scale is not None:
+                quant_kwargs["init_scale"] = init_scale
+                active_quant_func = opt_quant_func
+        qdq_weight, _, _ = active_quant_func(weight, **quant_kwargs)
+        return qdq_weight
 
     @torch.no_grad()
     def _apply_scales(self, mapping: ResolvedMapping, scales: torch.Tensor) -> None:
