@@ -37,9 +37,6 @@ AutoRound Kernel provides the following computational capabilities for LLM infer
 | FP8 (E4M3, E5M2) |      FP16      | FP16 / FP8 (E8M0) |     NA     |
 
 <sup>[1]</sup>: Quantization algorithms for integer types: symmetric or asymmetric.  
-<<<<<<< HEAD
-<sup>[2]</sup>: Includes dynamic activation quantization; results are dequantized to floating-point formats.    
-=======
 <sup>[2]</sup>: Includes dynamic activation quantization; results are dequantized to floating-point formats.  
 
 ### Flash Attention (XPU only)
@@ -60,7 +57,7 @@ All attention backends support both `HND` (`[B, H, N, D]`) and `NHD` (`[B, N, H,
 ### MOE GEMM (XPU only)
 
 Grouped GEMM for Mixture-of-Experts layers, supporting FP16/BF16 with variable token counts per expert.
->>>>>>> c014b0eb ([ARK] update README (#1906))
+
 
 ## Installation
 
