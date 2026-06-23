@@ -1098,9 +1098,17 @@ def _build_quantization_config(
         if differs:
             extra_config[layer_name] = {k: cfg.get(k) for k in scheme_keys if cfg.get(k) is not None}
 
+    # Filter out non-Linear ops (embed, conv) that don't need to be recorded in config.
+    # Routing gates and other predefined patterns are still recorded.
+    non_linear_ops = ["embed", "conv"]
+    non_linear_re = re.compile("|".join(re.escape(op) for op in non_linear_ops))
+
     unique_ignored = list(dict.fromkeys(ignored_layers))
     for layer_name in unique_ignored:
         if layer_name not in extra_config:
+            # Skip non-Linear ops (embed, conv) since they're not Linear layers
+            if non_linear_re.search(layer_name):
+                continue
             extra_config[layer_name] = {"bits": 16, "data_type": "float"}
 
     quantized_layer_set = set(quantized_layers)
