@@ -110,12 +110,12 @@ export AR_DYNAMO_CACHE_SIZE_LIMIT=32
 ```
 
 ### AR_MODEL_FREE_SHARD_PARALLELISM
-- **描述**：控制 model-free 量化时同时处理的权重 shard 数量。增大该值可提高资源利用率，但会占用更多内存。
-  - 自动策略（变量**未设置**时）：`shard_count // 4`，最大 **10**，最小 **1**。例如：8 个 shard → 2 个 worker；40 个 shard → 10 个 worker。
-  - 实际并行数始终不超过 shard 总数。
-- **默认值**：未设置 → 走自动策略（`shard_count // 4`，最大 10，最小 1）
-- **有效值**：任意正整数，不限于特定值，如 `2`、`4`、`6`、`8`；不能整除 shard 数时会自动均匀分配，末批处理剩余 shard，结果正确
-- **用途**：覆盖自动并行策略，手动指定并行数
+- **描述**：控制 model-free 量化使用多少个 shard 处理 worker。增大该值通常可以提高吞吐、降低每个 sub-shard 的峰值内存，但会增加 CPU/内存占用，并可能提高临时磁盘占用。
+  - 变量**未设置**时，model-free 量化使用固定默认值 **4**。
+  - 该值**不会**被原始 shard 数量限制，因为大 shard 可以先切成多个 sub-shard；即使模型只有 1 个 shard，也可以使用大于 1 的并行度。
+- **默认值**：`4`
+- **有效值**：任意正整数，例如 `2`、`4`、`6`、`8`
+- **用途**：覆盖默认 worker 数量，手动指定并行度
 
 ```bash
 export AR_MODEL_FREE_SHARD_PARALLELISM=4

@@ -1171,7 +1171,7 @@ class TestCopyMetadataSubfolders:
 
 
 class TestResolveShardParallelism:
-    """Tests for the automatic and env-controlled shard parallelism policy."""
+    """Tests for the default and env-controlled shard parallelism policy."""
 
     @staticmethod
     def _core_with_n_shards(n: int) -> _ModelFreeCompressorCore:
@@ -1180,22 +1180,13 @@ class TestResolveShardParallelism:
         core.shard_parallelism = 1
         return core
 
-    def test_auto_policy_formula(self, monkeypatch):
+    def test_default_parallelism_is_fixed_4(self, monkeypatch):
         monkeypatch.delenv("AR_MODEL_FREE_SHARD_PARALLELISM", raising=False)
-        cases = [
-            (1, 1),  # 1 // 4 = 0 -> min 1
-            (3, 1),  # 3 // 4 = 0 -> min 1
-            (4, 1),  # 4 // 4 = 1
-            (8, 2),  # 8 // 4 = 2
-            (12, 3),  # 12 // 4 = 3
-            (40, 10),  # 40 // 4 = 10 (at cap)
-            (80, 10),  # 80 // 4 = 20 -> capped at 10
-        ]
-        for n, expected in cases:
+        for n in (0, 1, 3, 4, 8, 12, 40, 80):
             core = self._core_with_n_shards(n)
             p, src = core._resolve_shard_parallelism()
-            assert p == expected, f"n={n}: expected {expected}, got {p}"
-            assert "auto" in src
+            assert p == 4, f"n={n}: expected fixed default 4, got {p}"
+            assert src == "default=4"
 
     def test_env_override_respected(self, monkeypatch):
         monkeypatch.setenv("AR_MODEL_FREE_SHARD_PARALLELISM", "7")
@@ -1204,11 +1195,11 @@ class TestResolveShardParallelism:
         assert p == 7
         assert "env=7" in src
 
-    def test_env_capped_at_shard_count(self, monkeypatch):
+    def test_env_not_capped_at_shard_count(self, monkeypatch):
         monkeypatch.setenv("AR_MODEL_FREE_SHARD_PARALLELISM", "100")
         core = self._core_with_n_shards(3)
         p, _ = core._resolve_shard_parallelism()
-        assert p == 3
+        assert p == 100
 
     def test_env_below_1_forces_1(self, monkeypatch):
         monkeypatch.setenv("AR_MODEL_FREE_SHARD_PARALLELISM", "0")
@@ -1216,11 +1207,11 @@ class TestResolveShardParallelism:
         p, _ = core._resolve_shard_parallelism()
         assert p == 1
 
-    def test_env_invalid_falls_back_to_auto(self, monkeypatch):
+    def test_env_invalid_falls_back_to_default_4(self, monkeypatch):
         monkeypatch.setenv("AR_MODEL_FREE_SHARD_PARALLELISM", "notanumber")
         core = self._core_with_n_shards(25)
         p, src = core._resolve_shard_parallelism()
-        assert p == 25 // 4  # auto formula: shard_count // 4
+        assert p == 4
         assert "invalid" in src
 
     def test_nondivisible_shard_count_all_shards_processed(self, tmp_path, monkeypatch):

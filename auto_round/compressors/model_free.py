@@ -90,15 +90,16 @@ Usage (API)
 from __future__ import annotations
 
 import copy
+import heapq
 import json
 import multiprocessing as mp
 import os
 import re
 import shutil
 import time
-from concurrent.futures import ProcessPoolExecutor, as_completed
+from concurrent.futures import ProcessPoolExecutor, ThreadPoolExecutor, as_completed
 from dataclasses import asdict, fields
-from typing import Any, Optional, Union
+from typing import Any, Callable, Optional, Union
 
 import torch
 
@@ -1181,39 +1182,120 @@ def _prefetch_shard(
         return None
 
 
-def _process_single_shard_task(
-    shard_idx: int,
-    shard_name: str,
+def _read_safetensors_sizes(shard_path: str) -> dict[str, int]:
+    """Return safetensors tensor sizes by reading only the file header."""
+    with open(shard_path, "rb") as fh:
+        header_len = int.from_bytes(fh.read(8), "little")
+        header = json.loads(fh.read(header_len))
+
+    sizes: dict[str, int] = {}
+    for name, meta in header.items():
+        if name == "__metadata__":
+            continue
+        offsets = meta.get("data_offsets")
+        sizes[name] = int(offsets[1] - offsets[0]) if offsets else 0
+    return sizes
+
+
+def _plan_buckets(sizes: dict[str, int], num_splits: int) -> list[list[str]] | None:
+    """Partition tensor groups into balanced buckets.
+
+    Tensors are grouped by layer prefix so related tensors such as
+    ``<layer>.weight`` and ``<layer>.weight_scale`` stay together.
+    """
+    groups: dict[str, list[str]] = {}
+    for name in sizes:
+        groups.setdefault(name.rsplit(".", 1)[0], []).append(name)
+
+    n_splits = min(num_splits, len(groups))
+    if n_splits <= 1:
+        return None
+
+    group_items = [(sum(sizes.get(name, 0) for name in names), names) for names in groups.values()]
+    group_items.sort(key=lambda item: item[0], reverse=True)
+
+    buckets: list[list[str]] = [[] for _ in range(n_splits)]
+    heap = [(0, idx) for idx in range(n_splits)]
+    heapq.heapify(heap)
+    for total_bytes, names in group_items:
+        running_total, bucket_idx = heapq.heappop(heap)
+        buckets[bucket_idx].extend(names)
+        heapq.heappush(heap, (running_total + total_bytes, bucket_idx))
+
+    return [bucket for bucket in buckets if bucket]
+
+
+def _write_buckets(
+    out_dir: str,
+    prefix: str,
+    buckets: list[list[str]],
+    loader: Callable[[str], torch.Tensor],
+) -> list[str]:
+    """Write one sub-shard file per bucket and return their paths."""
+    shard_paths: list[str] = []
+    for bucket_idx, names in enumerate(buckets):
+        tensors = {name: loader(name) for name in names}
+        shard_name = f"{prefix}-sub{bucket_idx:03d}.safetensors"
+        _write_output_shard(out_dir, shard_name, tensors, {})
+        shard_paths.append(os.path.join(out_dir, shard_name))
+        del tensors
+    return shard_paths
+
+
+def _split_shard_file(shard_path: str, num_splits: int, out_dir: str, prefix: str) -> list[str]:
+    """Split a shard into up to ``num_splits`` smaller shard files."""
+    if num_splits <= 1:
+        return [shard_path]
+
+    try:
+        if shard_path.endswith(".bin"):
+            try:
+                raw_tensors = torch.load(shard_path, map_location="cpu", weights_only=True)
+            except TypeError:
+                raw_tensors = torch.load(shard_path, map_location="cpu")  # nosec
+            if not isinstance(raw_tensors, dict):
+                return [shard_path]
+
+            sizes = {
+                name: tensor.numel() * tensor.element_size() if isinstance(tensor, torch.Tensor) else 0
+                for name, tensor in raw_tensors.items()
+            }
+            buckets = _plan_buckets(sizes, num_splits)
+            if buckets is None:
+                return [shard_path]
+            return _write_buckets(out_dir, prefix, buckets, lambda name: raw_tensors[name])
+
+        from safetensors import safe_open
+
+        sizes = _read_safetensors_sizes(shard_path)
+        buckets = _plan_buckets(sizes, num_splits)
+        if buckets is None:
+            return [shard_path]
+        with safe_open(shard_path, framework="pt", device="cpu") as f:
+            return _write_buckets(out_dir, prefix, buckets, f.get_tensor)
+    except Exception:  # pragma: no cover - fall back to whole-shard processing
+        logger.warning(f"Failed to split shard {shard_path}; falling back to whole-shard processing.")
+        return [shard_path]
+
+
+def _process_subshard_task(
+    subshard_path: str,
+    out_shard_name: str,
     *,
-    model_name_or_path: str,
-    work_dir: str,
-    source_dir: str,
-    is_streaming: bool,
     device: str,
     default_scheme: dict,
     layer_config: dict,
     ignore_patterns: list[str],
     fp8_block_size: list | None,
     quant_output_dir: str,
-    total_shards: int,
-) -> tuple[int, str, str | None, str | None, list[str] | None, list[str] | None, list[str] | None]:
-    """Process one shard in an isolated subprocess task.
+) -> tuple[list[str], list[str], list[str]]:
+    """Process one local sub-shard in an isolated subprocess task.
 
     Each worker builds its own matcher/cache via ``_process_shard`` to avoid
     cross-shard shared state.
     """
-    shard_path = _prefetch_shard(
-        model_name_or_path,
-        shard_name,
-        work_dir,
-        source_dir,
-        is_streaming,
-    )
-    if shard_path is None or not os.path.exists(shard_path):
-        return shard_idx, shard_name, None, None, None, None, None
-
     output_tensors, quantized, ignored = _process_shard(
-        shard_path=shard_path,
+        shard_path=subshard_path,
         default_scheme=default_scheme,
         layer_config=layer_config,
         ignore_patterns=ignore_patterns,
@@ -1221,7 +1303,6 @@ def _process_single_shard_task(
         fp8_block_size=fp8_block_size,
     )
 
-    out_shard_name = f"model-{shard_idx + 1:05d}-of-{total_shards:05d}.safetensors"
     local_weight_map: dict[str, str] = {}
     _write_output_shard(
         quant_output_dir,
@@ -1229,16 +1310,8 @@ def _process_single_shard_task(
         output_tensors,
         local_weight_map,
     )
-    tensor_names = list(local_weight_map.keys())
-
-    if is_streaming:
-        try:
-            os.remove(shard_path)
-        except OSError:
-            pass
-
-    # Return only lightweight metadata to avoid IPC transfer of tensor storages.
-    return shard_idx, shard_name, shard_path, out_shard_name, tensor_names, quantized, ignored
+    clear_memory()
+    return list(local_weight_map.keys()), quantized, ignored
 
 
 def _force_cleanup_process_pool(pool: ProcessPoolExecutor | None) -> None:
@@ -1481,6 +1554,7 @@ class _ModelFreeCompressorCore:
         self.all_ignored_layers: list[str] = []
         self.output_weight_map: dict[str, str] = {}
         self.shard_parallelism: int = 1
+        self.split_dir: str = ""
 
     # -------------------------------------------------------------------
     # Validation / parsing
@@ -1679,26 +1753,23 @@ class _ModelFreeCompressorCore:
         self.shard_names = _list_weight_shards(search_dir)
 
     def _resolve_shard_parallelism(self) -> tuple[int, str]:
-        shard_count = len(self.shard_names)
-        # Auto policy: shard_count // 4, capped at 10, minimum 1.
-        default_parallelism = max(1, min(shard_count // 4, 10))
+        default_parallelism = 4
         env_name = "AR_MODEL_FREE_SHARD_PARALLELISM"
         if not envs.is_set(env_name):
-            return min(default_parallelism, shard_count or 1), f"auto(default={default_parallelism})"
+            return default_parallelism, f"default={default_parallelism}"
 
         raw_value = os.environ.get(env_name, "")
         try:
             configured = int(raw_value)
         except ValueError:
-            logger.warning(f"Invalid {env_name}={raw_value!r}; using auto default {default_parallelism}.")
-            return min(default_parallelism, shard_count or 1), f"invalid({raw_value!r})"
+            logger.warning(f"Invalid {env_name}={raw_value!r}; using default {default_parallelism}.")
+            return default_parallelism, f"invalid({raw_value!r})"
 
         if configured < 1:
             logger.warning(f"{env_name}={configured} is less than 1; forcing parallelism to 1.")
             configured = 1
 
-        effective = min(configured, shard_count or 1)
-        return effective, f"env={configured}"
+        return configured, f"env={configured}"
 
     @property
     def _quant_output_dir(self) -> str:
@@ -1726,69 +1797,107 @@ class _ModelFreeCompressorCore:
             return
 
         os.makedirs(self._quant_output_dir, exist_ok=True)
+        self.split_dir = os.path.join(self.output_dir, "tmp_shard_splits")
+        os.makedirs(self.split_dir, exist_ok=True)
 
-        worker_count = max(1, min(self.shard_parallelism, len(self.shard_names)))
-        futures = []
+        worker_count = max(1, self.shard_parallelism)
+        num_splits = max(1, self.shard_parallelism)
         pool: ProcessPoolExecutor | None = None
+        preparer: ThreadPoolExecutor | None = None
+        pbar = _tqdm(total=len(self.shard_names), desc="Processing shards", unit="shard") if _tqdm else None
+
+        def prepare(shard_idx: int, shard_name: str) -> tuple[int, str, list[tuple[str, bool, str]]]:
+            shard_path = _prefetch_shard(
+                self.model_name_or_path,
+                shard_name,
+                self.work_dir,
+                self.source_dir,
+                self.is_streaming,
+            )
+            if shard_path is None or not os.path.exists(shard_path):
+                return shard_idx, shard_name, []
+
+            requested_splits = 1 if shard_idx == 0 else num_splits
+            shard_paths = _split_shard_file(shard_path, requested_splits, self.split_dir, f"shard{shard_idx:05d}")
+            did_split = not (len(shard_paths) == 1 and shard_paths[0] == shard_path)
+
+            if self.is_streaming and did_split:
+                try:
+                    os.remove(shard_path)
+                except OSError:
+                    pass
+
+            units: list[tuple[str, bool, str]] = []
+            for sub_idx, path in enumerate(shard_paths):
+                is_temp = did_split or self.is_streaming
+                out_name = f"out-{shard_idx:05d}-{sub_idx:03d}.safetensors"
+                units.append((path, is_temp, out_name))
+            return shard_idx, shard_name, units
+
         try:
             pool = ProcessPoolExecutor(max_workers=worker_count, mp_context=mp.get_context("spawn"))
-            for shard_idx, shard_name in enumerate(self.shard_names):
-                futures.append(
-                    pool.submit(
-                        _process_single_shard_task,
-                        shard_idx,
-                        shard_name,
-                        model_name_or_path=self.model_name_or_path,
-                        work_dir=self.work_dir,
-                        source_dir=self.source_dir,
-                        is_streaming=self.is_streaming,
+            preparer = ThreadPoolExecutor(max_workers=1)
+            next_future = preparer.submit(prepare, 0, self.shard_names[0])
+
+            for shard_idx in range(len(self.shard_names)):
+                _, shard_name, units = next_future.result()
+                if shard_idx + 1 < len(self.shard_names):
+                    next_future = preparer.submit(prepare, shard_idx + 1, self.shard_names[shard_idx + 1])
+
+                if not units:
+                    logger.warning(f"Shard not found: {shard_name}, skipping")
+                    if pbar:
+                        pbar.update(1)
+                    continue
+
+                future_map = {}
+                for path, is_temp, out_name in units:
+                    future = pool.submit(
+                        _process_subshard_task,
+                        path,
+                        out_name,
                         device=self.device,
                         default_scheme=self.default_scheme,
                         layer_config=self.layer_config,
                         ignore_patterns=self.ignore_patterns,
                         fp8_block_size=self.fp8_block_size,
                         quant_output_dir=self._quant_output_dir,
-                        total_shards=len(self.shard_names),
                     )
-                )
+                    future_map[future] = (path, is_temp, out_name)
 
-            shard_iter = (
-                _tqdm(as_completed(futures), total=len(futures), desc="Processing shards", unit="shard")
-                if _tqdm
-                else as_completed(futures)
-            )
-
-            for future in shard_iter:
-                shard_idx, shard_name, shard_path, out_shard_name, tensor_names, quantized, ignored = future.result()
-
-                if (
-                    shard_path is None
-                    or out_shard_name is None
-                    or tensor_names is None
-                    or quantized is None
-                    or ignored is None
-                ):
-                    logger.warning(f"Shard not found: {shard_name}, skipping")
-                    continue
+                shard_quantized: list[str] = []
+                shard_ignored: list[str] = []
+                for future in as_completed(future_map):
+                    path, is_temp, out_name = future_map[future]
+                    tensor_names, quantized, ignored = future.result()
+                    shard_quantized.extend(quantized)
+                    shard_ignored.extend(ignored)
+                    for tensor_name in tensor_names:
+                        self.output_weight_map[tensor_name] = out_name
+                    if is_temp:
+                        try:
+                            os.remove(path)
+                        except OSError:
+                            pass
 
                 memory_monitor.update()
                 clear_memory()
                 if len(self.shard_names) > 1:
                     logger.info(f"Memory usage: {memory_monitor.get_summary()}")
 
-                compressed_quantized = compress_layer_names(quantized)
-                compressed_ignored = compress_layer_names(ignored)
+                compressed_quantized = compress_layer_names(shard_quantized)
+                compressed_ignored = compress_layer_names(shard_ignored)
                 logger.info(
                     f"Shard {shard_idx + 1}/{len(self.shard_names)} ({shard_name}):\n"
-                    f"  Quantized layers ({len(quantized)}): {compressed_quantized}\n"
-                    f"  Ignored layers ({len(ignored)}): {compressed_ignored}"
+                    f"  Sub-shards: {len(units)}\n"
+                    f"  Quantized layers ({len(shard_quantized)}): {compressed_quantized}\n"
+                    f"  Ignored layers ({len(shard_ignored)}): {compressed_ignored}"
                 )
 
-                self.all_quantized_layers.extend(quantized)
-                self.all_ignored_layers.extend(ignored)
-
-                for tensor_name in tensor_names:
-                    self.output_weight_map[tensor_name] = out_shard_name
+                self.all_quantized_layers.extend(shard_quantized)
+                self.all_ignored_layers.extend(shard_ignored)
+                if pbar:
+                    pbar.update(1)
         except KeyboardInterrupt:
             logger.warning("Interrupted by user; terminating model-free shard worker processes.")
             _force_cleanup_process_pool(pool)
@@ -1797,11 +1906,37 @@ class _ModelFreeCompressorCore:
             _force_cleanup_process_pool(pool)
             raise
         finally:
+            if pbar:
+                pbar.close()
+            if preparer is not None:
+                preparer.shutdown(wait=False)
             _force_cleanup_process_pool(pool)
+            shutil.rmtree(self.split_dir, ignore_errors=True)
 
     # -------------------------------------------------------------------
     # Output
     # -------------------------------------------------------------------
+
+    def _finalize_shard_names(self) -> None:
+        """Rename provisional sub-shard outputs to canonical shard names."""
+        provisional = list(dict.fromkeys(self.output_weight_map.values()))
+        total_shards = len(provisional)
+        if total_shards <= 1:
+            return
+
+        ordered = sorted(provisional)
+        rename_map = {
+            old_name: f"model-{idx + 1:05d}-of-{total_shards:05d}.safetensors" for idx, old_name in enumerate(ordered)
+        }
+        for old_name, new_name in rename_map.items():
+            src = os.path.join(self._quant_output_dir, old_name)
+            dst = os.path.join(self._quant_output_dir, new_name)
+            if os.path.exists(src):
+                os.rename(src, dst)
+
+        self.output_weight_map = {
+            tensor_name: rename_map[shard_name] for tensor_name, shard_name in self.output_weight_map.items()
+        }
 
     def _write_index(self) -> None:
         _write_index_file(self._quant_output_dir, self.output_weight_map)
@@ -1926,6 +2061,7 @@ class _ModelFreeCompressorCore:
         self._process_all_shards()
 
         # ---- write outputs ----
+        self._finalize_shard_names()
         self._write_index()
         self._write_config_files()
         self._copy_metadata_files()
