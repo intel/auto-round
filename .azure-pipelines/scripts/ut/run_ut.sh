@@ -11,6 +11,8 @@ SUMMARY_LOG="${LOG_DIR}/results_summary.log"
 
 function setup_environment() {
     echo "##[group]set up UT env..."
+    echo "NUMA_NODE=${NUMA_NODE}"
+    echo "NUMA_CPUSET=${NUMA_CPUSET}"
     export TZ='Asia/Shanghai'
     export TQDM_MININTERVAL=120
     export HF_HUB_DISABLE_PROGRESS_BARS=1

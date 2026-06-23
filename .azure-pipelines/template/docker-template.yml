@@ -63,7 +63,7 @@ steps:
       - script: |
           set -eo pipefail
           
-          docker image prune -f
+          docker image prune -f || true
           IMAGE="${{ parameters.repoName }}:${{ parameters.repoTag }}"
           DOCKERFILE="${BUILD_SOURCESDIRECTORY}/.azure-pipelines/docker/${{parameters.dockerFileName}}.devel"
           CURRENT_HASH=$(md5sum "$DOCKERFILE" | awk '{print $1}')
