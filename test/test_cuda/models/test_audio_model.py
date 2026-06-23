@@ -261,10 +261,10 @@ class TestStableAudioRegistration:
     """Verify StableAudio-specific registrations."""
 
     def test_config_and_special_registered(self):
-        from auto_round.algorithms.quantization.base import BaseQuantizers
+        from auto_round.algorithms.quantization.base import DiffusionMixin
 
-        assert "StableAudioDiTBlock" in BaseQuantizers.DIFFUSION_OUTPUT_CONFIGS
-        assert BaseQuantizers.DIFFUSION_OUTPUT_CONFIGS["StableAudioDiTBlock"] == ["hidden_states"]
+        assert "StableAudioDiTBlock" in DiffusionMixin.DIFFUSION_OUTPUT_CONFIGS
+        assert DiffusionMixin.DIFFUSION_OUTPUT_CONFIGS["StableAudioDiTBlock"] == ["hidden_states"]
 
         assert "StableAudioDiTModel" in SPECIAL_SHARED_CACHE_KEYS
         assert "encoder_hidden_states" in SPECIAL_SHARED_CACHE_KEYS["StableAudioDiTModel"]

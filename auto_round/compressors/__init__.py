@@ -12,20 +12,12 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-# Lazy imports to avoid circular dependencies
-# Users should import from specific modules instead of this __init__.py
+# Lazy imports to avoid circular dependencies.
 
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
     from auto_round.compressors.base import BaseCompressor
-    from auto_round.compressors.config import (
-        DiffusionExtraConfig,
-        ExtraConfig,
-        MLLMExtraConfig,
-        SchemeExtraConfig,
-        TuningExtraConfig,
-    )
     from auto_round.compressors.data_driven import CalibratedRTNCompressor, DataDrivenCompressor
     from auto_round.compressors.entry import AutoRoundCompatible, AutoRound
     from auto_round.compressors.model_free import ModelFreeCompressor
@@ -39,11 +31,6 @@ __all__ = [
     "ZeroShotCompressor",
     "AutoRoundCompatible",
     "ModelFreeCompressor",
-    "ExtraConfig",
-    "TuningExtraConfig",
-    "SchemeExtraConfig",
-    "MLLMExtraConfig",
-    "DiffusionExtraConfig",
 ]
 
 
@@ -74,20 +61,4 @@ def __getattr__(name):
         from auto_round.compressors.model_free import ModelFreeCompressor
 
         return ModelFreeCompressor
-    elif name in ("ExtraConfig", "TuningExtraConfig", "SchemeExtraConfig", "MLLMExtraConfig", "DiffusionExtraConfig"):
-        from auto_round.compressors.config import (
-            DiffusionExtraConfig,
-            ExtraConfig,
-            MLLMExtraConfig,
-            SchemeExtraConfig,
-            TuningExtraConfig,
-        )
-
-        return {
-            "ExtraConfig": ExtraConfig,
-            "TuningExtraConfig": TuningExtraConfig,
-            "SchemeExtraConfig": SchemeExtraConfig,
-            "MLLMExtraConfig": MLLMExtraConfig,
-            "DiffusionExtraConfig": DiffusionExtraConfig,
-        }[name]
     raise AttributeError(f"module '{__name__}' has no attribute '{name}'")
