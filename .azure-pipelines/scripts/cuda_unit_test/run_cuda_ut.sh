@@ -146,6 +146,8 @@ function run_unit_test_sglang() {
         --prerelease=allow \
         --extra-index-url https://download.pytorch.org/whl/cu130 \
         --index-strategy unsafe-best-match
+    local flashinfer_version=$(uv pip show flashinfer-python 2>/dev/null | grep -i "^Version" | awk '{print $2}')
+    uv pip install flashinfer-jit-cache==${flashinfer_version} --index-url https://flashinfer.ai/whl/cu130
     uv pip install .
     uv pip list
     echo "##[endgroup]"
@@ -173,7 +175,8 @@ function run_unit_test_vllm() {
     uv pip install -r test/test_cuda/requirements_vllm.txt \
         --extra-index-url https://download.pytorch.org/whl/cu130 \
         --index-strategy unsafe-best-match
-    uv pip install flashinfer-jit-cache --index-url https://flashinfer.ai/whl/cu130
+    local flashinfer_version=$(uv pip show flashinfer-python 2>/dev/null | grep -i "^Version" | awk '{print $2}')
+    uv pip install flashinfer-jit-cache==${flashinfer_version} --index-url https://flashinfer.ai/whl/cu130
     uv pip install -U chardet
     uv pip install .
     uv pip list
