@@ -131,6 +131,7 @@ class TestPatternMatcher:
         m = _matcher()
         assert m.should_skip("model.layers.0.shared_expert_gate.weight") is True
         assert m.should_skip("model.layers.0.mlp.gate.weight") is True
+        assert m.should_skip("model.layers.0.mlp.gate_proj.weight") is False
         assert m.should_skip("model.embed_tokens.weight") is True
         assert m.should_skip("model.layers.0.mlp.fc1.weight") is False
 
@@ -164,11 +165,11 @@ class TestPatternMatcher:
 
 class TestParseLayerConfig:
     @staticmethod
-    def _make_core(layer_config_input):
+    def _make_core(layer_config_input, scheme="W4A16"):
         core = _ModelFreeCompressorCore(
             model_name_or_path="dummy",
             output_dir="dummy_out",
-            scheme="W4A16",
+            scheme=scheme,
         )
         core.layer_config_input = layer_config_input
         core._parse_scheme()
@@ -197,6 +198,13 @@ class TestParseLayerConfig:
         core = self._make_core({".ffn.experts.": QuantizationScheme(bits=2, group_size=64)})
         cfg = next(v for k, v in core.layer_config.items() if "ffn.experts" in k)
         assert cfg["bits"] == 2 and cfg["group_size"] == 64
+
+    def test_w4a16_mixed_recipe_in_model_free(self):
+        core = self._make_core({}, scheme="W4A16_MIXED")
+        assert core.default_scheme["bits"] == 8
+        assert core.layer_config[".experts."]["bits"] == 4
+        assert core.layer_config[".moe."]["bits"] == 4
+        assert core.layer_config[".shared_expert."]["bits"] == 8
 
 
 # ===========================================================================
@@ -237,6 +245,45 @@ class TestProcessShard:
             for proj in ["gate_proj", "up_proj", "down_proj"]:
                 base = f"model.layers.0.mlp.experts.{i}.{proj}"
                 assert base in quantized and f"{base}.qweight" in output
+
+    def test_moe_stacked_weights_are_split_and_quantized(self, tmp_path):
+        shard_path = str(tmp_path / "shard.safetensors")
+        n_experts, hidden, intermediate = 3, 64, 32
+        save_file(
+            {
+                "model.layers.3.moe.down_proj.weight": torch.randn(n_experts, hidden, intermediate),
+                "model.layers.3.moe.gate_proj.weight": torch.randn(n_experts, intermediate, hidden),
+                "model.layers.3.moe.up_proj.weight": torch.randn(n_experts, intermediate, hidden),
+                "model.layers.3.moe.gate.weight": torch.randn(n_experts, hidden),
+                "model.layers.3.moe.router_bias": torch.randn(n_experts),
+            },
+            shard_path,
+        )
+
+        output, quantized, ignored = _process_shard(shard_path, _DEFAULT_SCHEME, {}, [])
+
+        for i in range(n_experts):
+            for proj in ["down_proj", "gate_proj", "up_proj"]:
+                base = f"model.layers.3.moe.experts.{i}.{proj}"
+                assert base in quantized
+                assert f"{base}.qweight" in output
+
+        # Router gate stays in full precision by predefined skip rules.
+        assert "model.layers.3.moe.gate" in ignored
+        assert "model.layers.3.moe.gate.weight" in output
+        # router_bias is not a 2D linear weight and remains unchanged.
+        assert "model.layers.3.moe.router_bias" in output
+
+    def test_3d_weight_in_ignored_layers(self, tmp_path):
+        """A non-eligible 3D .weight tensor must appear in ignored_layers."""
+        shard_path = str(tmp_path / "shard.safetensors")
+        save_file({"model.layers.0.mlp.branch.weight": torch.randn(4, 8, 16)}, shard_path)
+
+        output, quantized, ignored = _process_shard(shard_path, _DEFAULT_SCHEME, {}, [])
+
+        assert "model.layers.0.mlp.branch.weight" in output
+        assert quantized == []
+        assert "model.layers.0.mlp.branch" in ignored
 
 
 # ===========================================================================

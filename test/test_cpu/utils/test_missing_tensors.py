@@ -89,6 +89,17 @@ class TestSplitFusedExpertTensors:
         for k in tensors:
             assert torch.equal(result[k], tensors[k])
 
+    def test_warns_on_3d_tensor_with_unsupported_parent(self, caplog):
+        tensors = {
+            "model.layers.0.mlp.branch.down_proj.weight": torch.randn(4, 8, 16),
+        }
+
+        with caplog.at_level("WARNING"):
+            result = split_fused_expert_tensors(tensors)
+
+        assert set(result.keys()) == set(tensors.keys())
+        assert any("unsupported parent" in rec.message and "open an issue" in rec.message for rec in caplog.records)
+
     def test_empty_dict_returns_empty(self):
         assert split_fused_expert_tensors({}) == {}
 
@@ -125,6 +136,18 @@ class TestSplitFusedExpertTensors:
         assert len(result) == N
         for i in range(N):
             key = f"model.layers.0.mlp.experts.{i}.down_proj.weight"
+            assert result[key].shape == (O, I)
+            assert torch.equal(result[key], stacked[i])
+
+    def test_moe_container_stacked_proj(self):
+        """moe.down_proj [N,O,I] → moe.experts.{i}.down_proj.weight."""
+        N, O, I = 3, 32, 16
+        stacked = torch.randn(N, O, I)
+        result = split_fused_expert_tensors({"model.layers.3.moe.down_proj.weight": stacked})
+        assert "model.layers.3.moe.down_proj.weight" not in result
+        assert len(result) == N
+        for i in range(N):
+            key = f"model.layers.3.moe.experts.{i}.down_proj.weight"
             assert result[key].shape == (O, I)
             assert torch.equal(result[key], stacked[i])
 

@@ -17,7 +17,7 @@ function setup_environment() {
     export TQDM_MININTERVAL=120
     export HF_HUB_DISABLE_PROGRESS_BARS=1
 
-    uv pip install pytest-cov pytest-html
+    uv pip install pytest-cov
     uv pip install -U chardet
     uv pip list
 
@@ -87,8 +87,7 @@ function run_unit_test() {
         local ut_log_name=${LOG_DIR}/unittest_${test_basename}.log
 
         numactl --physcpubind="${NUMA_CPUSET:-0-15}" --membind="${NUMA_NODE:-0}" \
-            python -m pytest --cov=auto_round --cov-report= --html=report.html --self-contained-html \
-                --cov-report xml:coverage.xml --cov-append \
+            pytest --cov=auto_round --cov-report= --cov-append \
                 -vs --disable-warnings ${test_file} 2>&1 | tee ${ut_log_name}
         echo "##[endgroup]"
     done
@@ -107,8 +106,7 @@ function run_inc_unit_test() {
         local ut_log_name=${LOG_DIR}/unittest_${test_basename}.log
 
         numactl --physcpubind="${NUMA_CPUSET:-0-15}" --membind="${NUMA_NODE:-0}" \
-            python -m pytest --cov=auto_round --cov-report= --html=report.html --self-contained-html \
-                --cov-report xml:coverage.xml --cov-append \
+            pytest --cov=auto_round --cov-report= --cov-append \
                 -vs --disable-warnings ${test_file} 2>&1 | tee ${ut_log_name}
         echo "##[endgroup]"
     done
@@ -129,8 +127,7 @@ function run_llmc_unit_test() {
         local ut_log_name=${LOG_DIR}/unittest_${test_basename}.log
 
         numactl --physcpubind="${NUMA_CPUSET:-0-15}" --membind="${NUMA_NODE:-0}" \
-            python -m pytest --cov=auto_round --cov-report= --html=report.html --self-contained-html \
-                --cov-report xml:coverage.xml --cov-append \
+            pytest --cov=auto_round --cov-report= --cov-append \
                 -vs --disable-warnings ${test_file} 2>&1 | tee ${ut_log_name}
         echo "##[endgroup]"
     done
