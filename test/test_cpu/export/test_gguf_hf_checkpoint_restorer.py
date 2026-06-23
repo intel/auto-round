@@ -1,4 +1,6 @@
+import pytest
 import torch
+from torch import nn
 from transformers.core_model_loading import Chunk, PrefixChange, WeightConverter
 
 from auto_round.export.export_to_gguf.hf_checkpoint_restorer import HFCheckpointRestorer
@@ -250,3 +252,104 @@ def test_gguf_writer_has_tensor_supports_current_gguf_dict_entries():
 
     assert _gguf_writer_has_tensor(writer, "blk.24.attn_k_norm.weight")
     assert not _gguf_writer_has_tensor(writer, "blk.24.attn_v_norm.weight")
+
+
+def test_gguf_shape_fallback_updates_layer_config_before_quantization():
+    from auto_round.compressors.utils import _apply_gguf_shape_fallback
+    from auto_round.export.export_to_gguf.config import GGUF_INNER_CONFIG
+
+    class Model(nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.proj = nn.Linear(1152, 4096, bias=False)
+
+    layer_config = {"proj": {**GGUF_INNER_CONFIG["gguf:q6_k"], "fixed_by_user": True, "scale_dtype": torch.float32}}
+
+    _apply_gguf_shape_fallback(layer_config, Model())
+
+    assert layer_config["proj"]["bits"] == 8
+    assert layer_config["proj"]["group_size"] == 32
+    assert layer_config["proj"]["super_bits"] is None
+    assert layer_config["proj"]["super_group_size"] is None
+    assert layer_config["proj"]["fixed_by_user"] is True
+    assert layer_config["proj"]["scale_dtype"] is torch.float32
+
+
+def test_quant_data_recomputes_scale_when_final_qtype_differs_from_layer_config(monkeypatch):
+    import gguf
+    import numpy as np
+
+    from auto_round.export.export_to_gguf import convert
+
+    captured = {}
+
+    class Module:
+        def __init__(self):
+            self.weight = torch.ones(2, 32)
+            self.scale = torch.ones(2, 16)
+
+    module = Module()
+
+    class Converter:
+        model = object()
+        layer_config = {"model.layers.0.self_attn.q_proj": {"bits": 6, "super_bits": 8, "sym": True}}
+
+    def fake_get_module(_model, _layer_name):
+        return module
+
+    def fake_ggml_quant(data_torch, ggml_type, device=None, **kwargs):
+        captured["data_shape"] = tuple(data_torch.shape)
+        captured["ggml_type"] = ggml_type
+        captured["scale"] = kwargs["scale"]
+        return np.zeros((data_torch.shape[0], data_torch.shape[1]), dtype=np.float32)
+
+    monkeypatch.setattr(convert, "get_module", fake_get_module)
+    monkeypatch.setattr(convert, "ggml_quant", fake_ggml_quant)
+
+    data, qtype = convert._quant_data(
+        Converter(),
+        torch.ones(2, 32),
+        gguf.GGMLQuantizationType.Q8_0,
+        "model.layers.0.self_attn.q_proj.weight",
+        "model.layers.0.self_attn.q_proj.weight",
+        "blk.0.attn_q.weight",
+        0,
+        device="cpu",
+    )
+
+    assert qtype == gguf.GGMLQuantizationType.Q8_0
+    assert data.shape == (2, 32)
+    assert captured["ggml_type"] == "q8_0"
+    assert captured["data_shape"] == (2, 32)
+    assert captured["scale"] is None
+
+
+def test_quant_data_rejects_layer_scale_that_does_not_match_final_qtype(monkeypatch):
+    import gguf
+
+    from auto_round.export.export_to_gguf import convert
+
+    class Module:
+        def __init__(self):
+            self.weight = torch.ones(2, 32)
+            self.scale = torch.ones(2, 2)
+
+    module = Module()
+
+    class Converter:
+        model = object()
+        layer_config = {"model.layers.0.self_attn.q_proj": {"bits": 8, "group_size": 32, "sym": True}}
+
+    monkeypatch.setattr(convert, "get_module", lambda _model, _layer_name: module)
+
+    with pytest.raises(ValueError, match="q8_0 scale shape"):
+        convert._quant_data(
+            Converter(),
+            torch.ones(2, 32),
+            gguf.GGMLQuantizationType.Q8_0,
+            "model.layers.0.self_attn.q_proj.weight",
+            "model.layers.0.self_attn.q_proj.weight",
+            "blk.0.attn_q.weight",
+            0,
+            device="cpu",
+        )

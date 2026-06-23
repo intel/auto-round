@@ -221,6 +221,58 @@ def _quant_data_with_args(
     return data
 
 
+def _remap_quant_attr_tensor(cls, attr_tensor, module, modify_name, new_name, bid):
+    if not isinstance(attr_tensor, torch.Tensor):
+        return attr_tensor
+    if not (hasattr(cls, "permute") or need_modify_tensor(cls, modify_name)):
+        return attr_tensor
+
+    bs = module.weight.shape[0]
+    remapped = dict(cls.modify_tensors(attr_tensor.reshape(bs, -1), modify_name, bid)).get(new_name)
+    return attr_tensor if remapped is None else remapped
+
+
+def _expected_scale_columns(ggml_type):
+    from auto_round.export.export_to_gguf.config import QK_K
+
+    if ggml_type in {"q4_0", "q4_1", "q5_0", "q5_1", "q8_0"}:
+        return 1
+    if ggml_type in {"q2_k", "q3_k", "q6_k"}:
+        return QK_K // 16
+    if ggml_type in {"q4_k", "q5_k"}:
+        return QK_K // 32
+    return None
+
+
+def _validate_quant_attr_shapes(data_torch, data_qtype, kwargs, name, new_name):
+    from auto_round.export.export_to_gguf.config import GGML_QUANT_SIZES
+
+    ggml_type = data_qtype.name.lower()
+    if ggml_type not in GGML_QUANT_SIZES or kwargs.get("scale") is None:
+        return
+
+    block_size, _ = GGML_QUANT_SIZES[ggml_type]
+    n_blocks = data_torch.numel() // block_size
+    scale_cols = _expected_scale_columns(ggml_type)
+    if scale_cols is None:
+        return
+
+    scale = kwargs["scale"]
+    if scale.numel() != n_blocks * scale_cols:
+        raise ValueError(
+            f"{name} -> {new_name}: {ggml_type} scale shape {tuple(scale.shape)} does not match "
+            f"tensor shape {tuple(data_torch.shape)}; expected {n_blocks * scale_cols} scale values"
+        )
+
+    for attr in ["d_scale", "d_wmin"]:
+        tensor = kwargs.get(attr)
+        if tensor is not None and tensor.numel() != n_blocks:
+            raise ValueError(
+                f"{name} -> {new_name}: {ggml_type} {attr} shape {tuple(tensor.shape)} does not match "
+                f"tensor shape {tuple(data_torch.shape)}; expected {n_blocks} values"
+            )
+
+
 def need_modify_tensor(cls, name):
     hf_arch = getattr(cls, "hf_arch", "")
     if hf_arch in "Qwen3NextForCausalLM" and "in_proj_qkvz.weight" in name:
@@ -228,7 +280,7 @@ def need_modify_tensor(cls, name):
     return False
 
 
-def _quant_data(cls, data_torch, data_qtype, name, modify_name, new_name, bid, device=None):
+def _quant_data(cls, data_torch, data_qtype, name, modify_name, new_name, bid, device=None, use_layer_attrs=True):
     """
 
     Args:
@@ -249,14 +301,18 @@ def _quant_data(cls, data_torch, data_qtype, name, modify_name, new_name, bid, d
     else:
         layer_name = name
     module = get_module(cls.model, layer_name)
-    kwargs = {
-        "scale": module.scale if hasattr(module, "scale") else None,
-        "zp": module.zp if hasattr(module, "zp") else None,
-        "d_scale": module.w_d_scale if hasattr(module, "w_d_scale") else None,
-        "d_wmin": module.w_d_wmin if hasattr(module, "w_d_wmin") else None,
-        "wmin": module.w_wmin if hasattr(module, "w_wmin") else None,
-        "imatrix": module.imatrix if hasattr(module, "imatrix") else None,
-    }
+    kwargs = {"scale": None, "zp": None, "d_scale": None, "d_wmin": None, "wmin": None, "imatrix": None}
+    source_qtype = get_qtype_by_layer_config(cls.layer_config, name, data_qtype, explicit_only=True)
+    use_layer_attrs = use_layer_attrs and source_qtype == data_qtype
+    if use_layer_attrs:
+        kwargs = {
+            "scale": module.scale if hasattr(module, "scale") else None,
+            "zp": module.zp if hasattr(module, "zp") else None,
+            "d_scale": module.w_d_scale if hasattr(module, "w_d_scale") else None,
+            "d_wmin": module.w_d_wmin if hasattr(module, "w_d_wmin") else None,
+            "wmin": module.w_wmin if hasattr(module, "w_wmin") else None,
+            "imatrix": module.imatrix if hasattr(module, "imatrix") else None,
+        }
     # patch for Qwen3_5, Qwen3_5 handles some weights specially,
     # but the scale doesn't match; these weights are handled by gguf itself.
     # Define model architectures that need special handling
@@ -281,7 +337,7 @@ def _quant_data(cls, data_torch, data_qtype, name, modify_name, new_name, bid, d
     hf_arch = getattr(cls, "hf_arch", "")
     should_skip = hf_arch in QWEN3_5_MODELS and any(key in name for key in QWEN3_5_SKIP_KEYS)
 
-    if not should_skip:
+    if use_layer_attrs and not should_skip:
         # support for MOE model with cls experts not linear
         for attr in ["scale", "zp", "w_d_scale", "w_d_wmin", "w_wmin"]:
             if not (hasattr(module, attr) and getattr(module, attr) is not None):
@@ -291,15 +347,13 @@ def _quant_data(cls, data_torch, data_qtype, name, modify_name, new_name, bid, d
             if not isinstance(attr_tensor, torch.Tensor):
                 continue
 
-            if hasattr(cls, "permute") or need_modify_tensor(cls, name):
-                bs = module.weight.shape[0]
-                attr_tensors_dict = dict(cls.modify_tensors(attr_tensor.reshape(bs, -1), modify_name, bid))
-                attr_tensor = attr_tensors_dict[new_name]
+            attr_tensor = _remap_quant_attr_tensor(cls, attr_tensor, module, modify_name, new_name, bid)
 
             # Map attribute names to kwargs keys: w_d_scale -> d_scale, w_d_wmin -> d_wmin, w_wmin -> wmin
             kwargs_key = attr.replace("w_", "") if attr.startswith("w_") else attr
             kwargs[kwargs_key] = attr_tensor.to(torch.float32)
     data_torch = data_torch.to(torch.float32)
+    _validate_quant_attr_shapes(data_torch, data_qtype, kwargs, name, new_name)
     data = ggml_quant(data_torch, data_qtype.name.lower(), device=device, **kwargs)
     # else:
     #     # if data_torch.dtype ==torch.float32:
@@ -829,7 +883,15 @@ def prepare_tensors(cls):
                     del new_data
                 else:
                     data, data_qtype = _quant_data(
-                        cls, data_torch, data_qtype, hf_name, modify_name, new_name, bid, device=device
+                        cls,
+                        data_torch,
+                        data_qtype,
+                        hf_name,
+                        modify_name,
+                        new_name,
+                        bid,
+                        device=device,
+                        use_layer_attrs=len(hf_names) == 1,
                     )
 
             shape = gguf.quant_shape_from_byte_shape(data.shape, data_qtype) if data.dtype == np.uint8 else data.shape
