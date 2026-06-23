@@ -95,7 +95,7 @@ import os
 import re
 import shutil
 import time
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import asdict, fields
 from typing import Optional, Union
 
@@ -1240,6 +1240,7 @@ class _ModelFreeCompressorCore:
         self.all_quantized_layers: list[str] = []
         self.all_ignored_layers: list[str] = []
         self.output_weight_map: dict[str, str] = {}
+        self.shard_parallelism: int = 1
 
     # -------------------------------------------------------------------
     # Validation / parsing
@@ -1413,6 +1414,28 @@ class _ModelFreeCompressorCore:
         search_dir = self.work_dir if self.is_streaming else self.source_dir
         self.shard_names = _list_weight_shards(search_dir)
 
+    def _resolve_shard_parallelism(self) -> tuple[int, str]:
+        shard_count = len(self.shard_names)
+        # Auto policy: shard_count // 4, capped at 10, minimum 1.
+        default_parallelism = max(1, min(shard_count // 4, 10))
+        env_name = "AR_MODEL_FREE_SHARD_PARALLELISM"
+        if not envs.is_set(env_name):
+            return min(default_parallelism, shard_count or 1), f"auto(default={default_parallelism})"
+
+        raw_value = os.environ.get(env_name, "")
+        try:
+            configured = int(raw_value)
+        except ValueError:
+            logger.warning(f"Invalid {env_name}={raw_value!r}; using auto default {default_parallelism}.")
+            return min(default_parallelism, shard_count or 1), f"invalid({raw_value!r})"
+
+        if configured < 1:
+            logger.warning(f"{env_name}={configured} is less than 1; forcing parallelism to 1.")
+            configured = 1
+
+        effective = min(configured, shard_count or 1)
+        return effective, f"env={configured}"
+
     def _build_matcher(self) -> None:
         self.matcher = _PatternMatcher(
             self.ignore_patterns,
@@ -1442,51 +1465,21 @@ class _ModelFreeCompressorCore:
         except ImportError:
             _tqdm = None
 
-        prefetch_pool = ThreadPoolExecutor(max_workers=1)
-        write_pool = ThreadPoolExecutor(max_workers=1)
-        prefetch_future = None
-        write_future = None
+        if not self.shard_names:
+            return
 
-        if self.shard_names:
-            prefetch_future = prefetch_pool.submit(
-                _prefetch_shard,
+        os.makedirs(self._quant_output_dir, exist_ok=True)
+
+        def _process_single_shard(shard_idx: int, shard_name: str):
+            shard_path = _prefetch_shard(
                 self.model_name_or_path,
-                self.shard_names[0],
+                shard_name,
                 self.work_dir,
                 self.source_dir,
                 self.is_streaming,
             )
-
-        shard_iter = (
-            _tqdm(
-                enumerate(self.shard_names),
-                total=len(self.shard_names),
-                desc="Processing shards",
-                unit="shard",
-            )
-            if _tqdm
-            else enumerate(self.shard_names)
-        )
-
-        for shard_idx, shard_name in shard_iter:
-            shard_path = prefetch_future.result() if prefetch_future else None
-
-            # Kick off prefetch of the next shard.
-            if shard_idx + 1 < len(self.shard_names):
-                prefetch_future = prefetch_pool.submit(
-                    _prefetch_shard,
-                    self.model_name_or_path,
-                    self.shard_names[shard_idx + 1],
-                    self.work_dir,
-                    self.source_dir,
-                    self.is_streaming,
-                )
-            else:
-                prefetch_future = None
-
             if shard_path is None or not os.path.exists(shard_path):
-                logger.warning(f"Shard not found: {shard_name}, skipping")
-                continue
+                return shard_idx, shard_name, None, None, None, None
 
             output_tensors, quantized, ignored = _process_shard(
                 shard_path=shard_path,
@@ -1494,38 +1487,57 @@ class _ModelFreeCompressorCore:
                 matcher=self.matcher,
                 fp8_block_size=self.fp8_block_size,
             )
-            memory_monitor.update()
-            clear_memory()
-            if len(self.shard_names) > 1:
-                logger.info(f"Memory usage: {memory_monitor.get_summary()}")
+            return shard_idx, shard_name, shard_path, output_tensors, quantized, ignored
 
-            self.all_quantized_layers.extend(quantized)
-            self.all_ignored_layers.extend(ignored)
+        worker_count = max(1, min(self.shard_parallelism, len(self.shard_names)))
+        futures = []
+        with ThreadPoolExecutor(max_workers=worker_count) as pool:
+            for shard_idx, shard_name in enumerate(self.shard_names):
+                futures.append(pool.submit(_process_single_shard, shard_idx, shard_name))
 
-            if write_future is not None:
-                write_future.result()
-
-            os.makedirs(self._quant_output_dir, exist_ok=True)
-            out_shard_name = f"model-{shard_idx + 1:05d}-of-{len(self.shard_names):05d}.safetensors"
-            write_future = write_pool.submit(
-                _write_output_shard,
-                self._quant_output_dir,
-                out_shard_name,
-                output_tensors,
-                self.output_weight_map,
+            shard_iter = (
+                _tqdm(as_completed(futures), total=len(futures), desc="Processing shards", unit="shard")
+                if _tqdm
+                else as_completed(futures)
             )
 
-            if self.is_streaming:
-                try:
-                    os.remove(shard_path)
-                    logger.debug(f"Deleted source shard: {shard_path}")
-                except OSError as e:
-                    logger.warning(f"Could not delete source shard {shard_path}: {e}")
+            for future in shard_iter:
+                shard_idx, shard_name, shard_path, output_tensors, quantized, ignored = future.result()
 
-        prefetch_pool.shutdown(wait=False)
-        if write_future is not None:
-            write_future.result()
-        write_pool.shutdown(wait=True)
+                if shard_path is None or output_tensors is None or quantized is None or ignored is None:
+                    logger.warning(f"Shard not found: {shard_name}, skipping")
+                    continue
+
+                memory_monitor.update()
+                clear_memory()
+                if len(self.shard_names) > 1:
+                    logger.info(f"Memory usage: {memory_monitor.get_summary()}")
+
+                compressed_quantized = compress_layer_names(quantized)
+                compressed_ignored = compress_layer_names(ignored)
+                logger.info(
+                    f"Shard {shard_idx + 1}/{len(self.shard_names)} ({shard_name}):\n"
+                    f"  Quantized layers ({len(quantized)}): {compressed_quantized}\n"
+                    f"  Ignored layers ({len(ignored)}): {compressed_ignored}"
+                )
+
+                self.all_quantized_layers.extend(quantized)
+                self.all_ignored_layers.extend(ignored)
+
+                out_shard_name = f"model-{shard_idx + 1:05d}-of-{len(self.shard_names):05d}.safetensors"
+                _write_output_shard(
+                    self._quant_output_dir,
+                    out_shard_name,
+                    output_tensors,
+                    self.output_weight_map,
+                )
+
+                if self.is_streaming:
+                    try:
+                        os.remove(shard_path)
+                        logger.debug(f"Deleted source shard: {shard_path}")
+                    except OSError as e:
+                        logger.warning(f"Could not delete source shard {shard_path}: {e}")
 
     # -------------------------------------------------------------------
     # Output
@@ -1622,6 +1634,7 @@ class _ModelFreeCompressorCore:
         self._build_matcher()
         self._detect_fp8_source()
         self._discover_shards()
+        self.shard_parallelism, shard_parallelism_source = self._resolve_shard_parallelism()
 
         # Determine the output packing format based on scheme data type
         data_type = (self.default_scheme.get("data_type") or "int").lower()
@@ -1637,6 +1650,7 @@ class _ModelFreeCompressorCore:
             f"  Packing format: {packing_format}\n"
             f"  Output: {self.output_dir}\n"
             f"  Shards: {len(self.shard_names)}\n"
+            f"  Shard parallelism: {self.shard_parallelism} ({shard_parallelism_source}, env AR_MODEL_FREE_SHARD_PARALLELISM)\n"
             f"  Streaming download: {self.is_streaming}\n"
             f"  Diffusion model: {self.is_diffusion_model}\n"
             f"  Quant lm_head: {self.quant_lm_head}\n"
