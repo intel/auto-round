@@ -203,7 +203,8 @@ def _compute_moe_flops(total_tokens, K, N, num_experts_active):
 # Total expert-token count per row = seq_len * top_k. Rows are labelled by
 # the originating sequence length (1K/2K/4K). Tokens are distributed
 # evenly across the 192 experts, except for the "skew" rows which keep a
-# skewed distribution to exercise load imbalance.
+# skewed (hot/cold) distribution and the "norm" rows which follow a
+# normal (Gaussian) distribution -- both exercise load imbalance.
 # ---------------------------------------------------------------------------
 
 
@@ -247,6 +248,43 @@ def _minimax_even_tpe(total: int) -> list[int]:
     return [base + 1 if i < extra else base for i in range(_MINIMAX_E)]
 
 
+def _minimax_normal_tpe(total: int, *, seed: int = 0, std_frac: float = 1.0 / 3.0) -> list[int]:
+    """Distribute ``total`` tokens across experts following a normal distribution.
+
+    Samples per-expert counts from ``N(mean, (std_frac * mean) ** 2)`` where
+    ``mean = total / E``, clamps negatives to 0, rounds to integers, and then
+    corrects any drift so the list sums exactly to ``total``. The result is
+    deterministic for a given ``seed`` and contrasts with ``_minimax_even_tpe``
+    (uniform) and ``_minimax_uneven_tpe`` (bimodal hot/cold) by exercising a
+    realistic Gaussian-shaped load distribution across the 192 experts.
+    """
+    E = _MINIMAX_E
+    mean = total / E
+    std = max(std_frac * mean, 1.0)
+    g = torch.Generator(device="cpu").manual_seed(seed)
+    samples = torch.normal(mean=mean, std=std, size=(E,), generator=g)
+    samples = samples.clamp_(min=0.0).round().to(torch.int64)
+    tpe = samples.tolist()
+    # Correct any drift so the list sums exactly to ``total``. Spread the
+    # adjustment one-token-at-a-time across experts (largest first when we
+    # need to subtract, smallest first when we need to add) to preserve the
+    # overall Gaussian shape without driving any entry negative.
+    diff = total - sum(tpe)
+    if diff != 0:
+        order = sorted(range(E), key=lambda i: tpe[i], reverse=(diff < 0))
+        step = 1 if diff > 0 else -1
+        i = 0
+        while diff != 0:
+            idx = order[i % E]
+            if step < 0 and tpe[idx] == 0:
+                i += 1
+                continue
+            tpe[idx] += step
+            diff -= step
+            i += 1
+    return tpe
+
+
 PREFILL_SHAPES = [
     # (label, num_experts, tokens_per_expert_list, N, K)
     # -- seq_len = 1K -> 8192 expert tokens, ~43/expert ----------------------
@@ -257,11 +295,15 @@ PREFILL_SHAPES = [
     ("minimax down 2K", _MINIMAX_E, _minimax_even_tpe(16384), _MINIMAX_K, _MINIMAX_N),
     ("minimax skew up  2K", _MINIMAX_E, _minimax_uneven_tpe(16384), _MINIMAX_N, _MINIMAX_K),
     ("minimax skew down 2K", _MINIMAX_E, _minimax_uneven_tpe(16384), _MINIMAX_K, _MINIMAX_N),
+    ("minimax norm up  2K", _MINIMAX_E, _minimax_normal_tpe(16384), _MINIMAX_N, _MINIMAX_K),
+    ("minimax norm down 2K", _MINIMAX_E, _minimax_normal_tpe(16384), _MINIMAX_K, _MINIMAX_N),
     # -- seq_len = 4K -> 32768 expert tokens, ~171/expert --------------------
     ("minimax up  4K", _MINIMAX_E, _minimax_even_tpe(32768), _MINIMAX_N, _MINIMAX_K),
     ("minimax down 4K", _MINIMAX_E, _minimax_even_tpe(32768), _MINIMAX_K, _MINIMAX_N),
     ("minimax skew up  4K", _MINIMAX_E, _minimax_uneven_tpe(32768), _MINIMAX_N, _MINIMAX_K),
     ("minimax skew down 4K", _MINIMAX_E, _minimax_uneven_tpe(32768), _MINIMAX_K, _MINIMAX_N),
+    ("minimax norm up  4K", _MINIMAX_E, _minimax_normal_tpe(32768), _MINIMAX_N, _MINIMAX_K),
+    ("minimax norm down 4K", _MINIMAX_E, _minimax_normal_tpe(32768), _MINIMAX_K, _MINIMAX_N),
 ]
 
 
