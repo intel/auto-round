@@ -35,6 +35,70 @@ size_t value_offset(const ValueStrides& strides, int b, int h, int s, int d) {
          static_cast<size_t>(s) * strides.seq + static_cast<size_t>(d) * strides.dim;
 }
 
+// Process-wide BestLA thread pool used to drive the migrated attention wrapper.
+// Neural Speed reaches a global pool through `ne_threading::get()`; ARK has no
+// such global, so the wrapper takes an explicit `parallel::IThreading&`. This
+// singleton mirrors that pool and is configured once on first use.
+bestla::parallel::IThreading& bestla_sdpa_threading() {
+#if BTLA_OPENMP
+  static bestla::parallel::OMPThreading pool;
+#else
+  static bestla::parallel::StdThreading pool;
+#endif
+  static const bool initialized = [] {
+    pool.set_threads(0, false);  // 0 -> all usable cores
+    return true;
+  }();
+  (void)initialized;
+  return pool;
+}
+
+// Copy the layout/stride/scale metadata from the type-erased `attn_fwd_args_t`
+// into the dtype-typed wrapper struct, reinterpreting the Q/K/V/dst pointers as
+// the requested operand types. Field names match one-to-one between the two
+// structs, so this is a straight per-field port.
+template <typename KV_T>
+bestla_mha::attn_fwd_args_t<float, KV_T, KV_T, float> make_typed_attn_args(const attn_fwd_args_t& a) {
+  bestla_mha::attn_fwd_args_t<float, KV_T, KV_T, float> t{};
+  t.Q = static_cast<float*>(a.Q);
+  t.K = static_cast<KV_T*>(a.K);
+  t.V = static_cast<KV_T*>(a.V);
+  t.dst = static_cast<float*>(a.dst);
+  t.Q_sc = a.Q_sc;
+  t.K_sc = a.K_sc;
+  t.V_sc = a.V_sc;
+  t.dst_sc = a.dst_sc;
+  t.tmp = a.tmp;
+  t.QK_scale = a.QK_scale;
+  t.attn_flags = a.attn_flags;
+  t.batch_size = a.batch_size;
+  t.head_num = a.head_num;
+  t.heads_kv = a.heads_kv;
+  t.head_size = a.head_size;
+  t.sl_q = a.sl_q;
+  t.sl_kv = a.sl_kv;
+  t.Q_layout = a.Q_layout;
+  t.K_layout = a.K_layout;
+  t.V_layout = a.V_layout;
+  t.dst_layout = a.dst_layout;
+  t.step_q_bs = a.step_q_bs;
+  t.step_q_head_num = a.step_q_head_num;
+  t.step_q_sl = a.step_q_sl;
+  t.step_k_bs = a.step_k_bs;
+  t.step_k_head_num = a.step_k_head_num;
+  t.step_k_sl = a.step_k_sl;
+  t.step_k_head_size = a.step_k_head_size;
+  t.step_v_bs = a.step_v_bs;
+  t.step_v_head_num = a.step_v_head_num;
+  t.step_v_sl = a.step_v_sl;
+  t.step_v_head_size = a.step_v_head_size;
+  t.step_dst_bs = a.step_dst_bs;
+  t.step_dst_head_num = a.step_dst_head_num;
+  t.step_dst_sl = a.step_dst_sl;
+  t.n_padding = a.n_padding;
+  return t;
+}
+
 }  // namespace
 
 void sdpa_forward(const MhaDenseArgs& args) {
@@ -47,6 +111,29 @@ void sdpa_forward(const MhaDenseArgs& args) {
     local.workspace = workspace.empty() ? nullptr : workspace.data();
   }
   mha_dense_forward(local);
+}
+
+void bestla_sdpa_forward(const attn_fwd_args_t& args, BTLA_DTYPE kv_dtype) {
+  if (!args.Q || !args.K || !args.V || !args.dst) {
+    throw std::invalid_argument("ark::cpu::bestla_sdpa_forward: Q/K/V/dst pointers must be non-null");
+  }
+
+  bestla::parallel::IThreading& th = bestla_sdpa_threading();
+  switch (kv_dtype) {
+    case BTLA_DTYPE::F16: {
+      const auto typed = make_typed_attn_args<bestla::utils::fp16>(args);
+      bestla_mha::bestla_fusion_attn_forward<float, bestla::utils::fp16, bestla::utils::fp16, float>(typed, th);
+      break;
+    }
+    case BTLA_DTYPE::BF16: {
+      const auto typed = make_typed_attn_args<bestla::utils::bf16>(args);
+      bestla_mha::bestla_fusion_attn_forward<float, bestla::utils::bf16, bestla::utils::bf16, float>(typed, th);
+      break;
+    }
+    default:
+      throw std::invalid_argument(
+          "ark::cpu::bestla_sdpa_forward: only F16 and BF16 K/V operands are supported");
+  }
 }
 
 void kv_cache_update(void* cache_k, void* cache_v, const void* key, const void* value, const AttentionStrides& k_strides,

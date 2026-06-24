@@ -22,6 +22,17 @@ enum class SdpaLayout : int { HND = 0, NHD = 1 };
 
 void sdpa_forward(const MhaDenseArgs& args);
 
+// Neural-Speed-style BestLA attention entry (Phase 3 migration).
+//
+// Builds the dtype-typed `bestla_mha::attn_fwd_args_t<Q_T, K_T, V_T, DST_T>`
+// from the type-erased `attn_fwd_args_t` (Phase 1 ABI struct) and dispatches it
+// through `bestla_mha::bestla_fusion_attn_forward`, the migrated wrapper. The
+// K/V operand element type selects the specialization that is wired today:
+//   * BTLA_DTYPE::F16  -> attn_fwd_args_t<float, fp16, fp16, float>
+//   * BTLA_DTYPE::BF16 -> attn_fwd_args_t<float, bf16, bf16, float>
+// Q and dst are always FP32. Unsupported K/V dtypes raise std::invalid_argument.
+void bestla_sdpa_forward(const attn_fwd_args_t& args, BTLA_DTYPE kv_dtype);
+
 void kv_cache_update(void* cache_k, void* cache_v, const void* key, const void* value, const AttentionStrides& k_strides,
                      const ValueStrides& v_strides, BTLA_DTYPE dtype, int batch, int num_heads_kv, int append_len,
                      int head_dim, int capacity, int start_pos);
