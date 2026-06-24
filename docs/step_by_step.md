@@ -825,7 +825,7 @@ autoround.save_quantized(format="auto_awq", output_dir="tmp_autoround")
 
 ### Rotation (Experimental)
 
-> ⚠️ **Experimental feature**: Rotation transform is still in experimental stage. Inference uses forward hooks, which may result in slower inference speed compared to native (non-rotated) models.
+> ⚠️ **Experimental feature**: Rotation transform is still in an experimental stage. Inference relies on forward hooks, which are currently only supported by the Hugging Face Transformers backend. As a result, inference may be slower compared to native (non-rotated) models.
 
 AutoRound supports rotation-based transforms to improve quantization accuracy. Rotation redistributes outliers in weights and activations before quantization, making the distribution more uniform and quantization-friendly.
 
