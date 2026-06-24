@@ -412,9 +412,9 @@ class TestAWQUseV2ScaleSearch:
     @staticmethod
     def _awq_quantizer():
         from auto_round.algorithms.transforms.awq.config import AWQConfig
-        from auto_round.algorithms.transforms.awq.quantizer import AWQQuantizer
+        from auto_round.algorithms.transforms.awq.base import AWQTransform
 
-        return AWQQuantizer(AWQConfig())
+        return AWQTransform(AWQConfig())
 
     @staticmethod
     def _signroundv2_config(data_type=None):

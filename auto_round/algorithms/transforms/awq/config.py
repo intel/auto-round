@@ -13,6 +13,7 @@
 # limitations under the License.
 
 from auto_round.algorithms.quantization.config import QuantizationConfig
+from auto_round.logger import logger
 
 
 class AWQConfig(QuantizationConfig):
@@ -139,12 +140,20 @@ class AWQConfig(QuantizationConfig):
         self.infer_bs_coeff = 1
         self.batch_dim = None
 
-        # NOTE: shared block-quantizer fields such as ``disable_opt_rtn`` and
-        # ``enable_quanted_input`` are intentionally NOT accepted or stored on
-        # AWQConfig. They belong to the block_quantizer (RTN / SignRound /
-        # AutoRound). AWQ's internal QDQ (used only during the smooth / clip
-        # grid search) inherits the *resolved* block-quantizer value at runtime
-        # — see ``AWQQuantizer.prepare_run``.
+    def finalize_scheme(self) -> None:
+        """Adjust AWQ state that depends on the resolved run scheme.
+        """
+        data_type = self.data_type
+        is_gguf_double_quant = bool(data_type) and (
+            data_type.endswith("_dq") or data_type.endswith("float_zp")
+        )
+        if self.apply_clip and is_gguf_double_quant:
+            logger.warning(
+                "AWQ weight clipping (apply_clip=True) is not supported for GGUF "
+                "double-quant schemes; disabling clipping and proceeding with AWQ "
+                "smoothing only."
+            )
+            self.apply_clip = False
 
     def __repr__(self) -> str:
         return (

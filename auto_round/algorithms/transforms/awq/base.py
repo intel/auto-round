@@ -50,10 +50,8 @@ from auto_round.algorithms.transforms.awq.mappings import (
     resolve_mappings,
 )
 from auto_round.algorithms.transforms.base import BaseWeightTransformer
+from auto_round.algorithms.quantization.qdq_tool import QDQTool
 from auto_round.data_type.utils import (
-    compute_optimized_init_scale,
-    get_optimized_quant_func,
-    get_quant_func,
     reshape_pad_tensor_by_group_size,
     revert_tensor_by_pad,
 )
@@ -111,8 +109,8 @@ def _rmsnorm_has_unit_offset(module: torch.nn.Module) -> bool:
 
 
 @register_pipeline_member(AWQConfig)
-class AWQQuantizer(BaseWeightTransformer):
-    """AWQ quantizer: activation-aware weight smoothing pre-processor.
+class AWQTransform(BaseWeightTransformer):
+    """AWQ transform: activation-aware weight smoothing pre-processor.
 
     Inherits :class:`~auto_round.algorithms.transforms.base.BaseWeightTransformer`.
     It smooths block weights in-place; actual weight compression (RTN /
@@ -132,21 +130,15 @@ class AWQQuantizer(BaseWeightTransformer):
         self.clip_max_shrink: float = getattr(config, "clip_max_shrink", 0.5)
         self.clip_n_sample_token: int = getattr(config, "clip_n_sample_token", 512)
 
-        # Quantization params used only as *fallback* defaults for AWQ's
-        # internal grid-search loss (quantize-dequantize during scale
-        # selection) when a layer is absent from ``self.layer_config``. The
-        # definitive per-layer params (incl. super_bits/super_group_size for
-        # GGUF schemes) are read directly from ``self.layer_config`` via
-        # ``config.get(...)``. See class docstring and AWQConfig docstring.
-        self.bits = config.bits
-        self.group_size = config.group_size
-        self.sym = config.sym
-        self.data_type = config.data_type
-
-        # AWQ's internal QDQ ``disable_opt_rtn`` follows the resolved
-        # block-quantizer value (wired in ``prepare_run``). AWQ never owns this
-        # field itself (mirrors ``enable_quanted_input``).
-        self.disable_opt_rtn: bool = None
+        # Single source of truth for "QDQ a candidate weight under the target
+        # block-quantizer scheme", used as AWQ's grid-search / clip loss. AWQ
+        # composes this instead of re-implementing block-quantizer dispatch;
+        self._qdq_tool = QDQTool(
+            bits=config.bits,
+            group_size=config.group_size,
+            sym=config.sym,
+            data_type=config.data_type,
+        )
 
         self._user_mappings: list[dict] | None = config.mappings
 
@@ -162,7 +154,6 @@ class AWQQuantizer(BaseWeightTransformer):
         # Per-mapping balance-layer input features captured for the clip search
         # (keyed by smooth_name). Only populated when ``apply_clip`` is set.
         self._clip_input_feat: dict[str, torch.Tensor] = {}
-        self._use_v2_scale_search: bool = False
 
         self._finalized: bool = False
 
@@ -202,14 +193,7 @@ class AWQQuantizer(BaseWeightTransformer):
             prefix = _extract_block_prefix(m.smooth_name)
             self._block_mappings.setdefault(prefix, []).append(m)
 
-        self._use_v2_scale_search = self._block_quantizer_is_signroundv2(compressor)
-        logger.info(f"AWQ: use_v2_scale_search={self._use_v2_scale_search}")
-
-        # Follow the resolved block-quantizer ``disable_opt_rtn`` for AWQ's
-        # internal QDQ so the smooth/clip grid search matches what the final
-        # block quantization will actually do.
-        self.disable_opt_rtn = bool(getattr(compressor.quantize_config, "disable_opt_rtn", False))
-        logger.info(f"AWQ: disable_opt_rtn={self.disable_opt_rtn} (inherited from block quantizer)")
+        self._qdq_tool.configure(compressor)
 
         if compressor.compress_context is not None:
             compressor.compress_context.cache_device = torch.device("cpu")
@@ -220,25 +204,6 @@ class AWQQuantizer(BaseWeightTransformer):
             len(self._block_mappings),
         )
         self._finalized = False
-
-    @staticmethod
-    def _block_quantizer_is_signroundv2(compressor) -> bool:
-        """Return True if the terminal block quantizer is SignRoundV2.
-
-        The block-quantizer config is ``compressor.quantize_config``. Its class
-        (``SignRoundV2Config``, or ``SignRoundConfig(enable_alg_ext=True)`` after
-        normalization) is resolved to its registered quantizer class through the
-        pipeline registry.
-        """
-        block_config = getattr(compressor, "quantize_config", None)
-        if block_config is None:
-            return False
-        from auto_round.algorithms.registry import resolve_pipeline_member
-
-        try:
-            return resolve_pipeline_member(block_config).__name__ == "SignRoundV2Quantizer"
-        except Exception:
-            return False
 
     def get_act_calib_policy(self, ctx: "BlockContext"):
         """AWQ W4A16 (weight-only): no activation calibration needed."""
@@ -279,6 +244,9 @@ class AWQQuantizer(BaseWeightTransformer):
         if not block_mappings:
             logger.debug("AWQ: no mappings for block '%s', skipping.", block_name)
             return
+        # The compressor sets ``layer_config`` after ``prepare_run``; keep the
+        # QDQ service in sync before it is used for the grid-search / clip loss.
+        self._qdq_tool.layer_config = self.layer_config
         self._smooth_block(block_name, block_mappings)
         if self.apply_clip:
             self._clip_block(block_name, block_mappings)
@@ -541,7 +509,7 @@ class AWQQuantizer(BaseWeightTransformer):
         """Per-channel mean of normalised weights across all balance layers."""
         weight = torch.cat([m.weight.detach().float() for m in layers], dim=0)
         org_shape = weight.shape
-        gs = AWQQuantizer._normalize_group_size(group_size, org_shape[1])
+        gs = AWQTransform._normalize_group_size(group_size, org_shape[1])
         weight, _, pad_len = reshape_pad_tensor_by_group_size(weight, gs)
         w_scale = weight.abs() / (weight.abs().amax(dim=1, keepdim=True) + 1e-6)
         w_scale = revert_tensor_by_pad(w_scale, orig_shape=org_shape, pad_len=pad_len)
@@ -557,7 +525,7 @@ class AWQQuantizer(BaseWeightTransformer):
         device = mapping.balance_layers[0].weight.device
         x_mean = x_mean.to(device)
 
-        group_size = self._normalize_group_size(self.group_size, -1)
+        group_size = self._normalize_group_size(self._qdq_tool.group_size, -1)
         if self.duo_scaling is not False:
             w_mean = self._compute_layer_means(mapping.balance_layers, group_size).to(device)
 
@@ -573,29 +541,10 @@ class AWQQuantizer(BaseWeightTransformer):
         if not use_parent_forward:
             orig_weights = orig_state  # same reference is fine
 
-        # Pre-resolve quant function once to avoid repeated dispatch in loop.
-        ref_layer = mapping.balance_layers[0]
-        ref_name = getattr(ref_layer, "global_name", None) or ""
-        ref_cfg = (self.layer_config or {}).get(ref_name, {})
-        try:
-            cached_quant_func, _ = get_quant_func(
-                ref_cfg.get("data_type", self.data_type),
-                ref_cfg.get("bits", self.bits),
-                ref_cfg.get("sym", self.sym),
-                disable_opt_rtn=ref_cfg.get("disable_opt_rtn", self.disable_opt_rtn),
-                group_size=ref_cfg.get("group_size", self.group_size),
-                iters=0,
-            )
-        except Exception as exc:
-            logger.debug("AWQ: failed to pre-resolve quant function for '%s': %s", ref_name, exc)
-            cached_quant_func = None
-
-        # The SignRoundV2 optimized init-scale path is static for this mapping:
-        # whether it applies, and which quant function to use, depend only on
-        # data_type/sym (not on the per-ratio smoothed weight).
-        opt_quant_func = None
-        if self._use_v2_scale_search and ref_cfg.get("sym", self.sym):
-            opt_quant_func = get_optimized_quant_func(ref_cfg.get("data_type", self.data_type))
+        # Pre-resolve quant functions once to avoid repeated dispatch in the
+        # grid-search loop. ``opt_quant_func`` is non-None only when the
+        # SignRoundV2 optimized init-scale path applies for this mapping.
+        cached_quant_func, opt_quant_func = self._qdq_tool.prepare_layer_funcs(mapping.balance_layers[0])
 
         best_error = float("inf")
         best_scales = None
@@ -612,15 +561,17 @@ class AWQQuantizer(BaseWeightTransformer):
             scales_view = scales.view(1, -1).to(device)
 
             if use_parent_forward:
+                # Quantize each balance layer's smoothed weight and write the
+                # de-smoothed result back, so the parent forward below sees the
+                # weights the layer would actually compute with.
                 for bl in mapping.balance_layers:
-                    bl.weight.data.copy_(orig_state[bl] * scales_view)
-                    w_qdq = self._quantize_dequantize_weight(
-                        bl, bl.weight.data.float(), quant_func=cached_quant_func, opt_quant_func=opt_quant_func
+                    w_qdq = self._qdq_tool.qdq(
+                        bl,
+                        orig_state[bl] * scales_view,
+                        quant_func=cached_quant_func,
+                        opt_quant_func=opt_quant_func,
                     )
-                    if w_qdq is not None:
-                        bl.weight.data = (w_qdq / scales_view).to(bl.weight.dtype)
-                    else:
-                        bl.weight.data.copy_(orig_state[bl])
+                    bl.weight.data = (w_qdq / scales_view).to(bl.weight.dtype)
 
                 int_w_outputs = self._run_parent_samples(mapping.parent, parent_kwargs_list)
                 total_loss = self._compute_loss(fp16_outputs, int_w_outputs)
@@ -631,12 +582,9 @@ class AWQQuantizer(BaseWeightTransformer):
                 total_loss = 0.0
                 for bl in mapping.balance_layers:
                     w_orig = orig_weights[bl].to(device)
-                    w_qdq = self._quantize_dequantize_weight(
+                    w_qdq = self._qdq_tool.qdq(
                         bl, w_orig * scales_view, quant_func=cached_quant_func, opt_quant_func=opt_quant_func
                     )
-                    if w_qdq is None:
-                        total_loss = float("inf")
-                        break
                     total_loss += (w_orig - w_qdq / scales_view).pow(2).sum().item()
 
             if total_loss < best_error:
@@ -684,69 +632,6 @@ class AWQQuantizer(BaseWeightTransformer):
         if num_elements == 0:
             return float("inf")
         return (loss / num_elements).item()
-
-    def _quantize_dequantize_weight(
-        self,
-        layer: torch.nn.Module,
-        weight: torch.Tensor,
-        quant_func=None,
-        opt_quant_func=None,
-    ) -> torch.Tensor | None:
-        """Quantize-dequantize a weight tensor using the layer's config.
-
-        Used internally for grid search loss calculation only.  Does NOT
-        modify the layer's stored weights. ``quant_func`` and ``opt_quant_func``
-        are pre-resolved once by the caller; passing ``opt_quant_func`` (non-None)
-        enables the SignRoundV2 optimized init-scale path for this weight.
-        """
-        layer_name = getattr(layer, "global_name", None) or ""
-        config = (self.layer_config or {}).get(layer_name, {})
-        bits = config.get("bits", self.bits)
-        group_size = config.get("group_size", self.group_size)
-        sym = config.get("sym", self.sym)
-        data_type = config.get("data_type", self.data_type)
-        disable_opt_rtn = config.get("disable_opt_rtn", self.disable_opt_rtn)
-        # GGUF double-quant schemes need the per-layer super-block params to reproduce the block quantizer's QDQ.
-        # Non-GGUF quant funcs ignore them via ``**kwargs``.
-        super_bits = config.get("super_bits", None)
-        super_group_size = config.get("super_group_size", None)
-
-        if quant_func is None:
-            quant_func, _ = get_quant_func(
-                data_type,
-                bits,
-                sym,
-                disable_opt_rtn=disable_opt_rtn,
-                group_size=group_size,
-                iters=0,
-            )
-
-        if quant_func is None:
-            raise RuntimeError(
-                f"AWQ: no quantization function resolved for '{layer_name}' "
-                f"(data_type={data_type}, bits={bits}, sym={sym}, group_size={group_size})."
-            )
-
-        quant_kwargs = {
-            "bits": bits,
-            "group_size": group_size,
-            "data_type": data_type,
-            "sym": sym,
-        }
-        if super_bits is not None:
-            quant_kwargs["super_bits"] = super_bits
-        if super_group_size is not None:
-            quant_kwargs["super_group_size"] = super_group_size
-        active_quant_func = quant_func
-        if opt_quant_func is not None:
-            init_scale = compute_optimized_init_scale(
-                weight, data_type, bits, group_size, imatrix=getattr(layer, "imatrix", None)
-            )
-            if init_scale is not None:
-                quant_kwargs["init_scale"] = init_scale
-                active_quant_func = opt_quant_func
-        qdq_weight, _, _ = active_quant_func(weight, **quant_kwargs)
-        return qdq_weight
 
     @torch.no_grad()
     def _apply_scales(self, mapping: ResolvedMapping, scales: torch.Tensor) -> None:
@@ -852,18 +737,6 @@ class AWQQuantizer(BaseWeightTransformer):
                 else:
                     self._apply_clip(bl, max_val)
 
-    def _resolve_layer_quant_params(self, layer: torch.nn.Module) -> dict:
-        """Resolve the per-layer quant params used by AWQ's internal QDQ loss."""
-        layer_name = getattr(layer, "global_name", None) or ""
-        config = (self.layer_config or {}).get(layer_name, {})
-        return {
-            "bits": config.get("bits", self.bits),
-            "group_size": config.get("group_size", self.group_size),
-            "sym": config.get("sym", self.sym),
-            "data_type": config.get("data_type", self.data_type),
-            "disable_opt_rtn": config.get("disable_opt_rtn", self.disable_opt_rtn),
-        }
-
     @torch.no_grad()
     def _compute_best_clip(
         self,
@@ -875,7 +748,7 @@ class AWQQuantizer(BaseWeightTransformer):
         Returns a ``[out_channels, n_group]`` tensor of clip magnitudes, or
         ``None`` if clipping is not applicable to this layer.
         """
-        params = self._resolve_layer_quant_params(layer)
+        params = self._qdq_tool.resolve_params(layer)
         bits = params["bits"]
         if bits is None or bits >= 16:
             return None
@@ -895,18 +768,7 @@ class AWQQuantizer(BaseWeightTransformer):
             return None
         n_group = in_features // gs
 
-        try:
-            quant_func, _ = get_quant_func(
-                params["data_type"],
-                bits,
-                params["sym"],
-                disable_opt_rtn=params["disable_opt_rtn"],
-                group_size=gs,
-                iters=0,
-            )
-        except Exception as exc:
-            logger.debug("AWQ: failed to resolve quant function for clip: %s", exc)
-            return None
+        quant_func = self._qdq_tool.resolve_clip_quant_func(params, gs)
         if quant_func is None:
             return None
 
@@ -935,9 +797,7 @@ class AWQQuantizer(BaseWeightTransformer):
             for i_s in range(n_steps):
                 max_val = org_max_val * (1 - i_s / self.clip_n_grid)
                 cur_w = torch.clamp(w_b, -max_val, max_val)
-                q_w = self._clip_qdq(cur_w, quant_func, params, gs)
-                if q_w is None:
-                    break
+                q_w = self._qdq_tool.clip_qdq(cur_w, quant_func, params, gs)
                 cur_out = (feat * q_w).sum(dim=-1)
                 err = (cur_out - org_out).pow(2).mean(dim=1).view(min_errs.shape)
                 improved = err < min_errs
@@ -949,30 +809,6 @@ class AWQQuantizer(BaseWeightTransformer):
 
         best_max_val = torch.cat(best_max_val_all, dim=0)
         return best_max_val.squeeze(1)  # [out_features, n_group, 1]
-
-    @staticmethod
-    @torch.no_grad()
-    def _clip_qdq(
-        cur_w: torch.Tensor,
-        quant_func,
-        params: dict,
-        group_size: int,
-    ) -> torch.Tensor | None:
-        """Quantize-dequantize the clamped weight for the clip-search loss."""
-        oc_b, _, n_group, gs = cur_w.shape
-        flat = cur_w.reshape(oc_b, n_group * gs)
-        try:
-            qdq, _, _ = quant_func(
-                flat,
-                bits=params["bits"],
-                group_size=group_size,
-                data_type=params["data_type"],
-                sym=params["sym"],
-            )
-        except Exception as exc:
-            logger.debug("AWQ: clip QDQ failed: %s", exc)
-            return None
-        return qdq.reshape(oc_b, 1, n_group, gs)
 
     @torch.no_grad()
     def _apply_clip(self, layer: torch.nn.Module, max_val: torch.Tensor) -> None:
