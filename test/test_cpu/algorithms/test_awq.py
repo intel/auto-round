@@ -411,8 +411,8 @@ class TestAWQUseV2ScaleSearch:
 
     @staticmethod
     def _awq_quantizer():
-        from auto_round.algorithms.transforms.awq.config import AWQConfig
         from auto_round.algorithms.transforms.awq.base import AWQTransform
+        from auto_round.algorithms.transforms.awq.config import AWQConfig
 
         return AWQTransform(AWQConfig())
 
