@@ -231,7 +231,7 @@ def _compute_moe_flops(total_tokens, K, N, num_experts_active):
 #   num_experts_per_tok = 8      (top-8 routing)
 #
 # Total expert-token count per row = seq_len * top_k. Rows are labelled by
-# the originating sequence length (1K/2K/4K). Tokens are distributed
+# the originating sequence length (2K/4K/8K). Tokens are distributed
 # evenly across the 192 experts, except for the "skew" rows which keep a
 # skewed (hot/cold) distribution and the "norm" rows which follow a
 # normal (Gaussian) distribution -- both exercise load imbalance.
@@ -317,9 +317,6 @@ def _minimax_normal_tpe(total: int, *, seed: int = 0, std_frac: float = 1.0 / 3.
 
 PREFILL_SHAPES = [
     # (label, num_experts, tokens_per_expert_list, N, K)
-    # -- seq_len = 1K -> 8192 expert tokens, ~43/expert ----------------------
-    ("minimax up  1K", _MINIMAX_E, _minimax_even_tpe(8192), _MINIMAX_N, _MINIMAX_K),
-    ("minimax down 1K", _MINIMAX_E, _minimax_even_tpe(8192), _MINIMAX_K, _MINIMAX_N),
     # -- seq_len = 2K -> 16384 expert tokens, ~85/expert ---------------------
     ("minimax up  2K", _MINIMAX_E, _minimax_even_tpe(16384), _MINIMAX_N, _MINIMAX_K),
     ("minimax down 2K", _MINIMAX_E, _minimax_even_tpe(16384), _MINIMAX_K, _MINIMAX_N),
@@ -334,6 +331,13 @@ PREFILL_SHAPES = [
     ("minimax skew down 4K", _MINIMAX_E, _minimax_uneven_tpe(32768), _MINIMAX_K, _MINIMAX_N),
     ("minimax norm up  4K", _MINIMAX_E, _minimax_normal_tpe(32768), _MINIMAX_N, _MINIMAX_K),
     ("minimax norm down 4K", _MINIMAX_E, _minimax_normal_tpe(32768), _MINIMAX_K, _MINIMAX_N),
+    # -- seq_len = 8K -> 65536 expert tokens, ~341/expert --------------------
+    ("minimax up  8K", _MINIMAX_E, _minimax_even_tpe(65536), _MINIMAX_N, _MINIMAX_K),
+    ("minimax down 8K", _MINIMAX_E, _minimax_even_tpe(65536), _MINIMAX_K, _MINIMAX_N),
+    ("minimax skew up  8K", _MINIMAX_E, _minimax_uneven_tpe(65536), _MINIMAX_N, _MINIMAX_K),
+    ("minimax skew down 8K", _MINIMAX_E, _minimax_uneven_tpe(65536), _MINIMAX_K, _MINIMAX_N),
+    ("minimax norm up  8K", _MINIMAX_E, _minimax_normal_tpe(65536), _MINIMAX_N, _MINIMAX_K),
+    ("minimax norm down 8K", _MINIMAX_E, _minimax_normal_tpe(65536), _MINIMAX_K, _MINIMAX_N),
 ]
 
 
