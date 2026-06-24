@@ -23,9 +23,11 @@ Unlike decode (one token per expert), prefill has multiple tokens per expert,
 making it a batched GEMM problem.
 
 This benchmark measures throughput (TFLOPS) and compares against a baseline
-PyTorch implementation. The baseline uses per-expert matrix multiplication
-with already-dequantized weights (for quantized tests), representing the
-standard fallback path when no fused MoE kernel is available.
+PyTorch implementation. The baseline is a single ``torch.bmm`` call over a
+padded ``[E, M_max, K]`` activations buffer (with already-dequantized
+weights for quantized tests), representing the most favorable non-fused
+PyTorch fallback: it pays extra FLOPs on padding rows but collapses the
+192-per-expert kernel launches into one.
 
 How to run::
 
@@ -151,28 +153,56 @@ def _xpu_time_ms(fn, warmup: int = WARMUP, iters: int = ITERS) -> float:
     return timings[len(timings) // 2]
 
 
-def _default_moe_prefill(activations, dequant_weights, num_tokens_per_expert):
-    """Default XPU MoE prefill baseline: per-expert torch matmul.
+def _build_bmm_pad_layout(activations, num_tokens_per_expert, num_experts):
+    """Pack ``[total_tokens, K]`` activations into a ``[E, M_max, K]`` buffer.
 
-    This mirrors the path a model would take when no fused MoE kernel is
-    available: iterate over experts and do ``A @ W.T`` on each token slice.
-    For prefill, each expert may have many tokens (unlike decode where each
-    expert typically has one token).
+    Each expert's token slice ``activations[offset:offset+n_e]`` is copied
+    into ``act_padded[e, :n_e]``; rows ``act_padded[e, n_e:]`` stay zero.
+    This rectangular layout is what the single-``torch.bmm`` baseline
+    consumes (see ``_default_moe_prefill``). Building it requires one
+    device->host sync to read ``M_max`` and is meant to be done once per
+    shape, outside the timed region.
     """
     total_tokens, K = activations.shape
-    E, N, _ = dequant_weights.shape
-    out = torch.empty(total_tokens, N, dtype=activations.dtype, device=activations.device)
-    offset = 0
-    for e in range(E):
-        n_tokens = int(num_tokens_per_expert[e].item())
-        if n_tokens == 0:
-            continue
-        a = activations[offset : offset + n_tokens]
-        # Weights are [N, K], activations are [n_tokens, K]
-        # Output is [n_tokens, N]
-        out[offset : offset + n_tokens] = a @ dequant_weights[e].T
-        offset += n_tokens
-    return out
+    tpe = num_tokens_per_expert.to(torch.int64)
+    M_max = int(tpe.max().item())
+    expert_id = torch.repeat_interleave(
+        torch.arange(num_experts, device=tpe.device, dtype=torch.int64), tpe
+    )
+    # Cumulative start offset of each expert's slice in the flat activations.
+    offsets = torch.cat([tpe.new_zeros(1), torch.cumsum(tpe, dim=0)])[:-1]
+    local_pos = torch.arange(total_tokens, device=tpe.device, dtype=torch.int64) - torch.repeat_interleave(
+        offsets, tpe
+    )
+    act_padded = activations.new_zeros((num_experts, M_max, K))
+    act_padded[expert_id, local_pos] = activations
+    return act_padded
+
+
+def _default_moe_prefill(act_padded, dequant_weights):
+    """Single-``torch.bmm`` MoE prefill baseline.
+
+    Computes ``[E, M_max, K] @ [E, K, N] -> [E, M_max, N]`` in one batched
+    GEMM call. ``act_padded`` (built by ``_build_bmm_pad_layout``) packs
+    each expert's token slice into a uniform ``M_max`` rectangle, so the
+    192 per-expert ``A @ W.T`` calls of the original Python-loop baseline
+    collapse into a single kernel launch -- the launch / dispatch cost
+    that previously dominated small-token cases is amortised away. The
+    trade-off is that experts with fewer than ``M_max`` tokens do extra
+    FLOPs on padding rows; for the heavily skewed shapes this can roughly
+    double the bmm's nominal work versus the ragged total, which is the
+    intended apples-to-apples ceiling for a non-fused PyTorch baseline.
+
+    Args:
+        act_padded: ``[E, M_max, K]`` activations (see ``_build_bmm_pad_layout``).
+        dequant_weights: ``[E, N, K]`` dequantized per-expert weights.
+
+    Returns:
+        ``[E, M_max, N]`` padded output. Rows corresponding to the padding
+        are not meaningful and are intentionally not gathered back into a
+        ``[total_tokens, N]`` tensor (this is a perf-only path).
+    """
+    return torch.bmm(act_padded, dequant_weights.transpose(1, 2))
 
 
 # ---------------------------------------------------------------------------
@@ -364,16 +394,20 @@ def _print_row(label, E, N, K, total_tokens, base_ms, ark_ms, tflops, *, base_wi
 
 @pytest.mark.skipif(bool(_PREFILL_SKIP), reason=_PREFILL_SKIP or "ok")
 class TestMoEGemmPrefillPerf:
-    """Median XPU-event timings of ``moe_gemm`` vs per-expert matrix multiply.
+    """Median XPU-event timings of ``moe_gemm`` vs a single-``torch.bmm`` baseline.
 
-    The baseline uses *already-dequantized* weights for quantized tests, so
-    the timed region only measures matmul cost. This is the most favorable
-    apples-to-apples comparison for the baseline.
+    The baseline pads each expert's token slice to ``M_max`` and runs one
+    batched GEMM (see ``_default_moe_prefill``). For quantized tests the
+    baseline operates on *already-dequantized* weights so the timed region
+    only measures matmul cost. This is the most favorable apples-to-apples
+    comparison for a non-fused PyTorch path: it removes the 192-iteration
+    Python loop / per-expert launch overhead at the cost of doing extra
+    FLOPs on padding rows.
     """
 
     @pytest.mark.parametrize("dtype", [torch.float16, torch.bfloat16])
     def test_perf_fp(self, dtype):
-        _print_header(f"FP weights ({str(dtype).split('.')[-1]})  -- ark.moe_gemm (prefill) vs per-expert A @ W.T")
+        _print_header(f"FP weights ({str(dtype).split('.')[-1]})  -- ark.moe_gemm (prefill) vs single torch.bmm")
         for label, E, tpe, N, K in PREFILL_SHAPES:
             total_tokens = sum(tpe)
             activations = torch.randn(total_tokens, K, dtype=dtype, device="xpu")
@@ -381,10 +415,11 @@ class TestMoEGemmPrefillPerf:
             weights = (torch.randn(E, K, N, dtype=torch.float32, device="xpu") * 0.1).to(dtype)
             ntpe = torch.tensor(tpe, dtype=torch.int32, device="xpu")
 
-            # Baseline: per-expert matmul. Weights need to be [E, N, K] for the baseline.
+            # Baseline: padded single-bmm. Weights need to be [E, N, K] for the baseline.
             weights_baseline = weights.transpose(1, 2)  # [E, N, K]
+            act_padded = _build_bmm_pad_layout(activations, ntpe, E)
 
-            base_ms = _xpu_time_ms(lambda: _default_moe_prefill(activations, weights_baseline, ntpe))
+            base_ms = _xpu_time_ms(lambda: _default_moe_prefill(act_padded, weights_baseline))
             ark_ms = _xpu_time_ms(lambda: ark.moe_gemm(activations, weights, ntpe))
 
             # Compute TFLOPS
@@ -401,7 +436,7 @@ class TestMoEGemmPrefillPerf:
         kind = "asym" if asym else "sym"
         _print_header(
             f"INT4 {kind} (group_size={group_size}, act={str(dtype).split('.')[-1]}) "
-            f"-- ark.moe_gemm_prefill (prefill) vs dequant + per-expert A @ W.T",
+            f"-- ark.moe_gemm_prefill (prefill) vs dequant + single torch.bmm",
             with_dequant_baseline=True,
         )
         for label, E, tpe, N, K in PREFILL_SHAPES:
@@ -409,6 +444,8 @@ class TestMoEGemmPrefillPerf:
                 continue
             total_tokens = sum(tpe)
             activations = torch.randn(total_tokens, K, dtype=dtype, device="xpu")
+            ntpe = torch.tensor(tpe, dtype=torch.int32, device="xpu")
+            act_padded = _build_bmm_pad_layout(activations, ntpe, E)
             # Pack helpers expect weights in [E, N, K] layout.
             w_float = (torch.randn(E, N, K, dtype=torch.float32, device="xpu") * 0.1).to(dtype)
             scales = torch.empty(E, N, K // group_size, dtype=dtype, device="xpu")
@@ -419,7 +456,7 @@ class TestMoEGemmPrefillPerf:
 
                 def _baseline_with_dequant():
                     d = _dequant_int4_asym(packed, scales, zeros, group_size).to(dtype)
-                    return _default_moe_prefill(activations, d, ntpe)
+                    return _default_moe_prefill(act_padded, d)
             else:
                 zeros = None
                 packed = _pack_int4_sym(w_float, scales, group_size)
@@ -427,12 +464,10 @@ class TestMoEGemmPrefillPerf:
 
                 def _baseline_with_dequant():
                     d = _dequant_int4_sym(packed, scales, group_size).to(dtype)
-                    return _default_moe_prefill(activations, d, ntpe)
-
-            ntpe = torch.tensor(tpe, dtype=torch.int32, device="xpu")
+                    return _default_moe_prefill(act_padded, d)
 
             # ``dequant`` is already [E, N, K] -- matches the baseline contract.
-            base_ms = _xpu_time_ms(lambda: _default_moe_prefill(activations, dequant, ntpe))
+            base_ms = _xpu_time_ms(lambda: _default_moe_prefill(act_padded, dequant))
             base_deq_ms = _xpu_time_ms(_baseline_with_dequant)
             ark_ms = _xpu_time_ms(
                 lambda: ark.moe_gemm_prefill(
@@ -460,7 +495,7 @@ class TestMoEGemmPrefillPerf:
         kind = "asym" if asym else "sym"
         _print_header(
             f"INT8 {kind} (group_size={group_size}, act={str(dtype).split('.')[-1]}) "
-            f"-- ark.moe_gemm_prefill (prefill) vs dequant + per-expert A @ W.T",
+            f"-- ark.moe_gemm_prefill (prefill) vs dequant + single torch.bmm",
             with_dequant_baseline=True,
         )
         for label, E, tpe, N, K in PREFILL_SHAPES:
@@ -468,6 +503,8 @@ class TestMoEGemmPrefillPerf:
                 continue
             total_tokens = sum(tpe)
             activations = torch.randn(total_tokens, K, dtype=dtype, device="xpu")
+            ntpe = torch.tensor(tpe, dtype=torch.int32, device="xpu")
+            act_padded = _build_bmm_pad_layout(activations, ntpe, E)
             w_float = (torch.randn(E, N, K, dtype=torch.float32, device="xpu") * 0.1).to(dtype)
             scales = torch.empty(E, N, K // group_size, dtype=dtype, device="xpu")
             if asym:
@@ -477,7 +514,7 @@ class TestMoEGemmPrefillPerf:
 
                 def _baseline_with_dequant():
                     d = _dequant_int8_asym(packed, scales, zeros, group_size).to(dtype)
-                    return _default_moe_prefill(activations, d, ntpe)
+                    return _default_moe_prefill(act_padded, d)
             else:
                 zeros = None
                 packed = _pack_int8_sym(w_float, scales, group_size)
@@ -485,11 +522,9 @@ class TestMoEGemmPrefillPerf:
 
                 def _baseline_with_dequant():
                     d = _dequant_int8_sym(packed, scales, group_size).to(dtype)
-                    return _default_moe_prefill(activations, d, ntpe)
+                    return _default_moe_prefill(act_padded, d)
 
-            ntpe = torch.tensor(tpe, dtype=torch.int32, device="xpu")
-
-            base_ms = _xpu_time_ms(lambda: _default_moe_prefill(activations, dequant, ntpe))
+            base_ms = _xpu_time_ms(lambda: _default_moe_prefill(act_padded, dequant))
             base_deq_ms = _xpu_time_ms(_baseline_with_dequant)
             ark_ms = _xpu_time_ms(
                 lambda: ark.moe_gemm_prefill(
@@ -517,7 +552,7 @@ class TestMoEGemmPrefillPerf:
         kind = "asym" if asym else "sym"
         _print_header(
             f"INT2 {kind} (group_size={group_size}, act={str(dtype).split('.')[-1]}) "
-            f"-- ark.moe_gemm_prefill (prefill) vs dequant + per-expert A @ W.T",
+            f"-- ark.moe_gemm_prefill (prefill) vs dequant + single torch.bmm",
             with_dequant_baseline=True,
         )
         for label, E, tpe, N, K in PREFILL_SHAPES:
@@ -525,6 +560,8 @@ class TestMoEGemmPrefillPerf:
                 continue
             total_tokens = sum(tpe)
             activations = torch.randn(total_tokens, K, dtype=dtype, device="xpu")
+            ntpe = torch.tensor(tpe, dtype=torch.int32, device="xpu")
+            act_padded = _build_bmm_pad_layout(activations, ntpe, E)
             w_float = (torch.randn(E, N, K, dtype=torch.float32, device="xpu") * 0.1).to(dtype)
             scales = torch.empty(E, N, K // group_size, dtype=dtype, device="xpu")
             if asym:
@@ -534,7 +571,7 @@ class TestMoEGemmPrefillPerf:
 
                 def _baseline_with_dequant():
                     d = _dequant_int2_asym(packed, scales, zeros, group_size).to(dtype)
-                    return _default_moe_prefill(activations, d, ntpe)
+                    return _default_moe_prefill(act_padded, d)
             else:
                 zeros = None
                 packed = _pack_int2_sym(w_float, scales, group_size)
@@ -542,11 +579,9 @@ class TestMoEGemmPrefillPerf:
 
                 def _baseline_with_dequant():
                     d = _dequant_int2_sym(packed, scales, group_size).to(dtype)
-                    return _default_moe_prefill(activations, d, ntpe)
+                    return _default_moe_prefill(act_padded, d)
 
-            ntpe = torch.tensor(tpe, dtype=torch.int32, device="xpu")
-
-            base_ms = _xpu_time_ms(lambda: _default_moe_prefill(activations, dequant, ntpe))
+            base_ms = _xpu_time_ms(lambda: _default_moe_prefill(act_padded, dequant))
             base_deq_ms = _xpu_time_ms(_baseline_with_dequant)
             ark_ms = _xpu_time_ms(
                 lambda: ark.moe_gemm_prefill(
@@ -573,7 +608,7 @@ class TestMoEGemmPrefillPerf:
         group_size = 128
         _print_header(
             f"FP8 {str(fp8_dtype).split('.')[-1]} (group_size={group_size}, "
-            f"act={str(dtype).split('.')[-1]}) -- ark.moe_gemm_prefill (prefill) vs dequant + per-expert A @ W.T",
+            f"act={str(dtype).split('.')[-1]}) -- ark.moe_gemm_prefill (prefill) vs dequant + single torch.bmm",
             with_dequant_baseline=True,
         )
         for label, E, tpe, N, K in PREFILL_SHAPES:
@@ -581,17 +616,18 @@ class TestMoEGemmPrefillPerf:
                 continue
             total_tokens = sum(tpe)
             activations = torch.randn(total_tokens, K, dtype=dtype, device="xpu")
+            ntpe = torch.tensor(tpe, dtype=torch.int32, device="xpu")
+            act_padded = _build_bmm_pad_layout(activations, ntpe, E)
             w_float = (torch.randn(E, N, K, dtype=torch.float32, device="xpu") * 0.1).to(dtype)
             scales = torch.empty(E, N, K // group_size, dtype=dtype, device="xpu")
             packed = _pack_fp8(w_float, scales, group_size, fp8_dtype)
             dequant = _dequant_fp8(packed, scales, group_size, dtype)
-            ntpe = torch.tensor(tpe, dtype=torch.int32, device="xpu")
 
             def _baseline_with_dequant():
                 d = _dequant_fp8(packed, scales, group_size, dtype)
-                return _default_moe_prefill(activations, d, ntpe)
+                return _default_moe_prefill(act_padded, d)
 
-            base_ms = _xpu_time_ms(lambda: _default_moe_prefill(activations, dequant, ntpe))
+            base_ms = _xpu_time_ms(lambda: _default_moe_prefill(act_padded, dequant))
             base_deq_ms = _xpu_time_ms(_baseline_with_dequant)
             ark_ms = _xpu_time_ms(
                 lambda: ark.moe_gemm_prefill(

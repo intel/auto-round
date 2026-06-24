@@ -40,7 +40,7 @@ The test covers multiple realistic MoE scenarios:
 
 ### 4. **Baseline Comparison**
 Each test compares the ARK MoE kernel against a baseline PyTorch implementation:
-- **Baseline**: Per-expert matrix multiplication using `torch.matmul`
+- **Baseline**: Single `torch.bmm` over a `[E, M_max, K]` padded activations buffer (each expert's token slice padded to the global maximum tokens-per-expert). Replaces the previous 192-iteration per-expert loop so the kernel-launch overhead doesn't dominate small-token cases.
 - **ARK Kernel**: Optimized `ark.moe_gemm` with fused operations
 - **Speedup**: Reports speedup ratio (baseline_time / ark_time)
 
@@ -102,8 +102,8 @@ test_moe_prefill_perf.py
 │   └── Uses XPU events for accurate GPU timing
 ├── FLOPS calculation (_compute_moe_flops)
 │   └── Computes theoretical FLOPs for TFLOPS metric
-├── Baseline implementation (_default_moe_prefill)
-│   └── Per-expert PyTorch matmul for comparison
+├── Baseline implementation (_default_moe_prefill, _build_bmm_pad_layout)
+│   └── Single `torch.bmm` over [E, M_max, K] padded activations
 ├── Test shapes (PREFILL_SHAPES)
 │   └── Various realistic MoE configurations
 └── Test cases (TestMoEGemmPrefillPerf)
@@ -118,7 +118,7 @@ test_moe_prefill_perf.py
 
 ```
 ==================================================================
-FP weights (float16)  -- ark.moe_gemm (prefill) vs per-expert A @ W.T
+FP weights (float16)  -- ark.moe_gemm (prefill) vs single torch.bmm
 ==================================================================
 shape              E      N      K  tokens    baseline(ms)        ark(ms)     speedup    TFLOPS
 ------------------------------------------------------------------
