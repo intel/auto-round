@@ -262,18 +262,18 @@ def _print_header(title: str, *, with_dequant_baseline: bool = False) -> None:
     into a workspace before dispatching to the FP GEMM).
     """
     print()
-    width = 130 if with_dequant_baseline else 110
+    width = 138 if with_dequant_baseline else 118
     print("=" * width)
     print(title)
     if with_dequant_baseline:
         print(
-            f"{'shape':<14}{'E':>4}{'N':>7}{'K':>7}{'tokens':>8}"
+            f"{'shape':<22}{'E':>4}{'N':>7}{'K':>7}{'tokens':>8}"
             f"{'base mm(ms)':>14}{'base+deq(ms)':>16}{'ark(ms)':>12}"
             f"{'speedup':>12}{'TFLOPS':>10}"
         )
     else:
         print(
-            f"{'shape':<14}{'E':>4}{'N':>7}{'K':>7}{'tokens':>8}"
+            f"{'shape':<22}{'E':>4}{'N':>7}{'K':>7}{'tokens':>8}"
             f"{'baseline(ms)':>16}{'ark(ms)':>14}{'speedup':>12}{'TFLOPS':>10}"
         )
     print("-" * width)
@@ -290,13 +290,13 @@ def _print_row(label, E, N, K, total_tokens, base_ms, ark_ms, tflops, *, base_wi
     if base_with_deq_ms is None:
         speedup = base_ms / ark_ms if ark_ms > 0 else float("nan")
         print(
-            f"{label:<14}{E:>4}{N:>7}{K:>7}{total_tokens:>8}"
+            f"{label:<22}{E:>4}{N:>7}{K:>7}{total_tokens:>8}"
             f"{base_ms:>16.4f}{ark_ms:>14.4f}{speedup:>11.2f}x{tflops:>9.1f}"
         )
     else:
         speedup = base_with_deq_ms / ark_ms if ark_ms > 0 else float("nan")
         print(
-            f"{label:<14}{E:>4}{N:>7}{K:>7}{total_tokens:>8}"
+            f"{label:<22}{E:>4}{N:>7}{K:>7}{total_tokens:>8}"
             f"{base_ms:>14.4f}{base_with_deq_ms:>16.4f}{ark_ms:>12.4f}"
             f"{speedup:>11.2f}x{tflops:>9.1f}"
         )
