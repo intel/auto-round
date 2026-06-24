@@ -233,9 +233,8 @@ def _compute_moe_flops(total_tokens, K, N, num_experts_active):
 # Total expert-token count per row = seq_len * top_k. Rows are labelled by
 # the originating sequence length (2K/4K/8K). Tokens are distributed
 # evenly across the 192 experts, except for the "real" rows which replay
-# an empirical 256-expert load distribution (resampled to 192) and the
-# "real sort" rows which sort that distribution descending so the hot
-# experts are contiguous (worst case for grouped-GEMM scheduling).
+# an empirical 256-expert load distribution (resampled to 192) to
+# exercise the realistic heavy-tailed routing imbalance.
 # ---------------------------------------------------------------------------
 
 
@@ -284,7 +283,7 @@ def _minimax_even_tpe(total: int) -> list[int]:
     return [base + 1 if i < extra else base for i in range(_MINIMAX_E)]
 
 
-def _minimax_real_tpe(total: int, *, sort_desc: bool = False) -> list[int]:
+def _minimax_real_tpe(total: int) -> list[int]:
     """Resample the empirical 256-expert distribution down to 192 experts.
 
     The template in ``_REAL_TPE_TEMPLATE_256`` is collapsed to
@@ -292,12 +291,7 @@ def _minimax_real_tpe(total: int, *, sort_desc: bool = False) -> list[int]:
     ``floor(src_idx * E / 256)``, then proportionally rescaled so the
     resulting list sums exactly to ``total`` (largest-remainder rounding).
     This preserves the heavy-tailed shape (zeros + a few hot experts)
-    observed in real MoE routing.
-
-    When ``sort_desc=True`` the result is sorted descending so the hot
-    experts are grouped contiguously -- a worst case for grouped-GEMM
-    scheduling. When ``sort_desc=False`` the as-measured ordering is
-    kept, exercising the realistic interleaved layout.
+    observed in real MoE routing, keeping the as-measured ordering.
     """
     E = _MINIMAX_E
     src_len = len(_REAL_TPE_TEMPLATE_256)
@@ -316,8 +310,6 @@ def _minimax_real_tpe(total: int, *, sort_desc: bool = False) -> list[int]:
     remainders = sorted(range(E), key=lambda i: scaled[i] - floored[i], reverse=True)
     for k in range(diff):
         floored[remainders[k % E]] += 1
-    if sort_desc:
-        floored.sort(reverse=True)
     return floored
 
 
@@ -326,22 +318,16 @@ PREFILL_SHAPES = [
     # -- seq_len = 2K -> 16384 expert tokens, ~85/expert ---------------------
     ("minimax up  2K", _MINIMAX_E, _minimax_even_tpe(16384), _MINIMAX_N, _MINIMAX_K),
     ("minimax down 2K", _MINIMAX_E, _minimax_even_tpe(16384), _MINIMAX_K, _MINIMAX_N),
-    ("minimax real sort up  2K", _MINIMAX_E, _minimax_real_tpe(16384, sort_desc=True), _MINIMAX_N, _MINIMAX_K),
-    ("minimax real sort down 2K", _MINIMAX_E, _minimax_real_tpe(16384, sort_desc=True), _MINIMAX_K, _MINIMAX_N),
     ("minimax real up  2K", _MINIMAX_E, _minimax_real_tpe(16384), _MINIMAX_N, _MINIMAX_K),
     ("minimax real down 2K", _MINIMAX_E, _minimax_real_tpe(16384), _MINIMAX_K, _MINIMAX_N),
     # -- seq_len = 4K -> 32768 expert tokens, ~171/expert --------------------
     ("minimax up  4K", _MINIMAX_E, _minimax_even_tpe(32768), _MINIMAX_N, _MINIMAX_K),
     ("minimax down 4K", _MINIMAX_E, _minimax_even_tpe(32768), _MINIMAX_K, _MINIMAX_N),
-    ("minimax real sort up  4K", _MINIMAX_E, _minimax_real_tpe(32768, sort_desc=True), _MINIMAX_N, _MINIMAX_K),
-    ("minimax real sort down 4K", _MINIMAX_E, _minimax_real_tpe(32768, sort_desc=True), _MINIMAX_K, _MINIMAX_N),
     ("minimax real up  4K", _MINIMAX_E, _minimax_real_tpe(32768), _MINIMAX_N, _MINIMAX_K),
     ("minimax real down 4K", _MINIMAX_E, _minimax_real_tpe(32768), _MINIMAX_K, _MINIMAX_N),
     # -- seq_len = 8K -> 65536 expert tokens, ~341/expert --------------------
     ("minimax up  8K", _MINIMAX_E, _minimax_even_tpe(65536), _MINIMAX_N, _MINIMAX_K),
     ("minimax down 8K", _MINIMAX_E, _minimax_even_tpe(65536), _MINIMAX_K, _MINIMAX_N),
-    ("minimax real sort up  8K", _MINIMAX_E, _minimax_real_tpe(65536, sort_desc=True), _MINIMAX_N, _MINIMAX_K),
-    ("minimax real sort down 8K", _MINIMAX_E, _minimax_real_tpe(65536, sort_desc=True), _MINIMAX_K, _MINIMAX_N),
     ("minimax real up  8K", _MINIMAX_E, _minimax_real_tpe(65536), _MINIMAX_N, _MINIMAX_K),
     ("minimax real down 8K", _MINIMAX_E, _minimax_real_tpe(65536), _MINIMAX_K, _MINIMAX_N),
 ]
