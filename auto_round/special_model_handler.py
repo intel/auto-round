@@ -53,6 +53,7 @@ SUPPORT_ONLY_TEXT_MODELS = [
     "bagel",
     "mimo_audio",
     "qwen3_tts",
+    "cosmos3_omni",
 ]
 
 NOT_SUPPORT_ONLY_TEXT_MODELS = ["mllama", "mistral3_2"]
@@ -567,6 +568,45 @@ def _get_qwen3_tts_multimodal_block(model, quant_vision=False):
     return block_names
 
 
+def _get_cosmos3_multimodal_block(model, quant_vision=False):
+    """Get block names for Cosmos3-Omni model.
+
+    Cosmos3OmniForConditionalGeneration has the same structure as Qwen3VL:
+    - model.language_model.layers: Text decoder layers (always quantized)
+    - model.visual.blocks: Vision encoder layers (if quant_vision=True)
+    - model.visual.merger / deepstack_merger_list: Vision patch merger (not quantized)
+
+    Args:
+        model: The Cosmos3OmniForConditionalGeneration instance.
+        quant_vision: If True, also include vision encoder blocks.
+    """
+    block_names = []
+
+    if quant_vision:
+        if hasattr(model, "model") and hasattr(model.model, "visual"):
+            visual = model.model.visual
+            if hasattr(visual, "blocks"):
+                block_names.append(
+                    [f"model.visual.blocks.{i}" for i in range(len(visual.blocks))]
+                )
+
+    # Language model layers (always quantized)
+    if hasattr(model, "model") and hasattr(model.model, "language_model"):
+        lm = model.model.language_model
+        if hasattr(lm, "layers"):
+            block_names.append(
+                [f"model.language_model.layers.{i}" for i in range(len(lm.layers))]
+            )
+        else:
+            # Fallback: some variants may have layers directly on model
+            if hasattr(model.model, "layers"):
+                block_names.append(
+                    [f"model.layers.{i}" for i in range(len(model.model.layers))]
+                )
+
+    return block_names
+
+
 def _get_bagel_multimodal_block(model, quant_vision=False):
     """Get block names for BAGEL MoT (Mixture of Transformers) model.
 
@@ -598,6 +638,7 @@ SPECIAL_MULTIMODAL_BLOCK = {
     "mimo_audio": _get_mimo_audio_multimodal_block,
     "qwen3_tts": _get_qwen3_tts_multimodal_block,
     "bagel": _get_bagel_multimodal_block,
+    "cosmos3_omni": _get_cosmos3_multimodal_block,
 }
 
 

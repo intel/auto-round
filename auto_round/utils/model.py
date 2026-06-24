@@ -690,6 +690,35 @@ def mllm_load_model(
         )
         processor = None
         image_processor = None
+
+    elif "cosmos3_omni" == model_type:
+        if version.parse(transformers.__version__) < version.parse("5.11.0"):
+            raise RuntimeError(
+                f"Cosmos3-Omni requires transformers >= 5.11.0, but found {transformers.__version__}. "
+                "Please upgrade: pip install transformers>=5.11.0"
+            )
+        model = transformers.Cosmos3OmniForConditionalGeneration.from_pretrained(
+            pretrained_model_name_or_path,
+            trust_remote_code=trust_remote_code,
+            torch_dtype=torch_dtype,
+            device_map="auto" if use_auto_mapping else None,
+        )
+        tokenizer = AutoTokenizer.from_pretrained(
+            pretrained_model_name_or_path,
+            trust_remote_code=trust_remote_code,
+        )
+        processor = AutoProcessor.from_pretrained(
+            pretrained_model_name_or_path,
+            trust_remote_code=trust_remote_code,
+        )
+        try:
+            image_processor = AutoImageProcessor.from_pretrained(
+                pretrained_model_name_or_path,
+                trust_remote_code=trust_remote_code,
+            )
+        except Exception:
+            image_processor = None
+
     else:
         architectures = config["architectures"][0]
         if architectures == "LlavaLlamaForCausalLM":
@@ -1043,6 +1072,10 @@ def is_diffusion_model(model_or_path: Union[str, object], trust_remote_code: boo
             # A special case for NextStep
             if model_type == "nextstep":
                 return True
+            # Models with known MLLM model_type that also have model_index.json
+            # (e.g. Cosmos3 omni models) should be routed as MLLM, not diffusion.
+            if model_type in ("cosmos3_omni",):
+                return False
         except:
             logger.warning(
                 f"Failed to load config for {model_or_path}, trying to check model_index.json for diffusion pipeline."
