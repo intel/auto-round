@@ -98,7 +98,7 @@ import shutil
 import time
 from concurrent.futures import ProcessPoolExecutor, as_completed
 from dataclasses import asdict, fields
-from typing import Any, Optional, Union
+from typing import Any, Callable, Optional, Union
 
 import torch
 
@@ -638,8 +638,52 @@ def _quantize_single_tensor(
         return layer_name, {tensor_name: tensor}, None, layer_name
 
 
+def _collect_mxfp_source_entries(raw_tensors: dict[str, torch.Tensor]) -> list[tuple[str, str, str, int]]:
+    """Collect MXFP source tensors present in a shard.
+
+    Returns entries as ``(layer_name, weight_key, scale_key, bits)`` where
+    ``bits`` is 8 for ``.weight`` (float8) and 4 for ``.weight_packed``.
+    """
+    entries: list[tuple[str, str, str, int]] = []
+    for name, tensor in raw_tensors.items():
+        if name.endswith(".weight") and tensor.dtype == torch.float8_e4m3fn:
+            layer_name = name[: -len(".weight")]
+            scale_key = f"{layer_name}.weight_scale"
+            if scale_key in raw_tensors:
+                entries.append((layer_name, name, scale_key, 8))
+        elif name.endswith(".weight_packed") and tensor.dtype in (torch.int8, torch.uint8):
+            layer_name = name[: -len(".weight_packed")]
+            scale_key = f"{layer_name}.weight_scale"
+            if scale_key in raw_tensors:
+                entries.append((layer_name, name, scale_key, 4))
+    return entries
+
+
+def _run_with_device_fallback(
+    *,
+    dequant_device: str,
+    shard_prefix: str,
+    op_name: str,
+    tensor_label: str,
+    on_device: Callable[[], torch.Tensor],
+    on_cpu: Callable[[], torch.Tensor],
+) -> torch.Tensor:
+    """Run tensor conversion on ``dequant_device`` and fall back to CPU on errors."""
+    if dequant_device != "cpu":
+        try:
+            return on_device()
+        except Exception as e:
+            logger.warning(
+                f"{shard_prefix}{op_name} on {dequant_device} failed for {tensor_label}: {e}. "
+                "Falling back to CPU for this tensor."
+            )
+    return on_cpu()
+
+
 def _dequant_mxfp_tensors(
     raw_tensors: dict[str, torch.Tensor],
+    device: str = "cpu",
+    shard_name: str | None = None,
 ) -> dict[str, torch.Tensor]:
     """Dequantize llm-compressor MXFP8 / MXFP4 weight tensors to bfloat16.
 
@@ -658,44 +702,63 @@ def _dequant_mxfp_tensors(
     from auto_round_extension.vllm_ext.mxfp4_qdq_utils import to_dtype
     from auto_round_extension.vllm_ext.mxfp8_qdq_utils import dequant_mx_fp8
 
-    # Tuple layout: (layer_name, weight_key, scale_key, is_fp8)
-    entries: list[tuple[str, str, str, bool]] = []
-    for name, tensor in raw_tensors.items():
-        if name.endswith(".weight") and tensor.dtype == torch.float8_e4m3fn:
-            layer_name = name[: -len(".weight")]
-            scale_key = f"{layer_name}.weight_scale"
-            if scale_key in raw_tensors:
-                entries.append((layer_name, name, scale_key, True))
-        elif name.endswith(".weight_packed") and tensor.dtype in (torch.int8, torch.uint8):
-            layer_name = name[: -len(".weight_packed")]
-            scale_key = f"{layer_name}.weight_scale"
-            if scale_key in raw_tensors:
-                entries.append((layer_name, name, scale_key, False))
+    # Tuple layout: (layer_name, weight_key, scale_key, bits)
+    entries = _collect_mxfp_source_entries(raw_tensors)
 
     if not entries:
         return raw_tensors
 
-    n_mxfp8 = sum(1 for _layer_name, _weight_key, _scale_key, is_fp8 in entries if is_fp8)
+    n_mxfp8 = sum(1 for _layer_name, _weight_key, _scale_key, bits in entries if bits == 8)
     n_mxfp4 = len(entries) - n_mxfp8
-    logger.info("Dequantizing MXFP tensor(s) to bfloat16: " f"MXFP8={n_mxfp8}, MXFP4={n_mxfp4}, total={len(entries)}.")
+    dequant_device = str(device or "cpu")
+    shard_prefix = f"[{shard_name}] " if shard_name else ""
+    logger.info(
+        f"{shard_prefix}Dequantizing MXFP tensor(s) to bfloat16 on {dequant_device}: "
+        f"MXFP8={n_mxfp8}, MXFP4={n_mxfp4}, total={len(entries)}."
+    )
 
-    for layer_name, weight_key, scale_key, is_fp8 in entries:
+    for layer_name, weight_key, scale_key, bits in entries:
         weight = raw_tensors.pop(weight_key)
         scale = raw_tensors.pop(scale_key).view(torch.uint8)
-        if is_fp8:
-            dq_weight = dequant_mx_fp8(
-                weight_fp8=weight,
-                scale_e8m0=scale,
-                block_size=32,
-                target_dtype=torch.bfloat16,
+        if bits == 8:
+            dq_weight = _run_with_device_fallback(
+                dequant_device=dequant_device,
+                shard_prefix=shard_prefix,
+                op_name="MXFP dequant",
+                tensor_label=layer_name,
+                on_device=lambda: dequant_mx_fp8(
+                    weight_fp8=weight.to(dequant_device, non_blocking=True),
+                    scale_e8m0=scale.to(dequant_device, non_blocking=True),
+                    block_size=32,
+                    target_dtype=torch.bfloat16,
+                ).to("cpu"),
+                on_cpu=lambda: dequant_mx_fp8(
+                    weight_fp8=weight,
+                    scale_e8m0=scale,
+                    block_size=32,
+                    target_dtype=torch.bfloat16,
+                ),
             )
         else:
-            dq_weight = to_dtype(
-                data_lp=weight.view(torch.uint8).contiguous(),
-                scale_e8m0=scale,
-                elem_dtype="fp4_e2m1",
-                block_size=32,
-                target_dtype=torch.bfloat16,
+            dq_weight = _run_with_device_fallback(
+                dequant_device=dequant_device,
+                shard_prefix=shard_prefix,
+                op_name="MXFP dequant",
+                tensor_label=layer_name,
+                on_device=lambda: to_dtype(
+                    data_lp=weight.view(torch.uint8).contiguous().to(dequant_device, non_blocking=True),
+                    scale_e8m0=scale.to(dequant_device, non_blocking=True),
+                    elem_dtype="fp4_e2m1",
+                    block_size=32,
+                    target_dtype=torch.bfloat16,
+                ).to("cpu"),
+                on_cpu=lambda: to_dtype(
+                    data_lp=weight.view(torch.uint8).contiguous(),
+                    scale_e8m0=scale,
+                    elem_dtype="fp4_e2m1",
+                    block_size=32,
+                    target_dtype=torch.bfloat16,
+                ),
             )
         raw_tensors[f"{layer_name}.weight"] = dq_weight
 
@@ -706,6 +769,8 @@ def _handle_mxfp_source_tensors(
     raw_tensors: dict[str, torch.Tensor],
     matcher: "_PatternMatcher",
     source_state: dict[str, int] | None = None,
+    device: str = "cpu",
+    shard_name: str | None = None,
 ) -> tuple[dict[str, torch.Tensor], dict[str, torch.Tensor], list[str]]:
     """Handle llm-compressor-style MXFP8/MXFP4 source tensors.
 
@@ -726,23 +791,8 @@ def _handle_mxfp_source_tensors(
     Returns:
         ``(raw_tensors, passthrough_tensors, passthrough_layers)``.
     """
-    # --- collect MXFP8 and MXFP4 entries ---
-    entries_fp8: list[tuple[str, str, str]] = []  # (layer_name, weight_key, scale_key)
-    entries_fp4: list[tuple[str, str, str]] = []
-
-    for name, tensor in raw_tensors.items():
-        if name.endswith(".weight") and tensor.dtype == torch.float8_e4m3fn:
-            layer_name = name[: -len(".weight")]
-            scale_key = f"{layer_name}.weight_scale"
-            if scale_key in raw_tensors:
-                entries_fp8.append((layer_name, name, scale_key))
-        elif name.endswith(".weight_packed") and tensor.dtype in (torch.int8, torch.uint8):
-            layer_name = name[: -len(".weight_packed")]
-            scale_key = f"{layer_name}.weight_scale"
-            if scale_key in raw_tensors:
-                entries_fp4.append((layer_name, name, scale_key))
-
-    if not entries_fp8 and not entries_fp4:
+    entries = _collect_mxfp_source_entries(raw_tensors)
+    if not entries:
         return raw_tensors, {}, []
 
     source_state = source_state or {}
@@ -751,24 +801,12 @@ def _handle_mxfp_source_tensors(
     passthrough_layers: list[str] = []
     n_dequant = 0
 
-    for layer_name, weight_key, scale_key in entries_fp8:
+    for layer_name, weight_key, scale_key, bits in entries:
         scheme = matcher.resolve_scheme(f"{layer_name}.weight")
-        target_is_mxfp8 = (
-            scheme is not None and is_mx_fp((scheme.get("data_type") or "").lower()) and scheme.get("bits") == 8
+        target_is_same_mxfp = (
+            scheme is not None and is_mx_fp((scheme.get("data_type") or "").lower()) and scheme.get("bits") == bits
         )
-        if target_is_mxfp8:
-            passthrough_tensors[weight_key] = raw_tensors.pop(weight_key).to("cpu")
-            passthrough_tensors[scale_key] = raw_tensors.pop(scale_key).to("cpu")
-            passthrough_layers.append(layer_name)
-        else:
-            n_dequant += 1
-
-    for layer_name, weight_key, scale_key in entries_fp4:
-        scheme = matcher.resolve_scheme(f"{layer_name}.weight")
-        target_is_mxfp4 = (
-            scheme is not None and is_mx_fp((scheme.get("data_type") or "").lower()) and scheme.get("bits") == 4
-        )
-        if target_is_mxfp4:
+        if target_is_same_mxfp:
             passthrough_tensors[weight_key] = raw_tensors.pop(weight_key).to("cpu")
             passthrough_tensors[scale_key] = raw_tensors.pop(scale_key).to("cpu")
             passthrough_layers.append(layer_name)
@@ -776,7 +814,7 @@ def _handle_mxfp_source_tensors(
             n_dequant += 1
 
     if n_dequant:
-        raw_tensors = _dequant_mxfp_tensors(raw_tensors)
+        raw_tensors = _dequant_mxfp_tensors(raw_tensors, device=device, shard_name=shard_name)
 
     parts: list[str] = []
     if passthrough_layers:
@@ -793,6 +831,8 @@ def _handle_mxfp_source_tensors(
 def _dequant_fp8_tensors(
     raw_tensors: dict[str, torch.Tensor],
     block_size: list | None = None,
+    device: str = "cpu",
+    shard_name: str | None = None,
 ) -> dict[str, torch.Tensor]:
     """Dequantize DeepSeek-V3-style FP8 weight tensors to bfloat16.
 
@@ -820,18 +860,39 @@ def _dequant_fp8_tensors(
     if not quant_entries:
         return raw_tensors
 
-    logger.info(f"Dequantizing {len(quant_entries)} FP8 weight tensor(s) to bfloat16.")
+    # device has already been resolved by the caller; use it directly here.
+    dequant_device = str(device or "cpu")
+    shard_prefix = f"[{shard_name}] " if shard_name else ""
+
+    logger.info(
+        f"{shard_prefix}Dequantizing {len(quant_entries)} FP8 weight tensor(s) to bfloat16 on {dequant_device}."
+    )
 
     for weight_name, scale_name in quant_entries:
         weight = raw_tensors[weight_name]
         scale = raw_tensors.pop(scale_name)
-        raw_tensors[weight_name] = _dequant_fp8_linear_weight(weight, scale, block_size=block_size)
+
+        # Dequantize on GPU for throughput, then move back to CPU to keep
+        # per-shard memory usage bounded before per-layer quantization.
+        raw_tensors[weight_name] = _run_with_device_fallback(
+            dequant_device=dequant_device,
+            shard_prefix=shard_prefix,
+            op_name="FP8 dequant",
+            tensor_label=weight_name,
+            on_device=lambda: _dequant_fp8_linear_weight(
+                weight.to(dequant_device, non_blocking=True),
+                scale.to(dequant_device, non_blocking=True),
+                block_size=block_size,
+            ).to("cpu"),
+            on_cpu=lambda: _dequant_fp8_linear_weight(weight, scale, block_size=block_size),
+        )
 
     return raw_tensors
 
 
 def _process_shard(
     shard_path: str,
+    shard_name: str | None = None,
     default_scheme: dict = None,
     layer_config: dict = None,
     ignore_patterns: list[str] = None,
@@ -914,11 +975,18 @@ def _process_shard(
         raw_tensors,
         matcher,
         source_state=source_state,
+        device=device,
+        shard_name=shard_name,
     )
     output_tensors.update(passthrough_tensors)
     quantized_layers.extend(passthrough_layers)
 
-    raw_tensors = _dequant_fp8_tensors(raw_tensors, block_size=fp8_block_size)
+    raw_tensors = _dequant_fp8_tensors(
+        raw_tensors,
+        block_size=fp8_block_size,
+        device=device,
+        shard_name=shard_name,
+    )
     raw_tensors.update(preserved_tensors)
 
     for tensor_name in list(raw_tensors.keys()):
@@ -1223,6 +1291,7 @@ def _process_single_shard_task(
 
     output_tensors, quantized, ignored = _process_shard(
         shard_path=shard_path,
+        shard_name=shard_name,
         default_scheme=default_scheme,
         layer_config=layer_config,
         ignore_patterns=ignore_patterns,
@@ -1646,7 +1715,7 @@ class _ModelFreeCompressorCore:
                     f"These layers have been automatically added to ignore_layers "
                     f"and will be kept in full precision.\n"
                     f"To override, pass --ignore_layers explicitly or disable "
-                    f"model-free mode (remove --model_free)."
+                    f"model-free mode (--disable_model_free)."
                 )
 
         except Exception as exc:
