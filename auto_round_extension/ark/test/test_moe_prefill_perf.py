@@ -232,38 +232,44 @@ def _compute_moe_flops(total_tokens, K, N, num_experts_active):
 #
 # Total expert-token count per row = seq_len * top_k. Rows are labelled by
 # the originating sequence length (2K/4K/8K). Tokens are distributed
-# evenly across the 192 experts, except for the "skew" rows which keep a
-# skewed (hot/cold) distribution and the "norm" rows which follow a
-# normal (Gaussian) distribution -- both exercise load imbalance.
+# evenly across the 192 experts, except for the "real" rows which replay
+# an empirical 256-expert load distribution (resampled to 192) and the
+# "real sort" rows which sort that distribution descending so the hot
+# experts are contiguous (worst case for grouped-GEMM scheduling).
 # ---------------------------------------------------------------------------
-
-
-def _minimax_uneven_tpe(total: int) -> list[int]:
-    """Return a skewed token-per-expert list of length 192 summing to ``total``.
-
-    Mimics the load imbalance commonly observed with top-8 routing on 192
-    experts: ~12 experts get ~2x the mean ("hot"), ~12 get ~0.5x ("cold"),
-    the rest stay near the mean.
-    """
-    E = 192
-    mean = max(total // E, 1)
-    tpe = [mean] * E
-    # Hot: 6 indices get +mean, 6 get +mean//2.
-    bumps = [(i, +mean) for i in range(0, 6)] + [(i, +mean // 2) for i in range(6, 12)]
-    # Cold: 6 indices get -mean, 6 get -mean//2.
-    drops = [(i, -mean) for i in range(12, 18)] + [(i, -mean // 2) for i in range(18, 24)]
-    for i, d in bumps + drops:
-        tpe[i] += d
-    # Fix any rounding drift so the list sums exactly to ``total``.
-    diff = total - sum(tpe)
-    tpe[-1] += diff
-    return tpe
 
 
 # top-8 routing means total expert tokens = seq_len * 8.
 _MINIMAX_E = 192
 _MINIMAX_N = 1536  # intermediate_size (gate/up output)
 _MINIMAX_K = 3072  # hidden_size
+
+
+# Empirical per-expert token counts captured from a 256-expert MoE run.
+# Used as a "shape template" -- ``_minimax_real_tpe`` resamples it down to
+# ``_MINIMAX_E = 192`` experts and rescales to the requested total so the
+# heavy-tailed real-world load distribution (many near-zero experts, a few
+# hot experts with thousands of tokens) drives the benchmark instead of a
+# synthetic Gaussian / bimodal one.
+_REAL_TPE_TEMPLATE_256 = [
+    6, 33, 106, 281, 10, 729, 837, 15, 42, 332, 6, 48, 27, 33, 0, 74,
+    178, 86, 0, 50, 38, 26, 21, 10, 7, 2, 163, 0, 7, 1109, 6, 15,
+    66, 49, 1, 4, 131, 3, 345, 0, 482, 10, 5, 17, 5, 224, 189, 425,
+    0, 20, 1, 23, 26, 1, 0, 95, 12, 4, 74, 1, 326, 72, 0, 9,
+    28, 13, 4, 112, 6, 77, 1, 13, 93, 215, 362, 4, 4, 28, 0, 12,
+    62, 59, 59, 12, 2, 0, 9, 538, 69, 17, 309, 38, 43, 842, 361, 100,
+    209, 27, 0, 1, 16, 196, 5, 710, 55, 4, 8, 1205, 1205, 10, 23, 111,
+    60, 0, 20, 18, 43, 9, 247, 7, 9, 7, 5, 45, 67, 49, 48, 345,
+    351, 672, 51, 1, 16, 10, 1, 4, 1, 0, 156, 15, 65, 174, 149, 67,
+    45, 46, 35, 10, 8, 55, 18, 357, 7, 331, 464, 128, 2, 175, 546, 218,
+    631, 12, 100, 62, 5, 167, 4, 13, 455, 10, 19, 168, 109, 164, 6, 6,
+    52, 9, 1, 3, 0, 7, 9, 164, 14, 27, 229, 57, 212, 2, 68, 30,
+    166, 89, 359, 1, 51, 0, 6, 42, 11, 4, 752, 3, 84, 0, 565, 177,
+    0, 0, 2491, 6, 30, 13, 6, 5, 1, 84, 8, 2, 211, 35, 19, 1,
+    49, 335, 12, 26, 4, 10, 24, 247, 2, 57, 3, 368, 373, 14, 300, 210,
+    300, 644, 118, 0, 277, 124, 32, 3, 2, 25, 23, 95, 184, 3, 178, 10,
+]
+assert len(_REAL_TPE_TEMPLATE_256) == 256
 
 
 def _minimax_even_tpe(total: int) -> list[int]:
@@ -278,41 +284,41 @@ def _minimax_even_tpe(total: int) -> list[int]:
     return [base + 1 if i < extra else base for i in range(_MINIMAX_E)]
 
 
-def _minimax_normal_tpe(total: int, *, seed: int = 0, std_frac: float = 1.0 / 3.0) -> list[int]:
-    """Distribute ``total`` tokens across experts following a normal distribution.
+def _minimax_real_tpe(total: int, *, sort_desc: bool = False) -> list[int]:
+    """Resample the empirical 256-expert distribution down to 192 experts.
 
-    Samples per-expert counts from ``N(mean, (std_frac * mean) ** 2)`` where
-    ``mean = total / E``, clamps negatives to 0, rounds to integers, and then
-    corrects any drift so the list sums exactly to ``total``. The result is
-    deterministic for a given ``seed`` and contrasts with ``_minimax_even_tpe``
-    (uniform) and ``_minimax_uneven_tpe`` (bimodal hot/cold) by exercising a
-    realistic Gaussian-shaped load distribution across the 192 experts.
+    The template in ``_REAL_TPE_TEMPLATE_256`` is collapsed to
+    ``_MINIMAX_E`` buckets by summing every source expert into
+    ``floor(src_idx * E / 256)``, then proportionally rescaled so the
+    resulting list sums exactly to ``total`` (largest-remainder rounding).
+    This preserves the heavy-tailed shape (zeros + a few hot experts)
+    observed in real MoE routing.
+
+    When ``sort_desc=True`` the result is sorted descending so the hot
+    experts are grouped contiguously -- a worst case for grouped-GEMM
+    scheduling. When ``sort_desc=False`` the as-measured ordering is
+    kept, exercising the realistic interleaved layout.
     """
     E = _MINIMAX_E
-    mean = total / E
-    std = max(std_frac * mean, 1.0)
-    g = torch.Generator(device="cpu").manual_seed(seed)
-    samples = torch.normal(mean=mean, std=std, size=(E,), generator=g)
-    samples = samples.clamp_(min=0.0).round().to(torch.int64)
-    tpe = samples.tolist()
-    # Correct any drift so the list sums exactly to ``total``. Spread the
-    # adjustment one-token-at-a-time across experts (largest first when we
-    # need to subtract, smallest first when we need to add) to preserve the
-    # overall Gaussian shape without driving any entry negative.
-    diff = total - sum(tpe)
-    if diff != 0:
-        order = sorted(range(E), key=lambda i: tpe[i], reverse=(diff < 0))
-        step = 1 if diff > 0 else -1
-        i = 0
-        while diff != 0:
-            idx = order[i % E]
-            if step < 0 and tpe[idx] == 0:
-                i += 1
-                continue
-            tpe[idx] += step
-            diff -= step
-            i += 1
-    return tpe
+    src_len = len(_REAL_TPE_TEMPLATE_256)
+    # Aggregate 256 source experts into 192 buckets, preserving total mass.
+    buckets = [0] * E
+    for j, v in enumerate(_REAL_TPE_TEMPLATE_256):
+        buckets[j * E // src_len] += v
+    s = sum(buckets)
+    if s == 0:
+        return [0] * E
+    scaled = [v * total / s for v in buckets]
+    floored = [int(x) for x in scaled]
+    diff = total - sum(floored)
+    # Distribute the remaining ``diff`` tokens to the buckets with the
+    # largest fractional remainders (standard largest-remainder rounding).
+    remainders = sorted(range(E), key=lambda i: scaled[i] - floored[i], reverse=True)
+    for k in range(diff):
+        floored[remainders[k % E]] += 1
+    if sort_desc:
+        floored.sort(reverse=True)
+    return floored
 
 
 PREFILL_SHAPES = [
@@ -320,24 +326,24 @@ PREFILL_SHAPES = [
     # -- seq_len = 2K -> 16384 expert tokens, ~85/expert ---------------------
     ("minimax up  2K", _MINIMAX_E, _minimax_even_tpe(16384), _MINIMAX_N, _MINIMAX_K),
     ("minimax down 2K", _MINIMAX_E, _minimax_even_tpe(16384), _MINIMAX_K, _MINIMAX_N),
-    ("minimax skew up  2K", _MINIMAX_E, _minimax_uneven_tpe(16384), _MINIMAX_N, _MINIMAX_K),
-    ("minimax skew down 2K", _MINIMAX_E, _minimax_uneven_tpe(16384), _MINIMAX_K, _MINIMAX_N),
-    ("minimax norm up  2K", _MINIMAX_E, _minimax_normal_tpe(16384), _MINIMAX_N, _MINIMAX_K),
-    ("minimax norm down 2K", _MINIMAX_E, _minimax_normal_tpe(16384), _MINIMAX_K, _MINIMAX_N),
+    ("minimax real sort up  2K", _MINIMAX_E, _minimax_real_tpe(16384, sort_desc=True), _MINIMAX_N, _MINIMAX_K),
+    ("minimax real sort down 2K", _MINIMAX_E, _minimax_real_tpe(16384, sort_desc=True), _MINIMAX_K, _MINIMAX_N),
+    ("minimax real up  2K", _MINIMAX_E, _minimax_real_tpe(16384), _MINIMAX_N, _MINIMAX_K),
+    ("minimax real down 2K", _MINIMAX_E, _minimax_real_tpe(16384), _MINIMAX_K, _MINIMAX_N),
     # -- seq_len = 4K -> 32768 expert tokens, ~171/expert --------------------
     ("minimax up  4K", _MINIMAX_E, _minimax_even_tpe(32768), _MINIMAX_N, _MINIMAX_K),
     ("minimax down 4K", _MINIMAX_E, _minimax_even_tpe(32768), _MINIMAX_K, _MINIMAX_N),
-    ("minimax skew up  4K", _MINIMAX_E, _minimax_uneven_tpe(32768), _MINIMAX_N, _MINIMAX_K),
-    ("minimax skew down 4K", _MINIMAX_E, _minimax_uneven_tpe(32768), _MINIMAX_K, _MINIMAX_N),
-    ("minimax norm up  4K", _MINIMAX_E, _minimax_normal_tpe(32768), _MINIMAX_N, _MINIMAX_K),
-    ("minimax norm down 4K", _MINIMAX_E, _minimax_normal_tpe(32768), _MINIMAX_K, _MINIMAX_N),
+    ("minimax real sort up  4K", _MINIMAX_E, _minimax_real_tpe(32768, sort_desc=True), _MINIMAX_N, _MINIMAX_K),
+    ("minimax real sort down 4K", _MINIMAX_E, _minimax_real_tpe(32768, sort_desc=True), _MINIMAX_K, _MINIMAX_N),
+    ("minimax real up  4K", _MINIMAX_E, _minimax_real_tpe(32768), _MINIMAX_N, _MINIMAX_K),
+    ("minimax real down 4K", _MINIMAX_E, _minimax_real_tpe(32768), _MINIMAX_K, _MINIMAX_N),
     # -- seq_len = 8K -> 65536 expert tokens, ~341/expert --------------------
     ("minimax up  8K", _MINIMAX_E, _minimax_even_tpe(65536), _MINIMAX_N, _MINIMAX_K),
     ("minimax down 8K", _MINIMAX_E, _minimax_even_tpe(65536), _MINIMAX_K, _MINIMAX_N),
-    ("minimax skew up  8K", _MINIMAX_E, _minimax_uneven_tpe(65536), _MINIMAX_N, _MINIMAX_K),
-    ("minimax skew down 8K", _MINIMAX_E, _minimax_uneven_tpe(65536), _MINIMAX_K, _MINIMAX_N),
-    ("minimax norm up  8K", _MINIMAX_E, _minimax_normal_tpe(65536), _MINIMAX_N, _MINIMAX_K),
-    ("minimax norm down 8K", _MINIMAX_E, _minimax_normal_tpe(65536), _MINIMAX_K, _MINIMAX_N),
+    ("minimax real sort up  8K", _MINIMAX_E, _minimax_real_tpe(65536, sort_desc=True), _MINIMAX_N, _MINIMAX_K),
+    ("minimax real sort down 8K", _MINIMAX_E, _minimax_real_tpe(65536, sort_desc=True), _MINIMAX_K, _MINIMAX_N),
+    ("minimax real up  8K", _MINIMAX_E, _minimax_real_tpe(65536), _MINIMAX_N, _MINIMAX_K),
+    ("minimax real down 8K", _MINIMAX_E, _minimax_real_tpe(65536), _MINIMAX_K, _MINIMAX_N),
 ]
 
 
