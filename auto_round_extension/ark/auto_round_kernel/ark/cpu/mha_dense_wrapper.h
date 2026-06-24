@@ -49,6 +49,17 @@
 // reusable launcher/prologue/packer building blocks. The next step is
 // `mha_stable_interface_t`.
 //
+// Phase 2, step 3 migrates the stable-softmax attention interface itself:
+//   * attn_fwd_args_t<Q_T, K_T, V_T, DST_T> (typed-pointer argument bundle that
+//     the wrapper consumes; mirrors Neural Speed's templated wrapper struct)
+//   * mha_stable_interface_t<L_Max, L_Scale> (PrologueQ/K/S/V, QK*/PV* arg
+//     typedefs, GemmQK/GemmPV, M_TILE/RT_ISA, and the full `compute()` flash
+//     attention launcher: QxK -> stable softmax -> PxV).
+// Runtime dispatch (sdpa.cpp / ark.cpp) and the dtype-specialized
+// `bestla_fusion_attn_forward` overloads are still NOT wired here; the
+// `instantiation_check` namespace only pins the interface to concrete BestLA
+// cores so it is type-checked / compiled at this step.
+//
 // API-drift notes vs Neural Speed's BestLA:
 //   * ARK's `kernel::wrapper::ScaleTrackMax::forward` takes an extra
 //     `padding_type` argument (0=dense, 1=causal, 2=right-padding) that Neural
@@ -72,16 +83,36 @@
 //     Neural Speed) so that GEMV path is bypassed; only the member typedefs
 //     (`GemmCore/Param/AType/BType/CType/ISA/PrologueA/PrologueB/Epilogue`) are
 //     inherited, all of which the ARK base exposes under the same names.
+//   * Neural Speed's stable interface only handles dense + causal masking. ARK
+//     adds an `ATTN_FLAG_PADDING_RIGHT` route: when set, `compute()` clamps the
+//     unmasked K/V region to `attn_fwd_args_t::n_padding` and drives the QK
+//     epilogue with `scale_track_max_t::Param::padding_type = 2`
+//     (`causal_offset = n_padding`). ARK's `ScaleTrackMax` ref/AVX2/AVX512F
+//     paths implement padding_type 2; the int8/fp16 paths assert it off, so the
+//     right-padding route is currently fp32-score only (scaffolding).
+//   * Neural Speed reaches the running CPU device through `GetCPUDevice()` and a
+//     `NS_TP_MODEL` tensor-parallel block. ARK keeps `GetCPUDevice()` (vendored
+//     BestLA macro) but drops the TP block (`k_offset = 0`,
+//     `log_head_num = head_num`); alibi slope math is otherwise identical.
+//   * Neural Speed's wrapper struct is `ne_bestla::custom::mha::attn_fwd_args_t
+//     <...>` with bare `ne_attn_flags_t`. ARK mirrors it as
+//     `bestla_mha::attn_fwd_args_t<...>` using ARK's `attn_flags_t` /
+//     `ATTN_FWD_LAYOUT` (from mha_dense.h) and adds the `n_padding` field. The
+//     non-templated `ark::cpu::attn_fwd_args_t` (Phase 1, void* pointers) is the
+//     public C-style ABI struct and is unrelated to this typed wrapper struct.
 // -----------------------------------------------------------------------------
 
+#include <algorithm>
 #include <cassert>
 #include <cmath>
 #include <cstddef>
+#include <cstdint>
 #include <cstring>
 #include <functional>
 #include <type_traits>
 
 #include "bestla/bestla.h"
+#include "bestla/bestla_device.h"
 #include "bestla/bestla_gemm.h"
 #include "bestla/bestla_parallel.h"
 #include "bestla/bestla_storage.h"
@@ -122,6 +153,41 @@ inline float mha_exp_ref(float x) {
   return std::exp(x);
 #endif
 }
+
+/**
+ * @brief Typed-pointer argument bundle consumed by `mha_stable_interface_t`.
+ *
+ * Direct port of Neural Speed's `ne_bestla::custom::mha::attn_fwd_args_t<...>`.
+ * Unlike the public, void*-erased `ark::cpu::attn_fwd_args_t` (Phase 1, in
+ * mha_dense.h), this struct carries fully-typed Q/K/V/dst pointers so the
+ * wrapper can do element-wise pointer arithmetic with the per-tensor `step_*`
+ * strides. Layout is therefore stride-driven only: no concrete [B,H,N,D] /
+ * [B,N,H,D] order is assumed here.
+ *
+ * ARK drift vs Neural Speed (see file header):
+ *   * `ne_attn_flags_t` -> ARK `attn_flags_t`; `ATTN_FWD_LAYOUT` is shared.
+ *   * Adds `n_padding` to drive the `ATTN_FLAG_PADDING_RIGHT` route.
+ */
+template <typename Q_T, typename K_T, typename V_T, typename DST_T>
+struct attn_fwd_args_t {
+  Q_T* Q;
+  K_T* K;
+  V_T* V;
+  DST_T* dst;
+  float Q_sc, K_sc, V_sc, dst_sc;
+  char* tmp;
+  float QK_scale;
+  attn_flags_t attn_flags;
+  int batch_size, head_num, heads_kv, head_size, sl_q, sl_kv;
+  ATTN_FWD_LAYOUT Q_layout, K_layout, V_layout, dst_layout;
+  int step_q_bs, step_q_head_num, step_q_sl;
+  int step_k_bs, step_k_head_num, step_k_sl, step_k_head_size;
+  int step_v_bs, step_v_head_num, step_v_sl, step_v_head_size;
+  int step_dst_bs, step_dst_head_num, step_dst_sl;
+  // Number of valid (non-padding) K/V positions when ATTN_FLAG_PADDING_RIGHT is
+  // set (ARK addition; ignored otherwise).
+  int n_padding = 0;
+};
 
 /**
  * @brief Epilogue that scales the fp32 GEMM result (optionally per-row), casts
@@ -747,6 +813,278 @@ class weight_cvt_f16_n_tile24_t {  // convert fp16 weight to fp32 using F16C
   }
 };
 
+/**
+ * @brief MHA interface with N-dim parallelism & stable (flash-attention)
+ * softmax. Port of Neural Speed's `mha_stable_interface_t`.
+ *
+ * @tparam L_Max   Launcher of the QxK matmul; tracks the running per-row max
+ *                 (the m_i of the stable softmax) via a `scale_track_max_t`
+ *                 epilogue.
+ * @tparam L_Scale Launcher of the PxV matmul; scales the accumulated output by
+ *                 1/l_i (and the dequant scales) in its epilogue.
+ *
+ * Both launchers are `launcher_base_weight_t` (N-dim parallel). The interface is
+ * layout-agnostic: it only reads the `step_*` strides of `attn_fwd_args_t`, so
+ * HND ([B,H,N,D]) and NHD ([B,N,H,D]) operands are both supported by passing the
+ * appropriate strides. See the file header for the ARK BestLA API drift this
+ * port absorbs (`COMPUTE` vs `COMP`, dropped TP block, PADDING_RIGHT route).
+ */
+template <class L_Max, class L_Scale>
+class mha_stable_interface_t {
+  template <class EpiArgs, bool HAS_SCALE, class T>
+  static inline typename std::enable_if<!HAS_SCALE, EpiArgs>::type composeEpiArgs(float*, T* dst, int ld_dst) {
+    return {dst, ld_dst};
+  }
+  template <class EpiArgs, bool HAS_SCALE, class T>
+  static inline typename std::enable_if<HAS_SCALE, EpiArgs>::type composeEpiArgs(float* scale, T* dst, int ld_dst) {
+    return {scale, dst, ld_dst};
+  }
+
+ public:
+  using PrologueQ = typename L_Max::PrologueA;
+  using PrologueK = typename L_Max::PrologueB;
+  using QKProQArgs = typename PrologueQ::Param;
+  using QKProKArgs = typename PrologueK::Param;
+  using QKArgs = typename L_Max::Param;
+  using QKEpiArgs = typename L_Max::EpiParam;
+
+  using PrologueS = typename L_Scale::PrologueA;
+  using PrologueV = typename L_Scale::PrologueB;
+  using PVProPArgs = typename PrologueS::Param;
+  using PVProVArgs = typename PrologueV::Param;
+  using PVArgs = typename L_Scale::Param;
+  using PVEpiArgs = typename L_Scale::EpiParam;
+
+  using GemmQK = typename L_Max::GemmCore;
+  using GemmPV = typename L_Scale::GemmCore;
+  using Q_T = typename std::remove_const<typename std::remove_pointer<decltype(QKProQArgs::A)>::type>::type;
+  using K_T = typename PrologueK::SType;
+  using V_T = typename PrologueV::SType;
+  using DST_T = typename L_Scale::Epilogue::DType;
+
+  static constexpr auto RT_ISA = std::max(L_Max::RT_ISA, L_Scale::RT_ISA);
+
+  static_assert(GemmQK::MTILE == GemmPV::MTILE, "2 GEMM should have the same M_TILE.");
+  static constexpr auto M_TILE = GemmQK::MTILE;
+
+  BTLA_CODE compute(const attn_fwd_args_t<Q_T, K_T, V_T, DST_T>& p, parallel::IThreading& th) {
+    assert((std::is_same<Q_T, int8_t>::value || p.Q_sc == 1));
+    assert((std::is_same<K_T, int8_t>::value || p.K_sc == 1));
+    assert((std::is_same<V_T, int8_t>::value || p.V_sc == 1));
+    assert((std::is_same<DST_T, int8_t>::value || p.dst_sc == 1));
+
+    assert((p.Q_layout == ATTN_FWD_LAYOUT_PLAIN && p.dst_layout == ATTN_FWD_LAYOUT_PLAIN));
+    assert((p.K_layout == ATTN_FWD_LAYOUT_PLAIN ||
+            (std::is_same<K_T, int8_t>::value && p.K_layout == ATTN_FWD_LAYOUT_NTILE48_ROWPACK4) ||
+            (std::is_same<K_T, utils::bf16>::value && p.K_layout == ATTN_FWD_LAYOUT_NTILE48_ROWPACK2) ||
+            (std::is_same<K_T, utils::fp16>::value && p.K_layout == ATTN_FWD_LAYOUT_NTILE24_ROWPACK1)));
+    assert((p.V_layout == ATTN_FWD_LAYOUT_PLAIN ||
+            (std::is_same<V_T, int8_t>::value && p.V_layout == ATTN_FWD_LAYOUT_NTILE48_ROWPACK4) ||
+            (std::is_same<V_T, utils::bf16>::value && p.V_layout == ATTN_FWD_LAYOUT_NTILE48_ROWPACK2) ||
+            (std::is_same<V_T, utils::fp16>::value && p.V_layout == ATTN_FWD_LAYOUT_NTILE24_ROWPACK1)));
+
+    assert((!std::is_same<  //
+               PrologueK, weight_forward_n_tile48_t<typename L_Max::GemmCore>>::value) ||
+           p.K_layout == ATTN_FWD_LAYOUT_NTILE48_ROWPACK4 ||
+           p.K_layout == ATTN_FWD_LAYOUT_NTILE48_ROWPACK2);  // WeightForward needs a preprocessed layout
+
+    assert((!std::is_same<  //
+               PrologueV, weight_forward_n_tile48_t<typename L_Scale::GemmCore>>::value) ||
+           p.V_layout == ATTN_FWD_LAYOUT_NTILE48_ROWPACK4 ||
+           p.V_layout == ATTN_FWD_LAYOUT_NTILE48_ROWPACK2);  // WeightForward needs a preprocessed layout
+
+    assert((p.K_layout != ATTN_FWD_LAYOUT_PLAIN || p.step_v_head_size == 1));
+    assert((p.V_layout != ATTN_FWD_LAYOUT_PLAIN || p.step_k_sl == 1));
+    const auto num_heads = p.batch_size * p.head_num;  // Total number of heads
+    GetCPUDevice();
+    const bool is_causal = (p.attn_flags & ATTN_FLAG_IS_CAUSAL) != 0;
+    const bool is_alibi = (p.attn_flags & ATTN_FLAG_IS_ALIBI8) != 0;  // only support alibi with 8 now
+    const bool is_tanh = (p.attn_flags & ATTN_FLAG_IS_TANH30) != 0;   // only support tanh with 30 now
+    const bool prefer_fp32 = (p.attn_flags & ATTN_FLAG_PREFER_FP32) != 0;
+    // ARK addition: right-padded variable-length batch (see file header).
+    const bool is_padding = (p.attn_flags & ATTN_FLAG_PADDING_RIGHT) != 0;
+
+    // prefer_fp32 requires both GEMMs to be fp32 compute cores.
+    assert(("prefer_fp32 not followed!",  //
+            !prefer_fp32 || (GemmQK::COMP == bestla::gemm::CompType::COMP_FP32 &&
+                             GemmPV::COMP == bestla::gemm::CompType::COMP_FP32)));
+    (void)prefer_fp32;
+    assert(("qlen should be no greater then klen/vlen!", !is_causal || p.sl_q <= p.sl_kv));
+    assert(!is_causal || p.sl_q <= p.sl_kv);
+    assert(("head_num must be a multiple of heads_kv!", p.head_num % p.heads_kv == 0));
+    const auto group_heads = p.head_num / p.heads_kv;  // GQA: ihkv = ihn / group_heads
+    const auto sl_diff = p.sl_kv - p.sl_q;
+    // ARK addition: number of valid K/V positions for the right-padding route.
+    const auto padded_kv = is_padding ? std::min(p.sl_kv, p.n_padding) : p.sl_kv;
+
+    // ARK drift: Neural Speed adjusts these under NS_TP_MODEL; ARK has no TP.
+    const int32_t k_offset = 0;
+    const int32_t log_head_num = p.head_num;
+
+    // alibi slope
+    const int n_heads_log2_floor = 1 << static_cast<int>(floor(log2(log_head_num)));
+    const float m0 = powf(2.0f, -(8.f) / n_heads_log2_floor);         // 8.f is a param of alibi but hardcode now
+    const float m1 = powf(2.0f, -(8.f / 2.0f) / n_heads_log2_floor);  // 8.f is a param of alibi but hardcode now
+    const float tanh_scale = is_tanh ? 30.f : 0.f;                    // 30.f is a param of tanh but hardcode now
+
+    const auto m_tiles = utils::updiv(p.sl_q, M_TILE);
+    const auto num_tasks = num_heads * m_tiles;
+
+    using Scheduler2D = bestla::parallel::Scheduler2D;
+    const Scheduler2D parl({th.num_threads(), {num_tasks, 1}, {1, 1}, {0, 0}});  // main parallel scheduler
+
+    th.parallel_for([&](int tid) {
+      const int tmp_s_size = M_TILE * utils::padto(utils::padto(p.sl_kv, GemmQK::NTILE), GemmPV::KTILE);
+      const int tmp_bytes = tmp_s_size * sizeof(float);  // S & exp
+      const auto tmp_s = reinterpret_cast<float*>(p.tmp + tid * tmp_bytes);
+      using PType = typename GemmPV::AType;
+      const auto tmp_p = reinterpret_cast<PType*>(tmp_s);  // overwrite tmp_s row-wisely
+
+      // calculate mm + softmax + mm
+      {
+        typename parallel::ThreadProblem2D thdp{tid};
+        parl.getIndex(thdp);
+        const auto [task_start, _assert0] = thdp.loc;
+        auto [task_size, _assert_max1] = thdp.size;
+        assert(task_size == 0 || _assert0 == 0);
+        assert(task_size == 0 || _assert_max1 == 1 || _assert_max1 == 0);
+        if (_assert_max1 == 0 || !thdp.valid) task_size = 0;
+
+        for (int task_id = task_start; task_id < task_start + task_size; ++task_id) {
+          const int ibat = task_id / m_tiles;
+          const int i_m = task_id % m_tiles * M_TILE;
+          const int ibs = ibat / p.head_num;
+          const int ihn = ibat % p.head_num;
+          const int ihkv = ihn / group_heads;  // GQA mapping
+          const int m_size = std::min(M_TILE, p.sl_q - i_m);
+
+          const auto alibi_ihn_m = !is_alibi ? 0.f
+                                   : (ihn + k_offset < n_heads_log2_floor)
+                                       ? powf(m0, ihn + k_offset + 1)
+                                       : powf(m1, 2 * (ihn + k_offset - n_heads_log2_floor) + 1);
+
+          float s_max[M_TILE]{};  // maximum for each row of the S matrix
+          std::fill_n(s_max, M_TILE, -INFINITY);
+
+          // ptr to Q / K / V / dst matrix of the current head (stride-driven)
+          const auto head_q = p.Q + ibs * p.step_q_bs + ihn * p.step_q_head_num;
+          const auto head_k = p.K + ibs * p.step_k_bs + ihkv * p.step_k_head_num;
+          const auto head_v = p.V + ibs * p.step_v_bs + ihkv * p.step_v_head_num;
+          const auto head_dst = p.dst + ibs * p.step_dst_bs + ihn * p.step_dst_head_num;
+          const auto unmasked_size = is_causal ? std::min(p.sl_kv, sl_diff + i_m + M_TILE - 1 + 1)
+                                     : is_padding ? padded_kv
+                                                  : p.sl_kv;
+
+          const auto unmasked_size_pad_qk = std::min(p.sl_kv, utils::padto(unmasked_size, GemmQK::NTILE));
+          const auto unmasked_size_pad_pv = std::min(p.sl_kv, utils::padto(unmasked_size, GemmPV::KTILE));
+          const int ld_tmp_s = utils::padto(utils::padto(unmasked_size_pad_pv, GemmQK::NTILE), GemmPV::KTILE);
+          static_assert(sizeof(float) >= sizeof(PType), "PType exceeded float size!");
+          const int ld_tmp_p = ld_tmp_s * sizeof(float) / sizeof(PType);
+          const auto qk_prok_ldb = p.step_k_sl == 1                                 ? p.step_k_head_size
+                                   : p.K_layout == ATTN_FWD_LAYOUT_NTILE48_ROWPACK4 ? p.step_k_sl
+                                   : p.K_layout == ATTN_FWD_LAYOUT_NTILE48_ROWPACK2 ? p.step_k_sl
+                                   : p.K_layout == ATTN_FWD_LAYOUT_NTILE24_ROWPACK1 ? p.step_k_sl
+                                                                                    : (assert(0), 0);
+
+          typename parallel::gemm::ThreadProblemBase tpQK{
+              /* ThreadProblem2D */ {tid, {}, {i_m, 0}, {m_size, unmasked_size_pad_qk}, true},
+              /* .block = */ {M_TILE, GemmQK::NTILE, p.head_size},
+              /* .stacksize = */ _cd->getL2CacheSize(),
+              /* .tmpcachesize = */ _cd->getL2CacheSize(),
+          };
+          l_qk.run(  // QxK => S ==exp==> P
+              QKArgs{
+                  utils::GemmProblem{
+                      /* .batch */ 1,
+                      /* .M = */ p.sl_q,
+                      /* .N = */ unmasked_size_pad_qk,
+                      /* .K = */ p.head_size,
+                  },
+                  /* .paramA = */
+                  QKProQArgs{
+                      head_q,
+                      p.step_q_sl,
+                  },
+                  /* .paramB = */
+                  QKProKArgs{
+                      /* .B = */ head_k,
+                      /* .ldb = */ qk_prok_ldb,
+                      /* .is_padded = */ true,
+                  },  // K should be pre-transposed
+                  /* .paramC = */
+                  QKEpiArgs{
+                      /* .dst = */ tmp_s - i_m * ld_tmp_s,  // pretend that there is a whole S mat
+                      /* .dst_max = */ s_max - i_m,         // pretend that there is a whole S mat
+                      /* .ld_dst = */ ld_tmp_s,
+                      /* .scale = */ p.QK_scale * p.Q_sc * p.K_sc / (tanh_scale == 0 ? 1.0f : tanh_scale),
+                      // ARK: padding_type encodes the mask mode; causal reuses
+                      // sl_diff, right-padding reuses the n_padding boundary.
+                      /* .causal_offset = */ is_causal ? sl_diff : (is_padding ? padded_kv : -1),
+                      /* .alibi_slope = */ alibi_ihn_m,
+                      /* .tanh_scale = */ tanh_scale,
+                      /* .padding_type = */ is_causal ? 1 : (is_padding ? 2 : 0),
+                  },
+              },
+              tpQK);
+
+          // softmax (with pre-computed row_max)
+          const auto unmasked_size_start = is_causal ? std::min(sl_diff + i_m + 1, p.sl_kv)
+                                           : is_padding ? padded_kv
+                                                        : p.sl_kv;
+          float expsum[M_TILE]{};  // sum of exp for each row of the S matrix
+          const auto softmax_npad_size = utils::padto(unmasked_size_pad_pv, GemmPV::KTILE);
+          inplace_precompute_max_softmax_t<float, PType>::template forward<RT_ISA>(  //
+              m_size, unmasked_size_start, softmax_npad_size,                        // m / n
+              is_causal, tmp_s, tmp_p, s_max, expsum, ld_tmp_s, ld_tmp_p);           //
+
+          const auto pv_scale = expsum;
+          // PV scale composition: V_sc / dst_sc (with the int8 1/UINT8_MAX
+          // dequant factor scaffolded in, matching Neural Speed).
+          for (int i = 0; i < M_TILE; ++i) pv_scale[i] = p.V_sc / UINT8_MAX / expsum[i] / p.dst_sc;
+
+          const auto pv_prov_ldb = p.step_v_head_size == 1                          ? p.step_v_sl
+                                   : p.V_layout == ATTN_FWD_LAYOUT_NTILE48_ROWPACK4 ? p.step_v_head_size
+                                   : p.V_layout == ATTN_FWD_LAYOUT_NTILE48_ROWPACK2 ? p.step_v_head_size
+                                   : p.V_layout == ATTN_FWD_LAYOUT_NTILE24_ROWPACK1 ? p.step_v_head_size
+                                                                                    : (assert(0), 0);
+
+          typename parallel::gemm::ThreadProblemBase tpPV{
+              /* ThreadProblem2D */ {tid, {}, {0, 0}, {m_size, p.head_size}, true},
+              /* .block = */ {M_TILE, GemmPV::NTILE, unmasked_size_pad_pv},
+              /* .stacksize = */ _cd->getL2CacheSize(),
+              /* .tmpcachesize = */ _cd->getL2CacheSize(),
+          };
+          l_pv.run(  // PxV => O
+              PVArgs{
+                  utils::GemmProblem{
+                      /* .batch */ 1,
+                      /* .M = */ std::min(p.sl_q - i_m, M_TILE),
+                      /* .N = */ p.head_size,
+                      /* .K = */ unmasked_size_pad_pv,
+                  },
+                  /* .paramA = */ PVProPArgs{tmp_p, ld_tmp_p},
+                  /* .paramB = */
+                  PVProVArgs{
+                      /* .B = */ head_v,
+                      /* .ldb = */ pv_prov_ldb,
+                      /* .is_padded = */ true,
+                  },
+                  /* .paramC = */
+                  composeEpiArgs<PVEpiArgs, std::is_same<V_T, int8_t>::value>(  //
+                      pv_scale, head_dst + i_m * p.step_dst_sl, p.step_dst_sl),
+              },
+              tpPV);
+        }
+      }
+    });
+    return BTLA_CODE::Success;
+  }
+
+ protected:
+  L_Max l_qk;
+  L_Scale l_pv;
+};
+
 // ---------------------------------------------------------------------------
 // Concrete instantiations / syntax-checks against the ARK vendored BestLA cores.
 // These mirror Neural Speed's *NonTr / *Trans aliases and pin each migrated
@@ -791,6 +1129,34 @@ using PackFp16Trans = WeightPackBatchFp16Bf16Trans<CoreAmxBf16>;
 using ForwardNTile48 = weight_forward_n_tile48_t<CoreAvx512f>;
 using CvtBf16NTile48 = weight_cvt_bf16_ntile48_t<CoreAvx512f>;
 using CvtFp16NTile24 = weight_cvt_f16_n_tile24_t<CoreAvx2>;
+
+// ---------------------------------------------------------------------------
+// Stable-interface syntax-checks. Each pins mha_stable_interface_t to a concrete
+// QK (track-max) + PV (write-back) launcher pair so compute() is fully
+// type-checked / compiled here. Compositions mirror Neural Speed's
+// bestla_fusion_attn_forward specializations (which land in the next step).
+// ---------------------------------------------------------------------------
+
+// AVX2: SCoreRowNAvx2<24, 4> path (fp32 scores, fp16->fp32 N-tile-24 weights).
+using QKTrackMaxAvx2 = launcher_base_weight_t<CoreAvx2, prologue_a::gemm::ActivationBase, weight_cvt_f16_n_tile24_t,
+                                              ScaleTrackMaxFp32Fp32>;
+using PVWriteBackAvx2 = launcher_base_weight_t<CoreAvx2, activation_identity_t, weight_cvt_f16_n_tile24_t,
+                                               epilogue::gemm::AccumulatorWriteBackFp32>;
+using MhaStableAvx2 = mha_stable_interface_t<QKTrackMaxAvx2, PVWriteBackAvx2>;
+
+// AVX512F: SCoreRowNAvx512f<48, 8> path (fp32 scores, bf16->fp32 N-tile-48).
+using QKTrackMaxAvx512f = launcher_base_weight_t<CoreAvx512f, prologue_a::gemm::ActivationBase,
+                                                 weight_cvt_bf16_ntile48_t, ScaleTrackMaxFp32Fp32>;
+using PVWriteBackAvx512f = launcher_base_weight_t<CoreAvx512f, activation_identity_t, weight_cvt_bf16_ntile48_t,
+                                                  epilogue::gemm::AccumulatorWriteBackFp32>;
+using MhaStableAvx512f = mha_stable_interface_t<QKTrackMaxAvx512f, PVWriteBackAvx512f>;
+
+// AMX BF16: HCoreRowNAmxbf16<48, 16> path (already-laid-out N-tile-48 weights).
+using QKTrackMaxAmxBf16 = launcher_base_weight_t<CoreAmxBf16, prologue_a::gemm::ActivationConverterFp32,
+                                                 weight_forward_n_tile48_t, ScaleTrackMaxFp32Fp32>;
+using PVWriteBackAmxBf16 = launcher_base_weight_t<CoreAmxBf16, activation_identity_t, weight_forward_n_tile48_t,
+                                                  epilogue::gemm::AccumulatorWriteBackFp32>;
+using MhaStableAmxBf16 = mha_stable_interface_t<QKTrackMaxAmxBf16, PVWriteBackAmxBf16>;
 }  // namespace instantiation_check
 
 }  // namespace bestla_mha
