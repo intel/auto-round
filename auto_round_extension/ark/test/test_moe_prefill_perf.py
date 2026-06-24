@@ -194,32 +194,33 @@ def _compute_moe_flops(total_tokens, K, N, num_experts_active):
 # ---------------------------------------------------------------------------
 # Shape matrix for prefill
 #
-# Shapes follow MiniMax-Text-01 / MiniMax-M1 MoE config:
-#   hidden_size       = 6144   (K for up/gate-proj, N for down-proj)
-#   intermediate_size = 9216   (N for up/gate-proj, K for down-proj)
-#   num_local_experts = 32
-#   num_experts_per_tok = 2    (top-2 routing)
+# Shapes follow MiniMax-M2 MoE config:
+#   hidden_size         = 3072   (K for up/gate-proj, N for down-proj)
+#   intermediate_size   = 1536   (N for up/gate-proj, K for down-proj)
+#   num_local_experts   = 192
+#   num_experts_per_tok = 8      (top-8 routing)
 #
 # Total expert-token count per row = seq_len * top_k. Rows are labelled by
 # the originating sequence length (1K/2K/4K). Tokens are distributed
-# evenly across the 32 experts, except for the "uneven" rows which keep a
+# evenly across the 192 experts, except for the "skew" rows which keep a
 # skewed distribution to exercise load imbalance.
 # ---------------------------------------------------------------------------
 
 
 def _minimax_uneven_tpe(total: int) -> list[int]:
-    """Return a skewed token-per-expert list of length 32 summing to ``total``.
+    """Return a skewed token-per-expert list of length 192 summing to ``total``.
 
-    Mimics the load imbalance commonly observed with top-2 routing on 32
-    experts: a handful of experts get ~2x the mean, a handful get ~0.5x,
+    Mimics the load imbalance commonly observed with top-8 routing on 192
+    experts: ~12 experts get ~2x the mean ("hot"), ~12 get ~0.5x ("cold"),
     the rest stay near the mean.
     """
-    E = 32
-    mean = total // E
+    E = 192
+    mean = max(total // E, 1)
     tpe = [mean] * E
-    # Skew: indices 0..5 are "hot", 6..11 are "cold", rest are mean.
-    bumps = [(0, +mean), (1, +mean), (2, +mean // 2), (3, +mean // 2), (4, +mean // 2), (5, +mean // 2)]
-    drops = [(6, -mean), (7, -mean), (8, -mean // 2), (9, -mean // 2), (10, -mean // 2), (11, -mean // 2)]
+    # Hot: 6 indices get +mean, 6 get +mean//2.
+    bumps = [(i, +mean) for i in range(0, 6)] + [(i, +mean // 2) for i in range(6, 12)]
+    # Cold: 6 indices get -mean, 6 get -mean//2.
+    drops = [(i, -mean) for i in range(12, 18)] + [(i, -mean // 2) for i in range(18, 24)]
     for i, d in bumps + drops:
         tpe[i] += d
     # Fix any rounding drift so the list sums exactly to ``total``.
@@ -228,26 +229,26 @@ def _minimax_uneven_tpe(total: int) -> list[int]:
     return tpe
 
 
-# top-2 routing means total expert tokens = seq_len * 2.
-_MINIMAX_E = 32
-_MINIMAX_N = 9216  # intermediate_size (gate/up output)
-_MINIMAX_K = 6144  # hidden_size
+# top-8 routing means total expert tokens = seq_len * 8.
+_MINIMAX_E = 192
+_MINIMAX_N = 1536  # intermediate_size (gate/up output)
+_MINIMAX_K = 3072  # hidden_size
 
 PREFILL_SHAPES = [
     # (label, num_experts, tokens_per_expert_list, N, K)
-    # -- seq_len = 1K -> 2048 expert tokens, ~64/expert ----------------------
-    ("minimax up  1K", _MINIMAX_E, [64] * _MINIMAX_E, _MINIMAX_N, _MINIMAX_K),
-    ("minimax down 1K", _MINIMAX_E, [64] * _MINIMAX_E, _MINIMAX_K, _MINIMAX_N),
-    # -- seq_len = 2K -> 4096 expert tokens, ~128/expert ---------------------
-    ("minimax up  2K", _MINIMAX_E, [128] * _MINIMAX_E, _MINIMAX_N, _MINIMAX_K),
-    ("minimax down 2K", _MINIMAX_E, [128] * _MINIMAX_E, _MINIMAX_K, _MINIMAX_N),
-    ("minimax skew up  2K", _MINIMAX_E, _minimax_uneven_tpe(4096), _MINIMAX_N, _MINIMAX_K),
-    ("minimax skew down 2K", _MINIMAX_E, _minimax_uneven_tpe(4096), _MINIMAX_K, _MINIMAX_N),
-    # -- seq_len = 4K -> 8192 expert tokens, ~256/expert ---------------------
-    ("minimax up  4K", _MINIMAX_E, [256] * _MINIMAX_E, _MINIMAX_N, _MINIMAX_K),
-    ("minimax down 4K", _MINIMAX_E, [256] * _MINIMAX_E, _MINIMAX_K, _MINIMAX_N),
-    ("minimax skew up  4K", _MINIMAX_E, _minimax_uneven_tpe(8192), _MINIMAX_N, _MINIMAX_K),
-    ("minimax skew down 4K", _MINIMAX_E, _minimax_uneven_tpe(8192), _MINIMAX_K, _MINIMAX_N),
+    # -- seq_len = 1K -> 8192 expert tokens, ~42/expert ----------------------
+    ("minimax up  1K", _MINIMAX_E, [8192 // _MINIMAX_E] * _MINIMAX_E, _MINIMAX_N, _MINIMAX_K),
+    ("minimax down 1K", _MINIMAX_E, [8192 // _MINIMAX_E] * _MINIMAX_E, _MINIMAX_K, _MINIMAX_N),
+    # -- seq_len = 2K -> 16384 expert tokens, ~85/expert ---------------------
+    ("minimax up  2K", _MINIMAX_E, [16384 // _MINIMAX_E] * _MINIMAX_E, _MINIMAX_N, _MINIMAX_K),
+    ("minimax down 2K", _MINIMAX_E, [16384 // _MINIMAX_E] * _MINIMAX_E, _MINIMAX_K, _MINIMAX_N),
+    ("minimax skew up  2K", _MINIMAX_E, _minimax_uneven_tpe(16384), _MINIMAX_N, _MINIMAX_K),
+    ("minimax skew down 2K", _MINIMAX_E, _minimax_uneven_tpe(16384), _MINIMAX_K, _MINIMAX_N),
+    # -- seq_len = 4K -> 32768 expert tokens, ~170/expert --------------------
+    ("minimax up  4K", _MINIMAX_E, [32768 // _MINIMAX_E] * _MINIMAX_E, _MINIMAX_N, _MINIMAX_K),
+    ("minimax down 4K", _MINIMAX_E, [32768 // _MINIMAX_E] * _MINIMAX_E, _MINIMAX_K, _MINIMAX_N),
+    ("minimax skew up  4K", _MINIMAX_E, _minimax_uneven_tpe(32768), _MINIMAX_N, _MINIMAX_K),
+    ("minimax skew down 4K", _MINIMAX_E, _minimax_uneven_tpe(32768), _MINIMAX_K, _MINIMAX_N),
 ]
 
 

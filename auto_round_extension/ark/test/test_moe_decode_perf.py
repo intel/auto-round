@@ -168,26 +168,26 @@ def _default_moe_decode(activations, dequant_weights, num_tokens_per_expert):
 # ---------------------------------------------------------------------------
 # Shape matrix.
 #
-# Shapes follow MiniMax-Text-01 / MiniMax-M1 MoE config:
-#   hidden_size       = 6144   (K for up-proj, N for down-proj)
-#   intermediate_size = 9216   (N for up-proj, K for down-proj)
-#   num_local_experts = 32
-#   num_experts_per_tok = 2    (top-2 routing -> 2 active experts at decode)
+# Shapes follow MiniMax-M2 MoE config:
+#   hidden_size         = 3072   (K for gate/up-proj, N for down-proj)
+#   intermediate_size   = 1536   (N for gate/up-proj, K for down-proj)
+#   num_local_experts   = 192
+#   num_experts_per_tok = 8      (top-8 routing -> 8 active experts at decode)
 #
 # ``tokens_per_expert`` follows the expected decode-phase pattern
-# (batch=1, top-2 routing: exactly two experts see one token each, the
-# remaining 30 experts are idle).
+# (batch=1, top-8 routing: exactly eight experts see one token each, the
+# remaining 184 experts are idle).
 # ---------------------------------------------------------------------------
 
-# MiniMax decode: batch=1, top-2 of 32. Two arbitrary experts get 1 token each.
-_MINIMAX_TPE = [0] * 32
-_MINIMAX_TPE[5] = 1
-_MINIMAX_TPE[19] = 1
+# MiniMax-M2 decode: batch=1, top-8 of 192. Eight arbitrary experts get 1 token.
+_MINIMAX_TPE = [0] * 192
+for _i in (3, 17, 42, 73, 88, 121, 150, 181):
+    _MINIMAX_TPE[_i] = 1
 
 DECODE_SHAPES = [
     # (label, num_experts, tokens_per_expert, N, K)
-    ("minimax up  ", 32, list(_MINIMAX_TPE), 9216, 6144),  # gate/up-proj
-    ("minimax down", 32, list(_MINIMAX_TPE), 6144, 9216),  # down-proj
+    ("minimax up  ", 192, list(_MINIMAX_TPE), 1536, 3072),  # gate/up-proj
+    ("minimax down", 192, list(_MINIMAX_TPE), 3072, 1536),  # down-proj
 ]
 
 
