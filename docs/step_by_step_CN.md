@@ -567,6 +567,40 @@ ar.quantize_and_save(output_dir, format="auto_round")
 - 与标准 `--iters 0 --disable_opt_rtn` 流程对所有受支持的 scheme **位级等价**
 
 <details>
+  <summary>Model-free 并行量化基准（分钟向上取整）</summary>
+
+时间归一化规则：所有 `mm:ss` 均向上取整到分钟。例如：`4:20 -> 5`、`15:45 -> 16`、`9:07 -> 10`、`7:29 -> 8`、`4:09 -> 5`。
+
+| 模型 | 设备 | 方案 | 并行度 | 峰值显存 (G) | 耗时（分钟，向上取整） |
+|---|---|---|---:|---:|---:|
+| Qwen/Qwen3-Next-80B-A3B-Instruct | A100 | W4A16 | 1 | 2 | N/A |
+| Qwen/Qwen3-Next-80B-A3B-Instruct | A100 | W4A16 | 10 | 8 | 7 |
+| Qwen3-235B-A22B-Instruct-2507 | A100 | W4A16 | 1 | 2 | 17 |
+| Qwen3-235B-A22B-Instruct-2507 | A100 | W4A16 | 10 | 8 | 5 |
+| zai-org/GLM-5.2 | B200 | MXFP4-Mixed | 1 | 2 | 60 |
+| zai-org/GLM-5.2 | B200 | MXFP4-Mixed | 10 | 27 | 16 |
+| zai-org/GLM-5.2 | B200 | W4A16 | 1 | 3 | 30 |
+| zai-org/GLM-5.2 | B200 | W4A16 | 10 | 16 | 10 |
+| zai-org/GLM-5.2 | B200 | W4A16 | 20 | 32 | 8 |
+| MiniMaxAI/MiniMax-M2.7 (FP8) | B200 | W4A16 | 1 | 2 | 18 |
+| MiniMaxAI/MiniMax-M2.7 (FP8) | B200 | W4A16 | 10 | 10 | 5 |
+| deepseek-ai/DeepSeek-V4-Pro (MXFP) | B200 | W4A16 | 1 | 6 | 80 |
+| deepseek-ai/DeepSeek-V4-Pro (MXFP) | B200 | W4A16 | 10 | 50 | 13 |
+
+| 模型 | 方案 | 对比 | 耗时变化（分钟） | 加速比 | 时间节省 | 峰值显存变化 |
+|---|---|---|---|---:|---:|---|
+| Qwen3-235B | W4A16 | 并行 1 -> 10 | 17 -> 5 | 3.40x | 70.6% | 2G -> 8G |
+| GLM-5.2 | MXFP4-Mixed | 并行 1 -> 10 | 60 -> 16 | 3.75x | 73.3% | 2G -> 27G |
+| GLM-5.2 | W4A16 | 并行 1 -> 10 | 30 -> 10 | 3.00x | 66.7% | 3G -> 16G |
+| GLM-5.2 | W4A16 | 并行 1 -> 20 | 30 -> 8 | 3.75x | 73.3% | 3G -> 32G |
+| MiniMax-M2.7 | W4A16 | 并行 1 -> 10 | 18 -> 5 | 3.60x | 72.2% | 2G -> 10G |
+| DeepSeek-V4-Pro | W4A16 | 并行 1 -> 10 | 80 -> 13 | 6.15x | 83.8% | 6G -> 50G |
+
+结论：在 model-free 量化中，提高并行度通常可带来约 `3x-6x` 的耗时加速，但峰值显存会明显上升。
+
+</details>
+
+<details>
   <summary>点击展开支持的 Scheme 与示例</summary>
 
 **支持的 Scheme**

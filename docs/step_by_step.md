@@ -569,6 +569,40 @@ Model-free mode performs RTN WOQ quantization **without loading the full model i
 - **Bit-exact parity** with the standard `--iters 0 --disable_opt_rtn` flow for all supported schemes
 
 <details>
+  <summary>Model-free Parallelism Benchmarks (Rounded Minutes)</summary>
+
+Runtime normalization: all `mm:ss` values are rounded up to the next full minute. For example, `4:20 -> 5`, `15:45 -> 16`, `9:07 -> 10`, `7:29 -> 8`, `4:09 -> 5`.
+
+| Model | Device | Scheme | Parallelism | Peak Memory (G) | Runtime (min, rounded up) |
+|---|---|---|---:|---:|---:|
+| Qwen/Qwen3-Next-80B-A3B-Instruct | A100 | W4A16 | 1 | 2 | N/A |
+| Qwen/Qwen3-Next-80B-A3B-Instruct | A100 | W4A16 | 10 | 8 | 7 |
+| Qwen3-235B-A22B-Instruct-2507 | A100 | W4A16 | 1 | 2 | 17 |
+| Qwen3-235B-A22B-Instruct-2507 | A100 | W4A16 | 10 | 8 | 5 |
+| zai-org/GLM-5.2 | B200 | MXFP4-Mixed | 1 | 2 | 60 |
+| zai-org/GLM-5.2 | B200 | MXFP4-Mixed | 10 | 27 | 16 |
+| zai-org/GLM-5.2 | B200 | W4A16 | 1 | 3 | 30 |
+| zai-org/GLM-5.2 | B200 | W4A16 | 10 | 16 | 10 |
+| zai-org/GLM-5.2 | B200 | W4A16 | 20 | 32 | 8 |
+| MiniMaxAI/MiniMax-M2.7 (FP8) | B200 | W4A16 | 1 | 2 | 18 |
+| MiniMaxAI/MiniMax-M2.7 (FP8) | B200 | W4A16 | 10 | 10 | 5 |
+| deepseek-ai/DeepSeek-V4-Pro (MXFP) | B200 | W4A16 | 1 | 6 | 80 |
+| deepseek-ai/DeepSeek-V4-Pro (MXFP) | B200 | W4A16 | 10 | 50 | 13 |
+
+| Model | Scheme | Comparison | Runtime Change (min) | Speedup | Time Saved | Peak Memory Change |
+|---|---|---|---|---:|---:|---|
+| Qwen3-235B | W4A16 | Parallelism 1 -> 10 | 17 -> 5 | 3.40x | 70.6% | 2G -> 8G |
+| GLM-5.2 | MXFP4-Mixed | Parallelism 1 -> 10 | 60 -> 16 | 3.75x | 73.3% | 2G -> 27G |
+| GLM-5.2 | W4A16 | Parallelism 1 -> 10 | 30 -> 10 | 3.00x | 66.7% | 3G -> 16G |
+| GLM-5.2 | W4A16 | Parallelism 1 -> 20 | 30 -> 8 | 3.75x | 73.3% | 3G -> 32G |
+| MiniMax-M2.7 | W4A16 | Parallelism 1 -> 10 | 18 -> 5 | 3.60x | 72.2% | 2G -> 10G |
+| DeepSeek-V4-Pro | W4A16 | Parallelism 1 -> 10 | 80 -> 13 | 6.15x | 83.8% | 6G -> 50G |
+
+Key takeaway: model-free quantization usually gets about `3x-6x` runtime speedup with higher parallelism, while peak memory usage increases significantly.
+
+</details>
+
+<details>
   <summary>Click to expand supported schemes and examples</summary>
 
 **Supported schemes**
