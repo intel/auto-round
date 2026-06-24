@@ -234,19 +234,32 @@ _MINIMAX_E = 192
 _MINIMAX_N = 1536  # intermediate_size (gate/up output)
 _MINIMAX_K = 3072  # hidden_size
 
+
+def _minimax_even_tpe(total: int) -> list[int]:
+    """Distribute ``total`` tokens as evenly as possible across all experts.
+
+    Uses ``floor(total/E)`` per expert and spreads the remainder
+    (``total % E`` tokens) one-per-expert across the first experts so the
+    list sums exactly to ``total`` instead of falling short by up to E-1.
+    """
+    base = total // _MINIMAX_E
+    extra = total % _MINIMAX_E
+    return [base + 1 if i < extra else base for i in range(_MINIMAX_E)]
+
+
 PREFILL_SHAPES = [
     # (label, num_experts, tokens_per_expert_list, N, K)
-    # -- seq_len = 1K -> 8192 expert tokens, ~42/expert ----------------------
-    ("minimax up  1K", _MINIMAX_E, [8192 // _MINIMAX_E] * _MINIMAX_E, _MINIMAX_N, _MINIMAX_K),
-    ("minimax down 1K", _MINIMAX_E, [8192 // _MINIMAX_E] * _MINIMAX_E, _MINIMAX_K, _MINIMAX_N),
+    # -- seq_len = 1K -> 8192 expert tokens, ~43/expert ----------------------
+    ("minimax up  1K", _MINIMAX_E, _minimax_even_tpe(8192), _MINIMAX_N, _MINIMAX_K),
+    ("minimax down 1K", _MINIMAX_E, _minimax_even_tpe(8192), _MINIMAX_K, _MINIMAX_N),
     # -- seq_len = 2K -> 16384 expert tokens, ~85/expert ---------------------
-    ("minimax up  2K", _MINIMAX_E, [16384 // _MINIMAX_E] * _MINIMAX_E, _MINIMAX_N, _MINIMAX_K),
-    ("minimax down 2K", _MINIMAX_E, [16384 // _MINIMAX_E] * _MINIMAX_E, _MINIMAX_K, _MINIMAX_N),
+    ("minimax up  2K", _MINIMAX_E, _minimax_even_tpe(16384), _MINIMAX_N, _MINIMAX_K),
+    ("minimax down 2K", _MINIMAX_E, _minimax_even_tpe(16384), _MINIMAX_K, _MINIMAX_N),
     ("minimax skew up  2K", _MINIMAX_E, _minimax_uneven_tpe(16384), _MINIMAX_N, _MINIMAX_K),
     ("minimax skew down 2K", _MINIMAX_E, _minimax_uneven_tpe(16384), _MINIMAX_K, _MINIMAX_N),
-    # -- seq_len = 4K -> 32768 expert tokens, ~170/expert --------------------
-    ("minimax up  4K", _MINIMAX_E, [32768 // _MINIMAX_E] * _MINIMAX_E, _MINIMAX_N, _MINIMAX_K),
-    ("minimax down 4K", _MINIMAX_E, [32768 // _MINIMAX_E] * _MINIMAX_E, _MINIMAX_K, _MINIMAX_N),
+    # -- seq_len = 4K -> 32768 expert tokens, ~171/expert --------------------
+    ("minimax up  4K", _MINIMAX_E, _minimax_even_tpe(32768), _MINIMAX_N, _MINIMAX_K),
+    ("minimax down 4K", _MINIMAX_E, _minimax_even_tpe(32768), _MINIMAX_K, _MINIMAX_N),
     ("minimax skew up  4K", _MINIMAX_E, _minimax_uneven_tpe(32768), _MINIMAX_N, _MINIMAX_K),
     ("minimax skew down 4K", _MINIMAX_E, _minimax_uneven_tpe(32768), _MINIMAX_K, _MINIMAX_N),
 ]
