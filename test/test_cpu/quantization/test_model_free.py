@@ -1243,11 +1243,12 @@ class TestResolveShardParallelism:
         p, _ = core._resolve_shard_parallelism()
         assert p == 3
 
-    def test_env_below_1_forces_1(self, monkeypatch):
+    def test_env_below_1_falls_back_to_auto(self, monkeypatch):
         monkeypatch.setenv("AR_MODEL_FREE_SHARD_PARALLELISM", "0")
         core = self._core_with_n_shards(25)
-        p, _ = core._resolve_shard_parallelism()
-        assert p == 1
+        p, src = core._resolve_shard_parallelism()
+        assert p == 25 // 4
+        assert "invalid" in src
 
     def test_env_invalid_falls_back_to_auto(self, monkeypatch):
         monkeypatch.setenv("AR_MODEL_FREE_SHARD_PARALLELISM", "notanumber")

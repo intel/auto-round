@@ -659,7 +659,14 @@ def _collect_mxfp_source_entries(raw_tensors: dict[str, torch.Tensor]) -> list[t
     return entries
 
 
-def _run_with_device_fallback(
+def _is_out_of_memory_error(exc: Exception) -> bool:
+    if isinstance(exc, torch.OutOfMemoryError):
+        return True
+    message = str(exc).lower()
+    return "out of memory" in message or "cuda error: out of memory" in message
+
+
+def _dequantize_with_device_fallback(
     *,
     dequant_device: str,
     shard_prefix: str,
@@ -668,15 +675,22 @@ def _run_with_device_fallback(
     on_device: Callable[[], torch.Tensor],
     on_cpu: Callable[[], torch.Tensor],
 ) -> torch.Tensor:
-    """Run tensor conversion on ``dequant_device`` and fall back to CPU on errors."""
+    """Run dequantization on ``dequant_device`` and fall back to CPU on errors."""
     if dequant_device != "cpu":
         try:
             return on_device()
         except Exception as e:
-            logger.warning(
-                f"{shard_prefix}{op_name} on {dequant_device} failed for {tensor_label}: {e}. "
-                "Falling back to CPU for this tensor."
-            )
+            if _is_out_of_memory_error(e):
+                logger.warning(
+                    f"{shard_prefix}{op_name} on {dequant_device} ran OOM for {tensor_label}: {e}. "
+                    "Clearing accelerator memory and falling back to CPU for this tensor."
+                )
+                clear_memory()
+            else:
+                logger.warning(
+                    f"{shard_prefix}{op_name} on {dequant_device} failed for {tensor_label}: {e}. "
+                    "Falling back to CPU for this tensor."
+                )
     return on_cpu()
 
 
@@ -721,7 +735,7 @@ def _dequant_mxfp_tensors(
         weight = raw_tensors.pop(weight_key)
         scale = raw_tensors.pop(scale_key).view(torch.uint8)
         if bits == 8:
-            dq_weight = _run_with_device_fallback(
+            dq_weight = _dequantize_with_device_fallback(
                 dequant_device=dequant_device,
                 shard_prefix=shard_prefix,
                 op_name="MXFP dequant",
@@ -740,7 +754,7 @@ def _dequant_mxfp_tensors(
                 ),
             )
         else:
-            dq_weight = _run_with_device_fallback(
+            dq_weight = _dequantize_with_device_fallback(
                 dequant_device=dequant_device,
                 shard_prefix=shard_prefix,
                 op_name="MXFP dequant",
@@ -874,7 +888,7 @@ def _dequant_fp8_tensors(
 
         # Dequantize on GPU for throughput, then move back to CPU to keep
         # per-shard memory usage bounded before per-layer quantization.
-        raw_tensors[weight_name] = _run_with_device_fallback(
+        raw_tensors[weight_name] = _dequantize_with_device_fallback(
             dequant_device=dequant_device,
             shard_prefix=shard_prefix,
             op_name="FP8 dequant",
@@ -1766,16 +1780,15 @@ class _ModelFreeCompressorCore:
         if not envs.is_set(env_name):
             return min(default_parallelism, shard_count or 1), f"auto(default={default_parallelism})"
 
-        raw_value = os.environ.get(env_name, "")
         try:
-            configured = int(raw_value)
-        except ValueError:
-            logger.warning(f"Invalid {env_name}={raw_value!r}; using auto default {default_parallelism}.")
+            configured = envs.AR_MODEL_FREE_SHARD_PARALLELISM
+        except ValueError as e:
+            logger.warning(f"{e}; using auto default {default_parallelism}.")
+            raw_value = os.environ.get(env_name, "")
             return min(default_parallelism, shard_count or 1), f"invalid({raw_value!r})"
 
-        if configured < 1:
-            logger.warning(f"{env_name}={configured} is less than 1; forcing parallelism to 1.")
-            configured = 1
+        if configured is None:
+            return min(default_parallelism, shard_count or 1), f"auto(default={default_parallelism})"
 
         effective = min(configured, shard_count or 1)
         return effective, f"env={configured}"
