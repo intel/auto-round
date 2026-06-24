@@ -1238,6 +1238,7 @@ def _process_single_shard_task(
         local_weight_map,
     )
     tensor_names = list(local_weight_map.keys())
+    clear_memory()
 
     if is_streaming:
         try:
