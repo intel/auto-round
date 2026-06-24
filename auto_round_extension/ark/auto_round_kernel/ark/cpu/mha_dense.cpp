@@ -146,6 +146,16 @@ size_t mha_dense_workspace_size(const MhaDenseArgs& args) {
   return per_thread * static_cast<size_t>(max_threads());
 }
 
+size_t attn_workspace_size(const attn_shape_t& shape) {
+  // Mirror the per-(b, head, query-row) flash-attention scratch: an output
+  // accumulator and an FP32 query row (head_size each) plus one K/V score tile,
+  // replicated per thread. Returned in bytes for attn_fwd_args_t::tmp.
+  const int kv_block = std::min(kDefaultKvBlock, std::max(1, shape.sl_kv));
+  const size_t per_thread =
+      static_cast<size_t>(2) * static_cast<size_t>(std::max(1, shape.head_size)) + static_cast<size_t>(kv_block);
+  return per_thread * static_cast<size_t>(max_threads()) * sizeof(float);
+}
+
 size_t element_size(BTLA_DTYPE dtype) {
   switch (dtype) {
     case BTLA_DTYPE::F32:
