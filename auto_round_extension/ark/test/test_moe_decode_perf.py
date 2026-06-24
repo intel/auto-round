@@ -24,11 +24,6 @@ once up-front (outside the timed region), so the baseline measures only the
 matmul cost on XPU. This is what models fall back to when no fused decode
 kernel is available.
 
-Each row also reports the achieved ARK ``TFLOPS`` for the MoE GEMM
-(``total_routed_tokens * K * N * 2 / ark_ms``), matching the convention
-used by ``test_moe_prefill_perf.py`` so prefill / decode tables can be
-compared directly.
-
 How to run::
 
     pytest -v -s auto_round_extension/ark/test/test_moe_decode_perf.py
@@ -230,21 +225,9 @@ def _print_header(title: str) -> None:
     print(title)
     print(
         f"{'shape':<18}{'N':>7}{'K':>7}{'tokens':>8}"
-        f"{'baseline(ms)':>16}{'ark(ms)':>14}{'speedup':>12}{'TFLOPS':>10}"
+        f"{'baseline(ms)':>16}{'ark(ms)':>14}{'speedup':>12}"
     )
     print("-" * 110)
-
-
-def _compute_moe_flops(total_tokens: int, K: int, N: int) -> int:
-    """FLOPs for the MoE GEMM at decode time.
-
-    Each routed expert-token slot does a ``[1, K] @ [K, N] -> [1, N]`` matmul,
-    so summed across all ``total_tokens`` routed slots the work is
-    ``total_tokens * K * N * 2`` (multiply-add counted as 2 ops).
-    Idle experts (``tokens_per_expert[e] == 0``) contribute zero FLOPs,
-    which matches what ``moe_gemm_decode`` actually computes.
-    """
-    return total_tokens * K * N * 2
 
 
 def _print_row(label, N, K, total_tokens, base_ms, ark_ms):
@@ -252,15 +235,12 @@ def _print_row(label, N, K, total_tokens, base_ms, ark_ms):
 
     ``speedup`` is ``baseline / ark`` -- a pure matmul-vs-matmul comparison
     against the per-expert ``A @ W.T`` baseline running on already-dequantized
-    weights. ``TFLOPS`` is the achieved ARK throughput: total MoE FLOPs
-    (summed over routed expert-token slots) divided by the measured ARK time.
+    weights.
     """
     speedup = base_ms / ark_ms if ark_ms > 0 else float("nan")
-    flops = _compute_moe_flops(total_tokens, K, N)
-    tflops = flops / (ark_ms * 1e-3) / 1e12 if ark_ms > 0 else float("nan")
     print(
         f"{label:<18}{N:>7}{K:>7}{total_tokens:>8}"
-        f"{base_ms:>16.4f}{ark_ms:>14.4f}{speedup:>11.2f}x{tflops:>10.2f}"
+        f"{base_ms:>16.4f}{ark_ms:>14.4f}{speedup:>11.2f}x"
     )
 
 
