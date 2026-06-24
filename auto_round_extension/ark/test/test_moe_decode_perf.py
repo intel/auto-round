@@ -168,20 +168,26 @@ def _default_moe_decode(activations, dequant_weights, num_tokens_per_expert):
 # ---------------------------------------------------------------------------
 # Shape matrix.
 #
-# Picked to cover small / medium / large MoE expert FFNs (Mixtral-style
-# 4096x14336 down-projection is the upper bound; smaller shapes catch
-# launch-overhead-dominated cases). ``tokens_per_expert`` follows the
-# expected decode-phase pattern (top-k routing with batch=1: each active
-# expert sees one token).
+# Shapes follow MiniMax-Text-01 / MiniMax-M1 MoE config:
+#   hidden_size       = 6144   (K for up-proj, N for down-proj)
+#   intermediate_size = 9216   (N for up-proj, K for down-proj)
+#   num_local_experts = 32
+#   num_experts_per_tok = 2    (top-2 routing -> 2 active experts at decode)
+#
+# ``tokens_per_expert`` follows the expected decode-phase pattern
+# (batch=1, top-2 routing: exactly two experts see one token each, the
+# remaining 30 experts are idle).
 # ---------------------------------------------------------------------------
+
+# MiniMax decode: batch=1, top-2 of 32. Two arbitrary experts get 1 token each.
+_MINIMAX_TPE = [0] * 32
+_MINIMAX_TPE[5] = 1
+_MINIMAX_TPE[19] = 1
 
 DECODE_SHAPES = [
     # (label, num_experts, tokens_per_expert, N, K)
-    ("small   E=4 ", 4, [1, 0, 1, 1], 1024, 1024),
-    ("medium  E=8 ", 8, [1, 1, 0, 1, 1, 0, 1, 1], 2048, 2048),
-    ("large   E=8 ", 8, [1, 0, 1, 1, 0, 1, 1, 1], 4096, 4096),
-    ("ffn-up  E=8 ", 8, [1, 1, 0, 1, 1, 1, 0, 1], 14336, 4096),
-    ("ffn-dn  E=8 ", 8, [1, 1, 0, 1, 1, 1, 0, 1], 4096, 14336),
+    ("minimax up  ", 32, list(_MINIMAX_TPE), 9216, 6144),  # gate/up-proj
+    ("minimax down", 32, list(_MINIMAX_TPE), 6144, 9216),  # down-proj
 ]
 
 
