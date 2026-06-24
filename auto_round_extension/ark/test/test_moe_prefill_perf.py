@@ -195,22 +195,34 @@ def _compute_moe_flops(total_tokens, K, N, num_experts_active):
 # Shape matrix for prefill
 #
 # Prefill has many tokens per expert (e.g., batch size, prompt length).
-# We test small to large expert counts and token distributions typical of
-# MoE models during prefill (Mixtral, DeepSeek, etc.).
+# Each row totals either 2048 (2K) or 4096 (4K) tokens across all experts
+# to match realistic MoE prefill workloads (Mixtral, DeepSeek, etc.).
+# Tokens are distributed evenly across experts, except for the "uneven"
+# rows which keep a skewed distribution to exercise load imbalance.
 # ---------------------------------------------------------------------------
 
 PREFILL_SHAPES = [
     # (label, num_experts, tokens_per_expert_list, N, K)
+    # -- 2K total tokens --------------------------------------------------
     # Small models (e.g., Mixtral 8x7B style)
-    ("small  E=8 ", 8, [32, 28, 30, 35, 33, 31, 29, 34], 4096, 4096),
-    ("medium E=8 ", 8, [64, 60, 68, 72, 65, 63, 70, 66], 4096, 14336),  # up-proj
-    ("medium E=8 ", 8, [64, 60, 68, 72, 65, 63, 70, 66], 14336, 4096),  # down-proj
+    ("small  E=8  2K", 8, [256] * 8, 4096, 4096),
+    ("medium E=8  2K", 8, [256] * 8, 4096, 14336),  # up-proj
+    ("medium E=8  2K", 8, [256] * 8, 14336, 4096),  # down-proj
     # Larger models (e.g., DeepSeek style with more experts)
-    ("large  E=16", 16, [16] * 16, 2048, 2048),
-    ("large  E=32", 32, [8] * 32, 2048, 2048),
-    ("large  E=64", 64, [4] * 64, 2048, 2048),
-    # Uneven distribution (some experts get more tokens)
-    ("uneven E=8 ", 8, [100, 50, 75, 80, 60, 90, 70, 85], 4096, 4096),
+    ("large  E=16 2K", 16, [128] * 16, 2048, 2048),
+    ("large  E=32 2K", 32, [64] * 32, 2048, 2048),
+    ("large  E=64 2K", 64, [32] * 64, 2048, 2048),
+    # Uneven distribution (some experts get more tokens); total = 2048.
+    ("uneven E=8  2K", 8, [320, 160, 240, 256, 192, 288, 224, 368], 4096, 4096),
+    # -- 4K total tokens --------------------------------------------------
+    ("small  E=8  4K", 8, [512] * 8, 4096, 4096),
+    ("medium E=8  4K", 8, [512] * 8, 4096, 14336),  # up-proj
+    ("medium E=8  4K", 8, [512] * 8, 14336, 4096),  # down-proj
+    ("large  E=16 4K", 16, [256] * 16, 2048, 2048),
+    ("large  E=32 4K", 32, [128] * 32, 2048, 2048),
+    ("large  E=64 4K", 64, [64] * 64, 2048, 2048),
+    # Uneven distribution; total = 4096 (the 2K skew, scaled by 2).
+    ("uneven E=8  4K", 8, [640, 320, 480, 512, 384, 576, 448, 736], 4096, 4096),
 ]
 
 
