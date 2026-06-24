@@ -27,13 +27,23 @@ PyTorch implementation. The baseline is a single ``torch.bmm`` call over a
 padded ``[E, M_max, K]`` activations buffer with **already-dequantized**
 weights for quantized tests, representing the most favorable non-fused
 PyTorch fallback: it pays extra FLOPs on padding rows but collapses the
-192-per-expert kernel launches into one. Weight dequantization is
-performed once per shape, *outside* the timed region -- including it on
-every iteration would conflate steady-state matmul cost with a one-time
-setup cost that production deployments amortise away (and, under
-heavy-tailed routing, with allocator pressure from materialising a
-multi-GB FP weight tensor each iteration), producing misleading 100x+
-"speedups" against an artificially slow baseline.
+192-per-expert kernel launches into one.
+
+Two baseline columns are reported per row:
+
+* ``baseline(ms)`` -- matmul-only cost (weights pre-dequantized). This is
+  the apples-to-apples GEMM ceiling for a non-fused PyTorch path.
+* ``base+deq(ms)`` -- ``baseline + deq``, where ``deq`` is the cost of
+  dequantizing the quantized weight buffer once per step (timed
+  separately from the matmul). This reflects what a pipeline that keeps
+  weights in quantized storage but reuses a stock matmul baseline would
+  pay end-to-end, and is the denominator of the reported ``speedup``
+  against our fused kernel. For FP rows ``deq`` is zero and the two
+  columns are identical.
+
+Reporting both keeps the comparison transparent: the matmul-only column
+shows the raw GEMM ceiling, while the ``base+deq`` column shows the
+realistic cost our fused kernel actually has to beat to be worth using.
 
 How to run::
 
@@ -406,33 +416,44 @@ PREFILL_SHAPES = [
 def _print_header(title: str) -> None:
     """Print a benchmark header.
 
-    All callers use the same matmul-only baseline (single ``torch.bmm`` over
-    a padded ``[E, M_max, K]`` buffer, with weights already dequantized for
-    quantized tests). Weight dequantization happens once per shape outside
-    the timed region and is intentionally not reported -- it is a one-time
-    setup cost that production deployments amortise away.
+    Columns:
+
+    * ``baseline(ms)``: matmul-only baseline (single ``torch.bmm`` over a
+      padded ``[E, M_max, K]`` buffer, with weights already dequantized
+      for quantized tests). This is the most favorable apples-to-apples
+      matmul comparison.
+    * ``base+deq(ms)``: matmul baseline plus the per-iteration weight
+      dequantization cost (``baseline + deq``). For FP rows this equals
+      ``baseline`` (deq is a no-op). This is the comparison point against
+      our fused kernel: any pipeline that wants to keep weights in
+      quantized storage but reuse a stock matmul baseline must pay the
+      dequant cost on every step.
+    * ``speedup``: ``(base+deq) / ark``.
     """
     print()
-    width = 118
+    width = 132
     print("=" * width)
     print(title)
     print(
         f"{'shape':<22}{'E':>4}{'N':>7}{'K':>7}{'tokens':>8}"
-        f"{'baseline(ms)':>16}{'ark(ms)':>14}{'speedup':>12}{'TFLOPS':>10}"
+        f"{'baseline(ms)':>16}{'base+deq(ms)':>16}{'ark(ms)':>14}{'speedup':>12}{'TFLOPS':>10}"
     )
     print("-" * width)
 
 
-def _print_row(label, E, N, K, total_tokens, base_ms, ark_ms, tflops):
+def _print_row(label, E, N, K, total_tokens, base_ms, deq_ms, ark_ms, tflops):
     """Print a benchmark row.
 
-    ``speedup`` is always ``baseline / ark`` against the matmul-only
-    baseline (weights pre-dequantized for quantized tests).
+    ``speedup`` is ``(base+deq) / ark`` -- a fair comparison against any
+    pipeline that keeps weights quantized and pays per-step dequant cost
+    on top of a stock matmul baseline. For FP rows ``deq_ms == 0`` so
+    ``base+deq == baseline``.
     """
-    speedup = base_ms / ark_ms if ark_ms > 0 else float("nan")
+    base_plus_deq_ms = base_ms + deq_ms
+    speedup = base_plus_deq_ms / ark_ms if ark_ms > 0 else float("nan")
     print(
         f"{label:<22}{E:>4}{N:>7}{K:>7}{total_tokens:>8}"
-        f"{base_ms:>16.4f}{ark_ms:>14.4f}{speedup:>11.2f}x{tflops:>9.1f}"
+        f"{base_ms:>16.4f}{base_plus_deq_ms:>16.4f}{ark_ms:>14.4f}{speedup:>11.2f}x{tflops:>9.1f}"
     )
 
 
@@ -475,7 +496,8 @@ class TestMoEGemmPrefillPerf:
             flops = _compute_moe_flops(total_tokens, K, N, E)
             tflops = flops / (ark_ms * 1e-3) / 1e12
 
-            _print_row(label, E, N, K, total_tokens, base_ms, ark_ms, tflops)
+            # FP path: no dequant cost.
+            _print_row(label, E, N, K, total_tokens, base_ms, 0.0, ark_ms, tflops)
 
             # Drop references to large per-shape tensors before releasing the
             # XPU allocator cache so peak memory stays close to one shape's
@@ -513,11 +535,14 @@ class TestMoEGemmPrefillPerf:
                 dequant = _dequant_int4_sym(packed, scales, group_size).to(dtype)
 
             # ``dequant`` is already [E, N, K] -- matches the baseline contract.
-            # Dequantization is done once here, outside the timed region: it is
-            # a one-time setup cost in production (weights are stored quantized
-            # but dequantized once at load), so charging it to every iteration
-            # would inflate the baseline by orders of magnitude on heavy-tailed
-            # shapes (multi-GB FP buffer reallocation per iter).
+            # We time dequant separately so the report can show both the
+            # matmul-only baseline (apples-to-apples GEMM cost) and the
+            # ``base+deq`` total that a stock pipeline keeping weights in
+            # quantized storage would actually pay per step.
+            if asym:
+                deq_ms = _xpu_time_ms(lambda: _dequant_int4_asym(packed, scales, zeros, group_size).to(dtype))
+            else:
+                deq_ms = _xpu_time_ms(lambda: _dequant_int4_sym(packed, scales, group_size).to(dtype))
             base_ms = _xpu_time_ms(lambda: _default_moe_prefill(act_padded, dequant))
             ark_ms = _xpu_time_ms(
                 lambda: ark.moe_gemm_prefill(
@@ -535,7 +560,7 @@ class TestMoEGemmPrefillPerf:
             flops = _compute_moe_flops(total_tokens, K, N, E)
             tflops = flops / (ark_ms * 1e-3) / 1e12
 
-            _print_row(label, E, N, K, total_tokens, base_ms, ark_ms, tflops)
+            _print_row(label, E, N, K, total_tokens, base_ms, deq_ms, ark_ms, tflops)
 
             activations = ntpe = act_padded = w_float = scales = zeros = packed = dequant = None
             _release_xpu_memory()
@@ -568,6 +593,10 @@ class TestMoEGemmPrefillPerf:
                 packed = _pack_int8_sym(w_float, scales, group_size)
                 dequant = _dequant_int8_sym(packed, scales, group_size).to(dtype)
 
+            if asym:
+                deq_ms = _xpu_time_ms(lambda: _dequant_int8_asym(packed, scales, zeros, group_size).to(dtype))
+            else:
+                deq_ms = _xpu_time_ms(lambda: _dequant_int8_sym(packed, scales, group_size).to(dtype))
             base_ms = _xpu_time_ms(lambda: _default_moe_prefill(act_padded, dequant))
             ark_ms = _xpu_time_ms(
                 lambda: ark.moe_gemm_prefill(
@@ -585,7 +614,7 @@ class TestMoEGemmPrefillPerf:
             flops = _compute_moe_flops(total_tokens, K, N, E)
             tflops = flops / (ark_ms * 1e-3) / 1e12
 
-            _print_row(label, E, N, K, total_tokens, base_ms, ark_ms, tflops)
+            _print_row(label, E, N, K, total_tokens, base_ms, deq_ms, ark_ms, tflops)
 
             activations = ntpe = act_padded = w_float = scales = zeros = packed = dequant = None
             _release_xpu_memory()
@@ -618,6 +647,10 @@ class TestMoEGemmPrefillPerf:
                 packed = _pack_int2_sym(w_float, scales, group_size)
                 dequant = _dequant_int2_sym(packed, scales, group_size).to(dtype)
 
+            if asym:
+                deq_ms = _xpu_time_ms(lambda: _dequant_int2_asym(packed, scales, zeros, group_size).to(dtype))
+            else:
+                deq_ms = _xpu_time_ms(lambda: _dequant_int2_sym(packed, scales, group_size).to(dtype))
             base_ms = _xpu_time_ms(lambda: _default_moe_prefill(act_padded, dequant))
             ark_ms = _xpu_time_ms(
                 lambda: ark.moe_gemm_prefill(
@@ -635,7 +668,7 @@ class TestMoEGemmPrefillPerf:
             flops = _compute_moe_flops(total_tokens, K, N, E)
             tflops = flops / (ark_ms * 1e-3) / 1e12
 
-            _print_row(label, E, N, K, total_tokens, base_ms, ark_ms, tflops)
+            _print_row(label, E, N, K, total_tokens, base_ms, deq_ms, ark_ms, tflops)
 
             activations = ntpe = act_padded = w_float = scales = zeros = packed = dequant = None
             _release_xpu_memory()
@@ -662,6 +695,7 @@ class TestMoEGemmPrefillPerf:
             packed = _pack_fp8(w_float, scales, group_size, fp8_dtype)
             dequant = _dequant_fp8(packed, scales, group_size, dtype)
 
+            deq_ms = _xpu_time_ms(lambda: _dequant_fp8(packed, scales, group_size, dtype))
             base_ms = _xpu_time_ms(lambda: _default_moe_prefill(act_padded, dequant))
             ark_ms = _xpu_time_ms(
                 lambda: ark.moe_gemm_prefill(
@@ -677,7 +711,7 @@ class TestMoEGemmPrefillPerf:
             flops = _compute_moe_flops(total_tokens, K, N, E)
             tflops = flops / (ark_ms * 1e-3) / 1e12
 
-            _print_row(label, E, N, K, total_tokens, base_ms, ark_ms, tflops)
+            _print_row(label, E, N, K, total_tokens, base_ms, deq_ms, ark_ms, tflops)
 
             activations = ntpe = act_padded = w_float = scales = packed = dequant = None
             _release_xpu_memory()

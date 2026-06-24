@@ -193,15 +193,30 @@ DECODE_SHAPES = [
 
 def _print_header(title: str) -> None:
     print()
-    print("=" * 96)
+    print("=" * 112)
     print(title)
-    print(f"{'shape':<14}{'N':>7}{'K':>7}{'tokens':>8}" f"{'baseline(ms)':>16}{'ark(ms)':>14}{'speedup':>12}")
-    print("-" * 96)
+    print(
+        f"{'shape':<14}{'N':>7}{'K':>7}{'tokens':>8}"
+        f"{'baseline(ms)':>16}{'base+deq(ms)':>16}{'ark(ms)':>14}{'speedup':>12}"
+    )
+    print("-" * 112)
 
 
-def _print_row(label, N, K, total_tokens, base_ms, ark_ms):
-    speedup = base_ms / ark_ms if ark_ms > 0 else float("nan")
-    print(f"{label:<14}{N:>7}{K:>7}{total_tokens:>8}" f"{base_ms:>16.4f}{ark_ms:>14.4f}{speedup:>11.2f}x")
+def _print_row(label, N, K, total_tokens, base_ms, deq_ms, ark_ms):
+    """Print a benchmark row.
+
+    ``base+deq`` is ``baseline + deq`` (dequant timed separately, see the
+    class docstring). ``speedup`` is ``(base+deq) / ark`` -- the fair
+    comparison against any pipeline that keeps weights in quantized
+    storage and pays per-step dequant cost on top of a stock matmul
+    baseline. For FP rows ``deq_ms == 0`` so ``base+deq == baseline``.
+    """
+    base_plus_deq_ms = base_ms + deq_ms
+    speedup = base_plus_deq_ms / ark_ms if ark_ms > 0 else float("nan")
+    print(
+        f"{label:<14}{N:>7}{K:>7}{total_tokens:>8}"
+        f"{base_ms:>16.4f}{base_plus_deq_ms:>16.4f}{ark_ms:>14.4f}{speedup:>11.2f}x"
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -214,9 +229,13 @@ class TestMoEGemmDecodePerf:
     """Median XPU-event timings of ``moe_gemm_decode`` vs per-expert ``A @ W.T``.
 
     The baseline uses *already-dequantized* weights, so quantized cases only
-    pay the matmul cost in the timed region (no per-iteration dequant). This
-    is the most favorable apples-to-apples comparison for the baseline; the
-    fused decode kernel must beat that to be worth using.
+    pay the matmul cost in the ``baseline(ms)`` column. The ``base+deq(ms)``
+    column adds the per-iteration dequant cost (timed separately) and is
+    the denominator of the reported ``speedup`` -- this is the realistic
+    end-to-end cost a pipeline that keeps weights in quantized storage
+    would have to pay if it reused a stock matmul baseline instead of our
+    fused decode kernel. For FP rows ``deq`` is zero and the two columns
+    are identical.
     """
 
     @pytest.mark.parametrize("dtype", [torch.float16, torch.bfloat16])
@@ -230,7 +249,7 @@ class TestMoEGemmDecodePerf:
 
             base_ms = _xpu_time_ms(lambda: _default_moe_decode(activations, weights, ntpe))
             ark_ms = _xpu_time_ms(lambda: ark.moe_gemm_decode(activations, weights, ntpe, weight_bits=16))
-            _print_row(label, N, K, total_tokens, base_ms, ark_ms)
+            _print_row(label, N, K, total_tokens, base_ms, 0.0, ark_ms)
 
     @pytest.mark.parametrize("dtype", [torch.float16, torch.bfloat16])
     @pytest.mark.parametrize("asym", [False, True])
@@ -259,6 +278,10 @@ class TestMoEGemmDecodePerf:
             ntpe = torch.tensor(tpe, dtype=torch.int32, device="xpu")
 
             base_ms = _xpu_time_ms(lambda: _default_moe_decode(activations, dequant, ntpe))
+            if asym:
+                deq_ms = _xpu_time_ms(lambda: _dequant_int4_asym(packed, scales, zeros, group_size).to(dtype))
+            else:
+                deq_ms = _xpu_time_ms(lambda: _dequant_int4_sym(packed, scales, group_size).to(dtype))
             ark_ms = _xpu_time_ms(
                 lambda: ark.moe_gemm_decode(
                     activations,
@@ -271,7 +294,7 @@ class TestMoEGemmDecodePerf:
                     asym=asym,
                 )
             )
-            _print_row(label, N, K, total_tokens, base_ms, ark_ms)
+            _print_row(label, N, K, total_tokens, base_ms, deq_ms, ark_ms)
 
     @pytest.mark.parametrize("dtype", [torch.float16, torch.bfloat16])
     @pytest.mark.parametrize("asym", [False, True])
@@ -300,6 +323,10 @@ class TestMoEGemmDecodePerf:
             ntpe = torch.tensor(tpe, dtype=torch.int32, device="xpu")
 
             base_ms = _xpu_time_ms(lambda: _default_moe_decode(activations, dequant, ntpe))
+            if asym:
+                deq_ms = _xpu_time_ms(lambda: _dequant_int8_asym(packed, scales, zeros, group_size).to(dtype))
+            else:
+                deq_ms = _xpu_time_ms(lambda: _dequant_int8_sym(packed, scales, group_size).to(dtype))
             ark_ms = _xpu_time_ms(
                 lambda: ark.moe_gemm_decode(
                     activations,
@@ -312,7 +339,7 @@ class TestMoEGemmDecodePerf:
                     asym=asym,
                 )
             )
-            _print_row(label, N, K, total_tokens, base_ms, ark_ms)
+            _print_row(label, N, K, total_tokens, base_ms, deq_ms, ark_ms)
 
     @pytest.mark.parametrize("dtype", [torch.float16, torch.bfloat16])
     @pytest.mark.parametrize("asym", [False, True])
@@ -341,6 +368,10 @@ class TestMoEGemmDecodePerf:
             ntpe = torch.tensor(tpe, dtype=torch.int32, device="xpu")
 
             base_ms = _xpu_time_ms(lambda: _default_moe_decode(activations, dequant, ntpe))
+            if asym:
+                deq_ms = _xpu_time_ms(lambda: _dequant_int2_asym(packed, scales, zeros, group_size).to(dtype))
+            else:
+                deq_ms = _xpu_time_ms(lambda: _dequant_int2_sym(packed, scales, group_size).to(dtype))
             ark_ms = _xpu_time_ms(
                 lambda: ark.moe_gemm_decode(
                     activations,
@@ -353,7 +384,7 @@ class TestMoEGemmDecodePerf:
                     asym=asym,
                 )
             )
-            _print_row(label, N, K, total_tokens, base_ms, ark_ms)
+            _print_row(label, N, K, total_tokens, base_ms, deq_ms, ark_ms)
 
     @pytest.mark.parametrize("dtype", [torch.float16, torch.bfloat16])
     @pytest.mark.parametrize("fp8_dtype", [torch.float8_e4m3fn, torch.float8_e5m2])
@@ -375,6 +406,7 @@ class TestMoEGemmDecodePerf:
             ntpe = torch.tensor(tpe, dtype=torch.int32, device="xpu")
 
             base_ms = _xpu_time_ms(lambda: _default_moe_decode(activations, dequant, ntpe))
+            deq_ms = _xpu_time_ms(lambda: _dequant_fp8(packed, scales, group_size, dtype))
             ark_ms = _xpu_time_ms(
                 lambda: ark.moe_gemm_decode(
                     activations,
@@ -385,7 +417,7 @@ class TestMoEGemmDecodePerf:
                     asym=False,
                 )
             )
-            _print_row(label, N, K, total_tokens, base_ms, ark_ms)
+            _print_row(label, N, K, total_tokens, base_ms, deq_ms, ark_ms)
 
 
 if __name__ == "__main__":
