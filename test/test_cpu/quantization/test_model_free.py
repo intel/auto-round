@@ -25,6 +25,7 @@ from safetensors.torch import save_file
 from auto_round import AutoRound
 from auto_round.compressors.model_free import (
     _build_mxfp_quantization_config,
+    _build_quantization_config,
     _dequant_fp8_tensors,
     _dequant_mxfp_tensors,
     _expand_e8m0_block_scale,
@@ -327,6 +328,38 @@ class TestFP8Source:
         assert "lm_head.weight_scale_inv" in output
         # non-ignored layer should be quantized normally
         assert "layer" in quantized
+
+
+# ===========================================================================
+#  Quantization config builder
+# ===========================================================================
+
+
+class TestBuildQuantizationConfig:
+    def test_extra_config_filters_embed_conv_only(self):
+        default = {"bits": 4, "group_size": 128, "sym": True, "data_type": "int"}
+        ignored = [
+            "model.embed_tokens",
+            "model.conv1",
+            "model.layers.0.shared_expert_gate",
+            "model.layers.0.mlp.gate",
+        ]
+
+        cfg = _build_quantization_config(
+            default_scheme=default,
+            layer_config={},
+            ignore_patterns=[],
+            quantized_layers=[],
+            ignored_layers=ignored,
+        )
+
+        extra = cfg.get("extra_config", {})
+        # Non-Linear ops are filtered out.
+        assert "model.embed_tokens" not in extra
+        assert "model.conv1" not in extra
+        # Other ignored layers should still be recorded.
+        assert extra["model.layers.0.shared_expert_gate"] == {"bits": 16, "data_type": "float"}
+        assert extra["model.layers.0.mlp.gate"] == {"bits": 16, "data_type": "float"}
 
 
 # ===========================================================================

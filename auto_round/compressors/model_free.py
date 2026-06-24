@@ -1202,6 +1202,7 @@ def _process_single_shard_task(
     layer_config: dict,
     ignore_patterns: list[str],
     fp8_block_size: list | None,
+    model_type: str | None,
     quant_output_dir: str,
     total_shards: int,
 ) -> tuple[int, str, str | None, str | None, list[str] | None, list[str] | None, list[str] | None]:
@@ -1227,6 +1228,7 @@ def _process_single_shard_task(
         ignore_patterns=ignore_patterns,
         device=device,
         fp8_block_size=fp8_block_size,
+        model_type=model_type,
     )
 
     out_shard_name = f"model-{shard_idx + 1:05d}-of-{total_shards:05d}.safetensors"
@@ -1756,6 +1758,7 @@ class _ModelFreeCompressorCore:
                         layer_config=self.layer_config,
                         ignore_patterns=self.ignore_patterns,
                         fp8_block_size=self.fp8_block_size,
+                        model_type=self.model_type,
                         quant_output_dir=self._quant_output_dir,
                         total_shards=len(self.shard_names),
                     )
