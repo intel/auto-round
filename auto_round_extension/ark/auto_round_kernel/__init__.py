@@ -1534,9 +1534,7 @@ def moe_gemm_prefill(
         # allocator overhead (and, on the small shapes, dominates the
         # quantized GEMM cost). The workspace is kept alive by the cache so
         # we hand the data_ptr() to the kernel without taking a new ref.
-        dequant_workspace = _get_moe_prefill_workspace(
-            activations.device, activations.dtype, num_experts, K, N
-        )
+        dequant_workspace = _get_moe_prefill_workspace(activations.device, activations.dtype, num_experts, K, N)
         weights_ptr = weights.data_ptr()
 
     scales_ptr = scales.data_ptr() if scales is not None else 0
