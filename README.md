@@ -10,7 +10,7 @@
 <h3> Advanced Quantization Algorithm for LLMs</h3>
 
 [![python](https://img.shields.io/badge/python-3.10%2B-blue)](https://github.com/intel/auto-round)
-[![version](https://img.shields.io/badge/release-0.13.0-green)](https://github.com/intel/auto-round/releases)
+[![version](https://img.shields.io/badge/release-0.13.1-green)](https://github.com/intel/auto-round/releases)
 [![nightly](https://img.shields.io/badge/pypi-nightly-green)](https://pypi.org/project/auto-round-nightly)
 [![license](https://img.shields.io/badge/license-Apache%202-9C27B0)](https://github.com/intel/auto-round/blob/main/LICENSE)
 <a href="https://huggingface.co/Intel">
@@ -36,7 +36,12 @@ See our papers [SignRoundV1](https://arxiv.org/pdf/2309.05516) and [SignRoundV2]
 
 
 ## 🆕 What's New
-* [2026/05] We provide **free** devices for calibration-free quantization via pure RTN mode; please visit [Intel Low Bit Open LLM Leaderboard](https://huggingface.co/spaces/Intel/low_bit_open_llm_leaderboard) for more details.
+
+* [2026/06] AutoScheme has been refined to improve accuracy for gguf format. See [AutoScheme Accuracy](./docs/auto_scheme_acc.md) for details. This enhancement incurs additional tuning cost.
+
+* [2026/06] AutoRound is now fully integrated into vLLM-Omni: [*vLLM blog*](https://vllm.ai/blog/2026-06-02-vllm-omni-autoround)
+
+* [2026/05] We provide **free** devices for calibration-free quantization; please visit [Intel Low Bit Open LLM Leaderboard](https://huggingface.co/spaces/Intel/low_bit_open_llm_leaderboard) for more details.
 
 * [2026/05] **Model free** quantization is available, `auto-round-rtn` will now default to using the model-free approach: [Doc](https://github.com/intel/auto-round/blob/main/docs/step_by_step.md#model-free-mode).
 

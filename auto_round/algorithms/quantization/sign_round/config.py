@@ -11,25 +11,14 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-from typing import Union
+from typing import Any, Callable, Union
 
 from auto_round.algorithms.quantization.config import QuantizationConfig
 from auto_round.logger import logger
 
 
 class SignRoundConfig(QuantizationConfig):
-    """
-
-    Args:
-    iters (int): Number of iterations (default is 200).
-        lr (float): The learning rate (default is 0.005).
-        minmax_lr (float): The learning rate for min-max tuning (default is None).
-        lr_scheduler: The learning rate scheduler to be used.
-        enable_minmax_tuning (bool): Whether to enable min-max tuning (default is True).
-        enable_norm_bias_tuning (bool): Whether to enable fast norm/layer_bias tuning
-    """
-
-    _alg_cls = "SignRoundQuantizer"
+    """Configuration for SignRound-style block quantization."""
 
     def __init__(
         self,
@@ -37,7 +26,7 @@ class SignRoundConfig(QuantizationConfig):
         iters: int = 200,
         lr: float = None,
         minmax_lr: float = None,
-        lr_scheduler=None,
+        lr_scheduler: Callable | None = None,
         momentum: float = 0.0,
         nblocks: int = 1,
         enable_minmax_tuning: bool = True,
@@ -50,7 +39,39 @@ class SignRoundConfig(QuantizationConfig):
         optimizer: str = None,
         enable_adam: bool = False,
         **kwargs,
-    ):
+    ) -> None:
+        """Initialize a SignRound configuration.
+
+        Args:
+            iters: Number of optimization iterations for each quantized
+                block.
+            lr: Learning rate used by the main rounding optimization.
+                If None, a heuristic based on ``iters`` is used.
+            minmax_lr: Learning rate used by min-max tuning. If None, it
+                falls back to ``lr``.
+            lr_scheduler: Optional learning-rate scheduler name or
+                scheduler object used by the optimizer.
+            momentum: Momentum factor used by the optimizer.
+            nblocks: Number of blocks to optimize together.
+            enable_minmax_tuning: Whether to tune weight min/max ranges.
+            enable_norm_bias_tuning: Whether to tune normalization and
+                bias terms.
+            gradient_accumulate_steps: Number of gradient accumulation
+                steps used per optimization update.
+            enable_alg_ext: Whether to enable the experimental SignRound
+                extension implementation.
+            not_use_best_mse: Whether to skip restoring the best-MSE
+                checkpoint during tuning.
+            dynamic_max_gap: Maximum dynamic gap used by adaptive tuning
+                logic.
+            enable_quanted_input: Whether each block should consume the
+                quantized output of previous blocks during calibration.
+            optimizer: Optional optimizer name override.
+            enable_adam: Whether to use the Adam-based SignRound variant.
+            **kwargs: Common quantization arguments forwarded to
+                QuantizationConfig, such as bits, group_size, sym,
+                data_type, and activation quantization fields.
+        """
         super().__init__(**kwargs)
         self.gradient_accumulate_steps = gradient_accumulate_steps
         self.iters = iters
@@ -87,11 +108,6 @@ class SignRoundConfig(QuantizationConfig):
         self.optimizer = optimizer
         self.enable_adam = enable_adam
 
-        if self.enable_adam:
-            self._alg_cls = "AdamRoundQuantizer"
-        elif self.enable_alg_ext:
-            self._alg_cls = "SignRoundV2Quantizer"
-
     def check_configs(self) -> None:
         """Checks if the configurations are valid.
 
@@ -106,3 +122,11 @@ class SignRoundConfig(QuantizationConfig):
             raise ValueError("`nblocks` must be positive")
         if self.gradient_accumulate_steps <= 0:
             raise ValueError("`gradient_accumulate_steps` must be positive")
+
+
+class AdamRoundConfig(SignRoundConfig):
+    pass
+
+
+class SignRoundV2Config(SignRoundConfig):
+    pass

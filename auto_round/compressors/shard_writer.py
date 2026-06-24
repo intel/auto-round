@@ -15,6 +15,7 @@
 import json
 import os
 from collections import OrderedDict
+from typing import Optional, Union
 
 import torch
 
@@ -49,11 +50,11 @@ class ShardWriter:
 
     def __init__(
         self,
-        model,
-        bits,
-        max_shard_size=None,
-        safe_serialization=True,
-    ):
+        model: torch.nn.Module,
+        bits: int,
+        max_shard_size: Optional[Union[int, str]] = None,
+        safe_serialization: bool = True,
+    ) -> None:
         if ShardWriter._initialized:
             return
         self.model = model
@@ -114,13 +115,13 @@ class ShardWriter:
         return os.path.join(base_dir, "")
 
     @classmethod
-    def reset(cls):
+    def reset(cls) -> None:
         """Reset the singleton state so the next instantiation creates a fresh ShardWriter."""
         cls._initialized = False
         cls._instance = None
 
     @classmethod
-    def get_shard_writer(cls, *args, **kwargs):
+    def get_shard_writer(cls, *args, **kwargs) -> Optional["ShardWriter"]:
         """Return the current singleton instance, or None if not yet initialized.
 
         Callers that require a valid writer should guard the result with
@@ -148,7 +149,7 @@ class ShardWriter:
                 logger.warning("safetensors not installed; falling back to torch.save.")
         return False
 
-    def save_module(self, m: torch.nn.Module, name: str = None):
+    def save_module(self, m: torch.nn.Module, name: str = None) -> None:
         """Extracts and accumulates tensors from a module."""
         prefix = name if name is not None else getattr(m, "global_name", "model")
         sd = m.state_dict()
@@ -300,7 +301,7 @@ class ShardWriter:
             ):
                 module.to("meta")
 
-    def finalize(self):
+    def finalize(self) -> None:
         """Saves remaining weights, renames files, and writes the index JSON."""
         # 1. Capture remaining weights not yet saved
         full_sd = self.model.state_dict()
@@ -367,7 +368,7 @@ class ShardWriter:
         logger.info(f"model has been saved to {self.output_dir}")
 
     @torch.no_grad()
-    def write(self, m: torch.nn.Module = None, name: str = None, is_finalize: bool = False):
+    def write(self, m: torch.nn.Module = None, name: str = None, is_finalize: bool = False) -> None:
         if m is None and name is None and not is_finalize and not is_finalize:
             raise ValueError("Must specify either name or m")
         if m is None and name is not None:

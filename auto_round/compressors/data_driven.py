@@ -15,6 +15,7 @@ import copy
 import gc
 import time
 import traceback
+from contextlib import ExitStack
 from functools import partial
 from typing import Any, Callable, Optional, Union
 
@@ -25,7 +26,6 @@ from accelerate.utils import get_balanced_memory, get_max_memory
 from tqdm import tqdm
 
 from auto_round import envs
-from auto_round.algorithms.alg_config import AlgConfig
 from auto_round.calibration.utils import (
     _infer_last_cache_name,
     _split_inputs_diffusion,
@@ -76,11 +76,11 @@ class DataDrivenCompressor(BaseCompressor):
 
     def __init__(
         self,
-        config: Union[AlgConfig, list[AlgConfig]],
+        config: Union[object, list[object]],
         model: Union[torch.nn.Module, str],
-        tokenizer=None,
-        platform="hf",
-        format=None,
+        tokenizer: Any = None,
+        platform: str = "hf",
+        format: Union[str, list, None] = None,
         dataset: Union[str, list, tuple, torch.utils.data.DataLoader] = "NeelNanda/pile-10k",
         iters: int = 200,
         low_gpu_mem_usage: bool = False,
@@ -89,7 +89,9 @@ class DataDrivenCompressor(BaseCompressor):
         seed: int = 42,
         low_cpu_mem_usage: bool = True,
         **kwargs,
-    ):
+    ) -> None:
+        if iters is None:
+            iters = 200
         self.iters = iters
         super().__init__(
             config=config,
@@ -135,7 +137,13 @@ class DataDrivenCompressor(BaseCompressor):
         return "llm"
 
     @torch.no_grad()
-    def try_cache_inter_data_gpucpu(self, block_names, nsamples, layer_names=None, last_cache_name=None):
+    def try_cache_inter_data_gpucpu(
+        self,
+        block_names: list,
+        nsamples: int,
+        layer_names: Optional[list] = None,
+        last_cache_name: Optional[str] = None,
+    ) -> Any:
         """Thin wrapper around ``self.calibration.collect``.
 
         Public API kept for backward compatibility (entry.py and
@@ -146,7 +154,13 @@ class DataDrivenCompressor(BaseCompressor):
         return self.calibration.collect(block_names, nsamples, layer_names=layer_names, last_cache_name=last_cache_name)
 
     @torch.no_grad()
-    def cache_inter_data(self, block_names, nsamples, layer_names=None, last_cache_name=None):
+    def cache_inter_data(
+        self,
+        block_names: list,
+        nsamples: int,
+        layer_names: Optional[list] = None,
+        last_cache_name: Optional[str] = None,
+    ) -> Any:
         """Thin wrapper around ``self.calibration.cache_inter_data``.
 
         Public API kept for backward compatibility.
@@ -158,7 +172,7 @@ class DataDrivenCompressor(BaseCompressor):
         )
 
     @torch.no_grad()
-    def calib(self, nsamples, bs):
+    def calib(self, nsamples: int, bs: int) -> Any:
         """Thin wrapper around ``self.calibration.calib``.
 
         ``MLLMMixin`` and ``DiffusionMixin`` override this method directly via
@@ -263,11 +277,11 @@ class DataDrivenCompressor(BaseCompressor):
     def quantize_block(
         self,
         block: torch.nn.Module,
-        inputs,
+        inputs: Any,
         q_input: Union[torch.Tensor, dict, None] = None,
         device: Union[str, torch.device] = "cpu",
         auto_offload: bool = True,
-    ):
+    ) -> Any:
         """Quantize a single decoded block of the model (public API for LLM-Compressor).
 
         This method is the new-arch equivalent of the old ``BaseCompressor.quantize_block``
@@ -314,6 +328,20 @@ class DataDrivenCompressor(BaseCompressor):
         # quantizer, layer_config, etc.).
         if not self._post_init_done:
             self.post_init()
+
+        if len(self.quant_block_list) != 1 or len(self.quant_block_list[0]) != 1:
+            raise ValueError(
+                f"{self.__class__.__name__}.quantize_block supports exactly one target block, "
+                f"but quant_block_list is {self.quant_block_list!r}. "
+                "Use to_quant_block_names to select a single block."
+            )
+        expected_block_name = self.quant_block_list[0][0]
+        actual_block_name = getattr(block, "global_name", None)
+        if actual_block_name is not None and actual_block_name != expected_block_name:
+            raise ValueError(
+                f"quantize_block received block {actual_block_name!r}, but cached inputs are for "
+                f"{expected_block_name!r}. Pass the matching block or update to_quant_block_names."
+            )
 
         # When called from LLM-Compressor, `wrapped_model` is a single decoder layer
         # (not the full VL model), so it must not be treated as an MLLM regardless of
@@ -368,50 +396,114 @@ class DataDrivenCompressor(BaseCompressor):
                         continue
                     add_hook_to_module(m, AlignDevicesHook(m.tuning_device, io_same_device=True), True)
 
-            # ── Infrastructure: collect reference output and act_max ──────────────
+            blk_name = self.quant_block_list[0][0]
             bs = self.quantizer.batch_size * self.quantizer.infer_bs_coeff
-            if q_input is None:
-                hook_handles = self.quantizer.register_calibration_hooks(block)
-                reference_output = self.quantizer._get_block_outputs(block, input_ids, input_others, bs)
-                for h in hook_handles:
-                    h.remove()
+            mid_iter_mem_check = self.compress_context.low_gpu_mem_usage and card_0_in_high_risk
+
+            if not hasattr(self.quantizer, "create_block_io"):
+                if q_input is None:
+                    hook_handles = self.quantizer.register_calibration_hooks(block)
+                    reference_output = self.quantizer._get_block_outputs(block, input_ids, input_others, bs)
+                    for h in hook_handles:
+                        h.remove()
+                else:
+                    reference_output = self.quantizer._get_block_outputs(block, input_ids, input_others, bs)
+                    hook_handles = self.quantizer.register_calibration_hooks(block)
+                    if hook_handles:
+                        self.quantizer._get_block_outputs(block, q_input, input_others, bs, save_output=False)
+                    for h in hook_handles:
+                        h.remove()
+                    if input_ids is not q_input:
+                        clear_memory(input_ids, device_list=device_manager.device_list)
+                    else:
+                        clear_memory(device_list=device_manager.device_list)
+                    input_ids = q_input
+
+                self.quantizer.quantize_block(
+                    block,
+                    input_ids,
+                    input_others,
+                    reference_output,
+                    loss_device=loss_device,
+                    mid_iter_mem_check=mid_iter_mem_check,
+                )
+
+                if is_nv_fp(self.quantizer.act_data_type) or is_static_wfp8afp8(self.quantizer):
+                    set_amax_for_all_moe_layers(block, attr_name="act_max")
+
+                if self.quantizer.enable_quanted_input:
+                    q_outputs = self.quantizer._get_block_outputs(block, input_ids, input_others, bs)
+                else:
+                    q_outputs = None
+
+                if len(device_manager.device_list) > 1:
+                    accelerate.hooks.remove_hook_from_submodules(block)
+                mv_module_from_gpu(block)
+                return q_outputs, reference_output
+
+            from auto_round.algorithms.pipeline import BlockContext, InputSource
+
+            ctx = BlockContext(
+                model=self.model_context.model,
+                block=block,
+                block_names=[blk_name],
+                block_name=blk_name,
+                block_index=0,
+                io=self.quantizer.create_block_io(input_ids, input_others, q_input, block),
+                bs=bs,
+                loss_device=loss_device,
+                device=device,
+                mid_iter_mem_check=mid_iter_mem_check,
+                is_mllm=False,
+                is_diffusion=False,
+            )
+            policy = self.pipeline.get_merged_policy(ctx)
+
+            if policy.source == InputSource.QUANTIZED_INPUT and q_input is not None:
+                with ExitStack() as fwd_stack:
+                    self.pipeline.enter_preprocessor_hooks(ctx, fwd_stack)
+                    reference_output = ctx.collect_reference(fwd_stack)
+                with ExitStack() as fwd_stack:
+                    quantizer_hooks = self.pipeline.enter_quantizer_hooks(ctx, fwd_stack)
+                    if quantizer_hooks:
+                        ctx.collect_quantized_stats(fwd_stack)
             else:
-                reference_output = self.quantizer._get_block_outputs(block, input_ids, input_others, bs)
-                hook_handles = self.quantizer.register_calibration_hooks(block)
-                if hook_handles:
-                    self.quantizer._get_block_outputs(block, q_input, input_others, bs, save_output=False)
-                for h in hook_handles:
-                    h.remove()
+                with ExitStack() as fwd_stack:
+                    self.pipeline.enter_block_forward_hooks(ctx, fwd_stack)
+                    reference_output = ctx.collect_reference(fwd_stack)
+
+            if q_input is not None:
                 if input_ids is not q_input:
                     clear_memory(input_ids, device_list=device_manager.device_list)
                 else:
                     clear_memory(device_list=device_manager.device_list)
                 input_ids = q_input
 
-            # ── Pure algorithm: delegates to quantizer ────────────────────────────
-            mid_iter_mem_check = self.compress_context.low_gpu_mem_usage and card_0_in_high_risk
-            self.quantizer.quantize_block(
-                block,
-                input_ids,
-                input_others,
-                reference_output,
-                loss_device=loss_device,
-                mid_iter_mem_check=mid_iter_mem_check,
-            )
+            # pre_quantize_block: consolidate stats and apply weight transforms.
+            for pre in self.pipeline.preprocessors:
+                pre.pre_quantize_block(ctx)
+
+            # ── Pure algorithm: block_quantizer.quantize_block ────────────────────
+            self.pipeline.block_quantizer.quantize_block(ctx)
+
+            # ── Pipeline lifecycle: post_quantize_block ───────────────────────────
+            for pre in self.pipeline.preprocessors:
+                pre.post_quantize_block(ctx)
 
             # ── MoE scale alignment for FP8 dispatch efficiency ────────────────
             if is_nv_fp(self.quantizer.act_data_type) or is_static_wfp8afp8(self.quantizer):
                 set_amax_for_all_moe_layers(block, attr_name="act_max")
 
             # ── Collect quantized-block outputs ───────────────────────────────────
-            if self.quantizer.enable_quanted_input:
-                q_outputs = self.quantizer._get_block_outputs(block, input_ids, input_others, bs)
+            if self.pipeline.block_quantizer.enable_quanted_input:
+                q_outputs = ctx.collect_next_inputs()
             else:
                 q_outputs = None
 
             # ── Cleanup ───────────────────────────────────────────────────────────
             if len(device_manager.device_list) > 1:
                 accelerate.hooks.remove_hook_from_submodules(block)
+            ctx.finish()
             mv_module_from_gpu(block)
             return q_outputs, reference_output
         finally:
@@ -444,19 +536,6 @@ class DataDrivenCompressor(BaseCompressor):
             m.requires_grad_(False)
 
         input_ids, input_others = self._preprocess_block_inputs(inputs)
-
-        # For diffusion models, the heuristic split ("hidden_state" in key) may
-        # place keys like encoder_hidden_states in input_ids even though they are
-        # not block outputs.  Move those to input_others so they persist across
-        # blocks (only output keys get refreshed via reference_output each iteration).
-        if self.model_context.is_diffusion and isinstance(input_ids, dict):
-            first_block = get_module(model, block_names[0])
-            output_config = self.quantizer.DIFFUSION_OUTPUT_CONFIGS.get(
-                first_block.__class__.__name__, ["hidden_states"]
-            )
-            extra_keys = [k for k in list(input_ids.keys()) if k not in output_config]
-            for k in extra_keys:
-                input_others[k] = input_ids.pop(k)
 
         if pbar is None:
             pbar = tqdm(range(0, len(block_names), nblocks))
@@ -517,26 +596,52 @@ class DataDrivenCompressor(BaseCompressor):
                         continue
                     add_hook_to_module(_mod, AlignDevicesHook(_mod.tuning_device, io_same_device=True), True)
 
-            # ── Infrastructure: collect reference output and act_max ──────────
+            # ── Pipeline lifecycle: per-block setup ───────────────────────────
+            from auto_round.algorithms.pipeline import BlockContext, InputSource
+
+            current_block_names = (
+                block_name_or_names if isinstance(block_name_or_names, list) else [block_name_or_names]
+            )
+            current_block_name = current_block_names[0] if len(current_block_names) == 1 else str(block_name_or_names)
             bs = self.quantizer.batch_size * self.quantizer.infer_bs_coeff
-            if q_input is None:
-                hook_handles = self.quantizer.register_calibration_hooks(m)
-                reference_output = self.quantizer._get_block_outputs(
-                    m, input_ids, input_others, bs, device_override=loss_device
-                )
-                for h in hook_handles:
-                    h.remove()
+            mid_iter_mem_check = self.compress_context.low_gpu_mem_usage and card_0_in_high_risk
+
+            ctx = BlockContext(
+                model=model,
+                block=m,
+                block_names=current_block_names,
+                block_name=current_block_name,
+                block_index=i,
+                io=self.quantizer.create_block_io(input_ids, input_others, q_input, m),
+                bs=bs,
+                loss_device=loss_device,
+                device=device_manager.device,
+                mid_iter_mem_check=mid_iter_mem_check,
+                is_mllm=self.model_context.is_mllm,
+                is_diffusion=self.model_context.is_diffusion,
+                pbar=pbar,
+            )
+
+            # ── Infrastructure: collect reference output and act calib ────────
+            # All forward hooks (preprocessor stats + act-calib) are active during
+            # the reference forward and removed when the ExitStack exits.
+            policy = self.pipeline.get_merged_policy(ctx)
+
+            if policy.source == InputSource.QUANTIZED_INPUT and q_input is not None:
+                # First: reference forward with FP inputs and preprocessor hooks only.
+                with ExitStack() as fwd_stack:
+                    self.pipeline.enter_preprocessor_hooks(ctx, fwd_stack)
+                    reference_output = ctx.collect_reference(fwd_stack)
+                # Second: quantizer stats forward with q_input.
+                with ExitStack() as fwd_stack:
+                    quantizer_hooks = self.pipeline.enter_quantizer_hooks(ctx, fwd_stack)
+                    if quantizer_hooks:
+                        ctx.collect_quantized_stats(fwd_stack)
             else:
-                reference_output = self.quantizer._get_block_outputs(
-                    m, input_ids, input_others, bs, device_override=loss_device
-                )
-                hook_handles = self.quantizer.register_calibration_hooks(m)
-                if hook_handles:
-                    self.quantizer._get_block_outputs(
-                        m, q_input, input_others, bs, save_output=False, device_override=loss_device
-                    )
-                for h in hook_handles:
-                    h.remove()
+                # Unified: reference forward with all hooks active (or no hooks).
+                with ExitStack() as fwd_stack:
+                    self.pipeline.enter_block_forward_hooks(ctx, fwd_stack)
+                    reference_output = ctx.collect_reference(fwd_stack)
 
             # ── Infrastructure: swap q_input ──────────────────────────────────
             if q_input is not None:
@@ -546,24 +651,24 @@ class DataDrivenCompressor(BaseCompressor):
                     clear_memory(device_list=device_manager.device_list)
                 input_ids = q_input
 
-            # ── Pure algorithm: delegates to quantizer ────────────────────────
-            mid_iter_mem_check = self.compress_context.low_gpu_mem_usage and card_0_in_high_risk
-            self.quantizer.quantize_block(
-                m,
-                input_ids,
-                input_others,
-                reference_output,
-                loss_device=loss_device,
-                mid_iter_mem_check=mid_iter_mem_check,
-            )
+            # ── Pipeline lifecycle: pre_quantize_block (stats consolidation + weight transforms) ──
+            for pre in self.pipeline.preprocessors:
+                pre.pre_quantize_block(ctx)
+
+            # ── Pure algorithm: block_quantizer.quantize_block ────────────────
+            self.pipeline.block_quantizer.quantize_block(ctx)
+
+            # ── Pipeline lifecycle: post_quantize_block ───────────────────────
+            for pre in self.pipeline.preprocessors:
+                pre.post_quantize_block(ctx)
 
             # ── MoE scale alignment for FP8 dispatch efficiency ────────────────
             if is_nv_fp(self.quantizer.act_data_type) or is_static_wfp8afp8(self.quantizer):
                 set_amax_for_all_moe_layers(m, attr_name="act_max")
 
             # ── Infrastructure: collect q_outputs if needed ───────────────────
-            if self.quantizer.enable_quanted_input:
-                q_input = self.quantizer._get_block_outputs(m, input_ids, input_others, bs)
+            if self.pipeline.block_quantizer.enable_quanted_input:
+                q_input = ctx.collect_next_inputs()
             else:
                 q_input = None
 
@@ -579,6 +684,7 @@ class DataDrivenCompressor(BaseCompressor):
             # enabled) is only used as the quantized-input companion for the
             # next block.
             next_input_ids = reference_output
+            ctx.finish()
             clear_memory(input_ids if input_ids is not next_input_ids else None, device_list=device_manager.device_list)
             memory_monitor.log_summary()
 
@@ -588,7 +694,12 @@ class DataDrivenCompressor(BaseCompressor):
                     if hasattr(_mod, "bits") and check_to_quantized(_mod):
                         from auto_round.compressors.utils import immediate_pack as _immediate_pack
 
-                        _immediate_pack(_mod.global_name, self.quantizer.layer_config)
+                        module_name = getattr(_mod, "global_name", None)
+                        if module_name is None and nblocks == 1 and _n:
+                            module_name = f"{n}.{_n}"
+                        if module_name is None:
+                            continue
+                        _immediate_pack(module_name, self.quantizer.layer_config)
 
             input_ids = next_input_ids
 
@@ -666,7 +777,7 @@ class DataDrivenCompressor(BaseCompressor):
             last_cache_name=_last_cache_name,
         )
         self.inputs = all_inputs
-        is_quantized_embedding = self._quantize_embedding_layer()
+        is_quantized_embedding = self.quantizer.quantize_embedding_layer()
         clear_memory(device_list=device_manager.device_list)
         all_q_inputs = None
         if is_quantized_embedding:
@@ -700,38 +811,51 @@ class DataDrivenCompressor(BaseCompressor):
             pbar = tqdm(range(0, len(all_blocks[0]), self.nblocks))  # move the alg warning outside pbar
 
         start_time = time.time()
-        for block_names in all_blocks:
-            inputs = all_inputs[block_names[0]]
-            all_inputs.pop(block_names[0])
-            q_inputs = None
-            if all_q_inputs is not None:
-                q_inputs = all_q_inputs[block_names[0]]
-                all_q_inputs.pop(block_names[0])
 
-            inputs, q_inputs = _update_inputs(inputs, q_inputs)
+        for alg in self.pipeline.all():
+            alg.prepare_run(self)
 
-            clear_memory(self.inputs, device_list=device_manager.device_list)
+        try:
+            for block_names in all_blocks:
+                inputs = all_inputs[block_names[0]]
+                all_inputs.pop(block_names[0])
+                q_inputs = None
+                if all_q_inputs is not None:
+                    q_inputs = all_q_inputs[block_names[0]]
+                    all_q_inputs.pop(block_names[0])
 
-            if "input_ids" in inputs.keys():
-                total_samples = len(inputs["input_ids"])
-                if total_samples < self.quantizer.batch_size:
-                    self.quantizer.batch_size = total_samples
-                    logger.warning(f"force the train batch size to {total_samples}")
+                inputs, q_inputs = _update_inputs(inputs, q_inputs)
 
-            self._quantize_blocks(
-                self.model_context.model,
-                inputs,
-                block_names,
-                q_input=q_inputs if q_inputs is not None else None,
-                nblocks=self.nblocks,
-                pbar=pbar,
-                input_others_extra_blocks=all_inputs,
-            )
-            if self.compress_context.is_immediate_packing and len(self.formats) != 1:
-                raise ValueError(
-                    f"Expected exactly one packing format when 'immediate_packing' is True, "
-                    f"but got {len(self.formats)} formats."
+                clear_memory(self.inputs, device_list=device_manager.device_list)
+
+                if "input_ids" in inputs.keys():
+                    total_samples = len(inputs["input_ids"])
+                    if total_samples < self.quantizer.batch_size:
+                        self.quantizer.batch_size = total_samples
+                        logger.warning(f"force the train batch size to {total_samples}")
+
+                self._quantize_blocks(
+                    self.model_context.model,
+                    inputs,
+                    block_names,
+                    q_input=q_inputs if q_inputs is not None else None,
+                    nblocks=self.nblocks,
+                    pbar=pbar,
+                    input_others_extra_blocks=all_inputs,
                 )
+                if self.compress_context.is_immediate_packing and len(self.formats) != 1:
+                    raise ValueError(
+                        f"Expected exactly one packing format when 'immediate_packing' is True, "
+                        f"but got {len(self.formats)} formats."
+                    )
+        finally:
+            # ── Pipeline lifecycle: finalize_quantization (model-level teardown) ─
+            for alg in self.pipeline.all():
+                try:
+                    alg.finalize_run(self)
+                except Exception as _fe:
+                    logger.warning("finalize_run error in %s: %s", type(alg).__name__, _fe)
+
         pbar.set_description("Quantizing done")
         pbar.close()
         if self.compress_context.low_cpu_mem_usage:
@@ -782,6 +906,7 @@ class DataDrivenCompressor(BaseCompressor):
         """
         # TODO currently we take all the layers outside blocks as post block layers which is not optimal
         # if there is no input for layer, we use rtn
+
         for layer_name in copy.deepcopy(layer_names):
             if layer_name not in layer_inputs:
                 if self.act_bits < 16 and not self.act_dynamic:
@@ -891,10 +1016,10 @@ class CalibratedRTNCompressor(DataDrivenCompressor):
 
     def __init__(
         self,
-        config: AlgConfig,
+        config: object,
         model: torch.nn.Module,
         **kwargs,
-    ):
+    ) -> None:
         kwargs["iters"] = 0
         super().__init__(
             config,
@@ -1010,7 +1135,7 @@ class CalibratedRTNCompressor(DataDrivenCompressor):
                         self.quantizer.batch_size,
                         device_manager.device,
                     )
-                    if len(device_manager.device_list) > 1 and not self.model_context.is_diffusion:
+                    if len(device_manager.device_list) > 1:
                         from accelerate.hooks import AlignDevicesHook, add_hook_to_module
 
                         for _, _mod in block.named_modules():
@@ -1020,17 +1145,26 @@ class CalibratedRTNCompressor(DataDrivenCompressor):
                 else:
                     block = block.to(device_manager.device)
 
-                # ── Infrastructure: register act_max hook and run forward pass ──
-                hook_handles = self.quantizer.register_calibration_hooks(block, imatrix=False)
-                block_input_ids = input_ids  # keep reference for quantize_block
-                input_ids = self.quantizer._get_block_outputs(
-                    block,
-                    input_ids,
-                    input_others,
-                    self.quantizer.batch_size * self.quantizer.infer_bs_coeff,
+                # ── Infrastructure: collect block outputs and hook stats ──
+                from auto_round.algorithms.pipeline import BlockContext
+
+                block_input_ids = input_ids
+                bs = self.quantizer.batch_size * self.quantizer.infer_bs_coeff
+                ctx = BlockContext(
+                    model=self.model_context.model,
+                    block=block,
+                    block_names=[block_name],
+                    block_name=block_name,
+                    block_index=0,
+                    io=self.quantizer.create_block_io(input_ids, input_others, None, block),
+                    bs=bs,
+                    device=device_manager.device,
+                    is_mllm=self.model_context.is_mllm,
+                    is_diffusion=self.model_context.is_diffusion,
                 )
-                for h in hook_handles:
-                    h.remove()
+                with ExitStack() as fwd_stack:
+                    self.pipeline.enter_block_forward_hooks(ctx, fwd_stack)
+                    input_ids = ctx.collect_reference(fwd_stack)
 
                 if len(device_manager.device_list) > 1:
                     accelerate.hooks.remove_hook_from_submodules(block)
@@ -1040,7 +1174,9 @@ class CalibratedRTNCompressor(DataDrivenCompressor):
                     self.compress_context.clear_memory()
 
                 # ── Pure algorithm ────────────────────────────────────────────
-                self.quantizer.quantize_block(block, block_input_ids, input_others, block_name=block_name)
+                ctx.io.seed_reference(fp_inputs=block_input_ids, reference_outputs=input_ids)
+                self.quantizer.quantize_block(ctx)
+                ctx.finish()
 
                 # ── Infrastructure: cleanup ───────────────────────────────────
                 mv_module_from_gpu(block)
@@ -1077,14 +1213,6 @@ class CalibratedRTNCompressor(DataDrivenCompressor):
         #     shard_writer(self, is_finalize=True)
 
     def _quant_rtn_with_imatrix(self) -> None:
-        """Performs RTN quantization using input activation statistics (imatrix).
-
-        OptimizedRTNQuantizer owns imatrix hook registration. This method only
-        enables the quantizer-side collection path and keeps the OOM fallback.
-
-        Returns:
-            None
-        """
         logger.info("start to compute imatrix")
         self.quantizer.enable_imatrix = True
 
@@ -1097,7 +1225,6 @@ class CalibratedRTNCompressor(DataDrivenCompressor):
         if hasattr(model, "hf_device_map") and len(model.hf_device_map) > 1:
             dispatch_model(model, model.hf_device_map)
 
-        hooks = self.quantizer.register_calibration_hooks(model, act_max=False)
         try:
             if hasattr(model, "hf_device_map") and len(model.hf_device_map) > 1:
                 import accelerate
@@ -1110,7 +1237,6 @@ class CalibratedRTNCompressor(DataDrivenCompressor):
             cuda_error_msg = traceback.format_exc()
             try:
                 logger.error(cuda_error_msg)
-                # Final fallback: warn and use CPU-only quantization
                 logger.warning(
                     "Fallback to CPU. "
                     "Consider enabling `low_gpu_mem_usage` or using more GPUs via `--device 0,1,2,3`."
@@ -1135,8 +1261,6 @@ class CalibratedRTNCompressor(DataDrivenCompressor):
             except Exception as e:
                 raise
         finally:
-            for hook in hooks:
-                hook.remove()
             self.quantizer.enable_imatrix = False
 
     def quantize(self):
@@ -1160,7 +1284,7 @@ class CalibratedRTNCompressor(DataDrivenCompressor):
 
         formats = getattr(self, "formats", None) or []
         if not (any(fmt.is_gguf() for fmt in formats) or self.super_bits is not None):
-            self._quantize_embedding_layer()  # leave to gguf itself to handle
+            self.quantizer.quantize_embedding_layer()  # leave to gguf itself to handle
 
         # Release memory
         clear_memory(device_list=device_manager.device_list)
