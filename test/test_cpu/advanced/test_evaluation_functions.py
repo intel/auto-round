@@ -25,6 +25,33 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 
+class TestSelectGgufEvalFile:
+    """Test GGUF text file selection for evaluation."""
+
+    def test_selects_only_text_gguf_when_mixed_format_filename_differs(self, tmp_path):
+        from auto_round.eval.evaluation import select_gguf_eval_file
+
+        (tmp_path / "gemma-4-E4B-it-7.5B-Q2_K_S.gguf").touch()
+        (tmp_path / "mmproj-model.gguf").touch()
+
+        gguf_file, candidates = select_gguf_eval_file(str(tmp_path), ["gguf:q2_k_mixed"])
+
+        assert gguf_file == "gemma-4-E4B-it-7.5B-Q2_K_S.gguf"
+        assert candidates == ["gemma-4-E4B-it-7.5B-Q2_K_S.gguf"]
+
+    def test_prefers_exact_format_match_when_multiple_text_gguf_files_exist(self, tmp_path):
+        from auto_round.eval.evaluation import select_gguf_eval_file
+
+        (tmp_path / "model-Q4_0.gguf").touch()
+        (tmp_path / "model-Q8_0.gguf").touch()
+        (tmp_path / "mmproj-model.gguf").touch()
+
+        gguf_file, candidates = select_gguf_eval_file(str(tmp_path), ["gguf:q4_0"])
+
+        assert gguf_file == "model-Q4_0.gguf"
+        assert candidates == ["model-Q4_0.gguf", "model-Q8_0.gguf"]
+
+
 class TestParseVllmArgs:
     """Test parse_vllm_args function for parsing custom vllm arguments."""
 

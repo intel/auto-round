@@ -57,8 +57,8 @@ class LogAnalyzer:
         "ERROR:",
         "== ERRORS ==",
         " errors:",
-        "Exception",
-        "Traceback",
+        "Exception:",
+        "Traceback ",
         "Illegal instruction",
     )
 

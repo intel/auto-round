@@ -201,6 +201,143 @@ class TestGGUF:
             else:
                 assert abs(file_size - 264) < 5.0
 
+    def test_mmproj_uses_native_f32_export_when_nontext_is_not_quantized(self, tmp_path, monkeypatch):
+        from auto_round.export.export_to_gguf import export
+        from auto_round.export.export_to_gguf.config import ModelType
+
+        ftypes = {
+            "q4_0": object(),
+            "f32": object(),
+        }
+        wrapper_calls = []
+
+        class FakeConfig:
+            model_type = "qwen2_vl"
+
+        class FakeModel:
+            name_or_path = str(tmp_path)
+            config = FakeConfig()
+
+        class FakeModelClass:
+            def __init__(self, **kwargs):
+                self.__dict__.update(kwargs)
+                self.model_arch = "MMPROJ"
+
+        class FakeModelBase:
+            @staticmethod
+            def load_hparams(_dir_model, _is_mistral_format):
+                return {"architectures": ["FakeArchitecture"], "quantization_config": {"bits": 4}}
+
+        class FakeConversion:
+            ModelBase = FakeModelBase
+
+            @staticmethod
+            def model_type(model_type):
+                return model_type
+
+            @staticmethod
+            def get_model_architecture(_hparams, _model_type):
+                return "FakeArchitecture"
+
+            @staticmethod
+            def get_model_class(_model_architecture, model_type):
+                return FakeModelClass
+
+        def fake_wrapper(model_instance, **kwargs):
+            wrapper_calls.append(model_instance)
+            model_instance.was_wrapped = True
+            model_instance.model = kwargs["model"]
+            return model_instance
+
+        monkeypatch.setattr(export, "FTYPE_MAP", ftypes)
+        monkeypatch.setattr(export, "get_conversion", lambda *_args, **_kwargs: FakeConversion)
+        monkeypatch.setattr(export, "wrapper_model_instance", fake_wrapper)
+        monkeypatch.setattr(export, "handle_special_model", lambda model_instance, _architecture: model_instance)
+
+        model_instance = export.create_model_class(
+            output_dir=str(tmp_path),
+            model=FakeModel(),
+            layer_config={},
+            backend="gguf:q4_0",
+            model_type=ModelType.MMPROJ,
+            quant_nontext_module=False,
+        )
+
+        assert wrapper_calls == []
+        assert not hasattr(model_instance, "model")
+        assert model_instance.ftype is ftypes["f32"]
+        assert model_instance.fname_out == tmp_path / "mmproj-model.gguf"
+
+    def test_text_still_uses_autoround_wrapper_when_nontext_is_not_quantized(self, tmp_path, monkeypatch):
+        from auto_round.export.export_to_gguf import export
+        from auto_round.export.export_to_gguf.config import ModelType
+
+        ftypes = {
+            "q4_0": object(),
+            "f32": object(),
+        }
+        wrapper_calls = []
+
+        class FakeConfig:
+            model_type = "qwen2_vl"
+
+        class FakeModel:
+            name_or_path = str(tmp_path)
+            config = FakeConfig()
+
+        class FakeModelClass:
+            def __init__(self, **kwargs):
+                self.__dict__.update(kwargs)
+                self.model_arch = "TEXT"
+
+        class FakeModelBase:
+            @staticmethod
+            def load_hparams(_dir_model, _is_mistral_format):
+                return {"architectures": ["FakeArchitecture"], "quantization_config": {"bits": 4}}
+
+        class FakeConversion:
+            ModelBase = FakeModelBase
+
+            @staticmethod
+            def model_type(model_type):
+                return model_type
+
+            @staticmethod
+            def get_model_architecture(_hparams, _model_type):
+                return "FakeArchitecture"
+
+            @staticmethod
+            def get_model_class(_model_architecture, model_type):
+                return FakeModelClass
+
+        def fake_wrapper(model_instance, **kwargs):
+            wrapper_calls.append((model_instance, kwargs))
+            model_instance.was_wrapped = True
+            model_instance.model = kwargs["model"]
+            return model_instance
+
+        monkeypatch.setattr(export, "FTYPE_MAP", ftypes)
+        monkeypatch.setattr(export, "get_conversion", lambda *_args, **_kwargs: FakeConversion)
+        monkeypatch.setattr(export, "wrapper_model_instance", fake_wrapper)
+        monkeypatch.setattr(export, "handle_special_model", lambda model_instance, _architecture: model_instance)
+
+        model_instance = export.create_model_class(
+            output_dir=str(tmp_path),
+            model=FakeModel(),
+            layer_config={},
+            backend="gguf:q4_0",
+            model_type=ModelType.TEXT,
+            quant_nontext_module=False,
+        )
+
+        assert len(wrapper_calls) == 1
+        assert wrapper_calls[0][0] is model_instance
+        assert wrapper_calls[0][1]["quant_nontext_module"] is False
+        assert model_instance.was_wrapped
+        assert isinstance(model_instance.model, FakeModel)
+        assert model_instance.ftype is ftypes["q4_0"]
+        assert model_instance.fname_out == tmp_path
+
     def test_qtype_setting(self, tiny_qwen_vl_model_path):
         # Qwen2.5-0.5B-Instruct no output, token_embed q6_k fallbakc to q8_0 336M
         # Qwen3-0.6B output q6_k, token_embed q4_0  448M
@@ -321,8 +458,8 @@ class TestGGUF:
         gguf_model = GGUFReader(os.path.join(quantized_model_path, gguf_file))
         assert gguf_model.get_tensor(2).name == "blk.0.attn_k.weight"
         assert gguf_model.get_tensor(2).tensor_type.name == "Q4_K"
-        assert gguf_model.get_tensor(9).name == "blk.0.ffn_up_exps.weight"
-        assert gguf_model.get_tensor(9).tensor_type.name == "Q2_K"
+        tensor_types = {tensor.name: tensor.tensor_type.name for tensor in gguf_model.tensors}
+        assert tensor_types["blk.0.ffn_up_exps.weight"] == "Q2_K"
 
     def test_q2k_mixed_keeps_only_three_dim_expert_weights_at_q2k(self, tiny_qwen_moe_model_path):
         model_name = tiny_qwen_moe_model_path
