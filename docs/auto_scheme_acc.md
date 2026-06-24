@@ -9,7 +9,7 @@ python3 -m auto_round Qwen/Qwen3-8B     --options "gguf:q2_k_s,gguf:q4_k_s"     
 eval
 
 ~~~
- llm serve ./test_gguf/Qwen3-8B-w2g16/ --port 8001 --max-model-len 8192 --host 127.0.0.1 --served-model-name qwen
+ vllm serve ./test_gguf/Qwen3-8B-w2g16/ --port 8000 --max-model-len 8192 --host 127.0.0.1 --served-model-name qwen
 evalscope eval --model qwen --api-url http://127.0.0.1:8000/v1   --api-key EMPTY   --datasets math_500 gpqa_diamoid mmlu_pro  --eval-batch-size 32
 ~~~
 

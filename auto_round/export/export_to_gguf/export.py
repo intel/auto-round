@@ -64,6 +64,16 @@ FTYPE_MAP: dict[str, gguf.LlamaFileType] = {
 }
 
 
+def _use_native_nontext_gguf_export(model_type, quant_nontext_module: bool) -> bool:
+    return model_type == ModelType.MMPROJ and not quant_nontext_module
+
+
+def _set_mmproj_output_path(model_instance):
+    if model_instance.fname_out.is_dir():
+        model_instance.fname_out = model_instance.fname_out / "mmproj-model.gguf"
+    return model_instance
+
+
 def create_model_class(
     output_dir,
     model,
@@ -94,7 +104,8 @@ def create_model_class(
         else:
             model_name = model_name[-1]
 
-        output_type = backend.split(":")[-1]
+        native_nontext_export = _use_native_nontext_gguf_export(model_type, quant_nontext_module)
+        output_type = "f32" if native_nontext_export else backend.split(":")[-1]
         if output_type.lower() not in FTYPE_MAP:
             raise TypeError(f"{output_type} type is not supported")
         output_type = FTYPE_MAP.get(output_type.lower())
@@ -112,14 +123,18 @@ def create_model_class(
             dry_run=False,
             small_first_shard=False,
         )
-        model_instance = wrapper_model_instance(
-            model_instance,
-            model=model,
-            layer_config=layer_config,
-            low_cpu_mem_usage=low_cpu_mem_usage,
-            device=device,
-            quant_nontext_module=quant_nontext_module,
-        )
+        if native_nontext_export:
+            logger.info("Using native llama.cpp F32 export for non-text GGUF model")
+            model_instance = _set_mmproj_output_path(model_instance)
+        else:
+            model_instance = wrapper_model_instance(
+                model_instance,
+                model=model,
+                layer_config=layer_config,
+                low_cpu_mem_usage=low_cpu_mem_usage,
+                device=device,
+                quant_nontext_module=quant_nontext_module,
+            )
         model_instance = handle_special_model(model_instance, model_architecture)
     return model_instance
 
@@ -253,6 +268,8 @@ def save_quantized_as_gguf(
             )
 
     for gguf_model in gguf_model_instance_global:
+        model_kind = "mmproj" if gguf_model.model_arch == gguf.MODEL_ARCH.MMPROJ else "text"
+        logger.info("Start writing %s GGUF model to %s", model_kind, gguf_model.fname_out)
         gguf_model.write()
         rt = time.time() - st
         logger.info(f"Model successfully exported to {gguf_model.fname_out}, running time={rt}")

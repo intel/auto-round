@@ -56,7 +56,10 @@ from auto_round.utils.weight_handler import _dequant_fp8_linear_weight
 # slice to produce one tensor per split name per expert.
 _FUSED_EXPERT_PROJ_PATTERNS: dict[str, list[str]] = {
     "gate_up_proj": ["gate_proj", "up_proj"],
+    "w13": ["w1", "w3"],
 }
+
+_AUTOROUND_ISSUE_URL = "https://github.com/intel/auto-round/issues"
 
 
 def split_fused_expert_tensors(
@@ -65,7 +68,8 @@ def split_fused_expert_tensors(
     """Split 3-D fused expert tensors into per-expert 2-D tensors.
 
     Many MoE checkpoints store expert weights as fused 3-D parameters
-    under ``*.experts.<proj_name>`` (for example ``gate_up_proj`` with shape
+    under either ``*.experts.<proj_name>`` or ``*.moe.<proj_name>``
+    (for example ``gate_up_proj`` with shape
     ``[num_experts, 2*intermediate, hidden]``, or ``down_proj`` with shape
     ``[num_experts, out, in]``).  After unfusing, each expert gets its own
     2-D weight tensor, e.g.
@@ -73,12 +77,16 @@ def split_fused_expert_tensors(
 
     Splitting rules:
 
-    * **gate_up_proj** ``[N, 2*inter, hidden]`` →
+        * **gate_up_proj** ``[N, 2*inter, hidden]`` →
       ``experts.{i}.gate_proj.weight`` + ``experts.{i}.up_proj.weight``
     * **up_gate_proj** ``[N, 2*inter, hidden]`` →
       ``experts.{i}.up_proj.weight`` + ``experts.{i}.gate_proj.weight``
-    * **Other** stacked projections (e.g. ``down_proj``) ``[N, out, in]`` →
-      ``experts.{i}.<proj>.weight``
+        * **Other** stacked projections (e.g. ``down_proj``) ``[N, out, in]`` →
+            ``experts.{i}.<proj>.weight``
+
+        For ``*.moe.<proj_name>`` tensors, outputs use
+        ``*.moe.experts.{i}.<proj>.weight`` so they align with the sequential
+        expert module layout used by quantized MoE replacements.
 
     Non-3-D or non-expert tensors pass through unchanged.
 
@@ -109,10 +117,24 @@ def split_fused_expert_tensors(
         parent = stripped[:dot_idx]
         proj_name = stripped[dot_idx + 1 :]
 
-        # The immediate parent must be "experts"
-        if not parent.endswith("experts") and parent.split(".")[-1] != "experts":
+        parent_last = parent.split(".")[-1]
+        is_experts_parent = parent.endswith("experts") or parent_last == "experts"
+        is_moe_parent = parent.endswith("moe") or parent_last == "moe"
+
+        # The immediate parent must be "experts" or "moe"
+        if not is_experts_parent and not is_moe_parent:
+            logger.warning(
+                "Found 3-D tensor '%s' with unsupported parent '%s' while splitting expert tensors; "
+                "it will be kept unchanged. If this is an MoE/expert weight that should be split/quantized, "
+                "please open an issue at %s.",
+                tensor_name,
+                parent,
+                _AUTOROUND_ISSUE_URL,
+            )
             result[tensor_name] = tensor
             continue
+
+        target_prefix = parent if is_experts_parent else f"{parent}.experts"
 
         num_experts = tensor.shape[0]
 
@@ -127,7 +149,7 @@ def split_fused_expert_tensors(
                 expert_2d = tensor[i]  # [fused_out, in_features]
                 chunks = expert_2d.chunk(len(split_names), dim=0)
                 for split_name, chunk in zip(split_names, chunks):
-                    out_key = f"{parent}.{i}.{split_name}.weight"
+                    out_key = f"{target_prefix}.{i}.{split_name}.weight"
                     result[out_key] = chunk.contiguous()
         else:
             logger.info(
@@ -136,7 +158,7 @@ def split_fused_expert_tensors(
             )
             for i in range(num_experts):
                 expert_2d = tensor[i]  # [out, in]
-                out_key = f"{parent}.{i}.{proj_name}.weight"
+                out_key = f"{target_prefix}.{i}.{proj_name}.weight"
                 result[out_key] = expert_2d.contiguous()
 
         split_count += 1
