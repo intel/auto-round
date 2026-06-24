@@ -60,6 +60,19 @@
 // `instantiation_check` namespace only pins the interface to concrete BestLA
 // cores so it is type-checked / compiled at this step.
 //
+// Phase 2, step 4 migrates the dtype-specialized attention dispatch:
+//   * bestla_fusion_attn_forward<Q_T, K_T, V_T, DST_T> (generic primary
+//     template `= delete`, so unsupported operand-type combinations are
+//     rejected at compile time).
+//   * bestla_fusion_attn_forward<float, fp16, fp16, float> (AVX2 stable branch).
+//   * bestla_fusion_attn_forward<float, bf16, bf16, float> (AVX512F + AMX-BF16
+//     stable branches, gated by ATTN_FLAG_PREFER_FP32 like Neural Speed).
+// Only the fp32-score routes that compose `mha_stable_interface_t` are wired;
+// the bf16/bf16, fp16/fp16 and int8 overloads (and the AVX512-FP16 / AMX-BF16
+// ExpSum sub-paths) need the not-yet-migrated non-stable `mha_interface_t` /
+// `ScaleExpAccSumFp32Bf16` / avx512fp16 core and assert off as scaffolding.
+// Runtime dispatch (sdpa.cpp / ark.cpp) still does NOT call these overloads.
+//
 // API-drift notes vs Neural Speed's BestLA:
 //   * ARK's `kernel::wrapper::ScaleTrackMax::forward` takes an extra
 //     `padding_type` argument (0=dense, 1=causal, 2=right-padding) that Neural
@@ -100,6 +113,11 @@
 //     `ATTN_FWD_LAYOUT` (from mha_dense.h) and adds the `n_padding` field. The
 //     non-templated `ark::cpu::attn_fwd_args_t` (Phase 1, void* pointers) is the
 //     public C-style ABI struct and is unrelated to this typed wrapper struct.
+//   * Neural Speed's `bestla_fusion_attn_forward` overloads take no threading
+//     argument and pull a process-global pool from `ne_threading::get()`. ARK
+//     has no such global, so each overload takes an explicit
+//     `parallel::IThreading&` (the object `mha_stable_interface_t::compute`
+//     already consumes) and forwards it through.
 // -----------------------------------------------------------------------------
 
 #include <algorithm>
@@ -1086,6 +1104,110 @@ class mha_stable_interface_t {
 };
 
 // ---------------------------------------------------------------------------
+// Dtype-specialized attention dispatch (port of Neural Speed's
+// `bestla_fusion_attn_forward`). The generic template is deleted so an
+// unsupported Q/K/V/dst combination is a compile-time error; each supported
+// combination is provided as an explicit specialization below.
+//
+// ARK drift vs Neural Speed (see file header):
+//   * Neural Speed reaches a process-global thread pool through
+//     `ne_threading::get()` and takes no threading argument. ARK has no such
+//     global, so the overloads take an explicit `parallel::IThreading&` (the
+//     same object `mha_stable_interface_t::compute` already consumes) and
+//     forward it to `compute`.
+//   * Only the fp32-score paths that compose `mha_stable_interface_t` are wired
+//     here. Neural Speed's bf16/bf16, fp16/fp16 and int8 overloads (and the
+//     AVX512-FP16 / AMX-BF16 ExpSum sub-paths) rely on the non-stable
+//     `mha_interface_t` / `ScaleExpAccSumFp32Bf16` / avx512fp16 core, none of
+//     which is migrated yet; those routes assert off as scaffolding.
+// ---------------------------------------------------------------------------
+template <typename Q_T, typename K_T, typename V_T, typename DST_T>
+inline void bestla_fusion_attn_forward(const attn_fwd_args_t<Q_T, K_T, V_T, DST_T>& params,
+                                       parallel::IThreading& th) = delete;
+
+// fp32 Q, fp16 K/V (NTILE24 row-packed), fp32 dst. ARK wires only the AVX2
+// stable-interface branch: Neural Speed's AVX512-FP16 branch needs the
+// avx512fp16 GemmCore and its AMX-BF16 branch needs the non-stable
+// `mha_interface_t` / `ScaleExpAccSumFp32Bf16`, neither migrated yet.
+template <>
+inline void bestla_fusion_attn_forward<float, utils::fp16, utils::fp16, float>(
+    const attn_fwd_args_t<float, utils::fp16, utils::fp16, float>& params, parallel::IThreading& th) {
+  GetCPUDevice();
+  if (_cd->AVX2() &&                                          //
+      params.K_layout == ATTN_FWD_LAYOUT_NTILE24_ROWPACK1 &&  //
+      params.V_layout == ATTN_FWD_LAYOUT_NTILE24_ROWPACK1) {
+#if CompileAVX2()
+    using GemmKernelTrackMax = launcher_base_weight_t<  //
+        gemm::SCoreRowNAvx2<24, 4>,                     //
+        prologue_a::gemm::ActivationBase,               //
+        weight_cvt_f16_n_tile24_t,                      //
+        ScaleTrackMaxFp32Fp32>;                         //
+    using GemmKernelId = launcher_base_weight_t<        //
+        gemm::SCoreRowNAvx2<24, 4>,                     //
+        activation_identity_t,                          // enough padding for the P-matrix
+        weight_cvt_f16_n_tile24_t,                      //
+        epilogue::gemm::AccumulatorWriteBackFp32>;      //
+    static mha_stable_interface_t<GemmKernelTrackMax, GemmKernelId> mha;
+    [[maybe_unused]] const auto ret = mha.compute(params, th);
+    assert(ret == BTLA_CODE::Success);
+#else
+    assert(false);
+#endif
+  } else {
+    assert(false);  // no suitable launcher
+  }
+}
+
+// fp32 Q, bf16 K/V, fp32 dst. Both the AVX512F (bf16->fp32 N-tile-48 convert)
+// and AMX-BF16 (already-laid-out N-tile-48 forward) stable-interface branches
+// are wired; selection mirrors Neural Speed's PREFER_FP32 gating.
+template <>
+inline void bestla_fusion_attn_forward<float, utils::bf16, utils::bf16, float>(
+    const attn_fwd_args_t<float, utils::bf16, utils::bf16, float>& params, parallel::IThreading& th) {
+  GetCPUDevice();
+  if (_cd->AVX512F() &&
+      ((_cd->AMX_BF16() && (params.attn_flags & ATTN_FLAG_PREFER_FP32) != 0) || !_cd->AMX_BF16())) {
+#if CompileAVX512F()
+    using GemmKernelBF16TrackMax = launcher_base_weight_t<  //
+        gemm::SCoreRowNAvx512f<48, 8>,                      //
+        prologue_a::gemm::ActivationBase,                   //
+        weight_cvt_bf16_ntile48_t,                          //
+        ScaleTrackMaxFp32Fp32>;                             //
+    using GemmKernelBF16 = launcher_base_weight_t<          //
+        gemm::SCoreRowNAvx512f<48, 8>,                      //
+        activation_identity_t,                              // enough padding for the P-matrix
+        weight_cvt_bf16_ntile48_t,                          //
+        epilogue::gemm::AccumulatorWriteBackFp32>;          //
+    static mha_stable_interface_t<GemmKernelBF16TrackMax, GemmKernelBF16> mha;
+    [[maybe_unused]] const auto ret = mha.compute(params, th);
+    assert(ret == BTLA_CODE::Success);
+#else
+    assert(false);
+#endif
+  } else if (_cd->AMX_BF16()) {
+#if CompileBF16()
+    using GemmKernelBF16TrackMax = launcher_base_weight_t<  //
+        gemm::HCoreRowNAmxbf16<48, 16>,                     //
+        prologue_a::gemm::ActivationConverterFp32,          //
+        weight_forward_n_tile48_t,                          //
+        ScaleTrackMaxFp32Fp32>;                             //
+    using GemmKernelBF16 = launcher_base_weight_t<          //
+        gemm::HCoreRowNAmxbf16<48, 16>,                     //
+        activation_identity_t,                              // enough padding for the P-matrix
+        weight_forward_n_tile48_t,                          //
+        epilogue::gemm::AccumulatorWriteBackFp32>;          //
+    static mha_stable_interface_t<GemmKernelBF16TrackMax, GemmKernelBF16> mha;
+    [[maybe_unused]] const auto ret = mha.compute(params, th);
+    assert(ret == BTLA_CODE::Success);
+#else
+    assert(false);
+#endif
+  } else {
+    assert(false);  // no suitable launcher
+  }
+}
+
+// ---------------------------------------------------------------------------
 // Concrete instantiations / syntax-checks against the ARK vendored BestLA cores.
 // These mirror Neural Speed's *NonTr / *Trans aliases and pin each migrated
 // template to at least one real GemmCore so the building blocks are compiled
@@ -1133,8 +1255,11 @@ using CvtFp16NTile24 = weight_cvt_f16_n_tile24_t<CoreAvx2>;
 // ---------------------------------------------------------------------------
 // Stable-interface syntax-checks. Each pins mha_stable_interface_t to a concrete
 // QK (track-max) + PV (write-back) launcher pair so compute() is fully
-// type-checked / compiled here. Compositions mirror Neural Speed's
-// bestla_fusion_attn_forward specializations (which land in the next step).
+// type-checked / compiled here. These compositions are exactly the launcher
+// pairs the `bestla_fusion_attn_forward` overloads above instantiate (AVX2 for
+// `<float, fp16, fp16, float>`; AVX512F / AMX-BF16 for `<float, bf16, bf16,
+// float>`); they are retained as ISA-agnostic compile pins independent of the
+// runtime CPU-feature dispatch.
 // ---------------------------------------------------------------------------
 
 // AVX2: SCoreRowNAvx2<24, 4> path (fp32 scores, fp16->fp32 N-tile-24 weights).
