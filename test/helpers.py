@@ -56,7 +56,12 @@ def generate_prompt(model_obj_or_str, tokenizer=None, text="The capital of Franc
 
 
 def eval_generated_prompt(
-    model, tokenizer=None, prompt_text="United States of", target_text="America", max_new_tokens=10, device=None
+    model,
+    tokenizer=None,
+    prompt_text="What is the capital of France?",
+    target_text="Paris",
+    max_new_tokens=10,
+    device=None,
 ):
     generated_text = generate_prompt(model, tokenizer, prompt_text, max_new_tokens=max_new_tokens, device=device)
     assert target_text in generated_text, f"Expected {target_text} in generated text: {generated_text}"
