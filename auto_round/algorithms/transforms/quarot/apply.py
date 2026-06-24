@@ -21,16 +21,20 @@ Public entry points
 
 from __future__ import annotations
 
+import json
+import os
 from typing import Any
 
 import torch
+import torch.nn as nn
 import tqdm
 
-from auto_round.algorithms.transforms.base import BaseRotation
+from auto_round.algorithms.transforms.base import BaseRotation, SerializerMixin
 from auto_round.algorithms.transforms.quarot.config import RotationConfig, normalize_rotation_config
 from auto_round.algorithms.transforms.quarot.transforms import build_hadamard_transform
 from auto_round.compressors.utils import is_nv_fp
 from auto_round.experimental.qmodules.base import QModuleBase
+from auto_round.utils import logger
 
 __all__ = ["HadamardRotation", "apply_rotation_transform"]
 
@@ -54,11 +58,14 @@ def _triton_available(data_type: str = "mx_fp") -> bool:
 
 
 @BaseRotation.register("hadamard")
-class HadamardRotation(BaseRotation):
+class HadamardRotation(BaseRotation, SerializerMixin):
     """Hadamard rotation algorithm.
 
     Registered under ``"hadamard"`` in the
     :class:`~auto_round.algorithms.transforms.base.BaseRotation` registry.
+
+    Implements :class:`SerializerMixin` for save/load support — the config
+    is persisted under ``"rotation_config"`` in ``config.json``.
 
     Typical usage (via the top-level helper)::
 
@@ -102,7 +109,7 @@ class HadamardRotation(BaseRotation):
             **kwargs:        Reserved for future use.
 
         Returns:
-            The mutated *model* with ``model.rotation_config`` set to the
+            The mutated *model* with ``model._rotation_config`` set to the
             normalised :class:`RotationConfig` dict.
         """
         cfg = self.config
@@ -136,7 +143,7 @@ class HadamardRotation(BaseRotation):
                 fuse_online_to_weight=fuse_online_to_weight,
                 compute_device=compute_device,
             )
-            setattr(model, "rotation_config", cfg.model_dump())
+            setattr(model, "_rotation_config", cfg)
             return model
 
         # backend == "transform": original per-Linear triton-fused path.
@@ -152,8 +159,77 @@ class HadamardRotation(BaseRotation):
             _apply_to_module(model, module, cfg, location, data_type)
 
         # Store config on model for serialisation / downstream inspection.
-        setattr(model, "rotation_config", cfg.model_dump())
+        setattr(model, "_rotation_config", cfg)
         return model
+
+    # ------------------------------------------------------------------
+    # SerializerMixin — Save side
+    # ------------------------------------------------------------------
+
+    def inject_buffers_on_layer(
+        self,
+        layer_name: str,
+        qlayer: nn.Module,
+        model: nn.Module,
+    ) -> None:
+        """No-op — Hadamard rotation does not use per-module buffers."""
+
+    def inject_buffers_bulk(
+        self,
+        model: nn.Module,
+        quantization_config: dict,
+    ) -> None:
+        """Write rotation_config into quantization_config for persistence."""
+        config = getattr(model, "_rotation_config", None)
+        if config is not None:
+            cfg_dict = config.model_dump() if hasattr(config, "model_dump") else dict(config)
+            quantization_config[self.config_key()] = cfg_dict
+
+    def save_config(self, model: nn.Module, save_dir: str) -> None:
+        """Persist rotation_config into config.json after model.save_pretrained()."""
+        config = getattr(model, "_rotation_config", None)
+        if config is None:
+            return
+
+        cfg_dict = config.model_dump() if hasattr(config, "model_dump") else dict(config)
+
+        config_path = os.path.join(save_dir, "config.json")
+        if not os.path.exists(config_path):
+            logger.warning(f"[Hadamard] config.json not found at {save_dir}, cannot save rotation_config")
+            return
+
+        with open(config_path, "r") as f:
+            model_config = json.load(f)
+
+        if "quantization_config" in model_config:
+            model_config["quantization_config"][self.config_key()] = cfg_dict
+        else:
+            model_config[self.config_key()] = cfg_dict
+
+        with open(config_path, "w") as f:
+            json.dump(model_config, f, indent=2)
+
+        logger.info(f"[Hadamard] Saved rotation_config to {config_path}")
+
+    # ------------------------------------------------------------------
+    # SerializerMixin — Load side
+    # ------------------------------------------------------------------
+
+    def preregister_buffers(self, model: nn.Module, config_dict: dict) -> int:
+        """No-op — Hadamard rotation does not use per-module buffers."""
+        return 0
+
+    def rebuild_online(self, model: nn.Module) -> nn.Module:
+        """No-op — Hadamard hooks are rebuilt via apply_rotation_hooks_from_config."""
+        return model
+
+    def has_rotation_buffers(self, module: nn.Module) -> bool:
+        """Hadamard rotation does not inject buffers into modules."""
+        return False
+
+    @classmethod
+    def config_key(cls) -> str:
+        return "rotation_config"
 
 
 # ---------------------------------------------------------------------------

@@ -1311,7 +1311,7 @@ def _gen_layer_config(
         # Rotation mutates weights in memory before AutoScheme starts. Clean-mode
         # reloads from the original checkpoint and would silently discard those
         # transformed weights during scoring and final restore.
-        if getattr(model, "rotation_config", None):
+        if getattr(model, "_rotation_config", None):
             offload_mode = "offload"
             offload_kwargs = {"offload_dir_prefix": "autoscheme", "retain_saved_entries": True}
         offload_context = OffloadManager(enabled=True, mode=offload_mode, cache_numel=True, **offload_kwargs)

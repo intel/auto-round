@@ -34,7 +34,7 @@ This document presents step-by-step instructions for auto-round llm quantization
   + [Device/Multi-GPU setting in Quantization](#devicemulti-gpu-setting-in-quantization)
     - [Enable multiple gpus calibration in lm_head quantization](#enable-multiple-gpus-calibration-in-lm_head-quantization)
   + [Adjust Hyperparameters](#adjust-hyperparameters)
-  + [Rotation](#rotation)
+  + [Rotation (Experimental)](#rotation-experimental)
     - [QuaRot / SpinQuant](#quarot--spinquant)
     - [Per-Linear Block Rotation (Experimental)](#per-linear-block-rotation-experimental)
 * [4 Inference](#4-inference)
@@ -484,7 +484,6 @@ We will try to optimize the RAM usage in the future. The RAM usage is about 1.1-
 #### Limitations
 Embedding layer is not supported in AutoScheme, it will use the best scheme in options.
 
-
 ### AWQ Quantization Algorithm
 
 AWQ (`algorithm="awq"`) is a pre-processing quantization algorithm that analyzes activation patterns and applies channel-wise scaling to protect salient weights. It runs BEFORE the actual quantization (RTN by default, or auto_round/SignRound).
@@ -519,7 +518,6 @@ ar.quantize_and_save(output_dir="./qmodel")
 **Important Note**: `algorithm="awq"` (quantization algorithm) and `format="auto_awq"` (export format) are independent. You can use:
 - `algorithm="awq"` + `format="auto_round"`: AWQ smoothing + AutoRound packing
 - `algorithm="auto_round"` + `format="auto_awq"`: No AWQ smoothing + AutoAWQ packing
-
 
 ### OPT RTN Mode
 AutoRound also supports Optimized RTN (Round-To-Nearest) mode for fast, calibration-free baseline quantization. Setting `iters=0` tp enable it and we recommend using `group_size=32` for better results. Check [accuracy comparison](./opt_rtn.md) between RTN and OPT RTN mode
@@ -859,7 +857,9 @@ autoround.save_quantized(format="auto_awq", output_dir="tmp_autoround")
   Include the flag `--adam`. Note that AdamW is less effective than sign gradient descent in many scenarios we tested.
 
 
-### Rotation
+### Rotation (Experimental)
+
+> ⚠️ **Experimental feature**: Rotation transform is still in an experimental stage. Inference relies on forward hooks, which are currently only supported by the Hugging Face Transformers backend. As a result, inference may be slower compared to native (non-rotated) models.
 
 AutoRound supports rotation-based transforms to improve quantization accuracy. Rotation redistributes outliers in weights and activations before quantization, making the distribution more uniform and quantization-friendly.
 
