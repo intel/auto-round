@@ -892,12 +892,12 @@ def _dequant_fp8_tensors(
 
 def _process_shard(
     shard_path: str,
-    shard_name: str | None = None,
     default_scheme: dict = None,
     layer_config: dict = None,
     ignore_patterns: list[str] = None,
     device: str = "cpu",
     *,
+    shard_name: str | None = None,
     matcher: "_PatternMatcher | None" = None,
     fp8_block_size: list | None = None,
     model_type: str | None = None,
