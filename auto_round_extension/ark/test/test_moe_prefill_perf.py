@@ -24,10 +24,16 @@ making it a batched GEMM problem.
 
 This benchmark measures throughput (TFLOPS) and compares against a baseline
 PyTorch implementation. The baseline is a single ``torch.bmm`` call over a
-padded ``[E, M_max, K]`` activations buffer (with already-dequantized
-weights for quantized tests), representing the most favorable non-fused
+padded ``[E, M_max, K]`` activations buffer with **already-dequantized**
+weights for quantized tests, representing the most favorable non-fused
 PyTorch fallback: it pays extra FLOPs on padding rows but collapses the
-192-per-expert kernel launches into one.
+192-per-expert kernel launches into one. Weight dequantization is
+performed once per shape, *outside* the timed region -- including it on
+every iteration would conflate steady-state matmul cost with a one-time
+setup cost that production deployments amortise away (and, under
+heavy-tailed routing, with allocator pressure from materialising a
+multi-GB FP weight tensor each iteration), producing misleading 100x+
+"speedups" against an artificially slow baseline.
 
 How to run::
 
@@ -134,6 +140,19 @@ WARMUP = 5
 ITERS = 30
 
 
+def _release_xpu_memory() -> None:
+    """Free cached XPU memory and synchronize.
+
+    Called between shapes to keep allocator fragmentation from one shape
+    (especially heavy-tailed padded buffers in the multi-GB range) from
+    bleeding into the next shape's timings.
+    """
+    if hasattr(torch, "xpu") and torch.xpu.is_available():
+        torch.xpu.synchronize()
+        if hasattr(torch.xpu, "empty_cache"):
+            torch.xpu.empty_cache()
+
+
 def _xpu_time_ms(fn, warmup: int = WARMUP, iters: int = ITERS) -> float:
     """Time ``fn`` on XPU using device events; returns median ms per call."""
     for _ in range(warmup):
@@ -166,14 +185,10 @@ def _build_bmm_pad_layout(activations, num_tokens_per_expert, num_experts):
     total_tokens, K = activations.shape
     tpe = num_tokens_per_expert.to(torch.int64)
     M_max = int(tpe.max().item())
-    expert_id = torch.repeat_interleave(
-        torch.arange(num_experts, device=tpe.device, dtype=torch.int64), tpe
-    )
+    expert_id = torch.repeat_interleave(torch.arange(num_experts, device=tpe.device, dtype=torch.int64), tpe)
     # Cumulative start offset of each expert's slice in the flat activations.
     offsets = torch.cat([tpe.new_zeros(1), torch.cumsum(tpe, dim=0)])[:-1]
-    local_pos = torch.arange(total_tokens, device=tpe.device, dtype=torch.int64) - torch.repeat_interleave(
-        offsets, tpe
-    )
+    local_pos = torch.arange(total_tokens, device=tpe.device, dtype=torch.int64) - torch.repeat_interleave(offsets, tpe)
     act_padded = activations.new_zeros((num_experts, M_max, K))
     act_padded[expert_id, local_pos] = activations
     return act_padded
@@ -250,6 +265,7 @@ _MINIMAX_K = 3072  # hidden_size
 # heavy-tailed real-world load distribution (many near-zero experts, a few
 # hot experts with thousands of tokens) drives the benchmark instead of a
 # synthetic Gaussian / bimodal one.
+# fmt: off
 _REAL_TPE_TEMPLATE_256 = [
     6, 33, 106, 281, 10, 729, 837, 15, 42, 332, 6, 48, 27, 33, 0, 74,
     178, 86, 0, 50, 38, 26, 21, 10, 7, 2, 163, 0, 7, 1109, 6, 15,
@@ -268,6 +284,7 @@ _REAL_TPE_TEMPLATE_256 = [
     49, 335, 12, 26, 4, 10, 24, 247, 2, 57, 3, 368, 373, 14, 300, 210,
     300, 644, 118, 0, 277, 124, 32, 3, 2, 25, 23, 95, 184, 3, 178, 10,
 ]
+# fmt: on
 assert len(_REAL_TPE_TEMPLATE_256) == 256
 
 
@@ -283,7 +300,7 @@ def _minimax_even_tpe(total: int) -> list[int]:
     return [base + 1 if i < extra else base for i in range(_MINIMAX_E)]
 
 
-def _minimax_real_tpe(total: int) -> list[int]:
+def _minimax_real_tpe(total: int, max_ratio: float | None = None) -> list[int]:
     """Resample the empirical 256-expert distribution down to 192 experts.
 
     The template in ``_REAL_TPE_TEMPLATE_256`` is collapsed to
@@ -292,6 +309,19 @@ def _minimax_real_tpe(total: int) -> list[int]:
     resulting list sums exactly to ``total`` (largest-remainder rounding).
     This preserves the heavy-tailed shape (zeros + a few hot experts)
     observed in real MoE routing, keeping the as-measured ordering.
+
+    Args:
+        total: Total token count the returned list must sum to exactly.
+        max_ratio: Optional cap expressed as a multiple of the mean
+            tokens-per-expert (``total / E``). When set, any bucket
+            exceeding ``max_ratio * mean`` is clipped down to the cap
+            and the excess mass is redistributed proportionally to the
+            uncapped buckets. This bounds ``M_max`` of the padded bmm
+            baseline (which otherwise blows up to multi-GB buffers on
+            heavy-tailed shapes and dominates measurement noise) while
+            preserving the qualitative skew of the distribution. The
+            default ``None`` performs no clipping and reproduces the
+            raw empirical distribution.
     """
     E = _MINIMAX_E
     src_len = len(_REAL_TPE_TEMPLATE_256)
@@ -310,77 +340,100 @@ def _minimax_real_tpe(total: int) -> list[int]:
     remainders = sorted(range(E), key=lambda i: scaled[i] - floored[i], reverse=True)
     for k in range(diff):
         floored[remainders[k % E]] += 1
+    if max_ratio is not None and E > 0:
+        cap = max(1, int(max_ratio * total / E))
+        # Iterate: clipping may push redistributed mass back over the cap.
+        for _ in range(E):  # bounded fixed-point loop
+            over = [i for i, v in enumerate(floored) if v > cap]
+            if not over:
+                break
+            excess = sum(floored[i] - cap for i in over)
+            for i in over:
+                floored[i] = cap
+            recipients = [i for i in range(E) if floored[i] < cap]
+            if not recipients:
+                break  # infeasible cap; leave the lost mass (shouldn't happen for reasonable max_ratio)
+            w_sum = sum(floored[i] for i in recipients)
+            if w_sum == 0:
+                # All recipients are empty -- spread uniformly.
+                per = excess // len(recipients)
+                rem = excess - per * len(recipients)
+                for j, i in enumerate(recipients):
+                    floored[i] += per + (1 if j < rem else 0)
+            else:
+                added = 0
+                for i in recipients:
+                    share = excess * floored[i] // w_sum
+                    floored[i] += share
+                    added += share
+                # Place any rounding leftover into the first recipients with room.
+                leftover = excess - added
+                for i in recipients:
+                    if leftover == 0:
+                        break
+                    room = cap - floored[i]
+                    take = min(room, leftover)
+                    floored[i] += take
+                    leftover -= take
     return floored
 
 
 PREFILL_SHAPES = [
     # (label, num_experts, tokens_per_expert_list, N, K)
+    # The ``real`` rows use ``max_ratio=8`` to clip the heaviest experts to
+    # at most 8x the mean tokens-per-expert. This keeps the qualitative
+    # heavy-tail (many near-zero experts, a few hot ones) but bounds
+    # ``M_max`` of the padded bmm baseline so its allocator pressure does
+    # not dominate the measurement.
     # -- seq_len = 2K -> 16384 expert tokens, ~85/expert ---------------------
     ("minimax up  2K", _MINIMAX_E, _minimax_even_tpe(16384), _MINIMAX_N, _MINIMAX_K),
     ("minimax down 2K", _MINIMAX_E, _minimax_even_tpe(16384), _MINIMAX_K, _MINIMAX_N),
-    ("minimax real up  2K", _MINIMAX_E, _minimax_real_tpe(16384), _MINIMAX_N, _MINIMAX_K),
-    ("minimax real down 2K", _MINIMAX_E, _minimax_real_tpe(16384), _MINIMAX_K, _MINIMAX_N),
+    ("minimax real up  2K", _MINIMAX_E, _minimax_real_tpe(16384, max_ratio=8), _MINIMAX_N, _MINIMAX_K),
+    ("minimax real down 2K", _MINIMAX_E, _minimax_real_tpe(16384, max_ratio=8), _MINIMAX_K, _MINIMAX_N),
     # -- seq_len = 4K -> 32768 expert tokens, ~171/expert --------------------
     ("minimax up  4K", _MINIMAX_E, _minimax_even_tpe(32768), _MINIMAX_N, _MINIMAX_K),
     ("minimax down 4K", _MINIMAX_E, _minimax_even_tpe(32768), _MINIMAX_K, _MINIMAX_N),
-    ("minimax real up  4K", _MINIMAX_E, _minimax_real_tpe(32768), _MINIMAX_N, _MINIMAX_K),
-    ("minimax real down 4K", _MINIMAX_E, _minimax_real_tpe(32768), _MINIMAX_K, _MINIMAX_N),
+    ("minimax real up  4K", _MINIMAX_E, _minimax_real_tpe(32768, max_ratio=8), _MINIMAX_N, _MINIMAX_K),
+    ("minimax real down 4K", _MINIMAX_E, _minimax_real_tpe(32768, max_ratio=8), _MINIMAX_K, _MINIMAX_N),
     # -- seq_len = 8K -> 65536 expert tokens, ~341/expert --------------------
     ("minimax up  8K", _MINIMAX_E, _minimax_even_tpe(65536), _MINIMAX_N, _MINIMAX_K),
     ("minimax down 8K", _MINIMAX_E, _minimax_even_tpe(65536), _MINIMAX_K, _MINIMAX_N),
-    ("minimax real up  8K", _MINIMAX_E, _minimax_real_tpe(65536), _MINIMAX_N, _MINIMAX_K),
-    ("minimax real down 8K", _MINIMAX_E, _minimax_real_tpe(65536), _MINIMAX_K, _MINIMAX_N),
+    ("minimax real up  8K", _MINIMAX_E, _minimax_real_tpe(65536, max_ratio=8), _MINIMAX_N, _MINIMAX_K),
+    ("minimax real down 8K", _MINIMAX_E, _minimax_real_tpe(65536, max_ratio=8), _MINIMAX_K, _MINIMAX_N),
 ]
 
 
-def _print_header(title: str, *, with_dequant_baseline: bool = False) -> None:
+def _print_header(title: str) -> None:
     """Print a benchmark header.
 
-    When ``with_dequant_baseline`` is True, an extra ``base+deq(ms)`` column is
-    printed alongside the matmul-only baseline and ``speedup`` is reported
-    against the dequant-inclusive baseline (this is the apples-to-apples
-    comparison for the current Stage-1 ``moe_gemm_prefill`` which dequants
-    into a workspace before dispatching to the FP GEMM).
+    All callers use the same matmul-only baseline (single ``torch.bmm`` over
+    a padded ``[E, M_max, K]`` buffer, with weights already dequantized for
+    quantized tests). Weight dequantization happens once per shape outside
+    the timed region and is intentionally not reported -- it is a one-time
+    setup cost that production deployments amortise away.
     """
     print()
-    width = 138 if with_dequant_baseline else 118
+    width = 118
     print("=" * width)
     print(title)
-    if with_dequant_baseline:
-        print(
-            f"{'shape':<22}{'E':>4}{'N':>7}{'K':>7}{'tokens':>8}"
-            f"{'base mm(ms)':>14}{'base+deq(ms)':>16}{'ark(ms)':>12}"
-            f"{'speedup':>12}{'TFLOPS':>10}"
-        )
-    else:
-        print(
-            f"{'shape':<22}{'E':>4}{'N':>7}{'K':>7}{'tokens':>8}"
-            f"{'baseline(ms)':>16}{'ark(ms)':>14}{'speedup':>12}{'TFLOPS':>10}"
-        )
+    print(
+        f"{'shape':<22}{'E':>4}{'N':>7}{'K':>7}{'tokens':>8}"
+        f"{'baseline(ms)':>16}{'ark(ms)':>14}{'speedup':>12}{'TFLOPS':>10}"
+    )
     print("-" * width)
 
 
-def _print_row(label, E, N, K, total_tokens, base_ms, ark_ms, tflops, *, base_with_deq_ms=None):
+def _print_row(label, E, N, K, total_tokens, base_ms, ark_ms, tflops):
     """Print a benchmark row.
 
-    If ``base_with_deq_ms`` is provided, the dequant-inclusive baseline is
-    shown and ``speedup`` is computed against it (apples-to-apples with the
-    Stage-1 quantized path). Otherwise the row reverts to the original
-    matmul-only layout.
+    ``speedup`` is always ``baseline / ark`` against the matmul-only
+    baseline (weights pre-dequantized for quantized tests).
     """
-    if base_with_deq_ms is None:
-        speedup = base_ms / ark_ms if ark_ms > 0 else float("nan")
-        print(
-            f"{label:<22}{E:>4}{N:>7}{K:>7}{total_tokens:>8}"
-            f"{base_ms:>16.4f}{ark_ms:>14.4f}{speedup:>11.2f}x{tflops:>9.1f}"
-        )
-    else:
-        speedup = base_with_deq_ms / ark_ms if ark_ms > 0 else float("nan")
-        print(
-            f"{label:<22}{E:>4}{N:>7}{K:>7}{total_tokens:>8}"
-            f"{base_ms:>14.4f}{base_with_deq_ms:>16.4f}{ark_ms:>12.4f}"
-            f"{speedup:>11.2f}x{tflops:>9.1f}"
-        )
+    speedup = base_ms / ark_ms if ark_ms > 0 else float("nan")
+    print(
+        f"{label:<22}{E:>4}{N:>7}{K:>7}{total_tokens:>8}"
+        f"{base_ms:>16.4f}{ark_ms:>14.4f}{speedup:>11.2f}x{tflops:>9.1f}"
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -424,6 +477,12 @@ class TestMoEGemmPrefillPerf:
 
             _print_row(label, E, N, K, total_tokens, base_ms, ark_ms, tflops)
 
+            # Drop references to large per-shape tensors before releasing the
+            # XPU allocator cache so peak memory stays close to one shape's
+            # working set even on heavy-tailed buffers.
+            activations = weights = weights_baseline = act_padded = ntpe = None
+            _release_xpu_memory()
+
     @pytest.mark.skipif(bool(_QUANT_PREFILL_SKIP), reason=_QUANT_PREFILL_SKIP or "ok")
     @pytest.mark.parametrize("dtype", [torch.float16, torch.bfloat16])
     @pytest.mark.parametrize("asym", [False, True])
@@ -432,8 +491,7 @@ class TestMoEGemmPrefillPerf:
         kind = "asym" if asym else "sym"
         _print_header(
             f"INT4 {kind} (group_size={group_size}, act={str(dtype).split('.')[-1]}) "
-            f"-- ark.moe_gemm_prefill (prefill) vs dequant + single torch.bmm",
-            with_dequant_baseline=True,
+            f"-- ark.moe_gemm_prefill (prefill) vs single torch.bmm (weights pre-dequantized)",
         )
         for label, E, tpe, N, K in PREFILL_SHAPES:
             if K % group_size != 0:
@@ -449,22 +507,18 @@ class TestMoEGemmPrefillPerf:
                 zeros = torch.empty(E, N, K // group_size, dtype=dtype, device="xpu")
                 packed = _pack_int4_asym(w_float, scales, zeros, group_size)
                 dequant = _dequant_int4_asym(packed, scales, zeros, group_size).to(dtype)
-
-                def _baseline_with_dequant():
-                    d = _dequant_int4_asym(packed, scales, zeros, group_size).to(dtype)
-                    return _default_moe_prefill(act_padded, d)
             else:
                 zeros = None
                 packed = _pack_int4_sym(w_float, scales, group_size)
                 dequant = _dequant_int4_sym(packed, scales, group_size).to(dtype)
 
-                def _baseline_with_dequant():
-                    d = _dequant_int4_sym(packed, scales, group_size).to(dtype)
-                    return _default_moe_prefill(act_padded, d)
-
             # ``dequant`` is already [E, N, K] -- matches the baseline contract.
+            # Dequantization is done once here, outside the timed region: it is
+            # a one-time setup cost in production (weights are stored quantized
+            # but dequantized once at load), so charging it to every iteration
+            # would inflate the baseline by orders of magnitude on heavy-tailed
+            # shapes (multi-GB FP buffer reallocation per iter).
             base_ms = _xpu_time_ms(lambda: _default_moe_prefill(act_padded, dequant))
-            base_deq_ms = _xpu_time_ms(_baseline_with_dequant)
             ark_ms = _xpu_time_ms(
                 lambda: ark.moe_gemm_prefill(
                     activations,
@@ -481,7 +535,10 @@ class TestMoEGemmPrefillPerf:
             flops = _compute_moe_flops(total_tokens, K, N, E)
             tflops = flops / (ark_ms * 1e-3) / 1e12
 
-            _print_row(label, E, N, K, total_tokens, base_ms, ark_ms, tflops, base_with_deq_ms=base_deq_ms)
+            _print_row(label, E, N, K, total_tokens, base_ms, ark_ms, tflops)
+
+            activations = ntpe = act_padded = w_float = scales = zeros = packed = dequant = None
+            _release_xpu_memory()
 
     @pytest.mark.skipif(bool(_QUANT_PREFILL_SKIP), reason=_QUANT_PREFILL_SKIP or "ok")
     @pytest.mark.parametrize("dtype", [torch.float16, torch.bfloat16])
@@ -491,8 +548,7 @@ class TestMoEGemmPrefillPerf:
         kind = "asym" if asym else "sym"
         _print_header(
             f"INT8 {kind} (group_size={group_size}, act={str(dtype).split('.')[-1]}) "
-            f"-- ark.moe_gemm_prefill (prefill) vs dequant + single torch.bmm",
-            with_dequant_baseline=True,
+            f"-- ark.moe_gemm_prefill (prefill) vs single torch.bmm (weights pre-dequantized)",
         )
         for label, E, tpe, N, K in PREFILL_SHAPES:
             if K % group_size != 0:
@@ -507,21 +563,12 @@ class TestMoEGemmPrefillPerf:
                 zeros = torch.empty(E, N, K // group_size, dtype=dtype, device="xpu")
                 packed = _pack_int8_asym(w_float, scales, zeros, group_size)
                 dequant = _dequant_int8_asym(packed, scales, zeros, group_size).to(dtype)
-
-                def _baseline_with_dequant():
-                    d = _dequant_int8_asym(packed, scales, zeros, group_size).to(dtype)
-                    return _default_moe_prefill(act_padded, d)
             else:
                 zeros = None
                 packed = _pack_int8_sym(w_float, scales, group_size)
                 dequant = _dequant_int8_sym(packed, scales, group_size).to(dtype)
 
-                def _baseline_with_dequant():
-                    d = _dequant_int8_sym(packed, scales, group_size).to(dtype)
-                    return _default_moe_prefill(act_padded, d)
-
             base_ms = _xpu_time_ms(lambda: _default_moe_prefill(act_padded, dequant))
-            base_deq_ms = _xpu_time_ms(_baseline_with_dequant)
             ark_ms = _xpu_time_ms(
                 lambda: ark.moe_gemm_prefill(
                     activations,
@@ -538,7 +585,10 @@ class TestMoEGemmPrefillPerf:
             flops = _compute_moe_flops(total_tokens, K, N, E)
             tflops = flops / (ark_ms * 1e-3) / 1e12
 
-            _print_row(label, E, N, K, total_tokens, base_ms, ark_ms, tflops, base_with_deq_ms=base_deq_ms)
+            _print_row(label, E, N, K, total_tokens, base_ms, ark_ms, tflops)
+
+            activations = ntpe = act_padded = w_float = scales = zeros = packed = dequant = None
+            _release_xpu_memory()
 
     @pytest.mark.skipif(bool(_QUANT_PREFILL_SKIP), reason=_QUANT_PREFILL_SKIP or "ok")
     @pytest.mark.parametrize("dtype", [torch.float16, torch.bfloat16])
@@ -548,8 +598,7 @@ class TestMoEGemmPrefillPerf:
         kind = "asym" if asym else "sym"
         _print_header(
             f"INT2 {kind} (group_size={group_size}, act={str(dtype).split('.')[-1]}) "
-            f"-- ark.moe_gemm_prefill (prefill) vs dequant + single torch.bmm",
-            with_dequant_baseline=True,
+            f"-- ark.moe_gemm_prefill (prefill) vs single torch.bmm (weights pre-dequantized)",
         )
         for label, E, tpe, N, K in PREFILL_SHAPES:
             if K % group_size != 0 or K % 4 != 0:
@@ -564,21 +613,12 @@ class TestMoEGemmPrefillPerf:
                 zeros = torch.empty(E, N, K // group_size, dtype=dtype, device="xpu")
                 packed = _pack_int2_asym(w_float, scales, zeros, group_size)
                 dequant = _dequant_int2_asym(packed, scales, zeros, group_size).to(dtype)
-
-                def _baseline_with_dequant():
-                    d = _dequant_int2_asym(packed, scales, zeros, group_size).to(dtype)
-                    return _default_moe_prefill(act_padded, d)
             else:
                 zeros = None
                 packed = _pack_int2_sym(w_float, scales, group_size)
                 dequant = _dequant_int2_sym(packed, scales, group_size).to(dtype)
 
-                def _baseline_with_dequant():
-                    d = _dequant_int2_sym(packed, scales, group_size).to(dtype)
-                    return _default_moe_prefill(act_padded, d)
-
             base_ms = _xpu_time_ms(lambda: _default_moe_prefill(act_padded, dequant))
-            base_deq_ms = _xpu_time_ms(_baseline_with_dequant)
             ark_ms = _xpu_time_ms(
                 lambda: ark.moe_gemm_prefill(
                     activations,
@@ -595,7 +635,10 @@ class TestMoEGemmPrefillPerf:
             flops = _compute_moe_flops(total_tokens, K, N, E)
             tflops = flops / (ark_ms * 1e-3) / 1e12
 
-            _print_row(label, E, N, K, total_tokens, base_ms, ark_ms, tflops, base_with_deq_ms=base_deq_ms)
+            _print_row(label, E, N, K, total_tokens, base_ms, ark_ms, tflops)
+
+            activations = ntpe = act_padded = w_float = scales = zeros = packed = dequant = None
+            _release_xpu_memory()
 
     @pytest.mark.skipif(bool(_QUANT_PREFILL_SKIP), reason=_QUANT_PREFILL_SKIP or "ok")
     @pytest.mark.parametrize("dtype", [torch.float16, torch.bfloat16])
@@ -604,8 +647,8 @@ class TestMoEGemmPrefillPerf:
         group_size = 128
         _print_header(
             f"FP8 {str(fp8_dtype).split('.')[-1]} (group_size={group_size}, "
-            f"act={str(dtype).split('.')[-1]}) -- ark.moe_gemm_prefill (prefill) vs dequant + single torch.bmm",
-            with_dequant_baseline=True,
+            f"act={str(dtype).split('.')[-1]}) -- ark.moe_gemm_prefill (prefill) "
+            f"vs single torch.bmm (weights pre-dequantized)",
         )
         for label, E, tpe, N, K in PREFILL_SHAPES:
             if K % group_size != 0:
@@ -619,12 +662,7 @@ class TestMoEGemmPrefillPerf:
             packed = _pack_fp8(w_float, scales, group_size, fp8_dtype)
             dequant = _dequant_fp8(packed, scales, group_size, dtype)
 
-            def _baseline_with_dequant():
-                d = _dequant_fp8(packed, scales, group_size, dtype)
-                return _default_moe_prefill(act_padded, d)
-
             base_ms = _xpu_time_ms(lambda: _default_moe_prefill(act_padded, dequant))
-            base_deq_ms = _xpu_time_ms(_baseline_with_dequant)
             ark_ms = _xpu_time_ms(
                 lambda: ark.moe_gemm_prefill(
                     activations,
@@ -639,7 +677,10 @@ class TestMoEGemmPrefillPerf:
             flops = _compute_moe_flops(total_tokens, K, N, E)
             tflops = flops / (ark_ms * 1e-3) / 1e12
 
-            _print_row(label, E, N, K, total_tokens, base_ms, ark_ms, tflops, base_with_deq_ms=base_deq_ms)
+            _print_row(label, E, N, K, total_tokens, base_ms, ark_ms, tflops)
+
+            activations = ntpe = act_padded = w_float = scales = packed = dequant = None
+            _release_xpu_memory()
 
 
 if __name__ == "__main__":
