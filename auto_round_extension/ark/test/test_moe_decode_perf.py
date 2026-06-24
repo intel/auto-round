@@ -174,32 +174,60 @@ def _default_moe_decode(activations, dequant_weights, num_tokens_per_expert):
 #   num_local_experts   = 192
 #   num_experts_per_tok = 8      (top-8 routing -> 8 active experts at decode)
 #
-# ``tokens_per_expert`` follows the expected decode-phase pattern
-# (batch=1, top-8 routing: exactly eight experts see one token each, the
-# remaining 184 experts are idle).
+# Two decode-phase ``tokens_per_expert`` patterns are exercised:
+#
+#   * ``bs1``  -- batch=1 decode (the classic single-stream case). With
+#                 top-8 of 192 exactly eight experts see one token each
+#                 and the remaining 184 experts are idle.
+#   * ``bs32`` -- batch=32 decode (32 concurrent decoding streams, the
+#                 common server-side continuous-batching size). With
+#                 top-8 routing this produces 32*8 = 256 routed
+#                 expert-token slots spread across the 192 experts;
+#                 some experts see >1 token, many see exactly one and a
+#                 minority are idle. The distribution below is a fixed
+#                 deterministic histogram (64 experts get 2 tokens,
+#                 128 get 1 -> sum == 256) so timings are reproducible
+#                 across runs and machines.
 # ---------------------------------------------------------------------------
 
-# MiniMax-M2 decode: batch=1, top-8 of 192. Eight arbitrary experts get 1 token.
-_MINIMAX_TPE = [0] * 192
+# MiniMax-M2 decode, batch=1, top-8 of 192: eight arbitrary experts get 1 token.
+_MINIMAX_TPE_BS1 = [0] * 192
 for _i in (3, 17, 42, 73, 88, 121, 150, 181):
-    _MINIMAX_TPE[_i] = 1
+    _MINIMAX_TPE_BS1[_i] = 1
+
+# MiniMax-M2 decode, batch=32, top-8 of 192. Total routed slots = 32*8 = 256.
+# Use a fixed deterministic histogram: 64 experts get 2 tokens, 128 get 1
+# (64*2 + 128*1 = 256). The hot-expert indices are striped (every third
+# expert) so the active set is spread across the full expert range rather
+# than clustered, mirroring the load pattern a real router produces.
+_MINIMAX_TPE_BS32 = [1] * 192
+for _i in range(0, 192, 3):  # 64 indices: 0, 3, 6, ..., 189
+    _MINIMAX_TPE_BS32[_i] = 2
+assert sum(_MINIMAX_TPE_BS32) == 256, sum(_MINIMAX_TPE_BS32)
+
+# Backwards-compatible alias (older code/tests referenced ``_MINIMAX_TPE``).
+_MINIMAX_TPE = _MINIMAX_TPE_BS1
 
 DECODE_SHAPES = [
     # (label, num_experts, tokens_per_expert, N, K)
-    ("minimax up  ", 192, list(_MINIMAX_TPE), 1536, 3072),  # gate/up-proj
-    ("minimax down", 192, list(_MINIMAX_TPE), 3072, 1536),  # down-proj
+    # batch=1 decode (single-stream).
+    ("minimax up   bs1 ", 192, list(_MINIMAX_TPE_BS1), 1536, 3072),  # gate/up-proj
+    ("minimax down bs1 ", 192, list(_MINIMAX_TPE_BS1), 3072, 1536),  # down-proj
+    # batch=32 decode (32 concurrent streams, 32 generated tokens per step).
+    ("minimax up   bs32", 192, list(_MINIMAX_TPE_BS32), 1536, 3072),  # gate/up-proj
+    ("minimax down bs32", 192, list(_MINIMAX_TPE_BS32), 3072, 1536),  # down-proj
 ]
 
 
 def _print_header(title: str) -> None:
     print()
-    print("=" * 112)
+    print("=" * 116)
     print(title)
     print(
-        f"{'shape':<14}{'N':>7}{'K':>7}{'tokens':>8}"
+        f"{'shape':<18}{'N':>7}{'K':>7}{'tokens':>8}"
         f"{'baseline(ms)':>16}{'base+deq(ms)':>16}{'ark(ms)':>14}{'speedup':>12}"
     )
-    print("-" * 112)
+    print("-" * 116)
 
 
 def _print_row(label, N, K, total_tokens, base_ms, deq_ms, ark_ms):
@@ -214,7 +242,7 @@ def _print_row(label, N, K, total_tokens, base_ms, deq_ms, ark_ms):
     base_plus_deq_ms = base_ms + deq_ms
     speedup = base_plus_deq_ms / ark_ms if ark_ms > 0 else float("nan")
     print(
-        f"{label:<14}{N:>7}{K:>7}{total_tokens:>8}"
+        f"{label:<18}{N:>7}{K:>7}{total_tokens:>8}"
         f"{base_ms:>16.4f}{base_plus_deq_ms:>16.4f}{ark_ms:>14.4f}{speedup:>11.2f}x"
     )
 
