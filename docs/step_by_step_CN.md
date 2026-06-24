@@ -792,7 +792,7 @@ auto-round --model_name Qwen/Qwen3-0.6B  --scheme "W4A16" --quant_lm_head --form
 
 ### 旋转（Rotation）（实验性）
 
-> ⚠️ **实验性功能**：旋转变换仍处于实验阶段。推理使用 forward hook 方式实现，与非旋转模型相比，推理速度可能较慢。
+> ⚠️ **实验性功能**：旋转变换仍处于实验阶段。推理依赖 forward hook 机制，目前仅支持 Hugging Face Transformers 后端，因此相比非旋转模型，推理速度可能较慢。
 
 AutoRound 支持基于旋转的变换技术来提升量化精度。旋转在量化前对权重和激活中的离群点进行重分布，使分布更加均匀，从而对量化更友好。
 
