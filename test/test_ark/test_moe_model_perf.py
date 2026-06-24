@@ -96,8 +96,9 @@ _DECODE_WARMUP_TOKENS = 4
 # allocate workspaces so the timed iterations measure steady-state cost.
 _TIMING_WARMUP = 3
 # Number of timed iterations; the harness reports the **mean** of these
-# (with one outlier trimmed when we have enough samples) so the printed
-# numbers are stable across runs.
+# (with the slowest sample trimmed when at least 3 samples are taken)
+# so the printed numbers are stable across runs. Keep this >= 3 for the
+# outlier-trim path to activate.
 _TIMING_REPEATS = 5
 
 # Perf-regression guard for the ARK decode path vs the unquantized FP
@@ -157,7 +158,9 @@ def _xpu_time_ms(fn, warmup: int = _TIMING_WARMUP, repeats: int = _TIMING_REPEAT
     the remaining samples.
     """
     # Warmup: run several iterations untimed so JIT/caches are primed.
-    for _ in range(max(1, warmup)):
+    # ``warmup=0`` skips warmup entirely (useful for tests of the harness
+    # itself); callers should normally pass ``_TIMING_WARMUP``.
+    for _ in range(warmup):
         fn()
     _xpu_sync()
 
