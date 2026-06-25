@@ -1197,15 +1197,16 @@ def _apply_head_trick(head_name, schemes, sorted_indices, target_bits, target_pa
     # lm_head option restriction for DP                                   #
     # lm_head is critical — its quantization error goes directly into     #
     # logits with no subsequent LayerNorm dampening. Instead of removing  #
-    # it from DP, we restrict its candidate options so the DP can only    #
-    # assign it >= 6 bit schemes, then let DP globally optimize.          #
+    # it from DP, we bias its candidate options toward higher precision   #
+    # or lower loss, then relax the restriction if it cannot fit budget.  #
     #                                                                      #
     # Rules (only if user hasn't already fixed it):                        #
-    #   1. No option has bits >= 6      → prefer the lowest-loss option   #
-    #   2. Exactly one option bits >= 6 → restrict to only that option    #
+    #   1. No option has bits >= 6      → prefer lowest-loss available    #
+    #   2. Exactly one option bits >= 6 → prefer that high-bit option     #
     #   3. Multiple options bits >= 6:                                      #
     #      - target_bits > 6  → restrict to only the highest-bit option   #
     #      - target_bits <= 6 → keep all >=6 options, let DP decide       #
+    #   Any restriction above is relaxed if it makes the budget infeasible.#
     # ------------------------------------------------------------------ #
 
     high_bit_indices = [i for i in range(len(schemes)) if _get_scheme_bits(schemes[i]) >= 6]
