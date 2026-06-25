@@ -64,8 +64,7 @@ class QDQTool:
 
     # ── runtime wiring ────────────────────────────────────────────────────────
     def configure(self, compressor) -> None:
-        """Derive QDQ behaviour from the run's block quantizer.
-        """
+        """Derive QDQ behaviour from the run's block quantizer."""
         block_config = getattr(compressor, "quantize_config", None)
         self.disable_opt_rtn = bool(getattr(block_config, "disable_opt_rtn", False))
         self.use_v2_scale_search = self._block_quantizer_is_signroundv2(compressor)

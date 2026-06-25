@@ -41,7 +41,6 @@ from auto_round.algorithms.pipeline import (
     CalibTiming,
     InputSource,
 )
-from auto_round.algorithms.transforms.awq.qdq import QDQTool
 from auto_round.algorithms.registry import register_pipeline_member
 from auto_round.algorithms.transforms.awq.config import AWQConfig
 from auto_round.algorithms.transforms.awq.mappings import (
@@ -50,6 +49,7 @@ from auto_round.algorithms.transforms.awq.mappings import (
     check_model_compatibility,
     resolve_mappings,
 )
+from auto_round.algorithms.transforms.awq.qdq import QDQTool
 from auto_round.algorithms.transforms.base import BaseWeightTransformer
 from auto_round.data_type.utils import (
     reshape_pad_tensor_by_group_size,
