@@ -53,6 +53,7 @@ class TestAWQLLM:
             tiny_opt_model_path,
             scheme="W4A16",
             algorithm="awq",
+            n_grid=4,
             nsamples=2,
             seqlen=32,
             batch_size=2,
@@ -77,6 +78,7 @@ class TestAWQLLM:
             group_size=group_size,
             sym=sym,
             algorithm="awq",
+            n_grid=4,
             nsamples=2,
             seqlen=32,
             batch_size=2,
@@ -98,8 +100,10 @@ class TestAWQLLM:
             model_name,
             scheme="W4A16",
             algorithm="awq",
+            n_grid=4,
             nsamples=2,
             seqlen=32,
+            n_grid=4,
         )
         _, quantized_model_path = ar.quantize_and_save(output_dir=self.save_dir, format="auto_round")
         eval_generated_prompt(quantized_model_path)
@@ -158,6 +162,7 @@ class TestAWQMoE:
             scheme="W4A16",
             algorithm="awq",
             nsamples=2,
+            n_grid=4,
             seqlen=32,
             batch_size=2,
         )
@@ -192,6 +197,7 @@ class TestAWQMoE:
             tiny_qwen_moe_model_path,
             scheme="W4A16",
             algorithm="awq",
+            n_grid=4,
             nsamples=2,
             seqlen=32,
             batch_size=2,
