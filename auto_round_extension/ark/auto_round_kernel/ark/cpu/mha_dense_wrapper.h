@@ -127,6 +127,7 @@
 #include <cstdint>
 #include <cstring>
 #include <functional>
+#include <stdexcept>
 #include <type_traits>
 
 #include "bestla/bestla.h"
@@ -841,11 +842,14 @@ class weight_cvt_f16_n_tile24_t {  // convert fp16 weight to fp32 using F16C
  * @tparam L_Scale Launcher of the PxV matmul; scales the accumulated output by
  *                 1/l_i (and the dequant scales) in its epilogue.
  *
- * Both launchers are `launcher_base_weight_t` (N-dim parallel). The interface is
- * layout-agnostic: it only reads the `step_*` strides of `attn_fwd_args_t`, so
- * HND ([B,H,N,D]) and NHD ([B,N,H,D]) operands are both supported by passing the
- * appropriate strides. See the file header for the ARK BestLA API drift this
- * port absorbs (`COMPUTE` vs `COMP`, dropped TP block, PADDING_RIGHT route).
+ * Both launchers are `launcher_base_weight_t` (N-dim parallel). The `step_*`
+ * stride interface is itself HND/NHD-friendly: HND ([B,H,N,D]) and NHD
+ * ([B,N,H,D]) Q/dst are expressed purely through strides. The K/V operands,
+ * however, are NOT raw-layout-agnostic in the wired paths: the prologues
+ * consume packed/reordered (NTILE24/NTILE48 row-packed) K/V, so a raw PLAIN
+ * HND/NHD K/V tensor is unsupported until packing is added in Phase 4. See the
+ * file header for the ARK BestLA API drift this port absorbs (`COMPUTE` vs
+ * `COMP`, dropped TP block, PADDING_RIGHT route).
  */
 template <class L_Max, class L_Scale>
 class mha_stable_interface_t {
@@ -1119,7 +1123,11 @@ class mha_stable_interface_t {
 //     here. Neural Speed's bf16/bf16, fp16/fp16 and int8 overloads (and the
 //     AVX512-FP16 / AMX-BF16 ExpSum sub-paths) rely on the non-stable
 //     `mha_interface_t` / `ScaleExpAccSumFp32Bf16` / avx512fp16 core, none of
-//     which is migrated yet; those routes assert off as scaffolding.
+//     which is migrated yet; those routes throw std::runtime_error as
+//     scaffolding so an unsupported dtype/layout/ISA dispatch fails loudly
+//     instead of silently no-opping in release builds (NDEBUG drops assert()).
+//     The wired fp16/bf16 specializations additionally expect packed/reordered
+//     (NTILE24/NTILE48) K/V and throw for raw PLAIN K/V until Phase 4.
 // ---------------------------------------------------------------------------
 template <typename Q_T, typename K_T, typename V_T, typename DST_T>
 inline void bestla_fusion_attn_forward(const attn_fwd_args_t<Q_T, K_T, V_T, DST_T>& params,
@@ -1151,10 +1159,14 @@ inline void bestla_fusion_attn_forward<float, utils::fp16, utils::fp16, float>(
     [[maybe_unused]] const auto ret = mha.compute(params, th);
     assert(ret == BTLA_CODE::Success);
 #else
-    assert(false);
+    throw std::runtime_error(
+        "ark::cpu::bestla_fusion_attn_forward: fp32/fp16 attention requires an AVX2 build "
+        "(CompileAVX2 disabled)");
 #endif
   } else {
-    assert(false);  // no suitable launcher
+    throw std::runtime_error(
+        "ark::cpu::bestla_fusion_attn_forward: fp32 Q + fp16 K/V is only wired for AVX2 CPUs with "
+        "NTILE24 row-packed K/V; raw PLAIN (HND/NHD) K/V is not supported yet (Phase 4)");
   }
 }
 
@@ -1182,7 +1194,9 @@ inline void bestla_fusion_attn_forward<float, utils::bf16, utils::bf16, float>(
     [[maybe_unused]] const auto ret = mha.compute(params, th);
     assert(ret == BTLA_CODE::Success);
 #else
-    assert(false);
+    throw std::runtime_error(
+        "ark::cpu::bestla_fusion_attn_forward: fp32/bf16 attention requires an AVX512F build "
+        "(CompileAVX512F disabled)");
 #endif
   } else if (_cd->AMX_BF16()) {
 #if CompileBF16()
@@ -1200,10 +1214,14 @@ inline void bestla_fusion_attn_forward<float, utils::bf16, utils::bf16, float>(
     [[maybe_unused]] const auto ret = mha.compute(params, th);
     assert(ret == BTLA_CODE::Success);
 #else
-    assert(false);
+    throw std::runtime_error(
+        "ark::cpu::bestla_fusion_attn_forward: fp32/bf16 AMX attention requires an AMX-BF16 build "
+        "(CompileBF16 disabled)");
 #endif
   } else {
-    assert(false);  // no suitable launcher
+    throw std::runtime_error(
+        "ark::cpu::bestla_fusion_attn_forward: fp32 Q + bf16 K/V requires an AVX512F or AMX-BF16 CPU "
+        "with NTILE48 row-packed K/V; raw PLAIN (HND/NHD) K/V is not supported yet (Phase 4)");
   }
 }
 

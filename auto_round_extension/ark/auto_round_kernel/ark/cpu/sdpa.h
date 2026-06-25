@@ -36,8 +36,13 @@ void sdpa_forward(const MhaDenseArgs& args);
 // `bestla::parallel::IThreading*`, type-erased as void*); ARK passes
 // `CpuWrapper::get_threading()` so the attention path shares the same pool as
 // the rest of the CPU kernels. When `args.tmp` is null the wrapper scratch is
-// allocated internally for the duration of the call. Only ATTN_FWD_LAYOUT_PLAIN
-// operands are accepted; alibi, tanh and padding-right flags are rejected.
+// allocated internally (as a float-aligned buffer) for the duration of the
+// call. This entry validates PLAIN-strided operands and rejects alibi, tanh and
+// padding-right flags; note, however, that the `step_*` stride interface being
+// HND/NHD-friendly does NOT mean the wired mixed-precision kernels accept raw
+// HND/NHD/PLAIN K/V. Those specializations currently require packed/reordered
+// (NTILE24/NTILE48) K/V and throw std::runtime_error for raw PLAIN inputs;
+// packed K/V support is deferred to Phase 4.
 void bestla_sdpa_forward(const attn_fwd_args_t& args, BTLA_DTYPE kv_dtype);
 
 void kv_cache_update(void* cache_k, void* cache_v, const void* key, const void* value, const AttentionStrides& k_strides,

@@ -14,6 +14,8 @@
 
 #include <pybind11/pybind11.h>
 
+#include <cstdlib>
+#include <cstring>
 #include <iostream>
 #include <stdexcept>
 #include "bestla/bestla/bestla.h"
@@ -742,9 +744,25 @@ static void sdpa(torch_ptr stream, torch_ptr Q, torch_ptr K, torch_ptr V, torch_
   // Mixed-precision BestLA route (Phase 3): F32 Q + (F16|BF16) K/V -> F32 O.
   // K and V share `k_dtype` in this ABI, so a single check covers both.
   // Homogeneous fp16/bf16 and int8 are intentionally NOT routed here yet.
-  const bool mixed_bestla =
+  //
+  // IMPORTANT (Phase 3 safety gate): the BestLA specializations wired today
+  // (`bestla_fusion_attn_forward<float, fp16, ...>` /  `<float, bf16, ...>`)
+  // expect NTILE24/NTILE48 row-packed (reordered) K/V, NOT the raw PLAIN
+  // (HND/NHD-strided) K/V this entry point receives. Feeding raw PLAIN K/V to
+  // those kernels is unsupported and, before this audit, fell through to an
+  // `assert(false)` that silently no-ops in release builds. Packed/reordered
+  // K/V support is deferred to Phase 4, so this route is DISABLED BY DEFAULT and
+  // only reachable as an explicit, unsafe opt-in via the
+  // `ARK_UNSAFE_BESTLA_MIXED_SDPA=1` environment variable (the wired kernels now
+  // throw explicitly for raw PLAIN inputs instead of silently producing wrong
+  // results). Until Phase 4 verifies packed K/V, the default user path must not
+  // expose this unsupported raw HND/NHD mixed-precision route.
+  const bool mixed_dtype =
       static_cast<BTLA_DTYPE>(q_dtype) == BTLA_DTYPE::F32 && static_cast<BTLA_DTYPE>(o_dtype) == BTLA_DTYPE::F32 &&
       (static_cast<BTLA_DTYPE>(k_dtype) == BTLA_DTYPE::F16 || static_cast<BTLA_DTYPE>(k_dtype) == BTLA_DTYPE::BF16);
+  const char* const unsafe_mixed_env = std::getenv("ARK_UNSAFE_BESTLA_MIXED_SDPA");
+  const bool mixed_bestla =
+      mixed_dtype && unsafe_mixed_env != nullptr && std::strcmp(unsafe_mixed_env, "0") != 0;
   if (mixed_bestla) {
     if (mask) {
       throw std::invalid_argument("ark::sdpa: attn_mask is not supported on the BestLA mixed-precision path yet");
@@ -762,8 +780,11 @@ static void sdpa(torch_ptr stream, torch_ptr Q, torch_ptr K, torch_ptr V, torch_
     bargs.head_size = head_dim;
     bargs.sl_q = seq_len_q;
     bargs.sl_kv = seq_len_kv;
-    // PLAIN layout for now; HND/NHD is expressed purely through the strides below
-    // (no [B,H,N,D] / [B,N,H,D] order is hard-coded).
+    // Strides describe an HND/NHD-friendly PLAIN interface, but the wired BestLA
+    // mixed kernels currently require packed/reordered (NTILE24/NTILE48) K/V, so
+    // this raw PLAIN path is gated behind ARK_UNSAFE_BESTLA_MIXED_SDPA above and
+    // the kernel throws if the layout it actually needs is not provided. No
+    // [B,H,N,D] / [B,N,H,D] order is hard-coded here.
     bargs.Q_layout = ark::cpu::ATTN_FWD_LAYOUT_PLAIN;
     bargs.K_layout = ark::cpu::ATTN_FWD_LAYOUT_PLAIN;
     bargs.V_layout = ark::cpu::ATTN_FWD_LAYOUT_PLAIN;

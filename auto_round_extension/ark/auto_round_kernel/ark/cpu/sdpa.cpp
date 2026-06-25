@@ -127,9 +127,14 @@ void bestla_sdpa_forward(const attn_fwd_args_t& args, BTLA_DTYPE kv_dtype) {
   if (!args.Q || !args.K || !args.V || !args.dst) {
     throw std::invalid_argument("ark::cpu::bestla_sdpa_forward: Q/K/V/dst pointers must be non-null");
   }
-  // Phase 3 Step 2 wires only the plain mixed-precision route; reject every
-  // feature whose BestLA path is not migrated yet so callers fail loudly rather
-  // than silently producing wrong results.
+  // Phase 3 Step 2 wires only the plain-strided mixed-precision dispatch shell.
+  // The `step_*` stride interface itself is HND/NHD-friendly, but the BestLA
+  // specializations reached below currently require packed/reordered
+  // (NTILE24/NTILE48) K/V and will throw for raw PLAIN K/V (see
+  // mha_dense_wrapper.h). Reject every other feature whose BestLA path is not
+  // migrated yet so callers fail loudly rather than silently producing wrong
+  // results. Packed K/V acceptance is a Phase 4 concern and intentionally not
+  // implemented here; for now PLAIN is forwarded and the kernel decides.
   if (args.Q_layout != ATTN_FWD_LAYOUT_PLAIN || args.K_layout != ATTN_FWD_LAYOUT_PLAIN ||
       args.V_layout != ATTN_FWD_LAYOUT_PLAIN || args.dst_layout != ATTN_FWD_LAYOUT_PLAIN) {
     throw std::invalid_argument("ark::cpu::bestla_sdpa_forward: only ATTN_FWD_LAYOUT_PLAIN is supported");
@@ -152,11 +157,16 @@ void bestla_sdpa_forward(const attn_fwd_args_t& args, BTLA_DTYPE kv_dtype) {
   // Allocate the BestLA wrapper scratch when the caller did not provide one and
   // keep it alive for the duration of the forward call (Phase 1 attn_fwd_args_t
   // is passed by const ref, so the buffer must outlive the dispatch below).
+  // The kernel reinterprets `tmp` as `float*` for its per-thread score/exp tile,
+  // so back it with a `float` vector to guarantee correct (>= alignof(float))
+  // alignment; a `char` buffer would only be 1-byte aligned and could fault or
+  // silently mis-read on the SIMD score tile.
   attn_fwd_args_t local = args;
-  std::vector<char> workspace;
+  std::vector<float> workspace;
   if (local.tmp == nullptr) {
     attn_shape_t shape{local.batch_size, local.head_num, local.heads_kv, local.head_size, local.sl_q, local.sl_kv};
-    workspace.resize(bestla_attn_workspace_size(shape, th->num_threads()));
+    const size_t bytes = bestla_attn_workspace_size(shape, th->num_threads());
+    workspace.resize((bytes + sizeof(float) - 1) / sizeof(float));
     local.tmp = workspace.empty() ? nullptr : workspace.data();
   }
 
