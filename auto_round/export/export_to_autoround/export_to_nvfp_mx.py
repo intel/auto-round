@@ -30,8 +30,8 @@ from auto_round.export.utils import (
     filter_quantization_config,
     is_immediate_saving_mode,
     release_layer_safely,
-    save_pretrained_artifact,
     save_model,
+    save_pretrained_artifact,
 )
 from auto_round.logger import logger
 from auto_round.schemes import QuantizationScheme

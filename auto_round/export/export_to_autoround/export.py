@@ -34,8 +34,8 @@ from auto_round.export.utils import (
     is_immediate_saving_mode,
     release_layer_safely,
     resolve_pipeline_export_layout,
-    save_pretrained_artifact,
     save_model,
+    save_pretrained_artifact,
 )
 from auto_round.formats import AutoRoundExportFormat
 from auto_round.logger import logger
