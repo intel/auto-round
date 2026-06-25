@@ -594,12 +594,23 @@ def sdpa(
     )
     if query.dtype not in supported_dtypes:
         raise ValueError(f"Q dtype {query.dtype} is unsupported on {query.device.type}")
-    if key.dtype != query.dtype or value.dtype != query.dtype:
+
+    # CPU BestLA mixed precision: F32 query with F16/BF16 K/V produces an F32
+    # output. These are the only two cross-dtype combinations wired today; every
+    # other combination still requires K/V to match Q. Homogeneous fp16/bf16 is
+    # NOT a mixed combination and is unaffected by this branch.
+    mixed_kv = (
+        query.device.type == "cpu"
+        and query.dtype == torch.float32
+        and key.dtype == value.dtype
+        and key.dtype in (torch.float16, torch.bfloat16)
+    )
+    if not mixed_kv and (key.dtype != query.dtype or value.dtype != query.dtype):
         raise ValueError(f"K/V dtype must match Q dtype, got K={key.dtype}, V={value.dtype}, Q={query.dtype}")
 
     B, Hq, Sq, D = _validate_attention_tensor(query, "Q", tensor_layout)
-    Bk, Hkv, Skv, Dk = _validate_attention_tensor(key, "K", tensor_layout, expected_dtype=query.dtype)
-    Bv, Hkv2, Skv2, Dv = _validate_attention_tensor(value, "V", tensor_layout, expected_dtype=query.dtype)
+    Bk, Hkv, Skv, Dk = _validate_attention_tensor(key, "K", tensor_layout, expected_dtype=key.dtype)
+    Bv, Hkv2, Skv2, Dv = _validate_attention_tensor(value, "V", tensor_layout, expected_dtype=value.dtype)
 
     if Bk != B or Bv != B:
         raise ValueError("Batch size mismatch between Q/K/V")
@@ -633,12 +644,15 @@ def sdpa(
     _validate_canonical_strides(key, "K", tensor_layout)
     _validate_canonical_strides(value, "V", tensor_layout)
 
+    # Mixed precision (F32 Q + F16/BF16 K/V) accumulates in and emits F32; the
+    # homogeneous path keeps the operand dtype.
+    out_dtype = torch.float32 if mixed_kv else value.dtype
     O = _empty_attention_output(
         B,
         Hq,
         Sq,
         D,
-        dtype=value.dtype,
+        dtype=out_dtype,
         device=query.device,
         tensor_layout=tensor_layout,
     )

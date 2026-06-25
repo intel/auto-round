@@ -15,6 +15,7 @@
 #include "ark/cpu/sdpa.h"
 #include "ark/cpu/mha_dense_wrapper.h"
 
+#include <algorithm>
 #include <stdexcept>
 #include <vector>
 
@@ -35,22 +36,31 @@ size_t value_offset(const ValueStrides& strides, int b, int h, int s, int d) {
          static_cast<size_t>(s) * strides.seq + static_cast<size_t>(d) * strides.dim;
 }
 
-// Process-wide BestLA thread pool used to drive the migrated attention wrapper.
-// Neural Speed reaches a global pool through `ne_threading::get()`; ARK has no
-// such global, so the wrapper takes an explicit `parallel::IThreading&`. This
-// singleton mirrors that pool and is configured once on first use.
-bestla::parallel::IThreading& bestla_sdpa_threading() {
-#if BTLA_OPENMP
-  static bestla::parallel::OMPThreading pool;
-#else
-  static bestla::parallel::StdThreading pool;
-#endif
-  static const bool initialized = [] {
-    pool.set_threads(0, false);  // 0 -> all usable cores
-    return true;
-  }();
-  (void)initialized;
-  return pool;
+// Scratch (attn_fwd_args_t::tmp) bytes required by the migrated BestLA attention
+// wrapper. mha_stable_interface_t::compute uses, per thread,
+//   M_TILE * padto(padto(sl_kv, GemmQK::NTILE), GemmPV::KTILE) * sizeof(float)
+// bytes for the score/exp tile. The exact tile constants depend on the GemmCore
+// chosen at runtime from CPU features, so we use a conservative upper bound over
+// every wired core (M_TILE<=16, NTILE<=48, KTILE<=32; AVX2 fp16=4/24/1,
+// AVX512F bf16=8/48/1, AMX-BF16=16/48/32). The kernel only ever touches its own
+// `tmp + tid * tmp_bytes_actual .. + tmp_bytes_actual` region, and the actual
+// per-thread stride never exceeds this bound, so over-allocating keeps every
+// thread's slice in range regardless of the dispatched branch.
+//
+// This intentionally differs from the scalar `attn_workspace_size()` /
+// `mha_dense_workspace_size()` helpers, which size the legacy per-row scalar
+// kernel rather than the BestLA tiled wrapper. (Neural Speed queries the exact
+// size for the selected core; ARK over-allocates to keep one core-independent
+// helper.)
+size_t bestla_attn_workspace_size(const attn_shape_t& shape, int num_threads) {
+  constexpr int kMaxMTile = 16;
+  constexpr int kMaxNTile = 48;
+  constexpr int kMaxKTile = 32;
+  const int sl_kv = std::max(1, shape.sl_kv);
+  const int padded_n = ((sl_kv + kMaxNTile - 1) / kMaxNTile) * kMaxNTile;
+  const int padded_k = ((padded_n + kMaxKTile - 1) / kMaxKTile) * kMaxKTile;
+  const size_t per_thread = static_cast<size_t>(kMaxMTile) * static_cast<size_t>(padded_k) * sizeof(float);
+  return per_thread * static_cast<size_t>(std::max(1, num_threads));
 }
 
 // Copy the layout/stride/scale metadata from the type-erased `attn_fwd_args_t`
@@ -117,17 +127,48 @@ void bestla_sdpa_forward(const attn_fwd_args_t& args, BTLA_DTYPE kv_dtype) {
   if (!args.Q || !args.K || !args.V || !args.dst) {
     throw std::invalid_argument("ark::cpu::bestla_sdpa_forward: Q/K/V/dst pointers must be non-null");
   }
+  // Phase 3 Step 2 wires only the plain mixed-precision route; reject every
+  // feature whose BestLA path is not migrated yet so callers fail loudly rather
+  // than silently producing wrong results.
+  if (args.Q_layout != ATTN_FWD_LAYOUT_PLAIN || args.K_layout != ATTN_FWD_LAYOUT_PLAIN ||
+      args.V_layout != ATTN_FWD_LAYOUT_PLAIN || args.dst_layout != ATTN_FWD_LAYOUT_PLAIN) {
+    throw std::invalid_argument("ark::cpu::bestla_sdpa_forward: only ATTN_FWD_LAYOUT_PLAIN is supported");
+  }
+  constexpr attn_flags_t kUnsupportedFlags =
+      ATTN_FLAG_IS_ALIBI8 | ATTN_FLAG_IS_TANH30 | ATTN_FLAG_PADDING_RIGHT;
+  if ((args.attn_flags & kUnsupportedFlags) != 0) {
+    throw std::invalid_argument(
+        "ark::cpu::bestla_sdpa_forward: alibi, tanh and padding-right are not wired yet");
+  }
 
-  bestla::parallel::IThreading& th = bestla_sdpa_threading();
+  // Threading is supplied by the caller (ARK reuses CpuWrapper::get_threading()),
+  // type-erased through attn_fwd_args_t::threading. This avoids maintaining a
+  // second independent BestLA thread pool in the CPU attention path.
+  if (args.threading == nullptr) {
+    throw std::invalid_argument("ark::cpu::bestla_sdpa_forward: threading pool must be provided");
+  }
+  auto* th = static_cast<bestla::parallel::IThreading*>(args.threading);
+
+  // Allocate the BestLA wrapper scratch when the caller did not provide one and
+  // keep it alive for the duration of the forward call (Phase 1 attn_fwd_args_t
+  // is passed by const ref, so the buffer must outlive the dispatch below).
+  attn_fwd_args_t local = args;
+  std::vector<char> workspace;
+  if (local.tmp == nullptr) {
+    attn_shape_t shape{local.batch_size, local.head_num, local.heads_kv, local.head_size, local.sl_q, local.sl_kv};
+    workspace.resize(bestla_attn_workspace_size(shape, th->num_threads()));
+    local.tmp = workspace.empty() ? nullptr : workspace.data();
+  }
+
   switch (kv_dtype) {
     case BTLA_DTYPE::F16: {
-      const auto typed = make_typed_attn_args<bestla::utils::fp16>(args);
-      bestla_mha::bestla_fusion_attn_forward<float, bestla::utils::fp16, bestla::utils::fp16, float>(typed, th);
+      const auto typed = make_typed_attn_args<bestla::utils::fp16>(local);
+      bestla_mha::bestla_fusion_attn_forward<float, bestla::utils::fp16, bestla::utils::fp16, float>(typed, *th);
       break;
     }
     case BTLA_DTYPE::BF16: {
-      const auto typed = make_typed_attn_args<bestla::utils::bf16>(args);
-      bestla_mha::bestla_fusion_attn_forward<float, bestla::utils::bf16, bestla::utils::bf16, float>(typed, th);
+      const auto typed = make_typed_attn_args<bestla::utils::bf16>(local);
+      bestla_mha::bestla_fusion_attn_forward<float, bestla::utils::bf16, bestla::utils::bf16, float>(typed, *th);
       break;
     }
     default:

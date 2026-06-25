@@ -735,11 +735,65 @@ static void sdpa(torch_ptr stream, torch_ptr Q, torch_ptr K, torch_ptr V, torch_
                  int batch, int num_heads_q, int num_heads_kv, int seq_len_q, int seq_len_kv, int head_dim,
                  float softmax_scale, bool is_causal) {
   (void)stream;
-  if (k_dtype != q_dtype || o_dtype != q_dtype) {
-    throw std::invalid_argument("ark::sdpa: k_dtype and o_dtype must match q_dtype");
-  }
   if (mask && is_causal) {
     throw std::invalid_argument("ark::sdpa: mask and is_causal cannot both be set");
+  }
+
+  // Mixed-precision BestLA route (Phase 3): F32 Q + (F16|BF16) K/V -> F32 O.
+  // K and V share `k_dtype` in this ABI, so a single check covers both.
+  // Homogeneous fp16/bf16 and int8 are intentionally NOT routed here yet.
+  const bool mixed_bestla =
+      static_cast<BTLA_DTYPE>(q_dtype) == BTLA_DTYPE::F32 && static_cast<BTLA_DTYPE>(o_dtype) == BTLA_DTYPE::F32 &&
+      (static_cast<BTLA_DTYPE>(k_dtype) == BTLA_DTYPE::F16 || static_cast<BTLA_DTYPE>(k_dtype) == BTLA_DTYPE::BF16);
+  if (mixed_bestla) {
+    if (mask) {
+      throw std::invalid_argument("ark::sdpa: attn_mask is not supported on the BestLA mixed-precision path yet");
+    }
+    ark::cpu::attn_fwd_args_t bargs;
+    bargs.Q = (void*)Q;
+    bargs.K = (void*)K;
+    bargs.V = (void*)V;
+    bargs.dst = (void*)O;
+    bargs.QK_scale = softmax_scale;
+    bargs.attn_flags = is_causal ? ark::cpu::ATTN_FLAG_IS_CAUSAL : ark::cpu::ATTN_FLAG_NONE;
+    bargs.batch_size = batch;
+    bargs.head_num = num_heads_q;
+    bargs.heads_kv = num_heads_kv;
+    bargs.head_size = head_dim;
+    bargs.sl_q = seq_len_q;
+    bargs.sl_kv = seq_len_kv;
+    // PLAIN layout for now; HND/NHD is expressed purely through the strides below
+    // (no [B,H,N,D] / [B,N,H,D] order is hard-coded).
+    bargs.Q_layout = ark::cpu::ATTN_FWD_LAYOUT_PLAIN;
+    bargs.K_layout = ark::cpu::ATTN_FWD_LAYOUT_PLAIN;
+    bargs.V_layout = ark::cpu::ATTN_FWD_LAYOUT_PLAIN;
+    bargs.dst_layout = ark::cpu::ATTN_FWD_LAYOUT_PLAIN;
+    // Q/dst head-dim stride is assumed contiguous (== 1); batch/head/seq come
+    // straight from the incoming stride arguments.
+    bargs.step_q_bs = q_stride_b;
+    bargs.step_q_head_num = q_stride_h;
+    bargs.step_q_sl = q_stride_s;
+    bargs.step_k_bs = k_stride_b;
+    bargs.step_k_head_num = k_stride_h;
+    bargs.step_k_sl = k_stride_s;
+    bargs.step_k_head_size = k_stride_d;
+    bargs.step_v_bs = v_stride_b;
+    bargs.step_v_head_num = v_stride_h;
+    bargs.step_v_sl = v_stride_s;
+    bargs.step_v_head_size = v_stride_d;
+    bargs.step_dst_bs = o_stride_b;
+    bargs.step_dst_head_num = o_stride_h;
+    bargs.step_dst_sl = o_stride_s;
+    bargs.n_padding = 0;  // padding-right not wired yet
+    bargs.tmp = nullptr;  // scratch allocated inside bestla_sdpa_forward
+    // Reuse ARK's shared CPU thread pool rather than a dedicated attention pool.
+    bargs.threading = ark::CpuWrapper::get_threading();
+    ark::cpu::bestla_sdpa_forward(bargs, static_cast<BTLA_DTYPE>(k_dtype));
+    return;
+  }
+
+  if (k_dtype != q_dtype || o_dtype != q_dtype) {
+    throw std::invalid_argument("ark::sdpa: k_dtype and o_dtype must match q_dtype");
   }
   ark::cpu::MhaDenseArgs args;
   args.query = (const void*)Q;

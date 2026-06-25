@@ -31,6 +31,13 @@ void sdpa_forward(const MhaDenseArgs& args);
 //   * BTLA_DTYPE::F16  -> attn_fwd_args_t<float, fp16, fp16, float>
 //   * BTLA_DTYPE::BF16 -> attn_fwd_args_t<float, bf16, bf16, float>
 // Q and dst are always FP32. Unsupported K/V dtypes raise std::invalid_argument.
+//
+// The caller supplies the BestLA thread pool through `args.threading` (a
+// `bestla::parallel::IThreading*`, type-erased as void*); ARK passes
+// `CpuWrapper::get_threading()` so the attention path shares the same pool as
+// the rest of the CPU kernels. When `args.tmp` is null the wrapper scratch is
+// allocated internally for the duration of the call. Only ATTN_FWD_LAYOUT_PLAIN
+// operands are accepted; alibi, tanh and padding-right flags are rejected.
 void bestla_sdpa_forward(const attn_fwd_args_t& args, BTLA_DTYPE kv_dtype);
 
 void kv_cache_update(void* cache_k, void* cache_v, const void* key, const void* value, const AttentionStrides& k_strides,
