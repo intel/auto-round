@@ -1140,6 +1140,16 @@ register_ignore_layers(
     ],
 )
 
+# diffusion_gemma
+register_ignore_layers(
+    matchers=[
+        ArchitectureMatcher(r"DiffusionGemma", mode="in"),
+    ],
+    ignore_layers=[
+        "router.proj",
+    ],
+)
+
 
 def get_predefined_ignore_layers(model: torch.nn.Module) -> list[str]:
     layers = []
