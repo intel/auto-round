@@ -27,7 +27,14 @@ def forbid_threaded_packing(monkeypatch, module):
         monkeypatch.setattr(tctl, "threadpool_limits", _raise_threaded_packing)
 
 
-def generate_prompt(model_obj_or_str, tokenizer=None, text="The capital of France is,", max_new_tokens=10, device=None):
+def generate_prompt(
+    model_obj_or_str,
+    tokenizer=None,
+    text="The capital of France is,",
+    max_new_tokens=10,
+    device=None,
+    include_prompt=True,
+):
     """Generate text using a model and tokenizer.
 
     Args:
@@ -37,7 +44,8 @@ def generate_prompt(model_obj_or_str, tokenizer=None, text="The capital of Franc
         max_new_tokens: Maximum number of new tokens to generate.
 
     Returns:
-        str: The generated text.
+        str: The generated text. If include_prompt is False, returns only
+            newly generated continuation tokens.
     """
     if device is None:
         device = get_major_device()
@@ -50,7 +58,12 @@ def generate_prompt(model_obj_or_str, tokenizer=None, text="The capital of Franc
         model = model.to(device)
     inputs = tokenizer(text, return_tensors="pt").to(model.device)
     generated_ids = model.generate(**inputs, max_new_tokens=max_new_tokens, do_sample=False)[0]
-    output = tokenizer.decode(generated_ids)
+    if include_prompt:
+        output_ids = generated_ids
+    else:
+        prompt_len = inputs["input_ids"].shape[-1]
+        output_ids = generated_ids[prompt_len:]
+    output = tokenizer.decode(output_ids)
     print(output)
     return output
 
@@ -58,12 +71,19 @@ def generate_prompt(model_obj_or_str, tokenizer=None, text="The capital of Franc
 def eval_generated_prompt(
     model,
     tokenizer=None,
-    prompt_text="What is the capital of France?",
-    target_text="Paris",
+    prompt_text='Convert "hello" to uppercase:',
+    target_text="HELLO",
     max_new_tokens=10,
     device=None,
 ):
-    generated_text = generate_prompt(model, tokenizer, prompt_text, max_new_tokens=max_new_tokens, device=device)
+    generated_text = generate_prompt(
+        model,
+        tokenizer,
+        prompt_text,
+        max_new_tokens=max_new_tokens,
+        device=device,
+        include_prompt=False,
+    )
     assert target_text in generated_text, f"Expected {target_text} in generated text: {generated_text}"
 
 
