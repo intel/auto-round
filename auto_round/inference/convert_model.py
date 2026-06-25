@@ -63,24 +63,14 @@ def flatten_list(nested_list):
 
 
 def skip_not_convert_modules(model, quantization_config, layer_names, layer_configs):
-    user_specified = bool(getattr(quantization_config, "modules_to_not_convert", None))
     modules_to_not_convert = getattr(quantization_config, "modules_to_not_convert", [])
     try:  # transformers new api
         modules_to_not_convert = get_modules_to_not_convert(model, modules_to_not_convert, add_default_skips=True)
     except:
         modules_to_not_convert = _get_modules_to_not_convert(model, modules_to_not_convert)
-
-    if modules_to_not_convert and not user_specified:
-        _DEFAULT_SKIP_KEYWORDS = ("embed", "embed_tokens", "lm_head", "output_embed", "norm")
-        modules_to_not_convert = [
-            name for name in modules_to_not_convert if any(key in name for key in _DEFAULT_SKIP_KEYWORDS)
-        ]
-
     if modules_to_not_convert:
-        # Pre-compile patterns once instead of recompiling them for every layer name.
-        compiled_patterns = [re.compile(n) for n in modules_to_not_convert]
         for layer_name in layer_names:
-            if any(pattern.search(layer_name) for pattern in compiled_patterns):
+            if any([re.search(re.compile(n), layer_name) for n in modules_to_not_convert]):
                 layer_configs[layer_name] = {"bits": 16}
     return layer_configs
 
@@ -396,8 +386,9 @@ def get_layer_config(model, quantization_config):
             model=model,
         )
 
-    # AWQ format: exclude specified modules
-    extra_config = skip_not_convert_modules(model, quantization_config, layer_names, extra_config)
+    # AWQ format: exclude specified modules.
+    if "awq" in (getattr(quantization_config, "quant_method", "") or "").lower():
+        extra_config = skip_not_convert_modules(model, quantization_config, layer_names, extra_config)
 
     # Expand auto_round regex configs (regex-based)
     extra_config = _expand_regex_config(
