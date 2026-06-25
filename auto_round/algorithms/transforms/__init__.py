@@ -90,7 +90,7 @@ def __getattr__(name):
         from auto_round.algorithms.transforms.awq.config import AWQConfig
 
         return AWQConfig
-    if name in ("AWQTransform", "AWQQuantizer"):
+    if name == "AWQTransform":
         from auto_round.algorithms.transforms.awq.base import AWQTransform
 
         return AWQTransform

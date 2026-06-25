@@ -110,6 +110,34 @@ class TestAWQNormalLLM:
         assert qconfig["sym"] == sym
 
 
+class TestAWQNonIntegerSchemes:
+    """Regression: AWQ smoothing must run under non-integer schemes (MX/NV-FP).
+
+    AWQ's grid-search / clip loss reproduces the block quantizer's weight QDQ.
+    The reported failure mode was an end-to-end ``algorithm='awq'`` run raising
+    under an MXFP/NVFP scheme.
+    """
+
+    @pytest.mark.parametrize("scheme", ["MXFP4", "NVFP4"])
+    def test_awq_non_integer_scheme_smoke(self, tiny_opt_model_path, scheme):
+        ar = AutoRound(
+            tiny_opt_model_path,
+            scheme=scheme,
+            algorithm="awq,signround",
+            n_grid=4,
+            nsamples=2,
+            seqlen=32,
+            batch_size=2,
+        )
+        model, layer_config = ar.quantize()
+
+        assert model is not None
+        assert len(layer_config) > 0
+        for name, cfg in layer_config.items():
+            assert cfg["bits"] == 4, f"Layer {name} expected bits=4, got {cfg['bits']}"
+            assert cfg["act_bits"] == 4, f"Layer {name} expected act_bits=4, got {cfg['act_bits']}"
+
+
 class TestAWQW8A8LLMCompressor:
     """AWQ INT W8A8 quantization with llm_compressor export format.
 

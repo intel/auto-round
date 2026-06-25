@@ -15,8 +15,4 @@
 from auto_round.algorithms.transforms.awq.config import AWQConfig
 from auto_round.algorithms.transforms.awq.base import AWQTransform
 
-# Deprecated alias kept for backward compatibility; will be removed in a future
-# release. AWQ is a smoothing transform, not a quantizer.
-AWQQuantizer = AWQTransform
-
-__all__ = ["AWQConfig", "AWQTransform", "AWQQuantizer"]
+__all__ = ["AWQConfig", "AWQTransform"]

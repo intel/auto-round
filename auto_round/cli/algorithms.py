@@ -188,7 +188,7 @@ class AWQ(AlgorithmHandler):
 
     def register(self, group) -> None:
         group.add_argument(
-            "--duo-scaling",
+            "--awq-duo-scaling",
             dest="duo_scaling",
             default=True,
             type=_parse_bool_or_mode,
@@ -196,7 +196,7 @@ class AWQ(AlgorithmHandler):
             help="Use activation+weight duo scaling (true/false/both).",
         )
         group.add_argument(
-            "--n-grid",
+            "--awq-n-grid",
             dest="n_grid",
             default=20,
             type=int,
