@@ -18,7 +18,7 @@
 """Model-level perf benchmark for MoE LLMs on the ARK (XPU) backend.
 
 This file mirrors the structure of ``test/test_ark/test_model.py`` but
-operates on real MoE checkpoints (Qwen3-30B-A3B, DeepSeek-V2-Lite) and adds
+operates on real MoE checkpoints (Qwen1.5-MoE) and adds
 prefill / decode latency measurement on top.
 
 For each ``(model, bits, dtype)`` combination we:
@@ -65,10 +65,10 @@ from transformers import AutoModelForCausalLM, AutoRoundConfig, AutoTokenizer
 from auto_round import AutoRound
 
 from ..helpers import (
-    deepseek_v2_name_or_path,
     get_model_path,
     get_tiny_model,
     model_infer,
+    qwen_moe_name_or_path,
 )
 
 # ---------------------------------------------------------------------------
@@ -345,8 +345,7 @@ class TestMoEModelPerf:
     @pytest.mark.parametrize(
         "model_label, model_path",
         [
-            ("qwen-moe", "Qwen/Qwen3-30B-A3B"),
-            ("deepseek-v2-lite", deepseek_v2_name_or_path),
+            ("qwen-moe", qwen_moe_name_or_path),
         ],
     )
     @pytest.mark.parametrize("bits, group_size, sym", [(4, 128, True), (8, 128, True)])
