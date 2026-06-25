@@ -272,7 +272,7 @@ def save_quantized_as_fp(
     if tokenizer is not None and hasattr(tokenizer, "save_pretrained"):
         tokenizer.save_pretrained(output_dir)
     else:
-        print(f"Skip tokenizer save, tokenizer={tokenizer}")
+        logger.warning(f"Skip tokenizer save, tokenizer={tokenizer}")
 
     if processor is not None:
         processor.save_pretrained(output_dir)
