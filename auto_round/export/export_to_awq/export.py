@@ -35,6 +35,7 @@ from auto_round.export.utils import (
     is_immediate_saving_mode,
     release_layer_safely,
     save_model,
+    save_pretrained_artifact,
 )
 from auto_round.logger import logger
 from auto_round.utils import (
@@ -164,8 +165,7 @@ def save_quantized_as_autoawq(
         logger.warning(f"{output_dir} already exists, this may cause model conflict")
 
     logger.info("Saving quantized model to auto_awq format")
-    if tokenizer is not None and hasattr(tokenizer, "save_pretrained") and output_dir is not None:
-        tokenizer.save_pretrained(output_dir)
+    save_pretrained_artifact(tokenizer, output_dir, artifact_name="tokenizer")
 
     if processor is not None and output_dir is not None:
         processor.save_pretrained(output_dir)
