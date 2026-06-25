@@ -64,7 +64,7 @@ def test_auto_round(model):
         "The future of AI is",
     ]
     # Create a sampling params object.
-    sampling_params = SamplingParams(temperature=0.8, top_p=0.95)
+    sampling_params = SamplingParams(temperature=0, max_tokens=32)
     # Create an LLM.
     QUANTIZATION = "auto-round"
     llm = LLM(
@@ -83,6 +83,7 @@ def test_auto_round(model):
         prompt = output.prompt
         generated_text = output.outputs[0].text
         if "France" in prompt:
+            print(generated_text)
             assert "Paris" in generated_text
 
 
@@ -202,6 +203,7 @@ def test_vllm_awq_w8a8_llmc_inference(tiny_opt_model_path, tmp_path):
     )
     outputs = llm.generate(["Hello, my name is"], sampling_params)
     generated_text = outputs[0].outputs[0].text
+    print(generated_text)
     assert len(generated_text.strip()) > 0 and "!!!" not in generated_text, "vLLM produced empty/meaningless output"
 
 

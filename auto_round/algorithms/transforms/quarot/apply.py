@@ -21,16 +21,20 @@ Public entry points
 
 from __future__ import annotations
 
+import json
+import os
 from typing import Any
 
 import torch
+import torch.nn as nn
 import tqdm
 
-from auto_round.algorithms.transforms.base import BaseRotation
-from auto_round.algorithms.transforms.rotation.config import RotationConfig, normalize_rotation_config
-from auto_round.algorithms.transforms.rotation.transforms import build_hadamard_transform
+from auto_round.algorithms.transforms.base import BaseRotation, SerializerMixin
+from auto_round.algorithms.transforms.quarot.config import RotationConfig, normalize_rotation_config
+from auto_round.algorithms.transforms.quarot.transforms import build_hadamard_transform
 from auto_round.compressors.utils import is_nv_fp
 from auto_round.experimental.qmodules.base import QModuleBase
+from auto_round.utils import logger
 
 __all__ = ["HadamardRotation", "apply_rotation_transform"]
 
@@ -44,7 +48,7 @@ def _triton_available(data_type: str = "mx_fp") -> bool:
 
         if not torch.cuda.is_available():
             return False
-        from auto_round.algorithms.transforms.rotation.utils.triton.mxfp4 import (  # noqa: F401
+        from auto_round.algorithms.transforms.quarot.utils.triton.mxfp4 import (  # noqa: F401
             mxfp4_forward_kernel_wrapper,
         )
 
@@ -54,11 +58,14 @@ def _triton_available(data_type: str = "mx_fp") -> bool:
 
 
 @BaseRotation.register("hadamard")
-class HadamardRotation(BaseRotation):
+class HadamardRotation(BaseRotation, SerializerMixin):
     """Hadamard rotation algorithm.
 
     Registered under ``"hadamard"`` in the
     :class:`~auto_round.algorithms.transforms.base.BaseRotation` registry.
+
+    Implements :class:`SerializerMixin` for save/load support — the config
+    is persisted under ``"rotation_config"`` in ``config.json``.
 
     Typical usage (via the top-level helper)::
 
@@ -67,7 +74,7 @@ class HadamardRotation(BaseRotation):
 
     Or directly::
 
-        from auto_round.algorithms.transforms.rotation import apply_rotation_transform
+        from auto_round.algorithms.transforms.quarot import apply_rotation_transform
         model = apply_rotation_transform(model, config=RotationConfig(), need_calibration=True)
     """
 
@@ -102,20 +109,20 @@ class HadamardRotation(BaseRotation):
             **kwargs:        Reserved for future use.
 
         Returns:
-            The mutated *model* with ``model.rotation_config`` set to the
+            The mutated *model* with ``model._rotation_config`` set to the
             normalised :class:`RotationConfig` dict.
         """
         cfg = self.config
 
         # Dispatch by backend.  The transform backend (triton-fused per-Linear)
         # is implemented below; the inplace (QuaRot) backend is delegated to
-        # :mod:`auto_round.algorithms.transforms.rotation.inplace`.
-        from auto_round.algorithms.transforms.rotation.dispatcher import resolve_hadamard_backend
+        # :mod:`auto_round.algorithms.transforms.quarot.inplace`.
+        from auto_round.algorithms.transforms.quarot.dispatcher import resolve_hadamard_backend
 
         backend = resolve_hadamard_backend(cfg, data_type)
         if backend == "inplace":
             import auto_round.envs as envs
-            from auto_round.algorithms.transforms.rotation.inplace import apply_rotation_transform as _inplace_apply
+            from auto_round.algorithms.transforms.quarot.inplace import apply_rotation_transform as _inplace_apply
 
             # Resolve fuse flag: explicit > env var > default(False).
             fuse_online_to_weight = cfg.fuse_online_to_weight
@@ -136,7 +143,7 @@ class HadamardRotation(BaseRotation):
                 fuse_online_to_weight=fuse_online_to_weight,
                 compute_device=compute_device,
             )
-            setattr(model, "rotation_config", cfg.model_dump())
+            setattr(model, "_rotation_config", cfg)
             return model
 
         # backend == "transform": original per-Linear triton-fused path.
@@ -152,8 +159,77 @@ class HadamardRotation(BaseRotation):
             _apply_to_module(model, module, cfg, location, data_type)
 
         # Store config on model for serialisation / downstream inspection.
-        setattr(model, "rotation_config", cfg.model_dump())
+        setattr(model, "_rotation_config", cfg)
         return model
+
+    # ------------------------------------------------------------------
+    # SerializerMixin — Save side
+    # ------------------------------------------------------------------
+
+    def inject_buffers_on_layer(
+        self,
+        layer_name: str,
+        qlayer: nn.Module,
+        model: nn.Module,
+    ) -> None:
+        """No-op — Hadamard rotation does not use per-module buffers."""
+
+    def inject_buffers_bulk(
+        self,
+        model: nn.Module,
+        quantization_config: dict,
+    ) -> None:
+        """Write rotation_config into quantization_config for persistence."""
+        config = getattr(model, "_rotation_config", None)
+        if config is not None:
+            cfg_dict = config.model_dump() if hasattr(config, "model_dump") else dict(config)
+            quantization_config[self.config_key()] = cfg_dict
+
+    def save_config(self, model: nn.Module, save_dir: str) -> None:
+        """Persist rotation_config into config.json after model.save_pretrained()."""
+        config = getattr(model, "_rotation_config", None)
+        if config is None:
+            return
+
+        cfg_dict = config.model_dump() if hasattr(config, "model_dump") else dict(config)
+
+        config_path = os.path.join(save_dir, "config.json")
+        if not os.path.exists(config_path):
+            logger.warning(f"[Hadamard] config.json not found at {save_dir}, cannot save rotation_config")
+            return
+
+        with open(config_path, "r") as f:
+            model_config = json.load(f)
+
+        if "quantization_config" in model_config:
+            model_config["quantization_config"][self.config_key()] = cfg_dict
+        else:
+            model_config[self.config_key()] = cfg_dict
+
+        with open(config_path, "w") as f:
+            json.dump(model_config, f, indent=2)
+
+        logger.info(f"[Hadamard] Saved rotation_config to {config_path}")
+
+    # ------------------------------------------------------------------
+    # SerializerMixin — Load side
+    # ------------------------------------------------------------------
+
+    def preregister_buffers(self, model: nn.Module, config_dict: dict) -> int:
+        """No-op — Hadamard rotation does not use per-module buffers."""
+        return 0
+
+    def rebuild_online(self, model: nn.Module) -> nn.Module:
+        """No-op — Hadamard hooks are rebuilt via apply_rotation_hooks_from_config."""
+        return model
+
+    def has_rotation_buffers(self, module: nn.Module) -> bool:
+        """Hadamard rotation does not inject buffers into modules."""
+        return False
+
+    @classmethod
+    def config_key(cls) -> str:
+        return "rotation_config"
 
 
 # ---------------------------------------------------------------------------
@@ -181,7 +257,7 @@ def _apply_to_module(
 
 def _apply_input_transform(module: torch.nn.Module, config: RotationConfig, data_type: str = "mx_fp") -> None:
     """Register a forward pre-hook that applies the Hadamard to the input activation."""
-    from auto_round.algorithms.transforms.rotation.utils.matrix import multihead_matmul
+    from auto_round.algorithms.transforms.quarot.utils.matrix import multihead_matmul
 
     inp_transform = build_hadamard_transform(
         **config.model_dump(),
@@ -197,7 +273,7 @@ def _apply_input_transform(module: torch.nn.Module, config: RotationConfig, data
         hadamard_weight = None
 
     if _triton_available(data_type):
-        from auto_round.algorithms.transforms.rotation.utils.triton.mxfp4 import mxfp4_forward_kernel_wrapper
+        from auto_round.algorithms.transforms.quarot.utils.triton.mxfp4 import mxfp4_forward_kernel_wrapper
 
         def _input_hook(self, args):
             x = args[0]
@@ -232,7 +308,7 @@ def _apply_weight_transform(
     config: RotationConfig,
 ) -> None:
     """Fuse or patch the Hadamard rotation into the weight of *module*."""
-    from auto_round.algorithms.transforms.rotation.patch import (
+    from auto_round.algorithms.transforms.quarot.patch import (
         patch_quantlinear,
         patch_wrapperlinear_to_apply_transform,
         patch_wrapperwalayer_forward_to_apply_transform,
@@ -248,7 +324,7 @@ def _apply_weight_transform(
 
     # For random Hadamard, save the matrix as a submodule for serialisation.
     if config.hadamard_type == "random_hadamard":
-        from auto_round.algorithms.transforms.rotation.patch import patch_quantlinear as _patch_ql
+        from auto_round.algorithms.transforms.quarot.patch import patch_quantlinear as _patch_ql
 
         _patch_ql(w_transform)
 

@@ -327,9 +327,9 @@ class SpinQuantTrainingHook:
     def __init__(
         self,
         model: nn.Module,
-        config=None,
+        config: Any = None,
         enabled: bool = True,
-    ):
+    ) -> None:
         from auto_round.algorithms.transforms.spinquant.preprocessor import (
             SpinQuantConfig,
             SpinQuantPreprocessor,
@@ -365,7 +365,7 @@ class OrthogonalTrainingCallback:
     maximum deviation after each training step.
     """
 
-    def __init__(self, model: nn.Module, log_interval: int = 50):
+    def __init__(self, model: nn.Module, log_interval: int = 50) -> None:
         self.model = model
         self.log_interval = log_interval
         self.step = 0
@@ -407,7 +407,7 @@ class SpinQuantState:
     SpinQuant-specific metrics.
     """
 
-    def __init__(self):
+    def __init__(self) -> None:
         self.enabled = False
         self.iteration = 0
         self.max_iterations = 0
@@ -529,7 +529,7 @@ class OrthogonalityMonitor(RotationTrainerCallback):
     Prints a warning when the deviation exceeds a threshold.
     """
 
-    def __init__(self, threshold: float = 1e-3, log_interval: int = 50):
+    def __init__(self, threshold: float = 1e-3, log_interval: int = 50) -> None:
         self.threshold = threshold
         self.log_interval = log_interval
 
@@ -561,7 +561,7 @@ class OrthogonalityMonitor(RotationTrainerCallback):
 class LossLogger(RotationTrainerCallback):
     """Callback that prints loss every ``log_interval`` steps."""
 
-    def __init__(self, log_interval: int = 50):
+    def __init__(self, log_interval: int = 50) -> None:
         self.log_interval = log_interval
 
     def on_step_end(self, args, state, control):
@@ -607,7 +607,7 @@ class RotationTrainer:
         config: Optional[RotationTrainerConfig] = None,
         callbacks: Optional[list[RotationTrainerCallback]] = None,
         compute_loss_fn: Optional[Callable[[torch.Tensor, torch.Tensor, RotationTrainerConfig], torch.Tensor]] = None,
-    ):
+    ) -> None:
         from auto_round.algorithms.transforms.spinquant.preprocessor import (
             SpinQuantConfig,
             SpinQuantPreprocessor,

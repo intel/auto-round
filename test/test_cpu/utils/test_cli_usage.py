@@ -131,7 +131,7 @@ def test_parse_layer_config_with_single_escaped_regex_keys():
 
 
 def test_run_rtn_uses_zero_shot_recipe(monkeypatch):
-    from auto_round import __main__ as cli_main
+    from auto_round.cli import main as cli_main
 
     captured = {}
 
@@ -160,7 +160,7 @@ def test_run_rtn_uses_zero_shot_recipe(monkeypatch):
 
 
 def test_run_rtn_preserves_eval_args(monkeypatch, tmp_path):
-    from auto_round import __main__ as cli_main
+    from auto_round.cli import main as cli_main
 
     captured = {}
 
@@ -198,7 +198,7 @@ def test_run_rtn_preserves_eval_args(monkeypatch, tmp_path):
 
 
 def test_run_opt_rtn_uses_recipe(monkeypatch):
-    from auto_round import __main__ as cli_main
+    from auto_round.cli import main as cli_main
 
     captured = {}
 
@@ -224,3 +224,28 @@ def test_run_opt_rtn_uses_recipe(monkeypatch):
     assert args.disable_opt_rtn is False
     assert args.batch_size == 8
     assert args.nsamples == 128
+
+
+def test_unknown_algorithm_help_exits_with_suggestion(monkeypatch):
+    from auto_round.cli import main as cli_main
+
+    monkeypatch.setattr(sys, "argv", ["auto_round", "--algorithm", "hadarmard", "--help"])
+
+    with pytest.raises(SystemExit, match="Unknown algorithm 'hadarmard'. Did you mean 'hadamard'\\?"):
+        cli_main.run()
+
+
+def test_legacy_disable_flags_map_to_enable_bools():
+    from auto_round.cli.parser import build_quantize_parser
+
+    args = build_quantize_parser().parse_args(
+        [
+            "--model",
+            "dummy-model",
+            "--disable_minmax_tuning",
+            "--disable_quanted_input",
+        ]
+    )
+
+    assert args.enable_minmax_tuning is False
+    assert args.enable_quanted_input is False

@@ -18,7 +18,7 @@ import os
 import re
 from collections import UserDict
 from pathlib import Path
-from typing import TYPE_CHECKING, Union
+from typing import TYPE_CHECKING, Optional, Union
 
 import psutil
 import torch
@@ -949,10 +949,16 @@ _is_mllm_model_cache: dict = {}
 _LLM_ONLY_MODEL_TYPES = {"bagel"}
 
 
+def get_model_name_or_path(model_or_path: Union[str, torch.nn.Module]) -> Optional[str]:
+    if isinstance(model_or_path, str):
+        return model_or_path
+    return getattr(model_or_path, "_name_or_path", None) or getattr(model_or_path, "name_or_path", None)
+
+
 def is_mllm_model(model_or_path: Union[str, torch.nn.Module], platform: str = None):
     from auto_round.utils.common import MM_KEYS
 
-    model_path = model_or_path if isinstance(model_or_path, str) else model_or_path.name_or_path
+    model_path = get_model_name_or_path(model_or_path)
 
     # Fast path: return cached result for already-seen paths
     if model_path in _is_mllm_model_cache:
@@ -999,7 +1005,7 @@ def is_mllm_model(model_or_path: Union[str, torch.nn.Module], platform: str = No
                 break
 
     # Cache by the original path key (model_path may have been resolved above)
-    original_key = model_or_path if isinstance(model_or_path, str) else model_or_path.name_or_path
+    original_key = get_model_name_or_path(model_or_path)
     _is_mllm_model_cache[original_key] = result
     return result
 
@@ -2295,8 +2301,8 @@ def is_model_free_route(
     """
     from auto_round.compressors.model_free import is_model_free_supported_scheme
 
-    explicit = bool(kwargs.pop("model_free", False))
-    disabled = bool(kwargs.pop("disable_model_free", False))
+    explicit = bool(kwargs.get("model_free", False))
+    disabled = bool(kwargs.get("disable_model_free", False))
     if explicit:
         return True
     # Only auto-route when format is auto_round (or not specified).

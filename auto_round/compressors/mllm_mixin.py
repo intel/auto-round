@@ -12,6 +12,8 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+from typing import Any, Optional, Union
+
 from auto_round.logger import logger
 
 
@@ -46,13 +48,13 @@ class MLLMMixin:
     def __init__(
         self,
         *args,
-        processor=None,
-        image_processor=None,
-        template=None,
-        extra_data_dir=None,
-        quant_nontext_module=False,
+        processor: Any = None,
+        image_processor: Any = None,
+        template: Optional[str] = None,
+        extra_data_dir: Optional[str] = None,
+        quant_nontext_module: bool = False,
         **kwargs,
-    ):
+    ) -> None:
         self.template = template
         self.extra_data_dir = extra_data_dir
         self.quant_nontext_module = quant_nontext_module
@@ -68,8 +70,8 @@ class MLLMMixin:
                 new_grad_acc = batch_size * grad_acc
                 kwargs["gradient_accumulate_steps"] = new_grad_acc
                 kwargs["batch_size"] = 1
-                # Also patch ``gradient_accumulate_steps`` on AlgConfig (still
-                # owned there) so behaviour matches the old arch.
+                # Also patch ``gradient_accumulate_steps`` on algorithm configs so
+                # behaviour matches the old arch.
                 _alg_cfg = args[0] if args else None
                 if _alg_cfg is not None:
                     cfgs = _alg_cfg if isinstance(_alg_cfg, list) else [_alg_cfg]
@@ -100,7 +102,13 @@ class MLLMMixin:
         """
         return "mllm"
 
-    def save_quantized(self, output_dir=None, format="auto_round", inplace=True, **kwargs):
+    def save_quantized(
+        self,
+        output_dir: Optional[str] = None,
+        format: Union[str, list] = "auto_round",
+        inplace: bool = True,
+        **kwargs,
+    ) -> Any:
         """Save the quantized model to the specified output directory in the specified format.
 
         Args:
