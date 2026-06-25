@@ -35,6 +35,7 @@ from auto_round.export.utils import (
     release_layer_safely,
     resolve_pipeline_export_layout,
     save_model,
+    save_pretrained_artifact,
 )
 from auto_round.formats import AutoRoundExportFormat
 from auto_round.logger import logger
@@ -347,8 +348,7 @@ def save_quantized_as_autoround(
     if output_dir:
         model_output_dir, processor_output_dir, _ = resolve_pipeline_export_layout(model, output_dir)
 
-    if tokenizer is not None and hasattr(tokenizer, "save_pretrained"):
-        tokenizer.save_pretrained(processor_output_dir)
+    save_pretrained_artifact(tokenizer, processor_output_dir, artifact_name="tokenizer")
 
     if processor is not None:
         processor.save_pretrained(processor_output_dir)
