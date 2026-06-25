@@ -81,7 +81,7 @@ jobs:
           # if os is macOS, run the following command to test the compatibility of auto-round with macOS
           if [[ "${{ matrix.os-name }}" == "macOS" ]]; then
             echo "============================================================================"
-            pytest -vs auto_round/test/test_mlx/*
+            pytest -vs test/test_mlx/*
           fi
         env:
           TQDM_MININTERVAL: "60"
