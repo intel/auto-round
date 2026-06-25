@@ -127,6 +127,8 @@ class AWQConfig(QuantizationConfig):
         self.smooth_iters = smooth_iters
         self.apply_clip = apply_clip
         self.clip_as_init = clip_as_init
+        if self.clip_as_init and not self.apply_clip:
+            raise ValueError("`clip_as_init=True` requires `apply_clip=True`.")
         if clip_n_grid is None or clip_n_grid < 1:
             raise ValueError(f"`clip_n_grid` must be a positive integer, got {clip_n_grid!r}")
         if not (0.0 < clip_max_shrink < 1.0):
