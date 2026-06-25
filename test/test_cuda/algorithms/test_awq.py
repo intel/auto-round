@@ -103,7 +103,6 @@ class TestAWQLLM:
             n_grid=4,
             nsamples=2,
             seqlen=32,
-            n_grid=4,
         )
         _, quantized_model_path = ar.quantize_and_save(output_dir=self.save_dir, format="auto_round")
         eval_generated_prompt(quantized_model_path)
