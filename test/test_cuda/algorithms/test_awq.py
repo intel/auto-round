@@ -321,7 +321,7 @@ class TestAWQUseV2ScaleSearch:
 
         from auto_round.data_type.utils import reshape_pad_tensor_by_group_size, search_optimized_init_scale
 
-        for dt, gs in (("int_sym", 128), ("mx_fp4", 32)):
+        for dt, gs in (("int_sym", 128), ("mx_fp4", 32)), ("nv_fp4", 16):
             weight = torch.randn(32, 128)
             weight_reshape, _, _ = reshape_pad_tensor_by_group_size(weight, gs)
             init_scale = search_optimized_init_scale(weight_reshape, dt, 4, None)

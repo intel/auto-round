@@ -41,7 +41,7 @@ from auto_round.algorithms.pipeline import (
     CalibTiming,
     InputSource,
 )
-from auto_round.algorithms.quantization.qdq_tool import QDQTool
+from auto_round.algorithms.transforms.awq.qdq import QDQTool
 from auto_round.algorithms.registry import register_pipeline_member
 from auto_round.algorithms.transforms.awq.config import AWQConfig
 from auto_round.algorithms.transforms.awq.mappings import (
@@ -541,10 +541,11 @@ class AWQTransform(BaseWeightTransformer):
         if not use_parent_forward:
             orig_weights = orig_state  # same reference is fine
 
-        # Pre-resolve quant functions once to avoid repeated dispatch in the
-        # grid-search loop. ``opt_quant_func`` is non-None only when the
-        # SignRoundV2 optimized init-scale path applies for this mapping.
-        cached_quant_func, opt_quant_func = self._qdq_tool.prepare_layer_funcs(mapping.balance_layers[0])
+        # Resolve each balance layer's scheme once, then pre-resolve the quant
+        # functions for the grid-search loop. ``opt_quant_func`` is non-None only
+        # when the SignRoundV2 optimized init-scale path applies for this mapping.
+        bl_params = {bl: self._qdq_tool.resolve_params(bl) for bl in mapping.balance_layers}
+        cached_quant_func, opt_quant_func = self._qdq_tool.resolve_quant_funcs(bl_params[mapping.balance_layers[0]])
 
         best_error = float("inf")
         best_scales = None
@@ -566,10 +567,11 @@ class AWQTransform(BaseWeightTransformer):
                 # weights the layer would actually compute with.
                 for bl in mapping.balance_layers:
                     w_qdq = self._qdq_tool.qdq(
-                        bl,
                         orig_state[bl] * scales_view,
+                        bl_params[bl],
                         quant_func=cached_quant_func,
                         opt_quant_func=opt_quant_func,
+                        imatrix=getattr(bl, "imatrix", None),
                     )
                     bl.weight.data = (w_qdq / scales_view).to(bl.weight.dtype)
 
@@ -583,7 +585,11 @@ class AWQTransform(BaseWeightTransformer):
                 for bl in mapping.balance_layers:
                     w_orig = orig_weights[bl].to(device)
                     w_qdq = self._qdq_tool.qdq(
-                        bl, w_orig * scales_view, quant_func=cached_quant_func, opt_quant_func=opt_quant_func
+                        w_orig * scales_view,
+                        bl_params[bl],
+                        quant_func=cached_quant_func,
+                        opt_quant_func=opt_quant_func,
+                        imatrix=getattr(bl, "imatrix", None),
                     )
                     total_loss += (w_orig - w_qdq / scales_view).pow(2).sum().item()
 
@@ -768,7 +774,11 @@ class AWQTransform(BaseWeightTransformer):
             return None
         n_group = in_features // gs
 
-        quant_func = self._qdq_tool.resolve_clip_quant_func(params, gs)
+        # Clip search is a flat per-group weight QDQ: substitute the normalized
+        # group size and drop super-block (double-quant) params, which the clip
+        # path does not apply.
+        clip_params = {**params, "group_size": gs, "super_bits": None, "super_group_size": None}
+        quant_func, _ = self._qdq_tool.resolve_quant_funcs(clip_params)
         if quant_func is None:
             return None
 
@@ -797,7 +807,8 @@ class AWQTransform(BaseWeightTransformer):
             for i_s in range(n_steps):
                 max_val = org_max_val * (1 - i_s / self.clip_n_grid)
                 cur_w = torch.clamp(w_b, -max_val, max_val)
-                q_w = self._qdq_tool.clip_qdq(cur_w, quant_func, params, gs)
+                cur_w_flat = cur_w.reshape(cur_w.shape[0], n_group * gs)
+                q_w = self._qdq_tool.qdq(cur_w_flat, clip_params, quant_func=quant_func).reshape(cur_w.shape)
                 cur_out = (feat * q_w).sum(dim=-1)
                 err = (cur_out - org_out).pow(2).mean(dim=1).view(min_errs.shape)
                 improved = err < min_errs
