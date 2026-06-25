@@ -28,6 +28,7 @@ from auto_round.export.utils import (
     filter_quantization_config,
     is_immediate_saving_mode,
     release_layer_safely,
+    save_pretrained_artifact,
     save_model,
 )
 from auto_round.logger import logger
@@ -280,10 +281,7 @@ def save_quantized_as_autoround(
     immediate_saving = is_immediate_saving_mode(model, serialization_dict)
     if os.path.exists(output_dir) and not immediate_saving:
         logger.warning(f"{output_dir} already exists, this may cause model conflict")
-    if tokenizer is not None and hasattr(tokenizer, "save_pretrained"):
-        tokenizer.save_pretrained(output_dir)
-    else:
-        logger.warning(f"Skip tokenizer save, tokenizer={tokenizer}")
+    save_pretrained_artifact(tokenizer, output_dir, artifact_name="tokenizer")
 
     if processor is not None:
         processor.save_pretrained(output_dir)
