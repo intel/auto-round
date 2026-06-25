@@ -1201,7 +1201,7 @@ def _apply_head_trick(head_name, schemes, sorted_indices, target_bits, target_pa
     # assign it >= 6 bit schemes, then let DP globally optimize.          #
     #                                                                      #
     # Rules (only if user hasn't already fixed it):                        #
-    #   1. No option has bits >= 6      → keep all options (DP picks best)#
+    #   1. No option has bits >= 6      → prefer the lowest-loss option   #
     #   2. Exactly one option bits >= 6 → restrict to only that option    #
     #   3. Multiple options bits >= 6:                                      #
     #      - target_bits > 6  → restrict to only the highest-bit option   #
@@ -1211,7 +1211,7 @@ def _apply_head_trick(head_name, schemes, sorted_indices, target_bits, target_pa
     high_bit_indices = [i for i in range(len(schemes)) if _get_scheme_bits(schemes[i]) >= 6]
 
     if len(high_bit_indices) == 0:
-        # Rule 1: no option >= 6 bit → restrict to the lowest-loss scheme
+        # Rule 1: no option >= 6 bit → keep the lowest-loss scheme if budget allows.
         allowed_indices = {sorted_indices[0]} if sorted_indices else None
     elif len(high_bit_indices) == 1:
         # Rule 2: exactly one >= 6 bit option → restrict to it
@@ -1275,6 +1275,18 @@ def _apply_head_trick(head_name, schemes, sorted_indices, target_bits, target_pa
             filtered = [opt for opt in total_scores[head_name] if opt[0] in allowed_indices]
             if filtered:
                 total_scores[head_name] = filtered
+
+
+def _get_not_fixed_embedding_layer_names(embedding_layers_names, fixed_layer_scheme, quant_layer_names):
+    """Return embedding layers still eligible for AutoScheme assignment.
+
+    AutoScheme removes embedding layers from ``quant_layer_names`` before the
+    DP scoring stage, so eligibility must be derived from the original
+    embedding list rather than the post-filtered quant layer list.
+    """
+
+    _ = quant_layer_names  # kept for call-site compatibility and future checks
+    return [name for name in embedding_layers_names if name not in fixed_layer_scheme]
 
 
 def _gen_layer_config(
@@ -1530,9 +1542,11 @@ def _gen_layer_config(
     target_params_cnt = int(total_params * target_bits)
     sorted_indices = sorted(range(len(options_scores)), key=lambda i: options_scores[i])
     # Layers that are not fixed in fixed_layer_scheme
-    not_fixed_embedding_layers_names = [
-        name for name in embedding_layers_names if (name not in fixed_layer_scheme and name in quant_layer_names)
-    ]
+    not_fixed_embedding_layers_names = _get_not_fixed_embedding_layer_names(
+        embedding_layers_names=embedding_layers_names,
+        fixed_layer_scheme=fixed_layer_scheme,
+        quant_layer_names=quant_layer_names,
+    )
 
     # Determine if model has shared lm_head (tie_word_embeddings)
     has_tied_lm_head = getattr(getattr(model, "config", None), "tie_word_embeddings", False)
@@ -1633,9 +1647,6 @@ def _gen_layer_config(
         layer_bits, _ = compute_layer_bits(m, auto_scheme.ignore_scale_zp_bits)
         target_params_cnt -= layer_bits
 
-    head_name = get_lm_head_name(model)
-    if head_name is not None and (head_name not in fixed_layer_scheme and head_name in quant_layer_names):
-        _apply_head_trick(head_name, schemes, sorted_indices, target_bits, target_params_cnt, total_scores)
     # As only a small amount of calibration data is used and embedding layers are inherently sparse,
     # we cannot obtain a reliable score.
     if not_fixed_embedding_layers_names:
@@ -1649,6 +1660,10 @@ def _gen_layer_config(
                 setattr(embedding_layer, key, item)
             layer_bits, _ = compute_layer_bits(embedding_layer, auto_scheme.ignore_scale_zp_bits)
             target_params_cnt -= layer_bits
+
+    head_name = get_lm_head_name(model)
+    if head_name is not None and (head_name not in fixed_layer_scheme and head_name in quant_layer_names):
+        _apply_head_trick(head_name, schemes, sorted_indices, target_bits, target_params_cnt, total_scores)
 
     if target_params_cnt <= 0:
         raise ValueError("Avg bits is too small")
