@@ -38,7 +38,6 @@ class AutoScheme:
     dataset: Optional[str] = None  # Import Notice no comma for each item
     device_map: Optional[Union[str, torch.device, int, dict]] = None
     enable_torch_compile: Optional[bool] = None
-    disable_opt_rtn: bool = True
     low_gpu_mem_usage: bool = True
     low_cpu_mem_usage: bool = True
 
@@ -46,6 +45,43 @@ class AutoScheme:
         if isinstance(self.options, str):
             options = self.options.upper().replace(" ", "")
             self.options = options.split(",")
+        self.options = self._deduplicate_options(self.options)
+
+    @staticmethod
+    def _deduplicate_options(
+        options: list[Union["QuantizationScheme", str]],
+    ) -> list[Union["QuantizationScheme", str]]:
+        """Remove options that resolve to the same quantization scheme.
+
+        For example, GGUF:Q4_K_S and GGUF:Q4_K_M share identical quantization
+        parameters (bits, group_size, sym, data_type, super_bits, super_group_size)
+        so only the first one is kept.
+        """
+        from auto_round.schemes import QuantizationScheme, preset_name_to_scheme
+
+        seen_schemes: list[QuantizationScheme] = []
+        unique_options = []
+
+        for opt in options:
+            if isinstance(opt, str):
+                try:
+                    scheme = preset_name_to_scheme(opt.upper())
+                except KeyError:
+                    unique_options.append(opt)
+                    continue
+            elif isinstance(opt, QuantizationScheme):
+                scheme = opt
+            else:
+                unique_options.append(opt)
+                continue
+
+            if any(scheme == s for s in seen_schemes):
+                logger.info("AutoScheme: removed duplicate option '%s' (same scheme already present).", opt)
+                continue
+            seen_schemes.append(scheme)
+            unique_options.append(opt)
+
+        return unique_options
 
 
 class GenScheme:
@@ -64,6 +100,9 @@ class GenScheme:
         processor=None,
     ):
         self.auto_scheme = auto_scheme
+        if self.auto_scheme.low_cpu_mem_usage:
+            logger.info("force not using `low_cpu_mem_usage` in AutoScheme")
+            self.auto_scheme.low_cpu_mem_usage = False
         self.model = model
         self.tokenizer = tokenizer
         self.processor = processor
@@ -76,7 +115,6 @@ class GenScheme:
             if self.auto_scheme.enable_torch_compile is None
             else self.auto_scheme.enable_torch_compile
         )
-        self.disable_opt_rtn = self.auto_scheme.disable_opt_rtn
         self.min_avg_bit, self.max_avg_bit, self.min_avg_bit_scheme = self.compute_avg_bit_range()
         self._check_configs()
 
@@ -129,7 +167,6 @@ class GenScheme:
             self.tokenizer,
             device_map=self.device_map,
             enable_torch_compile=self.enable_torch_compile,
-            disable_opt_rtn=self.disable_opt_rtn,
             low_gpu_mem_usage=self.auto_scheme.low_gpu_mem_usage,
             min_avg_bit_scheme=self.min_avg_bit_scheme,
             processor=self.processor,

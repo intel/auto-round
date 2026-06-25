@@ -104,7 +104,7 @@ def apply_hadamard_rotation(
             the transform backend.
 
     Returns:
-        The same model (for chaining); also stored on ``model.rotation_config``.
+        The same model (for chaining); also stored on ``model._rotation_config``.
     """
     config = _to_config(rotation_config, data_type)
     backend = resolve_hadamard_backend(config, data_type)
@@ -137,9 +137,8 @@ def apply_hadamard_rotation(
             fuse_online_to_weight=fuse_online_to_weight,
             compute_device=compute_device,
         )
-        # Stash for downstream (export / serialization). Plain dict so JSON
-        # serialization (HF save_pretrained -> config.json) round-trips.
-        setattr(model, "rotation_config", config.model_dump() if hasattr(config, "model_dump") else config)
+        # Stash config object for downstream (export / serialization).
+        setattr(model, "_rotation_config", config)
         return model, hooks
 
     elif backend == "transform":

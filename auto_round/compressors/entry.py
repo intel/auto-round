@@ -339,6 +339,9 @@ class AutoRound(object):
     ) -> "BaseCompressor":
         from auto_round.utils.model import is_model_free_route
 
+        if alg_configs is None:
+            alg_configs = "auto_round"
+
         device_map = normalize_default_device_map(device_map)
         split_kwargs = _split_entry_kwargs(kwargs)
         route_kwargs = dict(split_kwargs["route"])
@@ -346,9 +349,6 @@ class AutoRound(object):
         base_kwargs = dict(split_kwargs["base"])
         mllm_kwargs = dict(split_kwargs["mllm"])
         diffusion_kwargs = dict(split_kwargs["diffusion"])
-
-        if alg_configs is None:
-            alg_configs = "auto_round"
 
         # Resolve string alias(es) to config instance(s) before routing.
         alg_configs = cls._resolve_config(alg_configs)
@@ -362,7 +362,8 @@ class AutoRound(object):
         # Model-free routing is now supported directly by the new entry path.
         model_free_iters = 0 if isinstance(quant_config, RTNConfig) else getattr(quant_config, "iters", None)
         model_free_disable_opt_rtn = getattr(quant_config, "disable_opt_rtn", None)
-        if is_model_free_route(model, scheme, model_free_iters, model_free_disable_opt_rtn, route_kwargs):
+        route_decision_kwargs = dict(route_kwargs, format=format)
+        if is_model_free_route(model, scheme, model_free_iters, model_free_disable_opt_rtn, route_decision_kwargs):
             from auto_round.compressors.model_free import ModelFreeCompressor
 
             if not isinstance(model, str):

@@ -888,33 +888,14 @@ def convert_hf_model(model: nn.Module, target_device: str = "cpu") -> tuple[nn.M
 
     prune_stale_tied_weights_keys(model)
 
-    rotation_config = getattr(quantization_config, "rotation_config", None)
-    if rotation_config is not None and rotation_config:
-        from auto_round.algorithms.transforms.quarot.apply import apply_rotation_transform
-        from auto_round.algorithms.transforms.quarot.config import RotationConfig
+    # Apply rotation hooks (hadamard, spinquant, quarot, etc.) via unified dispatch.
+    _has_rotation = getattr(quantization_config, "rotation_config", None) or getattr(
+        quantization_config, "spinquant_config", None
+    )
+    if _has_rotation:
+        from auto_round.algorithms.transforms import apply_rotation_hooks_from_config
 
-        # apply forward hook
-        act_rotation_config = RotationConfig(
-            block_size=rotation_config["block_size"],
-            hadamard_type=rotation_config["hadamard_type"],
-        )  # apply to activation
-        model, _ = apply_rotation_transform(
-            model,
-            act_rotation_config,
-            location="input",
-            desc="Register pre forward hook for hadamard transform",
-            data_type=quantization_config.data_type,
-        )
-
-    # Pre-register rotation buffers on QuantLinear modules so HuggingFace's
-    # state_dict loader can populate them from safetensors.
-    # Uses generic dispatch — supports SpinQuant and future rotation methods.
-    try:
-        from auto_round.algorithms.transforms import preregister_rotation_buffers
-
-        preregister_rotation_buffers(model, quantization_config)
-    except Exception as e:
-        logger.warning(f"Failed to pre-register rotation buffers: {e}")
+        model = apply_rotation_hooks_from_config(model, quantization_config)
 
     # Suggest a better backend if available
     if backend == "auto":

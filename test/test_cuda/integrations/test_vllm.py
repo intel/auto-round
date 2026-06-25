@@ -64,7 +64,7 @@ def test_auto_round(model):
         "The future of AI is",
     ]
     # Create a sampling params object.
-    sampling_params = SamplingParams(temperature=0.8, top_p=0.95)
+    sampling_params = SamplingParams(temperature=0, max_tokens=32)
     # Create an LLM.
     QUANTIZATION = "auto-round"
     llm = LLM(

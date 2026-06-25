@@ -25,6 +25,7 @@ from safetensors.torch import save_file
 from auto_round import AutoRound
 from auto_round.compressors.model_free import (
     _build_mxfp_quantization_config,
+    _build_quantization_config,
     _dequant_fp8_tensors,
     _dequant_mxfp_tensors,
     _expand_e8m0_block_scale,
@@ -131,6 +132,7 @@ class TestPatternMatcher:
         m = _matcher()
         assert m.should_skip("model.layers.0.shared_expert_gate.weight") is True
         assert m.should_skip("model.layers.0.mlp.gate.weight") is True
+        assert m.should_skip("model.layers.0.mlp.gate_proj.weight") is False
         assert m.should_skip("model.embed_tokens.weight") is True
         assert m.should_skip("model.layers.0.mlp.fc1.weight") is False
 
@@ -164,11 +166,11 @@ class TestPatternMatcher:
 
 class TestParseLayerConfig:
     @staticmethod
-    def _make_core(layer_config_input):
+    def _make_core(layer_config_input, scheme="W4A16"):
         core = _ModelFreeCompressorCore(
             model_name_or_path="dummy",
             output_dir="dummy_out",
-            scheme="W4A16",
+            scheme=scheme,
         )
         core.layer_config_input = layer_config_input
         core._parse_scheme()
@@ -197,6 +199,13 @@ class TestParseLayerConfig:
         core = self._make_core({".ffn.experts.": QuantizationScheme(bits=2, group_size=64)})
         cfg = next(v for k, v in core.layer_config.items() if "ffn.experts" in k)
         assert cfg["bits"] == 2 and cfg["group_size"] == 64
+
+    def test_w4a16_mixed_recipe_in_model_free(self):
+        core = self._make_core({}, scheme="W4A16_MIXED")
+        assert core.default_scheme["bits"] == 8
+        assert core.layer_config[".experts."]["bits"] == 4
+        assert core.layer_config[".moe."]["bits"] == 4
+        assert core.layer_config[".shared_expert."]["bits"] == 8
 
 
 # ===========================================================================
@@ -237,6 +246,45 @@ class TestProcessShard:
             for proj in ["gate_proj", "up_proj", "down_proj"]:
                 base = f"model.layers.0.mlp.experts.{i}.{proj}"
                 assert base in quantized and f"{base}.qweight" in output
+
+    def test_moe_stacked_weights_are_split_and_quantized(self, tmp_path):
+        shard_path = str(tmp_path / "shard.safetensors")
+        n_experts, hidden, intermediate = 3, 64, 32
+        save_file(
+            {
+                "model.layers.3.moe.down_proj.weight": torch.randn(n_experts, hidden, intermediate),
+                "model.layers.3.moe.gate_proj.weight": torch.randn(n_experts, intermediate, hidden),
+                "model.layers.3.moe.up_proj.weight": torch.randn(n_experts, intermediate, hidden),
+                "model.layers.3.moe.gate.weight": torch.randn(n_experts, hidden),
+                "model.layers.3.moe.router_bias": torch.randn(n_experts),
+            },
+            shard_path,
+        )
+
+        output, quantized, ignored = _process_shard(shard_path, _DEFAULT_SCHEME, {}, [])
+
+        for i in range(n_experts):
+            for proj in ["down_proj", "gate_proj", "up_proj"]:
+                base = f"model.layers.3.moe.experts.{i}.{proj}"
+                assert base in quantized
+                assert f"{base}.qweight" in output
+
+        # Router gate stays in full precision by predefined skip rules.
+        assert "model.layers.3.moe.gate" in ignored
+        assert "model.layers.3.moe.gate.weight" in output
+        # router_bias is not a 2D linear weight and remains unchanged.
+        assert "model.layers.3.moe.router_bias" in output
+
+    def test_3d_weight_in_ignored_layers(self, tmp_path):
+        """A non-eligible 3D .weight tensor must appear in ignored_layers."""
+        shard_path = str(tmp_path / "shard.safetensors")
+        save_file({"model.layers.0.mlp.branch.weight": torch.randn(4, 8, 16)}, shard_path)
+
+        output, quantized, ignored = _process_shard(shard_path, _DEFAULT_SCHEME, {}, [])
+
+        assert "model.layers.0.mlp.branch.weight" in output
+        assert quantized == []
+        assert "model.layers.0.mlp.branch" in ignored
 
 
 # ===========================================================================
@@ -280,6 +328,38 @@ class TestFP8Source:
         assert "lm_head.weight_scale_inv" in output
         # non-ignored layer should be quantized normally
         assert "layer" in quantized
+
+
+# ===========================================================================
+#  Quantization config builder
+# ===========================================================================
+
+
+class TestBuildQuantizationConfig:
+    def test_extra_config_filters_embed_conv_only(self):
+        default = {"bits": 4, "group_size": 128, "sym": True, "data_type": "int"}
+        ignored = [
+            "model.embed_tokens",
+            "model.conv1",
+            "model.layers.0.shared_expert_gate",
+            "model.layers.0.mlp.gate",
+        ]
+
+        cfg = _build_quantization_config(
+            default_scheme=default,
+            layer_config={},
+            ignore_patterns=[],
+            quantized_layers=[],
+            ignored_layers=ignored,
+        )
+
+        extra = cfg.get("extra_config", {})
+        # Non-Linear ops are filtered out.
+        assert "model.embed_tokens" not in extra
+        assert "model.conv1" not in extra
+        # Other ignored layers should still be recorded.
+        assert extra["model.layers.0.shared_expert_gate"] == {"bits": 16, "data_type": "float"}
+        assert extra["model.layers.0.mlp.gate"] == {"bits": 16, "data_type": "float"}
 
 
 # ===========================================================================
@@ -1116,3 +1196,111 @@ class TestCopyMetadataSubfolders:
         assert any(
             k.endswith(".qweight") for k in keys
         ), f"Quantized transformer should contain .qweight tensors, got: {keys}"
+
+
+# ===========================================================================
+#  Shard parallelism — _resolve_shard_parallelism + end-to-end with non-divisible counts
+# ===========================================================================
+
+
+class TestResolveShardParallelism:
+    """Tests for the automatic and env-controlled shard parallelism policy."""
+
+    @staticmethod
+    def _core_with_n_shards(n: int) -> _ModelFreeCompressorCore:
+        core = _ModelFreeCompressorCore.__new__(_ModelFreeCompressorCore)
+        core.shard_names = [f"shard_{i:02d}.safetensors" for i in range(n)]
+        core.shard_parallelism = 1
+        return core
+
+    def test_auto_policy_formula(self, monkeypatch):
+        monkeypatch.delenv("AR_MODEL_FREE_SHARD_PARALLELISM", raising=False)
+        cases = [
+            (1, 1),  # 1 // 4 = 0 -> min 1
+            (3, 1),  # 3 // 4 = 0 -> min 1
+            (4, 1),  # 4 // 4 = 1
+            (8, 2),  # 8 // 4 = 2
+            (12, 3),  # 12 // 4 = 3
+            (40, 10),  # 40 // 4 = 10 (at cap)
+            (80, 10),  # 80 // 4 = 20 -> capped at 10
+        ]
+        for n, expected in cases:
+            core = self._core_with_n_shards(n)
+            p, src = core._resolve_shard_parallelism()
+            assert p == expected, f"n={n}: expected {expected}, got {p}"
+            assert "auto" in src
+
+    def test_env_override_respected(self, monkeypatch):
+        monkeypatch.setenv("AR_MODEL_FREE_SHARD_PARALLELISM", "7")
+        core = self._core_with_n_shards(25)
+        p, src = core._resolve_shard_parallelism()
+        assert p == 7
+        assert "env=7" in src
+
+    def test_env_capped_at_shard_count(self, monkeypatch):
+        monkeypatch.setenv("AR_MODEL_FREE_SHARD_PARALLELISM", "100")
+        core = self._core_with_n_shards(3)
+        p, _ = core._resolve_shard_parallelism()
+        assert p == 3
+
+    def test_env_below_1_falls_back_to_auto(self, monkeypatch):
+        monkeypatch.setenv("AR_MODEL_FREE_SHARD_PARALLELISM", "0")
+        core = self._core_with_n_shards(25)
+        p, src = core._resolve_shard_parallelism()
+        assert p == 25 // 4
+        assert "invalid" in src
+
+    def test_env_invalid_falls_back_to_auto(self, monkeypatch):
+        monkeypatch.setenv("AR_MODEL_FREE_SHARD_PARALLELISM", "notanumber")
+        core = self._core_with_n_shards(25)
+        p, src = core._resolve_shard_parallelism()
+        assert p == 25 // 4  # auto formula: shard_count // 4
+        assert "invalid" in src
+
+    def test_nondivisible_shard_count_all_shards_processed(self, tmp_path, monkeypatch):
+        """Parallelism that does not evenly divide the shard count must still
+        process every shard and produce correct output.
+
+        7 shards with parallelism=3 → 7 % 3 == 1 (non-divisible).
+        """
+        monkeypatch.setenv("AR_MODEL_FREE_SHARD_PARALLELISM", "3")
+
+        # Build 7 shards of simple linear weights
+        layer_names = [f"model.layers.{i}.fc.weight" for i in range(7)]
+        model_dir = str(tmp_path / "source")
+        os.makedirs(model_dir, exist_ok=True)
+        with open(os.path.join(model_dir, "config.json"), "w") as f:
+            json.dump(_SIMPLE_CONFIG, f)
+
+        weight_map = {}
+        for shard_idx, layer_name in enumerate(layer_names):
+            shard_filename = f"model-{shard_idx + 1:05d}-of-{len(layer_names):05d}.safetensors"
+            save_file({layer_name: torch.randn(128, 128)}, os.path.join(model_dir, shard_filename))
+            weight_map[layer_name] = shard_filename
+        with open(os.path.join(model_dir, "model.safetensors.index.json"), "w") as f:
+            json.dump({"metadata": {"total_size": 0}, "weight_map": weight_map}, f)
+
+        output_dir = str(tmp_path / "output")
+        core = _ModelFreeCompressorCore(
+            model_name_or_path=model_dir,
+            output_dir=output_dir,
+            scheme="W4A16",
+            quant_lm_head=True,
+        )
+        core.run()
+
+        # Every layer must appear as quantized in the output
+        out_keys = _read_output_keys(output_dir)
+        for layer_name in layer_names:
+            base = layer_name.replace(".weight", "")
+            assert f"{base}.qweight" in out_keys, (
+                f"Layer '{base}' missing from output after non-divisible shard processing. "
+                f"Output keys: {sorted(out_keys)[:20]}"
+            )
+
+        # The index must reference exactly 7 shards
+        index_path = os.path.join(output_dir, "model.safetensors.index.json")
+        with open(index_path) as f:
+            index = json.load(f)
+        unique_shards = set(index["weight_map"].values())
+        assert len(unique_shards) == 7, f"Expected 7 output shards, got {len(unique_shards)}: {unique_shards}"
