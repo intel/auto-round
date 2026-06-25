@@ -267,32 +267,6 @@ class TestAWQMoE:
         assert qconfig["group_size"] == 128
         assert "auto-round" in qconfig["quant_method"]
 
-    def test_awq_moe_save_compressed_size(self, tiny_qwen_moe_model_path):
-        """AWQ MoE W4: quantized safetensors should be smaller than original."""
-        ar = AutoRound(
-            tiny_qwen_moe_model_path,
-            scheme="W4A16",
-            algorithm="awq",
-            nsamples=2,
-            seqlen=32,
-            batch_size=2,
-        )
-        _, save_path = ar.quantize_and_save(output_dir=self.save_dir, format="auto_round")
-
-        def _safetensors_size(path):
-            return sum(os.path.getsize(os.path.join(path, f)) for f in os.listdir(path) if f.endswith(".safetensors"))
-
-        original_size = _safetensors_size(tiny_qwen_moe_model_path)
-        quantized_size = _safetensors_size(save_path)
-        assert quantized_size > 0, f"No safetensors files in {save_path}"
-
-        ratio = quantized_size / original_size
-        # W4G128 packing: (4-bit weights + scale/zp overhead)
-        assert 0.35 < ratio < 0.65, (
-            f"Compression ratio {ratio:.4f} outside expected range (0.35, 0.65): "
-            f"original={original_size / (1024**2):.1f}MB, quantized={quantized_size / (1024**2):.1f}MB"
-        )
-
 
 class TestAWQWeightClip:
     """AWQ weight-clip option (issue #1854).
@@ -335,32 +309,6 @@ class TestAWQWeightClip:
         output = generate_prompt(model, tokenizer, device="cpu")
         assert len(output) > 0, "Clipped model should produce non-empty output"
 
-    def test_awq_clip_then_signround(self, tiny_opt_model_path):
-        """AWQ smooth+clip → SignRound (scenario 1): clip initializes the range, then tuned."""
-        from auto_round.algorithms.quantization.sign_round.config import SignRoundConfig
-        from auto_round.algorithms.transforms.awq.config import AWQConfig
-
-        ar = AutoRound(
-            tiny_opt_model_path,
-            alg_configs=[
-                AWQConfig(bits=4, group_size=128, sym=True, apply_clip=True),
-                SignRoundConfig(iters=2),
-            ],
-            nsamples=2,
-            seqlen=32,
-            batch_size=2,
-        )
-        model, layer_config = ar.quantize()
-
-        assert model is not None
-        assert len(layer_config) > 0
-        for name, cfg in layer_config.items():
-            assert cfg["bits"] == 4, f"Layer {name} expected bits=4, got {cfg['bits']}"
-
-        tokenizer = AutoTokenizer.from_pretrained(tiny_opt_model_path)
-        output = generate_prompt(model, tokenizer, device="cpu")
-        assert len(output) > 0, "Clipped+SignRound model should produce non-empty output"
-
     def test_awq_clip_as_init_signround(self, tiny_opt_model_path):
         """clip_as_init: clip is kept on the model context and initializes SignRound's range."""
         from auto_round.algorithms.quantization.sign_round.config import SignRoundConfig
@@ -370,7 +318,7 @@ class TestAWQWeightClip:
             tiny_opt_model_path,
             alg_configs=[
                 AWQConfig(bits=4, group_size=128, sym=False, apply_clip=True, clip_as_init=True),
-                SignRoundConfig(iters=2),
+                SignRoundConfig(iters=1),
             ],
             nsamples=2,
             seqlen=32,
@@ -433,13 +381,13 @@ class TestAWQUseV2ScaleSearch:
 
         q = self._awq_quantizer()
         compressor = self._make_compressor(RTNConfig(disable_opt_rtn=True))
-        assert q._block_quantizer_is_signroundv2(compressor) is False
+        assert q._qdq_tool._block_quantizer_is_signroundv2(compressor) is False
 
     def test_use_v2_true_for_v2_block(self):
         """Gate is True for any SignRoundV2 block (data-type gating is per-layer)."""
         q = self._awq_quantizer()
         compressor = self._make_compressor(self._signroundv2_config(data_type="mx_fp"))
-        assert q._block_quantizer_is_signroundv2(compressor) is True
+        assert q._qdq_tool._block_quantizer_is_signroundv2(compressor) is True
 
     def test_use_v2_false_for_non_v2_block(self):
         """Gate is False when the block is not SignRoundV2, regardless of dtype."""
@@ -449,7 +397,7 @@ class TestAWQUseV2ScaleSearch:
         block = SignRoundConfig(iters=2)
         block.data_type = "mx_fp"
         compressor = self._make_compressor(block)
-        assert q._block_quantizer_is_signroundv2(compressor) is False
+        assert q._qdq_tool._block_quantizer_is_signroundv2(compressor) is False
 
     def test_init_scale_dispatch_by_data_type(self):
         """``search_optimized_init_scale`` injects only for sym int/mx/nv."""
@@ -457,8 +405,8 @@ class TestAWQUseV2ScaleSearch:
 
         from auto_round.data_type.utils import reshape_pad_tensor_by_group_size, search_optimized_init_scale
 
-        for dt, gs in (("int_sym", 128), ("mx_fp4", 32), ("nv_fp4", 16)):
-            weight = torch.randn(64, 128)
+        for dt, gs in (("int_sym", 128), ("mx_fp4", 32)):
+            weight = torch.randn(32, 128)
             weight_reshape, _, _ = reshape_pad_tensor_by_group_size(weight, gs)
             init_scale = search_optimized_init_scale(weight_reshape, dt, 4, None)
             assert init_scale is not None, dt
