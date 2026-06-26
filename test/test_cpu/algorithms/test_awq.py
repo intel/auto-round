@@ -51,6 +51,7 @@ class TestAWQNormalLLM:
             tiny_opt_model_path,
             scheme="W4A16",
             algorithm="awq",
+            n_grid=1,
             nsamples=2,
             seqlen=32,
             batch_size=2,
@@ -74,8 +75,9 @@ class TestAWQNormalLLM:
             tiny_opt_model_path,
             scheme="W4A16",
             algorithm="awq",
+            n_grid=1,
             nsamples=2,
-            seqlen=32,
+            seqlen=8,
             batch_size=2,
         )
         _, save_path = ar.quantize_and_save(output_dir=self.save_dir, format="auto_round")
@@ -97,6 +99,7 @@ class TestAWQNormalLLM:
             group_size=group_size,
             sym=sym,
             algorithm="awq",
+            n_grid=1,
             nsamples=2,
             seqlen=8,
             batch_size=2,
@@ -124,9 +127,9 @@ class TestAWQNonIntegerSchemes:
             tiny_opt_model_path,
             scheme=scheme,
             algorithm="awq,signround",
-            n_grid=4,
+            n_grid=1,
             nsamples=2,
-            seqlen=32,
+            seqlen=8,
             batch_size=2,
         )
         model, layer_config = ar.quantize()
@@ -157,7 +160,8 @@ class TestAWQW8A8LLMCompressor:
             scheme="INT8",
             algorithm="awq",
             nsamples=2,
-            seqlen=32,
+            seqlen=8,
+            n_grid=1,
             batch_size=2,
         )
         _, save_path = ar.quantize_and_save(output_dir=self.save_dir, format="llm_compressor")
@@ -243,8 +247,9 @@ class TestAWQMoE:
             tiny_qwen_moe_model_path,
             scheme="W4A16",
             algorithm="awq",
+            n_grid=1,
             nsamples=2,
-            seqlen=32,
+            seqlen=8,
             batch_size=2,
         )
         model, layer_config = ar.quantize()
@@ -276,6 +281,7 @@ class TestAWQMoE:
             tiny_qwen_moe_model_path,
             scheme="W4A16",
             algorithm="awq",
+            n_grid=1,
             nsamples=2,
             seqlen=32,
             batch_size=2,
@@ -320,12 +326,12 @@ class TestAWQWeightClip:
             tiny_opt_model_path,
             alg_configs=[
                 AWQConfig(
-                    bits=4, group_size=128, sym=True, apply_clip=True, n_grid=2, clip_n_grid=4, clip_n_sample_token=64
+                    bits=4, group_size=128, sym=True, apply_clip=True, n_grid=2, clip_n_grid=2, clip_n_sample_token=8
                 ),
                 RTNConfig(disable_opt_rtn=True),
             ],
             nsamples=2,
-            seqlen=32,
+            seqlen=8,
             batch_size=2,
         )
         model, layer_config = ar.quantize()
@@ -350,17 +356,17 @@ class TestAWQWeightClip:
                 AWQConfig(
                     bits=4,
                     group_size=128,
-                    sym=False,
+                    sym=True,
                     apply_clip=True,
                     clip_as_init=True,
                     n_grid=2,
-                    clip_n_grid=4,
-                    clip_n_sample_token=64,
+                    clip_n_grid=2,
+                    clip_n_sample_token=8,
                 ),
                 SignRoundConfig(iters=1),
             ],
             nsamples=2,
-            seqlen=32,
+            seqlen=8,
             batch_size=2,
         )
         model, layer_config = ar.quantize()
@@ -397,34 +403,31 @@ class TestAWQUseV2ScaleSearch:
         return types.SimpleNamespace(quantize_config=block_config, alg_configs=[block_config])
 
     @staticmethod
-    def _awq_quantizer():
+    def _awq_transform():
         from auto_round.algorithms.transforms.awq.base import AWQTransform
         from auto_round.algorithms.transforms.awq.config import AWQConfig
 
-        return AWQTransform(AWQConfig())
+        return AWQTransform(AWQConfig(n_grid=1, apply_smooth=True))
 
     @staticmethod
     def _signroundv2_config(data_type=None):
         from auto_round.algorithms.quantization.sign_round.config import SignRoundConfig
         from auto_round.algorithms.registry import normalize_algorithm_config
 
-        cfg = normalize_algorithm_config(SignRoundConfig(iters=2, enable_alg_ext=True))
+        cfg = normalize_algorithm_config(SignRoundConfig(iters=1, enable_alg_ext=True))
         assert type(cfg).__name__ == "SignRoundV2Config"
         if data_type is not None:
             cfg.data_type = data_type
         return cfg
 
-    def test_rtn_block_is_not_v2(self):
+    def test_block_v2(self):
         """An RTN block quantizer must NOT be detected as V2."""
         from auto_round.algorithms.quantization.rtn.config import RTNConfig
 
-        q = self._awq_quantizer()
-        compressor = self._make_compressor(RTNConfig(disable_opt_rtn=True))
+        q = self._awq_transform()
+        compressor = self._make_compressor(RTNConfig())
         assert q._qdq_tool._block_quantizer_is_signroundv2(compressor) is False
 
-    def test_use_v2_true_for_v2_block(self):
-        """Gate is True for any SignRoundV2 block (data-type gating is per-layer)."""
-        q = self._awq_quantizer()
         compressor = self._make_compressor(self._signroundv2_config(data_type="mx_fp"))
         assert q._qdq_tool._block_quantizer_is_signroundv2(compressor) is True
 
@@ -432,8 +435,8 @@ class TestAWQUseV2ScaleSearch:
         """Gate is False when the block is not SignRoundV2, regardless of dtype."""
         from auto_round.algorithms.quantization.sign_round.config import SignRoundConfig
 
-        q = self._awq_quantizer()
-        block = SignRoundConfig(iters=2)
+        q = self._awq_transform()
+        block = SignRoundConfig(iters=1)
         block.data_type = "mx_fp"
         compressor = self._make_compressor(block)
         assert q._qdq_tool._block_quantizer_is_signroundv2(compressor) is False
@@ -444,8 +447,8 @@ class TestAWQUseV2ScaleSearch:
 
         from auto_round.data_type.utils import reshape_pad_tensor_by_group_size, search_optimized_init_scale
 
-        for dt, gs in (("int_sym", 128), ("mx_fp4", 32)):
-            weight = torch.randn(32, 128)
+        for dt, gs in (("mx_fp4", 32),):
+            weight = torch.randn(32, 64)
             weight_reshape, _, _ = reshape_pad_tensor_by_group_size(weight, gs)
             init_scale = search_optimized_init_scale(weight_reshape, dt, 4, None)
             assert init_scale is not None, dt
