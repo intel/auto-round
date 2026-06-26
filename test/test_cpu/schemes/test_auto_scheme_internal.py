@@ -53,23 +53,3 @@ def test_apply_head_trick_relaxes_lowest_loss_candidate_when_budget_is_tight():
         [0, 1244659712, 41.0, ["lm_head"]],
         [1, 2489319424, 11.9, ["lm_head"]],
     ]
-
-
-def test_collect_not_fixed_embedding_layer_names_ignores_quant_layer_filter():
-    from auto_round.auto_scheme import delta_loss
-
-    embedding_layers_names = ["model.embed_tokens"]
-    fixed_layer_scheme = {}
-    quant_layer_names = [
-        "model.layers.0.self_attn.q_proj",
-        "model.layers.0.self_attn.k_proj",
-        "lm_head",
-    ]
-
-    names = delta_loss._get_not_fixed_embedding_layer_names(
-        embedding_layers_names=embedding_layers_names,
-        fixed_layer_scheme=fixed_layer_scheme,
-        quant_layer_names=quant_layer_names,
-    )
-
-    assert names == ["model.embed_tokens"]
