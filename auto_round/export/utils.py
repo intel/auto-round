@@ -27,6 +27,21 @@ from auto_round.utils import (
 )
 
 
+def save_pretrained_artifact(artifact, output_dir: str, artifact_name: str = "artifact") -> bool:
+    """Save a Hugging Face style artifact and log explicit skip reasons."""
+    if output_dir is None:
+        logger.warning("Skipping %s save: output_dir is None.", artifact_name)
+        return False
+    if artifact is None:
+        logger.warning("Skipping %s save: object is None.", artifact_name)
+        return False
+    if not hasattr(artifact, "save_pretrained"):
+        logger.warning("Skipping %s save: object %r has no save_pretrained method.", artifact_name, artifact)
+        return False
+    artifact.save_pretrained(output_dir)
+    return True
+
+
 def _save_model_configs(model: nn.Module, save_dir: str) -> None:
     if hasattr(model, "config") and model.config is not None:
         try:
