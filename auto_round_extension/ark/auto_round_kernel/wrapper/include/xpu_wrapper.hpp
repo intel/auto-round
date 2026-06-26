@@ -1575,6 +1575,80 @@ class XpuWrapper {
     }
   }
 
+  /// @brief Varlen variant: Q/K/V are flat 3-D [total_tokens, num_heads, head_dim].
+  ///        cu_seqlens_q/k provide per-sequence boundaries on device.
+  template <typename T = sycl::half>
+  static void sagev1_varlen_impl(sycl::queue* q, void* Q_ptr, void* K_ptr, void* V_ptr, void* O_ptr, void* mask,
+                                 int scale_block_size, int q_stride_s, int q_stride_d, int q_stride_h, int q_stride_b,
+                                 int k_stride_s, int k_stride_d, int k_stride_h, int k_stride_b, int v_stride_d,
+                                 int v_stride_s, int v_stride_h, int v_stride_b, int o_stride_s, int o_stride_d,
+                                 int o_stride_h, int o_stride_b, int batch, int num_heads_q, int num_heads_kv,
+                                 int total_seqlen_q, int total_seqlen_kv, int max_seqlen_q, int max_seqlen_kv,
+                                 int head_dim, float softmax_scale, bool is_causal, bool use_int8_pv,
+                                 const int* cu_seqlens_q, const int* cu_seqlens_k) {
+    size_t q_size = size_t(num_heads_q) * total_seqlen_q * head_dim;
+    size_t q_seq_blk = (size_t(total_seqlen_q) + scale_block_size - 1) / scale_block_size;
+    size_t q_scale_size = size_t(num_heads_q) * q_seq_blk;
+    size_t k_size = size_t(num_heads_kv) * total_seqlen_kv * head_dim;
+    size_t k_seq_blk = (size_t(total_seqlen_kv) + scale_block_size - 1) / scale_block_size;
+    size_t k_scale_size = size_t(num_heads_kv) * k_seq_blk;
+    size_t v_tmp_size = use_int8_pv ? k_size : 0;
+    size_t v_scale_size = use_int8_pv ? k_scale_size * head_dim * sizeof(float) : 0;
+    size_t total_size = k_size + q_size + k_scale_size * sizeof(float) + q_scale_size * sizeof(float) + v_tmp_size + v_scale_size;
+    auto ptr = DnnlContext::Instance()->get_scratch_mem(total_size, 1, q);
+    auto q_out_ptr = (int8_t*)ptr;
+    auto k_out_ptr = (int8_t*)ptr + q_size;
+    auto qscale = (float*)((int8_t*)ptr + q_size + k_size);
+    auto kscale = (float*)((int8_t*)ptr + q_size + k_size + q_scale_size * sizeof(float));
+    auto v_out_ptr = use_int8_pv
+        ? (int8_t*)((int8_t*)ptr + q_size + k_size + q_scale_size * sizeof(float) + k_scale_size * sizeof(float))
+        : nullptr;
+    auto vscale = use_int8_pv
+        ? (float*)((int8_t*)ptr + q_size + k_size + q_scale_size * sizeof(float) + k_scale_size * sizeof(float) + k_size)
+        : nullptr;
+
+    // Flat [total, H, D] quantize via strided path (batch=1).
+    sage_dynamic_quant_strided<T>(q, (T*)Q_ptr, q_out_ptr, qscale, batch, num_heads_q,
+                                  total_seqlen_q, q_seq_blk, head_dim, scale_block_size,
+                                  q_stride_s, q_stride_d, q_stride_h, q_stride_b);
+    sage_dynamic_quant_strided<T>(q, (T*)K_ptr, k_out_ptr, kscale, batch, num_heads_kv,
+                                  total_seqlen_kv, k_seq_blk, head_dim, scale_block_size,
+                                  k_stride_s, k_stride_d, k_stride_h, k_stride_b);
+
+    // Quantized output stride: packed HND using total_seqlen.
+    int qo_s = head_dim,  qo_d = 1,  qo_h = total_seqlen_q * head_dim,  qo_b = num_heads_q * total_seqlen_q * head_dim;
+    int ko_s = head_dim,  ko_d = 1,  ko_h = total_seqlen_kv * head_dim,  ko_b = num_heads_kv * total_seqlen_kv * head_dim;
+    int vo_d = 1,  vo_s = head_dim,  vo_h = total_seqlen_kv * head_dim,  vo_b = num_heads_kv * total_seqlen_kv * head_dim;
+
+    constexpr BTLA_DTYPE pv_dtype = std::is_same<T, sycl::half>::value ? BTLA_DTYPE::F16 : BTLA_DTYPE::BF16;
+    if (use_int8_pv) {
+      sage_dynamic_quant_v_strided<T>(q, (T*)V_ptr, v_out_ptr, vscale, batch,
+                                      num_heads_kv, total_seqlen_kv, k_seq_blk, head_dim, scale_block_size,
+                                      v_stride_d, v_stride_s, v_stride_h, v_stride_b);
+      ark::sage_prefill_varlen(q, q_out_ptr, k_out_ptr, v_out_ptr, O_ptr, mask, scale_block_size, qscale, kscale,
+                               vscale, true, BTLA_DTYPE::S8, pv_dtype,
+                               qo_s, qo_d, qo_h, qo_b,
+                               ko_s, ko_d, ko_h, ko_b,
+                               vo_d, vo_s, vo_h, vo_b,
+                               o_stride_s, o_stride_d, o_stride_h, o_stride_b,
+                               batch, num_heads_q, num_heads_kv,
+                               total_seqlen_q, total_seqlen_kv, max_seqlen_q, max_seqlen_kv,
+                               head_dim, softmax_scale, is_causal,
+                               cu_seqlens_q, cu_seqlens_k);
+    } else {
+      ark::sage_prefill_varlen(q, q_out_ptr, k_out_ptr, V_ptr, O_ptr, mask, scale_block_size, qscale, kscale,
+                               nullptr, false, BTLA_DTYPE::S8, pv_dtype,
+                               qo_s, qo_d, qo_h, qo_b,
+                               ko_s, ko_d, ko_h, ko_b,
+                               v_stride_d, v_stride_s, v_stride_h, v_stride_b,
+                               o_stride_s, o_stride_d, o_stride_h, o_stride_b,
+                               batch, num_heads_q, num_heads_kv,
+                               total_seqlen_q, total_seqlen_kv, max_seqlen_q, max_seqlen_kv,
+                               head_dim, softmax_scale, is_causal,
+                               cu_seqlens_q, cu_seqlens_k);
+    }
+  }
+
   static void sagev1(sycl::queue* q, void* Q_ptr, void* K_ptr, void* V_ptr, void* O_ptr, void* mask,
                      int scale_block_size, int q_stride_s, int q_stride_d, int q_stride_h, int q_stride_b,
                      int k_stride_s, int k_stride_d, int k_stride_h, int k_stride_b, int v_stride_d,

@@ -392,6 +392,132 @@ void sdpa_impl_qks8_pvi8(sycl::queue* q, void* Q_ptr, void* K_ptr, void* V_ptr, 
                softmax_scale, is_causal);
 }
 
+void sage_prefill_varlen(sycl::queue* q, void* Q_ptr, void* K_ptr, void* V_ptr, void* O_ptr, void* mask,
+                         int scale_block_size, void* qscale, void* kscale, void* vscale, bool use_int8_pv,
+                         BTLA_DTYPE q_dtype, BTLA_DTYPE pv_dtype,
+                         int q_stride_s, int q_stride_d, int q_stride_h, int q_stride_b,
+                         int k_stride_s, int k_stride_d, int k_stride_h, int k_stride_b,
+                         int v_stride_d, int v_stride_s, int v_stride_h, int v_stride_b,
+                         int o_stride_s, int o_stride_d, int o_stride_h, int o_stride_b,
+                         int batch, int num_heads_q, int num_heads_kv,
+                         int total_seqlen_q, int total_seqlen_kv, int max_seqlen_q, int max_seqlen_kv,
+                         int head_dim, float softmax_scale, bool is_causal,
+                         const int* cu_seqlens_q, const int* cu_seqlens_k) {
+  if (mask && is_causal) {
+    throw std::invalid_argument("sage_prefill_varlen: mask and is_causal cannot both be set");
+  }
+  if (batch <= 0 || total_seqlen_q <= 0 || total_seqlen_kv <= 0) {
+    throw std::invalid_argument("sage_prefill_varlen: batch, total_seqlen_q, total_seqlen_kv must be > 0");
+  }
+  if (cu_seqlens_q == nullptr || cu_seqlens_k == nullptr) {
+    throw std::invalid_argument("sage_prefill_varlen: cu_seqlens_q and cu_seqlens_k must not be null");
+  }
+
+  detail::Options options = make_common_options(
+      Q_ptr, K_ptr, V_ptr, O_ptr, mask,
+      q_stride_s, q_stride_d, q_stride_h, q_stride_b,
+      k_stride_s, k_stride_d, k_stride_h, k_stride_b,
+      v_stride_d, v_stride_s, v_stride_h, v_stride_b,
+      o_stride_s, o_stride_d, o_stride_h, o_stride_b,
+      batch, num_heads_q, num_heads_kv,
+      max_seqlen_q, max_seqlen_kv,
+      head_dim, softmax_scale, is_causal);
+  options.varlen = true;
+  options.total_seqlen_q = total_seqlen_q;
+  options.total_seqlen_kv = total_seqlen_kv;
+  options.max_seqlen_q = max_seqlen_q;
+  options.max_seqlen_kv = max_seqlen_kv;
+  options.cu_seqlens_q = cu_seqlens_q;
+  options.cu_seqlens_k = cu_seqlens_k;
+  options.seq_len_kv_cache = 0;
+  options.total_seqlen_kv_cache = 0;
+  options.max_seqlen_kv_cache = 0;
+  options.scale_block_size = scale_block_size;
+  options.qscale = qscale;
+  options.kscale = kscale;
+  options.vscale = vscale;
+
+  compat::set_default_queue(*q);
+
+  int* zero_cu_buf = static_cast<int*>(compat::malloc((batch + 1) * sizeof(int)));
+  q->memset(zero_cu_buf, 0, (batch + 1) * sizeof(int));
+  options.cu_seqlens_kv_cache = zero_cu_buf;
+  options.use_tensor_strides = true;
+
+  KernelLauncher launcher = select_sage_prefill_launcher(q_dtype, pv_dtype, head_dim, use_int8_pv);
+  if (launcher == nullptr) {
+    throw std::runtime_error(
+        "Unsupported dtype or head dimension for sage_prefill_varlen (only S8/64/128)");
+  }
+
+  launcher(options);
+
+  compat::free(zero_cu_buf);
+}
+
+void sdpa_varlen_impl(sycl::queue* q, void* Q_ptr, void* K_ptr, void* V_ptr, void* O_ptr, void* mask,
+                      BTLA_DTYPE q_dtype, int q_stride_s, int q_stride_d, int q_stride_h, int q_stride_b,
+                      int k_stride_s, int k_stride_d, int k_stride_h, int k_stride_b, int v_stride_d,
+                      int v_stride_s, int v_stride_h, int v_stride_b, int o_stride_s, int o_stride_d,
+                      int o_stride_h, int o_stride_b, int batch, int num_heads_q, int num_heads_kv,
+                      int total_seqlen_q, int total_seqlen_kv, int max_seqlen_q, int max_seqlen_kv,
+                      int head_dim, float softmax_scale, bool is_causal,
+                      const int* cu_seqlens_q, const int* cu_seqlens_k) {
+  if (mask && is_causal) {
+    throw std::invalid_argument("sdpa_varlen_impl: mask and is_causal cannot both be set");
+  }
+  if (q_dtype != BTLA_DTYPE::F16 && q_dtype != BTLA_DTYPE::BF16) {
+    throw std::invalid_argument("sdpa_varlen_impl: only F16 and BF16 are supported");
+  }
+  if (batch <= 0 || total_seqlen_q <= 0 || total_seqlen_kv <= 0) {
+    throw std::invalid_argument("sdpa_varlen_impl: batch, total_seqlen_q, total_seqlen_kv must be > 0");
+  }
+  if (cu_seqlens_q == nullptr || cu_seqlens_k == nullptr) {
+    throw std::invalid_argument("sdpa_varlen_impl: cu_seqlens_q and cu_seqlens_k must not be null");
+  }
+
+  detail::Options options = make_common_options(
+      Q_ptr, K_ptr, V_ptr, O_ptr, mask,
+      q_stride_s, q_stride_d, q_stride_h, q_stride_b,
+      k_stride_s, k_stride_d, k_stride_h, k_stride_b,
+      v_stride_d, v_stride_s, v_stride_h, v_stride_b,
+      o_stride_s, o_stride_d, o_stride_h, o_stride_b,
+      batch, num_heads_q, num_heads_kv,
+      max_seqlen_q, max_seqlen_kv,
+      head_dim, softmax_scale, is_causal);
+  options.varlen = true;
+  options.total_seqlen_q = total_seqlen_q;
+  options.total_seqlen_kv = total_seqlen_kv;
+  options.max_seqlen_q = max_seqlen_q;
+  options.max_seqlen_kv = max_seqlen_kv;
+  options.cu_seqlens_q = cu_seqlens_q;
+  options.cu_seqlens_k = cu_seqlens_k;
+  options.seq_len_kv_cache = 0;
+  options.total_seqlen_kv_cache = 0;
+  options.max_seqlen_kv_cache = 0;
+
+  compat::set_default_queue(*q);
+
+  // When isVarLen=true, the kernel's apply_variable_length accesses
+  // cumulative_length for ALL three fields.  Even with max_seqlen_kv_cache=0,
+  // the pointer must be non-null and device-accessible.  Allocate a zero-
+  // filled device buffer for this purpose.
+  int* zero_cu_buf = static_cast<int*>(compat::malloc((batch + 1) * sizeof(int)));
+  q->memset(zero_cu_buf, 0, (batch + 1) * sizeof(int));
+  options.cu_seqlens_kv_cache = zero_cu_buf;
+  options.use_tensor_strides = true;
+
+  KernelLauncher launcher = select_prefill_launcher(q_dtype, head_dim);
+  if (launcher == nullptr) {
+    throw std::runtime_error(
+        "Unsupported dtype or head dimension for sdpa_varlen_impl (only F16/BF16 and 64/96/128/192 are supported)");
+  }
+
+  launcher(options);
+
+  compat::free(zero_cu_buf);
+}
+
 }  // namespace ark
 
 #endif  // ARK_XPU && ARK_SYCL_TLA
