@@ -585,7 +585,7 @@ def compare_varlen_vs_batched_sdpa(device="xpu"):
     dff = (out_varlen - ref).abs()
     md = float(dff.max().item())
     mean_d = float(dff.mean().item())
-    print(f"\n=== Varlen vs Per-Batch Batched ARK SDPA ===")
+    print("\n=== Varlen vs Per-Batch Batched ARK SDPA ===")
     print(f"  max_diff = {md:.6f}, mean_diff = {mean_d:.8f}")
     if md > 0.5:
         print_top_diffs(dff, out_varlen, ref, topk=6, threshold=0.1)
@@ -633,7 +633,7 @@ def compare_varlen_vs_per_seq_torch(device="xpu"):
         scale=scale,
     )
     dff = (out_varlen - ref).abs()
-    print(f"\n=== Varlen vs Per-Sequence Torch SDPA ===")
+    print("\n=== Varlen vs Per-Sequence Torch SDPA ===")
     print(f"  max_diff = {dff.max().item():.6f}, mean_diff = {dff.mean().item():.8f}")
     print_top_diffs(dff, out_varlen, ref, topk=4, threshold=0.5)
     return float(dff.max().item()) < 5.0

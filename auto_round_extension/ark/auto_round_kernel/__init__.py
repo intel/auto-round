@@ -101,15 +101,11 @@ def get_stream(A: torch.Tensor) -> int:
 def _normalize_tensor_layout(tensor_layout: str) -> str:
     layout = tensor_layout.upper()
     if layout not in ("HND", "NHD"):
-        raise ValueError(
-            f"tensor_layout must be either 'HND' or 'NHD', got {tensor_layout!r}"
-        )
+        raise ValueError(f"tensor_layout must be either 'HND' or 'NHD', got {tensor_layout!r}")
     return layout
 
 
-def _attention_shape(
-    tensor: torch.Tensor, tensor_layout: str
-) -> tuple[int, int, int, int]:
+def _attention_shape(tensor: torch.Tensor, tensor_layout: str) -> tuple[int, int, int, int]:
     layout = _normalize_tensor_layout(tensor_layout)
     if layout == "HND":
         batch, num_heads, seq_len, head_dim = tensor.shape
@@ -118,9 +114,7 @@ def _attention_shape(
     return batch, num_heads, seq_len, head_dim
 
 
-def _attention_strides_qko(
-    tensor: torch.Tensor, tensor_layout: str
-) -> tuple[int, int, int, int]:
+def _attention_strides_qko(tensor: torch.Tensor, tensor_layout: str) -> tuple[int, int, int, int]:
     layout = _normalize_tensor_layout(tensor_layout)
     if layout == "HND":
         batch_stride, head_stride, seq_stride, dim_stride = tensor.stride()
@@ -129,9 +123,7 @@ def _attention_strides_qko(
     return seq_stride, dim_stride, head_stride, batch_stride
 
 
-def _attention_strides_v(
-    tensor: torch.Tensor, tensor_layout: str
-) -> tuple[int, int, int, int]:
+def _attention_strides_v(tensor: torch.Tensor, tensor_layout: str) -> tuple[int, int, int, int]:
     layout = _normalize_tensor_layout(tensor_layout)
     if layout == "HND":
         batch_stride, head_stride, seq_stride, dim_stride = tensor.stride()
@@ -140,9 +132,7 @@ def _attention_strides_v(
     return dim_stride, seq_stride, head_stride, batch_stride
 
 
-def _validate_canonical_strides(
-    tensor: torch.Tensor, name: str, tensor_layout: str
-) -> None:
+def _validate_canonical_strides(tensor: torch.Tensor, name: str, tensor_layout: str) -> None:
     """Verify that *batched* 4-D tensor strides match the canonical packed layout.
 
     C++ backends compute strides from layout + shape alone (no stride params),
@@ -182,13 +172,9 @@ def _validate_attention_tensor(
 
     qko_strides = _attention_strides_qko(tensor, tensor_layout)
     if qko_strides[1] != 1:
-        raise ValueError(
-            f"{name} must be contiguous along the head-dim axis; got stride {qko_strides[1]}"
-        )
+        raise ValueError(f"{name} must be contiguous along the head-dim axis; got stride {qko_strides[1]}")
     if any(stride <= 0 for stride in qko_strides):
-        raise ValueError(
-            f"{name} must have positive non-zero strides, got {tensor.stride()}"
-        )
+        raise ValueError(f"{name} must have positive non-zero strides, got {tensor.stride()}")
 
     return _attention_shape(tensor, tensor_layout)
 
@@ -204,11 +190,7 @@ def _empty_attention_output(
     tensor_layout: str,
 ) -> torch.Tensor:
     layout = _normalize_tensor_layout(tensor_layout)
-    shape = (
-        (batch, num_heads, seq_len, head_dim)
-        if layout == "HND"
-        else (batch, seq_len, num_heads, head_dim)
-    )
+    shape = (batch, num_heads, seq_len, head_dim) if layout == "HND" else (batch, seq_len, num_heads, head_dim)
     return torch.empty(shape, device=device, dtype=dtype)
 
 
@@ -305,9 +287,7 @@ def igemm_s8s8s32(A: torch.Tensor, B: torch.Tensor):
 
 # A: mxk:DT,  B: nxk:s8, scaleB: n:DT
 # return: mxn:DT
-def woqgemm_s8(
-    A: torch.Tensor, B: torch.Tensor, scaleB: torch.Tensor, bias: torch.Tensor
-):
+def woqgemm_s8(A: torch.Tensor, B: torch.Tensor, scaleB: torch.Tensor, bias: torch.Tensor):
     m = A.shape[0]
     n = B.shape[0]
     k = B.shape[1]
@@ -345,9 +325,7 @@ def woqgemm(
     scale_type,
     asym,
 ):
-    _validate_packed_blob(
-        B, n, k, groupsize, compute_type, weight_type, scale_type, asym
-    )
+    _validate_packed_blob(B, n, k, groupsize, compute_type, weight_type, scale_type, asym)
     m = A.shape[0]
     lib = get_lib(A)
     ct = cvtstr_dtype(compute_type)
@@ -430,13 +408,9 @@ def _validate_packed_blob(
     }
     valid_compute_types = valid_types | {"auto"}
     if compute_type not in valid_compute_types:
-        raise ValueError(
-            f"compute_type must be one of {valid_compute_types}, got {compute_type!r}"
-        )
+        raise ValueError(f"compute_type must be one of {valid_compute_types}, got {compute_type!r}")
     if weight_type not in valid_types:
-        raise ValueError(
-            f"weight_type must be one of {valid_types}, got {weight_type!r}"
-        )
+        raise ValueError(f"weight_type must be one of {valid_types}, got {weight_type!r}")
     if scale_type not in valid_types:
         raise ValueError(f"scale_type must be one of {valid_types}, got {scale_type!r}")
 
@@ -498,9 +472,7 @@ def _unpack_weight_core(
     scale_type,
     asym,
 ):
-    _validate_packed_blob(
-        blob, n, k, groupsize, compute_type, weight_type, scale_type, asym
-    )
+    _validate_packed_blob(blob, n, k, groupsize, compute_type, weight_type, scale_type, asym)
     lib = get_lib(blob)
     stream = get_stream(blob)
     ct = cvtstr_dtype(compute_type)
@@ -557,17 +529,11 @@ def sdpa(
     if query.dtype not in (torch.float16, torch.bfloat16):
         raise ValueError(f"Q must be float16 or bfloat16, got {query.dtype}")
     if key.dtype != query.dtype or value.dtype != query.dtype:
-        raise ValueError(
-            f"K/V dtype must match Q dtype, got K={key.dtype}, V={value.dtype}, Q={query.dtype}"
-        )
+        raise ValueError(f"K/V dtype must match Q dtype, got K={key.dtype}, V={value.dtype}, Q={query.dtype}")
 
     B, Hq, Sq, D = _validate_attention_tensor(query, "Q", tensor_layout)
-    Bk, Hkv, Skv, Dk = _validate_attention_tensor(
-        key, "K", tensor_layout, expected_dtype=query.dtype
-    )
-    Bv, Hkv2, Skv2, Dv = _validate_attention_tensor(
-        value, "V", tensor_layout, expected_dtype=query.dtype
-    )
+    Bk, Hkv, Skv, Dk = _validate_attention_tensor(key, "K", tensor_layout, expected_dtype=query.dtype)
+    Bv, Hkv2, Skv2, Dv = _validate_attention_tensor(value, "V", tensor_layout, expected_dtype=query.dtype)
 
     if Bk != B or Bv != B:
         raise ValueError("Batch size mismatch between Q/K/V")
@@ -579,9 +545,7 @@ def sdpa(
         raise ValueError(f"Unsupported head_dim={D}; supported: 64, 128, 96, 192")
 
     if dropout_p != 0.0:
-        raise NotImplementedError(
-            f"dropout_p must be 0.0 (got {dropout_p}); dropout is not supported"
-        )
+        raise NotImplementedError(f"dropout_p must be 0.0 (got {dropout_p}); dropout is not supported")
 
     if attn_mask is not None:
         if attn_mask.device.type != "xpu":
@@ -589,14 +553,10 @@ def sdpa(
         if not attn_mask.is_contiguous():
             raise ValueError("attn_mask must be contiguous")
         if attn_mask.dtype != torch.float32:
-            raise ValueError(
-                f"attn_mask must be float32 (additive bias), got {attn_mask.dtype}"
-            )
+            raise ValueError(f"attn_mask must be float32 (additive bias), got {attn_mask.dtype}")
         expected_mask_shape = (B, 1, Sq, Skv)
         if attn_mask.shape != expected_mask_shape:
-            raise ValueError(
-                f"attn_mask shape must be {expected_mask_shape}, got {tuple(attn_mask.shape)}"
-            )
+            raise ValueError(f"attn_mask shape must be {expected_mask_shape}, got {tuple(attn_mask.shape)}")
 
     lib = get_lib(query)
     stream = get_stream(query)
@@ -614,9 +574,7 @@ def sdpa(
         device=query.device,
         tensor_layout=tensor_layout,
     )
-    layout_code = (
-        LAYOUT_HND if _normalize_tensor_layout(tensor_layout) == "HND" else LAYOUT_NHD
-    )
+    layout_code = LAYOUT_HND if _normalize_tensor_layout(tensor_layout) == "HND" else LAYOUT_NHD
     lib.sdpa(
         stream,
         query.data_ptr(),
@@ -687,23 +645,15 @@ def sdpa_varlen(
     if query.dtype not in (torch.float16, torch.bfloat16):
         raise ValueError(f"Q must be float16 or bfloat16, got {query.dtype}")
     if key.dtype != query.dtype or value.dtype != query.dtype:
-        raise ValueError(
-            f"K/V dtype must match Q dtype, got K={key.dtype}, V={value.dtype}, Q={query.dtype}"
-        )
+        raise ValueError(f"K/V dtype must match Q dtype, got K={key.dtype}, V={value.dtype}, Q={query.dtype}")
 
     if query.ndim != 3 or key.ndim != 3 or value.ndim != 3:
-        raise ValueError(
-            f"Q/K/V must be 3-D for varlen; got Q={query.ndim}D, K={key.ndim}D, V={value.ndim}D"
-        )
+        raise ValueError(f"Q/K/V must be 3-D for varlen; got Q={query.ndim}D, K={key.ndim}D, V={value.ndim}D")
 
     if cu_seqlens_q.dtype not in (torch.int32, torch.int64):
-        raise ValueError(
-            f"cu_seqlens_q must be int32 or int64, got {cu_seqlens_q.dtype}"
-        )
+        raise ValueError(f"cu_seqlens_q must be int32 or int64, got {cu_seqlens_q.dtype}")
     if cu_seqlens_k.dtype not in (torch.int32, torch.int64):
-        raise ValueError(
-            f"cu_seqlens_k must be int32 or int64, got {cu_seqlens_k.dtype}"
-        )
+        raise ValueError(f"cu_seqlens_k must be int32 or int64, got {cu_seqlens_k.dtype}")
     if cu_seqlens_q.dim() != 1 or cu_seqlens_k.dim() != 1:
         raise ValueError("cu_seqlens_q and cu_seqlens_k must be 1-D")
     if cu_seqlens_q.device.type != "xpu" or cu_seqlens_k.device.type != "xpu":
@@ -711,26 +661,18 @@ def sdpa_varlen(
 
     batch = cu_seqlens_q.shape[0] - 1
     if cu_seqlens_k.shape[0] - 1 != batch:
-        raise ValueError(
-            "cu_seqlens_q and cu_seqlens_k must describe the same batch size"
-        )
+        raise ValueError("cu_seqlens_q and cu_seqlens_k must describe the same batch size")
 
     total_q, Hq, D = query.shape
     total_kv, Hkv, Dk = key.shape
     total_kv_v, Hkv2, Dv = value.shape
 
     if total_q != cu_seqlens_q[-1].item():
-        raise ValueError(
-            f"Q dim-0 ({total_q}) != cu_seqlens_q[-1] ({cu_seqlens_q[-1].item()})"
-        )
+        raise ValueError(f"Q dim-0 ({total_q}) != cu_seqlens_q[-1] ({cu_seqlens_q[-1].item()})")
     if total_kv != cu_seqlens_k[-1].item():
-        raise ValueError(
-            f"K dim-0 ({total_kv}) != cu_seqlens_k[-1] ({cu_seqlens_k[-1].item()})"
-        )
+        raise ValueError(f"K dim-0 ({total_kv}) != cu_seqlens_k[-1] ({cu_seqlens_k[-1].item()})")
     if total_kv_v != cu_seqlens_k[-1].item():
-        raise ValueError(
-            f"V dim-0 ({total_kv_v}) != cu_seqlens_k[-1] ({cu_seqlens_k[-1].item()})"
-        )
+        raise ValueError(f"V dim-0 ({total_kv_v}) != cu_seqlens_k[-1] ({cu_seqlens_k[-1].item()})")
     if Hkv != Hkv2 or Dk != Dv:
         raise ValueError("K/V shape mismatch")
     if Dk != D:
@@ -739,32 +681,22 @@ def sdpa_varlen(
         raise ValueError(f"Unsupported head_dim={D}; supported: 64, 128, 96, 192")
 
     if dropout_p != 0.0:
-        raise NotImplementedError(
-            f"dropout_p must be 0.0 (got {dropout_p}); dropout is not supported"
-        )
+        raise NotImplementedError(f"dropout_p must be 0.0 (got {dropout_p}); dropout is not supported")
 
     if attn_mask is not None:
         raise NotImplementedError("attn_mask is not yet supported in sdpa_varlen")
 
     if Hq % Hkv != 0:
-        raise ValueError(
-            f"num_heads_q ({Hq}) must be divisible by num_heads_kv ({Hkv})"
-        )
+        raise ValueError(f"num_heads_q ({Hq}) must be divisible by num_heads_kv ({Hkv})")
 
     # Validate strides: the dim axis must be contiguous.
     # Flat layout [total, H, D]: dim-stride (stride(2)) must be 1.
     if query.stride(2) != 1:
-        raise ValueError(
-            f"Q must be contiguous along head-dim axis; got stride {query.stride()}"
-        )
+        raise ValueError(f"Q must be contiguous along head-dim axis; got stride {query.stride()}")
     if key.stride(2) != 1:
-        raise ValueError(
-            f"K must be contiguous along head-dim axis; got stride {key.stride()}"
-        )
+        raise ValueError(f"K must be contiguous along head-dim axis; got stride {key.stride()}")
     if value.stride(2) != 1:
-        raise ValueError(
-            f"V must be contiguous along head-dim axis; got stride {value.stride()}"
-        )
+        raise ValueError(f"V must be contiguous along head-dim axis; got stride {value.stride()}")
 
     layout = _normalize_tensor_layout(tensor_layout)
     layout_code = LAYOUT_HND if layout == "HND" else LAYOUT_NHD
@@ -868,9 +800,7 @@ def sage(
         device=query.device,
         tensor_layout=tensor_layout,
     )
-    layout_code = (
-        LAYOUT_HND if _normalize_tensor_layout(tensor_layout) == "HND" else LAYOUT_NHD
-    )
+    layout_code = LAYOUT_HND if _normalize_tensor_layout(tensor_layout) == "HND" else LAYOUT_NHD
     lib.sage(
         stream,
         query.data_ptr(),
@@ -928,14 +858,8 @@ def sage_pvi8(
     """
     if query.device.type != "xpu":
         raise NotImplementedError("sage_pvi8 is only supported on XPU")
-    if (
-        query.dtype != torch.int8
-        or key.dtype != torch.int8
-        or value.dtype != torch.int8
-    ):
-        raise ValueError(
-            f"Q/K/V must be int8, got Q={query.dtype}, K={key.dtype}, V={value.dtype}"
-        )
+    if query.dtype != torch.int8 or key.dtype != torch.int8 or value.dtype != torch.int8:
+        raise ValueError(f"Q/K/V must be int8, got Q={query.dtype}, K={key.dtype}, V={value.dtype}")
     if out_dtype != torch.float16:
         raise ValueError(f"sage_pvi8 output must be float16, got {out_dtype}")
     if qscale is None or kscale is None or vscale is None:
@@ -985,9 +909,7 @@ def sage_pvi8(
         device=query.device,
         tensor_layout=tensor_layout,
     )
-    layout_code = (
-        LAYOUT_HND if _normalize_tensor_layout(tensor_layout) == "HND" else LAYOUT_NHD
-    )
+    layout_code = LAYOUT_HND if _normalize_tensor_layout(tensor_layout) == "HND" else LAYOUT_NHD
     lib.sage_pvi8(
         stream,
         query.data_ptr(),
@@ -1057,17 +979,11 @@ def sagev1(
     if query.dtype not in (torch.float16, torch.bfloat16):
         raise ValueError(f"Q must be float16 or bfloat16, got {query.dtype}")
     if key.dtype != query.dtype or value.dtype != query.dtype:
-        raise ValueError(
-            f"K/V dtype must match Q dtype, got K={key.dtype}, V={value.dtype}, Q={query.dtype}"
-        )
+        raise ValueError(f"K/V dtype must match Q dtype, got K={key.dtype}, V={value.dtype}, Q={query.dtype}")
 
     B, Hq, Sq, D = _validate_attention_tensor(query, "Q", tensor_layout)
-    Bk, Hkv, Skv, Dk = _validate_attention_tensor(
-        key, "K", tensor_layout, expected_dtype=query.dtype
-    )
-    Bv, Hkv2, Skv2, Dv = _validate_attention_tensor(
-        value, "V", tensor_layout, expected_dtype=query.dtype
-    )
+    Bk, Hkv, Skv, Dk = _validate_attention_tensor(key, "K", tensor_layout, expected_dtype=query.dtype)
+    Bv, Hkv2, Skv2, Dv = _validate_attention_tensor(value, "V", tensor_layout, expected_dtype=query.dtype)
 
     if Bk != B or Bv != B:
         raise ValueError("Batch size mismatch between Q/K/V")
@@ -1094,9 +1010,7 @@ def sagev1(
         device=query.device,
         tensor_layout=tensor_layout,
     )
-    layout_code = (
-        LAYOUT_HND if _normalize_tensor_layout(tensor_layout) == "HND" else LAYOUT_NHD
-    )
+    layout_code = LAYOUT_HND if _normalize_tensor_layout(tensor_layout) == "HND" else LAYOUT_NHD
     lib.sagev1(
         stream,
         query.data_ptr(),
@@ -1155,17 +1069,11 @@ def sagev1_pvi8(
     if query.dtype not in (torch.float16, torch.bfloat16):
         raise ValueError(f"Q must be float16 or bfloat16, got {query.dtype}")
     if key.dtype != query.dtype or value.dtype != query.dtype:
-        raise ValueError(
-            f"K/V dtype must match Q dtype, got K={key.dtype}, V={value.dtype}, Q={query.dtype}"
-        )
+        raise ValueError(f"K/V dtype must match Q dtype, got K={key.dtype}, V={value.dtype}, Q={query.dtype}")
 
     B, Hq, Sq, D = _validate_attention_tensor(query, "Q", tensor_layout)
-    Bk, Hkv, Skv, Dk = _validate_attention_tensor(
-        key, "K", tensor_layout, expected_dtype=query.dtype
-    )
-    Bv, Hkv2, Skv2, Dv = _validate_attention_tensor(
-        value, "V", tensor_layout, expected_dtype=query.dtype
-    )
+    Bk, Hkv, Skv, Dk = _validate_attention_tensor(key, "K", tensor_layout, expected_dtype=query.dtype)
+    Bv, Hkv2, Skv2, Dv = _validate_attention_tensor(value, "V", tensor_layout, expected_dtype=query.dtype)
 
     if Bk != B or Bv != B:
         raise ValueError("Batch size mismatch between Q/K/V")
@@ -1192,9 +1100,7 @@ def sagev1_pvi8(
         device=query.device,
         tensor_layout=tensor_layout,
     )
-    layout_code = (
-        LAYOUT_HND if _normalize_tensor_layout(tensor_layout) == "HND" else LAYOUT_NHD
-    )
+    layout_code = LAYOUT_HND if _normalize_tensor_layout(tensor_layout) == "HND" else LAYOUT_NHD
     lib.sagev1_pvi8(
         stream,
         query.data_ptr(),
@@ -1258,9 +1164,7 @@ def sageattn(
     elif kernel == "v1_pvi8":
         impl = sagev1_pvi8
     else:
-        raise ValueError(
-            f"Unsupported sageattn kernel={kernel!r}; supported: 'v1_pvhalf', 'v1_pvi8'"
-        )
+        raise ValueError(f"Unsupported sageattn kernel={kernel!r}; supported: 'v1_pvhalf', 'v1_pvi8'")
 
     return impl(
         query=q,
@@ -1321,18 +1225,12 @@ def sageattn_varlen(
         raise ValueError(f"Q must be float16 or bfloat16, got {q.dtype}")
 
     if q.ndim != 3 or k.ndim != 3 or v.ndim != 3:
-        raise ValueError(
-            f"Q/K/V must be 3-D for varlen; got Q={q.ndim}D, K={k.ndim}D, V={v.ndim}D"
-        )
+        raise ValueError(f"Q/K/V must be 3-D for varlen; got Q={q.ndim}D, K={k.ndim}D, V={v.ndim}D")
 
     if cu_seqlens_q.dtype not in (torch.int32, torch.int64):
-        raise ValueError(
-            f"cu_seqlens_q must be int32 or int64, got {cu_seqlens_q.dtype}"
-        )
+        raise ValueError(f"cu_seqlens_q must be int32 or int64, got {cu_seqlens_q.dtype}")
     if cu_seqlens_k.dtype not in (torch.int32, torch.int64):
-        raise ValueError(
-            f"cu_seqlens_k must be int32 or int64, got {cu_seqlens_k.dtype}"
-        )
+        raise ValueError(f"cu_seqlens_k must be int32 or int64, got {cu_seqlens_k.dtype}")
     if cu_seqlens_q.dim() != 1 or cu_seqlens_k.dim() != 1:
         raise ValueError("cu_seqlens_q and cu_seqlens_k must be 1-D")
     if cu_seqlens_q.device.type != "xpu" or cu_seqlens_k.device.type != "xpu":
@@ -1340,26 +1238,18 @@ def sageattn_varlen(
 
     batch = cu_seqlens_q.shape[0] - 1
     if cu_seqlens_k.shape[0] - 1 != batch:
-        raise ValueError(
-            "cu_seqlens_q and cu_seqlens_k must describe the same batch size"
-        )
+        raise ValueError("cu_seqlens_q and cu_seqlens_k must describe the same batch size")
 
     total_q, Hq, D = q.shape
     total_kv, Hkv, Dk = k.shape
     total_kv_v, Hkv2, Dv = v.shape
 
     if total_q != cu_seqlens_q[-1].item():
-        raise ValueError(
-            f"Q dim-0 ({total_q}) != cu_seqlens_q[-1] ({cu_seqlens_q[-1].item()})"
-        )
+        raise ValueError(f"Q dim-0 ({total_q}) != cu_seqlens_q[-1] ({cu_seqlens_q[-1].item()})")
     if total_kv != cu_seqlens_k[-1].item():
-        raise ValueError(
-            f"K dim-0 ({total_kv}) != cu_seqlens_k[-1] ({cu_seqlens_k[-1].item()})"
-        )
+        raise ValueError(f"K dim-0 ({total_kv}) != cu_seqlens_k[-1] ({cu_seqlens_k[-1].item()})")
     if total_kv_v != cu_seqlens_k[-1].item():
-        raise ValueError(
-            f"V dim-0 ({total_kv_v}) != cu_seqlens_k[-1] ({cu_seqlens_k[-1].item()})"
-        )
+        raise ValueError(f"V dim-0 ({total_kv_v}) != cu_seqlens_k[-1] ({cu_seqlens_k[-1].item()})")
     if Hkv != Hkv2 or Dk != Dv:
         raise ValueError("K/V shape mismatch")
     if Dk != D:
@@ -1368,9 +1258,7 @@ def sageattn_varlen(
         raise ValueError(f"Unsupported head_dim={D}; only 64, 128 supported for SAGE")
 
     if kernel not in ("v1_pvhalf", "v1_pvi8"):
-        raise ValueError(
-            f"Unsupported kernel={kernel!r}; supported: 'v1_pvhalf', 'v1_pvi8'"
-        )
+        raise ValueError(f"Unsupported kernel={kernel!r}; supported: 'v1_pvhalf', 'v1_pvi8'")
 
     if quant_block_size <= 0:
         quant_block_size = 1
@@ -1379,17 +1267,11 @@ def sageattn_varlen(
 
     # Validate contiguous along head-dim
     if q.stride(2) != 1:
-        raise ValueError(
-            f"Q must be contiguous along head-dim axis; got stride {q.stride()}"
-        )
+        raise ValueError(f"Q must be contiguous along head-dim axis; got stride {q.stride()}")
     if k.stride(2) != 1:
-        raise ValueError(
-            f"K must be contiguous along head-dim axis; got stride {k.stride()}"
-        )
+        raise ValueError(f"K must be contiguous along head-dim axis; got stride {k.stride()}")
     if v.stride(2) != 1:
-        raise ValueError(
-            f"V must be contiguous along head-dim axis; got stride {v.stride()}"
-        )
+        raise ValueError(f"V must be contiguous along head-dim axis; got stride {v.stride()}")
 
     lib = get_lib(q)
     stream = get_stream(q)
@@ -1581,9 +1463,7 @@ def moe_gemm(
         raise ValueError("weights dtype must match activations dtype")
 
     if activations.ndim != 2 or weights.ndim != 3:
-        raise ValueError(
-            "activations must be 2D [total_tokens, K], weights must be 3D [num_experts, K, N]"
-        )
+        raise ValueError("activations must be 2D [total_tokens, K], weights must be 3D [num_experts, K, N]")
 
     if not activations.is_contiguous() or not weights.is_contiguous():
         raise ValueError("activations and weights must be contiguous")
@@ -1601,22 +1481,16 @@ def moe_gemm(
         raise ValueError(f"K dimension mismatch: activations K={K}, weights K={K_w}")
 
     if num_tokens_per_expert.shape[0] != num_experts:
-        raise ValueError(
-            f"num_tokens_per_expert length {num_tokens_per_expert.shape[0]} != num_experts {num_experts}"
-        )
+        raise ValueError(f"num_tokens_per_expert length {num_tokens_per_expert.shape[0]} != num_experts {num_experts}")
 
     # Validate total tokens
     expected_total = int(num_tokens_per_expert.sum().item())
     if expected_total != total_tokens:
-        raise ValueError(
-            f"Sum of num_tokens_per_expert ({expected_total}) != total_tokens ({total_tokens})"
-        )
+        raise ValueError(f"Sum of num_tokens_per_expert ({expected_total}) != total_tokens ({total_tokens})")
 
     lib = get_lib(activations)
     stream = get_stream(activations)
-    outputs = torch.empty(
-        (total_tokens, N), device=activations.device, dtype=activations.dtype
-    )
+    outputs = torch.empty((total_tokens, N), device=activations.device, dtype=activations.dtype)
 
     scales_ptr = scales.data_ptr() if scales is not None else 0
 
@@ -1696,19 +1570,14 @@ def repack_quantized_weight(*args, **kwargs):
         else:
             weight_type, compute_type = a4, a5
     else:
-        raise TypeError(
-            "repack_quantized_weight() expects 8 or 9 positional arguments; "
-            f"got {len(args)}"
-        )
+        raise TypeError("repack_quantized_weight() expects 8 or 9 positional arguments; " f"got {len(args)}")
 
     # Some native paths may still expect a valid zp pointer even when asym=False.
     if (zp is None) or (isinstance(zp, torch.Tensor) and zp.numel() == 0):
         if not bool(asym):
             k = QB.shape[0]
             n = QB.shape[1]
-            zp = torch.zeros(
-                (k // int(groupsize), n), dtype=torch.int8, device=QB.device
-            )
+            zp = torch.zeros((k // int(groupsize), n), dtype=torch.int8, device=QB.device)
         else:
             zp = torch.empty(0, dtype=torch.int8, device=QB.device)
 
@@ -1735,14 +1604,10 @@ def unpack_weight(
     scale_type,
     asym,
 ):
-    return _unpack_weight_core(
-        blob, out_dtype, n, k, groupsize, compute_type, weight_type, scale_type, asym
-    )
+    return _unpack_weight_core(blob, out_dtype, n, k, groupsize, compute_type, weight_type, scale_type, asym)
 
 
-def packed_weight_size(
-    A: torch.Tensor, n, k, groupsize, compute_type, weight_type, scale_type, asym
-):
+def packed_weight_size(A: torch.Tensor, n, k, groupsize, compute_type, weight_type, scale_type, asym):
     # Keep signature convenient for Python callers; native library needs a stream.
     lib = get_lib(A)
     stream = get_stream(A)
@@ -1800,11 +1665,7 @@ if __name__ == "__main__":
         else:
             A = torch.rand(m, k, dtype=dt, device=device) - 0.5
             B = torch.rand(k, n, dtype=dt, device=device) - 0.5
-            bias = (
-                torch.rand(1, n, dtype=dt, device=device)
-                if has_bias
-                else torch.empty(0)
-            )
+            bias = torch.rand(1, n, dtype=dt, device=device) if has_bias else torch.empty(0)
             C = matmul(A, B, bias)
         ref = torch.matmul(A, B.T)
         if has_bias:
@@ -1838,9 +1699,7 @@ if __name__ == "__main__":
         B = torch.randint(-8, 7, (k, n), dtype=torch.int8, device=device)
         zp = torch.randint(-8, 7, (k // groupsize, n), dtype=torch.int8, device=device)
         scaleB = torch.rand(k // groupsize, n, dtype=dt, device=device) / 100
-        blob = repack_quantized_weight(
-            B, scaleB, zp, groupsize, "fp32", "int4", "fp32", False
-        )
+        blob = repack_quantized_weight(B, scaleB, zp, groupsize, "fp32", "int4", "fp32", False)
         dq = unpack_weight(blob, dt, n, k, groupsize, "fp32", "int4", "fp32", False)
         print(blob, dq)
         scale_re = scaleB.repeat_interleave(repeats=groupsize, dim=0).to(dt)
