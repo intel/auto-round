@@ -1,5 +1,6 @@
 import pytest
 
+from auto_round.cli.parser import build_quantize_parser
 from auto_round.estimation import (
     _format_bytes,
     _format_time,
@@ -10,7 +11,6 @@ from auto_round.estimation import (
     estimate_parameter_count,
     estimate_time,
 )
-from auto_round.cli.parser import build_quantize_parser
 
 
 class FakeConfig:
