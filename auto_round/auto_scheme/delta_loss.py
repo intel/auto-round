@@ -1084,12 +1084,21 @@ def choose_bits_per_layer_with_path(layers: dict, P: int, max_states: int = None
         (layer_names, scheme) for each layer, or (None, None) if no feasible
         solution exists.
     """
-    # dp: total_params -> (accumulated_loss, chosen_path)
-    # The path explicitly stores the selected options.
-    dp: dict[int, tuple[float, list]] = {0: (0.0, [])}
+    # dp: total_params -> (accumulated_loss, path_tail)
+    # ``path_tail`` is an immutable back-pointer cons cell
+    # ``(layer_names, scheme, prev_tail)`` (or ``None`` for the empty path)
+    # representing the chosen path in reverse layer order. Appending a layer is
+    # therefore an O(1) tuple allocation that *shares* the unchanged prefix with
+    # every sibling state, instead of the previous ``cur_path + [(...)]`` which
+    # copied the whole O(L) path on every transition. That copy made the DP
+    # O(L^2 * S) in both time and live path memory for L layers and S surviving
+    # Pareto states; the back-pointer form is O(L * S) work with structural
+    # sharing, and the full path is reconstructed once at the end in O(L). The
+    # selected loss and path are identical to the previous implementation.
+    dp: dict[int, tuple[float, tuple | None]] = {0: (0.0, None)}
     for layer_name, opts in layers.items():
-        new_dp: dict[int, tuple[float, list]] = {}
-        for cur_params, (cur_loss, cur_path) in dp.items():
+        new_dp: dict[int, tuple[float, tuple | None]] = {}
+        for cur_params, (cur_loss, cur_tail) in dp.items():
             for opt in opts:
                 scheme, bits_cost, loss_cost, layer_names = opt
                 np_total = cur_params + bits_cost
@@ -1097,28 +1106,27 @@ def choose_bits_per_layer_with_path(layers: dict, P: int, max_states: int = None
                     continue
 
                 new_loss = cur_loss + loss_cost
-                new_path = cur_path + [(layer_names, scheme)]
 
                 # Keep the path with smaller loss for the same parameter budget
                 if np_total not in new_dp or new_loss < new_dp[np_total][0]:
-                    new_dp[np_total] = (new_loss, new_path)
+                    new_dp[np_total] = (new_loss, (layer_names, scheme, cur_tail))
 
         if not new_dp:
             return None, None
         # Pareto pruning: remove dominated (params, loss) states
-        items = sorted(new_dp.items(), key=lambda x: x[0])  # (params, (loss, path))
-        pruned: dict[int, tuple[float, list]] = {}
+        items = sorted(new_dp.items(), key=lambda x: x[0])  # (params, (loss, tail))
+        pruned: dict[int, tuple[float, tuple | None]] = {}
         best_loss_so_far = float("inf")
-        for params_val, (loss_val, path_val) in items:
+        for params_val, (loss_val, tail_val) in items:
             if loss_val < best_loss_so_far:
-                pruned[params_val] = (loss_val, path_val)
+                pruned[params_val] = (loss_val, tail_val)
                 best_loss_so_far = loss_val
 
         # Beam width limit: if too many states survive Pareto pruning,
         # uniformly subsample to bound memory usage.  For models with many
         # layers whose sizes are incommensurate, the number of distinct
-        # cumulative-bit sums can grow to millions, each storing a full
-        # path copy — easily exceeding 70 GB of RAM.
+        # cumulative-bit sums can grow to millions, each carrying a back-pointer
+        # chain — keeping all of them can exceed 70 GB of RAM.
         if max_states is not None and len(pruned) > max_states:
             if max_states <= 1:
                 best_k = min(pruned.keys(), key=lambda k: pruned[k][0])
@@ -1128,7 +1136,7 @@ def choose_bits_per_layer_with_path(layers: dict, P: int, max_states: int = None
                 n = len(sorted_keys)
                 # Uniformly pick max_states indices (always include first and last)
                 step = (n - 1) / (max_states - 1)
-                selected: dict[int, tuple[float, list]] = {}
+                selected: dict[int, tuple[float, tuple | None]] = {}
                 for i in range(max_states):
                     idx = int(round(i * step))
                     k = sorted_keys[idx]
@@ -1139,7 +1147,17 @@ def choose_bits_per_layer_with_path(layers: dict, P: int, max_states: int = None
 
     # Select the solution with the minimum loss
     best_params = min(dp.keys(), key=lambda k: dp[k][0])
-    best_loss, best_path = dp[best_params]
+    best_loss, best_tail = dp[best_params]
+
+    # Reconstruct the path by walking the back-pointer chain (reverse layer
+    # order) and flipping it back to forward layer order.
+    best_path: list = []
+    node = best_tail
+    while node is not None:
+        layer_names, scheme, prev_tail = node
+        best_path.append((layer_names, scheme))
+        node = prev_tail
+    best_path.reverse()
     return best_loss, best_path
 
 
