@@ -18,7 +18,7 @@ from typing import Callable, Union
 
 import torch
 
-from auto_round.export.utils import is_immediate_saving_mode, save_model
+from auto_round.export.utils import is_immediate_saving_mode, save_model, save_pretrained_artifact
 from auto_round.logger import logger
 from auto_round.utils import (
     SUPPORTED_LAYER_TYPES,
@@ -209,8 +209,7 @@ def save_quantized_as_llmcompressor(
         model = copy.deepcopy(model.to("cpu"))
 
     # save tokenizer, processor
-    if output_dir is not None and tokenizer is not None and hasattr(tokenizer, "save_pretrained"):
-        tokenizer.save_pretrained(output_dir)
+    save_pretrained_artifact(tokenizer, output_dir, artifact_name="tokenizer")
     if output_dir is not None and processor is not None:
         processor.save_pretrained(output_dir)
 
