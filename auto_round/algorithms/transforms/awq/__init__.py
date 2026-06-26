@@ -13,6 +13,6 @@
 # limitations under the License.
 
 from auto_round.algorithms.transforms.awq.config import AWQConfig
-from auto_round.algorithms.transforms.awq.quantizer import AWQQuantizer
+from auto_round.algorithms.transforms.awq.base import AWQTransform
 
-__all__ = ["AWQConfig", "AWQQuantizer"]
+__all__ = ["AWQConfig", "AWQTransform"]
