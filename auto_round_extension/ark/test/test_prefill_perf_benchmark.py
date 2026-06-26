@@ -13,6 +13,21 @@ hard-wired MiniMax-M2-style prefill distribution:
 
 All routing, padding, token-count tensors, and hot-expert metadata are prepared
 outside the timed region. The reported time is therefore kernel/wrapper-only.
+
+The script supports two API modes:
+
+* ``wrapper`` calls the public Python ARK APIs. Its results include wrapper-side
+  validation/normalization work such as shape checks, token-count consistency
+  checks, and output/workspace allocation.
+* ``raw`` calls ``ark.xpu_lib`` directly with preallocated buffers. This does
+  not reimplement the kernel math; it bypasses the Python wrapper so the result
+  more closely reflects the underlying kernel plus launch/runtime cost.
+
+Use ``raw`` when comparing baseline vs. hybrid as execution strategies and when
+you want to minimize machine-specific wrapper overhead (for example,
+``num_tokens.sum().item()`` scalar-sync cost). Treat ``raw`` results as
+kernel/runtime-facing measurements, and ``wrapper`` results as end-to-end public
+API measurements.
 """
 
 from __future__ import annotations
@@ -352,6 +367,8 @@ class BaselinePlan:
     weight_slices: List[torch.Tensor | None]
     scale_slices: List[torch.Tensor | None] | None = None
     zero_slices: List[torch.Tensor | None] | None = None
+    raw_outputs: List[torch.Tensor | None] | None = None
+    raw_workspaces: List[torch.Tensor | None] | None = None
 
 
 @dataclass(frozen=True)
@@ -366,6 +383,10 @@ class HybridPlan:
     full_zeros: torch.Tensor | None = None
     remainder_scales: List[torch.Tensor | None] | None = None
     remainder_zeros: List[torch.Tensor | None] | None = None
+    raw_full_output: torch.Tensor | None = None
+    raw_full_workspace: torch.Tensor | None = None
+    raw_remainder_outputs: List[torch.Tensor] | None = None
+    raw_remainder_workspaces: List[torch.Tensor | None] | None = None
 
 
 def _expert_offsets(counts: List[int]) -> List[int]:
@@ -453,6 +474,26 @@ def _call_fp(activations: torch.Tensor, weights: torch.Tensor, num_tokens: torch
     ark.moe_gemm(activations, weights, num_tokens)
 
 
+def _call_fp_raw(
+    activations: torch.Tensor,
+    weights: torch.Tensor,
+    num_tokens: torch.Tensor,
+    output: torch.Tensor,
+) -> None:
+    ark.xpu_lib.moe_gemm(
+        ark.get_stream(activations),
+        activations.data_ptr(),
+        weights.data_ptr(),
+        0,
+        output.data_ptr(),
+        ark.cvt_dtype(activations.dtype),
+        N,
+        K,
+        num_tokens.data_ptr(),
+        weights.shape[0],
+    )
+
+
 def _call_quant(
     activations: torch.Tensor,
     weights: torch.Tensor,
@@ -468,12 +509,58 @@ def _call_quant(
     ark.moe_gemm_prefill(activations, weights, num_tokens, **kwargs)
 
 
+def _quant_weight_dtype(weights: torch.Tensor, weight_bits: int | None) -> int:
+    if weights.dtype == torch.float8_e4m3fn:
+        return ark.ARK_DT.float8_e4m3
+    if weights.dtype == torch.float8_e5m2:
+        return ark.ARK_DT.float8_e5m2
+    if weight_bits == 8:
+        return ark.ARK_DT.int8
+    if weight_bits == 4:
+        return ark.ARK_DT.int4
+    if weight_bits == 2:
+        return ark.ARK_DT.int2
+    raise ValueError(f"Unsupported raw quant weight dtype: weights={weights.dtype}, weight_bits={weight_bits}")
+
+
+def _call_quant_raw(
+    activations: torch.Tensor,
+    weights: torch.Tensor,
+    num_tokens: torch.Tensor,
+    scales: torch.Tensor | None,
+    zeros: torch.Tensor | None,
+    weight_bits: int | None,
+    asym: bool,
+    output: torch.Tensor,
+    workspace: torch.Tensor,
+) -> None:
+    ark.xpu_lib.moe_gemm_prefill(
+        ark.get_stream(activations),
+        activations.data_ptr(),
+        weights.data_ptr(),
+        scales.data_ptr() if scales is not None else 0,
+        zeros.data_ptr() if zeros is not None else 0,
+        output.data_ptr(),
+        workspace.data_ptr(),
+        ark.cvt_dtype(activations.dtype),
+        _quant_weight_dtype(weights, weight_bits),
+        N,
+        K,
+        GROUP_SIZE,
+        num_tokens.data_ptr(),
+        weights.shape[0],
+        activations.shape[0],
+        asym,
+    )
+
+
 def _build_baseline_plan(
     activations: torch.Tensor,
     weights: torch.Tensor,
     counts: List[int],
     scales: torch.Tensor | None = None,
     zeros: torch.Tensor | None = None,
+    raw: bool = False,
 ) -> BaselinePlan:
     offsets = _expert_offsets(counts)
     num_tokens = []
@@ -481,6 +568,17 @@ def _build_baseline_plan(
     weight_slices = []
     scale_slices = [] if scales is not None else None
     zero_slices = [] if zeros is not None else None
+    raw_outputs = [] if raw else None
+    raw_workspaces = [] if raw and scales is not None else None
+    max_count = max(counts) if counts else 0
+    shared_raw_output = (
+        torch.empty((max_count, N), dtype=activations.dtype, device="xpu") if raw and max_count > 0 else None
+    )
+    shared_raw_workspace = (
+        torch.empty((1, K, N), dtype=activations.dtype, device="xpu")
+        if raw and scales is not None and max_count > 0
+        else None
+    )
 
     for expert, count in enumerate(counts):
         if count == 0:
@@ -491,6 +589,10 @@ def _build_baseline_plan(
                 scale_slices.append(None)
             if zero_slices is not None:
                 zero_slices.append(None)
+            if raw_outputs is not None:
+                raw_outputs.append(None)
+            if raw_workspaces is not None:
+                raw_workspaces.append(None)
             continue
 
         offset = offsets[expert]
@@ -500,7 +602,11 @@ def _build_baseline_plan(
         if scale_slices is not None:
             scale_slices.append(scales[expert : expert + 1])
         if zero_slices is not None:
-            zero_slices.append(zeros[expert : expert + 1])
+            zero_slices.append(zeros[expert: expert + 1])
+        if raw_outputs is not None:
+            raw_outputs.append(shared_raw_output)
+        if raw_workspaces is not None:
+            raw_workspaces.append(shared_raw_workspace)
 
     return BaselinePlan(
         activations=activations,
@@ -510,6 +616,8 @@ def _build_baseline_plan(
         weight_slices=weight_slices,
         scale_slices=scale_slices,
         zero_slices=zero_slices,
+        raw_outputs=raw_outputs,
+        raw_workspaces=raw_workspaces,
     )
 
 
@@ -520,6 +628,7 @@ def _build_hybrid_plan(
     threshold: int,
     scales: torch.Tensor | None = None,
     zeros: torch.Tensor | None = None,
+    raw: bool = False,
 ) -> HybridPlan:
     offsets = _expert_offsets(counts)
     effective_threshold = min(threshold, max(counts))
@@ -530,6 +639,17 @@ def _build_hybrid_plan(
     remainder_num_tokens = []
     remainder_scales = [] if scales is not None else None
     remainder_zeros = [] if zeros is not None else None
+    raw_remainder_outputs = [] if raw else None
+    raw_remainder_workspaces = [] if raw and scales is not None else None
+    max_remainder = max(max(count - effective_threshold, 0) for count in counts) if counts else 0
+    shared_remainder_output = (
+        torch.empty((max_remainder, N), dtype=activations.dtype, device="xpu") if raw and max_remainder > 0 else None
+    )
+    shared_remainder_workspace = (
+        torch.empty((1, K, N), dtype=activations.dtype, device="xpu")
+        if raw and scales is not None and max_remainder > 0
+        else None
+    )
 
     for expert, count in enumerate(counts):
         if count > 0:
@@ -547,7 +667,18 @@ def _build_hybrid_plan(
             if remainder_scales is not None:
                 remainder_scales.append(scales[expert : expert + 1])
             if remainder_zeros is not None:
-                remainder_zeros.append(zeros[expert : expert + 1])
+                remainder_zeros.append(zeros[expert: expert + 1])
+            if raw_remainder_outputs is not None:
+                raw_remainder_outputs.append(shared_remainder_output)
+            if raw_remainder_workspaces is not None:
+                raw_remainder_workspaces.append(shared_remainder_workspace)
+
+    raw_full_output = None
+    raw_full_workspace = None
+    if raw:
+        raw_full_output = torch.empty((padded_activations.shape[0], N), dtype=activations.dtype, device="xpu")
+        if scales is not None:
+            raw_full_workspace = torch.empty((weights.shape[0], K, N), dtype=activations.dtype, device="xpu")
 
     return HybridPlan(
         padded_activations=padded_activations,
@@ -560,62 +691,121 @@ def _build_hybrid_plan(
         remainder_num_tokens=remainder_num_tokens,
         remainder_scales=remainder_scales,
         remainder_zeros=remainder_zeros,
+        raw_full_output=raw_full_output,
+        raw_full_workspace=raw_full_workspace,
+        raw_remainder_outputs=raw_remainder_outputs,
+        raw_remainder_workspaces=raw_remainder_workspaces,
     )
 
 
-def _run_baseline_fp(plan: BaselinePlan) -> None:
-    for activations, weights, num_tokens in zip(plan.activation_slices, plan.weight_slices, plan.num_tokens):
-        if num_tokens is not None:
+def _run_baseline_fp(plan: BaselinePlan, api: str) -> None:
+    for expert, num_tokens in enumerate(plan.num_tokens):
+        if num_tokens is None:
+            continue
+        activations = plan.activation_slices[expert]
+        weights = plan.weight_slices[expert]
+        if api == "raw":
+            _call_fp_raw(activations, weights, num_tokens, plan.raw_outputs[expert])
+        else:
             _call_fp(activations, weights, num_tokens)
 
 
-def _run_baseline_quant(plan: BaselinePlan, weight_bits: int | None, asym: bool) -> None:
+def _run_baseline_quant(plan: BaselinePlan, weight_bits: int | None, asym: bool, api: str) -> None:
     for expert, num_tokens in enumerate(plan.num_tokens):
         if num_tokens is None:
             continue
         scales = plan.scale_slices[expert] if plan.scale_slices is not None else None
         zeros = plan.zero_slices[expert] if plan.zero_slices is not None else None
+        if api == "raw":
+            _call_quant_raw(
+                plan.activation_slices[expert],
+                plan.weight_slices[expert],
+                num_tokens,
+                scales,
+                zeros,
+                weight_bits,
+                asym,
+                plan.raw_outputs[expert],
+                plan.raw_workspaces[expert],
+            )
+        else:
+            _call_quant(
+                plan.activation_slices[expert],
+                plan.weight_slices[expert],
+                num_tokens,
+                scales,
+                zeros,
+                weight_bits,
+                asym,
+            )
+
+
+def _run_hybrid_fp(plan: HybridPlan, api: str) -> None:
+    if api == "raw":
+        _call_fp_raw(plan.padded_activations, plan.full_weights, plan.all_num_tokens, plan.raw_full_output)
+        for idx, num_tokens in enumerate(plan.remainder_num_tokens):
+            _call_fp_raw(
+                plan.remainder_activations[idx],
+                plan.remainder_weights[idx],
+                num_tokens,
+                plan.raw_remainder_outputs[idx],
+            )
+    else:
+        _call_fp(plan.padded_activations, plan.full_weights, plan.all_num_tokens)
+        for activations, weights, num_tokens in zip(
+            plan.remainder_activations, plan.remainder_weights, plan.remainder_num_tokens
+        ):
+            _call_fp(activations, weights, num_tokens)
+
+
+def _run_hybrid_quant(plan: HybridPlan, weight_bits: int | None, asym: bool, api: str) -> None:
+    if api == "raw":
+        _call_quant_raw(
+            plan.padded_activations,
+            plan.full_weights,
+            plan.all_num_tokens,
+            plan.full_scales,
+            plan.full_zeros,
+            weight_bits,
+            asym,
+            plan.raw_full_output,
+            plan.raw_full_workspace,
+        )
+    else:
         _call_quant(
-            plan.activation_slices[expert],
-            plan.weight_slices[expert],
-            num_tokens,
-            scales,
-            zeros,
+            plan.padded_activations,
+            plan.full_weights,
+            plan.all_num_tokens,
+            plan.full_scales,
+            plan.full_zeros,
             weight_bits,
             asym,
         )
-
-
-def _run_hybrid_fp(plan: HybridPlan) -> None:
-    _call_fp(plan.padded_activations, plan.full_weights, plan.all_num_tokens)
-    for activations, weights, num_tokens in zip(
-        plan.remainder_activations, plan.remainder_weights, plan.remainder_num_tokens
-    ):
-        _call_fp(activations, weights, num_tokens)
-
-
-def _run_hybrid_quant(plan: HybridPlan, weight_bits: int | None, asym: bool) -> None:
-    _call_quant(
-        plan.padded_activations,
-        plan.full_weights,
-        plan.all_num_tokens,
-        plan.full_scales,
-        plan.full_zeros,
-        weight_bits,
-        asym,
-    )
     for idx, num_tokens in enumerate(plan.remainder_num_tokens):
         scales = plan.remainder_scales[idx] if plan.remainder_scales is not None else None
         zeros = plan.remainder_zeros[idx] if plan.remainder_zeros is not None else None
-        _call_quant(
-            plan.remainder_activations[idx],
-            plan.remainder_weights[idx],
-            num_tokens,
-            scales,
-            zeros,
-            weight_bits,
-            asym,
-        )
+        if api == "raw":
+            _call_quant_raw(
+                plan.remainder_activations[idx],
+                plan.remainder_weights[idx],
+                num_tokens,
+                scales,
+                zeros,
+                weight_bits,
+                asym,
+                plan.raw_remainder_outputs[idx],
+                plan.raw_remainder_workspaces[idx],
+            )
+        else:
+            _call_quant(
+                plan.remainder_activations[idx],
+                plan.remainder_weights[idx],
+                num_tokens,
+                scales,
+                zeros,
+                weight_bits,
+                asym,
+            )
 
 
 def _print_table_header(format_name: str, dtype_name: str, baseline_ms: float, baseline_tflops: float) -> None:
@@ -651,22 +841,22 @@ def _print_row(row: BenchmarkRow) -> None:
 
 
 def _benchmark_fp(
-    dtype: torch.dtype, counts: List[int], thresholds: List[int], print_table: bool
+    dtype: torch.dtype, counts: List[int], thresholds: List[int], print_table: bool, api: str
 ) -> List[BenchmarkRow]:
     dtype_name = _dtype_name(dtype)
     total_tokens = sum(counts)
     activations = torch.randn(total_tokens, K, dtype=dtype, device="xpu")
     weights = _make_fp_weights(dtype)
-    baseline_plan = _build_baseline_plan(activations, weights, counts)
-    baseline_ms = _time_ms(lambda: _run_baseline_fp(baseline_plan))
+    baseline_plan = _build_baseline_plan(activations, weights, counts, raw=api == "raw")
+    baseline_ms = _time_ms(lambda: _run_baseline_fp(baseline_plan, api))
     baseline_tflops = _tflops(total_tokens, baseline_ms)
 
     rows = []
     if print_table:
         _print_table_header(dtype_name, dtype_name, baseline_ms, baseline_tflops)
     for threshold in thresholds:
-        hybrid_plan = _build_hybrid_plan(activations, weights, counts, threshold)
-        hybrid_ms = _time_ms(lambda plan=hybrid_plan: _run_hybrid_fp(plan))
+        hybrid_plan = _build_hybrid_plan(activations, weights, counts, threshold, raw=api == "raw")
+        hybrid_ms = _time_ms(lambda plan=hybrid_plan: _run_hybrid_fp(plan, api))
         hybrid_tflops = _tflops(_hybrid_compute_tokens(counts, threshold), hybrid_ms)
         row = BenchmarkRow(dtype_name, dtype_name, threshold, baseline_ms, hybrid_ms, baseline_tflops, hybrid_tflops)
         rows.append(row)
@@ -678,22 +868,37 @@ def _benchmark_fp(
 
 
 def _benchmark_quant(
-    format_name: str, counts: List[int], thresholds: List[int], print_table: bool
+    format_name: str, counts: List[int], thresholds: List[int], print_table: bool, api: str
 ) -> List[BenchmarkRow]:
     dtype_name = "bfloat16"
     total_tokens = sum(counts)
     quant = _make_quant_weights(format_name)
     activations = torch.randn(total_tokens, K, dtype=torch.bfloat16, device="xpu")
-    baseline_plan = _build_baseline_plan(activations, quant.weights, counts, quant.scales, quant.zeros)
-    baseline_ms = _time_ms(lambda: _run_baseline_quant(baseline_plan, quant.weight_bits, quant.asym))
+    baseline_plan = _build_baseline_plan(
+        activations,
+        quant.weights,
+        counts,
+        quant.scales,
+        quant.zeros,
+        raw=api == "raw",
+    )
+    baseline_ms = _time_ms(lambda: _run_baseline_quant(baseline_plan, quant.weight_bits, quant.asym, api))
     baseline_tflops = _tflops(total_tokens, baseline_ms)
 
     rows = []
     if print_table:
         _print_table_header(format_name, dtype_name, baseline_ms, baseline_tflops)
     for threshold in thresholds:
-        hybrid_plan = _build_hybrid_plan(activations, quant.weights, counts, threshold, quant.scales, quant.zeros)
-        hybrid_ms = _time_ms(lambda plan=hybrid_plan: _run_hybrid_quant(plan, quant.weight_bits, quant.asym))
+        hybrid_plan = _build_hybrid_plan(
+            activations,
+            quant.weights,
+            counts,
+            threshold,
+            quant.scales,
+            quant.zeros,
+            raw=api == "raw",
+        )
+        hybrid_ms = _time_ms(lambda plan=hybrid_plan: _run_hybrid_quant(plan, quant.weight_bits, quant.asym, api))
         hybrid_tflops = _tflops(_hybrid_compute_tokens(counts, threshold), hybrid_ms)
         row = BenchmarkRow(format_name, dtype_name, threshold, baseline_ms, hybrid_ms, baseline_tflops, hybrid_tflops)
         rows.append(row)
@@ -712,46 +917,70 @@ def _parse_args() -> argparse.Namespace:
         default="summary",
         help="summary: only threshold=512 in one table; full: print per-dtype threshold tuning tables",
     )
+    parser.add_argument(
+        "--api",
+        choices=("wrapper", "raw"),
+        default="wrapper",
+        help=(
+            "wrapper: measure the public Python API including validation/allocation overhead; "
+            "raw: call xpu_lib directly with preallocated buffers to better isolate kernel/runtime cost"
+        ),
+    )
     return parser.parse_args()
 
 
-def main() -> None:
-    args = _parse_args()
+def _cleanup_prefill_runtime() -> None:
     if not hasattr(torch, "xpu") or not torch.xpu.is_available():
-        raise RuntimeError("XPU is required for this benchmark")
+        return
+    if hasattr(ark, "clear_moe_prefill_workspace_cache"):
+        ark.clear_moe_prefill_workspace_cache()
+    torch.xpu.synchronize()
+    torch.xpu.empty_cache()
 
-    torch.manual_seed(42)
-    counts = REAL_TOKEN_COUNTS[:NUM_EXPERTS]
-    total_tokens = sum(counts)
-    active_experts = sum(count > 0 for count in counts)
 
-    print("=" * 104)
-    print("MoE prefill kernel-only threshold tuning benchmark")
-    print(f"Configuration: experts={NUM_EXPERTS}, N={N}, K={K}, group_size={GROUP_SIZE}")
-    print(f"Distribution: total_tokens={total_tokens}, active_experts={active_experts}")
-    thresholds = THRESHOLDS if args.mode == "full" else [DEFAULT_THRESHOLD]
-    print(f"Mode: {args.mode}")
-    print(f"Thresholds: {thresholds}")
-    print("=" * 104)
+def main() -> None:
+    try:
+        args = _parse_args()
+        if not hasattr(torch, "xpu") or not torch.xpu.is_available():
+            raise RuntimeError("XPU is required for this benchmark")
+        if args.api == "raw" and ark.xpu_lib is None:
+            raise RuntimeError("raw API requires auto_round_kernel XPU library")
 
-    rows = []
-    for dtype in FP_DTYPES:
-        rows.extend(_benchmark_fp(dtype, counts, thresholds, args.mode == "full"))
+        torch.manual_seed(42)
+        counts = REAL_TOKEN_COUNTS[:NUM_EXPERTS]
+        total_tokens = sum(counts)
+        active_experts = sum(count > 0 for count in counts)
 
-    for format_name in QUANT_FORMATS:
-        try:
-            rows.extend(_benchmark_quant(format_name, counts, thresholds, args.mode == "full"))
-        except Exception as exc:
-            print()
-            print(f"Format/dtype: {format_name}/bfloat16")
-            print(f"SKIP: {exc}")
+        print("=" * 104)
+        print("MoE prefill kernel-only threshold tuning benchmark")
+        print(f"Configuration: experts={NUM_EXPERTS}, N={N}, K={K}, group_size={GROUP_SIZE}")
+        print(f"Distribution: total_tokens={total_tokens}, active_experts={active_experts}")
+        thresholds = THRESHOLDS if args.mode == "full" else [DEFAULT_THRESHOLD]
+        print(f"Mode: {args.mode}")
+        print(f"API: {args.api}")
+        print(f"Thresholds: {thresholds}")
+        print("=" * 104)
 
-    if args.mode == "summary":
-        _print_summary_header()
-        for row in rows:
-            _print_row(row)
+        rows = []
+        for dtype in FP_DTYPES:
+            rows.extend(_benchmark_fp(dtype, counts, thresholds, args.mode == "full", args.api))
 
-    print("=" * 104)
+        for format_name in QUANT_FORMATS:
+            try:
+                rows.extend(_benchmark_quant(format_name, counts, thresholds, args.mode == "full", args.api))
+            except Exception as exc:
+                print()
+                print(f"Format/dtype: {format_name}/bfloat16")
+                print(f"SKIP: {exc}")
+
+        if args.mode == "summary":
+            _print_summary_header()
+            for row in rows:
+                _print_row(row)
+
+        print("=" * 104)
+    finally:
+        _cleanup_prefill_runtime()
 
 
 if __name__ == "__main__":
