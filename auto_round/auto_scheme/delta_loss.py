@@ -1278,7 +1278,27 @@ def _apply_head_trick(head_name, schemes, sorted_indices, target_bits, target_pa
                 total_scores[head_name] = filtered
 
 
-def _get_not_fixed_embedding_layer_names(embedding_layers_names, fixed_layer_scheme, quant_layer_names):
+def _is_gguf_auto_scheme(schemes) -> bool:
+    """Return True when AutoScheme options target GGUF embedding quantization."""
+
+    for scheme in schemes:
+        if isinstance(scheme, str) and scheme.upper().startswith("GGUF:"):
+            return True
+    return False
+
+
+def _get_bit_budget_layer_names(quant_layer_names, embedding_layers_names, schemes):
+    """Return layer names whose params contribute to the AutoScheme bit budget."""
+
+    layer_names = list(quant_layer_names)
+    if _is_gguf_auto_scheme(schemes):
+        layer_names += list(embedding_layers_names)
+    return layer_names
+
+
+def _get_not_fixed_embedding_layer_names(
+    embedding_layers_names, fixed_layer_scheme, quant_layer_names, include_embeddings=True
+):
     """Return embedding layers still eligible for AutoScheme assignment.
 
     AutoScheme removes embedding layers from ``quant_layer_names`` before the
@@ -1287,6 +1307,8 @@ def _get_not_fixed_embedding_layer_names(embedding_layers_names, fixed_layer_sch
     """
 
     _ = quant_layer_names  # kept for call-site compatibility and future checks
+    if not include_embeddings:
+        return []
     return [name for name in embedding_layers_names if name not in fixed_layer_scheme]
 
 
@@ -1532,9 +1554,10 @@ def _gen_layer_config(
     if offload_context is not None:
         offload_context.remove_offload_hooks(model, block_name)
 
+    bit_budget_layer_names = _get_bit_budget_layer_names(quant_layer_names, embedding_layers_names, schemes)
     total_params = 0
     for n, m in model.named_modules():
-        if n in quant_layer_names + embedding_layers_names:
+        if n in bit_budget_layer_names:
             n_param = m.weight.numel()
             if n_param == 0 and hasattr(m, "_cached_weight_numel"):
                 n_param = m._cached_weight_numel
@@ -1547,6 +1570,7 @@ def _gen_layer_config(
         embedding_layers_names=embedding_layers_names,
         fixed_layer_scheme=fixed_layer_scheme,
         quant_layer_names=quant_layer_names,
+        include_embeddings=_is_gguf_auto_scheme(schemes),
     )
 
     # Determine if model has shared lm_head (tie_word_embeddings)
