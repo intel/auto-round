@@ -582,7 +582,7 @@ def _build_estimate_result(  # pylint: disable=too-many-arguments,too-many-posit
 def _load_auto_config(platform):
     """Load the appropriate AutoConfig class for the platform."""
     if platform == "model_scope":
-        from modelscope import AutoConfig  # pylint: disable=import-outside-toplevel
+        from modelscope import AutoConfig  # pylint: disable=E0401,import-outside-toplevel
     else:
         from transformers import AutoConfig  # pylint: disable=import-outside-toplevel
     return AutoConfig
