@@ -4,9 +4,11 @@ import shutil
 
 import pytest
 import torch
+from transformers import BatchEncoding
 from transformers import AutoModelForCausalLM, AutoTokenizer
 
 from auto_round import AutoRound
+from auto_round.calib_dataset import get_ultrachat_dataset
 
 from ...helpers import get_model_path, opt_name_or_path
 
@@ -110,3 +112,64 @@ class TestLocalCalibDataset:
             nsamples=1,
         )
         autoround.quantize()
+
+
+class _FakeStreamingDataset:
+    def __init__(self):
+        self.mapped_output = None
+
+    def shuffle(self, seed=42):
+        return self
+
+    def take(self, count):
+        return self
+
+    def map(self, fn, batched=True):
+        self.mapped_output = fn({"messages": [[{"role": "user", "content": "hello"}]]})
+        return self
+
+
+class _FakeV5ChatTokenizer:
+    def __init__(self):
+        self.rendered_messages = None
+
+    def apply_chat_template(self, messages, tokenize=True, add_generation_prompt=False, **kwargs):
+        if tokenize:
+            return BatchEncoding({"input_ids": [[1, 2]], "attention_mask": [[1, 1]]})
+        return f"templated::{messages[-1]['content']}"
+
+    def __call__(self, texts, truncation=True, max_length=None):
+        self.rendered_messages = texts
+        return {
+            "input_ids": [[len(text)] for text in texts],
+            "attention_mask": [[1] for _ in texts],
+        }
+
+
+class _FakePlainTokenizer(_FakeV5ChatTokenizer):
+    def apply_chat_template(self, messages, tokenize=True, add_generation_prompt=False, **kwargs):
+        raise ValueError("chat templates are not supported")
+
+
+def test_ultrachat_dataset_keeps_chat_template_for_v5_tokenizers(monkeypatch):
+    tokenizer = _FakeV5ChatTokenizer()
+    dataset = _FakeStreamingDataset()
+    monkeypatch.setattr("auto_round.calib_dataset.load_dataset", lambda *args, **kwargs: dataset)
+
+    result = get_ultrachat_dataset(tokenizer=tokenizer, seqlen=128, apply_chat_template=True)
+
+    assert result is dataset
+    assert tokenizer.rendered_messages == ["templated::hello"]
+    assert dataset.mapped_output["input_ids"] == [[16]]
+
+
+def test_ultrachat_dataset_disables_chat_template_for_plain_tokenizers(monkeypatch):
+    tokenizer = _FakePlainTokenizer()
+    dataset = _FakeStreamingDataset()
+    monkeypatch.setattr("auto_round.calib_dataset.load_dataset", lambda *args, **kwargs: dataset)
+
+    result = get_ultrachat_dataset(tokenizer=tokenizer, seqlen=128, apply_chat_template=True)
+
+    assert result is dataset
+    assert tokenizer.rendered_messages == ["hello"]
+    assert dataset.mapped_output["input_ids"] == [[5]]

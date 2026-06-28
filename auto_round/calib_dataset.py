@@ -359,7 +359,7 @@ def get_ultrachat_dataset(
 
     def is_instruct_tokenizer(tokenizer):
         try:
-            out = tokenizer.apply_chat_template([{"role": "user", "content": "Hi"}])
+            out = tokenizer.apply_chat_template([{"role": "user", "content": "Hi"}], tokenize=False)
             return bool(out and len(out) > 0)
         except Exception:
             return False
@@ -371,7 +371,7 @@ def get_ultrachat_dataset(
         apply_chat_template = True
     elif not is_instruct and apply_chat_template:
         logger.info("Tokenizer is not an instruct/chat model, but apply_chat_template=True. Setting to False.")
-    apply_chat_template = False
+        apply_chat_template = False
 
     def tokenize_example_batch(examples):
         if not apply_chat_template:
