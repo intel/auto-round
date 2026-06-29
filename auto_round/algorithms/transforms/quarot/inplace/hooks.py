@@ -9,6 +9,7 @@ provides the hooks and a helper to register them on the model.
 """
 
 import math
+from typing import Optional
 
 import torch
 import torch.nn as nn
@@ -153,7 +154,14 @@ def _get_custom_had(had_dict, size):
 class FullOnlineHadamardHook(nn.Module):
     """Pre-forward hook: full Hadamard on the entire last dimension (for ``down_proj``)."""
 
-    def __init__(self, had_K, K, fp32_had=False, use_fast_had=True, had_matrix=None):
+    def __init__(
+        self,
+        had_K: Optional[torch.Tensor],
+        K: Optional[int],
+        fp32_had: bool = False,
+        use_fast_had: bool = True,
+        had_matrix: Optional[torch.Tensor] = None,
+    ) -> None:
         super().__init__()
         self.custom_had = had_matrix is not None
         if had_matrix is not None:
@@ -209,7 +217,15 @@ class CrossHeadOnlineHadamardHook(nn.Module):
       * transpose back and reshape
     """
 
-    def __init__(self, had_K, K, head_dim, fp32_had=False, use_fast_had=True, had_matrix=None):
+    def __init__(
+        self,
+        had_K: Optional[torch.Tensor],
+        K: Optional[int],
+        head_dim: int,
+        fp32_had: bool = False,
+        use_fast_had: bool = True,
+        had_matrix: Optional[torch.Tensor] = None,
+    ) -> None:
         """
         Args:
             had_K: Hadamard sub-matrix from ``get_hadK(num_heads)``.
@@ -295,7 +311,7 @@ def register_online_had_hooks(model, mapping=None, fp32_had=False, use_fast_had=
         list of hook handles (call ``handle.remove()`` to detach).
     """
     if mapping is None:
-        from auto_round.algorithms.transforms.rotation.inplace.model_config import infer_mapping_from_model
+        from auto_round.algorithms.transforms.quarot.inplace.model_config import infer_mapping_from_model
 
         mapping = infer_mapping_from_model(model)
 
@@ -352,7 +368,7 @@ def get_hadK(n: int, transpose=False) -> (torch.Tensor, int):
         K = 1
         return hadK, K
     else:
-        from auto_round.algorithms.transforms.rotation.utils.math import _fetch_hadamard_divisor
+        from auto_round.algorithms.transforms.quarot.utils.math import _fetch_hadamard_divisor
 
         hadK = _fetch_hadamard_divisor(n, torch.float, torch.device("cpu"))
         if transpose:
@@ -574,7 +590,7 @@ class OnlineHadamardPostHook(nn.Module):
     rotation is not fused into weights.
     """
 
-    def __init__(self, pre_hook):
+    def __init__(self, pre_hook: nn.Module) -> None:
         super().__init__()
         self.pre_hook = pre_hook
 
@@ -592,7 +608,13 @@ class GroupOnlineHadamardHook(nn.Module):
     per group, then reshapes back.  Much cheaper than a full-dimension Hadamard.
     """
 
-    def __init__(self, group_size, fp32_had=False, use_fast_had=True, had_matrix=None):
+    def __init__(
+        self,
+        group_size: int,
+        fp32_had: bool = False,
+        use_fast_had: bool = True,
+        had_matrix: Optional[torch.Tensor] = None,
+    ) -> None:
         super().__init__()
         self.group_size = group_size
         self.fp32_had = fp32_had

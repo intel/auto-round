@@ -21,7 +21,7 @@ class TestAlgExt:
         ar.quantize()
 
     def test_alg_ext_import(self):
-        from auto_round.alg_ext import wrapper_autoround
+        from auto_round.algorithms.quantization.sign_roundv2 import SignRoundV2Quantizer
 
     def test_all_support_dtype(self, tiny_opt_model_path):
         model_name = tiny_opt_model_path

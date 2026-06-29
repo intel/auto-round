@@ -16,7 +16,7 @@
 # limitations under the License.
 
 
-from typing import List, Optional
+from typing import Iterable, List, Optional
 
 # From PyTorch:
 #
@@ -212,17 +212,17 @@ class SignSGD(Optimizer):
 
     def __init__(
         self,
-        params,
-        lr=required,
-        momentum=0,
-        dampening=0,
-        weight_decay=0,
-        nesterov=False,
+        params: Iterable[Tensor],
+        lr: float = required,
+        momentum: float = 0,
+        dampening: float = 0,
+        weight_decay: float = 0,
+        nesterov: bool = False,
         *,
-        maximize=False,
+        maximize: bool = False,
         foreach: Optional[bool] = None,
-        differentiable=False
-    ):
+        differentiable: bool = False,
+    ) -> None:
         if lr is not required and lr < 0.0:
             raise ValueError("Invalid learning rate: {}".format(lr))
         if momentum < 0.0:
@@ -320,7 +320,7 @@ def sgd(
     lr: float,
     dampening: float,
     nesterov: bool,
-    maximize: bool
+    maximize: bool,
 ):
     r"""Functional API that performs SGD algorithm computation.
 
@@ -364,7 +364,7 @@ def _single_tensor_sgd(
     dampening: float,
     nesterov: bool,
     maximize: bool,
-    has_sparse_grad: bool
+    has_sparse_grad: bool,
 ):
     for i, param in enumerate(params):
         d_p = d_p_list[i] if not maximize else -d_p_list[i]

@@ -40,9 +40,10 @@ The test covers multiple realistic MoE scenarios:
 
 ### 4. **Baseline Comparison**
 Each test compares the ARK MoE kernel against a baseline PyTorch implementation:
-- **Baseline**: Per-expert matrix multiplication using `torch.matmul`
-- **ARK Kernel**: Optimized `ark.moe_gemm` with fused operations
-- **Speedup**: Reports speedup ratio (baseline_time / ark_time)
+- **Baseline**: Single `torch.bmm` over a `[E, M_max, K]` padded activations buffer (each expert's token slice padded to the global maximum tokens-per-expert). Replaces the previous 192-iteration per-expert loop so the kernel-launch overhead doesn't dominate small-token cases. For quantized tests, weights are pre-dequantized so the `baseline(ms)` column measures matmul cost only.
+- **Base+Deq**: For quantized tests, the dequantization step is timed separately and the `base+deq(ms)` column reports `baseline + deq` -- the end-to-end cost a pipeline that stores weights quantized but reuses a stock matmul baseline would pay per step. For FP rows this equals `baseline(ms)`.
+- **ARK Kernel**: Optimized `ark.moe_gemm` with fused operations.
+- **Speedup**: Reports `(base+deq) / ark` -- the realistic comparison point against our fused kernel.
 
 ## How to Run
 
@@ -71,9 +72,9 @@ pytest -v -s test_moe_prefill_perf.py::TestMoEGemmPrefillPerf::test_perf_int8 -k
 The test prints formatted tables with the following columns:
 
 ```
-shape          E      N      K  tokens    baseline(ms)        ark(ms)     speedup    TFLOPS
-small  E=8     8   4096   4096     252         12.3456        4.5678       2.70x       45.2
-medium E=8     8   4096  14336     528         23.4567        8.9012       2.64x       78.9
+shape          E      N      K  tokens    baseline(ms)    base+deq(ms)        ark(ms)     speedup    TFLOPS
+small  E=8     8   4096   4096     252         12.3456         14.1234         4.5678       3.09x       45.2
+medium E=8     8   4096  14336     528         23.4567         27.2345         8.9012       3.06x       78.9
 ...
 ```
 
@@ -83,9 +84,10 @@ Where:
 - **N**: Output feature dimension
 - **K**: Input feature dimension
 - **tokens**: Total tokens across all experts
-- **baseline(ms)**: PyTorch baseline latency (milliseconds)
+- **baseline(ms)**: PyTorch matmul-only latency (weights pre-dequantized for quantized tests).
+- **base+deq(ms)**: `baseline + deq` -- adds the per-step weight dequantization cost (timed separately). Equals `baseline(ms)` for FP rows.
 - **ark(ms)**: ARK kernel latency (milliseconds)
-- **speedup**: Performance improvement ratio
+- **speedup**: `(base+deq) / ark` -- realistic improvement ratio against a stock pipeline that keeps weights quantized
 - **TFLOPS**: Throughput in tera floating point operations per second
 
 ## Requirements
@@ -102,8 +104,8 @@ test_moe_prefill_perf.py
 │   └── Uses XPU events for accurate GPU timing
 ├── FLOPS calculation (_compute_moe_flops)
 │   └── Computes theoretical FLOPs for TFLOPS metric
-├── Baseline implementation (_default_moe_prefill)
-│   └── Per-expert PyTorch matmul for comparison
+├── Baseline implementation (_default_moe_prefill, _build_bmm_pad_layout)
+│   └── Single `torch.bmm` over [E, M_max, K] padded activations
 ├── Test shapes (PREFILL_SHAPES)
 │   └── Various realistic MoE configurations
 └── Test cases (TestMoEGemmPrefillPerf)
@@ -118,18 +120,23 @@ test_moe_prefill_perf.py
 
 ```
 ==================================================================
-FP weights (float16)  -- ark.moe_gemm (prefill) vs per-expert A @ W.T
+FP weights (float16)  -- ark.moe_gemm (prefill) vs single torch.bmm
 ==================================================================
-shape              E      N      K  tokens    baseline(ms)        ark(ms)     speedup    TFLOPS
+shape              E      N      K  tokens    baseline(ms)    base+deq(ms)        ark(ms)     speedup    TFLOPS
 ------------------------------------------------------------------
-small  E=8         8   4096   4096     252         12.3456        4.5678       2.70x       45.2
-medium E=8         8   4096  14336     528         23.4567        8.9012       2.64x       78.9
-medium E=8         8  14336   4096     528         25.6789        9.1234       2.82x       76.5
-large  E=16       16   2048   2048     256          5.6789        2.3456       2.42x       91.2
-large  E=32       32   2048   2048     256          5.7890        2.4567       2.36x       87.3
-large  E=64       64   2048   2048     256          5.8901        2.5678       2.29x       83.5
-uneven E=8         8   4096   4096     610         28.9012       10.1234       2.86x       52.1
+small  E=8         8   4096   4096     252         12.3456         12.3456         4.5678       2.70x       45.2
+medium E=8         8   4096  14336     528         23.4567         23.4567         8.9012       2.64x       78.9
+medium E=8         8  14336   4096     528         25.6789         25.6789         9.1234       2.82x       76.5
+large  E=16       16   2048   2048     256          5.6789          5.6789         2.3456       2.42x       91.2
+large  E=32       32   2048   2048     256          5.7890          5.7890         2.4567       2.36x       87.3
+large  E=64       64   2048   2048     256          5.8901          5.8901         2.5678       2.29x       83.5
+uneven E=8         8   4096   4096     610         28.9012         28.9012        10.1234       2.86x       52.1
 ```
+
+(For FP rows `base+deq(ms)` equals `baseline(ms)` because there is no
+dequantization step; quantized rows will show a larger `base+deq(ms)`
+than `baseline(ms)` and the `speedup` column will reflect the
+`(base+deq)/ark` ratio.)
 
 ## Key Metrics
 

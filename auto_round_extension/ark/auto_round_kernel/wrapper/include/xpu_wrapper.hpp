@@ -343,7 +343,15 @@ class XpuWrapper {
     packzp(zpptr, blob, p, q);
   }
 
-  static void unpackq(BTLA_DTYPE outt, int8_t* blob, void* optr, QuantParam* p, sycl::queue* q) {
+  static void unpackq(BTLA_DTYPE outt, int8_t* blob, void* optr, QuantParam* p, sycl::queue* q,
+                      size_t blob_count = 0) {
+    if (blob_count > 0) {
+      auto expected = get_packw_size(p);
+      if (blob_count < expected) {
+        throw std::runtime_error("Corrupt packed weight: blob size (" + std::to_string(blob_count) +
+                                 ") less than expected (" + std::to_string(expected) + ")");
+      }
+    }
     using namespace bestla;
     using namespace bestla::sycl_prologue_b;
     auto qptr = (uint8_t*)blob;
@@ -678,7 +686,14 @@ class XpuWrapper {
   }
 
   static void woq_gemm(int m, const void* a, const void* b, void* c, const void* bias, BTLA_DTYPE acdt, QuantParam* p,
-                       sycl::queue* q) {
+                       sycl::queue* q, size_t blob_count = 0) {
+    if (blob_count > 0) {
+      auto expected = get_packw_size(p);
+      if (blob_count < expected) {
+        throw std::runtime_error("Corrupt packed weight: blob size (" + std::to_string(blob_count) +
+                                 ") less than expected (" + std::to_string(expected) + ")");
+      }
+    }
     auto ret = woq_gemv(q, m, p, a, b, c, bias, acdt);
     if (ret) {
       auto dnnl_dt = to_dt(acdt);

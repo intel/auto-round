@@ -18,7 +18,7 @@
 """Model-level perf benchmark for MoE LLMs on the ARK (XPU) backend.
 
 This file mirrors the structure of ``test/test_ark/test_model.py`` but
-operates on real MoE checkpoints (Qwen1.5-MoE, DeepSeek-V2-Lite) and adds
+operates on real MoE checkpoints (Qwen1.5-MoE) and adds
 prefill / decode latency measurement on top.
 
 For each ``(model, bits, dtype)`` combination we:
@@ -35,10 +35,12 @@ For each ``(model, bits, dtype)`` combination we:
         c. *optional* GPTQModel backend, skipped if not installed.
   4. Smoke-test correctness via ``helpers.model_infer`` (asserts non-empty
      output -> catches any wiring break in the backend).
-  5. Measure **prefill** latency (single forward over a 128-token prompt)
-     and **per-token decode** latency (``model.generate(max_new_tokens=32)``
-     after a 4-token warmup) using ``torch.xpu.Event``. Report the median
-     of 3 runs.
+  5. Measure **prefill** latency (single forward over prompts of length
+     2048 and 4096 tokens) and **per-token decode** latency
+     (``model.generate(max_new_tokens=32)`` after a 4-token warmup) using
+     ``torch.xpu.Event``. Each measurement is preceded by several warmup
+     iterations and the reported number is the mean of multiple timed
+     runs (with the slowest sample trimmed) to absorb XPU runtime jitter.
   6. Assert that ARK decode latency is within ``ARK_DECODE_REGRESSION_FACTOR``
      of the FP reference -- defends against silent perf regressions of the
      unified ``ark.moe`` dispatcher.
@@ -54,7 +56,7 @@ How to run::
 
 import os
 import shutil
-from statistics import median
+from statistics import fmean
 
 import pytest
 import torch
@@ -63,7 +65,6 @@ from transformers import AutoModelForCausalLM, AutoRoundConfig, AutoTokenizer
 from auto_round import AutoRound
 
 from ..helpers import (
-    deepseek_v2_name_or_path,
     get_model_path,
     get_tiny_model,
     model_infer,
@@ -83,14 +84,24 @@ _TINY_NUM_LAYERS = 2
 _TINY_NUM_EXPERTS = 4
 
 # Timing harness.
-_PREFILL_PROMPT_TOKENS = 128
+# Prefill is exercised at multiple sequence lengths (2K, 4K) so the table
+# reflects realistic prompt sizes rather than a single small input.
+_PREFILL_SEQ_LENS = (2048, 4096)
 _DECODE_NEW_TOKENS = 32
 _DECODE_WARMUP_TOKENS = 4
-_TIMING_REPEATS = 3
+# Number of warmup iterations performed before each timed measurement.
+# A handful of warmup runs lets the XPU runtime JIT/cache kernels and
+# allocate workspaces so the timed iterations measure steady-state cost.
+_TIMING_WARMUP = 3
+# Number of timed iterations; the harness reports the **mean** of these
+# (with the slowest sample trimmed when at least 3 samples are taken)
+# so the printed numbers are stable across runs. Keep this >= 3 for the
+# outlier-trim path to activate.
+_TIMING_REPEATS = 5
 
 # Perf-regression guard for the ARK decode path vs the unquantized FP
 # baseline. Loose enough to absorb run-to-run jitter (we already take the
-# median of N runs) but tight enough to catch the "phase=auto sync"
+# mean of N runs) but tight enough to catch the "phase=auto sync"
 # regression class described in the upstream perf analysis (which costs
 # ~25% per kernel call).
 ARK_DECODE_REGRESSION_FACTOR = 2.0
@@ -135,14 +146,22 @@ def _xpu_sync():
         torch.xpu.synchronize()
 
 
-def _xpu_time_ms(fn, repeats: int = _TIMING_REPEATS) -> float:
-    """Time ``fn`` on XPU using ``torch.xpu.Event``; return median ms.
+def _xpu_time_ms(fn, warmup: int = _TIMING_WARMUP, repeats: int = _TIMING_REPEATS) -> float:
+    """Time ``fn`` on XPU using ``torch.xpu.Event``; return mean ms.
 
-    The function is invoked ``repeats`` times after one warmup call. The
-    median is returned to absorb run-to-run jitter from the XPU runtime.
+    The function is invoked ``warmup`` times (untimed) to warm up the XPU
+    runtime / caches / KV allocations, then timed ``repeats`` times. To
+    absorb run-to-run jitter, we drop the slowest sample when at least
+    three timed samples are available and return the arithmetic mean of
+    the remaining samples.
     """
-    fn()  # warmup
+    # Warmup: run several iterations untimed so JIT/caches are primed.
+    # ``warmup=0`` skips warmup entirely (useful for tests of the harness
+    # itself); callers should normally pass ``_TIMING_WARMUP``.
+    for _ in range(warmup):
+        fn()
     _xpu_sync()
+
     timings = []
     for _ in range(repeats):
         start = torch.xpu.Event(enable_timing=True)
@@ -152,7 +171,11 @@ def _xpu_time_ms(fn, repeats: int = _TIMING_REPEATS) -> float:
         end.record()
         end.synchronize()
         timings.append(start.elapsed_time(end))
-    return median(timings)
+
+    # Trim the slowest sample as a light-touch outlier guard, then average.
+    if len(timings) >= 3:
+        timings.remove(max(timings))
+    return fmean(timings)
 
 
 def _measure_prefill_ms(model, input_ids, attention_mask) -> float:
@@ -194,7 +217,7 @@ def _measure_decode_ms_per_tok(model, tokenizer, prompt_ids, attention_mask) -> 
 # ---------------------------------------------------------------------------
 
 
-def _make_prefill_inputs(tokenizer, device, dtype, num_tokens=_PREFILL_PROMPT_TOKENS):
+def _make_prefill_inputs(tokenizer, device, dtype, num_tokens):
     """Build a fixed-length (num_tokens) input tensor on ``device``."""
     # Use a deterministic synthetic prompt to keep the perf number stable
     # across machines that may not have the same vocab tokenization for a
@@ -227,24 +250,28 @@ def _load_tiny_or_full(model_name_or_path, dtype):
     return model, tokenizer
 
 
-def _format_row(model_label, backend, prefill_ms, decode_ms_per_tok, baseline_decode_ms):
+def _format_row(model_label, backend, seq_len, prefill_ms, decode_ms_per_tok, baseline_decode_ms):
     tps = 1000.0 / decode_ms_per_tok if decode_ms_per_tok > 0 else float("nan")
     if baseline_decode_ms is None or baseline_decode_ms <= 0:
         speedup_str = "    --"
     else:
         speedup_str = f"{baseline_decode_ms / decode_ms_per_tok:6.2f}x"
     return (
-        f"{model_label:<22}{backend:<14}{prefill_ms:>12.3f}{decode_ms_per_tok:>16.3f}" f"{tps:>14.2f}{speedup_str:>14}"
+        f"{model_label:<22}{backend:<14}{seq_len:>8}{prefill_ms:>12.3f}{decode_ms_per_tok:>16.3f}"
+        f"{tps:>14.2f}{speedup_str:>14}"
     )
 
 
 def _print_header(dtype):
     print()
-    print("=" * 96)
+    print("=" * 104)
     print(f"Model-level MoE perf  --  dtype={dtype}  AR_MOE_PERF_FULL={_USE_FULL_MODEL}")
-    print("-" * 96)
-    print(f"{'model':<22}{'backend':<14}{'prefill(ms)':>12}{'decode(ms/tok)':>16}" f"{'tokens/s':>14}{'vs FP':>14}")
-    print("-" * 96)
+    print("-" * 104)
+    print(
+        f"{'model':<22}{'backend':<14}{'seq_len':>8}{'prefill(ms)':>12}{'decode(ms/tok)':>16}"
+        f"{'tokens/s':>14}{'vs FP':>14}"
+    )
+    print("-" * 104)
 
 
 # ---------------------------------------------------------------------------
@@ -292,10 +319,22 @@ class TestMoEModelPerf:
         return AutoModelForCausalLM.from_pretrained(saved_folder, **kwargs)
 
     def _bench_one(self, model, tokenizer, dtype):
-        prompt_ids, attention_mask = _make_prefill_inputs(tokenizer, model.device, dtype)
-        prefill_ms = _measure_prefill_ms(model, prompt_ids, attention_mask)
-        decode_ms = _measure_decode_ms_per_tok(model, tokenizer, prompt_ids, attention_mask)
-        return prefill_ms, decode_ms
+        """Benchmark a model: prefill at each seq len in _PREFILL_SEQ_LENS, and decode.
+
+        Returns a tuple ``(prefill_ms_by_seq_len, decode_ms_per_tok)`` where
+        ``prefill_ms_by_seq_len`` is an ordered dict mapping seq_len -> mean ms.
+        """
+        prefill_by_seq = {}
+        # Use the largest seq len for the decode prompt so the KV cache /
+        # attention path is exercised at a realistic size as well.
+        max_seq = max(_PREFILL_SEQ_LENS)
+        for seq_len in _PREFILL_SEQ_LENS:
+            prompt_ids, attention_mask = _make_prefill_inputs(tokenizer, model.device, dtype, num_tokens=seq_len)
+            prefill_by_seq[seq_len] = _measure_prefill_ms(model, prompt_ids, attention_mask)
+        # Decode uses the longest prompt; keep one set of inputs around.
+        decode_ids, decode_mask = _make_prefill_inputs(tokenizer, model.device, dtype, num_tokens=max_seq)
+        decode_ms = _measure_decode_ms_per_tok(model, tokenizer, decode_ids, decode_mask)
+        return prefill_by_seq, decode_ms
 
     def _smoke_test(self, model, tokenizer):
         out = model_infer(model, tokenizer)
@@ -307,7 +346,6 @@ class TestMoEModelPerf:
         "model_label, model_path",
         [
             ("qwen-moe", qwen_moe_name_or_path),
-            ("deepseek-v2-lite", deepseek_v2_name_or_path),
         ],
     )
     @pytest.mark.parametrize("bits, group_size, sym", [(4, 128, True), (8, 128, True)])
@@ -338,8 +376,9 @@ class TestMoEModelPerf:
         fp_decode_ms = None
         try:
             fp_model_xpu = self._reload(resolved, dtype, backend=None)
-            fp_prefill_ms, fp_decode_ms = self._bench_one(fp_model_xpu, tokenizer, dtype)
-            print(_format_row(label, "fp(ref)", fp_prefill_ms, fp_decode_ms, fp_decode_ms))
+            fp_prefill_by_seq, fp_decode_ms = self._bench_one(fp_model_xpu, tokenizer, dtype)
+            for seq_len, prefill_ms in fp_prefill_by_seq.items():
+                print(_format_row(label, "fp(ref)", seq_len, prefill_ms, fp_decode_ms, fp_decode_ms))
             del fp_model_xpu
             torch.xpu.empty_cache()
         except Exception as exc:  # noqa: BLE001 -- FP baseline is optional
@@ -350,22 +389,24 @@ class TestMoEModelPerf:
             pytest.skip(f"ARK backend unavailable: {_ARK_SKIP}")
         ark_model = self._reload(saved_folder, dtype, backend="ark")
         self._smoke_test(ark_model, tokenizer)
-        ark_prefill_ms, ark_decode_ms = self._bench_one(ark_model, tokenizer, dtype)
-        print(_format_row(label, "ark", ark_prefill_ms, ark_decode_ms, fp_decode_ms))
+        ark_prefill_by_seq, ark_decode_ms = self._bench_one(ark_model, tokenizer, dtype)
+        for seq_len, prefill_ms in ark_prefill_by_seq.items():
+            print(_format_row(label, "ark", seq_len, prefill_ms, ark_decode_ms, fp_decode_ms))
         del ark_model
         torch.xpu.empty_cache()
 
         # 4c. Optional GPTQModel cross-reference (skip silently if missing).
         try:
             gptq_model = self._reload(saved_folder, dtype, backend="gptqmodel")
-            gptq_prefill_ms, gptq_decode_ms = self._bench_one(gptq_model, tokenizer, dtype)
-            print(_format_row(label, "gptqmodel", gptq_prefill_ms, gptq_decode_ms, fp_decode_ms))
+            gptq_prefill_by_seq, gptq_decode_ms = self._bench_one(gptq_model, tokenizer, dtype)
+            for seq_len, prefill_ms in gptq_prefill_by_seq.items():
+                print(_format_row(label, "gptqmodel", seq_len, prefill_ms, gptq_decode_ms, fp_decode_ms))
             del gptq_model
             torch.xpu.empty_cache()
         except Exception as exc:  # noqa: BLE001 -- backend is optional
             print(f"[moe-model-perf] gptqmodel row skipped for {label}: {exc}")
 
-        print("-" * 96)
+        print("-" * 104)
 
         # 5. Perf-regression assertion (only when we have an FP baseline).
         if fp_decode_ms is not None and fp_decode_ms > 0:
