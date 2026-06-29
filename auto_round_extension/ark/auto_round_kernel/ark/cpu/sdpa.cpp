@@ -16,6 +16,7 @@
 #include "ark/cpu/mha_dense_wrapper.h"
 
 #include <algorithm>
+#include <cstring>
 #include <stdexcept>
 #include <vector>
 
@@ -133,8 +134,8 @@ void bestla_sdpa_forward(const attn_fwd_args_t& args, BTLA_DTYPE kv_dtype) {
   // (NTILE24/NTILE48) K/V and will throw for raw PLAIN K/V (see
   // mha_dense_wrapper.h). Reject every other feature whose BestLA path is not
   // migrated yet so callers fail loudly rather than silently producing wrong
-  // results. Packed K/V acceptance is a Phase 4 concern and intentionally not
-  // implemented here; for now PLAIN is forwarded and the kernel decides.
+  // results. Phase 4 Step 1 builds the bridge below: raw PLAIN K/V are reordered
+  // into the NTILE packed cache the kernels require before dispatch.
   if (args.Q_layout != ATTN_FWD_LAYOUT_PLAIN || args.K_layout != ATTN_FWD_LAYOUT_PLAIN ||
       args.V_layout != ATTN_FWD_LAYOUT_PLAIN || args.dst_layout != ATTN_FWD_LAYOUT_PLAIN) {
     throw std::invalid_argument("ark::cpu::bestla_sdpa_forward: only ATTN_FWD_LAYOUT_PLAIN is supported");
@@ -170,6 +171,38 @@ void bestla_sdpa_forward(const attn_fwd_args_t& args, BTLA_DTYPE kv_dtype) {
     local.tmp = workspace.empty() ? nullptr : workspace.data();
   }
 
+  // Phase 4 Step 1: bridge raw PLAIN HND/NHD K/V into the Neural-Speed-style
+  // NTILE packed/reordered cache the wired mixed kernels require. The kernel's
+  // QK weight is K (NTILE over seq, ROWPACK over head_size) and its PV weight is
+  // V (NTILE over head_size, ROWPACK over seq). We allocate per-head packed
+  // caches, fill them from the strided inputs, then retarget `local` at the
+  // packed layouts/strides. Q and dst stay PLAIN. This path is reached only via
+  // the internal/debug ARK_UNSAFE_BESTLA_MIXED_SDPA opt-in (see ark.cpp).
+  std::vector<uint16_t> packed_k;
+  std::vector<uint16_t> packed_v;
+  const ReorderKVShape rshape =
+      reorder_kv_shape(local.batch_size, local.heads_kv, local.sl_kv, local.head_size, kv_dtype);
+  packed_k.resize(reorder_kv_cache_elems(rshape, /*is_value=*/false));
+  packed_v.resize(reorder_kv_cache_elems(rshape, /*is_value=*/true));
+  AttentionStrides k_in{local.step_k_sl, local.step_k_head_size, local.step_k_head_num, local.step_k_bs};
+  ValueStrides v_in{local.step_v_head_size, local.step_v_sl, local.step_v_head_num, local.step_v_bs};
+  reorder_k_to_packed(packed_k.data(), local.K, rshape, k_in, local.batch_size, local.heads_kv, local.sl_kv,
+                      local.head_size, kv_dtype);
+  reorder_v_to_packed(packed_v.data(), local.V, rshape, v_in, local.batch_size, local.heads_kv, local.sl_kv,
+                      local.head_size, kv_dtype);
+  local.K = packed_k.data();
+  local.V = packed_v.data();
+  local.K_layout = rshape.layout;
+  local.V_layout = rshape.layout;
+  local.step_k_head_num = static_cast<int>(rshape.k_head_elems);
+  local.step_k_bs = static_cast<int>(rshape.k_head_elems) * local.heads_kv;
+  local.step_k_sl = rshape.step_k_sl;
+  local.step_k_head_size = rshape.step_k_head_size;
+  local.step_v_head_num = static_cast<int>(rshape.v_head_elems);
+  local.step_v_bs = static_cast<int>(rshape.v_head_elems) * local.heads_kv;
+  local.step_v_sl = rshape.step_v_sl;
+  local.step_v_head_size = rshape.step_v_head_size;
+
   switch (kv_dtype) {
     case BTLA_DTYPE::F16: {
       const auto typed = make_typed_attn_args<bestla::utils::fp16>(local);
@@ -184,6 +217,119 @@ void bestla_sdpa_forward(const attn_fwd_args_t& args, BTLA_DTYPE kv_dtype) {
     default:
       throw std::invalid_argument(
           "ark::cpu::bestla_sdpa_forward: only F16 and BF16 K/V operands are supported");
+  }
+}
+
+namespace {
+
+// Pad helper.
+int pad_up(int v, int p) { return ((v + p - 1) / p) * p; }
+
+}  // namespace
+
+ReorderKVShape reorder_kv_shape(int batch, int num_heads_kv, int seq_len_kv, int head_dim, BTLA_DTYPE kv_dtype) {
+  ReorderKVShape s;
+  switch (kv_dtype) {
+    case BTLA_DTYPE::F16:
+      s.layout = ATTN_FWD_LAYOUT_NTILE24_ROWPACK1;
+      s.ntile = 24;
+      s.rowpack = 1;
+      break;
+    case BTLA_DTYPE::BF16:
+      s.layout = ATTN_FWD_LAYOUT_NTILE48_ROWPACK2;
+      s.ntile = 48;
+      s.rowpack = 2;
+      break;
+    default:
+      throw std::invalid_argument("ark::cpu::reorder_kv_shape: only F16 and BF16 K/V are supported");
+  }
+  if (batch <= 0 || num_heads_kv <= 0 || seq_len_kv <= 0 || head_dim <= 0) {
+    throw std::invalid_argument("ark::cpu::reorder_kv_shape: invalid dimensions");
+  }
+  s.sl_pad = pad_up(seq_len_kv, s.ntile);
+  s.hs_pad = pad_up(head_dim, s.rowpack);
+  s.num_heads = batch * num_heads_kv;
+  // K is the QK weight: NTILE blocks over seq, head_size is ROWPACK-packed.
+  const int k_sl_pad = pad_up(seq_len_kv, s.ntile);
+  const int k_hs_pad = pad_up(head_dim, s.rowpack);
+  s.k_head_elems = static_cast<size_t>(k_sl_pad) * static_cast<size_t>(k_hs_pad);
+  s.step_k_sl = k_hs_pad;
+  s.step_k_head_size = 1;
+  // V is the PV weight: NTILE blocks over head_size, seq is ROWPACK-packed.
+  const int v_sl_pad = pad_up(seq_len_kv, s.rowpack);
+  const int v_hs_pad = pad_up(head_dim, s.ntile);
+  s.v_head_elems = static_cast<size_t>(v_sl_pad) * static_cast<size_t>(v_hs_pad);
+  s.step_v_sl = 1;
+  s.step_v_head_size = v_sl_pad;
+  return s;
+}
+
+size_t reorder_kv_cache_elems(const ReorderKVShape& shape, bool is_value) {
+  const size_t per_head = is_value ? shape.v_head_elems : shape.k_head_elems;
+  return per_head * static_cast<size_t>(std::max(0, shape.num_heads));
+}
+
+void reorder_k_to_packed(void* dst, const void* src, const ReorderKVShape& shape, const AttentionStrides& k_strides,
+                         int batch, int num_heads_kv, int seq_len_kv, int head_dim, BTLA_DTYPE kv_dtype) {
+  if (!dst || !src) {
+    throw std::invalid_argument("ark::cpu::reorder_k_to_packed: dst/src must be non-null");
+  }
+  const int ntile = shape.ntile;
+  const int rp = shape.rowpack;
+  const int sl_pad = pad_up(seq_len_kv, ntile);   // K: NTILE over seq
+  const int hs_pad = pad_up(head_dim, rp);        // K: ROWPACK over head_size
+  (void)sl_pad;
+  // K element (sl, hs) -> tile of NTILE over sl, ROWPACK over head_size.
+  //   tile = sl/NTILE, sl_in = sl%NTILE, kp = hs/rp, rp_i = hs%rp
+  //   idx = tile*(hs_pad*NTILE) + kp*(NTILE*rp) + sl_in*rp + rp_i
+  std::memset(dst, 0, reorder_kv_cache_elems(shape, /*is_value=*/false) * element_size(kv_dtype));
+#pragma omp parallel for collapse(2) schedule(static)
+  for (int b = 0; b < batch; ++b) {
+    for (int h = 0; h < num_heads_kv; ++h) {
+      const size_t head_base = (static_cast<size_t>(b) * num_heads_kv + h) * shape.k_head_elems;
+      for (int s = 0; s < seq_len_kv; ++s) {
+        const int tile = s / ntile, sl_in = s % ntile;
+        for (int d = 0; d < head_dim; ++d) {
+          const float val = load_scalar(src, qko_offset(k_strides, b, h, s, d), kv_dtype);
+          const int kp = d / rp, rp_i = d % rp;
+          const size_t idx = static_cast<size_t>(tile) * hs_pad * ntile + static_cast<size_t>(kp) * ntile * rp +
+                             static_cast<size_t>(sl_in) * rp + rp_i;
+          store_scalar(dst, head_base + idx, kv_dtype, val);
+        }
+      }
+    }
+  }
+}
+
+void reorder_v_to_packed(void* dst, const void* src, const ReorderKVShape& shape, const ValueStrides& v_strides,
+                         int batch, int num_heads_kv, int seq_len_kv, int head_dim, BTLA_DTYPE kv_dtype) {
+  if (!dst || !src) {
+    throw std::invalid_argument("ark::cpu::reorder_v_to_packed: dst/src must be non-null");
+  }
+  const int ntile = shape.ntile;
+  const int rp = shape.rowpack;
+  const int sl_pad = pad_up(seq_len_kv, rp);      // V: ROWPACK over seq
+  const int hs_pad = pad_up(head_dim, ntile);     // V: NTILE over head_size
+  (void)hs_pad;
+  // V element (sl, hs) -> tile of NTILE over head_size, ROWPACK over seq.
+  //   tile = hs/NTILE, hs_in = hs%NTILE, kp = sl/rp, rp_i = sl%rp
+  //   idx = tile*(sl_pad*NTILE) + kp*(NTILE*rp) + hs_in*rp + rp_i
+  std::memset(dst, 0, reorder_kv_cache_elems(shape, /*is_value=*/true) * element_size(kv_dtype));
+#pragma omp parallel for collapse(2) schedule(static)
+  for (int b = 0; b < batch; ++b) {
+    for (int h = 0; h < num_heads_kv; ++h) {
+      const size_t head_base = (static_cast<size_t>(b) * num_heads_kv + h) * shape.v_head_elems;
+      for (int s = 0; s < seq_len_kv; ++s) {
+        const int kp = s / rp, rp_i = s % rp;
+        for (int d = 0; d < head_dim; ++d) {
+          const float val = load_scalar(src, value_offset(v_strides, b, h, s, d), kv_dtype);
+          const int tile = d / ntile, hs_in = d % ntile;
+          const size_t idx = static_cast<size_t>(tile) * sl_pad * ntile + static_cast<size_t>(kp) * ntile * rp +
+                             static_cast<size_t>(hs_in) * rp + rp_i;
+          store_scalar(dst, head_base + idx, kv_dtype, val);
+        }
+      }
+    }
   }
 }
 
