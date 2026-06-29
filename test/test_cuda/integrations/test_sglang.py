@@ -1,4 +1,5 @@
 import gc
+import dataclasses
 import json
 import multiprocessing.resource_tracker
 import shutil
@@ -64,9 +65,27 @@ class TestAutoRound:
                         )
             except Exception:
                 pass
-        llm = sgl.Engine(
-            model_path=str(model_path), mem_fraction_static=0.5, disable_piecewise_cuda_graph=True, cuda_graph_bs=[1]
-        )
+
+        def _server_arg_fields():
+            try:
+                from sglang.srt.server_args import ServerArgs
+
+                return {f.name for f in dataclasses.fields(ServerArgs)}
+            except Exception:
+                return set()
+
+        engine_kwargs = {"model_path": str(model_path), "mem_fraction_static": 0.5}
+        fields = _server_arg_fields()
+        if "disable_piecewise_cuda_graph" in fields:
+            engine_kwargs["disable_piecewise_cuda_graph"] = True
+            if "cuda_graph_bs" in fields:
+                engine_kwargs["cuda_graph_bs"] = [1]
+        elif "disable_cuda_graph" in fields:
+            engine_kwargs["disable_cuda_graph"] = True
+            if "cuda_graph_bs_decode" in fields:
+                engine_kwargs["cuda_graph_bs_decode"] = [1]
+
+        llm = sgl.Engine(**engine_kwargs)
         try:
             prompts = ["Hello, my name is"]
             sampling_params = {"temperature": 0.6, "top_p": 0.95}
