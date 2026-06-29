@@ -17,7 +17,7 @@ import torch
 
 from auto_round.data_type.register import register_dtype
 from auto_round.data_type.utils import reshape_pad_tensor_by_group_size, revert_tensor_by_pad, round_ste
-from auto_round.export.export_to_gguf.config import GGML_QUANT_SIZES
+from auto_round.export.export_to_gguf.config import GGML_QUANT_SIZES, QK_K
 from auto_round.export.export_to_gguf.packing import make_q3_quants, make_qx_quants, make_qx_quants_chunk
 from auto_round.logger import logger
 from auto_round.utils import get_reciprocal
@@ -461,20 +461,18 @@ def search_gguf_scale_min_asym(tensor, bits=4, scale_dtype=torch.float16, imatri
             5: {"rmin": -0.9, "rdelta": 0.05, "nstep": 36, "use_mad": False},
         }
 
+        group_size = 16 if bits == 2 else 32
+        groups_per_block = QK_K // group_size
         weights = imatrix.reshape(1, -1)
+        weights = weights.expand(tensor.numel() // weights.numel(), -1).reshape(tensor.shape)
 
-        weights = weights.expand(tensor.numel() // weights.numel(), -1)
-        quant_weights = weights.reshape(tensor.shape)
-
+        tensor_blocks = tensor.reshape(-1, groups_per_block, group_size)
+        weight_blocks = weights.reshape_as(tensor_blocks)
+        sigma_factor = 1 if bits == 2 else 2
+        sigma2 = sigma_factor * torch.sum(torch.pow(tensor_blocks, 2), dim=(-1, -2), keepdim=True) / QK_K
+        quant_weights = weight_blocks * torch.sqrt(sigma2 + tensor_blocks * tensor_blocks)
+        quant_weights = quant_weights.reshape(tensor.shape)
         quant_weights = _imatrix_handle_zero(quant_weights, tensor, bits)
-
-        # sigma2 = torch.sum(torch.pow(tensor, 2), dim=-1, keepdim=True) / QK_K
-        # if imatrix is None:
-        #     av_x = torch.sqrt(sigma2)
-        #     quant_weights = torch.abs(av_x + tensor * tensor)
-        # else:
-        #     imatrix = imatrix.reshape(1, -1).expand(tensor.numel() // imatrix.numel(), -1).reshape(tensor.shape)
-        #     quant_weights = imatrix * torch.sqrt(sigma2 + tensor * tensor)
 
         params = search_kwargs[bits]
 
