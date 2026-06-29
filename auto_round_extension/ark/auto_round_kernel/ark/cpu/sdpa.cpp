@@ -147,6 +147,27 @@ void bestla_sdpa_forward(const attn_fwd_args_t& args, BTLA_DTYPE kv_dtype) {
         "ark::cpu::bestla_sdpa_forward: alibi, tanh and padding-right are not wired yet");
   }
 
+  // Runtime capability gate: the wired weight prologues are ISA-specialized and
+  // return BTLA_CODE::NotSupport (silently, behind asserts) on hardware that
+  // lacks the needed extension. Detect that up front and raise a clear error
+  // naming the dtype/layout/ISA condition instead of relying on assert (which is
+  // a no-op in release builds) or producing wrong results:
+  //   * F16 K/V  -> NTILE24_ROWPACK1, fp16->fp32 via F16C, needs AVX2.
+  //   * BF16 K/V -> NTILE48_ROWPACK2, bf16->fp32,         needs AVX512F.
+  {
+    auto* cpu = bestla::device::CpuDevice::getInstance();
+    if (kv_dtype == BTLA_DTYPE::F16 && !cpu->AVX2()) {
+      throw std::runtime_error(
+          "ark::cpu::bestla_sdpa_forward: fp16 K/V (NTILE24_ROWPACK1) mixed SDPA requires AVX2; "
+          "this CPU/build does not provide it");
+    }
+    if (kv_dtype == BTLA_DTYPE::BF16 && !cpu->AVX512F()) {
+      throw std::runtime_error(
+          "ark::cpu::bestla_sdpa_forward: bf16 K/V (NTILE48_ROWPACK2) mixed SDPA requires AVX512F; "
+          "this CPU/build does not provide it");
+    }
+  }
+
   // Threading is supplied by the caller (ARK reuses CpuWrapper::get_threading()),
   // type-erased through attn_fwd_args_t::threading. This avoids maintaining a
   // second independent BestLA thread pool in the CPU attention path.
