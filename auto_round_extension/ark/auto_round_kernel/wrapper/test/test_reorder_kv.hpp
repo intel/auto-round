@@ -138,4 +138,82 @@ struct TestReorderKV {
   }
 };
 
+// Phase 4 Step 4: persistent packed K/V cache + in-place update validation.
+// The persistent cache, sized for `capacity`, is filled incrementally
+// ([0,start_pos) then [start_pos,append_len)) and must byte-match a one-shot
+// reorder of the same final K/V sequence padded out to `capacity`.
+struct TestPersistentPackedKV {
+  TestPersistentPackedKV() { run_all(); }
+
+  static size_t qko_offset(const AttentionStrides& s, int b, int h, int sq, int d) {
+    return size_t(b) * s.batch + size_t(h) * s.head + size_t(sq) * s.seq + size_t(d) * s.dim;
+  }
+  static size_t value_offset(const ValueStrides& s, int b, int h, int sq, int d) {
+    return size_t(b) * s.batch + size_t(h) * s.head + size_t(sq) * s.seq + size_t(d) * s.dim;
+  }
+
+  // Build HND/NHD raw strides over a [B,Hkv,cap,D] plain buffer.
+  template <typename ST>
+  static ST raw_strides(int hkv, int cap, int hd, bool nhd) {
+    ST st;
+    st.dim = 1;
+    st.seq = nhd ? hkv * hd : hd;
+    st.head = nhd ? hd : cap * hd;
+    st.batch = cap * hkv * hd;
+    return st;
+  }
+
+  static void check(BTLA_DTYPE dt, int batch, int hkv, int hd, int capacity, int start_pos, int append_len, bool nhd) {
+    const int seq = start_pos + append_len;
+    // Raw buffer sized for capacity; positions >= seq are zero (match reorder pad).
+    std::vector<uint16_t> rawk(size_t(batch) * hkv * capacity * hd, 0);
+    std::vector<uint16_t> rawv(size_t(batch) * hkv * capacity * hd, 0);
+    auto ks = raw_strides<AttentionStrides>(hkv, capacity, hd, nhd);
+    auto vs = raw_strides<ValueStrides>(hkv, capacity, hd, nhd);
+    for (int b = 0; b < batch; ++b)
+      for (int h = 0; h < hkv; ++h)
+        for (int s = 0; s < seq; ++s)
+          for (int d = 0; d < hd; ++d) {
+            store_scalar(rawk.data(), qko_offset(ks, b, h, s, d), dt, float(((b + h + s + d) % 251) - 125) * 0.1f);
+            store_scalar(rawv.data(), value_offset(vs, b, h, s, d), dt, float(((b * 3 + h + s + d) % 241) - 120) * 0.1f);
+          }
+    // One-shot reorder of the capacity-length sequence (zeros past seq).
+    auto sh = packed_kv_cache_shape(batch, hkv, capacity, hd, dt);
+    std::vector<uint16_t> ref_k(reorder_kv_cache_elems(sh, false));
+    std::vector<uint16_t> ref_v(reorder_kv_cache_elems(sh, true));
+    reorder_k_to_packed(ref_k.data(), rawk.data(), sh, ks, batch, hkv, capacity, hd, dt);
+    reorder_v_to_packed(ref_v.data(), rawv.data(), sh, vs, batch, hkv, capacity, hd, dt);
+    // Persistent: zero, append prefix [0,start_pos), then [start_pos,append_len).
+    std::vector<uint16_t> cur_k(ref_k.size(), 0);
+    std::vector<uint16_t> cur_v(ref_v.size(), 0);
+    if (start_pos > 0) {
+      update_packed_k_cache(cur_k.data(), rawk.data(), sh, ks, batch, hkv, start_pos, hd, 0, dt);
+      update_packed_v_cache(cur_v.data(), rawv.data(), sh, vs, batch, hkv, start_pos, hd, 0, dt);
+    }
+    auto ks2 = raw_strides<AttentionStrides>(hkv, capacity, hd, nhd);  // append slice begins at row start_pos
+    auto vs2 = raw_strides<ValueStrides>(hkv, capacity, hd, nhd);
+    update_packed_k_cache(cur_k.data(), rawk.data() + size_t(start_pos) * ks2.seq, sh, ks2, batch, hkv, append_len, hd,
+                          start_pos, dt);
+    update_packed_v_cache(cur_v.data(), rawv.data() + size_t(start_pos) * vs2.seq, sh, vs2, batch, hkv, append_len, hd,
+                          start_pos, dt);
+    for (size_t i = 0; i < ref_k.size(); ++i)
+      if (cur_k[i] != ref_k[i]) throw std::runtime_error("persistent K cache mismatch");
+    for (size_t i = 0; i < ref_v.size(); ++i)
+      if (cur_v[i] != ref_v[i]) throw std::runtime_error("persistent V cache mismatch");
+  }
+
+  void run_all() {
+    int pass = 0;
+    for (auto dt : {BTLA_DTYPE::F16, BTLA_DTYPE::BF16})
+      for (bool nhd : {false, true})
+        for (int hd : {17, 64}) {
+          check(dt, 2, 2, hd, 128, 0, 30, nhd);    // start_pos=0, append not tile-aligned
+          check(dt, 2, 2, hd, 128, 24, 26, nhd);   // non-zero start_pos, capacity > seq
+          check(dt, 2, 2, hd, 256, 48, 49, nhd);   // non-zero start_pos, odd append
+          ++pass;
+        }
+    printf("[persistent_packed_kv] %d cases passed\n", pass);
+  }
+};
+
 }  // namespace ark::cpu

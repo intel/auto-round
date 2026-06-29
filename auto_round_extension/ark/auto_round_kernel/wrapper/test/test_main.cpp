@@ -9,6 +9,7 @@ int main() {
   // TestGemm test_gemm;
   // TestQuant test_quant;
   ark::cpu::TestReorderKV test_reorder_kv;  // CPU packed K/V reorder layout checks
+  ark::cpu::TestPersistentPackedKV test_persistent_packed_kv;  // persistent packed K/V update checks
   TestSDPA test_sdpa;
   return 0;
 }

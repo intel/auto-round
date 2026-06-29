@@ -396,4 +396,85 @@ void kv_cache_update(void* cache_k, void* cache_v, const void* key, const void* 
   }
 }
 
+ReorderKVShape packed_kv_cache_shape(int batch, int num_heads_kv, int capacity, int head_dim, BTLA_DTYPE kv_dtype) {
+  // Identical layout/strides to reorder_kv_shape, but the seq dim is padded to
+  // the persistent `capacity` instead of the current sequence length.
+  return reorder_kv_shape(batch, num_heads_kv, capacity, head_dim, kv_dtype);
+}
+
+void update_packed_k_cache(void* cache_k, const void* key, const ReorderKVShape& shape,
+                           const AttentionStrides& k_strides, int batch, int num_heads_kv, int append_len, int head_dim,
+                           int start_pos, BTLA_DTYPE kv_dtype) {
+  if (!cache_k || !key) {
+    throw std::invalid_argument("ark::cpu::update_packed_k_cache: cache/src must be non-null");
+  }
+  if (kv_dtype != BTLA_DTYPE::F16 && kv_dtype != BTLA_DTYPE::BF16) {
+    throw std::invalid_argument("ark::cpu::update_packed_k_cache: only F16 and BF16 K are supported");
+  }
+  const int ntile = shape.ntile, rp = shape.rowpack;
+  const int hs_pad = pad_up(head_dim, rp);
+  // Capacity (in seq tiles) the cache was sized for; reject overflow.
+  const int cap = static_cast<int>(shape.k_head_elems / (static_cast<size_t>(hs_pad) * ntile)) * ntile;
+  if (batch <= 0 || num_heads_kv <= 0 || append_len <= 0 || head_dim <= 0 || start_pos < 0 ||
+      start_pos + append_len > cap) {
+    throw std::invalid_argument("ark::cpu::update_packed_k_cache: invalid dimensions or append range");
+  }
+  // K (QK weight): NTILE over seq, ROWPACK over head_size. Source read via
+  // strides only (HND/NHD agnostic). Padded head_size columns are zero-filled.
+#pragma omp parallel for collapse(2) schedule(static)
+  for (int b = 0; b < batch; ++b) {
+    for (int h = 0; h < num_heads_kv; ++h) {
+      const size_t head_base = (static_cast<size_t>(b) * num_heads_kv + h) * shape.k_head_elems;
+      for (int s = 0; s < append_len; ++s) {
+        const int pos = start_pos + s;
+        const int tile = pos / ntile, sl_in = pos % ntile;
+        for (int d = 0; d < hs_pad; ++d) {
+          const float val = d < head_dim ? load_scalar(key, qko_offset(k_strides, b, h, s, d), kv_dtype) : 0.0f;
+          const int kp = d / rp, rp_i = d % rp;
+          const size_t idx = static_cast<size_t>(tile) * hs_pad * ntile + static_cast<size_t>(kp) * ntile * rp +
+                             static_cast<size_t>(sl_in) * rp + rp_i;
+          store_scalar(cache_k, head_base + idx, kv_dtype, val);
+        }
+      }
+    }
+  }
+}
+
+void update_packed_v_cache(void* cache_v, const void* value, const ReorderKVShape& shape,
+                           const ValueStrides& v_strides, int batch, int num_heads_kv, int append_len, int head_dim,
+                           int start_pos, BTLA_DTYPE kv_dtype) {
+  if (!cache_v || !value) {
+    throw std::invalid_argument("ark::cpu::update_packed_v_cache: cache/src must be non-null");
+  }
+  if (kv_dtype != BTLA_DTYPE::F16 && kv_dtype != BTLA_DTYPE::BF16) {
+    throw std::invalid_argument("ark::cpu::update_packed_v_cache: only F16 and BF16 V are supported");
+  }
+  const int ntile = shape.ntile, rp = shape.rowpack;
+  const int hs_pad = pad_up(head_dim, ntile);
+  const int sl_pad = hs_pad == 0 ? 0 : static_cast<int>(shape.v_head_elems / hs_pad);
+  if (batch <= 0 || num_heads_kv <= 0 || append_len <= 0 || head_dim <= 0 || start_pos < 0 ||
+      start_pos + append_len > sl_pad) {
+    throw std::invalid_argument("ark::cpu::update_packed_v_cache: invalid dimensions or append range");
+  }
+  // V (PV weight): NTILE over head_size, ROWPACK over seq. Padded head_size rows
+  // zero-filled. Source read via strides only (HND/NHD agnostic).
+#pragma omp parallel for collapse(2) schedule(static)
+  for (int b = 0; b < batch; ++b) {
+    for (int h = 0; h < num_heads_kv; ++h) {
+      const size_t head_base = (static_cast<size_t>(b) * num_heads_kv + h) * shape.v_head_elems;
+      for (int s = 0; s < append_len; ++s) {
+        const int pos = start_pos + s;
+        const int kp = pos / rp, rp_i = pos % rp;
+        for (int d = 0; d < hs_pad; ++d) {
+          const float val = d < head_dim ? load_scalar(value, value_offset(v_strides, b, h, s, d), kv_dtype) : 0.0f;
+          const int tile = d / ntile, hs_in = d % ntile;
+          const size_t idx = static_cast<size_t>(tile) * sl_pad * ntile + static_cast<size_t>(kp) * ntile * rp +
+                             static_cast<size_t>(hs_in) * rp + rp_i;
+          store_scalar(cache_v, head_base + idx, kv_dtype, val);
+        }
+      }
+    }
+  }
+}
+
 }  // namespace ark::cpu

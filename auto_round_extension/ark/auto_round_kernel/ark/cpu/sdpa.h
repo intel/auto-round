@@ -98,4 +98,34 @@ void kv_cache_update(void* cache_k, void* cache_v, const void* key, const void* 
                      const ValueStrides& v_strides, BTLA_DTYPE dtype, int batch, int num_heads_kv, int append_len,
                      int head_dim, int capacity, int start_pos);
 
+// ---------------------------------------------------------------------------
+// Phase 4 Step 4: persistent packed K/V cache + in-place update path.
+//
+// The temporary bridge above reorders the whole raw K/V into a packed cache on
+// every forward. To move toward a Neural-Speed-style persistent cache, these
+// helpers size a packed cache for a fixed `capacity` (>= sequence length) and
+// append raw K/V tokens directly into it at [start_pos, start_pos+append_len),
+// without re-reordering the prefix. Packed geometry/strides are identical to
+// reorder_kv_shape (fp16->NTILE24_ROWPACK1, bf16->NTILE48_ROWPACK2) but the seq
+// dim is padded to `capacity`. Still experimental and gated by
+// ARK_UNSAFE_BESTLA_MIXED_SDPA; not default-enabled and not yet routed by the
+// Python SDPA path. Source raw tensors are read only through stride fields, so
+// HND and NHD layouts work with no hard-coded assumptions.
+// ---------------------------------------------------------------------------
+
+// Packed cache shape sized for a fixed capacity rather than the current seq.
+// k_head_elems / v_head_elems give the packed per-head stride; multiply by
+// num_heads for the total K/V cache element count.
+ReorderKVShape packed_kv_cache_shape(int batch, int num_heads_kv, int capacity, int head_dim, BTLA_DTYPE kv_dtype);
+
+// Append raw K tokens -> persistent packed K cache at [start_pos, start_pos+append_len).
+void update_packed_k_cache(void* cache_k, const void* key, const ReorderKVShape& shape,
+                           const AttentionStrides& k_strides, int batch, int num_heads_kv, int append_len, int head_dim,
+                           int start_pos, BTLA_DTYPE kv_dtype);
+
+// Append raw V tokens -> persistent packed V cache at [start_pos, start_pos+append_len).
+void update_packed_v_cache(void* cache_v, const void* value, const ReorderKVShape& shape,
+                           const ValueStrides& v_strides, int batch, int num_heads_kv, int append_len, int head_dim,
+                           int start_pos, BTLA_DTYPE kv_dtype);
+
 }  // namespace ark::cpu
