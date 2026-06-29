@@ -21,6 +21,7 @@
 #include <cute/numeric/numeric_types.hpp>
 #include <sycl/aliases.hpp>
 #include "bestla/bestla.h"
+#include "utils.hpp"
 
 #include <sycl/sycl.hpp>
 #include "sycl_tla_sdpa.hpp"
