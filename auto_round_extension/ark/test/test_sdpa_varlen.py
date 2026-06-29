@@ -12,8 +12,7 @@ import sys
 import time
 
 import torch
-
-from ut_utils import is_xpu_available, get_ark, print_top_diffs
+from ut_utils import get_ark, is_xpu_available, print_top_diffs
 from ut_utils import reference_sdpa_varlen as reference_varlen_sdpa
 
 
@@ -433,7 +432,7 @@ def benchmark_sdpa_varlen_case(
         print(f"  seq_lens_q={seq_lens_q}")
         print(f"  seq_lens_kv={seq_lens_k}")
         print(f"  max_seqlen_q={max_seqlen_q}, max_seqlen_kv={max_seqlen_k}")
-        print(f"  (diff vs per-batch ark.sdpa: same kernel, bit-exact)")
+        print("  (diff vs per-batch ark.sdpa: same kernel, bit-exact)")
         print_top_diffs(dff, ref, out, topk=4, threshold=0.5)
         print(f"  Time: {dur*1e3:.3f} ms  TFLOPS: {tflops:.2f}  GB/s: {gbps:.1f}")
 

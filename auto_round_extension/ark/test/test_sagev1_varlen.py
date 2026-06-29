@@ -23,9 +23,7 @@ import sys
 import time
 
 import torch
-
-from ut_utils import is_xpu_available, get_ark, print_top_diffs
-from ut_utils import reference_sdpa_varlen
+from ut_utils import get_ark, is_xpu_available, print_top_diffs, reference_sdpa_varlen
 
 # Supported SAGE kernel variants
 KERNEL_VARIANTS = ["v1_pvhalf", "v1_pvi8"]

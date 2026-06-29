@@ -6,8 +6,7 @@ import time
 
 import pandas as pd
 import torch
-
-from ut_utils import reference_sdpa, print_top_diffs, is_xpu_available, get_ark
+from ut_utils import get_ark, is_xpu_available, print_top_diffs, reference_sdpa
 
 ark = None
 

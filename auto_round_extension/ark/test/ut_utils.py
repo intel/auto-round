@@ -171,7 +171,6 @@ def is_xpu_available():
 
 
 def get_ark():
-    import auto_round_kernel
 
     return auto_round_kernel
 
