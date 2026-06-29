@@ -457,6 +457,10 @@ class BaseCompressor(object):
             if hasattr(config, "scheme"):
                 config.scheme = self.scheme_context
         self.quantize_config.check_config()
+        for config in self._alg_configs:
+            finalize_scheme = getattr(config, "finalize_scheme", None)
+            if callable(finalize_scheme):
+                finalize_scheme()
 
         self.orig_scheme = copy.deepcopy(self.scheme)
         self.scheme = default_scheme

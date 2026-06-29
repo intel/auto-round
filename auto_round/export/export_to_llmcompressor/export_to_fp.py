@@ -33,6 +33,7 @@ from auto_round.export.utils import (
     is_immediate_saving_mode,
     release_layer_safely,
     save_model,
+    save_pretrained_artifact,
 )
 from auto_round.logger import logger
 from auto_round.utils import (
@@ -362,8 +363,7 @@ def save_quantized_as_fp(
     immediate_saving = is_immediate_saving_mode(model, serialization_dict)
     if os.path.exists(output_dir) and not immediate_saving:
         logger.warning(f"{output_dir} already exists, this may cause model conflict")
-    if tokenizer is not None:
-        tokenizer.save_pretrained(output_dir)
+    save_pretrained_artifact(tokenizer, output_dir, artifact_name="tokenizer")
 
     if processor is not None:
         processor.save_pretrained(output_dir)
