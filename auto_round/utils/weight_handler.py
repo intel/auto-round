@@ -414,7 +414,8 @@ def convert_module_to_hp_if_necessary(
     if hasattr(model_or_layer, "quantized_weight_type") and model_or_layer.quantized_weight_type is not None:
         handler = get_handler(model_or_layer.quantized_weight_type)
         logger.info(
-            f"Converting layer {model_or_layer.__class__.__name__} from {model_or_layer.quantized_weight_type.name} to {dtype}"
+            f"Converting layer {model_or_layer.__class__.__name__} from "
+            + f"{model_or_layer.quantized_weight_type.name} to {dtype}"
         )
         new_module = handler.convert_layer(model_or_layer, dtype, device, to_cpu)
         _sync_serialization_attrs(model_or_layer, new_module)
