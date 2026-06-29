@@ -637,25 +637,28 @@ class BaseCompressor(object):
         is_gguf_format = _formats is not None and any(
             "gguf" in str(getattr(fmt, "output_format", "")) for fmt in _formats
         )
-        predefined_ignore_layers = get_predefined_ignore_layers(self.model_context.model)
-        if predefined_ignore_layers and self.quant_block_list:
-            block_prefixes = [block for group in self.quant_block_list for block in group]
-            # Only filter layers that are full paths clearly inside a block.
-            predefined_ignore_layers = [
-                name
-                for name in predefined_ignore_layers
-                if any(name.startswith(prefix) for prefix in block_prefixes)
-                or not any(prefix.startswith(name.split(".")[0]) for prefix in block_prefixes)
-            ]
-        predefined_ignore_layers = compress_layer_names(predefined_ignore_layers)
-        compressed_predefined_ignore_layers = predefined_ignore_layers
-        if predefined_ignore_layers:
-            logger.info(f"Using predefined ignore_layers: {compressed_predefined_ignore_layers}")
-            tmp_str = predefined_ignore_layers.replace(" ", "")
-            if self.ignore_layers == "":
-                self.ignore_layers = tmp_str
-            else:
-                self.ignore_layers += "," + tmp_str
+        predefined_ignore_layers = get_predefined_ignore_layers(self.model_context.model) if not is_gguf_format else []
+        compressed_predefined_ignore_layers = compress_layer_names(predefined_ignore_layers)
+
+        if not is_gguf_format:
+            predefined_ignore_layers = get_predefined_ignore_layers(self.model_context.model)
+            if predefined_ignore_layers and self.quant_block_list:
+                block_prefixes = [block for group in self.quant_block_list for block in group]
+                # Only filter layers that are full paths clearly inside a block.
+                predefined_ignore_layers = [
+                    name
+                    for name in predefined_ignore_layers
+                    if any(name.startswith(prefix) for prefix in block_prefixes)
+                    or not any(prefix.startswith(name.split(".")[0]) for prefix in block_prefixes)
+                ]
+            predefined_ignore_layers = compress_layer_names(predefined_ignore_layers)
+            if predefined_ignore_layers:
+                logger.info(f"Using predefined ignore_layers: {compressed_predefined_ignore_layers}")
+                tmp_str = predefined_ignore_layers.replace(" ", "")
+                if self.ignore_layers == "":
+                    self.ignore_layers = tmp_str
+                else:
+                    self.ignore_layers += "," + tmp_str
 
         if self.is_auto_scheme:
             self.layer_config = self._gen_auto_scheme()

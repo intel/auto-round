@@ -461,17 +461,9 @@ def search_gguf_scale_min_asym(tensor, bits=4, scale_dtype=torch.float16, imatri
             5: {"rmin": -0.9, "rdelta": 0.05, "nstep": 36, "use_mad": False},
         }
 
-        group_size = 16 if bits == 2 else 32
-        groups_per_block = QK_K // group_size
         weights = imatrix.reshape(1, -1)
-        weights = weights.expand(tensor.numel() // weights.numel(), -1).reshape(tensor.shape)
-
-        tensor_blocks = tensor.reshape(-1, groups_per_block, group_size)
-        weight_blocks = weights.reshape_as(tensor_blocks)
-        sigma_factor = 1 if bits == 2 else 2
-        sigma2 = sigma_factor * torch.sum(torch.pow(tensor_blocks, 2), dim=(-1, -2), keepdim=True) / QK_K
-        quant_weights = weight_blocks * torch.sqrt(sigma2 + tensor_blocks * tensor_blocks)
-        quant_weights = quant_weights.reshape(tensor.shape)
+        weights = weights.expand(tensor.numel() // weights.numel(), -1)
+        quant_weights = weights.reshape(tensor.shape)
         quant_weights = _imatrix_handle_zero(quant_weights, tensor, bits)
 
         params = search_kwargs[bits]
@@ -787,7 +779,7 @@ def quant_tensor_gguf_sym_dq(
         Quantized and de-quantized tensor, scale, zero-point
     """
 
-    from auto_round.export.export_to_gguf.config import K_SCALE_SIZE, QK_K
+    from auto_round.export.export_to_gguf.config import K_SCALE_SIZE
 
     if bits not in [3, 6]:
         raise KeyError(f"bits={bits} is not supported by gguf_int_sym_dq, please check.")
