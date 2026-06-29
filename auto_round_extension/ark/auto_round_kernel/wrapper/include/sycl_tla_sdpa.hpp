@@ -640,7 +640,13 @@ struct SageKernelRunner {
     if constexpr (isVarLen) {
       shape.seq_len_qo.cumulative_length = const_cast<int*>(options.cu_seqlens_q);
       shape.seq_len_kv.cumulative_length = const_cast<int*>(options.cu_seqlens_k);
-      shape.seq_len_kv_cache.cumulative_length = const_cast<int*>(options.cu_seqlens_kv_cache);
+      if (options.cu_seqlens_kv_cache) {
+        shape.seq_len_kv_cache.cumulative_length = const_cast<int*>(options.cu_seqlens_kv_cache);
+      } else {
+        zero_cu_cache_.reset(options.batch + 1);
+        std::fill_n(zero_cu_cache_.get(), options.batch + 1, 0);
+        shape.seq_len_kv_cache.cumulative_length = zero_cu_cache_.get();
+      }
     }
     return shape;
   }

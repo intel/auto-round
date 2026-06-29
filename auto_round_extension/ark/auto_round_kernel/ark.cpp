@@ -161,6 +161,9 @@ static void sdpa_varlen(torch_ptr stream, torch_ptr Q, torch_ptr K, torch_ptr V,
   if (mask && is_causal) {
     throw std::invalid_argument("ark::sdpa_varlen: mask and is_causal cannot both be set");
   }
+  if (tensor_layout != TENSOR_LAYOUT_HND && tensor_layout != TENSOR_LAYOUT_NHD) {
+    throw std::invalid_argument("ark::sdpa_varlen: tensor_layout must be TENSOR_LAYOUT_HND or TENSOR_LAYOUT_NHD");
+  }
 
   // Strides for flat 3-D layout [total, num_heads, head_dim].
   // Shape order expected by the kernel: (seq, head-dim, num_heads, batch=1).

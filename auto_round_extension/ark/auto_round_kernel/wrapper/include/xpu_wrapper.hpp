@@ -1607,11 +1607,13 @@ class XpuWrapper {
         ? (float*)((int8_t*)ptr + q_size + k_size + q_scale_size * sizeof(float) + k_scale_size * sizeof(float) + k_size)
         : nullptr;
 
-    // Flat [total, H, D] quantize via strided path (batch=1).
-    sage_dynamic_quant_strided<T>(q, (T*)Q_ptr, q_out_ptr, qscale, batch, num_heads_q,
+    // Flat [total, H, D] quantize via strided path (batch=1 — the tensor is flat,
+    // not a batched 4-D tensor, so batch must be 1 to avoid reading past the end
+    // of the packed buffer when batch > 1).
+    sage_dynamic_quant_strided<T>(q, (T*)Q_ptr, q_out_ptr, qscale, 1, num_heads_q,
                                   total_seqlen_q, q_seq_blk, head_dim, scale_block_size,
                                   q_stride_s, q_stride_d, q_stride_h, q_stride_b);
-    sage_dynamic_quant_strided<T>(q, (T*)K_ptr, k_out_ptr, kscale, batch, num_heads_kv,
+    sage_dynamic_quant_strided<T>(q, (T*)K_ptr, k_out_ptr, kscale, 1, num_heads_kv,
                                   total_seqlen_kv, k_seq_blk, head_dim, scale_block_size,
                                   k_stride_s, k_stride_d, k_stride_h, k_stride_b);
 
@@ -1622,7 +1624,7 @@ class XpuWrapper {
 
     constexpr BTLA_DTYPE pv_dtype = std::is_same<T, sycl::half>::value ? BTLA_DTYPE::F16 : BTLA_DTYPE::BF16;
     if (use_int8_pv) {
-      sage_dynamic_quant_v_strided<T>(q, (T*)V_ptr, v_out_ptr, vscale, batch,
+      sage_dynamic_quant_v_strided<T>(q, (T*)V_ptr, v_out_ptr, vscale, 1,
                                       num_heads_kv, total_seqlen_kv, k_seq_blk, head_dim, scale_block_size,
                                       v_stride_d, v_stride_s, v_stride_h, v_stride_b);
       ark::sage_prefill_varlen(q, q_out_ptr, k_out_ptr, v_out_ptr, O_ptr, mask, scale_block_size, qscale, kscale,

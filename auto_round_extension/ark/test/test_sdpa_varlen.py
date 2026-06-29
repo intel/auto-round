@@ -1,5 +1,19 @@
-# Copyright (C) 2026 Intel Corporation
-# SPDX-License-Identifier: Apache-2.0
+#!/usr/bin/env python
+# -*- coding: utf-8 -*-
+#
+# Copyright (c) 2026 Intel Corporation
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#   http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
 
 """
 Unit tests for sdpa_varlen: correctness and performance.
@@ -11,6 +25,7 @@ import math
 import sys
 import time
 
+import pytest
 import torch
 from ut_utils import get_ark, is_xpu_available, print_top_diffs
 from ut_utils import reference_sdpa_varlen as reference_varlen_sdpa
@@ -25,6 +40,12 @@ def has_sdpa():
     if ark_instance.xpu_lib is None:
         return False
     return hasattr(ark_instance.xpu_lib, "sdpa")
+
+
+pytestmark = [
+    pytest.mark.skipif(not is_xpu_available(), reason="XPU not available"),
+    pytest.mark.skipif(not has_sdpa(), reason="SDPA kernel not built (need ARK_SYCL_TLA=ON)"),
+]
 
 
 # ========================================================================
@@ -227,6 +248,10 @@ def test_sdpa_varlen_correctness(
         print_top_diffs(dff, ref, out, topk=4, threshold=0.1)
 
     passed = (max_diff < max_diff_threshold) and (mean_diff < mean_diff_threshold)
+    assert passed, (
+        f"max_diff={max_diff:.4f} exceeds threshold={max_diff_threshold}, "
+        f"mean_diff={mean_diff:.6f} exceeds threshold={mean_diff_threshold}"
+    )
     return {
         "passed": passed,
         "max_diff": max_diff,
