@@ -58,6 +58,7 @@ All attention backends support both `HND` (`[B, H, N, D]`) and `NHD` (`[B, N, H,
 
 Grouped GEMM for Mixture-of-Experts layers, supporting FP16/BF16 with variable token counts per expert.
 
+
 ## Installation
 
 ### 1. Install via pip

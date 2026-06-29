@@ -223,10 +223,7 @@ def _print_header(title: str) -> None:
     print()
     print("=" * 110)
     print(title)
-    print(
-        f"{'shape':<18}{'N':>7}{'K':>7}{'tokens':>8}"
-        f"{'baseline(ms)':>16}{'ark(ms)':>14}{'speedup':>12}"
-    )
+    print(f"{'shape':<18}{'N':>7}{'K':>7}{'tokens':>8}" f"{'baseline(ms)':>16}{'ark(ms)':>14}{'speedup':>12}")
     print("-" * 110)
 
 
@@ -238,10 +235,7 @@ def _print_row(label, N, K, total_tokens, base_ms, ark_ms):
     weights.
     """
     speedup = base_ms / ark_ms if ark_ms > 0 else float("nan")
-    print(
-        f"{label:<18}{N:>7}{K:>7}{total_tokens:>8}"
-        f"{base_ms:>16.4f}{ark_ms:>14.4f}{speedup:>11.2f}x"
-    )
+    print(f"{label:<18}{N:>7}{K:>7}{total_tokens:>8}" f"{base_ms:>16.4f}{ark_ms:>14.4f}{speedup:>11.2f}x")
 
 
 # ---------------------------------------------------------------------------
