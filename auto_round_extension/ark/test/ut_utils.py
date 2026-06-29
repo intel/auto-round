@@ -26,7 +26,7 @@ import torch
 
 
 def is_xpu_available():
-    return torch.xpu.is_available()
+    return hasattr(torch, "xpu") and torch.xpu.is_available()
 
 
 def capture_args(f):
@@ -164,10 +164,6 @@ def sample_valid_fp8_e8m0_xpu_safe(shape, fmt: str, device, *, exp_range=None):
         mant = torch.randint(0, 4, shape, dtype=torch.uint8, device=cpu)
         payload_u8 = (sign << 7) | (exp << 2) | mant
     return payload_u8.view(torch.int8).to(device)
-
-
-def is_xpu_available():
-    return torch.xpu.is_available()
 
 
 def get_ark():

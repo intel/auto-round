@@ -197,7 +197,7 @@ def test_sdpa_varlen_correctness(
     if is_causal:
         max_diff_threshold = max(max_diff_threshold, 1000.0)
         mean_diff_threshold = max(mean_diff_threshold, 0.5)
-    """Run one correctness case and return metrics."""
+    # Run one correctness case and return metrics.
     q, k, v, cu_seqlens_q, cu_seqlens_k, max_seqlen_q, max_seqlen_k, seq_lens_q, seq_lens_k = build_varlen_problem(
         batch, total_q, total_kv, h_q, h_kv, head_dim, dtype, device
     )
@@ -238,9 +238,8 @@ def test_sdpa_varlen_correctness(
     if math.isnan(max_diff) or math.isinf(max_diff):
         nan_count = int(torch.isnan(out).sum().item() + torch.isinf(out).sum().item() + torch.isinf(ref).sum().item())
         total_elems = out.numel()
-        print(f"  [NaN/Inf] {nan_count}/{total_elems} abnormal elements (kernel causal-mask boundary artifact)")
-        max_diff = 0.0
-        mean_diff = 0.0
+        print(f"  [NaN/Inf] {nan_count}/{total_elems} abnormal elements — KERNEL BUG")
+        assert False, f"Kernel produced {nan_count}/{total_elems} NaN/Inf elements"
 
     if verbose:
         print(f"  seq_lens_q={seq_lens_q}, seq_lens_k={seq_lens_k}")

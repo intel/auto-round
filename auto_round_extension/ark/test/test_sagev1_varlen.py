@@ -1,5 +1,19 @@
-# Copyright (C) 2026 Intel Corporation
-# SPDX-License-Identifier: Apache-2.0
+#!/usr/bin/env python
+# -*- coding: utf-8 -*-
+#
+# Copyright (c) 2026 Intel Corporation
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#   http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
 
 """
 Unit tests for sagev1_varlen: correctness and performance.
@@ -22,8 +36,26 @@ import math
 import sys
 import time
 
+import pytest
 import torch
 from ut_utils import get_ark, is_xpu_available, print_top_diffs, reference_sdpa_varlen
+
+
+def has_sagev1():
+    """Check if the SAGE varlen kernel is available."""
+    try:
+        ark_instance = get_ark()
+    except Exception:
+        return False
+    if ark_instance.xpu_lib is None:
+        return False
+    return hasattr(ark_instance.xpu_lib, "sagev1_varlen")
+
+
+pytestmark = [
+    pytest.mark.skipif(not is_xpu_available(), reason="XPU not available"),
+    pytest.mark.skipif(not has_sagev1(), reason="SAGE v1 kernel not built (need ARK_SYCL_TLA=ON)"),
+]
 
 # Supported SAGE kernel variants
 KERNEL_VARIANTS = ["v1_pvhalf", "v1_pvi8"]
@@ -61,9 +93,9 @@ def build_varlen_problem(
         (q, k, v, cu_seqlens_q, cu_seqlens_k, max_seqlen_q, max_seqlen_k,
          seq_lens_q, seq_lens_k)
     """
-    # Heuristic: align total_q/kv to quant_block_size (64) for SAGE
-    total_q = max(total_q, total_q // 64 * 64)
-    total_kv = max(total_kv, total_kv // 64 * 64)
+    # Heuristic: align total_q/kv up to quant_block_size (64) for SAGE
+    total_q = ((total_q + 63) // 64) * 64
+    total_kv = ((total_kv + 63) // 64) * 64
 
     def _random_seq_lens(batch, total, min_len=1):
         cuts = sorted(
@@ -197,6 +229,11 @@ def test_sagev1_varlen_correctness(
         print_top_diffs(dff, ref, out, topk=4, threshold=0.5)
 
     passed = not has_nan and (max_diff < max_diff_threshold) and (mean_diff < mean_diff_threshold)
+    assert passed, (
+        f"max_diff={max_diff:.4f} exceeds threshold={max_diff_threshold}, "
+        f"mean_diff={mean_diff:.6f} exceeds threshold={mean_diff_threshold}"
+        + (f", has_nan={has_nan}" if has_nan else "")
+    )
     return {
         "passed": passed,
         "max_diff": max_diff,
