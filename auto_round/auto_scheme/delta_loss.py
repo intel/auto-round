@@ -1531,7 +1531,9 @@ def _gen_layer_config(
     target_params_cnt = int(total_params * target_bits)
     sorted_indices = sorted(range(len(options_scores)), key=lambda i: options_scores[i])
     # Layers that are not fixed in fixed_layer_scheme
-    not_fixed_embedding_layers_names = [name for name in embedding_layers_names if name not in fixed_layer_scheme]
+    not_fixed_embedding_layers_names = [
+        name for name in embedding_layers_names if (name not in fixed_layer_scheme and name in quant_layer_names)
+    ]
 
     # Determine if model has shared lm_head (tie_word_embeddings)
     has_tied_lm_head = getattr(getattr(model, "config", None), "tie_word_embeddings", False)
