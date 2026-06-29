@@ -106,17 +106,23 @@ def _normalize_attention_mask(
 @dataclass
 class WanSparseAttentionStats:
     self_attn_total: int = 0
+    cross_attn_total: int = 0
     sparse_self_attn_calls: int = 0
+    sparse_cross_attn_calls: int = 0
     cross_attn_fallbacks: int = 0
+    cross_attn_policy_fallbacks: int = 0
+    cross_attn_unsupported_fallbacks: int = 0
+    cross_attn_runtime_fallbacks: int = 0
     unsupported_fallbacks: int = 0
     runtime_fallbacks: int = 0
     sparse_sparsity_sum: float = 0.0
 
     @property
     def avg_sparsity(self) -> float:
-        if self.sparse_self_attn_calls == 0:
+        sparse_calls = self.sparse_self_attn_calls + self.sparse_cross_attn_calls
+        if sparse_calls == 0:
             return 0.0
-        return self.sparse_sparsity_sum / self.sparse_self_attn_calls
+        return self.sparse_sparsity_sum / sparse_calls
 
 
 class WanSparseAttnProcessor:
@@ -128,12 +134,14 @@ class WanSparseAttnProcessor:
         smooth_k: bool,
         topk: float,
         attention_sink: bool,
+        enable_cross_attention: bool,
     ):
         self.original_processor = original_processor
         self.stats = stats
         self.smooth_k = smooth_k
         self.topk = topk
         self.attention_sink = attention_sink
+        self.enable_cross_attention = enable_cross_attention
         self._warned_runtime_fallback = False
 
     def __call__(
@@ -146,19 +154,22 @@ class WanSparseAttnProcessor:
         **kwargs,
     ) -> torch.Tensor:
         if attn.is_cross_attention:
-            self.stats.cross_attn_fallbacks += 1
-            return self.original_processor(
-                attn,
-                hidden_states,
-                encoder_hidden_states,
-                attention_mask,
-                rotary_emb,
-                **kwargs,
-            )
+            self.stats.cross_attn_total += 1
+            if not self.enable_cross_attention:
+                self.stats.cross_attn_fallbacks += 1
+                self.stats.cross_attn_policy_fallbacks += 1
+                return self.original_processor(
+                    attn,
+                    hidden_states,
+                    encoder_hidden_states,
+                    attention_mask,
+                    rotary_emb,
+                    **kwargs,
+                )
+        else:
+            self.stats.self_attn_total += 1
 
-        self.stats.self_attn_total += 1
-
-        if encoder_hidden_states is not None:
+        if encoder_hidden_states is not None and not attn.is_cross_attention:
             self.stats.unsupported_fallbacks += 1
             return self.original_processor(
                 attn,
@@ -170,6 +181,9 @@ class WanSparseAttnProcessor:
             )
 
         if hidden_states.device.type != "xpu" or hidden_states.dtype not in (torch.float16, torch.bfloat16):
+            if attn.is_cross_attention:
+                self.stats.cross_attn_fallbacks += 1
+                self.stats.cross_attn_unsupported_fallbacks += 1
             self.stats.unsupported_fallbacks += 1
             return self.original_processor(
                 attn,
@@ -215,13 +229,19 @@ class WanSparseAttnProcessor:
                 tensor_layout="NHD",
                 return_sparsity=True,
             )
-            self.stats.sparse_self_attn_calls += 1
+            if attn.is_cross_attention:
+                self.stats.sparse_cross_attn_calls += 1
+            else:
+                self.stats.sparse_self_attn_calls += 1
             self.stats.sparse_sparsity_sum += float(sparsity)
             attn_out = attn_out.flatten(2, 3).type_as(query)
             attn_out = attn.to_out[0](attn_out)
             attn_out = attn.to_out[1](attn_out)
             return attn_out
         except Exception as exc:  # noqa: BLE001
+            if attn.is_cross_attention:
+                self.stats.cross_attn_fallbacks += 1
+                self.stats.cross_attn_runtime_fallbacks += 1
             self.stats.runtime_fallbacks += 1
             if not self._warned_runtime_fallback:
                 warnings.warn(
@@ -246,6 +266,7 @@ def patch_wan_sparse_attention(
     smooth_k: bool = True,
     topk: float = 0.75,
     attention_sink: bool = False,
+    enable_cross_attention: bool = False,
 ):
     ensure_ark_sparse_binding()
     originals: list[tuple[WanAttention, object]] = []
@@ -261,6 +282,7 @@ def patch_wan_sparse_attention(
                     smooth_k=smooth_k,
                     topk=topk,
                     attention_sink=attention_sink,
+                    enable_cross_attention=enable_cross_attention,
                 )
             )
             originals.append((module, original))
@@ -278,4 +300,5 @@ def patch_wan_sparse_attention_from_env(transformer):
         smooth_k=_parse_bool_env("WAN_SPARSE_SMOOTH_K", True),
         topk=float(os.getenv("WAN_SPARSE_TOPK", "0.75")),
         attention_sink=_parse_bool_env("WAN_SPARSE_ATTENTION_SINK", False),
+        enable_cross_attention=_parse_bool_env("WAN_SPARSE_ENABLE_CROSS_ATTN", False),
     )

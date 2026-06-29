@@ -109,6 +109,12 @@ def _triton_bmm_pool_sim_simmean_fuse_quant_xpu(
     grams = tl.dot(x_normed, tl.trans(x_normed))
     sum_value = tl.sum(grams).to(tl.float32)
     cur_sim = (sum_value / (bs_eff * bs_eff)) > cur_h1
+    # Match the CUDA reference (SpargeAttn spas_sage_attn/utils.py): there the
+    # self-similarity divides zero-padded rows by a zero norm (0/0 -> NaN), so a
+    # partial tail block compares NaN > thr == False and is forced dense. Our
+    # guarded norm would instead mark the tail block similar/prunable, sparsifying
+    # the sequence tail (= last video frames). Force partial blocks to False.
+    cur_sim = cur_sim & (bs_eff >= BS)
 
     num_blocks = tl.cdiv(N, BS)
     pool_block_offset = (b * H * num_blocks * D) + (h * num_blocks * D) + (nb * D)
@@ -142,10 +148,17 @@ def _safe_softmax(scores: torch.Tensor) -> torch.Tensor:
     return torch.where(denom > 0, probs / denom, torch.zeros_like(probs))
 
 
-def _build_block_causal_mask(num_q_tiles: int, num_k_blocks: int, blocks_per_qtile: int, device: torch.device) -> torch.Tensor:
+def _build_block_causal_mask(
+    num_q_tiles: int,
+    num_k_blocks: int,
+    q_route_block_tokens: int,
+    k_route_block_tokens: int,
+    device: torch.device,
+) -> torch.Tensor:
     q_idx = torch.arange(num_q_tiles, device=device, dtype=torch.int64).view(-1, 1)
     k_idx = torch.arange(num_k_blocks, device=device, dtype=torch.int64).view(1, -1)
-    return k_idx < ((q_idx + 1) * blocks_per_qtile)
+    valid_k_per_q = ((q_idx + 1) * q_route_block_tokens + k_route_block_tokens - 1) // k_route_block_tokens
+    return k_idx < valid_k_per_q
 
 
 @triton.jit
@@ -160,10 +173,14 @@ def _triton_fill_block_map_kernel(final_map_ptr, num_to_select_ptr, sorted_indic
     sorted_row_ptr = sorted_indices_ptr + b * H * Q * NK + h * Q * NK + q * NK
     final_row_ptr = final_map_ptr + b * H * Q * NK + h * Q * NK + q * NK
     cur_num_to_select = tl.where(cur_num_to_select == 0, 1, cur_num_to_select)
+    added = 0
     for i in range(NK):
-        if i < cur_num_to_select:
+        if added < cur_num_to_select:
             cur_idx = tl.load(sorted_row_ptr + i)
-            tl.store(final_row_ptr + cur_idx, 1)
+            cur_val = tl.load(final_row_ptr + cur_idx)
+            if cur_val == 0:
+                tl.store(final_row_ptr + cur_idx, 1)
+                added += 1
 
 
 def _fill_block_map_triton(final_map: torch.Tensor, num_to_select: torch.Tensor, sorted_indices: torch.Tensor) -> torch.Tensor:
@@ -213,9 +230,15 @@ def _fill_block_map_torch(final_map: torch.Tensor, num_to_select: torch.Tensor, 
     k_blocks = final_map.shape[-1]
     filled = final_map.clone()
     column_ids = torch.arange(k_blocks, device=final_map.device).view(1, 1, 1, k_blocks)
+    target_new = torch.maximum(num_to_select, torch.ones_like(num_to_select))
+    added = torch.zeros_like(num_to_select)
     for rank in range(k_blocks):
-        active = (num_to_select > rank).unsqueeze(-1)
-        filled |= active & (column_ids == sorted_indices[..., rank : rank + 1])
+        idx_match = column_ids == sorted_indices[..., rank : rank + 1]
+        is_new = idx_match & ~filled
+        should_add = (added < target_new).unsqueeze(-1)
+        newly_selected = should_add & is_new
+        filled |= newly_selected
+        added = added + newly_selected.any(dim=-1).to(added.dtype)
     return filled
 
 
@@ -273,7 +296,7 @@ def _get_pool_sim_triton_simmean_fuse_quant(
 
 def _run_triton_xpu_preprocess(ctx: Any) -> dict[str, Any]:
     key_mean = _sequence_mean_native_layout(ctx.key, ctx.tensor_layout) if ctx.smooth_k else None
-    pooled_q, _, q_int8_hnd, q_scale = _get_pool_sim_triton_simmean_fuse_quant(
+    pooled_q, sim_qblocks, q_int8_hnd, q_scale = _get_pool_sim_triton_simmean_fuse_quant(
         ctx.query,
         None,
         ctx.quant_block_size,
@@ -287,21 +310,49 @@ def _run_triton_xpu_preprocess(ctx: Any) -> dict[str, Any]:
         ctx.simthreshd1[: ctx.num_heads_kv],
         ctx.tensor_layout,
     )
-    pooled_q_for_routing, sim_q_for_routing, _, _ = _get_pool_sim_triton_simmean_fuse_quant(
-        ctx.query,
-        None,
-        ctx.query_tile_tokens,
-        ctx.simthreshd1,
-        ctx.tensor_layout,
-    )
+    k_quant_gran = getattr(ctx, "k_quant_granularity", ctx.quant_block_size)
+    if k_quant_gran > ctx.quant_block_size:
+        _, _, k_int8_hnd, k_scale = _get_pool_sim_triton_simmean_fuse_quant(
+            ctx.key,
+            key_mean,
+            k_quant_gran,
+            ctx.simthreshd1[: ctx.num_heads_kv],
+            ctx.tensor_layout,
+        )
+        ratio = k_quant_gran // ctx.quant_block_size
+        num_k_blocks_fine = (ctx.seq_len_kv + ctx.quant_block_size - 1) // ctx.quant_block_size
+        k_scale = k_scale.repeat_interleave(ratio, dim=2)[:, :, :num_k_blocks_fine, :]
+    if ctx.q_blocks_per_tile > 1:
+        pooled_q_for_routing, sim_q_for_routing, _, _ = _get_pool_sim_triton_simmean_fuse_quant(
+            ctx.query,
+            None,
+            ctx.query_tile_tokens,
+            ctx.simthreshd1,
+            ctx.tensor_layout,
+        )
+    else:
+        pooled_q_for_routing = pooled_q
+        sim_q_for_routing = sim_qblocks
+
+    if ctx.k_blocks_per_tile > 1:
+        pooled_k_for_routing, sim_k_for_routing, _, _ = _get_pool_sim_triton_simmean_fuse_quant(
+            ctx.key,
+            key_mean,
+            ctx.k_route_block_tokens,
+            ctx.simthreshd1[: ctx.num_heads_kv],
+            ctx.tensor_layout,
+        )
+    else:
+        pooled_k_for_routing = pooled_k
+        sim_k_for_routing = sim_kblocks
 
     kv_head_index = torch.arange(ctx.num_heads_q, device=ctx.query.device, dtype=torch.int64) // (
         ctx.num_heads_q // ctx.num_heads_kv
     )
-    pooled_k_for_q = pooled_k[:, kv_head_index]
-    sim_k_for_q = sim_kblocks[:, kv_head_index]
+    pooled_k_for_q = pooled_k_for_routing[:, kv_head_index]
+    sim_k_for_q = sim_k_for_routing[:, kv_head_index]
     sim_k_expand = sim_k_for_q.unsqueeze(-2).expand(-1, -1, ctx.num_q_tiles, -1)
-    sim_q_expand = sim_q_for_routing.unsqueeze(-1).expand(-1, -1, -1, pooled_k.size(2))
+    sim_q_expand = sim_q_for_routing.unsqueeze(-1).expand(-1, -1, -1, pooled_k_for_routing.size(2))
 
     pooled_score = torch.matmul(
         pooled_q_for_routing.to(torch.float32),
@@ -310,16 +361,22 @@ def _run_triton_xpu_preprocess(ctx: Any) -> dict[str, Any]:
     pooled_score *= ctx.head_dim ** -0.5
     pooled_score = pooled_score.masked_fill(~sim_k_expand, -torch.inf)
     if ctx.is_causal:
-        causal_mask = _build_block_causal_mask(ctx.num_q_tiles, pooled_k.size(2), ctx.blocks_per_qtile, ctx.query.device)
-        pooled_score = pooled_score.masked_fill(~causal_mask.view(1, 1, ctx.num_q_tiles, pooled_k.size(2)), -torch.inf)
+        causal_mask = _build_block_causal_mask(
+            ctx.num_q_tiles,
+            pooled_k_for_routing.size(2),
+            ctx.q_route_block_tokens,
+            ctx.k_route_block_tokens,
+            ctx.query.device,
+        )
+        pooled_score = pooled_score.masked_fill(~causal_mask.view(1, 1, ctx.num_q_tiles, pooled_k_for_routing.size(2)), -torch.inf)
     else:
         causal_mask = None
 
     pooled_prob = _safe_softmax(pooled_score)
     sorted_prob = torch.sort(pooled_prob, dim=-1, descending=True)
-    _, _, _, num_k_blocks = pooled_prob.shape
+    _, _, _, num_k_route_blocks = pooled_prob.shape
     num_to_select = (
-        (ctx.topk.view(1, ctx.num_heads_q, 1) * num_k_blocks)
+        (ctx.topk.view(1, ctx.num_heads_q, 1) * num_k_route_blocks)
         .to(torch.int64)
         .expand(ctx.batch, -1, ctx.num_q_tiles)
         .contiguous()
@@ -329,16 +386,15 @@ def _run_triton_xpu_preprocess(ctx: Any) -> dict[str, Any]:
     final_tile_map[~sim_q_expand] = True
     final_tile_map = _fill_block_map_triton(final_tile_map, num_to_select, sorted_prob.indices)
     if causal_mask is not None:
-        final_tile_map &= causal_mask.view(1, 1, ctx.num_q_tiles, num_k_blocks)
+        final_tile_map &= causal_mask.view(1, 1, ctx.num_q_tiles, num_k_route_blocks)
     if ctx.attention_sink:
         final_tile_map[..., 0] = True
 
-    q_block_to_tile = (
-        torch.arange((ctx.seq_len_q + ctx.quant_block_size - 1) // ctx.quant_block_size, device=ctx.query.device)
-        * ctx.quant_block_size
-    ) // ctx.query_tile_tokens
+    q_block_to_tile = torch.arange(ctx.num_q_blocks, device=ctx.query.device, dtype=torch.int64) // ctx.q_blocks_per_tile
     q_block_to_tile = q_block_to_tile.clamp_max(ctx.num_q_tiles - 1)
-    raw_block_map = final_tile_map.index_select(2, q_block_to_tile).contiguous()
+    k_block_to_tile = torch.arange(ctx.num_k_blocks, device=ctx.query.device, dtype=torch.int64) // ctx.k_blocks_per_tile
+    k_block_to_tile = k_block_to_tile.clamp_max(ctx.num_k_tiles - 1)
+    raw_block_map = final_tile_map.index_select(2, q_block_to_tile).index_select(3, k_block_to_tile).contiguous()
     lut, valid_block_num = _block_map_lut_triton(raw_block_map)
 
     return {
@@ -351,7 +407,7 @@ def _run_triton_xpu_preprocess(ctx: Any) -> dict[str, Any]:
         "raw_block_map": raw_block_map,
         "tile_block_map": final_tile_map.contiguous(),
         "sim_qblocks": sim_q_for_routing.contiguous(),
-        "sim_kblocks": sim_kblocks.contiguous(),
+        "sim_kblocks": sim_k_for_routing.contiguous(),
         "backend": "triton_xpu",
     }
 

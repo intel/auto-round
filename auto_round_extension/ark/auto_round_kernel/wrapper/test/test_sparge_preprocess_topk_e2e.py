@@ -50,18 +50,36 @@ def _assert_metadata_matches(actual: dict, reference: dict) -> None:
     assert actual["stats"] == reference["stats"]
 
 
-def run_case(head_dim: int, *, topk: float, is_causal: bool, tensor_layout: str) -> None:
+def run_case(
+    head_dim: int,
+    *,
+    topk: float,
+    is_causal: bool,
+    tensor_layout: str,
+    seq_len_q: int = 256,
+    seq_len_kv: int = 256,
+    num_heads_q: int = 1,
+    num_heads_kv: int = 1,
+) -> None:
     device = torch.device("xpu")
     batch = 1
-    heads = 1
-    seq_len = 256
     scale = 1.0 / math.sqrt(head_dim)
 
-    seed = 5200 + head_dim + int(topk * 100) + (7 if is_causal else 0) + (13 if tensor_layout == "NHD" else 0)
+    seed = (
+        5200
+        + head_dim
+        + int(topk * 100)
+        + (7 if is_causal else 0)
+        + (13 if tensor_layout == "NHD" else 0)
+        + seq_len_q
+        + (seq_len_kv * 3)
+        + (num_heads_q * 5)
+        + (num_heads_kv * 11)
+    )
     torch.manual_seed(seed)
-    query_hnd = torch.randn((batch, heads, seq_len, head_dim), dtype=torch.float16, device=device)
-    key_hnd = torch.randn((batch, heads, seq_len, head_dim), dtype=torch.float16, device=device)
-    value_hnd = torch.randn((batch, heads, seq_len, head_dim), dtype=torch.float16, device=device)
+    query_hnd = torch.randn((batch, num_heads_q, seq_len_q, head_dim), dtype=torch.float16, device=device)
+    key_hnd = torch.randn((batch, num_heads_kv, seq_len_kv, head_dim), dtype=torch.float16, device=device)
+    value_hnd = torch.randn((batch, num_heads_kv, seq_len_kv, head_dim), dtype=torch.float16, device=device)
 
     query = _to_layout(query_hnd, tensor_layout)
     key = _to_layout(key_hnd, tensor_layout)
@@ -163,8 +181,8 @@ def run_case(head_dim: int, *, topk: float, is_causal: bool, tensor_layout: str)
         dense_mask = ark.sparge_block_map_to_mask(
             meta["block_map"],
             quant_block_size=meta["quant_block_size"],
-            seq_len_q=seq_len,
-            seq_len_kv=seq_len,
+            seq_len_q=seq_len_q,
+            seq_len_kv=seq_len_kv,
             is_causal=is_causal,
         )
         dense_out = ark.sage(
@@ -188,7 +206,8 @@ def run_case(head_dim: int, *, topk: float, is_causal: bool, tensor_layout: str)
 
     if topk < 1.0:
         assert 0.0 <= meta["stats"]["selected_ratio"] <= 1.0
-        assert meta["stats"]["selected_ratio"] < 1.0
+        if seq_len_q == seq_len_kv:
+            assert meta["stats"]["selected_ratio"] < 1.0
     assert meta["kernel_compatibility_added_blocks"] == 0
     assert torch.equal(meta["block_map"], meta["raw_block_map"])
     assert torch.isfinite(sparse_out).all()
@@ -196,8 +215,8 @@ def run_case(head_dim: int, *, topk: float, is_causal: bool, tensor_layout: str)
     if topk < 1.0 and not is_causal:
         compatibility_seed = seed + 101
         torch.manual_seed(compatibility_seed)
-        crafted_query_hnd = torch.randn((batch, heads, seq_len, head_dim), dtype=torch.float16, device=device)
-        crafted_key_hnd = torch.randn((batch, heads, seq_len, head_dim), dtype=torch.float16, device=device)
+        crafted_query_hnd = torch.randn((batch, num_heads_q, seq_len_q, head_dim), dtype=torch.float16, device=device)
+        crafted_key_hnd = torch.randn((batch, num_heads_kv, seq_len_kv, head_dim), dtype=torch.float16, device=device)
         crafted_query = _to_layout(crafted_query_hnd, tensor_layout)
         crafted_key = _to_layout(crafted_key_hnd, tensor_layout)
         crafted_meta = ark._sparge_preprocess_topk_torch(
@@ -227,6 +246,16 @@ def main() -> None:
         run_case(128, topk=0.5, is_causal=True, tensor_layout=tensor_layout)
         run_case(64, topk=0.25, is_causal=False, tensor_layout=tensor_layout)
         run_case(128, topk=0.25, is_causal=False, tensor_layout=tensor_layout)
+        run_case(
+            128,
+            topk=0.5,
+            is_causal=False,
+            tensor_layout=tensor_layout,
+            seq_len_q=256,
+            seq_len_kv=128,
+            num_heads_q=2,
+            num_heads_kv=1,
+        )
 
 
 if __name__ == "__main__":

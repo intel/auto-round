@@ -1019,14 +1019,17 @@ inline int launch_sage_prefill_kernel_64(Options const& options) {
 template <typename ElementQ, typename ElementK, typename ElementV, typename ElementO = ElementV>
 inline int launch_sparse_sage_prefill_kernel_128(Options const& options) {
   constexpr int PipelineStages = 2;
-  using ShapeQK = Shape<_256, _64, _32>;
-  using ShapePV = Shape<_256, _32, _64>;
-  using ShapeOut = Shape<_256, _128>;
-  using SubgroupLayoutQK = Layout<Shape<_16, _1, _1>>;
-  using ShapeQK1 = Shape<_256, _64, _32>;
-  using ShapePV1 = Shape<_256, _32, _64>;
-  using ShapeOut1 = Shape<_256, _128>;
-  using SubgroupLayoutQK1 = Layout<Shape<_16, _1, _1>>;
+  // Q tile fixed at 64 to match CUDA sm90 (CTA_Q=64): one 64-token Q quant block
+  // maps to exactly one LUT routing row. A wider Q tile would force every Q
+  // sub-block in the tile to reuse the first sub-block's routing row.
+  using ShapeQK = Shape<_64, _64, _32>;
+  using ShapePV = Shape<_64, _32, _64>;
+  using ShapeOut = Shape<_64, _128>;
+  using SubgroupLayoutQK = Layout<Shape<_4, _1, _1>>;
+  using ShapeQK1 = Shape<_64, _64, _32>;
+  using ShapePV1 = Shape<_64, _32, _64>;
+  using ShapeOut1 = Shape<_64, _128>;
+  using SubgroupLayoutQK1 = Layout<Shape<_4, _1, _1>>;
   return options.is_causal ? SparseSageConfig<true, false, true, true, ShapeQK, ShapePV, ShapeOut, SubgroupLayoutQK,
                                               void, PipelineStages, false, ElementQ, ElementK, ElementV, ElementO>::run(options)
                            : SparseSageConfig<false, false, true, true, ShapeQK1, ShapePV1, ShapeOut1,
@@ -1037,10 +1040,11 @@ inline int launch_sparse_sage_prefill_kernel_128(Options const& options) {
 template <typename ElementQ, typename ElementK, typename ElementV, typename ElementO = ElementV>
 inline int launch_sparse_sage_prefill_kernel_64(Options const& options) {
   constexpr int PipelineStages = 2;
-  using ShapeQK = Shape<_128, _64, _32>;
-  using ShapePV = Shape<_128, _32, _64>;
-  using ShapeOut = Shape<_128, _64>;
-  using SubgroupLayoutQK = Layout<Shape<_8, _1, _1>>;
+  // Q tile fixed at 64 to match CUDA sm90 (CTA_Q=64): one Q quant block per LUT row.
+  using ShapeQK = Shape<_64, _64, _32>;
+  using ShapePV = Shape<_64, _32, _64>;
+  using ShapeOut = Shape<_64, _64>;
+  using SubgroupLayoutQK = Layout<Shape<_4, _1, _1>>;
   using SubgroupLayoutPV = void;
   return options.is_causal
              ? SparseSageConfig<true, false, true, true, ShapeQK, ShapePV, ShapeOut, SubgroupLayoutQK,

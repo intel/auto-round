@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import logging
+import os
 from typing import Any, Optional
 import warnings
 
@@ -17,6 +19,26 @@ from . import (
     get_stream,
     sdpa,
 )
+
+logger = logging.getLogger(__name__)
+_SPARGE_EXECUTION_WARNING_KEYS: set[str] = set()
+
+
+def _warn_sparse_execution_fallback_once(key: str, message: str) -> None:
+    if key in _SPARGE_EXECUTION_WARNING_KEYS:
+        return
+    logger.warning(message)
+    _SPARGE_EXECUTION_WARNING_KEYS.add(key)
+
+
+def _get_xpu_sparse_kernel_backend() -> str:
+    backend = os.getenv("SAGE_ATTN_XPU_SPARSE_KERNEL_BACKEND", "sycl").strip().lower()
+    if backend not in {"sycl", "triton_xpu_kernel"}:
+        raise ValueError(
+            "Unsupported SAGE_ATTN_XPU_SPARSE_KERNEL_BACKEND="
+            f"{backend!r}; expected one of: sycl, triton_xpu_kernel"
+        )
+    return backend
 
 
 def sage_sparse(
@@ -558,7 +580,15 @@ def _query_tile_tokens_for_head_dim(head_dim: int) -> int:
     if head_dim == 64:
         return 128
     if head_dim == 128:
-        return 256
+        return 64
+    raise ValueError(f"Unsupported head_dim={head_dim}; supported: 64, 128")
+
+
+def _routing_k_block_tokens_for_head_dim(head_dim: int, quant_block_size: int) -> int:
+    if head_dim == 64:
+        return quant_block_size
+    if head_dim == 128:
+        return 128
     raise ValueError(f"Unsupported head_dim={head_dim}; supported: 64, 128")
 
 
@@ -598,19 +628,32 @@ def _safe_softmax(scores: torch.Tensor) -> torch.Tensor:
     return torch.where(denom > 0, probs / denom, torch.zeros_like(probs))
 
 
-def _build_block_causal_mask(num_q_tiles: int, num_k_blocks: int, blocks_per_qtile: int, device: torch.device) -> torch.Tensor:
+def _build_block_causal_mask(
+    num_q_tiles: int,
+    num_k_blocks: int,
+    q_route_block_tokens: int,
+    k_route_block_tokens: int,
+    device: torch.device,
+) -> torch.Tensor:
     q_idx = torch.arange(num_q_tiles, device=device, dtype=torch.int64).view(-1, 1)
     k_idx = torch.arange(num_k_blocks, device=device, dtype=torch.int64).view(1, -1)
-    return k_idx < ((q_idx + 1) * blocks_per_qtile)
+    valid_k_per_q = ((q_idx + 1) * q_route_block_tokens + k_route_block_tokens - 1) // k_route_block_tokens
+    return k_idx < valid_k_per_q
 
 
 def _fill_block_map_torch(final_map: torch.Tensor, num_to_select: torch.Tensor, sorted_indices: torch.Tensor) -> torch.Tensor:
     k_blocks = final_map.shape[-1]
     filled = final_map.clone()
     column_ids = torch.arange(k_blocks, device=final_map.device).view(1, 1, 1, k_blocks)
+    target_new = torch.maximum(num_to_select, torch.ones_like(num_to_select))
+    added = torch.zeros_like(num_to_select)
     for rank in range(k_blocks):
-        active = (num_to_select > rank).unsqueeze(-1)
-        filled |= active & (column_ids == sorted_indices[..., rank : rank + 1])
+        idx_match = column_ids == sorted_indices[..., rank : rank + 1]
+        is_new = idx_match & ~filled
+        should_add = (added < target_new).unsqueeze(-1)
+        newly_selected = should_add & is_new
+        filled |= newly_selected
+        added = added + newly_selected.any(dim=-1).to(added.dtype)
     return filled
 
 
@@ -672,6 +715,13 @@ def _pool_sim_and_quant_torch(
     grams = torch.matmul(normalized, normalized.transpose(-1, -2))
     mean_sim = grams.sum(dim=(-1, -2)) / counts.squeeze(-1).squeeze(-1).pow(2)
     sim_blocks = mean_sim > sim_threshold.view(1, num_heads, 1)
+    # Match the CUDA reference (SpargeAttn spas_sage_attn/utils.py): a partial
+    # tail block (pad_tokens > 0 only ever affects the last block) divides padded
+    # rows by a zero norm there (0/0 -> NaN -> NaN > thr == False), forcing it
+    # dense. Our guarded norm would mark it prunable and sparsify the sequence
+    # tail (= last video frames), so force the partial last block to False.
+    if pad_tokens:
+        sim_blocks[:, :, -1] = False
 
     max_abs = x_blocks.abs().amax(dim=(-1, -2)).clamp_min_(0.0)
     scales = (max_abs / 127.0) + 1.0e-7
@@ -723,9 +773,16 @@ class _SpargePreprocessContext:
     attention_sink: bool
     quant_block_size: int
     tensor_layout: str
+    q_route_block_tokens: int
+    k_route_block_tokens: int
     query_tile_tokens: int
-    blocks_per_qtile: int
+    q_blocks_per_tile: int
+    k_blocks_per_tile: int
+    num_q_blocks: int
+    num_k_blocks: int
     num_q_tiles: int
+    num_k_tiles: int
+    k_quant_granularity: int
 
 
 def _build_sparge_preprocess_context(
@@ -739,6 +796,7 @@ def _build_sparge_preprocess_context(
     attention_sink: bool,
     quant_block_size: int,
     tensor_layout: str,
+    k_quant_granularity: int = 64,
 ) -> _SpargePreprocessContext:
     if query.device.type != "xpu":
         raise NotImplementedError("sparge_preprocess_topk is only supported on XPU")
@@ -748,6 +806,10 @@ def _build_sparge_preprocess_context(
         raise ValueError(f"K dtype must match Q dtype, got K={key.dtype}, Q={query.dtype}")
     if quant_block_size != 64:
         raise ValueError(f"quant_block_size={quant_block_size} is not supported in sparge_preprocess_topk; only 64 is supported")
+    if k_quant_granularity not in (64, 128):
+        raise ValueError(f"k_quant_granularity={k_quant_granularity} is not supported; only 64 or 128")
+    if k_quant_granularity % quant_block_size != 0:
+        raise ValueError(f"k_quant_granularity={k_quant_granularity} must be a multiple of quant_block_size={quant_block_size}")
 
     B, Hq, Sq, D = _validate_attention_tensor(query, "Q", tensor_layout, expected_dtype=query.dtype)
     Bk, Hkv, Skv, Dk = _validate_attention_tensor(key, "K", tensor_layout, expected_dtype=query.dtype)
@@ -755,16 +817,19 @@ def _build_sparge_preprocess_context(
         raise ValueError("Batch size mismatch between Q and K")
     if Dk != D:
         raise ValueError("Head dim mismatch between Q and K")
-    if Sq != Skv:
-        raise ValueError("sparge_preprocess_topk currently supports prefill only: seq_len_q must equal seq_len_kv")
     if Hq % Hkv != 0:
         raise ValueError("num_heads_q must be divisible by num_heads_kv")
     if D not in (64, 128):
         raise ValueError(f"Unsupported head_dim={D}; supported: 64, 128")
 
-    query_tile_tokens = _query_tile_tokens_for_head_dim(D)
-    blocks_per_qtile = query_tile_tokens // quant_block_size
-    num_q_tiles = (Sq + query_tile_tokens - 1) // query_tile_tokens
+    q_route_block_tokens = _query_tile_tokens_for_head_dim(D)
+    k_route_block_tokens = _routing_k_block_tokens_for_head_dim(D, quant_block_size)
+    q_blocks_per_tile = q_route_block_tokens // quant_block_size
+    k_blocks_per_tile = k_route_block_tokens // quant_block_size
+    num_q_blocks = (Sq + quant_block_size - 1) // quant_block_size
+    num_k_blocks = (Skv + quant_block_size - 1) // quant_block_size
+    num_q_tiles = (Sq + q_route_block_tokens - 1) // q_route_block_tokens
+    num_k_tiles = (Skv + k_route_block_tokens - 1) // k_route_block_tokens
 
     return _SpargePreprocessContext(
         query=query,
@@ -782,9 +847,16 @@ def _build_sparge_preprocess_context(
         attention_sink=attention_sink,
         quant_block_size=quant_block_size,
         tensor_layout=tensor_layout,
-        query_tile_tokens=query_tile_tokens,
-        blocks_per_qtile=blocks_per_qtile,
+        q_route_block_tokens=q_route_block_tokens,
+        k_route_block_tokens=k_route_block_tokens,
+        query_tile_tokens=q_route_block_tokens,
+        q_blocks_per_tile=q_blocks_per_tile,
+        k_blocks_per_tile=k_blocks_per_tile,
+        num_q_blocks=num_q_blocks,
+        num_k_blocks=num_k_blocks,
         num_q_tiles=num_q_tiles,
+        num_k_tiles=num_k_tiles,
+        k_quant_granularity=k_quant_granularity,
     )
 
 
@@ -804,12 +876,12 @@ def _sparge_preprocess_topk_torch_impl(ctx: _SpargePreprocessContext) -> dict[st
         key_mean,
     )
 
-    if ctx.blocks_per_qtile > 1:
+    if ctx.q_blocks_per_tile > 1:
         tile_pooled_q = []
         tile_sim_q = []
         for qtile in range(ctx.num_q_tiles):
-            qblk_start = qtile * ctx.blocks_per_qtile
-            qblk_end = min(qblk_start + ctx.blocks_per_qtile, pooled_q.size(2))
+            qblk_start = qtile * ctx.q_blocks_per_tile
+            qblk_end = min(qblk_start + ctx.q_blocks_per_tile, pooled_q.size(2))
             tile_tokens = _slice_sequence_native_layout(
                 ctx.query,
                 ctx.tensor_layout,
@@ -830,28 +902,46 @@ def _sparge_preprocess_topk_torch_impl(ctx: _SpargePreprocessContext) -> dict[st
         pooled_q_for_routing = pooled_q
         sim_q_for_routing = sim_qblocks
 
+    if ctx.k_blocks_per_tile > 1:
+        pooled_k_for_routing, sim_k_for_routing, _, _ = _pool_sim_and_quant_torch(
+            ctx.key,
+            ctx.k_route_block_tokens,
+            ctx.simthreshd1[: ctx.num_heads_kv],
+            ctx.tensor_layout,
+            key_mean,
+        )
+    else:
+        pooled_k_for_routing = pooled_k
+        sim_k_for_routing = sim_kblocks
+
     kv_head_index = torch.arange(ctx.num_heads_q, device=ctx.query.device, dtype=torch.int64) // (
         ctx.num_heads_q // ctx.num_heads_kv
     )
-    pooled_k_for_q = pooled_k[:, kv_head_index]
-    sim_k_for_q = sim_kblocks[:, kv_head_index]
+    pooled_k_for_q = pooled_k_for_routing[:, kv_head_index]
+    sim_k_for_q = sim_k_for_routing[:, kv_head_index]
     sim_k_expand = sim_k_for_q.unsqueeze(-2).expand(-1, -1, ctx.num_q_tiles, -1)
-    sim_q_expand = sim_q_for_routing.unsqueeze(-1).expand(-1, -1, -1, pooled_k.size(2))
+    sim_q_expand = sim_q_for_routing.unsqueeze(-1).expand(-1, -1, -1, pooled_k_for_routing.size(2))
 
     pooled_score = torch.matmul(pooled_q_for_routing.to(torch.float32), pooled_k_for_q.transpose(-1, -2).to(torch.float32))
     pooled_score *= ctx.head_dim ** -0.5
     pooled_score = pooled_score.masked_fill(~sim_k_expand, -torch.inf)
     if ctx.is_causal:
-        causal_mask = _build_block_causal_mask(ctx.num_q_tiles, pooled_k.size(2), ctx.blocks_per_qtile, ctx.query.device)
-        pooled_score = pooled_score.masked_fill(~causal_mask.view(1, 1, ctx.num_q_tiles, pooled_k.size(2)), -torch.inf)
+        causal_mask = _build_block_causal_mask(
+            ctx.num_q_tiles,
+            pooled_k_for_routing.size(2),
+            ctx.q_route_block_tokens,
+            ctx.k_route_block_tokens,
+            ctx.query.device,
+        )
+        pooled_score = pooled_score.masked_fill(~causal_mask.view(1, 1, ctx.num_q_tiles, pooled_k_for_routing.size(2)), -torch.inf)
     else:
         causal_mask = None
 
     pooled_prob = _safe_softmax(pooled_score)
     sorted_prob = torch.sort(pooled_prob, dim=-1, descending=True)
-    _, _, _, num_k_blocks = pooled_prob.shape
+    _, _, _, num_k_route_blocks = pooled_prob.shape
     num_to_select = (
-        (ctx.topk.view(1, ctx.num_heads_q, 1) * num_k_blocks)
+        (ctx.topk.view(1, ctx.num_heads_q, 1) * num_k_route_blocks)
         .to(torch.int64)
         .expand(ctx.batch, -1, ctx.num_q_tiles)
         .contiguous()
@@ -861,16 +951,15 @@ def _sparge_preprocess_topk_torch_impl(ctx: _SpargePreprocessContext) -> dict[st
     final_tile_map[~sim_q_expand] = True
     final_tile_map = _fill_block_map_torch(final_tile_map, num_to_select, sorted_prob.indices)
     if causal_mask is not None:
-        final_tile_map &= causal_mask.view(1, 1, ctx.num_q_tiles, num_k_blocks)
+        final_tile_map &= causal_mask.view(1, 1, ctx.num_q_tiles, num_k_route_blocks)
     if ctx.attention_sink:
         final_tile_map[..., 0] = True
 
-    q_block_to_tile = (
-        torch.arange((ctx.seq_len_q + ctx.quant_block_size - 1) // ctx.quant_block_size, device=ctx.query.device)
-        * ctx.quant_block_size
-    ) // ctx.query_tile_tokens
+    q_block_to_tile = torch.arange(ctx.num_q_blocks, device=ctx.query.device, dtype=torch.int64) // ctx.q_blocks_per_tile
     q_block_to_tile = q_block_to_tile.clamp_max(ctx.num_q_tiles - 1)
-    raw_block_map = final_tile_map.index_select(2, q_block_to_tile).contiguous()
+    k_block_to_tile = torch.arange(ctx.num_k_blocks, device=ctx.query.device, dtype=torch.int64) // ctx.k_blocks_per_tile
+    k_block_to_tile = k_block_to_tile.clamp_max(ctx.num_k_tiles - 1)
+    raw_block_map = final_tile_map.index_select(2, q_block_to_tile).index_select(3, k_block_to_tile).contiguous()
 
     return {
         "query_i8": q_int8_hnd,
@@ -880,7 +969,7 @@ def _sparge_preprocess_topk_torch_impl(ctx: _SpargePreprocessContext) -> dict[st
         "raw_block_map": raw_block_map,
         "tile_block_map": final_tile_map.contiguous(),
         "sim_qblocks": sim_q_for_routing.contiguous(),
-        "sim_kblocks": sim_kblocks.contiguous(),
+        "sim_kblocks": sim_k_for_routing.contiguous(),
         "backend": "torch",
     }
 
@@ -1006,6 +1095,7 @@ def sparge_preprocess_topk(
     attention_sink: bool = False,
     quant_block_size: int = 64,
     tensor_layout: str = "HND",
+    k_quant_granularity: int = 64,
 ) -> dict[str, Any]:
     ctx = _build_sparge_preprocess_context(
         query,
@@ -1017,6 +1107,7 @@ def sparge_preprocess_topk(
         attention_sink=attention_sink,
         quant_block_size=quant_block_size,
         tensor_layout=tensor_layout,
+        k_quant_granularity=k_quant_granularity,
     )
     return _sparge_preprocess_topk_dispatch(ctx)
 
@@ -1236,6 +1327,7 @@ def sparge_sage2_attn_meansim_topk_xpu(
     output_dtype: torch.dtype | None = None,
     return_sparsity: bool = False,
     return_metadata: bool = False,
+    k_quant_granularity: int = 64,
 ) -> torch.Tensor | tuple[Any, ...]:
     if query.device.type != "xpu":
         raise NotImplementedError("sparge_sage2_attn_meansim_topk_xpu is only supported on XPU")
@@ -1277,21 +1369,81 @@ def sparge_sage2_attn_meansim_topk_xpu(
         attention_sink=attention_sink,
         quant_block_size=64,
         tensor_layout=tensor_layout,
+        k_quant_granularity=k_quant_granularity,
     )
-    out = sage_sparse(
-        metadata["query_i8"],
-        metadata["key_i8"],
-        value,
-        metadata["lut"],
-        metadata["valid_block_num"],
-        attn_mask=normalized_mask,
-        is_causal=is_causal,
-        scale=scale,
-        quant_block_size=metadata["quant_block_size"],
-        qscale=metadata["qscale"],
-        kscale=metadata["kscale"],
-        tensor_layout=tensor_layout,
-    )
+    sparse_backend = _get_xpu_sparse_kernel_backend()
+    use_triton_sparse = sparse_backend == "triton_xpu_kernel"
+    triton_block_reason = None
+    if use_triton_sparse:
+        if normalized_mask is not None:
+            triton_block_reason = "attn_mask is not supported by triton_xpu_kernel sparse execution"
+        elif is_causal:
+            triton_block_reason = "causal sparse execution is not supported by triton_xpu_kernel"
+        elif Sq != Skv:
+            triton_block_reason = "cross-attention is not supported by triton_xpu_kernel yet"
+        elif D not in (64, 128):
+            triton_block_reason = f"head_dim={D} is not supported by triton_xpu_kernel"
+        if triton_block_reason is not None:
+            _warn_sparse_execution_fallback_once(
+                f"triton_blocked:{triton_block_reason}",
+                f"ARK triton_xpu_kernel sparse execution fallback to SYCL: {triton_block_reason}",
+            )
+            use_triton_sparse = False
+
+    if use_triton_sparse:
+        try:
+            from .triton_sparse_attention_xpu import triton_sparse_prefill_attention
+
+            query_hnd = _to_hnd(metadata["query_i8"], tensor_layout)
+            key_hnd = _to_hnd(metadata["key_i8"], tensor_layout)
+            value_hnd = _to_hnd(value, tensor_layout)
+            out_hnd = triton_sparse_prefill_attention(
+                query_hnd,
+                key_hnd,
+                value_hnd,
+                metadata["lut"],
+                metadata["valid_block_num"],
+                qscale=metadata["qscale"],
+                kscale=metadata["kscale"],
+                scale=float(scale) if scale is not None else 1.0 / (D**0.5),
+                quant_block_size=metadata["quant_block_size"],
+            )
+            out = _from_hnd(out_hnd, tensor_layout)
+        except Exception as error:
+            _warn_sparse_execution_fallback_once(
+                f"triton_runtime:{type(error).__name__}",
+                "ARK triton_xpu_kernel sparse execution failed and fell back to SYCL. "
+                f"Subsequent failures of this type will be suppressed. Error: {error}",
+            )
+            out = sage_sparse(
+                metadata["query_i8"],
+                metadata["key_i8"],
+                value,
+                metadata["lut"],
+                metadata["valid_block_num"],
+                attn_mask=normalized_mask,
+                is_causal=is_causal,
+                scale=scale,
+                quant_block_size=metadata["quant_block_size"],
+                qscale=metadata["qscale"],
+                kscale=metadata["kscale"],
+                tensor_layout=tensor_layout,
+            )
+    else:
+        out = sage_sparse(
+            metadata["query_i8"],
+            metadata["key_i8"],
+            value,
+            metadata["lut"],
+            metadata["valid_block_num"],
+            attn_mask=normalized_mask,
+            is_causal=is_causal,
+            scale=scale,
+            quant_block_size=metadata["quant_block_size"],
+            qscale=metadata["qscale"],
+            kscale=metadata["kscale"],
+            tensor_layout=tensor_layout,
+        )
     sparsity_ratio = metadata["stats"]["sparsity_ratio"]
     if return_metadata and return_sparsity:
         return out, sparsity_ratio, metadata
