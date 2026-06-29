@@ -602,7 +602,7 @@ def _build_baseline_plan(
         if scale_slices is not None:
             scale_slices.append(scales[expert : expert + 1])
         if zero_slices is not None:
-            zero_slices.append(zeros[expert: expert + 1])
+            zero_slices.append(zeros[expert : expert + 1])
         if raw_outputs is not None:
             raw_outputs.append(shared_raw_output)
         if raw_workspaces is not None:
@@ -667,7 +667,7 @@ def _build_hybrid_plan(
             if remainder_scales is not None:
                 remainder_scales.append(scales[expert : expert + 1])
             if remainder_zeros is not None:
-                remainder_zeros.append(zeros[expert: expert + 1])
+                remainder_zeros.append(zeros[expert : expert + 1])
             if raw_remainder_outputs is not None:
                 raw_remainder_outputs.append(shared_remainder_output)
             if raw_remainder_workspaces is not None:
