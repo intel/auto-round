@@ -40,9 +40,12 @@ void sdpa_forward(const MhaDenseArgs& args);
 // call. This entry validates PLAIN-strided operands and rejects alibi, tanh and
 // padding-right flags; note, however, that the `step_*` stride interface being
 // HND/NHD-friendly does NOT mean the wired mixed-precision kernels accept raw
-// HND/NHD/PLAIN K/V. Those specializations currently require packed/reordered
-// (NTILE24/NTILE48) K/V and throw std::runtime_error for raw PLAIN inputs;
-// packed K/V support is deferred to Phase 4.
+// HND/NHD/PLAIN K/V. Those specializations require packed/reordered
+// (NTILE24/NTILE48) K/V; Phase 4 Step 1 added an internal raw->packed reorder so
+// the experimental mixed path can feed them. That reorder bridge stays behind
+// ARK_UNSAFE_BESTLA_MIXED_SDPA and the default Python mixed SDPA remains disabled
+// until correctness is verified; a persistent packed KV cache/update is still
+// future work.
 void bestla_sdpa_forward(const attn_fwd_args_t& args, BTLA_DTYPE kv_dtype);
 
 // ---------------------------------------------------------------------------
@@ -51,9 +54,11 @@ void bestla_sdpa_forward(const attn_fwd_args_t& args, BTLA_DTYPE kv_dtype);
 // The wired BestLA mixed kernels (`bestla_fusion_attn_forward<float,fp16,...>` /
 // `<float,bf16,...>`) consume packed/reordered K/V, not the raw PLAIN
 // (HND/NHD-strided) tensors `bestla_sdpa_forward` receives. These helpers build
-// the missing bridge: they describe the packed cache geometry and fill it from
-// raw K/V so the kernel can be fed NTILE24 (fp16) / NTILE48 (bf16) row-packed
-// operands. fp16 K/V map to NTILE24_ROWPACK1, bf16 K/V to NTILE48_ROWPACK2.
+// the bridge: they describe the packed cache geometry and fill it from raw K/V
+// so the kernel can be fed NTILE24 (fp16) / NTILE48 (bf16) row-packed operands.
+// fp16 K/V map to NTILE24_ROWPACK1, bf16 K/V to NTILE48_ROWPACK2. Phase 4 Step 2
+// validates the reorder layout against the prologue read addresses; the path is
+// still experimental and gated by ARK_UNSAFE_BESTLA_MIXED_SDPA only.
 // ---------------------------------------------------------------------------
 
 // Per-(NTILE, ROWPACK) packed K/V geometry for a single shape + element type.

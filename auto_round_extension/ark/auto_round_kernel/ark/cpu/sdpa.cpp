@@ -168,7 +168,10 @@ void bestla_sdpa_forward(const attn_fwd_args_t& args, BTLA_DTYPE kv_dtype) {
     attn_shape_t shape{local.batch_size, local.head_num, local.heads_kv, local.head_size, local.sl_q, local.sl_kv};
     const size_t bytes = bestla_attn_workspace_size(shape, th->num_threads());
     workspace.resize((bytes + sizeof(float) - 1) / sizeof(float));
-    local.tmp = workspace.empty() ? nullptr : workspace.data();
+    // attn_fwd_args_t::tmp is char* but the kernel reinterprets it as float*; the
+    // backing std::vector<float> guarantees the required alignof(float), so the
+    // reinterpret_cast only narrows the element type, not the alignment.
+    local.tmp = workspace.empty() ? nullptr : reinterpret_cast<char*>(workspace.data());
   }
 
   // Phase 4 Step 1: bridge raw PLAIN HND/NHD K/V into the Neural-Speed-style
@@ -177,7 +180,17 @@ void bestla_sdpa_forward(const attn_fwd_args_t& args, BTLA_DTYPE kv_dtype) {
   // V (NTILE over head_size, ROWPACK over seq). We allocate per-head packed
   // caches, fill them from the strided inputs, then retarget `local` at the
   // packed layouts/strides. Q and dst stay PLAIN. This path is reached only via
-  // the internal/debug ARK_UNSAFE_BESTLA_MIXED_SDPA opt-in (see ark.cpp).
+  // the internal/debug ARK_UNSAFE_BESTLA_MIXED_SDPA opt-in (see ark.cpp);
+  // default Python mixed SDPA stays disabled until correctness is verified, and
+  // persistent packed KV cache/update remains future work.
+  //
+  // Buffer alignment: both wired dtypes (fp16/bf16) are 16-bit, so a
+  // std::vector<uint16_t> backing matches element_size() and gives the natural
+  // 2-byte element alignment. The NTILE24 (fp16->fp32 F16C) and NTILE48
+  // (bf16->fp32) weight prologues read these caches with unaligned SIMD loads
+  // (load_T_fp32 / vcvtph2ps over 8-lane groups), so 2-byte alignment is
+  // sufficient and no over-aligned allocation is required here. int8/ROWPACK4
+  // is not wired, so no wider element ever lands in these buffers.
   std::vector<uint16_t> packed_k;
   std::vector<uint16_t> packed_v;
   const ReorderKVShape rshape =
