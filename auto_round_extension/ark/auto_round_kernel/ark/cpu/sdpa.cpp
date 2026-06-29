@@ -261,6 +261,82 @@ int pad_up(int v, int p) { return ((v + p - 1) / p) * p; }
 
 }  // namespace
 
+void bestla_sdpa_forward_packed(const attn_fwd_args_t& args, const ReorderKVShape& shape, BTLA_DTYPE kv_dtype) {
+  if (!args.Q || !args.K || !args.V || !args.dst) {
+    throw std::invalid_argument("ark::cpu::bestla_sdpa_forward_packed: Q/K/V/dst pointers must be non-null");
+  }
+  // Q and dst stay PLAIN; K/V must already be the NTILE-packed cache for kv_dtype.
+  if (args.Q_layout != ATTN_FWD_LAYOUT_PLAIN || args.dst_layout != ATTN_FWD_LAYOUT_PLAIN) {
+    throw std::invalid_argument("ark::cpu::bestla_sdpa_forward_packed: Q/dst must be ATTN_FWD_LAYOUT_PLAIN");
+  }
+  if (args.K_layout != shape.layout || args.V_layout != shape.layout) {
+    throw std::invalid_argument("ark::cpu::bestla_sdpa_forward_packed: K/V layout must match packed cache shape");
+  }
+  if ((kv_dtype == BTLA_DTYPE::F16 && shape.layout != ATTN_FWD_LAYOUT_NTILE24_ROWPACK1) ||
+      (kv_dtype == BTLA_DTYPE::BF16 && shape.layout != ATTN_FWD_LAYOUT_NTILE48_ROWPACK2)) {
+    throw std::invalid_argument("ark::cpu::bestla_sdpa_forward_packed: dtype/layout mismatch for packed cache");
+  }
+  // sl_kv is the current valid length, never the padded capacity.
+  if (args.sl_kv <= 0 || args.sl_kv > shape.logical_capacity) {
+    throw std::invalid_argument("ark::cpu::bestla_sdpa_forward_packed: sl_kv must be in (0, logical_capacity]");
+  }
+  if (args.head_size != shape.head_dim) {
+    throw std::invalid_argument("ark::cpu::bestla_sdpa_forward_packed: head_size must match packed cache head_dim");
+  }
+  constexpr attn_flags_t kUnsupportedFlags = ATTN_FLAG_IS_ALIBI8 | ATTN_FLAG_IS_TANH30 | ATTN_FLAG_PADDING_RIGHT;
+  if ((args.attn_flags & kUnsupportedFlags) != 0) {
+    throw std::invalid_argument("ark::cpu::bestla_sdpa_forward_packed: alibi, tanh and padding-right are not wired yet");
+  }
+  {
+    auto* cpu = bestla::device::CpuDevice::getInstance();
+    if (kv_dtype == BTLA_DTYPE::F16 && !cpu->AVX2()) {
+      throw std::runtime_error("ark::cpu::bestla_sdpa_forward_packed: fp16 K/V mixed SDPA requires AVX2");
+    }
+    if (kv_dtype == BTLA_DTYPE::BF16 && !cpu->AVX512F()) {
+      throw std::runtime_error("ark::cpu::bestla_sdpa_forward_packed: bf16 K/V mixed SDPA requires AVX512F");
+    }
+  }
+  if (args.threading == nullptr) {
+    throw std::invalid_argument("ark::cpu::bestla_sdpa_forward_packed: threading pool must be provided");
+  }
+  auto* th = static_cast<bestla::parallel::IThreading*>(args.threading);
+
+  // Retarget the packed K/V strides from the cache shape (no reorder happens
+  // here: K/V are already NTILE-packed). Q/dst pointers/strides are untouched.
+  attn_fwd_args_t local = args;
+  local.step_k_head_num = static_cast<int>(shape.k_head_elems);
+  local.step_k_bs = static_cast<int>(shape.k_head_elems) * local.heads_kv;
+  local.step_k_sl = shape.step_k_sl;
+  local.step_k_head_size = shape.step_k_head_size;
+  local.step_v_head_num = static_cast<int>(shape.v_head_elems);
+  local.step_v_bs = static_cast<int>(shape.v_head_elems) * local.heads_kv;
+  local.step_v_sl = shape.step_v_sl;
+  local.step_v_head_size = shape.step_v_head_size;
+
+  std::vector<float> workspace;
+  if (local.tmp == nullptr) {
+    attn_shape_t ashape{local.batch_size, local.head_num, local.heads_kv, local.head_size, local.sl_q, local.sl_kv};
+    const size_t bytes = bestla_attn_workspace_size(ashape, th->num_threads());
+    workspace.resize((bytes + sizeof(float) - 1) / sizeof(float));
+    local.tmp = workspace.empty() ? nullptr : reinterpret_cast<char*>(workspace.data());
+  }
+
+  switch (kv_dtype) {
+    case BTLA_DTYPE::F16: {
+      const auto typed = make_typed_attn_args<bestla::utils::fp16>(local);
+      bestla_mha::bestla_fusion_attn_forward<float, bestla::utils::fp16, bestla::utils::fp16, float>(typed, *th);
+      break;
+    }
+    case BTLA_DTYPE::BF16: {
+      const auto typed = make_typed_attn_args<bestla::utils::bf16>(local);
+      bestla_mha::bestla_fusion_attn_forward<float, bestla::utils::bf16, bestla::utils::bf16, float>(typed, *th);
+      break;
+    }
+    default:
+      throw std::invalid_argument("ark::cpu::bestla_sdpa_forward_packed: only F16 and BF16 K/V operands are supported");
+  }
+}
+
 ReorderKVShape reorder_kv_shape(int batch, int num_heads_kv, int seq_len_kv, int head_dim, BTLA_DTYPE kv_dtype) {
   ReorderKVShape s;
   switch (kv_dtype) {
@@ -282,6 +358,8 @@ ReorderKVShape reorder_kv_shape(int batch, int num_heads_kv, int seq_len_kv, int
   }
   s.sl_pad = pad_up(seq_len_kv, s.ntile);
   s.hs_pad = pad_up(head_dim, s.rowpack);
+  s.head_dim = head_dim;
+  s.logical_capacity = seq_len_kv;
   s.num_heads = batch * num_heads_kv;
   // K is the QK weight: NTILE blocks over seq, head_size is ROWPACK-packed.
   const int k_sl_pad = pad_up(seq_len_kv, s.ntile);
@@ -398,8 +476,24 @@ void kv_cache_update(void* cache_k, void* cache_v, const void* key, const void* 
 
 ReorderKVShape packed_kv_cache_shape(int batch, int num_heads_kv, int capacity, int head_dim, BTLA_DTYPE kv_dtype) {
   // Identical layout/strides to reorder_kv_shape, but the seq dim is padded to
-  // the persistent `capacity` instead of the current sequence length.
+  // the persistent `capacity` instead of the current sequence length. The
+  // logical_capacity field preserves the real capacity so the update helpers can
+  // reject writes past it even though buffers are padded to NTILE/ROWPACK.
   return reorder_kv_shape(batch, num_heads_kv, capacity, head_dim, kv_dtype);
+}
+
+void clear_packed_k_cache(void* cache_k, const ReorderKVShape& shape, BTLA_DTYPE kv_dtype) {
+  if (!cache_k) {
+    throw std::invalid_argument("ark::cpu::clear_packed_k_cache: cache must be non-null");
+  }
+  std::memset(cache_k, 0, reorder_kv_cache_elems(shape, /*is_value=*/false) * element_size(kv_dtype));
+}
+
+void clear_packed_v_cache(void* cache_v, const ReorderKVShape& shape, BTLA_DTYPE kv_dtype) {
+  if (!cache_v) {
+    throw std::invalid_argument("ark::cpu::clear_packed_v_cache: cache must be non-null");
+  }
+  std::memset(cache_v, 0, reorder_kv_cache_elems(shape, /*is_value=*/true) * element_size(kv_dtype));
 }
 
 void update_packed_k_cache(void* cache_k, const void* key, const ReorderKVShape& shape,
@@ -413,8 +507,8 @@ void update_packed_k_cache(void* cache_k, const void* key, const ReorderKVShape&
   }
   const int ntile = shape.ntile, rp = shape.rowpack;
   const int hs_pad = pad_up(head_dim, rp);
-  // Capacity (in seq tiles) the cache was sized for; reject overflow.
-  const int cap = static_cast<int>(shape.k_head_elems / (static_cast<size_t>(hs_pad) * ntile)) * ntile;
+  // Reject writes beyond the *logical* capacity, not the NTILE-padded capacity.
+  const int cap = shape.logical_capacity;
   if (batch <= 0 || num_heads_kv <= 0 || append_len <= 0 || head_dim <= 0 || start_pos < 0 ||
       start_pos + append_len > cap) {
     throw std::invalid_argument("ark::cpu::update_packed_k_cache: invalid dimensions or append range");
@@ -452,8 +546,10 @@ void update_packed_v_cache(void* cache_v, const void* value, const ReorderKVShap
   const int ntile = shape.ntile, rp = shape.rowpack;
   const int hs_pad = pad_up(head_dim, ntile);
   const int sl_pad = hs_pad == 0 ? 0 : static_cast<int>(shape.v_head_elems / hs_pad);
+  // Reject writes beyond the *logical* capacity, not the ROWPACK-padded capacity.
+  const int cap = shape.logical_capacity;
   if (batch <= 0 || num_heads_kv <= 0 || append_len <= 0 || head_dim <= 0 || start_pos < 0 ||
-      start_pos + append_len > sl_pad) {
+      start_pos + append_len > cap) {
     throw std::invalid_argument("ark::cpu::update_packed_v_cache: invalid dimensions or append range");
   }
   // V (PV weight): NTILE over head_size, ROWPACK over seq. Padded head_size rows

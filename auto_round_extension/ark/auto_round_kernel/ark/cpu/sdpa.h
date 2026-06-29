@@ -44,8 +44,9 @@ void sdpa_forward(const MhaDenseArgs& args);
 // (NTILE24/NTILE48) K/V; Phase 4 Step 1 added an internal raw->packed reorder so
 // the experimental mixed path can feed them. That reorder bridge stays behind
 // ARK_UNSAFE_BESTLA_MIXED_SDPA and the default Python mixed SDPA remains disabled
-// until correctness is verified; a persistent packed KV cache/update is still
-// future work.
+// until correctness is verified. A persistent packed KV cache/update path and an
+// internal already-packed forward (bestla_sdpa_forward_packed) now exist
+// alongside this temporary bridge; both stay experimental and gated.
 void bestla_sdpa_forward(const attn_fwd_args_t& args, BTLA_DTYPE kv_dtype);
 
 // ---------------------------------------------------------------------------
@@ -68,6 +69,8 @@ struct ReorderKVShape {
   int rowpack = 0;                                 // 1 (fp16) or 2 (bf16)
   int sl_pad = 0;                                  // seq padded to NTILE
   int hs_pad = 0;                                  // head_size padded to rowpack
+  int head_dim = 0;                                // logical head_size (unpadded)
+  int logical_capacity = 0;  // logical seq capacity (k_head_elems uses padded cap)
   // Per-head element counts (one head = one [B,Hkv] slice).
   size_t k_head_elems = 0;  // packed K bytes/elems per head ([hs_pad][sl_pad])
   size_t v_head_elems = 0;  // packed V bytes/elems per head ([sl_pad][hs_pad])
@@ -115,8 +118,17 @@ void kv_cache_update(void* cache_k, void* cache_v, const void* key, const void* 
 
 // Packed cache shape sized for a fixed capacity rather than the current seq.
 // k_head_elems / v_head_elems give the packed per-head stride; multiply by
-// num_heads for the total K/V cache element count.
+// num_heads for the total K/V cache element count. The returned shape records
+// logical_capacity = capacity; update_packed_* reject writes beyond it even when
+// the buffer is padded out to a NTILE/ROWPACK multiple, so padded slots stay
+// deterministic. Callers must pass zero-filled buffers (or clear_packed_*_cache)
+// so padded/unwritten regions read as zero.
 ReorderKVShape packed_kv_cache_shape(int batch, int num_heads_kv, int capacity, int head_dim, BTLA_DTYPE kv_dtype);
+
+// Zero a freshly allocated packed K/V cache so padded regions and future tokens
+// are deterministic. Buffers hold reorder_kv_cache_elems(shape, is_value) elems.
+void clear_packed_k_cache(void* cache_k, const ReorderKVShape& shape, BTLA_DTYPE kv_dtype);
+void clear_packed_v_cache(void* cache_v, const ReorderKVShape& shape, BTLA_DTYPE kv_dtype);
 
 // Append raw K tokens -> persistent packed K cache at [start_pos, start_pos+append_len).
 void update_packed_k_cache(void* cache_k, const void* key, const ReorderKVShape& shape,
@@ -127,5 +139,18 @@ void update_packed_k_cache(void* cache_k, const void* key, const ReorderKVShape&
 void update_packed_v_cache(void* cache_v, const void* value, const ReorderKVShape& shape,
                            const ValueStrides& v_strides, int batch, int num_heads_kv, int append_len, int head_dim,
                            int start_pos, BTLA_DTYPE kv_dtype);
+
+// ---------------------------------------------------------------------------
+// Phase 4 Step 5: internal forward over an already-packed persistent K/V cache.
+//
+// bestla_sdpa_forward (above) keeps the temporary per-forward raw->packed
+// reorder bridge. This entry instead consumes a cache already filled by
+// update_packed_k_cache / update_packed_v_cache: K/V are NTILE24_ROWPACK1 (fp16)
+// or NTILE48_ROWPACK2 (bf16), step_k_*/step_v_* come from `shape`, sl_kv is the
+// current valid sequence length (<= shape.logical_capacity), and no reorder
+// happens inside. Q and dst stay PLAIN. Internal/experimental only: still gated
+// by ARK_UNSAFE_BESTLA_MIXED_SDPA, no default Python path, and true e2e
+// numerical validation requires a capable CPU extension build (AVX2/AVX512/AMX).
+void bestla_sdpa_forward_packed(const attn_fwd_args_t& args, const ReorderKVShape& shape, BTLA_DTYPE kv_dtype);
 
 }  // namespace ark::cpu

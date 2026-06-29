@@ -10,6 +10,7 @@ int main() {
   // TestQuant test_quant;
   ark::cpu::TestReorderKV test_reorder_kv;  // CPU packed K/V reorder layout checks
   ark::cpu::TestPersistentPackedKV test_persistent_packed_kv;  // persistent packed K/V update checks
+  ark::cpu::TestPackedForwardSetup test_packed_forward_setup;  // logical-cap/zero-fill/packed-forward checks
   TestSDPA test_sdpa;
   return 0;
 }

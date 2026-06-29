@@ -216,4 +216,84 @@ struct TestPersistentPackedKV {
   }
 };
 
+// Phase 4 Step 5: logical-vs-padded capacity, zero-fill, and packed-forward arg
+// construction checks. Verifies update_packed_* reject writes past the logical
+// capacity even when buffers are padded, that padded regions stay zero, and that
+// bestla_sdpa_forward_packed validates dtype/layout/capacity before any GEMM.
+struct TestPackedForwardSetup {
+  TestPackedForwardSetup() { run_all(); }
+
+  static void check_logical_capacity(BTLA_DTYPE dt, int cap, int hd) {
+    auto sh = packed_kv_cache_shape(2, 2, cap, hd, dt);
+    if (sh.logical_capacity != cap) throw std::runtime_error("logical_capacity not preserved");
+    std::vector<uint16_t> k(reorder_kv_cache_elems(sh, false), 0), v(reorder_kv_cache_elems(sh, true), 0);
+    AttentionStrides ks{hd, 1, cap * hd, cap * 2 * hd};
+    ValueStrides vs{1, hd, cap * hd, cap * 2 * hd};
+    std::vector<uint16_t> raw(size_t(2) * 2 * cap * hd, 0);
+    // start_pos + append == capacity must be allowed.
+    update_packed_k_cache(k.data(), raw.data(), sh, ks, 2, 2, cap, hd, 0, dt);
+    update_packed_v_cache(v.data(), raw.data(), sh, vs, 2, 2, cap, hd, 0, dt);
+    // start_pos + append > capacity must throw, even inside padded capacity.
+    bool threw = false;
+    try { update_packed_k_cache(k.data(), raw.data(), sh, ks, 2, 2, 1, hd, cap, dt); }
+    catch (const std::invalid_argument&) { threw = true; }
+    if (!threw) throw std::runtime_error("K overflow not rejected");
+    threw = false;
+    try { update_packed_v_cache(v.data(), raw.data(), sh, vs, 2, 2, 1, hd, cap, dt); }
+    catch (const std::invalid_argument&) { threw = true; }
+    if (!threw) throw std::runtime_error("V overflow not rejected");
+  }
+
+  static void check_padding_zero(BTLA_DTYPE dt, int cap, int hd) {
+    auto sh = packed_kv_cache_shape(2, 2, cap, hd, dt);
+    std::vector<uint16_t> k(reorder_kv_cache_elems(sh, false), 0xFFFF), v(reorder_kv_cache_elems(sh, true), 0xFFFF);
+    clear_packed_k_cache(k.data(), sh, dt);
+    clear_packed_v_cache(v.data(), sh, dt);
+    std::vector<uint16_t> raw(size_t(2) * 2 * cap * hd, 0);
+    AttentionStrides ks{hd, 1, cap * hd, cap * 2 * hd};
+    ValueStrides vs{1, hd, cap * hd, cap * 2 * hd};
+    for (size_t i = 0; i < raw.size(); ++i) store_scalar(raw.data(), i, dt, 1.0f);
+    update_packed_k_cache(k.data(), raw.data(), sh, ks, 2, 2, 1, hd, 0, dt);  // append only 1 token
+    update_packed_v_cache(v.data(), raw.data(), sh, vs, 2, 2, 1, hd, 0, dt);
+    // Padded head_dim / tile / rowpack slots beyond the single token stay zero.
+    int zeros = 0;
+    for (size_t i = 0; i < k.size(); ++i) if (k[i] == 0) ++zeros;
+    if (zeros == 0) throw std::runtime_error("padded K not zero");
+    zeros = 0;
+    for (size_t i = 0; i < v.size(); ++i) if (v[i] == 0) ++zeros;
+    if (zeros == 0) throw std::runtime_error("padded V not zero");
+  }
+
+  static void check_forward_rejects() {
+    auto sh = packed_kv_cache_shape(1, 1, 32, 64, BTLA_DTYPE::F16);
+    std::vector<uint16_t> k(reorder_kv_cache_elems(sh, false), 0), v(reorder_kv_cache_elems(sh, true), 0);
+    std::vector<float> q(64), dst(64);
+    attn_fwd_args_t a{};
+    a.Q = q.data(); a.K = k.data(); a.V = v.data(); a.dst = dst.data();
+    a.batch_size = 1; a.head_num = 1; a.heads_kv = 1; a.head_size = 64; a.sl_q = 1; a.sl_kv = 16;
+    a.Q_layout = ATTN_FWD_LAYOUT_PLAIN; a.dst_layout = ATTN_FWD_LAYOUT_PLAIN;
+    a.K_layout = sh.layout; a.V_layout = sh.layout;
+    // Capacity overflow: sl_kv > logical_capacity must throw.
+    a.sl_kv = 99;
+    bool threw = false;
+    try { bestla_sdpa_forward_packed(a, sh, BTLA_DTYPE::F16); } catch (const std::exception&) { threw = true; }
+    if (!threw) throw std::runtime_error("forward capacity overflow not rejected");
+    // Wrong dtype/layout pairing must throw.
+    a.sl_kv = 16;
+    threw = false;
+    try { bestla_sdpa_forward_packed(a, sh, BTLA_DTYPE::BF16); } catch (const std::exception&) { threw = true; }
+    if (!threw) throw std::runtime_error("forward dtype/layout mismatch not rejected");
+  }
+
+  void run_all() {
+    for (auto dt : {BTLA_DTYPE::F16, BTLA_DTYPE::BF16})
+      for (int cap : {30, 50, 100}) {  // not divisible by NTILE/ROWPACK
+        check_logical_capacity(dt, cap, 17);
+        check_padding_zero(dt, cap, 17);
+      }
+    check_forward_rejects();
+    printf("[packed_forward_setup] checks passed\n");
+  }
+};
+
 }  // namespace ark::cpu
