@@ -619,6 +619,16 @@ def model_forward_low_gpu(model, dataloader, major_device="cuda", pbar=None):
     for data in dataloader:
         prepare_model_low_gpu(model, block_inputs, major_device=major_device, pbar=pbar)
 
+        # Enable grad_mode for non-block wrapper layers (e.g., lm_head) so their
+        # scoring hooks fire during the full backward pass before the last-block
+        # hook interrupts it.  The backward flow is:
+        #   loss → lm_head (hooks fire) → norm → last_block (hook raises error)
+        for n, m in model.named_modules():
+            if hasattr(m, "grad_mode"):
+                is_in_block = any(n == bn or n.startswith(bn + ".") for bn in block_names)
+                if not is_in_block:
+                    m.grad_mode = True
+
         # Register backward hook on the last block
         last_block = get_module(model, block_names[-1])
         last_block_backward_hook = last_block.register_full_backward_pre_hook(backward_pre_hook)
