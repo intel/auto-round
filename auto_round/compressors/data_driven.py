@@ -1225,12 +1225,16 @@ class CalibratedRTNCompressor(DataDrivenCompressor):
         if hasattr(model, "hf_device_map") and len(model.hf_device_map) > 1:
             dispatch_model(model, model.hf_device_map)
 
+        orig_model_device = getattr(model, "device", None)
+
         try:
             if hasattr(model, "hf_device_map") and len(model.hf_device_map) > 1:
                 import accelerate
 
                 accelerate.hooks.remove_hook_from_submodules(model)
             safe_to_cpu_(model)
+            if orig_model_device is not None:
+                model.device = torch.device("cpu")
             clear_memory(device_list=device_manager.device_list)
             self._quantize_via_rtn_blockwise()
         except torch.OutOfMemoryError:
@@ -1242,6 +1246,8 @@ class CalibratedRTNCompressor(DataDrivenCompressor):
                     "Consider enabling `low_gpu_mem_usage` or using more GPUs via `--device 0,1,2,3`."
                 )
                 safe_to_cpu_(model)
+                if orig_model_device is not None:
+                    model.device = torch.device("cpu")
                 clear_memory(device_list=device_manager.device_list)
                 if hasattr(model, "hf_device_map") and len(model.hf_device_map) > 1:
                     import accelerate
@@ -1261,6 +1267,8 @@ class CalibratedRTNCompressor(DataDrivenCompressor):
             except Exception as e:
                 raise
         finally:
+            if orig_model_device is not None:
+                model.device = orig_model_device
             self.quantizer.enable_imatrix = False
 
     def quantize(self):

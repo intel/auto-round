@@ -291,6 +291,48 @@ def tune(args):
         model_name = model_name[:-1]
     logger.info(f"start to quantize {model_name}")
 
+    # ---- VLLMCompressor routing ----
+    if getattr(args, "use_vllm_compressor", False):
+        from auto_round.vllm_compressor import VLLMCompressor
+        from auto_round.utils import clear_memory
+        from auto_round.eval.eval_cli import parse_vllm_args
+
+        logger.info("Using VLLMCompressor for vLLM 0.23.x runtime quantization.")
+        
+        # Map CLI arguments to VLLMCompressor constructor
+        compressor_kwargs = {
+            "algorithm": "rtn" if args.disable_opt_rtn else "optimized_rtn",
+            "scheme": args.scheme,
+            "format": args.format,
+        }
+        if args.nsamples is not None:
+            compressor_kwargs["nsamples"] = args.nsamples
+        if args.seqlen is not None:
+            compressor_kwargs["seqlen"] = args.seqlen
+        if hasattr(args, "nblocks") and args.nblocks is not None:
+            compressor_kwargs["nblocks"] = args.nblocks
+        if hasattr(args, "iters") and args.iters is not None:
+            compressor_kwargs["iters"] = args.iters
+        if hasattr(args, "low_gpu_mem_usage"):
+            compressor_kwargs["low_gpu_mem_usage"] = args.low_gpu_mem_usage
+        if getattr(args, "vllm_args", None):
+            compressor_kwargs["vllm_args"] = parse_vllm_args(args.vllm_args)
+        
+        compressor = VLLMCompressor(
+            model_id_or_path=model_name,
+            **compressor_kwargs,
+        )
+
+        try:
+            with compressor.managed_backend():
+                logger.info("Quantizing vLLM model...")
+                compressor.quantize_and_save(args.output_dir)
+                logger.info(f"Quantized model saved to {args.output_dir}")
+        finally:
+            clear_memory()
+        return
+
+    # ---- Standard AutoRound path ----
     from auto_round.compressors.base import BaseCompressor
     from auto_round.compressors.entry import AutoRound as PipelineAutoRound
 

@@ -392,7 +392,16 @@ class BlockIO:
                 else:
                     current_input_others[key] = val
             elif not isinstance(input_others[key], (str, bool, type(None))):
-                current_input_others[key] = [input_others[key][i] for i in indices]
+                source_values = input_others[key]
+                if isinstance(source_values, list):
+                    if len(source_values) == 0:
+                        current_input_others[key] = source_values
+                        continue
+                    current_input_others[key] = [
+                        source_values[i] if i < len(source_values) else source_values[0] for i in indices
+                    ]
+                else:
+                    current_input_others[key] = [source_values for _ in indices]
                 if len(current_input_others[key]) == 1:
                     current_input_others[key] = current_input_others[key][0]
                 else:

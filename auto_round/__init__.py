@@ -28,6 +28,7 @@ from auto_round.schemes import QuantizationScheme
 from auto_round.auto_scheme import AutoScheme
 from auto_round.utils import LazyImport
 from auto_round.utils import monkey_patch
+from auto_round.vllm_compressor import VLLMCompressor
 
 monkey_patch()
 
@@ -50,4 +51,5 @@ __all__ = [
     "AWQConfig",
     "RotationConfig",
     "SpinQuantConfig",
+    "VLLMCompressor",
 ]

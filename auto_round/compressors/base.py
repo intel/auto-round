@@ -291,7 +291,7 @@ class BaseCompressor(object):
 
         # Extra/legacy kwargs for backward compatibility
         # Major version releases may pack them with extra configuration options
-        kwargs.pop("iters", None)
+        self.iters = kwargs.pop("iters", None)
         kwargs.pop("enable_alg_ext", None)
         kwargs.pop("vlm", None)
         amp = kwargs.pop("amp", True)
@@ -655,10 +655,12 @@ class BaseCompressor(object):
                     if any(name.startswith(prefix) for prefix in block_prefixes)
                     or not any(prefix.startswith(name.split(".")[0]) for prefix in block_prefixes)
                 ]
-            predefined_ignore_layers = compress_layer_names(predefined_ignore_layers)
             if predefined_ignore_layers:
                 logger.info(f"Using predefined ignore_layers: {compressed_predefined_ignore_layers}")
-                tmp_str = predefined_ignore_layers.replace(" ", "")
+                # Keep original layer names for matching. Compressed range forms
+                # (e.g., "layers.[0-47]") are for logging only and can be
+                # interpreted as regex character classes by downstream matching.
+                tmp_str = ",".join(predefined_ignore_layers).replace(" ", "")
                 if self.ignore_layers == "":
                     self.ignore_layers = tmp_str
                 else:

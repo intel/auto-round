@@ -97,15 +97,18 @@ def pack_layer(name, model, device=None):
 
     # QuantLinear = get_fp_qlinear(backend, bits, group_size, sym)
 
-    if type(layer) == nn.Linear:
+    if hasattr(layer, "in_features") and hasattr(layer, "out_features"):
         in_features = layer.in_features
         out_features = layer.out_features
+    elif hasattr(layer, "input_size") and hasattr(layer, "output_size"):
+        # vLLM parallel linear layers
+        in_features = layer.input_size
+        out_features = layer.output_size
     elif type(layer) == nn.Conv2d:
         in_features = layer.in_channels
         out_features = layer.out_channels
-    elif type(layer) == transformers.pytorch_utils.Conv1D:
-        in_features = layer.weight.shape[0]
-        out_features = layer.weight.shape[1]
+    else:
+        raise ValueError(f"Unsupported layer type: {type(layer)}")
 
     bias = layer.bias is not None
     ##bias = True  ## if using the above, llama3 lambada RTN will be NAN , TODO why?
@@ -352,6 +355,7 @@ def save_quantized_as_fp(
         quantization_config = quantization_config.to_dict()
         quantization_config["provider"] = "auto-round"
         _configure_gaudi2_fp8_dtype(quantization_config)
+
     if hasattr(model, "config"):
         model.config.quantization_config = quantization_config
     if output_dir is None:

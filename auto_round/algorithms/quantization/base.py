@@ -68,6 +68,8 @@ class RTNLayerFallbackMixin:
             try:
                 if disable_opt_rtn is None:
                     disable_opt_rtn = bool(getattr(self.config, "disable_opt_rtn", False))
+                # Only disable opt_rtn for fused MoE layers (FusedMoE, RoutedExperts).
+                # Unfused individual expert Linear layers should use opt_rtn normally.
                 if (
                     not disable_opt_rtn
                     and getattr(self.config, "orig_disable_opt_rtn", None) is None
@@ -76,11 +78,26 @@ class RTNLayerFallbackMixin:
                     and "shared_expert" not in layer.global_name
                     and self.config.super_bits is None
                 ):
-                    disable_opt_rtn = True
-                    logger.warning_once(
-                        "MoE layer detected: optimized RTN is disabled for efficiency. "
-                        "Use `--enable_opt_rtn` to force-enable it for MoE layers."
+                    parent_module = None
+                    try:
+                        parent_name = ".".join(layer.global_name.split(".")[:-1])
+                        if parent_name:
+                            parent_module = get_module(self.model, parent_name)
+                    except Exception:
+                        pass
+                    
+                    parent_type_name = type(parent_module).__name__.lower() if parent_module else ""
+                    is_fused_moe = any(
+                        keyword in parent_type_name for keyword in ["fusedmoe", "routedexperts"]
                     )
+                    
+                    if is_fused_moe:
+                        disable_opt_rtn = True
+                        logger.warning_once(
+                            "Fused MoE layer detected: optimized RTN is disabled for efficiency. "
+                            "Use `--enable_opt_rtn` to force-enable it for MoE layers."
+                        )
+
                 layer = layer.to(tuning_device)
                 layer = WrapperLinear(
                     layer,

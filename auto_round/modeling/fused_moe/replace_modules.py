@@ -72,6 +72,7 @@ def _handle_moe_modules(model: torch.nn.Module) -> list[str]:
         List of module names that were processed
     """
     from auto_round.modeling.fused_moe.moe_experts_interface import (
+        _unfuse_experts_weights_inplace,
         is_linear_loop_available,
         prepare_model_for_moe_quantization,
     )
@@ -87,8 +88,46 @@ def _handle_moe_modules(model: torch.nn.Module) -> list[str]:
     model_type = getattr(getattr(model, "config", None), "model_type", None)
     skip_prefixes = MOE_SKIP_PREFIXES.get(model_type, [])
 
-    # Use transformers' experts interface
+    # Use transformers' experts interface first.
     unfused = prepare_model_for_moe_quantization(model, skip_prefixes=skip_prefixes)
+
+    # vLLM runtime experts (e.g. FusedMoE) are not decorated with
+    # @use_experts_implementation, so the generic path above skips them.
+    # For vLLM-compressor flow, force-unfuse these fused experts into
+    # per-expert Linear containers so they can be discovered as quantizable
+    # linear projections (gate_proj/up_proj/down_proj).
+    if getattr(model, "_use_vllm_compressor", False):
+        forced_unfused: list[str] = []
+        forced_unfuse_failed: list[str] = []
+        for name, module in model.named_modules():
+            if skip_prefixes and any(name.startswith(prefix) for prefix in skip_prefixes):
+                continue
+            if getattr(module, "_unfused_experts", False):
+                continue
+
+            class_name = module.__class__.__name__.lower()
+            has_fused_weights = hasattr(module, "w13_weight") or hasattr(module, "w2_weight")
+            if ("fusedmoe" not in class_name and "routedexperts" not in class_name) and not has_fused_weights:
+                continue
+
+            if _unfuse_experts_weights_inplace(module, check_decorator=False):
+                forced_unfused.append(name)
+            else:
+                forced_unfuse_failed.append(name)
+
+        if forced_unfused:
+            unfused.extend(forced_unfused)
+            logger.info(
+                "Force-unfused %d vLLM fused MoE module(s) for linear quantization path",
+                len(forced_unfused),
+            )
+        if forced_unfuse_failed:
+            logger.warning(
+                "Detected %d candidate vLLM fused MoE module(s) but failed to unfuse: %s",
+                len(forced_unfuse_failed),
+                ", ".join(forced_unfuse_failed[:8]) + (" ..." if len(forced_unfuse_failed) > 8 else ""),
+            )
+
     if unfused:
         logger.info(f"Prepared {len(unfused)} MOE modules for quantization")
     return unfused
@@ -128,7 +167,11 @@ def materialize_model_(model: torch.nn.Module) -> None:
         if isinstance(module, ReplacementModuleBase):
             module.materialize_weights()
 
-    model.apply(_materialize_module)
+    # Some third-party modules define an `apply(...)` method with a custom
+    # signature (not `nn.Module.apply(fn)`). Iterating `modules()` avoids
+    # calling those overridden APIs while still visiting the full tree.
+    for module in model.modules():
+        _materialize_module(module)
 
     # check if any module on meta device remains
     found_meta = False
@@ -150,7 +193,8 @@ def release_original_module_(model: torch.nn.Module) -> None:
         if isinstance(module, ReplacementModuleBase):
             module.release_original_module()
 
-    model.apply(_clear_source_module)
+    for module in model.modules():
+        _clear_source_module(module)
 
 
 def safe_to_cpu_(model: torch.nn.Module) -> None:

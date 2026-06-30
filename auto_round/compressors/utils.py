@@ -189,9 +189,20 @@ def block_forward(
     import inspect as _inspect
 
     param_names = [p for p in _inspect.signature(block.forward).parameters.keys() if p != "self"]
-    block_input_kwarg = param_names[0] if param_names else "hidden_states"
+    if "hidden_states" in param_names:
+        block_input_kwarg = "hidden_states"
+    else:
+        block_input_kwarg = param_names[0] if param_names else "hidden_states"
     if block_input_kwarg not in input_others:
         input_others[block_input_kwarg] = input_ids
+
+    if "positions" in param_names and ("positions" not in input_others or input_others["positions"] == []):
+        if input_ids.dim() >= 2:
+            batch_size, seq_len = input_ids.shape[0], input_ids.shape[1]
+            num_tokens = batch_size * seq_len
+            input_others["positions"] = torch.arange(num_tokens, device=input_ids.device, dtype=torch.long)
+        else:
+            input_others["positions"] = torch.arange(input_ids.shape[0], device=input_ids.device, dtype=torch.long)
 
     # Convert positional inputs to keyword args for any remaining positional parameters.
     positional_inputs = input_tuple or ()
@@ -204,11 +215,50 @@ def block_forward(
                     input_others[param_name] = val
         positional_inputs = ()
 
-    if amp:
-        with autocast(device_type=str(device).split(":")[0], dtype=amp_dtype):  # pragma: no cover
-            output = block(**input_others)
+    vllm_config = getattr(block, "_vllm_config", None)
+
+    def run_block_forward():
+        if amp:
+            with autocast(device_type=str(device).split(":")[0], dtype=amp_dtype):  # pragma: no cover
+                return block(**input_others)
+        return block(**input_others)
+
+    if vllm_config is not None:
+        from vllm.forward_context import set_forward_context
+
+        hidden_states = input_others.get("hidden_states", input_ids)
+        original_shape = None
+        
+        if isinstance(hidden_states, torch.Tensor) and hidden_states.dim() >= 3:
+            original_shape = hidden_states.shape
+            batch_size, seq_len = hidden_states.shape[0], hidden_states.shape[1]
+            hidden_states = hidden_states.reshape(batch_size * seq_len, -1)
+            input_others["hidden_states"] = hidden_states
+            num_tokens = batch_size * seq_len
+            
+            # Sync positions tensor with flattened hidden_states
+            if "positions" in input_others:
+                positions = input_others["positions"]
+                if isinstance(positions, torch.Tensor) and positions.dim() >= 2:
+                    input_others["positions"] = positions.reshape(-1)
+        elif isinstance(hidden_states, torch.Tensor):
+            num_tokens = hidden_states.shape[0]
+        else:
+            num_tokens = None
+
+        with set_forward_context(None, vllm_config, num_tokens=num_tokens):
+            output = run_block_forward()
+        
+        if original_shape is not None:
+            if isinstance(output, torch.Tensor) and output.dim() >= 2:
+                output = output.reshape(original_shape[0], original_shape[1], -1)
+            elif isinstance(output, (tuple, list)) and output and isinstance(output[0], torch.Tensor):
+                output_list = list(output)
+                if output_list[0].dim() >= 2:
+                    output_list[0] = output_list[0].reshape(original_shape[0], original_shape[1], -1)
+                output = tuple(output_list) if isinstance(output, tuple) else output_list
     else:
-        output = block(**input_others)
+        output = run_block_forward()
     if isinstance(output_return_id, int) and (isinstance(output, list) or isinstance(output, tuple)):
         output = output[output_return_id]
     return output

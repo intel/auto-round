@@ -68,6 +68,11 @@ KNOWN_PROJECTION_PATTERNS = {
     "v1": {"is_input_proj": True, "output_multiplier": 1},
     "w1_proj": {"is_input_proj": True, "output_multiplier": 1},
     "w2_proj": {"is_input_proj": False, "output_multiplier": 1},
+    # vLLM fused MoE names
+    # w13_weight packs gate+up projections and should split into gate_proj/up_proj.
+    "w13_weight": {"is_input_proj": True, "output_multiplier": 2, "split_into": ["gate_proj", "up_proj"]},
+    # w2_weight maps to down_proj.
+    "w2_weight": {"is_input_proj": False, "output_multiplier": 1, "split_into": ["down_proj"]},
 }
 
 
@@ -303,6 +308,16 @@ def _experts_supports_decorator(module: nn.Module) -> bool:
     return hasattr(forward_method, "__wrapped__")
 
 
+def _as_tensor_data(value) -> torch.Tensor | None:
+    """Resolve Tensor payload from direct Tensor/Parameter or wrapper with `.data` tensor."""
+    if isinstance(value, torch.Tensor):
+        return value
+    data = getattr(value, "data", None)
+    if isinstance(data, torch.Tensor):
+        return data
+    return None
+
+
 def _detect_expert_projections(module: nn.Module) -> dict[str, dict]:
     """Detect which expert projections exist in the module.
 
@@ -316,9 +331,10 @@ def _detect_expert_projections(module: nn.Module) -> dict[str, dict]:
     detected = {}
 
     # First, check known projection patterns
+    # vLLM may store fused MoE weights as Tensor-like attributes instead of plain nn.Parameter.
     for proj_name, config in KNOWN_PROJECTION_PATTERNS.items():
-        param = getattr(module, proj_name, None)
-        if param is not None and isinstance(param, nn.Parameter) and param.dim() == 3:
+        param = _as_tensor_data(getattr(module, proj_name, None))
+        if param is not None and param.dim() == 3:
             detected[proj_name] = config
 
     # If no known patterns found, scan for any 3D Parameter (future-proofing),
@@ -331,8 +347,8 @@ def _detect_expert_projections(module: nn.Module) -> dict[str, dict]:
                 continue
             if attr_name in _NON_EXPERT_3D_PARAMS:
                 continue
-            param = getattr(module, attr_name, None)
-            if param is not None and isinstance(param, nn.Parameter) and param.dim() == 3:
+            param = _as_tensor_data(getattr(module, attr_name, None))
+            if param is not None and param.dim() == 3:
                 # Use default config for unknown projections
                 logger.debug(f"Discovered unknown 3D projection: {attr_name}")
                 detected[attr_name] = {"is_input_proj": True, "output_multiplier": 1}
@@ -340,7 +356,7 @@ def _detect_expert_projections(module: nn.Module) -> dict[str, dict]:
     return detected
 
 
-def _infer_dimensions(param: nn.Parameter, config: dict, is_transposed: bool) -> tuple[int, int]:
+def _infer_dimensions(param: torch.Tensor, config: dict, is_transposed: bool) -> tuple[int, int]:
     """Infer input and output dimensions for a projection.
 
     Args:
@@ -368,6 +384,46 @@ def _infer_dimensions(param: nn.Parameter, config: dict, is_transposed: bool) ->
     return in_features, out_features
 
 
+def _get_hidden_and_intermediate_size(module: nn.Module) -> tuple[int | None, int | None]:
+    """Best-effort extraction of hidden/intermediate sizes from module metadata."""
+    hidden = getattr(module, "hidden_size", None)
+    inter = getattr(module, "intermediate_size_per_partition", None)
+    if inter is None:
+        inter = getattr(module, "intermediate_size", None)
+    if inter is None:
+        inter = getattr(module, "moe_intermediate_size", None)
+
+    if hidden is None:
+        runner = getattr(module, "runner", None)
+        gate = getattr(runner, "gate", None)
+        hidden = getattr(gate, "in_features", None)
+
+    return hidden, inter
+
+
+def _infer_is_transposed(module: nn.Module, proj_name: str, param: torch.Tensor, config: dict) -> bool:
+    """Infer whether expert weights are stored as (in, out) instead of (out, in)."""
+    dim1, dim2 = param.shape[1], param.shape[2]
+
+    hidden, inter = _get_hidden_and_intermediate_size(module)
+    if hidden is not None and inter is not None:
+        multiplier = int(config.get("output_multiplier", 1))
+        is_input_proj = bool(config.get("is_input_proj", True))
+
+        expected_out = inter * multiplier if is_input_proj else hidden
+        expected_in = hidden if is_input_proj else inter
+
+        # Canonical layout: (num_experts, out_features, in_features)
+        if dim1 == expected_out and dim2 == expected_in:
+            return False
+        # Transposed layout: (num_experts, in_features, out_features)
+        if dim1 == expected_in and dim2 == expected_out:
+            return True
+
+    # Fallback heuristic for unknown models.
+    return dim1 < dim2
+
+
 def _unfuse_single_projection(
     module: nn.Module,
     proj_name: str,
@@ -375,6 +431,7 @@ def _unfuse_single_projection(
     is_transposed: bool,
     dtype: torch.dtype,
     target_device: torch.device,
+    share_storage_with_source: bool = False,
 ) -> list | None:
     """Unfuse a single projection from 3D Parameter to a list of Linear layers.
 
@@ -395,8 +452,9 @@ def _unfuse_single_projection(
     Returns:
         List of Linear layers, or None if projection doesn't exist
     """
-    param = getattr(module, proj_name, None)
-    if param is None or not isinstance(param, nn.Parameter) or param.dim() != 3:
+    param_obj = getattr(module, proj_name, None)
+    param = _as_tensor_data(param_obj)
+    if param is None or param.dim() != 3:
         return None
 
     # Get projection config
@@ -407,33 +465,47 @@ def _unfuse_single_projection(
 
     # Check for bias
     bias_name = f"{proj_name}_bias"
-    bias_param = getattr(module, bias_name, None)
+    bias_obj = getattr(module, bias_name, None)
+    bias_param = _as_tensor_data(bias_obj)
     has_bias = bias_param is not None
 
     source_device = param.device
     is_meta = source_device.type == "meta"
 
-    # Prepare weight slices on CPU in batch (single D2H transfer + batch transpose)
+    # Prepare slices:
+    # - default: move once to CPU and slice there (memory-friendly for non-vLLM path)
+    # - vLLM fused-runtime path: share storage with source tensor to avoid doubled weights
     if not is_meta:
-        # Single transfer: GPU -> CPU (or no-op if already on CPU)
-        weights_cpu = param.data.cpu()  # (num_experts, dim1, dim2)
-        if is_transposed:
-            # Batch transpose: (num_experts, in, out) -> (num_experts, out, in)
-            weights_cpu = weights_cpu.transpose(1, 2)
-        # Ensure contiguous layout so unbind produces contiguous 2D slices.
-        # This is needed when the param comes from a chunk split (Phase 1)
-        # which produces non-contiguous views even on CPU.
-        if not weights_cpu.is_contiguous():
-            weights_cpu = weights_cpu.contiguous()
-        # Unbind into a tuple of 2D tensors (zero-copy views since contiguous)
-        weight_slices = weights_cpu.unbind(0)
+        if share_storage_with_source:
+            # Keep single storage: per-expert weights become views into source param.
+            weights_view = param.detach()
+            if is_transposed:
+                weights_view = weights_view.transpose(1, 2)
+            weight_slices = weights_view.unbind(0)
 
-        if has_bias:
-            bias_cpu = bias_param.data.cpu()
-            # Ensure contiguous — bias may come from a chunk split (Phase 1)
-            if not bias_cpu.is_contiguous():
-                bias_cpu = bias_cpu.contiguous()
-            bias_slices = bias_cpu.unbind(0)
+            if has_bias:
+                bias_view = bias_param.detach()
+                bias_slices = bias_view.unbind(0)
+        else:
+            # Single transfer: GPU -> CPU (or no-op if already on CPU)
+            weights_cpu = param.detach().cpu()  # (num_experts, dim1, dim2)
+            if is_transposed:
+                # Batch transpose: (num_experts, in, out) -> (num_experts, out, in)
+                weights_cpu = weights_cpu.transpose(1, 2)
+            # Ensure contiguous layout so unbind produces contiguous 2D slices.
+            # This is needed when the param comes from a chunk split (Phase 1)
+            # which produces non-contiguous views even on CPU.
+            if not weights_cpu.is_contiguous():
+                weights_cpu = weights_cpu.contiguous()
+            # Unbind into a tuple of 2D tensors (zero-copy views since contiguous)
+            weight_slices = weights_cpu.unbind(0)
+
+            if has_bias:
+                bias_cpu = bias_param.detach().cpu()
+                # Ensure contiguous — bias may come from a chunk split (Phase 1)
+                if not bias_cpu.is_contiguous():
+                    bias_cpu = bias_cpu.contiguous()
+                bias_slices = bias_cpu.unbind(0)
 
     # Create Linear shells on meta device (no memory allocation)
     linears = []
@@ -449,12 +521,13 @@ def _unfuse_single_projection(
 
         linears.append(linear)
 
-    # Release original parameter memory
-    if not is_meta:
+    # Release original parameter memory (skip when sharing source storage)
+    if not is_meta and not share_storage_with_source:
         try:
-            param.data = param.data.to_empty(device="meta")
-            if has_bias:
-                bias_param.data = bias_param.data.to_empty(device="meta")
+            if isinstance(param_obj, nn.Parameter):
+                param_obj.data = param_obj.data.to_empty(device="meta")
+            if has_bias and isinstance(bias_obj, nn.Parameter):
+                bias_obj.data = bias_obj.data.to_empty(device="meta")
             logger.debug(f"Released memory for {proj_name} using to_empty(device='meta')")
         except Exception:
             pass
@@ -509,18 +582,40 @@ def _unfuse_experts_weights_inplace(
 
     # Get first projection to determine num_experts and layout
     first_proj_name = next(iter(detected_projections))
-    first_param = getattr(module, first_proj_name)
+    first_param = _as_tensor_data(getattr(module, first_proj_name, None))
+    if first_param is None:
+        return False
     num_experts = first_param.shape[0]
 
-    # Detect if transposed
-    is_transposed = getattr(module, "is_transposed", None)
-    if is_transposed is None:
-        # Infer from shape: typically hidden_dim < intermediate_dim
-        dim1, dim2 = first_param.shape[1], first_param.shape[2]
-        is_transposed = dim1 < dim2
+    # Detect if transposed. Some runtimes expose module.is_transposed, but it can
+    # be stale/inconsistent with actual tensor layout after wrapper conversions.
+    first_cfg = detected_projections.get(first_proj_name, {"is_input_proj": True, "output_multiplier": 1})
+    inferred_is_transposed = _infer_is_transposed(module, first_proj_name, first_param, first_cfg)
+
+    is_transposed_attr = getattr(module, "is_transposed", None)
+    if is_transposed_attr is None:
+        is_transposed = inferred_is_transposed
+    else:
+        is_transposed = bool(is_transposed_attr)
+        if is_transposed != inferred_is_transposed:
+            logger.warning(
+                "Overriding inconsistent is_transposed for %s: attr=%s inferred=%s (shape=%s)",
+                module.__class__.__name__,
+                is_transposed,
+                inferred_is_transposed,
+                tuple(first_param.shape),
+            )
+            is_transposed = inferred_is_transposed
 
     dtype = first_param.dtype
     target_device = first_param.device if first_param.device.type != "meta" else "cpu"
+
+    # vLLM FusedMoE runtime still reads fused weights (w13_weight/w2_weight) in forward.
+    # Keep those fused attrs for runtime execution, while materializing per-expert
+    # Linear projections for quantization/export.
+    keep_vllm_fused_runtime_weights = bool(getattr(module, "runner", None)) and (
+        hasattr(module, "w13_weight") or hasattr(module, "w2_weight")
+    )
 
     # Phase 1: Split fused projections (e.g., gate_up_proj -> gate_proj + up_proj) into separate 3D params
     extra_projections = {}
@@ -529,8 +624,9 @@ def _unfuse_experts_weights_inplace(
         split_into = config.get("split_into")
         if not split_into:
             continue
-        param = getattr(module, proj_name, None)
-        if param is None or not isinstance(param, nn.Parameter) or param.dim() != 3:
+        param_obj = getattr(module, proj_name, None)
+        param = _as_tensor_data(param_obj)
+        if param is None or param.dim() != 3:
             continue
         # Split along output dimension
         split_dim = 2 if is_transposed else 1
@@ -538,9 +634,10 @@ def _unfuse_experts_weights_inplace(
 
         # Also split bias if present (e.g., gate_up_proj_bias -> gate_proj_bias + up_proj_bias)
         bias_name = f"{proj_name}_bias"
-        bias_param = getattr(module, bias_name, None)
+        bias_obj = getattr(module, bias_name, None)
+        bias_param = _as_tensor_data(bias_obj)
         bias_splits = None
-        if bias_param is not None and isinstance(bias_param, nn.Parameter) and bias_param.dim() == 2:
+        if bias_param is not None and bias_param.dim() == 2:
             bias_splits = bias_param.chunk(len(split_into), dim=1)
 
         for i, (split_name, split_param) in enumerate(zip(split_into, split_params)):
@@ -552,9 +649,12 @@ def _unfuse_experts_weights_inplace(
             extra_projections[split_name] = KNOWN_PROJECTION_PATTERNS.get(
                 split_name, {"is_input_proj": True, "output_multiplier": 1}
             )
-        delattr(module, proj_name)
-        if bias_param is not None:
-            delattr(module, bias_name)
+        # For vLLM fused MoE runtime, keep original fused params so forward_native
+        # can still access layer.w13_weight/layer.w2_weight.
+        if not (keep_vllm_fused_runtime_weights and proj_name in {"w13_weight", "w2_weight"}):
+            delattr(module, proj_name)
+            if bias_param is not None:
+                delattr(module, bias_name)
         fused_to_remove.append(proj_name)
         logger.debug(f"Split {proj_name} -> {split_into}: {num_experts} experts")
 
@@ -566,7 +666,15 @@ def _unfuse_experts_weights_inplace(
     # Phase 2: Unfuse all 3D params into per-expert Linear layers
     proj_linears = {}  # proj_name -> [Linear_expert0, Linear_expert1, ...]
     for proj_name in detected_projections:
-        linears = _unfuse_single_projection(module, proj_name, num_experts, is_transposed, dtype, target_device)
+        linears = _unfuse_single_projection(
+            module,
+            proj_name,
+            num_experts,
+            is_transposed,
+            dtype,
+            target_device,
+            share_storage_with_source=keep_vllm_fused_runtime_weights,
+        )
         if linears is not None:
             delattr(module, proj_name)
             # Also remove the bias parameter if it exists (already absorbed into Linear.bias)

@@ -2181,33 +2181,35 @@ def merge_block_output_keys(block, input_others, extra_keys):
 def wrap_block_forward_positional_to_kwargs(base_hook):
     """Wrap a block forward hook to convert positional inputs to keyword args.
 
-    Models like GLM-Image call transformer blocks with positional args
-    (e.g. block(hidden_states, encoder_hidden_states, temb, ...)).  The base
-    hook only stores positional_inputs once (from the first sample), losing
-    per-sample variation for encoder_hidden_states etc.  By converting
-    positional args to keyword args, all inputs are properly accumulated
-    across calibration samples.
+    Handles models where blocks expect positional args like (positions, hidden_states, residual).
     """
-    _param_names_cache: dict = {}
+    _param_names_cache = {}
+    _hidden_state_idx_cache = {}
 
-    def forward(m, hidden_states=None, *positional_inputs, **kwargs):
-        if positional_inputs:
-            m_id = id(m)
-            if m_id not in _param_names_cache:
-                # Prefer _true_orig_forward (set by new-arch CalibCompressor._replace_forward)
-                # over orig_forward (which points to the wrapped forward after wrapping).
-                sig_target = getattr(m, "_true_orig_forward", None) or m.orig_forward
-                sig = inspect.signature(sig_target)
-                _param_names_cache[m_id] = [p for p in sig.parameters.keys() if p != "self"]
-            _param_names = _param_names_cache[m_id]
-            for i, val in enumerate(positional_inputs):
-                param_idx = i + 1  # hidden_states is params[0]
-                if param_idx < len(_param_names):
-                    param_name = _param_names[param_idx]
-                    if param_name not in kwargs:
-                        kwargs[param_name] = val
-            positional_inputs = ()
-        return base_hook(m, hidden_states, *positional_inputs, **kwargs)
+    def forward(m, *call_args, **kwargs):
+        m_id = id(m)
+        if m_id not in _param_names_cache:
+            sig_target = getattr(m, "_true_orig_forward", None) or m.orig_forward
+            sig = inspect.signature(sig_target)
+            param_names = [p for p in sig.parameters.keys() if p != "self"]
+            _param_names_cache[m_id] = param_names
+            _hidden_state_idx_cache[m_id] = param_names.index("hidden_states") if "hidden_states" in param_names else None
+
+        param_names = _param_names_cache[m_id]
+        hidden_state_idx = _hidden_state_idx_cache[m_id]
+
+        hidden_states = kwargs.pop("hidden_states", None)
+        if hidden_states is None and hidden_state_idx is not None and hidden_state_idx < len(call_args):
+            hidden_states = call_args[hidden_state_idx]
+
+        for i, val in enumerate(call_args):
+            if i >= len(param_names):
+                break
+            param_name = param_names[i]
+            if param_name != "hidden_states" and param_name not in kwargs:
+                kwargs[param_name] = val
+
+        return base_hook(m, hidden_states, **kwargs)
 
     return forward
 

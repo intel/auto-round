@@ -44,6 +44,19 @@ def _get_weight_scheme_strategy(group_size):
     return None
 
 
+def _is_vllm_parallel_linear_layer(layer) -> bool:
+    """Heuristic check for vLLM parallel linear modules.
+
+    They are not nn.Linear subclasses, but expose input_size/output_size and
+    still carry quantization attrs (bits/scale/zp/weight).
+    """
+    return (
+        hasattr(layer, "input_size")
+        and hasattr(layer, "output_size")
+        and hasattr(layer, "weight")
+    )
+
+
 def _get_act_scheme_strategy(group_size):
     if group_size == 0:
         return "tensor"
@@ -86,8 +99,15 @@ def construct_ct_scheme(layer):
             group_size=layer.act_group_size if _get_act_scheme_strategy(layer.act_group_size) == "group" else None,
             strategy=_get_act_scheme_strategy(layer.act_group_size),
         )
+    # vLLM parallel linear layers (QKVParallelLinear, RowParallelLinear, etc.)
+    # use input_size/output_size instead of in_features/out_features;
+    # normalize their target to "Linear" so vLLM compressor recognizes them.
+    if hasattr(layer, "input_size") and hasattr(layer, "output_size"):
+        target_name = "Linear"
+    else:
+        target_name = layer.__class__.__name__
     scheme = QuantizationScheme(
-        targets=[layer.__class__.__name__],
+        targets=[target_name],
         weights=weights_args,
         input_activations=activations_args,
     )
@@ -97,8 +117,29 @@ def construct_ct_scheme(layer):
 def _get_quant_format(model):
     for n, m in model.named_modules():
         if hasattr(m, "quantization_scheme") and hasattr(m.quantization_scheme, "format"):
-            return m.quantization_scheme.format
+            qfmt = m.quantization_scheme.format
+            if qfmt is not None:
+                return qfmt
     return None
+
+
+
+
+def _infer_format_for_layer(layer, scheme):
+    """Infer the correct compression format, using nn.Linear as the reference
+    type for vLLM parallel linear layers (which are not nn.Linear subclasses but
+    are functionally equivalent and support the same packing formats)."""
+    import torch.nn as nn
+    from compressed_tensors.compressors.base import infer_module_format
+
+    module_type = type(layer)
+    # vLLM parallel linear layers (QKVParallelLinear, RowParallelLinear, etc.)
+    # have input_size/output_size instead of in_features/out_features and are
+    # NOT nn.Linear subclasses, so infer_module_format falls back to "dense".
+    # Treat them as nn.Linear for format inference.
+    if not issubclass(module_type, nn.Linear) and hasattr(layer, "input_size") and hasattr(layer, "output_size"):
+        module_type = nn.Linear
+    return infer_module_format(module_type, scheme)
 
 
 def _compress_and_set_format(layer, scheme, device=None):
@@ -123,14 +164,22 @@ def _compress_and_set_format(layer, scheme, device=None):
             raise ImportError(
                 "compress_module not found in compressed_tensors. " "Install a compatible version."
             ) from e
-    _compress_module(layer)
+    # For vLLM parallel linear layers (not nn.Linear subclasses), infer_module_format
+    # falls back to "dense" because can_compress only checks nn.Linear. Explicitly
+    # pass the correct format so compress_module packs int4 weights properly.
+    inferred_format = _infer_format_for_layer(layer, scheme)
+    _compress_module(layer, format=inferred_format)
 
 
 def pack_layer(name, model, device=None):
     from compressed_tensors.quantization import QuantizationStatus  # pylint: disable=E0401
 
     layer = get_module(model, name)
-    if type(layer) not in SUPPORTED_LAYER_TYPES and not isinstance(layer, WrapperWALayer):  ##already packed
+    if (
+        type(layer) not in SUPPORTED_LAYER_TYPES
+        and not isinstance(layer, WrapperWALayer)
+        and not _is_vllm_parallel_linear_layer(layer)
+    ):  ##already packed
         return
 
     if hasattr(layer, "orig_layer"):  # revert WrapperWALayer for offline usage

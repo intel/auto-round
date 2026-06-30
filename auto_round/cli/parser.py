@@ -166,6 +166,11 @@ def build_quantize_parser(*, prog: str = "auto_round quantize") -> argparse.Argu
         choices=["fp8", "float8_e4m3fn"],
         help="Static attention quantization data type.",
     )
+    rt.add_argument(
+        "--use_vllm_compressor",
+        action="store_true",
+        help="Use VLLMCompressor for single-GPU vLLM 0.23.x runtime quantization instead of standard AutoRound.",
+    )
 
     # ---- Evaluation ----
     ev = parser.add_argument_group("Evaluation Arguments")

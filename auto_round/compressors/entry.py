@@ -250,7 +250,7 @@ def _build_model_type_ctor_kwargs(model, base_kwargs, mllm_kwargs, diffusion_kwa
 
 
 def _select_rtn_compressor_base_cls(quant_config: RTNConfig, scheme, format, base_kwargs) -> type:
-    enable_imatrix = False
+    enable_imatrix = getattr(quant_config, "enable_imatrix", False)  # Respect pre-set enable_imatrix
     resolved_attrs = {}
     disable_opt_rtn = getattr(quant_config, "disable_opt_rtn", False)
 

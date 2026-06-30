@@ -264,14 +264,60 @@ def save_model(
     else:
         try:
             model.save_pretrained(save_dir, max_shard_size=max_shard_size, safe_serialization=safe_serialization)
-        except (KeyError, TypeError) as e:
+        except (KeyError, TypeError, AttributeError) as e:
             # Some third-party configs fail during config serialization in save_pretrained.
+            # Also handle models that don't implement save_pretrained (e.g., some vLLM wrappers).
             # Fall back to saving weights separately + config without diff.
             logger.warning("model.save_pretrained failed (%s), falling back to manual save.", e)
-            from safetensors.torch import save_file
+            if safe_serialization:
+                from safetensors.torch import save_file
 
-            state_dict = model.state_dict()
-            save_file(state_dict, os.path.join(save_dir, "model.safetensors"))
+                state_dict = model.state_dict()
+
+                # Safetensors cannot store multiple keys sharing the same storage.
+                # Clone duplicated-storage tensors to keep serialization robust.
+                processed_state_dict = {}
+                seen_storage_ptr = {}
+                for key, tensor in state_dict.items():
+                    if isinstance(tensor, torch.Tensor):
+                        ptr = tensor.data_ptr()
+                        if ptr in seen_storage_ptr:
+                            processed_state_dict[key] = tensor.clone()
+                        else:
+                            seen_storage_ptr[ptr] = key
+                            processed_state_dict[key] = tensor
+                    else:
+                        processed_state_dict[key] = tensor
+
+                if max_shard_size:
+                    try:
+                        from huggingface_hub import split_torch_state_dict_into_shards
+
+                        split = split_torch_state_dict_into_shards(
+                            processed_state_dict,
+                            filename_pattern="model{suffix}.safetensors",
+                            max_shard_size=max_shard_size,
+                        )
+
+                        for shard_file, tensor_names in split.filename_to_tensors.items():
+                            shard_state = {name: processed_state_dict[name] for name in tensor_names}
+                            save_file(shard_state, os.path.join(save_dir, shard_file))
+
+                        if split.is_sharded:
+                            index = {
+                                "metadata": split.metadata,
+                                "weight_map": split.tensor_to_filename,
+                            }
+                            with open(os.path.join(save_dir, "model.safetensors.index.json"), "w", encoding="utf-8") as f:
+                                json.dump(index, f, indent=2)
+                    except Exception as shard_e:
+                        logger.warning("Sharded safetensors save failed (%s), falling back to single file.", shard_e)
+                        save_file(processed_state_dict, os.path.join(save_dir, "model.safetensors"))
+                else:
+                    save_file(processed_state_dict, os.path.join(save_dir, "model.safetensors"))
+            else:
+                torch.save(model.state_dict(), os.path.join(save_dir, "pytorch_model.pt"))
+
             _save_model_configs(model, save_dir)
 
     source_dir = _resolve_model_source_dir(model)

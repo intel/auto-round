@@ -360,6 +360,45 @@ class LLMCalibrator(Calibrator):
                 if new_attention_mask is not None and not (isinstance(data_new, dict) and "attention_mask" in data_new):
                     kwargs["attention_mask"] = new_attention_mask
 
+                # vLLM-exposed model wrappers can have reduced forward signatures
+                # (e.g. no attention_mask). Filter keyword arguments to only those
+                # accepted by model.forward when **kwargs is not present.
+                accepted_forward_kwargs = None
+                try:
+                    import inspect
+
+                    sig = inspect.signature(c.model.forward)
+                    has_var_kwargs = any(
+                        p.kind == inspect.Parameter.VAR_KEYWORD for p in sig.parameters.values()
+                    )
+                    if not has_var_kwargs:
+                        accepted_forward_kwargs = {
+                            name
+                            for name, p in sig.parameters.items()
+                            if p.kind in (inspect.Parameter.POSITIONAL_OR_KEYWORD, inspect.Parameter.KEYWORD_ONLY)
+                        }
+                except Exception:
+                    accepted_forward_kwargs = None
+
+                if accepted_forward_kwargs is not None:
+                    kwargs = {k: v for k, v in kwargs.items() if k in accepted_forward_kwargs}
+                    if isinstance(data_new, dict):
+                        data_new = {k: v for k, v in data_new.items() if k in accepted_forward_kwargs}
+
+                # Some vLLM model wrappers require explicit `positions`.
+                if isinstance(data_new, dict) and "positions" in (accepted_forward_kwargs or set()):
+                    if "positions" not in data_new and "input_ids" in data_new:
+                        input_ids_for_pos = data_new["input_ids"]
+                        if hasattr(input_ids_for_pos, "dim") and input_ids_for_pos.dim() >= 2:
+                            seq_len = input_ids_for_pos.shape[-1]
+                            pos = torch.arange(seq_len, device=input_ids_for_pos.device, dtype=torch.long)
+                            data_new["positions"] = pos.unsqueeze(0).expand(input_ids_for_pos.shape[0], -1)
+                        elif hasattr(input_ids_for_pos, "dim") and input_ids_for_pos.dim() == 1:
+                            seq_len = input_ids_for_pos.shape[0]
+                            data_new["positions"] = torch.arange(
+                                seq_len, device=input_ids_for_pos.device, dtype=torch.long
+                            )
+
                 if isinstance(data_new, torch.Tensor):
                     c.model(data_new, **kwargs)
                 elif isinstance(data_new, tuple) or isinstance(data_new, list):
