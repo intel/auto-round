@@ -187,7 +187,9 @@ def _check_sdpa_varlen_correctness(
 ) -> dict:
     """Core correctness check — returns metrics dict. Not a pytest test."""
     # Causal FP16/bf16 softmax at the boundary produces ~3-4 ULPs due to
-    # online-softmax vs reference two-pass softmax; non-causal is bit-exact.
+    # online-softmax vs reference two-pass softmax; non-causal is bit-exact
+    # when the stride bug is fixed (varlen uses host-provided strides, not
+    # make_cute_packed_stride which computes wrong strides for flat layout).
     if max_diff_threshold is None:
         max_diff_threshold = 6.0 if is_causal else 0.1
     if mean_diff_threshold is None:
