@@ -171,7 +171,7 @@ VARLEN_TEST_CASES = [
 ]
 
 
-def test_sdpa_varlen_correctness(
+def _check_sdpa_varlen_correctness(
     batch=2,
     total_q=1024,
     total_kv=1024,
@@ -185,6 +185,7 @@ def test_sdpa_varlen_correctness(
     mean_diff_threshold: float | None = None,
     verbose: bool = True,
 ) -> dict:
+    """Core correctness check — returns metrics dict. Not a pytest test."""
     # Causal FP16/bf16 softmax at the boundary produces ~3-4 ULPs due to
     # online-softmax vs reference two-pass softmax; non-causal is bit-exact.
     if max_diff_threshold is None:
@@ -260,6 +261,11 @@ def test_sdpa_varlen_correctness(
     }
 
 
+def test_sdpa_varlen_correctness():
+    """Pytest entry point — asserts correctness, returns None."""
+    _check_sdpa_varlen_correctness()
+
+
 def run_all_correctness_tests(device="xpu"):
     """Run all VARLEN_TEST_CASES and print a summary."""
     passed = 0
@@ -271,7 +277,7 @@ def run_all_correctness_tests(device="xpu"):
             f"Hq={h_q} Hkv={h_kv} D={head_dim} causal={is_causal} dtype={dtype}"
         )
         try:
-            result = test_sdpa_varlen_correctness(
+            result = _check_sdpa_varlen_correctness(
                 batch=batch,
                 total_q=total_q,
                 total_kv=total_kv,

@@ -158,7 +158,7 @@ def build_varlen_problem(
 # ========================================================================
 
 
-def test_sagev1_varlen_correctness(
+def _check_sagev1_varlen_correctness(
     batch=2,
     total_q=1024,
     total_kv=1024,
@@ -174,7 +174,11 @@ def test_sagev1_varlen_correctness(
     mean_diff_threshold: float | None = None,
     verbose: bool = True,
 ) -> dict:
-    """Run one correctness case for a given kernel variant."""
+    """Run one correctness case for a given kernel variant. Returns metrics dict.
+
+    Note: this is NOT a pytest test (underscore-prefixed).  Use the
+    ``test_sagev1_varlen_correctness`` wrapper for pytest discovery.
+    """
     # SAGE quantization error tolerance
     if max_diff_threshold is None:
         # v1_pvi8 has larger quantization error (PV path also INT8)
@@ -254,6 +258,11 @@ def test_sagev1_varlen_correctness(
     }
 
 
+def test_sagev1_varlen_correctness():
+    """Pytest entry point — asserts correctness, returns None."""
+    _check_sagev1_varlen_correctness()
+
+
 def run_all_correctness_tests(device="xpu", kernel="v1_pvhalf", quant_block_size=64):
     """Run all VARLEN_TEST_CASES for one kernel variant."""
     passed = 0
@@ -266,7 +275,7 @@ def run_all_correctness_tests(device="xpu", kernel="v1_pvhalf", quant_block_size
             f"Hq={h_q} Hkv={h_kv} D={head_dim} causal={is_causal} dtype={dtype}"
         )
         try:
-            result = test_sagev1_varlen_correctness(
+            result = _check_sagev1_varlen_correctness(
                 batch=batch,
                 total_q=total_q,
                 total_kv=total_kv,
