@@ -277,6 +277,13 @@ class AutoRound(AlgorithmHandler):
         group.add_argument("--minmax_lr", default=None, type=float, help="Learning rate for min-max tuning.")
         group.add_argument("--momentum", default=0.0, type=float, help="Momentum factor for the optimizer.")
         group.add_argument("--nblocks", default=1, type=int, help="Number of blocks to optimize together.")
+        group.add_argument(
+            "--nblocks_overlap",
+            default=0,
+            type=int,
+            help="Number of overlapping blocks between adjacent windows when --nblocks > 1 "
+            "(0 <= nblocks_overlap < nblocks). For CBQ-style CBD, use --nblocks 2 --nblocks_overlap 1.",
+        )
         minmax_mutex = group.add_mutually_exclusive_group()
         minmax_mutex.add_argument(
             "--enable_minmax_tuning",
@@ -344,6 +351,7 @@ class AutoRound(AlgorithmHandler):
             minmax_lr=getattr(args, "minmax_lr", None),
             momentum=getattr(args, "momentum", 0.0),
             nblocks=getattr(args, "nblocks", 1),
+            nblocks_overlap=getattr(args, "nblocks_overlap", 0),
             enable_minmax_tuning=getattr(args, "enable_minmax_tuning", True),
             enable_norm_bias_tuning=getattr(args, "enable_norm_bias_tuning", False),
             gradient_accumulate_steps=getattr(args, "gradient_accumulate_steps", 1),

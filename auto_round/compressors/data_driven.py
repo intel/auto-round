@@ -59,6 +59,7 @@ from auto_round.utils import (
     memory_monitor,
     mv_module_from_gpu,
     set_amax_for_all_moe_layers,
+    set_module,
     to_device,
     to_dtype,
     wrap_block_forward_positional_to_kwargs,
@@ -509,6 +510,47 @@ class DataDrivenCompressor(BaseCompressor):
         finally:
             self.model_context.is_mllm = orig_is_mllm
 
+    def _get_block_window_starts(self, block_names: list, nblocks: int) -> list[int]:
+        """Compute the start index of each block window.
+
+        With ``nblocks_overlap == 0`` this returns ``range(0, len, nblocks)``
+        (the default non-overlapping schedule). When overlap is enabled the
+        windows advance by ``stride = nblocks - overlap`` so adjacent windows
+        share ``overlap`` blocks. A trailing window that would consist solely of
+        already-seen overlap blocks is skipped.
+        """
+        overlap = self.nblocks_overlap if nblocks > 1 else 0
+        stride = nblocks - overlap
+        block_starts = []
+        block_idx = 0
+        while block_idx < len(block_names):
+            remaining = len(block_names) - block_idx
+            if block_idx > 0 and overlap > 0 and remaining <= overlap:
+                break
+            block_starts.append(block_idx)
+            block_idx += stride
+        return block_starts
+
+    @staticmethod
+    def _snapshot_fp_block(model: torch.nn.Module, block_name: str) -> torch.nn.Module:
+        """Clone a block's current (FP) state onto CPU for later restoration."""
+        fp_module = copy.deepcopy(get_module(model, block_name))
+        fp_module.requires_grad_(False)
+        return mv_module_from_gpu(fp_module)
+
+    def _collect_partial_window_output(self, model: torch.nn.Module, block_names_subset: list, input_ids, input_others):
+        """Run the first ``stride`` sub-blocks of a window to advance the cache.
+
+        With overlapping windows the next window starts ``stride`` blocks ahead,
+        so its inputs are the outputs of the leading (finalized) sub-blocks
+        rather than the whole window. The sub-blocks are read from ``model`` so
+        the current weight state (FP before quantization, quantized after) is
+        reflected automatically.
+        """
+        partial_block = WrapperMultiblock([get_module(model, nm) for nm in block_names_subset])
+        io = self.quantizer.create_block_io(input_ids, input_others, None, partial_block)
+        return io.collect_reference()
+
     def _quantize_blocks(
         self,
         model: torch.nn.Module,
@@ -537,15 +579,26 @@ class DataDrivenCompressor(BaseCompressor):
 
         input_ids, input_others = self._preprocess_block_inputs(inputs)
 
-        if pbar is None:
-            pbar = tqdm(range(0, len(block_names), nblocks))
+        # Overlap schedule: windows advance by `stride = nblocks - overlap`, so
+        # adjacent windows share `overlap` blocks. When overlap == 0 this is the
+        # default non-overlapping schedule (range(0, len, nblocks)).
+        overlap = self.nblocks_overlap if nblocks > 1 else 0
+        stride = nblocks - overlap
+        block_starts = self._get_block_window_starts(block_names, nblocks)
+        # FP snapshots of overlap blocks (keyed by block name), restored when the
+        # next overlapping window starts so they are re-tuned with more context.
+        fp_overlap_modules: dict[str, torch.nn.Module] = {}
 
-        for i in range(0, len(block_names), nblocks):
+        if pbar is None:
+            pbar = tqdm(range(len(block_starts)))
+
+        for step_idx, i in enumerate(block_starts):
+            is_last_window = step_idx == len(block_starts) - 1
             if input_others_extra_blocks and block_names[i] in input_others_extra_blocks:
                 input_others = input_others_extra_blocks[block_names[i]]
                 _, input_others = self._preprocess_block_inputs(input_others)
                 input_others_extra_blocks.pop(block_names[i])
-            if i != 0:
+            if step_idx != 0:
                 pbar.update(1)
             if nblocks == 1:
                 n = block_names[i]
@@ -554,8 +607,22 @@ class DataDrivenCompressor(BaseCompressor):
             else:
                 names = block_names[i : min(i + nblocks, len(block_names))]
                 pbar.set_description(f"Quantizing [{i + 1}-{min(i + nblocks, len(block_names))}]/{len(block_names)}")
+                # Restore FP weights for blocks re-entering through an overlap.
+                for name in names:
+                    if name in fp_overlap_modules:
+                        set_module(model, name, fp_overlap_modules.pop(name))
                 modules = [get_module(model, n) for n in names]
                 m = WrapperMultiblock(modules)
+
+            # Split the window into blocks finalized now vs. overlap blocks that
+            # will be restored and re-tuned by the next window.
+            window_names = [n] if nblocks == 1 else names
+            if is_last_window or overlap == 0 or nblocks == 1:
+                window_final_names = window_names
+                window_overlap_names = []
+            else:
+                window_final_names = window_names[:stride]
+                window_overlap_names = window_names[stride:]
 
             if self.compress_context.low_cpu_mem_usage:
                 if nblocks == 1:
@@ -587,6 +654,11 @@ class DataDrivenCompressor(BaseCompressor):
             else:
                 m = m.to(device_manager.device)
                 card_0_in_high_risk, loss_device = False, device_manager.device
+
+            # Snapshot FP weights of overlap blocks (still un-quantized here) so
+            # the next overlapping window can restore and re-tune them.
+            for name in window_overlap_names:
+                fp_overlap_modules[name] = self._snapshot_fp_block(model, name)
 
             if len(device_manager.device_list) > 1 and not self.model_context.is_diffusion:
                 from accelerate.hooks import AlignDevicesHook, add_hook_to_module
@@ -643,6 +715,16 @@ class DataDrivenCompressor(BaseCompressor):
                     self.pipeline.enter_block_forward_hooks(ctx, fwd_stack)
                     reference_output = ctx.collect_reference(fwd_stack)
 
+            # ── Overlap: capture FP partial output before the q_input swap ────
+            # The next overlapping window starts `stride` blocks ahead, so its FP
+            # input is the output of the leading (finalized) sub-blocks run while
+            # they are still un-quantized.
+            partial_fp_output = None
+            if window_overlap_names:
+                partial_fp_output = self._collect_partial_window_output(
+                    model, window_final_names, input_ids, input_others
+                )
+
             # ── Infrastructure: swap q_input ──────────────────────────────────
             if q_input is not None:
                 if input_ids is not q_input:
@@ -672,6 +754,17 @@ class DataDrivenCompressor(BaseCompressor):
             else:
                 q_input = None
 
+            # ── Overlap: advance the cache by `stride` blocks ─────────────────
+            # The next window starts `stride` blocks ahead, so its inputs are the
+            # outputs of the leading sub-blocks (now quantized) rather than the
+            # whole window. Compute these while `m` is still on the device.
+            if window_overlap_names:
+                next_input_ids = partial_fp_output
+                if q_input is not None:
+                    q_input = self._collect_partial_window_output(model, window_final_names, input_ids, input_others)
+            else:
+                next_input_ids = reference_output
+
             # ── Infrastructure: hook removal, device cleanup, logging ─────────
             if len(device_manager.device_list) > 1 and not self.model_context.is_diffusion:
                 accelerate.hooks.remove_hook_from_submodules(m)
@@ -683,14 +776,20 @@ class DataDrivenCompressor(BaseCompressor):
             # from the current block's reference output, while q_input (when
             # enabled) is only used as the quantized-input companion for the
             # next block.
-            next_input_ids = reference_output
             ctx.finish()
             clear_memory(input_ids if input_ids is not next_input_ids else None, device_list=device_manager.device_list)
             memory_monitor.log_summary()
 
             # ── Infrastructure: immediate_pack / shard write ──────────────────
+            # Only blocks finalized in this window are packed/written/offloaded;
+            # overlap blocks are deferred until their last (re-tuning) window.
+            if window_final_names == window_names:
+                finalize_module = m
+            else:
+                finalize_module = WrapperMultiblock([get_module(model, nm) for nm in window_final_names])
+
             if self.compress_context.is_immediate_packing:
-                for _n, _mod in m.named_modules():
+                for _n, _mod in finalize_module.named_modules():
                     if hasattr(_mod, "bits") and check_to_quantized(_mod):
                         from auto_round.compressors.utils import immediate_pack as _immediate_pack
 
@@ -704,13 +803,13 @@ class DataDrivenCompressor(BaseCompressor):
             input_ids = next_input_ids
 
             if self.compress_context.is_immediate_saving:
-                self.shard_writer.write(m, is_finalize=False)
+                self.shard_writer.write(finalize_module, is_finalize=False)
 
             if self.compress_context.low_cpu_mem_usage and not self.compress_context.is_immediate_saving:
                 if nblocks == 1:
                     self._offloader(model, n, overwrite=True)
                 else:
-                    for name in names:
+                    for name in window_final_names:
                         self._offloader(model, name, overwrite=True)
         if pbar is not None:
             pbar.update(1)

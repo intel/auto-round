@@ -295,7 +295,7 @@ class BaseCompressor(object):
         kwargs.pop("enable_alg_ext", None)
         kwargs.pop("vlm", None)
         amp = kwargs.pop("amp", True)
-        nblocks = kwargs.pop("nblocks", 1)
+        nblocks = kwargs.pop("nblocks", getattr(self.quantize_config, "nblocks", 1))
         disable_deterministic_algorithms = kwargs.pop("disable_deterministic_algorithms", True)
         enable_deterministic_algorithms = kwargs.pop("enable_deterministic_algorithms", False)
 
@@ -347,6 +347,16 @@ class BaseCompressor(object):
         set_seed(self.seed)
 
         self.nblocks = nblocks
+        # ``nblocks_overlap`` controls how many blocks adjacent windows share
+        # when ``nblocks > 1``. Prefer the resolved quantize_config value (CLI /
+        # config path); fall back to the legacy kwarg (old API path). ``0``
+        # disables overlap and keeps the default non-overlapping behavior.
+        nblocks_overlap = kwargs.pop("nblocks_overlap", getattr(self.quantize_config, "nblocks_overlap", 0))
+        self.nblocks_overlap = nblocks_overlap if self.nblocks > 1 else 0
+        if self.nblocks_overlap < 0:
+            raise ValueError("`nblocks_overlap` must be non-negative")
+        if self.nblocks > 1 and self.nblocks_overlap >= self.nblocks:
+            raise ValueError("`nblocks_overlap` must be smaller than `nblocks`")
 
         self.enable_torch_compile = enable_torch_compile
 
