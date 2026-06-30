@@ -1487,9 +1487,12 @@ def _gen_layer_config(
     pbar_cnt = 0
     need_weight_grad = False
     need_imatrix = False  # only trigger it for gguf q-k quant
+    effective_scheme_num = 0
+    block_num = len(block_name)
     for index, scheme in enumerate(schemes):
         if check_bf16_scheme(scheme):
             continue
+        effective_scheme_num += 1
         if isinstance(scheme, str):
             scheme = asdict(preset_name_to_scheme(scheme))
         elif isinstance(scheme, QuantizationScheme):
@@ -1504,6 +1507,29 @@ def _gen_layer_config(
             pbar_cnt += nsamples
         if auto_scheme.low_gpu_mem_usage:
             pbar_cnt += len(block_name) * 2 * ((nsamples + batch_size - 1) // batch_size)  # forward backward
+
+    # Formula-style step log for paper/debug readability.
+    # In low_gpu mode, one calibration mini-batch uses block-wise forward+backward replay.
+    # so base_step_per_scheme = block_num * 2.
+    base_total_steps = effective_scheme_num * block_num * 2
+    logger.info(f"AutoScheme steps(total)={base_total_steps}")
+    logger.info(
+        "AutoScheme steps variables: "
+        f"scheme_num={effective_scheme_num}, block_num={block_num}, "
+        f"nsamples={nsamples}, batch_size={batch_size}"
+    )
+    if auto_scheme.low_gpu_mem_usage:
+        n_batches = (nsamples + batch_size - 1) // batch_size
+        logger.info(
+            "AutoScheme steps expanded(low_gpu): "
+            "total_steps = scheme_num * block_num * 2(forward+backward) * n_batches = "
+            f"{effective_scheme_num} * {block_num} * 2 * {n_batches} = {pbar_cnt}"
+        )
+    else:
+        logger.info(
+            "AutoScheme steps expanded(full_backward): "
+            f"total_steps = scheme_num * nsamples = {effective_scheme_num} * {nsamples} = {pbar_cnt}"
+        )
     shared_layers = parse_shared_layers(model, auto_scheme.shared_layers)
 
     options_scores = []
@@ -1530,6 +1556,7 @@ def _gen_layer_config(
 
     pbar = tqdm(total=pbar_cnt, desc="Generating AutoScheme")
     for index, scheme in enumerate(schemes):
+        logger.info(f"AutoScheme transition: switch to scheme {index + 1}/{len(schemes)} ({scheme})")
         apply_quant_scheme(
             model, quant_layer_names=quant_layer_names, fixed_layer_scheme=fixed_layer_scheme, scheme=scheme
         )
@@ -1589,6 +1616,10 @@ def _gen_layer_config(
             else:
                 total_scores[key] = [item]
         options_scores.append(options_total_loss)
+        logger.info(
+            f"AutoScheme transition: scheme {index + 1}/{len(schemes)} "
+            f"scoring finished (total_loss={options_total_loss:.6f})"
+        )
         clear_memory(device_list=device_list)
 
     # Remove hooks and restore original weights from disk for final bit-budget computations
@@ -1797,6 +1828,11 @@ def gen_layer_config(
     processor=None,
     **kwargs,
 ):
+    """Public AutoScheme entry.
+
+    This wrapper performs model loading/dispatch and environment preparation,
+    then delegates to `_gen_layer_config` for staged scoring + DP selection.
+    """
     model_name = None
     is_vlm = False
     if isinstance(model, str):
