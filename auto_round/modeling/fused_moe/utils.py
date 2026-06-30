@@ -24,3 +24,35 @@ def _update_parameter(
     old_param = getattr(module, name)
     new_param = nn.Parameter(data, requires_grad=old_param.requires_grad)
     setattr(module, name, new_param)
+
+
+def is_fused_layout(original: torch.nn.Module) -> bool:
+    """Check if MoE experts use fused gate_up_proj/down_proj layout."""
+    return hasattr(original, "gate_up_proj") and hasattr(original, "down_proj")
+
+
+def is_linearized_layout(original: torch.nn.Module) -> bool:
+    """Check if MoE experts use linearized layout with individual gate_proj/up_proj/down_proj."""
+    if not isinstance(original, torch.nn.ModuleList) or len(original) == 0:
+        return False
+    first_expert = original[0]
+    return all(
+        hasattr(first_expert, attr)
+        for attr in ("gate_proj", "up_proj", "down_proj")
+    )
+
+
+def get_num_experts(original: torch.nn.Module) -> int:
+    """Get the number of experts from either fused or linearized layout."""
+    if is_fused_layout(original):
+        return original.gate_up_proj.shape[0]
+    if is_linearized_layout(original):
+        # Count only numeric keys (expert modules), exclude 'act_fn' etc.
+        if hasattr(original, '_modules'):
+            numeric_keys = [k for k in original._modules.keys() if k.isdigit()]
+            return len(numeric_keys)
+        return len(original)
+    raise AttributeError(
+        "Unsupported MoE experts layout: expected fused gate_up_proj/down_proj "
+        "or linearized gate_proj/up_proj/down_proj experts"
+    )

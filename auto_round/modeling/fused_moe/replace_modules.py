@@ -28,6 +28,8 @@ from auto_round.utils import (
     is_transformers_version_greater_or_equal_5,
     logger,
 )
+from auto_round.modeling.fused_moe.utils import is_linearized_layout
+from auto_round.modeling.fused_moe.utils import is_linearized_layout
 
 BUILTIN_MODULES = {
     # Llama4 has no use_experts_implementation, needs custom replacement to handle fused MoE blocks.
@@ -325,7 +327,7 @@ def apply_replacements(
         _handle_moe_modules(model)
 
     if _raw_expert_is_logged:
-        _log_first_moe_block(model, "after replacement")
+        _log_first_moe_block(model, "after replacement/skip")
 
     return model
 
@@ -345,6 +347,7 @@ def _apply_custom_replacements(model: torch.nn.Module) -> list:
     # Step 1: Collect all modules that need replacement
     logger.debug("Scanning for modules to replace")
     modules_to_replace = []
+    skipped_modules = []
     for name, module in model.named_modules():
         # skip replaced modules
         if isinstance(module, ReplacementModuleBase):
@@ -352,8 +355,20 @@ def _apply_custom_replacements(model: torch.nn.Module) -> list:
         class_name = module.__class__.__name__
         if ReplacementModuleBase.is_registered(class_name):
             replacement_cls = ReplacementModuleBase.get_replacement_class(class_name)
+            # If llm-compressor already linearized experts, skip custom replacement.
+            if hasattr(module, "experts") and is_linearized_layout(module.experts):
+                skipped_modules.append((name, class_name, "skipped because linearize_moe"))
+                continue
             if replacement_cls.is_to_be_replaced(module):
                 modules_to_replace.append((name, module, class_name))
+            else:
+                skipped_modules.append((name, class_name, "skipped because replacement criteria not met"))
+
+    if skipped_modules:
+        for name, class_name, reason in skipped_modules:
+            logger.info(
+                f"Skipped replacement for {name} ({class_name}): {reason}"
+            )
 
     # Step 2: Replace modules
     if modules_to_replace:

@@ -25,6 +25,15 @@ import pytest
 import torch
 from torch import nn
 
+from auto_round.modeling.fused_moe.replace_modules import (
+    ReplacementModuleBase,
+    _apply_custom_replacements,
+)
+from auto_round.modeling.fused_moe.utils import (
+    get_num_experts,
+    is_linearized_layout,
+)
+
 
 def _skip_if_no_linear_loop():
     from auto_round.modeling.fused_moe.moe_experts_interface import is_linear_loop_available
@@ -250,3 +259,62 @@ def test_prepare_model_for_moe_quantization():
     experts = model.layer["experts"]
     expert_0 = getattr(experts, "0")
     assert isinstance(expert_0.gate_proj, nn.Linear)
+
+
+class _TinyExpert(nn.Module):
+    def __init__(self):
+        super().__init__()
+        self.gate_proj = nn.Linear(4, 8, bias=False)
+        self.up_proj = nn.Linear(4, 8, bias=False)
+        self.down_proj = nn.Linear(8, 4, bias=False)
+
+
+def _build_linearized_experts(num_experts: int, with_act_fn: bool = True) -> nn.ModuleList:
+    experts = nn.ModuleList([_TinyExpert() for _ in range(num_experts)])
+    if with_act_fn:
+        experts.act_fn = nn.SiLU()
+    return experts
+
+
+def test_utils_get_num_experts_ignores_non_numeric_modules_in_linearized_layout():
+    experts = _build_linearized_experts(num_experts=3, with_act_fn=True)
+
+    assert is_linearized_layout(experts)
+    assert len(experts) == 4  # 3 experts + act_fn module
+    assert get_num_experts(experts) == 3
+
+
+def test_apply_custom_replacements_skips_linearized_moe_and_logs_reason(monkeypatch):
+    messages = []
+
+    # Capture info logs to assert the skip reason is explicit.
+    from auto_round.modeling.fused_moe import replace_modules as rm
+
+    monkeypatch.setattr(rm.logger, "info", lambda msg: messages.append(str(msg)))
+
+    class DummyMoEForLinearizeSkipUT(nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.experts = _build_linearized_experts(num_experts=2, with_act_fn=True)
+
+    class DummyReplacementForLinearizeSkipUT(ReplacementModuleBase):
+        @classmethod
+        def original_module_class(cls) -> str:
+            return "DummyMoEForLinearizeSkipUT"
+
+        @classmethod
+        def from_original(cls, original: nn.Module, config):
+            return cls(original)
+
+        def __init__(self, original: nn.Module):
+            super().__init__(original)
+
+    model = nn.Module()
+    model.config = type("Cfg", (), {"model_type": "unit_test"})()
+    model.block = DummyMoEForLinearizeSkipUT()
+
+    replaced = _apply_custom_replacements(model)
+
+    assert replaced == []
+    assert isinstance(model.block, DummyMoEForLinearizeSkipUT)
+    assert any("skipped because linearize_moe" in msg for msg in messages)
