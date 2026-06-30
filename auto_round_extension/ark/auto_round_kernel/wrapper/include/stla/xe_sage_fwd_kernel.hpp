@@ -236,13 +236,23 @@ class XeSageFwdKernel {
       if constexpr (is_var_len) {
         auto qo_cumulative = s.seq_len_qo.cumulative_length;
         auto kv_cumulative = s.seq_len_kv.cumulative_length;
-        offset_q = s.num_heads_q * s.head_size_qk * qo_cumulative[idx_b];
-        offset_k = s.num_heads_kv * s.head_size_qk * kv_cumulative[idx_b];
-        offset_v = s.num_heads_kv * s.head_size_vo * kv_cumulative[idx_b];
+        // NOTE: Q/K use packed-HND layout (from sage_dynamic_quant_strided) where
+        // data is [num_heads, seq, head_dim] contiguous.  The offset from the
+        // start of the buffer to the first token of batch `idx_b` for a given
+        // head is just `head_size * cum[idx_b]` (no num_heads factor).
+        // V uses packed-HND when quantized (v1_pvi8) or flat otherwise (v1_pvhalf).
+        // O always uses the original flat [total, num_heads, head_dim] layout.
+        offset_q = s.head_size_qk * qo_cumulative[idx_b];
+        offset_k = s.head_size_qk * kv_cumulative[idx_b];
+        if constexpr (CollectiveMainloop::UseInt8PV) {
+          offset_v = s.head_size_vo * kv_cumulative[idx_b];
+        } else {
+          offset_v = s.num_heads_kv * s.head_size_vo * kv_cumulative[idx_b];
+        }
         offset_o = s.num_heads_q * s.head_size_vo * qo_cumulative[idx_b];
         if (s.seq_len_kv_cache.cumulative_length) {
           auto kv_cumulative_cache = s.seq_len_kv_cache.cumulative_length;
-          offset_k_cache = s.num_heads_kv * s.head_size_qk * kv_cumulative_cache[idx_b];
+          offset_k_cache = s.head_size_qk * kv_cumulative_cache[idx_b];
           offset_v_cache = s.num_heads_kv * s.head_size_vo * kv_cumulative_cache[idx_b];
         }
       }
@@ -263,16 +273,38 @@ class XeSageFwdKernel {
       auto dcV_cache = const_cast<ElementV*>(p.V_cache + offset_v_cache);
       int seq_q_pad = (seq_len_qo + params.mainloop.scale_block_size - 1) / params.mainloop.scale_block_size;
       int seq_kv_pad = (seq_len_kv + params.mainloop.scale_block_size - 1) / params.mainloop.scale_block_size;
-      auto scaleQ = params.mainloop.scale_block_size
-                        ? (float*)params.mainloop.qscale + (idx_b * s.num_heads_q * seq_q_pad + head_q * seq_q_pad)
-                        : nullptr;  // per head qscale
-      auto scaleK = params.mainloop.scale_block_size
-                        ? (float*)params.mainloop.kscale + (idx_b * s.num_heads_kv * seq_kv_pad + head * seq_kv_pad)
-                        : nullptr;  // per head kscale
-      auto scaleV = params.mainloop.scale_block_size && params.mainloop.vscale
-        ? (float*)params.mainloop.vscale +
-          ((idx_b * s.num_heads_kv * seq_kv_pad + head * seq_kv_pad) * s.head_size_vo)
-        : nullptr;  // per head vscale, laid out as [seq_block, d]
+      // Varlen: scales are laid out as flat [num_heads][total_seq_blocks] for the
+      // [total, H, D] tensor (quantized as one contiguous block).  Compute the
+      // starting block from cumulative_length; the batched offset formula does
+      // NOT apply because there is no batch dimension in the scale array.
+      float* scaleQ = nullptr;
+      float* scaleK = nullptr;
+      float* scaleV = nullptr;
+      if (params.mainloop.scale_block_size) {
+        if constexpr (is_var_len) {
+          auto qo_cum = s.seq_len_qo.cumulative_length;
+          auto kv_cum = s.seq_len_kv.cumulative_length;
+          int total_q_blocks = (qo_cum[s.batch] + params.mainloop.scale_block_size - 1)
+                               / params.mainloop.scale_block_size;
+          int total_kv_blocks = (kv_cum[s.batch] + params.mainloop.scale_block_size - 1)
+                                / params.mainloop.scale_block_size;
+          int start_block_q = qo_cum[idx_b] / params.mainloop.scale_block_size;
+          int start_block_k = kv_cum[idx_b] / params.mainloop.scale_block_size;
+          scaleQ = (float*)params.mainloop.qscale + head_q * total_q_blocks + start_block_q;
+          scaleK = (float*)params.mainloop.kscale + head * total_kv_blocks + start_block_k;
+          if (params.mainloop.vscale) {
+            scaleV = (float*)params.mainloop.vscale
+                     + (head * total_kv_blocks + start_block_k) * s.head_size_vo;
+          }
+        } else {
+          scaleQ = (float*)params.mainloop.qscale + (idx_b * s.num_heads_q * seq_q_pad + head_q * seq_q_pad);
+          scaleK = (float*)params.mainloop.kscale + (idx_b * s.num_heads_kv * seq_kv_pad + head * seq_kv_pad);
+          if (params.mainloop.vscale) {
+            scaleV = (float*)params.mainloop.vscale
+                     + ((idx_b * s.num_heads_kv * seq_kv_pad + head * seq_kv_pad) * s.head_size_vo);
+          }
+        }
+      }
       auto ptrO = p.O + offset_o;
 
       // Varlen: use host-provided strides for flat [total, H, D] layout.

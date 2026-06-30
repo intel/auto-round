@@ -25,9 +25,6 @@ Tests both kernel variants:
 SAGE uses INT8 block quantization for Q/K, so numerical error is larger
 (~2e-2 vs ~0.0005 for non-quantized SDPA).
 
-KNOWN ISSUE: multi-batch (B>1) SAGE varlen produces NaN (~50% of elements)
-due to a kernel bug.  Only single-sequence (B=1) cases are correct.
-
 Usage:
   python test/test_sagev1_varlen.py
 """
@@ -60,7 +57,7 @@ pytestmark = [
 # Supported SAGE kernel variants
 KERNEL_VARIANTS = ["v1_pvhalf", "v1_pvi8"]
 
-# B=1 only — multi-batch SAGE varlen has a known kernel NaN bug.
+# B=1 single-sequence cases
 VARLEN_TEST_CASES = [
     (1, 512, 512, 8, 8, 64, torch.float16, False, "single-seq-nc"),
     (1, 512, 512, 8, 8, 64, torch.float16, True, "single-seq-c"),
@@ -72,6 +69,13 @@ VARLEN_TEST_CASES = [
     (1, 1024, 1024, 8, 8, 128, torch.bfloat16, True, "bf16-c"),
     (1, 4096, 4096, 32, 8, 128, torch.float16, False, "large-gqa-nc"),
     (1, 4096, 4096, 32, 8, 128, torch.float16, True, "large-gqa-c"),
+    # Multi-batch cases (batch>1).  Block quantization across batch boundaries
+    # in the flat varlen tensor introduces slightly larger mean error, so
+    # thresholds are relaxed accordingly.
+    (2, 1024, 1024, 16, 4, 128, torch.float16, False, "multi-2-nc"),
+    (2, 1024, 1024, 16, 4, 128, torch.float16, True, "multi-2-c"),
+    (4, 1024, 1024, 8, 8, 64, torch.float16, False, "multi-4-nc"),
+    (4, 1024, 1024, 8, 8, 64, torch.float16, True, "multi-4-c"),
 ]
 
 
@@ -177,6 +181,12 @@ def test_sagev1_varlen_correctness(
         max_diff_threshold = 3.0 if kernel == "v1_pvi8" else 1.5
     if mean_diff_threshold is None:
         mean_diff_threshold = 0.01 if kernel == "v1_pvi8" else 0.005
+        # Multi-batch: block quantization boundaries across batch splits
+        # in the flat varlen tensor compound the mean error (per-batch
+        # max values are unrelated, making boundary-block scales a worse
+        # fit for tokens on both sides of the split).
+        if batch > 1:
+            mean_diff_threshold *= batch
 
     q, k, v, cu_seqlens_q, cu_seqlens_k, max_seqlen_q, max_seqlen_k, seq_lens_q, seq_lens_k = build_varlen_problem(
         batch, total_q, total_kv, h_q, h_kv, head_dim, dtype, device
