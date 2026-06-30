@@ -41,6 +41,10 @@ def _get_xpu_sparse_kernel_backend() -> str:
     return backend
 
 
+def _get_sparse_preprocess_backend_preference() -> str:
+    return os.getenv("SAGE_ATTN_SPARSE_PREPROCESS_BACKEND", "auto").strip().lower()
+
+
 def sage_sparse(
     query: torch.Tensor,
     key: torch.Tensor,
@@ -1096,6 +1100,7 @@ def sparge_preprocess_topk(
     quant_block_size: int = 64,
     tensor_layout: str = "HND",
     k_quant_granularity: int = 64,
+    backend_preference: str | None = None,
 ) -> dict[str, Any]:
     ctx = _build_sparge_preprocess_context(
         query,
@@ -1109,7 +1114,10 @@ def sparge_preprocess_topk(
         tensor_layout=tensor_layout,
         k_quant_granularity=k_quant_granularity,
     )
-    return _sparge_preprocess_topk_dispatch(ctx)
+    return _sparge_preprocess_topk_dispatch(
+        ctx,
+        backend_preference=backend_preference or _get_sparse_preprocess_backend_preference(),
+    )
 
 
 def sparge_preprocess_topk_decode(
