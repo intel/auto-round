@@ -16,6 +16,7 @@
 # limitations under the License.
 
 import inspect
+import math
 import time
 from functools import wraps
 
@@ -25,7 +26,7 @@ import torch
 
 
 def is_xpu_available():
-    return torch.xpu.is_available()
+    return hasattr(torch, "xpu") and torch.xpu.is_available()
 
 
 def capture_args(f):
@@ -163,3 +164,147 @@ def sample_valid_fp8_e8m0_xpu_safe(shape, fmt: str, device, *, exp_range=None):
         mant = torch.randint(0, 4, shape, dtype=torch.uint8, device=cpu)
         payload_u8 = (sign << 7) | (exp << 2) | mant
     return payload_u8.view(torch.int8).to(device)
+
+
+def get_ark():
+
+    return auto_round_kernel
+
+
+# ---------------------------------------------------------------------------
+# Shared SDPA reference functions used by multiple test files.
+# Keep them here so that causal-mask semantics (diagonal offset for
+# asymmetric seq_q/seq_kv) are consistent everywhere.
+# ---------------------------------------------------------------------------
+
+
+def print_top_diffs(diff, ref, out, topk=10, threshold=0):
+    """Print top-k element-wise absolute differences between ref and out."""
+    flat_diff = diff.reshape(-1)
+    topk = min(topk, flat_diff.numel())
+    top_values, top_indices = torch.topk(flat_diff, k=topk)
+    flat_ref = ref.reshape(-1)
+    flat_out = out.reshape(-1)
+    print(f"diff max={diff.max()} mean={diff.mean()}")
+    print(f"Top {topk} diff entries:")
+    if diff.max() > threshold:
+        for rank, (value, flat_index) in enumerate(zip(top_values, top_indices), start=1):
+            coord = tuple(int(index.item()) for index in torch.unravel_index(flat_index, diff.shape))
+            ref_value = flat_ref[flat_index].item()
+            out_value = flat_out[flat_index].item()
+            print(f"#{rank}: index={coord}, diff={value.item()}, ref={ref_value}, out={out_value}")
+
+
+def _build_causal_mask(seq_q: int, seq_kv: int, dtype, device) -> torch.Tensor:
+    """Build a causal mask with diagonal offset for asymmetric seq_q/seq_kv.
+
+    When ``seq_kv > seq_q`` the extra KV positions act as a prefix visible
+    to all Q (``diagonal = seq_kv - seq_q``).  This matches the semantics
+    used by the kernel (``full_tile_offset = seq_len_kv - seq_len_qo``).
+    """
+    mask = torch.full((1, 1, seq_q, seq_kv), float("-inf"), dtype=dtype, device=device)
+    allow = torch.ones(seq_q, seq_kv, dtype=torch.bool, device=device).tril(diagonal=seq_kv - seq_q)
+    mask[:, :, allow] = 0.0
+    return mask
+
+
+def reference_sdpa(
+    q: torch.Tensor,
+    k: torch.Tensor,
+    v: torch.Tensor,
+    *,
+    scale: float | None = None,
+    is_causal: bool = False,
+    tensor_layout: str = "HND",
+) -> torch.Tensor:
+    """Reference scaled dot-product attention for batched 4-D tensors.
+
+    Args:
+        q, k, v: 4-D tensors in ``tensor_layout`` format.
+        scale: Softmax scaling factor (default: 1/sqrt(head_dim)).
+        is_causal: Whether to apply causal masking.
+        tensor_layout: ``"HND"`` (``[B, H, S, D]``) or ``"NHD"`` (``[B, S, H, D]``).
+
+    Returns:
+        Reference attention output (same shape and layout as inputs).
+    """
+    layout = tensor_layout.upper()
+    if layout not in ("HND", "NHD"):
+        raise ValueError(f"tensor_layout must be 'HND' or 'NHD', got {tensor_layout!r}")
+
+    # Convert to HND for torch.sdpa
+    if layout == "NHD":
+        q = q.transpose(1, 2).contiguous()
+        k = k.transpose(1, 2).contiguous()
+        v = v.transpose(1, 2).contiguous()
+
+    group = q.shape[1] // k.shape[1]  # GQA group size
+    scale_val = float(scale) if scale is not None else 1.0 / math.sqrt(q.shape[-1])
+
+    if is_causal:
+        _, _, seq_q, _ = q.shape
+        _, _, seq_kv, _ = k.shape
+        mask = _build_causal_mask(seq_q, seq_kv, q.dtype, q.device)
+        ref = torch.nn.functional.scaled_dot_product_attention(
+            q,
+            k,
+            v,
+            attn_mask=mask,
+            scale=scale_val,
+            enable_gqa=group > 1,
+        )
+    else:
+        ref = torch.nn.functional.scaled_dot_product_attention(
+            q,
+            k,
+            v,
+            scale=scale_val,
+            enable_gqa=group > 1,
+            is_causal=False,
+        )
+
+    # Convert back to requested layout
+    if layout == "NHD":
+        ref = ref.transpose(1, 2).contiguous()
+    return ref
+
+
+def reference_sdpa_varlen(
+    q: torch.Tensor,
+    k: torch.Tensor,
+    v: torch.Tensor,
+    cu_seqlens_q: torch.Tensor,
+    cu_seqlens_k: torch.Tensor,
+    max_seqlen_q: int,
+    max_seqlen_k: int,
+    *,
+    is_causal: bool = False,
+    scale: float | None = None,
+    device: str = "xpu",
+) -> torch.Tensor:
+    """Reference SDPA for varlen (flat 3-D) tensors.
+
+    Each sequence is processed individually via ``reference_sdpa``, so the
+    causal mask uses the correct diagonal offset for the per-sequence
+    lengths.
+
+    Returns:
+        Flat 3-D output ``[total_q, Hq, D]``.
+    """
+    batch = cu_seqlens_q.shape[0] - 1
+    h_q = q.shape[1]
+    h_kv = k.shape[1]
+    cuq = cu_seqlens_q.cpu().tolist()
+    cuk = cu_seqlens_k.cpu().tolist()
+    outputs = []
+    for i in range(batch):
+        q_i = q[cuq[i] : cuq[i + 1]]
+        k_i = k[cuk[i] : cuk[i + 1]]
+        v_i = v[cuk[i] : cuk[i + 1]]
+        # reference_sdpa expects (B, H, S, D)
+        q_4d = q_i.permute(1, 0, 2).unsqueeze(0)
+        k_4d = k_i.permute(1, 0, 2).unsqueeze(0)
+        v_4d = v_i.permute(1, 0, 2).unsqueeze(0)
+        o_4d = reference_sdpa(q_4d, k_4d, v_4d, scale=scale, is_causal=is_causal)
+        outputs.append(o_4d.squeeze(0).permute(1, 0, 2))
+    return torch.cat(outputs, dim=0)
