@@ -25,8 +25,9 @@ import torch
 ark = auto_round_kernel
 
 
-def main_op(m, k, n, dt, batch_size, runs, has_bias, record_property, device):
-    print(f"\n  m={m}, k={k}, n={n}, dt={dt}, batch={batch_size}")
+def main_op(m, k, n, dt, batch_size, runs, has_bias, record_property, device, op=None, op_name="matmul"):
+    op = op or ark.matmul
+    print(f"\n  op={op_name}, m={m}, k={k}, n={n}, dt={dt}, batch={batch_size}")
     torch.manual_seed(0)
     cdt = dt
     if device == "cpu":
@@ -48,12 +49,11 @@ def main_op(m, k, n, dt, batch_size, runs, has_bias, record_property, device):
             print(f"OOM during basic init: {e}")
             return
 
-    tar_dst = ark.matmul(activation, wei, bias)
+    tar_dst = op(activation, wei, bias)
     ref_dst = torch.matmul(activation, wei.T).to(cdt)
     if has_bias:
         ref_dst = ref_dst + bias
     diff = abs(tar_dst - ref_dst)
-    # print(f"  abs(ref_dst).max(): {abs(ref_dst).max()}, abs(ref_dst).mean(): {abs(ref_dst).mean()}, abs(tar_dst).max(): {abs(tar_dst).max()}, abs(tar_dst).mean(): {abs(tar_dst).mean()}")
     print(f"  Max Diff: {diff.max().item():.6f}, Mean Diff: {diff.mean().item():.6f}")
     if dt == torch.float32:
         atol = 0.001
@@ -80,14 +80,14 @@ def main_op(m, k, n, dt, batch_size, runs, has_bias, record_property, device):
 
     for i in range(runs):
         idx = i % batch_size
-        tar_dst = ark.matmul(act_set[idx], wei_set[idx], bias)
+        tar_dst = op(act_set[idx], wei_set[idx], bias)
     if device == "xpu":
         torch.xpu.synchronize()
 
     st = time.perf_counter()
     for i in range(runs):
         idx = i % batch_size
-        tar_dst = ark.matmul(act_set[idx], wei_set[idx], bias)
+        tar_dst = op(act_set[idx], wei_set[idx], bias)
     if device == "xpu":
         torch.xpu.synchronize()
     dur = (time.perf_counter() - st) / runs
@@ -201,6 +201,36 @@ def test_xpu(m, k, n, dt, batch_size, runs, record_property):
 @pytest.mark.parametrize("runs", [1])
 def test_cpu(m, k, n, dt, batch_size, runs, record_property):
     main_op(m, k, n, dt, batch_size, runs, True, record_property, "cpu")
+
+
+@pytest.mark.parametrize("m", [1, 8, 16, 32, 64, 128, 256, 1024])
+@pytest.mark.parametrize("k, n", [(4096, 4096)])
+@pytest.mark.parametrize("dt", [torch.float16, torch.bfloat16])
+@pytest.mark.parametrize("batch_size", [1])
+@pytest.mark.parametrize("runs", [1])
+def test_xpu_sycl_tla(m, k, n, dt, batch_size, runs, record_property):
+    if not torch.xpu.is_available():
+        pytest.skip("No XPU Device")
+    if not hasattr(ark, "matmul_sycl_tla"):
+        pytest.skip("Python wrapper for matmul_sycl_tla is not available")
+    if getattr(ark, "xpu_lib", None) is None or not hasattr(ark.xpu_lib, "matmul_sycl_tla"):
+        pytest.skip("SYCL-TLA matmul is not available in this build")
+
+    main_op(
+        m,
+        k,
+        n,
+        dt,
+        batch_size,
+        runs,
+        True,
+        record_property,
+        "xpu",
+        op=ark.matmul_sycl_tla,
+        op_name="matmul_sycl_tla",
+    )
+
+    torch.xpu.empty_cache()
 
 
 # LOCAL_TEST: python test_matmul.py
