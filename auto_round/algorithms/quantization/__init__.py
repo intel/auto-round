@@ -37,8 +37,8 @@ def __getattr__(name):
         from auto_round.algorithms.transforms.awq.config import AWQConfig
 
         return AWQConfig
-    if name == "AWQQuantizer":
-        from auto_round.algorithms.transforms.awq.quantizer import AWQQuantizer
+    if name == "AWQTransform":
+        from auto_round.algorithms.transforms.awq.base import AWQTransform
 
-        return AWQQuantizer
+        return AWQTransform
     raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
