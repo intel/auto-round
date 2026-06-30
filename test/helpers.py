@@ -71,7 +71,7 @@ def generate_prompt(
 def eval_generated_prompt(
     model,
     tokenizer=None,
-    prompt_text='Convert "hello" to uppercase:',
+    prompt_text='Convert "hello" to uppercase, the answer is:',
     target_text="HELLO",
     max_new_tokens=10,
     device=None,
