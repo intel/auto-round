@@ -233,6 +233,78 @@ def test_xpu_sycl_tla(m, k, n, dt, batch_size, runs, record_property):
     torch.xpu.empty_cache()
 
 
+# ARK_RUN_COMPARE=1 pytest -vs auto_round_extension/ark/test/test_matmul.py -k compare_dnnl_vs_sycl_tla
+@pytest.mark.skipif(
+    os.environ.get("ARK_RUN_COMPARE", "0") != "1",
+    reason="manual benchmark only; set ARK_RUN_COMPARE=1 to enable",
+)
+@pytest.mark.parametrize("m", [1, 8, 16, 32, 128, 1024])
+@pytest.mark.parametrize("k, n", [(4096, 4096)])
+@pytest.mark.parametrize("dt", [torch.float16, torch.bfloat16])
+def test_xpu_compare_dnnl_vs_sycl_tla(m, k, n, dt, record_property):
+    warmup = 30 if m <= 32 else 20
+    runs = 200 if m <= 32 else 80
+
+    compare_matmul_backends(m, k, n, dt, warmup, runs, record_property, "xpu")
+    torch.xpu.empty_cache()
+
+
+def compare_matmul_backends(m, k, n, dt, warmup, runs, record_property, device="xpu"):
+    if device != "xpu":
+        raise ValueError("compare_matmul_backends only supports XPU")
+
+    def _matmul_tolerance(dt):
+        if dt == torch.float32:
+            return 0.001, 0.03
+        if dt == torch.float16:
+            return 0.1, 0.06
+        if dt == torch.bfloat16:
+            return 0.6, 0.1
+        raise ValueError(f"Unsupported dtype: {dt}")
+
+    def _benchmark_op(op, A, B, bias, runs, warmup):
+        for _ in range(warmup):
+            _ = op(A, B, bias)
+        if A.device.type == "xpu":
+            torch.xpu.synchronize()
+
+        st = time.perf_counter()
+        for _ in range(runs):
+            _ = op(A, B, bias)
+        if A.device.type == "xpu":
+            torch.xpu.synchronize()
+
+        return (time.perf_counter() - st) / runs
+
+    torch.manual_seed(0)
+
+    activation = torch.rand(m, k, dtype=dt, device=device) - 0.5
+    wei = torch.rand(n, k, dtype=dt, device=device) - 0.5
+    bias = torch.rand(1, n, dtype=dt, device=device) - 0.5
+
+    dnnl_out = ark.matmul(activation, wei, bias)
+    tla_out = ark.matmul_sycl_tla(activation, wei, bias)
+
+    atol, rtol = _matmul_tolerance(dt)
+    ok = torch.allclose(dnnl_out, tla_out, atol=atol, rtol=rtol)
+    max_diff = (dnnl_out - tla_out).abs().max().item()
+
+    assert ok, "oneDNN vs sycl-tla mismatch"
+
+    dnnl_dur = _benchmark_op(ark.matmul, activation, wei, bias, runs=runs, warmup=warmup)
+    tla_dur = _benchmark_op(ark.matmul_sycl_tla, activation, wei, bias, runs=runs, warmup=warmup)
+
+    ops = m * n * k * 2
+    dnnl_tflops = ops / dnnl_dur / 1e12
+    tla_tflops = ops / tla_dur / 1e12
+    speedup = dnnl_dur / tla_dur
+
+    print(f"\n  m={m:4d} k={k:4d} n={n:4d} accuracy={ok}  max_diff={max_diff:.6f} \n  dt={str(dt):>14}")
+    print(f"  [oneDNN]         : {dnnl_dur*1000:8.3f} ms   {dnnl_tflops:7.3f} TFLOPS")
+    print(f"  [matmul_sycl_tla]: {tla_dur*1000:8.3f} ms   {tla_tflops:7.3f} TFLOPS   speedup={speedup:5.2f}x")
+    print()
+
+
 # LOCAL_TEST: python test_matmul.py
 # CI pytest: pytest -v test_matmul.py -k 'test_xpu'
 # pytest -s -v test_matmul.py -k 'test_xpu' --csv results_matmul_all.csv --csv-columns file,function,parameters_as_columns,properties_as_columns
