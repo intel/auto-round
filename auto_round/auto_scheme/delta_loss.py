@@ -15,6 +15,7 @@
 import copy
 import gc
 import logging
+import math
 import re
 from dataclasses import asdict
 from functools import wraps
@@ -728,41 +729,203 @@ def _expert_key_from_layer_name(layer_name: str) -> Optional[str]:
     return None
 
 
-def _log_score_summary_by_block_and_nonblock(scores_dict: dict[str, list[float]], block_names: list[str]):
-    if not scores_dict:
-        logger.info("AutoScheme score summary: empty.")
-        return
+def _short_summary_name(layer_name: str) -> str:
+    parts = layer_name.rsplit(".", 2)
+    if len(parts) >= 2 and parts[-1].isdigit():
+        return ".".join(parts[-2:])
+    return layer_name
 
-    # Sort by length to avoid prefix ambiguity and match faster in practice.
+
+def _fill_inactive_expert_scores(scores_dict: dict[str, list[float]], block_names: list[str]):
+    """Fill inactive experts with the min loss of active experts in each block.
+
+    Inactive expert means all its tracked projection losses are zero.
+    """
     block_prefixes = [(name, name + ".") for name in sorted(block_names, key=len, reverse=True)]
-    block_stats: dict[str, list[float]] = {name: [0.0, 0.0] for name in block_names}  # [sum_loss, count]
-    non_block_items: list[tuple[str, float]] = []
-    expert_seen: set[str] = set()
-    expert_active: set[str] = set()
+    # block -> expert -> {"layers": [...], "has_active": bool}
+    block_expert_stats: dict[str, dict[str, dict[str, object]]] = {}
 
     for layer_name, values in scores_dict.items():
         layer_loss = float(values[1])
+        if not math.isfinite(layer_loss):
+            continue
+
         matched_block = None
         for block_name, block_prefix in block_prefixes:
             if layer_name == block_name or layer_name.startswith(block_prefix):
                 matched_block = block_name
                 break
         if matched_block is None:
-            non_block_items.append((layer_name, layer_loss))
-        else:
-            block_stats[matched_block][0] += layer_loss
-            block_stats[matched_block][1] += 1
+            continue
 
         expert_key = _expert_key_from_layer_name(layer_name)
-        if expert_key is not None:
-            expert_seen.add(expert_key)
+        if expert_key is None:
+            continue
+
+        expert_stats = block_expert_stats.setdefault(matched_block, {}).setdefault(
+            expert_key,
+            {"layers": [], "has_active": False},
+        )
+        expert_stats["layers"].append(layer_name)
+
+        if abs(layer_loss) >= _ZERO_EPS:
+            expert_stats["has_active"] = True
+
+    for block_name, expert_stats_map in block_expert_stats.items():
+        fill_value = None
+        for expert_stats in expert_stats_map.values():
+            if not expert_stats["has_active"]:
+                continue
+            active_losses = [
+                float(scores_dict[layer_name][1])
+                for layer_name in expert_stats["layers"]
+                if abs(float(scores_dict[layer_name][1])) >= _ZERO_EPS
+            ]
+            if not active_losses:
+                continue
+            expert_avg_loss = sum(active_losses) / len(active_losses)
+            if fill_value is None or expert_avg_loss < fill_value:
+                fill_value = expert_avg_loss
+        if fill_value is None:
+            continue
+        for _, expert_stats in expert_stats_map.items():
+            if expert_stats["has_active"]:
+                continue
+            for layer_name in expert_stats["layers"]:
+                scores_dict[layer_name][1] = fill_value
+
+
+def _log_score_summary_by_block_and_nonblock(
+    scores_dict: dict[str, list[float]],
+    block_names: list[str],
+    model=None,
+):
+    if not scores_dict:
+        logger.info("AutoScheme score summary: empty.")
+        return
+
+    head_name = get_lm_head_name(model) if model is not None else None
+    if head_name is None and "lm_head" in scores_dict:
+        head_name = "lm_head"
+
+    # Sort by length to avoid prefix ambiguity and match faster in practice.
+    block_prefixes = [(name, name + ".") for name in sorted(block_names, key=len, reverse=True)]
+    block_stats: dict[str, list[float]] = {name: [0.0, 0.0] for name in block_names}  # [sum_loss, count]
+    block_expert_seen: dict[str, set[str]] = {name: set() for name in block_names}
+    block_expert_active: dict[str, set[str]] = {name: set() for name in block_names}
+    block_expert_losses: dict[str, dict[str, list[float]]] = {}
+    block_regular_losses: dict[str, list[float]] = {name: [] for name in block_names}
+    non_block_items: list[tuple[str, float]] = []
+
+    for layer_name, values in scores_dict.items():
+        layer_loss = float(values[1])
+        if not math.isfinite(layer_loss):
+            continue
+        matched_block = None
+        for block_name, block_prefix in block_prefixes:
+            if layer_name == block_name or layer_name.startswith(block_prefix):
+                matched_block = block_name
+                break
+        if matched_block is None:
+            if layer_name != head_name:
+                non_block_items.append((layer_name, layer_loss))
+        else:
+            expert_key = _expert_key_from_layer_name(layer_name)
+            if expert_key is None:
+                block_regular_losses[matched_block].append(layer_loss)
+            else:
+                block_expert_losses.setdefault(matched_block, {}).setdefault(expert_key, []).append(layer_loss)
+
+        expert_key = _expert_key_from_layer_name(layer_name)
+        if expert_key is not None and matched_block is not None:
+            block_expert_seen[matched_block].add(expert_key)
             if abs(layer_loss) >= _ZERO_EPS:
-                expert_active.add(expert_key)
+                block_expert_active[matched_block].add(expert_key)
+
+    for block_name in block_names:
+        for layer_loss in block_regular_losses.get(block_name, []):
+            block_stats[block_name][0] += layer_loss
+            block_stats[block_name][1] += 1
+        for losses in block_expert_losses.get(block_name, {}).values():
+            # Skip fully inactive experts in avg_loss; they have no observed score.
+            if not any(abs(loss) >= _ZERO_EPS for loss in losses):
+                continue
+            for layer_loss in losses:
+                block_stats[block_name][0] += layer_loss
+                block_stats[block_name][1] += 1
+
+    has_moe_block = any(block_expert_seen.get(block_name) for block_name in block_names)
+    logger.debug("AutoScheme block loss summary:")
+    if has_moe_block:
+        logger.debug("AutoScheme | block | avg_loss | non_exp_avg | exp_avg | inactive_exp | shared_loss |")
+    else:
+        logger.debug("AutoScheme | block | avg_loss | inactive_exp |")
 
     for block_name in block_names:
         total_loss, cnt = block_stats.get(block_name, [0.0, 0.0])
         avg_loss = 0.0 if cnt <= 0 else total_loss / cnt
-        logger.info("AutoScheme block=%s avg_loss=%.6f", block_name, avg_loss)
+        expert_total = len(block_expert_seen.get(block_name, set()))
+        expert_inactive = expert_total - len(block_expert_active.get(block_name, set()))
+        regular_losses = block_regular_losses.get(block_name, [])
+        non_expert_avg_loss = None
+        if expert_total and regular_losses:
+            non_expert_avg_loss = sum(regular_losses) / len(regular_losses)
+        expert_active_losses = []
+        for losses in block_expert_losses.get(block_name, {}).values():
+            if not any(abs(loss) >= _ZERO_EPS for loss in losses):
+                continue
+            expert_active_losses.extend(losses)
+        expert_avg_loss = None
+        if expert_total and expert_active_losses:
+            expert_avg_loss = sum(expert_active_losses) / len(expert_active_losses)
+        shared_loss = None
+        if expert_inactive:
+            for losses in block_expert_losses.get(block_name, {}).values():
+                active_losses = [loss for loss in losses if abs(loss) >= _ZERO_EPS]
+                if not active_losses:
+                    continue
+                expert_avg_loss = sum(active_losses) / len(active_losses)
+                if shared_loss is None or expert_avg_loss < shared_loss:
+                    shared_loss = expert_avg_loss
+
+        if has_moe_block:
+            non_expert_avg = "N/A" if non_expert_avg_loss is None else f"{non_expert_avg_loss:.6f}"
+            expert_avg = "N/A" if expert_avg_loss is None else f"{expert_avg_loss:.6f}"
+            shared_avg = "N/A" if shared_loss is None else f"{shared_loss:.6f}"
+            logger.debug(
+                "AutoScheme | %s | %.6f | %s | %s | %d/%d | %s |",
+                _short_summary_name(block_name),
+                avg_loss,
+                non_expert_avg,
+                expert_avg,
+                expert_inactive,
+                expert_total,
+                shared_avg,
+            )
+        else:
+            logger.debug(
+                "AutoScheme | %s | %.6f | %d/%d |",
+                _short_summary_name(block_name),
+                avg_loss,
+                expert_inactive,
+                expert_total,
+            )
+
+    if head_name is not None:
+        head_loss = None
+        if head_name in scores_dict:
+            head_loss = float(scores_dict[head_name][1])
+        head_avg = "N/A" if head_loss is None or not math.isfinite(head_loss) else f"{head_loss:.6f}"
+        if has_moe_block:
+            logger.debug("AutoScheme | %s | %s | N/A | N/A | 0/0 | N/A |", head_name, head_avg)
+        else:
+            logger.debug("AutoScheme | %s | %s | 0/0 |", head_name, head_avg)
+
+    if has_moe_block:
+        logger.debug(
+            "AutoScheme table note: non_exp_avg excludes experts; exp_avg excludes inactive experts; "
+            "shared_loss is used for inactive expert broadcast."
+        )
 
     if non_block_items:
         non_block_items.sort(key=lambda x: x[0])
@@ -770,10 +933,6 @@ def _log_score_summary_by_block_and_nonblock(scores_dict: dict[str, list[float]]
             logger.info("AutoScheme non_block=%s loss=%.6f", layer_name, layer_loss)
     else:
         logger.info("AutoScheme non_block loss: none")
-
-    if expert_seen:
-        inactive = len(expert_seen) - len(expert_active)
-        logger.info("AutoScheme inactive_experts=%d/%d", inactive, len(expert_seen))
 
 
 def get_score_for_scheme(
@@ -1115,7 +1274,8 @@ def get_score_for_scheme(
                     )
             layer_bits, _ = compute_layer_bits(m.orig_layer, ignore_scale_zp_bits=ignore_scale_zp_bits)
             scores_dict[n] = [layer_bits, m.mix_score]
-    _log_score_summary_by_block_and_nonblock(scores_dict, block_names)
+    _log_score_summary_by_block_and_nonblock(scores_dict, block_names, model=model)
+    _fill_inactive_expert_scores(scores_dict, block_names)
 
     for n, m in model.named_modules():
         if hasattr(m, "orig_layer"):
