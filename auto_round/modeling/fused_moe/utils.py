@@ -36,10 +36,7 @@ def is_linearized_layout(original: torch.nn.Module) -> bool:
     if not isinstance(original, torch.nn.ModuleList) or len(original) == 0:
         return False
     first_expert = original[0]
-    return all(
-        hasattr(first_expert, attr)
-        for attr in ("gate_proj", "up_proj", "down_proj")
-    )
+    return all(hasattr(first_expert, attr) for attr in ("gate_proj", "up_proj", "down_proj"))
 
 
 def get_num_experts(original: torch.nn.Module) -> int:
@@ -48,7 +45,7 @@ def get_num_experts(original: torch.nn.Module) -> int:
         return original.gate_up_proj.shape[0]
     if is_linearized_layout(original):
         # Count only numeric keys (expert modules), exclude 'act_fn' etc.
-        if hasattr(original, '_modules'):
+        if hasattr(original, "_modules"):
             numeric_keys = [k for k in original._modules.keys() if k.isdigit()]
             return len(numeric_keys)
         return len(original)

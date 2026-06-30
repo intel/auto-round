@@ -20,6 +20,7 @@ import torch
 from tqdm import tqdm
 from transformers import PreTrainedModel
 
+from auto_round.modeling.fused_moe.utils import is_linearized_layout
 from auto_round.utils import (
     LazyImport,
     dump_mem_usage,
@@ -28,8 +29,6 @@ from auto_round.utils import (
     is_transformers_version_greater_or_equal_5,
     logger,
 )
-from auto_round.modeling.fused_moe.utils import is_linearized_layout
-from auto_round.modeling.fused_moe.utils import is_linearized_layout
 
 BUILTIN_MODULES = {
     # Llama4 has no use_experts_implementation, needs custom replacement to handle fused MoE blocks.
@@ -366,9 +365,7 @@ def _apply_custom_replacements(model: torch.nn.Module) -> list:
 
     if skipped_modules:
         for name, class_name, reason in skipped_modules:
-            logger.info(
-                f"Skipped replacement for {name} ({class_name}): {reason}"
-            )
+            logger.info(f"Skipped replacement for {name} ({class_name}): {reason}")
 
     # Step 2: Replace modules
     if modules_to_replace:
