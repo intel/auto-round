@@ -1322,6 +1322,44 @@ def packed_weight_size(A: torch.Tensor, n, k, groupsize, compute_type, weight_ty
     return lib.packed_weight_size(stream, n, k, groupsize, ct, wt, st, asym)
 
 
+def woqgemm_linear(
+    A: torch.Tensor,
+    B: torch.Tensor,
+    bias: torch.Tensor | None,
+    n,
+    k,
+    groupsize,
+    compute_type,
+    weight_type,
+    scale_type,
+    asym,
+):
+    raw_input_dtype = A.dtype
+    target_dtype = torch.float16 if A.device.type == "xpu" else torch.float32
+    out_shape = A.shape[:-1] + (n,)
+    A_2d = A.to(target_dtype).reshape(-1, A.shape[-1])
+
+    if bias is None or bias.numel() == 0:
+        bias = torch.empty(0, dtype=target_dtype, device=A.device)
+    else:
+        bias = bias.to(device=A.device, dtype=target_dtype)
+
+    out = woqgemm(
+        A_2d,
+        B,
+        bias,
+        n,
+        k,
+        groupsize,
+        compute_type,
+        weight_type,
+        scale_type,
+        asym,
+    )
+
+    return out.to(raw_input_dtype).reshape(out_shape)
+
+
 def woq_linear(
     A: torch.Tensor,
     packed_B: torch.Tensor,
