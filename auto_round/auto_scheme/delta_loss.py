@@ -14,6 +14,8 @@
 
 import copy
 import gc
+import logging
+import re
 from dataclasses import asdict
 from functools import wraps
 from typing import Iterable, Optional, Union
@@ -66,6 +68,9 @@ from auto_round.utils.offload import OffloadManager
 from auto_round.wrapper import WrapperLinear
 
 __all__ = ["gen_layer_config"]
+
+_EXPERT_ID_PATTERN = re.compile(r"^(.*?\.experts\.\d+)(?:\.|$)")
+_ZERO_EPS = 1e-12
 
 
 class AutoSchemeWrapperLinear(WrapperLinear):
@@ -702,6 +707,75 @@ def model_forward_low_gpu(model, dataloader, major_device="cuda", pbar=None):
             pbar.update(1)
 
 
+def _expert_key_from_layer_name(layer_name: str) -> Optional[str]:
+    """Map one MoE-related linear layer to a unique expert key.
+
+    Gate/up/down projections belonging to the same expert should map to one key.
+    """
+    match = _EXPERT_ID_PATTERN.search(layer_name)
+    if match:
+        return match.group(1)
+
+    if ".moe." in layer_name:
+        # Fallback for models that expose MoE expert layers without
+        # `.experts.<id>` naming. Best-effort collapse by dropping the last
+        # projection suffix (gate/up/down/etc.).
+        parts = layer_name.split(".")
+        if len(parts) > 1:
+            return ".".join(parts[:-1])
+        return layer_name
+
+    return None
+
+
+def _log_score_summary_by_block_and_nonblock(scores_dict: dict[str, list[float]], block_names: list[str]):
+    if not scores_dict:
+        logger.info("AutoScheme score summary: empty.")
+        return
+
+    # Sort by length to avoid prefix ambiguity and match faster in practice.
+    block_prefixes = [(name, name + ".") for name in sorted(block_names, key=len, reverse=True)]
+    block_stats: dict[str, list[float]] = {name: [0.0, 0.0] for name in block_names}  # [sum_loss, count]
+    non_block_items: list[tuple[str, float]] = []
+    expert_seen: set[str] = set()
+    expert_active: set[str] = set()
+
+    for layer_name, values in scores_dict.items():
+        layer_loss = float(values[1])
+        matched_block = None
+        for block_name, block_prefix in block_prefixes:
+            if layer_name == block_name or layer_name.startswith(block_prefix):
+                matched_block = block_name
+                break
+        if matched_block is None:
+            non_block_items.append((layer_name, layer_loss))
+        else:
+            block_stats[matched_block][0] += layer_loss
+            block_stats[matched_block][1] += 1
+
+        expert_key = _expert_key_from_layer_name(layer_name)
+        if expert_key is not None:
+            expert_seen.add(expert_key)
+            if abs(layer_loss) >= _ZERO_EPS:
+                expert_active.add(expert_key)
+
+    for block_name in block_names:
+        total_loss, cnt = block_stats.get(block_name, [0.0, 0.0])
+        avg_loss = 0.0 if cnt <= 0 else total_loss / cnt
+        logger.info("AutoScheme block=%s avg_loss=%.6f", block_name, avg_loss)
+
+    if non_block_items:
+        non_block_items.sort(key=lambda x: x[0])
+        for layer_name, layer_loss in non_block_items:
+            logger.info("AutoScheme non_block=%s loss=%.6f", layer_name, layer_loss)
+    else:
+        logger.info("AutoScheme non_block loss: none")
+
+    if expert_seen:
+        inactive = len(expert_seen) - len(expert_active)
+        logger.info("AutoScheme inactive_experts=%d/%d", inactive, len(expert_seen))
+
+
 def get_score_for_scheme(
     model,
     tokenizer,
@@ -725,6 +799,7 @@ def get_score_for_scheme(
     model_name: Optional[str] = None,
 ):
     scores_dict = {}  # Key=name,Val=[quant_total_bits, loss]
+    block_names = get_block_names(model)[0]
     for n, m in model.named_modules():
         if type(m) in SUPPORTED_LAYER_TYPES:
             m.weight.requires_grad = False
@@ -1031,7 +1106,6 @@ def get_score_for_scheme(
         for n, m in model.named_parameters():
             m.grad = None
 
-    scores_dict = {}
     for n, m in model.named_modules():
         if hasattr(m, "mix_score"):
             if m.orig_layer.act_bits <= 8:
@@ -1041,6 +1115,8 @@ def get_score_for_scheme(
                     )
             layer_bits, _ = compute_layer_bits(m.orig_layer, ignore_scale_zp_bits=ignore_scale_zp_bits)
             scores_dict[n] = [layer_bits, m.mix_score]
+    _log_score_summary_by_block_and_nonblock(scores_dict, block_names)
+
     for n, m in model.named_modules():
         if hasattr(m, "orig_layer"):
             # Explicitly break reference cycles to ensure GC can free the wrapper.
@@ -1377,16 +1453,15 @@ def _gen_layer_config(
     else:
         is_moe_model = False
         if hasattr(model, "config"):
-            for key in model.config.to_dict().keys():
-                if "moe" in key or "expert" in key:
-                    is_moe_model = True
-                    break
+            config_str = str(model.config.to_dict())
+            if "moe" in config_str or "expert" in config_str:
+                is_moe_model = True
         if is_moe_model:
             logger.info(
                 "The model appears to be an MoE  model. "
                 "Using more samples to help generate a better auto-scheme recipe."
             )
-            nsamples = 64
+            nsamples = 1
         else:
             nsamples = 16
     seqlen = auto_scheme.seqlen if auto_scheme.seqlen is not None else 256
@@ -1395,7 +1470,7 @@ def _gen_layer_config(
         batch_size = auto_scheme.batch_size
     else:
         if auto_scheme.low_gpu_mem_usage:
-            batch_size = 8
+            batch_size = 1
         else:
             batch_size = 1
 
@@ -1747,6 +1822,9 @@ def gen_layer_config(
         except Exception:  # noqa: BLE001
             is_vlm = False
 
+    from auto_round.modeling.fused_moe.replace_modules import materialize_model_
+
+    materialize_model_(model)
     # ---- Vision-tower scoring requires a full backward ---- #
     # ``model_forward_low_gpu`` only walks the language tower (it uses
     # ``get_block_names(model)[0]``, which excludes vision blocks by default)
