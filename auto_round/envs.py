@@ -24,6 +24,8 @@ if TYPE_CHECKING:
     AUTO_ROUND_CACHE: Optional[str] = None
     AUTO_ROUND_GGUF_AUTO_UPDATE: bool = False
     LLAMA_CPP_ROOT: Optional[str] = None
+    AR_AUTO_SCHEME_NSAMPLES: Optional[int] = None
+    AR_AUTO_SCHEME_BATCH_SIZE: Optional[int] = None
 
 
 def _get_optional_positive_int_env(name: str) -> Optional[int]:
@@ -75,6 +77,14 @@ environment_variables: dict[str, Callable[[], Any]] = {
     "AUTO_ROUND_GGUF_AUTO_UPDATE": lambda: os.getenv("AUTO_ROUND_GGUF_AUTO_UPDATE", "0").lower()
     in ("1", "true", "yes", "on"),
     "LLAMA_CPP_ROOT": lambda: os.getenv("LLAMA_CPP_ROOT", None),
+    # Controls the default number of calibration samples used by AutoScheme scoring
+    # when ``AutoScheme.nsamples`` is not explicitly set.
+    # When unset, AutoScheme uses 3 for MoE models and 16 for dense models.
+    "AR_AUTO_SCHEME_NSAMPLES": lambda: _get_optional_positive_int_env("AR_AUTO_SCHEME_NSAMPLES"),
+    # Controls the default batch size used by AutoScheme scoring
+    # when ``AutoScheme.batch_size`` is not explicitly set.
+    # When unset, AutoScheme defaults to 1.
+    "AR_AUTO_SCHEME_BATCH_SIZE": lambda: _get_optional_positive_int_env("AR_AUTO_SCHEME_BATCH_SIZE"),
 }
 
 
