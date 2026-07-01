@@ -1724,6 +1724,8 @@ def _gen_layer_config(
                 return True
         return False
 
+    seqlen = auto_scheme.seqlen if auto_scheme.seqlen is not None else 256
+
     if auto_scheme.nsamples is not None:
         nsamples = auto_scheme.nsamples
     else:
@@ -1738,15 +1740,7 @@ def _gen_layer_config(
                 config_str = str(model.config.to_dict())
                 if "moe" in config_str or "expert" in config_str:
                     is_moe_model = True
-            if is_moe_model:
-                logger.info(
-                    "The model appears to be an MoE  model. "
-                    "Using more samples to help generate a better auto-scheme recipe."
-                )
-                nsamples = 64
-            else:
-                nsamples = 16
-    seqlen = auto_scheme.seqlen if auto_scheme.seqlen is not None else 256
+            nsamples, seqlen = 16, 128
 
     if auto_scheme.batch_size is not None:
         batch_size = auto_scheme.batch_size
