@@ -42,6 +42,7 @@
 #include "bestla/bestla.h"
 #include "sycl_tla_moe.hpp"
 #include "sycl_tla_moe_dequant.hpp"
+#include "sycl_tla_moe_prefill_fp8_dpas.hpp"
 #include "sycl_tla_moe_prefill_fp8_native.hpp"
 #include "sycl_tla_moe_prefill_fused.hpp"
 
@@ -513,8 +514,56 @@ inline void moe_gemm_prefill(sycl::queue* q, void* activations, void* weights, v
   // in-register upcast, group-boundary scale fold, no `[E, K, N]` workspace).
   // Opt-in via `ARK_MOE_PREFILL_NATIVE_FP8=1`; silent fallback if the shape
   // doesn't satisfy the tile preconditions or if `asym=true` is requested.
-  // Precedence (highest first): native -> fused-dequant -> v1 dequant.
+  // Precedence (highest first): dpas -> native -> fused-dequant -> v1 dequant.
   // See `sycl_tla_moe_prefill_fp8_native.hpp` for the tile / SLM design.
+
+  // FP8 mixed-input DPAS grouped GEMM (Variant B: per-K-group scale,
+  // in-register fp8->act upcast, XMX MMA). Opt-in default via
+  // `ARK_MOE_PREFILL_DPAS_FP8` (default ON); shape gate is stricter than
+  // the native path -- silent fallback to the native/dequant paths for any
+  // shape that doesn't satisfy the tile preconditions. Drop-in for
+  // existing auto-round FP8 checkpoints -- no re-calibration needed.
+  //
+  // STATUS: NEEDS-HARDWARE-VALIDATION. The port is untested; on-hardware
+  // parity against `test_moe_prefill_accuracy.py::test_accuracy_fp8` must
+  // be verified before this branch is trusted. See the header preamble
+  // in `sycl_tla_moe_prefill_fp8_dpas.hpp` for the open questions.
+  if ((weight_dtype == BTLA_DTYPE::F8_E4M3 || weight_dtype == BTLA_DTYPE::F8_E5M2) && !asym &&
+      moe_dpas_fp8::moe_prefill_dpas_fp8_enabled() &&
+      moe_dpas_fp8::moe_prefill_dpas_fp8_pergroup_shape_ok(N, K, group_size)) {
+    const bool is_e4m3 = (weight_dtype == BTLA_DTYPE::F8_E4M3);
+    if (act_dtype == BTLA_DTYPE::F16) {
+      using ScalarT = sycl::half;
+      if (is_e4m3) {
+        moe_dpas_fp8::moe_prefill_fp8_dpas_per_group_dispatch<ScalarT, true>(
+            q, static_cast<const ScalarT*>(activations), static_cast<const uint8_t*>(weights),
+            static_cast<const ScalarT*>(scales), static_cast<ScalarT*>(outputs), num_tokens_per_expert, num_experts,
+            N, K, group_size, total_tokens);
+      } else {
+        moe_dpas_fp8::moe_prefill_fp8_dpas_per_group_dispatch<ScalarT, false>(
+            q, static_cast<const ScalarT*>(activations), static_cast<const uint8_t*>(weights),
+            static_cast<const ScalarT*>(scales), static_cast<ScalarT*>(outputs), num_tokens_per_expert, num_experts,
+            N, K, group_size, total_tokens);
+      }
+      return;
+    } else if (act_dtype == BTLA_DTYPE::BF16) {
+      using ScalarT = sycl::ext::oneapi::bfloat16;
+      if (is_e4m3) {
+        moe_dpas_fp8::moe_prefill_fp8_dpas_per_group_dispatch<ScalarT, true>(
+            q, static_cast<const ScalarT*>(activations), static_cast<const uint8_t*>(weights),
+            static_cast<const ScalarT*>(scales), static_cast<ScalarT*>(outputs), num_tokens_per_expert, num_experts,
+            N, K, group_size, total_tokens);
+      } else {
+        moe_dpas_fp8::moe_prefill_fp8_dpas_per_group_dispatch<ScalarT, false>(
+            q, static_cast<const ScalarT*>(activations), static_cast<const uint8_t*>(weights),
+            static_cast<const ScalarT*>(scales), static_cast<ScalarT*>(outputs), num_tokens_per_expert, num_experts,
+            N, K, group_size, total_tokens);
+      }
+      return;
+    }
+    // Unsupported act_dtype falls through to the native / dequant branches.
+  }
+
   if ((weight_dtype == BTLA_DTYPE::F8_E4M3 || weight_dtype == BTLA_DTYPE::F8_E5M2) && !asym &&
       moe_prefill_native_fp8_detail::moe_prefill_native_fp8_enabled() &&
       moe_prefill_native_fp8_detail::moe_prefill_native_fp8_shape_ok(N, K, group_size)) {
@@ -597,6 +646,58 @@ inline void moe_gemm_prefill(sycl::queue* q, void* activations, void* weights, v
     moe_gemm(q, activations, w_kn, /*scales=*/nullptr, outputs, act_dtype, N, K, num_tokens_per_expert, num_experts);
   } else {
     throw std::invalid_argument("moe_gemm_prefill: act_dtype must be F16 or BF16");
+  }
+}
+
+// ----------------------------------------------------------------------------
+// MoE prefill Grouped GEMM -- FP8 per-tensor DPAS (Variant A).
+//
+// Separate entry point (not multiplexed through `moe_gemm_prefill` because
+// the scale layout differs -- `[E]` FP32 per-tensor vs. the
+// `[E, N, K/group_size]` act-dtype per-K-group layout `moe_gemm_prefill`
+// takes). Weights are `[E, K, N]` row-major (vllm convention).
+//
+// STATUS: NEEDS-HARDWARE-VALIDATION. See
+// `sycl_tla_moe_prefill_fp8_dpas.hpp` for the port's provenance & the
+// on-hardware TODOs.
+// ----------------------------------------------------------------------------
+inline void moe_gemm_prefill_fp8_dpas(sycl::queue* q, void* activations, void* weights, void* scales, void* outputs,
+                                      BTLA_DTYPE act_dtype, BTLA_DTYPE weight_dtype, int N, int K,
+                                      int* num_tokens_per_expert, int num_experts, int total_tokens) {
+  if (total_tokens == 0) return;
+  if (weight_dtype != BTLA_DTYPE::F8_E4M3 && weight_dtype != BTLA_DTYPE::F8_E5M2) {
+    throw std::invalid_argument(
+        "moe_gemm_prefill_fp8_dpas: weight_dtype must be F8_E4M3 or F8_E5M2");
+  }
+  const bool is_e4m3 = (weight_dtype == BTLA_DTYPE::F8_E4M3);
+  if (act_dtype == BTLA_DTYPE::F16) {
+    using ScalarT = sycl::half;
+    if (is_e4m3) {
+      moe_dpas_fp8::moe_prefill_fp8_dpas_per_tensor_dispatch<ScalarT, true>(
+          q, static_cast<const ScalarT*>(activations), static_cast<const uint8_t*>(weights),
+          static_cast<const float*>(scales), static_cast<ScalarT*>(outputs), num_tokens_per_expert, num_experts, N,
+          K, total_tokens);
+    } else {
+      moe_dpas_fp8::moe_prefill_fp8_dpas_per_tensor_dispatch<ScalarT, false>(
+          q, static_cast<const ScalarT*>(activations), static_cast<const uint8_t*>(weights),
+          static_cast<const float*>(scales), static_cast<ScalarT*>(outputs), num_tokens_per_expert, num_experts, N,
+          K, total_tokens);
+    }
+  } else if (act_dtype == BTLA_DTYPE::BF16) {
+    using ScalarT = sycl::ext::oneapi::bfloat16;
+    if (is_e4m3) {
+      moe_dpas_fp8::moe_prefill_fp8_dpas_per_tensor_dispatch<ScalarT, true>(
+          q, static_cast<const ScalarT*>(activations), static_cast<const uint8_t*>(weights),
+          static_cast<const float*>(scales), static_cast<ScalarT*>(outputs), num_tokens_per_expert, num_experts, N,
+          K, total_tokens);
+    } else {
+      moe_dpas_fp8::moe_prefill_fp8_dpas_per_tensor_dispatch<ScalarT, false>(
+          q, static_cast<const ScalarT*>(activations), static_cast<const uint8_t*>(weights),
+          static_cast<const float*>(scales), static_cast<ScalarT*>(outputs), num_tokens_per_expert, num_experts, N,
+          K, total_tokens);
+    }
+  } else {
+    throw std::invalid_argument("moe_gemm_prefill_fp8_dpas: act_dtype must be F16 or BF16");
   }
 }
 

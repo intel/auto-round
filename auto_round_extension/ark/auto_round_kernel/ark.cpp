@@ -418,6 +418,18 @@ static void moe_gemm_prefill_wrapper(torch_ptr stream, torch_ptr activations, to
                         total_tokens, asym);
 }
 
+// Variant A: FP8 per-tensor DPAS grouped GEMM (mirrors vllm-xpu-kernels'
+// `cutlass_grouped_gemm_xe2_impl` FP8 branch). `scales` is [E] FP32.
+// Weights are [E, K, N] row-major uint8. STATUS: NEEDS-HARDWARE-VALIDATION.
+static void moe_gemm_prefill_fp8_dpas_wrapper(torch_ptr stream, torch_ptr activations, torch_ptr weights,
+                                              torch_ptr scales, torch_ptr outputs, int act_dtype, int weight_dtype,
+                                              int N, int K, torch_ptr num_tokens_per_expert, int num_experts,
+                                              int total_tokens) {
+  ark::moe_gemm_prefill_fp8_dpas((sycl::queue*)stream, (void*)activations, (void*)weights, (void*)scales,
+                                 (void*)outputs, (BTLA_DTYPE)(act_dtype), (BTLA_DTYPE)(weight_dtype), N, K,
+                                 (int*)num_tokens_per_expert, num_experts, total_tokens);
+}
+
 static void sage_dynamic_quant(torch_ptr stream, torch_ptr input, torch_ptr bias, torch_ptr output, torch_ptr scale_out,
                                int num_rows, int head_dim, int block_size) {
   auto* q = (sycl::queue*)stream;
@@ -657,5 +669,6 @@ PYBIND11_MODULE(PY_NAME, m) {
   m.def("moe_gemm", &ark::moe_gemm_wrapper);
   m.def("moe_gemm_decode", &ark::moe_gemm_decode_wrapper);
   m.def("moe_gemm_prefill", &ark::moe_gemm_prefill_wrapper);
+  m.def("moe_gemm_prefill_fp8_dpas", &ark::moe_gemm_prefill_fp8_dpas_wrapper);
 #endif
 }
