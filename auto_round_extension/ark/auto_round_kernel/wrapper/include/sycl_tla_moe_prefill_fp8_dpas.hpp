@@ -117,6 +117,40 @@ namespace moe_dpas_fp8 {
 using namespace cute;
 
 // ---------------------------------------------------------------------------
+// Scalar-type translation: callers in `sycl_tla_moe_mixed.hpp` pass the
+// activation buffer typed as `sycl::half` / `sycl::ext::oneapi::bfloat16`
+// (the SYCL native half/bfloat16 types), but CUTE only ships
+// `XE_DPAS_TT<...>` specializations for `cutlass::half_t` /
+// `cutlass::bfloat16_t`. Instantiating the DPAS atom directly with the SYCL
+// native types produces `implicit instantiation of undefined template
+// 'cute::XE_DPAS_TT<8, float, sycl::detail::half_impl::half>'` at compile
+// time. The two representations are bit-compatible (both are IEEE-754 16-bit
+// floats laid out identically in memory), so the dispatchers below map the
+// caller's `ScalarT` to the matching CUTLASS type and `reinterpret_cast` the
+// buffer pointers before entering `MoEGEMMLauncher<>`. The sibling
+// `sycl_tla_moe.hpp` dispatcher works today for the same reason (it selects
+// `cutlass::half_t` / `cutlass::bfloat16_t` at its call sites before
+// invoking `choose_tiled_mma`).
+// ---------------------------------------------------------------------------
+template <typename ScalarT>
+struct cute_scalar {
+  using type = ScalarT;
+};
+
+template <>
+struct cute_scalar<sycl::half> {
+  using type = cutlass::half_t;
+};
+
+template <>
+struct cute_scalar<sycl::ext::oneapi::bfloat16> {
+  using type = cutlass::bfloat16_t;
+};
+
+template <typename ScalarT>
+using cute_scalar_t = typename cute_scalar<ScalarT>::type;
+
+// ---------------------------------------------------------------------------
 // Policy classes (ported verbatim from vllm-xpu-kernels
 // `gemm_xe2_policy.hpp`, renamed to `dpas_*` to avoid collision with any
 // future upstream import into `namespace MoE`).
@@ -820,6 +854,12 @@ void moe_prefill_fp8_dpas_per_tensor_dispatch(
 
   using ElementB = std::conditional_t<IsE4M3, cutlass::float_e4m3_t,
                                       cutlass::float_e5m2_t>;
+  // Map the caller-facing SYCL native half/bfloat16 to the CUTLASS type CUTE
+  // has DPAS-atom specializations for. See `cute_scalar` above.
+  using ElementA = cute_scalar_t<ScalarT>;
+  const auto* activations_ca =
+      reinterpret_cast<const ElementA*>(activations);
+  auto* outputs_ca = reinterpret_cast<ElementA*>(outputs);
 
   int A_avg_M = total_tokens / E;
 
@@ -831,8 +871,8 @@ void moe_prefill_fp8_dpas_per_tensor_dispatch(
 
 #define ARK_DPAS_PT_LAUNCH(policy)                                             \
   MoEGEMMLauncher<'R', 'R', policy, ScaleMode::kPerTensor>(                    \
-      *q, activations, reinterpret_cast<const ElementB*>(weights_KN),          \
-      scales_e, static_cast<const ScalarT*>(nullptr), outputs, N, K,           \
+      *q, activations_ca, reinterpret_cast<const ElementB*>(weights_KN),       \
+      scales_e, static_cast<const ElementA*>(nullptr), outputs_ca, N, K,       \
       num_tokens_per_expert, E, /*group_size=*/0, atomic_buffer);
 
   if (A_avg_M <= 8) {
@@ -871,6 +911,13 @@ void moe_prefill_fp8_dpas_per_group_dispatch(
 
   using ElementB = std::conditional_t<IsE4M3, cutlass::float_e4m3_t,
                                       cutlass::float_e5m2_t>;
+  // Map the caller-facing SYCL native half/bfloat16 to the CUTLASS type CUTE
+  // has DPAS-atom specializations for. See `cute_scalar` above.
+  using ElementA = cute_scalar_t<ScalarT>;
+  const auto* activations_ca =
+      reinterpret_cast<const ElementA*>(activations);
+  const auto* scales_ca = reinterpret_cast<const ElementA*>(scales);
+  auto* outputs_ca = reinterpret_cast<ElementA*>(outputs);
 
   int A_avg_M = total_tokens / E;
 
@@ -882,8 +929,8 @@ void moe_prefill_fp8_dpas_per_group_dispatch(
 
 #define ARK_DPAS_PG_LAUNCH(policy)                                             \
   MoEGEMMLauncher<'R', 'C', policy, ScaleMode::kPerGroup>(                     \
-      *q, activations, reinterpret_cast<const ElementB*>(weights_NK), scales,  \
-      static_cast<const ScalarT*>(nullptr), outputs, N, K,                     \
+      *q, activations_ca, reinterpret_cast<const ElementB*>(weights_NK),       \
+      scales_ca, static_cast<const ElementA*>(nullptr), outputs_ca, N, K,      \
       num_tokens_per_expert, E, group_size, atomic_buffer);
 
   if (A_avg_M <= 8) {
