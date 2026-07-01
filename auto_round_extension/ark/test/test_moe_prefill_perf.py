@@ -919,7 +919,7 @@ class TestMoEGemmPrefillPerf:
 
         int8_max = 127.0
         _print_header(
-            f"INT8 per-expert scale int8 "
+            f"INT8 per-expert scale "
             f"(scales=[E] fp32, act={str(dtype).split('.')[-1]}) -- "
             f"ark.moe_gemm_prefill(scale_scheme='per_tensor') vs single torch.bmm "
             f"(weights pre-dequantized)",
