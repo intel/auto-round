@@ -68,6 +68,25 @@
 // Any shape that fails a precondition transparently falls back to the
 // two-stage path via the dispatcher in `sycl_tla_moe_mixed.hpp`.
 //
+// K-loop structure (Phase 1 optimization)
+// ---------------------------------------
+// The K reduction is organised as a two-level nest:
+//
+//   for g in [0, K/group_size):          // scale group; barrier + scale reload
+//     stage A[BM][group_size] into SLM   // ONE cooperative load + barrier
+//     scale = scales[e, n_col, g]        // per-lane scale, loaded ONCE
+//     for sub in [0, group_size/BK):     // BK sub-tile inside the group
+//       load BK fp8 bytes for this lane  // 4-byte chunked, unrolled
+//       w_col[k] = decode_fp8(byte) * scale
+//       acc[m]  += sum_k a_slm[m, sub*BK+k] * w_col[k]
+//
+// vs. the original one-level loop that reloaded A + issued a barrier
+// once per BK-wide K-tile and reloaded the scale on every iteration.
+// The default group_size = 128 (BK = 32) drops the per-WG barrier count
+// by 4x and the per-WG global scale-load count by 4x with no change to
+// the per-BK partial-sum accumulation order (numerics preserved within
+// the FP8 accuracy tolerance of 7e-2 in `test_moe_prefill_accuracy.py`).
+//
 // Copyright (C) 2026 Intel Corporation
 // SPDX-License-Identifier: Apache-2.0
 
@@ -106,7 +125,10 @@ namespace moe_prefill_native_fp8_detail {
 //                              tile so the shape predicates are compatible).
 //
 // SLM footprint per work-group:
-//   * BM × BK act tile in ScalarT             -> 8 * 32 * 2 = 512 bytes
+//   * BM x group_size ScalarT elements  (A tile staged once per scale group)
+//     = 8 * 128 * 2 = 2 KiB for the default group_size = 128 / bf16 acts.
+//     Scales with group_size up to a few KiB of SLM; well below the per-WG
+//     SLM budget on BMG/PVC.
 //   * (no B staging: each lane reads its own BK weight bytes into regs)
 // ----------------------------------------------------------------------------
 constexpr int SG_SIZE = 16;
@@ -169,10 +191,10 @@ inline bool moe_prefill_native_fp8_shape_ok(int N, int K, int group_size) {
 // instruction the WG executes.
 // ----------------------------------------------------------------------------
 template <typename ScalarT, bool IsE4M3, bool UseLut>
-void launch_moe_prefill_fp8_native(sycl::queue* q, const ScalarT* activations, const uint8_t* weights_NK,
-                                   const ScalarT* scales, ScalarT* outputs, const int* expert_offsets, int E, int N,
-                                   int K, int group_size, int max_e_tokens) {
-  if (E == 0 || N == 0 || K == 0 || max_e_tokens == 0) return;
+sycl::event launch_moe_prefill_fp8_native(sycl::queue* q, const ScalarT* activations, const uint8_t* weights_NK,
+                                          const ScalarT* scales, ScalarT* outputs, const int* expert_offsets, int E,
+                                          int N, int K, int group_size, int max_e_tokens) {
+  if (E == 0 || N == 0 || K == 0 || max_e_tokens == 0) return sycl::event{};
   if (!moe_prefill_native_fp8_shape_ok(N, K, group_size)) {
     throw std::invalid_argument("moe_gemm_prefill(fp8 native): shape preconditions not met");
   }
@@ -180,15 +202,19 @@ void launch_moe_prefill_fp8_native(sycl::queue* q, const ScalarT* activations, c
   const int num_groups_k = K / group_size;
   const int n_tiles = N / BN;
   const int max_m_tiles = (max_e_tokens + BM - 1) / BM;
-  const int k_tiles = K / BK;
+  // Per-scale-group inner sub-tile count. `group_size % BK == 0` is a
+  // launch precondition so this divides evenly.
+  const int gs_per_tile = group_size / BK;
+  const int stage_k = group_size;  // A tile is BM x stage_k, staged once per group.
 
   sycl::range<3> global{static_cast<size_t>(E), static_cast<size_t>(max_m_tiles),
                         static_cast<size_t>(n_tiles) * static_cast<size_t>(SG_SIZE)};
   sycl::range<3> local{1, 1, static_cast<size_t>(SG_SIZE)};
 
-  q->submit([&](sycl::handler& cgh) {
-    // Cooperative A-tile SLM staging: BM * BK ScalarT elements per WG.
-    sycl::local_accessor<ScalarT, 1> a_slm(sycl::range<1>(static_cast<size_t>(BM) * static_cast<size_t>(BK)), cgh);
+  return q->submit([&](sycl::handler& cgh) {
+    // Cooperative A-tile SLM staging: BM x stage_k ScalarT elements per WG.
+    // Sized at submit time; stage_k == group_size is a kernel argument.
+    sycl::local_accessor<ScalarT, 1> a_slm(sycl::range<1>(static_cast<size_t>(BM) * static_cast<size_t>(stage_k)), cgh);
 
     cgh.parallel_for<MoEPrefillFP8NativeKernel<ScalarT, IsE4M3, UseLut>>(
         sycl::nd_range<3>(global, local),
@@ -222,20 +248,20 @@ void launch_moe_prefill_fp8_native(sycl::queue* q, const ScalarT* activations, c
           for (int m = 0; m < BM; ++m) acc[m] = 0.0f;
 
           // -----------------------------------------------------------------
-          // K-reduction loop.
+          // K-reduction loop (Phase 1 layout).
           //
-          // For each BK-wide K chunk:
-          //   1. Cooperatively stage the A[BM][BK] tile into SLM (each
-          //      lane loads BM elements: `BM * BK / SG_SIZE = 16` slots).
-          //   2. Load `BK` weight bytes for this lane's N column and
-          //      the tile's expert; decode + fold the group scale into
-          //      a per-K float in registers.
-          //   3. MAC into `acc[m]` for each of the `BM` output rows.
+          // Outer loop iterates once per scale group `g in [0, K/group_size)`:
+          //   1. Cooperatively stage the [BM][stage_k] A tile into SLM.
+          //      ONE barrier per scale group (vs. one per BK-tile before).
+          //   2. Load this lane's scale ONCE per group (vs. once per BK-tile).
+          //   3. Inner loop over `sub in [0, group_size/BK)` runs BK-wide
+          //      sub-tiles fully from SLM + registers with no extra barrier:
+          //        a. Fetch BK fp8 weight bytes (4-byte chunked, unrolled).
+          //        b. Decode + fold scale in registers into w_col[BK].
+          //        c. MAC into acc[m] for each of the BM output rows.
           //
-          // Scale hoist: `BK` divides `group_size`, so all `BK` positions
-          // in one tile fall in the same scale group `g = base_k / group_size`.
-          // Every lane loads its own N column's scale (one broadcast per
-          // K-tile boundary, i.e., per `group_size / BK` inner iterations).
+          // Per-BK partial-sum accumulation order is preserved bit-for-bit,
+          // so the FP8 parity tests (7e-2 tolerance) remain valid.
           // -----------------------------------------------------------------
           const size_t w_row_stride = static_cast<size_t>(K);              // [E, N, K] row-major
           const size_t w_expert_stride = static_cast<size_t>(N) * w_row_stride;
@@ -248,55 +274,80 @@ void launch_moe_prefill_fp8_native(sycl::queue* q, const ScalarT* activations, c
           const size_t w_row_base = static_cast<size_t>(e) * w_expert_stride + static_cast<size_t>(n_col) * w_row_stride;
           const size_t s_row_base = static_cast<size_t>(e) * s_expert_stride + static_cast<size_t>(n_col) * s_row_stride;
 
-          for (int k_tile = 0; k_tile < k_tiles; ++k_tile) {
-            const int base_k = k_tile * BK;
-            const int g = base_k / group_size;
+          for (int g = 0; g < num_groups_k; ++g) {
+            const int base_gk = g * stage_k;
 
-            // --------- 1. Cooperative A-tile load into SLM ---------------
-            // BM * BK = 8 * 32 = 256 elements across 16 lanes -> 16 per lane.
-            // We interleave lanes across the flat index so each SG cycle
-            // hits SG_SIZE consecutive addresses in `activations` (which
-            // is row-major `[total_tokens, K]` — the fast dim is K).
-#pragma unroll
-            for (int i = 0; i < (BM * BK) / SG_SIZE; ++i) {
-              const int flat = i * SG_SIZE + lane;
-              const int m = flat / BK;
-              const int k = flat % BK;
+            // --------- 1. Cooperative A-tile load into SLM --------------
+            // Load BM * stage_k ScalarT elements across SG_SIZE lanes with
+            // a stride of SG_SIZE, so within one SG cycle the lanes touch
+            // SG_SIZE consecutive addresses in `activations` (K is the fast
+            // dim of the row-major [total_tokens, K] layout).
+            const int a_total = BM * stage_k;
+            for (int i = lane; i < a_total; i += SG_SIZE) {
+              const int m = i / stage_k;
+              const int k = i % stage_k;
               ScalarT a_val = static_cast<ScalarT>(0);
               if (m < m_valid) {
                 a_val = activations[(static_cast<size_t>(base_m_global) + static_cast<size_t>(m)) * a_row_stride +
-                                    static_cast<size_t>(base_k) + static_cast<size_t>(k)];
+                                    static_cast<size_t>(base_gk) + static_cast<size_t>(k)];
               }
-              a_slm[static_cast<size_t>(flat)] = a_val;
+              a_slm[static_cast<size_t>(i)] = a_val;
             }
             it.barrier(sycl::access::fence_space::local_space);
 
-            // --------- 2. Load + decode BK weight bytes for this lane ----
-            // and fold in the per-group scale (constant across BK).
+            // --------- 2. Hoisted per-lane scale load --------------------
+            // One global load per lane per scale group (vs. one per BK-tile
+            // in the prior revision).
             const float scale = static_cast<float>(scales[s_row_base + static_cast<size_t>(g)]);
-            float w_col[BK];
-#pragma unroll
-            for (int k = 0; k < BK; ++k) {
-              const uint8_t raw = weights_NK[w_row_base + static_cast<size_t>(base_k) + static_cast<size_t>(k)];
-              w_col[k] = moe_dequant::decode_fp8<IsE4M3, UseLut>(raw) * scale;
-            }
 
-            // --------- 3. MAC ---------------------------------------------
-            // For each output row m in this tile, dot-product the length-BK
-            // slice of A[m] (staged in SLM) with `w_col`, accumulate into
-            // `acc[m]`.
+            // --------- 3. Inner BK-sub-tile loop -------------------------
+            for (int sub = 0; sub < gs_per_tile; ++sub) {
+              const int base_k_sub = sub * BK;
+
+              // 3a. Load BK weight bytes for this lane's column, vectorized
+              //     as (BK/4) x uint32_t chunks. The pointer is 4-byte
+              //     aligned: `weights_NK` is 4-byte aligned (tensor storage)
+              //     and the offset `w_row_base + base_gk + base_k_sub` is a
+              //     multiple of BK = 32 (K % BK == 0, base_gk multiple of
+              //     group_size which is a multiple of BK).
+              const size_t w_off = w_row_base + static_cast<size_t>(base_gk) + static_cast<size_t>(base_k_sub);
+              const uint32_t* w_u32 =
+                  reinterpret_cast<const uint32_t*>(weights_NK + w_off);
+              float w_col[BK];
+              constexpr int W_WORDS = BK / 4;  // 8 for BK = 32
 #pragma unroll
-            for (int m = 0; m < BM; ++m) {
-              float sum = 0.0f;
-#pragma unroll
-              for (int k = 0; k < BK; ++k) {
-                const float a_f = static_cast<float>(a_slm[static_cast<size_t>(m) * BK + static_cast<size_t>(k)]);
-                sum += a_f * w_col[k];
+              for (int wi = 0; wi < W_WORDS; ++wi) {
+                const uint32_t w = w_u32[wi];
+                const uint8_t b0 = static_cast<uint8_t>(w & 0xFFu);
+                const uint8_t b1 = static_cast<uint8_t>((w >> 8) & 0xFFu);
+                const uint8_t b2 = static_cast<uint8_t>((w >> 16) & 0xFFu);
+                const uint8_t b3 = static_cast<uint8_t>((w >> 24) & 0xFFu);
+                w_col[wi * 4 + 0] = moe_dequant::decode_fp8<IsE4M3, UseLut>(b0) * scale;
+                w_col[wi * 4 + 1] = moe_dequant::decode_fp8<IsE4M3, UseLut>(b1) * scale;
+                w_col[wi * 4 + 2] = moe_dequant::decode_fp8<IsE4M3, UseLut>(b2) * scale;
+                w_col[wi * 4 + 3] = moe_dequant::decode_fp8<IsE4M3, UseLut>(b3) * scale;
               }
-              acc[m] += sum;
+
+              // 3b. MAC. For each output row m in this tile, dot-product
+              //     the length-BK slice of A[m] (staged in SLM) with
+              //     `w_col`, accumulate into `acc[m]`. Same per-BK partial-
+              //     sum shape as the original kernel to preserve numerics.
+              const size_t a_col_base = static_cast<size_t>(base_k_sub);
+#pragma unroll
+              for (int m = 0; m < BM; ++m) {
+                float sum = 0.0f;
+#pragma unroll
+                for (int k = 0; k < BK; ++k) {
+                  const size_t a_off =
+                      static_cast<size_t>(m) * static_cast<size_t>(stage_k) + a_col_base + static_cast<size_t>(k);
+                  const float a_f = static_cast<float>(a_slm[a_off]);
+                  sum += a_f * w_col[k];
+                }
+                acc[m] += sum;
+              }
             }
 
-            // Barrier before the next iteration re-stages A[] into SLM.
+            // Barrier before the next scale group re-stages A[].
             it.barrier(sycl::access::fence_space::local_space);
           }
 
@@ -322,9 +373,13 @@ void launch_moe_prefill_fp8_native(sycl::queue* q, const ScalarT* activations, c
 //
 // Handles the per-launch prefix-sum of `num_tokens_per_expert` (small —
 // num_experts is O(hundreds)) and the USM allocation of the resulting
-// expert-offsets buffer. Blocks on the launched event so the caller can
-// treat this as a synchronous kernel dispatch (matching the rest of the
-// module and `moe_gemm_launcher`'s `event.wait()`).
+// expert-offsets buffer. Returns *asynchronously*: the kernel event is
+// captured and used to chain an async `sycl::free` of the offsets buffer
+// via a `host_task` (Phase 1 optimization — eliminates the trailing
+// `q->wait()` that the initial revision needed to safely release the
+// USM buffer). Ordering with respect to subsequent ops on the same XPU
+// queue is preserved through the queue itself, matching how the rest of
+// the module composes with the PyTorch XPU stream.
 // ----------------------------------------------------------------------------
 template <typename ScalarT, bool IsE4M3, bool UseLut>
 void moe_prefill_fp8_native_dispatch(sycl::queue* q, const ScalarT* activations, const uint8_t* weights_NK,
@@ -334,6 +389,7 @@ void moe_prefill_fp8_native_dispatch(sycl::queue* q, const ScalarT* activations,
 
   // 1) Copy per-expert token counts to host so we can build a prefix sum
   //    and compute the max (needed for `max_m_tiles` in the grid range).
+  //    This `.wait()` is mandatory: we read `h_ntpe` on the host below.
   std::vector<int> h_ntpe(static_cast<size_t>(E));
   q->memcpy(h_ntpe.data(), num_tokens_per_expert, static_cast<size_t>(E) * sizeof(int)).wait();
 
@@ -345,20 +401,34 @@ void moe_prefill_fp8_native_dispatch(sycl::queue* q, const ScalarT* activations,
   }
   if (max_e_tokens == 0) return;  // all experts empty
 
-  // 2) Push offsets to a USM device buffer (freed at end of dispatch).
+  // 2) Push offsets to a USM device buffer. This `.wait()` is kept: the
+  //    source (`h_offsets`) is a stack `std::vector` that dies when this
+  //    function returns, and dropping the host block here would race with
+  //    the async H2D copy. The async release below still buys us the
+  //    tail `q->wait()` savings (dominant on repeated benchmark calls).
   int* d_offsets = sycl::malloc_device<int>(static_cast<size_t>(E) + 1, *q);
   if (d_offsets == nullptr) {
     throw std::runtime_error("moe_gemm_prefill(fp8 native): failed to allocate USM offsets buffer");
   }
   q->memcpy(d_offsets, h_offsets.data(), (static_cast<size_t>(E) + 1) * sizeof(int)).wait();
 
-  // 3) Launch. The launcher submits + returns; we wait on the queue below
-  //    before freeing the offsets buffer so the kernel can safely read it.
-  launch_moe_prefill_fp8_native<ScalarT, IsE4M3, UseLut>(q, activations, weights_NK, scales, outputs, d_offsets, E, N,
-                                                         K, group_size, max_e_tokens);
-  q->wait();
+  // 3) Launch. The launcher submits and returns the kernel event; ordering
+  //    with the H2D copy above is established by the (in-order) XPU queue.
+  sycl::event kernel_evt = launch_moe_prefill_fp8_native<ScalarT, IsE4M3, UseLut>(
+      q, activations, weights_NK, scales, outputs, d_offsets, E, N, K, group_size, max_e_tokens);
 
-  sycl::free(d_offsets, *q);
+  // 4) Async release of `d_offsets`. A `host_task` submission chained on
+  //    the kernel event frees the USM buffer after the kernel has fully
+  //    consumed it, without blocking the host. Subsequent ops on the
+  //    same queue observe the kernel result via queue ordering, so the
+  //    caller-visible semantics match the previous synchronous dispatch
+  //    modulo the host-side wait latency we're removing.
+  sycl::queue* q_capture = q;
+  int* d_offsets_capture = d_offsets;
+  q->submit([=](sycl::handler& cgh) {
+    cgh.depends_on(kernel_evt);
+    cgh.host_task([=]() { sycl::free(d_offsets_capture, *q_capture); });
+  });
 }
 
 }  // namespace moe_prefill_native_fp8_detail
