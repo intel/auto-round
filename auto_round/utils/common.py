@@ -640,6 +640,10 @@ deepspeed_exists = False
 if importlib.util.find_spec("deepspeed"):  # check if deepspeed is installed
     deepspeed_exists = True
 
+vllm_exists = False
+if importlib.util.find_spec("vllm"):  # check if vllm is installed
+    vllm_exists = True
+
 SUPPORTED_DTYPES = ("int", "mx_fp", "fp", "nv_fp", "mx_int")
 SUPPORTED_FORMATS = SupportedFormats()
 SUPPORTED_LAYER_TYPES = (torch.nn.Linear, transformers.pytorch_utils.Conv1D)

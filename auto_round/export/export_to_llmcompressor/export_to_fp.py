@@ -64,16 +64,129 @@ __all__ = [
     "save_quantized_as_fp",
 ]
 
+# Lazy import: vLLM LinearBase (None when vLLM is not installed).
+_VLLMLinearBase = None
+try:
+    from vllm.model_executor.layers.linear import LinearBase as _VLLMLinearBase
+except Exception:
+    pass
+
+
+def _unfuse_vllm_packed_layer(name: str, model: torch.nn.Module, qlayer) -> bool:
+    """Split a packed fused vLLM layer (qkv_proj / gate_up_proj) into separate
+    sub-layers stored under the corresponding HF-checkpoint key names.
+
+    For qkv_proj  → injects q_proj / k_proj / v_proj into the parent module.
+    For gate_up_proj → injects gate_proj / up_proj into the parent module.
+
+    Returns True if the layer was unfused, False otherwise.
+    """
+    layer_base = name.rsplit(".", 1)[-1]
+
+    # Determine the sub-layer names and output dimension split
+    if layer_base == "qkv_proj":
+        sub_names = ["q_proj", "k_proj", "v_proj"]
+    elif layer_base == "gate_up_proj":
+        sub_names = ["gate_proj", "up_proj"]
+    else:
+        return False
+
+    # Get the split sizes from the original vLLM LinearBase (stored as output_sizes)
+    # We stored output_sizes on qlayer before replacing the original layer.
+    output_sizes = getattr(qlayer, "_vllm_output_sizes", None)
+    if output_sizes is None or len(output_sizes) != len(sub_names):
+        logger.warning(
+            "Cannot unfuse vLLM layer %s: _vllm_output_sizes not set or length mismatch "
+            "(expected %d, got %s). Saving as fused.",
+            name,
+            len(sub_names),
+            output_sizes,
+        )
+        return False
+
+    # Compute cumulative offsets
+    offsets = [0]
+    for s in output_sizes:
+        offsets.append(offsets[-1] + s)
+
+    # bits=8 (MXFP8): weight attr is "weight"   [out, in]        dtype float8_e4m3fn
+    # bits=4 (MXFP4/NVFP4): weight attr is "weight_packed" [out, in//2] dtype uint8
+    if hasattr(qlayer, "weight_packed"):
+        fused_weight = qlayer.weight_packed
+        weight_attr = "weight_packed"
+    else:
+        fused_weight = qlayer.weight
+        weight_attr = "weight"
+    fused_scale = qlayer.weight_scale  # uint8 (mxfp8 exponents) or float16/fp8 (mxfp4/nvfp4)
+    fused_bias = getattr(qlayer, "bias", None)
+    global_scale = getattr(qlayer, "weight_global_scale", None)
+    input_global_scale = getattr(qlayer, "input_global_scale", None)
+
+    # Resolve parent module
+    parts = name.rsplit(".", 1)
+    parent_path = parts[0] if len(parts) == 2 else ""
+    parent = get_module(model, parent_path) if parent_path else model
+
+    # For bits=4 the weight is packed 2 fp4 per byte along in-dim,
+    # but output-dim slicing is unaffected.
+    in_features_packed = fused_weight.shape[1]
+
+    for i, sub_name in enumerate(sub_names):
+        row_start, row_end = offsets[i], offsets[i + 1]
+        sub_out = row_end - row_start
+
+        # Slice weight and scale along dim=0 (output dimension)
+        sub_weight = fused_weight[row_start:row_end, :].contiguous()
+        # weight_scale rows correspond 1:1 with weight rows
+        sub_scale = fused_scale[row_start:row_end, :].contiguous()
+        sub_bias = fused_bias[row_start:row_end].contiguous() if fused_bias is not None else None
+
+        # infeatures for the QuantLinear constructor: un-pack for bits=4
+        sub_infeatures = in_features_packed * 2 if qlayer.bits == 4 else in_features_packed
+
+        # Build a fresh QuantLinear shell and assign buffers directly (skip .pack())
+        sub_qlayer = QuantLinear(
+            qlayer.bits,
+            qlayer.group_size,
+            sub_infeatures,
+            sub_out,
+            sub_bias is not None,
+            weight_dtype=sub_weight.dtype,
+            sym=qlayer.sym,
+            data_type=qlayer.data_type,
+            act_bits=qlayer.act_bits,
+            act_data_type=qlayer.act_data_type,
+        )
+        sub_qlayer.device = qlayer.device
+        setattr(sub_qlayer, weight_attr, sub_weight)
+        sub_qlayer.weight_scale = sub_scale
+        if sub_bias is not None:
+            sub_qlayer.bias = sub_bias
+        if global_scale is not None:
+            sub_qlayer.weight_global_scale = global_scale
+        if input_global_scale is not None:
+            sub_qlayer.input_global_scale = input_global_scale
+
+        # Register under the parent module with the HF-style name
+        setattr(parent, sub_name, sub_qlayer)
+
+    # Remove the original fused layer from the parent
+    delattr(parent, layer_base)
+    logger.info("Unfused vLLM layer %s → %s", name, sub_names)
+    return True
+
 
 def pack_layer(name, model, device=None):
     layer = get_module(model, name)
-    if type(layer) not in SUPPORTED_LAYER_TYPES and not isinstance(layer, WrapperWALayer):  ##already packed
-        return
+    _is_vllm_linear = _VLLMLinearBase is not None and isinstance(layer, _VLLMLinearBase)
+    if type(layer) not in SUPPORTED_LAYER_TYPES and not isinstance(layer, WrapperWALayer) and not _is_vllm_linear:
+        return  ##already packed
 
     if isinstance(layer, WrapperWALayer):  # revert WrapperWALayer for offline usage
         wp_layer = layer
         layer = wp_layer.orig_layer
         set_module(model, name, layer)
+        _is_vllm_linear = _VLLMLinearBase is not None and isinstance(layer, _VLLMLinearBase)
 
     orig_device = layer.weight.device
     data_type = layer.data_type
@@ -106,6 +219,10 @@ def pack_layer(name, model, device=None):
     elif type(layer) == transformers.pytorch_utils.Conv1D:
         in_features = layer.weight.shape[0]
         out_features = layer.weight.shape[1]
+    elif _is_vllm_linear:
+        # vLLM LinearBase uses input_size / output_size instead of in_features / out_features
+        in_features = layer.input_size
+        out_features = layer.output_size
 
     bias = layer.bias is not None
     ##bias = True  ## if using the above, llama3 lambada RTN will be NAN , TODO why?
@@ -129,7 +246,21 @@ def pack_layer(name, model, device=None):
     # zero = layer.zp # no zeros to handle, as mxfp/nvfp do not support asym quantization
     qlayer.pack(layer, scale, global_scale=global_scale, input_global_scale=input_global_scale, device=device)
     qlayer.to(orig_device)
+
+    # For vLLM fused layers (qkv_proj, gate_up_proj), store the per-part output
+    # sizes so _unfuse_vllm_packed_layer can slice them into HF-style sub-layers.
+    if _is_vllm_linear and hasattr(layer, "output_sizes"):
+        qlayer._vllm_output_sizes = list(layer.output_sizes)
+        # QuantLinear stores act_data_type in **kwargs but doesn't set self.act_data_type;
+        # store it explicitly so _unfuse_vllm_packed_layer can read it.
+        qlayer.act_data_type = act_data_type
+
     set_module(model, name, qlayer)
+
+    # Attempt to unfuse vLLM fused layers into HF-style separate sub-layers.
+    if _is_vllm_linear:
+        _unfuse_vllm_packed_layer(name, model, qlayer)
+
     # Note: release weight and bias explicitly, in case they are referenced elsewhere
     release_layer_safely(layer)
 

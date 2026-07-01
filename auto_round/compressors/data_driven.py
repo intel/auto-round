@@ -718,7 +718,7 @@ class DataDrivenCompressor(BaseCompressor):
         if not self.compress_context.is_immediate_saving:
             self.model = mv_module_from_gpu(self.model)
         for n, m in self.model.named_modules():
-            if hasattr(m, "name"):
+            if "name" in m.__dict__:
                 delattr(m, "name")
 
         del q_input
@@ -875,8 +875,13 @@ class DataDrivenCompressor(BaseCompressor):
         # Dump a summary
         quantized_layers = []
         unquantized_layers = []
+        from auto_round.compressors.utils import _VLLMLinearBase as _VLLMBase
+
         for n, m in self.model_context.model.named_modules():
-            if isinstance(m, tuple(SUPPORTED_LAYER_TYPES)):
+            is_supported = isinstance(m, tuple(SUPPORTED_LAYER_TYPES)) or (
+                _VLLMBase is not None and isinstance(m, _VLLMBase)
+            )
+            if is_supported:
                 if check_to_quantized(m):
                     quantized_layers.append(n)
                 else:
@@ -1098,9 +1103,12 @@ class CalibratedRTNCompressor(DataDrivenCompressor):
                         input_others[key] = val.to(tmp_dtype)
                     elif isinstance(val, list):
                         input_others[key] = [
-                            to_dtype(v, tmp_dtype)
+                            (
+                                to_dtype(v, tmp_dtype)
+                                if not (isinstance(v, torch.Tensor) and v.dtype in (torch.int32, torch.int64))
+                                else v
+                            )
                             for v in val
-                            if not (isinstance(v, torch.Tensor) and v.dtype in (torch.int32, torch.int64))
                         ]
                 return input_others
 
@@ -1164,7 +1172,25 @@ class CalibratedRTNCompressor(DataDrivenCompressor):
                 )
                 with ExitStack() as fwd_stack:
                     self.pipeline.enter_block_forward_hooks(ctx, fwd_stack)
-                    input_ids = ctx.collect_reference(fwd_stack)
+                    try:
+                        input_ids = ctx.collect_reference(fwd_stack)
+                    except (AssertionError, RuntimeError, IndexError, TypeError) as _e:
+                        # vLLM blocks cannot be forward-called outside the engine
+                        # (ForwardContext is only set by llm.generate()).
+                        # Token-count mismatches and index errors in calibration
+                        # captures are also expected when prefill/decode batches
+                        # are mixed.  For RTN (iters=0), collect_reference outputs
+                        # are never used for gradient optimisation and the outer
+                        # loop overwrites input_ids from all_inputs[next_block]
+                        # anyway, so returning the current input_ids is safe.
+                        logger.warning_once(
+                            "vLLM collect_reference skipped (%s: %s); "
+                            "using block input as placeholder. "
+                            "This is expected for iters=0 RTN with vLLM loading.",
+                            type(_e).__name__,
+                            str(_e)[:120],
+                        )
+                        # input_ids stays as-is (already the pre-captured input)
 
                 if len(device_manager.device_list) > 1:
                     accelerate.hooks.remove_hook_from_submodules(block)

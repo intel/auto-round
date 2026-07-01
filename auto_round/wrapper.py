@@ -29,11 +29,19 @@ from auto_round.utils import (
     compile_func,
     deepspeed_exists,
     set_module,
+    vllm_exists,
 )
 
 if deepspeed_exists:
     from deepspeed import comm as dist
     from deepspeed.module_inject import LinearAllreduce, LinearLayer
+
+_VLLMLinearBase = None
+if vllm_exists:
+    try:
+        from vllm.model_executor.layers.linear import LinearBase as _VLLMLinearBase
+    except Exception:
+        pass
 
 
 def get_scale_shape(weight, group_size):
@@ -117,7 +125,9 @@ class WrapperLinear(torch.nn.Module):
         else:
             self.q_scale_thresh = 1e-5
         self._init_tuning_params_and_quant_func()
-        if deepspeed_exists:
+        if _VLLMLinearBase is not None and isinstance(self.orig_layer, _VLLMLinearBase):
+            self.orig_forward = self.vllm_linear_forward
+        elif deepspeed_exists:
             if type(self.orig_layer) in (torch.nn.Linear, LinearLayer):
                 self.orig_forward = self.linear_forward
             elif type(self.orig_layer) == LinearAllreduce:
@@ -475,6 +485,16 @@ class WrapperLinear(torch.nn.Module):
         """
         return F.linear(x, weight, bias)  # pylint: disable=E1102
 
+    def vllm_linear_forward(self, x, weight, bias):
+        """Forward for vLLM LinearBase subclasses (ColumnParallelLinear,
+        RowParallelLinear, etc.).
+
+        During quantization tuning TP=1, so F.linear is equivalent to the
+        original vLLM quant_method.apply.  The wrapper forward re-wraps the
+        result into a tuple when skip_bias_add=True.
+        """
+        return F.linear(x, weight, bias)  # pylint: disable=E1102
+
     def all_reduce_linear_forward(self, x, weight, bias):
         """Performs the forward pass for a linear layer.
 
@@ -556,6 +576,15 @@ class WrapperLinear(torch.nn.Module):
             hook_result = hook(self.orig_layer, (x,), output)
             if hook_result is not None:
                 output = hook_result
+
+        # vLLM parallel linear layers ALWAYS return (output, output_bias) 2-tuple.
+        # When skip_bias_add=True, bias is returned for caller to add; else None.
+        # Returning a bare tensor would cause callers like:
+        #   qkv, _ = self.qkv_proj(hidden_states)
+        # to unpack the tensor's first dimension → "too many values to unpack".
+        if _VLLMLinearBase is not None and isinstance(self.orig_layer, _VLLMLinearBase):
+            output_bias = self.orig_layer.bias if getattr(self.orig_layer, "skip_bias_add", False) else None
+            return output, output_bias
 
         return output
 
@@ -790,7 +819,7 @@ def wrapper_block(
     quantized_layers = []
     unquantized_layers = []
     for n, m in block.named_modules():
-        if type(m) in SUPPORTED_LAYER_TYPES:
+        if type(m) in SUPPORTED_LAYER_TYPES or (_VLLMLinearBase is not None and isinstance(m, _VLLMLinearBase)):
             if not check_to_quantized(m):
                 unquantized_layers.append(n)
                 continue

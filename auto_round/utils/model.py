@@ -20,7 +20,6 @@ from collections import UserDict
 from pathlib import Path
 from typing import TYPE_CHECKING, Optional, Union
 
-import psutil
 import torch
 import transformers
 from packaging import version
@@ -190,6 +189,16 @@ def check_diffusers_installed():  # pragma: no cover
         return True
     except ImportError:
         logger.error("Please install diffusers via 'pip install diffusers'" " to run diffusion model")
+        exit(-1)
+
+
+def check_vllm_installed():  # pragma: no cover
+    try:
+        from vllm import LLM, SamplingParams  # noqa: F401
+
+        return True
+    except ImportError:
+        logger.error("Please install vllm via 'pip install vllm'" " to run vllm model")
         exit(-1)
 
 
@@ -925,6 +934,94 @@ def diffusion_load_model(
     return pipe, model.to(device)
 
 
+def vllm_load_model(
+    pretrained_model_name_or_path: str,
+    **kwargs,
+):
+    check_vllm_installed()
+    from transformers import AutoConfig, AutoTokenizer
+    from vllm import LLM
+
+    tp = kwargs.get("tensor_parallel_size", 1)
+    if tp != 1:
+        raise ValueError(
+            f"vllm_load_model only supports single-GPU quantization "
+            f"(tensor_parallel_size=1), but got tensor_parallel_size={tp}. "
+            "Multi-GPU TP is not supported: the wrapper forward, unfuse logic, "
+            "and act_max collection all assume TP=1."
+        )
+
+    if isinstance(pretrained_model_name_or_path, str):
+
+        os.environ["VLLM_ENABLE_V1_MULTIPROCESSING"] = "0"
+        logger.warning("VLLM_ENABLE_V1_MULTIPROCESSING is set to 0 for vllm model quantization")
+
+        # Keep max_model_len consistent with model config by default to avoid
+        # vLLM validation errors on short-context models.
+        user_max_model_len = kwargs.pop("max_model_len", None)
+        gpu_memory_utilization = kwargs.pop("gpu_memory_utilization", 0.8)
+
+        _CALIB_MAX_LEN = 4096
+        if user_max_model_len is not None:
+            max_model_len = max(user_max_model_len, _CALIB_MAX_LEN)
+        else:
+            max_model_len = _CALIB_MAX_LEN
+
+        llm = LLM(
+            pretrained_model_name_or_path,
+            enforce_eager=True,
+            gpu_memory_utilization=gpu_memory_utilization,
+            max_model_len=max_model_len,
+            # Reserve a fixed KV cache so vLLM's memory profiler does not
+            # try to allocate a large KV cache and OOM during calibration.
+            # 1 GB accommodates max_model_len up to ~7K (typical calibration
+            # needs are ≤ 4096 tokens).
+            kv_cache_memory_bytes=1024 * 1024 * 1024,
+            **kwargs,
+        )
+        model = llm.llm_engine.engine_core.engine_core.model_executor.driver_worker.worker.model_runner.model
+    elif isinstance(pretrained_model_name_or_path, LLM):
+        llm = pretrained_model_name_or_path
+        model = llm.llm_engine.engine_core.engine_core.model_executor.driver_worker.worker.model_runner.model
+    else:
+        raise ValueError(f"Only support str or LLM class for model, but get {type(model)}")
+
+    tokenizer = AutoTokenizer.from_pretrained(llm.llm_engine.model_config.model)
+
+    # Attach the HF config to the raw vLLM nn.Module so that export functions
+    # (save_quantized_as_llmcompressor etc.) can write config.json and embed
+    # quantization_config without AttributeError on model.config.
+    if not hasattr(model, "config"):
+        _hf_model_name = llm.llm_engine.model_config.model
+        try:
+            model.config = AutoConfig.from_pretrained(_hf_model_name, trust_remote_code=True)
+        except Exception as _e:
+            logger.warning(
+                "Could not attach HF config to vLLM model from %r: %s. "
+                "The export step may fail to write config.json.",
+                _hf_model_name,
+                _e,
+            )
+
+    if not hasattr(model.__class__, "dtype"):
+
+        @property
+        def dtype(self):
+            return self.lm_head.weight.dtype
+
+        setattr(model.__class__, "dtype", dtype)
+
+    if not hasattr(model.__class__, "device"):
+
+        @property
+        def device(self):
+            return self.lm_head.weight.device
+
+        setattr(model.__class__, "device", device)
+
+    return llm, model, tokenizer
+
+
 def is_pure_text_model(model):
     """verify on: phi-3.5, Mistral-Small-3.1, gemma-3, qwen2-vl,"""
     if hasattr(model, "config") and hasattr(model.config, "vision_config"):
@@ -1055,7 +1152,7 @@ def is_diffusion_model(model_or_path: Union[str, object], trust_remote_code: boo
                 index_file = hf_hub_download(model_or_path, "model_index.json")
                 check_diffusers_installed()
             except Exception as e:
-                print(e)
+                logger.debug(f"model_index.json not found for {model_or_path}: {e}")
                 index_file = None
 
         elif os.path.exists(os.path.join(model_or_path, "model_index.json")):
@@ -1070,16 +1167,39 @@ def is_diffusion_model(model_or_path: Union[str, object], trust_remote_code: boo
         return False
 
 
+def is_vllm_model(model_or_path: object) -> bool:
+    if "vllm" in str(type(model_or_path)):
+        check_vllm_installed()
+        if not isinstance(model_or_path, torch.nn.Module):
+            attr = get_nested_attr(
+                model_or_path,
+                "llm_engine.engine_core.engine_core.model_executor.driver_worker.worker.model_runner.model",
+            )
+            if attr is None:
+                raise ValueError(
+                    "Please add VLLM_ENABLE_V1_MULTIPROCESSING=0 and use enforce_eager=True to load vllm model"
+                )
+            return True
+        else:
+            return True
+    else:
+        return False
+
+
 def detect_model_type(model):
-    """Detect the type of model (LLM, MLLM, or Diffusion).
+    """Detect the type of model (LLM, MLLM, Diffusion, or vLLM based).
 
     Args:
         model: Model instance or model path string
 
     Returns:
-        str: "mllm", "diffusion", or "llm"
+        str: "mllm", "diffusion", "llm", or "vllm"
     """
-    # Check if it's a diffusion model first (more specific)
+    # Check if it's a vLLM based model first (based on class name)
+    if is_vllm_model(model):
+        return "vllm"
+
+    # Check if it's a diffusion model (more specific)
     if is_diffusion_model(model):
         return "diffusion"
 
@@ -1337,10 +1457,18 @@ def get_layer_names_in_block(
         list: A list of strings, where each string is the name of a layer
               within a block of the model.
     """
+    # Lazy import for vLLM LinearBase support (None when vLLM not installed).
+    _vllm_linear_base = None
+    try:
+        from vllm.model_executor.layers.linear import LinearBase as _vllm_linear_base
+    except Exception:
+        pass
+
     if class_names is None:
         class_names = []
     for n, m in model.named_modules():
-        if type(m) in supported_types or (class_names is not None and m.__class__.__name__ in class_names):
+        is_vllm = _vllm_linear_base is not None and isinstance(m, _vllm_linear_base)
+        if type(m) in supported_types or (class_names is not None and m.__class__.__name__ in class_names) or is_vllm:
             m.bk_global_name = n
     layers_in_block = []
     if bool(quant_block_list):
@@ -1961,7 +2089,6 @@ _EXTRA_MODEL_FILES = {
 
 def _copy_extra_model_files(src_dir: str, dst_dir: str):
     """Copy known extra model files from *src_dir* to *dst_dir* if they exist."""
-    import os
     import shutil
 
     for file in os.listdir(src_dir):
@@ -2200,13 +2327,31 @@ def wrap_block_forward_positional_to_kwargs(base_hook):
                 sig = inspect.signature(sig_target)
                 _param_names_cache[m_id] = [p for p in sig.parameters.keys() if p != "self"]
             _param_names = _param_names_cache[m_id]
-            for i, val in enumerate(positional_inputs):
-                param_idx = i + 1  # hidden_states is params[0]
-                if param_idx < len(_param_names):
-                    param_name = _param_names[param_idx]
-                    if param_name not in kwargs:
-                        kwargs[param_name] = val
-            positional_inputs = ()
+
+            # If the original forward's first parameter is NOT "hidden_states" (e.g.,
+            # vLLM's DecoderLayer uses ``(positions, hidden_states, residual)``), then
+            # what arrived in the ``hidden_states`` slot is actually the first positional
+            # arg.  Re-map all positional args according to the true signature.
+            if _param_names and _param_names[0] != "hidden_states":
+                all_args = (hidden_states,) + tuple(positional_inputs)
+                hidden_states = None
+                positional_inputs = ()
+                for i, val in enumerate(all_args):
+                    if i >= len(_param_names):
+                        break
+                    pname = _param_names[i]
+                    if pname == "hidden_states":
+                        hidden_states = val
+                    elif pname not in kwargs:
+                        kwargs[pname] = val
+            else:
+                for i, val in enumerate(positional_inputs):
+                    param_idx = i + 1  # hidden_states is params[0]
+                    if param_idx < len(_param_names):
+                        param_name = _param_names[param_idx]
+                        if param_name not in kwargs:
+                            kwargs[param_name] = val
+                positional_inputs = ()
         return base_hook(m, hidden_states, *positional_inputs, **kwargs)
 
     return forward
@@ -2230,8 +2375,6 @@ def config_save_pretrained(config, file_name, save_directory, model=None):
 def rename_weights_files(path: str, prefix="diffusion_pytorch_model"):
     """Rename weight files for diffusion models."""
     import glob
-    import json
-    import os
 
     # rename safetensors
     files = sorted(glob.glob(f"{path}/*.safetensors"))

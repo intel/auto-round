@@ -264,8 +264,9 @@ def save_model(
     else:
         try:
             model.save_pretrained(save_dir, max_shard_size=max_shard_size, safe_serialization=safe_serialization)
-        except (KeyError, TypeError) as e:
+        except (KeyError, TypeError, AttributeError) as e:
             # Some third-party configs fail during config serialization in save_pretrained.
+            # AttributeError is raised when the model lacks save_pretrained (e.g. vLLM models).
             # Fall back to saving weights separately + config without diff.
             logger.warning("model.save_pretrained failed (%s), falling back to manual save.", e)
             from safetensors.torch import save_file
