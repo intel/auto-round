@@ -92,6 +92,7 @@ using ::ark::moe_dpas_fp8::dpas_w8a16_policy_m_32;
 using ::ark::moe_dpas_fp8::ScaleMode;
 using ::ark::moe_dpas_fp8::cute_scalar;
 using ::ark::moe_dpas_fp8::cute_scalar_t;
+using ::ark::moe_dpas_fp8::make_moe_tensor;
 
 // ---------------------------------------------------------------------------
 // Variant A -- per-tensor INT8 mainloop.
