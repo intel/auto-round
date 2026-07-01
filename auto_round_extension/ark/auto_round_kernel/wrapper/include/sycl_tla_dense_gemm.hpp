@@ -9,7 +9,6 @@
 #include <cstddef>
 #include <cstdint>
 #include <stdexcept>
-#include <string>
 #include <type_traits>
 
 #ifdef ARK_XPU
@@ -21,16 +20,6 @@
 
 #include "cute/tensor.hpp"
 #include "cute/util/compat.hpp"
-
-#include "cutlass/epilogue/collective/default_epilogue.hpp"
-#include "cutlass/epilogue/collective/xe_epilogue.hpp"
-#include "cutlass/epilogue/fusion/xe_callbacks.hpp"
-#include "cutlass/gemm/collective/collective_mma.hpp"
-#include "cutlass/gemm/device/gemm_universal.h"
-#include "cutlass/gemm/device/gemm_universal_adapter.h"
-#include "cutlass/kernel_hardware_info.h"
-#include "cutlass/util/device_memory.h"
-#include "cutlass/util/packed_stride.hpp"
 
 #if defined(__clang__)
 #pragma clang diagnostic ignored "-Wpass-failed"
@@ -50,8 +39,9 @@ namespace dense_gemm_detail {
 
 using namespace cute;
 
-template <class ATensor, class BTensor, class CTensor, class TiledMMA>
-void gemm_device(ATensor const& A, BTensor const& B, CTensor& C, TiledMMA const& mma) {
+template <class ATensor, class BTensor, class CTensor, class TiledMMA, class BiasElement>
+void gemm_device_impl(ATensor const& A, BTensor const& B, CTensor& C, TiledMMA const& mma,
+                      const BiasElement* bias_ptr) {
   auto item = sycl::ext::oneapi::this_work_item::get_nd_item<2>();
   auto wg_m = int(item.get_group(1));
   auto wg_n = int(item.get_group(0));
@@ -68,8 +58,8 @@ void gemm_device(ATensor const& A, BTensor const& B, CTensor& C, TiledMMA const&
   Tensor gB = local_tile(cB, select<1, 2>(wg_tile), make_coord(wg_n, _));
   Tensor gC = local_tile(cC, wg_tile, wg_coord, Step<_1, _1, X>{});
 
-  auto copy_a = make_block_2d_copy_A(mma, A);
-  auto copy_b = make_block_2d_copy_B(mma, B);
+  auto copy_a = make_block_2d_copy_A(XE_LOAD_2D<16, 8, 32, 32>{}, mma, A);
+  auto copy_b = make_block_2d_copy_B(XE_LOAD_2D_TRANSPOSE<32, 16, 8>{}, mma, B);
   auto copy_c = make_block_2d_copy_D(mma, C);
 
   auto thr_mma = mma.get_slice(local_id);
@@ -127,7 +117,25 @@ void gemm_device(ATensor const& A, BTensor const& B, CTensor& C, TiledMMA const&
     barrier_wait(barrier_scope);
   }
 
-  copy(copy_c, tCrC, tCgC);
+  using ElementOutput = typename CTensor::element_type;
+  if constexpr (is_same_v<ElementOutput, float>) {
+    copy(copy_c, tCrC, tCgC);
+  } else {
+    Tensor tCrD = make_tensor_like<ElementOutput>(tCrC);
+
+    CUTE_UNROLL
+    for (int i = 0; i < size(tCrC); ++i) {
+      auto coord = tCgC(i);
+      int col = int(get<1>(coord));
+      float value = static_cast<float>(tCrC(i));
+      if (bias_ptr != nullptr && col < int(shape<1>(C))) {
+        value += static_cast<float>(bias_ptr[col]);
+      }
+      tCrD(i) = static_cast<ElementOutput>(value);
+    }
+
+    copy(copy_c, tCrD, tCgC);
+  }
 }
 
 template <typename TA, typename TB, typename TC>
@@ -141,8 +149,8 @@ auto choose_mma_op() {
   }
 }
 
-template <class ATensor, class BTensor, class CTensor>
-auto choose_tiled_mma(ATensor const& A, BTensor const& B, CTensor const&) {
+template <int TileM, int TileN, class SGLayout, class ATensor, class BTensor, class CTensor>
+auto choose_tiled_mma_tile(ATensor const& A, BTensor const& B, CTensor const&) {
   using TA = typename ATensor::element_type;
   using TB = typename BTensor::element_type;
   using TC = typename CTensor::element_type;
@@ -152,29 +160,26 @@ auto choose_tiled_mma(ATensor const& A, BTensor const& B, CTensor const&) {
   constexpr bool byte = (cute::max(sizeof_bits_v<TA>, sizeof_bits_v<TB>) <= 8);
   constexpr bool a_t = is_constant_v<1, decltype(stride<0>(A))>;
   constexpr bool b_n = is_constant_v<1, decltype(stride<0>(B))>;
-
   constexpr bool use_1x_dpas_per_k = a_t || (byte && b_n);
-  constexpr bool use_4x8_sg =
-      ((sizeof_bits_v<TB> < sizeof_bits_v<TA>) && !(is_same_v<TB, cute::float_e5m2_t>)) ||
-      (b_n && sizeof_bits_v<TB> < 8);
 
   using _K = conditional_t<use_1x_dpas_per_k, C<op.K>, C<op.K * 2>>;
-  using WGTile = Shape<_256, _256, _K>;
-  using SGLayout8x4 = Layout<Shape<_8, _4, _1>, Stride<_4, _1, _0>>;
-  using SGLayout4x8 = Layout<Shape<_4, _8, _1>, Stride<_8, _1, _0>>;
-  using SGLayout = conditional_t<use_4x8_sg, SGLayout4x8, SGLayout8x4>;
+  using WGTile = Shape<Int<TileM>, Int<TileN>, _K>;
   using MMA = typename TiledMMAHelper<MMA_Atom<decltype(op)>, Layout<WGTile>, SGLayout>::TiledMMA;
 
   return MMA{};
 }
 
-template <class, class, char, char>
-class DenseGemmKernelName;
+template <class, class, class, int, int, class, char, char>
+class DenseGemmStoreKernelName;
 
-template <class ATensor, class BTensor, class CTensor, typename TA, typename TB, char layoutA, char layoutB>
-void gemm_cute(sycl::queue* q, ATensor const& A, BTensor const& B, CTensor& C) {
+template <int TileM, int TileN, class SGLayout, class ATensor, class BTensor, class CTensor, typename TA,
+          typename TB, typename BiasElement, char layoutA, char layoutB>
+void gemm_cute_store_tile(sycl::queue* q, ATensor const& A, BTensor const& B, CTensor& C,
+                          const BiasElement* bias_ptr) {
   compat::set_default_queue(*q);
-  auto mma = choose_tiled_mma(A, B, C);
+
+  auto C_accum = make_tensor(make_gmem_ptr(static_cast<float*>(nullptr)), C.shape(), C.stride());
+  auto mma = choose_tiled_mma_tile<TileM, TileN, SGLayout>(A, B, C_accum);
 
   sycl::range<2> local = {size(mma), 1};
   sycl::range<2> global = {local[0] * ceil_div(shape<0>(B), get<1>(mma.tile_mnk())),
@@ -185,174 +190,65 @@ void gemm_cute(sycl::queue* q, ATensor const& A, BTensor const& B, CTensor& C) {
 
   syclex::properties kernel_props{syclex::sub_group_size<16>, intelex::grf_size<256>};
 
-  auto event = q->parallel_for<DenseGemmKernelName<TA, TB, layoutA, layoutB>>(
-      sycl::nd_range<2>(global, local), kernel_props, [=](auto) { gemm_device(A, B, C, mma); });
+  auto event = q->parallel_for<
+      DenseGemmStoreKernelName<TA, TB, BiasElement, TileM, TileN, SGLayout, layoutA, layoutB>>(
+      sycl::nd_range<2>(global, local), kernel_props,
+      [=](auto) { gemm_device_impl(A, B, C, mma, bias_ptr); });
+
   event.wait_and_throw();
 }
 
 template <typename Element>
-void postprocess(sycl::queue* q, int m, int n, const float* accum_ptr, const Element* bias_ptr, Element* out_ptr) {
-  std::size_t elems = static_cast<std::size_t>(m) * static_cast<std::size_t>(n);
-  auto event = q->parallel_for(sycl::range<1>(elems), [=](sycl::id<1> idx) {
-    std::size_t linear = idx[0];
-    float value = accum_ptr[linear];
-    if (bias_ptr != nullptr) {
-      value += static_cast<float>(bias_ptr[linear % static_cast<std::size_t>(n)]);
-    }
-    out_ptr[linear] = static_cast<Element>(value);
-  });
-  event.wait_and_throw();
+void run_dense_gemm_large_tile(sycl::queue* q, int m, int n, int k, const Element* a_ptr, const Element* b_ptr,
+                               Element* c_ptr, const Element* bias_ptr) {
+  auto A = make_tensor(make_gmem_ptr(const_cast<Element*>(a_ptr)), make_shape(m, k), make_stride(k, _1{}));
+  auto B = make_tensor(make_gmem_ptr(const_cast<Element*>(b_ptr)), make_shape(n, k), make_stride(k, _1{}));
+  auto C = make_tensor(make_gmem_ptr(c_ptr), make_shape(m, n), make_stride(n, _1{}));
+
+  using LargeTileSG = Layout<Shape<_8, _4, _1>, Stride<_4, _1, _0>>;
+
+  gemm_cute_store_tile<256, 256, LargeTileSG, decltype(A), decltype(B), decltype(C), Element, Element, Element,
+                       'R', 'R'>(q, A, B, C, bias_ptr);
+}
+
+template <typename Element>
+void run_dense_gemm_tuned_tile(sycl::queue* q, int m, int n, int k, const Element* a_ptr, const Element* b_ptr,
+                               Element* c_ptr, const Element* bias_ptr) {
+  auto A = make_tensor(make_gmem_ptr(const_cast<Element*>(a_ptr)), make_shape(m, k), make_stride(k, _1{}));
+  auto B = make_tensor(make_gmem_ptr(const_cast<Element*>(b_ptr)), make_shape(n, k), make_stride(k, _1{}));
+  auto C = make_tensor(make_gmem_ptr(c_ptr), make_shape(m, n), make_stride(n, _1{}));
+
+  using SmallTileSG = Layout<Shape<_1, _4, _1>, Stride<_0, _1, _0>>;
+  using SmallMidTileSG = Layout<Shape<_2, _4, _1>, Stride<_4, _1, _0>>;
+  using MediumTileSG = Layout<Shape<_4, _4, _1>, Stride<_4, _1, _0>>;
+  using LargeTileSG = Layout<Shape<_8, _4, _1>, Stride<_4, _1, _0>>;
+
+  
+  if (m < 8) {
+    gemm_cute_store_tile<8, 128, SmallTileSG, decltype(A), decltype(B), decltype(C), Element, Element, Element,
+                         'R', 'R'>(q, A, B, C, bias_ptr);
+  } else if (m < 128) {
+    gemm_cute_store_tile<64, 128, SmallMidTileSG, decltype(A), decltype(B), decltype(C), Element, Element, Element,
+                         'R', 'R'>(q, A, B, C, bias_ptr);
+  } else if (m <= 1024) {
+    gemm_cute_store_tile<128, 128, MediumTileSG, decltype(A), decltype(B), decltype(C), Element, Element, Element,
+                         'R', 'R'>(q, A, B, C, bias_ptr);
+  } else {
+    gemm_cute_store_tile<256, 256, LargeTileSG, decltype(A), decltype(B), decltype(C), Element, Element, Element,
+                         'R', 'R'>(q, A, B, C, bias_ptr);
+  }
 }
 
 template <typename Element>
 void run_dense_gemm(sycl::queue* q, int m, int n, int k, const Element* a_ptr, const Element* b_ptr, Element* c_ptr,
                     const Element* bias_ptr) {
-  auto A = make_tensor(make_gmem_ptr(const_cast<Element*>(a_ptr)), make_shape(m, k), make_stride(k, _1{}));
-  auto B = make_tensor(make_gmem_ptr(const_cast<Element*>(b_ptr)), make_shape(n, k), make_stride(k, _1{}));
-
-  std::size_t accum_bytes = static_cast<std::size_t>(m) * static_cast<std::size_t>(n) * sizeof(float);
-  auto* accum_ptr = static_cast<float*>(DnnlContext::Instance()->get_scratch_mem(accum_bytes, 6, q));
-  if (!accum_ptr) {
-    throw std::runtime_error("sycl_tla_dense_gemm: failed to allocate scratch buffer");
-  }
-
-  auto C = make_tensor(make_gmem_ptr(accum_ptr), make_shape(m, n), make_stride(n, _1{}));
-
-  gemm_cute<decltype(A), decltype(B), decltype(C), Element, Element, 'R', 'R'>(q, A, B, C);
-  postprocess(q, m, n, accum_ptr, bias_ptr, c_ptr);
-}
-
-inline void check_cutlass_status(cutlass::Status status, const char* where) {
-  if (status != cutlass::Status::kSuccess) {
-    throw std::runtime_error(std::string("sycl_tla_dense_gemm_fused_bias: ") + where + " failed: " +
-                             cutlass::cutlassGetStatusString(status));
-  }
+  run_dense_gemm_large_tile(q, m, n, k, a_ptr, b_ptr, c_ptr, bias_ptr);
 }
 
 template <typename Element>
-struct DenseFusedBiasGemmConfig;
-
-template <>
-struct DenseFusedBiasGemmConfig<cute::half_t> {
-  using MmaAtom = cute::XE_8x16x16_F32F16F16F32_TT;
-};
-
-template <>
-struct DenseFusedBiasGemmConfig<cute::bfloat16_t> {
-  using MmaAtom = cute::XE_8x16x16_F32BF16BF16F32_TT;
-};
-
-template <typename Element>
-void run_dense_gemm_fused_bias(sycl::queue* q, int m, int n, int k, const Element* a_ptr, const Element* b_ptr,
-                               Element* c_ptr, const Element* bias_ptr) {
-  compat::set_default_queue(*q);
-
-  using ElementAccumulator = float;
-  using ElementComputeEpilogue = float;
-  using ElementInputA = Element;
-  using ElementInputB = Element;
-  using ElementBias = Element;
-  // using ElementSource = Element;
-  using ElementSource = ElementAccumulator;
-  using ElementOutput = Element;
-
-  using LayoutA = cutlass::layout::RowMajor;
-  using StrideB = cute::Stride<int64_t, _1, _0>;
-  using LayoutC = cutlass::layout::RowMajor;
-  using LayoutD = cutlass::layout::RowMajor;
-
-  using GmemTiledCopyA = XE_2D_U16x32x32_LD_N;
-  using GmemTiledCopyB = XE_2D_U16x16x16_LD_T;
-
-  // using GmemTiledCopyC = XE_2D_U16x8x16_LD_N;
-  using GmemTiledCopyC = XE_2D_U32x8x16_LD_N;
-  using GmemTiledCopyD = XE_2D_U16x8x16_ST_N;
-
-  using TileShape = Shape<_256, _256, _32>;
-  using TiledMma = typename TiledMMAHelper<
-      MMA_Atom<typename DenseFusedBiasGemmConfig<Element>::MmaAtom>, Layout<TileShape>,
-      Layout<Shape<_8, _4, _1>, Stride<_4, _1, _0>>>::TiledMMA;
-
-  constexpr int PipelineStages = 2;
-  using GEMMDispatchPolicy = cutlass::gemm::MainloopIntelXeXMX16<PipelineStages>;
-  using EpilogueDispatchPolicy = cutlass::epilogue::IntelXeXMX16;
-
-  // using EpilogueOp = cutlass::epilogue::fusion::LinCombPerColBias<
-  //     ElementOutput, ElementComputeEpilogue, ElementBias, ElementSource, ElementAccumulator,
-  //     128 / sizeof_bits_v<ElementBias>, cutlass::FloatRoundStyle::round_to_nearest>;
-
-  using EpilogueOp = cutlass::epilogue::fusion::LinCombPerColBias<
-    ElementAccumulator, ElementComputeEpilogue, ElementBias, ElementSource, ElementAccumulator,
-    128 / sizeof_bits_v<ElementBias>, cutlass::FloatRoundStyle::round_to_nearest>;
-
-  using FusionCallbacks =
-      cutlass::epilogue::fusion::FusionCallbacks<EpilogueDispatchPolicy, EpilogueOp, TileShape,
-                                                 decltype(tile_shape(TiledMma()))>;
-
-  using CollectiveEpilogue = cutlass::epilogue::collective::CollectiveEpilogue<
-      EpilogueDispatchPolicy, TileShape, ElementSource, cutlass::gemm::TagToStrideC_t<LayoutC>, ElementOutput,
-      cutlass::gemm::TagToStrideC_t<LayoutD>, FusionCallbacks, GmemTiledCopyC, void, void, GmemTiledCopyD, void,
-      void>;
-
-  using CollectiveMainloop = cutlass::gemm::collective::CollectiveMma<
-      GEMMDispatchPolicy, TileShape, ElementInputA, cutlass::gemm::TagToStrideA_t<LayoutA>, ElementInputB, StrideB,
-      TiledMma, GmemTiledCopyA, void, void, cute::identity, GmemTiledCopyB, void, void, cute::identity>;
-
-  using GemmKernel =
-      cutlass::gemm::kernel::GemmUniversal<Shape<int, int, int, int>, CollectiveMainloop, CollectiveEpilogue>;
-  using Gemm = cutlass::gemm::device::GemmUniversalAdapter<GemmKernel>;
-
-  using StrideA = typename Gemm::GemmKernel::StrideA;
-  using StrideC = typename Gemm::GemmKernel::StrideC;
-  using StrideD = typename Gemm::GemmKernel::StrideD;
-
-  auto problem_size = typename Gemm::GemmKernel::ProblemShape{m, n, k, 1};
-  StrideA stride_A = cutlass::make_cute_packed_stride(StrideA{}, cute::make_shape(m, k, 1));
-
-  // StrideB stride_B = cutlass::make_cute_packed_stride(StrideB{}, cute::make_shape(n, k, 1));
-  StrideB stride_B = {};
-  get<0>(stride_B) = static_cast<int64_t>(k);
-
-
-  StrideC stride_C = cutlass::make_cute_packed_stride(StrideC{}, cute::make_shape(m, n, 1));
-  StrideD stride_D = cutlass::make_cute_packed_stride(StrideD{}, cute::make_shape(m, n, 1));
-
-  using StrideBias = Stride<_0, _1, int64_t>;
-  StrideBias dBias = {};
-  get<2>(dBias) = 0;
-
-  using EpilogueArguments = typename Gemm::GemmKernel::EpilogueArguments;
-  // EpilogueArguments epilogue_arguments{
-  //     {ElementAccumulator(1), ElementAccumulator(0)}, c_ptr, stride_C, c_ptr, stride_D};
-  EpilogueArguments epilogue_arguments{
-    {ElementAccumulator(1), ElementAccumulator(0)},
-    static_cast<const ElementSource*>(nullptr),
-    stride_C,
-    c_ptr,
-    stride_D};
-
-  epilogue_arguments.thread.bias_ptr = bias_ptr;
-  epilogue_arguments.thread.dBias = dBias;
-
-  cutlass::KernelHardwareInfo hw_info;
-  hw_info.sm_count = cutlass::KernelHardwareInfo::query_device_multiprocessor_count(hw_info.device_id);
-
-  typename Gemm::GemmKernel::Arguments arguments{cutlass::gemm::GemmUniversalMode::kGemm,
-                                                 problem_size,
-                                                 {a_ptr, stride_A, b_ptr, stride_B},
-                                                 epilogue_arguments,
-                                                 hw_info};
-
-  Gemm gemm_op;
-  size_t workspace_size = Gemm::get_workspace_size(arguments);
-  cutlass::device_memory::allocation<uint8_t> workspace(workspace_size);
-
-  check_cutlass_status(gemm_op.can_implement(arguments), "can_implement");
-  check_cutlass_status(gemm_op.initialize(arguments, workspace.get()), "initialize");
-  check_cutlass_status(gemm_op.run(), "run");
-
-  compat::wait();
-  q->wait_and_throw();
+void run_dense_gemm_fused_store(sycl::queue* q, int m, int n, int k, const Element* a_ptr, const Element* b_ptr,
+                                Element* c_ptr, const Element* bias_ptr) {
+  run_dense_gemm_tuned_tile(q, m, n, k, a_ptr, b_ptr, c_ptr, bias_ptr);
 }
 
 }  // namespace dense_gemm_detail
@@ -380,16 +276,17 @@ inline void sycl_tla_dense_gemm(sycl::queue* q, int m, int n, int k, const void*
 
   switch (at) {
     case BTLA_DTYPE::F16:
-      dense_gemm_detail::run_dense_gemm(q, m, n, k, static_cast<const cute::half_t*>(a),
-                                        static_cast<const cute::half_t*>(b), static_cast<cute::half_t*>(c),
-                                        static_cast<const cute::half_t*>(bias));
+      dense_gemm_detail::run_dense_gemm(
+          q, m, n, k, static_cast<const cute::half_t*>(a), static_cast<const cute::half_t*>(b),
+          static_cast<cute::half_t*>(c), static_cast<const cute::half_t*>(bias));
       return;
+
     case BTLA_DTYPE::BF16:
-      dense_gemm_detail::run_dense_gemm(q, m, n, k, static_cast<const cute::bfloat16_t*>(a),
-                                        static_cast<const cute::bfloat16_t*>(b),
-                                        static_cast<cute::bfloat16_t*>(c),
-                                        static_cast<const cute::bfloat16_t*>(bias));
+      dense_gemm_detail::run_dense_gemm(
+          q, m, n, k, static_cast<const cute::bfloat16_t*>(a), static_cast<const cute::bfloat16_t*>(b),
+          static_cast<cute::bfloat16_t*>(c), static_cast<const cute::bfloat16_t*>(bias));
       return;
+
     default:
       throw std::invalid_argument("sycl_tla_dense_gemm: only FP16 and BF16 are supported");
   }
@@ -419,15 +316,17 @@ inline void sycl_tla_dense_gemm_fused_bias(sycl::queue* q, int m, int n, int k, 
 
   switch (at) {
     case BTLA_DTYPE::F16:
-      dense_gemm_detail::run_dense_gemm_fused_bias(
+      dense_gemm_detail::run_dense_gemm_fused_store(
           q, m, n, k, static_cast<const cute::half_t*>(a), static_cast<const cute::half_t*>(b),
           static_cast<cute::half_t*>(c), static_cast<const cute::half_t*>(bias));
       return;
+
     case BTLA_DTYPE::BF16:
-      dense_gemm_detail::run_dense_gemm_fused_bias(
+      dense_gemm_detail::run_dense_gemm_fused_store(
           q, m, n, k, static_cast<const cute::bfloat16_t*>(a), static_cast<const cute::bfloat16_t*>(b),
           static_cast<cute::bfloat16_t*>(c), static_cast<const cute::bfloat16_t*>(bias));
       return;
+
     default:
       throw std::invalid_argument("sycl_tla_dense_gemm_fused_bias: only FP16 and BF16 are supported");
   }
