@@ -1804,9 +1804,9 @@ def moe_gemm_prefill(
     # dispatcher additionally checks shape preconditions (N % 16 == 0,
     # K % 32 == 0, K % group_size == 0, group_size % 32 == 0) and
     # silently falls through to the dequant path if any fail.
-    is_native_fp8 = _native_fp8_prefill_enabled() and (
-        weights.dtype in (torch.float8_e4m3fn, torch.float8_e5m2)
-    ) and (not asym)
+    is_native_fp8 = (
+        _native_fp8_prefill_enabled() and (weights.dtype in (torch.float8_e4m3fn, torch.float8_e5m2)) and (not asym)
+    )
 
     # Quantized paths need an [E, K, N] act-dtype scratch buffer that the
     # on-device dequant kernel fills before the inner Grouped GEMM consumes
