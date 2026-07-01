@@ -552,10 +552,11 @@ CUTE_DEVICE void xe_gemm_fp8_pergroup(
   // Per-SG per-N scale cache. Loaded once per group boundary; kept small
   // (one float per SG-owned N lane stride) so it lives entirely in the
   // register file. Matches upstream `xe_gemm`'s per-tensor `float B_scale`
-  // caching, generalized to per-N-column for the per-group scheme.
+  // caching, generalized to per-N-column for the per-group scheme. Not
+  // pre-initialized: the first mainloop iteration (`k_tile == 0`) trips
+  // the group-boundary load unconditionally, so every entry is written
+  // before any read.
   float sg_scale[sg_n_strides];
-  CUTLASS_PRAGMA_UNROLL
-  for (int sn = 0; sn < sg_n_strides; ++sn) sg_scale[sn] = 0.0f;
 
   // Warm-up prefetch: A/B for `prefetch_dist` k_tiles ahead. Scales for
   // the first `prefetch_dist_scale` groups are prefetched separately so
