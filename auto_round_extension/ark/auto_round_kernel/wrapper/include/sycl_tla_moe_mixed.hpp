@@ -72,6 +72,19 @@ class MoEDequantKernelInt4;
 template <typename ScalarT, bool Asym>
 class MoEDequantKernelInt2;
 
+// Fast-path (word-load) kernel name tags for the INT4 / INT2 prefill dequant
+// paths. Introduced by PR-1 of the int4/int2 MoE dequant throughput plan:
+// one work-item handles a full 32-bit (INT4) / 16-bit (INT2) packed word =
+// 8 K outputs, amortising the packed-byte load and per-group scale/zero
+// loads that the byte-per-work-item path repeats 4×/2× today. Bit-identical
+// numerics vs. the scalar path (arithmetic still in fp32; decoders share
+// `decode_int4_pair` / `decode_int2_quad`).
+template <typename ScalarT, bool Asym>
+class MoEDequantKernelInt4Fast;
+
+template <typename ScalarT, bool Asym>
+class MoEDequantKernelInt2Fast;
+
 template <typename ScalarT, bool IsE4M3, bool UseLut>
 class MoEDequantKernelFP8;
 
@@ -81,6 +94,14 @@ class MoEDequantKernelFP8;
 // resulting buffer to `moe_prefill_int_dpas_per_group_dispatch` unchanged.
 class MoEUpcastInt4SymToInt8Kernel;
 class MoEUpcastInt2SymToInt8Kernel;
+
+// PR-1 fast-path counterparts of the sym->int8 upcast kernels: one
+// work-item processes 4 packed bytes (INT4) / 2 packed bytes (INT2) = 8
+// consecutive int8 outputs. Same bit-level decode as the scalar path so
+// the downstream `moe_prefill_int_dpas_per_group_dispatch` sees identical
+// bytes.
+class MoEUpcastInt4SymToInt8KernelFast;
+class MoEUpcastInt2SymToInt8KernelFast;
 
 // Tile sizes for the dequant kernels.
 //
@@ -113,6 +134,20 @@ constexpr int PACK_K_INT8 = 4;
 constexpr int PACK_K_INT4 = 2;
 constexpr int PACK_K_INT2 = 4;
 constexpr int PACK_K_FP8 = 4;
+
+// PR-1 fast-path PACK_K: one work-item handles 4 packed bytes for INT4
+// (= 8 nibbles = 8 K outputs) and 2 packed bytes for INT2 (= 8 fields =
+// 8 K outputs). Enabling this path requires that:
+//   * `K % PACK_K_INT{4,2}_FAST == 0`   (so the launch tail is regular), and
+//   * `group_size % PACK_K_INT{4,2}_FAST == 0`   (so the 8 K values in one
+//     work-item share the same scale/zero and the hoisted-load optimisation
+//     stays valid).
+// Both hold for every configuration actually used in the repo test/eval
+// suite (group_size is 32/64/128 and K is a multiple of group_size), but
+// the kernels fall back to the byte-per-work-item path when either
+// constraint is violated so short-K unit tests keep working.
+constexpr int PACK_K_INT4_FAST = 8;
+constexpr int PACK_K_INT2_FAST = 8;
 
 // ----------------------------------------------------------------------------
 // FP16 / BF16 weight reshape: in-place transpose [E, N, K] -> [E, K, N].
@@ -233,6 +268,67 @@ void launch_dequant_int4(sycl::queue* q, const uint8_t* weights_NKp, const Scala
   const int num_groups_k = K / group_size;
   const int k_packed = K / 2;
 
+  // PR-1 fast path: one work-item processes a full 4-byte packed word =
+  // 8 nibbles = 8 K outputs for a single (e, n). Prerequisites: K and
+  // group_size are both multiples of PACK_K_INT4_FAST (=8) so that (a) the
+  // launch grid has no partial-word tail and (b) all 8 K values share the
+  // same per-group scale/zero, letting us keep the byte-path's hoist-once
+  // load pattern. This cuts packed-byte loads and scale/zero loads by 4×
+  // relative to the byte-per-work-item path.
+  if ((K % PACK_K_INT4_FAST) == 0 && (group_size % PACK_K_INT4_FAST) == 0) {
+    const int k_words = K / PACK_K_INT4_FAST;  // == k_packed / 4
+    sycl::range<3> global_fast{static_cast<size_t>(E), static_cast<size_t>(k_words),
+                               static_cast<size_t>((N + WG_N - 1) / WG_N) * WG_N};
+    sycl::range<3> local_fast{1, 1, static_cast<size_t>(WG_N)};
+
+    q->parallel_for<MoEDequantKernelInt4Fast<ScalarT, Asym>>(
+        sycl::nd_range<3>(global_fast, local_fast), [=](sycl::nd_item<3> it) {
+          const int e = static_cast<int>(it.get_global_id(0));
+          if (num_tokens_per_expert != nullptr && num_tokens_per_expert[e] == 0) return;
+          const int kw = static_cast<int>(it.get_global_id(1));
+          const int n = static_cast<int>(it.get_global_id(2));
+          if (n >= N) return;
+          const int k_base = kw * PACK_K_INT4_FAST;
+          // PACK_K_INT4_FAST divides group_size (checked above), so all 8
+          // K outputs in this work-item share (g, scale, zero).
+          const int g = k_base / group_size;
+          const size_t s_idx = (static_cast<size_t>(e) * N + static_cast<size_t>(n)) * num_groups_k +
+                               static_cast<size_t>(g);
+          const float scale = static_cast<float>(scales[s_idx]);
+          const float zero = Asym ? static_cast<float>(zeros[s_idx]) : 0.0f;
+          // Read 4 consecutive packed bytes = one 32-bit little-endian word.
+          // We assemble via byte loads rather than a `reinterpret_cast` to
+          // avoid any strict-aliasing / alignment assumption on the input
+          // buffer; the DPC++ backend fuses these into a single dword load
+          // when the row start is 4-byte aligned (which it is whenever
+          // k_packed is a multiple of 4, guaranteed by K%8==0).
+          const size_t row_kp_base = (static_cast<size_t>(e) * N + static_cast<size_t>(n)) * k_packed +
+                                     static_cast<size_t>(kw) * 4;
+          const uint32_t packed =
+              static_cast<uint32_t>(weights_NKp[row_kp_base + 0]) |
+              (static_cast<uint32_t>(weights_NKp[row_kp_base + 1]) << 8) |
+              (static_cast<uint32_t>(weights_NKp[row_kp_base + 2]) << 16) |
+              (static_cast<uint32_t>(weights_NKp[row_kp_base + 3]) << 24);
+          int qv[8];
+          moe_dequant::decode_int4_octet<Asym>(packed, qv);
+          const size_t out_base = static_cast<size_t>(e) * K * N + static_cast<size_t>(n);
+#pragma unroll
+          for (int j = 0; j < PACK_K_INT4_FAST; ++j) {
+            float w;
+            if constexpr (Asym) {
+              w = (static_cast<float>(qv[j]) - zero) * scale;
+            } else {
+              w = static_cast<float>(qv[j]) * scale;
+            }
+            weights_KN[out_base + static_cast<size_t>(k_base + j) * N] = static_cast<ScalarT>(w);
+          }
+        });
+    return;
+  }
+
+  // Fallback byte-per-work-item path (retained for short-K / small-group
+  // configurations where the fast path's PACK_K_INT4_FAST=8 constraint
+  // does not hold).
   // Each work-item now dequantises one full packed byte = PACK_K_INT4 (=2)
   // consecutive K outputs for a single (e, n). The middle launch dim is
   // therefore k_packed instead of K, halving the work-item count and
@@ -294,6 +390,54 @@ void launch_dequant_int2(sycl::queue* q, const uint8_t* weights_NKp, const Scala
   const int num_groups_k = K / group_size;
   const int k_packed = K / 4;
 
+  // PR-1 fast path: one work-item processes a full 2-byte packed word =
+  // 8 2-bit fields = 8 K outputs for a single (e, n). Enables the same
+  // load-amortisation win as the int4 fast path (see comment there). The
+  // K%8==0 && group_size%8==0 constraints are met by every configuration
+  // exercised by the accuracy / perf tests (group_size is 32/64/128).
+  if ((K % PACK_K_INT2_FAST) == 0 && (group_size % PACK_K_INT2_FAST) == 0) {
+    const int k_words = K / PACK_K_INT2_FAST;  // == k_packed / 2
+    sycl::range<3> global_fast{static_cast<size_t>(E), static_cast<size_t>(k_words),
+                               static_cast<size_t>((N + WG_N - 1) / WG_N) * WG_N};
+    sycl::range<3> local_fast{1, 1, static_cast<size_t>(WG_N)};
+
+    q->parallel_for<MoEDequantKernelInt2Fast<ScalarT, Asym>>(
+        sycl::nd_range<3>(global_fast, local_fast), [=](sycl::nd_item<3> it) {
+          const int e = static_cast<int>(it.get_global_id(0));
+          if (num_tokens_per_expert != nullptr && num_tokens_per_expert[e] == 0) return;
+          const int kw = static_cast<int>(it.get_global_id(1));
+          const int n = static_cast<int>(it.get_global_id(2));
+          if (n >= N) return;
+          const int k_base = kw * PACK_K_INT2_FAST;
+          const int g = k_base / group_size;
+          const size_t s_idx = (static_cast<size_t>(e) * N + static_cast<size_t>(n)) * num_groups_k +
+                               static_cast<size_t>(g);
+          const float scale = static_cast<float>(scales[s_idx]);
+          const float zero = Asym ? static_cast<float>(zeros[s_idx]) : 0.0f;
+          const size_t row_kp_base = (static_cast<size_t>(e) * N + static_cast<size_t>(n)) * k_packed +
+                                     static_cast<size_t>(kw) * 2;
+          const uint16_t packed =
+              static_cast<uint16_t>(static_cast<uint32_t>(weights_NKp[row_kp_base + 0]) |
+                                    (static_cast<uint32_t>(weights_NKp[row_kp_base + 1]) << 8));
+          int qv[8];
+          moe_dequant::decode_int2_octet<Asym>(packed, qv);
+          const size_t out_base = static_cast<size_t>(e) * K * N + static_cast<size_t>(n);
+#pragma unroll
+          for (int j = 0; j < PACK_K_INT2_FAST; ++j) {
+            float w;
+            if constexpr (Asym) {
+              w = (static_cast<float>(qv[j]) - zero) * scale;
+            } else {
+              w = static_cast<float>(qv[j]) * scale;
+            }
+            weights_KN[out_base + static_cast<size_t>(k_base + j) * N] = static_cast<ScalarT>(w);
+          }
+        });
+    return;
+  }
+
+  // Fallback byte-per-work-item path (retained for short-K / small-group
+  // configurations where the fast path's constraints do not hold).
   // One work-item handles one full packed byte = PACK_K_INT2 (=4)
   // consecutive K outputs for a single (e, n). This removes the previous
   // 4x duplicated byte loads (one item per 2-bit field) and 4x scale
@@ -357,6 +501,44 @@ inline void launch_upcast_int4_sym_to_int8(sycl::queue* q, const uint8_t* weight
   }
   const int k_packed = K / 2;
 
+  // PR-1 fast path: one work-item processes a 4-byte packed word = 8 int8
+  // outputs, matching the launch geometry of the int4 dequant fast path so
+  // the two kernels share cache-hit patterns for the packed weight buffer.
+  // Output writes here are contiguous along K (buffer layout `[E, N, K]`),
+  // so 8 consecutive int8 stores form an aligned 8-byte burst.
+  if ((K % PACK_K_INT4_FAST) == 0) {
+    const int k_words = K / PACK_K_INT4_FAST;
+    sycl::range<3> global_fast{static_cast<size_t>(E), static_cast<size_t>(k_words),
+                               static_cast<size_t>((N + WG_N - 1) / WG_N) * WG_N};
+    sycl::range<3> local_fast{1, 1, static_cast<size_t>(WG_N)};
+
+    q->parallel_for<MoEUpcastInt4SymToInt8KernelFast>(
+        sycl::nd_range<3>(global_fast, local_fast), [=](sycl::nd_item<3> it) {
+          const int e = static_cast<int>(it.get_global_id(0));
+          if (num_tokens_per_expert != nullptr && num_tokens_per_expert[e] == 0) return;
+          const int kw = static_cast<int>(it.get_global_id(1));
+          const int n = static_cast<int>(it.get_global_id(2));
+          if (n >= N) return;
+          const int k_base = kw * PACK_K_INT4_FAST;
+          const size_t row_kp_base = (static_cast<size_t>(e) * N + static_cast<size_t>(n)) * k_packed +
+                                     static_cast<size_t>(kw) * 4;
+          const uint32_t packed =
+              static_cast<uint32_t>(weights_NKp[row_kp_base + 0]) |
+              (static_cast<uint32_t>(weights_NKp[row_kp_base + 1]) << 8) |
+              (static_cast<uint32_t>(weights_NKp[row_kp_base + 2]) << 16) |
+              (static_cast<uint32_t>(weights_NKp[row_kp_base + 3]) << 24);
+          int qv[8];
+          moe_dequant::decode_int4_octet</*Asym=*/false>(packed, qv);
+          const size_t out_row = (static_cast<size_t>(e) * N + static_cast<size_t>(n)) * K;
+#pragma unroll
+          for (int j = 0; j < PACK_K_INT4_FAST; ++j) {
+            weights_i8_NK[out_row + static_cast<size_t>(k_base + j)] = static_cast<int8_t>(qv[j]);
+          }
+        });
+    return;
+  }
+
+  // Fallback byte-per-work-item path (short-K configurations).
   // One work-item per packed byte writes PACK_K_INT4 (=2) consecutive int8
   // outputs for a single (e, n). Matches the launch geometry of
   // `launch_dequant_int4` so the two paths share cache-hit patterns for
@@ -401,6 +583,39 @@ inline void launch_upcast_int2_sym_to_int8(sycl::queue* q, const uint8_t* weight
   }
   const int k_packed = K / 4;
 
+  // PR-1 fast path: one work-item processes a 2-byte packed word = 8 int8
+  // outputs. Same rationale as the int4 upcast fast path above.
+  if ((K % PACK_K_INT2_FAST) == 0) {
+    const int k_words = K / PACK_K_INT2_FAST;
+    sycl::range<3> global_fast{static_cast<size_t>(E), static_cast<size_t>(k_words),
+                               static_cast<size_t>((N + WG_N - 1) / WG_N) * WG_N};
+    sycl::range<3> local_fast{1, 1, static_cast<size_t>(WG_N)};
+
+    q->parallel_for<MoEUpcastInt2SymToInt8KernelFast>(
+        sycl::nd_range<3>(global_fast, local_fast), [=](sycl::nd_item<3> it) {
+          const int e = static_cast<int>(it.get_global_id(0));
+          if (num_tokens_per_expert != nullptr && num_tokens_per_expert[e] == 0) return;
+          const int kw = static_cast<int>(it.get_global_id(1));
+          const int n = static_cast<int>(it.get_global_id(2));
+          if (n >= N) return;
+          const int k_base = kw * PACK_K_INT2_FAST;
+          const size_t row_kp_base = (static_cast<size_t>(e) * N + static_cast<size_t>(n)) * k_packed +
+                                     static_cast<size_t>(kw) * 2;
+          const uint16_t packed =
+              static_cast<uint16_t>(static_cast<uint32_t>(weights_NKp[row_kp_base + 0]) |
+                                    (static_cast<uint32_t>(weights_NKp[row_kp_base + 1]) << 8));
+          int qv[8];
+          moe_dequant::decode_int2_octet</*Asym=*/false>(packed, qv);
+          const size_t out_row = (static_cast<size_t>(e) * N + static_cast<size_t>(n)) * K;
+#pragma unroll
+          for (int j = 0; j < PACK_K_INT2_FAST; ++j) {
+            weights_i8_NK[out_row + static_cast<size_t>(k_base + j)] = static_cast<int8_t>(qv[j]);
+          }
+        });
+    return;
+  }
+
+  // Fallback byte-per-work-item path (short-K configurations).
   sycl::range<3> global{static_cast<size_t>(E), static_cast<size_t>(k_packed),
                         static_cast<size_t>((N + WG_N - 1) / WG_N) * WG_N};
   sycl::range<3> local{1, 1, static_cast<size_t>(WG_N)};

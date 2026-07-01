@@ -15,6 +15,14 @@
 //     and prefill (mixed-input Grouped GEMM) paths call these directly,
 //     guaranteeing bit-identical dequantization for the round-trip parity
 //     tests in `test_moe_prefill_accuracy.py` / `test_moe_unified.py`.
+//   - INT4 / INT2 packed-word decoders (`decode_int4_octet`,
+//     `decode_int2_octet`): thin `#pragma unroll` wrappers over
+//     `decode_int4_pair` / `decode_int2_quad` that decode 8 K outputs from
+//     one 32-bit (INT4) / 16-bit (INT2) little-endian word. Used by the
+//     prefill fast paths in `sycl_tla_moe_mixed.hpp` to amortise packed-byte
+//     loads and scale/zero broadcasts across 4×/2× more K per work-item;
+//     bit-identical to the scalar decoders by construction, so decode↔prefill
+//     parity is preserved without any changes to the GEMV path.
 //
 // Copyright (C) 2026 Intel Corporation
 // SPDX-License-Identifier: Apache-2.0
@@ -185,6 +193,56 @@ inline void decode_int2_quad(uint8_t packed, int q[4]) {
     q[1] = static_cast<int>(static_cast<int8_t>((packed << 4) & 0xC0u) >> 6);
     q[2] = static_cast<int>(static_cast<int8_t>((packed << 2) & 0xC0u) >> 6);
     q[3] = static_cast<int>(static_cast<int8_t>(packed & 0xC0u) >> 6);
+  }
+}
+
+// ----------------------------------------------------------------------------
+// INT4 (S4_CLIP) packed-word decode: 8 nibbles from one 32-bit little-endian
+// word = 4 consecutive packed bytes.
+//
+// The word is assembled from bytes b0..b3 as `b0 | (b1<<8) | (b2<<16) |
+// (b3<<24)` (i.e. little-endian, which matches the memory layout on all
+// supported XPUs). Each byte contributes two K outputs via the existing
+// `decode_int4_pair`, so the K-index mapping is:
+//   q[0] = byte0 low nibble  (k_base + 0)
+//   q[1] = byte0 high nibble (k_base + 1)
+//   q[2] = byte1 low nibble  (k_base + 2)
+//   q[3] = byte1 high nibble (k_base + 3)
+//   ...
+//   q[7] = byte3 high nibble (k_base + 7)
+//
+// The decoder is expressed as a `#pragma unroll` loop over `decode_int4_pair`,
+// so it is bit-identical by construction to four scalar decodes of the same
+// four bytes. This keeps the parity contract with the decode/GEMV path (which
+// only ever calls `decode_int4_pair`) trivially satisfied.
+// ----------------------------------------------------------------------------
+template <bool Asym>
+inline void decode_int4_octet(uint32_t packed, int q[8]) {
+#pragma unroll
+  for (int i = 0; i < 4; ++i) {
+    const uint8_t byte = static_cast<uint8_t>((packed >> (i * 8)) & 0xFFu);
+    decode_int4_pair<Asym>(byte, q[2 * i], q[2 * i + 1]);
+  }
+}
+
+// ----------------------------------------------------------------------------
+// INT2 (S2_CLIP) packed-word decode: 8 fields from one 16-bit little-endian
+// word = 2 consecutive packed bytes.
+//
+// Word assembly: `b0 | (b1<<8)`. Each byte contributes four K outputs via
+// `decode_int2_quad`, so the K-index mapping is:
+//   q[0..3] = byte0 fields 0..3 (k_base + 0 .. k_base + 3)
+//   q[4..7] = byte1 fields 0..3 (k_base + 4 .. k_base + 7)
+//
+// Same parity-by-construction argument as `decode_int4_octet`: the semantics
+// come entirely from the shared `decode_int2_quad` primitive.
+// ----------------------------------------------------------------------------
+template <bool Asym>
+inline void decode_int2_octet(uint16_t packed, int q[8]) {
+#pragma unroll
+  for (int i = 0; i < 2; ++i) {
+    const uint8_t byte = static_cast<uint8_t>((packed >> (i * 8)) & 0xFFu);
+    decode_int2_quad<Asym>(byte, &q[4 * i]);
   }
 }
 
