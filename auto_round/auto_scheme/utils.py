@@ -403,12 +403,6 @@ def _scheme_short_name(scheme) -> str:
     return str(scheme)
 
 
-def _format_scientific_loss(value: float) -> str:
-    """Format a score using compact scientific notation like 1.23E-5."""
-    text = f"{value:.2E}"
-    return re.sub(r"E([+-])0+(\d+)", r"E\1\2", text)
-
-
 def _fill_inactive_expert_scores(scores_dict: dict[str, list[float]], block_names: list[str]):
     """Fill inactive experts with the average loss of active experts in each block.
 
@@ -672,8 +666,162 @@ def _log_batch_avg_loss(model, batch_idx: int, pbar=None, block_names=None, tota
                 )
 
 
-def _describe_layer_config(layer_config, scores_dict, block_names, model=None):
-    """Log a compact, structured view of the final ``layer_config``."""
+def _build_layer_config_header_rows(columns: list[str]) -> list[list[str]]:
+    """Build a compact two-row header for the layer-config matrix.
+
+    The first row keeps a shared prefix for each grouped set of columns (for
+    example ``mlp`` or ``self_attn``), while the second row keeps the leaf
+    suffix (for example ``down_proj``).
+    """
+    if not columns:
+        return [["block"], [""]]
+
+    leaves = []
+    first_row = []
+    prev_prefix = None
+    for column in columns:
+        parts = column.split(".")
+        if len(parts) > 1:
+            prefix = ".".join(parts[:-1])
+            leaves.append(parts[-1])
+            if prefix == prev_prefix:
+                first_row.append("")
+            else:
+                first_row.append(prefix)
+                prev_prefix = prefix
+        else:
+            leaves.append(column)
+            first_row.append("")
+            prev_prefix = None
+
+    header_rows = [["block"] + first_row]
+    header_rows.append([""] + leaves)
+    return header_rows
+
+
+def _log_scheme_loss_matrix(total_scores, options, block_names, model=None, layer_numel=None):
+    """For every scheme in *options* log a block×layer matrix of per-element losses.
+
+    Cells show ``loss / weight.numel()`` in scientific notation with three
+    decimal places (e.g. ``1.234E-05``).  Expert layers are aggregated into an
+    ``experts`` column that shows the average per-element loss across all active
+    expert layers in each block.
+    """
+    if not total_scores or not options:
+        return
+
+    head_name = get_lm_head_name(model) if model is not None else None
+    if head_name is not None and head_name.endswith(".orig_layer"):
+        head_name = head_name[: -len(".orig_layer")]
+    block_prefixes = [(name, name + ".") for name in sorted(block_names, key=len, reverse=True)]
+
+    # Classify every key in total_scores into a (block, short_name) pair or expert bucket.
+    # lm_head is treated as a regular non-block row (not skipped).
+    block_col_keys: dict[str, dict[str, str]] = {name: {} for name in block_names}
+    block_expert_keys: dict[str, list[str]] = {name: [] for name in block_names}
+    other_keys: list[str] = []  # keys not belonging to any block (e.g. lm_head)
+    for key in sorted(total_scores):
+        matched_block = None
+        for block_name, block_prefix in block_prefixes:
+            if key == block_name or key.startswith(block_prefix):
+                matched_block = block_name
+                break
+        if matched_block is None:
+            other_keys.append(key)
+            continue
+        if _expert_key_from_layer_name(key) is not None:
+            block_expert_keys[matched_block].append(key)
+        else:
+            short_name = key[len(matched_block) + 1 :] if key.startswith(matched_block + ".") else key
+            block_col_keys[matched_block][short_name] = key
+
+    columns = sorted({col for row in block_col_keys.values() for col in row.keys()})
+    if not columns:
+        columns = ["layer"]
+    has_expert_layers = any(block_expert_keys.get(b) for b in block_names)
+
+    block_display_names = [_short_summary_name(b) for b in block_names]
+    header_rows = _build_layer_config_header_rows(columns)
+
+    # Fixed cell width for scientific-notation values: "1.234E-05" = 9 chars.
+    _CELL_W = 9
+    widths: dict[str, int] = {"block": max(8, max((len(b) for b in block_display_names), default=5))}
+    for col in columns:
+        leaf = col.split(".")[-1]
+        widths[col] = max(len(leaf), _CELL_W)
+    if has_expert_layers:
+        widths["experts"] = max(len("experts"), _CELL_W)
+    # Ensure the first column of each prefix group is wide enough for the prefix text in header row 1.
+    for col, prefix in zip(columns, header_rows[0][1:]):
+        if prefix:
+            widths[col] = max(widths[col], len(prefix))
+
+    header_keys = ["block"] + columns + (["experts"] if has_expert_layers else [])
+    header_vals = [header_rows[0][0]] + header_rows[0][1:]
+    header_vals_row2 = ([""]) + (header_rows[1][1:] if len(header_rows) > 1 else [""] * len(columns))
+    if has_expert_layers:
+        header_vals.append("experts")
+        header_vals_row2.append("")
+
+    def _fmt_row(values: list[str], keys: list[str]) -> str:
+        return "|".join(v.ljust(widths[k]) for v, k in zip(values, keys))
+
+    sep = "|".join("-" * widths[k] for k in header_keys)
+
+    for scheme_idx, scheme in enumerate(options):
+        scheme_name = _scheme_short_name(scheme)
+        block_loss_cells: dict[str, dict[str, str]] = {name: {} for name in block_names}
+        block_expert_avg: dict[str, str] = {}
+
+        _numel = layer_numel or {}
+        for block_name in block_names:
+            for short_name, key in block_col_keys[block_name].items():
+                loss = next((item[2] for item in total_scores.get(key, []) if item[0] == scheme_idx), None)
+                if loss is not None:
+                    n = _numel.get(key, 0)
+                    block_loss_cells[block_name][short_name] = f"{loss / n:.3E}" if n > 0 else f"{loss:.3E}"
+                else:
+                    block_loss_cells[block_name][short_name] = "-"
+
+            expert_losses_per_elem: list[float] = []
+            for ek in block_expert_keys.get(block_name, []):
+                el = next((item[2] for item in total_scores.get(ek, []) if item[0] == scheme_idx), None)
+                if el is not None:
+                    n = _numel.get(ek, 0)
+                    expert_losses_per_elem.append(el / n if n > 0 else el)
+            if expert_losses_per_elem:
+                block_expert_avg[block_name] = f"{sum(expert_losses_per_elem) / len(expert_losses_per_elem):.3E}"
+            else:
+                block_expert_avg[block_name] = "-"
+
+        logger.debug("AutoScheme [%s] per-op loss/elem matrix:", scheme_name)
+        logger.debug("  %s", _fmt_row(header_vals, header_keys))
+        logger.debug("  %s", _fmt_row(header_vals_row2, header_keys))
+        logger.debug("  %s", sep)
+        for block_name, block_display_name in zip(block_names, block_display_names):
+            row_vals = [block_display_name]
+            for col in columns:
+                row_vals.append(block_loss_cells.get(block_name, {}).get(col, "-"))
+            if has_expert_layers:
+                row_vals.append(block_expert_avg.get(block_name, "-"))
+            logger.debug("  %s", _fmt_row(row_vals, header_keys))
+        if other_keys:
+            for key in other_keys:
+                loss = next((item[2] for item in total_scores.get(key, []) if item[0] == scheme_idx), None)
+                if loss is not None:
+                    n = _numel.get(key, 0)
+                    loss_str = f"{loss / n:.3E}" if n > 0 else f"{loss:.3E}"
+                else:
+                    loss_str = "-"
+                logger.debug("  %s -> %s", _short_summary_name(key), loss_str)
+
+
+def _describe_layer_config(layer_config, total_scores, options, block_names, model=None):
+    """Log final ``layer_config`` as a block-row / layer-column matrix.
+
+    Cells show the selected scheme name only; the detailed loss delta is no
+    longer printed to keep the table compact.
+    """
 
     if not layer_config:
         logger.info("AutoScheme final layer_config: empty.")
@@ -684,23 +832,15 @@ def _describe_layer_config(layer_config, scores_dict, block_names, model=None):
         head_name = head_name[: -len(".orig_layer")]
     block_prefixes = [(name, name + ".") for name in sorted(block_names, key=len, reverse=True)]
 
-    block_rows: dict[str, list[tuple[str, str, str]]] = {name: [] for name in block_names}
+    block_cells: dict[str, dict[str, str]] = {name: {} for name in block_names}
     block_expert_scheme_counts: dict[str, dict[str, int]] = {name: {} for name in block_names}
-    block_expert_layers: dict[str, dict[str, list[tuple[str, str]]]] = {name: {} for name in block_names}
-    head_row: tuple[str, str] | None = None
-    other_rows: list[tuple[str, str, str]] = []
+    block_expert_layers: dict[str, dict[str, list[str]]] = {name: {} for name in block_names}
+    other_rows: list[tuple[str, str]] = []
 
     for layer_name in sorted(layer_config):
-        scheme_name = _scheme_short_name(layer_config[layer_name])
-        mix_score = scores_dict.get(layer_name, [None, None])[1]
-        mix_score_str = (
-            None
-            if mix_score is None or not math.isfinite(float(mix_score))
-            else _format_scientific_loss(float(mix_score))
-        )
+        cell = _scheme_short_name(layer_config[layer_name])
 
         if head_name is not None and layer_name == head_name:
-            head_row = (layer_name, scheme_name)
             continue
 
         matched_block = None
@@ -711,51 +851,91 @@ def _describe_layer_config(layer_config, scores_dict, block_names, model=None):
 
         expert_key = _expert_key_from_layer_name(layer_name)
         if matched_block is None:
-            other_rows.append((layer_name, scheme_name, mix_score_str or "N/A"))
+            other_rows.append((layer_name, cell))
             continue
 
         if expert_key is not None:
-            block_expert_layers[matched_block].setdefault(expert_key, []).append((layer_name, scheme_name))
+            block_expert_layers[matched_block].setdefault(expert_key, []).append(layer_name)
             continue
 
         short_name = layer_name[len(matched_block) + 1 :] if layer_name.startswith(matched_block + ".") else layer_name
-        block_rows[matched_block].append((short_name, scheme_name, mix_score_str or "N/A"))
+        block_cells[matched_block][short_name] = cell
 
     for block_name, expert_map in block_expert_layers.items():
         if not expert_map:
             continue
         counts: dict[str, int] = {}
-        for expert_layers in expert_map.values():
-            scheme_set = {scheme_name for _, scheme_name in expert_layers}
+        for layer_names in expert_map.values():
+            scheme_set = {_scheme_short_name(layer_config[layer_name]) for layer_name in layer_names}
             rep_scheme = (
                 next(iter(sorted(scheme_set))) if len(scheme_set) == 1 else f"MIXED({', '.join(sorted(scheme_set))})"
             )
             counts[rep_scheme] = counts.get(rep_scheme, 0) + 1
         block_expert_scheme_counts[block_name] = counts
 
-    logger.info("AutoScheme final layer_config:")
+    columns = sorted({col for row in block_cells.values() for col in row.keys()})
+    if not columns:
+        columns = ["layer"]
+
+    expert_text_by_block: dict[str, str] = {}
     for block_name in block_names:
-        rows = block_rows.get(block_name, [])
         expert_counts = block_expert_scheme_counts.get(block_name, {})
-        if not rows and not expert_counts:
+        if not expert_counts:
+            expert_text_by_block[block_name] = "-"
             continue
+        expert_total = len(block_expert_layers.get(block_name, {}))
+        expert_text_by_block[block_name] = ", ".join(
+            f"{count}/{expert_total} {scheme_name}"
+            for scheme_name, count in sorted(expert_counts.items(), key=lambda item: (-item[1], item[0]))
+        )
 
-        logger.info("  %s", block_name)
-        for short_name, scheme_name, mix_score_str in sorted(rows, key=lambda item: item[0]):
-            logger.info("    %-48s %-10s mix_score=%s", short_name, scheme_name, mix_score_str)
+    has_expert_layers = any(block_expert_layers.get(block_name) for block_name in block_names)
 
-        if expert_counts:
-            expert_total = len(block_expert_layers.get(block_name, {}))
-            expert_summary = ", ".join(
-                f"{count}/{expert_total} {scheme_name}"
-                for scheme_name, count in sorted(expert_counts.items(), key=lambda item: (-item[1], item[0]))
-            )
-            logger.info("    experts: %s", expert_summary)
+    block_display_names = [_short_summary_name(block_name) for block_name in block_names]
+    header_rows = _build_layer_config_header_rows(columns)
+
+    # Width is driven by the leaf name and cell content — NOT the full dotted column name,
+    # so columns stay tight (e.g. "down_proj" width, not "mlp.down_proj" width).
+    widths: dict[str, int] = {"block": max(8, max((len(b) for b in block_display_names), default=5))}
+    for col in columns:
+        leaf = col.split(".")[-1]
+        max_cell_len = max((len(block_cells.get(b, {}).get(col, "-")) for b in block_names), default=1)
+        widths[col] = max(len(leaf), max_cell_len)
+    if has_expert_layers:
+        widths["experts"] = max(len("experts"), max((len(v) for v in expert_text_by_block.values()), default=1))
+    # Ensure the first column of each prefix group is wide enough for the prefix text in header row 1.
+    for col, prefix in zip(columns, header_rows[0][1:]):
+        if prefix:
+            widths[col] = max(widths[col], len(prefix))
+
+    def _fmt_row(values: list[str], keys: list[str]) -> str:
+        return "|".join(v.ljust(widths[k]) for v, k in zip(values, keys))
+
+    header_keys = ["block"] + columns + (["experts"] if has_expert_layers else [])
+    header_vals = [header_rows[0][0]] + header_rows[0][1:]
+    if len(header_rows) > 1:
+        header_vals_row2 = [header_rows[1][0]] + header_rows[1][1:]
+    else:
+        header_vals_row2 = [""] + [""] * len(columns)
+
+    logger.info("AutoScheme final layer_config matrix:")
+    logger.info("AutoScheme note: cell=`scheme`.")
+    logger.info("  %s", _fmt_row(header_vals, header_keys))
+    logger.info("  %s", _fmt_row(header_vals_row2, header_keys))
+    logger.info("  %s", "|".join("-" * widths[k] for k in header_keys))
+
+    for block_name, block_display_name in zip(block_names, block_display_names):
+        row_vals = [block_display_name]
+        for col in columns:
+            row_vals.append(block_cells.get(block_name, {}).get(col, "-"))
+        if has_expert_layers:
+            row_vals.append(expert_text_by_block.get(block_name, "-"))
+        logger.info("  %s", _fmt_row(row_vals, header_keys))
+
+    if head_name is not None and head_name in layer_config:
+        logger.info("  %s is using %s", head_name, _scheme_short_name(layer_config[head_name]))
 
     if other_rows:
-        logger.info("  other")
-        for layer_name, scheme_name, mix_score_str in other_rows:
-            logger.info("    %-48s %-10s mix_score=%s", layer_name, scheme_name, mix_score_str)
-
-    if head_row is not None:
-        logger.info("  %s is using %s", head_row[0], head_row[1])
+        logger.info("  other:")
+        for layer_name, cell in other_rows:
+            logger.info("    %s -> %s", layer_name, cell)

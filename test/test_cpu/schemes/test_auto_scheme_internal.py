@@ -1,60 +1,14 @@
 import os
 
-from auto_round.auto_scheme.delta_loss import _apply_head_trick
+from auto_round.auto_scheme.delta_loss import _resolve_dp_max_states
 from auto_round.auto_scheme.gen_auto_scheme import AutoScheme
+from auto_round.auto_scheme.utils import _build_layer_config_header_rows, _short_summary_name
 
 
-def test_apply_head_trick_keeps_lowest_loss_candidate_when_budget_allows():
-    schemes = AutoScheme(avg_bits=3, options=("GGUF:Q2_K_S", "GGUF:Q4_K_M")).options
-    total_scores = {
-        "lm_head": [
-            [0, 1244659712, 41.0, ["lm_head"]],
-            [1, 2489319424, 11.9, ["lm_head"]],
-        ],
-        "model.layers.0.mlp.down_proj": [
-            [0, 100, 10.0, ["model.layers.0.mlp.down_proj"]],
-            [1, 200, 5.0, ["model.layers.0.mlp.down_proj"]],
-        ],
-    }
-
-    _apply_head_trick(
-        head_name="lm_head",
-        schemes=schemes,
-        sorted_indices=[1, 0],
-        target_bits=3,
-        target_params_cnt=4891670016,
-        total_scores=total_scores,
-    )
-
-    assert total_scores["lm_head"] == [[1, 2489319424, 11.9, ["lm_head"]]]
-
-
-def test_apply_head_trick_relaxes_lowest_loss_candidate_when_budget_is_tight():
-    schemes = AutoScheme(avg_bits=3, options=("GGUF:Q2_K_S", "GGUF:Q4_K_M")).options
-    total_scores = {
-        "lm_head": [
-            [0, 1244659712, 41.0, ["lm_head"]],
-            [1, 2489319424, 11.9, ["lm_head"]],
-        ],
-        "model.layers.0.mlp.down_proj": [
-            [0, 100, 10.0, ["model.layers.0.mlp.down_proj"]],
-            [1, 200, 5.0, ["model.layers.0.mlp.down_proj"]],
-        ],
-    }
-
-    _apply_head_trick(
-        head_name="lm_head",
-        schemes=schemes,
-        sorted_indices=[1, 0],
-        target_bits=3,
-        target_params_cnt=1244659812,
-        total_scores=total_scores,
-    )
-
-    assert total_scores["lm_head"] == [
-        [0, 1244659712, 41.0, ["lm_head"]],
-        [1, 2489319424, 11.9, ["lm_head"]],
-    ]
+def test_resolve_dp_max_states_applies_beam_for_large_layers():
+    """Large layer sets should automatically use a bounded DP beam width."""
+    layers = {f"layer_{idx}": [] for idx in range(80)}
+    assert _resolve_dp_max_states(layers) == 576
 
 
 def test_env_ar_auto_scheme_nsamples_overrides_default(monkeypatch):
@@ -82,3 +36,17 @@ def test_env_ar_auto_scheme_batch_size_zero_raises(monkeypatch):
     monkeypatch.setenv("AR_AUTO_SCHEME_BATCH_SIZE", "0")
     with pytest.raises(ValueError):
         _ = envs.AR_AUTO_SCHEME_BATCH_SIZE
+
+
+def test_build_layer_config_header_rows_merges_adjacent_prefixes():
+    """Adjacent columns with the same prefix should be merged into one compact header cell."""
+    columns = ["mlp.down_proj", "mlp.gate_proj", "self_attn.q_proj", "self_attn.v_proj"]
+    assert _build_layer_config_header_rows(columns) == [
+        ["block", "mlp", "", "self_attn", ""],
+        ["", "down_proj", "gate_proj", "q_proj", "v_proj"],
+    ]
+
+
+def test_short_summary_name_keeps_one_field_before_numeric_suffix():
+    """Numeric block suffixes should be shortened to keep the preceding field."""
+    assert _short_summary_name("model.layers.0") == "layers.0"
