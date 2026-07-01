@@ -36,7 +36,7 @@ def test_split_awq_plus_rtn():
 
 def test_pipeline_preprocessor_only_auto_appends_rtn():
     pipeline = QuantizationPipeline.from_configs([AWQConfig()])
-    assert type(pipeline.preprocessors[0]).__name__ == "AWQQuantizer"
+    assert type(pipeline.preprocessors[0]).__name__ == "AWQTransform"
     assert isinstance(pipeline.block_quantizer, RTNQuantizer)
 
 

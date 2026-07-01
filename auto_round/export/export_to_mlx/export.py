@@ -36,7 +36,7 @@ import torch
 import torch.nn as nn
 import transformers
 
-from auto_round.export.utils import unsupported_meta_device
+from auto_round.export.utils import save_pretrained_artifact, unsupported_meta_device
 from auto_round.logger import logger
 from auto_round.utils import (
     check_to_quantized,
@@ -701,8 +701,7 @@ def save_quantized_as_mlx(
             json.dump(config, f, indent=2)
 
     # Save tokenizer
-    if tokenizer is not None and hasattr(tokenizer, "save_pretrained"):
-        tokenizer.save_pretrained(output_dir)
+    save_pretrained_artifact(tokenizer, output_dir, artifact_name="tokenizer")
 
     # Copy processor if available
     processor = kwargs.get("processor", None)
