@@ -262,7 +262,7 @@ CUTE_DEVICE void xe_gemm(ATensor const& A,   // (M,K)
   auto pBgB = thr_prefetch_B.partition_S(gB);
 
   const int prefetch_dist = 3;
-  constexpr int barrier_scope = 2;
+  constexpr auto barrier_scope = ScopeWorkgroup;
   int k_tile_count = ceil_div(shape<1>(A), get<2>(wg_tile));
   int k_tile_prefetch = 0;
 
@@ -423,7 +423,7 @@ CUTE_DEVICE void xe_gemm_fp8_pergroup(
   auto pBgB = thr_prefetch_B.partition_S(gB);
 
   const int prefetch_dist = 6;
-  constexpr int barrier_scope = 2;
+  constexpr auto barrier_scope = ScopeWorkgroup;
   int k_tile_count = ceil_div(shape<1>(A), get<2>(wg_tile));
   int k_tile_prefetch = 0;
 
