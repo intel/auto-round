@@ -74,6 +74,13 @@ class MoEDequantKernelInt2;
 template <typename ScalarT, bool IsE4M3, bool UseLut>
 class MoEDequantKernelFP8;
 
+// Kernel name tags for the low-bit-width -> int8 sym upcast helpers used
+// by the INT DPAS grouped-GEMM path. Output layout is `[E, N, K]` int8
+// row-major (auto-round decode convention) so the caller can hand the
+// resulting buffer to `moe_prefill_int_dpas_per_group_dispatch` unchanged.
+class MoEUpcastInt4SymToInt8Kernel;
+class MoEUpcastInt2SymToInt8Kernel;
+
 // Tile sizes for the dequant kernels.
 //
 // Each work-group covers a (PACK_K x WG_N) tile in (k, n) and writes PACK_K
@@ -328,6 +335,97 @@ void launch_dequant_int2(sycl::queue* q, const uint8_t* weights_NKp, const Scala
 }
 
 // ----------------------------------------------------------------------------
+// INT4 sym -> INT8 sym upcast: [E, N, K/2] uint8 packed -> [E, N, K] int8.
+//
+// Sign-extends each 4-bit signed field to a full `int8_t` (range [-8, 7])
+// preserving the auto-round `[E, N, K]` decode-style layout so the result
+// can be fed directly to `moe_prefill_int_dpas_per_group_dispatch`, which
+// treats its `int8_t` weight input as sym-packed values that the per-group
+// scale (already `[E, N, K/group_size]` in act dtype) rescales at each
+// group boundary. Algebraically:
+//     dequant(w_int4)[e, n, k] = int4_signed(w_int4[e, n, k]) * scale[e, n, g]
+//                             = int8_signed(upcast[e, n, k]) * scale[e, n, g]
+// so the same `scale` tensor packs unmodified into the DPAS mainloop.
+// ----------------------------------------------------------------------------
+inline void launch_upcast_int4_sym_to_int8(sycl::queue* q, const uint8_t* weights_NKp, int8_t* weights_i8_NK,
+                                           int E, int N, int K,
+                                           const int* num_tokens_per_expert = nullptr) {
+  if (E == 0 || N == 0 || K == 0) return;
+  if ((K & 1) != 0) {
+    throw std::invalid_argument("moe_gemm_prefill(int4->int8 upcast): K must be even");
+  }
+  const int k_packed = K / 2;
+
+  // One work-item per packed byte writes PACK_K_INT4 (=2) consecutive int8
+  // outputs for a single (e, n). Matches the launch geometry of
+  // `launch_dequant_int4` so the two paths share cache-hit patterns for
+  // the packed-weight buffer.
+  sycl::range<3> global{static_cast<size_t>(E), static_cast<size_t>(k_packed),
+                        static_cast<size_t>((N + WG_N - 1) / WG_N) * WG_N};
+  sycl::range<3> local{1, 1, static_cast<size_t>(WG_N)};
+
+  q->parallel_for<MoEUpcastInt4SymToInt8Kernel>(
+      sycl::nd_range<3>(global, local), [=](sycl::nd_item<3> it) {
+        const int e = static_cast<int>(it.get_global_id(0));
+        if (num_tokens_per_expert != nullptr && num_tokens_per_expert[e] == 0) return;
+        const int kp = static_cast<int>(it.get_global_id(1));
+        const int n = static_cast<int>(it.get_global_id(2));
+        if (n >= N) return;
+        const int k_base = kp * PACK_K_INT4;
+        const uint8_t packed =
+            weights_NKp[(static_cast<size_t>(e) * N + static_cast<size_t>(n)) * k_packed +
+                        static_cast<size_t>(kp)];
+        int q_lo, q_hi;
+        moe_dequant::decode_int4_pair</*Asym=*/false>(packed, q_lo, q_hi);
+        const size_t out_row = (static_cast<size_t>(e) * N + static_cast<size_t>(n)) * K;
+        weights_i8_NK[out_row + static_cast<size_t>(k_base)] = static_cast<int8_t>(q_lo);
+        weights_i8_NK[out_row + static_cast<size_t>(k_base + 1)] = static_cast<int8_t>(q_hi);
+      });
+}
+
+// ----------------------------------------------------------------------------
+// INT2 sym -> INT8 sym upcast: [E, N, K/4] uint8 packed -> [E, N, K] int8.
+//
+// Sign-extends each 2-bit signed field to a full `int8_t` (range [-2, 1]).
+// Same rationale as `launch_upcast_int4_sym_to_int8` -- the DPAS per-group
+// mainloop consumes the resulting `[E, N, K]` int8 buffer with the packed
+// int2 scale tensor unmodified.
+// ----------------------------------------------------------------------------
+inline void launch_upcast_int2_sym_to_int8(sycl::queue* q, const uint8_t* weights_NKp, int8_t* weights_i8_NK,
+                                           int E, int N, int K,
+                                           const int* num_tokens_per_expert = nullptr) {
+  if (E == 0 || N == 0 || K == 0) return;
+  if ((K & 3) != 0) {
+    throw std::invalid_argument("moe_gemm_prefill(int2->int8 upcast): K must be a multiple of 4");
+  }
+  const int k_packed = K / 4;
+
+  sycl::range<3> global{static_cast<size_t>(E), static_cast<size_t>(k_packed),
+                        static_cast<size_t>((N + WG_N - 1) / WG_N) * WG_N};
+  sycl::range<3> local{1, 1, static_cast<size_t>(WG_N)};
+
+  q->parallel_for<MoEUpcastInt2SymToInt8Kernel>(
+      sycl::nd_range<3>(global, local), [=](sycl::nd_item<3> it) {
+        const int e = static_cast<int>(it.get_global_id(0));
+        if (num_tokens_per_expert != nullptr && num_tokens_per_expert[e] == 0) return;
+        const int kp = static_cast<int>(it.get_global_id(1));
+        const int n = static_cast<int>(it.get_global_id(2));
+        if (n >= N) return;
+        const int k_base = kp * PACK_K_INT2;
+        const uint8_t packed =
+            weights_NKp[(static_cast<size_t>(e) * N + static_cast<size_t>(n)) * k_packed +
+                        static_cast<size_t>(kp)];
+        int qv[4];
+        moe_dequant::decode_int2_quad</*Asym=*/false>(packed, qv);
+        const size_t out_row = (static_cast<size_t>(e) * N + static_cast<size_t>(n)) * K;
+#pragma unroll
+        for (int j = 0; j < PACK_K_INT2; ++j) {
+          weights_i8_NK[out_row + static_cast<size_t>(k_base + j)] = static_cast<int8_t>(qv[j]);
+        }
+      });
+}
+
+// ----------------------------------------------------------------------------
 // FP8 (E4M3 / E5M2) dequant: [E, N, K] uint8 -> [E, K, N] ScalarT.
 // Per-group scale applied; no zero-points (caller must enforce sym).
 // `UseLut` selects the LUT vs inline-bits decode at compile time
@@ -518,45 +616,91 @@ inline void moe_gemm_prefill(sycl::queue* q, void* activations, void* weights, v
   // Precedence (highest first): dpas -> native -> fused-dequant -> v1 dequant.
   // See `sycl_tla_moe_prefill_fp8_native.hpp` for the tile / SLM design.
 
-  // INT8 mixed-input DPAS grouped GEMM (Variant B: per-K-group scale,
-  // in-register int8->act upcast, XMX MMA). Opt-in default via
+  // INT8 mixed-input DPAS grouped GEMM (Variant B, sym only): per-K-group
+  // scale, in-register int8->act upcast, XMX MMA. Opt-in default via
   // `ARK_MOE_PREFILL_DPAS_INT8` (default ON, matching the FP8 DPAS gate).
-  // Shape gate mirrors the FP8 per-group predicate exactly. Both sym and
-  // asym are supported: sym takes a `Zeros=nullptr` fast path; asym
-  // additionally uses a pre-computed per-M-row per-K-group activation sum
-  // to fold `Σ_g s · (Σ w·a − z · Σ a)` at each group boundary.
+  // Shape gate mirrors the FP8 per-group predicate exactly. Only `asym=false`
+  // is accelerated here -- the asym port used a per-M-row per-K-group
+  // activation-sum precompute and regressed below the dequant fallback on
+  // hardware, so asym S8 falls through to the dequant + `moe_gemm` path
+  // below.
   //
   // Scales are already the activation dtype (`[E, N, K/group_size]` half /
   // bfloat16) in auto-round's INT8 per-group layout, so no conversion is
   // needed relative to the dequant fallback -- the kernel just consumes the
-  // same scale (and, for asym, zero) tensor.
+  // same scale tensor.
   //
   // STATUS: NEEDS-HARDWARE-VALIDATION. See
   // `sycl_tla_moe_prefill_int_dpas.hpp` for the port's provenance & the
   // on-hardware TODOs.
-  if (weight_dtype == BTLA_DTYPE::S8 &&
+  if (weight_dtype == BTLA_DTYPE::S8 && !asym &&
       moe_dpas_int::moe_prefill_dpas_int_enabled() &&
       moe_dpas_int::moe_prefill_dpas_int_pergroup_shape_ok(N, K, group_size)) {
+    const auto* weights_i8 = reinterpret_cast<const int8_t*>(weights);
     if (act_dtype == BTLA_DTYPE::F16) {
       using ScalarT = sycl::half;
       moe_dpas_int::moe_prefill_int_dpas_per_group_dispatch<ScalarT>(
-          q, static_cast<const ScalarT*>(activations), weights,
-          static_cast<const ScalarT*>(scales),
-          static_cast<const ScalarT*>(zeros), static_cast<ScalarT*>(outputs),
-          num_tokens_per_expert, num_experts, N, K, group_size, total_tokens,
-          asym);
+          q, static_cast<const ScalarT*>(activations), weights_i8,
+          static_cast<const ScalarT*>(scales), static_cast<ScalarT*>(outputs),
+          num_tokens_per_expert, num_experts, N, K, group_size, total_tokens);
       return;
     } else if (act_dtype == BTLA_DTYPE::BF16) {
       using ScalarT = sycl::ext::oneapi::bfloat16;
       moe_dpas_int::moe_prefill_int_dpas_per_group_dispatch<ScalarT>(
-          q, static_cast<const ScalarT*>(activations), weights,
-          static_cast<const ScalarT*>(scales),
-          static_cast<const ScalarT*>(zeros), static_cast<ScalarT*>(outputs),
-          num_tokens_per_expert, num_experts, N, K, group_size, total_tokens,
-          asym);
+          q, static_cast<const ScalarT*>(activations), weights_i8,
+          static_cast<const ScalarT*>(scales), static_cast<ScalarT*>(outputs),
+          num_tokens_per_expert, num_experts, N, K, group_size, total_tokens);
       return;
     }
     // Unsupported act_dtype falls through to the dequant branch below.
+  }
+
+  // INT4-sym / INT2-sym via INT8 DPAS. Rather than dequantise packed
+  // nibbles/crumbs into a bf16/fp16 `[E, K, N]` workspace and then run a
+  // bf16 x bf16 GEMM, we upcast the low-bit-width weights to `int8_t` in
+  // a `[E, N, K]` layout and hand the resulting buffer to the same
+  // per-group INT8 DPAS mainloop the S8 branch above uses. The upcast
+  // writes 1 byte per element (vs. 2 bytes for the bf16/fp16 dequant),
+  // and the DPAS mainloop then folds the per-K-group scale exactly the
+  // same way as the S8-sym path -- reusing the packed scale tensor
+  // unmodified. Silent fallback to the generic dequant path if the shape
+  // predicate rejects the tile geometry, if `asym=true`, or if the caller
+  // opted out via `ARK_MOE_PREFILL_DPAS_INT8=0`.
+  //
+  // The dequant workspace pointer we reinterpret as `int8_t*` is the same
+  // caller-owned buffer used by the bf16/fp16 dequant fallback: since it
+  // is sized to `E * K * N * sizeof(act_dtype)` (>= 2 bytes/element) and
+  // the int8 view needs exactly `E * K * N` bytes, the reinterpretation is
+  // safe and does not require a separate allocation.
+  if ((weight_dtype == BTLA_DTYPE::S4_CLIP || weight_dtype == BTLA_DTYPE::S2_CLIP) && !asym &&
+      moe_dpas_int::moe_prefill_dpas_int_enabled() &&
+      moe_dpas_int::moe_prefill_dpas_int_pergroup_shape_ok(N, K, group_size) &&
+      dequant_workspace != nullptr &&
+      (act_dtype == BTLA_DTYPE::F16 || act_dtype == BTLA_DTYPE::BF16)) {
+    auto* upcast_i8 = static_cast<int8_t*>(dequant_workspace);
+    if (weight_dtype == BTLA_DTYPE::S4_CLIP) {
+      moe_mixed_detail::launch_upcast_int4_sym_to_int8(
+          q, static_cast<const uint8_t*>(weights), upcast_i8, num_experts, N, K,
+          num_tokens_per_expert);
+    } else {
+      moe_mixed_detail::launch_upcast_int2_sym_to_int8(
+          q, static_cast<const uint8_t*>(weights), upcast_i8, num_experts, N, K,
+          num_tokens_per_expert);
+    }
+    if (act_dtype == BTLA_DTYPE::F16) {
+      using ScalarT = sycl::half;
+      moe_dpas_int::moe_prefill_int_dpas_per_group_dispatch<ScalarT>(
+          q, static_cast<const ScalarT*>(activations), upcast_i8,
+          static_cast<const ScalarT*>(scales), static_cast<ScalarT*>(outputs),
+          num_tokens_per_expert, num_experts, N, K, group_size, total_tokens);
+    } else {
+      using ScalarT = sycl::ext::oneapi::bfloat16;
+      moe_dpas_int::moe_prefill_int_dpas_per_group_dispatch<ScalarT>(
+          q, static_cast<const ScalarT*>(activations), upcast_i8,
+          static_cast<const ScalarT*>(scales), static_cast<ScalarT*>(outputs),
+          num_tokens_per_expert, num_experts, N, K, group_size, total_tokens);
+    }
+    return;
   }
 
   // FP8 mixed-input DPAS grouped GEMM (Variant B: per-K-group scale,

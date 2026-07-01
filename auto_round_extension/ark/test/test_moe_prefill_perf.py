@@ -656,9 +656,13 @@ class TestMoEGemmPrefillPerf:
             flops = _compute_moe_flops(total_tokens, K, N, E)
             tflops = flops / (ark_ms * 1e-3) / 1e12
 
-            # Variant B DPAS INT8 (default-on branch). Both sym and asym are
-            # supported; asym uses a per-M-row per-K-group activation-sum
-            # precompute to fold the zero-point correction.
+            # Variant B DPAS INT8 (default-on branch). Only sym is
+            # DPAS-accelerated -- asym S8 falls through to the dequant
+            # path inside `moe_gemm_prefill` since the fused zero-point
+            # fold regressed below the dequant fallback on hardware. Left
+            # in the sweep so the perf table shows both sym and asym rows;
+            # asym rows here are effectively the same code path as
+            # `ark(ms)` above.
             dpas_ms = None
             dpas_tflops = None
             os.environ["ARK_MOE_PREFILL_DPAS_INT8"] = "1"
