@@ -217,7 +217,7 @@ static void sage_pvi8(torch_ptr stream, torch_ptr Q, torch_ptr K, torch_ptr V, t
 
 static void sage_sparse(torch_ptr stream, torch_ptr Q, torch_ptr K, torch_ptr V, torch_ptr O, torch_ptr mask,
                         int scale_block_size, torch_ptr qscale, torch_ptr kscale, torch_ptr lut,
-                        torch_ptr valid_block_num, int num_q_blocks, int num_k_blocks, int q_stride_s, int q_stride_d,
+                        torch_ptr valid_block_num, int num_q_blocks, int num_k_blocks, int q_tile_override, int q_stride_s, int q_stride_d,
                         int q_stride_h, int q_stride_b, int k_stride_s, int k_stride_d, int k_stride_h, int k_stride_b,
                         int v_stride_d, int v_stride_s, int v_stride_h, int v_stride_b, int o_stride_s,
                         int o_stride_d, int o_stride_h, int o_stride_b, int q_dtype, int k_dtype, int o_dtype,
@@ -231,7 +231,7 @@ static void sage_sparse(torch_ptr stream, torch_ptr Q, torch_ptr K, torch_ptr V,
   }
   ark::sdpa_impl_qks8_sparse_pvhalf((sycl::queue*)stream, (void*)Q, (void*)K, (void*)V, (void*)O, (void*)mask,
                                     scale_block_size, (void*)qscale, (void*)kscale, (void*)lut,
-                                    (void*)valid_block_num, num_q_blocks, num_k_blocks, q_stride_s, q_stride_d,
+                                    (void*)valid_block_num, num_q_blocks, num_k_blocks, q_tile_override, q_stride_s, q_stride_d,
                                     q_stride_h, q_stride_b, k_stride_s, k_stride_d, k_stride_h, k_stride_b, v_stride_d,
                                     v_stride_s, v_stride_h, v_stride_b, o_stride_s, o_stride_d, o_stride_h, o_stride_b,
                                     batch, num_heads_q, num_heads_kv, seq_len_q, seq_len_kv, head_dim, softmax_scale,

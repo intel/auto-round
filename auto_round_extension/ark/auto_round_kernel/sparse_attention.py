@@ -59,6 +59,7 @@ def sage_sparse(
     quant_block_size: int = 64,
     qscale: torch.Tensor = None,
     kscale: torch.Tensor = None,
+    q_tile_override: int = 0,
     tensor_layout: str = "HND",
 ) -> torch.Tensor:
     """Low-level sparse SAGE attention with pre-quantized INT8 Q/K and LUT-driven block selection."""
@@ -70,6 +71,8 @@ def sage_sparse(
         raise ValueError(f"V must be float16 or bfloat16, got {value.dtype}")
     if qscale is None or kscale is None:
         raise ValueError("qscale and kscale must be provided for sage_sparse")
+    if q_tile_override not in (0, 128, 256):
+        raise ValueError(f"Unsupported q_tile_override={q_tile_override}; supported values: 0, 128, 256")
     if lut.dtype != torch.int32 or valid_block_num.dtype != torch.int32:
         raise ValueError("lut and valid_block_num must be int32 tensors")
     if lut.device != query.device or valid_block_num.device != query.device:
@@ -140,6 +143,7 @@ def sage_sparse(
         valid_block_num.data_ptr(),
         q_blocks,
         kv_blocks,
+        q_tile_override,
         *q_strides,
         *k_strides,
         *v_strides,
@@ -1336,6 +1340,7 @@ def sparge_sage2_attn_meansim_topk_xpu(
     return_sparsity: bool = False,
     return_metadata: bool = False,
     k_quant_granularity: int = 64,
+    q_tile_override: int = 0,
 ) -> torch.Tensor | tuple[Any, ...]:
     if query.device.type != "xpu":
         raise NotImplementedError("sparge_sage2_attn_meansim_topk_xpu is only supported on XPU")
@@ -1435,6 +1440,7 @@ def sparge_sage2_attn_meansim_topk_xpu(
                 quant_block_size=metadata["quant_block_size"],
                 qscale=metadata["qscale"],
                 kscale=metadata["kscale"],
+                q_tile_override=q_tile_override,
                 tensor_layout=tensor_layout,
             )
     else:
@@ -1450,6 +1456,7 @@ def sparge_sage2_attn_meansim_topk_xpu(
             quant_block_size=metadata["quant_block_size"],
             qscale=metadata["qscale"],
             kscale=metadata["kscale"],
+            q_tile_override=q_tile_override,
             tensor_layout=tensor_layout,
         )
     sparsity_ratio = metadata["stats"]["sparsity_ratio"]

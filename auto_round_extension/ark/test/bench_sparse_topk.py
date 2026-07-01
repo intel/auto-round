@@ -660,6 +660,7 @@ def run_benchmark(args: argparse.Namespace) -> list[dict[str, object]]:
                     quant_block_size=preprocess["quant_block_size"],
                     qscale=preprocess["qscale"],
                     kscale=preprocess["kscale"],
+                    q_tile_override=args.q_tile_override,
                     tensor_layout=args.tensor_layout,
                 ),
                 batch=args.batch,
@@ -690,6 +691,7 @@ def run_benchmark(args: argparse.Namespace) -> list[dict[str, object]]:
                     topk=topk,
                     attention_sink=False,
                     tensor_layout=args.tensor_layout,
+                    q_tile_override=args.q_tile_override,
                 ),
                 batch=args.batch,
                 num_heads_q=args.num_heads_q,
@@ -720,6 +722,13 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--head-dim", type=int, default=128)
     parser.add_argument("--topk", type=float, nargs="+", default=[1.0, 0.75, 0.5, 0.25, 0.125])
     parser.add_argument("--quant-block-size", type=int, default=64)
+    parser.add_argument(
+        "--q-tile-override",
+        type=int,
+        default=0,
+        choices=(0, 128, 256),
+        help="Sparse kernel q_tile override. 0 keeps the default kernel choice.",
+    )
     parser.add_argument("--tensor-layout", choices=("HND", "NHD"), default="HND")
     parser.add_argument("--warmup", type=int, default=2)
     parser.add_argument("--iters", type=int, default=3)

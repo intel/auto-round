@@ -261,7 +261,7 @@ struct TestSDPA {
                                  seq_len_kv, head_dim, softmax_scale, is_causal);
 
       ark::sdpa_impl_qks8_sparse_pvhalf(q, dev_qi8, dev_ki8, dev_v, dev_sparse_out, nullptr, scale_block_size,
-                                        dev_qscale, dev_kscale, dev_lut, dev_valid, q_blocks, kv_blocks, q_stride_s,
+                                        dev_qscale, dev_kscale, dev_lut, dev_valid, q_blocks, kv_blocks, 0, q_stride_s,
                                         q_stride_d, q_stride_h, q_stride_b, k_stride_s, k_stride_d, k_stride_h,
                                         k_stride_b, v_stride_d, v_stride_s, v_stride_h, v_stride_b, o_stride_s,
                                         o_stride_d, o_stride_h, o_stride_b, batch, num_heads_q, num_heads_kv,
@@ -397,7 +397,7 @@ struct TestSDPA {
                                  seq_len, head_dim, softmax_scale, false);
 
       ark::sdpa_impl_qks8_sparse_pvhalf(q, dev_qi8, dev_ki8, dev_v, dev_sparse_out, nullptr, scale_block_size,
-                                        dev_qscale, dev_kscale, dev_lut, dev_valid, q_blocks, kv_blocks, q_stride_s,
+                                        dev_qscale, dev_kscale, dev_lut, dev_valid, q_blocks, kv_blocks, 0, q_stride_s,
                                         q_stride_d, q_stride_h, q_stride_b, k_stride_s, k_stride_d, k_stride_h,
                                         k_stride_b, v_stride_d, v_stride_s, v_stride_h, v_stride_b, o_stride_s,
                                         o_stride_d, o_stride_h, o_stride_b, batch, num_heads_q, num_heads_kv, seq_len,
@@ -537,7 +537,7 @@ struct TestSDPA {
                                  seq_len, head_dim, softmax_scale, false);
 
       ark::sdpa_impl_qks8_sparse_pvhalf(q, dev_qi8, dev_ki8, dev_v, dev_sparse_out, nullptr, scale_block_size,
-                                        dev_qscale, dev_kscale, dev_lut, dev_valid, q_blocks, kv_blocks, q_stride_s,
+                                        dev_qscale, dev_kscale, dev_lut, dev_valid, q_blocks, kv_blocks, 0, q_stride_s,
                                         q_stride_d, q_stride_h, q_stride_b, k_stride_s, k_stride_d, k_stride_h,
                                         k_stride_b, v_stride_d, v_stride_s, v_stride_h, v_stride_b, o_stride_s,
                                         o_stride_d, o_stride_h, o_stride_b, batch, num_heads_q, num_heads_kv, seq_len,
@@ -678,7 +678,7 @@ struct TestSDPA {
                                  seq_len, head_dim, softmax_scale, false);
 
       ark::sdpa_impl_qks8_sparse_pvhalf(q, dev_qi8, dev_ki8, dev_v, dev_sparse_out, nullptr, scale_block_size,
-                                        dev_qscale, dev_kscale, dev_lut, dev_valid, q_blocks, kv_blocks, q_stride_s,
+                                        dev_qscale, dev_kscale, dev_lut, dev_valid, q_blocks, kv_blocks, 0, q_stride_s,
                                         q_stride_d, q_stride_h, q_stride_b, k_stride_s, k_stride_d, k_stride_h,
                                         k_stride_b, v_stride_d, v_stride_s, v_stride_h, v_stride_b, o_stride_s,
                                         o_stride_d, o_stride_h, o_stride_b, batch, num_heads_q, num_heads_kv, seq_len,

@@ -71,8 +71,9 @@ def build_sparse_metadata_and_mask(
     valid = torch.zeros((batch, heads, q_blocks), dtype=torch.int32, device=device)
     mask = torch.full((batch, 1, seq_len, seq_len), -1.0e9, dtype=torch.float32, device=device)
 
+    q_blocks_per_query_tile = max(1, query_tile_tokens // block_size)
     for qblk in range(q_blocks):
-        qtile = min(qblk, active_query_tiles - 1)
+        qtile = min(qblk // q_blocks_per_query_tile, active_query_tiles - 1)
         selected_blocks = per_query_tile_selection[qtile]
         previous = 0
         for i, selected in enumerate(selected_blocks):
@@ -158,6 +159,68 @@ def run_case(head_dim: int, block_size: int = 64, is_causal: bool = False) -> No
         raise RuntimeError(f"sage_sparse python prefill mismatch for D={head_dim}, causal={is_causal}")
 
 
+def run_multi_row_tile_case() -> None:
+    device = torch.device("xpu")
+    batch = 1
+    heads = 4
+    head_dim = 128
+    seq_len = 256
+    block_size = 64
+    scale = 1.0 / math.sqrt(head_dim)
+    query_tile_tokens = 64
+    per_query_tile_selection = [
+        [0, 1],
+        [1, 3],
+        [0, 2, 3],
+        [2, 3],
+    ]
+
+    torch.manual_seed(4026)
+    query = torch.randn((batch, heads, seq_len, head_dim), dtype=torch.float16, device=device)
+    key = torch.randn((batch, heads, seq_len, head_dim), dtype=torch.float16, device=device)
+    value = torch.randn((batch, heads, seq_len, head_dim), dtype=torch.float16, device=device)
+
+    q_i8, q_scale = quantize_qk(query, block_size)
+    k_i8, k_scale = quantize_qk(key, block_size)
+    lut, valid, dense_mask = build_sparse_metadata_and_mask(
+        batch, heads, seq_len, block_size, query_tile_tokens, per_query_tile_selection, device, is_causal=False
+    )
+
+    dense_out = ark.sage(
+        q_i8,
+        k_i8,
+        value,
+        attn_mask=dense_mask,
+        is_causal=False,
+        scale=scale,
+        quant_block_size=block_size,
+        qscale=q_scale,
+        kscale=k_scale,
+        tensor_layout="HND",
+    )
+    sparse_out = ark.sage_sparse(
+        q_i8,
+        k_i8,
+        value,
+        lut,
+        valid,
+        is_causal=False,
+        scale=scale,
+        quant_block_size=block_size,
+        qscale=q_scale,
+        kscale=k_scale,
+        tensor_layout="HND",
+    )
+    torch.xpu.synchronize()
+
+    diff = (dense_out.float() - sparse_out.float()).abs()
+    max_diff = float(diff.max().cpu())
+    mean_diff = float(diff.mean().cpu())
+    print(f"[sage_sparse][python_prefill_multi_row_tile] D=128 max_diff={max_diff:.6f} mean_diff={mean_diff:.6f}")
+    if max_diff > 5e-3 or mean_diff > 5e-4:
+        raise RuntimeError("sage_sparse multi-row tile mismatch for D=128")
+
+
 def run_all_selected_case(head_dim: int, block_size: int = 64) -> None:
     device = torch.device("xpu")
     batch = 1
@@ -223,6 +286,7 @@ def main() -> None:
     run_all_selected_case(128)
     run_case(64)
     run_case(128)
+    run_multi_row_tile_case()
     run_case(64, is_causal=True)
     run_case(128, is_causal=True)
 

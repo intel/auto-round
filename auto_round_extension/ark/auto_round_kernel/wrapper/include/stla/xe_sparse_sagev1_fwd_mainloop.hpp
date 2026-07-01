@@ -253,6 +253,15 @@ struct SPARSESAGEV1FwdMainloop<sage::XeDefault<Stages>, CausalMask_, FullMask_, 
     return params.ptr_page_table[batch_offset + next_page_logical_idx] * tiles_per_page + K % tiles_per_page;
   }
 
+  CUTLASS_DEVICE
+  static int logical_block_from_delta_row(int const* row, int valid_blocks, int idx) {
+    int logical_block = 0;
+    for (int i = 0; i <= idx && i < valid_blocks; ++i) {
+      logical_block += row[i];
+    }
+    return logical_block;
+  }
+
   template <typename QVCoord>
   CUTLASS_DEVICE void operator()(TensorQ2D const& Q_2D,  // (q,d)
                                  TensorK2D const& K_2D,  // (k,d)
@@ -266,7 +275,8 @@ struct SPARSESAGEV1FwdMainloop<sage::XeDefault<Stages>, CausalMask_, FullMask_, 
                                  int total_blk,  // Total # of K blocks
                                  int thr_id, int seq_len, int seq_len_kv_cache, int l_coord, float* scaleQ,
                                  float* scaleK, float* scaleV, int full_tile_offset, int discard_seq_coord,
-                                 int const* lut_row = nullptr, int valid_blocks = -1,
+                                 int const* lut_rows_base = nullptr, int const* valid_blocks_base = nullptr,
+                                 int sparse_q_rows_in_tile = 1,
                                  TensorK_cache2D const& K_cache_2D = TensorK_cache2D{},
                                  TensorV_cache2D const& V_cache_2D = TensorV_cache2D{}) {
     using namespace sycl::ext::oneapi::this_work_item;
@@ -372,7 +382,7 @@ struct SPARSESAGEV1FwdMainloop<sage::XeDefault<Stages>, CausalMask_, FullMask_, 
     for (int D = 0; D < size<3>(pQgQ); D++) {
       prefetch(prefetch_q, pQgQ(_, _, _, D));
     }
-    if (lut_row == nullptr) {
+    if (lut_rows_base == nullptr) {
       for (int D = 0; D < size<4>(pKgK); D++) {
         CUTLASS_PRAGMA_UNROLL
         for (int K = 0; K < Stages; K++) {
@@ -398,6 +408,10 @@ struct SPARSESAGEV1FwdMainloop<sage::XeDefault<Stages>, CausalMask_, FullMask_, 
     /* Check if */
     bool check_remainder_k = (seq_len % get<1>(TileShapeQK{}) != 0);
     int q_sg_tile = get<0>(shape_div(TileShapeQK{}, shape(SubgroupLayoutQK{})));
+    int q_blocks_per_wg_tile = params.scale_block_size > 0 ? cute::max(1, int(get<0>(TileShapeQK{})) / params.scale_block_size) : 1;
+    int sg_rows_per_sparse_q_block = params.scale_block_size > 0 ? cute::max(1, params.scale_block_size / q_sg_tile) : 1;
+    int subgroup_q_row_in_tile = get_sub_group_id() / sg_rows_per_sparse_q_block;
+    subgroup_q_row_in_tile = cute::min(subgroup_q_row_in_tile, q_blocks_per_wg_tile - 1);
 
     float dq_scale = params.scale_block_size
                          ? scaleQ[(get<0>(blk_qv) * get<0>(TileShapeQK{}) + get_sub_group_id() * q_sg_tile) /
@@ -405,7 +419,8 @@ struct SPARSESAGEV1FwdMainloop<sage::XeDefault<Stages>, CausalMask_, FullMask_, 
                                params.scale
                          : 1.f;
     /* Main loop body */
-    auto mainloop_body = [&](auto cached_k, int K, bool first_block, auto& copy_k_cur, auto& copy_v_cur,
+    auto mainloop_body = [&](auto cached_k, int K, bool first_block, bool subgroup_selected, auto& copy_k_cur,
+                             auto& copy_v_cur,
                              auto& prefetch_v_cur, auto& tKgK_cur, auto& tVgV_cur, auto& pVgV_cur) {
       /* Split barrier to keep threads together */
       barrier_arrive(ScopeWorkgroup);
@@ -438,10 +453,40 @@ struct SPARSESAGEV1FwdMainloop<sage::XeDefault<Stages>, CausalMask_, FullMask_, 
       for (int VV = 0; VV < VTiles; VV++) {
         prefetch(prefetch_v_cur, pVgV_cur(_, _, _, VV, k_idx));
       }
-      reorder(tSrS, tPrS);
-      if constexpr (!CausalMask) {
-        if (params.scale_block_size) {
-          if (params.scale_block_size == 1) {
+      if (subgroup_selected) {
+        reorder(tSrS, tPrS);
+        if constexpr (!CausalMask) {
+          if (params.scale_block_size) {
+            if (params.scale_block_size == 1) {
+              // Need to get global col and row indices to mask the elements
+              Tensor cPgP = make_identity_tensor(make_shape(seq_len, seq_len));
+              Tensor gP = local_tile(cPgP, take<0, 2>(TileShapeQK{}), make_coord(get<0>(blk_qv), K));
+              auto cS_thread = thr_mma_qk.partition_C(gP);
+              CUTLASS_PRAGMA_UNROLL
+              for (int i = 0; i < tPrS.size(); ++i) {
+                int row_idx = get<0>(cS_thread(i));
+                int col_idx = get<1>(cS_thread(i));
+                tPrS(i) *= ElementP(scaleQ[row_idx] * scaleK[col_idx]);
+              }
+              CUTLASS_PRAGMA_UNROLL
+              for (int i = 0; i < tPrS.size(); ++i) {
+                tPrS(i) *= params.scale;
+              }
+            } else {
+              float _scale = dq_scale * scaleK[scalek_idx];
+              CUTLASS_PRAGMA_UNROLL
+              for (int i = 0; i < tPrS.size(); i++) tPrS(i) *= _scale;
+            }
+          }
+        } else {
+          float _scale = dq_scale * scaleK[scalek_idx];
+          CUTLASS_PRAGMA_UNROLL
+          for (int i = 0; i < tPrS.size(); i++) tPrS(i) *= _scale;
+        }
+
+        /* Causal masking - only in non-cache mode */
+        if constexpr (!is_cache && CausalMask) {
+          if (K == total_blk - 1) {
             // Need to get global col and row indices to mask the elements
             Tensor cPgP = make_identity_tensor(make_shape(seq_len, seq_len));
             Tensor gP = local_tile(cPgP, take<0, 2>(TileShapeQK{}), make_coord(get<0>(blk_qv), K));
@@ -450,144 +495,116 @@ struct SPARSESAGEV1FwdMainloop<sage::XeDefault<Stages>, CausalMask_, FullMask_, 
             for (int i = 0; i < tPrS.size(); ++i) {
               int row_idx = get<0>(cS_thread(i));
               int col_idx = get<1>(cS_thread(i));
-              tPrS(i) *= ElementP(scaleQ[row_idx] * scaleK[col_idx]);
+              if (col_idx - seq_len_kv_cache - full_tile_offset > row_idx - discard_seq_coord) {
+                tPrS(i) = ElementP(-INFINITY);
+              }
             }
-            CUTLASS_PRAGMA_UNROLL
-            for (int i = 0; i < tPrS.size(); ++i) {
-              tPrS(i) *= params.scale;
+          }
+        } else {
+          if constexpr (FullMask_) {
+            // Need to get global col and row indices to mask the elements
+            Tensor cPgP = make_identity_tensor(make_shape(seq_len, seq_len));
+            Tensor gP = local_tile(cPgP, take<0, 2>(TileShapeQK{}), make_coord(get<0>(blk_qv), K));
+            auto cS_thread = thr_mma_qk.partition_C(gP);
+            int row_idx_begin = get<0>(cS_thread(0));
+            int row_idx_end = row_idx_begin + q_sg_tile;
+            int col_idx_begin = get<1>(cS_thread(0));
+            int col_idx_end = col_idx_begin + get<1>(TileShapeQK{});
+            if (row_idx_end <= seq_len && col_idx_end <= seq_len) {
+              CUTLASS_PRAGMA_UNROLL
+              for (int i = 0; i < tPrS.size(); ++i) {
+                int row_idx = get<0>(cS_thread(i));
+                int col_idx = get<1>(cS_thread(i));
+                tPrS(i) += ElementP(params.mask[col_idx + row_idx * seq_len]);
+              }
+            } else {
+              CUTLASS_PRAGMA_UNROLL
+              for (int i = 0; i < tPrS.size(); ++i) {
+                int row_idx = get<0>(cS_thread(i));
+                int col_idx = get<1>(cS_thread(i));
+                tPrS(i) += (row_idx < seq_len && col_idx < seq_len) ? ElementP(params.mask[col_idx + row_idx * seq_len])
+                                                                    : ElementP(-INFINITY);
+              }
             }
-          } else {
-            float _scale = dq_scale * scaleK[scalek_idx];
-            CUTLASS_PRAGMA_UNROLL
-            for (int i = 0; i < tPrS.size(); i++) tPrS(i) *= _scale;
           }
         }
-      } else {
-        float _scale = dq_scale * scaleK[scalek_idx];
-        CUTLASS_PRAGMA_UNROLL
-        for (int i = 0; i < tPrS.size(); i++) tPrS(i) *= _scale;
-      }
+        /* k masking for remainder tiles */
+        if constexpr (!is_cache) {
+          if (check_remainder_k && K == total_blk - 1) {
+            FragPCol k_rem_mask;
+            int k_val = get<0>(tKgK_cur(0, 0, 0, k_idx, 0)) + kblocks_cache * get<1>(TileShapeQK{});
+            int k = k_val + get_sub_group().get_local_id()[0];
+            CUTLASS_PRAGMA_UNROLL
+            for (int i = 0; i < k_rem_mask.size(); i++, k += intel::sg_size) {
+              k_rem_mask(i) = (k < seq_len) ? ElementP(sycl::nan(0u)) : ElementP(-INFINITY);
+            }
+            CUTLASS_PRAGMA_UNROLL
+            for (int i = 0; i < tPrS.size(); i++) {
+              tPrS(i) = sycl::fmin(tPrS(i), broadcast<1>(k_rem_mask, tPrS, i));
+            }
+          }
+        }
 
-      /* Causal masking - only in non-cache mode */
-      if constexpr (!is_cache && CausalMask) {
-        if (K == total_blk - 1) {
-          // Need to get global col and row indices to mask the elements
-          Tensor cPgP = make_identity_tensor(make_shape(seq_len, seq_len));
-          Tensor gP = local_tile(cPgP, take<0, 2>(TileShapeQK{}), make_coord(get<0>(blk_qv), K));
-          auto cS_thread = thr_mma_qk.partition_C(gP);
+        /* Apply softmax and scaling (tA rescaling fused into GEMM2 VTile loop) */
+        auto rescale = softmax(first_block, tPrS, tA_max, tA_sum);
+        if constexpr (!UseInt8PV) {
+          reorder(tPrS, tArP);
+        } else {
+          reorder(tPrS, tArP_i8);
+        }
+
+        /* GEMM 2: A += P * V, split in v dimension.
+          tArA rescaling is fused to per-VTile */
+        if constexpr (!UseInt8PV) {
           CUTLASS_PRAGMA_UNROLL
-          for (int i = 0; i < tPrS.size(); ++i) {
-            int row_idx = get<0>(cS_thread(i));
-            int col_idx = get<1>(cS_thread(i));
-            if (col_idx - seq_len_kv_cache - full_tile_offset > row_idx - discard_seq_coord) {
-              tPrS(i) = ElementP(-INFINITY);
+          for (int VV = 0; VV < VTiles; VV++) {
+            copy(copy_v_cur, tVgV_cur(_, _, _, VV, k_idx), tVrV);
+            reorder(tVrV, tArV);
+            if (!first_block) {
+              CUTLASS_PRAGMA_UNROLL
+              for (int i = 0; i < tArA.size() / VTiles; i++) tArA(_, _, _, VV)(i) *= broadcast<0>(rescale, tArA, i);
             }
+
+            cute::gemm(mma_pv, tArP, tArV, tArA(_, _, _, VV));
           }
-        }
-      } else {
-        if constexpr (FullMask_) {
-          // Need to get global col and row indices to mask the elements
-          Tensor cPgP = make_identity_tensor(make_shape(seq_len, seq_len));
-          Tensor gP = local_tile(cPgP, take<0, 2>(TileShapeQK{}), make_coord(get<0>(blk_qv), K));
-          auto cS_thread = thr_mma_qk.partition_C(gP);
-          int row_idx_begin = get<0>(cS_thread(0));
-          int row_idx_end = row_idx_begin + q_sg_tile;
-          int col_idx_begin = get<1>(cS_thread(0));
-          int col_idx_end = col_idx_begin + get<1>(TileShapeQK{});
-          if (row_idx_end <= seq_len && col_idx_end <= seq_len) {
-            CUTLASS_PRAGMA_UNROLL
-            for (int i = 0; i < tPrS.size(); ++i) {
-              int row_idx = get<0>(cS_thread(i));
-              int col_idx = get<1>(cS_thread(i));
-              tPrS(i) += ElementP(params.mask[col_idx + row_idx * seq_len]);
-            }
-          } else {
-            CUTLASS_PRAGMA_UNROLL
-            for (int i = 0; i < tPrS.size(); ++i) {
-              int row_idx = get<0>(cS_thread(i));
-              int col_idx = get<1>(cS_thread(i));
-              tPrS(i) += (row_idx < seq_len && col_idx < seq_len) ? ElementP(params.mask[col_idx + row_idx * seq_len])
-                                                                  : ElementP(-INFINITY);
-            }
-          }
-        }
-      }
-      /* k masking for remainder tiles */
-      if constexpr (!is_cache) {
-        if (check_remainder_k && K == total_blk - 1) {
-          FragPCol k_rem_mask;
-          int k_val = get<0>(tKgK_cur(0, 0, 0, k_idx, 0)) + kblocks_cache * get<1>(TileShapeQK{});
-          int k = k_val + get_sub_group().get_local_id()[0];
+        } else {
+          constexpr ElementA kInvVQuantScale = ElementA(1.0f / 127.0f);
+          int scalev_head_dim = int(size<0>(V_2D));
+          int v_block_base = int(get<1>(blk_qv)) * int(get<1>(TileShapePV{})) * VTiles;
+          int scalev_block_base = scalek_idx * scalev_head_dim;
           CUTLASS_PRAGMA_UNROLL
-          for (int i = 0; i < k_rem_mask.size(); i++, k += intel::sg_size) {
-            k_rem_mask(i) = (k < seq_len) ? ElementP(sycl::nan(0u)) : ElementP(-INFINITY);
-          }
-          CUTLASS_PRAGMA_UNROLL
-          for (int i = 0; i < tPrS.size(); i++) {
-            tPrS(i) = sycl::fmin(tPrS(i), broadcast<1>(k_rem_mask, tPrS, i));
-          }
-        }
-      }
+          for (int VV = 0; VV < VTiles; VV++) {
+            auto tArA_v = tArA(_, _, _, VV);
+            if (!first_block) {
+              CUTLASS_PRAGMA_UNROLL
+              for (int i = 0; i < tArA.size() / VTiles; i++) tArA_v(i) *= broadcast<0>(rescale, tArA, i);
+            }
 
-      /* Apply softmax and scaling (tA rescaling fused into GEMM2 VTile loop) */
-      auto rescale = softmax(first_block, tPrS, tA_max, tA_sum);
-      if constexpr (!UseInt8PV) {
-        reorder(tPrS, tArP);
-      } else {
-        reorder(tPrS, tArP_i8);
-      }
+            auto tArAcc = thr_mma_pv_i8.partition_sg_fragment_C(cPV);
+            auto tVrV_i8 = thr_copy_v.partition_sg_fragment_D(gV_split(_, _, 0, 0));
+            auto tArV_i8 = thr_mma_pv_i8.partition_sg_fragment_B(gV_split(_, _, 0, 0));
+            copy(copy_v_cur, tVgV_cur(_, _, _, VV, k_idx), tVrV_i8);
+            reorder(tVrV_i8, tArV_i8);
+            clear(tArAcc);
 
-      /* GEMM 2: A += P * V, split in v dimension.
-        tArA rescaling is fused to per-VTile */
-      if constexpr (!UseInt8PV) {
-        CUTLASS_PRAGMA_UNROLL
-        for (int VV = 0; VV < VTiles; VV++) {
-          copy(copy_v_cur, tVgV_cur(_, _, _, VV, k_idx), tVrV);
-          reorder(tVrV, tArV);
-          if (!first_block) {
-            CUTLASS_PRAGMA_UNROLL
-            for (int i = 0; i < tArA.size() / VTiles; i++) tArA(_, _, _, VV)(i) *= broadcast<0>(rescale, tArA, i);
-          }
+            if constexpr (ExecuteInt8PV) {
+              cute::gemm(mma_pv_i8, tArP_i8, tArV_i8, tArAcc);
+            }
 
-          cute::gemm(mma_pv, tArP, tArV, tArA(_, _, _, VV));
-        }
-      } else {
-        constexpr ElementA kInvVQuantScale = ElementA(1.0f / 127.0f);
-        int scalev_head_dim = int(size<0>(V_2D));
-        int v_block_base = int(get<1>(blk_qv)) * int(get<1>(TileShapePV{})) * VTiles;
-        int scalev_block_base = scalek_idx * scalev_head_dim;
-        CUTLASS_PRAGMA_UNROLL
-        for (int VV = 0; VV < VTiles; VV++) {
-          auto tArA_v = tArA(_, _, _, VV);
-          if (!first_block) {
-            CUTLASS_PRAGMA_UNROLL
-            for (int i = 0; i < tArA.size() / VTiles; i++) tArA_v(i) *= broadcast<0>(rescale, tArA, i);
-          }
-
-          auto tArAcc = thr_mma_pv_i8.partition_sg_fragment_C(cPV);
-          auto tVrV_i8 = thr_copy_v.partition_sg_fragment_D(gV_split(_, _, 0, 0));
-          auto tArV_i8 = thr_mma_pv_i8.partition_sg_fragment_B(gV_split(_, _, 0, 0));
-          copy(copy_v_cur, tVgV_cur(_, _, _, VV, k_idx), tVrV_i8);
-          reorder(tVrV_i8, tArV_i8);
-          clear(tArAcc);
-
-          if constexpr (ExecuteInt8PV) {
-            cute::gemm(mma_pv_i8, tArP_i8, tArV_i8, tArAcc);
-          }
-
-          if constexpr (WriteBackInt8PV) {
-            CUTLASS_PRAGMA_UNROLL
-            for (int i = 0; i < tArAcc.size(); ++i) {
-              int local_v = int(get<1>(tCrA(i)));
-              int scalev_idx = scalev_block_base + v_block_base + VV * int(get<1>(TileShapePV{})) + local_v;
-              tArA_v(i) += ElementA(tArAcc(i)) * ElementA(scaleV[scalev_idx]) * kInvVQuantScale;
+            if constexpr (WriteBackInt8PV) {
+              CUTLASS_PRAGMA_UNROLL
+              for (int i = 0; i < tArAcc.size(); ++i) {
+                int local_v = int(get<1>(tCrA(i)));
+                int scalev_idx = scalev_block_base + v_block_base + VV * int(get<1>(TileShapePV{})) + local_v;
+                tArA_v(i) += ElementA(tArAcc(i)) * ElementA(scaleV[scalev_idx]) * kInvVQuantScale;
+              }
             }
           }
         }
       }
 
       /* K prefetch */
-      if (lut_row == nullptr) {
+      if (lut_rows_base == nullptr) {
         int K_next = K + Stages;
         for (int D = 0; D < size<4>(pKgK); D++) {
           if constexpr (is_cache) {
@@ -613,36 +630,85 @@ struct SPARSESAGEV1FwdMainloop<sage::XeDefault<Stages>, CausalMask_, FullMask_, 
     };
 
     /* Main loop, blocked in k. */
-    if (lut_row != nullptr && valid_blocks >= 0) {
-      int cur_block = 0;
-      bool first_sparse_block = true;
-      for (int i = 0; i < valid_blocks; ++i) {
-        cur_block += lut_row[i];
-        int K = cur_block;
-        if constexpr (CachedKV) {
-          if (K < kblocks_cache) {
-            if (K < blk_k0 || K >= blk_k1) continue;
-            mainloop_body(std::bool_constant<true>{}, K, first_sparse_block, copy_k_cache, copy_v_cache,
-                          prefetch_v_cache, tKgK_cache, tVgV_cache, pVgV_cache);
-            first_sparse_block = false;
-            continue;
+    if (lut_rows_base != nullptr && valid_blocks_base != nullptr) {
+      static constexpr int kMaxSparseRowsPerTile = cute::max(1, int(get<0>(TileShapeQK{})) / 64);
+      int row_valid[kMaxSparseRowsPerTile];
+      int row_pos[kMaxSparseRowsPerTile];
+      int row_cur_block[kMaxSparseRowsPerTile];
+      bool subgroup_started = false;
+
+      for (int row = 0; row < kMaxSparseRowsPerTile; ++row) {
+        if (row < sparse_q_rows_in_tile) {
+          row_valid[row] = valid_blocks_base[row];
+          row_pos[row] = 0;
+          row_cur_block[row] = row_valid[row] > 0 ? logical_block_from_delta_row(
+                                                        lut_rows_base + row * params.num_k_blocks, row_valid[row], 0)
+                                                  : total_blk;
+        } else {
+          row_valid[row] = 0;
+          row_pos[row] = 0;
+          row_cur_block[row] = total_blk;
+        }
+      }
+
+      while (true) {
+        int next_block = total_blk;
+        for (int row = 0; row < sparse_q_rows_in_tile; ++row) {
+          if (row_pos[row] < row_valid[row]) {
+            next_block = cute::min(next_block, row_cur_block[row]);
           }
         }
-        K += kblocks_cache;
-        if (K < (blk_k0 > kblocks_cache ? blk_k0 : kblocks_cache) || K >= blk_k1) continue;
-        mainloop_body(std::bool_constant<false>{}, K, first_sparse_block, copy_k, copy_v, prefetch_v, tKgK, tVgV,
-                      pVgV);
-        first_sparse_block = false;
+        if (next_block >= total_blk) break;
+
+        bool subgroup_selected = subgroup_q_row_in_tile < sparse_q_rows_in_tile &&
+                                 row_pos[subgroup_q_row_in_tile] < row_valid[subgroup_q_row_in_tile] &&
+                                 row_cur_block[subgroup_q_row_in_tile] == next_block;
+        bool first_selected_block = !subgroup_started;
+        int K = next_block;
+        if constexpr (CachedKV) {
+          if (K < kblocks_cache) {
+            if (K >= blk_k0 && K < blk_k1) {
+              mainloop_body(std::bool_constant<true>{}, K, first_selected_block, subgroup_selected, copy_k_cache,
+                            copy_v_cache, prefetch_v_cache, tKgK_cache, tVgV_cache, pVgV_cache);
+              subgroup_started = subgroup_started || subgroup_selected;
+            }
+          } else {
+            K += kblocks_cache;
+            if (K >= (blk_k0 > kblocks_cache ? blk_k0 : kblocks_cache) && K < blk_k1) {
+              mainloop_body(std::bool_constant<false>{}, K, first_selected_block, subgroup_selected, copy_k, copy_v,
+                            prefetch_v, tKgK, tVgV, pVgV);
+              subgroup_started = subgroup_started || subgroup_selected;
+            }
+          }
+        } else {
+          if (K >= blk_k0 && K < blk_k1) {
+            mainloop_body(std::bool_constant<false>{}, K, first_selected_block, subgroup_selected, copy_k, copy_v,
+                          prefetch_v, tKgK, tVgV, pVgV);
+            subgroup_started = subgroup_started || subgroup_selected;
+          }
+        }
+
+        for (int row = 0; row < sparse_q_rows_in_tile; ++row) {
+          if (row_pos[row] < row_valid[row] && row_cur_block[row] == next_block) {
+            row_pos[row] += 1;
+            if (row_pos[row] < row_valid[row]) {
+              int const* row_ptr = lut_rows_base + row * params.num_k_blocks;
+              row_cur_block[row] += row_ptr[row_pos[row]];
+            } else {
+              row_cur_block[row] = total_blk;
+            }
+          }
+        }
       }
     } else {
       if constexpr (CachedKV) {
         for (int K = blk_k0; K < kblocks_cache; K++) {
-          mainloop_body(std::bool_constant<true>{}, K, K == blk_k0, copy_k_cache, copy_v_cache, prefetch_v_cache,
+          mainloop_body(std::bool_constant<true>{}, K, K == blk_k0, true, copy_k_cache, copy_v_cache, prefetch_v_cache,
                         tKgK_cache, tVgV_cache, pVgV_cache);
         }
       }
       for (int K = (blk_k0 > kblocks_cache ? blk_k0 : kblocks_cache); K < blk_k1; K++) {
-        mainloop_body(std::bool_constant<false>{}, K, K == (blk_k0 > kblocks_cache ? blk_k0 : kblocks_cache), copy_k,
+        mainloop_body(std::bool_constant<false>{}, K, K == (blk_k0 > kblocks_cache ? blk_k0 : kblocks_cache), true, copy_k,
                       copy_v, prefetch_v, tKgK, tVgV, pVgV);
       }
     }

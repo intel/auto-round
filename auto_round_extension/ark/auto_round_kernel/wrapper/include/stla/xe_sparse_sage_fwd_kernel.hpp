@@ -237,19 +237,22 @@ class XeSparseSageFwdKernel {
                               ((idx_b * s.num_heads_kv * seq_kv_pad + head * seq_kv_pad) * s.head_size_vo)
                         : nullptr;
       int sparse_q_block = blk_q;
+      int sparse_q_rows_in_tile = 1;
       if (params.mainloop.scale_block_size > 0) {
         int q_blocks_per_tile = cute::max(1, int(get<0>(TileShapeQK{})) / params.mainloop.scale_block_size);
         sparse_q_block = blk_q * q_blocks_per_tile;
+        sparse_q_rows_in_tile = q_blocks_per_tile;
         if (params.mainloop.num_q_blocks > 0) {
+          sparse_q_rows_in_tile = cute::min(sparse_q_rows_in_tile, params.mainloop.num_q_blocks - sparse_q_block);
           sparse_q_block = cute::min(sparse_q_block, params.mainloop.num_q_blocks - 1);
         }
       }
-      auto valid_blocks = params.mainloop.valid_block_num
-                              ? params.mainloop.valid_block_num[(idx_b * s.num_heads_q + head_q) *
-                                                                    params.mainloop.num_q_blocks +
-                                                                sparse_q_block]
-                              : -1;
-      auto lut_row = params.mainloop.lut
+      auto valid_blocks_base = params.mainloop.valid_block_num
+                                   ? params.mainloop.valid_block_num +
+                                         (idx_b * s.num_heads_q + head_q) * params.mainloop.num_q_blocks +
+                                         sparse_q_block
+                                   : nullptr;
+      auto lut_rows_base = params.mainloop.lut
                          ? params.mainloop.lut +
                                (((idx_b * s.num_heads_q + head_q) * params.mainloop.num_q_blocks + sparse_q_block) *
                                 params.mainloop.num_k_blocks)
@@ -277,7 +280,8 @@ class XeSparseSageFwdKernel {
       CollectiveMainloop mainloop(params.mainloop, shared_storage.mainloop);
       mainloop(Q(_, _, head_q, l_coord), K(_, _, head, l_coord), V(_, _, head, l_coord), tArA, tA_max, tA_sum, blk_qv,
                0, k_blocks, k_blocks, thr_id, seq_len, seq_len_kv_cache, idx_b, scaleQ, scaleK, scaleV,
-               full_tile_offset, discard_seq_coord, lut_row, valid_blocks, K_cache(_, _, head, l_coord),
+               full_tile_offset, discard_seq_coord, lut_rows_base, valid_blocks_base, sparse_q_rows_in_tile,
+               K_cache(_, _, head, l_coord),
                V_cache(_, _, head, l_coord));
 
       if constexpr (!is_empty_v<MainloopSharedStorage> && !is_empty_v<EpilogueSharedStorage>) {

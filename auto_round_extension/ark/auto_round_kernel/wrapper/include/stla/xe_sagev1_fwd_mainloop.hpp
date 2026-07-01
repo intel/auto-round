@@ -266,10 +266,14 @@ struct SAGEV1FwdMainloop<sage::XeDefault<Stages>, CausalMask_, FullMask_, Cached
                                  int total_blk,  // Total # of K blocks
                                  int thr_id, int seq_len, int seq_len_kv_cache, int l_coord, float* scaleQ,
                                  float* scaleK, float* scaleV, int full_tile_offset, int discard_seq_coord,
-                                 int const* lut_row = nullptr, int valid_blocks = -1,
+                                 int const* lut_rows_base = nullptr, int const* valid_blocks_base = nullptr,
+                                 int sparse_q_rows_in_tile = 1,
                                  TensorK_cache2D const& K_cache_2D = TensorK_cache2D{},
                                  TensorV_cache2D const& V_cache_2D = TensorV_cache2D{}) {
     using namespace sycl::ext::oneapi::this_work_item;
+    (void)sparse_q_rows_in_tile;
+    int const* lut_row = lut_rows_base;
+    int valid_blocks = valid_blocks_base ? valid_blocks_base[0] : -1;
 
     // Short dimension names:
     //    q = sequence len dimension for Q

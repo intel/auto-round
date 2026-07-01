@@ -72,12 +72,20 @@ int launch_prefill_kernel_f16_128_sparse_sage(detail::Options const& options) {
   return launch_sparse_sage_prefill_kernel_128<cute::int8_t, cute::int8_t, cute::half_t>(options);
 }
 
+int launch_prefill_kernel_f16_128_sparse_sage_qtile128(detail::Options const& options) {
+  return launch_sparse_sage_prefill_kernel_128_qtile128<cute::int8_t, cute::int8_t, cute::half_t>(options);
+}
+
 int launch_prefill_kernel_f16_64_sparse_sage(detail::Options const& options) {
   return launch_sparse_sage_prefill_kernel_64<cute::int8_t, cute::int8_t, cute::half_t>(options);
 }
 
 int launch_prefill_kernel_bf16_128_sparse_sage(detail::Options const& options) {
   return launch_sparse_sage_prefill_kernel_128<cute::int8_t, cute::int8_t, cute::bfloat16_t>(options);
+}
+
+int launch_prefill_kernel_bf16_128_sparse_sage_qtile128(detail::Options const& options) {
+  return launch_sparse_sage_prefill_kernel_128_qtile128<cute::int8_t, cute::int8_t, cute::bfloat16_t>(options);
 }
 
 int launch_prefill_kernel_bf16_64_sparse_sage(detail::Options const& options) {
@@ -128,14 +136,20 @@ KernelLauncher select_sage_prefill_launcher(BTLA_DTYPE dtype, int head_dim) {
   }
 }
 
-KernelLauncher select_sparse_sage_prefill_launcher(BTLA_DTYPE pv_dtype, int head_dim) {
+KernelLauncher select_sparse_sage_prefill_launcher(BTLA_DTYPE pv_dtype, int head_dim, int q_tile_override) {
   // Sparse Sage reuses the dense dtype/head-dim family split, but always routes through the dedicated
   // sparse mainloop that consumes LUT metadata instead of walking dense KV tiles.
   switch (head_dim) {
     case 128:
+      if (q_tile_override == 128) {
+        return pv_dtype == BTLA_DTYPE::BF16 ? launch_prefill_kernel_bf16_128_sparse_sage_qtile128
+                                            : launch_prefill_kernel_f16_128_sparse_sage_qtile128;
+      }
+      if (q_tile_override != 0 && q_tile_override != 256) return nullptr;
       return pv_dtype == BTLA_DTYPE::BF16 ? launch_prefill_kernel_bf16_128_sparse_sage
                                           : launch_prefill_kernel_f16_128_sparse_sage;
     case 64:
+      if (q_tile_override != 0 && q_tile_override != 128) return nullptr;
       return pv_dtype == BTLA_DTYPE::BF16 ? launch_prefill_kernel_bf16_64_sparse_sage
                                           : launch_prefill_kernel_f16_64_sparse_sage;
     default:
@@ -285,7 +299,7 @@ void sage_prefill(sycl::queue* q, void* Q_ptr, void* K_ptr, void* V_ptr, void* O
 
 void sparse_sage_prefill(sycl::queue* q, void* Q_ptr, void* K_ptr, void* V_ptr, void* O_ptr, void* mask,
                          int scale_block_size, void* qscale, void* kscale, void* lut, void* valid_block_num,
-                         int num_q_blocks, int num_k_blocks, BTLA_DTYPE pv_dtype, int q_stride_s, int q_stride_d,
+                         int num_q_blocks, int num_k_blocks, int q_tile_override, BTLA_DTYPE pv_dtype, int q_stride_s, int q_stride_d,
                          int q_stride_h, int q_stride_b, int k_stride_s, int k_stride_d, int k_stride_h,
                          int k_stride_b, int v_stride_d, int v_stride_s, int v_stride_h, int v_stride_b,
                          int o_stride_s, int o_stride_d, int o_stride_h, int o_stride_b, int batch, int num_heads_q,
@@ -297,6 +311,7 @@ void sparse_sage_prefill(sycl::queue* q, void* Q_ptr, void* K_ptr, void* V_ptr, 
                           v_stride_b, o_stride_s, o_stride_d, o_stride_h, o_stride_b, batch, num_heads_q, num_heads_kv,
                           seq_len_q, seq_len_kv, head_dim, softmax_scale, is_causal);
   options.scale_block_size = scale_block_size;
+  options.q_tile_override = q_tile_override;
   options.qscale = qscale;
   options.kscale = kscale;
   options.lut = static_cast<int const*>(lut);
@@ -305,10 +320,9 @@ void sparse_sage_prefill(sycl::queue* q, void* Q_ptr, void* K_ptr, void* V_ptr, 
   options.num_k_blocks = num_k_blocks;
   compat::set_default_queue(*q);
 
-  KernelLauncher launcher = select_sparse_sage_prefill_launcher(pv_dtype, head_dim);
+  KernelLauncher launcher = select_sparse_sage_prefill_launcher(pv_dtype, head_dim, q_tile_override);
   if (launcher == nullptr) {
-    throw std::runtime_error(
-        "Unsupported dtype or head dimension for sparse_sage_prefill (only F16/BF16 PV and 64/128 are supported)");
+    throw std::runtime_error("Unsupported sparse_sage_prefill config");
   }
 
   launcher(options);
@@ -339,7 +353,7 @@ void sparse_sage_decode(sycl::queue* q, void* Q_ptr, void* K_ptr, void* V_ptr, v
   options.seq_len_kv_cache = seq_len_kv_cache;
   compat::set_default_queue(*q);
 
-  KernelLauncher launcher = select_sparse_sage_prefill_launcher(pv_dtype, head_dim);
+  KernelLauncher launcher = select_sparse_sage_prefill_launcher(pv_dtype, head_dim, 0);
   if (launcher == nullptr) {
     throw std::runtime_error(
         "Unsupported dtype or head dimension for sparse_sage_decode (only F16/BF16 PV and 64/128 are supported)");
@@ -490,7 +504,7 @@ void sdpa_impl_qks8_pvi8(sycl::queue* q, void* Q_ptr, void* K_ptr, void* V_ptr, 
 
 void sdpa_impl_qks8_sparse_pvhalf(sycl::queue* q, void* Q_ptr, void* K_ptr, void* V_ptr, void* O_ptr, void* mask,
                                   int scale_block_size, void* qscale, void* kscale, void* lut, void* valid_block_num,
-                                  int num_q_blocks, int num_k_blocks, int q_stride_s, int q_stride_d, int q_stride_h,
+                                  int num_q_blocks, int num_k_blocks, int q_tile_override, int q_stride_s, int q_stride_d, int q_stride_h,
                                   int q_stride_b, int k_stride_s, int k_stride_d, int k_stride_h, int k_stride_b,
                                   int v_stride_d, int v_stride_s, int v_stride_h, int v_stride_b, int o_stride_s,
                                   int o_stride_d, int o_stride_h, int o_stride_b, int batch, int num_heads_q,
@@ -519,7 +533,7 @@ void sdpa_impl_qks8_sparse_pvhalf(sycl::queue* q, void* Q_ptr, void* K_ptr, void
   }
 
   sparse_sage_prefill(q, Q_ptr, K_ptr, V_ptr, O_ptr, mask, scale_block_size, qscale, kscale, lut, valid_block_num,
-                      num_q_blocks, num_k_blocks, pv_dtype, q_stride_s, q_stride_d, q_stride_h, q_stride_b,
+                      num_q_blocks, num_k_blocks, q_tile_override, pv_dtype, q_stride_s, q_stride_d, q_stride_h, q_stride_b,
                       k_stride_s, k_stride_d, k_stride_h, k_stride_b, v_stride_d, v_stride_s, v_stride_h,
                       v_stride_b, o_stride_s, o_stride_d, o_stride_h, o_stride_b, batch, num_heads_q, num_heads_kv,
                       seq_len_q, seq_len_kv, head_dim, softmax_scale, is_causal);

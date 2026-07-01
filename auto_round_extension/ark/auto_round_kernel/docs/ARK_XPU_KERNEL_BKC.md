@@ -86,6 +86,52 @@ sg render -c 'source /opt/intel/oneapi/setvars.sh >/dev/null 2>&1 && \
 
 For a larger run, keep the same `sg render` wrapper and increase `--seq-len`, `--warmup`, and `--iters` as needed.
 
+## Fix `sg render -c` Friction
+
+If `sg render -c ...` is required on every run, the usual issue is that the current shell session does not yet carry the `render` group.
+
+Permanent fix:
+
+```bash
+sudo usermod -aG render "$USER"
+```
+
+Then start a fresh login session. On some hosts, opening a new terminal tab is not enough; use one of:
+
+- full logout/login
+- reconnect SSH
+- reconnect the VS Code remote session
+
+Verify that the new session has the right group before running XPU workloads:
+
+```bash
+id
+python -c "import torch; print(torch.xpu.is_available(), torch.xpu.device_count())"
+```
+
+You should see `render` in `id`, and PyTorch should report XPU devices.
+
+Short-term workaround without a full relogin:
+
+```bash
+su - "$USER"
+cd /home/yiliu7/workspace/auto-round/auto_round_extension/ark
+source /opt/intel/oneapi/setvars.sh >/dev/null 2>&1 || true
+source .venv/bin/activate
+python test/bench_sparse_topk.py --seq-len 1024 --topk 1.0 0.5 --warmup 1 --iters 2
+```
+
+If `sg render -c ...` still needs to be used, source oneAPI inside that shell too; otherwise the XPU extension may fail to load with `libiomp5.so` missing:
+
+```bash
+sg render -c 'bash -lc "
+cd /home/yiliu7/workspace/auto-round/auto_round_extension/ark
+source /opt/intel/oneapi/setvars.sh >/dev/null 2>&1 || true
+source .venv/bin/activate
+python test/bench_sparse_topk.py --seq-len 1024 --topk 1.0 0.5 --warmup 1 --iters 2
+"'
+```
+
 ## Reproduce The Current Triton-XPU Sparse Work
 
 ### Prefill executor regression test
@@ -144,7 +190,8 @@ PY
 
 | Symptom | Likely Cause | Fix |
 |---|---|---|
-| `XPU device count is zero` | Not running in `render` context | Use `sg render -c "..."` or log in with the correct groups |
+| `XPU device count is zero` | Current shell is missing the `render` group | Add the user to `render`, start a fresh login session, and verify with `id`; use `sg render -c "..."` only as a temporary workaround |
 | `XPU not available` | GPU driver stack or permissions issue | Check `/dev/dri/renderD*`, render group membership, and Intel GPU userspace packages |
+| `libiomp5.so: cannot open shared object file` | oneAPI runtime libraries are not loaded in the current shell | Source `/opt/intel/oneapi/setvars.sh` inside the same shell that launches Python |
 | `No space left on device` | Workspace or cache is on a full filesystem | Move the env or `uv` cache to a writable volume |
 | `Unable to load XPU lib` | Build output not found | Make sure `xbuild/` points at the built `auto_round_kernel_xpu` artifact |
