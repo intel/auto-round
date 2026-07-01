@@ -42,6 +42,7 @@
 #include "bestla/bestla.h"
 #include "sycl_tla_moe.hpp"
 #include "sycl_tla_moe_dequant.hpp"
+#include "sycl_tla_moe_prefill_fp8_native.hpp"
 #include "sycl_tla_moe_prefill_fused.hpp"
 
 #ifdef ARK_XPU
@@ -506,6 +507,77 @@ inline void moe_gemm_prefill(sycl::queue* q, void* activations, void* weights, v
   if (weight_dtype == act_dtype && (weight_dtype == BTLA_DTYPE::F16 || weight_dtype == BTLA_DTYPE::BF16)) {
     moe_gemm(q, activations, weights, scales, outputs, act_dtype, N, K, num_tokens_per_expert, num_experts);
     return;
+  }
+
+  // Native FP8 fused GEMM (Variant A: fp8 weight x bf16/fp16 activation,
+  // in-register upcast, group-boundary scale fold, no `[E, K, N]` workspace).
+  // Opt-in via `ARK_MOE_PREFILL_NATIVE_FP8=1`; silent fallback if the shape
+  // doesn't satisfy the tile preconditions or if `asym=true` is requested.
+  // Precedence (highest first): native -> fused-dequant -> v1 dequant.
+  // See `sycl_tla_moe_prefill_fp8_native.hpp` for the tile / SLM design.
+  if ((weight_dtype == BTLA_DTYPE::F8_E4M3 || weight_dtype == BTLA_DTYPE::F8_E5M2) && !asym &&
+      moe_prefill_native_fp8_detail::moe_prefill_native_fp8_enabled() &&
+      moe_prefill_native_fp8_detail::moe_prefill_native_fp8_shape_ok(N, K, group_size)) {
+    const bool is_e4m3 = (weight_dtype == BTLA_DTYPE::F8_E4M3);
+    const bool use_lut = moe_dequant::fp8_decode_use_lut();
+    if (act_dtype == BTLA_DTYPE::F16) {
+      using ScalarT = sycl::half;
+      if (is_e4m3) {
+        if (use_lut) {
+          moe_prefill_native_fp8_detail::moe_prefill_fp8_native_dispatch<ScalarT, true, true>(
+              q, static_cast<const ScalarT*>(activations), static_cast<const uint8_t*>(weights),
+              static_cast<const ScalarT*>(scales), static_cast<ScalarT*>(outputs), num_tokens_per_expert, num_experts,
+              N, K, group_size, total_tokens);
+        } else {
+          moe_prefill_native_fp8_detail::moe_prefill_fp8_native_dispatch<ScalarT, true, false>(
+              q, static_cast<const ScalarT*>(activations), static_cast<const uint8_t*>(weights),
+              static_cast<const ScalarT*>(scales), static_cast<ScalarT*>(outputs), num_tokens_per_expert, num_experts,
+              N, K, group_size, total_tokens);
+        }
+      } else {
+        if (use_lut) {
+          moe_prefill_native_fp8_detail::moe_prefill_fp8_native_dispatch<ScalarT, false, true>(
+              q, static_cast<const ScalarT*>(activations), static_cast<const uint8_t*>(weights),
+              static_cast<const ScalarT*>(scales), static_cast<ScalarT*>(outputs), num_tokens_per_expert, num_experts,
+              N, K, group_size, total_tokens);
+        } else {
+          moe_prefill_native_fp8_detail::moe_prefill_fp8_native_dispatch<ScalarT, false, false>(
+              q, static_cast<const ScalarT*>(activations), static_cast<const uint8_t*>(weights),
+              static_cast<const ScalarT*>(scales), static_cast<ScalarT*>(outputs), num_tokens_per_expert, num_experts,
+              N, K, group_size, total_tokens);
+        }
+      }
+      return;
+    } else if (act_dtype == BTLA_DTYPE::BF16) {
+      using ScalarT = sycl::ext::oneapi::bfloat16;
+      if (is_e4m3) {
+        if (use_lut) {
+          moe_prefill_native_fp8_detail::moe_prefill_fp8_native_dispatch<ScalarT, true, true>(
+              q, static_cast<const ScalarT*>(activations), static_cast<const uint8_t*>(weights),
+              static_cast<const ScalarT*>(scales), static_cast<ScalarT*>(outputs), num_tokens_per_expert, num_experts,
+              N, K, group_size, total_tokens);
+        } else {
+          moe_prefill_native_fp8_detail::moe_prefill_fp8_native_dispatch<ScalarT, true, false>(
+              q, static_cast<const ScalarT*>(activations), static_cast<const uint8_t*>(weights),
+              static_cast<const ScalarT*>(scales), static_cast<ScalarT*>(outputs), num_tokens_per_expert, num_experts,
+              N, K, group_size, total_tokens);
+        }
+      } else {
+        if (use_lut) {
+          moe_prefill_native_fp8_detail::moe_prefill_fp8_native_dispatch<ScalarT, false, true>(
+              q, static_cast<const ScalarT*>(activations), static_cast<const uint8_t*>(weights),
+              static_cast<const ScalarT*>(scales), static_cast<ScalarT*>(outputs), num_tokens_per_expert, num_experts,
+              N, K, group_size, total_tokens);
+        } else {
+          moe_prefill_native_fp8_detail::moe_prefill_fp8_native_dispatch<ScalarT, false, false>(
+              q, static_cast<const ScalarT*>(activations), static_cast<const uint8_t*>(weights),
+              static_cast<const ScalarT*>(scales), static_cast<ScalarT*>(outputs), num_tokens_per_expert, num_experts,
+              N, K, group_size, total_tokens);
+        }
+      }
+      return;
+    }
+    // Unsupported act_dtype falls through to the generic dequant check below.
   }
 
   if (dequant_workspace == nullptr) {

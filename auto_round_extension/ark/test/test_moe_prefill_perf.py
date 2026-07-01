@@ -52,6 +52,8 @@ How to run::
 The ``-s`` flag is required to see the printed timing tables and TFLOPS.
 """
 
+import os
+
 import auto_round_kernel
 import pytest
 import torch
@@ -428,32 +430,50 @@ def _print_header(title: str) -> None:
       our fused kernel: any pipeline that wants to keep weights in
       quantized storage but reuse a stock matmul baseline must pay the
       dequant cost on every step.
+    * ``ark(ms)``: default ARK path (dequant workspace + grouped GEMM,
+      or fused-dequant if ``ARK_MOE_PREFILL_FUSED_FP8=1`` is set in the
+      env for FP8 rows).
+    * ``native(ms)`` / ``native TFLOPS``: FP8 rows only. ARK path with
+      ``ARK_MOE_PREFILL_NATIVE_FP8=1`` — the fused native-FP8 GEMM that
+      skips the ``[E, K, N]`` bf16/fp16 workspace and folds the per-K-
+      group scale into the accumulator. ``--`` for non-FP8 rows.
     * ``speedup``: ``(base+deq) / ark``.
     """
     print()
-    width = 132
+    width = 156
     print("=" * width)
     print(title)
     print(
         f"{'shape':<22}{'E':>4}{'N':>7}{'K':>7}{'tokens':>8}"
         f"{'baseline(ms)':>16}{'base+deq(ms)':>16}{'ark(ms)':>14}{'speedup':>12}{'TFLOPS':>10}"
+        f"{'native(ms)':>14}{'native TFLOPS':>16}"
     )
     print("-" * width)
 
 
-def _print_row(label, E, N, K, total_tokens, base_ms, deq_ms, ark_ms, tflops):
+def _print_row(label, E, N, K, total_tokens, base_ms, deq_ms, ark_ms, tflops, native_ms=None, native_tflops=None):
     """Print a benchmark row.
 
     ``speedup`` is ``(base+deq) / ark`` -- a fair comparison against any
     pipeline that keeps weights quantized and pays per-step dequant cost
     on top of a stock matmul baseline. For FP rows ``deq_ms == 0`` so
     ``base+deq == baseline``.
+
+    ``native_ms`` / ``native_tflops`` are printed for FP8 rows where the
+    native fused kernel was benchmarked, and left blank otherwise.
     """
     base_plus_deq_ms = base_ms + deq_ms
     speedup = base_plus_deq_ms / ark_ms if ark_ms > 0 else float("nan")
+    if native_ms is None:
+        native_col = f"{'--':>14}"
+        native_tflops_col = f"{'--':>16}"
+    else:
+        native_col = f"{native_ms:>14.4f}"
+        native_tflops_col = f"{native_tflops:>15.1f} "
     print(
         f"{label:<22}{E:>4}{N:>7}{K:>7}{total_tokens:>8}"
         f"{base_ms:>16.4f}{base_plus_deq_ms:>16.4f}{ark_ms:>14.4f}{speedup:>11.2f}x{tflops:>9.1f}"
+        f"{native_col}{native_tflops_col}"
     )
 
 
@@ -697,21 +717,54 @@ class TestMoEGemmPrefillPerf:
 
             deq_ms = _xpu_time_ms(lambda: _dequant_fp8(packed, scales, group_size, dtype))
             base_ms = _xpu_time_ms(lambda: _default_moe_prefill(act_padded, dequant))
-            ark_ms = _xpu_time_ms(
-                lambda: ark.moe_gemm_prefill(
-                    activations,
-                    packed,
-                    ntpe,
-                    scales=scales,
-                    group_size=group_size,
-                    asym=False,
+
+            # Default ARK path (respects the caller's env, i.e. dequant or
+            # fused-dequant depending on `ARK_MOE_PREFILL_FUSED_FP8`). We
+            # force `ARK_MOE_PREFILL_NATIVE_FP8=0` for this measurement so
+            # the two columns are independently attributable.
+            prev = os.environ.get("ARK_MOE_PREFILL_NATIVE_FP8")
+            os.environ["ARK_MOE_PREFILL_NATIVE_FP8"] = "0"
+            try:
+                ark_ms = _xpu_time_ms(
+                    lambda: ark.moe_gemm_prefill(
+                        activations,
+                        packed,
+                        ntpe,
+                        scales=scales,
+                        group_size=group_size,
+                        asym=False,
+                    )
                 )
-            )
+            finally:
+                if prev is None:
+                    os.environ.pop("ARK_MOE_PREFILL_NATIVE_FP8", None)
+                else:
+                    os.environ["ARK_MOE_PREFILL_NATIVE_FP8"] = prev
 
             flops = _compute_moe_flops(total_tokens, K, N, E)
             tflops = flops / (ark_ms * 1e-3) / 1e12
 
-            _print_row(label, E, N, K, total_tokens, base_ms, deq_ms, ark_ms, tflops)
+            # Native FP8 fused GEMM (no [E, K, N] workspace).
+            os.environ["ARK_MOE_PREFILL_NATIVE_FP8"] = "1"
+            try:
+                native_ms = _xpu_time_ms(
+                    lambda: ark.moe_gemm_prefill(
+                        activations,
+                        packed,
+                        ntpe,
+                        scales=scales,
+                        group_size=group_size,
+                        asym=False,
+                    )
+                )
+            finally:
+                if prev is None:
+                    os.environ.pop("ARK_MOE_PREFILL_NATIVE_FP8", None)
+                else:
+                    os.environ["ARK_MOE_PREFILL_NATIVE_FP8"] = prev
+            native_tflops = flops / (native_ms * 1e-3) / 1e12
+
+            _print_row(label, E, N, K, total_tokens, base_ms, deq_ms, ark_ms, tflops, native_ms, native_tflops)
 
             activations = ntpe = act_padded = w_float = scales = packed = dequant = None
             _release_xpu_memory()

@@ -43,6 +43,8 @@ How to run::
     pytest -v -s auto_round_extension/ark/test/test_moe_prefill_accuracy.py
 """
 
+import os
+
 import auto_round_kernel
 import pytest
 import torch
@@ -325,31 +327,54 @@ class TestMoEGemmPrefillAccuracy:
     @pytest.mark.skipif(bool(_QUANT_PREFILL_SKIP), reason=_QUANT_PREFILL_SKIP or "ok")
     @pytest.mark.parametrize("dtype", [torch.float16, torch.bfloat16])
     @pytest.mark.parametrize("fp8_dtype", [torch.float8_e4m3fn, torch.float8_e5m2])
-    def test_accuracy_fp8(self, dtype, fp8_dtype):
+    @pytest.mark.parametrize(
+        "native",
+        [
+            pytest.param(False, id="dequant"),
+            pytest.param(True, id="native"),
+        ],
+    )
+    def test_accuracy_fp8(self, dtype, fp8_dtype, native):
+        """Parity of the FP8 prefill kernel against a dequant + ``A @ W.T`` reference.
+
+        Parametrised over the ``ARK_MOE_PREFILL_NATIVE_FP8`` opt-in so both
+        the two-stage (dequant -> bf16 GEMM) path and the native fused path
+        are covered by the same shape matrix. The two implementations share
+        the ``moe_dequant::decode_fp8`` primitive, so tolerances are the
+        same; only accumulator-order differences remain.
+        """
         group_size = 128
-        for label, E, tpe, N, K in PREFILL_SHAPES:
-            if K % group_size != 0:
-                continue
-            total_tokens = sum(tpe)
-            activations = torch.randn(total_tokens, K, dtype=dtype, device="xpu")
-            w_float = (torch.randn(E, N, K, dtype=torch.float32, device="xpu") * 0.1).to(dtype)
-            scales = torch.empty(E, N, K // group_size, dtype=dtype, device="xpu")
-            packed = _pack_fp8(w_float, scales, group_size, fp8_dtype)
-            dequant = _dequant_fp8(packed, scales, group_size, dtype)
-            ntpe = torch.tensor(tpe, dtype=torch.int32, device="xpu")
+        prev = os.environ.get("ARK_MOE_PREFILL_NATIVE_FP8")
+        os.environ["ARK_MOE_PREFILL_NATIVE_FP8"] = "1" if native else "0"
+        try:
+            for label, E, tpe, N, K in PREFILL_SHAPES:
+                if K % group_size != 0:
+                    continue
+                total_tokens = sum(tpe)
+                activations = torch.randn(total_tokens, K, dtype=dtype, device="xpu")
+                w_float = (torch.randn(E, N, K, dtype=torch.float32, device="xpu") * 0.1).to(dtype)
+                scales = torch.empty(E, N, K // group_size, dtype=dtype, device="xpu")
+                packed = _pack_fp8(w_float, scales, group_size, fp8_dtype)
+                dequant = _dequant_fp8(packed, scales, group_size, dtype)
+                ntpe = torch.tensor(tpe, dtype=torch.int32, device="xpu")
 
-            out = ark.moe_gemm_prefill(
-                activations,
-                packed,
-                ntpe,
-                scales=scales,
-                group_size=group_size,
-                asym=False,
-            )
+                out = ark.moe_gemm_prefill(
+                    activations,
+                    packed,
+                    ntpe,
+                    scales=scales,
+                    group_size=group_size,
+                    asym=False,
+                )
 
-            ref = _reference_moe_prefill(activations, dequant, ntpe)
-            assert out.shape == (total_tokens, N), f"{label}: bad shape {out.shape}"
-            torch.testing.assert_close(out, ref, msg=lambda m, lbl=label: f"[{lbl}] {m}", **_TOL_FP8)
+                ref = _reference_moe_prefill(activations, dequant, ntpe)
+                assert out.shape == (total_tokens, N), f"{label}: bad shape {out.shape}"
+                torch.testing.assert_close(out, ref, msg=lambda m, lbl=label: f"[{lbl}] {m}", **_TOL_FP8)
+        finally:
+            if prev is None:
+                os.environ.pop("ARK_MOE_PREFILL_NATIVE_FP8", None)
+            else:
+                os.environ["ARK_MOE_PREFILL_NATIVE_FP8"] = prev
 
 
 if __name__ == "__main__":

@@ -13,6 +13,7 @@
 # limitations under the License.
 
 from typing import Optional
+import os
 import torch
 import sys
 
@@ -1796,6 +1797,17 @@ def moe_gemm_prefill(
     stream = get_stream(activations)
     outputs = torch.empty((total_tokens, N), device=activations.device, dtype=activations.dtype)
 
+    # Native FP8 fused GEMM (Variant A): fp8 weight is upcast to bf16/fp16
+    # in registers inside the GEMM kernel and the per-K-group scale is
+    # folded into the accumulator. No `[E, K, N]` bf16 workspace is
+    # needed. Opt-in via `ARK_MOE_PREFILL_NATIVE_FP8=1`; the C++
+    # dispatcher additionally checks shape preconditions (N % 16 == 0,
+    # K % 32 == 0, K % group_size == 0, group_size % 32 == 0) and
+    # silently falls through to the dequant path if any fail.
+    is_native_fp8 = _native_fp8_prefill_enabled() and (
+        weights.dtype in (torch.float8_e4m3fn, torch.float8_e5m2)
+    ) and (not asym)
+
     # Quantized paths need an [E, K, N] act-dtype scratch buffer that the
     # on-device dequant kernel fills before the inner Grouped GEMM consumes
     # it. The unquantized fast path forwards directly through `moe_gemm` and
@@ -1812,6 +1824,16 @@ def moe_gemm_prefill(
         # on-device path stays uniform.
         dequant_workspace = weights.transpose(1, 2).contiguous()
         weights_ptr = dequant_workspace.data_ptr()
+        workspace_ptr = dequant_workspace.data_ptr()
+    elif is_native_fp8:
+        # Native path fuses GEMM+scale, so no `[E, K, N]` workspace is
+        # needed. Pass 0 (null) as the workspace pointer; the C++
+        # `moe_gemm_prefill_wrapper` forwards the null through and the
+        # dispatcher short-circuits into the native launcher before the
+        # generic null-check.
+        dequant_workspace = None
+        weights_ptr = weights.data_ptr()
+        workspace_ptr = 0
     else:
         # Reuse a persistent `[E, K, N]` workspace across calls with the same
         # (device, dtype, E, K, N). For real MoE prefill workloads the same
@@ -1822,6 +1844,7 @@ def moe_gemm_prefill(
         # we hand the data_ptr() to the kernel without taking a new ref.
         dequant_workspace = _get_moe_prefill_workspace(activations.device, activations.dtype, num_experts, K, N)
         weights_ptr = weights.data_ptr()
+        workspace_ptr = dequant_workspace.data_ptr()
 
     scales_ptr = scales.data_ptr() if scales is not None else 0
     zeros_ptr = zeros.data_ptr() if zeros is not None else 0
@@ -1833,7 +1856,7 @@ def moe_gemm_prefill(
         scales_ptr,
         zeros_ptr,
         outputs.data_ptr(),
-        dequant_workspace.data_ptr(),
+        workspace_ptr,
         cvt_dtype(activations.dtype),
         weight_dtype,
         N,
@@ -1850,7 +1873,8 @@ def moe_gemm_prefill(
     # workspace. For the unquantized fast path the workspace is a per-call
     # transposed copy of `weights` -- drop it now. For the quantized paths
     # the workspace lives in the module-level cache (`_get_moe_prefill_workspace`)
-    # and is intentionally retained for reuse on the next call.
+    # and is intentionally retained for reuse on the next call. The native
+    # fp8 path allocates no workspace at all, so there is nothing to drop.
     if is_unquantized:
         del dequant_workspace
     return outputs
@@ -1899,6 +1923,35 @@ def _get_moe_prefill_workspace(device: torch.device, dtype: torch.dtype, E: int,
 def clear_moe_prefill_workspace_cache() -> None:
     """Release all cached `moe_gemm_prefill` dequant-workspace tensors."""
     _MOE_PREFILL_WORKSPACE_CACHE.clear()
+
+
+# ---------------------------------------------------------------------------
+# Native FP8 prefill opt-in.
+#
+# When `ARK_MOE_PREFILL_NATIVE_FP8` is truthy, `moe_gemm_prefill` skips the
+# `[E, K, N]` bf16/fp16 workspace and dispatches to the fused native-fp8
+# kernel in `sycl_tla_moe_prefill_fp8_native.hpp`. The kernel loads fp8
+# weight bytes and the per-K-group scale directly, upcasts to
+# ``act_dtype`` in registers, folds the scale into the accumulator, and
+# writes only the final output row -- no `[E, K, N]` global-memory round-
+# trip.
+#
+# The C++ dispatcher performs an additional shape check
+# (``N % 16 == 0`` and ``K % 32 == 0`` and ``K % group_size == 0`` and
+# ``group_size % 32 == 0``) and silently falls back to the dequant path
+# for shapes the native tile can't cover, so it is safe to leave this
+# flag enabled globally.
+#
+# Truthy values (case-insensitive): "1", "true", "on", "yes".
+# ---------------------------------------------------------------------------
+
+
+def _native_fp8_prefill_enabled() -> bool:
+    """Return True iff ``ARK_MOE_PREFILL_NATIVE_FP8`` is truthy."""
+    env = os.environ.get("ARK_MOE_PREFILL_NATIVE_FP8")
+    if env is None:
+        return False
+    return env.strip().lower() in ("1", "true", "on", "yes")
 
 
 # ---------------------------------------------------------------------------
