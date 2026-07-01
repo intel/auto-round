@@ -1534,8 +1534,10 @@ inline void bestla_fusion_attn_forward<float, utils::bf16, utils::bf16, float>(
 }
 
 // ---------------------------------------------------------------------------
-// Phase 4.5, step 1-3: homogeneous FP16/BF16 attention (Q == K == V == dst
-// element type). These two routes are NOT the same remaining task:
+// Phase 4.5, step 1-4: homogeneous FP16/BF16 attention (Q == K == V == dst
+// element type). These two routes are NOT the same task and use two DIFFERENT
+// launcher families (dtype tuple selects the family; ISA/layout select the
+// kernel inside it, exactly as Neural Speed does):
 //
 //   * bf16 (wired in step 3, below): Neural Speed routes it through the
 //     *non-stable* `mha_interface_t` (runtime K/V pack -> QK with a
@@ -1544,15 +1546,16 @@ inline void bestla_fusion_attn_forward<float, utils::bf16, utils::bf16, float>(
 //     Step 2 migrated that launcher + epilogue; step 3 composes them here into a
 //     real internal path over the AMX-BF16 core.
 //
-//   * fp16 (still out of scope): Neural Speed drives it through the *stable*
+//   * fp16 (wired in step 4, below): Neural Speed drives it through the *stable*
 //     `mha_stable_interface_t` over the native-fp16 `gemm::HCoreRowNAvx512fp16`
-//     core with a `weight_base_t` forward prologue and fp16 stable epilogues --
-//     a different launcher family from the bf16 exp-sum route. See its overload
-//     below for the exact missing piece.
+//     core with a `weight_base_t` forward prologue and fp16 stable epilogues
+//     (`ScaleTrackMaxFp16Fp32` for QK, `epilogue::gemm::AccumulatorWriteBackFp16`
+//     for PV) -- a different launcher family from the bf16 exp-sum route. Step 4
+//     composes that stable-fp16 launcher pair here into a real internal path.
 //
 // Runtime dispatch (sdpa.cpp / ark.cpp) still does NOT reach either overload:
-// homogeneous support is partial (bf16 only) and is kept internal so it is not
-// exposed to Python as if it were complete.
+// homogeneous support is kept internal so it is not exposed to Python as if it
+// were part of the public C-ABI dispatch yet.
 // ---------------------------------------------------------------------------
 
 // bf16 packers on the AMX bf16 core (BType == utils::bf16). Declared here,
@@ -1563,28 +1566,51 @@ using WeightPackBatchBf16Bf16NonTr = weight_pack_batch_bf16_non_tr_t<GEMM_T, uti
 template <class GEMM_T>
 using WeightPackBatchBf16Bf16Trans = weight_pack_batch_bf16_trans_t<GEMM_T, utils::bf16>;
 
-// fp16 Q/K/V, fp16 dst. OUT OF SCOPE for Phase 4.5 step 3 and DIFFERENT from the
-// homogeneous bf16 route below: Neural Speed drives fp16 through the two-pass
-// *stable* interface (`mha_stable_interface_t`) over the native-fp16
-// `gemm::HCoreRowNAvx512fp16<64, 8>` core with a `weight_base_t` forward prologue
-// and fp16 stable epilogues (`ScaleTrackMaxFp16Fp32` for QK,
-// `epilogue::gemm::AccumulatorWriteBackFp16` for PV) -- NOT the non-stable
-// `mha_interface_t` / `scale_exp_acc_sum_fp32_t` exp-sum path the bf16 route uses.
-// The individual building blocks already exist in ARK (`weight_base_t`,
-// `ScaleTrackMaxFp16Fp32`, `HCoreRowNAvx512fp16`, `AccumulatorWriteBackFp16`), but
-// the stable-fp16 launcher pair is not yet composed/compile-pinned here, so this
-// route fails loudly rather than silently running the wrong (bf16 exp-sum) kernel.
+// fp16 Q/K/V, fp16 dst. Real internal path (Phase 4.5 step 4): the two-pass
+// *stable* `mha_stable_interface_t` over the native-fp16
+// `gemm::HCoreRowNAvx512fp16<64, 8>` core (AType/BType/CType all fp16, ISA
+// AVX512-FP16). Both launchers use the `weight_base_t` forward prologue (plain
+// row-major K/V, N padded to NTILE at runtime); the QK pass tracks the running
+// max via `ScaleTrackMaxFp16Fp32`, the PV pass writes back the fp16 output via
+// `epilogue::gemm::AccumulatorWriteBackFp16`. This composition matches Neural
+// Speed's homogeneous fp16 launcher pair exactly (and the
+// `instantiation_check::MhaStableAvx512Fp16` compile pin) -- a DIFFERENT launcher
+// family from the bf16 non-stable exp-sum route below. Neural Speed's overload
+// guards this on `_cd->AMX_BF16()`; ARK follows the same convention its bf16
+// homogeneous route uses and guards on the ISA the core actually needs
+// (`_cd->AVX512_FP16()`), with an `#if CompileFP16()` build guard, so an
+// unsupported CPU/build fails loudly instead of running the wrong kernel. It is a
+// working internal kernel; runtime dispatch (sdpa.cpp / ark.cpp) still does NOT
+// reach it, so homogeneous support is not exposed to Python.
 template <>
 inline void bestla_fusion_attn_forward<utils::fp16, utils::fp16, utils::fp16, utils::fp16>(
     const attn_fwd_args_t<utils::fp16, utils::fp16, utils::fp16, utils::fp16>& params, parallel::IThreading& th) {
-  (void)params;
-  (void)th;
-  throw std::runtime_error(
-      "ark::cpu::bestla_fusion_attn_forward: homogeneous fp16 attention is not wired yet (Phase 4.5 step 3 wires "
-      "only homogeneous bf16). fp16 uses the STABLE mha_stable_interface_t over gemm::HCoreRowNAvx512fp16 with a "
-      "weight_base_t prologue and ScaleTrackMaxFp16Fp32 / AccumulatorWriteBackFp16 epilogues -- a different "
-      "launcher family from the bf16 non-stable exp-sum route -- and that stable-fp16 launcher pair is not "
-      "composed here yet");
+  GetCPUDevice();
+  if (_cd->AVX512_FP16()) {
+#if CompileFP16()
+    using GemmKernelFP16TrackMax = launcher_base_weight_t<  //
+        gemm::HCoreRowNAvx512fp16<64, 8>,                   //
+        prologue_a::gemm::ActivationBase,                   //
+        weight_base_t,                                      //
+        ScaleTrackMaxFp16Fp32>;                             //
+    using GemmKernelFP16 = launcher_base_weight_t<          //
+        gemm::HCoreRowNAvx512fp16<64, 8>,                   //
+        prologue_a::gemm::ActivationBase,                   //
+        weight_base_t,                                      //
+        epilogue::gemm::AccumulatorWriteBackFp16>;          //
+    static mha_stable_interface_t<GemmKernelFP16TrackMax, GemmKernelFP16> mha;
+    [[maybe_unused]] const auto ret = mha.compute(params, th);
+    assert(ret == BTLA_CODE::Success);
+#else
+    throw std::runtime_error(
+        "ark::cpu::bestla_fusion_attn_forward: homogeneous fp16 attention requires an AVX512-FP16 build "
+        "(CompileFP16 disabled)");
+#endif
+  } else {
+    throw std::runtime_error(
+        "ark::cpu::bestla_fusion_attn_forward: homogeneous fp16 attention requires an AVX512-FP16 CPU with the "
+        "stable mha_stable_interface_t over gemm::HCoreRowNAvx512fp16; this CPU/build does not provide AVX512-FP16");
+  }
 }
 
 // bf16 Q/K/V, bf16 dst. Real internal path (Phase 4.5 step 3): the non-stable
@@ -1713,6 +1739,18 @@ using QKTrackMaxAmxBf16 = launcher_base_weight_t<CoreAmxBf16, prologue_a::gemm::
 using PVWriteBackAmxBf16 = launcher_base_weight_t<CoreAmxBf16, activation_identity_t, weight_forward_n_tile48_t,
                                                   epilogue::gemm::AccumulatorWriteBackFp32>;
 using MhaStableAmxBf16 = mha_stable_interface_t<QKTrackMaxAmxBf16, PVWriteBackAmxBf16>;
+
+// AVX512-FP16: HCoreRowNAvx512fp16<64, 8> path (native fp16 A/B/C weights). This
+// is the homogeneous fp16 `bestla_fusion_attn_forward<fp16, fp16, fp16, fp16>`
+// launcher pair (Phase 4.5 step 4): a `weight_base_t` forward prologue with an
+// fp16 track-max QK epilogue and an fp16 write-back PV epilogue -- distinct from
+// the fp32-score stable pairs above and from the bf16 non-stable exp-sum pair.
+using CoreAvx512Fp16Homogeneous = gemm::HCoreRowNAvx512fp16<64, 8>;
+using QKTrackMaxAvx512Fp16 = launcher_base_weight_t<CoreAvx512Fp16Homogeneous, prologue_a::gemm::ActivationBase,
+                                                    weight_base_t, ScaleTrackMaxFp16Fp32>;
+using PVWriteBackAvx512Fp16 = launcher_base_weight_t<CoreAvx512Fp16Homogeneous, prologue_a::gemm::ActivationBase,
+                                                     weight_base_t, epilogue::gemm::AccumulatorWriteBackFp16>;
+using MhaStableAvx512Fp16 = mha_stable_interface_t<QKTrackMaxAvx512Fp16, PVWriteBackAvx512Fp16>;
 
 // ---------------------------------------------------------------------------
 // Phase 4.5 step 2: non-stable interface syntax-checks. Pin `mha_interface_t`
