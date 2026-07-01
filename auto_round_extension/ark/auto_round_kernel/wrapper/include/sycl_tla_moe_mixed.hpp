@@ -42,6 +42,7 @@
 #include "bestla/bestla.h"
 #include "sycl_tla_moe.hpp"
 #include "sycl_tla_moe_dequant.hpp"
+#include "sycl_tla_moe_prefill_fused.hpp"
 
 #ifdef ARK_XPU
 #include <sycl/sycl.hpp>
@@ -420,6 +421,25 @@ void dequant_to_KN(sycl::queue* q, const void* weights, const void* scales, cons
     }
     const bool is_e4m3 = (weight_dtype == BTLA_DTYPE::F8_E4M3);
     const bool use_lut = moe_dequant::fp8_decode_use_lut();
+    // Opt-in SLM-transposed fused dequant path (PR-B1 / Commit 2). This
+    // commit only covers fp8-e4m3; e5m2 still takes the legacy path.
+    // See `sycl_tla_moe_prefill_fused.hpp` for the tile / SLM design.
+    // The flag defaults to OFF, so end-to-end behaviour is unchanged
+    // unless `ARK_MOE_PREFILL_FUSED_FP8=1` is set.
+    const bool try_fused = is_e4m3 && moe_prefill_fused_detail::moe_prefill_fused_fp8_enabled() &&
+                           moe_prefill_fused_detail::moe_prefill_fused_fp8_shape_ok(N, K, group_size);
+    if (try_fused) {
+      if (use_lut) {
+        moe_prefill_fused_detail::launch_dequant_fp8_slm<ScalarT, true, true>(
+            q, static_cast<const uint8_t*>(weights), static_cast<const ScalarT*>(scales), weights_KN, E, N, K,
+            group_size, num_tokens_per_expert);
+      } else {
+        moe_prefill_fused_detail::launch_dequant_fp8_slm<ScalarT, true, false>(
+            q, static_cast<const uint8_t*>(weights), static_cast<const ScalarT*>(scales), weights_KN, E, N, K,
+            group_size, num_tokens_per_expert);
+      }
+      return;
+    }
     if (is_e4m3) {
       if (use_lut) {
         launch_dequant_fp8<ScalarT, true, true>(q, static_cast<const uint8_t*>(weights),
