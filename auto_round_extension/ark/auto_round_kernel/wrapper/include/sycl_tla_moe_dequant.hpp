@@ -7,10 +7,14 @@
 // the same packed weight bytes, which is what the round-trip parity tests
 // (decode vs prefill) rely on.
 //
-// Currently extracted (PR-A1): the FP8 byte->float decoders and the host-
-// side `ARK_FP8_DECODE_USE_LUT` env-var reader. INT2/INT4/INT8 decoders are
-// still inlined inside the decode kernel; they will be added here when the
-// mixed-input prefill mainloop in PR-A2/PR-A3 starts consuming them.
+// Currently extracted:
+//   - FP8 (E4M3 / E5M2) byte->float decoders + host-side
+//     `ARK_FP8_DECODE_USE_LUT` env-var reader (PR-A1).
+//   - INT2 / INT4 / INT8 packed-byte decoders (PR-A2): return the raw
+//     integer field(s) prior to `(q - zp) * scale`. Both the decode (GEMV)
+//     and prefill (mixed-input Grouped GEMM) paths call these directly,
+//     guaranteeing bit-identical dequantization for the round-trip parity
+//     tests in `test_moe_prefill_accuracy.py` / `test_moe_unified.py`.
 //
 // Copyright (C) 2026 Intel Corporation
 // SPDX-License-Identifier: Apache-2.0
@@ -119,6 +123,86 @@ inline float decode_fp8(uint8_t byte) {
     } else {
       return decode_fp8_e5m2_bits(byte);
     }
+  }
+}
+
+// ----------------------------------------------------------------------------
+// INT4 (S4_CLIP) packed-byte decode.
+//
+// Packing: two 4-bit values per byte:
+//   value at k = 2*i     -> LOW nibble  (bits [3:0])
+//   value at k = 2*i + 1 -> HIGH nibble (bits [7:4])
+//
+// Asym=false (sym): signed nibble in [-8, 7]. Sign extension is performed by
+// shifting the nibble into the top 4 bits of an int8 and arithmetic-shifting
+// right by 4, which fills the upper bits with the sign bit.
+// Asym=true         : unsigned nibble in [0, 15]. Callers subtract the
+// per-group zero-point before applying the scale.
+//
+// Returns the two decoded values as ints in `q_lo` (k=2i) and `q_hi` (k=2i+1).
+// The exact same bit-level operations are used by the decode (GEMV) kernel
+// in `sycl_tla_moe_decode.hpp` and the prefill (Grouped-GEMM) kernel in
+// `sycl_tla_moe_mixed.hpp` so the two paths produce bit-identical results
+// for identical packed inputs.
+// ----------------------------------------------------------------------------
+template <bool Asym>
+inline void decode_int4_pair(uint8_t packed, int& q_lo, int& q_hi) {
+  if constexpr (Asym) {
+    q_lo = static_cast<int>(packed & 0x0Fu);
+    q_hi = static_cast<int>((packed >> 4) & 0x0Fu);
+  } else {
+    q_lo = static_cast<int>(static_cast<int8_t>(packed << 4) >> 4);
+    q_hi = static_cast<int>(static_cast<int8_t>(packed & 0xF0u) >> 4);
+  }
+}
+
+// ----------------------------------------------------------------------------
+// INT2 (S2_CLIP) packed-byte decode.
+//
+// Packing: four 2-bit values per byte, byte = q0 | (q1<<2) | (q2<<4) | (q3<<6).
+// Field j (0..3) corresponds to K index 4*i + j, i.e. bits [2j+1 : 2j].
+//
+// Asym=false (sym): signed 2-bit value in [-2, 1]. Sign extension shifts the
+// field into bits [7:6] of an int8 and arithmetic-shifts right by 6.
+// Asym=true         : unsigned 2-bit value in [0, 3]. Callers subtract the
+// per-group zero-point before applying the scale.
+//
+// The four decoded values are returned in `q[0..3]` in K-index order.
+// ----------------------------------------------------------------------------
+template <bool Asym>
+inline void decode_int2_quad(uint8_t packed, int q[4]) {
+  if constexpr (Asym) {
+    q[0] = static_cast<int>(packed & 0x3u);
+    q[1] = static_cast<int>((packed >> 2) & 0x3u);
+    q[2] = static_cast<int>((packed >> 4) & 0x3u);
+    q[3] = static_cast<int>((packed >> 6) & 0x3u);
+  } else {
+    // Shift the target field into bits [7:6] then arithmetic-shift right by 6.
+    // Masking with 0xC0 keeps only the top two bits (equivalent to the direct
+    // `int8_t(packed << 6) >> 6` used for field 0, where no other bits can
+    // survive an 8-bit truncation of a 6-bit left shift of a uint8).
+    q[0] = static_cast<int>(static_cast<int8_t>(packed << 6) >> 6);
+    q[1] = static_cast<int>(static_cast<int8_t>((packed << 4) & 0xC0u) >> 6);
+    q[2] = static_cast<int>(static_cast<int8_t>((packed << 2) & 0xC0u) >> 6);
+    q[3] = static_cast<int>(static_cast<int8_t>(packed & 0xC0u) >> 6);
+  }
+}
+
+// ----------------------------------------------------------------------------
+// INT8 (S8) single-byte decode.
+//
+// The storage buffer is `uint8_t` in both sym and asym modes; only the
+// interpretation of the byte differs:
+//   Asym=false (sym): reinterpret as signed int8 in [-128, 127].
+//   Asym=true         : treat as unsigned in [0, 255]; caller subtracts the
+//                       per-group zero-point.
+// ----------------------------------------------------------------------------
+template <bool Asym>
+inline int decode_int8(uint8_t raw) {
+  if constexpr (Asym) {
+    return static_cast<int>(raw);
+  } else {
+    return static_cast<int>(static_cast<int8_t>(raw));
   }
 }
 

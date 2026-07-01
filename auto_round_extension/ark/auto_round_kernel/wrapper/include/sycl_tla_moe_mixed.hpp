@@ -189,11 +189,12 @@ void launch_dequant_int8(sycl::queue* q, const uint8_t* weights_NK, const Scalar
           const int k = k_base + j;
           if (k >= K) break;
           const uint8_t raw = weights_NK[w_row + static_cast<size_t>(k)];
+          const int q = moe_dequant::decode_int8<Asym>(raw);
           float w;
           if constexpr (Asym) {
-            w = (static_cast<float>(raw) - zero) * scale;
+            w = (static_cast<float>(q) - zero) * scale;
           } else {
-            w = static_cast<float>(static_cast<int8_t>(raw)) * scale;
+            w = static_cast<float>(q) * scale;
           }
           weights_KN[out_base + static_cast<size_t>(k) * N] = static_cast<ScalarT>(w);
         }
@@ -246,17 +247,13 @@ void launch_dequant_int4(sycl::queue* q, const uint8_t* weights_NKp, const Scala
         const uint8_t packed = weights_NKp[(static_cast<size_t>(e) * N + static_cast<size_t>(n)) * k_packed +
                                            static_cast<size_t>(kp)];
         const size_t out_base = static_cast<size_t>(e) * K * N + static_cast<size_t>(n);
+        int q_lo, q_hi;
+        moe_dequant::decode_int4_pair<Asym>(packed, q_lo, q_hi);
         float w0, w1;
         if constexpr (Asym) {
-          const int q_lo = static_cast<int>(packed & 0x0F);
-          const int q_hi = static_cast<int>((packed >> 4) & 0x0F);
           w0 = (static_cast<float>(q_lo) - zero) * scale;
           w1 = (static_cast<float>(q_hi) - zero) * scale;
         } else {
-          // Sign-extend each nibble: shift into the top of an int8 then
-          // arithmetic-shift right by 4 to fill the sign bits.
-          const int q_lo = static_cast<int>(static_cast<int8_t>(packed << 4) >> 4);
-          const int q_hi = static_cast<int>(static_cast<int8_t>(packed & 0xF0) >> 4);
           w0 = static_cast<float>(q_lo) * scale;
           w1 = static_cast<float>(q_hi) * scale;
         }
@@ -311,18 +308,15 @@ void launch_dequant_int2(sycl::queue* q, const uint8_t* weights_NKp, const Scala
         const uint8_t packed = weights_NKp[(static_cast<size_t>(e) * N + static_cast<size_t>(n)) * k_packed +
                                            static_cast<size_t>(kp)];
         const size_t out_base = static_cast<size_t>(e) * K * N + static_cast<size_t>(n);
+        int q[4];
+        moe_dequant::decode_int2_quad<Asym>(packed, q);
 #pragma unroll
         for (int j = 0; j < PACK_K_INT2; ++j) {
           float w;
           if constexpr (Asym) {
-            const int q = static_cast<int>((packed >> (2 * j)) & 0x3);
-            w = (static_cast<float>(q) - zero) * scale;
+            w = (static_cast<float>(q[j]) - zero) * scale;
           } else {
-            // Sign-extend 2-bit by shifting the field into the top bits of an int8.
-            const int shift = 6 - 2 * j;  // 6, 4, 2, 0 for fields 0..3
-            const int8_t s8 = static_cast<int8_t>((packed << shift) & 0xC0);
-            const int q = static_cast<int>(s8 >> 6);
-            w = static_cast<float>(q) * scale;
+            w = static_cast<float>(q[j]) * scale;
           }
           weights_KN[out_base + static_cast<size_t>(k_base + j) * N] = static_cast<ScalarT>(w);
         }

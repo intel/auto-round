@@ -101,6 +101,9 @@ using moe_dequant::decode_fp8_e4m3_bits;
 using moe_dequant::decode_fp8_e4m3_lut;
 using moe_dequant::decode_fp8_e5m2_bits;
 using moe_dequant::decode_fp8_e5m2_lut;
+using moe_dequant::decode_int2_quad;
+using moe_dequant::decode_int4_pair;
+using moe_dequant::decode_int8;
 using moe_dequant::fp8_decode_use_lut;
 
 // ----------------------------------------------------------------------------
@@ -266,16 +269,13 @@ void launch_int4(sycl::queue* q, const ScalarT* activations, const uint8_t* weig
              const PackVec pv = *reinterpret_cast<const PackVec*>(w_row + (k_base + kk) / 2);
 #pragma unroll
              for (int b = 0; b < CHUNK / 2; ++b) {
-               const uint8_t packed = pv[b];
+               int q0, q1;
+               decode_int4_pair<Asym>(pv[b], q0, q1);
                float w0, w1;
                if constexpr (Asym) {
-                 const int q0 = static_cast<int>(packed & 0x0F);
-                 const int q1 = static_cast<int>((packed >> 4) & 0x0F);
                  w0 = (static_cast<float>(q0) - zero) * scale;
                  w1 = (static_cast<float>(q1) - zero) * scale;
                } else {
-                 const int q0 = static_cast<int>(static_cast<int8_t>(packed << 4) >> 4);
-                 const int q1 = static_cast<int>(static_cast<int8_t>(packed & 0xF0) >> 4);
                  w0 = static_cast<float>(q0) * scale;
                  w1 = static_cast<float>(q1) * scale;
                }
@@ -288,15 +288,13 @@ void launch_int4(sycl::queue* q, const ScalarT* activations, const uint8_t* weig
            // Scalar tail for group_size not divisible by CHUNK.
            for (; kk < group_size; kk += 2) {
              const uint8_t packed = w_row[(k_base + kk) / 2];
+             int q0, q1;
+             decode_int4_pair<Asym>(packed, q0, q1);
              float w0, w1;
              if constexpr (Asym) {
-               const int q0 = static_cast<int>(packed & 0x0F);
-               const int q1 = static_cast<int>((packed >> 4) & 0x0F);
                w0 = (static_cast<float>(q0) - zero) * scale;
                w1 = (static_cast<float>(q1) - zero) * scale;
              } else {
-               const int q0 = static_cast<int>(static_cast<int8_t>(packed << 4) >> 4);
-               const int q1 = static_cast<int>(static_cast<int8_t>(packed & 0xF0) >> 4);
                w0 = static_cast<float>(q0) * scale;
                w1 = static_cast<float>(q1) * scale;
              }
@@ -382,24 +380,24 @@ void launch_int8(sycl::queue* q, const ScalarT* activations, const uint8_t* weig
              const ByteVec wv = *reinterpret_cast<const ByteVec*>(w_row + k_base + kk);
 #pragma unroll
              for (int u = 0; u < CHUNK; ++u) {
-               const uint8_t raw = wv[u];
+               const int q = decode_int8<Asym>(wv[u]);
                float w;
                if constexpr (Asym) {
-                 w = (static_cast<float>(raw) - zero) * scale;
+                 w = (static_cast<float>(q) - zero) * scale;
                } else {
-                 w = static_cast<float>(static_cast<int8_t>(raw)) * scale;
+                 w = static_cast<float>(q) * scale;
                }
                const ScalarT a = sycl::bit_cast<ScalarT>(static_cast<uint16_t>(av[u]));
                acc += static_cast<float>(a) * w;
              }
            }
            for (; kk < group_size; ++kk) {
-             const uint8_t raw = w_row[k_base + kk];
+             const int q = decode_int8<Asym>(w_row[k_base + kk]);
              float w;
              if constexpr (Asym) {
-               w = (static_cast<float>(raw) - zero) * scale;
+               w = (static_cast<float>(q) - zero) * scale;
              } else {
-               w = static_cast<float>(static_cast<int8_t>(raw)) * scale;
+               w = static_cast<float>(q) * scale;
              }
              acc += static_cast<float>(act_row[k_base + kk]) * w;
            }
@@ -489,26 +487,19 @@ void launch_int2(sycl::queue* q, const ScalarT* activations, const uint8_t* weig
              const PackVec pv = *reinterpret_cast<const PackVec*>(w_row + (k_base + kk) / 4);
 #pragma unroll
              for (int b = 0; b < CHUNK / 4; ++b) {
-               const uint8_t packed = pv[b];
+               int q[4];
+               decode_int2_quad<Asym>(pv[b], q);
                float w0, w1, w2, w3;
                if constexpr (Asym) {
-                 const int q0 = static_cast<int>(packed & 0x3);
-                 const int q1 = static_cast<int>((packed >> 2) & 0x3);
-                 const int q2 = static_cast<int>((packed >> 4) & 0x3);
-                 const int q3 = static_cast<int>((packed >> 6) & 0x3);
-                 w0 = (static_cast<float>(q0) - zero) * scale;
-                 w1 = (static_cast<float>(q1) - zero) * scale;
-                 w2 = (static_cast<float>(q2) - zero) * scale;
-                 w3 = (static_cast<float>(q3) - zero) * scale;
+                 w0 = (static_cast<float>(q[0]) - zero) * scale;
+                 w1 = (static_cast<float>(q[1]) - zero) * scale;
+                 w2 = (static_cast<float>(q[2]) - zero) * scale;
+                 w3 = (static_cast<float>(q[3]) - zero) * scale;
                } else {
-                 const int q0 = static_cast<int>(static_cast<int8_t>(packed << 6) >> 6);
-                 const int q1 = static_cast<int>(static_cast<int8_t>((packed << 4) & 0xC0) >> 6);
-                 const int q2 = static_cast<int>(static_cast<int8_t>((packed << 2) & 0xC0) >> 6);
-                 const int q3 = static_cast<int>(static_cast<int8_t>(packed & 0xC0) >> 6);
-                 w0 = static_cast<float>(q0) * scale;
-                 w1 = static_cast<float>(q1) * scale;
-                 w2 = static_cast<float>(q2) * scale;
-                 w3 = static_cast<float>(q3) * scale;
+                 w0 = static_cast<float>(q[0]) * scale;
+                 w1 = static_cast<float>(q[1]) * scale;
+                 w2 = static_cast<float>(q[2]) * scale;
+                 w3 = static_cast<float>(q[3]) * scale;
                }
                const ScalarT a0 = sycl::bit_cast<ScalarT>(static_cast<uint16_t>(av[4 * b + 0]));
                const ScalarT a1 = sycl::bit_cast<ScalarT>(static_cast<uint16_t>(av[4 * b + 1]));
@@ -523,25 +514,19 @@ void launch_int2(sycl::queue* q, const ScalarT* activations, const uint8_t* weig
            // Scalar tail (4 values per byte).
            for (; kk < group_size; kk += 4) {
              const uint8_t packed = w_row[(k_base + kk) / 4];
+             int q[4];
+             decode_int2_quad<Asym>(packed, q);
              float w[4];
              if constexpr (Asym) {
-               const int q0 = static_cast<int>(packed & 0x3);
-               const int q1 = static_cast<int>((packed >> 2) & 0x3);
-               const int q2 = static_cast<int>((packed >> 4) & 0x3);
-               const int q3 = static_cast<int>((packed >> 6) & 0x3);
-               w[0] = (static_cast<float>(q0) - zero) * scale;
-               w[1] = (static_cast<float>(q1) - zero) * scale;
-               w[2] = (static_cast<float>(q2) - zero) * scale;
-               w[3] = (static_cast<float>(q3) - zero) * scale;
+               w[0] = (static_cast<float>(q[0]) - zero) * scale;
+               w[1] = (static_cast<float>(q[1]) - zero) * scale;
+               w[2] = (static_cast<float>(q[2]) - zero) * scale;
+               w[3] = (static_cast<float>(q[3]) - zero) * scale;
              } else {
-               const int q0 = static_cast<int>(static_cast<int8_t>(packed << 6) >> 6);
-               const int q1 = static_cast<int>(static_cast<int8_t>((packed << 4) & 0xC0) >> 6);
-               const int q2 = static_cast<int>(static_cast<int8_t>((packed << 2) & 0xC0) >> 6);
-               const int q3 = static_cast<int>(static_cast<int8_t>(packed & 0xC0) >> 6);
-               w[0] = static_cast<float>(q0) * scale;
-               w[1] = static_cast<float>(q1) * scale;
-               w[2] = static_cast<float>(q2) * scale;
-               w[3] = static_cast<float>(q3) * scale;
+               w[0] = static_cast<float>(q[0]) * scale;
+               w[1] = static_cast<float>(q[1]) * scale;
+               w[2] = static_cast<float>(q[2]) * scale;
+               w[3] = static_cast<float>(q[3]) * scale;
              }
              acc += static_cast<float>(act_row[k_base + kk + 0]) * w[0];
              acc += static_cast<float>(act_row[k_base + kk + 1]) * w[1];
