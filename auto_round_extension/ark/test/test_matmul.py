@@ -324,14 +324,14 @@ def compare_matmul_backends(m, k, n, dt, warmup, runs, record_property, device="
     assert ok, "oneDNN vs sycl-tla mismatch"
 
     dnnl_dur = _benchmark_op(ark.matmul, activation, wei, bias, runs=runs, warmup=warmup)
-    tla_dur = _benchmark_op(ark.matmul_sycl_tla, activation, wei, bias, runs=runs, warmup=warmup)
+    # tla_dur = _benchmark_op(ark.matmul_sycl_tla, activation, wei, bias, runs=runs, warmup=warmup)
     fused_tla_dur = _benchmark_op(ark.matmul_sycl_tla_fused_bias, activation, wei, bias, runs=runs, warmup=warmup)
 
     ops = m * n * k * 2
     print(f"\n  [oneDNN]                  : {dnnl_dur*1000:8.3f} ms   {ops / dnnl_dur / 1e12:7.3f} TFLOPS")
-    print(
-        f"  [matmul_sycl_tla]         : {tla_dur*1000:8.3f} ms   {ops / tla_dur / 1e12:7.3f} TFLOPS  speedup={dnnl_dur / tla_dur:5.2f}x"
-    )
+    # print(
+    #     f"  [matmul_sycl_tla]         : {tla_dur*1000:8.3f} ms   {ops / tla_dur / 1e12:7.3f} TFLOPS  speedup={dnnl_dur / tla_dur:5.2f}x"
+    # )
     print(
         f"  [matmul_sycl_tla_fused]   : {fused_tla_dur*1000:8.3f} ms   {ops / fused_tla_dur / 1e12:7.3f} TFLOPS  speedup={dnnl_dur / fused_tla_dur:5.2f}x"
     )
