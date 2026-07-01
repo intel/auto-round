@@ -73,6 +73,30 @@
 // `ScaleExpAccSumFp32Bf16` / avx512fp16 core and assert off as scaffolding.
 // Runtime dispatch (sdpa.cpp / ark.cpp) still does NOT call these overloads.
 //
+// Phase 4.5, step 1 begins the homogeneous FP16/BF16 attention path (Q, K, V and
+// dst all one low-precision element type), the next major missing functional
+// block after the stable mixed-precision (fp32-score) closure and the packed KV
+// infrastructure. Neural Speed implements it with the *non-stable*
+// `mha_interface_t` (single-pass QK*V that folds the softmax denominator into the
+// PV accumulation via an ExpSum epilogue) rather than the two-pass
+// `mha_stable_interface_t` this file has migrated so far:
+//   * bestla_fusion_attn_forward<fp16, fp16, fp16, fp16> drives BestLA's
+//     `gemm::HCoreRowNAvx512fp16` (native fp16 A/B/C GemmCore, ISA AVX512-FP16)
+//     with a `kernel::wrapper::ScaleExpAccSumFp32<fp16>` QK epilogue.
+//   * bestla_fusion_attn_forward<bf16, bf16, bf16, bf16> drives the AMX-BF16
+//     `gemm::HCoreRowNAmxbf16` core with a `ScaleExpAccSumFp32<bf16>` /
+//     `ScaleExpAccSumFp32Bf16` QK epilogue (the `avx512_bf16` sub-path of
+//     `ScaleExpAccSumFp32` migrated at kernel_wrapper.h).
+// This step only lands the two homogeneous `bestla_fusion_attn_forward`
+// specializations as documented throwing scaffolding (so the operand-type
+// surface exists and unsupported ISA/layout dispatches fail loudly rather than
+// via a hard `= delete` compile error) plus compile-only `instantiation_check`
+// pins for the homogeneous GemmCores. The non-stable `mha_interface_t` launcher
+// and its ExpSum epilogue composition are NOT migrated here, and runtime
+// dispatch (sdpa.cpp / ark.cpp) still does NOT route to these overloads; both
+// are deferred to the following Phase 4.5 steps, mirroring how the mixed
+// overloads were first introduced as scaffolding in Phase 2 step 4.
+//
 // API-drift notes vs Neural Speed's BestLA:
 //   * ARK's `kernel::wrapper::ScaleTrackMax::forward` takes an extra
 //     `padding_type` argument (0=dense, 1=causal, 2=right-padding) that Neural
@@ -1226,6 +1250,47 @@ inline void bestla_fusion_attn_forward<float, utils::bf16, utils::bf16, float>(
 }
 
 // ---------------------------------------------------------------------------
+// Phase 4.5, step 1: homogeneous FP16/BF16 attention (Q == K == V == dst element
+// type). Neural Speed routes these through the *non-stable* `mha_interface_t`
+// (single-pass QK*V with an ExpSum epilogue folding the softmax denominator into
+// the PV accumulation), not the two-pass `mha_stable_interface_t` migrated above.
+// That launcher and its `ScaleExpAccSumFp32` epilogue composition are not
+// migrated yet, so these specializations are documented throwing scaffolding:
+// they make the homogeneous operand-type surface explicit (instead of the hard
+// `= delete` on the generic primary template) and fail loudly, so a homogeneous
+// dispatch cannot silently no-op in a release build. Runtime dispatch
+// (sdpa.cpp / ark.cpp) still does NOT reach these overloads.
+// ---------------------------------------------------------------------------
+
+// fp16 Q/K/V, fp16 dst. Target: BestLA `gemm::HCoreRowNAvx512fp16` (native fp16
+// A/B/C, ISA AVX512-FP16) driven by the non-stable `mha_interface_t` with a
+// `kernel::wrapper::ScaleExpAccSumFp32<utils::fp16>` QK epilogue.
+template <>
+inline void bestla_fusion_attn_forward<utils::fp16, utils::fp16, utils::fp16, utils::fp16>(
+    const attn_fwd_args_t<utils::fp16, utils::fp16, utils::fp16, utils::fp16>& params, parallel::IThreading& th) {
+  (void)params;
+  (void)th;
+  throw std::runtime_error(
+      "ark::cpu::bestla_fusion_attn_forward: homogeneous fp16 attention is not implemented yet (Phase 4.5): it "
+      "needs the non-stable mha_interface_t launcher over gemm::HCoreRowNAvx512fp16 with a ScaleExpAccSumFp32<fp16> "
+      "epilogue, neither migrated yet");
+}
+
+// bf16 Q/K/V, bf16 dst. Target: AMX-BF16 `gemm::HCoreRowNAmxbf16` core driven by
+// the non-stable `mha_interface_t` with a `ScaleExpAccSumFp32<utils::bf16>`
+// (avx512_bf16 sub-path) QK epilogue.
+template <>
+inline void bestla_fusion_attn_forward<utils::bf16, utils::bf16, utils::bf16, utils::bf16>(
+    const attn_fwd_args_t<utils::bf16, utils::bf16, utils::bf16, utils::bf16>& params, parallel::IThreading& th) {
+  (void)params;
+  (void)th;
+  throw std::runtime_error(
+      "ark::cpu::bestla_fusion_attn_forward: homogeneous bf16 attention is not implemented yet (Phase 4.5): it "
+      "needs the non-stable mha_interface_t launcher over gemm::HCoreRowNAmxbf16 with a ScaleExpAccSumFp32<bf16> "
+      "epilogue, neither migrated yet");
+}
+
+// ---------------------------------------------------------------------------
 // Concrete instantiations / syntax-checks against the ARK vendored BestLA cores.
 // These mirror Neural Speed's *NonTr / *Trans aliases and pin each migrated
 // template to at least one real GemmCore so the building blocks are compiled
@@ -1250,6 +1315,18 @@ using CoreAvx2 = gemm::SCoreRowNAvx2<24, 4>;
 using CoreAvx512f = gemm::SCoreRowNAvx512f<48, 8>;
 // AMX bf16 core (HCoreRowNAmxbf16<48, 16>): drives the bf16 batched packers.
 using CoreAmxBf16 = gemm::HCoreRowNAmxbf16<48, 16>;
+
+// Phase 4.5 step 1: homogeneous low-precision GemmCores. These pin the cores the
+// homogeneous fp16/bf16 `bestla_fusion_attn_forward` overloads will drive so
+// they are type-checked / compiled at this step; the non-stable mha_interface_t
+// launcher and its ScaleExpAccSumFp32 epilogue composition are deferred.
+// avx512fp16 core (native fp16 A/B/C) for homogeneous fp16 attention.
+using CoreAvx512Fp16 = gemm::HCoreRowNAvx512fp16<64, 0>;
+// AMX bf16 core reused for homogeneous bf16 attention (same core, ExpSum path).
+using CoreAmxBf16Homogeneous = gemm::HCoreRowNAmxbf16<48, 16>;
+// ExpSum QK epilogues the non-stable interface will compose for each dtype.
+using ScaleExpAccSumFp16 = kernel::wrapper::ScaleExpAccSumFp32<utils::fp16>;
+using ScaleExpAccSumBf16 = kernel::wrapper::ScaleExpAccSumFp32<utils::bf16>;
 
 // Launchers composed exactly as the stable interface will compose them.
 using LauncherWeightAvx512f =
