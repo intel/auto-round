@@ -1534,49 +1534,97 @@ inline void bestla_fusion_attn_forward<float, utils::bf16, utils::bf16, float>(
 }
 
 // ---------------------------------------------------------------------------
-// Phase 4.5, step 1-2: homogeneous FP16/BF16 attention (Q == K == V == dst
-// element type). Neural Speed routes the bf16 case through the *non-stable*
-// `mha_interface_t` (runtime K/V pack -> QK with an ExpSum epilogue folding the
-// softmax denominator into the PV scale-write-back), not the two-pass
-// `mha_stable_interface_t` migrated above.
+// Phase 4.5, step 1-3: homogeneous FP16/BF16 attention (Q == K == V == dst
+// element type). These two routes are NOT the same remaining task:
 //
-// Step 2 migrated the non-stable `mha_interface_t` launcher and its
-// `scale_exp_acc_sum_fp32_t` / `ScaleExpAccSumFp32Bf16` QK epilogue (both above;
-// compile-pinned to the AMX-BF16 launcher pair in `instantiation_check`).
-// Wiring these specializations to that launcher is deferred to the next step, so
-// they remain documented throwing scaffolding: they make the homogeneous
-// operand-type surface explicit (instead of the hard `= delete` on the generic
-// primary template) and fail loudly, so a homogeneous dispatch cannot silently
-// no-op in a release build. Runtime dispatch (sdpa.cpp / ark.cpp) still does NOT
-// reach these overloads.
+//   * bf16 (wired in step 3, below): Neural Speed routes it through the
+//     *non-stable* `mha_interface_t` (runtime K/V pack -> QK with a
+//     `scale_exp_acc_sum_fp32_t` ExpSum epilogue folding the softmax denominator
+//     into the PV scale-write-back), NOT the two-pass `mha_stable_interface_t`.
+//     Step 2 migrated that launcher + epilogue; step 3 composes them here into a
+//     real internal path over the AMX-BF16 core.
+//
+//   * fp16 (still out of scope): Neural Speed drives it through the *stable*
+//     `mha_stable_interface_t` over the native-fp16 `gemm::HCoreRowNAvx512fp16`
+//     core with a `weight_base_t` forward prologue and fp16 stable epilogues --
+//     a different launcher family from the bf16 exp-sum route. See its overload
+//     below for the exact missing piece.
+//
+// Runtime dispatch (sdpa.cpp / ark.cpp) still does NOT reach either overload:
+// homogeneous support is partial (bf16 only) and is kept internal so it is not
+// exposed to Python as if it were complete.
 // ---------------------------------------------------------------------------
 
-// fp16 Q/K/V, fp16 dst. Target: BestLA `gemm::HCoreRowNAvx512fp16` (native fp16
-// A/B/C, ISA AVX512-FP16) driven by the non-stable `mha_interface_t` with a
-// `kernel::wrapper::ScaleExpAccSumFp32<utils::fp16>` QK epilogue.
+// bf16 packers on the AMX bf16 core (BType == utils::bf16). Declared here,
+// immediately before the homogeneous bf16 overload that composes them into its
+// non-stable launcher pair (mirrors Neural Speed's placement).
+template <class GEMM_T>
+using WeightPackBatchBf16Bf16NonTr = weight_pack_batch_bf16_non_tr_t<GEMM_T, utils::bf16>;
+template <class GEMM_T>
+using WeightPackBatchBf16Bf16Trans = weight_pack_batch_bf16_trans_t<GEMM_T, utils::bf16>;
+
+// fp16 Q/K/V, fp16 dst. OUT OF SCOPE for Phase 4.5 step 3 and DIFFERENT from the
+// homogeneous bf16 route below: Neural Speed drives fp16 through the two-pass
+// *stable* interface (`mha_stable_interface_t`) over the native-fp16
+// `gemm::HCoreRowNAvx512fp16<64, 8>` core with a `weight_base_t` forward prologue
+// and fp16 stable epilogues (`ScaleTrackMaxFp16Fp32` for QK,
+// `epilogue::gemm::AccumulatorWriteBackFp16` for PV) -- NOT the non-stable
+// `mha_interface_t` / `scale_exp_acc_sum_fp32_t` exp-sum path the bf16 route uses.
+// The individual building blocks already exist in ARK (`weight_base_t`,
+// `ScaleTrackMaxFp16Fp32`, `HCoreRowNAvx512fp16`, `AccumulatorWriteBackFp16`), but
+// the stable-fp16 launcher pair is not yet composed/compile-pinned here, so this
+// route fails loudly rather than silently running the wrong (bf16 exp-sum) kernel.
 template <>
 inline void bestla_fusion_attn_forward<utils::fp16, utils::fp16, utils::fp16, utils::fp16>(
     const attn_fwd_args_t<utils::fp16, utils::fp16, utils::fp16, utils::fp16>& params, parallel::IThreading& th) {
   (void)params;
   (void)th;
   throw std::runtime_error(
-      "ark::cpu::bestla_fusion_attn_forward: homogeneous fp16 attention is not wired yet (Phase 4.5): the "
-      "non-stable mha_interface_t launcher over gemm::HCoreRowNAvx512fp16 with a ScaleExpAccSumFp32<fp16> epilogue "
-      "is migrated but its dispatch is not connected yet");
+      "ark::cpu::bestla_fusion_attn_forward: homogeneous fp16 attention is not wired yet (Phase 4.5 step 3 wires "
+      "only homogeneous bf16). fp16 uses the STABLE mha_stable_interface_t over gemm::HCoreRowNAvx512fp16 with a "
+      "weight_base_t prologue and ScaleTrackMaxFp16Fp32 / AccumulatorWriteBackFp16 epilogues -- a different "
+      "launcher family from the bf16 non-stable exp-sum route -- and that stable-fp16 launcher pair is not "
+      "composed here yet");
 }
 
-// bf16 Q/K/V, bf16 dst. Target: AMX-BF16 `gemm::HCoreRowNAmxbf16` core driven by
-// the non-stable `mha_interface_t` with a `ScaleExpAccSumFp32<utils::bf16>`
-// (avx512_bf16 sub-path) QK epilogue.
+// bf16 Q/K/V, bf16 dst. Real internal path (Phase 4.5 step 3): the non-stable
+// `mha_interface_t` launcher over the AMX-BF16 `gemm::HCoreRowNAmxbf16<64, 16>`
+// core. QK packs a transposed K source and runs the `scale_exp_acc_sum_fp32_t`
+// epilogue (fusing exp + the per-row exp-sum, emitting the bf16 P matrix); PV
+// packs a non-transposed V source and writes back the 1/l_i-scaled bf16 output.
+// This composition matches Neural Speed's homogeneous bf16 launcher pair exactly
+// (and the `instantiation_check::MhaNonStableAmxBf16` compile pin). It is a
+// working internal kernel; runtime dispatch (sdpa.cpp / ark.cpp) still does NOT
+// reach it, so partial homogeneous support (bf16 only) is not exposed to Python.
 template <>
 inline void bestla_fusion_attn_forward<utils::bf16, utils::bf16, utils::bf16, utils::bf16>(
     const attn_fwd_args_t<utils::bf16, utils::bf16, utils::bf16, utils::bf16>& params, parallel::IThreading& th) {
-  (void)params;
-  (void)th;
-  throw std::runtime_error(
-      "ark::cpu::bestla_fusion_attn_forward: homogeneous bf16 attention is not wired yet (Phase 4.5): the "
-      "non-stable mha_interface_t launcher over gemm::HCoreRowNAmxbf16 with a ScaleExpAccSumFp32<bf16> epilogue "
-      "is migrated but its dispatch is not connected yet");
+  GetCPUDevice();
+  if (_cd->AMX_BF16()) {
+#if CompileBF16()
+    using GemmKernelBF16ExpSum = launcher_base_off_t<  //
+        gemm::HCoreRowNAmxbf16<64, 16>,                //
+        prologue_a::gemm::ActivationBase,              //
+        WeightPackBatchBf16Bf16Trans,                  //
+        ScaleExpAccSumFp32Bf16>;                       //
+    using GemmKernelBF16 = launcher_base_off_t<        //
+        gemm::HCoreRowNAmxbf16<64, 16>,                //
+        prologue_a::gemm::ActivationBase,              //
+        WeightPackBatchBf16Bf16NonTr,                  //
+        ScaleWriteBackFp32Bf16>;                       //
+    static mha_interface_t<GemmKernelBF16ExpSum, GemmKernelBF16> mha;
+    [[maybe_unused]] const auto ret = mha.compute(params, th);
+    assert(ret == BTLA_CODE::Success);
+#else
+    throw std::runtime_error(
+        "ark::cpu::bestla_fusion_attn_forward: homogeneous bf16 attention requires an AMX-BF16 build "
+        "(CompileBF16 disabled)");
+#endif
+  } else {
+    throw std::runtime_error(
+        "ark::cpu::bestla_fusion_attn_forward: homogeneous bf16 attention requires an AMX-BF16 CPU with the "
+        "non-stable mha_interface_t over gemm::HCoreRowNAmxbf16; this CPU/build does not provide AMX-BF16");
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -1587,11 +1635,9 @@ inline void bestla_fusion_attn_forward<utils::bf16, utils::bf16, utils::bf16, ut
 // ---------------------------------------------------------------------------
 using PackedWeightBatch = storage_packed_weight_batch_t;
 
-// bf16 packers on the AMX bf16 core (BType == utils::bf16).
-template <class GEMM_T>
-using WeightPackBatchBf16Bf16NonTr = weight_pack_batch_bf16_non_tr_t<GEMM_T, utils::bf16>;
-template <class GEMM_T>
-using WeightPackBatchBf16Bf16Trans = weight_pack_batch_bf16_trans_t<GEMM_T, utils::bf16>;
+// bf16 packers on the AMX bf16 core (BType == utils::bf16) are declared above,
+// immediately before the homogeneous bf16 overload that composes them
+// (WeightPackBatchBf16Bf16NonTr / WeightPackBatchBf16Bf16Trans).
 template <class GEMM_T>
 using WeightPackBatchFp16Bf16NonTr = weight_pack_batch_bf16_non_tr_t<GEMM_T, utils::fp16>;
 template <class GEMM_T>
