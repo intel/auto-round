@@ -122,8 +122,8 @@ export AR_MODEL_FREE_SHARD_PARALLELISM=4
 ```
 
 ### AR_AUTO_SCHEME_NSAMPLES
-- **Description**: Controls the default number of calibration samples used by AutoScheme scoring when `AutoScheme.nsamples` is not explicitly set. Takes precedence over the built-in heuristic (64 for MoE models, 16 for dense models).
-- **Default**: unset → built-in heuristic applies (64 for MoE, 16 for dense)
+- **Description**: Controls the default number of calibration samples used by AutoScheme scoring when `AutoScheme.nsamples` is not explicitly set.
+- **Default**: unset → 16
 - **Valid Values**: any positive integer, e.g. `8`, `16`, `32`
 - **Usage**: Set this to override the automatic sample-count selection for AutoScheme
 

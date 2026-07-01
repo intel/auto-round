@@ -122,8 +122,8 @@ export AR_MODEL_FREE_SHARD_PARALLELISM=4
 ```
 
 ### AR_AUTO_SCHEME_NSAMPLES
-- **描述**：控制 AutoScheme 评分时使用的校准样本数默认值，仅在 `AutoScheme.nsamples` 未显式设置时生效。优先级高于内置启发式规则（MoE 模型默认 64，稠密模型默认 16）。
-- **默认值**：未设置 → 走内置启发式规则（MoE 为 64，稠密模型为 16）
+- **描述**：控制 AutoScheme 评分时使用的校准样本数默认值，仅在 `AutoScheme.nsamples` 未显式设置时生效。
+- **默认值**：未设置 → 16
 - **有效值**：任意正整数，如 `8`、`16`、`32`
 - **用途**：覆盖 AutoScheme 的自动样本数选择
 

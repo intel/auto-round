@@ -223,15 +223,22 @@ def compute_layer_bits(
 
 
 def merge_lists_unionfind(list_of_lists):
+    """Merge lists that share at least one common element using union-find, returning the
+    resulting disjoint groups (each input list's elements are unioned together).
+    """
     parent = {}
 
     def find(x):
+        """Return the representative (root) element of ``x``'s union-find set, with path
+        compression.
+        """
         while parent[x] != x:
             parent[x] = parent[parent[x]]
             x = parent[x]
         return x
 
     def union(x, y):
+        """Merge the sets containing ``x`` and ``y``."""
         root_x, root_y = find(x), find(y)
         if root_x != root_y:
             parent[root_y] = root_x

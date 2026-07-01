@@ -87,6 +87,9 @@ class AutoSchemeWrapperLinear(WrapperLinear):
         enable_torch_compile=False,
         **kwargs,
     ):
+        """Wrap ``orig_layer`` to accumulate a ``mix_score`` (weight + activation loss) during
+        forward/backward, used by Delta Loss to rank candidate quantization schemes.
+        """
         super().__init__(
             orig_layer,
             enable_minmax_tuning,
@@ -111,6 +114,9 @@ class AutoSchemeWrapperLinear(WrapperLinear):
             self.orig_layer.weight.requires_grad = True
 
     def _qdq_act(self, x, act_min_scale=1.0, act_max_scale=1.0, act_max=None):
+        """Quant-dequant the activation and, in ``grad_mode``, register a backward hook that
+        accumulates ``act_score`` from ``|grad * (x - qdq_x)|``.
+        """
         if hasattr(self.orig_layer, "act_bits") and self.orig_layer.act_bits > 8:
             return x, 1.0, None
 
@@ -124,6 +130,7 @@ class AutoSchemeWrapperLinear(WrapperLinear):
                 self.x_diff = x_diff.to("cpu")
 
             def save_grad(grad):
+                """Backward hook: accumulate activation score from grad * (x - qdq_x)."""
                 if self.max_act_value == 0:
                     if torch.abs(grad).max() != 0:
                         raise ValueError
@@ -147,6 +154,11 @@ class AutoSchemeWrapperLinear(WrapperLinear):
         return qdq_x, scale, zp
 
     def _qdq_weight(self, value, min_scale, max_scale):
+        """Quant-dequant the weight and, in ``grad_mode``, register a backward hook that
+        accumulates ``weight_score`` from ``|grad * (weight - qdq_w)|``. Weight quantization
+        for the hook is only recomputed lazily inside the hook itself, so layers whose
+        forward never runs (e.g. unrouted MoE experts) never pay this cost.
+        """
         device = self.device
         if self.orig_layer.bits > 8 or not self.need_weight_grad:
             qdq_w, scale, zp = super()._qdq_weight(
@@ -162,6 +174,7 @@ class AutoSchemeWrapperLinear(WrapperLinear):
         if self.grad_mode:
 
             def save_grad(grad):
+                """Backward hook: accumulate weight score from grad * (weight - qdq_w)."""
                 qdq_w, scale, zp = self.super_qdq_func(
                     torch.tensor(0, device=device), torch.tensor(1.0, device=device), torch.tensor(1.0, device=device)
                 )
@@ -176,6 +189,7 @@ class AutoSchemeWrapperLinear(WrapperLinear):
 
 
 class AutoSchemeWrapperLinearIMatrix(WrapperLinear):
+    """GGUF-K wrapper that scores a layer using an imatrix-aware quant search (RTN, iters=0)."""
 
     def __init__(
         self,
@@ -188,6 +202,7 @@ class AutoSchemeWrapperLinearIMatrix(WrapperLinear):
         enable_torch_compile=False,
         **kwargs,
     ):
+        """Wrap ``orig_layer`` and eagerly run the imatrix-aware quant search to build ``qdq_w``."""
         super().__init__(
             orig_layer,
             enable_minmax_tuning,
@@ -222,8 +237,9 @@ class AutoSchemeWrapperLinearIMatrix(WrapperLinear):
 
     @torch.no_grad()
     def post_init_qdqw(self, device):
-        # Could not place in qdq_w, otherwise vram is much higher
-
+        """Run the imatrix-aware quant search once and cache the result as buffer ``qdq_w``,
+        registering a backward hook on it to accumulate ``weight_score``.
+        """
         qdq_w, _, _ = self.weight_search_quant_func(
             self.orig_layer.weight.to(device),
             bits=self.orig_layer.bits,
@@ -241,6 +257,7 @@ class AutoSchemeWrapperLinearIMatrix(WrapperLinear):
         self.register_buffer("qdq_w", qdq_w.detach().clone().to(self.orig_layer.weight.device))
 
         def save_grad(grad):
+            """Backward hook: accumulate weight score from grad * (weight - qdq_w)."""
             w_diff = self.orig_layer.weight - self.qdq_w.to(self.orig_layer.weight.device)
             self.weight_score += torch.abs((grad.to(torch.float32) * w_diff.to(grad.device))).sum().item()
             act_score = 0.0 if self.act_cnt <= 0 else self.total_act_score / self.act_cnt
@@ -253,6 +270,9 @@ class AutoSchemeWrapperLinearIMatrix(WrapperLinear):
         self.qdq_w.register_hook(save_grad)
 
     def _qdq_act(self, x, act_min_scale=1.0, act_max_scale=1.0, act_max=None):
+        """Quant-dequant the activation and, in ``grad_mode``, register a backward hook that
+        accumulates ``act_score`` from ``|grad * (x - qdq_x)|``.
+        """
         if hasattr(self.orig_layer, "act_bits") and self.orig_layer.act_bits > 8:
             return x, 1.0, None
 
@@ -266,6 +286,7 @@ class AutoSchemeWrapperLinearIMatrix(WrapperLinear):
                 self.x_diff = x_diff.to("cpu")
 
             def save_grad(grad):
+                """Backward hook: accumulate activation score from grad * (x - qdq_x)."""
                 if self.max_act_value == 0:
                     if torch.abs(grad).max() != 0:
                         raise ValueError
@@ -289,10 +310,12 @@ class AutoSchemeWrapperLinearIMatrix(WrapperLinear):
         return qdq_x, scale, zp
 
     def _qdq_weight(self, value, min_scale, max_scale):
+        """Return the cached ``qdq_w`` computed eagerly in ``__init__`` (via ``post_init_qdqw``)."""
         return self.qdq_w, 1.0, None
 
 
 class AutoSchemeWrapperLinearForGGUFK(AutoSchemeWrapperLinear):
+    """GGUF-K wrapper (no imatrix): scores a layer using the plain GGUF K-quant search."""
 
     def __init__(
         self,
@@ -304,6 +327,7 @@ class AutoSchemeWrapperLinearForGGUFK(AutoSchemeWrapperLinear):
         need_weight_grad=False,
         **kwargs,
     ):
+        """Wrap ``orig_layer`` and eagerly run the GGUF K-quant search to build ``qdq_w``."""
         super().__init__(
             orig_layer,
             enable_minmax_tuning,
@@ -313,13 +337,20 @@ class AutoSchemeWrapperLinearForGGUFK(AutoSchemeWrapperLinear):
             need_weight_grad,
             **kwargs,
         )
-        with torch.no_grad():
-            qdq_w, scale, zp = self.super_qdq_func(
-                torch.tensor(0).to(device), torch.tensor(1.0).to(device), torch.tensor(1.0).to(device)
-            )
+        self.post_init_qdqw(device)
+
+    @torch.no_grad()
+    def post_init_qdqw(self, device):
+        """Run the GGUF K-quant search once and cache the result as buffer ``qdq_w``,
+        registering a backward hook on it to accumulate ``weight_score``.
+        """
+        qdq_w, scale, zp = self.super_qdq_func(
+            torch.tensor(0).to(device), torch.tensor(1.0).to(device), torch.tensor(1.0).to(device)
+        )
         self.register_buffer("qdq_w", qdq_w.detach().clone().to(self.orig_layer.weight.device))
 
         def save_grad(grad):
+            """Backward hook: accumulate weight score from grad * (weight - qdq_w)."""
             w_diff = self.orig_layer.weight - self.qdq_w.to(self.orig_layer.weight.device)
             # TODO strange, grad could be in CPU
             self.weight_score += torch.abs((grad.to(w_diff.device).to(torch.float32) * w_diff)).sum().item()
@@ -332,10 +363,14 @@ class AutoSchemeWrapperLinearForGGUFK(AutoSchemeWrapperLinear):
         self.qdq_w.register_hook(save_grad)
 
     def _qdq_weight(self, value, min_scale, max_scale):
+        """Return the cached ``qdq_w`` computed eagerly in ``__init__`` (via ``post_init_qdqw``)."""
         return self.qdq_w, 1.0, None
 
 
 class AutoSchemeWrapperLinearForGGUFKImatrix(AutoSchemeWrapperLinear):
+    """GGUF-K wrapper (with imatrix): scores a layer using the imatrix-weighted GGUF K-quant
+    search (``_init_scale``).
+    """
 
     def __init__(
         self,
@@ -348,6 +383,9 @@ class AutoSchemeWrapperLinearForGGUFKImatrix(AutoSchemeWrapperLinear):
         enable_torch_compile=False,
         **kwargs,
     ):
+        """Wrap ``orig_layer`` and eagerly run the imatrix-weighted GGUF K-quant search to
+        build ``qdq_w``.
+        """
         super().__init__(
             orig_layer,
             enable_minmax_tuning,
@@ -362,10 +400,14 @@ class AutoSchemeWrapperLinearForGGUFKImatrix(AutoSchemeWrapperLinear):
 
     @torch.no_grad()
     def post_init_qdqw(self, device):  # Could not place in qdq_w, otherwise vram is much higher
+        """Run the imatrix-weighted GGUF K-quant search once and cache the result as buffer
+        ``qdq_w``, registering a backward hook on it to accumulate ``weight_score``.
+        """
         qdq_w = self._init_scale(device).detach()
         self.register_buffer("qdq_w", qdq_w.detach().clone().to(self.orig_layer.weight.device))
 
         def save_grad(grad):
+            """Backward hook: accumulate weight score from grad * (weight - qdq_w)."""
             w_diff = self.orig_layer.weight - self.qdq_w.to(self.orig_layer.weight.device)
             self.weight_score += torch.abs((grad.to(torch.float32) * w_diff.to(grad.device))).sum().item()
             act_score = 0.0 if self.act_cnt <= 0 else self.total_act_score / self.act_cnt
@@ -379,6 +421,9 @@ class AutoSchemeWrapperLinearForGGUFKImatrix(AutoSchemeWrapperLinear):
 
     @torch.no_grad()
     def _init_scale(self, device):
+        """Compute the imatrix-weighted GGUF K-quant quant-dequant weight for ``bits`` in
+        [2,3,4,5,6], returned in the original weight dtype.
+        """
         tensor = self.orig_layer.weight.data.to(device)
         bits = self.orig_layer.bits
         scale_dtype = self.orig_layer.scale_dtype
@@ -413,6 +458,7 @@ class AutoSchemeWrapperLinearForGGUFKImatrix(AutoSchemeWrapperLinear):
         return qdq_w.to(orig_dtype)
 
     def _qdq_weight(self, value, min_scale, max_scale):
+        """Return the cached ``qdq_w`` computed eagerly in ``__init__`` (via ``post_init_qdqw``)."""
         return self.qdq_w, 1.0, None
 
 
@@ -420,6 +466,7 @@ def register_imatrix_hook(model):
     """Registers hooks to accumulate activation squared norms into `imatrix`."""
 
     def get_imatrix_hook(module, input, output):
+        """Forward hook: accumulate the per-channel squared-activation sum into ``module.imatrix``."""
         input = input[0] if isinstance(input, (tuple, list)) else input
         flattened = input.reshape(-1, input.shape[-1]).to(torch.float32)
         squared = torch.sum(torch.pow(flattened, 2), dim=0).to(torch.float32)
@@ -439,7 +486,10 @@ def register_imatrix_hook(model):
 
 @torch.no_grad()
 def cal_imatrix(model, dataloader, major_device, low_gpu_mem_usage):
-
+    """Accumulate an activation-based imatrix on every supported layer by running the
+    calibration ``dataloader`` through ``model`` once (dispatches to the low-GPU-memory or
+    full-forward variant based on ``low_gpu_mem_usage``).
+    """
     if low_gpu_mem_usage:
         cal_imatrix_low_gpu(model, dataloader, major_device)
     else:
@@ -452,18 +502,24 @@ def cal_imatrix(model, dataloader, major_device, low_gpu_mem_usage):
 
 
 def cal_imatrix_low_gpu(model, dataloader, major_device):
+    """Low-GPU-memory variant of ``cal_imatrix``: moves each block to ``major_device`` only
+    for the duration of its own forward pass (via pre/post forward hooks), then back to CPU.
+    """
     imatrix_hooks = register_imatrix_hook(model)
     block_names = get_block_names(model, quant_vision=True)
     block_names = flatten_list(block_names)
 
     def move_to_gpu_hook(module, inputs):
+        """Pre-forward hook: move this block (and its inputs) to ``major_device``."""
         module.to(major_device)
         to_device(inputs, major_device)
 
     def move_to_cpu(module, inputs, outputs):
+        """Forward hook: move this block back to CPU once its forward pass is done."""
         module.to("cpu")
 
     def move_to_cpu_clear_memory(module, inputs, outputs):
+        """Forward hook: move this block back to CPU and free the device memory it used."""
         module.to("cpu")
         clear_memory(device_list=major_device)
 
@@ -490,8 +546,12 @@ def cal_imatrix_low_gpu(model, dataloader, major_device):
 
 
 class MyCustomError(Exception):
+    """Raised from ``backward_pre_hook`` to deliberately interrupt ``loss.backward()`` at the
+    last block, so gradients can be replayed manually block-by-block in ``model_forward_low_gpu``.
+    """
 
     def __init__(self, message):
+        """Create the interrupt signal with the given ``message``."""
         super().__init__(message)
 
 
@@ -499,6 +559,14 @@ last_grad_input = None
 
 
 def prepare_model_low_gpu(model, block_inputs: dict = None, pbar=None, major_device="cpu"):
+    """Wrap every block's forward so that, for one calibration batch, it (1) moves itself to
+    ``major_device`` on demand, (2) records its own inputs into ``block_inputs`` (on CPU) so
+    they can be replayed later, and (3) moves itself back to CPU once done.
+
+    Called once per calibration batch before ``model_forward_low_gpu`` runs the actual
+    forward+backward -- the recorded ``block_inputs`` are what let the backward pass be
+    replayed manually, one block at a time, without keeping every block resident on GPU.
+    """
     block_inputs.clear()
     for n, m in model.named_modules():
         if hasattr(m, "grad_mode"):
@@ -507,10 +575,16 @@ def prepare_model_low_gpu(model, block_inputs: dict = None, pbar=None, major_dev
     block_names = get_block_names(model)[0]
 
     def wrap_forward(module, module_name):
+        """Build a replacement ``forward`` for ``module`` that captures its inputs/outputs
+        (see ``prepare_model_low_gpu`` docstring) while moving it to/from ``major_device``.
+        """
         original_forward = module.forward
 
         @wraps(original_forward)
         def new_forward(*args, **kwargs):
+            """Move the block to device, run its original forward, cache its (CPU) inputs
+            for later replay, then move the block back to CPU.
+            """
             move_module_to_tuning_device(module, major_device=major_device)
             # for n,m in module.named_modules():
             #     if hasattr(m, "post_init_qdqw"):
@@ -602,6 +676,14 @@ def model_forward(model, data, **forward_kwargs):
 
 
 def model_forward_low_gpu(model, dataloader, major_device="cuda", pbar=None, scheme_tag=None):
+    """Run one full scoring pass (all calibration batches) in low-GPU-memory mode.
+
+    For each batch: capture per-block inputs via ``prepare_model_low_gpu``, run a forward
+    pass whose backward is deliberately interrupted at the last block (``backward_pre_hook``
+    raising ``MyCustomError``), then manually replay the backward pass block-by-block
+    (moving each block to ``major_device`` only for its own recompute + backward, then back
+    to CPU) so only one block's weights need to be resident on GPU at a time.
+    """
     block_inputs = {}
     total_batches = len(dataloader) if hasattr(dataloader, "__len__") else None
 
@@ -756,6 +838,9 @@ def _expert_key_from_layer_name(layer_name: str) -> Optional[str]:
 
 
 def _short_summary_name(layer_name: str) -> str:
+    """Shorten ``layer_name`` to its last two dotted segments when the final segment is a
+    numeric index (e.g. expert id), otherwise return it unchanged.
+    """
     parts = layer_name.rsplit(".", 2)
     if len(parts) >= 2 and parts[-1].isdigit():
         return ".".join(parts[-2:])
@@ -843,6 +928,12 @@ def _log_score_summary_by_block_and_nonblock(
     scheme_tag: Optional[str] = None,
     summary_stage: Optional[str] = None,
 ):
+    """Log a per-block (and non-block) breakdown of ``scores_dict`` losses at debug level.
+
+    For MoE blocks, additionally splits each block's loss into non-expert vs. expert
+    contributions and reports how many experts were never activated (see
+    ``_fill_inactive_expert_scores``).
+    """
     if not scores_dict:
         logger.info("AutoScheme score summary: empty.")
         return
@@ -981,6 +1072,10 @@ def _log_score_summary_by_block_and_nonblock(
 
 
 def _collect_current_scores(model):
+    """Snapshot the current ``mix_score`` of every wrapped module into a
+    ``{name: [0.0, loss]}`` dict (bits column unused, kept for interface parity with
+    ``scores_dict`` elsewhere).
+    """
     scores_dict = {}
     for name, module in model.named_modules():
         if not hasattr(module, "mix_score"):
@@ -993,7 +1088,27 @@ def _collect_current_scores(model):
     return scores_dict
 
 
+# How often (in batches) to compute and log the full per-batch avg-loss / block summary when
+# the logger is above DEBUG level. Both involve an O(num_quant_layers) traversal of the model's
+# modules, which becomes non-trivial on MoE models with hundreds of expert layers, so we avoid
+# paying that cost on every single batch when only coarse progress visibility is needed.
+_BATCH_SUMMARY_LOG_INTERVAL = 10
+
+
 def _log_batch_avg_loss(model, batch_idx: int, pbar=None, block_names=None, total_batches=None, scheme_tag=None):
+    """Log the running average ``mix_score`` after processing one calibration batch.
+
+    The underlying stats require an ``O(num_quant_layers)`` traversal of ``model``'s modules
+    (and, when ``block_names`` is given, a further per-block/per-expert breakdown), which is
+    non-trivial to repeat on every batch for MoE models with many expert layers. To bound this
+    cost, the detailed computation/logging only runs on the last batch, every
+    ``_BATCH_SUMMARY_LOG_INTERVAL`` batches, or whenever the logger is at DEBUG level.
+    """
+    is_last_batch = total_batches is not None and batch_idx == total_batches
+    should_log = is_last_batch or batch_idx % _BATCH_SUMMARY_LOG_INTERVAL == 0 or logger.isEnabledFor(logging.DEBUG)
+    if not should_log:
+        return
+
     total_loss = 0.0
     layer_cnt = 0
     for _, module in model.named_modules():
@@ -1017,7 +1132,6 @@ def _log_batch_avg_loss(model, batch_idx: int, pbar=None, block_names=None, tota
     if block_names:
         scores_dict = _collect_current_scores(model)
         if scores_dict:
-            is_last_batch = total_batches is not None and batch_idx == total_batches
             tag = f"[{scheme_tag}] " if scheme_tag else ""
             batch_str = f"{batch_idx}/{total_batches}" if total_batches is not None else str(batch_idx)
             if is_last_batch:
@@ -1060,6 +1174,10 @@ def get_score_for_scheme(
     model_name: Optional[str] = None,
     scheme_tag: Optional[str] = None,
 ):
+    """Wrap every quantizable layer in ``quant_layer_names`` with a scoring wrapper, run
+    forward(+backward, unless RTN-only) calibration over ``nsamples`` examples from
+    ``dataset``/``dataloader``, then unwrap and return each layer's ``[bits, loss]``.
+    """
     scores_dict = {}  # Key=name,Val=[quant_total_bits, loss]
     block_names = get_block_names(model)[0]
     for n, m in model.named_modules():
@@ -1291,6 +1409,10 @@ def get_score_for_scheme(
             #     m.post_init_qdqw()
 
         def _run_forward_loop(loader):
+            """Run the full (non-low-GPU) forward+backward calibration loop over ``loader``,
+            accumulating ``mix_score`` on every wrapped layer and periodically logging progress
+            via ``_log_batch_avg_loss``.
+            """
             total_batches = len(loader) if hasattr(loader, "__len__") else None
             _checked_pixel = False
             _pixel_keys = (
@@ -1496,11 +1618,20 @@ def choose_bits_per_layer_with_path(layers: dict, P: int, max_states: int = None
 
 
 def move_module_to_tuning_device(module, major_device="cpu"):
+    """Move every submodule of ``module`` to its own tuning device: wrapper submodules go to
+    ``orig_layer.tuning_device``/``tuning_device`` (set per-layer earlier), leaf modules with
+    no such attribute fall back to ``major_device``, and any directly-held parameters/buffers
+    (not just the standard ``.to()`` targets) are relocated along with their ``.grad``.
+    """
 
     def _normalize(dev):
+        """Coerce ``dev`` (str or ``torch.device``) into a ``torch.device``."""
         return dev if isinstance(dev, torch.device) else torch.device(dev)
 
     def _move_own_tensors(m, device):
+        """Move ``m``'s directly-owned (non-recursive) parameters/buffers (and their
+        ``.grad``) to ``device``.
+        """
         # Cover non-leaf modules that directly hold nn.Parameter / buffers
         # (e.g. Mamba/GDN linear_attn with A_log & dt_bias). Also relocate
         # p.grad together with p.data — otherwise the next backward's grad
@@ -1544,6 +1675,11 @@ def _get_scheme_bits(scheme):
 
 # Delta loss does not handle lm-head well, it is prone to assign low bit to lm-head which is not optimal
 def _apply_head_trick(head_name, schemes, sorted_indices, target_bits, target_params_cnt, total_scores):
+    """Bias (or restrict) ``lm_head``'s candidate scheme options toward higher precision before
+    DP knapsack selection, since its quantization error propagates directly into logits with
+    no downstream LayerNorm to dampen it. See inline rules below; any restriction is relaxed if
+    it would make the overall bit budget infeasible.
+    """
 
     # ------------------------------------------------------------------ #
     # lm_head option restriction for DP                                   #
@@ -1646,6 +1782,14 @@ def _gen_layer_config(
     processor=None,
     is_vlm: bool = False,
 ):
+    """Score every candidate scheme in ``auto_scheme.options`` against ``quant_layer_names``
+    and return per-layer per-scheme losses used by the caller to pick a final bit-width
+    assignment (via the DP knapsack in ``choose_bits_per_layer_with_path``).
+
+    For each scheme: wraps every quantizable layer with a scoring wrapper, runs
+    forward+backward calibration to accumulate ``mix_score`` (weight + activation loss), then
+    unwraps and records the result before moving to the next scheme.
+    """
     # Initialize memory tracking for AutoScheme
     memory_monitor = MemoryMonitor()
     # memory_monitor.reset()
@@ -1716,6 +1860,9 @@ def _gen_layer_config(
     schemes = auto_scheme.options
 
     def check_bf16_scheme(scheme):
+        """Return True if ``scheme`` is effectively BF16/no-op (bits >= 16 and act_bits >= 16),
+        in which case scoring can skip the expensive wrap/forward/backward cycle entirely.
+        """
         if isinstance(scheme, str) and scheme.upper() == "BF16":
             return True
         if isinstance(scheme, QuantizationScheme):
@@ -1740,7 +1887,15 @@ def _gen_layer_config(
                 config_str = str(model.config.to_dict())
                 if "moe" in config_str or "expert" in config_str:
                     is_moe_model = True
-            nsamples, seqlen = 16, 128
+            nsamples, seqlen = (16, 128) if is_moe_model else (16, 128)
+            if is_moe_model:
+                logger.info(
+                    "AutoScheme: detected MoE model, using nsamples=%d (vs %d for dense models) "
+                    "for better expert coverage. Override via AutoScheme(nsamples=...) or "
+                    "AR_AUTO_SCHEME_NSAMPLES if needed.",
+                    nsamples,
+                    16,
+                )
 
     if auto_scheme.batch_size is not None:
         batch_size = auto_scheme.batch_size
@@ -2205,6 +2360,9 @@ def gen_layer_config(
     # ``use_reentrant=False`` (saved-tensor-hooks impl) does not have this
     # restriction.
     def _enable_gc(mod):
+        """Enable gradient checkpointing on ``mod`` with ``use_reentrant=False`` if supported
+        (see rationale above); no-op if the module doesn't support checkpointing.
+        """
         if not getattr(mod, "supports_gradient_checkpointing", False):
             return
         try:

@@ -79,7 +79,7 @@ environment_variables: dict[str, Callable[[], Any]] = {
     "LLAMA_CPP_ROOT": lambda: os.getenv("LLAMA_CPP_ROOT", None),
     # Controls the default number of calibration samples used by AutoScheme scoring
     # when ``AutoScheme.nsamples`` is not explicitly set.
-    # When unset, AutoScheme uses 3 for MoE models and 16 for dense models.
+    # When unset, AutoScheme uses 16.
     "AR_AUTO_SCHEME_NSAMPLES": lambda: _get_optional_positive_int_env("AR_AUTO_SCHEME_NSAMPLES"),
     # Controls the default batch size used by AutoScheme scoring
     # when ``AutoScheme.batch_size`` is not explicitly set.
