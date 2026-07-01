@@ -65,7 +65,7 @@ def skip_not_convert_modules(model, quantization_config, layer_names, layer_conf
     modules_to_not_convert = getattr(quantization_config, "modules_to_not_convert", [])
     try:  # transformers new api
         modules_to_not_convert = get_modules_to_not_convert(model, modules_to_not_convert, add_default_skips=True)
-    except:
+    except Exception:
         modules_to_not_convert = _get_modules_to_not_convert(model, modules_to_not_convert)
     if modules_to_not_convert:
         for layer_name in layer_names:
@@ -155,7 +155,7 @@ try:
     from transformers.quantizers.base import HfQuantizer
 
     get_modules_to_not_convert = HfQuantizer.get_modules_to_not_convert
-except:
+except Exception:
     get_modules_to_not_convert = _get_modules_to_not_convert
 
 
@@ -492,7 +492,7 @@ def _import_exllamav2_kernels():
     """Attempts to import ExLlamaV2 kernels for performance optimization."""
     try:
         from exllamav2_kernels import gemm_half_q_half, make_q_matrix  # pylint: disable=E0611, E0401
-    except:
+    except Exception:
         logger.warning_once(
             "AutoGPTQ ExLlamaV2 has not been installed, Please install it using the following command: "
             "`pip install git+https://github.com/AutoGPTQ/AutoGPTQ.git@b8b4127`"

@@ -394,7 +394,7 @@ class ARDevice:
         if callable(fn):
             try:
                 fn()  # pylint: disable=E1102 # mps has issues
-            except:
+            except Exception:
                 pass
 
     def device_index(self, index: int):

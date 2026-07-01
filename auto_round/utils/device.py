@@ -313,7 +313,7 @@ def set_cuda_visible_devices(device: str):
             indices = [int(device) for device in devices]
             try:
                 pick_device = [current_visible_devices[i] for i in indices]
-            except:
+            except Exception:
                 raise ValueError(
                     "Invalid '--device' value: It must be smaller than the number of available devices."
                     " For example, with CUDA_VISIBLE_DEVICES=4,5, "
