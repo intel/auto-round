@@ -656,27 +656,25 @@ class TestMoEGemmPrefillPerf:
             flops = _compute_moe_flops(total_tokens, K, N, E)
             tflops = flops / (ark_ms * 1e-3) / 1e12
 
-            # Variant B DPAS INT8 (default-on branch). Silently skipped for
-            # asym since the DPAS kernel is sym-only; the dispatcher would
-            # silently fall through to the dequant path so the column
-            # would just repeat `ark(ms)`. Print `--` in that case.
+            # Variant B DPAS INT8 (default-on branch). Both sym and asym are
+            # supported; asym uses a per-M-row per-K-group activation-sum
+            # precompute to fold the zero-point correction.
             dpas_ms = None
             dpas_tflops = None
-            if not asym:
-                os.environ["ARK_MOE_PREFILL_DPAS_INT8"] = "1"
-                dpas_ms = _xpu_time_ms(
-                    lambda: ark.moe_gemm_prefill(
-                        activations,
-                        packed,
-                        ntpe,
-                        scales=scales,
-                        zeros=zeros,
-                        weight_bits=8,
-                        group_size=group_size,
-                        asym=asym,
-                    )
+            os.environ["ARK_MOE_PREFILL_DPAS_INT8"] = "1"
+            dpas_ms = _xpu_time_ms(
+                lambda: ark.moe_gemm_prefill(
+                    activations,
+                    packed,
+                    ntpe,
+                    scales=scales,
+                    zeros=zeros,
+                    weight_bits=8,
+                    group_size=group_size,
+                    asym=asym,
                 )
-                dpas_tflops = flops / (dpas_ms * 1e-3) / 1e12
+            )
+            dpas_tflops = flops / (dpas_ms * 1e-3) / 1e12
 
             # Restore prior env state.
             if prev_dpas is None:

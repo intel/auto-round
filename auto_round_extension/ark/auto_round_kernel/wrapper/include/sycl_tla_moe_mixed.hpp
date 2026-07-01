@@ -521,33 +521,39 @@ inline void moe_gemm_prefill(sycl::queue* q, void* activations, void* weights, v
   // INT8 mixed-input DPAS grouped GEMM (Variant B: per-K-group scale,
   // in-register int8->act upcast, XMX MMA). Opt-in default via
   // `ARK_MOE_PREFILL_DPAS_INT8` (default ON, matching the FP8 DPAS gate).
-  // Shape gate mirrors the FP8 per-group predicate exactly. Sym-only --
-  // asym silently falls through to the existing dequant + GEMM path below.
+  // Shape gate mirrors the FP8 per-group predicate exactly. Both sym and
+  // asym are supported: sym takes a `Zeros=nullptr` fast path; asym
+  // additionally uses a pre-computed per-M-row per-K-group activation sum
+  // to fold `Σ_g s · (Σ w·a − z · Σ a)` at each group boundary.
   //
   // Scales are already the activation dtype (`[E, N, K/group_size]` half /
   // bfloat16) in auto-round's INT8 per-group layout, so no conversion is
   // needed relative to the dequant fallback -- the kernel just consumes the
-  // same scale tensor.
+  // same scale (and, for asym, zero) tensor.
   //
   // STATUS: NEEDS-HARDWARE-VALIDATION. See
   // `sycl_tla_moe_prefill_int_dpas.hpp` for the port's provenance & the
   // on-hardware TODOs.
-  if (weight_dtype == BTLA_DTYPE::S8 && !asym &&
+  if (weight_dtype == BTLA_DTYPE::S8 &&
       moe_dpas_int::moe_prefill_dpas_int_enabled() &&
       moe_dpas_int::moe_prefill_dpas_int_pergroup_shape_ok(N, K, group_size)) {
     if (act_dtype == BTLA_DTYPE::F16) {
       using ScalarT = sycl::half;
       moe_dpas_int::moe_prefill_int_dpas_per_group_dispatch<ScalarT>(
-          q, static_cast<const ScalarT*>(activations), static_cast<const int8_t*>(weights),
-          static_cast<const ScalarT*>(scales), static_cast<ScalarT*>(outputs), num_tokens_per_expert, num_experts,
-          N, K, group_size, total_tokens);
+          q, static_cast<const ScalarT*>(activations), weights,
+          static_cast<const ScalarT*>(scales),
+          static_cast<const ScalarT*>(zeros), static_cast<ScalarT*>(outputs),
+          num_tokens_per_expert, num_experts, N, K, group_size, total_tokens,
+          asym);
       return;
     } else if (act_dtype == BTLA_DTYPE::BF16) {
       using ScalarT = sycl::ext::oneapi::bfloat16;
       moe_dpas_int::moe_prefill_int_dpas_per_group_dispatch<ScalarT>(
-          q, static_cast<const ScalarT*>(activations), static_cast<const int8_t*>(weights),
-          static_cast<const ScalarT*>(scales), static_cast<ScalarT*>(outputs), num_tokens_per_expert, num_experts,
-          N, K, group_size, total_tokens);
+          q, static_cast<const ScalarT*>(activations), weights,
+          static_cast<const ScalarT*>(scales),
+          static_cast<const ScalarT*>(zeros), static_cast<ScalarT*>(outputs),
+          num_tokens_per_expert, num_experts, N, K, group_size, total_tokens,
+          asym);
       return;
     }
     // Unsupported act_dtype falls through to the dequant branch below.

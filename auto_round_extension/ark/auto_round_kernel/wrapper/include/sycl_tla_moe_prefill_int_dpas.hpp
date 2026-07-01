@@ -5,16 +5,19 @@
 // ---------------------------------------------------------------------------
 // This file adapts the FP8 DPAS grouped-GEMM path
 // (`sycl_tla_moe_prefill_fp8_dpas.hpp`) to INT8 weight storage. The design
-// intent is deliberately narrow: **weights are stored as one signed byte
-// per element** (`int8_t`, sym), **activations stay FP16/BF16**, and the
-// DPAS atom keeps its `bf16/fp16 × bf16/fp16 → fp32` shape. The mainloop
-// upcasts each INT8 weight byte to the activation dtype in-register (via
-// `cute::reorder(tBrB, tCrB)`, which delegates to
+// intent is deliberately narrow: **weights are stored as one byte per
+// element** (`int8_t` for sym, `uint8_t` for asym), **activations stay
+// FP16/BF16**, and the DPAS atom keeps its `bf16/fp16 × bf16/fp16 → fp32`
+// shape. The mainloop upcasts each INT8 weight byte to the activation
+// dtype in-register (via `cute::reorder(tBrB, tCrB)`, which delegates to
 // `cutlass::NumericArrayConverter` for the int→float leg), then feeds the
 // upcast fragment into the same DPAS MMA as FP8 / bf16. The per-expert /
 // per-group scale is folded either once per output element in the epilogue
 // (per-tensor) or once per K-group in the deferred fold (per-group),
 // exactly as the FP8 header's `xe_gemm<>` / `xe_gemm_fp8_pergroup<>` do.
+// The per-group path additionally supports **asym** via a zero-point fold:
+// `y += (Σ w·a − z · Σ a) · s` per group, where the per-M-row activation
+// group-sum `Σ a` is precomputed once ahead of the DPAS launcher.
 //
 // This is Path A of the discussion attached to the auto-round issue that
 // introduced this header: "INT8 storage + bf16/fp16 DPAS compute". It is
@@ -37,11 +40,16 @@
 //   * Variant B (int8, per-K-group) -- weight scales are `[E, N, K/GS]`
 //     stored in the activation dtype (half / bfloat16), same layout as
 //     the FP8 per-group path so the scale-load logic is bit-identical.
-//     Weights are `[E, N, K]` row-major `int8_t` (auto-round's default
-//     INT8 per-group layout; the launcher passes `LayoutKindB='C'` so
-//     `MoEGEMM_int<>` XOR-flips to `'R'` inside `make_moe_tensor`). Only
-//     sym is instantiated -- asym continues to flow through the pre-existing
-//     dequant + GEMM fallback in `sycl_tla_moe_mixed.hpp`.
+//     Weights are `[E, N, K]` row-major -- `int8_t` for sym (auto-round's
+//     default INT8 sym layout, stored as `uint8_t` on the Python side and
+//     reinterpret-cast on entry) or `uint8_t` for asym (unsigned `[0, 255]`
+//     with a separate `[E, N, K/GS]` zero-point tensor); the launcher
+//     passes `LayoutKindB='C'` so `MoEGEMM_int<>` XOR-flips to `'R'` inside
+//     `make_moe_tensor`. Both sym and asym are instantiated -- asym uses a
+//     pre-computed per-M-row per-K-group activation sum so that the
+//     group-boundary fold becomes
+//     `tCrC += (Σ w·a  −  z · Σ a) · s`. See `xe_gemm_int_pergroup<>` and
+//     `compute_activation_group_sums_int<>` for the split.
 //
 // The scheduler / launcher are forked here (rather than re-templating the
 // FP8 header) to keep the FP8 hot path untouched while this INT8 branch
@@ -283,27 +291,36 @@ CUTE_DEVICE void xe_gemm_int_pertensor(ATensor const& A,   // (M,K)
 //     `tCrC_group`, then folds `tCrC_group * s` into `tCrC` at the group
 //     boundary (deferred fold). At the last k_tile the fold fires
 //     unconditionally so the tail group is not dropped.
-//   * `sym` only -- there is no zero-point subtraction. The fallback
-//     dequant path in `sycl_tla_moe_mixed.hpp` handles asym.
+//   * Both `sym` and `asym` are supported via the `Asym` template
+//     parameter. When `Asym=true` the mainloop additionally loads a
+//     per-N-column zero-point (`sg_zero[]`, same layout / dtype as
+//     `sg_scale[]`) and a per-M-row activation group-sum (`sg_asum[]`,
+//     fp32, precomputed once ahead of the launcher). The fold becomes
+//     `tCrC += (tCrC_group − sg_zero * sg_asum) * s`, matching auto-round's
+//     `w_float = (w_int − z) * s` per-group asym dequant algebraically.
+//     When `Asym=false` the zero / asum machinery collapses to compile-time
+//     no-ops (the sym hot path is byte-identical to the previous release).
 //   * Bias epilogue is identical to the FP8 per-group path and the INT8
 //     per-tensor path above.
 // ---------------------------------------------------------------------------
 
 template <class GmemTiledCopyA, class GmemTiledCopyB, class GmemTiledCopyC,
-          int GroupSize, class ATensor, class BTensor, class DTensor,
+          int GroupSize, bool Asym, class ATensor, class BTensor, class DTensor,
           class TiledMMA, typename ElementS, typename ElementBI>
 CUTE_DEVICE void xe_gemm_int_pergroup(
     ATensor const& A,   // (M,K)
     BTensor const& B,   // (N,K)
     const ElementS* Scales,
+    const ElementS* Zeros,   // asym only, else nullptr (unused)
+    const float* Asum,       // asym only: [M_total, K/GroupSize] fp32, else nullptr
     const ElementBI* Bias,
     DTensor& C,         // (M,N)
     Coord<int, int, cute::Underscore, int> blk_coord,
     TiledMMA const& mma) {
   using TA = typename ATensor::element_type;
   using TB = typename BTensor::element_type;
-  static_assert(std::is_same_v<TB, int8_t>,
-                "xe_gemm_int_pergroup: ElementB must be int8_t");
+  static_assert(std::is_same_v<TB, int8_t> || std::is_same_v<TB, uint8_t>,
+                "xe_gemm_int_pergroup: ElementB must be int8_t (sym) or uint8_t (asym)");
   static constexpr int group_size = GroupSize;
   static constexpr int sg_local_range = 16;
   auto item = sycl::ext::oneapi::this_work_item::get_nd_item<3>();
@@ -383,8 +400,11 @@ CUTE_DEVICE void xe_gemm_int_pergroup(
 
   auto n_tile_start = wg_n * tile_n;
   auto sg_local_n_coord = cutlass::get_sub_group_id() % ATOM_N;
+  auto sg_local_m_coord = cutlass::get_sub_group_id() / ATOM_N;
   int sg_local_id = cutlass::get_sub_group_local_id();
   int n_sg_start = sg_local_n_coord * SG_N;
+  int m_sg_start = sg_local_m_coord * SG_M;
+  int m_tile_start = wg_m * tile_m;
   int group_num = get<1>(A.shape()) / group_size;
 
   // Group-local accumulator: same fragment shape as `tCrC`, cleared at
@@ -400,6 +420,16 @@ CUTE_DEVICE void xe_gemm_int_pergroup(
   // float. Not pre-initialised: the first mainloop iteration (`k_tile == 0`)
   // trips the group-boundary load unconditionally.
   float sg_scale[sg_n_strides];
+  // Per-SG per-N zero-point cache (asym only) -- same layout / dtype as
+  // `sg_scale`, loaded from `Zeros` in parallel with `sg_scale`. Compile-
+  // time-elided in the sym instantiation.
+  float sg_zero[Asym ? sg_n_strides : 1];
+  // Per-SG per-M activation-group-sum cache (asym only). Populated at each
+  // group boundary from the precomputed `Asum[M_total, K/group_size]` fp32
+  // buffer. All 16 lanes in the SG redundantly load the SAME SG_M values --
+  // the DPAS-C fragment linearization uses the same `sm -> m_row` mapping
+  // across every lane, so per-lane replication is intentional (L1-cached).
+  float sg_asum[Asym ? SG_M : 1];
 
   // Warm-up prefetch: A/B for `prefetch_dist` k_tiles ahead. Scales for
   // the first `prefetch_dist_scale` groups are prefetched separately so
@@ -436,6 +466,8 @@ CUTE_DEVICE void xe_gemm_int_pergroup(
     // and cast from the storage dtype (ElementS = act dtype) to float.
     // ONE global load per SG-owned N-lane per group -- the deferred fold
     // below reuses these values every k_tile until the next boundary.
+    // When Asym, load sg_zero (per-N, same layout as scales) and sg_asum
+    // (per-M-row) at the same boundary.
     if (k_tile * tile_k % group_size == 0) {
       int group_idx = (k_tile * tile_k) / group_size;
       CUTLASS_PRAGMA_UNROLL
@@ -443,6 +475,23 @@ CUTE_DEVICE void xe_gemm_int_pergroup(
         int sg_local_n = sn * sg_local_range + sg_local_id;
         sg_scale[sn] = static_cast<float>(
             Scales[(n_tile_start + n_sg_start + sg_local_n) * group_num + group_idx]);
+        if constexpr (Asym) {
+          sg_zero[sn] = static_cast<float>(
+              Zeros[(n_tile_start + n_sg_start + sg_local_n) * group_num + group_idx]);
+        }
+      }
+      if constexpr (Asym) {
+        // Asum layout is [M_total, group_num] fp32 (row-major). The A base
+        // pointer was already offset by `pre_rows * gemm_k` per expert in
+        // the outer scheduler; the caller offsets Asum by
+        // `pre_rows * group_num` in lock-step so `m_tile_start + m_sg_start
+        // + sm` is a local-to-expert M-row index into this expert's asum
+        // slice. All 16 lanes load the same values.
+        CUTLASS_PRAGMA_UNROLL
+        for (int sm = 0; sm < SG_M; ++sm) {
+          sg_asum[sm] = Asum[static_cast<int64_t>(m_tile_start + m_sg_start + sm) *
+                             group_num + group_idx];
+        }
       }
 
       // Prefetch the scales for the group `prefetch_dist_scale` groups
@@ -460,6 +509,20 @@ CUTE_DEVICE void xe_gemm_int_pergroup(
         auto pSgS = thr_prefetch_scales.partition_S(
             make_identity_tensor(make_shape(Int<SG_N>{}, Int<1>{})));
         prefetch(prefetch_scales, pSgS(_, 0, 0));
+        if constexpr (Asym) {
+          auto next_zeros_tensor = make_tensor(
+              make_gmem_ptr(reinterpret_cast<const ElementS*>(
+                  Zeros + (n_tile_start + n_sg_start) * group_num +
+                  group_idx + prefetch_dist_scale)),
+              make_layout(make_shape(Int<SG_N>{}, Int<1>{}),
+                          make_stride(group_num, Int<1>{})));
+          auto prefetch_zeros = make_block_2d_prefetch<1>(
+              make_shape(Int<SG_N>{}, Int<1>{}), next_zeros_tensor);
+          auto thr_prefetch_zeros = prefetch_zeros.get_slice(sg_local_id);
+          auto pZgZ = thr_prefetch_zeros.partition_S(
+              make_identity_tensor(make_shape(Int<SG_N>{}, Int<1>{})));
+          prefetch(prefetch_zeros, pZgZ(_, 0, 0));
+        }
       }
     }
 
@@ -488,10 +551,18 @@ CUTE_DEVICE void xe_gemm_int_pergroup(
       CUTLASS_PRAGMA_UNROLL
       for (int sn = 0; sn < sg_n_strides; ++sn) {
         float s = sg_scale[sn];
+        float z = 0.0f;
+        if constexpr (Asym) {
+          z = sg_zero[sn];
+        }
         CUTLASS_PRAGMA_UNROLL
         for (int sm = 0; sm < SG_M; ++sm) {
           const int idx = sn * SG_M + sm;
-          tCrC(idx) += tCrC_group(idx) * s;
+          float partial = tCrC_group(idx);
+          if constexpr (Asym) {
+            partial -= z * sg_asum[sm];
+          }
+          tCrC(idx) += partial * s;
           tCrC_group(idx) = 0.0f;
         }
       }
@@ -541,11 +612,15 @@ CUTE_DEVICE void xe_gemm_int_pergroup(
 
 template <class GmemTiledCopyA, class GmemTiledCopyB, class GmemTiledCopyD,
           char LayoutKindA, char LayoutKindB, char LayoutKindD, ScaleMode Mode,
+          bool Asym,
           class TiledMMA, typename ElementA, typename ElementB,
           typename ElementS, typename ElementBI, typename ElementD>
 CUTE_DEVICE void MoEGEMM_int(const ElementA* Activations,
                              const ElementB* Weights,
-                             const ElementS* Scales, const ElementBI* Bias,
+                             const ElementS* Scales,
+                             const ElementS* Zeros,
+                             const float* Asum,
+                             const ElementBI* Bias,
                              ElementD* Outputs, TiledMMA const& mma,
                              const int* rows_per_expert,
                              const int32_t num_experts,
@@ -602,14 +677,28 @@ CUTE_DEVICE void MoEGEMM_int(const ElementA* Activations,
     ElementD* ptr_D_curr_batch = Outputs + pre_rows * gemm_n;
 
     ElementS* ptr_Scales_curr_batch = nullptr;
+    ElementS* ptr_Zeros_curr_batch = nullptr;
+    const float* ptr_Asum_curr_batch = nullptr;
     if constexpr (Mode == ScaleMode::kPerTensor) {
       // [E] -- one scalar per expert.
       ptr_Scales_curr_batch = const_cast<ElementS*>(Scales) + expert_id;
+      // Asym is not supported in per-tensor mode.
     } else {
       // [E, N, K/group_size] -- auto-round layout. Advance one expert.
-      ptr_Scales_curr_batch = const_cast<ElementS*>(Scales) +
-                              static_cast<int64_t>(expert_id) * gemm_n *
-                                  (gemm_k / group_size);
+      int64_t scale_expert_stride =
+          static_cast<int64_t>(gemm_n) * (gemm_k / group_size);
+      ptr_Scales_curr_batch =
+          const_cast<ElementS*>(Scales) + expert_id * scale_expert_stride;
+      if constexpr (Asym) {
+        ptr_Zeros_curr_batch =
+            const_cast<ElementS*>(Zeros) + expert_id * scale_expert_stride;
+        // Asum layout is [M_total, K/group_size] fp32 (row-major, per-token
+        // per-group). Offset by the running row cursor so kernel-side
+        // `m_tile_start + m_sg_start + sm` indexes into this expert's
+        // slice as if it were a local M row.
+        ptr_Asum_curr_batch = Asum + static_cast<int64_t>(pre_rows) *
+                                       (gemm_k / group_size);
+      }
     }
 
     ElementBI* ptr_Bias_curr_batch = nullptr;
@@ -638,9 +727,10 @@ CUTE_DEVICE void MoEGEMM_int(const ElementA* Activations,
 // header's `ARK_MOE_DPAS_FP8_GROUP_CALLER` macro; group_size is not a
 // compile-time constant at this level).
 #define ARK_MOE_DPAS_INT_GROUP_CALLER(GS)                                     \
-  xe_gemm_int_pergroup<GmemTiledCopyA, GmemTiledCopyB, GmemTiledCopyD, GS>(   \
-      A_tensor, B_tensor, ptr_Scales_curr_batch, ptr_Bias_curr_batch,         \
-      D_tensor, tile_coord, mma);
+  xe_gemm_int_pergroup<GmemTiledCopyA, GmemTiledCopyB, GmemTiledCopyD, GS,    \
+                       Asym>(                                                  \
+      A_tensor, B_tensor, ptr_Scales_curr_batch, ptr_Zeros_curr_batch,        \
+      ptr_Asum_curr_batch, ptr_Bias_curr_batch, D_tensor, tile_coord, mma);
         if (group_size == 32) {
           ARK_MOE_DPAS_INT_GROUP_CALLER(32)
         } else if (group_size == 64) {
@@ -669,14 +759,15 @@ CUTE_DEVICE void MoEGEMM_int(const ElementA* Activations,
 // Launcher (fork of `moe_dpas_fp8::MoEGEMMLauncher<>`).
 // ---------------------------------------------------------------------------
 
-template <typename, typename, typename, typename, char, char, class, ScaleMode>
+template <typename, typename, typename, typename, char, char, class, ScaleMode, bool>
 class DpasGemmIntName;
 
-template <char layoutA, char layoutB, class policy, ScaleMode Mode,
+template <char layoutA, char layoutB, class policy, ScaleMode Mode, bool Asym,
           typename ElementA, typename ElementB, typename ElementS,
           typename ElementBI, typename ElementD>
 void MoEGEMMLauncher_int(sycl::queue& stream, const ElementA* activations,
                          const ElementB* weights, const ElementS* scales,
+                         const ElementS* zeros, const float* asum,
                          const ElementBI* bias, ElementD* outputs,
                          const int gemm_n, const int gemm_k,
                          const int* rows_per_expert, const int num_experts,
@@ -720,13 +811,13 @@ void MoEGEMMLauncher_int(sycl::queue& stream, const ElementA* activations,
   auto event = stream.submit([&](sycl::handler& cgh) {
     sycl::local_accessor<int32_t, 1> local_mem(sycl::range<1>(1), cgh);
     cgh.parallel_for<DpasGemmIntName<ElementA, ElementB, ElementS, ElementD,
-                                     layoutA, layoutB, policy, Mode>>(
+                                     layoutA, layoutB, policy, Mode, Asym>>(
         sycl::nd_range<3>{global * local, local}, kernel_props, [=](auto) {
           MoEGEMM_int<GmemTiledCopyA, GmemTiledCopyB, GmemTiledCopyD, layoutA,
-                      layoutB, 'R', Mode>(activations, weights, scales, bias,
-                                          outputs, mma, rows_per_expert,
-                                          num_experts, group_size, gemm_n,
-                                          gemm_k, atomic_buffer, local_mem);
+                      layoutB, 'R', Mode, Asym>(
+              activations, weights, scales, zeros, asum, bias, outputs, mma,
+              rows_per_expert, num_experts, group_size, gemm_n, gemm_k,
+              atomic_buffer, local_mem);
         });
   });
 
@@ -767,8 +858,9 @@ void moe_prefill_int_dpas_per_tensor_dispatch(
   }
 
 #define ARK_DPAS_INT_PT_LAUNCH(policy)                                         \
-  MoEGEMMLauncher_int<'R', 'R', policy, ScaleMode::kPerTensor>(                \
+  MoEGEMMLauncher_int<'R', 'R', policy, ScaleMode::kPerTensor, /*Asym=*/false>(\
       *q, activations_ca, weights_KN, scales_e,                                \
+      static_cast<const float*>(nullptr), static_cast<const float*>(nullptr),  \
       static_cast<const ElementA*>(nullptr), outputs_ca, N, K,                 \
       num_tokens_per_expert, E, /*group_size=*/0, atomic_buffer);
 
@@ -785,36 +877,81 @@ void moe_prefill_int_dpas_per_tensor_dispatch(
 }
 
 // ---------------------------------------------------------------------------
+// Precompute per-M-row per-K-group activation sum for asym INT8 fold.
+//
+// Produces `asum[m, g] = Σ_{k ∈ group g} A[m, k]` in fp32, layout
+// [M_total, K/group_size] row-major. Called once per `moe_gemm_prefill`
+// invocation before the DPAS launcher when `asym=true`.
+//
+// Each work-item computes one `asum[m, g]` scalar. Cost is O(M_total * K)
+// fp16/bf16 loads across the whole launcher; group_size (32/64/128/256) is
+// small enough that a plain in-lane accumulate is fine. This is well below
+// DPAS MMA cost, so the extra pass shows up in the perf trace as a thin
+// bar next to the mainloop.
+// ---------------------------------------------------------------------------
+template <typename ElementA>
+sycl::event compute_activation_group_sums_int(sycl::queue& stream,
+                                              const ElementA* activations,
+                                              float* asum,
+                                              int total_tokens, int K,
+                                              int group_size) {
+  const int num_groups = K / group_size;
+  return stream.parallel_for(
+      sycl::range<2>(static_cast<size_t>(total_tokens),
+                     static_cast<size_t>(num_groups)),
+      [=](sycl::id<2> idx) {
+        int m = static_cast<int>(idx[0]);
+        int g = static_cast<int>(idx[1]);
+        const ElementA* row =
+            activations + static_cast<int64_t>(m) * K + g * group_size;
+        float s = 0.0f;
+        for (int j = 0; j < group_size; ++j) {
+          s += static_cast<float>(row[j]);
+        }
+        asum[static_cast<int64_t>(m) * num_groups + g] = s;
+      });
+}
+
+// ---------------------------------------------------------------------------
 // Host-side driver: INT8 Variant B (per-K-group).
 //
 // Weight layout `[E, N, K]` row-major (auto-round convention -- the launcher
 // passes `LayoutKindB='C'` so `MoEGEMM_int<>` XOR-flips to `'R'` inside
 // `make_moe_tensor`, matching the physical `[N, K]` row-major storage).
-// One signed byte per element.
+// One byte per element: `int8_t` for sym storage (auto-round `_pack_int8_sym`
+// packs signed `[-127, 127]` values into a `torch.uint8` buffer that is
+// reinterpret-cast to `int8_t` here), or `uint8_t` for asym storage
+// (`_pack_int8_asym` writes unsigned `[0, 255]` values with a matching
+// `[E, N, K/group_size]` zero-point tensor).
 // Scales `[E, N, K/group_size]` in act dtype (half / bfloat16), same layout
-// as the FP8 per-group path.
+// as the FP8 per-group path. Zeros (asym only) share the scales' layout.
 // ---------------------------------------------------------------------------
 
 template <typename ScalarT>
 void moe_prefill_int_dpas_per_group_dispatch(
-    sycl::queue* q, const ScalarT* activations, const int8_t* weights_NK,
-    const ScalarT* scales, ScalarT* outputs, const int* num_tokens_per_expert,
-    int E, int N, int K, int group_size, int total_tokens) {
+    sycl::queue* q, const ScalarT* activations, const void* weights_NK,
+    const ScalarT* scales, const ScalarT* zeros, ScalarT* outputs,
+    const int* num_tokens_per_expert, int E, int N, int K, int group_size,
+    int total_tokens, bool asym) {
   if (E == 0 || N == 0 || K == 0 || total_tokens == 0) return;
   if (K % group_size != 0) {
     throw std::invalid_argument(
         "moe_prefill_int_dpas(per-group): K must be a multiple of group_size");
   }
+  if (asym && zeros == nullptr) {
+    throw std::invalid_argument(
+        "moe_prefill_int_dpas(per-group): zeros must be non-null when asym=true");
+  }
 
   compat::set_default_queue(*q);
 
-  using ElementB = int8_t;
   // Map the caller-facing SYCL native half/bfloat16 to the CUTLASS type CUTE
   // has DPAS-atom specializations for. See `cute_scalar` in the FP8 header.
   using ElementA = cute_scalar_t<ScalarT>;
   const auto* activations_ca =
       reinterpret_cast<const ElementA*>(activations);
   const auto* scales_ca = reinterpret_cast<const ElementA*>(scales);
+  const auto* zeros_ca = reinterpret_cast<const ElementA*>(zeros);
   auto* outputs_ca = reinterpret_cast<ElementA*>(outputs);
 
   int A_avg_M = total_tokens / E;
@@ -825,21 +962,61 @@ void moe_prefill_int_dpas_per_group_dispatch(
         "moe_prefill_int_dpas(per-group): failed to allocate atomic buffer");
   }
 
-#define ARK_DPAS_INT_PG_LAUNCH(policy)                                         \
-  MoEGEMMLauncher_int<'R', 'C', policy, ScaleMode::kPerGroup>(                 \
-      *q, activations_ca, weights_NK, scales_ca,                               \
+  // Asym path: precompute per-token per-group activation sum. Layout
+  // [total_tokens, K/group_size] fp32 row-major. Small compared to DPAS
+  // mainloop cost; freed at the end of this dispatch.
+  float* asum_dev = nullptr;
+  const int num_groups = K / group_size;
+  if (asym) {
+    asum_dev = sycl::malloc_device<float>(
+        static_cast<size_t>(total_tokens) * num_groups, *q);
+    if (asum_dev == nullptr) {
+      sycl::free(atomic_buffer, *q);
+      throw std::runtime_error(
+          "moe_prefill_int_dpas(per-group): failed to allocate asum buffer");
+    }
+    auto asum_ev = compute_activation_group_sums_int<ElementA>(
+        *q, activations_ca, asum_dev, total_tokens, K, group_size);
+    asum_ev.wait();
+  }
+
+  if (asym) {
+    const auto* weights_u8 = reinterpret_cast<const uint8_t*>(weights_NK);
+#define ARK_DPAS_INT_PG_LAUNCH_ASYM(policy)                                    \
+  MoEGEMMLauncher_int<'R', 'C', policy, ScaleMode::kPerGroup, /*Asym=*/true>(  \
+      *q, activations_ca, weights_u8, scales_ca, zeros_ca, asum_dev,           \
       static_cast<const ElementA*>(nullptr), outputs_ca, N, K,                 \
       num_tokens_per_expert, E, group_size, atomic_buffer);
 
-  if (A_avg_M <= 8) {
-    ARK_DPAS_INT_PG_LAUNCH(dpas_w8a16_policy_m_16);
-  } else if (A_avg_M <= 32) {
-    ARK_DPAS_INT_PG_LAUNCH(dpas_w8a16_policy_m_32);
+    if (A_avg_M <= 8) {
+      ARK_DPAS_INT_PG_LAUNCH_ASYM(dpas_w8a16_policy_m_16);
+    } else if (A_avg_M <= 32) {
+      ARK_DPAS_INT_PG_LAUNCH_ASYM(dpas_w8a16_policy_m_32);
+    } else {
+      ARK_DPAS_INT_PG_LAUNCH_ASYM(dpas_w8a16_policy);
+    }
+#undef ARK_DPAS_INT_PG_LAUNCH_ASYM
   } else {
-    ARK_DPAS_INT_PG_LAUNCH(dpas_w8a16_policy);
-  }
-#undef ARK_DPAS_INT_PG_LAUNCH
+    const auto* weights_i8 = reinterpret_cast<const int8_t*>(weights_NK);
+#define ARK_DPAS_INT_PG_LAUNCH_SYM(policy)                                     \
+  MoEGEMMLauncher_int<'R', 'C', policy, ScaleMode::kPerGroup, /*Asym=*/false>( \
+      *q, activations_ca, weights_i8, scales_ca,                               \
+      static_cast<const ElementA*>(nullptr),                                   \
+      static_cast<const float*>(nullptr),                                      \
+      static_cast<const ElementA*>(nullptr), outputs_ca, N, K,                 \
+      num_tokens_per_expert, E, group_size, atomic_buffer);
 
+    if (A_avg_M <= 8) {
+      ARK_DPAS_INT_PG_LAUNCH_SYM(dpas_w8a16_policy_m_16);
+    } else if (A_avg_M <= 32) {
+      ARK_DPAS_INT_PG_LAUNCH_SYM(dpas_w8a16_policy_m_32);
+    } else {
+      ARK_DPAS_INT_PG_LAUNCH_SYM(dpas_w8a16_policy);
+    }
+#undef ARK_DPAS_INT_PG_LAUNCH_SYM
+  }
+
+  if (asum_dev != nullptr) sycl::free(asum_dev, *q);
   sycl::free(atomic_buffer, *q);
 }
 
