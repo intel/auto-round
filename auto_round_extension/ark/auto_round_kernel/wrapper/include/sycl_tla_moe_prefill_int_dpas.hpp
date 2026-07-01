@@ -771,7 +771,8 @@ void MoEGEMMLauncher_int(sycl::queue& stream, const ElementA* activations,
                          const ElementBI* bias, ElementD* outputs,
                          const int gemm_n, const int gemm_k,
                          const int* rows_per_expert, const int num_experts,
-                         const int group_size, int32_t* atomic_buffer) {
+                         const int group_size, int32_t* atomic_buffer,
+                         sycl::event depends_evt = sycl::event{}) {
   using ElementA_non_CV = cutlass::platform::remove_cv_t<ElementA>;
   // DPAS operates on same-dtype A/B pairs; the INT8 B tensor is upcast to
   // the activation dtype (ElementA) via `reorder(tBrB, tCrB)` in the
@@ -809,6 +810,13 @@ void MoEGEMMLauncher_int(sycl::queue& stream, const ElementA* activations,
   using GmemTiledCopyD = typename policy::GmemTiledCopyD;
 
   auto event = stream.submit([&](sycl::handler& cgh) {
+    // Lever 1: when the caller provides a prior event (e.g. the asym asum
+    // pre-pass), chain the DPAS submit on it via `depends_on`. On an
+    // in-order queue this is a no-op; on an out-of-order queue it makes
+    // the DPAS kernel on-device-wait for the asum kernel to complete
+    // without a host round-trip. `sycl::event{}` (the default) is a
+    // no-op dependency so the sym path is unaffected.
+    cgh.depends_on(depends_evt);
     sycl::local_accessor<int32_t, 1> local_mem(sycl::range<1>(1), cgh);
     cgh.parallel_for<DpasGemmIntName<ElementA, ElementB, ElementS, ElementD,
                                      layoutA, layoutB, policy, Mode, Asym>>(
@@ -965,7 +973,17 @@ void moe_prefill_int_dpas_per_group_dispatch(
   // Asym path: precompute per-token per-group activation sum. Layout
   // [total_tokens, K/group_size] fp32 row-major. Small compared to DPAS
   // mainloop cost; freed at the end of this dispatch.
+  //
+  // Lever 1: the pre-pass is enqueued on the SAME queue as the DPAS
+  // launcher and its event is captured -- we deliberately do NOT
+  // `.wait()` on the host here. The event is threaded into the DPAS
+  // submit's `depends_on` below so device-side ordering is guaranteed
+  // while the host proceeds to prepare the DPAS launch (template
+  // instantiation, hardware-info query, kernel props, arg marshalling)
+  // in parallel with asum's device execution. On an in-order queue the
+  // `depends_on` is redundant but harmless.
   float* asum_dev = nullptr;
+  sycl::event asum_ev{};
   const int num_groups = K / group_size;
   if (asym) {
     asum_dev = sycl::malloc_device<float>(
@@ -975,9 +993,8 @@ void moe_prefill_int_dpas_per_group_dispatch(
       throw std::runtime_error(
           "moe_prefill_int_dpas(per-group): failed to allocate asum buffer");
     }
-    auto asum_ev = compute_activation_group_sums_int<ElementA>(
+    asum_ev = compute_activation_group_sums_int<ElementA>(
         *q, activations_ca, asum_dev, total_tokens, K, group_size);
-    asum_ev.wait();
   }
 
   if (asym) {
@@ -986,7 +1003,7 @@ void moe_prefill_int_dpas_per_group_dispatch(
   MoEGEMMLauncher_int<'R', 'C', policy, ScaleMode::kPerGroup, /*Asym=*/true>(  \
       *q, activations_ca, weights_u8, scales_ca, zeros_ca, asum_dev,           \
       static_cast<const ElementA*>(nullptr), outputs_ca, N, K,                 \
-      num_tokens_per_expert, E, group_size, atomic_buffer);
+      num_tokens_per_expert, E, group_size, atomic_buffer, asum_ev);
 
     if (A_avg_M <= 8) {
       ARK_DPAS_INT_PG_LAUNCH_ASYM(dpas_w8a16_policy_m_16);
