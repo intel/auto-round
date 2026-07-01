@@ -655,10 +655,13 @@ class BaseCompressor(object):
                     if any(name.startswith(prefix) for prefix in block_prefixes)
                     or not any(prefix.startswith(name.split(".")[0]) for prefix in block_prefixes)
                 ]
-            predefined_ignore_layers = compress_layer_names(predefined_ignore_layers)
             if predefined_ignore_layers:
-                logger.info(f"Using predefined ignore_layers: {compressed_predefined_ignore_layers}")
-                tmp_str = predefined_ignore_layers.replace(" ", "")
+                logger.info(f"Using predefined ignore_layers: {compress_layer_names(predefined_ignore_layers)}")
+                # Join the raw (uncompressed) names so that get_fp_layer_names can do exact
+                # substring matching. Compressed forms like "layers.[0-61].gate" are
+                # misinterpreted as regex character classes ([0-6] matches only digits 0-6)
+                # and fail to cover layers with two-digit indices (7, 8, …).
+                tmp_str = ",".join(predefined_ignore_layers)
                 if self.ignore_layers == "":
                     self.ignore_layers = tmp_str
                 else:

@@ -558,6 +558,7 @@ def set_layer_config(
                     # logger.warning_once(f"{n} skipped quantization (shape not divisible by 32).")
     # enforce shape divisibility for mxfp/nvfp
     if (is_nv_fp(default_dict["data_type"]) or is_mx_fp(default_dict["data_type"])) and not gguf_name:
+        skipped_layers = []
         for n, m in model.named_modules():
             if type(m) in supported_types or m.__class__.__name__ in inner_supported_types:
                 if m.weight.shape[1] % default_dict["group_size"]:
@@ -565,9 +566,14 @@ def set_layer_config(
                     layer_config[n].update(
                         {"bits": 16, "data_type": "fp", "act_bits": 16, "act_data_type": "fp", "fixed_by_user": True}
                     )
-                    logger.warning_once(
-                        f"{n} skipped quantization (shape not divisible by {default_dict['group_size']})."
-                    )
+                    skipped_layers.append(n)
+
+        compressed_skipped_layers = compress_layer_names(skipped_layers)
+        if compressed_skipped_layers:
+            logger.warning_once(
+                f"some layers are skipped quantization (shape not divisible by {default_dict['group_size']}): "
+                f"{compressed_skipped_layers}"
+            )
 
     # 9. block layers: mark as in_blocks=True
     for name in get_layer_names_in_block(model, supported_types, quant_block_list, inner_supported_types):
