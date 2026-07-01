@@ -32,6 +32,7 @@ def run_opt_125m_on_hpu():
     output = tokenizer.decode(q_model.generate(**inputs, max_new_tokens=10, do_sample=False)[0])
     assert output is not None
 
+
 @pytest.mark.skipif(not is_hpex_available(), reason="HPU is not supported")
 @pytest.mark.skipif(not is_pytest_mode_lazy(), reason="Only for lazy mode")
 def test_opt_125m_lazy_mode():
