@@ -1197,21 +1197,22 @@ def _apply_head_trick(head_name, schemes, sorted_indices, target_bits, target_pa
     # lm_head option restriction for DP                                   #
     # lm_head is critical — its quantization error goes directly into     #
     # logits with no subsequent LayerNorm dampening. Instead of removing  #
-    # it from DP, we restrict its candidate options so the DP can only    #
-    # assign it >= 6 bit schemes, then let DP globally optimize.          #
+    # it from DP, we bias its candidate options toward higher precision   #
+    # or lower loss, then relax the restriction if it cannot fit budget.  #
     #                                                                      #
     # Rules (only if user hasn't already fixed it):                        #
-    #   1. No option has bits >= 6      → keep all options (DP picks best)#
-    #   2. Exactly one option bits >= 6 → restrict to only that option    #
+    #   1. No option has bits >= 6      → prefer lowest-loss available    #
+    #   2. Exactly one option bits >= 6 → prefer that high-bit option     #
     #   3. Multiple options bits >= 6:                                      #
     #      - target_bits > 6  → restrict to only the highest-bit option   #
     #      - target_bits <= 6 → keep all >=6 options, let DP decide       #
+    #   Any restriction above is relaxed if it makes the budget infeasible.#
     # ------------------------------------------------------------------ #
 
     high_bit_indices = [i for i in range(len(schemes)) if _get_scheme_bits(schemes[i]) >= 6]
 
     if len(high_bit_indices) == 0:
-        # Rule 1: no option >= 6 bit → restrict to the lowest-loss scheme
+        # Rule 1: no option >= 6 bit → keep the lowest-loss scheme if budget allows.
         allowed_indices = {sorted_indices[0]} if sorted_indices else None
     elif len(high_bit_indices) == 1:
         # Rule 2: exactly one >= 6 bit option → restrict to it
@@ -1633,9 +1634,6 @@ def _gen_layer_config(
         layer_bits, _ = compute_layer_bits(m, auto_scheme.ignore_scale_zp_bits)
         target_params_cnt -= layer_bits
 
-    head_name = get_lm_head_name(model)
-    if head_name is not None and (head_name not in fixed_layer_scheme and head_name in quant_layer_names):
-        _apply_head_trick(head_name, schemes, sorted_indices, target_bits, target_params_cnt, total_scores)
     # As only a small amount of calibration data is used and embedding layers are inherently sparse,
     # we cannot obtain a reliable score.
     if not_fixed_embedding_layers_names:
@@ -1649,6 +1647,10 @@ def _gen_layer_config(
                 setattr(embedding_layer, key, item)
             layer_bits, _ = compute_layer_bits(embedding_layer, auto_scheme.ignore_scale_zp_bits)
             target_params_cnt -= layer_bits
+
+    head_name = get_lm_head_name(model)
+    if head_name is not None and (head_name not in fixed_layer_scheme and head_name in quant_layer_names):
+        _apply_head_trick(head_name, schemes, sorted_indices, target_bits, target_params_cnt, total_scores)
 
     if target_params_cnt <= 0:
         raise ValueError("Avg bits is too small")
