@@ -750,7 +750,8 @@ void MoEGEMMLauncher(sycl::queue& stream, const ElementA* activations,
                      const int num_experts, const int group_size,
                      int32_t* atomic_buffer) {
   using ElementA_non_CV = cutlass::platform::remove_cv_t<ElementA>;
-  auto op = XE_DPAS_TT<8, float, ElementA_non_CV>{};
+  using ElementB_non_CV = cutlass::platform::remove_cv_t<ElementB>;
+  auto op = XE_DPAS_TT<8, float, ElementA_non_CV, ElementB_non_CV>{};
 
   using WGTile = typename policy::WGTile;
   using SGLayout = typename policy::SGLayout;
