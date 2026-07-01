@@ -1799,14 +1799,14 @@ def moe_gemm_prefill(
 
     # Native FP8 fused GEMM (Variant A): fp8 weight is upcast to bf16/fp16
     # in registers inside the GEMM kernel and the per-K-group scale is
-    # folded into the accumulator. No `[E, K, N]` bf16 workspace is
-    # needed. Opt-in via `ARK_MOE_PREFILL_NATIVE_FP8=1`; the C++
-    # dispatcher additionally checks shape preconditions (N % 16 == 0,
-    # K % 32 == 0, K % group_size == 0, group_size % 32 == 0) and
-    # silently falls through to the dequant path if any fail.
-    is_native_fp8 = (
-        _native_fp8_prefill_enabled() and (weights.dtype in (torch.float8_e4m3fn, torch.float8_e5m2)) and (not asym)
-    )
+    # folded into the accumulator. Opt-in via `ARK_MOE_PREFILL_NATIVE_FP8=1`;
+    # dispatch is decided entirely inside the C++ `moe_gemm_prefill`
+    # dispatcher (which additionally enforces shape preconditions:
+    # N % 16 == 0, K % 32 == 0, K % group_size == 0, group_size % 32 == 0).
+    # If any precondition fails, or the C++-side env cache disagrees with
+    # the Python-side view, the dispatcher silently falls through to the
+    # generic dequant path -- which requires the `[E, K, N]` workspace we
+    # allocate below. See the `else` branch for details.
 
     # Quantized paths need an [E, K, N] act-dtype scratch buffer that the
     # on-device dequant kernel fills before the inner Grouped GEMM consumes
@@ -1825,15 +1825,6 @@ def moe_gemm_prefill(
         dequant_workspace = weights.transpose(1, 2).contiguous()
         weights_ptr = dequant_workspace.data_ptr()
         workspace_ptr = dequant_workspace.data_ptr()
-    elif is_native_fp8:
-        # Native path fuses GEMM+scale, so no `[E, K, N]` workspace is
-        # needed. Pass 0 (null) as the workspace pointer; the C++
-        # `moe_gemm_prefill_wrapper` forwards the null through and the
-        # dispatcher short-circuits into the native launcher before the
-        # generic null-check.
-        dequant_workspace = None
-        weights_ptr = weights.data_ptr()
-        workspace_ptr = 0
     else:
         # Reuse a persistent `[E, K, N]` workspace across calls with the same
         # (device, dtype, E, K, N). For real MoE prefill workloads the same
@@ -1842,6 +1833,21 @@ def moe_gemm_prefill(
         # allocator overhead (and, on the small shapes, dominates the
         # quantized GEMM cost). The workspace is kept alive by the cache so
         # we hand the data_ptr() to the kernel without taking a new ref.
+        #
+        # We allocate the workspace unconditionally for all quantized paths,
+        # including native FP8. The native FP8 launcher fuses GEMM+scale and
+        # never reads the workspace, so the allocation is pure insurance: the
+        # C++ dispatcher may silently fall through to the generic dequant
+        # path if any of its own preconditions disagree with the caller's
+        # opt-in -- e.g. `moe_prefill_native_fp8_enabled()` on
+        # the C++ side caches its env value on first call (so runtime env
+        # toggling won't propagate), the shape preconditions
+        # (`N % 16`, `K % 32`, `K % group_size`, `group_size % 32`) may not
+        # hold, or the act dtype may not be F16/BF16. Without a workspace the
+        # fall-through would hit the generic null-pointer check in
+        # `sycl_tla_moe_mixed.hpp` and raise. Since the workspace lives in
+        # the module-level cache, allocation happens once per shape and adds
+        # no per-call overhead when the native path is taken.
         dequant_workspace = _get_moe_prefill_workspace(activations.device, activations.dtype, num_experts, K, N)
         weights_ptr = weights.data_ptr()
         workspace_ptr = dequant_workspace.data_ptr()
