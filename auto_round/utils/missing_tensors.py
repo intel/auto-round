@@ -324,6 +324,15 @@ def copy_missing_tensors_from_source(
             aliases.add("model.language_model." + name[len("language_model.model.") :])
         elif name.startswith("model.language_model."):
             aliases.add("language_model.model." + name[len("model.language_model.") :])
+        # NH trunk rename: the on-disk ``backbone.*`` trunk is re-exposed by
+        # transformers' ``AutoModelForCausalLM`` as ``model.*`` (and vice-versa).
+        # Alias only these two known trunk spellings — never drop an arbitrary
+        # leading component, which would wrongly equate sibling submodules such
+        # as ``talker.model.*`` and ``thinker.model.*``.
+        if name.startswith("backbone."):
+            aliases.add("model." + name[len("backbone.") :])
+        elif name.startswith("model."):
+            aliases.add("backbone." + name[len("model.") :])
         return aliases
 
     def _is_truly_missing(name: str) -> bool:
@@ -334,7 +343,7 @@ def copy_missing_tensors_from_source(
         aliases = _name_aliases(name)
         if aliases & saved_tensor_names:
             return False
-        parents = {a.rsplit(".", 1)[0] for a in aliases}
+        parents = {a.rsplit(".", 1)[0] for a in aliases if "." in a}
         if parents & saved_parent_layers:
             return False
         # For split experts, name is changed but block name is the same.

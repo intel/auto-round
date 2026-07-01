@@ -99,6 +99,35 @@ MODEL_CONFIG = {
             )
         ],
     },
+    "nemotron_h": {
+        "min_transformers_version": "5.0.0",
+        "max_transformers_version": "6.0.0",
+        "checkpoint_mapping": [],
+        "preserve_upstream_conversion_mapping": True,
+        "drop_conversion_target_patterns": [
+            "mixer.experts.up_proj",
+            "mixer.experts.down_proj",
+            "embeddings.weight",
+        ],
+        "post_load_fn": "auto_round.modeling.unfused_moe.nemotron_h.apply_nemotron_h_post_load",
+        "default_layer_config_patterns_fn": (
+            "auto_round.modeling.unfused_moe.nemotron_h.nemotron_h_default_layer_config_patterns"
+        ),
+        "block_patch": [
+            (
+                "transformers.models.nemotron_h.modeling_nemotron_h.NemotronHMoE",
+                "auto_round.modeling.unfused_moe.nemotron_h.LinearNemotronHMoE",
+            )
+        ],
+        "dispatch_dict_patch": [
+            (
+                "transformers.models.nemotron_h.modeling_nemotron_h",
+                "MIXER_TYPES",
+                "moe",
+                "auto_round.modeling.unfused_moe.nemotron_h.LinearNemotronHMoE",
+            )
+        ],
+    },
 }
 
 
@@ -110,9 +139,27 @@ def get_checkpoint_conversion_mapping_ar(model_type):
 
     cfg = MODEL_CONFIG.get(model_type)
     if cfg:
+        # Preserve upstream renames; filter out drop_conversion_target_patterns.
+        if cfg.get("preserve_upstream_conversion_mapping"):
+            try:
+                upstream = conversion_mapping.orig_get_checkpoint_conversion_mapping(model_type)
+            except Exception as exc:  # pragma: no cover - defensive guard
+                logger.warning(
+                    f"Failed to fetch upstream checkpoint conversion mapping for "
+                    f"model_type={model_type!r}: {exc}. Falling back to AutoRound default mapping."
+                )
+                return cfg.get("checkpoint_mapping", [])
+            drop_targets = cfg.get("drop_conversion_target_patterns", []) or []
+            if not drop_targets:
+                return upstream
+            filtered = []
+            for rule in upstream:
+                target_patterns = getattr(rule, "target_patterns", []) or []
+                if any(pat in target_patterns for pat in drop_targets):
+                    continue
+                filtered.append(rule)
+            return filtered
         return cfg.get("checkpoint_mapping", [])
-
-    from transformers import conversion_mapping
 
     return conversion_mapping.orig_get_checkpoint_conversion_mapping(model_type)
 
@@ -193,6 +240,20 @@ def apply_model_monkey_patches(model_name: str, trust_remote_code: bool = True) 
     model_type = getattr(config, "model_type")
 
     cfg = MODEL_CONFIG[model_type]
+    for module_path, dict_name, dict_key, replacement_path in cfg.get("dispatch_dict_patch", []):
+        try:
+            target_module = importlib.import_module(module_path)
+            dispatch = getattr(target_module, dict_name, None)
+            if not isinstance(dispatch, dict) or dict_key not in dispatch:
+                logger.warning(f"dispatch_dict_patch skipped: {module_path}.{dict_name}[{dict_key!r}] not found")
+                continue
+            replacement_module_path, replacement_class_name = replacement_path.rsplit(".", 1)
+            replacement_module = importlib.import_module(replacement_module_path)
+            dispatch[dict_key] = getattr(replacement_module, replacement_class_name)
+            logger.info(f"Patched dispatch dict: {module_path}.{dict_name}[{dict_key!r}] -> {replacement_path}")
+        except Exception as e:
+            logger.warning(f"Failed to patch dispatch dict {module_path}.{dict_name}[{dict_key!r}]: {e}")
+
     for orig_path, custom_path in cfg.get("block_patch", []):
         orig_module_path, orig_class_name = orig_path.rsplit(".", 1)
         custom_module_path, custom_class_name = custom_path.rsplit(".", 1)
@@ -249,3 +310,10 @@ def apply_modeling_patch(model: torch.nn.Module) -> bool:
             logger.warning(f"Failed to patch {orig_path}: {e}")
             return False
     return False
+
+
+# Registry dispatch helpers (``post_load_fn`` / ``default_layer_config_patterns_fn``)
+# live in ``nemotron_h_setup`` — currently their only consumer — to keep this
+# registry file thin.  Re-exported here as the ``unfused_moe`` package API for
+# ``auto_round.context`` / ``auto_round.compressors`` callers.
+from auto_round.modeling.unfused_moe.nemotron_h_setup import apply_post_load_fixups, get_default_layer_config_patterns
