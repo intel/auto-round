@@ -301,7 +301,7 @@ def _is_mxfp4_model(model_path, trust_remote_code=True):
 
     try:  # in case of config loading failure for new models
         config = AutoConfig.from_pretrained(model_path, trust_remote_code=trust_remote_code)
-    except:
+    except Exception:
         return False
 
     model_type = getattr(config, "model_type", "")
@@ -844,7 +844,7 @@ def diffusion_load_model(
         from transformers import AutoConfig
 
         config = AutoConfig.from_pretrained(pretrained_model_name_or_path, trust_remote_code=trust_remote_code)
-    except:
+    except Exception:
         config = None
 
     model_type = getattr(config, "model_type", "")
@@ -1043,7 +1043,7 @@ def is_diffusion_model(model_or_path: Union[str, object], trust_remote_code: boo
             # A special case for NextStep
             if model_type == "nextstep":
                 return True
-        except:
+        except Exception:
             logger.warning(
                 f"Failed to load config for {model_or_path}, trying to check model_index.json for diffusion pipeline."
             )
@@ -1436,7 +1436,7 @@ def _to_model_dtype(model, model_dtype):
                 model = model.to(torch.bfloat16)
             elif model_dtype == "float32" or model_dtype == "fp32" and model.dtype != torch.bfloat32:
                 model = model.to(torch.float32)
-        except:
+        except Exception:
             logger.error("please use more device to fit the device or just use one device")
             exit()
     return model
