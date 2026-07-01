@@ -161,19 +161,28 @@ This test can be integrated into performance regression testing:
 
 The FP8 prefill benchmark (`test_perf_fp8`) measures the default ARK path in
 the `ark(ms)` column and, on the same shapes, a fused **native FP8** path in
-the `native(ms)` / `native TFLOPS` columns. The three underlying kernels are
-selected by two independent env flags — read once on first use inside the
-extension and cached — with the following precedence:
+the `native(ms)` / `native TFLOPS` columns and a mixed-input **DPAS FP8**
+path in the `dpas(ms)` / `dpas TFLOPS` columns. The four underlying kernels
+are selected by three independent env flags — read once on first use inside
+the extension and cached — with the following precedence:
 
 | Precedence | Env flag(s)                                                       | Kernel                                                                                                       |
 | ---------- | ----------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------ |
-| 1 (highest)| `ARK_MOE_PREFILL_NATIVE_FP8=1`                                    | **Native FP8 fused GEMM.** No `[E, K, N]` bf16/fp16 workspace. FP8 bytes are upcast to `act_dtype` in registers inside the GEMM kernel and the per-K-group scale is folded into the accumulator. Only the final output row is written back. Implemented in `sycl_tla_moe_prefill_fp8_native.hpp`. |
-| 2          | `ARK_MOE_PREFILL_FUSED_FP8=1`                                     | SLM-transposed dequant kernel (`sycl_tla_moe_prefill_fused.hpp`) followed by the stock bf16/fp16 grouped GEMM. Still writes an `[E, K, N]` workspace to DRAM. FP8-E4M3 only.                                            |
-| 3 (default)| unset                                                             | v1 dequant kernel (`sycl_tla_moe_mixed.hpp::launch_dequant_fp8`) followed by the stock bf16/fp16 grouped GEMM. FP8-E4M3 and FP8-E5M2.                                                                                    |
+| 1 (highest)| `ARK_MOE_PREFILL_DPAS_FP8` unset or truthy (**default ON**)       | **Mixed-input DPAS FP8 grouped GEMM (Variant B).** Ported from `vllm-project/vllm-xpu-kernels` `xe_gemm_4bits` — FP8 bytes are upcast to `act_dtype` in registers via CuTe `reorder`, then the per-K-group scale is applied inline (`apply_scale` IGA asm). XMX-bound; expected ~2-2.5× the scalar native path. Same `[E, N, K/group_size]` scale layout as auto-round's calibration output — no re-quantisation needed. Implemented in `sycl_tla_moe_prefill_fp8_dpas.hpp`. **Status: NEEDS-HARDWARE-VALIDATION** (untested port). |
+| 2          | `ARK_MOE_PREFILL_NATIVE_FP8=1`                                    | Scalar native FP8 fused GEMM. No `[E, K, N]` bf16/fp16 workspace. FP8 bytes are upcast to `act_dtype` in registers inside the GEMM kernel and the per-K-group scale is folded into the accumulator. Only the final output row is written back. Implemented in `sycl_tla_moe_prefill_fp8_native.hpp`. |
+| 3          | `ARK_MOE_PREFILL_FUSED_FP8=1`                                     | SLM-transposed dequant kernel (`sycl_tla_moe_prefill_fused.hpp`) followed by the stock bf16/fp16 grouped GEMM. Still writes an `[E, K, N]` workspace to DRAM. FP8-E4M3 only.                                            |
+| 4 (default)| all above unset                                                   | v1 dequant kernel (`sycl_tla_moe_mixed.hpp::launch_dequant_fp8`) followed by the stock bf16/fp16 grouped GEMM. FP8-E4M3 and FP8-E5M2.                                                                                    |
 
-**Native path shape preconditions** — the `moe_gemm_prefill` dispatcher
-silently falls back to path 2/3 whenever any of these fail, so it is safe
-to leave `ARK_MOE_PREFILL_NATIVE_FP8=1` enabled in a mixed workload:
+**DPAS path shape preconditions** — the `moe_gemm_prefill` dispatcher
+silently falls back to precedence 2/3/4 whenever any of these fail:
+
+- `N % 64 == 0` (BN)
+- `K % 32 == 0` (BK)
+- `K % group_size == 0`
+- `group_size ∈ {32, 64, 128, 256}`
+- `asym == False` (FP8 quant is symmetric only)
+
+**Native path shape preconditions** — same fallback semantics:
 
 - `N % 16 == 0` (BN = SG_SIZE = 16)
 - `K % 32 == 0` (BK)
@@ -181,26 +190,52 @@ to leave `ARK_MOE_PREFILL_NATIVE_FP8=1` enabled in a mixed workload:
 - `group_size % 32 == 0` (so per-tile scale is constant along K)
 - `asym == False` (FP8 quant is symmetric only)
 
-The native path supports both **E4M3** and **E5M2**, both **F16** and
-**BF16** activations, and covers the same `PREFILL_SHAPES` matrix as the
-default column — every one of the perf-benchmark rows meets the
-preconditions.
+Both native and DPAS support **E4M3** and **E5M2**, and both **F16** and
+**BF16** activations, covering the same `PREFILL_SHAPES` matrix as the
+default column.
+
+### Variant A — per-tensor FP8 DPAS (separate entry point)
+
+The port also exposes a **Variant A** per-tensor FP8 DPAS grouped GEMM as a
+separate Python entry point:
+
+```python
+outputs = ark.moe_gemm_prefill(
+    activations,          # [total_tokens, K], f16/bf16
+    weights,              # [E, K, N] row-major FP8 (vllm layout)
+    num_tokens_per_expert,# [E] int32
+    scales=scales,        # [E] fp32, one per-tensor scale per expert
+    scale_scheme="per_tensor",
+)
+```
+
+This mirrors vllm-xpu-kernels' `cutlass_grouped_gemm_xe2_impl` FP8 branch
+byte-for-byte. It requires a **re-quantised checkpoint** (one FP32 scalar
+per expert, weights transposed to `[E, K, N]`), so it is best treated as a
+future option for latency-critical decode paths rather than a drop-in for
+existing auto-round FP8 checkpoints — Variant B is preferred there.
+
+**Status: NEEDS-HARDWARE-VALIDATION** (untested port).
 
 Enable via env at test-run time:
 
 ```bash
-# Default (v1 dequant) — same as before this feature landed.
+# Default (DPAS Variant B) — auto-round-native calibration scheme.
 pytest -v -s test_moe_prefill_perf.py::TestMoEGemmPrefillPerf::test_perf_fp8
 
-# Force the fused-dequant path (path 2) for the default column and keep
-# the native column as-is; useful for isolating the SLM-transposed dequant.
-ARK_MOE_PREFILL_FUSED_FP8=1 pytest -v -s test_moe_prefill_perf.py::TestMoEGemmPrefillPerf::test_perf_fp8
+# Force the scalar native path only (disables DPAS).
+ARK_MOE_PREFILL_DPAS_FP8=0 ARK_MOE_PREFILL_NATIVE_FP8=1 pytest -v -s test_moe_prefill_perf.py::TestMoEGemmPrefillPerf::test_perf_fp8
 
-# The `native(ms)` column always measures the native path (the perf test
-# toggles the env internally per row), regardless of the outer env setting.
+# Force the fused-dequant path.
+ARK_MOE_PREFILL_DPAS_FP8=0 ARK_MOE_PREFILL_FUSED_FP8=1 pytest -v -s test_moe_prefill_perf.py::TestMoEGemmPrefillPerf::test_perf_fp8
+
+# The perf test toggles the env internally per row so the `ark(ms)`,
+# `native(ms)`, and `dpas(ms)` columns each measure a specific path
+# regardless of the outer env setting.
 ```
 
-For accuracy parity, `test_moe_prefill_accuracy.py::test_accuracy_fp8` is
-parametrised over both paths (`dequant` / `native`) at the same production
-shapes; the native path uses the same `decode_fp8` primitive as the
-dequant path so it passes at the same tolerance.
+For accuracy parity, `test_moe_prefill_accuracy.py::test_accuracy_fp8`
+covers the dequant/native paths and
+`test_accuracy_fp8_dpas_per_group` / `test_accuracy_fp8_per_tensor_dpas`
+cover the DPAS Variants B / A at the same production shapes; all paths
+share the tolerance `rtol=atol=7e-2` (E4M3) / `1e-1` (E5M2).

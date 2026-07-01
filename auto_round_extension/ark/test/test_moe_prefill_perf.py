@@ -434,24 +434,30 @@ def _print_header(title: str) -> None:
       or fused-dequant if ``ARK_MOE_PREFILL_FUSED_FP8=1`` is set in the
       env for FP8 rows).
     * ``native(ms)`` / ``native TFLOPS``: FP8 rows only. ARK path with
-      ``ARK_MOE_PREFILL_NATIVE_FP8=1`` — the fused native-FP8 GEMM that
-      skips the ``[E, K, N]`` bf16/fp16 workspace and folds the per-K-
-      group scale into the accumulator. ``--`` for non-FP8 rows.
+      ``ARK_MOE_PREFILL_NATIVE_FP8=1`` — the fused scalar native-FP8 GEMM
+      that skips the ``[E, K, N]`` bf16/fp16 workspace and folds the
+      per-K-group scale into the accumulator. ``--`` for non-FP8 rows.
+    * ``dpas(ms)`` / ``dpas TFLOPS``: FP8 rows only. Variant B mixed-input
+      DPAS grouped GEMM (default-on branch behind
+      ``ARK_MOE_PREFILL_DPAS_FP8``). Prints ``--`` for non-FP8 rows and
+      for builds where ``moe_gemm_prefill_fp8_dpas`` is not linked in.
     * ``speedup``: ``(base+deq) / ark``.
     """
     print()
-    width = 156
+    width = 186
     print("=" * width)
     print(title)
     print(
         f"{'shape':<22}{'E':>4}{'N':>7}{'K':>7}{'tokens':>8}"
         f"{'baseline(ms)':>16}{'base+deq(ms)':>16}{'ark(ms)':>14}{'speedup':>12}{'TFLOPS':>10}"
         f"{'native(ms)':>14}{'native TFLOPS':>16}"
+        f"{'dpas(ms)':>14}{'dpas TFLOPS':>16}"
     )
     print("-" * width)
 
 
-def _print_row(label, E, N, K, total_tokens, base_ms, deq_ms, ark_ms, tflops, native_ms=None, native_tflops=None):
+def _print_row(label, E, N, K, total_tokens, base_ms, deq_ms, ark_ms, tflops, native_ms=None, native_tflops=None,
+               dpas_ms=None, dpas_tflops=None):
     """Print a benchmark row.
 
     ``speedup`` is ``(base+deq) / ark`` -- a fair comparison against any
@@ -461,6 +467,7 @@ def _print_row(label, E, N, K, total_tokens, base_ms, deq_ms, ark_ms, tflops, na
 
     ``native_ms`` / ``native_tflops`` are printed for FP8 rows where the
     native fused kernel was benchmarked, and left blank otherwise.
+    ``dpas_ms`` / ``dpas_tflops`` similarly for the Variant B DPAS path.
     """
     base_plus_deq_ms = base_ms + deq_ms
     speedup = base_plus_deq_ms / ark_ms if ark_ms > 0 else float("nan")
@@ -470,10 +477,17 @@ def _print_row(label, E, N, K, total_tokens, base_ms, deq_ms, ark_ms, tflops, na
     else:
         native_col = f"{native_ms:>14.4f}"
         native_tflops_col = f"{native_tflops:>15.1f} "
+    if dpas_ms is None:
+        dpas_col = f"{'--':>14}"
+        dpas_tflops_col = f"{'--':>16}"
+    else:
+        dpas_col = f"{dpas_ms:>14.4f}"
+        dpas_tflops_col = f"{dpas_tflops:>15.1f} "
     print(
         f"{label:<22}{E:>4}{N:>7}{K:>7}{total_tokens:>8}"
         f"{base_ms:>16.4f}{base_plus_deq_ms:>16.4f}{ark_ms:>14.4f}{speedup:>11.2f}x{tflops:>9.1f}"
         f"{native_col}{native_tflops_col}"
+        f"{dpas_col}{dpas_tflops_col}"
     )
 
 
@@ -720,10 +734,13 @@ class TestMoEGemmPrefillPerf:
 
             # Default ARK path (respects the caller's env, i.e. dequant or
             # fused-dequant depending on `ARK_MOE_PREFILL_FUSED_FP8`). We
-            # force `ARK_MOE_PREFILL_NATIVE_FP8=0` for this measurement so
-            # the two columns are independently attributable.
-            prev = os.environ.get("ARK_MOE_PREFILL_NATIVE_FP8")
+            # force `ARK_MOE_PREFILL_NATIVE_FP8=0` and
+            # `ARK_MOE_PREFILL_DPAS_FP8=0` for this measurement so the
+            # native / dpas columns are independently attributable.
+            prev_native = os.environ.get("ARK_MOE_PREFILL_NATIVE_FP8")
+            prev_dpas = os.environ.get("ARK_MOE_PREFILL_DPAS_FP8")
             os.environ["ARK_MOE_PREFILL_NATIVE_FP8"] = "0"
+            os.environ["ARK_MOE_PREFILL_DPAS_FP8"] = "0"
             try:
                 ark_ms = _xpu_time_ms(
                     lambda: ark.moe_gemm_prefill(
@@ -736,16 +753,16 @@ class TestMoEGemmPrefillPerf:
                     )
                 )
             finally:
-                if prev is None:
-                    os.environ.pop("ARK_MOE_PREFILL_NATIVE_FP8", None)
-                else:
-                    os.environ["ARK_MOE_PREFILL_NATIVE_FP8"] = prev
+                pass  # keep DPAS off for the following native measurement
 
             flops = _compute_moe_flops(total_tokens, K, N, E)
             tflops = flops / (ark_ms * 1e-3) / 1e12
 
-            # Native FP8 fused GEMM (no [E, K, N] workspace).
+            # Native FP8 fused GEMM (scalar path, no [E, K, N] workspace).
+            # Keep DPAS disabled so the C++ dispatcher does not shadow the
+            # native branch.
             os.environ["ARK_MOE_PREFILL_NATIVE_FP8"] = "1"
+            os.environ["ARK_MOE_PREFILL_DPAS_FP8"] = "0"
             try:
                 native_ms = _xpu_time_ms(
                     lambda: ark.moe_gemm_prefill(
@@ -758,13 +775,44 @@ class TestMoEGemmPrefillPerf:
                     )
                 )
             finally:
-                if prev is None:
-                    os.environ.pop("ARK_MOE_PREFILL_NATIVE_FP8", None)
-                else:
-                    os.environ["ARK_MOE_PREFILL_NATIVE_FP8"] = prev
+                pass
             native_tflops = flops / (native_ms * 1e-3) / 1e12
 
-            _print_row(label, E, N, K, total_tokens, base_ms, deq_ms, ark_ms, tflops, native_ms, native_tflops)
+            # Variant B DPAS FP8 (default-on branch). Guarded on the
+            # presence of the pybind symbol so builds without the DPAS
+            # kernel print `--` for this column instead of failing.
+            dpas_ms = None
+            dpas_tflops = None
+            if hasattr(ark.xpu_lib, "moe_gemm_prefill_fp8_dpas"):
+                os.environ["ARK_MOE_PREFILL_NATIVE_FP8"] = "0"
+                os.environ["ARK_MOE_PREFILL_DPAS_FP8"] = "1"
+                try:
+                    dpas_ms = _xpu_time_ms(
+                        lambda: ark.moe_gemm_prefill(
+                            activations,
+                            packed,
+                            ntpe,
+                            scales=scales,
+                            group_size=group_size,
+                            asym=False,
+                        )
+                    )
+                finally:
+                    pass
+                dpas_tflops = flops / (dpas_ms * 1e-3) / 1e12
+
+            # Restore prior env state.
+            if prev_native is None:
+                os.environ.pop("ARK_MOE_PREFILL_NATIVE_FP8", None)
+            else:
+                os.environ["ARK_MOE_PREFILL_NATIVE_FP8"] = prev_native
+            if prev_dpas is None:
+                os.environ.pop("ARK_MOE_PREFILL_DPAS_FP8", None)
+            else:
+                os.environ["ARK_MOE_PREFILL_DPAS_FP8"] = prev_dpas
+
+            _print_row(label, E, N, K, total_tokens, base_ms, deq_ms, ark_ms, tflops, native_ms, native_tflops,
+                       dpas_ms, dpas_tflops)
 
             activations = ntpe = act_padded = w_float = scales = packed = dequant = None
             _release_xpu_memory()
