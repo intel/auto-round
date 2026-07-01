@@ -373,8 +373,11 @@ CUTE_DEVICE void xe_gemm_int_pergroup(
 
   static constexpr auto SG_M = tile_m / ATOM_M;
   static constexpr auto SG_N = tile_n / ATOM_N;
-  static constexpr auto SG_K = tile_k / ATOM_K;
-  (void)SG_K;
+  // NOTE: SG_K (tile_k / ATOM_K) is intentionally not materialised here.
+  // The FP8 per-group mainloop keeps it around for symmetry with the
+  // per-tensor variant, but it is unused inside the pergroup loop — the
+  // K-slicing granularity is driven by `group_size` / `tile_k`, not by
+  // sub-group K-tiles. Kept out to avoid an `-Wunused-const-variable`.
 
   static constexpr int sg_n_strides = SG_N / sg_local_range;
 

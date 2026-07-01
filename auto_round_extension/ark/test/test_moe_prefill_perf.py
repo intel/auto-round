@@ -638,22 +638,20 @@ class TestMoEGemmPrefillPerf:
             # `ark(ms)` column measures the legacy dequant path
             # independently of the `dpas(ms)` column below.
             prev_dpas = os.environ.get("ARK_MOE_PREFILL_DPAS_INT8")
+            # Force the legacy dequant + GEMM path for the `ark(ms)` column.
             os.environ["ARK_MOE_PREFILL_DPAS_INT8"] = "0"
-            try:
-                ark_ms = _xpu_time_ms(
-                    lambda: ark.moe_gemm_prefill(
-                        activations,
-                        packed,
-                        ntpe,
-                        scales=scales,
-                        zeros=zeros,
-                        weight_bits=8,
-                        group_size=group_size,
-                        asym=asym,
-                    )
+            ark_ms = _xpu_time_ms(
+                lambda: ark.moe_gemm_prefill(
+                    activations,
+                    packed,
+                    ntpe,
+                    scales=scales,
+                    zeros=zeros,
+                    weight_bits=8,
+                    group_size=group_size,
+                    asym=asym,
                 )
-            finally:
-                pass  # keep DPAS off for the following measurements
+            )
 
             flops = _compute_moe_flops(total_tokens, K, N, E)
             tflops = flops / (ark_ms * 1e-3) / 1e12
@@ -666,21 +664,18 @@ class TestMoEGemmPrefillPerf:
             dpas_tflops = None
             if not asym:
                 os.environ["ARK_MOE_PREFILL_DPAS_INT8"] = "1"
-                try:
-                    dpas_ms = _xpu_time_ms(
-                        lambda: ark.moe_gemm_prefill(
-                            activations,
-                            packed,
-                            ntpe,
-                            scales=scales,
-                            zeros=zeros,
-                            weight_bits=8,
-                            group_size=group_size,
-                            asym=asym,
-                        )
+                dpas_ms = _xpu_time_ms(
+                    lambda: ark.moe_gemm_prefill(
+                        activations,
+                        packed,
+                        ntpe,
+                        scales=scales,
+                        zeros=zeros,
+                        weight_bits=8,
+                        group_size=group_size,
+                        asym=asym,
                     )
-                finally:
-                    pass
+                )
                 dpas_tflops = flops / (dpas_ms * 1e-3) / 1e12
 
             # Restore prior env state.
