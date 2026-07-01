@@ -1737,7 +1737,7 @@ def _gen_layer_config(
                 "The model appears to be an MoE  model. "
                 "Using more samples to help generate a better auto-scheme recipe."
             )
-            nsamples = 16
+            nsamples = 64
         else:
             nsamples = 16
     seqlen = auto_scheme.seqlen if auto_scheme.seqlen is not None else 256
