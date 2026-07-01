@@ -423,11 +423,9 @@ void moe_prefill_fp8_native_dispatch(sycl::queue* q, const ScalarT* activations,
   //    same queue observe the kernel result via queue ordering, so the
   //    caller-visible semantics match the previous synchronous dispatch
   //    modulo the host-side wait latency we're removing.
-  sycl::queue* q_capture = q;
-  int* d_offsets_capture = d_offsets;
-  q->submit([=](sycl::handler& cgh) {
+  q->submit([q, d_offsets, kernel_evt](sycl::handler& cgh) {
     cgh.depends_on(kernel_evt);
-    cgh.host_task([=]() { sycl::free(d_offsets_capture, *q_capture); });
+    cgh.host_task([q, d_offsets]() { sycl::free(d_offsets, *q); });
   });
 }
 
