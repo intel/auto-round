@@ -97,6 +97,25 @@
 // are deferred to the following Phase 4.5 steps, mirroring how the mixed
 // overloads were first introduced as scaffolding in Phase 2 step 4.
 //
+// Phase 4.5, step 2 begins the real migration of that non-stable path:
+//   * scale_exp_acc_sum_fp32_t<T_DST> / ScaleExpAccSumFp32Bf16 -- the QK
+//     epilogue that scales, causal-masks, exponentiates and accumulates the
+//     per-row exp-sum, emitting the low-precision P matrix directly (delegates
+//     to `kernel::wrapper::ScaleExpAccSumFp32`). No running-max tracking, so no
+//     separate softmax pass; the denominator is applied by the PV epilogue.
+//   * mha_interface_t<L_ExpSum, L_Scale> -- the non-stable launcher: it packs
+//     raw PLAIN K/V into per-head reordered caches at runtime (reusing the
+//     already-migrated `storage_packed_weight_batch_t` /
+//     `weight_pack_batch_bf16_*_t` / `launcher_base_off_t` blocks), runs QxK
+//     with the ExpSum epilogue, reciprocates the exp-sum, then runs PxV with a
+//     `scale_write_back_t` epilogue applying 1/l_i. Only raw PLAIN K/V, no GQA /
+//     alibi / prefer_fp32, exactly as Neural Speed asserts.
+// Both are compile-pinned against the AMX-BF16 launcher pair in
+// `instantiation_check` (`MhaNonStableAmxBf16`). The homogeneous
+// `bestla_fusion_attn_forward` overloads are NOT yet wired to this launcher and
+// runtime dispatch (sdpa.cpp / ark.cpp) still does NOT route to them; connecting
+// the dispatch is the next Phase 4.5 step.
+//
 // API-drift notes vs Neural Speed's BestLA:
 //   * ARK's `kernel::wrapper::ScaleTrackMax::forward` takes an extra
 //     `padding_type` argument (0=dense, 1=causal, 2=right-padding) that Neural
@@ -261,6 +280,43 @@ class scale_write_back_t {
 using ScaleWriteBackFp32Bf16 = scale_write_back_t<float, utils::bf16>;
 using ScaleWriteBackFp32Fp32 = scale_write_back_t<float, float>;
 using ScaleWriteBackS32S8 = scale_write_back_t<int32_t, int8_t>;
+
+/**
+ * @brief Epilogue for the QK matmul on the *non-stable* attention path: scales
+ * the fp32 scores, optionally applies the causal mask, exponentiates in place
+ * and accumulates the per-row exp-sum (the l_i of attention), storing the exp'd
+ * P matrix in the low-precision destination type. Port of Neural Speed's
+ * `scale_exp_acc_sum_fp32_t`; delegates to ARK BestLA's
+ * `kernel::wrapper::ScaleExpAccSumFp32`.
+ *
+ * Unlike `scale_track_max_t` (the stable path), this folds exp directly into the
+ * QK epilogue without tracking / subtracting a running row max, so no separate
+ * softmax pass is needed; the softmax denominator is applied later by the PV
+ * `scale_write_back_t` epilogue. ARK drift: alibi/tanh are not plumbed here (the
+ * vendored `ScaleExpAccSumFp32` does not accept them), matching Neural Speed's
+ * `assert(alibi_slope == 0)`.
+ */
+template <typename T_DST>
+class scale_exp_acc_sum_fp32_t {
+ public:
+  struct Param {  // NOLINT(readability-identifier-naming): align with bestla name
+    T_DST* dst;
+    float* dst_sum;
+    int ld_dst;         // #elements
+    float scale;
+    int causal_offset;  // offset for causal mask; negative disables causal mask
+    float alibi_slope;  // m-factor in the alibi paper (https://arxiv.org/abs/2108.12409)
+  };
+  template <BTLA_ISA ISA_T>
+  static inline BTLA_CODE forward(const float* src, const int src_step, const int M_offset, const int N_offset,
+                                  const int M, const int N, const Param& p, void* tmpcache, size_t cachesize) {
+    assert(("alibi not supported!", p.alibi_slope == 0.f));
+    return bestla::kernel::wrapper::ScaleExpAccSumFp32<T_DST>::template forward<ISA_T>(
+        src, src_step, p.dst, p.ld_dst, p.dst_sum, M_offset, N_offset, M, N, p.scale, p.causal_offset, tmpcache,
+        cachesize);
+  }
+};
+using ScaleExpAccSumFp32Bf16 = scale_exp_acc_sum_fp32_t<utils::bf16>;
 
 /**
  * @brief Epilogue for the QK matmul: scales the scores, applies the causal /
@@ -1131,6 +1187,234 @@ class mha_stable_interface_t {
   L_Scale l_pv;
 };
 
+/**
+ * @brief Non-stable MHA interface with N-dim parallelism. Port of Neural Speed's
+ * `mha_interface_t`, the launcher the homogeneous fp16/bf16
+ * `bestla_fusion_attn_forward` overloads compose. Unlike
+ * `mha_stable_interface_t`, it never tracks a running row max: it packs raw
+ * PLAIN K/V into per-head reordered caches at runtime, runs QxK with the
+ * `scale_exp_acc_sum_fp32_t` epilogue (fusing exp + the per-row exp-sum and
+ * emitting the low-precision P matrix directly), then reciprocates the exp-sum
+ * and runs PxV with a `scale_write_back_t` epilogue that applies 1/l_i.
+ *
+ * @tparam L_ExpSum Launcher of the QxK exp-sum matmul (a `launcher_base_off_t`
+ *                  whose epilogue is `scale_exp_acc_sum_fp32_t`).
+ * @tparam L_Scale  Launcher of the PxV scale matmul (a `launcher_base_off_t`
+ *                  whose epilogue is `scale_write_back_t`).
+ *
+ * ARK drift vs Neural Speed (see file header):
+ *   * Neural Speed pulls a process-global pool from `ne_threading::get()`; ARK
+ *     takes an explicit `parallel::IThreading&` (as `mha_stable_interface_t`).
+ *   * `padto / updiv / bf16 / ne_bf16_t` are qualified as `utils::padto /
+ *     utils::updiv / utils::bf16` (ARK has no `using namespace bestla` reach for
+ *     the unqualified names in this scope's helpers).
+ *   * The `NS_TP_MODEL` tensor-parallel block and the unused `mha_problem_t`
+ *     bookkeeping struct are dropped (ARK has no TP), matching how the stable
+ *     interface drops them.
+ *   * This path only supports raw PLAIN K/V (no GQA, no alibi, no prefer_fp32),
+ *     exactly as Neural Speed asserts.
+ */
+template <class L_ExpSum, class L_Scale>
+class mha_interface_t {
+ public:
+  using PrologueQ = typename L_ExpSum::PrologueA;
+  using PrologueK = typename L_ExpSum::PrologueB;
+  using QKProQArgs = typename PrologueQ::Param;
+  using QKProKArgs = typename PrologueK::Param;
+  using QKArgs = typename L_ExpSum::Param;
+  using QKEpiArgs = typename L_ExpSum::EpiParam;
+
+  using PrologueS = typename L_Scale::PrologueA;
+  using PrologueV = typename L_Scale::PrologueB;
+  using PVProPArgs = typename PrologueS::Param;
+  using PVProVArgs = typename PrologueV::Param;
+  using PVArgs = typename L_Scale::Param;
+  using PVEpiArgs = typename L_Scale::EpiParam;
+
+  using GemmQK = typename L_ExpSum::GemmCore;
+  using GemmPV = typename L_Scale::GemmCore;
+  using Q_T = typename std::remove_const<typename std::remove_pointer<decltype(QKProQArgs::A)>::type>::type;
+  using K_T = typename PrologueK::SType;
+  using V_T = typename PrologueV::SType;
+  using DST_T = typename std::remove_const<typename std::remove_pointer<decltype(PVEpiArgs::dst)>::type>::type;
+
+  static_assert(GemmQK::MTILE == GemmPV::MTILE, "2 GEMM should have the same M_TILE.");
+
+  BTLA_CODE compute(const attn_fwd_args_t<Q_T, K_T, V_T, DST_T>& p, parallel::IThreading& th) {
+    static constexpr auto M_TILE = GemmQK::MTILE;
+    assert(p.Q_sc == 1 && p.K_sc == 1 && p.V_sc == 1 && p.dst_sc == 1);
+    assert(p.Q_layout == ATTN_FWD_LAYOUT_PLAIN && p.K_layout == ATTN_FWD_LAYOUT_PLAIN &&
+           p.V_layout == ATTN_FWD_LAYOUT_PLAIN && p.dst_layout == ATTN_FWD_LAYOUT_PLAIN);
+    assert(p.step_v_head_size == 1);
+    assert(p.step_k_head_size == 1 || p.step_k_sl == 1);
+    const auto num_heads = p.batch_size * p.head_num;  // Total number of heads
+    GetCPUDevice();
+
+    const bool is_causal = (p.attn_flags & ATTN_FLAG_IS_CAUSAL) != 0;
+    const bool is_alibi = (p.attn_flags & ATTN_FLAG_IS_ALIBI8) != 0;
+    const bool prefer_fp32 = (p.attn_flags & ATTN_FLAG_PREFER_FP32) != 0;
+
+    assert(!is_causal || p.sl_q <= p.sl_kv);
+    assert(("qlen should be no greater then klen/vlen!", !is_causal || p.sl_q <= p.sl_kv));
+    assert(("prefer_fp32 not implemented!", !prefer_fp32));
+    assert(("alibi not supported!", !is_alibi));
+    assert(("GQA not supported!", p.head_num == p.heads_kv));
+    (void)prefer_fp32;
+    (void)is_alibi;
+    const auto sl_diff = p.sl_kv - p.sl_q;
+
+    // prepare memory for packed weight (one reordered K/V tensor per head)
+    storage_packed_weight_batch_t /*<typename GemmQK::BType>*/ K_pack(GemmQK::ID);  // packed K
+    K_pack.resize(utils::padto(p.sl_kv, GemmQK::NTILE), utils::padto(p.head_size, GemmQK::KTILE), p.sl_kv, p.head_size,
+                  num_heads, utils::bestla_dtype<typename GemmQK::BType>);
+    auto bufferK = utils::amalloc<int8_t>(K_pack.mSize);
+    K_pack.assign(bufferK);
+    storage_packed_weight_batch_t /*<typename GemmPV::BType>*/ V_pack(GemmPV::ID);  // packed V
+    V_pack.resize(utils::padto(p.head_size, GemmPV::NTILE), utils::padto(p.sl_kv, GemmPV::KTILE), p.head_size, p.sl_kv,
+                  num_heads, utils::bestla_dtype<typename GemmPV::BType>);
+    auto bufferV = utils::amalloc<int8_t>(V_pack.mSize);
+    V_pack.assign(bufferV);
+    const auto K_pack_batch_off = K_pack.mKPad * K_pack.mNPad;
+    const auto V_pack_batch_off = V_pack.mKPad * V_pack.mNPad;
+
+    const auto step_batch_k = [step_bs = p.step_k_bs, step_hn = p.step_k_head_num, hn = p.heads_kv](int ibat) {
+      return (ibat / hn) * step_bs + (ibat % hn) * step_hn;
+    };
+    const auto step_batch_v = [step_bs = p.step_v_bs, step_hn = p.step_v_head_num, hn = p.heads_kv](int ibat) {
+      return (ibat / hn) * step_bs + (ibat % hn) * step_hn;
+    };
+
+    // prepare parallel scheduler for packed weight
+    using Scheduler2D = bestla::parallel::Scheduler2D;
+    using ThreadProblem2D = bestla::parallel::ThreadProblem2D;
+    const auto schK = p.step_k_head_size == 1
+                          ? Scheduler2D({th.num_threads(), {num_heads, p.sl_kv}, {1, GemmQK::NTILE}})
+                          : Scheduler2D({th.num_threads(), {num_heads, p.head_size}, {1, GemmQK::KTILE}});
+    const auto schV = Scheduler2D({th.num_threads(), {num_heads, p.sl_kv}, {1, GemmPV::KTILE}});
+
+    const auto m_tiles = utils::updiv(p.sl_q, M_TILE);
+    const auto num_tasks = num_heads * m_tiles;
+    const Scheduler2D parl({th.num_threads(), {num_tasks, 1}, {1, 1}, {0, 0}});
+
+    th.parallel_for([&](int tid) {
+      {  // reorder K & V
+        ThreadProblem2D thdpK{tid};
+        schK.getIndex(thdpK);
+        PrologueK::run(  // pack K
+            QKProKArgs{
+                /* .B = */ p.K,
+                /* .ldb = */ p.step_k_sl * p.step_k_head_size,  //  use the non-one step
+                /* .StorageType = */ &K_pack,
+            },
+            thdpK, step_batch_k);
+
+        ThreadProblem2D thdpV{tid};
+        schV.getIndex(thdpV);
+        PrologueV::run(  // pack V
+            PVProVArgs{
+                /* .B = */ p.V,
+                /* .ldb = */ p.step_v_sl,
+                /* .StorageType = */ &V_pack,
+            },
+            thdpV, step_batch_v);
+      }
+
+      th.sync(tid);
+
+      // calculate mm + softmax + mm
+      {
+        const int tmp_exp_size = M_TILE * utils::padto(p.sl_kv, GemmQK::NTILE) * static_cast<int>(sizeof(utils::bf16));
+        const auto tmp = p.tmp + tid * tmp_exp_size;
+        ThreadProblem2D thdp{tid};
+        parl.getIndex(thdp);
+        const auto [task_start, _assert0] = thdp.loc;
+        auto [task_size, _assert_max1] = thdp.size;
+        assert(task_size == 0 || _assert0 == 0);
+        assert(task_size == 0 || _assert_max1 == 1 || _assert_max1 == 0);
+        if (_assert_max1 == 0 || !thdp.valid) task_size = 0;
+
+        for (int task_id = task_start; task_id < task_start + task_size; ++task_id) {
+          const int ibat = task_id / m_tiles;
+          const int i_m = task_id % m_tiles * M_TILE;
+          const int ibs = ibat / p.head_num;
+          const int ihn = ibat % p.head_num;
+          const int m_size = std::min(M_TILE, p.sl_q - i_m);
+
+          float exp_sum[M_TILE]{};
+          std::fill_n(exp_sum, M_TILE, 0.f);
+
+          // ptr to Q / dst matrix of the current head
+          const auto head_q = p.Q + ibs * p.step_q_bs + ihn * p.step_q_head_num;
+          const auto head_dst = p.dst + ibs * p.step_dst_bs + ihn * p.step_dst_head_num;
+          const auto unmasked_size = is_causal ? std::min(p.sl_kv, p.sl_kv - p.sl_q + i_m + M_TILE - 1 + 1) : p.sl_kv;
+
+          const auto unmasked_size_pad_qk = std::min(p.sl_kv, utils::padto(unmasked_size, GemmQK::NTILE));
+          const auto unmasked_size_pad_pv = std::min(p.sl_kv, utils::padto(unmasked_size, GemmPV::KTILE));
+          const auto ld_tmp_exp = utils::padto(utils::padto(unmasked_size_pad_pv, GemmQK::NTILE), GemmPV::KTILE);
+
+          typename parallel::gemm::ThreadProblemBase tpQK{
+              /* ThreadProblem2D */ {tid, {}, {i_m, 0}, {m_size, unmasked_size_pad_qk}, true},
+              /* .block = */ {M_TILE, GemmQK::NTILE, p.head_size},
+              /* .stacksize = */ _cd->getL2CacheSize(),
+              /* .tmpcachesize = */ _cd->getL2CacheSize(),
+          };
+          const auto bf16_tmp = reinterpret_cast<utils::bf16*>(tmp);
+          L_ExpSum::run(  // QxK => S ==exp==> P
+              QKArgs{
+                  utils::GemmProblem{
+                      /* .batch */ 1,
+                      /* .M = */ p.sl_q,
+                      /* .N = */ unmasked_size_pad_qk,
+                      /* .K = */ p.head_size,
+                  },
+                  /* .paramA = */ QKProQArgs{head_q, p.step_q_sl},
+                  /* .paramB = */ QKProKArgs{nullptr, 0, &K_pack},
+                  /* .paramC = */
+                  QKEpiArgs{
+                      /* .dst = */ bf16_tmp - i_m * ld_tmp_exp,  // pretend that there is a whole exp mat
+                      /* .dst_sum = */ exp_sum - i_m,            // pretend that there is a whole exp sum
+                      /* .ld_dst = */ ld_tmp_exp,
+                      /* .scale = */ p.QK_scale,
+                      /* .causal_offset = */ is_causal ? sl_diff : -1,
+                      /* .alibi_slope = */ 0.f,
+                  },
+              },
+              tpQK, /* w_offset */ ibat * K_pack_batch_off);
+          for (int ii = 0; ii < M_TILE; ++ii) exp_sum[ii] = 1.f / exp_sum[ii];
+
+          typename parallel::gemm::ThreadProblemBase tpPV{
+              /* ThreadProblem2D */ {tid, {}, {0, 0}, {m_size, p.head_size}, true},
+              /* .block = */ {M_TILE, GemmPV::NTILE, unmasked_size_pad_qk},
+              /* .stacksize = */ _cd->getL2CacheSize(),
+              /* .tmpcachesize = */ _cd->getL2CacheSize(),
+          };
+          L_Scale::run(  // PxV => O
+              PVArgs{
+                  utils::GemmProblem{
+                      /* .batch */ 1,
+                      /* .M = */ std::min(p.sl_q - i_m, M_TILE),
+                      /* .N = */ p.head_size,
+                      /* .K = */ unmasked_size_pad_qk,
+                  },
+                  /* .paramA = */ PVProPArgs{reinterpret_cast<utils::bf16*>(tmp), ld_tmp_exp},
+                  /* .paramB = */ PVProVArgs{nullptr, 0, &V_pack},
+                  /* .paramC = */
+                  PVEpiArgs{
+                      /* .scale = */ exp_sum,
+                      /* .dst = */ head_dst + i_m * p.step_dst_sl,
+                      /* .ld_dst = */ p.step_dst_sl,
+                  },
+              },
+              tpPV, /* w_offset */ ibat * V_pack_batch_off);
+        }
+      }
+    });
+    utils::afree(bufferK);
+    utils::afree(bufferV);
+    return BTLA_CODE::Success;
+  }
+};
+
 // ---------------------------------------------------------------------------
 // Dtype-specialized attention dispatch (port of Neural Speed's
 // `bestla_fusion_attn_forward`). The generic template is deleted so an
@@ -1250,16 +1534,21 @@ inline void bestla_fusion_attn_forward<float, utils::bf16, utils::bf16, float>(
 }
 
 // ---------------------------------------------------------------------------
-// Phase 4.5, step 1: homogeneous FP16/BF16 attention (Q == K == V == dst element
-// type). Neural Speed routes these through the *non-stable* `mha_interface_t`
-// (single-pass QK*V with an ExpSum epilogue folding the softmax denominator into
-// the PV accumulation), not the two-pass `mha_stable_interface_t` migrated above.
-// That launcher and its `ScaleExpAccSumFp32` epilogue composition are not
-// migrated yet, so these specializations are documented throwing scaffolding:
-// they make the homogeneous operand-type surface explicit (instead of the hard
-// `= delete` on the generic primary template) and fail loudly, so a homogeneous
-// dispatch cannot silently no-op in a release build. Runtime dispatch
-// (sdpa.cpp / ark.cpp) still does NOT reach these overloads.
+// Phase 4.5, step 1-2: homogeneous FP16/BF16 attention (Q == K == V == dst
+// element type). Neural Speed routes the bf16 case through the *non-stable*
+// `mha_interface_t` (runtime K/V pack -> QK with an ExpSum epilogue folding the
+// softmax denominator into the PV scale-write-back), not the two-pass
+// `mha_stable_interface_t` migrated above.
+//
+// Step 2 migrated the non-stable `mha_interface_t` launcher and its
+// `scale_exp_acc_sum_fp32_t` / `ScaleExpAccSumFp32Bf16` QK epilogue (both above;
+// compile-pinned to the AMX-BF16 launcher pair in `instantiation_check`).
+// Wiring these specializations to that launcher is deferred to the next step, so
+// they remain documented throwing scaffolding: they make the homogeneous
+// operand-type surface explicit (instead of the hard `= delete` on the generic
+// primary template) and fail loudly, so a homogeneous dispatch cannot silently
+// no-op in a release build. Runtime dispatch (sdpa.cpp / ark.cpp) still does NOT
+// reach these overloads.
 // ---------------------------------------------------------------------------
 
 // fp16 Q/K/V, fp16 dst. Target: BestLA `gemm::HCoreRowNAvx512fp16` (native fp16
@@ -1271,9 +1560,9 @@ inline void bestla_fusion_attn_forward<utils::fp16, utils::fp16, utils::fp16, ut
   (void)params;
   (void)th;
   throw std::runtime_error(
-      "ark::cpu::bestla_fusion_attn_forward: homogeneous fp16 attention is not implemented yet (Phase 4.5): it "
-      "needs the non-stable mha_interface_t launcher over gemm::HCoreRowNAvx512fp16 with a ScaleExpAccSumFp32<fp16> "
-      "epilogue, neither migrated yet");
+      "ark::cpu::bestla_fusion_attn_forward: homogeneous fp16 attention is not wired yet (Phase 4.5): the "
+      "non-stable mha_interface_t launcher over gemm::HCoreRowNAvx512fp16 with a ScaleExpAccSumFp32<fp16> epilogue "
+      "is migrated but its dispatch is not connected yet");
 }
 
 // bf16 Q/K/V, bf16 dst. Target: AMX-BF16 `gemm::HCoreRowNAmxbf16` core driven by
@@ -1285,9 +1574,9 @@ inline void bestla_fusion_attn_forward<utils::bf16, utils::bf16, utils::bf16, ut
   (void)params;
   (void)th;
   throw std::runtime_error(
-      "ark::cpu::bestla_fusion_attn_forward: homogeneous bf16 attention is not implemented yet (Phase 4.5): it "
-      "needs the non-stable mha_interface_t launcher over gemm::HCoreRowNAmxbf16 with a ScaleExpAccSumFp32<bf16> "
-      "epilogue, neither migrated yet");
+      "ark::cpu::bestla_fusion_attn_forward: homogeneous bf16 attention is not wired yet (Phase 4.5): the "
+      "non-stable mha_interface_t launcher over gemm::HCoreRowNAmxbf16 with a ScaleExpAccSumFp32<bf16> epilogue "
+      "is migrated but its dispatch is not connected yet");
 }
 
 // ---------------------------------------------------------------------------
@@ -1318,8 +1607,9 @@ using CoreAmxBf16 = gemm::HCoreRowNAmxbf16<48, 16>;
 
 // Phase 4.5 step 1: homogeneous low-precision GemmCores. These pin the cores the
 // homogeneous fp16/bf16 `bestla_fusion_attn_forward` overloads will drive so
-// they are type-checked / compiled at this step; the non-stable mha_interface_t
-// launcher and its ScaleExpAccSumFp32 epilogue composition are deferred.
+// they are type-checked / compiled at this step. As of step 2 the non-stable
+// mha_interface_t launcher and its ScaleExpAccSumFp32 epilogue are also migrated
+// and pinned below (see MhaNonStableAmxBf16); only the dispatch wiring remains.
 // avx512fp16 core (native fp16 A/B/C) for homogeneous fp16 attention.
 using CoreAvx512Fp16 = gemm::HCoreRowNAvx512fp16<64, 0>;
 // AMX bf16 core reused for homogeneous bf16 attention (same core, ExpSum path).
@@ -1377,6 +1667,26 @@ using QKTrackMaxAmxBf16 = launcher_base_weight_t<CoreAmxBf16, prologue_a::gemm::
 using PVWriteBackAmxBf16 = launcher_base_weight_t<CoreAmxBf16, activation_identity_t, weight_forward_n_tile48_t,
                                                   epilogue::gemm::AccumulatorWriteBackFp32>;
 using MhaStableAmxBf16 = mha_stable_interface_t<QKTrackMaxAmxBf16, PVWriteBackAmxBf16>;
+
+// ---------------------------------------------------------------------------
+// Phase 4.5 step 2: non-stable interface syntax-checks. Pin `mha_interface_t`
+// to the exact AMX-BF16 launcher pair Neural Speed's homogeneous bf16
+// `bestla_fusion_attn_forward<bf16, bf16, bf16, bf16>` composes, so the migrated
+// non-stable launcher + `scale_exp_acc_sum_fp32_t` epilogue are fully
+// type-checked / compiled here. The QK launcher packs a transposed K source and
+// runs the ExpSum epilogue; the PV launcher packs a non-transposed V source and
+// writes back the 1/l_i-scaled output. Retained as ISA-agnostic compile pins,
+// independent of the runtime CPU-feature dispatch (still deferred).
+// ---------------------------------------------------------------------------
+
+// AMX BF16 non-stable core (NTILE 64, MTILE 16), as Neural Speed uses for the
+// homogeneous bf16 exp-sum path (distinct from the stable path's <48, 16>).
+using CoreAmxBf16ExpSum = gemm::HCoreRowNAmxbf16<64, 16>;
+using QKExpSumAmxBf16 = launcher_base_off_t<CoreAmxBf16ExpSum, prologue_a::gemm::ActivationBase,
+                                            WeightPackBatchBf16Bf16Trans, ScaleExpAccSumFp32Bf16>;
+using PVScaleAmxBf16 = launcher_base_off_t<CoreAmxBf16ExpSum, prologue_a::gemm::ActivationBase,
+                                           WeightPackBatchBf16Bf16NonTr, ScaleWriteBackFp32Bf16>;
+using MhaNonStableAmxBf16 = mha_interface_t<QKExpSumAmxBf16, PVScaleAmxBf16>;
 }  // namespace instantiation_check
 
 }  // namespace bestla_mha
