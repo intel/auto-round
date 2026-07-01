@@ -240,9 +240,10 @@ void launch_dequant_fp8_slm(sycl::queue* q, const uint8_t* weights_NK, const Sca
 //     - unset / "0" / "false" / "off" / "no" (default) -> v1 path
 //     - "1" / "true" / "on" / "yes"                    -> new SLM path
 //
-// Callers query this once per launch; the underlying `getenv` is issued
-// exactly once (function-local static). Keep this in step with the
-// `fp8_decode_use_lut` reader style in `sycl_tla_moe_dequant.hpp`.
+// Re-read on every call (host-side cold path) so benchmarks / tests can
+// toggle the path in-process. Was previously a function-local static,
+// which prevented `test_moe_prefill_perf.py` from independently measuring
+// v1 vs fused after the first FP8 launch had frozen the value.
 //
 // The opt-in default (OFF) is deliberate: the fused path only covers
 // fp8 + bf16 in this commit, and BMG performance verification is still
@@ -252,15 +253,12 @@ void launch_dequant_fp8_slm(sycl::queue* q, const uint8_t* weights_NK, const Sca
 // by toggling a single env var.
 // ----------------------------------------------------------------------------
 inline bool moe_prefill_fused_fp8_enabled() {
-  static const bool value = []() {
-    const char* env = std::getenv("ARK_MOE_PREFILL_FUSED_FP8");
-    if (env == nullptr) return false;
-    std::string s(env);
-    for (char& c : s) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
-    if (s == "1" || s == "true" || s == "on" || s == "yes") return true;
-    return false;
-  }();
-  return value;
+  const char* env = std::getenv("ARK_MOE_PREFILL_FUSED_FP8");
+  if (env == nullptr) return false;
+  std::string s(env);
+  for (char& c : s) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+  if (s == "1" || s == "true" || s == "on" || s == "yes") return true;
+  return false;
 }
 
 // ----------------------------------------------------------------------------

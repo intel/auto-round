@@ -141,26 +141,24 @@ template <typename ScalarT, bool IsE4M3, bool UseLut>
 class MoEPrefillFP8NativeKernel;
 
 // ----------------------------------------------------------------------------
-// Env-var opt-in (cached; defaults to OFF).
+// Env-var opt-in (defaults to OFF).
 //
 //   `ARK_MOE_PREFILL_NATIVE_FP8`
 //     - unset / "0" / "false" / "off" / "no"  -> use the (fused|v1) dequant path
 //     - "1" / "true" / "on" / "yes"           -> use this native path
 //
-// Kept independent of `ARK_MOE_PREFILL_FUSED_FP8` so the two opt-in paths
-// can be A/B benchmarked without recompiling. Precedence in the dispatcher
-// is: native -> fused-dequant -> v1 dequant.
+// Re-read on every call (host-side cold path) so benchmarks / tests can
+// toggle the path in-process. Kept independent of `ARK_MOE_PREFILL_FUSED_FP8`
+// so the two opt-in paths can be A/B benchmarked without recompiling.
+// Precedence in the dispatcher is: dpas -> native -> fused-dequant -> v1 dequant.
 // ----------------------------------------------------------------------------
 inline bool moe_prefill_native_fp8_enabled() {
-  static const bool value = []() {
-    const char* env = std::getenv("ARK_MOE_PREFILL_NATIVE_FP8");
-    if (env == nullptr) return false;
-    std::string s(env);
-    for (char& c : s) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
-    if (s == "1" || s == "true" || s == "on" || s == "yes") return true;
-    return false;
-  }();
-  return value;
+  const char* env = std::getenv("ARK_MOE_PREFILL_NATIVE_FP8");
+  if (env == nullptr) return false;
+  std::string s(env);
+  for (char& c : s) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+  if (s == "1" || s == "true" || s == "on" || s == "yes") return true;
+  return false;
 }
 
 // ----------------------------------------------------------------------------

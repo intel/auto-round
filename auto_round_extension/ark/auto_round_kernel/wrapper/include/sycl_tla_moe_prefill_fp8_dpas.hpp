@@ -949,20 +949,19 @@ void moe_prefill_fp8_dpas_per_group_dispatch(
 // Env-flag helper -- `ARK_MOE_PREFILL_DPAS_FP8` (default ON per plan).
 //
 // Truthy values (case-insensitive): "1", "true", "on", "yes".
-// Explicit "0" / "false" / "off" / "no" disable. Cached on first read so a
-// mid-run env toggle won't propagate -- callers should set the env before
-// the first `moe_gemm_prefill` call in the process.
+// Explicit "0" / "false" / "off" / "no" disable. Re-read on every call so
+// benchmarks / tests can toggle the path in-process (was previously cached
+// via a Meyers singleton, which prevented `test_moe_prefill_perf.py` from
+// independently measuring the native / dpas variants after the first
+// FP8 launch had frozen the value).
 // ---------------------------------------------------------------------------
 inline bool moe_prefill_dpas_fp8_enabled() {
-  static const bool cached = []() {
-    const char* env = std::getenv("ARK_MOE_PREFILL_DPAS_FP8");
-    if (env == nullptr) return true;  // default ON
-    std::string s(env);
-    for (auto& c : s) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
-    if (s == "0" || s == "false" || s == "off" || s == "no") return false;
-    return true;
-  }();
-  return cached;
+  const char* env = std::getenv("ARK_MOE_PREFILL_DPAS_FP8");
+  if (env == nullptr) return true;  // default ON
+  std::string s(env);
+  for (auto& c : s) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+  if (s == "0" || s == "false" || s == "off" || s == "no") return false;
+  return true;
 }
 
 // ---------------------------------------------------------------------------
