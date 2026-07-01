@@ -1277,18 +1277,6 @@ def _apply_head_trick(head_name, schemes, sorted_indices, target_bits, target_pa
                 total_scores[head_name] = filtered
 
 
-def _get_not_fixed_embedding_layer_names(embedding_layers_names, fixed_layer_scheme, quant_layer_names):
-    """Return embedding layers still eligible for AutoScheme assignment.
-
-    AutoScheme removes embedding layers from ``quant_layer_names`` before the
-    DP scoring stage, so eligibility must be derived from the original
-    embedding list rather than the post-filtered quant layer list.
-    """
-
-    _ = quant_layer_names  # kept for call-site compatibility and future checks
-    return [name for name in embedding_layers_names if name not in fixed_layer_scheme]
-
-
 def _gen_layer_config(
     auto_scheme: AutoScheme,
     model: Union[str, torch.nn.Module],
@@ -1542,11 +1530,9 @@ def _gen_layer_config(
     target_params_cnt = int(total_params * target_bits)
     sorted_indices = sorted(range(len(options_scores)), key=lambda i: options_scores[i])
     # Layers that are not fixed in fixed_layer_scheme
-    not_fixed_embedding_layers_names = _get_not_fixed_embedding_layer_names(
-        embedding_layers_names=embedding_layers_names,
-        fixed_layer_scheme=fixed_layer_scheme,
-        quant_layer_names=quant_layer_names,
-    )
+    not_fixed_embedding_layers_names = [
+        name for name in embedding_layers_names if (name not in fixed_layer_scheme and name in quant_layer_names)
+    ]
 
     # Determine if model has shared lm_head (tie_word_embeddings)
     has_tied_lm_head = getattr(getattr(model, "config", None), "tie_word_embeddings", False)
