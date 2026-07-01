@@ -429,6 +429,62 @@ class TestMoEGemmPrefillAccuracy:
             assert out.shape == (total_tokens, N), f"{label}: bad shape {out.shape}"
             torch.testing.assert_close(out, ref, msg=lambda m, lbl=label: f"[{lbl}] {m}", **_TOL_FP8)
 
+    def test_accuracy_int8_per_tensor_dpas(self, dtype):
+        """Parity of the Variant A per-tensor INT8 DPAS entry point.
+
+        Sibling of :func:`test_accuracy_fp8_per_tensor_dpas`. Weights are
+        stored as one signed byte per element in ``[E, K, N]`` row-major
+        (vllm-xpu-kernels convention modulo dtype); scales are one FP32
+        scalar per expert. The kernel upcasts int8 -> activation dtype
+        in register before feeding DPAS, so numerics match a plain
+        "dequantize to bf16/fp16 then torch.bmm" reference within FP8-
+        style tolerances.
+
+        Skips silently on builds without the ``moe_gemm_prefill_int_dpas``
+        pybind symbol.
+
+        STATUS: NEEDS-HARDWARE-VALIDATION.
+        """
+        if not hasattr(ark.xpu_lib, "moe_gemm_prefill_int_dpas"):
+            pytest.skip("build lacks moe_gemm_prefill_int_dpas (Variant A) symbol")
+
+        # Sym per-tensor INT8: q = round_to_int8(w / scale), scale = amax(w) / 127.
+        int8_max = 127.0
+
+        for label, E, tpe, N, K in PREFILL_SHAPES:
+            total_tokens = sum(tpe)
+            activations = torch.randn(total_tokens, K, dtype=dtype, device="xpu")
+            # Weights in the vllm layout: [E, K, N] row-major.
+            w_float = (torch.randn(E, K, N, dtype=torch.float32, device="xpu") * 0.1)
+            amax = w_float.reshape(E, -1).abs().amax(dim=1).clamp_min(1e-8)
+            scales = (amax / int8_max).to(torch.float32)  # [E] fp32
+            # Round-half-to-even then clamp; matches the kernel's implicit
+            # round-nearest-then-saturate semantics on the int upcast.
+            packed = (
+                (w_float / scales.reshape(E, 1, 1))
+                .round()
+                .clamp(-128, 127)
+                .to(torch.int8)
+            )
+            # Reference dequant: cast int8 -> fp32 -> apply per-tensor scale ->
+            # cast to act dtype, then transpose to [E, N, K] for the shared
+            # `_reference_moe_prefill` helper.
+            dequant_KN = packed.to(torch.float32) * scales.reshape(E, 1, 1)
+            dequant_NK = dequant_KN.transpose(1, 2).contiguous().to(dtype)
+            ntpe = torch.tensor(tpe, dtype=torch.int32, device="xpu")
+
+            out = ark.moe_gemm_prefill(
+                activations,
+                packed,
+                ntpe,
+                scales=scales,
+                scale_scheme="per_tensor",
+            )
+
+            ref = _reference_moe_prefill(activations, dequant_NK, ntpe)
+            assert out.shape == (total_tokens, N), f"{label}: bad shape {out.shape}"
+            torch.testing.assert_close(out, ref, msg=lambda m, lbl=label: f"[{lbl}] {m}", **_TOL_INT8)
+
     @pytest.mark.parametrize("fp8_dtype", [torch.float8_e4m3fn, torch.float8_e5m2])
     def test_accuracy_fp8_dpas_per_group(self, dtype, fp8_dtype):
         """Parity of the Variant B per-K-group FP8 DPAS branch.

@@ -269,3 +269,41 @@ the richer per-group scheme.
 ```bash
 pytest -v -s test_moe_decode_perf.py::TestMoEGemmDecodePerf::test_perf_fp8_per_tensor
 ```
+
+## INT8 per-expert (per-tensor) perf tests
+
+`test_perf_int8_per_tensor` benchmarks the **INT8** sibling of the FP8
+Variant A DPAS path. Weights are stored as one signed byte per element
+in `[E, K, N]` row-major `torch.int8`; scales are one FP32 scalar per
+expert (`scales.shape == [E]`). The kernel keeps the DPAS atom running
+on `bf16`/`fp16` (identical to the FP8 Variant A path) and upcasts
+`int8` → activation dtype in register before the multiply, so the
+speed-of-light matches the FP8 case at a smaller weight footprint.
+
+```python
+outputs = ark.moe_gemm_prefill(
+    activations,          # [total_tokens, K], f16/bf16
+    weights,              # [E, K, N] row-major torch.int8 (vllm layout)
+    num_tokens_per_expert,# [E] int32
+    scales=scales,        # [E] fp32, one per-tensor scale per expert
+    scale_scheme="per_tensor",
+)
+```
+
+Dispatches to `moe_gemm_prefill_int_dpas` (Variant A INT8) — the
+`per_tensor` scheme now routes by `weights.dtype` (FP8 → existing FP8
+DPAS entry point; `torch.int8` → the new INT8 DPAS entry point).
+Silently skipped on builds without that pybind symbol.
+
+```bash
+pytest -v -s test_moe_prefill_perf.py::TestMoEGemmPrefillPerf::test_perf_int8_per_tensor
+```
+
+Accuracy parity is covered by
+`test_moe_prefill_accuracy.py::test_accuracy_int8_per_tensor_dpas` at
+the same production shapes, with the standard INT8 tolerance
+(`rtol=atol=7e-2`).
+
+**Status: NEEDS-HARDWARE-VALIDATION** (untested port; sym-only for
+Phase 1 — per-group and asym INT4 / INT2 DPAS are follow-up phases
+that will reuse the same mainloop skeleton with an added unpack step).

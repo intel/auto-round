@@ -192,3 +192,40 @@ pytest -v -s test_moe_prefill_perf.py::TestMoEGemmPrefillPerf::test_perf_fp8_per
 ```bash
 pytest -v -s test_moe_decode_perf.py::TestMoEGemmDecodePerf::test_perf_fp8_per_tensor
 ```
+
+## INT8 per-expert (per-tensor) 性能测试
+
+`test_perf_int8_per_tensor` 是 FP8 Variant A DPAS 路径的 **INT8** 对应
+入口:权重以每元素 1 字节的形式存放为 `[E, K, N]` 行主序
+`torch.int8`,scale 为每专家一个 FP32 标量(`scales.shape == [E]`)。
+kernel 内部的 DPAS 指令仍按 `bf16`/`fp16` 运行(与 FP8 Variant A 完全
+一致),在寄存器内先把 `int8` 上采样到激活 dtype 再送入 DPAS,因此峰
+值性能与 FP8 相同、但 weight footprint 更小。
+
+```python
+outputs = ark.moe_gemm_prefill(
+    activations,          # [total_tokens, K],f16/bf16
+    weights,              # [E, K, N] 行主序 torch.int8(vllm 布局)
+    num_tokens_per_expert,# [E] int32
+    scales=scales,        # [E] fp32,每专家一个 per-tensor scale
+    scale_scheme="per_tensor",
+)
+```
+
+该分支会调用 `moe_gemm_prefill_int_dpas`(Variant A INT8) ——
+`per_tensor` 方案现在按 `weights.dtype` 分派(FP8 走原有 FP8 DPAS
+入口;`torch.int8` 走新的 INT8 DPAS 入口)。构建时未链接该 pybind
+符号则测试自动跳过。
+
+```bash
+pytest -v -s test_moe_prefill_perf.py::TestMoEGemmPrefillPerf::test_perf_int8_per_tensor
+```
+
+精度对齐通过
+`test_moe_prefill_accuracy.py::test_accuracy_int8_per_tensor_dpas`
+在同一份生产形状上覆盖,使用标准 INT8 容差
+(`rtol=atol=7e-2`)。
+
+**状态:NEEDS-HARDWARE-VALIDATION**(未在硬件上验证过的移植;Phase 1
+仅支持 sym。per-group / asym 的 INT4 / INT2 DPAS 是后续阶段,将复用
+同一份 mainloop 骨架,只在其中追加 unpack 步骤)。
