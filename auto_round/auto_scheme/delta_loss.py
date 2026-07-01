@@ -601,8 +601,9 @@ def model_forward(model, data, **forward_kwargs):
     return model(**prepared, **forward_kwargs), prepared
 
 
-def model_forward_low_gpu(model, dataloader, major_device="cuda", pbar=None):
+def model_forward_low_gpu(model, dataloader, major_device="cuda", pbar=None, scheme_tag=None):
     block_inputs = {}
+    total_batches = len(dataloader) if hasattr(dataloader, "__len__") else None
 
     block_names = get_block_names(model)[0]
     for name in block_names:
@@ -616,18 +617,24 @@ def model_forward_low_gpu(model, dataloader, major_device="cuda", pbar=None):
         get_current_device_manager().synchronize()
         raise MyCustomError("Interrupt backward pass")
 
-    for data in dataloader:
+    for batch_idx, data in enumerate(dataloader, start=1):
         prepare_model_low_gpu(model, block_inputs, major_device=major_device, pbar=pbar)
 
-        # Enable grad_mode for non-block wrapper layers (e.g., lm_head) so their
-        # scoring hooks fire during the full backward pass before the last-block
-        # hook interrupts it.  The backward flow is:
-        #   loss → lm_head (hooks fire) → norm → last_block (hook raises error)
-        for n, m in model.named_modules():
-            if hasattr(m, "grad_mode"):
-                is_in_block = any(n == bn or n.startswith(bn + ".") for bn in block_names)
-                if not is_in_block:
-                    m.grad_mode = True
+        # lm_head sits outside every decoder block, so it never gets `grad_mode=True`
+        # in the manual block-by-block backward below. Scope the fix narrowly to
+        # just lm_head (rather than every non-block module) to avoid enabling grad
+        # tracking / scoring hooks on unrelated out-of-block layers, which would
+        # add extra autograd-graph memory for no benefit. The backward flow is:
+        #   loss → lm_head (hook fires here) → norm → last_block (hook raises error)
+        head_name = get_lm_head_name(model)
+        if head_name is not None:
+            # Once lm_head has been wrapped for scoring, `get_lm_head_name` resolves
+            # to the inner original Linear (e.g. "lm_head.orig_layer") rather than
+            # the wrapper itself ("lm_head") -- strip the suffix to reach the wrapper.
+            head_name = head_name.removesuffix(".orig_layer")
+            head_module = get_module(model, head_name)
+            if hasattr(head_module, "grad_mode"):
+                head_module.grad_mode = True
 
         # Register backward hook on the last block
         last_block = get_module(model, block_names[-1])
@@ -717,6 +724,15 @@ def model_forward_low_gpu(model, dataloader, major_device="cuda", pbar=None):
 
             pbar.update(1)
 
+        _log_batch_avg_loss(
+            model,
+            batch_idx,
+            pbar=pbar,
+            block_names=block_names,
+            total_batches=total_batches,
+            scheme_tag=scheme_tag,
+        )
+
 
 def _expert_key_from_layer_name(layer_name: str) -> Optional[str]:
     """Map one MoE-related linear layer to a unique expert key.
@@ -744,6 +760,21 @@ def _short_summary_name(layer_name: str) -> str:
     if len(parts) >= 2 and parts[-1].isdigit():
         return ".".join(parts[-2:])
     return layer_name
+
+
+def _scheme_short_name(scheme) -> str:
+    """Concise human-readable label for a quantization scheme, e.g. 'MXFP4' or 'W4A16'."""
+    if isinstance(scheme, str):
+        return scheme
+    if isinstance(scheme, QuantizationScheme):
+        scheme = asdict(scheme)
+    if isinstance(scheme, dict):
+        bits = scheme.get("bits", 16)
+        act_bits = scheme.get("act_bits", 16)
+        if act_bits >= 16:
+            return f"W{bits}"
+        return f"W{bits}A{act_bits}"
+    return str(scheme)
 
 
 def _fill_inactive_expert_scores(scores_dict: dict[str, list[float]], block_names: list[str]):
@@ -809,12 +840,16 @@ def _log_score_summary_by_block_and_nonblock(
     scores_dict: dict[str, list[float]],
     block_names: list[str],
     model=None,
+    scheme_tag: Optional[str] = None,
+    summary_stage: Optional[str] = None,
 ):
     if not scores_dict:
         logger.info("AutoScheme score summary: empty.")
         return
 
     head_name = get_lm_head_name(model) if model is not None else None
+    if head_name is not None and head_name.endswith(".orig_layer"):
+        head_name = head_name[: -len(".orig_layer")]
     if head_name is None and "lm_head" in scores_dict:
         head_name = "lm_head"
 
@@ -865,11 +900,13 @@ def _log_score_summary_by_block_and_nonblock(
                 block_stats[block_name][1] += 1
 
     has_moe_block = any(block_expert_seen.get(block_name) for block_name in block_names)
-    logger.debug("AutoScheme block loss summary:")
+    tag = f"[{scheme_tag}] " if scheme_tag else ""
+    stage_str = f" ({summary_stage})" if summary_stage else ""
+    logger.debug("AutoScheme %sblock loss summary%s:", tag, stage_str)
     if has_moe_block:
         logger.debug("AutoScheme | block | avg_loss | non_exp_avg | exp_avg | inactive_exp | shared_loss |")
     else:
-        logger.debug("AutoScheme | block | avg_loss | inactive_exp |")
+        logger.debug("AutoScheme | block | avg_loss |")
 
     for block_name in block_names:
         total_loss, cnt = block_stats.get(block_name, [0.0, 0.0])
@@ -914,11 +951,9 @@ def _log_score_summary_by_block_and_nonblock(
             )
         else:
             logger.debug(
-                "AutoScheme | %s | %.6f | %d/%d |",
+                "AutoScheme | %s | %.6f |",
                 _short_summary_name(block_name),
                 avg_loss,
-                expert_inactive,
-                expert_total,
             )
 
     if head_name is not None:
@@ -929,7 +964,7 @@ def _log_score_summary_by_block_and_nonblock(
         if has_moe_block:
             logger.debug("AutoScheme | %s | %s | N/A | N/A | 0/0 | N/A |", head_name, head_avg)
         else:
-            logger.debug("AutoScheme | %s | %s | 0/0 |", head_name, head_avg)
+            logger.debug("AutoScheme | %s | %s |", head_name, head_avg)
 
     if has_moe_block:
         logger.debug(
@@ -943,6 +978,63 @@ def _log_score_summary_by_block_and_nonblock(
             logger.info("AutoScheme non_block=%s loss=%.6f", layer_name, layer_loss)
     else:
         logger.info("AutoScheme non_block loss: none")
+
+
+def _collect_current_scores(model):
+    scores_dict = {}
+    for name, module in model.named_modules():
+        if not hasattr(module, "mix_score"):
+            continue
+        loss = float(module.mix_score)
+        if not math.isfinite(loss):
+            continue
+        # _log_score_summary_by_block_and_nonblock only consumes loss column.
+        scores_dict[name] = [0.0, loss]
+    return scores_dict
+
+
+def _log_batch_avg_loss(model, batch_idx: int, pbar=None, block_names=None, total_batches=None, scheme_tag=None):
+    total_loss = 0.0
+    layer_cnt = 0
+    for _, module in model.named_modules():
+        if not hasattr(module, "mix_score"):
+            continue
+        loss = float(module.mix_score)
+        if not math.isfinite(loss):
+            continue
+        total_loss += loss
+        layer_cnt += 1
+
+    avg_loss = 0.0 if layer_cnt == 0 else total_loss / layer_cnt
+    tag = f"[{scheme_tag}] " if scheme_tag else ""
+    batch_str = f"{batch_idx}/{total_batches}" if total_batches is not None else str(batch_idx)
+    msg = f"AutoScheme {tag}cumulative batch {batch_str}  avg_loss={avg_loss:.6f} layers={layer_cnt}"
+    # tqdm redraw can hide normal logger lines; print via pbar for per-batch visibility.
+    if pbar is not None:
+        pbar.write(msg)
+    logger.debug(msg)
+
+    if block_names:
+        scores_dict = _collect_current_scores(model)
+        if scores_dict:
+            is_last_batch = total_batches is not None and batch_idx == total_batches
+            tag = f"[{scheme_tag}] " if scheme_tag else ""
+            batch_str = f"{batch_idx}/{total_batches}" if total_batches is not None else str(batch_idx)
+            if is_last_batch:
+                logger.debug(
+                    "AutoScheme %scumulative batch %s block summary skipped (same as final)",
+                    tag,
+                    batch_str,
+                )
+            else:
+                logger.debug("AutoScheme %scumulative batch %s block summary:", tag, batch_str)
+                _log_score_summary_by_block_and_nonblock(
+                    scores_dict,
+                    block_names,
+                    model=model,
+                    scheme_tag=scheme_tag,
+                    summary_stage="cumulative",
+                )
 
 
 def get_score_for_scheme(
@@ -966,6 +1058,7 @@ def get_score_for_scheme(
     is_vlm: bool = False,
     force_mllm: bool = False,
     model_name: Optional[str] = None,
+    scheme_tag: Optional[str] = None,
 ):
     scores_dict = {}  # Key=name,Val=[quant_total_bits, loss]
     block_names = get_block_names(model)[0]
@@ -1030,8 +1123,6 @@ def get_score_for_scheme(
                 enable_torch_compile=enable_torch_compile,
             )
             set_module(model, name, new_m)
-    if offload_context is not None:
-        offload_context.flush_loaded(model)
 
     # ---- Memory: only wrapper.orig_layer.weight needs ``requires_grad`` ---- #
     # AutoScheme scoring uses ``iters=0`` (RTN), so we never UPDATE any
@@ -1175,11 +1266,11 @@ def get_score_for_scheme(
                     "AutoScheme(force_mllm): cannot build mllm dataloader. "
                     "Provide a `processor` and a multimodal `dataset`."
                 )
-            model_forward_low_gpu(model, mllm_loader, major_device=major_device, pbar=pbar)
+            model_forward_low_gpu(model, mllm_loader, major_device=major_device, pbar=pbar, scheme_tag=scheme_tag)
         else:
             try:
                 dataloader = _build_calib_dataloader()
-                model_forward_low_gpu(model, dataloader, major_device=major_device, pbar=pbar)
+                model_forward_low_gpu(model, dataloader, major_device=major_device, pbar=pbar, scheme_tag=scheme_tag)
             except Exception as exc:  # noqa: BLE001
                 if not is_vlm:
                     raise
@@ -1191,7 +1282,7 @@ def get_score_for_scheme(
                 batch_size = 1
                 if mllm_loader is None:
                     raise
-                model_forward_low_gpu(model, mllm_loader, major_device=major_device, pbar=pbar)
+                model_forward_low_gpu(model, mllm_loader, major_device=major_device, pbar=pbar, scheme_tag=scheme_tag)
     else:
         for n, m in model.named_modules():
             if hasattr(m, "grad_mode"):
@@ -1200,6 +1291,7 @@ def get_score_for_scheme(
             #     m.post_init_qdqw()
 
         def _run_forward_loop(loader):
+            total_batches = len(loader) if hasattr(loader, "__len__") else None
             _checked_pixel = False
             _pixel_keys = (
                 "pixel_values",
@@ -1209,7 +1301,7 @@ def get_score_for_scheme(
                 "images",
                 "image",
             )
-            for data in loader:
+            for batch_idx, data in enumerate(loader, start=1):
                 # Pull labels out of the batch (VLM datasets often carry them;
                 # LLM ones don't) before mllm_model_forward casts dtypes.
                 _src = data if isinstance(data, dict) else None
@@ -1248,6 +1340,14 @@ def get_score_for_scheme(
                     m.grad = None
                 if pbar is not None:
                     pbar.update(1)
+                _log_batch_avg_loss(
+                    model,
+                    batch_idx,
+                    pbar=pbar,
+                    block_names=block_names,
+                    total_batches=total_batches,
+                    scheme_tag=scheme_tag,
+                )
 
         if force_mllm:
             mllm_loader = _build_mllm_calib_dataloader()
@@ -1284,7 +1384,13 @@ def get_score_for_scheme(
                     )
             layer_bits, _ = compute_layer_bits(m.orig_layer, ignore_scale_zp_bits=ignore_scale_zp_bits)
             scores_dict[n] = [layer_bits, m.mix_score]
-    _log_score_summary_by_block_and_nonblock(scores_dict, block_names, model=model)
+    _log_score_summary_by_block_and_nonblock(
+        scores_dict,
+        block_names,
+        model=model,
+        scheme_tag=scheme_tag,
+        summary_stage="final",
+    )
     _fill_inactive_expert_scores(scores_dict, block_names)
 
     for n, m in model.named_modules():
@@ -1631,7 +1737,7 @@ def _gen_layer_config(
                 "The model appears to be an MoE  model. "
                 "Using more samples to help generate a better auto-scheme recipe."
             )
-            nsamples = 1
+            nsamples = 16
         else:
             nsamples = 16
     seqlen = auto_scheme.seqlen if auto_scheme.seqlen is not None else 256
@@ -1640,7 +1746,7 @@ def _gen_layer_config(
         batch_size = auto_scheme.batch_size
     else:
         if auto_scheme.low_gpu_mem_usage:
-            batch_size = 1
+            batch_size = 8
         else:
             batch_size = 1
 
@@ -1726,6 +1832,7 @@ def _gen_layer_config(
 
     pbar = tqdm(total=pbar_cnt, desc="Generating AutoScheme")
     for index, scheme in enumerate(schemes):
+        scheme_tag = f"{index + 1}/{len(schemes)} {_scheme_short_name(scheme)}"
         logger.info(f"AutoScheme transition: switch to scheme {index + 1}/{len(schemes)} ({scheme})")
         apply_quant_scheme(
             model, quant_layer_names=quant_layer_names, fixed_layer_scheme=fixed_layer_scheme, scheme=scheme
@@ -1759,6 +1866,7 @@ def _gen_layer_config(
                 is_vlm=is_vlm,
                 force_mllm=force_mllm,
                 model_name=model_name,
+                scheme_tag=scheme_tag,
             )
         # Track peak RAM after each scheme scoring
         memory_monitor.update()
