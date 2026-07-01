@@ -115,6 +115,30 @@ void moe_gemm_prefill_fp8_dpas(sycl::queue* q, void* activations, void* weights,
                                BTLA_DTYPE act_dtype, BTLA_DTYPE weight_dtype, int N, int K,
                                int* num_tokens_per_expert, int num_experts, int total_tokens);
 
+/**
+ * @brief MoE prefill Grouped GEMM -- INT8 per-tensor mixed-input DPAS
+ * (Variant A, sibling of `moe_gemm_prefill_fp8_dpas`).
+ *
+ * Weights `[num_experts, K, N]` row-major (vllm convention, one signed byte
+ * per element). Scales are `[num_experts]` FP32 (one per-tensor scale per
+ * expert). Activations / outputs are FP16 or BF16; `weight_dtype` must be
+ * `BTLA_DTYPE::S8`.
+ *
+ * Storage-only INT8: the DPAS atom still runs `act_dtype x act_dtype ->
+ * fp32`; the mainloop upcasts each INT8 weight byte to `act_dtype` in
+ * register before feeding DPAS. The per-tensor scale is folded once per
+ * output element in the epilogue.
+ *
+ * STATUS: NEEDS-HARDWARE-VALIDATION. See
+ * `sycl_tla_moe_prefill_int_dpas.hpp` for the port's provenance & the
+ * on-hardware TODOs.
+ *
+ * Implementation is header-only in `sycl_tla_moe_prefill_int_dpas.hpp`.
+ */
+void moe_gemm_prefill_int_dpas(sycl::queue* q, void* activations, void* weights, void* scales, void* outputs,
+                               BTLA_DTYPE act_dtype, BTLA_DTYPE weight_dtype, int N, int K,
+                               int* num_tokens_per_expert, int num_experts, int total_tokens);
+
 // ========================================================================
 // Public API
 // ========================================================================

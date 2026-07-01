@@ -43,6 +43,7 @@
 #include "sycl_tla_moe.hpp"
 #include "sycl_tla_moe_dequant.hpp"
 #include "sycl_tla_moe_prefill_fp8_dpas.hpp"
+#include "sycl_tla_moe_prefill_int_dpas.hpp"
 #include "sycl_tla_moe_prefill_fp8_native.hpp"
 #include "sycl_tla_moe_prefill_fused.hpp"
 
@@ -698,6 +699,44 @@ inline void moe_gemm_prefill_fp8_dpas(sycl::queue* q, void* activations, void* w
     }
   } else {
     throw std::invalid_argument("moe_gemm_prefill_fp8_dpas: act_dtype must be F16 or BF16");
+  }
+}
+
+// ----------------------------------------------------------------------------
+// MoE prefill Grouped GEMM -- INT8 per-tensor DPAS (Variant A).
+//
+// Separate entry point (not multiplexed through `moe_gemm_prefill` because
+// the scale layout differs -- `[E]` FP32 per-tensor vs. the
+// `[E, N, K/group_size]` act-dtype per-K-group layout `moe_gemm_prefill`
+// takes for its INT8 branch). Weights are `[E, K, N]` row-major (vllm
+// convention, one signed byte per element), scales are `[E]` FP32.
+//
+// STATUS: NEEDS-HARDWARE-VALIDATION. See
+// `sycl_tla_moe_prefill_int_dpas.hpp` for the port's provenance & the
+// on-hardware TODOs.
+// ----------------------------------------------------------------------------
+inline void moe_gemm_prefill_int_dpas(sycl::queue* q, void* activations, void* weights, void* scales, void* outputs,
+                                      BTLA_DTYPE act_dtype, BTLA_DTYPE weight_dtype, int N, int K,
+                                      int* num_tokens_per_expert, int num_experts, int total_tokens) {
+  if (total_tokens == 0) return;
+  if (weight_dtype != BTLA_DTYPE::S8) {
+    throw std::invalid_argument(
+        "moe_gemm_prefill_int_dpas: weight_dtype must be S8");
+  }
+  if (act_dtype == BTLA_DTYPE::F16) {
+    using ScalarT = sycl::half;
+    moe_dpas_int::moe_prefill_int_dpas_per_tensor_dispatch<ScalarT>(
+        q, static_cast<const ScalarT*>(activations), static_cast<const int8_t*>(weights),
+        static_cast<const float*>(scales), static_cast<ScalarT*>(outputs), num_tokens_per_expert, num_experts, N,
+        K, total_tokens);
+  } else if (act_dtype == BTLA_DTYPE::BF16) {
+    using ScalarT = sycl::ext::oneapi::bfloat16;
+    moe_dpas_int::moe_prefill_int_dpas_per_tensor_dispatch<ScalarT>(
+        q, static_cast<const ScalarT*>(activations), static_cast<const int8_t*>(weights),
+        static_cast<const float*>(scales), static_cast<ScalarT*>(outputs), num_tokens_per_expert, num_experts, N,
+        K, total_tokens);
+  } else {
+    throw std::invalid_argument("moe_gemm_prefill_int_dpas: act_dtype must be F16 or BF16");
   }
 }
 
