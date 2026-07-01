@@ -129,7 +129,6 @@ function run_unit_test_vlm() {
 
     uv pip install torch==2.12.1 torchvision --index-url https://download.pytorch.org/whl/cu132
     uv pip install git+https://github.com/haotian-liu/LLaVA.git@v1.2.2 --no-deps
-    uv pip install -v git+https://github.com/casper-hansen/AutoAWQ.git@v0.2.0 --no-build-isolation
     uv pip install flash-attn==2.8.3 --no-build-isolation
     uv pip install -r test_cuda/requirements_vlm.txt \
         --extra-index-url https://download.pytorch.org/whl/cu132 \
@@ -191,7 +190,7 @@ function run_unit_test_sglang() {
 
     cd ${REPO_PATH}/test
     rm -rf .coverage* *.xml *.html
-    uv pip install -r test/test_cuda/requirements_sglang.txt \
+    uv pip install -r test_cuda/requirements_sglang.txt \
         --prerelease=allow \
         --extra-index-url https://download.pytorch.org/whl/cu130 \
         --index-strategy unsafe-best-match
