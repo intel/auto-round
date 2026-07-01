@@ -250,6 +250,58 @@ def matmul_sycl_tla(A: torch.Tensor, B: torch.Tensor, bias: Optional[torch.Tenso
     return C
 
 
+# A: mxk,  B: nxk, bias: n or [1, n]
+def matmul_sycl_tla_fused_bias(A: torch.Tensor, B: torch.Tensor, bias: Optional[torch.Tensor] = None):
+    if A.device.type != "xpu" or B.device.type != "xpu":
+        raise NotImplementedError("matmul_sycl_tla_fused_bias is only supported on XPU")
+    if A.ndim != 2 or B.ndim != 2:
+        raise ValueError("A and B must be 2D tensors")
+    if A.device != B.device:
+        raise ValueError("A and B must be on the same device")
+    if A.dtype not in (torch.float16, torch.bfloat16):
+        raise ValueError("matmul_sycl_tla_fused_bias only supports torch.float16 and torch.bfloat16")
+    if B.dtype != A.dtype:
+        raise ValueError("A and B must have the same dtype")
+
+    m, k = A.shape
+    n, kb = B.shape
+    if k != kb:
+        raise ValueError(f"Shape mismatch: A.shape={tuple(A.shape)}, B.shape={tuple(B.shape)}")
+
+    lib = get_lib(A)
+    if lib is None or not hasattr(lib, "matmul_sycl_tla_fused_bias"):
+        raise NotImplementedError("Current XPU build does not expose matmul_sycl_tla_fused_bias")
+
+    A_arg = A.contiguous()
+    B_arg = B.contiguous()
+    C = torch.empty(m, n, dtype=A.dtype, device=A.device)
+
+    bias_ptr = 0
+    bias_arg = None
+    if bias is not None and bias.numel() > 0:
+        bias_arg = bias.to(dtype=C.dtype, device=A.device).contiguous().view(-1)
+        if bias_arg.numel() != n:
+            raise ValueError(f"bias must have {n} elements, got {bias_arg.numel()}")
+        bias_ptr = bias_arg.data_ptr()
+
+    stream = get_stream(A_arg)
+    lib.matmul_sycl_tla_fused_bias(
+        stream,
+        m,
+        n,
+        k,
+        A_arg.data_ptr(),
+        cvt_dtype(A_arg.dtype),
+        B_arg.data_ptr(),
+        cvt_dtype(B_arg.dtype),
+        C.data_ptr(),
+        cvt_dtype(C.dtype),
+        bias_ptr,
+        True,
+    )
+    return C
+
+
 # A: mxk,  B: nxk, bias: n
 def matmul(A: torch.Tensor, B: torch.Tensor, bias: torch.Tensor):
     m = A.shape[0]
