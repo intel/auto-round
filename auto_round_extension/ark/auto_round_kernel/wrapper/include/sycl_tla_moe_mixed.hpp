@@ -44,6 +44,7 @@
 #include "sycl_tla_moe_dequant.hpp"
 #include "sycl_tla_moe_prefill_fp8_dpas.hpp"
 #include "sycl_tla_moe_prefill_int_dpas.hpp"
+#include "sycl_tla_moe_prefill_s4_dpas.hpp"
 #include "sycl_tla_moe_prefill_fp8_native.hpp"
 #include "sycl_tla_moe_prefill_fused.hpp"
 
@@ -655,6 +656,43 @@ inline void moe_gemm_prefill(sycl::queue* q, void* activations, void* weights, v
     // Unsupported act_dtype falls through to the dequant branch below.
   }
 
+  // S4-sym single-pass DPAS grouped GEMM (Variant B: per-K-group scale,
+  // in-register nibble->act upcast, XMX MMA). This is the newer path that
+  // reads packed `[E, N, K/2]` uint8_t nibbles directly and folds the
+  // upcast into the DPAS mainloop via CuTe's `reorder(tBrB, tCrB)`, so
+  // the B-side global traffic is halved vs. the S4->S8 upcast branch
+  // below. Opt-in default via `ARK_MOE_PREFILL_DPAS_S4` (default ON);
+  // silent fallback to the S4->S8 upcast branch (which is itself gated
+  // by `ARK_MOE_PREFILL_DPAS_INT8`) or to the generic dequant path if
+  // the shape gate rejects the tile geometry.
+  //
+  // STATUS: NEEDS-HARDWARE-VALIDATION. See
+  // `sycl_tla_moe_prefill_s4_dpas.hpp` for the port's provenance & the
+  // on-hardware TODOs (chief among them: `NumericArrayConverter
+  // <ElementA, cutlass::int4b_t, N>` availability in the pinned
+  // cutlass-sycl).
+  if (weight_dtype == BTLA_DTYPE::S4_CLIP && !asym &&
+      moe_dpas_s4::moe_prefill_dpas_s4_enabled() &&
+      moe_dpas_s4::moe_prefill_dpas_s4_pergroup_shape_ok(N, K, group_size) &&
+      (act_dtype == BTLA_DTYPE::F16 || act_dtype == BTLA_DTYPE::BF16)) {
+    if (act_dtype == BTLA_DTYPE::F16) {
+      using ScalarT = sycl::half;
+      moe_dpas_s4::moe_prefill_s4_dpas_per_group_dispatch<ScalarT>(
+          q, static_cast<const ScalarT*>(activations),
+          static_cast<const uint8_t*>(weights),
+          static_cast<const ScalarT*>(scales), static_cast<ScalarT*>(outputs),
+          num_tokens_per_expert, num_experts, N, K, group_size, total_tokens);
+    } else {
+      using ScalarT = sycl::ext::oneapi::bfloat16;
+      moe_dpas_s4::moe_prefill_s4_dpas_per_group_dispatch<ScalarT>(
+          q, static_cast<const ScalarT*>(activations),
+          static_cast<const uint8_t*>(weights),
+          static_cast<const ScalarT*>(scales), static_cast<ScalarT*>(outputs),
+          num_tokens_per_expert, num_experts, N, K, group_size, total_tokens);
+    }
+    return;
+  }
+
   // INT4-sym / INT2-sym via INT8 DPAS. Rather than dequantise packed
   // nibbles/crumbs into a bf16/fp16 `[E, K, N]` workspace and then run a
   // bf16 x bf16 GEMM, we upcast the low-bit-width weights to `int8_t` in
@@ -666,6 +704,13 @@ inline void moe_gemm_prefill(sycl::queue* q, void* activations, void* weights, v
   // unmodified. Silent fallback to the generic dequant path if the shape
   // predicate rejects the tile geometry, if `asym=true`, or if the caller
   // opted out via `ARK_MOE_PREFILL_DPAS_INT8=0`.
+  //
+  // For S4-sym specifically this branch is the *fallback* for the
+  // single-pass S4 DPAS path above -- callers who disable
+  // `ARK_MOE_PREFILL_DPAS_S4` land here instead of on the generic
+  // dequant path, so the two-pass INT4->INT8 pipeline stays available
+  // as a runtime kill-switch until the single-pass mainloop is
+  // hardware-validated.
   //
   // The dequant workspace pointer we reinterpret as `int8_t*` is the same
   // caller-owned buffer used by the bf16/fp16 dequant fallback: since it
