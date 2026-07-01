@@ -169,6 +169,33 @@ dequant/native 路径,`test_accuracy_fp8_dpas_per_group` /
 生产形状下测试;所有路径共享容差 `rtol=atol=7e-2` (E4M3) / `1e-1`
 (E5M2)。
 
+## INT8 Prefill 路径(可选 env 开关)
+
+INT8 sym prefill 基准(`test_perf_int8`,`asym=False`)也带一列混合输入
+**DPAS INT8**(`dpas(ms)` / `dpas TFLOPS`),对应 FP8 per-K-group Variant B
+路径。`ark(ms)` 列强制 `ARK_MOE_PREFILL_DPAS_INT8=0`,测量传统的
+dequant + GEMM 路径;`dpas(ms)` 列重新启用该开关,在同一批形状上测量新的
+混合输入路径。
+
+| 优先级       | Env 开关                                                     | Kernel                                                                                                                                                                                                                              |
+| ------------ | ------------------------------------------------------------ | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| 1 (最高)     | `ARK_MOE_PREFILL_DPAS_INT8` 未设置或为真值(**默认开启**)   | **混合输入 DPAS INT8 grouped GEMM (Variant B)**。INT8 字节通过 CuTe `reorder` 在寄存器中上转到 `act_dtype`,然后通过组边界延迟折叠应用 per-K-group scale(与 FP8 per-group 路径完全一致)。scale 使用与 auto-round INT8 校准输出相同的 `[E, N, K/group_size]` 布局 —— 无需重新量化。实现于 `sycl_tla_moe_prefill_int_dpas.hpp`。仅支持 sym。**状态:NEEDS-HARDWARE-VALIDATION**(未经测试的移植)。 |
+| 2 (默认回退) | `ARK_MOE_PREFILL_DPAS_INT8=0`(或 asym)                     | v1 dequant kernel(`sycl_tla_moe_mixed.hpp::launch_dequant_int8`)后接标准 bf16/fp16 grouped GEMM。同时支持 sym 与 asym。                                                                                                              |
+
+**DPAS 路径形状前置条件** — 任何条件不满足时,`moe_gemm_prefill`
+分发器会静默回退到优先级 2(与 FP8 per-group 谓词一致):
+
+- `N % 64 == 0` (BN)
+- `K % 32 == 0` (BK)
+- `K % group_size == 0`
+- `group_size ∈ {32, 64, 128, 256}`
+- `asym == False`(INT8 DPAS 仅支持 sym;asym 继续走 dequant 回退)
+
+精度对齐由
+`test_moe_prefill_accuracy.py::test_accuracy_int8_dpas_per_group`
+在与 `test_accuracy_int8` 相同的生产形状下覆盖,使用标准 INT8 容差
+(`rtol=atol=7e-2`)。
+
 ## FP8 per-expert (per-tensor) 性能测试
 
 `test_perf_fp8_per_tensor` 提供 Variant A DPAS 路径的性能表格,对应

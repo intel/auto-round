@@ -240,6 +240,35 @@ covers the dequant/native paths and
 cover the DPAS Variants B / A at the same production shapes; all paths
 share the tolerance `rtol=atol=7e-2` (E4M3) / `1e-1` (E5M2).
 
+## INT8 Prefill Paths (opt-in env flag)
+
+The INT8 sym prefill benchmark (`test_perf_int8` with `asym=False`) also
+carries a mixed-input **DPAS INT8** column (`dpas(ms)` / `dpas TFLOPS`),
+mirroring the FP8 per-K-group Variant B path. The `ark(ms)` column
+forces `ARK_MOE_PREFILL_DPAS_INT8=0` and measures the legacy dequant +
+GEMM path; the `dpas(ms)` column re-enables the flag and measures the
+new mixed-input path on the same shapes.
+
+| Precedence | Env flag                                                | Kernel                                                                                                                                                                                                                                                                                                                                                                                                    |
+| ---------- | ------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| 1 (highest)| `ARK_MOE_PREFILL_DPAS_INT8` unset or truthy (**default ON**) | **Mixed-input DPAS INT8 grouped GEMM (Variant B).** INT8 bytes are upcast to `act_dtype` in registers via CuTe `reorder`, then the per-K-group scale is applied through the deferred group-boundary fold (identical to the FP8 per-group path). Same `[E, N, K/group_size]` scale layout as auto-round's INT8 calibration output — no re-quantisation needed. Implemented in `sycl_tla_moe_prefill_int_dpas.hpp`. Sym only. **Status: NEEDS-HARDWARE-VALIDATION** (untested port). |
+| 2 (default)| `ARK_MOE_PREFILL_DPAS_INT8=0` (or asym)                 | v1 dequant kernel (`sycl_tla_moe_mixed.hpp::launch_dequant_int8`) followed by the stock bf16/fp16 grouped GEMM. Handles both sym and asym.                                                                                                                                                                                                                                                                       |
+
+**DPAS path shape preconditions** — the `moe_gemm_prefill` dispatcher
+silently falls back to precedence 2 whenever any of these fail
+(identical to the FP8 per-group predicate):
+
+- `N % 64 == 0` (BN)
+- `K % 32 == 0` (BK)
+- `K % group_size == 0`
+- `group_size ∈ {32, 64, 128, 256}`
+- `asym == False` (INT8 DPAS is sym only; asym continues via the dequant fallback)
+
+Accuracy parity is covered by
+`test_moe_prefill_accuracy.py::test_accuracy_int8_dpas_per_group` at the
+same production shapes as `test_accuracy_int8`, with the standard INT8
+tolerance (`rtol=atol=7e-2`).
+
 ## FP8 per-expert (per-tensor) perf tests
 
 `test_perf_fp8_per_tensor` benchmarks the Variant A DPAS path against

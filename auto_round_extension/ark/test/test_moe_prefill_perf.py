@@ -632,23 +632,65 @@ class TestMoEGemmPrefillPerf:
             else:
                 deq_ms = _xpu_time_ms(lambda: _dequant_int8_sym(packed, scales, group_size).to(dtype))
             base_ms = _xpu_time_ms(lambda: _default_moe_prefill(act_padded, dequant))
-            ark_ms = _xpu_time_ms(
-                lambda: ark.moe_gemm_prefill(
-                    activations,
-                    packed,
-                    ntpe,
-                    scales=scales,
-                    zeros=zeros,
-                    weight_bits=8,
-                    group_size=group_size,
-                    asym=asym,
+
+            # Default ARK path (dequant + GEMM). Force
+            # `ARK_MOE_PREFILL_DPAS_INT8=0` for this measurement so the
+            # `ark(ms)` column measures the legacy dequant path
+            # independently of the `dpas(ms)` column below.
+            prev_dpas = os.environ.get("ARK_MOE_PREFILL_DPAS_INT8")
+            os.environ["ARK_MOE_PREFILL_DPAS_INT8"] = "0"
+            try:
+                ark_ms = _xpu_time_ms(
+                    lambda: ark.moe_gemm_prefill(
+                        activations,
+                        packed,
+                        ntpe,
+                        scales=scales,
+                        zeros=zeros,
+                        weight_bits=8,
+                        group_size=group_size,
+                        asym=asym,
+                    )
                 )
-            )
+            finally:
+                pass  # keep DPAS off for the following measurements
 
             flops = _compute_moe_flops(total_tokens, K, N, E)
             tflops = flops / (ark_ms * 1e-3) / 1e12
 
-            _print_row(label, E, N, K, total_tokens, base_ms, deq_ms, ark_ms, tflops)
+            # Variant B DPAS INT8 (default-on branch). Silently skipped for
+            # asym since the DPAS kernel is sym-only; the dispatcher would
+            # silently fall through to the dequant path so the column
+            # would just repeat `ark(ms)`. Print `--` in that case.
+            dpas_ms = None
+            dpas_tflops = None
+            if not asym:
+                os.environ["ARK_MOE_PREFILL_DPAS_INT8"] = "1"
+                try:
+                    dpas_ms = _xpu_time_ms(
+                        lambda: ark.moe_gemm_prefill(
+                            activations,
+                            packed,
+                            ntpe,
+                            scales=scales,
+                            zeros=zeros,
+                            weight_bits=8,
+                            group_size=group_size,
+                            asym=asym,
+                        )
+                    )
+                finally:
+                    pass
+                dpas_tflops = flops / (dpas_ms * 1e-3) / 1e12
+
+            # Restore prior env state.
+            if prev_dpas is None:
+                os.environ.pop("ARK_MOE_PREFILL_DPAS_INT8", None)
+            else:
+                os.environ["ARK_MOE_PREFILL_DPAS_INT8"] = prev_dpas
+
+            _print_row(label, E, N, K, total_tokens, base_ms, deq_ms, ark_ms, tflops,
+                       dpas_ms=dpas_ms, dpas_tflops=dpas_tflops)
 
             activations = ntpe = act_padded = w_float = scales = zeros = packed = dequant = None
             _release_xpu_memory()
