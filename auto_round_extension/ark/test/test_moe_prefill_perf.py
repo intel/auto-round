@@ -817,6 +817,82 @@ class TestMoEGemmPrefillPerf:
             activations = ntpe = act_padded = w_float = scales = packed = dequant = None
             _release_xpu_memory()
 
+    @pytest.mark.skipif(bool(_QUANT_PREFILL_SKIP), reason=_QUANT_PREFILL_SKIP or "ok")
+    @pytest.mark.parametrize("dtype", [torch.float16, torch.bfloat16])
+    @pytest.mark.parametrize("fp8_dtype", [torch.float8_e4m3fn, torch.float8_e5m2])
+    def test_perf_fp8_per_tensor(self, dtype, fp8_dtype):
+        """Perf: FP8 per-expert (per-tensor) scale -- Variant A DPAS prefill path.
+
+        One FP32 scale per expert (``scales.shape == [E]``), weights laid
+        out ``[E, K, N]`` row-major FP8 (vllm-xpu-kernels convention -- the
+        transpose of the per-group ``[E, N, K]`` layout). Dispatches via
+        ``moe_gemm_prefill(..., scale_scheme="per_tensor")`` which routes
+        to ``moe_gemm_prefill_fp8_dpas`` (Variant A). Skipped silently if
+        the build was not linked against that pybind symbol.
+
+        The baseline (``base+deq``) pre-dequantizes weights back to
+        ``[E, N, K]`` in the activation dtype for a fair single-``torch.bmm``
+        comparison; the ``deq_ms`` column reports the cost of that
+        per-tensor dequant so ``(base+deq) / ark`` reflects the end-to-end
+        cost of a stock pipeline that keeps weights quantized.
+
+        The ``native(ms)`` and ``dpas(ms)`` columns are ``--`` here because
+        the Variant A DPAS entry point IS the ARK column for this scheme
+        (there is no separate scalar-native / per-group fallback with
+        ``[E]`` scales).
+        """
+        if not hasattr(ark.xpu_lib, "moe_gemm_prefill_fp8_dpas"):
+            pytest.skip("build lacks moe_gemm_prefill_fp8_dpas (Variant A) symbol")
+
+        fp8_finfo_max = torch.finfo(fp8_dtype).max
+        _print_header(
+            f"FP8 per-expert scale {str(fp8_dtype).split('.')[-1]} "
+            f"(scales=[E] fp32, act={str(dtype).split('.')[-1]}) -- "
+            f"ark.moe_gemm_prefill(scale_scheme='per_tensor') vs single torch.bmm "
+            f"(weights pre-dequantized)",
+        )
+        for label, E, tpe, N, K in PREFILL_SHAPES:
+            total_tokens = sum(tpe)
+            activations = torch.randn(total_tokens, K, dtype=dtype, device="xpu")
+            ntpe = torch.tensor(tpe, dtype=torch.int32, device="xpu")
+            act_padded = _build_bmm_pad_layout(activations, ntpe, E)
+            # Weights in the vllm layout: [E, K, N] row-major.
+            w_float = (torch.randn(E, K, N, dtype=torch.float32, device="xpu") * 0.1)
+            # One scalar scale per expert -- max-abs of the tile, matches
+            # the semantics of test_accuracy_fp8_per_tensor_dpas.
+            amax = w_float.reshape(E, -1).abs().amax(dim=1).clamp_min(1e-8)
+            scales = (amax / fp8_finfo_max).to(torch.float32)  # [E] fp32
+            packed = (w_float / scales.reshape(E, 1, 1)).to(fp8_dtype)
+
+            # Baseline dequant: cast fp8 -> fp32 -> apply per-tensor scale ->
+            # cast to act dtype, then transpose to [E, N, K] which is what
+            # `_default_moe_prefill` (single torch.bmm) consumes.
+            def _do_dequant():
+                dequant_KN = packed.to(torch.float32) * scales.reshape(E, 1, 1)
+                return dequant_KN.transpose(1, 2).contiguous().to(dtype)
+
+            dequant_NK = _do_dequant()
+            deq_ms = _xpu_time_ms(_do_dequant)
+            base_ms = _xpu_time_ms(lambda: _default_moe_prefill(act_padded, dequant_NK))
+
+            ark_ms = _xpu_time_ms(
+                lambda: ark.moe_gemm_prefill(
+                    activations,
+                    packed,
+                    ntpe,
+                    scales=scales,
+                    scale_scheme="per_tensor",
+                )
+            )
+
+            flops = _compute_moe_flops(total_tokens, K, N, E)
+            tflops = flops / (ark_ms * 1e-3) / 1e12
+
+            _print_row(label, E, N, K, total_tokens, base_ms, deq_ms, ark_ms, tflops)
+
+            activations = ntpe = act_padded = w_float = scales = packed = dequant_NK = None
+            _release_xpu_memory()
+
 
 if __name__ == "__main__":
     pytest.main([__file__, "-v", "-s"])

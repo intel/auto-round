@@ -239,3 +239,33 @@ covers the dequant/native paths and
 `test_accuracy_fp8_dpas_per_group` / `test_accuracy_fp8_per_tensor_dpas`
 cover the DPAS Variants B / A at the same production shapes; all paths
 share the tolerance `rtol=atol=7e-2` (E4M3) / `1e-1` (E5M2).
+
+## FP8 per-expert (per-tensor) perf tests
+
+`test_perf_fp8_per_tensor` benchmarks the Variant A DPAS path against
+the single-`torch.bmm` baseline for the **one-FP32-scalar-per-expert**
+quantisation scheme (`scales.shape == [E]`, weights `[E, K, N]` row-major
+FP8 — vllm layout). Parametrised across all dtype combinations
+(fp16/bf16 × E4M3/E5M2) over the same `PREFILL_SHAPES` matrix as
+`test_perf_fp8`.
+
+```bash
+# Prefill: dispatches to moe_gemm_prefill_fp8_dpas (Variant A) via
+# scale_scheme="per_tensor". Silently skipped on builds without that
+# pybind symbol.
+pytest -v -s test_moe_prefill_perf.py::TestMoEGemmPrefillPerf::test_perf_fp8_per_tensor
+```
+
+`test_moe_decode_perf.py::test_perf_fp8_per_tensor` covers the same
+quantisation scheme for the decode phase. The C++ decode kernel does
+NOT expose a native `[E]` per-tensor entry point (only per-K-group
+`[E, N, K/group_size]` scales are accepted), so the test **broadcasts**
+the per-expert scalar over the K-group dimension before feeding the
+existing kernel. Semantically this matches a per-tensor quantised
+checkpoint and runs on the same code path as `test_perf_fp8`; the
+timings validate that the scheme incurs the same decode-kernel cost as
+the richer per-group scheme.
+
+```bash
+pytest -v -s test_moe_decode_perf.py::TestMoEGemmDecodePerf::test_perf_fp8_per_tensor
+```

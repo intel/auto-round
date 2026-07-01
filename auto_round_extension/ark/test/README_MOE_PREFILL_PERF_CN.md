@@ -168,3 +168,27 @@ dequant/native 路径,`test_accuracy_fp8_dpas_per_group` /
 `test_accuracy_fp8_per_tensor_dpas` 覆盖 DPAS Variant B / A,均在相同
 生产形状下测试;所有路径共享容差 `rtol=atol=7e-2` (E4M3) / `1e-1`
 (E5M2)。
+
+## FP8 per-expert (per-tensor) 性能测试
+
+`test_perf_fp8_per_tensor` 提供 Variant A DPAS 路径的性能表格,对应
+**每专家一个 FP32 scale** 的量化方案(`scales.shape == [E]`,权重
+`[E, K, N]` 行主 FP8 — vllm 布局)。参数化覆盖所有 dtype 组合
+(fp16/bf16 × E4M3/E5M2),形状矩阵与 `test_perf_fp8` 相同。
+
+```bash
+# Prefill: 通过 scale_scheme="per_tensor" 分发到
+# moe_gemm_prefill_fp8_dpas (Variant A)。构建缺少该 pybind 符号时静默跳过。
+pytest -v -s test_moe_prefill_perf.py::TestMoEGemmPrefillPerf::test_perf_fp8_per_tensor
+```
+
+`test_moe_decode_perf.py::test_perf_fp8_per_tensor` 补充 decode 侧的
+相同量化方案。由于 C++ decode kernel 目前没有原生的 `[E]` per-tensor
+入口(只接受 per-K-group `[E, N, K/group_size]` scales),该测试通过
+把每专家标量 **广播** 到 K-group 维度来喂给现有 kernel — 语义上等价
+于 per-tensor 量化 checkpoint,与 `test_perf_fp8` 走同一条代码路径,
+用于验证该量化方案在现有 decode kernel 上的运行成本。
+
+```bash
+pytest -v -s test_moe_decode_perf.py::TestMoEGemmDecodePerf::test_perf_fp8_per_tensor
+```

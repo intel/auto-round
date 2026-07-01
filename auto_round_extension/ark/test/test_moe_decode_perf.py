@@ -422,6 +422,77 @@ class TestMoEGemmDecodePerf:
             )
             _print_row(label, N, K, total_tokens, base_ms, ark_ms)
 
+    @pytest.mark.parametrize("dtype", [torch.float16, torch.bfloat16])
+    @pytest.mark.parametrize("fp8_dtype", [torch.float8_e4m3fn, torch.float8_e5m2])
+    def test_perf_fp8_per_tensor(self, dtype, fp8_dtype):
+        """Perf: FP8 per-expert (per-tensor) scale for the decode path.
+
+        The C++ decode kernel does NOT expose a native ``[E]`` per-tensor
+        scale API -- ``moe_gemm_decode`` only accepts per-K-group scales
+        (``[E, N, K/group_size]``). To exercise the "one FP32 scalar per
+        expert" quantisation scheme through the existing decode kernel we
+        emulate it by:
+
+        1. Packing each expert's weight tile with a single max-abs FP32
+           scalar (``scales_pe.shape == [E]``, same recipe as the prefill
+           ``test_perf_fp8_per_tensor`` and the accuracy test
+           ``test_accuracy_fp8_per_tensor_dpas``).
+        2. Broadcasting that ``[E]`` scalar to a ``[E, N, K/group_size]``
+           tensor filled with the same value per expert, which is what
+           the decode kernel expects on the wire.
+
+        Semantically this is identical to a per-tensor quantised
+        checkpoint (every K-group inside an expert shares one scale) so
+        the timings reflect what a real per-expert-scale FP8 checkpoint
+        would cost on the existing decode kernel. It does NOT measure a
+        different code path from ``test_perf_fp8`` -- the point is to
+        confirm the quantisation scheme runs at the same speed as the
+        richer per-group scheme, i.e. the extra memory traffic of the
+        broadcast tensor is the same as a genuine per-group one.
+        """
+        group_size = 128
+        fp8_finfo_max = torch.finfo(fp8_dtype).max
+        _print_header(
+            f"FP8 per-expert scale {str(fp8_dtype).split('.')[-1]} "
+            f"(scales=[E] fp32 broadcast to K-groups, act={str(dtype).split('.')[-1]}) "
+            f"-- ark.moe_gemm_decode vs dequant + per-expert A @ W.T"
+        )
+        for label, E, tpe, N, K in DECODE_SHAPES:
+            if K % group_size != 0:
+                continue
+            total_tokens = sum(tpe)
+            activations = torch.randn(total_tokens, K, dtype=dtype, device="xpu")
+            # Per-expert FP32 scale (max-abs of the tile). Note we build the
+            # weight in [E, N, K] here to match the decode kernel layout.
+            w_float = (torch.randn(E, N, K, dtype=torch.float32, device="xpu") * 0.1)
+            amax = w_float.reshape(E, -1).abs().amax(dim=1).clamp_min(1e-8)
+            scales_pe = (amax / fp8_finfo_max)  # [E] fp32
+            packed = (w_float / scales_pe.reshape(E, 1, 1)).to(fp8_dtype)
+
+            # Broadcast the per-expert scalar into the [E, N, K/group_size]
+            # layout the decode kernel wire format requires. Every K-group
+            # in an expert holds the same value, so the accumulated result
+            # matches a genuine per-tensor scale semantically.
+            scales = scales_pe.to(dtype).reshape(E, 1, 1).expand(E, N, K // group_size).contiguous()
+
+            # Reference dequant for the baseline: multiply the fp8 bytes by
+            # the per-expert scalar and cast to the activation dtype.
+            dequant = (packed.to(torch.float32) * scales_pe.reshape(E, 1, 1)).to(dtype)
+            ntpe = torch.tensor(tpe, dtype=torch.int32, device="xpu")
+
+            base_ms = _xpu_time_ms(lambda: _default_moe_decode(activations, dequant, ntpe))
+            ark_ms = _xpu_time_ms(
+                lambda: ark.moe_gemm_decode(
+                    activations,
+                    packed,
+                    ntpe,
+                    scales=scales,
+                    group_size=group_size,
+                    asym=False,
+                )
+            )
+            _print_row(label, N, K, total_tokens, base_ms, ark_ms)
+
 
 if __name__ == "__main__":
     pytest.main([__file__, "-v", "-s"])
