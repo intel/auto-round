@@ -31,14 +31,12 @@ from auto_round.utils import clear_memory, unsupported_meta_device
 class SequentialLlama4TextExperts(torch.nn.ModuleList):
     def __init__(self, config, original):
         self.num_experts = original.gate_up_proj.shape[0]
-        target_device = next(original.parameters()).device
         with no_init_weights(), torch.device("meta"):
             super().__init__([Llama4TextMLP(config) for _ in range(self.num_experts)])
 
     def _materialize_weights(self, original) -> None:
         if not unsupported_meta_device(original):
             intermediate_size = original.down_proj.shape[1]
-
             for i in range(self.num_experts):
                 gate_up = original.gate_up_proj[i]
                 down = original.down_proj[i]
