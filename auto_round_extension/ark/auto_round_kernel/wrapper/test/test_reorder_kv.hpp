@@ -499,4 +499,114 @@ struct TestHomogeneousForwardSetup {
   }
 };
 
+// Phase 5 Step 2: padding-right plumbing + validation for the MIXED SDPA entry
+// (ark::cpu::bestla_sdpa_forward, routes 1 f32/f16 and 2 f32/bf16). Both mixed
+// routes compose the fp32-score stable interface whose ScaleTrackMax epilogue
+// implements padding_type==2 (see the AVX2/AVX512F scale_track_max_fp32_fp32
+// paths), so padding-right is S: the entry forwards n_padding and validates the
+// boundary. Like the setups above, every case here is decided by the argument-
+// validation gates that fire BEFORE the ISA/threading gates and the raw->packed
+// reorder, so the rejection cases are deterministic on any CPU. The accept case
+// asserts padding-right with a valid boundary is no longer treated as an
+// unsupported/invalid flag -- it passes the padding gate and stops at the same
+// pre-kernel ISA/threading gate as a plain call (never a "padding-right" error).
+struct TestMixedPaddingRight {
+  TestMixedPaddingRight() { run_all(); }
+
+  // Minimal PLAIN, GQA-consistent mixed arg bundle. threading stays null: the
+  // padding/causal/GQA gates run before the ISA/threading gates, so this exercises
+  // the accept path of the padding validator on any CPU. Buffers are over-sized;
+  // only their non-null-ness matters before the kernel runs (fp32 Q/dst are 4B,
+  // fp16/bf16 K/V are 2B).
+  static attn_fwd_args_t make_args(std::vector<uint8_t>& q, std::vector<uint8_t>& k, std::vector<uint8_t>& v,
+                                   std::vector<uint8_t>& dst) {
+    attn_fwd_args_t a{};
+    a.Q = q.data();
+    a.K = k.data();
+    a.V = v.data();
+    a.dst = dst.data();
+    a.batch_size = 1;
+    a.head_num = 1;
+    a.heads_kv = 1;
+    a.head_size = 8;
+    a.sl_q = 4;
+    a.sl_kv = 8;
+    a.Q_layout = ATTN_FWD_LAYOUT_PLAIN;
+    a.K_layout = ATTN_FWD_LAYOUT_PLAIN;
+    a.V_layout = ATTN_FWD_LAYOUT_PLAIN;
+    a.dst_layout = ATTN_FWD_LAYOUT_PLAIN;
+    a.threading = nullptr;
+    return a;
+  }
+
+  // True iff bestla_sdpa_forward rejects `a` with a padding-right-specific
+  // std::invalid_argument. An ISA gate (std::runtime_error) or the shared
+  // threading gate (a non-padding std::invalid_argument) means the padding gate
+  // PASSED, so both count as "not a padding rejection".
+  static bool padding_rejected(const attn_fwd_args_t& a, BTLA_DTYPE dt) {
+    try {
+      bestla_sdpa_forward(a, dt);
+    } catch (const std::invalid_argument& e) {
+      return std::string(e.what()).find("padding-right") != std::string::npos;
+    } catch (const std::exception&) {
+      return false;  // ISA/threading gate reached: padding gate already passed
+    }
+    return false;
+  }
+
+  static void run_all() {
+    for (auto dt : {BTLA_DTYPE::F16, BTLA_DTYPE::BF16}) {
+      std::vector<uint8_t> q(4096, 0), k(4096, 0), v(4096, 0), dst(4096, 0);
+      // Accept: a valid boundary (0 < n_padding <= sl_kv) is not rejected.
+      {
+        auto a = make_args(q, k, v, dst);
+        a.attn_flags = ATTN_FLAG_PADDING_RIGHT;
+        a.n_padding = a.sl_kv / 2;
+        if (padding_rejected(a, dt))
+          throw std::runtime_error("mixed padding-right with valid n_padding wrongly rejected");
+      }
+      // Reject: n_padding <= 0 (no valid K/V positions).
+      {
+        auto a = make_args(q, k, v, dst);
+        a.attn_flags = ATTN_FLAG_PADDING_RIGHT;
+        a.n_padding = 0;
+        if (!padding_rejected(a, dt)) throw std::runtime_error("mixed padding-right n_padding<=0 not rejected");
+      }
+      // Reject: n_padding > sl_kv (boundary past the K/V sequence).
+      {
+        auto a = make_args(q, k, v, dst);
+        a.attn_flags = ATTN_FLAG_PADDING_RIGHT;
+        a.n_padding = a.sl_kv + 1;
+        if (!padding_rejected(a, dt)) throw std::runtime_error("mixed padding-right n_padding>sl_kv not rejected");
+      }
+      // Reject: padding-right combined with causal (mutually exclusive -- the stable
+      // epilogue applies a single padding_type per call).
+      {
+        auto a = make_args(q, k, v, dst);
+        a.attn_flags = ATTN_FLAG_PADDING_RIGHT | ATTN_FLAG_IS_CAUSAL;
+        a.n_padding = a.sl_kv / 2;
+        if (!padding_rejected(a, dt)) throw std::runtime_error("mixed padding-right + causal not rejected");
+      }
+    }
+    // Homogeneous routes 3/4 stay U for padding-right (route 3 fp16-score
+    // ScaleTrackMax asserts padding_type != 2; route 4 has no padding path). Use a
+    // route-valid homogeneous bundle so the rejection comes from the flag gate, not
+    // a layout/stride failure.
+    for (auto dt : {BTLA_DTYPE::F16, BTLA_DTYPE::BF16}) {
+      std::vector<uint16_t> hq(64, 0), hk(64, 0), hv(64, 0), hd(64, 0);
+      auto a = TestHomogeneousForwardSetup::make_route_valid_args(hq, hk, hv, hd, dt);
+      a.attn_flags = ATTN_FLAG_PADDING_RIGHT;
+      a.n_padding = 2;
+      bool threw = false;
+      try {
+        bestla_sdpa_forward_homogeneous(a, dt);
+      } catch (const std::exception&) {
+        threw = true;
+      }
+      if (!threw) throw std::runtime_error("homogeneous padding-right not rejected");
+    }
+    printf("[mixed_padding_right] checks passed\n");
+  }
+};
+
 }  // namespace ark::cpu

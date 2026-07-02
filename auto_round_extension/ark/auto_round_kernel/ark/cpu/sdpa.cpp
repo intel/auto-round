@@ -186,7 +186,7 @@ bestla_mha::attn_fwd_args_t<T, T, T, T> make_typed_attn_args_homogeneous(const a
 //   --------------+-------------------+--------------------+-------------------+--------------------
 //   causal        | S (sl_q<=sl_kv)   | S (sl_q<=sl_kv)    | S (sl_q<=sl_kv)   | S (sl_q<=sl_kv)
 //   GQA           | S (hn % hkv == 0) | S (hn % hkv == 0)  | S (hn % hkv == 0) | U (needs hn == hkv)
-//   padding-right | P (fp32 score)    | P (fp32 score)     | U (fp16 score)    | U (no padding path)
+//   padding-right | S (fp32 score)    | S (fp32 score)     | U (fp16 score)    | U (no padding path)
 //   alibi         | P                 | P                  | P                 | U (asserts off)
 //   tanh          | P                 | P                  | P                 | U (no tanh path)
 //   prefer_fp32   | S (no-op; fp32)   | S (selects fp32)   | U (fp16 core)     | U (asserts off)
@@ -197,9 +197,12 @@ bestla_mha::attn_fwd_args_t<T, T, T, T> make_typed_attn_args_homogeneous(const a
 //                  needs `head_num % heads_kv == 0`; the non-stable interface asserts
 //                  `head_num == heads_kv` (no GQA mapping), so route 4 is U.
 //   * pad-right -- ARK's `ScaleTrackMax` implements `padding_type==2` only on its
-//                  fp32-score paths, so routes 1/2 (fp32 score) are P (kernel-capable,
-//                  entry not plumbed) while route 3 (fp16 score) and route 4 (no
-//                  padding path at all) are U.
+//                  fp32-score paths, so routes 1/2 (fp32 score) are S: Phase 5 Step 2
+//                  forwards `n_padding` (already carried by make_typed_attn_args) and
+//                  validates the boundary (0 < n_padding <= sl_kv, mutually exclusive
+//                  with causal) so the fp32-score epilogue runs with padding_type==2.
+//                  Route 3 (fp16 score: its avx512_fp16 ScaleTrackMax asserts
+//                  padding_type != 2) and route 4 (no padding path at all) stay U.
 //   * alibi     -- the stable interface computes alibi slopes (routes 1/2/3 are P,
 //                  pending entry plumbing of the slope); the non-stable interface
 //                  asserts alibi off, so route 4 is U.
@@ -213,11 +216,13 @@ bestla_mha::attn_fwd_args_t<T, T, T, T> make_typed_attn_args_homogeneous(const a
 //                  core (COMP_FP16) so it is U, and the non-stable route 4 asserts
 //                  prefer_fp32 off so it is U.
 //
-// This matrix is the authoritative audit. causal/GQA/prefer_fp32 are validated per
-// route (mixed entry + the two homogeneous validators below); alibi/tanh/padding-
-// right are rejected up front in each entry with the per-route P/U rationale noted
-// at the reject site. Promoting any P/U cell to S is future Phase 5 work and must
-// add the matching typed plumbing + validation -- do NOT relax a guard to "pass".
+// This matrix is the authoritative audit. causal/GQA/prefer_fp32/padding-right are
+// validated per route: the mixed entry validates causal/GQA/padding-right and accepts
+// prefer_fp32 (S), while the two homogeneous validators below reject prefer_fp32 and
+// padding-right (U). alibi/tanh remain P (mixed routes 1/2 + fp16 route 3) or U (bf16
+// route 4) and are rejected up front in each entry with the per-route rationale noted
+// at the reject site. Promoting a remaining P/U cell to S is future Phase 5 work and
+// must add the matching typed plumbing + validation -- do NOT relax a guard to "pass".
 // ---------------------------------------------------------------------------
 
 // ---------------------------------------------------------------------------
@@ -370,27 +375,46 @@ void bestla_sdpa_forward(const attn_fwd_args_t& args, BTLA_DTYPE kv_dtype) {
       args.V_layout != ATTN_FWD_LAYOUT_PLAIN || args.dst_layout != ATTN_FWD_LAYOUT_PLAIN) {
     throw std::invalid_argument("ark::cpu::bestla_sdpa_forward: only ATTN_FWD_LAYOUT_PLAIN is supported");
   }
-  // Feature flags (matrix rows alibi/tanh/padding-right). For BOTH mixed routes
-  // (route 1 f32/f16, route 2 f32/bf16) these are P (plumbing-gap): the stable
-  // interface's fp32-score ScaleTrackMax epilogue implements alibi, tanh and
-  // padding_type==2, but this entry does not build/forward the alibi slope, tanh
-  // scale or n_padding region yet, so they are rejected loudly here until that
-  // typed plumbing lands. prefer_fp32 is NOT rejected: it is S for both mixed
-  // routes -- route 2 uses it to select the AVX512F fp32-score path over the
-  // AMX-BF16 core, and route 1 already runs a fp32-score core so it is an accepted
-  // no-op (see the feature-support matrix above and the overload dispatch in
-  // mha_dense_wrapper.h).
-  constexpr attn_flags_t kUnsupportedFlags =
-      ATTN_FLAG_IS_ALIBI8 | ATTN_FLAG_IS_TANH30 | ATTN_FLAG_PADDING_RIGHT;
+  // Feature flags (matrix rows alibi/tanh). For BOTH mixed routes (route 1
+  // f32/f16, route 2 f32/bf16) alibi/tanh are P (plumbing-gap): the stable
+  // interface's fp32-score ScaleTrackMax epilogue implements them, but this entry
+  // does not build/forward the alibi slope or tanh scale yet, so they are rejected
+  // loudly here until that typed plumbing lands. prefer_fp32 is NOT rejected: it is
+  // S for both mixed routes -- route 2 uses it to select the AVX512F fp32-score
+  // path over the AMX-BF16 core, and route 1 already runs a fp32-score core so it
+  // is an accepted no-op (see the feature-support matrix above and the overload
+  // dispatch in mha_dense_wrapper.h). padding-right is also NOT rejected here: it
+  // is S for both mixed routes and validated below (Phase 5 Step 2).
+  constexpr attn_flags_t kUnsupportedFlags = ATTN_FLAG_IS_ALIBI8 | ATTN_FLAG_IS_TANH30;
   if ((args.attn_flags & kUnsupportedFlags) != 0) {
     throw std::invalid_argument(
-        "ark::cpu::bestla_sdpa_forward: alibi, tanh and padding-right are not wired yet");
+        "ark::cpu::bestla_sdpa_forward: alibi and tanh are not wired yet");
   }
   // causal (matrix row causal == S): the stable interface masks with sl_q <= sl_kv;
   // formalize that contract here (parity with the homogeneous validators) so a
   // violating decode/prefill shape fails loudly instead of via a stripped assert.
   if ((args.attn_flags & ATTN_FLAG_IS_CAUSAL) != 0 && args.sl_q > args.sl_kv) {
     throw std::invalid_argument("ark::cpu::bestla_sdpa_forward: causal mask requires sl_q <= sl_kv");
+  }
+  // padding-right (matrix row padding-right == S for both mixed routes): the stable
+  // interface's fp32-score ScaleTrackMax epilogue drives padding_type==2, clamping
+  // the unmasked K/V region to `n_padding` (causal_offset = n_padding). Both mixed
+  // routes compose fp32-score cores (route 1 SCoreRowNAvx2, route 2 SCoreRowNAvx512f),
+  // so the kernel is capable; make_typed_attn_args already forwards `n_padding`.
+  // Validate the boundary here so an out-of-range request or a causal+padding combo
+  // fails loudly instead of silently masking the wrong region. causal and padding-
+  // right are mutually exclusive: the wrapper carries a single `padding_type` per
+  // call and lets causal win when both are set, so reject the combination up front.
+  if ((args.attn_flags & ATTN_FLAG_PADDING_RIGHT) != 0) {
+    if ((args.attn_flags & ATTN_FLAG_IS_CAUSAL) != 0) {
+      throw std::invalid_argument(
+          "ark::cpu::bestla_sdpa_forward: padding-right and causal masks are mutually exclusive "
+          "(the stable epilogue applies one padding_type per call)");
+    }
+    if (args.n_padding <= 0 || args.n_padding > args.sl_kv) {
+      throw std::invalid_argument(
+          "ark::cpu::bestla_sdpa_forward: padding-right requires 0 < n_padding <= sl_kv");
+    }
   }
   // GQA (matrix row GQA == S): the stable interface maps grouped-query heads via
   // ihkv = ihn / (head_num / heads_kv) and requires head_num to be a positive

@@ -37,8 +37,8 @@ void sdpa_forward(const MhaDenseArgs& args);
 // `CpuWrapper::get_threading()` so the attention path shares the same pool as
 // the rest of the CPU kernels. When `args.tmp` is null the wrapper scratch is
 // allocated internally (as a float-aligned buffer) for the duration of the
-// call. This entry validates PLAIN-strided operands and rejects alibi, tanh and
-// padding-right flags; note, however, that the `step_*` stride interface being
+// call. This entry validates PLAIN-strided operands and rejects alibi and tanh
+// flags; note, however, that the `step_*` stride interface being
 // HND/NHD-friendly does NOT mean the wired mixed-precision kernels accept raw
 // HND/NHD/PLAIN K/V. Those specializations require packed/reordered
 // (NTILE24/NTILE48) K/V; Phase 4 Step 1 added an internal raw->packed reorder so
@@ -48,13 +48,15 @@ void sdpa_forward(const MhaDenseArgs& args);
 // internal already-packed forward (bestla_sdpa_forward_packed) now exist
 // alongside this temporary bridge; both stay experimental and gated.
 //
-// Feature support (Phase 5 Step 1 audit; see the matrix in sdpa.cpp for the full
-// per-route classification): both mixed routes support causal (sl_q<=sl_kv), GQA
-// (head_num a multiple of heads_kv) and prefer_fp32 (route 2 uses it to pick the
-// AVX512F fp32-score path over AMX-BF16; route 1 is an accepted fp32-score no-op),
-// all validated here. alibi/tanh/padding-right are a plumbing-gap (the fp32-score
-// stable epilogue implements them but this entry does not forward their inputs
-// yet) and are rejected up front.
+// Feature support (Phase 5 Step 1 audit + Phase 5 Step 2 padding-right; see the
+// matrix in sdpa.cpp for the full per-route classification): both mixed routes
+// support causal (sl_q<=sl_kv), GQA (head_num a multiple of heads_kv), prefer_fp32
+// (route 2 uses it to pick the AVX512F fp32-score path over AMX-BF16; route 1 is an
+// accepted fp32-score no-op) and padding-right (Phase 5 Step 2 forwards n_padding to
+// the fp32-score ScaleTrackMax padding_type==2 epilogue and validates the boundary:
+// 0 < n_padding <= sl_kv, mutually exclusive with causal), all validated here.
+// alibi/tanh remain a plumbing-gap (the fp32-score stable epilogue implements them
+// but this entry does not forward their inputs yet) and are rejected up front.
 void bestla_sdpa_forward(const attn_fwd_args_t& args, BTLA_DTYPE kv_dtype);
 
 // ---------------------------------------------------------------------------
