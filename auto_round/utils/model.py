@@ -1652,10 +1652,13 @@ def safe_device_move_with_meta_handling(
 
 
 def is_moe_model(model: torch.nn.Module) -> bool:
+    """Heuristically detect whether ``model`` is a MoE architecture by scanning its config
+    for "moe"/"expert" markers or by checking module names for "expert".
+    """
     if hasattr(model, "config") and hasattr(model.config, "to_dict"):
-        for key in model.config.to_dict().keys():
-            if "moe" in key or "expert" in key:
-                return True
+        config_str = str(model.config.to_dict())
+        if "moe" in config_str or "expert" in config_str:
+            return True
     for n, m in model.named_modules():
         if "expert" in n:
             return True
