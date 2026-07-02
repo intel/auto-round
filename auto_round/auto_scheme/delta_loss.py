@@ -1231,7 +1231,7 @@ def _resolve_dp_max_states(layers: dict, max_states: Optional[int] = None, is_mo
     if not is_moe_model:
         return None
     layer_count = len(layers)
-    if layer_count <= 32:
+    if layer_count <= 1024:
         return None
     return max(4096, min(20000, 64 * max(1, math.ceil(math.sqrt(layer_count)))))
 
