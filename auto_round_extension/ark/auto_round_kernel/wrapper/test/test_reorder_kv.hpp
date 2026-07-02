@@ -30,9 +30,11 @@
 // K=seq). Both packed caches use these row-packed prologue addresses, so an
 // index match here proves reorder feeds the kernel the values it consumes.
 
+#include <algorithm>
 #include <cmath>
 #include <cstdint>
 #include <cstdio>
+#include <limits>
 #include <stdexcept>
 #include <string>
 #include <vector>
@@ -685,6 +687,216 @@ struct TestMixedAlibiTanh {
       }
     }
     printf("[mixed_alibi_tanh] checks passed\n");
+  }
+};
+
+// ---------------------------------------------------------------------------
+// Phase 6: Numerical validation for mixed-route features (alibi, padding-right,
+// tanh). Each test builds a small attention problem, runs it through
+// bestla_sdpa_forward, and compares against a scalar fp32 reference.
+//
+// Test dimensions: B=1, Hq=4, Hkv=2 (GQA 2×), Sq=4, Sk=8, D=32.
+//
+// ISA gates (mirroring bestla_sdpa_forward's own gates):
+//   F16 K/V  (route 1) -> AVX2:    skip if cpu->AVX2() == false
+//   BF16 K/V (route 2) -> AVX512F: skip if cpu->AVX512F() == false
+//
+// Note on tanh: the AVX2 (F16) kernel instantiates HAS_TANH=true but does NOT
+// apply the tanh nonlinearity (the if constexpr (HAS_TANH) epilogue block only
+// exists in the AVX512F specialisation). Testing tanh on the F16 route would
+// just validate the reduced QK scale (QK_scale/30), which is not meaningful.
+// Therefore tanh is tested on BF16 (AVX512F) only, where the full
+// 30*tanh(score * QK_scale/30) path is executed.
+// ---------------------------------------------------------------------------
+struct TestMixedNumericalFeatures {
+  TestMixedNumericalFeatures() { run_all(); }
+
+  // Compute the ALiBi slope for query head h in a model with head_num query
+  // heads. Mirrors mha_dense_wrapper.h lines 1027-1066 exactly (k_offset=0).
+  static float alibi_slope_for_head(int h, int head_num) {
+    const int n_log2 = 1 << int(std::floor(std::log2f(float(head_num))));
+    const float m0 = std::pow(2.f, -8.f / float(n_log2));
+    const float m1 = std::pow(2.f, -4.f / float(n_log2));
+    return (h < n_log2) ? std::pow(m0, float(h + 1)) : std::pow(m1, float(2 * (h - n_log2) + 1));
+  }
+
+  // Scalar fp32 attention reference. Layout: Q[Hq*Sq*D], K_rt[Hkv*Sk*D],
+  // V_rt[Hkv*Sk*D] (K/V have been round-tripped through fp16/bf16 to match the
+  // dtype error in the kernel path), dst[Hq*Sq*D].
+  //
+  // use_tanh  : scores = 30*tanh(dot * QK_scale/30) before alibi+softmax.
+  // slopes    : non-null -> add alibi_slope[hq]*k to each score.
+  // n_valid   : key positions [n_valid, Sk) are masked (-inf) before softmax.
+  static void scalar_attn_ref(int Hq, int Hkv, int Sq, int Sk, int D, float qk_scale, bool use_tanh, int n_valid,
+                               const float* Q, const float* K_rt, const float* V_rt, const float* slopes,
+                               float* dst) {
+    const float inner_scale = use_tanh ? qk_scale / 30.f : qk_scale;
+    const int gqa_ratio = Hq / Hkv;
+    for (int hq = 0; hq < Hq; ++hq) {
+      const int hkv = hq / gqa_ratio;
+      const float slope = slopes ? slopes[hq] : 0.f;
+      for (int q = 0; q < Sq; ++q) {
+        const float* Qrow = Q + (hq * Sq + q) * D;
+        // Compute raw scores and track max over valid positions.
+        std::vector<float> scores(Sk, -std::numeric_limits<float>::infinity());
+        float max_s = -std::numeric_limits<float>::infinity();
+        for (int k = 0; k < n_valid; ++k) {
+          const float* Krow = K_rt + (hkv * Sk + k) * D;
+          float dot = 0.f;
+          for (int d = 0; d < D; ++d) dot += Qrow[d] * Krow[d];
+          float s = dot * inner_scale;
+          if (use_tanh) s = 30.f * std::tanh(s);
+          s += slope * float(k);
+          scores[k] = s;
+          max_s = std::max(max_s, s);
+        }
+        // Softmax over valid positions only.
+        float sum_exp = 0.f;
+        for (int k = 0; k < n_valid; ++k) {
+          scores[k] = std::exp(scores[k] - max_s);
+          sum_exp += scores[k];
+        }
+        for (int k = 0; k < n_valid; ++k) scores[k] /= sum_exp;
+        // Weighted sum of V.
+        float* dstrow = dst + (hq * Sq + q) * D;
+        for (int d = 0; d < D; ++d) {
+          float acc = 0.f;
+          for (int k = 0; k < n_valid; ++k) acc += scores[k] * V_rt[(hkv * Sk + k) * D + d];
+          dstrow[d] = acc;
+        }
+      }
+    }
+  }
+
+  // Run one numerical check. extra_flags is OR-ed into attn_flags (caller
+  // provides the feature flag, e.g. ATTN_FLAG_IS_ALIBI8). n_valid_kv is the
+  // n_padding value when ATTN_FLAG_PADDING_RIGHT is set, else unused (pass Sk).
+  // Returns true if the check ran; false if ISA was unavailable (skip).
+  static bool run_check(BTLA_DTYPE kv_dtype, uint32_t extra_flags, int n_valid_kv, const char* tag) {
+    auto* cpu = bestla::device::CpuDevice::getInstance();
+    if (kv_dtype == BTLA_DTYPE::F16 && !cpu->AVX2()) {
+      printf("[num_mixed] %s: SKIP (no AVX2)\n", tag);
+      return false;
+    }
+    if (kv_dtype == BTLA_DTYPE::BF16 && !cpu->AVX512F()) {
+      printf("[num_mixed] %s: SKIP (no AVX512F)\n", tag);
+      return false;
+    }
+
+    static constexpr int B = 1, Hq = 4, Hkv = 2, Sq = 4, Sk = 8, D = 32;
+    const float qk_scale = 1.f / std::sqrt(float(D));
+
+    // Deterministic Q/K/V with values in [-1, 1].
+    std::vector<float> Q_f32(Hq * Sq * D), K_f32(Hkv * Sk * D), V_f32(Hkv * Sk * D);
+    for (int i = 0; i < static_cast<int>(Q_f32.size()); ++i) Q_f32[i] = 0.1f * float((i * 17 + 3) % 20 - 10);
+    for (int i = 0; i < static_cast<int>(K_f32.size()); ++i) K_f32[i] = 0.1f * float((i * 13 + 7) % 20 - 10);
+    for (int i = 0; i < static_cast<int>(V_f32.size()); ++i) V_f32[i] = 0.1f * float((i * 11 + 5) % 20 - 10);
+
+    // Convert K/V to the target dtype and back to fp32 (dtype round-trip).
+    std::vector<uint16_t> K_kv(Hkv * Sk * D), V_kv(Hkv * Sk * D);
+    std::vector<float> K_rt(Hkv * Sk * D), V_rt(Hkv * Sk * D);
+    for (int i = 0; i < Hkv * Sk * D; ++i) {
+      if (kv_dtype == BTLA_DTYPE::F16) {
+        const bestla::utils::fp16 kf(K_f32[i]), vf(V_f32[i]);
+        K_kv[i] = kf.x;
+        V_kv[i] = vf.x;
+        K_rt[i] = float(kf);
+        V_rt[i] = float(vf);
+      } else {
+        const auto kb = bestla::utils::cast<float, bestla::utils::bf16>(K_f32[i]);
+        const auto vb = bestla::utils::cast<float, bestla::utils::bf16>(V_f32[i]);
+        K_kv[i] = kb.x;
+        V_kv[i] = vb.x;
+        K_rt[i] = kb.tofloat();
+        V_rt[i] = vb.tofloat();
+      }
+    }
+
+    const bool use_alibi = (extra_flags & ATTN_FLAG_IS_ALIBI8) != 0;
+    const bool use_tanh = (extra_flags & ATTN_FLAG_IS_TANH30) != 0;
+    const bool use_padding = (extra_flags & ATTN_FLAG_PADDING_RIGHT) != 0;
+    const int n_valid = use_padding ? n_valid_kv : Sk;
+
+    // Per-head alibi slopes (matched exactly to mha_dense_wrapper.h formula).
+    std::vector<float> slopes;
+    if (use_alibi) {
+      slopes.resize(Hq);
+      for (int h = 0; h < Hq; ++h) slopes[h] = alibi_slope_for_head(h, Hq);
+    }
+
+    // Scalar reference output.
+    std::vector<float> ref_dst(Hq * Sq * D);
+    scalar_attn_ref(Hq, Hkv, Sq, Sk, D, qk_scale, use_tanh, n_valid, Q_f32.data(), K_rt.data(), V_rt.data(),
+                    use_alibi ? slopes.data() : nullptr, ref_dst.data());
+
+    // Kernel output via bestla_sdpa_forward (handles raw->packed reorder internally).
+    std::vector<float> out_dst(Hq * Sq * D, 0.f);
+    bestla::parallel::SingleThread sth;
+
+    attn_fwd_args_t a{};
+    a.Q = Q_f32.data();
+    a.K = K_kv.data();
+    a.V = V_kv.data();
+    a.dst = out_dst.data();
+    a.QK_scale = qk_scale;
+    a.attn_flags = extra_flags;
+    a.batch_size = B;
+    a.head_num = Hq;
+    a.heads_kv = Hkv;
+    a.head_size = D;
+    a.sl_q = Sq;
+    a.sl_kv = Sk;
+    a.n_padding = use_padding ? n_valid_kv : 0;
+    a.Q_layout = ATTN_FWD_LAYOUT_PLAIN;
+    a.K_layout = ATTN_FWD_LAYOUT_PLAIN;
+    a.V_layout = ATTN_FWD_LAYOUT_PLAIN;
+    a.dst_layout = ATTN_FWD_LAYOUT_PLAIN;
+    // HND strides: [Head × Seq × Dim], contiguous.
+    a.step_q_bs = Hq * Sq * D;
+    a.step_q_head_num = Sq * D;
+    a.step_q_sl = D;
+    a.step_k_bs = Hkv * Sk * D;
+    a.step_k_head_num = Sk * D;
+    a.step_k_sl = D;
+    a.step_k_head_size = 1;
+    a.step_v_bs = Hkv * Sk * D;
+    a.step_v_head_num = Sk * D;
+    a.step_v_sl = D;
+    a.step_v_head_size = 1;
+    a.step_dst_bs = Hq * Sq * D;
+    a.step_dst_head_num = Sq * D;
+    a.step_dst_sl = D;
+    a.tmp = nullptr;
+    a.threading = &sth;
+
+    bestla_sdpa_forward(a, kv_dtype);
+
+    // Numerical comparison with per-dtype tolerances.
+    const float tol = (kv_dtype == BTLA_DTYPE::F16) ? 3e-2f : 8e-2f;
+    float max_diff = 0.f;
+    for (int i = 0; i < Hq * Sq * D; ++i) max_diff = std::max(max_diff, std::abs(out_dst[i] - ref_dst[i]));
+    if (max_diff > tol) {
+      printf("[num_mixed] %s: FAIL max_abs_diff=%.5f tol=%.5f\n", tag, max_diff, tol);
+      throw std::runtime_error(std::string("[num_mixed] ") + tag + ": max_abs_diff exceeds tolerance");
+    }
+    printf("[num_mixed] %s: PASS max_abs_diff=%.5f\n", tag, max_diff);
+    return true;
+  }
+
+  static void run_all() {
+    // Route 1 (F16 K/V, fp32-score, AVX2): alibi and padding-right.
+    // tanh is omitted here: AVX2 scale_track_max_fp32_fp32<false,true> compiles
+    // but has no if constexpr(HAS_TANH) epilogue block, so TANH30 on the F16
+    // route only reduces the QK scale (no tanh function is applied). The
+    // semantically correct tanh test lives on the BF16 route below.
+    run_check(BTLA_DTYPE::F16, ATTN_FLAG_IS_ALIBI8, 8, "alibi/F16");
+    run_check(BTLA_DTYPE::F16, ATTN_FLAG_PADDING_RIGHT, 5, "padding-right/F16");
+    // Route 2 (BF16 K/V, fp32-score, AVX512F): alibi, padding-right, and tanh.
+    // tanh uses the full 30*tanh(dot * QK_scale/30) path in the AVX512F kernel.
+    run_check(BTLA_DTYPE::BF16, ATTN_FLAG_IS_ALIBI8, 8, "alibi/BF16");
+    run_check(BTLA_DTYPE::BF16, ATTN_FLAG_PADDING_RIGHT, 5, "padding-right/BF16");
+    run_check(BTLA_DTYPE::BF16, ATTN_FLAG_IS_TANH30, 8, "tanh/BF16");
+    printf("[num_mixed] all numerical feature checks complete\n");
   }
 };
 

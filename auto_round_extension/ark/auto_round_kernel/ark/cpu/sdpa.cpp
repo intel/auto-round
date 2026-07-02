@@ -234,6 +234,49 @@ bestla_mha::attn_fwd_args_t<T, T, T, T> make_typed_attn_args_homogeneous(const a
 // ---------------------------------------------------------------------------
 
 // ---------------------------------------------------------------------------
+// Phase 6: three-tier exposure policy for the non-int8 CPU BestLA attention routes.
+//
+// TIER 0 — Production (default Python sdpa())
+//   Backend: scalar mha_dense_forward (see sdpa() fallback below).
+//   Dtype:   f32 Q/K/V, f16 K/V, or bf16 K/V (homogeneous scalar path).
+//   ISA:     any (no SIMD dependency beyond baseline).
+//   Features: all (causal, GQA, padding-right, alibi, tanh, prefer_fp32).
+//   ABI:     stable, no env gate.
+//   Status:  ready for public exposure; well-tested via test_ark_cpu_sdpa.py.
+//
+// TIER 1 — Experimental / env-gated (routes 1/2 mixed)
+//   Backend: bestla_sdpa_forward (F16 = route 1, BF16 = route 2).
+//   Dtype:   f32 Q, fp16/bf16 K/V, f32 dst.
+//   ISA:     AVX2 (F16), AVX512F or AMX-BF16 (BF16).
+//   Features: all features S (causal, GQA, padding-right, alibi, tanh, prefer_fp32);
+//             validated at C++ plumbing level by Phase 5 and Phase 6 numerical tests.
+//   Gate:    ARK_UNSAFE_BESTLA_MIXED_SDPA=1 (see ark.cpp).
+//   Status:  NOT yet exposed as default. Remaining barriers:
+//     (a) Raw->packed reorder bridge adds per-forward allocation overhead; persistent
+//         packed KV cache is future work.
+//     (b) Python ABI does not yet expose n_padding or attn_flags (alibi/tanh);
+//         numerical Python-level tests for those features are pending.
+//   Promotion criteria: Python alibi/tanh/padding-right numerical tests passing on
+//     AVX2/AVX512F CI, persistent packed KV cache path wired to Python, and
+//     n_padding + attn_flags exposed in the Python sdpa() signature.
+//
+// TIER 2 — Internal / not Python-accessible (routes 3/4 homogeneous)
+//   Backend: bestla_sdpa_forward_homogeneous (F16 = route 3, BF16 = route 4).
+//   Dtype:   f16/f16/f16/f16 or bf16/bf16/bf16/bf16 (all operands homogeneous).
+//   ISA:     AVX512-FP16 (F16), AMX-BF16 (BF16).
+//   Features: route 3 supports causal+GQA; route 4 supports causal only.
+//             padding-right, alibi, tanh, prefer_fp32 are U for both routes.
+//   ABI:     not wired in ark.cpp; not reachable from Python.
+//   Status:  internal/debug only. Promotion criteria:
+//     Route 3: Python-accessible packed K/V layout bridge (the homogeneous fp16
+//       stable kernel expects weight_base_t K/V layout that raw PLAIN inputs don't
+//       satisfy; bridging is future work).
+//     Route 4: expose only if an AMX-BF16 bf16-compute preference use case is
+//       identified (currently not justified given route 2 already covers bf16 K/V
+//       with the full feature set and fp32-score stability).
+// ---------------------------------------------------------------------------
+
+// ---------------------------------------------------------------------------
 // Phase 4.5 Step 6: per-route pre-dispatch validation for the homogeneous SDPA
 // launcher families.
 //

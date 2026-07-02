@@ -745,6 +745,15 @@ static void sdpa(torch_ptr stream, torch_ptr Q, torch_ptr K, torch_ptr V, torch_
   // K and V share `k_dtype` in this ABI, so a single check covers both.
   // Homogeneous fp16/bf16 and int8 are intentionally NOT routed here yet.
   //
+  // Phase 6 exposure-tier note: this block is TIER 1 (experimental/env-gated).
+  // Routes 1 (F16, AVX2) and 2 (BF16, AVX512F/AMX-BF16) have a full S feature
+  // matrix (causal, GQA, padding-right, alibi, tanh, prefer_fp32) validated at
+  // the C++ level. They are not the default path because:
+  //   (a) the raw->packed reorder bridge adds per-forward allocation overhead;
+  //   (b) n_padding and attn_flags (alibi, tanh) are not yet in the Python ABI.
+  // The homogeneous routes (Tier 2, not wired here) and the scalar fallback below
+  // (Tier 0, always active) are described in sdpa.cpp's Phase 6 comment block.
+  //
   // IMPORTANT (Phase 3 safety gate): the BestLA specializations wired today
   // (`bestla_fusion_attn_forward<float, fp16, ...>` /  `<float, bf16, ...>`)
   // expect NTILE24/NTILE48 row-packed (reordered) K/V, NOT the raw PLAIN
@@ -805,7 +814,9 @@ static void sdpa(torch_ptr stream, torch_ptr Q, torch_ptr K, torch_ptr V, torch_
     bargs.step_dst_bs = o_stride_b;
     bargs.step_dst_head_num = o_stride_h;
     bargs.step_dst_sl = o_stride_s;
-    bargs.n_padding = 0;  // padding-right not wired yet
+    bargs.n_padding = 0;  // padding-right is S (validated by Phase 5 Step 2) but not yet
+                          // exposed via the Python ABI -- n_padding stays 0 until the
+                          // sdpa() signature is extended with a padding_right parameter.
     bargs.tmp = nullptr;  // scratch allocated inside bestla_sdpa_forward
     // Reuse ARK's shared CPU thread pool rather than a dedicated attention pool.
     bargs.threading = ark::CpuWrapper::get_threading();

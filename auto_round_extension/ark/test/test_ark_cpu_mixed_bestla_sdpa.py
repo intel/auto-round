@@ -99,3 +99,34 @@ def test_bestla_mixed_sdpa_matches_torch(kv_dtype, is_causal, layout):
     atol, rtol = _TOL[kv_dtype]
     assert actual.dtype == torch.float32
     torch.testing.assert_close(_to_hnd(actual, layout), expected_hnd, atol=atol, rtol=rtol)
+
+
+@pytest.mark.parametrize("kv_dtype", [torch.float16, torch.bfloat16])
+@pytest.mark.parametrize("gqa_ratio", [2, 4, 8])
+def test_bestla_mixed_sdpa_gqa_ratio(kv_dtype, gqa_ratio):
+    """Phase 6: explicit GQA-ratio smoke test.
+
+    Exercises the ihkv = ihn / (head_num / heads_kv) mapping inside the
+    BestLA mixed routes with GQA ratios 2×, 4×, and 8× to verify that each
+    query-head reads K/V from the correct KV head.
+    """
+    torch.manual_seed(5001 + gqa_ratio)
+    batch, heads_q, head_dim, seq = 1, 8, 64, 32
+    heads_kv = heads_q // gqa_ratio
+    scale = 1 / math.sqrt(head_dim)
+
+    q = torch.randn(batch, heads_q, seq, head_dim, dtype=torch.float32)
+    k = torch.randn(batch, heads_kv, seq, head_dim, dtype=kv_dtype)
+    v = torch.randn(batch, heads_kv, seq, head_dim, dtype=kv_dtype)
+
+    expected = torch.nn.functional.scaled_dot_product_attention(
+        q, k.float(), v.float(), scale=scale, enable_gqa=True, is_causal=False
+    )
+    try:
+        actual = _mixed_sdpa(q, k, v, scale, False, "HND")
+    except (RuntimeError, ValueError) as exc:
+        pytest.skip(f"BestLA mixed path unavailable on this ISA/runtime: {exc}")
+
+    atol, rtol = _TOL[kv_dtype]
+    assert actual.dtype == torch.float32
+    torch.testing.assert_close(actual, expected, atol=atol, rtol=rtol)

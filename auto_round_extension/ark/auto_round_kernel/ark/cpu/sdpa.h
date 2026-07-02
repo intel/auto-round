@@ -206,6 +206,10 @@ void bestla_sdpa_forward_packed(const attn_fwd_args_t& args, const ReorderKVShap
 // default user path stays on the scalar reference kernel. True e2e numerical
 // validation requires a capable CPU extension build (AVX512-FP16 / AMX-BF16).
 //
+// Tier 2 / internal (Phase 6 exposure policy, see sdpa.cpp): not wired in
+// ark.cpp until the packed K/V layout bridging for the homogeneous routes is
+// in place (route 3) or a specific AMX-BF16 use case is identified (route 4).
+//
 // Feature support (Phase 5 audit; full matrix in sdpa.cpp): route 3 (fp16 stable)
 // supports causal and GQA (validated); route 4 (bf16 non-stable) supports causal but
 // NOT GQA (requires head_num == heads_kv). prefer_fp32 is unsupported for BOTH

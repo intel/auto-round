@@ -15,6 +15,7 @@ int main() {
   ark::cpu::TestHomogeneousForwardSetup test_homogeneous_forward_setup;  // homogeneous SDPA dispatch validation
   ark::cpu::TestMixedPaddingRight test_mixed_padding_right;  // mixed SDPA padding-right plumbing/validation
   ark::cpu::TestMixedAlibiTanh test_mixed_alibi_tanh;  // mixed SDPA alibi/tanh wiring; homogeneous rejection
+  ark::cpu::TestMixedNumericalFeatures test_mixed_numerical;  // Phase 6: numerical alibi/tanh/padding-right checks
   ark::cpu::TestCoreAttentionE2E test_core_attention_e2e;  // four core dtype tuples e2e dispatch validation
   TestSDPA test_sdpa;
   return 0;
