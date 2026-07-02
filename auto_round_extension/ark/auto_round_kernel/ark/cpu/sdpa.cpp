@@ -159,6 +159,107 @@ bestla_mha::attn_fwd_args_t<T, T, T, T> make_typed_attn_args_homogeneous(const a
   return t;
 }
 
+// ---------------------------------------------------------------------------
+// Phase 4.5 Step 6: per-route pre-dispatch validation for the homogeneous SDPA
+// launcher families.
+//
+// The homogeneous dtype tuple selects one of TWO DISTINCT launcher families
+// (Neural-Speed structure, NOT a single "homogeneous" branch):
+//
+//   dtype | launcher family                       | core                  | ISA
+//   ------+---------------------------------------+-----------------------+-------------
+//   F16   | stable   mha_stable_interface_t       | HCoreRowNAvx512fp16   | AVX512-FP16
+//   BF16  | non-stable mha_interface_t (exp-sum)  | HCoreRowNAmxbf16      | AMX-BF16
+//
+// Each launcher has its own layout/stride/head-count contract that the wrapper
+// only guards with `assert` (a no-op in release builds). These helpers promote
+// those contracts into user-facing std::invalid_argument guards that fire before
+// any kernel work, so the two routes stay distinct and their assumptions are
+// explicit and testable. Compact contract matrix (see the wrapper `compute`
+// asserts the values are mirrored from):
+//
+//   contract           | fp16 stable route        | bf16 non-stable route
+//   -------------------+--------------------------+-------------------------------
+//   Q_layout           | PLAIN                     | PLAIN
+//   dst_layout         | PLAIN                     | PLAIN
+//   K_layout           | PLAIN or NTILE24_ROWPACK1 | PLAIN
+//   V_layout           | PLAIN or NTILE24_ROWPACK1 | PLAIN
+//   GQA (head_num)     | multiple of heads_kv      | == heads_kv (no GQA)
+//   K PLAIN stride     | step_v_head_size == 1     | step_v_head_size == 1
+//   V PLAIN stride     | step_k_sl == 1            | step_k_head_size==1 || step_k_sl==1
+//   causal shape       | sl_q <= sl_kv             | sl_q <= sl_kv
+// ---------------------------------------------------------------------------
+
+// fp16 homogeneous route == the *stable* mha_stable_interface_t over
+// gemm::HCoreRowNAvx512fp16. Mirrors the PLAIN/NTILE24 layout, GQA-multiple
+// head-count, and PLAIN K/V stride assumptions asserted in
+// mha_stable_interface_t::compute.
+void validate_homogeneous_fp16_stable_route(const attn_fwd_args_t& a) {
+  if (a.Q_layout != ATTN_FWD_LAYOUT_PLAIN || a.dst_layout != ATTN_FWD_LAYOUT_PLAIN) {
+    throw std::invalid_argument(
+        "ark::cpu::bestla_sdpa_forward_homogeneous: fp16 stable route requires PLAIN Q and dst layouts");
+  }
+  if (a.K_layout != ATTN_FWD_LAYOUT_PLAIN && a.K_layout != ATTN_FWD_LAYOUT_NTILE24_ROWPACK1) {
+    throw std::invalid_argument(
+        "ark::cpu::bestla_sdpa_forward_homogeneous: fp16 stable route K layout must be PLAIN or NTILE24_ROWPACK1");
+  }
+  if (a.V_layout != ATTN_FWD_LAYOUT_PLAIN && a.V_layout != ATTN_FWD_LAYOUT_NTILE24_ROWPACK1) {
+    throw std::invalid_argument(
+        "ark::cpu::bestla_sdpa_forward_homogeneous: fp16 stable route V layout must be PLAIN or NTILE24_ROWPACK1");
+  }
+  if (a.heads_kv <= 0 || a.head_num <= 0 || (a.head_num % a.heads_kv) != 0) {
+    throw std::invalid_argument(
+        "ark::cpu::bestla_sdpa_forward_homogeneous: fp16 stable route requires head_num to be a positive multiple "
+        "of heads_kv (GQA groups)");
+  }
+  // Raw PLAIN K/V stride restrictions the stable interface relies on for its
+  // contiguous inner reads (mha_stable_interface_t::compute asserts these).
+  if (a.K_layout == ATTN_FWD_LAYOUT_PLAIN && a.step_v_head_size != 1) {
+    throw std::invalid_argument(
+        "ark::cpu::bestla_sdpa_forward_homogeneous: fp16 stable route requires contiguous V head-size stride "
+        "(step_v_head_size == 1) when K is PLAIN");
+  }
+  if (a.V_layout == ATTN_FWD_LAYOUT_PLAIN && a.step_k_sl != 1) {
+    throw std::invalid_argument(
+        "ark::cpu::bestla_sdpa_forward_homogeneous: fp16 stable route requires contiguous K seq stride "
+        "(step_k_sl == 1) when V is PLAIN");
+  }
+  if ((a.attn_flags & ATTN_FLAG_IS_CAUSAL) != 0 && a.sl_q > a.sl_kv) {
+    throw std::invalid_argument(
+        "ark::cpu::bestla_sdpa_forward_homogeneous: fp16 stable route causal mask requires sl_q <= sl_kv");
+  }
+}
+
+// bf16 homogeneous route == the *non-stable* mha_interface_t exp-sum path over
+// gemm::HCoreRowNAmxbf16. Mirrors the all-PLAIN layout, no-GQA head-count, and
+// contiguous K/V stride assumptions asserted in mha_interface_t::compute.
+void validate_homogeneous_bf16_nonstable_route(const attn_fwd_args_t& a) {
+  if (a.Q_layout != ATTN_FWD_LAYOUT_PLAIN || a.K_layout != ATTN_FWD_LAYOUT_PLAIN ||
+      a.V_layout != ATTN_FWD_LAYOUT_PLAIN || a.dst_layout != ATTN_FWD_LAYOUT_PLAIN) {
+    throw std::invalid_argument(
+        "ark::cpu::bestla_sdpa_forward_homogeneous: bf16 non-stable route requires PLAIN Q/K/V/dst layouts");
+  }
+  if (a.head_num != a.heads_kv) {
+    throw std::invalid_argument(
+        "ark::cpu::bestla_sdpa_forward_homogeneous: bf16 non-stable route does not support GQA (requires "
+        "head_num == heads_kv)");
+  }
+  if (a.step_v_head_size != 1) {
+    throw std::invalid_argument(
+        "ark::cpu::bestla_sdpa_forward_homogeneous: bf16 non-stable route requires contiguous V head-size stride "
+        "(step_v_head_size == 1)");
+  }
+  if (a.step_k_head_size != 1 && a.step_k_sl != 1) {
+    throw std::invalid_argument(
+        "ark::cpu::bestla_sdpa_forward_homogeneous: bf16 non-stable route requires a contiguous K stride "
+        "(step_k_head_size == 1 or step_k_sl == 1)");
+  }
+  if ((a.attn_flags & ATTN_FLAG_IS_CAUSAL) != 0 && a.sl_q > a.sl_kv) {
+    throw std::invalid_argument(
+        "ark::cpu::bestla_sdpa_forward_homogeneous: bf16 non-stable route causal mask requires sl_q <= sl_kv");
+  }
+}
+
 }  // namespace
 
 void sdpa_forward(const MhaDenseArgs& args) {
@@ -320,6 +421,20 @@ void bestla_sdpa_forward_homogeneous(const attn_fwd_args_t& args, BTLA_DTYPE dty
   if ((args.attn_flags & kUnsupportedFlags) != 0) {
     throw std::invalid_argument(
         "ark::cpu::bestla_sdpa_forward_homogeneous: alibi, tanh and padding-right are not wired yet");
+  }
+
+  // Second-layer route contract: each homogeneous dtype reaches a DISTINCT
+  // launcher family (fp16 -> stable mha_stable_interface_t, bf16 -> non-stable
+  // mha_interface_t), and each has its own layout/stride/GQA contract. Validate
+  // the incoming operands against the exact route that will run so a violation
+  // fails loudly here with std::invalid_argument instead of tripping a
+  // release-mode-stripped assert (or silently mis-reading) inside the kernel.
+  // The two routes are validated separately on purpose -- this is NOT collapsed
+  // into one "homogeneous" check.
+  if (dtype == BTLA_DTYPE::F16) {
+    validate_homogeneous_fp16_stable_route(args);
+  } else {  // BTLA_DTYPE::BF16 (guaranteed by the first-layer dtype gate above)
+    validate_homogeneous_bf16_nonstable_route(args);
   }
 
   // Second-layer condition (ISA): the homogeneous overloads compose ISA-specific

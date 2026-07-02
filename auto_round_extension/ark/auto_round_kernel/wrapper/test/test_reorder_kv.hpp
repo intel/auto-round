@@ -34,6 +34,7 @@
 #include <cstdint>
 #include <cstdio>
 #include <stdexcept>
+#include <string>
 #include <vector>
 
 #include "ark/cpu/mha_dense.h"
@@ -326,6 +327,30 @@ struct TestHomogeneousForwardSetup {
     return a;
   }
 
+  // Build an arg bundle that satisfies the full layout/stride/head-count contract
+  // of the requested homogeneous route, so every std::invalid_argument route
+  // guard passes and only the ISA/threading gates remain. threading stays null:
+  // route validation runs before the threading/ISA gates, so these args exercise
+  // the accept path of the route validators on any CPU.
+  static attn_fwd_args_t make_route_valid_args(std::vector<uint16_t>& q, std::vector<uint16_t>& k,
+                                               std::vector<uint16_t>& v, std::vector<uint16_t>& dst, BTLA_DTYPE dt) {
+    auto a = make_args(q, k, v, dst, nullptr);
+    // Both routes accept PLAIN K/V with contiguous V head-size and K seq strides.
+    a.step_v_head_size = 1;
+    a.step_k_sl = 1;
+    a.step_k_head_size = 1;
+    if (dt == BTLA_DTYPE::F16) {
+      // fp16 stable route supports GQA (head_num a multiple of heads_kv).
+      a.head_num = 2;
+      a.heads_kv = 1;
+    } else {
+      // bf16 non-stable route requires head_num == heads_kv.
+      a.head_num = 1;
+      a.heads_kv = 1;
+    }
+    return a;
+  }
+
   static void check_rejects() {
     std::vector<uint16_t> q(8, 0), k(32, 0), v(32, 0), dst(8, 0);
     // Null pointers must throw regardless of dtype.
@@ -354,8 +379,110 @@ struct TestHomogeneousForwardSetup {
     }
   }
 
+  // True if calling the homogeneous entry with `a`/`dt` throws an exception whose
+  // message names a route-validation failure (all route guards contain "route").
+  static bool route_validation_rejects(const attn_fwd_args_t& a, BTLA_DTYPE dt) {
+    try {
+      bestla_sdpa_forward_homogeneous(a, dt);
+    } catch (const std::exception& e) {
+      return std::string(e.what()).find("route") != std::string::npos;
+    }
+    return false;
+  }
+
+  // fp16 stable route (mha_stable_interface_t) contract: PLAIN Q/dst, K/V PLAIN
+  // or NTILE24_ROWPACK1, GQA head_num multiple of heads_kv, PLAIN K/V strides.
+  static void check_fp16_route_rejects() {
+    std::vector<uint16_t> q(64, 0), k(64, 0), v(64, 0), dst(64, 0);
+    // Non-PLAIN Q layout is rejected.
+    {
+      auto a = make_route_valid_args(q, k, v, dst, BTLA_DTYPE::F16);
+      a.Q_layout = ATTN_FWD_LAYOUT_NTILE24_ROWPACK1;
+      if (!route_validation_rejects(a, BTLA_DTYPE::F16)) throw std::runtime_error("fp16 non-PLAIN Q not rejected");
+    }
+    // A K layout that belongs to the bf16 packing (NTILE48_ROWPACK2) is rejected.
+    {
+      auto a = make_route_valid_args(q, k, v, dst, BTLA_DTYPE::F16);
+      a.K_layout = ATTN_FWD_LAYOUT_NTILE48_ROWPACK2;
+      if (!route_validation_rejects(a, BTLA_DTYPE::F16)) throw std::runtime_error("fp16 wrong K layout not rejected");
+    }
+    // head_num not a whole multiple of heads_kv is rejected.
+    {
+      auto a = make_route_valid_args(q, k, v, dst, BTLA_DTYPE::F16);
+      a.head_num = 3;
+      a.heads_kv = 2;
+      if (!route_validation_rejects(a, BTLA_DTYPE::F16)) throw std::runtime_error("fp16 bad GQA not rejected");
+    }
+    // PLAIN K with a non-contiguous V head-size stride is rejected.
+    {
+      auto a = make_route_valid_args(q, k, v, dst, BTLA_DTYPE::F16);
+      a.step_v_head_size = 4;
+      if (!route_validation_rejects(a, BTLA_DTYPE::F16)) throw std::runtime_error("fp16 bad step_v not rejected");
+    }
+    // PLAIN V with a non-contiguous K seq stride is rejected.
+    {
+      auto a = make_route_valid_args(q, k, v, dst, BTLA_DTYPE::F16);
+      a.step_k_sl = 8;
+      if (!route_validation_rejects(a, BTLA_DTYPE::F16)) throw std::runtime_error("fp16 bad step_k not rejected");
+    }
+  }
+
+  // bf16 non-stable route (mha_interface_t) contract: all-PLAIN, no GQA
+  // (head_num == heads_kv), contiguous V head-size stride, contiguous K stride.
+  static void check_bf16_route_rejects() {
+    std::vector<uint16_t> q(64, 0), k(64, 0), v(64, 0), dst(64, 0);
+    // Any non-PLAIN layout is rejected (the non-stable path takes no packed K/V).
+    {
+      auto a = make_route_valid_args(q, k, v, dst, BTLA_DTYPE::BF16);
+      a.K_layout = ATTN_FWD_LAYOUT_NTILE48_ROWPACK2;
+      if (!route_validation_rejects(a, BTLA_DTYPE::BF16)) throw std::runtime_error("bf16 non-PLAIN K not rejected");
+    }
+    // GQA (head_num != heads_kv) is rejected -- the non-stable path has no GQA.
+    {
+      auto a = make_route_valid_args(q, k, v, dst, BTLA_DTYPE::BF16);
+      a.head_num = 2;
+      a.heads_kv = 1;
+      if (!route_validation_rejects(a, BTLA_DTYPE::BF16)) throw std::runtime_error("bf16 GQA not rejected");
+    }
+    // Non-contiguous V head-size stride is rejected.
+    {
+      auto a = make_route_valid_args(q, k, v, dst, BTLA_DTYPE::BF16);
+      a.step_v_head_size = 4;
+      if (!route_validation_rejects(a, BTLA_DTYPE::BF16)) throw std::runtime_error("bf16 bad step_v not rejected");
+    }
+    // Neither K stride contiguous is rejected.
+    {
+      auto a = make_route_valid_args(q, k, v, dst, BTLA_DTYPE::BF16);
+      a.step_k_head_size = 8;
+      a.step_k_sl = 8;
+      if (!route_validation_rejects(a, BTLA_DTYPE::BF16)) throw std::runtime_error("bf16 bad K stride not rejected");
+    }
+    // Causal mask with sl_q > sl_kv is rejected.
+    {
+      auto a = make_route_valid_args(q, k, v, dst, BTLA_DTYPE::BF16);
+      a.attn_flags = ATTN_FLAG_IS_CAUSAL;
+      a.sl_q = 8;
+      a.sl_kv = 4;
+      if (!route_validation_rejects(a, BTLA_DTYPE::BF16)) throw std::runtime_error("bf16 bad causal shape not rejected");
+    }
+  }
+
+  // Route-valid args must pass every std::invalid_argument route guard; the only
+  // failure left is the ISA capability gate (std::runtime_error) on a CPU that
+  // lacks AVX512-FP16 / AMX-BF16, or the threading gate -- never a "route" error.
+  static void check_valid_routes_pass_validation() {
+    std::vector<uint16_t> q(64, 0), k(64, 0), v(64, 0), dst(64, 0);
+    for (auto dt : {BTLA_DTYPE::F16, BTLA_DTYPE::BF16}) {
+      auto a = make_route_valid_args(q, k, v, dst, dt);
+      if (route_validation_rejects(a, dt)) throw std::runtime_error("valid homogeneous route wrongly rejected");
+    }
+  }
+
   void run_all() {
     check_rejects();
+    check_fp16_route_rejects();
+    check_bf16_route_rejects();
+    check_valid_routes_pass_validation();
     printf("[homogeneous_forward_setup] checks passed\n");
   }
 };

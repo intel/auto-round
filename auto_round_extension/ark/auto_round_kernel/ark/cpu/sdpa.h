@@ -175,7 +175,11 @@ void bestla_sdpa_forward_packed(const attn_fwd_args_t& args, const ReorderKVShap
 //      AMX-BF16 for bf16 -- and its `weight_base_t` / batch-packer prologue
 //      handles the K/V layout at runtime). This entry adds the matching runtime
 //      capability gate up front so an unsupported CPU/build fails loudly with a
-//      clear message instead of relying on release-mode-stripped asserts.
+//      clear message instead of relying on release-mode-stripped asserts. Phase
+//      4.5 Step 6 additionally promotes each launcher's layout/stride/GQA
+//      contract into explicit std::invalid_argument guards (validated per route,
+//      not collapsed) so raw PLAIN shape/stride restrictions are checked before
+//      any kernel work -- see the contract matrix in sdpa.cpp.
 //
 // Unlike the mixed route, the homogeneous prologues pack/convert K/V themselves
 // (bf16 batch packers, fp16 plain `weight_base_t`), so NO external raw->packed
