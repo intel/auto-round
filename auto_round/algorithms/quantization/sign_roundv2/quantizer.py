@@ -30,13 +30,14 @@ from auto_round.data_type.gguf import (
     search_gguf_scale_min_asym,
     search_gguf_scale_min_sym,
 )
-from auto_round.data_type.int import quant_tensor_asym, quant_tensor_sym, search_scales
-from auto_round.data_type.mxfp import quant_mx, search_mx_scale
-from auto_round.data_type.nvfp import nv_fp4, search_nvfp4_scale
+from auto_round.data_type.int import quant_tensor_asym, quant_tensor_sym
 from auto_round.data_type.utils import (
+    get_optimized_quant_func,
+    reshape_imatrix_for_weight,
     reshape_pad_tensor_by_group_size,
     revert_tensor_by_pad,
     round_ste,
+    search_optimized_init_scale,
 )
 from auto_round.logger import logger
 from auto_round.utils import check_to_quantized, compile_func, get_reciprocal
@@ -89,46 +90,65 @@ def _named_wrapper_block(wrapper_cls, name: str):
     return wrapped
 
 
+def _dq_asym_group_size(bits: int) -> int:
+    """Group size used by the GGUF asym double-quant path (16 for 2-bit, else 32)."""
+    return 16 if bits == 2 else 32
+
+
 class SignRoundOptimizedWrapperLinear(WrapperLinear):
     minmax_scale_bound = (0.0, 2.0)
 
     def _init_tuning_params_and_quant_func(self):
         super()._init_tuning_params_and_quant_func()
 
-        orig_weight = getattr(self.orig_layer, "get_weight", lambda: self.orig_layer.weight)()
-        if type(self.orig_layer) == transformers.pytorch_utils.Conv1D:
-            orig_weight = orig_weight.t()
-        weight_reshape, _, _ = reshape_pad_tensor_by_group_size(orig_weight.data, self.orig_layer.group_size)
-        if hasattr(self.orig_layer, "imatrix"):
-            imatrix = self.orig_layer.imatrix.reshape(1, -1)
-            imatrix = reshape_pad_tensor_by_group_size(imatrix, self.orig_layer.group_size, val=1e-5)[0].view(1, -1)
-            imatrix = imatrix.expand(weight_reshape.numel() // imatrix.numel(), -1)
-            imatrix = imatrix.reshape(weight_reshape.shape).to(orig_weight.device)
-        else:
-            imatrix = 1.0
+        layer = self.orig_layer
+        data_type = layer.data_type
+        weight_reshape = self._prepare_init_scale_weight()
+        imatrix = reshape_imatrix_for_weight(getattr(layer, "imatrix", None), weight_reshape, layer.group_size)
 
-        if self.orig_layer.data_type.startswith("int"):
-            self.init_scale = search_scales(weight_reshape, self.orig_layer.bits, imatrix)
-            self.init_scale = torch.where(
-                self.init_scale < 0,
-                torch.clamp(self.init_scale, max=-self.q_scale_thresh),
-                torch.clamp(self.init_scale, min=self.q_scale_thresh),
+        self.init_scale = search_optimized_init_scale(
+            weight_reshape, data_type, layer.bits, imatrix, self.q_scale_thresh
+        )
+        self.weight_quant_func = get_optimized_quant_func(data_type)
+        if self.init_scale is None or self.weight_quant_func is None:
+            raise ValueError(
+                f"SignRound optimized path does not support data_type={data_type!r}; "
+                "expected a symmetric int / mx / nv type."
             )
-            self.weight_quant_func = quant_tensor_sym
-        elif self.orig_layer.data_type.startswith("mx"):
-            self.init_scale = search_mx_scale(weight_reshape, self.orig_layer.bits, imatrix)
-            self.weight_quant_func = quant_mx
-        elif self.orig_layer.data_type.startswith("nv"):
-            self.init_scale = search_nvfp4_scale(weight_reshape, self.orig_layer.bits, imatrix)
-            self.weight_quant_func = nv_fp4
-        else:
-            raise ValueError(f"unsupported SignRound optimized data type: {self.orig_layer.data_type}")
 
-        self.data_type = self.orig_layer.data_type
-        if hasattr(self.orig_layer, "imatrix"):
-            delattr(self.orig_layer, "imatrix")
+        self.data_type = data_type
+        if hasattr(layer, "imatrix"):
+            del layer.imatrix
         if self.enable_torch_compile:
             self.weight_quant_func = compile_func(self.weight_quant_func, self.device)
+
+    def _prepare_init_scale_weight(self) -> torch.Tensor:
+        """Return the group-reshaped weight that seeds the init-scale search.
+
+        Reproduces the layout the quant func sees at tuning time: the (optionally
+        transposed) FP weight grouped to ``[-1, group_size]``. When AWQ ran in
+        ``clip_as_init`` mode and stored a per-group ``awq_clip_max`` on the layer,
+        the weight is clamped to that range first so the searched ``init_scale``
+        already reflects the AWQ clip (``max_scale`` then tunes a coefficient on
+        top of it).
+        """
+        layer = self.orig_layer
+        weight = layer.get_weight() if hasattr(layer, "get_weight") else layer.weight
+        if isinstance(layer, transformers.pytorch_utils.Conv1D):
+            weight = weight.t()
+        weight_reshape, _, _ = reshape_pad_tensor_by_group_size(weight.data, layer.group_size)
+
+        clip_max = getattr(layer, "awq_clip_max", None)
+        if clip_max is not None:
+            clip_max = clip_max.reshape(-1, 1).to(weight_reshape.device, weight_reshape.dtype)
+            if clip_max.shape[0] == weight_reshape.shape[0]:
+                weight_reshape = torch.clamp(weight_reshape, -clip_max, clip_max)
+            else:
+                logger.warning_once(
+                    "SignRoundV2: ignoring awq_clip_max with shape %s incompatible with "
+                    "grouped weight shape %s." % (tuple(clip_max.shape), tuple(weight_reshape.shape))
+                )
+        return weight_reshape
 
 
 class SignRoundDQWrapperLinear(WrapperLinear):
@@ -187,7 +207,7 @@ class SignRoundDQWrapperLinear(WrapperLinear):
         imatrix = getattr(self.orig_layer, "imatrix", None)
 
         if self._dq_kind == "asym":
-            group_size = 16 if bits == 2 else 32
+            group_size = _dq_asym_group_size(bits)
             t, _, _ = reshape_pad_tensor_by_group_size(weight.to(torch.float32), group_size)
             v_r = v
             if isinstance(v, torch.Tensor):
@@ -261,7 +281,7 @@ class SignRoundDQWrapperLinear(WrapperLinear):
 
         bits = self.orig_layer.bits
         if self._dq_kind == "asym":
-            group_size = 16 if bits == 2 else 32
+            group_size = _dq_asym_group_size(bits)
             weight_q = self.weight_quant_func(
                 weight,
                 params["scale"],

@@ -175,6 +175,140 @@ def get_quant_func(
     )
 
 
+def _resolve_optimized_dtype_funcs(data_type: str, q_scale_thresh: float = 1e-5):
+    """Resolve the SignRound optimized ``(scale_search_fn, quant_func)`` for a data type.
+
+    Single source of truth for the optimized-path dispatch shared by
+    ``SignRoundOptimizedWrapperLinear`` and AWQ's internal QDQ:
+
+    * ``scale_search_fn(weight_reshape, bits, imatrix) -> init_scale`` searches the
+      data-type-specific per-group init scale (the int variant clamps to
+      ``q_scale_thresh`` to avoid a degenerate zero scale).
+    * ``quant_func`` is the matching *plain* quant function (``init_scale`` already
+      encodes the searched scale, so no opt-rtn / rtn variant is needed).
+
+    Returns ``(None, None)`` for data types without an optimized path
+    (asym int, ``*_dq``, or unrelated types).
+    """
+    dt = str(data_type)
+    if dt.endswith("dq"):
+        return None, None
+    if dt.startswith("int"):
+        # The optimized int init-scale search is symmetric-only; asym int uses
+        # the standard tensor_min/tensor_max range instead.
+        if "asym" in dt:
+            return None, None
+        from auto_round.data_type.int import quant_tensor_sym, search_scales
+
+        def search_int(weight_reshape, bits, imatrix):
+            init_scale = search_scales(weight_reshape, bits, imatrix)
+            return torch.where(
+                init_scale < 0,
+                torch.clamp(init_scale, max=-q_scale_thresh),
+                torch.clamp(init_scale, min=q_scale_thresh),
+            )
+
+        return search_int, quant_tensor_sym
+    if dt.startswith("mx"):
+        from auto_round.data_type.mxfp import quant_mx, search_mx_scale
+
+        return search_mx_scale, quant_mx
+    if dt.startswith("nv"):
+        from auto_round.data_type.nvfp import nv_fp4, search_nvfp4_scale
+
+        return search_nvfp4_scale, nv_fp4
+    return None, None
+
+
+def search_optimized_init_scale(
+    weight_reshape: torch.Tensor,
+    data_type: str,
+    bits: int,
+    imatrix=None,
+    q_scale_thresh: float = 1e-5,
+):
+    """Compute the SignRoundV2 optimized per-group ``init_scale`` for a grouped weight.
+
+    Mirrors ``SignRoundOptimizedWrapperLinear``: dispatches on ``data_type`` so that
+    any caller (the optimized wrapper itself or AWQ's internal QDQ used for the
+    smooth/clip grid search) seeds the quantizer with the same initial scale.
+    Returns ``None`` for data types that do not use the optimized init-scale search
+    (asym int, ``*_dq``, or unrelated types).
+
+    Args:
+        weight_reshape: Weight reshaped/padded to ``[..., group_size]``.
+        data_type: Resolved weight data type (e.g. ``"int_sym"``, ``"mx_fp4"``, ``"nv_fp4"``).
+        bits: Weight bit-width.
+        imatrix: Per-element importance matrix matching ``weight_reshape`` (or ``None``/scalar).
+        q_scale_thresh: Minimum scale magnitude used to clamp the int init_scale.
+
+    Returns:
+        The per-group ``init_scale`` tensor, or ``None`` if unsupported.
+    """
+    search_fn, _ = _resolve_optimized_dtype_funcs(data_type, q_scale_thresh)
+    if search_fn is None:
+        return None
+    if imatrix is None:
+        imatrix = 1.0
+    return search_fn(weight_reshape, bits, imatrix)
+
+
+def get_optimized_quant_func(data_type: str):
+    """Return the plain quant function used by the SignRound optimized path.
+
+    The optimized init-scale search always pairs with the *plain* (non opt-rtn /
+    non rtn) quant function for the data type, since ``init_scale`` already
+    encodes the searched scale. Returns ``None`` for data types without an
+    optimized path (asym int, ``*_dq``, or unrelated types).
+    """
+    _, quant_func = _resolve_optimized_dtype_funcs(data_type)
+    return quant_func
+
+
+def reshape_imatrix_for_weight(imatrix, weight_reshape: torch.Tensor, group_size):
+    """Reshape/pad an importance matrix to match a group-reshaped weight.
+
+    Encapsulates the imatrix grouping logic shared by the SignRound optimized
+    wrapper and AWQ's internal QDQ so callers never handle the low-level reshape.
+    Returns the scalar ``1.0`` when no imatrix is available (uniform importance).
+    """
+    if imatrix is None:
+        return 1.0
+    imatrix = imatrix.reshape(1, -1)
+    imatrix = reshape_pad_tensor_by_group_size(imatrix, group_size, val=1e-5)[0].view(1, -1)
+    imatrix = imatrix.expand(weight_reshape.numel() // imatrix.numel(), -1)
+    return imatrix.reshape(weight_reshape.shape).to(weight_reshape.device)
+
+
+def compute_optimized_init_scale(
+    weight: torch.Tensor,
+    data_type: str,
+    bits: int,
+    group_size,
+    imatrix=None,
+    q_scale_thresh: float = 1e-5,
+):
+    """Compute the SignRound optimized per-group ``init_scale`` for a full weight.
+
+    Group-reshapes ``weight``, prepares the ``imatrix`` layout, and runs the
+    data-type-specific scale search. Unlike :func:`search_optimized_init_scale`
+    (which expects an already group-reshaped weight), this is the entry point for
+    callers holding a full 2-D weight, e.g. AWQ's internal QDQ. Pair it with
+    :func:`get_optimized_quant_func` (resolved once) to obtain the matching quant
+    function, so the smooth/clip grid-search loss mirrors what
+    ``SignRoundOptimizedWrapperLinear`` applies.
+
+    Returns ``None`` for data types without an optimized init-scale path
+    (asym int, ``*_dq``, or unrelated types).
+    """
+    search_fn, _ = _resolve_optimized_dtype_funcs(data_type, q_scale_thresh)
+    if search_fn is None:
+        return None
+    weight_reshape, _, _ = reshape_pad_tensor_by_group_size(weight, group_size)
+    imatrix = reshape_imatrix_for_weight(imatrix, weight_reshape, group_size)
+    return search_fn(weight_reshape, bits, imatrix)
+
+
 def round_ste(x: torch.Tensor):
     """Straight-Through Estimator for rounding.
 
