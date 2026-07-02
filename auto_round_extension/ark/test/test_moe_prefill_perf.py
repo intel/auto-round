@@ -52,6 +52,8 @@ How to run::
 The ``-s`` flag is required to see the printed timing tables and TFLOPS.
 """
 
+import os
+
 import auto_round_kernel
 import pytest
 import torch
@@ -412,12 +414,6 @@ PREFILL_SHAPES = [
     ("minimax real down 8K", _MINIMAX_E, _minimax_real_tpe(65536, max_ratio=8), _MINIMAX_K, _MINIMAX_N),
 ]
 
-# Restrict the sweep to the "minimax real" rows only -- the heavy-tailed
-# tokens-per-expert distribution that mirrors real MoE routing. Comment
-# this filter out to also include the "minimax up/down" (evenly balanced)
-# rows.
-PREFILL_SHAPES = [s for s in PREFILL_SHAPES if "real" in s[0]]
-
 
 def _print_header(title: str) -> None:
     """Print a benchmark header.
@@ -592,12 +588,22 @@ class TestMoEGemmPrefillPerf:
                 deq_ms = _xpu_time_ms(lambda: _dequant_int4_sym(packed, scales, group_size).to(dtype))
             base_ms = _xpu_time_ms(lambda: _default_moe_prefill(act_padded, dequant))
 
-            # Single ARK measurement using whatever env defaults are in
-            # effect for the caller (INT4 DPAS branches are default-ON, so
-            # this typically measures the packed-nibble DPAS mainloop). No
-            # env-var toggling here -- if you want to A/B different
-            # branches, set `ARK_MOE_PREFILL_DPAS_S4` / `ARK_MOE_PREFILL_DPAS_INT8`
-            # in the shell before invoking pytest.
+            # Default ARK path (dequant + GEMM). INT4-sym is DPAS-accelerated
+            # via TWO independent branches inside `moe_gemm_prefill`:
+            #   1. `ARK_MOE_PREFILL_DPAS_S4=1` (default ON) -- single-pass
+            #      mainloop reading packed nibbles directly via CuTe's
+            #      `NumericArrayConverter<ElementA, int4b_t, N>` in
+            #      `reorder(tBrB, tCrB)`. Preferred; the new hot path.
+            #   2. `ARK_MOE_PREFILL_DPAS_INT8=1` (default ON) -- two-pass
+            #      S4->S8 upcast into workspace + shared INT8 DPAS
+            #      mainloop. Fallback for when (1) is disabled.
+            # Force BOTH off for this measurement so the `ark(ms)` column
+            # reflects the legacy dequant + BF16 GEMM path independently
+            # of the `dpas(ms)` column below.
+            prev_dpas_s4 = os.environ.get("ARK_MOE_PREFILL_DPAS_S4")
+            prev_dpas_int8 = os.environ.get("ARK_MOE_PREFILL_DPAS_INT8")
+            os.environ["ARK_MOE_PREFILL_DPAS_S4"] = "0"
+            os.environ["ARK_MOE_PREFILL_DPAS_INT8"] = "0"
             ark_ms = _xpu_time_ms(
                 lambda: ark.moe_gemm_prefill(
                     activations,
@@ -614,7 +620,42 @@ class TestMoEGemmPrefillPerf:
             flops = _compute_moe_flops(total_tokens, K, N, E)
             tflops = flops / (ark_ms * 1e-3) / 1e12
 
-            _print_row(label, E, N, K, total_tokens, base_ms, deq_ms, ark_ms, tflops)
+            # Variant B DPAS S4 (default-on branch: single-pass packed
+            # nibble read + in-register upcast). Only sym is
+            # DPAS-accelerated -- asym S4 falls through to the S4->S8
+            # upcast (also disabled here via DPAS_INT8=0), which itself
+            # falls through to the dequant path inside
+            # `moe_gemm_prefill`. So asym rows here report the same
+            # code path as `ark(ms)` above. Left in the sweep so the
+            # perf table shows both sym and asym rows.
+            os.environ["ARK_MOE_PREFILL_DPAS_S4"] = "1"
+            os.environ["ARK_MOE_PREFILL_DPAS_INT8"] = "0"
+            dpas_ms = _xpu_time_ms(
+                lambda: ark.moe_gemm_prefill(
+                    activations,
+                    packed,
+                    ntpe,
+                    scales=scales,
+                    zeros=zeros,
+                    weight_bits=4,
+                    group_size=group_size,
+                    asym=asym,
+                )
+            )
+            dpas_tflops = flops / (dpas_ms * 1e-3) / 1e12
+
+            # Restore prior env state.
+            if prev_dpas_s4 is None:
+                os.environ.pop("ARK_MOE_PREFILL_DPAS_S4", None)
+            else:
+                os.environ["ARK_MOE_PREFILL_DPAS_S4"] = prev_dpas_s4
+            if prev_dpas_int8 is None:
+                os.environ.pop("ARK_MOE_PREFILL_DPAS_INT8", None)
+            else:
+                os.environ["ARK_MOE_PREFILL_DPAS_INT8"] = prev_dpas_int8
+
+            _print_row(label, E, N, K, total_tokens, base_ms, deq_ms, ark_ms, tflops,
+                       dpas_ms=dpas_ms, dpas_tflops=dpas_tflops)
 
             activations = ntpe = act_padded = w_float = scales = zeros = packed = dequant = None
             _release_xpu_memory()
@@ -653,9 +694,13 @@ class TestMoEGemmPrefillPerf:
                 deq_ms = _xpu_time_ms(lambda: _dequant_int8_sym(packed, scales, group_size).to(dtype))
             base_ms = _xpu_time_ms(lambda: _default_moe_prefill(act_padded, dequant))
 
-            # Single ARK measurement using whatever env defaults are in
-            # effect for the caller (INT8 DPAS branch is default-ON for
-            # sym). No env-var toggling here.
+            # Default ARK path (dequant + GEMM). Force
+            # `ARK_MOE_PREFILL_DPAS_INT8=0` for this measurement so the
+            # `ark(ms)` column measures the legacy dequant path
+            # independently of the `dpas(ms)` column below.
+            prev_dpas = os.environ.get("ARK_MOE_PREFILL_DPAS_INT8")
+            # Force the legacy dequant + GEMM path for the `ark(ms)` column.
+            os.environ["ARK_MOE_PREFILL_DPAS_INT8"] = "0"
             ark_ms = _xpu_time_ms(
                 lambda: ark.moe_gemm_prefill(
                     activations,
@@ -672,7 +717,38 @@ class TestMoEGemmPrefillPerf:
             flops = _compute_moe_flops(total_tokens, K, N, E)
             tflops = flops / (ark_ms * 1e-3) / 1e12
 
-            _print_row(label, E, N, K, total_tokens, base_ms, deq_ms, ark_ms, tflops)
+            # Variant B DPAS INT8 (default-on branch). Only sym is
+            # DPAS-accelerated -- asym S8 falls through to the dequant
+            # path inside `moe_gemm_prefill` since the fused zero-point
+            # fold regressed below the dequant fallback on hardware. Left
+            # in the sweep so the perf table shows both sym and asym rows;
+            # asym rows here are effectively the same code path as
+            # `ark(ms)` above.
+            dpas_ms = None
+            dpas_tflops = None
+            os.environ["ARK_MOE_PREFILL_DPAS_INT8"] = "1"
+            dpas_ms = _xpu_time_ms(
+                lambda: ark.moe_gemm_prefill(
+                    activations,
+                    packed,
+                    ntpe,
+                    scales=scales,
+                    zeros=zeros,
+                    weight_bits=8,
+                    group_size=group_size,
+                    asym=asym,
+                )
+            )
+            dpas_tflops = flops / (dpas_ms * 1e-3) / 1e12
+
+            # Restore prior env state.
+            if prev_dpas is None:
+                os.environ.pop("ARK_MOE_PREFILL_DPAS_INT8", None)
+            else:
+                os.environ["ARK_MOE_PREFILL_DPAS_INT8"] = prev_dpas
+
+            _print_row(label, E, N, K, total_tokens, base_ms, deq_ms, ark_ms, tflops,
+                       dpas_ms=dpas_ms, dpas_tflops=dpas_tflops)
 
             activations = ntpe = act_padded = w_float = scales = zeros = packed = dequant = None
             _release_xpu_memory()
@@ -756,27 +832,87 @@ class TestMoEGemmPrefillPerf:
             deq_ms = _xpu_time_ms(lambda: _dequant_fp8(packed, scales, group_size, dtype))
             base_ms = _xpu_time_ms(lambda: _default_moe_prefill(act_padded, dequant))
 
-            # Single ARK measurement using whatever env defaults are in
-            # effect for the caller. No env-var toggling here -- to A/B
-            # the fused-dequant, native-FP8 and DPAS-FP8 branches, set
-            # `ARK_MOE_PREFILL_FUSED_FP8` / `ARK_MOE_PREFILL_NATIVE_FP8` /
-            # `ARK_MOE_PREFILL_DPAS_FP8` in the shell before invoking
-            # pytest.
-            ark_ms = _xpu_time_ms(
-                lambda: ark.moe_gemm_prefill(
-                    activations,
-                    packed,
-                    ntpe,
-                    scales=scales,
-                    group_size=group_size,
-                    asym=False,
+            # Default ARK path (respects the caller's env, i.e. dequant or
+            # fused-dequant depending on `ARK_MOE_PREFILL_FUSED_FP8`). We
+            # force `ARK_MOE_PREFILL_NATIVE_FP8=0` and
+            # `ARK_MOE_PREFILL_DPAS_FP8=0` for this measurement so the
+            # native / dpas columns are independently attributable.
+            prev_native = os.environ.get("ARK_MOE_PREFILL_NATIVE_FP8")
+            prev_dpas = os.environ.get("ARK_MOE_PREFILL_DPAS_FP8")
+            os.environ["ARK_MOE_PREFILL_NATIVE_FP8"] = "0"
+            os.environ["ARK_MOE_PREFILL_DPAS_FP8"] = "0"
+            try:
+                ark_ms = _xpu_time_ms(
+                    lambda: ark.moe_gemm_prefill(
+                        activations,
+                        packed,
+                        ntpe,
+                        scales=scales,
+                        group_size=group_size,
+                        asym=False,
+                    )
                 )
-            )
+            finally:
+                pass  # keep DPAS off for the following native measurement
 
             flops = _compute_moe_flops(total_tokens, K, N, E)
             tflops = flops / (ark_ms * 1e-3) / 1e12
 
-            _print_row(label, E, N, K, total_tokens, base_ms, deq_ms, ark_ms, tflops)
+            # Native FP8 fused GEMM (scalar path, no [E, K, N] workspace).
+            # Keep DPAS disabled so the C++ dispatcher does not shadow the
+            # native branch.
+            os.environ["ARK_MOE_PREFILL_NATIVE_FP8"] = "1"
+            os.environ["ARK_MOE_PREFILL_DPAS_FP8"] = "0"
+            try:
+                native_ms = _xpu_time_ms(
+                    lambda: ark.moe_gemm_prefill(
+                        activations,
+                        packed,
+                        ntpe,
+                        scales=scales,
+                        group_size=group_size,
+                        asym=False,
+                    )
+                )
+            finally:
+                pass
+            native_tflops = flops / (native_ms * 1e-3) / 1e12
+
+            # Variant B DPAS FP8 (default-on branch). Guarded on the
+            # presence of the pybind symbol so builds without the DPAS
+            # kernel print `--` for this column instead of failing.
+            dpas_ms = None
+            dpas_tflops = None
+            if hasattr(ark.xpu_lib, "moe_gemm_prefill_fp8_dpas"):
+                os.environ["ARK_MOE_PREFILL_NATIVE_FP8"] = "0"
+                os.environ["ARK_MOE_PREFILL_DPAS_FP8"] = "1"
+                try:
+                    dpas_ms = _xpu_time_ms(
+                        lambda: ark.moe_gemm_prefill(
+                            activations,
+                            packed,
+                            ntpe,
+                            scales=scales,
+                            group_size=group_size,
+                            asym=False,
+                        )
+                    )
+                finally:
+                    pass
+                dpas_tflops = flops / (dpas_ms * 1e-3) / 1e12
+
+            # Restore prior env state.
+            if prev_native is None:
+                os.environ.pop("ARK_MOE_PREFILL_NATIVE_FP8", None)
+            else:
+                os.environ["ARK_MOE_PREFILL_NATIVE_FP8"] = prev_native
+            if prev_dpas is None:
+                os.environ.pop("ARK_MOE_PREFILL_DPAS_FP8", None)
+            else:
+                os.environ["ARK_MOE_PREFILL_DPAS_FP8"] = prev_dpas
+
+            _print_row(label, E, N, K, total_tokens, base_ms, deq_ms, ark_ms, tflops, native_ms, native_tflops,
+                       dpas_ms, dpas_tflops)
 
             activations = ntpe = act_padded = w_float = scales = packed = dequant = None
             _release_xpu_memory()
