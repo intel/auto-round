@@ -994,9 +994,7 @@ def vllm_load_model(
     if not hasattr(model, "config"):
         _hf_model_name = llm.llm_engine.model_config.model
         try:
-            model.config = AutoConfig.from_pretrained(
-                _hf_model_name, trust_remote_code=True
-            )
+            model.config = AutoConfig.from_pretrained(_hf_model_name, trust_remote_code=True)
         except Exception as _e:
             logger.warning(
                 "Could not attach HF config to vLLM model from %r: %s. "

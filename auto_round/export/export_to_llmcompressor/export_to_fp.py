@@ -203,6 +203,7 @@ def pack_layer(name, model, device=None):
         if input_global_scale is None:
             if not hasattr(layer, "act_max"):
                 from auto_round.logger import logger as _logger
+
                 _logger.error(
                     f"act_max missing for layer '{name}' "
                     f"(type={type(layer).__name__}, act_bits={act_bits}, act_data_type={act_data_type}). "
