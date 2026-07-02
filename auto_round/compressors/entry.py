@@ -13,7 +13,7 @@ from auto_round.algorithms.quantization.sign_round.config import SignRoundConfig
 from auto_round.algorithms.registry import normalize_algorithm_config, resolve_alg_config
 from auto_round.algorithms.transforms import normalize_rotation_config as _normalize_rotation_alg_config
 from auto_round.algorithms.transforms.awq.config import AWQConfig
-from auto_round.algorithms.transforms.quarot.config import RotationConfig as _NewArchRotationConfig
+from auto_round.algorithms.transforms.hadamard.config import RotationConfig as _NewArchRotationConfig
 from auto_round.auto_scheme.gen_auto_scheme import AutoScheme
 from auto_round.compressors.base import BaseCompressor
 from auto_round.compressors.data_driven import CalibratedRTNCompressor, DataDrivenCompressor
