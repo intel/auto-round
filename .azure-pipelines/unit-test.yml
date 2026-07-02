@@ -176,8 +176,6 @@ stages:
                   | python3 -c "import json,sys; print(json.load(sys.stdin)['token'])")
                 # ---------------------------------------------
 
-                export REPO_PATH="${repo_path}"
-                export PR_NUMBER="${pr_number}"
                 export CURRENT_SHA="${SYSTEM_PULLREQUEST_SOURCECOMMITID:-${BUILD_SOURCEVERSION:-unknown}}"
 
                 if python "$(Build.SourcesDirectory)/.azure-pipelines/scripts/check_cuda_trigger.py"; then
