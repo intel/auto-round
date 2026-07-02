@@ -50,6 +50,12 @@ How to run::
     pytest -v -s auto_round_extension/ark/test/test_moe_prefill_perf.py
 
 The ``-s`` flag is required to see the printed timing tables and TFLOPS.
+
+Pass ``--minimax-real-only`` to restrict the sweep to the ``"minimax real"``
+rows only (the heavy-tailed tokens-per-expert distribution)::
+
+    pytest -v -s auto_round_extension/ark/test/test_moe_prefill_perf.py \
+        --minimax-real-only
 """
 
 import os
@@ -413,6 +419,28 @@ PREFILL_SHAPES = [
     ("minimax real up  8K", _MINIMAX_E, _minimax_real_tpe(65536, max_ratio=8), _MINIMAX_N, _MINIMAX_K),
     ("minimax real down 8K", _MINIMAX_E, _minimax_real_tpe(65536, max_ratio=8), _MINIMAX_K, _MINIMAX_N),
 ]
+
+
+@pytest.fixture(autouse=True)
+def _maybe_restrict_to_minimax_real(request, monkeypatch):
+    """Optionally restrict ``PREFILL_SHAPES`` to the ``"minimax real"`` rows.
+
+    Controlled by the ``--minimax-real-only`` pytest CLI flag (registered
+    in this directory's ``conftest.py``). Default is off, so the full
+    shape matrix is used and existing behavior is preserved.
+
+    The filter is applied by monkeypatching this module's ``PREFILL_SHAPES``
+    for the duration of each test, so the ``for label, E, tpe, N, K in
+    PREFILL_SHAPES`` loop inside every ``test_perf_*`` method sees the
+    filtered list without threading the option through each call site.
+    """
+    if not request.config.getoption("--minimax-real-only", default=False):
+        return
+    import sys
+
+    module = sys.modules[__name__]
+    filtered = [s for s in PREFILL_SHAPES if "real" in s[0]]
+    monkeypatch.setattr(module, "PREFILL_SHAPES", filtered)
 
 
 def _print_header(title: str) -> None:
