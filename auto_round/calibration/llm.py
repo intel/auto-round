@@ -38,6 +38,7 @@ from auto_round.utils import (
     hook_ngram_embeddings_on_cpu,
     is_quantized_input_module,
     mv_module_from_gpu,
+    safe_tie_weights,
     to_device,
     to_dtype,
 )
@@ -135,7 +136,7 @@ class LLMCalibrator(Calibrator):
                             no_split_module_classes=no_split_modules,
                         )
                         if hasattr(c.model_context.model, "tie_weights"):
-                            c.model_context.model.tie_weights()
+                            safe_tie_weights(c.model_context.model)
                         device_map = infer_auto_device_map(
                             c.model_context.model,
                             max_memory=new_max_memory,
