@@ -175,11 +175,11 @@ bestla_mha::attn_fwd_args_t<T, T, T, T> make_typed_attn_args_homogeneous(const a
 //   3 | bestla_sdpa_forward_homogeneous(F16)  | f16,f16,f16,f16    | stable  (fp16)   | HCoreRowNAvx512fp16/AVX512-FP16
 //   4 | bestla_sdpa_forward_homogeneous(BF16) | bf16,bf16,bf16,bf16| non-stable(exp)  | HCoreRowNAmxbf16 / AMX-BF16
 //
-// Per-feature status. S = supported + validated + reachable. P = plumbing-gap: the
-// launcher `compute()` implements it, but the ARK entry does not build the inputs
-// it needs yet, so the entry rejects it LOUDLY (future Phase 5 work). U = the
-// launcher itself does not implement it (asserts it off), so the entry rejects it
-// LOUDLY as unsupported. "Loudly" == std::invalid_argument before any kernel work,
+// Per-feature status. S = supported + validated + reachable. U = the launcher itself
+// does not implement it (asserts it off / ignores it), so the entry rejects it LOUDLY
+// as unsupported. ("P" = plumbing-gap -- launcher-capable but entry-unwired -- was the
+// transitional state for alibi/tanh on the fp32-score routes; Phase 5 closed it, so no
+// cell below is P anymore.) "Loudly" == std::invalid_argument before any kernel work,
 // never a release-stripped assert or a silent wrong result.
 //
 //   feature       | route 1 (mix f16) | route 2 (mix bf16) | route 3 (hom f16) | route 4 (hom bf16)
@@ -187,8 +187,8 @@ bestla_mha::attn_fwd_args_t<T, T, T, T> make_typed_attn_args_homogeneous(const a
 //   causal        | S (sl_q<=sl_kv)   | S (sl_q<=sl_kv)    | S (sl_q<=sl_kv)   | S (sl_q<=sl_kv)
 //   GQA           | S (hn % hkv == 0) | S (hn % hkv == 0)  | S (hn % hkv == 0) | U (needs hn == hkv)
 //   padding-right | S (fp32 score)    | S (fp32 score)     | U (fp16 score)    | U (no padding path)
-//   alibi         | P                 | P                  | P                 | U (asserts off)
-//   tanh          | P                 | P                  | P                 | U (no tanh path)
+//   alibi         | S (fp32 score)    | S (fp32 score)     | U (fp16 score)    | U (asserts off)
+//   tanh          | S (fp32 score)    | S (fp32 score)     | U (fp16 score)    | U (no tanh path)
 //   prefer_fp32   | S (no-op; fp32)   | S (selects fp32)   | U (fp16 core)     | U (asserts off)
 //
 // Where the status comes from:
@@ -203,12 +203,20 @@ bestla_mha::attn_fwd_args_t<T, T, T, T> make_typed_attn_args_homogeneous(const a
 //                  with causal) so the fp32-score epilogue runs with padding_type==2.
 //                  Route 3 (fp16 score: its avx512_fp16 ScaleTrackMax asserts
 //                  padding_type != 2) and route 4 (no padding path at all) stay U.
-//   * alibi     -- the stable interface computes alibi slopes (routes 1/2/3 are P,
-//                  pending entry plumbing of the slope); the non-stable interface
-//                  asserts alibi off, so route 4 is U.
-//   * tanh      -- the stable `ScaleTrackMax` epilogue carries a `tanh_scale`
-//                  (routes 1/2/3 are P); the non-stable exp-sum epilogue has no tanh
-//                  term, so route 4 is U.
+//   * alibi     -- ARK's `ScaleTrackMax` implements the alibi slope term only on its
+//                  fp32-score paths (the templated `scale_track_max_fp32_fp32<HAS_ALIBI,
+//                  ...>` AVX2/AVX512F kernels). Routes 1/2 compose fp32-score cores, so
+//                  the stable `compute()` derives the per-head slope from head_num and
+//                  the epilogue applies it: Phase 5 forwards the ALIBI8 flag (already
+//                  carried by make_typed_attn_args) and validates the route so it is S.
+//                  Route 3's fp16-score `ScaleTrackMax<fp16,float>` ASSERTS alibi off and
+//                  its scale_track_max_fp16_fp32 kernel ignores the slope entirely, so
+//                  route 3 is U (a nonzero slope would silently do nothing); the non-
+//                  stable route 4 asserts alibi off too, so it is U.
+//   * tanh      -- same split: the fp32-score `ScaleTrackMax` epilogue folds `tanh_scale`
+//                  into the QK scale (routes 1/2 are S, wired via the TANH30 flag), while
+//                  route 3's fp16-score ScaleTrackMax asserts tanh off / ignores it (U)
+//                  and the non-stable exp-sum epilogue has no tanh term (route 4 U).
 //   * prefer32  -- the stable interface asserts prefer_fp32 requires COMP_FP32 cores:
 //                  routes 1/2 use fp32-score cores so it is S (route 2 uses it to
 //                  select the AVX512F fp32 path over AMX-BF16; route 1 is already
@@ -216,13 +224,13 @@ bestla_mha::attn_fwd_args_t<T, T, T, T> make_typed_attn_args_homogeneous(const a
 //                  core (COMP_FP16) so it is U, and the non-stable route 4 asserts
 //                  prefer_fp32 off so it is U.
 //
-// This matrix is the authoritative audit. causal/GQA/prefer_fp32/padding-right are
-// validated per route: the mixed entry validates causal/GQA/padding-right and accepts
-// prefer_fp32 (S), while the two homogeneous validators below reject prefer_fp32 and
-// padding-right (U). alibi/tanh remain P (mixed routes 1/2 + fp16 route 3) or U (bf16
-// route 4) and are rejected up front in each entry with the per-route rationale noted
-// at the reject site. Promoting a remaining P/U cell to S is future Phase 5 work and
-// must add the matching typed plumbing + validation -- do NOT relax a guard to "pass".
+// This matrix is the authoritative audit. causal/GQA/prefer_fp32/padding-right/alibi/
+// tanh are validated per route: the mixed entry validates causal/GQA/padding-right and
+// accepts prefer_fp32/alibi/tanh (all S for the fp32-score routes 1/2), while the two
+// homogeneous validators below reject prefer_fp32/alibi/tanh/padding-right (all U for
+// their fp16-score / non-stable routes 3/4) with the per-route rationale noted at the
+// reject site. Promoting a remaining U cell to S is future work and must add the
+// matching typed plumbing + validation -- do NOT relax a guard to "pass".
 // ---------------------------------------------------------------------------
 
 // ---------------------------------------------------------------------------
@@ -294,6 +302,18 @@ void validate_homogeneous_fp16_stable_route(const attn_fwd_args_t& a) {
     throw std::invalid_argument(
         "ark::cpu::bestla_sdpa_forward_homogeneous: fp16 stable route causal mask requires sl_q <= sl_kv");
   }
+  // alibi/tanh (matrix cells route 3 == U): the fp16 homogeneous route composes the
+  // fp16-score QK epilogue ScaleTrackMax<utils::fp16, float>, whose forward() asserts
+  // `alibi_slope == 0` and `tanh_scale == 0` (and its scale_track_max_fp16_fp32 kernel
+  // ignores both parameters entirely). There is no fp16-score alibi/tanh
+  // implementation to fall back to -- unlike the fp32-score mixed routes -- so a
+  // nonzero slope/scale would silently do nothing. Reject them loudly here instead of
+  // relying on the release-stripped assert or producing a wrong result.
+  if ((a.attn_flags & (ATTN_FLAG_IS_ALIBI8 | ATTN_FLAG_IS_TANH30)) != 0) {
+    throw std::invalid_argument(
+        "ark::cpu::bestla_sdpa_forward_homogeneous: fp16 stable route does not support alibi or tanh (its "
+        "fp16-score ScaleTrackMax<fp16,float> asserts both off)");
+  }
   // prefer_fp32 (matrix cell route 3 == U): the homogeneous fp16 route composes the
   // fp16-compute core gemm::HCoreRowNAvx512fp16 (COMP_FP16), but the stable
   // interface only honors prefer_fp32 over COMP_FP32 cores (it asserts
@@ -335,6 +355,15 @@ void validate_homogeneous_bf16_nonstable_route(const attn_fwd_args_t& a) {
     throw std::invalid_argument(
         "ark::cpu::bestla_sdpa_forward_homogeneous: bf16 non-stable route causal mask requires sl_q <= sl_kv");
   }
+  // alibi/tanh (matrix cells route 4 == U): the non-stable mha_interface_t exp-sum
+  // launcher composes a `scale_exp_acc_sum` epilogue that has no alibi slope term and
+  // no tanh scale, and its QK ScaleExpAccSum path asserts alibi off. Reject both here
+  // loudly rather than relying on that release-stripped assert.
+  if ((a.attn_flags & (ATTN_FLAG_IS_ALIBI8 | ATTN_FLAG_IS_TANH30)) != 0) {
+    throw std::invalid_argument(
+        "ark::cpu::bestla_sdpa_forward_homogeneous: bf16 non-stable route does not support alibi or tanh (the "
+        "non-stable mha_interface_t exp-sum epilogue has no alibi/tanh term)");
+  }
   // prefer_fp32 (matrix cell route 4 == U): the non-stable mha_interface_t exp-sum
   // launcher asserts prefer_fp32 off -- it has no fp32-compute variant -- so reject
   // it loudly here rather than relying on that release-stripped assert.
@@ -375,21 +404,22 @@ void bestla_sdpa_forward(const attn_fwd_args_t& args, BTLA_DTYPE kv_dtype) {
       args.V_layout != ATTN_FWD_LAYOUT_PLAIN || args.dst_layout != ATTN_FWD_LAYOUT_PLAIN) {
     throw std::invalid_argument("ark::cpu::bestla_sdpa_forward: only ATTN_FWD_LAYOUT_PLAIN is supported");
   }
-  // Feature flags (matrix rows alibi/tanh). For BOTH mixed routes (route 1
-  // f32/f16, route 2 f32/bf16) alibi/tanh are P (plumbing-gap): the stable
-  // interface's fp32-score ScaleTrackMax epilogue implements them, but this entry
-  // does not build/forward the alibi slope or tanh scale yet, so they are rejected
-  // loudly here until that typed plumbing lands. prefer_fp32 is NOT rejected: it is
-  // S for both mixed routes -- route 2 uses it to select the AVX512F fp32-score
-  // path over the AMX-BF16 core, and route 1 already runs a fp32-score core so it
-  // is an accepted no-op (see the feature-support matrix above and the overload
-  // dispatch in mha_dense_wrapper.h). padding-right is also NOT rejected here: it
-  // is S for both mixed routes and validated below (Phase 5 Step 2).
-  constexpr attn_flags_t kUnsupportedFlags = ATTN_FLAG_IS_ALIBI8 | ATTN_FLAG_IS_TANH30;
-  if ((args.attn_flags & kUnsupportedFlags) != 0) {
-    throw std::invalid_argument(
-        "ark::cpu::bestla_sdpa_forward: alibi and tanh are not wired yet");
-  }
+  // Feature flags (matrix rows alibi/tanh) are now WIRED for both mixed routes
+  // (route 1 f32/f16, route 2 f32/bf16): they are S. Both routes compose fp32-score
+  // cores (route 1 SCoreRowNAvx2, route 2 SCoreRowNAvx512f/HCoreRowNAmxbf16) whose
+  // `ScaleTrackMaxFp32Fp32` epilogue implements the alibi slope and the tanh scale
+  // (the templated scale_track_max_fp32_fp32<HAS_ALIBI, HAS_TANH> AVX2/AVX512F
+  // kernels). The stable `compute()` derives the per-head alibi slope from head_num
+  // and folds tanh_scale into the QK scale from the ALIBI8/TANH30 flags alone -- no
+  // extra typed metadata is needed, and make_typed_attn_args already forwards
+  // `attn_flags`. So neither flag is rejected here anymore; they flow straight
+  // through to the epilogue. (They stay U on the homogeneous fp16-score route 3,
+  // whose ScaleTrackMax<fp16,float> asserts both off, and on the non-stable route 4;
+  // those rejections live in the homogeneous validators, not here.) prefer_fp32 is
+  // likewise not rejected: it is S for both mixed routes -- route 2 uses it to select
+  // the AVX512F fp32-score path over the AMX-BF16 core, and route 1 already runs a
+  // fp32-score core so it is an accepted no-op. padding-right is also NOT rejected
+  // here: it is S for both mixed routes and validated below (Phase 5 Step 2).
   // causal (matrix row causal == S): the stable interface masks with sl_q <= sl_kv;
   // formalize that contract here (parity with the homogeneous validators) so a
   // violating decode/prefill shape fails loudly instead of via a stripped assert.
@@ -543,19 +573,18 @@ void bestla_sdpa_forward_homogeneous(const attn_fwd_args_t& args, BTLA_DTYPE dty
     throw std::invalid_argument(
         "ark::cpu::bestla_sdpa_forward_homogeneous: only homogeneous F16 or BF16 (Q==K==V==dst) is supported");
   }
-  // Alibi/tanh/padding-right are rejected up front for BOTH homogeneous routes
-  // (matrix rows alibi/tanh/padding-right). The per-route rationale differs: for
-  // route 3 (fp16 stable) alibi/tanh are P (the stable interface implements them,
-  // pending entry plumbing) while padding-right is U (its fp16-score ScaleTrackMax
-  // asserts padding_type off); for route 4 (bf16 non-stable) all three are U (the
-  // exp-sum launcher has no alibi/tanh/padding path). Either way the entry rejects
-  // them here before any kernel work; prefer_fp32 is handled per route in the
-  // validators below (routes 3/4 are both U, for different core reasons).
-  constexpr attn_flags_t kUnsupportedFlags =
-      ATTN_FLAG_IS_ALIBI8 | ATTN_FLAG_IS_TANH30 | ATTN_FLAG_PADDING_RIGHT;
-  if ((args.attn_flags & kUnsupportedFlags) != 0) {
+  // padding-right is rejected up front for BOTH homogeneous routes (matrix row
+  // padding-right): route 3's fp16-score ScaleTrackMax asserts padding_type != 2 and
+  // route 4's non-stable exp-sum path has no padding path, so it is U either way.
+  // alibi/tanh are NOT rejected here anymore -- they are U for both homogeneous
+  // routes as well, but the per-route rationale differs (route 3's fp16-score
+  // ScaleTrackMax<fp16,float> asserts them off; route 4's exp-sum epilogue has no
+  // slope/scale term), so they are rejected inside each route validator below with
+  // that route-specific message, exactly like prefer_fp32. This keeps the two routes
+  // validated separately rather than collapsed into one homogeneous check.
+  if ((args.attn_flags & ATTN_FLAG_PADDING_RIGHT) != 0) {
     throw std::invalid_argument(
-        "ark::cpu::bestla_sdpa_forward_homogeneous: alibi, tanh and padding-right are not wired yet");
+        "ark::cpu::bestla_sdpa_forward_homogeneous: padding-right is not wired yet");
   }
 
   // Second-layer route contract: each homogeneous dtype reaches a DISTINCT
@@ -661,6 +690,11 @@ void bestla_sdpa_forward_packed(const attn_fwd_args_t& args, const ReorderKVShap
   if (args.head_size != shape.head_dim) {
     throw std::invalid_argument("ark::cpu::bestla_sdpa_forward_packed: head_size must match packed cache head_dim");
   }
+  // This internal already-packed entry keeps alibi/tanh/padding-right rejected. It is
+  // NOT one of the four routes in the sdpa.cpp feature matrix (it is the experimental
+  // gated packed-cache forward); although it drives the same fp32-score mixed kernels
+  // whose ScaleTrackMax epilogue is alibi/tanh-capable, wiring them here is deferred
+  // until this path leaves the ARK_UNSAFE_BESTLA_MIXED_SDPA gate.
   constexpr attn_flags_t kUnsupportedFlags = ATTN_FLAG_IS_ALIBI8 | ATTN_FLAG_IS_TANH30 | ATTN_FLAG_PADDING_RIGHT;
   if ((args.attn_flags & kUnsupportedFlags) != 0) {
     throw std::invalid_argument("ark::cpu::bestla_sdpa_forward_packed: alibi, tanh and padding-right are not wired yet");

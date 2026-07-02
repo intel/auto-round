@@ -369,13 +369,20 @@ struct TestHomogeneousForwardSetup {
       try { bestla_sdpa_forward_homogeneous(a, BTLA_DTYPE::F32); } catch (const std::exception&) { threw = true; }
       if (!threw) throw std::runtime_error("homogeneous unsupported dtype not rejected");
     }
-    // Alibi/tanh/padding-right flags are rejected before the ISA gate / GEMM.
+    // Phase 5: alibi/tanh are U for BOTH homogeneous routes and rejected PER ROUTE
+    // (route 3's fp16-score ScaleTrackMax<fp16,float> asserts them off; route 4's
+    // non-stable exp-sum epilogue has no alibi/tanh term) -- NOT via a shared up-front
+    // flag gate. Build route-valid args so the rejection comes from the route
+    // validator's alibi/tanh guard (message contains "route"), not an earlier
+    // layout/stride check.
     for (auto dt : {BTLA_DTYPE::F16, BTLA_DTYPE::BF16}) {
-      auto a = make_args(q, k, v, dst, nullptr);
-      a.attn_flags = ATTN_FLAG_IS_ALIBI8;
-      bool threw = false;
-      try { bestla_sdpa_forward_homogeneous(a, dt); } catch (const std::exception&) { threw = true; }
-      if (!threw) throw std::runtime_error("homogeneous unsupported flag not rejected");
+      for (auto flag : {ATTN_FLAG_IS_ALIBI8, ATTN_FLAG_IS_TANH30}) {
+        std::vector<uint16_t> rq(64, 0), rk(64, 0), rv(64, 0), rd(64, 0);
+        auto a = make_route_valid_args(rq, rk, rv, rd, dt);
+        a.attn_flags = flag;
+        if (!route_validation_rejects(a, dt))
+          throw std::runtime_error("homogeneous alibi/tanh not rejected by the route validator");
+      }
     }
     // Phase 5 Step 1: prefer_fp32 is unsupported for BOTH homogeneous routes and is
     // rejected per route (route 3 fp16 core is not COMP_FP32; route 4 non-stable
@@ -606,6 +613,78 @@ struct TestMixedPaddingRight {
       if (!threw) throw std::runtime_error("homogeneous padding-right not rejected");
     }
     printf("[mixed_padding_right] checks passed\n");
+  }
+};
+
+// Phase 5 (alibi + tanh closure): alibi/tanh wiring + per-route classification.
+// Both mixed routes (ark::cpu::bestla_sdpa_forward, route 1 f32/f16 and route 2
+// f32/bf16) compose fp32-score cores whose ScaleTrackMax epilogue implements the
+// alibi slope and the tanh scale (the templated scale_track_max_fp32_fp32<HAS_ALIBI,
+// HAS_TANH> AVX2/AVX512F kernels), driven entirely by the ALIBI8/TANH30 flags that
+// make_typed_attn_args already forwards, so both features are S: the entry no longer
+// rejects them and they flow through to the kernel. Each case here is decided before
+// the ISA/threading gates, so acceptance is deterministic on any CPU (a valid alibi/
+// tanh call stops at the same pre-kernel ISA/threading gate as a plain call, never an
+// "alibi"/"tanh" rejection). The two homogeneous routes (3 fp16-score, 4 non-stable)
+// stay U and reject alibi/tanh in their per-route validators.
+struct TestMixedAlibiTanh {
+  TestMixedAlibiTanh() { run_all(); }
+
+  // True iff bestla_sdpa_forward rejects `a`/`dt` with an alibi/tanh-specific
+  // std::invalid_argument. Any other exception (the ISA std::runtime_error gate or
+  // the shared threading std::invalid_argument gate) means the alibi/tanh flags were
+  // ACCEPTED and the call simply stopped at a later pre-kernel gate.
+  static bool alibi_tanh_rejected(const attn_fwd_args_t& a, BTLA_DTYPE dt) {
+    try {
+      bestla_sdpa_forward(a, dt);
+    } catch (const std::invalid_argument& e) {
+      const std::string msg = e.what();
+      return msg.find("alibi") != std::string::npos || msg.find("tanh") != std::string::npos;
+    } catch (const std::exception&) {
+      return false;  // ISA/threading gate reached: alibi/tanh gate already passed
+    }
+    return false;
+  }
+
+  static void run_all() {
+    // Mixed routes 1/2: alibi, tanh, both, and alibi+causal are all accepted (S).
+    for (auto dt : {BTLA_DTYPE::F16, BTLA_DTYPE::BF16}) {
+      std::vector<uint8_t> q(4096, 0), k(4096, 0), v(4096, 0), dst(4096, 0);
+      {
+        auto a = TestMixedPaddingRight::make_args(q, k, v, dst);
+        a.attn_flags = ATTN_FLAG_IS_ALIBI8;
+        if (alibi_tanh_rejected(a, dt)) throw std::runtime_error("mixed alibi wrongly rejected");
+      }
+      {
+        auto a = TestMixedPaddingRight::make_args(q, k, v, dst);
+        a.attn_flags = ATTN_FLAG_IS_TANH30;
+        if (alibi_tanh_rejected(a, dt)) throw std::runtime_error("mixed tanh wrongly rejected");
+      }
+      {
+        auto a = TestMixedPaddingRight::make_args(q, k, v, dst);
+        a.attn_flags = ATTN_FLAG_IS_ALIBI8 | ATTN_FLAG_IS_TANH30;
+        if (alibi_tanh_rejected(a, dt)) throw std::runtime_error("mixed alibi+tanh wrongly rejected");
+      }
+      {
+        // alibi composes with causal (per-head slope + sl_q<=sl_kv mask).
+        auto a = TestMixedPaddingRight::make_args(q, k, v, dst);
+        a.attn_flags = ATTN_FLAG_IS_ALIBI8 | ATTN_FLAG_IS_CAUSAL;
+        if (alibi_tanh_rejected(a, dt)) throw std::runtime_error("mixed alibi+causal wrongly rejected");
+      }
+    }
+    // Homogeneous routes 3/4 stay U for alibi/tanh; the rejection is per route (its
+    // message names the route). Use route-valid bundles so the reject comes from the
+    // alibi/tanh guard, not a layout/stride failure.
+    for (auto dt : {BTLA_DTYPE::F16, BTLA_DTYPE::BF16}) {
+      for (auto flag : {ATTN_FLAG_IS_ALIBI8, ATTN_FLAG_IS_TANH30}) {
+        std::vector<uint16_t> hq(64, 0), hk(64, 0), hv(64, 0), hd(64, 0);
+        auto a = TestHomogeneousForwardSetup::make_route_valid_args(hq, hk, hv, hd, dt);
+        a.attn_flags = flag;
+        if (!TestHomogeneousForwardSetup::route_validation_rejects(a, dt))
+          throw std::runtime_error("homogeneous alibi/tanh not rejected by the route validator");
+      }
+    }
+    printf("[mixed_alibi_tanh] checks passed\n");
   }
 };
 

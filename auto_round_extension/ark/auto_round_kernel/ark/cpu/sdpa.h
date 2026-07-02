@@ -37,8 +37,9 @@ void sdpa_forward(const MhaDenseArgs& args);
 // `CpuWrapper::get_threading()` so the attention path shares the same pool as
 // the rest of the CPU kernels. When `args.tmp` is null the wrapper scratch is
 // allocated internally (as a float-aligned buffer) for the duration of the
-// call. This entry validates PLAIN-strided operands and rejects alibi and tanh
-// flags; note, however, that the `step_*` stride interface being
+// call. This entry validates PLAIN-strided operands and forwards the alibi/tanh
+// flags to the fp32-score epilogue (Phase 5: both are S for the mixed routes);
+// note, however, that the `step_*` stride interface being
 // HND/NHD-friendly does NOT mean the wired mixed-precision kernels accept raw
 // HND/NHD/PLAIN K/V. Those specializations require packed/reordered
 // (NTILE24/NTILE48) K/V; Phase 4 Step 1 added an internal raw->packed reorder so
@@ -48,15 +49,17 @@ void sdpa_forward(const MhaDenseArgs& args);
 // internal already-packed forward (bestla_sdpa_forward_packed) now exist
 // alongside this temporary bridge; both stay experimental and gated.
 //
-// Feature support (Phase 5 Step 1 audit + Phase 5 Step 2 padding-right; see the
-// matrix in sdpa.cpp for the full per-route classification): both mixed routes
-// support causal (sl_q<=sl_kv), GQA (head_num a multiple of heads_kv), prefer_fp32
-// (route 2 uses it to pick the AVX512F fp32-score path over AMX-BF16; route 1 is an
-// accepted fp32-score no-op) and padding-right (Phase 5 Step 2 forwards n_padding to
-// the fp32-score ScaleTrackMax padding_type==2 epilogue and validates the boundary:
-// 0 < n_padding <= sl_kv, mutually exclusive with causal), all validated here.
-// alibi/tanh remain a plumbing-gap (the fp32-score stable epilogue implements them
-// but this entry does not forward their inputs yet) and are rejected up front.
+// Feature support (Phase 5 audit + wiring; see the matrix in sdpa.cpp for the full
+// per-route classification): both mixed routes support causal (sl_q<=sl_kv), GQA
+// (head_num a multiple of heads_kv), prefer_fp32 (route 2 uses it to pick the AVX512F
+// fp32-score path over AMX-BF16; route 1 is an accepted fp32-score no-op), padding-right
+// (Phase 5 Step 2 forwards n_padding to the fp32-score ScaleTrackMax padding_type==2
+// epilogue and validates 0 < n_padding <= sl_kv, mutually exclusive with causal) and
+// alibi/tanh (Phase 5: the fp32-score ScaleTrackMax epilogue implements the alibi slope
+// and tanh scale, both driven by the ALIBI8/TANH30 flags that make_typed_attn_args
+// already forwards -- no extra typed metadata needed), all validated here. Those two
+// flags stay unsupported (U) on the homogeneous fp16-score/non-stable routes, rejected
+// in bestla_sdpa_forward_homogeneous rather than here.
 void bestla_sdpa_forward(const attn_fwd_args_t& args, BTLA_DTYPE kv_dtype);
 
 // ---------------------------------------------------------------------------
@@ -203,13 +206,15 @@ void bestla_sdpa_forward_packed(const attn_fwd_args_t& args, const ReorderKVShap
 // default user path stays on the scalar reference kernel. True e2e numerical
 // validation requires a capable CPU extension build (AVX512-FP16 / AMX-BF16).
 //
-// Feature support (Phase 5 Step 1 audit; full matrix in sdpa.cpp): route 3 (fp16
-// stable) supports causal and GQA (validated); route 4 (bf16 non-stable) supports
-// causal but NOT GQA (requires head_num == heads_kv). prefer_fp32 is unsupported
-// for BOTH homogeneous routes and rejected per route (route 3's fp16 core is not
-// COMP_FP32; route 4's non-stable exp-sum path asserts prefer_fp32 off).
-// alibi/tanh/padding-right are rejected up front (plumbing-gap for the fp16 stable
-// route's alibi/tanh, unsupported by the bf16 non-stable launcher).
+// Feature support (Phase 5 audit; full matrix in sdpa.cpp): route 3 (fp16 stable)
+// supports causal and GQA (validated); route 4 (bf16 non-stable) supports causal but
+// NOT GQA (requires head_num == heads_kv). prefer_fp32 is unsupported for BOTH
+// homogeneous routes and rejected per route (route 3's fp16 core is not COMP_FP32;
+// route 4's non-stable exp-sum path asserts prefer_fp32 off). alibi/tanh are ALSO
+// unsupported (U) for both and rejected per route (route 3's fp16-score
+// ScaleTrackMax<fp16,float> asserts them off / ignores the slope+scale; route 4's
+// exp-sum epilogue has no alibi/tanh term) -- unlike the fp32-score mixed routes,
+// which do implement them. padding-right is rejected up front (U for both).
 void bestla_sdpa_forward_homogeneous(const attn_fwd_args_t& args, BTLA_DTYPE dtype);
 
 }  // namespace ark::cpu
