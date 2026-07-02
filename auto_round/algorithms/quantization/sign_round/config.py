@@ -29,6 +29,7 @@ class SignRoundConfig(QuantizationConfig):
         lr_scheduler: Callable | None = None,
         momentum: float = 0.0,
         nblocks: int = 1,
+        nblocks_overlap: int = 0,
         enable_minmax_tuning: bool = True,
         enable_norm_bias_tuning: bool = False,
         gradient_accumulate_steps: int = 1,
@@ -53,6 +54,10 @@ class SignRoundConfig(QuantizationConfig):
                 scheduler object used by the optimizer.
             momentum: Momentum factor used by the optimizer.
             nblocks: Number of blocks to optimize together.
+            nblocks_overlap: Number of blocks shared between adjacent block
+                windows when ``nblocks > 1``. Must satisfy
+                ``0 <= nblocks_overlap < nblocks``. ``0`` disables overlap
+                and reproduces the default non-overlapping behavior.
             enable_minmax_tuning: Whether to tune weight min/max ranges.
             enable_norm_bias_tuning: Whether to tune normalization and
                 bias terms.
@@ -92,6 +97,7 @@ class SignRoundConfig(QuantizationConfig):
         self.lr_scheduler = lr_scheduler
 
         self.nblocks = nblocks
+        self.nblocks_overlap = nblocks_overlap if nblocks > 1 else 0
         self.momentum = momentum
         self.enable_alg_ext = enable_alg_ext
 
@@ -120,6 +126,10 @@ class SignRoundConfig(QuantizationConfig):
             raise ValueError("`iters` must be non-negative")
         if self.nblocks <= 0:
             raise ValueError("`nblocks` must be positive")
+        if self.nblocks_overlap < 0:
+            raise ValueError("`nblocks_overlap` must be non-negative")
+        if self.nblocks > 1 and self.nblocks_overlap >= self.nblocks:
+            raise ValueError("`nblocks_overlap` must be smaller than `nblocks`")
         if self.gradient_accumulate_steps <= 0:
             raise ValueError("`gradient_accumulate_steps` must be positive")
 
