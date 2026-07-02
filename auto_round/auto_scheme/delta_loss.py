@@ -845,7 +845,12 @@ def get_score_for_scheme(
     ``dataset``/``dataloader``, then unwrap and return each layer's ``[bits, loss]``.
     """
     scores_dict = {}  # Key=name,Val=[quant_total_bits, loss]
-    block_names = get_block_names(model)[0]
+    # Include the visual block(s) when scoring VLMs with ``--quant_nontext_module``
+    # (``force_mllm=True``) so vision-tower layer losses match a block below instead
+    # of silently falling through to "non_block" in the logging/inactive-expert-fill
+    # helpers. Mirrors the same ``quant_vision=force_mllm`` pattern used in
+    # ``_gen_layer_config``.
+    block_names = get_block_names(model, quant_vision=force_mllm)[0]
     for n, m in model.named_modules():
         if type(m) in SUPPORTED_LAYER_TYPES:
             m.weight.requires_grad = False
