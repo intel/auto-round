@@ -1,14 +1,7 @@
 import os
 
-from auto_round.auto_scheme.delta_loss import _resolve_dp_max_states
 from auto_round.auto_scheme.gen_auto_scheme import AutoScheme
 from auto_round.auto_scheme.utils import _build_layer_config_header_rows, _short_summary_name
-
-
-def test_resolve_dp_max_states_applies_beam_for_large_layers():
-    """Large layer sets should automatically use a bounded DP beam width."""
-    layers = {f"layer_{idx}": [] for idx in range(80)}
-    assert _resolve_dp_max_states(layers) == 576
 
 
 def test_env_ar_auto_scheme_nsamples_overrides_default(monkeypatch):

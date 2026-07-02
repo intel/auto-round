@@ -1217,26 +1217,7 @@ def get_score_for_scheme(
     return scores_dict
 
 
-def _resolve_dp_max_states(layers: dict, max_states: Optional[int] = None, is_moe_model: bool = False) -> Optional[int]:
-    """Choose an effective beam width for the DP search.
-
-    Large MoE-style models can produce thousands of DP states even after Pareto
-    pruning, and retaining all of them is both slow and memory-heavy. Dense models
-    (e.g. Qwen3-8B) have been observed to reach ~18k states with no noticeable
-    slowdown or memory issue, so the beam limit is only applied to MoE models for
-    now, and with a higher ceiling than before.
-    """
-    if max_states is not None:
-        return max_states
-    if not is_moe_model:
-        return None
-    layer_count = len(layers)
-    if layer_count <= 1024:
-        return None
-    return max(4096, min(20000, 64 * max(1, math.ceil(math.sqrt(layer_count)))))
-
-
-def choose_bits_per_layer_with_path(layers: dict, P: int, max_states: int = None, is_moe_model: bool = False):
+def choose_bits_per_layer_with_path(layers: dict, P: int, max_states: int = None):
     """
     Args:
         layers: A dict mapping each layer name to a list of candidate options.
@@ -1245,9 +1226,6 @@ def choose_bits_per_layer_with_path(layers: dict, P: int, max_states: int = None
         max_states: Maximum number of DP states to retain after each layer
                     (beam width). Limits memory usage for models with many
                     layers and incommensurate layer sizes.
-        is_moe_model: Whether the underlying model is a MoE architecture. The
-                    automatic beam-width cap (used when ``max_states`` isn't
-                    explicitly provided) is only applied for MoE models.
 
     Returns:
         (min_loss, best_path), where best_path is a list of
@@ -1257,7 +1235,6 @@ def choose_bits_per_layer_with_path(layers: dict, P: int, max_states: int = None
     # dp: total_params -> (accumulated_loss, chosen_path)
     # The path is stored as a tuple to avoid the high overhead of repeatedly
     # copying Python lists for every DP transition.
-    effective_max_states = _resolve_dp_max_states(layers, max_states, is_moe_model)
     dp: dict[int, tuple[float, tuple]] = {0: (0.0, ())}
     for layer_name, opts in layers.items():
         new_dp: dict[int, tuple[float, tuple]] = {}
@@ -1291,17 +1268,17 @@ def choose_bits_per_layer_with_path(layers: dict, P: int, max_states: int = None
         # layers whose sizes are incommensurate, the number of distinct
         # cumulative-bit sums can grow to millions, each storing a full
         # path copy — easily exceeding 70 GB of RAM.
-        if effective_max_states is not None and len(pruned) > effective_max_states:
-            if effective_max_states <= 1:
+        if max_states is not None and len(pruned) > max_states:
+            if max_states <= 1:
                 best_k = min(pruned.keys(), key=lambda k: pruned[k][0])
                 pruned = {best_k: pruned[best_k]}
             else:
                 sorted_keys = sorted(pruned.keys())
                 n = len(sorted_keys)
                 # Uniformly pick max_states indices (always include first and last)
-                step = (n - 1) / (effective_max_states - 1)
+                step = (n - 1) / (max_states - 1)
                 selected: dict[int, tuple[float, tuple]] = {}
-                for i in range(effective_max_states):
+                for i in range(max_states):
                     idx = int(round(i * step))
                     if idx >= n:
                         idx = n - 1
@@ -1855,7 +1832,6 @@ def _gen_layer_config(
         In all cases, the selected scheme must not exceed the total bit budget
         (i.e., embedding bits + fixed bits + min DP bits <= target_params_cnt).
         """
-        import math
 
         if has_tied_lm_head:
             if target_bits > 6:
@@ -1925,7 +1901,7 @@ def _gen_layer_config(
     memory_monitor.update()
     memory_monitor.log_summary()
 
-    best_loss, best_path = choose_bits_per_layer_with_path(total_scores, target_params_cnt, is_moe_model=is_moe_model)
+    best_loss, best_path = choose_bits_per_layer_with_path(total_scores, target_params_cnt)
 
     # print(best_loss, best_path)  # TODO better log
     layer_config = copy.deepcopy(fixed_layer_scheme)
