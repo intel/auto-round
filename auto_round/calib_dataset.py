@@ -980,7 +980,11 @@ def get_dataset(tokenizer, seqlen, dataset_name="NeelNanda/pile-10k", seed=42, n
         if os.name == "nt":
             raise OSError("fork is not available on Windows")
 
-        ctx = multiprocessing.get_context("fork")
+        # macOS crashes with SIGSEGV (exit code -11) when using "fork" after threads
+        # have been started (PyTorch, tokenizers, and HuggingFace datasets all use
+        # threads).  Use "spawn" on macOS, which is safe but requires pickling args.
+        mp_context = "spawn" if sys.platform == "darwin" else "fork"
+        ctx = multiprocessing.get_context(mp_context)
         p = ctx.Process(
             target=_get_dataset_impl,
             args=(tokenizer, seqlen, dataset_name, seed, nsamples),
