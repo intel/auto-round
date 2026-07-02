@@ -700,6 +700,20 @@ class BaseCompressor(object):
             fill_default_value=fill_default_value,
             gguf_format_name=getattr(self, "_gguf_format_name", None),
         )
+        if self.is_auto_scheme:
+            from auto_round.auto_scheme.utils import compute_avg_bits_for_model
+
+            ignore_scale_zp_bits = getattr(self.orig_scheme, "ignore_scale_zp_bits", False)
+            avg_bits, total_bits = compute_avg_bits_for_model(
+                self.model_context.model,
+                ignore_scale_zp_bits=ignore_scale_zp_bits,
+            )
+            logger.info(
+                "AutoScheme final effective avg_bits=%.4f, target avg_bits=%.4f, total_bits=%d",
+                avg_bits,
+                self.orig_scheme.avg_bits,
+                total_bits,
+            )
 
     # ─────────────────────────────────────────────────────────────────────────
 
