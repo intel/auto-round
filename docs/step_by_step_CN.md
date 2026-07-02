@@ -421,6 +421,8 @@ ar.quantize_and_save()
 
 为加速推理，在部分框架中，会对特定层（如QKV、MoE）进行融合。这些融合层必须是相同的数据类型和量化配置。`shared_layers` 参数可以简化该配置，**同时支持正则表达式匹配和完整层名匹配**。注意**正则匹配按块匹配规则生效**。
 
+**MoE 的 expert 层会自动按块分组** — 同一个 transformer block 内所有 expert 的投影层（gate/up/down，跨所有 experts）会被视为一个整体进行 DP 优化。它们共享相同的量化方案，loss 和 numel 直接求和。无需手动配置 `shared_layers` 来处理 expert 层。
+
 示例代码如下：
 ```python
 from auto_round import AutoRound, AutoScheme

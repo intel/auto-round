@@ -27,13 +27,14 @@ from auto_round.auto_scheme.gen_auto_scheme import AutoScheme
 from auto_round.auto_scheme.register import register_scheme_methods
 from auto_round.auto_scheme.utils import (
     _describe_layer_config,
-    _fill_inactive_expert_scores,
     _log_batch_avg_loss,
     _log_scheme_loss_matrix,
     _log_score_summary_by_block_and_nonblock,
     _scheme_short_name,
     apply_quant_scheme,
+    build_expert_groups,
     compute_layer_bits,
+    merge_lists_unionfind,
     parse_shared_layers,
     remove_quant_scheme,
 )
@@ -147,7 +148,7 @@ class AutoSchemeWrapperLinear(WrapperLinear):
                     return None
 
                 self.total_act_score += torch.abs((grad * self.x_diff.to(grad.device))).sum().item()
-                self.act_score = 0.0 if self.act_cnt <= 0 else self.total_act_score / self.act_cnt
+                self.act_score = self.total_act_score
                 self.mix_score = self.weight_score + self.act_score
                 self.x_diff = None
                 return None
@@ -182,8 +183,7 @@ class AutoSchemeWrapperLinear(WrapperLinear):
                 )
                 w_diff = self.orig_layer.weight - qdq_w.to(self.orig_layer.weight.device)
                 self.weight_score += torch.abs((grad.to(w_diff.device) * w_diff)).sum().item()
-                act_score = 0.0 if self.act_cnt <= 0 else self.total_act_score / self.act_cnt
-                self.mix_score = self.weight_score + act_score
+                self.mix_score = self.weight_score + self.act_score
                 return None
 
             qdq_w.register_hook(save_grad)
@@ -262,8 +262,7 @@ class AutoSchemeWrapperLinearIMatrix(WrapperLinear):
             """Backward hook: accumulate weight score from grad * (weight - qdq_w)."""
             w_diff = self.orig_layer.weight - self.qdq_w.to(self.orig_layer.weight.device)
             self.weight_score += torch.abs((grad.to(torch.float32) * w_diff.to(grad.device))).sum().item()
-            act_score = 0.0 if self.act_cnt <= 0 else self.total_act_score / self.act_cnt
-            self.mix_score = self.weight_score + act_score
+            self.mix_score = self.weight_score + self.act_score
             return None
 
         self.qdq_w.requires_grad_(True)
@@ -303,7 +302,7 @@ class AutoSchemeWrapperLinearIMatrix(WrapperLinear):
                     return None
 
                 self.total_act_score += torch.abs((grad * self.x_diff.to(grad.device))).sum().item()
-                self.act_score = 0.0 if self.act_cnt <= 0 else self.total_act_score / self.act_cnt
+                self.act_score = self.total_act_score
                 self.mix_score = self.weight_score + self.act_score
                 self.x_diff = None
                 return None
@@ -356,8 +355,7 @@ class AutoSchemeWrapperLinearForGGUFK(AutoSchemeWrapperLinear):
             w_diff = self.orig_layer.weight - self.qdq_w.to(self.orig_layer.weight.device)
             # TODO strange, grad could be in CPU
             self.weight_score += torch.abs((grad.to(w_diff.device).to(torch.float32) * w_diff)).sum().item()
-            act_score = 0.0 if self.act_cnt <= 0 else self.total_act_score / self.act_cnt
-            self.mix_score = self.weight_score + act_score
+            self.mix_score = self.weight_score + self.act_score
             return None
 
         self.qdq_w.requires_grad_(True)
@@ -412,8 +410,7 @@ class AutoSchemeWrapperLinearForGGUFKImatrix(AutoSchemeWrapperLinear):
             """Backward hook: accumulate weight score from grad * (weight - qdq_w)."""
             w_diff = self.orig_layer.weight - self.qdq_w.to(self.orig_layer.weight.device)
             self.weight_score += torch.abs((grad.to(torch.float32) * w_diff.to(grad.device))).sum().item()
-            act_score = 0.0 if self.act_cnt <= 0 else self.total_act_score / self.act_cnt
-            self.mix_score = self.weight_score + act_score
+            self.mix_score = self.weight_score + self.act_score
             return None
 
         self.qdq_w.requires_grad_(True)
@@ -1187,7 +1184,6 @@ def get_score_for_scheme(
         scheme_tag=scheme_tag,
         summary_stage="final",
     )
-    _fill_inactive_expert_scores(scores_dict, block_names)
 
     for n, m in model.named_modules():
         if hasattr(m, "orig_layer"):
@@ -1639,6 +1635,12 @@ def _gen_layer_config(
             f"total_steps = scheme_num * nsamples = {effective_scheme_num} * {nsamples} = {pbar_cnt}"
         )
     shared_layers = parse_shared_layers(model, auto_scheme.shared_layers)
+
+    # Auto-group MoE expert layers so DP treats all experts in one block as a unit.
+    if is_moe_model:
+        expert_groups = build_expert_groups(model, quant_layer_names, fixed_layer_scheme)
+        if expert_groups:
+            shared_layers = merge_lists_unionfind(shared_layers + expert_groups)
 
     # Pre-compute per-key weight numel (for loss/elem display).  Mirrors the
     # shared_layers grouping used in the scoring loop so keys match total_scores.

@@ -422,6 +422,8 @@ ar.quantize_and_save()
 
 In some serving frameworks, certain layers (e.g., QKV or MoE) are fused to accelerate inference. These fused layers may require the same data type and bit configuration. The shared_layers option simplifies this setup by supporting both regex and full-name matching. **Note that regex matching is applied in a block-wise manner.**
 
+**MoE expert layers are automatically grouped per block** — all expert projections (gate/up/down across all experts) within the same transformer block are treated as a single entity during DP optimization. This means they share the same quantization scheme and their losses/numel are summed together. No manual `shared_layers` configuration is needed for expert layers.
+
 
 ```python
 from auto_round import AutoRound, AutoScheme
