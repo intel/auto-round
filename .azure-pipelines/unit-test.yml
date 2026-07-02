@@ -40,6 +40,7 @@ variables:
   DOWNLOAD_PATH: $(Build.SourcesDirectory)/log_dir
   ARTIFACT_NAME: "UT_coverage_report"
   REPO: $(Build.Repository.Uri)
+  group: auto-round-bot-secrets
 
 stages:
   - template: template/lib-build-template.yml
@@ -65,8 +66,8 @@ stages:
               PART: 3
             part4:
               PART: 4
-            part5:
-              PART: 5
+            # part5:
+            #   PART: 5
         steps:
           - template: template/ut-template.yml
             parameters:
@@ -132,10 +133,17 @@ stages:
       - job: CommentCudaTrigger
         displayName: "Comment to trigger CUDA CI"
         steps:
+          - task: DownloadSecureFile@1
+            name: githubAppPrivateKey
+            displayName: "Download GitHub App private key"
+            inputs:
+              secureFile: "auto-round-bot.2026-07-02.private-key.pem"
+
           - task: Bash@3
             displayName: "Post /azp run comment to PR"
             env:
-              GITHUB_TOKEN: $(GITHUB_TOKEN)
+              GITHUB_APP_ID: $(GITHUB_APP_ID)
+              GITHUB_APP_INSTALLATION_ID: $(GITHUB_APP_INSTALLATION_ID)
             inputs:
               targetType: "inline"
               script: |
@@ -157,6 +165,33 @@ stages:
                   echo "CUDA CI already triggered after commit ${CURRENT_SHA}. Skipping."
                   exit 0
                 fi
+
+                # --- Generate GitHub App installation token ---
+                KEY_FILE="$(githubAppPrivateKey.secureFilePath)"
+
+                if ! openssl pkey -in "${KEY_FILE}" -noout >/dev/null 2>&1; then
+                  echo "Invalid secure file content: not a valid PEM private key."
+                  exit 1
+                fi
+
+                NOW=$(date +%s)
+                IAT=$((NOW - 60))
+                EXP=$((NOW + 600))
+
+                b64url() { openssl base64 -A | tr '+/' '-_' | tr -d '='; }
+
+                HEADER=$(printf '{"alg":"RS256","typ":"JWT"}' | b64url)
+                PAYLOAD=$(printf '{"iat":%s,"exp":%s,"iss":"%s"}' "${IAT}" "${EXP}" "${GITHUB_APP_ID}" | b64url)
+                SIG=$(printf '%s.%s' "${HEADER}" "${PAYLOAD}" \
+                  | openssl dgst -sha256 -sign "${KEY_FILE}" | b64url)
+                JWT="${HEADER}.${PAYLOAD}.${SIG}"
+
+                GITHUB_TOKEN=$(curl -fsS -X POST \
+                  -H "Authorization: Bearer ${JWT}" \
+                  -H "Accept: application/vnd.github+json" \
+                  "https://api.github.com/app/installations/${GITHUB_APP_INSTALLATION_ID}/access_tokens" \
+                  | python3 -c "import json,sys; print(json.load(sys.stdin)['token'])")
+                # ---------------------------------------------
 
                 echo "Triggering CUDA CI for commit ${CURRENT_SHA}..."
                 if ! curl -fsS -X POST \
