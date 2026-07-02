@@ -47,6 +47,14 @@ void sdpa_forward(const MhaDenseArgs& args);
 // until correctness is verified. A persistent packed KV cache/update path and an
 // internal already-packed forward (bestla_sdpa_forward_packed) now exist
 // alongside this temporary bridge; both stay experimental and gated.
+//
+// Feature support (Phase 5 Step 1 audit; see the matrix in sdpa.cpp for the full
+// per-route classification): both mixed routes support causal (sl_q<=sl_kv), GQA
+// (head_num a multiple of heads_kv) and prefer_fp32 (route 2 uses it to pick the
+// AVX512F fp32-score path over AMX-BF16; route 1 is an accepted fp32-score no-op),
+// all validated here. alibi/tanh/padding-right are a plumbing-gap (the fp32-score
+// stable epilogue implements them but this entry does not forward their inputs
+// yet) and are rejected up front.
 void bestla_sdpa_forward(const attn_fwd_args_t& args, BTLA_DTYPE kv_dtype);
 
 // ---------------------------------------------------------------------------
@@ -192,6 +200,14 @@ void bestla_sdpa_forward_packed(const attn_fwd_args_t& args, const ReorderKVShap
 // K/V layout the raw PLAIN [B,H,S,D] Python inputs do not satisfy -- so the
 // default user path stays on the scalar reference kernel. True e2e numerical
 // validation requires a capable CPU extension build (AVX512-FP16 / AMX-BF16).
+//
+// Feature support (Phase 5 Step 1 audit; full matrix in sdpa.cpp): route 3 (fp16
+// stable) supports causal and GQA (validated); route 4 (bf16 non-stable) supports
+// causal but NOT GQA (requires head_num == heads_kv). prefer_fp32 is unsupported
+// for BOTH homogeneous routes and rejected per route (route 3's fp16 core is not
+// COMP_FP32; route 4's non-stable exp-sum path asserts prefer_fp32 off).
+// alibi/tanh/padding-right are rejected up front (plumbing-gap for the fp16 stable
+// route's alibi/tanh, unsupported by the bf16 non-stable launcher).
 void bestla_sdpa_forward_homogeneous(const attn_fwd_args_t& args, BTLA_DTYPE dtype);
 
 }  // namespace ark::cpu

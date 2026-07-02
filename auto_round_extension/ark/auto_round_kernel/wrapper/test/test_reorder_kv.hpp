@@ -377,6 +377,18 @@ struct TestHomogeneousForwardSetup {
       try { bestla_sdpa_forward_homogeneous(a, dt); } catch (const std::exception&) { threw = true; }
       if (!threw) throw std::runtime_error("homogeneous unsupported flag not rejected");
     }
+    // Phase 5 Step 1: prefer_fp32 is unsupported for BOTH homogeneous routes and is
+    // rejected per route (route 3 fp16 core is not COMP_FP32; route 4 non-stable
+    // path asserts prefer_fp32 off). Build route-valid args so the rejection comes
+    // from the route validator's prefer_fp32 guard, not an earlier layout/stride
+    // check, and assert the message is the route-specific one.
+    for (auto dt : {BTLA_DTYPE::F16, BTLA_DTYPE::BF16}) {
+      std::vector<uint16_t> rq(64, 0), rk(64, 0), rv(64, 0), rd(64, 0);
+      auto a = make_route_valid_args(rq, rk, rv, rd, dt);
+      a.attn_flags = ATTN_FLAG_PREFER_FP32;
+      if (!route_validation_rejects(a, dt))
+        throw std::runtime_error("homogeneous prefer_fp32 not rejected by the route validator");
+    }
   }
 
   // True if calling the homogeneous entry with `a`/`dt` throws an exception whose
