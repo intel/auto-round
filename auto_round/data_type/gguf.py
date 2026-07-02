@@ -466,6 +466,14 @@ def search_gguf_scale_min_asym(tensor, bits=4, scale_dtype=torch.float16, imatri
         quant_weights = weights.reshape(tensor.shape)
         quant_weights = _imatrix_handle_zero(quant_weights, tensor, bits)
 
+        # sigma2 = torch.sum(torch.pow(tensor, 2), dim=-1, keepdim=True) / QK_K
+        # if imatrix is None:
+        #     av_x = torch.sqrt(sigma2)
+        #     quant_weights = torch.abs(av_x + tensor * tensor)
+        # else:
+        #     imatrix = imatrix.reshape(1, -1).expand(tensor.numel() // imatrix.numel(), -1).reshape(tensor.shape)
+        #     quant_weights = imatrix * torch.sqrt(sigma2 + tensor * tensor)
+
         params = search_kwargs[bits]
 
         scale, wmin_0 = iterative_wls_quant_search(
