@@ -462,10 +462,20 @@ def update_fused_layer_global_scales(
             hasattr(module, "k_proj") or hasattr(module, "v_proj") or hasattr(module, "qkv_proj")
         )
 
-    def _is_mlp_module(module: Module):
-        return "mlp" in module.__class__.__name__.lower() and (
-            hasattr(module, "gate_proj") and hasattr(module, "up_proj")
-        )
+    def _get_mlp_input_projections(module: Module):
+        """Return input projection modules that should share one global scale.
+
+        For MoE-style MLPs this is typically gate/up (aka w1/w3).  We avoid
+        relying on class names so linearized expert wrappers (e.g.
+        ``_VLLMLinearizedExpert``) are also covered.
+        """
+        if hasattr(module, "gate_proj") and hasattr(module, "up_proj"):
+            return [module.gate_proj, module.up_proj]
+        if hasattr(module, "w1") and hasattr(module, "w3"):
+            return [module.w1, module.w3]
+        if hasattr(module, "w1_linear") and hasattr(module, "v1_linear"):
+            return [module.w1_linear, module.v1_linear]
+        return None
 
     def _update_global_scales(modules: List[Module]):
         """Update global scales for a list of modules."""
@@ -493,8 +503,9 @@ def update_fused_layer_global_scales(
         return
 
     # ---------------- MLP ----------------
-    if _is_mlp_module(submodule):
-        _update_global_scales([submodule.gate_proj, submodule.up_proj])
+    mlp_input_projs = _get_mlp_input_projections(submodule)
+    if mlp_input_projs is not None:
+        _update_global_scales(mlp_input_projs)
 
 
 def update_block_global_scale_if_needed(block, data_type, group_size):

@@ -33,9 +33,11 @@ from auto_round.utils import (
     is_mllm_model,
     is_moe_model,
     is_moe_model_via_config,
+    is_vllm_model,
     llm_load_model,
     mllm_load_model,
     unsupported_meta_device,
+    vllm_load_model,
 )
 from auto_round.utils.device import _force_trim_malloc
 from auto_round.utils.device_manager import device_manager, get_ar_device
@@ -73,6 +75,7 @@ class ModelContext(BaseContext):
         self.quantized = False
         self.is_mllm = False
         self.is_diffusion = False
+        self.is_vllm = False
         self.is_model_patched = False
         self.is_moe_model = False
         # Set by CalibCompressor._replace_forward; used by recover_forward to detect
@@ -83,11 +86,12 @@ class ModelContext(BaseContext):
         self.model = model
         self.tokenizer = tokenizer
 
-        # MLLM / diffusion artifacts – always present so callers need no getattr guards.
+        # MLLM / diffusion / vLLM artifacts – always present so callers need no getattr guards.
         # _load_model() will populate the ones that are relevant to the model type.
         self.processor = None
         self.image_processor = None
         self.pipe = None
+        self.llm = None
 
         # AWQ weight-clip thresholds kept for downstream block quantizers.
         # Populated by AWQTransform when ``apply_clip`` is enabled; keyed by
@@ -104,6 +108,8 @@ class ModelContext(BaseContext):
         self.amp = amp
         self.need_calib = need_calib
         self.quant_nontext_module = quant_nontext_module
+        self.enable_vllm_loading = kwargs.pop("enable_vllm_loading", False)
+        self.vllm_model_kwargs = kwargs.pop("vllm_model_kwargs", None)
 
         # Load model and run basic initialization eagerly so the model is ready
         # by the time BaseCompressor.post_init() runs.
@@ -145,7 +151,18 @@ class ModelContext(BaseContext):
         device_manager.device = value
 
     def _load_model(self):
-        if is_mllm_model(self.model, platform=self.platform):
+        if self.enable_vllm_loading or is_vllm_model(self.model):
+            self.is_vllm = True
+            if isinstance(self.model, str):
+                vllm_kwargs = self.vllm_model_kwargs
+                if vllm_kwargs is None:
+                    vllm_kwargs = {}
+                if not isinstance(vllm_kwargs, dict):
+                    raise ValueError("`vllm_model_kwargs` must be a dict when enable_vllm_loading=True")
+                self.llm, self.model, self.tokenizer = vllm_load_model(self.model, **vllm_kwargs)
+            else:
+                self.llm, self.model, self.tokenizer = vllm_load_model(self.model)
+        elif is_mllm_model(self.model, platform=self.platform):
             self.is_mllm = True
             if isinstance(self.model, str):
                 self.model, self.processor, self.tokenizer, self.image_processor = mllm_load_model(
@@ -276,6 +293,14 @@ class ModelContext(BaseContext):
         # It is best to modify the model structure in the quantize function and check the format,
         # because it may cause the gguf format to not be exported normally.
         self._patch_custom_moe_modules()
+
+        # For vLLM models, replace FusedMoE with per-expert nn.Linear modules
+        # so auto-round can calibrate and quantize each expert independently.
+        if self.is_vllm:
+            from auto_round.compressors.vllm.linearized_fused_moe import linearize_vllm_moe
+
+            linearize_vllm_moe(self.model)
+
         self.model = update_module(
             self.model, formats=formats, trust_remote_code=self.trust_remote_code, cleanup_original=False
         )
