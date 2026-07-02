@@ -69,6 +69,7 @@ from auto_round.utils import (
 )
 from auto_round.utils.device import MemoryMonitor, memory_monitor
 from auto_round.utils.device_manager import get_current_device_manager
+from auto_round.utils.model import is_moe_model as _is_moe_model
 from auto_round.utils.offload import OffloadManager
 from auto_round.wrapper import WrapperLinear
 
@@ -1216,22 +1217,26 @@ def get_score_for_scheme(
     return scores_dict
 
 
-def _resolve_dp_max_states(layers: dict, max_states: Optional[int] = None) -> Optional[int]:
+def _resolve_dp_max_states(layers: dict, max_states: Optional[int] = None, is_moe_model: bool = False) -> Optional[int]:
     """Choose an effective beam width for the DP search.
 
     Large MoE-style models can produce thousands of DP states even after Pareto
-    pruning, and retaining all of them is both slow and memory-heavy. For big
-    search spaces we therefore switch to a bounded beam width automatically.
+    pruning, and retaining all of them is both slow and memory-heavy. Dense models
+    (e.g. Qwen3-8B) have been observed to reach ~18k states with no noticeable
+    slowdown or memory issue, so the beam limit is only applied to MoE models for
+    now, and with a higher ceiling than before.
     """
     if max_states is not None:
         return max_states
+    if not is_moe_model:
+        return None
     layer_count = len(layers)
     if layer_count <= 32:
         return None
-    return max(256, min(4096, 64 * max(1, math.ceil(math.sqrt(layer_count)))))
+    return max(4096, min(20000, 64 * max(1, math.ceil(math.sqrt(layer_count)))))
 
 
-def choose_bits_per_layer_with_path(layers: dict, P: int, max_states: int = None):
+def choose_bits_per_layer_with_path(layers: dict, P: int, max_states: int = None, is_moe_model: bool = False):
     """
     Args:
         layers: A dict mapping each layer name to a list of candidate options.
@@ -1240,6 +1245,9 @@ def choose_bits_per_layer_with_path(layers: dict, P: int, max_states: int = None
         max_states: Maximum number of DP states to retain after each layer
                     (beam width). Limits memory usage for models with many
                     layers and incommensurate layer sizes.
+        is_moe_model: Whether the underlying model is a MoE architecture. The
+                    automatic beam-width cap (used when ``max_states`` isn't
+                    explicitly provided) is only applied for MoE models.
 
     Returns:
         (min_loss, best_path), where best_path is a list of
@@ -1249,7 +1257,7 @@ def choose_bits_per_layer_with_path(layers: dict, P: int, max_states: int = None
     # dp: total_params -> (accumulated_loss, chosen_path)
     # The path is stored as a tuple to avoid the high overhead of repeatedly
     # copying Python lists for every DP transition.
-    effective_max_states = _resolve_dp_max_states(layers, max_states)
+    effective_max_states = _resolve_dp_max_states(layers, max_states, is_moe_model)
     dp: dict[int, tuple[float, tuple]] = {0: (0.0, ())}
     for layer_name, opts in layers.items():
         new_dp: dict[int, tuple[float, tuple]] = {}
@@ -1521,6 +1529,8 @@ def _gen_layer_config(
             embedding_layers_names.append(name)
     quant_layer_names = list(set(quant_layer_names) - set(embedding_layers_names))
 
+    is_moe_model = _is_moe_model(model)
+
     # Decide whether AutoScheme has to score vision-tower layers (typically
     # because the user passed ``--quant_nontext_module``). Used below to
     # clamp batch_size to 1 (image sizes vary) and to pick the multimodal
@@ -1573,11 +1583,6 @@ def _gen_layer_config(
         if _env_nsamples is not None:
             nsamples = _env_nsamples
         else:
-            is_moe_model = False
-            if hasattr(model, "config"):
-                config_str = str(model.config.to_dict())
-                if "moe" in config_str or "expert" in config_str:
-                    is_moe_model = True
             nsamples, seqlen = (16, 128) if is_moe_model else (16, 256)
 
     if auto_scheme.batch_size is not None:
@@ -1920,7 +1925,7 @@ def _gen_layer_config(
     memory_monitor.update()
     memory_monitor.log_summary()
 
-    best_loss, best_path = choose_bits_per_layer_with_path(total_scores, target_params_cnt)
+    best_loss, best_path = choose_bits_per_layer_with_path(total_scores, target_params_cnt, is_moe_model=is_moe_model)
 
     # print(best_loss, best_path)  # TODO better log
     layer_config = copy.deepcopy(fixed_layer_scheme)
