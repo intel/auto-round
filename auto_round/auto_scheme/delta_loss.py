@@ -1360,9 +1360,97 @@ def _get_scheme_bits(scheme):
     """Extract the weight bits from a scheme (str or dict)."""
     if isinstance(scheme, str):
         scheme = asdict(preset_name_to_scheme(scheme))
-    elif isinstance(QuantizationScheme):
+    elif isinstance(scheme, QuantizationScheme):
         scheme = asdict(scheme)
     return scheme.get("bits", 16)
+
+
+# Delta loss does not handle lm-head well, it is prone to assign low bit to lm-head which is not optimal
+def _apply_head_trick(head_name, schemes, sorted_indices, target_bits, target_params_cnt, total_scores):
+
+    # ------------------------------------------------------------------ #
+    # lm_head option restriction for DP                                   #
+    # lm_head is critical — its quantization error goes directly into     #
+    # logits with no subsequent LayerNorm dampening. Instead of removing  #
+    # it from DP, we bias its candidate options toward higher precision   #
+    # or lower loss, then relax the restriction if it cannot fit budget.  #
+    #                                                                      #
+    # Rules (only if user hasn't already fixed it):                        #
+    #   1. No option has bits >= 6      → prefer lowest-loss available    #
+    #   2. Exactly one option bits >= 6 → prefer that high-bit option     #
+    #   3. Multiple options bits >= 6:                                      #
+    #      - target_bits > 6  → restrict to only the highest-bit option   #
+    #      - target_bits <= 6 → keep all >=6 options, let DP decide       #
+    #   Any restriction above is relaxed if it makes the budget infeasible.#
+    # ------------------------------------------------------------------ #
+
+    high_bit_indices = [i for i in range(len(schemes)) if _get_scheme_bits(schemes[i]) >= 6]
+
+    if len(high_bit_indices) == 0:
+        # Rule 1: no option >= 6 bit → keep the lowest-loss scheme if budget allows.
+        allowed_indices = {sorted_indices[0]} if sorted_indices else None
+    elif len(high_bit_indices) == 1:
+        # Rule 2: exactly one >= 6 bit option → restrict to it
+        allowed_indices = set(high_bit_indices)
+    else:
+        # Rule 3: multiple >= 6 bit options
+        if target_bits > 6:
+            # Restrict to only the highest-bit option
+            highest_idx = max(high_bit_indices, key=lambda i: _get_scheme_bits(schemes[i]))
+            allowed_indices = {highest_idx}
+        else:
+            # Keep all >= 6 bit options, let DP decide among them
+            allowed_indices = set(high_bit_indices)
+
+    # Feasibility check: ensure the restricted lm_head options + min bits
+    # for all other layers don't exceed the budget. If infeasible, relax
+    # by adding options from sorted_indices (lowest loss first) until
+    # a feasible combination exists.
+    if allowed_indices is not None:
+        # Compute budget remaining after fixed layers
+
+        _remaining_budget = target_params_cnt
+
+        # Compute min bits for non-lm_head DP layers
+        _min_other_bits = 0
+        for key, opts in total_scores.items():
+            if key != head_name:
+                _min_other_bits += min(opt[1] for opt in opts)
+
+        # Compute min bits for lm_head under allowed_indices
+        _min_head_bits = 0
+
+        if head_name in total_scores:
+            head_opts = [opt for opt in total_scores[head_name] if opt[0] in allowed_indices]
+            if head_opts:
+                _min_head_bits += min(opt[1] for opt in head_opts)
+            else:
+                _min_head_bits += min(opt[1] for opt in total_scores[head_name])
+
+        # If infeasible, relax by adding cheaper options from sorted_indices
+        if _min_head_bits + _min_other_bits > _remaining_budget:
+            for fallback_idx in sorted_indices:
+                if fallback_idx in allowed_indices:
+                    continue
+                allowed_indices.add(fallback_idx)
+                # Recompute min head bits with expanded options
+                _min_head_bits = 0
+
+                if head_name in total_scores:
+                    head_opts = [opt for opt in total_scores[head_name] if opt[0] in allowed_indices]
+                    if head_opts:
+                        _min_head_bits += min(opt[1] for opt in head_opts)
+                    else:
+                        _min_head_bits += min(opt[1] for opt in total_scores[head_name])
+                if _min_head_bits + _min_other_bits <= _remaining_budget:
+                    break
+
+    # Filter lm_head's entries in total_scores to only allowed options
+    if allowed_indices is not None:
+        if head_name in total_scores:
+            filtered = [opt for opt in total_scores[head_name] if opt[0] in allowed_indices]
+            if filtered:
+                total_scores[head_name] = filtered
 
 
 def _gen_layer_config(
@@ -1490,15 +1578,7 @@ def _gen_layer_config(
                 config_str = str(model.config.to_dict())
                 if "moe" in config_str or "expert" in config_str:
                     is_moe_model = True
-            nsamples, seqlen = (16, 128) if is_moe_model else (16, 128)
-            if is_moe_model:
-                logger.info(
-                    "AutoScheme: detected MoE model, using nsamples=%d (vs %d for dense models) "
-                    "for better expert coverage. Override via AutoScheme(nsamples=...) or "
-                    "AR_AUTO_SCHEME_NSAMPLES if needed.",
-                    nsamples,
-                    16,
-                )
+            nsamples, seqlen = (16, 128) if is_moe_model else (16, 256)
 
     if auto_scheme.batch_size is not None:
         batch_size = auto_scheme.batch_size
@@ -1557,6 +1637,12 @@ def _gen_layer_config(
         "AutoScheme steps variables: "
         f"scheme_num={effective_scheme_num}, block_num={block_num}, "
         f"nsamples={nsamples}, batch_size={batch_size}"
+    )
+    logger.info(
+        "AutoScheme: nsamples/batch_size can be overridden via env vars "
+        "AR_AUTO_SCHEME_NSAMPLES / AR_AUTO_SCHEME_BATCH_SIZE "
+        "(e.g. `export AR_AUTO_SCHEME_NSAMPLES=1` for a quick run); "
+        "see docs/environments.md for details."
     )
     if auto_scheme.low_gpu_mem_usage:
         n_batches = (nsamples + batch_size - 1) // batch_size
@@ -1822,6 +1908,10 @@ def _gen_layer_config(
                 setattr(embedding_layer, key, item)
             layer_bits, _ = compute_layer_bits(embedding_layer, auto_scheme.ignore_scale_zp_bits)
             target_params_cnt -= layer_bits
+
+    head_name = get_lm_head_name(model)
+    if head_name is not None and (head_name not in fixed_layer_scheme and head_name in quant_layer_names):
+        _apply_head_trick(head_name, schemes, sorted_indices, target_bits, target_params_cnt, total_scores)
 
     if target_params_cnt <= 0:
         raise ValueError("Avg bits is too small")
