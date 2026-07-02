@@ -296,4 +296,68 @@ struct TestPackedForwardSetup {
   }
 };
 
+// Phase 4.5 Step 5: pre-GEMM validation for the internal homogeneous SDPA
+// dispatch (ark::cpu::bestla_sdpa_forward_homogeneous). Like TestPackedForwardSetup
+// these checks never run a BestLA GEMM: they only exercise the argument-validation
+// gates that fire before any ISA-specific kernel is reached, so they are
+// deterministic on any CPU regardless of AVX512-FP16 / AMX-BF16 support.
+struct TestHomogeneousForwardSetup {
+  TestHomogeneousForwardSetup() { run_all(); }
+
+  // Build a minimally-populated homogeneous arg bundle (Q==K==V==dst dtype).
+  static attn_fwd_args_t make_args(std::vector<uint16_t>& q, std::vector<uint16_t>& k, std::vector<uint16_t>& v,
+                                   std::vector<uint16_t>& dst, void* threading) {
+    attn_fwd_args_t a{};
+    a.Q = q.data();
+    a.K = k.data();
+    a.V = v.data();
+    a.dst = dst.data();
+    a.batch_size = 1;
+    a.head_num = 1;
+    a.heads_kv = 1;
+    a.head_size = 8;
+    a.sl_q = 1;
+    a.sl_kv = 4;
+    a.Q_layout = ATTN_FWD_LAYOUT_PLAIN;
+    a.K_layout = ATTN_FWD_LAYOUT_PLAIN;
+    a.V_layout = ATTN_FWD_LAYOUT_PLAIN;
+    a.dst_layout = ATTN_FWD_LAYOUT_PLAIN;
+    a.threading = threading;
+    return a;
+  }
+
+  static void check_rejects() {
+    std::vector<uint16_t> q(8, 0), k(32, 0), v(32, 0), dst(8, 0);
+    // Null pointers must throw regardless of dtype.
+    {
+      auto a = make_args(q, k, v, dst, nullptr);
+      a.Q = nullptr;
+      bool threw = false;
+      try { bestla_sdpa_forward_homogeneous(a, BTLA_DTYPE::F16); } catch (const std::exception&) { threw = true; }
+      if (!threw) throw std::runtime_error("homogeneous null Q not rejected");
+    }
+    // Unsupported operand dtype (F32 is the mixed route's dst, never homogeneous
+    // here) must throw before any ISA gate / GEMM.
+    {
+      auto a = make_args(q, k, v, dst, nullptr);
+      bool threw = false;
+      try { bestla_sdpa_forward_homogeneous(a, BTLA_DTYPE::F32); } catch (const std::exception&) { threw = true; }
+      if (!threw) throw std::runtime_error("homogeneous unsupported dtype not rejected");
+    }
+    // Alibi/tanh/padding-right flags are rejected before the ISA gate / GEMM.
+    for (auto dt : {BTLA_DTYPE::F16, BTLA_DTYPE::BF16}) {
+      auto a = make_args(q, k, v, dst, nullptr);
+      a.attn_flags = ATTN_FLAG_IS_ALIBI8;
+      bool threw = false;
+      try { bestla_sdpa_forward_homogeneous(a, dt); } catch (const std::exception&) { threw = true; }
+      if (!threw) throw std::runtime_error("homogeneous unsupported flag not rejected");
+    }
+  }
+
+  void run_all() {
+    check_rejects();
+    printf("[homogeneous_forward_setup] checks passed\n");
+  }
+};
+
 }  // namespace ark::cpu

@@ -1553,9 +1553,12 @@ inline void bestla_fusion_attn_forward<float, utils::bf16, utils::bf16, float>(
 //     for PV) -- a different launcher family from the bf16 exp-sum route. Step 4
 //     composes that stable-fp16 launcher pair here into a real internal path.
 //
-// Runtime dispatch (sdpa.cpp / ark.cpp) still does NOT reach either overload:
-// homogeneous support is kept internal so it is not exposed to Python as if it
-// were part of the public C-ABI dispatch yet.
+// Phase 4.5 step 5 adds an internal runtime dispatch entry
+// (`ark::cpu::bestla_sdpa_forward_homogeneous` in sdpa.cpp) that DOES reach both
+// overloads, dispatching by the full Q/K/V/dst dtype tuple and gating on the ISA
+// each core needs. The public Python C-ABI (ark.cpp `sdpa`) still does NOT route
+// here, so homogeneous support remains internal/experimental and is not exposed
+// to Python as if it were part of the public C-ABI dispatch yet.
 // ---------------------------------------------------------------------------
 
 // bf16 packers on the AMX bf16 core (BType == utils::bf16). Declared here,
@@ -1580,8 +1583,9 @@ using WeightPackBatchBf16Bf16Trans = weight_pack_batch_bf16_trans_t<GEMM_T, util
 // homogeneous route uses and guards on the ISA the core actually needs
 // (`_cd->AVX512_FP16()`), with an `#if CompileFP16()` build guard, so an
 // unsupported CPU/build fails loudly instead of running the wrong kernel. It is a
-// working internal kernel; runtime dispatch (sdpa.cpp / ark.cpp) still does NOT
-// reach it, so homogeneous support is not exposed to Python.
+// working internal kernel reached at runtime by
+// `ark::cpu::bestla_sdpa_forward_homogeneous` (Phase 4.5 step 5); the public
+// Python C-ABI (ark.cpp) still does NOT route here, so it is not exposed to Python.
 template <>
 inline void bestla_fusion_attn_forward<utils::fp16, utils::fp16, utils::fp16, utils::fp16>(
     const attn_fwd_args_t<utils::fp16, utils::fp16, utils::fp16, utils::fp16>& params, parallel::IThreading& th) {
@@ -1620,8 +1624,10 @@ inline void bestla_fusion_attn_forward<utils::fp16, utils::fp16, utils::fp16, ut
 // packs a non-transposed V source and writes back the 1/l_i-scaled bf16 output.
 // This composition matches Neural Speed's homogeneous bf16 launcher pair exactly
 // (and the `instantiation_check::MhaNonStableAmxBf16` compile pin). It is a
-// working internal kernel; runtime dispatch (sdpa.cpp / ark.cpp) still does NOT
-// reach it, so partial homogeneous support (bf16 only) is not exposed to Python.
+// working internal kernel reached at runtime by
+// `ark::cpu::bestla_sdpa_forward_homogeneous` (Phase 4.5 step 5); the public
+// Python C-ABI (ark.cpp) still does NOT route here, so homogeneous support stays
+// internal/experimental and is not exposed to Python.
 template <>
 inline void bestla_fusion_attn_forward<utils::bf16, utils::bf16, utils::bf16, utils::bf16>(
     const attn_fwd_args_t<utils::bf16, utils::bf16, utils::bf16, utils::bf16>& params, parallel::IThreading& th) {

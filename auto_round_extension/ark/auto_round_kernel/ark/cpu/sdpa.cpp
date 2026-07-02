@@ -110,6 +110,55 @@ bestla_mha::attn_fwd_args_t<float, KV_T, KV_T, float> make_typed_attn_args(const
   return t;
 }
 
+// Homogeneous variant of make_typed_attn_args: every operand (Q/K/V/dst) shares
+// one element type `T`, so all four pointers are reinterpreted as `T*`. Used by
+// the Phase 4.5 Step 5 homogeneous dispatch, which reaches the
+// `bestla_fusion_attn_forward<T, T, T, T>` overloads (fp16 stable / bf16
+// non-stable). Field names match one-to-one, so this is a straight per-field
+// port -- identical to make_typed_attn_args except Q and dst are typed `T`
+// rather than `float`.
+template <typename T>
+bestla_mha::attn_fwd_args_t<T, T, T, T> make_typed_attn_args_homogeneous(const attn_fwd_args_t& a) {
+  bestla_mha::attn_fwd_args_t<T, T, T, T> t{};
+  t.Q = static_cast<T*>(a.Q);
+  t.K = static_cast<T*>(a.K);
+  t.V = static_cast<T*>(a.V);
+  t.dst = static_cast<T*>(a.dst);
+  t.Q_sc = a.Q_sc;
+  t.K_sc = a.K_sc;
+  t.V_sc = a.V_sc;
+  t.dst_sc = a.dst_sc;
+  t.tmp = a.tmp;
+  t.QK_scale = a.QK_scale;
+  t.attn_flags = a.attn_flags;
+  t.batch_size = a.batch_size;
+  t.head_num = a.head_num;
+  t.heads_kv = a.heads_kv;
+  t.head_size = a.head_size;
+  t.sl_q = a.sl_q;
+  t.sl_kv = a.sl_kv;
+  t.Q_layout = a.Q_layout;
+  t.K_layout = a.K_layout;
+  t.V_layout = a.V_layout;
+  t.dst_layout = a.dst_layout;
+  t.step_q_bs = a.step_q_bs;
+  t.step_q_head_num = a.step_q_head_num;
+  t.step_q_sl = a.step_q_sl;
+  t.step_k_bs = a.step_k_bs;
+  t.step_k_head_num = a.step_k_head_num;
+  t.step_k_sl = a.step_k_sl;
+  t.step_k_head_size = a.step_k_head_size;
+  t.step_v_bs = a.step_v_bs;
+  t.step_v_head_num = a.step_v_head_num;
+  t.step_v_sl = a.step_v_sl;
+  t.step_v_head_size = a.step_v_head_size;
+  t.step_dst_bs = a.step_dst_bs;
+  t.step_dst_head_num = a.step_dst_head_num;
+  t.step_dst_sl = a.step_dst_sl;
+  t.n_padding = a.n_padding;
+  return t;
+}
+
 }  // namespace
 
 void sdpa_forward(const MhaDenseArgs& args) {
@@ -251,6 +300,85 @@ void bestla_sdpa_forward(const attn_fwd_args_t& args, BTLA_DTYPE kv_dtype) {
     default:
       throw std::invalid_argument(
           "ark::cpu::bestla_sdpa_forward: only F16 and BF16 K/V operands are supported");
+  }
+}
+
+void bestla_sdpa_forward_homogeneous(const attn_fwd_args_t& args, BTLA_DTYPE dtype) {
+  if (!args.Q || !args.K || !args.V || !args.dst) {
+    throw std::invalid_argument("ark::cpu::bestla_sdpa_forward_homogeneous: Q/K/V/dst pointers must be non-null");
+  }
+  // First-layer dispatch is by the full Q/K/V/dst dtype tuple (Neural-Speed
+  // style). Only the homogeneous fp16/bf16 tuples migrated in Phase 4.5 steps
+  // 3-4 are wired; reject any other operand type before touching the kernel.
+  if (dtype != BTLA_DTYPE::F16 && dtype != BTLA_DTYPE::BF16) {
+    throw std::invalid_argument(
+        "ark::cpu::bestla_sdpa_forward_homogeneous: only homogeneous F16 or BF16 (Q==K==V==dst) is supported");
+  }
+  // Alibi/tanh/padding-right are not migrated for any attention route yet.
+  constexpr attn_flags_t kUnsupportedFlags =
+      ATTN_FLAG_IS_ALIBI8 | ATTN_FLAG_IS_TANH30 | ATTN_FLAG_PADDING_RIGHT;
+  if ((args.attn_flags & kUnsupportedFlags) != 0) {
+    throw std::invalid_argument(
+        "ark::cpu::bestla_sdpa_forward_homogeneous: alibi, tanh and padding-right are not wired yet");
+  }
+
+  // Second-layer condition (ISA): the homogeneous overloads compose ISA-specific
+  // cores whose prologues silently return BTLA_CODE::NotSupport (behind asserts)
+  // on hardware that lacks the extension. Gate up front so the failure is a clear
+  // error instead of a release-mode no-op / wrong result:
+  //   * F16  -> stable mha_stable_interface_t over HCoreRowNAvx512fp16, needs AVX512-FP16.
+  //   * BF16 -> non-stable mha_interface_t exp-sum over HCoreRowNAmxbf16, needs AMX-BF16.
+  {
+    auto* cpu = bestla::device::CpuDevice::getInstance();
+    if (dtype == BTLA_DTYPE::F16 && !cpu->AVX512_FP16()) {
+      throw std::runtime_error(
+          "ark::cpu::bestla_sdpa_forward_homogeneous: homogeneous fp16 attention requires an AVX512-FP16 CPU with "
+          "the stable mha_stable_interface_t over gemm::HCoreRowNAvx512fp16; this CPU/build does not provide it");
+    }
+    if (dtype == BTLA_DTYPE::BF16 && !cpu->AMX_BF16()) {
+      throw std::runtime_error(
+          "ark::cpu::bestla_sdpa_forward_homogeneous: homogeneous bf16 attention requires an AMX-BF16 CPU with the "
+          "non-stable mha_interface_t over gemm::HCoreRowNAmxbf16; this CPU/build does not provide it");
+    }
+  }
+
+  if (args.threading == nullptr) {
+    throw std::invalid_argument("ark::cpu::bestla_sdpa_forward_homogeneous: threading pool must be provided");
+  }
+  auto* th = static_cast<bestla::parallel::IThreading*>(args.threading);
+
+  // Allocate the wrapper scratch when the caller did not provide one, backed by a
+  // float vector to guarantee alignof(float) for the reinterpret to the kernel's
+  // per-thread score/exp tile (see bestla_sdpa_forward for the rationale).
+  attn_fwd_args_t local = args;
+  std::vector<float> workspace;
+  if (local.tmp == nullptr) {
+    attn_shape_t shape{local.batch_size, local.head_num, local.heads_kv, local.head_size, local.sl_q, local.sl_kv};
+    const size_t bytes = bestla_attn_workspace_size(shape, th->num_threads());
+    workspace.resize((bytes + sizeof(float) - 1) / sizeof(float));
+    local.tmp = workspace.empty() ? nullptr : reinterpret_cast<char*>(workspace.data());
+  }
+
+  // No raw->packed reorder bridge here (unlike the mixed route): the homogeneous
+  // prologues pack/convert K/V themselves -- bf16 through the batch packers, fp16
+  // through the plain `weight_base_t` forward prologue -- so the operands are
+  // forwarded with their incoming strides/layout untouched.
+  switch (dtype) {
+    case BTLA_DTYPE::F16: {
+      const auto typed = make_typed_attn_args_homogeneous<bestla::utils::fp16>(local);
+      bestla_mha::bestla_fusion_attn_forward<bestla::utils::fp16, bestla::utils::fp16, bestla::utils::fp16,
+                                             bestla::utils::fp16>(typed, *th);
+      break;
+    }
+    case BTLA_DTYPE::BF16: {
+      const auto typed = make_typed_attn_args_homogeneous<bestla::utils::bf16>(local);
+      bestla_mha::bestla_fusion_attn_forward<bestla::utils::bf16, bestla::utils::bf16, bestla::utils::bf16,
+                                             bestla::utils::bf16>(typed, *th);
+      break;
+    }
+    default:
+      throw std::invalid_argument(
+          "ark::cpu::bestla_sdpa_forward_homogeneous: only homogeneous F16 or BF16 is supported");
   }
 }
 

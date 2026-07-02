@@ -153,4 +153,41 @@ void update_packed_v_cache(void* cache_v, const void* value, const ReorderKVShap
 // numerical validation requires a capable CPU extension build (AVX2/AVX512/AMX).
 void bestla_sdpa_forward_packed(const attn_fwd_args_t& args, const ReorderKVShape& shape, BTLA_DTYPE kv_dtype);
 
+// ---------------------------------------------------------------------------
+// Phase 4.5 Step 5: internal runtime dispatch for the homogeneous attention
+// routes (Q == K == V == dst element type) migrated in steps 3-4.
+//
+// This is DISTINCT from bestla_sdpa_forward above, which drives the *mixed*
+// route (fp32 Q/dst + low-precision K/V). Here every operand shares one element
+// type, so dispatch follows the same Neural-Speed-style two-layer model the
+// wrapper uses:
+//   1. First layer -- the full Q/K/V/dst dtype tuple selects the launcher
+//      family via the typed `bestla_fusion_attn_forward<T, T, T, T>` overload:
+//        * BTLA_DTYPE::F16  -> `<fp16, fp16, fp16, fp16>`, the *stable*
+//          `mha_stable_interface_t` over `gemm::HCoreRowNAvx512fp16` (step 4).
+//        * BTLA_DTYPE::BF16 -> `<bf16, bf16, bf16, bf16>`, the *non-stable*
+//          `mha_interface_t` exp-sum path over `gemm::HCoreRowNAmxbf16` (step 3).
+//      These are two different launcher families -- exactly Neural Speed's
+//      structure -- NOT collapsed into one "homogeneous" branch.
+//   2. Second layer -- ISA/layout/stride conditions select the concrete kernel
+//      inside each dtype branch. That selection already lives in the wrapper
+//      overload (each checks the ISA its core needs -- AVX512-FP16 for fp16,
+//      AMX-BF16 for bf16 -- and its `weight_base_t` / batch-packer prologue
+//      handles the K/V layout at runtime). This entry adds the matching runtime
+//      capability gate up front so an unsupported CPU/build fails loudly with a
+//      clear message instead of relying on release-mode-stripped asserts.
+//
+// Unlike the mixed route, the homogeneous prologues pack/convert K/V themselves
+// (bf16 batch packers, fp16 plain `weight_base_t`), so NO external raw->packed
+// reorder bridge is applied here. Q and dst share the operand dtype. Threading
+// is caller-supplied through `args.threading`; `args.tmp` is allocated
+// internally (float-aligned) when null, as in the other entries.
+//
+// Internal/experimental only: this is not routed by the public Python C-ABI
+// (ark.cpp) yet -- the homogeneous fp16 stable kernel expects a `weight_base_t`
+// K/V layout the raw PLAIN [B,H,S,D] Python inputs do not satisfy -- so the
+// default user path stays on the scalar reference kernel. True e2e numerical
+// validation requires a capable CPU extension build (AVX512-FP16 / AMX-BF16).
+void bestla_sdpa_forward_homogeneous(const attn_fwd_args_t& args, BTLA_DTYPE dtype);
+
 }  // namespace ark::cpu
