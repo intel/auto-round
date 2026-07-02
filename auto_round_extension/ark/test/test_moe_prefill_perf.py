@@ -442,16 +442,19 @@ def _print_header(title: str) -> None:
       ``ARK_MOE_PREFILL_DPAS_FP8``). Prints ``--`` for non-FP8 rows and
       for builds where ``moe_gemm_prefill_fp8_dpas`` is not linked in.
     * ``speedup``: ``(base+deq) / ark``.
+    * ``dpas speedup``: ``(base+deq) / dpas`` -- the fused DPAS path's
+      speedup over the same ``base+deq`` denominator used for
+      ``speedup``. Prints ``--`` when no ``dpas(ms)`` was measured.
     """
     print()
-    width = 186
+    width = 200
     print("=" * width)
     print(title)
     print(
         f"{'shape':<22}{'E':>4}{'N':>7}{'K':>7}{'tokens':>8}"
         f"{'baseline(ms)':>16}{'base+deq(ms)':>16}{'ark(ms)':>14}{'speedup':>12}{'TFLOPS':>10}"
         f"{'native(ms)':>14}{'native TFLOPS':>16}"
-        f"{'dpas(ms)':>14}{'dpas TFLOPS':>16}"
+        f"{'dpas(ms)':>14}{'dpas TFLOPS':>16}{'dpas speedup':>14}"
     )
     print("-" * width)
 
@@ -468,6 +471,9 @@ def _print_row(label, E, N, K, total_tokens, base_ms, deq_ms, ark_ms, tflops, na
     ``native_ms`` / ``native_tflops`` are printed for FP8 rows where the
     native fused kernel was benchmarked, and left blank otherwise.
     ``dpas_ms`` / ``dpas_tflops`` similarly for the Variant B DPAS path.
+    The ``dpas speedup`` column is ``(base+deq) / dpas`` -- the fused
+    DPAS path's speedup over the same denominator used for ``speedup``
+    (``ark``); printed as ``--`` when no ``dpas(ms)`` was measured.
     """
     base_plus_deq_ms = base_ms + deq_ms
     speedup = base_plus_deq_ms / ark_ms if ark_ms > 0 else float("nan")
@@ -480,14 +486,17 @@ def _print_row(label, E, N, K, total_tokens, base_ms, deq_ms, ark_ms, tflops, na
     if dpas_ms is None:
         dpas_col = f"{'--':>14}"
         dpas_tflops_col = f"{'--':>16}"
+        dpas_speedup_col = f"{'--':>14}"
     else:
         dpas_col = f"{dpas_ms:>14.4f}"
         dpas_tflops_col = f"{dpas_tflops:>15.1f} "
+        dpas_speedup = base_plus_deq_ms / dpas_ms if dpas_ms > 0 else float("nan")
+        dpas_speedup_col = f"{dpas_speedup:>13.2f}x"
     print(
         f"{label:<22}{E:>4}{N:>7}{K:>7}{total_tokens:>8}"
         f"{base_ms:>16.4f}{base_plus_deq_ms:>16.4f}{ark_ms:>14.4f}{speedup:>11.2f}x{tflops:>9.1f}"
         f"{native_col}{native_tflops_col}"
-        f"{dpas_col}{dpas_tflops_col}"
+        f"{dpas_col}{dpas_tflops_col}{dpas_speedup_col}"
     )
 
 
