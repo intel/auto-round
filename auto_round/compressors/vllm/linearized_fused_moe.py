@@ -270,6 +270,20 @@ class LinearizedVLLMFusedMoE(nn.Module):
         # ``is_internal_router`` via __getattr__ delegation below.
         self.__dict__["_fused_moe_ref"] = fused_moe
 
+    @property
+    def experts(self):
+        """Return the per-expert modules as a list.
+
+        Experts are registered as numbered children (``"0"``, ``"1"``, ...) so
+        that module paths are ``<moe>.0.gate_proj`` rather than the double-
+        nested ``<moe>.experts.0.gate_proj`` that a ModuleList would produce.
+        This property exposes them as a plain list so that
+        ``set_amax_for_all_moe_layers`` (which checks
+        ``isinstance(sub_module.experts, Iterable)``) can iterate them and fill
+        act_max for any expert that was not activated during calibration.
+        """
+        return [m for n, m in self._modules.items() if n.isdigit()]
+
     def __getattr__(self, name: str):
         """Delegate unknown attributes to the original FusedMoE.
 

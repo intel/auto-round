@@ -201,6 +201,13 @@ def pack_layer(name, model, device=None):
     if is_nv_fp(act_data_type) and act_bits <= 8:
         input_global_scale = getattr(layer, "input_global_scale", None)
         if input_global_scale is None:
+            if not hasattr(layer, "act_max"):
+                from auto_round.logger import logger as _logger
+                _logger.error(
+                    f"act_max missing for layer '{name}' "
+                    f"(type={type(layer).__name__}, act_bits={act_bits}, act_data_type={act_data_type}). "
+                    f"attrs: {[a for a in dir(layer) if not a.startswith('_')][:20]}"
+                )
             assert hasattr(layer, "act_max")
             from auto_round.data_type.nvfp import calculate_gparam
 

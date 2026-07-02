@@ -963,7 +963,7 @@ def vllm_load_model(
 
         _CALIB_MAX_LEN = 4096
         if user_max_model_len is not None:
-            max_model_len = max(user_max_model_len, _CALIB_MAX_LEN)
+            max_model_len = min(user_max_model_len, _CALIB_MAX_LEN)
         else:
             max_model_len = _CALIB_MAX_LEN
 
@@ -994,7 +994,9 @@ def vllm_load_model(
     if not hasattr(model, "config"):
         _hf_model_name = llm.llm_engine.model_config.model
         try:
-            model.config = AutoConfig.from_pretrained(_hf_model_name, trust_remote_code=True)
+            model.config = AutoConfig.from_pretrained(
+                _hf_model_name, trust_remote_code=True
+            )
         except Exception as _e:
             logger.warning(
                 "Could not attach HF config to vLLM model from %r: %s. "
@@ -1342,6 +1344,15 @@ def get_expert_linear_names(module: torch.nn.Module) -> list[str]:
         return ["linear_fc1", "linear_fc2"]
     elif module_match_name_list(module, ["DBRXMoeSparseMoeBlock"]):
         return ["w1_linear", "w2_linear", "v1_linear"]
+    elif module_match_name_list(module, ["LinearizedVLLMFusedMoE"]):
+        # Infer linear names from the first per-expert child (numbered "0", "1", …).
+        first_expert = next((m for n, m in module._modules.items() if n.isdigit()), None)
+        if first_expert is not None:
+            names = [n for n, m in first_expert.named_children() if isinstance(m, torch.nn.Linear)]
+            if names:
+                return names
+        # Fallback for standard MLP-style experts
+        return ["gate_proj", "down_proj", "up_proj"]
     else:
         # assuming w1, w2, w3 by default
         return ["w1", "w2", "w3"]
@@ -1385,6 +1396,14 @@ def get_expert_input_proj_names(module: torch.nn.Module) -> list[str]:
     elif module_match_name_list(module, ["DBRXMoeSparseMoeBlock"]):
         # w1_linear and v1_linear are input projections, w2_linear is output
         return ["w1_linear", "v1_linear"]
+    elif module_match_name_list(module, ["LinearizedVLLMFusedMoE"]):
+        # Infer input projection names: all linear children of the first expert except down_proj.
+        first_expert = next((m for n, m in module._modules.items() if n.isdigit()), None)
+        if first_expert is not None:
+            linear_names = [n for n, m in first_expert.named_children() if isinstance(m, torch.nn.Linear)]
+            # Exclude the output projection (commonly "down_proj" or "w2")
+            return [n for n in linear_names if n not in ("down_proj", "w2", "linear_fc2")]
+        return ["gate_proj", "up_proj"]
     else:
         logger.warning_once("Using default input projection names ['w1', 'w3'] for MoE expert alignment. ")
         # Default: w1 and w3 are input projections, w2 is output
@@ -1942,8 +1961,25 @@ def set_amax_for_all_moe_layers(model: torch.nn.Module, layer_name=None, attr_na
                 f"fused experts use parent module's act_max"
             )
             continue
+        elif "LinearizedVLLMFusedMoE" in type(sub_module.experts).__name__:
+            # LinearizedVLLMFusedMoE stores per-expert modules as numbered children.
+            # It is itself a named submodule and will appear as `sub_module` in a later
+            # iteration of this loop, at which point its `experts` property returns a
+            # plain list that passes the isinstance(…, Iterable) check below.  Skip here
+            # to avoid the "Unknown experts structure" warning on the outer MLP wrapper.
+            logger.debug(
+                f"Skipping '{name}' ({type(sub_module).__name__}): its experts "
+                f"(LinearizedVLLMFusedMoE) will be processed as a direct submodule."
+            )
+            continue
         elif isinstance(sub_module.experts, collections.abc.Iterable):
             # Iterable experts: list of expert modules (e.g., Mixtral)
+            logger.debug(
+                f"set_amax_for_all_moe_layers: processing '{name}' "
+                f"(type={type(sub_module).__name__}) with "
+                f"{len(list(sub_module.experts))} experts, "
+                f"linear_names={expert_linear_names}"
+            )
             for linear_name in expert_linear_names:
                 try:
                     # Determine if this is an input projection that needs scale unification
@@ -2000,8 +2036,16 @@ def _set_amax_for_moe_auxiliary_layers(moe_module: torch.nn.Module, attr_name: s
     # Collect all Linear layers that have act_bits set but missing act_max
     layers_needing_amax = []
 
-    # Check gate (router) layer - it's typically a Linear layer for token routing
-    if hasattr(moe_module, "gate") and isinstance(moe_module.gate, torch.nn.Linear):
+    # Lazy import for vLLM LinearBase (ReplicatedLinear, ColumnParallelLinear, etc.)
+    _LinearBase = None
+    try:
+        from vllm.model_executor.layers.linear import LinearBase as _LinearBase
+    except Exception:
+        pass
+    _linear_types = (torch.nn.Linear,) if _LinearBase is None else (torch.nn.Linear, _LinearBase)
+
+    # Check gate (router) layer - it may be nn.Linear or a vLLM LinearBase subclass
+    if hasattr(moe_module, "gate") and isinstance(moe_module.gate, _linear_types):
         gate = moe_module.gate
         if hasattr(gate, "act_bits") and gate.act_bits < 8:
             if get_nested_attr(gate, attr_name) is None:
@@ -2012,7 +2056,7 @@ def _set_amax_for_moe_auxiliary_layers(moe_module: torch.nn.Module, attr_name: s
         shared_experts = moe_module.shared_experts
         if shared_experts is not None:
             for child_name, child in shared_experts.named_modules():
-                if isinstance(child, torch.nn.Linear):
+                if isinstance(child, _linear_types):
                     if hasattr(child, "act_bits") and child.act_bits < 8:
                         if get_nested_attr(child, attr_name) is None:
                             layers_needing_amax.append(child)
@@ -2056,10 +2100,21 @@ def _get_reference_amax_from_experts(moe_module: torch.nn.Module, attr_name: str
 
     experts = moe_module.experts
 
+    # Handle LinearizedVLLMFusedMoE: .experts is a module with its own .experts property
+    # returning the list of per-expert modules.  Resolve the actual expert list and use
+    # the inner module (not the outer MLP) to look up correct linear names.
+    actual_experts = None
+    expert_linear_source = moe_module  # used for get_expert_linear_names()
+    if hasattr(experts, "experts") and isinstance(getattr(experts, "experts"), list):
+        actual_experts = experts.experts
+        expert_linear_source = experts  # LinearizedVLLMFusedMoE knows its own linear names
+    elif isinstance(experts, collections.abc.Iterable):
+        actual_experts = list(experts)
+
     # Handle iterable experts (list of modules)
-    if isinstance(experts, collections.abc.Iterable):
-        expert_linear_names = get_expert_linear_names(moe_module)
-        for expert in experts:
+    if actual_experts is not None:
+        expert_linear_names = get_expert_linear_names(expert_linear_source)
+        for expert in actual_experts:
             for linear_name in expert_linear_names:
                 layer = getattr(expert, linear_name, None)
                 if layer is not None:
