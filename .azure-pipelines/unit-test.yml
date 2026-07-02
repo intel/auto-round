@@ -135,7 +135,9 @@ stages:
           - task: Bash@3
             displayName: "Post /azp run comment to PR"
             env:
-              GITHUB_TOKEN: $(GITHUB_TOKEN)
+              GITHUB_APP_ID: $(GITHUB_APP_ID)
+              GITHUB_APP_PRIVATE_KEY: $(GITHUB_APP_PRIVATE_KEY)
+              GITHUB_APP_INSTALLATION_ID: $(GITHUB_APP_INSTALLATION_ID)
             inputs:
               targetType: "inline"
               script: |
@@ -149,6 +151,31 @@ stages:
 
                 repo_path="${BUILD_REPOSITORY_URI#https://github.com/}"
                 repo_path="${repo_path%.git}"
+
+                # --- Generate GitHub App installation token ---
+                KEY_FILE=$(mktemp)
+                trap "rm -f ${KEY_FILE}" EXIT
+                printf '%s' "${GITHUB_APP_PRIVATE_KEY}" > "${KEY_FILE}"
+
+                NOW=$(date +%s)
+                IAT=$((NOW - 60))
+                EXP=$((NOW + 600))
+
+                b64url() { openssl base64 -A | tr '+/' '-_' | tr -d '='; }
+
+                HEADER=$(printf '{"alg":"RS256","typ":"JWT"}' | b64url)
+                PAYLOAD=$(printf '{"iat":%s,"exp":%s,"iss":"%s"}' "${IAT}" "${EXP}" "${GITHUB_APP_ID}" | b64url)
+                SIG=$(printf '%s.%s' "${HEADER}" "${PAYLOAD}" \
+                  | openssl dgst -sha256 -sign "${KEY_FILE}" | b64url)
+                JWT="${HEADER}.${PAYLOAD}.${SIG}"
+
+                GITHUB_TOKEN=$(curl -fsS -X POST \
+                  -H "Authorization: Bearer ${JWT}" \
+                  -H "Accept: application/vnd.github+json" \
+                  "https://api.github.com/app/installations/${GITHUB_APP_INSTALLATION_ID}/access_tokens" \
+                  | python3 -c "import json,sys; print(json.load(sys.stdin)['token'])")
+                # ---------------------------------------------
+
                 export REPO_PATH="${repo_path}"
                 export PR_NUMBER="${pr_number}"
                 export CURRENT_SHA="${SYSTEM_PULLREQUEST_SOURCECOMMITID:-${BUILD_SOURCEVERSION:-unknown}}"
