@@ -40,6 +40,7 @@ variables:
   DOWNLOAD_PATH: $(Build.SourcesDirectory)/log_dir
   ARTIFACT_NAME: "UT_coverage_report"
   REPO: $(Build.Repository.Uri)
+  group: auto-round-bot-secrets
 
 stages:
   - template: template/lib-build-template.yml
@@ -152,6 +153,11 @@ stages:
                 repo_path="${BUILD_REPOSITORY_URI#https://github.com/}"
                 repo_path="${repo_path%.git}"
 
+                if python "$(Build.SourcesDirectory)/.azure-pipelines/scripts/check_cuda_trigger.py"; then
+                  echo "CUDA CI already triggered after commit ${CURRENT_SHA}. Skipping."
+                  exit 0
+                fi
+
                 # --- Generate GitHub App installation token ---
                 KEY_FILE=$(mktemp)
                 trap "rm -f ${KEY_FILE}" EXIT
@@ -177,11 +183,6 @@ stages:
                 # ---------------------------------------------
 
                 export CURRENT_SHA="${SYSTEM_PULLREQUEST_SOURCECOMMITID:-${BUILD_SOURCEVERSION:-unknown}}"
-
-                if python "$(Build.SourcesDirectory)/.azure-pipelines/scripts/check_cuda_trigger.py"; then
-                  echo "CUDA CI already triggered after commit ${CURRENT_SHA}. Skipping."
-                  exit 0
-                fi
 
                 echo "Triggering CUDA CI for commit ${CURRENT_SHA}..."
                 if ! curl -fsS -X POST \
