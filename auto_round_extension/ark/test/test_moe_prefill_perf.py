@@ -29,21 +29,11 @@ weights for quantized tests, representing the most favorable non-fused
 PyTorch fallback: it pays extra FLOPs on padding rows but collapses the
 192-per-expert kernel launches into one.
 
-Two baseline columns are reported per row:
+Baseline column:
 
 * ``baseline(ms)`` -- matmul-only cost (weights pre-dequantized). This is
-  the apples-to-apples GEMM ceiling for a non-fused PyTorch path.
-* ``base+deq(ms)`` -- ``baseline + deq``, where ``deq`` is the cost of
-  dequantizing the quantized weight buffer once per step (timed
-  separately from the matmul). This reflects what a pipeline that keeps
-  weights in quantized storage but reuses a stock matmul baseline would
-  pay end-to-end, and is the denominator of the reported ``speedup``
-  against our fused kernel. For FP rows ``deq`` is zero and the two
-  columns are identical.
-
-Reporting both keeps the comparison transparent: the matmul-only column
-shows the raw GEMM ceiling, while the ``base+deq`` column shows the
-realistic cost our fused kernel actually has to beat to be worth using.
+  the apples-to-apples GEMM ceiling for a non-fused PyTorch path and the
+  denominator of the reported ``speedup`` against our fused kernel.
 
 How to run::
 
@@ -451,13 +441,7 @@ def _print_header(title: str) -> None:
     * ``baseline(ms)``: matmul-only baseline (single ``torch.bmm`` over a
       padded ``[E, M_max, K]`` buffer, with weights already dequantized
       for quantized tests). This is the most favorable apples-to-apples
-      matmul comparison.
-    * ``base+deq(ms)``: matmul baseline plus the per-iteration weight
-      dequantization cost (``baseline + deq``). For FP rows this equals
-      ``baseline`` (deq is a no-op). This is the comparison point against
-      our fused kernel: any pipeline that wants to keep weights in
-      quantized storage but reuse a stock matmul baseline must pay the
-      dequant cost on every step.
+      matmul comparison and the denominator of ``speedup``.
     * ``ark(ms)``: default ARK path (dequant workspace + grouped GEMM,
       or fused-dequant if ``ARK_MOE_PREFILL_FUSED_FP8=1`` is set in the
       env for FP8 rows).
@@ -469,9 +453,9 @@ def _print_header(title: str) -> None:
       DPAS grouped GEMM (default-on branch behind
       ``ARK_MOE_PREFILL_DPAS_FP8``). Prints ``--`` for non-FP8 rows and
       for builds where ``moe_gemm_prefill_fp8_dpas`` is not linked in.
-    * ``speedup``: ``(base+deq) / ark``.
-    * ``dpas speedup``: ``(base+deq) / dpas`` -- the fused DPAS path's
-      speedup over the same ``base+deq`` denominator used for
+    * ``speedup``: ``baseline / ark``.
+    * ``dpas speedup``: ``baseline / dpas`` -- the fused DPAS path's
+      speedup over the same ``baseline`` denominator used for
       ``speedup``. Prints ``--`` when no ``dpas(ms)`` was measured.
     """
     print()
@@ -480,7 +464,7 @@ def _print_header(title: str) -> None:
     print(title)
     print(
         f"{'shape':<22}{'E':>4}{'N':>7}{'K':>7}{'tokens':>8}"
-        f"{'baseline(ms)':>16}{'base+deq(ms)':>16}{'ark(ms)':>14}{'speedup':>12}{'TFLOPS':>10}"
+        f"{'baseline(ms)':>16}{'ark(ms)':>14}{'speedup':>12}{'TFLOPS':>10}"
         f"{'native(ms)':>14}{'native TFLOPS':>16}"
         f"{'dpas(ms)':>14}{'dpas TFLOPS':>16}{'dpas speedup':>14}"
     )
@@ -491,20 +475,20 @@ def _print_row(label, E, N, K, total_tokens, base_ms, deq_ms, ark_ms, tflops, na
                dpas_ms=None, dpas_tflops=None):
     """Print a benchmark row.
 
-    ``speedup`` is ``(base+deq) / ark`` -- a fair comparison against any
-    pipeline that keeps weights quantized and pays per-step dequant cost
-    on top of a stock matmul baseline. For FP rows ``deq_ms == 0`` so
-    ``base+deq == baseline``.
+    ``speedup`` is ``baseline / ark`` -- the fused kernel's speedup over
+    the matmul-only baseline (weights pre-dequantized). ``deq_ms`` is
+    accepted for signature compatibility with existing callers but is
+    no longer displayed.
 
     ``native_ms`` / ``native_tflops`` are printed for FP8 rows where the
     native fused kernel was benchmarked, and left blank otherwise.
     ``dpas_ms`` / ``dpas_tflops`` similarly for the Variant B DPAS path.
-    The ``dpas speedup`` column is ``(base+deq) / dpas`` -- the fused
+    The ``dpas speedup`` column is ``baseline / dpas`` -- the fused
     DPAS path's speedup over the same denominator used for ``speedup``
     (``ark``); printed as ``--`` when no ``dpas(ms)`` was measured.
     """
-    base_plus_deq_ms = base_ms + deq_ms
-    speedup = base_plus_deq_ms / ark_ms if ark_ms > 0 else float("nan")
+    del deq_ms  # no longer displayed; kept in signature for caller compatibility
+    speedup = base_ms / ark_ms if ark_ms > 0 else float("nan")
     if native_ms is None:
         native_col = f"{'--':>14}"
         native_tflops_col = f"{'--':>16}"
@@ -518,11 +502,11 @@ def _print_row(label, E, N, K, total_tokens, base_ms, deq_ms, ark_ms, tflops, na
     else:
         dpas_col = f"{dpas_ms:>14.4f}"
         dpas_tflops_col = f"{dpas_tflops:>15.1f} "
-        dpas_speedup = base_plus_deq_ms / dpas_ms if dpas_ms > 0 else float("nan")
+        dpas_speedup = base_ms / dpas_ms if dpas_ms > 0 else float("nan")
         dpas_speedup_col = f"{dpas_speedup:>13.2f}x"
     print(
         f"{label:<22}{E:>4}{N:>7}{K:>7}{total_tokens:>8}"
-        f"{base_ms:>16.4f}{base_plus_deq_ms:>16.4f}{ark_ms:>14.4f}{speedup:>11.2f}x{tflops:>9.1f}"
+        f"{base_ms:>16.4f}{ark_ms:>14.4f}{speedup:>11.2f}x{tflops:>9.1f}"
         f"{native_col}{native_tflops_col}"
         f"{dpas_col}{dpas_tflops_col}{dpas_speedup_col}"
     )
@@ -606,10 +590,8 @@ class TestMoEGemmPrefillPerf:
                 dequant = _dequant_int4_sym(packed, scales, group_size).to(dtype)
 
             # ``dequant`` is already [E, N, K] -- matches the baseline contract.
-            # We time dequant separately so the report can show both the
-            # matmul-only baseline (apples-to-apples GEMM cost) and the
-            # ``base+deq`` total that a stock pipeline keeping weights in
-            # quantized storage would actually pay per step.
+            # We still time dequant separately (measured but no longer reported)
+            # so callers of ``_print_row`` keep their existing signature.
             if asym:
                 deq_ms = _xpu_time_ms(lambda: _dequant_int4_asym(packed, scales, zeros, group_size).to(dtype))
             else:
@@ -958,11 +940,9 @@ class TestMoEGemmPrefillPerf:
         to ``moe_gemm_prefill_fp8_dpas`` (Variant A). Skipped silently if
         the build was not linked against that pybind symbol.
 
-        The baseline (``base+deq``) pre-dequantizes weights back to
-        ``[E, N, K]`` in the activation dtype for a fair single-``torch.bmm``
-        comparison; the ``deq_ms`` column reports the cost of that
-        per-tensor dequant so ``(base+deq) / ark`` reflects the end-to-end
-        cost of a stock pipeline that keeps weights quantized.
+        The baseline pre-dequantizes weights back to ``[E, N, K]`` in the
+        activation dtype for a fair single-``torch.bmm`` comparison; the
+        reported ``speedup`` is ``baseline / ark``.
 
         The ``native(ms)`` and ``dpas(ms)`` columns are ``--`` here because
         the Variant A DPAS entry point IS the ARK column for this scheme

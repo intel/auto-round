@@ -41,9 +41,8 @@ TFLOPS = FLOPs / (time_in_seconds) / 1e12
 ### 4. **基线对比**
 每项测试将 ARK MoE kernel 与 PyTorch 基线实现进行对比:
 - **Baseline**: 单个 `torch.bmm`,输入为 `[E, M_max, K]` padding 后的激活缓冲区 (每个专家的 token 切片 padding 到全局最大 tokens-per-expert)。对量化测试,权重会被预先反量化,因此 `baseline(ms)` 列只测量 matmul 开销。
-- **Base+Deq**: 对量化测试,反量化步骤单独计时,`base+deq(ms)` 列报告 `baseline + deq` — 一个"权重量化存储但复用标准 matmul 基线"的流水线每步付出的端到端开销。对于 FP 行,此值等于 `baseline(ms)`。
 - **ARK Kernel**: 带融合操作的优化 `ark.moe_gemm`。
-- **Speedup**: 报告 `(base+deq) / ark` — 与我们融合 kernel 的现实对比点。
+- **Speedup**: 报告 `baseline / ark` — 融合 kernel 相对 matmul-only 基线的加速比。
 
 ## 如何运行
 
