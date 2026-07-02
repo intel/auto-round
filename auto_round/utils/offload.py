@@ -47,6 +47,7 @@ import gc
 import json
 import os
 import shutil
+import sys
 import tempfile
 from collections import defaultdict
 from functools import partial
@@ -724,7 +725,11 @@ class OffloadManager:
             self._saved[name] = {"save_path": save_path}
             del state_dict
         except Exception as e:
-            logger.warning(f"OffloadManager: failed to save {name}: {e}")
+            # Keeping the module resident in memory after a failed save (e.g. disk
+            # quota exceeded) silently increases memory pressure and can lead to a
+            # confusing OOM later on, so fail fast instead.
+            logger.error(f"OffloadManager: failed to save {name}: {e}. Exiting to avoid silent memory growth.")
+            sys.exit(1)
 
     def _load_from_disk(self, name: str, module: torch.nn.Module) -> None:
         metadata = self._saved.get(name)
