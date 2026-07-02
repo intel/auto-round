@@ -58,6 +58,7 @@ __all__ = [
     "ARDevice",
     "DeviceManager",
     "device_manager",
+    "normalize_default_device_map",
     "get_ar_device",
     "get_current_device_manager",
     "get_current_device_type",
@@ -84,6 +85,23 @@ __all__ = [
 # ``torch.accelerator`` (cuda/xpu/mps/npu/...) is discovered automatically and
 # does NOT need to appear in this list.
 _PREFERRED_ORDER = ("cuda", "xpu", "hpu")  # add mps later
+
+
+def normalize_default_device_map(device_map: Union[None, str, int, torch.device, dict]):
+    """Normalize default device selection across entry points.
+
+    On Apple Silicon, the default ``0`` / ``"0"`` / ``None`` / ``"auto"``
+    selection would otherwise resolve to MPS.  That tends to OOM on larger
+    models, so keep the historical behavior of defaulting to CPU unless the
+    caller explicitly requests MPS.
+    """
+    if torch.mps.is_available() and device_map in (0, "0", None, "auto"):
+        logger.warning(
+            "MPS detected. Using CPU by default to avoid potential memory issues. "
+            "Set --device_map=mps to force MPS usage."
+        )
+        return "cpu"
+    return device_map
 
 
 def _torch_accelerator_type() -> Optional[str]:
@@ -1052,6 +1070,7 @@ def _clear_memory_for_cpu_and_cuda(
             tensor[i] = None
     tensor = None
     gc.collect()
+
     # Lazy import: malloc-trim helpers live in utils/device.py.
     from auto_round.utils.device import _maybe_trim_malloc
 

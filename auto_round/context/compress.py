@@ -11,7 +11,7 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-from typing import Any, Callable, Optional, Union
+from typing import Callable, Optional, Union
 
 import torch
 
@@ -41,7 +41,7 @@ class CompressContext(BaseContext):
         static_kv_dtype: Optional[torch.dtype] = None,
         static_attention_dtype: Optional[torch.dtype] = None,
         **kwargs,
-    ):
+    ) -> None:
         super().__init__()
         self.low_cpu_mem_usage = low_cpu_mem_usage
         self.low_gpu_mem_usage = low_gpu_mem_usage

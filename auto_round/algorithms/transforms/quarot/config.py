@@ -19,13 +19,13 @@ schema.
 Two implementation backends share this one schema (method B):
 
 * ``backend="inplace"``  – QuaRot-style residual-stream rotation, implemented
-    under :mod:`auto_round.algorithms.transforms.rotation.inplace`.  Works for any
+    under :mod:`auto_round.algorithms.transforms.quarot.inplace`.  Works for any
   weight/activation dtype and can optionally fuse the online Hadamard into
   weights (``fuse_online_to_weight=True``).
 
 * ``backend="transform"`` – Per-Linear weight + activation Hadamard with a
   fused triton kernel, implemented under
-  :mod:`auto_round.algorithms.transforms.rotation.apply`.  Supports only
+  :mod:`auto_round.algorithms.transforms.quarot.apply`.  Supports only
   MXFP4 / NVFP4 and cannot fuse online to weight.
 
 * ``backend="auto"`` – dispatcher picks inplace when a fused online rotation
@@ -50,7 +50,9 @@ __all__ = [
 ]
 
 # Supported Hadamard transform types (also used by HadamardTransform registry).
-HADAMARD_TYPES: frozenset[str] = frozenset({"hadamard", "random_hadamard", "quarot_hadamard"})
+HADAMARD_TYPES: frozenset[str] = frozenset(
+    {"hadamard", "random_hadamard", "inplace_quarot_hadamard", "inplace_hadamard", "inplace_random"}
+)
 _SUPPORTED_BACKENDS: frozenset[str] = frozenset({"auto", "inplace", "transform"})
 
 
@@ -82,6 +84,27 @@ class RotationConfig(BaseModel, BaseRotationConfig):
     random_seed: bool = Field(default=False, exclude=True)
 
     model_config = {"arbitrary_types_allowed": True}
+
+    def __init__(self, **data: Any) -> None:
+        """Initialize a Hadamard rotation configuration.
+
+        Args:
+            algorithm: Canonical algorithm name used for registry lookup.
+            backend: Rotation backend to use. ``auto`` lets AutoRound pick
+                an implementation, ``inplace`` uses QuaRot-style online
+                rotation, and ``transform`` uses the transform backend.
+            block_size: Grouped Hadamard block size. None keeps the backend
+                default behavior.
+            hadamard_type: Hadamard transform variant, such as
+                ``hadamard``, ``random_hadamard``, or ``quarot_hadamard``.
+            fuse_online_to_weight: Whether online Hadamard rotation should
+                be fused into the weights when supported.
+            allow_online_rotation: Whether online activation rotation is
+                allowed.
+            random_seed: Internal flag used by random Hadamard paths.
+            **data: Additional Pydantic field values forwarded to BaseModel.
+        """
+        super().__init__(**data)
 
     @field_validator("backend")
     @classmethod

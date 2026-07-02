@@ -769,13 +769,14 @@ class GGUFFormat(OutputFormat):
     def __init__(self, format: str, ar: BaseCompressor):
         if format.startswith("gguf:"):
             self._original_format = format  # preserve "gguf:q2_k_mixed" etc. for Phase 2b
-            self.gguf_args_check(ar, format, model_type=ModelType.TEXT)
-            if ar.mllm:
-                self.gguf_args_check(ar, format, model_type=ModelType.MMPROJ)
-
             self.output_format = "gguf"
             self.backend_cls = GGUFFormat
             self.backend = GGUFFormat(format.split(":")[-1], ar)
+
+            resolved_format = self.backend.output_format
+            self.gguf_args_check(ar, resolved_format, model_type=ModelType.TEXT)
+            if ar.mllm:
+                self.gguf_args_check(ar, resolved_format, model_type=ModelType.MMPROJ)
         else:
             scheme = ar.scheme
             gguf_format = f"gguf:{format.lower()}"
@@ -783,12 +784,12 @@ class GGUFFormat(OutputFormat):
                 from auto_round.schemes import _handle_special_schemes
                 from auto_round.utils.model import is_moe_model
 
-                if format.lower() == "q2_k_mixed" and getattr(ar, "iters", 0) > 0 and not is_moe_model(ar.model):
+                if format.lower() == "q2_k_mixed" and (getattr(ar, "iters", 0) or 0) > 0 and not is_moe_model(ar.model):
                     logger.warning(
                         "gguf:q2_k_mixed only supports MoE models with iters>0. "
-                        "It is not an MoE model, falling back to gguf:q4_k_m."
+                        "It is not an MoE model, falling back to gguf:q2_k_s."
                     )
-                    gguf_format = "gguf:q4_k_m"
+                    gguf_format = "gguf:q2_k_s"
                 else:
                     ar.layer_config = _handle_special_schemes(
                         gguf_format, ar.layer_config, ar.model, quant_nontext_module=ar.quant_nontext_module

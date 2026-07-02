@@ -16,6 +16,11 @@ from typing import Optional
 import torch
 import sys
 
+# Tensor layout constants passed to native C++ backends.
+# 0 = HND ([B, H, S, D]), 1 = NHD ([B, S, H, D]).
+LAYOUT_HND = 0
+LAYOUT_NHD = 1
+
 
 class ARK_DT:
     float64 = 64
@@ -125,6 +130,32 @@ def _attention_strides_v(tensor: torch.Tensor, tensor_layout: str) -> tuple[int,
     else:
         batch_stride, seq_stride, head_stride, dim_stride = tensor.stride()
     return dim_stride, seq_stride, head_stride, batch_stride
+
+
+def _validate_canonical_strides(tensor: torch.Tensor, name: str, tensor_layout: str) -> None:
+    """Verify that *batched* 4-D tensor strides match the canonical packed layout.
+
+    C++ backends compute strides from layout + shape alone (no stride params),
+    so the input tensors must have the exact canonical strides.
+
+    ``tensor.stride()`` returns strides in dimension order:
+
+        HND [B, H, S, D]:  stride=(H*S*D, S*D, D, 1)
+        NHD [B, S, H, D]:  stride=(S*H*D, H*D, D, 1)
+    """
+    layout = _normalize_tensor_layout(tensor_layout)
+    if layout == "HND":
+        B, H, S, D = tensor.shape
+        expected = (H * S * D, S * D, D, 1)
+    else:
+        B, S, H, D = tensor.shape
+        expected = (S * H * D, H * D, D, 1)
+    actual = tensor.stride()
+    if actual != expected:
+        raise ValueError(
+            f"{name} strides {actual} do not match canonical {layout} layout {expected}. "
+            f"Non-contiguous inputs are not supported; call .contiguous() first."
+        )
 
 
 def _validate_attention_tensor(
@@ -294,6 +325,7 @@ def woqgemm(
     scale_type,
     asym,
 ):
+    _validate_packed_blob(B, n, k, groupsize, compute_type, weight_type, scale_type, asym)
     m = A.shape[0]
     lib = get_lib(A)
     ct = cvtstr_dtype(compute_type)
@@ -316,8 +348,71 @@ def woqgemm(
         wt,
         st,
         asym,
+        B.numel(),
     )
     return C
+
+
+def _validate_packed_blob(
+    blob: torch.Tensor,
+    n: int,
+    k: int,
+    groupsize: int,
+    compute_type: str,
+    weight_type: str,
+    scale_type: str,
+    asym: bool,
+) -> None:
+    """Validate a packed-weight blob before passing it to native code.
+
+    Raises ``TypeError`` or ``ValueError`` if any check fails, preventing
+    out-of-bounds memory access in the native ``unpack_weight`` /
+    ``woqgemm`` path when the blob is malformed or the parameters are
+    inconsistent with the blob contents.
+    """
+    if not isinstance(blob, torch.Tensor):
+        raise TypeError(f"blob must be a torch.Tensor, got {type(blob).__name__}")
+
+    if blob.device.type not in ("cpu", "xpu"):
+        raise ValueError(f"blob must reside on cpu or xpu, got {blob.device.type}")
+
+    if blob.dtype != torch.int8:
+        raise ValueError(f"blob must have dtype torch.int8, got {blob.dtype}")
+
+    if blob.dim() != 1:
+        raise ValueError(f"blob must be a 1-D tensor, got {blob.dim()}-D")
+
+    if not isinstance(n, (int,)) or n <= 0:
+        raise ValueError(f"n must be a positive integer, got {n!r}")
+    if not isinstance(k, (int,)) or k <= 0:
+        raise ValueError(f"k must be a positive integer, got {k!r}")
+    if not isinstance(groupsize, (int,)) or groupsize <= 0:
+        raise ValueError(f"groupsize must be a positive integer, got {groupsize!r}")
+    if not isinstance(asym, bool):
+        raise TypeError(f"asym must be a bool, got {type(asym).__name__}")
+
+    valid_types = {
+        "fp32",
+        "fp16",
+        "bf16",
+        "int8",
+        "int4",
+        "int2",
+        "int3",
+        "int5",
+        "int6",
+        "int7",
+        "fp8_e4m3",
+        "fp8_e5m2",
+        "fp8_e8m0",
+    }
+    valid_compute_types = valid_types | {"auto"}
+    if compute_type not in valid_compute_types:
+        raise ValueError(f"compute_type must be one of {valid_compute_types}, got {compute_type!r}")
+    if weight_type not in valid_types:
+        raise ValueError(f"weight_type must be one of {valid_types}, got {weight_type!r}")
+    if scale_type not in valid_types:
+        raise ValueError(f"scale_type must be one of {valid_types}, got {scale_type!r}")
 
 
 # QB: k*n:int8,  scaleB: k/blocksize*n:DT
@@ -332,6 +427,12 @@ def _repack_quantized_weight_core(
     scale_type,
     asym,
 ):
+    if not isinstance(QB, torch.Tensor) or QB.dim() != 2:
+        raise ValueError(f"QB must be a 2-D tensor, got shape {QB.shape!r}")
+    if not isinstance(scaleB, torch.Tensor) or scaleB.dim() != 2:
+        raise ValueError(f"scaleB must be a 2-D tensor, got shape {scaleB.shape!r}")
+    if not isinstance(zp, torch.Tensor):
+        raise TypeError(f"zp must be a torch.Tensor, got {type(zp).__name__}")
     k = QB.shape[0]
     n = QB.shape[1]
     lib = get_lib(QB)
@@ -371,6 +472,7 @@ def _unpack_weight_core(
     scale_type,
     asym,
 ):
+    _validate_packed_blob(blob, n, k, groupsize, compute_type, weight_type, scale_type, asym)
     lib = get_lib(blob)
     stream = get_stream(blob)
     ct = cvtstr_dtype(compute_type)
@@ -391,6 +493,7 @@ def _unpack_weight_core(
         wt,
         st,
         asym,
+        blob.numel(),
     )
     if blob.device.type == "cpu":
         return out.T
@@ -457,6 +560,11 @@ def sdpa(
 
     lib = get_lib(query)
     stream = get_stream(query)
+
+    _validate_canonical_strides(query, "Q", tensor_layout)
+    _validate_canonical_strides(key, "K", tensor_layout)
+    _validate_canonical_strides(value, "V", tensor_layout)
+
     O = _empty_attention_output(
         B,
         Hq,
@@ -466,10 +574,7 @@ def sdpa(
         device=query.device,
         tensor_layout=tensor_layout,
     )
-    q_strides = _attention_strides_qko(query, tensor_layout)
-    k_strides = _attention_strides_qko(key, tensor_layout)
-    v_strides = _attention_strides_v(value, tensor_layout)
-    o_strides = _attention_strides_qko(O, tensor_layout)
+    layout_code = LAYOUT_HND if _normalize_tensor_layout(tensor_layout) == "HND" else LAYOUT_NHD
     lib.sdpa(
         stream,
         query.data_ptr(),
@@ -477,10 +582,6 @@ def sdpa(
         value.data_ptr(),
         O.data_ptr(),
         attn_mask.data_ptr() if attn_mask is not None else 0,
-        *q_strides,
-        *k_strides,
-        *v_strides,
-        *o_strides,
         cvt_dtype(query.dtype),
         cvt_dtype(key.dtype),
         cvt_dtype(O.dtype),
@@ -492,6 +593,137 @@ def sdpa(
         D,
         float(scale) if scale is not None else 1.0 / (D**0.5),
         bool(is_causal),
+        layout_code,
+    )
+    return O
+
+
+def sdpa_varlen(
+    query: torch.Tensor,
+    key: torch.Tensor,
+    value: torch.Tensor,
+    cu_seqlens_q: torch.Tensor,
+    cu_seqlens_k: torch.Tensor,
+    max_seqlen_q: int,
+    max_seqlen_k: int,
+    attn_mask: torch.Tensor | None = None,
+    dropout_p: float = 0.0,
+    is_causal: bool = False,
+    scale: float | None = None,
+) -> torch.Tensor:
+    """Scaled dot-product attention (SDPA) prefill+decode with variable-length sequences.
+
+    Q, K, V use a flat 3-D layout where tokens from all sequences in the batch
+    are concatenated along dim-0 (the *total* dimension).  Per-sequence
+    boundaries are given by ``cu_seqlens_q`` / ``cu_seqlens_k``.
+
+    Shapes:
+        Q:   [total_q, num_heads_q, head_dim]
+        K:   [total_kv, num_heads_kv, head_dim]
+        V:   [total_kv, num_heads_kv, head_dim]
+        O:   [total_q, num_heads_q, head_dim]
+
+    where ``total_q = cu_seqlens_q[-1]`` and ``total_kv = cu_seqlens_k[-1]``.
+
+    Args:
+        cu_seqlens_q: Cumulative sequence lengths for Q  [batch_size + 1] int32.
+        cu_seqlens_k: Cumulative sequence lengths for K/V  [batch_size + 1] int32.
+        max_seqlen_q: Maximum Q sequence length in the batch.
+        max_seqlen_k: Maximum K/V sequence length in the batch.
+        scale: Softmax scale.  Uses ``1 / sqrt(head_dim)`` when ``None``.
+
+    Returns:
+        O: Flat output with shape [total_q, num_heads_q, head_dim].
+    """
+    if query.device.type != "xpu":
+        raise NotImplementedError("sdpa_varlen is only supported on XPU")
+
+    if query.dtype not in (torch.float16, torch.bfloat16):
+        raise ValueError(f"Q must be float16 or bfloat16, got {query.dtype}")
+    if key.dtype != query.dtype or value.dtype != query.dtype:
+        raise ValueError(f"K/V dtype must match Q dtype, got K={key.dtype}, V={value.dtype}, Q={query.dtype}")
+
+    if query.ndim != 3 or key.ndim != 3 or value.ndim != 3:
+        raise ValueError(f"Q/K/V must be 3-D for varlen; got Q={query.ndim}D, K={key.ndim}D, V={value.ndim}D")
+
+    if cu_seqlens_q.dtype not in (torch.int32, torch.int64):
+        raise ValueError(f"cu_seqlens_q must be int32 or int64, got {cu_seqlens_q.dtype}")
+    if cu_seqlens_k.dtype not in (torch.int32, torch.int64):
+        raise ValueError(f"cu_seqlens_k must be int32 or int64, got {cu_seqlens_k.dtype}")
+    if cu_seqlens_q.dim() != 1 or cu_seqlens_k.dim() != 1:
+        raise ValueError("cu_seqlens_q and cu_seqlens_k must be 1-D")
+    if cu_seqlens_q.device.type != "xpu" or cu_seqlens_k.device.type != "xpu":
+        raise ValueError("cu_seqlens_q and cu_seqlens_k must be on XPU")
+
+    batch = cu_seqlens_q.shape[0] - 1
+    if cu_seqlens_k.shape[0] - 1 != batch:
+        raise ValueError("cu_seqlens_q and cu_seqlens_k must describe the same batch size")
+
+    total_q, Hq, D = query.shape
+    total_kv, Hkv, Dk = key.shape
+    total_kv_v, Hkv2, Dv = value.shape
+
+    if total_q != cu_seqlens_q[-1].item():
+        raise ValueError(f"Q dim-0 ({total_q}) != cu_seqlens_q[-1] ({cu_seqlens_q[-1].item()})")
+    if total_kv != cu_seqlens_k[-1].item():
+        raise ValueError(f"K dim-0 ({total_kv}) != cu_seqlens_k[-1] ({cu_seqlens_k[-1].item()})")
+    if total_kv_v != cu_seqlens_k[-1].item():
+        raise ValueError(f"V dim-0 ({total_kv_v}) != cu_seqlens_k[-1] ({cu_seqlens_k[-1].item()})")
+    if Hkv != Hkv2 or Dk != Dv:
+        raise ValueError("K/V shape mismatch")
+    if Dk != D:
+        raise ValueError("Head dim mismatch between Q and K/V")
+    if D not in (64, 128, 96, 192):
+        raise ValueError(f"Unsupported head_dim={D}; supported: 64, 128, 96, 192")
+
+    if dropout_p != 0.0:
+        raise NotImplementedError(f"dropout_p must be 0.0 (got {dropout_p}); dropout is not supported")
+
+    if attn_mask is not None:
+        raise NotImplementedError("attn_mask is not yet supported in sdpa_varlen")
+
+    if Hq % Hkv != 0:
+        raise ValueError(f"num_heads_q ({Hq}) must be divisible by num_heads_kv ({Hkv})")
+
+    # Validate strides: the dim axis must be contiguous.
+    # Flat layout [total, H, D]: dim-stride (stride(2)) must be 1.
+    if query.stride(2) != 1:
+        raise ValueError(f"Q must be contiguous along head-dim axis; got stride {query.stride()}")
+    if key.stride(2) != 1:
+        raise ValueError(f"K must be contiguous along head-dim axis; got stride {key.stride()}")
+    if value.stride(2) != 1:
+        raise ValueError(f"V must be contiguous along head-dim axis; got stride {value.stride()}")
+
+    lib = get_lib(query)
+    stream = get_stream(query)
+    cu_seqlens_q_i32 = cu_seqlens_q.contiguous().to(torch.int32)
+    cu_seqlens_k_i32 = cu_seqlens_k.contiguous().to(torch.int32)
+
+    O = torch.empty(total_q, Hq, D, dtype=value.dtype, device=query.device)
+
+    lib.sdpa_varlen(
+        stream,
+        query.data_ptr(),
+        key.data_ptr(),
+        value.data_ptr(),
+        O.data_ptr(),
+        attn_mask.data_ptr() if attn_mask is not None else 0,
+        cvt_dtype(query.dtype),
+        cvt_dtype(key.dtype),
+        cvt_dtype(O.dtype),
+        batch,
+        Hq,
+        Hkv,
+        total_q,
+        total_kv,
+        max_seqlen_q,
+        max_seqlen_k,
+        D,
+        float(scale) if scale is not None else 1.0 / (D**0.5),
+        bool(is_causal),
+        cu_seqlens_q_i32.data_ptr(),
+        cu_seqlens_k_i32.data_ptr(),
+        LAYOUT_HND,  # unused by the native varlen path (always flat 3-D)
     )
     return O
 
@@ -547,6 +779,11 @@ def sage(
 
     lib = get_lib(query)
     stream = get_stream(query)
+
+    _validate_canonical_strides(query, "Q", tensor_layout)
+    _validate_canonical_strides(key, "K", tensor_layout)
+    _validate_canonical_strides(value, "V", tensor_layout)
+
     O = _empty_attention_output(
         B,
         Hq,
@@ -556,10 +793,7 @@ def sage(
         device=query.device,
         tensor_layout=tensor_layout,
     )
-    q_strides = _attention_strides_qko(query, tensor_layout)
-    k_strides = _attention_strides_qko(key, tensor_layout)
-    v_strides = _attention_strides_v(value, tensor_layout)
-    o_strides = _attention_strides_qko(O, tensor_layout)
+    layout_code = LAYOUT_HND if _normalize_tensor_layout(tensor_layout) == "HND" else LAYOUT_NHD
     lib.sage(
         stream,
         query.data_ptr(),
@@ -570,10 +804,6 @@ def sage(
         quant_block_size,
         qscale.data_ptr() if qscale is not None else 0,
         kscale.data_ptr() if kscale is not None else 0,
-        *q_strides,
-        *k_strides,
-        *v_strides,
-        *o_strides,
         cvt_dtype(query.dtype),
         cvt_dtype(key.dtype),
         cvt_dtype(O.dtype),
@@ -585,6 +815,7 @@ def sage(
         D,
         float(scale) if scale is not None else 1.0 / (D**0.5),
         bool(is_causal),
+        layout_code,
     )
     return O
 
@@ -657,6 +888,11 @@ def sage_pvi8(
 
     lib = get_lib(query)
     stream = get_stream(query)
+
+    _validate_canonical_strides(query, "Q", tensor_layout)
+    _validate_canonical_strides(key, "K", tensor_layout)
+    _validate_canonical_strides(value, "V", tensor_layout)
+
     O = _empty_attention_output(
         B,
         Hq,
@@ -666,10 +902,7 @@ def sage_pvi8(
         device=query.device,
         tensor_layout=tensor_layout,
     )
-    q_strides = _attention_strides_qko(query, tensor_layout)
-    k_strides = _attention_strides_qko(key, tensor_layout)
-    v_strides = _attention_strides_v(value, tensor_layout)
-    o_strides = _attention_strides_qko(O, tensor_layout)
+    layout_code = LAYOUT_HND if _normalize_tensor_layout(tensor_layout) == "HND" else LAYOUT_NHD
     lib.sage_pvi8(
         stream,
         query.data_ptr(),
@@ -681,10 +914,6 @@ def sage_pvi8(
         qscale.data_ptr(),
         kscale.data_ptr(),
         vscale.data_ptr(),
-        *q_strides,
-        *k_strides,
-        *v_strides,
-        *o_strides,
         cvt_dtype(query.dtype),
         cvt_dtype(key.dtype),
         cvt_dtype(O.dtype),
@@ -696,6 +925,7 @@ def sage_pvi8(
         D,
         float(scale) if scale is not None else 1.0 / (D**0.5),
         bool(is_causal),
+        layout_code,
     )
     return O
 
@@ -759,6 +989,11 @@ def sagev1(
 
     lib = get_lib(query)
     stream = get_stream(query)
+
+    _validate_canonical_strides(query, "Q", tensor_layout)
+    _validate_canonical_strides(key, "K", tensor_layout)
+    _validate_canonical_strides(value, "V", tensor_layout)
+
     O = _empty_attention_output(
         B,
         Hq,
@@ -768,10 +1003,7 @@ def sagev1(
         device=query.device,
         tensor_layout=tensor_layout,
     )
-    q_strides = _attention_strides_qko(query, tensor_layout)
-    k_strides = _attention_strides_qko(key, tensor_layout)
-    v_strides = _attention_strides_v(value, tensor_layout)
-    o_strides = _attention_strides_qko(O, tensor_layout)
+    layout_code = LAYOUT_HND if _normalize_tensor_layout(tensor_layout) == "HND" else LAYOUT_NHD
     lib.sagev1(
         stream,
         query.data_ptr(),
@@ -780,10 +1012,6 @@ def sagev1(
         O.data_ptr(),
         attn_mask.data_ptr() if attn_mask is not None else 0,
         quant_block_size,
-        *q_strides,
-        *k_strides,
-        *v_strides,
-        *o_strides,
         cvt_dtype(query.dtype),
         cvt_dtype(key.dtype),
         cvt_dtype(value.dtype),
@@ -796,6 +1024,7 @@ def sagev1(
         D,
         float(scale) if scale is not None else 1.0 / (D**0.5),
         bool(is_causal),
+        layout_code,
     )
     return O
 
@@ -850,6 +1079,11 @@ def sagev1_pvi8(
 
     lib = get_lib(query)
     stream = get_stream(query)
+
+    _validate_canonical_strides(query, "Q", tensor_layout)
+    _validate_canonical_strides(key, "K", tensor_layout)
+    _validate_canonical_strides(value, "V", tensor_layout)
+
     O = _empty_attention_output(
         B,
         Hq,
@@ -859,10 +1093,7 @@ def sagev1_pvi8(
         device=query.device,
         tensor_layout=tensor_layout,
     )
-    q_strides = _attention_strides_qko(query, tensor_layout)
-    k_strides = _attention_strides_qko(key, tensor_layout)
-    v_strides = _attention_strides_v(value, tensor_layout)
-    o_strides = _attention_strides_qko(O, tensor_layout)
+    layout_code = LAYOUT_HND if _normalize_tensor_layout(tensor_layout) == "HND" else LAYOUT_NHD
     lib.sagev1_pvi8(
         stream,
         query.data_ptr(),
@@ -871,10 +1102,6 @@ def sagev1_pvi8(
         O.data_ptr(),
         attn_mask.data_ptr() if attn_mask is not None else 0,
         quant_block_size,
-        *q_strides,
-        *k_strides,
-        *v_strides,
-        *o_strides,
         cvt_dtype(query.dtype),
         cvt_dtype(key.dtype),
         cvt_dtype(value.dtype),
@@ -887,6 +1114,7 @@ def sagev1_pvi8(
         D,
         float(scale) if scale is not None else 1.0 / (D**0.5),
         bool(is_causal),
+        layout_code,
     )
     return O
 
@@ -940,6 +1168,136 @@ def sageattn(
         tensor_layout=tensor_layout,
         **kwargs,
     )
+
+
+def sageattn_varlen(
+    q: torch.Tensor,
+    k: torch.Tensor,
+    v: torch.Tensor,
+    cu_seqlens_q: torch.Tensor,
+    cu_seqlens_k: torch.Tensor,
+    max_seqlen_q: int,
+    max_seqlen_k: int,
+    is_causal: bool = False,
+    sm_scale: float | None = None,
+    kernel: str = "v1_pvhalf",
+    quant_block_size: int = 64,
+    **kwargs,
+) -> torch.Tensor:
+    """SAGE attention with variable-length sequences (no padding).
+
+    Q/K/V are flat 3-D tensors: [total_tokens, num_heads, head_dim].
+    Per-sequence boundaries given by ``cu_seqlens_q`` / ``cu_seqlens_k``.
+
+    Internally quantizes Q/K (and V for pvi8) to INT8, then dispatches to
+    the SAGE varlen kernel.
+
+    Args:
+        q:   [total_q, num_heads_q, head_dim] float16/bfloat16
+        k:   [total_kv, num_heads_kv, head_dim] float16/bfloat16
+        v:   [total_kv, num_heads_kv, head_dim] float16/bfloat16
+        cu_seqlens_q: Cumulative sequence lengths for Q [batch+1] int32.
+        cu_seqlens_k: Cumulative sequence lengths for K/V [batch+1] int32.
+        max_seqlen_q: Maximum Q sequence length.
+        max_seqlen_k: Maximum K/V sequence length.
+        is_causal: Apply causal mask.
+        sm_scale: Softmax scale. Uses 1/sqrt(D) when None.
+        kernel: "v1_pvhalf" (PV half) or "v1_pvi8" (PV int8).
+        quant_block_size: Block size for INT8 quantization (default 64).
+        **kwargs: Forwarded (attn_mask, dropout_p etc. not yet supported).
+
+    Returns:
+        O: [total_q, num_heads_q, head_dim] float16/bfloat16
+    """
+    if q.device.type != "xpu":
+        raise NotImplementedError("sageattn_varlen is only supported on XPU")
+
+    if q.dtype not in (torch.float16, torch.bfloat16):
+        raise ValueError(f"Q must be float16 or bfloat16, got {q.dtype}")
+
+    if q.ndim != 3 or k.ndim != 3 or v.ndim != 3:
+        raise ValueError(f"Q/K/V must be 3-D for varlen; got Q={q.ndim}D, K={k.ndim}D, V={v.ndim}D")
+
+    if cu_seqlens_q.dtype not in (torch.int32, torch.int64):
+        raise ValueError(f"cu_seqlens_q must be int32 or int64, got {cu_seqlens_q.dtype}")
+    if cu_seqlens_k.dtype not in (torch.int32, torch.int64):
+        raise ValueError(f"cu_seqlens_k must be int32 or int64, got {cu_seqlens_k.dtype}")
+    if cu_seqlens_q.dim() != 1 or cu_seqlens_k.dim() != 1:
+        raise ValueError("cu_seqlens_q and cu_seqlens_k must be 1-D")
+    if cu_seqlens_q.device.type != "xpu" or cu_seqlens_k.device.type != "xpu":
+        raise ValueError("cu_seqlens_q and cu_seqlens_k must be on XPU")
+
+    batch = cu_seqlens_q.shape[0] - 1
+    if cu_seqlens_k.shape[0] - 1 != batch:
+        raise ValueError("cu_seqlens_q and cu_seqlens_k must describe the same batch size")
+
+    total_q, Hq, D = q.shape
+    total_kv, Hkv, Dk = k.shape
+    total_kv_v, Hkv2, Dv = v.shape
+
+    if total_q != cu_seqlens_q[-1].item():
+        raise ValueError(f"Q dim-0 ({total_q}) != cu_seqlens_q[-1] ({cu_seqlens_q[-1].item()})")
+    if total_kv != cu_seqlens_k[-1].item():
+        raise ValueError(f"K dim-0 ({total_kv}) != cu_seqlens_k[-1] ({cu_seqlens_k[-1].item()})")
+    if total_kv_v != cu_seqlens_k[-1].item():
+        raise ValueError(f"V dim-0 ({total_kv_v}) != cu_seqlens_k[-1] ({cu_seqlens_k[-1].item()})")
+    if Hkv != Hkv2 or Dk != Dv:
+        raise ValueError("K/V shape mismatch")
+    if Dk != D:
+        raise ValueError("Head dim mismatch between Q and K/V")
+    if D not in (64, 128):
+        raise ValueError(f"Unsupported head_dim={D}; only 64, 128 supported for SAGE")
+
+    if kernel not in ("v1_pvhalf", "v1_pvi8"):
+        raise ValueError(f"Unsupported kernel={kernel!r}; supported: 'v1_pvhalf', 'v1_pvi8'")
+
+    if quant_block_size <= 0:
+        quant_block_size = 1
+
+    use_int8_pv = 1 if kernel == "v1_pvi8" else 0
+
+    # Validate contiguous along head-dim
+    if q.stride(2) != 1:
+        raise ValueError(f"Q must be contiguous along head-dim axis; got stride {q.stride()}")
+    if k.stride(2) != 1:
+        raise ValueError(f"K must be contiguous along head-dim axis; got stride {k.stride()}")
+    if v.stride(2) != 1:
+        raise ValueError(f"V must be contiguous along head-dim axis; got stride {v.stride()}")
+
+    lib = get_lib(q)
+    stream = get_stream(q)
+    cu_seqlens_q_i32 = cu_seqlens_q.contiguous().to(torch.int32)
+    cu_seqlens_k_i32 = cu_seqlens_k.contiguous().to(torch.int32)
+
+    O = torch.empty(total_q, Hq, D, dtype=v.dtype, device=q.device)
+
+    lib.sagev1_varlen(
+        stream,
+        q.data_ptr(),
+        k.data_ptr(),
+        v.data_ptr(),
+        O.data_ptr(),
+        0,  # mask
+        quant_block_size,
+        cvt_dtype(q.dtype),
+        cvt_dtype(k.dtype),
+        cvt_dtype(v.dtype),
+        cvt_dtype(O.dtype),
+        batch,
+        Hq,
+        Hkv,
+        total_q,
+        total_kv,
+        max_seqlen_q,
+        max_seqlen_k,
+        D,
+        sm_scale if sm_scale is not None else 1.0 / (D**0.5),
+        bool(is_causal),
+        cu_seqlens_q_i32.data_ptr(),
+        cu_seqlens_k_i32.data_ptr(),
+        use_int8_pv,
+    )
+    return O
 
 
 def sage_dynquant(
@@ -1248,6 +1606,51 @@ def packed_weight_size(A: torch.Tensor, n, k, groupsize, compute_type, weight_ty
     wt = cvtstr_dtype(weight_type)
     st = cvtstr_dtype(scale_type)
     return lib.packed_weight_size(stream, n, k, groupsize, ct, wt, st, asym)
+
+
+def woqgemm_linear(
+    A: torch.Tensor,
+    B: torch.Tensor,
+    bias: torch.Tensor | None,
+    n,
+    k,
+    groupsize,
+    compute_type,
+    weight_type,
+    scale_type,
+    asym,
+):
+    n = int(n)
+    k = int(k)
+    groupsize = int(groupsize)
+    asym = bool(asym)
+
+    if A.shape[-1] != k:
+        raise ValueError(f"k must match A.shape[-1] ({A.shape[-1]}), got {k}")
+
+    raw_input_dtype = A.dtype
+    target_dtype = torch.float16 if A.device.type == "xpu" else torch.float32
+    out_shape = A.shape[:-1] + (n,)
+    A_2d = A.to(target_dtype).reshape(-1, A.shape[-1])
+    if bias is None or bias.numel() == 0:
+        bias = torch.empty(0, dtype=target_dtype, device=A.device)
+    else:
+        bias = bias.to(device=A.device, dtype=target_dtype)
+
+    out = woqgemm(
+        A_2d,
+        B,
+        bias,
+        n,
+        k,
+        groupsize,
+        compute_type,
+        weight_type,
+        scale_type,
+        asym,
+    )
+
+    return out.to(raw_input_dtype).reshape(out_shape)
 
 
 def woq_linear(

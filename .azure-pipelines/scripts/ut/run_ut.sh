@@ -11,11 +11,13 @@ SUMMARY_LOG="${LOG_DIR}/results_summary.log"
 
 function setup_environment() {
     echo "##[group]set up UT env..."
+    echo "NUMA_NODE=${NUMA_NODE}"
+    echo "NUMA_CPUSET=${NUMA_CPUSET}"
     export TZ='Asia/Shanghai'
     export TQDM_MININTERVAL=120
     export HF_HUB_DISABLE_PROGRESS_BARS=1
 
-    uv pip install pytest-cov pytest-html
+    uv pip install pytest-cov
     uv pip install -U chardet
     uv pip list
 
@@ -87,8 +89,47 @@ function run_unit_test() {
         local ut_log_name=${LOG_DIR}/unittest_${test_basename}.log
 
         numactl --physcpubind="${NUMA_CPUSET:-0-15}" --membind="${NUMA_NODE:-0}" \
-            python -m pytest --cov=auto_round --cov-report= --html=report.html --self-contained-html \
-                --cov-report xml:coverage.xml --cov-append \
+            pytest --cov=auto_round --cov-report= --cov-append \
+                -vs --disable-warnings ${test_file} 2>&1 | tee ${ut_log_name}
+        echo "##[endgroup]"
+    done
+}
+
+function run_inc_unit_test() {
+    echo "##[group]set up INC UT env..."
+    INC_PT_ONLY=1 uv pip install -r /auto-round/test/test_cpu/requirements_inc.txt --extra-index-url https://download.pytorch.org/whl/cpu
+    echo "##[endgroup]"
+
+    cd /auto-round/test || exit 1
+
+    for test_file in $(find ./test_cpu -name "test_inc*.py" | sort); do
+        echo "##[group]Running ${test_file}..."
+        local test_basename=$(basename ${test_file} .py)
+        local ut_log_name=${LOG_DIR}/unittest_${test_basename}.log
+
+        numactl --physcpubind="${NUMA_CPUSET:-0-15}" --membind="${NUMA_NODE:-0}" \
+            pytest --cov=auto_round --cov-report= --cov-append \
+                -vs --disable-warnings ${test_file} 2>&1 | tee ${ut_log_name}
+        echo "##[endgroup]"
+    done
+}
+
+function run_llmc_unit_test() {
+    echo "##[group]set up LLMC UT env..."
+    BUILD_TYPE="nightly" uv pip install -r /auto-round/test/test_cpu/requirements_llmc.txt --extra-index-url https://download.pytorch.org/whl/cpu
+    uv pip uninstall auto-round
+    cd /auto-round && uv pip install .
+    echo "##[endgroup]"
+
+    cd /auto-round/test || exit 1
+
+    for test_file in $(find ./test_cpu -name "test_llmc*.py" | sort); do
+        echo "##[group]Running ${test_file}..."
+        local test_basename=$(basename ${test_file} .py)
+        local ut_log_name=${LOG_DIR}/unittest_${test_basename}.log
+
+        numactl --physcpubind="${NUMA_CPUSET:-0-15}" --membind="${NUMA_NODE:-0}" \
+            pytest --cov=auto_round --cov-report= --cov-append \
                 -vs --disable-warnings ${test_file} 2>&1 | tee ${ut_log_name}
         echo "##[endgroup]"
     done

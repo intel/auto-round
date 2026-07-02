@@ -62,14 +62,15 @@ function run_unit_test() {
     # install unit test dependencies
     echo "##[group]set up UT env..."
     cd "${BUILD_SOURCESDIRECTORY}" || exit 1
-    uv pip install torch==2.12.0 torchvision torchao --index-url https://download.pytorch.org/whl/cu130
-    uv pip install https://github.com/XuehaoSun/llama-cpp-python/releases/download/v0.3.23/llama_cpp_python-0.3.23-py3-none-linux_x86_64.whl
+    uv pip install torch==2.12.1 torchvision torchao --index-url https://download.pytorch.org/whl/cu130
+    uv pip install llama-cpp-python --extra-index-url https://abetlen.github.io/llama-cpp-python/whl/cu130
     uv pip install 'git+https://github.com/ggml-org/llama.cpp.git#subdirectory=gguf-py'
-    uv pip install -r test/unit/test_cuda/requirements.txt
-    uv pip install -r test/unit/test_cuda/requirements_diffusion.txt
-    uv pip install -U transformers
+    uv pip install -r test/test_cuda/requirements.txt
+    uv pip install -r test/test_cuda/requirements_diffusion.txt
+    uv pip install -U transformers chardet
+    uv pip install kernels==0.12.3 # For sm120: https://github.com/huggingface/transformers/blob/v5.12.1/setup.py#L94
     uv pip uninstall torch torchvision
-    uv pip install torch==2.12.0 torchvision torchao --index-url https://download.pytorch.org/whl/cu130
+    uv pip install torch==2.12.1 torchvision torchao --index-url https://download.pytorch.org/whl/cu130
     uv pip install .
     echo "##[endgroup]"
 
@@ -110,11 +111,12 @@ function run_unit_test_llmc() {
     cd "${BUILD_SOURCESDIRECTORY}" || exit 1
     rm -rf /root/.venv
     uv venv --python=3.12 /root/.venv
-    uv pip install -U pytest-cov pytest-html
+    uv pip install -U pytest-cov
     BUILD_TYPE="nightly" uv pip install \
         -r test/unit/test_cuda/requirements_llmc.txt \
         --extra-index-url https://download.pytorch.org/whl/cu130 \
         --index-strategy unsafe-best-match
+    uv pip install -U chardet
     uv pip install .
     uv pip list
     echo "##[endgroup]"
@@ -139,11 +141,13 @@ function run_unit_test_sglang() {
     cd "${BUILD_SOURCESDIRECTORY}" || exit 1
     rm -rf /root/.venv
     uv venv --python=3.12 /root/.venv
-    uv pip install -U pytest-cov pytest-html
-    uv pip install -r test/unit/test_cuda/requirements_sglang.txt \
+    uv pip install -U pytest-cov
+    uv pip install -r test/test_cuda/requirements_sglang.txt \
         --prerelease=allow \
         --extra-index-url https://download.pytorch.org/whl/cu130 \
         --index-strategy unsafe-best-match
+    local flashinfer_version=$(uv pip show flashinfer-python 2>/dev/null | grep -i "^Version" | awk '{print $2}')
+    uv pip install flashinfer-jit-cache==${flashinfer_version} --index-url https://flashinfer.ai/whl/cu130
     uv pip install .
     uv pip list
     echo "##[endgroup]"
@@ -167,11 +171,13 @@ function run_unit_test_vllm() {
     cd "${BUILD_SOURCESDIRECTORY}" || exit 1
     rm -rf /root/.venv
     uv venv --python=3.12 /root/.venv
-    uv pip install -U pytest-cov pytest-html
-    vllm_version=$(curl -s https://api.github.com/repos/vllm-project/vllm/releases/latest | jq -r .tag_name | sed 's/^v//')
-    uv pip install -r test/unit/test_cuda/requirements_vllm.txt \
+    uv pip install -U pytest-cov
+    uv pip install -r test/test_cuda/requirements_vllm.txt \
         --extra-index-url https://download.pytorch.org/whl/cu130 \
         --index-strategy unsafe-best-match
+    local flashinfer_version=$(uv pip show flashinfer-python 2>/dev/null | grep -i "^Version" | awk '{print $2}')
+    uv pip install flashinfer-jit-cache==${flashinfer_version} --index-url https://flashinfer.ai/whl/cu130
+    uv pip install -U chardet
     uv pip install .
     uv pip list
     echo "##[endgroup]"

@@ -43,10 +43,25 @@ class QuantizationScheme:
     rotation_config: Optional[dict] = None
 
     @classmethod
+    def empty(cls):
+        return cls(**{field.name: None for field in fields(cls)})
+
+    @classmethod
     def from_dict(cls, config: dict):
         field_names = {f.name for f in fields(cls)}
         filtered_config = {k: v for k, v in config.items() if k in field_names}
         return cls(**filtered_config)
+
+    def to_dict(self) -> dict:
+        return asdict(self)
+
+    def copy(self):
+        return copy.deepcopy(self)
+
+    def update_from_dict(self, config: dict) -> None:
+        for key, value in config.items():
+            if key in self.get_attributes():
+                setattr(self, key, value)
 
     @classmethod
     def get_attributes(cls: "QuantizationScheme") -> list[str]:
@@ -237,9 +252,9 @@ def _override_scheme_with_user_specify(
     return QuantizationScheme.from_dict(scheme_dict)
 
 
-def _parse_scheme(
+def parse_scheme(
     scheme: Union[str, dict, QuantizationScheme, "AutoScheme"], user_scheme_overrides: dict[str, Any]
-) -> tuple[Union[str, QuantizationScheme], bool]:
+) -> tuple[Union[str, QuantizationScheme], bool, dict[str, Any]]:
     """
     Parses the final scheme.
     """

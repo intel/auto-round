@@ -6,7 +6,7 @@ import pytest
 from transformers import AutoTokenizer
 
 from auto_round import AutoRound
-from auto_round.algorithms.quantization.base import BaseQuantizers
+from auto_round.algorithms.quantization.base import BaseQuantizer
 from auto_round.algorithms.quantization.rtn.config import RTNConfig
 from auto_round.compressors.utils import block_forward
 
@@ -76,7 +76,7 @@ class TestTorchCompile:
 
     def test_opt_rtn_uses_plain_block_forward(self):
         config = RTNConfig(bits=4, data_type="int", act_bits=16, disable_opt_rtn=False)
-        quantizer = BaseQuantizers(config)
+        quantizer = BaseQuantizer(config)
         quantizer.compress_context = SimpleNamespace(enable_torch_compile=True, device="cpu")
 
         assert quantizer._resolve_block_forward() is block_forward

@@ -165,6 +165,17 @@ class WrapperLinear(torch.nn.Module):
         else:
             self.weight_min = None
             self.weight_max = None
+        # AWQ clip-as-init: cap the tunable weight range to the per-group clip
+        # magnitude searched by AWQ (``apply_clip`` with ``clip_as_init=True``).
+        # This initializes the range used by quant_tensor_sym/asym, leaving
+        # min_scale/max_scale to tune a coefficient on top. Only the standard
+        # (non-tuple) group layout maps onto weight_min/weight_max here.
+        awq_clip_max = getattr(orig_layer, "awq_clip_max", None)
+        if awq_clip_max is not None and self.weight_min is not None and not isinstance(orig_layer.group_size, tuple):
+            clip_flat = awq_clip_max.reshape(-1).to(self.weight_max.device, self.weight_max.dtype)
+            if clip_flat.numel() == self.weight_max.numel():
+                self.weight_max = torch.minimum(self.weight_max, clip_flat)
+                self.weight_min = torch.maximum(self.weight_min, -clip_flat)
         self._init_params(
             "value", p_dtype, weight_reshape.shape, 0, self.enable_round_tuning and self.orig_layer.bits < 16
         )
@@ -335,6 +346,12 @@ class WrapperLinear(torch.nn.Module):
         Returns:
             torch.nn.Module: The unwrapped and restored original layer.
         """
+
+        def _preserve_global_name(layer):
+            if hasattr(self.orig_layer, "global_name") and not hasattr(layer, "global_name"):
+                layer.global_name = self.orig_layer.global_name
+            return layer
+
         best_params = best_params or {}
         v = best_params.get("value", torch.tensor(0.0)).to(self.device)
         min_scale = best_params.get("min_scale", torch.tensor(1.0)).to(self.device)
@@ -441,9 +458,9 @@ class WrapperLinear(torch.nn.Module):
                 enable_torch_compile=self.enable_torch_compile,
                 device=self.device,
             )
-            return wrapper_layer
+            return _preserve_global_name(wrapper_layer)
 
-        return self.orig_layer
+        return _preserve_global_name(self.orig_layer)
 
     def linear_forward(self, x, weight, bias):
         """Performs the forward pass for a linear layer.

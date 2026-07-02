@@ -413,6 +413,10 @@ def convert_module_to_hp_if_necessary(
     # Check if it's a single quantized layer (has the attribute directly)
     if hasattr(model_or_layer, "quantized_weight_type") and model_or_layer.quantized_weight_type is not None:
         handler = get_handler(model_or_layer.quantized_weight_type)
+        logger.info(
+            f"Converting layer {model_or_layer.__class__.__name__} from "
+            + f"{model_or_layer.quantized_weight_type.name} to {dtype}"
+        )
         new_module = handler.convert_layer(model_or_layer, dtype, device, to_cpu)
         _sync_serialization_attrs(model_or_layer, new_module)
         return new_module
@@ -420,9 +424,11 @@ def convert_module_to_hp_if_necessary(
     # Otherwise, traverse model and convert all quantized layers
     # Get handler for each layer to support mixed quantization types
     cnt = 0
+    type_counts: dict = {}
     for n, m in model_or_layer.named_modules():
         if hasattr(m, "quantized_weight_type") and m.quantized_weight_type is not None:
             handler = get_handler(m.quantized_weight_type)
+            type_counts[m.quantized_weight_type.name] = type_counts.get(m.quantized_weight_type.name, 0) + 1
             new_module = handler.convert_layer(m, dtype, device, to_cpu)
             _sync_serialization_attrs(m, new_module)
             new_module.quantized_weight_type = None  # Clear quantized type after conversion
@@ -430,6 +436,10 @@ def convert_module_to_hp_if_necessary(
             cnt += 1
             if cnt % 10 == 0:
                 clear_memory()
+
+    if type_counts:
+        summary = ", ".join(f"{k}: {v} layers" for k, v in type_counts.items())
+        logger.info(f"Converted quantized layers to {dtype}: {summary}")
 
     return model_or_layer
 

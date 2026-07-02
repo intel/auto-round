@@ -31,7 +31,7 @@ from transformers import AutoConfig, AutoModelForCausalLM, AutoTokenizer
 
 from auto_round import AutoRound
 
-from test.helpers import evaluate_accuracy, generate_prompt, get_model_path, opt_name_or_path, save_tiny_model
+from test.helpers import eval_generated_prompt, evaluate_accuracy, generate_prompt, get_model_path, opt_name_or_path
 
 # ---------------------------------------------------------------------------
 # Section 1: Normal LLM (OPT-125m) – W4A16 quantize, inference, export args
@@ -53,6 +53,7 @@ class TestAWQLLM:
             tiny_opt_model_path,
             scheme="W4A16",
             algorithm="awq",
+            n_grid=4,
             nsamples=2,
             seqlen=32,
             batch_size=2,
@@ -64,9 +65,8 @@ class TestAWQLLM:
         for name, cfg in layer_config.items():
             assert cfg["bits"] == 4, f"Layer {name} expected bits=4, got {cfg['bits']}"
 
-        # CUDA inference
         tokenizer = AutoTokenizer.from_pretrained(tiny_opt_model_path)
-        output = generate_prompt(model, tokenizer, device="cuda")
+        output = generate_prompt(model, tokenizer)
         assert len(output) > 0 and "!!!" not in output, f"Unexpected generation output: {output}"
 
     def test_awq_w4a16_export_auto_round_args(self, tiny_opt_model_path):
@@ -78,6 +78,7 @@ class TestAWQLLM:
             group_size=group_size,
             sym=sym,
             algorithm="awq",
+            n_grid=4,
             nsamples=2,
             seqlen=32,
             batch_size=2,
@@ -92,22 +93,19 @@ class TestAWQLLM:
         assert qconfig["sym"] == sym
         assert "auto-round" in qconfig["quant_method"]
 
-    def test_awq_w4a16_load_and_generate(self, tiny_opt_model_path):
+    def test_awq_w4a16_load_and_generate(self):
         """Quantize, save, reload, and generate on CUDA to verify round-trip."""
+        model_name = get_model_path("facebook/opt-125m")
         ar = AutoRound(
-            tiny_opt_model_path,
+            model_name,
             scheme="W4A16",
             algorithm="awq",
+            n_grid=4,
             nsamples=2,
             seqlen=32,
-            batch_size=2,
         )
-        _, save_path = ar.quantize_and_save(output_dir=self.save_dir, format="auto_round")
-
-        loaded_model = AutoModelForCausalLM.from_pretrained(save_path, device_map="auto")
-        tokenizer = AutoTokenizer.from_pretrained(save_path)
-        output = generate_prompt(loaded_model, tokenizer, device="cuda")
-        assert len(output) > 0 and "!!!" not in output, f"Unexpected generation output: {output}"
+        _, quantized_model_path = ar.quantize_and_save(output_dir=self.save_dir, format="auto_round")
+        eval_generated_prompt(quantized_model_path)
 
 
 # ---------------------------------------------------------------------------
@@ -126,7 +124,7 @@ class TestAWQMoE:
 
     def test_awq_moe_dynamic_smoothing(self, tiny_qwen_moe_model_path):
         """AWQ mapping resolution works on MoE model."""
-        from auto_round.algorithms.quantization.awq.mappings import resolve_mappings
+        from auto_round.algorithms.transforms.awq.mappings import resolve_mappings
 
         model = AutoModelForCausalLM.from_pretrained(
             tiny_qwen_moe_model_path,
@@ -163,6 +161,7 @@ class TestAWQMoE:
             scheme="W4A16",
             algorithm="awq",
             nsamples=2,
+            n_grid=4,
             seqlen=32,
             batch_size=2,
         )
@@ -197,6 +196,7 @@ class TestAWQMoE:
             tiny_qwen_moe_model_path,
             scheme="W4A16",
             algorithm="awq",
+            n_grid=4,
             nsamples=2,
             seqlen=32,
             batch_size=2,
@@ -253,5 +253,86 @@ class TestAWQEval:
             threshold=0.3,
             batch_size="auto:8",
             limit=50,
-            device="cuda",
         )
+
+
+# ---------------------------------------------------------------------------
+# Section 4: use_v2_scale_search detection and init-scale dispatch
+# ---------------------------------------------------------------------------
+
+
+class TestAWQUseV2ScaleSearch:
+    """Unit tests for AWQ's ``use_v2_scale_search`` detection and dispatch.
+
+    The flag is True whenever the terminal block quantizer resolves to
+    ``SignRoundV2Quantizer``. The per-data-type init_scale injection (int/mx/nv,
+    sym only) is then handled by ``search_optimized_init_scale`` inside the QDQ
+    path. Detection lives on ``QDQTool`` (accessed via ``AWQTransform._qdq_tool``)
+    and must go through the pipeline registry, not an ``_alg_cls`` string
+    comparison (which always evaluated False before the fix).
+    """
+
+    @staticmethod
+    def _make_compressor(block_config):
+        import types
+
+        return types.SimpleNamespace(quantize_config=block_config, alg_configs=[block_config])
+
+    @staticmethod
+    def _awq_quantizer():
+        from auto_round.algorithms.transforms.awq.base import AWQTransform
+        from auto_round.algorithms.transforms.awq.config import AWQConfig
+
+        return AWQTransform(AWQConfig())
+
+    @staticmethod
+    def _signroundv2_config(data_type=None):
+        from auto_round.algorithms.quantization.sign_round.config import SignRoundConfig
+        from auto_round.algorithms.registry import normalize_algorithm_config
+
+        cfg = normalize_algorithm_config(SignRoundConfig(iters=2, enable_alg_ext=True))
+        assert type(cfg).__name__ == "SignRoundV2Config"
+        if data_type is not None:
+            cfg.data_type = data_type
+        return cfg
+
+    def test_rtn_block_is_not_v2(self):
+        """An RTN block quantizer must NOT be detected as V2."""
+        from auto_round.algorithms.quantization.rtn.config import RTNConfig
+
+        q = self._awq_quantizer()
+        compressor = self._make_compressor(RTNConfig(disable_opt_rtn=True))
+        assert q._qdq_tool._block_quantizer_is_signroundv2(compressor) is False
+
+    def test_use_v2_true_for_v2_block(self):
+        """Gate is True for any SignRoundV2 block (data-type gating is per-layer)."""
+        q = self._awq_quantizer()
+        compressor = self._make_compressor(self._signroundv2_config(data_type="mx_fp"))
+        assert q._qdq_tool._block_quantizer_is_signroundv2(compressor) is True
+
+    def test_use_v2_false_for_non_v2_block(self):
+        """Gate is False when the block is not SignRoundV2, regardless of dtype."""
+        from auto_round.algorithms.quantization.sign_round.config import SignRoundConfig
+
+        q = self._awq_quantizer()
+        block = SignRoundConfig(iters=2)
+        block.data_type = "mx_fp"
+        compressor = self._make_compressor(block)
+        assert q._qdq_tool._block_quantizer_is_signroundv2(compressor) is False
+
+    def test_init_scale_dispatch_by_data_type(self):
+        """``search_optimized_init_scale`` injects only for sym int/mx/nv."""
+        import torch
+
+        from auto_round.data_type.utils import reshape_pad_tensor_by_group_size, search_optimized_init_scale
+
+        for dt, gs in (("int_sym", 128), ("mx_fp4", 32), ("nv_fp4", 16)):
+            weight = torch.randn(32, 128)
+            weight_reshape, _, _ = reshape_pad_tensor_by_group_size(weight, gs)
+            init_scale = search_optimized_init_scale(weight_reshape, dt, 4, None)
+            assert init_scale is not None, dt
+            assert init_scale.shape[0] == weight_reshape.shape[0]
+
+        # asym int and *_dq are not part of the optimized init-scale path.
+        assert search_optimized_init_scale(torch.randn(4, 128), "int_asym", 4, None) is None
+        assert search_optimized_init_scale(torch.randn(4, 128), "int_sym_dq", 4, None) is None

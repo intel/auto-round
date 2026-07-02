@@ -41,23 +41,27 @@ class LogAnalyzer:
         "e2e_",
     )
 
+    # pytest test logic failures: test ran but assertion/expectation failed
     FAILURE_MARKERS = (
         "FAILED",
         "== FAILURES ==",
         " failures",
-        "Killed",
         "AssertionError",
-        "Error:",
-        "core dumped",
-        "Segmentation fault",
     )
 
+    # runtime/system errors: process crashed, setup/teardown failed, or unhandled exception
     ERROR_MARKERS = (
+        "Aborted",
+        "Killed",
+        "Segmentation fault",
+        "core dumped",
+        "Error:",
         "ERROR:",
         "== ERRORS ==",
         " errors:",
-        "Exception",
-        "Traceback",
+        "Exception:",
+        "Traceback ",
+        "Illegal instruction",
     )
 
     PASS_MARKER = " passed"

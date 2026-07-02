@@ -16,7 +16,7 @@ import json
 import os
 from collections import OrderedDict
 from inspect import signature
-from typing import Dict
+from typing import Any, Dict, Optional
 
 import torch
 from torch.utils.data import DataLoader, Dataset
@@ -68,16 +68,16 @@ class LlavaDataset(Dataset):
 
     def __init__(
         self,
-        template,
-        model,
-        tokenizer,
-        dataset_path,
-        extra_data_dir=None,
-        seqlen=512,
-        padding=True,
-        truncation=True,
-        nsamples=512,
-        cache_size=0,
+        template: Template,
+        model: torch.nn.Module,
+        tokenizer: Any,
+        dataset_path: str,
+        extra_data_dir: Optional[str] = None,
+        seqlen: int = 512,
+        padding: bool = True,
+        truncation: bool = True,
+        nsamples: int = 512,
+        cache_size: int = 0,
     ) -> None:
         super().__init__()
         self.model = model

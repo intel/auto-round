@@ -1291,7 +1291,8 @@ def parse_available_devices(device_map: Union[str, torch.device, int, dict, None
                     parsed.append(f"{p}:0")
             else:
                 parsed.append(p)
-        return list(set(parsed))
+        # Preserve user-specified device order while removing duplicates.
+        return list(dict.fromkeys(parsed))
 
     if isinstance(device_map, dict):
         # Extract all devices recursively from dict values

@@ -195,8 +195,8 @@ class TestAutoRoundMarlinBackend:
         )
 
         tokenizer = AutoTokenizer.from_pretrained(quantized_model_path)
-        # Inference generation check
-        eval_generated_prompt(model, tokenizer)
+        # Inference generation check (smoke test only; OPT-125M is not instruction-following)
+        model_infer(model, tokenizer)
         # Accuracy check
         evaluate_accuracy(model, tokenizer, threshold=0.2, batch_size=16)
         torch.cuda.empty_cache()

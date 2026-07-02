@@ -199,7 +199,14 @@ def quant_tensor_sym(
     maxq = int(2.0 ** (bits - 1))
 
     if init_scale is not None:
-        scale = init_scale * max_scale.unsqueeze(dim=-1)
+        # ``max_scale`` is a per-group tuning coefficient (Tensor) during
+        # SignRound optimization, but may be a plain scalar (e.g. 1.0) when the
+        # init_scale is reused for a one-shot QDQ such as AWQ's smooth/clip grid
+        # search.
+        if isinstance(max_scale, torch.Tensor):
+            scale = init_scale * max_scale.unsqueeze(dim=-1)
+        else:
+            scale = init_scale * max_scale
         scale = scale.to(scale_dtype)
         scale = torch.where(scale < 0, torch.clamp(scale, max=-q_scale_thresh), torch.clamp(scale, min=q_scale_thresh))
         int_w = round_ste(tensor / scale + v)

@@ -558,6 +558,7 @@ def set_layer_config(
                     # logger.warning_once(f"{n} skipped quantization (shape not divisible by 32).")
     # enforce shape divisibility for mxfp/nvfp
     if (is_nv_fp(default_dict["data_type"]) or is_mx_fp(default_dict["data_type"])) and not gguf_name:
+        skipped_layers = []
         for n, m in model.named_modules():
             if type(m) in supported_types or m.__class__.__name__ in inner_supported_types:
                 if m.weight.shape[1] % default_dict["group_size"]:
@@ -565,9 +566,14 @@ def set_layer_config(
                     layer_config[n].update(
                         {"bits": 16, "data_type": "fp", "act_bits": 16, "act_data_type": "fp", "fixed_by_user": True}
                     )
-                    logger.warning_once(
-                        f"{n} skipped quantization (shape not divisible by {default_dict['group_size']})."
-                    )
+                    skipped_layers.append(n)
+
+        compressed_skipped_layers = compress_layer_names(skipped_layers)
+        if compressed_skipped_layers:
+            logger.warning_once(
+                f"some layers are skipped quantization (shape not divisible by {default_dict['group_size']}): "
+                f"{compressed_skipped_layers}"
+            )
 
     # 9. block layers: mark as in_blocks=True
     for name in get_layer_names_in_block(model, supported_types, quant_block_list, inner_supported_types):
@@ -611,6 +617,7 @@ def set_layer_config(
         model_type = ModelType.MMPROJ if is_mllm else ModelType.TEXT
         layer_config, _ = get_layer_config_by_gguf_format(layer_config, gguf_name.lower(), model, model_type)
 
+    _apply_gguf_shape_fallback(layer_config, model)
     dispatch_layer_config(layer_config)
     return layer_config, has_qlayer_outside_block, regex_config
 
@@ -679,6 +686,48 @@ def get_gguf_qtype_by_layer_config(layer_config):
     if bits == 8 and sym and group_size == 32:
         return gguf.GGMLQuantizationType.Q8_0
     raise ValueError("Unknown layer config")
+
+
+def _apply_gguf_shape_fallback(layer_config, model):
+    from auto_round.utils.model import get_module
+
+    for layer_name, config in layer_config.items():
+        if not check_to_quantized(config):
+            continue
+        layer = get_module(model, layer_name)
+        if layer is None or not hasattr(layer, "weight"):
+            continue
+        try:
+            qtype = get_gguf_qtype_by_layer_config(config)
+        except ValueError:
+            continue
+        if qtype is None:
+            continue
+
+        gguf_type = f"gguf:{qtype.name.lower()}"
+        block_size = GGML_QUANT_SIZES[gguf_type.split(":")[-1]][0]
+        input_features = (
+            layer.weight.shape[0] if type(layer) == transformers.pytorch_utils.Conv1D else layer.weight.shape[-1]
+        )
+        if input_features % block_size == 0:
+            continue
+
+        fallback_type = _gguf_type_fallback(gguf_type)
+        fallback_block_size = GGML_QUANT_SIZES[fallback_type.split(":")[-1]][0]
+        if input_features % fallback_block_size != 0:
+            fallback_type = "gguf:bf16"
+
+        preserved = {key: config[key] for key in ("fixed_by_user", "scale_dtype") if key in config}
+        config.update(GGUF_INNER_CONFIG[fallback_type])
+        config.update(preserved)
+        logger.warning(
+            "fallback %s to %s before quantization, because input_features(%s) is not divisible by %s block_size(%s)",
+            layer_name,
+            fallback_type,
+            input_features,
+            gguf_type,
+            block_size,
+        )
 
 
 def _get_digital_in_layer_name(layer_name):

@@ -184,6 +184,28 @@ def evaluate_diffusion_model(args, autoround=None, model=None, pipe=None):
         diffusion_eval(pipe, args.prompt_file, metrics, args.image_save_dir, 1, gen_kwargs, args.limit)
 
 
+def select_gguf_eval_file(eval_folder, formats):
+    """Select the text GGUF file used for HF-based evaluation."""
+    gguf_format = None
+    for format in formats:
+        if format.startswith("gguf"):
+            gguf_format = format.split(":")[-1].upper()
+            break
+
+    if gguf_format is None:
+        return None, []
+
+    gguf_files = sorted(
+        file for file in os.listdir(eval_folder) if file.endswith(".gguf") and file != "mmproj-model.gguf"
+    )
+    matched_files = [file for file in gguf_files if gguf_format in file]
+    if matched_files:
+        return matched_files[0], gguf_files
+    if len(gguf_files) == 1:
+        return gguf_files[0], gguf_files
+    return None, gguf_files
+
+
 def load_gguf_model_for_eval(eval_folder, formats, args):
     """
     Load GGUF model for evaluation.
@@ -202,26 +224,13 @@ def load_gguf_model_for_eval(eval_folder, formats, args):
 
     from auto_round.utils import get_model_dtype, logger
 
-    # Find corresponding GGUF format
-    gguf_format = None
-    for format in formats:
-        if format.startswith("gguf"):
-            gguf_format = format.split(":")[-1].upper()
-            break
-
-    if gguf_format is None:
+    gguf_file, gguf_files = select_gguf_eval_file(eval_folder, formats)
+    if not any(format.startswith("gguf") for format in formats):
         logger.error("No valid gguf format found in formats. Please check the input.")
         sys.exit(-1)
 
-    # Find matching GGUF file
-    gguf_file = None
-    for file in os.listdir(eval_folder):
-        if gguf_format in file:
-            gguf_file = file
-            break
-
     if gguf_file is None:
-        logger.error("Cannot find correct gguf file for evaluation, please check.")
+        logger.error("Cannot find correct gguf file for evaluation, candidates=%s", gguf_files)
         sys.exit(-1)
 
     # Load model and tokenizer
@@ -482,6 +491,8 @@ def run_model_evaluation(model, tokenizer, autoround, folders, formats, args):
         # Load or prepare model instance
         if eval_gguf_model:
             model, tokenizer = load_gguf_model_for_eval(eval_folder, formats, args)
+            if model is None:
+                return
         else:
             eval_model_dtype = get_model_dtype(args.eval_model_dtype, "auto")
             model = prepare_model_for_eval(model, args.device_map, eval_model_dtype)

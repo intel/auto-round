@@ -91,13 +91,14 @@ from __future__ import annotations
 
 import copy
 import json
+import multiprocessing as mp
 import os
 import re
 import shutil
 import time
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import ProcessPoolExecutor, as_completed
 from dataclasses import asdict, fields
-from typing import Optional, Union
+from typing import Any, Callable, Optional, Union
 
 import torch
 
@@ -253,9 +254,9 @@ def _list_weight_shards(source_dir: str) -> list[str]:
         if fname.endswith(".safetensors.index.json"):
             return _shards_from_index(os.path.join(source_dir, fname))
 
-    # --- safetensors: any single .safetensors file ---
+    # --- safetensors: single file or index-less multi-file shards ---
     st_files = sorted(f for f in os.listdir(source_dir) if f.endswith(".safetensors"))
-    if len(st_files) == 1:
+    if len(st_files) >= 1:
         return st_files
 
     # --- pytorch .bin: standard index ---
@@ -275,11 +276,8 @@ def _list_weight_shards(source_dir: str) -> list[str]:
 
     # --- pytorch .bin: any single .bin file ---
     bin_files = sorted(f for f in os.listdir(source_dir) if f.endswith(".bin"))
-    if len(bin_files) == 1:
+    if len(bin_files) >= 1:
         return bin_files
-
-    # --- safetensors: single file ---
-    return ["model.safetensors"]
 
 
 def _is_eligible_weight(tensor_name: str, tensor: torch.Tensor) -> bool:
@@ -388,7 +386,7 @@ class _PatternMatcher:
         ignore_patterns: list[str],
         layer_config: dict[str, dict],
         default_scheme: dict,
-    ):
+    ) -> None:
         self._default_scheme = default_scheme
         self._layer_config = layer_config
 
@@ -520,10 +518,16 @@ def _quantize_weight_mxfp(
     # quant_mx returns (qdq_tensor, shared_exp, None).  We only need shared_exp
     # (the per-block log2 scale).  The element-wise rounding to the FP4/FP8 grid
     # is performed inside QuantLinear.pack via dtype casts / pack_fp4_to_uint8.
-    _, shared_exp, _ = quant_mx(weight_dev, bits=bits, group_size=group_size, data_type=data_type)
+    weight_dev, shared_exp, _ = quant_mx(weight_dev, bits=bits, group_size=group_size, data_type=data_type)
     # Reshape to (out_features, n_groups) so the on-disk weight_scale matches
     # the llm-compressor convention (and QuantLinear's registered buffer shape).
     shared_exp = shared_exp.reshape(out_features, in_features // group_size)
+    # Ensure shared_exp is a numeric float (not a storage-specific dtype like
+    # float8) — QuantLinear.pack performs `2 ** scales` which dispatches to
+    # torch.pow; some backends do not implement pow for float8 dtypes. Cast to
+    # float32 here to avoid runtime errors like "pow_cuda not implemented for
+    # 'Float8_e4m3fn'" while preserving numeric values.
+    shared_exp = shared_exp.to(torch.float32)
 
     # Build a lightweight nn.Linear holding the original weight so we can
     # delegate packing to the existing QuantLinear.pack implementation.
@@ -568,6 +572,8 @@ def _quantize_single_tensor(
     layer_name = tensor_name.rsplit(".", 1)[0]
 
     if not _is_eligible_weight(tensor_name, tensor):
+        if tensor_name.endswith(".weight"):
+            return layer_name, {tensor_name: tensor}, None, layer_name
         return layer_name, {tensor_name: tensor}, None, None
 
     if matcher.should_ignore(tensor_name):
@@ -632,137 +638,268 @@ def _quantize_single_tensor(
         return layer_name, {tensor_name: tensor}, None, layer_name
 
 
+def _collect_mxfp_source_entries(raw_tensors: dict[str, torch.Tensor]) -> list[tuple[str, str, str, int]]:
+    """Collect MXFP source tensors present in a shard.
+
+    Returns entries as ``(layer_name, weight_key, scale_key, bits)`` where
+    ``bits`` is 8 for ``.weight`` (float8) and 4 for ``.weight_packed``.
+    """
+    entries: list[tuple[str, str, str, int]] = []
+    for name, tensor in raw_tensors.items():
+        if name.endswith(".weight") and tensor.dtype == torch.float8_e4m3fn:
+            layer_name = name[: -len(".weight")]
+            scale_key = f"{layer_name}.weight_scale"
+            if scale_key in raw_tensors:
+                entries.append((layer_name, name, scale_key, 8))
+        elif name.endswith(".weight_packed") and tensor.dtype in (torch.int8, torch.uint8):
+            layer_name = name[: -len(".weight_packed")]
+            scale_key = f"{layer_name}.weight_scale"
+            if scale_key in raw_tensors:
+                entries.append((layer_name, name, scale_key, 4))
+    return entries
+
+
+def _is_out_of_memory_error(exc: Exception) -> bool:
+    if isinstance(exc, torch.OutOfMemoryError):
+        return True
+    message = str(exc).lower()
+    return "out of memory" in message or "cuda error: out of memory" in message
+
+
+def _dequantize_with_device_fallback(
+    *,
+    dequant_device: str,
+    shard_prefix: str,
+    op_name: str,
+    tensor_label: str,
+    on_device: Callable[[], torch.Tensor],
+    on_cpu: Callable[[], torch.Tensor],
+) -> torch.Tensor:
+    """Run dequantization on ``dequant_device`` and fall back to CPU on errors."""
+    if dequant_device != "cpu":
+        try:
+            return on_device()
+        except Exception as e:
+            if _is_out_of_memory_error(e):
+                logger.warning(
+                    f"{shard_prefix}{op_name} on {dequant_device} ran OOM for {tensor_label}: {e}. "
+                    "Clearing accelerator memory and falling back to CPU for this tensor."
+                )
+                clear_memory()
+            else:
+                logger.warning(
+                    f"{shard_prefix}{op_name} on {dequant_device} failed for {tensor_label}: {e}. "
+                    "Falling back to CPU for this tensor."
+                )
+    return on_cpu()
+
+
+def _dequant_mxfp_tensors(
+    raw_tensors: dict[str, torch.Tensor],
+    device: str = "cpu",
+    shard_name: str | None = None,
+) -> dict[str, torch.Tensor]:
+    """Dequantize llm-compressor MXFP8 / MXFP4 weight tensors to bfloat16.
+
+    Detection is purely by *name* and *dtype*, reusing the dequant kernels in
+    :mod:`auto_round_extension.vllm_ext`:
+
+    * ``<layer>.weight`` (``float8_e4m3fn``) + ``<layer>.weight_scale`` → MXFP8,
+      dequantized via :func:`~auto_round_extension.vllm_ext.mxfp8_qdq_utils.dequant_mx_fp8`.
+    * ``<layer>.weight_packed`` (``uint8``) + ``<layer>.weight_scale`` → MXFP4,
+      dequantized via :func:`~auto_round_extension.vllm_ext.mxfp4_qdq_utils.to_dtype`.
+
+    The dequantized weight is written back under ``<layer>.weight`` and the
+    scale (and any ``weight_packed``) tensor is removed, so the downstream RTN
+    path can requantize the layer to the requested target scheme.
+    """
+    from auto_round_extension.vllm_ext.mxfp4_qdq_utils import to_dtype
+    from auto_round_extension.vllm_ext.mxfp8_qdq_utils import dequant_mx_fp8
+
+    # Tuple layout: (layer_name, weight_key, scale_key, bits)
+    entries = _collect_mxfp_source_entries(raw_tensors)
+
+    if not entries:
+        return raw_tensors
+
+    n_mxfp8 = sum(1 for _layer_name, _weight_key, _scale_key, bits in entries if bits == 8)
+    n_mxfp4 = len(entries) - n_mxfp8
+    dequant_device = str(device or "cpu")
+    shard_prefix = f"[{shard_name}] " if shard_name else ""
+    logger.info(
+        f"{shard_prefix}Dequantizing MXFP tensor(s) to bfloat16 on {dequant_device}: "
+        f"MXFP8={n_mxfp8}, MXFP4={n_mxfp4}, total={len(entries)}."
+    )
+
+    for layer_name, weight_key, scale_key, bits in entries:
+        weight = raw_tensors.pop(weight_key)
+        scale = raw_tensors.pop(scale_key).view(torch.uint8)
+        if bits == 8:
+            dq_weight = _dequantize_with_device_fallback(
+                dequant_device=dequant_device,
+                shard_prefix=shard_prefix,
+                op_name="MXFP dequant",
+                tensor_label=layer_name,
+                on_device=lambda: dequant_mx_fp8(
+                    weight_fp8=weight.to(dequant_device, non_blocking=True),
+                    scale_e8m0=scale.to(dequant_device, non_blocking=True),
+                    block_size=32,
+                    target_dtype=torch.bfloat16,
+                ).to("cpu"),
+                on_cpu=lambda: dequant_mx_fp8(
+                    weight_fp8=weight,
+                    scale_e8m0=scale,
+                    block_size=32,
+                    target_dtype=torch.bfloat16,
+                ),
+            )
+        else:
+            dq_weight = _dequantize_with_device_fallback(
+                dequant_device=dequant_device,
+                shard_prefix=shard_prefix,
+                op_name="MXFP dequant",
+                tensor_label=layer_name,
+                on_device=lambda: to_dtype(
+                    data_lp=weight.view(torch.uint8).contiguous().to(dequant_device, non_blocking=True),
+                    scale_e8m0=scale.to(dequant_device, non_blocking=True),
+                    elem_dtype="fp4_e2m1",
+                    block_size=32,
+                    target_dtype=torch.bfloat16,
+                ).to("cpu"),
+                on_cpu=lambda: to_dtype(
+                    data_lp=weight.view(torch.uint8).contiguous(),
+                    scale_e8m0=scale,
+                    elem_dtype="fp4_e2m1",
+                    block_size=32,
+                    target_dtype=torch.bfloat16,
+                ),
+            )
+        raw_tensors[f"{layer_name}.weight"] = dq_weight
+
+    return raw_tensors
+
+
+def _handle_mxfp_source_tensors(
+    raw_tensors: dict[str, torch.Tensor],
+    matcher: "_PatternMatcher",
+    source_state: dict[str, int] | None = None,
+    device: str = "cpu",
+    shard_name: str | None = None,
+) -> tuple[dict[str, torch.Tensor], dict[str, torch.Tensor], list[str]]:
+    """Handle llm-compressor-style MXFP8/MXFP4 source tensors.
+
+    Detects llm-compressor MXFP tensors purely by *name + dtype*:
+
+    * ``<layer>.weight`` (``float8_e4m3fn``) + ``<layer>.weight_scale`` → MXFP8.
+    * ``<layer>.weight_packed`` (``uint8``) + ``<layer>.weight_scale`` → MXFP4.
+
+    For each detected layer the effective target scheme is resolved via *matcher*:
+
+    * If the target is the **same MXFP format** (``data_type='mx_fp'``, matching
+      ``bits``), the tensors are emitted directly as a passthrough — no
+      dequantization is performed and the layer is recorded as already quantized.
+    * Otherwise the tensors are dequantized to ``bfloat16`` via
+      :func:`_dequant_mxfp_tensors` so the downstream RTN path can re-quantize
+      them to the requested target scheme.
+
+    Returns:
+        ``(raw_tensors, passthrough_tensors, passthrough_layers)``.
+    """
+    entries = _collect_mxfp_source_entries(raw_tensors)
+    if not entries:
+        return raw_tensors, {}, []
+
+    source_state = source_state or {}
+
+    passthrough_tensors: dict[str, torch.Tensor] = {}
+    passthrough_layers: list[str] = []
+    n_dequant = 0
+
+    for layer_name, weight_key, scale_key, bits in entries:
+        scheme = matcher.resolve_scheme(f"{layer_name}.weight")
+        target_is_same_mxfp = (
+            scheme is not None and is_mx_fp((scheme.get("data_type") or "").lower()) and scheme.get("bits") == bits
+        )
+        if target_is_same_mxfp:
+            passthrough_tensors[weight_key] = raw_tensors.pop(weight_key).to("cpu")
+            passthrough_tensors[scale_key] = raw_tensors.pop(scale_key).to("cpu")
+            passthrough_layers.append(layer_name)
+        else:
+            n_dequant += 1
+
+    if n_dequant:
+        raw_tensors = _dequant_mxfp_tensors(raw_tensors, device=device, shard_name=shard_name)
+
+    parts: list[str] = []
+    if passthrough_layers:
+        parts.append(f"{len(passthrough_layers)} passthrough")
+    if n_dequant:
+        parts.append(f"{n_dequant} dequantized to bfloat16")
+    if source_state:
+        parts.append(f"{len(source_state)} model_type-normalized")
+    logger.info(f"Handling MXFP source tensor(s): {', '.join(parts)}.")
+
+    return raw_tensors, passthrough_tensors, passthrough_layers
+
+
 def _dequant_fp8_tensors(
     raw_tensors: dict[str, torch.Tensor],
     block_size: list | None = None,
+    device: str = "cpu",
+    shard_name: str | None = None,
 ) -> dict[str, torch.Tensor]:
-    """Dequantize FP8 / FP4-packed weight tensors and remove their scale tensors.
+    """Dequantize DeepSeek-V3-style FP8 weight tensors to bfloat16.
 
-    Handles three storage conventions:
+    Handles the **DeepSeek-V3 FP8** convention: weight dtype ``float8_e4m3fn``
+    paired with a ``.weight_scale_inv`` tensor (per-block float32 scales, NOT
+    E8M0).  The weights are converted to ``bfloat16`` so downstream RTN
+    quantization can proceed normally.
 
-    1. **DeepSeek-V3 FP8** — weight dtype ``float8_e4m3fn`` + ``weight_scale_inv``
-       (per-block float32 scales, NOT E8M0).
-    2. **FP8 + UE8M0 scale** — weight dtype ``float8_e4m3fn`` + ``.scale``
-       (F8_E8M0 / ``ue8m0`` format, e.g. ``scale_fmt=ue8m0``).
-    3. **FP4-packed I8 + UE8M0 scale** — weight dtype ``torch.int8`` where each
-       byte stores two FP4 E2M1 nibbles, paired with a ``.scale`` tensor in
-       F8_E8M0 format.  Shape relationship: ``weight[rows, cols/2]`` and
-       ``scale[rows, (cols/2)*2/block_size]`` where ``block_size`` is inferred
-       from the ratio ``weight.shape[1] * 2 / scale.shape[1]``.
-
-    All cases are converted to ``bfloat16`` so downstream RTN quantization can
-    proceed normally.
+    MXFP sources are handled separately by
+    :func:`_preprocess_model_type_source_tensors` / :func:`_handle_mxfp_source_tensors`.
     """
     from auto_round.utils.weight_handler import _dequant_fp8_linear_weight
 
-    E8M0_EXPONENT_BIAS = 127
-
-    def _e8m0_to_float(scale_tensor: torch.Tensor) -> torch.Tensor:
-        """Convert E8M0 (power-of-2 exponent) scale tensor to float."""
-        raw = scale_tensor.view(torch.uint8).to(torch.int16) - E8M0_EXPONENT_BIAS
-        return torch.pow(2.0, raw.to(torch.float32)).to(torch.bfloat16)
-
-    def _dequant_fp4_packed_weight(
-        weight_i8: torch.Tensor,
-        scale_e8m0: torch.Tensor,
-    ) -> torch.Tensor:
-        """Dequantize FP4-packed int8 weight with E8M0 block scales to bfloat16.
-
-        Each ``int8`` byte stores two FP4 E2M1 values: the low nibble is the
-        first element and the high nibble is the second.  Block size is inferred
-        from the shape ratio ``weight.shape[1] * 2 / scale.shape[1]``.
-
-        Args:
-            weight_i8:   Packed weight tensor, shape ``[rows, cols_packed]``,
-                         dtype ``torch.int8``.  ``cols_packed = cols / 2``.
-            scale_e8m0:  Per-block scale tensor, shape ``[rows, n_blocks]``,
-                         stored as raw uint8 bytes in F8_E8M0 (ue8m0) format.
-
-        Returns:
-            Dequantized weight, shape ``[rows, cols]``, dtype ``bfloat16``.
-        """
-        # FP4 E2M1 lookup table — index is the 4-bit pattern (0..15)
-        # Layout: positive range at indices 0-7, negative at 8-15.
-        FP4_LUT = torch.tensor(
-            [0.0, 0.5, 1.0, 1.5, 2.0, 3.0, 4.0, 6.0, -0.0, -0.5, -1.0, -1.5, -2.0, -3.0, -4.0, -6.0],
-            dtype=torch.bfloat16,
-            device=weight_i8.device,
-        )
-        rows = weight_i8.shape[0]
-
-        # Re-interpret int8 storage as uint8 for bit operations.
-        weight_u8 = weight_i8.view(torch.uint8)
-        lo = (weight_u8 & 0x0F).to(torch.long)  # low  nibble → first  element
-        hi = ((weight_u8 >> 4) & 0x0F).to(torch.long)  # high nibble → second element
-        # Interleave lo/hi along the last dim: [rows, cols_packed, 2] → [rows, cols]
-        unpacked = torch.stack([lo, hi], dim=-1).reshape(rows, -1)
-        cols = unpacked.shape[1]
-
-        # Decode 4-bit patterns to bfloat16 float values via the lookup table.
-        decoded = FP4_LUT[unpacked]  # [rows, cols]
-
-        # Convert E8M0 per-block scales to float32 → bfloat16.
-        scale_f = _e8m0_to_float(scale_e8m0)  # [rows, n_blocks]
-        n_blocks = scale_f.shape[1]
-        block_size_inner = cols // n_blocks  # inferred block size (e.g. 32)
-
-        # Multiply each block of decoded values by its corresponding scale.
-        decoded = decoded.reshape(rows, n_blocks, block_size_inner)
-        return (decoded * scale_f.unsqueeze(-1)).reshape(rows, cols)
-
-    # ------------------------------------------------------------------
-    # Collect quantized weight entries.
-    # Tuple layout: (weight_name, scale_name, is_e8m0, is_fp4_packed)
-    #   is_e8m0      – scale tensor is in F8_E8M0 format (needs _e8m0_to_float)
-    #   is_fp4_packed – weight is int8-packed FP4; use _dequant_fp4_packed_weight
-    # ------------------------------------------------------------------
-    quant_entries: list[tuple[str, str, bool, bool]] = []
-
+    quant_entries: list[tuple[str, str]] = []
     for name, tensor in raw_tensors.items():
         if not name.endswith(".weight"):
             continue
-
-        is_fp4_packed = tensor.dtype == torch.int8
-        is_fp8 = tensor.dtype == torch.float8_e4m3fn
-        # Also catch other 1-byte dtypes (e.g. float8_e5m2) by element size.
-        if not is_fp4_packed and not is_fp8:
-            if tensor.element_size() != 1:
-                continue
-            is_fp8 = True  # treat remaining 1-byte dtypes as FP8
-
-        # Convention 1: .weight_scale_inv (DeepSeek-V3 style, FP8 only)
-        scale_inv_name = name.replace(".weight", ".weight_scale_inv")
-        if scale_inv_name in raw_tensors and not is_fp4_packed:
-            quant_entries.append((name, scale_inv_name, False, False))
+        if tensor.dtype != torch.float8_e4m3fn and tensor.element_size() != 1:
             continue
-
-        # Convention 2: .scale in F8_E8M0 / ue8m0 format
-        scale_name = name.replace(".weight", ".scale")
-        if scale_name in raw_tensors:
-            quant_entries.append((name, scale_name, True, is_fp4_packed))
+        # DeepSeek-V3 style: .weight_scale_inv (per-block float32 scales).
+        scale_inv_name = name.replace(".weight", ".weight_scale_inv")
+        if scale_inv_name in raw_tensors:
+            quant_entries.append((name, scale_inv_name))
 
     if not quant_entries:
         return raw_tensors
 
-    fp4_count = sum(1 for e in quant_entries if e[3])
-    fp8_count = len(quant_entries) - fp4_count
-    parts: list[str] = []
-    if fp8_count:
-        parts.append(f"{fp8_count} FP8")
-    if fp4_count:
-        parts.append(f"{fp4_count} FP4-packed (int8)")
-    logger.info(f"Dequantizing {' and '.join(parts)} weight tensor(s) to bfloat16.")
+    # device has already been resolved by the caller; use it directly here.
+    dequant_device = str(device or "cpu")
+    shard_prefix = f"[{shard_name}] " if shard_name else ""
 
-    for weight_name, scale_name, is_e8m0, is_fp4_packed in quant_entries:
+    logger.info(
+        f"{shard_prefix}Dequantizing {len(quant_entries)} FP8 weight tensor(s) to bfloat16 on {dequant_device}."
+    )
+
+    for weight_name, scale_name in quant_entries:
         weight = raw_tensors[weight_name]
         scale = raw_tensors.pop(scale_name)
-        if is_fp4_packed:
-            # FP4 E2M1 packed in int8 with UE8M0 per-block scale.
-            raw_tensors[weight_name] = _dequant_fp4_packed_weight(weight, scale)
-        else:
-            if is_e8m0:
-                scale = _e8m0_to_float(scale)
-            raw_tensors[weight_name] = _dequant_fp8_linear_weight(weight, scale, block_size=block_size)
+
+        # Dequantize on GPU for throughput, then move back to CPU to keep
+        # per-shard memory usage bounded before per-layer quantization.
+        raw_tensors[weight_name] = _dequantize_with_device_fallback(
+            dequant_device=dequant_device,
+            shard_prefix=shard_prefix,
+            op_name="FP8 dequant",
+            tensor_label=weight_name,
+            on_device=lambda: _dequant_fp8_linear_weight(
+                weight.to(dequant_device, non_blocking=True),
+                scale.to(dequant_device, non_blocking=True),
+                block_size=block_size,
+            ).to("cpu"),
+            on_cpu=lambda: _dequant_fp8_linear_weight(weight, scale, block_size=block_size),
+        )
 
     return raw_tensors
 
@@ -774,13 +911,22 @@ def _process_shard(
     ignore_patterns: list[str] = None,
     device: str = "cpu",
     *,
+    shard_name: str | None = None,
     matcher: "_PatternMatcher | None" = None,
     fp8_block_size: list | None = None,
+    model_type: str | None = None,
 ) -> tuple[dict[str, torch.Tensor], list[str], list[str]]:
     """Quantize eligible weights in a single safetensors shard.
 
     Returns:
         (output_tensors, quantized_layer_names, ignored_layer_names)
+
+    ``ignored_layer_names`` is derived by comparing the set of input ``.weight``
+    layer names (collected after fused-expert splitting) with the final set of
+    quantized layer names.  Any layer that had a ``.weight`` tensor in the input
+    but was NOT quantized is reported as ignored — this correctly captures
+    user-ignored layers, predefined-skipped layers, non-eligible weights, and
+    any other pass-through case without separate per-tensor tracking.
     """
     if matcher is None:
         matcher = _PatternMatcher(
@@ -791,7 +937,6 @@ def _process_shard(
 
     output_tensors: dict[str, torch.Tensor] = {}
     quantized_layers: list[str] = []
-    ignored_layers: list[str] = []
 
     if shard_path.endswith(".bin"):
         # PyTorch pickle checkpoint — load with weights_only where supported.
@@ -810,6 +955,12 @@ def _process_shard(
             raw_tensors = {name: f.get_tensor(name) for name in f.keys()}
 
     raw_tensors = split_fused_expert_tensors(raw_tensors)
+
+    # Snapshot eligible weight layer names *before* any preprocessing so that
+    # the ignored-layer list can be derived by dict comparison at the end.
+    input_weight_layers: list[str] = list(
+        dict.fromkeys(k.rsplit(".", 1)[0] for k in raw_tensors if k.endswith(".weight"))
+    )
 
     # Preserve original tensors for ignored/skipped layers so that already-
     # quantized weights (FP8, FP4-packed, etc.) are NOT dequantized.
@@ -830,12 +981,31 @@ def _process_shard(
             if prefix in preserved_prefixes:
                 preserved_tensors[key] = raw_tensors.pop(key)
 
-    raw_tensors = _dequant_fp8_tensors(raw_tensors, block_size=fp8_block_size)
+    # 1) model-type-specific preprocessing (format conversion only)
+    raw_tensors, source_state = _preprocess_model_type_source_tensors(raw_tensors, model_type=model_type)
+
+    # 2) generic MXFP handling for both preprocessed and normal source models
+    raw_tensors, passthrough_tensors, passthrough_layers = _handle_mxfp_source_tensors(
+        raw_tensors,
+        matcher,
+        source_state=source_state,
+        device=device,
+        shard_name=shard_name,
+    )
+    output_tensors.update(passthrough_tensors)
+    quantized_layers.extend(passthrough_layers)
+
+    raw_tensors = _dequant_fp8_tensors(
+        raw_tensors,
+        block_size=fp8_block_size,
+        device=device,
+        shard_name=shard_name,
+    )
     raw_tensors.update(preserved_tensors)
 
     for tensor_name in list(raw_tensors.keys()):
         tensor = raw_tensors.pop(tensor_name)
-        _layer_name, out_dict, q_layer, ig_layer = _quantize_single_tensor(
+        _layer_name, out_dict, q_layer, _ig_layer = _quantize_single_tensor(
             tensor_name,
             tensor,
             matcher,
@@ -844,8 +1014,10 @@ def _process_shard(
         output_tensors.update(out_dict)
         if q_layer:
             quantized_layers.append(q_layer)
-        if ig_layer:
-            ignored_layers.append(ig_layer)
+
+    # Derive ignored layers by comparing input weight layers with quantized set.
+    quantized_set = set(quantized_layers)
+    ignored_layers: list[str] = [l for l in input_weight_layers if l not in quantized_set]
 
     return output_tensors, quantized_layers, ignored_layers
 
@@ -859,9 +1031,17 @@ def _build_mxfp_quantization_config(
     default_scheme: dict,
     quantized_layers: list[str],
     ignored_layers: list[str],
+    layer_config: dict | None = None,
 ) -> dict:
     """Build a compressed-tensors / llm-compressor style quantization_config
-    dict for MXFP4 / MXFP8 model-free output.
+    dict for MXFP4 / MXFP8 model-free output, including mixed-precision cases.
+
+    When *layer_config* contains layers that override the default bits (e.g.
+    some layers are MXFP8 while the default is MXFP4), the function creates
+    one ``config_group`` per distinct bit-width.  Override groups list their
+    layers explicitly; the default-bits group uses ``targets=["Linear"]`` as a
+    catch-all.  The top-level ``"format"`` is set to ``"mixed-precision"``
+    when more than one group is produced.
 
     Mirrors the per-group format produced by
     :mod:`auto_round.export.export_to_llmcompressor.export_to_fp`.
@@ -877,20 +1057,74 @@ def _build_mxfp_quantization_config(
     if bits not in _SUPPORTED_MXFP_BITS:
         raise ValueError(f"Unsupported MXFP bits={bits} for model-free output.")
 
-    scheme_name = "MXFP4" if bits == 4 else "MXFP8"
-    fmt = "mxfp4-pack-quantized" if bits == 4 else "mxfp8-quantized"
-
     # Default ignore list: any layer present in ignored_layers (deduped) that
     # was NOT quantized.
     ignore = list(dict.fromkeys(ignored_layers))
     quant_set = set(quantized_layers)
     ignore = [n for n in ignore if n not in quant_set]
 
-    qconfig = initialize_quantization(scheme=scheme_name, ignore=ignore)
-    qconfig = qconfig.to_dict()
-    qconfig["format"] = fmt
-    qconfig["provider"] = "auto-round"
-    return qconfig
+    # Resolve each quantized layer's effective bits using layer_config overrides.
+    scheme_groups: dict[int, list[str]] = {}  # bits -> [layer_names]
+    if layer_config:
+        temp_matcher = _PatternMatcher(
+            ignore_patterns=[],
+            layer_config=layer_config,
+            default_scheme=default_scheme,
+        )
+        for layer in quantized_layers:
+            scheme = temp_matcher.resolve_scheme(f"{layer}.weight")
+            layer_bits = scheme.get("bits", bits) if scheme is not None else bits
+            scheme_groups.setdefault(layer_bits, []).append(layer)
+    else:
+        scheme_groups[bits] = list(quantized_layers)
+
+    if len(scheme_groups) <= 1:
+        # Single scheme — existing behavior.
+        scheme_name = "MXFP4" if bits == 4 else "MXFP8"
+        fmt = "mxfp4-pack-quantized" if bits == 4 else "mxfp8-quantized"
+        qconfig = initialize_quantization(scheme=scheme_name, ignore=ignore)
+        qconfig = qconfig.to_dict()
+        qconfig["format"] = fmt
+        qconfig["provider"] = "auto-round"
+        return qconfig
+
+    # Mixed MXFP: build one config_group per distinct bit-width.
+    # Override groups (non-default bits) come first, default group last,
+    # ordered by descending bit-width within each partition so that the
+    # higher-precision group gets the lower group index.
+    override_items = sorted(
+        [(b, layers) for b, layers in scheme_groups.items() if b != bits],
+        key=lambda x: x[0],
+        reverse=True,
+    )
+    default_item = (bits, scheme_groups[bits]) if bits in scheme_groups else None
+    ordered = override_items + ([default_item] if default_item else [])
+
+    config_groups: dict = {}
+    group_formats: dict[str, str] = {}
+    for idx, (group_bits, layer_names) in enumerate(ordered):
+        group_name = f"group_{idx}"
+        scheme_name = "MXFP4" if group_bits == 4 else "MXFP8"
+        fmt = "mxfp4-pack-quantized" if group_bits == 4 else "mxfp8-quantized"
+        is_default_group = group_bits == bits
+        targets = ["Linear"] if is_default_group else layer_names
+        # vLLM MoE: prepend RoutedExperts so vLLM's routed-expert matcher
+        # takes priority when this explicit group contains expert layers.
+        if not is_default_group and any(".experts." in n for n in layer_names):
+            targets = ["RoutedExperts"] + targets
+        tmp_qconfig = initialize_quantization(scheme=scheme_name, ignore=ignore)
+        group_scheme = tmp_qconfig.config_groups["group_0"]
+        group_scheme.targets = targets
+        config_groups[group_name] = group_scheme
+        group_formats[group_name] = fmt
+
+    full_qconfig = initialize_quantization(scheme=None, config_groups=config_groups, ignore=ignore)
+    full_dict = full_qconfig.to_dict()
+    full_dict["format"] = "mixed-precision"
+    for group_name, fmt in group_formats.items():
+        full_dict["config_groups"][group_name]["format"] = fmt
+    full_dict["provider"] = "auto-round"
+    return full_dict
 
 
 def _build_quantization_config(
@@ -908,6 +1142,7 @@ def _build_quantization_config(
             default_scheme=default_scheme,
             quantized_layers=quantized_layers,
             ignored_layers=ignored_layers,
+            layer_config=layer_config,
         )
 
     from auto_round.version import __version__
@@ -945,9 +1180,17 @@ def _build_quantization_config(
         if differs:
             extra_config[layer_name] = {k: cfg.get(k) for k in scheme_keys if cfg.get(k) is not None}
 
+    # Filter out non-Linear ops (embed, conv) that don't need to be recorded in config.
+    # Routing gates and other predefined patterns are still recorded.
+    non_linear_ops = ["embed", "conv"]
+    non_linear_re = re.compile("|".join(re.escape(op) for op in non_linear_ops))
+
     unique_ignored = list(dict.fromkeys(ignored_layers))
     for layer_name in unique_ignored:
         if layer_name not in extra_config:
+            # Skip non-Linear ops (embed, conv) since they're not Linear layers
+            if non_linear_re.search(layer_name):
+                continue
             extra_config[layer_name] = {"bits": 16, "data_type": "float"}
 
     quantized_layer_set = set(quantized_layers)
@@ -1026,6 +1269,97 @@ def _prefetch_shard(
     except Exception as e:  # pragma: no cover
         logger.warning(f"Prefetch failed for {shard_name}: {e}")
         return None
+
+
+def _process_single_shard_task(
+    shard_idx: int,
+    shard_name: str,
+    *,
+    model_name_or_path: str,
+    work_dir: str,
+    source_dir: str,
+    is_streaming: bool,
+    device: str,
+    default_scheme: dict,
+    layer_config: dict,
+    ignore_patterns: list[str],
+    fp8_block_size: list | None,
+    model_type: str | None,
+    quant_output_dir: str,
+    total_shards: int,
+) -> tuple[int, str, str | None, str | None, list[str] | None, list[str] | None, list[str] | None]:
+    """Process one shard in an isolated subprocess task.
+
+    Each worker builds its own matcher/cache via ``_process_shard`` to avoid
+    cross-shard shared state.
+    """
+    shard_path = _prefetch_shard(
+        model_name_or_path,
+        shard_name,
+        work_dir,
+        source_dir,
+        is_streaming,
+    )
+    if shard_path is None or not os.path.exists(shard_path):
+        return shard_idx, shard_name, None, None, None, None, None
+
+    output_tensors, quantized, ignored = _process_shard(
+        shard_path=shard_path,
+        shard_name=shard_name,
+        default_scheme=default_scheme,
+        layer_config=layer_config,
+        ignore_patterns=ignore_patterns,
+        device=device,
+        fp8_block_size=fp8_block_size,
+        model_type=model_type,
+    )
+
+    out_shard_name = f"model-{shard_idx + 1:05d}-of-{total_shards:05d}.safetensors"
+    local_weight_map: dict[str, str] = {}
+    _write_output_shard(
+        quant_output_dir,
+        out_shard_name,
+        output_tensors,
+        local_weight_map,
+    )
+    tensor_names = list(local_weight_map.keys())
+    clear_memory()
+
+    if is_streaming:
+        try:
+            os.remove(shard_path)
+        except OSError:
+            pass
+
+    # Return only lightweight metadata to avoid IPC transfer of tensor storages.
+    return shard_idx, shard_name, shard_path, out_shard_name, tensor_names, quantized, ignored
+
+
+def _force_cleanup_process_pool(pool: ProcessPoolExecutor | None) -> None:
+    """Best-effort cleanup for process-pool workers.
+
+    On interruption (Ctrl+C / SIGTERM) or executor failures, worker processes
+    may survive briefly. This helper force-terminates workers before shutting
+    the executor down.
+    """
+    if pool is None:
+        return
+
+    # Accessing _processes is intentionally best-effort for robust cleanup.
+    # pylint: disable=protected-access
+    processes = getattr(pool, "_processes", None)
+    if isinstance(processes, dict):
+        for proc in processes.values():
+            if proc is not None and proc.is_alive():
+                try:
+                    proc.terminate()
+                except Exception:
+                    pass
+
+    try:
+        pool.shutdown(wait=False, cancel_futures=True)
+    except Exception:
+        pass
 
 
 # ---------------------------------------------------------------------------
@@ -1211,7 +1545,7 @@ class _ModelFreeCompressorCore:
         device: str = "cpu",
         quant_lm_head: bool = False,
         quant_nontext_module: bool = False,
-    ):
+    ) -> None:
         # --- raw inputs ---
         self.model_name_or_path = model_name_or_path
         self.output_dir = output_dir
@@ -1228,9 +1562,9 @@ class _ModelFreeCompressorCore:
         self.default_scheme: dict = {}
         self.layer_config: dict = {}
         self.ignore_patterns: list[str] = []
-        self.matcher: _PatternMatcher | None = None
         self.config: dict = {}
         self.fp8_block_size: list | None = None
+        self.model_type: str = ""
         self.is_streaming: bool = False
         self.is_diffusion_model: bool = False
         self.diffusion_root_dir: str = ""
@@ -1240,6 +1574,7 @@ class _ModelFreeCompressorCore:
         self.all_quantized_layers: list[str] = []
         self.all_ignored_layers: list[str] = []
         self.output_weight_map: dict[str, str] = {}
+        self.shard_parallelism: int = 1
 
     # -------------------------------------------------------------------
     # Validation / parsing
@@ -1254,7 +1589,14 @@ class _ModelFreeCompressorCore:
             )
 
     def _parse_scheme(self) -> None:
-        self.scheme_obj = _normalize_scheme(self.scheme_input)
+        scheme_in = self.scheme_input
+        if isinstance(scheme_in, str) and scheme_in.upper() == "W4A16_MIXED":
+            # Match regular-flow mixed recipe behavior in model-free mode:
+            # default non-expert linear layers use 8-bit; expert overrides are
+            # injected in _parse_layer_config.
+            self.scheme_obj = _normalize_scheme("W8A16")
+        else:
+            self.scheme_obj = _normalize_scheme(scheme_in)
         _validate_supported_scheme(self.scheme_obj, self.scheme_input)
         ds = asdict(self.scheme_obj)
         self.default_scheme = {k: v for k, v in ds.items() if v is not None}
@@ -1262,9 +1604,20 @@ class _ModelFreeCompressorCore:
     def _parse_layer_config(self) -> None:
         lc = copy.deepcopy(self.layer_config_input) if self.layer_config_input else {}
 
-        # Append '.' to keys ending with a digit to avoid partial numeric matches.
+        if isinstance(self.scheme_input, str) and self.scheme_input.upper() == "W4A16_MIXED":
+            # Keep shared experts at 8-bit while routing experts to 4-bit.
+            # User-provided layer_config entries (if any) still take priority.
+            if "shared_expert" not in lc:
+                lc[".shared_expert."] = {"bits": 8, "data_type": "int"}
+            if "expert" not in lc:
+                lc[".experts."] = {"bits": 4, "data_type": "int"}
+                lc[".moe."] = {"bits": 4, "data_type": "int"}
+
+        # Append '.' only for keys ending with ".<digits>" to avoid partial
+        # numeric matches (e.g. layer.1 should not match layer.10).
+        # Keep plain names like "fc2" untouched.
         for key in list(lc.keys()):
-            if key and key[-1].isdigit():
+            if re.search(r"\.\d+$", key):
                 lc[key + "."] = lc.pop(key)
 
         # Normalize values to dicts.
@@ -1297,7 +1650,7 @@ class _ModelFreeCompressorCore:
         ignore_patterns: list[str] = []
         if self.ignore_layers_input:
             ignore_patterns = [p.strip() for p in self.ignore_layers_input.replace(" ", "").split(",") if p.strip()]
-            ignore_patterns = [p + "." if p and p[-1].isdigit() else p for p in ignore_patterns]
+            ignore_patterns = [p + "." if re.search(r"\.\d+$", p) else p for p in ignore_patterns]
 
         if not self.quant_lm_head and "lm_head" not in ignore_patterns:
             ignore_patterns.append("lm_head")
@@ -1376,7 +1729,7 @@ class _ModelFreeCompressorCore:
                     f"These layers have been automatically added to ignore_layers "
                     f"and will be kept in full precision.\n"
                     f"To override, pass --ignore_layers explicitly or disable "
-                    f"model-free mode (remove --model_free)."
+                    f"model-free mode (--disable_model_free)."
                 )
 
         except Exception as exc:
@@ -1409,16 +1762,36 @@ class _ModelFreeCompressorCore:
                 f"FP8 weights will be dequantized before quantization."
             )
 
+    def _resolve_model_type(self) -> None:
+        """Resolve and log model_type for model-specific preprocessing hooks."""
+        self.model_type = str(self.config.get("model_type", "")).lower()
+        if self.model_type:
+            logger.info(f"Detected source model_type='{self.model_type}'.")
+
     def _discover_shards(self) -> None:
         search_dir = self.work_dir if self.is_streaming else self.source_dir
         self.shard_names = _list_weight_shards(search_dir)
 
-    def _build_matcher(self) -> None:
-        self.matcher = _PatternMatcher(
-            self.ignore_patterns,
-            self.layer_config,
-            self.default_scheme,
-        )
+    def _resolve_shard_parallelism(self) -> tuple[int, str]:
+        shard_count = len(self.shard_names)
+        # Auto policy: shard_count // 4, capped at 10, minimum 1.
+        default_parallelism = max(1, min(shard_count // 4, 10))
+        env_name = "AR_MODEL_FREE_SHARD_PARALLELISM"
+        if not envs.is_set(env_name):
+            return min(default_parallelism, shard_count or 1), f"auto(default={default_parallelism})"
+
+        try:
+            configured = envs.AR_MODEL_FREE_SHARD_PARALLELISM
+        except ValueError as e:
+            logger.warning(f"{e}; using auto default {default_parallelism}.")
+            raw_value = os.environ.get(env_name, "")
+            return min(default_parallelism, shard_count or 1), f"invalid({raw_value!r})"
+
+        if configured is None:
+            return min(default_parallelism, shard_count or 1), f"auto(default={default_parallelism})"
+
+        effective = min(configured, shard_count or 1)
+        return effective, f"env={configured}"
 
     @property
     def _quant_output_dir(self) -> str:
@@ -1442,90 +1815,83 @@ class _ModelFreeCompressorCore:
         except ImportError:
             _tqdm = None
 
-        prefetch_pool = ThreadPoolExecutor(max_workers=1)
-        write_pool = ThreadPoolExecutor(max_workers=1)
-        prefetch_future = None
-        write_future = None
+        if not self.shard_names:
+            return
 
-        if self.shard_names:
-            prefetch_future = prefetch_pool.submit(
-                _prefetch_shard,
-                self.model_name_or_path,
-                self.shard_names[0],
-                self.work_dir,
-                self.source_dir,
-                self.is_streaming,
-            )
+        os.makedirs(self._quant_output_dir, exist_ok=True)
 
-        shard_iter = (
-            _tqdm(
-                enumerate(self.shard_names),
-                total=len(self.shard_names),
-                desc="Processing shards",
-                unit="shard",
-            )
-            if _tqdm
-            else enumerate(self.shard_names)
-        )
-
-        for shard_idx, shard_name in shard_iter:
-            shard_path = prefetch_future.result() if prefetch_future else None
-
-            # Kick off prefetch of the next shard.
-            if shard_idx + 1 < len(self.shard_names):
-                prefetch_future = prefetch_pool.submit(
-                    _prefetch_shard,
-                    self.model_name_or_path,
-                    self.shard_names[shard_idx + 1],
-                    self.work_dir,
-                    self.source_dir,
-                    self.is_streaming,
+        worker_count = max(1, min(self.shard_parallelism, len(self.shard_names)))
+        futures = []
+        pool: ProcessPoolExecutor | None = None
+        try:
+            pool = ProcessPoolExecutor(max_workers=worker_count, mp_context=mp.get_context("spawn"))
+            for shard_idx, shard_name in enumerate(self.shard_names):
+                futures.append(
+                    pool.submit(
+                        _process_single_shard_task,
+                        shard_idx,
+                        shard_name,
+                        model_name_or_path=self.model_name_or_path,
+                        work_dir=self.work_dir,
+                        source_dir=self.source_dir,
+                        is_streaming=self.is_streaming,
+                        device=self.device,
+                        default_scheme=self.default_scheme,
+                        layer_config=self.layer_config,
+                        ignore_patterns=self.ignore_patterns,
+                        fp8_block_size=self.fp8_block_size,
+                        model_type=self.model_type,
+                        quant_output_dir=self._quant_output_dir,
+                        total_shards=len(self.shard_names),
+                    )
                 )
-            else:
-                prefetch_future = None
 
-            if shard_path is None or not os.path.exists(shard_path):
-                logger.warning(f"Shard not found: {shard_name}, skipping")
-                continue
-
-            output_tensors, quantized, ignored = _process_shard(
-                shard_path=shard_path,
-                device=self.device,
-                matcher=self.matcher,
-                fp8_block_size=self.fp8_block_size,
-            )
-            memory_monitor.update()
-            clear_memory()
-            if len(self.shard_names) > 1:
-                logger.info(f"Memory usage: {memory_monitor.get_summary()}")
-
-            self.all_quantized_layers.extend(quantized)
-            self.all_ignored_layers.extend(ignored)
-
-            if write_future is not None:
-                write_future.result()
-
-            os.makedirs(self._quant_output_dir, exist_ok=True)
-            out_shard_name = f"model-{shard_idx + 1:05d}-of-{len(self.shard_names):05d}.safetensors"
-            write_future = write_pool.submit(
-                _write_output_shard,
-                self._quant_output_dir,
-                out_shard_name,
-                output_tensors,
-                self.output_weight_map,
+            shard_iter = (
+                _tqdm(as_completed(futures), total=len(futures), desc="Processing shards", unit="shard")
+                if _tqdm
+                else as_completed(futures)
             )
 
-            if self.is_streaming:
-                try:
-                    os.remove(shard_path)
-                    logger.debug(f"Deleted source shard: {shard_path}")
-                except OSError as e:
-                    logger.warning(f"Could not delete source shard {shard_path}: {e}")
+            for future in shard_iter:
+                shard_idx, shard_name, shard_path, out_shard_name, tensor_names, quantized, ignored = future.result()
 
-        prefetch_pool.shutdown(wait=False)
-        if write_future is not None:
-            write_future.result()
-        write_pool.shutdown(wait=True)
+                if (
+                    shard_path is None
+                    or out_shard_name is None
+                    or tensor_names is None
+                    or quantized is None
+                    or ignored is None
+                ):
+                    logger.warning(f"Shard not found: {shard_name}, skipping")
+                    continue
+
+                memory_monitor.update()
+                clear_memory()
+                if len(self.shard_names) > 1:
+                    logger.info(f"Memory usage: {memory_monitor.get_summary()}")
+
+                compressed_quantized = compress_layer_names(quantized)
+                compressed_ignored = compress_layer_names(ignored)
+                logger.info(
+                    f"Shard {shard_idx + 1}/{len(self.shard_names)} ({shard_name}):\n"
+                    f"  Quantized layers ({len(quantized)}): {compressed_quantized}\n"
+                    f"  Ignored layers ({len(ignored)}): {compressed_ignored}"
+                )
+
+                self.all_quantized_layers.extend(quantized)
+                self.all_ignored_layers.extend(ignored)
+
+                for tensor_name in tensor_names:
+                    self.output_weight_map[tensor_name] = out_shard_name
+        except KeyboardInterrupt:
+            logger.warning("Interrupted by user; terminating model-free shard worker processes.")
+            _force_cleanup_process_pool(pool)
+            raise
+        except Exception:
+            _force_cleanup_process_pool(pool)
+            raise
+        finally:
+            _force_cleanup_process_pool(pool)
 
     # -------------------------------------------------------------------
     # Output
@@ -1619,9 +1985,10 @@ class _ModelFreeCompressorCore:
         self._resolve_source()
         self._check_conv1d_and_embedding()
         self._apply_predefined_ignore_layers()
-        self._build_matcher()
         self._detect_fp8_source()
+        self._resolve_model_type()
         self._discover_shards()
+        self.shard_parallelism, shard_parallelism_source = self._resolve_shard_parallelism()
 
         # Determine the output packing format based on scheme data type
         data_type = (self.default_scheme.get("data_type") or "int").lower()
@@ -1637,6 +2004,8 @@ class _ModelFreeCompressorCore:
             f"  Packing format: {packing_format}\n"
             f"  Output: {self.output_dir}\n"
             f"  Shards: {len(self.shard_names)}\n"
+            f"  Shard parallelism: {self.shard_parallelism} ({shard_parallelism_source}, "
+            f"env AR_MODEL_FREE_SHARD_PARALLELISM)\n"
             f"  Streaming download: {self.is_streaming}\n"
             f"  Diffusion model: {self.is_diffusion_model}\n"
             f"  Quant lm_head: {self.quant_lm_head}\n"
@@ -1708,10 +2077,10 @@ class ModelFreeCompressor(_ModelFreeCompressorCore):
         quant_lm_head: bool = False,
         quant_nontext_module: bool = False,
         # --- AutoRound compressor-role aliases ---
-        tokenizer=None,
-        device_map=None,
+        tokenizer: Any = None,
+        device_map: Any = None,
         **kwargs,
-    ):
+    ) -> None:
         import copy
         from dataclasses import fields as dc_fields
 
@@ -1760,6 +2129,11 @@ class ModelFreeCompressor(_ModelFreeCompressorCore):
         # Start from the remaining user kwargs and explicitly set/override
         # known compressor init parameters for clarity.
         fallback_init = dict(fallback_kwargs)
+        # Route-control kwargs are only meaningful for the initial entry
+        # selection. Strip them so fallback always re-enters the regular flow
+        # with a single explicit disable_model_free=True override.
+        fallback_init.pop("model_free", None)
+        fallback_init.pop("disable_model_free", None)
         fallback_init.update(
             model=model_name_or_path,
             iters=0,
@@ -1805,7 +2179,7 @@ class ModelFreeCompressor(_ModelFreeCompressorCore):
 
     def quantize(
         self,
-    ):
+    ) -> Any:
         """fallback to base compressor's quantize."""
         self._fallback_to_base_compressor()
         return self._fallback_compressor.quantize()  # pylint: disable=E1101
@@ -1852,7 +2226,7 @@ class ModelFreeCompressor(_ModelFreeCompressorCore):
         format: str = "auto_round",
         inplace: bool = True,
         **kwargs,
-    ):
+    ) -> Any:
         """Quantize and save — AutoRound compressor entry point."""
         # Accept the standard auto_round formats.
         _accepted_formats = {
@@ -1880,3 +2254,119 @@ class ModelFreeCompressor(_ModelFreeCompressorCore):
         self.output_dir = orig
         self.quantized = True
         return None, out_path
+
+
+# ---------------------------------------------------------------------------
+# Model-Type Specific Preprocessing Hooks (Extension Point)
+# ---------------------------------------------------------------------------
+#
+# Keep model-specific source-format adaptation functions at the end of this
+# file so the core quantization pipeline remains easy to read and maintain.
+# Add new model handlers here, keyed by `model_type`, and keep dequant/passthrough
+# decisions in the generic MXFP handlers above.
+
+
+def _expand_e8m0_block_scale(
+    scale: torch.Tensor,
+    out_features: int,
+    in_features: int,
+    group_size: int = 32,
+) -> torch.Tensor:
+    """Expand a coarse 2D E8M0 block scale to the llm-compressor per-group layout.
+
+    deepseek_v4 stores the per-block shared exponent in a *coarse* 2D shape
+    ``[out_features // block_h, in_features // block_w]`` (e.g. ``[12, 56]`` for
+    a ``[1536, 7168]`` weight, i.e. 128x128 blocks).  llm-compressor expects a
+    per-group scale of shape ``[out_features, in_features // group_size]``
+    (e.g. ``[1536, 224]`` for ``group_size=32``).
+
+    Because every fine MXFP group lies entirely inside a single coarse block,
+    the expansion is a pure ``repeat_interleave`` along both axes (no
+    interpolation).  The returned tensor is ``uint8`` (raw E8M0 bytes), matching
+    the ``U8`` dtype used by llm-compressor ``weight_scale`` tensors.
+    """
+    scale = scale.view(torch.uint8)
+    if scale.dim() != 2:
+        raise ValueError(f"Expected a 2D E8M0 block scale, got shape {tuple(scale.shape)}.")
+
+    target_rows = out_features
+    target_cols = in_features // group_size
+    rows, cols = scale.shape
+
+    if target_rows % rows != 0 or target_cols % cols != 0:
+        raise ValueError(
+            f"Cannot expand E8M0 block scale {tuple(scale.shape)} to "
+            f"({target_rows}, {target_cols}); shapes are not divisible."
+        )
+
+    if target_rows != rows:
+        scale = scale.repeat_interleave(target_rows // rows, dim=0)
+    if target_cols != cols:
+        scale = scale.repeat_interleave(target_cols // cols, dim=1)
+    return scale.contiguous()
+
+
+def _preprocess_model_type_source_tensors(
+    raw_tensors: dict[str, torch.Tensor],
+    model_type: str | None,
+    group_size: int = 32,
+) -> tuple[dict[str, torch.Tensor], dict[str, int]]:
+    """Apply model-type-specific source tensor normalization.
+
+    This step is intentionally limited to *format conversion* and does not do
+    passthrough / dequant decisions. It marks converted layers in the returned
+    ``source_state`` so downstream generic MXFP handling can treat them exactly
+    like normal llm-compressor MXFP sources.
+
+    Returns:
+        ``(raw_tensors, source_state)`` where ``source_state[layer]`` is the
+        source MXFP bits (4 or 8) for model-type preprocessed layers.
+    """
+    if (model_type or "").lower() != "deepseek_v4":
+        return raw_tensors, {}
+
+    entries: list[tuple[str, str, bool]] = []  # (weight_name, scale_name, is_fp8)
+    for name, tensor in raw_tensors.items():
+        if not name.endswith(".weight"):
+            continue
+        scale_name = name[: -len(".weight")] + ".scale"
+        if scale_name not in raw_tensors:
+            continue
+        if tensor.dtype == torch.float8_e4m3fn:
+            entries.append((name, scale_name, True))
+        elif tensor.dtype in (torch.int8, torch.uint8):
+            entries.append((name, scale_name, False))
+
+    if not entries:
+        return raw_tensors, {}
+
+    source_state: dict[str, int] = {}
+    n_fp8 = 0
+    n_fp4 = 0
+    for weight_name, scale_name, is_fp8 in entries:
+        layer_name = weight_name[: -len(".weight")]
+        weight = raw_tensors.pop(weight_name)
+        scale = raw_tensors.pop(scale_name)
+
+        if is_fp8:
+            out_features, in_features = weight.shape
+            weight_key = f"{layer_name}.weight"
+            source_state[layer_name] = 8
+            n_fp8 += 1
+        else:
+            out_features = weight.shape[0]
+            in_features = weight.shape[1] * 2
+            weight = weight.view(torch.uint8).contiguous()
+            weight_key = f"{layer_name}.weight_packed"
+            source_state[layer_name] = 4
+            n_fp4 += 1
+
+        weight_scale = _expand_e8m0_block_scale(scale, out_features, in_features, group_size=group_size)
+        raw_tensors[weight_key] = weight
+        raw_tensors[f"{layer_name}.weight_scale"] = weight_scale
+
+    logger.info(
+        "Applied model_type preprocessing for deepseek_v4: "
+        f"{n_fp8} MXFP8 layer(s), {n_fp4} MXFP4 layer(s) converted to llm-compressor naming."
+    )
+    return raw_tensors, source_state

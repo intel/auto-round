@@ -35,7 +35,7 @@
     - [lm_head 量化中开启多 GPU 标定](#lm_head-量化中开启多-gpu-标定)
     - [手动配置设备映射](#手动配置设备映射)
   + [超参数调整](#超参数调整)
-  + [旋转（Rotation）](#旋转rotation)
+  + [旋转（Rotation）（实验性）](#旋转rotation实验性)
     - [QuaRot / SpinQuant](#quarot--spinquant)
     - [逐线性层块旋转（实验性）](#逐线性层块旋转实验性)
 * [4 推理部署](#4-推理部署)
@@ -482,6 +482,41 @@ ar.quantize_and_save()
 #### 局限性
 AutoScheme 目前还**不支持对嵌入层（Embedding layer）进行自动量化**。该层将直接采用候选方案中精度最高的配置。
 
+### AWQ 量化算法
+
+AWQ（`algorithm="awq"`）是一种预处理量化算法，通过分析激活分布并应用通道缩放（channel-wise scaling）来保护重要的权重。它在实际量化（默认为 RTN，或使用 auto_round/SignRound）之前运行。
+
+#### 命令行用法
+```bash
+# AWQ + 默认 RTN (自动选择 iters=0)
+auto-round --model Qwen/Qwen3-0.6B --algorithm awq --scheme W4A16
+
+# AWQ + AutoRound 优化
+auto-round --model Qwen/Qwen3-0.6B --algorithm awq,auto_round --scheme W4A16
+
+# AWQ 相关参数
+--duo-scaling true|false|both  (默认: true)
+--n-grid 20                    (默认: 20)
+```
+
+#### API 用法
+```python
+from auto_round import AutoRound
+from auto_round.algorithms.quantization.awq.config import AWQConfig
+from auto_round.algorithms.quantization.sign_round.config import SignRoundConfig
+
+# AWQ + 默认 RTN (最简用法)
+ar = AutoRound(model, tokenizer, algorithm="awq", scheme="W4A16")
+
+# 通过 alg_configs 指定 AWQ + AutoRound (显式流水线)
+ar = AutoRound(model, tokenizer, alg_configs=[AWQConfig(), SignRoundConfig(iters=200)], scheme="W4A16")
+ar.quantize_and_save(output_dir="./qmodel")
+```
+
+**重要提示**：`algorithm="awq"`（量化算法）与 `format="auto_awq"`（导出格式）是相互独立的。你可以使用：
+- `algorithm="awq"` + `format="auto_round"`：AWQ 平滑 + AutoRound 打包
+- `algorithm="auto_round"` + `format="auto_awq"`：不使用 AWQ 平滑 + AutoAWQ 打包
+
 ### OPT-RTN 模式
 AutoRound 还提供优化版 RTN（Round-To-Nearest，就近舍入）模式，无需标定数据即可实现快速基线量化。**启用方式为 `iters=0`**。同时为获得更好的效果，推荐搭配 `group_size=32` 。RTN 与 OPT RTN 模式的精度对比详见[《精度对比报告》](./opt_rtn.md)。
 
@@ -530,6 +565,40 @@ ar.quantize_and_save(output_dir, format="auto_round")
 - **逐层配置** — 支持 `--layer_config` 设置逐层位宽，以及 `--ignore_layers` 保持特定层全精度
 - **预定义忽略层** — 根据模型配置自动跳过特定层（如 MoE 门控层、MTP 层等）
 - 与标准 `--iters 0 --disable_opt_rtn` 流程对所有受支持的 scheme **位级等价**
+
+<details>
+  <summary>Model-free 并行量化基准（分钟向上取整）</summary>
+
+时间归一化规则：所有 `mm:ss` 均向上取整到分钟。例如：`4:20 -> 5`、`15:45 -> 16`、`9:07 -> 10`、`7:29 -> 8`、`4:09 -> 5`。
+
+| 模型 | 设备 | 方案 | 并行度 | 峰值显存 (G) | 耗时（分钟，向上取整） |
+|---|---|---|---:|---:|---:|
+| Qwen/Qwen3-Next-80B-A3B-Instruct | A100 | W4A16 | 1 | 2 | N/A |
+| Qwen/Qwen3-Next-80B-A3B-Instruct | A100 | W4A16 | 10 | 8 | 7 |
+| Qwen3-235B-A22B-Instruct-2507 | A100 | W4A16 | 1 | 2 | 17 |
+| Qwen3-235B-A22B-Instruct-2507 | A100 | W4A16 | 10 | 8 | 5 |
+| zai-org/GLM-5.2 | B200 | MXFP4-Mixed | 1 | 2 | 60 |
+| zai-org/GLM-5.2 | B200 | MXFP4-Mixed | 10 | 27 | 16 |
+| zai-org/GLM-5.2 | B200 | W4A16 | 1 | 3 | 30 |
+| zai-org/GLM-5.2 | B200 | W4A16 | 10 | 16 | 10 |
+| zai-org/GLM-5.2 | B200 | W4A16 | 20 | 32 | 8 |
+| MiniMaxAI/MiniMax-M2.7 (FP8) | B200 | W4A16 | 1 | 2 | 18 |
+| MiniMaxAI/MiniMax-M2.7 (FP8) | B200 | W4A16 | 10 | 10 | 5 |
+| deepseek-ai/DeepSeek-V4-Pro (MXFP) | B200 | W4A16 | 1 | 6 | 80 |
+| deepseek-ai/DeepSeek-V4-Pro (MXFP) | B200 | W4A16 | 10 | 50 | 13 |
+
+| 模型 | 方案 | 对比 | 耗时变化（分钟） | 加速比 | 时间节省 | 峰值显存变化 |
+|---|---|---|---|---:|---:|---|
+| Qwen3-235B | W4A16 | 并行 1 -> 10 | 17 -> 5 | 3.40x | 70.6% | 2G -> 8G |
+| GLM-5.2 | MXFP4-Mixed | 并行 1 -> 10 | 60 -> 16 | 3.75x | 73.3% | 2G -> 27G |
+| GLM-5.2 | W4A16 | 并行 1 -> 10 | 30 -> 10 | 3.00x | 66.7% | 3G -> 16G |
+| GLM-5.2 | W4A16 | 并行 1 -> 20 | 30 -> 8 | 3.75x | 73.3% | 3G -> 32G |
+| MiniMax-M2.7 | W4A16 | 并行 1 -> 10 | 18 -> 5 | 3.60x | 72.2% | 2G -> 10G |
+| DeepSeek-V4-Pro | W4A16 | 并行 1 -> 10 | 80 -> 13 | 6.15x | 83.8% | 6G -> 50G |
+
+结论：在 model-free 量化中，提高并行度通常可带来约 `3x-6x` 的耗时加速，但峰值显存会明显上升。
+
+</details>
 
 <details>
   <summary>点击展开支持的 Scheme 与示例</summary>
@@ -790,7 +859,9 @@ auto-round --model_name Qwen/Qwen3-0.6B  --scheme "W4A16" --quant_lm_head --form
 #### 使用 AdamW 优化器
 添加 `--adam` 参数即可启用；**注意**：在我们的多项测试场景中，AdamW 优化器的效果均不如符号梯度下降（sign gradient descent）。
 
-### 旋转（Rotation）
+### 旋转（Rotation）（实验性）
+
+> ⚠️ **实验性功能**：旋转变换仍处于实验阶段。推理依赖 forward hook 机制，目前仅支持 Hugging Face Transformers 后端，因此相比非旋转模型，推理速度可能较慢。
 
 AutoRound 支持基于旋转的变换技术来提升量化精度。旋转在量化前对权重和激活中的离群点进行重分布，使分布更加均匀，从而对量化更友好。
 
