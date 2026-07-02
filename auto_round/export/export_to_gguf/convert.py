@@ -591,7 +591,10 @@ def _flush_name_resolution_diagnostics(cls):
 def prepare_tensors(cls):
     device = get_packing_device(cls.device)
     if not hasattr(cls, "_gguf_dtype_selector"):
-        cls._gguf_dtype_selector = GGUFDTypeSelector(cls.hparams, cls.ftype, cls.model_arch)
+        has_tied_embeddings = cls.hparams.get("tie_word_embeddings", False)
+        cls._gguf_dtype_selector = GGUFDTypeSelector(
+            cls.hparams, cls.ftype, cls.model_arch, has_tied_embeddings=has_tied_embeddings
+        )
         cls._gguf_dtype_selector.n_attention_wv = _count_attention_wv_tensors(cls)
     if not hasattr(cls, "_gguf_name_resolution_diagnostics"):
         cls._gguf_name_resolution_diagnostics = []

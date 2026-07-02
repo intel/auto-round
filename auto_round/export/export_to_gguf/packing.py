@@ -83,6 +83,8 @@ def ggml_quant(
             return t
         # Q4_0 / Q5_0 etc. compute their own scales; metadata from a different
         # group size (e.g. 256 vs block_size 32) cannot be reshaped and is unused.
+        if t.dim() == 1:  # imatrix / per-channel importance vector; keep as-is
+            return t.to(device)
         if t.nelement() % blocks.shape[0] != 0:
             return None
         return t.to(device).reshape(blocks.shape[0], -1)
@@ -768,9 +770,14 @@ def q4_k_quant_block(
         output_dmin = d_wmin.reshape(-1, 1).to(torch.float32)
         q_scales = (scales * get_reciprocal(output_d)).round_().clamp_(0, 63).to(torch.uint8)
         q_mins = (mins * get_reciprocal(output_dmin)).round_().clamp_(0, 63).to(torch.uint8)
+        output_d = output_d.to(torch.float16).to(torch.float32)
+        output_dmin = output_dmin.to(torch.float16).to(torch.float32)
+        d_tmp = output_d * q_scales.to(torch.float32)
+        dm_tmp = output_dmin * q_mins.to(torch.float32)
+        d_tmp = torch.where(d_tmp != 0, d_tmp, torch.ones_like(d_tmp))
         all_L = (
-            blocks.add_(mins.unsqueeze(-1))
-            .mul_(get_reciprocal(scales.unsqueeze(-1)))
+            blocks.add_(dm_tmp.unsqueeze(-1))
+            .mul_(get_reciprocal(d_tmp.unsqueeze(-1)))
             .round_()
             .clamp_(0, 15)
             .to(torch.uint8)
@@ -814,9 +821,14 @@ def q4_k_quant_block(
         output_dmin = d_wmin.reshape(-1, 1).to(torch.float32)
         q_scales = (scales * get_reciprocal(output_d)).round_().clamp_(0, 63).to(torch.uint8)
         q_mins = (mins * get_reciprocal(output_dmin)).round_().clamp_(0, 63).to(torch.uint8)
+        output_d = output_d.to(torch.float16).to(torch.float32)
+        output_dmin = output_dmin.to(torch.float16).to(torch.float32)
+        d_tmp = output_d * q_scales.to(torch.float32)
+        dm_tmp = output_dmin * q_mins.to(torch.float32)
+        d_tmp = torch.where(d_tmp != 0, d_tmp, torch.ones_like(d_tmp))
         all_L = (
-            blocks.add_(mins.unsqueeze(-1))
-            .mul_(get_reciprocal(scales.unsqueeze(-1)))
+            blocks.add_(dm_tmp.unsqueeze(-1))
+            .mul_(get_reciprocal(d_tmp.unsqueeze(-1)))
             .round_()
             .clamp_(0, 15)
             .to(torch.uint8)
@@ -864,9 +876,14 @@ def q5_k_quant_block(
         output_dmin = d_wmin.reshape(-1, 1).to(torch.float32)
         q_scales = (scales * get_reciprocal(output_d)).round_().clamp_(0, 63).to(torch.uint8)
         q_mins = (mins * get_reciprocal(output_dmin)).round_().clamp_(0, 63).to(torch.uint8)
+        output_d = output_d.to(torch.float16).to(torch.float32)
+        output_dmin = output_dmin.to(torch.float16).to(torch.float32)
+        d_tmp = output_d * q_scales.to(torch.float32)
+        dm_tmp = output_dmin * q_mins.to(torch.float32)
+        d_tmp = torch.where(d_tmp != 0, d_tmp, torch.ones_like(d_tmp))
         all_L = (
-            blocks.add_(mins.unsqueeze(-1))
-            .mul_(get_reciprocal(scales.unsqueeze(-1)))
+            blocks.add_(dm_tmp.unsqueeze(-1))
+            .mul_(get_reciprocal(d_tmp.unsqueeze(-1)))
             .round_()
             .clamp_(0, 31)
             .to(torch.uint8)
@@ -909,9 +926,14 @@ def q5_k_quant_block(
         output_dmin = d_wmin.reshape(-1, 1).to(torch.float32)
         q_scales = (scales * get_reciprocal(output_d)).round_().clamp_(0, 63).to(torch.uint8)
         q_mins = (mins * get_reciprocal(output_dmin)).round_().clamp_(0, 63).to(torch.uint8)
+        output_d = output_d.to(torch.float16).to(torch.float32)
+        output_dmin = output_dmin.to(torch.float16).to(torch.float32)
+        d_tmp = output_d * q_scales.to(torch.float32)
+        dm_tmp = output_dmin * q_mins.to(torch.float32)
+        d_tmp = torch.where(d_tmp != 0, d_tmp, torch.ones_like(d_tmp))
         all_L = (
-            blocks.add_(mins.unsqueeze(-1))
-            .mul_(get_reciprocal(scales.unsqueeze(-1)))
+            blocks.add_(dm_tmp.unsqueeze(-1))
+            .mul_(get_reciprocal(d_tmp.unsqueeze(-1)))
             .round_()
             .clamp_(0, 31)
             .to(torch.uint8)
@@ -952,8 +974,10 @@ def q6_k_quant_block(blocks: np.array, scale=None, d_scale=None, original=False,
         output_d = d_scale.reshape(-1, 1).to(torch.float32)
         rd = get_reciprocal(output_d)
         output_scale = scales.mul(rd).round_().clamp_(max=127).to(torch.int8)
-        rs = get_reciprocal(scales).unsqueeze_(-1)  # unsqueeze for broadcasting
-        all_L = blocks.mul_(rs).add_(32).round_().clamp_(0, 63).to(torch.uint8)
+        output_d = output_d.to(torch.float16).to(torch.float32)
+        d_tmp = output_d * output_scale.to(torch.float32)
+        d_tmp = torch.where(d_tmp != 0, d_tmp, torch.ones_like(d_tmp))
+        all_L = blocks.mul_(get_reciprocal(d_tmp).unsqueeze_(-1)).add_(32).round_().clamp_(0, 63).to(torch.uint8)
     elif original:
         scales, all_L = make_qx_quants(blocks, bits=6, rmse_type=1, qw=None)
         imax = abs(scales).argmax(dim=-1, keepdim=True)
@@ -978,7 +1002,10 @@ def q6_k_quant_block(blocks: np.array, scale=None, d_scale=None, original=False,
         scales = scales.reshape((-1, QK_K // 16))
         output_d = d_scale.reshape(-1, 1).to(torch.float32)
         output_scale = (scales * get_reciprocal(output_d)).round_().clamp_(max=127).to(torch.int8)
-        all_L = blocks.mul_(get_reciprocal(scales.unsqueeze(-1))).add_(32).round_().clamp_(0, 63).to(torch.uint8)
+        output_d = output_d.to(torch.float16).to(torch.float32)
+        d_tmp = output_d * output_scale.to(torch.float32)
+        d_tmp = torch.where(d_tmp != 0, d_tmp, torch.ones_like(d_tmp))
+        all_L = blocks.mul_(get_reciprocal(d_tmp).unsqueeze_(-1)).add_(32).round_().clamp_(0, 63).to(torch.uint8)
 
     tmp_L = all_L.reshape(nb, 4, 64) & 0xF
     output_ql = (tmp_L[:, ::2] | (tmp_L[:, 1::2] << 4)).reshape(nb, QK_K // 2).cpu().numpy().astype(np.uint8)
