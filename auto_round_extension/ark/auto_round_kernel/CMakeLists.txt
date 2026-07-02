@@ -82,7 +82,7 @@ include_directories(wrapper/include)
 if(ARK_XPU AND ARK_SYCL_TLA)
   # Fetch sycl-tla headers (header-only, don't build)
   set(SYCL_TLA_GIT_REPOSITORY "https://github.com/luoyu-intel/sycl-tla.git" CACHE STRING "sycl-tla git repository")
-  set(SYCL_TLA_GIT_TAG "260409" CACHE STRING "sycl-tla git tag/commit")
+  set(SYCL_TLA_GIT_TAG "260630" CACHE STRING "sycl-tla git tag/commit")
 
   FetchContent_Declare(
     sycl_tla

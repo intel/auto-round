@@ -22,7 +22,7 @@ from auto_round.algorithms.quantization.sign_round.config import (
     SignRoundV2Config,
 )
 from auto_round.algorithms.transforms.awq.config import AWQConfig
-from auto_round.algorithms.transforms.quarot.config import RotationConfig
+from auto_round.algorithms.transforms.hadamard.config import RotationConfig
 from auto_round.algorithms.transforms.spinquant.preprocessor import SpinQuantConfig
 from auto_round.schemes import QuantizationScheme
 from auto_round.auto_scheme import AutoScheme

@@ -72,7 +72,8 @@ class TestAutoScheme:
         model, layer_config = ar.quantize()
         avg_bits, _ = compute_avg_bits_for_model(model, ignore_scale_zp_bits=True)
         print(avg_bits)
-        assert target_bits - 0.1 < avg_bits <= target_bits + 1e-3
+        # Due to the tiny model and embedding, the actual number of bits of gguf format will be larger than the target bits.
+        assert target_bits - 0.1 < avg_bits <= target_bits + 0.3
 
     def test_shared_layers(self, tiny_opt_model_path):
         model_name = tiny_opt_model_path

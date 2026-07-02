@@ -4,7 +4,7 @@
 """
 SpinQuant in-place application sub-package.
 
-Follows the same structure as ``auto_round.algorithms.transforms.quarot.inplace``.
+Follows the same structure as ``auto_round.algorithms.transforms.hadamard.inplace``.
 """
 
 from auto_round.algorithms.transforms.spinquant.inplace.apply import (

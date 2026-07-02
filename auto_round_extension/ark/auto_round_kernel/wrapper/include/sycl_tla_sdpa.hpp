@@ -79,6 +79,9 @@ struct Options {
       head_size_qk = 0, head_size_vo = 0;
   int total_seqlen_q = 0, total_seqlen_kv = 0, total_seqlen_kv_cache = 0;
   int max_seqlen_q = 0, max_seqlen_kv = 0, max_seqlen_kv_cache = 0;
+  const int* cu_seqlens_q = nullptr;
+  const int* cu_seqlens_k = nullptr;
+  const int* cu_seqlens_kv_cache = nullptr;
   int q_stride_s = 0, q_stride_d = 1, q_stride_h = 0, q_stride_b = 0;
   int k_stride_s = 0, k_stride_d = 1, k_stride_h = 0, k_stride_b = 0;
   int v_stride_d = 1, v_stride_s = 0, v_stride_h = 0, v_stride_b = 0;
@@ -170,6 +173,8 @@ struct KernelRunner {
   StrideV stride_V_cache;
   StrideO stride_O;
   uint64_t seed = 0;
+  /// Scratch buffer for zero-filled kv_cache cumulative_length.
+  cutlass::device_memory::allocation<int> zero_cu_cache_;
 
   //
   // Methods
@@ -217,6 +222,15 @@ struct KernelRunner {
     problem_size_for_launch.seq_len_qo = cutlass::fmha::collective::VariableLength{options.max_seqlen_q};
     problem_size_for_launch.seq_len_kv = cutlass::fmha::collective::VariableLength{options.max_seqlen_kv};
     problem_size_for_launch.seq_len_kv_cache = cutlass::fmha::collective::VariableLength{options.max_seqlen_kv_cache};
+    problem_size_for_launch.seq_len_qo.cumulative_length = const_cast<int*>(options.cu_seqlens_q);
+    problem_size_for_launch.seq_len_kv.cumulative_length = const_cast<int*>(options.cu_seqlens_k);
+    if (options.cu_seqlens_kv_cache) {
+      problem_size_for_launch.seq_len_kv_cache.cumulative_length = const_cast<int*>(options.cu_seqlens_kv_cache);
+    } else {
+      zero_cu_cache_.reset(options.batch + 1);
+      std::fill_n(zero_cu_cache_.get(), options.batch + 1, 0);
+      problem_size_for_launch.seq_len_kv_cache.cumulative_length = zero_cu_cache_.get();
+    }
     problem_size_for_launch.head_size_qk = get<6>(problem_size);
     problem_size_for_launch.head_size_vo = get<7>(problem_size);
 
@@ -256,15 +270,8 @@ struct KernelRunner {
     auto shape_V_cache = cute::make_shape(head_size_vo, seq_len_kv_cache, num_heads_kv, batch);
     auto shape_O = cute::make_shape(seq_len_qo, head_size_vo, num_heads_q, batch);
 
-    if constexpr (!isVarLen) {
-      if (options.use_tensor_strides) {
-        set_tensor_strides_from_options(options, stride_Q, stride_K, stride_V, stride_O);
-      } else {
-        stride_Q = cutlass::make_cute_packed_stride(StrideQ{}, shape_Q);
-        stride_K = cutlass::make_cute_packed_stride(StrideK{}, shape_K);
-        stride_V = cutlass::make_cute_packed_stride(StrideV{}, shape_V);
-        stride_O = cutlass::make_cute_packed_stride(StrideO{}, shape_O);
-      }
+    if (options.use_tensor_strides) {
+      set_tensor_strides_from_options(options, stride_Q, stride_K, stride_V, stride_O);
     } else {
       stride_Q = cutlass::make_cute_packed_stride(StrideQ{}, shape_Q);
       stride_K = cutlass::make_cute_packed_stride(StrideK{}, shape_K);
@@ -275,9 +282,15 @@ struct KernelRunner {
     stride_V_cache = cutlass::make_cute_packed_stride(StrideV{}, shape_V_cache);
 
     if constexpr (isVarLen) {
-      // shape.seq_len_qo.cumulative_length = device_cumulative_seqlen_q.get();
-      // shape.seq_len_kv.cumulative_length = device_cumulative_seqlen_kv.get();
-      // shape.seq_len_kv_cache.cumulative_length = device_cumulative_seqlen_kv_cache.get();
+      shape.seq_len_qo.cumulative_length = const_cast<int*>(options.cu_seqlens_q);
+      shape.seq_len_kv.cumulative_length = const_cast<int*>(options.cu_seqlens_k);
+      if (options.cu_seqlens_kv_cache) {
+        shape.seq_len_kv_cache.cumulative_length = const_cast<int*>(options.cu_seqlens_kv_cache);
+      } else {
+        zero_cu_cache_.reset(options.batch + 1);
+        std::fill_n(zero_cu_cache_.get(), options.batch + 1, 0);
+        shape.seq_len_kv_cache.cumulative_length = zero_cu_cache_.get();
+      }
     }
     return shape;
   }
@@ -471,8 +484,7 @@ struct FMHAConfig {
       throw std::runtime_error("Paged KV without varlen is not supported yet");
       // return run<false, true, true, cutlass::fmha::kernel::XeFHMAIndividualTileScheduler>(options);
     } else if (!options.use_paged_kv && options.varlen && !cached_kv) {
-      throw std::runtime_error("Varlen without cached KV is not supported yet");
-      // return run<true, false, false, cutlass::fmha::kernel::XeFHMAIndividualTileScheduler>(options);
+      return run<true, false, false, cutlass::fmha::kernel::XeFHMAIndividualTileScheduler>(options);
     } else if (!options.use_paged_kv && !options.varlen && !cached_kv) {
       return run<false, false, false, cutlass::fmha::kernel::XeFHMAIndividualTileScheduler>(options);
     } else if (!options.use_paged_kv && options.varlen && cached_kv) {
@@ -517,6 +529,8 @@ struct SageKernelRunner {
   StrideV stride_V_cache;
   StrideO stride_O;
   uint64_t seed = 0;
+  /// Scratch buffer for zero-filled kv_cache cumulative_length.
+  cutlass::device_memory::allocation<int> zero_cu_cache_;
 
   //
   // Methods
@@ -564,6 +578,15 @@ struct SageKernelRunner {
     problem_size_for_launch.seq_len_qo = cutlass::fmha::collective::VariableLength{options.max_seqlen_q};
     problem_size_for_launch.seq_len_kv = cutlass::fmha::collective::VariableLength{options.max_seqlen_kv};
     problem_size_for_launch.seq_len_kv_cache = cutlass::fmha::collective::VariableLength{options.max_seqlen_kv_cache};
+    problem_size_for_launch.seq_len_qo.cumulative_length = const_cast<int*>(options.cu_seqlens_q);
+    problem_size_for_launch.seq_len_kv.cumulative_length = const_cast<int*>(options.cu_seqlens_k);
+    if (options.cu_seqlens_kv_cache) {
+      problem_size_for_launch.seq_len_kv_cache.cumulative_length = const_cast<int*>(options.cu_seqlens_kv_cache);
+    } else {
+      zero_cu_cache_.reset(options.batch + 1);
+      std::fill_n(zero_cu_cache_.get(), options.batch + 1, 0);
+      problem_size_for_launch.seq_len_kv_cache.cumulative_length = zero_cu_cache_.get();
+    }
     problem_size_for_launch.head_size_qk = get<6>(problem_size);
     problem_size_for_launch.head_size_vo = get<7>(problem_size);
 
@@ -603,15 +626,8 @@ struct SageKernelRunner {
     auto shape_V_cache = cute::make_shape(head_size_vo, seq_len_kv_cache, num_heads_kv, batch);
     auto shape_O = cute::make_shape(seq_len_qo, head_size_vo, num_heads_q, batch);
 
-    if constexpr (!isVarLen) {
-      if (options.use_tensor_strides) {
-        set_tensor_strides_from_options(options, stride_Q, stride_K, stride_V, stride_O);
-      } else {
-        stride_Q = cutlass::make_cute_packed_stride(StrideQ{}, shape_Q);
-        stride_K = cutlass::make_cute_packed_stride(StrideK{}, shape_K);
-        stride_V = cutlass::make_cute_packed_stride(StrideV{}, shape_V);
-        stride_O = cutlass::make_cute_packed_stride(StrideO{}, shape_O);
-      }
+    if (options.use_tensor_strides) {
+      set_tensor_strides_from_options(options, stride_Q, stride_K, stride_V, stride_O);
     } else {
       stride_Q = cutlass::make_cute_packed_stride(StrideQ{}, shape_Q);
       stride_K = cutlass::make_cute_packed_stride(StrideK{}, shape_K);
@@ -622,9 +638,15 @@ struct SageKernelRunner {
     stride_V_cache = cutlass::make_cute_packed_stride(StrideV{}, shape_V_cache);
 
     if constexpr (isVarLen) {
-      // shape.seq_len_qo.cumulative_length = device_cumulative_seqlen_q.get();
-      // shape.seq_len_kv.cumulative_length = device_cumulative_seqlen_kv.get();
-      // shape.seq_len_kv_cache.cumulative_length = device_cumulative_seqlen_kv_cache.get();
+      shape.seq_len_qo.cumulative_length = const_cast<int*>(options.cu_seqlens_q);
+      shape.seq_len_kv.cumulative_length = const_cast<int*>(options.cu_seqlens_k);
+      if (options.cu_seqlens_kv_cache) {
+        shape.seq_len_kv_cache.cumulative_length = const_cast<int*>(options.cu_seqlens_kv_cache);
+      } else {
+        zero_cu_cache_.reset(options.batch + 1);
+        std::fill_n(zero_cu_cache_.get(), options.batch + 1, 0);
+        shape.seq_len_kv_cache.cumulative_length = zero_cu_cache_.get();
+      }
     }
     return shape;
   }
@@ -814,8 +836,7 @@ struct SageConfig {
       throw std::runtime_error("Paged KV without varlen is not supported yet");
       // return run<false, true, true, cutlass::fmha::kernel::XeFHMAIndividualTileScheduler>(options);
     } else if (!options.use_paged_kv && options.varlen && !cached_kv) {
-      throw std::runtime_error("Varlen without cached KV is not supported yet");
-      // return run<true, false, false, cutlass::fmha::kernel::XeFHMAIndividualTileScheduler>(options);
+      return run<true, false, false, cutlass::fmha::kernel::XeFHMAIndividualTileScheduler>(options);
     } else if (!options.use_paged_kv && !options.varlen && !cached_kv) {
       return run<false, false, false, cutlass::fmha::kernel::XeFHMAIndividualTileScheduler>(options);
     } else if (!options.use_paged_kv && options.varlen && cached_kv) {

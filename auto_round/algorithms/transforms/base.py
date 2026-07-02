@@ -174,7 +174,7 @@ def _ensure_registry_populated() -> None:
     # Import each sub-package here.  Add new entries as more algorithms land.
     import importlib
 
-    for sub in ("quarot", "spinquant"):
+    for sub in ("hadamard", "spinquant"):
         try:
             importlib.import_module(f"auto_round.algorithms.transforms.{sub}")
         except ImportError:
