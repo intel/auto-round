@@ -276,23 +276,9 @@ def tune(args):
     if "marlin" in args.format and args.asym is True:
         raise RuntimeError("marlin backend only supports sym quantization, please remove --asym")
 
-    from auto_round.utils import get_device_and_parallelism
-
-    device_str, use_auto_mapping = get_device_and_parallelism(args.device_map)
-
-    if args.enable_torch_compile:
-        logger.info(
-            "`torch.compile` is enabled to reduce tuning costs. "
-            "If it causes issues, you can disable it by removing `--enable_torch_compile` argument."
-        )
-
     model_name = args.model
     if model_name[-1] == "/":
         model_name = model_name[:-1]
-    logger.info(f"start to quantize {model_name}")
-
-    from auto_round.compressors.base import BaseCompressor
-    from auto_round.compressors.entry import AutoRound as PipelineAutoRound
 
     if "bloom" in model_name:
         args.low_gpu_mem_usage = False
@@ -312,6 +298,46 @@ def tune(args):
 
     if scheme not in PRESET_SCHEMES:
         raise ValueError(f"{scheme} is not supported. only {PRESET_SCHEMES.keys()} are supported ")
+
+    if args.dry_run:
+        from auto_round.estimation import dry_run_estimate, print_dry_run_report
+
+        scheme_obj = PRESET_SCHEMES[scheme]
+        target_bits = args.bits if args.bits is not None else scheme_obj.bits
+        group_size = args.group_size if args.group_size is not None else scheme_obj.group_size
+        act_bits = args.act_bits if args.act_bits is not None else scheme_obj.act_bits
+        model_dtype = args.model_dtype or "float16"
+        estimates = dry_run_estimate(
+            model_name=model_name,
+            scheme_bits=target_bits,
+            group_size=group_size,
+            act_bits=act_bits,
+            model_dtype=model_dtype,
+            batch_size=args.batch_size,
+            seqlen=args.seqlen,
+            nsamples=args.nsamples,
+            iters=args.iters,
+            trust_remote_code=not args.disable_trust_remote_code,
+            platform=args.platform,
+            low_gpu_mem_usage=args.low_gpu_mem_usage,
+        )
+        print_dry_run_report(estimates)
+        return
+
+    from auto_round.utils import get_device_and_parallelism
+
+    device_str, use_auto_mapping = get_device_and_parallelism(args.device_map)
+
+    if args.enable_torch_compile:
+        logger.info(
+            "`torch.compile` is enabled to reduce tuning costs. "
+            "If it causes issues, you can disable it by removing `--enable_torch_compile` argument."
+        )
+
+    logger.info(f"start to quantize {model_name}")
+
+    from auto_round.compressors.base import BaseCompressor
+    from auto_round.compressors.entry import AutoRound as PipelineAutoRound
 
     if args.disable_deterministic_algorithms:
         logger.warning(

@@ -139,6 +139,12 @@ def build_quantize_parser(*, prog: str = "auto_round quantize") -> argparse.Argu
     rt.add_argument("--disable_low_cpu_mem_usage", action="store_true", help="Disable low CPU memory mode.")
     rt.add_argument("--enable_torch_compile", action="store_true", help="Enable torch.compile during quantization.")
     rt.add_argument(
+        "--dry_run",
+        "--dry-run",
+        action="store_true",
+        help="Estimate VRAM usage, output file size, and quantization time without loading model weights.",
+    )
+    rt.add_argument(
         "--disable_trust_remote_code", action="store_true", help="Disable trust_remote_code when loading models."
     )
     rt.add_argument(
