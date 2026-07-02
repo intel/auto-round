@@ -133,11 +133,16 @@ stages:
       - job: CommentCudaTrigger
         displayName: "Comment to trigger CUDA CI"
         steps:
+          - task: DownloadSecureFile@1
+            name: githubAppPrivateKey
+            displayName: "Download GitHub App private key"
+            inputs:
+              secureFile: "auto-round-bot.2026-07-02.private-key.pem"
+
           - task: Bash@3
             displayName: "Post /azp run comment to PR"
             env:
               GITHUB_APP_ID: $(GITHUB_APP_ID)
-              GITHUB_APP_PRIVATE_KEY: $(GITHUB_APP_PRIVATE_KEY)
               GITHUB_APP_INSTALLATION_ID: $(GITHUB_APP_INSTALLATION_ID)
             inputs:
               targetType: "inline"
@@ -152,6 +157,9 @@ stages:
 
                 repo_path="${BUILD_REPOSITORY_URI#https://github.com/}"
                 repo_path="${repo_path%.git}"
+                export REPO_PATH="${repo_path}"
+                export PR_NUMBER="${pr_number}"
+                export CURRENT_SHA="${SYSTEM_PULLREQUEST_SOURCECOMMITID:-${BUILD_SOURCEVERSION:-unknown}}"
 
                 if python "$(Build.SourcesDirectory)/.azure-pipelines/scripts/check_cuda_trigger.py"; then
                   echo "CUDA CI already triggered after commit ${CURRENT_SHA}. Skipping."
@@ -159,9 +167,12 @@ stages:
                 fi
 
                 # --- Generate GitHub App installation token ---
-                KEY_FILE=$(mktemp)
-                trap "rm -f ${KEY_FILE}" EXIT
-                printf '%s' "${GITHUB_APP_PRIVATE_KEY}" > "${KEY_FILE}"
+                KEY_FILE="$(githubAppPrivateKey.secureFilePath)"
+
+                if ! openssl pkey -in "${KEY_FILE}" -noout >/dev/null 2>&1; then
+                  echo "Invalid secure file content: not a valid PEM private key."
+                  exit 1
+                fi
 
                 NOW=$(date +%s)
                 IAT=$((NOW - 60))
@@ -181,8 +192,6 @@ stages:
                   "https://api.github.com/app/installations/${GITHUB_APP_INSTALLATION_ID}/access_tokens" \
                   | python3 -c "import json,sys; print(json.load(sys.stdin)['token'])")
                 # ---------------------------------------------
-
-                export CURRENT_SHA="${SYSTEM_PULLREQUEST_SOURCECOMMITID:-${BUILD_SOURCEVERSION:-unknown}}"
 
                 echo "Triggering CUDA CI for commit ${CURRENT_SHA}..."
                 if ! curl -fsS -X POST \
