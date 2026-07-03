@@ -40,7 +40,6 @@ variables:
   DOWNLOAD_PATH: $(Build.SourcesDirectory)/log_dir
   ARTIFACT_NAME: "UT_coverage_report"
   REPO: $(Build.Repository.Uri)
-  group: auto-round-bot-secrets
 
 stages:
   # - template: template/lib-build-template.yml
@@ -129,6 +128,8 @@ stages:
       vmImage: "ubuntu-latest"
     # dependsOn: [Coverage]
     # condition: and(succeeded('Coverage'), eq(variables['Build.Reason'], 'PullRequest'))
+    variables:
+      - group: auto-round-bot-secrets
     jobs:
       - job: CommentCudaTrigger
         displayName: "Comment to trigger CUDA CI"
