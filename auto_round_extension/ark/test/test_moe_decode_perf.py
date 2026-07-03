@@ -29,6 +29,12 @@ How to run::
     pytest -v -s auto_round_extension/ark/test/test_moe_decode_perf.py
 
 The ``-s`` flag is required to see the printed timing tables.
+
+By default only the smallest shape group (``bs1``) is run so a CI pass
+stays short. Pass ``--all-shapes`` to also include ``bs32``::
+
+    pytest -v -s auto_round_extension/ark/test/test_moe_decode_perf.py \
+        --all-shapes
 """
 
 import auto_round_kernel
@@ -217,6 +223,29 @@ DECODE_SHAPES = [
     ("minimax up   bs32", 192, list(_MINIMAX_TPE_BS32), 1536, 3072),  # gate/up-proj
     ("minimax down bs32", 192, list(_MINIMAX_TPE_BS32), 3072, 1536),  # down-proj
 ]
+
+
+@pytest.fixture(autouse=True)
+def _maybe_restrict_shapes(request, monkeypatch):
+    """Optionally restrict ``DECODE_SHAPES`` to the smallest shape group.
+
+    Controlled by the ``--all-shapes`` pytest CLI flag (registered in this
+    directory's ``conftest.py``). Default is off, so only the ``bs1`` rows
+    are run and a CI pass stays short. Pass ``--all-shapes`` to also
+    include the ``bs32`` rows.
+
+    The filter is applied by monkeypatching this module's ``DECODE_SHAPES``
+    for the duration of each test so the ``for label, E, tpe, N, K in
+    DECODE_SHAPES`` loop inside every ``test_perf_*`` method sees the
+    filtered list without threading the option through each call site.
+    """
+    if request.config.getoption("--all-shapes", default=False):
+        return
+    import sys
+
+    module = sys.modules[__name__]
+    filtered = [s for s in DECODE_SHAPES if "bs1 " in s[0]]
+    monkeypatch.setattr(module, "DECODE_SHAPES", filtered)
 
 
 def _print_header(title: str) -> None:

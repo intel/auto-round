@@ -46,6 +46,13 @@ rows only (the heavy-tailed tokens-per-expert distribution)::
 
     pytest -v -s auto_round_extension/ark/test/test_moe_prefill_perf.py \
         --minimax-real-only
+
+By default only the smallest shape group (``seq_len = 2K``) is run so a
+CI pass stays short. Pass ``--all-shapes`` to sweep the full matrix
+(2K / 4K / 8K, up / down, even / real)::
+
+    pytest -v -s auto_round_extension/ark/test/test_moe_prefill_perf.py \
+        --all-shapes
 """
 
 import os
@@ -412,24 +419,39 @@ PREFILL_SHAPES = [
 
 
 @pytest.fixture(autouse=True)
-def _maybe_restrict_to_minimax_real(request, monkeypatch):
-    """Optionally restrict ``PREFILL_SHAPES`` to the ``"minimax real"`` rows.
+def _maybe_restrict_shapes(request, monkeypatch):
+    """Optionally restrict ``PREFILL_SHAPES``.
 
-    Controlled by the ``--minimax-real-only`` pytest CLI flag (registered
-    in this directory's ``conftest.py``). Default is off, so the full
-    shape matrix is used and existing behavior is preserved.
+    Two orthogonal pytest CLI flags (registered in this directory's
+    ``conftest.py``) filter the shape sweep:
 
-    The filter is applied by monkeypatching this module's ``PREFILL_SHAPES``
-    for the duration of each test, so the ``for label, E, tpe, N, K in
-    PREFILL_SHAPES`` loop inside every ``test_perf_*`` method sees the
-    filtered list without threading the option through each call site.
+    * ``--all-shapes`` (default off): when absent, restrict the sweep to
+      the smallest shape group (``seq_len = 2K``, four rows) so a CI run
+      stays short. When passed, run the full 12-row matrix.
+    * ``--minimax-real-only`` (default off): further restrict to rows
+      whose label contains ``"real"`` (the heavy-tailed tokens-per-expert
+      distribution).
+
+    The filters are applied by monkeypatching this module's
+    ``PREFILL_SHAPES`` for the duration of each test, so the
+    ``for label, E, tpe, N, K in PREFILL_SHAPES`` loop inside every
+    ``test_perf_*`` method sees the filtered list without threading the
+    option through each call site.
     """
-    if not request.config.getoption("--minimax-real-only", default=False):
+    all_shapes = request.config.getoption("--all-shapes", default=False)
+    real_only = request.config.getoption("--minimax-real-only", default=False)
+    if all_shapes and not real_only:
         return
+
     import sys
 
     module = sys.modules[__name__]
-    filtered = [s for s in PREFILL_SHAPES if "real" in s[0]]
+    filtered = PREFILL_SHAPES
+    if not all_shapes:
+        # Default: keep only the smallest shape group (seq_len = 2K).
+        filtered = [s for s in filtered if "2K" in s[0]]
+    if real_only:
+        filtered = [s for s in filtered if "real" in s[0]]
     monkeypatch.setattr(module, "PREFILL_SHAPES", filtered)
 
 
