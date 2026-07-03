@@ -166,6 +166,11 @@ stages:
                   exit 1
                 fi
 
+                if ! [[ "${GITHUB_APP_ID}" =~ ^[0-9]+$ ]]; then
+                  echo "GITHUB_APP_ID must be numeric (GitHub App ID)."
+                  exit 1
+                fi
+
                 if [ -z "${GITHUB_APP_INSTALLATION_ID:-}" ]; then
                   echo "GITHUB_APP_INSTALLATION_ID is empty."
                   exit 1
@@ -186,7 +191,7 @@ stages:
                 b64url() { openssl base64 -A | tr '+/' '-_' | tr -d '='; }
 
                 HEADER=$(printf '{"alg":"RS256","typ":"JWT"}' | b64url)
-                PAYLOAD=$(printf '{"iat":%s,"exp":%s,"iss":"%s"}' "${IAT}" "${EXP}" "${GITHUB_APP_ID}" | b64url)
+                PAYLOAD=$(printf '{"iat":%s,"exp":%s,"iss":%s}' "${IAT}" "${EXP}" "${GITHUB_APP_ID}" | b64url)
                 SIG=$(printf '%s.%s' "${HEADER}" "${PAYLOAD}" \
                   | openssl dgst -sha256 -sign "${KEY_FILE}" | b64url)
                 JWT="${HEADER}.${PAYLOAD}.${SIG}"
