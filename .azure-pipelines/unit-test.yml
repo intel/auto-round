@@ -165,6 +165,8 @@ stages:
                   echo "GITHUB_APP_ID is empty."
                   exit 1
                 fi
+                echo "GITHUB_APP_ID: ${GITHUB_APP_ID}"
+                echo "GITHUB_APP_INSTALLATION_ID: ${GITHUB_APP_INSTALLATION_ID}"
 
                 if ! [[ "${GITHUB_APP_ID}" =~ ^[0-9]+$ ]]; then
                   echo "GITHUB_APP_ID must be numeric (GitHub App ID)."
