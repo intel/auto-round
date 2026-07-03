@@ -161,6 +161,16 @@ stages:
                 export PR_NUMBER="${pr_number}"
                 export CURRENT_SHA="${SYSTEM_PULLREQUEST_SOURCECOMMITID:-${BUILD_SOURCEVERSION:-unknown}}"
 
+                if [ -z "${GITHUB_APP_ID:-}" ]; then
+                  echo "GITHUB_APP_ID is empty."
+                  exit 1
+                fi
+
+                if [ -z "${GITHUB_APP_INSTALLATION_ID:-}" ]; then
+                  echo "GITHUB_APP_INSTALLATION_ID is empty."
+                  exit 1
+                fi
+
                 # --- Generate GitHub App installation token first ---
                 KEY_FILE="$(githubAppPrivateKey.secureFilePath)"
 
@@ -181,16 +191,41 @@ stages:
                   | openssl dgst -sha256 -sign "${KEY_FILE}" | b64url)
                 JWT="${HEADER}.${PAYLOAD}.${SIG}"
 
-                export GITHUB_TOKEN=$(curl -fsS -X POST \
+                token_resp_file=$(mktemp)
+                token_http_code=$(curl -sS -o "${token_resp_file}" -w "%{http_code}" -X POST \
                   -H "Authorization: Bearer ${JWT}" \
                   -H "Accept: application/vnd.github+json" \
-                  "https://api.github.com/app/installations/${GITHUB_APP_INSTALLATION_ID}/access_tokens" \
-                  | python3 -c "import json,sys; print(json.load(sys.stdin)['token'])")
+                  "https://api.github.com/app/installations/${GITHUB_APP_INSTALLATION_ID}/access_tokens")
+
+                if [ "${token_http_code}" != "201" ]; then
+                  echo "Failed to create installation token. HTTP ${token_http_code}."
+                  cat "${token_resp_file}"
+                  rm -f "${token_resp_file}"
+                  exit 1
+                fi
+
+                export GITHUB_TOKEN=$(python3 -c "import json,sys; print(json.load(open(sys.argv[1]))['token'])" "${token_resp_file}")
+                rm -f "${token_resp_file}"
+
+                if [ -z "${GITHUB_TOKEN}" ]; then
+                  echo "Installation token is empty."
+                  exit 1
+                fi
                 # -----------------------------------------------
 
-                if python "$(Build.SourcesDirectory)/.azure-pipelines/scripts/check_cuda_trigger.py"; then
+                set +e
+                python "$(Build.SourcesDirectory)/.azure-pipelines/scripts/check_cuda_trigger.py"
+                check_rc=$?
+                set -e
+
+                if [ "${check_rc}" -eq 0 ]; then
                   echo "CUDA CI already triggered after commit ${CURRENT_SHA}. Skipping."
                   exit 0
+                elif [ "${check_rc}" -eq 1 ]; then
+                  echo "No trigger comment found for current commit. Proceeding to post comment."
+                else
+                  echo "check_cuda_trigger.py failed (exit code: ${check_rc})."
+                  exit "${check_rc}"
                 fi
 
                 echo "Triggering CUDA CI for commit ${CURRENT_SHA}..."

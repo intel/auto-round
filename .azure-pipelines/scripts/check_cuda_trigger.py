@@ -12,7 +12,11 @@ def main():
 
     if not repo_path or "/" not in repo_path or not pr_number_str:
         print("Missing required environment variables (REPO_PATH, PR_NUMBER).", file=sys.stderr)
-        sys.exit(1)
+        sys.exit(2)
+
+    if not token:
+        print("Missing required environment variable (GITHUB_TOKEN).", file=sys.stderr)
+        sys.exit(2)
 
     owner, name = repo_path.split("/")
     pr = int(pr_number_str)
@@ -51,7 +55,7 @@ def main():
             nodes = data["data"]["repository"]["pullRequest"]["timelineItems"]["nodes"]
     except Exception as e:
         print("GraphQL Error:", e, file=sys.stderr)
-        sys.exit(1)
+        sys.exit(2)
 
     target = "/azp run Unit-Test-CUDA-AutoRound"
 
@@ -70,6 +74,7 @@ def main():
 
     # Exit 1 means we break the loop (commit reached) without calling sys.exit(0)
     # The bash script catching exit 1 means "proceed to post the comment".
+    # Exit 2 is reserved for runtime/auth errors and should fail the step.
     sys.exit(1)
 
 
