@@ -629,9 +629,25 @@ PYBIND11_MODULE(PY_NAME, m) {
   m.def("sagev1", &ark::sagev1);
   // High-level SAGEV1 PVi8 API: input Q/K/V are FP16 and quantized internally.
   m.def("sagev1_pvi8", &ark::sagev1_pvi8);
-  m.def("sage", &ark::sage);
+  m.def("sage", &ark::sage, pybind11::arg("stream"), pybind11::arg("Q"), pybind11::arg("K"),
+        pybind11::arg("V"), pybind11::arg("O"), pybind11::arg("mask"),
+        pybind11::arg("scale_block_size"),
+        pybind11::arg("qscale"), pybind11::arg("kscale"),
+        pybind11::arg("q_dtype"), pybind11::arg("k_dtype"), pybind11::arg("o_dtype"),
+        pybind11::arg("batch"), pybind11::arg("num_heads_q"), pybind11::arg("num_heads_kv"),
+        pybind11::arg("seq_len_q"), pybind11::arg("seq_len_kv"),
+        pybind11::arg("head_dim"), pybind11::arg("softmax_scale"), pybind11::arg("is_causal"),
+        pybind11::arg("tensor_layout"), pybind11::arg("lse") = 0);
   // Low-level SAGE PVi8 API: input Q/K/V are pre-quantized int8 with qscale/kscale/vscale.
-  m.def("sage_pvi8", &ark::sage_pvi8);
+  m.def("sage_pvi8", &ark::sage_pvi8, pybind11::arg("stream"), pybind11::arg("Q"), pybind11::arg("K"),
+        pybind11::arg("V"), pybind11::arg("O"), pybind11::arg("mask"),
+        pybind11::arg("scale_block_size"),
+        pybind11::arg("qscale"), pybind11::arg("kscale"), pybind11::arg("vscale"),
+        pybind11::arg("q_dtype"), pybind11::arg("k_dtype"), pybind11::arg("o_dtype"),
+        pybind11::arg("batch"), pybind11::arg("num_heads_q"), pybind11::arg("num_heads_kv"),
+        pybind11::arg("seq_len_q"), pybind11::arg("seq_len_kv"),
+        pybind11::arg("head_dim"), pybind11::arg("softmax_scale"), pybind11::arg("is_causal"),
+        pybind11::arg("tensor_layout"), pybind11::arg("lse") = 0);
   m.def("sage_dynamic_quant", &ark::sage_dynamic_quant);
   m.def("sage_compute_seq_mean_bias_layout", &ark::sage_compute_seq_mean_bias_layout);
   m.def("sage_dynamic_quant_layout", &ark::sage_dynamic_quant_layout);
