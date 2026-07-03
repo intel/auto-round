@@ -2089,7 +2089,7 @@ class _ModelFreeCompressorCore:
         # ---- AutoScheme: resolve per-layer schemes before anything else ----
         if _looks_like_auto_scheme(self.scheme_input):
             resolver = getattr(self, "_resolve_auto_scheme", None)
-            if resolver is None:
+            if not callable(resolver):
                 raise ValueError(
                     "AutoScheme schemes are only supported through the "
                     "AutoRound(model_free=True) API, not the low-level "
@@ -2362,13 +2362,18 @@ class ModelFreeCompressor(_ModelFreeCompressorCore):
         try:
             # post_init() (outside inference_mode) runs the delta-loss scheme
             # selection and populates ``compressor.layer_config``.
-            compressor.post_init()
+            post_init = getattr(compressor, "post_init", None)
+            if not callable(post_init):
+                raise RuntimeError("AutoScheme fallback compressor has no callable post_init().")
+            post_init()
             layer_config = copy.deepcopy(getattr(compressor, "layer_config", {}) or {})
         finally:
             # Release the model that was loaded only for scoring so the
             # packing phase keeps model-free's low memory footprint.
             try:
-                compressor.model_context.model = None
+                model_context = getattr(compressor, "model_context", None)
+                if model_context is not None and hasattr(model_context, "model"):
+                    model_context.model = None
             except Exception:  # pragma: no cover - best-effort cleanup
                 pass
             del compressor
