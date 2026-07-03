@@ -1777,8 +1777,7 @@ def _moe_gemm_prefill_fp8_pertensor(
         )
     if activations.dtype not in (torch.float16, torch.bfloat16):
         raise ValueError(
-            "moe_gemm_prefill(scale_scheme='per_tensor'): activations must be F16 or BF16, "
-            f"got {activations.dtype}"
+            "moe_gemm_prefill(scale_scheme='per_tensor'): activations must be F16 or BF16, " f"got {activations.dtype}"
         )
     if weights.ndim != 3:
         raise ValueError(
@@ -1859,13 +1858,11 @@ def _moe_gemm_prefill_int_pertensor(
         raise ValueError("moe_gemm_prefill(scale_scheme='per_tensor'): scales is required")
     if weights.dtype != torch.int8:
         raise ValueError(
-            "moe_gemm_prefill(scale_scheme='per_tensor'): weights must be torch.int8, "
-            f"got {weights.dtype}"
+            "moe_gemm_prefill(scale_scheme='per_tensor'): weights must be torch.int8, " f"got {weights.dtype}"
         )
     if activations.dtype not in (torch.float16, torch.bfloat16):
         raise ValueError(
-            "moe_gemm_prefill(scale_scheme='per_tensor'): activations must be F16 or BF16, "
-            f"got {activations.dtype}"
+            "moe_gemm_prefill(scale_scheme='per_tensor'): activations must be F16 or BF16, " f"got {activations.dtype}"
         )
     if weights.ndim != 3:
         raise ValueError(
@@ -1989,17 +1986,11 @@ def moe_gemm_prefill(
     # ------------------------------------------------------------------
     if scale_scheme is not None:
         if scale_scheme != "per_tensor":
-            raise ValueError(
-                f"moe_gemm_prefill: unknown scale_scheme={scale_scheme!r}; expected 'per_tensor' or None"
-            )
+            raise ValueError(f"moe_gemm_prefill: unknown scale_scheme={scale_scheme!r}; expected 'per_tensor' or None")
         if weights.dtype in (torch.float8_e4m3fn, torch.float8_e5m2):
-            return _moe_gemm_prefill_fp8_pertensor(
-                activations, weights, num_tokens_per_expert, scales=scales
-            )
+            return _moe_gemm_prefill_fp8_pertensor(activations, weights, num_tokens_per_expert, scales=scales)
         if weights.dtype == torch.int8:
-            return _moe_gemm_prefill_int_pertensor(
-                activations, weights, num_tokens_per_expert, scales=scales
-            )
+            return _moe_gemm_prefill_int_pertensor(activations, weights, num_tokens_per_expert, scales=scales)
         raise ValueError(
             "moe_gemm_prefill(scale_scheme='per_tensor'): weights must be FP8 "
             "(float8_e4m3fn / float8_e5m2) or INT8 (torch.int8), "

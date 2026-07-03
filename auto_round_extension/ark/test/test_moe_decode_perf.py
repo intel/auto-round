@@ -493,9 +493,9 @@ class TestMoEGemmDecodePerf:
             activations = torch.randn(total_tokens, K, dtype=dtype, device="xpu")
             # Per-expert FP32 scale (max-abs of the tile). Note we build the
             # weight in [E, N, K] here to match the decode kernel layout.
-            w_float = (torch.randn(E, N, K, dtype=torch.float32, device="xpu") * 0.1)
+            w_float = torch.randn(E, N, K, dtype=torch.float32, device="xpu") * 0.1
             amax = w_float.reshape(E, -1).abs().amax(dim=1).clamp_min(1e-8)
-            scales_pe = (amax / fp8_finfo_max)  # [E] fp32
+            scales_pe = amax / fp8_finfo_max  # [E] fp32
             packed = (w_float / scales_pe.reshape(E, 1, 1)).to(fp8_dtype)
 
             # Broadcast the per-expert scalar into the [E, N, K/group_size]

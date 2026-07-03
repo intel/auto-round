@@ -131,10 +131,10 @@ grouped GEMM:
 
 ```python
 outputs = ark.moe_gemm_prefill(
-    activations,          # [total_tokens, K], f16/bf16
-    weights,              # [E, K, N] 行主 FP8 (vllm 布局)
-    num_tokens_per_expert,# [E] int32
-    scales=scales,        # [E] fp32,每专家一个 per-tensor scale
+    activations,  # [total_tokens, K], f16/bf16
+    weights,  # [E, K, N] 行主 FP8 (vllm 布局)
+    num_tokens_per_expert,  # [E] int32
+    scales=scales,  # [E] fp32,每专家一个 per-tensor scale
     scale_scheme="per_tensor",
 )
 ```
@@ -263,10 +263,10 @@ kernel 内部的 DPAS 指令仍按 `bf16`/`fp16` 运行(与 FP8 Variant A 完全
 
 ```python
 outputs = ark.moe_gemm_prefill(
-    activations,          # [total_tokens, K],f16/bf16
-    weights,              # [E, K, N] 行主序 torch.int8(vllm 布局)
-    num_tokens_per_expert,# [E] int32
-    scales=scales,        # [E] fp32,每专家一个 per-tensor scale
+    activations,  # [total_tokens, K],f16/bf16
+    weights,  # [E, K, N] 行主序 torch.int8(vllm 布局)
+    num_tokens_per_expert,  # [E] int32
+    scales=scales,  # [E] fp32,每专家一个 per-tensor scale
     scale_scheme="per_tensor",
 )
 ```

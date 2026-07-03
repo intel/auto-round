@@ -404,7 +404,7 @@ class TestMoEGemmPrefillAccuracy:
             total_tokens = sum(tpe)
             activations = torch.randn(total_tokens, K, dtype=dtype, device="xpu")
             # Weights in the vllm layout: [E, K, N] row-major.
-            w_float = (torch.randn(E, K, N, dtype=torch.float32, device="xpu") * 0.1)
+            w_float = torch.randn(E, K, N, dtype=torch.float32, device="xpu") * 0.1
             # One scalar scale per expert -- max-abs of the tile.
             amax = w_float.reshape(E, -1).abs().amax(dim=1).clamp_min(1e-8)
             scales = (amax / fp8_finfo_max).to(torch.float32)  # [E] fp32
@@ -455,17 +455,12 @@ class TestMoEGemmPrefillAccuracy:
             total_tokens = sum(tpe)
             activations = torch.randn(total_tokens, K, dtype=dtype, device="xpu")
             # Weights in the vllm layout: [E, K, N] row-major.
-            w_float = (torch.randn(E, K, N, dtype=torch.float32, device="xpu") * 0.1)
+            w_float = torch.randn(E, K, N, dtype=torch.float32, device="xpu") * 0.1
             amax = w_float.reshape(E, -1).abs().amax(dim=1).clamp_min(1e-8)
             scales = (amax / int8_max).to(torch.float32)  # [E] fp32
             # Round-half-to-even then clamp; matches the kernel's implicit
             # round-nearest-then-saturate semantics on the int upcast.
-            packed = (
-                (w_float / scales.reshape(E, 1, 1))
-                .round()
-                .clamp(-128, 127)
-                .to(torch.int8)
-            )
+            packed = (w_float / scales.reshape(E, 1, 1)).round().clamp(-128, 127).to(torch.int8)
             # Reference dequant: cast int8 -> fp32 -> apply per-tensor scale ->
             # cast to act dtype, then transpose to [E, N, K] for the shared
             # `_reference_moe_prefill` helper.

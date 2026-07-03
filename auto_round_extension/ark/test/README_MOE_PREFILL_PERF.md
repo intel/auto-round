@@ -194,10 +194,10 @@ separate Python entry point:
 
 ```python
 outputs = ark.moe_gemm_prefill(
-    activations,          # [total_tokens, K], f16/bf16
-    weights,              # [E, K, N] row-major FP8 (vllm layout)
-    num_tokens_per_expert,# [E] int32
-    scales=scales,        # [E] fp32, one per-tensor scale per expert
+    activations,  # [total_tokens, K], f16/bf16
+    weights,  # [E, K, N] row-major FP8 (vllm layout)
+    num_tokens_per_expert,  # [E] int32
+    scales=scales,  # [E] fp32, one per-tensor scale per expert
     scale_scheme="per_tensor",
 )
 ```
@@ -340,10 +340,10 @@ speed-of-light matches the FP8 case at a smaller weight footprint.
 
 ```python
 outputs = ark.moe_gemm_prefill(
-    activations,          # [total_tokens, K], f16/bf16
-    weights,              # [E, K, N] row-major torch.int8 (vllm layout)
-    num_tokens_per_expert,# [E] int32
-    scales=scales,        # [E] fp32, one per-tensor scale per expert
+    activations,  # [total_tokens, K], f16/bf16
+    weights,  # [E, K, N] row-major torch.int8 (vllm layout)
+    num_tokens_per_expert,  # [E] int32
+    scales=scales,  # [E] fp32, one per-tensor scale per expert
     scale_scheme="per_tensor",
 )
 ```

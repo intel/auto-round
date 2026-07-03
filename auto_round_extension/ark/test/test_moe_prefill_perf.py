@@ -493,8 +493,21 @@ def _print_header(title: str) -> None:
     print("-" * width)
 
 
-def _print_row(label, E, N, K, total_tokens, base_ms, deq_ms, ark_ms, tflops, native_ms=None, native_tflops=None,
-               dpas_ms=None, dpas_tflops=None):
+def _print_row(
+    label,
+    E,
+    N,
+    K,
+    total_tokens,
+    base_ms,
+    deq_ms,
+    ark_ms,
+    tflops,
+    native_ms=None,
+    native_tflops=None,
+    dpas_ms=None,
+    dpas_tflops=None,
+):
     """Print a benchmark row.
 
     ``speedup`` is ``baseline / ark`` -- the fused kernel's speedup over
@@ -686,8 +699,9 @@ class TestMoEGemmPrefillPerf:
             else:
                 os.environ["ARK_MOE_PREFILL_DPAS_INT8"] = prev_dpas_int8
 
-            _print_row(label, E, N, K, total_tokens, base_ms, deq_ms, ark_ms, tflops,
-                       dpas_ms=dpas_ms, dpas_tflops=dpas_tflops)
+            _print_row(
+                label, E, N, K, total_tokens, base_ms, deq_ms, ark_ms, tflops, dpas_ms=dpas_ms, dpas_tflops=dpas_tflops
+            )
 
             activations = ntpe = act_padded = w_float = scales = zeros = packed = dequant = None
             _release_xpu_memory()
@@ -779,8 +793,9 @@ class TestMoEGemmPrefillPerf:
             else:
                 os.environ["ARK_MOE_PREFILL_DPAS_INT8"] = prev_dpas
 
-            _print_row(label, E, N, K, total_tokens, base_ms, deq_ms, ark_ms, tflops,
-                       dpas_ms=dpas_ms, dpas_tflops=dpas_tflops)
+            _print_row(
+                label, E, N, K, total_tokens, base_ms, deq_ms, ark_ms, tflops, dpas_ms=dpas_ms, dpas_tflops=dpas_tflops
+            )
 
             activations = ntpe = act_padded = w_float = scales = zeros = packed = dequant = None
             _release_xpu_memory()
@@ -943,8 +958,21 @@ class TestMoEGemmPrefillPerf:
             else:
                 os.environ["ARK_MOE_PREFILL_DPAS_FP8"] = prev_dpas
 
-            _print_row(label, E, N, K, total_tokens, base_ms, deq_ms, ark_ms, tflops, native_ms, native_tflops,
-                       dpas_ms, dpas_tflops)
+            _print_row(
+                label,
+                E,
+                N,
+                K,
+                total_tokens,
+                base_ms,
+                deq_ms,
+                ark_ms,
+                tflops,
+                native_ms,
+                native_tflops,
+                dpas_ms,
+                dpas_tflops,
+            )
 
             activations = ntpe = act_padded = w_float = scales = packed = dequant = None
             _release_xpu_memory()
@@ -987,7 +1015,7 @@ class TestMoEGemmPrefillPerf:
             ntpe = torch.tensor(tpe, dtype=torch.int32, device="xpu")
             act_padded = _build_bmm_pad_layout(activations, ntpe, E)
             # Weights in the vllm layout: [E, K, N] row-major.
-            w_float = (torch.randn(E, K, N, dtype=torch.float32, device="xpu") * 0.1)
+            w_float = torch.randn(E, K, N, dtype=torch.float32, device="xpu") * 0.1
             # One scalar scale per expert -- max-abs of the tile, matches
             # the semantics of test_accuracy_fp8_per_tensor_dpas.
             amax = w_float.reshape(E, -1).abs().amax(dim=1).clamp_min(1e-8)
@@ -1060,15 +1088,10 @@ class TestMoEGemmPrefillPerf:
             ntpe = torch.tensor(tpe, dtype=torch.int32, device="xpu")
             act_padded = _build_bmm_pad_layout(activations, ntpe, E)
             # Weights in the vllm layout: [E, K, N] row-major.
-            w_float = (torch.randn(E, K, N, dtype=torch.float32, device="xpu") * 0.1)
+            w_float = torch.randn(E, K, N, dtype=torch.float32, device="xpu") * 0.1
             amax = w_float.reshape(E, -1).abs().amax(dim=1).clamp_min(1e-8)
             scales = (amax / int8_max).to(torch.float32)  # [E] fp32
-            packed = (
-                (w_float / scales.reshape(E, 1, 1))
-                .round()
-                .clamp(-128, 127)
-                .to(torch.int8)
-            )
+            packed = (w_float / scales.reshape(E, 1, 1)).round().clamp(-128, 127).to(torch.int8)
 
             def _do_dequant():
                 dequant_KN = packed.to(torch.float32) * scales.reshape(E, 1, 1)
