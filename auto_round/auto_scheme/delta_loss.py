@@ -27,6 +27,7 @@ from auto_round.auto_scheme.gen_auto_scheme import AutoScheme
 from auto_round.auto_scheme.register import register_scheme_methods
 from auto_round.auto_scheme.utils import (
     _describe_layer_config,
+    _fill_inactive_expert_scores,
     _log_batch_avg_loss,
     _log_scheme_loss_matrix,
     _log_score_summary_by_block_and_nonblock,
@@ -102,7 +103,6 @@ class AutoSchemeWrapperLinear(WrapperLinear):
             enable_torch_compile=enable_torch_compile,
             **kwargs,
         )
-        self.total_act_score = 0.0
         self.act_score = 0.0
         self.avg_act_score = 0.0
         self.act_cnt = 0.0
@@ -147,8 +147,7 @@ class AutoSchemeWrapperLinear(WrapperLinear):
                     self.act_cnt -= 1
                     return None
 
-                self.total_act_score += torch.abs((grad * self.x_diff.to(grad.device))).sum().item()
-                self.act_score = self.total_act_score
+                self.act_score += torch.abs((grad * self.x_diff.to(grad.device))).sum().item()
                 self.mix_score = self.weight_score + self.act_score
                 self.x_diff = None
                 return None
@@ -214,7 +213,6 @@ class AutoSchemeWrapperLinearIMatrix(WrapperLinear):
             enable_torch_compile=enable_torch_compile,
             **kwargs,
         )
-        self.total_act_score = 0.0
         self.act_score = 0.0
         self.avg_act_score = 0.0
         self.act_cnt = 0.0
@@ -301,8 +299,7 @@ class AutoSchemeWrapperLinearIMatrix(WrapperLinear):
                     self.act_cnt -= 1
                     return None
 
-                self.total_act_score += torch.abs((grad * self.x_diff.to(grad.device))).sum().item()
-                self.act_score = self.total_act_score
+                self.act_score += torch.abs((grad * self.x_diff.to(grad.device))).sum().item()
                 self.mix_score = self.weight_score + self.act_score
                 self.x_diff = None
                 return None
@@ -1177,6 +1174,7 @@ def get_score_for_scheme(
                     )
             layer_bits, _ = compute_layer_bits(m.orig_layer, ignore_scale_zp_bits=ignore_scale_zp_bits)
             scores_dict[n] = [layer_bits, m.mix_score]
+    _fill_inactive_expert_scores(scores_dict, block_names)
     _log_score_summary_by_block_and_nonblock(
         scores_dict,
         block_names,
@@ -1287,7 +1285,7 @@ def choose_bits_per_layer_with_path(layers: dict, P: int, max_states: int = None
     # Select the solution with the minimum loss
     best_params = min(dp.keys(), key=lambda k: dp[k][0])
     best_loss, best_path = dp[best_params]
-    return best_loss, best_path
+    return best_loss, list(best_path)
 
 
 def move_module_to_tuning_device(module, major_device="cpu"):
@@ -1545,24 +1543,26 @@ def _gen_layer_config(
                 return True
         return False
 
-    seqlen = auto_scheme.seqlen if auto_scheme.seqlen is not None else 256
+    from auto_round import envs as _envs
 
-    if auto_scheme.nsamples is not None:
+    _env_nsamples = _envs.AR_AUTO_SCHEME_NSAMPLES
+    # Priority for nsamples: env > API > default
+    if _env_nsamples is not None:
+        nsamples = _env_nsamples
+    elif auto_scheme.nsamples is not None:
         nsamples = auto_scheme.nsamples
     else:
-        from auto_round import envs as _envs
+        nsamples = 16
 
-        _env_nsamples = _envs.AR_AUTO_SCHEME_NSAMPLES
-        if _env_nsamples is not None:
-            nsamples = _env_nsamples
-        else:
-            nsamples, seqlen = (16, 128) if is_moe_model else (16, 256)
+    # seqlen: API explicit setting takes priority; otherwise use MoE-aware default
+    if auto_scheme.seqlen is not None:
+        seqlen = auto_scheme.seqlen
+    else:
+        seqlen = 128 if is_moe_model else 256
 
     if auto_scheme.batch_size is not None:
         batch_size = auto_scheme.batch_size
     else:
-        from auto_round import envs as _envs
-
         _env_batch_size = _envs.AR_AUTO_SCHEME_BATCH_SIZE
         if _env_batch_size is not None:
             batch_size = _env_batch_size

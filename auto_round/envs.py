@@ -83,7 +83,7 @@ environment_variables: dict[str, Callable[[], Any]] = {
     "AR_AUTO_SCHEME_NSAMPLES": lambda: _get_optional_positive_int_env("AR_AUTO_SCHEME_NSAMPLES"),
     # Controls the default batch size used by AutoScheme scoring
     # when ``AutoScheme.batch_size`` is not explicitly set.
-    # When unset, AutoScheme defaults to 1.
+    # When unset, AutoScheme uses its built-in heuristic (8 for low GPU memory mode, 1 for normal mode).
     "AR_AUTO_SCHEME_BATCH_SIZE": lambda: _get_optional_positive_int_env("AR_AUTO_SCHEME_BATCH_SIZE"),
 }
 

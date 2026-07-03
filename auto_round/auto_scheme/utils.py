@@ -424,7 +424,7 @@ def build_expert_groups(
     # Collect expert layers per block
     block_expert_layers: dict[str, list[str]] = {}
     for layer_name in dp_names:
-        if _EXPERT_ID_PATTERN.search(layer_name) is None:
+        if _expert_key_from_layer_name(layer_name) is None:
             continue
         for block_name, block_prefix in block_prefixes:
             if layer_name.startswith(block_prefix):
@@ -580,7 +580,7 @@ _BATCH_SUMMARY_LOG_INTERVAL = 10
 def _log_batch_avg_loss(model, batch_idx: int, pbar=None, block_names=None, total_batches=None, scheme_tag=None):
     """Log the running average ``mix_score`` after processing one calibration batch."""
     is_last_batch = total_batches is not None and batch_idx == total_batches
-    should_log = is_last_batch or batch_idx % _BATCH_SUMMARY_LOG_INTERVAL == 0 or logger.isEnabledFor(logging.DEBUG)
+    should_log = logger.isEnabledFor(logging.DEBUG) and (is_last_batch or batch_idx % _BATCH_SUMMARY_LOG_INTERVAL == 0)
     if not should_log:
         return
 

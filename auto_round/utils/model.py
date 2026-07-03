@@ -1656,7 +1656,7 @@ def is_moe_model(model: torch.nn.Module) -> bool:
     for "moe"/"expert" markers or by checking module names for "expert".
     """
     if hasattr(model, "config") and hasattr(model.config, "to_dict"):
-        config_str = str(model.config.to_dict())
+        config_str = str(model.config.to_dict()).lower()
         if "moe" in config_str or "expert" in config_str:
             return True
     for n, m in model.named_modules():
