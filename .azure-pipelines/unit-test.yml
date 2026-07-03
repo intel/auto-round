@@ -161,12 +161,7 @@ stages:
                 export PR_NUMBER="${pr_number}"
                 export CURRENT_SHA="${SYSTEM_PULLREQUEST_SOURCECOMMITID:-${BUILD_SOURCEVERSION:-unknown}}"
 
-                if python "$(Build.SourcesDirectory)/.azure-pipelines/scripts/check_cuda_trigger.py"; then
-                  echo "CUDA CI already triggered after commit ${CURRENT_SHA}. Skipping."
-                  exit 0
-                fi
-
-                # --- Generate GitHub App installation token ---
+                # --- Generate GitHub App installation token first ---
                 KEY_FILE="$(githubAppPrivateKey.secureFilePath)"
 
                 if ! openssl pkey -in "${KEY_FILE}" -noout >/dev/null 2>&1; then
@@ -186,12 +181,17 @@ stages:
                   | openssl dgst -sha256 -sign "${KEY_FILE}" | b64url)
                 JWT="${HEADER}.${PAYLOAD}.${SIG}"
 
-                GITHUB_TOKEN=$(curl -fsS -X POST \
+                export GITHUB_TOKEN=$(curl -fsS -X POST \
                   -H "Authorization: Bearer ${JWT}" \
                   -H "Accept: application/vnd.github+json" \
                   "https://api.github.com/app/installations/${GITHUB_APP_INSTALLATION_ID}/access_tokens" \
                   | python3 -c "import json,sys; print(json.load(sys.stdin)['token'])")
-                # ---------------------------------------------
+                # -----------------------------------------------
+
+                if python "$(Build.SourcesDirectory)/.azure-pipelines/scripts/check_cuda_trigger.py"; then
+                  echo "CUDA CI already triggered after commit ${CURRENT_SHA}. Skipping."
+                  exit 0
+                fi
 
                 echo "Triggering CUDA CI for commit ${CURRENT_SHA}..."
                 if ! curl -fsS -X POST \
