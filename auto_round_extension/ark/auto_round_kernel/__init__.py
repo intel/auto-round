@@ -517,7 +517,7 @@ def sdpa(
     scale: float | None = None,
     tensor_layout: str = "HND",
     return_lse: bool = False,
-) -> torch.Tensor:
+) -> torch.Tensor | tuple[torch.Tensor, torch.Tensor]:
     """Scaled dot-product attention (SDPA) prefill+decode.
 
     Supported tensor layouts:
