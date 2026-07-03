@@ -141,7 +141,7 @@ stages:
             inputs:
               targetType: "inline"
               script: |
-                set -euo pipefail
+                set -euox pipefail
 
                 pr_number="${SYSTEM_PULLREQUEST_PULLREQUESTNUMBER:-}"
                 if [ -z "${pr_number}" ]; then
