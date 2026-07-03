@@ -244,7 +244,7 @@ def _maybe_restrict_shapes(request, monkeypatch):
     import sys
 
     module = sys.modules[__name__]
-    filtered = [s for s in DECODE_SHAPES if "bs1 " in s[0]]
+    filtered = [s for s in DECODE_SHAPES if s[0].rstrip().endswith("bs1")]
     monkeypatch.setattr(module, "DECODE_SHAPES", filtered)
 
 

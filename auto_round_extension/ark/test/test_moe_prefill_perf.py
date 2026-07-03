@@ -449,7 +449,7 @@ def _maybe_restrict_shapes(request, monkeypatch):
     filtered = PREFILL_SHAPES
     if not all_shapes:
         # Default: keep only the smallest shape group (seq_len = 2K).
-        filtered = [s for s in filtered if "2K" in s[0]]
+        filtered = [s for s in filtered if s[0].rstrip().endswith("2K")]
     if real_only:
         filtered = [s for s in filtered if "real" in s[0]]
     monkeypatch.setattr(module, "PREFILL_SHAPES", filtered)
