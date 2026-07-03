@@ -2302,7 +2302,11 @@ def is_model_free_route(
 
     Note: this function only *reads* kwargs; it does **not** pop any keys.
     """
-    from auto_round.compressors.model_free import is_model_free_supported_scheme
+    from auto_round.compressors.model_free import (
+        _looks_like_auto_scheme,
+        _validate_auto_scheme_options,
+        is_model_free_supported_scheme,
+    )
 
     explicit = bool(kwargs.get("model_free", False))
     disabled = bool(kwargs.get("disable_model_free", False))
@@ -2313,15 +2317,23 @@ def is_model_free_route(
     if fmt is None:
         fmt = "auto_round"
     fmt_first = str(fmt).lower().replace(" ", "").split(",")[0]
+    common_conditions = not disabled and isinstance(model, str) and iters == 0 and disable_opt_rtn is True
+
+    if _looks_like_auto_scheme(scheme):
+        try:
+            family = _validate_auto_scheme_options(scheme)
+        except ValueError:
+            return False
+
+        if fmt_first == "auto_round":
+            return common_conditions and family == "int"
+        if fmt_first == "llm_compressor":
+            return common_conditions and family == "mx_fp"
+        return False
+
     if fmt_first != "auto_round":
         return False
-    return (
-        not disabled
-        and isinstance(model, str)
-        and iters == 0
-        and disable_opt_rtn is True
-        and is_model_free_supported_scheme(scheme, kwargs)
-    )
+    return common_conditions and is_model_free_supported_scheme(scheme, kwargs)
 
 
 def find_layers_from_config(model_dir: str, class_names: list[str] | None = None) -> dict[str, str]:
