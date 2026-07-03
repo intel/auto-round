@@ -943,19 +943,36 @@ _UNSUPPORTED = [
 class TestSchemeValidation:
     @pytest.mark.parametrize("name", _SUPPORTED)
     def test_supported(self, tmp_path, name):
+        """Each supported preset must resolve and quantize without error.
+
+        This exercises the same scheme-resolution code (``_parse_scheme`` /
+        ``_parse_layer_config`` / ``_build_ignore_patterns``) used by the real
+        pipeline, then quantizes a shard directly via ``_process_shard`` —
+        skipping the multiprocessing shard pipeline (already covered by the
+        full end-to-end tests in ``TestModelFreeQuantize`` / ``TestModelFreeMXFP``)
+        to keep this parametrized check fast.
+        """
         if name.startswith("MXFP"):
             pytest.importorskip("compressed_tensors", reason="test requires compressed-tensors")
-            format = "llm_compressor"
-        else:
-            format = "auto_round"
-        model_dir = _make_model_dir(tmp_path, _LLAMA_CFG, {"model.layers.0.mlp.fc1.weight": torch.randn(64, 128)})
-        out = str(tmp_path / f"out_{name}")
-        AutoRound(model=model_dir, scheme=name, model_free=True).quantize_and_save(out, format=format)
-        keys = _read_output_keys(out)
+
+        core = _ModelFreeCompressorCore(model_name_or_path="unused", output_dir=str(tmp_path), scheme=name)
+        core._parse_scheme()
+        core._parse_layer_config()
+        core._build_ignore_patterns()
+
+        shard_path = str(tmp_path / f"shard_{name}.safetensors")
+        save_file({"model.layers.0.mlp.fc1.weight": torch.randn(64, 128)}, shard_path)
+        output, quantized, _ignored = _process_shard(
+            shard_path,
+            default_scheme=core.default_scheme,
+            layer_config=core.layer_config,
+            ignore_patterns=core.ignore_patterns,
+        )
+        assert "model.layers.0.mlp.fc1" in quantized
         if name.startswith("MXFP"):
-            assert "model.layers.0.mlp.fc1.weight_scale" in keys
+            assert "model.layers.0.mlp.fc1.weight_scale" in output
         else:
-            assert "model.layers.0.mlp.fc1.qweight" in keys
+            assert "model.layers.0.mlp.fc1.qweight" in output
 
     @pytest.mark.parametrize("name", _UNSUPPORTED)
     def test_unsupported_raises(self, tmp_path, name):
