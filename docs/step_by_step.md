@@ -486,6 +486,8 @@ We will try to optimize the RAM usage in the future. The RAM usage is about 1.1-
 #### Limitations
 Embedding layer is not supported in AutoScheme, it will use the best scheme in options.
 
+When using AutoScheme with `model_free=True`, only INT (`W2A16`/`W4A16`/`W8A16`) and MXFP (`MXFP4`/`MXFP8`) option families are supported. Options like `W3A16`, `GGUF:*`, and `NVFP4` will raise a `ValueError`. INT and MXFP families cannot be mixed in the same `AutoScheme`.
+
 ### AWQ Quantization Algorithm
 
 AWQ (`algorithm="awq"`) is a pre-processing quantization algorithm that analyzes activation patterns and applies channel-wise scaling to protect salient weights. It runs BEFORE the actual quantization (RTN by default, or auto_round/SignRound).
@@ -569,6 +571,7 @@ Model-free mode performs RTN WOQ quantization **without loading the full model i
 - **Per-layer configuration** – supports `--layer_config` for per-layer bit-width overrides and `--ignore_layers` to keep specific layers in full precision
 - **Predefined ignore layers** – automatically skips model-specific layers (e.g., MoE gates, MTP layers) based on config detection
 - **Bit-exact parity** with the standard `--iters 0 --disable_opt_rtn` flow for all supported schemes
+- **AutoScheme integration** – pass an `AutoScheme` object as `scheme` to get automatic mixed-bit selection followed by shard-by-shard packing (two-phase: score with model briefly loaded, then free and pack)
 
 <details>
   <summary>Model-free Parallelism Benchmarks (Rounded Minutes)</summary>
@@ -697,6 +700,41 @@ AutoRound(
 ```
 
 > **Note:** Model-free mode uses RTN (no calibration data, no iterative tuning).  INT schemes output in `auto_round:auto_gptq` format; MXFP schemes output in compressed-tensors format (`mxfp4-pack-quantized` / `mxfp8-quantized`).  For higher-quality quantization or schemes outside the supported list, use the standard AutoRound flow.
+
+#### AutoScheme + Model-Free (Mixed-Bit)
+
+You can combine `AutoScheme` with `model_free=True` for automatic mixed-bit selection with minimal memory overhead. AutoRound uses a **two-phase** approach:
+
+1. **Selection phase** — briefly loads the model, runs delta-loss scoring to determine per-layer bit allocations, then immediately frees the model from memory.
+2. **Packing phase** — performs the normal shard-by-shard model-free packing using the selected per-layer configuration.
+
+**Constraints:**
+- Only INT options (`W2A16`, `W4A16`, `W8A16`, and custom `QuantizationScheme` with `bits ∈ {2, 4, 8}`) and MXFP options (`MXFP4`, `MXFP8`) are supported.
+- INT and MXFP options cannot be mixed in the same `AutoScheme`.
+- Unsupported options (`W3A16`, `GGUF:*`, `NVFP4`, etc.) raise `ValueError` immediately.
+- MXFP selection automatically uses `llm_compressor` export format.
+
+```python
+from auto_round import AutoRound, AutoScheme
+
+# INT mixed-bit: layers get W2A16, W4A16, or W8A16 based on delta-loss scoring
+scheme = AutoScheme(avg_bits=3.0, options=("W2A16", "W4A16", "W8A16"), nsamples=128)
+AutoRound(
+    model="meta-llama/Llama-3.2-1B-Instruct",
+    scheme=scheme,
+    iters=0,
+    model_free=True,
+).quantize_and_save("./int-mixed-llama", format="auto_round")
+
+# MXFP mixed-bit (requires llm_compressor)
+scheme = AutoScheme(avg_bits=6.0, options=("MXFP4", "MXFP8"), nsamples=128)
+AutoRound(
+    model="meta-llama/Llama-3.2-1B-Instruct",
+    scheme=scheme,
+    iters=0,
+    model_free=True,
+).quantize_and_save("./mxfp-mixed-llama", format="llm_compressor")
+```
 
 </details>
 

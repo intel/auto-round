@@ -26,15 +26,18 @@ from auto_round import AutoRound
 from auto_round.compressors.model_free import (
     _build_mxfp_quantization_config,
     _build_quantization_config,
+    _convert_auto_scheme_layer_config,
     _dequant_fp8_tensors,
     _dequant_mxfp_tensors,
     _expand_e8m0_block_scale,
     _handle_mxfp_source_tensors,
+    _looks_like_auto_scheme,
     _ModelFreeCompressorCore,
     _PatternMatcher,
     _preprocess_model_type_source_tensors,
     _process_shard,
     _quantize_weight_mxfp,
+    _validate_auto_scheme_options,
     get_predefined_ignore_layers_from_config,
     is_model_free_supported_scheme,
 )
@@ -1304,3 +1307,85 @@ class TestResolveShardParallelism:
             index = json.load(f)
         unique_shards = set(index["weight_map"].values())
         assert len(unique_shards) == 7, f"Expected 7 output shards, got {len(unique_shards)}: {unique_shards}"
+
+
+# ===========================================================================
+#  Model-free + AutoScheme (two-phase delta-loss selection + packing)
+# ===========================================================================
+
+
+class TestModelFreeAutoScheme:
+    """Model-free support for ``AutoScheme`` mixed-bit selection."""
+
+    def test_looks_like_auto_scheme(self):
+        from auto_round import AutoScheme
+
+        assert _looks_like_auto_scheme(AutoScheme(avg_bits=3, options=("W2A16", "W4A16")))
+        assert not _looks_like_auto_scheme("W4A16")
+        assert not _looks_like_auto_scheme(QuantizationScheme(bits=4))
+
+    def test_validate_options_int_family(self):
+        from auto_round import AutoScheme
+
+        assert _validate_auto_scheme_options(AutoScheme(avg_bits=3, options=("W2A16", "W4A16", "W8A16"))) == "int"
+
+    def test_validate_options_mxfp_family(self):
+        from auto_round import AutoScheme
+
+        assert _validate_auto_scheme_options(AutoScheme(avg_bits=6, options=("MXFP4", "MXFP8"))) == "mx_fp"
+
+    def test_validate_options_mixed_family_raises(self):
+        from auto_round import AutoScheme
+
+        with pytest.raises(ValueError, match="mix INT and MXFP"):
+            _validate_auto_scheme_options(AutoScheme(avg_bits=4, options=("W4A16", "MXFP4")))
+
+    @pytest.mark.parametrize("options", [("W3A16", "W4A16"), ("GGUF:Q4_K_M", "W8A16"), ("NVFP4", "W4A16")])
+    def test_validate_options_unsupported_raises(self, options):
+        from auto_round import AutoScheme
+
+        with pytest.raises(ValueError, match="unsupported option"):
+            _validate_auto_scheme_options(AutoScheme(avg_bits=4, options=options))
+
+    def test_convert_layer_config(self):
+        generated = {
+            "model.layers.0.q_proj": {"bits": 4, "group_size": 128, "sym": True, "data_type": "int"},
+            "model.layers.0.k_proj": {"bits": 2, "group_size": 128, "sym": True, "data_type": "int"},
+            "model.layers.0.v_proj": {"bits": 4, "group_size": 128, "sym": True, "data_type": "int"},
+            "model.embed_tokens": {"bits": 16, "group_size": 128, "sym": True, "data_type": "int"},
+        }
+        base_scheme, per_layer, fp16_layers = _convert_auto_scheme_layer_config(generated)
+        # Most common quantized scheme (4-bit) becomes the base.
+        assert base_scheme.bits == 4 and base_scheme.group_size == 128
+        assert per_layer["model.layers.0.k_proj"]["bits"] == 2
+        assert "model.embed_tokens" not in per_layer
+        assert fp16_layers == ["model.embed_tokens"]
+
+    def test_e2e_int_auto_scheme(self, tmp_path, tiny_opt_model_path):
+        from auto_round import AutoScheme
+
+        output_dir = str(tmp_path / "output")
+        scheme = AutoScheme(avg_bits=3.0, options=("W2A16", "W4A16", "W8A16"), nsamples=1)
+        ar = AutoRound(model=tiny_opt_model_path, scheme=scheme, iters=0, model_free=True, nsamples=1)
+        ar.quantize_and_save(output_dir, format="auto_round")
+
+        qc = _read_qconfig(output_dir)
+        assert qc["quant_method"] == "auto-round"
+        assert qc["model_free"] is True
+        # A genuine mix of bit-widths must have been selected across layers.
+        extra = qc.get("extra_config", {})
+        selected_bits = {qc["bits"]} | {v["bits"] for v in extra.values() if v.get("bits", 16) < 16}
+        assert len(selected_bits) >= 2, f"expected mixed bit-widths, got {selected_bits}"
+
+    @require_compressed_tensors
+    def test_e2e_mxfp_auto_scheme(self, tmp_path, tiny_opt_model_path):
+        from auto_round import AutoScheme
+
+        output_dir = str(tmp_path / "output")
+        scheme = AutoScheme(avg_bits=6.0, options=("MXFP4", "MXFP8"), nsamples=1)
+        ar = AutoRound(model=tiny_opt_model_path, scheme=scheme, iters=0, model_free=True, nsamples=1)
+        ar.quantize_and_save(output_dir, format="llm_compressor")
+
+        qc = _read_qconfig(output_dir)
+        assert qc["quant_method"] == "compressed-tensors"
+        assert qc["provider"] == "auto-round"
