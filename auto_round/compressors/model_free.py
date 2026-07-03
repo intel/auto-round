@@ -2102,7 +2102,7 @@ class _ModelFreeCompressorCore:
                     "AutoRound(model_free=True) API, not the low-level "
                     "_ModelFreeCompressorCore driver."
                 )
-            resolver()
+            resolver()  # pylint: disable=E1102
 
         # ---- preflight ----
         self._validate_format()
@@ -2372,7 +2372,7 @@ class ModelFreeCompressor(_ModelFreeCompressorCore):
             post_init = getattr(compressor, "post_init", None)
             if not callable(post_init):
                 raise RuntimeError("AutoScheme fallback compressor has no callable post_init().")
-            post_init()
+            post_init()  # pylint: disable=E1102
             layer_config = copy.deepcopy(getattr(compressor, "layer_config", {}) or {})
         finally:
             # Release the model that was loaded only for scoring so the
