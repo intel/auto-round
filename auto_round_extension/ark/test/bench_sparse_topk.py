@@ -392,6 +392,52 @@ def benchmark_preprocess_stages(
     return avg, last_meta
 
 
+def run_sparse_row_linear_e2e(
+    q: torch.Tensor,
+    k: torch.Tensor,
+    v: torch.Tensor,
+    *,
+    topk: float,
+    is_causal: bool,
+    scale: float,
+    quant_block_size: int,
+    tensor_layout: str,
+) -> torch.Tensor:
+    preprocess = ark.sparge_preprocess_topk(
+        q,
+        k,
+        is_causal=is_causal,
+        smooth_k=True,
+        simthreshd1=-1.0,
+        topk=topk,
+        attention_sink=False,
+        quant_block_size=quant_block_size,
+        tensor_layout=tensor_layout,
+    )
+    return ark.sage_sparse_row_linear(
+        preprocess["query_i8"],
+        preprocess["key_i8"],
+        v,
+        preprocess["lut"],
+        preprocess["valid_block_num"],
+        is_causal=is_causal,
+        scale=scale,
+        quant_block_size=preprocess["quant_block_size"],
+        qscale=preprocess["qscale"],
+        kscale=preprocess["kscale"],
+        q_tile_override=64,
+        tensor_layout=tensor_layout,
+    )
+
+
+def nhd_to_hnd(x: torch.Tensor) -> torch.Tensor:
+    return x.permute(0, 2, 1, 3).contiguous()
+
+
+def hnd_to_nhd(x: torch.Tensor) -> torch.Tensor:
+    return x.permute(0, 2, 1, 3).contiguous()
+
+
 def summarize_speedups(rows: list[dict[str, object]]) -> list[dict[str, object]]:
     torch_row = next((row for row in rows if row["mode"] == "dense_torch_sdpa" and row["status"] == "ok"), None)
     sage_row = next((row for row in rows if row["mode"] == "dense_sagev1" and row["status"] == "ok"), None)
@@ -415,7 +461,14 @@ def summarize_speedups(rows: list[dict[str, object]]) -> list[dict[str, object]]
         mode = str(row["mode"])
         row["baseline_tflops"] = None
         row["effective_tflops"] = None
-        if mode in {"dense_torch_sdpa", "dense_sagev1", "sparse_kernel_only", "sparse_e2e"}:
+        if mode in {
+            "dense_torch_sdpa",
+            "dense_sagev1",
+            "sparse_kernel_only",
+            "sparse_row_linear_kernel_only",
+            "sparse_row_linear_e2e",
+            "sparse_e2e",
+        }:
             row["baseline_tflops"] = flops_to_tflops(dense_flops, float(latency_ms))
             work_ratio = 1.0
             if mode.startswith("sparse_") and row["selected_ratio"] is not None:
@@ -463,7 +516,7 @@ def run_benchmark(args: argparse.Namespace) -> list[dict[str, object]]:
     dtype = torch.float16
     scale = 1.0 / math.sqrt(args.head_dim)
     enable_gqa = args.num_heads_q // args.num_heads_kv > 1
-    q, k, v = build_inputs(
+    q_hnd_src, k_hnd_src, v_hnd_src = build_inputs(
         args.batch,
         args.num_heads_q,
         args.num_heads_kv,
@@ -472,22 +525,36 @@ def run_benchmark(args: argparse.Namespace) -> list[dict[str, object]]:
         dtype,
         device,
     )
+    q_nhd_src = hnd_to_nhd(q_hnd_src)
+    k_nhd_src = hnd_to_nhd(k_hnd_src)
+    v_nhd_src = hnd_to_nhd(v_hnd_src)
     if args.tensor_layout == "NHD":
-        q = q.permute(0, 2, 1, 3).contiguous()
-        k = k.permute(0, 2, 1, 3).contiguous()
-        v = v.permute(0, 2, 1, 3).contiguous()
-        q_hnd = q.permute(0, 2, 1, 3).contiguous()
-        k_hnd = k.permute(0, 2, 1, 3).contiguous()
-        v_hnd = v.permute(0, 2, 1, 3).contiguous()
+        q, k, v = q_nhd_src, k_nhd_src, v_nhd_src
+        q_hnd, k_hnd, v_hnd = q_hnd_src, k_hnd_src, v_hnd_src
     else:
-        q_hnd, k_hnd, v_hnd = q, k, v
+        q, k, v = q_hnd_src, k_hnd_src, v_hnd_src
+        q_hnd, k_hnd, v_hnd = q_hnd_src, k_hnd_src, v_hnd_src
 
     rows: list[dict[str, object]] = []
     rows.append(
         try_benchmark(
             "dense_torch_sdpa",
-            lambda: F.scaled_dot_product_attention(
-                q_hnd, k_hnd, v_hnd, dropout_p=0.0, is_causal=args.causal, scale=scale, enable_gqa=enable_gqa
+            lambda: (
+                hnd_to_nhd(
+                    F.scaled_dot_product_attention(
+                        nhd_to_hnd(q_nhd_src),
+                        nhd_to_hnd(k_nhd_src),
+                        nhd_to_hnd(v_nhd_src),
+                        dropout_p=0.0,
+                        is_causal=args.causal,
+                        scale=scale,
+                        enable_gqa=enable_gqa,
+                    )
+                )
+                if args.tensor_layout == "HND"
+                else F.scaled_dot_product_attention(
+                    q_hnd, k_hnd, v_hnd, dropout_p=0.0, is_causal=args.causal, scale=scale, enable_gqa=enable_gqa
+                )
             ),
             batch=args.batch,
             num_heads_q=args.num_heads_q,
@@ -503,14 +570,28 @@ def run_benchmark(args: argparse.Namespace) -> list[dict[str, object]]:
     rows.append(
         try_benchmark(
             "dense_sagev1",
-            lambda: ark.sagev1(
-                q,
-                k,
-                v,
-                scale=scale,
-                is_causal=args.causal,
-                quant_block_size=args.quant_block_size,
-                tensor_layout=args.tensor_layout,
+            lambda: (
+                hnd_to_nhd(
+                    ark.sagev1(
+                        nhd_to_hnd(q_nhd_src),
+                        nhd_to_hnd(k_nhd_src),
+                        nhd_to_hnd(v_nhd_src),
+                        scale=scale,
+                        is_causal=args.causal,
+                        quant_block_size=args.quant_block_size,
+                        tensor_layout="HND",
+                    )
+                )
+                if args.tensor_layout == "HND"
+                else ark.sagev1(
+                    q,
+                    k,
+                    v,
+                    scale=scale,
+                    is_causal=args.causal,
+                    quant_block_size=args.quant_block_size,
+                    tensor_layout=args.tensor_layout,
+                )
             ),
             batch=args.batch,
             num_heads_q=args.num_heads_q,
@@ -649,19 +730,88 @@ def run_benchmark(args: argparse.Namespace) -> list[dict[str, object]]:
         rows.append(
             try_benchmark(
                 "sparse_kernel_only",
-                lambda preprocess=preprocess: ark.sage_sparse(
-                    preprocess["query_i8"],
-                    preprocess["key_i8"],
-                    v,
-                    preprocess["lut"],
-                    preprocess["valid_block_num"],
-                    is_causal=args.causal,
-                    scale=scale,
-                    quant_block_size=preprocess["quant_block_size"],
-                    qscale=preprocess["qscale"],
-                    kscale=preprocess["kscale"],
-                    q_tile_override=args.q_tile_override,
-                    tensor_layout=args.tensor_layout,
+                lambda preprocess=preprocess: (
+                    hnd_to_nhd(
+                        ark.sage_sparse(
+                            preprocess["query_i8"],
+                            preprocess["key_i8"],
+                            nhd_to_hnd(v_nhd_src),
+                            preprocess["lut"],
+                            preprocess["valid_block_num"],
+                            is_causal=args.causal,
+                            scale=scale,
+                            quant_block_size=preprocess["quant_block_size"],
+                            qscale=preprocess["qscale"],
+                            kscale=preprocess["kscale"],
+                            q_tile_override=args.q_tile_override,
+                            tensor_layout="HND",
+                        )
+                    )
+                    if args.tensor_layout == "HND"
+                    else ark.sage_sparse(
+                        preprocess["query_i8"],
+                        preprocess["key_i8"],
+                        v,
+                        preprocess["lut"],
+                        preprocess["valid_block_num"],
+                        is_causal=args.causal,
+                        scale=scale,
+                        quant_block_size=preprocess["quant_block_size"],
+                        qscale=preprocess["qscale"],
+                        kscale=preprocess["kscale"],
+                        q_tile_override=args.q_tile_override,
+                        tensor_layout=args.tensor_layout,
+                    )
+                ),
+                batch=args.batch,
+                num_heads_q=args.num_heads_q,
+                num_heads_kv=args.num_heads_kv,
+                seq_len=args.seq_len,
+                head_dim=args.head_dim,
+                dtype=dtype,
+                is_causal=args.causal,
+                warmup=args.warmup,
+                iters=args.iters,
+                requested_topk=topk,
+                selected_ratio=selected_ratio,
+                selected_blocks_per_row=selected_blocks_per_row,
+            )
+        )
+        rows.append(
+            try_benchmark(
+                "sparse_row_linear_kernel_only",
+                lambda preprocess=preprocess: (
+                    hnd_to_nhd(
+                        ark.sage_sparse_row_linear(
+                            preprocess["query_i8"],
+                            preprocess["key_i8"],
+                            nhd_to_hnd(v_nhd_src),
+                            preprocess["lut"],
+                            preprocess["valid_block_num"],
+                            is_causal=args.causal,
+                            scale=scale,
+                            quant_block_size=preprocess["quant_block_size"],
+                            qscale=preprocess["qscale"],
+                            kscale=preprocess["kscale"],
+                            q_tile_override=64,
+                            tensor_layout="HND",
+                        )
+                    )
+                    if args.tensor_layout == "HND"
+                    else ark.sage_sparse_row_linear(
+                        preprocess["query_i8"],
+                        preprocess["key_i8"],
+                        v,
+                        preprocess["lut"],
+                        preprocess["valid_block_num"],
+                        is_causal=args.causal,
+                        scale=scale,
+                        quant_block_size=preprocess["quant_block_size"],
+                        qscale=preprocess["qscale"],
+                        kscale=preprocess["kscale"],
+                        q_tile_override=64,
+                        tensor_layout=args.tensor_layout,
+                    )
                 ),
                 batch=args.batch,
                 num_heads_q=args.num_heads_q,
@@ -680,18 +830,78 @@ def run_benchmark(args: argparse.Namespace) -> list[dict[str, object]]:
         rows.append(
             try_benchmark(
                 "sparse_e2e",
-                lambda topk=topk: ark.sparge_sage2_attn_meansim_topk_xpu(
-                    q,
-                    k,
-                    v,
-                    is_causal=args.causal,
-                    scale=scale,
-                    smooth_k=True,
-                    simthreshd1=-1.0,
-                    topk=topk,
-                    attention_sink=False,
-                    tensor_layout=args.tensor_layout,
-                    q_tile_override=args.q_tile_override,
+                lambda topk=topk: (
+                    hnd_to_nhd(
+                        ark.sparge_sage2_attn_meansim_topk_xpu(
+                            nhd_to_hnd(q_nhd_src),
+                            nhd_to_hnd(k_nhd_src),
+                            nhd_to_hnd(v_nhd_src),
+                            is_causal=args.causal,
+                            scale=scale,
+                            smooth_k=True,
+                            simthreshd1=-1.0,
+                            topk=topk,
+                            attention_sink=False,
+                            tensor_layout="HND",
+                            q_tile_override=args.q_tile_override,
+                        )
+                    )
+                    if args.tensor_layout == "HND"
+                    else ark.sparge_sage2_attn_meansim_topk_xpu(
+                        q,
+                        k,
+                        v,
+                        is_causal=args.causal,
+                        scale=scale,
+                        smooth_k=True,
+                        simthreshd1=-1.0,
+                        topk=topk,
+                        attention_sink=False,
+                        tensor_layout=args.tensor_layout,
+                        q_tile_override=args.q_tile_override,
+                    )
+                ),
+                batch=args.batch,
+                num_heads_q=args.num_heads_q,
+                num_heads_kv=args.num_heads_kv,
+                seq_len=args.seq_len,
+                head_dim=args.head_dim,
+                dtype=dtype,
+                is_causal=args.causal,
+                warmup=args.warmup,
+                iters=args.iters,
+                requested_topk=topk,
+                selected_ratio=selected_ratio,
+                selected_blocks_per_row=selected_blocks_per_row,
+            )
+        )
+        rows.append(
+            try_benchmark(
+                "sparse_row_linear_e2e",
+                lambda topk=topk: (
+                    hnd_to_nhd(
+                        run_sparse_row_linear_e2e(
+                            nhd_to_hnd(q_nhd_src),
+                            nhd_to_hnd(k_nhd_src),
+                            nhd_to_hnd(v_nhd_src),
+                            topk=topk,
+                            is_causal=args.causal,
+                            scale=scale,
+                            quant_block_size=args.quant_block_size,
+                            tensor_layout="HND",
+                        )
+                    )
+                    if args.tensor_layout == "HND"
+                    else run_sparse_row_linear_e2e(
+                        q,
+                        k,
+                        v,
+                        topk=topk,
+                        is_causal=args.causal,
+                        scale=scale,
+                        quant_block_size=args.quant_block_size,
+                        tensor_layout=args.tensor_layout,
+                    )
                 ),
                 batch=args.batch,
                 num_heads_q=args.num_heads_q,
@@ -726,7 +936,7 @@ def parse_args() -> argparse.Namespace:
         "--q-tile-override",
         type=int,
         default=0,
-        choices=(0, 128, 256),
+        choices=(0, 64, 128, 256),
         help="Sparse kernel q_tile override. 0 keeps the default kernel choice.",
     )
     parser.add_argument("--tensor-layout", choices=("HND", "NHD"), default="HND")

@@ -44,10 +44,17 @@
 #include "flash_attention_v2/collective/xe_fmha_fwd_mainloop.hpp"
 #include "xe_sagev1_fwd_mainloop.hpp"
 #include "flash_attention_v2/kernel/xe_tile_scheduler.hpp"
+#include <type_traits>
 
 namespace cutlass::fmha::kernel {
 
 using namespace cute;
+
+template <class T, class = void>
+struct has_canonical_nhd_k : std::false_type {};
+
+template <class T>
+struct has_canonical_nhd_k<T, std::void_t<decltype(std::declval<T&>().canonical_nhd_k)>> : std::true_type {};
 
 template <class ProblemShape_, class CollectiveMainloop_, class CollectiveEpilogue_, class TileScheduler_>
 class XeSparseSageFwdKernel {
@@ -277,7 +284,15 @@ class XeSparseSageFwdKernel {
       FragARow tA_max, tA_sum;
 
       int l_coord = is_var_len ? 0 : idx_b;
-      CollectiveMainloop mainloop(params.mainloop, shared_storage.mainloop);
+      auto mainloop_params = params.mainloop;
+      if constexpr (has_canonical_nhd_k<MainloopParams>::value) {
+        mainloop_params.canonical_nhd_k =
+            !is_var_len &&
+            int(get<1>(stride_k)) == 1 &&
+            int(get<2>(stride_k)) == s.head_size_qk &&
+            int(get<0>(stride_k)) == s.num_heads_kv * s.head_size_qk;
+      }
+      CollectiveMainloop mainloop(mainloop_params, shared_storage.mainloop);
       mainloop(Q(_, _, head_q, l_coord), K(_, _, head, l_coord), V(_, _, head, l_coord), tArA, tA_max, tA_sum, blk_qv,
                0, k_blocks, k_blocks, thr_id, seq_len, seq_len_kv_cache, idx_b, scaleQ, scaleK, scaleV,
                full_tile_offset, discard_seq_coord, lut_rows_base, valid_blocks_base, sparse_q_rows_in_tile,

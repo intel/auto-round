@@ -64,12 +64,19 @@ namespace detail {
 
 using namespace cute;
 
+template <class T, class = void>
+struct has_canonical_nhd_k : std::false_type {};
+
+template <class T>
+struct has_canonical_nhd_k<T, std::void_t<decltype(std::declval<T&>().canonical_nhd_k)>> : std::true_type {};
+
 // Command line options parsing
 struct Options {
    const void *q = nullptr, *k = nullptr, *v = nullptr;
    void* mask = nullptr;
    void* o = nullptr;
   int q_tile_override = 0;
+  int sparse_profile_mode = 0;
   int scale_block_size = 0;
   const void *qscale = nullptr, *kscale = nullptr, *vscale = nullptr;
   // Sparse routing metadata is stored per (batch, q_head, q_block). Each LUT row is delta-encoded
@@ -101,6 +108,7 @@ struct Options {
        << "  o: " << o << "\n"
        << "  mask: " << mask << "\n"
        << "  q_tile_override: " << q_tile_override << "\n"
+       << "  sparse_profile_mode: " << sparse_profile_mode << "\n"
        << "  lut: " << lut << "\n"
        << "  valid_block_num: " << valid_block_num << "\n"
        << "  num_q_blocks: " << num_q_blocks << "\n"
@@ -137,6 +145,46 @@ struct Options {
        << "}\n";
   }
 };
+
+template <class MainloopArguments>
+MainloopArguments make_sage_mainloop_arguments(const Options& options) {
+  if constexpr (has_canonical_nhd_k<MainloopArguments>::value) {
+    return {options.softmax_scale,
+            static_cast<const float*>(options.mask),
+            options.scale_block_size,
+            static_cast<const float*>(options.qscale),
+            static_cast<const float*>(options.kscale),
+            static_cast<const float*>(options.vscale),
+            options.lut,
+            options.valid_block_num,
+            options.num_q_blocks,
+            // num_k_blocks counts the logical KV blocks visible to sparse routing. For cached decode this
+            // spans the concatenated cache + current KV space even though the kernel may source data from
+            // different tensors under the hood.
+            options.num_k_blocks,
+            false,
+            options.use_paged_kv ? options.page_table : nullptr,
+            options.use_paged_kv ? options.page_size : 0,
+            options.use_paged_kv ? options.num_pages_per_seq : nullptr};
+  } else {
+    return {options.softmax_scale,
+            static_cast<const float*>(options.mask),
+            options.scale_block_size,
+            static_cast<const float*>(options.qscale),
+            static_cast<const float*>(options.kscale),
+            static_cast<const float*>(options.vscale),
+            options.lut,
+            options.valid_block_num,
+            options.num_q_blocks,
+            // num_k_blocks counts the logical KV blocks visible to sparse routing. For cached decode this
+            // spans the concatenated cache + current KV space even though the kernel may source data from
+            // different tensors under the hood.
+            options.num_k_blocks,
+            options.use_paged_kv ? options.page_table : nullptr,
+            options.use_paged_kv ? options.page_size : 0,
+            options.use_paged_kv ? options.num_pages_per_seq : nullptr};
+  }
+}
 
     template <typename StrideQ, typename StrideK, typename StrideV, typename StrideO>
     inline void set_tensor_strides_from_options(const Options& options, StrideQ& stride_Q, StrideK& stride_K,
@@ -660,15 +708,7 @@ struct SageKernelRunner {
             static_cast<const FMHAKernel::ElementV*>(options.block_V),
             stride_V_cache,
         },
-        {options.softmax_scale, static_cast<float*>(options.mask), options.scale_block_size,
-         static_cast<const float*>(options.qscale), static_cast<const float*>(options.kscale),
-         static_cast<const float*>(options.vscale), options.lut, options.valid_block_num, options.num_q_blocks,
-         // num_k_blocks counts the logical KV blocks visible to sparse routing. For cached decode this
-         // spans the concatenated cache + current KV space even though the kernel may source data from
-         // different tensors under the hood.
-         options.num_k_blocks,
-         options.use_paged_kv ? options.page_table : nullptr, options.use_paged_kv ? options.page_size : 0,
-         options.use_paged_kv ? options.num_pages_per_seq : nullptr},
+        make_sage_mainloop_arguments<typename FMHAKernel::MainloopArguments>(options),
         {},
         hw_info};
     // Define device-global scratch memory
@@ -849,7 +889,8 @@ struct SageConfig {
 
 template <bool Causal, bool UseInt8PV, bool WriteBackInt8PV, bool ExecuteInt8PV, typename TileShapeQK,
           typename TileShapePV, typename TileShapeOutput, typename SubgroupLayoutQK,
-          typename SubgroupLayoutPV_, int PipelineStages, bool persistent, typename ElementQ = bfloat16_t,
+          typename SubgroupLayoutPV_, int PipelineStages, bool persistent, cutlass::sage::SparseProfileMode ProfileMode,
+          typename ElementQ = bfloat16_t,
           typename ElementK = bfloat16_t, typename ElementV = bfloat16_t, typename ElementO = ElementQ,
           typename MMAOperation_ = void, typename StrideQ = Stride<int, _1, int, int>,
           typename StrideK = Stride<int, _1, int, int>, typename StrideV = Stride<_1, int, int, int>,
@@ -891,7 +932,7 @@ struct SparseSageConfig {
     if constexpr (Causal) {
       using CollectiveMainloop =
           cutlass::fmha::collective::SPARSESAGEV1FwdMainloop<MainloopDispatchPolicy, Causal, false, CachedKV, PagedKV,
-                                                             UseInt8PV, WriteBackInt8PV, ExecuteInt8PV, TiledMMAQK,
+                                                             UseInt8PV, WriteBackInt8PV, ExecuteInt8PV, ProfileMode, TiledMMAQK,
                                                              TiledMMAPV, VTiles, TensorQ, TensorK, TensorV,
                                                              TensorK_cache, TensorV_cache, GmemTiledCopyQ, GmemTiledCopyK,
                                                              GmemTiledCopyV, GmemTiledCopyK_cache, GmemTiledCopyV_cache>;
@@ -903,9 +944,9 @@ struct SparseSageConfig {
       CUTLASS_CHECK(runner.run(options, hw_info));
     } else {
       if (options.mask) {
-        using CollectiveMainloop =
+      using CollectiveMainloop =
             cutlass::fmha::collective::SPARSESAGEV1FwdMainloop<MainloopDispatchPolicy, Causal, true, CachedKV, PagedKV,
-                                                               UseInt8PV, WriteBackInt8PV, ExecuteInt8PV, TiledMMAQK,
+                                                               UseInt8PV, WriteBackInt8PV, ExecuteInt8PV, ProfileMode, TiledMMAQK,
                                                                TiledMMAPV, VTiles, TensorQ, TensorK, TensorV,
                                                                TensorK_cache, TensorV_cache, GmemTiledCopyQ,
                                                                GmemTiledCopyK, GmemTiledCopyV, GmemTiledCopyK_cache,
@@ -919,7 +960,7 @@ struct SparseSageConfig {
       } else {
         using CollectiveMainloop =
             cutlass::fmha::collective::SPARSESAGEV1FwdMainloop<MainloopDispatchPolicy, Causal, false, CachedKV, PagedKV,
-                                                               UseInt8PV, WriteBackInt8PV, ExecuteInt8PV, TiledMMAQK,
+                                                               UseInt8PV, WriteBackInt8PV, ExecuteInt8PV, ProfileMode, TiledMMAQK,
                                                                TiledMMAPV, VTiles, TensorQ, TensorK, TensorV,
                                                                TensorK_cache, TensorV_cache, GmemTiledCopyQ,
                                                                GmemTiledCopyK, GmemTiledCopyV, GmemTiledCopyK_cache,
@@ -1030,10 +1071,12 @@ inline int launch_sparse_sage_prefill_kernel_128(Options const& options) {
   using ShapeOut1 = Shape<_256, _128>;
   using SubgroupLayoutQK1 = Layout<Shape<_16, _1, _1>>;
   return options.is_causal ? SparseSageConfig<true, false, true, true, ShapeQK, ShapePV, ShapeOut, SubgroupLayoutQK,
-                                              void, PipelineStages, false, ElementQ, ElementK, ElementV, ElementO>::run(options)
+                                              void, PipelineStages, false, cutlass::sage::SparseProfileMode::Full,
+                                              ElementQ, ElementK, ElementV, ElementO>::run(options)
                            : SparseSageConfig<false, false, true, true, ShapeQK1, ShapePV1, ShapeOut1,
-                                             SubgroupLayoutQK1, void, PipelineStages, false, ElementQ, ElementK,
-                                             ElementV, ElementO>::run(options);
+                                             SubgroupLayoutQK1, void, PipelineStages, false,
+                                             cutlass::sage::SparseProfileMode::Full, ElementQ, ElementK, ElementV,
+                                             ElementO>::run(options);
 }
 
 template <typename ElementQ, typename ElementK, typename ElementV, typename ElementO = ElementV>
@@ -1048,10 +1091,51 @@ inline int launch_sparse_sage_prefill_kernel_128_qtile128(Options const& options
   using ShapeOut1 = Shape<_128, _128>;
   using SubgroupLayoutQK1 = Layout<Shape<_8, _1, _1>>;
   return options.is_causal ? SparseSageConfig<true, false, true, true, ShapeQK, ShapePV, ShapeOut, SubgroupLayoutQK,
-                                              void, PipelineStages, false, ElementQ, ElementK, ElementV, ElementO>::run(options)
+                                              void, PipelineStages, false, cutlass::sage::SparseProfileMode::Full,
+                                              ElementQ, ElementK, ElementV, ElementO>::run(options)
                            : SparseSageConfig<false, false, true, true, ShapeQK1, ShapePV1, ShapeOut1,
-                                             SubgroupLayoutQK1, void, PipelineStages, false, ElementQ, ElementK,
-                                             ElementV, ElementO>::run(options);
+                                             SubgroupLayoutQK1, void, PipelineStages, false,
+                                             cutlass::sage::SparseProfileMode::Full, ElementQ, ElementK, ElementV,
+                                             ElementO>::run(options);
+}
+
+template <typename ElementQ, typename ElementK, typename ElementV, typename ElementO = ElementV>
+inline int launch_sparse_sage_prefill_kernel_128_qtile64(Options const& options) {
+  constexpr int PipelineStages = 2;
+  using ShapeQK = Shape<_64, _64, _32>;
+  using ShapePV = Shape<_64, _32, _64>;
+  using ShapeOut = Shape<_64, _128>;
+  using SubgroupLayoutQK = Layout<Shape<_4, _1, _1>>;
+  using ShapeQK1 = Shape<_64, _64, _32>;
+  using ShapePV1 = Shape<_64, _32, _64>;
+  using ShapeOut1 = Shape<_64, _128>;
+  using SubgroupLayoutQK1 = Layout<Shape<_4, _1, _1>>;
+  return options.is_causal ? SparseSageConfig<true, false, true, true, ShapeQK, ShapePV, ShapeOut, SubgroupLayoutQK,
+                                              void, PipelineStages, false, cutlass::sage::SparseProfileMode::Full,
+                                              ElementQ, ElementK, ElementV, ElementO>::run(options)
+                           : SparseSageConfig<false, false, true, true, ShapeQK1, ShapePV1, ShapeOut1,
+                                             SubgroupLayoutQK1, void, PipelineStages, false,
+                                             cutlass::sage::SparseProfileMode::Full, ElementQ, ElementK, ElementV,
+                                             ElementO>::run(options);
+}
+
+template <cutlass::sage::SparseProfileMode ProfileMode, typename ElementQ, typename ElementK, typename ElementV,
+          typename ElementO = ElementV>
+inline int launch_sparse_sage_prefill_kernel_128_qtile64_profile(Options const& options) {
+  constexpr int PipelineStages = 2;
+  using ShapeQK = Shape<_64, _64, _32>;
+  using ShapePV = Shape<_64, _32, _64>;
+  using ShapeOut = Shape<_64, _128>;
+  using SubgroupLayoutQK = Layout<Shape<_4, _1, _1>>;
+  using ShapeQK1 = Shape<_64, _64, _32>;
+  using ShapePV1 = Shape<_64, _32, _64>;
+  using ShapeOut1 = Shape<_64, _128>;
+  using SubgroupLayoutQK1 = Layout<Shape<_4, _1, _1>>;
+  return options.is_causal
+             ? SparseSageConfig<true, false, true, true, ShapeQK, ShapePV, ShapeOut, SubgroupLayoutQK, void,
+                                PipelineStages, false, ProfileMode, ElementQ, ElementK, ElementV, ElementO>::run(options)
+             : SparseSageConfig<false, false, true, true, ShapeQK1, ShapePV1, ShapeOut1, SubgroupLayoutQK1, void,
+                                PipelineStages, false, ProfileMode, ElementQ, ElementK, ElementV, ElementO>::run(options);
 }
 
 template <typename ElementQ, typename ElementK, typename ElementV, typename ElementO = ElementV>
@@ -1064,9 +1148,11 @@ inline int launch_sparse_sage_prefill_kernel_64(Options const& options) {
   using SubgroupLayoutPV = void;
   return options.is_causal
              ? SparseSageConfig<true, false, true, true, ShapeQK, ShapePV, ShapeOut, SubgroupLayoutQK,
-                                SubgroupLayoutPV, PipelineStages, false, ElementQ, ElementK, ElementV, ElementO>::run(options)
+                                SubgroupLayoutPV, PipelineStages, false, cutlass::sage::SparseProfileMode::Full,
+                                ElementQ, ElementK, ElementV, ElementO>::run(options)
              : SparseSageConfig<false, false, true, true, ShapeQK, ShapePV, ShapeOut, SubgroupLayoutQK,
-                                SubgroupLayoutPV, PipelineStages, false, ElementQ, ElementK, ElementV, ElementO>::run(options);
+                                SubgroupLayoutPV, PipelineStages, false, cutlass::sage::SparseProfileMode::Full,
+                                ElementQ, ElementK, ElementV, ElementO>::run(options);
 }
 
 template <typename ElementQ, typename ElementK, typename ElementV, bool persistent = false>

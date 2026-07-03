@@ -163,6 +163,254 @@ def sage_sparse(
     return O
 
 
+def sage_sparse_row_linear(
+    query: torch.Tensor,
+    key: torch.Tensor,
+    value: torch.Tensor,
+    lut: torch.Tensor,
+    valid_block_num: torch.Tensor,
+    attn_mask: torch.Tensor | None = None,
+    dropout_p: float = 0.0,
+    is_causal: bool = False,
+    scale: float | None = None,
+    enable_gqa: bool = False,
+    quant_block_size: int = 64,
+    qscale: torch.Tensor = None,
+    kscale: torch.Tensor = None,
+    q_tile_override: int = 64,
+    tensor_layout: str = "HND",
+) -> torch.Tensor:
+    """Sparse SAGE prefill with one sparse row per workgroup via the q_tile=64 launcher."""
+    if quant_block_size != 64:
+        raise ValueError(
+            f"sage_sparse_row_linear currently requires quant_block_size == 64, got {quant_block_size}"
+        )
+    if q_tile_override not in (0, 64):
+        raise ValueError(
+            f"Unsupported q_tile_override={q_tile_override}; row-linear backend supports only 0 or 64"
+        )
+    if query.device.type != "xpu":
+        raise NotImplementedError("sage_sparse_row_linear is only supported on XPU")
+    if query.dtype != torch.int8 or key.dtype != torch.int8:
+        raise ValueError(f"Q/K must be int8, got Q={query.dtype}, K={key.dtype}")
+    if value.dtype not in (torch.float16, torch.bfloat16):
+        raise ValueError(f"V must be float16 or bfloat16, got {value.dtype}")
+    if qscale is None or kscale is None:
+        raise ValueError("qscale and kscale must be provided for sage_sparse_row_linear")
+    if lut.dtype != torch.int32 or valid_block_num.dtype != torch.int32:
+        raise ValueError("lut and valid_block_num must be int32 tensors")
+    if lut.device != query.device or valid_block_num.device != query.device:
+        raise ValueError("lut and valid_block_num must be on the same XPU device as Q/K/V")
+    if qscale.device != query.device or kscale.device != query.device:
+        raise ValueError("qscale and kscale must be on the same XPU device as Q/K/V")
+
+    B, Hq, Sq, D = _validate_attention_tensor(query, "Q", tensor_layout)
+    Bk, Hkv, Skv, Dk = _validate_attention_tensor(key, "K", tensor_layout)
+    Bv, Hkv2, Skv2, Dv = _validate_attention_tensor(value, "V", tensor_layout)
+
+    if Bk != B or Bv != B:
+        raise ValueError("Batch size mismatch between Q/K/V")
+    if Hkv2 != Hkv or Skv2 != Skv or Dv != Dk:
+        raise ValueError("K/V shape mismatch")
+    if Dk != D:
+        raise ValueError("Head dim mismatch between Q and K/V")
+    if D not in (64, 128):
+        raise ValueError(f"Unsupported head_dim={D}; supported: 64, 128")
+
+    q_blocks = (Sq + quant_block_size - 1) // quant_block_size
+    kv_blocks = (Skv + quant_block_size - 1) // quant_block_size
+    if tuple(lut.shape) != (B, Hq, q_blocks, kv_blocks):
+        raise ValueError(f"lut must have shape {(B, Hq, q_blocks, kv_blocks)}, got {tuple(lut.shape)}")
+    if tuple(valid_block_num.shape) != (B, Hq, q_blocks):
+        raise ValueError(f"valid_block_num must have shape {(B, Hq, q_blocks)}, got {tuple(valid_block_num.shape)}")
+    if qscale.numel() != B * Hq * q_blocks:
+        raise ValueError(
+            f"qscale must have {B * Hq * q_blocks} elements for shape [B, Hq, ceil(Sq/block), 1], got {qscale.numel()}"
+        )
+    if kscale.numel() != B * Hkv * kv_blocks:
+        raise ValueError(
+            f"kscale must have {B * Hkv * kv_blocks} elements for shape [B, Hkv, ceil(Skv/block), 1], got {kscale.numel()}"
+        )
+    if torch.any(valid_block_num < 0).item():
+        raise ValueError("valid_block_num entries must be non-negative")
+    if torch.any(valid_block_num > kv_blocks).item():
+        raise ValueError(f"valid_block_num entries must be <= {kv_blocks}")
+
+    lib = get_lib(query)
+    stream = get_stream(query)
+    O = _empty_attention_output(
+        B,
+        Hq,
+        Sq,
+        D,
+        dtype=value.dtype,
+        device=query.device,
+        tensor_layout=tensor_layout,
+    )
+    q_strides = _attention_strides_qko(query, tensor_layout)
+    k_strides = _attention_strides_qko(key, tensor_layout)
+    v_strides = _attention_strides_v(value, tensor_layout)
+    o_strides = _attention_strides_qko(O, tensor_layout)
+    lib.sage_sparse_row_linear(
+        stream,
+        query.data_ptr(),
+        key.data_ptr(),
+        value.data_ptr(),
+        O.data_ptr(),
+        attn_mask.data_ptr() if attn_mask is not None else 0,
+        quant_block_size,
+        qscale.data_ptr(),
+        kscale.data_ptr(),
+        lut.data_ptr(),
+        valid_block_num.data_ptr(),
+        q_blocks,
+        kv_blocks,
+        q_tile_override,
+        *q_strides,
+        *k_strides,
+        *v_strides,
+        *o_strides,
+        cvt_dtype(query.dtype),
+        cvt_dtype(key.dtype),
+        cvt_dtype(O.dtype),
+        B,
+        Hq,
+        Hkv,
+        Sq,
+        Skv,
+        D,
+        float(scale) if scale is not None else 1.0 / (D**0.5),
+        bool(is_causal),
+    )
+    return O
+
+
+def sage_sparse_row_linear_profile(
+    query: torch.Tensor,
+    key: torch.Tensor,
+    value: torch.Tensor,
+    lut: torch.Tensor,
+    valid_block_num: torch.Tensor,
+    attn_mask: torch.Tensor | None = None,
+    dropout_p: float = 0.0,
+    is_causal: bool = False,
+    scale: float | None = None,
+    enable_gqa: bool = False,
+    quant_block_size: int = 64,
+    qscale: torch.Tensor = None,
+    kscale: torch.Tensor = None,
+    q_tile_override: int = 64,
+    tensor_layout: str = "HND",
+    profile_mode: str = "full",
+) -> torch.Tensor:
+    """Profiling-only sparse row-linear entrypoint with compile-time phase-isolation variants."""
+    profile_mode_map = {
+        "full": 0,
+        "qk_only": 1,
+        "qk_softmax_only": 2,
+        "pv_only_synthetic": 3,
+        "softmax_only_synth": 4,
+        "pv_only_realish": 5,
+        "qk_plus_pv_no_softmax": 6,
+        "pv_reorder_only": 7,
+        "pv_load_v_only": 8,
+        "pv_mma_only": 9,
+        "pv_reorder_plus_mma": 10,
+    }
+    if profile_mode not in profile_mode_map:
+        raise ValueError(f"Unsupported profile_mode={profile_mode!r}; supported: {sorted(profile_mode_map)}")
+    if q_tile_override != 64:
+        raise ValueError(f"sage_sparse_row_linear_profile requires q_tile_override == 64, got {q_tile_override}")
+
+    if quant_block_size != 64:
+        raise ValueError(
+            f"sage_sparse_row_linear_profile currently requires quant_block_size == 64, got {quant_block_size}"
+        )
+    if query.device.type != "xpu":
+        raise NotImplementedError("sage_sparse_row_linear_profile is only supported on XPU")
+    if query.dtype != torch.int8 or key.dtype != torch.int8:
+        raise ValueError(f"Q/K must be int8, got Q={query.dtype}, K={key.dtype}")
+    if value.dtype not in (torch.float16, torch.bfloat16):
+        raise ValueError(f"V must be float16 or bfloat16, got {value.dtype}")
+    if qscale is None or kscale is None:
+        raise ValueError("qscale and kscale must be provided for sage_sparse_row_linear_profile")
+    if lut.dtype != torch.int32 or valid_block_num.dtype != torch.int32:
+        raise ValueError("lut and valid_block_num must be int32 tensors")
+    if lut.device != query.device or valid_block_num.device != query.device:
+        raise ValueError("lut and valid_block_num must be on the same XPU device as Q/K/V")
+    if qscale.device != query.device or kscale.device != query.device:
+        raise ValueError("qscale and kscale must be on the same XPU device as Q/K/V")
+
+    B, Hq, Sq, D = _validate_attention_tensor(query, "Q", tensor_layout)
+    Bk, Hkv, Skv, Dk = _validate_attention_tensor(key, "K", tensor_layout)
+    Bv, Hkv2, Skv2, Dv = _validate_attention_tensor(value, "V", tensor_layout)
+
+    if Bk != B or Bv != B:
+        raise ValueError("Batch size mismatch between Q/K/V")
+    if Hkv2 != Hkv or Skv2 != Skv or Dv != Dk:
+        raise ValueError("K/V shape mismatch")
+    if Dk != D:
+        raise ValueError("Head dim mismatch between Q and K/V")
+    if D not in (64, 128):
+        raise ValueError(f"Unsupported head_dim={D}; supported: 64, 128")
+
+    q_blocks = (Sq + quant_block_size - 1) // quant_block_size
+    kv_blocks = (Skv + quant_block_size - 1) // quant_block_size
+    if tuple(lut.shape) != (B, Hq, q_blocks, kv_blocks):
+        raise ValueError(f"lut must have shape {(B, Hq, q_blocks, kv_blocks)}, got {tuple(lut.shape)}")
+    if tuple(valid_block_num.shape) != (B, Hq, q_blocks):
+        raise ValueError(f"valid_block_num must have shape {(B, Hq, q_blocks)}, got {tuple(valid_block_num.shape)}")
+
+    lib = get_lib(query)
+    stream = get_stream(query)
+    O = _empty_attention_output(
+        B,
+        Hq,
+        Sq,
+        D,
+        dtype=value.dtype,
+        device=query.device,
+        tensor_layout=tensor_layout,
+    )
+    q_strides = _attention_strides_qko(query, tensor_layout)
+    k_strides = _attention_strides_qko(key, tensor_layout)
+    v_strides = _attention_strides_v(value, tensor_layout)
+    o_strides = _attention_strides_qko(O, tensor_layout)
+    lib.sage_sparse_row_linear_profile(
+        stream,
+        query.data_ptr(),
+        key.data_ptr(),
+        value.data_ptr(),
+        O.data_ptr(),
+        attn_mask.data_ptr() if attn_mask is not None else 0,
+        quant_block_size,
+        qscale.data_ptr(),
+        kscale.data_ptr(),
+        lut.data_ptr(),
+        valid_block_num.data_ptr(),
+        q_blocks,
+        kv_blocks,
+        q_tile_override,
+        profile_mode_map[profile_mode],
+        *q_strides,
+        *k_strides,
+        *v_strides,
+        *o_strides,
+        cvt_dtype(query.dtype),
+        cvt_dtype(key.dtype),
+        cvt_dtype(O.dtype),
+        B,
+        Hq,
+        Hkv,
+        Sq,
+        Skv,
+        D,
+        float(scale) if scale is not None else 1.0 / (D**0.5),
+        bool(is_causal),
+    )
+    return O
+
+
 def sage_sparse_decode(
     query: torch.Tensor,
     key: torch.Tensor,

@@ -711,6 +711,8 @@ from .sparse_attention import (
     _to_hnd,
     sageattn,
     sage_sparse,
+    sage_sparse_row_linear,
+    sage_sparse_row_linear_profile,
     sage_sparse_decode,
     sagev1,
     sagev1_pvi8,
