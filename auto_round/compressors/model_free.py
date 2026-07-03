@@ -1514,9 +1514,16 @@ def _validate_auto_scheme_options(auto_scheme: Any) -> str:
     families: set[str] = set()
     unsupported: list[Any] = []
     for opt in options:
-        try:
-            scheme_obj = _normalize_scheme(opt) if isinstance(opt, (str, QuantizationScheme)) else None
-        except (ValueError, TypeError):
+        # Preserve original string validation semantics so preset-name
+        # restrictions (e.g. MXFP4/MXFP8 only) are enforced.
+        if isinstance(opt, str):
+            try:
+                scheme_obj = _normalize_scheme(opt)
+            except (ValueError, TypeError):
+                scheme_obj = None
+        elif isinstance(opt, QuantizationScheme):
+            scheme_obj = opt
+        else:
             scheme_obj = None
 
         # GGUF k-quants carry super_bits and are not packable by the model-free
@@ -1524,7 +1531,7 @@ def _validate_auto_scheme_options(auto_scheme: Any) -> str:
         if scheme_obj is None or getattr(scheme_obj, "super_bits", None) is not None:
             unsupported.append(opt)
             continue
-        if not is_model_free_supported_scheme(scheme_obj):
+        if not is_model_free_supported_scheme(opt):
             unsupported.append(opt)
             continue
 

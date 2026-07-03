@@ -1340,7 +1340,15 @@ class TestModelFreeAutoScheme:
         with pytest.raises(ValueError, match="mix INT and MXFP"):
             _validate_auto_scheme_options(AutoScheme(avg_bits=4, options=("W4A16", "MXFP4")))
 
-    @pytest.mark.parametrize("options", [("W3A16", "W4A16"), ("GGUF:Q4_K_M", "W8A16"), ("NVFP4", "W4A16")])
+    @pytest.mark.parametrize(
+        "options",
+        [
+            ("W3A16", "W4A16"),
+            ("GGUF:Q4_K_M", "W8A16"),
+            ("NVFP4", "W4A16"),
+            ("MXFP4_RCEIL", "MXFP4"),
+        ],
+    )
     def test_validate_options_unsupported_raises(self, options):
         from auto_round import AutoScheme
 
