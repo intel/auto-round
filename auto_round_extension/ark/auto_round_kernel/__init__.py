@@ -546,7 +546,6 @@ def sdpa(
     tensor_layout: str = "HND",
     return_lse: bool = False,
 ) -> torch.Tensor | tuple[torch.Tensor, torch.Tensor]:
-) -> torch.Tensor | tuple[torch.Tensor, torch.Tensor]:
     """Scaled dot-product attention (SDPA) prefill+decode.
 
     Supported tensor layouts:
@@ -795,8 +794,15 @@ def sdpa_varlen(
     if return_lse:
         max_q = int((cu_seqlens_q_i32[1:] - cu_seqlens_q_i32[:-1]).max().item())
         if max_seqlen_q < max_q:
-            raise ValueError(f"max_seqlen_q ({max_seqlen_q}) < max sequence length in cu_seqlens_q ({max_q})")
-        LSE = torch.full((batch, Hq, max_seqlen_q), float("-inf"), dtype=torch.float32, device=query.device)
+            raise ValueError(
+                f"max_seqlen_q ({max_seqlen_q}) < max sequence length in cu_seqlens_q ({max_q})"
+            )
+        LSE = torch.full(
+            (batch, Hq, max_seqlen_q),
+            float("-inf"),
+            dtype=torch.float32,
+            device=query.device,
+        )
     else:
         LSE = None
     lib.sdpa_varlen(
@@ -1454,8 +1460,15 @@ def sageattn_varlen(
     if return_lse:
         max_q = int((cu_seqlens_q_i32[1:] - cu_seqlens_q_i32[:-1]).max().item())
         if max_seqlen_q < max_q:
-            raise ValueError(f"max_seqlen_q ({max_seqlen_q}) < max sequence length in cu_seqlens_q ({max_q})")
-        LSE = torch.full((batch, Hq, max_seqlen_q), float("-inf"), dtype=torch.float32, device=q.device)
+            raise ValueError(
+                f"max_seqlen_q ({max_seqlen_q}) < max sequence length in cu_seqlens_q ({max_q})"
+            )
+        LSE = torch.full(
+            (batch, Hq, max_seqlen_q),
+            float("-inf"),
+            dtype=torch.float32,
+            device=q.device,
+        )
     else:
         LSE = None
     lib.sagev1_varlen(
