@@ -971,7 +971,7 @@ def sagev1(
     quant_block_size: int = 64,
     tensor_layout: str = "HND",
     return_lse: bool = False,
-) -> torch.Tensor:
+) -> torch.Tensor | tuple[torch.Tensor, torch.Tensor]:
     """SAGE v1 attention prefill+decode.
 
     Supported tensor layouts:
