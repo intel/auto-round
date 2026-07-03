@@ -47,6 +47,7 @@ import gc
 import json
 import os
 import shutil
+import sys
 import tempfile
 from collections import defaultdict
 from functools import partial
@@ -709,16 +710,26 @@ class OffloadManager:
     def _save_to_disk(self, name: str, module: torch.nn.Module) -> None:
         tmpdir = self._ensure_dir()
         safe_name = name.replace(".", "_")
-        save_path = os.path.join(tmpdir, f"{safe_name}.pt")
+        save_path = os.path.join(tmpdir, f"{safe_name}.safetensors")
         try:
+            from safetensors.torch import save_file as safe_save_file
+
             # Skip meta tensors: they contain no real data (e.g. quantized weights
             # already flushed to disk by an immediate-saving shard writer).
-            state_dict = {k: v.cpu().contiguous() for k, v in module.state_dict().items() if v.device.type != "meta"}
-            torch.save(state_dict, save_path)
+            state_dict = {
+                k: v.cpu().contiguous()
+                for k, v in module.state_dict().items()
+                if isinstance(v, torch.Tensor) and v.device.type != "meta"
+            }
+            safe_save_file(state_dict, save_path)
             self._saved[name] = {"save_path": save_path}
             del state_dict
         except Exception as e:
-            logger.warning(f"OffloadManager: failed to save {name}: {e}")
+            # Keeping the module resident in memory after a failed save (e.g. disk
+            # quota exceeded) silently increases memory pressure and can lead to a
+            # confusing OOM later on, so fail fast instead.
+            logger.error(f"OffloadManager: failed to save {name}: {e}. Exiting to avoid silent memory growth.")
+            sys.exit(1)
 
     def _load_from_disk(self, name: str, module: torch.nn.Module) -> None:
         metadata = self._saved.get(name)
@@ -729,7 +740,9 @@ class OffloadManager:
             logger.warning(f"OffloadManager: file not found {save_path}")
             return
         try:
-            state_dict = torch.load(save_path, map_location="cpu")
+            from safetensors.torch import load_file as safe_load_file
+
+            state_dict = safe_load_file(save_path, device="cpu")
             _load_state_dict_into_module(state_dict, module)
         except Exception as e:
             logger.warning(f"OffloadManager: failed to load {name}: {e}")
