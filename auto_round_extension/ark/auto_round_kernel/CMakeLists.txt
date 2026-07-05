@@ -3,6 +3,7 @@ project(ark LANGUAGES CXX)
 
 option(ARK_XPU "Build XPU kernels" OFF)
 option(ARK_UT "Build XPU kernels UT" OFF)
+option(ARK_SPARSE_SAGE_ENABLE_K_PREFETCH "Enable sparse K-prefetch in the Sage sparse kernel" OFF)
 option(ARK_RESCALE "Experimental" OFF)
 set(ARK_DNNL_BUILD_SOURCE ON CACHE BOOL "Build oneDNN from source" FORCE)
 
@@ -72,7 +73,11 @@ else()
 endif()
 list(APPEND libs bestla)
 
-file(GLOB SRCS ${CMAKE_CURRENT_SOURCE_DIR}/*.cpp)
+set(SRCS
+  ${CMAKE_CURRENT_SOURCE_DIR}/ark.cpp
+  ${CMAKE_CURRENT_SOURCE_DIR}/sdpa.cpp
+  ${CMAKE_CURRENT_SOURCE_DIR}/sdpa_sparse.cpp
+)
 set(SDPA_GENERATED_SRCS)
 set(SDPA_KERNEL_DECLARATIONS)
 
@@ -128,6 +133,7 @@ if(ARK_XPU AND ARK_SYCL_TLA)
     ${CUTLASS_DIR}/examples/06_bmg_flash_attention
     ${CUTLASS_DIR}/examples/12_xe20_moe_gemm_cute_interface
   )
+  set(_ark_compat_include_dir ${CMAKE_CURRENT_SOURCE_DIR}/compat/include)
   include(${CMAKE_CURRENT_LIST_DIR}/sdpa_generation.cmake)
 endif()
 
@@ -139,8 +145,12 @@ if(ARK_RESCALE)
 endif()
 if(ARK_XPU AND ARK_SYCL_TLA)
   target_compile_definitions(${PY_NAME} PRIVATE ARK_SYCL_TLA=1 CUTLASS_ENABLE_SYCL=1 SYCL_INTEL_TARGET=1)
+  if(ARK_SPARSE_SAGE_ENABLE_K_PREFETCH)
+    target_compile_definitions(${PY_NAME} PRIVATE ARK_SPARSE_SAGE_ENABLE_K_PREFETCH=1)
+  endif()
   target_include_directories(${PY_NAME} PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/wrapper/include)
   target_include_directories(${PY_NAME} PRIVATE ${CMAKE_CURRENT_BINARY_DIR}/generated/sdpa)
+  target_include_directories(${PY_NAME} SYSTEM PRIVATE ${_ark_compat_include_dir})
   # Use SYSTEM include directories for sycl-tla to suppress warnings/errors from third-party headers
   # (e.g., std::common_type specialization issues in traits.hpp)
   foreach(_inc_dir IN LISTS _sycl_tla_include_dirs)
@@ -166,7 +176,11 @@ if(ARK_UT)
     target_include_directories(${TEST_NAME} PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/wrapper/include)
     if(ARK_XPU AND ARK_SYCL_TLA)
       target_compile_definitions(${TEST_NAME} PRIVATE ARK_SYCL_TLA=1 CUTLASS_ENABLE_SYCL=1 SYCL_INTEL_TARGET=1)
+      if(ARK_SPARSE_SAGE_ENABLE_K_PREFETCH)
+        target_compile_definitions(${TEST_NAME} PRIVATE ARK_SPARSE_SAGE_ENABLE_K_PREFETCH=1)
+      endif()
       target_include_directories(${TEST_NAME} PRIVATE ${CMAKE_CURRENT_BINARY_DIR}/generated/sdpa)
+      target_include_directories(${TEST_NAME} SYSTEM PRIVATE ${_ark_compat_include_dir})
       foreach(_inc_dir IN LISTS _sycl_tla_include_dirs)
         if(EXISTS "${_inc_dir}")
           target_include_directories(${TEST_NAME} SYSTEM PRIVATE "${_inc_dir}")

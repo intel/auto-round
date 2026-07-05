@@ -44,69 +44,53 @@
 #include "flash_attention_v2/collective/xe_fmha_fwd_mainloop.hpp"
 #include "xe_sagev1_fwd_mainloop.hpp"
 #include "flash_attention_v2/kernel/xe_tile_scheduler.hpp"
+#include <type_traits>
 
 namespace cutlass::fmha::kernel {
 
 using namespace cute;
 
-///////////////////////////////////////////////////////////////////////////////
-template <bool IsVarLen_ = false>
-struct SageProblemShape {
-  using SeqLenType = cute::conditional_t<IsVarLen_, cutlass::fmha::collective::VariableLength, int>;
-  int batch;
-  int num_heads_q, num_heads_kv;
-  SeqLenType seq_len_qo, seq_len_kv, seq_len_kv_cache;
-  int head_size_qk, head_size_vo;
-};
+template <class T, class = void>
+struct has_canonical_nhd_k : std::false_type {};
 
-///////////////////////////////////////////////////////////////////////////////
+template <class T>
+struct has_canonical_nhd_k<T, std::void_t<decltype(std::declval<T&>().canonical_nhd_k)>> : std::true_type {};
+
+template <class T, class = void>
+struct has_sparse_q_block_size : std::false_type {};
+
+template <class T>
+struct has_sparse_q_block_size<T, std::void_t<decltype(std::declval<T&>().sparse_q_block_size)>> : std::true_type {};
 
 template <class ProblemShape_, class CollectiveMainloop_, class CollectiveEpilogue_, class TileScheduler_>
-class XeSageFwdKernel {
+class XeSparseSageFwdKernel {
  public:
-  //
-  // Type Aliases
-  //
   using ProblemShape = ProblemShape_;
   using VariableLength = cutlass::fmha::collective::VariableLength;
   static constexpr bool is_var_len = cutlass::fmha::collective::is_variable_length_v<typename ProblemShape::SeqLenType>;
-  // Mainloop derived types
   using CollectiveMainloop = CollectiveMainloop_;
   using MainloopArguments = typename CollectiveMainloop::Arguments;
   using MainloopParams = typename CollectiveMainloop::Params;
-
   using TiledMMAQK = typename CollectiveMainloop::TiledMMAQK;
-  using TiledMMAPV = typename CollectiveMainloop::TiledMMAPV;
   using TileShapeQK = typename CollectiveMainloop::TileShapeQK;
-  using TileShapePV = typename CollectiveMainloop::TileShapePV;
   using SubgroupLayoutQK = typename CollectiveMainloop::SubgroupLayoutQK;
   using ElementQ = typename CollectiveMainloop::TensorQ::element_type;
   using ElementK = typename CollectiveMainloop::TensorK::element_type;
   using ElementV = typename CollectiveMainloop::TensorV::element_type;
-
   using StrideQ = decltype(stride(typename CollectiveMainloop::TensorQ{}));
   using StrideK = decltype(stride(typename CollectiveMainloop::TensorK{}));
   using StrideV = decltype(stride(typename CollectiveMainloop::TensorV{}));
-
   using SGPerWG = typename CollectiveMainloop::SGPerWG;
-
   using FragA = typename CollectiveMainloop::FragA;
   using FragARow = typename CollectiveMainloop::FragARow;
-
-  // Tile scheduler derived types
   using TileScheduler = TileScheduler_;
   using TileSchedulerParams = typename TileScheduler::Params;
-
-  // Epilogue derived types
   using CollectiveEpilogue = CollectiveEpilogue_;
   using EpilogueArguments = typename CollectiveEpilogue::Arguments;
   using EpilogueParams = typename CollectiveEpilogue::Params;
-
   using TileShapeO = typename CollectiveEpilogue::TileShapeO;
   using ElementO = typename CollectiveEpilogue::TensorO::element_type;
   using StrideO = decltype(stride(typename CollectiveEpilogue::TensorO{}));
-
-  // Kernel level shared memory storage
   using MainloopSharedStorage = typename CollectiveMainloop::SharedStorage;
   using EpilogueSharedStorage = typename CollectiveEpilogue::SharedStorage;
   union SharedStorage {
@@ -116,7 +100,6 @@ class XeSageFwdKernel {
 
   static constexpr int SharedStorageSize = is_empty_v<SharedStorage> ? size_t(0) : sizeof(SharedStorage);
 
-  // Device side arguments
   struct KernelArguments {
     ProblemShape shape;
     const ElementQ* Q;
@@ -141,17 +124,12 @@ class XeSageFwdKernel {
     KernelHardwareInfo hw_info{};
   };
 
-  // Kernel entry point API
   struct Params {
     KernelParams kernel;
     MainloopParams mainloop;
     EpilogueParams epilogue;
     TileSchedulerParams scheduler;
   };
-
-  //
-  // Methods
-  //
 
   static Params to_underlying_arguments(Arguments const& args, void* workspace) {
     return {args.kernel, CollectiveMainloop::to_underlying_arguments(args.mainloop, workspace),
@@ -199,19 +177,17 @@ class XeSageFwdKernel {
     int head_group_q = s.num_heads_q / s.num_heads_kv;
 
     int thr_id = int(ThreadIdxX());
-    int sub_group_id = thr_id / intel::sg_size;
-    int q_sg_tile = get<0>(shape_div(TileShapeQK{}, shape(SubgroupLayoutQK{})));
-
     auto cS = make_identity_tensor(take<0, 2>(TiledMMAQK{}.tile_mnk()));
     auto tScS = TiledMMAQK{}.get_slice(thr_id).partition_C(cS);
     auto q_offset_wi = get<0>(tScS(0));
     auto q_offset_sg = group_broadcast(sycl::ext::oneapi::this_work_item::get_sub_group(), q_offset_wi, 0);
+    constexpr int q_sg_tile = get<0>(shape_div(TileShapeQK{}, shape(SubgroupLayoutQK{})))();
 
     TileScheduler tile_scheduler{params.scheduler};
 
     CUTLASS_PRAGMA_NO_UNROLL
     for (; tile_scheduler.is_valid(); ++tile_scheduler) {
-      auto [blk_q, blk_v, head_q, idx_b] = tile_scheduler.get_block_coord();  // (Q,V,h,b)
+      auto [blk_q, blk_v, head_q, idx_b] = tile_scheduler.get_block_coord();
       auto blk_qv = make_coord(blk_q, blk_v);
       int head = head_q / head_group_q;
 
@@ -252,7 +228,6 @@ class XeSageFwdKernel {
       auto shape_K = make_shape(seq_len_kv, s.head_size_qk, s.num_heads_kv, batch_dim);
       auto shape_V = make_shape(s.head_size_vo, seq_len_kv, s.num_heads_kv, batch_dim);
       auto shape_O = make_shape(seq_len_qo, s.head_size_vo, s.num_heads_q, batch_dim);
-
       auto shape_K_cache = make_shape(seq_len_kv_cache, s.head_size_qk, s.num_heads_kv, batch_dim);
       auto shape_V_cache = make_shape(s.head_size_vo, seq_len_kv_cache, s.num_heads_kv, batch_dim);
 
@@ -262,17 +237,45 @@ class XeSageFwdKernel {
       auto dcK_cache = const_cast<ElementK*>(p.K_cache + offset_k_cache);
       auto dcV_cache = const_cast<ElementV*>(p.V_cache + offset_v_cache);
       int seq_q_pad = (seq_len_qo + params.mainloop.scale_block_size - 1) / params.mainloop.scale_block_size;
-      int seq_kv_pad = (seq_len_kv + params.mainloop.scale_block_size - 1) / params.mainloop.scale_block_size;
+      int seq_kv_total = seq_len_kv + seq_len_kv_cache;
+      int seq_kv_pad = (seq_kv_total + params.mainloop.scale_block_size - 1) / params.mainloop.scale_block_size;
       auto scaleQ = params.mainloop.scale_block_size
                         ? (float*)params.mainloop.qscale + (idx_b * s.num_heads_q * seq_q_pad + head_q * seq_q_pad)
-                        : nullptr;  // per head qscale
+                        : nullptr;
       auto scaleK = params.mainloop.scale_block_size
                         ? (float*)params.mainloop.kscale + (idx_b * s.num_heads_kv * seq_kv_pad + head * seq_kv_pad)
-                        : nullptr;  // per head kscale
+                        : nullptr;
       auto scaleV = params.mainloop.scale_block_size && params.mainloop.vscale
-        ? (float*)params.mainloop.vscale +
-          ((idx_b * s.num_heads_kv * seq_kv_pad + head * seq_kv_pad) * s.head_size_vo)
-        : nullptr;  // per head vscale, laid out as [seq_block, d]
+                        ? (float*)params.mainloop.vscale +
+                              ((idx_b * s.num_heads_kv * seq_kv_pad + head * seq_kv_pad) * s.head_size_vo)
+                        : nullptr;
+      int sparse_q_block = blk_q;
+      int sparse_q_rows_in_tile = 1;
+      int sparse_q_block_size = params.mainloop.scale_block_size;
+      if constexpr (has_sparse_q_block_size<MainloopParams>::value) {
+        if (params.mainloop.sparse_q_block_size > 0) {
+          sparse_q_block_size = params.mainloop.sparse_q_block_size;
+        }
+      }
+      if (sparse_q_block_size > 0) {
+        int q_blocks_per_tile = cute::max(1, int(get<0>(TileShapeQK{})) / sparse_q_block_size);
+        sparse_q_block = blk_q * q_blocks_per_tile;
+        sparse_q_rows_in_tile = q_blocks_per_tile;
+        if (params.mainloop.num_q_blocks > 0) {
+          sparse_q_rows_in_tile = cute::min(sparse_q_rows_in_tile, params.mainloop.num_q_blocks - sparse_q_block);
+          sparse_q_block = cute::min(sparse_q_block, params.mainloop.num_q_blocks - 1);
+        }
+      }
+      auto valid_blocks_base = params.mainloop.valid_block_num
+                                   ? params.mainloop.valid_block_num +
+                                         (idx_b * s.num_heads_q + head_q) * params.mainloop.num_q_blocks +
+                                         sparse_q_block
+                                   : nullptr;
+      auto lut_rows_base = params.mainloop.lut
+                         ? params.mainloop.lut +
+                               (((idx_b * s.num_heads_q + head_q) * params.mainloop.num_q_blocks + sparse_q_block) *
+                                params.mainloop.num_k_blocks)
+                         : nullptr;
       auto ptrO = p.O + offset_o;
 
       auto stride_q = is_var_len ? cutlass::make_cute_packed_stride(StrideQ{}, shape_Q) : p.dQ;
@@ -289,24 +292,29 @@ class XeSageFwdKernel {
       Tensor V_cache = make_tensor(make_gmem_ptr(dcV_cache), make_layout(shape_V_cache, stride_v_cache));
       Tensor O = make_tensor(make_gmem_ptr(ptrO), make_layout(shape_O, stride_o));
 
-      // O accumulator types
       FragA tArA;
       FragARow tA_max, tA_sum;
 
-      // Main loop
       int l_coord = is_var_len ? 0 : idx_b;
-      CollectiveMainloop mainloop(params.mainloop, shared_storage.mainloop);
+      auto mainloop_params = params.mainloop;
+      if constexpr (has_canonical_nhd_k<MainloopParams>::value) {
+        mainloop_params.canonical_nhd_k =
+            !is_var_len &&
+            int(get<1>(stride_k)) == 1 &&
+            int(get<2>(stride_k)) == s.head_size_qk &&
+            int(get<0>(stride_k)) == s.num_heads_kv * s.head_size_qk;
+      }
+      CollectiveMainloop mainloop(mainloop_params, shared_storage.mainloop);
       mainloop(Q(_, _, head_q, l_coord), K(_, _, head, l_coord), V(_, _, head, l_coord), tArA, tA_max, tA_sum, blk_qv,
                0, k_blocks, k_blocks, thr_id, seq_len, seq_len_kv_cache, idx_b, scaleQ, scaleK, scaleV,
-               full_tile_offset, discard_seq_coord,
-               /*lut_rows_base=*/nullptr, /*valid_blocks_base=*/nullptr, /*sparse_q_rows_in_tile=*/1,
-               K_cache(_, _, head, l_coord), V_cache(_, _, head, l_coord));
+               full_tile_offset, discard_seq_coord, lut_rows_base, valid_blocks_base, sparse_q_rows_in_tile,
+               K_cache(_, _, head, l_coord),
+               V_cache(_, _, head, l_coord));
 
       if constexpr (!is_empty_v<MainloopSharedStorage> && !is_empty_v<EpilogueSharedStorage>) {
         sycl::group_barrier(get_work_group<3>());
       }
 
-      // Epilogue
       CollectiveEpilogue epilogue{params.epilogue, shared_storage.epilogue};
       epilogue(O(_, _, head_q, l_coord), tArA, tA_max, tA_sum, blk_qv, thr_id);
     }
