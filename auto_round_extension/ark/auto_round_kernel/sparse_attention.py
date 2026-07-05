@@ -140,7 +140,7 @@ def sage_sparse(
         raise ValueError(
             "Only the decoupled sparse config "
             "(head_dim=128, quant_block_size=64, q_tile_override=256, "
-            "sparse_q_block_tokens=256, sparse_k_block_tokens=64, tensor_layout='NHD') is supported"
+            "sparse_q_block_tokens=256, sparse_k_block_tokens=64, tensor_layout in {'HND', 'NHD'}) is supported"
         )
 
     lib = get_lib(query)
@@ -989,7 +989,7 @@ def _is_sparse_qtile256_row64k_config(
         and q_tile_override == 256
         and sparse_q_block_tokens == 256
         and sparse_k_block_tokens == 64
-        and _normalize_tensor_layout(tensor_layout) == "NHD"
+        and _normalize_tensor_layout(tensor_layout) in {"HND", "NHD"}
     )
 
 
