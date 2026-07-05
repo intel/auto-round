@@ -27,7 +27,6 @@ os.environ.setdefault("IGC_RemoveUnusedIdImplicitLocalIDs", "0")
 LAYOUT_HND = 0
 LAYOUT_NHD = 1
 
-
 class ARK_DT:
     float64 = 64
     float32 = 32
@@ -383,7 +382,6 @@ def woqgemm(
     scale_type,
     asym,
 ):
-    _validate_packed_blob(B, n, k, groupsize, compute_type, weight_type, scale_type, asym)
     m = A.shape[0]
     lib = get_lib(A)
     ct = cvtstr_dtype(compute_type)
@@ -406,71 +404,8 @@ def woqgemm(
         wt,
         st,
         asym,
-        B.numel(),
     )
     return C
-
-
-def _validate_packed_blob(
-    blob: torch.Tensor,
-    n: int,
-    k: int,
-    groupsize: int,
-    compute_type: str,
-    weight_type: str,
-    scale_type: str,
-    asym: bool,
-) -> None:
-    """Validate a packed-weight blob before passing it to native code.
-
-    Raises ``TypeError`` or ``ValueError`` if any check fails, preventing
-    out-of-bounds memory access in the native ``unpack_weight`` /
-    ``woqgemm`` path when the blob is malformed or the parameters are
-    inconsistent with the blob contents.
-    """
-    if not isinstance(blob, torch.Tensor):
-        raise TypeError(f"blob must be a torch.Tensor, got {type(blob).__name__}")
-
-    if blob.device.type not in ("cpu", "xpu"):
-        raise ValueError(f"blob must reside on cpu or xpu, got {blob.device.type}")
-
-    if blob.dtype != torch.int8:
-        raise ValueError(f"blob must have dtype torch.int8, got {blob.dtype}")
-
-    if blob.dim() != 1:
-        raise ValueError(f"blob must be a 1-D tensor, got {blob.dim()}-D")
-
-    if not isinstance(n, (int,)) or n <= 0:
-        raise ValueError(f"n must be a positive integer, got {n!r}")
-    if not isinstance(k, (int,)) or k <= 0:
-        raise ValueError(f"k must be a positive integer, got {k!r}")
-    if not isinstance(groupsize, (int,)) or groupsize <= 0:
-        raise ValueError(f"groupsize must be a positive integer, got {groupsize!r}")
-    if not isinstance(asym, bool):
-        raise TypeError(f"asym must be a bool, got {type(asym).__name__}")
-
-    valid_types = {
-        "fp32",
-        "fp16",
-        "bf16",
-        "int8",
-        "int4",
-        "int2",
-        "int3",
-        "int5",
-        "int6",
-        "int7",
-        "fp8_e4m3",
-        "fp8_e5m2",
-        "fp8_e8m0",
-    }
-    valid_compute_types = valid_types | {"auto"}
-    if compute_type not in valid_compute_types:
-        raise ValueError(f"compute_type must be one of {valid_compute_types}, got {compute_type!r}")
-    if weight_type not in valid_types:
-        raise ValueError(f"weight_type must be one of {valid_types}, got {weight_type!r}")
-    if scale_type not in valid_types:
-        raise ValueError(f"scale_type must be one of {valid_types}, got {scale_type!r}")
 
 
 # QB: k*n:int8,  scaleB: k/blocksize*n:DT
@@ -485,12 +420,6 @@ def _repack_quantized_weight_core(
     scale_type,
     asym,
 ):
-    if not isinstance(QB, torch.Tensor) or QB.dim() != 2:
-        raise ValueError(f"QB must be a 2-D tensor, got shape {QB.shape!r}")
-    if not isinstance(scaleB, torch.Tensor) or scaleB.dim() != 2:
-        raise ValueError(f"scaleB must be a 2-D tensor, got shape {scaleB.shape!r}")
-    if not isinstance(zp, torch.Tensor):
-        raise TypeError(f"zp must be a torch.Tensor, got {type(zp).__name__}")
     k = QB.shape[0]
     n = QB.shape[1]
     lib = get_lib(QB)
@@ -530,7 +459,6 @@ def _unpack_weight_core(
     scale_type,
     asym,
 ):
-    _validate_packed_blob(blob, n, k, groupsize, compute_type, weight_type, scale_type, asym)
     lib = get_lib(blob)
     stream = get_stream(blob)
     ct = cvtstr_dtype(compute_type)
@@ -551,7 +479,6 @@ def _unpack_weight_core(
         wt,
         st,
         asym,
-        blob.numel(),
     )
     if blob.device.type == "cpu":
         return out.T
@@ -1014,7 +941,6 @@ def sage_pvi8(
     )
     return O
 
-
 def sagev1(
     query: torch.Tensor,
     key: torch.Tensor,
@@ -1279,6 +1205,21 @@ def sageattn(
         **kwargs,
     )
 
+from .sparse_attention import (
+    _block_map_lut_torch,
+    _build_block_causal_mask,
+    _build_sparge_preprocess_context,
+    _finalize_sparge_preprocess_outputs,
+    _from_hnd,
+    _sparge_preprocess_topk_torch,
+    _sequence_mean_native_layout,
+    _slice_sequence_native_layout,
+    _to_hnd,
+    sage_sparse,
+    sparge_block_map_to_mask,
+    sparge_preprocess_topk,
+    sparge_sage2_attn_meansim_topk_xpu,
+)
 
 def sageattn_varlen(
     q: torch.Tensor,
