@@ -134,9 +134,14 @@ def test_preprocess_context_accepts_explicit_query_tile_tokens_256():
     not (hasattr(torch, "xpu") and torch.xpu.is_available()),
     reason="XPU not available",
 )
-def test_preprocess_context_accepts_decoupled_sparse_qtile256_row64k():
-    q = torch.randn((1, 2, 512, 128), device="xpu", dtype=torch.float16)
-    k = torch.randn((1, 2, 512, 128), device="xpu", dtype=torch.float16)
+@pytest.mark.parametrize("tensor_layout", ("HND", "NHD"))
+def test_preprocess_context_accepts_decoupled_sparse_qtile256_row64k(tensor_layout: str):
+    if tensor_layout == "HND":
+        q = torch.randn((1, 2, 512, 128), device="xpu", dtype=torch.float16)
+        k = torch.randn((1, 2, 512, 128), device="xpu", dtype=torch.float16)
+    else:
+        q = torch.randn((1, 512, 2, 128), device="xpu", dtype=torch.float16)
+        k = torch.randn((1, 512, 2, 128), device="xpu", dtype=torch.float16)
 
     ctx = _build_sparge_preprocess_context(
         q,
@@ -147,7 +152,7 @@ def test_preprocess_context_accepts_decoupled_sparse_qtile256_row64k():
         topk=0.5,
         attention_sink=False,
         quant_block_size=64,
-        tensor_layout="NHD",
+        tensor_layout=tensor_layout,
         query_tile_tokens=256,
         sparse_q_block_tokens=256,
         sparse_k_block_tokens=64,

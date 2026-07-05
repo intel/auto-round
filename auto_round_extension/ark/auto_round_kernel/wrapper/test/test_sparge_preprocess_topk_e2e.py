@@ -280,20 +280,19 @@ def main() -> None:
         run_case(128, topk=0.25, is_causal=False, tensor_layout=tensor_layout)
         run_case(128, topk=0.5, is_causal=False, tensor_layout=tensor_layout, query_tile_tokens=256)
         run_case(128, topk=0.5, is_causal=False, tensor_layout=tensor_layout, q_tile_override=256)
-        if tensor_layout == "NHD":
-            run_case(
-                128,
-                topk=0.5,
-                is_causal=False,
-                tensor_layout=tensor_layout,
-                q_tile_override=256,
-                sparse_q_block_tokens=256,
-                sparse_k_block_tokens=64,
-                seq_len_q=512,
-                seq_len_kv=512,
-                num_heads_q=2,
-                num_heads_kv=2,
-            )
+        run_case(
+            128,
+            topk=0.5,
+            is_causal=False,
+            tensor_layout=tensor_layout,
+            q_tile_override=256,
+            sparse_q_block_tokens=256,
+            sparse_k_block_tokens=64,
+            seq_len_q=512,
+            seq_len_kv=512,
+            num_heads_q=2,
+            num_heads_kv=2,
+        )
         run_case(
             128,
             topk=0.5,
