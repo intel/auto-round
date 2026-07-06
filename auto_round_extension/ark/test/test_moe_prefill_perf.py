@@ -41,6 +41,16 @@ How to run::
 
 The ``-s`` flag is required to see the printed timing tables and TFLOPS.
 
+.. note::
+
+    This file is **skipped by default** when discovered by a broad
+    ``pytest`` invocation (e.g. ``pytest auto_round_extension/ark/test``)
+    because the MoE prefill perf sweep is too time-consuming for a
+    routine CI pass. To include it in a broad run, pass
+    ``--run-moe-prefill-perf`` or select the file / its marker
+    explicitly (``pytest test_moe_prefill_perf.py`` or
+    ``pytest -m moe_prefill_perf``).
+
 Pass ``--minimax-real-only`` to restrict the sweep to the ``"minimax real"``
 rows only (the heavy-tailed tokens-per-expert distribution)::
 
@@ -576,6 +586,7 @@ def _print_row(
 # ---------------------------------------------------------------------------
 
 
+@pytest.mark.moe_prefill_perf
 @pytest.mark.skipif(bool(_PREFILL_SKIP), reason=_PREFILL_SKIP or "ok")
 class TestMoEGemmPrefillPerf:
     """Median XPU-event timings of ``moe_gemm`` vs a single-``torch.bmm`` baseline.
