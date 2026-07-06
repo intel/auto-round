@@ -881,6 +881,117 @@ static void ark_cpu_kv_update(torch_ptr KCache, torch_ptr VCache, torch_ptr K, t
                             append_len, head_dim, capacity, start_pos);
 }
 
+// ---------------------------------------------------------------------------
+// NS-parity persistent packed KV cache Python ABI (Tier 1 / internal).
+//
+// These four functions expose the packed-cache path for Python consumers:
+//   ark_cpu_packed_kv_elems  — query the element counts for a given cache shape
+//   ark_cpu_update_packed_k  — append raw K into the persistent packed K cache
+//   ark_cpu_update_packed_v  — append raw V into the persistent packed V cache
+//   ark_cpu_bestla_sdpa_packed — forward attention over a packed K/V cache
+//
+// All four are gated by ARK_UNSAFE_BESTLA_MIXED_SDPA (same gate as routes 1/2).
+// kv_dtype must be F16 (15) or BF16 (14) — matching BTLA_DTYPE values.
+// ---------------------------------------------------------------------------
+
+// Returns (k_elems, v_elems): element counts for 1D allocation of the packed cache.
+static std::pair<int64_t, int64_t> ark_cpu_packed_kv_elems(int batch, int num_heads_kv, int capacity, int head_dim,
+                                                            int kv_dtype_int) {
+  auto shape = ark::cpu::packed_kv_cache_shape(batch, num_heads_kv, capacity, head_dim,
+                                               static_cast<BTLA_DTYPE>(kv_dtype_int));
+  // Each packed head occupies k_head_elems / v_head_elems elements; total over all
+  // batch×head slots gives the required 1D buffer size (in kv_dtype elements).
+  int64_t k_elems = static_cast<int64_t>(shape.k_head_elems) * batch * num_heads_kv;
+  int64_t v_elems = static_cast<int64_t>(shape.v_head_elems) * batch * num_heads_kv;
+  return {k_elems, v_elems};
+}
+
+// Append raw K tokens at [start_pos, start_pos+append_len) into the packed K cache.
+static void ark_cpu_update_packed_k(torch_ptr cache_k, torch_ptr key, int k_stride_s, int k_stride_d, int k_stride_h,
+                                    int k_stride_b, int kv_dtype_int, int batch, int num_heads_kv, int append_len,
+                                    int head_dim, int capacity, int start_pos) {
+  auto shape = ark::cpu::packed_kv_cache_shape(batch, num_heads_kv, capacity, head_dim,
+                                               static_cast<BTLA_DTYPE>(kv_dtype_int));
+  ark::cpu::update_packed_k_cache((void*)cache_k, (const void*)key, shape,
+                                  {k_stride_s, k_stride_d, k_stride_h, k_stride_b}, batch, num_heads_kv, append_len,
+                                  head_dim, start_pos, static_cast<BTLA_DTYPE>(kv_dtype_int));
+}
+
+// Append raw V tokens at [start_pos, start_pos+append_len) into the packed V cache.
+static void ark_cpu_update_packed_v(torch_ptr cache_v, torch_ptr value, int v_stride_d, int v_stride_s, int v_stride_h,
+                                    int v_stride_b, int kv_dtype_int, int batch, int num_heads_kv, int append_len,
+                                    int head_dim, int capacity, int start_pos) {
+  auto shape = ark::cpu::packed_kv_cache_shape(batch, num_heads_kv, capacity, head_dim,
+                                               static_cast<BTLA_DTYPE>(kv_dtype_int));
+  ark::cpu::update_packed_v_cache((void*)cache_v, (const void*)value, shape,
+                                  {v_stride_d, v_stride_s, v_stride_h, v_stride_b}, batch, num_heads_kv, append_len,
+                                  head_dim, start_pos, static_cast<BTLA_DTYPE>(kv_dtype_int));
+}
+
+// Forward attention over a pre-packed K/V cache.  Requires ARK_UNSAFE_BESTLA_MIXED_SDPA=1.
+// q_dtype must be F32 (10); kv_dtype must be F16 (15) or BF16 (14).
+// sl_kv is the current valid sequence length (must be <= capacity).
+static void ark_cpu_bestla_sdpa_packed(torch_ptr Q, torch_ptr K_packed, torch_ptr V_packed, torch_ptr O,
+                                       int q_stride_s, int q_stride_d, int q_stride_h, int q_stride_b,
+                                       int o_stride_s, int o_stride_d, int o_stride_h, int o_stride_b, int q_dtype,
+                                       int kv_dtype_int, int batch, int num_heads_q, int num_heads_kv, int seq_len_q,
+                                       int seq_len_kv, int capacity, int head_dim, float softmax_scale, bool is_causal,
+                                       bool use_alibi, bool use_tanh, bool prefer_fp32, int n_padding) {
+  const char* const unsafe_env = std::getenv("ARK_UNSAFE_BESTLA_MIXED_SDPA");
+  if (unsafe_env == nullptr || std::strcmp(unsafe_env, "0") == 0) {
+    throw std::runtime_error(
+        "ark_cpu_bestla_sdpa_packed: requires ARK_UNSAFE_BESTLA_MIXED_SDPA=1 "
+        "(packed BestLA mixed-precision path is experimental)");
+  }
+  if (static_cast<BTLA_DTYPE>(q_dtype) != BTLA_DTYPE::F32) {
+    throw std::invalid_argument("ark_cpu_bestla_sdpa_packed: q_dtype must be F32 (10)");
+  }
+  auto shape = ark::cpu::packed_kv_cache_shape(batch, num_heads_kv, capacity, head_dim,
+                                               static_cast<BTLA_DTYPE>(kv_dtype_int));
+  ark::cpu::attn_fwd_args_t bargs;
+  bargs.Q = (void*)Q;
+  bargs.K = (void*)K_packed;
+  bargs.V = (void*)V_packed;
+  bargs.dst = (void*)O;
+  bargs.QK_scale = softmax_scale;
+  bargs.attn_flags = ark::cpu::ATTN_FLAG_NONE;
+  if (is_causal) bargs.attn_flags |= ark::cpu::ATTN_FLAG_IS_CAUSAL;
+  if (use_alibi) bargs.attn_flags |= ark::cpu::ATTN_FLAG_IS_ALIBI8;
+  if (use_tanh) bargs.attn_flags |= ark::cpu::ATTN_FLAG_IS_TANH30;
+  if (prefer_fp32) bargs.attn_flags |= ark::cpu::ATTN_FLAG_PREFER_FP32;
+  if (n_padding > 0) bargs.attn_flags |= ark::cpu::ATTN_FLAG_PADDING_RIGHT;
+  bargs.n_padding = n_padding;
+  bargs.batch_size = batch;
+  bargs.head_num = num_heads_q;
+  bargs.heads_kv = num_heads_kv;
+  bargs.head_size = head_dim;
+  bargs.sl_q = seq_len_q;
+  bargs.sl_kv = seq_len_kv;
+  bargs.Q_layout = ark::cpu::ATTN_FWD_LAYOUT_PLAIN;
+  bargs.dst_layout = ark::cpu::ATTN_FWD_LAYOUT_PLAIN;
+  // K/V layouts are set by bestla_sdpa_forward_packed from shape; leave PLAIN here.
+  bargs.K_layout = ark::cpu::ATTN_FWD_LAYOUT_PLAIN;
+  bargs.V_layout = ark::cpu::ATTN_FWD_LAYOUT_PLAIN;
+  bargs.step_q_bs = q_stride_b;
+  bargs.step_q_head_num = q_stride_h;
+  bargs.step_q_sl = q_stride_s;
+  bargs.step_dst_bs = o_stride_b;
+  bargs.step_dst_head_num = o_stride_h;
+  bargs.step_dst_sl = o_stride_s;
+  // K/V strides are taken from shape inside bestla_sdpa_forward_packed.
+  bargs.step_k_bs = 0;
+  bargs.step_k_head_num = 0;
+  bargs.step_k_sl = 0;
+  bargs.step_k_head_size = 0;
+  bargs.step_v_bs = 0;
+  bargs.step_v_head_num = 0;
+  bargs.step_v_sl = 0;
+  bargs.step_v_head_size = 0;
+  bargs.tmp = nullptr;
+  bargs.threading = ark::CpuWrapper::get_threading();
+  ark::cpu::bestla_sdpa_forward_packed(bargs, shape, static_cast<BTLA_DTYPE>(kv_dtype_int));
+}
+
 #endif  // ARK_XPU && ARK_SYCL_TLA
 
 }  // namespace ark
@@ -966,5 +1077,9 @@ PYBIND11_MODULE(PY_NAME, m) {
 #endif  // ARK_SYCL_TLA
 #elif !defined(ARK_XPU)
   m.def("ark_cpu_kv_update", &ark::ark_cpu_kv_update);
+  m.def("ark_cpu_packed_kv_elems", &ark::ark_cpu_packed_kv_elems);
+  m.def("ark_cpu_update_packed_k", &ark::ark_cpu_update_packed_k);
+  m.def("ark_cpu_update_packed_v", &ark::ark_cpu_update_packed_v);
+  m.def("ark_cpu_bestla_sdpa_packed", &ark::ark_cpu_bestla_sdpa_packed);
 #endif
 }

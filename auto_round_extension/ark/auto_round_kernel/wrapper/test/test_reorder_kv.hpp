@@ -14,8 +14,8 @@
 
 #pragma once
 
-// Phase 4 Step 2: layout-correctness validation for the experimental raw->packed
-// K/V reorder bridge (ark::cpu::reorder_k_to_packed / reorder_v_to_packed).
+// Layout-correctness validation for the NS-parity raw->packed K/V reorder
+// bridge (ark::cpu::reorder_k_to_packed / reorder_v_to_packed).
 //
 // These checks do not run any BestLA GEMM. Instead they independently recompute
 // the byte address that the wired weight prologues read for each raw (seq,
@@ -141,7 +141,7 @@ struct TestReorderKV {
   }
 };
 
-// Phase 4 Step 4: persistent packed K/V cache + in-place update validation.
+// Persistent packed K/V cache + in-place update validation.
 // The persistent cache, sized for `capacity`, is filled incrementally
 // ([0,start_pos) then [start_pos,append_len)) and must byte-match a one-shot
 // reorder of the same final K/V sequence padded out to `capacity`.
@@ -219,9 +219,9 @@ struct TestPersistentPackedKV {
   }
 };
 
-// Phase 4 Step 5: logical-vs-padded capacity, zero-fill, and packed-forward arg
-// construction checks. Verifies update_packed_* reject writes past the logical
-// capacity even when buffers are padded, that padded regions stay zero, and that
+// Logical-vs-padded capacity, zero-fill, and packed-forward arg construction
+// checks. Verifies update_packed_* reject writes past the logical capacity even
+// when buffers are padded, that padded regions stay zero, and that
 // bestla_sdpa_forward_packed validates dtype/layout/capacity before any GEMM.
 struct TestPackedForwardSetup {
   TestPackedForwardSetup() { run_all(); }
@@ -299,11 +299,12 @@ struct TestPackedForwardSetup {
   }
 };
 
-// Phase 4.5 Step 5: pre-GEMM validation for the internal homogeneous SDPA
-// dispatch (ark::cpu::bestla_sdpa_forward_homogeneous). Like TestPackedForwardSetup
-// these checks never run a BestLA GEMM: they only exercise the argument-validation
-// gates that fire before any ISA-specific kernel is reached, so they are
-// deterministic on any CPU regardless of AVX512-FP16 / AMX-BF16 support.
+// Pre-GEMM validation for the internal homogeneous SDPA dispatch
+// (ark::cpu::bestla_sdpa_forward_homogeneous, routes 3 fp16×4 and 4 bf16×4).
+// Like TestPackedForwardSetup these checks never run a BestLA GEMM: they only
+// exercise the argument-validation gates that fire before any ISA-specific
+// kernel is reached, so they are deterministic on any CPU regardless of
+// AVX512-FP16 / AMX-BF16 support.
 struct TestHomogeneousForwardSetup {
   TestHomogeneousForwardSetup() { run_all(); }
 
@@ -371,12 +372,9 @@ struct TestHomogeneousForwardSetup {
       try { bestla_sdpa_forward_homogeneous(a, BTLA_DTYPE::F32); } catch (const std::exception&) { threw = true; }
       if (!threw) throw std::runtime_error("homogeneous unsupported dtype not rejected");
     }
-    // Phase 5: alibi/tanh are U for BOTH homogeneous routes and rejected PER ROUTE
-    // (route 3's fp16-score ScaleTrackMax<fp16,float> asserts them off; route 4's
-    // non-stable exp-sum epilogue has no alibi/tanh term) -- NOT via a shared up-front
-    // flag gate. Build route-valid args so the rejection comes from the route
-    // validator's alibi/tanh guard (message contains "route"), not an earlier
-    // layout/stride check.
+    // alibi/tanh are U for BOTH homogeneous routes and rejected PER ROUTE.
+    // Build route-valid args so the rejection comes from the route validator's
+    // alibi/tanh guard (message contains "route"), not an earlier layout/stride check.
     for (auto dt : {BTLA_DTYPE::F16, BTLA_DTYPE::BF16}) {
       for (auto flag : {ATTN_FLAG_IS_ALIBI8, ATTN_FLAG_IS_TANH30}) {
         std::vector<uint16_t> rq(64, 0), rk(64, 0), rv(64, 0), rd(64, 0);
@@ -386,11 +384,7 @@ struct TestHomogeneousForwardSetup {
           throw std::runtime_error("homogeneous alibi/tanh not rejected by the route validator");
       }
     }
-    // Phase 5 Step 1: prefer_fp32 is unsupported for BOTH homogeneous routes and is
-    // rejected per route (route 3 fp16 core is not COMP_FP32; route 4 non-stable
-    // path asserts prefer_fp32 off). Build route-valid args so the rejection comes
-    // from the route validator's prefer_fp32 guard, not an earlier layout/stride
-    // check, and assert the message is the route-specific one.
+    // prefer_fp32 is unsupported for BOTH homogeneous routes and is rejected per route.
     for (auto dt : {BTLA_DTYPE::F16, BTLA_DTYPE::BF16}) {
       std::vector<uint16_t> rq(64, 0), rk(64, 0), rv(64, 0), rd(64, 0);
       auto a = make_route_valid_args(rq, rk, rv, rd, dt);
@@ -508,16 +502,15 @@ struct TestHomogeneousForwardSetup {
   }
 };
 
-// Phase 5 Step 2: padding-right plumbing + validation for the MIXED SDPA entry
-// (ark::cpu::bestla_sdpa_forward, routes 1 f32/f16 and 2 f32/bf16). Both mixed
-// routes compose the fp32-score stable interface whose ScaleTrackMax epilogue
-// implements padding_type==2 (see the AVX2/AVX512F scale_track_max_fp32_fp32
-// paths), so padding-right is S: the entry forwards n_padding and validates the
-// boundary. Like the setups above, every case here is decided by the argument-
-// validation gates that fire BEFORE the ISA/threading gates and the raw->packed
-// reorder, so the rejection cases are deterministic on any CPU. The accept case
-// asserts padding-right with a valid boundary is no longer treated as an
-// unsupported/invalid flag -- it passes the padding gate and stops at the same
+// Padding-right plumbing + validation for routes 1/2 (ark::cpu::bestla_sdpa_forward,
+// f32/f16 and f32/bf16). Both mixed routes compose the fp32-score stable interface
+// whose ScaleTrackMax epilogue implements padding_type==2 (see the AVX2/AVX512F
+// scale_track_max_fp32_fp32 paths), so padding-right is S: the entry forwards
+// n_padding and validates the boundary. Like the setups above, every case here is
+// decided by the argument-validation gates that fire BEFORE the ISA/threading gates
+// and the raw->packed reorder, so the rejection cases are deterministic on any CPU.
+// The accept case asserts padding-right with a valid boundary is no longer treated as
+// an unsupported/invalid flag — it passes the padding gate and stops at the same
 // pre-kernel ISA/threading gate as a plain call (never a "padding-right" error).
 struct TestMixedPaddingRight {
   TestMixedPaddingRight() { run_all(); }
@@ -618,7 +611,8 @@ struct TestMixedPaddingRight {
   }
 };
 
-// Phase 5 (alibi + tanh closure): alibi/tanh wiring + per-route classification.
+// ---------------------------------------------------------------------------
+// Alibi/tanh wiring + per-route classification for routes 1/2 and 3/4.
 // Both mixed routes (ark::cpu::bestla_sdpa_forward, route 1 f32/f16 and route 2
 // f32/bf16) compose fp32-score cores whose ScaleTrackMax epilogue implements the
 // alibi slope and the tanh scale (the templated scale_track_max_fp32_fp32<HAS_ALIBI,
@@ -691,8 +685,8 @@ struct TestMixedAlibiTanh {
 };
 
 // ---------------------------------------------------------------------------
-// Phase 6: Numerical validation for mixed-route features (alibi, padding-right,
-// tanh). Each test builds a small attention problem, runs it through
+// Numerical validation for mixed-route features (alibi, padding-right, tanh).
+// Each test builds a small attention problem, runs it through
 // bestla_sdpa_forward, and compares against a scalar fp32 reference.
 //
 // Test dimensions: B=1, Hq=4, Hkv=2 (GQA 2×), Sq=4, Sk=8, D=32.

@@ -22,57 +22,51 @@ enum class SdpaLayout : int { HND = 0, NHD = 1 };
 
 void sdpa_forward(const MhaDenseArgs& args);
 
-// Neural-Speed-style BestLA attention entry (Phase 3 migration).
+// BestLA mixed-precision attention: float32 Q/dst, fp16 or bf16 K/V.
 //
-// Builds the dtype-typed `bestla_mha::attn_fwd_args_t<Q_T, K_T, V_T, DST_T>`
-// from the type-erased `attn_fwd_args_t` (Phase 1 ABI struct) and dispatches it
-// through `bestla_mha::bestla_fusion_attn_forward`, the migrated wrapper. The
-// K/V operand element type selects the specialization that is wired today:
-//   * BTLA_DTYPE::F16  -> attn_fwd_args_t<float, fp16, fp16, float>
-//   * BTLA_DTYPE::BF16 -> attn_fwd_args_t<float, bf16, bf16, float>
-// Q and dst are always FP32. Unsupported K/V dtypes raise std::invalid_argument.
+// Route 1 (kv_dtype == F16):  f32,f16,f16,f32  — stable fp32-score, AVX2.
+// Route 2 (kv_dtype == BF16): f32,bf16,bf16,f32 — stable fp32-score, AVX512F or AMX-BF16.
 //
-// The caller supplies the BestLA thread pool through `args.threading` (a
-// `bestla::parallel::IThreading*`, type-erased as void*); ARK passes
-// `CpuWrapper::get_threading()` so the attention path shares the same pool as
-// the rest of the CPU kernels. When `args.tmp` is null the wrapper scratch is
-// allocated internally (as a float-aligned buffer) for the duration of the
-// call. This entry validates PLAIN-strided operands and forwards the alibi/tanh
-// flags to the fp32-score epilogue (Phase 5: both are S for the mixed routes);
-// note, however, that the `step_*` stride interface being
-// HND/NHD-friendly does NOT mean the wired mixed-precision kernels accept raw
-// HND/NHD/PLAIN K/V. Those specializations require packed/reordered
-// (NTILE24/NTILE48) K/V; Phase 4 Step 1 added an internal raw->packed reorder so
-// the experimental mixed path can feed them. That reorder bridge stays behind
-// ARK_UNSAFE_BESTLA_MIXED_SDPA and the default Python mixed SDPA remains disabled
-// until correctness is verified. A persistent packed KV cache/update path and an
-// internal already-packed forward (bestla_sdpa_forward_packed) now exist
-// alongside this temporary bridge; both stay experimental and gated.
+// Exposure: TIER 1 (experimental/env-gated). Reachable from the Python sdpa()
+// only with ARK_UNSAFE_BESTLA_MIXED_SDPA=1.  The scalar Tier-0 fallback handles
+// the default Python path; this entry handles the BestLA mixed-precision route.
 //
-// Feature support (Phase 5 audit + wiring; see the matrix in sdpa.cpp for the full
-// per-route classification): both mixed routes support causal (sl_q<=sl_kv), GQA
-// (head_num a multiple of heads_kv), prefer_fp32 (route 2 uses it to pick the AVX512F
-// fp32-score path over AMX-BF16; route 1 is an accepted fp32-score no-op), padding-right
-// (Phase 5 Step 2 forwards n_padding to the fp32-score ScaleTrackMax padding_type==2
-// epilogue and validates 0 < n_padding <= sl_kv, mutually exclusive with causal) and
-// alibi/tanh (Phase 5: the fp32-score ScaleTrackMax epilogue implements the alibi slope
-// and tanh scale, both driven by the ALIBI8/TANH30 flags that make_typed_attn_args
-// already forwards -- no extra typed metadata needed), all validated here. Those two
-// flags stay unsupported (U) on the homogeneous fp16-score/non-stable routes, rejected
-// in bestla_sdpa_forward_homogeneous rather than here.
+// Feature support (both routes, all S): causal, GQA (head_num % heads_kv == 0),
+// padding-right (n_padding, mutually exclusive with causal), alibi (ALIBI8 flag),
+// tanh (TANH30 flag), prefer_fp32 (route-2 selects AVX512F path; no-op for route 1).
+// All features are validated before any kernel work; see the matrix in sdpa.cpp.
+//
+// K/V are received as raw PLAIN-strided operands and reordered internally into
+// the NTILE24 (fp16) or NTILE48 (bf16) packed layout the BestLA kernels require.
+// Use bestla_sdpa_forward_packed to skip this per-forward reorder when a
+// persistent packed KV cache is available. Threading is caller-supplied through
+// args.threading (a `bestla::parallel::IThreading*`); args.tmp is allocated
+// internally when null.
 void bestla_sdpa_forward(const attn_fwd_args_t& args, BTLA_DTYPE kv_dtype);
 
 // ---------------------------------------------------------------------------
-// Phase 4 Step 1: raw HND/NHD K/V -> Neural-Speed NTILE packed/reordered cache.
+// Packed/reordered K/V layout helpers (NS-parity persistent KV cache path).
 //
-// The wired BestLA mixed kernels (`bestla_fusion_attn_forward<float,fp16,...>` /
-// `<float,bf16,...>`) consume packed/reordered K/V, not the raw PLAIN
-// (HND/NHD-strided) tensors `bestla_sdpa_forward` receives. These helpers build
-// the bridge: they describe the packed cache geometry and fill it from raw K/V
-// so the kernel can be fed NTILE24 (fp16) / NTILE48 (bf16) row-packed operands.
-// fp16 K/V map to NTILE24_ROWPACK1, bf16 K/V to NTILE48_ROWPACK2. Phase 4 Step 2
-// validates the reorder layout against the prologue read addresses; the path is
-// still experimental and gated by ARK_UNSAFE_BESTLA_MIXED_SDPA only.
+// The BestLA mixed kernels (routes 1/2) consume K/V in NTILE row-packed
+// layout, not the raw PLAIN-strided tensors bestla_sdpa_forward receives.
+// These helpers build the bridge:
+//
+//   * fp16 K/V → NTILE24_ROWPACK1  (K: NTILE=24 over seq, ROWPACK=1 over head_size;
+//                                   V: NTILE=24 over head_size, ROWPACK=1 over seq)
+//   * bf16 K/V → NTILE48_ROWPACK2  (K: NTILE=48 over seq, ROWPACK=2 over head_size;
+//                                   V: NTILE=48 over head_size, ROWPACK=2 over seq)
+//
+// The persistent cache path (`packed_kv_cache_shape` / `update_packed_k/v_cache`
+// / `bestla_sdpa_forward_packed`) is the NS-parity runtime-ready path for
+// autoregressive decode: a fixed-capacity packed buffer is allocated once, updated
+// token-by-token, and passed directly to `bestla_sdpa_forward_packed` without
+// any per-forward reorder overhead.  This is the internal/experimental tier of
+// routes 1/2; it is gated behind ARK_UNSAFE_BESTLA_MIXED_SDPA alongside the
+// PLAIN entry.
+//
+// `reorder_kv_shape` / `reorder_kv_cache_elems` / `reorder_k/v_to_packed` are
+// used by bestla_sdpa_forward's internal per-forward bridge (raw→packed on every
+// call) and are shared with the persistent path.
 // ---------------------------------------------------------------------------
 
 // Per-(NTILE, ROWPACK) packed K/V geometry for a single shape + element type.
@@ -115,18 +109,15 @@ void kv_cache_update(void* cache_k, void* cache_v, const void* key, const void* 
                      int head_dim, int capacity, int start_pos);
 
 // ---------------------------------------------------------------------------
-// Phase 4 Step 4: persistent packed K/V cache + in-place update path.
+// Persistent packed KV cache: allocate a fixed-capacity packed buffer, clear
+// it, and update it incrementally.
 //
-// The temporary bridge above reorders the whole raw K/V into a packed cache on
-// every forward. To move toward a Neural-Speed-style persistent cache, these
-// helpers size a packed cache for a fixed `capacity` (>= sequence length) and
-// append raw K/V tokens directly into it at [start_pos, start_pos+append_len),
-// without re-reordering the prefix. Packed geometry/strides are identical to
-// reorder_kv_shape (fp16->NTILE24_ROWPACK1, bf16->NTILE48_ROWPACK2) but the seq
-// dim is padded to `capacity`. Still experimental and gated by
-// ARK_UNSAFE_BESTLA_MIXED_SDPA; not default-enabled and not yet routed by the
-// Python SDPA path. Source raw tensors are read only through stride fields, so
-// HND and NHD layouts work with no hard-coded assumptions.
+// Packed geometry/strides are identical to reorder_kv_shape (fp16→NTILE24_ROWPACK1,
+// bf16→NTILE48_ROWPACK2) but the seq dim is padded to `capacity`.  The
+// `logical_capacity` field in the returned shape records the real capacity so
+// update helpers reject writes past it even when the buffer is padded to a
+// NTILE/ROWPACK multiple.  Callers must pass zero-filled buffers (or call
+// `clear_packed_*_cache`) so padded/unwritten regions read as zero.
 // ---------------------------------------------------------------------------
 
 // Packed cache shape sized for a fixed capacity rather than the current seq.
@@ -154,71 +145,47 @@ void update_packed_v_cache(void* cache_v, const void* value, const ReorderKVShap
                            int start_pos, BTLA_DTYPE kv_dtype);
 
 // ---------------------------------------------------------------------------
-// Phase 4 Step 5: internal forward over an already-packed persistent K/V cache.
+// Forward over an already-packed persistent K/V cache (NS-parity decode path).
 //
-// bestla_sdpa_forward (above) keeps the temporary per-forward raw->packed
-// reorder bridge. This entry instead consumes a cache already filled by
-// update_packed_k_cache / update_packed_v_cache: K/V are NTILE24_ROWPACK1 (fp16)
-// or NTILE48_ROWPACK2 (bf16), step_k_*/step_v_* come from `shape`, sl_kv is the
-// current valid sequence length (<= shape.logical_capacity), and no reorder
-// happens inside. Q and dst stay PLAIN. Internal/experimental only: still gated
-// by ARK_UNSAFE_BESTLA_MIXED_SDPA, no default Python path, and true e2e
-// numerical validation requires a capable CPU extension build (AVX2/AVX512/AMX).
+// This entry consumes K/V already packed by update_packed_k/v_cache: K/V are
+// NTILE24_ROWPACK1 (fp16) or NTILE48_ROWPACK2 (bf16), step_k_*/step_v_* come
+// from `shape`, sl_kv is the current valid sequence length
+// (<= shape.logical_capacity), and no reorder happens inside.  Q and dst stay
+// PLAIN.
+//
+// Feature support: same as bestla_sdpa_forward (routes 1/2) — causal, GQA,
+// padding-right, alibi (ALIBI8), tanh (TANH30), and prefer_fp32 are all
+// validated and forwarded to the fp32-score epilogue.
+//
+// Exposure: internal/experimental, gated by ARK_UNSAFE_BESTLA_MIXED_SDPA
+// alongside the PLAIN entry.  This is the intended NS-parity persistent-cache
+// forward; promote to default once per-ISA CI coverage is in place.
 void bestla_sdpa_forward_packed(const attn_fwd_args_t& args, const ReorderKVShape& shape, BTLA_DTYPE kv_dtype);
 
 // ---------------------------------------------------------------------------
-// Phase 4.5 Step 5: internal runtime dispatch for the homogeneous attention
-// routes (Q == K == V == dst element type) migrated in steps 3-4.
+// Homogeneous attention routes (Tier 2 — internal-only by design).
 //
-// This is DISTINCT from bestla_sdpa_forward above, which drives the *mixed*
-// route (fp32 Q/dst + low-precision K/V). Here every operand shares one element
-// type, so dispatch follows the same Neural-Speed-style two-layer model the
-// wrapper uses:
-//   1. First layer -- the full Q/K/V/dst dtype tuple selects the launcher
-//      family via the typed `bestla_fusion_attn_forward<T, T, T, T>` overload:
-//        * BTLA_DTYPE::F16  -> `<fp16, fp16, fp16, fp16>`, the *stable*
-//          `mha_stable_interface_t` over `gemm::HCoreRowNAvx512fp16` (step 4).
-//        * BTLA_DTYPE::BF16 -> `<bf16, bf16, bf16, bf16>`, the *non-stable*
-//          `mha_interface_t` exp-sum path over `gemm::HCoreRowNAmxbf16` (step 3).
-//      These are two different launcher families -- exactly Neural Speed's
-//      structure -- NOT collapsed into one "homogeneous" branch.
-//   2. Second layer -- ISA/layout/stride conditions select the concrete kernel
-//      inside each dtype branch. That selection already lives in the wrapper
-//      overload (each checks the ISA its core needs -- AVX512-FP16 for fp16,
-//      AMX-BF16 for bf16 -- and its `weight_base_t` / batch-packer prologue
-//      handles the K/V layout at runtime). This entry adds the matching runtime
-//      capability gate up front so an unsupported CPU/build fails loudly with a
-//      clear message instead of relying on release-mode-stripped asserts. Phase
-//      4.5 Step 6 additionally promotes each launcher's layout/stride/GQA
-//      contract into explicit std::invalid_argument guards (validated per route,
-//      not collapsed) so raw PLAIN shape/stride restrictions are checked before
-//      any kernel work -- see the contract matrix in sdpa.cpp.
+// These two routes complete the non-int8 NS-parity surface for homogeneous
+// operand types (Q == K == V == dst element type), matching the two distinct
+// launcher families Neural Speed uses for this case:
 //
-// Unlike the mixed route, the homogeneous prologues pack/convert K/V themselves
-// (bf16 batch packers, fp16 plain `weight_base_t`), so NO external raw->packed
-// reorder bridge is applied here. Q and dst share the operand dtype. Threading
-// is caller-supplied through `args.threading`; `args.tmp` is allocated
-// internally (float-aligned) when null, as in the other entries.
+//   Route 3 — fp16 stable:   f16,f16,f16,f16  → mha_stable_interface_t over
+//             HCoreRowNAvx512fp16 (ISA: AVX512-FP16).  Supports causal + GQA.
+//             K/V must be PLAIN or NTILE24_ROWPACK1; Q/dst must be PLAIN.
 //
-// Internal/experimental only: this is not routed by the public Python C-ABI
-// (ark.cpp) yet -- the homogeneous fp16 stable kernel expects a `weight_base_t`
-// K/V layout the raw PLAIN [B,H,S,D] Python inputs do not satisfy -- so the
-// default user path stays on the scalar reference kernel. True e2e numerical
-// validation requires a capable CPU extension build (AVX512-FP16 / AMX-BF16).
+//   Route 4 — bf16 non-stable: bf16,bf16,bf16,bf16 → mha_interface_t (exp-sum)
+//             over HCoreRowNAmxbf16 (ISA: AMX-BF16).  Supports causal only
+//             (no GQA); all operands must be PLAIN.
 //
-// Tier 2 / internal (Phase 6 exposure policy, see sdpa.cpp): not wired in
-// ark.cpp until the packed K/V layout bridging for the homogeneous routes is
-// in place (route 3) or a specific AMX-BF16 use case is identified (route 4).
+// padding-right, alibi, tanh, and prefer_fp32 are U for both routes (fp16-score
+// and non-stable exp-sum epilogues do not implement them; they are rejected with
+// per-route messages before any kernel work).
 //
-// Feature support (Phase 5 audit; full matrix in sdpa.cpp): route 3 (fp16 stable)
-// supports causal and GQA (validated); route 4 (bf16 non-stable) supports causal but
-// NOT GQA (requires head_num == heads_kv). prefer_fp32 is unsupported for BOTH
-// homogeneous routes and rejected per route (route 3's fp16 core is not COMP_FP32;
-// route 4's non-stable exp-sum path asserts prefer_fp32 off). alibi/tanh are ALSO
-// unsupported (U) for both and rejected per route (route 3's fp16-score
-// ScaleTrackMax<fp16,float> asserts them off / ignores the slope+scale; route 4's
-// exp-sum epilogue has no alibi/tanh term) -- unlike the fp32-score mixed routes,
-// which do implement them. padding-right is rejected up front (U for both).
+// Exposure: NOT wired in ark.cpp / Python ABI.  Internal/experimental only.
+// Route 3 requires a packed K/V layout bridge for PLAIN inputs; route 4 is only
+// justified if an AMX-BF16 bf16-compute preference use case arises (route 2
+// already covers bf16 K/V with full feature set and fp32-score stability).
+// Both remain Tier 2 / internal-only as the correct NS-parity final state.
 void bestla_sdpa_forward_homogeneous(const attn_fwd_args_t& args, BTLA_DTYPE dtype);
 
 }  // namespace ark::cpu

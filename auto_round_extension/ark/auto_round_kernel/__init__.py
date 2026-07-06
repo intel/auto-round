@@ -1390,6 +1390,123 @@ def ark_cpu_kv_update(
     return key_cache, value_cache
 
 
+def ark_cpu_packed_kv_alloc(
+    batch: int,
+    num_heads_kv: int,
+    capacity: int,
+    head_dim: int,
+    *,
+    dtype: torch.dtype = torch.float16,
+    device: str = "cpu",
+) -> tuple:
+    """Allocate 1-D packed K and V cache tensors for the NS-parity BestLA decode path.
+
+    Returns (cache_k, cache_v) as 1-D tensors of the requested dtype.  The packed
+    geometry is NTILE24_ROWPACK1 for fp16, NTILE48_ROWPACK2 for bf16, matching the
+    layout expected by ark_cpu_update_packed_k/v and ark_cpu_bestla_sdpa_packed.
+
+    Requires ARK_UNSAFE_BESTLA_MIXED_SDPA=1 at forward time; allocation itself does
+    not check the env var.  Both tensors are zero-initialized (unwritten packed slots
+    read as zero).
+    """
+    cpu_lib = _get_cpu_lib()
+    if cpu_lib is None or not hasattr(cpu_lib, "ark_cpu_packed_kv_elems"):
+        raise NotImplementedError("ARK CPU packed KV cache is not available (requires BestLA CPU extension build)")
+    k_elems, v_elems = cpu_lib.ark_cpu_packed_kv_elems(batch, num_heads_kv, capacity, head_dim, cvt_dtype(dtype))
+    cache_k = torch.zeros(k_elems, dtype=dtype, device=device)
+    cache_v = torch.zeros(v_elems, dtype=dtype, device=device)
+    return cache_k, cache_v
+
+
+def ark_cpu_update_packed_kv(
+    cache_k: torch.Tensor,
+    cache_v: torch.Tensor,
+    key: torch.Tensor,
+    value: torch.Tensor,
+    start_pos: int,
+    capacity: int,
+    *,
+    tensor_layout: str = "HND",
+) -> None:
+    """Append raw K/V tokens at [start_pos, start_pos+append_len) into packed caches.
+
+    cache_k and cache_v must have been allocated by ark_cpu_packed_kv_alloc with
+    the same (batch, num_heads_kv, capacity, head_dim, dtype).  key and value are
+    raw HND/NHD tensors; tensor_layout selects the stride convention.  capacity
+    must match the value passed to ark_cpu_packed_kv_alloc.  The update is in-place.
+    """
+    cpu_lib = _get_cpu_lib()
+    if cpu_lib is None or not hasattr(cpu_lib, "ark_cpu_update_packed_k"):
+        raise NotImplementedError("ARK CPU packed KV update is not available (requires BestLA CPU extension build)")
+    kv_dtype = cvt_dtype(key.dtype)
+    batch, num_heads_kv, append_len, head_dim = _attention_shape(key, tensor_layout)
+    k_strides = _attention_strides_qko(key, tensor_layout)
+    v_strides = _attention_strides_v(value, tensor_layout)
+    cpu_lib.ark_cpu_update_packed_k(
+        cache_k.data_ptr(), key.data_ptr(),
+        *k_strides,
+        kv_dtype, batch, num_heads_kv, append_len, head_dim, capacity, int(start_pos),
+    )
+    cpu_lib.ark_cpu_update_packed_v(
+        cache_v.data_ptr(), value.data_ptr(),
+        *v_strides,
+        kv_dtype, batch, num_heads_kv, append_len, head_dim, capacity, int(start_pos),
+    )
+
+
+def ark_cpu_bestla_sdpa_packed(
+    query: torch.Tensor,
+    cache_k: torch.Tensor,
+    cache_v: torch.Tensor,
+    seq_len_kv: int,
+    capacity: int,
+    num_heads_kv: int,
+    *,
+    is_causal: bool = False,
+    scale: Optional[float] = None,
+    use_alibi: bool = False,
+    use_tanh: bool = False,
+    prefer_fp32: bool = False,
+    n_padding: int = 0,
+    tensor_layout: str = "HND",
+) -> torch.Tensor:
+    """BestLA mixed-precision SDPA forward over a persistent packed K/V cache.
+
+    query must be float32; cache_k/cache_v must be float16 or bfloat16 (produced
+    by ark_cpu_packed_kv_alloc + ark_cpu_update_packed_kv).  seq_len_kv is the
+    current valid sequence length in the cache (<= capacity).  capacity and
+    num_heads_kv must match the values used at allocation time.
+
+    Requires ARK_UNSAFE_BESTLA_MIXED_SDPA=1.  This is the NS-parity decode forward
+    for routes 1/2; see sdpa.h for the full feature support matrix.
+    """
+    import os
+    if os.environ.get("ARK_UNSAFE_BESTLA_MIXED_SDPA", "0") == "0":
+        raise RuntimeError(
+            "ark_cpu_bestla_sdpa_packed requires ARK_UNSAFE_BESTLA_MIXED_SDPA=1 "
+            "(packed BestLA mixed-precision path is experimental)"
+        )
+    cpu_lib = _get_cpu_lib()
+    if cpu_lib is None or not hasattr(cpu_lib, "ark_cpu_bestla_sdpa_packed"):
+        raise NotImplementedError("ARK CPU packed BestLA SDPA is not available (requires BestLA CPU extension build)")
+
+    kv_dtype = cvt_dtype(cache_k.dtype)
+    batch, num_heads_q, seq_len_q, head_dim = _attention_shape(query, tensor_layout)
+    sm_scale = scale if scale is not None else (head_dim ** -0.5)
+    output = _empty_attention_output(batch, num_heads_q, seq_len_q, head_dim,
+                                     dtype=query.dtype, device=query.device, tensor_layout=tensor_layout)
+    q_strides = _attention_strides_qko(query, tensor_layout)
+    o_strides = _attention_strides_qko(output, tensor_layout)
+    cpu_lib.ark_cpu_bestla_sdpa_packed(
+        query.data_ptr(), cache_k.data_ptr(), cache_v.data_ptr(), output.data_ptr(),
+        *q_strides, *o_strides,
+        cvt_dtype(query.dtype), kv_dtype,
+        batch, num_heads_q, num_heads_kv, seq_len_q, seq_len_kv, capacity, head_dim,
+        float(sm_scale), is_causal, use_alibi, use_tanh, prefer_fp32, n_padding,
+    )
+    return output
+
+
 def sageattn(
     q: torch.Tensor,
     k: torch.Tensor,

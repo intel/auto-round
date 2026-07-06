@@ -15,152 +15,49 @@
 #pragma once
 
 // -----------------------------------------------------------------------------
-// ARK CPU flash-attention wrapper.
+// ARK CPU flash-attention wrapper (NS-parity final state).
 //
-// This is a direct port of Neural Speed's BestLA attention wrapper
-// (neural_speed/core/layers/mha_dense_wrapper.h) adapted to the BestLA snapshot
-// vendored under auto_round_kernel/bestla. The eventual target is to land
-// `mha_stable_interface_t` plus the `bestla_fusion_attn_forward` dtype
-// specializations as the CPU SDPA runtime; the legacy scalar kernel in
-// mha_dense.cpp is retained only as a temporary build-safety fallback and is not
-// the long-term path.
+// This file is a direct port of Neural Speed's BestLA attention wrapper
+// (neural_speed/core/layers/mha_dense_wrapper.h), adapted to the BestLA
+// snapshot vendored under auto_round_kernel/bestla.
 //
-// Phase 2, step 1 migrates the BestLA-independent softmax/epilogue building
-// blocks that the stable interface composes:
-//   * mha_exp_ref
-//   * scale_write_back_t
-//   * scale_track_max_t
-//   * inplace_precompute_max_softmax_t
-//   * activation_identity_t
-//   * weight_base_t
+// Wired route specializations (non-int8, final state):
 //
-// Phase 2, step 2 migrates the GEMM dispatch / packer layer that the stable
-// interface launchers compose (kept in Neural Speed priority order):
-//   * launcher_base_weight_t          (LauncherBase + N-dim track-max kernels)
-//   * launcher_base_off_t             (LauncherBase + packed-weight batch offset)
-//   * storage_packed_weight_batch_t   (batched packed-weight storage object)
-//   * weight_pack_batch_bf16_base_t   (runtime bf16 weight packer base)
-//   * weight_pack_batch_bf16_trans_t  (transposed source variant)
-//   * weight_pack_batch_bf16_non_tr_t (non-transposed source variant)
-//   * weight_forward_n_tile48_t       (NTILE=48 already-laid-out weight prologue)
-//   * weight_cvt_bf16_ntile48_t       (bf16->dst NTILE=48 weight conversion)
-//   * weight_cvt_f16_n_tile24_t       (fp16->fp32 NTILE=24 weight conversion)
-// Runtime dispatch is intentionally NOT wired here; this step only lands the
-// reusable launcher/prologue/packer building blocks. The next step is
-// `mha_stable_interface_t`.
+//   Route 1 — f32,f16,f16,f32  (Tier 1, env-gated):
+//     bestla_fusion_attn_forward<float, fp16, fp16, float>
+//     Launcher: mha_stable_interface_t / gemm::HCoreRowNAvx2 (AVX2 score).
+//     Features: causal, GQA, padding-right, alibi (ALIBI8), tanh (TANH30),
+//               prefer_fp32 (fp32-score epilogue, always active).
 //
-// Phase 2, step 3 migrates the stable-softmax attention interface itself:
-//   * attn_fwd_args_t<Q_T, K_T, V_T, DST_T> (typed-pointer argument bundle that
-//     the wrapper consumes; mirrors Neural Speed's templated wrapper struct)
-//   * mha_stable_interface_t<L_Max, L_Scale> (PrologueQ/K/S/V, QK*/PV* arg
-//     typedefs, GemmQK/GemmPV, M_TILE/RT_ISA, and the full `compute()` flash
-//     attention launcher: QxK -> stable softmax -> PxV).
-// Runtime dispatch (sdpa.cpp / ark.cpp) and the dtype-specialized
-// `bestla_fusion_attn_forward` overloads are still NOT wired here; the
-// `instantiation_check` namespace only pins the interface to concrete BestLA
-// cores so it is type-checked / compiled at this step.
+//   Route 2 — f32,bf16,bf16,f32  (Tier 1, env-gated):
+//     bestla_fusion_attn_forward<float, bf16, bf16, float>
+//     Launcher: mha_stable_interface_t / gemm::HCoreRowNAvx512f (AVX512F score)
+//               or gemm::HCoreRowNAmxbf16 (AMX-BF16 score, ATTN_FLAG_PREFER_FP32
+//               off = bf16 matmul, on = fp32 matmul exactly as Neural Speed).
+//     Features: same as Route 1.
 //
-// Phase 2, step 4 migrates the dtype-specialized attention dispatch:
-//   * bestla_fusion_attn_forward<Q_T, K_T, V_T, DST_T> (generic primary
-//     template `= delete`, so unsupported operand-type combinations are
-//     rejected at compile time).
-//   * bestla_fusion_attn_forward<float, fp16, fp16, float> (AVX2 stable branch).
-//   * bestla_fusion_attn_forward<float, bf16, bf16, float> (AVX512F + AMX-BF16
-//     stable branches, gated by ATTN_FLAG_PREFER_FP32 like Neural Speed).
-// Only the fp32-score routes that compose `mha_stable_interface_t` are wired;
-// the bf16/bf16, fp16/fp16 and int8 overloads (and the AVX512-FP16 / AMX-BF16
-// ExpSum sub-paths) need the not-yet-migrated non-stable `mha_interface_t` /
-// `ScaleExpAccSumFp32Bf16` / avx512fp16 core and assert off as scaffolding.
-// Runtime dispatch (sdpa.cpp / ark.cpp) still does NOT call these overloads.
+//   Route 3 — f16,f16,f16,f16  (Tier 2, internal-only):
+//     bestla_fusion_attn_forward<fp16, fp16, fp16, fp16>
+//     Launcher: mha_stable_interface_t / gemm::HCoreRowNAvx512fp16 (AVX512-FP16).
+//     Features: causal, GQA. alibi/tanh/padding-right/prefer_fp32 are U (fp16
+//               score epilogue has no fp32-path term; rejected before kernel work).
+//     Exposure: NOT wired in ark.cpp; internal only.
 //
-// Phase 4.5, step 1 begins the homogeneous FP16/BF16 attention path (Q, K, V and
-// dst all one low-precision element type), the next major missing functional
-// block after the stable mixed-precision (fp32-score) closure and the packed KV
-// infrastructure. Neural Speed implements it with the *non-stable*
-// `mha_interface_t` (single-pass QK*V that folds the softmax denominator into the
-// PV accumulation via an ExpSum epilogue) rather than the two-pass
-// `mha_stable_interface_t` this file has migrated so far:
-//   * bestla_fusion_attn_forward<fp16, fp16, fp16, fp16> drives BestLA's
-//     `gemm::HCoreRowNAvx512fp16` (native fp16 A/B/C GemmCore, ISA AVX512-FP16)
-//     with a `kernel::wrapper::ScaleExpAccSumFp32<fp16>` QK epilogue.
-//   * bestla_fusion_attn_forward<bf16, bf16, bf16, bf16> drives the AMX-BF16
-//     `gemm::HCoreRowNAmxbf16` core with a `ScaleExpAccSumFp32<bf16>` /
-//     `ScaleExpAccSumFp32Bf16` QK epilogue (the `avx512_bf16` sub-path of
-//     `ScaleExpAccSumFp32` migrated at kernel_wrapper.h).
-// This step only lands the two homogeneous `bestla_fusion_attn_forward`
-// specializations as documented throwing scaffolding (so the operand-type
-// surface exists and unsupported ISA/layout dispatches fail loudly rather than
-// via a hard `= delete` compile error) plus compile-only `instantiation_check`
-// pins for the homogeneous GemmCores. The non-stable `mha_interface_t` launcher
-// and its ExpSum epilogue composition are NOT migrated here, and runtime
-// dispatch (sdpa.cpp / ark.cpp) still does NOT route to these overloads; both
-// are deferred to the following Phase 4.5 steps, mirroring how the mixed
-// overloads were first introduced as scaffolding in Phase 2 step 4.
+//   Route 4 — bf16,bf16,bf16,bf16  (Tier 2, internal-only):
+//     bestla_fusion_attn_forward<bf16, bf16, bf16, bf16>
+//     Launcher: mha_interface_t (non-stable exp-sum) / gemm::HCoreRowNAmxbf16.
+//     Features: causal only (no GQA, no alibi/tanh/padding-right/prefer_fp32).
+//     Exposure: NOT wired in ark.cpp; internal only.
 //
-// Phase 4.5, step 2 begins the real migration of that non-stable path:
-//   * scale_exp_acc_sum_fp32_t<T_DST> / ScaleExpAccSumFp32Bf16 -- the QK
-//     epilogue that scales, causal-masks, exponentiates and accumulates the
-//     per-row exp-sum, emitting the low-precision P matrix directly (delegates
-//     to `kernel::wrapper::ScaleExpAccSumFp32`). No running-max tracking, so no
-//     separate softmax pass; the denominator is applied by the PV epilogue.
-//   * mha_interface_t<L_ExpSum, L_Scale> -- the non-stable launcher: it packs
-//     raw PLAIN K/V into per-head reordered caches at runtime (reusing the
-//     already-migrated `storage_packed_weight_batch_t` /
-//     `weight_pack_batch_bf16_*_t` / `launcher_base_off_t` blocks), runs QxK
-//     with the ExpSum epilogue, reciprocates the exp-sum, then runs PxV with a
-//     `scale_write_back_t` epilogue applying 1/l_i. Only raw PLAIN K/V, no GQA /
-//     alibi / prefer_fp32, exactly as Neural Speed asserts.
-// Both are compile-pinned against the AMX-BF16 launcher pair in
-// `instantiation_check` (`MhaNonStableAmxBf16`). The homogeneous
-// `bestla_fusion_attn_forward` overloads are NOT yet wired to this launcher and
-// runtime dispatch (sdpa.cpp / ark.cpp) still does NOT route to them; connecting
-// the dispatch is the next Phase 4.5 step.
-//
-// API-drift notes vs Neural Speed's BestLA:
-//   * ARK's `kernel::wrapper::ScaleTrackMax::forward` takes an extra
-//     `padding_type` argument (0=dense, 1=causal, 2=right-padding) that Neural
-//     Speed folds into `causal_offset`. We surface it as `scale_track_max_t::
-//     Param::padding_type` (default 0) so both the causal and right-padding
-//     routes can be driven later without re-touching the call site.
-//   * Neural Speed gates `exp` behind the `MHA_2ND_EXP` macro; we mirror it but
-//     default it on to reuse BestLA's `kernel::ref::exp_ps_0_1`.
-//   * Neural Speed sizes the packed-weight buffer with `utils::bestla_dtype_size`
-//     and aligns storage to the `NE_ALIGNMENT` macro. ARK's vendored BestLA
-//     exposes neither; we use `utils::bestla_dtype_bytes` and the
-//     `bestla::storage::Alignment` (== 64) constant instead. See
-//     `storage_packed_weight_batch_t`.
-//   * Neural Speed's wrapper relies on `using namespace bestla` to reach the
-//     `padto / padto_le / remainsize / cpu_pointer_align` helpers and the
-//     `bf16 / fp16` types unqualified. In ARK these live under `bestla::utils`,
-//     so the launcher/packer bodies qualify them with `utils::` (and use
-//     `utils::bf16 / utils::fp16`). Logic is otherwise byte-for-byte.
-//   * ARK's `wrapper::gemm::LauncherBase` adds a `GEMVWrapper` fast path inside
-//     its own `run()`. Our launchers fully override `run()/run_block()` (as in
-//     Neural Speed) so that GEMV path is bypassed; only the member typedefs
-//     (`GemmCore/Param/AType/BType/CType/ISA/PrologueA/PrologueB/Epilogue`) are
-//     inherited, all of which the ARK base exposes under the same names.
-//   * Neural Speed's stable interface only handles dense + causal masking. ARK
-//     adds an `ATTN_FLAG_PADDING_RIGHT` route: when set, `compute()` clamps the
-//     unmasked K/V region to `attn_fwd_args_t::n_padding` and drives the QK
-//     epilogue with `scale_track_max_t::Param::padding_type = 2`
-//     (`causal_offset = n_padding`). ARK's `ScaleTrackMax` ref/AVX2/AVX512F
-//     paths implement padding_type 2; the int8/fp16 paths assert it off, so the
-//     right-padding route is currently fp32-score only (scaffolding).
-//   * Neural Speed reaches the running CPU device through `GetCPUDevice()` and a
-//     `NS_TP_MODEL` tensor-parallel block. ARK keeps `GetCPUDevice()` (vendored
-//     BestLA macro) but drops the TP block (`k_offset = 0`,
-//     `log_head_num = head_num`); alibi slope math is otherwise identical.
-//   * Neural Speed's wrapper struct is `ne_bestla::custom::mha::attn_fwd_args_t
-//     <...>` with bare `ne_attn_flags_t`. ARK mirrors it as
-//     `bestla_mha::attn_fwd_args_t<...>` using ARK's `attn_flags_t` /
-//     `ATTN_FWD_LAYOUT` (from mha_dense.h) and adds the `n_padding` field. The
-//     non-templated `ark::cpu::attn_fwd_args_t` (Phase 1, void* pointers) is the
-//     public C-style ABI struct and is unrelated to this typed wrapper struct.
-//   * Neural Speed's `bestla_fusion_attn_forward` overloads take no threading
-//     argument and pull a process-global pool from `ne_threading::get()`. ARK
-//     has no such global, so each overload takes an explicit
-//     `parallel::IThreading&` (the object `mha_stable_interface_t::compute`
-//     already consumes) and forwards it through.
+// Key API-drift notes vs Neural Speed's BestLA:
+//   * ARK's ScaleTrackMax adds a padding_type argument (0=dense, 1=causal,
+//     2=padding-right) that NS folds into causal_offset.
+//   * ARK does not carry NS_TP_MODEL tensor-parallel block; k_offset is always 0.
+//   * Storage alignment uses bestla::storage::Alignment (64) instead of
+//     NE_ALIGNMENT; per-element size uses utils::bestla_dtype_bytes.
+//   * Threading is explicit (parallel::IThreading&) rather than a global pool.
+//   * The public C-ABI struct ark::cpu::attn_fwd_args_t (void* pointers) is
+//     distinct from the typed wrapper struct bestla_mha::attn_fwd_args_t<...>.
 // -----------------------------------------------------------------------------
 
 #include <algorithm>

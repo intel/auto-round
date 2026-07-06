@@ -734,14 +734,26 @@ void bestla_sdpa_forward_packed(const attn_fwd_args_t& args, const ReorderKVShap
   if (args.head_size != shape.head_dim) {
     throw std::invalid_argument("ark::cpu::bestla_sdpa_forward_packed: head_size must match packed cache head_dim");
   }
-  // This internal already-packed entry keeps alibi/tanh/padding-right rejected. It is
-  // NOT one of the four routes in the sdpa.cpp feature matrix (it is the experimental
-  // gated packed-cache forward); although it drives the same fp32-score mixed kernels
-  // whose ScaleTrackMax epilogue is alibi/tanh-capable, wiring them here is deferred
-  // until this path leaves the ARK_UNSAFE_BESTLA_MIXED_SDPA gate.
-  constexpr attn_flags_t kUnsupportedFlags = ATTN_FLAG_IS_ALIBI8 | ATTN_FLAG_IS_TANH30 | ATTN_FLAG_PADDING_RIGHT;
-  if ((args.attn_flags & kUnsupportedFlags) != 0) {
-    throw std::invalid_argument("ark::cpu::bestla_sdpa_forward_packed: alibi, tanh and padding-right are not wired yet");
+  // The packed forward drives the same fp32-score mixed kernels as bestla_sdpa_forward
+  // (routes 1/2), so it shares their feature set: causal, GQA, padding-right, alibi,
+  // tanh, and prefer_fp32 are all S.  Apply the same per-feature validation here so
+  // an invalid combination fails before any kernel work.
+  if ((args.attn_flags & ATTN_FLAG_IS_CAUSAL) != 0 && args.sl_q > args.sl_kv) {
+    throw std::invalid_argument("ark::cpu::bestla_sdpa_forward_packed: causal mask requires sl_q <= sl_kv");
+  }
+  if ((args.attn_flags & ATTN_FLAG_PADDING_RIGHT) != 0) {
+    if ((args.attn_flags & ATTN_FLAG_IS_CAUSAL) != 0) {
+      throw std::invalid_argument(
+          "ark::cpu::bestla_sdpa_forward_packed: padding-right and causal masks are mutually exclusive");
+    }
+    if (args.n_padding <= 0 || args.n_padding > args.sl_kv) {
+      throw std::invalid_argument(
+          "ark::cpu::bestla_sdpa_forward_packed: padding-right requires 0 < n_padding <= sl_kv");
+    }
+  }
+  if (args.heads_kv <= 0 || args.head_num <= 0 || (args.head_num % args.heads_kv) != 0) {
+    throw std::invalid_argument(
+        "ark::cpu::bestla_sdpa_forward_packed: head_num must be a positive multiple of heads_kv (GQA groups)");
   }
   {
     auto* cpu = bestla::device::CpuDevice::getInstance();
