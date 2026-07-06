@@ -3,42 +3,31 @@
 We tested with a fake model because the main branch currently has layer name mismatches between Transformers and GGUF.
 
 ~~~bash
-python3 -m auto_round Qwen/Qwen3-8B     --options "gguf:q2_k_s,gguf:q4_k_s"     --target_bits 3.5     --ignore_scale_zp_bits     --iters 0     --format fake     --output_dir "./test_gguf"     --tasks mmlu,lambada_openai
+python3 -m auto_round Qwen/Qwen3-8B     --options "gguf:q2_k_s,gguf:q4_k_s"     --target_bits 3.5     --ignore_scale_zp_bits     --iters 0     --format fake     --output_dir "./test_gguf"
 ~~~
+
 
 eval
 
 ~~~
- vllm serve ./test_gguf/Qwen3-8B-w2g16/ --port 8000 --max-model-len 8192 --host 127.0.0.1 --served-model-name qwen
-evalscope eval --model qwen --api-url http://127.0.0.1:8000/v1   --api-key EMPTY   --datasets math_500 gpqa_diamoid mmlu_pro  --eval-batch-size 32
+# Start vLLM serve
+vllm serve ./test_gguf/Qwen3-8B-w2g16/ --port 8000 --max-model-len 8192 --host 127.0.0.1 --served-model-name qwen3-8b
+
+# Perform five repeated evaluations on math_500 and gpqa_diamond.
+evalscope eval --model qwen3-8b --api-url http://127.0.0.1:8000/v1   --api-key EMPTY   --datasets math_500 gpqa_diamond  --eval-batch-size 64  --generation-config "{\"n\":5}"
+
+# Evaluate mmlu_pro
+evalscope eval --model qwen3-8b --api-url http://127.0.0.1:8001/v1   --api-key EMPTY   --datasets mmlu_pro  --eval-batch-size 128
 ~~~
+| evalscope, options q2ks,q4ks avgbits 3.5, ignore_scale_zp | math_500 (repeat=5) | gpqa_diamond (repeat=5) | mmlu_pro |
+|-----------------------------------------------------------|---------------------|-------------------------|----------|
+| qwen3-8b: BF16                                            | 0.8083              | 0.4586                  | 0.6934   |
+| qwen3-8b: Fake quantized model                            | 0.7924              | 0.4313                  | 0.6751   |
 
-| evalscope options q2ks,q4ks avgbits 3.5, ignore_scale_zp | math_500   | gpqa_diamond  | mmlu_pro |
-|----------------------------------------------------------|------------|---------------|----------|
-| qwen3-8b bf16                                            | 0.79       | 0.4242        | 0.6934   |
-| qwen3-8b (AR<=0.13.1) iters 0                            | 0.76/0.768 | 0.3434/0.3687 | 0.6419   |
-| qwen3-8b (AR>0.13.1)  iters 0                            | 0.782      | 0.4293        | 0.6763   |
-
-| evalscope, options q2ks,q4ks avgbits 3.5, ignore_scale_zp | math_500 | gpqa_diamond | mmlu_pro |
-|-----------------------------------------------------------|----------|--------------|----------|
-| qwen3.5-4b bf16                                              | 0.48     | 0.4192       | 0.5891   |
-| qwen3.5-4b  (AR<=0.13.1) iters 0                          | 0.228    | 0.298        | 0.4583   |
-| pr branch  (AR>0.13.1)  iters 0                           | 0.432    | 0.4444       | 0.5922   |
-
-[//]: # (| options W2A16G64,W4A16 avgbits 3.5 ignore_scale_zp | math_500 | gpqa_diamond | mmlu_pro |)
-
-[//]: # (| -------------------------------------------------- | -------- | ------------ | -------- |)
-
-[//]: # (| qwen3-8b bf16                                      | 0.79     | 0.4242       | 0.6934   |)
-
-[//]: # (| qwen3-8b main branch                               | 0.738    | 0.2778       | 0.576    |)
-
-[//]: # (| main branch iters 200 enable_alg_ext               | 0.766    | 0.3434       |          |)
-
-[//]: # (| pr branch                                          | 0.72     | 0.2677       | -        |)
-
-[//]: # (| pr branch + iters 200 enable_alg_ext                 | 0.742    | 0.3232       | -        |)
-
+| evalscope, options q2ks,q4ks avgbits 3.5, ignore_scale_zp | math_500 (repeat=5) | gpqa_diamond (repeat=5) | mmlu_pro |
+|-----------------------------------------------------------|---------------------|-------------------------|----------|
+| qwen3.5-4b: BF16                                          | 0.5365              | 0.3263                  | 0.5891   |
+| qwen3.5-4b: Fake quantized model                          | 0.505               | 0.3172                  | 0.5948   |
 
 
 ### Other results

@@ -90,7 +90,7 @@ class TestAutoRound:
         # inputs = tokenizer(text, return_tensors="pt").to(model.device)
         # print(tokenizer.decode(model.generate(**inputs, max_new_tokens=50)[0]))
 
-    @pytest.mark.skip_ci(reason="Triton issue; time-consuming")
+    @pytest.mark.skip_ci(reason="time-consuming")
     def test_small_model_rtn(self, mock_fp8_capable_device):
         model_name = get_model_path("Qwen/Qwen3-0.6B-FP8")
         ar = AutoRound(model=model_name, iters=0, disable_opt_rtn=True)
@@ -98,7 +98,7 @@ class TestAutoRound:
         with patch("torch.cuda.get_device_capability", return_value=DEVICE_CAPABILITY):  # revert DEVICE_CAPABILITY
             evaluate_accuracy(folder, threshold=0.25)
 
-    @pytest.mark.skip_ci(reason="Triton issue; time-consuming")
+    @pytest.mark.skip_ci(reason="time-consuming")
     def test_small_model_iters1(self, mock_fp8_capable_device):
         model_name = get_model_path("Qwen/Qwen3-0.6B-FP8")
         ar = AutoRound(model=model_name, iters=1)
@@ -113,7 +113,7 @@ class TestAutoRound:
         with patch("torch.cuda.get_device_capability", return_value=DEVICE_CAPABILITY):  # revert DEVICE_CAPABILITY
             evaluate_accuracy(folder, threshold=0.33)
 
-    @pytest.mark.skip_ci(reason="Triton issue; time-consuming")
+    @pytest.mark.skip_ci(reason="time-consuming")
     def test_small_model_rtn_with_lm_head(self, mock_fp8_capable_device):
         model_name = get_model_path("Qwen/Qwen3-0.6B-FP8")
         layer_config = {"lm_head": {"bits": 4}}

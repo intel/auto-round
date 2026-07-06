@@ -518,7 +518,7 @@ def _quantize_weight_mxfp(
     # quant_mx returns (qdq_tensor, shared_exp, None).  We only need shared_exp
     # (the per-block log2 scale).  The element-wise rounding to the FP4/FP8 grid
     # is performed inside QuantLinear.pack via dtype casts / pack_fp4_to_uint8.
-    _, shared_exp, _ = quant_mx(weight_dev, bits=bits, group_size=group_size, data_type=data_type)
+    weight_dev, shared_exp, _ = quant_mx(weight_dev, bits=bits, group_size=group_size, data_type=data_type)
     # Reshape to (out_features, n_groups) so the on-disk weight_scale matches
     # the llm-compressor convention (and QuantLinear's registered buffer shape).
     shared_exp = shared_exp.reshape(out_features, in_features // group_size)
@@ -1486,6 +1486,124 @@ def is_model_free_supported_scheme(
 
 
 # ---------------------------------------------------------------------------
+# AutoScheme support (two-phase: delta-loss selection + model-free packing)
+# ---------------------------------------------------------------------------
+
+
+def _looks_like_auto_scheme(scheme: Any) -> bool:
+    """Duck-typed check for an :class:`~auto_round.auto_scheme.AutoScheme`.
+
+    Avoids importing ``AutoScheme`` at module scope (it pulls in exporter /
+    compressor modules that would create an import cycle with this file).
+    """
+    return hasattr(scheme, "options") and hasattr(scheme, "avg_bits")
+
+
+def _validate_auto_scheme_options(auto_scheme: Any) -> str:
+    """Validate that every AutoScheme option is model-free-packable.
+
+    Returns the single data-type family shared by all options
+    (``"int"`` or ``"mx_fp"``).  Raises ``ValueError`` when any option is
+    unsupported or when INT and MXFP options are mixed (they use different
+    packing formats and cannot be produced in one model-free run).
+    """
+    options = list(getattr(auto_scheme, "options", []) or [])
+    if not options:
+        raise ValueError("AutoScheme.options must be non-empty for model-free mode.")
+
+    families: set[str] = set()
+    unsupported: list[Any] = []
+    for opt in options:
+        # Preserve original string validation semantics so preset-name
+        # restrictions (e.g. MXFP4/MXFP8 only) are enforced.
+        if isinstance(opt, str):
+            try:
+                scheme_obj = _normalize_scheme(opt)
+            except (ValueError, TypeError):
+                scheme_obj = None
+        elif isinstance(opt, QuantizationScheme):
+            scheme_obj = opt
+        else:
+            scheme_obj = None
+
+        # GGUF k-quants carry super_bits and are not packable by the model-free
+        # RTN kernel even though their data_type is nominally "int".
+        if scheme_obj is None or getattr(scheme_obj, "super_bits", None) is not None:
+            unsupported.append(opt)
+            continue
+        if not is_model_free_supported_scheme(opt):
+            unsupported.append(opt)
+            continue
+
+        data_type = (scheme_obj.data_type or "int").lower()
+        families.add("mx_fp" if is_mx_fp(data_type) else "int")
+
+    if unsupported:
+        raise ValueError(
+            f"Model-free + AutoScheme received unsupported option(s): {unsupported}. "
+            f"Model-free supports INT WOQ (bits in {_SUPPORTED_INT_BITS}) and MXFP "
+            f"(bits in {_SUPPORTED_MXFP_BITS}); GGUF / NVFP4 / FP8 options are not "
+            f"packable in model-free mode. Remove the unsupported options or pass "
+            f"disable_model_free=True to use the regular flow."
+        )
+    if len(families) > 1:
+        raise ValueError(
+            "Model-free + AutoScheme cannot mix INT and MXFP options in a single run "
+            f"(got families {sorted(families)}); INT and MXFP use different packing "
+            "formats. Use a single data-type family, or pass disable_model_free=True."
+        )
+    return families.pop()
+
+
+def _convert_auto_scheme_layer_config(
+    generated: dict[str, dict],
+) -> tuple[QuantizationScheme, dict[str, dict], list[str]]:
+    """Convert an AutoScheme-generated ``layer_config`` into model-free inputs.
+
+    Returns ``(base_scheme, per_layer_overrides, fp16_layers)`` where:
+
+    * ``base_scheme`` is the most common quantized scheme across layers, used
+      as the model-free default (top-level config.json ``bits``/``group_size``).
+    * ``per_layer_overrides`` maps every quantized layer name to its resolved
+      :class:`QuantizationScheme` fields.
+    * ``fp16_layers`` lists layers AutoScheme kept at >= 16 bits (added to the
+      model-free ignore list so they stay in full precision).
+    """
+    from collections import Counter
+
+    scheme_keys = {f.name for f in fields(QuantizationScheme)}
+    per_layer: dict[str, dict] = {}
+    fp16_layers: list[str] = []
+    counter: "Counter[tuple]" = Counter()
+
+    for name, cfg in generated.items():
+        if not isinstance(cfg, dict):
+            continue
+        bits = cfg.get("bits")
+        if bits is None:
+            continue
+        clean = {k: cfg[k] for k in scheme_keys if cfg.get(k) is not None}
+        if bits >= 16:
+            fp16_layers.append(name)
+            continue
+        data_type = (clean.get("data_type") or "int").lower()
+        per_layer[name] = clean
+        counter[(clean.get("bits"), clean.get("group_size"), bool(clean.get("sym", True)), data_type)] += 1
+
+    if not counter:
+        raise ValueError("AutoScheme did not assign any quantizable layers for model-free mode.")
+
+    (base_bits, base_group_size, base_sym, base_dtype), _ = counter.most_common(1)[0]
+    base_scheme = QuantizationScheme(
+        bits=base_bits,
+        group_size=base_group_size,
+        sym=base_sym,
+        data_type=base_dtype,
+    )
+    return base_scheme, per_layer, fp16_layers
+
+
+# ---------------------------------------------------------------------------
 # Main class
 # ---------------------------------------------------------------------------
 
@@ -1975,6 +2093,17 @@ class _ModelFreeCompressorCore:
         Returns:
             Absolute path to the output directory.
         """
+        # ---- AutoScheme: resolve per-layer schemes before anything else ----
+        if _looks_like_auto_scheme(self.scheme_input):
+            resolver = getattr(self, "_resolve_auto_scheme", None)
+            if not callable(resolver):
+                raise ValueError(
+                    "AutoScheme schemes are only supported through the "
+                    "AutoRound(model_free=True) API, not the low-level "
+                    "_ModelFreeCompressorCore driver."
+                )
+            resolver()  # pylint: disable=E1102
+
         # ---- preflight ----
         self._validate_format()
         self._parse_scheme()
@@ -2151,6 +2280,10 @@ class ModelFreeCompressor(_ModelFreeCompressorCore):
             self._fallback_init_kwargs["quant_nontext_module"] = quant_nontext_module
         # remaining kwargs intentionally consumed/ignored
 
+        # AutoScheme (two-phase delta-loss selection) state.
+        self._auto_scheme_resolved = False
+        self._auto_scheme_family: Optional[str] = None
+
     def _fallback_to_base_compressor(self):
         from auto_round.autoround import AutoRound
 
@@ -2217,6 +2350,92 @@ class ModelFreeCompressor(_ModelFreeCompressorCore):
         return super().__getattribute__(name)
 
     # ------------------------------------------------------------------
+    # AutoScheme (two-phase: delta-loss selection + model-free packing)
+    # ------------------------------------------------------------------
+
+    def _run_auto_scheme_selection(self, auto_scheme: Any) -> dict[str, dict]:
+        """Run AutoScheme delta-loss selection to obtain a per-layer config.
+
+        The model is loaded temporarily (via the regular AutoRound flow) so
+        that delta-loss scoring can run its forward/backward passes, then it is
+        released before the model-free shard-by-shard packing begins.
+        """
+        from auto_round.autoround import AutoRound
+
+        init_kwargs = dict(self._fallback_init_kwargs)
+        init_kwargs["scheme"] = auto_scheme
+
+        compressor = AutoRound(**init_kwargs, disable_model_free=True)
+        try:
+            # post_init() (outside inference_mode) runs the delta-loss scheme
+            # selection and populates ``compressor.layer_config``.
+            post_init = getattr(compressor, "post_init", None)
+            if not callable(post_init):
+                raise RuntimeError("AutoScheme fallback compressor has no callable post_init().")
+            post_init()  # pylint: disable=E1102
+            layer_config = copy.deepcopy(getattr(compressor, "layer_config", {}) or {})
+        finally:
+            # Release the model that was loaded only for scoring so the
+            # packing phase keeps model-free's low memory footprint.
+            try:
+                model_context = getattr(compressor, "model_context", None)
+                if model_context is not None and hasattr(model_context, "model"):
+                    model_context.model = None
+            except Exception:  # pragma: no cover - best-effort cleanup
+                pass
+            del compressor
+            clear_memory()
+
+        if not layer_config:
+            raise RuntimeError("AutoScheme did not produce a layer_config for model-free mode.")
+        return layer_config
+
+    def _resolve_auto_scheme(self) -> None:
+        """Resolve an ``AutoScheme`` scheme into concrete model-free inputs.
+
+        Idempotent.  Validates the options, runs delta-loss selection, then
+        rewrites ``scheme_input`` / ``layer_config_input`` / ``ignore_layers_input``
+        so the standard model-free pipeline can proceed unchanged.
+        """
+        if self._auto_scheme_resolved:
+            return
+
+        auto_scheme = self.scheme_input
+        family = _validate_auto_scheme_options(auto_scheme)
+        logger.info(
+            "Model-free + AutoScheme: generating a per-layer scheme via delta-loss. "
+            "The model is loaded temporarily for scoring, then released before "
+            "shard-by-shard packing."
+        )
+
+        generated = self._run_auto_scheme_selection(auto_scheme)
+        base_scheme, per_layer, fp16_layers = _convert_auto_scheme_layer_config(generated)
+
+        # Merge the generated per-layer overrides; any user-provided
+        # layer_config entries take priority.
+        merged_lc: dict = dict(per_layer)
+        if self.layer_config_input:
+            merged_lc.update(copy.deepcopy(self.layer_config_input))
+        self.layer_config_input = merged_lc
+
+        # Keep AutoScheme's 16-bit layers in full precision.
+        if fp16_layers:
+            extra = ",".join(fp16_layers)
+            self.ignore_layers_input = f"{self.ignore_layers_input},{extra}" if self.ignore_layers_input else extra
+
+        self.scheme_input = base_scheme
+        self._auto_scheme_family = family
+        self._auto_scheme_resolved = True
+
+        logger.info(
+            "Model-free + AutoScheme resolved: base scheme %s, %d per-layer override(s), "
+            "%d layer(s) kept at 16-bit.",
+            base_scheme,
+            len(per_layer),
+            len(fp16_layers),
+        )
+
+    # ------------------------------------------------------------------
     # AutoRound compressor interface
     # ------------------------------------------------------------------
 
@@ -2228,13 +2447,19 @@ class ModelFreeCompressor(_ModelFreeCompressorCore):
         **kwargs,
     ) -> Any:
         """Quantize and save — AutoRound compressor entry point."""
+        # AutoScheme: run delta-loss selection first so the effective scheme /
+        # data-type family (which drives the accepted export formats) is known.
+        if _looks_like_auto_scheme(self.scheme_input):
+            self._resolve_auto_scheme()
+
         # Accept the standard auto_round formats.
         _accepted_formats = {
             "auto_round",
             "auto_round:auto_gptq",
         }
-        # MXFP only supports the llm_compressor format.
-        if self.scheme_input in ["MXFP4", "MXFP8"]:
+        # MXFP only supports the llm_compressor format (INT string preset,
+        # or an AutoScheme run whose options resolved to the MXFP family).
+        if self.scheme_input in ["MXFP4", "MXFP8"] or self._auto_scheme_family == "mx_fp":
             _accepted_formats = ["llm_compressor"]
         if format not in _accepted_formats:
             logger.warning(

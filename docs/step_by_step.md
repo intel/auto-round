@@ -422,6 +422,8 @@ ar.quantize_and_save()
 
 In some serving frameworks, certain layers (e.g., QKV or MoE) are fused to accelerate inference. These fused layers may require the same data type and bit configuration. The shared_layers option simplifies this setup by supporting both regex and full-name matching. **Note that regex matching is applied in a block-wise manner.**
 
+**MoE expert layers are automatically grouped per block** — all expert projections (gate/up/down across all experts) within the same transformer block are treated as a single entity during DP optimization. This means they share the same quantization scheme and their losses/numel are summed together. No manual `shared_layers` configuration is needed for expert layers.
+
 
 ```python
 from auto_round import AutoRound, AutoScheme
@@ -483,6 +485,8 @@ We will try to optimize the RAM usage in the future. The RAM usage is about 1.1-
 
 #### Limitations
 Embedding layer is not supported in AutoScheme, it will use the best scheme in options.
+
+When using AutoScheme with `model_free=True`, only INT (`W2A16`/`W4A16`/`W8A16`) and MXFP (`MXFP4`/`MXFP8`) option families are supported. Options like `W3A16`, `GGUF:*`, and `NVFP4` will raise a `ValueError`. INT and MXFP families cannot be mixed in the same `AutoScheme`.
 
 ### AWQ Quantization Algorithm
 
@@ -567,6 +571,7 @@ Model-free mode performs RTN WOQ quantization **without loading the full model i
 - **Per-layer configuration** – supports `--layer_config` for per-layer bit-width overrides and `--ignore_layers` to keep specific layers in full precision
 - **Predefined ignore layers** – automatically skips model-specific layers (e.g., MoE gates, MTP layers) based on config detection
 - **Bit-exact parity** with the standard `--iters 0 --disable_opt_rtn` flow for all supported schemes
+- **AutoScheme integration** – pass an `AutoScheme` object as `scheme` to get automatic mixed-bit selection followed by shard-by-shard packing (two-phase: score with model briefly loaded, then free and pack)
 
 <details>
   <summary>Model-free Parallelism Benchmarks (Rounded Minutes)</summary>

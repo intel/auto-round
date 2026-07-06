@@ -119,6 +119,9 @@ def make_block_forward_func(state, name: str) -> Callable:
                                 state.inputs[name][key] = [stored, raw_new]
                         continue
                     new_data = to_device(new_data, device=torch.device("cpu"))
+                    # Guard against None-initialized kwargs that arrive as tensors on later samples (#1950).
+                    if state.inputs[name][key] is None:
+                        state.inputs[name][key] = []
                     if state.quantizer.batch_size <= 1:
                         state.inputs[name][key].append(new_data)
                     else:

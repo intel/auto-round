@@ -20,7 +20,7 @@ quantisation step to improve numerical properties.
 Current algorithms
 ------------------
 * **hadamard** – Block-diagonal Hadamard rotations (QuaRot / SpinQuant style).
-  See :mod:`auto_round.algorithms.transforms.quarot`.
+  See :mod:`auto_round.algorithms.transforms.hadamard`.
 * **spinquant** – SpinQuant/QuaRot multi-level rotation (R1–R4) with optional
   online hooks, trainable rotations, and known Hadamard matrices for non-pow2.
   See :mod:`auto_round.algorithms.transforms.spinquant`.
@@ -53,7 +53,7 @@ from auto_round.algorithms.transforms.base import (
     check_supported_schemes,
     _ensure_registry_populated,
 )
-from auto_round.algorithms.transforms.quarot import (
+from auto_round.algorithms.transforms.hadamard import (
     HadamardRotation,
     apply_rotation_transform,
     normalize_rotation_config as _normalize_hadamard_config,
@@ -430,8 +430,8 @@ def apply_rotation_hooks_from_config(
             if isinstance(quantization_config, dict)
             else getattr(quantization_config, "data_type", "mx_fp")
         )
-        from auto_round.algorithms.transforms.quarot.apply import apply_rotation_transform
-        from auto_round.algorithms.transforms.quarot.config import RotationConfig as _RC
+        from auto_round.algorithms.transforms.hadamard.apply import apply_rotation_transform
+        from auto_round.algorithms.transforms.hadamard.config import RotationConfig as _RC
 
         cfg = _RC(
             block_size=rotation_config["block_size"],

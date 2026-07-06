@@ -655,10 +655,13 @@ class BaseCompressor(object):
                     if any(name.startswith(prefix) for prefix in block_prefixes)
                     or not any(prefix.startswith(name.split(".")[0]) for prefix in block_prefixes)
                 ]
-            predefined_ignore_layers = compress_layer_names(predefined_ignore_layers)
             if predefined_ignore_layers:
-                logger.info(f"Using predefined ignore_layers: {compressed_predefined_ignore_layers}")
-                tmp_str = predefined_ignore_layers.replace(" ", "")
+                logger.info(f"Using predefined ignore_layers: {compress_layer_names(predefined_ignore_layers)}")
+                # Join the raw (uncompressed) names so that get_fp_layer_names can do exact
+                # substring matching. Compressed forms like "layers.[0-61].gate" are
+                # misinterpreted as regex character classes ([0-6] matches only digits 0-6)
+                # and fail to cover layers with two-digit indices (7, 8, …).
+                tmp_str = ",".join(predefined_ignore_layers)
                 if self.ignore_layers == "":
                     self.ignore_layers = tmp_str
                 else:
@@ -704,6 +707,20 @@ class BaseCompressor(object):
             fill_default_value=fill_default_value,
             gguf_format_name=getattr(self, "_gguf_format_name", None),
         )
+        if self.is_auto_scheme:
+            from auto_round.auto_scheme.utils import compute_avg_bits_for_model
+
+            ignore_scale_zp_bits = getattr(self.orig_scheme, "ignore_scale_zp_bits", False)
+            avg_bits, total_bits = compute_avg_bits_for_model(
+                self.model_context.model,
+                ignore_scale_zp_bits=ignore_scale_zp_bits,
+            )
+            logger.info(
+                "AutoScheme final effective avg_bits=%.4f, target avg_bits=%.4f, total_bits=%d",
+                avg_bits,
+                self.orig_scheme.avg_bits,
+                total_bits,
+            )
 
     # ─────────────────────────────────────────────────────────────────────────
 
@@ -990,58 +1007,68 @@ class BaseCompressor(object):
             "act_bits",
             "scale_dtype",
         )
-        _any_gguf_attr_changed = False
-        for _attr in _gguf_forwarded_attrs:
-            if _attr not in self.__dict__:
-                continue
-            config_val = getattr(self.quantize_config, _attr, None)
-            self_val = self.__dict__[_attr]
-            if _attr not in ("scale_dtype", "act_bits") and config_val != self_val:
-                _any_gguf_attr_changed = True
-            if config_val != self_val:
-                setattr(self.quantize_config, _attr, self_val)
-        # If format resolution changed scheme attrs, rebuild self.scheme so that
-        # configure_layer_config() / set_layer_config() see the correct values.
-        if _any_gguf_attr_changed:
-            from auto_round.schemes import PRESET_SCHEMES
-            from auto_round.schemes import QuantizationScheme as _QS
+        # Skip this for AutoScheme — the format is for export only, and the
+        # per-layer quantization is already determined by orig_scheme.options.
+        # Restore scheme attrs from quantize_config for AutoScheme —
+        # gguf_args_check may have set __dict__ entries that shadow the proxy.
+        if self.is_auto_scheme:
+            for _attr in _gguf_forwarded_attrs:
+                if _attr in self.__dict__:
+                    del self.__dict__[_attr]
 
-            # Prefer to derive the scheme directly from the gguf format name to
-            # avoid ambiguity (e.g. Q4_K_S and Q4_K_M share identical weight attrs).
-            _gguf_preset_scheme = None
-            _gguf_fmt_name = None
-            _gguf_original_fmt_name = None
-            for _fmt in self.formats or []:
-                # GGUFFormat (outer) has output_format="gguf" but backend.output_format="gguf:q4_k_m"
-                # GGUFFormat (inner/standalone) has output_format="gguf:q4_k_m"
-                _of = getattr(_fmt, "output_format", "")
-                if "gguf" in str(_of):
-                    if str(_of) == "gguf":
-                        # outer GGUFFormat: full format in _original_format (e.g. "gguf:q2_k_mixed")
-                        # or backend.output_format (e.g. "gguf:q2_k_s" after _mixed → _s conversion)
-                        _orig = getattr(_fmt, "_original_format", None)
-                        if _orig:
-                            _gguf_original_fmt_name = str(_orig).upper()
-                        _backend = getattr(_fmt, "backend", None)
-                        _of = getattr(_backend, "output_format", _of) if _backend is not None else _of
-                    _preset_key = str(_of).upper()
-                    if _preset_key in PRESET_SCHEMES:
-                        _gguf_preset_scheme = PRESET_SCHEMES[_preset_key]
-                        _gguf_fmt_name = _preset_key
-                        break
-            if _gguf_preset_scheme is not None:
-                # Update scheme on both compressor and quantizer.
-                self.scheme = _gguf_preset_scheme
-                # Store the exact gguf format name so configure_layer_config /
-                # set_layer_config can use it directly, avoiding Q4_K_S / Q4_K_M ambiguity.
-                self._gguf_format_name = _gguf_fmt_name
-                # Store original format name (may include _mixed) for _handle_special_schemes
-                if _gguf_original_fmt_name:
-                    self._gguf_original_format_name = _gguf_original_fmt_name
-            else:
-                _new_scheme_dict = {f.name: getattr(self, f.name, None) for f in fields(_QS)}
-                _new_scheme = _QS.from_dict({k: v for k, v in _new_scheme_dict.items() if v is not None})
-                self.scheme = _new_scheme
+        if not self.is_auto_scheme:
+            _any_gguf_attr_changed = False
+            for _attr in _gguf_forwarded_attrs:
+                if _attr not in self.__dict__:
+                    continue
+                config_val = getattr(self.quantize_config, _attr, None)
+                self_val = self.__dict__[_attr]
+                if _attr not in ("scale_dtype", "act_bits") and config_val != self_val:
+                    _any_gguf_attr_changed = True
+                if config_val != self_val:
+                    setattr(self.quantize_config, _attr, self_val)
+            # If format resolution changed scheme attrs, rebuild self.scheme so that
+            # configure_layer_config() / set_layer_config() see the correct values.
+            if _any_gguf_attr_changed:
+                from auto_round.schemes import PRESET_SCHEMES
+                from auto_round.schemes import QuantizationScheme as _QS
+
+                # Prefer to derive the scheme directly from the gguf format name to
+                # avoid ambiguity (e.g. Q4_K_S and Q4_K_M share identical weight attrs).
+                _gguf_preset_scheme = None
+                _gguf_fmt_name = None
+                _gguf_original_fmt_name = None
+                for _fmt in self.formats or []:
+                    # GGUFFormat (outer) has output_format="gguf" but backend.output_format="gguf:q4_k_m"
+                    # GGUFFormat (inner/standalone) has output_format="gguf:q4_k_m"
+                    _of = getattr(_fmt, "output_format", "")
+                    if "gguf" in str(_of):
+                        if str(_of) == "gguf":
+                            # outer GGUFFormat: full format in _original_format (e.g. "gguf:q2_k_mixed")
+                            # or backend.output_format (e.g. "gguf:q2_k_s" after _mixed → _s conversion)
+                            _orig = getattr(_fmt, "_original_format", None)
+                            if _orig:
+                                _gguf_original_fmt_name = str(_orig).upper()
+                            _backend = getattr(_fmt, "backend", None)
+                            _of = getattr(_backend, "output_format", _of) if _backend is not None else _of
+                        _preset_key = str(_of).upper()
+                        if _preset_key in PRESET_SCHEMES:
+                            _gguf_preset_scheme = PRESET_SCHEMES[_preset_key]
+                            _gguf_fmt_name = _preset_key
+                            break
+                if _gguf_preset_scheme is not None:
+                    # Update scheme on both compressor and quantizer.
+                    self.scheme = _gguf_preset_scheme
+                    # Store the exact gguf format name so configure_layer_config /
+                    # set_layer_config can use it directly, avoiding Q4_K_S / Q4_K_M ambiguity.
+                    self._gguf_format_name = _gguf_fmt_name
+                    # Store original format name (may include _mixed) for _handle_special_schemes
+                    if _gguf_original_fmt_name:
+                        self._gguf_original_format_name = _gguf_original_fmt_name
+                else:
+                    _new_scheme_dict = {f.name: getattr(self, f.name, None) for f in fields(_QS)}
+                    _new_scheme = _QS.from_dict({k: v for k, v in _new_scheme_dict.items() if v is not None})
+                    self.scheme = _new_scheme
 
         _gguf_layer_cfg = {
             k: v for k, v in (self.__dict__.get("layer_config") or {}).items() if k not in (_pre_gguf_layer_config)

@@ -421,6 +421,8 @@ ar.quantize_and_save()
 
 为加速推理，在部分框架中，会对特定层（如QKV、MoE）进行融合。这些融合层必须是相同的数据类型和量化配置。`shared_layers` 参数可以简化该配置，**同时支持正则表达式匹配和完整层名匹配**。注意**正则匹配按块匹配规则生效**。
 
+**MoE 的 expert 层会自动按块分组** — 同一个 transformer block 内所有 expert 的投影层（gate/up/down，跨所有 experts）会被视为一个整体进行 DP 优化。它们共享相同的量化方案，loss 和 numel 直接求和。无需手动配置 `shared_layers` 来处理 expert 层。
+
 示例代码如下：
 ```python
 from auto_round import AutoRound, AutoScheme
@@ -481,6 +483,8 @@ ar.quantize_and_save()
 
 #### 局限性
 AutoScheme 目前还**不支持对嵌入层（Embedding layer）进行自动量化**。该层将直接采用候选方案中精度最高的配置。
+
+当 AutoScheme 与 `model_free=True` 联合使用时，仅支持 INT（`W2A16`/`W4A16`/`W8A16`）和 MXFP（`MXFP4`/`MXFP8`）两种选项族。`W3A16`、`GGUF:*`、`NVFP4` 等不支持的选项会直接抛出 `ValueError`；同一 `AutoScheme` 中也不允许混用 INT 和 MXFP 选项族。
 
 ### AWQ 量化算法
 
@@ -565,6 +569,7 @@ ar.quantize_and_save(output_dir, format="auto_round")
 - **逐层配置** — 支持 `--layer_config` 设置逐层位宽，以及 `--ignore_layers` 保持特定层全精度
 - **预定义忽略层** — 根据模型配置自动跳过特定层（如 MoE 门控层、MTP 层等）
 - 与标准 `--iters 0 --disable_opt_rtn` 流程对所有受支持的 scheme **位级等价**
+- **AutoScheme 集成** — 将 `AutoScheme` 对象传入 `scheme` 参数，即可在免模型模式下完成自动混合精度选择与逐分片打包（两阶段：短暂加载模型评分 → 释放模型 → 逐分片打包）
 
 <details>
   <summary>Model-free 并行量化基准（分钟向上取整）</summary>

@@ -398,7 +398,7 @@ class Hadamard(AlgorithmHandler):
         )
 
     def build(self, args, common_kwargs: dict[str, Any]):
-        from auto_round.algorithms.transforms.quarot.config import RotationConfig
+        from auto_round.algorithms.transforms.hadamard.config import RotationConfig
 
         hadamard_type = getattr(args, "rotation_hadamard_type", None) or "hadamard"
         return RotationConfig(
@@ -414,7 +414,7 @@ def _register_builtin_algorithm_factories() -> None:
     from auto_round.algorithms.quantization.rtn.config import RTNConfig
     from auto_round.algorithms.quantization.sign_round.config import SignRoundConfig
     from auto_round.algorithms.transforms.awq.config import AWQConfig
-    from auto_round.algorithms.transforms.quarot.config import RotationConfig
+    from auto_round.algorithms.transforms.hadamard.config import RotationConfig
 
     register_algorithm("rtn", aliases=("rtn",), config_factory=RTNConfig, cli_handler=RTN, summary=RTN.summary)
     register_algorithm(
