@@ -730,12 +730,23 @@ static void sage_dynamic_quant_v_layout(torch_ptr stream, torch_ptr input, torch
 
 #elif !defined(ARK_XPU)
 
+// Finalization note (non-int8 closure pass):
+// Routes 1/2 (mixed BestLA, Tier 1) now accept the full feature set from the
+// Python ABI: `use_alibi`, `use_tanh`, `prefer_fp32`, and `n_padding` are
+// forwarded to `bargs.attn_flags` / `bargs.n_padding` in the mixed_bestla
+// block below. The scalar Tier-0 path (MhaDenseArgs) only supports causal
+// masking; alibi, tanh, and padding-right are BestLA-specific and are rejected
+// on that path with a clear error pointing to ARK_UNSAFE_BESTLA_MIXED_SDPA.
+// `prefer_fp32` on the Tier-0 path is silently accepted (pure fp32 computations
+// are always fp32-compute; the flag is a no-op). Routes 3/4 (homogeneous, Tier 2)
+// remain internal-only (not wired here).
 static void sdpa(torch_ptr stream, torch_ptr Q, torch_ptr K, torch_ptr V, torch_ptr O, torch_ptr mask,
                  int q_stride_s, int q_stride_d, int q_stride_h, int q_stride_b, int k_stride_s, int k_stride_d,
                  int k_stride_h, int k_stride_b, int v_stride_d, int v_stride_s, int v_stride_h, int v_stride_b,
                  int o_stride_s, int o_stride_d, int o_stride_h, int o_stride_b, int q_dtype, int k_dtype, int o_dtype,
                  int batch, int num_heads_q, int num_heads_kv, int seq_len_q, int seq_len_kv, int head_dim,
-                 float softmax_scale, bool is_causal) {
+                 float softmax_scale, bool is_causal,
+                 bool use_alibi, bool use_tanh, bool prefer_fp32_flag, int n_padding_arg) {
   (void)stream;
   if (mask && is_causal) {
     throw std::invalid_argument("ark::sdpa: mask and is_causal cannot both be set");
@@ -750,22 +761,16 @@ static void sdpa(torch_ptr stream, torch_ptr Q, torch_ptr K, torch_ptr V, torch_
   // matrix (causal, GQA, padding-right, alibi, tanh, prefer_fp32) validated at
   // the C++ level. They are not the default path because:
   //   (a) the raw->packed reorder bridge adds per-forward allocation overhead;
-  //   (b) n_padding and attn_flags (alibi, tanh) are not yet in the Python ABI.
-  // The homogeneous routes (Tier 2, not wired here) and the scalar fallback below
-  // (Tier 0, always active) are described in sdpa.cpp's Phase 6 comment block.
+  //   (b) persistent packed KV cache is deferred to a future cleanup pass.
+  // The Python ABI (use_alibi/use_tanh/prefer_fp32/n_padding) is now wired;
+  // see the finalization note above. The homogeneous routes (Tier 2, not wired
+  // here) and the scalar fallback (Tier 0) are in sdpa.cpp's Phase 6 block.
   //
   // IMPORTANT (Phase 3 safety gate): the BestLA specializations wired today
   // (`bestla_fusion_attn_forward<float, fp16, ...>` /  `<float, bf16, ...>`)
   // expect NTILE24/NTILE48 row-packed (reordered) K/V, NOT the raw PLAIN
-  // (HND/NHD-strided) K/V this entry point receives. Feeding raw PLAIN K/V to
-  // those kernels is unsupported and, before this audit, fell through to an
-  // `assert(false)` that silently no-ops in release builds. Packed/reordered
-  // K/V support is deferred to Phase 4, so this route is DISABLED BY DEFAULT and
-  // only reachable as an explicit, unsafe opt-in via the
-  // `ARK_UNSAFE_BESTLA_MIXED_SDPA=1` environment variable (the wired kernels now
-  // throw explicitly for raw PLAIN inputs instead of silently producing wrong
-  // results). Until Phase 4 verifies packed K/V, the default user path must not
-  // expose this unsupported raw HND/NHD mixed-precision route.
+  // (HND/NHD-strided) K/V this entry point receives. This route is DISABLED BY
+  // DEFAULT and only reachable via `ARK_UNSAFE_BESTLA_MIXED_SDPA=1`.
   const bool mixed_dtype =
       static_cast<BTLA_DTYPE>(q_dtype) == BTLA_DTYPE::F32 && static_cast<BTLA_DTYPE>(o_dtype) == BTLA_DTYPE::F32 &&
       (static_cast<BTLA_DTYPE>(k_dtype) == BTLA_DTYPE::F16 || static_cast<BTLA_DTYPE>(k_dtype) == BTLA_DTYPE::BF16);
@@ -776,24 +781,34 @@ static void sdpa(torch_ptr stream, torch_ptr Q, torch_ptr K, torch_ptr V, torch_
     if (mask) {
       throw std::invalid_argument("ark::sdpa: attn_mask is not supported on the BestLA mixed-precision path yet");
     }
+    if (n_padding_arg > 0 && is_causal) {
+      throw std::invalid_argument(
+          "ark::sdpa: n_padding and is_causal are mutually exclusive on the BestLA mixed-precision path");
+    }
     ark::cpu::attn_fwd_args_t bargs;
     bargs.Q = (void*)Q;
     bargs.K = (void*)K;
     bargs.V = (void*)V;
     bargs.dst = (void*)O;
     bargs.QK_scale = softmax_scale;
-    bargs.attn_flags = is_causal ? ark::cpu::ATTN_FLAG_IS_CAUSAL : ark::cpu::ATTN_FLAG_NONE;
+    // Build attn_flags from the individual Python kwargs (is_causal was the
+    // only flag before the Python ABI was extended; now all four are wired).
+    bargs.attn_flags = ark::cpu::ATTN_FLAG_NONE;
+    if (is_causal) bargs.attn_flags |= ark::cpu::ATTN_FLAG_IS_CAUSAL;
+    if (use_alibi) bargs.attn_flags |= ark::cpu::ATTN_FLAG_IS_ALIBI8;
+    if (use_tanh) bargs.attn_flags |= ark::cpu::ATTN_FLAG_IS_TANH30;
+    if (prefer_fp32_flag) bargs.attn_flags |= ark::cpu::ATTN_FLAG_PREFER_FP32;
+    if (n_padding_arg > 0) bargs.attn_flags |= ark::cpu::ATTN_FLAG_PADDING_RIGHT;
+    bargs.n_padding = n_padding_arg;
     bargs.batch_size = batch;
     bargs.head_num = num_heads_q;
     bargs.heads_kv = num_heads_kv;
     bargs.head_size = head_dim;
     bargs.sl_q = seq_len_q;
     bargs.sl_kv = seq_len_kv;
-    // Strides describe an HND/NHD-friendly PLAIN interface, but the wired BestLA
-    // mixed kernels currently require packed/reordered (NTILE24/NTILE48) K/V, so
-    // this raw PLAIN path is gated behind ARK_UNSAFE_BESTLA_MIXED_SDPA above and
-    // the kernel throws if the layout it actually needs is not provided. No
-    // [B,H,N,D] / [B,N,H,D] order is hard-coded here.
+    // Strides describe an HND/NHD-friendly PLAIN interface; the wired BestLA
+    // mixed kernels require packed/reordered (NTILE24/NTILE48) K/V, so this
+    // raw PLAIN path is gated behind ARK_UNSAFE_BESTLA_MIXED_SDPA above.
     bargs.Q_layout = ark::cpu::ATTN_FWD_LAYOUT_PLAIN;
     bargs.K_layout = ark::cpu::ATTN_FWD_LAYOUT_PLAIN;
     bargs.V_layout = ark::cpu::ATTN_FWD_LAYOUT_PLAIN;
@@ -814,14 +829,21 @@ static void sdpa(torch_ptr stream, torch_ptr Q, torch_ptr K, torch_ptr V, torch_
     bargs.step_dst_bs = o_stride_b;
     bargs.step_dst_head_num = o_stride_h;
     bargs.step_dst_sl = o_stride_s;
-    bargs.n_padding = 0;  // padding-right is S (validated by Phase 5 Step 2) but not yet
-                          // exposed via the Python ABI -- n_padding stays 0 until the
-                          // sdpa() signature is extended with a padding_right parameter.
     bargs.tmp = nullptr;  // scratch allocated inside bestla_sdpa_forward
     // Reuse ARK's shared CPU thread pool rather than a dedicated attention pool.
     bargs.threading = ark::CpuWrapper::get_threading();
     ark::cpu::bestla_sdpa_forward(bargs, static_cast<BTLA_DTYPE>(k_dtype));
     return;
+  }
+
+  // Tier 0 scalar fallback: alibi, tanh, and padding-right are BestLA-specific
+  // features not implemented in the scalar MhaDenseArgs kernel. Reject them here
+  // so callers get a clear message instead of a silently ignored flag. prefer_fp32
+  // is accepted as a no-op (the scalar path is always fp32-compute).
+  if (use_alibi || use_tanh || n_padding_arg > 0) {
+    throw std::invalid_argument(
+        "ark::sdpa: use_alibi, use_tanh, and n_padding are only supported on the BestLA mixed-precision path "
+        "(Q=float32, K/V=float16|bfloat16). Set ARK_UNSAFE_BESTLA_MIXED_SDPA=1 to enable it.");
   }
 
   if (k_dtype != q_dtype || o_dtype != q_dtype) {

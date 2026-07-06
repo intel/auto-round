@@ -254,11 +254,12 @@ bestla_mha::attn_fwd_args_t<T, T, T, T> make_typed_attn_args_homogeneous(const a
 //   Status:  NOT yet exposed as default. Remaining barriers:
 //     (a) Raw->packed reorder bridge adds per-forward allocation overhead; persistent
 //         packed KV cache is future work.
-//     (b) Python ABI does not yet expose n_padding or attn_flags (alibi/tanh);
-//         numerical Python-level tests for those features are pending.
-//   Promotion criteria: Python alibi/tanh/padding-right numerical tests passing on
-//     AVX2/AVX512F CI, persistent packed KV cache path wired to Python, and
-//     n_padding + attn_flags exposed in the Python sdpa() signature.
+//     CLOSED: (b) Python ABI now exposes n_padding and attn_flags (alibi/tanh/prefer_fp32)
+//         as `use_alibi`, `use_tanh`, `prefer_fp32`, `n_padding` kwargs in the Python
+//         sdpa() wrapper. Numerical Python-level tests for these features are in
+//         test_ark_cpu_mixed_bestla_sdpa.py.
+//   Promotion criteria: persistent packed KV cache path wired to Python, and
+//     per-ISA CI coverage on AVX2/AVX512F.
 //
 // TIER 2 — Internal / not Python-accessible (routes 3/4 homogeneous)
 //   Backend: bestla_sdpa_forward_homogeneous (F16 = route 3, BF16 = route 4).
