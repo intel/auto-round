@@ -699,6 +699,180 @@ def sage_pvi8(
     return O
 
 
+def sagev1(
+    query: torch.Tensor,
+    key: torch.Tensor,
+    value: torch.Tensor,
+    attn_mask: torch.Tensor | None = None,
+    dropout_p: float = 0.0,
+    is_causal: bool = False,
+    scale: float | None = None,
+    enable_gqa: bool = False,
+    quant_block_size: int = 64,
+    tensor_layout: str = "HND",
+) -> torch.Tensor:
+    """SAGE v1 attention prefill+decode."""
+    if quant_block_size <= 0:
+        return sdpa(
+            query=query,
+            key=key,
+            value=value,
+            attn_mask=attn_mask,
+            dropout_p=dropout_p,
+            is_causal=is_causal,
+            scale=scale,
+            tensor_layout=tensor_layout,
+        )
+    if query.device.type != "xpu":
+        raise NotImplementedError("sdpa is only supported on XPU")
+    if query.dtype not in (torch.float16, torch.bfloat16):
+        raise ValueError(f"Q must be float16 or bfloat16, got {query.dtype}")
+    if key.dtype != query.dtype or value.dtype != query.dtype:
+        raise ValueError(f"K/V dtype must match Q dtype, got K={key.dtype}, V={value.dtype}, Q={query.dtype}")
+
+    B, Hq, Sq, D = _validate_attention_tensor(query, "Q", tensor_layout)
+    Bk, Hkv, Skv, Dk = _validate_attention_tensor(key, "K", tensor_layout, expected_dtype=query.dtype)
+    Bv, Hkv2, Skv2, Dv = _validate_attention_tensor(value, "V", tensor_layout, expected_dtype=query.dtype)
+
+    if Bk != B or Bv != B:
+        raise ValueError("Batch size mismatch between Q/K/V")
+    if Hkv2 != Hkv or Skv2 != Skv or Dv != Dk:
+        raise ValueError("K/V shape mismatch")
+    if Dk != D:
+        raise ValueError("Head dim mismatch between Q and K/V")
+    if D not in (64, 128):
+        raise ValueError(f"Unsupported head_dim={D}; supported: 64, 128")
+
+    lib = get_lib(query)
+    stream = get_stream(query)
+    O = _empty_attention_output(
+        B,
+        Hq,
+        Sq,
+        D,
+        dtype=value.dtype,
+        device=query.device,
+        tensor_layout=tensor_layout,
+    )
+    q_strides = _attention_strides_qko(query, tensor_layout)
+    k_strides = _attention_strides_qko(key, tensor_layout)
+    v_strides = _attention_strides_v(value, tensor_layout)
+    o_strides = _attention_strides_qko(O, tensor_layout)
+    lib.sagev1(
+        stream,
+        query.data_ptr(),
+        key.data_ptr(),
+        value.data_ptr(),
+        O.data_ptr(),
+        attn_mask.data_ptr() if attn_mask is not None else 0,
+        quant_block_size,
+        *q_strides,
+        *k_strides,
+        *v_strides,
+        *o_strides,
+        cvt_dtype(query.dtype),
+        cvt_dtype(key.dtype),
+        cvt_dtype(value.dtype),
+        cvt_dtype(O.dtype),
+        B,
+        Hq,
+        Hkv,
+        Sq,
+        Skv,
+        D,
+        float(scale) if scale is not None else 1.0 / (D**0.5),
+        bool(is_causal),
+    )
+    return O
+
+
+def sagev1_pvi8(
+    query: torch.Tensor,
+    key: torch.Tensor,
+    value: torch.Tensor,
+    attn_mask: torch.Tensor | None = None,
+    dropout_p: float = 0.0,
+    is_causal: bool = False,
+    scale: float | None = None,
+    enable_gqa: bool = False,
+    quant_block_size: int = 64,
+    tensor_layout: str = "HND",
+) -> torch.Tensor:
+    """SAGE v1 attention with PV int8 path."""
+    if quant_block_size <= 0:
+        return sdpa(
+            query=query,
+            key=key,
+            value=value,
+            attn_mask=attn_mask,
+            dropout_p=dropout_p,
+            is_causal=is_causal,
+            scale=scale,
+            tensor_layout=tensor_layout,
+        )
+    if query.device.type != "xpu":
+        raise NotImplementedError("sagev1_pvi8 is only supported on XPU")
+    if query.dtype not in (torch.float16, torch.bfloat16):
+        raise ValueError(f"Q must be float16 or bfloat16, got {query.dtype}")
+    if key.dtype != query.dtype or value.dtype != query.dtype:
+        raise ValueError(f"K/V dtype must match Q dtype, got K={key.dtype}, V={value.dtype}, Q={query.dtype}")
+
+    B, Hq, Sq, D = _validate_attention_tensor(query, "Q", tensor_layout)
+    Bk, Hkv, Skv, Dk = _validate_attention_tensor(key, "K", tensor_layout, expected_dtype=query.dtype)
+    Bv, Hkv2, Skv2, Dv = _validate_attention_tensor(value, "V", tensor_layout, expected_dtype=query.dtype)
+
+    if Bk != B or Bv != B:
+        raise ValueError("Batch size mismatch between Q/K/V")
+    if Hkv2 != Hkv or Skv2 != Skv or Dv != Dk:
+        raise ValueError("K/V shape mismatch")
+    if Dk != D:
+        raise ValueError("Head dim mismatch between Q and K/V")
+    if D not in (64, 128):
+        raise ValueError(f"Unsupported head_dim={D}; supported: 64, 128")
+
+    lib = get_lib(query)
+    stream = get_stream(query)
+    O = _empty_attention_output(
+        B,
+        Hq,
+        Sq,
+        D,
+        dtype=value.dtype,
+        device=query.device,
+        tensor_layout=tensor_layout,
+    )
+    q_strides = _attention_strides_qko(query, tensor_layout)
+    k_strides = _attention_strides_qko(key, tensor_layout)
+    v_strides = _attention_strides_v(value, tensor_layout)
+    o_strides = _attention_strides_qko(O, tensor_layout)
+    lib.sagev1_pvi8(
+        stream,
+        query.data_ptr(),
+        key.data_ptr(),
+        value.data_ptr(),
+        O.data_ptr(),
+        attn_mask.data_ptr() if attn_mask is not None else 0,
+        quant_block_size,
+        *q_strides,
+        *k_strides,
+        *v_strides,
+        *o_strides,
+        cvt_dtype(query.dtype),
+        cvt_dtype(key.dtype),
+        cvt_dtype(value.dtype),
+        cvt_dtype(O.dtype),
+        B,
+        Hq,
+        Hkv,
+        Sq,
+        Skv,
+        D,
+        float(scale) if scale is not None else 1.0 / (D**0.5),
+        bool(is_causal),
+    )
+    return O
+
+
 from .sparse_attention import (
     _block_map_lut_torch,
     _build_block_causal_mask,
@@ -711,8 +885,6 @@ from .sparse_attention import (
     _to_hnd,
     sageattn,
     sage_sparse,
-    sagev1,
-    sagev1_pvi8,
     sparge_block_map_to_mask,
     sparge_preprocess_topk,
     sparge_sage2_attn_meansim_topk_xpu,
