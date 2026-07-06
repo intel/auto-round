@@ -42,7 +42,7 @@
 #include "flash_attention_v2/collective/fmha_fusion.hpp"
 #include "flash_attention_v2/collective/xe_fmha_fwd_epilogue.hpp"
 #include "flash_attention_v2/collective/xe_fmha_fwd_mainloop.hpp"
-#include "xe_sagev1_fwd_mainloop.hpp"
+#include "xe_sparse_sagev1_fwd_mainloop.hpp"
 #include "flash_attention_v2/kernel/xe_tile_scheduler.hpp"
 #include <type_traits>
 
@@ -61,6 +61,15 @@ struct has_sparse_q_block_size : std::false_type {};
 
 template <class T>
 struct has_sparse_q_block_size<T, std::void_t<decltype(std::declval<T&>().sparse_q_block_size)>> : std::true_type {};
+
+template <bool IsVarLen_ = false>
+struct SparseSageProblemShape {
+  using SeqLenType = cute::conditional_t<IsVarLen_, cutlass::fmha::collective::VariableLength, int>;
+  int batch;
+  int num_heads_q, num_heads_kv;
+  SeqLenType seq_len_qo, seq_len_kv, seq_len_kv_cache;
+  int head_size_qk, head_size_vo;
+};
 
 template <class ProblemShape_, class CollectiveMainloop_, class CollectiveEpilogue_, class TileScheduler_>
 class XeSparseSageFwdKernel {
