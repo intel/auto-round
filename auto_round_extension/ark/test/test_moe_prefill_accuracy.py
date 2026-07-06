@@ -376,6 +376,7 @@ class TestMoEGemmPrefillAccuracy:
             else:
                 os.environ["ARK_MOE_PREFILL_NATIVE_FP8"] = prev
 
+    @pytest.mark.parametrize("dtype", [torch.float16, torch.bfloat16])
     @pytest.mark.parametrize("fp8_dtype", [torch.float8_e4m3fn, torch.float8_e5m2])
     def test_accuracy_fp8_per_tensor_dpas(self, dtype, fp8_dtype):
         """Parity of the Variant A per-tensor FP8 DPAS entry point.
@@ -429,6 +430,7 @@ class TestMoEGemmPrefillAccuracy:
             assert out.shape == (total_tokens, N), f"{label}: bad shape {out.shape}"
             torch.testing.assert_close(out, ref, msg=lambda m, lbl=label: f"[{lbl}] {m}", **_TOL_FP8)
 
+    @pytest.mark.parametrize("dtype", [torch.float16, torch.bfloat16])
     def test_accuracy_int8_per_tensor_dpas(self, dtype):
         """Parity of the Variant A per-tensor INT8 DPAS entry point.
 
@@ -480,6 +482,7 @@ class TestMoEGemmPrefillAccuracy:
             assert out.shape == (total_tokens, N), f"{label}: bad shape {out.shape}"
             torch.testing.assert_close(out, ref, msg=lambda m, lbl=label: f"[{lbl}] {m}", **_TOL_INT8)
 
+    @pytest.mark.parametrize("dtype", [torch.float16, torch.bfloat16])
     @pytest.mark.parametrize("fp8_dtype", [torch.float8_e4m3fn, torch.float8_e5m2])
     def test_accuracy_fp8_dpas_per_group(self, dtype, fp8_dtype):
         """Parity of the Variant B per-K-group FP8 DPAS branch.
