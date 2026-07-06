@@ -1192,7 +1192,18 @@ def revert_checkpoint_conversion_mapping(name: str, key_mapping: dict[str, str])
         for target_pattern in target_patterns:
             source_pattern = source_pattern.lstrip("^")  # strip off un-needed chars and patterns
             source_pattern = re.sub(r"\(.*\)", "", source_pattern)
-            name, n_replace = re.subn(source_pattern, target_pattern, name)
+
+            # Weight-conversion reverse mappings may expose bare tensor names
+            # such as "weight" -> ".weight_packed". Treat those as terminal
+            # tensor suffixes so they do not rewrite already-quantized names
+            # like ".weight_packed" into malformed keys such as
+            # "..weight_packed_packed".
+            if re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", source_pattern) and target_pattern.startswith("."):
+                match_pattern = rf"\.{re.escape(source_pattern)}$"
+            else:
+                match_pattern = source_pattern
+
+            name, n_replace = re.subn(match_pattern, target_pattern, name)
             # Early exit of the loop
             if n_replace > 0:
                 return name
