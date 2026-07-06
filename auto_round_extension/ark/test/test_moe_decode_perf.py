@@ -248,6 +248,38 @@ def _maybe_restrict_shapes(request, monkeypatch):
     monkeypatch.setattr(module, "DECODE_SHAPES", filtered)
 
 
+def _release_xpu_memory() -> None:
+    """Free cached XPU memory and synchronize.
+
+    Called before and after every test (via the autouse cleanup fixture
+    below) so allocator pressure from one parametrization does not bleed
+    into the next -- mirroring the ``torch.xpu.empty_cache()`` pattern
+    used at the end of every XPU test in ``test_matmul.py`` /
+    ``test_weightonly.py`` and the ``_release_xpu_memory`` helper in
+    ``test_moe_prefill_perf.py``.
+    """
+    if hasattr(torch, "xpu") and torch.xpu.is_available():
+        torch.xpu.synchronize()
+        if hasattr(torch.xpu, "empty_cache"):
+            torch.xpu.empty_cache()
+
+
+@pytest.fixture(autouse=True)
+def _xpu_cleanup_between_tests():
+    """Release XPU allocator cache before and after every test.
+
+    An aborted test (OOM, kernel error, assertion) can leave the XPU
+    allocator holding a large working set that then starves the next
+    parametrization. Bracketing each test with an ``empty_cache`` call
+    isolates parametrizations from one another.
+    """
+    _release_xpu_memory()
+    try:
+        yield
+    finally:
+        _release_xpu_memory()
+
+
 def _print_header(title: str) -> None:
     print()
     print("=" * 110)

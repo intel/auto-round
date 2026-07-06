@@ -455,6 +455,30 @@ def _maybe_restrict_shapes(request, monkeypatch):
     monkeypatch.setattr(module, "PREFILL_SHAPES", filtered)
 
 
+@pytest.fixture(autouse=True)
+def _xpu_cleanup_between_tests():
+    """Release XPU allocator cache before and after every test.
+
+    The MoE prefill perf tests allocate multi-GB padded ``[E, M_max, K]``
+    buffers per shape. Even though each test drops references and calls
+    :func:`_release_xpu_memory` inside its shape loop, an aborted test
+    (OOM, kernel error, assertion) can leave the XPU allocator holding
+    the working set of a large shape, which then starves the next
+    parametrization -- matching the pattern of many
+    ``TestMoEGemmPrefillPerf.test_perf_*[...]`` cases failing together.
+
+    Mirrors the ``torch.xpu.empty_cache()`` cleanup pattern used by
+    ``test_matmul.py`` / ``test_weightonly.py`` at the end of every XPU
+    test, but as an autouse fixture so it also runs before the test
+    starts (isolating from any leftover state from earlier tests).
+    """
+    _release_xpu_memory()
+    try:
+        yield
+    finally:
+        _release_xpu_memory()
+
+
 def _print_header(title: str) -> None:
     """Print a benchmark header.
 
