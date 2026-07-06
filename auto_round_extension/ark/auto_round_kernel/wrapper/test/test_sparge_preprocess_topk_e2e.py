@@ -46,6 +46,8 @@ def _assert_metadata_matches(actual: dict, reference: dict) -> None:
         assert torch.allclose(actual[key], reference[key], atol=2.0e-5, rtol=0.0), key
     assert actual["query_tile_tokens"] == reference["query_tile_tokens"]
     assert actual["quant_block_size"] == reference["quant_block_size"]
+    assert actual["sparse_q_block_tokens"] == reference["sparse_q_block_tokens"]
+    assert actual["sparse_k_block_tokens"] == reference["sparse_k_block_tokens"]
     assert actual["kernel_compatibility_added_blocks"] == reference["kernel_compatibility_added_blocks"]
     assert actual["stats"] == reference["stats"]
 
@@ -56,6 +58,10 @@ def run_case(
     topk: float,
     is_causal: bool,
     tensor_layout: str,
+    query_tile_tokens: int | None = None,
+    q_tile_override: int = 0,
+    sparse_q_block_tokens: int | None = None,
+    sparse_k_block_tokens: int | None = None,
     seq_len_q: int = 256,
     seq_len_kv: int = 256,
     num_heads_q: int = 1,
@@ -64,6 +70,8 @@ def run_case(
     device = torch.device("xpu")
     batch = 1
     scale = 1.0 / math.sqrt(head_dim)
+    effective_query_tile_tokens = query_tile_tokens or (q_tile_override or None)
+    effective_q_tile_override = q_tile_override if q_tile_override != 0 else (query_tile_tokens or 0)
 
     seed = (
         5200
@@ -94,6 +102,9 @@ def run_case(
         topk=topk,
         attention_sink=False,
         tensor_layout=tensor_layout,
+        query_tile_tokens=effective_query_tile_tokens,
+        sparse_q_block_tokens=sparse_q_block_tokens,
+        sparse_k_block_tokens=sparse_k_block_tokens,
     )
     torch_meta = ark._sparge_preprocess_topk_torch(
         query,
@@ -104,6 +115,9 @@ def run_case(
         topk=topk,
         attention_sink=False,
         tensor_layout=tensor_layout,
+        query_tile_tokens=effective_query_tile_tokens,
+        sparse_q_block_tokens=sparse_q_block_tokens,
+        sparse_k_block_tokens=sparse_k_block_tokens,
     )
     _assert_metadata_matches(preprocess_meta, torch_meta)
 
@@ -118,6 +132,10 @@ def run_case(
         topk=topk,
         attention_sink=False,
         tensor_layout=tensor_layout,
+        query_tile_tokens=effective_query_tile_tokens,
+        q_tile_override=q_tile_override,
+        sparse_q_block_tokens=sparse_q_block_tokens,
+        sparse_k_block_tokens=sparse_k_block_tokens,
         return_metadata=True,
     )
 
@@ -139,6 +157,9 @@ def run_case(
         quant_block_size=meta["quant_block_size"],
         qscale=meta["qscale"],
         kscale=meta["kscale"],
+        q_tile_override=effective_q_tile_override,
+        sparse_q_block_tokens=meta["sparse_q_block_tokens"],
+        sparse_k_block_tokens=meta["sparse_k_block_tokens"],
         tensor_layout=tensor_layout,
     )
     torch_sparse = ark.sage_sparse(
@@ -152,11 +173,17 @@ def run_case(
         quant_block_size=torch_meta["quant_block_size"],
         qscale=torch_meta["qscale"],
         kscale=torch_meta["kscale"],
+        q_tile_override=effective_q_tile_override,
+        sparse_q_block_tokens=torch_meta["sparse_q_block_tokens"],
+        sparse_k_block_tokens=torch_meta["sparse_k_block_tokens"],
         tensor_layout=tensor_layout,
     )
     torch.xpu.synchronize()
 
-    case_name = f"topk_{topk:.2f}_{'causal' if is_causal else 'noncausal'}_{tensor_layout.lower()}"
+    case_name = (
+        f"topk_{topk:.2f}_{'causal' if is_causal else 'noncausal'}_{tensor_layout.lower()}"
+        f"_qtile{query_tile_tokens or 'default'}_kqtile{effective_q_tile_override or 'default'}"
+    )
     direct_diff = (direct_sparse.float() - sparse_out.float()).abs()
     direct_max_diff = float(direct_diff.max().cpu())
     direct_mean_diff = float(direct_diff.mean().cpu())
@@ -181,6 +208,8 @@ def run_case(
         dense_mask = ark.sparge_block_map_to_mask(
             meta["block_map"],
             quant_block_size=meta["quant_block_size"],
+            q_block_tokens=meta["sparse_q_block_tokens"],
+            k_block_tokens=meta["sparse_k_block_tokens"],
             seq_len_q=seq_len_q,
             seq_len_kv=seq_len_kv,
             is_causal=is_causal,
@@ -228,6 +257,9 @@ def run_case(
             topk=topk,
             attention_sink=False,
             tensor_layout=tensor_layout,
+            query_tile_tokens=effective_query_tile_tokens,
+            sparse_q_block_tokens=sparse_q_block_tokens,
+            sparse_k_block_tokens=sparse_k_block_tokens,
         )
         assert crafted_meta["kernel_compatibility_added_blocks"] == 0
         assert torch.equal(crafted_meta["block_map"], crafted_meta["raw_block_map"])
@@ -246,6 +278,22 @@ def main() -> None:
         run_case(128, topk=0.5, is_causal=True, tensor_layout=tensor_layout)
         run_case(64, topk=0.25, is_causal=False, tensor_layout=tensor_layout)
         run_case(128, topk=0.25, is_causal=False, tensor_layout=tensor_layout)
+        run_case(128, topk=0.5, is_causal=False, tensor_layout=tensor_layout, query_tile_tokens=256)
+        run_case(128, topk=0.5, is_causal=False, tensor_layout=tensor_layout, q_tile_override=256)
+        if tensor_layout == "NHD":
+            run_case(
+                128,
+                topk=0.5,
+                is_causal=False,
+                tensor_layout=tensor_layout,
+                q_tile_override=256,
+                sparse_q_block_tokens=256,
+                sparse_k_block_tokens=64,
+                seq_len_q=512,
+                seq_len_kv=512,
+                num_heads_q=2,
+                num_heads_kv=2,
+            )
         run_case(
             128,
             topk=0.5,

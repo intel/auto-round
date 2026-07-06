@@ -56,6 +56,12 @@ struct has_canonical_nhd_k : std::false_type {};
 template <class T>
 struct has_canonical_nhd_k<T, std::void_t<decltype(std::declval<T&>().canonical_nhd_k)>> : std::true_type {};
 
+template <class T, class = void>
+struct has_sparse_q_block_size : std::false_type {};
+
+template <class T>
+struct has_sparse_q_block_size<T, std::void_t<decltype(std::declval<T&>().sparse_q_block_size)>> : std::true_type {};
+
 template <class ProblemShape_, class CollectiveMainloop_, class CollectiveEpilogue_, class TileScheduler_>
 class XeSparseSageFwdKernel {
  public:
@@ -245,8 +251,14 @@ class XeSparseSageFwdKernel {
                         : nullptr;
       int sparse_q_block = blk_q;
       int sparse_q_rows_in_tile = 1;
-      if (params.mainloop.scale_block_size > 0) {
-        int q_blocks_per_tile = cute::max(1, int(get<0>(TileShapeQK{})) / params.mainloop.scale_block_size);
+      int sparse_q_block_size = params.mainloop.scale_block_size;
+      if constexpr (has_sparse_q_block_size<MainloopParams>::value) {
+        if (params.mainloop.sparse_q_block_size > 0) {
+          sparse_q_block_size = params.mainloop.sparse_q_block_size;
+        }
+      }
+      if (sparse_q_block_size > 0) {
+        int q_blocks_per_tile = cute::max(1, int(get<0>(TileShapeQK{})) / sparse_q_block_size);
         sparse_q_block = blk_q * q_blocks_per_tile;
         sparse_q_rows_in_tile = q_blocks_per_tile;
         if (params.mainloop.num_q_blocks > 0) {

@@ -224,6 +224,7 @@ struct SPARSESAGEV1FwdMainloop<sage::XeDefault<Stages>, CausalMask_, FullMask_, 
     int const* valid_block_num = nullptr;
     int num_q_blocks = 0;
     int num_k_blocks = 0;
+    int sparse_q_block_size = 0;
     bool canonical_nhd_k = false;
     int const* ptr_page_table = nullptr;
     int page_size = 0;
@@ -251,7 +252,8 @@ struct SPARSESAGEV1FwdMainloop<sage::XeDefault<Stages>, CausalMask_, FullMask_, 
     constexpr double kLog2e = 1.4426950408889634074;  // log_2(e)
     float val = args.scale * static_cast<float>(kLog2e);
     return Params{val, args.mask, args.scale_block_size, args.qscale, args.kscale, args.vscale,
-            args.lut, args.valid_block_num, args.num_q_blocks, args.num_k_blocks, args.canonical_nhd_k,
+            args.lut, args.valid_block_num, args.num_q_blocks, args.num_k_blocks, args.sparse_q_block_size,
+            args.canonical_nhd_k,
             args.ptr_page_table, args.page_size, args.num_pages_per_seq};
   }
 
@@ -450,8 +452,11 @@ struct SPARSESAGEV1FwdMainloop<sage::XeDefault<Stages>, CausalMask_, FullMask_, 
     /* Check if */
     bool check_remainder_k = (seq_len % get<1>(TileShapeQK{}) != 0);
     int q_sg_tile = get<0>(shape_div(TileShapeQK{}, shape(SubgroupLayoutQK{})));
-    int q_blocks_per_wg_tile = params.scale_block_size > 0 ? cute::max(1, int(get<0>(TileShapeQK{})) / params.scale_block_size) : 1;
-    int sg_rows_per_sparse_q_block = params.scale_block_size > 0 ? cute::max(1, params.scale_block_size / q_sg_tile) : 1;
+    int sparse_q_block_size = params.sparse_q_block_size > 0 ? params.sparse_q_block_size : params.scale_block_size;
+    int q_blocks_per_wg_tile =
+        sparse_q_block_size > 0 ? cute::max(1, int(get<0>(TileShapeQK{})) / sparse_q_block_size) : 1;
+    int sg_rows_per_sparse_q_block =
+        sparse_q_block_size > 0 ? cute::max(1, sparse_q_block_size / q_sg_tile) : 1;
     int subgroup_q_row_in_tile = get_sub_group_id() / sg_rows_per_sparse_q_block;
     subgroup_q_row_in_tile = cute::min(subgroup_q_row_in_tile, q_blocks_per_wg_tile - 1);
 

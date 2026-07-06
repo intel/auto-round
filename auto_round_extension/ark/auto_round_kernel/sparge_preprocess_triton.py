@@ -390,9 +390,13 @@ def _run_triton_xpu_preprocess(ctx: Any) -> dict[str, Any]:
     if ctx.attention_sink:
         final_tile_map[..., 0] = True
 
-    q_block_to_tile = torch.arange(ctx.num_q_blocks, device=ctx.query.device, dtype=torch.int64) // ctx.q_blocks_per_tile
+    q_block_to_tile = (
+        torch.arange(ctx.num_sparse_q_blocks, device=ctx.query.device, dtype=torch.int64) // ctx.q_sparse_blocks_per_tile
+    )
     q_block_to_tile = q_block_to_tile.clamp_max(ctx.num_q_tiles - 1)
-    k_block_to_tile = torch.arange(ctx.num_k_blocks, device=ctx.query.device, dtype=torch.int64) // ctx.k_blocks_per_tile
+    k_block_to_tile = (
+        torch.arange(ctx.num_sparse_k_blocks, device=ctx.query.device, dtype=torch.int64) // ctx.k_sparse_blocks_per_tile
+    )
     k_block_to_tile = k_block_to_tile.clamp_max(ctx.num_k_tiles - 1)
     raw_block_map = final_tile_map.index_select(2, q_block_to_tile).index_select(3, k_block_to_tile).contiguous()
     lut, valid_block_num = _block_map_lut_triton(raw_block_map)

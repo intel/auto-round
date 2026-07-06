@@ -70,6 +70,12 @@ struct has_canonical_nhd_k : std::false_type {};
 template <class T>
 struct has_canonical_nhd_k<T, std::void_t<decltype(std::declval<T&>().canonical_nhd_k)>> : std::true_type {};
 
+template <class T, class = void>
+struct has_sparse_q_block_size : std::false_type {};
+
+template <class T>
+struct has_sparse_q_block_size<T, std::void_t<decltype(std::declval<T&>().sparse_q_block_size)>> : std::true_type {};
+
 // Command line options parsing
 struct Options {
    const void *q = nullptr, *k = nullptr, *v = nullptr;
@@ -78,6 +84,7 @@ struct Options {
   int q_tile_override = 0;
   int sparse_profile_mode = 0;
   int scale_block_size = 0;
+  int sparse_q_block_size = 0;
   const void *qscale = nullptr, *kscale = nullptr, *vscale = nullptr;
   // Sparse routing metadata is stored per (batch, q_head, q_block). Each LUT row is delta-encoded
   // over logical KV blocks and valid_block_num says how many entries in that row are live.
@@ -109,6 +116,7 @@ struct Options {
        << "  mask: " << mask << "\n"
        << "  q_tile_override: " << q_tile_override << "\n"
        << "  sparse_profile_mode: " << sparse_profile_mode << "\n"
+       << "  sparse_q_block_size: " << sparse_q_block_size << "\n"
        << "  lut: " << lut << "\n"
        << "  valid_block_num: " << valid_block_num << "\n"
        << "  num_q_blocks: " << num_q_blocks << "\n"
@@ -162,6 +170,7 @@ MainloopArguments make_sage_mainloop_arguments(const Options& options) {
             // spans the concatenated cache + current KV space even though the kernel may source data from
             // different tensors under the hood.
             options.num_k_blocks,
+            options.sparse_q_block_size,
             false,
             options.use_paged_kv ? options.page_table : nullptr,
             options.use_paged_kv ? options.page_size : 0,
@@ -1130,6 +1139,25 @@ inline int launch_sparse_sage_prefill_kernel_128_qtile64_profile(Options const& 
   using ShapeQK1 = Shape<_64, _64, _32>;
   using ShapePV1 = Shape<_64, _32, _64>;
   using ShapeOut1 = Shape<_64, _128>;
+  using SubgroupLayoutQK1 = Layout<Shape<_4, _1, _1>>;
+  return options.is_causal
+             ? SparseSageConfig<true, false, true, true, ShapeQK, ShapePV, ShapeOut, SubgroupLayoutQK, void,
+                                PipelineStages, false, ProfileMode, ElementQ, ElementK, ElementV, ElementO>::run(options)
+             : SparseSageConfig<false, false, true, true, ShapeQK1, ShapePV1, ShapeOut1, SubgroupLayoutQK1, void,
+                                PipelineStages, false, ProfileMode, ElementQ, ElementK, ElementV, ElementO>::run(options);
+}
+
+template <cutlass::sage::SparseProfileMode ProfileMode, typename ElementQ, typename ElementK, typename ElementV,
+          typename ElementO = ElementV>
+inline int launch_sparse_sage_prefill_kernel_128_qtile64_profile_halfwidth(Options const& options) {
+  constexpr int PipelineStages = 2;
+  using ShapeQK = Shape<_64, _64, _32>;
+  using ShapePV = Shape<_64, _32, _64>;
+  using ShapeOut = Shape<_64, _64>;
+  using SubgroupLayoutQK = Layout<Shape<_4, _1, _1>>;
+  using ShapeQK1 = Shape<_64, _64, _32>;
+  using ShapePV1 = Shape<_64, _32, _64>;
+  using ShapeOut1 = Shape<_64, _64>;
   using SubgroupLayoutQK1 = Layout<Shape<_4, _1, _1>>;
   return options.is_causal
              ? SparseSageConfig<true, false, true, true, ShapeQK, ShapePV, ShapeOut, SubgroupLayoutQK, void,

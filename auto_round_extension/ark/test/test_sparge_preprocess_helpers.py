@@ -101,3 +101,67 @@ def test_preprocess_context_uses_wan_head_dim_128_routing_geometry():
     assert ctx.q_blocks_per_tile == 1
     assert ctx.k_blocks_per_tile == 2
     assert ctx.query_tile_tokens == 64
+
+
+@pytest.mark.skipif(
+    not (hasattr(torch, "xpu") and torch.xpu.is_available()),
+    reason="XPU not available",
+)
+def test_preprocess_context_accepts_explicit_query_tile_tokens_256():
+    q = torch.randn((1, 2, 512, 128), device="xpu", dtype=torch.float16)
+    k = torch.randn((1, 2, 512, 128), device="xpu", dtype=torch.float16)
+
+    ctx = _build_sparge_preprocess_context(
+        q,
+        k,
+        is_causal=False,
+        smooth_k=True,
+        simthreshd1=-0.1,
+        topk=0.5,
+        attention_sink=False,
+        quant_block_size=64,
+        tensor_layout="HND",
+        query_tile_tokens=256,
+    )
+
+    assert ctx.q_route_block_tokens == 256
+    assert ctx.q_blocks_per_tile == 4
+    assert ctx.num_q_tiles == 2
+    assert ctx.query_tile_tokens == 256
+
+
+@pytest.mark.skipif(
+    not (hasattr(torch, "xpu") and torch.xpu.is_available()),
+    reason="XPU not available",
+)
+def test_preprocess_context_accepts_decoupled_sparse_qtile256_row64k():
+    q = torch.randn((1, 2, 512, 128), device="xpu", dtype=torch.float16)
+    k = torch.randn((1, 2, 512, 128), device="xpu", dtype=torch.float16)
+
+    ctx = _build_sparge_preprocess_context(
+        q,
+        k,
+        is_causal=False,
+        smooth_k=True,
+        simthreshd1=-0.1,
+        topk=0.5,
+        attention_sink=False,
+        quant_block_size=64,
+        tensor_layout="NHD",
+        query_tile_tokens=256,
+        sparse_q_block_tokens=256,
+        sparse_k_block_tokens=64,
+    )
+
+    assert ctx.q_route_block_tokens == 256
+    assert ctx.k_route_block_tokens == 64
+    assert ctx.sparse_q_block_tokens == 256
+    assert ctx.sparse_k_block_tokens == 64
+    assert ctx.q_blocks_per_tile == 4
+    assert ctx.k_blocks_per_tile == 1
+    assert ctx.q_sparse_blocks_per_tile == 1
+    assert ctx.k_sparse_blocks_per_tile == 1
+    assert ctx.num_q_blocks == 8
+    assert ctx.num_k_blocks == 8
+    assert ctx.num_sparse_q_blocks == 2
+    assert ctx.num_sparse_k_blocks == 8
