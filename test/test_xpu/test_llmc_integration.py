@@ -3,16 +3,9 @@ import torch
 from compressed_tensors.quantization import QuantizationArgs, QuantizationScheme
 from llmcompressor import oneshot
 from llmcompressor.modifiers.autoround import AutoRoundModifier
-from packaging import version
 from transformers import AutoModelForCausalLM, AutoTokenizer
 
 from auto_round.calib_dataset import get_dataset
-from ..helpers import transformers_version
-
-pytestmark = pytest.mark.skipif(
-    transformers_version >= version.parse("5.13.0"),
-    reason="llm-compressor integration tests are incompatible with transformers >= 5.13.0",
-)
 
 recipe_str = """
 quant_stage:
