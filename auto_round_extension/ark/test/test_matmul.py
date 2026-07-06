@@ -54,7 +54,7 @@ def main_op(m, k, n, dt, batch_size, runs, has_bias, record_property, device, op
     if has_bias:
         ref_dst = ref_dst + bias
     diff = abs(tar_dst - ref_dst)
-    print(f"  Max Diff: {diff.max().item():.6f}, Mean Diff: {diff.mean().item():.6f}")
+    print(f"  Max Diff: {diff.max().item():.5f}, Mean Diff: {diff.mean().item():.5f}", end="", flush=True)
     if dt == torch.float32:
         atol = 0.001
         rtol = 0.03
@@ -106,9 +106,7 @@ def main_op(m, k, n, dt, batch_size, runs, has_bias, record_property, device, op
         record_property("GFLOPS", round(gflops, 2))
         record_property("Bandwidth_GBs", round(bandwidth, 2))
 
-    print(f"[Performance] Time: {dur*1000:.4f} ms")
-    print(f"              GFLOPS: {gflops:.2f}")
-    print(f"              Bandwidth: {bandwidth:.2f} GB/s")
+    print(f"[Performance] Time: {dur*1000:.4f} ms, GFLOPS: {gflops:.2f}, Bandwidth: {bandwidth:.2f} GB/s")
 
 
 def woqgemm(m, k, n, dt, batch_size, runs, record_property, device):
@@ -129,8 +127,8 @@ def woqgemm(m, k, n, dt, batch_size, runs, record_property, device):
     DB = B[0].to(dt) * scaleB
     ref = torch.matmul(DA, DB.T)
     ref = ref + bias
-    dff = abs(C - ref)
-    print(f"  Max Diff: {dff.max().item():.6f}, Mean Diff: {dff.mean().item():.6f}")
+    diff = abs(C - ref)
+    print(f"  Max Diff: {diff.max().item():.5f}, Mean Diff: {diff.mean().item():.5f}", end="", flush=True)
     # QDQ tolerance
     assert torch.allclose(C, ref, atol=1, rtol=0.1), "Verification Failed!"
     print("  -> Verification PASS")
@@ -163,9 +161,7 @@ def woqgemm(m, k, n, dt, batch_size, runs, record_property, device):
         record_property("GFLOPS", round(gflops, 2))
         record_property("Bandwidth_GBs", round(bandwidth, 2))
 
-    print(f"[Performance] Time: {dur*1000:.4f} ms")
-    print(f"              GFLOPS: {gflops:.2f}")
-    print(f"              Bandwidth: {bandwidth:.2f} GB/s")
+    print(f"[Performance] Time: {dur*1000:.4f} ms, GFLOPS: {gflops:.2f}, Bandwidth: {bandwidth:.2f} GB/s")
 
 
 @pytest.mark.parametrize("m", [4096])
@@ -203,7 +199,7 @@ def test_cpu(m, k, n, dt, batch_size, runs, record_property):
     main_op(m, k, n, dt, batch_size, runs, True, record_property, "cpu")
 
 
-@pytest.mark.parametrize("m", [1, 8, 16, 32, 64, 128, 256, 1024])
+@pytest.mark.parametrize("m", [1, 8, 16, 32, 64, 128, 256, 1024, 2048, 4096])
 @pytest.mark.parametrize("k, n", [(4096, 4096)])
 @pytest.mark.parametrize("dt", [torch.float16, torch.bfloat16])
 @pytest.mark.parametrize("batch_size", [1])
@@ -233,19 +229,60 @@ def test_xpu_sycl_tla(m, k, n, dt, batch_size, runs, record_property):
     torch.xpu.empty_cache()
 
 
+@pytest.mark.parametrize("m", [1, 8, 16, 32, 64, 128, 256, 1024, 2048, 4096])
+@pytest.mark.parametrize("k, n", [(4096, 4096)])
+@pytest.mark.parametrize("dt", [torch.float16, torch.bfloat16])
+@pytest.mark.parametrize("batch_size", [1])
+@pytest.mark.parametrize("runs", [1])
+def test_xpu_sycl_tla_no_bias(m, k, n, dt, batch_size, runs, record_property):
+    if not torch.xpu.is_available():
+        pytest.skip("No XPU Device")
+    if not hasattr(ark, "matmul_sycl_tla"):
+        pytest.skip("Python wrapper for matmul_sycl_tla is not available")
+    if getattr(ark, "xpu_lib", None) is None or not hasattr(ark.xpu_lib, "matmul_sycl_tla"):
+        pytest.skip("SYCL-TLA matmul is not available in this build")
+
+    main_op(
+        m,
+        k,
+        n,
+        dt,
+        batch_size,
+        runs,
+        False,
+        record_property,
+        "xpu",
+        op=ark.matmul_sycl_tla,
+        op_name="matmul_sycl_tla_no_bias",
+    )
+
+    torch.xpu.empty_cache()
+
+
 # pytest -vs auto_round_extension/ark/test/test_matmul.py -k compare_dnnl_vs_sycl_tla
 @pytest.mark.parametrize("m", [1, 8, 16, 32, 128, 1024, 2048, 4096])
 @pytest.mark.parametrize("k, n", [(4096, 4096)])
 @pytest.mark.parametrize("dt", [torch.float16, torch.bfloat16])
-def test_xpu_compare_dnnl_vs_sycl_tla(m, k, n, dt, record_property):
+def test_xpu_compare_dnnl_vs_sycl_tla(m, k, n, dt):
     warmup = 30 if m <= 32 else 20
     runs = 200 if m <= 32 else 80
 
-    compare_matmul_backends(m, k, n, dt, warmup, runs, record_property, "xpu")
+    compare_matmul_backends(m, k, n, dt, warmup, runs, "xpu")
     torch.xpu.empty_cache()
 
 
-def compare_matmul_backends(m, k, n, dt, warmup, runs, record_property, device="xpu"):
+@pytest.mark.parametrize("m", [1, 8, 16, 32, 128, 1024, 2048, 4096, 5120])
+@pytest.mark.parametrize("k, n", [(4096, 4096)])
+@pytest.mark.parametrize("dt", [torch.float16, torch.bfloat16])
+def test_xpu_compare_dnnl_vs_sycl_tla_no_bias(m, k, n, dt):
+    warmup = 30 if m <= 32 else 20
+    runs = 200 if m <= 32 else 80
+
+    compare_matmul_backends(m, k, n, dt, warmup, runs, "xpu", has_bias=False)
+    torch.xpu.empty_cache()
+
+
+def compare_matmul_backends(m, k, n, dt, warmup, runs, device="xpu", has_bias=True):
     if device != "xpu":
         raise ValueError("compare_matmul_backends only supports XPU")
 
@@ -276,7 +313,7 @@ def compare_matmul_backends(m, k, n, dt, warmup, runs, record_property, device="
 
     activation = torch.rand(m, k, dtype=dt, device=device) - 0.5
     wei = torch.rand(n, k, dtype=dt, device=device) - 0.5
-    bias = torch.rand(1, n, dtype=dt, device=device) - 0.5
+    bias = torch.rand(1, n, dtype=dt, device=device) - 0.5 if has_bias else torch.Tensor()
 
     dnnl_out = ark.matmul(activation, wei, bias)
     tla_out = ark.matmul_sycl_tla(activation, wei, bias)
@@ -290,11 +327,12 @@ def compare_matmul_backends(m, k, n, dt, warmup, runs, record_property, device="
     tla_dur = _benchmark_op(ark.matmul_sycl_tla, activation, wei, bias, runs=runs, warmup=warmup)
 
     ops = m * n * k * 2
-    print(f"\n  [oneDNN]                  : {dnnl_dur*1000:8.3f} ms   {ops / dnnl_dur / 1e12:7.3f} TFLOPS")
+    tag = "with_bias" if has_bias else "no_bias"
+    print(f"\n  [{tag}]")
+    print(f"  [oneDNN]                  : {dnnl_dur*1000:8.3f} ms   {ops / dnnl_dur / 1e12:7.3f} TFLOPS")
     print(
         f"  [matmul_sycl_tla]         : {tla_dur*1000:8.3f} ms   {ops / tla_dur / 1e12:7.3f} TFLOPS  speedup={dnnl_dur / tla_dur:5.2f}x"
     )
-    print()
 
 
 # LOCAL_TEST: python test_matmul.py
