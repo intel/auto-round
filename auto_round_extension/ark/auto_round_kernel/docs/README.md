@@ -6,6 +6,11 @@
 - `SPARSE_SAGE_DECODE_PLAN.md`: implementation plan for adding `seq_len_q == 1` cached sparse decode support on top of the existing sparse Sage kernel stack.
 - `SPARSE_SAGE_KERNEL_FIX_PLAN.md`: implementation plan for fixing the remaining non-contiguous sparse-row kernel limitation by moving sparse execution to a dedicated sparse forward mainloop.
 - `SPARSE_PREFETCH_NOTES.md`: notes on why dense `K + Stages` prefetch works, why LUT-driven sparse traversal needs a different scheduler, and what a sparse-aware prefetch path would require.
+- `SPARSE_DEV_FAST_BUILD_20260703.md`: fast rebuild path for sparse-kernel development on this node, including the focused `D128 + BF16` sparse-only dev target, measured rebuild times, and the exact commands to use.
+- `SPARSE_HALFWIDTH_FULL_KERNEL_BENCH_20260704.md`: half-width `ShapeOut=[64,64]` sparse row-linear benchmark notes showing that the reduced PV output tile does not improve the full kernel.
+- `SPARSE_PV_LIVE_STATE_REDUCTION_PLAN_20260704.md`: plan for reducing PV-path live state and spill pressure in the long-sequence sparse kernel.
+- `SPARSE_QUERY_TILE_256_20260704.md`: notes on adding preprocess-side `query_tile_tokens=256` support and the first benchmark results for the generic `q_tile=256` sparse path.
+- `SPARSE_QTILE256_ROW64K_COMPARE_20260706.md`: benchmark comparison between the older sparse implementations and the newer decoupled `q_tile=256 / q_block=256 / k_block=64` path.
 - `SAGE_MAINLOOP_BODY_DIAGRAM.html`: visual note explaining what one `mainloop_body(...)` call does, with a concrete Wan D=128 tile example.
 - `SPARSE_KERNEL_BENCH_PLAN.md`: implementation note and usage guide for the dedicated C++ sparse-kernel benchmark executable with Wan- and Flux-shaped presets for later kernel tuning.
 - `SPARSE_ATTN_CLEAN_BRANCH.md`: clean-branch contract for rebuilding sparse attention on top of `main`, including what is kept, what is excluded, and the build/e2e/perf commands used to verify it.
