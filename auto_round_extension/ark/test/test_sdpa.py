@@ -4,9 +4,9 @@
 import math
 import time
 
+import auto_round_kernel
 import pandas as pd
 import torch
-from ut_utils import get_ark, is_xpu_available, print_top_diffs, reference_sdpa
 
 ark = None
 
@@ -107,8 +107,9 @@ def benchmark_ark_sdpa_case(
     q = torch.rand(batch, h_q, seq, head_size_qk, dtype=dt, device=dev)
     k = torch.rand(batch, h_kv, seq_kv, head_size_qk, dtype=dt, device=dev)
     v = torch.rand(batch, h_kv, seq_kv, head_size_vo, dtype=dt, device=dev)
+    attn_bias = build_attn_bias(seq, seq_kv, dt, q.device, is_causal)
     scale = 1 / math.sqrt(head_size_qk)
-    ref = reference_sdpa(q, k, v, scale=scale, is_causal=is_causal)
+    ref = torch.nn.functional.scaled_dot_product_attention(q, k, v, scale=scale, enable_gqa=group > 1, is_causal=True)
     ret = get_ark().sdpa(q, k, v, scale=scale, is_causal=is_causal)
     dff = abs(ref - ret)
     print_top_diffs(dff, ref, ret, topk=4, threshold=1)
@@ -241,6 +242,20 @@ def run_ark_sdpa_to_excel(
     return pd.DataFrame(results)
 
 
+def is_xpu_available():
+    return hasattr(torch, "xpu") and torch.xpu.is_available()
+
+
+def get_ark():
+    """Lazily initialize and return the ARK instance."""
+    global ark
+    if ark is None:
+        if not is_xpu_available():
+            raise RuntimeError("XPU is not available; cannot initialize auto_round_kernel")
+        ark = auto_round_kernel
+    return ark
+
+
 def has_sdpa():
     """Check if Flash Attention kernel is available."""
     try:
@@ -261,6 +276,23 @@ def build_mask(seq, seq_kv, dt=torch.float32, dev="xpu", const_count=0, const_va
     indices = torch.randperm(flat_mask.numel(), device=flat_mask.device)[:const_count]
     flat_mask[indices] = const_value
     return mask
+
+
+def print_top_diffs(diff, ref, out, topk=10, threshold=0):
+    flat_diff = diff.reshape(-1)
+    topk = min(topk, flat_diff.numel())
+    top_values, top_indices = torch.topk(flat_diff, k=topk)
+    flat_ref = ref.reshape(-1)
+    flat_out = out.reshape(-1)
+
+    print(f"diff max={diff.max()} mean={diff.mean()}")
+    print(f"Top {topk} diff entries:")
+    if diff.max() > threshold:
+        for rank, (value, flat_index) in enumerate(zip(top_values, top_indices), start=1):
+            coord = tuple(int(index.item()) for index in torch.unravel_index(flat_index, diff.shape))
+            ref_value = flat_ref[flat_index].item()
+            out_value = flat_out[flat_index].item()
+            print(f"#{rank}: index={coord}, diff={value.item()}, ref={ref_value}, out={out_value}")
 
 
 def sftm(seq, h, block=-1, dt=torch.float32, dev="xpu"):

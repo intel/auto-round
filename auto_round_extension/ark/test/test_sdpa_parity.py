@@ -18,22 +18,17 @@ pytestmark = pytest.mark.skipif(
 )
 
 
-def _make_attention_inputs(layout: str):
-    """Create contiguous Q/K/V tensors matching the requested layout."""
+def _make_noncontiguous_attention_inputs(layout: str):
     torch.manual_seed(3030)
     batch, heads, seq, head_dim = 1, 2, 64, 64
+    q_hnd = torch.randn(batch, heads, seq * 2, head_dim, device="xpu", dtype=torch.float16)[:, :, ::2, :]
+    k_hnd = torch.randn(batch, heads, seq * 2, head_dim, device="xpu", dtype=torch.float16)[:, :, ::2, :]
+    v_hnd = torch.randn(batch, heads, seq * 2, head_dim, device="xpu", dtype=torch.float16)[:, :, ::2, :]
+
     if layout == "HND":
-        return (
-            torch.randn(batch, heads, seq, head_dim, device="xpu", dtype=torch.float16).contiguous(),
-            torch.randn(batch, heads, seq, head_dim, device="xpu", dtype=torch.float16).contiguous(),
-            torch.randn(batch, heads, seq, head_dim, device="xpu", dtype=torch.float16).contiguous(),
-        )
+        return q_hnd, k_hnd, v_hnd
     if layout == "NHD":
-        return (
-            torch.randn(batch, seq, heads, head_dim, device="xpu", dtype=torch.float16).contiguous(),
-            torch.randn(batch, seq, heads, head_dim, device="xpu", dtype=torch.float16).contiguous(),
-            torch.randn(batch, seq, heads, head_dim, device="xpu", dtype=torch.float16).contiguous(),
-        )
+        return q_hnd.transpose(1, 2), k_hnd.transpose(1, 2), v_hnd.transpose(1, 2)
     raise ValueError(f"Unsupported layout: {layout}")
 
 
@@ -42,8 +37,8 @@ def _make_attention_inputs(layout: str):
     [("sdpa", 1e-2, 1e-2), ("sagev1", 2e-2, 2e-2)],
 )
 @pytest.mark.parametrize("layout", ["HND", "NHD"])
-def test_ark_attention_supports_contiguous_inputs_for_layouts(api_name, atol, rtol, layout):
-    q, k, v = _make_attention_inputs(layout)
+def test_ark_attention_supports_noncontiguous_inputs_for_layouts(api_name, atol, rtol, layout):
+    q, k, v = _make_noncontiguous_attention_inputs(layout)
     scale = 1 / math.sqrt(q.shape[-1])
 
     expected = torch.nn.functional.scaled_dot_product_attention(
@@ -71,6 +66,9 @@ def test_ark_attention_supports_contiguous_inputs_for_layouts(api_name, atol, rt
         )
     torch.xpu.synchronize()
 
+    assert not q.is_contiguous()
+    assert not k.is_contiguous()
+    assert not v.is_contiguous()
     torch.testing.assert_close(actual, expected, atol=atol, rtol=rtol)
 
 
