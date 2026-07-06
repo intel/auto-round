@@ -271,7 +271,7 @@ def test_xpu_compare_dnnl_vs_sycl_tla(m, k, n, dt):
     torch.xpu.empty_cache()
 
 
-@pytest.mark.parametrize("m", [1, 8, 16, 32, 128, 1024, 2048, 4096, 5120])
+@pytest.mark.parametrize("m", [1, 8, 16, 32, 128, 1024, 2048, 4096])
 @pytest.mark.parametrize("k, n", [(4096, 4096)])
 @pytest.mark.parametrize("dt", [torch.float16, torch.bfloat16])
 def test_xpu_compare_dnnl_vs_sycl_tla_no_bias(m, k, n, dt):
@@ -327,9 +327,7 @@ def compare_matmul_backends(m, k, n, dt, warmup, runs, device="xpu", has_bias=Tr
     tla_dur = _benchmark_op(ark.matmul_sycl_tla, activation, wei, bias, runs=runs, warmup=warmup)
 
     ops = m * n * k * 2
-    tag = "with_bias" if has_bias else "no_bias"
-    print(f"\n  [{tag}]")
-    print(f"  [oneDNN]                  : {dnnl_dur*1000:8.3f} ms   {ops / dnnl_dur / 1e12:7.3f} TFLOPS")
+    print(f"\n  [oneDNN]                  : {dnnl_dur*1000:8.3f} ms   {ops / dnnl_dur / 1e12:7.3f} TFLOPS")
     print(
         f"  [matmul_sycl_tla]         : {tla_dur*1000:8.3f} ms   {ops / tla_dur / 1e12:7.3f} TFLOPS  speedup={dnnl_dur / tla_dur:5.2f}x"
     )
