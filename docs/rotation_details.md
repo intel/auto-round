@@ -117,9 +117,11 @@ model_name = "Qwen/Qwen3-0.6B"
 ar = AutoRound(model_name, scheme="MXFP4", rotation_config="quarot")
 
 # Choose how many positions to rotate:
-ar = AutoRound(model_name, scheme="MXFP4", rotation_config=SpinQuantConfig(r1=True))                       # R1 only
-ar = AutoRound(model_name, scheme="MXFP4", rotation_config=SpinQuantConfig(r1=True, r2=True))              # R1+R2
-ar = AutoRound(model_name, scheme="MXFP4", rotation_config=SpinQuantConfig(r1=True, r2=True, r3=True, r4=True))  # all four
+ar = AutoRound(model_name, scheme="MXFP4", rotation_config=SpinQuantConfig(r1=True))  # R1 only
+ar = AutoRound(model_name, scheme="MXFP4", rotation_config=SpinQuantConfig(r1=True, r2=True))  # R1+R2
+ar = AutoRound(
+    model_name, scheme="MXFP4", rotation_config=SpinQuantConfig(r1=True, r2=True, r3=True, r4=True)
+)  # all four
 
 ar.quantize_and_save(output_dir="./Qwen3-0.6B-mxfp4-quarot", format="auto_round")
 ```
@@ -146,8 +148,14 @@ ar = AutoRound(
     model_name,
     scheme="MXFP4",
     rotation_config=SpinQuantConfig(
-        r1=True, r2=True, r3=True, r4=True,
-        random_r1=True, random_r2=True, random_r3=True, random_r4=True,
+        r1=True,
+        r2=True,
+        r3=True,
+        r4=True,
+        random_r1=True,
+        random_r2=True,
+        random_r3=True,
+        random_r4=True,
     ),
 )
 ```
@@ -177,6 +185,7 @@ ar.quantize_and_save(output_dir="./my_model", format="auto_round")
 
 # Load (rotation hooks restored automatically)
 from transformers import AutoModelForCausalLM
+
 model = AutoModelForCausalLM.from_pretrained("./my_model", device_map="auto")
 ```
 
