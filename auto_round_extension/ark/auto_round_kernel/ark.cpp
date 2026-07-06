@@ -413,13 +413,21 @@ static void sage_sparse(torch_ptr stream, torch_ptr Q, torch_ptr K, torch_ptr V,
   if (!lut || !valid_block_num) {
     throw std::invalid_argument("ark::sage_sparse: lut and valid_block_num must be provided");
   }
-  ark::sdpa_impl_qks8_sparse_pvhalf((sycl::queue*)stream, (void*)Q, (void*)K, (void*)V, (void*)O, (void*)mask,
-                                    scale_block_size, (void*)qscale, (void*)kscale, (void*)lut,
-                                    (void*)valid_block_num, num_q_blocks, num_k_blocks, q_tile_override, q_stride_s, q_stride_d,
-                                    q_stride_h, q_stride_b, k_stride_s, k_stride_d, k_stride_h, k_stride_b, v_stride_d,
-                                    v_stride_s, v_stride_h, v_stride_b, o_stride_s, o_stride_d, o_stride_h, o_stride_b,
-                                    batch, num_heads_q, num_heads_kv, seq_len_q, seq_len_kv, head_dim, softmax_scale,
-                                    is_causal, (BTLA_DTYPE)o_dtype);
+  if (head_dim == 64) {
+    ark::sdpa_impl_qks8_sparse_d64_pvhalf(
+        (sycl::queue*)stream, (void*)Q, (void*)K, (void*)V, (void*)O, (void*)mask, scale_block_size, (void*)qscale,
+        (void*)kscale, (void*)lut, (void*)valid_block_num, num_q_blocks, num_k_blocks, q_tile_override, q_stride_s,
+        q_stride_d, q_stride_h, q_stride_b, k_stride_s, k_stride_d, k_stride_h, k_stride_b, v_stride_d, v_stride_s,
+        v_stride_h, v_stride_b, o_stride_s, o_stride_d, o_stride_h, o_stride_b, batch, num_heads_q, num_heads_kv,
+        seq_len_q, seq_len_kv, head_dim, softmax_scale, is_causal, (BTLA_DTYPE)o_dtype);
+    return;
+  }
+  ark::sdpa_impl_qks8_sparse_row_linear_pvhalf(
+      (sycl::queue*)stream, (void*)Q, (void*)K, (void*)V, (void*)O, (void*)mask, scale_block_size, (void*)qscale,
+      (void*)kscale, (void*)lut, (void*)valid_block_num, num_q_blocks, num_k_blocks, q_tile_override, q_stride_s,
+      q_stride_d, q_stride_h, q_stride_b, k_stride_s, k_stride_d, k_stride_h, k_stride_b, v_stride_d, v_stride_s,
+      v_stride_h, v_stride_b, o_stride_s, o_stride_d, o_stride_h, o_stride_b, batch, num_heads_q, num_heads_kv,
+      seq_len_q, seq_len_kv, head_dim, softmax_scale, is_causal, (BTLA_DTYPE)o_dtype);
 }
 
 static void sage_sparse_qtile256_row64k(
