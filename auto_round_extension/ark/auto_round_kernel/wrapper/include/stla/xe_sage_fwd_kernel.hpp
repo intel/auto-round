@@ -298,9 +298,8 @@ class XeSageFwdKernel {
       CollectiveMainloop mainloop(params.mainloop, shared_storage.mainloop);
       mainloop(Q(_, _, head_q, l_coord), K(_, _, head, l_coord), V(_, _, head, l_coord), tArA, tA_max, tA_sum, blk_qv,
                0, k_blocks, k_blocks, thr_id, seq_len, seq_len_kv_cache, idx_b, scaleQ, scaleK, scaleV,
-               full_tile_offset, discard_seq_coord,
-               /*lut_rows_base=*/nullptr, /*valid_blocks_base=*/nullptr, /*sparse_q_rows_in_tile=*/1,
-               K_cache(_, _, head, l_coord), V_cache(_, _, head, l_coord));
+               full_tile_offset,
+               discard_seq_coord, K_cache(_, _, head, l_coord), V_cache(_, _, head, l_coord));
 
       if constexpr (!is_empty_v<MainloopSharedStorage> && !is_empty_v<EpilogueSharedStorage>) {
         sycl::group_barrier(get_work_group<3>());

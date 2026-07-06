@@ -192,13 +192,6 @@ MainloopArguments make_sage_mainloop_arguments(const Options& options) {
             static_cast<const float*>(options.qscale),
             static_cast<const float*>(options.kscale),
             static_cast<const float*>(options.vscale),
-            options.lut,
-            options.valid_block_num,
-            options.num_q_blocks,
-            // num_k_blocks counts the logical KV blocks visible to sparse routing. For cached decode this
-            // spans the concatenated cache + current KV space even though the kernel may source data from
-            // different tensors under the hood.
-            options.num_k_blocks,
             options.use_paged_kv ? options.page_table : nullptr,
             options.use_paged_kv ? options.page_size : 0,
             options.use_paged_kv ? options.num_pages_per_seq : nullptr};
