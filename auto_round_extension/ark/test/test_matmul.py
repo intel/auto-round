@@ -264,8 +264,8 @@ def test_xpu_sycl_tla_no_bias(m, k, n, dt, batch_size, runs, record_property):
 @pytest.mark.parametrize("k, n", [(4096, 4096)])
 @pytest.mark.parametrize("dt", [torch.float16, torch.bfloat16])
 def test_xpu_compare_dnnl_vs_sycl_tla(m, k, n, dt):
-    warmup = 30 if m <= 32 else 20
-    runs = 200 if m <= 32 else 80
+    warmup = 100
+    runs = 1000
 
     compare_matmul_backends(m, k, n, dt, warmup, runs, "xpu")
     torch.xpu.empty_cache()
@@ -275,8 +275,8 @@ def test_xpu_compare_dnnl_vs_sycl_tla(m, k, n, dt):
 @pytest.mark.parametrize("k, n", [(4096, 4096)])
 @pytest.mark.parametrize("dt", [torch.float16, torch.bfloat16])
 def test_xpu_compare_dnnl_vs_sycl_tla_no_bias(m, k, n, dt):
-    warmup = 30 if m <= 32 else 20
-    runs = 200 if m <= 32 else 80
+    warmup = 100
+    runs = 1000
 
     compare_matmul_backends(m, k, n, dt, warmup, runs, "xpu", has_bias=False)
     torch.xpu.empty_cache()
