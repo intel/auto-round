@@ -233,42 +233,12 @@ def test_xpu_sycl_tla(m, k, n, dt, batch_size, runs, record_property):
     torch.xpu.empty_cache()
 
 
-@pytest.mark.parametrize("m", [1, 8, 16, 32, 64, 128, 256, 1024])
-@pytest.mark.parametrize("k, n", [(4096, 4096)])
-@pytest.mark.parametrize("dt", [torch.float16, torch.bfloat16])
-@pytest.mark.parametrize("batch_size", [1])
-@pytest.mark.parametrize("runs", [1])
-def test_xpu_sycl_tla_fused_bias(m, k, n, dt, batch_size, runs, record_property):
-    if not torch.xpu.is_available():
-        pytest.skip("No XPU Device")
-    if not hasattr(ark, "matmul_sycl_tla_fused_bias"):
-        pytest.skip("Python wrapper for matmul_sycl_tla_fused_bias is not available")
-    if getattr(ark, "xpu_lib", None) is None or not hasattr(ark.xpu_lib, "matmul_sycl_tla_fused_bias"):
-        pytest.skip("SYCL-TLA fused-bias matmul is not available in this build")
-
-    main_op(
-        m,
-        k,
-        n,
-        dt,
-        batch_size,
-        runs,
-        True,
-        record_property,
-        "xpu",
-        op=ark.matmul_sycl_tla_fused_bias,
-        op_name="matmul_sycl_tla_fused_bias",
-    )
-
-    torch.xpu.empty_cache()
-
-
-# ARK_RUN_COMPARE=1 pytest -vs auto_round_extension/ark/test/test_matmul.py -k compare_dnnl_vs_sycl_tla
+# pytest -vs auto_round_extension/ark/test/test_matmul.py -k compare_dnnl_vs_sycl_tla
 @pytest.mark.skipif(
     os.environ.get("ARK_RUN_COMPARE", "0") != "1",
     reason="manual benchmark only; set ARK_RUN_COMPARE=1 to enable",
 )
-@pytest.mark.parametrize("m", [1, 8, 16, 32, 128, 1024, 2048, 4096])
+@pytest.mark.parametrize("m", [1, 8, 16, 32, 128, 1024, 2048, 4096, 5120])
 @pytest.mark.parametrize("k, n", [(4096, 4096)])
 @pytest.mark.parametrize("dt", [torch.float16, torch.bfloat16])
 def test_xpu_compare_dnnl_vs_sycl_tla(m, k, n, dt, record_property):
@@ -314,26 +284,19 @@ def compare_matmul_backends(m, k, n, dt, warmup, runs, record_property, device="
 
     dnnl_out = ark.matmul(activation, wei, bias)
     tla_out = ark.matmul_sycl_tla(activation, wei, bias)
-    fused_tla_out = ark.matmul_sycl_tla_fused_bias(activation, wei, bias)
 
     atol, rtol = _matmul_tolerance(dt)
-    ok = torch.allclose(dnnl_out, tla_out, atol=atol, rtol=rtol) and torch.allclose(
-        dnnl_out, fused_tla_out, atol=atol, rtol=rtol
-    )
+    ok = torch.allclose(dnnl_out, tla_out, atol=atol, rtol=rtol)
 
     assert ok, "oneDNN vs sycl-tla mismatch"
 
     dnnl_dur = _benchmark_op(ark.matmul, activation, wei, bias, runs=runs, warmup=warmup)
-    # tla_dur = _benchmark_op(ark.matmul_sycl_tla, activation, wei, bias, runs=runs, warmup=warmup)
-    fused_tla_dur = _benchmark_op(ark.matmul_sycl_tla_fused_bias, activation, wei, bias, runs=runs, warmup=warmup)
+    tla_dur = _benchmark_op(ark.matmul_sycl_tla, activation, wei, bias, runs=runs, warmup=warmup)
 
     ops = m * n * k * 2
     print(f"\n  [oneDNN]                  : {dnnl_dur*1000:8.3f} ms   {ops / dnnl_dur / 1e12:7.3f} TFLOPS")
-    # print(
-    #     f"  [matmul_sycl_tla]         : {tla_dur*1000:8.3f} ms   {ops / tla_dur / 1e12:7.3f} TFLOPS  speedup={dnnl_dur / tla_dur:5.2f}x"
-    # )
     print(
-        f"  [matmul_sycl_tla_fused]   : {fused_tla_dur*1000:8.3f} ms   {ops / fused_tla_dur / 1e12:7.3f} TFLOPS  speedup={dnnl_dur / fused_tla_dur:5.2f}x"
+        f"  [matmul_sycl_tla]         : {tla_dur*1000:8.3f} ms   {ops / tla_dur / 1e12:7.3f} TFLOPS  speedup={dnnl_dur / tla_dur:5.2f}x"
     )
     print()
 
