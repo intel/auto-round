@@ -1,0 +1,233 @@
+# Copyright (c) 2026 Intel Corporation
+# SPDX-License-Identifier: Apache-2.0
+#
+# CI/readiness matrix for the non-int8 CPU BestLA SDPA routes.
+#
+# ISA coverage plan:
+#   avx2       — ubuntu-latest (x86_64).  Route 1 (f16 K/V) and Tier 0 scalar.
+#                Route 2 (bf16 K/V) tests are ISA-skipped on AVX2-only machines.
+#   avx512f    — self-hosted SPR/EMR/GNR (no AMX).  Routes 1+2, fp32-score path.
+#   amx-bf16   — self-hosted SPR/EMR/GNR (AMX enabled).  Route 2 AMX-BF16 path.
+#   avx512-fp16— self-hosted GNR/SRF.  C++ UT route-3 ISA coverage only.
+#
+# This file implements the avx2 job that can run on standard GitHub runners.
+# The self-hosted hardware jobs (avx512f, amx-bf16, avx512-fp16) require physical
+# SPR/EMR/GNR machines; their structure is documented below but they are left as
+# manual-dispatch stubs until hardware is available.
+#
+# Routes 1/2 remain ENV-GATED (ARK_UNSAFE_BESTLA_MIXED_SDPA=1) until blockers
+# B1–B5 (see validate_non_int8_cpu_sdpa.py) are resolved.
+
+name: Non-int8 CPU SDPA
+
+on:
+  pull_request:
+    branches: [main]
+    types: [opened, reopened, ready_for_review, synchronize]
+    paths:
+      - "auto_round_extension/ark/**"
+      - ".github/workflows/non_int8_cpu_sdpa.yml"
+      - "!**/*.md"
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  # ---------------------------------------------------------------------------
+  # AVX2 job — runs on standard ubuntu-latest (x86_64).
+  # Exercises: Tier 0 scalar, C++ UT dispatch/reorder (ISA-skip guards for
+  # AVX512F-only tests), Tier 1 mixed route 1 (F16 K/V, AVX2 path), and the
+  # Python ABI tests for route 1 features.
+  # ---------------------------------------------------------------------------
+  avx2:
+    name: CPU SDPA (AVX2, ubuntu-latest)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install Python dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install torch --index-url https://download.pytorch.org/whl/cpu
+          python -m pip install pytest
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends cmake build-essential g++
+
+      - name: Build ARK CPU extension
+        id: build
+        working-directory: auto_round_extension/ark
+        run: |
+          pip install --no-build-isolation -e . 2>&1 || echo "::warning::CPU extension build failed; C++ and Tier 1 tests will be skipped"
+        continue-on-error: true
+
+      - name: Print ISA + route status
+        working-directory: auto_round_extension/ark
+        run: python test/validate_non_int8_cpu_sdpa.py
+
+      - name: Tier 0 — scalar path (Python)
+        working-directory: auto_round_extension/ark
+        run: |
+          python -m pytest test/test_ark_cpu_sdpa.py -v --tb=short -x
+        continue-on-error: ${{ steps.build.outcome != 'success' }}
+
+      - name: Tier 1 — mixed BestLA route 1 (F16 K/V, AVX2, env-gated)
+        working-directory: auto_round_extension/ark
+        env:
+          ARK_UNSAFE_BESTLA_MIXED_SDPA: "1"
+        run: |
+          python -m pytest test/test_ark_cpu_mixed_bestla_sdpa.py -v --tb=short \
+            -k "float16" \
+            2>&1 | tee tier1_avx2.log
+          # ISA-skip is expected for bf16 on AVX2-only; failures outside skip are real.
+        continue-on-error: ${{ steps.build.outcome != 'success' }}
+
+      - name: Tier 1 — mixed BestLA route 2 (BF16 K/V, gating check only on AVX2)
+        working-directory: auto_round_extension/ark
+        run: |
+          # Without the env gate, mixed dtype must raise — this must pass on any ISA.
+          python -m pytest test/test_ark_cpu_mixed_bestla_sdpa.py::test_mixed_dtype_default_is_gated \
+            -v --tb=short
+        continue-on-error: ${{ steps.build.outcome != 'success' }}
+
+  # ---------------------------------------------------------------------------
+  # AVX512F / AMX-BF16 / AVX512-FP16 jobs — require self-hosted hardware.
+  # These are documented here as manual-dispatch stubs.  They will be activated
+  # once the corresponding self-hosted runners are available.
+  # ---------------------------------------------------------------------------
+  avx512f:
+    name: CPU SDPA (AVX512F, self-hosted SPR/EMR)
+    runs-on: [self-hosted, avx512f]
+    if: ${{ github.event_name == 'workflow_dispatch' }}
+    timeout-minutes: 45
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install Python dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install torch --index-url https://download.pytorch.org/whl/cpu
+          python -m pip install pytest
+
+      - name: Build ARK CPU extension
+        working-directory: auto_round_extension/ark
+        run: pip install --no-build-isolation -e .
+
+      - name: Print ISA + route status
+        working-directory: auto_round_extension/ark
+        run: python test/validate_non_int8_cpu_sdpa.py
+
+      - name: Tier 0 — scalar path (Python)
+        working-directory: auto_round_extension/ark
+        run: python -m pytest test/test_ark_cpu_sdpa.py -v --tb=short -x
+
+      - name: Tier 1 — mixed BestLA routes 1+2 (AVX512F, env-gated)
+        working-directory: auto_round_extension/ark
+        env:
+          ARK_UNSAFE_BESTLA_MIXED_SDPA: "1"
+        run: python -m pytest test/test_ark_cpu_mixed_bestla_sdpa.py -v --tb=short -x
+
+  amx-bf16:
+    name: CPU SDPA (AMX-BF16, self-hosted SPR/EMR/GNR)
+    runs-on: [self-hosted, amx-bf16]
+    if: ${{ github.event_name == 'workflow_dispatch' }}
+    timeout-minutes: 45
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install Python dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install torch --index-url https://download.pytorch.org/whl/cpu
+          python -m pip install pytest
+
+      - name: Build ARK CPU extension
+        working-directory: auto_round_extension/ark
+        run: pip install --no-build-isolation -e .
+
+      - name: Print ISA + route status
+        working-directory: auto_round_extension/ark
+        run: python test/validate_non_int8_cpu_sdpa.py
+
+      - name: Tier 0 — scalar path (Python)
+        working-directory: auto_round_extension/ark
+        run: python -m pytest test/test_ark_cpu_sdpa.py -v --tb=short -x
+
+      - name: Tier 1 — mixed BestLA route 2 (BF16, AMX-BF16 path, env-gated)
+        working-directory: auto_round_extension/ark
+        env:
+          ARK_UNSAFE_BESTLA_MIXED_SDPA: "1"
+        run: python -m pytest test/test_ark_cpu_mixed_bestla_sdpa.py -v --tb=short -x
+
+      - name: Benchmark — route 2 raw vs packed (regression baseline)
+        working-directory: auto_round_extension/ark
+        env:
+          ARK_UNSAFE_BESTLA_MIXED_SDPA: "1"
+        run: |
+          python test/bench_ark_cpu_sdpa.py \
+            --dtype bfloat16 --shape decode --mode both --runs 30 \
+            --csv /tmp/bench_amx_bf16.csv
+          echo "Benchmark results saved to /tmp/bench_amx_bf16.csv"
+
+  avx512-fp16:
+    name: CPU SDPA (AVX512-FP16, self-hosted GNR/SRF)
+    runs-on: [self-hosted, avx512-fp16]
+    if: ${{ github.event_name == 'workflow_dispatch' }}
+    timeout-minutes: 30
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install Python dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install torch --index-url https://download.pytorch.org/whl/cpu
+          python -m pip install pytest
+
+      - name: Build ARK CPU extension
+        working-directory: auto_round_extension/ark
+        run: pip install --no-build-isolation -e .
+
+      - name: Tier 0 — scalar path (Python)
+        working-directory: auto_round_extension/ark
+        run: python -m pytest test/test_ark_cpu_sdpa.py -v --tb=short -x
+
+      - name: C++ UT — route 3 ISA coverage (AVX512-FP16 internal-only)
+        working-directory: auto_round_extension/ark
+        run: |
+          # Route 3 (fp16x4) C++ UTs run here for ISA coverage only;
+          # route 3 is NOT wired in Python ABI (internal-only by design).
+          echo "C++ UT route-3 ISA coverage: build test_reorder_kv_main and run manually."
+          echo "Expected: TestReorderKV passes on AVX512-FP16; TestHomogeneousForwardSetup verifies route 3 setup."

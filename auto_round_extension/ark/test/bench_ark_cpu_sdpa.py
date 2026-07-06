@@ -12,14 +12,32 @@ only ever counted for a kernel that matches the reference within tolerance.
 This is intentionally CPU-only: it never touches ``torch.xpu``/``torch.cuda`` and forces the
 reference SDPA onto the math backend so both sides run on the CPU.
 
+The ``--mode`` flag selects which paths to benchmark:
+  raw    — Tier 0 scalar (default Python path) vs PyTorch math SDPA (default).
+  packed — Tier 1 BestLA packed KV cache path vs PyTorch math SDPA.
+           Requires ARK_UNSAFE_BESTLA_MIXED_SDPA=1 and the BestLA extension build.
+           Only valid for mixed dtypes (float16 or bfloat16 KV).
+  both   — Side-by-side: raw mixed path vs packed mixed path vs PyTorch reference.
+           Shows the packed-vs-raw latency ratio to quantify the reorder overhead.
+
 Usage::
 
-    # default sweep
+    # default sweep (Tier 0 raw path)
     python auto_round_extension/ark/test/bench_ark_cpu_sdpa.py
 
-    # custom run, e.g. single shape with CSV output
-    OMP_NUM_THREADS=8 python auto_round_extension/ark/test/bench_ark_cpu_sdpa.py \
-        --shape decode --batch 1 --heads-q 32 --heads-kv 8 --head-dim 128 \
+    # packed KV cache path benchmark (Route 1, decode only)
+    ARK_UNSAFE_BESTLA_MIXED_SDPA=1 \\
+    python auto_round_extension/ark/test/bench_ark_cpu_sdpa.py \\
+        --dtype float16 --shape decode --mode packed
+
+    # raw vs packed comparison for regression tracking (Route 2, decode)
+    ARK_UNSAFE_BESTLA_MIXED_SDPA=1 \\
+    python auto_round_extension/ark/test/bench_ark_cpu_sdpa.py \\
+        --dtype bfloat16 --shape decode --mode both
+
+    # custom run with CSV output
+    OMP_NUM_THREADS=8 python auto_round_extension/ark/test/bench_ark_cpu_sdpa.py \\
+        --shape decode --batch 1 --heads-q 32 --heads-kv 8 --head-dim 128 \\
         --seq-kv 4096 --runs 50 --csv results.csv
 """
 
@@ -128,6 +146,72 @@ def run_case(shape_kind, batch, heads_q, heads_kv, head_dim, seq, dtype, warmup,
     }
 
 
+def run_case_packed(shape_kind, batch, heads_q, heads_kv, head_dim, seq, dtype, warmup, runs, atol, rtol):
+    """Benchmark the Tier 1 packed KV cache path (ark_cpu_bestla_sdpa_packed).
+
+    Only meaningful for mixed dtypes (float16 or bfloat16 KV).  Requires
+    ARK_UNSAFE_BESTLA_MIXED_SDPA=1 and the BestLA extension build.  Returns None
+    when the packed path is unavailable (no extension or ISA not present).
+    """
+    if dtype not in (torch.float16, torch.bfloat16):
+        return None
+    if os.environ.get("ARK_UNSAFE_BESTLA_MIXED_SDPA", "0") != "1":
+        return None
+    if not hasattr(auto_round_kernel, "ark_cpu_packed_kv_alloc"):
+        return None
+
+    is_causal = shape_kind == "prefill"
+    seq_q = 1 if shape_kind == "decode" else seq
+    seq_kv = seq
+    scale = 1.0 / math.sqrt(head_dim)
+
+    q_f32, k, v = _make_qkv(batch, heads_q, heads_kv, head_dim, seq_q, seq_kv, dtype)
+    q_f32 = q_f32.float()
+
+    try:
+        cache_k, cache_v = auto_round_kernel.ark_cpu_packed_kv_alloc(
+            batch, heads_kv, seq_kv, head_dim, dtype
+        )
+        auto_round_kernel.ark_cpu_update_packed_kv(cache_k, cache_v, k, v, 0, dtype)
+    except (RuntimeError, ValueError):
+        return None
+
+    def packed_call():
+        return auto_round_kernel.ark_cpu_bestla_sdpa_packed(
+            q_f32, cache_k, cache_v, seq_kv, batch, heads_q, heads_kv, head_dim, scale,
+            is_causal=is_causal, tensor_layout="HND", dtype=dtype,
+        )
+
+    try:
+        actual = packed_call()
+    except (RuntimeError, ValueError):
+        return None
+
+    expected = _reference_sdpa(q_f32, k, v, scale, is_causal)
+    max_err = (actual.float() - expected).abs().max().item()
+    passed = torch.allclose(actual.float(), expected, atol=atol, rtol=rtol)
+
+    packed_mean, packed_best = _time_call(packed_call, warmup, runs)
+    ref_mean, _ = _time_call(lambda: _reference_sdpa(q_f32, k, v, scale, is_causal), warmup, runs)
+
+    return {
+        "shape": shape_kind,
+        "batch": batch,
+        "heads_q": heads_q,
+        "heads_kv": heads_kv,
+        "head_dim": head_dim,
+        "seq_q": seq_q,
+        "seq_kv": seq_kv,
+        "dtype": str(dtype).replace("torch.", ""),
+        "packed_ms": packed_mean * 1e3,
+        "packed_best_ms": packed_best * 1e3,
+        "ref_ms": ref_mean * 1e3,
+        "speedup": ref_mean / packed_mean if packed_mean > 0 else float("nan"),
+        "max_abs_err": max_err,
+        "passed": passed,
+    }
+
+
 def _build_cases(args):
     if args.shape == "decode" or args.shape == "all":
         decode = (
@@ -161,42 +245,127 @@ def main(argv=None):
     parser.add_argument("--atol", type=float, default=2e-2)
     parser.add_argument("--rtol", type=float, default=2e-2)
     parser.add_argument("--csv", type=str, default="", help="Optional path to write per-case results as CSV")
+    parser.add_argument(
+        "--mode",
+        choices=["raw", "packed", "both"],
+        default="raw",
+        help=(
+            "raw: Tier 0 scalar vs PyTorch ref (default); "
+            "packed: Tier 1 packed KV vs PyTorch ref (requires ARK_UNSAFE_BESTLA_MIXED_SDPA=1 and mixed dtype); "
+            "both: raw mixed path + packed mixed path side-by-side vs PyTorch ref"
+        ),
+    )
     args = parser.parse_args(argv)
 
     dtype = _dtype_from_str(args.dtype)
     threads = os.environ.get("OMP_NUM_THREADS", str(torch.get_num_threads()))
     print(f"CPU-only ARK SDPA benchmark | torch_threads={torch.get_num_threads()} OMP_NUM_THREADS={threads}")
-    header = (
-        f"{'shape':<8}{'B':>3}{'Hq':>4}{'Hkv':>4}{'D':>5}{'q':>6}{'kv':>7}"
-        f"{'dtype':>10}{'ark(ms)':>11}{'ref(ms)':>11}{'speedup':>9}{'max_err':>11}{'ok':>4}"
-    )
-    print(header)
-    print("-" * len(header))
+    print(f"mode={args.mode} dtype={args.dtype}")
 
-    rows = []
-    for shape_kind, batch, hq, hkv, hd, seq in _build_cases(args):
-        row = run_case(shape_kind, batch, hq, hkv, hd, seq, dtype, args.warmup, args.runs, args.atol, args.rtol)
-        rows.append(row)
-        print(
-            f"{row['shape']:<8}{row['batch']:>3}{row['heads_q']:>4}{row['heads_kv']:>4}{row['head_dim']:>5}"
-            f"{row['seq_q']:>6}{row['seq_kv']:>7}{row['dtype']:>10}{row['ark_ms']:>11.3f}{row['ref_ms']:>11.3f}"
-            f"{row['speedup']:>9.2f}{row['max_abs_err']:>11.2e}{('yes' if row['passed'] else 'NO'):>4}"
+    run_raw = args.mode in ("raw", "both")
+    run_packed = args.mode in ("packed", "both")
+
+    all_passed = True
+
+    if run_raw:
+        header = (
+            f"{'shape':<8}{'B':>3}{'Hq':>4}{'Hkv':>4}{'D':>5}{'q':>6}{'kv':>7}"
+            f"{'dtype':>10}{'ark(ms)':>11}{'ref(ms)':>11}{'speedup':>9}{'max_err':>11}{'ok':>4}"
         )
-
-    if rows:
-        geomean = math.exp(sum(math.log(r["speedup"]) for r in rows) / len(rows))
-        all_passed = all(r["passed"] for r in rows)
+        print("\n[raw path]")
+        print(header)
         print("-" * len(header))
-        print(f"geomean speedup vs torch math SDPA: {geomean:.2f}x | parity: {'PASS' if all_passed else 'FAIL'}")
 
-    if args.csv:
-        with open(args.csv, "w", newline="") as fh:
-            writer = csv.DictWriter(fh, fieldnames=list(rows[0].keys()))
-            writer.writeheader()
-            writer.writerows(rows)
-        print(f"wrote {len(rows)} rows to {args.csv}")
+        raw_rows = []
+        for shape_kind, batch, hq, hkv, hd, seq in _build_cases(args):
+            row = run_case(shape_kind, batch, hq, hkv, hd, seq, dtype, args.warmup, args.runs, args.atol, args.rtol)
+            raw_rows.append(row)
+            print(
+                f"{row['shape']:<8}{row['batch']:>3}{row['heads_q']:>4}{row['heads_kv']:>4}{row['head_dim']:>5}"
+                f"{row['seq_q']:>6}{row['seq_kv']:>7}{row['dtype']:>10}{row['ark_ms']:>11.3f}{row['ref_ms']:>11.3f}"
+                f"{row['speedup']:>9.2f}{row['max_abs_err']:>11.2e}{('yes' if row['passed'] else 'NO'):>4}"
+            )
 
-    return 0 if all(r["passed"] for r in rows) else 1
+        if raw_rows:
+            geomean = math.exp(sum(math.log(r["speedup"]) for r in raw_rows) / len(raw_rows))
+            raw_passed = all(r["passed"] for r in raw_rows)
+            all_passed = all_passed and raw_passed
+            print("-" * len(header))
+            print(f"geomean speedup vs torch math SDPA: {geomean:.2f}x | parity: {'PASS' if raw_passed else 'FAIL'}")
+
+        if args.csv and run_raw and not run_packed:
+            with open(args.csv, "w", newline="") as fh:
+                writer = csv.DictWriter(fh, fieldnames=list(raw_rows[0].keys()))
+                writer.writeheader()
+                writer.writerows(raw_rows)
+            print(f"wrote {len(raw_rows)} rows to {args.csv}")
+
+    if run_packed:
+        pack_header = (
+            f"{'shape':<8}{'B':>3}{'Hq':>4}{'Hkv':>4}{'D':>5}{'q':>6}{'kv':>7}"
+            f"{'dtype':>10}{'packed(ms)':>12}{'ref(ms)':>11}{'speedup':>9}{'max_err':>11}{'ok':>4}"
+        )
+        print("\n[packed KV path — ARK_UNSAFE_BESTLA_MIXED_SDPA=1 required]")
+        print(pack_header)
+        print("-" * len(pack_header))
+
+        packed_rows = []
+        skipped = 0
+        for shape_kind, batch, hq, hkv, hd, seq in _build_cases(args):
+            row = run_case_packed(
+                shape_kind, batch, hq, hkv, hd, seq, dtype, args.warmup, args.runs, args.atol, args.rtol
+            )
+            if row is None:
+                skipped += 1
+                print(f"  {'SKIP':<8} shape={shape_kind} seq_kv={seq} (unavailable on this ISA/build)")
+                continue
+            packed_rows.append(row)
+            print(
+                f"{row['shape']:<8}{row['batch']:>3}{row['heads_q']:>4}{row['heads_kv']:>4}{row['head_dim']:>5}"
+                f"{row['seq_q']:>6}{row['seq_kv']:>7}{row['dtype']:>10}{row['packed_ms']:>12.3f}{row['ref_ms']:>11.3f}"
+                f"{row['speedup']:>9.2f}{row['max_abs_err']:>11.2e}{('yes' if row['passed'] else 'NO'):>4}"
+            )
+
+        if packed_rows:
+            geomean = math.exp(sum(math.log(r["speedup"]) for r in packed_rows) / len(packed_rows))
+            packed_passed = all(r["passed"] for r in packed_rows)
+            all_passed = all_passed and packed_passed
+            print("-" * len(pack_header))
+            print(
+                f"geomean speedup (packed) vs torch math SDPA: {geomean:.2f}x | "
+                f"parity: {'PASS' if packed_passed else 'FAIL'}"
+            )
+        elif skipped:
+            print(f"  All {skipped} cases skipped — BestLA extension not built or ISA unavailable.")
+
+        # Raw-vs-packed ratio when running both.
+        if run_raw and packed_rows and raw_rows:
+            print("\n[raw vs packed comparison]")
+            cmp_header = (
+                f"{'shape':<8}{'B':>3}{'Hq':>4}{'Hkv':>4}{'D':>5}{'q':>6}{'kv':>7}"
+                f"{'dtype':>10}{'raw(ms)':>10}{'packed(ms)':>12}{'ratio':>8}"
+            )
+            print(cmp_header)
+            print("-" * len(cmp_header))
+            for raw, packed in zip(raw_rows, packed_rows):
+                ratio = raw["ark_ms"] / packed["packed_ms"] if packed["packed_ms"] > 0 else float("nan")
+                print(
+                    f"{raw['shape']:<8}{raw['batch']:>3}{raw['heads_q']:>4}{raw['heads_kv']:>4}{raw['head_dim']:>5}"
+                    f"{raw['seq_q']:>6}{raw['seq_kv']:>7}{raw['dtype']:>10}{raw['ark_ms']:>10.3f}"
+                    f"{packed['packed_ms']:>12.3f}{ratio:>8.2f}x"
+                )
+
+        if args.csv and packed_rows:
+            csv_path = args.csv
+            if run_raw and not csv_path.endswith("_packed.csv"):
+                csv_path = csv_path.replace(".csv", "_packed.csv") if args.csv.endswith(".csv") else args.csv + "_packed"
+            with open(csv_path, "w", newline="") as fh:
+                writer = csv.DictWriter(fh, fieldnames=list(packed_rows[0].keys()))
+                writer.writeheader()
+                writer.writerows(packed_rows)
+            print(f"wrote {len(packed_rows)} packed-path rows to {csv_path}")
+
+    return 0 if all_passed else 1
 
 
 if __name__ == "__main__":
