@@ -56,61 +56,52 @@ class RTNLayerFallbackMixin:
         layer = convert_module_to_hp_if_necessary(layer, self.model_context.amp_dtype, device_manager.device)
         set_module(self.model, layer_name, layer)
         tuning_device = layer.tuning_device if hasattr(layer, "tuning_device") else device_manager.device
-        if (
-            self.compress_context.is_immediate_packing
-            and self.compress_context.formats[0].is_gguf()
-            and not getattr(self.config, "disable_opt_rtn", False)
-        ):
+        try:
+            if disable_opt_rtn is None:
+                disable_opt_rtn = bool(getattr(self.config, "disable_opt_rtn", False))
+            if (
+                not disable_opt_rtn
+                and getattr(self.config, "orig_disable_opt_rtn", None) is None
+                and self.model_context.is_moe_model
+                and "expert" in layer.global_name
+                and "shared_expert" not in layer.global_name
+                and self.config.super_bits is None
+            ):
+                disable_opt_rtn = True
+                logger.warning_once(
+                    "MoE layer detected: optimized RTN is disabled for efficiency. "
+                    "Use `--enable_opt_rtn` to force-enable it for MoE layers."
+                )
             layer = layer.to(tuning_device)
-            layer.scale = None
-            layer.zp = None
-        else:
+            layer = WrapperLinear(
+                layer,
+                device=tuning_device,
+                enable_minmax_tuning=False,
+                enable_norm_bias_tuning=False,
+                enable_round_tuning=False,
+                enable_torch_compile=self.compress_context.enable_torch_compile,
+                disable_opt_rtn=disable_opt_rtn,
+                iters=0,
+            )
+            layer = layer.unwrapper({})
+        except torch.OutOfMemoryError:
+            cuda_error_msg = traceback.format_exc()
+            layer = layer.orig_layer if hasattr(layer, "orig_layer") else layer
             try:
-                if disable_opt_rtn is None:
-                    disable_opt_rtn = bool(getattr(self.config, "disable_opt_rtn", False))
-                if (
-                    not disable_opt_rtn
-                    and getattr(self.config, "orig_disable_opt_rtn", None) is None
-                    and self.model_context.is_moe_model
-                    and "expert" in layer.global_name
-                    and "shared_expert" not in layer.global_name
-                    and self.config.super_bits is None
-                ):
-                    disable_opt_rtn = True
-                    logger.warning_once(
-                        "MoE layer detected: optimized RTN is disabled for efficiency. "
-                        "Use `--enable_opt_rtn` to force-enable it for MoE layers."
-                    )
-                layer = layer.to(tuning_device)
+                logger.error(cuda_error_msg)
+                logger.warning("falling back to CPU.")
+                layer.to("cpu")
                 layer = WrapperLinear(
                     layer,
-                    device=tuning_device,
                     enable_minmax_tuning=False,
                     enable_norm_bias_tuning=False,
                     enable_round_tuning=False,
                     enable_torch_compile=self.compress_context.enable_torch_compile,
-                    disable_opt_rtn=disable_opt_rtn,
                     iters=0,
                 )
                 layer = layer.unwrapper({})
-            except torch.OutOfMemoryError:
-                cuda_error_msg = traceback.format_exc()
-                layer = layer.orig_layer if hasattr(layer, "orig_layer") else layer
-                try:
-                    logger.error(cuda_error_msg)
-                    logger.warning("falling back to CPU.")
-                    layer.to("cpu")
-                    layer = WrapperLinear(
-                        layer,
-                        enable_minmax_tuning=False,
-                        enable_norm_bias_tuning=False,
-                        enable_round_tuning=False,
-                        enable_torch_compile=self.compress_context.enable_torch_compile,
-                        iters=0,
-                    )
-                    layer = layer.unwrapper({})
-                except Exception:
-                    raise
+            except Exception:
+                raise
         set_module(self.model, layer_name, layer)
         self._immediate_pack_and_save_module(layer_name)
 

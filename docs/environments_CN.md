@@ -121,6 +121,26 @@ export AR_DYNAMO_CACHE_SIZE_LIMIT=32
 export AR_MODEL_FREE_SHARD_PARALLELISM=4
 ```
 
+### AR_AUTO_SCHEME_NSAMPLES
+- **描述**：控制 AutoScheme 评分时使用的校准样本数默认值，仅在 `AutoScheme.nsamples` 未显式设置时生效。
+- **默认值**：未设置 → 16
+- **有效值**：任意正整数，如 `8`、`16`、`32`
+- **用途**：覆盖 AutoScheme 的自动样本数选择
+
+```bash
+export AR_AUTO_SCHEME_NSAMPLES=1
+```
+
+### AR_AUTO_SCHEME_BATCH_SIZE
+- **描述**：控制 AutoScheme 评分时使用的批大小默认值，仅在 `AutoScheme.batch_size` 未显式设置时生效。
+- **默认值**：未设置 → 走内置启发式规则（低GPU内存模式为 8，普通模式为 1）
+- **有效值**：任意正整数，如 `1`、`2`、`4`
+- **用途**：覆盖 AutoScheme 的默认批大小
+
+```bash
+export AR_AUTO_SCHEME_BATCH_SIZE=1
+```
+
 ## 使用示例
 
 ### 设置环境变量

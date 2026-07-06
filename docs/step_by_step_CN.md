@@ -36,8 +36,6 @@
     - [手动配置设备映射](#手动配置设备映射)
   + [超参数调整](#超参数调整)
   + [旋转（Rotation）（实验性）](#旋转rotation实验性)
-    - [QuaRot / SpinQuant](#quarot--spinquant)
-    - [逐线性层块旋转（实验性）](#逐线性层块旋转实验性)
 * [4 推理部署](#4-推理部署)
   + [CPU](#cpu)
   + [英特尔 GPU](#英特尔-gpu)
@@ -421,6 +419,8 @@ ar.quantize_and_save()
 
 为加速推理，在部分框架中，会对特定层（如QKV、MoE）进行融合。这些融合层必须是相同的数据类型和量化配置。`shared_layers` 参数可以简化该配置，**同时支持正则表达式匹配和完整层名匹配**。注意**正则匹配按块匹配规则生效**。
 
+**MoE 的 expert 层会自动按块分组** — 同一个 transformer block 内所有 expert 的投影层（gate/up/down，跨所有 experts）会被视为一个整体进行 DP 优化。它们共享相同的量化方案，loss 和 numel 直接求和。无需手动配置 `shared_layers` 来处理 expert 层。
+
 示例代码如下：
 ```python
 from auto_round import AutoRound, AutoScheme
@@ -481,6 +481,8 @@ ar.quantize_and_save()
 
 #### 局限性
 AutoScheme 目前还**不支持对嵌入层（Embedding layer）进行自动量化**。该层将直接采用候选方案中精度最高的配置。
+
+当 AutoScheme 与 `model_free=True` 联合使用时，仅支持 INT（`W2A16`/`W4A16`/`W8A16`）和 MXFP（`MXFP4`/`MXFP8`）两种选项族。`W3A16`、`GGUF:*`、`NVFP4` 等不支持的选项会直接抛出 `ValueError`；同一 `AutoScheme` 中也不允许混用 INT 和 MXFP 选项族。
 
 ### AWQ 量化算法
 
@@ -565,6 +567,7 @@ ar.quantize_and_save(output_dir, format="auto_round")
 - **逐层配置** — 支持 `--layer_config` 设置逐层位宽，以及 `--ignore_layers` 保持特定层全精度
 - **预定义忽略层** — 根据模型配置自动跳过特定层（如 MoE 门控层、MTP 层等）
 - 与标准 `--iters 0 --disable_opt_rtn` 流程对所有受支持的 scheme **位级等价**
+- **AutoScheme 集成** — 将 `AutoScheme` 对象传入 `scheme` 参数，即可在免模型模式下完成自动混合精度选择与逐分片打包（两阶段：短暂加载模型评分 → 释放模型 → 逐分片打包）
 
 <details>
   <summary>Model-free 并行量化基准（分钟向上取整）</summary>
@@ -861,154 +864,27 @@ auto-round --model_name Qwen/Qwen3-0.6B  --scheme "W4A16" --quant_lm_head --form
 
 ### 旋转（Rotation）（实验性）
 
-> ⚠️ **实验性功能**：旋转变换仍处于实验阶段。推理依赖 forward hook 机制，目前仅支持 Hugging Face Transformers 后端，因此相比非旋转模型，推理速度可能较慢。
+> ⚠️ **实验性功能**：旋转变换仍处于实验阶段。推理依赖 forward hook 机制，目前仅支持 Hugging Face Transformers 后端，因此相比非旋转模型，旋转后的模型推理速度可能较慢。
 
-AutoRound 支持基于旋转的变换技术来提升量化精度。旋转在量化前对权重和激活中的离群点进行重分布，使分布更加均匀，从而对量化更友好。
+旋转在量化前对权重和激活中的离群点进行重分布，使分布更加均匀、对量化更友好。它对 MXFP4、NVFP4、W4A4 等激进的低比特方案最为有效。
 
-目前提供两种旋转方式：
+AutoRound 通过 `rotation_config` 参数应用旋转。推荐在大多数场景中使用 `"quarot"` 预设——确定性 Hadamard 旋转（QuaRot / SpinQuant），无需训练、无需校准数据。
 
-- **QuaRot / SpinQuant** — 在多个位置（R1–R4）进行全模型旋转，为激进量化（如 MXFP4、NVFP4、W4A4）提供全面的离群点抑制。**推荐在大多数场景中使用。**
-- **逐线性层块旋转（Per-Linear Block Rotation）** — 对每个线性层均匀应用块对角旋转。为较早期的实验性实现，通常建议使用上述 QuaRot/SpinQuant 方式。
-
-#### QuaRot / SpinQuant
-
-QuaRot 在 Transformer 架构的最多 4 个位置应用确定性 Hadamard 旋转。与逐线性层块旋转不同，它在模型架构级别操作——在特定位置对残差流、注意力头和 MLP 激活进行旋转，以实现针对性的离群点抑制。
-
-##### 旋转位置
-
-| 位置 | 目标 | 模式 | 效果 |
-|------|------|------|------|
-| **R1** | 残差流（hidden_size） | 在线或离线 | 平滑所有线性层的权重离群点 |
-| **R2** | V/O 投影（head_dim） | 离线（融合） | 平衡各注意力头的值分布 |
-| **R3** | RoPE 后的 Q/K（head_dim） | 在线（hook） | 提升 KV-cache 的量化友好性 |
-| **R4** | MLP up/down（intermediate_size） | 在线（hook） | 抑制 FFN 中的激活离群点 |
-
-- **在线（Online）**：通过 forward hook 在运行时应用（不修改权重，保存时零开销）
-- **离线/融合（Offline/Fused）**：吸收到相邻权重矩阵中（无运行时开销）
-
-##### 快速开始
+#### API 用法
 
 ```python
 from auto_round import AutoRound
 
 model_name = "Qwen/Qwen3-0.6B"
-output_dir = "./Qwen3-0.6B-mxfp4-quarot"
 
-# QuaRot 预设：R1+R2+R3+R4，确定性 Hadamard
+# QuaRot 预设：确定性 Hadamard，无需训练
 ar = AutoRound(model_name, scheme="MXFP4", rotation_config="quarot")
-ar.quantize_and_save(output_dir=output_dir, format="auto_round")
+ar.quantize_and_save(output_dir="./Qwen3-0.6B-mxfp4-quarot", format="auto_round")
 ```
 
-##### 旋转级别
+带旋转的量化模型可透明地保存和加载——旋转矩阵和 hook 会在加载时自动恢复，推理无需额外步骤。
 
-根据精度需求选择旋转的位置数量：
-
-```python
-from auto_round import AutoRound
-from auto_round.algorithms.transforms.spinquant import SpinQuantConfig
-
-# 仅 R1（速度快，良好的基准提升）
-ar = AutoRound(model_name, scheme="MXFP4", rotation_config=SpinQuantConfig(r1=True))
-
-# R1 + R2（更好，融合后无运行时开销）
-ar = AutoRound(model_name, scheme="MXFP4", rotation_config=SpinQuantConfig(r1=True, r2=True))
-
-# R1 + R2 + R3 + R4（最佳精度，hook 带来少许运行时开销）
-ar = AutoRound(model_name, scheme="MXFP4", rotation_config=SpinQuantConfig(r1=True, r2=True, r3=True, r4=True))
-```
-
-##### 字符串快捷方式
-
-| 值 | 等价配置 |
-|----|---------|
-| `"quarot"` | `SpinQuantConfig(r1=True, r2=True, trainable_rotation=False, trainable_smooth=False)` — 确定性 Hadamard，无需训练 |
-| `"spinquant"` | `SpinQuantConfig(r1=True, r2=True, trainable_rotation=True, trainable_smooth=True)` — **实验性**（需要提供 dataloader） |
-
-> ⚠️ **SpinQuant 可训练旋转**（`trainable_rotation=True`）启用通过 Cayley SGD 优化的可学习旋转矩阵。此功能为**实验性**，尚未完全验证。生产环境建议使用 `"quarot"`（固定 Hadamard）。
-
-##### 确定性与随机 Hadamard
-
-```python
-# 确定性（默认）：固定 Hadamard 矩阵，无需额外存储
-ar = AutoRound(model_name, scheme="MXFP4", rotation_config=SpinQuantConfig(r1=True, r2=True, r3=True, r4=True))
-
-# 随机：H × diag(±1)，离群点抑制效果略好，需保存旋转矩阵
-ar = AutoRound(
-    model_name,
-    scheme="MXFP4",
-    rotation_config=SpinQuantConfig(
-        r1=True, r2=True, r3=True, r4=True, random_r1=True, random_r2=True, random_r3=True, random_r4=True
-    ),
-)
-```
-
-##### 关键参数
-
-| 参数 | 默认值 | 描述 |
-|------|--------|------|
-| `r1` / `r2` / `r3` / `r4` | `True / True / False / False` | 启用各位置的旋转 |
-| `online_r1_rotation` | `True` | R1 通过 hook 应用（`True`）或融合到权重中（`False`） |
-| `random_r1` / `random_r2` / `random_r3` / `random_r4` | `False` | 使用随机 Hadamard（H×diag(±1)）而非确定性 |
-| `rotation_size` | `None`（自动） | 块旋转维度；从模型维度自动检测 |
-| `trainable_rotation` | `False` | 启用 SpinQuant 可学习旋转（**实验性**，需要 dataloader） |
-| `trainable_smooth` | `False` | 启用可学习 smooth 值（**实验性**，需要 dataloader） |
-
-##### 保存与加载
-
-带旋转的量化模型可透明地保存和加载：
-
-```python
-# 保存（旋转矩阵在需要时自动存储）
-ar.quantize_and_save(output_dir="./my_model", format="auto_round")
-
-# 加载（旋转 hook 自动恢复）
-from transformers import AutoModelForCausalLM
-
-model = AutoModelForCausalLM.from_pretrained("./my_model", device_map="auto")
-```
-
-- **确定性旋转**：仅存储元数据（类型 + rotation_size）——矩阵在加载时重建
-- **随机旋转**：以 `int8`（±1）旋转矩阵形式存储（大小约为 rotation_size² 字节）
-- **在线旋转**：在模型加载时重建（R1/R4 通过 QuantLinear forward patch；R3 通过配置触发的 monkeypatch）
-
-#### 逐线性层块旋转（实验性）
-
-> ⚠️ 这是较早期的实验性实现，通过对模型中每个 `nn.Linear` 模块应用块对角 Hadamard 旋转来工作。对于大多数场景，推荐使用上述 [QuaRot / SpinQuant](#quarot--spinquant) 方式——它在特定位置（R1–R4）提供架构感知的旋转，具有更好的精度和更低的开销。
-
-逐线性层块旋转通过遍历所有线性层实现，可选择以下模式：
-- **权重模式**：将 Hadamard 矩阵直接融合到权重张量中（离线）
-- **输入模式**：注册 forward pre-hook 在每个线性层前旋转输入激活（在线）
-
-该方式使用可配置的 `block_size`（默认 32），对每个线性层统一应用。它比 QuaRot 更简单，但不够精确——不区分残差流、注意力和 MLP 层，也不处理 RoPE 或激活侧旋转。使用 `rotation_config="default"` 启用。
-
-##### 使用方式
-
-```python
-from auto_round import AutoRound
-
-model_name_or_path = "meta-llama/Llama-3.1-8B-Instruct"
-output_dir = "./Llama-3.1-8B-Instruct-mxfp4-ht"
-
-# rotation_config="default": block_size=32, hadamard_type="hadamard"
-ar = AutoRound(model_name_or_path, scheme="MXFP4", rotation_config="default")
-
-ar.quantize_and_save(output_dir=output_dir, format="auto_round")
-```
-
-##### 类型
-
-| 类型 | 描述 |
-|------|------|
-| `hadamard`（默认） | 确定性 Hadamard 矩阵（Sylvester 构造，block_size 必须为 2 的幂次） |
-| `random_hadamard` | 随机签名 Hadamard，来自已知矩阵库；支持非 2 的幂次尺寸 |
-
-##### 参数说明
-
-| 参数 | 默认值 | 描述 |
-|------|--------|------|
-| `block_size` | `32` | 应用于每个线性层的 Hadamard 块大小 |
-| `hadamard_type` | `"hadamard"` | `"hadamard"` 或 `"random_hadamard"` |
-| `seed` | `None` | 随机种子（仅用于 `random_hadamard`） |
+关于旋转位置（R1–R4）、完整配置选项、确定性与随机 Hadamard、可训练的 SpinQuant、逐线性层块旋转变体以及保存/加载的内部细节，请参阅 [Rotation Details](./rotation_details.md)（英文）。
 
 
 ## 4 推理部署
