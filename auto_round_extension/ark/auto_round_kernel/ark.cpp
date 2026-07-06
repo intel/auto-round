@@ -54,13 +54,15 @@ static void woqgemm_s8(torch_ptr stream, int m, int n, int k, torch_ptr A, int A
 }
 
 static void woqgemm(torch_ptr stream, int m, int n, int k, torch_ptr A, int ACdt, torch_ptr BlobB, torch_ptr C,
-                    torch_ptr bias, int blocksize, int compute_type, int weight_type, int scale_type, bool asym) {
+                    torch_ptr bias, int blocksize, int compute_type, int weight_type, int scale_type, bool asym,
+                    int blob_numel = 0) {
   QuantParam param{n, k, blocksize, compute_type, weight_type, scale_type, asym};
+  size_t bc = static_cast<size_t>(blob_numel);
 #ifdef ARK_XPU
   XpuWrapper::woq_gemm(m, (void*)A, (void*)BlobB, (void*)C, (void*)bias, (BTLA_DTYPE)ACdt, &param,
-                       (sycl::queue*)stream);
+                       (sycl::queue*)stream, bc);
 #else
-  CpuWrapper::woq_gemm(m, (void*)A, (void*)BlobB, (void*)C, (void*)bias, (BTLA_DTYPE)ACdt, &param);
+  CpuWrapper::woq_gemm(m, (void*)A, (void*)BlobB, (void*)C, (void*)bias, (BTLA_DTYPE)ACdt, &param, bc);
 #endif
 }
 
@@ -76,12 +78,13 @@ static void repack_quantized_weight(torch_ptr stream, torch_ptr raws8, torch_ptr
 }
 
 static void unpack_weight(torch_ptr stream, torch_ptr blob, torch_ptr output, int out_type, int n, int k, int blocksize,
-                          int compute_type, int weight_type, int scale_type, bool asym) {
+                          int compute_type, int weight_type, int scale_type, bool asym, int blob_numel = 0) {
   QuantParam param{n, k, blocksize, compute_type, weight_type, scale_type, asym};
+  size_t bc = static_cast<size_t>(blob_numel);
 #ifdef ARK_XPU
-  XpuWrapper::unpackq((BTLA_DTYPE)out_type, (int8_t*)blob, (void*)output, &param, (sycl::queue*)stream);
+  XpuWrapper::unpackq((BTLA_DTYPE)out_type, (int8_t*)blob, (void*)output, &param, (sycl::queue*)stream, bc);
 #else
-  CpuWrapper::unpackq((BTLA_DTYPE)out_type, (int8_t*)blob, (void*)output, &param);
+  CpuWrapper::unpackq((BTLA_DTYPE)out_type, (int8_t*)blob, (void*)output, &param, bc);
 #endif
 }
 
