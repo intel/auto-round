@@ -24,6 +24,8 @@
 
 namespace ark {
 
+namespace detail = sparse_detail;
+
 namespace {
 
 using KernelLauncher = int (*)(detail::Options const& options);

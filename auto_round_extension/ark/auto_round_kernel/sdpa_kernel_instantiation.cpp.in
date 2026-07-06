@@ -3,7 +3,7 @@
 #if defined(ARK_XPU) && defined(ARK_SYCL_TLA)
 
 #include <sycl/sycl.hpp>
-#include "sycl_tla_sdpa_dense.hpp"
+#include "sycl_tla_sdpa.hpp"
 
 namespace ark {
 namespace detail {
@@ -16,3 +16,4 @@ int @SDPA_FUNCTION_NAME@(Options const& options) {
 }  // namespace ark
 
 #endif  // ARK_XPU && ARK_SYCL_TLA
+
