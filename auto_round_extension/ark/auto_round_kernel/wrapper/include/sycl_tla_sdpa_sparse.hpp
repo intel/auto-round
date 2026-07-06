@@ -27,8 +27,8 @@
 #include "cutlass/epilogue/collective/default_epilogue.hpp"
 #include "cutlass/gemm/device/gemm_universal_adapter.h"
 #include "cutlass/util/packed_stride.hpp"
-#include "stla/xe_sdpa_fwd_mainloop.hpp"
 #if defined(ARK_SDPA_ENABLE_DENSE)
+#include "stla/xe_sdpa_fwd_mainloop.hpp"
 #include "stla/xe_sagev1_fwd_mainloop.hpp"
 #include "stla/xe_sage_fwd_kernel.hpp"
 #endif
@@ -37,8 +37,10 @@
 #include "stla/xe_sparse_sage_fwd_kernel.hpp"
 #endif
 #include "flash_attention_v2/collective/fmha_fusion.hpp"
+#if defined(ARK_SDPA_ENABLE_DENSE)
 #include "flash_attention_v2/collective/xe_fmha_fwd_mainloop.hpp"
 #include "flash_attention_v2/kernel/xe_fmha_fwd_kernel.hpp"
+#endif
 #include "flash_attention_v2/kernel/xe_tile_scheduler.hpp"
 #include "cutlass/util/GPU_Clock.hpp"
 #include "cutlass/util/sycl_event_manager.hpp"
@@ -212,6 +214,7 @@ using LayoutK = cutlass::layout::ColumnMajor;
 using LayoutV = cutlass::layout::RowMajor;
 using LayoutO = cutlass::layout::RowMajor;
 
+#if defined(ARK_SDPA_ENABLE_DENSE)
 template <class FMHAKernel, bool isVarLen = false>
 struct KernelRunner {
   using StrideQ = typename FMHAKernel::StrideQ;
@@ -558,6 +561,7 @@ struct FMHAConfig {
     }
   }
 };
+#endif  // ARK_SDPA_ENABLE_DENSE
 
 template <class FMHAKernel, bool isVarLen = false>
 struct SageKernelRunner {
@@ -1016,6 +1020,7 @@ struct SparseSageConfig {
 // Prefill Kernel Launch
 // ========================================================================
 
+#if defined(ARK_SDPA_ENABLE_DENSE)
 template <typename ElementQ, typename ElementK, typename ElementV, bool persistent = false>
 inline int launch_prefill_kernel_128(Options const& options) {
   constexpr int PipelineStages = 2;
@@ -1034,7 +1039,6 @@ inline int launch_prefill_kernel_128(Options const& options) {
                                         /*persistent=*/persistent, ElementQ, ElementK, ElementV>::run(options);
 }
 
-#if defined(ARK_SDPA_ENABLE_DENSE)
 template <typename ElementQ, typename ElementK, typename ElementV, typename ElementO = ElementV, bool UseInt8PV = false,
           bool WriteBackInt8PV = true, bool ExecuteInt8PV = true>
 inline int launch_sage_prefill_kernel_128(Options const& options) {
@@ -1074,7 +1078,7 @@ inline int launch_sage_prefill_kernel_64(Options const& options) {
                           SubgroupLayoutQK, SubgroupLayoutPV, PipelineStages1,
                           /*persistent=*/false, ElementQ, ElementK, ElementV, ElementO>::run(options);
 }
-#endif
+#endif  // ARK_SDPA_ENABLE_DENSE
 
 #if defined(ARK_SDPA_ENABLE_SPARSE)
 template <typename ElementQ, typename ElementK, typename ElementV, typename ElementO = ElementV>
@@ -1193,6 +1197,7 @@ inline int launch_sparse_sage_prefill_kernel_64(Options const& options) {
 }
 #endif  // ARK_SDPA_ENABLE_SPARSE
 
+#if defined(ARK_SDPA_ENABLE_DENSE)
 template <typename ElementQ, typename ElementK, typename ElementV, bool persistent = false>
 inline int launch_prefill_kernel_64(Options const& options) {
   constexpr int PipelineStages = 1;
@@ -1295,6 +1300,7 @@ inline int launch_decode_kernel_192(Options const& options) {
                            : FMHAConfig<false, ShapeQK, ShapePV, ShapeOut, SubgroupLayoutQK, void, PipelineStages,
                                         /*persistent=*/persistent, ElementQ, ElementK, ElementV>::run(options);
 }
+#endif  // ARK_SDPA_ENABLE_DENSE
 
 }  // namespace sparse_detail
 #endif  // ARK_SYCL_TLA

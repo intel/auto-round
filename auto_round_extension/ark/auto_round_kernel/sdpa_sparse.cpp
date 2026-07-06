@@ -69,127 +69,6 @@ int launch_prefill_kernel_bf16_128_sparse_sage_qtile64(detail::Options const& op
   return detail::launch_sparse_sage_prefill_kernel_128_qtile64<cute::int8_t, cute::int8_t, cute::bfloat16_t>(options);
 }
 
-int launch_prefill_kernel_f16_128_sparse_sage_qtile64_qkonly(detail::Options const& options) {
-  return detail::launch_sparse_sage_prefill_kernel_128_qtile64_profile<cutlass::sage::SparseProfileMode::QkOnly,
-                                                                       cute::int8_t, cute::int8_t,
-                                                                       cute::half_t>(options);
-}
-
-int launch_prefill_kernel_f16_128_sparse_sage_qtile64_qksoftmax(detail::Options const& options) {
-  return detail::launch_sparse_sage_prefill_kernel_128_qtile64_profile<
-      cutlass::sage::SparseProfileMode::QkSoftmaxOnly, cute::int8_t, cute::int8_t, cute::half_t>(options);
-}
-
-int launch_prefill_kernel_f16_128_sparse_sage_qtile64_pvsynthetic(detail::Options const& options) {
-  return detail::launch_sparse_sage_prefill_kernel_128_qtile64_profile<
-      cutlass::sage::SparseProfileMode::PvOnlySynthetic, cute::int8_t, cute::int8_t, cute::half_t>(options);
-}
-
-int launch_prefill_kernel_f16_128_sparse_sage_qtile64_softmaxonlysynth(detail::Options const& options) {
-  return detail::launch_sparse_sage_prefill_kernel_128_qtile64_profile<
-      cutlass::sage::SparseProfileMode::SoftmaxOnlySynth, cute::int8_t, cute::int8_t, cute::half_t>(options);
-}
-
-int launch_prefill_kernel_f16_128_sparse_sage_qtile64_pvonlyrealish(detail::Options const& options) {
-  return detail::launch_sparse_sage_prefill_kernel_128_qtile64_profile<
-      cutlass::sage::SparseProfileMode::PvOnlyRealish, cute::int8_t, cute::int8_t, cute::half_t>(options);
-}
-
-int launch_prefill_kernel_f16_128_sparse_sage_qtile64_qkpluspvnosoftmax(detail::Options const& options) {
-  return detail::launch_sparse_sage_prefill_kernel_128_qtile64_profile<
-      cutlass::sage::SparseProfileMode::QkPlusPvNoSoftmax, cute::int8_t, cute::int8_t, cute::half_t>(options);
-}
-
-int launch_prefill_kernel_f16_128_sparse_sage_qtile64_pvreorderonly(detail::Options const& options) {
-  return detail::launch_sparse_sage_prefill_kernel_128_qtile64_profile<
-      cutlass::sage::SparseProfileMode::PvReorderOnly, cute::int8_t, cute::int8_t, cute::half_t>(options);
-}
-
-int launch_prefill_kernel_f16_128_sparse_sage_qtile64_pvloadvonly(detail::Options const& options) {
-  return detail::launch_sparse_sage_prefill_kernel_128_qtile64_profile<
-      cutlass::sage::SparseProfileMode::PvLoadVOnly, cute::int8_t, cute::int8_t, cute::half_t>(options);
-}
-
-int launch_prefill_kernel_f16_128_sparse_sage_qtile64_pvmmaonly(detail::Options const& options) {
-  return detail::launch_sparse_sage_prefill_kernel_128_qtile64_profile<
-      cutlass::sage::SparseProfileMode::PvMmaOnly, cute::int8_t, cute::int8_t, cute::half_t>(options);
-}
-
-int launch_prefill_kernel_f16_128_sparse_sage_qtile64_pvreorderplusmma(detail::Options const& options) {
-  return detail::launch_sparse_sage_prefill_kernel_128_qtile64_profile<
-      cutlass::sage::SparseProfileMode::PvReorderPlusMma, cute::int8_t, cute::int8_t, cute::half_t>(options);
-}
-
-int launch_prefill_kernel_bf16_128_sparse_sage_qtile64_qkonly(detail::Options const& options) {
-  return detail::launch_sparse_sage_prefill_kernel_128_qtile64_profile<
-      cutlass::sage::SparseProfileMode::QkOnly, cute::int8_t, cute::int8_t, cute::bfloat16_t>(options);
-}
-
-int launch_prefill_kernel_bf16_128_sparse_sage_qtile64_qksoftmax(detail::Options const& options) {
-  return detail::launch_sparse_sage_prefill_kernel_128_qtile64_profile<
-      cutlass::sage::SparseProfileMode::QkSoftmaxOnly, cute::int8_t, cute::int8_t, cute::bfloat16_t>(options);
-}
-
-int launch_prefill_kernel_bf16_128_sparse_sage_qtile64_pvsynthetic(detail::Options const& options) {
-  return detail::launch_sparse_sage_prefill_kernel_128_qtile64_profile<
-      cutlass::sage::SparseProfileMode::PvOnlySynthetic, cute::int8_t, cute::int8_t, cute::bfloat16_t>(options);
-}
-
-int launch_prefill_kernel_bf16_128_sparse_sage_qtile64_softmaxonlysynth(detail::Options const& options) {
-  return detail::launch_sparse_sage_prefill_kernel_128_qtile64_profile<
-      cutlass::sage::SparseProfileMode::SoftmaxOnlySynth, cute::int8_t, cute::int8_t, cute::bfloat16_t>(options);
-}
-
-int launch_prefill_kernel_bf16_128_sparse_sage_qtile64_pvonlyrealish(detail::Options const& options) {
-  return detail::launch_sparse_sage_prefill_kernel_128_qtile64_profile<
-      cutlass::sage::SparseProfileMode::PvOnlyRealish, cute::int8_t, cute::int8_t, cute::bfloat16_t>(options);
-}
-
-int launch_prefill_kernel_bf16_128_sparse_sage_qtile64_qkpluspvnosoftmax(detail::Options const& options) {
-  return detail::launch_sparse_sage_prefill_kernel_128_qtile64_profile<
-      cutlass::sage::SparseProfileMode::QkPlusPvNoSoftmax, cute::int8_t, cute::int8_t, cute::bfloat16_t>(options);
-}
-
-int launch_prefill_kernel_bf16_128_sparse_sage_qtile64_pvreorderonly(detail::Options const& options) {
-  return detail::launch_sparse_sage_prefill_kernel_128_qtile64_profile<
-      cutlass::sage::SparseProfileMode::PvReorderOnly, cute::int8_t, cute::int8_t, cute::bfloat16_t>(options);
-}
-
-int launch_prefill_kernel_bf16_128_sparse_sage_qtile64_pvloadvonly(detail::Options const& options) {
-  return detail::launch_sparse_sage_prefill_kernel_128_qtile64_profile<
-      cutlass::sage::SparseProfileMode::PvLoadVOnly, cute::int8_t, cute::int8_t, cute::bfloat16_t>(options);
-}
-
-int launch_prefill_kernel_bf16_128_sparse_sage_qtile64_pvmmaonly(detail::Options const& options) {
-  return detail::launch_sparse_sage_prefill_kernel_128_qtile64_profile<
-      cutlass::sage::SparseProfileMode::PvMmaOnly, cute::int8_t, cute::int8_t, cute::bfloat16_t>(options);
-}
-
-int launch_prefill_kernel_bf16_128_sparse_sage_qtile64_pvreorderplusmma(detail::Options const& options) {
-  return detail::launch_sparse_sage_prefill_kernel_128_qtile64_profile<
-      cutlass::sage::SparseProfileMode::PvReorderPlusMma, cute::int8_t, cute::int8_t, cute::bfloat16_t>(options);
-}
-
-template <cutlass::sage::SparseProfileMode ProfileMode, typename ElementV>
-int launch_prefill_kernel_sparse_sage_qtile64_profile_halfwidth(detail::Options const& options) {
-  return detail::launch_sparse_sage_prefill_kernel_128_qtile64_profile_halfwidth<ProfileMode, cute::int8_t,
-                                                                                 cute::int8_t, ElementV>(options);
-}
-
-template <typename ElementV>
-KernelLauncher select_sparse_sage_qtile64_profile_halfwidth_for_dtype(int sparse_profile_mode) {
-  switch (sparse_profile_mode) {
-    case kSparseProfileModeFull:
-      return &launch_prefill_kernel_sparse_sage_qtile64_profile_halfwidth<
-          cutlass::sage::SparseProfileMode::Full, ElementV>;
-    case kSparseProfileModePvMmaOnly:
-      return &launch_prefill_kernel_sparse_sage_qtile64_profile_halfwidth<
-          cutlass::sage::SparseProfileMode::PvMmaOnly, ElementV>;
-    default:
-      return nullptr;
-  }
-}
-
 int launch_prefill_kernel_bf16_64_sparse_sage(detail::Options const& options) {
   return detail::launch_sparse_sage_prefill_kernel_64<cute::int8_t, cute::int8_t, cute::bfloat16_t>(options);
 }
@@ -197,42 +76,7 @@ int launch_prefill_kernel_bf16_64_sparse_sage(detail::Options const& options) {
 KernelLauncher select_sparse_sage_prefill_launcher(BTLA_DTYPE pv_dtype, int head_dim, int q_tile_override,
                                                    int sparse_profile_mode = kSparseProfileModeFull) {
   if (sparse_profile_mode != kSparseProfileModeFull) {
-    if (q_tile_override != 64) return nullptr;
-    if (head_dim != 128) return nullptr;
-    switch (sparse_profile_mode) {
-      case kSparseProfileModeQkOnly:
-        return pv_dtype == BTLA_DTYPE::BF16 ? launch_prefill_kernel_bf16_128_sparse_sage_qtile64_qkonly
-                                            : launch_prefill_kernel_f16_128_sparse_sage_qtile64_qkonly;
-      case kSparseProfileModeQkSoftmaxOnly:
-        return pv_dtype == BTLA_DTYPE::BF16 ? launch_prefill_kernel_bf16_128_sparse_sage_qtile64_qksoftmax
-                                            : launch_prefill_kernel_f16_128_sparse_sage_qtile64_qksoftmax;
-      case kSparseProfileModePvOnlySynthetic:
-        return pv_dtype == BTLA_DTYPE::BF16 ? launch_prefill_kernel_bf16_128_sparse_sage_qtile64_pvsynthetic
-                                            : launch_prefill_kernel_f16_128_sparse_sage_qtile64_pvsynthetic;
-      case kSparseProfileModeSoftmaxOnlySynth:
-        return pv_dtype == BTLA_DTYPE::BF16 ? launch_prefill_kernel_bf16_128_sparse_sage_qtile64_softmaxonlysynth
-                                            : launch_prefill_kernel_f16_128_sparse_sage_qtile64_softmaxonlysynth;
-      case kSparseProfileModePvOnlyRealish:
-        return pv_dtype == BTLA_DTYPE::BF16 ? launch_prefill_kernel_bf16_128_sparse_sage_qtile64_pvonlyrealish
-                                            : launch_prefill_kernel_f16_128_sparse_sage_qtile64_pvonlyrealish;
-      case kSparseProfileModeQkPlusPvNoSoftmax:
-        return pv_dtype == BTLA_DTYPE::BF16 ? launch_prefill_kernel_bf16_128_sparse_sage_qtile64_qkpluspvnosoftmax
-                                            : launch_prefill_kernel_f16_128_sparse_sage_qtile64_qkpluspvnosoftmax;
-      case kSparseProfileModePvReorderOnly:
-        return pv_dtype == BTLA_DTYPE::BF16 ? launch_prefill_kernel_bf16_128_sparse_sage_qtile64_pvreorderonly
-                                            : launch_prefill_kernel_f16_128_sparse_sage_qtile64_pvreorderonly;
-      case kSparseProfileModePvLoadVOnly:
-        return pv_dtype == BTLA_DTYPE::BF16 ? launch_prefill_kernel_bf16_128_sparse_sage_qtile64_pvloadvonly
-                                            : launch_prefill_kernel_f16_128_sparse_sage_qtile64_pvloadvonly;
-      case kSparseProfileModePvMmaOnly:
-        return pv_dtype == BTLA_DTYPE::BF16 ? launch_prefill_kernel_bf16_128_sparse_sage_qtile64_pvmmaonly
-                                            : launch_prefill_kernel_f16_128_sparse_sage_qtile64_pvmmaonly;
-      case kSparseProfileModePvReorderPlusMma:
-        return pv_dtype == BTLA_DTYPE::BF16 ? launch_prefill_kernel_bf16_128_sparse_sage_qtile64_pvreorderplusmma
-                                            : launch_prefill_kernel_f16_128_sparse_sage_qtile64_pvreorderplusmma;
-      default:
-        return nullptr;
-    }
+    return nullptr;
   }
 
   switch (head_dim) {
@@ -259,10 +103,11 @@ KernelLauncher select_sparse_sage_prefill_launcher(BTLA_DTYPE pv_dtype, int head
 
 KernelLauncher select_sparse_sage_prefill_launcher_halfwidth(BTLA_DTYPE pv_dtype, int head_dim, int q_tile_override,
                                                              int sparse_profile_mode = kSparseProfileModeFull) {
-  if (q_tile_override != 64 || head_dim != 128) return nullptr;
-  return pv_dtype == BTLA_DTYPE::BF16
-             ? select_sparse_sage_qtile64_profile_halfwidth_for_dtype<cute::bfloat16_t>(sparse_profile_mode)
-             : select_sparse_sage_qtile64_profile_halfwidth_for_dtype<cute::half_t>(sparse_profile_mode);
+  (void)pv_dtype;
+  (void)head_dim;
+  (void)q_tile_override;
+  (void)sparse_profile_mode;
+  return nullptr;
 }
 
 detail::Options make_common_options(void* Q_ptr, void* K_ptr, void* V_ptr, void* O_ptr, void* mask, int q_stride_s,
