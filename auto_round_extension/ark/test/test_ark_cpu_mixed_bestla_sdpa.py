@@ -317,3 +317,114 @@ def test_bestla_mixed_sdpa_tanh_matches_reference():
     atol, rtol = _TOL[kv_dtype]
     assert actual.dtype == torch.float32
     torch.testing.assert_close(actual, expected, atol=atol, rtol=rtol)
+
+
+# ---------------------------------------------------------------------------
+# Module B: packed mixed path numerical parity + raw-vs-packed consistency.
+#
+# These tests cover the persistent packed KV cache path introduced by the
+# NS-parity delivery (Phase 6): ark_cpu_packed_kv_alloc + ark_cpu_update_packed_kv
+# + ark_cpu_bestla_sdpa_packed.  Two gaps are closed here:
+#   1. Packed path numerical parity: output vs PyTorch SDPA reference.
+#   2. Raw vs packed output consistency: both paths must agree on the same inputs.
+#
+# Both tests require ARK_UNSAFE_BESTLA_MIXED_SDPA=1 and the BestLA CPU extension.
+# ISA unavailability (no AVX2 for F16, no AVX512F for BF16) is caught and
+# converted to pytest.skip, consistent with the raw-path smoke tests above.
+# ---------------------------------------------------------------------------
+
+
+def _packed_sdpa(q_f32, k, v, scale, *, is_causal=False):
+    """Run the packed KV cache path under ARK_UNSAFE_BESTLA_MIXED_SDPA=1.
+
+    Allocates a fresh packed cache from k/v, runs one update at offset 0, then
+    calls ark_cpu_bestla_sdpa_packed.  Raises (RuntimeError, ValueError,
+    NotImplementedError) when the path is unavailable; callers convert to skip.
+    """
+    batch, heads_kv, seq_kv, head_dim = k.shape
+    prev = os.environ.get("ARK_UNSAFE_BESTLA_MIXED_SDPA")
+    os.environ["ARK_UNSAFE_BESTLA_MIXED_SDPA"] = "1"
+    try:
+        cache_k, cache_v = auto_round_kernel.ark_cpu_packed_kv_alloc(
+            batch, heads_kv, seq_kv, head_dim, dtype=k.dtype
+        )
+        auto_round_kernel.ark_cpu_update_packed_kv(cache_k, cache_v, k, v, 0, seq_kv)
+        return auto_round_kernel.ark_cpu_bestla_sdpa_packed(
+            q_f32, cache_k, cache_v, seq_kv, seq_kv, heads_kv,
+            is_causal=is_causal, scale=scale,
+        )
+    finally:
+        if prev is None:
+            os.environ.pop("ARK_UNSAFE_BESTLA_MIXED_SDPA", None)
+        else:
+            os.environ["ARK_UNSAFE_BESTLA_MIXED_SDPA"] = prev
+
+
+@pytest.mark.parametrize("kv_dtype", [torch.float16, torch.bfloat16])
+@pytest.mark.parametrize("is_causal", [False, True])
+def test_bestla_packed_sdpa_numerical_parity(kv_dtype, is_causal):
+    """Packed KV cache path (alloc + update + forward) vs PyTorch SDPA reference.
+
+    Closes Module B gap: packed-path numerical correctness was previously only
+    exercised by the benchmark script (bench_ark_cpu_sdpa.py --mode packed),
+    not by a pytest.  This test provides an authoritative correctness assertion.
+    """
+    torch.manual_seed(8001)
+    batch, heads_q, heads_kv, head_dim, seq_q, seq_kv = 1, 8, 2, 64, 1, 32
+    scale = 1.0 / math.sqrt(head_dim)
+    q = torch.randn(batch, heads_q, seq_q, head_dim, dtype=torch.float32)
+    k = torch.randn(batch, heads_kv, seq_kv, head_dim, dtype=kv_dtype)
+    v = torch.randn(batch, heads_kv, seq_kv, head_dim, dtype=kv_dtype)
+
+    try:
+        actual = _packed_sdpa(q, k, v, scale, is_causal=is_causal)
+    except (RuntimeError, ValueError, NotImplementedError) as exc:
+        pytest.skip(f"BestLA packed path unavailable on this ISA/runtime: {exc}")
+
+    expected = torch.nn.functional.scaled_dot_product_attention(
+        q, k.float(), v.float(), scale=scale, enable_gqa=True, is_causal=is_causal
+    )
+    atol, rtol = _TOL[kv_dtype]
+    assert actual.dtype == torch.float32
+    assert actual.shape == (batch, heads_q, seq_q, head_dim)
+    torch.testing.assert_close(actual, expected, atol=atol, rtol=rtol)
+
+
+@pytest.mark.parametrize("kv_dtype", [torch.float16, torch.bfloat16])
+def test_bestla_raw_vs_packed_output_consistency(kv_dtype):
+    """Raw mixed path and packed path must agree on the same inputs.
+
+    Closes Module B gap: raw-vs-packed consistency was not explicitly verified.
+    Both paths consume the same Q/K/V tensors; the raw path converts K/V on the
+    fly (bestla_sdpa_forward), the packed path uses pre-packed caches
+    (bestla_sdpa_forward_packed).  The two outputs must match within tolerance.
+    """
+    torch.manual_seed(8002)
+    batch, heads_q, heads_kv, head_dim, seq_q, seq_kv = 1, 4, 2, 64, 1, 16
+    scale = 1.0 / math.sqrt(head_dim)
+    q = torch.randn(batch, heads_q, seq_q, head_dim, dtype=torch.float32)
+    k = torch.randn(batch, heads_kv, seq_kv, head_dim, dtype=kv_dtype)
+    v = torch.randn(batch, heads_kv, seq_kv, head_dim, dtype=kv_dtype)
+
+    prev = os.environ.get("ARK_UNSAFE_BESTLA_MIXED_SDPA")
+    os.environ["ARK_UNSAFE_BESTLA_MIXED_SDPA"] = "1"
+    try:
+        out_raw = auto_round_kernel.sdpa(q, k, v, scale=scale)
+    except (RuntimeError, ValueError) as exc:
+        pytest.skip(f"BestLA raw path unavailable on this ISA/runtime: {exc}")
+    finally:
+        if prev is None:
+            os.environ.pop("ARK_UNSAFE_BESTLA_MIXED_SDPA", None)
+        else:
+            os.environ["ARK_UNSAFE_BESTLA_MIXED_SDPA"] = prev
+
+    try:
+        out_packed = _packed_sdpa(q, k, v, scale)
+    except (RuntimeError, ValueError, NotImplementedError) as exc:
+        pytest.skip(f"BestLA packed path unavailable on this ISA/runtime: {exc}")
+
+    # Both outputs must be fp32 and agree within the per-dtype tolerance.
+    assert out_raw.dtype == torch.float32
+    assert out_packed.dtype == torch.float32
+    atol, rtol = _TOL[kv_dtype]
+    torch.testing.assert_close(out_raw, out_packed, atol=atol, rtol=rtol)

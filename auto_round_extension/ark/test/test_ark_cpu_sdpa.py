@@ -2,6 +2,7 @@
 # SPDX-License-Identifier: Apache-2.0
 
 import math
+import os
 import sys
 from pathlib import Path
 
@@ -226,3 +227,58 @@ def test_ark_cpu_sdpa_decode_half_dtypes_match_torch(dtype):
 
     assert actual.dtype == dtype
     torch.testing.assert_close(actual.float(), expected, atol=2e-2, rtol=2e-2)
+
+
+# ---------------------------------------------------------------------------
+# Module C: homogeneous-route classification assertion.
+#
+# Routes 3/4 (fp16×4 / bf16×4) are internal-only and NOT wired in the Python
+# ABI (see validate_non_int8_cpu_sdpa.py, ROUTE_TABLE).  This test asserts
+# that calling sdpa() with fully homogeneous half-precision inputs:
+#   * produces numerically correct output (Tier 0 scalar handles them),
+#   * is unaffected by ARK_UNSAFE_BESTLA_MIXED_SDPA — the gate is only for
+#     the mixed Q=fp32/K|V=fp16|bf16 routes (1/2), not route 3/4.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("dtype", [torch.float16, torch.bfloat16])
+def test_homogeneous_half_uses_tier0_not_internal_routes(dtype):
+    """Homogeneous Q/K/V inputs (all fp16 or all bf16) must NOT enter routes 3/4.
+
+    Routes 3 (fp16×4) and 4 (bf16×4) are C++-internal and not wired in
+    ark.cpp/Python.  With or without ARK_UNSAFE_BESTLA_MIXED_SDPA=1, sdpa()
+    must route through Tier 0 scalar and produce correct output for homogeneous
+    half-precision inputs.  The two runs must agree exactly (no routing divergence).
+    """
+    torch.manual_seed(4100)
+    batch, heads, seq, head_dim = 1, 4, 32, 16
+    scale = 1.0 / math.sqrt(head_dim)
+    q = torch.randn(batch, heads, seq, head_dim, dtype=dtype)
+    k = torch.randn(batch, heads, seq, head_dim, dtype=dtype)
+    v = torch.randn(batch, heads, seq, head_dim, dtype=dtype)
+
+    expected = torch.nn.functional.scaled_dot_product_attention(
+        q.float(), k.float(), v.float(), scale=scale
+    )
+
+    # Without env gate.
+    out_no_gate = auto_round_kernel.sdpa(q, k, v, scale=scale)
+
+    # With env gate: must produce identical output since routes 3/4 are internal-only.
+    prev = os.environ.get("ARK_UNSAFE_BESTLA_MIXED_SDPA")
+    os.environ["ARK_UNSAFE_BESTLA_MIXED_SDPA"] = "1"
+    try:
+        out_with_gate = auto_round_kernel.sdpa(q, k, v, scale=scale)
+    finally:
+        if prev is None:
+            os.environ.pop("ARK_UNSAFE_BESTLA_MIXED_SDPA", None)
+        else:
+            os.environ["ARK_UNSAFE_BESTLA_MIXED_SDPA"] = prev
+
+    # Both must be the original dtype and match torch reference.
+    assert out_no_gate.dtype == dtype
+    assert out_with_gate.dtype == dtype
+    torch.testing.assert_close(out_no_gate.float(), expected, atol=2e-2, rtol=2e-2)
+    torch.testing.assert_close(out_with_gate.float(), expected, atol=2e-2, rtol=2e-2)
+    # No routing divergence between gated and ungated: exact bitwise match.
+    torch.testing.assert_close(out_no_gate, out_with_gate, atol=0, rtol=0)

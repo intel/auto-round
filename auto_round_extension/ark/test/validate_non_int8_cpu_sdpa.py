@@ -97,12 +97,19 @@ C++ unit tests (build the CPU extension and run test_reorder_kv_main):
 
 Python tests:
   test_ark_cpu_sdpa.py              — Tier 0 scalar path (HND/NHD, causal, GQA)
+    test_homogeneous_half_uses_tier0_not_internal_routes — Module C: asserts that
+      homogeneous fp16/bf16 Q/K/V inputs do NOT enter routes 3/4 (internal-only)
+      and produce correct output via Tier 0 scalar, regardless of env gate state.
   test_ark_cpu_mixed_bestla_sdpa.py — Tier 1 mixed routes 1/2 features
     (prefer_fp32, padding-right, alibi, tanh, GQA, causal)
     Requires: ARK_UNSAFE_BESTLA_MIXED_SDPA=1, BestLA CPU extension build.
     ISA skip conditions (pytest.mark.skipif):
       Route 1 (F16): AVX2 required
       Route 2 (BF16): AVX512F required
+    test_bestla_packed_sdpa_numerical_parity — Module B: packed path (alloc +
+      update + forward) vs PyTorch SDPA reference for fp16/bf16, causal on/off.
+    test_bestla_raw_vs_packed_output_consistency — Module B: raw mixed path and
+      packed path must agree on the same inputs within per-dtype tolerance.
 """
 
 # ---------------------------------------------------------------------------
@@ -123,6 +130,15 @@ COMMANDS = {
         "auto_round_extension/ark/test/test_ark_cpu_mixed_bestla_sdpa.py",
         "-v",
         "-x",
+    ],
+    "Tier 1 packed path (Python, requires AVX2/AVX512F)": [
+        "env",
+        "ARK_UNSAFE_BESTLA_MIXED_SDPA=1",
+        "pytest",
+        "auto_round_extension/ark/test/test_ark_cpu_mixed_bestla_sdpa.py",
+        "-v",
+        "-k",
+        "packed",
     ],
 }
 

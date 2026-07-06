@@ -89,9 +89,20 @@ jobs:
           ARK_UNSAFE_BESTLA_MIXED_SDPA: "1"
         run: |
           python -m pytest test/test_ark_cpu_mixed_bestla_sdpa.py -v --tb=short \
-            -k "float16" \
+            -k "float16 and not packed" \
             2>&1 | tee tier1_avx2.log
           # ISA-skip is expected for bf16 on AVX2-only; failures outside skip are real.
+        continue-on-error: ${{ steps.build.outcome != 'success' }}
+
+      - name: Tier 1 — packed KV path (F16, AVX2, env-gated)
+        working-directory: auto_round_extension/ark
+        env:
+          ARK_UNSAFE_BESTLA_MIXED_SDPA: "1"
+        run: |
+          # Packed path tests skip if the C++ packed-kv symbols are not built.
+          python -m pytest test/test_ark_cpu_mixed_bestla_sdpa.py -v --tb=short \
+            -k "packed and float16" \
+            2>&1 | tee tier1_packed_avx2.log
         continue-on-error: ${{ steps.build.outcome != 'success' }}
 
       - name: Tier 1 — mixed BestLA route 2 (BF16 K/V, gating check only on AVX2)
@@ -144,7 +155,15 @@ jobs:
         working-directory: auto_round_extension/ark
         env:
           ARK_UNSAFE_BESTLA_MIXED_SDPA: "1"
-        run: python -m pytest test/test_ark_cpu_mixed_bestla_sdpa.py -v --tb=short -x
+        run: python -m pytest test/test_ark_cpu_mixed_bestla_sdpa.py -v --tb=short -x \
+          -k "not packed"
+
+      - name: Tier 1 — packed KV path (AVX512F, env-gated)
+        working-directory: auto_round_extension/ark
+        env:
+          ARK_UNSAFE_BESTLA_MIXED_SDPA: "1"
+        run: python -m pytest test/test_ark_cpu_mixed_bestla_sdpa.py -v --tb=short \
+          -k "packed"
 
   amx-bf16:
     name: CPU SDPA (AMX-BF16, self-hosted SPR/EMR/GNR)
@@ -183,7 +202,15 @@ jobs:
         working-directory: auto_round_extension/ark
         env:
           ARK_UNSAFE_BESTLA_MIXED_SDPA: "1"
-        run: python -m pytest test/test_ark_cpu_mixed_bestla_sdpa.py -v --tb=short -x
+        run: python -m pytest test/test_ark_cpu_mixed_bestla_sdpa.py -v --tb=short -x \
+          -k "not packed"
+
+      - name: Tier 1 — packed KV path (AMX-BF16, env-gated)
+        working-directory: auto_round_extension/ark
+        env:
+          ARK_UNSAFE_BESTLA_MIXED_SDPA: "1"
+        run: python -m pytest test/test_ark_cpu_mixed_bestla_sdpa.py -v --tb=short \
+          -k "packed"
 
       - name: Benchmark — route 2 raw vs packed (regression baseline)
         working-directory: auto_round_extension/ark

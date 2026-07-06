@@ -1409,7 +1409,6 @@ def ark_cpu_packed_kv_alloc(
     not check the env var.  Both tensors are zero-initialized (unwritten packed slots
     read as zero).
     """
-    cpu_lib = _get_cpu_lib()
     if cpu_lib is None or not hasattr(cpu_lib, "ark_cpu_packed_kv_elems"):
         raise NotImplementedError("ARK CPU packed KV cache is not available (requires BestLA CPU extension build)")
     k_elems, v_elems = cpu_lib.ark_cpu_packed_kv_elems(batch, num_heads_kv, capacity, head_dim, cvt_dtype(dtype))
@@ -1435,7 +1434,6 @@ def ark_cpu_update_packed_kv(
     raw HND/NHD tensors; tensor_layout selects the stride convention.  capacity
     must match the value passed to ark_cpu_packed_kv_alloc.  The update is in-place.
     """
-    cpu_lib = _get_cpu_lib()
     if cpu_lib is None or not hasattr(cpu_lib, "ark_cpu_update_packed_k"):
         raise NotImplementedError("ARK CPU packed KV update is not available (requires BestLA CPU extension build)")
     kv_dtype = cvt_dtype(key.dtype)
@@ -1486,7 +1484,6 @@ def ark_cpu_bestla_sdpa_packed(
             "ark_cpu_bestla_sdpa_packed requires ARK_UNSAFE_BESTLA_MIXED_SDPA=1 "
             "(packed BestLA mixed-precision path is experimental)"
         )
-    cpu_lib = _get_cpu_lib()
     if cpu_lib is None or not hasattr(cpu_lib, "ark_cpu_bestla_sdpa_packed"):
         raise NotImplementedError("ARK CPU packed BestLA SDPA is not available (requires BestLA CPU extension build)")
 

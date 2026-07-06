@@ -170,21 +170,21 @@ def run_case_packed(shape_kind, batch, heads_q, heads_kv, head_dim, seq, dtype, 
 
     try:
         cache_k, cache_v = auto_round_kernel.ark_cpu_packed_kv_alloc(
-            batch, heads_kv, seq_kv, head_dim, dtype
+            batch, heads_kv, seq_kv, head_dim, dtype=dtype
         )
-        auto_round_kernel.ark_cpu_update_packed_kv(cache_k, cache_v, k, v, 0, dtype)
-    except (RuntimeError, ValueError):
+        auto_round_kernel.ark_cpu_update_packed_kv(cache_k, cache_v, k, v, 0, seq_kv)
+    except (RuntimeError, ValueError, NotImplementedError):
         return None
 
     def packed_call():
         return auto_round_kernel.ark_cpu_bestla_sdpa_packed(
-            q_f32, cache_k, cache_v, seq_kv, batch, heads_q, heads_kv, head_dim, scale,
-            is_causal=is_causal, tensor_layout="HND", dtype=dtype,
+            q_f32, cache_k, cache_v, seq_kv, seq_kv, heads_kv,
+            is_causal=is_causal, scale=scale, tensor_layout="HND",
         )
 
     try:
         actual = packed_call()
-    except (RuntimeError, ValueError):
+    except (RuntimeError, ValueError, NotImplementedError):
         return None
 
     expected = _reference_sdpa(q_f32, k, v, scale, is_causal)
