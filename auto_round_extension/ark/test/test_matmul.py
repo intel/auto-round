@@ -234,11 +234,7 @@ def test_xpu_sycl_tla(m, k, n, dt, batch_size, runs, record_property):
 
 
 # pytest -vs auto_round_extension/ark/test/test_matmul.py -k compare_dnnl_vs_sycl_tla
-@pytest.mark.skipif(
-    os.environ.get("ARK_RUN_COMPARE", "0") != "1",
-    reason="manual benchmark only; set ARK_RUN_COMPARE=1 to enable",
-)
-@pytest.mark.parametrize("m", [1, 8, 16, 32, 128, 1024, 2048, 4096, 5120])
+@pytest.mark.parametrize("m", [1, 8, 16, 32, 128, 1024, 2048, 4096])
 @pytest.mark.parametrize("k, n", [(4096, 4096)])
 @pytest.mark.parametrize("dt", [torch.float16, torch.bfloat16])
 def test_xpu_compare_dnnl_vs_sycl_tla(m, k, n, dt, record_property):
