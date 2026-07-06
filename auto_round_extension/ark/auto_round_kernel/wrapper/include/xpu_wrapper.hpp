@@ -1478,7 +1478,7 @@ class XpuWrapper {
                           int v_stride_s, int v_stride_h, int v_stride_b, int o_stride_s, int o_stride_d,
                           int o_stride_h, int o_stride_b, int batch, int num_heads_q, int num_heads_kv,
                           int seq_len_q, int seq_len_kv, int head_dim, float softmax_scale, bool is_causal,
-                          bool use_int8_pv) {
+                          bool use_int8_pv, float* lse = nullptr) {
     bool use_mean_bias = env_params::Instance()->sage_use_mean_bias != 0;
     bool q_packed = is_packed_hnd(q_stride_s, q_stride_d, q_stride_h, q_stride_b, num_heads_q, seq_len_q, head_dim);
     bool k_packed =
@@ -1565,13 +1565,14 @@ class XpuWrapper {
                                k_out_stride_s, k_out_stride_d, k_out_stride_h, k_out_stride_b, v_out_stride_d,
                                v_out_stride_s, v_out_stride_h, v_out_stride_b, o_stride_s, o_stride_d, o_stride_h,
                                o_stride_b, batch, num_heads_q, num_heads_kv, seq_len_q, seq_len_kv, head_dim,
-                               softmax_scale, is_causal, pv_dtype);
+                               softmax_scale, is_causal, pv_dtype, lse);
     } else {
       ark::sdpa_impl_qks8_pvhalf(q, q_out_ptr, k_out_ptr, V_ptr, O_ptr, mask, scale_block_size, qscale, kscale,
                                  q_out_stride_s, q_out_stride_d, q_out_stride_h, q_out_stride_b, k_out_stride_s,
                                  k_out_stride_d, k_out_stride_h, k_out_stride_b, v_stride_d, v_stride_s, v_stride_h,
                                  v_stride_b, o_stride_s, o_stride_d, o_stride_h, o_stride_b, batch, num_heads_q,
-                                 num_heads_kv, seq_len_q, seq_len_kv, head_dim, softmax_scale, is_causal, pv_dtype);
+                                 num_heads_kv, seq_len_q, seq_len_kv, head_dim, softmax_scale, is_causal, pv_dtype,
+                                 lse);
     }
   }
 
@@ -1585,7 +1586,7 @@ class XpuWrapper {
                                  int o_stride_h, int o_stride_b, int batch, int num_heads_q, int num_heads_kv,
                                  int total_seqlen_q, int total_seqlen_kv, int max_seqlen_q, int max_seqlen_kv,
                                  int head_dim, float softmax_scale, bool is_causal, bool use_int8_pv,
-                                 const int* cu_seqlens_q, const int* cu_seqlens_k) {
+                                 const int* cu_seqlens_q, const int* cu_seqlens_k, float* lse = nullptr) {
     size_t q_size = size_t(num_heads_q) * total_seqlen_q * head_dim;
     size_t q_seq_blk = (size_t(total_seqlen_q) + scale_block_size - 1) / scale_block_size;
     size_t q_scale_size = size_t(num_heads_q) * q_seq_blk;
@@ -1636,7 +1637,7 @@ class XpuWrapper {
                                batch, num_heads_q, num_heads_kv,
                                total_seqlen_q, total_seqlen_kv, max_seqlen_q, max_seqlen_kv,
                                head_dim, softmax_scale, is_causal,
-                               cu_seqlens_q, cu_seqlens_k);
+                               cu_seqlens_q, cu_seqlens_k, lse);
     } else {
       ark::sage_prefill_varlen(q, q_out_ptr, k_out_ptr, V_ptr, O_ptr, mask, scale_block_size, qscale, kscale,
                                nullptr, false, BTLA_DTYPE::S8, pv_dtype,
@@ -1647,7 +1648,7 @@ class XpuWrapper {
                                batch, num_heads_q, num_heads_kv,
                                total_seqlen_q, total_seqlen_kv, max_seqlen_q, max_seqlen_kv,
                                head_dim, softmax_scale, is_causal,
-                               cu_seqlens_q, cu_seqlens_k);
+                               cu_seqlens_q, cu_seqlens_k, lse);
     }
   }
 
@@ -1657,19 +1658,19 @@ class XpuWrapper {
                      int v_stride_s, int v_stride_h, int v_stride_b, int o_stride_s, int o_stride_d,
                      int o_stride_h, int o_stride_b, int batch, int num_heads_q, int num_heads_kv, int seq_len_q,
                      int seq_len_kv, int head_dim, float softmax_scale, bool is_causal,
-                     BTLA_DTYPE dtype = BTLA_DTYPE::F16) {
+                     BTLA_DTYPE dtype = BTLA_DTYPE::F16, float* lse = nullptr) {
     if (dtype == BTLA_DTYPE::BF16) {
       sagev1_impl<sycl::ext::oneapi::bfloat16>(
           q, Q_ptr, K_ptr, V_ptr, O_ptr, mask, scale_block_size, q_stride_s, q_stride_d, q_stride_h, q_stride_b,
           k_stride_s, k_stride_d, k_stride_h, k_stride_b, v_stride_d, v_stride_s, v_stride_h, v_stride_b,
           o_stride_s, o_stride_d, o_stride_h, o_stride_b, batch, num_heads_q, num_heads_kv, seq_len_q, seq_len_kv,
-          head_dim, softmax_scale, is_causal, false);
+          head_dim, softmax_scale, is_causal, false, lse);
     } else {
       sagev1_impl<sycl::half>(q, Q_ptr, K_ptr, V_ptr, O_ptr, mask, scale_block_size, q_stride_s, q_stride_d,
                               q_stride_h, q_stride_b, k_stride_s, k_stride_d, k_stride_h, k_stride_b, v_stride_d,
                               v_stride_s, v_stride_h, v_stride_b, o_stride_s, o_stride_d, o_stride_h, o_stride_b,
                               batch, num_heads_q, num_heads_kv, seq_len_q, seq_len_kv, head_dim, softmax_scale,
-                              is_causal, false);
+                              is_causal, false, lse);
     }
   }
 
@@ -1679,19 +1680,19 @@ class XpuWrapper {
                           int v_stride_s, int v_stride_h, int v_stride_b, int o_stride_s, int o_stride_d,
                           int o_stride_h, int o_stride_b, int batch, int num_heads_q, int num_heads_kv,
                           int seq_len_q, int seq_len_kv, int head_dim, float softmax_scale, bool is_causal,
-                          BTLA_DTYPE dtype = BTLA_DTYPE::F16) {
+                          BTLA_DTYPE dtype = BTLA_DTYPE::F16, float* lse = nullptr) {
     if (dtype == BTLA_DTYPE::BF16) {
       sagev1_impl<sycl::ext::oneapi::bfloat16>(
           q, Q_ptr, K_ptr, V_ptr, O_ptr, mask, scale_block_size, q_stride_s, q_stride_d, q_stride_h, q_stride_b,
           k_stride_s, k_stride_d, k_stride_h, k_stride_b, v_stride_d, v_stride_s, v_stride_h, v_stride_b,
           o_stride_s, o_stride_d, o_stride_h, o_stride_b, batch, num_heads_q, num_heads_kv, seq_len_q, seq_len_kv,
-          head_dim, softmax_scale, is_causal, true);
+          head_dim, softmax_scale, is_causal, true, lse);
     } else {
       sagev1_impl<sycl::half>(q, Q_ptr, K_ptr, V_ptr, O_ptr, mask, scale_block_size, q_stride_s, q_stride_d,
                               q_stride_h, q_stride_b, k_stride_s, k_stride_d, k_stride_h, k_stride_b, v_stride_d,
                               v_stride_s, v_stride_h, v_stride_b, o_stride_s, o_stride_d, o_stride_h, o_stride_b,
                               batch, num_heads_q, num_heads_kv, seq_len_q, seq_len_kv, head_dim, softmax_scale,
-                              is_causal, true);
+                              is_causal, true, lse);
     }
   }
 };

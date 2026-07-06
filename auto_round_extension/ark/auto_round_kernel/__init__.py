@@ -12,10 +12,17 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import os
 from typing import Optional
 import os
 import torch
 import sys
+
+# Intel GPU compiler (IGC) environment variable: ensure implicit local IDs are
+# not removed by the compiler even when unused. This guarantees consistent
+# behavior across driver upgrades and prevents performance regressions.
+# Reference: https://github.com/intel/intel-graphics-compiler/issues/412
+os.environ.setdefault("IGC_RemoveUnusedIdImplicitLocalIDs", "0")
 
 # Tensor layout constants passed to native C++ backends.
 # 0 = HND ([B, H, S, D]), 1 = NHD ([B, S, H, D]).
@@ -510,7 +517,8 @@ def sdpa(
     is_causal: bool = False,
     scale: float | None = None,
     tensor_layout: str = "HND",
-) -> torch.Tensor:
+    return_lse: bool = False,
+) -> torch.Tensor | tuple[torch.Tensor, torch.Tensor]:
     """Scaled dot-product attention (SDPA) prefill+decode.
 
     Supported tensor layouts:
@@ -520,9 +528,11 @@ def sdpa(
     Args:
     - scale: Softmax scale. Uses 1 / sqrt(D) when None.
     - tensor_layout: Layout of Q/K/V/O tensors.
+    - return_lse: If True, returns (O, LSE) where LSE[b, h, q] = log(sum_j exp(score_{b,h,q,j})).
 
     Returns:
     - O: same layout as the input tensors.
+    - (O, LSE): if return_lse is True.
     """
     if query.device.type != "xpu":
         raise NotImplementedError("sdpa is only supported on XPU")
@@ -575,6 +585,9 @@ def sdpa(
         device=query.device,
         tensor_layout=tensor_layout,
     )
+
+    LSE = torch.empty(B, Hq, Sq, dtype=torch.float32, device=query.device) if return_lse else None
+
     layout_code = LAYOUT_HND if _normalize_tensor_layout(tensor_layout) == "HND" else LAYOUT_NHD
     lib.sdpa(
         stream,
@@ -595,7 +608,11 @@ def sdpa(
         float(scale) if scale is not None else 1.0 / (D**0.5),
         bool(is_causal),
         layout_code,
+        LSE.data_ptr() if LSE is not None else 0,
     )
+
+    if return_lse:
+        return O, LSE
     return O
 
 
@@ -611,7 +628,8 @@ def sdpa_varlen(
     dropout_p: float = 0.0,
     is_causal: bool = False,
     scale: float | None = None,
-) -> torch.Tensor:
+    return_lse: bool = False,
+) -> torch.Tensor | tuple[torch.Tensor, torch.Tensor]:
     """Scaled dot-product attention (SDPA) prefill+decode with variable-length sequences.
 
     Q, K, V use a flat 3-D layout where tokens from all sequences in the batch
@@ -702,6 +720,18 @@ def sdpa_varlen(
 
     O = torch.empty(total_q, Hq, D, dtype=value.dtype, device=query.device)
 
+    if return_lse:
+        max_q = int((cu_seqlens_q_i32[1:] - cu_seqlens_q_i32[:-1]).max().item())
+        if max_seqlen_q < max_q:
+            raise ValueError(f"max_seqlen_q ({max_seqlen_q}) < max sequence length in cu_seqlens_q ({max_q})")
+        LSE = torch.full(
+            (batch, Hq, max_seqlen_q),
+            float("-inf"),
+            dtype=torch.float32,
+            device=query.device,
+        )
+    else:
+        LSE = None
     lib.sdpa_varlen(
         stream,
         query.data_ptr(),
@@ -725,7 +755,11 @@ def sdpa_varlen(
         cu_seqlens_q_i32.data_ptr(),
         cu_seqlens_k_i32.data_ptr(),
         LAYOUT_HND,  # unused by the native varlen path (always flat 3-D)
+        LSE.data_ptr() if LSE is not None else 0,
     )
+
+    if return_lse:
+        return O, LSE
     return O
 
 
@@ -942,7 +976,8 @@ def sagev1(
     enable_gqa: bool = False,
     quant_block_size: int = 64,
     tensor_layout: str = "HND",
-) -> torch.Tensor:
+    return_lse: bool = False,
+) -> torch.Tensor | tuple[torch.Tensor, torch.Tensor]:
     """SAGE v1 attention prefill+decode.
 
     Supported tensor layouts:
@@ -953,9 +988,11 @@ def sagev1(
     - scale: Attention scale. Uses 1 / sqrt(D) when None.
     - quant_block_size: Quantization block size used by the kernel.
     - tensor_layout: Layout of Q/K/V/O tensors.
+    - return_lse: If True, returns (O, LSE) where LSE[b, h, q] = log(sum_j exp(score_{b,h,q,j})).
 
     Returns:
     - O: same layout as the input tensors.
+    - (O, LSE): if return_lse is True.
     """
     if quant_block_size <= 0:
         return sdpa(
@@ -967,6 +1004,7 @@ def sagev1(
             is_causal=is_causal,
             scale=scale,
             tensor_layout=tensor_layout,
+            return_lse=return_lse,
         )
     if query.device.type != "xpu":
         raise NotImplementedError("sdpa is only supported on XPU")
@@ -1004,6 +1042,9 @@ def sagev1(
         device=query.device,
         tensor_layout=tensor_layout,
     )
+
+    LSE = torch.empty(B, Hq, Sq, dtype=torch.float32, device=query.device) if return_lse else None
+
     layout_code = LAYOUT_HND if _normalize_tensor_layout(tensor_layout) == "HND" else LAYOUT_NHD
     lib.sagev1(
         stream,
@@ -1026,7 +1067,11 @@ def sagev1(
         float(scale) if scale is not None else 1.0 / (D**0.5),
         bool(is_causal),
         layout_code,
+        LSE.data_ptr() if LSE is not None else 0,
     )
+
+    if return_lse:
+        return O, LSE
     return O
 
 
@@ -1041,7 +1086,8 @@ def sagev1_pvi8(
     enable_gqa: bool = False,
     quant_block_size: int = 64,
     tensor_layout: str = "HND",
-) -> torch.Tensor:
+    return_lse: bool = False,
+) -> torch.Tensor | tuple[torch.Tensor, torch.Tensor]:
     """SAGE v1 attention with PV int8 path.
 
     Expects FP16 Q/K/V input and quantizes Q/K/V internally before calling
@@ -1057,6 +1103,7 @@ def sagev1_pvi8(
             is_causal=is_causal,
             scale=scale,
             tensor_layout=tensor_layout,
+            return_lse=return_lse,
         )
     if query.device.type != "xpu":
         raise NotImplementedError("sagev1_pvi8 is only supported on XPU")
@@ -1094,6 +1141,9 @@ def sagev1_pvi8(
         device=query.device,
         tensor_layout=tensor_layout,
     )
+
+    LSE = torch.empty(B, Hq, Sq, dtype=torch.float32, device=query.device) if return_lse else None
+
     layout_code = LAYOUT_HND if _normalize_tensor_layout(tensor_layout) == "HND" else LAYOUT_NHD
     lib.sagev1_pvi8(
         stream,
@@ -1116,7 +1166,11 @@ def sagev1_pvi8(
         float(scale) if scale is not None else 1.0 / (D**0.5),
         bool(is_causal),
         layout_code,
+        LSE.data_ptr() if LSE is not None else 0,
     )
+
+    if return_lse:
+        return O, LSE
     return O
 
 
@@ -1130,7 +1184,7 @@ def sageattn(
     return_lse: bool = False,
     kernel: str = "v1_pvhalf",
     **kwargs,
-) -> torch.Tensor:
+) -> torch.Tensor | tuple[torch.Tensor, torch.Tensor]:
     """SAGE attention dispatcher.
 
     Signature mirrors ``sageattention.sageattn``.
@@ -1140,7 +1194,7 @@ def sageattn(
     - tensor_layout: "HND" or "NHD".
     - is_causal: Whether to apply causal mask.
     - sm_scale: Softmax scale. Uses ``1 / sqrt(head_dim)`` when None.
-    - return_lse: Not supported; must be False.
+    - return_lse: If True, returns (O, LSE) tuple.
     - kernel: Which SAGE variant to dispatch to.
         - "v1_pvhalf" (default): PV in half precision (calls ``sagev1``).
         - "v1_pvi8": PV in INT8 precision (calls ``sagev1_pvi8``).
@@ -1149,10 +1203,8 @@ def sageattn(
 
     Returns:
     - O: same layout as the input tensors.
+    - (O, LSE): if return_lse is True.
     """
-    if return_lse:
-        raise NotImplementedError("return_lse is not supported in ARK sageattn")
-
     if kernel == "v1_pvhalf":
         impl = sagev1
     elif kernel == "v1_pvi8":
@@ -1167,6 +1219,7 @@ def sageattn(
         is_causal=is_causal,
         scale=sm_scale,
         tensor_layout=tensor_layout,
+        return_lse=return_lse,
         **kwargs,
     )
 
@@ -1183,8 +1236,9 @@ def sageattn_varlen(
     sm_scale: float | None = None,
     kernel: str = "v1_pvhalf",
     quant_block_size: int = 64,
+    return_lse: bool = False,
     **kwargs,
-) -> torch.Tensor:
+) -> torch.Tensor | tuple[torch.Tensor, torch.Tensor]:
     """SAGE attention with variable-length sequences (no padding).
 
     Q/K/V are flat 3-D tensors: [total_tokens, num_heads, head_dim].
@@ -1272,6 +1326,18 @@ def sageattn_varlen(
 
     O = torch.empty(total_q, Hq, D, dtype=v.dtype, device=q.device)
 
+    if return_lse:
+        max_q = int((cu_seqlens_q_i32[1:] - cu_seqlens_q_i32[:-1]).max().item())
+        if max_seqlen_q < max_q:
+            raise ValueError(f"max_seqlen_q ({max_seqlen_q}) < max sequence length in cu_seqlens_q ({max_q})")
+        LSE = torch.full(
+            (batch, Hq, max_seqlen_q),
+            float("-inf"),
+            dtype=torch.float32,
+            device=q.device,
+        )
+    else:
+        LSE = None
     lib.sagev1_varlen(
         stream,
         q.data_ptr(),
@@ -1297,7 +1363,11 @@ def sageattn_varlen(
         cu_seqlens_q_i32.data_ptr(),
         cu_seqlens_k_i32.data_ptr(),
         use_int8_pv,
+        LSE.data_ptr() if LSE is not None else 0,
     )
+
+    if return_lse:
+        return O, LSE
     return O
 
 
