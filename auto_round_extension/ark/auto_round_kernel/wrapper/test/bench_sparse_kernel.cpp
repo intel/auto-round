@@ -20,6 +20,15 @@
 
 namespace {
 
+#if defined(ARK_SPARSE_DEV_SPARSE_ONLY)
+constexpr bool kSparseDevSparseOnly = true;
+#else
+constexpr bool kSparseDevSparseOnly = false;
+#endif
+
+constexpr int kSparseProfileModeFull = 0;
+constexpr int kSparseProfileModePvMmaOnly = 9;
+
 enum class ValueDType {
   F16,
   BF16,
@@ -40,10 +49,15 @@ struct PresetConfig {
 struct CliConfig {
   std::string preset = "flux_joint";
   std::string pattern = "prefix";
+  std::string sparse_mode = "sparse";
+  std::string profile_mode = "full";
+  std::string tensor_layout = "HND";
   std::vector<double> topks{1.0, 0.75, 0.5, 0.25, 0.125};
   int warmup = 2;
   int iters = 5;
+  bool half_output_tile = false;
   std::optional<std::string> csv_path;
+  std::optional<ValueDType> value_dtype;
   std::optional<int> batch;
   std::optional<int> num_heads_q;
   std::optional<int> num_heads_kv;
@@ -51,6 +65,7 @@ struct CliConfig {
   std::optional<int> seq_len_kv;
   std::optional<int> head_dim;
   std::optional<int> scale_block_size;
+  std::optional<int> q_tile_override;
 };
 
 struct ResultRow {
@@ -120,6 +135,23 @@ std::vector<float> make_random_vector(size_t count, float low, float high, uint3
   std::vector<float> values(count);
   for (auto& value : values) value = dist(rng);
   return values;
+}
+
+template <typename T>
+std::vector<T> hnd_to_nhd(const std::vector<T>& src, int batch, int heads, int seq, int head_dim) {
+  std::vector<T> dst(src.size());
+  for (int b = 0; b < batch; ++b) {
+    for (int h = 0; h < heads; ++h) {
+      for (int s = 0; s < seq; ++s) {
+        for (int d = 0; d < head_dim; ++d) {
+          size_t src_idx = (((size_t(b) * heads + size_t(h)) * seq + size_t(s)) * head_dim) + size_t(d);
+          size_t dst_idx = (((size_t(b) * seq + size_t(s)) * heads + size_t(h)) * head_dim) + size_t(d);
+          dst[dst_idx] = src[src_idx];
+        }
+      }
+    }
+  }
+  return dst;
 }
 
 double compute_dense_flops(int batch, int num_heads_q, int num_heads_kv, int seq_len_q, int seq_len_kv, int head_dim) {
@@ -205,10 +237,19 @@ std::string dtype_to_string(ValueDType dtype) {
   return dtype == ValueDType::BF16 ? "bf16" : "f16";
 }
 
+ValueDType parse_value_dtype(const std::string& text) {
+  if (text == "f16") return ValueDType::F16;
+  if (text == "bf16") return ValueDType::BF16;
+  throw std::invalid_argument("unsupported dtype: " + text + " (expected f16 or bf16)");
+}
+
 void print_usage() {
   std::cout
       << "Usage: bench_ARK_XPU [--preset wan_self|flux_joint|flux_single] [--pattern prefix|all_selected|stride2|custom_02|custom_035|custom_135]\n"
-      << "                    [--topk 1.0,0.75,0.5] [--warmup N] [--iters N] [--csv path]\n"
+      << "                    [--sparse-mode sparse|sparse_row_linear|sparse_row_linear_halfwidth|sparse_row_linear_profile]\n"
+      << "                    [--tensor-layout HND|NHD]\n"
+      << "                    [--profile-mode full|pv_mma_only] [--half-output-tile] [--q-tile 0|64|128|256]\n"
+      << "                    [--topk 1.0,0.75,0.5] [--dtype f16|bf16] [--warmup N] [--iters N] [--csv path]\n"
       << "                    [--batch N] [--heads-q N] [--heads-kv N] [--seq-q N] [--seq-kv N] [--head-dim N] [--block-size N]\n";
 }
 
@@ -223,9 +264,15 @@ CliConfig parse_args(int argc, char** argv) {
 
     if (arg == "--preset") config.preset = need_value("--preset");
     else if (arg == "--pattern") config.pattern = need_value("--pattern");
+    else if (arg == "--sparse-mode") config.sparse_mode = need_value("--sparse-mode");
+    else if (arg == "--tensor-layout") config.tensor_layout = need_value("--tensor-layout");
+    else if (arg == "--profile-mode") config.profile_mode = need_value("--profile-mode");
     else if (arg == "--topk") config.topks = parse_topks(need_value("--topk"));
+    else if (arg == "--dtype") config.value_dtype = parse_value_dtype(need_value("--dtype"));
     else if (arg == "--warmup") config.warmup = std::stoi(need_value("--warmup"));
     else if (arg == "--iters") config.iters = std::stoi(need_value("--iters"));
+    else if (arg == "--half-output-tile") config.half_output_tile = true;
+    else if (arg == "--q-tile") config.q_tile_override = std::stoi(need_value("--q-tile"));
     else if (arg == "--csv") config.csv_path = need_value("--csv");
     else if (arg == "--batch") config.batch = std::stoi(need_value("--batch"));
     else if (arg == "--heads-q") config.num_heads_q = std::stoi(need_value("--heads-q"));
@@ -244,7 +291,30 @@ CliConfig parse_args(int argc, char** argv) {
   return config;
 }
 
+int parse_sparse_profile_mode(const std::string& text) {
+  if (text == "full") return kSparseProfileModeFull;
+  if (text == "pv_mma_only") return kSparseProfileModePvMmaOnly;
+  throw std::invalid_argument("unsupported profile mode: " + text + " (expected full or pv_mma_only)");
+}
+
+int effective_q_tile_override(const CliConfig& cli) {
+  if (cli.q_tile_override) return *cli.q_tile_override;
+  return cli.sparse_mode == "sparse" ? 0 : 64;
+}
+
+std::string sparse_mode_label(const CliConfig& cli) {
+  if (cli.sparse_mode == "sparse") return "sparse_kernel_only";
+  if (cli.sparse_mode == "sparse_row_linear") return "sparse_row_linear_kernel_only";
+  if (cli.sparse_mode == "sparse_row_linear_halfwidth") return "sparse_row_linear_halfwidth_kernel_only";
+  if (cli.sparse_mode == "sparse_row_linear_profile") {
+    return cli.half_output_tile ? "sparse_row_linear_profile_" + cli.profile_mode + "_halfwidth"
+                                : "sparse_row_linear_profile_" + cli.profile_mode;
+  }
+  throw std::invalid_argument("unsupported sparse mode: " + cli.sparse_mode);
+}
+
 PresetConfig apply_overrides(PresetConfig preset, const CliConfig& cli) {
+  if (cli.value_dtype) preset.value_dtype = *cli.value_dtype;
   if (cli.batch) preset.batch = *cli.batch;
   if (cli.num_heads_q) preset.num_heads_q = *cli.num_heads_q;
   if (cli.num_heads_kv) preset.num_heads_kv = *cli.num_heads_kv;
@@ -298,9 +368,18 @@ std::vector<ResultRow> run_benchmark_typed(const PresetConfig& preset, const Cli
   const int seq_len_kv = preset.seq_len_kv;
   const int head_dim = preset.head_dim;
   const int block_size = preset.scale_block_size;
+  const int q_tile_override = effective_q_tile_override(cli);
+  const int sparse_profile_mode = parse_sparse_profile_mode(cli.profile_mode);
   const int q_blocks = (seq_len_q + block_size - 1) / block_size;
   const int kv_blocks = (seq_len_kv + block_size - 1) / block_size;
   const float softmax_scale = 1.0f / std::sqrt(float(head_dim));
+  const BTLA_DTYPE pv_dtype = preset.value_dtype == ValueDType::BF16 ? BTLA_DTYPE::BF16 : BTLA_DTYPE::F16;
+
+  if (cli.sparse_mode == "sparse_row_linear_profile" && !cli.half_output_tile &&
+      sparse_profile_mode != kSparseProfileModePvMmaOnly) {
+    throw std::invalid_argument(
+        "sparse_row_linear_profile without --half-output-tile currently supports only --profile-mode pv_mma_only");
+  }
 
   size_t q_count = size_t(batch) * num_heads_q * seq_len_q * head_dim;
   size_t kv_count = size_t(batch) * num_heads_kv * seq_len_kv * head_dim;
@@ -311,6 +390,13 @@ std::vector<ResultRow> run_benchmark_typed(const PresetConfig& preset, const Cli
   auto host_q = to_dtype_vector<T>(make_random_vector(q_count, -1.0f, 1.0f, 101));
   auto host_k = to_dtype_vector<T>(make_random_vector(kv_count, -1.0f, 1.0f, 202));
   auto host_v = to_dtype_vector<T>(make_random_vector(kv_count, -1.0f, 1.0f, 303));
+  if (cli.tensor_layout == "NHD") {
+    host_q = hnd_to_nhd(host_q, batch, num_heads_q, seq_len_q, head_dim);
+    host_k = hnd_to_nhd(host_k, batch, num_heads_kv, seq_len_kv, head_dim);
+    host_v = hnd_to_nhd(host_v, batch, num_heads_kv, seq_len_kv, head_dim);
+  } else if (cli.tensor_layout != "HND") {
+    throw std::invalid_argument("unsupported tensor layout: " + cli.tensor_layout);
+  }
 
   auto* dev_q = reinterpret_cast<T*>(ctx->allocate(q_count * sizeof(T)));
   auto* dev_k = reinterpret_cast<T*>(ctx->allocate(kv_count * sizeof(T)));
@@ -319,13 +405,63 @@ std::vector<ResultRow> run_benchmark_typed(const PresetConfig& preset, const Cli
   auto* dev_ki8 = reinterpret_cast<int8_t*>(ctx->allocate(kv_count * sizeof(int8_t)));
   auto* dev_qscale = reinterpret_cast<float*>(ctx->allocate(q_scale_count * sizeof(float)));
   auto* dev_kscale = reinterpret_cast<float*>(ctx->allocate(k_scale_count * sizeof(float)));
-  auto* dev_dense_out = reinterpret_cast<T*>(ctx->allocate(o_count * sizeof(T)));
+  T* dev_dense_out = nullptr;
+  if (!kSparseDevSparseOnly) {
+    dev_dense_out = reinterpret_cast<T*>(ctx->allocate(o_count * sizeof(T)));
+  }
   auto* dev_sparse_out = reinterpret_cast<T*>(ctx->allocate(o_count * sizeof(T)));
 
-  int q_stride_s = head_dim, q_stride_d = 1, q_stride_h = seq_len_q * head_dim, q_stride_b = num_heads_q * seq_len_q * head_dim;
-  int k_stride_s = head_dim, k_stride_d = 1, k_stride_h = seq_len_kv * head_dim, k_stride_b = num_heads_kv * seq_len_kv * head_dim;
-  int v_stride_d = 1, v_stride_s = head_dim, v_stride_h = seq_len_kv * head_dim, v_stride_b = num_heads_kv * seq_len_kv * head_dim;
-  int o_stride_s = head_dim, o_stride_d = 1, o_stride_h = seq_len_q * head_dim, o_stride_b = num_heads_q * seq_len_q * head_dim;
+  int q_in_stride_s;
+  int q_in_stride_d = 1;
+  int q_in_stride_h;
+  int q_in_stride_b;
+  int k_in_stride_s;
+  int k_in_stride_d = 1;
+  int k_in_stride_h;
+  int k_in_stride_b;
+  int v_stride_d = 1;
+  int v_stride_s;
+  int v_stride_h;
+  int v_stride_b;
+  int q_stride_s = head_dim;
+  int q_stride_d = 1;
+  int q_stride_h = seq_len_q * head_dim;
+  int q_stride_b = num_heads_q * seq_len_q * head_dim;
+  int k_stride_s = head_dim;
+  int k_stride_d = 1;
+  int k_stride_h = seq_len_kv * head_dim;
+  int k_stride_b = num_heads_kv * seq_len_kv * head_dim;
+  int o_stride_s;
+  int o_stride_d = 1;
+  int o_stride_h;
+  int o_stride_b;
+  if (cli.tensor_layout == "NHD") {
+    q_in_stride_s = num_heads_q * head_dim;
+    q_in_stride_h = head_dim;
+    q_in_stride_b = seq_len_q * num_heads_q * head_dim;
+    k_in_stride_s = num_heads_kv * head_dim;
+    k_in_stride_h = head_dim;
+    k_in_stride_b = seq_len_kv * num_heads_kv * head_dim;
+    v_stride_s = num_heads_kv * head_dim;
+    v_stride_h = head_dim;
+    v_stride_b = seq_len_kv * num_heads_kv * head_dim;
+    o_stride_s = num_heads_q * head_dim;
+    o_stride_h = head_dim;
+    o_stride_b = seq_len_q * num_heads_q * head_dim;
+  } else {
+    q_in_stride_s = head_dim;
+    q_in_stride_h = seq_len_q * head_dim;
+    q_in_stride_b = num_heads_q * seq_len_q * head_dim;
+    k_in_stride_s = head_dim;
+    k_in_stride_h = seq_len_kv * head_dim;
+    k_in_stride_b = num_heads_kv * seq_len_kv * head_dim;
+    v_stride_s = head_dim;
+    v_stride_h = seq_len_kv * head_dim;
+    v_stride_b = num_heads_kv * seq_len_kv * head_dim;
+    o_stride_s = head_dim;
+    o_stride_h = seq_len_q * head_dim;
+    o_stride_b = num_heads_q * seq_len_q * head_dim;
+  }
 
   std::vector<ResultRow> rows;
   double dense_flops = compute_dense_flops(batch, num_heads_q, num_heads_kv, seq_len_q, seq_len_kv, head_dim);
@@ -335,25 +471,35 @@ std::vector<ResultRow> run_benchmark_typed(const PresetConfig& preset, const Cli
     q->memcpy(dev_k, host_k.data(), kv_count * sizeof(T)).wait();
     q->memcpy(dev_v, host_v.data(), kv_count * sizeof(T)).wait();
 
-    ark::XpuWrapper::sage_dynamic_quant<T>(q, dev_q, dev_qi8, dev_qscale, batch * num_heads_q, seq_len_q, q_blocks,
-                                           head_dim, block_size);
-    ark::XpuWrapper::sage_dynamic_quant<T>(q, dev_k, dev_ki8, dev_kscale, batch * num_heads_kv, seq_len_kv, kv_blocks,
-                                           head_dim, block_size);
+    if (cli.tensor_layout == "NHD") {
+      ark::XpuWrapper::sage_dynamic_quant_strided<T>(q, dev_q, dev_qi8, dev_qscale, batch, num_heads_q, seq_len_q,
+                                                     q_blocks, head_dim, block_size, q_in_stride_s, q_in_stride_d,
+                                                     q_in_stride_h, q_in_stride_b);
+      ark::XpuWrapper::sage_dynamic_quant_strided<T>(q, dev_k, dev_ki8, dev_kscale, batch, num_heads_kv, seq_len_kv,
+                                                     kv_blocks, head_dim, block_size, k_in_stride_s, k_in_stride_d,
+                                                     k_in_stride_h, k_in_stride_b);
+    } else {
+      ark::XpuWrapper::sage_dynamic_quant<T>(q, dev_q, dev_qi8, dev_qscale, batch * num_heads_q, seq_len_q, q_blocks,
+                                             head_dim, block_size);
+      ark::XpuWrapper::sage_dynamic_quant<T>(q, dev_k, dev_ki8, dev_kscale, batch * num_heads_kv, seq_len_kv, kv_blocks,
+                                             head_dim, block_size);
+    }
 
-    double dense_ms = run_bench(
-        [&] {
-          ark::sdpa_impl_qks8_pvhalf(q, dev_qi8, dev_ki8, dev_v, dev_dense_out, nullptr, block_size, dev_qscale,
-                                     dev_kscale, q_stride_s, q_stride_d, q_stride_h, q_stride_b, k_stride_s,
-                                     k_stride_d, k_stride_h, k_stride_b, v_stride_d, v_stride_s, v_stride_h,
-                                     v_stride_b, o_stride_s, o_stride_d, o_stride_h, o_stride_b, batch, num_heads_q,
-                                     num_heads_kv, seq_len_q, seq_len_kv, head_dim, softmax_scale, false,
-                                     preset.value_dtype == ValueDType::BF16 ? BTLA_DTYPE::BF16 : BTLA_DTYPE::F16);
-        },
-        q, cli.warmup, cli.iters);
+    if (!kSparseDevSparseOnly && cli.sparse_mode == "sparse") {
+      double dense_ms = run_bench(
+          [&] {
+            ark::sdpa_impl_qks8_pvhalf(q, dev_qi8, dev_ki8, dev_v, dev_dense_out, nullptr, block_size, dev_qscale,
+                                       dev_kscale, q_stride_s, q_stride_d, q_stride_h, q_stride_b, k_stride_s,
+                                       k_stride_d, k_stride_h, k_stride_b, v_stride_d, v_stride_s, v_stride_h,
+                                       v_stride_b, o_stride_s, o_stride_d, o_stride_h, o_stride_b, batch, num_heads_q,
+                                       num_heads_kv, seq_len_q, seq_len_kv, head_dim, softmax_scale, false, pv_dtype);
+          },
+          q, cli.warmup, cli.iters);
 
-    rows.push_back(ResultRow{preset.name, "dense_sagev1", "dense", dtype_to_string(preset.value_dtype), 1.0, 1.0,
-                             double(kv_blocks), dense_ms, flops_to_tflops(dense_flops, dense_ms),
-                             flops_to_tflops(dense_flops, dense_ms)});
+      rows.push_back(ResultRow{preset.name, "dense_sagev1", "dense", dtype_to_string(preset.value_dtype), 1.0, 1.0,
+                               double(kv_blocks), dense_ms, flops_to_tflops(dense_flops, dense_ms),
+                               flops_to_tflops(dense_flops, dense_ms)});
+    }
 
     bool custom_pattern = cli.pattern.rfind("custom_", 0) == 0 || cli.pattern == "all_selected";
     std::vector<double> topks = custom_pattern ? std::vector<double>{1.0} : cli.topks;
@@ -371,18 +517,51 @@ std::vector<ResultRow> run_benchmark_typed(const PresetConfig& preset, const Cli
 
       double sparse_ms = run_bench(
           [&] {
-            ark::sdpa_impl_qks8_sparse_pvhalf(
-                q, dev_qi8, dev_ki8, dev_v, dev_sparse_out, nullptr, block_size, dev_qscale, dev_kscale, dev_lut,
-                dev_valid, q_blocks, kv_blocks, 0, q_stride_s, q_stride_d, q_stride_h, q_stride_b, k_stride_s,
-                k_stride_d, k_stride_h, k_stride_b, v_stride_d, v_stride_s, v_stride_h, v_stride_b, o_stride_s,
-                o_stride_d, o_stride_h, o_stride_b, batch, num_heads_q, num_heads_kv, seq_len_q, seq_len_kv,
-                head_dim, softmax_scale, false,
-                preset.value_dtype == ValueDType::BF16 ? BTLA_DTYPE::BF16 : BTLA_DTYPE::F16);
+            if (cli.sparse_mode == "sparse") {
+              ark::sdpa_impl_qks8_sparse_pvhalf(
+                  q, dev_qi8, dev_ki8, dev_v, dev_sparse_out, nullptr, block_size, dev_qscale, dev_kscale, dev_lut,
+                  dev_valid, q_blocks, kv_blocks, q_tile_override, q_stride_s, q_stride_d, q_stride_h, q_stride_b,
+                  k_stride_s, k_stride_d, k_stride_h, k_stride_b, v_stride_d, v_stride_s, v_stride_h, v_stride_b,
+                  o_stride_s, o_stride_d, o_stride_h, o_stride_b, batch, num_heads_q, num_heads_kv, seq_len_q,
+                  seq_len_kv, head_dim, softmax_scale, false, pv_dtype);
+            } else if (cli.sparse_mode == "sparse_row_linear") {
+              ark::sdpa_impl_qks8_sparse_row_linear_pvhalf(
+                  q, dev_qi8, dev_ki8, dev_v, dev_sparse_out, nullptr, block_size, dev_qscale, dev_kscale, dev_lut,
+                  dev_valid, q_blocks, kv_blocks, q_tile_override, q_stride_s, q_stride_d, q_stride_h, q_stride_b,
+                  k_stride_s, k_stride_d, k_stride_h, k_stride_b, v_stride_d, v_stride_s, v_stride_h, v_stride_b,
+                  o_stride_s, o_stride_d, o_stride_h, o_stride_b, batch, num_heads_q, num_heads_kv, seq_len_q,
+                  seq_len_kv, head_dim, softmax_scale, false, pv_dtype);
+            } else if (cli.sparse_mode == "sparse_row_linear_halfwidth") {
+              ark::sdpa_impl_qks8_sparse_row_linear_halfwidth_pvhalf(
+                  q, dev_qi8, dev_ki8, dev_v, dev_sparse_out, nullptr, block_size, dev_qscale, dev_kscale, dev_lut,
+                  dev_valid, q_blocks, kv_blocks, q_tile_override, q_stride_s, q_stride_d, q_stride_h, q_stride_b,
+                  k_stride_s, k_stride_d, k_stride_h, k_stride_b, v_stride_d, v_stride_s, v_stride_h, v_stride_b,
+                  o_stride_s, o_stride_d, o_stride_h, o_stride_b, batch, num_heads_q, num_heads_kv, seq_len_q,
+                  seq_len_kv, head_dim, softmax_scale, false, pv_dtype);
+            } else if (cli.sparse_mode == "sparse_row_linear_profile") {
+              if (cli.half_output_tile) {
+                ark::sdpa_impl_qks8_sparse_row_linear_profile_pvhalf(
+                    q, dev_qi8, dev_ki8, dev_v, dev_sparse_out, nullptr, block_size, dev_qscale, dev_kscale, dev_lut,
+                    dev_valid, q_blocks, kv_blocks, q_tile_override, sparse_profile_mode, q_stride_s, q_stride_d,
+                    q_stride_h, q_stride_b, k_stride_s, k_stride_d, k_stride_h, k_stride_b, v_stride_d, v_stride_s,
+                    v_stride_h, v_stride_b, o_stride_s, o_stride_d, o_stride_h, o_stride_b, batch, num_heads_q,
+                    num_heads_kv, seq_len_q, seq_len_kv, head_dim, softmax_scale, false, pv_dtype);
+              } else {
+                ark::sdpa_impl_qks8_sparse_row_linear_profile(
+                    q, dev_qi8, dev_ki8, dev_v, dev_sparse_out, nullptr, block_size, dev_qscale, dev_kscale, dev_lut,
+                    dev_valid, q_blocks, kv_blocks, q_tile_override, sparse_profile_mode, q_stride_s, q_stride_d,
+                    q_stride_h, q_stride_b, k_stride_s, k_stride_d, k_stride_h, k_stride_b, v_stride_d, v_stride_s,
+                    v_stride_h, v_stride_b, o_stride_s, o_stride_d, o_stride_h, o_stride_b, batch, num_heads_q,
+                    num_heads_kv, seq_len_q, seq_len_kv, head_dim, softmax_scale, false, pv_dtype);
+              }
+            } else {
+              throw std::invalid_argument("unsupported sparse mode: " + cli.sparse_mode);
+            }
           },
           q, cli.warmup, cli.iters);
 
       double selected_ratio = double(selection.size()) / double(kv_blocks);
-      rows.push_back(ResultRow{preset.name, "sparse_kernel_only", cli.pattern, dtype_to_string(preset.value_dtype),
+      rows.push_back(ResultRow{preset.name, sparse_mode_label(cli), cli.pattern, dtype_to_string(preset.value_dtype),
                                topk, selected_ratio, double(selection.size()), sparse_ms,
                                flops_to_tflops(dense_flops, sparse_ms),
                                flops_to_tflops(dense_flops * selected_ratio, sparse_ms)});
@@ -398,7 +577,7 @@ std::vector<ResultRow> run_benchmark_typed(const PresetConfig& preset, const Cli
     ctx->deallocate(dev_ki8);
     ctx->deallocate(dev_qscale);
     ctx->deallocate(dev_kscale);
-    ctx->deallocate(dev_dense_out);
+    if (dev_dense_out != nullptr) ctx->deallocate(dev_dense_out);
     ctx->deallocate(dev_sparse_out);
     throw;
   }
@@ -410,7 +589,7 @@ std::vector<ResultRow> run_benchmark_typed(const PresetConfig& preset, const Cli
   ctx->deallocate(dev_ki8);
   ctx->deallocate(dev_qscale);
   ctx->deallocate(dev_kscale);
-  ctx->deallocate(dev_dense_out);
+  if (dev_dense_out != nullptr) ctx->deallocate(dev_dense_out);
   ctx->deallocate(dev_sparse_out);
   return rows;
 }
