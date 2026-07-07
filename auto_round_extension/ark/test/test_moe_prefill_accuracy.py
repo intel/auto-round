@@ -175,10 +175,10 @@ def _reference_moe_prefill(activations, dequant_weights_NK, num_tokens_per_exper
 # ---------------------------------------------------------------------------
 
 _TOL_FP = dict(rtol=3e-2, atol=3e-2)
-_TOL_INT8 = dict(rtol=1.5e-1, atol=1.5e-1)
+_TOL_INT8 = dict(rtol=1e-1, atol=1e-1)
 _TOL_INT4 = dict(rtol=1.5e-1, atol=1.5e-1)
-_TOL_INT2 = dict(rtol=2e-1, atol=2e-1)
-_TOL_FP8 = dict(rtol=1.5e-1, atol=1.5e-1)
+_TOL_INT2 = dict(rtol=1.5e-1, atol=1.5e-1)
+_TOL_FP8 = dict(rtol=1e-1, atol=1e-1)
 
 
 def _tol_for_dtype(base, dtype):
@@ -195,7 +195,7 @@ def _tol_for_dtype(base, dtype):
     the tight bound.
     """
     if dtype is torch.bfloat16:
-        return dict(rtol=max(base["rtol"], 1.5e-1), atol=max(base["atol"], 1.5e-1))
+        return dict(rtol=max(base["rtol"], 1e-1), atol=max(base["atol"], 1e-1))
     return base
 
 
