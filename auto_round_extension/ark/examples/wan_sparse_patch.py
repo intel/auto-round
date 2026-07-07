@@ -10,10 +10,11 @@ from pathlib import Path
 import torch
 
 
-REPO_ROOT = Path(__file__).resolve().parent
-ARK_PARENT = REPO_ROOT.parent
-if str(ARK_PARENT) not in sys.path:
-    sys.path.insert(0, str(ARK_PARENT))
+EXAMPLES_DIR = Path(__file__).resolve().parent
+ARK_DIR = EXAMPLES_DIR.parent
+KERNEL_DIR = ARK_DIR / "auto_round_kernel"
+if str(ARK_DIR) not in sys.path:
+    sys.path.insert(0, str(ARK_DIR))
 
 import auto_round_kernel as ark
 from diffusers.models.transformers.transformer_wan import WanAttention, _get_qkv_projections
@@ -43,9 +44,9 @@ def ensure_ark_sparse_binding() -> None:
         raise RuntimeError("Unable to determine Python extension suffix for the current interpreter")
 
     search_roots = [
-        REPO_ROOT / "xbuild",
-        REPO_ROOT / "xbuild_diffuser",
-        REPO_ROOT,
+        KERNEL_DIR / "xbuild",
+        KERNEL_DIR / "xbuild_diffuser",
+        KERNEL_DIR,
     ]
     candidates = []
     for root in search_roots:

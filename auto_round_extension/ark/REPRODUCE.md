@@ -56,7 +56,7 @@ python \
 `q_tile=64`:
 
 ```bash
-cd auto_round_extension/ark/auto_round_kernel
+cd auto_round_extension/ark/examples
 WAN_USE_SPARSE=1 \
 WAN_SPARSE_TOPK=0.5 \
 WAN_SPARSE_Q_TILE_OVERRIDE=64 \
@@ -66,7 +66,7 @@ python run_wan.py
 `q_tile=256`:
 
 ```bash
-cd auto_round_extension/ark/auto_round_kernel
+cd auto_round_extension/ark/examples
 WAN_USE_SPARSE=1 \
 WAN_SPARSE_TOPK=0.5 \
 WAN_SPARSE_Q_TILE_OVERRIDE=256 \
@@ -80,7 +80,7 @@ python run_wan.py
 `q_tile=64`:
 
 ```bash
-cd auto_round_extension/ark/auto_round_kernel
+cd auto_round_extension/ark/examples
 FLUX_USE_SPARSE=1 \
 FLUX_SPARSE_TOPK=0.5 \
 FLUX_SPARSE_Q_TILE_OVERRIDE=64 \
@@ -90,7 +90,7 @@ python run_flux.py
 `q_tile=256`:
 
 ```bash
-cd auto_round_extension/ark/auto_round_kernel
+cd auto_round_extension/ark/examples
 FLUX_USE_SPARSE=1 \
 FLUX_SPARSE_TOPK=0.5 \
 FLUX_SPARSE_Q_TILE_OVERRIDE=256 \
