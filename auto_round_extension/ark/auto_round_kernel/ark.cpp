@@ -766,6 +766,8 @@ PYBIND11_MODULE(PY_NAME, m) {
         pybind11::arg("tensor_layout"), pybind11::arg("lse") = 0);
   m.def("sage_sparse", &ark::sage_sparse);
   m.def("sage_sparse_qtile256_row64k", &ark::sage_sparse_qtile256_row64k);
+  m.def("sage_sparse_row_linear", &ark::sage_sparse_row_linear);
+  m.def("sage_sparse_decode", &ark::sage_sparse_decode);
   // Low-level SAGE PVi8 API: input Q/K/V are pre-quantized int8 with qscale/kscale/vscale.
   m.def("sage_pvi8", &ark::sage_pvi8, pybind11::arg("stream"), pybind11::arg("Q"), pybind11::arg("K"),
         pybind11::arg("V"), pybind11::arg("O"), pybind11::arg("mask"),

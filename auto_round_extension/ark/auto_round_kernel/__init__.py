@@ -27,6 +27,7 @@ os.environ.setdefault("IGC_RemoveUnusedIdImplicitLocalIDs", "0")
 LAYOUT_HND = 0
 LAYOUT_NHD = 1
 
+
 class ARK_DT:
     float64 = 64
     float32 = 32
@@ -420,7 +421,13 @@ def _validate_packed_blob(
     scale_type: str,
     asym: bool,
 ) -> None:
-    """Validate a packed-weight blob before passing it to native code."""
+    """Validate a packed-weight blob before passing it to native code.
+
+    Raises ``TypeError`` or ``ValueError`` if any check fails, preventing
+    out-of-bounds memory access in the native ``unpack_weight`` /
+    ``woqgemm`` path when the blob is malformed or the parameters are
+    inconsistent with the blob contents.
+    """
     if not isinstance(blob, torch.Tensor):
         raise TypeError(f"blob must be a torch.Tensor, got {type(blob).__name__}")
 
@@ -433,11 +440,11 @@ def _validate_packed_blob(
     if blob.dim() != 1:
         raise ValueError(f"blob must be a 1-D tensor, got {blob.dim()}-D")
 
-    if not isinstance(n, int) or n <= 0:
+    if not isinstance(n, (int,)) or n <= 0:
         raise ValueError(f"n must be a positive integer, got {n!r}")
-    if not isinstance(k, int) or k <= 0:
+    if not isinstance(k, (int,)) or k <= 0:
         raise ValueError(f"k must be a positive integer, got {k!r}")
-    if not isinstance(groupsize, int) or groupsize <= 0:
+    if not isinstance(groupsize, (int,)) or groupsize <= 0:
         raise ValueError(f"groupsize must be a positive integer, got {groupsize!r}")
     if not isinstance(asym, bool):
         raise TypeError(f"asym must be a bool, got {type(asym).__name__}")
@@ -1006,6 +1013,7 @@ def sage_pvi8(
         layout_code,
     )
     return O
+
 
 def sagev1(
     query: torch.Tensor,
