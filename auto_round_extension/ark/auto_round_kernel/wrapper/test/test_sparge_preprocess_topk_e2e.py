@@ -139,7 +139,7 @@ def run_case(
         return_metadata=True,
     )
 
-    assert meta["backend"] in {"torch", "triton_xpu", "triton_xpu_cuda_port"}
+    assert meta["backend"] in {"torch", "triton_xpu"}
     _assert_metadata_matches(meta, preprocess_meta)
     assert tuple(meta["query_i8"].shape) == tuple(query.shape)
     assert tuple(meta["key_i8"].shape) == tuple(key.shape)

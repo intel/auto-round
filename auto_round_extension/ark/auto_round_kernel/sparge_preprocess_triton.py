@@ -27,7 +27,7 @@ def _log_fallback_warning_once(error: Exception) -> None:
 
 def _normalize_backend_preference(backend_preference: str) -> str:
     backend = backend_preference.lower()
-    if backend not in {"auto", "torch", "triton_xpu", "triton_xpu_cuda_port"}:
+    if backend not in {"auto", "torch", "triton_xpu"}:
         raise ValueError(f"Unsupported SPARGE preprocess backend: {backend_preference}")
     return backend
 
@@ -426,14 +426,6 @@ def dispatch_sparge_preprocess_backend(
     if backend == "torch":
         result = torch_backend()
         result["backend"] = "torch"
-        return result
-
-    if backend == "triton_xpu_cuda_port":
-        from .sparge_preprocess_triton_cuda_port import run_triton_xpu_cuda_port_preprocess
-
-        _ensure_triton_xpu_available(ctx.query, ctx.head_dim)
-        result = run_triton_xpu_cuda_port_preprocess(ctx)
-        result["backend"] = "triton_xpu_cuda_port"
         return result
 
     try:
