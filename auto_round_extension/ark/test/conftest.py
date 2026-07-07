@@ -75,8 +75,7 @@ def pytest_addoption(parser):
 def pytest_configure(config):
     config.addinivalue_line(
         "markers",
-        "moe_prefill_perf: MoE prefill perf sweep; skipped by default, "
-        "opt in via --run-moe-prefill-perf.",
+        "moe_prefill_perf: MoE prefill perf sweep; skipped by default, " "opt in via --run-moe-prefill-perf.",
     )
 
 
