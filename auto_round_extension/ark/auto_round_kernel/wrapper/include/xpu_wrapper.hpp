@@ -1478,8 +1478,7 @@ class XpuWrapper {
                           int v_stride_s, int v_stride_h, int v_stride_b, int o_stride_s, int o_stride_d,
                           int o_stride_h, int o_stride_b, int batch, int num_heads_q, int num_heads_kv,
                           int seq_len_q, int seq_len_kv, int head_dim, float softmax_scale, bool is_causal,
-                          bool use_int8_pv, float* lse = nullptr) {
-    bool use_mean_bias = env_params::Instance()->sage_use_mean_bias != 0;
+                          bool use_int8_pv, bool use_mean_bias, float* lse = nullptr) {
     bool q_packed = is_packed_hnd(q_stride_s, q_stride_d, q_stride_h, q_stride_b, num_heads_q, seq_len_q, head_dim);
     bool k_packed =
         is_packed_hnd(k_stride_s, k_stride_d, k_stride_h, k_stride_b, num_heads_kv, seq_len_kv, head_dim);
@@ -1586,6 +1585,7 @@ class XpuWrapper {
                                  int o_stride_h, int o_stride_b, int batch, int num_heads_q, int num_heads_kv,
                                  int total_seqlen_q, int total_seqlen_kv, int max_seqlen_q, int max_seqlen_kv,
                                  int head_dim, float softmax_scale, bool is_causal, bool use_int8_pv,
+                                 bool use_mean_bias,
                                  const int* cu_seqlens_q, const int* cu_seqlens_k, float* lse = nullptr) {
     size_t q_size = size_t(num_heads_q) * total_seqlen_q * head_dim;
     size_t q_seq_blk = (size_t(total_seqlen_q) + scale_block_size - 1) / scale_block_size;
@@ -1595,7 +1595,9 @@ class XpuWrapper {
     size_t k_scale_size = size_t(num_heads_kv) * k_seq_blk;
     size_t v_tmp_size = use_int8_pv ? k_size : 0;
     size_t v_scale_size = use_int8_pv ? k_scale_size * head_dim * sizeof(float) : 0;
-    size_t total_size = k_size + q_size + k_scale_size * sizeof(float) + q_scale_size * sizeof(float) + v_tmp_size + v_scale_size;
+    size_t k_bias_size = use_mean_bias ? num_heads_kv * head_dim * sizeof(T) : 0;
+    size_t total_size = k_size + q_size + k_scale_size * sizeof(float) + q_scale_size * sizeof(float) + v_tmp_size +
+                        v_scale_size + k_bias_size;
     auto ptr = DnnlContext::Instance()->get_scratch_mem(total_size, 1, q);
     auto q_out_ptr = (int8_t*)ptr;
     auto k_out_ptr = (int8_t*)ptr + q_size;
@@ -1607,6 +1609,17 @@ class XpuWrapper {
     auto vscale = use_int8_pv
         ? (float*)((int8_t*)ptr + q_size + k_size + q_scale_size * sizeof(float) + k_scale_size * sizeof(float) + k_size)
         : nullptr;
+    auto kbias = use_mean_bias
+        ? (T*)((int8_t*)ptr + q_size + k_size + q_scale_size * sizeof(float) +
+               k_scale_size * sizeof(float) + v_tmp_size + v_scale_size)
+        : nullptr;
+
+    if (use_mean_bias) {
+      // Per-head sequence mean bias for the flat 3-D [total_kv, Hkv, D] tensor.
+      // batch=1 because the varlen tensor is flat (all sequences concatenated).
+      compute_seq_mean_bias_strided<T>(q, (T*)K_ptr, kbias, 1, num_heads_kv, total_seqlen_kv,
+                                       head_dim, k_stride_s, k_stride_d, k_stride_h, k_stride_b);
+    }
 
     // Flat [total, H, D] quantize via strided path (batch=1 — the tensor is flat,
     // not a batched 4-D tensor, so batch must be 1 to avoid reading past the end
@@ -1616,7 +1629,7 @@ class XpuWrapper {
                                   q_stride_s, q_stride_d, q_stride_h, q_stride_b);
     sage_dynamic_quant_strided<T>(q, (T*)K_ptr, k_out_ptr, kscale, 1, num_heads_kv,
                                   total_seqlen_kv, k_seq_blk, head_dim, scale_block_size,
-                                  k_stride_s, k_stride_d, k_stride_h, k_stride_b);
+                                  k_stride_s, k_stride_d, k_stride_h, k_stride_b, kbias);
 
     // Quantized output stride: packed HND using total_seqlen.
     int qo_s = head_dim,  qo_d = 1,  qo_h = total_seqlen_q * head_dim,  qo_b = num_heads_q * total_seqlen_q * head_dim;
@@ -1658,19 +1671,20 @@ class XpuWrapper {
                      int v_stride_s, int v_stride_h, int v_stride_b, int o_stride_s, int o_stride_d,
                      int o_stride_h, int o_stride_b, int batch, int num_heads_q, int num_heads_kv, int seq_len_q,
                      int seq_len_kv, int head_dim, float softmax_scale, bool is_causal,
-                     BTLA_DTYPE dtype = BTLA_DTYPE::F16, float* lse = nullptr) {
+                     BTLA_DTYPE dtype = BTLA_DTYPE::F16, float* lse = nullptr,
+                     bool use_mean_bias = true) {
     if (dtype == BTLA_DTYPE::BF16) {
       sagev1_impl<sycl::ext::oneapi::bfloat16>(
           q, Q_ptr, K_ptr, V_ptr, O_ptr, mask, scale_block_size, q_stride_s, q_stride_d, q_stride_h, q_stride_b,
           k_stride_s, k_stride_d, k_stride_h, k_stride_b, v_stride_d, v_stride_s, v_stride_h, v_stride_b,
           o_stride_s, o_stride_d, o_stride_h, o_stride_b, batch, num_heads_q, num_heads_kv, seq_len_q, seq_len_kv,
-          head_dim, softmax_scale, is_causal, false, lse);
+          head_dim, softmax_scale, is_causal, false, use_mean_bias, lse);
     } else {
       sagev1_impl<sycl::half>(q, Q_ptr, K_ptr, V_ptr, O_ptr, mask, scale_block_size, q_stride_s, q_stride_d,
                               q_stride_h, q_stride_b, k_stride_s, k_stride_d, k_stride_h, k_stride_b, v_stride_d,
                               v_stride_s, v_stride_h, v_stride_b, o_stride_s, o_stride_d, o_stride_h, o_stride_b,
                               batch, num_heads_q, num_heads_kv, seq_len_q, seq_len_kv, head_dim, softmax_scale,
-                              is_causal, false, lse);
+                              is_causal, false, use_mean_bias, lse);
     }
   }
 
@@ -1680,19 +1694,20 @@ class XpuWrapper {
                           int v_stride_s, int v_stride_h, int v_stride_b, int o_stride_s, int o_stride_d,
                           int o_stride_h, int o_stride_b, int batch, int num_heads_q, int num_heads_kv,
                           int seq_len_q, int seq_len_kv, int head_dim, float softmax_scale, bool is_causal,
-                          BTLA_DTYPE dtype = BTLA_DTYPE::F16, float* lse = nullptr) {
+                          BTLA_DTYPE dtype = BTLA_DTYPE::F16, float* lse = nullptr,
+                          bool use_mean_bias = true) {
     if (dtype == BTLA_DTYPE::BF16) {
       sagev1_impl<sycl::ext::oneapi::bfloat16>(
           q, Q_ptr, K_ptr, V_ptr, O_ptr, mask, scale_block_size, q_stride_s, q_stride_d, q_stride_h, q_stride_b,
           k_stride_s, k_stride_d, k_stride_h, k_stride_b, v_stride_d, v_stride_s, v_stride_h, v_stride_b,
           o_stride_s, o_stride_d, o_stride_h, o_stride_b, batch, num_heads_q, num_heads_kv, seq_len_q, seq_len_kv,
-          head_dim, softmax_scale, is_causal, true, lse);
+          head_dim, softmax_scale, is_causal, true, use_mean_bias, lse);
     } else {
       sagev1_impl<sycl::half>(q, Q_ptr, K_ptr, V_ptr, O_ptr, mask, scale_block_size, q_stride_s, q_stride_d,
                               q_stride_h, q_stride_b, k_stride_s, k_stride_d, k_stride_h, k_stride_b, v_stride_d,
                               v_stride_s, v_stride_h, v_stride_b, o_stride_s, o_stride_d, o_stride_h, o_stride_b,
                               batch, num_heads_q, num_heads_kv, seq_len_q, seq_len_kv, head_dim, softmax_scale,
-                              is_causal, true, lse);
+                              is_causal, true, use_mean_bias, lse);
     }
   }
 };
