@@ -26,6 +26,7 @@ typedef uintptr_t torch_ptr;
 #include "sycl_tla_common.hpp"
 #include "sycl_tla_moe.hpp"
 #include "sycl_tla_sdpa.hpp"
+#include "sycl_tla_dense_gemm.hpp"
 #endif
 #else
 #include "cpu_wrapper.hpp"
@@ -100,6 +101,12 @@ static size_t packed_weight_size(torch_ptr stream, int n, int k, int blocksize, 
 }
 
 #if defined(ARK_XPU) && defined(ARK_SYCL_TLA)
+
+static void matmul_sycl_tla(torch_ptr stream, int m, int n, int k, torch_ptr A, int Adt, torch_ptr B,
+                                       int Bdt, torch_ptr C, int Cdt, torch_ptr bias, bool BT) {
+  ark::sycl_tla_dense_gemm((sycl::queue*)stream, m, n, k, (void*)A, (BTLA_DTYPE)Adt, (void*)B,
+                                      (BTLA_DTYPE)Bdt, (void*)C, (BTLA_DTYPE)Cdt, (void*)bias, BT);
+}
 
 // Tensor layout codes passed from Python (tensor_layout argument).
 constexpr int TENSOR_LAYOUT_HND = 0;  // [B, H, S, D]
@@ -669,5 +676,6 @@ PYBIND11_MODULE(PY_NAME, m) {
   m.def("sage_dynamic_quant_layout", &ark::sage_dynamic_quant_layout);
   m.def("sage_dynamic_quant_v_layout", &ark::sage_dynamic_quant_v_layout);
   m.def("moe_gemm", &ark::moe_gemm_wrapper);
+  m.def("matmul_sycl_tla", &ark::matmul_sycl_tla);
 #endif
 }
