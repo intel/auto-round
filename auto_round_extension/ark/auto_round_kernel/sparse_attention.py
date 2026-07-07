@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-import logging
 import os
 from typing import Any, Optional
 import warnings
@@ -22,23 +21,12 @@ from . import (
     sdpa,
 )
 
-logger = logging.getLogger(__name__)
-_SPARGE_EXECUTION_WARNING_KEYS: set[str] = set()
-
-
-def _warn_sparse_execution_fallback_once(key: str, message: str) -> None:
-    if key in _SPARGE_EXECUTION_WARNING_KEYS:
-        return
-    logger.warning(message)
-    _SPARGE_EXECUTION_WARNING_KEYS.add(key)
-
-
 def _get_xpu_sparse_kernel_backend() -> str:
     backend = os.getenv("SAGE_ATTN_XPU_SPARSE_KERNEL_BACKEND", "sycl").strip().lower()
-    if backend not in {"sycl", "triton_xpu_kernel"}:
+    if backend != "sycl":
         raise ValueError(
             "Unsupported SAGE_ATTN_XPU_SPARSE_KERNEL_BACKEND="
-            f"{backend!r}; expected one of: sycl, triton_xpu_kernel"
+            f"{backend!r}; expected: sycl"
         )
     return backend
 
@@ -1587,90 +1575,24 @@ def sparge_sage2_attn_meansim_topk_xpu(
         sparse_q_block_tokens=sparse_q_block_tokens,
         sparse_k_block_tokens=sparse_k_block_tokens,
     )
-    decoupled_sparse_rows = metadata["sparse_q_block_tokens"] != metadata["quant_block_size"] or (
-        metadata["sparse_k_block_tokens"] != metadata["quant_block_size"]
+    _get_xpu_sparse_kernel_backend()
+    out = sage_sparse(
+        metadata["query_i8"],
+        metadata["key_i8"],
+        value,
+        metadata["lut"],
+        metadata["valid_block_num"],
+        attn_mask=normalized_mask,
+        is_causal=is_causal,
+        scale=scale,
+        quant_block_size=metadata["quant_block_size"],
+        qscale=metadata["qscale"],
+        kscale=metadata["kscale"],
+        q_tile_override=effective_q_tile_override,
+        sparse_q_block_tokens=metadata["sparse_q_block_tokens"],
+        sparse_k_block_tokens=metadata["sparse_k_block_tokens"],
+        tensor_layout=tensor_layout,
     )
-    sparse_backend = _get_xpu_sparse_kernel_backend()
-    use_triton_sparse = sparse_backend == "triton_xpu_kernel"
-    triton_block_reason = None
-    if use_triton_sparse:
-        if decoupled_sparse_rows:
-            triton_block_reason = "decoupled sparse block tokens are only supported by the SYCL sparse kernel"
-        elif normalized_mask is not None:
-            triton_block_reason = "attn_mask is not supported by triton_xpu_kernel sparse execution"
-        elif is_causal:
-            triton_block_reason = "causal sparse execution is not supported by triton_xpu_kernel"
-        elif Sq != Skv:
-            triton_block_reason = "cross-attention is not supported by triton_xpu_kernel yet"
-        elif D not in (64, 128):
-            triton_block_reason = f"head_dim={D} is not supported by triton_xpu_kernel"
-        if triton_block_reason is not None:
-            _warn_sparse_execution_fallback_once(
-                f"triton_blocked:{triton_block_reason}",
-                f"ARK triton_xpu_kernel sparse execution fallback to SYCL: {triton_block_reason}",
-            )
-            use_triton_sparse = False
-
-    if use_triton_sparse:
-        try:
-            from .triton_sparse_attention_xpu import triton_sparse_prefill_attention
-
-            query_hnd = _to_hnd(metadata["query_i8"], tensor_layout)
-            key_hnd = _to_hnd(metadata["key_i8"], tensor_layout)
-            value_hnd = _to_hnd(value, tensor_layout)
-            out_hnd = triton_sparse_prefill_attention(
-                query_hnd,
-                key_hnd,
-                value_hnd,
-                metadata["lut"],
-                metadata["valid_block_num"],
-                qscale=metadata["qscale"],
-                kscale=metadata["kscale"],
-                scale=float(scale) if scale is not None else 1.0 / (D**0.5),
-                quant_block_size=metadata["quant_block_size"],
-            )
-            out = _from_hnd(out_hnd, tensor_layout)
-        except Exception as error:
-            _warn_sparse_execution_fallback_once(
-                f"triton_runtime:{type(error).__name__}",
-                "ARK triton_xpu_kernel sparse execution failed and fell back to SYCL. "
-                f"Subsequent failures of this type will be suppressed. Error: {error}",
-            )
-            out = sage_sparse(
-                metadata["query_i8"],
-                metadata["key_i8"],
-                value,
-                metadata["lut"],
-                metadata["valid_block_num"],
-                attn_mask=normalized_mask,
-                is_causal=is_causal,
-                scale=scale,
-                quant_block_size=metadata["quant_block_size"],
-                qscale=metadata["qscale"],
-                kscale=metadata["kscale"],
-                q_tile_override=effective_q_tile_override,
-                sparse_q_block_tokens=metadata["sparse_q_block_tokens"],
-                sparse_k_block_tokens=metadata["sparse_k_block_tokens"],
-                tensor_layout=tensor_layout,
-            )
-    else:
-        out = sage_sparse(
-            metadata["query_i8"],
-            metadata["key_i8"],
-            value,
-            metadata["lut"],
-            metadata["valid_block_num"],
-            attn_mask=normalized_mask,
-            is_causal=is_causal,
-            scale=scale,
-            quant_block_size=metadata["quant_block_size"],
-            qscale=metadata["qscale"],
-            kscale=metadata["kscale"],
-            q_tile_override=effective_q_tile_override,
-            sparse_q_block_tokens=metadata["sparse_q_block_tokens"],
-            sparse_k_block_tokens=metadata["sparse_k_block_tokens"],
-            tensor_layout=tensor_layout,
-        )
     sparsity_ratio = metadata["stats"]["sparsity_ratio"]
     if return_metadata and return_sparsity:
         return out, sparsity_ratio, metadata
