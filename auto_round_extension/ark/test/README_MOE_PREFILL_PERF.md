@@ -231,7 +231,7 @@ For accuracy parity, `test_moe_prefill_accuracy.py::test_accuracy_fp8`
 covers the dequant/native paths and
 `test_accuracy_fp8_dpas_per_group` / `test_accuracy_fp8_per_tensor_dpas`
 cover the DPAS Variants B / A at the same production shapes; all paths
-share the tolerance `rtol=atol=7e-2` (E4M3) / `1e-1` (E5M2).
+share the tolerance `rtol=atol=1e-1` (E4M3) / `1e-1` (E5M2).
 
 ## INT8 Prefill Paths (opt-in env flag)
 
@@ -260,7 +260,7 @@ silently falls back to precedence 2 whenever any of these fail
 Accuracy parity is covered by
 `test_moe_prefill_accuracy.py::test_accuracy_int8_dpas_per_group` at the
 same production shapes as `test_accuracy_int8`, with the standard INT8
-tolerance (`rtol=atol=7e-2`).
+tolerance (`rtol=atol=1e-1`).
 
 ## INT4-sym Prefill Paths (opt-in env flags)
 
@@ -296,7 +296,7 @@ Accuracy parity is covered by
 which forces `ARK_MOE_PREFILL_DPAS_S4=1` +
 `ARK_MOE_PREFILL_DPAS_INT8=0` so the single-pass mainloop is
 exclusively exercised, at the same production shapes as
-`test_accuracy_int4`, with tolerance `rtol=atol=7e-2`.
+`test_accuracy_int4`, with tolerance `rtol=atol=1e-1`.
 
 ## FP8 per-expert (per-tensor) perf tests
 
@@ -360,7 +360,7 @@ pytest -v -s test_moe_prefill_perf.py::TestMoEGemmPrefillPerf::test_perf_int8_pe
 Accuracy parity is covered by
 `test_moe_prefill_accuracy.py::test_accuracy_int8_per_tensor_dpas` at
 the same production shapes, with the standard INT8 tolerance
-(`rtol=atol=7e-2`).
+(`rtol=atol=1e-1`).
 
 **Status: NEEDS-HARDWARE-VALIDATION** (untested port; sym-only for
 Phase 1 — per-group and asym INT4 / INT2 DPAS are follow-up phases

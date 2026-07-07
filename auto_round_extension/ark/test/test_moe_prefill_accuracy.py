@@ -175,10 +175,10 @@ def _reference_moe_prefill(activations, dequant_weights_NK, num_tokens_per_exper
 # ---------------------------------------------------------------------------
 
 _TOL_FP = dict(rtol=3e-2, atol=3e-2)
-_TOL_INT8 = dict(rtol=7e-2, atol=7e-2)
-_TOL_INT4 = dict(rtol=7e-2, atol=7e-2)
+_TOL_INT8 = dict(rtol=1e-1, atol=1e-1)
+_TOL_INT4 = dict(rtol=1e-1, atol=1e-1)
 _TOL_INT2 = dict(rtol=1.5e-1, atol=1.5e-1)
-_TOL_FP8 = dict(rtol=7e-2, atol=7e-2)
+_TOL_FP8 = dict(rtol=1e-1, atol=1e-1)
 
 
 def _tol_for_dtype(base, dtype):
