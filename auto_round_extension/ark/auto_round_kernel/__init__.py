@@ -15,7 +15,6 @@
 import os
 from typing import Optional
 import torch
-import sys
 
 # Intel GPU compiler (IGC) environment variable: ensure implicit local IDs are
 # not removed by the compiler even when unused. This guarantees consistent
@@ -235,6 +234,58 @@ def get_lib(A: torch.Tensor):
     if lib is None:
         raise NotImplementedError(f"Current device {A.device} is not supported")
     return lib
+
+
+# A: mxk,  B: nxk, bias: n or [1, n]
+def matmul_sycl_tla(A: torch.Tensor, B: torch.Tensor, bias: Optional[torch.Tensor] = None):
+    if A.device.type != "xpu" or B.device.type != "xpu":
+        raise NotImplementedError("matmul_sycl_tla is only supported on XPU")
+    if A.ndim != 2 or B.ndim != 2:
+        raise ValueError("A and B must be 2D tensors")
+    if A.device != B.device:
+        raise ValueError("A and B must be on the same device")
+    if A.dtype not in (torch.float16, torch.bfloat16):
+        raise ValueError("matmul_sycl_tla only supports torch.float16 and torch.bfloat16")
+    if B.dtype != A.dtype:
+        raise ValueError("A and B must have the same dtype")
+
+    m, k = A.shape
+    n, kb = B.shape
+    if k != kb:
+        raise ValueError(f"Shape mismatch: A.shape={tuple(A.shape)}, B.shape={tuple(B.shape)}")
+
+    lib = get_lib(A)
+    if lib is None or not hasattr(lib, "matmul_sycl_tla"):
+        raise NotImplementedError("Current XPU build does not expose matmul_sycl_tla")
+
+    A_arg = A.contiguous()
+    B_arg = B.contiguous()
+    C = torch.empty(m, n, dtype=A.dtype, device=A.device)
+
+    bias_ptr = 0
+    bias_arg = None
+    if bias is not None and bias.numel() > 0:
+        bias_arg = bias.to(dtype=C.dtype, device=A.device).contiguous().view(-1)
+        if bias_arg.numel() != n:
+            raise ValueError(f"bias must have {n} elements, got {bias_arg.numel()}")
+        bias_ptr = bias_arg.data_ptr()
+
+    stream = get_stream(A_arg)
+    lib.matmul_sycl_tla(
+        stream,
+        m,
+        n,
+        k,
+        A_arg.data_ptr(),
+        cvt_dtype(A_arg.dtype),
+        B_arg.data_ptr(),
+        cvt_dtype(B_arg.dtype),
+        C.data_ptr(),
+        cvt_dtype(C.dtype),
+        bias_ptr,
+        True,
+    )
+    return C
 
 
 # A: mxk,  B: nxk, bias: n
@@ -976,6 +1027,7 @@ def sagev1(
     quant_block_size: int = 64,
     tensor_layout: str = "HND",
     return_lse: bool = False,
+    smooth_k: bool = True,
 ) -> torch.Tensor | tuple[torch.Tensor, torch.Tensor]:
     """SAGE v1 attention prefill+decode.
 
@@ -988,6 +1040,8 @@ def sagev1(
     - quant_block_size: Quantization block size used by the kernel.
     - tensor_layout: Layout of Q/K/V/O tensors.
     - return_lse: If True, returns (O, LSE) where LSE[b, h, q] = log(sum_j exp(score_{b,h,q,j})).
+    - smooth_k: Whether to smooth the key by subtracting the sequence mean
+      before INT8 quantization (handled by the C++ kernel). Default: True.
 
     Returns:
     - O: same layout as the input tensors.
@@ -1066,6 +1120,7 @@ def sagev1(
         float(scale) if scale is not None else 1.0 / (D**0.5),
         bool(is_causal),
         layout_code,
+        bool(smooth_k),
         LSE.data_ptr() if LSE is not None else 0,
     )
 
@@ -1086,6 +1141,7 @@ def sagev1_pvi8(
     quant_block_size: int = 64,
     tensor_layout: str = "HND",
     return_lse: bool = False,
+    smooth_k: bool = True,
 ) -> torch.Tensor | tuple[torch.Tensor, torch.Tensor]:
     """SAGE v1 attention with PV int8 path.
 
@@ -1165,6 +1221,7 @@ def sagev1_pvi8(
         float(scale) if scale is not None else 1.0 / (D**0.5),
         bool(is_causal),
         layout_code,
+        bool(smooth_k),
         LSE.data_ptr() if LSE is not None else 0,
     )
 
@@ -1236,6 +1293,7 @@ def sageattn_varlen(
     kernel: str = "v1_pvhalf",
     quant_block_size: int = 64,
     return_lse: bool = False,
+    smooth_k: bool = True,
     **kwargs,
 ) -> torch.Tensor | tuple[torch.Tensor, torch.Tensor]:
     """SAGE attention with variable-length sequences (no padding).
@@ -1258,6 +1316,8 @@ def sageattn_varlen(
         sm_scale: Softmax scale. Uses 1/sqrt(D) when None.
         kernel: "v1_pvhalf" (PV half) or "v1_pvi8" (PV int8).
         quant_block_size: Block size for INT8 quantization (default 64).
+        smooth_k: Whether to smooth the key by subtracting the sequence mean
+            before INT8 quantization (handled by the C++ kernel). Default: True.
         **kwargs: Forwarded (attn_mask, dropout_p etc. not yet supported).
 
     Returns:
@@ -1362,6 +1422,7 @@ def sageattn_varlen(
         cu_seqlens_q_i32.data_ptr(),
         cu_seqlens_k_i32.data_ptr(),
         use_int8_pv,
+        bool(smooth_k),
         LSE.data_ptr() if LSE is not None else 0,
     )
 
