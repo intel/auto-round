@@ -8,7 +8,7 @@ This branch keeps the sparse prefill runtime on top of `main` with two supported
 ## Build
 
 ```bash
-cd /home/yiliu4/workspace/auto-round-prefill-clean/auto_round_extension/ark
+cd auto_round_extension/ark
 source /opt/intel/oneapi/setvars.sh
 python -m cmake -S auto_round_kernel -B auto_round_kernel/xbuild -DARK_XPU=ON -DARK_SYCL_TLA=ON
 python -m cmake --build auto_round_kernel/xbuild --target auto_round_kernel_xpu -j 4
@@ -17,12 +17,12 @@ python -m cmake --build auto_round_kernel/xbuild --target auto_round_kernel_xpu 
 ## Tests
 
 ```bash
-cd /home/yiliu4/workspace/auto-round-prefill-clean/auto_round_extension/ark
-/home/yiliu4/workspace/auto-round/auto_round_extension/ark/.venv/bin/python \
+cd auto_round_extension/ark
+python \
   auto_round_kernel/wrapper/test/test_sage_sparse_prefill_e2e.py
-/home/yiliu4/workspace/auto-round/auto_round_extension/ark/.venv/bin/python \
+python \
   auto_round_kernel/wrapper/test/test_sparge_preprocess_topk_e2e.py
-/home/yiliu4/workspace/auto-round/auto_round_extension/ark/.venv/bin/python -m pytest -q \
+python -m pytest -q \
   test/test_sparge_preprocess_helpers.py
 ```
 
@@ -32,7 +32,7 @@ cd /home/yiliu4/workspace/auto-round-prefill-clean/auto_round_extension/ark
 
 ```bash
 ZE_AFFINITY_MASK=4 \
-/home/yiliu4/workspace/auto-round/auto_round_extension/ark/.venv/bin/python \
+python \
   test/bench_sparse_topk.py \
   --batch 1 --num-heads-q 40 --num-heads-kv 40 --seq-len 75600 --head-dim 128 \
   --tensor-layout NHD --topk 0.5 0.3 --q-tile-override 64
@@ -42,7 +42,7 @@ ZE_AFFINITY_MASK=4 \
 
 ```bash
 ZE_AFFINITY_MASK=4 \
-/home/yiliu4/workspace/auto-round/auto_round_extension/ark/.venv/bin/python \
+python \
   test/bench_sparse_topk.py \
   --batch 1 --num-heads-q 40 --num-heads-kv 40 --seq-len 75600 --head-dim 128 \
   --tensor-layout NHD --topk 0.5 0.3 \
@@ -56,7 +56,7 @@ ZE_AFFINITY_MASK=4 \
 `q_tile=64`:
 
 ```bash
-cd /home/yiliu4/workspace/auto-round-prefill-clean/auto_round_extension/ark/auto_round_kernel
+cd auto_round_extension/ark/auto_round_kernel
 WAN_USE_SPARSE=1 \
 WAN_SPARSE_TOPK=0.5 \
 WAN_SPARSE_Q_TILE_OVERRIDE=64 \
@@ -66,7 +66,7 @@ python run_wan.py
 `q_tile=256`:
 
 ```bash
-cd /home/yiliu4/workspace/auto-round-prefill-clean/auto_round_extension/ark/auto_round_kernel
+cd auto_round_extension/ark/auto_round_kernel
 WAN_USE_SPARSE=1 \
 WAN_SPARSE_TOPK=0.5 \
 WAN_SPARSE_Q_TILE_OVERRIDE=256 \
@@ -80,7 +80,7 @@ python run_wan.py
 `q_tile=64`:
 
 ```bash
-cd /home/yiliu4/workspace/auto-round-prefill-clean/auto_round_extension/ark/auto_round_kernel
+cd auto_round_extension/ark/auto_round_kernel
 FLUX_USE_SPARSE=1 \
 FLUX_SPARSE_TOPK=0.5 \
 FLUX_SPARSE_Q_TILE_OVERRIDE=64 \
@@ -90,7 +90,7 @@ python run_flux.py
 `q_tile=256`:
 
 ```bash
-cd /home/yiliu4/workspace/auto-round-prefill-clean/auto_round_extension/ark/auto_round_kernel
+cd auto_round_extension/ark/auto_round_kernel
 FLUX_USE_SPARSE=1 \
 FLUX_SPARSE_TOPK=0.5 \
 FLUX_SPARSE_Q_TILE_OVERRIDE=256 \

@@ -382,6 +382,7 @@ def woqgemm(
     scale_type,
     asym,
 ):
+    _validate_packed_blob(B, n, k, groupsize, compute_type, weight_type, scale_type, asym)
     m = A.shape[0]
     lib = get_lib(A)
     ct = cvtstr_dtype(compute_type)
@@ -404,8 +405,65 @@ def woqgemm(
         wt,
         st,
         asym,
+        B.numel(),
     )
     return C
+
+
+def _validate_packed_blob(
+    blob: torch.Tensor,
+    n: int,
+    k: int,
+    groupsize: int,
+    compute_type: str,
+    weight_type: str,
+    scale_type: str,
+    asym: bool,
+) -> None:
+    """Validate a packed-weight blob before passing it to native code."""
+    if not isinstance(blob, torch.Tensor):
+        raise TypeError(f"blob must be a torch.Tensor, got {type(blob).__name__}")
+
+    if blob.device.type not in ("cpu", "xpu"):
+        raise ValueError(f"blob must reside on cpu or xpu, got {blob.device.type}")
+
+    if blob.dtype != torch.int8:
+        raise ValueError(f"blob must have dtype torch.int8, got {blob.dtype}")
+
+    if blob.dim() != 1:
+        raise ValueError(f"blob must be a 1-D tensor, got {blob.dim()}-D")
+
+    if not isinstance(n, int) or n <= 0:
+        raise ValueError(f"n must be a positive integer, got {n!r}")
+    if not isinstance(k, int) or k <= 0:
+        raise ValueError(f"k must be a positive integer, got {k!r}")
+    if not isinstance(groupsize, int) or groupsize <= 0:
+        raise ValueError(f"groupsize must be a positive integer, got {groupsize!r}")
+    if not isinstance(asym, bool):
+        raise TypeError(f"asym must be a bool, got {type(asym).__name__}")
+
+    valid_types = {
+        "fp32",
+        "fp16",
+        "bf16",
+        "int8",
+        "int4",
+        "int2",
+        "int3",
+        "int5",
+        "int6",
+        "int7",
+        "fp8_e4m3",
+        "fp8_e5m2",
+        "fp8_e8m0",
+    }
+    valid_compute_types = valid_types | {"auto"}
+    if compute_type not in valid_compute_types:
+        raise ValueError(f"compute_type must be one of {valid_compute_types}, got {compute_type!r}")
+    if weight_type not in valid_types:
+        raise ValueError(f"weight_type must be one of {valid_types}, got {weight_type!r}")
+    if scale_type not in valid_types:
+        raise ValueError(f"scale_type must be one of {valid_types}, got {scale_type!r}")
 
 
 # QB: k*n:int8,  scaleB: k/blocksize*n:DT
@@ -420,6 +478,12 @@ def _repack_quantized_weight_core(
     scale_type,
     asym,
 ):
+    if not isinstance(QB, torch.Tensor) or QB.dim() != 2:
+        raise ValueError(f"QB must be a 2-D tensor, got shape {QB.shape!r}")
+    if not isinstance(scaleB, torch.Tensor) or scaleB.dim() != 2:
+        raise ValueError(f"scaleB must be a 2-D tensor, got shape {scaleB.shape!r}")
+    if not isinstance(zp, torch.Tensor):
+        raise TypeError(f"zp must be a torch.Tensor, got {type(zp).__name__}")
     k = QB.shape[0]
     n = QB.shape[1]
     lib = get_lib(QB)
@@ -459,6 +523,7 @@ def _unpack_weight_core(
     scale_type,
     asym,
 ):
+    _validate_packed_blob(blob, n, k, groupsize, compute_type, weight_type, scale_type, asym)
     lib = get_lib(blob)
     stream = get_stream(blob)
     ct = cvtstr_dtype(compute_type)
@@ -479,6 +544,7 @@ def _unpack_weight_core(
         wt,
         st,
         asym,
+        blob.numel(),
     )
     if blob.device.type == "cpu":
         return out.T
@@ -1204,180 +1270,6 @@ def sageattn(
         return_lse=return_lse,
         **kwargs,
     )
-
-def sagev1(
-    query: torch.Tensor,
-    key: torch.Tensor,
-    value: torch.Tensor,
-    attn_mask: torch.Tensor | None = None,
-    dropout_p: float = 0.0,
-    is_causal: bool = False,
-    scale: float | None = None,
-    enable_gqa: bool = False,
-    quant_block_size: int = 64,
-    tensor_layout: str = "HND",
-) -> torch.Tensor:
-    """SAGE v1 attention prefill+decode."""
-    if quant_block_size <= 0:
-        return sdpa(
-            query=query,
-            key=key,
-            value=value,
-            attn_mask=attn_mask,
-            dropout_p=dropout_p,
-            is_causal=is_causal,
-            scale=scale,
-            tensor_layout=tensor_layout,
-        )
-    if query.device.type != "xpu":
-        raise NotImplementedError("sdpa is only supported on XPU")
-    if query.dtype not in (torch.float16, torch.bfloat16):
-        raise ValueError(f"Q must be float16 or bfloat16, got {query.dtype}")
-    if key.dtype != query.dtype or value.dtype != query.dtype:
-        raise ValueError(f"K/V dtype must match Q dtype, got K={key.dtype}, V={value.dtype}, Q={query.dtype}")
-
-    B, Hq, Sq, D = _validate_attention_tensor(query, "Q", tensor_layout)
-    Bk, Hkv, Skv, Dk = _validate_attention_tensor(key, "K", tensor_layout, expected_dtype=query.dtype)
-    Bv, Hkv2, Skv2, Dv = _validate_attention_tensor(value, "V", tensor_layout, expected_dtype=query.dtype)
-
-    if Bk != B or Bv != B:
-        raise ValueError("Batch size mismatch between Q/K/V")
-    if Hkv2 != Hkv or Skv2 != Skv or Dv != Dk:
-        raise ValueError("K/V shape mismatch")
-    if Dk != D:
-        raise ValueError("Head dim mismatch between Q and K/V")
-    if D not in (64, 128):
-        raise ValueError(f"Unsupported head_dim={D}; supported: 64, 128")
-
-    lib = get_lib(query)
-    stream = get_stream(query)
-    O = _empty_attention_output(
-        B,
-        Hq,
-        Sq,
-        D,
-        dtype=value.dtype,
-        device=query.device,
-        tensor_layout=tensor_layout,
-    )
-    q_strides = _attention_strides_qko(query, tensor_layout)
-    k_strides = _attention_strides_qko(key, tensor_layout)
-    v_strides = _attention_strides_v(value, tensor_layout)
-    o_strides = _attention_strides_qko(O, tensor_layout)
-    lib.sagev1(
-        stream,
-        query.data_ptr(),
-        key.data_ptr(),
-        value.data_ptr(),
-        O.data_ptr(),
-        attn_mask.data_ptr() if attn_mask is not None else 0,
-        quant_block_size,
-        *q_strides,
-        *k_strides,
-        *v_strides,
-        *o_strides,
-        cvt_dtype(query.dtype),
-        cvt_dtype(key.dtype),
-        cvt_dtype(value.dtype),
-        cvt_dtype(O.dtype),
-        B,
-        Hq,
-        Hkv,
-        Sq,
-        Skv,
-        D,
-        float(scale) if scale is not None else 1.0 / (D**0.5),
-        bool(is_causal),
-    )
-    return O
-
-
-def sagev1_pvi8(
-    query: torch.Tensor,
-    key: torch.Tensor,
-    value: torch.Tensor,
-    attn_mask: torch.Tensor | None = None,
-    dropout_p: float = 0.0,
-    is_causal: bool = False,
-    scale: float | None = None,
-    enable_gqa: bool = False,
-    quant_block_size: int = 64,
-    tensor_layout: str = "HND",
-) -> torch.Tensor:
-    """SAGE v1 attention with PV int8 path."""
-    if quant_block_size <= 0:
-        return sdpa(
-            query=query,
-            key=key,
-            value=value,
-            attn_mask=attn_mask,
-            dropout_p=dropout_p,
-            is_causal=is_causal,
-            scale=scale,
-            tensor_layout=tensor_layout,
-        )
-    if query.device.type != "xpu":
-        raise NotImplementedError("sagev1_pvi8 is only supported on XPU")
-    if query.dtype not in (torch.float16, torch.bfloat16):
-        raise ValueError(f"Q must be float16 or bfloat16, got {query.dtype}")
-    if key.dtype != query.dtype or value.dtype != query.dtype:
-        raise ValueError(f"K/V dtype must match Q dtype, got K={key.dtype}, V={value.dtype}, Q={query.dtype}")
-
-    B, Hq, Sq, D = _validate_attention_tensor(query, "Q", tensor_layout)
-    Bk, Hkv, Skv, Dk = _validate_attention_tensor(key, "K", tensor_layout, expected_dtype=query.dtype)
-    Bv, Hkv2, Skv2, Dv = _validate_attention_tensor(value, "V", tensor_layout, expected_dtype=query.dtype)
-
-    if Bk != B or Bv != B:
-        raise ValueError("Batch size mismatch between Q/K/V")
-    if Hkv2 != Hkv or Skv2 != Skv or Dv != Dk:
-        raise ValueError("K/V shape mismatch")
-    if Dk != D:
-        raise ValueError("Head dim mismatch between Q and K/V")
-    if D not in (64, 128):
-        raise ValueError(f"Unsupported head_dim={D}; supported: 64, 128")
-
-    lib = get_lib(query)
-    stream = get_stream(query)
-    O = _empty_attention_output(
-        B,
-        Hq,
-        Sq,
-        D,
-        dtype=value.dtype,
-        device=query.device,
-        tensor_layout=tensor_layout,
-    )
-    q_strides = _attention_strides_qko(query, tensor_layout)
-    k_strides = _attention_strides_qko(key, tensor_layout)
-    v_strides = _attention_strides_v(value, tensor_layout)
-    o_strides = _attention_strides_qko(O, tensor_layout)
-    lib.sagev1_pvi8(
-        stream,
-        query.data_ptr(),
-        key.data_ptr(),
-        value.data_ptr(),
-        O.data_ptr(),
-        attn_mask.data_ptr() if attn_mask is not None else 0,
-        quant_block_size,
-        *q_strides,
-        *k_strides,
-        *v_strides,
-        *o_strides,
-        cvt_dtype(query.dtype),
-        cvt_dtype(key.dtype),
-        cvt_dtype(value.dtype),
-        cvt_dtype(O.dtype),
-        B,
-        Hq,
-        Hkv,
-        Sq,
-        Skv,
-        D,
-        float(scale) if scale is not None else 1.0 / (D**0.5),
-        bool(is_causal),
-    )
-    return O
-
 
 from .sparse_attention import (
     _block_map_lut_torch,
