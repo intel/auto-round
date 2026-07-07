@@ -11,9 +11,6 @@ from auto_round.algorithms.quantization.config import QuantizationConfig
 from auto_round.algorithms.quantization.rtn.config import OptimizedRTNConfig, RTNConfig
 from auto_round.algorithms.quantization.sign_round.config import SignRoundConfig
 from auto_round.algorithms.registry import normalize_algorithm_config, resolve_alg_config
-from auto_round.algorithms.transforms import normalize_rotation_config as _normalize_rotation_alg_config
-from auto_round.algorithms.transforms.awq.config import AWQConfig
-from auto_round.algorithms.transforms.hadamard.config import RotationConfig as _NewArchRotationConfig
 from auto_round.auto_scheme.gen_auto_scheme import AutoScheme
 from auto_round.compressors.base import BaseCompressor
 from auto_round.compressors.data_driven import CalibratedRTNCompressor, DataDrivenCompressor
@@ -93,6 +90,17 @@ def _split_entry_kwargs(kwargs: dict[str, Any]) -> dict[str, dict[str, Any]]:
     return buckets
 
 
+def _collect_config_scheme_overrides(config) -> dict:
+    """Return the config's explicitly-set scheme fields as a ``{field: value}`` dict.
+
+    These are exactly the per-field overrides layered on top of ``scheme=`` — the
+    single mechanism through which ``bits`` / ``act_bits`` / ``data_type`` etc.
+    reach the resolved scheme. Fields left as ``None`` are omitted so the scheme's
+    own value wins.
+    """
+    return {k: getattr(config, k) for k in config._scheme_fields if getattr(config, k, None) is not None}
+
+
 def _preview_resolved_attrs(config, scheme=None) -> dict:
     """Resolve scheme attributes without mutating config, for routing decisions.
 
@@ -102,19 +110,24 @@ def _preview_resolved_attrs(config, scheme=None) -> dict:
     (``enable_imatrix``, ``needs_act_calib``, etc.) can use the correct values
     even when the user specified only ``scheme=`` without explicit bit/dtype args.
 
+    This is the single source of resolved scheme fields for entry-level routing:
+    callers read from the returned dict and never re-read raw ``config`` attrs.
+    When the scheme cannot be previewed (``AutoScheme``, or a deferred parse
+    error), the config's own explicitly-set scheme overrides are returned so the
+    values still reflect what the user passed.
+
     Returns:
-        dict: resolved attributes (may be empty if scheme cannot be previewed).
+        dict: resolved scheme attributes (config overrides when preview is skipped).
     """
+    config_overrides = _collect_config_scheme_overrides(config)
     if isinstance(scheme, AutoScheme):
-        # AutoScheme needs model info — cannot preview, rely on raw config attrs
-        return {}
-    scheme_attr_names = tuple(config._scheme_fields)
-    user_overrides = {k: getattr(config, k) for k in scheme_attr_names if getattr(config, k, None) is not None}
+        # AutoScheme needs model info — cannot preview; fall back to raw config attrs.
+        return config_overrides
     try:
-        _, _, final_attrs = parse_scheme(scheme, user_overrides)
+        _, _, final_attrs = parse_scheme(scheme, config_overrides)
         return final_attrs
     except Exception:
-        return {}
+        return config_overrides
 
 
 def _eager_validate_scheme(config, scheme=None) -> None:
@@ -131,8 +144,7 @@ def _eager_validate_scheme(config, scheme=None) -> None:
     if isinstance(scheme, AutoScheme):
         return
 
-    scheme_attr_names = tuple(config._scheme_fields)
-    user_overrides = {k: getattr(config, k) for k in scheme_attr_names if getattr(config, k, None) is not None}
+    user_overrides = _collect_config_scheme_overrides(config)
     try:
         _, _, final_attrs = parse_scheme(scheme, user_overrides)
     except (ValueError, NotImplementedError):
@@ -233,6 +245,44 @@ def _resolve_quant_config_for_routing(alg_configs) -> tuple[list, list, Quantiza
     )
 
 
+def _build_model_free_compressor(
+    model,
+    scheme,
+    layer_config,
+    tokenizer,
+    device_map,
+    *,
+    announced_via_flag: bool,
+    **model_free_kwargs,
+):
+    """Construct a ``ModelFreeCompressor`` for the model-free auto-route.
+
+    Shared by both :class:`PipelineCompressor` and the compatibility entry
+    (:func:`build_compatible_compressor`) so the
+    string-model guard, the auto-routing info log, and the constructor call live in
+    one place. ``announced_via_flag`` is truthy when the caller explicitly passed
+    ``model_free=True`` (so the informational auto-routing message is suppressed).
+    """
+    from auto_round.compressors.model_free import ModelFreeCompressor
+
+    if not isinstance(model, str):
+        raise ValueError("model_free=True requires `model` to be a HuggingFace ID or local path string.")
+    if not announced_via_flag:
+        logger.info(
+            "Auto-routing to model-free quantization "
+            "(iters=0, disable_opt_rtn=True, supported scheme). "
+            "Pass disable_model_free=True to use the regular flow."
+        )
+    return ModelFreeCompressor(
+        model_name_or_path=model,
+        scheme=scheme,
+        layer_config=layer_config,
+        tokenizer=tokenizer,
+        device_map=device_map,
+        **model_free_kwargs,
+    )
+
+
 def _build_model_type_ctor_kwargs(model, base_kwargs, mllm_kwargs, diffusion_kwargs) -> tuple[str, dict[str, Any]]:
     from auto_round.utils.model import detect_model_type
 
@@ -267,12 +317,14 @@ def _select_rtn_compressor_base_cls(quant_config: RTNConfig, scheme, format, bas
         if has_gguf_k:
             enable_imatrix = True
         else:
-            # Resolve scheme attrs for routing. SchemeMixin will do the authoritative
-            # resolution later; this preview only chooses the compressor class.
+            # Single resolved-scheme source for routing. SchemeMixin does the
+            # authoritative resolution later; this preview only chooses the class.
+            # _preview_resolved_attrs already folds the config's explicit overrides
+            # into the scheme, so we never re-read raw quant_config scheme fields.
             resolved_attrs = _preview_resolved_attrs(quant_config, scheme)
-            sym = resolved_attrs.get("sym", getattr(quant_config, "sym", None))
-            data_type = resolved_attrs.get("data_type", getattr(quant_config, "data_type", "") or "")
-            bits = resolved_attrs.get("bits", getattr(quant_config, "bits", None))
+            sym = resolved_attrs.get("sym")
+            data_type = resolved_attrs.get("data_type") or ""
+            bits = resolved_attrs.get("bits")
             if sym is not None and sym is False:
                 enable_imatrix = False
             elif data_type == "int" and (bits is None or bits < 8):
@@ -281,9 +333,9 @@ def _select_rtn_compressor_base_cls(quant_config: RTNConfig, scheme, format, bas
                 enable_imatrix = True
 
     resolved_attrs = resolved_attrs if not disable_opt_rtn else _preview_resolved_attrs(quant_config, scheme)
-    act_bits = resolved_attrs.get("act_bits", getattr(quant_config, "act_bits", None))
-    act_data_type = resolved_attrs.get("act_data_type", getattr(quant_config, "act_data_type", None))
-    act_dynamic = resolved_attrs.get("act_dynamic", getattr(quant_config, "act_dynamic", None))
+    act_bits = resolved_attrs.get("act_bits")
+    act_data_type = resolved_attrs.get("act_data_type")
+    act_dynamic = resolved_attrs.get("act_dynamic")
     is_act_quantize = act_bits is not None and act_bits <= 8
     needs_act_calib = is_act_quantize and check_need_act_calibration(
         act_dynamic,
@@ -306,7 +358,16 @@ def _select_rtn_compressor_base_cls(quant_config: RTNConfig, scheme, format, bas
     return ZeroShotCompressor
 
 
-class AutoRound(object):
+class PipelineCompressor(object):
+    """Algorithm-config-driven entry point (``scheme`` + ``alg_configs``).
+
+    This is the internal pipeline entry: it resolves the algorithm config(s),
+    routes to the concrete :class:`BaseCompressor` subclass (ZeroShot / DataDriven
+    / ModelFree / …) wired with the right model-type Mixin, and returns that
+    compressor instance. It is distinct from the public dispatcher
+    :class:`auto_round.AutoRound` (in ``auto_round/autoround.py``), which forwards
+    here or through :func:`build_compatible_compressor`.
+    """
 
     @classmethod
     def _resolve_config(cls, config: Union[str, object, list]) -> Union[object, list[object]]:
@@ -364,22 +425,13 @@ class AutoRound(object):
         model_free_disable_opt_rtn = getattr(quant_config, "disable_opt_rtn", None)
         route_decision_kwargs = dict(route_kwargs, format=format)
         if is_model_free_route(model, scheme, model_free_iters, model_free_disable_opt_rtn, route_decision_kwargs):
-            from auto_round.compressors.model_free import ModelFreeCompressor
-
-            if not isinstance(model, str):
-                raise ValueError("model_free=True requires `model` to be a HuggingFace ID or local path string.")
-            if not bool(route_kwargs.get("model_free", False)):
-                logger.info(
-                    "Auto-routing to model-free quantization "
-                    "(iters=0, disable_opt_rtn=True, supported scheme). "
-                    "Pass disable_model_free=True to use the regular flow."
-                )
-            return ModelFreeCompressor(
-                model_name_or_path=model,
-                scheme=scheme,
-                layer_config=layer_config,
-                tokenizer=tokenizer,
-                device_map=device_map,
+            return _build_model_free_compressor(
+                model,
+                scheme,
+                layer_config,
+                tokenizer,
+                device_map,
+                announced_via_flag=bool(route_kwargs.get("model_free", False)),
                 **compressor_kwargs,
                 **base_kwargs,
                 **mllm_kwargs,
@@ -427,348 +479,3 @@ class AutoRound(object):
         elif isinstance(quant_config, RTNConfig):
             base_cls = _select_rtn_compressor_base_cls(quant_config, scheme, format, base_kwargs)
             return _get_compressor_class(model_type, base_cls)(alg_configs, **local_args, **ctor_kwargs)
-
-
-class AutoRoundCompatible:
-    """AutoRoundCompatible wrapper class for backward compatibility.
-
-    This class provides the same API as the old AutoRoundCompatible class but internally
-    uses the new AutoRound architecture with Mixin pattern.
-
-    Args:
-        model: Model object or model name to load
-        tokenizer: Tokenizer for text processing
-        platform: Platform to download model ("hf" or "model_scope")
-        scheme: Quantization scheme (str, dict, or QuantizationScheme)
-        layer_config: Layer-wise quantization config
-        dataset: Calibration data
-        iters: Optimization iterations
-        seqlen: Calibration sequence length
-        nsamples: Number of calibration samples
-        batch_size: Calibration batch size
-        gradient_accumulate_steps: Gradient accumulation steps
-        low_gpu_mem_usage: Lower GPU memory mode
-        device_map: Device map for each module
-        enable_torch_compile: Enable torch.compile
-        seed: Random seed
-        low_cpu_mem_usage: Lower CPU memory mode
-        **kwargs: Additional arguments (bits, group_size, sym, etc.)
-
-    Example:
-        >>> # Old API - still works
-        >>> from auto_round.compressors.entry import AutoRoundCompatible
-        >>> autoround = AutoRoundCompatible(
-        ...     model="/models/opt-125m",
-        ...     bits=4,
-        ...     group_size=128,
-        ...     iters=200,
-        ... )
-        >>> quantized_model, layer_config = autoround.quantize()
-    """
-
-    SKIP_ARGS = ("local_args", "kwargs", "cls", "config")
-
-    bits: int | None
-    group_size: int | None
-    sym: bool | None
-    data_type: str | None
-    act_bits: int | None
-    act_group_size: int | None
-    act_sym: bool | None
-    act_data_type: str | None
-    act_dynamic: bool | None
-    super_bits: int | None
-    super_group_size: int | None
-
-    @staticmethod
-    def _pop_config_kwargs(kwargs: dict[str, Any]) -> tuple[dict[str, Any], dict[str, Any]]:
-        """Extract old-API config kwargs and split them by config type."""
-        common_keys = ("super_bits", "super_group_size")
-        auto_round_only_keys = (
-            "nblocks",
-            "enable_alg_ext",
-            "lr_scheduler",
-            "not_use_best_mse",
-            "dynamic_max_gap",
-            "optimizer",
-            "enable_adam",
-            "momentum",
-        )
-        common_kwargs = {}
-        auto_round_kwargs = {}
-        for key in common_keys:
-            if key in kwargs:
-                common_kwargs[key] = kwargs.pop(key)
-        for key in auto_round_only_keys:
-            if key in kwargs:
-                auto_round_kwargs[key] = kwargs.pop(key)
-        return common_kwargs, auto_round_kwargs
-
-    @staticmethod
-    def _pop_compressor_only_kwargs(kwargs: dict[str, Any]) -> dict[str, Any]:
-        return {
-            "scale_dtype": kwargs.pop("scale_dtype", None),
-            "ignore_layers": kwargs.pop("ignore_layers", ""),
-            "quant_lm_head": kwargs.pop("quant_lm_head", False),
-            "to_quant_block_names": kwargs.pop("to_quant_block_names", None),
-        }
-
-    @staticmethod
-    def _resolve_compat_algorithm(algorithm, iters) -> str:
-        if algorithm and algorithm.lower() == "awq":
-            return "awq"
-        if (algorithm and algorithm.lower() == "rtn") or iters == 0:
-            return "rtn"
-        return "signround"
-
-    @staticmethod
-    def _pop_shared_quant_kwargs(kwargs: dict[str, Any]) -> dict[str, Any]:
-        return {
-            "bits": kwargs.pop("bits", None),
-            "group_size": kwargs.pop("group_size", None),
-            "sym": kwargs.pop("sym", None),
-            "data_type": kwargs.pop("data_type", None),
-            "act_bits": kwargs.pop("act_bits", None),
-            "act_group_size": kwargs.pop("act_group_size", None),
-            "act_sym": kwargs.pop("act_sym", None),
-            "act_data_type": kwargs.pop("act_data_type", None),
-            "act_dynamic": kwargs.pop("act_dynamic", None),
-        }
-
-    @staticmethod
-    def _build_awq_config(
-        shared_quant_kwargs: dict[str, Any],
-        *,
-        seqlen,
-        nsamples,
-        batch_size,
-        kwargs,
-        common_config_kwargs,
-    ):
-        return AWQConfig(
-            **shared_quant_kwargs,
-            duo_scaling=kwargs.pop("duo_scaling", True),
-            n_grid=kwargs.pop("n_grid", 20),
-            seqlen=seqlen,
-            nsamples=nsamples,
-            batch_size=batch_size,
-            mappings=kwargs.pop("mappings", None),
-            **common_config_kwargs,
-        )
-
-    @staticmethod
-    def _build_rtn_config(shared_quant_kwargs: dict[str, Any], *, kwargs, common_config_kwargs):
-        cfg = RTNConfig(
-            **shared_quant_kwargs,
-            disable_opt_rtn=kwargs.pop("disable_opt_rtn", None),
-            enable_opt_rtn=kwargs.pop("enable_opt_rtn", None),
-            **common_config_kwargs,
-        )
-        return normalize_algorithm_config(cfg)
-
-    @staticmethod
-    def _build_signround_config(
-        shared_quant_kwargs: dict[str, Any],
-        *,
-        iters,
-        gradient_accumulate_steps,
-        kwargs,
-        common_config_kwargs,
-        auto_round_config_kwargs,
-    ):
-        cfg = SignRoundConfig(
-            **shared_quant_kwargs,
-            iters=iters,
-            gradient_accumulate_steps=gradient_accumulate_steps,
-            lr=kwargs.pop("lr", None),
-            minmax_lr=kwargs.pop("minmax_lr", None),
-            enable_minmax_tuning=kwargs.pop("enable_minmax_tuning", True),
-            enable_norm_bias_tuning=kwargs.pop("enable_norm_bias_tuning", False),
-            enable_quanted_input=kwargs.pop("enable_quanted_input", True),
-            **common_config_kwargs,
-            **auto_round_config_kwargs,
-        )
-        return normalize_algorithm_config(cfg)
-
-    @classmethod
-    def _build_alg_config(
-        cls,
-        *,
-        algorithm,
-        iters,
-        gradient_accumulate_steps,
-        seqlen,
-        nsamples,
-        batch_size,
-        kwargs,
-        common_config_kwargs,
-        auto_round_config_kwargs,
-    ):
-        alg_name = cls._resolve_compat_algorithm(algorithm, iters)
-        shared_quant_kwargs = cls._pop_shared_quant_kwargs(kwargs)
-
-        if alg_name == "awq":
-            return cls._build_awq_config(
-                shared_quant_kwargs,
-                seqlen=seqlen,
-                nsamples=nsamples,
-                batch_size=batch_size,
-                kwargs=kwargs,
-                common_config_kwargs=common_config_kwargs,
-            )
-        if alg_name == "rtn":
-            return cls._build_rtn_config(
-                shared_quant_kwargs,
-                kwargs=kwargs,
-                common_config_kwargs=common_config_kwargs,
-            )
-        return cls._build_signround_config(
-            shared_quant_kwargs,
-            iters=iters,
-            gradient_accumulate_steps=gradient_accumulate_steps,
-            kwargs=kwargs,
-            common_config_kwargs=common_config_kwargs,
-            auto_round_config_kwargs=auto_round_config_kwargs,
-        )
-
-    @staticmethod
-    def _build_entry_forward_kwargs(kwargs: dict[str, Any]) -> dict[str, Any]:
-        format_name = kwargs.pop("format", None)
-        rotation_config = kwargs.pop("rotation_config", None)
-        mllm_kwargs = {
-            "processor": kwargs.pop("processor", None),
-            "image_processor": kwargs.pop("image_processor", None),
-            "template": kwargs.pop("template", None),
-            "extra_data_dir": kwargs.pop("extra_data_dir", None),
-            "quant_nontext_module": kwargs.pop("quant_nontext_module", False),
-        }
-        diffusion_kwargs = {
-            "guidance_scale": kwargs.pop("guidance_scale", 7.5),
-            "num_inference_steps": kwargs.pop("num_inference_steps", 50),
-            "generator_seed": kwargs.pop("generator_seed", None),
-        }
-        return {
-            "format": format_name,
-            "rotation_config": rotation_config,
-            **mllm_kwargs,
-            **diffusion_kwargs,
-            **kwargs,
-        }
-
-    def __new__(
-        cls,
-        model: Union[torch.nn.Module, str],
-        tokenizer=None,
-        platform: str = "hf",
-        scheme: Union[str, dict, QuantizationScheme, AutoScheme] = "W4A16",
-        layer_config: dict[str, Union[str, dict, QuantizationScheme]] = None,
-        dataset: Union[str, list, tuple, torch.utils.data.DataLoader] = "NeelNanda/pile-10k",
-        iters: int = 200,
-        seqlen: int = 2048,
-        nsamples: int = 128,
-        batch_size: int = 8,
-        gradient_accumulate_steps: int = 1,
-        low_gpu_mem_usage: bool = False,
-        device_map: Union[str, torch.device, int, dict] = 0,
-        enable_torch_compile: bool = False,
-        seed: int = 42,
-        low_cpu_mem_usage: bool = True,
-        algorithm: str = None,
-        **kwargs,
-    ) -> "BaseCompressor":
-        """Create AutoRoundCompatible instance using new AutoRound architecture.
-
-        This method translates old AutoRoundCompatible API to new AutoRound API.
-        """
-        from auto_round.utils import is_diffusion_model, is_mllm_model
-        from auto_round.utils.model import is_model_free_route
-
-        device = kwargs.pop("device", None)
-        if device is not None:
-            logger.warning_once("`device` is deprecated, please use `device_map` instead")
-            if device_map in (None, 0):
-                device_map = device
-
-        # ---- Model-free fast-path detection --------------------------------
-        if is_model_free_route(model, scheme, iters, kwargs.get("disable_opt_rtn"), kwargs):
-            from auto_round.compressors.model_free import ModelFreeCompressor
-
-            compressor_only_kwargs = cls._pop_compressor_only_kwargs(kwargs)
-
-            if not isinstance(model, str):
-                raise ValueError("model_free=True requires `model` to be a HuggingFace ID or local path string.")
-            if not bool(kwargs.get("model_free", False)):
-                logger.info(
-                    "Auto-routing to model-free quantization "
-                    "(iters=0, disable_opt_rtn=True, supported scheme). "
-                    "Pass disable_model_free=True to use the regular flow."
-                )
-            return ModelFreeCompressor(
-                model_name_or_path=model,
-                scheme=scheme,
-                layer_config=layer_config,
-                tokenizer=tokenizer,
-                device_map=device_map,
-                **compressor_only_kwargs,
-                **kwargs,
-            )
-        # --------------------------------------------------------------------
-
-        compressor_only_kwargs = cls._pop_compressor_only_kwargs(kwargs)
-        common_config_kwargs, auto_round_config_kwargs = cls._pop_config_kwargs(kwargs)
-
-        config = cls._build_alg_config(
-            algorithm=algorithm,
-            iters=iters,
-            gradient_accumulate_steps=gradient_accumulate_steps,
-            seqlen=seqlen,
-            nsamples=nsamples,
-            batch_size=batch_size,
-            kwargs=kwargs,
-            common_config_kwargs=common_config_kwargs,
-            auto_round_config_kwargs=auto_round_config_kwargs,
-        )
-
-        forward_kwargs = cls._build_entry_forward_kwargs(kwargs)
-        format_name = forward_kwargs.pop("format", None)
-        _rotation_config_raw = forward_kwargs.pop("rotation_config", None)
-        if _rotation_config_raw is not None:
-            _rc = _normalize_rotation_alg_config(_rotation_config_raw)
-            if _rc is None:
-                _rc = _NewArchRotationConfig()
-            config = [config, _rc]
-
-        # Check model type for logging (use warning_once to avoid repeating for every block
-        # when called from LLM-Compressor which instantiates AutoRound per block)
-        if is_mllm_model(model, platform=platform):
-            logger.info("Using MLLM mode for multimodal model.")
-        elif is_diffusion_model(model):
-            logger.info("Using Diffusion mode for diffusion model.")
-        else:
-            logger.info("Using LLM mode.")
-
-        # Create AutoRound instance using new architecture
-        compressor = AutoRound(
-            model,
-            scheme,
-            config,
-            tokenizer=tokenizer,
-            platform=platform,
-            format=format_name,
-            dataset=dataset,
-            iters=iters,
-            gradient_accumulate_steps=gradient_accumulate_steps,
-            low_gpu_mem_usage=low_gpu_mem_usage,
-            device_map=device_map,
-            enable_torch_compile=enable_torch_compile,
-            seed=seed,
-            low_cpu_mem_usage=low_cpu_mem_usage,
-            layer_config=layer_config,
-            nsamples=nsamples,
-            seqlen=seqlen,
-            batch_size=batch_size,
-            **compressor_only_kwargs,
-            **forward_kwargs,
-        )
-
-        return compressor

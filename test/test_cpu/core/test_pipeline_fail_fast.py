@@ -14,7 +14,7 @@ from auto_round.algorithms.quantization import registry as _r
 from auto_round.algorithms.quantization.rtn.quantizer import RTNQuantizer
 from auto_round.compressors.base import collect_user_scheme_overrides
 from auto_round.compressors.data_driven import DataDrivenCompressor
-from auto_round.compressors.entry import AutoRound as NewAutoRound
+from auto_round.compressors.entry import PipelineCompressor as NewAutoRound
 from auto_round.logger import logger
 
 

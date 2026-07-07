@@ -19,12 +19,12 @@ from typing import TYPE_CHECKING
 if TYPE_CHECKING:
     from auto_round.compressors.base import BaseCompressor
     from auto_round.compressors.data_driven import CalibratedRTNCompressor, DataDrivenCompressor
-    from auto_round.compressors.entry import AutoRoundCompatible, AutoRound
+    from auto_round.compressors.entry import PipelineCompressor
     from auto_round.compressors.model_free import ModelFreeCompressor
     from auto_round.compressors.zero_shot import ZeroShotCompressor
 
 __all__ = [
-    "AutoRound",
+    "PipelineCompressor",
     "BaseCompressor",
     "DataDrivenCompressor",
     "CalibratedRTNCompressor",
@@ -36,18 +36,21 @@ __all__ = [
 
 def __getattr__(name):
     """Lazy import to avoid circular dependencies."""
-    if name == "AutoRound" or name == "AutoRoundCompatible":
-        from auto_round.compressors.entry import AutoRound, AutoRoundCompatible
+    if name == "PipelineCompressor":
+        from auto_round.compressors.entry import PipelineCompressor
 
-        if name == "AutoRound":
-            return AutoRound
+        return PipelineCompressor
+    elif name == "AutoRoundCompatible":
+        # Backward-compatible alias for the old-API entry (now folded into AutoRound).
+        from auto_round.autoround import AutoRoundCompatible
+
         return AutoRoundCompatible
     elif name == "BaseCompressor":
         from auto_round.compressors.base import BaseCompressor
 
         return BaseCompressor
     elif name in ("DataDrivenCompressor", "CalibratedRTNCompressor"):
-        from auto_round.compressors.data_driven import DataDrivenCompressor, CalibratedRTNCompressor
+        from auto_round.compressors.data_driven import CalibratedRTNCompressor, DataDrivenCompressor
 
         return {
             "DataDrivenCompressor": DataDrivenCompressor,

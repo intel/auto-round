@@ -2,11 +2,11 @@
 
 from auto_round.algorithms.quantization.sign_round.config import SignRoundConfig
 from auto_round.algorithms.transforms.awq.config import AWQConfig
-from auto_round.compressors.entry import AutoRound
+from auto_round.compressors.entry import PipelineCompressor
 
 
 def test_awq_plus_autoround_quantize_smoke(tiny_opt_model_path):
-    ar = AutoRound(
+    ar = PipelineCompressor(
         tiny_opt_model_path,
         scheme="W4A16",
         alg_configs=[AWQConfig(n_grid=2), SignRoundConfig(iters=1)],

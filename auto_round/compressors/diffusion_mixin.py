@@ -567,9 +567,7 @@ class DiffusionMixin:
         # Handle multi-format (convert string to list if needed)
         _format = format
         if isinstance(_format, str):
-            from auto_round.formats import get_formats
-
-            _format = get_formats(_format, self)
+            _format = self._resolve_format_string(_format)
 
         for name in pipe.components.keys():
             val = getattr(pipe, name)
