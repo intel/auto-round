@@ -87,18 +87,34 @@ struct has_sparse_q_block_size : std::false_type {};
 template <class T>
 struct has_sparse_q_block_size<T, std::void_t<decltype(std::declval<T&>().sparse_q_block_size)>> : std::true_type {};
 
-// Command line options parsing
+// Sparse SDPA launch options.
+//
+// Dense SDPA mainly needs tensor pointers, logical shapes, and an optional mask.
+// Sparse SDPA adds routing metadata that tells each workgroup which logical K/V
+// blocks are worth visiting for each sparse Q block. The fields below are the
+// sparse-only knobs that do not exist, or do not matter, in the dense path.
 struct Options {
    const void *q = nullptr, *k = nullptr, *v = nullptr;
    void* mask = nullptr;
    void* o = nullptr;
+  // Selects the Q tile shape at kernel-dispatch time. In the sparse path this
+  // also controls how many sparse Q rows one workgroup may cover.
   int q_tile_override = 0;
+  // Quantization / scaling granularity for the dense Q/K tensors. Sparse routing
+  // uses the same block unit by default unless sparse_q_block_size overrides it.
   int scale_block_size = 0;
+  // Sparse routing granularity along Q. When this differs from scale_block_size
+  // we decouple "how Q/K are quantized" from "how many Q tokens share one LUT row".
+  // Example: q_tile=256 with sparse_q_block_size=256 means one sparse row covers
+  // the full workgroup tile even though scales still live at 64-token granularity.
   int sparse_q_block_size = 0;
   const void *qscale = nullptr, *kscale = nullptr, *vscale = nullptr;
   // Sparse routing metadata is stored per (batch, q_head, q_block). Each LUT row is delta-encoded
   // over logical KV blocks and valid_block_num says how many entries in that row are live.
   const int *lut = nullptr, *valid_block_num = nullptr;
+  // Number of logical sparse Q rows and logical sparse K columns represented by
+  // the LUT. These are not tile counts in the dense GEMM sense; they describe the
+  // routing grid that the sparse mainloop walks.
   int num_q_blocks = 0, num_k_blocks = 0;
   const void *block_K = nullptr, *block_V = nullptr;
   const int *page_table = nullptr, *num_pages_per_seq = nullptr;
@@ -166,6 +182,12 @@ struct Options {
 template <class MainloopArguments>
 MainloopArguments make_sage_mainloop_arguments(const Options& options) {
   if constexpr (has_canonical_nhd_k<MainloopArguments>::value) {
+    // Sparse mainloop extends the dense-style argument bundle with routing state.
+    // The extra fields below are exactly what makes the sparse path different:
+    // scale_block_size / qscale / kscale: dequantization metadata for INT8 Q/K
+    // lut / valid_block_num: delta-encoded sparse routing table
+    // num_q_blocks / num_k_blocks: logical routing-grid shape
+    // sparse_q_block_size: how many Q tokens share one LUT row
     return {options.softmax_scale,
             static_cast<const float*>(options.mask),
             options.scale_block_size,

@@ -260,6 +260,9 @@ class XeSparseSageFwdKernel {
                         : nullptr;
       int sparse_q_block = blk_q;
       int sparse_q_rows_in_tile = 1;
+      // Dense FMHA treats blk_q as "the" Q tile handled by this workgroup.
+      // Sparse FMHA may further subdivide or coarsen that tile into routing rows.
+      // sparse_q_block_size tells us how many Q tokens share one LUT row.
       int sparse_q_block_size = params.mainloop.scale_block_size;
       if constexpr (has_sparse_q_block_size<MainloopParams>::value) {
         if (params.mainloop.sparse_q_block_size > 0) {
@@ -267,14 +270,24 @@ class XeSparseSageFwdKernel {
         }
       }
       if (sparse_q_block_size > 0) {
+        // q_blocks_per_tile is the sparse-only notion that differs from the dense
+        // path: one dense workgroup tile may correspond to multiple sparse routing
+        // rows. For q_tile=256 + sparse_q_block_size=64 we get 4 sparse rows;
+        // for q_tile=256 + sparse_q_block_size=256 we get 1 sparse row.
         int q_blocks_per_tile = cute::max(1, int(get<0>(TileShapeQK{})) / sparse_q_block_size);
         sparse_q_block = blk_q * q_blocks_per_tile;
         sparse_q_rows_in_tile = q_blocks_per_tile;
         if (params.mainloop.num_q_blocks > 0) {
+          // Tail tiles can expose fewer sparse rows than the nominal tile shape.
+          // Clamp both the starting row and the row count so the sparse mainloop
+          // never reads past the logical routing table.
           sparse_q_rows_in_tile = cute::min(sparse_q_rows_in_tile, params.mainloop.num_q_blocks - sparse_q_block);
           sparse_q_block = cute::min(sparse_q_block, params.mainloop.num_q_blocks - 1);
         }
       }
+      // Each workgroup gets a contiguous slice of valid_block_num / lut rows for
+      // the sparse Q rows covered by this tile. Dense FMHA has no equivalent
+      // per-tile routing metadata.
       auto valid_blocks_base = params.mainloop.valid_block_num
                                    ? params.mainloop.valid_block_num +
                                          (idx_b * s.num_heads_q + head_q) * params.mainloop.num_q_blocks +
@@ -314,6 +327,9 @@ class XeSparseSageFwdKernel {
             int(get<0>(stride_k)) == s.num_heads_kv * s.head_size_qk;
       }
       CollectiveMainloop mainloop(mainloop_params, shared_storage.mainloop);
+      // sparse_q_rows_in_tile is the key extra argument versus dense mainloop:
+      // it tells the sparse kernel whether this workgroup should walk a single
+      // LUT row linearly or merge multiple LUT rows inside one Q tile.
       mainloop(Q(_, _, head_q, l_coord), K(_, _, head, l_coord), V(_, _, head, l_coord), tArA, tA_max, tA_sum, blk_qv,
                0, k_blocks, k_blocks, thr_id, seq_len, seq_len_kv_cache, idx_b, scaleQ, scaleK, scaleV,
                full_tile_offset, discard_seq_coord, lut_rows_base, valid_blocks_base, sparse_q_rows_in_tile,

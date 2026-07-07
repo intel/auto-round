@@ -185,14 +185,24 @@ struct SPARSESAGEV1FwdMainloop<sage::XeDefault<Stages>, CausalMask_, FullMask_, 
   struct Arguments {
     float const scale;
     float const* mask = nullptr;
-    int scale_block_size = 0;  // if non-zero, apply scaling in blocks of this size (for block-sparse attention)
+    // Dense path can treat Q/K as native fp16/bf16. Sparse SAGE consumes INT8 Q/K,
+    // so every logical block needs dequant scales. scale_block_size is the token
+    // granularity of those Q/K scale tensors.
+    int scale_block_size = 0;
     float const* qscale = nullptr;
     float const* kscale = nullptr;
     float const* vscale = nullptr;
+    // Sparse-only routing metadata. lut stores delta-encoded logical K/V block
+    // ids per sparse Q row; valid_block_num stores the live length of each row.
+    // Dense FMHA iterates every K block in-order and does not need either tensor.
     int const* lut = nullptr;
     int const* valid_block_num = nullptr;
+    // Logical routing-grid shape, not MMA tile shape. num_q_blocks indexes LUT
+    // rows, num_k_blocks indexes the logical K/V blocks referenced by those rows.
     int num_q_blocks = 0;
     int num_k_blocks = 0;
+    // Sparse-only override for how many Q tokens map to one LUT row. When zero
+    // we fall back to scale_block_size so routing rows and quant rows coincide.
     int sparse_q_block_size = 0;
     bool canonical_nhd_k = false;
     int const* ptr_page_table = nullptr;
@@ -418,14 +428,19 @@ struct SPARSESAGEV1FwdMainloop<sage::XeDefault<Stages>, CausalMask_, FullMask_, 
       clear(tA_sum);
     }
 
-    /* Check if */
+    // Sparse row assignment differs from dense FMHA. Dense only needs the MMA tile
+    // coordinates. Sparse additionally needs to know which routing row each
+    // subgroup is responsible for within the current Q tile.
     bool check_remainder_k = (seq_len % get<1>(TileShapeQK{}) != 0);
     int q_sg_tile = get<0>(shape_div(TileShapeQK{}, shape(SubgroupLayoutQK{})));
     int sparse_q_block_size = params.sparse_q_block_size > 0 ? params.sparse_q_block_size : params.scale_block_size;
+    // How many sparse LUT rows are covered by this workgroup tile.
     int q_blocks_per_wg_tile =
         sparse_q_block_size > 0 ? cute::max(1, int(get<0>(TileShapeQK{})) / sparse_q_block_size) : 1;
+    // How many subgroup-row slices belong to one sparse LUT row.
     int sg_rows_per_sparse_q_block =
         sparse_q_block_size > 0 ? cute::max(1, sparse_q_block_size / q_sg_tile) : 1;
+    // Map subgroup id -> sparse row id within this workgroup tile.
     int subgroup_q_row_in_tile = get_sub_group_id() / sg_rows_per_sparse_q_block;
     subgroup_q_row_in_tile = cute::min(subgroup_q_row_in_tile, q_blocks_per_wg_tile - 1);
 
@@ -451,7 +466,7 @@ struct SPARSESAGEV1FwdMainloop<sage::XeDefault<Stages>, CausalMask_, FullMask_, 
           prefetch(prefetch_k, pKgK(_, _, _, logical_block - kblocks_cache, D));
         }
       }
-    };
+    }; // end of prefetch_sparse_k_block
     /* Main loop body */
       auto mainloop_body = [&](auto cached_k, int K, bool first_block, bool subgroup_selected,
                                int sparse_prefetch_block, auto& copy_k_cur, auto& copy_v_cur, auto& prefetch_v_cur,
@@ -667,12 +682,15 @@ struct SPARSESAGEV1FwdMainloop<sage::XeDefault<Stages>, CausalMask_, FullMask_, 
         }
 
         barrier_wait(ScopeWorkgroup);
-      };
+      }; // end of mainloop_body
 
       /* Main loop, blocked in k. */
       if (lut_rows_base != nullptr && valid_blocks_base != nullptr) {
         bool subgroup_started = false;
         if (sparse_q_rows_in_tile == 1) {
+          // Linear sparse traversal: one workgroup owns exactly one sparse LUT row.
+          // This is the closest sparse analogue to the dense path because all
+          // participating subgroups walk the same sequence of selected K blocks.
           int const* row_ptr = lut_rows_base;
           int row_valid = valid_blocks_base[0];
           int row_pos = 0;
@@ -740,6 +758,10 @@ struct SPARSESAGEV1FwdMainloop<sage::XeDefault<Stages>, CausalMask_, FullMask_, 
             advance_single_sparse_block(row_pos, row_cur_block);
           }
         } else {
+          // Merged multi-row sparse traversal: one workgroup covers multiple sparse
+          // Q rows, so each row has its own LUT frontier. We merge those frontiers
+          // by logical K block and let each subgroup participate only when the
+          // current merged block belongs to its assigned sparse row.
           static constexpr int kMaxSparseRowsPerTile = cute::max(1, int(get<0>(TileShapeQK{})) / 64);
           int const* row_ptrs[kMaxSparseRowsPerTile];
           int active_rows[kMaxSparseRowsPerTile];
@@ -814,6 +836,9 @@ struct SPARSESAGEV1FwdMainloop<sage::XeDefault<Stages>, CausalMask_, FullMask_, 
 
           int next_block = find_sparse_block(row_pos, row_cur_block);
           while (next_block < total_blk) {
+            // subgroup_q_row_in_tile is the row assignment computed earlier.
+            // subgroup_selected gates the dense GEMM/softmax/PV work so only the
+            // subgroups whose sparse row requested next_block contribute to it.
             bool subgroup_selected = subgroup_q_row_in_tile < sparse_q_rows_in_tile &&
                                      row_pos[subgroup_q_row_in_tile] < row_valid[subgroup_q_row_in_tile] &&
                                      row_cur_block[subgroup_q_row_in_tile] == next_block;

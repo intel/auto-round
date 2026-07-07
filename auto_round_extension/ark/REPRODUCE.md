@@ -98,3 +98,16 @@ FLUX_SPARSE_Q_BLOCK_TOKENS=256 \
 FLUX_SPARSE_K_BLOCK_TOKENS=64 \
 python run_flux.py
 ```
+
+## Flux Sweep
+
+Dense baseline plus sparse `topk=1.0..0.1`, using 8 devices and the `q_tile=256`,
+`sparse_q_block_tokens=256`, `sparse_k_block_tokens=64` kernel:
+
+```bash
+cd auto_round_extension/ark/examples
+FLUX_SWEEP_PYTHON=/home/yiliu4/workspace/auto-round-py/.venv/bin/python \
+FLUX_MODEL=/home/yiliu4/workspace/models/black-forest-labs/FLUX.1-dev \
+FLUX_SWEEP_DEVICES=0,1,2,3,4,5,6,7 \
+bash run_flux_sweep.sh
+```
