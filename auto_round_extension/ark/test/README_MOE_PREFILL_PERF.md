@@ -296,7 +296,7 @@ Accuracy parity is covered by
 which forces `ARK_MOE_PREFILL_DPAS_S4=1` +
 `ARK_MOE_PREFILL_DPAS_INT8=0` so the single-pass mainloop is
 exclusively exercised, at the same production shapes as
-`test_accuracy_int4`, with tolerance `rtol=atol=1.5e-1`.
+`test_accuracy_int4`, with tolerance `rtol=atol=1e-1`.
 
 ## FP8 per-expert (per-tensor) perf tests
 

@@ -226,7 +226,7 @@ S4-sym 有两条独立的 DPAS 路径;asym S4 始终回退到 dequant 路径。
 `test_moe_prefill_accuracy.py::test_accuracy_int4_dpas_per_group`
 覆盖,该用例强制 `ARK_MOE_PREFILL_DPAS_S4=1` +
 `ARK_MOE_PREFILL_DPAS_INT8=0`,专门验证单遍 mainloop 路径,形状矩阵与
-`test_accuracy_int4` 一致,容差 `rtol=atol=1.5e-1`。
+`test_accuracy_int4` 一致,容差 `rtol=atol=1e-1`。
 
 ## FP8 per-expert (per-tensor) 性能测试
 

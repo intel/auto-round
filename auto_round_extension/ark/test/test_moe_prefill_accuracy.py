@@ -176,7 +176,7 @@ def _reference_moe_prefill(activations, dequant_weights_NK, num_tokens_per_exper
 
 _TOL_FP = dict(rtol=3e-2, atol=3e-2)
 _TOL_INT8 = dict(rtol=1e-1, atol=1e-1)
-_TOL_INT4 = dict(rtol=1.5e-1, atol=1.5e-1)
+_TOL_INT4 = dict(rtol=1e-1, atol=1e-1)
 _TOL_INT2 = dict(rtol=1.5e-1, atol=1.5e-1)
 _TOL_FP8 = dict(rtol=1e-1, atol=1e-1)
 
@@ -212,6 +212,20 @@ class TestMoEGemmPrefillAccuracy:
     kernel output matches a per-expert dequant + ``A @ W.T`` reference.
     """
 
+    @pytest.fixture(autouse=True)
+    def _fix_seed(self):
+        """Deterministic RNG per test so tolerance assertions are reproducible.
+
+        Without a fixed seed, long-K reductions (K up to 14336) can produce a
+        handful of stochastic outliers per ~2M outputs that occasionally cross
+        the tolerance bound on some quant paths (notably int4-sym + fp16).
+        Pinning the seed makes any failure repeatable so it can be attributed
+        to the kernel implementation rather than RNG luck.
+        """
+        torch.manual_seed(0)
+        if hasattr(torch, "xpu") and torch.xpu.is_available():
+            torch.xpu.manual_seed_all(0)
+
     @pytest.mark.parametrize("dtype", [torch.float16, torch.bfloat16])
     def test_accuracy_fp(self, dtype):
         for label, E, tpe, N, K in PREFILL_SHAPES:
@@ -235,8 +249,6 @@ class TestMoEGemmPrefillAccuracy:
     @pytest.mark.parametrize("dtype", [torch.float16, torch.bfloat16])
     @pytest.mark.parametrize("asym", [False, True])
     def test_accuracy_int4(self, dtype, asym):
-        if not asym and dtype is torch.float16:
-            pytest.skip("temporarily disabled: test_accuracy_int4[False-dtype0] under investigation")
         group_size = 128
         for label, E, tpe, N, K in PREFILL_SHAPES:
             if K % group_size != 0:
