@@ -155,15 +155,8 @@ class XeSageFwdKernel {
   //
 
   static Params to_underlying_arguments(Arguments const& args, void* workspace) {
-    // Forward LSE info to epilogue if requested
-    auto epi_args = args.epilogue;
-    if (args.kernel.Lse) {
-      epi_args.lse_ptr = args.kernel.Lse;
-      epi_args.seq_len_qo = args.kernel.shape.seq_len_qo;
-      epi_args.num_heads_q = args.kernel.shape.num_heads_q;
-    }
     return {args.kernel, CollectiveMainloop::to_underlying_arguments(args.mainloop, workspace),
-            CollectiveEpilogue::to_underlying_arguments(epi_args, workspace),
+            CollectiveEpilogue::to_underlying_arguments(args.epilogue, workspace),
             TileScheduler::to_underlying_arguments(args.kernel.shape, args.hw_info, TileShapeO{})};
   }
 
@@ -339,9 +332,8 @@ class XeSageFwdKernel {
       CollectiveMainloop mainloop(params.mainloop, shared_storage.mainloop);
       mainloop(Q(_, _, head_q, l_coord), K(_, _, head, l_coord), V(_, _, head, l_coord), tArA, tA_max, tA_sum, blk_qv,
                0, k_blocks, k_blocks, thr_id, seq_len, seq_len_kv_cache, idx_b, scaleQ, scaleK, scaleV,
-               full_tile_offset, discard_seq_coord,
-               /*lut_rows_base=*/nullptr, /*valid_blocks_base=*/nullptr, /*sparse_q_rows_in_tile=*/1,
-               K_cache(_, _, head, l_coord), V_cache(_, _, head, l_coord));
+               full_tile_offset,
+               discard_seq_coord, K_cache(_, _, head, l_coord), V_cache(_, _, head, l_coord));
 
       if constexpr (!is_empty_v<MainloopSharedStorage> && !is_empty_v<EpilogueSharedStorage>) {
         sycl::group_barrier(get_work_group<3>());
@@ -349,7 +341,7 @@ class XeSageFwdKernel {
 
       // Epilogue
       CollectiveEpilogue epilogue{params.epilogue, shared_storage.epilogue};
-      epilogue(O(_, _, head_q, l_coord), tArA, tA_max, tA_sum, blk_qv, thr_id, head_q, idx_b);
+      epilogue(O(_, _, head_q, l_coord), tArA, tA_max, tA_sum, blk_qv, thr_id);
     }
   }
 };
