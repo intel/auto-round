@@ -22,17 +22,25 @@ import auto_round_kernel as ark
 
 
 def ensure_sparse_binding() -> None:
-    if getattr(ark, "xpu_lib", None) is not None and hasattr(ark.xpu_lib, "sage_sparse"):
-        return
-    candidates = sorted((REPO_ROOT / "auto_round_extension" / "ark" / "auto_round_kernel" / "xbuild").glob("auto_round_kernel_xpu*.so"))
+    local_kernel_dir = REPO_ROOT / "auto_round_extension" / "ark" / "auto_round_kernel"
+    current_file = getattr(getattr(ark, "xpu_lib", None), "__file__", None)
+    if current_file is not None and hasattr(ark.xpu_lib, "sage_sparse"):
+        try:
+            if Path(current_file).resolve().is_relative_to(local_kernel_dir.resolve()):
+                return
+        except Exception:
+            pass
+    candidates = sorted((local_kernel_dir / "xbuild").glob("auto_round_kernel_xpu*.so"))
     if not candidates:
         raise RuntimeError("Unable to locate built XPU extension with sage_sparse in xbuild/")
     ext_path = candidates[-1]
-    spec = importlib.util.spec_from_file_location("auto_round_kernel_xpu", ext_path)
+    module_name = "auto_round_kernel._bench.auto_round_kernel_xpu"
+    spec = importlib.util.spec_from_file_location(module_name, ext_path)
     if spec is None or spec.loader is None:
         raise RuntimeError(f"Unable to load extension spec from {ext_path}")
+    sys.modules.pop(module_name, None)
     module = importlib.util.module_from_spec(spec)
-    sys.modules["auto_round_kernel_xpu"] = module
+    sys.modules[module_name] = module
     spec.loader.exec_module(module)
     if not hasattr(module, "sage_sparse"):
         raise RuntimeError(f"Loaded extension does not expose sage_sparse: {ext_path}")
