@@ -52,20 +52,6 @@ template <int Stages>
 class XeDefault {};  // Default FMHA mainloop, P in registers.
 #endif
 
-enum class SparseProfileMode : int {
-  Full = 0,
-  QkOnly = 1,
-  QkSoftmaxOnly = 2,
-  PvOnlySynthetic = 3,
-  SoftmaxOnlySynth = 4,
-  PvOnlyRealish = 5,
-  QkPlusPvNoSoftmax = 6,
-  PvReorderOnly = 7,
-  PvLoadVOnly = 8,
-  PvMmaOnly = 9,
-  PvReorderPlusMma = 10,
-};
-
 };  // namespace cutlass::sage
 
 namespace cutlass::fmha::collective {
@@ -80,7 +66,6 @@ using namespace cute;
 
 template <class DispatchPolicy_, bool CausalMask_, bool FullMask_, bool CachedKV_, bool PagedKV_, bool UseInt8PV_,
           bool WriteBackInt8PV_, bool ExecuteInt8PV_,
-          cutlass::sage::SparseProfileMode SparseProfileMode_,
           class TiledMMAQK_,  // Tiling for Q*K GEMM
           class TiledMMAPV_,  // Tiling for P*V GEMM
           int VTiles_,        // # of tiles in V dimension
@@ -98,13 +83,12 @@ struct SPARSESAGEV1FwdMainloop {
 /////////////////////////////////////////////////////////////////////////////////////////////////
 
 template <int Stages, bool CausalMask_, bool FullMask_, bool CachedKV_, bool PagedKV_, bool UseInt8PV_,
-          bool WriteBackInt8PV_, bool ExecuteInt8PV_, cutlass::sage::SparseProfileMode SparseProfileMode_,
-          class TiledMMAQK_,
+          bool WriteBackInt8PV_, bool ExecuteInt8PV_, class TiledMMAQK_,
           class TiledMMAPV_, int VTiles_, class TensorQ_, class TensorK_, class TensorV_, class TensorK_cache_,
           class TensorV_cache_, class TiledCopyQ_, class TiledCopyK_, class TiledCopyV_, class TiledCopyK_cache_,
           class TiledCopyV_cache_>
 struct SPARSESAGEV1FwdMainloop<sage::XeDefault<Stages>, CausalMask_, FullMask_, CachedKV_, PagedKV_, UseInt8PV_,
-                         WriteBackInt8PV_, ExecuteInt8PV_, SparseProfileMode_, TiledMMAQK_, TiledMMAPV_, VTiles_, TensorQ_, TensorK_,
+                         WriteBackInt8PV_, ExecuteInt8PV_, TiledMMAQK_, TiledMMAPV_, VTiles_, TensorQ_, TensorK_,
                          TensorV_, TensorK_cache_, TensorV_cache_, TiledCopyQ_, TiledCopyK_, TiledCopyV_,
                          TiledCopyK_cache_, TiledCopyV_cache_> {
   //
@@ -191,21 +175,6 @@ struct SPARSESAGEV1FwdMainloop<sage::XeDefault<Stages>, CausalMask_, FullMask_, 
   static constexpr bool CachedKV = CachedKV_;
   static constexpr bool PagedKV = PagedKV_;
   static constexpr bool EnableSparseKPrefetch = ARK_SPARSE_SAGE_ENABLE_K_PREFETCH != 0;
-  static constexpr cutlass::sage::SparseProfileMode ProfileMode = SparseProfileMode_;
-  static constexpr bool ProfileRunsRealQk =
-      ProfileMode == cutlass::sage::SparseProfileMode::Full ||
-      ProfileMode == cutlass::sage::SparseProfileMode::QkOnly ||
-      ProfileMode == cutlass::sage::SparseProfileMode::QkSoftmaxOnly ||
-      ProfileMode == cutlass::sage::SparseProfileMode::QkPlusPvNoSoftmax;
-  static constexpr bool ProfileRequiresPV =
-      ProfileMode == cutlass::sage::SparseProfileMode::Full ||
-      ProfileMode == cutlass::sage::SparseProfileMode::PvOnlySynthetic ||
-      ProfileMode == cutlass::sage::SparseProfileMode::PvOnlyRealish ||
-      ProfileMode == cutlass::sage::SparseProfileMode::QkPlusPvNoSoftmax ||
-      ProfileMode == cutlass::sage::SparseProfileMode::PvReorderOnly ||
-      ProfileMode == cutlass::sage::SparseProfileMode::PvLoadVOnly ||
-      ProfileMode == cutlass::sage::SparseProfileMode::PvMmaOnly ||
-      ProfileMode == cutlass::sage::SparseProfileMode::PvReorderPlusMma;
   // The qtile64 Q-staging experiment stays disabled until the Xe SLM copy layout
   // matches the fragment layout expected by make_A_slm_copies().
     static constexpr bool UseInt8PV = UseInt8PV_;
@@ -483,160 +452,26 @@ struct SPARSESAGEV1FwdMainloop<sage::XeDefault<Stages>, CausalMask_, FullMask_, 
         }
       }
     };
-    auto prefetch_next_k_block = [&](auto cached_k, int K) {
-      constexpr bool is_cache = decltype(cached_k)::value;
-      if (lut_rows_base == nullptr) {
-        int K_next = K + Stages;
-        for (int D = 0; D < size<4>(pKgK); D++) {
-          if constexpr (is_cache) {
-            bool is_cache_next = K_next < kblocks_cache;
-            int physical_K_next = K_next;
-            if constexpr (PagedKV) {
-              if (is_cache_next) {
-                physical_K_next = get_physical_k_tile(K_next, l_coord, seq_len_kv_cache);
-              }
-            }
-            if (is_cache_next) {
-              prefetch(prefetch_k_cache, pKgK_cache(_, _, _, physical_K_next, D));
-            } else {
-              prefetch(prefetch_k, pKgK(_, _, _, K_next - kblocks_cache, D));
-            }
-          } else {
-            prefetch(prefetch_k, pKgK(_, _, _, K_next - kblocks_cache, D));
+    /* Main loop body */
+      auto mainloop_body = [&](auto cached_k, int K, bool first_block, bool subgroup_selected,
+                               int sparse_prefetch_block, auto& copy_k_cur, auto& copy_v_cur, auto& prefetch_v_cur,
+                               auto& tKgK_cur, auto& tVgV_cur, auto& pVgV_cur) {
+        /* Split barrier to keep threads together */
+        barrier_arrive(ScopeWorkgroup);
+        constexpr bool is_cache = decltype(cached_k)::value;
+
+        int k_idx;
+        if constexpr (is_cache) {
+          k_idx = K;
+          if constexpr (PagedKV) {
+            k_idx = get_physical_k_tile(K, l_coord, seq_len_kv_cache);
           }
+        } else {
+          k_idx = K - kblocks_cache;
         }
-      }
-    };
-    auto write_qk_profile_proxy = [&](bool first_block) {
-      if (first_block) {
-        clear(tArA);
-        fill(tA_max, ElementA(0));
-        fill(tA_sum, ElementA(1));
-      }
-      ElementA proxy = ElementA(0);
-      CUTLASS_PRAGMA_UNROLL
-      for (int i = 0; i < tPrS.size(); ++i) {
-        proxy += ElementA(tPrS(i));
-      }
-      tArA(0) += proxy;
-    };
+        int scalek_idx = params.scale_block_size ? K * get<1>(TileShapeQK{}) / params.scale_block_size : 0;
 
-    auto init_profile_pv_state = [&](bool first_block) {
-      if (first_block) {
-        clear(tArA);
-        fill(tA_max, ElementA(0));
-        fill(tA_sum, ElementA(1));
-      }
-    };
-
-    auto fill_softmax_only_synth_scores = [&]() {
-      CUTLASS_PRAGMA_UNROLL
-      for (int i = 0; i < tPrS.size(); ++i) {
-        switch (i & 3) {
-          case 0:
-            tPrS(i) = ElementP(0.75f);
-            break;
-          case 1:
-            tPrS(i) = ElementP(-0.25f);
-            break;
-          case 2:
-            tPrS(i) = ElementP(0.125f);
-            break;
-          default:
-            tPrS(i) = ElementP(-0.5f);
-            break;
-        }
-      }
-    };
-
-    auto fill_pv_only_realish_probs = [&]() {
-      CUTLASS_PRAGMA_UNROLL
-      for (int i = 0; i < tPrS.size(); ++i) {
-        switch (i % 5) {
-          case 0:
-            tPrS(i) = ElementP(0.3125f);
-            break;
-          case 1:
-            tPrS(i) = ElementP(0.1875f);
-            break;
-          case 2:
-            tPrS(i) = ElementP(0.1250f);
-            break;
-          case 3:
-            tPrS(i) = ElementP(0.0625f);
-            break;
-          default:
-            tPrS(i) = ElementP(0.03125f);
-            break;
-        }
-      }
-    };
-
-    auto prepare_qk_scores_for_pv = [&]() {
-      CUTLASS_PRAGMA_UNROLL
-      for (int i = 0; i < tPrS.size(); ++i) {
-        ElementP shifted = tPrS(i) * ElementP(0.0625f) + ElementP(0.5f);
-        tPrS(i) = sycl::fmin(ElementP(1.0f), sycl::fmax(ElementP(0.0f), shifted));
-      }
-    };
-
-    auto fill_pv_mma_only_probs = [&]() {
-      if constexpr (!UseInt8PV) {
-        using ElementPV = std::remove_reference_t<decltype(tArP(0))>;
-        CUTLASS_PRAGMA_UNROLL
-        for (int i = 0; i < tArP.size(); ++i) {
-          tArP(i) = ElementPV((i & 3) == 0 ? 0.3125f : (i & 3) == 1 ? 0.1875f : (i & 3) == 2 ? 0.125f : 0.0625f);
-        }
-      } else {
-        CUTLASS_PRAGMA_UNROLL
-        for (int i = 0; i < tArP_i8.size(); ++i) {
-          tArP_i8(i) = int8_t((i & 3) == 0 ? 40 : (i & 3) == 1 ? 24 : (i & 3) == 2 ? 16 : 8);
-        }
-      }
-    };
-
-    auto sink_reordered_p = [&]() {
-      ElementA proxy = ElementA(0);
-      if constexpr (!UseInt8PV) {
-        CUTLASS_PRAGMA_UNROLL
-        for (int i = 0; i < tArP.size(); ++i) {
-          proxy += ElementA(tArP(i));
-        }
-      } else {
-        CUTLASS_PRAGMA_UNROLL
-        for (int i = 0; i < tArP_i8.size(); ++i) {
-          proxy += ElementA(tArP_i8(i));
-        }
-      }
-      tArA(0) += proxy;
-    };
-
-    auto sink_loaded_v = [&]() {
-      ElementA proxy = ElementA(0);
-      CUTLASS_PRAGMA_UNROLL
-      for (int i = 0; i < tArV.size(); ++i) {
-        proxy += ElementA(tArV(i));
-      }
-      tArA(0) += proxy;
-    };
-
-    auto run_qk_math = [&](auto cached_k, int K, bool first_block, bool subgroup_selected, int sparse_prefetch_block,
-                           auto& copy_k_cur, auto& tKgK_cur) {
-      barrier_arrive(ScopeWorkgroup);
-      constexpr bool is_cache = decltype(cached_k)::value;
-
-      int k_idx;
-      if constexpr (is_cache) {
-        k_idx = K;
-        if constexpr (PagedKV) {
-          k_idx = get_physical_k_tile(K, l_coord, seq_len_kv_cache);
-        }
-      } else {
-        k_idx = K - kblocks_cache;
-      }
-      int scalek_idx = params.scale_block_size ? K * get<1>(TileShapeQK{}) / params.scale_block_size : 0;
-
-      if constexpr (ProfileMode != cutlass::sage::SparseProfileMode::SoftmaxOnlySynth) {
+        /* GEMM 1: S = K * Q */
         clear(tSrS);
         CUTLASS_PRAGMA_UNROLL
         for (int D = 0; D < size<4>(tKgK); D++) {
@@ -646,16 +481,18 @@ struct SPARSESAGEV1FwdMainloop<sage::XeDefault<Stages>, CausalMask_, FullMask_, 
           reorder(tKrK, tSrK);
           cute::gemm(mma_qk, tSrQ, tSrK, tSrS);
         }
-      }
 
-      if (subgroup_selected) {
-        if constexpr (ProfileMode == cutlass::sage::SparseProfileMode::SoftmaxOnlySynth) {
-          fill_softmax_only_synth_scores();
-        } else {
+        /* V prefetch for GEMM 2 */
+        CUTLASS_PRAGMA_UNROLL
+        for (int VV = 0; VV < VTiles; VV++) {
+          prefetch(prefetch_v_cur, pVgV_cur(_, _, _, VV, k_idx));
+        }
+        if (subgroup_selected) {
           reorder(tSrS, tPrS);
           if constexpr (!CausalMask) {
             if (params.scale_block_size) {
               if (params.scale_block_size == 1) {
+                // Need to get global col and row indices to mask the elements
                 Tensor cPgP = make_identity_tensor(make_shape(seq_len, seq_len));
                 Tensor gP = local_tile(cPgP, take<0, 2>(TileShapeQK{}), make_coord(get<0>(blk_qv), K));
                 auto cS_thread = thr_mma_qk.partition_C(gP);
@@ -681,8 +518,10 @@ struct SPARSESAGEV1FwdMainloop<sage::XeDefault<Stages>, CausalMask_, FullMask_, 
             for (int i = 0; i < tPrS.size(); i++) tPrS(i) *= _scale;
           }
 
+          /* Causal masking - only in non-cache mode */
           if constexpr (!is_cache && CausalMask) {
             if (K == total_blk - 1) {
+              // Need to get global col and row indices to mask the elements
               Tensor cPgP = make_identity_tensor(make_shape(seq_len, seq_len));
               Tensor gP = local_tile(cPgP, take<0, 2>(TileShapeQK{}), make_coord(get<0>(blk_qv), K));
               auto cS_thread = thr_mma_qk.partition_C(gP);
@@ -697,6 +536,7 @@ struct SPARSESAGEV1FwdMainloop<sage::XeDefault<Stages>, CausalMask_, FullMask_, 
             }
           } else {
             if constexpr (FullMask_) {
+              // Need to get global col and row indices to mask the elements
               Tensor cPgP = make_identity_tensor(make_shape(seq_len, seq_len));
               Tensor gP = local_tile(cPgP, take<0, 2>(TileShapeQK{}), make_coord(get<0>(blk_qv), K));
               auto cS_thread = thr_mma_qk.partition_C(gP);
@@ -724,6 +564,7 @@ struct SPARSESAGEV1FwdMainloop<sage::XeDefault<Stages>, CausalMask_, FullMask_, 
             }
           }
 
+          /* k masking for remainder tiles */
           if constexpr (!is_cache) {
             if (check_remainder_k && K == total_blk - 1) {
               FragPCol k_rem_mask;
@@ -739,604 +580,59 @@ struct SPARSESAGEV1FwdMainloop<sage::XeDefault<Stages>, CausalMask_, FullMask_, 
               }
             }
           }
-        }
 
-        if constexpr (ProfileMode == cutlass::sage::SparseProfileMode::QkOnly) {
-          write_qk_profile_proxy(first_block);
-        } else {
+          /* Apply softmax and scaling (tA rescaling fused into GEMM2 VTile loop) */
           auto rescale = softmax(first_block, tPrS, tA_max, tA_sum);
-          CUTLASS_PRAGMA_UNROLL
-          for (int i = 0; i < tPrS.size(); ++i) {
-            tPrS(i) *= broadcast<0>(rescale, tPrS, i);
-          }
-          write_qk_profile_proxy(first_block);
-        }
-      }
-
-      if (lut_rows_base == nullptr) {
-        int K_next = K + Stages;
-        for (int D = 0; D < size<4>(pKgK); D++) {
-          if constexpr (is_cache) {
-            bool is_cache_next = K_next < kblocks_cache;
-            int physical_K_next = K_next;
-            if constexpr (PagedKV) {
-              if (is_cache_next) {
-                physical_K_next = get_physical_k_tile(K_next, l_coord, seq_len_kv_cache);
-              }
-            }
-            if (is_cache_next) {
-              prefetch(prefetch_k_cache, pKgK_cache(_, _, _, physical_K_next, D));
-            } else {
-              prefetch(prefetch_k, pKgK(_, _, _, K_next - kblocks_cache, D));
-            }
+          if constexpr (!UseInt8PV) {
+            reorder(tPrS, tArP);
           } else {
-            prefetch(prefetch_k, pKgK(_, _, _, K_next - kblocks_cache, D));
-          }
-        }
-      } else if constexpr (EnableSparseKPrefetch) {
-        if (sparse_prefetch_block < total_blk) {
-          prefetch_sparse_k_block(sparse_prefetch_block);
-        }
-      }
-
-      barrier_wait(ScopeWorkgroup);
-    };
-
-    auto run_pv_only_math = [&](auto cached_k, int K, bool first_block, bool subgroup_selected, int sparse_prefetch_block,
-                                auto& copy_v_cur, auto& prefetch_v_cur, auto& tVgV_cur, auto& pVgV_cur) {
-      barrier_arrive(ScopeWorkgroup);
-      constexpr bool is_cache = decltype(cached_k)::value;
-
-      int k_idx;
-      if constexpr (is_cache) {
-        k_idx = K;
-        if constexpr (PagedKV) {
-          k_idx = get_physical_k_tile(K, l_coord, seq_len_kv_cache);
-        }
-      } else {
-        k_idx = K - kblocks_cache;
-      }
-
-      /* V prefetch for GEMM 2 stays workgroup-cooperative in the PV-only path. */
-      CUTLASS_PRAGMA_UNROLL
-      for (int VV = 0; VV < VTiles; VV++) {
-        prefetch(prefetch_v_cur, pVgV_cur(_, _, _, VV, k_idx));
-      }
-
-      if (subgroup_selected) {
-        init_profile_pv_state(first_block);
-        if constexpr (ProfileMode == cutlass::sage::SparseProfileMode::PvOnlySynthetic ||
-                      ProfileMode == cutlass::sage::SparseProfileMode::PvReorderOnly ||
-                      ProfileMode == cutlass::sage::SparseProfileMode::PvReorderPlusMma) {
-          CUTLASS_PRAGMA_UNROLL
-          for (int i = 0; i < tPrS.size(); ++i) {
-            tPrS(i) = ElementP(((i & 1) == 0) ? 0.25f : 0.125f);
-          }
-        } else {
-          fill_pv_only_realish_probs();
-        }
-
-        if constexpr (!UseInt8PV) {
-          reorder(tPrS, tArP);
-        } else {
-          reorder(tPrS, tArP_i8);
-        }
-
-        if constexpr (ProfileMode == cutlass::sage::SparseProfileMode::PvOnlySynthetic ||
-                      ProfileMode == cutlass::sage::SparseProfileMode::PvReorderOnly ||
-                      ProfileMode == cutlass::sage::SparseProfileMode::PvReorderPlusMma) {
-          if constexpr (UseInt8PV) {
-            CUTLASS_PRAGMA_UNROLL
-            for (int i = 0; i < tArP_i8.size(); ++i) {
-              tArP_i8(i) = int8_t((i & 1) == 0 ? 32 : 16);
-            }
-          }
-        }
-
-        if constexpr (ProfileMode == cutlass::sage::SparseProfileMode::PvReorderOnly) {
-          sink_reordered_p();
-          goto finish_pv_only_profile;
-        }
-
-        if constexpr (ProfileMode == cutlass::sage::SparseProfileMode::PvLoadVOnly) {
-          CUTLASS_PRAGMA_UNROLL
-          for (int VV = 0; VV < VTiles; VV++) {
-            copy(copy_v_cur, tVgV_cur(_, _, _, VV, k_idx), tVrV);
-            reorder(tVrV, tArV);
-            sink_loaded_v();
-          }
-          goto finish_pv_only_profile;
-        }
-
-        if constexpr (ProfileMode == cutlass::sage::SparseProfileMode::PvMmaOnly) {
-          fill_pv_mma_only_probs();
-        }
-
-        /* GEMM 2: A += P * V, split in v dimension. */
-        if constexpr (!UseInt8PV) {
-          CUTLASS_PRAGMA_UNROLL
-          for (int VV = 0; VV < VTiles; VV++) {
-            copy(copy_v_cur, tVgV_cur(_, _, _, VV, k_idx), tVrV);
-            reorder(tVrV, tArV);
-            cute::gemm(mma_pv, tArP, tArV, tArA(_, _, _, VV));
-          }
-        } else {
-          constexpr ElementA kInvVQuantScale = ElementA(1.0f / 127.0f);
-          int scalev_head_dim = int(size<0>(V_2D));
-          int v_block_base = int(get<1>(blk_qv)) * int(get<1>(TileShapePV{})) * VTiles;
-          int scalev_block_base = 0;
-          CUTLASS_PRAGMA_UNROLL
-          for (int VV = 0; VV < VTiles; VV++) {
-            auto tArA_v = tArA(_, _, _, VV);
-            auto tArAcc = thr_mma_pv_i8.partition_sg_fragment_C(cPV);
-            auto tVrV_i8 = thr_copy_v.partition_sg_fragment_D(gV_split(_, _, 0, 0));
-            auto tArV_i8 = thr_mma_pv_i8.partition_sg_fragment_B(gV_split(_, _, 0, 0));
-            copy(copy_v_cur, tVgV_cur(_, _, _, VV, k_idx), tVrV_i8);
-            reorder(tVrV_i8, tArV_i8);
-            clear(tArAcc);
-
-            if constexpr (ExecuteInt8PV) {
-              cute::gemm(mma_pv_i8, tArP_i8, tArV_i8, tArAcc);
-            }
-
-            if constexpr (WriteBackInt8PV) {
-              CUTLASS_PRAGMA_UNROLL
-              for (int i = 0; i < tArAcc.size(); ++i) {
-                int local_v = int(get<1>(tCrA(i)));
-                int scalev_idx = scalev_block_base + v_block_base + VV * int(get<1>(TileShapePV{})) + local_v;
-                tArA_v(i) += ElementA(tArAcc(i)) * ElementA(scaleV[scalev_idx]) * kInvVQuantScale;
-              }
-            }
-          }
-        }
-      }
-
-finish_pv_only_profile:
-
-      if (lut_rows_base == nullptr) {
-        int K_next = K + Stages;
-        for (int D = 0; D < size<4>(pKgK); D++) {
-          if constexpr (is_cache) {
-            bool is_cache_next = K_next < kblocks_cache;
-            int physical_K_next = K_next;
-            if constexpr (PagedKV) {
-              if (is_cache_next) {
-                physical_K_next = get_physical_k_tile(K_next, l_coord, seq_len_kv_cache);
-              }
-            }
-            if (is_cache_next) {
-              prefetch(prefetch_k_cache, pKgK_cache(_, _, _, physical_K_next, D));
-            } else {
-              prefetch(prefetch_k, pKgK(_, _, _, K_next - kblocks_cache, D));
-            }
-          } else {
-            prefetch(prefetch_k, pKgK(_, _, _, K_next - kblocks_cache, D));
-          }
-        }
-      } else if constexpr (EnableSparseKPrefetch) {
-        if (sparse_prefetch_block < total_blk) {
-          prefetch_sparse_k_block(sparse_prefetch_block);
-        }
-      }
-
-      barrier_wait(ScopeWorkgroup);
-    };
-
-    /* Main loop body */
-      auto mainloop_body = [&](auto cached_k, int K, bool first_block, bool subgroup_selected,
-                               int sparse_prefetch_block, auto& copy_k_cur, auto& copy_v_cur, auto& prefetch_v_cur,
-                               auto& tKgK_cur, auto& tVgV_cur, auto& pVgV_cur) {
-        /* Split barrier to keep threads together */
-        barrier_arrive(ScopeWorkgroup);
-        constexpr bool is_cache = decltype(cached_k)::value;
-
-        int k_idx;
-        if constexpr (is_cache) {
-          k_idx = K;
-          if constexpr (PagedKV) {
-            k_idx = get_physical_k_tile(K, l_coord, seq_len_kv_cache);
-          }
-        } else {
-          k_idx = K - kblocks_cache;
-        }
-        int scalek_idx = params.scale_block_size ? K * get<1>(TileShapeQK{}) / params.scale_block_size : 0;
-
-        if constexpr (ProfileMode == cutlass::sage::SparseProfileMode::Full) {
-          /* GEMM 1: S = K * Q */
-          clear(tSrS);
-          CUTLASS_PRAGMA_UNROLL
-          for (int D = 0; D < size<4>(tKgK); D++) {
-            copy(copy_q, tQgQ(_, _, _, D), tQrQ);
-            copy(copy_k_cur, tKgK_cur(_, _, _, k_idx, D), tKrK);
-            reorder(tQrQ, tSrQ);
-            reorder(tKrK, tSrK);
-            cute::gemm(mma_qk, tSrQ, tSrK, tSrS);
+            reorder(tPrS, tArP_i8);
           }
 
-          /* V prefetch for GEMM 2 */
-          CUTLASS_PRAGMA_UNROLL
-          for (int VV = 0; VV < VTiles; VV++) {
-            prefetch(prefetch_v_cur, pVgV_cur(_, _, _, VV, k_idx));
-          }
-          if (subgroup_selected) {
-            reorder(tSrS, tPrS);
-            if constexpr (!CausalMask) {
-              if (params.scale_block_size) {
-                if (params.scale_block_size == 1) {
-                  // Need to get global col and row indices to mask the elements
-                  Tensor cPgP = make_identity_tensor(make_shape(seq_len, seq_len));
-                  Tensor gP = local_tile(cPgP, take<0, 2>(TileShapeQK{}), make_coord(get<0>(blk_qv), K));
-                  auto cS_thread = thr_mma_qk.partition_C(gP);
-                  CUTLASS_PRAGMA_UNROLL
-                  for (int i = 0; i < tPrS.size(); ++i) {
-                    int row_idx = get<0>(cS_thread(i));
-                    int col_idx = get<1>(cS_thread(i));
-                    tPrS(i) *= ElementP(scaleQ[row_idx] * scaleK[col_idx]);
-                  }
-                  CUTLASS_PRAGMA_UNROLL
-                  for (int i = 0; i < tPrS.size(); ++i) {
-                    tPrS(i) *= params.scale;
-                  }
-                } else {
-                  float _scale = dq_scale * scaleK[scalek_idx];
-                  CUTLASS_PRAGMA_UNROLL
-                  for (int i = 0; i < tPrS.size(); i++) tPrS(i) *= _scale;
-                }
-              }
-            } else {
-              float _scale = dq_scale * scaleK[scalek_idx];
-              CUTLASS_PRAGMA_UNROLL
-              for (int i = 0; i < tPrS.size(); i++) tPrS(i) *= _scale;
-            }
-
-            /* Causal masking - only in non-cache mode */
-            if constexpr (!is_cache && CausalMask) {
-              if (K == total_blk - 1) {
-                // Need to get global col and row indices to mask the elements
-                Tensor cPgP = make_identity_tensor(make_shape(seq_len, seq_len));
-                Tensor gP = local_tile(cPgP, take<0, 2>(TileShapeQK{}), make_coord(get<0>(blk_qv), K));
-                auto cS_thread = thr_mma_qk.partition_C(gP);
-                CUTLASS_PRAGMA_UNROLL
-                for (int i = 0; i < tPrS.size(); ++i) {
-                  int row_idx = get<0>(cS_thread(i));
-                  int col_idx = get<1>(cS_thread(i));
-                  if (col_idx - seq_len_kv_cache - full_tile_offset > row_idx - discard_seq_coord) {
-                    tPrS(i) = ElementP(-INFINITY);
-                  }
-                }
-              }
-            } else {
-              if constexpr (FullMask_) {
-                // Need to get global col and row indices to mask the elements
-                Tensor cPgP = make_identity_tensor(make_shape(seq_len, seq_len));
-                Tensor gP = local_tile(cPgP, take<0, 2>(TileShapeQK{}), make_coord(get<0>(blk_qv), K));
-                auto cS_thread = thr_mma_qk.partition_C(gP);
-                int row_idx_begin = get<0>(cS_thread(0));
-                int row_idx_end = row_idx_begin + q_sg_tile;
-                int col_idx_begin = get<1>(cS_thread(0));
-                int col_idx_end = col_idx_begin + get<1>(TileShapeQK{});
-                if (row_idx_end <= seq_len && col_idx_end <= seq_len) {
-                  CUTLASS_PRAGMA_UNROLL
-                  for (int i = 0; i < tPrS.size(); ++i) {
-                    int row_idx = get<0>(cS_thread(i));
-                    int col_idx = get<1>(cS_thread(i));
-                    tPrS(i) += ElementP(params.mask[col_idx + row_idx * seq_len]);
-                  }
-                } else {
-                  CUTLASS_PRAGMA_UNROLL
-                  for (int i = 0; i < tPrS.size(); ++i) {
-                    int row_idx = get<0>(cS_thread(i));
-                    int col_idx = get<1>(cS_thread(i));
-                    tPrS(i) += (row_idx < seq_len && col_idx < seq_len)
-                                   ? ElementP(params.mask[col_idx + row_idx * seq_len])
-                                   : ElementP(-INFINITY);
-                  }
-                }
-              }
-            }
-            /* k masking for remainder tiles */
-            if constexpr (!is_cache) {
-              if (check_remainder_k && K == total_blk - 1) {
-                FragPCol k_rem_mask;
-                int k_val = get<0>(tKgK_cur(0, 0, 0, k_idx, 0)) + kblocks_cache * get<1>(TileShapeQK{});
-                int k = k_val + get_sub_group().get_local_id()[0];
-                CUTLASS_PRAGMA_UNROLL
-                for (int i = 0; i < k_rem_mask.size(); i++, k += intel::sg_size) {
-                  k_rem_mask(i) = (k < seq_len) ? ElementP(sycl::nan(0u)) : ElementP(-INFINITY);
-                }
-                CUTLASS_PRAGMA_UNROLL
-                for (int i = 0; i < tPrS.size(); i++) {
-                  tPrS(i) = sycl::fmin(tPrS(i), broadcast<1>(k_rem_mask, tPrS, i));
-                }
-              }
-            }
-
-            /* Apply softmax and scaling (tA rescaling fused into GEMM2 VTile loop) */
-            auto rescale = softmax(first_block, tPrS, tA_max, tA_sum);
-            if constexpr (!UseInt8PV) {
-              reorder(tPrS, tArP);
-            } else {
-              reorder(tPrS, tArP_i8);
-            }
-
-            /* GEMM 2: A += P * V, split in v dimension.
-              tArA rescaling is fused to per-VTile */
-            if constexpr (!UseInt8PV) {
-              CUTLASS_PRAGMA_UNROLL
-              for (int VV = 0; VV < VTiles; VV++) {
-                copy(copy_v_cur, tVgV_cur(_, _, _, VV, k_idx), tVrV);
-                reorder(tVrV, tArV);
-                if (!first_block) {
-                  CUTLASS_PRAGMA_UNROLL
-                  for (int i = 0; i < tArA.size() / VTiles; i++) tArA(_, _, _, VV)(i) *= broadcast<0>(rescale, tArA, i);
-                }
-
-                cute::gemm(mma_pv, tArP, tArV, tArA(_, _, _, VV));
-              }
-            } else {
-              constexpr ElementA kInvVQuantScale = ElementA(1.0f / 127.0f);
-              int scalev_head_dim = int(size<0>(V_2D));
-              int v_block_base = int(get<1>(blk_qv)) * int(get<1>(TileShapePV{})) * VTiles;
-              int scalev_block_base = scalek_idx * scalev_head_dim;
-              CUTLASS_PRAGMA_UNROLL
-              for (int VV = 0; VV < VTiles; VV++) {
-                auto tArA_v = tArA(_, _, _, VV);
-                if (!first_block) {
-                  CUTLASS_PRAGMA_UNROLL
-                  for (int i = 0; i < tArA.size() / VTiles; i++) tArA_v(i) *= broadcast<0>(rescale, tArA, i);
-                }
-
-                auto tArAcc = thr_mma_pv_i8.partition_sg_fragment_C(cPV);
-                auto tVrV_i8 = thr_copy_v.partition_sg_fragment_D(gV_split(_, _, 0, 0));
-                auto tArV_i8 = thr_mma_pv_i8.partition_sg_fragment_B(gV_split(_, _, 0, 0));
-                copy(copy_v_cur, tVgV_cur(_, _, _, VV, k_idx), tVrV_i8);
-                reorder(tVrV_i8, tArV_i8);
-                clear(tArAcc);
-
-                if constexpr (ExecuteInt8PV) {
-                  cute::gemm(mma_pv_i8, tArP_i8, tArV_i8, tArAcc);
-                }
-
-                if constexpr (WriteBackInt8PV) {
-                  CUTLASS_PRAGMA_UNROLL
-                  for (int i = 0; i < tArAcc.size(); ++i) {
-                    int local_v = int(get<1>(tCrA(i)));
-                    int scalev_idx = scalev_block_base + v_block_base + VV * int(get<1>(TileShapePV{})) + local_v;
-                    tArA_v(i) += ElementA(tArAcc(i)) * ElementA(scaleV[scalev_idx]) * kInvVQuantScale;
-                  }
-                }
-              }
-            }
-          }
-        } else {
-          if constexpr (ProfileRunsRealQk) {
-            /* GEMM 1: S = K * Q */
-            clear(tSrS);
-            CUTLASS_PRAGMA_UNROLL
-            for (int D = 0; D < size<4>(tKgK); D++) {
-              copy(copy_q, tQgQ(_, _, _, D), tQrQ);
-              copy(copy_k_cur, tKgK_cur(_, _, _, k_idx, D), tKrK);
-              reorder(tQrQ, tSrQ);
-              reorder(tKrK, tSrK);
-              cute::gemm(mma_qk, tSrQ, tSrK, tSrS);
-            }
-          }
-
-          if constexpr (ProfileMode == cutlass::sage::SparseProfileMode::PvOnlySynthetic ||
-                        ProfileMode == cutlass::sage::SparseProfileMode::PvOnlyRealish ||
-                        ProfileMode == cutlass::sage::SparseProfileMode::QkPlusPvNoSoftmax) {
-            /* V prefetch for GEMM 2 stays workgroup-cooperative in the PV-only path. */
+          /* GEMM 2: A += P * V, split in v dimension.
+            tArA rescaling is fused to per-VTile */
+          if constexpr (!UseInt8PV) {
             CUTLASS_PRAGMA_UNROLL
             for (int VV = 0; VV < VTiles; VV++) {
-              prefetch(prefetch_v_cur, pVgV_cur(_, _, _, VV, k_idx));
-            }
-          }
-
-          auto write_profile_proxy = [&]() {
-            if (first_block) {
-              clear(tArA);
-              fill(tA_max, ElementA(0));
-              fill(tA_sum, ElementA(1));
-            }
-            ElementA proxy = ElementA(0);
-            CUTLASS_PRAGMA_UNROLL
-            for (int i = 0; i < tPrS.size(); ++i) {
-              proxy += ElementA(tPrS(i));
-            }
-            CUTLASS_PRAGMA_UNROLL
-            for (int i = 0; i < tArA.size(); ++i) {
-              tArA(i) += proxy;
-            }
-          };
-
-          if (subgroup_selected) {
-            if constexpr (ProfileRunsRealQk) {
-              reorder(tSrS, tPrS);
-              if constexpr (!CausalMask) {
-                if (params.scale_block_size) {
-                  if (params.scale_block_size == 1) {
-                    // Need to get global col and row indices to mask the elements.
-                    Tensor cPgP = make_identity_tensor(make_shape(seq_len, seq_len));
-                    Tensor gP = local_tile(cPgP, take<0, 2>(TileShapeQK{}), make_coord(get<0>(blk_qv), K));
-                    auto cS_thread = thr_mma_qk.partition_C(gP);
-                    CUTLASS_PRAGMA_UNROLL
-                    for (int i = 0; i < tPrS.size(); ++i) {
-                      int row_idx = get<0>(cS_thread(i));
-                      int col_idx = get<1>(cS_thread(i));
-                      tPrS(i) *= ElementP(scaleQ[row_idx] * scaleK[col_idx]);
-                    }
-                    CUTLASS_PRAGMA_UNROLL
-                    for (int i = 0; i < tPrS.size(); ++i) {
-                      tPrS(i) *= params.scale;
-                    }
-                  } else {
-                    float _scale = dq_scale * scaleK[scalek_idx];
-                    CUTLASS_PRAGMA_UNROLL
-                    for (int i = 0; i < tPrS.size(); i++) tPrS(i) *= _scale;
-                  }
-                }
-              } else {
-                float _scale = dq_scale * scaleK[scalek_idx];
+              copy(copy_v_cur, tVgV_cur(_, _, _, VV, k_idx), tVrV);
+              reorder(tVrV, tArV);
+              if (!first_block) {
                 CUTLASS_PRAGMA_UNROLL
-                for (int i = 0; i < tPrS.size(); i++) tPrS(i) *= _scale;
+                for (int i = 0; i < tArA.size() / VTiles; i++) tArA(_, _, _, VV)(i) *= broadcast<0>(rescale, tArA, i);
               }
-            } else if constexpr (ProfileMode == cutlass::sage::SparseProfileMode::PvOnlySynthetic) {
-              CUTLASS_PRAGMA_UNROLL
-              for (int i = 0; i < tPrS.size(); ++i) {
-                tPrS(i) = ElementP(((i & 1) == 0) ? 0.25f : 0.125f);
-              }
-            } else {
-              fill_pv_only_realish_probs();
+
+              cute::gemm(mma_pv, tArP, tArV, tArA(_, _, _, VV));
             }
-
-            if constexpr (ProfileRunsRealQk) {
-              /* Causal masking - only in non-cache mode */
-              if constexpr (!is_cache && CausalMask) {
-                if (K == total_blk - 1) {
-                  // Need to get global col and row indices to mask the elements.
-                  Tensor cPgP = make_identity_tensor(make_shape(seq_len, seq_len));
-                  Tensor gP = local_tile(cPgP, take<0, 2>(TileShapeQK{}), make_coord(get<0>(blk_qv), K));
-                  auto cS_thread = thr_mma_qk.partition_C(gP);
-                  CUTLASS_PRAGMA_UNROLL
-                  for (int i = 0; i < tPrS.size(); ++i) {
-                    int row_idx = get<0>(cS_thread(i));
-                    int col_idx = get<1>(cS_thread(i));
-                    if (col_idx - seq_len_kv_cache - full_tile_offset > row_idx - discard_seq_coord) {
-                      tPrS(i) = ElementP(-INFINITY);
-                    }
-                  }
-                }
-              } else {
-                if constexpr (FullMask_) {
-                  // Need to get global col and row indices to mask the elements.
-                  Tensor cPgP = make_identity_tensor(make_shape(seq_len, seq_len));
-                  Tensor gP = local_tile(cPgP, take<0, 2>(TileShapeQK{}), make_coord(get<0>(blk_qv), K));
-                  auto cS_thread = thr_mma_qk.partition_C(gP);
-                  int row_idx_begin = get<0>(cS_thread(0));
-                  int row_idx_end = row_idx_begin + q_sg_tile;
-                  int col_idx_begin = get<1>(cS_thread(0));
-                  int col_idx_end = col_idx_begin + get<1>(TileShapeQK{});
-                  if (row_idx_end <= seq_len && col_idx_end <= seq_len) {
-                    CUTLASS_PRAGMA_UNROLL
-                    for (int i = 0; i < tPrS.size(); ++i) {
-                      int row_idx = get<0>(cS_thread(i));
-                      int col_idx = get<1>(cS_thread(i));
-                      tPrS(i) += ElementP(params.mask[col_idx + row_idx * seq_len]);
-                    }
-                  } else {
-                    CUTLASS_PRAGMA_UNROLL
-                    for (int i = 0; i < tPrS.size(); ++i) {
-                      int row_idx = get<0>(cS_thread(i));
-                      int col_idx = get<1>(cS_thread(i));
-                      tPrS(i) += (row_idx < seq_len && col_idx < seq_len)
-                                     ? ElementP(params.mask[col_idx + row_idx * seq_len])
-                                     : ElementP(-INFINITY);
-                    }
-                  }
-                }
-              }
-
-              /* k masking for remainder tiles */
-              if constexpr (!is_cache) {
-                if (check_remainder_k && K == total_blk - 1) {
-                  FragPCol k_rem_mask;
-                  int k_val = get<0>(tKgK_cur(0, 0, 0, k_idx, 0)) + kblocks_cache * get<1>(TileShapeQK{});
-                  int k = k_val + get_sub_group().get_local_id()[0];
-                  CUTLASS_PRAGMA_UNROLL
-                  for (int i = 0; i < k_rem_mask.size(); i++, k += intel::sg_size) {
-                    k_rem_mask(i) = (k < seq_len) ? ElementP(sycl::nan(0u)) : ElementP(-INFINITY);
-                  }
-                  CUTLASS_PRAGMA_UNROLL
-                  for (int i = 0; i < tPrS.size(); i++) {
-                    tPrS(i) = sycl::fmin(tPrS(i), broadcast<1>(k_rem_mask, tPrS, i));
-                  }
-                }
-              }
-            }
-
-            if constexpr (ProfileMode == cutlass::sage::SparseProfileMode::QkOnly) {
-              write_profile_proxy();
-              prefetch_next_k_block(cached_k, K);
-              barrier_wait(ScopeWorkgroup);
-              return;
-            }
-
-            if constexpr (ProfileMode == cutlass::sage::SparseProfileMode::PvOnlySynthetic ||
-                          ProfileMode == cutlass::sage::SparseProfileMode::PvOnlyRealish ||
-                          ProfileMode == cutlass::sage::SparseProfileMode::QkPlusPvNoSoftmax) {
-              init_profile_pv_state(first_block);
-              if constexpr (ProfileMode == cutlass::sage::SparseProfileMode::QkPlusPvNoSoftmax) {
-                prepare_qk_scores_for_pv();
-              }
-              if constexpr (!UseInt8PV) {
-                reorder(tPrS, tArP);
-              } else {
-                reorder(tPrS, tArP_i8);
-              }
-              if constexpr (ProfileMode == cutlass::sage::SparseProfileMode::PvOnlySynthetic) {
-                if constexpr (UseInt8PV) {
-                  CUTLASS_PRAGMA_UNROLL
-                  for (int i = 0; i < tArP_i8.size(); ++i) {
-                    tArP_i8(i) = int8_t((i & 1) == 0 ? 32 : 16);
-                  }
-                }
-              }
-            } else {
-              /* Apply softmax and scaling (tA rescaling fused into GEMM2 VTile loop). */
-              auto rescale = softmax(first_block, tPrS, tA_max, tA_sum);
-              if constexpr (ProfileMode == cutlass::sage::SparseProfileMode::QkSoftmaxOnly) {
+          } else {
+            constexpr ElementA kInvVQuantScale = ElementA(1.0f / 127.0f);
+            int scalev_head_dim = int(size<0>(V_2D));
+            int v_block_base = int(get<1>(blk_qv)) * int(get<1>(TileShapePV{})) * VTiles;
+            int scalev_block_base = scalek_idx * scalev_head_dim;
+            CUTLASS_PRAGMA_UNROLL
+            for (int VV = 0; VV < VTiles; VV++) {
+              auto tArA_v = tArA(_, _, _, VV);
+              if (!first_block) {
                 CUTLASS_PRAGMA_UNROLL
-                for (int i = 0; i < tPrS.size(); ++i) {
-                  tPrS(i) *= broadcast<0>(rescale, tPrS, i);
-                }
-                write_profile_proxy();
-                prefetch_next_k_block(cached_k, K);
-                barrier_wait(ScopeWorkgroup);
-                return;
+                for (int i = 0; i < tArA.size() / VTiles; i++) tArA_v(i) *= broadcast<0>(rescale, tArA, i);
               }
 
-              if constexpr (!UseInt8PV) {
-                reorder(tPrS, tArP);
-              } else {
-                reorder(tPrS, tArP_i8);
+              auto tArAcc = thr_mma_pv_i8.partition_sg_fragment_C(cPV);
+              auto tVrV_i8 = thr_copy_v.partition_sg_fragment_D(gV_split(_, _, 0, 0));
+              auto tArV_i8 = thr_mma_pv_i8.partition_sg_fragment_B(gV_split(_, _, 0, 0));
+              copy(copy_v_cur, tVgV_cur(_, _, _, VV, k_idx), tVrV_i8);
+              reorder(tVrV_i8, tArV_i8);
+              clear(tArAcc);
+
+              if constexpr (ExecuteInt8PV) {
+                cute::gemm(mma_pv_i8, tArP_i8, tArV_i8, tArAcc);
               }
-            }
 
-            /* GEMM 2: A += P * V, split in v dimension.
-              tArA rescaling is fused to per-VTile. */
-            if constexpr (!UseInt8PV) {
-              CUTLASS_PRAGMA_UNROLL
-              for (int VV = 0; VV < VTiles; VV++) {
-                copy(copy_v_cur, tVgV_cur(_, _, _, VV, k_idx), tVrV);
-                reorder(tVrV, tArV);
-                cute::gemm(mma_pv, tArP, tArV, tArA(_, _, _, VV));
-              }
-            } else {
-              constexpr ElementA kInvVQuantScale = ElementA(1.0f / 127.0f);
-              int scalev_head_dim = int(size<0>(V_2D));
-              int v_block_base = int(get<1>(blk_qv)) * int(get<1>(TileShapePV{})) * VTiles;
-              int scalev_block_base = scalek_idx * scalev_head_dim;
-              CUTLASS_PRAGMA_UNROLL
-              for (int VV = 0; VV < VTiles; VV++) {
-                auto tArA_v = tArA(_, _, _, VV);
-                auto tArAcc = thr_mma_pv_i8.partition_sg_fragment_C(cPV);
-                auto tVrV_i8 = thr_copy_v.partition_sg_fragment_D(gV_split(_, _, 0, 0));
-                auto tArV_i8 = thr_mma_pv_i8.partition_sg_fragment_B(gV_split(_, _, 0, 0));
-                copy(copy_v_cur, tVgV_cur(_, _, _, VV, k_idx), tVrV_i8);
-                reorder(tVrV_i8, tArV_i8);
-                clear(tArAcc);
-
-                if constexpr (ExecuteInt8PV) {
-                  cute::gemm(mma_pv_i8, tArP_i8, tArV_i8, tArAcc);
-                }
-
-                if constexpr (WriteBackInt8PV) {
-                  CUTLASS_PRAGMA_UNROLL
-                  for (int i = 0; i < tArAcc.size(); ++i) {
-                    int local_v = int(get<1>(tCrA(i)));
-                    int scalev_idx = scalev_block_base + v_block_base + VV * int(get<1>(TileShapePV{})) + local_v;
-                    tArA_v(i) += ElementA(tArAcc(i)) * ElementA(scaleV[scalev_idx]) * kInvVQuantScale;
-                  }
+              if constexpr (WriteBackInt8PV) {
+                CUTLASS_PRAGMA_UNROLL
+                for (int i = 0; i < tArAcc.size(); ++i) {
+                  int local_v = int(get<1>(tCrA(i)));
+                  int scalev_idx = scalev_block_base + v_block_base + VV * int(get<1>(TileShapePV{})) + local_v;
+                  tArA_v(i) += ElementA(tArAcc(i)) * ElementA(scaleV[scalev_idx]) * kInvVQuantScale;
                 }
               }
             }
@@ -1420,68 +716,23 @@ finish_pv_only_profile:
             if constexpr (CachedKV) {
               if (K < kblocks_cache) {
                 if (K >= blk_k0 && K < blk_k1) {
-                  if constexpr (ProfileRequiresPV) {
-                    if constexpr (ProfileMode == cutlass::sage::SparseProfileMode::PvOnlySynthetic ||
-                                  ProfileMode == cutlass::sage::SparseProfileMode::PvOnlyRealish ||
-                                  ProfileMode == cutlass::sage::SparseProfileMode::PvReorderOnly ||
-                                  ProfileMode == cutlass::sage::SparseProfileMode::PvLoadVOnly ||
-                                  ProfileMode == cutlass::sage::SparseProfileMode::PvMmaOnly ||
-                                  ProfileMode == cutlass::sage::SparseProfileMode::PvReorderPlusMma) {
-                      run_pv_only_math(std::bool_constant<true>{}, K, first_selected_block, subgroup_selected,
-                                       sparse_prefetch_block, copy_v_cache, prefetch_v_cache, tVgV_cache, pVgV_cache);
-                    } else {
-                      mainloop_body(std::bool_constant<true>{}, K, first_selected_block, subgroup_selected,
-                                    sparse_prefetch_block, copy_k_cache, copy_v_cache, prefetch_v_cache, tKgK_cache,
-                                    tVgV_cache, pVgV_cache);
-                    }
-                  } else {
-                    run_qk_math(std::bool_constant<true>{}, K, first_selected_block, subgroup_selected,
-                                sparse_prefetch_block, copy_k_cache, tKgK_cache);
-                  }
+                  mainloop_body(std::bool_constant<true>{}, K, first_selected_block, subgroup_selected,
+                                sparse_prefetch_block, copy_k_cache, copy_v_cache, prefetch_v_cache, tKgK_cache,
+                                tVgV_cache, pVgV_cache);
                   subgroup_started = true;
                 }
               } else {
                 K += kblocks_cache;
                 if (K >= (blk_k0 > kblocks_cache ? blk_k0 : kblocks_cache) && K < blk_k1) {
-                  if constexpr (ProfileRequiresPV) {
-                    if constexpr (ProfileMode == cutlass::sage::SparseProfileMode::PvOnlySynthetic ||
-                                  ProfileMode == cutlass::sage::SparseProfileMode::PvOnlyRealish ||
-                                  ProfileMode == cutlass::sage::SparseProfileMode::PvReorderOnly ||
-                                  ProfileMode == cutlass::sage::SparseProfileMode::PvLoadVOnly ||
-                                  ProfileMode == cutlass::sage::SparseProfileMode::PvMmaOnly ||
-                                  ProfileMode == cutlass::sage::SparseProfileMode::PvReorderPlusMma) {
-                      run_pv_only_math(std::bool_constant<false>{}, K, first_selected_block, subgroup_selected,
-                                       sparse_prefetch_block, copy_v, prefetch_v, tVgV, pVgV);
-                    } else {
-                      mainloop_body(std::bool_constant<false>{}, K, first_selected_block, subgroup_selected,
-                                    sparse_prefetch_block, copy_k, copy_v, prefetch_v, tKgK, tVgV, pVgV);
-                    }
-                  } else {
-                    run_qk_math(std::bool_constant<false>{}, K, first_selected_block, subgroup_selected,
-                                sparse_prefetch_block, copy_k, tKgK);
-                  }
+                  mainloop_body(std::bool_constant<false>{}, K, first_selected_block, subgroup_selected,
+                                sparse_prefetch_block, copy_k, copy_v, prefetch_v, tKgK, tVgV, pVgV);
                   subgroup_started = true;
                 }
               }
             } else {
               if (K >= blk_k0 && K < blk_k1) {
-                if constexpr (ProfileRequiresPV) {
-                  if constexpr (ProfileMode == cutlass::sage::SparseProfileMode::PvOnlySynthetic ||
-                                ProfileMode == cutlass::sage::SparseProfileMode::PvOnlyRealish ||
-                                ProfileMode == cutlass::sage::SparseProfileMode::PvReorderOnly ||
-                                ProfileMode == cutlass::sage::SparseProfileMode::PvLoadVOnly ||
-                                ProfileMode == cutlass::sage::SparseProfileMode::PvMmaOnly ||
-                                ProfileMode == cutlass::sage::SparseProfileMode::PvReorderPlusMma) {
-                    run_pv_only_math(std::bool_constant<false>{}, K, first_selected_block, subgroup_selected,
-                                     sparse_prefetch_block, copy_v, prefetch_v, tVgV, pVgV);
-                  } else {
-                    mainloop_body(std::bool_constant<false>{}, K, first_selected_block, subgroup_selected,
-                                  sparse_prefetch_block, copy_k, copy_v, prefetch_v, tKgK, tVgV, pVgV);
-                  }
-                } else {
-                  run_qk_math(std::bool_constant<false>{}, K, first_selected_block, subgroup_selected,
-                              sparse_prefetch_block, copy_k, tKgK);
-                }
+                mainloop_body(std::bool_constant<false>{}, K, first_selected_block, subgroup_selected,
+                              sparse_prefetch_block, copy_k, copy_v, prefetch_v, tKgK, tVgV, pVgV);
                 subgroup_started = true;
               }
             }
@@ -1575,68 +826,23 @@ finish_pv_only_profile:
             if constexpr (CachedKV) {
               if (K < kblocks_cache) {
                 if (K >= blk_k0 && K < blk_k1) {
-                  if constexpr (ProfileRequiresPV) {
-                    if constexpr (ProfileMode == cutlass::sage::SparseProfileMode::PvOnlySynthetic ||
-                                  ProfileMode == cutlass::sage::SparseProfileMode::PvOnlyRealish ||
-                                  ProfileMode == cutlass::sage::SparseProfileMode::PvReorderOnly ||
-                                  ProfileMode == cutlass::sage::SparseProfileMode::PvLoadVOnly ||
-                                  ProfileMode == cutlass::sage::SparseProfileMode::PvMmaOnly ||
-                                  ProfileMode == cutlass::sage::SparseProfileMode::PvReorderPlusMma) {
-                      run_pv_only_math(std::bool_constant<true>{}, K, first_selected_block, subgroup_selected,
-                                       sparse_prefetch_block, copy_v_cache, prefetch_v_cache, tVgV_cache, pVgV_cache);
-                    } else {
-                      mainloop_body(std::bool_constant<true>{}, K, first_selected_block, subgroup_selected,
-                                    sparse_prefetch_block, copy_k_cache, copy_v_cache, prefetch_v_cache, tKgK_cache,
-                                    tVgV_cache, pVgV_cache);
-                    }
-                  } else {
-                    run_qk_math(std::bool_constant<true>{}, K, first_selected_block, subgroup_selected,
-                                sparse_prefetch_block, copy_k_cache, tKgK_cache);
-                  }
+                  mainloop_body(std::bool_constant<true>{}, K, first_selected_block, subgroup_selected,
+                                sparse_prefetch_block, copy_k_cache, copy_v_cache, prefetch_v_cache, tKgK_cache,
+                                tVgV_cache, pVgV_cache);
                   subgroup_started = subgroup_started || subgroup_selected;
                 }
               } else {
                 K += kblocks_cache;
                 if (K >= (blk_k0 > kblocks_cache ? blk_k0 : kblocks_cache) && K < blk_k1) {
-                  if constexpr (ProfileRequiresPV) {
-                    if constexpr (ProfileMode == cutlass::sage::SparseProfileMode::PvOnlySynthetic ||
-                                  ProfileMode == cutlass::sage::SparseProfileMode::PvOnlyRealish ||
-                                  ProfileMode == cutlass::sage::SparseProfileMode::PvReorderOnly ||
-                                  ProfileMode == cutlass::sage::SparseProfileMode::PvLoadVOnly ||
-                                  ProfileMode == cutlass::sage::SparseProfileMode::PvMmaOnly ||
-                                  ProfileMode == cutlass::sage::SparseProfileMode::PvReorderPlusMma) {
-                      run_pv_only_math(std::bool_constant<false>{}, K, first_selected_block, subgroup_selected,
-                                       sparse_prefetch_block, copy_v, prefetch_v, tVgV, pVgV);
-                    } else {
-                      mainloop_body(std::bool_constant<false>{}, K, first_selected_block, subgroup_selected,
-                                    sparse_prefetch_block, copy_k, copy_v, prefetch_v, tKgK, tVgV, pVgV);
-                    }
-                  } else {
-                    run_qk_math(std::bool_constant<false>{}, K, first_selected_block, subgroup_selected,
-                                sparse_prefetch_block, copy_k, tKgK);
-                  }
+                  mainloop_body(std::bool_constant<false>{}, K, first_selected_block, subgroup_selected,
+                                sparse_prefetch_block, copy_k, copy_v, prefetch_v, tKgK, tVgV, pVgV);
                   subgroup_started = subgroup_started || subgroup_selected;
                 }
               }
             } else {
               if (K >= blk_k0 && K < blk_k1) {
-                if constexpr (ProfileRequiresPV) {
-                  if constexpr (ProfileMode == cutlass::sage::SparseProfileMode::PvOnlySynthetic ||
-                                ProfileMode == cutlass::sage::SparseProfileMode::PvOnlyRealish ||
-                                ProfileMode == cutlass::sage::SparseProfileMode::PvReorderOnly ||
-                                ProfileMode == cutlass::sage::SparseProfileMode::PvLoadVOnly ||
-                                ProfileMode == cutlass::sage::SparseProfileMode::PvMmaOnly ||
-                                ProfileMode == cutlass::sage::SparseProfileMode::PvReorderPlusMma) {
-                    run_pv_only_math(std::bool_constant<false>{}, K, first_selected_block, subgroup_selected,
-                                     sparse_prefetch_block, copy_v, prefetch_v, tVgV, pVgV);
-                  } else {
-                    mainloop_body(std::bool_constant<false>{}, K, first_selected_block, subgroup_selected,
-                                  sparse_prefetch_block, copy_k, copy_v, prefetch_v, tKgK, tVgV, pVgV);
-                  }
-                } else {
-                  run_qk_math(std::bool_constant<false>{}, K, first_selected_block, subgroup_selected,
-                              sparse_prefetch_block, copy_k, tKgK);
-                }
+                mainloop_body(std::bool_constant<false>{}, K, first_selected_block, subgroup_selected,
+                              sparse_prefetch_block, copy_k, copy_v, prefetch_v, tKgK, tVgV, pVgV);
                 subgroup_started = subgroup_started || subgroup_selected;
               }
             }
@@ -1648,44 +854,14 @@ finish_pv_only_profile:
       } else {
         if constexpr (CachedKV) {
           for (int K = blk_k0; K < kblocks_cache; K++) {
-            if constexpr (ProfileRequiresPV) {
-              if constexpr (ProfileMode == cutlass::sage::SparseProfileMode::PvOnlySynthetic ||
-                            ProfileMode == cutlass::sage::SparseProfileMode::PvOnlyRealish ||
-                            ProfileMode == cutlass::sage::SparseProfileMode::PvReorderOnly ||
-                            ProfileMode == cutlass::sage::SparseProfileMode::PvLoadVOnly ||
-                            ProfileMode == cutlass::sage::SparseProfileMode::PvMmaOnly ||
-                            ProfileMode == cutlass::sage::SparseProfileMode::PvReorderPlusMma) {
-                run_pv_only_math(std::bool_constant<true>{}, K, K == blk_k0, true, total_blk, copy_v_cache,
-                                 prefetch_v_cache, tVgV_cache, pVgV_cache);
-              } else {
-                mainloop_body(std::bool_constant<true>{}, K, K == blk_k0, true, total_blk, copy_k_cache, copy_v_cache,
-                              prefetch_v_cache, tKgK_cache, tVgV_cache, pVgV_cache);
-              }
-            } else {
-              run_qk_math(std::bool_constant<true>{}, K, K == blk_k0, true, total_blk, copy_k_cache, tKgK_cache);
-            }
+            mainloop_body(std::bool_constant<true>{}, K, K == blk_k0, true, total_blk, copy_k_cache, copy_v_cache,
+                          prefetch_v_cache, tKgK_cache, tVgV_cache, pVgV_cache);
           }
         }
         for (int K = (blk_k0 > kblocks_cache ? blk_k0 : kblocks_cache); K < blk_k1; K++) {
-          if constexpr (ProfileRequiresPV) {
-            if constexpr (ProfileMode == cutlass::sage::SparseProfileMode::PvOnlySynthetic ||
-                          ProfileMode == cutlass::sage::SparseProfileMode::PvOnlyRealish ||
-                          ProfileMode == cutlass::sage::SparseProfileMode::PvReorderOnly ||
-                          ProfileMode == cutlass::sage::SparseProfileMode::PvLoadVOnly ||
-                          ProfileMode == cutlass::sage::SparseProfileMode::PvMmaOnly ||
-                          ProfileMode == cutlass::sage::SparseProfileMode::PvReorderPlusMma) {
-              run_pv_only_math(std::bool_constant<false>{}, K,
-                               K == (blk_k0 > kblocks_cache ? blk_k0 : kblocks_cache), true, total_blk, copy_v,
-                               prefetch_v, tVgV, pVgV);
-            } else {
-              mainloop_body(std::bool_constant<false>{}, K,
-                            K == (blk_k0 > kblocks_cache ? blk_k0 : kblocks_cache), true, total_blk, copy_k, copy_v,
-                            prefetch_v, tKgK, tVgV, pVgV);
-            }
-          } else {
-            run_qk_math(std::bool_constant<false>{}, K,
-                        K == (blk_k0 > kblocks_cache ? blk_k0 : kblocks_cache), true, total_blk, copy_k, tKgK);
-          }
+          mainloop_body(std::bool_constant<false>{}, K,
+                        K == (blk_k0 > kblocks_cache ? blk_k0 : kblocks_cache), true, total_blk, copy_k, copy_v,
+                        prefetch_v, tKgK, tVgV, pVgV);
         }
       }
   }

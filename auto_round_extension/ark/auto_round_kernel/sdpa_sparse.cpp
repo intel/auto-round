@@ -29,7 +29,6 @@ namespace detail = sparse_detail;
 namespace {
 
 using KernelLauncher = int (*)(detail::Options const& options);
-constexpr int kSparseProfileModeFull = 0;
 
 int launch_prefill_kernel_f16_128_sparse_sage(detail::Options const& options) {
   return detail::launch_sparse_sage_prefill_kernel_128<cute::int8_t, cute::int8_t, cute::half_t>(options);
@@ -63,12 +62,7 @@ int launch_prefill_kernel_bf16_64_sparse_sage(detail::Options const& options) {
   return detail::launch_sparse_sage_prefill_kernel_64<cute::int8_t, cute::int8_t, cute::bfloat16_t>(options);
 }
 
-KernelLauncher select_sparse_sage_prefill_launcher(BTLA_DTYPE pv_dtype, int head_dim, int q_tile_override,
-                                                   int sparse_profile_mode = kSparseProfileModeFull) {
-  if (sparse_profile_mode != kSparseProfileModeFull) {
-    return nullptr;
-  }
-
+KernelLauncher select_sparse_sage_prefill_launcher(BTLA_DTYPE pv_dtype, int head_dim, int q_tile_override) {
   switch (head_dim) {
     case 128:
       if (q_tile_override == 64) {

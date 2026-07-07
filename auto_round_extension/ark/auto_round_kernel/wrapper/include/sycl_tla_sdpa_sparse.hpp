@@ -93,7 +93,6 @@ struct Options {
    void* mask = nullptr;
    void* o = nullptr;
   int q_tile_override = 0;
-  int sparse_profile_mode = 0;
   int scale_block_size = 0;
   int sparse_q_block_size = 0;
   const void *qscale = nullptr, *kscale = nullptr, *vscale = nullptr;
@@ -126,7 +125,6 @@ struct Options {
        << "  o: " << o << "\n"
        << "  mask: " << mask << "\n"
        << "  q_tile_override: " << q_tile_override << "\n"
-       << "  sparse_profile_mode: " << sparse_profile_mode << "\n"
        << "  sparse_q_block_size: " << sparse_q_block_size << "\n"
        << "  lut: " << lut << "\n"
        << "  valid_block_num: " << valid_block_num << "\n"
@@ -907,7 +905,7 @@ struct SageConfig {
 #if defined(ARK_SDPA_ENABLE_SPARSE)
 template <bool Causal, bool UseInt8PV, bool WriteBackInt8PV, bool ExecuteInt8PV, typename TileShapeQK,
           typename TileShapePV, typename TileShapeOutput, typename SubgroupLayoutQK,
-          typename SubgroupLayoutPV_, int PipelineStages, bool persistent, cutlass::sage::SparseProfileMode ProfileMode,
+          typename SubgroupLayoutPV_, int PipelineStages, bool persistent,
           typename ElementQ = bfloat16_t,
           typename ElementK = bfloat16_t, typename ElementV = bfloat16_t, typename ElementO = ElementQ,
           typename MMAOperation_ = void, typename StrideQ = Stride<int, _1, int, int>,
@@ -950,7 +948,7 @@ struct SparseSageConfig {
     if constexpr (Causal) {
       using CollectiveMainloop =
           cutlass::fmha::collective::SPARSESAGEV1FwdMainloop<MainloopDispatchPolicy, Causal, false, CachedKV, PagedKV,
-                                                             UseInt8PV, WriteBackInt8PV, ExecuteInt8PV, ProfileMode, TiledMMAQK,
+                                                             UseInt8PV, WriteBackInt8PV, ExecuteInt8PV, TiledMMAQK,
                                                              TiledMMAPV, VTiles, TensorQ, TensorK, TensorV,
                                                              TensorK_cache, TensorV_cache, GmemTiledCopyQ, GmemTiledCopyK,
                                                              GmemTiledCopyV, GmemTiledCopyK_cache, GmemTiledCopyV_cache>;
@@ -964,7 +962,7 @@ struct SparseSageConfig {
       if (options.mask) {
       using CollectiveMainloop =
             cutlass::fmha::collective::SPARSESAGEV1FwdMainloop<MainloopDispatchPolicy, Causal, true, CachedKV, PagedKV,
-                                                               UseInt8PV, WriteBackInt8PV, ExecuteInt8PV, ProfileMode, TiledMMAQK,
+                                                               UseInt8PV, WriteBackInt8PV, ExecuteInt8PV, TiledMMAQK,
                                                                TiledMMAPV, VTiles, TensorQ, TensorK, TensorV,
                                                                TensorK_cache, TensorV_cache, GmemTiledCopyQ,
                                                                GmemTiledCopyK, GmemTiledCopyV, GmemTiledCopyK_cache,
@@ -978,7 +976,7 @@ struct SparseSageConfig {
       } else {
         using CollectiveMainloop =
             cutlass::fmha::collective::SPARSESAGEV1FwdMainloop<MainloopDispatchPolicy, Causal, false, CachedKV, PagedKV,
-                                                               UseInt8PV, WriteBackInt8PV, ExecuteInt8PV, ProfileMode, TiledMMAQK,
+                                                               UseInt8PV, WriteBackInt8PV, ExecuteInt8PV, TiledMMAQK,
                                                                TiledMMAPV, VTiles, TensorQ, TensorK, TensorV,
                                                                TensorK_cache, TensorV_cache, GmemTiledCopyQ,
                                                                GmemTiledCopyK, GmemTiledCopyV, GmemTiledCopyK_cache,
@@ -1093,12 +1091,11 @@ inline int launch_sparse_sage_prefill_kernel_128(Options const& options) {
   using ShapeOut1 = Shape<_256, _128>;
   using SubgroupLayoutQK1 = Layout<Shape<_16, _1, _1>>;
   return options.is_causal ? SparseSageConfig<true, false, true, true, ShapeQK, ShapePV, ShapeOut, SubgroupLayoutQK,
-                                              void, PipelineStages, false, cutlass::sage::SparseProfileMode::Full,
-                                              ElementQ, ElementK, ElementV, ElementO>::run(options)
+                                              void, PipelineStages, false, ElementQ, ElementK, ElementV,
+                                              ElementO>::run(options)
                            : SparseSageConfig<false, false, true, true, ShapeQK1, ShapePV1, ShapeOut1,
-                                             SubgroupLayoutQK1, void, PipelineStages, false,
-                                             cutlass::sage::SparseProfileMode::Full, ElementQ, ElementK, ElementV,
-                                             ElementO>::run(options);
+                                             SubgroupLayoutQK1, void, PipelineStages, false, ElementQ, ElementK,
+                                             ElementV, ElementO>::run(options);
 }
 
 template <typename ElementQ, typename ElementK, typename ElementV, typename ElementO = ElementV>
@@ -1113,12 +1110,11 @@ inline int launch_sparse_sage_prefill_kernel_128_qtile128(Options const& options
   using ShapeOut1 = Shape<_128, _128>;
   using SubgroupLayoutQK1 = Layout<Shape<_8, _1, _1>>;
   return options.is_causal ? SparseSageConfig<true, false, true, true, ShapeQK, ShapePV, ShapeOut, SubgroupLayoutQK,
-                                              void, PipelineStages, false, cutlass::sage::SparseProfileMode::Full,
-                                              ElementQ, ElementK, ElementV, ElementO>::run(options)
+                                              void, PipelineStages, false, ElementQ, ElementK, ElementV,
+                                              ElementO>::run(options)
                            : SparseSageConfig<false, false, true, true, ShapeQK1, ShapePV1, ShapeOut1,
-                                             SubgroupLayoutQK1, void, PipelineStages, false,
-                                             cutlass::sage::SparseProfileMode::Full, ElementQ, ElementK, ElementV,
-                                             ElementO>::run(options);
+                                             SubgroupLayoutQK1, void, PipelineStages, false, ElementQ, ElementK,
+                                             ElementV, ElementO>::run(options);
 }
 
 template <typename ElementQ, typename ElementK, typename ElementV, typename ElementO = ElementV>
@@ -1133,50 +1129,11 @@ inline int launch_sparse_sage_prefill_kernel_128_qtile64(Options const& options)
   using ShapeOut1 = Shape<_64, _128>;
   using SubgroupLayoutQK1 = Layout<Shape<_4, _1, _1>>;
   return options.is_causal ? SparseSageConfig<true, false, true, true, ShapeQK, ShapePV, ShapeOut, SubgroupLayoutQK,
-                                              void, PipelineStages, false, cutlass::sage::SparseProfileMode::Full,
-                                              ElementQ, ElementK, ElementV, ElementO>::run(options)
+                                              void, PipelineStages, false, ElementQ, ElementK, ElementV,
+                                              ElementO>::run(options)
                            : SparseSageConfig<false, false, true, true, ShapeQK1, ShapePV1, ShapeOut1,
-                                             SubgroupLayoutQK1, void, PipelineStages, false,
-                                             cutlass::sage::SparseProfileMode::Full, ElementQ, ElementK, ElementV,
-                                             ElementO>::run(options);
-}
-
-template <cutlass::sage::SparseProfileMode ProfileMode, typename ElementQ, typename ElementK, typename ElementV,
-          typename ElementO = ElementV>
-inline int launch_sparse_sage_prefill_kernel_128_qtile64_profile(Options const& options) {
-  constexpr int PipelineStages = 2;
-  using ShapeQK = Shape<_64, _64, _32>;
-  using ShapePV = Shape<_64, _32, _64>;
-  using ShapeOut = Shape<_64, _128>;
-  using SubgroupLayoutQK = Layout<Shape<_4, _1, _1>>;
-  using ShapeQK1 = Shape<_64, _64, _32>;
-  using ShapePV1 = Shape<_64, _32, _64>;
-  using ShapeOut1 = Shape<_64, _128>;
-  using SubgroupLayoutQK1 = Layout<Shape<_4, _1, _1>>;
-  return options.is_causal
-             ? SparseSageConfig<true, false, true, true, ShapeQK, ShapePV, ShapeOut, SubgroupLayoutQK, void,
-                                PipelineStages, false, ProfileMode, ElementQ, ElementK, ElementV, ElementO>::run(options)
-             : SparseSageConfig<false, false, true, true, ShapeQK1, ShapePV1, ShapeOut1, SubgroupLayoutQK1, void,
-                                PipelineStages, false, ProfileMode, ElementQ, ElementK, ElementV, ElementO>::run(options);
-}
-
-template <cutlass::sage::SparseProfileMode ProfileMode, typename ElementQ, typename ElementK, typename ElementV,
-          typename ElementO = ElementV>
-inline int launch_sparse_sage_prefill_kernel_128_qtile64_profile_halfwidth(Options const& options) {
-  constexpr int PipelineStages = 2;
-  using ShapeQK = Shape<_64, _64, _32>;
-  using ShapePV = Shape<_64, _32, _64>;
-  using ShapeOut = Shape<_64, _64>;
-  using SubgroupLayoutQK = Layout<Shape<_4, _1, _1>>;
-  using ShapeQK1 = Shape<_64, _64, _32>;
-  using ShapePV1 = Shape<_64, _32, _64>;
-  using ShapeOut1 = Shape<_64, _64>;
-  using SubgroupLayoutQK1 = Layout<Shape<_4, _1, _1>>;
-  return options.is_causal
-             ? SparseSageConfig<true, false, true, true, ShapeQK, ShapePV, ShapeOut, SubgroupLayoutQK, void,
-                                PipelineStages, false, ProfileMode, ElementQ, ElementK, ElementV, ElementO>::run(options)
-             : SparseSageConfig<false, false, true, true, ShapeQK1, ShapePV1, ShapeOut1, SubgroupLayoutQK1, void,
-                                PipelineStages, false, ProfileMode, ElementQ, ElementK, ElementV, ElementO>::run(options);
+                                             SubgroupLayoutQK1, void, PipelineStages, false, ElementQ, ElementK,
+                                             ElementV, ElementO>::run(options);
 }
 
 template <typename ElementQ, typename ElementK, typename ElementV, typename ElementO = ElementV>
@@ -1189,11 +1146,11 @@ inline int launch_sparse_sage_prefill_kernel_64(Options const& options) {
   using SubgroupLayoutPV = void;
   return options.is_causal
              ? SparseSageConfig<true, false, true, true, ShapeQK, ShapePV, ShapeOut, SubgroupLayoutQK,
-                                SubgroupLayoutPV, PipelineStages, false, cutlass::sage::SparseProfileMode::Full,
-                                ElementQ, ElementK, ElementV, ElementO>::run(options)
+                                SubgroupLayoutPV, PipelineStages, false, ElementQ, ElementK, ElementV,
+                                ElementO>::run(options)
              : SparseSageConfig<false, false, true, true, ShapeQK, ShapePV, ShapeOut, SubgroupLayoutQK,
-                                SubgroupLayoutPV, PipelineStages, false, cutlass::sage::SparseProfileMode::Full,
-                                ElementQ, ElementK, ElementV, ElementO>::run(options);
+                                SubgroupLayoutPV, PipelineStages, false, ElementQ, ElementK, ElementV,
+                                ElementO>::run(options);
 }
 #endif  // ARK_SDPA_ENABLE_SPARSE
 
