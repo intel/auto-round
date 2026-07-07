@@ -223,7 +223,6 @@ class GGUFDTypeSelector:
             )
             or 0
         )
-
         # llama.cpp: output & token_embd handling (llama_tensor_get_type outer wrapper)
         if category == TensorCategory.OUTPUT or (self.has_tied_embeddings and category == TensorCategory.TOKEN_EMBD):
             # llama.cpp: if new_type != Q8_0, upgrade to Q6_K
