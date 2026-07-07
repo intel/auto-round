@@ -11,20 +11,11 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-from enum import Enum
 from typing import ClassVar, Union
 
 from auto_round.export.export_to_gguf.config import GGUF_INNER_CONFIG
 from auto_round.logger import logger
 from auto_round.schemes import QuantizationScheme
-
-
-class BackendDataType(str, Enum):
-    STANDARD_FP = "fp"
-    MX_FP = "mx_fp"
-    NV_FP = "nv_fp"
-    FP8_STATIC = "fp8_static"
-    FP8 = "fp8"
 
 
 class QuantizationConfig:
@@ -184,71 +175,44 @@ class QuantizationConfig:
 
     @property
     def is_act_quantize(self) -> bool:
-        return self.act_bits is not None and self.act_bits <= 8
+        return self.scheme.is_act_quantize()
 
     @property
     def is_nv_fp(self) -> bool:
-        return self.data_type is not None and BackendDataType.NV_FP in self.data_type
+        return self.scheme.is_nv_fp()
 
     @property
     def is_act_nv_fp(self) -> bool:
-        return self.act_data_type is not None and BackendDataType.NV_FP in self.act_data_type
+        return self.scheme.is_act_nv_fp()
 
     @property
     def is_mx_fp(self) -> bool:
-        return self.data_type is not None and BackendDataType.MX_FP in self.data_type
+        return self.scheme.is_mx_fp()
 
     @property
     def is_act_mx_fp(self) -> bool:
-        return self.act_data_type is not None and BackendDataType.MX_FP in self.act_data_type
+        return self.scheme.is_act_mx_fp()
 
     @property
     def is_dynamic_wint8aint8(self) -> bool:
-        if self.act_dynamic:
-            return True
-        if self.act_data_type is not None and self.data_type is not None:
-            if ("int8" in self.act_data_type or ("int" in self.act_data_type and self.act_bits == 8)) and (
-                "int8" in self.data_type or ("int" in self.data_type and self.bits == 8)
-            ):
-                return True
-        return False
+        return self.scheme.is_dynamic_wint8aint8()
 
     @property
     def is_standard_fp(self) -> bool:
-        return (
-            self.data_type is not None
-            and BackendDataType.STANDARD_FP in self.data_type
-            and not self.is_mx_fp
-            and not self.is_nv_fp
-        )
+        return self.scheme.is_standard_fp()
 
     @property
     def is_act_standard_fp(self) -> bool:
-        return (
-            self.act_data_type is not None
-            and BackendDataType.STANDARD_FP in self.act_data_type
-            and not self.is_act_mx_fp
-            and not self.is_act_nv_fp
-        )
+        return self.scheme.is_act_standard_fp()
 
     @property
     def is_static_afp8(self) -> bool:
-        return self.act_data_type is not None and BackendDataType.FP8_STATIC in self.act_data_type
+        return self.scheme.is_static_afp8()
 
     @property
     def is_static_wfp8afp8(self) -> bool:
-        return self.data_type is not None and BackendDataType.FP8_STATIC in self.data_type and self.is_static_afp8
+        return self.scheme.is_static_wfp8afp8()
 
     @property
     def is_wfp8afp8(self) -> bool:
-        if self.act_data_type is None or self.data_type is None:
-            return False
-        if (
-            ("fp8" in self.act_data_type or ("fp" in self.act_data_type and self.act_bits == 8))
-            and ("fp8" in self.data_type or ("fp" in self.data_type and self.bits == 8))
-            and self.is_act_standard_fp
-            and self.is_standard_fp
-        ):
-            return True
-        else:
-            return False
+        return self.scheme.is_wfp8afp8()

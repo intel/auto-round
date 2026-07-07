@@ -26,18 +26,6 @@ from typing import TYPE_CHECKING, Callable, Union
 import torch
 import transformers
 
-from auto_round.compressors.utils import (
-    is_block_wfp8,
-    is_dynamic_afp8,
-    is_dynamic_wint8aint8,
-    is_mx_fp,
-    is_mx_int,
-    is_nv_fp,
-    is_standard_fp,
-    is_static_wfp8afp8,
-    is_wfp8afp8,
-    is_wint_woq,
-)
 from auto_round.export.export_to_gguf.config import ModelType
 from auto_round.schemes import (
     PRESET_SCHEMES,
@@ -82,7 +70,7 @@ if TYPE_CHECKING:
     from auto_round.compressors.base import BaseCompressor
 
 
-def _check_compatibility(formats: list[str], ar: BaseCompressor):
+def _check_compatibility(formats: list[str], scheme: QuantizationScheme):
     if (
         any(["gguf" in f.lower() for f in formats])
         and len([f for f in formats if f.lower() != "fake" and not f.lower().startswith("gguf")]) > 1
@@ -90,7 +78,7 @@ def _check_compatibility(formats: list[str], ar: BaseCompressor):
         raise ValueError(
             f"GGUF format is not compatible with other formats, but got {formats}, please choose only one of them"
         )
-    gguf_format_name = get_gguf_scheme(ar.scheme)
+    gguf_format_name = get_gguf_scheme(scheme)
     if gguf_format_name:
         if gguf_format_name.lower().endswith("mixed"):
             gguf_format_name = gguf_format_name.lower().replace("_mixed", "_s")
@@ -102,7 +90,7 @@ def _check_compatibility(formats: list[str], ar: BaseCompressor):
             )
             formats = tmp_format_name.split(",")
 
-    if isinstance(ar.group_size, tuple) and any(["auto_round" in f.lower() for f in formats]):
+    if isinstance(scheme.group_size, tuple) and any(["auto_round" in f.lower() for f in formats]):
         logger.warning(
             "auto_round:fp8 format only supports vLLM inference for now. "
             "We recommend using the FP8 format via `--format fp8` instead."
@@ -113,18 +101,45 @@ def _check_compatibility(formats: list[str], ar: BaseCompressor):
 
 def get_formats(
     format: str,
-    ar: BaseCompressor,
-) -> list[OutputFormat]:
-    """Get the list of OutputFormat instances based on the provided name."""
+    scheme: QuantizationScheme,
+    *,
+    model=None,
+    layer_config: dict = None,
+    scale_dtype=None,
+    mllm: bool = False,
+    iters: int = 0,
+    enable_alg_ext: bool = False,
+    quant_nontext_module: bool = False,
+    quant_block_list: list = None,
+    platform: str = None,
+) -> tuple[list[OutputFormat], QuantizationScheme, dict, object, list]:
+    """Get the list of OutputFormat instances based on the provided name.
+
+    Returns ``(formats, scheme, layer_config, scale_dtype, quant_block_list)`` since format
+    resolution may replace the scheme (GGUF preset correction), create ``layer_config`` if it
+    was ``None``, force ``scale_dtype`` to ``torch.float32`` for GGUF, or narrow ``quant_block_list``.
+    """
 
     def remove_duplicates(lst):
         seen = set()
         return [x for x in lst if not (x in seen or seen.add(x))]
 
-    formats = format.lower().replace("q*_", f"q{ar.bits}_").replace(" ", "").split(",")
+    fwd_kwargs = dict(
+        model=model,
+        layer_config=layer_config,
+        scale_dtype=scale_dtype,
+        mllm=mllm,
+        iters=iters,
+        enable_alg_ext=enable_alg_ext,
+        quant_nontext_module=quant_nontext_module,
+        quant_block_list=quant_block_list,
+        platform=platform,
+    )
+
+    formats = format.lower().replace("q*_", f"q{scheme.bits}_").replace(" ", "").split(",")
     formats = remove_duplicates(formats)  # need the keep origin order
 
-    formats = _check_compatibility(formats, ar)
+    formats = _check_compatibility(formats, scheme)
 
     formats = remove_duplicates(formats)
 
@@ -134,52 +149,54 @@ def get_formats(
 
     for i in range(len(formats)):
         if formats[i].startswith("gguf:"):
-            formats[i] = GGUFFormat(formats[i], ar)
+            formats[i], scheme, layer_config = GGUFFormat.build(formats[i], scheme, **fwd_kwargs)
         elif formats[i] not in OutputFormat._format_list:
             raise KeyError(f"Unsupported format {formats[i]}, please choose from {SUPPORTED_FORMATS}")
         else:
-            formats[i] = OutputFormat._format_list[formats[i]](formats[i], ar)
+            fwd_kwargs["layer_config"] = layer_config
+            formats[i] = OutputFormat._format_list[formats[i]](formats[i], scheme, **fwd_kwargs)
 
-        new_format = formats[i].check_and_reset_format(ar)
+        fwd_kwargs["layer_config"] = layer_config
+        new_format, scheme, layer_config, quant_block_list = formats[i].check_and_reset_format(
+            scheme, **{**fwd_kwargs, "quant_block_list": quant_block_list}
+        )
+        fwd_kwargs["layer_config"] = layer_config
+        fwd_kwargs["quant_block_list"] = quant_block_list
         if new_format is not None:
             if new_format not in format:
-                formats[i] = OutputFormat._format_list[new_format](new_format, ar)
+                formats[i] = OutputFormat._format_list[new_format](new_format, scheme, **fwd_kwargs)
             else:
                 formats[i] = None
 
     formats = [fmt for fmt in formats if fmt is not None]
 
-    if len(formats) == 1 and formats[0].is_gguf() and ar.scale_dtype != torch.float32:
-        ar.scale_dtype = torch.float32
+    if len(formats) == 1 and formats[0].is_gguf() and scale_dtype != torch.float32:
+        scale_dtype = torch.float32
         logger.info("change `scale_dtype` to `torch.float32` for gguf format")
 
-    return formats
+    return formats, scheme, layer_config, scale_dtype, quant_block_list
 
 
-def _check_divisible_by_32(ar):
-    from auto_round.schemes import preset_name_to_scheme
-
-    if isinstance(ar.scheme, str):
-        default_dict = asdict(preset_name_to_scheme(ar.scheme.upper()))
-    else:
-        default_dict = asdict(ar.scheme)
+def _check_divisible_by_32(scheme: QuantizationScheme, model, layer_config: dict) -> dict:
+    default_dict = asdict(scheme)
     skipped_layers = []
     if default_dict["data_type"] == "int" and default_dict["act_bits"] >= 16:
-        for n, m in ar.model.named_modules():
+        for n, m in model.named_modules():
             if type(m) in SUPPORTED_LAYER_TYPES or m.__class__.__name__ in INNER_SUPPORTED_LAYER_TYPES:
                 if m.weight.shape[0] % 32 or m.weight.shape[1] % 32:
-                    if ar.layer_config is None:
-                        ar.layer_config = {}
-                    if ar.layer_config.get(n) is not None and ar.layer_config[n]["bits"] >= 16:
+                    if layer_config is None:
+                        layer_config = {}
+                    if layer_config.get(n) is not None and layer_config[n]["bits"] >= 16:
                         continue
-                    ar.layer_config.setdefault(n, copy.deepcopy(default_dict))
-                    ar.layer_config[n].update({"bits": 16, "data_type": "fp", "fixed_by_user": True})
+                    layer_config.setdefault(n, copy.deepcopy(default_dict))
+                    layer_config[n].update({"bits": 16, "data_type": "fp", "fixed_by_user": True})
                     skipped_layers.append(n)
     compressed_skipped_layers = compress_layer_names(skipped_layers)
     if compressed_skipped_layers:
         logger.warning_once(
             f"some layers are skipped quantization (shape not divisible by 32): {compressed_skipped_layers}"
         )
+    return layer_config
 
 
 class OutputFormat(ABC):
@@ -195,15 +212,30 @@ class OutputFormat(ABC):
     _format_list: dict[str, OutputFormat] = {}
     format_name = "base"
 
-    def __init__(self, format: str, ar: BaseCompressor):
+    def __init__(
+        self,
+        format: str,
+        scheme: QuantizationScheme,
+        *,
+        model=None,
+        layer_config: dict = None,
+        scale_dtype=None,
+        mllm: bool = False,
+        iters: int = 0,
+        enable_alg_ext: bool = False,
+        quant_nontext_module: bool = False,
+        quant_block_list: list = None,
+        platform: str = None,
+    ):
         """Initialize the OutputFormat class."""
         self.output_format = format
         self.backend = None
+        self.mllm = mllm
 
-        if not self.is_fake() and not self.is_support_scheme(ar.scheme):
+        if not self.is_fake() and not self.is_support_scheme(scheme):
             logger.error(
                 f"Currently, the {self.format_name} format only supports {self.support_schemes}, "
-                f"but got scheme {ar.scheme}, please change to fake or auto_round etc."
+                f"but got scheme {scheme}, please change to fake or auto_round etc."
             )
             exit(-1)
 
@@ -256,15 +288,47 @@ class OutputFormat(ABC):
     def check_scheme_args(cls: OutputFormat, scheme: QuantizationScheme) -> bool:
         return True
 
-    def check_and_reset_format(self, ar: BaseCompressor) -> str:
+    def check_and_reset_format(
+        self,
+        scheme: QuantizationScheme,
+        *,
+        model=None,
+        layer_config: dict = None,
+        scale_dtype=None,
+        mllm: bool = False,
+        iters: int = 0,
+        enable_alg_ext: bool = False,
+        quant_nontext_module: bool = False,
+        quant_block_list: list = None,
+        platform: str = None,
+    ) -> tuple[str, QuantizationScheme, dict, list]:
+        fwd_kwargs = dict(
+            model=model,
+            layer_config=layer_config,
+            scale_dtype=scale_dtype,
+            mllm=mllm,
+            iters=iters,
+            enable_alg_ext=enable_alg_ext,
+            quant_nontext_module=quant_nontext_module,
+            quant_block_list=quant_block_list,
+            platform=platform,
+        )
         if self.backend is not None:
-            new_format = self.backend.check_and_reset_format(ar)
-            self.backend = OutputFormat._format_list[new_format](new_format, ar) if new_format else self.backend
+            new_format, scheme, layer_config, quant_block_list = self.backend.check_and_reset_format(
+                scheme, **{**fwd_kwargs, "layer_config": layer_config, "quant_block_list": quant_block_list}
+            )
+            fwd_kwargs["layer_config"] = layer_config
+            fwd_kwargs["quant_block_list"] = quant_block_list
+            self.backend = (
+                OutputFormat._format_list[new_format](new_format, scheme, **fwd_kwargs) if new_format else self.backend
+            )
 
-        w_fp8 = ar.data_type.startswith("fp") and ar.bits == 8
-        act_fp8 = ar.act_data_type.startswith("fp") and ar.act_bits == 8
+        w_fp8 = scheme.data_type.startswith("fp") and scheme.bits == 8
+        act_fp8 = scheme.act_data_type.startswith("fp") and scheme.act_bits == 8
         is_block_dynamic_fp8 = (
-            self.format_name in ["fp8", "auto_round:fp8"] and isinstance(ar.group_size, tuple) and ar.act_dynamic
+            self.format_name in ["fp8", "auto_round:fp8"]
+            and isinstance(scheme.group_size, tuple)
+            and scheme.act_dynamic
         )
         if (w_fp8 or act_fp8) and not is_block_dynamic_fp8:
             error_msg = (
@@ -276,14 +340,18 @@ class OutputFormat(ABC):
             logger.error(error_msg)
             sys.exit(-1)
 
-        if ar.act_bits <= 8 and (not is_standard_fp(ar.act_data_type) or ar.act_dynamic) and not is_block_dynamic_fp8:
+        if (
+            scheme.act_bits <= 8
+            and (not scheme.is_act_standard_fp() or scheme.act_dynamic)
+            and not is_block_dynamic_fp8
+        ):
             logger.warning(
                 f"{self.format_name} format does not support the current activation quantization configuration,"
                 " reset to fake format and save."
             )
-            return "fake"
+            return "fake", scheme, layer_config, quant_block_list
 
-        return None
+        return None, scheme, layer_config, quant_block_list
 
     @abstractmethod
     def pack_layer(self, *args, **kwargs):
@@ -321,8 +389,10 @@ class FakeFormat(OutputFormat):
     support_schemes = None
     format_name = "fake"
 
-    def check_and_reset_format(self, ar: BaseCompressor) -> str:
-        return None
+    def check_and_reset_format(
+        self, scheme: QuantizationScheme, **kwargs
+    ) -> tuple[None, QuantizationScheme, dict, list]:
+        return None, scheme, kwargs.get("layer_config"), kwargs.get("quant_block_list")
 
     # fake format will not execute pack_layer.
     def pack_layer(self, *args, **kwargs):
@@ -373,48 +443,73 @@ class LLMCompressorFormat(OutputFormat):
     ]
     format_name = "llm_compressor"
 
-    def __init__(self, format, ar):
-        if not self.is_support_scheme(ar.scheme):
+    def __init__(
+        self,
+        format: str,
+        scheme: QuantizationScheme,
+        *,
+        model=None,
+        layer_config: dict = None,
+        scale_dtype=None,
+        mllm: bool = False,
+        iters: int = 0,
+        enable_alg_ext: bool = False,
+        quant_nontext_module: bool = False,
+        quant_block_list: list = None,
+        platform: str = None,
+    ):
+        fwd_kwargs = dict(
+            model=model,
+            layer_config=layer_config,
+            scale_dtype=scale_dtype,
+            mllm=mllm,
+            iters=iters,
+            enable_alg_ext=enable_alg_ext,
+            quant_nontext_module=quant_nontext_module,
+            quant_block_list=quant_block_list,
+            platform=platform,
+        )
+        if not self.is_support_scheme(scheme):
             logger.error(
                 f"Currently, the llm_compressor format only supports {self.support_schemes}, "
-                f"but got scheme {ar.scheme}, please change to fake or auto_round etc."
+                f"but got scheme {scheme}, please change to fake or auto_round etc."
             )
             exit(-1)
         # if format.startswith("llm_compressor"):
         if re.search("^(auto_round:)?llm_compressor", format):
             self.output_format = format
             self.backend = None
-            if is_nv_fp(ar.data_type) or is_mx_fp(ar.data_type):
+            if scheme.is_nv_fp() or scheme.is_mx_fp():
                 from auto_round.export.export_to_llmcompressor import check_compressed_tensors_supported
 
                 check_compressed_tensors_supported(raise_error=True)
-                self.backend = LLMCompressorFormat(ar.data_type, ar)
-            elif is_dynamic_afp8(ar) and is_block_wfp8(ar):
-                self.backend = LLMCompressorFormat(AutoRoundExportFormat.FP8_BLOCK.value, ar)
-            elif is_static_wfp8afp8(ar):
-                self.backend = LLMCompressorFormat(AutoRoundExportFormat.FP8_STATIC.value, ar)
-                if ar.act_group_size != 0:
+                self.backend = LLMCompressorFormat(scheme.data_type, scheme, **fwd_kwargs)
+            elif scheme.is_dynamic_afp8() and scheme.is_block_wfp8():
+                self.backend = LLMCompressorFormat(AutoRoundExportFormat.FP8_BLOCK.value, scheme, **fwd_kwargs)
+            elif scheme.is_static_wfp8afp8():
+                self.backend = LLMCompressorFormat(AutoRoundExportFormat.FP8_STATIC.value, scheme, **fwd_kwargs)
+                if scheme.act_group_size != 0:
                     logger.warning(
                         f"scheme FP8_STATIC export to llm_compressor format only support for act_group_size 0,"
-                        f" ,but got act_group_size={ar.act_group_size}, reset = 0"
+                        f" ,but got act_group_size={scheme.act_group_size}, reset = 0"
                     )
-                    ar.act_group_size = 0
-                if ar.group_size > 0:
+                    scheme.act_group_size = 0
+                if scheme.group_size > 0:
                     logger.warning(
-                        f"please note that group_size={ar.group_size}"
+                        f"please note that group_size={scheme.group_size}"
                         " may not be supported for llm_compressor format, and cannot be loaded in llm_compressor"
                     )
-            elif is_dynamic_wint8aint8(ar):
+            elif scheme.is_dynamic_wint8aint8():
                 from auto_round.export.export_to_llmcompressor import check_compressed_tensors_supported
 
                 check_compressed_tensors_supported()
-                self.backend = LLMCompressorFormat(AutoRoundExportFormat.INT8.name, ar)
+                self.backend = LLMCompressorFormat(AutoRoundExportFormat.INT8.name, scheme, **fwd_kwargs)
                 self.backend.output_format = f"llm_compressor:{AutoRoundExportFormat.INT8.value}"
-            elif is_wint_woq(ar):
+            elif scheme.is_wint_woq():
                 from auto_round.export.export_to_llmcompressor import check_compressed_tensors_supported
 
                 check_compressed_tensors_supported()
-                self.backend = LLMCompressorFormat(AutoRoundExportFormat.WINT_A16.value, ar)
+                self.backend = LLMCompressorFormat(AutoRoundExportFormat.WINT_A16.value, scheme, **fwd_kwargs)
         else:
             if format.upper() not in list(AutoRoundExportFormat.__members__.keys()):
                 raise KeyError(f"Unsupported backend format llm_compressor:{format}, please check")
@@ -458,32 +553,62 @@ class LLMCompressorFormat(OutputFormat):
             )
         return True
 
-    def check_and_reset_format(self, ar: BaseCompressor) -> str | None:
+    def check_and_reset_format(
+        self,
+        scheme: QuantizationScheme,
+        *,
+        model=None,
+        layer_config: dict = None,
+        scale_dtype=None,
+        mllm: bool = False,
+        iters: int = 0,
+        enable_alg_ext: bool = False,
+        quant_nontext_module: bool = False,
+        quant_block_list: list = None,
+        platform: str = None,
+    ) -> tuple[str, QuantizationScheme, dict, list]:
+        fwd_kwargs = dict(
+            model=model,
+            layer_config=layer_config,
+            scale_dtype=scale_dtype,
+            mllm=mllm,
+            iters=iters,
+            enable_alg_ext=enable_alg_ext,
+            quant_nontext_module=quant_nontext_module,
+            quant_block_list=quant_block_list,
+            platform=platform,
+        )
         if self.backend is not None:
-            new_format = self.backend.check_and_reset_format(ar)
-            self.backend = OutputFormat._format_list[new_format](new_format, ar) if new_format else self.backend
+            new_format, scheme, layer_config, quant_block_list = self.backend.check_and_reset_format(
+                scheme, **{**fwd_kwargs, "layer_config": layer_config, "quant_block_list": quant_block_list}
+            )
+            fwd_kwargs["layer_config"] = layer_config
+            fwd_kwargs["quant_block_list"] = quant_block_list
+            self.backend = (
+                OutputFormat._format_list[new_format](new_format, scheme, **fwd_kwargs) if new_format else self.backend
+            )
 
-        if ar.act_bits <= 8 and (not is_standard_fp(ar.act_data_type) or ar.act_dynamic):
-            if (is_nv_fp(ar.act_data_type) and "static_gs" in ar.act_data_type) or (is_mx_fp(ar.act_data_type)):
-                return None
-            elif is_dynamic_afp8(ar) and is_block_wfp8(ar):
-                return None
+        if scheme.act_bits <= 8 and (not scheme.is_act_standard_fp() or scheme.act_dynamic):
+            if (scheme.is_act_nv_fp() and "static_gs" in scheme.act_data_type) or scheme.is_act_mx_fp():
+                return None, scheme, layer_config, quant_block_list
+            elif scheme.is_dynamic_afp8() and scheme.is_block_wfp8():
+                return None, scheme, layer_config, quant_block_list
             else:
                 bits, group_size, sym, act_bits = 8, -1, True, 8
                 assert (
-                    ar.bits == bits
-                    and ar.group_size == group_size
-                    and ar.sym == sym
-                    and ar.act_bits == act_bits
-                    and ar.act_dynamic
+                    scheme.bits == bits
+                    and scheme.group_size == group_size
+                    and scheme.sym == sym
+                    and scheme.act_bits == act_bits
+                    and scheme.act_dynamic
                 ), (
                     f"Currently only support to export llm_compressor format for sym dynamic quantized"
-                    f" W{ar.bits}A{ar.act_bits} model with group_size={group_size},"
-                    f" but got bits={ar.bits}, group_size={ar.group_size}, sym={ar.sym},"
-                    f" act_bits={ar.act_bits}"
+                    f" W{scheme.bits}A{scheme.act_bits} model with group_size={group_size},"
+                    f" but got bits={scheme.bits}, group_size={scheme.group_size}, sym={scheme.sym},"
+                    f" act_bits={scheme.act_bits}"
                 )
-            return None
-        return None
+            return None, scheme, layer_config, quant_block_list
+        return None, scheme, layer_config, quant_block_list
 
     def pack_layer(self, layer_name, model, device=None, **kwargs):
         if self.backend is not None:
@@ -554,8 +679,21 @@ class AutoGPTQFormat(OutputFormat):
     support_schemes = ["W4A16", "W2A16", "W3A16", "W8A16", "BF16", "W2A16G64", "W2A16G32", "W4A16_MIXED"]
     format_name = "auto_gptq"
 
-    def check_and_reset_format(self, ar):
-        if not ar.sym:
+    def check_and_reset_format(
+        self,
+        scheme: QuantizationScheme,
+        *,
+        model=None,
+        layer_config: dict = None,
+        scale_dtype=None,
+        mllm: bool = False,
+        iters: int = 0,
+        enable_alg_ext: bool = False,
+        quant_nontext_module: bool = False,
+        quant_block_list: list = None,
+        platform: str = None,
+    ):
+        if not scheme.sym:
             logger.warning(
                 "the asymmetrical kernel of the GPTQ format may result in a noticeable accuracy drop,"
                 " particularly for 2-bit quantization and smaller models."
@@ -563,8 +701,19 @@ class AutoGPTQFormat(OutputFormat):
                 "the AutoRound format(2/3/4/8 bits)."
             )
         if self.backend is None:
-            _check_divisible_by_32(ar)
-        return super().check_and_reset_format(ar)
+            layer_config = _check_divisible_by_32(scheme, model, layer_config)
+        return super().check_and_reset_format(
+            scheme,
+            model=model,
+            layer_config=layer_config,
+            scale_dtype=scale_dtype,
+            mllm=mllm,
+            iters=iters,
+            enable_alg_ext=enable_alg_ext,
+            quant_nontext_module=quant_nontext_module,
+            quant_block_list=quant_block_list,
+            platform=platform,
+        )
 
     @classmethod
     def check_scheme_args(cls: OutputFormat, scheme: QuantizationScheme) -> bool:
@@ -692,19 +841,43 @@ class AutoAWQFormat(OutputFormat):
 
         return True, ""
 
-    def check_and_reset_format(self, ar):
+    def check_and_reset_format(
+        self,
+        scheme: QuantizationScheme,
+        *,
+        model=None,
+        layer_config: dict = None,
+        scale_dtype=None,
+        mllm: bool = False,
+        iters: int = 0,
+        enable_alg_ext: bool = False,
+        quant_nontext_module: bool = False,
+        quant_block_list: list = None,
+        platform: str = None,
+    ):
         awq_supported, info = self.check_awq_gemm_compatibility(
-            ar.model, ar.bits, ar.group_size, ar.sym, ar.layer_config
+            model, scheme.bits, scheme.group_size, scheme.sym, layer_config
         )
         if not awq_supported:
             logger.warning(f"The AutoAWQ format may not be supported due to {info}")
-        if ar.bits != 4:
-            raise ValueError(f"auto_awq format support quantization scheme with W4A16 but got bits={ar.bits}")
+        if scheme.bits != 4:
+            raise ValueError(f"auto_awq format support quantization scheme with W4A16 but got bits={scheme.bits}")
 
         if self.backend is None:
-            _check_divisible_by_32(ar)
+            layer_config = _check_divisible_by_32(scheme, model, layer_config)
 
-        return super().check_and_reset_format(ar)
+        return super().check_and_reset_format(
+            scheme,
+            model=model,
+            layer_config=layer_config,
+            scale_dtype=scale_dtype,
+            mllm=mllm,
+            iters=iters,
+            enable_alg_ext=enable_alg_ext,
+            quant_nontext_module=quant_nontext_module,
+            quant_block_list=quant_block_list,
+            platform=platform,
+        )
 
     def pack_layer(self, layer_name, model, device=None, **kwargs):
         from auto_round.export.export_to_awq.export import pack_layer
@@ -766,41 +939,89 @@ class GGUFFormat(OutputFormat):
     ]
     format_name = "gguf"
 
-    def __init__(self, format: str, ar: BaseCompressor):
+    def __init__(
+        self,
+        format: str,
+        scheme: QuantizationScheme,
+        *,
+        model=None,
+        layer_config: dict = None,
+        scale_dtype=None,
+        mllm: bool = False,
+        iters: int = 0,
+        enable_alg_ext: bool = False,
+        quant_nontext_module: bool = False,
+        quant_block_list: list = None,
+        platform: str = None,
+    ):
+        fwd_kwargs = dict(
+            model=model,
+            layer_config=layer_config,
+            scale_dtype=scale_dtype,
+            mllm=mllm,
+            iters=iters,
+            enable_alg_ext=enable_alg_ext,
+            quant_nontext_module=quant_nontext_module,
+            quant_block_list=quant_block_list,
+            platform=platform,
+        )
         if format.startswith("gguf:"):
             self._original_format = format  # preserve "gguf:q2_k_mixed" etc. for Phase 2b
             self.output_format = "gguf"
             self.backend_cls = GGUFFormat
-            self.backend = GGUFFormat(format.split(":")[-1], ar)
+            self.backend, scheme, layer_config = GGUFFormat.build(format.split(":")[-1], scheme, **fwd_kwargs)
 
             resolved_format = self.backend.output_format
-            self.gguf_args_check(ar, resolved_format, model_type=ModelType.TEXT)
-            if ar.mllm:
-                self.gguf_args_check(ar, resolved_format, model_type=ModelType.MMPROJ)
+            scheme = self.gguf_args_check(scheme, model, platform, resolved_format, model_type=ModelType.TEXT)
+            if mllm:
+                scheme = self.gguf_args_check(scheme, model, platform, resolved_format, model_type=ModelType.MMPROJ)
         else:
-            scheme = ar.scheme
             gguf_format = f"gguf:{format.lower()}"
             if format.lower().endswith("_mixed"):
                 from auto_round.schemes import _handle_special_schemes
                 from auto_round.utils.model import is_moe_model
 
-                if format.lower() == "q2_k_mixed" and (getattr(ar, "iters", 0) or 0) > 0 and not is_moe_model(ar.model):
+                if format.lower() == "q2_k_mixed" and (iters or 0) > 0 and not is_moe_model(model):
                     logger.warning(
                         "gguf:q2_k_mixed only supports MoE models with iters>0. "
                         "It is not an MoE model, falling back to gguf:q2_k_s."
                     )
                     gguf_format = "gguf:q2_k_s"
                 else:
-                    ar.layer_config = _handle_special_schemes(
-                        gguf_format, ar.layer_config, ar.model, quant_nontext_module=ar.quant_nontext_module
+                    layer_config = _handle_special_schemes(
+                        gguf_format, layer_config, model, quant_nontext_module=quant_nontext_module
                     )
                     gguf_format = gguf_format.lower().replace("_mixed", "_s")
             if isinstance(scheme, str) and scheme.lower() != gguf_format:
+                # Defensive legacy branch: only reachable if a caller constructs OutputFormat
+                # objects before scheme resolution (scheme still a raw string). No call site in
+                # this codebase does this today (compressors/base.py's _resolve_formats documents
+                # scheme as already-resolved to a QuantizationScheme by this point) — preserved
+                # verbatim from the pre-refactor code in case an external caller relies on it.
                 logger.warning(f"reset scheme {scheme.lower()} to {gguf_format} for gguf format export")
-                ar.scheme = gguf_format
+                scheme = gguf_format
             self.output_format = gguf_format
             self.backend = None
-        self.mllm = ar.mllm
+        self.mllm = mllm
+        self._resolved_layer_config = layer_config
+        self._resolved_scheme = scheme
+
+    @classmethod
+    def build(
+        cls,
+        format: str,
+        scheme: QuantizationScheme,
+        **kwargs,
+    ) -> tuple["GGUFFormat", QuantizationScheme, dict]:
+        """Construct a GGUFFormat and surface the (possibly corrected) scheme/layer_config.
+
+        Plain ``__init__`` cannot report a corrected ``scheme``/``layer_config`` back to its
+        caller, but GGUF resolution can replace either (the ``_mixed`` -> ``_s`` rewrite, and the
+        legacy string-scheme correction above). ``get_formats`` calls this instead of the bare
+        constructor for every ``gguf:``-prefixed dispatch.
+        """
+        instance = cls(format, scheme, **kwargs)
+        return instance, instance._resolved_scheme, instance._resolved_layer_config
 
     @classmethod
     def check_scheme_args(cls: OutputFormat, scheme: QuantizationScheme) -> bool:
@@ -814,22 +1035,46 @@ class GGUFFormat(OutputFormat):
             )
         return True
 
-    def check_and_reset_format(self, ar):
-        if getattr(ar, "iters", 0) != 0 and ar.bits != 3 and not ar.enable_alg_ext:
+    def check_and_reset_format(
+        self,
+        scheme: QuantizationScheme,
+        *,
+        model=None,
+        layer_config: dict = None,
+        scale_dtype=None,
+        mllm: bool = False,
+        iters: int = 0,
+        enable_alg_ext: bool = False,
+        quant_nontext_module: bool = False,
+        quant_block_list: list = None,
+        platform: str = None,
+    ):
+        if iters != 0 and scheme.bits != 3 and not enable_alg_ext:
             logger.warning_once(
                 "`iters=0` is recommended when exporting to current GGUF format"
                 " or add `enable_alg_ext` for better accuracy with much more tuning cost."
                 " Please refer to https://github.com/intel/auto-round/tree/main/docs/gguf_alg_ext_acc.md"
                 " for the accuracy results."
             )
-        elif ar.bits >= 8 and getattr(ar, "iters", 0) != 0:
+        elif scheme.bits >= 8 and iters != 0:
             logger.warning_once("`iters=0` is recommended for bits>=8")
 
-        if getattr(ar, "quant_nontext_module", False):
+        if quant_nontext_module:
             # for gguf export, leave vl model for gguf itself
-            all_blocks = get_block_names(ar.model, False)
-            ar.quant_block_list = find_matching_blocks(ar.model, all_blocks, None)
-        return super().check_and_reset_format(ar)
+            all_blocks = get_block_names(model, False)
+            quant_block_list = find_matching_blocks(model, all_blocks, None)
+        return super().check_and_reset_format(
+            scheme,
+            model=model,
+            layer_config=layer_config,
+            scale_dtype=scale_dtype,
+            mllm=mllm,
+            iters=iters,
+            enable_alg_ext=enable_alg_ext,
+            quant_nontext_module=quant_nontext_module,
+            quant_block_list=quant_block_list,
+            platform=platform,
+        )
 
     def pack_layer(
         self,
@@ -887,7 +1132,13 @@ class GGUFFormat(OutputFormat):
         )
 
     @staticmethod
-    def gguf_args_check(args_or_ar, formats: Union[str, list[str]] = None, model_type=ModelType.TEXT):
+    def gguf_args_check(
+        scheme: QuantizationScheme,
+        model,
+        platform: str,
+        formats: Union[str, list[str]] = None,
+        model_type=ModelType.TEXT,
+    ) -> QuantizationScheme:
         import argparse
 
         from auto_round.export.export_to_gguf.config import GGUF_CONFIG
@@ -906,12 +1157,12 @@ class GGUFFormat(OutputFormat):
                 logger.error(f"{f} is not supported, please check.")
 
         if export_gguf:
-            if isinstance(args_or_ar.model, str):
-                model_path = args_or_ar.model
+            if isinstance(model, str):
+                model_path = model
             else:
-                model_path = args_or_ar.model.name_or_path
+                model_path = model.name_or_path
             if not os.path.isdir(model_path):
-                model_path = download_or_get_path(model_path, args_or_ar.platform)
+                model_path = download_or_get_path(model_path, platform)
             conversion = get_conversion(model_path, model_type=ModelType.TEXT)
             model_architecture = get_gguf_architecture(model_path, model_type=ModelType.TEXT)
             if not conversion.is_supported(model_architecture, ModelType.TEXT):
@@ -936,25 +1187,27 @@ class GGUFFormat(OutputFormat):
                 unsupported_list, reset_list = [], []
                 gguf_config = GGUF_CONFIG[format]
                 for k, v in gguf_config.items():
-                    if not hasattr(args_or_ar, k):
+                    if not hasattr(scheme, k):
                         continue
                     if k == "data_type":
                         if re.search(r"q\d_1", format) and len(formats) > 1:
                             v = "int"
-                    if k == "sym" and isinstance(args_or_ar, argparse.Namespace):
+                    # `scheme` is never an argparse.Namespace (no caller in this codebase passes
+                    # one — confirmed via repo-wide grep); preserved verbatim for parity with the
+                    # pre-refactor dual-mode contract.
+                    if k == "sym" and isinstance(scheme, argparse.Namespace):
                         k = "asym"
                         v = not v
-                    if getattr(args_or_ar, k) != v:
-                        unsupported_list.append(f"{k}={getattr(args_or_ar, k)}")
+                    if getattr(scheme, k) != v:
+                        unsupported_list.append(f"{k}={getattr(scheme, k)}")
                         reset_list.append(f"{k}={v}")
-                        setattr(args_or_ar, k, v)
+                        setattr(scheme, k, v)
                 if len(unsupported_list) > 0:
                     logger.info(
                         f"format {format} does not support for {', '.join(unsupported_list)},"
                         f" reset to {', '.join(reset_list)}."
                     )
-        # Removed obsolete commented-out block for improved readability and maintainability.
-        return args_or_ar
+        return scheme
 
     def immediate_pack(
         self,
@@ -1142,33 +1395,58 @@ class AutoRoundFormat(OutputFormat):
     ]
     format_name = "auto_round"
 
-    def __init__(self, format: str, ar: BaseCompressor):
+    def __init__(
+        self,
+        format: str,
+        scheme: QuantizationScheme,
+        *,
+        model=None,
+        layer_config: dict = None,
+        scale_dtype=None,
+        mllm: bool = False,
+        iters: int = 0,
+        enable_alg_ext: bool = False,
+        quant_nontext_module: bool = False,
+        quant_block_list: list = None,
+        platform: str = None,
+    ):
+        fwd_kwargs = dict(
+            model=model,
+            layer_config=layer_config,
+            scale_dtype=scale_dtype,
+            mllm=mllm,
+            iters=iters,
+            enable_alg_ext=enable_alg_ext,
+            quant_nontext_module=quant_nontext_module,
+            quant_block_list=quant_block_list,
+            platform=platform,
+        )
         self.output_format = "auto_round"
         self.backend = None
 
         if format == "auto_round":
-            if ar.sym and "int" in ar.data_type and "mx" not in ar.data_type:
-                self.backend = AutoGPTQFormat("auto_round:auto_gptq", ar)
-            elif ar.bits == 4 and not ar.sym and "int" in ar.data_type:
-                if ar.layer_config is None:
+            if scheme.sym and "int" in scheme.data_type and "mx" not in scheme.data_type:
+                self.backend = AutoGPTQFormat("auto_round:auto_gptq", scheme, **fwd_kwargs)
+            elif scheme.bits == 4 and not scheme.sym and "int" in scheme.data_type:
+                if layer_config is None:
                     enable_awq = True
                 else:
                     enable_awq = all(
-                        config["bits"] == ar.bits or config["bits"] >= 16 for config in ar.layer_config.values()
+                        config["bits"] == scheme.bits or config["bits"] >= 16 for config in layer_config.values()
                     )
                 if enable_awq:
-                    self.backend = AutoAWQFormat("auto_round:auto_awq", ar)
-            elif is_nv_fp(ar.data_type) or is_mx_fp(ar.data_type):
-                self.backend = AutoRoundFormat(ar.data_type, ar)
-            elif is_mx_int(ar.data_type) and ar.bits == 4:  # only add mx_int4 now
-                self.backend = AutoRoundFormat(ar.data_type, ar)
-            elif is_static_wfp8afp8(ar):  # static wfp8afp8
-                self.backend = AutoRoundFormat(AutoRoundExportFormat.FP8_STATIC.value, ar)
-            elif ar.data_type.startswith("fp") and ar.bits == 8 and ar.act_bits >= 16:  # woq fp8
-                self.backend = AutoRoundFormat(AutoRoundExportFormat.FP8.value, ar)
-            elif ar.data_type.startswith("fp") and ar.bits == 8 and isinstance(ar.group_size, tuple):
-                self.backend = AutoRoundFormat("auto_round:fp8", ar)
-            elif ar.act_bits < 16:
+                    self.backend = AutoAWQFormat("auto_round:auto_awq", scheme, **fwd_kwargs)
+            elif scheme.is_nv_fp() or scheme.is_mx_fp():
+                self.backend = AutoRoundFormat(scheme.data_type, scheme, **fwd_kwargs)
+            elif scheme.is_mx_int() and scheme.bits == 4:  # only add mx_int4 now
+                self.backend = AutoRoundFormat(scheme.data_type, scheme, **fwd_kwargs)
+            elif scheme.is_static_wfp8afp8():  # static wfp8afp8
+                self.backend = AutoRoundFormat(AutoRoundExportFormat.FP8_STATIC.value, scheme, **fwd_kwargs)
+            elif scheme.data_type.startswith("fp") and scheme.bits == 8 and scheme.act_bits >= 16:  # woq fp8
+                self.backend = AutoRoundFormat(AutoRoundExportFormat.FP8.value, scheme, **fwd_kwargs)
+            elif scheme.data_type.startswith("fp") and scheme.bits == 8 and isinstance(scheme.group_size, tuple):
+                self.backend = AutoRoundFormat("auto_round:fp8", scheme, **fwd_kwargs)
+            elif scheme.act_bits < 16:
                 raise ValueError(
                     "AutoRound format does not support exporting "
                     "for the current quantization configuration, "
@@ -1177,40 +1455,70 @@ class AutoRoundFormat(OutputFormat):
         # for auto_round:fp8_static, auto_round:nv_fp etc.
         elif not format.startswith("auto_round"):
             if format == "mlx":
-                self.backend = MLXFormat("mlx", ar)
+                self.backend = MLXFormat("mlx", scheme, **fwd_kwargs)
             elif format.upper() not in list(AutoRoundExportFormat.__members__.keys()):
                 raise KeyError(f"Unsupported backend format auto_round:{format}, please check")
             else:
                 self.output_format = f"auto_round:{format}"
                 self.backend = None
         elif format == "auto_round:mlx":
-            self.backend = MLXFormat("mlx", ar)
+            self.backend = MLXFormat("mlx", scheme, **fwd_kwargs)
         else:
             backend = format.split(":")[1] if ":" in format else None
-            self.backend = self._format_list.get(backend)(format, ar) if backend else None
+            self.backend = self._format_list.get(backend)(format, scheme, **fwd_kwargs) if backend else None
 
         if self.backend is not None:
             self.support_schemes = self.backend.support_schemes
 
-    def check_and_reset_format(self, ar):
+    def check_and_reset_format(
+        self,
+        scheme: QuantizationScheme,
+        *,
+        model=None,
+        layer_config: dict = None,
+        scale_dtype=None,
+        mllm: bool = False,
+        iters: int = 0,
+        enable_alg_ext: bool = False,
+        quant_nontext_module: bool = False,
+        quant_block_list: list = None,
+        platform: str = None,
+    ):
+        fwd_kwargs = dict(
+            model=model,
+            layer_config=layer_config,
+            scale_dtype=scale_dtype,
+            mllm=mllm,
+            iters=iters,
+            enable_alg_ext=enable_alg_ext,
+            quant_nontext_module=quant_nontext_module,
+            quant_block_list=quant_block_list,
+            platform=platform,
+        )
         if self.backend is not None:
-            new_format = self.backend.check_and_reset_format(ar)
-            self.backend = OutputFormat._format_list[new_format](new_format, ar) if new_format else self.backend
+            new_format, scheme, layer_config, quant_block_list = self.backend.check_and_reset_format(
+                scheme, **{**fwd_kwargs, "layer_config": layer_config, "quant_block_list": quant_block_list}
+            )
+            fwd_kwargs["layer_config"] = layer_config
+            fwd_kwargs["quant_block_list"] = quant_block_list
+            self.backend = (
+                OutputFormat._format_list[new_format](new_format, scheme, **fwd_kwargs) if new_format else self.backend
+            )
 
-        if ar.act_bits <= 8:
-            if is_standard_fp(ar.act_data_type) and not ar.act_dynamic:
+        if scheme.act_bits <= 8:
+            if scheme.is_act_standard_fp() and not scheme.act_dynamic:
                 if (
-                    ar.act_group_size != 0
-                    and not ar.act_dynamic
+                    scheme.act_group_size != 0
+                    and not scheme.act_dynamic
                     and self.get_backend_name() == f"auto_round:{AutoRoundExportFormat.FP8.value}"
                 ):
                     logger.warning(
-                        f"Please note that quantize activation with act_group_size={ar.act_group_size}"
+                        f"Please note that quantize activation with act_group_size={scheme.act_group_size}"
                         " may result in failure to export or import normally."
                     )
         if self.backend is None:
-            _check_divisible_by_32(ar)
-        return None
+            layer_config = _check_divisible_by_32(scheme, model, layer_config)
+        return None, scheme, layer_config, quant_block_list
 
     def pack_layer(self, layer_name, model, device=None, **kwargs):
         if self.backend is not None:
