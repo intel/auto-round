@@ -177,6 +177,7 @@ class GGUFDTypeSelector:
         n_layer: int | None = None,
         n_attention_wv: int | None = None,
         has_imatrix: bool = False,
+        has_tied_embeddings: bool = False,
     ):
         self.hparams = hparams
         self.ftype = ftype
@@ -184,6 +185,7 @@ class GGUFDTypeSelector:
         self.n_layer = n_layer
         self.n_attention_wv = n_attention_wv
         self.has_imatrix = has_imatrix
+        self.has_tied_embeddings = has_tied_embeddings
         self.i_attention_wv = 0
         self.i_ffn_down = 0
 
@@ -221,6 +223,20 @@ class GGUFDTypeSelector:
             )
             or 0
         )
+
+        # llama.cpp: output & token_embd handling (llama_tensor_get_type outer wrapper)
+        if category == TensorCategory.OUTPUT or (self.has_tied_embeddings and category == TensorCategory.TOKEN_EMBD):
+            # llama.cpp: if new_type != Q8_0, upgrade to Q6_K
+            # Skip F32/F16/BF16 (non-quantized types that won't reach here in practice)
+            if qtype not in (
+                gguf.GGMLQuantizationType.F32,
+                gguf.GGMLQuantizationType.F16,
+                gguf.GGMLQuantizationType.BF16,
+                gguf.GGMLQuantizationType.Q8_0,
+            ):
+                qtype = gguf.GGMLQuantizationType.Q6_K
+        elif category == TensorCategory.TOKEN_EMBD:
+            pass
 
         if _is_attn_v_like(category):
             if self.ftype == gguf.LlamaFileType.MOSTLY_Q2_K:

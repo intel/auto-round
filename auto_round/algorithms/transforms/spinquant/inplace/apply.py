@@ -6,7 +6,7 @@ SpinQuant in-place application utilities.
 
 This module provides ``apply_spinquant_in_place`` and hook registration
 that follow the same patterns used by AutoRound's
-``auto_round.algorithms.transforms.quarot.inplace`` package.
+``auto_round.algorithms.transforms.hadamard.inplace`` package.
 
 R3 rotation uses the architecture-generic monkeypatch approach from QuaRot/Quark:
 we replace ``apply_rotary_pos_emb`` in the attention forward's globals with a

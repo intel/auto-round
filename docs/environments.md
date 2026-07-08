@@ -121,6 +121,26 @@ export AR_DYNAMO_CACHE_SIZE_LIMIT=32
 export AR_MODEL_FREE_SHARD_PARALLELISM=4
 ```
 
+### AR_AUTO_SCHEME_NSAMPLES
+- **Description**: Controls the default number of calibration samples used by AutoScheme scoring when `AutoScheme.nsamples` is not explicitly set.
+- **Default**: unset → 16
+- **Valid Values**: any positive integer, e.g. `8`, `16`, `32`
+- **Usage**: Set this to override the automatic sample-count selection for AutoScheme
+
+```bash
+export AR_AUTO_SCHEME_NSAMPLES=1  # set 1 for quick execution
+```
+
+### AR_AUTO_SCHEME_BATCH_SIZE
+- **Description**: Controls the default batch size used by AutoScheme scoring when `AutoScheme.batch_size` is not explicitly set.
+- **Default**: unset → built-in heuristic applies (8 for low GPU memory mode, 1 for normal mode)
+- **Valid Values**: any positive integer, e.g. `1`, `2`, `4`
+- **Usage**: Set this to override the default batch size for AutoScheme
+
+```bash
+export AR_AUTO_SCHEME_BATCH_SIZE=1
+```
+
 ## Usage Examples
 
 ### Setting Environment Variables

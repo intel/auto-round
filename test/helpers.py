@@ -71,11 +71,13 @@ def generate_prompt(
 def eval_generated_prompt(
     model,
     tokenizer=None,
-    prompt_text='Convert "hello" to uppercase, the answer is:',
-    target_text="HELLO",
+    prompt_text="United States of",
+    target_text="America",
     max_new_tokens=10,
     device=None,
 ):
+    # Use a completion-style prompt: base models (e.g. OPT-125M) cannot follow
+    # instructions, so an instruction prompt makes the check flaky after quantization.
     generated_text = generate_prompt(
         model,
         tokenizer,

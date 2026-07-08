@@ -87,6 +87,7 @@ struct Options {
   int v_stride_d = 1, v_stride_s = 0, v_stride_h = 0, v_stride_b = 0;
   int o_stride_s = 0, o_stride_d = 1, o_stride_h = 0, o_stride_b = 0;
   float softmax_scale = 0.0f;
+  float* lse = nullptr;  // LSE output buffer (null = skip)
   bool persistent = false;
 
   void print(std::ostream& os = std::cout) const {
@@ -313,6 +314,7 @@ struct KernelRunner {
             stride_K_cache,
             static_cast<const FMHAKernel::ElementV*>(options.block_V),
             stride_V_cache,
+            static_cast<float*>(options.lse),
         },
         {options.softmax_scale, static_cast<FMHAKernel::ElementQ*>(options.mask),
          options.use_paged_kv ? options.page_table : nullptr, options.use_paged_kv ? options.page_size : 0,
@@ -669,6 +671,7 @@ struct SageKernelRunner {
             stride_K_cache,
             static_cast<const FMHAKernel::ElementV*>(options.block_V),
             stride_V_cache,
+            static_cast<float*>(options.lse),
         },
         {options.softmax_scale, static_cast<float*>(options.mask), options.scale_block_size,
          static_cast<const float*>(options.qscale), static_cast<const float*>(options.kscale),

@@ -95,12 +95,23 @@ def _check_compatibility(formats: list[str], ar: BaseCompressor):
         if gguf_format_name.lower().endswith("mixed"):
             gguf_format_name = gguf_format_name.lower().replace("_mixed", "_s")
         if any([f.lower() not in ["fake", gguf_format_name.lower()] for f in formats]):
-            tmp_format_name = gguf_format_name.lower() if "fake" not in formats else f"{gguf_format_name.lower()},fake"
-            logger.warning(
-                f"reset format {','.join(formats)} to {tmp_format_name} "
-                f"since scheme {gguf_format_name} can only be exported to format {gguf_format_name.lower()} or fake"
-            )
-            formats = tmp_format_name.split(",")
+            has_gguf_format = any(f.lower().startswith("gguf") for f in formats if f.lower() != "fake")
+            if has_gguf_format:
+                logger.warning(
+                    f"scheme {gguf_format_name} is GGUF, but format {','.join(formats)} specifies "
+                    f"a different GGUF type. The scheme-driven per-layer quantization may differ from the "
+                    f"file-level GGUF format type."
+                )
+            else:
+                tmp_format_name = (
+                    gguf_format_name.lower() if "fake" not in formats else (f"{gguf_format_name.lower()},fake")
+                )
+                logger.warning(
+                    f"reset format {','.join(formats)} to {tmp_format_name} "
+                    f"since scheme {gguf_format_name} can only be exported to format "
+                    f"{gguf_format_name.lower()} or fake"
+                )
+                formats = tmp_format_name.split(",")
 
     if isinstance(ar.group_size, tuple) and any(["auto_round" in f.lower() for f in formats]):
         logger.warning(
@@ -148,6 +159,11 @@ def get_formats(
                 formats[i] = None
 
     formats = [fmt for fmt in formats if fmt is not None]
+
+    # Ensure fake format is processed before GGUF — GGUF export may clear
+    # model weights via low_cpu_mem_usage, causing zeroed weights for fake.
+    if any(fmt.is_gguf() for fmt in formats) and any(fmt.is_fake() for fmt in formats):
+        formats.sort(key=lambda f: 0 if f.is_fake() else 1)
 
     if len(formats) == 1 and formats[0].is_gguf() and ar.scale_dtype != torch.float32:
         ar.scale_dtype = torch.float32
@@ -795,7 +811,7 @@ class GGUFFormat(OutputFormat):
                         gguf_format, ar.layer_config, ar.model, quant_nontext_module=ar.quant_nontext_module
                     )
                     gguf_format = gguf_format.lower().replace("_mixed", "_s")
-            if isinstance(scheme, str) and scheme.lower() != gguf_format:
+            if isinstance(scheme, str) and scheme.lower() != gguf_format and not getattr(ar, "is_auto_scheme", False):
                 logger.warning(f"reset scheme {scheme.lower()} to {gguf_format} for gguf format export")
                 ar.scheme = gguf_format
             self.output_format = gguf_format

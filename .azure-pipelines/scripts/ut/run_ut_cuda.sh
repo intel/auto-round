@@ -31,7 +31,8 @@ function create_conda_env() {
         export PATH=/usr/local/cuda/bin${PATH:+:${PATH}}
         export LD_LIBRARY_PATH=$(python -c "import site; print(site.getsitepackages()[0])")/nvidia/nvjitlink/lib:$LD_LIBRARY_PATH
     fi
-    uv pip install pytest-cov cmake requests
+    uv pip install pytest-cov cmake requests ninja psutil
+    uv cache prune
 }
 
 function print_test_results_table() {
@@ -91,14 +92,14 @@ function run_unit_test() {
     cd ${REPO_PATH}/test
     rm -rf .coverage* *.xml *.html
 
-    uv pip install torch==2.12.0 torchvision torchao --index-url https://download.pytorch.org/whl/cu126
-    CMAKE_ARGS="-DGGML_CUDA=on -DLLAVA_BUILD=off" uv pip install llama-cpp-python
+    uv pip install torch==2.12.1 torchvision torchao --index-url https://download.pytorch.org/whl/cu130
+    uv pip install llama-cpp-python --extra-index-url https://abetlen.github.io/llama-cpp-python/whl/cu130
     uv pip install 'git+https://github.com/ggml-org/llama.cpp.git#subdirectory=gguf-py'
     uv pip install -r test/unit/test_cuda/requirements.txt
     uv pip install -r test/unit/test_cuda/requirements_diffusion.txt
     uv pip install -U transformers chardet
     uv pip uninstall torch torchvision
-    uv pip install torch==2.12.0 torchvision torchao --index-url https://download.pytorch.org/whl/cu126
+    uv pip install torch==2.12.1 torchvision torchao --index-url https://download.pytorch.org/whl/cu130
     cd ${REPO_PATH} && uv pip install . && cd ${REPO_PATH}/test
 
     pip list > ${LOG_DIR}/ut_pip_list.txt
@@ -126,12 +127,11 @@ function run_unit_test_vlm() {
     cd ${REPO_PATH}/test
     rm -rf .coverage* *.xml *.html
 
-    uv pip install torch==2.12.0 torchvision --index-url https://download.pytorch.org/whl/cu126
+    uv pip install torch==2.12.1 torchvision --index-url https://download.pytorch.org/whl/cu130
     uv pip install git+https://github.com/haotian-liu/LLaVA.git@v1.2.2 --no-deps
-    uv pip install -v git+https://github.com/casper-hansen/AutoAWQ.git@v0.2.0 --no-build-isolation
     uv pip install flash-attn==2.8.3 --no-build-isolation
-    uv pip install -r test/unit/test_cuda/requirements_vlm.txt \
-        --extra-index-url https://download.pytorch.org/whl/cu126 \
+    uv pip install -r test_cuda/requirements_vlm.txt \
+        --extra-index-url https://download.pytorch.org/whl/cu130 \
         --index-strategy unsafe-best-match
     uv pip install -U chardet
     cd ${REPO_PATH} && uv pip install . && cd ${REPO_PATH}/test
@@ -161,7 +161,7 @@ function run_unit_test_llmc() {
 
     cd ${REPO_PATH}/test
     rm -rf .coverage* *.xml *.html
-    BUILD_TYPE="nightly" uv pip install -r test/unit/test_cuda/requirements_llmc.txt --extra-index-url https://download.pytorch.org/whl/cu126 --index-strategy unsafe-best-match
+    BUILD_TYPE="nightly" uv pip install -r test_cuda/requirements_llmc.txt --extra-index-url https://download.pytorch.org/whl/cu130 --index-strategy unsafe-best-match
     uv pip install -U chardet
     cd ${REPO_PATH} && uv pip install . && cd ${REPO_PATH}/test
 
@@ -190,7 +190,12 @@ function run_unit_test_sglang() {
 
     cd ${REPO_PATH}/test
     rm -rf .coverage* *.xml *.html
-    uv pip install "sglang<0.5.11" --prerelease=allow
+    uv pip install -r test_cuda/requirements_sglang.txt \
+        --prerelease=allow \
+        --extra-index-url https://download.pytorch.org/whl/cu130 \
+        --index-strategy unsafe-best-match
+    local flashinfer_version=$(uv pip show flashinfer-python 2>/dev/null | grep -i "^Version" | awk '{print $2}')
+    uv pip install flashinfer-jit-cache==${flashinfer_version} --index-url https://flashinfer.ai/whl/cu130
     cd ${REPO_PATH} && uv pip install . && cd ${REPO_PATH}/test
 
     pip list > ${LOG_DIR}/sglang_ut_pip_list.txt
@@ -219,11 +224,11 @@ function run_unit_test_vllm() {
 
     cd ${REPO_PATH}/test
     rm -rf .coverage* *.xml *.html
-    vllm_version=$(curl -s https://api.github.com/repos/vllm-project/vllm/releases/latest | jq -r .tag_name | sed 's/^v//')
-    uv pip install -r test/unit/test_cuda/requirements_vllm.txt \
-        --extra-index-url https://wheels.vllm.ai/${vllm_version}/cu129 \
-        --extra-index-url https://download.pytorch.org/whl/cu126 \
+    uv pip install -r test_cuda/requirements_vllm.txt \
+        --extra-index-url https://download.pytorch.org/whl/cu130 \
         --index-strategy unsafe-best-match
+    local flashinfer_version=$(uv pip show flashinfer-python 2>/dev/null | grep -i "^Version" | awk '{print $2}')
+    uv pip install flashinfer-jit-cache==${flashinfer_version} --index-url https://flashinfer.ai/whl/cu130
     uv pip install -U chardet
     cd ${REPO_PATH} && uv pip install . && cd ${REPO_PATH}/test
 

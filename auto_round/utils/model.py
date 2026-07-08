@@ -1652,10 +1652,13 @@ def safe_device_move_with_meta_handling(
 
 
 def is_moe_model(model: torch.nn.Module) -> bool:
+    """Heuristically detect whether ``model`` is a MoE architecture by scanning its config
+    for "moe"/"expert" markers or by checking module names for "expert".
+    """
     if hasattr(model, "config") and hasattr(model.config, "to_dict"):
-        for key in model.config.to_dict().keys():
-            if "moe" in key or "expert" in key:
-                return True
+        config_str = str(model.config.to_dict()).lower()
+        if "moe" in config_str or "expert" in config_str:
+            return True
     for n, m in model.named_modules():
         if "expert" in n:
             return True
@@ -2299,7 +2302,11 @@ def is_model_free_route(
 
     Note: this function only *reads* kwargs; it does **not** pop any keys.
     """
-    from auto_round.compressors.model_free import is_model_free_supported_scheme
+    from auto_round.compressors.model_free import (
+        _looks_like_auto_scheme,
+        _validate_auto_scheme_options,
+        is_model_free_supported_scheme,
+    )
 
     explicit = bool(kwargs.get("model_free", False))
     disabled = bool(kwargs.get("disable_model_free", False))
@@ -2310,15 +2317,23 @@ def is_model_free_route(
     if fmt is None:
         fmt = "auto_round"
     fmt_first = str(fmt).lower().replace(" ", "").split(",")[0]
+    common_conditions = not disabled and isinstance(model, str) and iters == 0 and disable_opt_rtn is True
+
+    if _looks_like_auto_scheme(scheme):
+        try:
+            family = _validate_auto_scheme_options(scheme)
+        except ValueError:
+            return False
+
+        if fmt_first == "auto_round":
+            return common_conditions and family == "int"
+        if fmt_first == "llm_compressor":
+            return common_conditions and family == "mx_fp"
+        return False
+
     if fmt_first != "auto_round":
         return False
-    return (
-        not disabled
-        and isinstance(model, str)
-        and iters == 0
-        and disable_opt_rtn is True
-        and is_model_free_supported_scheme(scheme, kwargs)
-    )
+    return common_conditions and is_model_free_supported_scheme(scheme, kwargs)
 
 
 def find_layers_from_config(model_dir: str, class_names: list[str] | None = None) -> dict[str, str]:
