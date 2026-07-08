@@ -184,6 +184,92 @@ Saved CSVs:
 - `bench_sparse_topk_prefetch_off_qtile256_k64_nhd_gpu6.csv`
 - `bench_sparse_topk_prefetch_off_qtile256_k64_hnd_gpu6.csv`
 
+## B70 Profiling Snapshot
+
+This node is `0xe223` (`B70` / `bmg_g31`). The following `unitrace` A/B was run
+for the same sparse case in `HND` layout:
+
+- `batch=1`
+- `num_heads_q=40`
+- `num_heads_kv=40`
+- `seq_len=75600`
+- `head_dim=128`
+- `topk=0.5`
+- `q_tile=256`
+- `sparse_q_block_tokens=256`
+- `sparse_k_block_tokens=64`
+- `ZE_AFFINITY_MASK=0`
+
+Build toggle:
+
+- `ARK_SPARSE_SAGE_ENABLE_K_PREFETCH=OFF`
+- `ARK_SPARSE_SAGE_ENABLE_K_PREFETCH=ON`
+
+Machine-specific profiling command:
+
+```bash
+sg render -c 'bash -lc "
+cd /home/yiliu4/workspace/auto-round-prefill-clean-sparse-pr/auto_round_extension/ark
+export LD_LIBRARY_PATH=/opt/intel/oneapi/compiler/2025.3/lib:/opt/intel/oneapi/2025.3/lib:${LD_LIBRARY_PATH}
+ZE_AFFINITY_MASK=0 \
+/home/yiliu4/workspace/pti-gpu/tools/unitrace/install_local/bin/unitrace \
+  -d -s --chrome-kernel-logging --demangle \
+  --devices-to-sample 0 \
+  --output sparse_vecstall_sampling_prefetch_<on_or_off> \
+  /home/yiliu4/workspace/auto-round-py/.venv/bin/python \
+  test/bench_sparse_topk.py \
+    --batch 1 \
+    --num-heads-q 40 \
+    --num-heads-kv 40 \
+    --seq-len 75600 \
+    --head-dim 128 \
+    --tensor-layout HND \
+    --topk 0.5 \
+    --q-tile-override 256 \
+    --sparse-q-block-tokens 256 \
+    --sparse-k-block-tokens 64 \
+    --warmup 0 \
+    --iters 1
+"'
+```
+
+Kernel properties from `unitrace`:
+
+| Setting | Sparse Private Mem / Thread | Sparse Spill / Thread | Dense Spill / Thread | Notes |
+|---|---:|---:|---:|---|
+| `prefetch=OFF` | `1536 B` | `3392 B` | `128 B` | large sparse spill remains |
+| `prefetch=ON` | `2048 B` | `640 B` | `128 B` | spill drops a lot, private mem rises |
+
+Sparse kernel timing from the same profiled runs:
+
+| Setting | XeSparseSageFwdKernel Calls | Total Time (ns) | Avg Time (ns) |
+|---|---:|---:|---:|
+| `prefetch=OFF` | `2` | `1377784270` | `688892135` |
+| `prefetch=ON` | `2` | `868062916` | `434031458` |
+
+Profiled benchmark output from the same runs:
+
+| Setting | dense_torch_sdpa | dense_sagev1 | sparse kernel_only | sparse e2e |
+|---|---:|---:|---:|---:|
+| `prefetch=OFF` | `2160.233 ms` | `8896.800 ms` | `40102.633 ms` | `837.385 ms` |
+| `prefetch=ON` | `2014.259 ms` | `873.501 ms` | `42590.231 ms` | `620.531 ms` |
+
+Interpretation:
+
+- On this `B70` node, enabling sparse `K` prefetch increases sparse private
+  memory but reduces sparse spill substantially.
+- The sparse kernel also ran faster under `unitrace` with prefetch enabled.
+- Treat the benchmark latencies in this section as profiler-distorted. Use them
+  only for `prefetch ON/OFF` comparison inside `unitrace`, not as normal
+  benchmark numbers.
+
+Saved profiling artifacts:
+
+- `sparse_vecstall_sampling_prefetch_off.3716760`
+- `python.3716760.json`
+- `sparse_vecstall_sampling_prefetch_on.3756979`
+- `python.3756979.json`
+
 ## Optional `q_tile=64` Reference
 
 ```bash
