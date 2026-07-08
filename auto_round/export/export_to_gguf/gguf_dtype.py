@@ -265,7 +265,7 @@ class GGUFDTypeSelector:
             elif self.ftype == gguf.LlamaFileType.MOSTLY_Q3_K_M:
                 if i_layer < n_layer // 16:
                     qtype = gguf.GGMLQuantizationType.Q5_K
-                elif self.model_arch == gguf.MODEL_ARCH.FALCON or _use_more_bits(i_layer, n_layer):
+                elif self.model_arch != gguf.MODEL_ARCH.FALCON or _use_more_bits(i_layer, n_layer):
                     qtype = gguf.GGMLQuantizationType.Q4_K
                 else:
                     qtype = gguf.GGMLQuantizationType.Q3_K
