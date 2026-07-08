@@ -249,3 +249,41 @@ def test_legacy_disable_flags_map_to_enable_bools():
 
     assert args.enable_minmax_tuning is False
     assert args.enable_quanted_input is False
+
+
+# ===========================================================================
+#  _extract_common_quantization_kwargs: backfill unset fields from --scheme
+# ===========================================================================
+
+
+def _parse_quantize_args(argv):
+    from auto_round.cli.parser import build_quantize_parser
+
+    return build_quantize_parser().parse_args(["--model", "dummy-model"] + argv)
+
+
+@pytest.mark.parametrize(
+    "extra_args, expected_bits",
+    [
+        ([], 4),  # default --scheme W4A16 also backfills
+        (["--scheme", "W8A16"], 8),
+        (["--scheme", "W8A16", "--bits", "6"], 6),  # explicit --bits wins over the preset
+        (["--avg_bits", "6", "--options", "INT4,INT8"], None),  # AutoScheme: must not lock options
+        (["--scheme", "gguf:q4_k_s"], None),  # GGUF: overrides are ignored anyway
+    ],
+)
+def test_common_kwargs_backfill_from_scheme(extra_args, expected_bits):
+    from auto_round.cli.main import _extract_common_quantization_kwargs
+
+    kwargs = _extract_common_quantization_kwargs(_parse_quantize_args(extra_args))
+    assert kwargs["bits"] == expected_bits
+
+
+def test_rtn_disable_opt_rtn_heuristic_respects_scheme_without_explicit_bits():
+    """Regression test: --scheme W8A16 alone (no --bits/--act_bits) must still
+    auto-enable disable_opt_rtn, matching RTNConfig's own W8A16/W8A8 heuristic."""
+    from auto_round.algorithms.quantization.rtn.config import RTNConfig
+    from auto_round.cli.main import _extract_common_quantization_kwargs
+
+    kwargs = _extract_common_quantization_kwargs(_parse_quantize_args(["--scheme", "W8A16"]))
+    assert RTNConfig(**kwargs).disable_opt_rtn is True
