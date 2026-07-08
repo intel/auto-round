@@ -17,7 +17,7 @@ import torch
 
 from auto_round.data_type.register import register_dtype
 from auto_round.data_type.utils import reshape_pad_tensor_by_group_size, revert_tensor_by_pad, round_ste
-from auto_round.export.export_to_gguf.config import GGML_QUANT_SIZES
+from auto_round.export.export_to_gguf.config import GGML_QUANT_SIZES, QK_K
 from auto_round.export.export_to_gguf.packing import make_q3_quants, make_qx_quants, make_qx_quants_chunk
 from auto_round.logger import logger
 from auto_round.utils import get_reciprocal
@@ -471,10 +471,8 @@ def search_gguf_scale_min_asym(tensor, bits=4, scale_dtype=torch.float16, imatri
         }
 
         weights = imatrix.reshape(1, -1)
-
         weights = weights.expand(tensor.numel() // weights.numel(), -1)
         quant_weights = weights.reshape(tensor.shape)
-
         quant_weights = _imatrix_handle_zero(quant_weights, tensor, bits)
 
         # sigma2 = torch.sum(torch.pow(tensor, 2), dim=-1, keepdim=True) / QK_K
@@ -798,7 +796,7 @@ def quant_tensor_gguf_sym_dq(
         Quantized and de-quantized tensor, scale, zero-point
     """
 
-    from auto_round.export.export_to_gguf.config import K_SCALE_SIZE, QK_K
+    from auto_round.export.export_to_gguf.config import K_SCALE_SIZE
 
     if bits not in [3, 6]:
         raise KeyError(f"bits={bits} is not supported by gguf_int_sym_dq, please check.")

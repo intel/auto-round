@@ -70,11 +70,8 @@ stages:
                   script: |
                     export PYTHONUNBUFFERED=1
                     cd ${BUILD_SOURCESDIRECTORY}
-                    if [ ${{ pair.value.PART }} -eq 0 ]; then
-                      CUDA_VERSION="13.0"
-                    else
-                      CUDA_VERSION="any"
-                    fi
+                    CUDA_VERSION="13.0"
+
                     python .azure-pipelines/scripts/cuda_unit_test/runpod_manager.py \
                       --action create \
                       --api_key $(RUNPOD_API_KEY) \

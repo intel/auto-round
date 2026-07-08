@@ -128,6 +128,7 @@ stages:
                 path: $(Pipeline.Workspace)/dist
           
           - task: DownloadPipelineArtifact@2
+            condition: and(succeeded(), eq('${{ parameters.buildMode }}', 'release'))
             displayName: Download source dist
             inputs:
               artifact: auto-round-lib-dist
