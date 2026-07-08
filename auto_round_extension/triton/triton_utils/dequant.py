@@ -85,8 +85,8 @@ def dequant_kernel_248(
     weights = (qweights >> wf_weights) & maxq
 
     qzero_ncols: tl.constexpr = outfeatures // elements_per_feature
-    qzero_idx = (qzero_ncols * groups) + col_block
-    qzeros = tl.load(qzeros_ptr + qzero_idx, None, eviction_policy="evict_last")
+    qzero_idx = (qzero_ncols * groups) + (col_offsets // elements_per_feature)
+    qzeros = tl.load(qzeros_ptr + qzero_idx, mask=col_mask, other=0, eviction_policy="evict_last")
     wf_zeros = (col_offsets % elements_per_feature) * bits
     zeros = (qzeros >> wf_zeros) & maxq
 
