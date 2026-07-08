@@ -253,18 +253,11 @@ def _select_rtn_compressor_base_cls(quant_config: RTNConfig, scheme, format, bas
     enable_imatrix = False
     disable_opt_rtn = getattr(quant_config, "disable_opt_rtn", False)
 
-    # Resolve scheme attrs once for routing. SchemeMixin will do the authoritative
-    # resolution later; this preview only chooses the compressor class. Computed
-    # up front (rather than only when needed) so the W8A16/W8A8 check below also
-    # sees the scheme's real bits/act_bits/data_type, not just the config's own
-    # (often unset) construction-time values.
+    # Preview resolved scheme attrs once (authoritative resolution happens later).
     resolved_attrs = _preview_resolved_attrs(quant_config, scheme)
 
-    # If disable_opt_rtn was not explicitly set and the resolved scheme is
-    # W8A16/W8A8-equivalent, auto-disable optimization to improve efficiency.
-    # Uses the resolved preview (not a literal scheme-string match) so this also
-    # covers schemes passed only via `scheme=`/`--scheme` (e.g. "INT8", a dict,
-    # or a QuantizationScheme instance), not just the literal "W8A16" string.
+    # Auto-disable rtn optimization for W8A16/W8A8-equivalent resolved schemes,
+    # unless the user already set disable_opt_rtn explicitly.
     if getattr(quant_config, "orig_disable_opt_rtn", None) is None:
         bits = resolved_attrs.get("bits", getattr(quant_config, "bits", None))
         act_bits = resolved_attrs.get("act_bits", getattr(quant_config, "act_bits", None))

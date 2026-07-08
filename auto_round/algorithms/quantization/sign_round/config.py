@@ -79,15 +79,10 @@ class SignRoundConfig(QuantizationConfig):
             logger.warning("`iters` must be non-negative, reset it to 200")
             self.iters = 200
 
-        # `bits` may still be unresolved here (e.g. only `scheme=`/`--scheme` was
-        # given, no explicit `bits=`) -- BaseCompressor.resolve_scheme() binds the
-        # real value later. Track whether the user explicitly chose lr/minmax_lr
-        # so `finalize_scheme()` can safely apply the low-bit heuristic once
-        # `self.bits` is resolved, without clobbering an intentional choice.
-        self._user_set_lr = bool(lr)
-        self._user_set_minmax_lr = bool(minmax_lr)
-        self.lr = lr or 1.0 / self.iters
-        self.minmax_lr = minmax_lr or self.lr
+        # lr/minmax_lr depend on `bits`, which may still be unresolved here
+        # (e.g. only `scheme=` was given) -- finalize_scheme() fills them in.
+        self.lr = lr
+        self.minmax_lr = minmax_lr
         self.lr_scheduler = lr_scheduler
 
         self.nblocks = nblocks
@@ -108,24 +103,15 @@ class SignRoundConfig(QuantizationConfig):
         self.enable_adam = enable_adam
 
     def finalize_scheme(self) -> None:
-        """Apply the low-bit lr heuristic once the scheme is resolved.
-
-        `self.bits` may have been unset at construction time (e.g. only
-        `scheme=`/`--scheme` was given), in which case the low-bit lr bump in
-        `__init__` was skipped. `BaseCompressor.resolve_scheme()` calls this
-        after binding `self.scheme` to the real resolved scheme, so `self.bits`
-        now reflects the actual value regardless of how it was supplied.
-        """
-        if self._user_set_lr:
-            return
-        # TODO need to check 4 bits lr setting for auto-round-best, 3bits only validate on small models
-        if self.iters >= 1000 and self.bits is not None and self.bits <= 3:
-            new_lr = 2.0 / self.iters
-            if new_lr != self.lr:
+        """Resolve lr/minmax_lr once `bits` is known (low-bit schemes use a higher lr)."""
+        if self.lr is None:
+            # TODO need to check 4 bits lr setting for auto-round-best, 3bits only validate on small models
+            if self.iters >= 1000 and self.bits is not None and self.bits <= 3:
+                self.lr = 2.0 / self.iters
                 logger.info("set the lr to 2.0/iters for better accuracy")
-            self.lr = new_lr
-            if not self._user_set_minmax_lr:
-                self.minmax_lr = new_lr
+            else:
+                self.lr = 1.0 / self.iters
+        self.minmax_lr = self.minmax_lr or self.lr
 
     def check_configs(self) -> None:
         """Checks if the configurations are valid.
