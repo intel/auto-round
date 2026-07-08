@@ -129,3 +129,30 @@ def test_ark_sagev1_matches_torch_for_kv_remainder_tile():
     torch.xpu.synchronize()
 
     torch.testing.assert_close(actual, expected, atol=2e-2, rtol=2e-2)
+
+
+@pytest.mark.parametrize("layout", ["HND", "NHD"])
+def test_ark_sage_dynquant_matches_torch_for_layout(layout):
+    torch.manual_seed(3031)
+    batch, heads_q, heads_kv, seq_q, seq_kv, head_dim = 1, 4, 2, 48, 80, 64
+    dtype = torch.float16
+    scale = 1 / math.sqrt(head_dim)
+    q_hnd = torch.randn(batch, heads_q, seq_q, head_dim, device="xpu", dtype=dtype)
+    k_hnd = torch.randn(batch, heads_kv, seq_kv, head_dim, device="xpu", dtype=dtype)
+    v_hnd = torch.randn(batch, heads_kv, seq_kv, head_dim, device="xpu", dtype=dtype)
+
+    q = q_hnd if layout == "HND" else q_hnd.transpose(1, 2).contiguous()
+    k = k_hnd if layout == "HND" else k_hnd.transpose(1, 2).contiguous()
+    v = v_hnd if layout == "HND" else v_hnd.transpose(1, 2).contiguous()
+
+    expected = torch.nn.functional.scaled_dot_product_attention(
+        q_hnd, k_hnd, v_hnd, scale=scale, enable_gqa=True, is_causal=False
+    )
+    actual = auto_round_kernel.sage_dynquant(
+        q, k, v, scale=scale, is_causal=False, quant_block_size=32, tensor_layout=layout
+    )
+    torch.xpu.synchronize()
+
+    if layout == "NHD":
+        actual = actual.transpose(1, 2)
+    torch.testing.assert_close(actual.float(), expected.float(), atol=3e-2, rtol=3e-2)

@@ -728,6 +728,108 @@ static void sage_dynamic_quant_v_layout(torch_ptr stream, torch_ptr input, torch
   }
 }
 
+template <typename T>
+static void xpu_copy_into_kv_cache_qk(sycl::queue* q, T* cache_ptr, const T* src_ptr, int stride_s, int stride_d,
+                                    int stride_h, int stride_b, int batch, int num_heads_kv, int append_len,
+                                    int head_dim, int capacity, int start_pos) {
+  const size_t total = static_cast<size_t>(batch) * num_heads_kv * append_len * head_dim;
+  q->parallel_for(sycl::range<1>(total), [=](sycl::id<1> idx) {
+    size_t linear = idx[0];
+    const int d = linear % head_dim;
+    linear /= head_dim;
+    const int s = linear % append_len;
+    linear /= append_len;
+    const int h = linear % num_heads_kv;
+    const int b = linear / num_heads_kv;
+    const size_t src_offset =
+      static_cast<size_t>(b) * stride_b + static_cast<size_t>(h) * stride_h + static_cast<size_t>(s) * stride_s + d;
+    const size_t dst_offset =
+      ((static_cast<size_t>(b) * num_heads_kv + h) * capacity + (start_pos + s)) * head_dim + d;
+    cache_ptr[dst_offset] = src_ptr[src_offset];
+  });
+  q->wait();
+}
+
+template <typename T>
+static void xpu_copy_into_kv_cache_v(sycl::queue* q, T* cache_ptr, const T* src_ptr, int stride_d, int stride_s,
+                                   int stride_h, int stride_b, int batch, int num_heads_kv, int append_len,
+                                   int head_dim, int capacity, int start_pos) {
+  const size_t total = static_cast<size_t>(batch) * num_heads_kv * append_len * head_dim;
+  q->parallel_for(sycl::range<1>(total), [=](sycl::id<1> idx) {
+    size_t linear = idx[0];
+    const int d = linear % head_dim;
+    linear /= head_dim;
+    const int s = linear % append_len;
+    linear /= append_len;
+    const int h = linear % num_heads_kv;
+    const int b = linear / num_heads_kv;
+    const size_t src_offset =
+      static_cast<size_t>(b) * stride_b + static_cast<size_t>(h) * stride_h + static_cast<size_t>(s) * stride_s +
+      static_cast<size_t>(d) * stride_d;
+    const size_t dst_offset =
+      ((static_cast<size_t>(b) * num_heads_kv + h) * capacity + (start_pos + s)) * head_dim + d;
+    cache_ptr[dst_offset] = src_ptr[src_offset];
+  });
+  q->wait();
+}
+
+static void ark_xpu_kv_update(torch_ptr stream, torch_ptr KCache, torch_ptr VCache, torch_ptr K, torch_ptr V,
+                            int k_stride_s, int k_stride_d, int k_stride_h, int k_stride_b, int v_stride_d,
+                            int v_stride_s, int v_stride_h, int v_stride_b, int kv_dtype, int batch,
+                            int num_heads_kv, int append_len, int head_dim, int capacity, int start_pos) {
+  auto* q = (sycl::queue*)stream;
+  if (append_len <= 0 || start_pos < 0 || start_pos + append_len > capacity) {
+    throw std::invalid_argument("ark::ark_xpu_kv_update: invalid append range for cache capacity");
+  }
+  switch (static_cast<BTLA_DTYPE>(kv_dtype)) {
+    case BTLA_DTYPE::F16:
+    xpu_copy_into_kv_cache_qk<sycl::half>(q, (sycl::half*)KCache, (const sycl::half*)K, k_stride_s, k_stride_d,
+                                          k_stride_h, k_stride_b, batch, num_heads_kv, append_len, head_dim,
+                                          capacity, start_pos);
+    xpu_copy_into_kv_cache_v<sycl::half>(q, (sycl::half*)VCache, (const sycl::half*)V, v_stride_d, v_stride_s,
+                                         v_stride_h, v_stride_b, batch, num_heads_kv, append_len, head_dim,
+                                         capacity, start_pos);
+    return;
+    case BTLA_DTYPE::BF16:
+    xpu_copy_into_kv_cache_qk<sycl::ext::oneapi::bfloat16>(
+        q, (sycl::ext::oneapi::bfloat16*)KCache, (const sycl::ext::oneapi::bfloat16*)K, k_stride_s, k_stride_d,
+        k_stride_h, k_stride_b, batch, num_heads_kv, append_len, head_dim, capacity, start_pos);
+    xpu_copy_into_kv_cache_v<sycl::ext::oneapi::bfloat16>(
+        q, (sycl::ext::oneapi::bfloat16*)VCache, (const sycl::ext::oneapi::bfloat16*)V, v_stride_d, v_stride_s,
+        v_stride_h, v_stride_b, batch, num_heads_kv, append_len, head_dim, capacity, start_pos);
+    return;
+    default:
+    throw std::invalid_argument("ark::ark_xpu_kv_update: only FP16 and BF16 caches are supported");
+  }
+}
+
+static void sdpa_with_kv_cache(torch_ptr stream, torch_ptr Q, torch_ptr KCache, torch_ptr VCache, torch_ptr O,
+                             torch_ptr mask, int q_stride_s, int q_stride_d, int q_stride_h, int q_stride_b,
+                             int k_stride_s, int k_stride_d, int k_stride_h, int k_stride_b, int v_stride_d,
+                             int v_stride_s, int v_stride_h, int v_stride_b, int o_stride_s, int o_stride_d,
+                             int o_stride_h, int o_stride_b, int q_dtype, int batch, int num_heads_q,
+                             int num_heads_kv, int seq_len_q, int seq_len_kv, int capacity, int head_dim,
+                             float softmax_scale, bool is_causal) {
+  if (mask && is_causal) {
+    throw std::invalid_argument("ark::sdpa_with_kv_cache: mask and is_causal cannot both be set");
+  }
+  if (seq_len_q <= 0 || seq_len_kv <= 0 || seq_len_kv > capacity) {
+    throw std::invalid_argument("ark::sdpa_with_kv_cache: invalid query/KV lengths for cache capacity");
+  }
+  if (q_dtype != (int)BTLA_DTYPE::F16 && q_dtype != (int)BTLA_DTYPE::BF16) {
+    throw std::invalid_argument("ark::sdpa_with_kv_cache: only FP16 and BF16 are supported");
+  }
+  if (is_causal && seq_len_q != 1) {
+    throw std::invalid_argument(
+      "ark::sdpa_with_kv_cache: causal cache decode currently supports only seq_len_q == 1");
+  }
+  ark::flash_attn_prefill((sycl::queue*)stream, (void*)Q, (void*)KCache, (void*)VCache, (void*)O, (void*)mask,
+                        (BTLA_DTYPE)(q_dtype), q_stride_s, q_stride_d, q_stride_h, q_stride_b, k_stride_s,
+                        k_stride_d, k_stride_h, k_stride_b, v_stride_d, v_stride_s, v_stride_h, v_stride_b,
+                        o_stride_s, o_stride_d, o_stride_h, o_stride_b, batch, num_heads_q, num_heads_kv, seq_len_q,
+                        seq_len_kv, head_dim, softmax_scale, is_causal);
+}
+
 #elif !defined(ARK_XPU)
 
 // Finalization note (non-int8 closure pass):
@@ -1068,6 +1170,8 @@ PYBIND11_MODULE(PY_NAME, m) {
   m.def("sage_compute_seq_mean_bias_layout", &ark::sage_compute_seq_mean_bias_layout);
   m.def("sage_dynamic_quant_layout", &ark::sage_dynamic_quant_layout);
   m.def("sage_dynamic_quant_v_layout", &ark::sage_dynamic_quant_v_layout);
+  m.def("ark_xpu_kv_update", &ark::ark_xpu_kv_update);
+  m.def("sdpa_with_kv_cache", &ark::sdpa_with_kv_cache);
   m.def("moe_gemm", &ark::moe_gemm_wrapper);
   m.def("moe_gemm_decode", &ark::moe_gemm_decode_wrapper);
   m.def("moe_gemm_prefill", &ark::moe_gemm_prefill_wrapper);

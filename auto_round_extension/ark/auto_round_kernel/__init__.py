@@ -13,6 +13,7 @@
 # limitations under the License.
 
 import os
+from dataclasses import dataclass
 from typing import Optional
 import torch
 
@@ -198,6 +199,99 @@ def _empty_attention_output(
     layout = _normalize_tensor_layout(tensor_layout)
     shape = (batch, num_heads, seq_len, head_dim) if layout == "HND" else (batch, seq_len, num_heads, head_dim)
     return torch.empty(shape, device=device, dtype=dtype)
+
+
+def _validate_attention_mask(
+    attn_mask: torch.Tensor | None,
+    *,
+    batch: int,
+    seq_len_q: int,
+    seq_len_kv: int,
+    device: torch.device,
+) -> None:
+    if attn_mask is None:
+        return
+    if attn_mask.device != device:
+        raise ValueError("attn_mask must be on the same device as Q")
+    if not attn_mask.is_contiguous():
+        raise ValueError("attn_mask must be contiguous")
+    if attn_mask.dtype != torch.float32:
+        raise ValueError(f"attn_mask must be float32 (additive bias), got {attn_mask.dtype}")
+    expected_mask_shape = (batch, 1, seq_len_q, seq_len_kv)
+    if attn_mask.shape != expected_mask_shape:
+        raise ValueError(f"attn_mask shape must be {expected_mask_shape}, got {tuple(attn_mask.shape)}")
+
+
+def _validate_no_dropout(dropout_p: float, api_name: str) -> None:
+    if dropout_p != 0.0:
+        raise NotImplementedError(f"{api_name}: dropout_p must be 0.0 (got {dropout_p}); dropout is not supported")
+
+
+def _validate_head_ratio(num_heads_q: int, num_heads_kv: int) -> None:
+    if num_heads_kv <= 0:
+        raise ValueError("num_heads_kv must be greater than 0")
+    if num_heads_q % num_heads_kv != 0:
+        raise ValueError(
+            f"num_heads_q ({num_heads_q}) must be divisible by num_heads_kv ({num_heads_kv}) for MQA/GQA attention"
+        )
+
+
+def _validate_attention_geometry(
+    query: torch.Tensor,
+    key: torch.Tensor,
+    value: torch.Tensor,
+    tensor_layout: str,
+    *,
+    key_dtype: torch.dtype | None = None,
+    value_dtype: torch.dtype | None = None,
+) -> tuple[int, int, int, int, int, int]:
+    B, Hq, Sq, D = _validate_attention_tensor(query, "Q", tensor_layout)
+    Bk, Hkv, Skv, Dk = _validate_attention_tensor(key, "K", tensor_layout, expected_dtype=key_dtype)
+    Bv, Hkv2, Skv2, Dv = _validate_attention_tensor(value, "V", tensor_layout, expected_dtype=value_dtype)
+
+    if Bk != B or Bv != B:
+        raise ValueError("Batch size mismatch between Q/K/V")
+    if Hkv2 != Hkv or Skv2 != Skv or Dv != Dk:
+        raise ValueError("K/V shape mismatch")
+    if Dk != D:
+        raise ValueError("Head dim mismatch between Q and K/V")
+    _validate_head_ratio(Hq, Hkv)
+    return B, Hq, Hkv, Sq, Skv, D
+
+
+def _contiguous_hnd_qko_strides(num_heads: int, seq_len: int, head_dim: int) -> tuple[int, int, int, int]:
+    return head_dim, 1, seq_len * head_dim, num_heads * seq_len * head_dim
+
+
+def _contiguous_hnd_v_strides(num_heads: int, seq_len: int, head_dim: int) -> tuple[int, int, int, int]:
+    return 1, head_dim, seq_len * head_dim, num_heads * seq_len * head_dim
+
+
+@dataclass(frozen=True)
+class _XPUKVCacheMeta:
+    batch: int
+    num_heads_kv: int
+    capacity: int
+    head_dim: int
+    dtype: torch.dtype
+    device: torch.device
+    storage_layout: str = "HND"
+    storage_format: str = "contiguous"
+
+    @classmethod
+    def from_tensors(cls, key_cache: torch.Tensor, value_cache: torch.Tensor) -> "_XPUKVCacheMeta":
+        if key_cache.device.type != "xpu" or value_cache.device.type != "xpu":
+            raise ValueError("XPU KV cache tensors must live on an XPU device")
+        if key_cache.dtype != value_cache.dtype:
+            raise ValueError("K/V cache tensors must have identical dtype")
+        if key_cache.ndim != 4 or value_cache.shape != key_cache.shape:
+            raise ValueError("K/V cache tensors must be 4D tensors with identical shape")
+        if not key_cache.is_contiguous() or not value_cache.is_contiguous():
+            raise ValueError("K/V cache tensors must be contiguous")
+        batch, num_heads_kv, capacity, head_dim = key_cache.shape
+        if key_cache.dtype not in (torch.float16, torch.bfloat16):
+            raise ValueError(f"Unsupported XPU KV cache dtype: {key_cache.dtype}")
+        return cls(batch, num_heads_kv, capacity, head_dim, key_cache.dtype, key_cache.device)
 
 
 # -----------------------------------------------------------------------------
@@ -634,34 +728,16 @@ def sdpa(
     if not mixed_kv and (key.dtype != query.dtype or value.dtype != query.dtype):
         raise ValueError(f"K/V dtype must match Q dtype, got K={key.dtype}, V={value.dtype}, Q={query.dtype}")
 
-    B, Hq, Sq, D = _validate_attention_tensor(query, "Q", tensor_layout)
-    Bk, Hkv, Skv, Dk = _validate_attention_tensor(key, "K", tensor_layout, expected_dtype=key.dtype)
-    Bv, Hkv2, Skv2, Dv = _validate_attention_tensor(value, "V", tensor_layout, expected_dtype=value.dtype)
-
-    if Bk != B or Bv != B:
-        raise ValueError("Batch size mismatch between Q/K/V")
-    if Hkv2 != Hkv or Skv2 != Skv or Dv != Dk:
-        raise ValueError("K/V shape mismatch")
-    if Dk != D:
-        raise ValueError("Head dim mismatch between Q and K/V")
+    B, Hq, Hkv, Sq, Skv, D = _validate_attention_geometry(
+        query, key, value, tensor_layout, key_dtype=key.dtype, value_dtype=value.dtype
+    )
     # The SYCL-TLA (XPU) flash-attention kernels are only compiled for a fixed
     # set of head dimensions. The CPU kernel supports arbitrary head_dim.
     if query.device.type == "xpu" and D not in (64, 128, 96, 192):
         raise ValueError(f"Unsupported head_dim={D}; supported: 64, 128, 96, 192")
 
-    if dropout_p != 0.0:
-        raise NotImplementedError(f"dropout_p must be 0.0 (got {dropout_p}); dropout is not supported")
-
-    if attn_mask is not None:
-        if attn_mask.device != query.device:
-            raise ValueError("attn_mask must be on the same device as Q")
-        if not attn_mask.is_contiguous():
-            raise ValueError("attn_mask must be contiguous")
-        if attn_mask.dtype != torch.float32:
-            raise ValueError(f"attn_mask must be float32 (additive bias), got {attn_mask.dtype}")
-        expected_mask_shape = (B, 1, Sq, Skv)
-        if attn_mask.shape != expected_mask_shape:
-            raise ValueError(f"attn_mask shape must be {expected_mask_shape}, got {tuple(attn_mask.shape)}")
+    _validate_no_dropout(dropout_p, "sdpa")
+    _validate_attention_mask(attn_mask, batch=B, seq_len_q=Sq, seq_len_kv=Skv, device=query.device)
 
     lib = get_lib(query)
     stream = get_stream(query)
@@ -927,25 +1003,21 @@ def sage(
     - O: same layout as the input tensors.
     """
     if query.device.type != "xpu":
-        raise NotImplementedError("sdpa is only supported on XPU")
+        raise NotImplementedError("sage is only supported on XPU")
+    if query.dtype != torch.int8 or key.dtype != torch.int8:
+        raise ValueError(f"sage expects int8 Q/K tensors, got Q={query.dtype}, K={key.dtype}")
+    if value.dtype not in (torch.float16, torch.bfloat16):
+        raise ValueError(f"sage expects fp16/bf16 V tensors, got V={value.dtype}")
+    if qscale is None or kscale is None:
+        raise ValueError("qscale and kscale must be provided for sage")
 
-    # if query.dtype not in (torch.float16, torch.bfloat16):
-    #     raise ValueError(f"Q must be float16 or bfloat16, got {query.dtype}")
-    # if key.dtype != query.dtype or value.dtype != query.dtype:
-    #     raise ValueError(f"K/V dtype must match Q dtype, got K={key.dtype}, V={value.dtype}, Q={query.dtype}")
-
-    B, Hq, Sq, D = _validate_attention_tensor(query, "Q", tensor_layout)
-    Bk, Hkv, Skv, Dk = _validate_attention_tensor(key, "K", tensor_layout)
-    Bv, Hkv2, Skv2, Dv = _validate_attention_tensor(value, "V", tensor_layout)
-
-    if Bk != B or Bv != B:
-        raise ValueError("Batch size mismatch between Q/K/V")
-    if Hkv2 != Hkv or Skv2 != Skv or Dv != Dk:
-        raise ValueError("K/V shape mismatch")
-    if Dk != D:
-        raise ValueError("Head dim mismatch between Q and K/V")
+    B, Hq, Hkv, Sq, Skv, D = _validate_attention_geometry(
+        query, key, value, tensor_layout, key_dtype=torch.int8, value_dtype=value.dtype
+    )
     if D not in (64, 128):
         raise ValueError(f"Unsupported head_dim={D}; supported: 64, 128")
+    _validate_no_dropout(dropout_p, "sage")
+    _validate_attention_mask(attn_mask, batch=B, seq_len_q=Sq, seq_len_kv=Skv, device=query.device)
 
     lib = get_lib(query)
     stream = get_stream(query)
@@ -1028,18 +1100,13 @@ def sage_pvi8(
     if qscale is None or kscale is None or vscale is None:
         raise ValueError("qscale, kscale and vscale must be provided for sage_pvi8")
 
-    B, Hq, Sq, D = _validate_attention_tensor(query, "Q", tensor_layout)
-    Bk, Hkv, Skv, Dk = _validate_attention_tensor(key, "K", tensor_layout)
-    Bv, Hkv2, Skv2, Dv = _validate_attention_tensor(value, "V", tensor_layout)
-
-    if Bk != B or Bv != B:
-        raise ValueError("Batch size mismatch between Q/K/V")
-    if Hkv2 != Hkv or Skv2 != Skv or Dv != Dk:
-        raise ValueError("K/V shape mismatch")
-    if Dk != D:
-        raise ValueError("Head dim mismatch between Q and K/V")
+    B, Hq, Hkv, Sq, Skv, D = _validate_attention_geometry(
+        query, key, value, tensor_layout, key_dtype=torch.int8, value_dtype=torch.int8
+    )
     if D not in (64, 128):
         raise ValueError(f"Unsupported head_dim={D}; supported: 64, 128")
+    _validate_no_dropout(dropout_p, "sage_pvi8")
+    _validate_attention_mask(attn_mask, batch=B, seq_len_q=Sq, seq_len_kv=Skv, device=query.device)
 
     q_blocks = (Sq + quant_block_size - 1) // quant_block_size
     kv_blocks = (Skv + quant_block_size - 1) // quant_block_size
@@ -1145,24 +1212,19 @@ def sagev1(
             return_lse=return_lse,
         )
     if query.device.type != "xpu":
-        raise NotImplementedError("sdpa is only supported on XPU")
-    if query.dtype not in (torch.float16, torch.bfloat16):
-        raise ValueError(f"Q must be float16 or bfloat16, got {query.dtype}")
+        raise NotImplementedError("sagev1 is only supported on XPU")
+    if query.dtype != torch.float16:
+        raise ValueError(f"sage_dynquant currently supports only float16 Q/K/V tensors, got {query.dtype}")
     if key.dtype != query.dtype or value.dtype != query.dtype:
         raise ValueError(f"K/V dtype must match Q dtype, got K={key.dtype}, V={value.dtype}, Q={query.dtype}")
 
-    B, Hq, Sq, D = _validate_attention_tensor(query, "Q", tensor_layout)
-    Bk, Hkv, Skv, Dk = _validate_attention_tensor(key, "K", tensor_layout, expected_dtype=query.dtype)
-    Bv, Hkv2, Skv2, Dv = _validate_attention_tensor(value, "V", tensor_layout, expected_dtype=query.dtype)
-
-    if Bk != B or Bv != B:
-        raise ValueError("Batch size mismatch between Q/K/V")
-    if Hkv2 != Hkv or Skv2 != Skv or Dv != Dk:
-        raise ValueError("K/V shape mismatch")
-    if Dk != D:
-        raise ValueError("Head dim mismatch between Q and K/V")
+    B, Hq, Hkv, Sq, Skv, D = _validate_attention_geometry(
+        query, key, value, tensor_layout, key_dtype=query.dtype, value_dtype=query.dtype
+    )
     if D not in (64, 128):
         raise ValueError(f"Unsupported head_dim={D}; supported: 64, 128")
+    _validate_no_dropout(dropout_p, "sagev1")
+    _validate_attention_mask(attn_mask, batch=B, seq_len_q=Sq, seq_len_kv=Skv, device=query.device)
 
     lib = get_lib(query)
     stream = get_stream(query)
@@ -1252,18 +1314,13 @@ def sagev1_pvi8(
     if key.dtype != query.dtype or value.dtype != query.dtype:
         raise ValueError(f"K/V dtype must match Q dtype, got K={key.dtype}, V={value.dtype}, Q={query.dtype}")
 
-    B, Hq, Sq, D = _validate_attention_tensor(query, "Q", tensor_layout)
-    Bk, Hkv, Skv, Dk = _validate_attention_tensor(key, "K", tensor_layout, expected_dtype=query.dtype)
-    Bv, Hkv2, Skv2, Dv = _validate_attention_tensor(value, "V", tensor_layout, expected_dtype=query.dtype)
-
-    if Bk != B or Bv != B:
-        raise ValueError("Batch size mismatch between Q/K/V")
-    if Hkv2 != Hkv or Skv2 != Skv or Dv != Dk:
-        raise ValueError("K/V shape mismatch")
-    if Dk != D:
-        raise ValueError("Head dim mismatch between Q and K/V")
+    B, Hq, Hkv, Sq, Skv, D = _validate_attention_geometry(
+        query, key, value, tensor_layout, key_dtype=query.dtype, value_dtype=query.dtype
+    )
     if D not in (64, 128):
         raise ValueError(f"Unsupported head_dim={D}; supported: 64, 128")
+    _validate_no_dropout(dropout_p, "sagev1_pvi8")
+    _validate_attention_mask(attn_mask, batch=B, seq_len_q=Sq, seq_len_kv=Skv, device=query.device)
 
     lib = get_lib(query)
     stream = get_stream(query)
@@ -1504,6 +1561,144 @@ def ark_cpu_bestla_sdpa_packed(
     return output
 
 
+def ark_xpu_kv_cache_alloc(
+    batch: int,
+    num_heads_kv: int,
+    capacity: int,
+    head_dim: int,
+    *,
+    dtype: torch.dtype = torch.float16,
+    device: torch.device | str = "xpu",
+) -> tuple[torch.Tensor, torch.Tensor]:
+    """Allocate a contiguous XPU KV cache in internal HND layout: [B, Hkv, capacity, D]."""
+    device = torch.device(device)
+    if device.type != "xpu":
+        raise ValueError("ark_xpu_kv_cache_alloc only supports XPU tensors")
+    if dtype not in (torch.float16, torch.bfloat16):
+        raise ValueError(f"Unsupported XPU KV cache dtype: {dtype}")
+    if batch <= 0 or num_heads_kv <= 0 or capacity <= 0 or head_dim <= 0:
+        raise ValueError("batch, num_heads_kv, capacity, and head_dim must be greater than 0")
+    shape = (batch, num_heads_kv, capacity, head_dim)
+    return torch.empty(shape, device=device, dtype=dtype), torch.empty(shape, device=device, dtype=dtype)
+
+
+def ark_xpu_kv_update(
+    key_cache: torch.Tensor,
+    value_cache: torch.Tensor,
+    key: torch.Tensor,
+    value: torch.Tensor,
+    start_pos: int,
+    *,
+    tensor_layout: str = "HND",
+) -> tuple[torch.Tensor, torch.Tensor]:
+    """Append raw HND/NHD K/V tensors into a persistent contiguous XPU KV cache."""
+    meta = _XPUKVCacheMeta.from_tensors(key_cache, value_cache)
+    if key.device != meta.device or value.device != meta.device:
+        raise ValueError("K/V source tensors must be on the same XPU device as the cache")
+    if key.dtype != meta.dtype or value.dtype != meta.dtype:
+        raise ValueError("K/V cache and source tensors must have the same dtype")
+    if xpu_lib is None or not hasattr(xpu_lib, "ark_xpu_kv_update"):
+        raise NotImplementedError("ARK XPU KV cache update kernel is not available")
+
+    Bk, Hkv, append_len, Dk = _validate_attention_tensor(key, "K", tensor_layout, expected_dtype=meta.dtype)
+    Bv, Hkv2, append_len_v, Dv = _validate_attention_tensor(value, "V", tensor_layout, expected_dtype=meta.dtype)
+    if (Bk, Bv) != (meta.batch, meta.batch) or Hkv != meta.num_heads_kv or Hkv2 != meta.num_heads_kv:
+        raise ValueError("K/V source batch or head count does not match cache")
+    if append_len_v != append_len or Dk != meta.head_dim or Dv != meta.head_dim:
+        raise ValueError("K/V source shape does not match cache")
+    if start_pos < 0 or start_pos + append_len > meta.capacity:
+        raise ValueError("KV append range exceeds cache capacity")
+
+    k_strides = _attention_strides_qko(key, tensor_layout)
+    v_strides = _attention_strides_v(value, tensor_layout)
+    xpu_lib.ark_xpu_kv_update(
+        get_stream(key),
+        key_cache.data_ptr(),
+        value_cache.data_ptr(),
+        key.data_ptr(),
+        value.data_ptr(),
+        *k_strides,
+        *v_strides,
+        cvt_dtype(meta.dtype),
+        meta.batch,
+        meta.num_heads_kv,
+        append_len,
+        meta.head_dim,
+        meta.capacity,
+        int(start_pos),
+    )
+    return key_cache, value_cache
+
+
+def sdpa_with_kv_cache(
+    query: torch.Tensor,
+    cache_k: torch.Tensor,
+    cache_v: torch.Tensor,
+    seq_len_kv: int,
+    attn_mask: torch.Tensor | None = None,
+    dropout_p: float = 0.0,
+    is_causal: bool = False,
+    scale: float | None = None,
+    tensor_layout: str = "HND",
+) -> torch.Tensor:
+    """Decode-style attention over a persistent contiguous XPU KV cache."""
+    if query.device.type != "xpu":
+        raise NotImplementedError("sdpa_with_kv_cache is only supported on XPU")
+    if query.dtype not in (torch.float16, torch.bfloat16):
+        raise ValueError(f"Q must be float16 or bfloat16, got {query.dtype}")
+    meta = _XPUKVCacheMeta.from_tensors(cache_k, cache_v)
+    if meta.device != query.device:
+        raise ValueError("query and KV cache must be on the same XPU device")
+    if meta.dtype != query.dtype:
+        raise ValueError(f"query dtype must match KV cache dtype, got Q={query.dtype}, cache={meta.dtype}")
+    if seq_len_kv <= 0 or seq_len_kv > meta.capacity:
+        raise ValueError(f"seq_len_kv must be in [1, {meta.capacity}], got {seq_len_kv}")
+    if xpu_lib is None or not hasattr(xpu_lib, "sdpa_with_kv_cache"):
+        raise NotImplementedError("ARK XPU KV-cache decode kernel is not available")
+
+    B, Hq, Sq, D = _validate_attention_tensor(query, "Q", tensor_layout, expected_dtype=query.dtype)
+    if B != meta.batch or D != meta.head_dim:
+        raise ValueError("query batch/head_dim must match the KV cache")
+    _validate_head_ratio(Hq, meta.num_heads_kv)
+    if D not in (64, 128, 96, 192):
+        raise ValueError(f"Unsupported head_dim={D}; supported: 64, 128, 96, 192")
+    if is_causal and Sq != 1:
+        raise NotImplementedError(
+            "sdpa_with_kv_cache only supports is_causal=True for single-token decode (seq_len_q == 1)"
+        )
+    _validate_no_dropout(dropout_p, "sdpa_with_kv_cache")
+    _validate_attention_mask(attn_mask, batch=B, seq_len_q=Sq, seq_len_kv=seq_len_kv, device=query.device)
+
+    output = _empty_attention_output(B, Hq, Sq, D, dtype=query.dtype, device=query.device, tensor_layout=tensor_layout)
+    q_strides = _attention_strides_qko(query, tensor_layout)
+    o_strides = _attention_strides_qko(output, tensor_layout)
+    k_strides = _contiguous_hnd_qko_strides(meta.num_heads_kv, seq_len_kv, meta.head_dim)
+    v_strides = _contiguous_hnd_v_strides(meta.num_heads_kv, seq_len_kv, meta.head_dim)
+    xpu_lib.sdpa_with_kv_cache(
+        get_stream(query),
+        query.data_ptr(),
+        cache_k.data_ptr(),
+        cache_v.data_ptr(),
+        output.data_ptr(),
+        attn_mask.data_ptr() if attn_mask is not None else 0,
+        *q_strides,
+        *k_strides,
+        *v_strides,
+        *o_strides,
+        cvt_dtype(query.dtype),
+        B,
+        Hq,
+        meta.num_heads_kv,
+        Sq,
+        seq_len_kv,
+        meta.capacity,
+        meta.head_dim,
+        float(scale) if scale is not None else 1.0 / (D**0.5),
+        bool(is_causal),
+    )
+    return output
+
+
 def sageattn(
     q: torch.Tensor,
     k: torch.Tensor,
@@ -1732,6 +1927,7 @@ def sage_dynquant(
     scale: float | None = None,
     enable_gqa: bool = False,
     quant_block_size: int = 64,
+    tensor_layout: str = "HND",
 ) -> torch.Tensor:
     """SAGE Attention with dynamic INT8 block-wise quantization of Q/K.
 
@@ -1755,9 +1951,16 @@ def sage_dynquant(
 
     if query.dtype not in (torch.float16, torch.bfloat16):
         raise ValueError(f"Q must be float16 or bfloat16, got {query.dtype}")
+    if key.dtype != query.dtype or value.dtype != query.dtype:
+        raise ValueError(f"K/V dtype must match Q dtype, got K={key.dtype}, V={value.dtype}, Q={query.dtype}")
 
-    B, Hq, Sq, D = query.shape
-    _, Hkv, Skv, _ = key.shape
+    B, Hq, Hkv, Sq, Skv, D = _validate_attention_geometry(
+        query, key, value, tensor_layout, key_dtype=query.dtype, value_dtype=query.dtype
+    )
+    if D not in (64, 128):
+        raise ValueError(f"Unsupported head_dim={D}; supported: 64, 128")
+    _validate_no_dropout(dropout_p, "sage_dynquant")
+    _validate_attention_mask(attn_mask, batch=B, seq_len_q=Sq, seq_len_kv=Skv, device=query.device)
 
     # block_size=0 means per-token
     block_size = quant_block_size if quant_block_size > 0 else 1
@@ -1771,79 +1974,57 @@ def sage_dynquant(
 
     lib = get_lib(query)
     stream = get_stream(query)
-
-    # Auto-pad Q and K/V seq lengths to be divisible by block_size
-    # so sage_dynquant works as a drop-in replacement for SDPA
-    def _ceil_div(a, b):
-        return (a + b - 1) // b
-
-    Sq_pad = _ceil_div(Sq, block_size) * block_size
-    Skv_pad = _ceil_div(Skv, block_size) * block_size
-    need_pad_q = Sq_pad != Sq
-    need_pad_kv = Skv_pad != Skv
-
-    if need_pad_q:
-        pad_q = Sq_pad - Sq
-        query = torch.nn.functional.pad(query, (0, 0, 0, pad_q))  # pad S dim with zeros
-    if need_pad_kv:
-        pad_kv = Skv_pad - Skv
-        key = torch.nn.functional.pad(key, (0, 0, 0, pad_kv))
-        value = torch.nn.functional.pad(value, (0, 0, 0, pad_kv))
-
-    # Fused block-wise quantization via SYCL kernel
-    # Tensor layout: [B, H, S, D] is contiguous → [B*H*S, D] flattened
-    # block_size tokens share one scale → num_blocks = B*H*S / block_size
-    # For Q: num_rows = B*Hq*Sq_pad, scale shape = [B, Hq, Sq_pad/block_size, 1]
-    q_num_rows = B * Hq * Sq_pad
-    q_num_blocks = q_num_rows // block_size
+    q_blocks = (Sq + block_size - 1) // block_size
+    kv_blocks = (Skv + block_size - 1) // block_size
     q_i8 = torch.empty_like(query, dtype=torch.int8)
-    q_scale = torch.empty(q_num_blocks, dtype=torch.float32, device=query.device)
-    lib.sage_dynamic_quant(
+    q_scale = torch.empty((B, Hq, q_blocks, 1), dtype=torch.float32, device=query.device)
+    q_strides = _attention_strides_qko(query, tensor_layout)
+    lib.sage_dynamic_quant_layout(
         stream,
         query.data_ptr(),
         0,
         q_i8.data_ptr(),
         q_scale.data_ptr(),
-        q_num_rows,
+        B,
+        Hq,
+        Sq,
         D,
         block_size,
+        *q_strides,
     )
-    q_scale = q_scale.reshape(B, Hq, Sq_pad // block_size, 1)
 
-    k_num_rows = B * Hkv * Skv_pad
-    k_num_blocks = k_num_rows // block_size
     k_i8 = torch.empty_like(key, dtype=torch.int8)
-    k_scale = torch.empty(k_num_blocks, dtype=torch.float32, device=key.device)
-    lib.sage_dynamic_quant(
+    k_scale = torch.empty((B, Hkv, kv_blocks, 1), dtype=torch.float32, device=key.device)
+    k_strides = _attention_strides_qko(key, tensor_layout)
+    lib.sage_dynamic_quant_layout(
         stream,
         key.data_ptr(),
         0,
         k_i8.data_ptr(),
         k_scale.data_ptr(),
-        k_num_rows,
+        B,
+        Hkv,
+        Skv,
         D,
         block_size,
+        *k_strides,
     )
-    k_scale = k_scale.reshape(B, Hkv, Skv_pad // block_size, 1)
 
     # Call SAGE v1 with matching quant_block_size
-    out = sage(
+    return sage(
         q_i8,
         k_i8,
         value,
         attn_mask=attn_mask,
+        dropout_p=dropout_p,
         is_causal=is_causal,
         scale=scale,
         enable_gqa=enable_gqa,
         quant_block_size=block_size,
         qscale=q_scale,
         kscale=k_scale,
+        tensor_layout=tensor_layout,
     )
-
-    # Slice back to original seq length if padded
-    if need_pad_q:
-        out = out[:, :, :Sq, :]
-    return out
 
 
 def moe_gemm_decode(
