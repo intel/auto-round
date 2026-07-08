@@ -248,14 +248,16 @@ def _dequant_int4_sym(packed, scales, group_size):
     """Inverse of _pack_int4_sym. Returns [E, N, K] in scales.dtype."""
     E, N, K_half = packed.shape
     K = K_half * 2
-    q = _unpack_int4_values(packed, signed=True).reshape(E, N, K // group_size, group_size).to(scales.dtype)
+    q = _unpack_int4_values(packed, signed=True)
+    q = q.reshape(E, N, K // group_size, group_size).to(scales.dtype)
     return (q * scales.unsqueeze(-1)).reshape(E, N, K)
 
 
 def _dequant_int4_asym(packed, scales, zeros, group_size):
     E, N, K_half = packed.shape
     K = K_half * 2
-    q = _unpack_int4_values(packed, signed=False).reshape(E, N, K // group_size, group_size).to(scales.dtype)
+    q = _unpack_int4_values(packed, signed=False)
+    q = q.reshape(E, N, K // group_size, group_size).to(scales.dtype)
     deq = (q - zeros.to(scales.dtype).unsqueeze(-1)) * scales.unsqueeze(-1)
     return deq.reshape(E, N, K)
 
@@ -359,14 +361,16 @@ def _pack_int2_asym(w_float, scales, zeros, group_size):
 def _dequant_int2_sym(packed, scales, group_size):
     E, N, K_q = packed.shape
     K = K_q * 4
-    fields = _unpack_int2_values(packed, signed=True).reshape(E, N, K // group_size, group_size).to(scales.dtype)
+    fields = _unpack_int2_values(packed, signed=True)
+    fields = fields.reshape(E, N, K // group_size, group_size).to(scales.dtype)
     return (fields * scales.unsqueeze(-1)).reshape(E, N, K)
 
 
 def _dequant_int2_asym(packed, scales, zeros, group_size):
     E, N, K_q = packed.shape
     K = K_q * 4
-    fields = _unpack_int2_values(packed, signed=False).reshape(E, N, K // group_size, group_size).to(scales.dtype)
+    fields = _unpack_int2_values(packed, signed=False)
+    fields = fields.reshape(E, N, K // group_size, group_size).to(scales.dtype)
     deq = (fields - zeros.to(scales.dtype).unsqueeze(-1)) * scales.unsqueeze(-1)
     return deq.reshape(E, N, K)
 
