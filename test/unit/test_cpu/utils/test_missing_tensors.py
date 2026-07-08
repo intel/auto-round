@@ -13,6 +13,7 @@
 # limitations under the License.
 
 import json
+import logging
 import os
 import tempfile
 
@@ -25,6 +26,27 @@ from auto_round.utils.missing_tensors import (
     quantize_weight_rtn,
     split_fused_expert_tensors,
 )
+
+# ---------------------------------------------------------------------------
+#  Fixtures
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture()
+def _autoround_log_propagate():
+    """Temporarily enable propagation on the ``autoround`` logger so that pytest's
+    ``caplog`` fixture (which attaches its handler to the root logger) can capture
+    warnings emitted via ``logger.warning(...)``. The logger is configured with
+    ``propagate=False`` in ``auto_round/logger.py`` to avoid duplicate output in
+    production, so we must opt in for the duration of the test."""
+    logger = logging.getLogger("autoround")
+    original = logger.propagate
+    logger.propagate = True
+    try:
+        yield
+    finally:
+        logger.propagate = original
+
 
 # ---------------------------------------------------------------------------
 #  Helpers
@@ -89,7 +111,7 @@ class TestSplitFusedExpertTensors:
         for k in tensors:
             assert torch.equal(result[k], tensors[k])
 
-    def test_warns_on_3d_tensor_with_unsupported_parent(self, caplog):
+    def test_warns_on_3d_tensor_with_unsupported_parent(self, caplog, _autoround_log_propagate):
         tensors = {
             "model.layers.0.mlp.branch.down_proj.weight": torch.randn(4, 8, 16),
         }
