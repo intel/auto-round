@@ -51,7 +51,6 @@ def make_dequant_configs(block_sizes, num_warps):
 DEFAULT_DEQUANT_CONFIGS = make_dequant_configs([128, 256, 512, 1024], [4, 8])
 
 
-@triton.autotune(DEFAULT_DEQUANT_CONFIGS, key=["numels"])
 @triton.jit
 def dequant_kernel_248(
     g_idx_ptr,
@@ -64,57 +63,41 @@ def dequant_kernel_248(
     bits: tl.constexpr,
     outfeatures: tl.constexpr,
     num_groups: tl.constexpr,
-    X_BLOCK: tl.constexpr,
+    BLOCK_COLS: tl.constexpr,
 ):
-    # Block indexing
-    xoffset = tl.program_id(0) * X_BLOCK
-    x_index = xoffset + tl.arange(0, X_BLOCK)
-    xmask = x_index < numels
-    row_idx = x_index // outfeatures
-    col_idx = x_index % outfeatures
+    row_idx = tl.program_id(0)
+    col_block = tl.program_id(1)
 
     elements_per_feature: tl.constexpr = 32 // bits
+    col_offsets = col_block * BLOCK_COLS + tl.arange(0, BLOCK_COLS)
+    col_mask = col_offsets < outfeatures
 
-    # Load parameters
-    g_idx = tl.load(g_idx_ptr + (row_idx), None, eviction_policy="evict_last")
-    qweights = tl.load(
-        qweight_ptr + (col_idx + (outfeatures * (row_idx // elements_per_feature))),
-        None,
-    )
-
-    wf_weights = (row_idx % elements_per_feature) * bits
-
-    wf_zeros = (col_idx % elements_per_feature) * bits
-
+    g_idx = tl.load(g_idx_ptr + row_idx, None, eviction_policy="evict_last")
     tmp1 = g_idx + num_groups
     tmp2 = g_idx < 0
     tl.device_assert(g_idx >= 0, "index out of bounds: 0 <= tmp0 < 0")
-    groups = tl.where(tmp2, tmp1, g_idx)  # tmp3 are g_idx
+    groups = tl.where(tmp2, tmp1, g_idx)
 
-    scales = tl.load(scales_ptr + (col_idx + (outfeatures * groups)), None).to(tl.float32)
+    qweight_offsets = col_offsets + (outfeatures * (row_idx // elements_per_feature))
+    qweights = tl.load(qweight_ptr + qweight_offsets, mask=col_mask, other=0)
 
-    # Unpack weights
-    weights = qweights >> wf_weights  # bit shift qweight
+    wf_weights = (row_idx % elements_per_feature) * bits
+    weights = (qweights >> wf_weights) & maxq
 
-    weights = weights & maxq
-
-    # Unpack zeros
     qzero_ncols: tl.constexpr = outfeatures // elements_per_feature
-    qzeros = tl.load(
-        qzeros_ptr + ((qzero_ncols * groups) + (col_idx // elements_per_feature)),
-        None,
-        eviction_policy="evict_last",
-    )
-    zeros = qzeros >> wf_zeros
-    zeros = zeros & maxq
+    qzero_idx = (qzero_ncols * groups) + col_block
+    qzeros = tl.load(qzeros_ptr + qzero_idx, None, eviction_policy="evict_last")
+    wf_zeros = (col_offsets % elements_per_feature) * bits
+    zeros = (qzeros >> wf_zeros) & maxq
 
-    ##Dequantize
+    scales = tl.load(scales_ptr + (col_offsets + (outfeatures * groups)), mask=col_mask, other=0).to(tl.float32)
+
     zeros = zeros + 1
     weights = weights - zeros
     weights = weights.to(tl.float32)
     weights = scales * weights
 
-    tl.store(out_ptr + (x_index), weights, mask=xmask)
+    tl.store(out_ptr + (row_idx * outfeatures + col_offsets), weights, mask=col_mask)
 
 
 def dequant248_core(qweight, scales, qzeros, g_idx, bits, maxq=None, input_dtype=torch.float16):
@@ -126,9 +109,9 @@ def dequant248_core(qweight, scales, qzeros, g_idx, bits, maxq=None, input_dtype
     infeatures = g_idx.shape[0]
 
     out = torch.empty((infeatures, outfeatures), device=qweight.device, dtype=input_dtype)
-    numels = out.numel()
     maxq = 2**bits - 1 if maxq is None else maxq
-    grid = lambda meta: (triton.cdiv(numels, meta["X_BLOCK"]),)  # noqa: E731
+    block_cols = 32 // bits
+    grid = (infeatures, triton.cdiv(outfeatures, block_cols))
 
     dequant_kernel_248[grid](
         g_idx,
@@ -136,11 +119,12 @@ def dequant248_core(qweight, scales, qzeros, g_idx, bits, maxq=None, input_dtype
         qweight,
         qzeros,
         out,
-        numels,
+        out.numel(),
         maxq=maxq,
         bits=bits,
         outfeatures=outfeatures,
         num_groups=num_groups,
+        BLOCK_COLS=block_cols,
     )
     return out
 
