@@ -156,7 +156,9 @@ def _estimate_bandwidth_gbps(total_bytes: int, elapsed_ms: float) -> float:
     return total_bytes / (elapsed_ms * 1e-3) / 1e9
 
 
-def _estimate_moe_decode_bytes(activations, weights=None, scales=None, zeros=None, output_numel: int | None = None) -> int:
+def _estimate_moe_decode_bytes(
+    activations, weights=None, scales=None, zeros=None, output_numel: int | None = None
+) -> int:
     total_bytes = activations.numel() * activations.element_size()
     if weights is not None:
         total_bytes += weights.numel() * weights.element_size()

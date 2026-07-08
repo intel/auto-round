@@ -759,7 +759,7 @@ class TestMoEGemmPrefillPerf:
                 os.environ.pop("ARK_MOE_PREFILL_DPAS_INT8", None)
             else:
                 os.environ["ARK_MOE_PREFILL_DPAS_INT8"] = prev_dpas_int8
- 
+
             _print_row(
                 label,
                 E,
@@ -868,7 +868,7 @@ class TestMoEGemmPrefillPerf:
                 os.environ.pop("ARK_MOE_PREFILL_DPAS_INT8", None)
             else:
                 os.environ["ARK_MOE_PREFILL_DPAS_INT8"] = prev_dpas
- 
+
             _print_row(
                 label,
                 E,
@@ -1117,14 +1117,14 @@ class TestMoEGemmPrefillPerf:
             amax = w_float.reshape(E, -1).abs().amax(dim=1).clamp_min(1e-8)
             scales = (amax / fp8_finfo_max).to(torch.float32)  # [E] fp32
             packed = (w_float / scales.reshape(E, 1, 1)).to(fp8_dtype)
- 
+
             # Baseline dequant: cast fp8 -> fp32 -> apply per-tensor scale ->
             # cast to act dtype, then transpose to [E, N, K] which is what
             # `_default_moe_prefill` (single torch.bmm) consumes.
             def _do_dequant():
                 dequant_KN = packed.to(torch.float32) * scales.reshape(E, 1, 1)
                 return dequant_KN.transpose(1, 2).contiguous().to(dtype)
- 
+
             dequant_NK = _do_dequant()
             deq_ms = _xpu_time_ms(_do_dequant)
             deq_bw = _estimate_bandwidth_gbps(
