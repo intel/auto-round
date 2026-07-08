@@ -516,8 +516,9 @@ def _print_header(title: str) -> None:
     * ``ark(ms)``: default ARK path (dequant workspace + grouped GEMM,
       or fused-dequant if ``ARK_MOE_PREFILL_FUSED_FP8=1`` is set in the
       env for FP8 rows).
-    * ``deq BW GB/s``: estimated bandwidth for the timed dequant stage in
-      quantized rows (``--`` for FP rows with no dequant cost).
+    * ``dpas deq BW GB/s``: estimated bandwidth for the dequant stage that
+      feeds the DPAS path in quantized rows (``--`` for FP rows with no
+      dequant cost).
     * ``native(ms)`` / ``native TFLOPS``: FP8 rows only. ARK path with
       ``ARK_MOE_PREFILL_NATIVE_FP8=1`` — the fused scalar native-FP8 GEMM
       that skips the ``[E, K, N]`` bf16/fp16 workspace and folds the
@@ -532,12 +533,12 @@ def _print_header(title: str) -> None:
       ``speedup``. Prints ``--`` when no ``dpas(ms)`` was measured.
     """
     print()
-    width = 215
+    width = 225
     print("=" * width)
     print(title)
     print(
         f"{'shape':<22}{'E':>4}{'N':>7}{'K':>7}{'tokens':>8}"
-        f"{'baseline(ms)':>16}{'ark(ms)':>14}{'deq BW GB/s':>16}{'speedup':>12}{'TFLOPS':>10}"
+        f"{'baseline(ms)':>16}{'ark(ms)':>14}{'dpas deq BW GB/s':>20}{'speedup':>12}{'TFLOPS':>10}"
         f"{'native(ms)':>14}{'native TFLOPS':>16}"
         f"{'dpas(ms)':>14}{'dpas TFLOPS':>16}{'dpas speedup':>14}"
     )
@@ -554,7 +555,7 @@ def _print_row(
     deq_ms,
     ark_ms,
     tflops,
-    deq_bw=None,
+    dpas_deq_bw=None,
     native_ms=None,
     native_tflops=None,
     dpas_ms=None,
@@ -565,7 +566,8 @@ def _print_row(
     ``speedup`` is ``baseline / ark`` -- the fused kernel's speedup over
     the matmul-only baseline (weights pre-dequantized). ``deq_ms`` is
     accepted for signature compatibility with existing callers but is
-    no longer displayed.
+    no longer displayed. ``dpas_deq_bw`` is printed in the dedicated DPAS
+    dequant-bandwidth column when available.
 
     ``native_ms`` / ``native_tflops`` are printed for FP8 rows where the
     native fused kernel was benchmarked, and left blank otherwise.
@@ -576,10 +578,10 @@ def _print_row(
     """
     del deq_ms  # no longer displayed; kept in signature for caller compatibility
     speedup = base_ms / ark_ms if ark_ms > 0 else float("nan")
-    if deq_bw is None:
-        deq_bw_col = f"{'--':>16}"
+    if dpas_deq_bw is None:
+        dpas_deq_bw_col = f"{'--':>20}"
     else:
-        deq_bw_col = f"{deq_bw:>15.2f} "
+        dpas_deq_bw_col = f"{dpas_deq_bw:>19.2f} "
     if native_ms is None:
         native_col = f"{'--':>14}"
         native_tflops_col = f"{'--':>16}"
@@ -597,7 +599,7 @@ def _print_row(
         dpas_speedup_col = f"{dpas_speedup:>13.2f}x"
     print(
         f"{label:<22}{E:>4}{N:>7}{K:>7}{total_tokens:>8}"
-        f"{base_ms:>16.4f}{ark_ms:>14.4f}{deq_bw_col}{speedup:>11.2f}x{tflops:>9.1f}"
+        f"{base_ms:>16.4f}{ark_ms:>14.4f}{dpas_deq_bw_col}{speedup:>11.2f}x{tflops:>9.1f}"
         f"{native_col}{native_tflops_col}"
         f"{dpas_col}{dpas_tflops_col}{dpas_speedup_col}"
     )
@@ -770,7 +772,7 @@ class TestMoEGemmPrefillPerf:
                 deq_ms,
                 ark_ms,
                 tflops,
-                deq_bw=deq_bw,
+                dpas_deq_bw=deq_bw,
                 dpas_ms=dpas_ms,
                 dpas_tflops=dpas_tflops,
             )
@@ -879,7 +881,7 @@ class TestMoEGemmPrefillPerf:
                 deq_ms,
                 ark_ms,
                 tflops,
-                deq_bw=deq_bw,
+                dpas_deq_bw=deq_bw,
                 dpas_ms=dpas_ms,
                 dpas_tflops=dpas_tflops,
             )
@@ -940,7 +942,7 @@ class TestMoEGemmPrefillPerf:
             flops = _compute_moe_flops(total_tokens, K, N, E)
             tflops = flops / (ark_ms * 1e-3) / 1e12
 
-            _print_row(label, E, N, K, total_tokens, base_ms, deq_ms, ark_ms, tflops, deq_bw=deq_bw)
+            _print_row(label, E, N, K, total_tokens, base_ms, deq_ms, ark_ms, tflops, dpas_deq_bw=deq_bw)
 
             activations = ntpe = act_padded = w_float = scales = zeros = packed = dequant = None
             _release_xpu_memory()
@@ -1063,7 +1065,7 @@ class TestMoEGemmPrefillPerf:
                 deq_ms,
                 ark_ms,
                 tflops,
-                deq_bw=deq_bw,
+                dpas_deq_bw=deq_bw,
                 native_ms=native_ms,
                 native_tflops=native_tflops,
                 dpas_ms=dpas_ms,
@@ -1146,7 +1148,7 @@ class TestMoEGemmPrefillPerf:
             flops = _compute_moe_flops(total_tokens, K, N, E)
             tflops = flops / (ark_ms * 1e-3) / 1e12
 
-            _print_row(label, E, N, K, total_tokens, base_ms, deq_ms, ark_ms, tflops, deq_bw=deq_bw)
+            _print_row(label, E, N, K, total_tokens, base_ms, deq_ms, ark_ms, tflops, dpas_deq_bw=deq_bw)
 
             activations = ntpe = act_padded = w_float = scales = packed = dequant_NK = None
             _release_xpu_memory()
@@ -1218,7 +1220,7 @@ class TestMoEGemmPrefillPerf:
             flops = _compute_moe_flops(total_tokens, K, N, E)
             tflops = flops / (ark_ms * 1e-3) / 1e12
 
-            _print_row(label, E, N, K, total_tokens, base_ms, deq_ms, ark_ms, tflops, deq_bw=deq_bw)
+            _print_row(label, E, N, K, total_tokens, base_ms, deq_ms, ark_ms, tflops, dpas_deq_bw=deq_bw)
 
             activations = ntpe = act_padded = w_float = scales = packed = dequant_NK = None
             _release_xpu_memory()
