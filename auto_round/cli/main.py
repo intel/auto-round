@@ -26,49 +26,14 @@ from auto_round.cli.parser import (
 )
 
 
-def _resolve_scheme_preset(args):
-    """Return the concrete preset ``QuantizationScheme`` for ``args.scheme``, or None.
-
-    Returns None (nothing to backfill) when:
-      - ``args.scheme`` is unset, or
-      - AutoScheme is in play (``--avg_bits`` set): AutoScheme searches several
-        schemes with different bits/dtypes, so locking fields to the (often
-        untouched) ``--scheme`` default would wrongly pin every AutoScheme
-        option to the same values, and
-      - the scheme is a GGUF preset: GGUF resolution ignores any user overrides
-        outright (see ``_override_scheme_with_user_specify``), so backfilling
-        here would only trigger a spurious "overrides ignored" warning without
-        changing the outcome.
-    """
-    scheme_name = getattr(args, "scheme", None)
-    if scheme_name is None or getattr(args, "avg_bits", None) is not None:
-        return None
-    scheme_name = scheme_name.upper()
-    if scheme_name.startswith("GGUF"):
-        return None
-
-    from auto_round.schemes import PRESET_SCHEMES
-
-    return PRESET_SCHEMES.get(scheme_name)
-
-
 def _extract_common_quantization_kwargs(args) -> dict:
     """Map parsed CLI args back to QuantizationConfig constructor kwargs.
 
     Handles inverted flags: --asym -> sym, --act_asym -> act_sym,
     --disable_act_dynamic -> act_dynamic.
     When the flag was not set (False), the value is None (defer to scheme).
-
-    When ``--scheme`` resolves to a concrete preset, any field the user left
-    unset is backfilled from that preset. Some algorithm configs (e.g.
-    ``RTNConfig.disable_opt_rtn``, ``SignRoundConfig.lr``) inspect ``bits``/
-    ``act_bits``/``data_type`` at construction time, before the compressor
-    resolves ``--scheme`` into concrete values. Without this backfill, those
-    fields stay ``None`` whenever the user relies on ``--scheme`` alone (no
-    explicit ``--bits``/``--act_bits``/...), so scheme-dependent config
-    judgments silently see "unset" instead of the scheme's actual values.
     """
-    kwargs = {
+    return {
         "bits": args.bits,
         "group_size": args.group_size,
         "sym": None if not args.asym else False,
@@ -81,16 +46,6 @@ def _extract_common_quantization_kwargs(args) -> dict:
         "super_bits": args.super_bits,
         "super_group_size": args.super_group_size,
     }
-
-    preset = _resolve_scheme_preset(args)
-    if preset is not None:
-        for key, value in kwargs.items():
-            if value is None:
-                preset_value = getattr(preset, key, None)
-                if preset_value is not None:
-                    kwargs[key] = preset_value
-
-    return kwargs
 
 
 def _build_entry_base_kwargs(args, *, low_cpu_mem_usage, enable_torch_compile, layer_config) -> dict:
