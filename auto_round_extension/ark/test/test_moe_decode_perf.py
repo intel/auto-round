@@ -37,6 +37,8 @@ stays short. Pass ``--all-shapes`` to also include ``bs32``::
         --all-shapes
 """
 
+import math
+
 import auto_round_kernel
 import pytest
 import torch
@@ -157,17 +159,57 @@ def _estimate_bandwidth_gbps(total_bytes: int, elapsed_ms: float) -> float:
 
 
 def _estimate_moe_decode_bytes(
-    activations, weights=None, scales=None, zeros=None, output_numel: int | None = None
+    activations,
+    weights=None,
+    scales=None,
+    zeros=None,
+    num_tokens_per_expert=None,
+    output_numel: int | None = None,
 ) -> int:
-    total_bytes = activations.numel() * activations.element_size()
-    if weights is not None:
-        total_bytes += weights.numel() * weights.element_size()
-    if scales is not None:
-        total_bytes += scales.numel() * scales.element_size()
-    if zeros is not None:
-        total_bytes += zeros.numel() * zeros.element_size()
-    if output_numel is not None:
-        total_bytes += output_numel * activations.element_size()
+    """Estimate bytes touched by the active-expert decode work.
+
+    The fused decode kernel only processes experts that receive at least one
+    routed token. Counting the full weight tensor for every call overstates the
+    amount of data moved and produces unrealistically high bandwidth numbers.
+    """
+    if num_tokens_per_expert is None:
+        total_bytes = activations.numel() * activations.element_size()
+        if weights is not None:
+            total_bytes += weights.numel() * weights.element_size()
+        if scales is not None:
+            total_bytes += scales.numel() * scales.element_size()
+        if zeros is not None:
+            total_bytes += zeros.numel() * zeros.element_size()
+        if output_numel is not None:
+            total_bytes += output_numel * activations.element_size()
+        return total_bytes
+
+    if hasattr(num_tokens_per_expert, "tolist"):
+        num_tokens_per_expert = num_tokens_per_expert.tolist()
+    else:
+        num_tokens_per_expert = list(num_tokens_per_expert)
+
+    total_bytes = 0
+    activation_bytes_per_elem = activations.element_size()
+    output_bytes_per_elem = activations.element_size()
+    activation_cols = activations.shape[1]
+    output_cols = weights.shape[1] if weights is not None else None
+    if output_numel is not None and output_cols is None:
+        output_cols = output_numel // max(sum(num_tokens_per_expert), 1)
+
+    for num_tokens in num_tokens_per_expert:
+        if num_tokens <= 0:
+            continue
+        total_bytes += num_tokens * activation_cols * activation_bytes_per_elem
+        if weights is not None:
+            total_bytes += math.prod(weights.shape[1:]) * weights.element_size()
+        if scales is not None:
+            total_bytes += math.prod(scales.shape[1:]) * scales.element_size()
+        if zeros is not None:
+            total_bytes += math.prod(zeros.shape[1:]) * zeros.element_size()
+        if output_cols is not None:
+            total_bytes += num_tokens * output_cols * output_bytes_per_elem
+
     return total_bytes
 
 
@@ -317,8 +359,8 @@ def _print_row(label, N, K, total_tokens, base_ms, ark_ms, ark_bw=None):
 
     ``speedup`` is ``baseline / ark`` -- a pure matmul-vs-matmul comparison
     against the per-expert ``A @ W.T`` baseline running on already-dequantized
-    weights. ``ark_bw`` estimates the bandwidth of the timed fused-kernel
-    computation in GB/s.
+    weights. ``ark_bw`` estimates the effective bandwidth of the active-expert
+    slices touched by the fused kernel in GB/s.
     """
     speedup = base_ms / ark_ms if ark_ms > 0 else float("nan")
     if ark_bw is None:
@@ -356,7 +398,12 @@ class TestMoEGemmDecodePerf:
             base_ms = _xpu_time_ms(lambda: _default_moe_decode(activations, weights, ntpe))
             ark_ms = _xpu_time_ms(lambda: ark.moe_gemm_decode(activations, weights, ntpe, weight_bits=16))
             ark_bw = _estimate_bandwidth_gbps(
-                _estimate_moe_decode_bytes(activations, weights=weights, output_numel=total_tokens * N),
+                _estimate_moe_decode_bytes(
+                    activations,
+                    weights=weights,
+                    num_tokens_per_expert=ntpe,
+                    output_numel=total_tokens * N,
+                ),
                 ark_ms,
             )
             _print_row(label, N, K, total_tokens, base_ms, ark_ms, ark_bw=ark_bw)
@@ -406,6 +453,7 @@ class TestMoEGemmDecodePerf:
                     weights=packed,
                     scales=scales,
                     zeros=zeros,
+                    num_tokens_per_expert=ntpe,
                     output_numel=total_tokens * N,
                 ),
                 ark_ms,
@@ -457,6 +505,7 @@ class TestMoEGemmDecodePerf:
                     weights=packed,
                     scales=scales,
                     zeros=zeros,
+                    num_tokens_per_expert=ntpe,
                     output_numel=total_tokens * N,
                 ),
                 ark_ms,
@@ -508,6 +557,7 @@ class TestMoEGemmDecodePerf:
                     weights=packed,
                     scales=scales,
                     zeros=zeros,
+                    num_tokens_per_expert=ntpe,
                     output_numel=total_tokens * N,
                 ),
                 ark_ms,
@@ -549,6 +599,7 @@ class TestMoEGemmDecodePerf:
                     activations,
                     weights=packed,
                     scales=scales,
+                    num_tokens_per_expert=ntpe,
                     output_numel=total_tokens * N,
                 ),
                 ark_ms,
@@ -629,6 +680,7 @@ class TestMoEGemmDecodePerf:
                     activations,
                     weights=packed,
                     scales=scales,
+                    num_tokens_per_expert=ntpe,
                     output_numel=total_tokens * N,
                 ),
                 ark_ms,
