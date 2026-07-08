@@ -53,6 +53,10 @@ python \
 
 ## Wan Example
 
+The WAN example defaults now follow the `Wan2.2-T2V-A14B` diffusers model-card
+example: `1280x720`, `81` frames, `40` steps, `guidance_scale=4.0`,
+`guidance_scale_2=3.0`, `fps=16`.
+
 `q_tile=64`:
 
 ```bash
@@ -111,3 +115,23 @@ FLUX_MODEL=/home/yiliu4/workspace/models/black-forest-labs/FLUX.1-dev \
 FLUX_SWEEP_DEVICES=0,1,2,3,4,5,6,7 \
 bash run_flux_sweep.sh
 ```
+
+## WAN Sweep
+
+Dense baseline plus sparse `topk=1.0..0.1`, using the `Wan2.2-T2V-A14B` model-card
+default settings and fixed sparse kernel settings
+(`q_tile=256`, `sparse_q_block_tokens=256`, `sparse_k_block_tokens=64`):
+
+```bash
+cd auto_round_extension/ark/examples
+WAN_SWEEP_PYTHON=/home/yiliu4/workspace/auto-round-py/.venv/bin/python \
+WAN_MODEL=/home/yiliu4/workspace/models/Wan-AI/Wan2.2-T2V-A14B-Diffusers \
+WAN_SWEEP_DEVICE_POOLS='0,1,2,3;4,5,6,7' \
+bash run_wan_sweep.sh
+```
+
+Execution order per config:
+
+- first try `WAN_DEVICE_MAP=balanced` on a 4-XPU pool
+- then retry `WAN_CPU_OFFLOAD_MODE=model` on the pool's primary device
+- finally retry `WAN_CPU_OFFLOAD_MODE=sequential` if needed
