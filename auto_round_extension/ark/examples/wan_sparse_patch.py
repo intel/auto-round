@@ -1,3 +1,6 @@
+# # Copyright (C) 2026 Intel Corporation
+# # SPDX-License-Identifier: Apache-2.0
+
 import contextlib
 import importlib.util
 import os
@@ -8,7 +11,6 @@ from dataclasses import dataclass
 from pathlib import Path
 
 import torch
-
 
 EXAMPLES_DIR = Path(__file__).resolve().parent
 ARK_DIR = EXAMPLES_DIR.parent

@@ -1,9 +1,11 @@
+# # Copyright (C) 2026 Intel Corporation
+# # SPDX-License-Identifier: Apache-2.0
+
 import os
 
 import torch
 from diffusers import AutoencoderKLWan, WanPipeline
 from diffusers.utils import export_to_video
-
 from wan_sparse_patch import patch_wan_sparse_attention_from_env
 
 dtype = torch.bfloat16

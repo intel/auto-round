@@ -1,10 +1,12 @@
+# # Copyright (C) 2026 Intel Corporation
+# # SPDX-License-Identifier: Apache-2.0
+
+import importlib.util
 import math
 import sys
-import importlib.util
 from pathlib import Path
 
 import torch
-
 
 REPO_PARENT = Path(__file__).resolve().parents[3]
 if str(REPO_PARENT) not in sys.path:
@@ -229,7 +231,9 @@ def run_case(
         diff = (dense_out.float() - sparse_out.float()).abs()
         max_diff = float(diff.max().cpu())
         mean_diff = float(diff.mean().cpu())
-        print(f"[sparge_preprocess][{case_name}] D={head_dim} dense_max_diff={max_diff:.6f} dense_mean_diff={mean_diff:.6f}")
+        print(
+            f"[sparge_preprocess][{case_name}] D={head_dim} dense_max_diff={max_diff:.6f} dense_mean_diff={mean_diff:.6f}"
+        )
         if max_diff > 5e-3 or mean_diff > 5e-4:
             raise RuntimeError(f"sparge preprocess dense-reference mismatch for {case_name}, D={head_dim}")
 
