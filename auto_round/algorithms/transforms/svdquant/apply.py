@@ -24,7 +24,6 @@ from auto_round.algorithms.transforms.svdquant.config import SVDQuantConfig
 from auto_round.algorithms.transforms.svdquant.wrapper import SVDQuantLinear
 from auto_round.logger import logger
 
-
 _SCHEME_ATTRS = (
     "bits",
     "group_size",
@@ -189,7 +188,9 @@ def _set_child_module(root: torch.nn.Module, name: str, module: torch.nn.Module)
     parts = name.split(".")
     parent = root
     for part in parts[:-1]:
-        parent = parent[int(part)] if part.isdigit() and isinstance(parent, torch.nn.Sequential) else getattr(parent, part)
+        parent = (
+            parent[int(part)] if part.isdigit() and isinstance(parent, torch.nn.Sequential) else getattr(parent, part)
+        )
     leaf = parts[-1]
     if leaf.isdigit() and isinstance(parent, torch.nn.Sequential):
         parent[int(leaf)] = module

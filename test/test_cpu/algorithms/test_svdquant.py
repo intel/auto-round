@@ -7,8 +7,8 @@ from auto_round.algorithms.quantization.rtn.config import RTNConfig
 
 
 def test_svdquant_config_is_pipeline_preprocessor():
-    from auto_round.algorithms.transforms.svdquant.config import SVDQuantConfig
     from auto_round.algorithms.transforms.svdquant.apply import SVDQuantTransform
+    from auto_round.algorithms.transforms.svdquant.config import SVDQuantConfig
 
     pipeline = QuantizationPipeline.from_configs([SVDQuantConfig(rank=8), RTNConfig()])
 

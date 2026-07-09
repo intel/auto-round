@@ -17,4 +17,3 @@ from auto_round.algorithms.transforms.svdquant.config import SVDQuantConfig
 from auto_round.algorithms.transforms.svdquant.wrapper import SVDQuantLinear
 
 __all__ = ["SVDQuantConfig", "SVDQuantLinear", "SVDQuantTransform"]
-

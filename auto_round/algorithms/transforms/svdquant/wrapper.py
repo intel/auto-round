@@ -35,4 +35,3 @@ class SVDQuantLinear(torch.nn.Module):
         smooth = self.smooth.to(device=x.device, dtype=x.dtype)
         x_hat = x * smooth
         return self.residual_linear(x_hat) + self.lora_up(self.lora_down(x_hat))
-
