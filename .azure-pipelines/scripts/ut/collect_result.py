@@ -329,6 +329,7 @@ class FailureContextWriter:
             if src_log.exists():
                 shutil.copy2(src_log, target_dir / result.filename)
 
+
 def main():
     parser = argparse.ArgumentParser(description="Analyze test logs and generate summary")
     parser.add_argument("--test-type", required=True, help="Type of tests")
@@ -361,7 +362,7 @@ def main():
         print(f"Done: {stats['total']} tests, {stats['passed']} passed, {stats['failed']} failed")
 
         if args.failure_context_file and stats["failed"] > 0:
-            print(f"Generating failure context used for AI analysis", file=sys.stderr)
+            print("Generating failure context used for AI analysis", file=sys.stderr)
             context_writer = FailureContextWriter(args.log_dir, max_lines=args.failure_context_max_lines)
             context_writer.write(
                 args.failure_context_file,
