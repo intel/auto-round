@@ -29,7 +29,7 @@ parameters:
 
 jobs:
   - job: Classify
-    displayName: "Classify And Comment"
+    displayName: "Classify and Comment"
     timeoutInMinutes: ${{ parameters.classifyTimeoutInMinutes }}
     steps:
       - checkout: self

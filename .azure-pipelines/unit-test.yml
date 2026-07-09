@@ -86,6 +86,8 @@ stages:
 
   - stage: AI_Analysis
     displayName: "AI Analyze"
+    pool:
+      vmImage: "ubuntu-latest"
     dependsOn: [Unit_test]
     condition: and(failed('Unit_test'), eq(variables['Build.Reason'], 'PullRequest'), eq(variables['COPILOT_ANALYSIS_ENABLED'], 'true'))
     jobs:
