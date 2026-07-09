@@ -58,10 +58,6 @@ namespace cutlass::fmha::collective {
 
 using namespace cute;
 
-#ifndef ARK_SPARSE_SAGE_ENABLE_K_PREFETCH
-#define ARK_SPARSE_SAGE_ENABLE_K_PREFETCH 0
-#endif
-
 /////////////////////////////////////////////////////////////////////////////////////////////////
 
 template <class DispatchPolicy_, bool CausalMask_, bool FullMask_, bool CachedKV_, bool PagedKV_, bool UseInt8PV_,
@@ -174,7 +170,6 @@ struct SPARSESAGEV1FwdMainloop<sage::XeDefault<Stages>, CausalMask_, FullMask_, 
   static constexpr bool CausalMask = CausalMask_;
   static constexpr bool CachedKV = CachedKV_;
   static constexpr bool PagedKV = PagedKV_;
-  static constexpr bool EnableSparseKPrefetch = ARK_SPARSE_SAGE_ENABLE_K_PREFETCH != 0;
   // The qtile64 Q-staging experiment stays disabled until the Xe SLM copy layout
   // matches the fragment layout expected by make_A_slm_copies().
     static constexpr bool UseInt8PV = UseInt8PV_;
@@ -675,7 +670,7 @@ struct SPARSESAGEV1FwdMainloop<sage::XeDefault<Stages>, CausalMask_, FullMask_, 
               prefetch(prefetch_k, pKgK(_, _, _, K_next - kblocks_cache, D));
             }
           }
-        } else if constexpr (EnableSparseKPrefetch) {
+        } else {
           if (sparse_prefetch_block < total_blk) {
             prefetch_sparse_k_block(sparse_prefetch_block);
           }
@@ -714,22 +709,17 @@ struct SPARSESAGEV1FwdMainloop<sage::XeDefault<Stages>, CausalMask_, FullMask_, 
             return block;
           };
 
-          if constexpr (EnableSparseKPrefetch) {
-            for (int stage = 0; stage < Stages; ++stage) {
-              int sparse_prefetch_block = pop_single_sparse_block(prefetch_pos, prefetch_cur_block);
-              if (sparse_prefetch_block >= total_blk) break;
-              prefetch_sparse_k_block(sparse_prefetch_block);
-            }
+          for (int stage = 0; stage < Stages; ++stage) {
+            int sparse_prefetch_block = pop_single_sparse_block(prefetch_pos, prefetch_cur_block);
+            if (sparse_prefetch_block >= total_blk) break;
+            prefetch_sparse_k_block(sparse_prefetch_block);
           }
 
           while (row_cur_block < total_blk) {
             int next_block = row_cur_block;
             bool subgroup_selected = (subgroup_q_row_in_tile == 0);
             bool first_selected_block = !subgroup_started;
-            int sparse_prefetch_block = total_blk;
-            if constexpr (EnableSparseKPrefetch) {
-              sparse_prefetch_block = pop_single_sparse_block(prefetch_pos, prefetch_cur_block);
-            }
+            int sparse_prefetch_block = pop_single_sparse_block(prefetch_pos, prefetch_cur_block);
             int K = next_block;
             if constexpr (CachedKV) {
               if (K < kblocks_cache) {
@@ -821,17 +811,15 @@ struct SPARSESAGEV1FwdMainloop<sage::XeDefault<Stages>, CausalMask_, FullMask_, 
 
           int prefetch_pos[kMaxSparseRowsPerTile];
           int prefetch_cur_block[kMaxSparseRowsPerTile];
-          if constexpr (EnableSparseKPrefetch) {
-            for (int row = 0; row < kMaxSparseRowsPerTile; ++row) {
-              prefetch_pos[row] = row_pos[row];
-              prefetch_cur_block[row] = row_cur_block[row];
-            }
+          for (int row = 0; row < kMaxSparseRowsPerTile; ++row) {
+            prefetch_pos[row] = row_pos[row];
+            prefetch_cur_block[row] = row_cur_block[row];
+          }
 
-            for (int stage = 0; stage < Stages; ++stage) {
-              int sparse_prefetch_block = pop_sparse_block(prefetch_pos, prefetch_cur_block);
-              if (sparse_prefetch_block >= total_blk) break;
-              prefetch_sparse_k_block(sparse_prefetch_block);
-            }
+          for (int stage = 0; stage < Stages; ++stage) {
+            int sparse_prefetch_block = pop_sparse_block(prefetch_pos, prefetch_cur_block);
+            if (sparse_prefetch_block >= total_blk) break;
+            prefetch_sparse_k_block(sparse_prefetch_block);
           }
 
           int next_block = find_sparse_block(row_pos, row_cur_block);
@@ -843,10 +831,7 @@ struct SPARSESAGEV1FwdMainloop<sage::XeDefault<Stages>, CausalMask_, FullMask_, 
                                      row_pos[subgroup_q_row_in_tile] < row_valid[subgroup_q_row_in_tile] &&
                                      row_cur_block[subgroup_q_row_in_tile] == next_block;
             bool first_selected_block = !subgroup_started;
-            int sparse_prefetch_block = total_blk;
-            if constexpr (EnableSparseKPrefetch) {
-              sparse_prefetch_block = pop_sparse_block(prefetch_pos, prefetch_cur_block);
-            }
+            int sparse_prefetch_block = pop_sparse_block(prefetch_pos, prefetch_cur_block);
             int K = next_block;
             if constexpr (CachedKV) {
               if (K < kblocks_cache) {

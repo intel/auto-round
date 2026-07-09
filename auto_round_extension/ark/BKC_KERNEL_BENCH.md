@@ -81,22 +81,13 @@ On this node, `xpu-smi` compute-util counters were not available without extra p
 
 The validated rerun used `ZE_AFFINITY_MASK=6`.
 
-## Sparse K-Prefetch A/B
+## Historical Sparse K-Prefetch A/B
 
-Build with sparse `K` prefetch enabled:
+The current branch keeps sparse `K` prefetch enabled by default, so there is no
+longer a build-time toggle in `CMakeLists.txt`.
 
-```bash
-python -m cmake -S auto_round_kernel -B auto_round_kernel/xbuild \
-  -DARK_XPU=ON \
-  -DARK_SYCL_TLA=ON \
-  -DARK_UT=OFF \
-  -DARK_RESCALE=OFF \
-  -DARK_SPARSE_SAGE_ENABLE_K_PREFETCH=ON
-
-python -m cmake --build auto_round_kernel/xbuild \
-  --target auto_round_kernel_xpu \
-  -j 4
-```
+The `prefetch=ON/OFF` comparisons below are historical A/B data captured before
+that cleanup, when both paths were still build-selectable.
 
 Run `NHD` and `HND` on the chosen device:
 
@@ -134,22 +125,7 @@ python test/bench_sparse_topk.py \
   --output-csv bench_sparse_topk_prefetch_on_qtile256_k64_hnd_gpu6.csv
 ```
 
-Rebuild with sparse `K` prefetch disabled:
-
-```bash
-python -m cmake -S auto_round_kernel -B auto_round_kernel/xbuild \
-  -DARK_XPU=ON \
-  -DARK_SYCL_TLA=ON \
-  -DARK_UT=OFF \
-  -DARK_RESCALE=OFF \
-  -DARK_SPARSE_SAGE_ENABLE_K_PREFETCH=OFF
-
-python -m cmake --build auto_round_kernel/xbuild \
-  --target auto_round_kernel_xpu \
-  -j 4
-```
-
-Then rerun the same `NHD` and `HND` commands with:
+For the old `prefetch=OFF` path, rerun the same `NHD` and `HND` commands with:
 
 ```bash
 --output-csv bench_sparse_topk_prefetch_off_qtile256_k64_nhd_gpu6.csv
@@ -200,7 +176,7 @@ for the same sparse case in `HND` layout:
 - `sparse_k_block_tokens=64`
 - `ZE_AFFINITY_MASK=0`
 
-Build toggle:
+Historical build toggle used for this A/B:
 
 - `ARK_SPARSE_SAGE_ENABLE_K_PREFETCH=OFF`
 - `ARK_SPARSE_SAGE_ENABLE_K_PREFETCH=ON`
@@ -269,6 +245,62 @@ Saved profiling artifacts:
 - `python.3716760.json`
 - `sparse_vecstall_sampling_prefetch_on.3756979`
 - `python.3756979.json`
+
+## B70 `sycl_tla` Tag A/B
+
+On the same `B70` node, with sparse `K` prefetch kept enabled, a separate build
+was created with:
+
+- baseline tree: `auto_round_kernel/xbuild`
+- baseline tag: `SYCL_TLA_GIT_TAG=260409`
+- comparison tree: `auto_round_kernel/xbuild_tla260630_prefetch_on`
+- comparison tag: `SYCL_TLA_GIT_TAG=260630`
+
+The benchmark script only loads the extension from `xbuild/`, so the rerun used
+the `xbuild` binary first, then temporarily swapped in the `260630` `.so`, ran
+the same benchmark, and restored the original `xbuild` binary afterward.
+
+Rerun conditions:
+
+- free device chosen from `xpu-smi ps`: `GPU7`
+- `ZE_AFFINITY_MASK=7`
+- `batch=1`
+- `num_heads_q=40`
+- `num_heads_kv=40`
+- `seq_len=75600`
+- `head_dim=128`
+- `topk=0.5`
+- `q_tile=256`
+- `sparse_q_block_tokens=256`
+- `sparse_k_block_tokens=64`
+- `warmup=2`
+- `iters=3`
+
+Sparse benchmark comparison:
+
+| Layout | `260409` kernel-only | `260630` kernel-only | Delta |
+|---|---:|---:|---:|
+| `HND` | `409.834 ms` | `399.086 ms` | `2.6%` faster |
+| `NHD` | `481.936 ms` | `465.911 ms` | `3.3%` faster |
+
+| Layout | `260409` e2e | `260630` e2e | Delta |
+|---|---:|---:|---:|
+| `HND` | `525.080 ms` | `515.407 ms` | `1.8%` faster |
+| `NHD` | `582.289 ms` | `564.575 ms` | `3.0%` faster |
+
+Interpretation:
+
+- On this rerun, `SYCL_TLA_GIT_TAG=260630` was consistently but modestly faster
+  than `260409`.
+- The improvement was small on `HND` and slightly larger on `NHD`.
+- This comparison was done with sparse `K` prefetch enabled in both builds.
+
+Saved CSVs:
+
+- `bench_sparse_topk_prefetch_on_tla260409_hnd_gpu7.csv`
+- `bench_sparse_topk_prefetch_on_tla260409_nhd_gpu7.csv`
+- `bench_sparse_topk_prefetch_on_tla260630_hnd_gpu7.csv`
+- `bench_sparse_topk_prefetch_on_tla260630_nhd_gpu7.csv`
 
 ## Optional `q_tile=64` Reference
 
