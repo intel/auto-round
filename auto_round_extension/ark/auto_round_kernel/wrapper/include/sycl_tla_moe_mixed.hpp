@@ -1096,6 +1096,42 @@ inline void moe_gemm_prefill(sycl::queue* q, void* activations, void* weights, v
 }
 
 // ----------------------------------------------------------------------------
+// Weight-dequant-only entry point for `moe_gemm_prefill`.
+//
+// Runs *only* the internal weight-dequantization stage that
+// `moe_gemm_prefill` performs on its generic (non-DPAS) path -- i.e. it
+// materialises the `[E, K, N]` act-dtype weights into `dequant_workspace`
+// via `dequant_to_KN` and returns without launching the subsequent Grouped
+// GEMM. This exists so callers can benchmark the interface's internal
+// dequant throughput in isolation (the fused `moe_gemm_prefill` call cannot
+// expose the dequant time on its own because the GEMM immediately consumes
+// the workspace). The dequant numerics are bit-identical to the generic
+// path of `moe_gemm_prefill`.
+//
+// Weight/scale/zero layouts match `moe_gemm_prefill` (decode-style
+// `[E, N, K_packed]` weights, `[E, N, K/group_size]` scales/zeros). The
+// destination `dequant_workspace` must be an `[E, K, N]` act-dtype buffer.
+// ----------------------------------------------------------------------------
+inline void moe_gemm_prefill_dequant(sycl::queue* q, void* weights, void* scales, void* zeros,
+                                     void* dequant_workspace, BTLA_DTYPE act_dtype, BTLA_DTYPE weight_dtype, int N,
+                                     int K, int group_size, int* num_tokens_per_expert, int num_experts, bool asym) {
+  if (dequant_workspace == nullptr) {
+    throw std::invalid_argument("moe_gemm_prefill_dequant: dequant_workspace must be non-null");
+  }
+  if (act_dtype == BTLA_DTYPE::F16) {
+    moe_mixed_detail::dequant_to_KN<sycl::half>(q, weights, scales, zeros, static_cast<sycl::half*>(dequant_workspace),
+                                                weight_dtype, num_experts, N, K, group_size, asym,
+                                                num_tokens_per_expert);
+  } else if (act_dtype == BTLA_DTYPE::BF16) {
+    using BF = sycl::ext::oneapi::bfloat16;
+    moe_mixed_detail::dequant_to_KN<BF>(q, weights, scales, zeros, static_cast<BF*>(dequant_workspace), weight_dtype,
+                                        num_experts, N, K, group_size, asym, num_tokens_per_expert);
+  } else {
+    throw std::invalid_argument("moe_gemm_prefill_dequant: act_dtype must be F16 or BF16");
+  }
+}
+
+// ----------------------------------------------------------------------------
 // MoE prefill Grouped GEMM -- FP8 per-tensor DPAS (Variant A).
 //
 // Separate entry point (not multiplexed through `moe_gemm_prefill` because

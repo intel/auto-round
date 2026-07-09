@@ -432,6 +432,21 @@ static void moe_gemm_prefill_wrapper(torch_ptr stream, torch_ptr activations, to
                         total_tokens, asym);
 }
 
+// Weight-dequant-only sibling of `moe_gemm_prefill`: runs the internal
+// `[E, N, K_packed] -> [E, K, N]` weight-dequant stage into
+// `dequant_workspace` without the Grouped GEMM, so callers can benchmark
+// the interface's internal dequant throughput in isolation.
+static void moe_gemm_prefill_dequant_wrapper(torch_ptr stream, torch_ptr weights, torch_ptr scales, torch_ptr zeros,
+                                             torch_ptr dequant_workspace, int act_dtype, int weight_dtype, int N, int K,
+                                             int group_size, torch_ptr num_tokens_per_expert, int num_experts,
+                                             bool asym) {
+  ark::moe_gemm_prefill_dequant((sycl::queue*)stream, (void*)weights, scales ? (void*)scales : nullptr,
+                                zeros ? (void*)zeros : nullptr,
+                                dequant_workspace ? (void*)dequant_workspace : nullptr, (BTLA_DTYPE)(act_dtype),
+                                (BTLA_DTYPE)(weight_dtype), N, K, group_size, (int*)num_tokens_per_expert, num_experts,
+                                asym);
+}
+
 // Variant A: FP8 per-tensor DPAS grouped GEMM (mirrors vllm-xpu-kernels'
 // `cutlass_grouped_gemm_xe2_impl` FP8 branch). `scales` is [E] FP32.
 // Weights are [E, K, N] row-major uint8. STATUS: NEEDS-HARDWARE-VALIDATION.
@@ -726,6 +741,7 @@ PYBIND11_MODULE(PY_NAME, m) {
   m.def("moe_gemm", &ark::moe_gemm_wrapper);
   m.def("moe_gemm_decode", &ark::moe_gemm_decode_wrapper);
   m.def("moe_gemm_prefill", &ark::moe_gemm_prefill_wrapper);
+  m.def("moe_gemm_prefill_dequant", &ark::moe_gemm_prefill_dequant_wrapper);
   m.def("moe_gemm_prefill_fp8_dpas", &ark::moe_gemm_prefill_fp8_dpas_wrapper);
   m.def("moe_gemm_prefill_int_dpas", &ark::moe_gemm_prefill_int_dpas_wrapper);
   m.def("matmul_sycl_tla", &ark::matmul_sycl_tla);

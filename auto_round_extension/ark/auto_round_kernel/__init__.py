@@ -2234,6 +2234,114 @@ def moe_gemm_prefill(
     return outputs
 
 
+def moe_gemm_prefill_dequant(
+    activations: torch.Tensor,
+    weights: torch.Tensor,
+    num_tokens_per_expert: torch.Tensor,
+    *,
+    scales: Optional[torch.Tensor] = None,
+    zeros: Optional[torch.Tensor] = None,
+    weight_bits: int = 4,
+    group_size: int = 128,
+    asym: bool = False,
+    out: Optional[torch.Tensor] = None,
+) -> torch.Tensor:
+    """Run only the internal weight-dequant stage of :func:`moe_gemm_prefill`.
+
+    :func:`moe_gemm_prefill` fuses an on-device weight-dequant step
+    (``[E, N, K_packed]`` quantized weights -> ``[E, K, N]`` ``act_dtype``
+    workspace) with the subsequent Grouped GEMM, so the dequant cost cannot
+    be observed from the fused call alone. This entry point launches *only*
+    that dequant kernel and returns the materialised ``[E, K, N]`` weights,
+    letting callers benchmark the interface's internal dequant throughput in
+    isolation. The dequant numerics are identical to the generic
+    (non-DPAS) path of :func:`moe_gemm_prefill`.
+
+    Args mirror :func:`moe_gemm_prefill` (quantized paths only). ``activations``
+    is used only to derive the target dtype/device and ``K``; its values are
+    not read. INT2/INT4/INT8 (sym/asym) and FP8 weights are supported.
+
+    Args:
+        activations: ``[total_tokens, K]`` fp16/bf16 tensor. Only its dtype,
+            device, and ``K`` are used.
+        weights: quantized ``[E, N, K_packed]`` weights (same contract as
+            :func:`moe_gemm_prefill`).
+        num_tokens_per_expert: ``[E]`` int32. Experts with 0 tokens are
+            skipped by the kernel (their workspace rows are left untouched).
+        scales: ``[E, N, K // group_size]`` act-dtype scales (required).
+        zeros: ``[E, N, K // group_size]`` act-dtype zeros (required when
+            ``asym=True``).
+        weight_bits: 2, 4, or 8. FP8 is inferred from the weight dtype.
+        group_size: group along K (default 128).
+        asym: unsigned encoding with ``zeros`` when ``True``.
+        out: optional pre-allocated ``[E, K, N]`` act-dtype destination. When
+            provided it is written in place and returned (useful for timing
+            loops that must exclude allocation cost). When ``None`` a fresh
+            tensor is allocated.
+
+    Returns:
+        ``[E, K, N]`` dequantized weights in the activations dtype.
+    """
+    activations, weights, scales, zeros, num_tokens_per_expert, weight_dtype, total_tokens, N, K, num_experts = (
+        _validate_moe_quant_args(
+            activations,
+            weights,
+            num_tokens_per_expert,
+            scales=scales,
+            zeros=zeros,
+            weight_bits=weight_bits,
+            group_size=group_size,
+            asym=asym,
+            api_name="moe_gemm_prefill_dequant",
+        )
+    )
+
+    is_unquantized = (weight_bits == 16) and (weights.dtype == activations.dtype)
+    if is_unquantized:
+        raise ValueError("moe_gemm_prefill_dequant: only quantized weights have an internal dequant stage")
+
+    lib = get_lib(activations)
+    stream = get_stream(activations)
+
+    if out is None:
+        dequant_workspace = torch.empty((num_experts, K, N), device=activations.device, dtype=activations.dtype)
+    else:
+        if tuple(out.shape) != (num_experts, K, N):
+            raise ValueError(f"out shape {tuple(out.shape)} != expected {(num_experts, K, N)}")
+        if out.dtype != activations.dtype:
+            raise ValueError("out dtype must match activations dtype")
+        if not out.is_contiguous():
+            raise ValueError("out must be contiguous")
+        dequant_workspace = out
+
+    if not hasattr(lib, "moe_gemm_prefill_dequant"):
+        raise RuntimeError(
+            "moe_gemm_prefill_dequant: the C++ backend was built without the "
+            "`moe_gemm_prefill_dequant` symbol. Rebuild auto_round_extension with "
+            "sycl-tla support to enable the internal-dequant benchmark entry point."
+        )
+
+    scales_ptr = scales.data_ptr() if scales is not None else 0
+    zeros_ptr = zeros.data_ptr() if zeros is not None else 0
+
+    lib.moe_gemm_prefill_dequant(
+        stream,
+        weights.data_ptr(),
+        scales_ptr,
+        zeros_ptr,
+        dequant_workspace.data_ptr(),
+        cvt_dtype(activations.dtype),
+        weight_dtype,
+        N,
+        K,
+        group_size,
+        num_tokens_per_expert.data_ptr(),
+        num_experts,
+        bool(asym),
+    )
+    return dequant_workspace
+
+
 # ---------------------------------------------------------------------------
 # `moe_gemm_prefill` dequant-workspace cache.
 #
