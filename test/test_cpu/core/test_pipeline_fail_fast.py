@@ -15,6 +15,7 @@ from auto_round.algorithms.quantization.rtn.quantizer import RTNQuantizer
 from auto_round.compressors.base import collect_user_scheme_overrides
 from auto_round.compressors.data_driven import DataDrivenCompressor
 from auto_round.compressors.entry import AutoRound as NewAutoRound
+from auto_round.compressors.entry import filter_supported_entry_kwargs
 from auto_round.logger import logger
 
 
@@ -160,6 +161,41 @@ def test_entry_warns_and_drops_unsupported_kwargs(monkeypatch, tiny_opt_model_pa
     )
 
     assert any("unsupported kwargs nonsense_kwarg" in msg for msg in calls)
+
+
+def test_entry_filter_keeps_pipeline_call_kwargs():
+    filtered = filter_supported_entry_kwargs(
+        {"pipeline_call_kwargs": {"height": 480, "width": 832}, "nonsense_kwarg": 1},
+        context="AutoRound",
+    )
+
+    assert filtered["pipeline_call_kwargs"] == {"height": 480, "width": 832}
+    assert "nonsense_kwarg" not in filtered
+
+
+def test_compat_entry_forwards_pipeline_call_kwargs(monkeypatch):
+    captured = {}
+
+    def _fake_new_autoround(model, scheme, config, **kwargs):
+        captured["kwargs"] = kwargs
+        return object()
+
+    monkeypatch.setattr("auto_round.compressors.entry.AutoRound", _fake_new_autoround)
+    monkeypatch.setattr("auto_round.utils.is_mllm_model", lambda *args, **kwargs: False)
+    monkeypatch.setattr("auto_round.utils.is_diffusion_model", lambda *args, **kwargs: True)
+
+    from auto_round.autoround import AutoRound as CompatAutoRound
+
+    CompatAutoRound(
+        "dummy-model",
+        scheme="W4A16",
+        iters=1,
+        nsamples=1,
+        seqlen=8,
+        pipeline_call_kwargs={"height": 480, "width": 832},
+    )
+
+    assert captured["kwargs"]["pipeline_call_kwargs"] == {"height": 480, "width": 832}
 
 
 def test_shared_config_values_inherit_across_matching_attrs_only():

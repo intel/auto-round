@@ -229,6 +229,36 @@ class TestStableAudioPipelineFunction:
         assert not hasattr(pipe, "_autoround_pipeline_fn")
 
 
+class TestCosmos3PipelineFunction:
+    """Test custom pipeline function attachment for Cosmos3 diffusion pipelines."""
+
+    @pytest.mark.parametrize("class_name", ["Cosmos3OmniPipeline", "Cosmos3OmniDiffusersPipeline"])
+    def test_attach_pipeline_fn(self, class_name):
+        from auto_round.utils.model import _attach_diffusion_pipeline_fn
+
+        pipe = MagicMock()
+        type(pipe).__name__ = class_name
+        _attach_diffusion_pipeline_fn(pipe)
+        assert hasattr(pipe, "_autoround_pipeline_fn")
+
+        pipe._autoround_pipeline_fn(
+            pipe,
+            ["test prompt"],
+            guidance_scale=6.0,
+            num_inference_steps=2,
+            height=480,
+            width=832,
+            negative_prompt="bad output",
+        )
+        _, kwargs = pipe.call_args
+        assert kwargs["prompt"] == ["test prompt"]
+        assert kwargs["guidance_scale"] == 6.0
+        assert kwargs["num_inference_steps"] == 2
+        assert kwargs["height"] == 480
+        assert kwargs["width"] == 832
+        assert kwargs["negative_prompt"] == "bad output"
+
+
 class TestStableAudioQuantization:
     """End-to-end quantization with a tiny StableAudioPipeline (random weights)."""
 
