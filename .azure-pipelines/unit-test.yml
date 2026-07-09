@@ -88,7 +88,6 @@ stages:
     displayName: "AI Analyze"
     dependsOn: [Unit_test]
     condition: and(failed('Unit_test'), eq(variables['Build.Reason'], 'PullRequest'), eq(variables['COPILOT_ANALYSIS_ENABLED'], 'true'))
-    pool: ICX-16C
     jobs:
       - template: template/ai-analysis-template.yml
         parameters:
