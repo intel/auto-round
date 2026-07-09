@@ -228,6 +228,43 @@ S4-sym 有两条独立的 DPAS 路径;asym S4 始终回退到 dequant 路径。
 `ARK_MOE_PREFILL_DPAS_INT8=0`,专门验证单遍 mainloop 路径,形状矩阵与
 `test_accuracy_int4` 一致,容差 `rtol=atol=1e-1`。
 
+## INT2-sym Prefill 路径(opt-in env 开关)
+
+INT2 sym 路径与 INT4-sym 设计同构,只是位宽再降一档:权重按
+`[E, N, K/4]` `uint8_t` 打包(每字节四个 2-bit 对称有符号字段,
+`[-2, 1]`)。单遍 **DPAS S2** mainloop 把 crumb→`act_dtype` 上转折叠进
+DPAS 流水线,从而消除独立的 dequant 遍。asym S2 始终回退到 dequant 路径。
+
+| 优先级       | Env 开关                                                              | Kernel                                                                                                                                                                                                                                                                                                                                                                       |
+| ------------ | --------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| 1 (最高)     | `ARK_MOE_PREFILL_DPAS_S2` 未设置或为真值(**默认开启**)                        | **S2-sym 单遍 DPAS 混合输入 mainloop**。直接读取 packed `[E, N, K/4]` `uint8_t` crumb,通过 CuTe `reorder(tBrB, tCrB)`(依赖 `NumericArrayConverter<ElementA, cutlass::int2b_t, N>`)在寄存器中把 S2 上转到 `act_dtype`。B 侧 global 带宽是 S8 路径的四分之一。Per-K-group scale 使用与 INT4/INT8 相同的组边界延迟折叠。实现于 `sycl_tla_moe_prefill_s2_dpas.hpp`。**状态:NEEDS-HARDWARE-VALIDATION**(未经测试的移植)。 |
+| 2 (回退)     | `ARK_MOE_PREFILL_DPAS_S2=0` 且 `ARK_MOE_PREFILL_DPAS_INT8` 为真值(**默认开启**) | **S2→S8 上转 + 共享 INT8 DPAS mainloop**。两遍:`launch_upcast_int2_sym_to_int8` 把权重写成 `[E, N, K]` `int8_t`(复用 dequant workspace),再由标准 INT8 per-group DPAS mainloop 消费。相较路径 1 需要付出 ~E·N·K 字节的 workspace 往返。实现于 `sycl_tla_moe_mixed.hpp` + `sycl_tla_moe_prefill_int_dpas.hpp`。 |
+| 3 (默认回退) | `ARK_MOE_PREFILL_DPAS_S2=0` 且 `ARK_MOE_PREFILL_DPAS_INT8=0`                    | v1 dequant kernel(`sycl_tla_moe_mixed.hpp::launch_dequant_int2`)后接标准 bf16/fp16 grouped GEMM。同时支持 sym 与 asym。                                                                                                                                                                                                                                                                                                                                              |
+
+**S2 DPAS 路径形状前置条件** — 任何条件不满足时,`moe_gemm_prefill`
+分发器会静默回退到优先级 2(再回退到 3):
+
+- `N % 64 == 0` (BN)
+- `K % 32 == 0` (BK)
+- `K % 4 == 0`(每字节四个 crumb 不跨越字节边界)
+- `K % group_size == 0`
+- `group_size % 4 == 0`(crumb 四元组不会跨越组边界)
+- `group_size ∈ {32, 64, 128, 256}`
+- `asym == false`(asym S2 不在 DPAS 路径的支持范围内)
+
+## Decode 权重复用(multi-token,opt-in)
+
+打包的 INT4/INT2 **decode**(GEMV)kernel 已经在寄存器中内联融合了
+dequant(没有独立的 dequant 遍),因此其吞吐由打包权重带宽主导。当同时
+decode 多个 token 时,`ARK_MOE_DECODE_MULTI_TOKEN=1` 会选择
+2-tokens-per-sub-group 变体:每个 sub-group lane 为一*对* token 负责同一个
+输出 N 列,并在每次迭代中把打包权重行只流一次供两个 token 共用。当两个
+token 路由到同一专家时,第二个 token 的权重加载命中 L1(同一地址),把真实
+权重流量大致减半;当这一对跨越专家边界时,第二次加载是对该专家权重行的真实
+读取,结果与单 token kernel 数值完全一致。默认**关闭**(收益取决于 decode
+的 batch 形状 / 路由);由 `sycl_tla_moe_decode.hpp::launch_int4_multitoken` /
+`launch_int2_multitoken` 覆盖。
+
 ## FP8 per-expert (per-tensor) 性能测试
 
 `test_perf_fp8_per_tensor` 提供 Variant A DPAS 路径的性能表格,对应
@@ -286,5 +323,7 @@ pytest -v -s test_moe_prefill_perf.py::TestMoEGemmPrefillPerf::test_perf_int8_pe
 (`rtol=atol=1e-1`)。
 
 **状态:NEEDS-HARDWARE-VALIDATION**(未在硬件上验证过的移植;Phase 1
-仅支持 sym。per-group / asym 的 INT4 / INT2 DPAS 是后续阶段,将复用
-同一份 mainloop 骨架,只在其中追加 unpack 步骤)。
+仅支持 sym。per-group 的 INT4 (S4) 与 INT2 (S2) DPAS 现已作为单遍路径存在
+——见上文 "INT4-sym / INT2-sym Prefill 路径" 小节。asym 的 INT4 / INT2
+DPAS 仍为后续阶段,将复用同一份 mainloop 骨架,只在其中追加 activation-sum
+预计算)。
