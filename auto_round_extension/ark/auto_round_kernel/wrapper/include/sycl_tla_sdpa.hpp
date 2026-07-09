@@ -314,6 +314,7 @@ struct KernelRunner {
             stride_K_cache,
             static_cast<const FMHAKernel::ElementV*>(options.block_V),
             stride_V_cache,
+            static_cast<float*>(options.lse),
         },
         {options.softmax_scale, static_cast<FMHAKernel::ElementQ*>(options.mask),
          options.use_paged_kv ? options.page_table : nullptr, options.use_paged_kv ? options.page_size : 0,
