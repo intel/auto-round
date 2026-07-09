@@ -227,7 +227,6 @@ class FailureContextWriter:
         output_path: Path,
         results: list[TestResult],
         test_type: str,
-        summary_log: Path | None = None,
         failure_log_dir: Path | None = None,
     ) -> None:
         output_path = Path(output_path)
@@ -260,7 +259,7 @@ class FailureContextWriter:
         print(f"Failure context written to: {output_path.absolute()}", file=sys.stderr)
 
         target_log_dir = Path(failure_log_dir) if failure_log_dir else output_path.parent / "failure_logs_dir"
-        self._collect_failure_logs(target_log_dir, failed_results, output_path, summary_log)
+        self._collect_failure_logs(target_log_dir, failed_results)
 
     def _to_failure_entry(self, result: TestResult) -> dict:
         log_path = self.log_dir / result.filename
@@ -319,25 +318,16 @@ class FailureContextWriter:
         self,
         target_dir: Path,
         failed_results: list[TestResult],
-        context_path: Path,
-        summary_log: Path | None,
     ) -> None:
         if not failed_results:
             return
 
         target_dir.mkdir(parents=True, exist_ok=True)
 
-        if summary_log and Path(summary_log).exists():
-            shutil.copy2(summary_log, target_dir / Path(summary_log).name)
-
         for result in failed_results:
             src_log = self.log_dir / result.filename
             if src_log.exists():
                 shutil.copy2(src_log, target_dir / result.filename)
-
-        if context_path.exists():
-            shutil.copy2(context_path, target_dir / context_path.name)
-
 
 def main():
     parser = argparse.ArgumentParser(description="Analyze test logs and generate summary")
@@ -368,17 +358,17 @@ def main():
             "failed": sum(1 for r in results if r.status == TestStatus.FAILED),
         }
 
+        print(f"Done: {stats['total']} tests, {stats['passed']} passed, {stats['failed']} failed")
+
         if args.failure_context_file and stats["failed"] > 0:
+            print(f"Generating failure context used for AI analysis", file=sys.stderr)
             context_writer = FailureContextWriter(args.log_dir, max_lines=args.failure_context_max_lines)
             context_writer.write(
                 args.failure_context_file,
                 results,
                 test_type=args.test_type,
-                summary_log=args.summary_log,
                 failure_log_dir=args.failure_log_dir,
             )
-
-        print(f"Done: {stats['total']} tests, {stats['passed']} passed, {stats['failed']} failed")
 
     except Exception as e:
         print(f"Error: {e}", file=sys.stderr)
