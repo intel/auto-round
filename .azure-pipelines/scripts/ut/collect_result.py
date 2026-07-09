@@ -368,7 +368,7 @@ def main():
             "failed": sum(1 for r in results if r.status == TestStatus.FAILED),
         }
 
-        if args.failure_context_file and stats['failed'] > 0:
+        if args.failure_context_file and stats["failed"] > 0:
             context_writer = FailureContextWriter(args.log_dir, max_lines=args.failure_context_max_lines)
             context_writer.write(
                 args.failure_context_file,
