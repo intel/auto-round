@@ -28,12 +28,12 @@ from auto_round.cli.parser import (
 
 def _build_quantize_parser_for_algorithms(algorithm_str: str):
     """Build a parser that only registers parameters for the given algorithms.
-    
+
     This ensures strict validation: only parameters supported by the explicitly
     selected algorithms are accepted.
     """
     from auto_round.cli.parser import build_quantize_parser as _base_parser_builder
-    
+
     # Parse algorithm names and resolve aliases
     names = [n.strip().lower() for n in algorithm_str.split(",") if n.strip()]
     canonical_names = []
@@ -41,26 +41,28 @@ def _build_quantize_parser_for_algorithms(algorithm_str: str):
         canon = AlgorithmHandler.resolve_alias(name)
         if canon and canon not in canonical_names:
             canonical_names.append(canon)
-    
+
     if not canonical_names:
-        raise ValueError(f"Invalid --algorithm value: '{algorithm_str}'. "
-                         f"Supported: {', '.join(AlgorithmHandler.resolve_alias(a) or a for a in names if AlgorithmHandler.resolve_alias(a) or a)}")
-    
+        raise ValueError(
+            f"Invalid --algorithm value: '{algorithm_str}'. "
+            f"Supported: {', '.join(AlgorithmHandler.resolve_alias(a) or a for a in names if AlgorithmHandler.resolve_alias(a) or a)}"
+        )
+
     # Build base parser
     parser = _base_parser_builder(prog="auto_round quantize")
-    
+
     # Remove all algorithm groups (we'll add only the selected ones)
     # Find and remove algorithm groups
     groups_to_remove = [g for g in parser._action_groups if "Algorithm:" in g.title]
     for g in groups_to_remove:
         parser._action_groups.remove(g)
-    
+
     # Register only selected algorithms
     for alg_name in canonical_names:
         handler = AlgorithmHandler.get(alg_name)
         alg_group = parser.add_argument_group(f"Algorithm: {handler.name}")
         handler.register(alg_group)
-    
+
     return parser
 
 
@@ -348,7 +350,6 @@ def tune(args):
 
     from auto_round.compressors.base import BaseCompressor
 
-
     if "bloom" in model_name:
         args.low_gpu_mem_usage = False
 
@@ -409,8 +410,9 @@ def tune(args):
     common_kwargs = _extract_common_quantization_kwargs(args)
     alg_configs = AlgorithmHandler.build_configs(args, common_kwargs)
 
-    from auto_round.utils import clear_memory
     from auto_round.compressors.entry import AutoRound
+    from auto_round.utils import clear_memory
+
     autoround: BaseCompressor = AutoRound(
         model_name,
         scheme,
@@ -449,7 +451,7 @@ def run_eval(argv=None):
     from auto_round.utils import is_gguf_model, is_mllm_model
 
     args = setup_eval_parser(argv)
-    
+
     # Unify model sources: prefer --model_name/--model if provided, else use positional model
     args.model_name = args.model_name or getattr(args, "model", None)
     if not args.model_name:

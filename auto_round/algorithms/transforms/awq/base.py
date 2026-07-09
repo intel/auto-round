@@ -116,6 +116,7 @@ class AWQTransform(BaseWeightTransformer):
     It smooths block weights in-place; actual weight compression (RTN /
     SignRound) is performed by the pipeline's ``block_quantizer``.
     """
+
     algorithm_names = ("awq",)
 
     def __init__(self, config: AWQConfig) -> None:

@@ -31,7 +31,7 @@ _ENTRY_BASE_KWARGS = {
     "batch_size",
     "model_dtype",
     "trust_remote_code",
-    "amp", #TODO only support in signround
+    "amp",  # TODO only support in signround
     "nblocks",
     "disable_deterministic_algorithms",
     "enable_deterministic_algorithms",
@@ -341,7 +341,7 @@ class AutoRound(object):
     ) -> "BaseCompressor":
         from auto_round.utils.model import is_model_free_route
 
-        if alg_configs is None: #TODO pick different algs based on scheme
+        if alg_configs is None:  # TODO pick different algs based on scheme
             alg_configs = "auto_round"
         device_map = normalize_default_device_map(device_map)
 
@@ -353,8 +353,8 @@ class AutoRound(object):
         diffusion_kwargs = dict(split_kwargs["diffusion"])
 
         # Resolve string alias(es) to config instance(s) before routing.
-        if isinstance(alg_configs,list) and len(alg_configs)==1:
-            alg_configs=alg_configs[0]
+        if isinstance(alg_configs, list) and len(alg_configs) == 1:
+            alg_configs = alg_configs[0]
 
         alg_configs = cls._resolve_config(alg_configs)
         if isinstance(alg_configs, list):

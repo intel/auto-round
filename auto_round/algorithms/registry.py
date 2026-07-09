@@ -131,9 +131,7 @@ def register_algorithm(config_cls: type):
         if raw_names is None:
             raw_names = getattr(member_cls, "algorithm_name", None)
         if raw_names is None:
-            raise TypeError(
-                f"{member_cls.__name__} must define 'algorithm_names' (str or tuple/list[str])."
-            )
+            raise TypeError(f"{member_cls.__name__} must define 'algorithm_names' (str or tuple/list[str]).")
         if isinstance(raw_names, str):
             names = (raw_names,)
         elif isinstance(raw_names, (tuple, list)) and all(isinstance(n, str) and n.strip() for n in raw_names):

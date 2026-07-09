@@ -353,7 +353,9 @@ class AlgorithmHandler(ABC):
                     continue
                 mutex = group.add_mutually_exclusive_group()
                 if disable_flag not in existing_opts:
-                    mutex.add_argument(disable_flag, dest=dest, default=None, action="store_const", const=True, help=help_text)
+                    mutex.add_argument(
+                        disable_flag, dest=dest, default=None, action="store_const", const=True, help=help_text
+                    )
                 if enable_flag not in existing_opts:
                     mutex.add_argument(enable_flag, dest=dest, action="store_const", const=False, help=help_text)
                 continue
@@ -377,7 +379,9 @@ class AlgorithmHandler(ABC):
             group.add_argument(flag, **kwargs)
 
     @staticmethod
-    def collect_config_kwargs(args, config_factory: Callable[[], object] | type | None, *, exclude: set[str] | None = None) -> dict[str, Any]:
+    def collect_config_kwargs(
+        args, config_factory: Callable[[], object] | type | None, *, exclude: set[str] | None = None
+    ) -> dict[str, Any]:
         """Collect config kwargs from parsed args using config signature keys."""
         config_cls = config_factory if inspect.isclass(config_factory) else None
         if config_cls is None:
@@ -424,7 +428,6 @@ class ConfigDrivenAlgoSpec:
 from auto_round.algorithms.quantization.rtn.config import RTNConfig
 from auto_round.algorithms.quantization.sign_round.config import SignRoundConfig
 from auto_round.algorithms.transforms.awq.config import AWQConfig
-
 
 CONFIG_DRIVEN_ALGO_SPECS: dict[str, ConfigDrivenAlgoSpec] = {
     "awq": ConfigDrivenAlgoSpec(

@@ -311,6 +311,7 @@ class SignRoundDQWrapperLinear(WrapperLinear):
 @register_algorithm(SignRoundV2Config)
 class SignRoundV2Quantizer(SignRoundQuantizer):
     """SignRound variant using the open algorithm-extension path in the new architecture."""
+
     algorithm_names = ("sign_roundv2", "signroundv2", "auto_round_v2")
 
     def __init__(self, config: SignRoundConfig) -> None:
