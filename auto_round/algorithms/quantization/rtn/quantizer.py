@@ -21,7 +21,7 @@ import torch
 from auto_round.algorithms.quantization.base import BaseQuantizer, RTNLayerFallbackMixin
 from auto_round.algorithms.quantization.rtn.config import OptimizedRTNConfig, RTNConfig
 from auto_round.algorithms.quantization.sign_round.quantizer import SignRoundQuantizer
-from auto_round.algorithms.registry import register_pipeline_member
+from auto_round.algorithms.registry import register_algorithm
 from auto_round.compressors.utils import (
     IndexSampler,
     block_forward,
@@ -43,8 +43,9 @@ from auto_round.utils import (
 )
 
 
-@register_pipeline_member(RTNConfig)
+@register_algorithm(RTNConfig)
 class RTNQuantizer(RTNLayerFallbackMixin, BaseQuantizer):
+    algorithm_names = ("rtn",)
 
     def __init__(self, config: RTNConfig) -> None:
         BaseQuantizer.__init__(self, config)
@@ -90,8 +91,9 @@ class RTNQuantizer(RTNLayerFallbackMixin, BaseQuantizer):
         self.quantize_layer_via_rtn(name)
 
 
-@register_pipeline_member(OptimizedRTNConfig)
+@register_algorithm(OptimizedRTNConfig)
 class OptimizedRTNQuantizer(RTNQuantizer):
+    algorithm_names = ("opt_rtn", "rtn")
 
     def __init__(self, config: RTNConfig) -> None:
         BaseQuantizer.__init__(self, config)

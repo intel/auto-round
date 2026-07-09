@@ -26,6 +26,44 @@ from auto_round.cli.parser import (
 )
 
 
+def _build_quantize_parser_for_algorithms(algorithm_str: str):
+    """Build a parser that only registers parameters for the given algorithms.
+    
+    This ensures strict validation: only parameters supported by the explicitly
+    selected algorithms are accepted.
+    """
+    from auto_round.cli.parser import build_quantize_parser as _base_parser_builder
+    
+    # Parse algorithm names and resolve aliases
+    names = [n.strip().lower() for n in algorithm_str.split(",") if n.strip()]
+    canonical_names = []
+    for name in names:
+        canon = AlgorithmHandler.resolve_alias(name)
+        if canon and canon not in canonical_names:
+            canonical_names.append(canon)
+    
+    if not canonical_names:
+        raise ValueError(f"Invalid --algorithm value: '{algorithm_str}'. "
+                         f"Supported: {', '.join(AlgorithmHandler.resolve_alias(a) or a for a in names if AlgorithmHandler.resolve_alias(a) or a)}")
+    
+    # Build base parser
+    parser = _base_parser_builder(prog="auto_round quantize")
+    
+    # Remove all algorithm groups (we'll add only the selected ones)
+    # Find and remove algorithm groups
+    groups_to_remove = [g for g in parser._action_groups if "Algorithm:" in g.title]
+    for g in groups_to_remove:
+        parser._action_groups.remove(g)
+    
+    # Register only selected algorithms
+    for alg_name in canonical_names:
+        handler = AlgorithmHandler.get(alg_name)
+        alg_group = parser.add_argument_group(f"Algorithm: {handler.name}")
+        handler.register(alg_group)
+    
+    return parser
+
+
 def _extract_common_quantization_kwargs(args) -> dict:
     """Map parsed CLI args back to QuantizationConfig constructor kwargs.
 
@@ -153,6 +191,9 @@ def list_item(argv=None):
             print("AutoRound supported algorithms:")
             print(AlgorithmHandler.format_listing())
             print("\nUse `auto_round list alg <name>` or `auto_round --algorithm <name> --help` for details.")
+    elif args.item in {"config", "configs"}:
+        print("AutoRound algorithm config keys:")
+        print(AlgorithmHandler.format_config_keys(args.name))
     else:
         raise ValueError(f"Unsupported list target: {args.item}")
 
@@ -216,20 +257,43 @@ def _print_algorithm_help(argv: list[str]) -> bool:
     return True
 
 
-def start(recipe="default", argv=None):
+def start(recipe="default", argv: list[str] | None = None):
     recipe_defaults = RECIPES[recipe]
-    argv = list(sys.argv[1:] if argv is None else argv)
+    argv_list = list(sys.argv[1:] if argv is None else argv)
 
-    if _print_algorithm_help(argv):
+    if _print_algorithm_help(argv_list):
         return
 
-    parser = build_quantize_parser(prog="auto_round quantize")
-    args = parser.parse_args(argv)
+    # If --algorithm is explicitly provided, only register those algorithms' parameters.
+    # Otherwise (empty --algorithm), register all algorithms for auto-inference.
+
+    # Pre-parse just --algorithm to see what user passed
+    _pre = argparse.ArgumentParser(add_help=False)
+    _pre.add_argument("--algorithm", default=None)
+    _pre_args, _ = _pre.parse_known_args(argv_list)
+
+    if _pre_args.algorithm:
+        # User explicitly passed --algorithm: build parser with only those algorithms
+        parser = _build_quantize_parser_for_algorithms(str(_pre_args.algorithm))
+    else:
+        # User did NOT pass --algorithm: use full parser (all algorithms registered)
+        parser = build_quantize_parser(prog="auto_round quantize")
+
+    args = parser.parse_args(argv_list)
+
+    # Unify model sources: prefer --model_name/--model if provided, else use positional model
+    args.model_name = args.model_name or getattr(args, "model", None)
+    if not args.model_name:
+        raise ValueError("[model] or --model/--model_name must be provided.")
 
     # Apply recipe defaults for fields the user didn't set
     for key, value in recipe_defaults.items():
         if getattr(args, key, None) is None:
             setattr(args, key, value)
+
+    # Keep parsed state explicit when --algorithm is omitted.
+    if not getattr(args, "algorithm", None):
+        args.algorithm = AlgorithmHandler.infer_default_algorithm(args)
 
     tune(args)
 
@@ -273,23 +337,17 @@ def tune(args):
     if "marlin" in args.format and args.asym is True:
         raise RuntimeError("marlin backend only supports sym quantization, please remove --asym")
 
-    from auto_round.utils import get_device_and_parallelism
-
-    device_str, use_auto_mapping = get_device_and_parallelism(args.device_map)
-
     if args.enable_torch_compile:
         logger.info(
             "`torch.compile` is enabled to reduce tuning costs. "
             "If it causes issues, you can disable it by removing `--enable_torch_compile` argument."
         )
 
-    model_name = args.model_name
-    if model_name[-1] == "/":
-        model_name = model_name[:-1]
+    model_name = args.model_name.rstrip("/")
     logger.info(f"start to quantize {model_name}")
 
     from auto_round.compressors.base import BaseCompressor
-    from auto_round.compressors.entry import AutoRound as PipelineAutoRound
+
 
     if "bloom" in model_name:
         args.low_gpu_mem_usage = False
@@ -319,9 +377,11 @@ def tune(args):
     from auto_round.utils import parse_layer_config_arg
 
     layer_config = {}
-    if args.layer_config:
-        layer_config = parse_layer_config_arg(args.layer_config)
-        args.layer_config = layer_config
+    raw_layer_config = getattr(args, "layer_config", None)
+    if isinstance(raw_layer_config, str) and raw_layer_config:
+        layer_config = parse_layer_config_arg(raw_layer_config)
+    elif isinstance(raw_layer_config, dict):
+        layer_config = raw_layer_config
 
     low_cpu_mem_usage = True
     if args.disable_low_cpu_mem_usage:
@@ -350,11 +410,12 @@ def tune(args):
     alg_configs = AlgorithmHandler.build_configs(args, common_kwargs)
 
     from auto_round.utils import clear_memory
-
-    autoround: BaseCompressor = PipelineAutoRound(
+    from auto_round.compressors.entry import AutoRound
+    autoround: BaseCompressor = AutoRound(
         model_name,
         scheme,
-        alg_configs if len(alg_configs) > 1 else alg_configs[0],
+        alg_configs,
+        gradient_accumulate_steps=getattr(args, "gradient_accumulate_steps", 1),
         **_to_autoround_kwargs(
             args,
             low_cpu_mem_usage=low_cpu_mem_usage,
@@ -388,16 +449,23 @@ def run_eval(argv=None):
     from auto_round.utils import is_gguf_model, is_mllm_model
 
     args = setup_eval_parser(argv)
+    
+    # Unify model sources: prefer --model_name/--model if provided, else use positional model
+    args.model_name = args.model_name or getattr(args, "model", None)
+    if not args.model_name:
+        raise ValueError("[model] or --model/--model_name must be provided.")
 
-    if "llama" in args.model_name.lower() and not args.add_bos_token:
+    model_name = str(args.model_name)
+
+    if "llama" in model_name.lower() and not args.add_bos_token:
         logger.warning("set add_bos_token=True for llama model.")
         args.add_bos_token = True
-    if not is_gguf_model(args.model_name) and is_mllm_model(args.model_name):
+    if not is_gguf_model(model_name) and is_mllm_model(model_name):
         args.mllm = True
 
     if args.eval_task_by_task:
         eval_task_by_task(
-            model=args.model_name,
+            model=model_name,
             device=args.device_map,
             limit=args.limit,
             tasks=args.tasks,

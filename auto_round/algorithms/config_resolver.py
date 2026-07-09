@@ -19,10 +19,10 @@ from typing import Any
 
 def get_algorithm_class(config: Any):
     """Return the registered implementation class for a quantization config."""
-    from auto_round.algorithms.registry import normalize_algorithm_config, resolve_pipeline_member
+    from auto_round.algorithms.registry import normalize_algorithm_config, resolve_quantizer_by_config
 
     try:
-        return resolve_pipeline_member(normalize_algorithm_config(config))
+        return resolve_quantizer_by_config(normalize_algorithm_config(config))
     except ValueError:
         return None
 

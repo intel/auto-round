@@ -16,7 +16,7 @@
 from contextlib import contextmanager
 from typing import Any
 
-from auto_round.algorithms.registry import resolve_pipeline_member
+from auto_round.algorithms.registry import resolve_quantizer_by_config
 from auto_round.schemes import QuantizationScheme
 
 
@@ -51,7 +51,7 @@ class BasePipelineMember:
     @classmethod
     def from_config(cls, config: Any) -> "BasePipelineMember":
         """Instantiate the registered implementation class for ``config``."""
-        alg_cls = resolve_pipeline_member(config)
+        alg_cls = resolve_quantizer_by_config(config)
         if cls is alg_cls:
             return cls(config)
         return alg_cls(config)

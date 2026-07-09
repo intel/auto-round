@@ -75,10 +75,10 @@ class QDQTool:
         block_config = getattr(compressor, "quantize_config", None)
         if block_config is None:
             return False
-        from auto_round.algorithms.registry import resolve_pipeline_member
+        from auto_round.algorithms.registry import resolve_quantizer_by_config
 
         try:
-            return resolve_pipeline_member(block_config).__name__ == "SignRoundV2Quantizer"
+            return resolve_quantizer_by_config(block_config).__name__ == "SignRoundV2Quantizer"
         except Exception:
             return False
 

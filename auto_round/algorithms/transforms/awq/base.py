@@ -41,7 +41,7 @@ from auto_round.algorithms.pipeline import (
     CalibTiming,
     InputSource,
 )
-from auto_round.algorithms.registry import register_pipeline_member
+from auto_round.algorithms.registry import register_algorithm
 from auto_round.algorithms.transforms.awq.config import AWQConfig
 from auto_round.algorithms.transforms.awq.mappings import (
     ResolvedMapping,
@@ -108,7 +108,7 @@ def _rmsnorm_has_unit_offset(module: torch.nn.Module) -> bool:
     return result
 
 
-@register_pipeline_member(AWQConfig)
+@register_algorithm(AWQConfig)
 class AWQTransform(BaseWeightTransformer):
     """AWQ transform: activation-aware weight smoothing pre-processor.
 
@@ -116,6 +116,7 @@ class AWQTransform(BaseWeightTransformer):
     It smooths block weights in-place; actual weight compression (RTN /
     SignRound) is performed by the pipeline's ``block_quantizer``.
     """
+    algorithm_names = ("awq",)
 
     def __init__(self, config: AWQConfig) -> None:
         super().__init__(config)

@@ -97,11 +97,12 @@ def build_quantize_parser(*, prog: str = "auto_round quantize") -> argparse.Argu
 
     # ---- Model / Runtime ----
     rt = parser.add_argument_group("Runtime Arguments")
-    rt.add_argument("model_name", default=None, nargs="?", help="Path to the pre-trained model or Hugging Face model id.")
+    rt.add_argument("model", default=None, nargs="?", help="Path to the pre-trained model or Hugging Face model id.")
     rt.add_argument(
         "--model_name",
         "--model",
         "--model_name_or_path",
+        dest="model_name",
         default=None,
         help="Path to the pre-trained model or Hugging Face model id.",
     )

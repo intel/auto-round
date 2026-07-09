@@ -45,7 +45,8 @@ class EvalArgumentParser(argparse.ArgumentParser):
             "--model_name",
             "--model",
             "--model_name_or_path",
-            default="facebook/opt-125m",
+            dest="model_name",
+            default=None,
             help="Path to the pre-trained model or model identifier from huggingface.co/models. "
             "Examples: 'facebook/opt-125m', 'bert-base-uncased', or local path like '/path/to/model'",
         )

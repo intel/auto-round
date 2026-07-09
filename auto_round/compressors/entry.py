@@ -31,7 +31,7 @@ _ENTRY_BASE_KWARGS = {
     "batch_size",
     "model_dtype",
     "trust_remote_code",
-    "amp",
+    "amp", #TODO only support in signround
     "nblocks",
     "disable_deterministic_algorithms",
     "enable_deterministic_algorithms",
@@ -71,7 +71,7 @@ def filter_supported_entry_kwargs(kwargs: dict[str, Any], *, context: str) -> di
 def _split_entry_kwargs(kwargs: dict[str, Any]) -> dict[str, dict[str, Any]]:
     """Partition new-entry kwargs by ownership."""
 
-    kwargs = filter_supported_entry_kwargs(kwargs, context="AutoRound entry")
+    supported = filter_supported_entry_kwargs(kwargs, context="AutoRound entry")
     buckets = {
         "route": {},
         "compressor": {},
@@ -79,7 +79,8 @@ def _split_entry_kwargs(kwargs: dict[str, Any]) -> dict[str, dict[str, Any]]:
         "mllm": {},
         "diffusion": {},
     }
-    for key, value in kwargs.items():
+    for key in supported:
+        value = kwargs.pop(key)
         if key in _ENTRY_ROUTE_KWARGS:
             buckets["route"][key] = value
         elif key in _ENTRY_COMPRESSOR_KWARGS:
@@ -340,10 +341,10 @@ class AutoRound(object):
     ) -> "BaseCompressor":
         from auto_round.utils.model import is_model_free_route
 
-        if alg_configs is None:
+        if alg_configs is None: #TODO pick different algs based on scheme
             alg_configs = "auto_round"
-
         device_map = normalize_default_device_map(device_map)
+
         split_kwargs = _split_entry_kwargs(kwargs)
         route_kwargs = dict(split_kwargs["route"])
         compressor_kwargs = dict(split_kwargs["compressor"])
@@ -352,6 +353,9 @@ class AutoRound(object):
         diffusion_kwargs = dict(split_kwargs["diffusion"])
 
         # Resolve string alias(es) to config instance(s) before routing.
+        if isinstance(alg_configs,list) and len(alg_configs)==1:
+            alg_configs=alg_configs[0]
+
         alg_configs = cls._resolve_config(alg_configs)
         if isinstance(alg_configs, list):
             alg_configs = [normalize_algorithm_config(cfg) for cfg in alg_configs]
@@ -553,7 +557,7 @@ class AutoRoundCompatible:
             seqlen=seqlen,
             nsamples=nsamples,
             batch_size=batch_size,
-            mappings=kwargs.pop("mappings", None),
+            awq_mappings=kwargs.pop("mappings", None),
             **common_config_kwargs,
         )
 

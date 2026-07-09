@@ -22,7 +22,7 @@ from torch import autocast
 
 from auto_round.algorithms.quantization.sign_round.config import SignRoundConfig, SignRoundV2Config
 from auto_round.algorithms.quantization.sign_round.quantizer import SignRoundQuantizer
-from auto_round.algorithms.registry import register_pipeline_member
+from auto_round.algorithms.registry import register_algorithm
 from auto_round.data_type.gguf import (
     double_quant_tensor_sym_rtn,
     quant_tensor_gguf_asym_dq,
@@ -308,9 +308,10 @@ class SignRoundDQWrapperLinear(WrapperLinear):
         return weight_q, scale_out, zp_out
 
 
-@register_pipeline_member(SignRoundV2Config)
+@register_algorithm(SignRoundV2Config)
 class SignRoundV2Quantizer(SignRoundQuantizer):
     """SignRound variant using the open algorithm-extension path in the new architecture."""
+    algorithm_names = ("sign_roundv2", "signroundv2", "auto_round_v2")
 
     def __init__(self, config: SignRoundConfig) -> None:
         super().__init__(config)
