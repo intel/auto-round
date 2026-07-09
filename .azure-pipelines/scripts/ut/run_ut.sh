@@ -115,7 +115,6 @@ function run_test_cases() {
     fi
 
     cd /auto-round || exit 1
-    auto_round_path=$(python -c 'import auto_round; print(auto_round.__path__[0])')
 
     for test_case in "${tests[@]}"; do
         if [[ -z "${test_case}" ]]; then
@@ -130,8 +129,7 @@ function run_test_cases() {
 
         echo "##[group]Running ${test_case}..."
         numactl --physcpubind="${NUMA_CPUSET:-0-15}" --membind="${NUMA_NODE:-0}" \
-            python -m pytest --cov="${auto_round_path}" --cov-report term --html=report.html --self-contained-html \
-                --cov-report xml:coverage.xml --cov-append \
+            python -m pytest --cov=auto_round --cov-report= --cov-append \
                 -vs --disable-warnings "${test_case}" 2>&1 | tee "${ut_log_name}"
         echo "##[endgroup]"
     done
