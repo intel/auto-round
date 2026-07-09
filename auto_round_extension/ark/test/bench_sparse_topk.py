@@ -21,20 +21,12 @@ if str(LOCAL_ARK_PARENT) not in sys.path:
 import auto_round_kernel as ark
 
 
-def ensure_sparse_binding() -> None:
-    local_kernel_dir = REPO_ROOT / "auto_round_extension" / "ark" / "auto_round_kernel"
-    current_file = getattr(getattr(ark, "xpu_lib", None), "__file__", None)
-    if current_file is not None and hasattr(ark.xpu_lib, "sage_sparse"):
-        try:
-            if Path(current_file).resolve().is_relative_to(local_kernel_dir.resolve()):
-                return
-        except Exception:
-            pass
-    candidates = sorted((local_kernel_dir / "xbuild").glob("auto_round_kernel_xpu*.so"))
-    if not candidates:
-        raise RuntimeError("Unable to locate built XPU extension with sage_sparse in xbuild/")
-    ext_path = candidates[-1]
+def _load_sparse_binding(ext_path: Path) -> None:
+    ext_path = ext_path.resolve()
+    if not ext_path.is_file():
+        raise RuntimeError(f"Unable to locate XPU extension: {ext_path}")
     module_name = "auto_round_kernel._bench.auto_round_kernel_xpu"
+    print(f"Loading XPU extension from {ext_path} as {module_name}")
     spec = importlib.util.spec_from_file_location(module_name, ext_path)
     if spec is None or spec.loader is None:
         raise RuntimeError(f"Unable to load extension spec from {ext_path}")
@@ -45,6 +37,36 @@ def ensure_sparse_binding() -> None:
     if not hasattr(module, "sage_sparse"):
         raise RuntimeError(f"Loaded extension does not expose sage_sparse: {ext_path}")
     ark.xpu_lib = module
+
+
+def _resolve_sparse_binding(args: argparse.Namespace) -> Path | None:
+    local_kernel_dir = REPO_ROOT / "auto_round_extension" / "ark" / "auto_round_kernel"
+    current_file = getattr(getattr(ark, "xpu_lib", None), "__file__", None)
+    if args.xpu_so is not None:
+        return args.xpu_so.resolve()
+    if args.xbuild_dir is not None:
+        candidates = sorted(args.xbuild_dir.resolve().glob("auto_round_kernel_xpu*.so"))
+        if not candidates:
+            raise RuntimeError(f"Unable to locate built XPU extension with sage_sparse in {args.xbuild_dir}")
+        return candidates[-1]
+    if current_file is not None and hasattr(ark.xpu_lib, "sage_sparse"):
+        try:
+            current_path = Path(current_file).resolve()
+            if current_path.is_relative_to(local_kernel_dir.resolve()):
+                print(f"Using already-loaded local XPU extension from {current_path}")
+                return None
+        except Exception:
+            pass
+    candidates = sorted((local_kernel_dir / "xbuild").glob("auto_round_kernel_xpu*.so"))
+    if not candidates:
+        raise RuntimeError("Unable to locate built XPU extension with sage_sparse in auto_round_kernel/xbuild")
+    return candidates[-1]
+
+
+def ensure_sparse_binding(args: argparse.Namespace) -> None:
+    ext_path = _resolve_sparse_binding(args)
+    if ext_path is not None:
+        _load_sparse_binding(ext_path)
 
 
 def is_xpu_available() -> bool:
@@ -478,7 +500,7 @@ def write_csv(rows: list[dict[str, object]], output_csv: Path) -> None:
 
 
 def run_benchmark(args: argparse.Namespace) -> list[dict[str, object]]:
-    ensure_sparse_binding()
+    ensure_sparse_binding(args)
     if not is_xpu_available():
         raise RuntimeError("XPU device is required")
 
@@ -858,6 +880,18 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--warmup", type=int, default=2)
     parser.add_argument("--iters", type=int, default=3)
     parser.add_argument("--causal", action="store_true", help="Run causal attention instead of the default non-causal mode.")
+    parser.add_argument(
+        "--xbuild-dir",
+        type=Path,
+        default=None,
+        help="Directory containing the benchmarked auto_round_kernel_xpu*.so build artifact.",
+    )
+    parser.add_argument(
+        "--xpu-so",
+        type=Path,
+        default=None,
+        help="Explicit path to the auto_round_kernel_xpu*.so artifact to benchmark.",
+    )
     parser.add_argument(
         "--output-csv",
         type=Path,
