@@ -4,9 +4,9 @@
 import math
 import time
 
-import auto_round_kernel
 import pandas as pd
 import torch
+from ut_utils import get_ark, is_xpu_available, print_top_diffs, reference_sdpa
 
 ark = None
 
@@ -107,9 +107,8 @@ def benchmark_ark_sdpa_case(
     q = torch.rand(batch, h_q, seq, head_size_qk, dtype=dt, device=dev)
     k = torch.rand(batch, h_kv, seq_kv, head_size_qk, dtype=dt, device=dev)
     v = torch.rand(batch, h_kv, seq_kv, head_size_vo, dtype=dt, device=dev)
-    attn_bias = build_attn_bias(seq, seq_kv, dt, q.device, is_causal)
     scale = 1 / math.sqrt(head_size_qk)
-    ref = torch.nn.functional.scaled_dot_product_attention(q, k, v, scale=scale, enable_gqa=group > 1, is_causal=True)
+    ref = reference_sdpa(q, k, v, scale=scale, is_causal=is_causal)
     ret = get_ark().sdpa(q, k, v, scale=scale, is_causal=is_causal)
     dff = abs(ref - ret)
     print_top_diffs(dff, ref, ret, topk=4, threshold=1)
@@ -242,20 +241,6 @@ def run_ark_sdpa_to_excel(
     return pd.DataFrame(results)
 
 
-def is_xpu_available():
-    return hasattr(torch, "xpu") and torch.xpu.is_available()
-
-
-def get_ark():
-    """Lazily initialize and return the ARK instance."""
-    global ark
-    if ark is None:
-        if not is_xpu_available():
-            raise RuntimeError("XPU is not available; cannot initialize auto_round_kernel.ARK()")
-        ark = auto_round_kernel.ARK()
-    return ark
-
-
 def has_sdpa():
     """Check if Flash Attention kernel is available."""
     try:
@@ -276,23 +261,6 @@ def build_mask(seq, seq_kv, dt=torch.float32, dev="xpu", const_count=0, const_va
     indices = torch.randperm(flat_mask.numel(), device=flat_mask.device)[:const_count]
     flat_mask[indices] = const_value
     return mask
-
-
-def print_top_diffs(diff, ref, out, topk=10, threshold=0):
-    flat_diff = diff.reshape(-1)
-    topk = min(topk, flat_diff.numel())
-    top_values, top_indices = torch.topk(flat_diff, k=topk)
-    flat_ref = ref.reshape(-1)
-    flat_out = out.reshape(-1)
-
-    print(f"diff max={diff.max()} mean={diff.mean()}")
-    print(f"Top {topk} diff entries:")
-    if diff.max() > threshold:
-        for rank, (value, flat_index) in enumerate(zip(top_values, top_indices), start=1):
-            coord = tuple(int(index.item()) for index in torch.unravel_index(flat_index, diff.shape))
-            ref_value = flat_ref[flat_index].item()
-            out_value = flat_out[flat_index].item()
-            print(f"#{rank}: index={coord}, diff={value.item()}, ref={ref_value}, out={out_value}")
 
 
 def sftm(seq, h, block=-1, dt=torch.float32, dev="xpu"):
@@ -618,44 +586,67 @@ def compare_sdpa_sage_scale(batch, seq, seq_kv, h_q, h_kv, H, H_v, dt=torch.floa
 
 
 def compare_sdpa_sage_dynquant(
-    batch, seq, seq_kv, h_q, h_kv, H, H_v, dt=torch.float16, is_causal=False, dev="xpu", quant_block_size=64
+    batch,
+    seq,
+    seq_kv,
+    h_q,
+    h_kv,
+    H,
+    H_v,
+    dt=torch.float16,
+    is_causal=False,
+    dev="xpu",
+    quant_block_size=64,
+    tensor_layout="HND",
 ):
     """Test dynamic quantization SAGE attention.
 
-    Q, K, V are FP16 inputs. The kernel dynamically quantizes Q, K to INT8
+    Q, K, V are FP16/BF16 inputs. The kernel dynamically quantizes Q, K to INT8.
+    tensor_layout: 'HND' = [B, H, N, D]; 'NHD' = [B, N, H, D].
     """
 
     group = h_q // h_kv
-    q = torch.randn(batch, h_q, seq, H, dtype=dt, device=dev)
-    k = torch.randn(batch, h_kv, seq_kv, H, dtype=dt, device=dev)
-    v = torch.randn(batch, h_kv, seq_kv, H_v, dtype=dt, device=dev) * 100
+    # Always build reference in HND for SDPA, then permute to requested layout.
+    q_hnd = torch.randn(batch, h_q, seq, H, dtype=dt, device=dev)
+    k_hnd = torch.randn(batch, h_kv, seq_kv, H, dtype=dt, device=dev)
+    v_hnd = torch.randn(batch, h_kv, seq_kv, H_v, dtype=dt, device=dev) * 100
+    if tensor_layout == "NHD":
+        q = q_hnd.transpose(1, 2).contiguous()
+        k = k_hnd.transpose(1, 2).contiguous()
+        v = v_hnd.transpose(1, 2).contiguous()
+    else:
+        q, k, v = q_hnd, k_hnd, v_hnd
     scale = 1 / math.sqrt(H)
     if seq_kv > 4096 and is_causal:
         if seq_kv == seq:
             ref = torch.nn.functional.scaled_dot_product_attention(
-                q, k, v, scale=scale, enable_gqa=group > 1, is_causal=is_causal
+                q_hnd, k_hnd, v_hnd, scale=scale, enable_gqa=group > 1, is_causal=is_causal
             )
         else:
-            ref = torch.zeros_like(q)
+            ref = torch.zeros_like(q_hnd)
     else:
-        attn_bias = torch.zeros(seq, seq_kv, dtype=q.dtype, device=q.device)
-        temp_mask = torch.ones(seq, seq_kv, dtype=torch.bool, device=q.device).tril(diagonal=seq_kv - seq)
+        attn_bias = torch.zeros(seq, seq_kv, dtype=q_hnd.dtype, device=q_hnd.device)
+        temp_mask = torch.ones(seq, seq_kv, dtype=torch.bool, device=q_hnd.device).tril(diagonal=seq_kv - seq)
         attn_bias.masked_fill_(temp_mask.logical_not(), float("-inf"))
         scale = 1 / math.sqrt(H)
         if is_causal:
             ref = torch.nn.functional.scaled_dot_product_attention(
-                q, k, v, scale=scale, enable_gqa=group > 1, is_causal=False, attn_mask=attn_bias
+                q_hnd, k_hnd, v_hnd, scale=scale, enable_gqa=group > 1, is_causal=False, attn_mask=attn_bias
             )
         else:
             ref = torch.nn.functional.scaled_dot_product_attention(
-                q, k, v, scale=scale, enable_gqa=group > 1, is_causal=is_causal
+                q_hnd, k_hnd, v_hnd, scale=scale, enable_gqa=group > 1, is_causal=is_causal
             )
+    if tensor_layout == "NHD":
+        ref = ref.transpose(1, 2).contiguous()
 
     # Dynamic quantization SAGE kernel
-    out = get_ark().sagev1(q, k, v, scale=scale, is_causal=is_causal, quant_block_size=quant_block_size)
+    out = get_ark().sagev1(
+        q, k, v, scale=scale, is_causal=is_causal, quant_block_size=quant_block_size, tensor_layout=tensor_layout
+    )
 
     dff = abs(ref - out)
-    print(f"=== Dynamic Quantization SAGE Test (block_size={quant_block_size}) ===")
+    print(f"=== Dynamic Quantization SAGE Test (block_size={quant_block_size}, layout={tensor_layout}, dt={dt}) ===")
     print(
         f"Batch:{batch} Seq_Q:{seq}, Seq_KV:{seq_kv}, HeadNum_Q:{h_q}, HeadNum_KV:{h_kv}, HeadDim_QK:{H}, HeadDim_V:{H_v}, Causal:{is_causal}"
     )
@@ -664,12 +655,16 @@ def compare_sdpa_sage_dynquant(
     # Benchmark
     n_runs = 10 if seq > 8192 else 100
     for i in range(n_runs):
-        _ = get_ark().sagev1(q, k, v, scale=scale, is_causal=is_causal, quant_block_size=quant_block_size)
+        _ = get_ark().sagev1(
+            q, k, v, scale=scale, is_causal=is_causal, quant_block_size=quant_block_size, tensor_layout=tensor_layout
+        )
     if dev == "xpu":
         torch.xpu.synchronize()
     st = time.time()
     for i in range(n_runs):
-        _ = get_ark().sagev1(q, k, v, scale=scale, is_causal=is_causal, quant_block_size=quant_block_size)
+        _ = get_ark().sagev1(
+            q, k, v, scale=scale, is_causal=is_causal, quant_block_size=quant_block_size, tensor_layout=tensor_layout
+        )
     if dev == "xpu":
         torch.xpu.synchronize()
     et = time.time()
@@ -684,7 +679,51 @@ def compare_sdpa_sage_dynquant(
     MEM += h_kv * seq_kv * H_v * dt.itemsize  # v
     MEM *= batch
     print(f"Time:{dur*1e3:.3f} FLOPS:{OPS/dur/1e9:.2f} G, MEM:{MEM/dur/1e9:.2f} GB/s")
-    return out, ref
+    return {
+        "layout": tensor_layout,
+        "dtype": "fp16" if dt == torch.float16 else ("bf16" if dt == torch.bfloat16 else str(dt)),
+        "causal": is_causal,
+        "time_ms": dur * 1e3,
+        "tflops": OPS / dur / 1e12,
+        "max_diff": float(dff.max().item()),
+        "mean_diff": float(dff.mean().item()),
+    }
+
+
+def run_dynquant_layout_dtype_table(
+    batch=1, seq=8192, seq_kv=8192, h_q=96, h_kv=8, H=128, H_v=128, quant_block_size=64, dev="xpu"
+):
+    """Sweep {layout} x {dtype} x {causal} for sage_dynquant and print a markdown table."""
+    rows = []
+    for layout in ("HND", "NHD"):
+        for dt in (torch.float16, torch.bfloat16):
+            for causal in (False, True):
+                m = compare_sdpa_sage_dynquant(
+                    batch,
+                    seq,
+                    seq_kv,
+                    h_q,
+                    h_kv,
+                    H,
+                    H_v,
+                    dt=dt,
+                    is_causal=causal,
+                    dev=dev,
+                    quant_block_size=quant_block_size,
+                    tensor_layout=layout,
+                )
+                rows.append(m)
+
+    print()
+    print(f"=== sage_dynquant sweep: B={batch} Hq={h_q} Hkv={h_kv} S={seq} D={H} blk={quant_block_size} ===")
+    print("| layout | dtype | causal | time (ms) | TFLOPS | max diff | mean diff |")
+    print("|---|---|---|---|---|---|---|")
+    for r in rows:
+        print(
+            f"| {r['layout']} | {r['dtype']} | {'T' if r['causal'] else 'F'} | "
+            f"{r['time_ms']:.3f} | {r['tflops']:.2f} | {r['max_diff']:.4g} | {r['mean_diff']:.4g} |"
+        )
+    return rows
 
 
 if __name__ == "__main__":
@@ -732,8 +771,7 @@ if __name__ == "__main__":
     # bench_ark(1, 4096, 8192*1, 96, 8, 64, 64, dt=torch.float16, is_causal=True)
     # compare_sdpa_sage_scale(1, 8192, 8192, 96, 8, 128, 128, dt=torch.float16)
     # compare_sdpa_sage_scale(1, 8192, 8192, 96, 8, 128, 128, dt=torch.float16, is_causal=True)
-    compare_sdpa_sage_dynquant(1, 8192, 8192, 96, 8, 128, 128, dt=torch.float16)
-    compare_sdpa_sage_dynquant(1, 8192, 8192, 96, 8, 128, 128, dt=torch.float16, is_causal=True)
+    run_dynquant_layout_dtype_table(batch=1, seq=8192, seq_kv=8192, h_q=96, h_kv=8, H=128, H_v=128, quant_block_size=64)
     # compare_sdpa_sage_scale(2, 4096, 4096, 96, 8, 128, 128, dt=torch.float16)
     # compare_sdpa_sage_scale(1, 4096, 4096, 96, 8, 128, 128, dt=torch.float16, is_causal=True)
     # compare_sdpa_sage(16, 512, 512, 32, 32, 128, 128, dt=torch.float16)

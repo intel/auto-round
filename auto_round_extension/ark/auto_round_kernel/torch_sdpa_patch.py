@@ -7,7 +7,9 @@ import logging
 
 import torch
 
-from . import ARK
+from . import sagev1, sagev1_pvi8
+from . import sdpa as ark_sdpa
+from . import xpu_lib
 
 logger = logging.getLogger(__name__)
 
@@ -134,8 +136,7 @@ def patch_torch_sdpa_with_ark(*, strict: bool = False, backend: str = "sdpa", qu
             raise RuntimeError("XPU is not available")
         return False
 
-    ark = ARK()
-    if ark.xpu_lib is None or not hasattr(ark.xpu_lib, backend):
+    if xpu_lib is None or not hasattr(xpu_lib, backend):
         if strict:
             raise RuntimeError(f"ARK XPU {backend} kernel is not available")
         return False
@@ -186,30 +187,30 @@ def patch_torch_sdpa_with_ark(*, strict: bool = False, backend: str = "sdpa", qu
 
         try:
             if backend == "sdpa":
-                return ark.sdpa(
-                    query.contiguous(),
-                    key.contiguous(),
-                    value.contiguous(),
+                return ark_sdpa(
+                    query,
+                    key,
+                    value,
                     attn_mask=normalized_mask,
                     dropout_p=dropout_p,
                     is_causal=is_causal,
                     scale=scale,
                 )
             if backend == "sagev1":
-                return ark.sagev1(
-                    query.contiguous(),
-                    key.contiguous(),
-                    value.contiguous(),
+                return sagev1(
+                    query,
+                    key,
+                    value,
                     attn_mask=normalized_mask,
                     dropout_p=dropout_p,
                     is_causal=is_causal,
                     scale=scale,
                     quant_block_size=quant_block_size,
                 )
-            return ark.sagev1_pvi8(
-                query.contiguous(),
-                key.contiguous(),
-                value.contiguous(),
+            return sagev1_pvi8(
+                query,
+                key,
+                value,
                 attn_mask=normalized_mask,
                 dropout_p=dropout_p,
                 is_causal=is_causal,

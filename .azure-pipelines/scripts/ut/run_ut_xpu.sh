@@ -5,7 +5,7 @@ source /auto-round/.azure-pipelines/scripts/change_color.sh
 
 function setup_environment() {
     echo "##[group]set up UT env..."
-    uv pip install pytest-cov pytest-html
+    uv pip install pytest-cov
     uv pip list
     echo "##[endgroup]"
 
@@ -38,9 +38,8 @@ function run_unit_test() {
 
         echo "##[group]Running ark ${test_file}..."
         local ut_log_name="${LOG_DIR}/unittest_ark_${test_basename}.log"
-        numactl --physcpubind="${NUMA_CPUSET:-0-27}" --membind="${NUMA_NODE:-0}" pytest --cov="${auto_round_path}" \
-            --cov-report term --html=report.html --self-contained-html \
-            --cov-report xml:coverage.xml --cov-append -vs --disable-warnings \
+        numactl --physcpubind="${NUMA_CPUSET:-0-27}" --membind="${NUMA_NODE:-0}" \
+            pytest --cov="${auto_round_path}" --cov-report= --cov-append -vs --disable-warnings \
             ${test_file} 2>&1 | tee ${ut_log_name}
         echo "##[endgroup]"
     done
@@ -50,9 +49,8 @@ function run_unit_test() {
 
         echo "##[group]Running xpu ${test_file}..."
         local ut_log_name="${LOG_DIR}/unittest_xpu_${test_basename}.log"
-        numactl --physcpubind="${NUMA_CPUSET:-0-27}" --membind="${NUMA_NODE:-0}" pytest --cov="${auto_round_path}" \
-            --cov-report term --html=report.html --self-contained-html \
-            --cov-report xml:coverage.xml --cov-append -vs --disable-warnings \
+        numactl --physcpubind="${NUMA_CPUSET:-0-27}" --membind="${NUMA_NODE:-0}" \
+            pytest --cov="${auto_round_path}" --cov-report= --cov-append -vs --disable-warnings \
             ${test_file} 2>&1 | tee ${ut_log_name}
         echo "##[endgroup]"
     done
@@ -71,9 +69,8 @@ function run_unit_test_vllm() {
 
         echo "##[group]Running xpu vLLM ${test_file}..."
         local ut_log_name="${LOG_DIR}/unittest_xpu_${test_basename}.log"
-        numactl --physcpubind="${NUMA_CPUSET:-0-27}" --membind="${NUMA_NODE:-0}" pytest --cov="${auto_round_path}" \
-            --cov-report term --html=report.html --self-contained-html \
-            --cov-report xml:coverage.xml --cov-append -vs --disable-warnings \
+        numactl --physcpubind="${NUMA_CPUSET:-0-27}" --membind="${NUMA_NODE:-0}" \
+            pytest --cov="${auto_round_path}" --cov-report= --cov-append -vs --disable-warnings \
             ${test_file} 2>&1 | tee ${ut_log_name}
         echo "##[endgroup]"
     done
@@ -100,8 +97,14 @@ function collect_log() {
     python /auto-round/.azure-pipelines/scripts/ut/collect_result.py \
         --test-type "Unit Tests" --log-pattern "unittest_*.log" --log-dir ${LOG_DIR} --summary-log ${SUMMARY_LOG}
     cp .coverage "${LOG_DIR}/.coverage"
-    cp report.html ${LOG_DIR}/
-    cp coverage.xml ${LOG_DIR}/
+    python -m coverage xml -o "${LOG_DIR}/coverage.xml"
+    python -m coverage html -d "${LOG_DIR}/htmlcov"
+}
+
+function print_coverage() {
+    echo "##[group]overall code coverage..."
+    python -m coverage report
+    echo "##[endgroup]"
 }
 
 function main() {
@@ -109,6 +112,7 @@ function main() {
     run_unit_test
     run_unit_test_vllm
     collect_log
+    print_coverage
     print_summary
 }
 

@@ -22,7 +22,40 @@ import pytest
 import torch
 from ut_utils import compare2, decode_fp8_to_float, gen_weis8, get_scale_torch_dt, get_torch_dt, sample_valid_fp8
 
-ark = auto_round_kernel.ARK()
+ark = auto_round_kernel
+
+
+def _release_xpu_memory() -> None:
+    """Free cached XPU memory and synchronize.
+
+    Called before and after every test (via the autouse cleanup fixture
+    below) so that when a parametrization fails, its cached allocator
+    state does not bleed into the next parametrization and eventually
+    abort the process. Mirrors the ``torch.xpu.empty_cache()`` pattern
+    used at the end of every XPU test in ``test_matmul.py`` /
+    ``test_weightonly.py``.
+    """
+    if hasattr(torch, "xpu") and torch.xpu.is_available():
+        torch.xpu.synchronize()
+        if hasattr(torch.xpu, "empty_cache"):
+            torch.xpu.empty_cache()
+
+
+@pytest.fixture(autouse=True)
+def _xpu_cleanup_between_tests():
+    """Release XPU allocator cache before and after every test.
+
+    The trailing ``torch.xpu.empty_cache()`` inside ``test_xpu`` only runs
+    on the success path; when ``main_op`` raises (e.g. ``allclose`` fails
+    or a kernel error occurs), the cache is never released and the next
+    parametrization inherits the pressure -- which matches the observed
+    pattern of a few FAILED cases followed by a fatal ``Aborted``.
+    """
+    _release_xpu_memory()
+    try:
+        yield
+    finally:
+        _release_xpu_memory()
 
 
 def main_op(k, n, weight_type, scale_type, asym, blocksize, device, compute_type):

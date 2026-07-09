@@ -16,8 +16,7 @@ from typing import Any
 
 import torch
 
-from auto_round.algorithms.transforms.rotation.config import RotationConfig
-from auto_round.algorithms.transforms.rotation.transforms import HADAMARDS
+from auto_round.algorithms.transforms.hadamard import HADAMARDS, RotationConfig
 from auto_round.compressors.utils import is_mx_fp, is_nv_fp
 from auto_round.utils import logger
 
@@ -47,8 +46,7 @@ def update_parameter_data(module: torch.nn.Module, new_val: torch.Tensor, name: 
             module.register_parameter(name, torch.nn.Parameter(new_val))
     else:
         logger.warning_once(
-            "Parameter %s not found in module %s, creating new parameter."
-            % (name, module.__class__.__name__ + str(getattr(module, "layer_idx", "")))
+            "Parameter %s not found in module %s, creating new parameter." % (name, module.__class__.__name__)
         )
         module.register_parameter(name, torch.nn.Parameter(new_val))
 
@@ -130,7 +128,7 @@ def is_triton_kernel_available(data_type: str) -> bool:
         return False
 
     try:
-        from auto_round.algorithms.transforms.rotation.utils.triton.mxfp4 import (  # pylint: disable=E0401
+        from auto_round.algorithms.transforms.hadamard.utils.triton.mxfp4 import (  # pylint: disable=E0401
             mxfp4_forward_kernel_wrapper,
         )
     except Exception:
@@ -140,19 +138,19 @@ def is_triton_kernel_available(data_type: str) -> bool:
 
 
 def dump_group_size_to_rotation_config(rotation_config: str | dict | RotationConfig, group_size: int):
-    from auto_round.algorithms.transforms.rotation.config import dump_group_size_to_rotation_config as _impl
+    from auto_round.algorithms.transforms.hadamard.config import dump_group_size_to_rotation_config as _impl
 
     return _impl(rotation_config, group_size)
 
 
 def to_dict_rotation_config(rotation_config: str | dict | RotationConfig):
-    from auto_round.algorithms.transforms.rotation.config import to_dict_rotation_config as _impl
+    from auto_round.algorithms.transforms.hadamard.config import to_dict_rotation_config as _impl
 
     return _impl(rotation_config)
 
 
 def normalize_rotation_config(rotation_config: str | dict | RotationConfig | None, data_type: str) -> dict[str, Any]:
-    from auto_round.algorithms.transforms.rotation.config import normalize_rotation_config as _impl
+    from auto_round.algorithms.transforms.hadamard.config import normalize_rotation_config as _impl
 
     return _impl(rotation_config, data_type)
 

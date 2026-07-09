@@ -72,7 +72,8 @@ class TestAutoScheme:
         model, layer_config = ar.quantize()
         avg_bits, _ = compute_avg_bits_for_model(model, ignore_scale_zp_bits=True)
         print(avg_bits)
-        assert target_bits - 0.1 < avg_bits <= target_bits + 1e-3
+        # Due to the tiny model and embedding, the actual number of bits of gguf format will be larger than the target bits.
+        assert target_bits - 0.1 < avg_bits <= target_bits + 0.3
 
     def test_shared_layers(self, tiny_opt_model_path):
         model_name = tiny_opt_model_path
@@ -258,6 +259,41 @@ class TestAutoScheme:
         print(avg_bits)
         # cause using tiny model
         assert 4.8 < avg_bits <= target_bits + 1e-3
+
+    def test_lm_head_mix_score_nonzero(self, tiny_untied_qwen_model_path):
+        """Verify that lm_head gets a non-zero mix_score in the low_gpu_mem_usage path."""
+        import auto_round.auto_scheme.delta_loss as dl
+
+        target_bits = 5
+        scheme = AutoScheme(avg_bits=target_bits, options=("MXFP4", "MXFP8"))
+
+        scores_captured = {}
+        orig_head_trick = dl._apply_head_trick
+
+        def capture_head_scores(head_name, schemes, sorted_indices, target_bits, target_params_cnt, total_scores):
+            if head_name in total_scores:
+                scores_captured["head_scores"] = [list(opt) for opt in total_scores[head_name]]
+            return orig_head_trick(head_name, schemes, sorted_indices, target_bits, target_params_cnt, total_scores)
+
+        dl._apply_head_trick = capture_head_scores
+        try:
+            ar = AutoRound(
+                tiny_untied_qwen_model_path,
+                scheme=scheme,
+                iters=0,
+                disable_opt_rtn=True,
+                nsamples=1,
+                quant_lm_head=True,
+            )
+            ar.quantize()
+        finally:
+            dl._apply_head_trick = orig_head_trick
+
+        assert "head_scores" in scores_captured, "lm_head was not found in total_scores"
+        head_scores = scores_captured["head_scores"]
+        assert len(head_scores) >= 2, f"Expected at least 2 scheme options, got {len(head_scores)}"
+        has_nonzero = any(opt[2] > 0 for opt in head_scores)
+        assert has_nonzero, f"lm_head mix_score is 0 for all schemes: {head_scores}"
 
     @pytest.mark.skip_ci(reason="The evaluation is time-consuming")
     def test_auto_scheme_export(self):

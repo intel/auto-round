@@ -1,15 +1,22 @@
 ---
 name: review-pr
-description: "Review a pull request for the AutoRound repository with a structured checklist covering code quality, test coverage, documentation, Chinese translations, and quantization-specific concerns. Use when reviewing or preparing to submit a PR."
+description: "Review or prepare a pull request for the AutoRound repository — checks registration points for new data types/backends/VLMs, validates Chinese translation parity for modified markdown files, verifies quantization numerical stability (scale overflow, STE gradient flow, group_size padding), confirms test placement and fixture usage, and enforces Apache 2.0 headers and DCO sign-off. Use when performing a code review, running a PR checklist, preparing a merge request, or auditing a contribution before submit."
 ---
 
 # Pull Request Review Workflow for AutoRound
 
-## Overview
+## Review Sequence
 
-This skill provides a structured workflow for reviewing pull requests in the
-AutoRound repository. It covers code quality, testing, documentation, and
-project-specific requirements like Chinese translation parity.
+Follow these steps in order. Stop and request changes at any gate that fails.
+
+1. **Scope check** — read the PR description and diff summary. Confirm the PR does one thing and unrelated changes are absent. If scope is unclear, request changes before proceeding.
+2. **Code quality gate** — run through the Code Quality checklist below. Any failure → request changes.
+3. **Quantization review** — if the PR touches `auto_round/` quantization logic, run the Quantization-Specific checklist. Any numerical stability concern → request changes.
+4. **Registration audit** — if the PR adds a new feature type (data type, export format, VLM, backend, dataset, scheme), verify every registration point in the table below is updated. Missing registration → request changes.
+5. **Test verification** — confirm new functionality has tests in the correct backend directory with minimal iterations. Missing or misplaced tests → request changes.
+6. **Documentation & translation** — check README/docs updates and run the Chinese Translation Verification procedure below. Missing `_CN.md` updates for modified markdown → request changes.
+7. **Contributing requirements** — verify DCO sign-off, clean commits, and clear PR description.
+8. **Decision** — if all gates pass, approve. Otherwise, summarize all findings in a single review comment with specific file:line references.
 
 ## Review Checklist
 

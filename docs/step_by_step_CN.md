@@ -35,7 +35,7 @@
     - [lm_head 量化中开启多 GPU 标定](#lm_head-量化中开启多-gpu-标定)
     - [手动配置设备映射](#手动配置设备映射)
   + [超参数调整](#超参数调整)
-  + [Hadamard变换-研究功能](#hadamard变换)
+  + [旋转（Rotation）（实验性）](#旋转rotation实验性)
 * [4 推理部署](#4-推理部署)
   + [CPU](#cpu)
   + [英特尔 GPU](#英特尔-gpu)
@@ -419,6 +419,8 @@ ar.quantize_and_save()
 
 为加速推理，在部分框架中，会对特定层（如QKV、MoE）进行融合。这些融合层必须是相同的数据类型和量化配置。`shared_layers` 参数可以简化该配置，**同时支持正则表达式匹配和完整层名匹配**。注意**正则匹配按块匹配规则生效**。
 
+**MoE 的 expert 层会自动按块分组** — 同一个 transformer block 内所有 expert 的投影层（gate/up/down，跨所有 experts）会被视为一个整体进行 DP 优化。它们共享相同的量化方案，loss 和 numel 直接求和。无需手动配置 `shared_layers` 来处理 expert 层。
+
 示例代码如下：
 ```python
 from auto_round import AutoRound, AutoScheme
@@ -480,6 +482,43 @@ ar.quantize_and_save()
 #### 局限性
 AutoScheme 目前还**不支持对嵌入层（Embedding layer）进行自动量化**。该层将直接采用候选方案中精度最高的配置。
 
+当 AutoScheme 与 `model_free=True` 联合使用时，仅支持 INT（`W2A16`/`W4A16`/`W8A16`）和 MXFP（`MXFP4`/`MXFP8`）两种选项族。`W3A16`、`GGUF:*`、`NVFP4` 等不支持的选项会直接抛出 `ValueError`；同一 `AutoScheme` 中也不允许混用 INT 和 MXFP 选项族。
+
+### AWQ 量化算法
+
+AWQ（`algorithm="awq"`）是一种预处理量化算法，通过分析激活分布并应用通道缩放（channel-wise scaling）来保护重要的权重。它在实际量化（默认为 RTN，或使用 auto_round/SignRound）之前运行。
+
+#### 命令行用法
+```bash
+# AWQ + 默认 RTN (自动选择 iters=0)
+auto-round --model Qwen/Qwen3-0.6B --algorithm awq --scheme W4A16
+
+# AWQ + AutoRound 优化
+auto-round --model Qwen/Qwen3-0.6B --algorithm awq,auto_round --scheme W4A16
+
+# AWQ 相关参数
+--duo-scaling true|false|both  (默认: true)
+--n-grid 20                    (默认: 20)
+```
+
+#### API 用法
+```python
+from auto_round import AutoRound
+from auto_round.algorithms.quantization.awq.config import AWQConfig
+from auto_round.algorithms.quantization.sign_round.config import SignRoundConfig
+
+# AWQ + 默认 RTN (最简用法)
+ar = AutoRound(model, tokenizer, algorithm="awq", scheme="W4A16")
+
+# 通过 alg_configs 指定 AWQ + AutoRound (显式流水线)
+ar = AutoRound(model, tokenizer, alg_configs=[AWQConfig(), SignRoundConfig(iters=200)], scheme="W4A16")
+ar.quantize_and_save(output_dir="./qmodel")
+```
+
+**重要提示**：`algorithm="awq"`（量化算法）与 `format="auto_awq"`（导出格式）是相互独立的。你可以使用：
+- `algorithm="awq"` + `format="auto_round"`：AWQ 平滑 + AutoRound 打包
+- `algorithm="auto_round"` + `format="auto_awq"`：不使用 AWQ 平滑 + AutoAWQ 打包
+
 ### OPT-RTN 模式
 AutoRound 还提供优化版 RTN（Round-To-Nearest，就近舍入）模式，无需标定数据即可实现快速基线量化。**启用方式为 `iters=0`**。同时为获得更好的效果，推荐搭配 `group_size=32` 。RTN 与 OPT RTN 模式的精度对比详见[《精度对比报告》](./opt_rtn.md)。
 
@@ -520,7 +559,7 @@ ar.quantize_and_save(output_dir, format="auto_round")
 
 免模型架构量化模式（Model-Free Mode）可以**无需将完整模型加载到内存中**即可执行 RTN WOQ 量化。它直接下载 safetensors 文件，逐分片地对每个 Linear 权重张量进行量化并保存打包结果。当您需要快速、无标定数据的量化且资源有限时，该模式非常实用。
 
-> **默认自动启用。** 自 v0.13 起，当您同时传入 `--iters 0 --disable_opt_rtn` 与一个受支持的 INT WOQ scheme 时，CLI 会自动走免模型路径。该路径与原始 `--iters 0 --disable_opt_rtn` 流程**位级（bit-exact）等价**，但内存占用大幅降低。如需关闭自动路由、强制使用原始流程，可加 `--disable_model_free`。
+> **默认自动启用。** 自 v0.13 起，当您同时传入 `--iters 0 --disable_opt_rtn` 与一个受支持的 INT WOQ 或 MXFP scheme 时，CLI 会自动走免模型路径。该路径与原始 `--iters 0 --disable_opt_rtn` 流程**位级（bit-exact）等价**，但内存占用大幅降低。如需关闭自动路由、强制使用原始流程，可加 `--disable_model_free`。
 
 **主要特性：**
 - **无需模型对象** — 仅需 `config.json` 和 safetensors 文件
@@ -528,13 +567,50 @@ ar.quantize_and_save(output_dir, format="auto_round")
 - **逐层配置** — 支持 `--layer_config` 设置逐层位宽，以及 `--ignore_layers` 保持特定层全精度
 - **预定义忽略层** — 根据模型配置自动跳过特定层（如 MoE 门控层、MTP 层等）
 - 与标准 `--iters 0 --disable_opt_rtn` 流程对所有受支持的 scheme **位级等价**
+- **AutoScheme 集成** — 将 `AutoScheme` 对象传入 `scheme` 参数，即可在免模型模式下完成自动混合精度选择与逐分片打包（两阶段：短暂加载模型评分 → 释放模型 → 逐分片打包）
+
+<details>
+  <summary>Model-free 并行量化基准（分钟向上取整）</summary>
+
+时间归一化规则：所有 `mm:ss` 均向上取整到分钟。例如：`4:20 -> 5`、`15:45 -> 16`、`9:07 -> 10`、`7:29 -> 8`、`4:09 -> 5`。
+
+| 模型 | 设备 | 方案 | 并行度 | 峰值显存 (G) | 耗时（分钟，向上取整） |
+|---|---|---|---:|---:|---:|
+| Qwen/Qwen3-Next-80B-A3B-Instruct | A100 | W4A16 | 1 | 2 | N/A |
+| Qwen/Qwen3-Next-80B-A3B-Instruct | A100 | W4A16 | 10 | 8 | 7 |
+| Qwen3-235B-A22B-Instruct-2507 | A100 | W4A16 | 1 | 2 | 17 |
+| Qwen3-235B-A22B-Instruct-2507 | A100 | W4A16 | 10 | 8 | 5 |
+| zai-org/GLM-5.2 | B200 | MXFP4-Mixed | 1 | 2 | 60 |
+| zai-org/GLM-5.2 | B200 | MXFP4-Mixed | 10 | 27 | 16 |
+| zai-org/GLM-5.2 | B200 | W4A16 | 1 | 3 | 30 |
+| zai-org/GLM-5.2 | B200 | W4A16 | 10 | 16 | 10 |
+| zai-org/GLM-5.2 | B200 | W4A16 | 20 | 32 | 8 |
+| MiniMaxAI/MiniMax-M2.7 (FP8) | B200 | W4A16 | 1 | 2 | 18 |
+| MiniMaxAI/MiniMax-M2.7 (FP8) | B200 | W4A16 | 10 | 10 | 5 |
+| deepseek-ai/DeepSeek-V4-Pro (MXFP) | B200 | W4A16 | 1 | 6 | 80 |
+| deepseek-ai/DeepSeek-V4-Pro (MXFP) | B200 | W4A16 | 10 | 50 | 13 |
+
+| 模型 | 方案 | 对比 | 耗时变化（分钟） | 加速比 | 时间节省 | 峰值显存变化 |
+|---|---|---|---|---:|---:|---|
+| Qwen3-235B | W4A16 | 并行 1 -> 10 | 17 -> 5 | 3.40x | 70.6% | 2G -> 8G |
+| GLM-5.2 | MXFP4-Mixed | 并行 1 -> 10 | 60 -> 16 | 3.75x | 73.3% | 2G -> 27G |
+| GLM-5.2 | W4A16 | 并行 1 -> 10 | 30 -> 10 | 3.00x | 66.7% | 3G -> 16G |
+| GLM-5.2 | W4A16 | 并行 1 -> 20 | 30 -> 8 | 3.75x | 73.3% | 3G -> 32G |
+| MiniMax-M2.7 | W4A16 | 并行 1 -> 10 | 18 -> 5 | 3.60x | 72.2% | 2G -> 10G |
+| DeepSeek-V4-Pro | W4A16 | 并行 1 -> 10 | 80 -> 13 | 6.15x | 83.8% | 6G -> 50G |
+
+结论：在 model-free 量化中，提高并行度通常可带来约 `3x-6x` 的耗时加速，但峰值显存会明显上升。
+
+</details>
 
 <details>
   <summary>点击展开支持的 Scheme 与示例</summary>
 
 **支持的 Scheme**
 
-免模型模式当前支持以下整数权重量化预设（均使用 `auto_round:auto_gptq` 打包格式）：
+免模型模式支持以下量化预设：
+
+**整数权重量化**（使用 `auto_round:auto_gptq` 打包格式）：
 
 | Preset | Bits | Group size | Sym |
 | --- | --- | --- | --- |
@@ -549,7 +625,14 @@ ar.quantize_and_save(output_dir, format="auto_round")
 
 也可以传入自定义的 `QuantizationScheme(bits=N, group_size=G, sym=True/False, data_type="int", act_bits=16)`，其中 `bits ∈ {2, 4, 8}`，group_size / sym 可任意设置。
 
-需要特殊打包内核的 scheme（`W3A16`、`FPW8A16`、`BF16`、`MXFP4`、`MXFP8`、`MXINT4`、`NVFP4`、`FP8_BLOCK`、`FP8_STATIC`、`INT8_W8A8`、`GGUF:*` 等）**不被支持**，传入会抛 `ValueError`。这些请使用标准 AutoRound 流程。
+**MXFP（微缩放浮点）**（使用 `mxfp4-pack-quantized` / `mxfp8-quantized` 格式，兼容 compressed-tensors / vLLM）：
+
+| Preset | Bits | Group size | 格式 |
+| --- | --- | --- | --- |
+| `MXFP4` | 4 | 32 | mxfp4-pack-quantized |
+| `MXFP8` | 8 | 32 | mxfp8-quantized |
+
+需要特殊打包内核的 scheme（`W3A16`、`FPW8A16`、`BF16`、`MXINT4`、`NVFP4`、`FP8_BLOCK`、`FP8_STATIC`、`INT8_W8A8`、`GGUF:*` 等）**不被支持**，传入会抛 `ValueError`。这些请使用标准 AutoRound 流程。
 
 #### 命令行用法
 
@@ -581,6 +664,18 @@ auto_round meta-llama/Llama-3.2-1B-Instruct \
   --layer_config "{k_proj:{bits:8},v_proj:{bits:8}}" \
   --ignore_layers "mlp" \
   --output_dir ./int4-llama
+
+# MXFP4 量化
+auto_round meta-llama/Llama-3.2-1B-Instruct \
+  --model_free \
+  --scheme MXFP4 \
+  --output_dir ./mxfp4-llama
+
+# MXFP8 量化
+auto_round meta-llama/Llama-3.2-1B-Instruct \
+  --model_free \
+  --scheme MXFP8 \
+  --output_dir ./mxfp8-llama
 ```
 
 #### API 用法
@@ -600,7 +695,7 @@ AutoRound(
 ).quantize_and_save("./int4-llama")
 ```
 
-> **注意：** 免模型量化模式仅支持 `auto_round` 输出格式，并使用 RTN（无标定数据、无迭代调优）。如需更高质量的量化结果或使用受支持列表外的 scheme，请使用标准 AutoRound 流程。
+> **注意：** 免模型量化模式使用 RTN（无标定数据、无迭代调优）。INT scheme 输出为 `auto_round:auto_gptq` 格式；MXFP scheme 输出为 compressed-tensors 格式（`mxfp4-pack-quantized` / `mxfp8-quantized`）。如需更高质量的量化结果或使用受支持列表外的 scheme，请使用标准 AutoRound 流程。
 
 </details>
 
@@ -767,51 +862,29 @@ auto-round --model_name Qwen/Qwen3-0.6B  --scheme "W4A16" --quant_lm_head --form
 #### 使用 AdamW 优化器
 添加 `--adam` 参数即可启用；**注意**：在我们的多项测试场景中，AdamW 优化器的效果均不如符号梯度下降（sign gradient descent）。
 
+### 旋转（Rotation）（实验性）
 
+> ⚠️ **实验性功能**：旋转变换仍处于实验阶段。推理依赖 forward hook 机制，目前仅支持 Hugging Face Transformers 后端，因此相比非旋转模型，旋转后的模型推理速度可能较慢。
 
-### Hadamard变换
+旋转在量化前对权重和激活中的离群点进行重分布，使分布更加均匀、对量化更友好。它对 MXFP4、NVFP4、W4A4 等激进的低比特方案最为有效。
 
-AutoRound 支持将 Hadamard 变换作为可选的权重/激活变换技术，通过旋转权重/激活矩阵来提升量化精度。这在某些量化场景中尤其有用。
+AutoRound 通过 `rotation_config` 参数应用旋转。推荐在大多数场景中使用 `"quarot"` 预设——确定性 Hadamard 旋转（QuaRot / SpinQuant），无需训练、无需校准数据。
 
-#### 概述
+#### API 用法
 
-Hadamard 变换在激活值存在离群点且影响量化精度的场景中特别有效。在实践中，它能够抑制这些离群点，因此在 `act_bits < 8` 的低比特激活量化设置中效果尤为显著。用户可以在需要更稳定的激活分布和更高低比特精度时启用该功能。
-
-#### 实现方式
-
-AutoRound 提供两种类型的 Hadamard 变换：
-
-1.  **确定性 Hadamard 变换**（`hadamard`）：使用 Sylvester 构造法生成确定性的 Hadamard 矩阵，尺寸必须为 2 的幂次。
-2.  **随机 Hadamard 变换**（`random_hadamard`）：使用 N. J. A. Sloane 的 Hadamard 矩阵库中已知的矩阵。支持非 2 的幂次的尺寸，并支持确定性随机种子。
-
-#### 使用 Hadamard 旋转进行量化
-研究性功能：当前暂无高效可用的 kernel 支持，且社区兼容性通常较低。
 ```python
 from auto_round import AutoRound
 
-# 加载模型（支持 FP8/BF16/FP16/FP32）
-model_name_or_path = "meta-llama/Llama-3.1-8B-Instruct"
-output_dir = "./Llama-3.1-8B-Instruct-mxfp4-ht"
+model_name = "Qwen/Qwen3-0.6B"
 
-# rotation_config="default": block_size=32, hadamard_type="hadamard"
-ar = AutoRound(model_name_or_path, scheme="MXFP4", rotation_config="default")
-
-ar.quantize_and_save(output_dir=output_dir, format="auto_round")
+# QuaRot 预设：确定性 Hadamard，无需训练
+ar = AutoRound(model_name, scheme="MXFP4", rotation_config="quarot")
+ar.quantize_and_save(output_dir="./Qwen3-0.6B-mxfp4-quarot", format="auto_round")
 ```
 
-#### 变换类
+带旋转的量化模型可透明地保存和加载——旋转矩阵和 hook 会在加载时自动恢复，推理无需额外步骤。
 
-| 类名                        | 描述                          |
-| ------------------------- | --------------------------- |
-| `HadamardTransform`       | 应用确定性 Hadamard 变换        |
-| `RandomHadamardTransform` | 应用随机 Hadamard 变换，并可选随机种子 |
-
-#### 参数说明
-
-| 参数           | 描述                               |
-| ------------ | -------------------------------- |
-| `block_size` | 变换块大小（默认：32）                     |
-| `seed`       | 随机种子（用于 RandomHadamardTransform） |
+关于旋转位置（R1–R4）、完整配置选项、确定性与随机 Hadamard、可训练的 SpinQuant、逐线性层块旋转变体以及保存/加载的内部细节，请参阅 [Rotation Details](./rotation_details.md)（英文）。
 
 
 ## 4 推理部署

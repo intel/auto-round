@@ -187,7 +187,7 @@ if __name__ == "__main__":
         package_data={
             "": [
                 "mllm/templates/*.json",
-                "algorithms/transforms/rotation/utils/hadamards.safetensors",
+                "algorithms/transforms/hadamard/utils/hadamards.safetensors",
             ]
         },
     )

@@ -15,15 +15,16 @@ import copy
 from collections import defaultdict
 from contextlib import nullcontext
 from functools import partial
-from typing import Any, Callable, Optional, Union
+from typing import TYPE_CHECKING, Any, Callable, Optional, Union
 
 import accelerate
 import torch
 from torch import autocast
 
-from auto_round.algorithms.quantization.base import BaseQuantizers
+from auto_round.algorithms.quantization.base import BaseQuantizer, RTNLayerFallbackMixin
 from auto_round.algorithms.quantization.sign_round.config import SignRoundConfig
 from auto_round.algorithms.quantization.sign_round.sign_sgd import SignSGD
+from auto_round.algorithms.registry import register_pipeline_member
 from auto_round.compressors.utils import (
     IndexSampler,
     block_forward,
@@ -36,27 +37,28 @@ from auto_round.logger import logger
 from auto_round.utils import (
     check_to_quantized,
     compile_func,
+    convert_module_to_hp_if_necessary,
     get_module,
     htcore,
-    is_auto_device_mapping,
     is_hpex_available,
-    memory_monitor,
     mv_module_from_gpu,
     set_amax_for_all_moe_layers,
     set_module,
     to_device,
 )
-from auto_round.utils.device import (
-    clear_memory_if_reached_threshold,
-    set_auto_device_map_for_block_with_tuning,
-)
+from auto_round.utils.device import clear_memory_if_reached_threshold
+from auto_round.utils.device_manager import device_manager
 from auto_round.utils.distributed import setup_ddp_if_needed_
 from auto_round.wrapper import WrapperLinear, unwrapper_block, unwrapper_layer, wrapper_block
 
+if TYPE_CHECKING:
+    from auto_round.algorithms.pipeline import BlockContext
 
-class SignRoundQuantizer(BaseQuantizers):
 
-    def __init__(self, config: SignRoundConfig):
+@register_pipeline_member(SignRoundConfig)
+class SignRoundQuantizer(RTNLayerFallbackMixin, BaseQuantizer):
+
+    def __init__(self, config: SignRoundConfig) -> None:
         super().__init__(config)
         self.iters = config.iters
         self.lr = config.lr
@@ -75,28 +77,6 @@ class SignRoundQuantizer(BaseQuantizers):
         self.optimizer = self._get_optimizer(optimizer=config.optimizer)
         self.wrapper_block = wrapper_block
 
-    def _get_current_output(self, output: list[torch.Tensor], indices: list[int]) -> torch.Tensor:
-        if self.model_context.is_diffusion:
-            assert "hidden_states" in output
-            current_output = [output["hidden_states"][x] for x in indices]
-            current_output = torch.cat(current_output, dim=self.batch_dim)
-            return current_output
-        current_output = [output[x] for x in indices]
-        current_output = torch.cat(current_output, dim=self.batch_dim)
-        return current_output
-
-    def _get_current_num_elm(
-        self,
-        input_ids: list[torch.Tensor],
-        indices: list[int],
-    ) -> int:
-        if self.model_context.is_diffusion:
-            current_input_ids = [input_ids["hidden_states"][i] for i in indices]
-            return sum(id.numel() for id in current_input_ids)
-
-        current_input_ids = [input_ids[i] for i in indices]
-        return sum(id.numel() for id in current_input_ids)
-
     def _get_non_zero_cnt(self, tensor: list[torch.Tensor], indices: list[int]) -> int:
         current_tensors = [tensor[i] for i in indices]
         non_zero_cnt = 0
@@ -106,8 +86,8 @@ class SignRoundQuantizer(BaseQuantizers):
 
     def _get_loss(
         self,
-        output_q: torch.Tensor,
-        current_output: torch.Tensor,
+        pred_output: torch.Tensor,
+        ref_output: torch.Tensor,
         indices: torch.Tensor,
         mse_loss: Callable,
         device: Union[str, torch.device] = "cpu",
@@ -124,28 +104,18 @@ class SignRoundQuantizer(BaseQuantizers):
 
             with autocast_ctx:
                 loss = mse_loss(  # pylint: disable=not-callable
-                    (output_q * tmp_attention_mask).to(torch.float32),
-                    (current_output * tmp_attention_mask).to(torch.float32),
+                    (pred_output * tmp_attention_mask).to(torch.float32),
+                    (ref_output * tmp_attention_mask).to(torch.float32),
                 )
         else:
             with autocast_ctx:
                 loss = mse_loss(  # pylint: disable=not-callable
-                    output_q.to(torch.float32), current_output.to(torch.float32)
+                    pred_output.to(torch.float32), ref_output.to(torch.float32)
                 )
 
         return loss
 
-    def quantize_block(
-        self,
-        block: torch.nn.Module,
-        input_ids: Union[list[torch.Tensor], dict],
-        input_others: dict,
-        reference_output,
-        *,
-        loss_device: Union[str, torch.device],
-        mid_iter_mem_check: bool = False,
-        **kwargs,
-    ) -> dict:
+    def quantize_block(self, ctx: "BlockContext") -> dict:
         """Apply the AutoRound optimization algorithm to a block.
 
         This is the pure-algorithm entry point.  All infrastructure concerns
@@ -154,21 +124,17 @@ class SignRoundQuantizer(BaseQuantizers):
         before and after this call.
 
         Args:
-            block: Module already placed on the correct device(s).
-            input_ids: Calibration inputs (already on cache_device).
-            input_others: Additional inputs for the block's forward pass.
-            reference_output: FP reference outputs collected by the Compressor.
-            loss_device: Device on which to compute the MSE loss.
-            mid_iter_mem_check: Pre-evaluated by the Compressor as
-                ``low_gpu_mem_usage and card_0_in_high_risk``.  When True,
-                triggers mid-iteration memory threshold checks to reduce
-                fragmentation on the primary GPU.
+            ctx: Per-block pipeline context. ``ctx.io`` owns calibration inputs,
+                reference outputs, and mini-batch block forwards.
 
         Returns:
             best_params: Best quantization parameters found during optimization.
                 Empty dict if no trainable parameters were found.
         """
-        device = self.compress_context.device
+        block = ctx.block
+        device = device_manager.device
+        loss_device = ctx.loss_device
+        mid_iter_mem_check = ctx.mid_iter_mem_check
 
         quantized_layer_names, unquantized_layer_names = self.wrapper_block(
             block,
@@ -226,10 +192,7 @@ class SignRoundQuantizer(BaseQuantizers):
         else:
             lr_schedule = copy.deepcopy(self.lr_scheduler)
 
-        if isinstance(input_ids, dict):  # input_ids of Flux is dict
-            nsamples = len(input_ids["hidden_states"])
-        else:
-            nsamples = len(input_ids)
+        nsamples = ctx.num_samples
         last_best_iter = 0
         best_loss = torch.finfo(torch.float).max
         num_elm = 1
@@ -246,8 +209,8 @@ class SignRoundQuantizer(BaseQuantizers):
         # We assume the block input and output shape is same
         if self.gradient_accumulate_steps != 1 and not self.attention_mask:
             whole_indices = torch.arange(global_batch_size)
-            num_elm = self._get_current_num_elm(input_ids, whole_indices)
-        setup_ddp_if_needed_(self, block, self.compress_context.device_list)
+            num_elm = ctx.count_batch_elements(whole_indices)
+        block, sync_gradients = setup_ddp_if_needed_(self, block, device_manager.device_list)
         index_sampler = IndexSampler(nsamples, global_batch_size)
         batch_size = self.batch_size
         for i in range(self.iters):
@@ -261,22 +224,23 @@ class SignRoundQuantizer(BaseQuantizers):
 
             for batch_start in range(0, len(global_indices), batch_size):
                 indices = global_indices[batch_start : batch_start + batch_size]
-                current_output = self._get_current_output(reference_output, indices)
-                current_output = to_device(current_output, loss_device)
-                output_q = self._get_current_q_output(block, input_ids, input_others, indices, device, loss_device)
-                loss = self._get_loss(output_q, current_output, indices, mse_loss, device)
+                ref_output = ctx.get_reference_outputs(indices, device=loss_device)
+                # BlockIO centralizes batch input selection, reference caching,
+                # and forwarding for the currently scheduled block (ctx.block).
+                pred_output = ctx.forward_block_batch(indices, device=device, cache_device=loss_device)
+                loss = self._get_loss(pred_output, ref_output, indices, mse_loss, device)
                 num_elm = 1 if num_elm <= 0 else num_elm
                 total_loss += loss.item() / num_elm
 
                 if mid_iter_mem_check:
                     # clear memory to avoid OOM due to memory fragmentation
-                    clear_memory_if_reached_threshold(threshold=0.5, device_list=self.compress_context.device_list)
+                    clear_memory_if_reached_threshold(threshold=0.5, device_list=device_manager.device_list)
 
                 self._scale_loss_and_backward(scaler, loss)
 
                 if mid_iter_mem_check:
                     # clear memory to avoid OOM due to memory fragmentation
-                    clear_memory_if_reached_threshold(threshold=0.8, device_list=self.compress_context.device_list)
+                    clear_memory_if_reached_threshold(threshold=0.8, device_list=device_manager.device_list)
 
             if i == 0:
                 init_loss = total_loss
@@ -292,6 +256,7 @@ class SignRoundQuantizer(BaseQuantizers):
             if not self.not_use_best_mse:
                 if 0 < self.dynamic_max_gap <= i - last_best_iter:
                     break
+            sync_gradients()
             self._step(scaler, optimizer, lr_schedule)
 
         last_loss = total_loss
@@ -336,7 +301,7 @@ class SignRoundQuantizer(BaseQuantizers):
 
         Args:
             layer_name (str): The name of the layer to quantize.
-            input_ids (list[torch.Tensor], optional): Input data for quantization.
+            inputs (torch.Tensor): Input data for quantization.
             q_inputs (torch.Tensor, optional): Quantized input data. Defaults to None.
             device (torch.device, optional): The device to use for quantization. Defaults to torch.device("cpu").
 
@@ -377,7 +342,7 @@ class SignRoundQuantizer(BaseQuantizers):
             static_attention_dtype,
         ):
             tmp_inputs = q_inputs if q_inputs is not None else input_ids
-            hook_handles = self.register_calibration_hooks(layer)
+            hook_handles = self._register_act_max_hooks(layer)
             with torch.no_grad():
                 for input in tmp_inputs:
                     layer(input)
@@ -439,9 +404,9 @@ class SignRoundQuantizer(BaseQuantizers):
         if gradient_accumulate_steps != 1 and not self.attention_mask:
             whole_indices = torch.arange(global_batch_size)
             if q_inputs is not None:
-                num_elm = self._get_current_num_elm(q_inputs, whole_indices)
+                num_elm = self._count_layer_input_elements(q_inputs, whole_indices)
             else:
-                num_elm = self._get_current_num_elm(input_ids, whole_indices)
+                num_elm = self._count_layer_input_elements(input_ids, whole_indices)
 
         index_sampler = IndexSampler(nsamples, global_batch_size)
 
@@ -534,6 +499,9 @@ class SignRoundQuantizer(BaseQuantizers):
                 "The optimizer setting in config will be ignored in AutoRound, using SignSGD as default."
             )
         return SignSGD
+
+    def _count_layer_input_elements(self, input_ids, indices: list) -> int:
+        return sum(input_ids[i].numel() for i in indices)
 
     def _get_scaler(self):
         """Returns scaler, in SignRound, no need to use scaler."""

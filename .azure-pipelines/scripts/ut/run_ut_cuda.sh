@@ -31,7 +31,8 @@ function create_conda_env() {
         export PATH=/usr/local/cuda/bin${PATH:+:${PATH}}
         export LD_LIBRARY_PATH=$(python -c "import site; print(site.getsitepackages()[0])")/nvidia/nvjitlink/lib:$LD_LIBRARY_PATH
     fi
-    uv pip install pytest-cov pytest-html cmake requests
+    uv pip install pytest-cov cmake requests ninja psutil
+    uv cache prune
 }
 
 function print_test_results_table() {
@@ -91,19 +92,18 @@ function run_unit_test() {
     cd ${REPO_PATH}/test
     rm -rf .coverage* *.xml *.html
 
-    uv pip install torch==2.12.0 torchvision torchao --index-url https://download.pytorch.org/whl/cu126
-    uv pip install https://github.com/XuehaoSun/llama-cpp-python/releases/download/v0.3.23/llama_cpp_python-0.3.23+cu128-py3-none-linux_x86_64.whl
+    uv pip install torch==2.12.1 torchvision torchao --index-url https://download.pytorch.org/whl/cu130
+    uv pip install llama-cpp-python --extra-index-url https://abetlen.github.io/llama-cpp-python/whl/cu130
     uv pip install 'git+https://github.com/ggml-org/llama.cpp.git#subdirectory=gguf-py'
     uv pip install -r test_cuda/requirements.txt
     uv pip install -r test_cuda/requirements_diffusion.txt
-    uv pip install -U transformers
+    uv pip install -U transformers chardet
     uv pip uninstall torch torchvision
-    uv pip install torch==2.12.0 torchvision torchao --index-url https://download.pytorch.org/whl/cu126
+    uv pip install torch==2.12.1 torchvision torchao --index-url https://download.pytorch.org/whl/cu130
     cd ${REPO_PATH} && uv pip install . && cd ${REPO_PATH}/test
 
     pip list > ${LOG_DIR}/ut_pip_list.txt
     export COVERAGE_RCFILE=${REPO_PATH}/.azure-pipelines/scripts/ut/.coverage
-    local auto_round_path=$(python -c 'import auto_round; print(auto_round.__path__[0])')
 
     # run unit tests individually with separate logs
     for test_file in $(find ./test_cuda -type f -name "test_*.py" | grep -Ev "vlms|llmc|sglang|vllm|multiple_card" | sort); do
@@ -111,13 +111,9 @@ function run_unit_test() {
         local ut_log_name=${LOG_DIR}/unittest_cuda_${test_basename}.log
         echo "Running ${test_file}..."
 
-        python -m pytest --cov="${auto_round_path}" --cov-report term --html=report.html --self-contained-html --cov-report xml:coverage.xml --cov-append -vs --disable-warnings ${test_file} 2>&1 | tee ${ut_log_name}
+        pytest --cov=auto_round --cov-report= --cov-append -vs --disable-warnings ${test_file} 2>&1 | tee ${ut_log_name}
     done
-
-    if [ -f "report.html" ] && [ -f "coverage.xml" ]; then
-        mv report.html ${LOG_DIR}/
-        mv coverage.xml ${LOG_DIR}/
-    fi
+    [ -f .coverage ] && cp .coverage ${LOG_DIR}/.coverage.unit
 
     # Print test results table and check for failures
     if ! print_test_results_table "unittest_cuda_test_*.log" "CUDA Unit Tests"; then
@@ -131,18 +127,17 @@ function run_unit_test_vlm() {
     cd ${REPO_PATH}/test
     rm -rf .coverage* *.xml *.html
 
-    uv pip install torch==2.12.0 torchvision --index-url https://download.pytorch.org/whl/cu126
+    uv pip install torch==2.12.1 torchvision --index-url https://download.pytorch.org/whl/cu130
     uv pip install git+https://github.com/haotian-liu/LLaVA.git@v1.2.2 --no-deps
-    uv pip install -v git+https://github.com/casper-hansen/AutoAWQ.git@v0.2.0 --no-build-isolation
     uv pip install flash-attn==2.8.3 --no-build-isolation
     uv pip install -r test_cuda/requirements_vlm.txt \
-        --extra-index-url https://download.pytorch.org/whl/cu126 \
+        --extra-index-url https://download.pytorch.org/whl/cu130 \
         --index-strategy unsafe-best-match
+    uv pip install -U chardet
     cd ${REPO_PATH} && uv pip install . && cd ${REPO_PATH}/test
 
     pip list > ${LOG_DIR}/vlm_ut_pip_list.txt
     export COVERAGE_RCFILE=${REPO_PATH}/.azure-pipelines/scripts/ut/.coverage
-    local auto_round_path=$(python -c 'import auto_round; print(auto_round.__path__[0])')
 
     # run VLM unit tests individually with separate logs
     for test_file in $(find ./test_cuda -name "test*vlms.py"); do
@@ -150,13 +145,9 @@ function run_unit_test_vlm() {
         local ut_log_name=${LOG_DIR}/unittest_cuda_vlm_${test_basename}.log
         echo "Running ${test_file}..."
 
-        python -m pytest --cov="${auto_round_path}" --cov-report term --html=report_vlms.html --self-contained-html --cov-report xml:coverage_vlms.xml --cov-append -vs --disable-warnings ${test_file} 2>&1 | tee ${ut_log_name}
+        pytest --cov=auto_round --cov-report= --cov-append -vs --disable-warnings ${test_file} 2>&1 | tee ${ut_log_name}
     done
-
-    if [ -f "report_vlms.html" ] && [ -f "coverage_vlms.xml" ]; then
-        mv report_vlms.html ${LOG_DIR}/
-        mv coverage_vlms.xml ${LOG_DIR}/
-    fi
+    [ -f .coverage ] && cp .coverage ${LOG_DIR}/.coverage.vlm
 
     # Print test results table and check for failures
     if ! print_test_results_table "unittest_cuda_vlm_test*.log" "CUDA VLM Tests"; then
@@ -170,12 +161,12 @@ function run_unit_test_llmc() {
 
     cd ${REPO_PATH}/test
     rm -rf .coverage* *.xml *.html
-    BUILD_TYPE="nightly" uv pip install -r test_cuda/requirements_llmc.txt --extra-index-url https://download.pytorch.org/whl/cu126 --index-strategy unsafe-best-match
+    BUILD_TYPE="nightly" uv pip install -r test_cuda/requirements_llmc.txt --extra-index-url https://download.pytorch.org/whl/cu130 --index-strategy unsafe-best-match
+    uv pip install -U chardet
     cd ${REPO_PATH} && uv pip install . && cd ${REPO_PATH}/test
 
     pip list > ${LOG_DIR}/llmc_ut_pip_list.txt
     export COVERAGE_RCFILE=${REPO_PATH}/.azure-pipelines/scripts/ut/.coverage
-    local auto_round_path=$(python -c 'import auto_round; print(auto_round.__path__[0])')
 
     # run unit tests individually with separate logs
     for test_file in $(find ./test_cuda -name "test_llmc*.py" | sort); do
@@ -183,13 +174,10 @@ function run_unit_test_llmc() {
         local ut_log_name=${LOG_DIR}/unittest_cuda_llmc_${test_basename}.log
         echo "Running ${test_file}..."
 
-        python -m pytest --cov="${auto_round_path}" --cov-report term --html=report_llmc.html --self-contained-html --cov-report xml:coverage_llmc.xml --cov-append -vs --disable-warnings ${test_file} 2>&1 | tee ${ut_log_name}
+        pytest --cov=auto_round --cov-report= --cov-append -vs --disable-warnings ${test_file} 2>&1 | tee ${ut_log_name}
     done
+    [ -f .coverage ] && cp .coverage ${LOG_DIR}/.coverage.llmc
 
-    if [ -f "report_llmc.html" ] && [ -f "coverage_llmc.xml" ]; then
-        mv report_llmc.html ${LOG_DIR}/
-        mv coverage_llmc.xml ${LOG_DIR}/
-    fi
     # Print test results table and check for failures
     if ! print_test_results_table "unittest_cuda_llmc_test_*.log" "CUDA LLMC Tests"; then
         echo "Some CUDA LLMC tests failed. Please check the individual log files for details."
@@ -202,12 +190,16 @@ function run_unit_test_sglang() {
 
     cd ${REPO_PATH}/test
     rm -rf .coverage* *.xml *.html
-    uv pip install "sglang<0.5.11" --prerelease=allow
+    uv pip install -r test_cuda/requirements_sglang.txt \
+        --prerelease=allow \
+        --extra-index-url https://download.pytorch.org/whl/cu130 \
+        --index-strategy unsafe-best-match
+    local flashinfer_version=$(uv pip show flashinfer-python 2>/dev/null | grep -i "^Version" | awk '{print $2}')
+    uv pip install flashinfer-jit-cache==${flashinfer_version} --index-url https://flashinfer.ai/whl/cu130
     cd ${REPO_PATH} && uv pip install . && cd ${REPO_PATH}/test
 
     pip list > ${LOG_DIR}/sglang_ut_pip_list.txt
     export COVERAGE_RCFILE=${REPO_PATH}/.azure-pipelines/scripts/ut/.coverage
-    local auto_round_path=$(python -c 'import auto_round; print(auto_round.__path__[0])')
 
     # run unit tests individually with separate logs
     for test_file in $(find ./test_cuda -name "test_sglang*.py" | sort); do
@@ -215,13 +207,10 @@ function run_unit_test_sglang() {
         local ut_log_name=${LOG_DIR}/unittest_cuda_sglang_${test_basename}.log
         echo "Running ${test_file}..."
 
-        python -m pytest --cov="${auto_round_path}" --cov-report term --html=report_sglang.html --self-contained-html --cov-report xml:coverage_sglang.xml --cov-append -vs --disable-warnings ${test_file} 2>&1 | tee ${ut_log_name}
+        pytest --cov=auto_round --cov-report= --cov-append -vs --disable-warnings ${test_file} 2>&1 | tee ${ut_log_name}
     done
+    [ -f .coverage ] && cp .coverage ${LOG_DIR}/.coverage.sglang
 
-    if [ -f "report_sglang.html" ] && [ -f "coverage_sglang.xml" ]; then
-        mv report_sglang.html ${LOG_DIR}/
-        mv coverage_sglang.xml ${LOG_DIR}/
-    fi
     # Print test results table and check for failures
     if ! print_test_results_table "unittest_cuda_sglang_test*.log" "CUDA SGLang Unit Tests"; then
         echo "Some CUDA SGLang unit tests failed. Please check the individual log files for details."
@@ -235,16 +224,16 @@ function run_unit_test_vllm() {
 
     cd ${REPO_PATH}/test
     rm -rf .coverage* *.xml *.html
-    vllm_version=$(curl -s https://api.github.com/repos/vllm-project/vllm/releases/latest | jq -r .tag_name | sed 's/^v//')
     uv pip install -r test_cuda/requirements_vllm.txt \
-        --extra-index-url https://wheels.vllm.ai/${vllm_version}/cu129 \
-        --extra-index-url https://download.pytorch.org/whl/cu126 \
+        --extra-index-url https://download.pytorch.org/whl/cu130 \
         --index-strategy unsafe-best-match
+    local flashinfer_version=$(uv pip show flashinfer-python 2>/dev/null | grep -i "^Version" | awk '{print $2}')
+    uv pip install flashinfer-jit-cache==${flashinfer_version} --index-url https://flashinfer.ai/whl/cu130
+    uv pip install -U chardet
     cd ${REPO_PATH} && uv pip install . && cd ${REPO_PATH}/test
 
     pip list > ${LOG_DIR}/vllm_ut_pip_list.txt
     export COVERAGE_RCFILE=${REPO_PATH}/.azure-pipelines/scripts/ut/.coverage
-    local auto_round_path=$(python -c 'import auto_round; print(auto_round.__path__[0])')
 
     # run unit tests individually with separate logs
     for test_file in $(find ./test_cuda -name "test_vllm*.py" | sort); do
@@ -252,17 +241,32 @@ function run_unit_test_vllm() {
         local ut_log_name=${LOG_DIR}/unittest_cuda_vllm_${test_basename}.log
         echo "Running ${test_file}..."
 
-        python -m pytest --cov="${auto_round_path}" --cov-report term --html=report_vllm.html --self-contained-html --cov-report xml:coverage_vllm.xml --cov-append -vs --disable-warnings ${test_file} 2>&1 | tee ${ut_log_name}
+        pytest --cov=auto_round --cov-report= --cov-append -vs --disable-warnings ${test_file} 2>&1 | tee ${ut_log_name}
     done
+    [ -f .coverage ] && cp .coverage ${LOG_DIR}/.coverage.vllm
 
-    if [ -f "report_vllm.html" ] && [ -f "coverage_vllm.xml" ]; then
-        mv report_vllm.html ${LOG_DIR}/
-        mv coverage_vllm.xml ${LOG_DIR}/
-    fi
     # Print test results table and check for failures
     if ! print_test_results_table "unittest_cuda_vllm_test*.log" "CUDA VLLM Unit Tests"; then
         echo "Some CUDA VLLM unit tests failed. Please check the individual log files for details."
     fi
+}
+
+function merge_coverage() {
+    echo "-----[VAL INFO] merging coverage data -----"
+    cd ${REPO_PATH}/test
+
+    local coverage_files=$(find ${LOG_DIR} -maxdepth 1 -name ".coverage.*" 2>/dev/null)
+    if [ -z "${coverage_files}" ]; then
+        echo "No coverage data files found in ${LOG_DIR}, skipping merge."
+        return
+    fi
+
+    export COVERAGE_RCFILE=${REPO_PATH}/.azure-pipelines/scripts/ut/.coverage
+    coverage combine ${coverage_files}
+    coverage xml -o ${LOG_DIR}/coverage_merged.xml
+    coverage html -d ${LOG_DIR}/htmlcov
+    coverage report | tee ${LOG_DIR}/coverage_summary.log
+    echo "Merged coverage report saved to ${LOG_DIR}/coverage_merged.xml and ${LOG_DIR}/htmlcov/index.html"
 }
 
 function main() {
@@ -271,6 +275,7 @@ function main() {
     run_unit_test_llmc
     run_unit_test_sglang
     run_unit_test
+    merge_coverage
     cat ${SUMMARY_LOG}
 }
 

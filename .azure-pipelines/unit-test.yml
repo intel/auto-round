@@ -33,7 +33,7 @@ pr:
       - .azure-pipelines/scripts/ut/run_ut_cuda.sh
       - .azure-pipelines/scripts/ut/run_ut_xpu.sh
 
-pool: ICX-16C
+pool: INTEL-CPU
 
 variables:
   IMAGE_NAME: "auto-round"
@@ -149,6 +149,8 @@ stages:
       vmImage: "ubuntu-latest"
     dependsOn: [Coverage]
     condition: and(succeeded('Coverage'), eq(variables['Build.Reason'], 'PullRequest'))
+    variables:
+      - group: auto-round-bot-secrets
     jobs:
       - job: CommentCudaTrigger
         displayName: "Comment to trigger CUDA CI"
@@ -156,7 +158,7 @@ stages:
           - task: Bash@3
             displayName: "Post /azp run comment to PR"
             env:
-              GITHUB_TOKEN: $(GITHUB_TOKEN)
+              GITHUB_TOKEN: $(AUTO_ROUND_BOT_TOKEN)
             inputs:
               targetType: "inline"
               script: |

@@ -27,7 +27,6 @@ from auto_round.logger import logger
 from auto_round.modeling.unfused_moe import apply_model_monkey_patches
 from auto_round.special_model_handler import _handle_special_model, update_module
 from auto_round.utils import (
-    CpuInfo,
     check_and_mark_quantized_module,
     diffusion_load_model,
     is_diffusion_model,
@@ -39,6 +38,7 @@ from auto_round.utils import (
     unsupported_meta_device,
 )
 from auto_round.utils.device import _force_trim_malloc
+from auto_round.utils.device_manager import device_manager, get_ar_device
 
 __all__ = ["ModelContext"]
 
@@ -57,19 +57,18 @@ class ModelContext(BaseContext):
 
     def __init__(
         self,
-        model=None,
-        tokenizer=None,
-        platform="hf",
-        model_dtype=None,
-        trust_remote_code=True,
+        model: Union[torch.nn.Module, str, None] = None,
+        tokenizer: Any = None,
+        platform: str = "hf",
+        model_dtype: Optional[Union[str, torch.dtype]] = None,
+        trust_remote_code: bool = True,
         config: Optional[AutoConfig] = None,
-        amp=True,
-        need_calib=True,
-        device="cpu",
-        formats=None,
-        is_act_quantize=False,
-        quant_nontext_module=False,
-    ):
+        amp: bool = True,
+        need_calib: bool = True,
+        is_act_quantize: bool = False,
+        quant_nontext_module: bool = False,
+        **kwargs,
+    ) -> None:
         super().__init__()
         self.quantized = False
         self.is_mllm = False
@@ -83,13 +82,18 @@ class ModelContext(BaseContext):
         assert model is not None, "model must be provided for ModelContext"
         self.model = model
         self.tokenizer = tokenizer
-        self.device = device
 
         # MLLM / diffusion artifacts – always present so callers need no getattr guards.
         # _load_model() will populate the ones that are relevant to the model type.
         self.processor = None
         self.image_processor = None
         self.pipe = None
+
+        # AWQ weight-clip thresholds kept for downstream block quantizers.
+        # Populated by AWQTransform when ``apply_clip`` is enabled; keyed by
+        # layer ``global_name`` -> per-group clip magnitude tensor. SignRound /
+        # SignRoundV2 use these to initialize their tunable weight range.
+        self.awq_clip_values: dict = {}
 
         if envs.AR_USE_MODELSCOPE:
             platform = "model_scope"
@@ -130,6 +134,15 @@ class ModelContext(BaseContext):
         # that the quantize loop starts from a tighter RSS baseline.
         gc.collect()
         _force_trim_malloc()
+
+    @property
+    def device(self) -> str:
+        """The active (major) device, single-sourced from the DeviceManager."""
+        return device_manager.device
+
+    @device.setter
+    def device(self, value) -> None:
+        device_manager.device = value
 
     def _load_model(self):
         if is_mllm_model(self.model, platform=self.platform):
@@ -225,32 +238,38 @@ class ModelContext(BaseContext):
                 setattr(module, "top_k", top_k)
 
     def _set_amp_dtype(self) -> None:
-        """Sets the automatic mixed precision (AMP) data type for the model based on the device and configuration."""
-        self.amp_dtype = torch.bfloat16
-        if self.model.dtype != torch.float32:
-            self.amp_dtype = self.model.dtype
-        if self.device == "cpu" or "hpu" in self.device:
-            self.amp_dtype = torch.bfloat16
-        if self.amp:
-            if self.device == "cpu" and not CpuInfo().bf16:
+        """Sets the automatic mixed precision (AMP) data type for the model based on the device and configuration.
+
+        The device only exposes capability/preference primitives
+        (``supports_bf16`` / ``prefers_bf16``); this method composes them into
+        the final ``amp`` / ``amp_dtype`` decision.
+        """
+        device = get_ar_device(self.device)
+        if not self.amp:
+            self.amp_dtype = torch.float32
+        else:
+            amp_dtype = torch.bfloat16
+            if self.model.dtype != torch.float32:
+                amp_dtype = self.model.dtype
+            # bf16-preferring backends (CPU/HPU/...) override the model dtype.
+            if device.prefers_bf16():
+                amp_dtype = torch.bfloat16
+            # Fall back to fp32 (and disable amp) when bf16 is unsupported.
+            if amp_dtype == torch.bfloat16 and not device.supports_bf16():
                 self.amp = False
-                self.amp_dtype = torch.float32
-                self.model = self.model.to(torch.float32)
+                amp_dtype = torch.float32
                 logger.warning(
                     f"amp is set to FALSE as the current {self.device} device does not support the 'bf16' data type."
                 )
-            else:
-                if self.model.dtype != self.amp_dtype:
-                    self.model = self.model.to(self.amp_dtype)
-        else:
-            self.amp_dtype = torch.float32
-            self.model = self.model.to(torch.float32)
+            self.amp_dtype = amp_dtype
+        if self.model.dtype != self.amp_dtype:
+            self.model = self.model.to(self.amp_dtype)
 
     def apply_patches(self, formats):
         """Apply format-specific model structure patches.
 
         Must be called after formats are resolved (list[OutputFormat]) and before
-        BaseQuantizers.post_init() so that configure_layer_config() operates on the
+        BaseQuantizer.post_init() so that configure_layer_config() operates on the
         final model structure (post update_module).  Eliminates the need for a
         subsequent refresh_quantizer_for_initialized_model() call.
         """

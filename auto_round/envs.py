@@ -20,9 +20,27 @@ from typing import TYPE_CHECKING, Any, Callable, Optional
 if TYPE_CHECKING:
     AR_LOG_LEVEL: str = "INFO"
     AR_USE_MODELSCOPE: bool = "False"
+    AR_MODEL_FREE_SHARD_PARALLELISM: Optional[int] = None
     AUTO_ROUND_CACHE: Optional[str] = None
     AUTO_ROUND_GGUF_AUTO_UPDATE: bool = False
     LLAMA_CPP_ROOT: Optional[str] = None
+    AR_AUTO_SCHEME_NSAMPLES: Optional[int] = None
+    AR_AUTO_SCHEME_BATCH_SIZE: Optional[int] = None
+
+
+def _get_optional_positive_int_env(name: str) -> Optional[int]:
+    """Read an optional env var that must be a positive integer when set."""
+    raw = os.getenv(name)
+    if raw is None:
+        return None
+    try:
+        value = int(raw)
+    except ValueError as exc:
+        raise ValueError(f"{name} must be a positive integer, got {raw!r}") from exc
+    if value < 1:
+        raise ValueError(f"{name} must be a positive integer, got {value}")
+    return value
+
 
 environment_variables: dict[str, Callable[[], Any]] = {
     # this is used for configuring the default logging level
@@ -54,10 +72,19 @@ environment_variables: dict[str, Callable[[], Any]] = {
     # o_proj, gate/up/down_proj, ...) so that per-layer static recompiles do
     # not exceed dynamo's default limit (8) and fall back to eager.
     "AR_DYNAMO_CACHE_SIZE_LIMIT": lambda: int(os.getenv("AR_DYNAMO_CACHE_SIZE_LIMIT", "16")),
+    "AR_MODEL_FREE_SHARD_PARALLELISM": lambda: _get_optional_positive_int_env("AR_MODEL_FREE_SHARD_PARALLELISM"),
     "AUTO_ROUND_CACHE": lambda: os.getenv("AUTO_ROUND_CACHE", None),
     "AUTO_ROUND_GGUF_AUTO_UPDATE": lambda: os.getenv("AUTO_ROUND_GGUF_AUTO_UPDATE", "0").lower()
     in ("1", "true", "yes", "on"),
     "LLAMA_CPP_ROOT": lambda: os.getenv("LLAMA_CPP_ROOT", None),
+    # Controls the default number of calibration samples used by AutoScheme scoring
+    # when ``AutoScheme.nsamples`` is not explicitly set.
+    # When unset, AutoScheme uses 16.
+    "AR_AUTO_SCHEME_NSAMPLES": lambda: _get_optional_positive_int_env("AR_AUTO_SCHEME_NSAMPLES"),
+    # Controls the default batch size used by AutoScheme scoring
+    # when ``AutoScheme.batch_size`` is not explicitly set.
+    # When unset, AutoScheme uses its built-in heuristic (8 for low GPU memory mode, 1 for normal mode).
+    "AR_AUTO_SCHEME_BATCH_SIZE": lambda: _get_optional_positive_int_env("AR_AUTO_SCHEME_BATCH_SIZE"),
 }
 
 

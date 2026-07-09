@@ -133,7 +133,7 @@ def evaluate_diffusion_model(args, autoround=None, model=None, pipe=None):
 
     import torch
 
-    from auto_round.utils import detect_device, get_model_dtype, logger, unsupported_meta_device
+    from auto_round.utils import get_major_device, get_model_dtype, logger, unsupported_meta_device
 
     # Prepare inference pipeline
     if pipe is None:
@@ -145,7 +145,7 @@ def evaluate_diffusion_model(args, autoround=None, model=None, pipe=None):
         pipe = autoround.pipe
         pipe.to(model.dtype)
         pipe.transformer = model
-    device_str = detect_device(args.device_map if hasattr(args, "device_map") else "0")
+    device_str = get_major_device(args.device_map if hasattr(args, "device_map") else "0")
     pipe = pipe.to(device_str)
 
     # Set evaluation dtype
@@ -184,6 +184,28 @@ def evaluate_diffusion_model(args, autoround=None, model=None, pipe=None):
         diffusion_eval(pipe, args.prompt_file, metrics, args.image_save_dir, 1, gen_kwargs, args.limit)
 
 
+def select_gguf_eval_file(eval_folder, formats):
+    """Select the text GGUF file used for HF-based evaluation."""
+    gguf_format = None
+    for format in formats:
+        if format.startswith("gguf"):
+            gguf_format = format.split(":")[-1].upper()
+            break
+
+    if gguf_format is None:
+        return None, []
+
+    gguf_files = sorted(
+        file for file in os.listdir(eval_folder) if file.endswith(".gguf") and file != "mmproj-model.gguf"
+    )
+    matched_files = [file for file in gguf_files if gguf_format in file]
+    if matched_files:
+        return matched_files[0], gguf_files
+    if len(gguf_files) == 1:
+        return gguf_files[0], gguf_files
+    return None, gguf_files
+
+
 def load_gguf_model_for_eval(eval_folder, formats, args):
     """
     Load GGUF model for evaluation.
@@ -202,26 +224,13 @@ def load_gguf_model_for_eval(eval_folder, formats, args):
 
     from auto_round.utils import get_model_dtype, logger
 
-    # Find corresponding GGUF format
-    gguf_format = None
-    for format in formats:
-        if format.startswith("gguf"):
-            gguf_format = format.split(":")[-1].upper()
-            break
-
-    if gguf_format is None:
+    gguf_file, gguf_files = select_gguf_eval_file(eval_folder, formats)
+    if not any(format.startswith("gguf") for format in formats):
         logger.error("No valid gguf format found in formats. Please check the input.")
         sys.exit(-1)
 
-    # Find matching GGUF file
-    gguf_file = None
-    for file in os.listdir(eval_folder):
-        if gguf_format in file:
-            gguf_file = file
-            break
-
     if gguf_file is None:
-        logger.error("Cannot find correct gguf file for evaluation, please check.")
+        logger.error("Cannot find correct gguf file for evaluation, candidates=%s", gguf_files)
         sys.exit(-1)
 
     # Load model and tokenizer
@@ -342,9 +351,9 @@ def evaluate_with_model_path(eval_folder, device_str, autoround, args):
     from auto_round.eval.eval_cli import _eval_init, eval_task_by_task
     from auto_round.utils import get_model_dtype, logger
 
-    tasks = args.tasks
-    if isinstance(tasks, str):
-        tasks = tasks.split(",")
+    # tasks = args.tasks
+    # if isinstance(tasks, str):
+    #     tasks = tasks.split(",")
 
     # Task-by-task evaluation
     if args.eval_task_by_task:
@@ -394,7 +403,7 @@ def evaluate_with_model_path(eval_folder, device_str, autoround, args):
         print("evaluation running time=%ds" % (time.time() - st))
 
 
-def run_model_evaluation(model, tokenizer, autoround, folders, formats, device_str, args):
+def run_model_evaluation(model, tokenizer, autoround, folders, formats, args):
     """
     Run model evaluation.
     Unified evaluation entry point that dispatches to different evaluation logic based on model type.
@@ -405,7 +414,6 @@ def run_model_evaluation(model, tokenizer, autoround, folders, formats, device_s
         autoround: AutoRound instance
         folders: List of export folders
         formats: List of export formats
-        device_str: Device string
         args: Command line arguments
     """
     from auto_round.utils import get_library_version, get_model_dtype, logger
@@ -439,7 +447,9 @@ def run_model_evaluation(model, tokenizer, autoround, folders, formats, device_s
 
     if args.tasks is None or args.tasks == "" or eval_folder is None:
         return
+    from auto_round.utils.device_manager import device_manager, get_device_and_parallelism
 
+    device_str, _ = get_device_and_parallelism(device_manager.device_map)
     # Handle vllm backend evaluation
     if hasattr(args, "eval_backend") and args.eval_backend == "vllm":
         from auto_round.eval.eval_cli import eval_with_vllm
@@ -481,6 +491,8 @@ def run_model_evaluation(model, tokenizer, autoround, folders, formats, device_s
         # Load or prepare model instance
         if eval_gguf_model:
             model, tokenizer = load_gguf_model_for_eval(eval_folder, formats, args)
+            if model is None:
+                return
         else:
             eval_model_dtype = get_model_dtype(args.eval_model_dtype, "auto")
             model = prepare_model_for_eval(model, args.device_map, eval_model_dtype)

@@ -18,7 +18,7 @@ import os
 import re
 from collections import UserDict
 from pathlib import Path
-from typing import TYPE_CHECKING, Union
+from typing import TYPE_CHECKING, Optional, Union
 
 import psutil
 import torch
@@ -346,10 +346,10 @@ def llm_load_model(
         _use_hpu_compile_mode,
         fake_cuda_for_hpu,
         fake_triton_for_hpu,
-        get_device_and_parallelism,
         is_hpex_available,
         override_cuda_device_capability,
     )
+    from auto_round.utils.device_manager import get_device_and_parallelism
 
     device_str, use_auto_mapping = get_device_and_parallelism(device)
     torch_dtype = "auto"
@@ -535,7 +535,8 @@ def mllm_load_model(
 
         base_lib = transformers
 
-    from auto_round.utils.device import get_device_and_parallelism, override_cuda_device_capability
+    from auto_round.utils.device import override_cuda_device_capability
+    from auto_round.utils.device_manager import get_device_and_parallelism
 
     device_str, use_auto_mapping = get_device_and_parallelism(device)
     torch_dtype = "auto"
@@ -825,7 +826,7 @@ def diffusion_load_model(
     from functools import partial
 
     from auto_round.utils.common import LazyImport
-    from auto_round.utils.device import get_device_and_parallelism
+    from auto_round.utils.device_manager import get_device_and_parallelism
 
     _check_accelerate_version()
 
@@ -948,10 +949,16 @@ _is_mllm_model_cache: dict = {}
 _LLM_ONLY_MODEL_TYPES = {"bagel"}
 
 
+def get_model_name_or_path(model_or_path: Union[str, torch.nn.Module]) -> Optional[str]:
+    if isinstance(model_or_path, str):
+        return model_or_path
+    return getattr(model_or_path, "_name_or_path", None) or getattr(model_or_path, "name_or_path", None)
+
+
 def is_mllm_model(model_or_path: Union[str, torch.nn.Module], platform: str = None):
     from auto_round.utils.common import MM_KEYS
 
-    model_path = model_or_path if isinstance(model_or_path, str) else model_or_path.name_or_path
+    model_path = get_model_name_or_path(model_or_path)
 
     # Fast path: return cached result for already-seen paths
     if model_path in _is_mllm_model_cache:
@@ -998,7 +1005,7 @@ def is_mllm_model(model_or_path: Union[str, torch.nn.Module], platform: str = No
                 break
 
     # Cache by the original path key (model_path may have been resolved above)
-    original_key = model_or_path if isinstance(model_or_path, str) else model_or_path.name_or_path
+    original_key = get_model_name_or_path(model_or_path)
     _is_mllm_model_cache[original_key] = result
     return result
 
@@ -1022,6 +1029,10 @@ def is_diffusion_model(model_or_path: Union[str, object], trust_remote_code: boo
     # Then check if model_index.json exists for diffusion pipeline,
     # which is a strong signal of being a diffusion pipeline.
     if isinstance(model_or_path, str):
+        # Quick check to avoid config loading attempts and unnecessary warnings
+        if is_gguf_model(model_or_path):
+            return False
+
         # First check if it's a known diffusion pipeline by config/model_type
         # to avoid unnecessary imports and file checks for non-diffusion models, which can be time-consuming.
         try:
@@ -1641,10 +1652,13 @@ def safe_device_move_with_meta_handling(
 
 
 def is_moe_model(model: torch.nn.Module) -> bool:
+    """Heuristically detect whether ``model`` is a MoE architecture by scanning its config
+    for "moe"/"expert" markers or by checking module names for "expert".
+    """
     if hasattr(model, "config") and hasattr(model.config, "to_dict"):
-        for key in model.config.to_dict().keys():
-            if "moe" in key or "expert" in key:
-                return True
+        config_str = str(model.config.to_dict()).lower()
+        if "moe" in config_str or "expert" in config_str:
+            return True
     for n, m in model.named_modules():
         if "expert" in n:
             return True
@@ -2288,10 +2302,14 @@ def is_model_free_route(
 
     Note: this function only *reads* kwargs; it does **not** pop any keys.
     """
-    from auto_round.compressors.model_free import is_model_free_supported_scheme
+    from auto_round.compressors.model_free import (
+        _looks_like_auto_scheme,
+        _validate_auto_scheme_options,
+        is_model_free_supported_scheme,
+    )
 
-    explicit = bool(kwargs.pop("model_free", False))
-    disabled = bool(kwargs.pop("disable_model_free", False))
+    explicit = bool(kwargs.get("model_free", False))
+    disabled = bool(kwargs.get("disable_model_free", False))
     if explicit:
         return True
     # Only auto-route when format is auto_round (or not specified).
@@ -2299,15 +2317,23 @@ def is_model_free_route(
     if fmt is None:
         fmt = "auto_round"
     fmt_first = str(fmt).lower().replace(" ", "").split(",")[0]
+    common_conditions = not disabled and isinstance(model, str) and iters == 0 and disable_opt_rtn is True
+
+    if _looks_like_auto_scheme(scheme):
+        try:
+            family = _validate_auto_scheme_options(scheme)
+        except ValueError:
+            return False
+
+        if fmt_first == "auto_round":
+            return common_conditions and family == "int"
+        if fmt_first == "llm_compressor":
+            return common_conditions and family == "mx_fp"
+        return False
+
     if fmt_first != "auto_round":
         return False
-    return (
-        not disabled
-        and isinstance(model, str)
-        and iters == 0
-        and disable_opt_rtn is True
-        and is_model_free_supported_scheme(scheme, kwargs)
-    )
+    return common_conditions and is_model_free_supported_scheme(scheme, kwargs)
 
 
 def find_layers_from_config(model_dir: str, class_names: list[str] | None = None) -> dict[str, str]:
@@ -2367,7 +2393,7 @@ def find_layers_from_config(model_dir: str, class_names: list[str] | None = None
                 config = AutoConfig.from_pretrained(config_dir, trust_remote_code=True)
                 model = AutoModel.from_config(config, trust_remote_code=True)
         except Exception as e:
-            logger.warning(f"Failed to load model from {config_dir} for layer detection. Skipping. Error: {e}")
+            logger.warning(f"Failed to load model from {config_dir} for layer detection. Skipping. Warning: {e}")
             continue  # skip silently
         for name, module in model.named_modules():
             cls_name = type(module).__name__

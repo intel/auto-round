@@ -95,12 +95,23 @@ def _check_compatibility(formats: list[str], ar: BaseCompressor):
         if gguf_format_name.lower().endswith("mixed"):
             gguf_format_name = gguf_format_name.lower().replace("_mixed", "_s")
         if any([f.lower() not in ["fake", gguf_format_name.lower()] for f in formats]):
-            tmp_format_name = gguf_format_name.lower() if "fake" not in formats else f"{gguf_format_name.lower()},fake"
-            logger.warning(
-                f"reset format {','.join(formats)} to {tmp_format_name} "
-                f"since scheme {gguf_format_name} can only be exported to format {gguf_format_name.lower()} or fake"
-            )
-            formats = tmp_format_name.split(",")
+            has_gguf_format = any(f.lower().startswith("gguf") for f in formats if f.lower() != "fake")
+            if has_gguf_format:
+                logger.warning(
+                    f"scheme {gguf_format_name} is GGUF, but format {','.join(formats)} specifies "
+                    f"a different GGUF type. The scheme-driven per-layer quantization may differ from the "
+                    f"file-level GGUF format type."
+                )
+            else:
+                tmp_format_name = (
+                    gguf_format_name.lower() if "fake" not in formats else (f"{gguf_format_name.lower()},fake")
+                )
+                logger.warning(
+                    f"reset format {','.join(formats)} to {tmp_format_name} "
+                    f"since scheme {gguf_format_name} can only be exported to format "
+                    f"{gguf_format_name.lower()} or fake"
+                )
+                formats = tmp_format_name.split(",")
 
     if isinstance(ar.group_size, tuple) and any(["auto_round" in f.lower() for f in formats]):
         logger.warning(
@@ -149,6 +160,11 @@ def get_formats(
 
     formats = [fmt for fmt in formats if fmt is not None]
 
+    # Ensure fake format is processed before GGUF — GGUF export may clear
+    # model weights via low_cpu_mem_usage, causing zeroed weights for fake.
+    if any(fmt.is_gguf() for fmt in formats) and any(fmt.is_fake() for fmt in formats):
+        formats.sort(key=lambda f: 0 if f.is_fake() else 1)
+
     if len(formats) == 1 and formats[0].is_gguf() and ar.scale_dtype != torch.float32:
         ar.scale_dtype = torch.float32
         logger.info("change `scale_dtype` to `torch.float32` for gguf format")
@@ -176,9 +192,10 @@ def _check_divisible_by_32(ar):
                     ar.layer_config[n].update({"bits": 16, "data_type": "fp", "fixed_by_user": True})
                     skipped_layers.append(n)
     compressed_skipped_layers = compress_layer_names(skipped_layers)
-    logger.warning_once(
-        f"some layers are skipped quantization (shape not divisible by 32): {compressed_skipped_layers}"
-    )
+    if compressed_skipped_layers:
+        logger.warning_once(
+            f"some layers are skipped quantization (shape not divisible by 32): {compressed_skipped_layers}"
+        )
 
 
 class OutputFormat(ABC):
@@ -768,22 +785,33 @@ class GGUFFormat(OutputFormat):
     def __init__(self, format: str, ar: BaseCompressor):
         if format.startswith("gguf:"):
             self._original_format = format  # preserve "gguf:q2_k_mixed" etc. for Phase 2b
-            self.gguf_args_check(ar, format, model_type=ModelType.TEXT)
-            if ar.mllm:
-                self.gguf_args_check(ar, format, model_type=ModelType.MMPROJ)
-
             self.output_format = "gguf"
             self.backend_cls = GGUFFormat
             self.backend = GGUFFormat(format.split(":")[-1], ar)
+
+            resolved_format = self.backend.output_format
+            self.gguf_args_check(ar, resolved_format, model_type=ModelType.TEXT)
+            if ar.mllm:
+                self.gguf_args_check(ar, resolved_format, model_type=ModelType.MMPROJ)
         else:
             scheme = ar.scheme
             gguf_format = f"gguf:{format.lower()}"
             if format.lower().endswith("_mixed"):
                 from auto_round.schemes import _handle_special_schemes
+                from auto_round.utils.model import is_moe_model
 
-                ar.layer_config = _handle_special_schemes(gguf_format, ar.layer_config, ar.model)
-                gguf_format = gguf_format.lower().replace("_mixed", "_s")
-            if isinstance(scheme, str) and scheme.lower() != gguf_format:
+                if format.lower() == "q2_k_mixed" and (getattr(ar, "iters", 0) or 0) > 0 and not is_moe_model(ar.model):
+                    logger.warning(
+                        "gguf:q2_k_mixed only supports MoE models with iters>0. "
+                        "It is not an MoE model, falling back to gguf:q2_k_s."
+                    )
+                    gguf_format = "gguf:q2_k_s"
+                else:
+                    ar.layer_config = _handle_special_schemes(
+                        gguf_format, ar.layer_config, ar.model, quant_nontext_module=ar.quant_nontext_module
+                    )
+                    gguf_format = gguf_format.lower().replace("_mixed", "_s")
+            if isinstance(scheme, str) and scheme.lower() != gguf_format and not getattr(ar, "is_auto_scheme", False):
                 logger.warning(f"reset scheme {scheme.lower()} to {gguf_format} for gguf format export")
                 ar.scheme = gguf_format
             self.output_format = gguf_format

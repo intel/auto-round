@@ -13,7 +13,7 @@
 # limitations under the License.
 import inspect
 import os
-from typing import Union
+from typing import Any, Optional, Union
 
 import torch
 from tqdm import tqdm
@@ -24,8 +24,8 @@ from auto_round.utils.device import (
     dispatch_model_block_wise,
     dispatch_model_by_all_available_devices,
     get_major_device,
-    is_auto_device_mapping,
 )
+from auto_round.utils.device_manager import device_manager, is_auto_device_mapping
 from auto_round.utils.model import rename_weights_files
 
 
@@ -54,7 +54,14 @@ class DiffusionMixin:
         saving so that ``model_context`` remains the single source of truth.
     """
 
-    def __init__(self, *args, guidance_scale=7.5, num_inference_steps=50, generator_seed=None, **kwargs):
+    def __init__(
+        self,
+        *args,
+        guidance_scale: float = 7.5,
+        num_inference_steps: int = 50,
+        generator_seed: Optional[int] = None,
+        **kwargs,
+    ) -> None:
         # Store diffusion-specific attributes
         self.guidance_scale = guidance_scale
         self.num_inference_steps = num_inference_steps
@@ -235,7 +242,7 @@ class DiffusionMixin:
             pipe.to(target_device)
 
     @torch.no_grad()
-    def calib(self, nsamples, bs):
+    def calib(self, nsamples: int, bs: int) -> None:
         """Perform diffusion-specific calibration for quantization.
 
         Override parent's calib method to use diffusion dataset loading logic.
@@ -348,7 +355,7 @@ class DiffusionMixin:
 
         # torch.cuda.empty_cache()
 
-    def try_cache_inter_data_gpucpu(self, *args, **kwargs):
+    def try_cache_inter_data_gpucpu(self, *args, **kwargs) -> Any:
         """Skip re-caching when DiffusionMixin.quantize has already populated self.inputs.
 
         CalibCompressor.quantize() always calls try_cache_inter_data_gpucpu, but for
@@ -361,7 +368,7 @@ class DiffusionMixin:
         if hasattr(super(), "try_cache_inter_data_gpucpu"):
             return super().try_cache_inter_data_gpucpu(*args, **kwargs)
 
-    def quantize(self):
+    def quantize(self) -> tuple[torch.nn.Module, dict]:
         """Quantize the diffusion model.
 
         Overrides the parent to use diffusion-specific cache_inter_data instead of
@@ -414,7 +421,7 @@ class DiffusionMixin:
                 layer_names=[],
             )
             self.inputs = all_inputs
-            clear_memory(device_list=self.compress_context.device_list)
+            clear_memory(device_list=device_manager.device_list)
             self._inputs_cached = True
             return super().quantize()
 
@@ -454,7 +461,7 @@ class DiffusionMixin:
             layer_names=[],
         )
         self.inputs = all_inputs
-        clear_memory(device_list=self.compress_context.device_list)
+        clear_memory(device_list=device_manager.device_list)
         self._inputs_cached = True
         super().quantize()
 
@@ -503,7 +510,7 @@ class DiffusionMixin:
                 layer_names=[],
             )
             self.inputs = all_inputs
-            clear_memory(device_list=self.compress_context.device_list)
+            clear_memory(device_list=device_manager.device_list)
             self._inputs_cached = True
             super().quantize()
 
@@ -524,7 +531,14 @@ class DiffusionMixin:
 
         return self.model_context.model, self.quantizer.layer_config
 
-    def save_quantized(self, output_dir=None, format="auto_round", inplace=True, return_folders=False, **kwargs):
+    def save_quantized(
+        self,
+        output_dir: Optional[str] = None,
+        format: Union[str, list] = "auto_round",
+        inplace: bool = True,
+        return_folders: bool = False,
+        **kwargs,
+    ) -> Any:
         """Save the quantized model to the specified output directory in the specified format.
 
         For multi-transformer pipelines, all quantized transformers are saved.

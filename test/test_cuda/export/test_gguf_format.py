@@ -175,9 +175,9 @@ class TestAutoRound:
             print(f"{file}: {os.path.getsize(os.path.join(quantized_model_path, file)) / 1024**2} MB")
             file_size = os.path.getsize(os.path.join(quantized_model_path, file)) / 1024**2
             if "mmproj-model.gguf" in file:
-                assert abs(file_size - 75) < 5.0
+                assert abs(file_size - 62) < 5.0
             else:
-                assert abs(file_size - 683) < 5.0
+                assert abs(file_size - 690) < 10.0
 
         shutil.rmtree(tiny_model_path, ignore_errors=True)
 

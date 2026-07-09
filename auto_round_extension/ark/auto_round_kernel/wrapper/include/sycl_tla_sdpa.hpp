@@ -74,11 +74,20 @@ struct Options {
   bool is_causal = false;
   bool varlen = false;
   bool use_paged_kv = false;
+  bool use_tensor_strides = false;
   int batch = 0, num_heads_q = 0, num_heads_kv = 0, seq_len_qo = 0, seq_len_kv = 0, seq_len_kv_cache = 0, page_size = 0,
       head_size_qk = 0, head_size_vo = 0;
   int total_seqlen_q = 0, total_seqlen_kv = 0, total_seqlen_kv_cache = 0;
   int max_seqlen_q = 0, max_seqlen_kv = 0, max_seqlen_kv_cache = 0;
+  const int* cu_seqlens_q = nullptr;
+  const int* cu_seqlens_k = nullptr;
+  const int* cu_seqlens_kv_cache = nullptr;
+  int q_stride_s = 0, q_stride_d = 1, q_stride_h = 0, q_stride_b = 0;
+  int k_stride_s = 0, k_stride_d = 1, k_stride_h = 0, k_stride_b = 0;
+  int v_stride_d = 1, v_stride_s = 0, v_stride_h = 0, v_stride_b = 0;
+  int o_stride_s = 0, o_stride_d = 1, o_stride_h = 0, o_stride_b = 0;
   float softmax_scale = 0.0f;
+  float* lse = nullptr;  // LSE output buffer (null = skip)
   bool persistent = false;
 
   void print(std::ostream& os = std::cout) const {
@@ -95,6 +104,7 @@ struct Options {
        << "  is_causal: " << is_causal << "\n"
        << "  varlen: " << varlen << "\n"
        << "  use_paged_kv: " << use_paged_kv << "\n"
+      << "  use_tensor_strides: " << use_tensor_strides << "\n"
        << "  batch: " << batch << "\n"
        << "  num_heads_q: " << num_heads_q << "\n"
        << "  num_heads_kv: " << num_heads_kv << "\n"
@@ -110,11 +120,24 @@ struct Options {
        << "  max_seqlen_q: " << max_seqlen_q << "\n"
        << "  max_seqlen_kv: " << max_seqlen_kv << "\n"
        << "  max_seqlen_kv_cache: " << max_seqlen_kv_cache << "\n"
+      << "  q_stride: (" << q_stride_s << ", " << q_stride_d << ", " << q_stride_h << ", " << q_stride_b << ")\n"
+      << "  k_stride: (" << k_stride_s << ", " << k_stride_d << ", " << k_stride_h << ", " << k_stride_b << ")\n"
+      << "  v_stride: (" << v_stride_d << ", " << v_stride_s << ", " << v_stride_h << ", " << v_stride_b << ")\n"
+      << "  o_stride: (" << o_stride_s << ", " << o_stride_d << ", " << o_stride_h << ", " << o_stride_b << ")\n"
        << "  softmax_scale: " << softmax_scale << "\n"
        << "  persistent: " << persistent << "\n"
        << "}\n";
   }
 };
+
+    template <typename StrideQ, typename StrideK, typename StrideV, typename StrideO>
+    inline void set_tensor_strides_from_options(const Options& options, StrideQ& stride_Q, StrideK& stride_K,
+                  StrideV& stride_V, StrideO& stride_O) {
+      stride_Q = cute::make_stride(options.q_stride_s, cute::_1{}, options.q_stride_h, options.q_stride_b);
+      stride_K = cute::make_stride(options.k_stride_s, cute::_1{}, options.k_stride_h, options.k_stride_b);
+      stride_V = cute::make_stride(cute::_1{}, options.v_stride_s, options.v_stride_h, options.v_stride_b);
+      stride_O = cute::make_stride(options.o_stride_s, cute::_1{}, options.o_stride_h, options.o_stride_b);
+    }
 
 // 3 input matrices: (K)eys, (Q)ueries and (V)alues.
 using LayoutQ = cutlass::layout::RowMajor;
@@ -151,6 +174,8 @@ struct KernelRunner {
   StrideV stride_V_cache;
   StrideO stride_O;
   uint64_t seed = 0;
+  /// Scratch buffer for zero-filled kv_cache cumulative_length.
+  cutlass::device_memory::allocation<int> zero_cu_cache_;
 
   //
   // Methods
@@ -198,6 +223,15 @@ struct KernelRunner {
     problem_size_for_launch.seq_len_qo = cutlass::fmha::collective::VariableLength{options.max_seqlen_q};
     problem_size_for_launch.seq_len_kv = cutlass::fmha::collective::VariableLength{options.max_seqlen_kv};
     problem_size_for_launch.seq_len_kv_cache = cutlass::fmha::collective::VariableLength{options.max_seqlen_kv_cache};
+    problem_size_for_launch.seq_len_qo.cumulative_length = const_cast<int*>(options.cu_seqlens_q);
+    problem_size_for_launch.seq_len_kv.cumulative_length = const_cast<int*>(options.cu_seqlens_k);
+    if (options.cu_seqlens_kv_cache) {
+      problem_size_for_launch.seq_len_kv_cache.cumulative_length = const_cast<int*>(options.cu_seqlens_kv_cache);
+    } else {
+      zero_cu_cache_.reset(options.batch + 1);
+      std::fill_n(zero_cu_cache_.get(), options.batch + 1, 0);
+      problem_size_for_launch.seq_len_kv_cache.cumulative_length = zero_cu_cache_.get();
+    }
     problem_size_for_launch.head_size_qk = get<6>(problem_size);
     problem_size_for_launch.head_size_vo = get<7>(problem_size);
 
@@ -237,17 +271,27 @@ struct KernelRunner {
     auto shape_V_cache = cute::make_shape(head_size_vo, seq_len_kv_cache, num_heads_kv, batch);
     auto shape_O = cute::make_shape(seq_len_qo, head_size_vo, num_heads_q, batch);
 
-    stride_Q = cutlass::make_cute_packed_stride(StrideQ{}, shape_Q);
-    stride_K = cutlass::make_cute_packed_stride(StrideK{}, shape_K);
-    stride_V = cutlass::make_cute_packed_stride(StrideV{}, shape_V);
+    if (options.use_tensor_strides) {
+      set_tensor_strides_from_options(options, stride_Q, stride_K, stride_V, stride_O);
+    } else {
+      stride_Q = cutlass::make_cute_packed_stride(StrideQ{}, shape_Q);
+      stride_K = cutlass::make_cute_packed_stride(StrideK{}, shape_K);
+      stride_V = cutlass::make_cute_packed_stride(StrideV{}, shape_V);
+      stride_O = cutlass::make_cute_packed_stride(StrideO{}, shape_O);
+    }
     stride_K_cache = cutlass::make_cute_packed_stride(StrideK{}, shape_K_cache);
     stride_V_cache = cutlass::make_cute_packed_stride(StrideV{}, shape_V_cache);
-    stride_O = cutlass::make_cute_packed_stride(StrideO{}, shape_O);
 
     if constexpr (isVarLen) {
-      // shape.seq_len_qo.cumulative_length = device_cumulative_seqlen_q.get();
-      // shape.seq_len_kv.cumulative_length = device_cumulative_seqlen_kv.get();
-      // shape.seq_len_kv_cache.cumulative_length = device_cumulative_seqlen_kv_cache.get();
+      shape.seq_len_qo.cumulative_length = const_cast<int*>(options.cu_seqlens_q);
+      shape.seq_len_kv.cumulative_length = const_cast<int*>(options.cu_seqlens_k);
+      if (options.cu_seqlens_kv_cache) {
+        shape.seq_len_kv_cache.cumulative_length = const_cast<int*>(options.cu_seqlens_kv_cache);
+      } else {
+        zero_cu_cache_.reset(options.batch + 1);
+        std::fill_n(zero_cu_cache_.get(), options.batch + 1, 0);
+        shape.seq_len_kv_cache.cumulative_length = zero_cu_cache_.get();
+      }
     }
     return shape;
   }
@@ -270,6 +314,7 @@ struct KernelRunner {
             stride_K_cache,
             static_cast<const FMHAKernel::ElementV*>(options.block_V),
             stride_V_cache,
+            static_cast<float*>(options.lse),
         },
         {options.softmax_scale, static_cast<FMHAKernel::ElementQ*>(options.mask),
          options.use_paged_kv ? options.page_table : nullptr, options.use_paged_kv ? options.page_size : 0,
@@ -441,8 +486,7 @@ struct FMHAConfig {
       throw std::runtime_error("Paged KV without varlen is not supported yet");
       // return run<false, true, true, cutlass::fmha::kernel::XeFHMAIndividualTileScheduler>(options);
     } else if (!options.use_paged_kv && options.varlen && !cached_kv) {
-      throw std::runtime_error("Varlen without cached KV is not supported yet");
-      // return run<true, false, false, cutlass::fmha::kernel::XeFHMAIndividualTileScheduler>(options);
+      return run<true, false, false, cutlass::fmha::kernel::XeFHMAIndividualTileScheduler>(options);
     } else if (!options.use_paged_kv && !options.varlen && !cached_kv) {
       return run<false, false, false, cutlass::fmha::kernel::XeFHMAIndividualTileScheduler>(options);
     } else if (!options.use_paged_kv && options.varlen && cached_kv) {
@@ -487,6 +531,8 @@ struct SageKernelRunner {
   StrideV stride_V_cache;
   StrideO stride_O;
   uint64_t seed = 0;
+  /// Scratch buffer for zero-filled kv_cache cumulative_length.
+  cutlass::device_memory::allocation<int> zero_cu_cache_;
 
   //
   // Methods
@@ -534,6 +580,15 @@ struct SageKernelRunner {
     problem_size_for_launch.seq_len_qo = cutlass::fmha::collective::VariableLength{options.max_seqlen_q};
     problem_size_for_launch.seq_len_kv = cutlass::fmha::collective::VariableLength{options.max_seqlen_kv};
     problem_size_for_launch.seq_len_kv_cache = cutlass::fmha::collective::VariableLength{options.max_seqlen_kv_cache};
+    problem_size_for_launch.seq_len_qo.cumulative_length = const_cast<int*>(options.cu_seqlens_q);
+    problem_size_for_launch.seq_len_kv.cumulative_length = const_cast<int*>(options.cu_seqlens_k);
+    if (options.cu_seqlens_kv_cache) {
+      problem_size_for_launch.seq_len_kv_cache.cumulative_length = const_cast<int*>(options.cu_seqlens_kv_cache);
+    } else {
+      zero_cu_cache_.reset(options.batch + 1);
+      std::fill_n(zero_cu_cache_.get(), options.batch + 1, 0);
+      problem_size_for_launch.seq_len_kv_cache.cumulative_length = zero_cu_cache_.get();
+    }
     problem_size_for_launch.head_size_qk = get<6>(problem_size);
     problem_size_for_launch.head_size_vo = get<7>(problem_size);
 
@@ -573,17 +628,27 @@ struct SageKernelRunner {
     auto shape_V_cache = cute::make_shape(head_size_vo, seq_len_kv_cache, num_heads_kv, batch);
     auto shape_O = cute::make_shape(seq_len_qo, head_size_vo, num_heads_q, batch);
 
-    stride_Q = cutlass::make_cute_packed_stride(StrideQ{}, shape_Q);
-    stride_K = cutlass::make_cute_packed_stride(StrideK{}, shape_K);
-    stride_V = cutlass::make_cute_packed_stride(StrideV{}, shape_V);
+    if (options.use_tensor_strides) {
+      set_tensor_strides_from_options(options, stride_Q, stride_K, stride_V, stride_O);
+    } else {
+      stride_Q = cutlass::make_cute_packed_stride(StrideQ{}, shape_Q);
+      stride_K = cutlass::make_cute_packed_stride(StrideK{}, shape_K);
+      stride_V = cutlass::make_cute_packed_stride(StrideV{}, shape_V);
+      stride_O = cutlass::make_cute_packed_stride(StrideO{}, shape_O);
+    }
     stride_K_cache = cutlass::make_cute_packed_stride(StrideK{}, shape_K_cache);
     stride_V_cache = cutlass::make_cute_packed_stride(StrideV{}, shape_V_cache);
-    stride_O = cutlass::make_cute_packed_stride(StrideO{}, shape_O);
 
     if constexpr (isVarLen) {
-      // shape.seq_len_qo.cumulative_length = device_cumulative_seqlen_q.get();
-      // shape.seq_len_kv.cumulative_length = device_cumulative_seqlen_kv.get();
-      // shape.seq_len_kv_cache.cumulative_length = device_cumulative_seqlen_kv_cache.get();
+      shape.seq_len_qo.cumulative_length = const_cast<int*>(options.cu_seqlens_q);
+      shape.seq_len_kv.cumulative_length = const_cast<int*>(options.cu_seqlens_k);
+      if (options.cu_seqlens_kv_cache) {
+        shape.seq_len_kv_cache.cumulative_length = const_cast<int*>(options.cu_seqlens_kv_cache);
+      } else {
+        zero_cu_cache_.reset(options.batch + 1);
+        std::fill_n(zero_cu_cache_.get(), options.batch + 1, 0);
+        shape.seq_len_kv_cache.cumulative_length = zero_cu_cache_.get();
+      }
     }
     return shape;
   }
@@ -606,6 +671,7 @@ struct SageKernelRunner {
             stride_K_cache,
             static_cast<const FMHAKernel::ElementV*>(options.block_V),
             stride_V_cache,
+            static_cast<float*>(options.lse),
         },
         {options.softmax_scale, static_cast<float*>(options.mask), options.scale_block_size,
          static_cast<const float*>(options.qscale), static_cast<const float*>(options.kscale),
@@ -650,8 +716,12 @@ struct SageConfig {
   static constexpr int SGTileQ = get<0>(shape_div(TileShapeQK{}, shape(SubgroupLayoutQK{})))();
   using MMAOperation =
       cute::conditional_t<is_void_v<MMAOperation_>, XE_DPAS_TT<cute::gcd(SGTileQ, 8), int32_t, int8_t>, MMAOperation_>;
+  // The PV "float" tiled MMA operates on the output element type. For UseInt8PV the kernel also
+  // constructs a separate int8 quantized PV MMA internally, while this float MMA only needs to
+  // describe the tile shape used for the accumulator and dequantized path. For the non-int8-PV
+  // path, V is consumed directly so we use ElementO (== ElementV) which supports half_t / bfloat16_t.
   using MMAOperationPV = cute::conditional_t<is_void_v<MMAOperation_>,
-                                             XE_DPAS_TT<cute::gcd(SGTileQ, 8), float, cute::half_t>, MMAOperation_>;
+                                             XE_DPAS_TT<cute::gcd(SGTileQ, 8), float, ElementO>, MMAOperation_>;
   using SubgroupLayoutPV =
       cute::conditional_t<is_void_v<SubgroupLayoutPV_>,
                           decltype(cutlass::fmha::collective::get_sg_layout_pv(SubgroupLayoutQK{})), SubgroupLayoutPV_>;
@@ -769,8 +839,7 @@ struct SageConfig {
       throw std::runtime_error("Paged KV without varlen is not supported yet");
       // return run<false, true, true, cutlass::fmha::kernel::XeFHMAIndividualTileScheduler>(options);
     } else if (!options.use_paged_kv && options.varlen && !cached_kv) {
-      throw std::runtime_error("Varlen without cached KV is not supported yet");
-      // return run<true, false, false, cutlass::fmha::kernel::XeFHMAIndividualTileScheduler>(options);
+      return run<true, false, false, cutlass::fmha::kernel::XeFHMAIndividualTileScheduler>(options);
     } else if (!options.use_paged_kv && !options.varlen && !cached_kv) {
       return run<false, false, false, cutlass::fmha::kernel::XeFHMAIndividualTileScheduler>(options);
     } else if (!options.use_paged_kv && options.varlen && cached_kv) {
@@ -811,8 +880,8 @@ inline int launch_prefill_kernel_128(Options const& options) {
 template <typename ElementQ, typename ElementK, typename ElementV, typename ElementO = ElementV, bool UseInt8PV = false,
           bool WriteBackInt8PV = true, bool ExecuteInt8PV = true>
 inline int launch_sage_prefill_kernel_128(Options const& options) {
-  constexpr int PipelineStages = 1;
-  constexpr int PipelineStages1 = 1;
+  constexpr int PipelineStages = 2;
+  constexpr int PipelineStages1 = 2;
   using ShapeQK = Shape<_256, _64, _32>;
   using ShapePV = Shape<_256, _32, _64>;
   using ShapeOut = Shape<_256, _128>;

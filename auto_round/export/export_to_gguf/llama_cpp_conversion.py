@@ -17,6 +17,7 @@ from __future__ import annotations
 import ast
 import importlib
 import json
+import logging
 import os
 import shutil
 import sys
@@ -113,11 +114,21 @@ def _clear_loaded_conversion_modules() -> None:
             del sys.modules[name]
 
 
+def _configure_conversion_logger() -> None:
+    conversion_logger = logging.getLogger("hf-to-gguf")
+    conversion_logger.setLevel(logger.level)
+    conversion_logger.propagate = False
+    for handler in logger.handlers:
+        if handler not in conversion_logger.handlers:
+            conversion_logger.addHandler(handler)
+
+
 def _import_conversion_from(root: Path, source: str) -> ConversionContext:
     global _ACTIVE_CONVERSION_ROOT, _CONVERSION_MODULE, _CONVERSION_SOURCE
 
     root = root.resolve()
     if _CONVERSION_MODULE is not None and _ACTIVE_CONVERSION_ROOT == root:
+        _configure_conversion_logger()
         return ConversionContext(_CONVERSION_MODULE, _CONVERSION_SOURCE)
 
     _clear_loaded_conversion_modules()
@@ -133,6 +144,7 @@ def _import_conversion_from(root: Path, source: str) -> ConversionContext:
     _ACTIVE_CONVERSION_ROOT = root
     _CONVERSION_MODULE = module
     _CONVERSION_SOURCE = source
+    _configure_conversion_logger()
     return ConversionContext(module, source)
 
 

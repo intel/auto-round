@@ -109,6 +109,38 @@ export AR_SEARCH_SCALE_RATIO=0.75
 export AR_DYNAMO_CACHE_SIZE_LIMIT=32
 ```
 
+### AR_MODEL_FREE_SHARD_PARALLELISM
+- **Description**: Controls how many weight shards are processed concurrently during model-free quantization. Increasing this value improves resource utilization but consumes more RAM.
+  - Auto policy (when the variable is **not** set): `shard_count // 4`, capped at **10**, minimum **1**. For example, 8 shards → 2 workers; 40 shards → 10 workers.
+  - The effective parallelism is always capped to the actual number of shards.
+- **Default**: unset → auto policy applies (`shard_count // 4`, max 10, min 1)
+- **Valid Values**: any positive integer; these are not restricted to specific values — e.g. `2`, `4`, `6`, `8`
+- **Usage**: Set this to override the automatic parallelism selection
+
+```bash
+export AR_MODEL_FREE_SHARD_PARALLELISM=4
+```
+
+### AR_AUTO_SCHEME_NSAMPLES
+- **Description**: Controls the default number of calibration samples used by AutoScheme scoring when `AutoScheme.nsamples` is not explicitly set.
+- **Default**: unset → 16
+- **Valid Values**: any positive integer, e.g. `8`, `16`, `32`
+- **Usage**: Set this to override the automatic sample-count selection for AutoScheme
+
+```bash
+export AR_AUTO_SCHEME_NSAMPLES=1  # set 1 for quick execution
+```
+
+### AR_AUTO_SCHEME_BATCH_SIZE
+- **Description**: Controls the default batch size used by AutoScheme scoring when `AutoScheme.batch_size` is not explicitly set.
+- **Default**: unset → built-in heuristic applies (8 for low GPU memory mode, 1 for normal mode)
+- **Valid Values**: any positive integer, e.g. `1`, `2`, `4`
+- **Usage**: Set this to override the default batch size for AutoScheme
+
+```bash
+export AR_AUTO_SCHEME_BATCH_SIZE=1
+```
+
 ## Usage Examples
 
 ### Setting Environment Variables

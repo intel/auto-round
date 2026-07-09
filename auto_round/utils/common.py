@@ -688,6 +688,13 @@ MM_MODULE_KEYS = [
 MM_KEYS = [*MM_MODULE_KEYS, "speech", "wav", "waveform"]
 
 
+def contain_any_mm_keys(name: str) -> bool:
+    for key in MM_MODULE_KEYS:
+        if key in name:
+            return True
+    return False
+
+
 def is_debug_mode():
     """Checks if the Python interpreter is running in debug mode.
 
@@ -1185,7 +1192,18 @@ def revert_checkpoint_conversion_mapping(name: str, key_mapping: dict[str, str])
         for target_pattern in target_patterns:
             source_pattern = source_pattern.lstrip("^")  # strip off un-needed chars and patterns
             source_pattern = re.sub(r"\(.*\)", "", source_pattern)
-            name, n_replace = re.subn(source_pattern, target_pattern, name)
+
+            # Weight-conversion reverse mappings may expose bare tensor names
+            # such as "weight" -> ".weight_packed". Treat those as terminal
+            # tensor suffixes so they do not rewrite already-quantized names
+            # like ".weight_packed" into malformed keys such as
+            # "..weight_packed_packed".
+            if re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", source_pattern) and target_pattern.startswith("."):
+                match_pattern = rf"\.{re.escape(source_pattern)}$"
+            else:
+                match_pattern = source_pattern
+
+            name, n_replace = re.subn(match_pattern, target_pattern, name)
             # Early exit of the loop
             if n_replace > 0:
                 return name
