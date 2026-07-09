@@ -477,7 +477,7 @@ def run_model_evaluation(model, tokenizer, autoround, folders, formats, args):
     logger.info(f"Using lm-eval version {lm_eval_version}")
 
     # Handle Llama model special case
-    if "llama" in args.model.lower() and not args.add_bos_token:
+    if "llama" in args.model_name.lower() and not args.add_bos_token:
         logger.warning("set add_bos_token=True for llama model.")
         args.add_bos_token = True
 

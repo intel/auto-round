@@ -235,9 +235,6 @@ def start(recipe="default", argv=None):
 
 
 def tune(args):
-    assert args.model or args.model_name, "[model] or --model MODEL_NAME should be set."
-    if args.model is None:
-        args.model = args.model_name
     if args.eval_bs is None:
         args.eval_bs = "auto"
 
@@ -286,7 +283,7 @@ def tune(args):
             "If it causes issues, you can disable it by removing `--enable_torch_compile` argument."
         )
 
-    model_name = args.model
+    model_name = args.model_name
     if model_name[-1] == "/":
         model_name = model_name[:-1]
     logger.info(f"start to quantize {model_name}")
@@ -391,19 +388,16 @@ def run_eval(argv=None):
     from auto_round.utils import is_gguf_model, is_mllm_model
 
     args = setup_eval_parser(argv)
-    assert args.model or args.model_name, "[model] or --model MODEL_NAME should be set."
 
-    if args.model is None:
-        args.model = args.model_name
-    if "llama" in args.model.lower() and not args.add_bos_token:
+    if "llama" in args.model_name.lower() and not args.add_bos_token:
         logger.warning("set add_bos_token=True for llama model.")
         args.add_bos_token = True
-    if not is_gguf_model(args.model) and is_mllm_model(args.model):
+    if not is_gguf_model(args.model_name) and is_mllm_model(args.model_name):
         args.mllm = True
 
     if args.eval_task_by_task:
         eval_task_by_task(
-            model=args.model,
+            model=args.model_name,
             device=args.device_map,
             limit=args.limit,
             tasks=args.tasks,
