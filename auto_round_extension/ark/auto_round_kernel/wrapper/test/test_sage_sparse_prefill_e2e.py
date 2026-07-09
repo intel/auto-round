@@ -1,10 +1,12 @@
+# # Copyright (C) 2026 Intel Corporation
+# # SPDX-License-Identifier: Apache-2.0
+
+import importlib.util
 import math
 import sys
-import importlib.util
 from pathlib import Path
 
 import torch
-
 
 REPO_PARENT = Path(__file__).resolve().parents[3]
 if str(REPO_PARENT) not in sys.path:

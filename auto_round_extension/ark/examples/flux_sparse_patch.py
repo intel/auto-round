@@ -1,3 +1,6 @@
+# # Copyright (C) 2026 Intel Corporation
+# # SPDX-License-Identifier: Apache-2.0
+
 import contextlib
 import os
 import sys
@@ -12,10 +15,9 @@ ARK_DIR = Path(__file__).resolve().parent.parent
 if str(ARK_DIR) not in sys.path:
     sys.path.insert(0, str(ARK_DIR))
 
-from wan_sparse_patch import ensure_ark_sparse_binding, _parse_bool_env, _parse_optional_int_env
-
 import auto_round_kernel as ark
 from diffusers.models.transformers.transformer_flux import FluxAttention, _get_qkv_projections, apply_rotary_emb
+from wan_sparse_patch import _parse_bool_env, _parse_optional_int_env, ensure_ark_sparse_binding
 
 
 def _normalize_attention_mask(

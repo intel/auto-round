@@ -1,3 +1,6 @@
+# # Copyright (C) 2026 Intel Corporation
+# # SPDX-License-Identifier: Apache-2.0
+
 from __future__ import annotations
 
 import logging
@@ -83,11 +86,7 @@ def _triton_bmm_pool_sim_simmean_fuse_quant_xpu(
     row_ids = nb * BS + tl.arange(0, BS)
     xmask = row_ids[:, None] < N
     x_ptrs = (
-        x_ptr
-        + b * x_stride_b
-        + row_ids[:, None] * x_stride_s
-        + h * x_stride_h
-        + tl.arange(0, D)[None, :] * x_stride_d
+        x_ptr + b * x_stride_b + row_ids[:, None] * x_stride_s + h * x_stride_h + tl.arange(0, D)[None, :] * x_stride_d
     )
     x = tl.load(x_ptrs, mask=xmask, other=0.0)
     valid_rows = N - nb * BS
@@ -183,7 +182,9 @@ def _triton_fill_block_map_kernel(final_map_ptr, num_to_select_ptr, sorted_indic
                 added += 1
 
 
-def _fill_block_map_triton(final_map: torch.Tensor, num_to_select: torch.Tensor, sorted_indices: torch.Tensor) -> torch.Tensor:
+def _fill_block_map_triton(
+    final_map: torch.Tensor, num_to_select: torch.Tensor, sorted_indices: torch.Tensor
+) -> torch.Tensor:
     final_map_u8 = final_map.contiguous().to(torch.uint8)
     num_to_select = num_to_select.contiguous()
     sorted_indices = sorted_indices.contiguous()
@@ -226,7 +227,9 @@ def _block_map_lut_triton(block_map: torch.Tensor) -> tuple[torch.Tensor, torch.
     return lut, valid_block_num
 
 
-def _fill_block_map_torch(final_map: torch.Tensor, num_to_select: torch.Tensor, sorted_indices: torch.Tensor) -> torch.Tensor:
+def _fill_block_map_torch(
+    final_map: torch.Tensor, num_to_select: torch.Tensor, sorted_indices: torch.Tensor
+) -> torch.Tensor:
     k_blocks = final_map.shape[-1]
     filled = final_map.clone()
     column_ids = torch.arange(k_blocks, device=final_map.device).view(1, 1, 1, k_blocks)
@@ -358,7 +361,7 @@ def _run_triton_xpu_preprocess(ctx: Any) -> dict[str, Any]:
         pooled_q_for_routing.to(torch.float32),
         pooled_k_for_q.transpose(-1, -2).to(torch.float32),
     )
-    pooled_score *= ctx.head_dim ** -0.5
+    pooled_score *= ctx.head_dim**-0.5
     pooled_score = pooled_score.masked_fill(~sim_k_expand, -torch.inf)
     if ctx.is_causal:
         causal_mask = _build_block_causal_mask(
@@ -368,7 +371,9 @@ def _run_triton_xpu_preprocess(ctx: Any) -> dict[str, Any]:
             ctx.k_route_block_tokens,
             ctx.query.device,
         )
-        pooled_score = pooled_score.masked_fill(~causal_mask.view(1, 1, ctx.num_q_tiles, pooled_k_for_routing.size(2)), -torch.inf)
+        pooled_score = pooled_score.masked_fill(
+            ~causal_mask.view(1, 1, ctx.num_q_tiles, pooled_k_for_routing.size(2)), -torch.inf
+        )
     else:
         causal_mask = None
 
@@ -391,11 +396,13 @@ def _run_triton_xpu_preprocess(ctx: Any) -> dict[str, Any]:
         final_tile_map[..., 0] = True
 
     q_block_to_tile = (
-        torch.arange(ctx.num_sparse_q_blocks, device=ctx.query.device, dtype=torch.int64) // ctx.q_sparse_blocks_per_tile
+        torch.arange(ctx.num_sparse_q_blocks, device=ctx.query.device, dtype=torch.int64)
+        // ctx.q_sparse_blocks_per_tile
     )
     q_block_to_tile = q_block_to_tile.clamp_max(ctx.num_q_tiles - 1)
     k_block_to_tile = (
-        torch.arange(ctx.num_sparse_k_blocks, device=ctx.query.device, dtype=torch.int64) // ctx.k_sparse_blocks_per_tile
+        torch.arange(ctx.num_sparse_k_blocks, device=ctx.query.device, dtype=torch.int64)
+        // ctx.k_sparse_blocks_per_tile
     )
     k_block_to_tile = k_block_to_tile.clamp_max(ctx.num_k_tiles - 1)
     raw_block_map = final_tile_map.index_select(2, q_block_to_tile).index_select(3, k_block_to_tile).contiguous()
