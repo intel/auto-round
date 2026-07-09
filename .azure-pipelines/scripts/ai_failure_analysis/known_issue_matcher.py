@@ -13,7 +13,7 @@ from pathlib import Path
 from urllib.parse import quote
 from urllib.request import Request, urlopen
 
-DEFAULT_LABEL = "CI_known_issue"
+DEFAULT_LABEL = "CI-known-issue"
 # Tokens shorter than this or in the stop list add noise to the overlap score.
 _MIN_TOKEN_LEN = 4
 _STOP_TOKENS = {
