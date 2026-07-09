@@ -42,6 +42,15 @@ def test_pipeline_preprocessor_only_auto_appends_rtn():
     assert isinstance(pipeline.block_quantizer, RTNQuantizer)
 
 
+def test_svdquant_plus_rtn_pipeline_uses_svdquant_as_preprocessor():
+    from auto_round.algorithms.transforms.svdquant.config import SVDQuantConfig
+
+    pipeline = QuantizationPipeline.from_configs([SVDQuantConfig(rank=8), RTNConfig()])
+
+    assert type(pipeline.preprocessors[0]).__name__ == "SVDQuantTransform"
+    assert isinstance(pipeline.block_quantizer, RTNQuantizer)
+
+
 def test_pipeline_duplicate_preprocessor_rejected():
     with pytest.raises(ValueError, match="Duplicate preprocessor"):
         QuantizationPipeline.from_configs([AWQConfig(), AWQConfig()])

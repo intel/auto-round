@@ -1,0 +1,67 @@
+# Copyright (c) 2026 Intel Corporation
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#    http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+from __future__ import annotations
+
+from auto_round.algorithms.quantization.config import QuantizationConfig
+
+
+class SVDQuantConfig(QuantizationConfig):
+    """Configuration for the SVDQuant structural transform.
+
+    SVDQuant does not define the final quantization datatype. It prepares each
+    target Linear as a high-precision low-rank branch plus a residual Linear,
+    then delegates the residual Linear to the downstream RTN/SignRound quantizer.
+    """
+
+    def __init__(
+        self,
+        *,
+        rank: int = 32,
+        smooth_alpha: float = 0.5,
+        target_modules: list[str] | tuple[str, ...] | str | None = None,
+        exclude_modules: list[str] | tuple[str, ...] | str | None = None,
+        low_rank_dtype: str = "bf16",
+        smooth_eps: float = 1e-6,
+        **kwargs,
+    ):
+        super().__init__(**kwargs)
+        if rank < 0:
+            raise ValueError(f"`rank` must be non-negative, got {rank!r}")
+        if not 0.0 <= smooth_alpha <= 1.0:
+            raise ValueError(f"`smooth_alpha` must be in [0, 1], got {smooth_alpha!r}")
+        if smooth_eps <= 0:
+            raise ValueError(f"`smooth_eps` must be positive, got {smooth_eps!r}")
+
+        self.rank = rank
+        self.smooth_alpha = smooth_alpha
+        self.target_modules = _normalize_patterns(target_modules)
+        self.exclude_modules = _normalize_patterns(exclude_modules)
+        self.low_rank_dtype = low_rank_dtype
+        self.smooth_eps = smooth_eps
+
+    def __repr__(self) -> str:
+        return (
+            f"SVDQuantConfig(rank={self.rank}, smooth_alpha={self.smooth_alpha}, "
+            f"low_rank_dtype={self.low_rank_dtype!r}, "
+            f"target_modules={self.target_modules}, exclude_modules={self.exclude_modules})"
+        )
+
+
+def _normalize_patterns(value):
+    if value is None:
+        return None
+    if isinstance(value, str):
+        return [item.strip() for item in value.split(",") if item.strip()]
+    return list(value)

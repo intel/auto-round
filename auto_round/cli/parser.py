@@ -125,6 +125,42 @@ def build_quantize_parser(*, prog: str = "auto_round quantize") -> argparse.Argu
     rt.add_argument(
         "--algorithm", default=None, type=str, help="Comma-separated algorithms such as 'awq' or 'awq,auto_round'."
     )
+    rt.add_argument(
+        "--enable_svdquant",
+        "--enable-svdquant",
+        default=False,
+        action="store_true",
+        help="Enable SVDQuant structural transform before RTN/SignRound quantization.",
+    )
+    rt.add_argument("--svdquant-rank", dest="svdquant_rank", default=32, type=int, help="SVDQuant low-rank size.")
+    rt.add_argument(
+        "--svdquant-smooth-alpha",
+        dest="svdquant_smooth_alpha",
+        default=0.5,
+        type=float,
+        help="SVDQuant smooth alpha in [0, 1].",
+    )
+    rt.add_argument(
+        "--svdquant-target-modules",
+        dest="svdquant_target_modules",
+        default=None,
+        type=str,
+        help="Comma-separated module name substrings to apply SVDQuant to.",
+    )
+    rt.add_argument(
+        "--svdquant-exclude-modules",
+        dest="svdquant_exclude_modules",
+        default=None,
+        type=str,
+        help="Comma-separated module name substrings to exclude from SVDQuant.",
+    )
+    rt.add_argument(
+        "--svdquant-low-rank-dtype",
+        dest="svdquant_low_rank_dtype",
+        default="bf16",
+        choices=["bf16", "bfloat16", "fp16", "float16", "fp32", "float32"],
+        help="Data type for SVDQuant low-rank branch.",
+    )
     rt.add_argument("--output_dir", default="./tmp_autoround", type=str, help="Directory to save quantized artifacts.")
     rt.add_argument("--avg_bits", "--target_bits", default=None, type=float, help="Average target bits for AutoScheme.")
     rt.add_argument("--options", default=None, type=str, help="AutoScheme options, for example 'W4A16,W8A16'.")

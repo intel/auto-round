@@ -23,6 +23,7 @@ from auto_round.algorithms.quantization.sign_round.config import (
 )
 from auto_round.algorithms.transforms.awq.config import AWQConfig
 from auto_round.algorithms.transforms.hadamard.config import RotationConfig
+from auto_round.algorithms.transforms.svdquant.config import SVDQuantConfig
 from auto_round.algorithms.transforms.spinquant.preprocessor import SpinQuantConfig
 from auto_round.schemes import QuantizationScheme
 from auto_round.auto_scheme import AutoScheme
@@ -49,5 +50,6 @@ __all__ = [
     "SignRoundV2Config",
     "AWQConfig",
     "RotationConfig",
+    "SVDQuantConfig",
     "SpinQuantConfig",
 ]

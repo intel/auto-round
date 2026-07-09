@@ -249,3 +249,14 @@ def test_legacy_disable_flags_map_to_enable_bools():
 
     assert args.enable_minmax_tuning is False
     assert args.enable_quanted_input is False
+
+
+def test_rtn_accepts_dashed_disable_opt_rtn_alias():
+    from auto_round.cli.algorithms import AlgorithmHandler
+    from auto_round.cli.parser import build_quantize_parser
+
+    args = build_quantize_parser().parse_args(["--model", "dummy-model", "--algorithm", "rtn", "--disable-opt-rtn"])
+    configs = AlgorithmHandler.build_configs(args, {})
+
+    assert args.disable_opt_rtn is True
+    assert configs[0].disable_opt_rtn is True

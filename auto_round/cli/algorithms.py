@@ -121,7 +121,21 @@ class AlgorithmHandler(ABC):
         if not ({"awq", "rtn", "auto_round"} & seen):
             canonical.append("rtn" if getattr(args, "iters", 0) == 0 else "auto_round")
 
-        return [cls.get(name).build(args, common_kwargs) for name in canonical]
+        configs = [cls.get(name).build(args, common_kwargs) for name in canonical]
+        if getattr(args, "enable_svdquant", False):
+            from auto_round.algorithms.transforms.svdquant.config import SVDQuantConfig
+
+            configs.insert(
+                0,
+                SVDQuantConfig(
+                    rank=getattr(args, "svdquant_rank", 32),
+                    smooth_alpha=getattr(args, "svdquant_smooth_alpha", 0.5),
+                    target_modules=getattr(args, "svdquant_target_modules", None),
+                    exclude_modules=getattr(args, "svdquant_exclude_modules", None),
+                    low_rank_dtype=getattr(args, "svdquant_low_rank_dtype", "bf16"),
+                ),
+            )
+        return configs
 
     @classmethod
     def format_listing(cls) -> str:
@@ -240,6 +254,7 @@ class RTN(AlgorithmHandler):
         mutex = group.add_mutually_exclusive_group()
         mutex.add_argument(
             "--disable_opt_rtn",
+            "--disable-opt-rtn",
             dest="disable_opt_rtn",
             default=None,
             action="store_const",
@@ -248,6 +263,7 @@ class RTN(AlgorithmHandler):
         )
         mutex.add_argument(
             "--enable_opt_rtn",
+            "--enable-opt-rtn",
             dest="disable_opt_rtn",
             action="store_const",
             const=False,

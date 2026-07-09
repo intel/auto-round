@@ -14,6 +14,7 @@ from auto_round.algorithms.registry import normalize_algorithm_config, resolve_a
 from auto_round.algorithms.transforms import normalize_rotation_config as _normalize_rotation_alg_config
 from auto_round.algorithms.transforms.awq.config import AWQConfig
 from auto_round.algorithms.transforms.hadamard.config import RotationConfig as _NewArchRotationConfig
+from auto_round.algorithms.transforms.svdquant.config import SVDQuantConfig
 from auto_round.auto_scheme.gen_auto_scheme import AutoScheme
 from auto_round.compressors.base import BaseCompressor
 from auto_round.compressors.data_driven import CalibratedRTNCompressor, DataDrivenCompressor
@@ -558,6 +559,24 @@ class AutoRoundCompatible:
         )
 
     @staticmethod
+    def _pop_svdquant_config(kwargs: dict[str, Any]):
+        enabled = kwargs.pop("enable_svdquant", False)
+        rank = kwargs.pop("svdquant_rank", 32)
+        smooth_alpha = kwargs.pop("svdquant_smooth_alpha", 0.5)
+        target_modules = kwargs.pop("svdquant_target_modules", None)
+        exclude_modules = kwargs.pop("svdquant_exclude_modules", None)
+        low_rank_dtype = kwargs.pop("svdquant_low_rank_dtype", "bf16")
+        if not enabled:
+            return None
+        return SVDQuantConfig(
+            rank=rank,
+            smooth_alpha=smooth_alpha,
+            target_modules=target_modules,
+            exclude_modules=exclude_modules,
+            low_rank_dtype=low_rank_dtype,
+        )
+
+    @staticmethod
     def _build_rtn_config(shared_quant_kwargs: dict[str, Any], *, kwargs, common_config_kwargs):
         cfg = RTNConfig(
             **shared_quant_kwargs,
@@ -691,7 +710,9 @@ class AutoRoundCompatible:
                 device_map = device
 
         # ---- Model-free fast-path detection --------------------------------
-        if is_model_free_route(model, scheme, iters, kwargs.get("disable_opt_rtn"), kwargs):
+        if not kwargs.get("enable_svdquant", False) and is_model_free_route(
+            model, scheme, iters, kwargs.get("disable_opt_rtn"), kwargs
+        ):
             from auto_round.compressors.model_free import ModelFreeCompressor
 
             compressor_only_kwargs = cls._pop_compressor_only_kwargs(kwargs)
@@ -729,6 +750,9 @@ class AutoRoundCompatible:
             common_config_kwargs=common_config_kwargs,
             auto_round_config_kwargs=auto_round_config_kwargs,
         )
+        svdquant_config = cls._pop_svdquant_config(kwargs)
+        if svdquant_config is not None:
+            config = [svdquant_config, config]
 
         forward_kwargs = cls._build_entry_forward_kwargs(kwargs)
         format_name = forward_kwargs.pop("format", None)

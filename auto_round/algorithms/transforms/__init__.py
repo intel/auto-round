@@ -59,6 +59,7 @@ from auto_round.algorithms.transforms.hadamard import (
     normalize_rotation_config as _normalize_hadamard_config,
     RotationConfig,
 )
+from auto_round.algorithms.transforms.svdquant import SVDQuantConfig, SVDQuantLinear, SVDQuantTransform
 
 __all__ = [
     # Base interfaces
@@ -70,7 +71,10 @@ __all__ = [
     "check_supported_schemes",
     # Config
     "RotationConfig",
+    "SVDQuantConfig",
     "HadamardRotation",
+    "SVDQuantLinear",
+    "SVDQuantTransform",
     "apply_rotation_transform",
     # Unified entry — preprocessing
     "apply_rotation",
