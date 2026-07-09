@@ -127,7 +127,6 @@ def build_quantize_parser(*, prog: str = "auto_round quantize") -> argparse.Argu
     )
     rt.add_argument(
         "--enable_svdquant",
-        "--enable-svdquant",
         default=False,
         action="store_true",
         help="Enable SVDQuant structural transform before RTN/SignRound quantization.",

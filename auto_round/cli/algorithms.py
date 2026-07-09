@@ -254,7 +254,6 @@ class RTN(AlgorithmHandler):
         mutex = group.add_mutually_exclusive_group()
         mutex.add_argument(
             "--disable_opt_rtn",
-            "--disable-opt-rtn",
             dest="disable_opt_rtn",
             default=None,
             action="store_const",
@@ -263,7 +262,6 @@ class RTN(AlgorithmHandler):
         )
         mutex.add_argument(
             "--enable_opt_rtn",
-            "--enable-opt-rtn",
             dest="disable_opt_rtn",
             action="store_const",
             const=False,
