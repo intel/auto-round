@@ -116,15 +116,14 @@ steps:
       publishLocation: "pipeline"
     displayName: "Publish UT coverage artifact"
   
-  - task: Bash@3
-    condition: failed()
-    script: |
+  - script: |
       if [ -d "${{ parameters.uploadPath }}/failure_logs_dir" ]; then
         echo "##vso[task.setvariable variable=FailureLogsExist]true"
       else
         echo "##vso[task.setvariable variable=FailureLogsExist]false"
       fi
     displayName: "Check failure logs directory"
+    condition: failed()
   
   - task: PublishPipelineArtifact@1
     condition: and(failed(), eq(variables['FailureLogsExist'], 'true'))
