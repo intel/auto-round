@@ -1,5 +1,5 @@
 #!/bin/bash
-set -e
+set -ex
 
 test_part=""
 failure_log_context=""
