@@ -57,11 +57,7 @@ def all_failures_from_payload(payload: dict) -> list[dict]:
 
 def collect_failed_log_paths(payload: dict, failed_logs_root: Path | None, project_root: Path) -> list[str]:
     failures = all_failures_from_payload(payload)
-    requested = [
-        (entry.get("log_file") or "").strip()
-        for entry in failures
-        if (entry.get("log_file") or "").strip()
-    ]
+    requested = [(entry.get("log_file") or "").strip() for entry in failures if (entry.get("log_file") or "").strip()]
 
     candidate_roots = []
     if failed_logs_root:
@@ -366,9 +362,7 @@ def main():
     regression_group_ids: list[str] = []
     per_group = classification_info.get("per_group_results", [])
     regression_group_ids = [
-        item.get("group_id", "")
-        for item in per_group
-        if item.get("classification") == "Code Regression"
+        item.get("group_id", "") for item in per_group if item.get("classification") == "Code Regression"
     ]
 
     summary = classification_info.get("summary", {})
@@ -431,7 +425,9 @@ def main():
     if cli_ok and cli_result:
         analysis.update(
             {
-                "error_classification": cli_result.get("error_classification", analysis.get("error_classification", [])),
+                "error_classification": cli_result.get(
+                    "error_classification", analysis.get("error_classification", [])
+                ),
                 "root_cause": cli_result.get("root_cause", analysis.get("root_cause", "")),
                 "confidence": cli_result.get("confidence", analysis.get("confidence", "medium")),
                 "suggestion": cli_result.get("suggestion", analysis.get("suggestion", "")),
@@ -478,24 +474,28 @@ def main():
     else:
         report_lines.append("- No structured classification returned.")
 
-    report_lines.extend([
-        "",
-        "## Root Cause",
-        analysis.get("root_cause", "No root cause available."),
-        "",
-        "## Suggested Fix",
-        analysis.get("suggestion", "No suggestion available."),
-        "",
-        "## Static Checks (Agent)",
-    ])
+    report_lines.extend(
+        [
+            "",
+            "## Root Cause",
+            analysis.get("root_cause", "No root cause available."),
+            "",
+            "## Suggested Fix",
+            analysis.get("suggestion", "No suggestion available."),
+            "",
+            "## Static Checks (Agent)",
+        ]
+    )
 
     for check in analysis.get("static_checks", [])[:20]:
         report_lines.append(f"- [{check.get('status', 'not_run')}] {check.get('command', 'unknown')}")
 
-    report_lines.extend([
-        "",
-        "## Static Checks (Local)",
-    ])
+    report_lines.extend(
+        [
+            "",
+            "## Static Checks (Local)",
+        ]
+    )
     for check in analysis.get("local_static_checks", [])[:20]:
         report_lines.append(f"- [{check.get('status', 'not_run')}] {check.get('command', 'unknown')}")
 
@@ -503,13 +503,15 @@ def main():
 
     excerpt = analysis.get("first_failure_excerpt", "")
     if excerpt:
-        report_lines.extend([
-            "## First Failure Excerpt",
-            "```text",
-            excerpt,
-            "```",
-            "",
-        ])
+        report_lines.extend(
+            [
+                "## First Failure Excerpt",
+                "```text",
+                excerpt,
+                "```",
+                "",
+            ]
+        )
 
     write_text(report_path, "\n".join(report_lines))
 

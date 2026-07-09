@@ -6,11 +6,32 @@ import re
 from pathlib import Path
 
 ENV_SIGNAL_PATTERNS: list[tuple[str, re.Pattern]] = [
-    ("network_timeout", re.compile(r"(connection\s+timed?\s*out|read\s+timed?\s*out|max\s+retries\s+exceeded|ECONNRESET|ECONNREFUSED|ETIMEDOUT)", re.IGNORECASE)),
+    (
+        "network_timeout",
+        re.compile(
+            r"(connection\s+timed?\s*out|read\s+timed?\s*out|max\s+retries\s+exceeded|ECONNRESET|ECONNREFUSED|ETIMEDOUT)",
+            re.IGNORECASE,
+        ),
+    ),
     ("disk_full", re.compile(r"(no\s+space\s+left\s+on\s+device|disk\s+quota\s+exceeded|ENOSPC)", re.IGNORECASE)),
-    ("runner_lost", re.compile(r"(lost\s+communication\s+with\s+the\s+agent|runner\s+has\s+been\s+lost|did\s+not\s+respond)", re.IGNORECASE)),
-    ("out_of_memory", re.compile(r"(out\s+of\s+memory|cannot\s+allocate\s+memory|oom[\s-]?kill|std::bad_alloc|MemoryError)", re.IGNORECASE)),
-    ("hf_download_error", re.compile(r"(HfHubHTTPError|huggingface\.co|couldn'?t\s+connect\s+to\s+['\"]?https?://huggingface)", re.IGNORECASE)),
+    (
+        "runner_lost",
+        re.compile(
+            r"(lost\s+communication\s+with\s+the\s+agent|runner\s+has\s+been\s+lost|did\s+not\s+respond)", re.IGNORECASE
+        ),
+    ),
+    (
+        "out_of_memory",
+        re.compile(
+            r"(out\s+of\s+memory|cannot\s+allocate\s+memory|oom[\s-]?kill|std::bad_alloc|MemoryError)", re.IGNORECASE
+        ),
+    ),
+    (
+        "hf_download_error",
+        re.compile(
+            r"(HfHubHTTPError|huggingface\.co|couldn'?t\s+connect\s+to\s+['\"]?https?://huggingface)", re.IGNORECASE
+        ),
+    ),
     ("rate_limited", re.compile(r"(rate\s+limit\s+exceeded|too\s+many\s+requests|HTTP\s+429)", re.IGNORECASE)),
 ]
 
@@ -210,7 +231,9 @@ def merge_contexts(input_root: Path) -> list[dict]:
 
 def main():
     parser = argparse.ArgumentParser(description="Merge failure context files from all test parts")
-    parser.add_argument("--input-root", required=True, type=Path, help="Root folder containing downloaded failure artifacts")
+    parser.add_argument(
+        "--input-root", required=True, type=Path, help="Root folder containing downloaded failure artifacts"
+    )
     parser.add_argument("--output", required=True, type=Path, help="Merged failure context JSON path")
     args = parser.parse_args()
 
@@ -223,7 +246,9 @@ def main():
         "schema_version": "1.0",
         "build": {
             "build_id": os.environ.get("BUILD_BUILDID", ""),
-            "source_commit": os.environ.get("SYSTEM_PULLREQUEST_SOURCECOMMITID", os.environ.get("BUILD_SOURCEVERSION", "")),
+            "source_commit": os.environ.get(
+                "SYSTEM_PULLREQUEST_SOURCECOMMITID", os.environ.get("BUILD_SOURCEVERSION", "")
+            ),
             "pr_number": os.environ.get("SYSTEM_PULLREQUEST_PULLREQUESTNUMBER", ""),
         },
         "stats": {

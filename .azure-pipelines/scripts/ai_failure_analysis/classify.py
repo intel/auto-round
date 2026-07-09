@@ -182,13 +182,10 @@ def main():
 
     repo_path = known_issue_matcher._repo_path_from_env()
     token = os.environ.get("GITHUB_TOKEN", "")
-    known_issues = known_issue_matcher.match_known_issues(
-        groups, repo_path, token, label=args.known_issue_label
-    )
+    known_issues = known_issue_matcher.match_known_issues(groups, repo_path, token, label=args.known_issue_label)
 
     known_map = {
-        item.get("group_id", ""): item.get("matches", [])
-        for item in known_issues.get("per_group_matches", [])
+        item.get("group_id", ""): item.get("matches", []) for item in known_issues.get("per_group_matches", [])
     }
 
     per_group_results = []
@@ -233,8 +230,10 @@ def main():
     emit_pipeline_variable("CLASSIFICATION", CODE_REGRESSION if has_regression else "Non-Regression")
     emit_pipeline_variable("HANDLING_ACTION", "grouped_routing")
 
-    print(f"classify: groups={len(groups)} failures={failure_count} "
-          f"regression_groups={summary['category_counts'].get(CODE_REGRESSION, 0)}")
+    print(
+        f"classify: groups={len(groups)} failures={failure_count} "
+        f"regression_groups={summary['category_counts'].get(CODE_REGRESSION, 0)}"
+    )
     print(f"classify: result written to {args.output}")
 
 

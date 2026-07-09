@@ -17,9 +17,28 @@ DEFAULT_LABEL = "CI-known-issue"
 # Tokens shorter than this or in the stop list add noise to the overlap score.
 _MIN_TOKEN_LEN = 4
 _STOP_TOKENS = {
-    "test", "tests", "error", "errors", "failed", "failure", "assert",
-    "self", "none", "true", "false", "value", "object", "python", "trace",
-    "traceback", "line", "file", "call", "last", "most", "recent",
+    "test",
+    "tests",
+    "error",
+    "errors",
+    "failed",
+    "failure",
+    "assert",
+    "self",
+    "none",
+    "true",
+    "false",
+    "value",
+    "object",
+    "python",
+    "trace",
+    "traceback",
+    "line",
+    "file",
+    "call",
+    "last",
+    "most",
+    "recent",
 }
 _TOKEN_RE = re.compile(r"[A-Za-z_][A-Za-z0-9_]{2,}")
 # Identifiers that are strong fingerprints: exception classes, error codes.
@@ -41,11 +60,7 @@ def github_get(url: str, token: str):
 
 
 def _tokenize(text: str) -> set[str]:
-    tokens = {
-        tok.lower()
-        for tok in _TOKEN_RE.findall(text or "")
-        if len(tok) >= _MIN_TOKEN_LEN
-    }
+    tokens = {tok.lower() for tok in _TOKEN_RE.findall(text or "") if len(tok) >= _MIN_TOKEN_LEN}
     return tokens - _STOP_TOKENS
 
 
@@ -57,10 +72,7 @@ def fetch_known_issues(repo_path: str, token: str, label: str = DEFAULT_LABEL) -
     """Fetch open issues carrying the known-issue label."""
     if not token or not repo_path:
         return []
-    url = (
-        f"https://api.github.com/repos/{repo_path}/issues"
-        f"?state=open&labels={quote(label)}&per_page=100"
-    )
+    url = f"https://api.github.com/repos/{repo_path}/issues" f"?state=open&labels={quote(label)}&per_page=100"
     try:
         issues = github_get(url, token)
     except Exception as exc:  # noqa: BLE001 - network best-effort
@@ -185,17 +197,17 @@ def main():
     )
     repo_path = _repo_path_from_env()
 
-    result = match_known_issues(
-        groups, repo_path, token, label=args.label, min_confidence=args.min_confidence
-    )
+    result = match_known_issues(groups, repo_path, token, label=args.label, min_confidence=args.min_confidence)
 
     args.output.parent.mkdir(parents=True, exist_ok=True)
     with open(args.output, "w", encoding="utf-8") as f:
         json.dump(result, f, indent=2)
 
         matched_groups = sum(1 for item in result.get("per_group_matches", []) if item.get("matches"))
-        print(f"known_issue_matcher: checked {result['checked']} issues, "
-            f"{matched_groups} groups with matches >= {args.min_confidence}")
+        print(
+            f"known_issue_matcher: checked {result['checked']} issues, "
+            f"{matched_groups} groups with matches >= {args.min_confidence}"
+        )
 
 
 if __name__ == "__main__":

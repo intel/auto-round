@@ -244,7 +244,9 @@ class FailureContextWriter:
             "build": {
                 "build_id": os.environ.get("BUILD_BUILDID", ""),
                 "build_number": os.environ.get("BUILD_BUILDNUMBER", ""),
-                "source_commit": os.environ.get("SYSTEM_PULLREQUEST_SOURCECOMMITID", os.environ.get("BUILD_SOURCEVERSION", "")),
+                "source_commit": os.environ.get(
+                    "SYSTEM_PULLREQUEST_SOURCECOMMITID", os.environ.get("BUILD_SOURCEVERSION", "")
+                ),
                 "pr_number": os.environ.get("SYSTEM_PULLREQUEST_PULLREQUESTNUMBER", ""),
             },
             "stats": {

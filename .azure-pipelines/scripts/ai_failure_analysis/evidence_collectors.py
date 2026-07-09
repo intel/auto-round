@@ -34,8 +34,7 @@ ENVIRONMENT_PATTERNS: list[tuple[str, str, re.Pattern]] = [
         "disk_full",
         "Disk space exhausted",
         re.compile(
-            r"(no\s+space\s+left\s+on\s+device|disk\s+quota\s+exceeded|ENOSPC|"
-            r"cannot\s+write\s+.*:\s+no\s+space)",
+            r"(no\s+space\s+left\s+on\s+device|disk\s+quota\s+exceeded|ENOSPC|" r"cannot\s+write\s+.*:\s+no\s+space)",
             re.IGNORECASE,
         ),
     ),
@@ -74,8 +73,7 @@ ENVIRONMENT_PATTERNS: list[tuple[str, str, re.Pattern]] = [
         "rate_limited",
         "API rate limit / throttling",
         re.compile(
-            r"(rate\s+limit\s+exceeded|too\s+many\s+requests|HTTP\s+429|"
-            r"429\s+client\s+error)",
+            r"(rate\s+limit\s+exceeded|too\s+many\s+requests|HTTP\s+429|" r"429\s+client\s+error)",
             re.IGNORECASE,
         ),
     ),
@@ -87,9 +85,7 @@ _TEST_NAME_FILE_RE = re.compile(r"^(?P<file>test_[\w/.-]+?\.py)(?:::|$)")
 
 def _failure_text(entry: dict) -> str:
     """Concatenate the searchable text for a single failure entry."""
-    return "\n".join(
-        part for part in (entry.get("excerpt", ""), entry.get("tail", "")) if part
-    )
+    return "\n".join(part for part in (entry.get("excerpt", ""), entry.get("tail", "")) if part)
 
 
 def _iter_cases(groups: list[dict]):
@@ -157,9 +153,7 @@ def collect_environment_signals(groups: list[dict]) -> dict:
 
 
 def _run_git(args: list[str], cwd: Path) -> tuple[int, str]:
-    result = subprocess.run(
-        ["git", *args], cwd=cwd, check=False, capture_output=True, text=True
-    )
+    result = subprocess.run(["git", *args], cwd=cwd, check=False, capture_output=True, text=True)
     return result.returncode, (result.stdout or "").strip()
 
 
@@ -193,9 +187,7 @@ def _candidate_test_file(test_name: str) -> str:
     return base
 
 
-def collect_pr_relevance(
-    groups: list[dict], project_root: Path, base_ref: str = "main"
-) -> dict:
+def collect_pr_relevance(groups: list[dict], project_root: Path, base_ref: str = "main") -> dict:
     """Correlate failed tests with PR-changed files.
 
     This is the strongest signal separating Code Regression from other classes:
@@ -229,10 +221,9 @@ def collect_pr_relevance(
                         directly_changed_tests.append(test_name)
                     break
 
-            subject_stem = test_stem[len("test_"):] if test_stem.startswith("test_") else test_stem
+            subject_stem = test_stem.removeprefix("test_")
             related_modules = sorted(
-                f for f in changed_files
-                if f.endswith(".py") and subject_stem and Path(f).stem == subject_stem
+                f for f in changed_files if f.endswith(".py") and subject_stem and Path(f).stem == subject_stem
             )
             if related_modules:
                 group_related.append({"test": test_name, "modules": related_modules})
@@ -254,10 +245,7 @@ def collect_pr_relevance(
     relevance_score = max((item["relevance_score"] for item in per_group), default=0.0)
 
     # Heuristic: PR only touches code under auto_round/ vs only tests/ vs docs.
-    touches_source = any(
-        f.startswith("auto_round/") or f.startswith("auto_round_extension/")
-        for f in changed_files
-    )
+    touches_source = any(f.startswith("auto_round/") or f.startswith("auto_round_extension/") for f in changed_files)
     touches_tests = any(f.startswith("test/") for f in changed_files)
 
     return {
@@ -302,9 +290,7 @@ def collect_flaky_signals(groups: list[dict]) -> dict:
     }
 
 
-def collect_all_evidence(
-    groups: list[dict], project_root: Path, base_ref: str = "main"
-) -> dict:
+def collect_all_evidence(groups: list[dict], project_root: Path, base_ref: str = "main") -> dict:
     """Aggregate every collector into a single evidence bundle."""
     failure_count = sum(len(group.get("cases", [])) for group in groups)
     return {

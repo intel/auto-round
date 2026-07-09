@@ -107,8 +107,7 @@ def build_category_section(classification: dict, analysis: dict) -> list[str]:
             body.append(f"A CI admin can help merge this PR manually. {admin}")
     elif category == "Environment":
         body.append(
-            "This looks like an environment/infrastructure issue and is likely "
-            "not caused by the PR code changes."
+            "This looks like an environment/infrastructure issue and is likely " "not caused by the PR code changes."
         )
     elif category == "Dependency":
         body.append(
@@ -141,9 +140,7 @@ def build_category_section(classification: dict, analysis: dict) -> list[str]:
         else:
             body.append("- No patch was generated in this run.")
     else:  # Other
-        body.append(
-            "This failure could not be confidently classified and needs manual review."
-        )
+        body.append("This failure could not be confidently classified and needs manual review.")
         if admin:
             body.append(admin)
 
