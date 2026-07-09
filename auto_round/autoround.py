@@ -68,6 +68,7 @@ _COMPAT_KWARGS = {
     "guidance_scale",
     "num_inference_steps",
     "generator_seed",
+    "pipeline_call_kwargs",
     "duo_scaling",
     "n_grid",
     "mappings",

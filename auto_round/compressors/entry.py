@@ -39,7 +39,7 @@ _ENTRY_BASE_KWARGS = {
     "static_attention_dtype",
 }
 _ENTRY_MLLM_KWARGS = {"processor", "image_processor", "template", "extra_data_dir", "quant_nontext_module"}
-_ENTRY_DIFFUSION_KWARGS = {"guidance_scale", "num_inference_steps", "generator_seed"}
+_ENTRY_DIFFUSION_KWARGS = {"guidance_scale", "num_inference_steps", "generator_seed", "pipeline_call_kwargs"}
 _ENTRY_ALLOWED_KWARGS = (
     _ENTRY_ROUTE_KWARGS | _ENTRY_COMPRESSOR_KWARGS | _ENTRY_BASE_KWARGS | _ENTRY_MLLM_KWARGS | _ENTRY_DIFFUSION_KWARGS
 )
@@ -646,6 +646,7 @@ class AutoRoundCompatible:
             "guidance_scale": kwargs.pop("guidance_scale", 7.5),
             "num_inference_steps": kwargs.pop("num_inference_steps", 50),
             "generator_seed": kwargs.pop("generator_seed", None),
+            "pipeline_call_kwargs": kwargs.pop("pipeline_call_kwargs", None),
         }
         return {
             "format": format_name,
@@ -740,10 +741,10 @@ class AutoRoundCompatible:
 
         # Check model type for logging (use warning_once to avoid repeating for every block
         # when called from LLM-Compressor which instantiates AutoRound per block)
-        if is_mllm_model(model, platform=platform):
-            logger.info("Using MLLM mode for multimodal model.")
-        elif is_diffusion_model(model):
+        if is_diffusion_model(model):
             logger.info("Using Diffusion mode for diffusion model.")
+        elif is_mllm_model(model, platform=platform):
+            logger.info("Using MLLM mode for multimodal model.")
         else:
             logger.info("Using LLM mode.")
 

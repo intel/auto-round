@@ -49,6 +49,29 @@ class DiffusionCalibrator(LLMCalibrator):
         """Wrap positional-arg block forward into kwargs form for diffusion blocks."""
         return wrap_block_forward_positional_to_kwargs(forward_fn)
 
+    def _build_pipeline_call_kwargs(self, pipe, prompts):
+        c = self.compressor
+        if hasattr(c, "_build_pipeline_call_kwargs"):
+            return c._build_pipeline_call_kwargs(pipe, prompts)
+
+        call_kwargs = {
+            "guidance_scale": c.guidance_scale,
+            "num_inference_steps": c.num_inference_steps,
+            "generator": (
+                None
+                if c.generator_seed is None
+                else torch.Generator(device=pipe.device).manual_seed(c.generator_seed)
+            ),
+        }
+        call_kwargs.update(dict(getattr(c, "pipeline_call_kwargs", {}) or {}))
+
+        requires_image = hasattr(c, "_requires_calibration_image") and c._requires_calibration_image()
+        if requires_image:
+            batch_size = len(prompts) if isinstance(prompts, list) else 1
+            call_kwargs.setdefault("image", c._get_calibration_image(batch_size))
+            call_kwargs.setdefault("prompt", prompts)
+        return call_kwargs
+
     @torch.no_grad()
     def calib(self, nsamples: int, bs: int) -> None:
         """Drive the diffusion pipeline so block-forward hooks fire.
@@ -100,42 +123,18 @@ class DiffusionCalibrator(LLMCalibrator):
         if pipe.device != torch.device(target_device):
             pipe.to(target_device)
         pipeline_fn = getattr(pipe, "_autoround_pipeline_fn", None)
-        # Check if this is an I2V pipeline (needs calibration image)
-        requires_image = hasattr(c, "_requires_calibration_image") and c._requires_calibration_image()
         with tqdm(range(1, total + 1), desc="cache block inputs") as pbar:
             for ids, prompts in c.dataloader:
                 if isinstance(prompts, tuple):
                     prompts = list(prompts)
                 try:
-                    generator = (
-                        None
-                        if c.generator_seed is None
-                        else torch.Generator(device=pipe.device).manual_seed(c.generator_seed)
-                    )
-                    if requires_image:
-                        image = c._get_calibration_image(len(prompts) if isinstance(prompts, list) else 1)
-                        pipe(
-                            image,
-                            prompt=prompts,
-                            guidance_scale=c.guidance_scale,
-                            num_inference_steps=c.num_inference_steps,
-                            generator=generator,
-                        )
-                    elif pipeline_fn is not None:
-                        pipeline_fn(
-                            pipe,
-                            prompts,
-                            guidance_scale=c.guidance_scale,
-                            num_inference_steps=c.num_inference_steps,
-                            generator=generator,
-                        )
+                    pipe_kwargs = self._build_pipeline_call_kwargs(pipe, prompts)
+                    if pipeline_fn is not None:
+                        pipeline_fn(pipe, prompts, **pipe_kwargs)
+                    elif "prompt" in pipe_kwargs:
+                        pipe(**pipe_kwargs)
                     else:
-                        pipe(
-                            prompts,
-                            guidance_scale=c.guidance_scale,
-                            num_inference_steps=c.num_inference_steps,
-                            generator=generator,
-                        )
+                        pipe(prompts, **pipe_kwargs)
                 except NotImplementedError:
                     pass
                 except Exception as error:

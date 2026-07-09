@@ -840,6 +840,113 @@ def _attach_diffusion_pipeline_fn(pipe):
             )
 
         pipe._autoround_pipeline_fn = _stable_audio_pipeline_fn
+    elif pipe_class_name in ("Cosmos3OmniPipeline", "Cosmos3OmniDiffusersPipeline"):
+
+        def _cosmos3_omni_pipeline_fn(
+            pipe, prompts, guidance_scale=6.0, num_inference_steps=35, generator=None, **kwargs
+        ):
+            supported_kwargs = set(inspect.signature(pipe.__call__).parameters)
+            call_kwargs = {k: v for k, v in kwargs.items() if v is not None and k in supported_kwargs}
+            call_kwargs.setdefault("prompt", prompts)
+            call_kwargs.setdefault("guidance_scale", guidance_scale)
+            call_kwargs.setdefault("num_inference_steps", num_inference_steps)
+            if generator is not None:
+                call_kwargs.setdefault("generator", generator)
+            return pipe(**call_kwargs)
+
+        pipe._autoround_pipeline_fn = _cosmos3_omni_pipeline_fn
+        _patch_cosmos3_time_embedder_dtype(pipe)
+
+
+def _patch_cosmos3_time_embedder_dtype(pipe) -> None:
+    transformer = getattr(pipe, "transformer", None)
+    time_embedder = getattr(transformer, "time_embedder", None)
+    linear_1 = getattr(time_embedder, "linear_1", None)
+    if time_embedder is None or linear_1 is None or getattr(time_embedder, "_autoround_dtype_patched", False):
+        return
+
+    original_forward = time_embedder.forward
+
+    def _autoround_forward(sample, condition=None):
+        target_dtype = linear_1.weight.dtype
+        if sample.dtype != target_dtype and target_dtype.is_floating_point:
+            sample = sample.to(target_dtype)
+        cond_proj = getattr(time_embedder, "cond_proj", None)
+        if condition is not None and cond_proj is not None and condition.dtype != cond_proj.weight.dtype:
+            condition = condition.to(cond_proj.weight.dtype)
+        return original_forward(sample, condition)
+
+    time_embedder.forward = _autoround_forward
+    time_embedder._autoround_dtype_patched = True
+
+
+def get_diffusion_pipeline_component_names(pipe) -> list[str]:
+    component_names = []
+    config = getattr(pipe, "config", {})
+    if isinstance(config, dict):
+        for key, value in config.items():
+            if not key.startswith("_") and isinstance(value, list):
+                component_names.append(key)
+    if component_names:
+        return component_names
+
+    model_index_path = getattr(getattr(pipe, "config", None), "_name_or_path", None)
+    if isinstance(model_index_path, str):
+        index_file = os.path.join(model_index_path, "model_index.json")
+        if os.path.exists(index_file):
+            with open(index_file, "r", encoding="utf-8") as handle:
+                model_index = json.load(handle)
+            return [key for key, value in model_index.items() if not key.startswith("_") and isinstance(value, list)]
+    return []
+
+
+def ensure_diffusion_pipeline_components_attr(pipe) -> None:
+    try:
+        _ = pipe.components
+        return
+    except Exception:
+        pass
+
+    try:
+        expected_modules, optional_parameters = pipe._get_signature_keys(pipe)
+    except Exception:
+        expected_modules, optional_parameters = [], []
+
+    component_names = []
+    seen = set()
+    for name in (
+        list(get_diffusion_pipeline_component_names(pipe))
+        + list(expected_modules)
+        + list(getattr(pipe, "_optional_components", []))
+    ):
+        if name.startswith("_") or name in optional_parameters or name in seen:
+            continue
+        seen.add(name)
+        component_names.append(name)
+
+    def _autoround_components(self):
+        return {name: getattr(self, name, None) for name in component_names if hasattr(self, name)}
+
+    pipe_cls = type(pipe)
+    if getattr(pipe_cls, "_autoround_components_patched", False):
+        return
+    setattr(pipe_cls, "components", property(_autoround_components))
+    setattr(pipe_cls, "_autoround_components_patched", True)
+
+
+def restore_diffusion_pipeline_fp32_modules(pipe) -> None:
+    for comp_name in get_diffusion_pipeline_component_names(pipe):
+        component = getattr(pipe, comp_name, None)
+        if not isinstance(component, torch.nn.Module):
+            continue
+        keep_in_fp32_modules = getattr(component, "_keep_in_fp32_modules", None) or []
+        if isinstance(keep_in_fp32_modules, str):
+            keep_in_fp32_modules = [keep_in_fp32_modules]
+        for module_name, module in component.named_modules():
+            if module_name and any(
+                module_name == keep_name or module_name.endswith(f".{keep_name}") for keep_name in keep_in_fp32_modules
+            ):
+                module.to(dtype=torch.float32)
 
 
 def diffusion_load_model(
@@ -919,6 +1026,7 @@ def diffusion_load_model(
             pipe.config[k] = v
 
     pipe = _to_model_dtype(pipe, model_dtype)
+    ensure_diffusion_pipeline_components_attr(pipe)
     model = pipe.transformer
 
     # Attach custom pipeline function for models that need special API calls
@@ -938,7 +1046,7 @@ def diffusion_load_model(
     # non-meta model uses model.save_pretrained for model and config saving
     setattr(model, "save_pretrained", partial(model_save_pretrained, model))
 
-    for comp_name in pipe.components:
+    for comp_name in get_diffusion_pipeline_component_names(pipe):
         comp = getattr(pipe, comp_name, None)
         if (
             comp_name.startswith("transformer")

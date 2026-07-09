@@ -26,7 +26,12 @@ from auto_round.utils.device import (
     get_major_device,
 )
 from auto_round.utils.device_manager import device_manager, is_auto_device_mapping
-from auto_round.utils.model import rename_weights_files
+from auto_round.utils.model import (
+    ensure_diffusion_pipeline_components_attr,
+    get_diffusion_pipeline_component_names,
+    rename_weights_files,
+    restore_diffusion_pipeline_fp32_modules,
+)
 
 
 class DiffusionMixin:
@@ -114,9 +119,11 @@ class DiffusionMixin:
         pipe = getattr(self.model_context, "pipe", None)
         model = getattr(self.model_context, "model", None)
         if pipe is not None and model is not None:
+            ensure_diffusion_pipeline_components_attr(pipe)
             is_nextstep = hasattr(model, "config") and getattr(model.config, "model_type", None) == "nextstep"
             if not is_nextstep:
                 pipe.to(model.dtype)
+                restore_diffusion_pipeline_fp32_modules(pipe)
 
     def _get_calibrator_kind(self) -> str:
         """Select the diffusion calibration strategy.
@@ -187,7 +194,7 @@ class DiffusionMixin:
         if pipe is None:
             return []
         result = []
-        for comp_name in pipe.components:
+        for comp_name in get_diffusion_pipeline_component_names(pipe):
             comp = getattr(pipe, comp_name, None)
             if (
                 comp_name.startswith("transformer")
@@ -209,6 +216,7 @@ class DiffusionMixin:
         is_nextstep = hasattr(model, "config") and getattr(model.config, "model_type", None) == "nextstep"
         if not is_nextstep:
             pipe.to(model.dtype)
+            restore_diffusion_pipeline_fp32_modules(pipe)
 
         # Dispatch secondary transformer to GPU(s)
         device_map = getattr(self.compress_context, "device_map", None)
@@ -217,7 +225,7 @@ class DiffusionMixin:
 
         if multi_device:
             comp_device = device_list[-1]
-            for comp_name in pipe.components:
+            for comp_name in get_diffusion_pipeline_component_names(pipe):
                 comp = getattr(pipe, comp_name, None)
                 if comp is None or comp is model or not hasattr(comp, "to"):
                     continue
@@ -294,6 +302,7 @@ class DiffusionMixin:
 
         if pipe.device != self.model.device:
             pipe.to(self.model.device)
+        restore_diffusion_pipeline_fp32_modules(pipe)
 
         device_map = getattr(self.compress_context, "device_map", None)
         device_list = getattr(self.compress_context, "device_list", [])
@@ -315,8 +324,11 @@ class DiffusionMixin:
                 if isinstance(prompts, tuple):
                     prompts = list(prompts)
                 pipe_kwargs = self._build_pipeline_call_kwargs(pipe, prompts)
+                pipeline_fn = getattr(pipe, "_autoround_pipeline_fn", None)
                 try:
-                    if self._requires_calibration_image() or "prompt" in pipe_kwargs:
+                    if pipeline_fn is not None:
+                        pipeline_fn(pipe, prompts, **pipe_kwargs)
+                    elif self._requires_calibration_image() or "prompt" in pipe_kwargs:
                         # I2V pipeline: 'image' is the first positional arg, so pass
                         # 'prompt' as keyword to avoid "multiple values for argument 'image'".
                         pipe(**pipe_kwargs)
@@ -414,6 +426,7 @@ class DiffusionMixin:
                 if not skip_move:
                     pipe.to(target_device)
 
+            restore_diffusion_pipeline_fp32_modules(pipe)
             logger.info("start to cache block inputs")
             all_inputs = self.try_cache_inter_data_gpucpu(
                 to_cache_block_names,
@@ -571,16 +584,14 @@ class DiffusionMixin:
 
             _format = get_formats(_format, self)
 
-        for name in pipe.components.keys():
+        for name in get_diffusion_pipeline_component_names(pipe):
+            if not hasattr(pipe, name):
+                continue
             val = getattr(pipe, name)
             sub_module_path = (
                 os.path.join(output_dir, name) if os.path.basename(os.path.normpath(output_dir)) != name else output_dir
             )
-            target_output_dir = (
-                sub_module_path
-                if has_multiple_quantized_transformers or not self.compress_context.is_immediate_saving
-                else output_dir
-            )
+            target_output_dir = sub_module_path
             if name in quantized_transformers:
                 # Save secondary quantized transformer
                 saved_model = self.model_context.model
