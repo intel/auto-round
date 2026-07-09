@@ -83,7 +83,6 @@ stages:
               utTestMode: $(PART)
               utContainerName: "AutoRoundUnitTest$(NODE_LABEL)"
               buildARKWheel: $(BUILD_ARK_WHEEL)
-              failureLogContext: $(UPLOAD_PATH)/failure_context_part$(PART).json
 
   - stage: AI_Analysis
     displayName: "AI Analyze"

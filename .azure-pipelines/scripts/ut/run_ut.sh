@@ -1,44 +1,13 @@
 #!/bin/bash
 set -ex
 
-test_part=""
-failure_log_context=""
-declare -a FAILED_BASE_CASES=()
-declare -a FAILED_INC_CASES=()
-declare -a FAILED_LLMC_CASES=()
-
-function parse_arguments() {
-
-    while [[ $# -gt 0 ]]; do
-        case "$1" in
-            --failure-context)
-                failure_log_context="$2"
-                shift 2
-                ;;
-            --test-part)
-                test_part="$2"
-                shift 2
-                ;;
-            *)
-                echo "Unknown argument: $1"
-                exit 1
-                ;;
-        esac
-    done
-
-    if [[ -z "${test_part}" ]]; then
-        echo "Error: test_part is required"
-        echo "Usage: run_ut.sh --test-part <part> [--failure-context <path>] [--failed-test-cases <path>]"
-        exit 1
-    fi
-}
-
-parse_arguments "$@"
-
+test_part=$1
 source /auto-round/.azure-pipelines/scripts/change_color.sh
 
 LOG_DIR=/auto-round/log_dir
+FAILURE_LOG_DIR=/auto-round/log_dir/failure_logs_dir
 mkdir -p "${LOG_DIR}"
+mkdir -p "${FAILURE_LOG_DIR}"
 SUMMARY_LOG="${LOG_DIR}/results_summary.log"
 
 function setup_inc_environment() {
@@ -185,12 +154,9 @@ function collect_log() {
         --log-pattern "unittest_test_*.log"
         --log-dir "${LOG_DIR}"
         --summary-log "${SUMMARY_LOG}"
-        --ci-part "${test_part}"
+        --failure-log-dir "${FAILURE_LOG_DIR}"
+        --failure-context-file "${FAILURE_LOG_DIR}/failure_context_part${test_part}.json"
     )
-
-    if [[ -n "${failure_log_context}" ]]; then
-        collect_cmd+=(--failure-context "${failure_log_context}")
-    fi
 
     "${collect_cmd[@]}"
 

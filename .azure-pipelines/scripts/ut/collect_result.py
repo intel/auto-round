@@ -227,7 +227,6 @@ class FailureContextWriter:
         output_path: Path,
         results: list[TestResult],
         test_type: str,
-        ci_part: str = "",
         summary_log: Path | None = None,
         failure_log_dir: Path | None = None,
     ) -> None:
@@ -240,7 +239,6 @@ class FailureContextWriter:
         payload = {
             "schema_version": "1.0",
             "test_type": test_type,
-            "ci_part": ci_part,
             "build": {
                 "build_id": os.environ.get("BUILD_BUILDID", ""),
                 "build_number": os.environ.get("BUILD_BUILDNUMBER", ""),
@@ -261,7 +259,7 @@ class FailureContextWriter:
 
         print(f"Failure context written to: {output_path.absolute()}", file=sys.stderr)
 
-        target_log_dir = Path(failure_log_dir) if failure_log_dir else output_path.parent / "failure_logs"
+        target_log_dir = Path(failure_log_dir) if failure_log_dir else output_path.parent / "failure_logs_dir"
         self._collect_failure_logs(target_log_dir, failed_results, output_path, summary_log)
 
     def _to_failure_entry(self, result: TestResult) -> dict:
@@ -347,9 +345,8 @@ def main():
     parser.add_argument("--log-dir", required=True, type=Path, help="Directory with logs")
     parser.add_argument("--summary-log", required=True, type=Path, help="Output file")
     parser.add_argument("--log-pattern", default="*.log", help="Glob pattern")
-    parser.add_argument("--failure-context", type=Path, help="Optional output file for failure context JSON")
+    parser.add_argument("--failure-context-file", type=Path, help="Optional output file for failure context JSON")
     parser.add_argument("--failure-context-max-lines", type=int, default=200, help="Max lines per failed case")
-    parser.add_argument("--ci-part", default="", help="Optional CI matrix part label")
     parser.add_argument("--failure-log-dir", type=Path, help="Optional output folder for failed logs package")
 
     args = parser.parse_args()
@@ -371,13 +368,12 @@ def main():
             "failed": sum(1 for r in results if r.status == TestStatus.FAILED),
         }
 
-        if args.failure_context:
+        if args.failure_context_file and stats['failed'] > 0:
             context_writer = FailureContextWriter(args.log_dir, max_lines=args.failure_context_max_lines)
             context_writer.write(
-                args.failure_context,
+                args.failure_context_file,
                 results,
                 test_type=args.test_type,
-                ci_part=args.ci_part,
                 summary_log=args.summary_log,
                 failure_log_dir=args.failure_log_dir,
             )
