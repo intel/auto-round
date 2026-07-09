@@ -62,7 +62,7 @@ function run_unit_test() {
     # install unit test dependencies
     echo "##[group]set up UT env..."
     cd "${BUILD_SOURCESDIRECTORY}" || exit 1
-    uv pip install torch==2.12.1 torchvision torchao --index-url https://download.pytorch.org/whl/cu130
+    uv pip install torch==2.13.0 torchvision torchao --index-url https://download.pytorch.org/whl/cu130
     uv pip install llama-cpp-python --extra-index-url https://abetlen.github.io/llama-cpp-python/whl/cu130
     uv pip install 'git+https://github.com/ggml-org/llama.cpp.git#subdirectory=gguf-py'
     uv pip install -r test/test_cuda/requirements.txt
@@ -70,7 +70,7 @@ function run_unit_test() {
     uv pip install -U transformers chardet
     uv pip install kernels==0.12.3 # For sm120: https://github.com/huggingface/transformers/blob/v5.12.1/setup.py#L94
     uv pip uninstall torch torchvision
-    uv pip install torch==2.12.1 torchvision torchao --index-url https://download.pytorch.org/whl/cu130
+    uv pip install torch==2.13.0 torchvision torchao --index-url https://download.pytorch.org/whl/cu130
     uv pip install .
     echo "##[endgroup]"
 
