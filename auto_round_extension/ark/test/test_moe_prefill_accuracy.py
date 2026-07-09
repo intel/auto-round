@@ -182,25 +182,67 @@ _TOL_FP8 = dict(rtol=1e-1, atol=1e-1)
 
 
 def _tol_for_dtype(base, dtype):
-    """Return tolerances loosened for accumulator noise at large K.
+    """Return tolerances loosened for bf16 accumulator noise at large K.
 
-    Long K-reductions (the ``medium E=8`` prefill shape uses K=14336) can
-    produce a handful of outliers per ~2M outputs that exceed the tight
-    fp16-calibrated bounds by up to ~1.3x (observed: max abs diff ~0.090).
-    Because the XPU kernel does not guarantee a deterministic reduction
-    order, these outliers appear stochastically from run to run even with a
-    pinned RNG seed, so a fixed seed alone cannot make the assertion robust.
+    bf16 has 7 mantissa bits vs fp16's 10, so K-reductions of ~14K elements
+    (the ``medium E=8`` prefill shape uses K=14336) can produce a handful of
+    outliers per ~2M outputs that exceed the fp16-calibrated bound by up to
+    ~1.3x (observed: max abs diff ~0.090). This is genuine accumulator-order
+    noise, so we widen only for bf16 quant callers and leave fp16 (whose wider
+    mantissa absorbs the noise) at the tight, quant-appropriate bound.
 
-    This shows up on every quantized path -- int8-sym / fp8 / DPAS mainloops
-    most consistently, but int4/int2 as well (notably int4-sym + fp16, which
-    intermittently crossed the tight bound). We therefore apply a ``1e-1``
-    tolerance floor for both fp16 and bf16 quant callers. The reference and
-    kernel share the same dequantized weights, so this floor still catches
-    real matmul/dequant bugs while absorbing accumulator-order noise.
+    fp16 is deliberately NOT loosened here. A previous change widened fp16 to a
+    ``1e-1`` floor to silence an "intermittent" int4-sym + fp16 failure, but the
+    observed failure (max abs diff ~70 at a single index) is orders of magnitude
+    beyond any accumulator noise and beyond the ``1e-1`` floor itself -- i.e. the
+    loosened tolerance never even made the assertion pass. Such a single wildly
+    wrong element is a kernel bug (boundary / uninitialized-memory / predication
+    in the S4 DPAS prefill path), not RNG luck, and must be fixed in the kernel
+    rather than masked here. Keeping fp16 strict ensures that bug stays visible.
     """
-    if dtype in (torch.bfloat16, torch.float16):
+    if dtype is torch.bfloat16:
         return dict(rtol=max(base["rtol"], 1e-1), atol=max(base["atol"], 1e-1))
     return base
+
+
+def _assert_close_report(out, ref, tol, label):
+    """``torch.testing.assert_close`` with a localized outlier report on failure.
+
+    When the assertion fails this augments the error with a breakdown that makes
+    the failure *attributable* to a root cause instead of just a single "greatest
+    absolute difference" number:
+
+      * the greatest abs diff and its index,
+      * how many elements exceed a coarse ``1.0`` threshold and their (first few)
+        indices -- a *single* / handful of huge outliers points at a kernel
+        boundary or uninitialized-memory bug, whereas a large *fraction* of
+        elements being off points at a global layout / dequant / scale bug.
+
+    This directly supports triaging the MoE prefill kernels: accumulator-order
+    noise is many tiny sub-``0.1`` diffs, so any element past ``1.0`` is a real
+    correctness defect regardless of the configured tolerance.
+    """
+    try:
+        torch.testing.assert_close(out, ref, msg=lambda m: f"[{label}] {m}", **tol)
+    except AssertionError as err:
+        diff = (out.detach().float() - ref.detach().float()).abs()
+        total = diff.numel()
+        gross_mask = diff > 1.0
+        n_gross = int(gross_mask.sum().item())
+        max_diff, max_flat = diff.reshape(-1).max(dim=0)
+        max_idx = tuple(int(i) for i in torch.unravel_index(max_flat, diff.shape))
+        gross_idx = [tuple(int(i) for i in idx) for idx in torch.nonzero(gross_mask)[:8].tolist()] if n_gross else []
+        report = (
+            f"\n[{label}] outlier report:"
+            f"\n  shape={tuple(diff.shape)} total={total}"
+            f"\n  max abs diff={float(max_diff):.6g} at index {max_idx}"
+            f"\n  elements with |diff|>1.0: {n_gross} ({100.0 * n_gross / total:.4f}%)"
+            f"\n  first gross indices: {gross_idx}"
+            f"\n  -> a single / handful of huge outliers indicates a kernel"
+            f" boundary or uninitialized-memory bug (fix the kernel, not the tol);"
+            f"\n     a large fraction indicates a global layout / dequant / scale bug."
+        )
+        raise AssertionError(str(err) + report) from None
 
 
 # ---------------------------------------------------------------------------
@@ -247,7 +289,7 @@ class TestMoEGemmPrefillAccuracy:
 
             assert out.shape == (total_tokens, N), f"{label}: bad shape {out.shape}"
             assert out.dtype == dtype, f"{label}: bad dtype {out.dtype}"
-            torch.testing.assert_close(out, ref, msg=lambda m, lbl=label: f"[{lbl}] {m}", **_TOL_FP)
+            _assert_close_report(out, ref, _TOL_FP, label)
 
     @pytest.mark.skipif(bool(_QUANT_PREFILL_SKIP), reason=_QUANT_PREFILL_SKIP or "ok")
     @pytest.mark.parametrize("dtype", [torch.float16, torch.bfloat16])
@@ -284,9 +326,7 @@ class TestMoEGemmPrefillAccuracy:
 
             ref = _reference_moe_prefill(activations, dequant, ntpe)
             assert out.shape == (total_tokens, N), f"{label}: bad shape {out.shape}"
-            torch.testing.assert_close(
-                out, ref, msg=lambda m, lbl=label: f"[{lbl}] {m}", **_tol_for_dtype(_TOL_INT4, dtype)
-            )
+            _assert_close_report(out, ref, _tol_for_dtype(_TOL_INT4, dtype), label)
 
     @pytest.mark.skipif(bool(_QUANT_PREFILL_SKIP), reason=_QUANT_PREFILL_SKIP or "ok")
     @pytest.mark.parametrize("dtype", [torch.float16, torch.bfloat16])
@@ -323,9 +363,7 @@ class TestMoEGemmPrefillAccuracy:
 
             ref = _reference_moe_prefill(activations, dequant, ntpe)
             assert out.shape == (total_tokens, N), f"{label}: bad shape {out.shape}"
-            torch.testing.assert_close(
-                out, ref, msg=lambda m, lbl=label: f"[{lbl}] {m}", **_tol_for_dtype(_TOL_INT8, dtype)
-            )
+            _assert_close_report(out, ref, _tol_for_dtype(_TOL_INT8, dtype), label)
 
     @pytest.mark.skipif(bool(_QUANT_PREFILL_SKIP), reason=_QUANT_PREFILL_SKIP or "ok")
     @pytest.mark.parametrize("dtype", [torch.float16, torch.bfloat16])
@@ -362,9 +400,7 @@ class TestMoEGemmPrefillAccuracy:
 
             ref = _reference_moe_prefill(activations, dequant, ntpe)
             assert out.shape == (total_tokens, N), f"{label}: bad shape {out.shape}"
-            torch.testing.assert_close(
-                out, ref, msg=lambda m, lbl=label: f"[{lbl}] {m}", **_tol_for_dtype(_TOL_INT2, dtype)
-            )
+            _assert_close_report(out, ref, _tol_for_dtype(_TOL_INT2, dtype), label)
 
     @pytest.mark.skipif(bool(_QUANT_PREFILL_SKIP), reason=_QUANT_PREFILL_SKIP or "ok")
     @pytest.mark.parametrize("dtype", [torch.float16, torch.bfloat16])
@@ -411,9 +447,7 @@ class TestMoEGemmPrefillAccuracy:
 
                 ref = _reference_moe_prefill(activations, dequant, ntpe)
                 assert out.shape == (total_tokens, N), f"{label}: bad shape {out.shape}"
-                torch.testing.assert_close(
-                    out, ref, msg=lambda m, lbl=label: f"[{lbl}] {m}", **_tol_for_dtype(_TOL_FP8, dtype)
-                )
+                _assert_close_report(out, ref, _tol_for_dtype(_TOL_FP8, dtype), label)
         finally:
             if prev is None:
                 os.environ.pop("ARK_MOE_PREFILL_NATIVE_FP8", None)
@@ -472,9 +506,7 @@ class TestMoEGemmPrefillAccuracy:
 
             ref = _reference_moe_prefill(activations, dequant_NK, ntpe)
             assert out.shape == (total_tokens, N), f"{label}: bad shape {out.shape}"
-            torch.testing.assert_close(
-                out, ref, msg=lambda m, lbl=label: f"[{lbl}] {m}", **_tol_for_dtype(_TOL_FP8, dtype)
-            )
+            _assert_close_report(out, ref, _tol_for_dtype(_TOL_FP8, dtype), label)
 
     @pytest.mark.parametrize("dtype", [torch.float16, torch.bfloat16])
     def test_accuracy_int8_per_tensor_dpas(self, dtype):
@@ -526,9 +558,7 @@ class TestMoEGemmPrefillAccuracy:
 
             ref = _reference_moe_prefill(activations, dequant_NK, ntpe)
             assert out.shape == (total_tokens, N), f"{label}: bad shape {out.shape}"
-            torch.testing.assert_close(
-                out, ref, msg=lambda m, lbl=label: f"[{lbl}] {m}", **_tol_for_dtype(_TOL_INT8, dtype)
-            )
+            _assert_close_report(out, ref, _tol_for_dtype(_TOL_INT8, dtype), label)
 
     @pytest.mark.parametrize("dtype", [torch.float16, torch.bfloat16])
     @pytest.mark.parametrize("fp8_dtype", [torch.float8_e4m3fn, torch.float8_e5m2])
@@ -570,9 +600,7 @@ class TestMoEGemmPrefillAccuracy:
 
                 ref = _reference_moe_prefill(activations, dequant, ntpe)
                 assert out.shape == (total_tokens, N), f"{label}: bad shape {out.shape}"
-                torch.testing.assert_close(
-                    out, ref, msg=lambda m, lbl=label: f"[{lbl}] {m}", **_tol_for_dtype(_TOL_FP8, dtype)
-                )
+                _assert_close_report(out, ref, _tol_for_dtype(_TOL_FP8, dtype), label)
         finally:
             if prev is None:
                 os.environ.pop("ARK_MOE_PREFILL_DPAS_FP8", None)
@@ -622,9 +650,7 @@ class TestMoEGemmPrefillAccuracy:
 
                 ref = _reference_moe_prefill(activations, dequant, ntpe)
                 assert out.shape == (total_tokens, N), f"{label}: bad shape {out.shape}"
-                torch.testing.assert_close(
-                    out, ref, msg=lambda m, lbl=label: f"[{lbl}] {m}", **_tol_for_dtype(_TOL_INT8, dtype)
-                )
+                _assert_close_report(out, ref, _tol_for_dtype(_TOL_INT8, dtype), label)
         finally:
             if prev is None:
                 os.environ.pop("ARK_MOE_PREFILL_DPAS_INT8", None)
@@ -678,9 +704,7 @@ class TestMoEGemmPrefillAccuracy:
 
                 ref = _reference_moe_prefill(activations, dequant, ntpe)
                 assert out.shape == (total_tokens, N), f"{label}: bad shape {out.shape}"
-                torch.testing.assert_close(
-                    out, ref, msg=lambda m, lbl=label: f"[{lbl}] {m}", **_tol_for_dtype(_TOL_INT4, dtype)
-                )
+                _assert_close_report(out, ref, _tol_for_dtype(_TOL_INT4, dtype), label)
         finally:
             if prev_s4 is None:
                 os.environ.pop("ARK_MOE_PREFILL_DPAS_S4", None)
